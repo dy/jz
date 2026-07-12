@@ -74,7 +74,7 @@ export const heapResetWat = () => ctx.scope.globals.has('__heap_reset') ? '(glob
 // zeroes memory, so a forward written into a DURABLE header (offOld < __heap_reset,
 // i.e. the block predates this round) permanently points at an EPHEMERAL target that
 // the next round's allocations silently overwrite — any later chase through the
-// durable alias then lands on garbage or goes OOB (.work/selfhost-perf-groundtruth.md,
+// durable alias then lands on garbage or goes OOB (.work/todo.md groundtruth archive,
 // "array-growth forwarding is not _clear-safe"). Growing an EPHEMERAL block needs no
 // protection: everything reachable from it is ephemeral too, so the whole chain (old
 // header, new header, and every durable-side reference to it — there are none, by

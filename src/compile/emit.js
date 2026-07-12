@@ -3189,7 +3189,7 @@ export const emitter = {
     // self-hosted kernel, at every optimize level 0-2, treats a value produced by a call
     // repeated textually across both arms of a ternary differently from one materialized
     // to a local first" — pinned in test/parser-bugs.js rather than chased further into
-    // the kernel's own call/branch codegen. See .work/selfhost-perf-groundtruth.md.
+    // the kernel's own call/branch codegen. See .work/todo.md (groundtruth archive).
     const emitted = emit(expr)
     const ir = pk != null ? asPtrOffset(emitted, pk) : asParamType(emitted, rt)
     const ty = pk != null ? 'i32' : rt

@@ -1237,6 +1237,24 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
   simplification (research.md) — carry `2πfc/fs` exactly, emit the cancellation-free form.
 - [x] **Metacircularity** — extract a minimal jz parser from subscript (jz-jessie fork: no
   class/async/regex, ~30 lines); jzify uses jessie, pure jz uses the internal parser; true bootstrap.
+- [ ] **Self-host-only miscompiles, open** (transplanted from the deleted groundtruth doc —
+  neither is tracked anywhere else; both bite only the wasm kernel, host is fine):
+  * bare `return;` sibling + i64-carrier boundary wrapper traps OOB at kernel runtime
+    level 2 — `export let f = (x, c) => { if (c) return; return (x*1000)|0 }` inside
+    compileAst; open tracker at test/parser-bugs.js:276.
+  * src/ir.js `writeVar` emits invalid wasm in-kernel for `[a] = [7]` (destructuring
+    ASSIGNMENT) and reassigned-param returns (`local.set expected f64, found i32.const`);
+    three fix attempts failed to localize — the groundtruth doc's git history has the trail.
+  * parked: SROA re-land (tag fix works natively, closures 89/0; miscompiles
+    m5_parse$expr in the kernel bundle — needs a flatten stack-shape audit).
+- [ ] **Self-host fragility guards, live** (from the deleted fragilities doc — each
+  neutralized only at its one known trigger, unguarded in general): Root F `.typed:[]`
+  runtime-variable OOB index unchecked (module/typedarray.js fast path — silent adjacent-
+  heap corruption class; deferred pending in-bounds proofs); multi-prop spread
+  `{...src,k1,k2}` HASH-vs-OBJECT result confusion (guarded only at narrow.js cloneSig);
+  same-scope for-of loop-var shadowing in-kernel (unique names at trigger; inert twin at
+  compile/index.js:572). Contributor-facing rule (ctx-literal field-set/order uniformity)
+  belongs in CONTRIBUTING's vectorizer section when next touched.
 
 ## Bench-vs-V8+JSC matrix (2026-07-08 full-corpus sweep, all checksums identical)
 vs V8 — trailing: jessie 5.4x (hard tail), immutable 1.83x, wordcount 1.63x,
@@ -1870,6 +1888,70 @@ correctness risk for zero measured benefit:
 ---
 
 ## Archive
+
+### .work plan docs audited & deleted (2026-07-12) — five deep-dive audits vs live code
+
+**preeval.md (2026-07-02→07-07) — CLOSED.** Tier 1 (pure-expression folding incl.
+BigInt-rational round-once arithmetic: `0.1+0.2-0.3` folds to exactly 2^-55) +
+Tier 3 (module-init snapshotting) both landed: `src/prepare/pre-eval.js` +
+`src/prepare/math-kernel.js` (21 bit-exact transcendental mirrors) behind
+`optimize.rationalConst` (default on), pinned by test/preeval.js (27 tests);
+`src/snapshot.js` (`optimize.snapshotInit`) proves init hermeticity DYNAMICALLY
+(instantiate with throwing host stubs) — supersedes the doc's sketched static
+initFacts consumer — bakes __start's heap image as data, 3208 globals, verified
+no start section in dist/jz.wasm, ships by default in the self-host build.
+Tier 2 (static object/array trees → data segments) never built — still the open
+tier. Follow-ups worth doing: mixed string+number `+` fold is now UNLOCKED (its
+exclusion cited kernel-vs-host String(number) divergence; Ryū closed that
+2026-07-12) — fold it behind the same rationalConst gate; no fuzz harness for
+the Rational/math-kernel arithmetic itself (only directed tests); jessie/watr
+ecosystem-perf caps still opt-in (`JZ_ECO_PIN=1`, test/ecosystem-perf.js);
+rationalConst's literal-fold divergence absent from README FAQ divergence list.
+
+**load-cse-design.md (2026-06-22) — RESOLVED, increment #2 obsolete.** Increment
+#1 (index-disjoint load-CSE) shipped same-day as `src/compile/cse-load.js` — an
+AST pass hooked post-type-inference (compile/index.js:536), NOT the WAT-level
+pass the doc argued necessary (stale conclusion; the simpler sound hook point
+won). Pinned test/perf.js:796; verified live: fft RE[a] 3 reads→1 load, IM[a]
+3→2 (the predicted same-index boundary). Both motivating benches won by OTHER
+levers: mat4 beats rust-wasm 1.58× via hoistReductionInvariantsIn; fft is a
+statistical tie (residual was FMA parity, not IM[a]). distinctParams shipped but
+feeds cross-iteration LICM (raytrace's win), not same-iteration reuse. Revisit
+increment #2 only if a kernel needs same-index cross-array load reuse; `A[i-3]`
+subtraction-shaped offsets remain unmatched (cheap, no workload).
+
+**ast-tagged-union-plan.md (2026-06-21) — PARKED with evidence.** Full 10-phase
+integer-op-tag migration was BUILT once end-to-end (dual-keyed dispatch, byte-
+identical corpus, self-host clean), then measured: op-tag dispatch ≈0.4% of
+compile time — not the bottleneck (watr's per-compile hash teardown was, fixed
+separately) — and the transitional diff deliberately reverted. Kept: dormant
+seed `src/ops.js` (OP/OPS enum + internOps, zero importers, zero cost) + the
+runbook in git history. Do not resume phases 1-9 absent a native-backend
+trigger where integer jump-tables pay. Confirmed still fully dormant.
+
+**selfhost-fragilities.md — 10/13 FIXED with guards+tests** (Root A/A′ dyn-set
+arms, Root B tblConsumed, Root D promotion disqualifier, __obj_clone,
+__clamp_idx deps + the selfhost-includes.js structural invariant, vectorizer
+ctx-shape unification, getter dispatch registry, Eisel-Lemire __dec_to_f64,
+bench-selfhost fresh-instance); Root C/E were non-issues. THREE LIVE (also
+recorded under Language coverage → correctness): (1) Root F — `.typed:[]` fast
+path is genuinely unchecked for runtime-variable negative/OOB index
+(module/typedarray.js; deferred pending the in-bounds-proof extension; the
+SAFETY framing — self-host codegen must fail loud, not corrupt silently — is
+distinct from the user-facing unchecked-reads principle); (2) multi-prop spread
+`{...src,k1,k2}` builds HASH while readers assume OBJECT — neutralized only at
+narrow.js's hand-built cloneSig; (3) same-scope for-of loop-var shadowing
+miscompiles in-kernel — neutralized via unique names at its one trigger, a
+second inert instance sits in analyzeFuncForEmit (compile/index.js:572).
+
+**selfhost-perf-groundtruth.md (2026-06-19→07-08) — SUPERSEDED** by this file's
+own "jz.wasm beats v8" thread (which carried the campaign to byte-parity + V8/
+JSC-dead-even warm). Every landed lever/root-cause is preserved as inline
+comments at its fix site. Its TWO never-fixed self-host-only miscompiles moved
+to Language coverage → correctness: bare-`return;` i64-carrier OOB
+(test/parser-bugs.js:276) and ir.js writeVar kernel-invalid-wasm; plus the
+parked SROA re-land note (flatten stack-shape audit; miscompiled m5_parse$expr
+in-kernel). Doc deleted; git history retains the full diagnostic trail.
 
 ### Verifier-surfaced deopts (absence-of-overhead gates, not benches)
 The structural-invariant verifier (`test/wat-invariants.js`) sweeps the fuzzer's

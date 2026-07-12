@@ -273,7 +273,7 @@ test('return-statement rebox: i32 tail in an unnarrowed (mixed-tail) function co
     // the kernel at runtime level 2, on the untouched pre-fix kernel too (confirmed via a
     // clean A/B) — a separate, deeper, PRE-EXISTING self-host bug in the level-2 inliner's
     // interaction with the boundary i64-carrier wrapper for a 2nd exported param, not this
-    // session's fix or regression. Left OPEN — see .work/selfhost-perf-groundtruth.md.
+    // session's fix or regression. Left OPEN — tracked in .work/todo.md (self-host groundtruth archive).
     // charter repro: minimally reduced from bench/mat4 + bench/_lib/benchlib.js's `medianUs`/
     // `printResult` pair — a same-named PARAMETER elsewhere in the program (`printResult`'s
     // `medianUs` param, used in a template literal) marks the top-level `medianUs` function

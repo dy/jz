@@ -107,7 +107,7 @@ const SAMPLES = [
   ['math-cos',    'export let main = () => (Math.abs(Math.cos(1.2) - 0.3623577544766736) < 1e-6) | 0', 1],
   ['math-pow',    'export let main = () => (Math.abs(Math.pow(2.5, 3.7) - 29.67413253642086) < 1e-6) | 0', 1],
   // Typed-array element WRITE with a literal RHS ('samples[j] > 0'-shaped repro,
-  // .work/selfhost-perf-groundtruth.md): jzify's isDestructurePat (jzify/hoist-vars.js)
+  // .work/todo.md groundtruth archive): jzify's isDestructurePat (jzify/hoist-vars.js)
   // misclassified `arr[i] = v` as a destructuring-assignment pattern — both share the
   // '[]' tag pre-prepare(), disambiguated only by arity (pattern length ≤2, element
   // access always length 3). Native jzify reconstructs byte-identical IR either way for

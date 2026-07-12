@@ -29,7 +29,7 @@ import { emit } from '../bridge.js'
 // emit(node) ONCE, before branching — same self-host miscompile class as emit.js's
 // 'return' handler (src/compile/emit.js): emit(node) called separately inline per
 // ternary arm, wrapped by a DIFFERENT coercion (boolBoxIR vs asF64) per arm, is
-// behaviorally identical in JS but self-host-fragile. See .work/selfhost-perf-groundtruth.md.
+// behaviorally identical in JS but self-host-fragile. See .work/todo.md (groundtruth archive).
 const storedValue = (node) => carrierF64(node, emit(node))
 
 // Integer array-index key: '3' → 3; rejects non-canonical and 2³²−1.

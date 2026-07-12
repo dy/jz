@@ -1180,7 +1180,7 @@ function emitFunc(func, funcFacts, programFacts) {
     if (p?.jsstring && p.jsstringDefault != null) continue
     const t = p?.type || 'f64'
     // emit(defVal) ONCE, before branching on t — same self-host miscompile class as
-    // emit.js's 'return' handler. See .work/selfhost-perf-groundtruth.md.
+    // emit.js's 'return' handler. See .work/todo.md (groundtruth archive).
     const emittedDefVal = emit(defVal)
     defaultInits.set(pname,
       ['if', isUndef(typed(['local.get', `$${pname}`], 'f64')),
