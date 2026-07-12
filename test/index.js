@@ -28,6 +28,7 @@ const TESTS = [
   'mem',
   'buffer',
   'workers',
+  'generators',
   'regex',
   'simd',
   'cli',

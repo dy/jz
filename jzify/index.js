@@ -14,7 +14,8 @@ import { createSwitchLowering, normalizeCaseBody } from './switch.js'
 import { createClassLowering } from './classes.js'
 import { hoistVars, prependDecls } from './hoist-vars.js'
 import { createArgumentsLowering } from './arguments.js'
-import { createTransform } from './transform.js'
+import { createTransform, bindGenerators } from './transform.js'
+import { createGeneratorLowering } from './generators.js'
 
 const names = createNames()
 const { lowerArguments, transformPattern, bindTransform } = createArgumentsLowering(names)
@@ -36,6 +37,10 @@ bindTransform(transform)
 
 const constStrings = new Map()
 ;({ lowerClass, lowerObjectLiteralThis, lowerArrayConstructor } = createClassLowering({ transform, names, JC, constStrings }))
+const generatorNames = new Set()
+const genErr = (msg) => { throw new Error('jzify: ' + msg) }
+const { lowerGenerator, desugarForOfGenerator } = createGeneratorLowering({ transform, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t) })
+bindGenerators({ lowerGenerator, desugarForOfGenerator, generatorNames })
 transformSwitch = createSwitchLowering(transform, names)
 
 /**
@@ -48,9 +53,12 @@ export default function jzify(ast) {
   // Module-scope `const K = 'str'` bindings — lets class lowering fold computed
   // member names `[K]() {}` (const guarantees the binding never changes).
   constStrings.clear()
+  generatorNames.clear()
   if (Array.isArray(ast)) {
     const stmts = ast[0] === ';' ? ast.slice(1) : [ast]
     for (const st of stmts) {
+      if (Array.isArray(st) && st[0] === 'function*' && typeof st[1] === 'string' && st[1]) generatorNames.add(st[1])
+      if (Array.isArray(st) && st[0] === 'export' && Array.isArray(st[1]) && st[1][0] === 'function*' && st[1][1]) generatorNames.add(st[1][1])
       if (!Array.isArray(st) || st[0] !== 'const') continue
       for (let i = 1; i < st.length; i++) {
         const d = st[i]

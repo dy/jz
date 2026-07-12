@@ -495,3 +495,31 @@ scalars; strings/objects/hashes thread-local). Full suite 2838/0 including a
 
 Next named steps: browser Worker leg for jz.pool; BigInt64Array atomics;
 bench headline (mandelbrot tiles × cores).
+
+## Generators v1 — landed (2026-07-12)
+
+The pivotal Ring-1 item, exactly as designed: regenerator-style state machines,
+no stack suspension. `function*` lowers (jzify/generators.js) to a factory
+arrow — body locals hoist to the factory scope, the body becomes a dispatch
+loop over a state local, `{ next, return }` are ordinary closures over that
+state (mutable captures carry it), each `yield` splits a state and `next(v)`
+delivers the sent value at the resume point. Sync only — no event loop.
+
+- for-of over a KNOWN generator call desugars to while-next — outside AND
+  inside generator bodies (nested generators compose).
+- Decomposition: if/else, while, do-while, C-style for, unlabeled
+  break/continue of decomposed loops; compound statements WITHOUT yield stay
+  atomic — with the free-jump gate (a non-yield `if (…) continue` whose loop
+  was decomposed must decompose too, or its continue binds the dispatch loop).
+- Protocol verified host-exact: two-way next(v), return(v) closes the machine,
+  independent instances, empty generator immediately done.
+- v1 rejects with precise messages: yield*, yield in arbitrary expressions,
+  try across yield, yield inside for-of/for-in bodies, destructuring/duplicate
+  let declarations in generator bodies (hoist-rename support later).
+- 10-test suite (test/generators.js); the stale "prohibited" pins graduated.
+
+Next (recorded, not yet built): ES2025 iterator helpers as fused loops over
+these machines (`for (x of g().map(h).filter(p))` → one composed while-next —
+zero intermediate objects); yield* delegation; test262 generators pool wiring
+(needs the runner-honesty treatment — track the pool, xfail the out-of-v1
+families: yield*/try-across-yield/throw()).

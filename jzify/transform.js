@@ -73,6 +73,9 @@ const arrowParams = params => Array.isArray(params) && params[0] === '()' ? para
  * @param {() => Function} opts.lowerObjectLiteralThis
  * @param {() => Function} opts.lowerArrayConstructor
  */
+let _gen = null
+export const bindGenerators = (g) => { _gen = g }
+
 export function createTransform(opts) {
   const { names, lowerArguments, transformPattern, normalizeCaseBody, transformSwitch } = opts
   const lowerClass = (...a) => opts.lowerClass()(...a)
@@ -109,6 +112,8 @@ export function createTransform(opts) {
     const [op, ...args] = node
 
     if (op === 'function' && args[0]) return hoistFnDecl(...args)
+    if (op === 'function*' && args[0] && _gen)
+      return ['const', ['=', args[0], _gen.lowerGenerator(args[1], args[2])]]
     if (op === 'class' && args[0]) return ['let', ['=', args[0], lowerClass(...args)]]
 
     if (op === ';') {
@@ -117,6 +122,10 @@ export function createTransform(opts) {
         const stmt = args[i]
         if (Array.isArray(stmt) && stmt[0] === 'function' && stmt[1]) {
           hoisted.push(hoistFnDecl(stmt[1], stmt[2], stmt[3]))
+          continue
+        }
+        if (Array.isArray(stmt) && stmt[0] === 'function*' && stmt[1] && _gen) {
+          hoisted.push(['const', ['=', stmt[1], _gen.lowerGenerator(stmt[2], stmt[3])]])
           continue
         }
         if (Array.isArray(stmt) && stmt[0] === 'class' && stmt[1]) {
@@ -226,6 +235,13 @@ export function createTransform(opts) {
       return ['let', ...args.map(transform)]
     },
 
+    'function*'(name, params, body) {
+      // Expression form (`let g = function* () {…}`). Named statement forms are
+      // hoisted in transformScope like plain function declarations.
+      if (!_gen) return
+      return _gen.lowerGenerator(params, body)
+    },
+
     ':'(label, body) {
       if (typeof label === 'string' && Array.isArray(body) && LABEL_BODY_OPS.has(body[0]))
         return ['label', label, transform(body)]
@@ -297,6 +313,12 @@ export function createTransform(opts) {
     // (`for (; i < n; i++)` ran zero/garbage iterations). for-of/for-in heads aren't
     // `;`-lists, so they pass through transform unchanged.
     'for'(head, body) {
+      // for-of over a KNOWN generator call → while-next desugar (the generator
+      // object is plain closures + a fixed-shape result record).
+      if (_gen && Array.isArray(head) && head[0] === 'of' &&
+          Array.isArray(head[2]) && head[2][0] === '()' &&
+          typeof head[2][1] === 'string' && _gen.generatorNames.has(head[2][1]))
+        return transform(_gen.desugarForOfGenerator(head[1], transform(head[2]), body, names.genTemp))
       if (Array.isArray(head) && head[0] === ';')
         return ['for', [';', ...head.slice(1).map(s => s == null ? s : transform(s))], transform(body)]
       return ['for', transform(head), transform(body)]

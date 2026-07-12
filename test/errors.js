@@ -44,7 +44,9 @@ test('SIMD + closures: IIFEs lift and run; genuine closures error clearly', () =
 test('prohibited: async', () => throws('async function f() {}', 'async', 'async should error'))
 test('prohibited: await', () => throws('export let f = async () => await x', 'async', 'async should error'))
 test('strict rejects: class', () => throws('class Foo {}', 'class', 'class should error', { strict: true }))
-test('prohibited: yield', () => throws('function* f() { yield 1 }', 'generator', 'yield should error'))
+// generators GRADUATED (jzify/generators.js state machines) — a stray yield
+// outside a generator body is the remaining rejection.
+test('prohibited: yield outside a generator', () => throws('export let f = () => { let x = yield 1; return x }', 'yield outside a generator', 'stray yield should error'))
 test('prohibited: delete', () => throws('delete obj.x', 'delete', 'delete should error'))
 // 'in' operator now supported for HASH key existence checks
 test('strict rejects: instanceof', () => throws('x instanceof Array', 'instanceof', 'instanceof should error', { strict: true }))
@@ -641,10 +643,12 @@ test('prohibited: .callee property access', () => {
 // not-in-scope) now carry curated messages. Never fail unknowingly.
 // ============================================================================
 
-test('prohibited: function* without yield', () =>
-  throws('function* g() { }; export let f = () => 1', 'generator', 'bare generator decl should error cleanly'))
-test('prohibited: yield*', () =>
-  throws('let g = () => { let x = yield* a; return x }; export let f = () => 1', 'generator', 'yield* should error cleanly'))
+// generators graduated: an empty generator is a VALID machine (immediately done).
+test('generators: empty generator runs (immediately done)', () => {
+  is(run('function* g() { } export let f = () => g().next().done ? 1 : 0').f(), 1)
+})
+test('prohibited: yield* (v1)', () =>
+  throws('let g = () => { let x = yield* a; return x }; export let f = () => 1', 'yield*', 'yield* should error cleanly'))
 test('prohibited: new.target', () =>
   throws('function C() { return new.target ? 1 : 0 }; export let f = () => C()', 'new.target', 'new.target should error cleanly'))
 test('prohibited: #field in obj brand check', () =>
