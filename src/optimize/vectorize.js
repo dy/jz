@@ -3209,13 +3209,16 @@ function liftExprV(expr, ctx) {
     return liftExprV(arg, ctx)
   }
 
-  // `$math.pow(x, c)` with a CONSTANT non-integer exponent → truly-2-wide `exp_v(c · log_v(x))`.
-  // Bit-identical to the scalar `$math.pow` for EVERY x when c is non-integer (verified: negative
-  // base → NaN and x=0 → 0/∞ both carry through log/exp identically; only the integer fast path
-  // differs, and it is excluded). This is exactly jz's own emit-time lowering of `x ** const`. The
-  // win: spow's `av ** nv` (runtime exponent, so it reached here as a `$math.pow` call, exponent
-  // now the substituted constant) computes both lanes through the vectorized log/exp polys instead
-  // of the per-lane scalar `$math.pow2` — the difference between ~1× and ~2× on pow-bound pixels.
+  // `$math.pow(x, c)` with a CONSTANT non-integer exponent → the truly-2-wide correctly-rounded
+  // `$math.pow_fold_v` (module/math.js) instead of a per-lane scalar `$math.pow2` repack — the
+  // SIMD twin of module/math.js's own `emitPow` const-exponent fold (which never reaches here:
+  // its constant exponent is known at EMIT time, so it already lowers straight to a
+  // `$math.pow_fold` call, picked up by the generic PPC_CALL2 lift below). This branch instead
+  // catches the case where a genuine RUNTIME `$math.pow(x, y)` call's `y` is only proven
+  // constant later, during vectorization (`ctx.constLocals`) — e.g. spow's `av ** nv` after pure-
+  // function inlining substitutes the literal. c needs no pre-split ($math.pow_fold's shared
+  // kernel twoProd-splits both multiply operands internally — see its own comment). Bit-
+  // identical to the scalar `$math.pow_fold` for every x — same function, called on both lanes.
   if (op === 'call' && ctx.laneType === 'f64' && expr[1] === '$math.pow' && expr.length === 4) {
     const ex = expr[3]
     let c = null
@@ -3223,7 +3226,7 @@ function liftExprV(expr, ctx) {
     else if (isArr(ex) && ex[0] === 'local.get' && ctx.constLocals && ctx.constLocals.has(ex[1])) c = ctx.constLocals.get(ex[1])
     if (c != null && Number.isFinite(c) && !Number.isInteger(c)) {
       const base = liftExprV(expr[2], ctx); if (ctx.fail) return null
-      return ['call', '$math.exp_v', ['f64x2.mul', ['f64x2.splat', ex], ['call', '$math.log_v', base]]]
+      return ['call', '$math.pow_fold_v', base, ['f64x2.splat', ['f64.const', c]]]
     }
   }
 
@@ -5109,6 +5112,7 @@ const PPC_CALL2 = {
   '$math.pow': '$math.pow2',   // 2-arg; bit-exact per-lane scalar (cancellation-sensitive — see module/math.js)
   '$math.atan2': '$math.atan2_2', '$math.hypot': '$math.hypot_2',   // 2-arg; bit-exact extract/repack
   '$math.cbrt': '$math.cbrt_v', '$math.fifthroot': '$math.fifthroot_v',   // 1-arg; per-lane scalar repack
+  '$math.pow_fold': '$math.pow_fold_v',   // 2-arg (x, c); per-lane scalar repack — see module/math.js
   // log/exp/exp2: TRUE f64x2 polys — both lanes one evaluation (≈2×, beats V8 native log). Bit-exact
   // via hot-path-vectorized + scalar-edge-fallback ($math.log_v/exp_v/exp2_v, module/math.js).
   '$math.log': '$math.log_v', '$math.exp': '$math.exp_v', '$math.exp2': '$math.exp2_v',
