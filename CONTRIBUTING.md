@@ -5,7 +5,7 @@
 ```sh
 git clone https://github.com/dy/jz.git && cd jz
 npm install
-npm test              # 2000+ tests
+npm test              # 2800+ tests
 node bench/bench.mjs  # run benchmarks
 ```
 
@@ -15,13 +15,15 @@ node bench/bench.mjs  # run benchmarks
 jzify/          pre-compile desugar (index.js orchestrator + phase modules)
   names.js      temp-name factory
   bundler.js    esbuild export/interop folds + object-literal idioms
-  classes.js    class + object-method `this` lowering
+  classes.js    class + object-method `this` lowering, pseudo-classical/prototype folds, statics
   switch.js     switch fall-through lowering
+  generators.js function*/yield state machines + iterator-helper loop fusion
+  hoist-vars.js var hoisting; arguments.js — arguments/rest lowering
 src/
   prepare/      validate, normalize, extract exports/imports (index.js)
   compile/      analyze → infer → plan → narrow → emit; program-facts; driver (index.js)
   optimize/     WASM IR peephole passes + vectorize.js
-  wat/          assemble.js, codegen.js, optimize.js
+  wat/          assemble.js, codegen.js (AST → jz source printer), optimize.js
   abi/          NaN-box ABI helpers (string, array, object, number)
   op-policy.js  shared jzify/prepare reject + class-error messages
   # shared leaves — cycle-free, imported across stages:
@@ -29,6 +31,7 @@ src/
   ctx.js bridge.js reps.js ir.js autoload.js resolve.js
 module/         stdlib
 layout.js       NaN-box bit layout + PTR.TYPED elem-aux codec (compiler-free, shared with module/)
+transform.js    jzify as standalone source→source (`jz/transform`; parse → jzify → codegen)
 ```
 
 **Folder policy:** one folder per pipeline *stage*, not per arbitrary concern. `jzify/` lives at repo root (pre-compiler transform, like `layout.js` / `cli.js`). Shared cycle-free leaves stay at `src/` root so `module/` imports stay short.
@@ -39,7 +42,7 @@ layout.js       NaN-box bit layout + PTR.TYPED elem-aux codec (compiler-free, sh
 
 ## Architecture
 
-Pipeline: `source → parse (subscript/jessie) → jzify (opt-in) → prepare → compile → optimize → watr (WAT→binary)`
+Pipeline: `source → parse (subscript/jessie) → jzify (default-on; strict skips) → prepare → compile → optimize → watr (WAT→binary)`
 
 All values are f64. Heap types use NaN-boxing (see README). Shared `ctx` object — see [`src/ctx.js`](src/ctx.js) for the lifecycle ownership table (which phase owns which subkey, writers, readers).
 
