@@ -3301,3 +3301,34 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   differential, test:self, optimizer.js shape pins, perf-ratchet,
   audit:fixpoint (bracket every phase), bench:size --json byte-diffs,
   bench checksum gate, the 76k differential fuzz for anything near SIMD.
+
+## CR-pow + watr 5.3.7 (2026-07-12, session close)
+- WATR 5.3.7 PUBLISHED: substGets + eliminateDeadStores hot walks → direct
+  recursion (agent-built; my independent gates: watr suite 610 green, jz suite
+  2870/0, jessie-graph sha256 identical, corpus compile −2.6% median /
+  wordcount −10.1% quiet-window). watr main 6cefc6a + d9eb947, tag v5.3.7.
+  A 4th specialization measured SLOWER (fresh-closure-per-scope never JIT-warms)
+  — dropped, recorded in the watr commit. jz's ^5.3.6 range picks 5.3.7 up on
+  next npm install.
+- CR-POW ACHIEVED ON BRANCH cr-pow (crpow-wt; c0eec641 + e97df4d0), NOT landed
+  on main — decision pending: gate 0/0 on 5152 mpmath@200bit vectors (+26k
+  adversarial +157k random vs fresh oracle), suite 2870/0, selfhost 21/21.
+  $math.pow_transcend two-phase Ziv (dd phase-1: 256-entry log2 table via
+  injectTable + Horner, twoProd y-mul — pow_fold signature simplified (x,c);
+  td phase-2, hit rates 0.019-0.58% measured; bounds: dd log2 2^-77.15 / exp2
+  2^-72.55, td 2^-148.2 / 2^-156.9, eps ships with ≥9 bits margin). TWO real
+  numerical bugs fixed en route: near-power-of-2 cancellation regrouping
+  ((k+1)+(table-1)+series) and Ziv eps must scale with |y| (x=1-2^-53,
+  y=1e18 missed 8 ulps under eps=|result|·E). fifthroot algebraic fold gated
+  behind optimize.approxPow (off by default on the branch).
+  HONEST COSTS blocking default-landing: colorpq 1097ms = 13.6x behind V8
+  (was 1.2x), colorlch 3.3x behind (was leading), colorlog LEADS 1.8x;
+  compile-time cliff ~4.1s for any pow-using program (kernel emits thousands
+  of fresh EFT locals). Phase-2 rate (0.2%) is NOT the cost — phase-1 codegen
+  is. V8 misrounds 0.147% of colorpq's own calls (mpmath referee), so CR ⇒
+  jz-correct-side DIFF: bit-parity with engines is mathematically incompatible
+  with correct rounding — checksums on the branch are the new correct ones.
+  NEXT (named): EFT scratch-register pool in the pow codegen (kill the
+  locals explosion → expect phase-1 ~2-3x fdlibm, not 15x) → re-bench →
+  THEN decide default-CR vs level-gated (speed keeps fdlibm?) with real
+  numbers. Vector gate test/pow-cr.js rides the branch either way.
