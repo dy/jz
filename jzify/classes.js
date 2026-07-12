@@ -332,3 +332,55 @@ function lowerArrayConstructor(arg) {
 
   return { lowerClass, lowerObjectLiteralThis, lowerArrayConstructor }
 }
+
+// ── Pseudo-classical fold ────────────────────────────────────────────────────
+// `function P(x) { this.x = x }` + `P.prototype.m = function (…) {…}` siblings
+// fold into the class lowering (`class P { constructor(x){…} m(…){…} }`) — the
+// single biggest `this`-blocker in pre-class npm code. Method-by-method
+// prototype assignments with FUNCTION values only: an arrow RHS keeps lexical
+// `this` (folding it would rebind), and a whole-`prototype = {…}` replacement
+// is a different idiom — both stay untouched (and reject on `this` as before).
+// The ctor must not be reassigned at top level (conservative fail-closed).
+export function foldPseudoClassical(stmts) {
+  const protoAssign = (st) => {
+    // ['=', ['.', ['.', NAME, 'prototype'], m], ['function', '', params, body]]
+    if (!Array.isArray(st) || st[0] !== '=' || !Array.isArray(st[1])) return null
+    const lhs = st[1]
+    if (lhs[0] !== '.' || typeof lhs[2] !== 'string') return null
+    const base = lhs[1]
+    if (!Array.isArray(base) || base[0] !== '.' || base[2] !== 'prototype' || typeof base[1] !== 'string') return null
+    const rhs = st[2]
+    if (!Array.isArray(rhs) || rhs[0] !== 'function') return null
+    return { ctor: base[1], method: lhs[2], params: rhs[2], body: rhs[3] }
+  }
+  const methods = new Map()   // ctorName → [{method, params, body}]
+  for (const st of stmts) {
+    const pa = protoAssign(st)
+    if (pa) { const l = methods.get(pa.ctor); l ? l.push(pa) : methods.set(pa.ctor, [pa]) }
+  }
+  if (!methods.size) return stmts
+
+  const reassigned = (name) => stmts.some(st =>
+    Array.isArray(st) && st[0] === '=' && st[1] === name)
+  const wholeProtoReplaced = (name) => stmts.some(st =>
+    Array.isArray(st) && st[0] === '=' && Array.isArray(st[1]) &&
+    st[1][0] === '.' && st[1][1] === name && st[1][2] === 'prototype')
+
+  const out = []
+  for (const st of stmts) {
+    if (Array.isArray(st) && st[0] === 'function' && typeof st[1] === 'string' && methods.has(st[1]) &&
+        !reassigned(st[1]) && !wholeProtoReplaced(st[1])) {
+      const ms = methods.get(st[1])
+      out.push(['class', st[1], null, [';',
+        [':', 'constructor', ['=>', ['()', st[2] ?? null], st[3]]],
+        ...ms.map(m => [':', m.method, ['=>', ['()', m.params ?? null], m.body]]),
+      ]])
+      methods.set(st[1], ms.map(m => ({ ...m, folded: true })))
+      continue
+    }
+    const pa = protoAssign(st)
+    if (pa && methods.get(pa.ctor)?.[0]?.folded) continue   // consumed by the fold
+    out.push(st)
+  }
+  return out
+}

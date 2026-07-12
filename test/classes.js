@@ -373,3 +373,25 @@ test('class: computed member names fold from module consts', () => {
   is(j(`const F = "x"; class A { [F] = 7 } export let f = () => new A().x`), 7)
   is(j(`const K = "g"; class A { [K]() { return 1 } m() { return this["g"]() + 1 } } export let f = () => new A().m()`), 2)
 })
+
+// Pseudo-classical fold: `function P(){this.x=…}` + `P.prototype.m = function`
+// siblings fold into the class lowering — the biggest `this` blocker in
+// pre-class npm code. Function-valued methods only (an arrow RHS keeps lexical
+// `this` — folding would rebind it, so it stays out and errors as before);
+// ctor reassignment / whole-`prototype={…}` replacement fail closed.
+test('class: pseudo-classical constructor + prototype methods fold', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`function Point(x, y) { this.x = x; this.y = y }
+Point.prototype.dist = function () { return Math.sqrt(this.x * this.x + this.y * this.y) }
+export let f = () => new Point(3, 4).dist()`), 5)
+  is(j(`function V(x) { this.x = x }
+V.prototype.get = function () { return this.x }
+V.prototype.scaled = function (k) { return new V(this.x * k) }
+export let f = () => new V(5).scaled(3).get()`), 15)
+  is(j(`function add(a, b) { return a + b } export let f = () => add(2, 3)`), 5)  // plain fns untouched
+  let err
+  try { jz.compile(`function P() { this.x = 1 }
+P.prototype.m = () => 5
+export let f = () => 1`) } catch (e) { err = e }
+  ok(err && /this/.test(err.message), 'arrow-valued prototype member stays out (lexical this)')
+})

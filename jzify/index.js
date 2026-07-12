@@ -11,7 +11,7 @@ import { JZIFY_CLASS_ERRORS as JC } from '../src/op-policy.js'
 import { createNames } from './names.js'
 import { foldStaticExportHelpers, foldStaticBundlerHelpers, canonicalizeObjectIdioms } from './bundler.js'
 import { createSwitchLowering, normalizeCaseBody } from './switch.js'
-import { createClassLowering } from './classes.js'
+import { createClassLowering, foldPseudoClassical } from './classes.js'
 import { hoistVars, prependDecls } from './hoist-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
@@ -71,5 +71,6 @@ export default function jzify(ast) {
   const hoisted = new Set()
   ast = hoistVars(ast, hoisted)
   if (hoisted.size) ast = prependDecls(ast, hoisted)
+  if (Array.isArray(ast) && ast[0] === ';') ast = [';', ...foldPseudoClassical(ast.slice(1))]
   return foldStaticBundlerHelpers(foldStaticExportHelpers(canonicalizeObjectIdioms(transformScope(ast))))
 }

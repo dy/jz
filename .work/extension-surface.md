@@ -441,10 +441,12 @@ All stdlib items shipped, pinned, and verified (full suite 0-fail; test262 langu
   module-scope `const K = 'str'` bindings; constStringKey folds `[K]` for methods AND
   fields (const guarantees no reassignment). Dynamic keys still reject cleanly. Pinned
   in test/classes.js.
-- **Pseudo-classical constructors** (`function Foo(){this.x=…}` + `Foo.prototype.m=…`)
-  — still a clean reject ("`this` not supported"). Real jzify work: collect prototype
-  assignments per constructor, synthesize a class, reuse the class lowering. Highest
-  npm-reach item; park until the generators milestone is done (bigger leverage).
+- ~~Pseudo-classical constructors~~ — LANDED (2026-07-12): `function P(){this.x=…}` +
+  `P.prototype.m = function` siblings fold into the existing class lowering
+  (jzify/classes.js foldPseudoClassical, applied at the entry before transformScope).
+  Function-valued methods only — an arrow RHS keeps lexical `this` (folding would
+  rebind), so it stays out and errors precisely; ctor reassignment / whole-prototype
+  replacement fail closed. Pinned in test/classes.js.
 - **Static blocks / static members** — the probe shows `static v = 1` itself rejects
   ("static class members are not supported yet"), so this is "static members" work,
   not just static blocks as the plan noted. Park with same priority as above.
@@ -568,3 +570,15 @@ helper object per stage; jz compiles them out — the plan's headline).
 Remaining recorded: generator methods (`{ *g() {} }`, `class { *m() }`),
 .throw(), browser pool leg, BigInt64 atomics, pseudo-classical ctors, static
 members.
+
+## Pseudo-classical constructors — landed (2026-07-12)
+
+The highest-npm-reach Ring-1 leftover: `function P(x){this.x=x}` +
+`P.prototype.m = function (…) {…}` folds into `class P { constructor… m… }` and
+rides the existing class lowering (this-rename, factory arrow, fixed shape).
+Fail-closed edges: arrow-valued members (lexical this), ctor reassignment,
+whole-`prototype = {…}` replacement — all stay untouched and reject on `this`
+as before. Suite 2859/0.
+
+Still recorded: generator methods, .throw(), browser pool leg, BigInt64
+atomics, static class members, Object.assign(P.prototype, {…}) idiom.
