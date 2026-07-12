@@ -106,6 +106,28 @@ export function createTransform(opts) {
     return decl
   }
 
+  // `using x = res` (ERM): bind, resolve [Symbol.dispose] up front (TypeError
+  // if absent on a non-null resource — spec checks at binding), then wrap the
+  // REST of the scope in try/finally calling it. Multiple resources nest —
+  // LIFO disposal falls out of the nesting. Divergence (documented): if both
+  // the body and a dispose throw, the dispose error propagates (no
+  // SuppressedError aggregation).
+  function lowerUsing(declarators, remaining) {
+    const NULL = [null, null]
+    const dispose = (name) => ['if', ['!=', name, NULL], ['()', ['.', name, '@@dispose'], null]]
+    let inner = remaining.length ? transformScope([';', ...remaining]) : null
+    for (let k = declarators.length - 1; k >= 0; k--) {
+      const [, name, init] = declarators[k]
+      inner = [';',
+        ['let', ['=', name, transform(init)]],
+        ['if', ['&&', ['!=', name, NULL], ['==', ['.', name, '@@dispose'], NULL]],
+          ['throw', [null, 'using: value has no [Symbol.dispose]() method']]],
+        ['try', inner ?? ['{}', null], ['finally', dispose(name)]],
+      ]
+    }
+    return inner
+  }
+
   function transformScope(node) {
     if (!Array.isArray(node)) return transform(node)
 
@@ -115,6 +137,7 @@ export function createTransform(opts) {
     if (op === 'function*' && args[0] && _gen)
       return ['const', ['=', args[0], _gen.lowerGenerator(args[1], args[2])]]
     if (op === 'class' && args[0]) return ['let', ['=', args[0], lowerClass(...args)]]
+    if (op === 'using') return lowerUsing(args, [])
 
     if (op === ';') {
       const hoisted = [], rest = []
@@ -131,6 +154,12 @@ export function createTransform(opts) {
         if (Array.isArray(stmt) && stmt[0] === 'class' && stmt[1]) {
           rest.push(['let', ['=', stmt[1], lowerClass(stmt[1], stmt[2], stmt[3])]])
           continue
+        }
+        // `using` consumes the REST of the scope into its try body (disposal
+        // runs at scope exit however the scope exits).
+        if (Array.isArray(stmt) && stmt[0] === 'using') {
+          rest.push(lowerUsing(stmt.slice(1), args.slice(i + 1)))
+          break
         }
         // Labeled BLOCK in statement position (`lbl: { … }`): unambiguous here —
         // a ':' STATEMENT can't be an object prop. '{}' stays out of
@@ -368,6 +397,15 @@ export function createTransform(opts) {
           return transform(fused)
         }
       }
+      // 'of-idx' — the protocol fork's array arm: plain indexed for-of, no re-fork.
+      if (Array.isArray(head) && head[0] === 'of-idx') {
+        const t = transform(['of', head[1], head[2]])
+        return ['for', t, transform(body)]
+      }
+      // for-of over an UNKNOWN source in an iterator-minting program → runtime
+      // protocol fork (probe once, drive next() lazily, else indexed path).
+      if (_gen && _gen.iterProto?.on && Array.isArray(head) && head[0] === 'of')
+        return transform(_gen.desugarForOfProtocol(head[1], head[2], body, names.genTemp))
       if (Array.isArray(head) && head[0] === ';')
         return ['for', [';', ...head.slice(1).map(s => s == null ? s : transform(s))], transform(body)]
       return ['for', transform(head), transform(body)]

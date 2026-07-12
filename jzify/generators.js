@@ -90,17 +90,34 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
     // yield* E — the delegate loop is nothing but already-supported constructs:
     // sent values thread through (`sent = yield r.value; r = it.next(sent)`),
     // and the delegate's COMPLETION value (final r.value) lands in `target`.
+    // E may be any iterable: an ['@@iterator']() provider unwraps first; a
+    // plain indexed iterable (array/string) yields element-wise (fork mirrors
+    // desugarForOfProtocol; both arms decompose like any generator-body loop).
     const desugarYieldStar = (expr, target) => {
-      const it = genTemp('yi'), r = genTemp('yr'), sent = genTemp('ys')
-      locals.add(it); locals.add(r); locals.add(sent)
+      const it = genTemp('yi'), r = genTemp('yr'), sent = genTemp('ys'), ix = genTemp('yx')
+      locals.add(it); locals.add(r); locals.add(sent); locals.add(ix)
+      const NULL = [null, null]
       return ['{}', [';',
         ['=', it, expr],
-        ['=', r, ['()', ['.', it, 'next'], null]],
-        ['while', ['!', ['.', r, 'done']], ['{}', [';',
-          ['=', sent, ['yield', ['.', r, 'value']]],
-          ['=', r, ['()', ['.', it, 'next'], sent]],
-        ]]],
-        ...(target ? [['=', target, ['.', r, 'value']]] : []),
+        ['if', ['&&', ['!=', it, NULL], ['!=', ['.', it, '@@iterator'], NULL]],
+          ['=', it, ['()', ['.', it, '@@iterator'], null]]],
+        ['if', ['&&', ['!=', it, NULL], ['!=', ['.', it, 'next'], NULL]],
+          ['{}', [';',
+            ['=', r, ['()', ['.', it, 'next'], null]],
+            ['while', ['!', ['.', r, 'done']], ['{}', [';',
+              ['=', sent, ['yield', ['.', r, 'value']]],
+              ['=', r, ['()', ['.', it, 'next'], sent]],
+            ]]],
+            ...(target ? [['=', target, ['.', r, 'value']]] : []),
+          ]],
+          ['{}', [';',
+            ['=', ix, [null, 0]],
+            ['while', ['<', ix, ['.', it, 'length']], ['{}', [';',
+              ['yield', ['[]', it, ix]],
+              ['=', ix, ['+', ix, [null, 1]]],
+            ]]],
+            ...(target ? [['=', target, [null, undefined]]] : []),
+          ]]],
       ]]
     }
 
@@ -410,5 +427,36 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
     ]]
   }
 
-  return { lowerGenerator, desugarForOfGenerator, unwindChain, fuseTerminal, fusedLoop, isTerminal: (h) => TERMINAL_HELPERS.has(h) }
+  // for-of over an UNKNOWN source in a program that mints iterators: unwrap a
+  // ['@@iterator']() provider, then a callable `next` drives the machine
+  // LAZILY (pull-at-top — a `break` stops pulling, spec-faithful); anything
+  // else falls to the indexed array path. 'of-idx' marks that arm so the fork
+  // doesn't re-enter. The probes run once per loop, not per iteration, and
+  // programs without iterator producers never take this shape (iterProto
+  // gate) — they compile byte-identically.
+  function desugarForOfProtocol(decl, iterExpr, body, temp) {
+    const v = temp('gv'), r = temp('gr')
+    const NULL = [null, null]
+    const isDecl = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const')
+    const bind = isDecl ? [decl[0], ['=', decl[1], ['.', r, 'value']]] : ['=', decl, ['.', r, 'value']]
+    const bodyStmts = Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
+    return ['{}', [';',
+      ['let', ['=', v, iterExpr]],
+      ['if', ['&&', ['!=', v, NULL], ['!=', ['.', v, '@@iterator'], NULL]],
+        ['=', v, ['()', ['.', v, '@@iterator'], null]]],
+      ['if', ['&&', ['!=', v, NULL], ['!=', ['.', v, 'next'], NULL]],
+        ['{}', [';',
+          ['let', ['=', r, [null, undefined]]],
+          ['while', [null, true], ['{}', [';',
+            ['=', r, ['()', ['.', v, 'next'], null]],
+            ['if', ['.', r, 'done'], ['{}', [';', ['break']]]],
+            bind,
+            ...bodyStmts,
+          ]]],
+        ]],
+        ['for', ['of-idx', decl, v], body]],
+    ]]
+  }
+
+  return { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal: (h) => TERMINAL_HELPERS.has(h) }
 }

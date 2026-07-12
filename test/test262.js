@@ -213,6 +213,16 @@ function countJs(dir) {
 // jz cannot yet model. Exact rel paths only — a Map can never over-skip a
 // passing test the way a pattern can. Revisit entries as the named fix lands.
 const LEGACY_LANG_LIMITATIONS = new Map([
+  // Surfaced by the generator-blanket lift (2026-07-12):
+  ['test/language/expressions/addition/S11.6.1_A2.2_T3.js', 'function source text via toString coercion'],
+  ['test/language/expressions/addition/S11.6.1_A3.2_T1.2.js', 'function source text via toString coercion'],
+  ['test/language/expressions/call/S11.2.4_A1.1_T2.js', 'function .length reflection'],
+  ['test/language/expressions/call/S11.2.4_A1.2_T2.js', 'function .length reflection'],
+  ['test/language/statements/function/S13.2_A3.js', 'function .length reflection'],
+  ['test/language/statements/function/S13_A17_T1.js', 'call-before-initialization TypeError not synthesized'],
+  ['test/language/statements/function/S13_A17_T2.js', 'call-before-initialization TypeError not synthesized'],
+  ['test/language/expressions/instanceof/S11.8.6_A6_T2.js', 'instanceof non-callable TypeError not synthesized'],
+  ['test/language/statementList/fn-regexp-literal.js', 'regex vs division after function decl (upstream subscript)'],
   // ASI is not applied around a postfix/prefix ++/-- operator.
   ['test/language/asi/S7.9.2_A1_T7.js', 'ASI around ++/-- operator'],
   ['test/language/asi/S7.9_A5.2_T1.js', 'ASI around ++/-- operator'],
@@ -457,9 +467,39 @@ function shouldSkip(content, rel = '') {
   if (rel.endsWith('/for-of/dstr/obj-prop-name-evaluation.js')) return 'pattern computed-key evaluation-order corner'
   // super(...spread) forwarding is outside the jzify class lowering's ctor model.
   if (rel.includes('/expressions/super/call-spread-')) return 'super(...spread) outside jzify class lowering'
-  // Generator method shorthand (`*method() {}`) — frontmatter feature flag survives stripping.
-  if (/features:\s*\[[^\]]*generators/.test(content)) return 'generator unsupported'
-  if (rel.includes('/method-definition/generator-')) return 'generator method unsupported'
+  // generators + generator methods landed (state machines; subscript 10.6
+  // grammar) — the per-dir generator arm below narrows what's still out.
+  // Named families surfaced by lifting the blanket (each out of the value
+  // model, not missing features):
+  // .caller/.arguments forbidden-extension reflection.
+  if (rel.includes('/forbidden-ext/')) return 'function .caller/.arguments reflection outside jz scope'
+  // Array-pattern elision/rest DRIVE the iterator protocol (next() calls,
+  // next-throw propagation); jz destructures arrays by index.
+  if (/\/dstr\/.*((ary-ptrn|dflt-ary-ptrn)-elision\.js$|elem-ary-elision-init\.js$|rest-ary-(elision|empty)\.js$|rest-id-elision(-next-err)?\.js$)/.test(rel))
+    return 'array-pattern elision/rest ride the iterator protocol (jz destructures by index)'
+  // Spread of an ITERATOR VALUE in call/new args — recorded follow-up (needs
+  // the __drain normalization the for-of fork already does).
+  if (/spread-err-(sngl|mult)-err-expr-throws/.test(rel)) return 'spread of an iterator value in call args (recorded __drain follow-up)'
+  // arguments-object / default-param scope reflection.
+  if (/(params-dflt|dflt-params).*(args-unmapped|ref-arguments|ref-later|ref-self)|arguments-object-attributes|formal-parameters-after-reassignment/.test(rel))
+    return 'arguments/default-param scope reflection outside jz scope'
+  // Params/body own var-environment semantics (same class as static-init-scope).
+  if (/scope-.*paramsbody-var|scope-name-var-close/.test(rel)) return 'params/body/fn-name own var-environment semantics outside jzify subset'
+  // Function-name binding immutability + IsConstructor reflection.
+  if (/-reassign-fn-name-in-body|invoke-as-constructor|invoke-ctor|isCtor-after-args-eval/.test(rel))
+    return 'function-name binding / constructor reflection outside jz scope'
+  // fn.length reflection — only trailing-comma tests that actually assert .length.
+  if (/params-trailing-comma/.test(rel) && /\.length\b/.test(codeContent)) return 'function .length reflection unsupported'
+  // Generator function/prototype reflection outside the machine model.
+  if (/generator-prototype|generator-invoke-ctor/.test(rel)) return 'generator reflection outside jzify subset'
+  // `yield` as an identifier — reserved throughout the jz subset.
+  if (/yield-identifier-non-strict|yield-as-identifier|yield-identifier-spread-non-strict/.test(rel))
+    return 'yield as an identifier (reserved in the jz subset)'
+  // Operand-position yield (`yield yield`, `[...yield]`) stays out of the v1 machine surface.
+  if (/rhs-yield\.js$|yield-as-yield-operand|yield-spread-arr/.test(rel)) return 'yield in arbitrary expression positions (v1 machine surface)'
+  // Regex value identity through untyped carriers (yield slot → .source/.test) —
+  // regex method dispatch needs static kind; recorded dispatch-class gap.
+  if (rel.endsWith('/yield/rhs-regexp.js')) return 'regex method dispatch through untyped carriers (recorded)'
   // Method shorthand has [[Construct]] absence — jz can't distinguish from arrow.
   if (rel.endsWith('/method-definition/name-invoke-ctor.js')) return 'method shorthand non-ctor outside current jz scope'
   // Computed property name with throwing initializer — non-literal computed keys outside jz subset.
@@ -683,7 +723,7 @@ function shouldSkip(content, rel = '') {
   } else if (isGeneratorTest(rel)) {
     // v1 machines: function*-declaration/expression bodies with statement-
     // position yields. Everything else is a named out-of-scope family.
-    if (/(^|[{,;(\s])\*\s*[\w$\[]/m.test(codeContent)) return 'generator METHOD syntax outside jzify v1 (function* declarations/expressions only)'
+    // generator METHOD syntax (class { *m() }, { *g() {} }) landed with subscript 10.6
     // .throw(v) landed: closes the machine + rethrows (no try spans a yield)
     if (/GeneratorFunction|%Generator/i.test(codeContent)) return 'GeneratorFunction reflection outside jzify subset'
     if (/function\.sent/.test(codeContent)) return 'function.sent outside jzify subset'
@@ -718,7 +758,9 @@ function shouldSkip(content, rel = '') {
   // Parser gaps tracked upstream in subscript; do not count as jz runtime failures.
   if (content.includes('\u00a0')) return 'NBSP parser gap'
   // Skip tests using undeclared globals
-  if (/\bFunction\b/.test(content) && !content.includes('arrow function')) return 'Function global'
+  // CODE only — spec-quote frontmatter says "FunctionDeclarationInstantiation"
+  // etc. in nearly every generator/class test (blanket false-positive class).
+  if (/\bFunction\b/.test(codeContent) && !content.includes('arrow function')) return 'Function global'
   if (/\bObject\.getOwnPropertyDescriptor\b/.test(content)) return 'Object.getOwnPropertyDescriptor'
   if (content.includes('MAX_ITERATIONS')) return 'MAX_ITERATIONS harness'
   if (/\.prototype\b/.test(codeContent)) return 'prototype chain outside current jz scope'
@@ -971,7 +1013,8 @@ function runChunk(items) {
         else { d.negaccept++; negaccepts.push(rel) }
         continue
       }
-      if (shouldSkip(src, rel)) { d.skip++; continue }
+      const __skipR = shouldSkip(src, rel)
+      if (__skipR) { d.skip++; if (process.env.JZ_SKIP_DEBUG && rel.includes(process.env.JZ_SKIP_DEBUG)) console.log('SKIP', rel.split('/').pop(), '→', __skipR); continue }
       const { status, error } = runTest(src, { assertHarness: needsAssertHarness(src, rel) })
       if (status === 'fail') {
         const reason = expectedFailReason(rel)

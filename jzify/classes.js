@@ -197,8 +197,18 @@ function lowerClass(name, heritage, body) {
     if (it[0] === ':' && Array.isArray(it[2]) && it[2][0] === '=>') {
       const key = constStringKey(it[1], constStrings)
       if (key == null) jzifyError(JC.computedMember)
-      if (key === 'constructor') { ctorParams = it[2][1]; ctorBody = it[2][2] }
+      if (key === 'constructor' && typeof it[1] === 'string') { ctorParams = it[2][1]; ctorBody = it[2][2] }
       else methods.push([key, it[2][1], it[2][2]])
+      continue
+    }
+    // Generator method `*g() {}` — value is a function* expression (parser emits
+    // [':', key, ['function*', null, rawParams, body]]); lowers to the factory
+    // arrow via the standard generator lowering, `this` renamed like any method.
+    if (it[0] === ':' && Array.isArray(it[2]) && it[2][0] === 'function*') {
+      const key = constStringKey(it[1], constStrings)
+      if (key == null) jzifyError(JC.computedMember)
+      if (key === 'constructor' && typeof it[1] === 'string') jzifyError('`constructor` cannot be a generator')
+      methods.push([key, it[2][2], it[2][3], 'gen'])
       continue
     }
     if (it[0] === '=') {
@@ -229,6 +239,12 @@ function lowerClass(name, heritage, body) {
       const key = constStringKey(it[1][1], constStrings)
       if (key == null) jzifyError(JC.computedStaticMember)
       statics.push([key, it[1][2], true])
+      continue
+    }
+    if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === ':' && Array.isArray(it[1][2]) && it[1][2][0] === 'function*') {
+      const key = constStringKey(it[1][1], constStrings)
+      if (key == null) jzifyError(JC.computedStaticMember)
+      statics.push([key, it[1][2], 'gen'])
       continue
     }
     if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === '{}') {
@@ -265,8 +281,10 @@ function lowerClass(name, heritage, body) {
     if (init != null && !usesThis(init)) litProps.push([':', fname, transform(init)])
     else { litProps.push([':', fname, UNDEF]); if (init != null) deferred.push([fname, init]) }
   }
-  for (const [mname, mparams, mbody] of methods)
-    litProps.push([':', mname, transform(['=>', mparams ?? ['()', null], block(renameThis(mbody, self))])])
+  for (const [mname, mparams, mbody, gen] of methods)
+    litProps.push([':', mname, gen
+      ? transform(['function*', null, mparams, renameThis(mbody, self)])
+      : transform(['=>', mparams ?? ['()', null], block(renameThis(mbody, self))])])
   const lit = ['{}', litProps.length === 0 ? null : litProps.length === 1 ? litProps[0] : [',', ...litProps]]
   let params = ctorParams ?? ['()', null]
   const dynamicBase = heritage != null && typeof heritage !== 'string'
@@ -289,8 +307,10 @@ function lowerClass(name, heritage, body) {
     }
     for (const [fname, init] of fields)
       stmts.push(['=', ['.', self, fname], init != null ? transform(renameThis(rewriteSuperMethodCalls(init, superMethodVars), self)) : UNDEF])
-    for (const [mname, mparams, mbody] of methods)
-      stmts.push(['=', ['.', self, mname], transform(['=>', mparams ?? ['()', null], block(renameThis(rewriteSuperMethodCalls(mbody, superMethodVars), self))])])
+    for (const [mname, mparams, mbody, gen] of methods)
+      stmts.push(['=', ['.', self, mname], gen
+        ? transform(['function*', null, mparams, renameThis(rewriteSuperMethodCalls(mbody, superMethodVars), self)])
+        : transform(['=>', mparams ?? ['()', null], block(renameThis(rewriteSuperMethodCalls(mbody, superMethodVars), self))])])
     ctorBody = rewriteSuperMethodCalls(ctorBody, superMethodVars)
     if (defaultArgs) params = ['()', defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]]
   } else {
@@ -323,9 +343,11 @@ function lowerClass(name, heritage, body) {
       else if (b != null) staticStmts.push(b)
       continue
     }
-    const rhs = kind
-      ? transform(['=>', value[1], block(renameThis(value[2], cls))])
-      : value == null ? UNDEF : transform(renameThis(value, cls))
+    const rhs = kind === 'gen'
+      ? transform(['function*', null, value[2], renameThis(value[3], cls)])
+      : kind
+        ? transform(['=>', value[1], block(renameThis(value[2], cls))])
+        : value == null ? UNDEF : transform(renameThis(value, cls))
     staticStmts.push(['=', ['.', cls, sname], rhs])
   }
   staticStmts.push(['return', cls])

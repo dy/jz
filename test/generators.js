@@ -133,3 +133,55 @@ test('generators: throw() closes the machine and rethrows', () => {
         export let f = () => { let it = g(); it.next(); let caught = 0; try { it.throw('boom') } catch (e) { caught = 1 } return '' + caught + (it.next().done ? 1 : 0) }`),
     '11')
 })
+
+// Generator METHODS (subscript 10.6 grammar): { *g() {} } / class { *m() {} } /
+// static *s() {} — the member value is a function* expression riding the same
+// lowering. `this` binds to the instance (renamed like any method).
+test('generators: methods in classes and object literals', () => {
+  is(j(`class A { *g(n) { for (let i = 0; i < n; i++) yield i } }
+        export let f = () => { let r = ''; for (const v of new A().g(4)) r += v; return r }`), '0123')
+  is(j(`class C { constructor(b) { this.b = b } *g() { yield this.b; yield this.b + 1 } }
+        export let f = () => { let it = new C(7).g(); return '' + it.next().value + it.next().value }`), '78')
+  is(j(`class A { static *r(n) { for (let i = 0; i < n; i++) yield i * 2 } }
+        export let f = () => { let r = ''; for (const v of A.r(3)) r += v; return r }`), '024')
+  is(j(`let o = { *g(n) { yield n; yield n * 10 } }
+        export let f = () => { let r = ''; for (const v of o.g(3)) r += v + ','; return r }`), '3,30,')
+})
+
+// Iterator protocol for VALUES: for-of over a stored machine, a method-call
+// result, a hand-rolled { next }, or an object with *[Symbol.iterator]().
+// The fork probes once per loop and drives next() lazily — break stops an
+// infinite source; programs without iterator producers keep the plain
+// indexed desugar (byte-identical).
+test('iterator protocol: for-of over iterator values', () => {
+  is(j(`function* g(n) { for (let i = 0; i < n; i++) yield i * 2 }
+        export let f = () => { let it = g(3), r = ''; for (const v of it) r += v + ','; return r }`), '0,2,4,')
+  is(j(`let mk = (n) => { let i = 0; return { next: () => ({ done: i >= n, value: i++ }) } }
+        export let f = () => { let r = ''; for (const v of mk(3)) r += v; return r }`), '012')
+  is(j(`class R { constructor(n) { this.n = n } *[Symbol.iterator]() { for (let i = 0; i < this.n; i++) yield i } }
+        export let f = () => { let r = ''; for (const v of new R(4)) r += v; return r }`), '0123')
+  // break stays lazy — an infinite stored iterator terminates
+  is(j(`function* nat() { let i = 0; while (1) { yield i; i++ } }
+        export let f = () => { let it = nat(), r = ''; for (const v of it) { if (v > 2) break; r += v } return r }`), '012')
+  // continue advances (pull-at-top), arrays in the same program stay indexed
+  is(j(`function* g() { yield 1 }
+        export let f = () => { let s = 0; for (const v of [1, 2, 3]) s += v; let r = ''; for (const v of g()) { if (v > 9) continue; r += v } return s + r }`), '61')
+})
+
+// `using` (ERM, subscript 10.6): scope-exit disposal via [Symbol.dispose] —
+// try/finally lowering, LIFO for multiple resources, null skipped, non-
+// disposable throws at binding. Divergence: no SuppressedError aggregation.
+test('using: scope-exit disposal', () => {
+  is(j(`let log = ''
+        let open = (t) => ({ [Symbol.dispose]: () => { log += 'd' + t } })
+        export let f = () => { { using a = open(1), b = open(2); log += 'x' }; return log }`), 'xd2d1')
+  is(j(`let log = ''
+        let open = () => ({ [Symbol.dispose]: () => { log += 'd' } })
+        export let f = () => { try { using a = open(); log += 'b'; throw 'boom' } catch (e) { log += 'c' } return log }`), 'bdc')
+  is(j(`export let f = () => { using a = null; return 'ok' }`), 'ok')
+  is(j(`let log = ''
+        let open = () => ({ [Symbol.dispose]: () => { log += 'd' } })
+        let g = () => { using a = open(); log += 'b'; return 9 }
+        export let f = () => '' + g() + log`), '9bd')
+  is(j(`export let f = () => { try { using a = { x: 1 }; return 'no' } catch (e) { return e.includes('dispose') ? 'threw' : e } }`), 'threw')
+})
