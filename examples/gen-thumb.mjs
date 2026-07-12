@@ -54,14 +54,6 @@ if (name === 'marble' && exports.drop) {
   exports.tine(0.82 * W, 0.44 * H, 0.5 * W, 0.5 * H)
   exports.tine(0.48 * W, 0.78 * H, 0.52 * W, 0.5 * H)
 }
-if (name === 'waves' && exports.drop) {
-  exports.clear?.()
-  // stagger the drops like real use — co-timed rings sum co-phased and bloom white
-  for (const [fx, fy] of [[0.3, 0.34], [0.62, 0.4], [0.5, 0.62], [0.4, 0.52], [0.72, 0.62]]) {
-    exports.drop(fx * W, fy * H)
-    for (let i = 0; i < 26; i++) exports.frame(i)
-  }
-}
 if (name === 'watercolor' && exports.paint) {
   exports.clear?.()
   for (let i = 0; i <= 30; i++) exports.paint((0.18 + i * 0.021) * W, (0.36 + Math.sin(i * 0.32) * 0.12) * H, 12, 1.4, 0.2)
@@ -79,6 +71,7 @@ const FRAME_ARGS = {
   burningship:   () => [0, -0.45, -0.5, 1.35, 0],
   lyapunov:      () => [0, 0, 0, 1.5],
   buddhabrot:    (f) => [f / 60, -0.5, 0, 1.1],
+  waves:         (f) => [f / 60, W * (0.5 + 0.28 * Math.cos(f * 0.015)), H * (0.5 + 0.3 * Math.sin(f * 0.0217)), 1.0, 110],   // circling stirrer, home depth
   bifurcation:   () => [0, 2.5, 4.0, 0.0, 1.0],
   lorenz:        (f) => [f / 60, -0.4],
   pendulum:      (f) => [f / 60],
@@ -112,7 +105,7 @@ const FRAME_ARGS = {
 
 const WARMUP = { diffusion: 320, nbody: 320, metaballs: 70, attractors: 200,
                  plasma: 40, swarm: 80, sand: 220, slime: 130, boids: 220, voronoi: 50,
-                 dla: 600, wireworld: 500, waves: 50, cloth: 130, maze: 200, sph: 500,
+                 dla: 600, wireworld: 500, waves: 380, cloth: 130, maze: 200, sph: 500,
                  erosion: 350, lbm: 1300, watercolor: 200, cradle: 36, lenia: 800,
                  buddhabrot: 120, lorenz: 320, pendulum: 250, fern: 150, ising: 140, dwa: 95,
                  rule30: 480, epicycles: 130, percolation: 120, schrodinger: 230,

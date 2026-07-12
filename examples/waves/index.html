@@ -9,65 +9,58 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-// 2D wave-equation drops: each front bursts out, slows as it damps, trails an oscillating wake,
-// and interferes with its neighbours — the crossings glare. Drops are kept a minimum distance
-// apart (esp. on drag) so near-identical rings don't stack into one smeared front.
-const REACHFRAC = 0.34                // ≈ how far a front reaches before it fades — sets drop spacing
-let nextDropMs = 0, painting = false, lastX = 0, lastY = 0
-let ldx = -1, ldy = -1                // last emitted drop, in canvas pixels
-
-const rmaxPx = () => REACHFRAC * Math.min(demo.W, demo.H)
-const minDist = () => 0.22 * rmaxPx()   // rings must differ enough to cross, not stack
-const clampX = (v) => v < 12 ? 12 : v > demo.W - 12 ? demo.W - 12 : v
-const clampY = (v) => v < 12 ? 12 : v > demo.H - 12 ? demo.H - 12 : v
-
-// emit a drop in canvas coords, but skip it if it's closer than minDist to the last one (unless forced)
-const emit = (cx, cy, force) => {
-  if (!demo.engine) return
-  if (!force && ldx >= 0) { const dx = cx - ldx, dy = cy - ldy, md = minDist(); if (dx * dx + dy * dy < md * md) return }
-  demo.engine.drop(cx, cy); ldx = cx; ldy = cy
-}
-const dropClient = (x, y, force) => emit(x * demo.W / demo.cv.clientWidth, y * demo.H / demo.cv.clientHeight, force)
-const strokeTo = (x, y) => {
-  const dx = x - lastX, dy = y - lastY, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 8))
-  for (let i = 1; i <= n; i++) dropClient(lastX + dx * i / n, lastY + dy * i / n, false)   // minDist thins these
-  lastX = x; lastY = y
-}
+// Wave-equation caustics (see waves.js — after KZ_LAB_E's caustics simulation): the surface is
+// stirred by a pressed dimple that FOLLOWS YOUR CURSOR whenever it moves over the pool; leave
+// it still for a few seconds and the stirrer wanders off on its own smooth path. Click for a
+// splash, scroll to change the POOL DEPTH (shallow barely bends the light, deep folds every
+// ripple into hard caustics). The dice re-seeds the wander and throws a handful of splashes.
+let px_ = 0.5, py_ = 0.5              // stirrer position, canvas fractions (eased)
+let tx = 0.5, ty = 0.5                // target
+let foc = 110                         // pool depth (focal length of the refraction)
+let lastMove = -10, nowT = 0
+let p1 = Math.random() * 6.28, p2 = Math.random() * 6.28, p3 = Math.random() * 6.28
 
 const demo = runDemo({
   name: "waves",
-  hint: "the 2D wave equation (nonlinear) — drops burst out, slow, and interfere; crossings glare · click or drag to drop",
+  hint: "the 2D wave equation refracted onto the pool floor — real caustics · move to stir · click to splash · scroll = depth",
   size: { budget: 420000 },
-  bg: "#000",
-  load: (e) => { e.clear(); ldx = -1; ldy = -1; nextDropMs = 0 },
-  frame: (e) => {
-    // the kernel paces itself against this clock — no throttle needed, any refresh rate
-    const now = performance.now()
-    if (nextDropMs === 0) nextDropMs = now + 500
-    if (now > nextDropMs) {
-      // place the next ring near the last (so the circles overlap & cross), but at least minDist away;
-      // occasionally jump somewhere fresh so the activity spreads across the field.
-      if (ldx >= 0 && Math.random() < 0.7) {
-        const ang = Math.random() * 6.283, rad = minDist() + Math.random() * rmaxPx()
-        emit(clampX(ldx + Math.cos(ang) * rad), clampY(ldy + Math.sin(ang) * rad), true)
-      } else {
-        emit(demo.W * (0.18 + Math.random() * 0.64), demo.H * (0.18 + Math.random() * 0.64), true)
-      }
-      nextDropMs = now + 1200 + Math.random() * 800    // ~1.2-2s → several fronts in flight
+  bg: "#777",
+  load: (e) => { e.clear() },
+  frame: (e, t) => {
+    nowT = t
+    if (t - lastMove > 3.0) {
+      // autonomous wander: two incommensurate orbits — smooth loops, never a repeated path
+      tx = 0.5 + 0.30 * Math.sin(t * 0.31 + p1) + 0.12 * Math.sin(t * 0.83 + p2)
+      ty = 0.5 + 0.30 * Math.sin(t * 0.43 + p2) + 0.12 * Math.cos(t * 0.67 + p3)
     }
-    e.frame(now * 0.001)
+    px_ += (tx - px_) * 0.16          // ease toward the target — no teleports, a real wake
+    py_ += (ty - py_) * 0.16
+    e.frame(t, px_ * demo.W, py_ * demo.H, 1.0, foc)
   },
-  randomize: (e, d) => { e.clear?.(); ldx = -1; ldy = -1; for (let i = 0; i < 4; i++) emit(d.W * (0.3 + Math.random() * 0.4), d.H * (0.3 + Math.random() * 0.4), true) },
+  randomize: (e, d) => {
+    p1 = Math.random() * 6.28; p2 = Math.random() * 6.28; p3 = Math.random() * 6.28
+    for (let i = 0; i < 5; i++) e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7))
+  },
 })
+demo.cv.addEventListener("wheel", (e) => {
+  e.preventDefault()
+  foc *= Math.exp(-e.deltaY * 0.001)
+  if (foc < 50) foc = 50
+  if (foc > 220) foc = 220
+}, { passive: false })
 
+const toFrac = (e) => {
+  const r = demo.cv.getBoundingClientRect()
+  tx = (e.clientX - r.left) / r.width
+  ty = (e.clientY - r.top) / r.height
+  lastMove = nowT
+}
+demo.cv.addEventListener("pointermove", toFrac)
 demo.cv.addEventListener("pointerdown", (e) => {
-  painting = true; lastX = e.offsetX; lastY = e.offsetY
-  try { demo.cv.setPointerCapture(e.pointerId) } catch {}
-  dropClient(e.offsetX, e.offsetY, true)       // a deliberate click always drops
+  toFrac(e)
+  const r = demo.cv.getBoundingClientRect()
+  demo.engine?.drop((e.clientX - r.left) / r.width * demo.W, (e.clientY - r.top) / r.height * demo.H)
 })
-demo.cv.addEventListener("pointermove", (e) => { if (painting) strokeTo(e.offsetX, e.offsetY) })
-demo.cv.addEventListener("pointerup", (e) => { painting = false; try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
-demo.cv.addEventListener("pointerleave", () => { painting = false })
 </script>
 </body>
 </html>

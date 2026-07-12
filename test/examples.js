@@ -83,11 +83,11 @@ test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', ()
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'watercolor SIMD stencils bit-exact vs scalar (3072 px, 30 frames)');
 });
 
-// Stencil vectorizer: waves is the 2-D nonlinear wave equation — a 9-point sweep over two
-// height buffers swapped each frame. With experimentalStencil the inner x-loop lifts to
-// f64x2 (neighbour loads a[c±1] / a[rn+x], derived IV c=rc+x). BIT-EXACT end-to-end — the
-// swap is outside the loop so the in-loop read/write bases stay distinct (no aliasing);
-// the shadow-ring glint splats and tone map are untouched scalar.
+// Stencil vectorizer: waves is the 2-D wave equation — a 9-point sweep over two height
+// buffers swapped each frame. With experimentalStencil the inner x-loop lifts to f64x2
+// (neighbour loads a[c±1] / a[rn+x], derived IV c=rc+x). BIT-EXACT end-to-end — the swap
+// is outside the loop so the in-loop read/write bases stay distinct (no aliasing); the
+// caustics splat and tone map are untouched scalar.
 test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/waves/waves.js', import.meta.url), 'utf8');
     const base = (jz.compile(src, { ...OPT, experimentalStencil: false, wat: true }).match(/f64x2\./g) || []).length;
@@ -95,16 +95,19 @@ test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact'
     ok(sten > base, `waves frame vectorizes via the stencil pass (${base} → ${sten} f64x2)`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
-        // the field must outsize the edge sponge (MARGIN 16 a side) or the render crushes to black
+        // the field must outsize the edge sponge (MARGIN 18 a side) or the render crushes to black
         const px = exports.resize(128, 96);
         exports.clear();
         exports.drop(64, 48); exports.drop(44, 56);
-        for (let f = 0; f < 25; f++) exports.frame(f);
+        for (let f = 0; f < 25; f++) exports.frame(f / 60, 50 + f * 1.5, 48, 1.0, 110);   // dragged stirrer
         return Array.from(px);
     };
     const simd = run({ ...OPT }), scal = run({ ...OPT, experimentalStencil: false });
     is(simd.length, scal.length);
-    ok(simd.filter(v => v & 0xffffff).length > 300, `waves renders fronts + glints (${simd.filter(v => v & 0xffffff).length} lit) — bit-exact below isn't vacuous`);
+    // non-vacuous: the caustic map must show real contrast — bright fold filaments AND dark voids
+    const lum = simd.map(v => v & 0xff);
+    ok(lum.filter(v => v > 190).length > 50 && lum.filter(v => v < 80).length > 50,
+        `waves renders caustic contrast (${lum.filter(v => v > 190).length} bright, ${lum.filter(v => v < 80).length} dark)`);
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'waves SIMD stencil bit-exact vs scalar (12288 px, 25 frames)');
 });
 

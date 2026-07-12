@@ -30,7 +30,7 @@ export const examples = [
   { name: 'sph',          title: 'Particle Fluid',    blurb: 'smoothed-particle-style liquid — pairwise repulsion & viscosity, the classic O(N²) sum' },
   { name: 'lbm',          title: 'Lattice-Boltzmann', blurb: 'lattice-Boltzmann flow — a dye filament wraps into the von Kármán vortex street' },
   { name: 'cloth',        title: 'Cloth',             blurb: 'Verlet cloth with shear bracing — grab, twist, and let the wind billow it' },
-  { name: 'waves',        title: 'Waves',             blurb: 'the 2D wave equation, nonlinear — drops burst, slow & interfere; crossings glare' },
+  { name: 'waves',        title: 'Waves',             blurb: 'the 2D wave equation refracted onto the pool floor — real caustics fold into filaments', show: true },
   { name: 'ocean',        title: 'Ocean',             blurb: 'Tessendorf FFT ocean — a Phillips-spectrum sea synthesized by inverse FFT, moonlit' },
   { name: 'pendulum',     title: 'Double Pendulum',   blurb: 'every pixel an initial angle, shaded by time-to-flip — sensitive chaos' },
   { name: 'magnet',       title: 'Magnetic Pendulum', blurb: 'a damped bob over three magnets — each pixel shaded by which magnet wins; fractal basin boundaries' },
@@ -116,7 +116,7 @@ export const WIKI = {
   'watercolor':        W + 'Watercolor_painting',
   'marble':            W + 'Paper_marbling',
   'interference':      W + 'Wave_interference',
-  'waves':             W + 'Wave_equation',
+  'waves':             W + 'Caustic_(optics)',
   'schrodinger':       W + 'Schr%C3%B6dinger_equation',
   'hydrogen':          W + 'Hydrogen_atom',
   'dithering':         W + 'Dither',
@@ -167,4 +167,5 @@ export const WIKI = {
 export const ORIGIN = {
   'plume':   'https://x.com/Rainmaker1973/status/2075485116856504794',
   'spectra': 'https://x.com/S_Conradi/status/2075661669854843080',
+  'waves':   'https://x.com/KZ_LAB_E/status/1979210373921411098',
 }
