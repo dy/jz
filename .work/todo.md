@@ -887,6 +887,31 @@
       session's absolute times are load-noise — user session + builds
       churning; recorded quiet numbers predate the healed inlining
       path). Pin: test/inference.js 'census: const-table arrow args'.
+      JESSIE LEVER RE-PROFILED (2026-07-12, production CPU profile —
+      helper-counter profiling PROVEN MISLEADING for this: counter
+      prologues inflate helper bodies, watr stops inlining them, and
+      the instrumented build shows 4.09M __ptr_offset calls in
+      functions whose PRODUCTION wat contains ZERO — profile the real
+      binary with node --cpu-prof + wat-order index→name mapping,
+      recipe in scratchpad/jessie-statics.mjs). True ranking (self
+      time): closure5 13% (hottest single fn), parser workers
+      (var$decl 7.9%, parse$id$10 6.6%), tramp_* closure-convention
+      adapters ≈6.6% combined, __is_nullish 3.1%, __char_at 3.0%.
+      Also: hashNode's 1.07M __length calls are OUTSIDE the timed
+      region (bench times parse() only) — not a lever. The named
+      lever: module-global CLOSURE devirt — the hot loop
+      call_indirects through `global.get $m45_asi$baseSpace` with
+      UNDEF-padded width args; source chain (subscript asi.js)
+      `const baseSpace = parse._baseSpace ??= parse.space` +
+      `parse.space = wrapper-arrow` — init-order-resolvable through
+      function-namespace slots, values are module-scope ARROW
+      LITERALS (no local captures). devirtGlobalCalls (plan/scope.js)
+      already has the linear init env + poison + init-reachability
+      soundness; its gaps: bare-fn-name-only RHS (needs arrow-literal
+      lifting), no ??=/||= env handling, alias-const chains for the
+      new value kinds. Worktree agent dispatched with the full design
+      + gates (checksums exact, call_indirect 30↓, suite green,
+      pins).
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
