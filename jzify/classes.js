@@ -365,21 +365,26 @@ export function foldPseudoClassical(stmts) {
   const wholeProtoReplaced = (name) => stmts.some(st =>
     Array.isArray(st) && st[0] === '=' && Array.isArray(st[1]) &&
     st[1][0] === '.' && st[1][1] === name && st[1][2] === 'prototype')
+  // Decide up front — prototype assignments may appear BEFORE the constructor
+  // declaration (function decls hoist in JS), so consumption can't depend on
+  // visit order.
+  const foldable = new Set([...methods.keys()].filter(name =>
+    stmts.some(st => Array.isArray(st) && st[0] === 'function' && st[1] === name) &&
+    !reassigned(name) && !wholeProtoReplaced(name)))
+  if (!foldable.size) return stmts
 
   const out = []
   for (const st of stmts) {
-    if (Array.isArray(st) && st[0] === 'function' && typeof st[1] === 'string' && methods.has(st[1]) &&
-        !reassigned(st[1]) && !wholeProtoReplaced(st[1])) {
+    if (Array.isArray(st) && st[0] === 'function' && typeof st[1] === 'string' && foldable.has(st[1])) {
       const ms = methods.get(st[1])
       out.push(['class', st[1], null, [';',
         [':', 'constructor', ['=>', ['()', st[2] ?? null], st[3]]],
         ...ms.map(m => [':', m.method, ['=>', ['()', m.params ?? null], m.body]]),
       ]])
-      methods.set(st[1], ms.map(m => ({ ...m, folded: true })))
       continue
     }
     const pa = protoAssign(st)
-    if (pa && methods.get(pa.ctor)?.[0]?.folded) continue   // consumed by the fold
+    if (pa && foldable.has(pa.ctor)) continue   // consumed by the fold
     out.push(st)
   }
   return out

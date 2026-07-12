@@ -389,6 +389,9 @@ V.prototype.get = function () { return this.x }
 V.prototype.scaled = function (k) { return new V(this.x * k) }
 export let f = () => new V(5).scaled(3).get()`), 15)
   is(j(`function add(a, b) { return a + b } export let f = () => add(2, 3)`), 5)  // plain fns untouched
+  is(j(`Q.prototype.get = function () { return this.x }
+function Q(x) { this.x = x }
+export let f = () => new Q(6).get()`), 6)  // methods BEFORE the ctor (decls hoist) still fold
   let err
   try { jz.compile(`function P() { this.x = 1 }
 P.prototype.m = () => 5
