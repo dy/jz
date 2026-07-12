@@ -983,6 +983,32 @@
       entry). THE named jessie residual, a design item not an
       increment. jessie busy-machine ballpark now ~2.0-2.1ms vs V8
       ~1.5ms (≈1.35x, was 1.46x) — quiet re-measure owed.
+      CORPUS SWEEP PAID (2026-07-12, --targets=v8,jz over all 52,
+      busy-machine timings but LOAD-PROOF checksums): 51/52 jz
+      checksum == reference — the ONE divergence is colorpq, the
+      recorded correctly-rounded-pow accuracy hold; several cases
+      show the ENGINE as the DIFF side (colorlog: jz is reference).
+      SVG geomean: V8 2.16× slower than jz (was 2.09×). Self-host
+      row: parity 'ok' IN THE REAL TABLE (cs=778190095 — the
+      workload GREW with the user's Ring2/workers/generators
+      commits); the sweep's 96.8ms jz time was a LOAD SPIKE —
+      standalone rerun: jz 41.75ms vs V8 41.88ms, DEAD EVEN warm on
+      the grown compiler (cold-lead headline still owed a quiet
+      machine). Demotion fix exonerated: ZERO demoted bindings in
+      the lab bundle.
+      CLOSURE5 VERDICT (kills the '~25% closure dispatch' claim
+      conclusively): it is subscript's DEDUPED SHARED UNARY-PARSELET
+      body (`a => post ? (a && [op,a]) : (!a && (a=expr(p-.5)) &&
+      [op,a])`) — the guard ladders ARE the semantics of `!a`/`&&`
+      on genuine null∪node unions; arg-typing would remove almost
+      nothing. Post-devirt the convention overhead is GONE
+      (trampolines out of the profile); the residual 1.4× vs V8 on
+      jessie is polymorphic-parser work where V8's ICs shine —
+      closing further means IC-class speculative machinery in wasm
+      (V2-scale idea), not a V1 lever. jessie stays the recorded
+      lab-probe gap; the closure-arg-typing design item is DOWNGRADED
+      from 'THE residual' to low-yield-for-jessie (still relevant for
+      numeric-element dispatch shapes per the old entry).
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
