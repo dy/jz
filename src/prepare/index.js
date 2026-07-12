@@ -74,6 +74,18 @@ let funcLocalNames
 // Lets the `.`-handler tell a function receiver — where `.caller`/`.callee` are
 // prohibited introspection — from a data object that merely has such a field.
 let funcValueNames
+// Per-module set of top-level names WRITTEN beyond their declaration (bare-name
+// assign/compound/++ anywhere in the module, locals-shadowed writes excluded).
+// Gates defFunc: a depth-0 `let g = (…) => …` lifts into a fixed NAMED FUNCTION,
+// sound only while the binding is immutable — JS lets a `let`/`var` function
+// binding be reassigned (even from inside a function), and lifting such a
+// binding froze callers onto the first value (reads resolved to the minted
+// function; the write targeted a binding that no longer existed — "'g' is not
+// in scope" / silently-stale first arrow). Mirror of fn-namespace's multiProp
+// demotion: a reassigned name stays an ordinary closure-valued global
+// (writable, indirect-callable); devirtGlobalCalls re-devirts the init-order-
+// resolvable cases afterward. Stacked per module (recursive imports swap it).
+let reassignedTopLevel
 
 const resetPrepState = () => {
   depth = 0
@@ -82,6 +94,63 @@ const resetPrepState = () => {
   assignedStaticGlobals = new Set()
   funcLocalNames = [new Set()]
   funcValueNames = [new Set()]
+  reassignedTopLevel = new Set()
+}
+
+// Bare-name write targets across a module root, scope-tracked: a write to a
+// same-named LOCAL (arrow param, or a let/const anywhere in the enclosing
+// function body — the function-scope approximation the sibling scans use)
+// does not count. Over-demotion is sound but taxes a lifted function with the
+// closure convention for nothing, so shadowed writes are excluded.
+const scanReassignedTopLevel = (root) => {
+  const out = new Set()
+  const isWriteOp = (op) => op === '++' || op === '--' ||
+    (typeof op === 'string' && op.endsWith('=') && ASSIGN_OPS.has(op))
+  const declaredIn = (body, bound) => {
+    const walk = (n) => {
+      if (!Array.isArray(n)) return
+      if (n[0] === '=>') return
+      if ((n[0] === 'let' || n[0] === 'const' || n[0] === 'var') && n.length >= 2) {
+        for (let i = 1; i < n.length; i++) {
+          const d = n[i]
+          if (typeof d === 'string') bound.add(d)
+          else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') bound.add(d[1])
+        }
+      }
+      if (n[0] === 'catch' && typeof n[1] === 'string') bound.add(n[1])
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    walk(body)
+  }
+  const walk = (n, bound) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === '=>') {
+      const inner = new Set(bound)
+      for (const p of extractParams(n[1])) {
+        const c = classifyParam(p)
+        if (c?.name) inner.add(c.name)
+      }
+      declaredIn(n[2], inner)
+      walk(n[2], inner)
+      return
+    }
+    // A declarator's own `=` is the DECLARATION, not a reassignment — descend
+    // only into each declarator's init expression.
+    if ((n[0] === 'let' || n[0] === 'const' || n[0] === 'var') && n.length >= 2) {
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (Array.isArray(d) && d[0] === '=') walk(d[2], bound)
+        else if (Array.isArray(d)) walk(d, bound)
+      }
+      return
+    }
+    if (isWriteOp(n[0]) && typeof n[1] === 'string' && !bound.has(n[1])) out.add(n[1])
+    for (let i = 1; i < n.length; i++) walk(n[i], bound)
+  }
+  // Top-level declarations don't shadow — they ARE the bindings being tested;
+  // a top-level `g = …` after `let g = …` is exactly the reassignment case.
+  walk(root, new Set())
+  return out
 }
 
 // ES spec: identifier with \uHHHH or \u{...} escape is equivalent to the decoded
@@ -500,6 +569,7 @@ export default function prepare(node) {
   normalizeIdents(node)
   fuseSparseMapReads(node)  // AST-level fusion; needs pre-resolution shape — defined at end of file
   seedStaticGlobalAssignments(node)
+  reassignedTopLevel = scanReassignedTopLevel(node)
   const ast = prep(node)
   // Top-level functions referenced as first-class values (e.g. `let o = { fn: g }`,
   // `arr.push(g)`, `return g`) need trampoline emission, which depends on the fn
@@ -2905,6 +2975,10 @@ function defFunc(name, node) {
   if (!Array.isArray(node) || node[0] !== '=>') return false
   // Only extract top-level functions, not nested (closures stay as values)
   if (depth > 0) return false
+  // A reassigned binding must stay a mutable closure-valued global — lifting it
+  // into a fixed named function froze callers onto the first value (see
+  // reassignedTopLevel). 'default' can't be reassigned (export default).
+  if (name !== 'default' && reassignedTopLevel?.has(name)) return false
   let [, rawParams, body] = node
   const raw = extractParams(rawParams)
 
@@ -3064,7 +3138,10 @@ function prepareModule(specifier, source) {
   }
   if (ctx.transform.jzify) ast = ctx.transform.jzify(ast)
   const savedDepth = depth; depth = 0
+  const savedReassigned = reassignedTopLevel
+  reassignedTopLevel = scanReassignedTopLevel(ast)
   const moduleInit = prep(ast)
+  reassignedTopLevel = savedReassigned
   depth = savedDepth
 
   // Collect exports: rename exported funcs with prefix

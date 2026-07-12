@@ -1288,3 +1288,33 @@ test('closures: for-head let captures per-iteration binding', () => {
   is(run(`export let f = () => { let fs = []; for (let i = 0; i < 6; i += 1) { fs.push(() => i); i += 1 } return fs[0]() * 100 + fs[1]() * 10 + fs[2]() }`).f(), 135)
   is(run(`export let f = () => { let fs = []; for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) fs.push(() => i * 10 + j); return fs[0]() + fs[3]() }`).f(), 11)
 })
+
+// Reassigned function bindings: a depth-0 `let g = (…) => …` lifts into a
+// FIXED named function (defFunc) — sound only while the binding is immutable.
+// JS allows reassigning a let/var function binding (even from inside a
+// function); lifting one froze callers onto the FIRST value — the module-level
+// reassign made later calls silently run the stale arrow (differential vs
+// native: 20 expected, 15 got), and an in-function reassign errored "'h' is
+// not in scope" (the write targeted a binding that no longer existed). The
+// prepare-time reassignedTopLevel scan now demotes such bindings to ordinary
+// closure-valued globals; devirtGlobalCalls re-devirts init-order-resolvable
+// cases. Scope-tracked: writes to same-named LOCALS don't demote.
+test('closures: reassigned module function bindings stay live', () => {
+  const r = run(`
+    let g = (x) => x + 5
+    g = (x) => x + 10
+    export let f = () => g(10)
+    let h = (x) => x * 2
+    export let hval = () => h(10)
+    export let swap = () => { h = (x) => x * 3; return h(10) }
+    let k = (x) => x - 1
+    export let shadowed = () => { let k = (x) => x - 2; return k(10) }
+    export let kval = () => k(10)
+  `, { memory: 64 })
+  is(r.f(), 20, 'module-level reassign: calls run the LAST value, not the lifted first')
+  is(r.hval(), 20, 'pre-swap reads the initial arrow')
+  is(r.swap(), 30, 'in-function reassign writes the binding and calls the new value')
+  is(r.hval(), 30, 'the reassign persists across calls')
+  is(r.shadowed(), 8, 'same-named local shadows — does not demote')
+  is(r.kval(), 9, 'the un-reassigned module binding stays lifted and correct')
+})
