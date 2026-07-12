@@ -1199,14 +1199,36 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
     isArray-of-derived-promotion (12 xfails); mixed `??`/`||`/`?:` bool-carrier
     JOIN family (in-flight carrier work's domain); js-string-builtins deepening;
     memory64/multi-memory YAGNI until a workload.
+  * **test262 headroom estimate (measured 2026-07-12)** — in-philosophy pools left,
+    largest first: (1) **built-ins Atomics 390 + SharedArrayBuffer 104 + Iterator
+    514 — 1,008 files, all UNTRACKED** while the features now exist (dual-width
+    atomics, sharedMemory, fused helpers); needs the test262 agent harness
+    (jz.pool is the substrate) + general iterator-protocol values (helper chains
+    stored as VALUES — desugar to generator-object wrappers; the recorded
+    out-of-v1 gap). Est +300–600 passes. (2) **generator dirs**: 543 skips —
+    ~85 flat-dir files clear the generator arm yet die on later generic filters
+    (harness includes, Symbol) — runner-honesty pass est +50–150; method syntax
+    (55+) stays parser-blocked. `.throw()` skip lifted (stale — feature landed).
+    (3) **class dirs**: 6.8k skips, dominated by descriptor/accessor reflection
+    (permanently out); in-philosophy residue est +100–300 via narrowing the
+    prototype/name-length blankets. (4) negative-accepts enforcement: honesty,
+    not passes. Out-by-verdict pools unchanged: async family ~2.5k language +
+    703 Promise, dynamic-import 997, for-await 1,142. Ceiling ≈ +0.5–1k passes
+    on 3,068 today; the curve is flattening — remaining leverage is harness
+    wiring + iterator values, not new syntax.
 - [ ] **Date** — deterministic spec slices first; local-tz/Intl later. (deferred: object
   ToPrimitive coercion order; Date.parse until value-objects + UTC stringify exist. out of
   scope: local-time getters/setters, getTimezoneOffset, locale methods, toJSON, subclassing.)
 - [ ] **Intl**; **test262** (know every fail by face — jzify or error cleanly, never fail
   unknowingly); **all AssemblyScript tests**; warn/error on memory-limit.
 - [x] Tighten test coverage — randomly mutate features, see if tests break.
-- [ ] **jzify** — converting script for any JZ; auto-import stdlib globals (Math.* → import
-  math); then make jz core require explicit stdlib imports (remove auto-import); Crockford align.
+- [~] **jzify** — ~~converting script~~ LANDED 2026-07-12 as a first-class transform:
+  `import { transform } from 'jz'` / `jz/transform` / CLI `--jzify` share one jzify/
+  module with the compiler; synthetic PUA temps rename to plain identifiers on print;
+  `{ onlyLowered: true }` returns null for already-canonical source (REPL auto-jzify
+  on paste rides it — ⚙ checkbox, on by default; canonical pastes stay byte-intact).
+  REMAINING: auto-import stdlib globals (Math.* → import math); then make jz core
+  require explicit stdlib imports (remove auto-import); Crockford align.
 - [ ] **Source maps** (blocked on watr upstream) — meanwhile add a WASM name section.
 - [ ] **Math-kernel precision** — sin/cos/exp ~1e-9 absolute vs libm (~30-bit); filter-design
   math amplifies it (biquad `(1−cosω)/2` cancellation → ~1.3e-6 relative coefficient error at

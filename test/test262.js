@@ -684,7 +684,7 @@ function shouldSkip(content, rel = '') {
     // v1 machines: function*-declaration/expression bodies with statement-
     // position yields. Everything else is a named out-of-scope family.
     if (/(^|[{,;(\s])\*\s*[\w$\[]/m.test(codeContent)) return 'generator METHOD syntax outside jzify v1 (function* declarations/expressions only)'
-    if (/\.throw\s*\(/.test(codeContent)) return 'generator .throw() outside jzify v1'
+    // .throw(v) landed: closes the machine + rethrows (no try spans a yield)
     if (/GeneratorFunction|%Generator/i.test(codeContent)) return 'GeneratorFunction reflection outside jzify subset'
     if (/function\.sent/.test(codeContent)) return 'function.sent outside jzify subset'
     if (/__proto__|\bprototype\b|Object\.(getPrototypeOf|getOwnPropertyDescriptor|defineProperty)/.test(codeContent)) return 'generator prototype reflection outside jzify subset'

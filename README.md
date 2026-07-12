@@ -35,7 +35,7 @@ Output `.wasm` is portable — run it in any host (browser, Node, Deno, edge, pl
 `npm install jz`
 
 ```js
-import jz, { compile, compileModule, instantiate } from 'jz'
+import jz, { compile, compileModule, instantiate, transform } from 'jz'
 
 // Compile + instantiate
 const { exports: { add } } = jz('export let add = (a, b) => a + b')
@@ -52,6 +52,12 @@ instantiate(mod).exports.f(21)  // 42 — repeat cheaply, no recompile
 const asyncMod = await WebAssembly.compile(wasm)
 const asyncInst = await WebAssembly.instantiate(asyncMod)
 asyncInst.exports.f(21) // 42
+
+// jzify as a standalone source→source transform — the same lowering the
+// compiler runs, printed back as canonical jz (also `import transform from 'jz/transform'`)
+transform('var x = 1; function f() { return x }')
+// → 'const f = () => {\n  return x;\n};\nlet x;\nx = 1;'  (decls hoist, then init order)
+transform(alreadyCanonicalSource, { onlyLowered: true })  // → null (nothing to lower)
 ```
 
 <details>
@@ -162,18 +168,20 @@ JZ is a **strict modern JS subset**. Built-in jzify transform extends support to
 │ │   try/catch/finally  throw                                         │ │
 │ │   operators  strings  booleans  numbers  arrays  objects  `${}`    │ │
 │ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol  null  │ │
-│ │   ArrayBuffer  DataView  TypedArray  Map  Set                      │ │
+│ │   ArrayBuffer  DataView  TypedArray  Map  Set  Atomics             │ │
 │ │   parseInt  parseFloat  encodeURIComponent  Error  BigInt          │ │
 │ │   console  setTimeout/setInterval  Date  performance               │ │
+│ │   structuredClone  groupBy  Set algebra  iterator helpers          │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
 │ jz default (jzify)                                                     │
 │   var  function  arguments  switch  new Foo()                          │
 │   class  new  this  extends  super  static  #private                   │
+│   function*  yield  yield*  Foo.prototype.m = …                        │
 │   ==  !=  instanceof  undefined  WeakMap  WeakSet                      │
 │                                                                        │
 └────────────────────────────────────────────────────────────────────────┘
 Not supported
-  async/await  Promise  function*  yield
+  async/await  Promise
   delete  getters/setters  eval  Function  with
   Proxy  Reflect
   import()  DOM  fetch  Intl  Node APIs
@@ -469,7 +477,7 @@ Literals (`0` vs `0.5`), operators (`|` `<<` `&` ⇒ i32), and how a value is us
 <details>
 <summary><strong>Is JZ production-ready?</strong></summary>
 
-It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may still change, so pin a version and re-test on upgrade. What's solid: every push runs the full test suite, the test262 conformance subset, the benchmark gate, and the self-host build in CI, so regressions surface immediately.
+It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may still change, so pin a version and re-test on upgrade. What's solid: every push runs the full test suite, the test262 conformance slice (≈3,000 language + built-ins files at **0 fail** — every excluded test is skip-classified by name, so a new failure can't hide), the benchmark gate, and the self-host build in CI, so regressions surface immediately.
 
 </details>
 

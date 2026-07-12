@@ -64,6 +64,7 @@ const TESTS = [
   'grid-current',
   'perf-ratchet',
   'parser-bugs',
+  'transform',
   'selfhost-source',
   'selfhost-includes',
   'jsstring',

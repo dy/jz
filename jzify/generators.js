@@ -367,7 +367,7 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
     const ret = (v) => ['return', v]
     let prologue = [], emit, epilogue
     if (T === 'toArray') {
-      prologue = [['let', ['=', acc, ['[']]]]
+      prologue = [['let', ['=', acc, ['[]', null]]]]
       emit = () => [['()', ['.', acc, 'push'], x]]
       epilogue = [ret(acc)]
     } else if (T === 'reduce') {

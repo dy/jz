@@ -33,6 +33,8 @@ export function codegen(node, depth = 0) {
 
   // Literal: [, value]
   if (op == null) return typeof a[0] === 'string' ? JSON.stringify(a[0]) : a[0] == null ? 'null' : String(a[0]) + (typeof a[0] === 'bigint' ? 'n' : '')
+  // ['nan'] — jz's parse encodes NaN as a self-describing marker (src/parse.js)
+  if (op === 'nan') return 'NaN'
 
   // Statements
   if (op === ';') return a.map(s => codegen(s, depth)).filter(Boolean).join(';\n' + ind) + ';'
@@ -114,7 +116,11 @@ export function codegen(node, depth = 0) {
   // Grouping parens / function call
   if (op === '()') {
     if (a.length === 1) return '(' + (a[0] == null ? '' : codegen(a[0])) + ')'
-    return codegen(a[0]) + '(' + a.slice(1).map(x => codegen(x)).join(', ') + ')'
+    // An arrow/ternary/binary callee binds looser than the call — parenthesize
+    // (IIFE: `(() => {…})()`), else `... => body()` re-parses into the body.
+    const calleeNeedsParens = Array.isArray(a[0]) && (a[0][0] === '=>' || a[0][0] === '?' || prec[a[0][0]] != null)
+    const callee = calleeNeedsParens ? '(' + codegen(a[0]) + ')' : codegen(a[0])
+    return callee + '(' + a.slice(1).map(x => codegen(x)).join(', ') + ')'
   }
 
   // Property access

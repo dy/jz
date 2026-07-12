@@ -303,6 +303,7 @@ html.embed .brand { display: none; }
             </div>
             <label class="check"><input type="checkbox" id="strict"> strict</label>
             <label class="check"><input type="checkbox" id="names"> names</label>
+            <label class="check" title="pasted or dropped full JS (var/function/class/switch/…) is rewritten to canonical jz source; already-canonical source is left byte-intact"><input type="checkbox" id="jzify" checked> auto-jzify paste</label>
           </div>
         </div>
       </span>
@@ -326,7 +327,7 @@ html.embed .brand { display: none; }
 // The whole point: the compiler runs HERE, in the page — parse, type inference,
 // WASM emit, instantiate. No server, no build step. (dist/jz.js is the
 // standalone bundle — `npm run build` regenerates it.)
-import jz, { compile } from '../dist/jz.js'
+import jz, { compile, transform } from '../dist/jz.js'
 
 const $ = id => document.getElementById(id)
 const editor = $('editor'), out = $('out'), watEl = $('wat'), stat = $('stat'), expr = $('expr')
@@ -765,6 +766,21 @@ makeResizer($('hdivider'), {
   axis: (e) => { const r = termEl.getBoundingClientRect(); return (e.clientY - r.top) / r.height * 100 },
 })
 
+// ── auto-jzify — pasted/dropped full JS (var/function/class/switch/…) rewrites to
+// canonical jz source (same jzify the compiler runs). Canonical source returns
+// null (byte-intact — comments/formatting kept); unparseable fragments pass through.
+const autoJzify = (src) => {
+  if (!$('jzify').checked) return src
+  try { return transform(src, { onlyLowered: true }) ?? src } catch { return src }
+}
+editor.addEventListener('paste', () => {
+  // after the paste lands (input event queues build at 250ms — the rewrite wins the race)
+  setTimeout(() => {
+    const t = autoJzify(editor.value)
+    if (t !== editor.value) { setSource(t); print('sys', 'jzified — full JS lowered to canonical jz (⚙ to turn off)') }
+  }, 0)
+})
+
 // ── file drop — replaces the editor content (single file; the repl compiles one source) ──
 const codePane = document.querySelector('.code')
 let dragDepth = 0
@@ -780,7 +796,7 @@ codePane.addEventListener('drop', async (e) => {
   e.preventDefault(); dragDepth = 0; codePane.classList.remove('drag')
   const f = e.dataTransfer?.files?.[0]
   if (!f) return
-  try { setSource(await f.text()); build() } catch {}
+  try { setSource(autoJzify(await f.text())); build() } catch {}
 })
 
 // ── url hash: #<base64url(source)> ──────────────────────────────────────────

@@ -888,3 +888,11 @@ export const compileModule = (code, opts = {}) => {
 }
 
 export { instantiateRuntime as instantiate }
+
+/**
+ * jzify as a standalone source→source transform: full JS in, canonical jz out.
+ * Same jzify/ module the compiler runs on every parse (default-on) — re-exported
+ * here so browser bundles (dist/jz.js: REPL auto-jzify on paste) and node users
+ * (`import { transform } from 'jz'`, also `jz/transform`) share one lowering.
+ */
+export { default as transform } from './transform.js'
