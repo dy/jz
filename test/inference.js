@@ -1328,3 +1328,29 @@ test('bigint∪null: kind carries through the nullish ternary arm, guards stay l
   is(chain(5), 'x' + (15n).toString(16), 'param settles BIGINT through the call boundary')
   is(chain(-1), 'NULL-OK', 'callee null guard stays live — narrow re-derived nullable')
 })
+
+// Census completeness: bundled sub-module INITS live outside the main AST
+// (ctx.module.moduleInits) and prepare's reduced init walk records no call
+// sites — so a const table of arrows (watr's FOLD/FOLD2 shape) called helpers
+// with args the param lattice never saw: the callee settled blind, its
+// bigint receiver fell to the number fork ("0.000…" hex), and
+// filterLiveCallSites culled the whole chain as dead (the speed-tier lab-row
+// throw). collectProgramFacts now walks moduleInits for '()' sites
+// (callerFunc = null — module scope), and the EXISTING lattice types the
+// chain: table args like `BigInt(x) * 3n` prove BIGINT with no caller
+// context at all.
+test('census: const-table arrow args in a bundled init reach the param lattice', () => {
+  const dep = `
+    export let hex = (v) => {
+      const h = v.toString(16)
+      return h[0] === '-' ? 'n' + h : h
+    }
+    export const T = { x2: (x) => hex(BigInt(x) * 2n), x3: (x) => hex(BigInt(x) * 3n) }
+  `
+  const { exports } = jz(
+    'import { T } from "./t.jz"; export let go = (k, n) => T[k ? "x2" : "x3"](n)',
+    { modules: { './t.jz': dep }, memory: 64 }
+  )
+  is(exports.go(1, 255), (510n).toString(16), 'bigint arg through the init table dispatches .bigint:toString')
+  is(exports.go(0, 255), (765n).toString(16), 'both table arms typed')
+})

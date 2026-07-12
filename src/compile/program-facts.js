@@ -322,6 +322,30 @@ export function collectProgramFacts(ast) {
     if (func.body && !func.raw) mergeWalkFacts(f, walkFactsRoot(func.body, true, func, doSchema, true))
   }
   const { propMap, valueUsed, callSites } = f
+  // Bundled sub-module inits live OUTSIDE `ast` (ctx.module.moduleInits — the
+  // main walk never sees them) and prepare's recordModuleInitFacts collects a
+  // REDUCED set with no call sites. But init code is a first-class CALLER:
+  // const tables of arrows (watr's FOLD/FOLD2) call helpers with args visible
+  // only here, and without these sites the param lattice settles callees
+  // blind — _i64Arith.r never proved BIGINT, _i64Hex16's radix-toString
+  // misformatted raw i64 bits (the speed-tier lab throw), and
+  // filterLiveCallSites culled both as dead code. Collect ONLY '()' sites
+  // (callerFunc = null — module scope; narrow's callerCtx already carries a
+  // null entry and filterLiveCallSites keeps null-caller sites and marks
+  // their callees live). Everything else stays on the reduced initFacts
+  // path: a full walkFactsRoot here would re-register schemas and promote
+  // init-stored func REFS into valueUsed — a program-wide dispatch behavior
+  // change this census repair must not smuggle in.
+  const initCallSites = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === '()' && isFuncRef(node[1], ctx.func.names)) {
+      const a = node[2]
+      const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+      f.callSites.push({ callee: node[1], argList, callerFunc: null, node })
+    }
+    for (let i = 1; i < node.length; i++) initCallSites(node[i])
+  }
+  if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) initCallSites(init)
   const initFacts = ctx.module.initFacts
   if (initFacts) {
     if (initFacts.anyDyn) {
