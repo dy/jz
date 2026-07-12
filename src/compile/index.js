@@ -495,6 +495,9 @@ function analyzeFuncForEmit(func, programFacts) {
   // constant-fold the very null-check guarding it — under-arity callers then read
   // the raw UNDEF box as NaN (window-function's taylor manual-default idiom).
   // `nullable` only suppresses the nullish-compare FOLD; arithmetic typing keeps.
+  // `r.nullable` alongside a SETTLED val is narrow.js's BIGINT re-derivation:
+  // a `c ? BigInt(x) : null` site proves the kind yet still passes null — the
+  // callee's `x == null` sentinel must stay a live bit-compare.
   {
     const restIdx = func.rest ? sig.params.length - 1 : -1
     for (let k = 0; k < sig.params.length; k++) {
@@ -502,7 +505,7 @@ function analyzeFuncForEmit(func, programFacts) {
       const pname = sig.params[k].name
       if (func.defaults?.[pname] != null) continue      // default fires on the UNDEF pad
       const r = _reps?.get(k)
-      if (!r || r.val == null) updateRep(pname, { nullable: true })
+      if (!r || r.val == null || r.nullable) updateRep(pname, { nullable: true })
     }
   }
   // Trust numeric export params. An exported f64 param used only in numeric

@@ -153,8 +153,30 @@ VT['?:'] = (args) => {
   // carry is what types `cond && typedArr` guarded-use idioms.)
   if (ta === VAL.BOOL && tb && tb !== VAL.BOOL) return tb === VAL.NUMBER ? VAL.NUMBER : null
   if (tb === VAL.BOOL && ta && ta !== VAL.BOOL) return ta === VAL.NUMBER ? VAL.NUMBER : null
+  // BIGINT arm + nullish-LITERAL arm carries BIGINT. BIGINT is the one kind
+  // with NO runtime tag — raw i64 bits ride the f64 slot, indistinguishable
+  // from a number — so a dispatcher that loses the static kind has no runtime
+  // fork to fall back on: tryRuntimeStringFork's non-NaN arm claimed
+  // `(c ? BigInt(x) : null).toString(16)` as NUMBER and formatted the bits as
+  // a denormal ("0.000…"), watr's `cb ? BigInt(cb.value) : null` folder shape.
+  // Sound where the bool-arm carry above is not: a nullish receiver is
+  // TypeError-class in JS (no method table to mis-pick), the nullish arm
+  // materializes as its ATOM whose bits the sentinel compare still matches at
+  // runtime, and the decl-site mayBeNullish flag (analyze.js) plus
+  // nullableOperand (emit.js) keep `x == null` folds honest — narrow.js
+  // re-derives that nullability across call boundaries for BIGINT params.
+  // Tagged kinds stay null here on purpose: their runtime fork handles the
+  // mix soundly and their eq-folds stay maximally live.
+  if (ta === VAL.BIGINT && nullishArm(args[2])) return VAL.BIGINT
+  if (tb === VAL.BIGINT && nullishArm(args[1])) return VAL.BIGINT
   return null
 }
+
+// AST nullish literal — mirrors ir.js isNullishLit ([null,null] = null literal,
+// [] = undefined) plus the bare `undefined` name form recordGlobalRep accepts;
+// local copy because ir.js already imports valTypeOf from here (cycle).
+const nullishArm = (n) => n === 'undefined' ||
+  (Array.isArray(n) && ((n.length === 2 && n[0] == null && n[1] == null) || n.length === 0))
 
 // Value-preserving logical: `&&`/`||` return one of their operands.
 // When both sides share a type, return it. When one side is boolean

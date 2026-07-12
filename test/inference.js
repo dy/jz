@@ -1290,3 +1290,41 @@ test('flow-fact: for-of desugar keeps the array fast path (the win the guard mus
   is(g(1), 2)
   is(g(-1), 15)
 })
+
+// BIGINT is the one kind with no runtime tag — raw i64 bits ride the f64 slot —
+// so `c ? BigInt(x) : null` must CARRY the kind through the nullish arm
+// (VT['?:'], kind.js) or the receiver falls to tryRuntimeStringFork's non-NaN
+// arm and `.toString(16)` formats the bits as a NUMBER denormal ("0.000…").
+// The counterweight: the val claim must not FOLD `x == null` guards — the decl
+// keeps rep.nullable (analyze.js mayBeNullish), and narrow.js re-derives it for
+// BIGINT params whose call sites can pass null (watr's `_i64Arith(r)` shape:
+// fold-miss null flows for real; the guard must return null, not hex-format
+// atom bits). Root of the speed-tier lab-row throw (.work/todo.md 2026-07-11).
+test('bigint∪null: kind carries through the nullish ternary arm, guards stay live', () => {
+  const { viaTern, viaIf, chain } = run(`
+    export let viaTern = (a) => {
+      const r = a > 0 ? BigInt(a) : null
+      return r == null ? 'null' : r.toString(16)
+    }
+    export let viaIf = (a) => {
+      const r = a > 0 ? BigInt(a) : null
+      if (r == null) return 'null'
+      return r.toString(16)
+    }
+    let hex = (v) => {
+      const h = v.toString(16)
+      return h[0] === '-' ? 'n' + h : h
+    }
+    let arith = (r) => r == null ? null : 'x' + hex(r)
+    export let chain = (a) => {
+      const r = a > 0 ? BigInt(a) * 3n : null
+      const out = arith(r)
+      return out === null ? 'NULL-OK' : out
+    }
+  `, { memory: 64 })
+  is(viaTern(255), 'ff', 'ternary-of-bigint receiver dispatches .bigint:toString(radix)')
+  is(viaTern(-1), 'null', 'local null guard stays live despite the BIGINT claim')
+  is(viaIf(255), 'ff', 'if-guarded form types the same')
+  is(chain(5), 'x' + (15n).toString(16), 'param settles BIGINT through the call boundary')
+  is(chain(-1), 'NULL-OK', 'callee null guard stays live — narrow re-derived nullable')
+})

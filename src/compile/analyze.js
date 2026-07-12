@@ -771,21 +771,25 @@ const NEVER_NULLISH_OPS = new Set([
   '==', '!=', '===', '!==', '<', '>', '<=', '>=', '!', 'u-', 'u+',
   'typeof', 'in', 'instanceof', '++', '--',
 ])
-function mayBeNullish(n) {
+// `nameNullable` resolves a bare-name read; the default reads the CURRENT
+// function's rep (emit-time callers). narrow.js passes its own resolver — at
+// plan time no caller's ctx.func is installed, so it re-derives nullability
+// from the caller body's writes instead. Exported for exactly that consumer.
+export function mayBeNullish(n, nameNullable = (name) => !!repOf(name)?.nullable) {
   if (typeof n === 'number' || typeof n === 'boolean') return false
   // name read: inherit the source binding's settled flag (best-effort — an
   // unsettled rep reads false, matching the old behavior for plain aliases)
-  if (typeof n === 'string') return !!repOf(n)?.nullable
+  if (typeof n === 'string') return nameNullable(n)
   if (!Array.isArray(n)) return true
   const op = n[0]
   if (op == null) return n[1] == null                    // [null, v] literal value
-  if (op === '?' || op === '?:') return mayBeNullish(n[2]) || mayBeNullish(n[3])
+  if (op === '?' || op === '?:') return mayBeNullish(n[2], nameNullable) || mayBeNullish(n[3], nameNullable)
   // `a && b` yields a (when falsy — possibly nullish) or b; `a || b` / `a ?? b`
   // yield a only when truthy/non-nullish, so only b's nullability matters.
-  if (op === '&&') return mayBeNullish(n[1]) || mayBeNullish(n[2])
-  if (op === '||' || op === '??') return mayBeNullish(n[2])
-  if (op === '=') return mayBeNullish(n[2])              // assignment expression yields its rhs
-  if (op === ',') return mayBeNullish(n[n.length - 1])
+  if (op === '&&') return mayBeNullish(n[1], nameNullable) || mayBeNullish(n[2], nameNullable)
+  if (op === '||' || op === '??') return mayBeNullish(n[2], nameNullable)
+  if (op === '=') return mayBeNullish(n[2], nameNullable) // assignment expression yields its rhs
+  if (op === ',') return mayBeNullish(n[n.length - 1], nameNullable)
   if (typeof op === 'string' && (NEVER_NULLISH_OPS.has(op) || op.startsWith('new.'))) return false
   // calls (incl. `.get()` misses), member/element reads, optional chains,
   // and anything unrecognized: missable — fail closed.

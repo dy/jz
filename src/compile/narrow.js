@@ -11,7 +11,7 @@ import { ctx, warn, err } from '../ctx.js'
 import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, callArgs, ASSIGN_OPS, extractParams, classifyParam } from '../ast.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from '../ir.js'
 import {
-  analyzeBody, findMutations, invalidateLocalsCache,
+  analyzeBody, findMutations, invalidateLocalsCache, mayBeNullish,
 } from './analyze.js'
 import { staticObjectProps } from '../static.js'
 import { scanBoundedLoops, exprType, typedElemCtor } from '../type.js'
@@ -1196,6 +1196,63 @@ export default function narrowSignatures(programFacts, ast) {
   // r.val is sound for emit + the late/post-return consumers (applyI32ParamSpecial-
   // ization's skipTyped guard, specializeBimorphicTyped) — which read it directly.
   runCallsiteLattice([mergeRule('val', (arg, _k, state) => inferValAtSite(arg, state))])
+  // BIGINT params: re-derive nullability the val claim just erased. VT['?:']
+  // carries BIGINT through a nullish-literal arm (the kind is untaggable at
+  // runtime — kind.js), so a site arg like `c ? BigInt(x) : null` PROVES
+  // BIGINT while still passing null on the other path; the settle above
+  // stamps bare val=BIGINT and strictSentinel would then FOLD the callee's
+  // `x == null` guard (watr's `_i64Arith(r)`: fold-miss null crosses for
+  // real — the guard must return null, not format atom bits as hex). Any
+  // site arg not structurally non-nullish marks the param nullable, which
+  // only suppresses that fold (emitFunc's caller-side nullability block).
+  // Scoped to BIGINT vals: tagged kinds keep their runtime forks and their
+  // folds. Name args resolve through the CALLER body's own writes — at plan
+  // time no caller ctx.func is installed, so rep lookups would misread;
+  // an unwritten name (param/global/closure) fails closed.
+  const bodyNameNullable = (callerFunc) => {
+    const seen = new Set()
+    const nameNullable = (name) => {
+      if (seen.has(name)) return false            // cyclic alias: no new evidence
+      seen.add(name)
+      let found = false, nullish = false
+      const walk = (node) => {
+        if (nullish || !Array.isArray(node)) return
+        const op = node[0]
+        if ((op === 'let' || op === 'const') && node.length >= 2) {
+          for (let i = 1; i < node.length; i++) {
+            const d = node[i]
+            if (Array.isArray(d) && d[0] === '=' && d[1] === name) {
+              found = true
+              if (mayBeNullish(d[2], nameNullable)) nullish = true
+            }
+          }
+        } else if (op === '=' && node[1] === name) {
+          found = true
+          if (mayBeNullish(node[2], nameNullable)) nullish = true
+        } else if (typeof op === 'string' && op.length > 1 && op.endsWith('=') &&
+                   ASSIGN_OPS.has(op) && node[1] === name) {
+          found = true
+          nullish = true                          // ??=/||= etc. — fail closed
+        }
+        for (let i = 1; i < node.length; i++) walk(node[i])
+      }
+      walk(callerFunc?.body)
+      return found ? nullish : true               // unwritten name — fail closed
+    }
+    return nameNullable
+  }
+  for (const [fname, reps] of paramReps) {
+    for (const [k, r] of reps) {
+      if (r.val !== VAL.BIGINT || r.nullable) continue
+      for (const cs of callSites) {
+        if (cs.callee !== fname || k >= cs.argList.length) continue
+        if (mayBeNullish(cs.argList[k], bodyNameNullable(cs.callerFunc))) {
+          r.nullable = true
+          break
+        }
+      }
+    }
+  }
   // Don't steal typed-array params from specializeBimorphicTyped: F phase parks
   // bimorphic typed params at type='f64' with sticky-null typedCtor (two distinct
   // ctors at call sites). Their callers post-F pass them as i32 (pointer ABI),
