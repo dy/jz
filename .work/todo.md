@@ -1009,6 +1009,13 @@
       lab-probe gap; the closure-arg-typing design item is DOWNGRADED
       from 'THE residual' to low-yield-for-jessie (still relevant for
       numeric-element dispatch shapes per the old entry).
+      PER-CASE COUNT (same sweep): 48/52 jz BEATS V8 outright (was
+      43/52 at the prior table). The four behinds, each with a
+      verdict: self-host 2.68× = the proven LOAD SPIKE (standalone
+      dead-even ⇒ effectively 49-50/52), jessie 1.44× (IC-class
+      verdict above), colorpq 1.20× (accuracy hold), shapes 1.05×
+      (noise band — recorded 0.89 LEAD on quiet). V1 bench mandate is
+      at its practical ceiling pending the quiet-machine session.
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
