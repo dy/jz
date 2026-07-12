@@ -871,6 +871,22 @@
         the census fix for this bug, but the bigintishOf query may still
         pay for receivers with NO call-site story; decide after the
         census fix lands.
+      LANDED (2026-07-12, c4ef67f): the census fix — collectProgramFacts
+      walks ctx.module.moduleInits for '()' sites (callerFunc=null; ~24
+      lines + pin). The chain healed exactly as designed with ZERO new
+      machinery: init-table args type via bare VT → _i64Arith.r settles
+      BIGINT → _i64Hex16.v via paramFacts → typed .bigint:toString →
+      the speed-tier lab row RUNS and the BENCH PARITY COLUMN PRINTS
+      'ok' (cs=3935718203 == reference; -Os and L2 legs identical).
+      Full gates at c4ef67f: suite 2774/2781 (the 1 fail = the known
+      watr-5.3.6 drift item, user's upgrade lane), parity 9/9
+      byte-identical, jessie cs=2418067300 EXACT @ ~2.24ms band,
+      wordcount cs=2370237189 EXACT across V8/wasmtime/w2c legs.
+      V1 FIDELITY MANDATE COMPLETE: jz-row parity 'ok' at speed tier.
+      OWED: quiet-machine re-measure of the jz-row headline (this
+      session's absolute times are load-noise — user session + builds
+      churning; recorded quiet numbers predate the healed inlining
+      path). Pin: test/inference.js 'census: const-table arrow args'.
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
