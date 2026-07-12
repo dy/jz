@@ -829,6 +829,48 @@
         revert waves (lost twice today; index.js briefly de-paired from
         their assemble.js rename — repaired from the saved diff). Work
         in a scratch worktree branch; land only via prompt commits.
+      LEVER-1 SESSION 2 (2026-07-12, probe chain in fix3-wt, all probes
+      reverted): the "closure-capture provenance" framing DISSOLVED into
+      a sharper, structural finding — the speed-throw is a CENSUS
+      COMPLETENESS hole, and the fix needs NO new provenance machinery:
+      * At narrow time the ENTIRE program contains exactly ONE
+        _i64Hex16/_i64Arith call node (`_i64Hex16(r)` inside _i64Arith)
+        — watr's FOLD2/FOLD arrow tables are NOWHERE: not in the module
+        AST, not in any ctx.func.list body (raw included), closure.table
+        still empty. The arrows leave the AST BEFORE THE FIRST
+        collectProgramFacts (pre-inline census already shows i64=5 =
+        only the non-arrow sites; the arrows' _i64Arith calls were never
+        seen by ANY census). NOT foldStaticConstAggregates (scalar-only)
+        and NOT pre-eval's foldNode (folds inside arrows, keeps them) —
+        the exact siphoning pass is the ONE remaining unknown; next
+        probe: trace which prepare/plan stage consumes the FOLD2 const
+        decl statement.
+      * At EMIT the arrows materialize as real functions (wat closures
+        2905-2913) calling _i64Hex16 — so the runtime graph and the
+        census graph DISAGREE. Two-level consequence: (a) _i64Arith's
+        one real site is DROPPED by filterLiveCallSites (narrow.js:38 —
+        roots are exported|valueUsed only; closure-materialized callers
+        are invisible ⇒ _i64Arith "dead" ⇒ its interior site culled,
+        [sites-i64]=0 at the lattice); (b) _i64Hex16.v gets no fact ⇒
+        v.toString(16) unknown ⇒ number-fork denormal string ⇒ BigInt
+        parse throw downstream (the zero-payload $__jz_err).
+      * THE FIX (census altitude, two pieces): (1) whatever store holds
+        pre-materialized closure bodies must feed collectProgramFacts as
+        call-site sources — args like `BigInt(a)+BigInt(b) & mask` type
+        BIGINT via bare VT with NO caller context, so the EXISTING val
+        lattice + the landed nullable sweep then heal the entire chain
+        (_i64Arith.r settles BIGINT+nullable → _i64Hex16.v settles via
+        paramFacts → typed .bigint:toString — no bigintishOf needed);
+        (2) filterLiveCallSites must seed closure-materialized functions
+        as live roots (address-taken ≡ valueUsed). GENERAL WIN beyond
+        the throw: today EVERY const-table closure's args are invisible
+        to param inference program-wide — plugging it upgrades inference
+        for all table-dispatch code (watr's PASSES/FOLD tables, jz's own
+        emitter tables when self-hosted).
+      * bigint-provenance branch (7b57dbb) stays parked: superseded by
+        the census fix for this bug, but the bigintishOf query may still
+        pay for receivers with NO call-site story; decide after the
+        census fix lands.
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
