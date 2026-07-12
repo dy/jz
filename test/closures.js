@@ -918,6 +918,82 @@ test('func-namespace SROA: escaping namespace keeps the dynamic path correct', (
   is(runHost(src).f(), 2)
 })
 
+// === module-global closure devirtualization (plan/scope.js devirtGlobalCalls) ===
+// A module global written only by unconditional init statements, resolving
+// (through aliases/chained assignment/`??=`/`||=`) to one statically-known
+// function, collapses every call through it to a direct `call` — no
+// call_indirect, no trampoline. Distinct from the watr-level `devirt` below
+// (guarded multi-candidate dispatch): this fires pre-emit, on the AST, and
+// only when the candidate set has exactly one member for the program's
+// entire post-init lifetime.
+
+test('devirtGlobalCalls: ??= chain resolves the pre-wrap value (subscript asi.js baseSpace shape)', () => {
+  // `const baseSpace = parse._baseSpace ??= parse.space` — asi.js captures
+  // the PRISTINE arrow through a `??=` BEFORE wrapping the slot. `saved` must
+  // resolve past the compound-assign to the pristine `(x) => x + 1`, not the
+  // wrapper that reads it (order matters: the capture runs before the
+  // rewrap), and the loop's call through the wrapper must devirtualize too.
+  const src = `
+    function base() { return 0 }
+    base.method = (x) => x + 1
+    const saved = base._saved ??= base.method
+    base.method = (x) => saved(x) * 2
+    export let run = () => {
+      let acc = 0
+      for (let i = 0; i < 5; i = i + 1) acc = acc + base.method(i)
+      return acc
+    }`
+  is(runHost(src).run(), 30)  // saved=x=>x+1; method=x=>saved(x)*2; Σ(i+1)*2, i=0..4 = 2+4+6+8+10
+  ok(!/call_indirect/.test(wat(src)), 'no call_indirect left — both saved() and method() devirtualize')
+})
+
+test('devirtGlobalCalls: chained assignment (const x = obj.prop = arrow) resolves the alias', () => {
+  // subscript asi.js: `const asi = parse.asi = (a,p,expr,…) => {…}` — the
+  // inner `.`-prop write pre-lifts to a named function (flattenFuncNamespaces
+  // + prepare's f.prop=arrow lift), but the OUTER declarator's own value is
+  // the nested `=` node itself; devirtGlobalCalls must follow that one hop to
+  // resolve the bare alias too, not just the property it mirrors.
+  const src = `
+    function base() { return 0 }
+    const alias = base.method = (x) => x * 3
+    export let run = () => {
+      let acc = 0
+      for (let i = 0; i < 5; i = i + 1) acc = acc + alias(i)
+      return acc
+    }`
+  is(runHost(src).run(), 30)  // Σ(i*3), i=0..4 = 0+3+6+9+12
+  ok(!/call_indirect/.test(wat(src)), 'no call_indirect — chained assignment resolved through')
+})
+
+test('devirtGlobalCalls: raw arrow literal lifted through a bare ??=; value-use of the same global stays a real closure', () => {
+  // `g` is never pre-lifted by prepare's defFunc (a bare `g ??= arrow`
+  // reassignment is neither a declaration initializer nor a `.`-prop write),
+  // so the arrow literal itself must be lifted into a top-level function
+  // before its value can resolve. `value` passes the SAME global `g` as a
+  // bare VALUE into a generic higher-order call — proving the lift only
+  // ADDED a direct-call target for run()'s call site and did not remove or
+  // alter the original closure-producing write, which `value` still needs.
+  const src = `
+    let g
+    g ??= (x) => x + 1
+    export let run = () => {
+      let acc = 0
+      for (let i = 0; i < 5; i = i + 1) acc = acc + g(i)
+      return acc
+    }
+    export let keep = (h) => h(9)
+    export let value = () => keep(g)`
+  const { run, value } = runHost(src)
+  is(run(), 15)    // Σ(i+1), i=0..4 = 1+2+3+4+5
+  is(value(), 10)  // g(9) through the generic closure param — g is still a real callable value
+  const w = wat(src)
+  // Exactly one call_indirect survives — keep()'s generic `h(9)` dispatch (h's
+  // identity is a runtime parameter, genuinely unknowable). None come from
+  // run()'s g(i): fnBody's fixed-window slice would bleed into keep()'s body
+  // here (run()'s is short), so the count is asserted over the whole module.
+  is((w.match(/call_indirect/g) || []).length, 1, 'only keep() generic dispatch remains indirect')
+})
+
 // === call_indirect devirtualization (watr/optimize devirt) ===
 // `let f = c ? a : b; f(x)` — the candidate set is two closure constants, so
 // each call site becomes a guarded direct-call chain with the original

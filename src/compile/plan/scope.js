@@ -780,10 +780,25 @@ export const devirtGlobalCalls = (ast) => {
   flatten(ast)
 
   const isGlobal = (s) => typeof s === 'string' && ctx.scope.globals.has(s)
-  // `[target, rhs]` pairs for a `=` / `let` / `const` node assigning a global.
+
+  // A node that is ITSELF a compound-assign (`=`/`??=`/`||=`/…) directly
+  // targeting a global — the one-hop-deep shape a declarator's or a bare
+  // statement's own value position can be (chained assignment: `const x = (G
+  // = arrow)`; `const x = (G ??= Y)`, subscript asi.js's `parse._baseSpace ??=
+  // parse.space`). Both the poison scan and the env resolver special-case
+  // exactly this nesting; anything buried deeper (behind a comma-expression,
+  // ternary, call, …) stays outside what either tracks — the same shallow-
+  // recognition boundary this pass always had for plain `=`.
+  const chainedWrite = (n) => Array.isArray(n) && ASSIGN_OPS.has(n[0]) && typeof n[1] === 'string'
+
+  // `[target, valueNode]` pairs for a `=`/compound-assign / `let` / `const`
+  // node assigning a global. `valueNode` is either a plain value expression
+  // (declarator RHS) or — for a bare compound-assign statement — the whole
+  // write node, so resolveValue's chainedWrite branch can see the operator.
   const writesOf = (node) => {
     if (!Array.isArray(node)) return []
-    if (node[0] === '=' && isGlobal(node[1])) return [[node[1], node[2]]]
+    if (chainedWrite(node) && isGlobal(node[1])) return [[node[1], node]]
+    if ((node[0] === '++' || node[0] === '--') && isGlobal(node[1])) return [[node[1], null]]
     if (node[0] === 'let' || node[0] === 'const') {
       const out = []
       for (let i = 1; i < node.length; i++) {
@@ -797,7 +812,11 @@ export const devirtGlobalCalls = (ast) => {
 
   // Poison a global assigned anywhere but an unconditional init statement — in a
   // function body, or nested in init control flow. Its value is then not a
-  // fixed post-init constant.
+  // fixed post-init constant. A RHS that is itself a direct chainedWrite (one
+  // hop) inherits the OUTER statement's topInit instead of being forced
+  // conservative — `const asi = parse.asi = arrow` is ONE unconditional
+  // top-level statement; poisoning its inner target merely for being nested
+  // one assignment deep would be over-conservative, not sound-required.
   const poison = new Set()
   const scanWrites = (node, topInit) => {
     if (!Array.isArray(node)) return
@@ -809,15 +828,18 @@ export const devirtGlobalCalls = (ast) => {
         const d = node[i]
         if (Array.isArray(d) && d[0] === '=') {
           if (!topInit && isGlobal(d[1])) poison.add(d[1])
-          scanWrites(d[2], false)
+          scanWrites(d[2], chainedWrite(d[2]) ? topInit : false)
         } else scanWrites(d, false)
       }
       return
     }
-    if (op === '=') {
+    // Any assign-op (`=`, `??=`, `||=`, `+=`, …) or `++`/`--` on a global outside
+    // unconditional init poisons it — the house write predicate used throughout
+    // prepare/narrow/emit (`ASSIGN_OPS.has(op) || op==='++' || op==='--'`).
+    if (ASSIGN_OPS.has(op) || op === '++' || op === '--') {
       if (!topInit && isGlobal(node[1])) poison.add(node[1])
       scanWrites(node[1], false)
-      scanWrites(node[2], false)
+      scanWrites(node[2], chainedWrite(node[2]) ? topInit : false)
       return
     }
     for (let i = 1; i < node.length; i++) scanWrites(node[i], false)
@@ -828,13 +850,94 @@ export const devirtGlobalCalls = (ast) => {
 
   // Resolve each global's value by a linear pass over init in execution order.
   const env = new Map()
-  const evalFn = (rhs) =>
-    typeof rhs !== 'string' ? null
-      : fnNames.has(rhs) ? rhs
-      : env.has(rhs) ? env.get(rhs)
-      : null
+
+  // Free identifiers referenced by `node`, skipping property-name / literal-
+  // key positions (mirrors ast.js's REFS_IN_EXPR convention: `.`/`?.` only
+  // recurse the receiver, `:` only the value) and skipping anything bound by a
+  // `=>` param, `let`/`const`, or `catch` clause anywhere within — the same
+  // "hoist every local to function scope" approximation the other body-local
+  // scans in this file use (over-inclusive `bound` only makes lifting MORE
+  // conservative, never less sound).
+  const collectFreeIdents = (node, bound, out) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') { collectParamNames(extractParams(node[1]), bound); collectFreeIdents(node[2], bound, out); return }
+    if (op === 'str') return
+    if (op === '.' || op === '?.') { collectFreeIdents(node[1], bound, out); return }
+    if (op === ':') { collectFreeIdents(node[2], bound, out); return }
+    if (op === 'catch' && typeof node[2] === 'string') bound.add(node[2])
+    if (op === 'let' || op === 'const') collectParamNames(node.slice(1), bound)
+    for (let i = 1; i < node.length; i++) {
+      const c = node[i]
+      if (typeof c === 'string') { if (!bound.has(c)) out.add(c) }
+      else collectFreeIdents(c, bound, out)
+    }
+  }
+
+  // Lift a module-init-time arrow literal into a standalone top-level function
+  // so its resolved VALUE (the function name) can flow through env like any
+  // other devirt candidate — subscript's `parse.space = (r,e) => {…}` shape
+  // once flattenFuncNamespaces turns the write into a plain global assign, or
+  // an arrow reached one hop through a chainedWrite. Sound only when the arrow
+  // captures nothing from an enclosing function's locals: at true module-init
+  // depth that's automatic (no enclosing function exists at all — initStmts
+  // only holds top-level statements, and this walk never enters a `=>` body
+  // except the candidate's own), but an arrow nested inside another init
+  // expression is still checked, fail-closed — any free identifier that isn't
+  // a module global or a top-level function name aborts the lift, as does any
+  // non-plain (rest/default/destructured) param. The ORIGINAL arrow node is
+  // left untouched in place: this only ADDS a new function; whatever produced
+  // the arrow as a value (closure.make at its own AST position) keeps working
+  // unchanged for any other, non-call use of the same global.
+  const liftArrow = (node) => {
+    const params = []
+    for (const p of extractParams(node[1])) {
+      const c = classifyParam(p)
+      if (c.kind !== 'plain') return null
+      params.push(c.name)
+    }
+    const bound = new Set(params)
+    const free = new Set()
+    collectFreeIdents(node[2], bound, free)
+    for (const name of free) if (!ctx.scope.globals.has(name) && !fnNames.has(name)) return null
+
+    const name = `${T}devirt${ctx.func.uniq++}`
+    const funcInfo = { name, body: node[2], exported: false, sig: { params: params.map(n => ({ name: n, type: 'f64' })), results: ['f64'] } }
+    ctx.func.list.push(funcInfo)
+    ctx.func.map.set(name, funcInfo)
+    fnNames.add(name)
+    return name
+  }
+
+  // A write node's resolved value: `=` always takes the RHS; `??=`/`||=` keep
+  // G's prior env value when one was already recorded (sound because a prior
+  // value present in env is always a function — non-nullish AND truthy, so
+  // both operators short-circuit without evaluating the RHS at all) and fall
+  // back to resolving the RHS only when no prior write was seen (sound because
+  // an as-yet-unwritten SROA/module global's declared init is the shared
+  // undefined atom — nullish and falsy). Any OTHER compound op (`+=`, `&&=`, …)
+  // can't be interpreted here — recorded as a write with an unknown value
+  // rather than left silently unset, so a LATER `??=`/`||=` on the same global
+  // can't mistake "written but uninterpretable" for "never written".
+  const resolveWriteNode = (n) => {
+    const [op, g, v] = n
+    const val = op === '='
+      ? resolveValue(v)
+      : (op === '??=' || op === '||=')
+        ? (env.has(g) ? env.get(g) : resolveValue(v))
+        : null
+    env.set(g, val)
+    return val
+  }
+  const resolveValue = (v) => {
+    if (typeof v === 'string') return fnNames.has(v) ? v : env.has(v) ? env.get(v) : null
+    if (!Array.isArray(v)) return null
+    if (v[0] === '=>') return liftArrow(v)
+    if (chainedWrite(v) && isGlobal(v[1])) return resolveWriteNode(v)
+    return null
+  }
   for (const stmt of initStmts)
-    for (const [g, rhs] of writesOf(stmt)) env.set(g, evalFn(rhs))
+    for (const [g, valueNode] of writesOf(stmt)) env.set(g, resolveValue(valueNode))
 
   const devirt = new Map()
   for (const [g, fn] of env)
