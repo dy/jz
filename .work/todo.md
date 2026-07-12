@@ -936,6 +936,25 @@
       binding/inline path resolves the stale value; pre-existing,
       unaffected by the devirt change. MISCOMPILE CLASS — next named
       correctness hunt.
+      KILLED (2026-07-12, 8e358a9): root = defFunc lifts EVERY depth-0
+      arrow decl into a fixed NAMED function, sound only for immutable
+      bindings — a reassigned `let g = a1; g = a2` froze callers onto
+      a1 (module-level reassign → silently-stale value; in-function
+      reassign → "'g' is not in scope", the write targeting a binding
+      that no longer existed). Fix mirrors fn-namespace's multiProp
+      demotion: a prepare-time scope-tracked pre-scan
+      (scanReassignedTopLevel, stacked per module root) collects
+      bare-name write targets (assign/compound/++/--, locals-shadowed
+      writes excluded, declarator '='s excluded) and defFunc refuses
+      the lift for any written name — the binding stays an ordinary
+      closure-valued global (writable, indirect-callable), and the
+      just-landed devirtGlobalCalls re-devirts init-order-resolvable
+      cases. Gates: suite 2866/0 (the watr-drift item also gone —
+      user's lane fixed it), jessie cs exact + call_indirect stays 21
+      (zero accidental demotions on the corpus), wordcount cs exact.
+      Pin: test/closures.js 'reassigned module function bindings stay
+      live' (6 legs incl. shadowed-local non-demotion and the
+      untouched-binding control).
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
