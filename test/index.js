@@ -48,6 +48,8 @@ const TESTS = [
   'timers',
   'invariants',
   'pow-ulp',
+  'pow-fold-ulp',
+  'fifthroot-ulp',
   'wat-invariants',
   'loop-square',
   'inplace-store',

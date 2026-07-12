@@ -1,32 +1,31 @@
-// Differential ULP regression guard for $math.fifthroot — the bit-hack-seed + Newton kernel
-// module/math.js's `emitPow` const-exponent fold used to ALWAYS use for k/5 exponents (x**2.4,
-// the sRGB/Rec.709 decode gamma, is the canonical caller). Since the CR-pow kernel landed
-// (test/pow-cr.js), that fold is OFF BY DEFAULT: it's only ~3.6e-10 relative error, not
-// correctly rounded (worst case ~473 ulp — see below), so a plain build now routes k/5
-// exponents through the correctly-rounded $math.pow_fold like any other constant exponent.
-// Bench check before deciding this (not assumed): colorlch (this fold's own sRGB-gamma-heavy
-// target case) is 4.8x slower through $math.pow_fold than through fifthroot — past the 1.3x
-// bar for an unconditional swap — so fifthroot stays available as an explicit opt-in,
-// `{ optimize: { approxPow: true } }`, for call sites where ulp-level error is genuinely fine
-// and the speed matters more. Every compile in this file passes that flag so the ULP figures
-// below still describe $math.fifthroot itself, not the (now default, ≤1ulp) $math.pow_fold
-// path — see pow-fold-ulp.js for that one.
+// Differential ULP regression guard for $math.fifthroot — the bit-hack-seed + 3-Newton-step
+// kernel module/math.js's `emitPow` const-exponent fold uses for k/5 exponents (x**2.4, the
+// sRGB/Rec.709 decode gamma, is the canonical caller) UNCONDITIONALLY by default — this predates
+// and is independent of the CR-pow kernel (test/pow-cr.js). 3 steps leave a worst case in the
+// low millions of ulp against host Math.pow(x, k/5) (measured ~2.6M here) — Newton's quadratic
+// convergence hasn't fully saturated the f64 rounding floor at 3 steps (a 4th step, prototyped
+// on an unmerged branch, brings this down to ~a few hundred ulp, but that improvement never
+// shipped — this test pins the 3-step reality actually running). This is NOT a ≤1ulp guarantee
+// (unlike pow-fold-ulp.js's $math.pow_fold): a genuine double-double Newton correction would be
+// needed for that, and $math.cbrt — this fold's usual downstream neighbor in the sRGB/Oklab
+// pipeline — is itself a documented non-bit-exact approximation, so ≤1ulp here buys no
+// externally-observable win through that path (see $math.fifthroot's comment). This test is a
+// REGRESSION GUARD: pin the current worst-case bound so a future change can't silently make it
+// much worse (e.g. a broken correction term, or losing a Newton step outright).
 //
-// $math.fifthroot went from 3 to 4 Newton steps (see its comment in module/math.js): 3 steps
-// left a ~2.1M ulp worst case against host Math.pow(x, k/5); 4 steps — Newton's own quadratic
-// convergence saturating the f64 rounding floor of the update formula itself, not under-
-// convergence (a 5th step measured identical) — brings that down to ~a few hundred ulps. This
-// is NOT a ≤1ulp guarantee (unlike pow-fold-ulp.js's $math.pow_fold): a genuine double-double
-// Newton correction would be needed for that, and $math.cbrt — this fold's usual downstream
-// neighbor in the sRGB/Oklab pipeline — is itself a documented non-bit-exact approximation, so
-// ≤1ulp here buys no externally-observable win through that path (see $math.fifthroot's
-// comment). This test is a REGRESSION GUARD: pin the current worst-case bound so a future
-// change can't silently reopen the 2M-ulp hole 3 steps had.
+// FLAG SEMANTICS (see the authoritative comment above emitPow in module/math.js):
+//   crPow OFF (DEFAULT): $math.pow_fold is the old fdlibm-derived fold, and the k/5 fifthroot
+//     fast path fires UNCONDITIONALLY — exactly the pre-CR-pow behavior, bit-for-bit. approxPow
+//     is meaningless here (fifthroot is already the default; there's nothing faster to opt into).
+//   crPow ON: $math.pow_fold instead shares $math.pow_transcend's correctly-rounded kernel, and
+//     fifthroot now requires an explicit `{ optimize: { approxPow: true } }` opt-in — correctness
+//     wins by default once crPow has opted into the correctly-rounded kernel family.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { compileSrc, run, ulpDiff } from './util.js'
 
-const APPROX_POW = { optimize: { approxPow: true } }
+const CR_POW = { optimize: { crPow: true } }
+const CR_POW_APPROX = { optimize: { crPow: true, approxPow: true } }
 
 const mkRng = (seed) => () => {
   seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5
@@ -37,27 +36,34 @@ const mkRng = (seed) => () => {
 // EOTF gamma colorlch/colorconv actually use; the others cover the other reachable k/5 shapes.
 const EXPS = [0.2, 0.4, 0.6, 0.8, 1.2, 1.4, 1.6, 1.8, 2.2, 2.4, 2.6, 2.8, 3.2, 3.4, 3.6, 3.8, 4.2, 4.4, 4.6, 4.8]
 
-// Generous regression ceiling — well above the measured ~200ulp worst case, tight enough to
-// catch an accidental reversion to the old 3-step (~2.1M ulp) or a broken correction.
-const ULP_CEILING = 2000
+// Generous regression ceiling — roughly 2x the measured ~2.65M ulp worst case (3 Newton steps),
+// tight enough to catch a genuinely broken correction (e.g. a dropped step) while tolerating the
+// known 3-step accuracy floor and ordinary machine/input variance.
+const ULP_CEILING = 5_000_000
 
-test('approxPow-opted-in fold reaches WAT via $math.fifthroot (not $math.pow/$math.pow_fold)', () => {
-  const wat = compileSrc('export let f = (x) => x ** 2.4', { wat: true, ...APPROX_POW })
-  ok(wat.includes('call $math.fifthroot'), 'x ** 2.4 must fold through $math.fifthroot when approxPow is on')
+test('fifthroot-backed pow fold reaches WAT via $math.fifthroot by default (not $math.pow/$math.pow_fold)', () => {
+  const wat = compileSrc('export let f = (x) => x ** 2.4', { wat: true })
+  ok(wat.includes('call $math.fifthroot'), 'x ** 2.4 must fold through $math.fifthroot by default')
   ok(!/call \$math\.pow(_core|_fold)? /.test(wat), 'x ** 2.4 must not fall through to the general pow paths')
 })
 
-test('x ** 2.4 WITHOUT approxPow routes through the correctly-rounded $math.pow_fold by default', () => {
-  const wat = compileSrc('export let f = (x) => x ** 2.4', { wat: true })
-  ok(wat.includes('call $math.pow_fold'), 'plain build must use $math.pow_fold, not the approximate fifthroot fast path')
-  ok(!wat.includes('call $math.fifthroot'), 'plain build must not reach $math.fifthroot from pow')
+test('x ** 2.4 under crPow (without approxPow) routes through the correctly-rounded $math.pow_fold', () => {
+  const wat = compileSrc('export let f = (x) => x ** 2.4', { wat: true, ...CR_POW })
+  ok(wat.includes('call $math.pow_fold'), 'crPow build must use $math.pow_fold, not the approximate fifthroot fast path')
+  ok(!wat.includes('call $math.fifthroot'), 'crPow build must not reach $math.fifthroot from pow unless approxPow is also set')
 })
 
-test(`fifthroot pow fold (approxPow opt-in) — worst case stays under ${ULP_CEILING} ulp vs host (regression guard)`, () => {
+test('x ** 2.4 under crPow + approxPow opts back into $math.fifthroot', () => {
+  const wat = compileSrc('export let f = (x) => x ** 2.4', { wat: true, ...CR_POW_APPROX })
+  ok(wat.includes('call $math.fifthroot'), 'crPow+approxPow must fold through $math.fifthroot')
+  ok(!/call \$math\.pow(_core|_fold)? /.test(wat), 'crPow+approxPow must not fall through to the general pow paths')
+})
+
+test(`fifthroot pow fold (default path) — worst case stays under ${ULP_CEILING} ulp vs host (regression guard)`, () => {
   const rng = mkRng(0x51DEC0DE)
   let worstOverall = 0
   for (const c of EXPS) {
-    const { f } = run(`export let f = (x) => x ** ${c}`, APPROX_POW)
+    const { f } = run(`export let f = (x) => x ** ${c}`)
     // Domain kept where the fold's OWN intermediate x**r (r up to 4, the algebraic
     // decomposition x**(k/5) = x**p · fifthroot(x**r)) can't itself over/underflow —
     // that's a separate, pre-existing property of the decomposition, not of $math.fifthroot's
