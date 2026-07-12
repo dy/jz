@@ -955,6 +955,19 @@
       Pin: test/closures.js 'reassigned module function bindings stay
       live' (6 legs incl. shadowed-local non-demotion and the
       untouched-binding control).
+      POST-DEVIRT JESSIE PROFILE (2026-07-12, load-tolerant relative
+      ranking, cs exact, median 2011µs busy-machine): tramp_* GONE
+      from the top table (devirt confirmed at runtime). Next threads,
+      in order: (1) closure5 15.8% — the single hottest function,
+      identify which subscript parselet it is and profile INSIDE it
+      (real work, not convention now); (2) __ext_prop 2.4% — the
+      HOST-EXTERNAL property fallback firing inside a pure-wasm bench:
+      some dyn property read escalates through __dyn_get_any's
+      external arm — find the receiver, likely an inference gap worth
+      a class fix (and ~2.4%+chain); (3) flat parser-worker spread
+      (loop$head 7.5, parse 6.1, register 4.9, var$decl 4.9) — no
+      single lever, revisit after (1)/(2). Corpus checksum sweep +
+      quiet-machine timing re-measure remain owed together.
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
