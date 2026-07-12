@@ -124,3 +124,12 @@ test('generators: spread fuses to toArray', () => {
         export let f = () => [...g(6).filter((x) => x % 2), 99].join(',')`), '1,3,5,99')
   is(j(`function* g() { yield 7 } export let f = () => [0, ...g(), 1].join('')`), '071')
 })
+
+// throw(v): no try may span a yield (v1 rejects it), so an injected exception
+// is always unhandled by spec — the machine closes, the throw is catchable at
+// the caller of throw().
+test('generators: throw() closes the machine and rethrows', () => {
+  is(j(`function* g() { yield 1; yield 2 }
+        export let f = () => { let it = g(); it.next(); let caught = 0; try { it.throw('boom') } catch (e) { caught = 1 } return '' + caught + (it.next().done ? 1 : 0) }`),
+    '11')
+})

@@ -1088,84 +1088,84 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
 - [ ] **Heap + RAM budget** — pick a memory region; document RAM budget; w2c2 (~150 KB) runtime.
 
 ## Language coverage / correctness
-- [~] **Extension-surface plan (2026-07-10)** — RINGS 0-1 + RUNNER COMPLETE 2026-07-11 (see extension-surface.md §session 3; remaining: Ring-2 stdlib batch, workers v1, generators) — full evidence map in
-  `.work/extension-surface.md` (gates, rings 0–3, async/workers verdicts, test262 pool
-  math, permanently-out reasons). Measured this session: language 1462/0/21924 (floor
-  1453 ✓), builtins **719/12 RED** (floor 722). Work ALL of it, in order:
-  * [~] **RING 0 — truth debt** — LEG 1 LANDED 2026-07-10 (see extension-surface.md
-    §Landed): hypot n-ary, parseInt/parseFloat spec edges, regex trio, normalize,
-    `**=`, clean roles for function*/yield*/new.target/#x-in-o/String.raw, void text,
-    + FOUR unblanketing-surfaced fixes (defaults-on-null, numeric pattern keys,
-    var pattern declarators, for-of cover-grammar patterns). Language 262:
-    1462 → 2205 / 0 fail, CI floor 2205. REMAINING below (0.2 let-capture,
-    0.3 bigint-mixed, 0.4/0.5 bind/call/apply, 0.7 unknown-method, 0.13
-    strict-switch, 0.17 reviver, 0.18 freeze [blocked: concurrent object.js],
-    0.20/0.21) + NEW: isArray-of-derived-promoted (12 xfail), catch-param
-    patterns, var-pattern for-of heads, member for-of targets, const-reassign
-    guard absent, arguments.js `??` param default.
-  * [ ] RING 0 remaining items (original list):
-    - [ ] builtins gate RED: `Math.hypot()`/`1/Math.hypot(0)`/`parseInt(" 1")` return
-      **boxed null** (non-canonical NaN escaping as ATOM — suspect pow/str-hash legs);
-      parseInt radix 1/37/i32-wrap + parseInt(Infinity)→Infinity; String.indexOf
-      position-ToInteger; Array.isArray.length; prune 3 unexpected-passes.
-    - [ ] for-head `let` capture: `for(let i…) fs.push(()=>i)` → [3,3,3] not [0,1,2]
-      (every -O; for-of/body-let correct) — jzify copy-in/copy-out, only-when-captured.
-    - [ ] mixed BigInt⊕Number: `1n+1` = f64-bits-as-i64 garbage, `5n>3` = false —
-      arith must TypeError, compares must coerce (emit.js cmpOp unconditional asI64).
-    - [ ] `fn.bind` → table-OOB trap; `fn.call/apply` → silent undefined — jzify-lower
-      static shapes, reject dynamic.
-    - [ ] silent-wrong family: Symbol computed key no-ops; regex `\p{…}` matches literal
-      "p{L}" (regex.js:188); `/y` scans like `/g` (:864); matchAll non-global no TypeError
-      (:1123); tagged `.raw` undefined; Object.freeze no-op + isFrozen(freeze(x))=false
-      (object.js:202/232 — bonus: freeze as immutable-schema optimizer fact).
-    - [ ] leaky→clean rejects: `function*` w/o yield + `yield*` ("Unknown op"), new.target
-      (watr leak), `#x in o` — op-policy entries; `**=` missing from ASSIGN_OPS
-      (ast.js:77) — support; strict-mode switch+break broken (route strict through
-      jzify/switch.js, delete native twin); `.normalize()` crash (autoload tuple) —
-      implement as ASCII identity; **unknown method on KNOWN receiver**
-      (`[].toSorted()` → runtime TypeError) must compile-error in default mode too.
-    - [ ] JSON.parse `reviver` silently dropped (json.js:1529) + runtime `replacer` —
-      implement, kills the xfail family.
-    - [ ] `({a,b} = obj)` assignment-form internal error — fix (kernel-leg + main).
-    - [ ] for-of over nullish silently 0-iterates (masked two kernel roots) — decide:
-      throw (leaning) vs documented-permissive.
-  * [~] **RUNNER HONESTY** — skip-split LANDED 2026-07-10: stale blankets removed
-    (for-of dir rule, destructuring content rules, this/class/super/WeakMap/
-    new.target/for-of EXCLUDED patterns), allowlist grew 'outside jz scope' +
-    'requires source with known schema', TypeError/ReferenceError-synthesis rule
-    scoped to dstr corpora, bool-carrier family xfail-tracked (flips to xpass on
-    carrier landing — prune then), 26 residuals precisely skip-classified.
-    REMAINING: track implemented-but-untracked pools (TypedArray 2184, RegExp
-    1877, WeakMap/WeakSet 226, Error family, global); count the 4389 verified
-    negative-rejects as their own pass-class; add language/import (182).
-  * [ ] **STDLIB batch** (module/, pay-per-use): Array toSorted/toReversed/with/
-    copyWithin/of (TypedArray has all four — port); ES2025 Set ops (7, over existing
-    tables); Object/Map.groupBy; String.raw; RegExp.escape + named backrefs; Float16Array
-    + f16round; structuredClone (arena deep-copy); Date toJSON/toDateString slices;
-    Ryū shortest-round-trip String(number) lazily-included (JSON float round-trip — the
-    big trust win); insertion-order Map/Set decision via bench gate.
-  * [ ] **WORKERS v1** (before async; philosophy-aligned; toolchain ready — watr encodes
-    all atomics + shared memtype): emit real `(memory … shared)`+max (assemble.js:883
-    lacks keyword); atomic `__alloc` bump (core.js:350 races); module/atomics.js →
-    wasm atomics; ~100-line interop pool helper. v1 CONTRACT: shared typed arrays +
-    scalars only (SPMD tiles — whole bench corpus shape); strings/objects thread-local —
-    dodges the stdlib single-writer audit (forwarding ptrs, STR_HCACHE, enum caches =
-    shared-everything later). Headline: N×cores × SIMD, same JS file.
-  * [ ] **GENERATORS** (pivotal; NOT coroutines — regenerator state machine): jzify
-    lowering (switch.js precedent; locals→env cells, mutable captures shipped;
-    next() = closure call); try/finally-across-yield = EH handler re-entry design;
-    **local fusion**: statically-consumed for-of SROAs the machine → plain loop =
-    zero-cost lazy sequences (V8 allocates, jz compiles them out); unlocks iterator
-    protocol + Symbol.iterator + ES2025 iterator helpers AS FUSED LOOPS (514-pool).
-  * [ ] **PARKED, designs recorded** (extension-surface.md): async/await — verdict:
-    NOT an architectural hit (state machine + module/promise.js on a free NaN-box tag
-    (5,12–15 free) + the shipped timer-pump pattern; sync pays zero; asyncify REJECTED,
-    JSPI watch — watr already encodes stack-switching); open design item = memory.reset()
-    vs in-flight continuations (nursery arena or contract). Relaxed-SIMD opt-in (watr has
-    relaxed_madd FMA — biquad/fft native floor; breaks bit-exact → flag only).
-    js-string-builtins deepening; memory64/multi-memory YAGNI.
-  * [x] **Permanently-out documented** — README FAQ entry with reasons + site link
-    (2026-07-10); keep the divergence list in sync as Ring-0 items land.
+- [x] **Extension-surface plan (2026-07-10 → CLOSED 2026-07-12)** — every ordered item
+  landed; the plan doc (`.work/extension-surface.md`) is deleted, this entry is the
+  archive. Start → close: language 1462/0 → **2331/0** (+ 2494 negative-rejects
+  counted, 1551 silent-accepts tracked), builtins 719/12 RED → **737/0**, full unit
+  suite **2864/0**. Permanently-out canon lives in README FAQ ("What will JZ never
+  support"). What landed, in plan order:
+  * [x] **Ring 0 — truth debt** (23 items): hypot n-ary, parseInt/parseFloat spec
+    edges, regex `\p`-reject/`/y`-anchor/matchAll-TypeError, normalize, `**=`,
+    per-iteration for-head `let` capture (copy-in/out, pay-per-capture), BigInt
+    mixed-op rejects + literal-compare coercion, static call/apply/bind lowering,
+    unknown-method-on-known-receiver compile error, JSON.parse reviver + replacer
+    honesty, const-reassign guard, catch-param/var-for-of/assignment-form patterns,
+    freeze/isFrozen consistency, strict-switch twin deleted, nullish for-of throws,
+    predicate builtins carry real BOOL. Plus unblanketing-surfaced fixes:
+    defaults-on-null, numeric pattern keys, var pattern declarators, cover-grammar
+    for-of heads, stringify-replacer selfhost keyers (unsound SLP/CSE dedup in-kernel).
+  * [x] **Runner honesty** — blanket skips split into named shape-skips; negative
+    tests run inverted (correctly-rejected = own class; silent-accepts measured);
+    TypedArray/RegExp/WeakMap/WeakSet/Error/import pools tracked; class dirs,
+    generators/yield dirs, statics unblanketed as features landed.
+  * [x] **Ring 2 — stdlib**: Array change-by-copy + of; ES2025 Set algebra (7);
+    Object/Map.groupBy; named backrefs + RegExp.escape; Date toJSON/toDateString/
+    toTimeString + branded 1-slot schema (fixed aux=0 aliasing corruption);
+    structuredClone (arena deep-copy, cycles + diamonds); Math.f16round (exact
+    round-via-addition, 200k differential); **Ryū String(number)** — spec-exact
+    shortest round-trip, 3M-value differential vs V8, ~1.2KB pay-per-use;
+    insertion-order Map/Set verified host-exact; lazy-table injection generalized.
+  * [x] **Workers v1** — `sharedMemory` (real `shared` memtype), CAS `__alloc`,
+    static region as passive segment behind `$__staticBase` (also fixed imported-
+    memory garbage tables), module/atomics.js on proven Int32Array AND BigInt64Array
+    receivers (runtime tag+elem guards; BigInt values enforced on i64), typed
+    default-arg annotation seeds the param lattice, jz.pool over node
+    worker_threads (i64-exact arg lanes; contended adds lose nothing; wait/notify
+    handshake verified).
+  * [x] **Generators** — regenerator-style state machines (no stack suspension):
+    factory arrow + hoisted locals + dispatch loop; two-way next(v), return(v),
+    throw(v) (closes + rethrows — no try may span a yield, so always unhandled);
+    yield* delegation to any iterator (completion value threads); for-of over known
+    generator calls fuses to while-next (pull-at-top — continue-safe); generator
+    spread via fused toArray.
+  * [x] **Iterator helpers as fused loops** — map/filter/take/drop stages +
+    toArray/reduce/forEach/some/every/find terminals compose into ONE loop, zero
+    intermediate iterator objects (the ES2025 flagship).
+  * [x] **Class-adjacent Ring 1**: labeled non-loop statements; computed keys from
+    module consts; pseudo-classical fold (`function P(){this.x=…}` +
+    `P.prototype.m = fn` and `Object.assign(P.prototype, {…})` → class lowering;
+    order-independent; arrow-RHS/ctor-reassign fail closed); static fields/methods/
+    blocks (post-decl closure props + class-init-order blocks, `this`→class).
+- [ ] **Extension surface — still open** (designs recorded here; the plan doc is gone):
+  * **async/await** — parked BY VERDICT, not difficulty: state machine (generators
+    built the machinery) + module/promise.js on a free NaN-box tag (5, 12–15 free) +
+    microtask pump like timers (`host:'js'` setTimeout / `host:'wasi'` exported
+    `__timer_tick`). Asyncify rejected (whole-module tax); JSPI rejected today
+    (Chrome-only; breaks portable-artifact). THE open design: memory.reset() vs
+    in-flight continuations (nursery arena for pending env cells, or a documented
+    "no reset while pending" contract). Re-open on a real wedge (Extism/edge async
+    host calls).
+  * **Generator methods** (`class { *m() }`, `{ *g() {} }`) and **`using`/ERM** —
+    parser-blocked UPSTREAM (subscript errors on the grammar); lowering is ready
+    (generator machinery + try/finally). Land when subscript learns the syntax.
+  * **Workers: browser pool leg** — jz.pool is node worker_threads today; the
+    browser Worker shim needs a browser harness (web-qa or site demo).
+    **Shared-everything** waits on the stdlib single-writer audit: relocation
+    forwarding ptrs, STR_HCACHE lazy bit, object enum caches, hash growth — each
+    races under true sharing.
+  * **Relaxed-SIMD opt-in** (`relaxedSimd:true`) — watr encodes relaxed_madd FMA
+    (the biquad/fft native-parity lever); breaks bit-exact valid-jz-runs-as-JS →
+    flag only, never default.
+  * **Float16Array** — elemType field saturated (3 bits + VIEW/BIGINT aux) and wasm
+    has no f16 memory ops; software shims betray native-perf. Revisit when the wasm
+    FP16 proposal ships. Math.f16round already landed.
+  * **Known residue**: static-block own scope env (splices into class init —
+    documented divergence, 3 skips); accessor-name/private-field/default-param
+    reflection class families skip-classified; 1551 negative-accepts (early-error
+    grammar a subset compiler doesn't enforce — measured per-dir, ungated);
+    isArray-of-derived-promotion (12 xfails); mixed `??`/`||`/`?:` bool-carrier
+    JOIN family (in-flight carrier work's domain); js-string-builtins deepening;
+    memory64/multi-memory YAGNI until a workload.
 - [ ] **Date** — deterministic spec slices first; local-tz/Intl later. (deferred: object
   ToPrimitive coercion order; Date.parse until value-objects + UTC stringify exist. out of
   scope: local-time getters/setters, getTimezoneOffset, locale methods, toJSON, subclassing.)
@@ -1775,8 +1775,8 @@ correctness risk for zero measured benefit:
   `memory:{shared:true}` → shared Memory + `(memory … shared)`; worker spawn stays host-side
   (same boundary discipline as I/O). Large; verify a real workload first. Vectorizer +
   shared-memory substrate already exist. SCOPED 2026-07-10: v1 plan + missing-pieces +
-  single-writer audit list in `.work/extension-surface.md` §Workers (promoted into the
-  Language-coverage plan — typed-array-SPMD v1 dodges the stdlib audit).
+  single-writer audit list archived under Language coverage → "Extension surface —
+  still open" (typed-array-SPMD v1 landed 2026-07-12 and dodges the stdlib audit).
 - [ ] memory64 (>4GB); relaxed SIMD; WebGPU compute shaders.
 - [ ] **wasm-gc backend** (`host:'gc'`) — orthogonal multi-month backend rewrite (engine GC +
   typed refs); benefits memory-model / externref / debugging, NOT boolean discrimination

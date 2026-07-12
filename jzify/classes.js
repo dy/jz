@@ -231,6 +231,11 @@ function lowerClass(name, heritage, body) {
       statics.push([key, it[1][2], true])
       continue
     }
+    if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === '{}') {
+      // static initialization block — runs in class-init order, `this` = class
+      statics.push([null, it[1], 'block'])
+      continue
+    }
     if (it[0] === 'get' || it[0] === 'set') jzifyError(JC.accessor)
     if (it[0] === 'static') jzifyError(JC.staticMember)
     jzifyError(`unsupported class member ${JSON.stringify(it).slice(0, 60)}`)
@@ -310,8 +315,15 @@ function lowerClass(name, heritage, body) {
   const staticStmts = []
   if (dynamicBase) staticStmts.push(['let', ['=', baseRef, transform(heritage)]])
   staticStmts.push(['let', ['=', cls, factory]])
-  for (const [sname, value, isMethod] of statics) {
-    const rhs = isMethod
+  for (const [sname, value, kind] of statics) {
+    if (kind === 'block') {
+      let b = transform(renameThis(value, cls))
+      if (Array.isArray(b) && b[0] === '{}') b = b[1]
+      if (Array.isArray(b) && b[0] === ';') staticStmts.push(...b.slice(1).filter(x => x != null))
+      else if (b != null) staticStmts.push(b)
+      continue
+    }
+    const rhs = kind
       ? transform(['=>', value[1], block(renameThis(value[2], cls))])
       : value == null ? UNDEF : transform(renameThis(value, cls))
     staticStmts.push(['=', ['.', cls, sname], rhs])
@@ -351,12 +363,33 @@ export function foldPseudoClassical(stmts) {
     if (!Array.isArray(base) || base[0] !== '.' || base[2] !== 'prototype' || typeof base[1] !== 'string') return null
     const rhs = st[2]
     if (!Array.isArray(rhs) || rhs[0] !== 'function') return null
-    return { ctor: base[1], method: lhs[2], params: rhs[2], body: rhs[3] }
+    return { ctor: base[1], methods: [{ method: lhs[2], params: rhs[2], body: rhs[3] }] }
   }
+  // Object.assign(NAME.prototype, { m: function (…) {…}, … }) — the batch
+  // idiom. Whole-or-nothing: any non-function prop value (arrow = lexical
+  // this, data prop = prototype state) skips the fold for this statement.
+  const protoAssignBatch = (st) => {
+    if (!Array.isArray(st) || st[0] !== '()' || !Array.isArray(st[1])) return null
+    if (st[1][0] !== '.' || st[1][1] !== 'Object' || st[1][2] !== 'assign') return null
+    const args = Array.isArray(st[2]) && st[2][0] === ',' ? st[2].slice(1) : [st[2]]
+    if (args.length !== 2) return null
+    const [proto, lit] = args
+    if (!Array.isArray(proto) || proto[0] !== '.' || proto[2] !== 'prototype' || typeof proto[1] !== 'string') return null
+    if (!Array.isArray(lit) || lit[0] !== '{}') return null
+    const props = Array.isArray(lit[1]) && lit[1][0] === ',' ? lit[1].slice(1) : lit[1] === undefined ? [] : [lit[1]]
+    const methods = []
+    for (const pr of props) {
+      if (!Array.isArray(pr) || pr[0] !== ':' || typeof pr[1] !== 'string') return null
+      if (!Array.isArray(pr[2]) || pr[2][0] !== 'function') return null
+      methods.push({ method: pr[1], params: pr[2][2], body: pr[2][3] })
+    }
+    return methods.length ? { ctor: proto[1], methods } : null
+  }
+  const matchProto = (st) => protoAssign(st) ?? protoAssignBatch(st)
   const methods = new Map()   // ctorName → [{method, params, body}]
   for (const st of stmts) {
-    const pa = protoAssign(st)
-    if (pa) { const l = methods.get(pa.ctor); l ? l.push(pa) : methods.set(pa.ctor, [pa]) }
+    const pa = matchProto(st)
+    if (pa) { const l = methods.get(pa.ctor); l ? l.push(...pa.methods) : methods.set(pa.ctor, [...pa.methods]) }
   }
   if (!methods.size) return stmts
 
@@ -383,7 +416,7 @@ export function foldPseudoClassical(stmts) {
       ]])
       continue
     }
-    const pa = protoAssign(st)
+    const pa = matchProto(st)
     if (pa && foldable.has(pa.ctor)) continue   // consumed by the fold
     out.push(st)
   }

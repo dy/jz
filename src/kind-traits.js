@@ -76,18 +76,34 @@ export const CALLEE_VAL = {
   __is_map: VAL.BOOL,
   __is_set: VAL.BOOL,
   __is_typed: VAL.BOOL,
-  // Atomics (module/atomics.js): numbers except wait (a result string) and
-  // isLockFree (a predicate boolean).
-  'Atomics.load': VAL.NUMBER, 'Atomics.store': VAL.NUMBER, 'Atomics.add': VAL.NUMBER,
-  'Atomics.sub': VAL.NUMBER, 'Atomics.and': VAL.NUMBER, 'Atomics.or': VAL.NUMBER,
-  'Atomics.xor': VAL.NUMBER, 'Atomics.exchange': VAL.NUMBER,
-  'Atomics.compareExchange': VAL.NUMBER, 'Atomics.notify': VAL.NUMBER,
+  // Atomics (module/atomics.js): wait → result string, isLockFree → boolean,
+  // notify → count. Value ops resolve by RECEIVER width in calleeValType below
+  // (Int32Array → NUMBER, BigInt64Array → BIGINT).
+  'Atomics.notify': VAL.NUMBER,
   'Atomics.wait': VAL.STRING, 'Atomics.isLockFree': VAL.BOOL,
 }
+
+const ATOMICS_VALUE_OPS = new Set(['Atomics.load', 'Atomics.store', 'Atomics.add',
+  'Atomics.sub', 'Atomics.and', 'Atomics.or', 'Atomics.xor', 'Atomics.exchange',
+  'Atomics.compareExchange'])
 
 export function calleeValType(callee, _args, ctx) {
   if (typeof callee !== 'string') return null
   if (callee in CALLEE_VAL) return CALLEE_VAL[callee]
+  // Atomics value ops: the result kind follows the receiver's element width —
+  // a proven BigInt64Array receiver yields BIGINT (raw i64 carrier), else NUMBER.
+  if (ATOMICS_VALUE_OPS.has(callee)) {
+    // _args is the '()' node tail: [callee, argsNode] — the receiver is the
+    // first real argument (unwrap a ','-group).
+    const a1 = _args?.[1]
+    const arr = Array.isArray(a1) && a1[0] === ',' ? a1[1] : a1
+    const ctor = Array.isArray(arr) && arr[0] === 'new' ? 'new.' + arr[1]
+      : typeof arr === 'string'
+        ? (ctx.func?.localTypedElemsOverlay?.get(arr) ?? ctx.types?.typedElem?.get(arr)
+          ?? ctx.func?.localReps?.get(arr)?.typedCtor ?? ctx.scope?.globalTypedElem?.get(arr))
+        : null
+    return ctor === 'new.BigInt64Array' || ctor === 'new.BigInt64Array.view' ? VAL.BIGINT : VAL.NUMBER
+  }
   if (callee.startsWith('new.')) return VAL.TYPED
   if (callee.startsWith('math.')) return VAL.NUMBER
   const hostVT = ctx.module.hostImportValTypes?.get(callee)

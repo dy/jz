@@ -264,6 +264,12 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
       [':', 'return', ['=>', '__v', ['{}', [';',
         ['=', S.NEXT, [null, -1]],
         ['return', ['{}', [',', [':', 'value', '__v'], [':', 'done', [null, true]]]]]]]]],
+      // throw(v): no try may span a yield (v1 rejects it), so every injected
+      // exception is unhandled by spec — close the machine, rethrow to the
+      // caller of throw() (catchable jz throw).
+      [':', 'throw', ['=>', '__v', ['{}', [';',
+        ['=', S.NEXT, [null, -1]],
+        ['throw', '__v']]]]],
     ]]
 
     return ['=>', params, ['{}', [';', ...decls, ['return', genObj]]]]

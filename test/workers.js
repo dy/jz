@@ -101,3 +101,20 @@ test('imported memory: static region relocates (stringify + parse work)', () => 
   const e = jz(`export let f = () => String(0.1 + 0.2) + '|' + Number('2.5')`, { importMemory: true, memory: m }).exports
   is(e.f(), '0.30000000000000004|2.5')
 })
+
+test('atomics: BigInt64Array — i64 ops, BigInt values in and out', () => {
+  if (onWasi() || onKernel()) return
+  const e = run(`export let f = () => {
+    let a = new BigInt64Array(4)
+    Atomics.store(a, 0, 41n)
+    let old = Atomics.add(a, 0, 1n)
+    Atomics.compareExchange(a, 1, 0n, 7n)
+    Atomics.exchange(a, 2, 1n << 40n)
+    return '' + Number(old) + ',' + Number(Atomics.load(a, 0)) + ',' + Number(Atomics.load(a, 1)) + ',' + Number(Atomics.load(a, 2) >> 40n)
+  }`)
+  is(e.f(), '41,42,7,1')
+  // number values on an i64 receiver reject at compile
+  let err
+  try { jz.compile('export let f = () => { let a = new BigInt64Array(2); return Number(Atomics.store(a, 0, 5)) }', { sharedMemory: true }) } catch (x) { err = x }
+  ok(err && /BigInt values/.test(err.message), 'number value on BigInt64Array receiver rejects')
+})

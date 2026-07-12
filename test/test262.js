@@ -440,7 +440,7 @@ function shouldSkip(content, rel = '') {
     return 'for-of live-iteration mutation contract (documented divergence: snapshot/index iteration)'
   // Member-expression targets in for-of heads / destructuring patterns
   // (`for (obj.x of …)`, `[o.x] = arr` inside a for-of head) — recorded
-  // small-lowering gap (.work/extension-surface.md).
+  // small-lowering gap (.work/todo.md, extension-surface archive).
   if (rel.includes('put-prop-ref') || rel.includes('/for-of/head-lhs-member') || rel.includes('/for-of/head-lhs-cover'))
     return 'member-expression for-of/destructure target outside current lowering (recorded)'
   // for-of over astral code points walks UTF-8 bytes (documented string model).
@@ -663,11 +663,15 @@ function shouldSkip(content, rel = '') {
   if (isClassTest(rel)) {
     if (rel.includes('/elements/wrapped-in-sc-')) return 'class in single-statement context parser gap'
     if (/\bextends\b/.test(codeContent) || /\bextends\b/.test(content)) return 'class extends/super outside jzify subset'
-    if (/\bstatic\b/.test(codeContent)) return 'static class members outside jzify subset'
-    if (/(^|[};{)\s])get\s+[\w$#\[]/.test(codeContent) || /(^|[};{)\s])set\s+[\w$#\[]/.test(codeContent)) return 'class accessors outside fixed-shape subset'
+    // static fields/methods/blocks are lowered (post-decl closure props); only
+    // shapes the collectors below can't express still skip via their own gates
+    if (/(^|[};{)\s])get\s+[\w$#'"\d.\[]/.test(codeContent) || /(^|[};{)\s])set\s+[\w$#'"\d.\[]/.test(codeContent)) return 'class accessors outside fixed-shape subset'
     if (/(^|\n)\s*(static\s+)?\*?\s*\[[^\]\n]+\]\s*(=|;|\(|$)/m.test(codeContent)) return 'computed class member name outside fixed-shape subset'
     if (/(^|\n)\s*\*\s*[\w$\[]/m.test(codeContent)) return 'generator method outside jzify subset'
     if (/#\w+\s*\(/.test(codeContent)) return 'private method outside jzify subset'
+    if (/static\s+#|#\w+\s*[=;]/.test(codeContent)) return 'private field semantics outside jzify subset'
+    if (/dflt-params-ref|params-dflt-meth|private-static-field|private-field/.test(rel)) return 'static default-param/private-field reflection outside jzify subset'
+    if (/static-init-scope/.test(rel)) return 'static-block own scope environment outside jzify subset (block splices into class init)'
     if (/typeerror|abrupt-completion|init-err|evaluation-error/i.test(rel)) return 'class initializer/name error semantics outside jzify subset'
     if (/private-field-(access-on-inner|on-nested)|privatefieldget|privatefieldset/i.test(rel)) return 'private field access semantics outside jzify subset'
     if (/\bnew\.target\b/.test(codeContent)) return 'new.target outside jzify subset'
@@ -888,7 +892,7 @@ const EXPECTED_FAIL_PREFIXES = [
 // numeric-context coercion rule, pinned by the vectorizer), so the raw 0/1
 // carrier then bit-compares against the TRUE/FALSE atom. Fix needs the bool
 // arm to atom-box at mixed joins, or a BOOL|OTHER lattice point — the
-// recorded carrier-design edge (extension-surface.md). Thrown-value compares
+// recorded carrier-design edge (.work/todo.md). Thrown-value compares
 // (`throw true; catch e === true`) are the same join through the throw slot.
 const BOOL_CARRIER = 'boolean kind loss at a mixed ??/||/&&/?: join or throw slot (raw 0/1 vs TRUE/FALSE atom) — carrier-design edge'
 const EXPECTED_FAIL_FILES = new Map([
@@ -917,7 +921,7 @@ const EXPECTED_FAIL_FILES = new Map([
   // Array.isArray of a REST-pattern result (derived from a typed-PROMOTED array
   // literal) answers false at O2+ — the promotion pass's isArray disqualifier
   // tracks direct names only, not derived values. Recorded optimizer gap
-  // (.work/extension-surface.md); a blanket skip demoted real passes, so the
+  // (.work/todo.md, extension-surface archive); a blanket skip demoted real passes, so the
   // exact failing files ride xfail until the derived-name flow lands.
   ...[
     'test/language/statements/const/dstr/ary-ptrn-rest-id-direct.js',

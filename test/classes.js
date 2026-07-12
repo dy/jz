@@ -398,3 +398,28 @@ P.prototype.m = () => 5
 export let f = () => 1`) } catch (e) { err = e }
   ok(err && /this/.test(err.message), 'arrow-valued prototype member stays out (lexical this)')
 })
+
+// Object.assign(P.prototype, { m: function () {…}, … }) — the batch idiom joins
+// the pseudo-classical fold; any non-function prop value fails the whole
+// statement closed (arrow = lexical this, data prop = prototype state).
+test('class: Object.assign(prototype) batch folds', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`function V(x) { this.x = x }
+Object.assign(V.prototype, { get: function () { return this.x }, dbl: function () { return this.x * 2 } })
+export let f = () => new V(7).dbl() + new V(1).get()`), 15)
+  let err
+  try { jz.compile(`function P() { this.x = 1 }
+Object.assign(P.prototype, { m: function () { return this.x }, k: 5 })
+export let f = () => 1`) } catch (e) { err = e }
+  ok(err && /this/.test(err.message), 'mixed batch stays out')
+})
+
+// Static class members: fields + methods (this → the class) were already
+// lowered as post-decl closure props; static BLOCKS now run in class-init
+// order with the same this-binding.
+test('class: static fields, methods, and blocks', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`class A { static x = 41; static m(k) { return A.x + k } } export let f = () => A.m(1)`), 42)
+  is(j(`class C { static base = 10; static mk(v) { return this.base + v } } export let f = () => C.mk(5)`), 15)
+  is(j(`class E { static a = 1; static { E.b = E.a + 10 } static c = 100 } export let f = () => E.b + E.c`), 111)
+})
