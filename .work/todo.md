@@ -788,6 +788,47 @@
         plan/inline.js — LAB ONLY, never commit), hoist log shows 13
         splices at speed; decode-exc.mjs; intern-diag.mjs (compileDiag
         intern records).
+      SESSION 2026-07-12 — VT carry LANDED (ce80bbe: VT['?:'] BIGINT/
+      nullish-literal-arm carry + decl-nullable + the narrow.js BIGINT-
+      param nullable re-derivation + emitFunc merge; pinned
+      test/inference.js 'bigint∪null', all guard-liveness legs green).
+      Buffer-family getters LANDED (d6c69fb: `.byteLength`/`.byteOffset`/
+      `.buffer` runtime tag dispatch — BUFFER/TYPED → helper, else
+      prehashed dyn-prop; proven receivers keep the static paths; pinned
+      test/objects.js 'buffer-family'). The bare-getter hijack class is
+      now CLOSED (.size 77331c4 + these three).
+      Speed-tier throw: STILL OPEN, map sharpened to the end:
+      * Payload decoded via a LAB-ONLY exported $__jz_err tag (recipe:
+        ensureThrowRuntime push ['export','"__jz_err"',['tag',…]] in a
+        scratch worktree + e.is/getArg in the harness): thrown value =
+        f64 bits ZERO — the `(throw $__jz_err (f64.const 0))` family;
+        with __num_radix's range guard and __bigint_from_str's digit
+        guard as prime suspects ⇒ consistent with the misformatted
+        "0.000…" hex string flowing into BigInt()/parse downstream. The
+        toString misdispatch remains the root; the throw is its echo.
+      * ORDERING FACT that killed the param-stamp plan:
+        inlineHotInternalCalls (plan/index.js:86) runs BEFORE
+        narrowSignatures (:125) — by lattice time the _i64Hex16/_i64Arith
+        call sites are consumed (trace: 7004 sites, zero to either), so
+        NO param fact can be derived from sites. Yet the final wasm
+        keeps LIVE copies: $…$_i64Arith calls _i64Hex16(r) directly, and
+        closures 2905-2913 call it with `local.get $__env` — CLOSURE-
+        CAPTURED receivers. The remaining dimension is capture-slot
+        provenance (closure env slots), not param lattice.
+      * PRESERVED: scratchpad/bigint-provenance.patch (258 lines vs
+        ce80bbe: kind.js bigintishOf fail-closed bigint∪nullish
+        provenance query + emit dispatch consult + narrow post-settle
+        weak-stamp w/ caller-param fixpoint + reps 'maybeBigint' +
+        emitFunc merge). Compiles clean, L2 parity cs exact, does not
+        yet heal speed (see closure dimension). Next session: extend
+        provenance through closure captures (env-slot facts at
+        resolveClosureWidth/emitClosureBody) or commit to the full
+        nullish-union kind; then re-gate.
+      * HYGIENE WARNING for next session: while the user's session is
+        live, UNCOMMITTED main-tree work gets wiped by their editor/
+        revert waves (lost twice today; index.js briefly de-paired from
+        their assemble.js rename — repaired from the saved diff). Work
+        in a scratch worktree branch; land only via prompt commits.
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
@@ -1586,8 +1627,10 @@ correctness risk for zero measured benefit:
 - [ ] **wasm-gc backend** (`host:'gc'`) — orthogonal multi-month backend rewrite (engine GC +
   typed refs); benefits memory-model / externref / debugging, NOT boolean discrimination
   (landed carrier resolves that in wasm-v1). Reserved error today (index.js:315).
-- [ ] **Insertion-order Set/Map** — open-addressing iterates slot-order; ES mandates insertion
-  order. Needs a per-entry `seq` or sibling order-list. Documented divergence in test262 xfail.
+- [x] **Insertion-order Set/Map** — landed: a monotonic insertion seq rides the free high 32
+  bits of each entry's hash word (seqStore, module/collection.js); __coll_order sorts live
+  slots by it for every iteration surface. Verified host-exact incl. delete+re-add (moves to
+  end), overwrite (stays), and rehash (order survives the grow copy). Pinned in test/data.js.
 
 ## Ideas
   - [ ] webpack/esbuild/unplugin — extract & compile fast pieces with jz.
