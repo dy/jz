@@ -29,6 +29,7 @@ const TESTS = [
   'buffer',
   'workers',
   'generators',
+  'async',
   'regex',
   'simd',
   'cli',

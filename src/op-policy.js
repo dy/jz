@@ -10,8 +10,8 @@
 
 /** Ops prepare rejects when they appear in the AST (handler or identifier). */
 export const REJECT_OPS = {
-  async: 'async/await not supported: WASM is synchronous',
-  await: 'async/await not supported: WASM is synchronous',
+  async: 'this `async` shape needs the jzify lowering (async fns/arrows are supported in default mode; async methods are not yet)',
+  await: '`await` outside an async function (or in a shape the jzify lowering does not cover)',
   class: 'class not supported: use object literals',
   yield: 'yield outside a generator body (or in an unsupported position — see jzify/generators.js v1 surface)',
   'yield*': 'yield* not supported yet: loop over the inner iterator and yield each value',

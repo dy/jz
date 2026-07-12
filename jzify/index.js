@@ -8,6 +8,8 @@
  */
 
 import { JZIFY_CLASS_ERRORS as JC } from '../src/op-policy.js'
+import { parse } from '../src/parse.js'
+import { createAsyncLowering, ASYNC_RUNTIME } from './async.js'
 import { createNames } from './names.js'
 import { foldStaticExportHelpers, foldStaticBundlerHelpers, canonicalizeObjectIdioms } from './bundler.js'
 import { createSwitchLowering, normalizeCaseBody } from './switch.js'
@@ -44,7 +46,8 @@ const generatorNames = new Set()
 const iterProto = { on: false }
 const genErr = (msg) => { throw new Error('jzify: ' + msg) }
 const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t) })
-bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal })
+const { lowerAsync, noteAsync, asyncUsed, resetAsync } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
+bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, noteAsync, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)
 
 const isSymbolWellKnown = (n, which) => Array.isArray(n) && n[0] === '.' && n[1] === 'Symbol' && n[2] === which
@@ -107,5 +110,16 @@ export default function jzify(ast) {
   ast = hoistVars(ast, hoisted)
   if (hoisted.size) ast = prependDecls(ast, hoisted)
   if (Array.isArray(ast) && ast[0] === ';') ast = [';', ...foldPseudoClassical(ast.slice(1))]
-  return foldStaticBundlerHelpers(foldStaticExportHelpers(canonicalizeObjectIdioms(transformScope(ast))))
+  resetAsync()
+  let out = transformScope(ast)
+  // async somewhere in the program → splice the plain-jz promise runtime
+  // (microtask queue, __async_run driver, promise shape + boundary readers)
+  // ahead of user code. Sync programs never reach this — byte-identical.
+  if (asyncUsed()) {
+    const rt = transformScope(parse(ASYNC_RUNTIME))
+    const rtStmts = Array.isArray(rt) && rt[0] === ';' ? rt.slice(1) : [rt]
+    const outStmts = Array.isArray(out) && out[0] === ';' ? out.slice(1) : [out]
+    out = [';', ...rtStmts, ...outStmts]
+  }
+  return foldStaticBundlerHelpers(foldStaticExportHelpers(canonicalizeObjectIdioms(out)))
 }

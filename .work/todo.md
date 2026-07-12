@@ -1247,6 +1247,26 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
     three fix attempts failed to localize — the groundtruth doc's git history has the trail.
   * parked: SROA re-land (tag fix works natively, closures 89/0; miscompiles
     m5_parse$expr in the kernel bundle — needs a flatten stack-shape audit).
+- [ ] **WASI basic file IO — designed, next up.** `import { readFile, writeFile }
+  from 'fs'` as a built-in module (module/fs.js), host:'wasi' only (host:'js'
+  rejects cleanly: "wire fs via {imports} or compile --host wasi"). readFile(path)
+  → string (jz strings are raw UTF-8 bytes — binary-lossless), writeFile(path,
+  str). WAT: wasi path_open against the first preopen (fd 3, relative paths),
+  fd_read loop into arena buffer (grow+copy), fd_close; iovec structs on the
+  arena. jz's own wasi.js shim stays console-only — real FS comes from the
+  actual WASI host (wasmtime, node:wasi); test via node --experimental-wasi in
+  test/wasi.js. Sync by construction (WASI IS sync) — no event-loop breach.
+- [ ] **Closure-state visibility miscompiles, open** (surfaced building the async
+  runtime 2026-07-12; BOTH host-side, both pinned to current-wrong in
+  test/parser-bugs.js "KNOWN GAP" — they flip loudly when fixed):
+  * a fn that writes props through an object param AND mints a closure inside a
+    for-loop body (capturing the body-let) makes prop reads through the factory's
+    other closures see STALE values — even when the loop never runs. One delta:
+    inline the write or call the loop closures directly → heals.
+  * `export`ing a closure that mutates module-level captured arrays breaks
+    sibling closures' reads of that state; unexported → correct. The async
+    runtime dodges both (settled-queue drain + thin export forwarders); root fix
+    belongs in closure-env/schema aliasing analysis.
 - [ ] **Self-host fragility guards, live** (from the deleted fragilities doc — each
   neutralized only at its one known trigger, unguarded in general): Root F `.typed:[]`
   runtime-variable OOB index unchecked (module/typedarray.js fast path — silent adjacent-

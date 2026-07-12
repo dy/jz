@@ -136,6 +136,8 @@ export function createTransform(opts) {
     if (op === 'function' && args[0]) return hoistFnDecl(...args)
     if (op === 'function*' && args[0] && _gen)
       return ['const', ['=', args[0], _gen.lowerGenerator(args[1], args[2])]]
+    if (op === 'async' && Array.isArray(args[0]) && args[0][0] === 'function' && args[0][1] && _gen?.lowerAsync)
+      return ['const', ['=', args[0][1], transform(_gen.lowerAsync(args[0][2], args[0][3]))]]
     if (op === 'class' && args[0]) return ['let', ['=', args[0], lowerClass(...args)]]
     if (op === 'using') return lowerUsing(args, [])
 
@@ -149,6 +151,12 @@ export function createTransform(opts) {
         }
         if (Array.isArray(stmt) && stmt[0] === 'function*' && stmt[1] && _gen) {
           hoisted.push(['const', ['=', stmt[1], _gen.lowerGenerator(stmt[2], stmt[3])]])
+          continue
+        }
+        // async function DECLARATION — hoists like any function declaration.
+        if (Array.isArray(stmt) && stmt[0] === 'async' && Array.isArray(stmt[1]) &&
+            stmt[1][0] === 'function' && stmt[1][1] && _gen?.lowerAsync) {
+          hoisted.push(['const', ['=', stmt[1][1], transform(_gen.lowerAsync(stmt[1][2], stmt[1][3]))]])
           continue
         }
         if (Array.isArray(stmt) && stmt[0] === 'class' && stmt[1]) {
@@ -201,8 +209,33 @@ export function createTransform(opts) {
     return transform(node)
   }
 
+  // Promise statics → the injected plain-jz runtime helpers.
+  const P_STATIC = { resolve: '__p_resolve', reject: '__p_reject', all: '__p_all', race: '__p_race' }
+
   const handlers = {
+    // async function/arrow → (...aa) => __async_run((function* …)(...aa))
+    'async'(inner) {
+      if (!_gen?.lowerAsync || !Array.isArray(inner)) return
+      if (inner[0] === 'function') return transform(_gen.lowerAsync(inner[2], inner[3]))
+      if (inner[0] === '=>') {
+        const params = Array.isArray(inner[1]) && inner[1][0] === '()' ? inner[1][1] : inner[1]
+        return transform(_gen.lowerAsync(params, inner[2]))
+      }
+    },
+
     '()'(callee, ...rest) {
+      // Promise API rides the async runtime: new Promise(fn) arrives here as a
+      // plain call (the `new` handler unwraps unknown ctors), statics by name.
+      if (_gen?.noteAsync) {
+        if (callee === 'Promise' && rest.length) {
+          _gen.noteAsync()
+          return ['()', '__p_exec', ...rest.map(a => a == null ? a : transform(a))]
+        }
+        if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Promise' && P_STATIC[callee[2]]) {
+          _gen.noteAsync()
+          return ['()', P_STATIC[callee[2]], ...rest.map(a => a == null ? a : transform(a))]
+        }
+      }
       // Terminal iterator helper (toArray/reduce/forEach/some/every/find) on a
       // chain rooted at a known generator call → fused IIFE loop.
       if (_gen && Array.isArray(callee) && callee[0] === '.') {

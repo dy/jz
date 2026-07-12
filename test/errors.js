@@ -41,8 +41,10 @@ test('SIMD + closures: IIFEs lift and run; genuine closures error clearly', () =
 // Prohibited ops
 // ============================================================================
 
-test('prohibited: async', () => throws('async function f() {}', 'async', 'async should error'))
-test('prohibited: await', () => throws('export let f = async () => await x', 'async', 'async should error'))
+// async GRADUATED (jzify/async.js state machines + plain-jz promise runtime) —
+// strict mode and unlowered shapes are the remaining rejections.
+test('strict rejects: async', () => throws('async function f() {} export let g = () => 1', 'async', 'strict rejects async', { strict: true }))
+test('prohibited: await outside async', () => throws('export let f = () => await 1', 'await', 'stray await should error'))
 test('strict rejects: class', () => throws('class Foo {}', 'class', 'class should error', { strict: true }))
 // generators GRADUATED (jzify/generators.js state machines) — a stray yield
 // outside a generator body is the remaining rejection.

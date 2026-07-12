@@ -91,7 +91,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
 
 ## [x] Anti-goals (what JZ refuses to be)
 
-  * Not a general-purpose language — no DOM, no async, no event loop
+  * Not a general-purpose language — no DOM, no engine event loop (async/await lowers to state machines + a boundary-drained job queue; asynchrony stays host-driven)
   * Not a JS runtime — no eval, no dynamic import, no reflection
   * Not aiming for 100% JS compat — subset by design, divergences documented
   * Not a build tool — no bundling, no tree-shaking, no source maps

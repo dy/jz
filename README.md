@@ -22,7 +22,7 @@ JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_D
 |------------------------------|---------------------------|
 | DSP, audio, synthesis        | UI, DOM, the frontend     |
 | Image, video, pixels         | Servers, APIs, I/O        |
-| Simulation, physics, games   | Async, promises, events   |
+| Simulation, physics, games   | I/O-bound orchestration   |
 | Parsers, codecs, compression | Dynamic, polymorphic, OOP |
 | Scientific, numeric, ML      | Security crypto, big-ints |
 | Hashing, checksums, RNG      | Glue, plumbing, orchestration |
@@ -177,11 +177,11 @@ JZ is a **strict modern JS subset**. Built-in jzify transform extends support to
 │   var  function  arguments  switch  new Foo()                          │
 │   class  new  this  extends  super  static  #private                   │
 │   function*  yield  yield*  Foo.prototype.m = …                        │
+│   async/await  Promise  using  Symbol.iterator  Symbol.dispose        │
 │   ==  !=  instanceof  undefined  WeakMap  WeakSet                      │
 │                                                                        │
 └────────────────────────────────────────────────────────────────────────┘
 Not supported
-  async/await  Promise
   delete  getters/setters  eval  Function  with
   Proxy  Reflect
   import()  DOM  fetch  Intl  Node APIs
@@ -201,7 +201,8 @@ Each follows one rule: **JZ takes WASM/native conventions over JS edge-cases whe
 - **Array indices are integers, typed-array access is unchecked** — an index coerces to `i32` (asm.js-style), so a fractional or `NaN` index *truncates* (`a[1.5]`→`a[1]`, `a[NaN]`→`a[0]`) rather than yielding JS's `undefined`. A `Float64Array`/etc. is fixed-size (`arr.length = n` won't compile) and read **raw**: an out-of-bounds or negative index reads arbitrary linear memory (a large one traps), not `undefined` — pass valid in-bounds integers. Plain `[]` arrays *are* bounds-checked (`undefined` past the end / for a negative index).
 - **No GC** — call `memory.reset()` between batches; `WeakMap`/`WeakSet` wired to `Map`/`Set`.
 - **Pseudo-classical constructors** — `function P(x) { this.x = x }` + `P.prototype.m = function () {…}` fold into the class lowering automatically (the pre-`class` npm idiom); arrow-valued members keep lexical `this` and stay out.
-- **Generators (sync) + iterator helpers** — `function*`/`yield` compile to regenerator-style state machines (no stack suspension): `next(v)`/`return(v)` are ordinary closure calls, `for-of` over a generator call desugars to a plain loop, and ES2025 helper chains (`g().map(f).filter(p).take(n)`, terminals `toArray`/`reduce`/`some`/`every`/`find`/`forEach`) fuse into ONE loop — no intermediate iterator objects. `yield*` delegates (sent values thread, completion value returned) and `[...g()]` spreads via the fused path. v1 scope: no `try` across yield — rejects with a precise message.
+- **Generators (sync) + iterator helpers** — `function*`/`yield` compile to regenerator-style state machines (no stack suspension): `next(v)`/`return(v)` are ordinary closure calls, `for-of` over a generator call desugars to a plain loop, and ES2025 helper chains (`g().map(f).filter(p).take(n)`, terminals `toArray`/`reduce`/`some`/`every`/`find`/`forEach`) fuse into ONE loop — no intermediate iterator objects. `yield*` delegates to any iterable, `for-of` drives any iterator value (stored machines, hand-rolled `{ next }`, `[Symbol.iterator]()` providers) lazily, and `[...g()]` spreads via the fused path. v1 scope: no `try` across yield — rejects with a precise message.
+- **async/await + Promise, no engine event loop** — an `async` function lowers to the same state machine (`await` ≡ `yield`) driven by a plain-jz promise runtime compiled into the module (pay-per-use: sync programs link none of it). Promises are ordinary fixed-shape objects with `then`/`catch`/`finally`; `Promise.resolve/reject/all/race` and `new Promise(executor)` work. The job queue drains at host boundaries (export return, timer tick) — an async export returns a real host `Promise` that settles when the machine completes (including across `setTimeout` awaits). Divergences: job ordering is per-drain-cycle rather than per-continuation, no unhandled-rejection reporting, no `try` across `await` in v1 (precise reject), and `memory.reset()` while a promise is pending is out of contract.
 - **Workers v1 (shared-memory SPMD)** — `sharedMemory: true` compiles against a shared `WebAssembly.Memory` (atomic heap bump, wasm `shared` memtype); `Atomics.*` on Int32Array lowers to wasm thread ops (`wait`/`notify` included); `jz.pool(src, {threads})` runs the same kernel across node worker_threads over one memory — annotate shared-array params as `(arr = new Int32Array(0))`. v1 contract: shared typed arrays + scalars; strings/objects stay thread-local.
 - **`String(number)` is ES-spec exact** — shortest round-trip digits via a built-in Ryū formatter (`String(0.1 + 0.2)` → `"0.30000000000000004"`, `String(Math.PI)` → `"3.141592653589793"`), including exponential notation and subnormals; its ~9.7 KB power-of-5 table is lazily included only in modules that stringify floats.
 - **Errors are just their message** — a caught error is the value you threw (no `.message`, not `instanceof Error`), and `null.x` yields `undefined` instead of throwing. It keeps `throw` and member reads free of object machinery and per-access checks.
@@ -219,7 +220,6 @@ Everything else is compiled, lowered by the built-in jzify pass, or rejected wit
 - **Live prototype chains** — `__proto__`, delegation, monkey-patching: `Object.create(proto)` is a documented shallow copy; method dispatch is static.
 - **`delete` on literal-key properties** — an object's shape is fixed at construction (computed-key/dictionary-mode `delete o[k]` works).
 - **eval, `Function` constructor, `with`** — would require the compiler (or an interpreter) at runtime; JZ ships neither.
-- **async/await, Promise** — compiled modules have no event loop; asynchrony belongs to the host (callbacks and `setTimeout` cross the boundary today).
 - **Intl, Temporal** — ICU/CLDR and timezone tables are hundreds of KB to MB, against single-digit-kB output. `Date` keeps deterministic UTC slices.
 - **UTF-16 string semantics & Unicode tables** — strings are UTF-8 bytes; `\p{…}` classes, `normalize` forms and locale case tables are the same multi-KB cost Intl was refused for.
 - **Arbitrary-precision BigInt** — BigInt is a raw 64-bit integer (wraps past ±2⁶³); bignum chains allocate unboundedly, and security crypto is explicitly out of scope.

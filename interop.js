@@ -615,7 +615,7 @@ export const memory = (src) => {
  * Wrap raw WASM exports with JS calling convention adaptation.
  * Handles: undefined → sentinel NaN for defaults, rest-param array packing.
  */
-export const wrap = (memSrc, inst) => {
+export const wrap = (memSrc, inst, state) => {
   const restFuncs = new Map()
   const mod = inst ? memSrc : memSrc.module || memSrc
   const realInst = inst || memSrc.instance || memSrc
@@ -656,6 +656,53 @@ export const wrap = (memSrc, inst) => {
     catch { /* ignore */ }
   }
   const mem = memory(memSrc)
+  // Async boundary: a module compiled from async source exports __mt_drain /
+  // __p_state / __p_value (the jzify-injected runtime). Every export call ends
+  // the "turn" — the microtask queue drains — and a promise-shaped return
+  // adopts into a HOST Promise: settled ones immediately, pending ones (parked
+  // on a timer) settle from the after-tick sweep. Sync modules: finishRet is
+  // pass-through, zero overhead beyond one truthiness check.
+  const mtDrain = realInst.exports.__mt_drain
+  const pState = realInst.exports.__p_state
+  const pValue = realInst.exports.__p_value
+  const asyncMod = !!(mtDrain && pState && pValue)
+  const pending = []
+  // Match the raw ret's carrier to the reader's param lane (i64Exp filled
+  // below); a reader's own result may ride the i64 lane too — __p_state's
+  // NUMBER comes back as f64 bits (reinterpret), __p_value's BOX stays raw
+  // bits for mem.read.
+  const pcall = (fn, name, raw) => {
+    const lane = i64Exp.get(name)
+    return fn(typeof raw === 'bigint' ? (lane?.p?.has(0) ? raw : i64ToF64(raw)) : (lane?.p?.has(0) ? bits(raw) : raw))
+  }
+  const pStateOf = (raw) => {
+    const r = pcall(pState, '__p_state', raw)
+    return typeof r === 'bigint' ? i64ToF64(r) : r
+  }
+  const readSettled = (raw) => {
+    const v = pcall(pValue, '__p_value', raw)
+    return mem ? mem.read(v) : decode(v)
+  }
+  const sweep = () => {
+    mtDrain()
+    for (let i = pending.length - 1; i >= 0; i--) {
+      const e = pending[i]
+      const st = pStateOf(e.raw)
+      if (st < 1) continue
+      pending.splice(i, 1)
+      st === 1 ? e.resolve(readSettled(e.raw)) : e.reject(readSettled(e.raw))
+    }
+  }
+  const adopt = (raw, read) => {
+    mtDrain()
+    const st = pStateOf(raw)
+    if (st < 0) return read(raw)                    // not a promise — plain value
+    if (st === 1) return Promise.resolve(readSettled(raw))
+    if (st === 2) return Promise.reject(readSettled(raw))
+    return new Promise((resolve, reject) => pending.push({ raw, resolve, reject }))
+  }
+  if (asyncMod && state) state.afterTick = sweep
+  const finishRet = (raw, read) => asyncMod ? adopt(raw, read) : read(raw)
   const lastErrBits = realInst.exports.__jz_last_err_bits
   const decodeThrown = error => {
     if (!(error instanceof WebAssembly.Exception) || !lastErrBits) throw error
@@ -730,7 +777,8 @@ export const wrap = (memSrc, inst) => {
         a.push(ie && ie.p.has(fixed) ? restArr : i64ToF64(restArr))
         try {
           const ret = fn.apply(null, a)
-          return typeof ret === 'bigint' && !(ie && ie.r) ? ret : mem.read(ret)
+          if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
+          return finishRet(ret, r => mem.read(r))
         } catch (error) {
           decodeThrown(error)
         }
@@ -743,7 +791,8 @@ export const wrap = (memSrc, inst) => {
         while (args.length < len) args.push(undefined)
         try {
           const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal)))
-          return typeof ret === 'bigint' && !(ie && ie.r) ? ret : mem.read(ret)
+          if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
+          return finishRet(ret, r => mem.read(r))
         } catch (error) {
           decodeThrown(error)
         }
@@ -866,7 +915,9 @@ const installDefaultEnvImports = (mod, imports, state) => {
     let nextId = 1
     if (envFns.has('setTimeout') && !imports.env.setTimeout) imports.env.setTimeout = (cbBig, delayMs, repeat) => {
       const id = nextId++
-      const fire = () => state.invoke?.(cbBig)
+      // after each timer callback: drain microtasks + settle host promises
+      // parked on async exports (state.afterTick set by wrap for async modules)
+      const fire = () => { state.invoke?.(cbBig); state.afterTick?.() }
       if (repeat) {
         const h = setInterval(fire, delayMs)
         cancel.set(id, () => clearInterval(h))
@@ -1002,7 +1053,7 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   // its SSO/atom boundary values), but the result's `.memory` stays null — the
   // module genuinely exposes no linear memory. `jz.memory(result)` still hands back
   // a usable reader on demand.
-  return { exports: wrap(memSrc), memory: enhanced?.scalar ? null : enhanced, instance: inst, module: mod }
+  return { exports: wrap(memSrc, undefined, state), memory: enhanced?.scalar ? null : enhanced, instance: inst, module: mod }
 }
 
 /**
