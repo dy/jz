@@ -549,3 +549,22 @@ helper object per stage; jz compiles them out — the plan's headline).
    JSPI watch. Follow-ups recorded per section: yield* delegation, generator
    test262 pool wiring, browser pool leg, BigInt64 atomics, pseudo-classical
    ctors, static members.
+
+## Generators follow-ups — landed (2026-07-12, second pass)
+
+- **yield\*** — delegates to ANY iterator-protocol value, desugared entirely
+  onto already-supported constructs (`sent = yield r.value; r = it.next(sent)`);
+  the delegate's COMPLETION value is the yield* result. Host-exact incl.
+  sent-value threading.
+- **Generator spread** — `[...g().map(f)]` rewrites the spread ELEMENT to the
+  fused toArray (a plain array); mixed heads compose with the existing
+  array-spread machinery.
+- **test262 generator pool unblanketed** — statements/generators +
+  expressions/generators + expressions/yield now RUN against the machines
+  (class-dirs pattern: narrowed exclusions + named out-of-v1 shape skips:
+  generator methods, .throw(), GeneratorFunction/prototype reflection,
+  function.sent). Language 2232 → 2237 / 0 fail; CI baseline bumped.
+
+Remaining recorded: generator methods (`{ *g() {} }`, `class { *m() }`),
+.throw(), browser pool leg, BigInt64 atomics, pseudo-classical ctors, static
+members.

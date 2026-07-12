@@ -173,6 +173,17 @@ const CLASS_EXCLUDED_PATTERNS = [
 ]
 const isClassTest = (rel) => /\/(expressions|statements)\/class\//.test(rel)
 
+// Generator dirs (statements/generators, expressions/generators, expressions/
+// yield) run against the jzify state machines — drop the generator/yield
+// blanket there, keep the rest, and shape-skip the out-of-v1 families.
+const GENERATOR_EXCLUDED_PATTERNS = [
+  /async/i, /await/, /reflect/i, /proxy/i, /\bwith\b/,
+  /\bWeakRef\b/, /\bBigInt\b/i,
+  /\bSymbol\b/, /iterator/i,
+  /dynamic[\s-]*import/i, /import\.meta/i, /\bexport\s+default\b/,
+]
+const isGeneratorTest = (rel) => /\/(expressions|statements)\/generators\//.test(rel) || /\/expressions\/yield\//.test(rel)
+
 // Quick mode: limit tests per subdirectory
 const QUICK = process.argv.includes('--quick')
 const FILTER = process.argv.find(a => a.startsWith('--filter='))?.split('=')[1]
@@ -664,6 +675,18 @@ function shouldSkip(content, rel = '') {
     if (/__proto__|\bprototype\b/.test(codeContent)) return 'prototype reflection outside jzify subset'
     if (/Object\.(getPrototypeOf|setPrototypeOf|getOwnPropertyDescriptor|defineProperty|keys|getOwnPropertyNames|create|freeze)/.test(codeContent)) return 'object reflection outside jzify subset'
     if (CLASS_EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
+    // fall through to the harness/negative-test filters below
+  } else if (isGeneratorTest(rel)) {
+    // v1 machines: function*-declaration/expression bodies with statement-
+    // position yields. Everything else is a named out-of-scope family.
+    if (/(^|[{,;(\s])\*\s*[\w$\[]/m.test(codeContent)) return 'generator METHOD syntax outside jzify v1 (function* declarations/expressions only)'
+    if (/\.throw\s*\(/.test(codeContent)) return 'generator .throw() outside jzify v1'
+    if (/GeneratorFunction|%Generator/i.test(codeContent)) return 'GeneratorFunction reflection outside jzify subset'
+    if (/function\.sent/.test(codeContent)) return 'function.sent outside jzify subset'
+    if (/__proto__|\bprototype\b|Object\.(getPrototypeOf|getOwnPropertyDescriptor|defineProperty)/.test(codeContent)) return 'generator prototype reflection outside jzify subset'
+    if (/\.name\b|\.length\b|\.constructor\b/.test(codeContent)) return 'generator function reflection unsupported'
+    if (/typeerror|restricted-properties|is-not-a-constructor/i.test(rel)) return 'generator error semantics outside jzify subset'
+    if (GENERATOR_EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
     // fall through to the harness/negative-test filters below
   } else
   // Skip tests with unsupported features

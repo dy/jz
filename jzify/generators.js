@@ -12,8 +12,11 @@
  *   - yield inside if/else, while, do-while and C-style for (any nesting)
  *   - plain `return E` anywhere; unlabeled break/continue of yield-bearing loops
  *   - compound statements WITHOUT yield stay atomic (later passes handle them)
- * Out (v1): yield inside arbitrary expressions, yield*, try across yield,
- * for-of/for-in bodies containing yield, labeled break/continue across states.
+ *   - yield* E — delegates to ANY iterator-protocol value (sent values thread,
+ *     the completion value lands in `x = yield* E`)
+ * Out (v1): yield inside arbitrary expressions, try across yield,
+ * for-of/for-in bodies containing yield (except known-generator for-of, which
+ * desugars), labeled break/continue across states.
  *
  * @module jzify/generators
  */
@@ -84,6 +87,23 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
       return resume
     }
 
+    // yield* E — the delegate loop is nothing but already-supported constructs:
+    // sent values thread through (`sent = yield r.value; r = it.next(sent)`),
+    // and the delegate's COMPLETION value (final r.value) lands in `target`.
+    const desugarYieldStar = (expr, target) => {
+      const it = genTemp('yi'), r = genTemp('yr'), sent = genTemp('ys')
+      locals.add(it); locals.add(r); locals.add(sent)
+      return ['{}', [';',
+        ['=', it, expr],
+        ['=', r, ['()', ['.', it, 'next'], null]],
+        ['while', ['!', ['.', r, 'done']], ['{}', [';',
+          ['=', sent, ['yield', ['.', r, 'value']]],
+          ['=', r, ['()', ['.', it, 'next'], sent]],
+        ]]],
+        ...(target ? [['=', target, ['.', r, 'value']]] : []),
+      ]]
+    }
+
     // Flatten a statement list into states. Returns the state id control falls
     // into after the list (or null if control never falls through).
     // loopCtx = { cont, brk } target state ids for the innermost decomposed loop.
@@ -100,15 +120,15 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
       const op = st[0]
 
       // --- yield forms ---
-      if (op === 'yield*') err('generators v1: yield* is not supported yet — loop over the inner iterator and yield each value')
+      if (op === 'yield*') return flattenStmt(desugarYieldStar(st[1], null), cur, loopCtx)
       if (op === 'yield') return emitYield(cur, st, null)
       if ((op === 'let' || op === 'const') && st.length === 2 && Array.isArray(st[1]) &&
           st[1][0] === '=' && isYield(st[1][2])) {
-        if (st[1][2][0] === 'yield*') err('generators v1: yield* is not supported yet')
+        if (st[1][2][0] === 'yield*') return flattenStmt(desugarYieldStar(st[1][2][1], st[1][1]), cur, loopCtx)
         return emitYield(cur, st[1][2], st[1][1])
       }
       if (op === '=' && typeof st[1] === 'string' && isYield(st[2])) {
-        if (st[2][0] === 'yield*') err('generators v1: yield* is not supported yet')
+        if (st[2][0] === 'yield*') return flattenStmt(desugarYieldStar(st[2][1], st[1]), cur, loopCtx)
         return emitYield(cur, st[2], st[1])
       }
 

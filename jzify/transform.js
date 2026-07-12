@@ -251,6 +251,33 @@ export function createTransform(opts) {
       return _gen.lowerGenerator(params, body)
     },
 
+    '[]'(payload, idx) {
+      // 2-arg form is INDEXING (obj[key]) — not ours. The 1-arg form is the
+      // array LITERAL: rewrite a spread of a generator / helper chain into a
+      // spread of the FUSED toArray (a plain array) — the existing
+      // array-spread machinery takes it from there.
+      if (!_gen || idx !== undefined) return
+      const rewrite = (e) => {
+        if (Array.isArray(e) && e[0] === '...' && Array.isArray(e[1])) {
+          const chain = _gen.unwindChain(e[1])
+          if (chain && (!chain.stages.length || !_gen.isTerminal(chain.stages[chain.stages.length - 1].h))) {
+            const fused = _gen.fuseTerminal({ root: chain.root, stages: [...chain.stages, { h: 'toArray', args: [] }] }, names.genTemp)
+            if (fused) return ['...', transform(fused)]
+          }
+        }
+        return null
+      }
+      if (payload === undefined) return
+      if (Array.isArray(payload) && payload[0] === ',') {
+        let hit = false
+        const mapped = payload.slice(1).map((e) => { const r = rewrite(e); if (r) hit = true; return r ?? transform(e) })
+        if (hit) return ['[]', [',', ...mapped]]
+        return
+      }
+      const one = rewrite(payload)
+      if (one) return ['[]', one]
+    },
+
     ':'(label, body) {
       if (typeof label === 'string' && Array.isArray(body) && LABEL_BODY_OPS.has(body[0]))
         return ['label', label, transform(body)]

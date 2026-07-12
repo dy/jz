@@ -71,7 +71,6 @@ test('generators: v1 rejections are precise', () => {
     let e; try { jz.compile(src) } catch (x) { e = x }
     ok(e && e.message.includes(needle), `${needle}: got ${e?.message?.slice(0, 90)}`)
   }
-  rejects(`function* g() { yield* [1, 2] } export let f = () => g().next().value`, 'yield*')
   rejects(`function* g() { try { yield 1 } catch (e) {} } export let f = () => 1`, 'try/catch across a yield')
   rejects(`export let f = () => { let y = yield 1; return y }`, 'yield outside a generator')
 })
@@ -103,4 +102,25 @@ test('for-of desugar: user continue advances the iterator (pull-at-top)', () => 
   is(j(`function* g() { for (let i = 0; i < 6; i++) yield i }
         export let f = () => { let s = ''; for (const v of g()) { if (v % 2) continue; s += v } return s }`),
     '024')
+})
+
+// yield* delegates to ANY iterator-protocol value: yields pass through, sent
+// values thread into the delegate, and the delegate's COMPLETION value is the
+// yield* result (`let done = yield* inner()`).
+test('generators: yield* delegation', () => {
+  is(j(`function* inner() { yield 1; yield 2; return 9 }
+        function* outer() { yield 0; let done = yield* inner(); yield done }
+        export let f = () => { let r = ''; for (const v of outer()) r += v + ','; return r }`),
+    '0,1,2,9,')
+  is(j(`function* inner() { let a = yield 'i1'; yield 'got:' + a }
+        function* outer() { yield* inner() }
+        export let f = () => { let it = outer(); let r = it.next().value; let r2 = it.next(42).value; return r + '|' + r2 }`),
+    'i1|got:42')
+})
+
+test('generators: spread fuses to toArray', () => {
+  is(j(`function* g() { yield 3; yield 1 } export let f = () => [...g()].join('-')`), '3-1')
+  is(j(`function* g(n) { for (let i = 0; i < n; i++) yield i }
+        export let f = () => [...g(6).filter((x) => x % 2), 99].join(',')`), '1,3,5,99')
+  is(j(`function* g() { yield 7 } export let f = () => [0, ...g(), 1].join('')`), '071')
 })

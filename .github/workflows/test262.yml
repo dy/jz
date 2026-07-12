@@ -50,7 +50,7 @@ jobs:
           # pattern declarators dropped; for-of head cover-grammar `{x=1}`
           # mis-destructured), residues precisely skip-classified or xfail-tracked
           # (bool-carrier family flips to xpass when that work lands — prune then).
-          JZ_TEST262_BASELINE: 2232
+          JZ_TEST262_BASELINE: 2237
         run: npm run test:262
 
   test262-builtins:
