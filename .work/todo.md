@@ -912,6 +912,30 @@
       new value kinds. Worktree agent dispatched with the full design
       + gates (checksums exact, call_indirect 30↓, suite green,
       pins).
+      LANDED (2026-07-12, a1c2ba0, agent-built + independently
+      verified): devirtGlobalCalls resolves ??=/||= (prior-env-value
+      wins — a resolved prior is always a function, non-nullish AND
+      truthy; unwritten SROA global init = undefined atom), chained
+      plain assignment one hop (`const asi = parse.asi = arrow`), and
+      raw arrow literals LIFTED to named functions (fail-closed:
+      plain params only, every free ident a module global/function;
+      original arrow left in place for value uses). Poison scan
+      widened to the house write predicate (ASSIGN_OPS + ++/--).
+      RESULT: jessie call_indirect 30→21 (baseSpace ×2, baseStep,
+      asi ×2, unicode id-alias ×4 — remaining 21 are the genuinely
+      polymorphic Pratt operator table); jessie cs=2418067300 EXACT,
+      wordcount cs exact, suite 2849/0, ratchets +0, interleaved A/B
+      ~8.7% (2125→1940µs; independent re-run 2030µs — busy-machine
+      caveat; quiet re-measure owed with the headline). Pins ×3 in
+      test/closures.js (??= chain, chained-assign, arrow-lift with a
+      live value-use proving closure.make survives).
+      DEFECT FOUND BY THE AGENT (out of scope, differential-verified,
+      NOT fixed): a REASSIGNED module `let g = arrow1; g = arrow2`
+      (no namespace involved) silently calls the FIRST arrow forever
+      (native 20, jz 15) — zero call_indirect involved, some direct-
+      binding/inline path resolves the stale value; pre-existing,
+      unaffected by the devirt change. MISCOMPILE CLASS — next named
+      correctness hunt.
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
