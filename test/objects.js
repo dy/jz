@@ -1703,3 +1703,34 @@ test('objects: size/length are ordinary props on objects, counts on collections'
   is(r.coll(), '3:1:3', 'Set/Map .size = entry count, typed and dispatched')
   is(r.prim(), 1, 'number .size and Set .length are undefined')
 })
+
+// Sibling of the size/length hijack (same class, module/typedarray.js): the
+// buffer-family getters read BUFFER/TYPED headers off ANY unproven receiver —
+// `{byteLength: 5}` through a dyn holder read 0 (byte header of nothing) and
+// `.buffer` retagged foreign memory as a BUFFER. Only BUFFER/TYPED own these
+// accessors in JS; everything else reads the ordinary own property.
+test('objects: buffer-family names are ordinary props off collections', () => {
+  const r = run(`
+    let holder = { t: null }
+    export let own = () => {
+      holder.t = { byteLength: 5, byteOffset: 3, buffer: 'B' }
+      const o = holder.t
+      return o.byteLength + ':' + o.byteOffset + ':' + o.buffer
+    }
+    export let real = () => {
+      const ab = new ArrayBuffer(16)
+      const v = new Float64Array(ab)
+      let u = null
+      u = v
+      return u.byteLength + ':' + u.byteOffset + ':' + (u.buffer === ab ? 'ab' : 'X') + ':' + v.byteLength
+    }
+    export let prim = () => {
+      let u = null
+      u = 2.5
+      return (u.byteLength === undefined) && (u.buffer === undefined) ? 1 : 0
+    }
+  `, { memory: 64 })
+  is(r.own(), '5:3:B', 'dyn-routed object reads its own byteLength/byteOffset/buffer keys')
+  is(r.real(), '16:0:ab:16', 'real views keep header reads, typed and dispatched')
+  is(r.prim(), 1, 'number receiver yields undefined')
+})

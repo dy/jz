@@ -9,6 +9,7 @@
 
 import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
+import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
@@ -235,6 +236,40 @@ export default (ctx) => {
   const buf = call('__to_buffer', 'I')
   const blen = call('__byte_length', 'I', 'i32')
   const boff = call('__byte_offset', 'I', 'i32')
+
+  // Unknown receiver for a buffer-family accessor: only BUFFER/TYPED own
+  // `.buffer`/`.byteLength`/`.byteOffset` in JS — on everything else the name
+  // is an ordinary own property (or undefined). Same dispatch shape as
+  // collection.js's `.size` (the dot-name hijack class, .work/todo.md
+  // 2026-07-11): a PROVEN BUFFER/TYPED receiver keeps the direct helper call;
+  // otherwise tag-dispatch at runtime — the NaN-check guards real numbers
+  // whose bit pattern could false-match the tag compare, and the prehashed
+  // dyn dispatcher covers OBJECT schema slots, HASH keys, sidecars, and
+  // primitives (→ undefined).
+  const bufAccessorDyn = (prop, helper, direct) => (obj) => {
+    const vt = valTypeOf(obj)
+    if (vt === VAL.BUFFER || vt === VAL.TYPED) return direct(obj)
+    inc('__ptr_type', '__dyn_get_expr_t_h', helper)
+    const o = temp('bad'), t = tempI32('badt')
+    const og = ['local.get', `$${o}`]
+    const helperCall = ['call', `$${helper}`, ['i64.reinterpret_f64', og]]
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${o}`, asF64(emit(obj))],
+      ['local.set', `$${t}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', og]]],
+      ['if', ['result', 'f64'],
+        ['i32.and',
+          ['f64.ne', og, og],
+          ['i32.or',
+            ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.BUFFER]],
+            ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.TYPED]]]],
+        ['then', helper === '__to_buffer' ? typed(helperCall, 'f64') : ['f64.convert_i32_s', helperCall]],
+        ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr_t_h',
+          ['i64.reinterpret_f64', og], asI64(emit(['str', prop])), ['local.get', `$${t}`],
+          ['i32.const', strHashLiteral(prop)]]]]]], 'f64')
+  }
+  const bufDyn = bufAccessorDyn('buffer', '__to_buffer', buf)
+  const blenDyn = bufAccessorDyn('byteLength', '__byte_length', blen)
+  const boffDyn = bufAccessorDyn('byteOffset', '__byte_offset', boff)
 
   // === Runtime helpers: byte length, buffer coerce ===
   // __typed_shift lives in core (needed by __len/__cap).
@@ -530,7 +565,7 @@ export default (ctx) => {
         }
       }
     }
-    return buf(obj)
+    return bufDyn(obj)
   })
 
   // .byteLength — BUFFER: raw __len. Owned TYPED: elemCount * stride.
@@ -555,7 +590,7 @@ export default (ctx) => {
         }
       }
     }
-    return blen(obj)
+    return blenDyn(obj)
   })
 
   // .byteOffset — owned: 0. View: descriptor[4] - descriptor[8].
@@ -573,7 +608,7 @@ export default (ctx) => {
       }
       if (ctor?.startsWith('new.') && TYPED_ELEM_CODE[ctor.slice(4)] != null) return typed(['f64.const', 0], 'f64')
     }
-    return boff(obj)
+    return boffDyn(obj)
   })
 
   // Runtime fallback for .byteOffset when variable view-ness is unknown.
