@@ -1597,6 +1597,17 @@ export default (ctx) => {
   // the receiver type can't be statically inferred (e.g. a callback param).
   bind('.string:toString', (str) => asF64(emit(str)))
   bind('.string:valueOf', (str) => asF64(emit(str)))
+  // String.prototype.normalize — identity: every normalization form (NFC/NFD/
+  // NFKC/NFKD) is the identity on ASCII, and jz strings are UTF-8 bytes with
+  // ASCII-only case/space semantics (README divergences). No Unicode tables.
+  // The form argument is ignored (a bogus form's RangeError needs the same
+  // tables to justify checking — out of scope with them). Generic twin
+  // ToString-coerces an untyped receiver (spec step 1), like .toString.
+  bind('.string:normalize', (str) => asF64(emit(str)))
+  bind('.normalize', (val) => {
+    inc('__to_str')
+    return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(val))]], 'f64')
+  })
   bind('.toString', (val) => {
     inc('__to_str')
     return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(val))]], 'f64')

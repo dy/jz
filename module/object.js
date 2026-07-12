@@ -13,6 +13,7 @@ import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
+import { isReassigned } from '../src/ast.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
 // return for primitive/built-in types; canonicalized from
@@ -196,6 +197,11 @@ export default (ctx) => {
 
   // === Object static methods ===
 
+  // Object.freeze: identity passthrough — jz objects have no per-property
+  // metadata, so write-protection is not enforced (documented divergence).
+  // Call forms are folded away in prepare (which records the binding in
+  // ctx.runtime.frozenVars so isFrozen answers true for it); this emitter
+  // survives only for freeze-as-a-value (`arr.map(Object.freeze)`).
   ctx.core.emit['Object.freeze'] = (obj) => asF64(emit(obj))
 
   // Object.is(a, b) — SameValue, which on NaN-boxed f64 values is exact bit
@@ -219,14 +225,21 @@ export default (ctx) => {
     if (t === VAL.NUMBER || t === VAL.STRING || t === VAL.BIGINT) return { ext: 0, sealed: 1, frozen: 1 }
     return { ext: 1, sealed: 0, frozen: 0 }
   }
-  const objQuery = (pick) => (obj) => {
-    const v = pick(extKind(obj))
+  const objQuery = (pick, frozenAware = false) => (obj) => {
+    let v = pick(extKind(obj))
+    if (frozenAware) {
+      // A binding freeze() marked in prepare (composition unwraps to the same
+      // name there). Trustworthy only while never reassigned — a rebind points
+      // at a fresh, unfrozen object.
+      if (typeof obj === 'string' && ctx.runtime.frozenVars?.has(obj) &&
+        !isReassigned(ctx.func.body, obj)) v = 1
+    }
     if (obj == null) return typed(['f64.const', v], 'f64')
     return typed(['block', ['result', 'f64'], ['drop', asF64(emit(obj))], ['f64.const', v]], 'f64')
   }
   ctx.core.emit['Object.isExtensible'] = objQuery((k) => k.ext)
   ctx.core.emit['Object.isSealed'] = objQuery((k) => k.sealed)
-  ctx.core.emit['Object.isFrozen'] = objQuery((k) => k.frozen)
+  ctx.core.emit['Object.isFrozen'] = objQuery((k) => k.frozen, true)
 
   // RequireObjectCoercible: Object.keys/values/entries reject null & undefined
   // with a TypeError. A literal lowers to a [null, value] node — so `null` is

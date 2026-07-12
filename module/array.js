@@ -305,6 +305,7 @@ export default (ctx) => {
       ...(needsArrayDynMove() ? ['__dyn_move', '__hash_new', '__ihash_set_local'] : []),
     ],
     __arr_fill: ['__ptr_offset', '__clamp_idx'],  // body-calls __clamp_idx; declare it (self-host auto-scan can't be relied on — see test/selfhost-includes.js)
+    __arr_copyWithin: ['__ptr_type', '__ptr_offset', '__clamp_idx'],
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset'],
     __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd'],
     __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type'],
@@ -1647,8 +1648,13 @@ export default (ctx) => {
     const recv = hoistArrayValue(arr)
     const acc = temp('ra')
     // reduce cb signature: (acc, item, idx). Item rep mirrors recv's elem val type.
+    // A BIGINT init seeds the acc's kind: the fold can't silently change type
+    // (mixed BigInt arithmetic rejects at compile), and without the seed the
+    // acc param reads as unknown/number and trips the mix guard on jz's own
+    // SWAR packing idiom (`arr.reduce((a, b, k) => a | (BigInt(b) << …), 0n)`).
     const reps = callbackArgReps(arr)
-    const cb = makeCallback(fn, [null, reps[0], { val: VAL.NUMBER }])
+    const accRep = init !== undefined && valTypeOf(init) === VAL.BIGINT ? { val: VAL.BIGINT } : null
+    const cb = makeCallback(fn, [accRep, reps[0], { val: VAL.NUMBER }])
     // No initial value: JS seeds the accumulator with element 0 and folds from
     // index 1 — NOT a 0 seed folded over every element. A 0 seed is invisible
     // for `+` (additive identity) but wrong for `*` (→0) and corrupts non-numeric
@@ -1729,8 +1735,10 @@ export default (ctx) => {
   }
 
   // .reverse() → in-place swap arr[i] ↔ arr[len-1-i], returns the array.
-  ctx.core.emit['.reverse'] = (arr) => {
-    const recv = hoistArrayValue(arr)
+  // Reverse an array VALUE in place, returning it. `.reverse` mutates the
+  // receiver (setup hoists it once); `.toReversed` (ES2023) reverses a fresh
+  // __arr_from copy so the receiver is untouched.
+  function emitArrayReverseInPlace(setup, value) {
     const arrTmp = temp('rv')
     const base = tempI32('rb')
     const len = tempI32('rl')
@@ -1745,8 +1753,8 @@ export default (ctx) => {
     const addr = (idxIR) => ['i32.add', ['local.get', `$${base}`], ['i32.shl', idxIR, ['i32.const', 3]]]
 
     return typed(['block', ['result', 'f64'],
-      recv.setup,
-      ['local.set', `$${arrTmp}`, recv.value],
+      setup,
+      ['local.set', `$${arrTmp}`, value],
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
@@ -1763,14 +1771,25 @@ export default (ctx) => {
       ['local.get', `$${arrTmp}`]
     ], 'f64')
   }
+  ctx.core.emit['.reverse'] = (arr) => {
+    const recv = hoistArrayValue(arr)
+    return emitArrayReverseInPlace(recv.setup, recv.value)
+  }
+  ctx.core.emit['.toReversed'] = (arr) => {
+    inc('__arr_from')
+    return emitArrayReverseInPlace(['nop'], typed(['call', '$__arr_from', asI64(emit(arr))], 'f64'))
+  }
 
   // Insertion sort — stable, in-place, O(n²). The comparator is called per
   // shift; positive return → swap. NaN returns become "no swap" via f64.gt's
   // IEEE 754 semantics (NaN compares false), matching the spec's NaN-as-0
   // behavior. When fn is omitted, elements are compared as strings via
   // __to_str → __str_cmp (byte-wise; NOT locale-aware).
-  ctx.core.emit['.sort'] = (arr, fn) => {
-    const recv = hoistArrayValue(arr)
+  // Insertion-sort an array VALUE in place, returning it. `.sort` mutates the
+  // receiver; `.toSorted` (ES2023) sorts a fresh __arr_from copy. Default (no
+  // comparator) is lexicographic-string order per spec — NOT the numeric
+  // default typed arrays use (see .typed:sort).
+  function emitArraySortInPlace(setup, value, fn) {
     const arrTmp = temp('sr')
     const base = tempI32('sb')
     const len = tempI32('sl')
@@ -1784,6 +1803,9 @@ export default (ctx) => {
 
     let cmpExpr, cmpSetup
     if (fn == null) {
+      // default comparator is ToString + byte compare — both live in the string
+      // module, which an all-numeric program hasn't loaded (dangling inc otherwise)
+      ctx.module.include('string')
       inc('__to_str', '__str_cmp')
       cmpExpr = (aIR, bIR) => typed(['f64.convert_i32_s',
         ['call', '$__str_cmp',
@@ -1807,9 +1829,9 @@ export default (ctx) => {
     const jPlus1 = ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]
 
     return typed(['block', ['result', 'f64'],
-      recv.setup,
+      setup,
       cmpSetup,
-      ['local.set', `$${arrTmp}`, recv.value],
+      ['local.set', `$${arrTmp}`, value],
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
 
@@ -1840,6 +1862,72 @@ export default (ctx) => {
       ['local.get', `$${arrTmp}`]
     ], 'f64')
   }
+  ctx.core.emit['.sort'] = (arr, fn) => {
+    const recv = hoistArrayValue(arr)
+    return emitArraySortInPlace(recv.setup, recv.value, fn)
+  }
+  ctx.core.emit['.toSorted'] = (arr, fn) => {
+    inc('__arr_from')
+    return emitArraySortInPlace(['nop'], typed(['call', '$__arr_from', asI64(emit(arr))], 'f64'), fn)
+  }
+
+  // .with(index, value) (ES2023) — a COPY with one element replaced. Negative
+  // index counts from the end; an out-of-range index throws (RangeError in JS —
+  // jz collapses Error subclasses to one generic throw, like .typed:with).
+  ctx.core.emit['.with'] = (arr, index, value) => {
+    inc('__arr_from', '__ptr_offset')
+    ctx.runtime.throws = true
+    const c = temp('awc'), base = tempI32('awb'), len = tempI32('awl'), idx = tempI32('awi')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${c}`, typed(['call', '$__arr_from', asI64(emit(arr))], 'f64')],
+      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${c}`]]]],
+      ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
+      ['local.set', `$${idx}`, asI32(emit(index))],
+      ['if', ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
+        ['then', ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${len}`]]]]],
+      ['if', ['i32.or',
+        ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
+        ['i32.ge_s', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
+        ['then', ['throw', '$__jz_err', ['f64.const', 0]]]],
+      ['f64.store',
+        ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${idx}`], ['i32.const', 3]]],
+        carrierF64(value, emit(value))],
+      ['local.get', `$${c}`]], 'f64')
+  }
+
+  // .copyWithin(target, start, end?) — in-place overlap-safe move, returns the
+  // receiver. memory.copy is memmove-semantic (bulk-memory), so unlike the
+  // element-kind-aware __typed_copyWithin, plain arrays need no direction loop.
+  ctx.core.emit['.copyWithin'] = (arr, target, start, end) => {
+    inc('__arr_copyWithin')
+    return typed(['call', '$__arr_copyWithin', asI64(emit(arr)),
+      target == null ? ['i32.const', 0] : asI32(emit(target)),
+      start == null ? ['i32.const', 0] : asI32(emit(start)),
+      end == null ? ['i32.const', 0x7FFFFFFF] : asI32(emit(end))], 'f64')
+  }
+  ctx.core.stdlib['__arr_copyWithin'] = `(func $__arr_copyWithin (param $arr i64) (param $target i32) (param $start i32) (param $end i32) (result f64)
+    (local $off i32) (local $len i32) (local $count i32)
+    (if (i32.eq (call $__ptr_type (local.get $arr)) (i32.const ${PTR.ARRAY}))
+      (then
+        (local.set $off (call $__ptr_offset (local.get $arr)))
+        (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
+        (local.set $target (call $__clamp_idx (local.get $target) (local.get $len)))
+        (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
+        (local.set $end (call $__clamp_idx (local.get $end) (local.get $len)))
+        (local.set $count (i32.sub (local.get $end) (local.get $start)))
+        (if (i32.gt_s (local.get $count) (i32.sub (local.get $len) (local.get $target)))
+          (then (local.set $count (i32.sub (local.get $len) (local.get $target)))))
+        (if (i32.gt_s (local.get $count) (i32.const 0))
+          (then (memory.copy
+            (i32.add (local.get $off) (i32.shl (local.get $target) (i32.const 3)))
+            (i32.add (local.get $off) (i32.shl (local.get $start) (i32.const 3)))
+            (i32.shl (local.get $count) (i32.const 3)))))))
+    (f64.reinterpret_i64 (local.get $arr)))`
+
+  // Array.of(...items) — spec-identical to the array literal `[...items]`; the
+  // `[` emitter already handles spread-tagged args and the static-data path.
+  // (Distinct from `Array(n)`, which makes a length-n hole array.)
+  ctx.core.emit['Array.of'] = (...items) => ctx.core.emit['['](...items)
 
   // Boxed pointer values (strings/objects/etc.) carry NaN payloads, and
   // f64.eq treats NaN as not-equal to anything — even bit-identical NaN —

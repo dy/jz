@@ -561,3 +561,60 @@ test('destruct: hoisted sibling function references a Math alias declared later 
   // convention as test/math.js's `almost`).
   ok(Math.abs(exports.default(1) - Math.exp(1)) < 1e-6, `expected ~${Math.exp(1)}, got ${exports.default(1)}`)
 })
+
+// ============================================================================
+// Unblanketing fixes (2026-07-10) — three real bugs the coarse test262 skips hid:
+// 1. defaults fired on null (?? lowering) — must fire ONLY on undefined;
+// 2. numeric keys in object patterns crashed the compiler (string-hash on 0);
+// 3. `var` pattern declarators were silently DROPPED by hoist-vars.
+// ============================================================================
+
+test('destruct: defaults fire only on undefined, never null', () => {
+  is(run(`export let f = () => { let [a = 1, b = 2] = [null, undefined]; return (a === null ? 1 : 0) * 10 + b }`).f(), 12)
+  is(run(`export let f = () => { let { x = 5, y = 6 } = { x: null }; return (x === null ? 1 : 0) * 10 + y }`).f(), 16)
+  // lazy: default not evaluated when a value is present
+  is(run(`export let f = () => { let n = 0; let bump = () => ++n; let [a = bump()] = [5]; return n * 10 + a }`).f(), 5)
+  // holes and out-of-bounds still take defaults
+  is(run(`export let f = () => { let v, h, o, k = 0; for ([v = 1, h = 2, o = 3] of [[9, , ]]) k = v * 100 + h * 10 + o; return k }`).f(), 923)
+})
+
+test('destruct: numeric keys in object patterns are index reads', () => {
+  is(run(`export let f = () => { let { 0: v, length: z } = [7, 8]; return v * 10 + z }`).f(), 72)
+  is(run(`let g = ([...{ 0: v, 1: w, length: z }]) => v * 100 + w * 10 + z; export let f = () => g([7, 8])`).f(), 782)
+})
+
+test('destruct: var pattern declarators hoist their bindings', () => {
+  is(run(`var [b] = [3]; export let f = () => b`).f(), 3)
+  is(run(`var { x, y = 2 } = { x: 9 }; export let f = () => x * 10 + y`).f(), 92)
+  is(run(`export let f = () => { var a = 1, [b2] = [2], { c } = { c: 3 }; return a * 100 + b2 * 10 + c }`).f(), 123)
+})
+
+// for-of head assignment-form object pattern parses as a STATEMENT-position
+// `{…}` cover (a `;`-block node, not a `,`-list) — patternItems unwraps both.
+// Before: the pattern silently mis-destructured (defaults fired on null).
+test('destruct: for-of head cover-grammar object pattern', () => {
+  is(run(`export let f = () => { let x, c = 0; for ({ x = 1 } of [{ x: null }]) { c = (x === null ? 1 : 0) * 10 + 1 } return c }`).f(), 11)
+  is(run(`export let f = () => { let x, c = 0; for ({ x = 2 } of [{}]) { c = x } return c }`).f(), 2)
+  is(run(`export let f = () => { let x; for ({ x } of [{ x: 9 }]) { } return x }`).f(), 9)
+})
+
+// `arguments`-lowered param defaults ride the same undefined-only rule
+// (jzify/arguments.js used `??` — a passed null took the default).
+test('destruct: arguments-path param default fires only on undefined', () => {
+  is(run(`function f(a = 9) { return arguments.length * 100 + (a === null ? 10 : a === undefined ? 20 : a) }
+    export let g = () => f() * 1000 + f(null)`).g(), 9110)
+})
+
+// catch-param patterns + var-pattern for-of heads + assignment-form targets
+// (2026-07-10): all three bound nothing or shadowed the outer binding before.
+test('destruct: catch patterns / var-pattern heads / assignment-form targets', () => {
+  is(run(`export let f = () => { try { throw { a: 5 } } catch ({ a }) { return a } }`).f(), 5)
+  is(run(`export let f = () => { try { throw [7] } catch ([x]) { return x } }`).f(), 7)
+  is(run(`export let f = () => { let r = 0; for (var { x } of [{ x: 3 }]) r = x; return r }`).f(), 3)
+  is(run(`export let f = () => { for (var [y] of [[4], [9]]) { } return y }`).f(), 9)
+  // assignment-form heads write the EXISTING binding (visible after the loop)
+  is(run(`export let f = () => { let x = 0; for (x of [5, 6]) { } return x }`).f(), 6)
+  is(run(`export let f = () => { let o = { x: 0 }; for (o.x of [7, 8]) { } return o.x }`).f(), 8)
+  is(run(`export let f = () => { let a = 0; for ([a] of [[9]]) { } return a }`).f(), 9)
+  is(run(`export let f = () => { let k = 0; for (k in { z: 1 }) { } return k.length }`).f(), 1)
+})

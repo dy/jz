@@ -241,7 +241,7 @@ test('ArrayBuffer.isView — typed array is a view', () => {
       return ArrayBuffer.isView(arr)
     }
   `)
-  is(exports.main(), 1)
+  is(exports.main(), true)
 })
 
 test('ArrayBuffer.isView — plain ArrayBuffer is NOT a view', () => {
@@ -251,7 +251,7 @@ test('ArrayBuffer.isView — plain ArrayBuffer is NOT a view', () => {
       return ArrayBuffer.isView(buf)
     }
   `)
-  is(exports.main(), 0)
+  is(exports.main(), false)
 })
 
 test('ArrayBuffer.isView — plain array is NOT a view', () => {
@@ -261,7 +261,7 @@ test('ArrayBuffer.isView — plain array is NOT a view', () => {
       return ArrayBuffer.isView(arr)
     }
   `)
-  is(exports.main(), 0)
+  is(exports.main(), false)
 })
 
 // === buf.slice ===
@@ -579,7 +579,7 @@ test('subview — ArrayBuffer.isView returns true', () => {
       return ArrayBuffer.isView(sub)
     }
   `)
-  is(exports.main(), 1)
+  is(exports.main(), true)
 })
 
 // === Subview: multiple disjoint views on same buffer ===

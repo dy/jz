@@ -34,7 +34,8 @@ let transform, transformScope
 }))
 bindTransform(transform)
 
-;({ lowerClass, lowerObjectLiteralThis, lowerArrayConstructor } = createClassLowering({ transform, names, JC }))
+const constStrings = new Map()
+;({ lowerClass, lowerObjectLiteralThis, lowerArrayConstructor } = createClassLowering({ transform, names, JC, constStrings }))
 transformSwitch = createSwitchLowering(transform, names)
 
 /**
@@ -44,6 +45,21 @@ transformSwitch = createSwitchLowering(transform, names)
  */
 export default function jzify(ast) {
   names.reset()
+  // Module-scope `const K = 'str'` bindings — lets class lowering fold computed
+  // member names `[K]() {}` (const guarantees the binding never changes).
+  constStrings.clear()
+  if (Array.isArray(ast)) {
+    const stmts = ast[0] === ';' ? ast.slice(1) : [ast]
+    for (const st of stmts) {
+      if (!Array.isArray(st) || st[0] !== 'const') continue
+      for (let i = 1; i < st.length; i++) {
+        const d = st[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' &&
+            Array.isArray(d[2]) && d[2][0] == null && typeof d[2][1] === 'string')
+          constStrings.set(d[1], d[2][1])
+      }
+    }
+  }
   const hoisted = new Set()
   ast = hoistVars(ast, hoisted)
   if (hoisted.size) ast = prependDecls(ast, hoisted)

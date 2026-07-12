@@ -617,7 +617,7 @@ function isDeclared(name) {
 
 function pushScope(scope = new Map()) {
   scopes.push(scope)
-  staticConstScopes.push({ strings: new Map(), arrays: new Map() })
+  staticConstScopes.push({ strings: new Map(), arrays: new Map(), consts: new Set() })
 }
 
 function popScope() {
@@ -876,6 +876,12 @@ function prep(node) {
   if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && typeof args[0] === 'string') {
     const aliasKey = builtinAliasKeyOf(args[0])
     if (aliasKey) err(`Cannot reassign '${args[0]}' — bound to builtin '${aliasKey}' via alias/destructuring; builtin-namespace bindings are compile-time only, not writable storage`)
+    // Assignment to a const binding is a compile error (ES: runtime TypeError).
+    // Resolve through the live block scopes so a shadowing `let` of the same
+    // name stays writable; module-level consts are guarded by emit's isConst.
+    const target = scopes.length && isDeclared(args[0]) ? resolveScope(args[0]) : args[0]
+    if (typeof target === 'string' && staticConstScopes.some(f => f.consts?.has(target)))
+      err(`Assignment to constant '${args[0]}' (TypeError in JS)`)
   }
   if (op == null) {
     if (typeof args[0] === 'string') {
@@ -988,6 +994,28 @@ function bindingNames(pattern, out = new Set()) {
     }
   }
   return out
+}
+
+/** Does any arrow inside `node` reference `name`? The capture test for the
+ *  per-iteration for-head `let` lowering (pay only when actually captured). */
+function bodyCapturesName(node, name) {
+  if (!Array.isArray(node)) return false
+  if (node[0] === '=>') return refsName(node[2], name, { skipArrow: false })
+  for (let i = 1; i < node.length; i++) if (bodyCapturesName(node[i], name)) return true
+  return false
+}
+
+/** Rename bare identifiers per `map` — literal nodes and non-computed property
+ *  keys stay untouched. Used to point a for-head's cond/step at the carrier. */
+function substIdents(node, map) {
+  if (typeof node === 'string') return map.get(node) ?? node
+  if (!Array.isArray(node) || node[0] == null) return node
+  if (node[0] === 'str') return node
+  if (node[0] === '.') return ['.', substIdents(node[1], map), node[2]]
+  // Property/label key position is not an identifier read (`{ i: i }` in a
+  // for-head cond must rename only the VALUE side).
+  if (node[0] === ':' && typeof node[1] === 'string') return [':', node[1], ...node.slice(2).map(n => substIdents(n, map))]
+  return [node[0], ...node.slice(1).map(n => substIdents(n, map))]
 }
 
 function pushPatternAssign(target, valueExpr, out, decls = null) {
@@ -1468,6 +1496,11 @@ function prepDecl(op, ...inits) {
       if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '=>')
         funcValueNames[funcValueNames.length - 1]?.add(declName)
       if (op === 'const') bindStaticConst(declName, staticStr, staticArr)
+      // Local const: record the (post-rename) name for the assignment guard —
+      // isConst covers only module scope, so `const c = 2; c = 3` inside a
+      // function used to compile and mutate silently.
+      if (op === 'const' && typeof declName === 'string' && scopes.length)
+        staticConstScopes[staticConstScopes.length - 1]?.consts?.add(declName)
       // Track const for reassignment checks — only module-scope consts (depth 0)
       if (typeof declName === 'string' && depth === 0) {
         if (ctx.module.currentPrefix) {
@@ -1563,6 +1596,87 @@ function dispatchConstructorCall(callee, args) {
   return undefined
 }
 
+// `f.call/apply/bind` on a PROVEN function binding lowers statically: jz
+// functions cannot observe `this` (rejected outside the class lowering), so
+// the thisArg is dead weight — kept only for its side effects via a comma
+// sequence. Anything not provably a function keeps the runtime path (a user
+// object may legitimately carry its own `call` property). Previously these
+// silently returned undefined (.call/.apply) or trapped (table OOB, .bind).
+function foldFnCallApplyBind(callee, args) {
+  if (!Array.isArray(callee) || callee[0] !== '.') return undefined
+  const [, name, meth] = callee
+  if (typeof name !== 'string' || (meth !== 'call' && meth !== 'apply' && meth !== 'bind')) return undefined
+  if (!hasFunc(name) && !isFuncValueLocal(name)) return undefined
+  const [thisArg, ...rest] = handlerArgs(args)
+  const trivialThis = thisArg == null || typeof thisArg === 'string' ||
+    (Array.isArray(thisArg) && thisArg[0] == null)
+  const seq = (node) => trivialThis ? prep(node) : prep([',', thisArg, node])
+  const argsSlot = (list) => list.length === 0 ? null : list.length === 1 ? list[0] : [',', ...list]
+  if (meth === 'call') return seq(['()', name, argsSlot(rest)])
+  if (meth === 'apply') {
+    if (rest.length > 1) err('`.apply` takes (thisArg, argsArray)')
+    // A literal args array expands statically — fixed-arity callees accept it
+    // where a runtime spread could not.
+    const arr = rest[0]
+    if (Array.isArray(arr) && arr[0] === '[]' && arr.length <= 2) {
+      const elems = arr.length === 1 ? [] : (Array.isArray(arr[1]) && arr[1][0] === ',') ? arr[1].slice(1) : [arr[1]]
+      if (!elems.some(e => Array.isArray(e) && e[0] === '...')) return seq(['()', name, argsSlot(elems)])
+    }
+    return seq(['()', name, rest.length ? ['...', rest[0]] : null])
+  }
+  // bind(thisArg, ...pre) → an arrow closing over the pre-bound args. When the
+  // callee's arity is known (a lifted top-level fn), mint EXPLICIT remaining
+  // params — a rest+spread arrow would hit the non-variadic spread-call limit.
+  const f = ctx.func.list.find(fn => fn.name === name)
+  if (f && !f.rest) {
+    const remaining = Math.max(0, f.sig.params.length - rest.length)
+    const ps = Array.from({ length: remaining }, () => `${T}b${ctx.func.uniq++}`)
+    return seq(['=>', ps.length ? ['()', argsSlot(ps)] : ['()', null],
+      ['()', name, argsSlot([...rest, ...ps])]])
+  }
+  const r = `${T}b${ctx.func.uniq++}`
+  return seq(['=>', ['()', ['...', r]], ['()', name, argsSlot([...rest, ['...', r]])]])
+}
+
+// `JSON.parse(src, reviver)` — the reviver argument was silently DROPPED
+// (module/json.js parses single-arg). Lower the two-arg form to an inline
+// IIFE that parses, then walks the result bottom-up applying the reviver
+// (ES §25.5.1 InternalizeJSONProperty). One divergence, documented: a
+// reviver returning undefined ASSIGNS undefined instead of deleting the
+// property (jz fixed-shape objects delete only dictionary keys).
+let jsonReviveTemplate = null
+function foldJsonReviver(callee, args) {
+  const isParse = callee === 'JSON.parse' ||
+    (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'JSON' && callee[2] === 'parse')
+  if (!isParse) return undefined
+  const list = handlerArgs(args)
+  if (list.length < 2 || list[1] == null) return undefined
+  // A literal null/undefined reviver is spec-ignored — keep the plain parse
+  // (the walk would otherwise closure-call a nullish value at runtime).
+  if (Array.isArray(list[1]) && list[1][0] == null && list[1][1] == null) return undefined
+  if (!ctx.transform.parse) err('JSON.parse with a reviver needs the jz pipeline (ctx.transform.parse)')
+  jsonReviveTemplate ??= ctx.transform.parse(`((s, r) => {
+    let walk
+    walk = (val) => {
+      if (Array.isArray(val)) {
+        for (let i = 0; i < val.length; i++) val[i] = r(String(i), walk(val[i]))
+      } else if (val !== null && typeof val === 'object') {
+        let ks = Object.keys(val)
+        for (let i = 0; i < ks.length; i++) { let k = ks[i]; val[k] = r(k, walk(val[k])) }
+      }
+      return val
+    }
+    return r("", walk(JSON.parse(s)))
+  })`)
+  // Fresh structural copy per site — prep mutates/renames in place.
+  // (Recursive copy, not structuredClone: the self-host kernel compiles this
+  // file and structuredClone is not a jz builtin.)
+  const cloneNode = (n) => Array.isArray(n) ? n.map(cloneNode) : n
+  const iife = cloneNode(jsonReviveTemplate)
+  const arrow = Array.isArray(iife) && iife[0] === '()' && iife.length === 2 ? iife[1] : iife
+  return prep(['()', arrow, [',', list[0], list[1]]])
+}
+
 // Compile-time namespace introspection on a `obj.prop(...)` callee:
 // `Array.isArray(NS)` on a bare builtin global folds to `false` (a namespace
 // value is never an array); `NS.hasOwnProperty("member")` on a builtin
@@ -1574,8 +1688,11 @@ function foldNamespaceIntrospection(callee, args) {
   if (obj === 'Array' && prop === 'isArray') {
     const cargs = handlerArgs(args)
     const a0 = cargs.length === 1 ? cargs[0] : null
+    // Fold to boolean `false`, not number 0 — `Array.isArray(Math) === false`
+    // must be true, and prepare keeps boolean identity (see the true/false
+    // literal notes at prep()).
     if (typeof a0 === 'string' && GLOBALS[a0] && !(scopes.length && isDeclared(a0)) && !hasFunc(a0))
-      return [, 0]
+      return [, false]
   }
   if (prop === 'hasOwnProperty' && typeof obj === 'string' && !(scopes.length && isDeclared(obj))) {
     const mod = ctx.scope.chain[obj]
@@ -1815,10 +1932,24 @@ const handlers = {
     const catchClause = clauses.find(c => Array.isArray(c) && c[0] === 'catch')
     const finallyClause = clauses.find(c => Array.isArray(c) && c[0] === 'finally')
     const tryBody = prep(body)
+    // A pattern catch param (`catch ({ x })`) binds via a minted temp + a
+    // destructuring decl prepended to the handler (mirrors defFunc's param
+    // patterns) — the raw pattern node is not a bindable catch local.
+    let cParam = catchClause?.[1], cHandler = catchClause?.[2]
+    if (catchClause && isDestructPattern(cParam)) {
+      const tmp = `${T}cp${ctx.func.uniq++}`
+      const declStmt = ['let', ['=', cParam, tmp]]
+      cHandler = Array.isArray(cHandler) && cHandler[0] === '{}'
+        ? (Array.isArray(cHandler[1]) && cHandler[1][0] === ';'
+          ? ['{}', [';', declStmt, ...cHandler[1].slice(1)]]
+          : ['{}', [';', declStmt, ...(cHandler[1] == null ? [] : [cHandler[1]])]])
+        : ['{}', [';', declStmt, cHandler]]
+      cParam = tmp
+    }
     // prep(handler) ONCE — it has side effects (uniq++, scope pushes, includes), so
     // the no-finally catch branch must reuse `caught`, not re-prep (FE-3 fix).
     const caught = catchClause
-      ? ['catch', tryBody, catchClause[1], prep(catchClause[2])]
+      ? ['catch', tryBody, cParam, prep(cHandler)]
       : tryBody
     return finallyClause ? ['finally', caught, prep(finallyClause[1])] : caught
   },
@@ -2190,19 +2321,12 @@ const handlers = {
     return result
   },
 
-  // Switch: prep discriminant and case values/bodies
-  // Parser appends fall-through flag (number) to case bodies — strip it
-  'switch'(discriminant, ...cases) {
-    const prepCase = body => {
-      if (Array.isArray(body) && body[0] === ';')
-        return prep([';', ...body.slice(1).filter(s => typeof s !== 'number')])
-      return prep(body)
-    }
-    return ['switch', prep(discriminant), ...cases.map(c => {
-      if (c[0] === 'case') return ['case', prep(c[1]), prepCase(c[2])]
-      if (c[0] === 'default') return ['default', prep(c[1])]
-      return prep(c)
-    })]
+  // Switch reaches prepare only when jzify was skipped (strict / .jz): default
+  // mode lowers every switch to the entry-index if-chain (jzify/switch.js). The
+  // language table keeps `switch` in the jzify ring, not the strict canonical
+  // subset — and the old native twin here mis-compiled `break` (no loop frame).
+  'switch'() {
+    return err('strict mode: `switch` is not in the canonical subset — use if/else chains (default mode lowers switch)')
   },
 
   // Optional chaining / typeof — need ptr module. Optional member access pulls
@@ -2309,6 +2433,8 @@ const handlers = {
     const folded = foldImportMetaResolve(callee, args)
       ?? dispatchConstructorCall(callee, args)
       ?? foldNamespaceIntrospection(callee, args)
+      ?? foldFnCallApplyBind(callee, args)
+      ?? foldJsonReviver(callee, args)
     if (folded !== undefined) return folded
 
     callee = resolveCallee(callee, args)
@@ -2334,8 +2460,12 @@ const handlers = {
     // preset table resolves statically instead of falling to the untyped
     // element dispatch. `Object.freeze` as a value (`arr.map(Object.freeze)`)
     // is not a call form and keeps the runtime emitter.
-    if (callee === 'Object.freeze' && preppedArgs.length === 1 && preppedArgs[0] != null)
+    if (callee === 'Object.freeze' && preppedArgs.length === 1 && preppedArgs[0] != null) {
+      // Record the (prepared, post-rename) binding so Object.isFrozen answers
+      // true for it — consistency, not enforcement (writes are not trapped).
+      if (typeof preppedArgs[0] === 'string') (ctx.runtime.frozenVars ??= new Set()).add(preppedArgs[0])
       return preppedArgs[0]
+    }
 
     const result = preppedArgs.length ? ['()', callee, ...preppedArgs] : ['()', callee, null]
 
@@ -2468,6 +2598,37 @@ const handlers = {
 
   // For loop
   'for'(head, body) {
+    // ES §14.7.4.7 CreatePerIterationEnvironment: a `let` declared in a classic
+    // for-HEAD gets a FRESH binding each iteration when closures capture it —
+    // `for (let i…) fns.push(() => i)` must capture 0,1,2, not the final value.
+    // Lower to the copy-in/copy-out shape (only when a body arrow actually
+    // references the head var — pay-per-capture):
+    //   for (let __i = 0; __i < n; __i++) { let i = __i; …body…; __i = i }
+    // The body-`let` then rides the existing per-iteration fresh-cell machinery
+    // (emitLoopFreshBoxed). Known edge, accepted: a closure inside the COND or
+    // STEP itself captures the carrier, not the per-iteration binding.
+    if (Array.isArray(head) && head[0] === ';' && Array.isArray(head[1]) && head[1][0] === 'let') {
+      const captured = []
+      for (let i = 1; i < head[1].length; i++) {
+        const d = head[1][i]
+        const nm = typeof d === 'string' ? d : (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? d[1] : null)
+        if (nm && bodyCapturesName(body, nm)) captured.push(nm)
+      }
+      if (captured.length) {
+        const carrier = new Map(captured.map(n => [n, `${n}${T}pi${ctx.func.uniq++}`]))
+        const renamed = (n) => substIdents(n, carrier)
+        const decl = ['let', ...head[1].slice(1).map(d => {
+          if (typeof d === 'string') return carrier.get(d) ?? d
+          if (Array.isArray(d) && d[0] === '=' && carrier.has(d[1])) return ['=', carrier.get(d[1]), d[2]]
+          return d
+        })]
+        const newHead = [';', decl, renamed(head[2]), renamed(head[3]), ...head.slice(4).map(renamed)]
+        const copyIn = ['let', ...captured.map(n => ['=', n, carrier.get(n)])]
+        const copyOut = captured.map(n => ['=', carrier.get(n), n])
+        const newBody = ['{}', [';', copyIn, body, ...copyOut]]
+        return handlers['for'](newHead, newBody)
+      }
+    }
     pushScope()
     // A comma/sequence Expression in a for-IN head RHS — `for (x in a, b)` — is valid (the RHS is
     // an Expression): evaluate left-to-right for side effects, value as the last element. (for-OF's
@@ -2529,7 +2690,10 @@ const handlers = {
       // Divergence from JS: mutating arr during iteration won't extend/shorten the loop.
       // jz philosophy: explicit > implicit; mutation during iteration is a code smell.
       const [, decl, src] = head
-      const varName = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const') ? decl[1] : decl
+      const isDeclHead = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const')
+      // `for ((x) of …)` — unwrap a cover-parenthesized target (mirrors for-in).
+      let ofLhs = decl; while (Array.isArray(ofLhs) && ofLhs[0] === '()' && ofLhs.length === 2) ofLhs = ofLhs[1]
+      const varName = isDeclHead ? decl[1] : ofLhs
       const idx = `${T}i${ctx.func.uniq++}`
       const lenVar = `${T}len${ctx.func.uniq++}`
       const arrVar = `${T}arr${ctx.func.uniq++}`
@@ -2543,7 +2707,14 @@ const handlers = {
       const decls = ['let', ['=', arrVar, ['()', '__iter_arr', src]], ['=', idx, [, 0]], ['=', lenVar, lenE]]
       const cond = ['<', idx, lenVar]
       const step = ['++', idx]
-      const inner = [';', ['let', ['=', varName, ['[]', arrVar, idx]]], body]
+      // Decl head (`for (let x of …)`) takes a fresh per-iteration binding;
+      // ASSIGNMENT head (`for (x of …)`, `for ([a] of …)`, `for (o.x of …)`,
+      // var-hoisted heads) must assign the EXISTING target — a `let` wrap
+      // shadowed it, so after-loop reads saw the stale outer value.
+      const bindStmt = isDeclHead
+        ? ['let', ['=', varName, ['[]', arrVar, idx]]]
+        : ['=', varName, ['[]', arrVar, idx]]
+      const inner = [';', bindStmt, body]
       r = prep(['for', [';', decls, cond, step], inner])
     } else if (Array.isArray(head) && head[0] === 'in') {
       // `for…in` relies on runtime key enumeration — outside the pure canonical subset. strict
@@ -2589,8 +2760,11 @@ const handlers = {
         ['=', ks, keysExpr],
         ['=', ix, [, 0]],
         ['=', lenV, ['|', ['.', ks, 'length'], [, 0]]]]
-      const bindEach = isMemberTarget
-        ? ['=', target, ['[]', ks, ix]]              // x.y = key / obj[k] = key
+      // Member targets AND assignment-form bare names (`for (k in o)`) assign
+      // the existing binding — a `let` wrap shadowed the outer k, so after-loop
+      // reads saw the stale value. Only decl heads take a fresh binding.
+      const bindEach = isMemberTarget || !isDecl
+        ? ['=', target, ['[]', ks, ix]]              // x.y = key / k = key (existing binding)
         : ['let', ['=', target, ['[]', ks, ix]]]     // let k = key  (fresh per-iteration binding)
       const forNode = ['for', [';', decls, ['<', ix, lenV], ['++', ix]],
         [';', bindEach, body]]

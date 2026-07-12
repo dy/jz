@@ -61,6 +61,7 @@ const TRACKED_LANGUAGE_DIRS = [
   'global-code',
   'source-text',
   'export',
+  'import',
 ]
 
 const COMPUTED_PROPERTY_NAME_OBJECT_TESTS = new Set([
@@ -143,14 +144,19 @@ function needsAssertHarness(content, rel = '') {
     content.includes('compareArray')
 }
 
-// Features to exclude entirely
+// Features to exclude entirely. CONTENT-based — keep this list to features with
+// NO clean jz rejection (silent-wrong risk) or whole absent protocols. Features
+// that reject cleanly ('not supported'/'not in scope'/…) need no pattern: the
+// runTest message allowlist absorbs them per-file. Unblanketed 2026-07-10:
+// this/class/super (jzify lowers; survivors reject cleanly), new.target (clean
+// reject), WeakMap/WeakSet (fold to Map/Set and run), for-of (supported over
+// Array/String/Map/Set/TypedArray; iterator-protocol tests absorb below).
 const EXCLUDED_PATTERNS = [
   /async/i, /await/, /generator/i, /yield/,
-  /\bthis\b/, /\bclass\b/, /\bsuper\b/, /reflect/i, /proxy/i,
-  /\bnew\b.*\btarget\b/, /\bwith\b/,
-  /\bWeak(Ref|Map|Set)\b/, /\bBigInt\b/i,
+  /reflect/i, /proxy/i, /\bwith\b/,
+  /\bWeakRef\b/, /\bBigInt\b/i,
   /iterator/i, /\bSymbol\b/, /symbol\.species/i, /symbol\.toPrimitive/i,
-  /symbol\.iterator/i, /for[\s-]*of/i,
+  /symbol\.iterator/i,
   /dynamic[\s-]*import/i, /import\.meta/i,
   /\bexport\s+default\b/,
 ]
@@ -161,8 +167,8 @@ const EXCLUDED_PATTERNS = [
 // (no blanket `this`/`class` ban) plus a feature-skip pass below.
 const CLASS_EXCLUDED_PATTERNS = [
   /async/i, /await/, /generator/i, /yield/, /\bsuper\b/, /reflect/i, /proxy/i,
-  /\bnew\b.*\btarget\b/, /\bWeak(Ref|Map|Set)\b/, /\bBigInt\b/i,
-  /iterator/i, /\bSymbol\b/, /for[\s-]*of/i,
+  /\bnew\b.*\btarget\b/, /\bWeakRef\b/, /\bBigInt\b/i,
+  /iterator/i, /\bSymbol\b/,
   /dynamic[\s-]*import/i, /import\.meta/i, /\bexport\s+default\b/,
 ]
 const isClassTest = (rel) => /\/(expressions|statements)\/class\//.test(rel)
@@ -323,6 +329,19 @@ const LEGACY_LANG_LIMITATIONS = new Map([
   ['test/language/statements/for-in/S12.6.4_A7_T2.js', 'property deleted mid for-in is still enumerated (snapshot, not live)'],
   ['test/language/statements/function/S13_A11_T3.js', 'delete of an arguments-object element'],
   ['test/language/statements/function/S13_A11_T4.js', 'delete of an arguments-object element'],
+  // Surfaced by the 2026-07-10 unblanketing (for-of / destructuring / this /
+  // class / WeakMap patterns removed) — each residual hits a specific corner.
+  ['test/language/statements/try/S12.14_A15.js', 'finally block with continue/break/return'],
+  ['test/language/statementList/class-regexp-literal.js', 'regex literal directly after class body — slash disambiguation parser gap (subscript)'],
+  ['test/language/statements/for-of/head-var-bound-names-let.js', 'let-as-identifier parser edge outside current jz scope'],
+  ['test/language/statements/for/scope-head-lex-open.js', 'for-head lexical-scope reference semantics (TDZ family) outside current jz scope'],
+  ['test/language/statements/for/head-let-destructuring.js', 'for-head let-destructuring block scoping outside current jz scope'],
+  ['test/language/statements/for-of/head-let-destructuring.js', 'for-head let-destructuring block scoping outside current jz scope'],
+  ['test/language/expressions/object/method-definition/name-invoke-fn-strict.js', 'extracted method-shorthand strict `this` (undefined) — jzify binds to the literal'],
+  ['test/language/computed-property-names/class/static/method-prototype.js', 'static computed key "prototype" TypeError not synthesized'],
+  ['test/language/computed-property-names/class/static/method-string-order.js', 'class static computed-key enumeration order outside schema model'],
+  ['test/language/expressions/new.target/asi.js', 'new.target parse shapes (ASI) outside jz scope'],
+  ['test/language/rest-parameters/with-new-target.js', 'new.target inside function body outside jz scope'],
 ])
 
 function shouldSkip(content, rel = '') {
@@ -348,7 +367,6 @@ function shouldSkip(content, rel = '') {
   if (/\bdo\s*;\s*while\b/.test(codeContent)) return 'do-while empty-statement parser gap'
   if (rel.includes('/optional-catch-binding')) return 'optional catch binding parser gap'
   if (rel.includes('/block-scope/shadowing/') && rel.includes('catch-parameter')) return 'catch parameter shadowing codegen gap'
-  if (rel.includes('/for-of/')) return 'for-of outside current jz scope'
   if (content.includes('for-in-order')) return 'for-in mutation-order semantics outside simple jz subset'
   if (rel.includes('/statements/for/head-lhs-let.js')) return 'let-as-identifier parser edge outside current jz scope'
   if (rel.includes('/statements/let/syntax/let.js')) return 'uninitialized lexical binding test outside current jz scope'
@@ -390,9 +408,44 @@ function shouldSkip(content, rel = '') {
   // The `RegExp` constructor/global isn't exposed by jz — regex is literal-only.
   // (Literal-dir tests are exempt: `instanceof RegExp` there folds to a constant.)
   else if (/\bRegExp\b/.test(codeContent)) return 'RegExp constructor/global unsupported'
-  if (/features:\s*\[[^\]]*destructuring-binding/.test(content) || rel.includes('/dstr/') || rel.includes('/destructuring/')) return 'destructuring binding outside current jz subset'
-  // Destructuring patterns in let/var/const declarators — `let [x]`, `let {x}` — outside jz subset.
-  if (/\b(let|var|const)\s*[\[{]/.test(codeContent)) return 'destructuring binding outside current jz subset'
+  // Destructuring/iterating null/undefined must throw TypeError (and TDZ reads
+  // ReferenceError) per spec; jz is deliberately permissive (nullish reads yield
+  // undefined, nullish iteration is empty — errors-are-values model, no TDZ).
+  // Scoped to the destructuring/for-of corpora where every such test asserts
+  // only the throw.
+  if (/assert\.throws\(\s*(TypeError|ReferenceError)/.test(codeContent) &&
+      (rel.includes('/dstr/') || rel.includes('/destructuring/') || rel.includes('/for-of/')))
+    return 'nullish destructuring/iteration TypeError (or TDZ ReferenceError) not synthesized (permissive by design)'
+  // Writes through a private METHOD reference must throw TypeError; jzify
+  // lowers #methods as plain fields, so the write silently succeeds.
+  if (rel.includes('left-hand-side-private-reference-method-'))
+    return 'private method reference write TypeError not synthesized (jzify lowers #methods as fields)'
+  // Mapped-arguments index aliasing (writes through arguments[i] alias params).
+  if (rel.includes('/for-of/arguments-mapped-aliasing')) return 'mapped arguments aliasing outside jz arguments model'
+  // for-of iterates by index over a hoisted snapshot; mutating the collection
+  // mid-iteration doesn't extend/shorten the walk (documented divergence in
+  // prepare's for-of lowering). The -contract/-expand files test exactly that.
+  if (rel.includes('/for-of/') && /-(contract|expand)\.js$|\/for-of\/set\.js$/.test(rel))
+    return 'for-of live-iteration mutation contract (documented divergence: snapshot/index iteration)'
+  // Member-expression targets in for-of heads / destructuring patterns
+  // (`for (obj.x of …)`, `[o.x] = arr` inside a for-of head) — recorded
+  // small-lowering gap (.work/extension-surface.md).
+  if (rel.includes('put-prop-ref') || rel.includes('/for-of/head-lhs-member') || rel.includes('/for-of/head-lhs-cover'))
+    return 'member-expression for-of/destructure target outside current lowering (recorded)'
+  // for-of over astral code points walks UTF-8 bytes (documented string model).
+  if (rel.includes('/for-of/string-astral')) return 'UTF-8 byte iteration (documented string model)'
+  // Per-iteration lexical binding closure — the recorded for-head let-capture item.
+  if (rel.includes('/for-of/scope-body-lex-close')) return 'per-iteration lexical closure (recorded let-capture plan item)'
+  // catch-param patterns (`catch ({ x })`) and `var`-pattern for-of heads don't
+  // bind yet (clean not-in-scope for plain shapes; the *-init-throws/-err
+  // variants exercise their throw paths) — recorded pattern-binding gaps.
+  if ((rel.includes('/try/dstr/') || (rel.includes('/for-of/dstr/') && rel.includes('/var-'))) &&
+      /-(init-throws|list-err|eval-err)\.js$/.test(rel))
+    return 'catch-param / for-of var-head pattern binding gap (recorded)'
+  // Computed pattern-key evaluation order corner.
+  if (rel.endsWith('/for-of/dstr/obj-prop-name-evaluation.js')) return 'pattern computed-key evaluation-order corner'
+  // super(...spread) forwarding is outside the jzify class lowering's ctor model.
+  if (rel.includes('/expressions/super/call-spread-')) return 'super(...spread) outside jzify class lowering'
   // Generator method shorthand (`*method() {}`) — frontmatter feature flag survives stripping.
   if (/features:\s*\[[^\]]*generators/.test(content)) return 'generator unsupported'
   if (rel.includes('/method-definition/generator-')) return 'generator method unsupported'
@@ -622,7 +675,11 @@ function shouldSkip(content, rel = '') {
   // phase), so they can't satisfy test262's negative-parse criteria — jz is a subset
   // compiler, not a JS syntax validator. Re-run scripts/neg-parse-audit if adding parse
   // surface, to confirm the 0-accepts invariant holds.
-  if (/negative:\s*\n\s+phase:\s+parse/.test(content)) return 'negative parse test'
+  // negative: phase: parse tests run in INVERTED mode (see runChunk) — jz must
+  // reject them; a clean compile is a silent-accept FAIL. (Audited 2026-05-29:
+  // jz rejects all 4389 — that correctness now COUNTS instead of hiding as
+  // skips. Runtime-phase negatives stay skipped: jz's permissive model doesn't
+  // synthesize most runtime TypeErrors — the documented divergence family.)
   if (/negative:\s*\n\s+phase:\s+runtime/.test(content)) return 'negative runtime test'
   // (Legacy Sputnik tests `throw new Test262Error(...)` directly — jz compiles
   // and runs that fine via ASSERT_HARNESS, so no skip is needed for them.)
@@ -643,6 +700,8 @@ function shouldSkip(content, rel = '') {
   if (/\busing\b/.test(codeContent)) return 'using keyword'
   // Multi-file module fixtures (not self-contained)
   if (content.includes('import ') && content.includes('_FIXTURE')) return 'fixture dependency'
+  // A fixture SUPPORT file itself (…_FIXTURE.js) is not a test.
+  if (/_FIXTURE\.js$/.test(rel)) return 'fixture support file'
   if (content.includes('import ') && /\bfrom\s+['"]\.\/[^'"]+_FIXTURE/.test(content)) return 'fixture dependency'
   if (content.includes('from ') && /\bfrom\s+['"]\.\/[^'"]+_FIXTURE/.test(content)) return 'fixture dependency'
   return null
@@ -678,6 +737,13 @@ function runTest(src, options = {}) {
     code = `${options.assertHarness ? ASSERT_HARNESS : ''}\n${code}`
   }
 
+  // Inverted mode for negative-parse tests: report whether jz REJECTS the
+  // source ('reject') or silently accepts it ('pass' — the caller fails it).
+  if (options.compileOnly) {
+    try { jz(code, { jzify: true }); return { status: 'pass' } }
+    catch (e) { return { status: 'reject', error: (e.message || '').slice(0, 80) } }
+  }
+
   try {
     const result = jz(code, { jzify: true })
     if (!result || !result.exports) return { status: 'fail', error: 'no output' }
@@ -689,6 +755,7 @@ function runTest(src, options = {}) {
     if (!msg) msg = (typeof e === 'string' ? e : (e?.toString?.() || JSON.stringify(e) || 'unknown'))
     // Compile-time errors for features jz intentionally doesn't support
     if (msg.includes('Unknown op') || msg.includes('not supported') ||
+        msg.includes('outside jz scope') || msg.includes('requires source with known schema') ||
         msg.includes('prohibited') || msg.includes('strict mode') ||
         msg.includes('Unknown tag') || msg.includes('Unknown func') ||
         msg.includes('Unknown local') || msg.includes('conflicts with a compiler internal') ||
@@ -791,9 +858,58 @@ function collectWork() {
 // former EXPECTED_FAIL entries were pruned and the baseline bumped 1428→1437.)
 const EXPECTED_FAIL_PREFIXES = [
 ]
+// Boolean kind-loss residue (2026-07-10): predicate-builtin kinds landed
+// (CALLEE_VAL BOOL entries — the isNaN()/isArray() families were pruned as
+// xpasses). What remains is the JOIN family: a boolean flowing through a
+// `??`/`||`/`&&`/`?:` with a non-bool arm loses its kind (VT's deliberate
+// numeric-context coercion rule, pinned by the vectorizer), so the raw 0/1
+// carrier then bit-compares against the TRUE/FALSE atom. Fix needs the bool
+// arm to atom-box at mixed joins, or a BOOL|OTHER lattice point — the
+// recorded carrier-design edge (extension-surface.md). Thrown-value compares
+// (`throw true; catch e === true`) are the same join through the throw slot.
+const BOOL_CARRIER = 'boolean kind loss at a mixed ??/||/&&/?: join or throw slot (raw 0/1 vs TRUE/FALSE atom) — carrier-design edge'
 const EXPECTED_FAIL_FILES = new Map([
   ['test/language/statements/function/13.2-2-s.js',
     'strict-mode write to function `.caller` must throw TypeError — function-object/strict-mode property semantics out of scope'],
+  ...[
+    'test/language/expressions/coalesce/chainable-with-bitwise-and.js',
+    'test/language/expressions/coalesce/chainable-with-bitwise-or.js',
+    'test/language/expressions/coalesce/chainable-with-bitwise-xor.js',
+    'test/language/expressions/coalesce/short-circuit-number-false.js',
+    'test/language/expressions/coalesce/short-circuit-number-true.js',
+    'test/language/expressions/logical-or/S11.11.2_A2.1_T4.js',
+    'test/language/expressions/logical-or/S11.11.2_A4_T4.js',
+    'test/language/literals/regexp/S7.8.5_A3.1_T1.js',
+    'test/language/literals/regexp/S7.8.5_A3.1_T4.js',
+    'test/language/literals/regexp/S7.8.5_A3.1_T5.js',
+    'test/language/literals/regexp/S7.8.5_A3.1_T6.js',
+    'test/language/statements/throw/S12.13_A2_T3.js',
+    'test/language/statements/try/S12.14_A18_T3.js',
+    'test/language/expressions/logical-and/S11.11.1_A2.1_T4.js',
+    'test/language/function-code/S10.2.1_A1.js',
+    'test/language/literals/regexp/S7.8.5_A3.1_T2.js',
+    'test/language/literals/regexp/S7.8.5_A3.1_T3.js',
+    'test/language/statements/throw/S12.13_A3_T1.js',
+  ].map(f => [f, BOOL_CARRIER]),
+  // Array.isArray of a REST-pattern result (derived from a typed-PROMOTED array
+  // literal) answers false at O2+ — the promotion pass's isArray disqualifier
+  // tracks direct names only, not derived values. Recorded optimizer gap
+  // (.work/extension-surface.md); a blanket skip demoted real passes, so the
+  // exact failing files ride xfail until the derived-name flow lands.
+  ...[
+    'test/language/statements/const/dstr/ary-ptrn-rest-id-direct.js',
+    'test/language/statements/const/dstr/ary-ptrn-rest-id-exhausted.js',
+    'test/language/statements/for/dstr/const-ary-ptrn-rest-id-direct.js',
+    'test/language/statements/for/dstr/const-ary-ptrn-rest-id-exhausted.js',
+    'test/language/statements/for/dstr/let-ary-ptrn-rest-id-direct.js',
+    'test/language/statements/for/dstr/let-ary-ptrn-rest-id-exhausted.js',
+    'test/language/statements/for/dstr/var-ary-ptrn-rest-id-direct.js',
+    'test/language/statements/for/dstr/var-ary-ptrn-rest-id-exhausted.js',
+    'test/language/statements/let/dstr/ary-ptrn-rest-id-direct.js',
+    'test/language/statements/let/dstr/ary-ptrn-rest-id-exhausted.js',
+    'test/language/statements/variable/dstr/ary-ptrn-rest-id-direct.js',
+    'test/language/statements/variable/dstr/ary-ptrn-rest-id-exhausted.js',
+  ].map(f => [f, 'Array.isArray of promotion-derived rest array — recorded optimizer gap (derived-name isArray disqualifier)']),
 ])
 function expectedFailReason(rel) {
   if (EXPECTED_FAIL_FILES.has(rel)) return EXPECTED_FAIL_FILES.get(rel)
@@ -807,12 +923,27 @@ function expectedFailReason(rel) {
 // are identical to running the same files sequentially.
 function runChunk(items) {
   const perDir = Object.create(null)
-  const fails = [], xfails = [], xpasses = []
-  const dirOf = (subdir) => perDir[subdir] || (perDir[subdir] = { pass: 0, fail: 0, skip: 0, xfail: 0 })
+  const fails = [], xfails = [], xpasses = [], negaccepts = []
+  const dirOf = (subdir) => perDir[subdir] || (perDir[subdir] = { pass: 0, fail: 0, skip: 0, xfail: 0, negpass: 0, negaccept: 0 })
   for (const { file, rel, subdir } of items) {
     const d = dirOf(subdir)
     try {
       const src = readFileSync(file, 'utf-8')
+      // negative: phase: parse — INVERTED: jz should reject at compile. Any
+      // rejection counts (jz is a subset compiler, not a syntax validator —
+      // its own curated error stands in for the spec's SyntaxError class).
+      // A clean compile is a SILENT ACCEPT: invalid JS that jz runs anyway —
+      // a real (measured, tracked) dent in "valid jz is valid JS", but NOT a
+      // miscompile, so it rides its own class instead of gating `fail`.
+      // (Early-error grammar rules — duplicate params, invalid assignment
+      // targets, reserved-word edges — are exactly what a subset compiler
+      // does not enforce.)
+      if (/negative:\s*\n\s+phase:\s+parse/.test(src)) {
+        const { status } = runTest(src, { compileOnly: true })
+        if (status === 'reject') d.negpass++
+        else { d.negaccept++; negaccepts.push(rel) }
+        continue
+      }
       if (shouldSkip(src, rel)) { d.skip++; continue }
       const { status, error } = runTest(src, { assertHarness: needsAssertHarness(src, rel) })
       if (status === 'fail') {
@@ -827,7 +958,7 @@ function runChunk(items) {
       d.skip++
     }
   }
-  return { perDir, fails, xfails, xpasses }
+  return { perDir, fails, xfails, xpasses, negaccepts }
 }
 
 if (!isMainThread) {
@@ -861,34 +992,43 @@ if (!isMainThread) {
 
   // Merge worker tallies with the dir-level skips counted during collection.
   const perDir = Object.create(null)
-  const dirOf = (subdir) => perDir[subdir] || (perDir[subdir] = { pass: 0, fail: 0, skip: 0, xfail: 0 })
+  const dirOf = (subdir) => perDir[subdir] || (perDir[subdir] = { pass: 0, fail: 0, skip: 0, xfail: 0, negpass: 0, negaccept: 0 })
   for (const subdir in dirSkip) dirOf(subdir).skip += dirSkip[subdir]
-  const fails = [], xfails = [], xpasses = []
-  for (const { perDir: wd, fails: wf, xfails: wxf, xpasses: wxp } of chunkResults) {
+  const fails = [], xfails = [], xpasses = [], negaccepts = []
+  for (const { perDir: wd, fails: wf, xfails: wxf, xpasses: wxp, negaccepts: wna } of chunkResults) {
     for (const subdir in wd) {
       const d = dirOf(subdir)
       d.pass += wd[subdir].pass
       d.fail += wd[subdir].fail
       d.skip += wd[subdir].skip
       d.xfail += wd[subdir].xfail
+      d.negpass += wd[subdir].negpass || 0
+      d.negaccept += wd[subdir].negaccept || 0
     }
     fails.push(...wf)
     xfails.push(...(wxf || []))
     xpasses.push(...(wxp || []))
+    negaccepts.push(...(wna || []))
   }
 
-  const results = { pass: 0, fail: 0, skip: 0, xfail: 0 }
+  const results = { pass: 0, fail: 0, skip: 0, xfail: 0, negpass: 0, negaccept: 0 }
   for (const subdir of DIRS) {
     const d = perDir[subdir]
     if (!d) continue
     results.pass += d.pass; results.fail += d.fail; results.skip += d.skip; results.xfail += d.xfail
+    results.negpass += d.negpass || 0
+    results.negaccept += d.negaccept || 0
     const xf = d.xfail ? ` xfail=${d.xfail}` : ''
-    console.log(`  ${subdir}/: ${d.pass + d.fail + d.skip + d.xfail} tests (pass=${d.pass} fail=${d.fail} skip=${d.skip}${xf})`)
+    const np = d.negpass ? ` negreject=${d.negpass}` : ''
+    const na = d.negaccept ? ` negaccept=${d.negaccept}` : ''
+    console.log(`  ${subdir}/: ${d.pass + d.fail + d.skip + d.xfail + (d.negpass || 0) + (d.negaccept || 0)} tests (pass=${d.pass} fail=${d.fail} skip=${d.skip}${xf}${np}${na})`)
   }
-  const total = results.pass + results.fail + results.skip + results.xfail
+  const total = results.pass + results.fail + results.skip + results.xfail + results.negpass + results.negaccept
 
   console.log(`\n── Results ── (${((Date.now() - t0) / 1000).toFixed(1)}s)`)
   console.log(`  Pass:          ${results.pass}`)
+  console.log(`  Neg-reject:    ${results.negpass} (negative-parse tests jz correctly REFUSES — the curated error stands in for SyntaxError)`)
+  console.log(`  Neg-accept:    ${results.negaccept} (invalid JS jz COMPILES — early-error grammar a subset compiler doesn't enforce; tracked, not gated — the honest dent in "valid jz is valid JS")`)
   console.log(`  Fail:          ${results.fail}`)
   console.log(`  Skip:          ${results.skip}`)
   console.log(`  Xfail:         ${results.xfail} (out-of-scope / upstream parser gaps — see below)`)
@@ -898,6 +1038,8 @@ if (!isMainThread) {
   const overallCoverage = allTest262Files ? (results.pass / allTest262Files * 100).toFixed(1) : '0.0'
   console.log(`\n  Language coverage (pass / language JS files): ${languageCoverage}% (${results.pass}/${languageTest262Files})`)
   console.log(`  Overall test262 coverage (pass / all JS files): ${overallCoverage}% (${results.pass}/${allTest262Files})`)
+  const handled = results.pass + results.negpass
+  console.log(`  Handled incl. negative rejections ((pass+negreject) / language): ${(handled / languageTest262Files * 100).toFixed(1)}% (${handled}/${languageTest262Files})`)
 
   if (fails.length) {
     console.log(`\n── In-scope failures (should be 0) ──`)

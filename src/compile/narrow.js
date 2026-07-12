@@ -1000,6 +1000,23 @@ export default function narrowSignatures(programFacts, ast) {
   // narrowing stays below — it benefits from i32 params being narrowed first.
   const funcsWithNarrowableResult = narrowableFuncs(valueUsed)
   narrowValResults(funcsWithNarrowableResult)
+  // Own-default typed annotation: `(arr = new Int32Array(0)) => …` self-declares
+  // the param's element ctor — the ONLY evidence a host-called export can carry
+  // (no call sites to lattice over; Workers v1 SPMD kernels are exactly this
+  // shape). A WEAK seed: set only at BOTTOM, so call-site facts merge/poison
+  // over it as usual. Runtime safety for Atomics receivers is the tag+elem
+  // guard in __atomics_addr (module/atomics.js) — a wrong host arg throws.
+  for (const func of ctx.func.list) {
+    if (!func.sig?.params || !func.defaults) continue
+    for (let k = 0; k < func.sig.params.length; k++) {
+      const d = func.defaults[func.sig.params[k].name]
+      if (Array.isArray(d) && d[0] === '()' && typeof d[1] === 'string' &&
+          d[1].startsWith('new.') && d[1].endsWith('Array')) {
+        const r = ensureParamRep(paramReps, func.name, k)
+        if (r.typedCtor === undefined) r.typedCtor = d[1]
+      }
+    }
+  }
   runFixpoint()
   runFixpoint()
 

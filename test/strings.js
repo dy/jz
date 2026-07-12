@@ -1158,3 +1158,12 @@ test('SSO hash mix: clamp (h<=1 -> h+=2) holds for both JS and WAT by constructi
   }
   ok(minSeen >= 2, `strHashLiteral never returns the 0/1 sentinels (min seen: ${minSeen})`)
 })
+
+// String.prototype.normalize — identity (all normalization forms are identity on
+// ASCII; jz strings are UTF-8 bytes, no Unicode tables — README divergences).
+// Was a compile crash: the autoload tuple lacked the fallback's array dep.
+test('strings: normalize is identity (typed + generic receivers)', () => {
+  is(run(`export let f = () => "héllo".normalize().length`).f(), 6)      // utf-8 bytes
+  is(run(`export let f = () => "abc".normalize("NFD") === "abc" ? 1 : 0`).f(), 1)
+  is(run(`export let f = (s) => s.normalize().length`).f !== undefined, true)
+})

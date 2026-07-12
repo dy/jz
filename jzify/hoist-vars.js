@@ -41,6 +41,10 @@ export function hoistVars(node, names) {
     if (Array.isArray(lhs) && lhs[0] === 'var' && typeof lhs[1] === 'string' && lhs.length === 2) {
       names.add(lhs[1])
       lhs = lhs[1]
+    } else if (Array.isArray(lhs) && lhs[0] === 'var' && lhs.length === 2 && isDestructurePat(lhs[1])) {
+      // `for (var [a, b] of …)` — hoist the pattern's bindings, keep an
+      // assignment-form head (the generic var branch DROPPED the declarator).
+      lhs = hoistVarPattern(lhs[1], names)
     } else {
       lhs = hoistVars(lhs, names)
     }
@@ -66,6 +70,12 @@ export function hoistVars(node, names) {
         (head[1][0] === 'in' || head[1][0] === 'of') && typeof head[1][1] === 'string') {
       names.add(head[1][1])
       h2 = [head[1][0], head[1][1], hoistVars(head[1][2], names)]
+    } else if (Array.isArray(head) && head[0] === 'var' && Array.isArray(head[1]) &&
+        (head[1][0] === 'in' || head[1][0] === 'of') && isDestructurePat(head[1][1])) {
+      // `for (var [a, b] of …)` / `for (var {x} in …)` — hoist the pattern's
+      // bindings, keep an assignment-form head (a silently DROPPED head here
+      // was the "'y' is not in scope" class).
+      h2 = [head[1][0], hoistVarPattern(head[1][1], names), hoistVars(head[1][2], names)]
     } else if (Array.isArray(head) && head[0] === ';') {
       h2 = [';']
       for (let i = 1; i < head.length; i++) h2.push(hoistVars(head[i], names))
@@ -82,6 +92,13 @@ export function hoistVars(node, names) {
       if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
         names.add(d[1])
         decls.push(['=', d[1], hoistVars(d[2], names)])
+        continue
+      }
+      // `var [a, b] = src` / `var {x} = src` — hoist every pattern binding,
+      // keep the declarator as an assignment-form destructure (a silently
+      // DROPPED declarator here was the "'b' is not in scope" class).
+      if (Array.isArray(d) && d[0] === '=' && isDestructurePat(d[1])) {
+        decls.push(['=', hoistVarPattern(d[1], names), hoistVars(d[2], names)])
       }
     }
     if (decls.length === 0) return null
@@ -138,6 +155,21 @@ export function hoistPattern(node, names) {
   if (op === ':') return [':', hoistVars(node[1], names), hoistPattern(node[2], names)]
   if (op === '...') return ['...', hoistPattern(node[1], names)]
   if (op === '[]' || op === '{}' || op === ',') return [op, ...node.slice(1).map(n => hoistPattern(n, names))]
+  return hoistVars(node, names)
+}
+
+// `var`-declared pattern: every bare leaf in binding position is a hoisted
+// name (the declarator itself becomes a plain assignment). let/const patterns
+// keep hoistPattern above — their names are declared by the surviving `let`,
+// so collecting them here would predeclare duplicates.
+function hoistVarPattern(node, names) {
+  if (typeof node === 'string') { names.add(node); return node }
+  if (node == null || !Array.isArray(node)) return node
+  const op = node[0]
+  if (op === '=') return ['=', hoistVarPattern(node[1], names), hoistVars(node[2], names)]
+  if (op === ':') return [':', hoistVars(node[1], names), hoistVarPattern(node[2], names)]
+  if (op === '...') return ['...', hoistVarPattern(node[1], names)]
+  if (op === '[]' || op === '{}' || op === ',') return [op, ...node.slice(1).map(n => hoistVarPattern(n, names))]
   return hoistVars(node, names)
 }
 

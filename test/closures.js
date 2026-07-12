@@ -1183,3 +1183,32 @@ export let g = () => t[0](5) + t[0](1, 2)`)
   // t[0](5): k omitted → undefined → (5 + undefined)|0 = 0; t[0](1,2) = 3
   is(g(), 3)
 })
+
+// f.call/apply/bind on a proven function binding lowers statically (prepare
+// foldFnCallApplyBind, 2026-07-10): thisArg is dead for jz functions (no
+// `this`), kept only for side effects. Previously .call/.apply silently
+// returned undefined and .bind trapped (table OOB). A user object's own
+// `call` property keeps the runtime path.
+test('closures: call/apply/bind static lowering', () => {
+  is(run(`let g = (a, b) => a + b; export let f = () => g.call(null, 1, 2)`).f(), 3)
+  is(run(`let g = (a, b) => a + b; export let f = () => g.apply(null, [3, 4])`).f(), 7)
+  is(run(`let g = (a, b) => a + b; let h = g.bind(null, 10); export let f = () => h(5)`).f(), 15)
+  is(run(`let g = (...xs) => xs.length; let h = g.bind(null, 1, 2); export let f = () => h(3)`).f(), 3)
+  is(run(`let g = (...xs) => xs.length; let xs = [1, 2, 3]; export let f = () => g.apply(null, xs)`).f(), 3)
+  // thisArg side effects are preserved via comma-sequencing
+  is(run(`let n = 0; let bump = () => ++n; let g = (a) => a; export let f = () => g.call(bump(), 7) + n * 100`).f(), 107)
+  // a user object's own .call property is NOT hijacked
+  is(run(`let o = { call: (x) => x * 2 }; export let f = () => o.call(21)`).f(), 42)
+})
+
+// ES §14.7.4.7 per-iteration bindings (2026-07-10): a for-head `let` captured
+// by a body closure gets a FRESH binding per iteration (copy-in/copy-out
+// lowering in prepare; the body-let rides emitLoopFreshBoxed). Uncaptured
+// heads keep the single-cell fast path — pay-per-capture.
+test('closures: for-head let captures per-iteration binding', () => {
+  is(run(`export let f = () => { let fs = []; for (let i = 0; i < 3; i++) fs.push(() => i); return fs[0]() * 100 + fs[1]() * 10 + fs[2]() }`).f(), 12)
+  // in-body mutation is visible to that iteration's closure, and the step
+  // runs on the NEXT binding (JS ground truth: 135)
+  is(run(`export let f = () => { let fs = []; for (let i = 0; i < 6; i += 1) { fs.push(() => i); i += 1 } return fs[0]() * 100 + fs[1]() * 10 + fs[2]() }`).f(), 135)
+  is(run(`export let f = () => { let fs = []; for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) fs.push(() => i * 10 + j); return fs[0]() + fs[3]() }`).f(), 11)
+})

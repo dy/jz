@@ -88,15 +88,26 @@ const TRACKED_BUILTIN_PATHS = [
   'Array/prototype/some',
   'Array/prototype/splice',
   'Array/prototype/unshift',
+  'Array/prototype/toSorted',
+  'Array/prototype/toReversed',
+  'Array/prototype/with',
+  'Array/prototype/copyWithin',
   'Object/keys',
   'Object/values',
   'Object/entries',
   'Object/assign',
   'Object/fromEntries',
+  'Object/groupBy',
+  'Map/groupBy',
   'Date/UTC',
   'Date/prototype/getTime',
   'Date/prototype/valueOf',
   'Date/prototype/setTime',
+  // UTC-clean stringifiers only: toDateString/toTimeString/toString are local-TZ
+  // shapes in test262 fixtures — jz is UTC-only (documented divergence).
+  'Date/prototype/toISOString',
+  'Date/prototype/toUTCString',
+  'Date/prototype/toJSON',
   'Map/prototype/clear',
   'Map/prototype/delete',
   'Map/prototype/get',
@@ -108,6 +119,13 @@ const TRACKED_BUILTIN_PATHS = [
   'Set/prototype/delete',
   'Set/prototype/has',
   'Set/prototype/size',
+  'Set/prototype/union',
+  'Set/prototype/intersection',
+  'Set/prototype/difference',
+  'Set/prototype/symmetricDifference',
+  'Set/prototype/isSubsetOf',
+  'Set/prototype/isSupersetOf',
+  'Set/prototype/isDisjointFrom',
   'ArrayBuffer',
   'DataView/prototype/getUint8',
   'DataView/prototype/getInt8',
@@ -126,6 +144,7 @@ const TRACKED_BUILTIN_PATHS = [
   'DataView/prototype/setFloat32',
   'DataView/prototype/setFloat64',
   'RegExp/prototype/exec',
+  'RegExp/escape',
   'Boolean',
   'BigInt',
   'parseInt',
@@ -138,6 +157,51 @@ const TRACKED_BUILTIN_PATHS = [
   'NaN',
   'undefined',
   'Symbol',
+  // Implemented-but-untracked pools wired 2026-07-10 (extension-surface plan):
+  // typed arrays are jz's flagship type — its full prototype surface has real
+  // implementations (module/typedarray.js incl. the ES2023 change-by-copy trio
+  // plain Array still lacks); WeakMap/WeakSet fold to Map/Set (documented);
+  // RegExp beyond exec: literal-based flags/source/test surfaces. Tests using
+  // harness helpers (testTypedArray.js etc.) absorb as not-in-scope skips.
+  'TypedArray/prototype/at',
+  'TypedArray/prototype/copyWithin',
+  'TypedArray/prototype/every',
+  'TypedArray/prototype/fill',
+  'TypedArray/prototype/filter',
+  'TypedArray/prototype/find',
+  'TypedArray/prototype/findIndex',
+  'TypedArray/prototype/findLast',
+  'TypedArray/prototype/findLastIndex',
+  'TypedArray/prototype/forEach',
+  'TypedArray/prototype/includes',
+  'TypedArray/prototype/indexOf',
+  'TypedArray/prototype/join',
+  'TypedArray/prototype/lastIndexOf',
+  'TypedArray/prototype/map',
+  'TypedArray/prototype/reduce',
+  'TypedArray/prototype/reduceRight',
+  'TypedArray/prototype/reverse',
+  'TypedArray/prototype/set',
+  'TypedArray/prototype/slice',
+  'TypedArray/prototype/some',
+  'TypedArray/prototype/sort',
+  'TypedArray/prototype/subarray',
+  'TypedArray/prototype/toReversed',
+  'TypedArray/prototype/toSorted',
+  'TypedArray/prototype/with',
+  'WeakMap/prototype/get',
+  'WeakMap/prototype/set',
+  'WeakMap/prototype/has',
+  'WeakMap/prototype/delete',
+  'WeakSet/prototype/add',
+  'WeakSet/prototype/has',
+  'WeakSet/prototype/delete',
+  'RegExp/prototype/test',
+  'RegExp/prototype/source',
+  'RegExp/prototype/flags',
+  'RegExp/prototype/global',
+  'RegExp/prototype/sticky',
+  'RegExp/prototype/unicode',
 ]
 
 const FUNCTIONAL_TESTS = new Set([
@@ -633,6 +697,31 @@ const EXPECTED_FAIL_PREFIXES = [
   ['built-ins/Symbol/', 'Symbol primitive semantics — out of scope'],
 ]
 const EXPECTED_FAIL_FILES = new Map([
+  // ES2025 Set algebra — jz accepts real Set/Map operands only; arbitrary
+  // "set-likes" (GetSetRecord: any object with size/has/keys) are out of the
+  // value model (no dynamic method protocol on plain objects).
+  ['built-ins/Set/prototype/union/called-with-object.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  ['built-ins/Set/prototype/union/keys-is-callable.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  ['built-ins/Set/prototype/intersection/called-with-object.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  ['built-ins/Set/prototype/intersection/keys-is-callable.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  ['built-ins/Set/prototype/difference/called-with-object.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  ['built-ins/Set/prototype/difference/keys-is-callable.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  ['built-ins/Set/prototype/symmetricDifference/called-with-object.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  ['built-ins/Set/prototype/symmetricDifference/keys-is-callable.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  ['built-ins/Set/prototype/isSubsetOf/called-with-object.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  ['built-ins/Set/prototype/isSubsetOf/keys-is-callable.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  ['built-ins/Set/prototype/isSupersetOf/called-with-object.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  ['built-ins/Set/prototype/isSupersetOf/keys-is-callable.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  ['built-ins/Set/prototype/isDisjointFrom/called-with-object.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  ['built-ins/Set/prototype/isDisjointFrom/keys-is-callable.js', 'Set-like GetSetRecord operand — out of scope (real Set/Map only)'],
+  // RegExp.escape — jz strings are UTF-8 bytes: the spec's \\uXXXX escaping of
+  // astral/whitespace/lineterminator code points cannot arise byte-wise (non-ASCII
+  // bytes are never regex-special and pass through).
+  ['built-ins/RegExp/escape/escaped-lineterminator.js', 'RegExp.escape non-ASCII \\u-escaping — out of scope (byte-wise strings)'],
+  ['built-ins/RegExp/escape/escaped-surrogates.js', 'RegExp.escape non-ASCII \\u-escaping — out of scope (byte-wise strings)'],
+  ['built-ins/RegExp/escape/escaped-whitespace.js', 'RegExp.escape non-ASCII \\u-escaping — out of scope (byte-wise strings)'],
+  // Array.of.call(CustomCtor, …) — this-constructor protocol on builtins
+  ['built-ins/Array/of/return-a-custom-instance.js', 'builtin .call with custom this-constructor — out of scope'],
   // JSON.parse — ToString-coerces a non-string argument
   ['built-ins/JSON/parse/text-non-string-primitive.js', 'JSON.parse non-string-arg ToString coercion — out of scope'],
   ['built-ins/JSON/parse/text-object.js', 'JSON.parse non-string-arg ToString coercion — out of scope'],
@@ -656,18 +745,17 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/JSON/stringify/value-object-circular.js', 'JSON.stringify circular-reference detection — out of scope'],
   ['built-ins/JSON/stringify/value-symbol.js', 'JSON.stringify of Symbol value — out of scope'],
   // String
-  ['built-ins/String/fromCharCode/touint16-tonumber-throws-bigint.js', 'BigInt-arg ToNumber throw — out of scope'],
   ['built-ins/String/prototype/indexOf/S15.5.4.7_A1_T9.js', 'String wrapper-object ToPrimitive coercion — out of scope'],
+  ['built-ins/String/prototype/indexOf/position-tointeger.js', 'String indexOf position object ToPrimitive coercion — out of scope'],
   ['built-ins/String/prototype/indexOf/searchstring-tostring.js', 'String(object) is JSON-ish, not "[object Object]" — documented divergence (boolean/number/null/undefined/array needles all coerce correctly)'],
   // Array
   ['built-ins/Array/from/elements-added-after.js', 'live iterator protocol — out of scope'],
   ['built-ins/Array/prototype/concat/create-ctor-non-object.js', 'Symbol.species constructor lookup — out of scope'],
+  ['built-ins/Array/isArray/15.4.3.2-0-2.js', 'builtin function .length reflection — out of scope (function-object property semantics)'],
   // Object — function objects, array-likes, dynamic schema, iterable coercion
   ['built-ins/Object/keys/15.2.3.14-3-2.js', 'Object.keys on function object — out of scope'],
   ['built-ins/Object/keys/15.2.3.14-3-4.js', 'Object.keys on arguments/array-like — out of scope'],
   ['built-ins/Object/assign/OnlyOneArgument.js', 'primitive ToObject boxing — out of scope'],
-  ['built-ins/Object/assign/assignment-to-readonly-property-of-target-must-throw-a-typeerror-exception.js', 'Object.assign dynamic target schema — out of scope'],
-  ['built-ins/Object/fromEntries/string-entry-primitive-throws.js', 'Object.fromEntries iterable/entry coercion — out of scope'],
   ['built-ins/Object/fromEntries/string-entry-string-object-succeeds.js', 'Object.fromEntries iterable/entry coercion — out of scope'],
   ['built-ins/Object/fromEntries/supports-symbols.js', 'Object.fromEntries Symbol keys — out of scope'],
   // parseInt / parseFloat

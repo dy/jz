@@ -69,7 +69,7 @@ import plan from './plan/index.js'
 import { foldStaticConstAggregates } from './plan/literals.js'
 import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
-  pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadElTable,
+  pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadLazyTables,
 } from '../wat/assemble.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 
@@ -1999,10 +1999,10 @@ export default function compile(ast, profiler) {
       [`${ty}.const`, g.init]]
   }))
 
-  // Drop the Eisel-Lemire decimal table if no live code parses decimals at runtime — must
-  // run after sec.globals/funcs are final (exact reachability) and before the data segment
-  // below serializes ctx.runtime.data. See stripDeadElTable.
-  stripDeadElTable(sec)
+  // Drop the lazy conversion tables (EL decimal→f64, Ryū float→decimal) whose owner
+  // functions no live code calls — must run after sec.globals/funcs are final (exact
+  // reachability) and before the data segment below serializes ctx.runtime.data.
+  stripDeadLazyTables(sec)
 
   // Data segments (after emit — string literals append to ctx.runtime.data / strPool during emit)
   // Active segment at address 0 — skipped for shared memory (would collide across modules)
@@ -2017,6 +2017,28 @@ export default function compile(ast, profiler) {
   }
   if (ctx.runtime.data && !ctx.memory.shared)
     sec.data.push(['data', ['i32.const', 0], '"' + escBytes(ctx.runtime.data) + '"'])
+  // Shared memory: no active segment at 0 (instances would collide) — ship the
+  // static region (static strings + lazy conversion tables) as a PASSIVE segment,
+  // memory.init it into __alloc'd space at start, and rebase its consumers:
+  // $__staticBase for __static_str, plus each surviving table global (their
+  // declared inits hold offsets WITHIN the region — see injectTable/strip).
+  else if (ctx.runtime.data && ctx.memory.shared && ctx.scope.globals.has('__staticBase')) {
+    const len = ctx.runtime.data.length
+    sec.data.push(['data', '$__staticData', '"' + escBytes(ctx.runtime.data) + '"'])
+    const inits = [
+      ['global.set', '$__staticBase', ['call', '$__alloc', ['i32.const', len]]],
+      ['memory.init', '$__staticData', ['global.get', '$__staticBase'], ['i32.const', 0], ['i32.const', len]],
+      ['data.drop', '$__staticData'],
+      ...(ctx.runtime.lazySpans || []).map(t => ['global.set', `$${t.global}`,
+        ['i32.add', ['global.get', '$__staticBase'], ['i32.const', ctx.scope.globals.get(t.global)?.init || 0]]]),
+    ]
+    let startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
+    if (!startFn) sec.start.push(startFn = ['func', '$__start'], ['start', '$__start'])
+    // insert after the local decls, before any init code (module init may stringify)
+    let at = 2
+    while (at < startFn.length && Array.isArray(startFn[at]) && startFn[at][0] === 'local') at++
+    startFn.splice(at, 0, ...inits)
+  }
   // Passive segment for shared-memory string literals (copied via memory.init at runtime)
   if (ctx.runtime.strPool)
     sec.data.push(['data', '$__strPool', '"' + escBytes(ctx.runtime.strPool) + '"'])

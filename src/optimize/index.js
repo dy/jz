@@ -33,7 +33,7 @@ import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, f64Range
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 const DBG_DSR = typeof process !== 'undefined' && !!process.env?.JZ_DBG_DSR
 const DBG_UNSWITCH = typeof process !== 'undefined' && (process.env?.JZ_DBG_UNSWITCH || null)
-import { T, isLeaf, stableKey } from '../ast.js'
+import { T, isLeaf, stableNodeKey } from '../ast.js'
 import { vectorizeLaneLocal, inlinePureCallExpr } from './vectorize.js'
 import { recursionUnroll } from './recurse.js'
 export { SIMD_PINNED, inlinePureFnsInFn } from './vectorize.js'
@@ -1254,10 +1254,12 @@ export function hoistInvariantLoop(fn) {
       if (!Array.isArray(node)) return
       if (node[0] === 'loop') return  // already processed bottom-up
       if (isHoistable(node) && (refcount.get(node) || 0) <= 1 && (refcount.get(parent) || 0) <= 1) {
-        // stableKey: hoistable boxed-pointer subtrees carry i64.const NaN-box prefixes
-        // (BigInt) that plain JSON.stringify can't serialize, and it also collapses
-        // Infinity/-Infinity/NaN→null & -0→0 — both would dedup distinct invariants.
-        const key = JSON.stringify(node, stableKey)
+        // stableNodeKey: hoistable boxed-pointer subtrees carry i64.const NaN-box
+        // prefixes (BigInt) that plain JSON.stringify can't serialize, and it also
+        // collapses Infinity/-Infinity/NaN→null & -0→0 — both would dedup distinct
+        // invariants. (A replacer-based stringify was silently replacer-less
+        // in-kernel — the recursive keyer behaves identically host and kernel.)
+        const key = stableNodeKey(node)
         let arr = sites.get(key); if (!arr) { arr = []; sites.set(key, arr) }
         arr.push({ parent, idx, node })
         return

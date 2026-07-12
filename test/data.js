@@ -931,3 +931,125 @@ test('Regression: negative literal index reads undefined, not heap (array + type
   is(deep(), 7)
   is(inb(), 20)  // in-bounds read unchanged
 })
+
+// ES2025 Set algebra (2026-07-11, Ring 2): union/intersection/difference/
+// symmetricDifference return a NEW Set (receiver untouched) in the spec result
+// order (test262 result-order.js: union = A then B-not-in-A; intersection
+// walks the SMALLER side, ties → this; difference always A's order; symmetric
+// = A-not-in-B then B-not-in-A). Predicates return real booleans. A Map other
+// participates as its key set; a non-Set/Map other is treated as empty (the
+// native-litmus line: no arbitrary set-like .has/.keys dispatch).
+test('Set algebra: union/intersection/difference/symmetricDifference', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => [...new Set([1,2]).union(new Set([2,3]))].join(",")`), '1,2,3')
+  is(j(`export let f = () => [...new Set([3,1]).union(new Set([2,1]))].join(",")`), '3,1,2')      // insertion order
+  is(j(`export let f = () => [...new Set([1,3,5]).intersection(new Set([3,2,1]))].join(",")`), '1,3')   // A ≤ B → A's order
+  is(j(`export let f = () => [...new Set([3,2,1,0]).intersection(new Set([1,3,5]))].join(",")`), '1,3') // B smaller → B's order
+  is(j(`export let f = () => [...new Set([1,2,3]).difference(new Set([2]))].join(",")`), '1,3')
+  is(j(`export let f = () => [...new Set([1,2,3]).symmetricDifference(new Set([2,4]))].join(",")`), '1,3,4')
+  is(j(`export let f = () => { let m = new Map(); m.set(9, 1); return [...new Set([1]).union(m)].join(",") }`), '1,9')  // Map = key set
+  is(j(`export let f = () => { let a = new Set([1]); a.union(new Set([2])); return a.size }`), 1)  // receiver intact
+  is(j(`export let f = () => new Set().union(new Set()).size`), 0)
+})
+test('Set algebra predicates: isSubsetOf/isSupersetOf/isDisjointFrom', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => new Set([1,2]).isSubsetOf(new Set([1,2,3]))`), true)
+  is(j(`export let f = () => new Set([1,9]).isSubsetOf(new Set([1,2,3]))`), false)
+  is(j(`export let f = () => new Set([1,2,3]).isSupersetOf(new Set([2,3]))`), true)
+  is(j(`export let f = () => new Set([1,2]).isSupersetOf(new Set([2,9]))`), false)
+  is(j(`export let f = () => new Set([1,2]).isDisjointFrom(new Set([3,4]))`), true)
+  is(j(`export let f = () => new Set([1,2]).isDisjointFrom(new Set([2,3]))`), false)
+  is(j(`export let f = () => new Set().isSubsetOf(new Set())`), true)   // vacuous truth
+})
+
+// ES2024 Object.groupBy / Map.groupBy (2026-07-11, Ring 2): buckets are arrays
+// in iteration order; Object.groupBy keys via ToPropertyKey (string), result is
+// a dictionary; Map.groupBy keys by SameValueZero (objects stay identity keys).
+test('groupBy: Object.groupBy / Map.groupBy', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => { let g = Object.groupBy([1,2,3,4], x => x % 2 ? "odd" : "even"); return g.odd.length * 10 + g.even.length }`), 22)
+  is(j(`export let f = () => { let g = Object.groupBy([1,2,3,4,5], x => x < 3 ? "lo" : "hi"); return g.lo.join(",") + "|" + g.hi.join(",") }`), '1,2|3,4,5')
+  is(j(`export let f = () => { let g = Object.groupBy([1,2,3], x => x % 2); return g[1].length * 10 + g[0].length }`), 21)  // numeric key → ToString
+  is(j(`export let f = () => { let g = Map.groupBy([1,2,3,4], x => x % 2); return g.get(1).length * 10 + g.get(0).length }`), 22)
+  is(j(`export let f = () => { let ka = {n:1}, kb = {n:2}; let g = Map.groupBy([1,2,3], x => x < 3 ? ka : kb); return g.get(ka).length * 10 + g.get(kb).length }`), 21)  // identity keys
+  is(j(`export let f = () => Map.groupBy([], x => x).size`), 0)
+  is(j(`export let f = () => { let t = new Float64Array([1,2,3]); return Map.groupBy(t, x => x > 1 ? 1 : 0).get(1).length }`), 2)  // typed source
+})
+
+// structuredClone (2026-07-11, Ring 2): deep arena clone — cycles terminate,
+// diamond sharing (incl. a buffer shared by views) is preserved, Map keys AND
+// values clone, Set/Map keep insertion order, Dates clone via their branded
+// schema. Closures/host handles throw (DataCloneError). transfer is ignored.
+test('structuredClone: deep copy + isolation', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => structuredClone(42.5)`), 42.5)
+  is(j(`export let f = () => structuredClone("hey")`), 'hey')
+  is(j(`export let f = () => structuredClone(true)`), true)
+  is(j(`export let f = () => structuredClone(null)`), null)
+  is(j(`export let f = () => { let a = [1,[2,3]]; let b = structuredClone(a); b[1][0] = 9; return a[1][0] }`), 2)
+  is(j(`export let f = () => { let o = {x: 1, y: {z: 2}}; let c = structuredClone(o); c.y.z = 9; return o.y.z + c.x }`), 3)
+  is(j(`export let f = () => { let o = {x: 5, y: "s"}; let c = structuredClone(o); return c.y + c.x }`), 's5')
+})
+test('structuredClone: identity — cycles and diamond sharing', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => { let a = [1]; a.push(a); let b = structuredClone(a); return (b[1] === b && b[1] !== a) ? "ok" : "broken" }`), 'ok')
+  is(j(`export let f = () => { let inner = {v: 1}; let o = {a: inner, b: inner}; let c = structuredClone(o); c.a.v = 7; return c.b.v * 10 + inner.v }`), 71)
+})
+test('structuredClone: collections, dates, typed, buffers', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => { let s = new Set([3,1,2]); let c = structuredClone(s); s.add(9); return [...c].join(",") + ":" + c.size }`), '3,1,2:3')
+  is(j(`export let f = () => { let m = new Map([["a",1],["b",2]]); let c = structuredClone(m); m.set("a", 9); return c.get("a") + c.size }`), 3)
+  is(j(`export let f = () => { let k = {id: 1}; let m = new Map([[k, "v"]]); return structuredClone(m).has(k) ? "aliased" : "cloned" }`), 'cloned')
+  is(j(`export let f = () => { let d = new Date(86400000); let c = structuredClone(d); c.setTime(0); return d.getTime() + c.getTime() }`), 86400000)
+  is(j(`export let f = () => { let a = new Int32Array(3); a[0] = 7; let b = structuredClone(a); a[0] = 1; return b[0] + b.length }`), 10)
+  // two views over one buffer: the clone shares ONE cloned buffer, source untouched
+  is(j(`export let f = () => { let buf = new ArrayBuffer(8); let a = new Int32Array(buf, 0, 2), b = new Int32Array(buf, 4, 1); let c = structuredClone([a, b]); c[0][1] = 42; return c[1][0] + ":" + new Int32Array(buf, 4, 1)[0] }`), '42:0')
+})
+test('structuredClone: DataCloneError on functions', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => { let fn = (x) => x; try { structuredClone({fn}); return "no-throw" } catch (e) { return "threw" } }`), 'threw')
+})
+
+// Insertion-order Map/Set (spec: ES OrdinaryMap/Set iteration order): the seq
+// packed into each entry's hash-word high bits + __coll_order. Host-exact:
+// delete + re-add moves the key to the END; overwrite keeps position; a rehash
+// (growth) preserves order.
+test('collections: insertion-order iteration', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => { let s = new Set([1,2,3]); s.delete(2); s.add(2); return [...s].join(",") }`), '1,3,2')
+  is(j(`export let f = () => { let m = new Map([["a",1],["b",2],["c",3]]); m.delete("a"); m.set("a",9); return [...m.keys()].join("") }`), 'bca')
+  is(j(`export let f = () => { let m = new Map([["a",1],["b",2]]); m.set("a",9); return [...m.keys()].join("") }`), 'ab')
+  is(j(`export let f = () => { let s = new Set(["z","a","m"]); let r = ""; s.forEach(v => r += v); return r }`), 'zam')
+  is(j(`export let f = () => { let s = new Set(); for (let i = 19; i >= 0; i--) s.add(i); return [...s].slice(0,5).join(",") }`), '19,18,17,16,15')
+})
+
+// Review pins: spec IsCallable throw (GroupBy step 2, before iteration); boolean
+// identity of jzify-synthesized instanceof predicates (__is_map is VAL.BOOL, so
+// `=== true` compares booleans, not a raw 0/1 carrier vs the TRUE atom); dates'
+// branded schema keeps dynamic reads clean (aux=0 used to alias schema id 0).
+test('groupBy: non-callable callback throws before iterating', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => { try { Object.groupBy([1], null); return "no" } catch (e) { return "threw" } }`), 'threw')
+  is(j(`export let f = () => { try { Map.groupBy([1], undefined); return "no" } catch (e) { return "threw" } }`), 'threw')
+})
+test('instanceof predicate is a real boolean', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => { let m = Map.groupBy([1], i => "k"); return (m instanceof Map) === true ? "y" : "n" }`), 'y')
+  is(j(`export let f = () => { let s = new Set([1]); return (s instanceof Set) === true && (s instanceof Map) === false ? "y" : "n" }`), 'y')
+})
+test('date dynamic property read is undefined (branded schema)', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => { let d = new Date(5); let k = "x"; return d[k] === undefined ? "undef" : "leak" }`), 'undef')
+})
+
+// delete on a dictionary-mode object: the receiver IS its own storage — __dyn_del
+// deletes its entry table directly (every other arm probes the props sidecar,
+// which dictionaries don't use; the key silently survived before). Enum cache
+// invalidates; re-added keys move to the end (host order).
+test('dictionary delete: removes own entries', () => {
+  const j = (code, ...a) => jz(code).exports.f(...a)
+  is(j(`export let f = (k) => { let d = {}; d[k] = 1; delete d[k]; return d[k] === undefined ? "gone" : "still" }`, 'a'), 'gone')
+  is(j(`export let f = (k, k2) => { let d = {}; d[k] = 1; d[k2] = 2; delete d[k]; return JSON.stringify(d) }`, 'a', 'b'), '{"b":2}')
+  is(j(`export let f = (k, k2) => { let d = {}; d[k] = 1; d[k2] = 2; delete d[k]; d[k] = 9; return Object.keys(d).join(",") + "=" + d[k] }`, 'a', 'b'), 'b,a=9')
+  is(j(`export let f = (k, k2) => { let d = {}; d[k] = 1; d[k2] = 2; let r = ""; for (let x in d) r += x; delete d[k]; for (let x in d) r += "|" + x; return r }`, 'a', 'b'), 'ab|b')
+})

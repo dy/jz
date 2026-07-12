@@ -363,3 +363,13 @@ test('rejects getters', () => rejects(`class A { get x(){ return 1 } } export le
 test('rejects setters', () => rejects(`class A { set x(v){ } } export let run = () => 1`, /setter|accessor/))
 test('rejects dynamic computed class fields', () => rejects(`let key = "x"; class A { [key] = 1 } export let run = () => 1`, /computed/))
 test('rejects dynamic computed class methods', () => rejects(`let key = "x"; class A { [key]() { return 1 } } export let run = () => 1`, /computed/))
+
+// Computed class member names from module-scope const bindings: jzify's entry
+// prepass collects `const K = 'str'`, class lowering folds `[K]` (const
+// guarantees no reassignment). Dynamic keys still reject cleanly.
+test('class: computed member names fold from module consts', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`const K = "m"; class A { [K]() { return 5 } } export let f = () => new A().m()`), 5)
+  is(j(`const F = "x"; class A { [F] = 7 } export let f = () => new A().x`), 7)
+  is(j(`const K = "g"; class A { [K]() { return 1 } m() { return this["g"]() + 1 } } export let f = () => new A().m()`), 2)
+})

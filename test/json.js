@@ -491,3 +491,31 @@ test('JSON.stringify: true still serialises as "true"', () => {
 test('JSON.stringify: false still serialises as "false"', () => {
   is(run(`export let f = () => JSON.stringify(false)`).f(), 'false')
 })
+
+// JSON.parse reviver (2026-07-10): was silently DROPPED — now lowers to an
+// inline bottom-up walk (ES InternalizeJSONProperty). One documented edge:
+// a reviver returning undefined assigns undefined instead of deleting.
+// JSON.stringify with a non-foldable replacer now REJECTS (was silently ignored).
+test('json: parse reviver applies bottom-up', () => {
+  is(run(`export let f = () => { let o = JSON.parse('{"a":1,"b":2}', (k, v) => typeof v === "number" ? v * 2 : v); return o.a * 10 + o.b }`).f(), 24)
+  is(run(`export let f = () => { let a = JSON.parse('[1,2,3]', (k, v) => typeof v === "number" ? v + 1 : v); return a[0] * 100 + a[1] * 10 + a[2] }`).f(), 234)
+  is(run(`export let f = () => { let o = JSON.parse('{"x":{"y":5}}', (k, v) => typeof v === "number" ? v * 2 : v); return o.x.y }`).f(), 10)
+  is(run(`export let f = () => JSON.parse('7', (k, v) => v + 1)`).f(), 8)
+})
+test('json: nullish reviver is spec-ignored; runtime replacer rejects', () => {
+  is(run(`export let f = () => JSON.parse('{"a":5}', null).a`).f(), 5)
+  is(run(`export let f = () => JSON.parse('7', undefined)`).f(), 7)
+  let rejected = 0
+  try { run(`let o = { a: 1 }; export let f = () => JSON.stringify(o, (k, v) => v).length`) } catch (e) { rejected = /replacer/.test(String(e)) ? 1 : 0 }
+  is(rejected, 1)
+})
+
+// JSON.stringify(date) → ISO via toJSON semantics (host-exact): the branded
+// date schema lets __json_obj recognize the receiver; invalid date → null.
+test('JSON.stringify: Date serializes as ISO string', () => {
+  const j = (code) => run(code).f()
+  is(j(`export let f = () => JSON.stringify(new Date(86400000))`), '"1970-01-02T00:00:00.000Z"')
+  is(j(`export let f = () => JSON.stringify({t: new Date(0), n: 1})`), '{"t":"1970-01-01T00:00:00.000Z","n":1}')
+  is(j(`export let f = () => JSON.stringify([new Date(5)])`), '["1970-01-01T00:00:00.005Z"]')
+  is(j(`export let f = () => JSON.stringify(new Date(NaN))`), 'null')
+})

@@ -9,7 +9,7 @@
  * @module date
  */
 
-import { typed, asF64, toNumF64, allocPtr, temp } from '../src/ir.js'
+import { typed, asF64, toNumF64, allocPtr, temp, NULL_WAT } from '../src/ir.js'
 import { emit, deps } from '../src/bridge.js'
 import { inc, PTR } from '../src/ctx.js'
 import { VAL } from '../src/reps.js'
@@ -51,9 +51,22 @@ export default (ctx) => {
     __date_write2: [],
     __date_write3: [],
     __date_write4: [],
-    __date_to_iso_string: ['__mkstr', '__alloc', '__itoa', '__date_year_from_time', '__date_month_from_time', '__date_date_from_time', '__date_hour_from_time', '__date_min_from_time', '__date_sec_from_time', '__date_ms_from_time', '__date_write2', '__date_write3', '__date_write4'],
-    __date_to_utc_string: ['__mkstr', '__alloc', '__itoa', '__date_weekday', '__date_date_from_time', '__date_month_from_time', '__date_year_from_time', '__date_hour_from_time', '__date_min_from_time', '__date_sec_from_time', '__date_write2', '__date_write4'],
+    __date_to_iso_string: ['__mkstr', '__alloc', '__date_year_from_time', '__date_month_from_time', '__date_date_from_time', '__date_hour_from_time', '__date_min_from_time', '__date_sec_from_time', '__date_ms_from_time', '__date_write2', '__date_write3', '__date_write4'],
+    __date_to_utc_string: ['__mkstr', '__alloc', '__itoa', '__date_wd_name', '__date_mon_name', '__date_weekday', '__date_date_from_time', '__date_month_from_time', '__date_year_from_time', '__date_hour_from_time', '__date_min_from_time', '__date_sec_from_time', '__date_write2', '__date_write4'],
+    __date_wd_name: [],
+    __date_mon_name: [],
+    __date_invalid_string: ['__alloc', '__mkstr'],
+    __date_to_date_string: ['__mkstr', '__alloc', '__itoa', '__date_invalid_string', '__date_wd_name', '__date_mon_name', '__date_weekday', '__date_month_from_time', '__date_date_from_time', '__date_year_from_time', '__date_write2', '__date_write4'],
+    __date_to_time_string: ['__mkstr', '__alloc', '__date_invalid_string', '__date_hour_from_time', '__date_min_from_time', '__date_sec_from_time', '__date_write2'],
+    __date_to_json: ['__date_to_iso_string'],
   })
+
+  // Brand: dates carry their own registered 1-slot schema (a key no user
+  // identifier can produce) instead of aux=0 — which aliases schema id 0, the
+  // first real literal shape, so dyn-get / {...date} / structuredClone would
+  // read that schema's layout against the date's single-slot block. With the
+  // brand, every generic OBJECT consumer sees the true shape.
+  ctx.schema.dateSid = ctx.schema.register(['\x00time'])
 
   const dateArg = (node, fallback, required = false) => {
     if (node === undefined) return typed(['f64.const', required ? NaN : fallback], 'f64')
@@ -381,27 +394,59 @@ export default (ctx) => {
     (i32.store8 (i32.add (local.get $buf) (i32.const 2)) (i32.add (i32.const 48) (local.get $d)))
     (i32.store8 (i32.add (local.get $buf) (i32.const 3)) (i32.add (i32.const 48) (i32.rem_u (local.get $v) (i32.const 10)))))`
 
+  // ── Name tables & fixed text ──────────────────────────────────────────────
+  // 3-letter weekday/month names as generated if-chains of byte stores — one
+  // table shared by toUTCString and toDateString.
+
+  const name3 = (fn, names) => `(func $${fn} (param $p i32) (param $i i32)
+    ${names.map((n, i) => `(if (i32.eq (local.get $i) (i32.const ${i}))
+      (then
+        (i32.store8 (local.get $p) (i32.const ${n.charCodeAt(0)}))
+        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const ${n.charCodeAt(1)}))
+        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const ${n.charCodeAt(2)}))))`).join('\n    ')})`
+
+  ctx.core.stdlib['__date_wd_name'] = name3('__date_wd_name', ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])
+  ctx.core.stdlib['__date_mon_name'] = name3('__date_mon_name', ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'])
+
+  // WAT fragment: store a fixed ASCII run at cursor $p, advance $p past it.
+  const storeLit = (s) => {
+    let out = ''
+    for (let k = 0; k < s.length; k++)
+      out += `(i32.store8 ${k ? `(i32.add (local.get $p) (i32.const ${k}))` : '(local.get $p)'} (i32.const ${s.charCodeAt(k)}))\n    `
+    return out + `(local.set $p (i32.add (local.get $p) (i32.const ${s.length})))`
+  }
+
+  ctx.core.stdlib['__date_invalid_string'] = `(func $__date_invalid_string (result f64)
+    (local $buf i32) (local $p i32)
+    (local.set $buf (call $__alloc (i32.const 12)))
+    (local.set $p (local.get $buf))
+    ${storeLit('Invalid Date')}
+    (call $__mkstr (local.get $buf) (i32.const 12)))`
+
   // ── toISOString ───────────────────────────────────────────────────────────
 
   ctx.core.stdlib['__date_to_iso_string'] = `(func $__date_to_iso_string (param $t f64) (result f64)
-    (local $buf i32) (local $p i32) (local $year f64) (local $yv i32) (local $nd i32)
+    (local $buf i32) (local $p i32) (local $year f64) (local $yv i32)
     (if (f64.ne (local.get $t) (local.get $t)) (then (return (call $__mkstr (i32.const 0) (i32.const 0)))))
     (local.set $buf (call $__alloc (i32.const 40)))
     (local.set $p (local.get $buf))
     (local.set $year (call $__date_year_from_time (local.get $t)))
-    (if (f64.lt (local.get $year) (f64.const 0))
+    (if (i32.and (f64.ge (local.get $year) (f64.const 0)) (f64.le (local.get $year) (f64.const 9999)))
       (then
-        (i32.store8 (local.get $p) (i32.const 45))
-        (local.set $p (i32.add (local.get $p) (i32.const 1)))
-        (local.set $year (f64.neg (local.get $year)))))
-    (local.set $yv (i32.trunc_sat_f64_u (local.get $year)))
-    (if (i32.le_u (local.get $yv) (i32.const 9999))
-      (then
-        (call $__date_write4 (local.get $p) (local.get $yv))
+        (call $__date_write4 (local.get $p) (i32.trunc_sat_f64_u (local.get $year)))
         (local.set $p (i32.add (local.get $p) (i32.const 4))))
       (else
-        (local.set $nd (call $__itoa (local.get $yv) (local.get $p)))
-        (local.set $p (i32.add (local.get $p) (local.get $nd)))))
+        ;; expanded years (spec: DateString): explicit sign + 6-digit zero-padded
+        (if (f64.lt (local.get $year) (f64.const 0))
+          (then
+            (i32.store8 (local.get $p) (i32.const 45))
+            (local.set $year (f64.neg (local.get $year))))
+          (else (i32.store8 (local.get $p) (i32.const 43))))
+        (local.set $p (i32.add (local.get $p) (i32.const 1)))
+        (local.set $yv (i32.trunc_sat_f64_u (local.get $year)))
+        (call $__date_write2 (local.get $p) (i32.div_u (local.get $yv) (i32.const 10000)))
+        (call $__date_write4 (i32.add (local.get $p) (i32.const 2)) (i32.rem_u (local.get $yv) (i32.const 10000)))
+        (local.set $p (i32.add (local.get $p) (i32.const 6)))))
     (i32.store8 (local.get $p) (i32.const 45))
     (local.set $p (i32.add (local.get $p) (i32.const 1)))
     (call $__date_write2 (local.get $p) (i32.add (i32.trunc_sat_f64_s (call $__date_month_from_time (local.get $t))) (i32.const 1)))
@@ -433,118 +478,19 @@ export default (ctx) => {
   // ── toUTCString ───────────────────────────────────────────────────────────
 
   ctx.core.stdlib['__date_to_utc_string'] = `(func $__date_to_utc_string (param $t f64) (result f64)
-    (local $buf i32) (local $p i32) (local $wd i32) (local $year f64) (local $yv i32) (local $nd i32) (local $month i32)
+    (local $buf i32) (local $p i32) (local $year f64) (local $yv i32) (local $nd i32)
     (if (f64.ne (local.get $t) (local.get $t)) (then (return (call $__mkstr (i32.const 0) (i32.const 0)))))
     (local.set $buf (call $__alloc (i32.const 48)))
     (local.set $p (local.get $buf))
-    (local.set $wd (i32.trunc_sat_f64_s (call $__date_weekday (local.get $t))))
-    (if (i32.eq (local.get $wd) (i32.const 0))
-      (then
-        (i32.store8 (local.get $p) (i32.const 83))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 117))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 110))))
-    (if (i32.eq (local.get $wd) (i32.const 1))
-      (then
-        (i32.store8 (local.get $p) (i32.const 77))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 111))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 110))))
-    (if (i32.eq (local.get $wd) (i32.const 2))
-      (then
-        (i32.store8 (local.get $p) (i32.const 84))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 117))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 101))))
-    (if (i32.eq (local.get $wd) (i32.const 3))
-      (then
-        (i32.store8 (local.get $p) (i32.const 87))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 101))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 100))))
-    (if (i32.eq (local.get $wd) (i32.const 4))
-      (then
-        (i32.store8 (local.get $p) (i32.const 84))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 104))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 117))))
-    (if (i32.eq (local.get $wd) (i32.const 5))
-      (then
-        (i32.store8 (local.get $p) (i32.const 70))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 114))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 105))))
-    (if (i32.eq (local.get $wd) (i32.const 6))
-      (then
-        (i32.store8 (local.get $p) (i32.const 83))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 97))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 116))))
+    (call $__date_wd_name (local.get $p) (i32.trunc_sat_f64_s (call $__date_weekday (local.get $t))))
     (local.set $p (i32.add (local.get $p) (i32.const 3)))
-    (i32.store8 (local.get $p) (i32.const 44))
-    (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 32))
-    (local.set $p (i32.add (local.get $p) (i32.const 2)))
+    ${storeLit(', ')}
     (call $__date_write2 (local.get $p) (i32.trunc_sat_f64_s (call $__date_date_from_time (local.get $t))))
     (local.set $p (i32.add (local.get $p) (i32.const 2)))
-    (i32.store8 (local.get $p) (i32.const 32))
-    (local.set $p (i32.add (local.get $p) (i32.const 1)))
-    (local.set $month (i32.trunc_sat_f64_s (call $__date_month_from_time (local.get $t))))
-    (if (i32.eq (local.get $month) (i32.const 0))
-      (then
-        (i32.store8 (local.get $p) (i32.const 74))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 97))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 110))))
-    (if (i32.eq (local.get $month) (i32.const 1))
-      (then
-        (i32.store8 (local.get $p) (i32.const 70))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 101))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 98))))
-    (if (i32.eq (local.get $month) (i32.const 2))
-      (then
-        (i32.store8 (local.get $p) (i32.const 77))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 97))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 114))))
-    (if (i32.eq (local.get $month) (i32.const 3))
-      (then
-        (i32.store8 (local.get $p) (i32.const 65))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 112))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 114))))
-    (if (i32.eq (local.get $month) (i32.const 4))
-      (then
-        (i32.store8 (local.get $p) (i32.const 77))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 97))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 121))))
-    (if (i32.eq (local.get $month) (i32.const 5))
-      (then
-        (i32.store8 (local.get $p) (i32.const 74))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 117))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 110))))
-    (if (i32.eq (local.get $month) (i32.const 6))
-      (then
-        (i32.store8 (local.get $p) (i32.const 74))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 117))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 108))))
-    (if (i32.eq (local.get $month) (i32.const 7))
-      (then
-        (i32.store8 (local.get $p) (i32.const 65))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 117))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 103))))
-    (if (i32.eq (local.get $month) (i32.const 8))
-      (then
-        (i32.store8 (local.get $p) (i32.const 83))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 101))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 112))))
-    (if (i32.eq (local.get $month) (i32.const 9))
-      (then
-        (i32.store8 (local.get $p) (i32.const 79))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 99))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 116))))
-    (if (i32.eq (local.get $month) (i32.const 10))
-      (then
-        (i32.store8 (local.get $p) (i32.const 78))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 111))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 118))))
-    (if (i32.eq (local.get $month) (i32.const 11))
-      (then
-        (i32.store8 (local.get $p) (i32.const 68))
-        (i32.store8 (i32.add (local.get $p) (i32.const 1)) (i32.const 101))
-        (i32.store8 (i32.add (local.get $p) (i32.const 2)) (i32.const 99))))
+    ${storeLit(' ')}
+    (call $__date_mon_name (local.get $p) (i32.trunc_sat_f64_s (call $__date_month_from_time (local.get $t))))
     (local.set $p (i32.add (local.get $p) (i32.const 3)))
-    (i32.store8 (local.get $p) (i32.const 32))
-    (local.set $p (i32.add (local.get $p) (i32.const 1)))
+    ${storeLit(' ')}
     (local.set $year (call $__date_year_from_time (local.get $t)))
     (if (f64.lt (local.get $year) (f64.const 0))
       (then
@@ -578,6 +524,63 @@ export default (ctx) => {
     (local.set $p (i32.add (local.get $p) (i32.const 4)))
     (call $__mkstr (local.get $buf) (i32.sub (local.get $p) (local.get $buf))))`
 
+  // ── toDateString / toTimeString / toJSON ──────────────────────────────────
+  // jz is UTC-only: the "local" date/time slices are the UTC ones and the zone
+  // suffix is the fixed UTC designation — a documented divergence, same policy
+  // as getHours ≡ getUTCHours.
+
+  ctx.core.stdlib['__date_to_date_string'] = `(func $__date_to_date_string (param $t f64) (result f64)
+    (local $buf i32) (local $p i32) (local $year f64) (local $yv i32) (local $nd i32)
+    (if (f64.ne (local.get $t) (local.get $t)) (then (return (call $__date_invalid_string))))
+    (local.set $buf (call $__alloc (i32.const 32)))
+    (local.set $p (local.get $buf))
+    (call $__date_wd_name (local.get $p) (i32.trunc_sat_f64_s (call $__date_weekday (local.get $t))))
+    (local.set $p (i32.add (local.get $p) (i32.const 3)))
+    ${storeLit(' ')}
+    (call $__date_mon_name (local.get $p) (i32.trunc_sat_f64_s (call $__date_month_from_time (local.get $t))))
+    (local.set $p (i32.add (local.get $p) (i32.const 3)))
+    ${storeLit(' ')}
+    (call $__date_write2 (local.get $p) (i32.trunc_sat_f64_s (call $__date_date_from_time (local.get $t))))
+    (local.set $p (i32.add (local.get $p) (i32.const 2)))
+    ${storeLit(' ')}
+    (local.set $year (call $__date_year_from_time (local.get $t)))
+    (if (f64.lt (local.get $year) (f64.const 0))
+      (then
+        (i32.store8 (local.get $p) (i32.const 45))
+        (local.set $p (i32.add (local.get $p) (i32.const 1)))
+        (local.set $year (f64.neg (local.get $year)))))
+    (local.set $yv (i32.trunc_sat_f64_u (local.get $year)))
+    (if (i32.le_u (local.get $yv) (i32.const 9999))
+      (then
+        (call $__date_write4 (local.get $p) (local.get $yv))
+        (local.set $p (i32.add (local.get $p) (i32.const 4))))
+      (else
+        (local.set $nd (call $__itoa (local.get $yv) (local.get $p)))
+        (local.set $p (i32.add (local.get $p) (local.get $nd)))))
+    (call $__mkstr (local.get $buf) (i32.sub (local.get $p) (local.get $buf))))`
+
+  ctx.core.stdlib['__date_to_time_string'] = `(func $__date_to_time_string (param $t f64) (result f64)
+    (local $buf i32) (local $p i32)
+    (if (f64.ne (local.get $t) (local.get $t)) (then (return (call $__date_invalid_string))))
+    (local.set $buf (call $__alloc (i32.const 48)))
+    (local.set $p (local.get $buf))
+    (call $__date_write2 (local.get $p) (i32.trunc_sat_f64_s (call $__date_hour_from_time (local.get $t))))
+    (local.set $p (i32.add (local.get $p) (i32.const 2)))
+    ${storeLit(':')}
+    (call $__date_write2 (local.get $p) (i32.trunc_sat_f64_s (call $__date_min_from_time (local.get $t))))
+    (local.set $p (i32.add (local.get $p) (i32.const 2)))
+    ${storeLit(':')}
+    (call $__date_write2 (local.get $p) (i32.trunc_sat_f64_s (call $__date_sec_from_time (local.get $t))))
+    (local.set $p (i32.add (local.get $p) (i32.const 2)))
+    ${storeLit(' GMT+0000 (Coordinated Universal Time)')}
+    (call $__mkstr (local.get $buf) (i32.sub (local.get $p) (local.get $buf))))`
+
+  // Serialization protocol: invalid date → null (JSON.stringify emits null),
+  // finite date → ISO string.
+  ctx.core.stdlib['__date_to_json'] = `(func $__date_to_json (param $t f64) (result f64)
+    (if (f64.ne (local.get $t) (local.get $t)) (then (return ${NULL_WAT})))
+    (call $__date_to_iso_string (local.get $t)))`
+
   // === Minimal Date value object ===
   // Represented as PTR.OBJECT with a single f64 slot at offset 0 (the time value).
   // No schemaId (aux=0); dynamic property access falls through to undefined.
@@ -603,7 +606,7 @@ export default (ctx) => {
       inc('__date_from_value')
       timeVal = typed(['call', '$__date_from_value', ['i64.reinterpret_f64', asF64(emit(ms))]], 'f64')
     }
-    const out = allocPtr({ type: PTR.OBJECT, len: 1, cap: 1, stride: 8, tag: 'date' })
+    const out = allocPtr({ type: PTR.OBJECT, aux: ctx.schema.dateSid, len: 1, cap: 1, stride: 8, tag: 'date' })
     return typed(['block', ['result', 'f64'],
       out.init,
       ['f64.store', ['local.get', `$${out.local}`], timeVal],
@@ -801,4 +804,23 @@ export default (ctx) => {
     return typed(['call', '$__date_to_utc_string', emitDateLoad(dateExpr)], 'f64')
   }
   ctx.core.emit[`.${VAL.DATE}:toUTCString`] = ctx.core.emit['.toUTCString']
+
+  ctx.core.emit['.toDateString'] = (dateExpr) => {
+    inc('__date_to_date_string')
+    return typed(['call', '$__date_to_date_string', emitDateLoad(dateExpr)], 'f64')
+  }
+  ctx.core.emit[`.${VAL.DATE}:toDateString`] = ctx.core.emit['.toDateString']
+
+  ctx.core.emit['.toTimeString'] = (dateExpr) => {
+    inc('__date_to_time_string')
+    return typed(['call', '$__date_to_time_string', emitDateLoad(dateExpr)], 'f64')
+  }
+  ctx.core.emit[`.${VAL.DATE}:toTimeString`] = ctx.core.emit['.toTimeString']
+
+  // Typed-key only: users legitimately define `toJSON` on plain objects, so the
+  // bare generic key stays free — only a *proven* Date routes here.
+  ctx.core.emit[`.${VAL.DATE}:toJSON`] = (dateExpr) => {
+    inc('__date_to_json')
+    return typed(['call', '$__date_to_json', emitDateLoad(dateExpr)], 'f64')
+  }
 }

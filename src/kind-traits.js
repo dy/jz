@@ -49,6 +49,40 @@ export const CALLEE_VAL = {
   'BigInt.asUintN': VAL.BIGINT,
   'performance.now': VAL.NUMBER,
   'Date.now': VAL.NUMBER,
+  // ES2024 groupBy: a dictionary (HASH) keyed by ToPropertyKey strings, and a
+  // real Map keyed by SameValueZero — result reads dispatch to the right table.
+  'Object.groupBy': VAL.HASH,
+  'Map.groupBy': VAL.MAP,
+  'RegExp.escape': VAL.STRING,
+  // Predicate builtins return booleans (raw 0/1 carrier) — same classification
+  // BOOL_METHODS gives includes/some/every: without it `isFinite(x) === false`
+  // falls to the unknown-identity path and bit-compares 0.0 against the FALSE
+  // atom (always false). typeof/String/JSON/host boundary observe it faithfully.
+  isNaN: VAL.BOOL,
+  isFinite: VAL.BOOL,
+  'Array.isArray': VAL.BOOL,
+  'Number.isNaN': VAL.BOOL,
+  'Number.isFinite': VAL.BOOL,
+  'Number.isInteger': VAL.BOOL,
+  'Number.isSafeInteger': VAL.BOOL,
+  'Object.is': VAL.BOOL,
+  'Object.hasOwn': VAL.BOOL,
+  'Object.isFrozen': VAL.BOOL,
+  'Object.isSealed': VAL.BOOL,
+  'Object.isExtensible': VAL.BOOL,
+  'ArrayBuffer.isView': VAL.BOOL,
+  // jzify-synthesized `instanceof Map/Set/TypedArray` predicates (autoload
+  // CALL_MODULES) — same boolean-carrier classification as the ops they lower.
+  __is_map: VAL.BOOL,
+  __is_set: VAL.BOOL,
+  __is_typed: VAL.BOOL,
+  // Atomics (module/atomics.js): numbers except wait (a result string) and
+  // isLockFree (a predicate boolean).
+  'Atomics.load': VAL.NUMBER, 'Atomics.store': VAL.NUMBER, 'Atomics.add': VAL.NUMBER,
+  'Atomics.sub': VAL.NUMBER, 'Atomics.and': VAL.NUMBER, 'Atomics.or': VAL.NUMBER,
+  'Atomics.xor': VAL.NUMBER, 'Atomics.exchange': VAL.NUMBER,
+  'Atomics.compareExchange': VAL.NUMBER, 'Atomics.notify': VAL.NUMBER,
+  'Atomics.wait': VAL.STRING, 'Atomics.isLockFree': VAL.BOOL,
 }
 
 export function calleeValType(callee, _args, ctx) {
@@ -89,8 +123,16 @@ export function methodValType(method, obj, objType, ctx) {
   // Mirrors the objType guard on map/filter/slice/concat.
   if (method === 'add') return objType === VAL.SET ? VAL.SET : null
   if (method === 'set') return objType === VAL.MAP ? VAL.MAP : null
+  // jz's valueOf is a receiver passthrough (module/string.js `.valueOf`), so the
+  // result kind IS the receiver kind — `Boolean(x).valueOf() === true` needs it.
+  if (method === 'valueOf') return objType ?? null
   if (BOOL_METHODS.has(method)) return VAL.BOOL
   if ((method === 'has' || method === 'delete') && (objType === VAL.MAP || objType === VAL.SET)) return VAL.BOOL
+  // ES2025 Set algebra — proven-SET receiver only (same guard rationale as add/set).
+  if ((method === 'union' || method === 'intersection' || method === 'difference' ||
+    method === 'symmetricDifference') && objType === VAL.SET) return VAL.SET
+  if ((method === 'isSubsetOf' || method === 'isSupersetOf' || method === 'isDisjointFrom') &&
+    objType === VAL.SET) return VAL.BOOL
   if (STRING_METHODS.has(method)) return VAL.STRING
   if (NUMBER_METHODS.has(method)) return VAL.NUMBER
   if (method === 'split') return VAL.ARRAY
@@ -98,9 +140,14 @@ export function methodValType(method, obj, objType, ctx) {
     if (objType === VAL.STRING || objType === VAL.ARRAY || objType === VAL.TYPED) return objType
     return null
   }
-  // .subarray / .toReversed / .toSorted / .with all return a typed array of the same kind.
-  if (method === 'subarray' || method === 'toReversed' || method === 'toSorted' || method === 'with')
-    return objType === VAL.TYPED ? VAL.TYPED : null
+  // .subarray returns a typed-array view (no plain-array analog). The ES2023
+  // change-by-copy trio return a fresh value of the RECEIVER's kind: a typed
+  // array from a typed receiver, a plain array from a plain-array receiver.
+  if (method === 'subarray') return objType === VAL.TYPED ? VAL.TYPED : null
+  if (method === 'toReversed' || method === 'toSorted' || method === 'with')
+    return objType === VAL.TYPED ? VAL.TYPED : objType === VAL.ARRAY ? VAL.ARRAY : null
+  // copyWithin mutates and returns the receiver.
+  if (method === 'copyWithin') return objType === VAL.TYPED || objType === VAL.ARRAY ? objType : null
   return null
 }
 

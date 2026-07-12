@@ -634,3 +634,44 @@ test('prohibited: .callee property access', () => {
   catch (e) { err = e }
   ok(err?.message.includes('callee'), `.callee should be prohibited: ${err?.message?.slice(0, 60)}`)
 })
+
+// ============================================================================
+// Reject-cleanly cluster (2026-07-10) — constructs that previously leaked
+// internal errors ("Unknown op", watr "Unknown instruction", generic
+// not-in-scope) now carry curated messages. Never fail unknowingly.
+// ============================================================================
+
+test('prohibited: function* without yield', () =>
+  throws('function* g() { }; export let f = () => 1', 'generator', 'bare generator decl should error cleanly'))
+test('prohibited: yield*', () =>
+  throws('let g = () => { let x = yield* a; return x }; export let f = () => 1', 'generator', 'yield* should error cleanly'))
+test('prohibited: new.target', () =>
+  throws('function C() { return new.target ? 1 : 0 }; export let f = () => C()', 'new.target', 'new.target should error cleanly'))
+test('prohibited: #field in obj brand check', () =>
+  throws('class A { #x = 1; static has(o) { return #x in o } }; export let f = () => A.has(new A()) ? 1 : 0', 'brand', 'brand check should error cleanly'))
+test('prohibited: String.raw (parser keeps only cooked strings)', () =>
+  throws('export let f = () => String.raw`a\\nb`.length', 'String.raw', 'String.raw should error, not fold cooked-as-raw'))
+test('strict rejects: switch', () =>
+  throws('export let f = (x) => { switch (x) { case 1: return 10; default: return 20 } }', 'switch', 'switch should error in strict', { strict: true }))
+test('unknown method on KNOWN receiver rejects in default mode', () => {
+  throws('export let f = () => [3, 1, 2].frobnicate()[0]', 'not implemented', 'missing array method should fail at compile')
+  throws('export let f = () => "abc".frobnicate()', 'not implemented', 'missing string method should fail at compile')
+})
+test('const reassignment rejects (every operator, local + module scope)', () => {
+  throws('export let f = () => { const c = 2; c = 3; return c }', 'constant', 'const = should error')
+  throws('export let f = () => { const c = 2; c += 3; return c }', 'constant', 'const += should error')
+  throws('export let f = () => { const c = 2; c++; return c }', 'constant', 'const ++ should error')
+})
+
+// Arena-rewind return wrapper: rewrite the return's VALUE (return stays
+// stack-polymorphic) — the old value-typed block AROUND the return left a
+// phantom value on a void try_table's stack ("expected 0 elements on the
+// stack for fallthru"). Trigger: no-param function + allocation + discarded
+// statement value + return inside try.
+test('try: discarded method result before return compiles and runs', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => { let a = [1]; try { a.slice(0); return 1 } catch (e) { return 2 } }`), 1)
+  is(j(`export let f = () => { let a = [1, 2]; try { a.splice(0, 1); return a[0] } catch (e) { return -1 } }`), 2)
+  is(j(`export let f = () => { let a = [1]; try { a.with(5, 2); return 1 } catch (e) { return 2 } }`), 2) // OOB throws, caught
+  is(j(`export let f = () => { let a = [1]; try { a.toSorted(); return 1 } catch (e) { return 2 } }`), 1) // default comparator pulls string module
+})

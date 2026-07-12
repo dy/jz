@@ -39,7 +39,7 @@ export const isI32 = (v) => Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX 
 
 /** Statement operators — distinguish block bodies from object literals. */
 export const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'for-in', 'while', 'break', 'continue', 'switch',
-  '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
+  '=', '+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
   'throw', 'try', 'catch', 'finally', '++', '--', '()'])
 
 /** jzify superset: pre-lowered JS shapes before prepare strips them. */
@@ -74,7 +74,7 @@ export const isLeaf = n => Array.isArray(n) && (n[0] === 'local.get' || n[0] ===
 // === Assignment / reassignment ===
 
 /** Assignment operators — shared across analyze, plan, emit, abi. */
-export const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
+export const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
 
 /** Detect whether `name` is written to (=, +=, ++, --, etc.) anywhere within `body`. */
 export function isReassigned(body, name) {
@@ -397,14 +397,20 @@ export function cloneNode(node) {
 // identically and compare equal — an unsound merge (SLP packs `[Inf,-Inf]` as one
 // splat lane; CSE/LICM dedups distinct invariants). Tag each so it round-trips with
 // Object.is semantics.
-export const stableKey = (_k, v) => {
+// Recursive keyer, NOT JSON.stringify with a replacer: the kernel's stringify
+// silently dropped the replacer, so in-kernel nodeEqual collapsed the very
+// constants the tagging exists to distinguish (a latent unsound SLP merge,
+// host≠kernel). A plain walk behaves identically on both sides.
+export function stableNodeKey(v) {
+  if (Array.isArray(v)) { let s = '['; for (let i = 0; i < v.length; i++) s += (i ? ',' : '') + stableNodeKey(v[i]); return s + ']' }
   if (typeof v === 'bigint') return `${v}n`
   if (typeof v === 'number' && (v !== v || v === Infinity || v === -Infinity || Object.is(v, -0)))
     return v !== v ? '#NaN' : v === Infinity ? '#Inf' : v === -Infinity ? '#-Inf' : '#-0'
-  return v
+  if (typeof v === 'string') return JSON.stringify(v)
+  return String(v)  // numbers, booleans, null, undefined — all distinct spellings
 }
 export function nodeEqual(a, b) {
-  return JSON.stringify(a, stableKey) === JSON.stringify(b, stableKey)
+  return stableNodeKey(a) === stableNodeKey(b)
 }
 
 /** Property entries of an object-literal AST node (`['{}', …]`). */

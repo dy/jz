@@ -151,6 +151,24 @@ test('Math.fround', async () => {
   almost(await evaluate('Math.fround(1.337)'), Math.fround(1.337), 1e-10)
 })
 
+// ES2025 Math.f16round — bit-exact vs host (reference: Math.f16round, V8):
+// round-to-nearest-even at the f16 quantum, subnormals, ±0/NaN/∞ passthrough,
+// overflow to ∞ at the 65520 boundary (65504 = max f16 + half-ulp).
+test('Math.f16round', async () => {
+  is(await evaluate('Math.f16round(1.1)'), Math.f16round(1.1))            // 1.099609375
+  is(await evaluate('Math.f16round(0.1)'), Math.f16round(0.1))
+  is(await evaluate('Math.f16round(65504)'), 65504)
+  is(await evaluate('Math.f16round(65519.99)'), 65504)
+  is(await evaluate('Math.f16round(65520)'), Infinity)
+  is(await evaluate('Math.f16round(-65520)'), -Infinity)
+  is(await evaluate('Math.f16round(1.00048828125)'), 1)                    // tie → even
+  is(await evaluate('Math.f16round(Math.pow(2, -25))'), 0)                 // tie at min-subnormal/2 → 0
+  is(await evaluate('Math.f16round(Math.pow(2, -24))'), 2 ** -24)          // min subnormal exact
+  is(await evaluate('1 / Math.f16round(-0)'), -Infinity)                   // -0 preserved
+  is(await evaluate('1 / Math.f16round(-1e-30)'), -Infinity)               // underflow keeps sign
+  is(await evaluate('isNaN(Math.f16round(NaN))'), true)
+})
+
 // ============================================
 // Trigonometric functions
 // ============================================
@@ -449,38 +467,38 @@ test('Math.imul', async () => {
 // ============================================
 
 test('isNaN (global)', async () => {
-  is(await evaluate('isNaN(NaN)'), 1)
-  is(await evaluate('isNaN(0)'), 0)
-  is(await evaluate('isNaN(1)'), 0)
-  is(await evaluate('isNaN(Infinity)'), 0)
-  is(await evaluate('isNaN(-Infinity)'), 0)
+  is(await evaluate('isNaN(NaN)'), true)
+  is(await evaluate('isNaN(0)'), false)
+  is(await evaluate('isNaN(1)'), false)
+  is(await evaluate('isNaN(Infinity)'), false)
+  is(await evaluate('isNaN(-Infinity)'), false)
 })
 
 test('isFinite (global)', async () => {
-  is(await evaluate('isFinite(0)'), 1)
-  is(await evaluate('isFinite(1)'), 1)
-  is(await evaluate('isFinite(-1)'), 1)
-  is(await evaluate('isFinite(Infinity)'), 0)
-  is(await evaluate('isFinite(-Infinity)'), 0)
-  is(await evaluate('isFinite(NaN)'), 0)
+  is(await evaluate('isFinite(0)'), true)
+  is(await evaluate('isFinite(1)'), true)
+  is(await evaluate('isFinite(-1)'), true)
+  is(await evaluate('isFinite(Infinity)'), false)
+  is(await evaluate('isFinite(-Infinity)'), false)
+  is(await evaluate('isFinite(NaN)'), false)
 })
 
 test('Number.isNaN', async () => {
-  is(await evaluate('Number.isNaN(NaN)'), 1)
-  is(await evaluate('Number.isNaN(0)'), 0)
-  is(await evaluate('Number.isNaN(1)'), 0)
+  is(await evaluate('Number.isNaN(NaN)'), true)
+  is(await evaluate('Number.isNaN(0)'), false)
+  is(await evaluate('Number.isNaN(1)'), false)
 })
 
 test('Number.isFinite', async () => {
-  is(await evaluate('Number.isFinite(0)'), 1)
-  is(await evaluate('Number.isFinite(Infinity)'), 0)
-  is(await evaluate('Number.isFinite(NaN)'), 0)
+  is(await evaluate('Number.isFinite(0)'), true)
+  is(await evaluate('Number.isFinite(Infinity)'), false)
+  is(await evaluate('Number.isFinite(NaN)'), false)
 })
 
 test('Number.isInteger', async () => {
-  is(await evaluate('Number.isInteger(1)'), 1)
-  is(await evaluate('Number.isInteger(1.5)'), 0)
-  is(await evaluate('Number.isInteger(0)'), 1)
+  is(await evaluate('Number.isInteger(1)'), true)
+  is(await evaluate('Number.isInteger(1.5)'), false)
+  is(await evaluate('Number.isInteger(0)'), true)
 })
 
 // ============================================
@@ -585,4 +603,20 @@ test('unsigned right shift - PRNG idiom produces [-1, 1)', () => {
 test('unsigned right shift - division of high-bit value', async () => {
   // 3959422976 = 0xEC000000 — high bit set, fits u32, exceeds i31.
   is(await evaluate('((-335544320 | 0) >>> 0) / 4294967296'), 3959422976 / 4294967296)
+})
+
+// ---- Math.hypot n-ary (test262 builtins gate, 2026-07-10) -------------------
+// The pre-eval MATH_KERNEL hypot was strictly 2-ary: hypot() folded to
+// hypot(undefined,undefined)=NaN and hypot(3,4,12) silently dropped the third
+// arg. Kernel now mirrors the runtime emitter's left-chained 2-ary calls.
+
+test('Math: hypot arities (const-fold and runtime agree)', () => {
+  is(run(`export let f = () => Math.hypot()`).f(), 0)
+  is(run(`export let f = () => 1 / Math.hypot(0)`).f(), Infinity)
+  is(run(`export let f = () => Math.hypot(-3)`).f(), 3)
+  is(run(`export let f = () => Math.hypot(3, 4, 12)`).f(), 13)
+  is(run(`export let f = () => Math.hypot(NaN, Infinity)`).f(), Infinity)
+  is(run(`export let f = () => isNaN(Math.hypot(NaN, 1))`).f(), true)
+  const r = run(`export let f = (a, b, c) => Math.hypot(a, b, c)`)
+  is(r.f(3, 4, 12), 13)
 })

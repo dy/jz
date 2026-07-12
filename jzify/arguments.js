@@ -95,7 +95,11 @@ export function createArgumentsLowering(names) {
         continue
       }
       if (Array.isArray(param) && param[0] === '=') {
-        decls.push(['=', param[1], ['??', ['[]', name, [null, idx]], renameArguments(param[2], name)]])
+        // Param default fires ONLY on undefined, not null — `??` would take the
+        // default for a passed null. The rest-array index read is idempotent
+        // and pure, so the ternary re-reads instead of spilling a temp.
+        const read = ['[]', name, [null, idx]]
+        decls.push(['=', param[1], ['?:', ['===', read, 'undefined'], renameArguments(param[2], name), read]])
         continue
       }
       decls.push(['=', param, ['[]', name, [null, idx]]])

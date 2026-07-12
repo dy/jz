@@ -192,10 +192,31 @@ Each follows one rule: **JZ takes WASM/native conventions over JS edge-cases whe
 - **Objects are fixed-shape structs** — literal keys sit in fixed slots; computed writes (`o[k] = v`) fall back to a per-object hash and enumerate normally, but a dot-key added after the literal (`o.b = 2`) stays readable without enumerating (`Object.keys`/`for…in`). Prefer `Map` for heavy dynamic keys.
 - **Array indices are integers, typed-array access is unchecked** — an index coerces to `i32` (asm.js-style), so a fractional or `NaN` index *truncates* (`a[1.5]`→`a[1]`, `a[NaN]`→`a[0]`) rather than yielding JS's `undefined`. A `Float64Array`/etc. is fixed-size (`arr.length = n` won't compile) and read **raw**: an out-of-bounds or negative index reads arbitrary linear memory (a large one traps), not `undefined` — pass valid in-bounds integers. Plain `[]` arrays *are* bounds-checked (`undefined` past the end / for a negative index).
 - **No GC** — call `memory.reset()` between batches; `WeakMap`/`WeakSet` wired to `Map`/`Set`.
-- **`String(number)` keeps ~9 significant digits** (`String(Math.PI)` → `"3.14159265"`), so it may not round-trip; `NaN`/`Infinity`/integers are exact. Exact shortest-form needs a multi-KB Ryū/Grisu formatter.
+- **Workers v1 (shared-memory SPMD)** — `sharedMemory: true` compiles against a shared `WebAssembly.Memory` (atomic heap bump, wasm `shared` memtype); `Atomics.*` on Int32Array lowers to wasm thread ops (`wait`/`notify` included); `jz.pool(src, {threads})` runs the same kernel across node worker_threads over one memory — annotate shared-array params as `(arr = new Int32Array(0))`. v1 contract: shared typed arrays + scalars; strings/objects stay thread-local.
+- **`String(number)` is ES-spec exact** — shortest round-trip digits via a built-in Ryū formatter (`String(0.1 + 0.2)` → `"0.30000000000000004"`, `String(Math.PI)` → `"3.141592653589793"`), including exponential notation and subnormals; its ~9.7 KB power-of-5 table is lazily included only in modules that stringify floats.
 - **Errors are just their message** — a caught error is the value you threw (no `.message`, not `instanceof Error`), and `null.x` yields `undefined` instead of throwing. It keeps `throw` and member reads free of object machinery and per-access checks.
 - **`Date` getters return UTC** (`getHours` ≡ `getUTCHours`) – the IANA timezone database is hundreds of KB.
 - **`Math.random` is seedable** — default draws host entropy; pass `randomSeed: n` for a reproducible stream.
+</details>
+
+<details>
+<summary><strong>What will JZ never support — and why?</strong></summary>
+
+Everything else is compiled, lowered by the built-in jzify pass, or rejected with a clean error — silent divergence is treated as a bug. These stay out **by design**; each is traded for a zero-cost guarantee:
+
+- **Proxy, Reflect** — traps have no meaning over fixed-shape structs with compile-time-resolved offsets.
+- **Property descriptors & accessors** — `defineProperty` descriptors, getters/setters, `writable`/`enumerable`: objects carry values only, no per-property metadata — that's what makes a property read one load.
+- **Live prototype chains** — `__proto__`, delegation, monkey-patching: `Object.create(proto)` is a documented shallow copy; method dispatch is static.
+- **`delete` on literal-key properties** — an object's shape is fixed at construction (computed-key/dictionary-mode `delete o[k]` works).
+- **eval, `Function` constructor, `with`** — would require the compiler (or an interpreter) at runtime; JZ ships neither.
+- **async/await, Promise** — compiled modules have no event loop; asynchrony belongs to the host (callbacks and `setTimeout` cross the boundary today).
+- **Intl, Temporal** — ICU/CLDR and timezone tables are hundreds of KB to MB, against single-digit-kB output. `Date` keeps deterministic UTC slices.
+- **UTF-16 string semantics & Unicode tables** — strings are UTF-8 bytes; `\p{…}` classes, `normalize` forms and locale case tables are the same multi-KB cost Intl was refused for.
+- **Arbitrary-precision BigInt** — BigInt is a raw 64-bit integer (wraps past ±2⁶³); bignum chains allocate unboundedly, and security crypto is explicitly out of scope.
+- **WeakRef, FinalizationRegistry** — no GC to observe; `WeakMap`/`WeakSet` fold to `Map`/`Set`.
+- **Annex B legacies, DOM, fetch, Node APIs** — the parts of JS the subset exists to shed; I/O stays host-side.
+
+The litmus for this list: the feature either needs a runtime JZ refuses to ship, or per-access metadata that would tax every program — including the ones not using it.
 </details>
 
 

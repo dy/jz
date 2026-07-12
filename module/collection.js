@@ -828,6 +828,12 @@ export default (ctx) => {
     __set_add: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __set_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset'],
     __set_delete: ['__map_hash', '__same_value_zero'],
+    __set_add_all: ['__ptr_offset', '__cap', '__len', '__coll_order', '__set_add'],
+    __set_filter: ['__ptr_offset', '__cap', '__len', '__coll_order', '__set_add', '__set_has', '__map_has'],
+    __set_all: ['__ptr_offset', '__cap', '__len', '__coll_order', '__set_has', '__map_has'],
+    __sclone: ['__sclone_rec', '__mkptr', '__alloc_hdr_n'],
+    __sclone_rec: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_from', '__obj_clone', '__sclone_hash_vals'],
+    __sclone_hash_vals: ['__sclone_rec'],
     __map_set: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __map_get: () => ctx.features.external ? ['__ext_prop', '__map_set', '__ptr_offset'] : ['__map_set', '__ptr_offset'],
     __map_get_h: () => ctx.features.external ? ['__ext_prop', '__same_value_zero', '__ptr_offset'] : ['__same_value_zero', '__ptr_offset'],
@@ -1166,6 +1172,60 @@ export default (ctx) => {
   ctx.core.stdlib['__set_has_h'] = () => genLookupStrictPrehashed('__set_has_h', SET_ENTRY, sameValueZeroEqG, PTR.SET, UNDEF_NAN, ctx.features.external, false)
   ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET)
 
+  // ES2025 Set algebra (union/intersection/difference/symmetricDifference +
+  // isSubsetOf/isSupersetOf/isDisjointFrom). Three shared walkers over the
+  // receiver's insertion order (__coll_order — result order is spec-exact); an
+  // `other` that is not a real Set/Map is treated as empty (__set_has/__map_has
+  // type-guard a wrong receiver to 0), the native-litmus line (a proven Set or
+  // Map is in-model; an arbitrary set-like is not, no .has/.keys dispatch).
+  // __set_add's SameValueZero dedup + insertion-seq stamping make add-order the
+  // result order for free.
+  // $stride is the src collection's entry stride (SET_ENTRY for a Set, MAP_ENTRY
+  // for a Map) — a Map's keys sit at slot+8 too, so a Map `other` iterates as a
+  // key set. The key is always at slot+8 in both layouts.
+  const setWalkPreamble = `(local $off i32) (local $cap i32) (local $n i32) (local $ord i32) (local $i i32) (local $slot i32) (local $key i64) (local $has i32)
+    (local.set $off (call $__ptr_offset (local.get $src)))
+    (local.set $cap (call $__cap (local.get $src)))
+    (local.set $n (call $__len (local.get $src)))
+    (local.set $ord (call $__coll_order (local.get $off) (local.get $cap) (local.get $stride)))`
+  const setWalkKey = `(local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
+      (local.set $key (i64.load (i32.add (local.get $slot) (i32.const 8))))`
+  const otherHas = `(if (result i32) (local.get $otherIsMap)
+        (then (call $__map_has (local.get $other) (local.get $key)))
+        (else (call $__set_has (local.get $other) (local.get $key))))`
+  // dst ← dst ∪ src (add every src key in insertion order).
+  ctx.core.stdlib['__set_add_all'] = `(func $__set_add_all (param $dst i64) (param $src i64) (param $stride i32) (result i64)
+    ${setWalkPreamble}
+    (block $d (loop $l
+      (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
+      ${setWalkKey}
+      (local.set $dst (call $__set_add (local.get $dst) (local.get $key)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
+    (local.get $dst))`
+  // For each src key, add to dst iff (other has key) == keep. keep=1 → intersection;
+  // keep=0 → difference / symmetricDifference pass.
+  ctx.core.stdlib['__set_filter'] = `(func $__set_filter (param $dst i64) (param $src i64) (param $stride i32) (param $other i64) (param $otherIsMap i32) (param $keep i32) (result i64)
+    ${setWalkPreamble}
+    (block $d (loop $l
+      (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
+      ${setWalkKey}
+      (local.set $has ${otherHas})
+      (if (i32.eq (local.get $has) (local.get $keep))
+        (then (local.set $dst (call $__set_add (local.get $dst) (local.get $key)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
+    (local.get $dst))`
+  // Predicate: return 0 as soon as any src key's presence in other != want; else 1.
+  // isSubsetOf(A,B) = all(A, B, want=1); isDisjointFrom(A,B) = all(A, B, want=0).
+  ctx.core.stdlib['__set_all'] = `(func $__set_all (param $src i64) (param $stride i32) (param $other i64) (param $otherIsMap i32) (param $want i32) (result i32)
+    ${setWalkPreamble}
+    (block $d (loop $l
+      (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
+      ${setWalkKey}
+      (local.set $has ${otherHas})
+      (if (i32.ne (local.get $has) (local.get $want)) (then (return (i32.const 0))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
+    (i32.const 1))`
+
   // === Map ===
 
   ctx.core.emit['new.Map'] = (iterExpr) => {
@@ -1292,6 +1352,324 @@ export default (ctx) => {
   }
   ctx.core.emit[`.${VAL.MAP}:forEach`] = collForEach(MAP_ENTRY, 16, 8)
   ctx.core.emit[`.${VAL.SET}:forEach`] = collForEach(SET_ENTRY, 8, 8)
+
+  // === ES2025 Set algebra emitters ===
+  // A = receiver (proven SET). `other` (B) may be a Set or Map at runtime; its
+  // stride/probe-kind is resolved once via __ptr_type (a Map's keys are its key
+  // set). Set-returning ops thread the fresh dst through the walker (forwarding
+  // is transparent, but re-capture is defensively correct); predicates fold the
+  // i32 result to a boolean carrier.
+  const isMapRT = (f64) => ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', f64]], ['i32.const', PTR.MAP]]
+  const strideRT = (f64) => ['select', ['i32.const', MAP_ENTRY], ['i32.const', SET_ENTRY], isMapRT(f64)]
+  const isMapI32 = (f64) => isMapRT(f64)  // 1 if Map, 0 otherwise
+  // Evaluate A,B into temps; hand their f64 accessors to `body`, which returns
+  // the block's final value node. resultType picks Set (f64) vs predicate (i32).
+  const setBin = (a, b, resultType, body) => {
+    inc('__ptr_type')
+    const aT = temp('sopa'), bT = temp('sopb')
+    const aF = typed(['local.get', `$${aT}`], 'f64'), bF = typed(['local.get', `$${bT}`], 'f64')
+    return typed(['block', ['result', resultType],
+      ['local.set', `$${aT}`, asF64(emit(a))],
+      ['local.set', `$${bT}`, asF64(emit(b))],
+      body(aF, bF)], resultType)
+  }
+  // Build the fresh-dst + threaded-walker-call sequence, returning the dst temp.
+  const buildSet = (steps, tag) => {
+    const dst = allocPtr({ type: PTR.SET, len: 0, cap: INIT_CAP, stride: SET_ENTRY, tag })
+    const dstT = temp('sopd')
+    const dI = () => ['i64.reinterpret_f64', ['local.get', `$${dstT}`]]
+    const seq = ['block', ['result', 'f64'], dst.init, ['local.set', `$${dstT}`, dst.ptr]]
+    for (const call of steps(dstT, dI)) seq.push(['local.set', `$${dstT}`, ['f64.reinterpret_i64', call]])
+    seq.push(['local.get', `$${dstT}`])
+    return seq
+  }
+  const addAll = (dI, srcF, strideIR) => ['call', '$__set_add_all', dI(), ['i64.reinterpret_f64', srcF], strideIR]
+  const filterInto = (dI, srcF, strideIR, otherF, otherIsMap, keep) =>
+    ['call', '$__set_filter', dI(), ['i64.reinterpret_f64', srcF], strideIR, ['i64.reinterpret_f64', otherF], otherIsMap, ['i32.const', keep]]
+  const allMatch = (srcF, strideIR, otherF, otherIsMap, want) =>
+    ['call', '$__set_all', ['i64.reinterpret_f64', srcF], strideIR, ['i64.reinterpret_f64', otherF], otherIsMap, ['i32.const', want]]
+
+  ctx.core.emit['.set:union'] = (a, b) => { inc('__set_add_all')
+    return setBin(a, b, 'f64', (aF, bF) => buildSet((dstT, dI) => [
+      addAll(dI, aF, ['i32.const', SET_ENTRY]),
+      addAll(dI, bF, strideRT(bF)),
+    ], 'setu')) }
+
+  ctx.core.emit['.set:intersection'] = (a, b) => { inc('__set_filter', '__len')
+    // Walk the SMALLER operand (ties → `this`, A) for spec-exact result order.
+    return setBin(a, b, 'f64', (aF, bF) => {
+      const aLen = ['call', '$__len', ['i64.reinterpret_f64', aF]]
+      const bLen = ['call', '$__len', ['i64.reinterpret_f64', bF]]
+      const walkA = buildSet((dstT, dI) => [filterInto(dI, aF, ['i32.const', SET_ENTRY], bF, isMapI32(bF), 1)], 'seti')
+      const walkB = buildSet((dstT, dI) => [filterInto(dI, bF, strideRT(bF), aF, ['i32.const', 0], 1)], 'seti')
+      return ['if', ['result', 'f64'], ['i32.le_s', aLen, bLen], ['then', walkA], ['else', walkB]]
+    }) }
+
+  ctx.core.emit['.set:difference'] = (a, b) => { inc('__set_filter')
+    // Always A's order (spec: iterate `this`, keep those NOT in other).
+    return setBin(a, b, 'f64', (aF, bF) => buildSet((dstT, dI) => [
+      filterInto(dI, aF, ['i32.const', SET_ENTRY], bF, isMapI32(bF), 0),
+    ], 'setd')) }
+
+  ctx.core.emit['.set:symmetricDifference'] = (a, b) => { inc('__set_filter')
+    // (A not in B, A's order) then (B not in A, B's order).
+    return setBin(a, b, 'f64', (aF, bF) => buildSet((dstT, dI) => [
+      filterInto(dI, aF, ['i32.const', SET_ENTRY], bF, isMapI32(bF), 0),
+      filterInto(dI, bF, strideRT(bF), aF, ['i32.const', 0], 0),
+    ], 'setx')) }
+
+  ctx.core.emit['.set:isSubsetOf'] = (a, b) => { inc('__set_all')
+    // every key of A is in B
+    return setBin(a, b, 'i32', (aF, bF) => allMatch(aF, ['i32.const', SET_ENTRY], bF, isMapI32(bF), 1)) }
+
+  ctx.core.emit['.set:isSupersetOf'] = (a, b) => { inc('__set_all')
+    // every key of B is in A (walk B; A is always a Set → otherIsMap=0)
+    return setBin(a, b, 'i32', (aF, bF) => allMatch(bF, strideRT(bF), aF, ['i32.const', 0], 1)) }
+
+  ctx.core.emit['.set:isDisjointFrom'] = (a, b) => { inc('__set_all')
+    // no key of A is in B
+    return setBin(a, b, 'i32', (aF, bF) => allMatch(aF, ['i32.const', SET_ENTRY], bF, isMapI32(bF), 0)) }
+
+  // === ES2024 Object.groupBy / Map.groupBy ===
+  // Both bucket items by cb(item, i): Object.groupBy keys a dictionary (HASH)
+  // by ToPropertyKey → __to_str; Map.groupBy keys a Map by SameValueZero (raw
+  // boxed value). Buckets are plain arrays appended in iteration order. The
+  // source normalizes through __iter_arr (Array/String/TypedArray pass through,
+  // Set→keys, Map→entries) and reads elements via the polymorphic __typed_idx.
+  const emitGroupBy = (isMap) => (items, fn) => {
+    inc('__iter_arr', '__len', '__typed_idx', '__arr_push1')
+    inc(...(isMap ? ['__map_set', '__map_get'] : ['__hash_new', '__hash_set', '__hash_get', '__to_str']))
+    const recv = temp('gbs'), cb = temp('gbc'), result = temp('gbr')
+    const len = tempI32('gbl'), i = tempI32('gbi')
+    const item = temp('gbv'), key = tempI64('gbk'), bucket = temp('gbb')
+    const id = ctx.func.uniq++
+    const resI64 = ['i64.reinterpret_f64', ['local.get', `$${result}`]]
+    const nb = allocPtr({ type: PTR.ARRAY, len: 0, cap: 0, tag: 'gbn' })
+    const initResult = isMap
+      ? (() => { const out = allocPtr({ type: PTR.MAP, len: 0, cap: INIT_CAP, stride: MAP_ENTRY, tag: 'gbm' })
+          return ['block', ['result', 'f64'], out.init, out.ptr] })()
+      : ['call', '$__hash_new']
+    const keyOf = (cbResult) => isMap ? asI64(cbResult) : ['call', '$__to_str', asI64(cbResult)]
+    const get = isMap ? '$__map_get' : '$__hash_get'
+    const set = isMap ? '$__map_set' : '$__hash_set'
+    ctx.runtime.throws = true
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${recv}`, asF64(emit(['()', '__iter_arr', items]))],
+      ['local.set', `$${cb}`, asF64(emit(fn))],
+      // spec GroupBy step 2: IsCallable(callbackfn) — throw before iterating,
+      // not an indirect-call trap mid-loop
+      ['if', ['i32.eqz', ptrTypeEq(typed(['local.get', `$${cb}`], 'f64'), PTR.CLOSURE)],
+        ['then', ['throw', '$__jz_err', ['f64.const', 0]]]],
+      ['local.set', `$${result}`, initResult],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]]],
+      ['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', `$gbrk${id}`, ['loop', `$gloop${id}`,
+        ['br_if', `$gbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+        ['local.set', `$${item}`, ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['local.get', `$${i}`]]],
+        ['local.set', `$${key}`, keyOf(ctx.closure.call(typed(['local.get', `$${cb}`], 'f64'),
+          [typed(['local.get', `$${item}`], 'f64'), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))],
+        ['local.set', `$${bucket}`, ['f64.reinterpret_i64', ['call', get, resI64, ['local.get', `$${key}`]]]],
+        // miss → fresh bucket, insert it (each distinct key allocates once)
+        ['if', ['i64.eq', ['i64.reinterpret_f64', ['local.get', `$${bucket}`]], ['i64.const', UNDEF_NAN]],
+          ['then',
+            nb.init,
+            ['local.set', `$${bucket}`, nb.ptr],
+            ['local.set', `$${result}`, ['f64.reinterpret_i64',
+              ['call', set, resI64, ['local.get', `$${key}`], ['i64.reinterpret_f64', ['local.get', `$${bucket}`]]]]]]],
+        // push may relocate the bucket — re-store the (possibly moved) pointer
+        ['local.set', `$${bucket}`, ['call', '$__arr_push1', ['i64.reinterpret_f64', ['local.get', `$${bucket}`]], typed(['local.get', `$${item}`], 'f64')]],
+        ['local.set', `$${result}`, ['f64.reinterpret_i64',
+          ['call', set, resI64, ['local.get', `$${key}`], ['i64.reinterpret_f64', ['local.get', `$${bucket}`]]]]],
+        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['br', `$gloop${id}`]]],
+      ['local.get', `$${result}`]], 'f64')
+  }
+  ctx.core.emit['Object.groupBy'] = emitGroupBy(false)
+  ctx.core.emit['Map.groupBy'] = emitGroupBy(true)
+
+  // === structuredClone — deep arena clone ===
+  // Walks the value graph copying every mutable container: arrays, schema
+  // objects (incl. branded Dates), dictionary HASHes, Set/Map (insertion order
+  // kept; Map keys AND values cloned, like the host), typed arrays, DataViews
+  // and ArrayBuffers (a buffer shared by several views stays shared in the
+  // clone). Numbers/atoms are immediate and strings immutable — passed through.
+  // Closures and host handles raise (the host's DataCloneError). The `transfer`
+  // option is out of model (arena memory has nothing to detach) and ignored.
+  //
+  // Identity memo: a real MAP keyed by boxed-pointer bits (SameValueZero on
+  // non-string pointers ≡ bit identity) — cycles terminate, diamond sharing
+  // dedupes. Every clone target is allocated at its final capacity, so no fill
+  // can trigger a grow: memo'd pointers stay canonical and `===` identity
+  // inside the cloned graph holds bit-exactly. The memo itself may grow, but
+  // __map_set forward-marks, so a stale $memo in an outer frame still resolves.
+
+  ctx.core.stdlib['__sclone'] = `(func $__sclone (param $v f64) (result f64)
+    (call $__sclone_rec (local.get $v)
+      (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
+        (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))))`
+
+  // Deep-clone the values of a freshly copied HASH table, in place.
+  ctx.core.stdlib['__sclone_hash_vals'] = `(func $__sclone_hash_vals (param $off i32) (param $memo i64)
+    (local $cap i32) (local $i i32) (local $slot i32)
+    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    (block $d (loop $l
+      (br_if $d (i32.ge_s (local.get $i) (local.get $cap)))
+      (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const ${MAP_ENTRY}))))
+      (if (i32.and
+            (i64.ne (i64.load (local.get $slot)) (i64.const 0))
+            (i64.ne (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN})))
+        (then (i64.store (i32.add (local.get $slot) (i32.const 16))
+          (i64.reinterpret_f64 (call $__sclone_rec
+            (f64.reinterpret_i64 (i64.load (i32.add (local.get $slot) (i32.const 16))))
+            (local.get $memo))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l))))`
+
+  ctx.core.stdlib['__sclone_rec'] = () => {
+    // Guarded: template expansion (pullStdlib) runs AFTER assemble's schema-table
+    // build — an unconditional declGlobal would reset the freshly-baked init offset
+    // back to 0 and every schema consumer would see an empty table.
+    if (!ctx.scope.globals.has('__schema_tbl')) declGlobal('__schema_tbl', 'i32')
+    return `(func $__sclone_rec (param $v f64) (param $memo i64) (result f64)
+    (local $bits i64) (local $t i32) (local $hit i64) (local $out f64) (local $side i64)
+    (local $src i32) (local $dst i32) (local $n i32) (local $cap i32) (local $i i32)
+    (local $slot i32) (local $ord i32) (local $stride i32) (local $aux i32) (local $root i32) (local $newroot i32)
+    ;; ordinary numbers (incl. ±Infinity) are immediate
+    (if (f64.eq (local.get $v) (local.get $v)) (then (return (local.get $v))))
+    (local.set $bits (i64.reinterpret_f64 (local.get $v)))
+    ;; negative-NaN bit patterns are numeric NaN, never boxes
+    (if (i64.eq (i64.and (local.get $bits) (i64.const 0xFFF0000000000000)) (i64.const 0xFFF0000000000000))
+      (then (return (local.get $v))))
+    (local.set $t (call $__ptr_type (local.get $bits)))
+    ;; atoms (canonical NaN / undefined / null / booleans) + immutable strings: share
+    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ATOM})) (i32.eq (local.get $t) (i32.const ${PTR.STRING})))
+      (then (return (local.get $v))))
+    ;; functions / host handles: DataCloneError
+    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE})) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL})))
+      (then (throw $__jz_err (f64.const 0))))
+    ;; already cloned? (cycle / diamond sharing) — __map_get yields raw i64 bits
+    (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+    (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
+
+    (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+      (then
+        (local.set $out (call $__arr_from (local.get $bits)))
+        (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+        (local.set $dst (call $__ptr_offset (i64.reinterpret_f64 (local.get $out))))
+        (local.set $n (call $__len (local.get $bits)))
+        (block $ad (loop $al
+          (br_if $ad (i32.ge_s (local.get $i) (local.get $n)))
+          (local.set $slot (i32.add (local.get $dst) (i32.shl (local.get $i) (i32.const 3))))
+          (f64.store (local.get $slot) (call $__sclone_rec (f64.load (local.get $slot)) (local.get $memo)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $al)))
+        (return (local.get $out))))
+
+    (if (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
+      (then
+        (local.set $out (call $__obj_clone (local.get $v)))
+        (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+        ;; deep the schema slots — slot count via aux → schema table, like __obj_clone
+        (if (i32.ne (global.get $__schema_tbl) (i32.const 0))
+          (then (local.set $n (call $__len
+            (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (call $__ptr_aux (local.get $bits)) (i32.const 3))))))))
+        (local.set $dst (call $__ptr_offset (i64.reinterpret_f64 (local.get $out))))
+        (block $od (loop $ol
+          (br_if $od (i32.ge_s (local.get $i) (local.get $n)))
+          (local.set $slot (i32.add (local.get $dst) (i32.shl (local.get $i) (i32.const 3))))
+          (f64.store (local.get $slot) (call $__sclone_rec (f64.load (local.get $slot)) (local.get $memo)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $ol)))
+        ;; deep the dyn-props sidecar's values (__obj_clone already re-tabled it)
+        (local.set $side (i64.load (i32.sub (local.get $dst) (i32.const 16))))
+        (if (i32.eq (call $__ptr_type (local.get $side)) (i32.const ${PTR.HASH}))
+          (then (call $__sclone_hash_vals (call $__ptr_offset (local.get $side)) (local.get $memo))))
+        (return (local.get $out))))
+
+    (if (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
+      (then
+        (local.set $out (call $__obj_clone (local.get $v)))
+        (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+        (call $__sclone_hash_vals (call $__ptr_offset (i64.reinterpret_f64 (local.get $out))) (local.get $memo))
+        (return (local.get $out))))
+
+    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.SET})) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))
+      (then
+        (local.set $stride (select (i32.const ${MAP_ENTRY}) (i32.const ${SET_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.MAP}))))
+        (local.set $src (call $__ptr_offset (local.get $bits)))
+        (local.set $cap (i32.load (i32.sub (local.get $src) (i32.const 4))))
+        (local.set $out (call $__mkptr (local.get $t) (i32.const 0)
+          (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (local.get $stride))))
+        (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+        ;; walk the source in insertion order; ≤len inserts into cap slots never grow,
+        ;; so $out's bits stay canonical (the memo entry above remains the pointer)
+        (local.set $n (i32.load (i32.sub (local.get $src) (i32.const 8))))
+        (local.set $ord (call $__coll_order (local.get $src) (local.get $cap) (local.get $stride)))
+        (block $cd (loop $cl
+          (br_if $cd (i32.ge_s (local.get $i) (local.get $n)))
+          (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
+          (if (i32.eq (local.get $t) (i32.const ${PTR.MAP}))
+            (then (drop (call $__map_set (i64.reinterpret_f64 (local.get $out))
+              (i64.reinterpret_f64 (call $__sclone_rec (f64.reinterpret_i64 (i64.load (i32.add (local.get $slot) (i32.const 8)))) (local.get $memo)))
+              (i64.reinterpret_f64 (call $__sclone_rec (f64.reinterpret_i64 (i64.load (i32.add (local.get $slot) (i32.const 16)))) (local.get $memo))))))
+            (else (drop (call $__set_add (i64.reinterpret_f64 (local.get $out))
+              (i64.reinterpret_f64 (call $__sclone_rec (f64.reinterpret_i64 (i64.load (i32.add (local.get $slot) (i32.const 8)))) (local.get $memo)))))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $cl)))
+        (return (local.get $out))))
+
+    (if (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
+      (then
+        (local.set $aux (call $__ptr_aux (local.get $bits)))
+        (local.set $src (call $__ptr_offset (local.get $bits)))
+        (if (i32.and (local.get $aux) (i32.const 8))
+          (then
+            ;; view: clone the root buffer once — memo'd as its boxed BUFFER value,
+            ;; the exact key .buffer reconstructs — and rebase the descriptor
+            (local.set $root (i32.load (i32.add (local.get $src) (i32.const 8))))
+            (local.set $newroot (call $__ptr_offset (i64.reinterpret_f64
+              (call $__sclone_rec (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0) (local.get $root)) (local.get $memo)))))
+            (local.set $dst (call $__alloc (i32.const 16)))
+            (i32.store (local.get $dst) (i32.load (local.get $src)))
+            (i32.store (i32.add (local.get $dst) (i32.const 4))
+              (i32.add (local.get $newroot) (i32.sub (i32.load (i32.add (local.get $src) (i32.const 4))) (local.get $root))))
+            (i32.store (i32.add (local.get $dst) (i32.const 8)) (local.get $newroot))
+            (i32.store (i32.add (local.get $dst) (i32.const 12)) (i32.const 0)))
+          (else
+            ;; owned storage: raw byte copy (header len is in bytes)
+            (local.set $n (i32.load (i32.sub (local.get $src) (i32.const 8))))
+            (local.set $dst (call $__alloc_hdr_n (local.get $n) (local.get $n) (i32.const 1)))
+            (memory.copy (local.get $dst) (local.get $src) (local.get $n))))
+        (local.set $out (call $__mkptr (i32.const ${PTR.TYPED}) (local.get $aux) (local.get $dst)))
+        (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+        (return (local.get $out))))
+
+    (if (i32.eq (local.get $t) (i32.const ${PTR.BUFFER}))
+      (then
+        (local.set $src (call $__ptr_offset (local.get $bits)))
+        (local.set $n (i32.load (i32.sub (local.get $src) (i32.const 8))))
+        (local.set $dst (call $__alloc_hdr_n (local.get $n) (local.get $n) (i32.const 1)))
+        (memory.copy (local.get $dst) (local.get $src) (local.get $n))
+        (local.set $out (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0) (local.get $dst)))
+        (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+        (return (local.get $out))))
+
+    ;; unrecognized tag — pass through
+    (local.get $v))`
+  }
+
+  // structuredClone(value[, options]) — options.transfer ignored (see above).
+  ctx.core.emit['structuredClone'] = (val, _opts) => {
+    inc('__sclone')
+    // __obj_clone/__sclone_rec read $__schema_tbl but only join includes via the
+    // pullStdlib dep-closure — after assemble has already decided whether to build
+    // the table. Flag the consumption explicitly (same hook as the enumeration
+    // scaffolds), or every OBJECT clones as zero slots.
+    ctx.runtime.schemaTblConsumed = true
+    // carrierF64: a bare boolean arg rides as a 0/1 carrier — box it to the
+    // TRUE/FALSE atom so the clone round-trips `true`, not the number 1.
+    return typed(['call', '$__sclone', carrierF64(val, emit(val))], 'f64')
+  }
 
   // Generated Map probe functions
   ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.features.external)
@@ -2226,6 +2604,12 @@ export default (ctx) => {
       (then (local.set $key (call $__to_str (local.get $key)))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    ;; HASH receiver is ITS OWN storage (dictionary-mode {} — __dyn_set/__dyn_get
+    ;; write/read its entry table directly): delete the entry there. Every arm
+    ;; below only probes the props SIDECAR, which a dictionary doesn't use for
+    ;; its own keys — without this arm, delete d[k] silently no-ops.
+    (if (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
+      (then (return (call $__hash_del_local (local.get $obj) (local.get $key)))))
     ${buildObjectSchemaDelArm()}
     ;; CLOSURE with no env: rekey to function table index (parallels __dyn_set / __dyn_get_t_h).
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.CLOSURE})) (i32.eqz (local.get $off)))

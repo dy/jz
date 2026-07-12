@@ -1098,6 +1098,11 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet, valTypes)
       return
     }
     // Array.isArray flips true→false under promotion.
+    // KNOWN GAP (recorded in .work/extension-surface.md): a DERIVED value of a
+    // promoted array (`s = a.slice(0); Array.isArray(s)`) is not tracked here,
+    // so promotion survives and isArray answers false at O2+. Fixing it needs
+    // derived-name flow, not a blanket disqualifier (a blanket one regressed
+    // the __to_num elision pin) — a focused optimizer-session item.
     if (callee === 'Array.isArray') {
       const raw = node[2]
       const list = raw == null ? [] : (Array.isArray(raw) && raw[0] === ',') ? raw.slice(1) : [raw]

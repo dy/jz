@@ -5,7 +5,7 @@ import * as mods from '../module/index.js'
 
 const dict = obj => Object.assign(Object.create(null), obj)
 
-export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', Date: 'date', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string',
+export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', Date: 'date', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string', Atomics: 'atomics',
   // SIMD intrinsic namespaces (f32x4/i32x4/f64x2/v128) all live in the `simd` module.
   f32x4: 'simd', i32x4: 'simd', f64x2: 'simd', v128: 'simd' }
 
@@ -17,6 +17,7 @@ export const PROP_MODULES = Object.assign(Object.create(null), {
   findLast: ['core', 'array'], findLastIndex: ['core', 'array'],
   every: ['core', 'array'], some: ['core', 'array'], flat: ['core', 'array'], flatMap: ['core', 'array'],
   join: ['core', 'array'], copyWithin: ['core', 'array'], at: ['core', 'string', 'array'],
+  toSorted: ['core', 'array'], toReversed: ['core', 'array'], with: ['core', 'array'],
   charAt: ['core', 'string'], charCodeAt: ['core', 'string'], codePointAt: ['core', 'string'],
   toUpperCase: ['core', 'string'], toLowerCase: ['core', 'string'], toLocaleLowerCase: ['core', 'string'], trim: ['core', 'string'],
   trimStart: ['core', 'string'], trimEnd: ['core', 'string'],
@@ -26,6 +27,10 @@ export const PROP_MODULES = Object.assign(Object.create(null), {
   matchAll: ['core', 'string'], match: ['core', 'string'],
   substring: ['core', 'string'], substr: ['core', 'string'],
   add: ['core', 'collection'], clear: ['core', 'collection'],
+  union: ['core', 'collection'], intersection: ['core', 'collection'],
+  difference: ['core', 'collection'], symmetricDifference: ['core', 'collection'],
+  isSubsetOf: ['core', 'collection'], isSupersetOf: ['core', 'collection'],
+  isDisjointFrom: ['core', 'collection'],
   slice: ['core', 'string', 'array'], concat: ['core', 'string', 'array'],
   indexOf: ['core', 'string', 'array'], lastIndexOf: ['core', 'string', 'array'],
   includes: ['core', 'string', 'array'],
@@ -48,6 +53,7 @@ export const OP_MODULES = {
   'delete': ['core', 'collection', 'string'],
   '//': ['core', 'string', 'regex'],
   '**': ['math'],
+  '**=': ['math'],  // desugars to `name = name ** val` at emit — needs the same module
 }
 
 export const TYPED_CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','ArrayBuffer','DataView']
@@ -77,6 +83,22 @@ export const CALL_MODULES = dict({
   'Object.values': ['core', 'object', 'string'],
   'Object.entries': ['core', 'object', 'string'],
   'Object.hasOwn': ['core', 'object', 'string', 'collection'],
+  'Object.groupBy': ['core', 'collection', 'object', 'string', 'array', 'fn'],
+  'Map.groupBy': ['core', 'collection', 'array', 'fn'],
+  'RegExp.escape': ['core', 'string', 'regex'],
+  structuredClone: ['core', 'collection', 'array'],
+  'Atomics.load': ['core', 'typedarray', 'atomics'],
+  'Atomics.store': ['core', 'typedarray', 'atomics'],
+  'Atomics.add': ['core', 'typedarray', 'atomics'],
+  'Atomics.sub': ['core', 'typedarray', 'atomics'],
+  'Atomics.and': ['core', 'typedarray', 'atomics'],
+  'Atomics.or': ['core', 'typedarray', 'atomics'],
+  'Atomics.xor': ['core', 'typedarray', 'atomics'],
+  'Atomics.exchange': ['core', 'typedarray', 'atomics'],
+  'Atomics.compareExchange': ['core', 'typedarray', 'atomics'],
+  'Atomics.notify': ['core', 'typedarray', 'atomics'],
+  'Atomics.isLockFree': ['core', 'typedarray', 'atomics'],
+  'Atomics.wait': ['core', 'typedarray', 'atomics', 'number', 'string'],
   'Object.freeze': ['core', 'object'],
   'Object.assign': ['core', 'object'],
   'Object.create': ['core', 'object'],
@@ -92,6 +114,7 @@ export const CALL_MODULES = dict({
   'BigInt.asIntN': ['number'],
   'BigInt.asUintN': ['number'],
   ...Object.fromEntries(TYPED_CTORS.filter(n => n.endsWith('Array')).map(n => [`${n}.from`, ['core', 'typedarray', 'array']])),
+  'Array.of': ['core', 'array'],
   'ArrayBuffer.isView': ['core', 'typedarray'],
   // instanceof Map / Set / TypedArray predicates (synthesized by jzify).
   '__is_map': ['core', 'collection'],
@@ -118,6 +141,7 @@ export const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval',
 
 const MOD_DEPS = {
   number: ['core', 'string'],
+  atomics: ['core', 'typedarray'],
   string: ['core', 'number'],
   array: ['core'],
   object: ['core'],

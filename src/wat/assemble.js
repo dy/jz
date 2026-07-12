@@ -111,15 +111,20 @@ function applyArenaRewind(func, fn, safeCallees) {
   const restore = () => heapSetIR(['local.get', save])
   const resultType = func.sig.results[0]
 
+  // Rewrite the return's VALUE, not the return: `return` is stack-polymorphic
+  // (never falls through), so it validates in statement AND value position alike.
+  // The old form — a value-typed block AROUND the return — reified `(result T)`
+  // even where the return was a statement, leaving a phantom value on the stack
+  // of a void enclosing frame (a `return` inside try_table failed validation:
+  // "expected 0 elements on the stack for fallthru, found 1").
   const rewriteReturns = node => {
     if (!Array.isArray(node)) return node
     if (node[0] === 'return' && node.length > 1) {
-      return ['block',
+      return ['return', ['block',
         ['result', resultType],
         ['local.set', ret, node[1]],
         restore(),
-        ['return', ['local.get', ret]],
-        ['unreachable']]
+        ['local.get', ret]]]
     }
     for (let i = 1; i < node.length; i++) node[i] = rewriteReturns(node[i])
     return node
@@ -638,7 +643,9 @@ export function pullStdlib(sec) {
   //    host marshals across the boundary). A data segment with no memory is invalid wasm,
   //    so memory can't be gated on allocation alone.
   const ALLOC_FUNCS = ['__alloc', '__alloc_hdr', '__alloc_hdr_n']
-  const needsAlloc = !!ctx.runtime.strPool || ALLOC_FUNCS.some(a => reachable.has(a))
+  const needsAlloc = !!ctx.runtime.strPool || ALLOC_FUNCS.some(a => reachable.has(a)) ||
+    // shared memory memory.init's the static region into __alloc'd space at start
+    !!(ctx.memory.shared && ctx.runtime.data)
   // Memory ops can be emitted *inline* into user/start funcs (a heap-path char read
   // loads without calling a stdlib helper), so scan the emitted bodies too.
   const hasMemOp = (node) => Array.isArray(node) &&
@@ -663,25 +670,36 @@ export function pullStdlib(sec) {
   // are pulled in on demand, never eagerly, so they're already minimal and never pruned
   // here (guarding against any reachability blind spot in a dotted-name template).
   for (const n of [...ctx.core.includes]) if (n.startsWith('__') && !reachable.has(n)) ctx.core.includes.delete(n)
-  // Lazy Eisel-Lemire table injection: only when __dec_to_f64 (correctly-rounded
-  // decimal→f64, module/number.js) survived pruning — append its trimmed 131-entry
-  // (~2KB) power-of-10 table and declare $__el_tbl = that offset. Must run HERE so
-  // dataPages (below) accounts for the addition; keeps it out of programs that never
-  // parse decimals at runtime.
-  if (ctx.core.includes.has('__dec_to_f64') && ctx.runtime.elTable) {
-    const elBefore = ctx.runtime.data.length
+  // Lazy data-table injection — Eisel-Lemire decimal→f64 (~2KB) and Ryū
+  // float→decimal (~9.7KB), module/number.js. Each table is appended only when
+  // its owning function survived pruning, and its base global declared at the
+  // offset. Must run HERE so dataPages (below) accounts for the addition; keeps
+  // the tables out of programs that never convert decimals at runtime.
+  //
+  // Reachability here OVER-counts: a dead inlined helper's `arr[i] | 0` on an
+  // untyped param pulls __to_num → __dec_to_f64, landing a table even when no
+  // LIVE code uses it. Record each span (they are the data tail — the last
+  // appends) so stripDeadLazyTables can excise dead ones post-lowering, once
+  // reachability is exact. Base globals register in staticI32GlobalInits so a
+  // later static-prefix strip shifts them like every other static offset.
+  ctx.runtime.lazySpans = []
+  const injectTable = (fn, global, bytes) => {
+    if (!ctx.core.includes.has(fn) || !bytes) return false
+    const start = ctx.runtime.data.length
     while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
-    const elTblOff = ctx.runtime.data.length
-    ctx.runtime.data += ctx.runtime.elTable
-    declGlobal('__el_tbl', 'i32', elTblOff, { mut: false })
-    ctx.runtime.elTable = null  // prevent double-injection on re-entry (null-sentinel; jz forbids delete)
-    // Reachability here OVER-counts __dec_to_f64: a dead inlined helper's `arr[i] | 0`
-    // on an untyped param pulls __to_num → __dec_to_f64, landing the table even when no
-    // LIVE code parses decimals. Record the appended span (padding + table, always the
-    // data tail — it's the last append) so stripDeadElTable can drop it post-lowering,
-    // once reachability is exact. See stripDeadElTable.
-    ctx.runtime.elTableLen = ctx.runtime.data.length - elBefore
+    // Shared memory: the table lands via memory.init at a runtime base, so the
+    // global is MUTABLE and re-pointed at start (compile/index.js); its declared
+    // init meanwhile holds the offset WITHIN the static region.
+    declGlobal(global, 'i32', ctx.runtime.data.length, ctx.memory.shared ? undefined : { mut: false })
+    if (ctx.memory.shared && !ctx.scope.globals.has('__staticBase')) declGlobal('__staticBase', 'i32')
+    ctx.runtime.data += bytes
+    ;(ctx.runtime.staticI32GlobalInits ??= []).push(global)
+    ctx.runtime.lazySpans.push({ fn: '$' + fn, global, start, bytes })
+    return true
   }
+  // prevent double-injection on re-entry (null-sentinel; jz forbids delete)
+  if (injectTable('__dec_to_f64', '__el_tbl', ctx.runtime.elTable)) ctx.runtime.elTable = null
+  if (injectTable('__ftoa_shortest', '__ryu_tbl', ctx.runtime.ryuTable)) ctx.runtime.ryuTable = null
   if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }
   if (needsMemory && ctx.module.modules.core) {
     if (needsAlloc) {
@@ -872,7 +890,13 @@ export function pullStdlib(sec) {
     const dataPages = ctx.memory.shared ? 0 : Math.ceil((ctx.runtime.data?.length || 0) / 65536)
     const pages = Math.max(ctx.memory.pages || 1, dataPages)
     const max = ctx.memory.max || 0   // 0 = no maximum (unbounded growth)
-    if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', max ? ['memory', pages, max] : ['memory', pages]])
+    // Truly-shared memory (opts.sharedMemory) declares the `shared` memtype —
+    // the spec requires an explicit max there (default: the wasm32 page ceiling).
+    // Plain imported memory (opts.importMemory / a Memory-valued opts.memory)
+    // stays non-shared, or a host passing an ordinary Memory could never link.
+    if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"',
+      ctx.memory.atomic ? ['memory', pages, max || 65536, 'shared']
+        : max ? ['memory', pages, max] : ['memory', pages]])
     else sec.memory.push(max ? ['memory', ['export', '"memory"'], pages, max] : ['memory', ['export', '"memory"'], pages])
     if (needsAlloc && ctx.transform.alloc !== false && ctx.core._allocRawFuncs)
       sec.funcs.push(...ctx.core._allocRawFuncs.map(parseTemplate))
@@ -1042,8 +1066,9 @@ export function optimizeModule(sec, profiler) {
  * watr, which already removes them. Keeps correctly-rounded decimal parsing wherever it is
  * genuinely live (parseFloat, the self-host compiler's `Number()` on source literals).
  */
-export function stripDeadElTable(sec) {
-  if (!ctx.runtime.elTableLen) return
+export function stripDeadLazyTables(sec) {
+  const spans = ctx.runtime.lazySpans
+  if (!spans || !spans.length) return
   const byName = new Map()
   for (const arr of [sec.funcs, sec.stdlib, sec.start])
     for (const f of arr || []) if (Array.isArray(f) && f[0] === 'func' && typeof f[1] === 'string') byName.set(f[1], f)
@@ -1061,9 +1086,28 @@ export function stripDeadElTable(sec) {
     for (const c of n) { if (typeof c === 'string' && c[0] === '$') mark(c); else scan(c) }
   }
   while (work.length) scan(byName.get(work.pop()))
-  if (live.has('$__dec_to_f64')) return   // genuinely parses decimals at runtime — keep it
-  ctx.runtime.data = ctx.runtime.data.slice(0, ctx.runtime.data.length - ctx.runtime.elTableLen)
-  ctx.runtime.elTableLen = 0
+  if (spans.every(s => live.has(s.fn))) { ctx.runtime.lazySpans = ctx.memory.shared ? spans : [] ; return }
+  // Rebuild the tail (the spans are the last data appends, in order): truncate
+  // to the first span's pre-pad start, re-append live tables, re-point their
+  // base globals — both the scope entry and the already-pushed sec.globals IR.
+  const setInit = (name, off) => {
+    const g = ctx.scope.globals.get(name)
+    if (g) g.init = off
+    for (const node of sec.globals) if (Array.isArray(node) && node[1] === '$' + name) {
+      const c = node[node.length - 1]
+      if (Array.isArray(c) && c[0] === 'i32.const') c[1] = off
+    }
+  }
+  ctx.runtime.data = ctx.runtime.data.slice(0, spans[0].start)
+  for (const s of spans) {
+    if (!live.has(s.fn)) { setInit(s.global, 0); continue }
+    while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
+    setInit(s.global, ctx.runtime.data.length)
+    ctx.runtime.data += s.bytes
+  }
+  // Shared memory needs the survivor list after this pass — the start-time
+  // rebase (compile/index.js) re-points each surviving table global.
+  ctx.runtime.lazySpans = ctx.memory.shared ? spans.filter(s => live.has(s.fn)) : []
 }
 
 /**
@@ -1112,6 +1156,10 @@ export function stripStaticDataPrefix(sec) {
     const g = ctx.scope.globals.get(name)
     if (g && typeof g.init === 'number' && g.init >= prefix) g.init -= prefix
   }
+  // Lazy-table spans (EL/Ryū) sit at the data tail — keep their recorded starts
+  // in post-strip coordinates so stripDeadLazyTables truncates at the right base.
+  if (ctx.runtime.lazySpans) for (const s of ctx.runtime.lazySpans)
+    if (s.start >= prefix) s.start -= prefix
   let s = ''
   for (let i = prefix; i < buf.length; i++) s += String.fromCharCode(buf[i])
   ctx.runtime.data = s

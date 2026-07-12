@@ -96,7 +96,24 @@ export const parseRegex = (pattern, flags = '') => {
   if (flags) ast.flags = flags
   ast.groups = groupNum
   if (groupNames.length) ast.groupNames = groupNames
+  resolveNamedBackrefs(ast, groupNames)
   return ast
+}
+
+// Rewrite ['\k', name] placeholders → the SAME ['\N'] node numbered backrefs
+// produce (in place, post-parse so forward references resolve). The match VM
+// supports \1–\9 — a named group past index 9 can't be referenced by name.
+const resolveNamedBackrefs = (node, names) => {
+  if (!Array.isArray(node)) return
+  if (node[0] === '\\k') {
+    const i = names.indexOf(node[1])
+    if (i < 0) perr(`Named backreference to undefined group '${node[1]}'`)
+    if (i > 9) perr('Named backreference to a group past index 9 unsupported')
+    node.length = 1
+    node[0] = '\\' + i
+    return
+  }
+  for (let j = 1; j < node.length; j++) resolveNamedBackrefs(node[j], names)
 }
 
 const parseAlt = () => {
@@ -180,6 +197,7 @@ const parseClassChar = () => {
   if (cur() === BSLASH) {
     skip(); const c = peek()
     if ('dDwWsS'.includes(c)) { skip(); return ['\\' + c] }
+    if (c === 'p' || c === 'P') perr('Unicode property escape \\p{…} unsupported')
     return parseEscapeChar()
   }
   return skip()
@@ -189,7 +207,13 @@ const parseEscape = () => {
   skip()
   const c = peek()
   if (c >= '1' && c <= '9') { skip(); return ['\\' + c] }
-  if (c === 'k' && src.charCodeAt(idx + 1) === LT) perr('Named backreference unsupported')
+  // \k<name> — parse to a placeholder; parseRegex resolves it to the group's
+  // NUMBERED backref node once all groups are known (forward refs included),
+  // so the compile/match VM needs no new cases.
+  if (c === 'k' && src.charCodeAt(idx + 1) === LT) { skip(); skip(); return ['\\k', parseGroupName()] }
+  // \p{…}/\P{…} need the Unicode property tables (multi-KB) — out of scope.
+  // Falling through would match the LITERAL text "p{…}" — silently wrong.
+  if (c === 'p' || c === 'P') perr('Unicode property escape \\p{…} unsupported')
   if ('dDwWsS'.includes(c)) { skip(); return ['\\' + c] }
   if (c === 'b' || c === 'B') { skip(); return ['\\' + c] }
   return parseEscapeChar()
@@ -733,7 +757,85 @@ const patternMinLen = node => {
 export default (ctx) => {
   deps({
     __str_to_buf: ['__str_byteLen', '__char_at'],
+    __regexp_escape: ['__to_str', '__str_byteLen', '__char_at', '__alloc', '__mkptr', '__sso_norm'],
   })
+
+  // RegExp.escape (ES2025) — escape a string for literal use inside a pattern.
+  // Spec sets, as jz UTF-8 byte tests (non-ASCII bytes are never regex-special
+  // and pass through; the spec's astral/whitespace \u-escapes don't arise in a
+  // byte-wise engine): SyntaxCharacter+`/` get a backslash; t/n/v/f/r their
+  // control escape; other punctuators + space `\xHH` (lowercase); an ASCII
+  // alnum FIRST char `\xHH` (so concatenating into a pattern can't fuse with a
+  // preceding token). Worst case 4 bytes per input byte.
+  const or = (tests) => tests.length === 1 ? tests[0] : `(i32.or ${tests[0]} ${or(tests.slice(1))})`
+  const eqAny = (codes) => or(codes.map(n => `(i32.eq (local.get $c) (i32.const ${n}))`))
+  const SYNTAX = [94, 36, 92, 46, 42, 43, 63, 40, 41, 91, 93, 123, 125, 124, 47]  // ^$\.*+?()[]{}| /
+  const CTRL = [[9, 116], [10, 110], [11, 118], [12, 102], [13, 114]]              // \t \n \v \f \r
+  const HEXED = [44, 45, 61, 60, 62, 35, 38, 33, 37, 58, 59, 64, 126, 39, 96, 34, 32]  // ,-=<>#&!%:;@~'`" SP
+  const alnum = `(i32.or (i32.or
+      (i32.and (i32.ge_u (local.get $c) (i32.const 65)) (i32.le_u (local.get $c) (i32.const 90)))
+      (i32.and (i32.ge_u (local.get $c) (i32.const 97)) (i32.le_u (local.get $c) (i32.const 122))))
+      (i32.and (i32.ge_u (local.get $c) (i32.const 48)) (i32.le_u (local.get $c) (i32.const 57))))`
+  // \xHH writer (lowercase hex): "\\x" + hi + lo
+  const hexOut = `
+        (i32.store8 (i32.add (local.get $out) (local.get $j)) (i32.const 92))
+        (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 1))) (i32.const 120))
+        (local.set $hi (i32.shr_u (local.get $c) (i32.const 4)))
+        (local.set $lo (i32.and (local.get $c) (i32.const 15)))
+        (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 2)))
+          (i32.add (local.get $hi) (select (i32.const 87) (i32.const 48) (i32.gt_u (local.get $hi) (i32.const 9)))))
+        (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 3)))
+          (i32.add (local.get $lo) (select (i32.const 87) (i32.const 48) (i32.gt_u (local.get $lo) (i32.const 9)))))
+        (local.set $j (i32.add (local.get $j) (i32.const 4)))`
+  const ctrlArms = CTRL.map(([code, esc]) => `
+    (if (i32.eq (local.get $c) (i32.const ${code})) (then
+        (i32.store8 (i32.add (local.get $out) (local.get $j)) (i32.const 92))
+        (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 1))) (i32.const ${esc}))
+        (local.set $j (i32.add (local.get $j) (i32.const 2)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $loop)))`).join('')
+  ctx.core.stdlib['__regexp_escape'] = `(func $__regexp_escape (param $val i64) (result f64)
+  (local $str i64) (local $slen i32) (local $base i32) (local $out i32)
+  (local $i i32) (local $j i32) (local $c i32) (local $hi i32) (local $lo i32)
+  (local.set $str (call $__to_str (local.get $val)))
+  (local.set $slen (call $__str_byteLen (local.get $str)))
+  (if (i32.eqz (local.get $slen))
+    (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
+  (local.set $base (call $__alloc (i32.add (i32.const 4) (i32.mul (local.get $slen) (i32.const 4)))))
+  (local.set $out (i32.add (local.get $base) (i32.const 4)))
+  (block $done (loop $loop
+    (br_if $done (i32.ge_u (local.get $i) (local.get $slen)))
+    (local.set $c (call $__char_at (local.get $str) (local.get $i)))
+    ;; first char alnum → \\xHH
+    (if (i32.and (i32.eqz (local.get $i)) ${alnum}) (then
+        ${hexOut}
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $loop)))
+    ;; syntax chars + '/' → backslash-prefixed
+    (if ${eqAny(SYNTAX)} (then
+        (i32.store8 (i32.add (local.get $out) (local.get $j)) (i32.const 92))
+        (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 1))) (local.get $c))
+        (local.set $j (i32.add (local.get $j) (i32.const 2)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $loop)))
+    ;; control escapes${ctrlArms}
+    ;; other punctuators + space → \\xHH
+    (if ${eqAny(HEXED)} (then
+        ${hexOut}
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $loop)))
+    ;; passthrough
+    (i32.store8 (i32.add (local.get $out) (local.get $j)) (local.get $c))
+    (local.set $j (i32.add (local.get $j) (i32.const 1)))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $loop)))
+  (i32.store (local.get $base) (local.get $j))
+  (call $__sso_norm (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $out))))`
+  ctx.core.emit['RegExp.escape'] = (value) => {
+    inc('__regexp_escape')
+    return typed(['call', '$__regexp_escape',
+      value === undefined ? ['i64.const', UNDEF_NAN] : asI64(emit(value))], 'f64')
+  }
 
   ctx.runtime.regex = { count: 0, vars: new Map(), compiled: new Map(), groups: new Map(), groupNames: new Map() }
 
@@ -776,9 +878,21 @@ export default (ctx) => {
     ctx.runtime.regex.groupNames.set(id, collectGroupNames(ast))
     ctx.core.stdlib[funcName] = compileRegex(ast, funcName)
 
-    // Search wrapper: tries match at each position, returns (match_start, match_end) via locals
+    // Search wrapper: tries match at each position, returns (match_start, match_end) via locals.
+    // A STICKY regex (/y) anchors: exactly one attempt at the start position — a
+    // forward scan is /g semantics, not /y (was silently identical before).
+    const sticky = (flags || '').includes('y')
     const searchName = `__regex_search_${id}`
-    ctx.core.stdlib[searchName] = `(func $${searchName} (param $str i64) (result i32 i32)
+    ctx.core.stdlib[searchName] = sticky
+      ? `(func $${searchName} (param $str i64) (result i32 i32)
+      (local $off i32) (local $len i32) (local $result i32)
+      (local.set $off (call $__str_to_buf (local.get $str)))
+      (local.set $len (call $__str_byteLen (local.get $str)))
+      (local.set $result (call $${funcName} (local.get $off) (local.get $len) (i32.const 0)))
+      (if (i32.ge_s (local.get $result) (i32.const 0))
+        (then (return (i32.const 0) (local.get $result))))
+      (i32.const -1) (i32.const -1))`
+      : `(func $${searchName} (param $str i64) (result i32 i32)
       (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
       (local.set $off (call $__str_to_buf (local.get $str)))
       (local.set $len (call $__str_byteLen (local.get $str)))
@@ -792,9 +906,21 @@ export default (ctx) => {
         (br $next)))
       (i32.const -1) (i32.const -1))`
 
-    // search_from: like search but starts scanning at $fromPos (used by global exec)
+    // search_from: like search but starts at $fromPos (used by stateful exec).
+    // Sticky: one attempt exactly at $fromPos (out-of-range → no match).
     const searchFromName = `__regex_search_from_${id}`
-    ctx.core.stdlib[searchFromName] = `(func $${searchFromName} (param $str i64) (param $fromPos i32) (result i32 i32)
+    ctx.core.stdlib[searchFromName] = sticky
+      ? `(func $${searchFromName} (param $str i64) (param $fromPos i32) (result i32 i32)
+      (local $off i32) (local $len i32) (local $result i32)
+      (local.set $off (call $__str_to_buf (local.get $str)))
+      (local.set $len (call $__str_byteLen (local.get $str)))
+      (if (i32.gt_s (local.get $fromPos) (local.get $len))
+        (then (return (i32.const -1) (i32.const -1))))
+      (local.set $result (call $${funcName} (local.get $off) (local.get $len) (local.get $fromPos)))
+      (if (i32.ge_s (local.get $result) (i32.const 0))
+        (then (return (local.get $fromPos) (local.get $result))))
+      (i32.const -1) (i32.const -1))`
+      : `(func $${searchFromName} (param $str i64) (param $fromPos i32) (result i32 i32)
       (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
       (local.set $off (call $__str_to_buf (local.get $str)))
       (local.set $len (call $__str_byteLen (local.get $str)))
@@ -1123,6 +1249,9 @@ export default (ctx) => {
   ctx.core.emit['.string:matchAll'] = (str, search) => {
     const id = resolveRegex(search)
     if (id == null) err('matchAll requires a regex argument')
+    // ES 22.1.3.14: matchAll throws TypeError without /g — flags are static here,
+    // so fail at compile instead of scanning once like /g anyway (silent-wrong).
+    if (!flagsOf(search).includes('g')) err('matchAll requires the /g flag (TypeError in JS)')
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const groupNames = ctx.runtime.regex.groupNames.get(id) || []
     inc('__str_to_buf', '__str_byteLen', '__alloc', '__mkptr', `__regex_${id}`)
@@ -1140,6 +1269,7 @@ export default (ctx) => {
   ctx.core.emit['.matchAll'] = (str, search) => {
     const id = resolveRegex(search)
     if (id == null) err('matchAll requires a regex argument')
+    if (!flagsOf(search).includes('g')) err('matchAll requires the /g flag (TypeError in JS)')
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const groupNames = ctx.runtime.regex.groupNames.get(id) || []
     inc('__str_to_buf', '__str_byteLen', '__alloc', '__mkptr', `__regex_${id}`)

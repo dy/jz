@@ -316,3 +316,54 @@ test('Number: unary + / Number() correctly-rounded hard cases (EL carry fix)', (
   // exact (emitted as f64.const, not parsed). The mul64 carry fix is exercised by the
   // 2505210838544172e-23 case above (exp10 -23, inside the table).
 })
+
+// ---- parseInt/parseFloat spec edges (test262 builtins gate, 2026-07-10) -----
+// parseInt: StrWhiteSpace is UTF-8-decoded __skipws (NBSP/LS/PS/Zs — was ASCII-
+// only), invalid radix (≠0 and outside 2..36 after ToInt32) is NaN before any
+// input inspection, and a number input takes ToString like any other value —
+// the trunc fast path is valid only in the plain-decimal range (no exponent in
+// ToString): parseInt(1e21) is 1, parseInt(1e-7) is 1, parseInt(Infinity) NaN,
+// parseInt(-0) +0.
+
+test('Number: parseInt whitespace / radix / numeric-arg spec edges', () => {
+  is(run(`export let f = () => parseInt(" 7")`).f(), 7)          // NBSP
+  is(run(`export let f = () => parseInt(" 7")`).f(), 7)          // LS
+  is(run(`export let f = () => parseInt(" 7", 10)`).f(), 7)      // PS, explicit radix
+  is(run(`export let f = () => isNaN(parseInt("0", 1))`).f(), true)   // radix < 2 (isNaN exports as real boolean)
+  is(run(`export let f = () => isNaN(parseInt("0", 37))`).f(), true)  // radix > 36
+  is(run(`export let f = () => isNaN(parseInt("11", -2147483650))`).f(), true) // ToInt32-wrapped radix
+  is(run(`export let f = () => isNaN(parseInt(Infinity))`).f(), true) // "Infinity" has no digits
+  is(run(`export let f = () => parseInt(1e21)`).f(), 1)               // "1e+21" → 1
+  is(run(`export let f = () => parseInt(1e-7)`).f(), 1)               // "1e-7" → 1
+  is(run(`export let f = () => 1 / parseInt(-0)`).f(), Infinity)      // ToString(-0)="0" → +0
+  is(run(`export let f = () => 1 / parseInt(-0.5)`).f(), -Infinity)   // "-0.5" → -0
+  is(run(`export let f = () => parseInt(123.9)`).f(), 123)            // plain-decimal fast path
+  is(run(`export let f = () => parseFloat(" 1.5")`).f(), 1.5)    // parseFloat same skip
+})
+
+// Ryū shortest round-trip String(number) (2026-07-11, Ring 2): reference values
+// verified against live V8 (node) String() — spec Number::toString, incl.
+// notation boundaries (1e21 / 1e-7), subnormals, ties, and -0.
+test('Number: String() shortest round-trip (Ryū)', () => {
+  const f = run(`export let f = (x) => String(x)`).f
+  is(f(0.1), '0.1')
+  is(f(0.3), '0.3')
+  is(f(0.1 + 0.2), '0.30000000000000004')
+  is(f(Math.PI), '3.141592653589793')
+  is(f(1 / 3), '0.3333333333333333')
+  is(f(100), '100')
+  is(f(1024), '1024')
+  is(f(-0), '0')
+  is(f(1.0000000000000002), '1.0000000000000002')
+  is(f(5e-324), '5e-324')                                  // min subnormal
+  is(f(1.7976931348623157e308), '1.7976931348623157e+308') // MAX_VALUE
+  is(f(1e21), '1e+21')                                     // notation boundary
+  is(f(999999999999999900000), '999999999999999900000')    // last plain integer form
+  is(f(1e-6), '0.000001')
+  is(f(1e-7), '1e-7')
+  is(f(123456.789), '123456.789')
+  is(f(-123456.789), '-123456.789')
+  is(f(2 ** 53), '9007199254740992')
+  is(f(4.35), '4.35')
+  is(f(999999999.9), '999999999.9')
+})

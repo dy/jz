@@ -1072,3 +1072,51 @@ export function g() { let a = [10, 20]; return a.map(s => mk(s)) }`)
   is(r.memory.read(r.exports.g()), [{ v: 10 }, { v: 20 }], 'local source')
   is(r.memory.read(r.exports.f(r.memory.Array([10, 20]))), [{ v: 10 }, { v: 20 }], 'host-marshaled source')
 })
+
+// Array.isArray answers from the STATIC kind when known — a rep-narrowed array
+// (raw base local, e.g. a slice() result) is not a NaN-box, so the runtime tag
+// test alone reads a plain number and says false. O2+ promotion-DERIVED arrays
+// remain a recorded gap (.work/extension-surface.md) — pinned at O0 here.
+test('Array.isArray: statically-known arrays (slice/rest results)', () => {
+  const o = { optimize: false }
+  is(jz(`export let f = () => { let a = [1, 2]; let s = a.slice(0); return Array.isArray(s) ? 1 : 0 }`, o).exports.f(), 1)
+  is(jz(`export let f = () => { const [...x] = [1]; return Array.isArray(x) ? 1 : 0 }`, o).exports.f(), 1)
+  // side effects of the argument are preserved when the answer is static
+  is(jz(`export let f = () => { let n = 0; let mk = () => { n = n + 1; return [1] }; let r = Array.isArray(mk()) ? 1 : 0; return n * 10 + r }`, o).exports.f(), 11)
+  // non-arrays still answer false at every level
+  is(jz(`export let f = () => Array.isArray(42) ? 1 : 0`).exports.f(), 0)
+})
+
+// ES2023 change-by-copy Array methods (2026-07-11, Ring 2) — port of the
+// TypedArray versions to plain arrays. toSorted/toReversed/with return a NEW
+// array (receiver untouched); copyWithin mutates in place and returns the
+// receiver. Default sort is lexicographic-string (NOT typed's numeric default).
+// runHost (marshaling exports) decodes string returns; run (adaptI64) does not.
+test('Array change-by-copy: toSorted / toReversed', () => {
+  is(runHost(`export let f = () => [10,9,100].toSorted().join(",")`).f(), '10,100,9')   // lexicographic default
+  is(runHost(`export let f = () => [3,1,2].toSorted((a,b)=>a-b).join(",")`).f(), '1,2,3')
+  is(runHost(`export let f = () => { let a=[3,1,2]; a.toSorted(); return a.join(",") }`).f(), '3,1,2')  // receiver intact
+  is(runHost(`export let f = () => [1,2,3].toReversed().join(",")`).f(), '3,2,1')
+  is(runHost(`export let f = () => { let a=[1,2,3]; let b=a.toReversed(); return a[0]*100+b[0] }`).f(), 103)
+  is(runHost(`export let f = () => ["a","b","c"].toReversed().join("")`).f(), 'cba')  // string elements
+})
+test('Array .with(index, value)', () => {
+  is(runHost(`export let f = () => [1,2,3].with(1,9).join(",")`).f(), '1,9,3')
+  is(runHost(`export let f = () => [1,2,3].with(-1,9).join(",")`).f(), '1,2,9')          // negative from end
+  is(runHost(`export let f = () => { let a=[1,2,3]; a.with(0,9); return a[0] }`).f(), 1)  // receiver intact
+  is(runHost(`export let f = () => ["a","b","c"].with(1,"X").join("")`).f(), 'aXc')       // string element boxed correctly
+  throws(() => runHost(`export let f = () => [1,2,3].with(5,9)`).f(), /./)                // RangeError (out of range)
+  throws(() => runHost(`export let f = () => [1,2,3].with(-4,9)`).f(), /./)               // out of range from end
+})
+test('Array .copyWithin', () => {
+  is(runHost(`export let f = () => [1,2,3,4,5].copyWithin(0,3).join(",")`).f(), '4,5,3,4,5')
+  is(runHost(`export let f = () => [1,2,3,4,5].copyWithin(0,-2).join(",")`).f(), '4,5,3,4,5')  // negative start
+  is(runHost(`export let f = () => [1,2,3,4,5].copyWithin(1,3,4).join(",")`).f(), '1,4,3,4,5')  // bounded end
+  is(runHost(`export let f = () => { let a=[1,2,3,4]; return a.copyWithin(0,2)===a ? 1 : 0 }`).f(), 1)  // returns receiver
+})
+test('Array.of', () => {
+  is(runHost(`export let f = () => Array.of(1,2,3).join(",")`).f(), '1,2,3')
+  is(runHost(`export let f = () => Array.of(7).length`).f(), 1)      // NOT Array(7)'s length-7 hole array
+  is(runHost(`export let f = () => Array.of().length`).f(), 0)
+  is(runHost(`export let f = () => { let xs=[1,2]; return Array.of(...xs,3).join(",") }`).f(), '1,2,3')  // spread
+})

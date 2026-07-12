@@ -1989,6 +1989,16 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   const vta = numericVal(resolveValType(a, valTypeOf, lookupValType))
   const vtb = numericVal(resolveValType(b, valTypeOf, lookupValType))
   if (vta === VAL.BIGINT || vtb === VAL.BIGINT) {
+    // Literal-mixed compare is MATHEMATICAL per spec (BigInt vs Number) — 5n > 3
+    // must not compare raw NaN-box bits. Coerce through f64 (exact for literal
+    // magnitudes); an unknown counterpart keeps the same-rep i64 contract
+    // (kernel carriers' NUMBER is a kind-default, not a proof).
+    if ((vta === VAL.BIGINT) !== (vtb === VAL.BIGINT) && numLiteralNode(vta === VAL.BIGINT ? b : a)) {
+      const conv = (node, v, isBig) => isBig
+        ? typed([bigintUnsignedBound(node) ? 'f64.convert_i64_u' : 'f64.convert_i64_s', asI64(v)], 'f64')
+        : toNumF64(node, asF64(v))
+      return typed([`f64.${f64op}`, conv(a, va, vta === VAL.BIGINT), conv(b, vb, vtb === VAL.BIGINT)], 'i32')
+    }
     const op = bigintUnsignedBound(a) || bigintUnsignedBound(b) ? i32op.replace('_s', '_u') : i32op
     return typed([`i64.${op}`, asI64(va), asI64(vb)], 'i32')
   }
@@ -2690,6 +2700,17 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
 
 // 12. Unknown callee — assume external method. Total: always returns.
 function externalMethodFallback({ obj, method, parsed }) {
+  // A receiver with a KNOWN jz-native kind (linear-memory value) has no host
+  // prototype behind it — every native strategy above declined, so the method
+  // is simply missing and __ext_call could only marshal garbage / return
+  // undefined at runtime. Fail at compile in every mode, like strict does.
+  // OBJECT/HASH are exempt: their property sets are user data, not a closed
+  // builtin table — `o.x()` may resolve to a closure slot at runtime (and when
+  // it doesn't, the documented lowering is undefined, host's TypeError shape).
+  // (Host values carry no static kind, so a null kind keeps the fallback.)
+  const vt = typeof obj === 'string' ? (lookupValType(obj) ?? valTypeOf(obj)) : valTypeOf(obj)
+  if (vt != null && vt !== VAL.OBJECT && vt !== VAL.HASH)
+    err(`\`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` — '${method}' is not implemented for a ${vt} receiver, and jz-native values have no host fallthrough (the call could only yield undefined). Check the method name; if it's a real JS API, it's a missing jz builtin.`)
   if (ctx.transform.strict)
     err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
   // Under wasi there is no host `__ext_call` — the call lowers to a
@@ -2992,6 +3013,21 @@ function compoundAssign(name, val, f64op, i32op) {
   if (i32op && va.type === 'i32' && vbi.type === 'i32')
     return writeVar(name, i32op(va, vbi), void_)
   return writeVar(name, f64op(asF64(va), asF64(vb)), void_)
+}
+
+// Ring 0.3 (re-landed after the dispatch rework dropped the uncommitted original):
+// JS makes BigInt⊕Number arithmetic a TypeError. Enforce it exactly where the mix
+// is PROVABLE from source — one side proven BIGINT, the other a NUMERIC LITERAL —
+// and stay permissive otherwise: kernel carriers read NUMBER as a kind-DEFAULT
+// (not a proof), so rejecting proven-BIGINT × default-NUMBER breaks sound kernels.
+const numLiteralNode = (n) =>
+  typeof n === 'number' || (Array.isArray(n) && n[0] == null && typeof n[1] === 'number')
+function bigintMixReject(op, a, b) {
+  if (b === undefined) return
+  const aBig = valTypeOf(a) === VAL.BIGINT, bBig = valTypeOf(b) === VAL.BIGINT
+  if (aBig === bBig) return
+  if (numLiteralNode(aBig ? b : a))
+    err(`Cannot mix BigInt and other types in \`${op}\` (TypeError in JS) — convert explicitly with BigInt() or Number()`)
 }
 
 // === Core emitter dispatch table ===
@@ -3343,8 +3379,10 @@ export const emitter = {
       if (cfB) return typed(ctx.abi.string.ops.concatRaw(strI64(a), strOperand(vtB, b), ctx, selfAccum), 'f64')
       return typed(ctx.abi.string.ops.cat(strOperand(vtA, a), strOperand(vtB, b), ctx, selfAccum), 'f64')
     }
-    if (vtA === VAL.BIGINT || vtB === VAL.BIGINT)
+    if (vtA === VAL.BIGINT || vtB === VAL.BIGINT) {
+      bigintMixReject('+', a, b)
       return fromI64(['i64.add', asI64(emit(a)), asI64(emit(b))])
+    }
     // Runtime string dispatch when at least one side could be a string. When one side has
     // a known non-STRING vtype, skip its `__is_str_key` (statically false). Common in
     // chained additions `s + a*b + c.d` — left grows as `+` (=NUMBER), only the new right
@@ -3412,10 +3450,12 @@ export const emitter = {
   },
   '-': (a, b) => {
     if (ctx.func._expect === 'void' && isPostfix(a, '++', b)) return emit(a, 'void')
-    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
+      bigintMixReject('-', a, b)
       return b === undefined
         ? fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
         : fromI64(['i64.sub', asI64(emit(a)), asI64(emit(b))])
+    }
     if (b === undefined) return emitNeg(a)
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a - b)
     if (_f) return _f
@@ -3428,7 +3468,7 @@ export const emitter = {
   },
   'u+': a => {
     if (valTypeOf(a) === VAL.BIGINT)
-      return typed(['f64.convert_i64_s', asI64(emit(a))], 'f64')
+      return err('unary `+` on a BigInt is a TypeError in JS — use Number(x)')
     const v = emit(a)
     if (v.type === 'i32') return asF64(v)
     if (valTypeOf(a) === VAL.NUMBER) return toNumF64(a, v)
@@ -3437,8 +3477,10 @@ export const emitter = {
   },
   'u-': a => emitNeg(a),
   '*': (a, b) => {
-    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
+      bigintMixReject('*', a, b)
       return fromI64(['i64.mul', asI64(emit(a)), asI64(emit(b))])
+    }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a * b)
     if (_f) return _f
     if (isLit(vb) && litVal(vb) === 1) return toNumF64(a, va)
@@ -3471,16 +3513,20 @@ export const emitter = {
     return typed(['f64.mul', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '/': (a, b) => {
-    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
+      bigintMixReject('/', a, b)
       return fromI64(['i64.div_s', asI64(emit(a)), asI64(emit(b))])
+    }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a / b, b => b !== 0)
     if (_f) return _f
     if (isLit(vb) && litVal(vb) === 1) return toNumF64(a, va)
     return typed(['f64.div', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '%': (a, b) => {
-    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
+      bigintMixReject('%', a, b)
       return fromI64(['i64.rem_s', asI64(emit(a)), asI64(emit(b))])
+    }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a % b, b => b !== 0)
     if (_f) return _f
     // ES remainder by zero is NaN; only the f64 path yields that (a - trunc(a/0)*0).
@@ -3852,8 +3898,10 @@ export const emitter = {
   ...Object.fromEntries([
     ['&', 'and'], ['|', 'or'], ['^', 'xor'], ['<<', 'shl'], ['>>', 'shr_s'],
   ].map(([op, fn]) => [op, (a, b) => {
-    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
+      bigintMixReject(op, a, b)
       return fromI64([`i64.${fn}`, asI64(emit(a)), asI64(emit(b))])
+    }
     if (op === '|') {  // `(x / y) | 0` integer-division idiom → i32.div_s
       const divN = intLiteralValue(b) === 0 ? a : intLiteralValue(a) === 0 ? b : null
       if (Array.isArray(divN) && divN[0] === '/') { const r = tryIntDivTrunc(divN[1], divN[2]); if (r) return r }

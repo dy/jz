@@ -148,7 +148,8 @@ export default (ctx) => {
     // machinery is actually part of this build (mirrors array.js's
     // needsArrayDynMove-gated deps thunks) — a program that never writes a
     // dynamic prop anywhere never loads collection.js.
-    __json_obj: () => ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__coll_order',
+    __json_obj: () => [...(ctx.schema.dateSid != null ? ['__date_to_iso_string'] : []),
+      '__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__coll_order',
       ...(ctx.scope.globals.has('__dyn_props') ? ['__ihash_get_local', '__is_nullish'] : [])],
     // Chain edges ($__jput_num → $__jput_str → $__jput): each body CALLS the
     // next stage; without the explicit edge they ride the auto-dep scan, which
@@ -507,6 +508,19 @@ export default (ctx) => {
     (local $poffS i32) (local $pcapS i32) (local $dnS i32) (local $ordS i32)
     (local.set $off (call $__ptr_offset (local.get $val)))
     (local.set $sid (call $__ptr_aux (local.get $val)))
+    ${ctx.schema.dateSid != null ? `
+    ;; Branded Date (module/date.js schema): serialize as its toJSON — the ISO
+    ;; string, or null for an invalid date — matching host JSON.stringify(date).
+    (if (i32.eq (local.get $sid) (i32.const ${ctx.schema.dateSid}))
+      (then
+        (if (f64.ne (f64.load (local.get $off)) (f64.load (local.get $off)))
+          (then
+            (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
+            (call $__jput (i32.const 108)) (call $__jput (i32.const 108)) (return)))
+        (call $__jput (i32.const 34))
+        (call $__jput_str (i64.reinterpret_f64 (call $__date_to_iso_string (f64.load (local.get $off)))))
+        (call $__jput (i32.const 34))
+        (return)))` : ''}
     ;; Schema keys: schema_tbl + sid*8. Dyn-only programs (empty {} + computed
     ;; o[k]=v) never allocate __schema_tbl, leaving it 0 — guard the read so the
     ;; dyn-prop walk below still runs.
@@ -1435,6 +1449,10 @@ ${localDecls}
     }
     const folded = foldStringify(x, replacer, space)
     if (folded !== undefined) return folded
+    // A real replacer that the const-fold could not absorb would be silently
+    // IGNORED by the runtime walker — a wrong result, not a slow one. Reject.
+    if (!noReplacer)
+      err('JSON.stringify with a runtime replacer is not supported — the constant-foldable case works; otherwise filter/map the value before stringifying')
     // Scalar boolean: the working-rep is the 0/1 number carrier, so the runtime
     // tag-walker would emit "0"/"1". A boolean's JSON is the bare word
     // true/false — exactly bool. Guard on no replacer: a replacer function may
@@ -1478,8 +1496,26 @@ ${localDecls}
       if (sp === NOT_LIT) return undefined
     }
 
+    // Array replacer = a per-level property whitelist (ES SerializeJSONObject
+    // step: PropertyList). Applied by a hand-rolled pre-filter, NOT the host
+    // stringify's replacer param — the kernel's stringify drops replacers, so
+    // in-kernel folds would silently ignore the filter (host≠kernel).
+    let picked = val
+    if (rep !== undefined && rep != null) {
+      const keys = rep.map(String)
+      const pick = (v) => {
+        if (Array.isArray(v)) return v.map(pick)
+        if (v !== null && typeof v === 'object') {
+          const o = {}
+          for (const k of keys) if (k in v) o[k] = pick(v[k])
+          return o
+        }
+        return v
+      }
+      picked = pick(val)
+    }
     let result
-    try { result = JSON.stringify(val, rep, sp) }
+    try { result = JSON.stringify(picked, null, sp) }
     catch { return undefined }
     return result === undefined ? undefExpr() : asF64(emit(['str', result]))
   }

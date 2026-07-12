@@ -6,7 +6,7 @@
 import { extractParams as paramList, objectLiteralEntries } from '../src/ast.js'
 import { err } from '../src/ctx.js'
 
-export function createClassLowering({ transform, names, JC }) {
+export function createClassLowering({ transform, names, JC, constStrings }) {
 // === class lowering ===
 //
 // A class is lowered to a factory arrow. Instance state is a plain object;
@@ -78,11 +78,17 @@ function literalStringKey(node) {
   return Array.isArray(node) && node[0] == null && typeof node[1] === 'string' ? node[1] : null
 }
 
-function constStringKey(node) {
+function constStringKey(node, constStrings) {
   if (typeof node === 'string') return node
   const lit = literalStringKey(node)
   if (lit != null) return lit
-  if (Array.isArray(node) && node[0] === '[]') return literalStringKey(node[1])
+  if (Array.isArray(node) && node[0] === '[]') {
+    const inner = literalStringKey(node[1])
+    if (inner != null) return inner
+    // [K] where K is a module-scope `const K = 'name'` — fold the binding
+    // (collected by jzify's entry prepass; const guarantees no reassignment).
+    if (typeof node[1] === 'string') return constStrings?.get(node[1]) ?? null
+  }
   return null
 }
 
@@ -186,10 +192,10 @@ function lowerClass(name, heritage, body) {
   for (const it of classBodyItems(body)) {
     if (typeof it === 'string') { fields.push([it, null]); continue }   // bare `x;`
     if (!Array.isArray(it)) continue
-    const bareFieldName = constStringKey(it)
+    const bareFieldName = constStringKey(it, constStrings)
     if (bareFieldName != null) { fields.push([bareFieldName, null]); continue }
     if (it[0] === ':' && Array.isArray(it[2]) && it[2][0] === '=>') {
-      const key = constStringKey(it[1])
+      const key = constStringKey(it[1], constStrings)
       if (key == null) jzifyError(JC.computedMember)
       if (key === 'constructor') { ctorParams = it[2][1]; ctorBody = it[2][2] }
       else methods.push([key, it[2][1], it[2][2]])
@@ -198,18 +204,18 @@ function lowerClass(name, heritage, body) {
     if (it[0] === '=') {
       const lhs = it[1]
       if (Array.isArray(lhs) && lhs[0] === 'static') {
-        const key = constStringKey(lhs[1])
+        const key = constStringKey(lhs[1], constStrings)
         if (key == null) jzifyError(JC.computedStaticField)
         statics.push([key, it[2]])
         continue
       }
-      const key = constStringKey(lhs)
+      const key = constStringKey(lhs, constStrings)
       if (key == null) jzifyError(JC.computedField)
       fields.push([key, it[2]])
       continue
     }
     if (it[0] === 'static') {
-      const key = constStringKey(it[1])
+      const key = constStringKey(it[1], constStrings)
       if (key != null) {
         statics.push([key, null])
         continue
@@ -220,7 +226,7 @@ function lowerClass(name, heritage, body) {
       continue
     }
     if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === ':' && Array.isArray(it[1][2]) && it[1][2][0] === '=>') {
-      const key = constStringKey(it[1][1])
+      const key = constStringKey(it[1][1], constStrings)
       if (key == null) jzifyError(JC.computedStaticMember)
       statics.push([key, it[1][2], true])
       continue

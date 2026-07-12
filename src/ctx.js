@@ -597,16 +597,22 @@ export function err(msg, cause) {
   throw e
 }
 
+// Recursive walk, NOT a stringify replacer — the kernel drops replacers, so
+// in-kernel error nodes would print with bigints/cycles unhandled. Cold path.
 function formatErrorNode(node) {
-  const seen = new WeakSet()
-  const json = JSON.stringify(node, (_key, value) => {
-    if (typeof value === 'bigint') return `${value}n`
-    if (typeof value === 'symbol') return value.toString()
-    if (Array.isArray(value)) {
-      if (seen.has(value)) return '[Circular]'
-      seen.add(value)
+  const seen = new Set()
+  const fmt = (v) => {
+    if (typeof v === 'bigint') return `"${v}n"`
+    if (typeof v === 'string') return JSON.stringify(v)
+    if (Array.isArray(v)) {
+      if (seen.has(v)) return '"[Circular]"'
+      seen.add(v)
+      let s = '['
+      for (let i = 0; i < v.length; i++) s += (i ? ',' : '') + fmt(v[i])
+      return s + ']'
     }
-    return value
-  })
+    return v === undefined ? 'null' : String(v)
+  }
+  const json = fmt(node)
   return json.length > 2000 ? `${json.slice(0, 2000)}...` : json
 }

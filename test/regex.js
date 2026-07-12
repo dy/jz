@@ -728,3 +728,56 @@ export let sweep = () => {
   for (const optimize of [0, 2])
     is(jz(src, { optimize }).exports.sweep(), '__heap_end __heap ', `O${optimize}: untyped receiver scans`)
 })
+
+// ============================================================================
+// Sticky /y anchoring + \p rejection + matchAll /g gate (2026-07-10).
+// /y previously scanned forward like /g (silently identical); \p{…} silently
+// matched the literal text "p{…}"; matchAll without /g scanned like /g instead
+// of the spec TypeError. All three were silent-wrong — now anchored/rejected.
+// ============================================================================
+
+test('regex: sticky /y anchors at lastIndex, no forward scan', () => {
+  is(jz(`let re = /a/y; export let f = () => re.test("ba") ? 1 : 0`).exports.f(), 0)
+  is(jz(`let re = /a/y; export let f = () => re.test("ab") ? 1 : 0`).exports.f(), 1)
+  // exec advances lastIndex per match; third attempt sits on 'x' and fails
+  is(jz(`let re = /\\d/y; export let f = () => {
+    let a = re.exec("12x"); let b = re.exec("12x"); let c = re.exec("12x")
+    return (a ? 1 : 0) * 100 + (b ? 1 : 0) * 10 + (c ? 1 : 0) }`).exports.f(), 110)
+  // /g keeps scanning
+  is(jz(`let re = /a/g; export let f = () => re.test("ba") ? 1 : 0`).exports.f(), 1)
+})
+
+test('regex: \p property escapes reject (both contexts)', () => {
+  throws(() => jz(`export let f = () => /\\p{L}/.test("a") ? 1 : 0`), /property escape/)
+  throws(() => jz(`export let f = () => /[\\p{L}]/.test("a") ? 1 : 0`), /property escape/)
+})
+
+test('regex: matchAll requires /g at compile time', () => {
+  throws(() => jz(`export let f = () => "a1".matchAll(/\\d/).length`), /\/g flag/)
+  is(jz(`export let f = () => "a1b2".matchAll(/\\d/g).length`).exports.f(), 2)
+})
+
+// Named backreferences \k<name> (2026-07-11, Ring 2): resolved at parse time to
+// the group's NUMBERED backref node (the VM's existing \1-\9 machinery), so
+// forward references work and undefined names reject cleanly.
+test('regex: \\k<name> named backreferences', () => {
+  is(jz(`export let f = () => /(?<a>x)\\k<a>/.test("xx") ? 1 : 0`).exports.f(), 1)
+  is(jz(`export let f = () => /(?<a>x)\\k<a>/.test("xy") ? 1 : 0`).exports.f(), 0)
+  is(jz(`export let f = () => /(?<q>['"]).*?\\k<q>/.test("say 'hi' ok") ? 1 : 0`).exports.f(), 1)  // quote-matching idiom
+  is(jz(`export let f = () => /\\k<a>(?<a>x)/.test("x") ? 1 : 0`).exports.f(), 1)  // forward ref
+  throws(() => jz(`export let f = () => /\\k<nope>x/.test("x")`), /undefined group/)
+})
+
+// RegExp.escape (ES2025): spec escape sets over UTF-8 bytes — first-char alnum
+// and other-punctuators/space → \xHH (lowercase), SyntaxCharacter+/ → \-prefix,
+// t/n/v/f/r → control escapes. Verified against host RegExp.escape.
+test('regex: RegExp.escape', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => RegExp.escape("a.b*c")`), '\\x61\\.b\\*c')
+  is(j(`export let f = () => RegExp.escape("(hi)|[ok]")`), '\\(hi\\)\\|\\[ok\\]')
+  is(j(`export let f = () => RegExp.escape("1a")`), '\\x31a')          // leading digit
+  is(j(`export let f = () => RegExp.escape("a\tb")`), '\\x61\\tb')     // real TAB → \t
+  is(j(`export let f = () => RegExp.escape("a b'")`), '\\x61\\x20b\\x27')
+  is(j(`export let f = () => RegExp.escape("_zZ9")`), '_zZ9')          // non-first alnum passthrough
+  is(j(`export let f = () => RegExp.escape("").length`), 0)
+})

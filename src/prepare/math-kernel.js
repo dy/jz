@@ -298,10 +298,20 @@ function cbrt(x) {
   return x < 0 ? -t : t
 }
 
-function hypot(x, y) {
+// N-ary like Math.hypot, folded as the SAME left-chained 2-ary calls the runtime
+// emitter builds (module/math.js `math.hypot`) so constant folds stay bit-equal to
+// the compiled chain: () → +0, (x) → abs(x), (a,b,…) → hypot2(hypot2(a,b),…).
+function hypot2(x, y) {
   if (Math.abs(x) === Infinity) return Infinity
   if (Math.abs(y) === Infinity) return Infinity
   return Math.sqrt(x * x + y * y)
+}
+function hypot(...vs) {
+  if (vs.length === 0) return 0
+  if (vs.length === 1) return Math.abs(vs[0])
+  let r = hypot2(vs[0], vs[1])
+  for (let i = 2; i < vs.length; i++) r = hypot2(r, vs[i])
+  return r
 }
 
 /** Pure bit-exact-vs-kernel transcendentals — dispatched by `math.<name>` key

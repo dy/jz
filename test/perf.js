@@ -1528,7 +1528,11 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 // power-of-10 table, exp10 ∈ [-65,65]). ~3 KB total; a full-range EL table would be
 // ~11 KB — trimmed to the realistic constant span (module/number.js). Typed programs
 // that never coerce a string keep their size (no __to_num).
-golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 8669)
+// 8669→9857: String()/template coercion now formats through the Ryū shortest
+// round-trip core (__ftoa_shortest + $__ryu_pow5 + an 828-byte seed table,
+// small-table variant) — ES-spec-exact String(number) instead of the 9-digit
+// truncation. A correctness feature that costs ~1.2 KB wherever __ftoa links.
+golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 9857)
 // Baseline 7789→8196: an empty literal `{}` grown by computed `p[k]=…` carries
 // per-object dyn props the literal's static schema doesn't enumerate. Reads
 // (`p[k]` after the write, `Object.keys`/`values`/`entries`, `JSON.stringify`,
@@ -1567,7 +1571,9 @@ golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, 
 // address ELEMENTS, not the props sidecar, matching JS and the proven path).
 // Rides along with every dyn read/write pull; pure size on this object-only
 // program, correctness (arr['1'], dyn-write/static-read unification) corpus-wide.
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 10665)
+// 10665→12285: Ryū shortest String(number) (same ~1.2 KB __ftoa_shortest cost as
+// the known-shape pin, plus the dyn path's extra __to_str call sites).
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 12285)
 // 3719→6736: this parser reads chars from an untyped string receiver and does
 // `c >= '0'` / `c <= '9'` on them. Two fixes net out here. (1) The NUMBER-keyed
 // `s[i]` read skips the now-dead `__is_str_key` dispatch (module/array.js
@@ -1588,7 +1594,8 @@ golden('closure-heavy parser', `export let f = (s) => {
   let total = 0
   while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
   return total
-}`, 12623) // 7149→10315: same Eisel-Lemire __dec_to_f64 + trimmed table cost as the known-shape pin above
+}`, 14375) // 7149→10315: same Eisel-Lemire __dec_to_f64 + trimmed table cost as the known-shape pin above
+// 12623→14375: Ryū shortest String(number) (__ftoa_shortest + seed table), as above.
 // 10315→12623: ES own-prop shadowing on unknown receivers (the builtin-shadow sidecar probe,
 // session 7) — a closure-heavy parser is all unknown-receiver method calls. Timing pins stayed
 // green; the jessie-campaign levers (namespace SRoA, descriptor devirt) re-type these receivers

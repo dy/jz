@@ -1311,3 +1311,62 @@ test('for-in with let as identifier compiles and runs', () => {
   const exports = run(`export let _run = () => { for (let in {}) {} return 1 }`, { jzify: true })
   is(exports._run(), 1)
 })
+
+// `**=` — was the one compound op missing from ASSIGN_OPS/emit (leaked "Unknown op").
+// Full desugar to `name = name ** val`; ** is always f64 with its own lowering.
+test('statements: **= compound assignment', () => {
+  is(run(`export let f = (x) => { x **= 2; return x }`).f(3), 9)
+  is(run(`export let f = () => { let o = { v: 3 }; o.v **= 2; return o.v }`).f(), 9)
+  is(run(`export let f = () => { let a = [2]; a[0] **= 3; return a[0] }`).f(), 8)
+  is(run(`export let f = (x) => { x **= 0.5; return x }`).f(16), 4)
+})
+
+// BigInt mixed-type semantics (2026-07-10): arithmetic with a proven non-BigInt
+// side is a compile error (JS TypeError) — was raw f64-bit reinterpretation;
+// comparisons coerce mathematically via f64 (5n > 3, 0n < 0.5); unary + on a
+// BigInt rejects (the one coercion BigInt refuses); ** on BigInt rejects.
+test('statements: BigInt mixed ops', () => {
+  is(run(`export let f = () => 5n > 3 ? 1 : 0`).f(), 1)
+  is(run(`export let f = () => 0n < 0.5 ? 1 : 0`).f(), 1)
+  is(run(`export let f = () => 5n > NaN ? 1 : 0`).f(), 0)
+  is(run(`export let f = () => Number(2n + 3n)`).f(), 5)
+  throws(() => run(`export let f = () => Number(1n + 1)`), /Cannot mix BigInt/)
+  throws(() => run(`export let f = () => Number(1n * 2)`), /Cannot mix BigInt/)
+  throws(() => run(`export let f = () => +(1n)`), /TypeError/)
+  throws(() => run(`export let f = () => Number(2n ** 3n)`), /exponentiation/)
+})
+
+// for-of / spread over null/undefined throws (ES: "x is not iterable") — the
+// silent zero-iteration masked two real self-host miscompiles before it was
+// flipped to a throw (see __iter_arr).
+test('statements: for-of over nullish throws', () => {
+  is(run(`export let f = (x) => { let n = 0; try { for (let v of x) n++ } catch (e) { n = -1 } return n }`).f(null), -1)
+  is(run(`export let f = () => { let n = 0; try { for (let v of null) n++ } catch (e) { n = -1 } return n }`).f(), -1)
+})
+
+// Predicate builtins carry BOOL (kind-traits CALLEE_VAL): the === compare is
+// a truth-value compare, not raw-bits vs the TRUE/FALSE atom; SWAR reduce accs
+// seed BIGINT from a bigint init.
+test('statements: predicate === boolean + bigint reduce acc', () => {
+  is(run(`export let f = () => Array.isArray([]) === true ? 1 : 0`).f(), 1)
+  is(run(`export let f = () => isFinite(Infinity) === false ? 1 : 0`).f(), 1)
+  is(run(`export let f = () => { let r = [1, 2].reduce((a, b, k) => a | (BigInt(b) << BigInt(8 * k)), 0n); return Number(r & 511n) }`).f(), 1)
+})
+
+// Labeled non-loop statements (ES LabelledStatement over a block): the grammar
+// gate was the only blocker — the label/break machinery already handles blocks.
+test('statements: labeled block with break', () => {
+  is(run(`export let f = () => { let r = 0; top: { r = 1; break top; r = 2 } return r }`).f(), 1)
+  is(run(`export let f = () => { let r = 0; a: { b: { break a } r = 9 } return r }`).f(), 0)
+  is(run(`export let f = () => { let n = 0; outer: for (let i = 0; i < 3; i++) { for (let j = 0; j < 3; j++) { if (j === 1) continue outer; n++ } } return n }`).f(), 3)
+})
+
+// The '{}' node is OVERLOADED: `['{}',[':',…]]` is both a single-prop literal
+// and a single-labeled-statement block. Labels of blocks are recognized ONLY
+// in statement positions — an object prop whose value is a literal must never
+// convert (this exact confusion once vanished nested literal props).
+test('statements: labeled block vs object-literal prop disambiguation', () => {
+  is(run(`export let f = () => Object.keys({x: 1, y: {z: 2}}).join(",")`).f(), 'x,y')
+  is(run(`export let f = () => { let o = {x: 1, y: {z: 2}}; return o.y.z }`).f(), 2)
+  is(run(`export let f = () => ({ y: { z: 5 } }).y.z`).f(), 5)
+})

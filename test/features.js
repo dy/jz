@@ -297,13 +297,13 @@ test('instanceof jzify: Array → Array.isArray', () => {
     let x = [1, 2, 3]
     return x instanceof Array
   }`)
-  is(f(), 1)
+  is(f(), true)
 })
 
 test('instanceof jzify: Array.isArray rejects non-array', () => {
   const { f } = runJzify(`export let f = (x) => x instanceof Array`)
-  is(f(42), 0)
-  is(f('hello'), 0)
+  is(f(42), false)
+  is(f('hello'), false)
 })
 
 test('instanceof jzify: Object → typeof === object', () => {
@@ -326,7 +326,7 @@ test('instanceof jzify: Float64Array → typeof === object', () => {
     let x = new Float64Array(1)
     return x instanceof Float64Array
   }`)
-  is(f(), 1)
+  is(f(), true) // __is_typed is VAL.BOOL — the boundary marshals a real boolean, like host instanceof
 })
 
 test('instanceof jzify: unknown constructor falls back to typeof === object', () => {

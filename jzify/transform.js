@@ -123,6 +123,15 @@ export function createTransform(opts) {
           rest.push(['let', ['=', stmt[1], lowerClass(stmt[1], stmt[2], stmt[3])]])
           continue
         }
+        // Labeled BLOCK in statement position (`lbl: { … }`): unambiguous here —
+        // a ':' STATEMENT can't be an object prop. '{}' stays out of
+        // LABEL_BODY_OPS (the expression-context disambiguator), so literal
+        // props `k: {…}` never label.
+        if (Array.isArray(stmt) && stmt[0] === ':' && typeof stmt[1] === 'string' &&
+            Array.isArray(stmt[2]) && stmt[2][0] === '{}') {
+          rest.push(['label', stmt[1], transform(stmt[2])])
+          continue
+        }
         const t = transform(stmt)
         if (t == null) continue
         if (Array.isArray(t) && t[0] === 'const' && t._hoisted) {

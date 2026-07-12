@@ -14,8 +14,9 @@
 
 import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
 import { emit, emitter, reg, deps, dual, tag, wat, hostImport } from '../src/bridge.js'
-import { inc, declGlobal } from '../src/ctx.js'
-import { repOf } from '../src/reps.js'
+import { inc, declGlobal, err } from '../src/ctx.js'
+import { repOf, VAL } from '../src/reps.js'
+import { valTypeOf } from '../src/kind.js'
 
 export default (ctx) => {
   // Math.random seeding. DEFAULT: entropy-seeded once from the host on first use (crypto under
@@ -250,6 +251,8 @@ export default (ctx) => {
     ], 'f64')
   }
   ctx.core.emit['math.fround'] = a => typed(['f64.promote_f32', ['f32.demote_f64', toNumF64(a, emit(a))]], 'f64')
+  // ES2025 Math.f16round — no wasm f16 ops, so round in software (exactly).
+  reg('math.f16round', ['math.f16round'], a => fn('math.f16round', a))
 
   // Sign
   reg('math.sign', ['math.sign'], a => fn('math.sign', a))
@@ -352,6 +355,10 @@ export default (ctx) => {
   const exp2Call = emitter(['math.exp2'], (exp) => typed(['call', '$math.exp2', toNumF64(exp, emit(exp))], 'f64'))
   // Shared pow/** lowering.
   const emitPow = (a, b, allowExpPos) => {
+    // BigInt ** is real JS (2n ** 3n === 8n) but unimplemented — the f64 pow
+    // pipeline would reinterpret raw i64 bits. Reject instead of silent garbage.
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+      err('BigInt exponentiation (`**`) not supported — use a multiply loop or Number(x)')
     const n = constInt(b)
     if (n !== null && Math.abs(n) <= POW_FOLD_MAX) return foldPow(a, n)
     if (constNum(b) === 0.5) { const ir = typed(['f64.sqrt', toNumF64(a, emit(a))], 'f64'); return nonNegF64(ir[1]) ? ir : canon(ir) }
@@ -453,6 +460,30 @@ export default (ctx) => {
   // WAT stdlib implementations
   // ============================================
 
+  // Round-to-nearest-f16 without double rounding: add-then-subtract s = 1.5·2^(52+k)
+  // makes the f64 adder itself round |x| to a multiple of the f16 quantum 2^k,
+  // ties-to-even (sum stays in s's binade, so the subtraction is exact). k comes
+  // from |x|'s exponent: eu-10 for f16 normals (eu ≥ -14), -24 in the subnormal
+  // range. Overflow boundary: |x| ≥ 65520 (= 65504 + half-ulp) → ±∞, per spec.
+  wat('math.f16round', `(func $math.f16round (param $x f64) (result f64)
+    (local $abs i64) (local $eu i32) (local $s f64)
+    (local.set $abs (i64.and (i64.reinterpret_f64 (local.get $x)) (i64.const 0x7FFFFFFFFFFFFFFF)))
+    ;; NaN, ±Infinity, ±0 pass through
+    (if (i64.ge_u (local.get $abs) (i64.const 0x7FF0000000000000)) (then (return (local.get $x))))
+    (if (i64.eqz (local.get $abs)) (then (return (local.get $x))))
+    (if (f64.ge (f64.reinterpret_i64 (local.get $abs)) (f64.const 65520))
+      (then (return (f64.copysign (f64.const inf) (local.get $x)))))
+    (local.set $eu (i32.sub (i32.wrap_i64 (i64.shr_u (local.get $abs) (i64.const 52))) (i32.const 1023)))
+    (local.set $s (f64.reinterpret_i64 (i64.or
+      (i64.shl (i64.extend_i32_s (i32.add
+        (select (i32.sub (local.get $eu) (i32.const 10)) (i32.const -24)
+          (i32.ge_s (local.get $eu) (i32.const -14)))
+        (i32.const 1075))) (i64.const 52))
+      (i64.const 0x0008000000000000))))
+    (f64.copysign
+      (f64.sub (f64.add (f64.reinterpret_i64 (local.get $abs)) (local.get $s)) (local.get $s))
+      (local.get $x)))`)
+
   wat('math.sign', `(func $math.sign (param $x f64) (result f64)
     ;; sign(NaN) = NaN, sign(±0) = ±0 — both pass x through unchanged.
     (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
@@ -474,15 +505,11 @@ export default (ctx) => {
   // 2^f over the reduced range f ∈ [-0.5, 0.5] for $math.exp2 (rel. err ≤ 6e-9). Lets the
   // base-2 power `2**y` skip the ×ln2 / ÷ln2 round-trip exp(y·ln2) pays — see $math.exp2.
   const EXP2_C = [1, 0.6931472000619209, 0.24022650999918949, 0.05550340682450019, 0.009618048870444599, 0.0013395279077191057, 0.00015463102004723134]
-  // Range-reduction constants embedded as exact round-trip decimal STRINGS, not
-  // `${Math.PI}`/`${1/Math.PI}` number interpolation. These multiply the (possibly
-  // astronomically large) argument, so any lost digit wrecks large-arg reduction. Under
-  // self-host the kernel formats `${number}` through __ftoa — a 9-significant-digit dtoa
-  // (module/number.js) — which would bake "3.14159265"/"0.318309886" into the WAT and
-  // throw the reduced quadrant off (Δ≈0.2 at x≈2267). A string interpolates verbatim, so
-  // watr parses the full-precision f64 in both legs. Values are native toString's shortest
-  // round-trip reprs of Math.PI, 1/Math.PI, Math.PI/2 — byte-identical to the old output.
-  const PI = '3.141592653589793', INV_PI = '0.3183098861837907', HALF_PI = '1.5707963267948966'
+  // Range-reduction constants via plain number interpolation: `${number}` now formats
+  // through the Ryū shortest-round-trip __ftoa in BOTH legs (host and self-hosted
+  // kernel), so the full-precision f64 bakes into the WAT verbatim — the former
+  // string-literal workaround for the kernel's 9-digit dtoa is obsolete.
+  const PI = Math.PI, INV_PI = 1 / Math.PI, HALF_PI = Math.PI / 2
 
   // Round-to-nearest reduction r = x − q·π ∈ [−π/2, π/2], in pure f64 — no int conversion,
   // so it never traps and never saturates. A SECOND pass folds the q·π rounding error back

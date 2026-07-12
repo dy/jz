@@ -239,3 +239,27 @@ test('Date toUTCString', () => {
 test('Date toUTCString: leap year', () => {
   same(run('export let f = () => { let d = new Date(Date.UTC(2024, 1, 29, 0, 0, 0, 0)); return d.toUTCString() }'), 'Thu, 29 Feb 2024 00:00:00 GMT')
 })
+
+test('Date toISOString: expanded years (sign + 6 digits)', () => {
+  // spec DateString: years outside [0, 9999] carry an explicit sign and 6-digit padding
+  same(run('export let f = () => new Date(8640000000000000).toISOString()'), '+275760-09-13T00:00:00.000Z')
+  same(run('export let f = () => new Date(-8640000000000000).toISOString()'), '-271821-04-20T00:00:00.000Z')
+  same(run('export let f = () => new Date(Date.UTC(-1, 11, 31, 23, 59, 59, 999)).toISOString()'), '-000001-12-31T23:59:59.999Z')
+})
+
+test('Date toJSON', () => {
+  same(run('export let f = () => { let d = new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123)); return d.toJSON() }'), '2025-01-15T10:30:45.123Z')
+  same(run('export let f = () => new Date(NaN).toJSON()'), null)
+  same(run('export let f = () => JSON.stringify(new Date(NaN).toJSON())'), 'null')
+})
+
+test('Date toDateString / toTimeString', () => {
+  same(run('export let f = () => new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123)).toDateString()'), 'Wed Jan 15 2025')
+  same(run('export let f = () => new Date(Date.UTC(2025, 0, 5)).toDateString()'), 'Sun Jan 05 2025')
+  same(run('export let f = () => new Date(8640000000000000).toDateString()'), 'Sat Sep 13 275760')
+  same(run('export let f = () => new Date(Date.UTC(-1, 11, 31)).toDateString()'), 'Fri Dec 31 -0001')
+  same(run('export let f = () => new Date(NaN).toDateString()'), 'Invalid Date')
+  same(run('export let f = () => new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123)).toTimeString()'), '10:30:45 GMT+0000 (Coordinated Universal Time)')
+  same(run('export let f = () => new Date(0).toTimeString()'), '00:00:00 GMT+0000 (Coordinated Universal Time)')
+  same(run('export let f = () => new Date(NaN).toTimeString()'), 'Invalid Date')
+})
