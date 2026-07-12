@@ -3162,3 +3162,40 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
 * [x] Rejected: intConst-driven i32 loop narrowing for biquad — V8 inliner regression
 * [x] Small-trip-count loop unroll on top of intConst
 * [x] Tail call optimization
+
+## Optimizer-fold survey verdict (2026-07-12, read-only agent, measured)
+- GOAL REFRAMED WITH EVIDENCE: folding src/optimize INTO watr does NOT shrink
+  dist/jz.js — index.js already bundles watr wholesale (esbuild metafile run:
+  watr/optimize 371KB is ALREADY in the graph; relocation nets ~0). jz's whole
+  optimizer = 629,547B raw = 14.8% of reachable source; dist/jz.js 1,750,126B
+  exact. THE halving mass is module/*.js stdlib (~3.15MB raw, 74%) — a
+  different project. Historical corroboration: the 0278309f dead-pass sweep
+  deleted ~900 lines for −9.5KB JS (−370KB self-host wasm).
+- REAL YIELD of the fold: dedup + one-walker-infra (compile speed) + the
+  "watr runs once, last" invariant. Ranked plan:
+  P1 DELETIONS (ablate-and-measure per 0278309f, never delete-on-inspection):
+  propagateSingleUse (author-acknowledged dup of watr propagate; deferred-list
+  says smaller AND faster off), dropDeadZeroInit (≈watr zeroinit incl. -0
+  logic), csePureExpr (⊂ watr cse — verify TARGET_OPS coverage first).
+  P2 CLEAN MIGRATIONS (generic, no watr equivalent): sortLocalsByUse,
+  promoteGlobals(+2 dataflow helpers), hoistConstantPool, recursionUnroll;
+  plus hoistGlobalPtrOffset's post-watr half = the author-flagged TODO
+  breaking "watr once, last" (hybrid: guardRefine-style hosting, jz-aware
+  off-by-default — the stable-pointee classification is a VAL-tag fact).
+  P2.5 INVESTIGATE (own deferred list): hoistAddrBase (−2KB when OFF —
+  possibly net-negative), hoistInvariantLoop-vs-licm double-LICM,
+  narrowLoopBound-vs-narrowLocals, specializeMkptr, internStrings,
+  fusedRewrite's memarg half (needs unfusing first — risk-bearing).
+  P3 VECTORIZER: DO NOT dissolve into watr's fixpoint rounds — the pre-watr
+  lowering boundary is fuzz-verified load-bearing (76,204 diffs, two real
+  miscompiles killed when the post phase was deleted). If moved at all:
+  package-boundary move as a `watr/vectorize` subpath export, still called
+  once pre-optimize. Coupling is thin (1 ctx flag, 1 warn, PPC_CALL2 name
+  bridge, SIMD_PINNED) but the move buys architecture, not size.
+- MECHANICS: watr has NO plugin surface — PASSES is a closed const array;
+  the precedent is direct source edits (ifset/zeroinit/deadset/guardRefine
+  commits) + version bump. ~1/3 of PASS_NAMES are plan/emit-phase (not WAT
+  IR) and can never migrate. Gates inventory: test:matrix, test:wasm
+  differential, test:self, optimizer.js shape pins, perf-ratchet,
+  audit:fixpoint (bracket every phase), bench:size --json byte-diffs,
+  bench checksum gate, the 76k differential fuzz for anything near SIMD.
