@@ -968,6 +968,21 @@
       (loop$head 7.5, parse 6.1, register 4.9, var$decl 4.9) — no
       single lever, revisit after (1)/(2). Corpus checksum sweep +
       quiet-machine timing re-measure remain owed together.
+      THREADS RESOLVED (same session): (2) __ext_prop = PROFILER
+      ARTIFACT — a counting stub proves zero runtime calls (the 2.4%
+      was V8 filing JS-side ticks under the import stub's frame);
+      the external arm is dead in the bench, no defect. (1) closure5
+      IDENTIFIED = a per-token parselet (loop-free 8K body, builds
+      2-slot AST nodes, one parse$expr call) — its self-time is the
+      INLINE NaN-box guard ladders on untyped closure ARGS. That is
+      the closure-arg-typing problem previously BUILT AND REVERTED
+      (dispatch-site arg lattice merged into element bodies'
+      paramTypes — unsound because prepare's pre-eval erases element
+      reads before program facts see them; revival needs a PREP-time
+      escape record at the fold site, per the dispatch-lever-2
+      entry). THE named jessie residual, a design item not an
+      increment. jessie busy-machine ballpark now ~2.0-2.1ms vs V8
+      ~1.5ms (≈1.35x, was 1.46x) — quiet re-measure owed.
 * [ ] sourcemaps
 * [ ] jzify
 * [ ] floatbeat
