@@ -9,45 +9,30 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-// Wave-equation caustics (see waves.js — after KZ_LAB_E's caustics simulation): the surface is
-// stirred by a pressed dimple that FOLLOWS YOUR CURSOR whenever it moves over the pool; leave
-// it still for a few seconds and the stirrer wanders off on its own smooth path. Click for a
-// splash, scroll to change the POOL DEPTH (shallow barely bends the light, deep folds every
-// ripple into hard caustics). The dice re-seeds the wander and throws a handful of splashes.
-let px_ = 0.5, py_ = 0.5              // stirrer position, canvas fractions (eased)
-let tx = 0.5, ty = 0.5                // target
-let foc = 110                         // pool depth (focal length of the refraction)
+// Swimming-pool caustics (see waves.js — after KZ_LAB_E's caustics simulation): a calm pool
+// whose gentle swell folds sunlight into the classic slowly-shimmering caustic net. Moving
+// the cursor trails fingertip ripples; click for a splash; scroll sets the POOL DEPTH
+// (shallow barely bends the light, deep folds every ripple hard). Dice throws splashes.
+let tx = 0.5, ty = 0.5                // fingertip position, canvas fractions
+let touch = 0                         // touch strength — fades when the pointer rests
+let foc = 150                         // pool depth (focal length of the refraction)
 let lastMove = -10, nowT = 0
-let p1 = Math.random() * 6.28, p2 = Math.random() * 6.28, p3 = Math.random() * 6.28
 
 const demo = runDemo({
   name: "waves",
-  hint: "the 2D wave equation refracted onto the pool floor — real caustics · move to stir · click to splash · scroll = depth",
+  hint: "a calm pool folding sunlight — real caustics · move to ripple · click to splash · scroll = depth",
   size: { budget: 420000 },
-  bg: "#777",
+  bg: "#2b98ac",
   load: (e) => { e.clear() },
   frame: (e, t) => {
     nowT = t
-    if (t - lastMove > 3.0) {
-      // autonomous wander: two incommensurate orbits — smooth loops, never a repeated path
-      tx = 0.5 + 0.30 * Math.sin(t * 0.31 + p1) + 0.12 * Math.sin(t * 0.83 + p2)
-      ty = 0.5 + 0.30 * Math.sin(t * 0.43 + p2) + 0.12 * Math.cos(t * 0.67 + p3)
-    }
-    px_ += (tx - px_) * 0.16          // ease toward the target — no teleports, a real wake
-    py_ += (ty - py_) * 0.16
-    e.frame(t, px_ * demo.W, py_ * demo.H, 1.0, foc)
+    touch = t - lastMove < 0.4 ? 1.0 : touch * 0.9    // the touch lifts off ~half a second after rest
+    e.frame(t, tx * demo.W, ty * demo.H, touch, foc)
   },
   randomize: (e, d) => {
-    p1 = Math.random() * 6.28; p2 = Math.random() * 6.28; p3 = Math.random() * 6.28
-    for (let i = 0; i < 5; i++) e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7))
+    for (let i = 0; i < 4; i++) e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7))
   },
 })
-demo.cv.addEventListener("wheel", (e) => {
-  e.preventDefault()
-  foc *= Math.exp(-e.deltaY * 0.001)
-  if (foc < 50) foc = 50
-  if (foc > 220) foc = 220
-}, { passive: false })
 
 const toFrac = (e) => {
   const r = demo.cv.getBoundingClientRect()
@@ -58,9 +43,14 @@ const toFrac = (e) => {
 demo.cv.addEventListener("pointermove", toFrac)
 demo.cv.addEventListener("pointerdown", (e) => {
   toFrac(e)
-  const r = demo.cv.getBoundingClientRect()
-  demo.engine?.drop((e.clientX - r.left) / r.width * demo.W, (e.clientY - r.top) / r.height * demo.H)
+  demo.engine?.drop(tx * demo.W, ty * demo.H)
 })
+demo.cv.addEventListener("wheel", (e) => {
+  e.preventDefault()
+  foc *= Math.exp(-e.deltaY * 0.001)
+  if (foc < 60) foc = 60
+  if (foc > 280) foc = 280
+}, { passive: false })
 </script>
 </body>
 </html>

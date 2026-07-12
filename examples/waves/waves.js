@@ -7,12 +7,13 @@
 // singularities of the light map. After KZ_LAB_E's caustics simulation
 // (x.com/KZ_LAB_E/status/1979210373921411098).
 //
-// The surface is stirred two ways: a STIRRER — a pressed dimple the host drags along the
-// pointer (or wanders on its own) whose moving wake throws the big loops — and a fine RAIN
-// of tiny plops (deterministic xorshift) that keeps the whole pool webbed with fine
-// cellular caustics. A 9-point isotropic Laplacian keeps fronts round, an edge sponge
-// swallows wall reflections, and one 3×3 blur softens the photon map before a LUT
-// tone-map. frame(t, sx, sy, stir): stirrer position (px) + press strength 0..1.
+// The pool is CALM: a steady drizzle of soft zero-mean plops (deterministic xorshift),
+// barely damped, accumulates into a gentle random swell — and gentle swell under a deep
+// focus is exactly the classic swimming-pool caustic net, slowly shimmering. The pointer is
+// a fingertip: a light touch trailing ripples, not a churn. A 9-point isotropic Laplacian
+// keeps fronts round, an edge sponge swallows wall reflections, one 3×3 blur softens the
+// photon map, and the tone LUT maps light onto POOL WATER — white caustics over turquoise,
+// deep teal in the shadows. frame(t, sx, sy, stir): fingertip position (px) + touch 0..1.
 // drop(x,y) splashes; clear() stills the pool. resize(w,h) → Uint32Array (ARGB).
 
 let W = 0, H = 0, px
@@ -21,15 +22,15 @@ let L                  // photon-density map (the pool floor), rebuilt every fra
 let Ls                 // blur scratch
 let dampField          // per-cell damping = global damp × edge sponge
 let rs = 0             // xorshift32 — the rain (i32 wraps identically in JS and jz)
-let glut               // Int32Array(1024) — photon density → gray tone curve
+let glut               // Int32Array(1024) — photon density → pool-water color
 
-const C2 = 0.42        // wave speed² (CFL-stable for the 9-point stencil at ≤0.5)
-const SUB = 3          // leapfrog substeps per frame → fronts travel ~2 px/frame
-const DAMP = 0.996     // global ring-down — ripples churn and fade, they don't haunt the pool
+const C2 = 0.35        // wave speed² (CFL-stable for the 9-point stencil at ≤0.5)
+const SUB = 1          // one leapfrog substep per frame — the pool shimmers, it doesn't race
+const DAMP = 0.9985    // barely damped: the drizzle accumulates into a standing gentle swell
 const MARGIN = 18      // edge-sponge width (cells)
 const MARGINDAMP = 0.94
-const RAIN = 14.0      // plops per second — the soft cellular webbing between the wake bands
-const RAINA = 0.3      // plop amplitude
+const RAIN = 9.0       // soft plops per second — the source of the swell
+const RAINA = 0.16     // plop amplitude (signs alternate → zero-mean surface)
 const O = 0.66667, D = 0.16667, CEN = -3.33333   // 9-point isotropic Laplacian weights
 
 export let resize = (w, h) => {
@@ -55,17 +56,27 @@ export let resize = (w, h) => {
     }
     y++
   }
-  // tone curve: density 1 (undisturbed floor) → mid gray ~0.42, folds (v ≥ ~3) saturate to
-  // white through a filmic shoulder, diverged voids fall toward black — the pool-floor look
+  // tone curve → POOL WATER: photon density through a filmic shoulder, then onto a
+  // deep-teal → turquoise → white ramp — sunlit water over a painted pool floor
   glut = new Int32Array(1024)
   let i = 0
   while (i < 1024) {
     let v = i * 0.00390625                 // bucket ↔ density v = i/256, range 0..4
     let vp = v * Math.sqrt(Math.sqrt(v))   // v^1.25 — mild gamma steepens the fold flanks
-    let g = 1.0 - Math.exp(-0.7 * vp)
-    let gi = (g * 255.0) | 0
-    if (gi > 255) gi = 255
-    glut[i] = gi
+    let t = 1.0 - Math.exp(-0.7 * vp)
+    let r = 0.0, g = 0.0, bl = 0.0
+    if (t < 0.55) {
+      let f = t / 0.55
+      r = 6.0 + (44.0 - 6.0) * f
+      g = 32.0 + (178.0 - 32.0) * f
+      bl = 54.0 + (195.0 - 54.0) * f
+    } else {
+      let f = (t - 0.55) / 0.45
+      r = 44.0 + (255.0 - 44.0) * f
+      g = 178.0 + (255.0 - 178.0) * f
+      bl = 195.0 + (255.0 - 195.0) * f
+    }
+    glut[i] = (255 << 24) | ((bl | 0) << 16) | ((g | 0) << 8) | (r | 0)
     i++
   }
   return px
@@ -81,7 +92,7 @@ let rnd = () => {
 }
 
 // gaussian plop pressed into the current field — a splash that rings out as a real front
-export let drop = (cx, cy) => { plop(cx, cy, 4.5, -3.6) }
+export let drop = (cx, cy) => { plop(cx, cy, 4.5, -2.2) }
 
 let plop = (cx, cy, r, amp) => {
   let rO = r * 3.0
@@ -127,27 +138,27 @@ let step = () => {
 export let frame = (t, sx, sy, stir, foc) => {
   let w = W, h = H, n = w * h
 
-  // rain: a steady drizzle of tiny plops keeps the fine cellular webbing alive
+  // drizzle: soft alternating-sign plops accumulate into the pool's gentle standing swell
   let drops = (RAIN / 60.0 + rnd()) | 0    // fractional rate via random rounding
   let d = 0
   while (d < drops) {
-    plop(6.0 + rnd() * (w - 12.0), 6.0 + rnd() * (h - 12.0), 3.5 + rnd() * 4.5, RAINA * (0.4 + rnd()))
+    let sgn = rnd() < 0.5 ? -1.0 : 1.0
+    plop(6.0 + rnd() * (w - 12.0), 6.0 + rnd() * (h - 12.0), 4.0 + rnd() * 5.0, sgn * RAINA * (0.4 + rnd()))
     d++
   }
 
   let s = 0
   while (s < SUB) { step(); s++ }
-  // the stirrer: a dimple pressed into the surface at (sx,sy) — DRAGGING it radiates the
-  // big loopy wake. One gaussian evaluation per cell, pressed once per frame.
+  // the fingertip: a light touch at (sx,sy) — dragging it trails gentle ripples
   if (stir > 0.0) {
-    let R = 0.07 * (w < h ? w : h) + 2.0
+    let R = 0.016 * (w < h ? w : h) + 2.0
     let x0 = (sx - 3.0 * R) | 0, x1 = (sx + 3.0 * R) | 0, y0 = (sy - 3.0 * R) | 0, y1 = (sy + 3.0 * R) | 0
     if (x0 < 1) x0 = 1
     if (y0 < 1) y0 = 1
     if (x1 > w - 2) x1 = w - 2
     if (y1 > h - 2) y1 = h - 2
     let ir2 = 1.0 / (R * R)
-    let press = 0.6 * stir
+    let press = 0.25 * stir
     let yy = y0
     while (yy <= y1) {
       let dy = yy - sy, row = yy * w, x = x0
@@ -157,7 +168,7 @@ export let frame = (t, sx, sy, stir, foc) => {
         if (q < 9.0) {
           let c = row + x
           let E = Math.exp(-q)
-          a[c] = a[c] + (-5.5 * stir * E - a[c]) * press * E
+          a[c] = a[c] + (-1.4 * stir * E - a[c]) * press * E
         }
         x++
       }
@@ -214,13 +225,12 @@ export let frame = (t, sx, sy, stir, foc) => {
     }
     bp++
   }
-  // ── tone map: photon density → gray through the LUT ──
+  // ── tone map: photon density → pool water through the color LUT ──
   i = 0
   while (i < n) {
     let q = (L[i] * 256.0) | 0
     if (q > 1023) q = 1023
-    let g = glut[q]
-    px[i] = (255 << 24) | (g << 16) | (g << 8) | g
+    px[i] = glut[q]
     i++
   }
 }

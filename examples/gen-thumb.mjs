@@ -72,7 +72,7 @@ const FRAME_ARGS = {
   burningship:   () => [0, -0.45, -0.5, 1.35, 0],
   lyapunov:      () => [0, 0, 0, 1.5],
   buddhabrot:    (f) => [f / 60, -0.5, 0, 1.1],
-  waves:         (f) => [f / 60, W * (0.5 + 0.28 * Math.cos(f * 0.015)), H * (0.5 + 0.3 * Math.sin(f * 0.0217)), 1.0, 110],   // circling stirrer, home depth
+  waves:         (f) => [f / 60, 0, 0, 0, 150],   // calm pool at home depth — the swell webs on its own
   bifurcation:   () => [0, 2.5, 4.0, 0.0, 1.0],
   lorenz:        (f) => [f / 60, -0.4],
   pendulum:      (f) => [f / 60],
@@ -106,7 +106,7 @@ const FRAME_ARGS = {
 
 const WARMUP = { diffusion: 320, nbody: 320, metaballs: 70, attractors: 200,
                  plasma: 40, swarm: 80, sand: 220, slime: 130, boids: 220, voronoi: 50,
-                 dla: 600, wireworld: 500, waves: 380, cloth: 130, maze: 200, sph: 500,
+                 dla: 600, wireworld: 500, waves: 800, cloth: 130, maze: 200, sph: 500,
                  erosion: 350, lbm: 1300, watercolor: 200, cradle: 36, lenia: 800,
                  buddhabrot: 120, lorenz: 320, pendulum: 250, fern: 150, ising: 140, dwa: 95,
                  rule30: 480, epicycles: 130, percolation: 120, schrodinger: 230,

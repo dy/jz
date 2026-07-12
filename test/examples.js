@@ -99,16 +99,17 @@ test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact'
         const px = exports.resize(128, 96);
         exports.clear();
         exports.drop(64, 48); exports.drop(44, 56);
-        for (let f = 0; f < 25; f++) exports.frame(f / 60, 50 + f * 1.5, 48, 1.0, 110);   // dragged stirrer
+        for (let f = 0; f < 60; f++) exports.frame(f / 60, 50 + f, 48, 1.0, 150);   // fingertip drag
         return Array.from(px);
     };
     const simd = run({ ...OPT }), scal = run({ ...OPT, experimentalStencil: false });
     is(simd.length, scal.length);
-    // non-vacuous: the caustic map must show real contrast — bright fold filaments AND dark voids
-    const lum = simd.map(v => v & 0xff);
-    ok(lum.filter(v => v > 190).length > 50 && lum.filter(v => v < 80).length > 50,
-        `waves renders caustic contrast (${lum.filter(v => v > 190).length} bright, ${lum.filter(v => v < 80).length} dark)`);
-    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'waves SIMD stencil bit-exact vs scalar (12288 px, 25 frames)');
+    // non-vacuous: the caustic map must show real contrast — white fold filaments (red channel
+    // saturates only at the caustic highlights) AND deep-teal shadow cells
+    const red = simd.map(v => v & 0xff);
+    ok(red.filter(v => v > 180).length > 30 && red.filter(v => v < 25).length > 30,
+        `waves renders caustic contrast (${red.filter(v => v > 180).length} bright, ${red.filter(v => v < 25).length} dark)`);
+    is(simd.filter((v, i) => v !== scal[i]).length, 0, 'waves SIMD stencil bit-exact vs scalar (12288 px, 60 frames)');
 });
 
 // Outer-loop strip-mine (experimental): metaballs sums an inverse-square field over every blob
