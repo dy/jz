@@ -944,4 +944,10 @@ export const canSkipWholeProgramNarrowing = (programFacts) =>
   !programFacts.anyDyn &&
   programFacts.propMap.size === 0 &&
   !programFacts.hasSchemaLiterals &&
-  !ctx.closure.make
+  !ctx.closure.make &&
+  // Typed default-arg annotations (`arr = new Int32Array(0)`) feed the param
+  // lattice even with zero call sites — a host-called SPMD kernel (Workers v1)
+  // gets its pointer-ABI lane and Atomics receiver proof from exactly this.
+  !ctx.func.list.some(f => f.defaults && Object.values(f.defaults).some(d =>
+    Array.isArray(d) && d[0] === '()' && typeof d[1] === 'string' &&
+    d[1].startsWith('new.') && d[1].endsWith('Array')))

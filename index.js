@@ -200,6 +200,80 @@ const appendFunctionNames = (wasm, module) => {
 jz.memory = enhanceMemory
 
 /**
+ * jz.pool(source, opts) — SPMD worker pool over ONE shared memory (Workers v1).
+ *
+ * Compiles `source` with { sharedMemory: true }, instantiates it on the main
+ * thread AND in `threads` node worker_threads, all linked to the same
+ * WebAssembly.Memory({ shared: true }). Kernels coordinate through shared
+ * typed arrays + Atomics (module/atomics.js); strings/objects stay
+ * thread-local by the v1 contract.
+ *
+ * Worker instances link `env.memory` ONLY — a kernel needing other host
+ * imports fails instantiation loudly (pure-compute contract).
+ *
+ *   const p = await jz.pool(src, { threads: 4, pages: 16, maxPages: 256 })
+ *   p.exports.setup(...)                    // main-thread instance
+ *   await p.run('tile')                     // every worker: tile(workerIndex, threads)
+ *   await p.run('tile', a, b)               // extra args broadcast to each worker
+ *   p.memory                                // the shared, jz-enhanced memory
+ *   await p.terminate()
+ *
+ * @param {string} source - jz source (compiled once; module shared with workers)
+ * @param {object} [opts] - { threads=4, pages=16, maxPages=16384, ...compile opts }
+ * @returns {Promise<{exports, memory, module, threads, run, terminate}>}
+ */
+jz.pool = async function pool(source, opts = {}) {
+  const { threads = 4, pages = 16, maxPages = 16384, ...rest } = opts
+  const memory = new WebAssembly.Memory({ initial: pages, maximum: maxPages, shared: true })
+  const main = jz(source, { ...rest, sharedMemory: true, memory })
+  // Computed specifier keeps bundlers (esbuild web dist) from resolving the
+  // node builtin statically; browsers get a clear v1 error instead.
+  const { Worker } = await import('node:' + 'worker_threads').catch(() => {
+    throw new Error('jz.pool v1 runs on node worker_threads; browser Worker support is a follow-up')
+  })
+  // The worker shim honors the jz:i64exp lane map (exact-bits ABI): an i64 lane
+  // takes a BigInt — scalars convert to their f64 bits, boxed pointers (BigInt
+  // args from jz.memory.* on the main thread) pass through; i64 results
+  // reinterpret back to numbers (v1 kernels return scalars).
+  const workerSrc = `
+    const { parentPort, workerData } = require('node:worker_threads')
+    const inst = new WebAssembly.Instance(workerData.module, { env: { memory: workerData.memory } })
+    const dv = new DataView(new ArrayBuffer(8))
+    const bits = (x) => (dv.setFloat64(0, x), dv.getBigUint64(0))
+    const unbits = (b) => (dv.setBigUint64(0, BigInt.asUintN(64, b)), dv.getFloat64(0))
+    const lanes = new Map()
+    for (const s of WebAssembly.Module.customSections(workerData.module, 'jz:i64exp'))
+      try { for (const e of JSON.parse(new TextDecoder().decode(s))) lanes.set(e.name, e) } catch {}
+    parentPort.on('message', (m) => {
+      try {
+        const sig = lanes.get(m.fn), p = new Set(sig?.p || [])
+        const args = m.args.map((x, i) => p.has(i) && typeof x === 'number' ? bits(x) : x)
+        let r = inst.exports[m.fn](...args)
+        if (sig?.r && typeof r === 'bigint') r = unbits(r)
+        parentPort.postMessage({ id: m.id, r })
+      } catch (e) { parentPort.postMessage({ id: m.id, e: String(e) }) }
+    })
+    parentPort.postMessage({ ready: true })`
+  const workers = Array.from({ length: threads }, () =>
+    new Worker(workerSrc, { eval: true, workerData: { module: main.module, memory } }))
+  await Promise.all(workers.map(w => new Promise((res, rej) => {
+    w.once('message', res); w.once('error', rej)
+  })))
+  let seq = 0
+  const call = (w, fn, args) => new Promise((res, rej) => {
+    const id = seq++
+    const on = (m) => { if (m.id !== id) return; w.off('message', on); m.e ? rej(new Error(m.e)) : res(m.r) }
+    w.on('message', on)
+    w.postMessage({ id, fn, args })
+  })
+  return {
+    exports: main.exports, memory: main.memory, module: main.module, threads,
+    run: (fn, ...args) => Promise.all(workers.map((w, i) => call(w, fn, [i, threads, ...args]))),
+    terminate: () => Promise.all(workers.map(w => w.terminate())),
+  }
+}
+
+/**
  * Compile jz source to WASM binary or WAT text. Low-level — no instantiation.
  * @param {string} code - jz source
  * @param {object} [opts]
@@ -213,6 +287,9 @@ jz.memory = enhanceMemory
  * @param {number} [opts.maxMemory] - Maximum memory pages — emits a ceiling on the
  *   memory type so growth traps past it (sandbox cap). Must be ≥ the initial size.
  *   Default: unbounded.
+ * @param {boolean} [opts.sharedMemory] - Import `env.memory` as a SHARED memory (wasm
+ *   threads): atomic heap bump, `shared` memtype (max defaults to the 4 GiB ceiling).
+ *   Link with `new WebAssembly.Memory({ initial, maximum, shared: true })`.
  * @param {boolean} [opts.importMemory] - Import `env.memory` instead of exporting an
  *   owned memory. For embedding into a host that provides the memory.
  * @param {boolean} [opts.alloc=true] - Export raw allocator helpers
@@ -431,6 +508,11 @@ const setupCtx = (code, opts) => {
   if (typeof opts.memory === 'number') ctx.memory.pages = opts.memory
   else if (opts.memory) ctx.memory.shared = true
   if (opts.importMemory) ctx.memory.shared = true   // import env.memory instead of exporting own
+  // True cross-thread sharing (Workers v1): import env.memory declared with the
+  // wasm `shared` memtype and switch the heap bump to atomic RMW. Distinct from
+  // importMemory — a plain imported (non-shared) Memory must NOT declare shared
+  // or linking fails in the other direction.
+  if (opts.sharedMemory) { ctx.memory.shared = true; ctx.memory.atomic = true }
   if (opts.maxMemory != null) {
     if (!Number.isInteger(opts.maxMemory) || opts.maxMemory < 1)
       err(`opts.maxMemory must be a positive integer page count (each page is 64 KiB); got ${opts.maxMemory}`)

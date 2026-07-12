@@ -366,7 +366,21 @@ export default (ctx) => {
   if (ctx.memory.shared) {
     // Heap offset stored at memory[HEAP.PTR_ADDR] (i32), just before heap start at
     // HEAP.START. Threads sharing one memory must share one pointer cell.
-    ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
+    // TRULY-shared memory (opts.sharedMemory → ctx.memory.atomic): the bump is a
+    // CAS retry loop — a plain load/store pair would hand two racing threads the
+    // same block. Plain imported memory keeps the cheap non-atomic bump.
+    ctx.core.stdlib['__alloc'] = ctx.memory.atomic ? `(func $__alloc (param $bytes i32) (result i32)
+      (local $ptr i32) (local $next i32)
+      (block $done (loop $retry
+        (local.set $ptr (i32.atomic.load (i32.const ${HEAP.PTR_ADDR})))
+        (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
+        (if (i32.gt_u (local.get $next) (global.get $__heap_end))
+          (then (call $__memgrow (local.get $next))))
+        (br_if $done (i32.eq
+          (i32.atomic.rmw.cmpxchg (i32.const ${HEAP.PTR_ADDR}) (local.get $ptr) (local.get $next))
+          (local.get $ptr)))
+        (br $retry)))
+      (local.get $ptr))` : `(func $__alloc (param $bytes i32) (result i32)
       (local $ptr i32) (local $next i32)
       (local.set $ptr (i32.load (i32.const ${HEAP.PTR_ADDR})))
       (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
@@ -382,7 +396,7 @@ export default (ctx) => {
     // clock at 0, heap ptr at HEAP.PTR_ADDR). Owned memory (the self-host + default
     // case) is the one fixed below; revisit shared if a thread-pooled reset hits it.
     ctx.core.stdlib['__clear'] = `(func $__clear
-      (i32.store (i32.const ${HEAP.PTR_ADDR}) (i32.const ${HEAP.START})))`
+      (${ctx.memory.atomic ? 'i32.atomic.store' : 'i32.store'} (i32.const ${HEAP.PTR_ADDR}) (i32.const ${HEAP.START})))`
   } else {
     // Own memory: heap offset in a global, exported so the JS-side adapter
     // (alloc:false, no `_alloc` export) shares the pointer.

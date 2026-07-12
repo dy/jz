@@ -10,8 +10,9 @@ import collection from './collection.js'
 import symbol from './symbol.js'
 import console from './console.js'
 import json from './json.js'
+import atomics from './atomics.js'
 import regex from './regex.js'
 import timer from './timer.js'
 import date from './date.js'
 import simd from './simd.js'
-export { math, core, array, object, string, number, fn, typedarray, collection, symbol, console, json, regex, timer, date, simd }
+export { math, core, array, object, string, number, fn, typedarray, collection, symbol, console, json, regex, timer, date, simd , atomics }

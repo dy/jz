@@ -27,6 +27,7 @@ const TESTS = [
   'snapshot',
   'mem',
   'buffer',
+  'workers',
   'regex',
   'simd',
   'cli',
