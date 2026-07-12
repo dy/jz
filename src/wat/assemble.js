@@ -685,6 +685,13 @@ export function pullStdlib(sec) {
   ctx.runtime.lazySpans = []
   const injectTable = (fn, global, bytes) => {
     if (!ctx.core.includes.has(fn) || !bytes) return false
+    // ctx.runtime.data is normally already a string by here because module/number.js's
+    // setup (which seeds the static NaN/Infinity/… stringify prefix) runs unconditionally —
+    // but ONLY for a program that pulls in something from number.js. A program reaching
+    // this via a module with no such dependency (e.g. module/math.js's CR-pow tables, needed
+    // by any `**`/Math.pow call, independent of number formatting) can hit pullStdlib with
+    // ctx.runtime.data still at its unset default — initialize defensively.
+    ctx.runtime.data ??= ''
     const start = ctx.runtime.data.length
     while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
     // Shared memory: the table lands via memory.init at a runtime base, so the
@@ -700,6 +707,10 @@ export function pullStdlib(sec) {
   // prevent double-injection on re-entry (null-sentinel; jz forbids delete)
   if (injectTable('__dec_to_f64', '__el_tbl', ctx.runtime.elTable)) ctx.runtime.elTable = null
   if (injectTable('__ftoa_shortest', '__ryu_tbl', ctx.runtime.ryuTable)) ctx.runtime.ryuTable = null
+  // CR-pow log2/exp2 breakpoint tables (module/math.js's $math.pow_transcend) — both gated on
+  // the SAME owning function since the shared kernel always needs both tables together.
+  if (injectTable('math.pow_transcend', 'math.pow_log2_tbl', ctx.runtime.powLog2Table)) ctx.runtime.powLog2Table = null
+  if (injectTable('math.pow_transcend', 'math.pow_exp2_tbl', ctx.runtime.powExp2Table)) ctx.runtime.powExp2Table = null
   if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }
   if (needsMemory && ctx.module.modules.core) {
     if (needsAlloc) {
