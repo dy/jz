@@ -132,7 +132,7 @@ footer .legal .credit { color: var(--mute); }   /* "made with watr and jessie" �
 footer .legal .dot { color: var(--mute); }       /* the middot between MIT and ॐ */
 footer .legal a { color: var(--soft); text-decoration: none; }
 footer .legal a:hover { color: light-dark(#000, #fff); }
-footer .legal .om { font-size: 15px; }
+footer .legal .om { font-size: 15px; font-weight: 700; }   /* Devanagari strokes are thin — bump weight so ॐ reads as dark as the MIT link (same colour, matched density) */
 @media (max-width: 640px) { footer { padding-inline: 20px; } footer .fwrap { flex-wrap: wrap; gap: 18px 16px; } }   /* less side padding; brand · nav · author+license stay on ONE row — legal pinned right via margin-left:auto */
 
 @media (max-width: 520px) {
