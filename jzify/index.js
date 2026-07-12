@@ -39,8 +39,8 @@ const constStrings = new Map()
 ;({ lowerClass, lowerObjectLiteralThis, lowerArrayConstructor } = createClassLowering({ transform, names, JC, constStrings }))
 const generatorNames = new Set()
 const genErr = (msg) => { throw new Error('jzify: ' + msg) }
-const { lowerGenerator, desugarForOfGenerator } = createGeneratorLowering({ transform, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t) })
-bindGenerators({ lowerGenerator, desugarForOfGenerator, generatorNames })
+const { lowerGenerator, desugarForOfGenerator, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t) })
+bindGenerators({ lowerGenerator, desugarForOfGenerator, generatorNames, unwindChain, fuseTerminal, fusedLoop, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)
 
 /**

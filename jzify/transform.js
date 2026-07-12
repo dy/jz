@@ -174,6 +174,15 @@ export function createTransform(opts) {
 
   const handlers = {
     '()'(callee, ...rest) {
+      // Terminal iterator helper (toArray/reduce/forEach/some/every/find) on a
+      // chain rooted at a known generator call → fused IIFE loop.
+      if (_gen && Array.isArray(callee) && callee[0] === '.') {
+        const chain = _gen.unwindChain(['()', callee, ...rest])
+        if (chain && chain.stages.length && _gen.isTerminal(chain.stages[chain.stages.length - 1].h)) {
+          const fused = _gen.fuseTerminal(chain, names.genTemp)
+          if (fused) return transform(fused)
+        }
+      }
       if (callee === 'Array') {
         const lit = lowerArrayConstructor(rest[0])
         if (lit) return lit
@@ -319,6 +328,19 @@ export function createTransform(opts) {
           Array.isArray(head[2]) && head[2][0] === '()' &&
           typeof head[2][1] === 'string' && _gen.generatorNames.has(head[2][1]))
         return transform(_gen.desugarForOfGenerator(head[1], transform(head[2]), body, names.genTemp))
+      // for-of over an iterator-HELPER CHAIN rooted at a known generator call
+      // → one fused while-next loop (map/filter/take/drop compose in place).
+      if (_gen && Array.isArray(head) && head[0] === 'of' && Array.isArray(head[2])) {
+        const chain = _gen.unwindChain(head[2])
+        if (chain && chain.stages.length && chain.stages.every(st => !_gen.isTerminal(st.h))) {
+          const name = Array.isArray(head[1]) ? head[1][1] : head[1]
+          const bodyStmts = Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
+          const x = names.genTemp('gx')
+          const fused = _gen.fusedLoop(chain.root, chain.stages, names.genTemp, x,
+            () => [['let', ['=', name, x]], ...bodyStmts])
+          return transform(fused)
+        }
+      }
       if (Array.isArray(head) && head[0] === ';')
         return ['for', [';', ...head.slice(1).map(s => s == null ? s : transform(s))], transform(body)]
       return ['for', transform(head), transform(body)]

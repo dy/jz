@@ -249,21 +249,140 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
     return ['=>', params, ['{}', [';', ...decls, ['return', genObj]]]]
   }
 
+  // ---- ES2025 iterator-helper chain fusion ----
+  // `g(args).map(f).filter(p).take(n)` rooted at a KNOWN generator call fuses
+  // into ONE while-next loop — no intermediate iterator objects. Consuming
+  // positions: a for-of head, or a terminal helper (toArray/reduce/forEach/
+  // some/every/find) in expression position. A chain stored as a VALUE is out
+  // of the v1 model (the object has no helper methods — the known-receiver
+  // fail-fast reports it precisely).
+  const STAGE_HELPERS = new Set(['map', 'filter', 'take', 'drop'])
+  const TERMINAL_HELPERS = new Set(['toArray', 'reduce', 'forEach', 'some', 'every', 'find'])
+
+  // Unwind `root.h1(a).h2(b)…` → { root: ['()', gen, args], stages: [{h, args}] }
+  // when the root is a known generator call; null otherwise.
+  function unwindChain(node) {
+    const stages = []
+    let cur = node
+    while (Array.isArray(cur) && cur[0] === '()' && Array.isArray(cur[1]) && cur[1][0] === '.') {
+      const helper = cur[1][2]
+      if (!STAGE_HELPERS.has(helper) && !TERMINAL_HELPERS.has(helper)) return null
+      stages.unshift({ h: helper, args: cur[2] == null ? [] : (Array.isArray(cur[2]) && cur[2][0] === ',' ? cur[2].slice(1) : [cur[2]]) })
+      cur = cur[1][1]
+    }
+    if (!(Array.isArray(cur) && cur[0] === '()' && typeof cur[1] === 'string' && generatorNames?.has(cur[1]))) return null
+    return { root: cur, stages }
+  }
+
+  // Compose the per-item body: stage transforms wrap `emit(x)` — the innermost
+  // callback receives the final item statements.
+  // Returns statements for the while body given (xName, emitStmts).
+  function stageBody(stages, x, temp, emitStmts) {
+    // build from the last stage outward
+    let build = emitStmts
+    for (let i = stages.length - 1; i >= 0; i--) {
+      const { h, args } = stages[i]
+      const inner = build
+      if (h === 'map') {
+        const fn = args[0]
+        build = () => [['=', x, ['()', fn, x]], ...inner()]
+      } else if (h === 'filter') {
+        const fn = args[0]
+        build = () => [['if', ['()', fn, x], ['{}', [';', ...inner()]]]]
+      } else if (h === 'take') {
+        const n = args[0], c = temp('tk')
+        build = () => [
+          ['if', ['>=', c, n], ['{}', [';', ['break']]]],
+          ['=', c, ['+', c, [null, 1]]],
+          ...inner()]
+        build.decls = [[c, [null, 0]]].concat(inner.decls || [])
+      } else if (h === 'drop') {
+        const n = args[0], c = temp('dp')
+        build = () => [
+          ['if', ['<', c, n], ['{}', [';', ['=', c, ['+', c, [null, 1]]], ['continue']]]],
+          ...inner()]
+        build.decls = [[c, [null, 0]]].concat(inner.decls || [])
+      }
+      if (!build.decls && inner.decls) build.decls = inner.decls
+    }
+    return build
+  }
+
+  // Fused loop skeleton: declares it/r (+stage counters), loops next().
+  function fusedLoop(root, stages, temp, x, emitStmts, prologue = [], epilogue = []) {
+    const it = temp('gi'), r = temp('gr')
+    const build = stageBody(stages, x, temp, emitStmts)
+    // Pull at the TOP of the body: stage/user `continue` must advance to the
+    // NEXT item — a tail-position pull would be skipped and re-process the
+    // same value forever (the drop()-stage / user-continue hazard).
+    return ['{}', [';',
+      ['const', ['=', it, root]],
+      ['let', ['=', x, [null, undefined]], ['=', r, [null, undefined]],
+        ...(build.decls || []).map(([n, init]) => ['=', n, init])],
+      ...prologue,
+      ['while', [null, true], ['{}', [';',
+        ['=', r, ['()', ['.', it, 'next'], null]],
+        ['if', ['.', r, 'done'], ['{}', [';', ['break']]]],
+        ['=', x, ['.', r, 'value']],
+        ...build(),
+      ]]],
+      ...epilogue,
+    ]]
+  }
+
+  // Terminal helper in EXPRESSION position → IIFE returning the reduction.
+  function fuseTerminal(chain, temp) {
+    const { root, stages } = chain
+    const last = stages[stages.length - 1]
+    if (!TERMINAL_HELPERS.has(last.h)) return null
+    const mid = stages.slice(0, -1)
+    const x = temp('gx'), acc = temp('ga')
+    const T = last.h, A = last.args
+    const ret = (v) => ['return', v]
+    let prologue = [], emit, epilogue
+    if (T === 'toArray') {
+      prologue = [['let', ['=', acc, ['[']]]]
+      emit = () => [['()', ['.', acc, 'push'], x]]
+      epilogue = [ret(acc)]
+    } else if (T === 'reduce') {
+      prologue = [['let', ['=', acc, A[1] === undefined ? [null, undefined] : A[1]]]]
+      emit = () => [['=', acc, ['()', A[0], [',', acc, x]]]]
+      epilogue = [ret(acc)]
+    } else if (T === 'forEach') {
+      emit = () => [['()', A[0], x]]
+      epilogue = [ret([null, undefined])]
+    } else if (T === 'some') {
+      emit = () => [['if', ['()', A[0], x], ['{}', [';', ret([null, true])]]]]
+      epilogue = [ret([null, false])]
+    } else if (T === 'every') {
+      emit = () => [['if', ['!', ['()', A[0], x]], ['{}', [';', ret([null, false])]]]]
+      epilogue = [ret([null, true])]
+    } else if (T === 'find') {
+      emit = () => [['if', ['()', A[0], x], ['{}', [';', ret(x)]]]]
+      epilogue = [ret([null, undefined])]
+    } else return null
+    const body = fusedLoop(root, mid, temp, x, emit, prologue, epilogue)
+    return ['()', ['=>', ['()', null], body], null]
+  }
+
   // for-of over a KNOWN generator call → while-next desugar (fusion-friendly:
   // the optimizer sees plain closure calls + a fixed-shape result object).
   function desugarForOfGenerator(decl, iterExpr, body, temp) {
     const it = temp('gi'), r = temp('gr')
     const name = Array.isArray(decl) ? decl[1] : decl
+    // Pull at the TOP: a user `continue` in the body must advance the iterator
+    // (a tail pull would be skipped — infinite loop on the same item).
     return ['{}', [';',
       ['const', ['=', it, iterExpr]],
-      ['let', ['=', r, ['()', ['.', it, 'next'], null]]],
-      ['while', ['!', ['.', r, 'done']], ['{}', [';',
+      ['let', ['=', r, [null, undefined]]],
+      ['while', [null, true], ['{}', [';',
+        ['=', r, ['()', ['.', it, 'next'], null]],
+        ['if', ['.', r, 'done'], ['{}', [';', ['break']]]],
         ['let', ['=', name, ['.', r, 'value']]],
         ...(Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]),
-        ['=', r, ['()', ['.', it, 'next'], null]],
       ]]],
     ]]
   }
 
-  return { lowerGenerator, desugarForOfGenerator }
+  return { lowerGenerator, desugarForOfGenerator, unwindChain, fuseTerminal, fusedLoop, isTerminal: (h) => TERMINAL_HELPERS.has(h) }
 }

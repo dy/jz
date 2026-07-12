@@ -523,3 +523,29 @@ these machines (`for (x of g().map(h).filter(p))` → one composed while-next �
 zero intermediate objects); yield* delegation; test262 generators pool wiring
 (needs the runner-honesty treatment — track the pool, xfail the out-of-v1
 families: yield*/try-across-yield/throw()).
+
+## Iterator helpers — landed (2026-07-12)
+
+The plan's #6 (and last ordered) item: ES2025 iterator helpers as FUSED loops
+over the generator machines. A chain rooted at a known generator call —
+`g().map(f).filter(p).take(n)` — compiles to ONE while-next loop with the
+stages composed in place: zero intermediate iterator objects (V8 allocates a
+helper object per stage; jz compiles them out — the plan's headline).
+
+- Stages: map / filter / take / drop (take terminates INFINITE sources).
+- Terminals fuse in expression position: toArray / reduce / forEach / some /
+  every / find → an IIFE'd loop returning the reduction.
+- Consuming positions only (for-of head, terminal call); a chain stored as a
+  VALUE is out of the v1 model — the known-receiver fail-fast names it.
+- En-route class fix: BOTH desugared loops now pull at the TOP of the body —
+  a tail-position `it.next()` was skipped by any `continue` (drop()'s or the
+  user's), re-processing the same item forever. Pinned.
+
+## Order — ALL ORDERED ITEMS COMPLETE (2026-07-12)
+
+1. Ring 0 ✓  2. Runner honesty ✓  3. Ring 2 ✓  4. Workers v1 ✓
+5. Generators ✓  6. Iterator helpers ✓
+7. Parked by design (unchanged): async (nursery/reset), relaxed-SIMD opt-in,
+   JSPI watch. Follow-ups recorded per section: yield* delegation, generator
+   test262 pool wiring, browser pool leg, BigInt64 atomics, pseudo-classical
+   ctors, static members.

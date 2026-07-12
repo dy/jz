@@ -75,3 +75,32 @@ test('generators: v1 rejections are precise', () => {
   rejects(`function* g() { try { yield 1 } catch (e) {} } export let f = () => 1`, 'try/catch across a yield')
   rejects(`export let f = () => { let y = yield 1; return y }`, 'yield outside a generator')
 })
+
+// ES2025 iterator helpers as FUSED loops: a chain rooted at a known generator
+// call — g().map(f).filter(p).take(n)… — compiles to ONE while-next loop with
+// the stages composed in place (no intermediate iterator objects). Terminals
+// (toArray/reduce/forEach/some/every/find) fuse in expression position.
+test('iterator helpers: stage fusion in for-of', () => {
+  is(j(`function* g(n) { for (let i = 0; i < n; i++) yield i }
+        export let f = () => { let s = ''; for (const v of g(8).map((x) => x * 10).filter((x) => x % 20 === 0)) s += v + ','; return s }`),
+    '0,20,40,60,')
+  is(j(`function* nat() { let i = 0; while (1) { yield i; i++ } }
+        export let f = () => { let s = ''; for (const v of nat().drop(3).take(4)) s += v; return s }`),
+    '3456')  // take() also terminates the INFINITE source
+})
+
+test('iterator helpers: terminals fuse in expression position', () => {
+  is(j(`function* g() { yield 3; yield 1; yield 2 }
+        export let f = () => g().map((x) => x + 1).toArray().join('-')`), '4-2-3')
+  is(j(`function* g(n) { for (let i = 1; i <= n; i++) yield i }
+        export let f = () => g(5).reduce((a, b) => a + b, 100)`), 115)
+  is(j(`function* g() { yield 1; yield 5; yield 9 }
+        export let f = () => '' + (g().some((x) => x > 8) ? 1 : 0) + (g().every((x) => x > 0) ? 1 : 0) + g().find((x) => x > 3)`),
+    '115')
+})
+
+test('for-of desugar: user continue advances the iterator (pull-at-top)', () => {
+  is(j(`function* g() { for (let i = 0; i < 6; i++) yield i }
+        export let f = () => { let s = ''; for (const v of g()) { if (v % 2) continue; s += v } return s }`),
+    '024')
+})
