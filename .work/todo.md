@@ -3652,3 +3652,47 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   ~5% single-case ceiling with probe-tax risk on slice-heavy cases (tokenizer).
   PARKED: the walk-callback closure-param devirt class ranks higher on the same
   profile; wordcount's table-resident-key interning case is separate and stands.
+
+## Root F round 3 (2026-07-13): the SIMD-residue class ERADICATED — 34→0 on branch typedoob
+- The blocker was real: checked `.typed:[]` forms blinded EVERY nest-level
+  recognizer — branch baseline failed 34 SIMD tests (worse than recorded). Built
+  the three-engine proof stack that returns every one:
+  1) TYPED-BOUNDS LOOP VERSIONING (emit-time, the unswitch precedent): countable
+     loops with iv-affine unproven typed accesses emit `if (extent-guard)
+     fast-arm else checked-arm`; the fast arm re-emits under arm-scoped
+     ctx.types.assumedBounds (snapshot/RESTORE — stamped clone keys must not
+     leak into the checked arm, which runs exactly when the guard fails).
+     Affine model: a*iv + Σkᵢ·slotᵢ + c (slots = stable names OR invariant pure
+     exprs like y*w; two slots for butterfly's i+j+half); body-let env resolves
+     `const j=3*i` chains; while-shapes via single body-inc (+bump on max-iv,
+     i32-wrap arg: wrapped extents exceed len ⇒ checked arm); comma-step
+     INDUCTION cursors (`j++, k+=step`) guard by BOTH endpoints (either slope
+     sign; ≥2^63 products wrap negative ⇒ fail-safe). f64/unknown bounds and
+     slots convert via ceil/floor+trunc_sat under runtime `|v|≤2^31` (+integral
+     for slots) conjuncts — box bit patterns are NaN and fail abs-compare.
+     Guard arithmetic ALL in i64 (a*(B-1)+b overflows i32 at the edge).
+  2) STATIC INTERVAL ENGINE (typedIdxProven class 5, memoized per function like
+     inBoundsArrIdx): abstract interpretation over const-bound nests — literal/
+     env-resolved loop bounds, if-join with condition refinement INCLUDING the
+     elseless fall-through (¬cond refines the other path — the clamp idiom
+     `if(xi<0)xi=0; else if(xi>=ww)xi=ww-1` proves [0,ww-1]), '?:' join, u-,
+     grouping '()' passthrough, while-iv model [entryLo, B-1] with exit
+     intervals, member-write kills fixed (o[i]=… rebinds NOTHING — the bug that
+     killed outer ivs), closure-write poisoning, call-kills for globals.
+  3) PEEL RANGE THEOREMS: peelClampedStencil stamps its own bit-exactness
+     argument (`ci ∈ [0,bound-1]` in the clamp-free interior) as _rangeFacts on
+     the interior body node; the walk intersects env writes with active facts —
+     relational knowledge a non-relational domain cannot re-derive.
+  Plus: cloneWithSubst PROOF STAMPING (unroll substitution only shrinks a proven
+  index's value set — without it unrolling silently re-checked everything);
+  typedStaticLen reads const-int EXPRS (`new Int8Array(CIN*H*W)`) with the
+  pendingTypedLens re-derivation AFTER the compile-time constInts fixpoint
+  (prepare-time recordGlobalRep runs before the fold).
+- Branch commits: 939175b7 (versioning) → ad66734d (interval v1) → 7634fa0a
+  (peel/nest classes) → butterfly/induction; SIMD 157/157, data.js 115/115.
+- REMAINING before landing: full suite + selfhost + fuzz on branch (running);
+  corpus byte-sweep vs main (checked-form size cost outside proven sites);
+  SIMD bench timing A/B vs main (colorconv/blur/conv2d/fft/aos parity); then
+  ff-merge typedoob. The Root F hole (silent adjacent-heap corruption on
+  runtime-variable typed OOB) closes with JS-exact semantics at zero hot-loop
+  cost.
