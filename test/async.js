@@ -126,3 +126,52 @@ test('fetch: host wasi warns (bind env.fetch yourself)', () => {
   jz.compile('async function g() { let r = await fetch("x"); return r } export let f = () => g()', { host: 'wasi', warnings })
   ok(warnings.entries.some(w => w.code === 'host-global'), 'wasi warning present')
 })
+
+// Async generators — the same sync machine with TAGGED yields ({a:1}=await,
+// {a:0}=yield), driven by __ag_run: next() returns promises, requests
+// serialize through a per-instance queue, yield* delegates through await'd
+// next(), and `for await` desugars to plain awaits (usable in async fns too,
+// over async iterators, sync iterators, and arrays of promises alike).
+test('async generators: protocol, await bodies, sent values', async () => {
+  if (onWasi() || onKernel()) return
+  is(await val(`async function* g() { yield 1; yield 2 }
+                async function drive() {
+                  let it = g()
+                  let r1 = await it.next()
+                  let r2 = await it.next()
+                  let r3 = await it.next()
+                  return '' + r1.value + r1.done + '|' + r2.value + '|' + r3.done
+                }
+                export let f = () => drive()`), '1false|2|true')
+  is(await val(`async function* g() { let a = await 10; yield a + 1; let b = await (a + 20); yield b }
+                async function drive() {
+                  let it = g()
+                  let r1 = await it.next()
+                  let r2 = await it.next()
+                  return '' + r1.value + '|' + r2.value
+                }
+                export let f = () => drive()`), '11|30')
+  is(await val(`async function* g() { let x = yield 'a'; yield x + '!' }
+                async function drive() { let it = g(); await it.next(); let r = await it.next('hi'); return r.value }
+                export let f = () => drive()`), 'hi!')
+})
+
+test('async generators: for await + yield* delegation', async () => {
+  if (onWasi() || onKernel()) return
+  is(await val(`async function* g() { yield 1; yield 2; yield 3 }
+                async function sum() { let s = 0; for await (const v of g()) s += v; return s }
+                export let f = () => sum()`), 6)
+  is(await val(`async function sum() {
+                  let s = 0
+                  for await (const v of [Promise.resolve(1), 2, Promise.resolve(3)]) s += v
+                  return s
+                }
+                export let f = () => sum()`), 6)
+  is(await val(`function* g() { yield 5; yield 6 }
+                async function sum() { let s = 0; for await (const v of g()) s += v; return s }
+                export let f = () => sum()`), 11)
+  is(await val(`async function* inner() { yield 1; yield 2 }
+                async function* g() { yield 0; yield* inner(); yield 3 }
+                async function drive() { let out = ''; for await (const v of g()) out += v; return out }
+                export let f = () => drive()`), '0123')
+})

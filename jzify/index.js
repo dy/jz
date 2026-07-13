@@ -9,7 +9,7 @@
 
 import { JZIFY_CLASS_ERRORS as JC } from '../src/op-policy.js'
 import { parse } from '../src/parse.js'
-import { createAsyncLowering, ASYNC_RUNTIME } from './async.js'
+import { createAsyncLowering, ASYNC_RUNTIME, ASYNC_GEN_RUNTIME } from './async.js'
 import { createNames } from './names.js'
 import { foldStaticExportHelpers, foldStaticBundlerHelpers, canonicalizeObjectIdioms } from './bundler.js'
 import { createSwitchLowering, normalizeCaseBody } from './switch.js'
@@ -46,8 +46,8 @@ const generatorNames = new Set()
 const iterProto = { on: false }
 const genErr = (msg) => { throw new Error('jzify: ' + msg) }
 const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t), iterProto })
-const { lowerAsync, noteAsync, asyncUsed, resetAsync } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
-bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, noteAsync, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal })
+const { lowerAsync, lowerAsyncGen, noteAsync, asyncUsed, agenUsed, resetAsync } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
+bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, noteAsync, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)
 
 // Spread normalization for iterator values — injected only when a spread site
@@ -68,7 +68,7 @@ let __it_drain = (v) => {
 `
 
 const isSymbolWellKnown = (n, which) => Array.isArray(n) && n[0] === '.' && n[1] === 'Symbol' && n[2] === which
-const WELL_KNOWN = { iterator: '@@iterator', dispose: '@@dispose' }
+const WELL_KNOWN = { iterator: '@@iterator', dispose: '@@dispose', asyncIterator: '@@asyncIterator' }
 // Iterator-helper method names (ES2025) — a CALL of one of these on any
 // receiver, in a program that mints iterators, gates decorated generator
 // objects (__it_mk). Fusable chains still fuse; this covers value positions.
@@ -161,6 +161,9 @@ export default function jzify(ast) {
   // [Symbol.iterator]() mints (__it_from) → splice the decorated-iterator
   // factory. Programs without value-position helpers never take this shape.
   if (iterProto.helpersUsed || iterProto.fromUsed) prepend(ITER_HELPERS_RUNTIME)
+  // async generators → splice the tagged-yield driver (before the promise
+  // runtime prepend so it lands AFTER it in module order — it calls __p_*).
+  if (agenUsed()) prepend(ASYNC_GEN_RUNTIME)
   // async somewhere in the program → splice the plain-jz promise runtime
   // (microtask queue, __async_run driver, promise shape + boundary readers)
   // ahead of user code. Sync programs never reach this — byte-identical.

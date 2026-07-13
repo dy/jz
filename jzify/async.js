@@ -206,16 +206,111 @@ export let __p_make = () => __p_new()
 export let __p_finish = (p, st, v) => __p_settle(p, st, v)
 `
 
+// Async generators — the SAME sync machine, with TAGGED yields: the lowered
+// body yields { a: 1, v } where the source awaited and { a: 0, v } where it
+// yielded, and __ag_run drives the machine, parking on awaited promises and
+// resolving each next() with a { value, done } record. next() calls serialize
+// through a per-instance queue (spec: requests queue while a step is inflight).
+// Injected only when a program contains async generators / for-await.
+export const ASYNC_GEN_RUNTIME = `
+let __ag_fin = (st, p, ok, v) => { __p_settle(p, ok, v); st.b = 0; __ag_kick(st) }
+let __ag_step = (st, g, p, r) => {
+  if (r.done) { __ag_fin(st, p, 1, { value: r.value, done: true }); return }
+  let t = r.value
+  // AsyncGeneratorYield AWAITS the yielded value first — yielding a rejected
+  // promise rejects the pending next() and closes the machine.
+  if (t.a === 0) {
+    __await(t.v,
+      (v) => __ag_fin(st, p, 1, { value: v, done: false }),
+      (e) => { g.return(undefined); __ag_fin(st, p, 2, e) })
+    return
+  }
+  __await(t.v,
+    (v) => {
+      let r2
+      try { r2 = g.next(v) } catch (e) { __ag_fin(st, p, 2, e); return }
+      __ag_step(st, g, p, r2)
+    },
+    (e) => { g.return(undefined); __ag_fin(st, p, 2, e) })
+}
+let __ag_kick = (st) => {
+  if (st.b === 1) return
+  if (st.q.length === 0) return
+  st.b = 1
+  let job = st.q.shift()
+  let r
+  try { r = job.g.next(job.v) } catch (e) { st.b = 0; __p_settle(job.p, 2, e); __ag_kick(st); return }
+  __ag_step(st, job.g, job.p, r)
+}
+let __ag_run = (g) => {
+  let st = { b: 0, q: [] }
+  let ag = { next: undefined, return: undefined, throw: undefined, '@@asyncIterator': undefined }
+  ag.next = (v) => { let p = __p_new(); st.q.push({ g: g, p: p, v: v }); __ag_kick(st); return p }
+  ag.return = (v) => { let p = __p_new(); let r = g.return(v); __p_settle(p, 1, { value: r.value, done: true }); return p }
+  ag.throw = (e) => { let p = __p_new(); try { g.throw(e) } catch (x) { __p_settle(p, 2, x) } return p }
+  ag[Symbol.asyncIterator] = () => ag
+  return ag
+}
+`
+
 export function createAsyncLowering({ genTemp, err }) {
   let used = false
+  let agUsed = false
 
   // await → yield inside THIS function body only (nested function forms keep
   // their own await/this rules; a stray await inside a nested sync fn falls
   // through to prepare's clean reject).
   const FN_OPS = new Set(['=>', 'function', 'function*', 'class', 'async'])
+
+  // `for await (decl of src)` → protocol loop in terms of PLAIN await: unwrap
+  // @@asyncIterator (else @@iterator), drive next() through await, and await
+  // each element (sync-source values may be promises; awaiting an async
+  // iterator's already-resolved value is a harmless pass-through). Non-protocol
+  // sources fall to an indexed loop with per-element await. The result is
+  // machine-lowerable by the same v1 yield surface as any while loop.
+  const NULL = [null, null]
+  function desugarForAwait(head, body) {
+    const [, decl, srcExpr] = head
+    const src = genTemp('fa'), it = genTemp('fi'), r = genTemp('fr'), ix = genTemp('fx')
+    const isDecl = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const')
+    const name = isDecl ? decl[1] : decl
+    // the loop binding declares ONCE before the protocol fork (both arms would
+    // otherwise re-declare it — the machine hoists locals and rejects dupes)
+    const bind = (valExpr) => ['=', name, ['await', valExpr]]
+    const bodyStmts = Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
+    return ['{}', [';',
+      ...(isDecl ? [['let', ['=', name, [null, undefined]]]] : []),
+      ['let', ['=', src, srcExpr]],
+      ['let', ['=', it, src]],
+      ['if', ['&&', ['!=', src, NULL], ['!=', ['.', src, '@@asyncIterator'], NULL]],
+        ['=', it, ['()', ['.', src, '@@asyncIterator'], null]],
+        ['if', ['&&', ['!=', src, NULL], ['!=', ['.', src, '@@iterator'], NULL]],
+          ['=', it, ['()', ['.', src, '@@iterator'], null]]]],
+      ['if', ['&&', ['!=', it, NULL], ['!=', ['.', it, 'next'], NULL]],
+        ['{}', [';',
+          ['let', ['=', r, ['await', ['()', ['.', it, 'next'], null]]]],
+          ['while', ['!', ['.', r, 'done']], ['{}', [';',
+            bind(['.', r, 'value']),
+            ...bodyStmts,
+            ['=', r, ['await', ['()', ['.', it, 'next'], null]]],
+          ]]],
+        ]],
+        ['{}', [';',
+          ['let', ['=', ix, [null, 0]]],
+          ['while', ['<', ix, ['.', it, 'length']], ['{}', [';',
+            bind(['[]', it, ix]),
+            ['=', ix, ['+', ix, [null, 1]]],
+            ...bodyStmts,
+          ]]],
+        ]]],
+    ]]
+  }
+
   function mapAwait(node) {
     if (!Array.isArray(node)) return node
     if (FN_OPS.has(node[0])) return node
+    if (node[0] === 'for await' && Array.isArray(node[1]) && node[1][0] === 'of')
+      return mapAwait(desugarForAwait(node[1], node[2]))
     if (node[0] === 'await') return ['yield', mapAwait(node[1])]
     if (node[0] === 'try' && refsAwait(node))
       err('try/catch across `await` is outside the v1 async surface — let the rejection reject the async function, or move the try into a sync helper')
@@ -224,8 +319,63 @@ export function createAsyncLowering({ genTemp, err }) {
   function refsAwait(node) {
     if (!Array.isArray(node)) return false
     if (FN_OPS.has(node[0])) return false
-    if (node[0] === 'await') return true
+    if (node[0] === 'await' || node[0] === 'for await') return true
     return node.some(refsAwait)
+  }
+  function refsSuspend(node) {
+    if (!Array.isArray(node)) return false
+    if (FN_OPS.has(node[0])) return false
+    if (node[0] === 'await' || node[0] === 'for await' || node[0] === 'yield' || node[0] === 'yield*') return true
+    return node.some(refsSuspend)
+  }
+
+  // async generator body → tagged-yield machine body: `await E` suspends as
+  // { a: 1, v: E } (driver resumes with the resolved value), `yield E` as
+  // { a: 0, v: E } (driver resolves next() and resumes with the sent value).
+  // `yield*`/for-await desugar into plain await/yield loops first and recurse.
+  const tag = (a, v) => ['yield', ['{}', [',', [':', 'a', [null, a]], [':', 'v', v]]]]
+  function mapAgen(node) {
+    if (!Array.isArray(node)) return node
+    if (FN_OPS.has(node[0])) return node
+    if (node[0] === 'for await' && Array.isArray(node[1]) && node[1][0] === 'of')
+      return mapAgen(desugarForAwait(node[1], node[2]))
+    if (node[0] === 'yield*') return mapAgen(desugarYieldStarAsync(node[1], null))
+    if (node[0] === 'await') return tag(1, mapAgen(node[1]))
+    if (node[0] === 'yield') return node[1] === undefined ? tag(0, [null, undefined]) : tag(0, mapAgen(node[1]))
+    if (node[0] === 'try' && refsSuspend(node))
+      err('try/catch across `await`/`yield` is outside the v1 async-generator surface — let the rejection reject, or move the try into a sync helper')
+    return node.map((n, i) => i === 0 ? n : mapAgen(n))
+  }
+
+  // `yield* E` inside an async generator: delegate through await'd next()
+  // (async or sync sources both work — __await passes plain values through).
+  function desugarYieldStarAsync(expr) {
+    const src = genTemp('ya'), it = genTemp('yb'), r = genTemp('yc'), sent = genTemp('yd'), ix = genTemp('ye')
+    return ['{}', [';',
+      ['let', ['=', src, expr]],
+      ['let', ['=', it, src]],
+      ['if', ['&&', ['!=', src, NULL], ['!=', ['.', src, '@@asyncIterator'], NULL]],
+        ['=', it, ['()', ['.', src, '@@asyncIterator'], null]],
+        ['if', ['&&', ['!=', src, NULL], ['!=', ['.', src, '@@iterator'], NULL]],
+          ['=', it, ['()', ['.', src, '@@iterator'], null]]]],
+      ['if', ['&&', ['!=', it, NULL], ['!=', ['.', it, 'next'], NULL]],
+        ['{}', [';',
+          ['let', ['=', r, ['await', ['()', ['.', it, 'next'], null]]]],
+          ['while', ['!', ['.', r, 'done']], ['{}', [';',
+            ['let', ['=', sent, ['yield', ['.', r, 'value']]]],
+            ['=', r, ['await', ['()', ['.', it, 'next'], sent]]],
+          ]]],
+        ]],
+        // indexed fallback (arrays/strings): each element rides the same
+        // tagged yield, so a rejected element rejects next() and closes.
+        ['{}', [';',
+          ['let', ['=', ix, [null, 0]]],
+          ['while', ['<', ix, ['.', it, 'length']], ['{}', [';',
+            ['yield', ['[]', it, ix]],
+            ['=', ix, ['+', ix, [null, 1]]],
+          ]]],
+        ]]],
+    ]]
   }
 
   // async (params) => body / async function (params) { body } →
@@ -241,5 +391,19 @@ export function createAsyncLowering({ genTemp, err }) {
       ['()', '__async_run', ['()', ['function*', null, params, mapAwait(body)], ['...', aa]]]]
   }
 
-  return { lowerAsync, noteAsync: () => { used = true }, asyncUsed: () => used, resetAsync: () => { used = false } }
+  // async function* (params) { body } → (...aa) => __ag_run(TAGGED_MACHINE(...aa))
+  function lowerAsyncGen(params, body) {
+    used = true
+    agUsed = true
+    const aa = genTemp('ag')
+    return ['=>', ['()', ['...', aa]],
+      ['()', '__ag_run', ['()', ['function*', null, params, mapAgen(body)], ['...', aa]]]]
+  }
+
+  return {
+    lowerAsync, lowerAsyncGen,
+    noteAsync: () => { used = true },
+    asyncUsed: () => used, agenUsed: () => agUsed,
+    resetAsync: () => { used = false; agUsed = false },
+  }
 }

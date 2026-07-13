@@ -184,7 +184,7 @@ const GENERATOR_EXCLUDED_PATTERNS = [
   /dynamic[\s-]*import/i, /import\.meta/i, /\bexport\s+default\b/,
 ]
 const isAsyncFnTest = (rel) =>
-  /\/(expressions\/(async-function|async-arrow-function|await)|statements\/async-function)\//.test(rel)
+  /\/(expressions\/(async-function|async-arrow-function|await|async-generator)|statements\/(async-function|async-generator|for-await-of))\//.test(rel)
 const isGeneratorTest = (rel) => /\/(expressions|statements)\/generators\//.test(rel) || /\/expressions\/yield\//.test(rel)
 
 // Quick mode: limit tests per subdirectory
@@ -713,9 +713,13 @@ function shouldSkipBase(content, rel = '') {
     if (CLASS_EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
     // fall through to the harness/negative-test filters below
   } else if (isAsyncFnTest(rel)) {
-    // async fns landed (jzify/async.js state machines + promise runtime) —
-    // narrow exclusions for the async dirs; the rest RUN via the $DONE shim.
-    if (/async\s+function\s*\*|async\s*\*|for\s+await|asyncDispose|async\s*generator/i.test(codeContent)) return 'async generators / for-await outside the sync-async v1'
+    // async fns AND async generators/for-await landed (jzify/async.js tagged-
+    // yield machines + __ag_run driver) — narrow exclusions; the rest RUN via
+    // the $DONE shim.
+    if (/asyncDispose|await\s+using/i.test(codeContent)) return 'await using / asyncDispose outside the sync dispose model'
+    // `async *m()` method shorthand (class/object) — v1 covers declaration +
+    // expression forms; `async function*` never matches (word between).
+    if (/async\s*\*/.test(codeContent)) return 'async generator METHOD syntax outside the v1 declaration/expression surface'
     if (/throwsAsync/.test(content)) return 'assert.throwsAsync harness outside the current shim'
     if (/\.name\b|\.length\b|\.constructor\b|\bprototype\b/.test(codeContent)) return 'function reflection unsupported'
     if (/dflt-params|params-dflt|arguments/.test(rel)) return 'default-param/arguments reflection outside jz scope'
@@ -866,6 +870,8 @@ function runTest(src, options = {}) {
         msg.includes('Unknown global') ||
         msg.includes('is not in scope') ||
         msg.includes('outside the v1 async surface') ||
+        msg.includes('outside the v1 async-generator surface') ||
+        msg.includes('yield outside a generator body') ||
         msg.includes('Imports argument must be present') ||
         msg.includes('function import requires a callable')) {
       return { status: 'skip', error: msg.slice(0, 80) }
@@ -973,6 +979,45 @@ const BOOL_CARRIER = 'boolean kind loss at a mixed ??/||/&&/?: join or throw slo
 const EXPECTED_FAIL_FILES = new Map([
   ['test/language/statements/function/13.2-2-s.js',
     'strict-mode write to function `.caller` must throw TypeError — function-object/strict-mode property semantics out of scope'],
+  // for-await grammar edges (2026-07-13, wired with async generators):
+  ['test/language/statements/for-await-of/head-lhs-async.js',
+    '`async` as a for-await LHS identifier — subset reserves the async prefix (upstream grammar edge)'],
+  ['test/language/statements/for-await-of/let-identifier-with-newline.js',
+    '`let` as an ASI-split identifier after a for-await body — sloppy-mode let-identifier grammar edge'],
+  // async-generator divergences (documented): job ordering is per-drain-cycle,
+  // and destructuring / yield* abrupt-completion semantics are out of the v1.
+  ['test/language/statements/async-generator/return-undefined-implicit-and-explicit.js',
+    'per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
+  ['test/language/expressions/await/for-await-of-interleaved.js',
+    'per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
+  ['test/language/statements/async-generator/dstr/ary-init-iter-get-err.js',
+    'destructuring abrupt-completion semantics — outside the async-generator v1'],
+  ['test/language/statements/async-generator/dstr/ary-ptrn-elem-id-iter-step-err.js',
+    'destructuring abrupt-completion semantics — outside the async-generator v1'],
+  ['test/language/statements/async-generator/dstr/ary-ptrn-elision-step-err.js',
+    'destructuring abrupt-completion semantics — outside the async-generator v1'],
+  ['test/language/statements/async-generator/dstr/ary-ptrn-rest-id-iter-step-err.js',
+    'destructuring abrupt-completion semantics — outside the async-generator v1'],
+  ['test/language/statements/async-generator/yield-star-expr-abrupt.js',
+    'yield* abrupt GetIterator semantics — outside the async-generator v1'],
+  ['test/language/statements/async-generator/yield-star-getiter-sync-returns-abrupt.js',
+    'yield* abrupt GetIterator semantics — outside the async-generator v1'],
+  ...[
+    'test/language/expressions/async-generator/dstr/ary-init-iter-get-err.js',
+    'test/language/expressions/async-generator/dstr/ary-ptrn-elem-id-iter-step-err.js',
+    'test/language/expressions/async-generator/dstr/ary-ptrn-elision-step-err.js',
+    'test/language/expressions/async-generator/dstr/ary-ptrn-rest-id-iter-step-err.js',
+    'test/language/expressions/async-generator/dstr/named-ary-init-iter-get-err.js',
+    'test/language/expressions/async-generator/dstr/named-ary-ptrn-elem-id-iter-step-err.js',
+    'test/language/expressions/async-generator/dstr/named-ary-ptrn-elision-step-err.js',
+    'test/language/expressions/async-generator/dstr/named-ary-ptrn-rest-id-iter-step-err.js',
+  ].map(f => [f, 'destructuring abrupt-completion semantics — outside the async-generator v1']),
+  ...[
+    'test/language/expressions/async-generator/named-yield-star-expr-abrupt.js',
+    'test/language/expressions/async-generator/named-yield-star-getiter-sync-returns-abrupt.js',
+    'test/language/expressions/async-generator/yield-star-expr-abrupt.js',
+    'test/language/expressions/async-generator/yield-star-getiter-sync-returns-abrupt.js',
+  ].map(f => [f, 'yield* abrupt GetIterator semantics — outside the async-generator v1']),
   ...[
     'test/language/expressions/coalesce/chainable-with-bitwise-and.js',
     'test/language/expressions/coalesce/chainable-with-bitwise-or.js',

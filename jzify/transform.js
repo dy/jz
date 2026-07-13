@@ -138,6 +138,8 @@ export function createTransform(opts) {
       return ['const', ['=', args[0], _gen.lowerGenerator(args[1], args[2])]]
     if (op === 'async' && Array.isArray(args[0]) && args[0][0] === 'function' && args[0][1] && _gen?.lowerAsync)
       return ['const', ['=', args[0][1], transform(_gen.lowerAsync(args[0][2], args[0][3]))]]
+    if (op === 'async' && Array.isArray(args[0]) && args[0][0] === 'function*' && args[0][1] && _gen?.lowerAsyncGen)
+      return ['const', ['=', args[0][1], transform(_gen.lowerAsyncGen(args[0][2], args[0][3]))]]
     if (op === 'class' && args[0]) return ['let', ['=', args[0], lowerClass(...args)]]
     if (op === 'using') return lowerUsing(args, [])
 
@@ -157,6 +159,12 @@ export function createTransform(opts) {
         if (Array.isArray(stmt) && stmt[0] === 'async' && Array.isArray(stmt[1]) &&
             stmt[1][0] === 'function' && stmt[1][1] && _gen?.lowerAsync) {
           hoisted.push(['const', ['=', stmt[1][1], transform(_gen.lowerAsync(stmt[1][2], stmt[1][3]))]])
+          continue
+        }
+        // async GENERATOR declaration — same hoisting, tagged-yield machine.
+        if (Array.isArray(stmt) && stmt[0] === 'async' && Array.isArray(stmt[1]) &&
+            stmt[1][0] === 'function*' && stmt[1][1] && _gen?.lowerAsyncGen) {
+          hoisted.push(['const', ['=', stmt[1][1], transform(_gen.lowerAsyncGen(stmt[1][2], stmt[1][3]))]])
           continue
         }
         if (Array.isArray(stmt) && stmt[0] === 'class' && stmt[1]) {
@@ -231,6 +239,7 @@ export function createTransform(opts) {
     // async function/arrow → (...aa) => __async_run((function* …)(...aa))
     'async'(inner) {
       if (!_gen?.lowerAsync || !Array.isArray(inner)) return
+      if (inner[0] === 'function*') return transform(_gen.lowerAsyncGen(inner[2], inner[3]))
       if (inner[0] === 'function') return transform(_gen.lowerAsync(inner[2], inner[3]))
       if (inner[0] === '=>') {
         const params = Array.isArray(inner[1]) && inner[1][0] === '()' ? inner[1][1] : inner[1]
