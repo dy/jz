@@ -6495,14 +6495,26 @@ export function vectorizeLaneLocal(fn, opts = {}) {
           { fn: `${fnName}#${whyNotN}` })
       }
       if (r) simdFired = true   // one of the real SIMD recognizers above matched
-      // Scalar IV strength-reduction is a non-SIMD fallback; it may still fire.
-      r = r ?? tryStrengthReduceIV(bl, fnLocals, freshIdRef)
       if (r) {
+        // Mark the consumed subtree: the wrapper REUSES these nodes (scalar tail, and the
+        // lane splats alias the original load nodes), so a deferred strength-reduce must
+        // never rewrite inside them — it would mutate the lifted lanes through the alias.
+        const mark = (n) => { if (isArr(n)) { srConsumed.add(n); for (let i = 0; i < n.length; i++) mark(n[i]) } }
+        mark(node)
         parent[idx] = r.wrapper
         newLocalDeclsAll.push(...r.newLocalDecls)
+      } else if (bl) {
+        // Scalar IV strength-reduction is a non-SIMD fallback — DEFERRED to after the
+        // whole walk. Applied eagerly here (post-order = innermost first) it rewrites an
+        // inner reduction loop into its wrapper before the ENCLOSING loop's outer
+        // recognizers (outer-strip / iterated-reduce / conv-column / tone-map) ever run,
+        // and they bail on the non-canonical inner shape — metaballs' pixel loop lost its
+        // whole f64x2 outer-strip to an eager strength-reduce of the blob loop.
+        deferredSR.push([node, parent, idx, bl])
       }
     }
   }
+  const deferredSR = [], srConsumed = new Set()
   _whyNotActive = whyNot
   _relaxF32 = relaxedFma
   _crPow = crPow
@@ -6510,6 +6522,14 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   _whyNotActive = false
   _relaxF32 = false
   _crPow = false
+  // Apply the deferred scalar fallback innermost-first (push order), skipping candidates
+  // inside any SIMD-consumed subtree (see the mark above), plus a same-slot check for
+  // wrappers that replaced the candidate node itself.
+  for (const [node, parent, idx, bl] of deferredSR) {
+    if (srConsumed.has(node) || parent[idx] !== node) continue
+    const r = tryStrengthReduceIV(bl, fnLocals, freshIdRef)
+    if (r) { parent[idx] = r.wrapper; newLocalDeclsAll.push(...r.newLocalDecls) }
+  }
 
   if (newLocalDeclsAll.length) {
     // Sibling loops (and the straight-line dot pass) can each lift the SAME source

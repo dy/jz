@@ -1685,23 +1685,17 @@ export function cseScalarLoad(fn) {
 // the two passes cover deliberately different op sets.
 const COMMUTATIVE = new Set(['f64.mul', 'f64.add', 'i32.mul', 'i32.add', 'i32.and', 'i32.or', 'i32.xor', 'i64.mul', 'i64.add', 'i64.and', 'i64.or', 'i64.xor'])
 
-// Presence of one of these arms the loop-aware CSE variant (it CSEs redundant pure f64/i32
-// arithmetic within the loop; the gate is just "is this loop expensive enough to
-// be worth the pass"). The whole class of transcendental helpers qualifies — each
-// is a multi-instruction polynomial approximation, so a loop built around exp/log/
-// pow deserves the same arithmetic-CSE a trig loop already got. Gating on the class,
-// not a benchmark shape; the CSE itself is bit-exact (pure-subexpr dedup only).
-const LOOP_CSE_EXPENSIVE = new Set([
-  '$math.sin', '$math.cos', '$math.tan', '$math.sin_core', '$math.cos_core',
-  '$math.exp', '$math.expm1', '$math.log', '$math.log2', '$math.log10', '$math.log1p',
-  '$math.pow', '$math.atan', '$math.asin', '$math.acos', '$math.atan2',
-  '$math.sinh', '$math.cosh', '$math.tanh', '$math.cbrt', '$math.hypot',
-])
-
 export function csePureExpr(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
+
+  // Skip vectorized functions (same gate as propagateSingleUse): the pass runs post-lift,
+  // and teeing scalar residue between lane sequences only adds register pressure.
+  let hasV128 = false
+  const scanV = (n) => { if (hasV128 || !Array.isArray(n)) return; const op = n[0]; if (typeof op === 'string' && (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op))) { hasV128 = true; return } for (let i = 1; i < n.length; i++) scanV(n[i]) }
+  for (let i = bodyStart; i < fn.length && !hasV128; i++) scanV(fn[i])
+  if (hasV128) return
 
   // High-water mark across ALL surviving `$__pe<N>` locals, not the first gap.
   // A prior csePureExpr run + watr.coalesce can leave non-contiguous numbering
@@ -3354,7 +3348,6 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
-  if (!cfg || cfg.csePureExpr !== false) csePureExpr(fn)
   if (!cfg || cfg.dropDeadZeroInit !== false) dropDeadZeroInit(fn)
   if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites)
   if (cfg && cfg.vectorizeLaneLocal === true) {
@@ -3385,6 +3378,11 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
     // iteration, the hot-loop waste audit-fixpoint.mjs flagged on dot/sum.
     foldV128Memargs(fn)
   }
+  // CSE pure scalar subexprs — AFTER the vectorizer, same rationale as propagateSingleUse below:
+  // its `$__pe` tees have no lift arm, so one teed subexpr bails the whole SIMD lift (colorconv's
+  // cbrt/fifthroot batch kernels fell scalar with the pass in the pre-vectorize slot). Like that
+  // pass it skips any function already lifted to v128 (lane sequences are register-tight).
+  if (!cfg || cfg.csePureExpr !== false) csePureExpr(fn)
   // Forward-substitute single-use temps — AFTER the vectorizer, never before: it pattern-matches a
   // STRAIGHT-LINE `s += a[i]*2`, and folding an address/index temp out scrambles it (the typed-array
   // loop fell from a SIMD body to a scalar unroll, +231 B). For watr:false the whole pipeline is the
