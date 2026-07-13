@@ -3553,3 +3553,22 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
 - Fragility note: the spread `{...src,k1,k2}` HASH-vs-OBJECT class already has
   its kind-layer guard (VT['{}'] mirrors emitObjectSpread — unknown-schema
   spread ⇒ HASH type carried); the todo's "guarded only at cloneSig" is stale.
+
+## Root F round 2 (2026-07-13): static-length proof stack — residue 118 → the vectorizer classes
+- BRANCH typedoob advanced (WIP: checked forms + typedStaticLen/litBoundArrIdx/
+  typedIdxProven proof stack; data.js 115/115 with proof-boundary + stale-length
+  pins). Hard-won plumbing lessons IN the commit: array-literal SHAPE DRIFT
+  (parse `['[]',[',',..]]` vs post-prepare `['[',..]`), live-closure trackers
+  (captured Maps orphan on per-function ctx.types resets), funcFacts channel +
+  BOTH per-function reset sites must mirror typedElem exactly.
+- FINAL RESIDUE (enumerated, ~5 shape classes + elisions): AoS stride-3 maps,
+  rfft param-bounded `cep[i]=x[i]/N`, conv2d affine `inp[irow+kx]`,
+  typed-narrow bitwise reads, and the butterfly dual-IV strip — ALL the
+  vectorizer's own shapes; no intra-function static proof reaches them.
+- THE NEXT ARC, designed: (b) lift-time bounds legality is the conceptual fix —
+  the strip/lane recognizers already compute affine extents to build strips, so
+  a LIFTED loop carries its own in-bounds proof and licenses unchecked emission
+  for exactly the region it covers (checked forms remain for scalar tails +
+  unlifted code). (a) loop versioning (pre-loop bounds guard, unswitch
+  precedent) covers the scalar remainder. Land Root F only with (b), else the
+  checked forms tax every SIMD kernel.
