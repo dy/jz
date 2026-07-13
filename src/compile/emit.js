@@ -967,24 +967,55 @@ function tryConcatChain(a, b, selfAccum) {
     if (vt === VAL.BOOL) return ['i64.reinterpret_f64', emitBoolStr(n)]
     return toStrI64(n, emit(n))   // OBJECT (compile-time ToPrimitive), NUMBER, unknown
   }
-  const bT = leaves.map(() => tempI64('cc'))
-  const lT = leaves.map(() => tempI32('cl'))
+  // LITERAL ASCII leaves (the serializer separators — ',', '\n', 'k=' …) carry
+  // their bytes and length at compile time: no box/len temps, no __str_byteLen,
+  // no __str_copy — the length const-folds into the total and the bytes store
+  // directly at the cursor (grouped 4/2/1-wide; watr folds the const totals).
+  // Profiled on strbuild: copy+len calls on 1-6 byte parts were 38.7% of a row.
+  const litOf = (n) => {
+    if (!Array.isArray(n) || n[0] !== 'str' || typeof n[1] !== 'string' || n[1].length === 0) return null
+    for (let i = 0; i < n[1].length; i++) if (n[1].charCodeAt(i) > 0x7f) return null
+    return n[1]
+  }
+  const lits = leaves.map(litOf)
+  const bT = leaves.map((_, k) => lits[k] != null ? null : tempI64('cc'))
+  const lT = leaves.map((_, k) => lits[k] != null ? null : tempI32('cl'))
   const offT = tempI32('co'), curT = tempI32('cu')
   const seq = []
+  let litTotal = 0
   leaves.forEach((n, k) => {
+    if (lits[k] != null) { litTotal += lits[k].length; return }
     seq.push(['local.set', `$${bT[k]}`, leafI64(n)])
     seq.push(['local.set', `$${lT[k]}`, ['call', '$__str_byteLen', ['local.get', `$${bT[k]}`]]])
   })
-  let total = ['local.get', `$${lT[0]}`]
-  for (let k = 1; k < leaves.length; k++) total = ['i32.add', total, ['local.get', `$${lT[k]}`]]
-  seq.push(['local.set', `$${offT}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], total]]])
+  const totalIR = () => {
+    let t = ['i32.const', litTotal]
+    for (let k = 0; k < leaves.length; k++) if (lT[k] != null) t = ['i32.add', t, ['local.get', `$${lT[k]}`]]
+    return t
+  }
+  seq.push(['local.set', `$${offT}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], totalIR()]]])
   seq.push(['i32.store', ['local.get', `$${offT}`], ['i32.const', 0]])                       // lazy hash cell
-  let total2 = ['local.get', `$${lT[0]}`]
-  for (let k = 1; k < leaves.length; k++) total2 = ['i32.add', total2, ['local.get', `$${lT[k]}`]]
-  seq.push(['i32.store', 'offset=4', ['local.get', `$${offT}`], total2])                     // len
+  seq.push(['i32.store', 'offset=4', ['local.get', `$${offT}`], totalIR()])                  // len
   seq.push(['local.set', `$${offT}`, ['i32.add', ['local.get', `$${offT}`], ['i32.const', 8]]])
   seq.push(['local.set', `$${curT}`, ['local.get', `$${offT}`]])
   leaves.forEach((n, k) => {
+    if (lits[k] != null) {
+      const s = lits[k]
+      let j = 0    // grouped little-endian stores: 4-byte words, 2-byte tail, then 1
+      const at = (o) => o ? [`offset=${o}`, ['local.get', `$${curT}`]] : [['local.get', `$${curT}`]]
+      for (; j + 4 <= s.length; j += 4)
+        seq.push(['i32.store', ...at(j), ['i32.const',
+          (s.charCodeAt(j) | (s.charCodeAt(j + 1) << 8) | (s.charCodeAt(j + 2) << 16) | (s.charCodeAt(j + 3) << 24)) | 0]])
+      if (j + 2 <= s.length) {
+        seq.push(['i32.store16', ...at(j), ['i32.const', s.charCodeAt(j) | (s.charCodeAt(j + 1) << 8)]])
+        j += 2
+      }
+      if (j < s.length)
+        seq.push(['i32.store8', ...at(j), ['i32.const', s.charCodeAt(j)]])
+      if (k < leaves.length - 1)
+        seq.push(['local.set', `$${curT}`, ['i32.add', ['local.get', `$${curT}`], ['i32.const', s.length]]])
+      return
+    }
     seq.push(['call', '$__str_copy', ['local.get', `$${bT[k]}`], ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]])
     if (k < leaves.length - 1)
       seq.push(['local.set', `$${curT}`, ['i32.add', ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]]])

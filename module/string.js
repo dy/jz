@@ -1862,19 +1862,34 @@ export default (ctx) => {
     if (!parts.length) return mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
     if (parts.length === 1) return typed(['f64.reinterpret_i64', partStrI64(parts[0])], 'f64')
 
-    const vals = parts.map(() => temp('s'))
-    const lens = parts.map(() => tempI32('sl'))
+    // LITERAL ASCII parts (the serializer separators: ',', '\n', 'x=' …) carry their
+    // bytes and length at compile time: no value temp, no __str_byteLen call, no
+    // __str_copy call — the length const-folds into the total and the bytes store
+    // directly at dst (grouped 4/2/1-wide). Profiled on strbuild: the copy+len
+    // calls on 1-6 byte parts were 38.7% of the row — pure call overhead.
+    const litBytes = (p) => {
+      if (!Array.isArray(p) || p[0] !== 'str' || typeof p[1] !== 'string' || p[1].length === 0) return null
+      const s = p[1]
+      for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) > 0x7f) return null
+      return s
+    }
+    const lits = parts.map(litBytes)
+
+    const vals = parts.map((_, i) => lits[i] != null ? null : temp('s'))
+    const lens = parts.map((_, i) => lits[i] != null ? null : tempI32('sl'))
     const total = tempI32('st')
     const off = tempI32('so')
     const dst = tempI32('sd')
     const ir = []
+    let litTotal = 0
 
     for (let i = 0; i < parts.length; i++) {
+      if (lits[i] != null) { litTotal += lits[i].length; continue }
       ir.push(['local.set', `$${vals[i]}`, ['f64.reinterpret_i64', partStrI64(parts[i])]])
       ir.push(['local.set', `$${lens[i]}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${vals[i]}`]]]])
     }
-    ir.push(['local.set', `$${total}`, ['i32.const', 0]])
-    for (const len of lens)
+    ir.push(['local.set', `$${total}`, ['i32.const', litTotal]])
+    for (const len of lens) if (len != null)
       ir.push(['local.set', `$${total}`, ['i32.add', ['local.get', `$${total}`], ['local.get', `$${len}`]]])
     const alloc = [
       ['local.set', `$${off}`, ['call', '$__alloc', ['i32.add', ['i32.const', 4], ['local.get', `$${total}`]]]],
@@ -1882,7 +1897,23 @@ export default (ctx) => {
       ['local.set', `$${off}`, ['i32.add', ['local.get', `$${off}`], ['i32.const', 4]]],
       ['local.set', `$${dst}`, ['local.get', `$${off}`]],
     ]
+    const dstAt = (k) => k ? ['i32.add', ['local.get', `$${dst}`], ['i32.const', k]] : ['local.get', `$${dst}`]
     for (let i = 0; i < parts.length; i++) {
+      if (lits[i] != null) {
+        const s = lits[i]
+        let k = 0    // grouped little-endian stores: 4-byte words, 2-byte tail, then 1
+        for (; k + 4 <= s.length; k += 4)
+          alloc.push(['i32.store', dstAt(k), ['i32.const',
+            (s.charCodeAt(k) | (s.charCodeAt(k + 1) << 8) | (s.charCodeAt(k + 2) << 16) | (s.charCodeAt(k + 3) << 24)) | 0]])
+        if (k + 2 <= s.length) {
+          alloc.push(['i32.store16', dstAt(k), ['i32.const', s.charCodeAt(k) | (s.charCodeAt(k + 1) << 8)]])
+          k += 2
+        }
+        if (k < s.length)
+          alloc.push(['i32.store8', dstAt(k), ['i32.const', s.charCodeAt(k)]])
+        alloc.push(['local.set', `$${dst}`, ['i32.add', ['local.get', `$${dst}`], ['i32.const', s.length]]])
+        continue
+      }
       alloc.push(['call', '$__str_copy', ['i64.reinterpret_f64', ['local.get', `$${vals[i]}`]], ['local.get', `$${dst}`], ['local.get', `$${lens[i]}`]])
       alloc.push(['local.set', `$${dst}`, ['i32.add', ['local.get', `$${dst}`], ['local.get', `$${lens[i]}`]]])
     }

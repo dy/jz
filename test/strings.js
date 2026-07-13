@@ -341,6 +341,24 @@ test('template literal: fused concat returns string and skips concat helper', ()
   ok(!wat.slice(start, end).includes('call $__str_concat'))
 })
 
+test('fused concat: literal ASCII parts store inline — no per-separator copy or length call', () => {
+  // The serializer shape (`i + ',' + name + '\n'`): literal parts carry their bytes
+  // and length at compile time, so only the DYNAMIC parts pay a __str_copy +
+  // __str_byteLen. Profiled on strbuild: the tiny-part copy/len calls were 38.7%
+  // of a row; inlining them was -15% on the bench with an exact checksum.
+  const src = `export let f = (i, v) => i + ', ' + v + '!\\n'`
+  const r = jz(src, { optimize: { level: 2, watr: false } })
+  is(r.memory.read(r.exports.f(7, -3)), '7, -3!\n')
+  const wat = compile(src, { wat: true, optimize: { level: 2, watr: false } })
+  const fn = wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func ', wat.indexOf('(func $f') + 1))
+  is((fn.match(/call \$__str_copy/g) || []).length, 2, 'copies only for the 2 dynamic parts')
+  is((fn.match(/call \$__str_byteLen/g) || []).length, 2, 'lengths only for the 2 dynamic parts')
+  // template path shares the machinery
+  const twat = compile('export let f = (x) => `[${x}]`', { wat: true, optimize: { level: 2, watr: false } })
+  const tfn = twat.slice(twat.indexOf('(func $f'), twat.indexOf('\n  (func ', twat.indexOf('(func $f') + 1))
+  is((tfn.match(/call \$__str_copy/g) || []).length, 1, 'template: one copy for the one dynamic part')
+})
+
 // === .slice ===
 
 test('string: .slice basic', () => {
