@@ -151,12 +151,17 @@ test('Math.fround', async () => {
   almost(await evaluate('Math.fround(1.337)'), Math.fround(1.337), 1e-10)
 })
 
-// ES2025 Math.f16round — bit-exact vs host (reference: Math.f16round, V8):
+// ES2025 Math.f16round — bit-exact vs the V8 reference (Math.f16round, node ≥ 24;
+// literal values below ARE that reference so the test runs on node 22 CI too):
 // round-to-nearest-even at the f16 quantum, subnormals, ±0/NaN/∞ passthrough,
 // overflow to ∞ at the 65520 boundary (65504 = max f16 + half-ulp).
 test('Math.f16round', async () => {
-  is(await evaluate('Math.f16round(1.1)'), Math.f16round(1.1))            // 1.099609375
-  is(await evaluate('Math.f16round(0.1)'), Math.f16round(0.1))
+  is(await evaluate('Math.f16round(1.1)'), 1.099609375)                    // = V8 Math.f16round(1.1)
+  is(await evaluate('Math.f16round(0.1)'), 0.0999755859375)                // = V8 Math.f16round(0.1)
+  if (Math.f16round) {                                                     // host cross-check when present
+    is(1.099609375, Math.f16round(1.1))
+    is(0.0999755859375, Math.f16round(0.1))
+  }
   is(await evaluate('Math.f16round(65504)'), 65504)
   is(await evaluate('Math.f16round(65519.99)'), 65504)
   is(await evaluate('Math.f16round(65520)'), Infinity)
