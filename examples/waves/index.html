@@ -9,35 +9,49 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-// Swimming-pool caustics (see waves.js — after KZ_LAB_E's caustics simulation): a calm
-// viscous pool whose gentle swell folds sunlight into the classic slowly-shimmering caustic
-// net. Click presses a dip — the water itself makes the ring. Drag is a STICK drawn through
-// the water: one continuous wake. Scroll sets the POOL DEPTH (shallow barely bends the
-// light, deep folds every ripple hard). Dice throws a few drops.
-let foc = 240                         // pool depth (focal length of the refraction)
+// Monochrome caustics after KZ_LAB_E's simulation: drops and pointer pressure disturb a
+// neutral sheet, then the wave equation opens them into silver fold lines. The untouched
+// demo receives only occasional drops—no synthetic pointer choreography. Click adds a drop,
+// drag draws your own stroke, and scroll changes the refraction depth.
+let foc = 240                         // focal depth of the refraction
 let down = false, stick = false       // stick engages only after real movement — a clean
 let sx = 0, sy = 0, dx0 = 0, dy0 = 0  // click must NOT press the stick under its own drop
+let nextDrop = 0, breakTrail = false
+const scheduleDrop = (t) => { nextDrop = t + 2.5 + Math.random() * 2.5 }
 
 const demo = runDemo({
   name: "waves",
-  hint: "a calm pool folding sunlight — real caustics · click to drop · drag a stick through the water · scroll = depth",
+  hint: "monochrome caustics — click to drop · drag through the sheet · scroll = refraction depth",
   size: { budget: 420000 },
-  bg: "#2b98ac",
-  load: (e) => { e.clear() },
-  frame: (e, t) => { e.frame(t, sx, sy, stick ? 1.0 : 0.0, foc) },
+  bg: "#9e9e9e",
+  load: (e, d) => { e.clear(); nextDrop = d.t + 0.8 },
+  frame: (e, t, d) => {
+    if (!down && t >= nextDrop) {
+      e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7))
+      scheduleDrop(t)
+    }
+    let active = stick ? 1.0 : 0.0
+    if (breakTrail) { active = 0.0; breakTrail = false }
+    e.frame(t, sx, sy, active, foc)
+  },
   randomize: (e, d) => {
+    scheduleDrop(d.t)
     for (let i = 0; i < 3; i++) e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7))
   },
 })
 
-const toPx = (e) => {
+const toPx = (e, snap = false) => {
   const r = demo.cv.getBoundingClientRect()
-  sx = (e.clientX - r.left) / r.width * demo.W
-  sy = (e.clientY - r.top) / r.height * demo.H
+  const x = (e.clientX - r.left) / r.width * demo.W
+  const y = (e.clientY - r.top) / r.height * demo.H
+  // Pointer events can arrive as a jagged, low-rate polyline. A short event-space low-pass
+  // removes those corners while staying close enough to the hand to feel immediate.
+  if (snap) { sx = x; sy = y }
+  else { sx += (x - sx) * 0.55; sy += (y - sy) * 0.55 }
 }
 demo.cv.addEventListener("pointerdown", (e) => {
-  toPx(e)
-  down = true; stick = false; dx0 = sx; dy0 = sy
+  toPx(e, true); scheduleDrop(demo.t)
+  down = true; stick = false; breakTrail = true; dx0 = sx; dy0 = sy
   try { demo.cv.setPointerCapture(e.pointerId) } catch {}
 })
 demo.cv.addEventListener("pointermove", (e) => {
@@ -51,8 +65,9 @@ demo.cv.addEventListener("pointerup", (e) => {
   try { demo.cv.releasePointerCapture(e.pointerId) } catch {}
 })
 demo.cv.addEventListener("pointerleave", () => { down = false; stick = false })
+demo.cv.addEventListener("pointercancel", () => { down = false; stick = false })
 demo.cv.addEventListener("wheel", (e) => {
-  e.preventDefault()
+  e.preventDefault(); scheduleDrop(demo.t)
   foc *= Math.exp(-e.deltaY * 0.001)
   if (foc < 80) foc = 80
   if (foc > 360) foc = 360
