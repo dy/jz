@@ -356,6 +356,67 @@ function collectTopLevelStaticAssignments(node, facts) {
   if (str != null || arr) facts.set(node[1], { str, arr })
 }
 
+/** `[c0,c1,…][i]` inside a function body allocates the literal PER EVALUATION —
+ *  the '[' static-data lowering is module-scope-gated because a NAMED local
+ *  literal could leak per-instance mutations across calls. A literal in the
+ *  RECEIVER position of its own read can neither escape nor be written, so
+ *  hoist it to a synthetic module-level const: one shared data segment + the
+ *  staticArrs base/len fold, with duplicates interned by content (beat-style
+ *  samplers read several such tables per sample — 3×144 B allocs/sample in the
+ *  Sierpinski floatbeat; a const index rides the same path and folds all the
+ *  way to a constant). Elements: number literals (incl. unary minus) only —
+ *  exactly the static-extractable set the '[' lowering takes. */
+function hoistIndexedConstLiterals(root) {
+  const lits = new Map()   // content key → synthetic const name
+  const decls = []
+  // Parse shapes: number literal = [null, n]; unary minus = ['-', lit];
+  // array literal = ['[]', elems] (unary '[]'), elems = [',', ...] | one lit | undefined;
+  // subscript = ['[]', receiver, index] (binary '[]').
+  const litVal = (e) => Array.isArray(e) && e.length === 2 && e[0] == null && typeof e[1] === 'number' ? e[1]
+    : Array.isArray(e) && e[0] === '-' && e.length === 2 ? (v => v === null ? null : -v)(litVal(e[1]))
+    : null
+  // A literal read in WRITE position (`[1,2][0] = 5`, `[1,2][k]++`, `delete [1,2][0]`,
+  // destructuring targets) must keep its fresh per-evaluation array — rewriting it
+  // would mutate the shared segment under every other read interned to the same
+  // content. Post-order rewrites children before the parent assign is visible, so
+  // collect banned '[]' nodes in a first pass over every assignment-target subtree.
+  const banned = new Set()
+  const banIn = (t) => { if (!Array.isArray(t)) return; if (t[0] === '[]') banned.add(t); for (let i = 1; i < t.length; i++) banIn(t[i]) }
+  const collectBans = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (typeof op === 'string' && (op === '++' || op === '--' || op === 'delete' || op === '=' ||
+        (op.length >= 2 && op.endsWith('=') && !['==', '===', '!=', '!==', '<=', '>='].includes(op))))
+      banIn(node[1])
+    for (let i = 1; i < node.length; i++) collectBans(node[i])
+  }
+  collectBans(root)
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    for (let i = 1; i < node.length; i++) walk(node[i])
+    if (node[0] !== '[]' || node.length !== 3 || banned.has(node)) return
+    const lit = node[1]
+    if (!Array.isArray(lit) || lit[0] !== '[]' || lit.length !== 2) return
+    const inner = lit[1]
+    const elems = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : inner === undefined ? [] : [inner]
+    if (!elems.length) return
+    const vals = elems.map(litVal)
+    if (vals.some(v => v === null)) return
+    const key = vals.join(',')
+    let name = lits.get(key)
+    if (name == null) {
+      name = `__salit${lits.size}`
+      lits.set(key, name)
+      decls.push(['const', ['=', name, lit]])
+    }
+    node[1] = name
+  }
+  walk(root)
+  if (!decls.length) return root
+  if (Array.isArray(root) && root[0] === ';') { root.splice(1, 0, ...decls); return root }
+  return [';', ...decls, root]
+}
+
 function seedStaticGlobalAssignments(node) {
   // jzify hoists function declarations ahead of `var` initializer assignments.
   // Seed one-write static globals before preparing those function bodies so
@@ -569,6 +630,7 @@ export default function prepare(node) {
   normalizeIdents(node)
   fuseSparseMapReads(node)  // AST-level fusion; needs pre-resolution shape — defined at end of file
   seedStaticGlobalAssignments(node)
+  node = hoistIndexedConstLiterals(node)
   reassignedTopLevel = scanReassignedTopLevel(node)
   const ast = prep(node)
   // Top-level functions referenced as first-class values (e.g. `let o = { fn: g }`,
@@ -3139,6 +3201,7 @@ function prepareModule(specifier, source) {
     ast = ctx.transform.parse(source)
   }
   if (ctx.transform.jzify) ast = ctx.transform.jzify(ast)
+  ast = hoistIndexedConstLiterals(ast)
   const savedDepth = depth; depth = 0
   const savedReassigned = reassignedTopLevel
   reassignedTopLevel = scanReassignedTopLevel(ast)

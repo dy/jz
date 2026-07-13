@@ -260,6 +260,36 @@ test('devirtConstFnArrayCalls: const-arrow-table indexed call switches to direct
   is(f(0, 5, 3), 8); is(f(1, 5, 3), 6); is(f(2, 5, 3), -2)
 })
 
+test('hoistIndexedConstLiterals: `[consts][i]` reads one shared data segment — no per-evaluation alloc', () => {
+  // The Sierpinski-floatbeat shape: three chord tables read per SAMPLE, each a
+  // fresh 144 B alloc + stores because the '[' static lowering is module-scope
+  // gated. A literal in RECEIVER position of its own read can't escape or be
+  // written, so prepare hoists it to a synthetic module const (content-interned)
+  // and the static base/len fold applies. 2.42× behind V8 → 0.94× on the beat.
+  const src = `export let f = (t) => {
+    let k = t >> 2
+    let c1 = -[2, 4, 2, 9][k & 3]
+    let c2 = [5, 0, 5, 0][k & 3]
+    let c3 = [2, 4, 2, 9][(k + 1) & 3]
+    return c1 * 100 + c2 * 10 + c3
+  }`
+  const w = jz.compile(src, { wat: true, optimize: 3 })
+  ok(!/call \$__alloc\b/.test(w.split(/(?=\(func \$)/).find(p => p.startsWith('(func $f')) || 'call $__alloc'),
+    'no allocation in the reading function')
+  const { f } = run(src, { optimize: 3 })
+  is(f(0), -146); is(f(4), -398); is(f(8), -141)
+  // out-of-bounds still undefined, and a WRITTEN named literal keeps the heap form
+  const oob = run(`export let f = (t) => [1, 2][t]`, { optimize: 3 }).f
+  is(oob(1), 2); is(oob(7), undefined)
+  const wr = run(`export let f = (t) => { let a = [1, 2]; a[0] = t; return a[0] + a[1] }`, { optimize: 3 }).f
+  is(wr(5), 7)
+  // write-position literal reads are BANNED from the hoist: `[1,2][0] = 99` writes a
+  // fresh discarded array — hoisted it would corrupt the shared segment under every
+  // read interned to the same content
+  const wp = run(`export let f = (k) => { [1, 2][0] = 99; return [1, 2][k] }`, { optimize: 3 }).f
+  is(wp(0), 1); is(wp(1), 2)
+})
+
 test('rotateLoops: speed tier rotates a scan loop to a fused conditional back-edge', () => {
   // The lz/qoi class of hot scalar loop. Top-test `loop { br_if exit ¬C; body; br loop }`
   // → guarded `br_if exit ¬C; loop { body; br_if loop C }`. The fused `br_if $loop`
