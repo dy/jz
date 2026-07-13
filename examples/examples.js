@@ -30,7 +30,7 @@ export const examples = [
   { name: 'sph',          title: 'Particle Fluid',    blurb: 'smoothed-particle-style liquid — pairwise repulsion & viscosity, the classic O(N²) sum' },
   { name: 'lbm',          title: 'Lattice-Boltzmann', blurb: 'lattice-Boltzmann flow — a dye filament wraps into the von Kármán vortex street' },
   { name: 'cloth',        title: 'Cloth',             blurb: 'Verlet cloth with shear bracing — grab, twist, and let the wind billow it' },
-  { name: 'waves',        title: 'Waves',             blurb: 'a calm swimming pool folding sunlight — real refractive caustics from the 2D wave equation', show: true },
+  { name: 'waves',        title: 'Waves',             blurb: 'viscous black gestures dissolve into silver caustics — real folds from the 2D wave equation', show: true },
   { name: 'ocean',        title: 'Ocean',             blurb: 'Tessendorf FFT ocean — a Phillips-spectrum sea synthesized by inverse FFT, moonlit' },
   { name: 'pendulum',     title: 'Double Pendulum',   blurb: 'every pixel an initial angle, shaded by time-to-flip — sensitive chaos' },
   { name: 'magnet',       title: 'Magnetic Pendulum', blurb: 'a damped bob over three magnets — each pixel shaded by which magnet wins; fractal basin boundaries' },
