@@ -91,10 +91,11 @@ let rnd = () => {
   return (((rs >>> 9) | 0) + 1) / 8388609.0
 }
 
-// gaussian plop pressed into the current field — a WIDE splash whose rings ride out thick
-export let drop = (cx, cy) => { plop(cx, cy, 10.0, -1.8) }
-
-let plop = (cx, cy, r, amp) => {
+// a soft gaussian bump. both=0: written to the current buffer only — an implicit velocity
+// kick whose broadband ringing is exactly what sustains the pool's cellular caustic web
+// (the drizzle wants that churn). both=1: written to BOTH leapfrog buffers — a zero-velocity
+// release that relaxes smoothly, for the splash's centre dip.
+let plop = (cx, cy, r, amp, both) => {
   let rO = r * 3.0
   let x0 = (cx - rO) | 0, x1 = (cx + rO) | 0, y0 = (cy - rO) | 0, y1 = (cy + rO) | 0
   if (x0 < 1) x0 = 1
@@ -108,11 +109,48 @@ let plop = (cx, cy, r, amp) => {
     while (x <= x1) {
       let dx = x - cx
       let q = (dx * dx + dy * dy) * ir2
-      if (q < 9.0) a[row + x] = a[row + x] + amp * Math.exp(-q)
+      if (q < 9.0) {
+        let v = amp * Math.exp(-q)
+        a[row + x] = a[row + x] + v
+        if (both > 0) b[row + x] = b[row + x] + v
+      }
       x++
     }
     y++
   }
+}
+
+// the click: a droplet ring — a wide raised crest launched OUTGOING (d'Alembert: the
+// previous-step buffer holds the same ring one wave-step smaller, so the crest rides
+// cleanly outward with no ingoing rebound and no velocity shock) plus a soft dip at the
+// centre where the drop landed
+export let drop = (cx, cy) => {
+  let R0 = 7.0, WD = 5.5, AMP = 1.5
+  let cs = Math.sqrt(C2)                   // lattice wave speed, px per substep
+  let rO = R0 + WD * 3.0
+  let x0 = (cx - rO) | 0, x1 = (cx + rO) | 0, y0 = (cy - rO) | 0, y1 = (cy + rO) | 0
+  if (x0 < 1) x0 = 1
+  if (y0 < 1) y0 = 1
+  if (x1 > W - 2) x1 = W - 2
+  if (y1 > H - 2) y1 = H - 2
+  let iw2 = 1.0 / (WD * WD)
+  let y = y0
+  while (y <= y1) {
+    let dy = y - cy, row = y * W, x = x0
+    while (x <= x1) {
+      let dx = x - cx
+      let d = Math.sqrt(dx * dx + dy * dy)
+      let e = d - R0
+      let q = e * e * iw2
+      if (q < 9.0) a[row + x] = a[row + x] + AMP * Math.exp(-q)
+      let e2 = d - R0 + cs                 // one substep earlier the ring was smaller
+      let q2 = e2 * e2 * iw2
+      if (q2 < 9.0) b[row + x] = b[row + x] + AMP * Math.exp(-q2)
+      x++
+    }
+    y++
+  }
+  plop(cx, cy, 4.5, -1.1, 1)               // the dip where the droplet punched through
 }
 
 // one leapfrog substep of the linear wave equation
@@ -143,7 +181,7 @@ export let frame = (t, foc) => {
   let d = 0
   while (d < drops) {
     let sgn = rnd() < 0.5 ? -1.0 : 1.0
-    plop(6.0 + rnd() * (w - 12.0), 6.0 + rnd() * (h - 12.0), 5.0 + rnd() * 6.0, sgn * RAINA * (0.4 + rnd()))
+    plop(6.0 + rnd() * (w - 12.0), 6.0 + rnd() * (h - 12.0), 5.0 + rnd() * 6.0, sgn * RAINA * (0.4 + rnd()), 0)
     d++
   }
 
