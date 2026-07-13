@@ -784,11 +784,11 @@ function scanIntervalIdx(body, out, lens) {
       visit(thenB)
       const afterThen = new Map(env)
       env.clear(); for (const [k2, v2] of save) env.set(k2, v2)
-      if (elseB !== undefined) {
-        const rE = refine(c, true)
-        if (rE && !closureWrites.has(rE[0])) env.set(rE[0], rE[1])
-        visit(elseB)
-      }
+      // the fall-through state refines by ¬cond whether or not an else arm exists
+      // (`if (xi >= 64) xi = 63` leaves xi < 64 on the other path)
+      const rE = refine(c, true)
+      if (rE && !closureWrites.has(rE[0])) env.set(rE[0], rE[1])
+      if (elseB !== undefined) visit(elseB)
       // join: both arms merge (min lo, max hi); known-in-one-arm-only joins unknown
       const keys = new Set([...afterThen.keys(), ...env.keys()])
       for (const k2 of keys) {
