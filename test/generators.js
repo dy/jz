@@ -200,3 +200,50 @@ test('iterator protocol: spread of iterator values', () => {
   is(j(`function* g() { yield 3 }
         export let f = () => { let a = [1, 2]; return [...a, ...g()].join('') }`), '123')
 })
+
+// Iterator helpers on iterator VALUES (ES2025): a helper-using program mints
+// generator objects through __it_mk — map/filter/take/drop/flatMap and the
+// terminals become value-position methods (lazy, value+counter callbacks,
+// early return() on short-circuit), Symbol.iterator returns self, and
+// `instanceof Iterator` is the callable-next shape probe. Fusable chains
+// still fuse; helper-free programs mint the bare record (pay-per-use).
+test('iterator helpers: value-position chains', () => {
+  is(j(`function* g() { yield 1; yield 2; yield 3 }
+        export let f = () => {
+          let it = g().map((x) => x * 10)
+          return it.next().value + '|' + it.next().value
+        }`), '10|20')
+  is(j(`function* nat() { let n = 0; while (true) { yield n; n++ } }
+        export let f = () => {
+          let evens = nat().filter((x) => x % 2 === 0)
+          return evens.take(5).toArray().join(',')
+        }`), '0,2,4,6,8')
+  is(j(`function* g() { yield 1; yield 2; yield 3 }
+        export let f = () => g().drop(1).flatMap((x) => [x, x * 100]).toArray().join(',')`), '2,200,3,300')
+})
+
+test('iterator helpers: spec callbacks and terminals', () => {
+  is(j(`function* g() { yield 'a'; yield 'b' }
+        export let f = () => g().map((x, i) => x + i).toArray().join(',')`), 'a0,b1')
+  is(j(`function* g() { yield 2; yield 4; yield 6 }
+        export let f = () => '' + g().reduce((a, b) => a + b) + '|' + g().find((x) => x > 3) +
+          '|' + g().some((x) => x > 5) + '|' + g().every((x) => x % 2 === 0)`), '12|4|true|true')
+  is(j(`function* g() { yield 1 }
+        export let f = () => { try { g().take(-1); return 'no' } catch (e) { return e.includes('RangeError') ? 'range' : e } }`), 'range')
+})
+
+test('iterator helpers: instanceof Iterator, protocol interplay', () => {
+  is(j(`function* g() { yield 1 }
+        export let f = () => '' + (g() instanceof Iterator) + (g().map((x) => x) instanceof Iterator) +
+          ([1, 2] instanceof Iterator) + (5 instanceof Iterator)`), 'truetruefalsefalse')
+  is(j(`function* g() { yield 1; yield 2; yield 3 }
+        export let f = () => {
+          let s = 0
+          for (const v of g().map((x) => x * 2)) s += v
+          let it = g().map((x) => x + 1)
+          for (const v of it) s += v
+          return s
+        }`), 21)
+  is(j(`function* g() { yield 1; yield 2 }
+        export let f = () => [...g().map((x) => x * 3)].join('-')`), '3-6')
+})

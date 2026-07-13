@@ -28,7 +28,9 @@ test('transform: lowered output compiles and matches the original', () => {
   ]
   for (const src of cases) {
     const out = transform(src)
-    ok(!/\bvar\b|\bswitch\b|\bfunction\b/.test(out.replace(/'[^']*'/g, '')), `lowered: ${out.slice(0, 60)}`)
+    // strip BOTH quote forms: codegen prints strings double-quoted, and the
+    // injected runtimes carry `typeof x !== "function"` guards
+    ok(!/\bvar\b|\bswitch\b|\bfunction\b/.test(out.replace(/'[^']*'|"[^"]*"/g, '')), `lowered: ${out.slice(0, 60)}`)
     is(runs(out), runs(src), `equal result for: ${src.slice(0, 50)}`)
   }
 })

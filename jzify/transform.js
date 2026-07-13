@@ -268,6 +268,28 @@ export function createTransform(opts) {
         const lit = lowerArrayConstructor(rest[0])
         if (lit) return lit
       }
+      // `[…literal][Symbol.iterator]()` / `'s'[Symbol.iterator]()` — mint a
+      // decorated indexed iterator (array/string values as iterators). Literal
+      // receivers only: name/expression receivers keep the plain dot-call
+      // (machines answer it themselves; the protocol desugar's own probe-call
+      // must not re-enter here).
+      if (_gen && Array.isArray(callee) && callee[0] === '.' && callee[2] === '@@iterator' &&
+          rest.every(a => a == null) && Array.isArray(callee[1]) &&
+          ((callee[1][0] === '[]' && callee[1].length === 2) || (callee[1][0] == null && typeof callee[1][1] === 'string'))) {
+        _gen.iterProto.fromUsed = true
+        return ['()', '__it_from', transform(callee[1])]
+      }
+      // Array.from over iterator values (iterator-minting programs only):
+      // protocol values materialize via __it_arr; arrays copy; array-likes
+      // build by length. `Array.from(x, fn)` maps the materialized array.
+      if (_gen?.iterProto?.on && Array.isArray(callee) && callee[0] === '.' &&
+          callee[1] === 'Array' && callee[2] === 'from' && rest.length === 1) {
+        _gen.iterProto.arr = true
+        const args = Array.isArray(rest[0]) && rest[0][0] === ',' ? rest[0].slice(1) : [rest[0]]
+        const drained = ['()', '__it_arr', transform(args[0])]
+        if (args.length >= 2) return ['()', ['.', drained, 'map'], transform(args[1])]
+        return drained
+      }
       // spread ARG of a possibly-iterator value → __drain (iterator programs only)
       if (_gen?.iterProto?.on && rest.length === 1 && Array.isArray(rest[0])) {
         const args = rest[0]
@@ -416,6 +438,12 @@ export function createTransform(opts) {
         _gen.noteAsync()
         const t0 = transform(val)
         return ['&&', ['!=', t0, [null, null]], ['==', ['.', t0, '__p'], [null, 1]]]
+      }
+      // iterator-shape probe — anything driving the protocol (a callable next)
+      // is an Iterator to jz; arrays/strings probe false (no `next` prop).
+      if (ctor === 'Iterator' && _gen) {
+        const t0 = transform(val)
+        return ['&&', ['===', ['typeof', t0], [null, 'object']], ['!=', ['.', t0, 'next'], [null, null]]]
       }
       const t = transform(val)
       const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)

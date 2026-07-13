@@ -48,8 +48,9 @@ let __p_new = () => {
   p.then = (ok, err) => {
     let q = __p_new()
     __p_sub(p, (st, v) => {
-      if (st === 1) { if (ok == null) { __p_settle(q, 1, v) } else { try { __p_settle(q, 1, ok(v)) } catch (e) { __p_settle(q, 2, e) } } }
-      else { if (err == null) { __p_settle(q, 2, v) } else { try { __p_settle(q, 1, err(v)) } catch (e2) { __p_settle(q, 2, e2) } } }
+      // non-callable handlers are ignored (spec: fulfillment/rejection pass through)
+      if (st === 1) { if (ok == null || typeof ok !== 'function') { __p_settle(q, 1, v) } else { try { __p_settle(q, 1, ok(v)) } catch (e) { __p_settle(q, 2, e) } } }
+      else { if (err == null || typeof err !== 'function') { __p_settle(q, 2, v) } else { try { __p_settle(q, 1, err(v)) } catch (e2) { __p_settle(q, 2, e2) } } }
     })
     return q
   }
@@ -122,37 +123,69 @@ let __p_resolve = (v) => {
   let p = __p_new(); __p_settle(p, 1, v); return p
 }
 let __p_reject = (e) => { let p = __p_new(); __p_settle(p, 2, e); return p }
+// GetIterator for the combinators: arrays pass through, iterator-protocol
+// values drain, anything else (non-iterable input, or an @@iterator that is
+// non-callable / returns a non-object) yields null → the combinator REJECTS
+// with a TypeError value instead of resolving garbage.
+let __p_list = (v) => {
+  if (v == null) return null
+  if (typeof v === 'string') return v.split('')
+  if (typeof v !== 'object') return null
+  let w = v
+  if (w['@@iterator'] != null) {
+    if (typeof w['@@iterator'] !== 'function') return null
+    w = w['@@iterator']()
+  }
+  if (w != null && typeof w === 'object' && typeof w.next === 'function') {
+    let a = [], r = w.next()
+    while (!r.done) { a.push(r.value); r = w.next() }
+    return a
+  }
+  if (w != null && typeof w === 'object' && w.length != null) return w
+  return null
+}
 let __p_all = (arr) => {
-  let p = __p_new(), n = arr.length, out = [], left = n
+  let p = __p_new()
+  let a = __p_list(arr)
+  if (a == null) { __p_settle(p, 2, 'TypeError: Promise.all argument is not iterable'); return p }
+  let n = a.length, out = [], left = n
   if (n === 0) { __p_settle(p, 1, out); return p }
   for (let i = 0; i < n; i++) {
     let k = i
-    __await(arr[k], (v) => { out[k] = v; left--; if (left === 0) __p_settle(p, 1, out) }, (e) => __p_settle(p, 2, e))
+    __await(a[k], (v) => { out[k] = v; left--; if (left === 0) __p_settle(p, 1, out) }, (e) => __p_settle(p, 2, e))
   }
   return p
 }
 let __p_race = (arr) => {
   let p = __p_new()
-  for (let i = 0; i < arr.length; i++) __await(arr[i], (v) => __p_settle(p, 1, v), (e) => __p_settle(p, 2, e))
+  let a = __p_list(arr)
+  if (a == null) { __p_settle(p, 2, 'TypeError: Promise.race argument is not iterable'); return p }
+  for (let i = 0; i < a.length; i++) __await(a[i], (v) => __p_settle(p, 1, v), (e) => __p_settle(p, 2, e))
   return p
 }
 let __p_allSettled = (arr) => {
-  let p = __p_new(), n = arr.length, out = [], left = n
+  let p = __p_new()
+  let a = __p_list(arr)
+  if (a == null) { __p_settle(p, 2, 'TypeError: Promise.allSettled argument is not iterable'); return p }
+  let n = a.length, out = [], left = n
   if (n === 0) { __p_settle(p, 1, out); return p }
   for (let i = 0; i < n; i++) {
     let k = i
-    __await(arr[k],
+    __await(a[k],
       (v) => { out[k] = { status: 'fulfilled', value: v, reason: undefined }; left--; if (left === 0) __p_settle(p, 1, out) },
       (e) => { out[k] = { status: 'rejected', value: undefined, reason: e }; left--; if (left === 0) __p_settle(p, 1, out) })
   }
   return p
 }
 let __p_any = (arr) => {
-  let p = __p_new(), n = arr.length, errs = [], left = n
+  let p = __p_new()
+  let a = __p_list(arr)
+  if (a == null) { __p_settle(p, 2, 'TypeError: Promise.any argument is not iterable'); return p }
+  let n = a.length, errs = [], left = n
   if (n === 0) { __p_settle(p, 2, { name: 'AggregateError', message: 'All promises were rejected', errors: errs }); return p }
   for (let i = 0; i < n; i++) {
     let k = i
-    __await(arr[k], (v) => __p_settle(p, 1, v),
+    __await(a[k], (v) => __p_settle(p, 1, v),
       (e) => { errs[k] = e; left--; if (left === 0) __p_settle(p, 2, { name: 'AggregateError', message: 'All promises were rejected', errors: errs }) })
   }
   return p

@@ -17,7 +17,7 @@ import { createClassLowering, foldPseudoClassical } from './classes.js'
 import { hoistVars, prependDecls } from './hoist-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
-import { createGeneratorLowering } from './generators.js'
+import { createGeneratorLowering, ITER_HELPERS_RUNTIME, ITER_ARR_RUNTIME } from './generators.js'
 
 const names = createNames()
 const { lowerArguments, transformPattern, bindTransform } = createArgumentsLowering(names)
@@ -45,7 +45,7 @@ const generatorNames = new Set()
 // programs without iterator producers compile byte-identically.
 const iterProto = { on: false }
 const genErr = (msg) => { throw new Error('jzify: ' + msg) }
-const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t) })
+const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t), iterProto })
 const { lowerAsync, noteAsync, asyncUsed, resetAsync } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
 bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, noteAsync, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)
@@ -69,12 +69,18 @@ let __it_drain = (v) => {
 
 const isSymbolWellKnown = (n, which) => Array.isArray(n) && n[0] === '.' && n[1] === 'Symbol' && n[2] === which
 const WELL_KNOWN = { iterator: '@@iterator', dispose: '@@dispose' }
+// Iterator-helper method names (ES2025) — a CALL of one of these on any
+// receiver, in a program that mints iterators, gates decorated generator
+// objects (__it_mk). Fusable chains still fuse; this covers value positions.
+const ITER_HELPER_NAMES = new Set(['map', 'filter', 'take', 'drop', 'flatMap',
+  'toArray', 'reduce', 'forEach', 'some', 'every', 'find'])
 // Entry walk, two jobs in one pass:
 // 1. Canonicalize well-known-symbol shapes to reserved literal props — a
 //    fixed-shape object has no symbol slots, so `[Symbol.iterator]` becomes
 //    the '@@iterator' prop in BOTH key position (computed member/method) and
 //    access position (`x[Symbol.iterator]`).
-// 2. Detect iterator producers for the protocol-fork gate.
+// 2. Detect iterator producers for the protocol-fork gate, and helper-method
+//    use / `instanceof Iterator` for the decorated-iterator gate.
 function canonSymbols(node) {
   if (!Array.isArray(node)) return node
   const [op] = node
@@ -82,6 +88,9 @@ function canonSymbols(node) {
   if (op === ':' && (node[1] === 'next' || node[1] === '@@iterator') &&
       Array.isArray(node[2]) && (node[2][0] === '=>' || node[2][0] === 'function' || node[2][0] === 'function*'))
     iterProto.on = true
+  if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && ITER_HELPER_NAMES.has(node[1][2]))
+    iterProto.helpers = true
+  if (op === 'instanceof' && node[2] === 'Iterator') iterProto.helpers = true
   // computed key: [':', ['[]', Symbol.X], value]
   if (op === ':' && Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 2) {
     for (const [k, prop] of Object.entries(WELL_KNOWN))
@@ -108,6 +117,10 @@ export default function jzify(ast) {
   constStrings.clear()
   generatorNames.clear()
   iterProto.on = false
+  iterProto.helpers = false
+  iterProto.helpersUsed = false
+  iterProto.arr = false
+  iterProto.fromUsed = false
   ast = canonSymbols(ast)
   if (Array.isArray(ast)) {
     const stmts = ast[0] === ';' ? ast.slice(1) : [ast]
@@ -131,7 +144,10 @@ export default function jzify(ast) {
   iterProto.drain = false
   let out = transformScope(ast)
   const prepend = (src) => {
-    const rt = transformScope(parse(src))
+    // runtimes ride the same well-known-symbol canonicalization as user code
+    // ([Symbol.iterator] → '@@iterator' in key/access/assign positions) — the
+    // dot-canonical form keeps writes and prehashed dot-reads on ONE path.
+    const rt = transformScope(canonSymbols(parse(src)))
     const rtStmts = Array.isArray(rt) && rt[0] === ';' ? rt.slice(1) : [rt]
     const outStmts = Array.isArray(out) && out[0] === ';' ? out.slice(1) : [out]
     out = [';', ...rtStmts, ...outStmts]
@@ -139,6 +155,12 @@ export default function jzify(ast) {
   // spread-of-iterator sites wrapped in __drain → splice the helper
   // (pass-through for arrays/strings; materializes machines/providers).
   if (iterProto.drain) prepend(ITER_RUNTIME)
+  // Array.from-over-iterators sites → splice __it_arr (materialize/copy).
+  if (iterProto.arr) prepend(ITER_ARR_RUNTIME)
+  // helper-bearing generator mints (__it_mk) or literal-receiver
+  // [Symbol.iterator]() mints (__it_from) → splice the decorated-iterator
+  // factory. Programs without value-position helpers never take this shape.
+  if (iterProto.helpersUsed || iterProto.fromUsed) prepend(ITER_HELPERS_RUNTIME)
   // async somewhere in the program → splice the plain-jz promise runtime
   // (microtask queue, __async_run driver, promise shape + boundary readers)
   // ahead of user code. Sync programs never reach this — byte-identical.

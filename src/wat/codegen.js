@@ -31,10 +31,13 @@ export function codegen(node, depth = 0) {
   const [op, ...a] = node
   const ind = INDENT.repeat(depth), ind1 = INDENT.repeat(depth + 1)
 
-  // Literal: [, value]
-  if (op == null) return typeof a[0] === 'string' ? JSON.stringify(a[0]) : a[0] == null ? 'null' : String(a[0]) + (typeof a[0] === 'bigint' ? 'n' : '')
+  // Literal: [, value]. `[]` (no payload) is subscript's undefined encoding —
+  // print it as `undefined`, not `null` (distinct values through a round-trip).
+  if (op == null) return typeof a[0] === 'string' ? JSON.stringify(a[0]) : a[0] === null ? 'null' : a[0] === undefined ? 'undefined' : String(a[0]) + (typeof a[0] === 'bigint' ? 'n' : '')
   // ['nan'] — jz's parse encodes NaN as a self-describing marker (src/parse.js)
   if (op === 'nan') return 'NaN'
+  // ['bool', 1|0] — true/false parse to a self-describing marker (src/parse.js)
+  if (op === 'bool') return a[0] ? 'true' : 'false'
 
   // Statements
   if (op === ';') return a.map(s => codegen(s, depth)).filter(Boolean).join(';\n' + ind) + ';'
@@ -123,8 +126,14 @@ export function codegen(node, depth = 0) {
     return callee + '(' + a.slice(1).map(x => codegen(x)).join(', ') + ')'
   }
 
-  // Property access
-  if (op === '.') return codegen(a[0]) + '.' + a[1]
+  // Property access. Canonicalized well-known-symbol props ('@@iterator' …)
+  // are not valid dot syntax — print the computed [Symbol.X] source form,
+  // which canonSymbols folds back to the same '@@X' on re-parse.
+  if (op === '.') {
+    if (typeof a[1] === 'string' && a[1].startsWith('@@'))
+      return codegen(a[0]) + '[Symbol.' + a[1].slice(2) + ']'
+    return codegen(a[0]) + '.' + a[1]
+  }
   if (op === '?.') return codegen(a[0]) + '?.' + a[1]
   if (op === '?.[]') return codegen(a[0]) + '?.[' + codegen(a[1]) + ']'
   if (op === '?.()') return codegen(a[0]) + '?.(' + a.slice(1).map(x => codegen(x)).join(', ') + ')'
@@ -140,7 +149,13 @@ export function codegen(node, depth = 0) {
     // Subscript: ['[]', obj, idx]
     return codegen(a[0]) + '[' + codegen(a[1]) + ']'
   }
-  if (op === ':') return codegen(a[0]) + ': ' + codegen(a[1])
+  if (op === ':') {
+    if (typeof a[0] === 'string' && a[0].startsWith('@@'))
+      return '[Symbol.' + a[0].slice(2) + ']: ' + codegen(a[1])
+    // a '@@X' key needs the quoted form ('@@iterator': v) only when written
+    // literally; the computed form above is the canonical print.
+    return codegen(a[0]) + ': ' + codegen(a[1])
+  }
   if (op === 'str') return JSON.stringify(a[0])
   if (op === '//') return '/' + a[0] + '/' + (a[1] || '')
 

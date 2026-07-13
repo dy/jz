@@ -208,6 +208,12 @@ const TRACKED_BUILTIN_PATHS = [
   // (module-level, polled via __t262_check — same design as the language
   // runner). Subclassing/species/descriptor tests absorb as skips.
   'Promise',
+  // Iterator pool wired 2026-07-13: generator objects in helper-using
+  // programs mint through __it_mk (jzify/generators.js) — map/filter/take/
+  // drop/flatMap + toArray/reduce/forEach/some/every/find as value-position
+  // methods, Symbol.iterator identity, `instanceof Iterator` shape probe.
+  // %Iterator.prototype% reflection / Iterator-as-constructor absorb as skips.
+  'Iterator',
 ]
 
 const FUNCTIONAL_TESTS = new Set([
@@ -774,10 +780,30 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/Promise/race/resolve-prms-cstm-then.js', 'overridden .then on a native promise — structural adoption divergence'],
   ['built-ins/Promise/resolve-prms-cstm-then-deferred.js', 'overridden .then on a native promise — structural adoption divergence'],
   ['built-ins/Promise/resolve-prms-cstm-then-immed.js', 'overridden .then on a native promise — structural adoption divergence'],
+  // Iterator — reflection / coercion edges
+  ['built-ins/Iterator/constructor.js', 'typeof Iterator as first-class value — out of scope'],
+  ['built-ins/Iterator/prototype/take/limit-tonumber.js', 'take limit object ToPrimitive coercion — out of scope'],
+  ['built-ins/Iterator/prototype/drop/limit-tonumber.js', 'drop limit object ToPrimitive coercion — out of scope'],
+  ['built-ins/Iterator/prototype/map/throws-typeerror-when-generator-is-running.js', 'running-generator reentrancy guard — out of scope'],
+  ['built-ins/Iterator/prototype/filter/throws-typeerror-when-generator-is-running.js', 'running-generator reentrancy guard — out of scope'],
+  ['built-ins/Iterator/prototype/flatMap/throws-typeerror-when-generator-is-running.js', 'running-generator reentrancy guard — out of scope'],
+  // Promise.any GetIterator observation — the @@iterator METHOD literal is
+  // read as missing by the runtime's dyn read when the combinator is invoked
+  // from an export (KNOWN GAP pin in test/parser-bugs.js); rejection is still
+  // correct, but these 7 assert callCount === 1.
+  ['built-ins/Promise/any/iter-returns-false-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
+  ['built-ins/Promise/any/iter-returns-null-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
+  ['built-ins/Promise/any/iter-returns-number-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
+  ['built-ins/Promise/any/iter-returns-string-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
+  ['built-ins/Promise/any/iter-returns-symbol-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
+  ['built-ins/Promise/any/iter-returns-true-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
+  ['built-ins/Promise/any/iter-returns-undefined-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
   // Promise — function-object / namespace reflection
   ['built-ins/Promise/constructor.js', 'typeof Promise as first-class value — out of scope'],
   ['built-ins/Promise/exec-args.js', 'executor resolve/reject .length reflection — out of scope'],
   ['built-ins/Promise/prototype/catch/S25.4.5.1_A2.1_T1.js', 'instanceof Function reflection — out of scope'],
+  ['built-ins/Promise/prototype/then/S25.4.5.3_A1.1_T2.js', 'instanceof Function reflection — out of scope'],
+  ['built-ins/Promise/prototype/then/S25.4.5.3_A2.1_T1.js', 'builtin .call with primitive this — out of scope'],
   ['built-ins/Promise/withResolvers/resolvers.js', 'resolve/reject .name/.length reflection — out of scope'],
   // parseInt / parseFloat
   ['built-ins/parseInt/S15.1.2.2_A1_T7.js', 'parseInt object-arg ToPrimitive coercion — out of scope'],
@@ -853,25 +879,44 @@ function isAsyncFlagged(content) {
   return /flags:\s*\[[^\]]*\basync\b/.test(content) || /\$DONE/.test(content)
 }
 
-function shouldSkip(content, rel) {
+function shouldSkip(raw, rel) {
   if (DATE_UNSUPPORTED_TESTS.has(rel)) return DATE_UNSUPPORTED_TESTS.get(rel)
   if (isFunctionalTest(rel)) return null
+  // Pools wired 2026-07-13 (Iterator, Promise) classify on CODE, not YAML:
+  // frontmatter `info:` prose routinely names `X.prototype`, `class`,
+  // `iterator` … and was skipping runnable tests. Legacy dirs keep raw-content
+  // matching — their pass/skip balance was hand-curated under that rule, and
+  // code-only matching there admits hundreds of coercion/sparse-array tests
+  // that need individual triage first.
+  const codeOnly = /^built-ins\/(Iterator|Promise)\//.test(rel)
+  const content = codeOnly ? raw.replace(/\/\*---[\s\S]*?---\*\//, '') : raw
+  if (codeOnly) {
+    // compareArray.js is implemented by ASSERT_HARNESS — only OTHER helpers skip.
+    const inc = raw.match(/includes:\s*\[([^\]]*)\]/)?.[1]
+    if (inc && inc.split(',').some(s => s.trim() && s.trim() !== 'compareArray.js')) return 'harness dependency'
+  } else if (content.includes('includes: [')) return 'harness dependency'
   if (rel.endsWith('/name.js')) return 'function name metadata'
   if (rel.endsWith('/length.js')) return 'function length metadata'
   if (rel.endsWith('/prop-desc.js')) return 'property descriptor metadata'
   if (rel.endsWith('/not-a-constructor.js')) return 'constructor/runtime-shape semantics'
   if (content.includes('propertyHelper')) return 'propertyHelper'
   if (content.includes('verifyProperty')) return 'verifyProperty'
-  if (content.includes('includes: [')) return 'harness dependency'
   if (/Reflect\./.test(content)) return 'Reflect'
   if (/\bFunction\b\s*\(/.test(content)) return 'Function global ctor'
   if (/\bclass\b/.test(content)) return 'class'
   if (/\bProxy\b/.test(content)) return 'Proxy'
   if (/\bWeak(Ref|Map|Set)\b/.test(content)) return 'Weak collection'
   if (/\bAggregateError\s*\(/.test(content) || /instanceof AggregateError/.test(content)) return 'AggregateError constructor semantics'
-  if (/Symbol\.(species|toPrimitive|iterator|hasInstance|asyncIterator|match|replace|search|split)/.test(content)) return 'Symbol runtime hook'
-  if (/\biterator\b/i.test(content)) return 'iterator semantics'
-  if (/\bgenerator\b/i.test(content) || /\byield\b/.test(content)) return 'generator semantics'
+  if (/Symbol\.(species|toPrimitive|hasInstance|asyncIterator|match|replace|search|split)/.test(content)) return 'Symbol runtime hook'
+  if (!codeOnly) {
+    // legacy-dir calibration (see codeOnly note above): these features ARE
+    // supported by jzify now, but admitting them here needs per-dir triage.
+    if (/Symbol\.iterator/.test(content)) return 'Symbol runtime hook'
+    if (/\biterator\b/i.test(content)) return 'iterator semantics'
+    if (/\bgenerator\b/i.test(content) || /\byield\b/.test(content)) return 'generator semantics'
+    if (/\bfor\s*\([^)]*\bof\b/.test(content)) return 'for-of'
+    if (/\busing\b/.test(content)) return 'using keyword'
+  }
   if (/\bsuper\b/.test(content)) return 'super'
   if (/\bthis\b/.test(content)) return 'this binding'
   if (/\.prototype\b/.test(content)) return 'prototype chain semantics'
@@ -882,8 +927,6 @@ function shouldSkip(content, rel) {
   if (/\.constructor\b/.test(content)) return 'constructor semantics'
   if (/\bnew\s+(?!Map|Set|Array|Promise|Error|TypeError|RangeError|ReferenceError|SyntaxError|URIError|EvalError)/.test(content)) return 'custom new'
   if (/\bnew\s+(Boolean|Number|String|Object)\b/.test(content)) return 'wrapper object new'
-  if (/\bfor\s*\([^)]*\bof\b/.test(content)) return 'for-of'
-  if (/\busing\b/.test(content)) return 'using keyword'
   if (/negative:\s*\n\s+phase:\s+(parse|runtime)/.test(content)) return 'negative test'
   if (/\bundefined\s*=/.test(content)) return 'global undefined assignment'
   return null

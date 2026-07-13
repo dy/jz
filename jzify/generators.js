@@ -39,7 +39,140 @@ const hasFreeJump = (n, depth = 0) => {
 
 const S = { NEXT: '__s', SENT: '__sent' }
 
-export function createGeneratorLowering({ transform, err, generatorNames, genTemp }) {
+// ES2025 iterator helpers on iterator VALUES — injected (pay-per-use) when a
+// program that mints iterators also uses helper methods in non-fusable
+// positions (chain stored as a value, helper on an unknown receiver) or tests
+// `instanceof Iterator`. Generator objects then mint through __it_mk, whose
+// helpers each wrap the source in a fresh decorated iterator — lazy,
+// spec-shaped (value+counter callbacks, early return() on short-circuit).
+// Fusable chains still fuse (zero-cost path unchanged); this is the fallback
+// that makes helper results first-class values.
+export const ITER_HELPERS_RUNTIME = `
+let __it_fn = (f, name) => { if (f == null || typeof f !== 'function') throw 'TypeError: ' + name + ' callback must be callable' }
+let __it_cl = (it) => { if (typeof it.return === 'function') it.return(undefined) }
+let __it_lim = (n, name) => {
+  let lim = +n
+  if (lim !== lim) throw 'RangeError: ' + name + ' limit must not be NaN'
+  lim = Math.trunc(lim)
+  if (lim < 0) throw 'RangeError: ' + name + ' limit must be non-negative'
+  return lim
+}
+let __it_mk = (nx, rt, th) => {
+  let it = { next: nx, return: rt, throw: th, '@@iterator': undefined,
+    map: undefined, filter: undefined, take: undefined, drop: undefined, flatMap: undefined,
+    toArray: undefined, reduce: undefined, forEach: undefined, some: undefined, every: undefined, find: undefined }
+  it[Symbol.iterator] = () => it
+  it.map = (f) => { __it_fn(f, 'map'); let c = 0; return __it_mk((v) => {
+    let r = it.next(v)
+    if (r.done) return r
+    let m = f(r.value, c)
+    c++
+    return { value: m, done: false }
+  }, it.return, it.throw) }
+  it.filter = (f) => { __it_fn(f, 'filter'); let c = 0; return __it_mk((v) => {
+    let r = it.next(v)
+    while (!r.done) { let hit = f(r.value, c); c++; if (hit) return { value: r.value, done: false }; r = it.next() }
+    return r
+  }, it.return, it.throw) }
+  it.take = (n) => {
+    let lim = __it_lim(n, 'take')
+    let c = 0
+    return __it_mk(() => {
+      if (c >= lim) { __it_cl(it); return { value: undefined, done: true } }
+      c++
+      return it.next()
+    }, it.return, it.throw)
+  }
+  it.drop = (n) => {
+    let lim = __it_lim(n, 'drop')
+    let c = 0
+    return __it_mk(() => {
+      while (c < lim) { c++; let r0 = it.next(); if (r0.done) return r0 }
+      return it.next()
+    }, it.return, it.throw)
+  }
+  it.flatMap = (f) => {
+    __it_fn(f, 'flatMap')
+    let inner = null, c = 0
+    return __it_mk(() => {
+      while (true) {
+        if (inner != null) {
+          let ri = inner.next()
+          if (!ri.done) return ri
+          inner = null
+        }
+        let r = it.next()
+        if (r.done) return r
+        let m = f(r.value, c)
+        c++
+        inner = __it_from(m)
+      }
+    }, (rv) => {
+      // closing the helper closes the ACTIVE inner iterator first (spec:
+      // IteratorClose forwards through the flattening), then the source.
+      if (inner != null) { let i2 = inner; inner = null; __it_cl(i2) }
+      if (typeof it.return === 'function') return it.return(rv)
+      return { value: rv, done: true }
+    }, it.throw)
+  }
+  it.toArray = () => { let a = [], r = it.next(); while (!r.done) { a.push(r.value); r = it.next() } return a }
+  it.reduce = (f, init) => {
+    __it_fn(f, 'reduce')
+    let acc = init, c = 0
+    if (init === undefined) {
+      let r0 = it.next()
+      if (r0.done) throw 'TypeError: Reduce of empty iterator with no initial value'
+      acc = r0.value
+      c = 1
+    }
+    let r = it.next()
+    while (!r.done) { acc = f(acc, r.value, c); c++; r = it.next() }
+    return acc
+  }
+  it.forEach = (f) => { __it_fn(f, 'forEach'); let c = 0, r = it.next(); while (!r.done) { f(r.value, c); c++; r = it.next() } }
+  it.some = (f) => { __it_fn(f, 'some'); let c = 0, r = it.next(); while (!r.done) { if (f(r.value, c)) { __it_cl(it); return true } c++; r = it.next() } return false }
+  it.every = (f) => { __it_fn(f, 'every'); let c = 0, r = it.next(); while (!r.done) { if (!f(r.value, c)) { __it_cl(it); return false } c++; r = it.next() } return true }
+  it.find = (f) => { __it_fn(f, 'find'); let c = 0, r = it.next(); while (!r.done) { if (f(r.value, c)) { __it_cl(it); return r.value } c++; r = it.next() } return undefined }
+  return it
+}
+let __it_from = (v) => {
+  if (v == null) throw 'TypeError: value is not iterable'
+  let w = v
+  if (typeof w === 'object' && w[Symbol.iterator] != null) {
+    if (typeof w[Symbol.iterator] !== 'function') throw 'TypeError: [Symbol.iterator] is not callable'
+    w = w[Symbol.iterator]()
+  }
+  if (typeof w === 'object' && w.next != null) return w
+  let ix = 0
+  return __it_mk(() => {
+    if (ix >= v.length) return { value: undefined, done: true }
+    let e = v[ix]
+    ix++
+    return { value: e, done: false }
+  }, undefined, undefined)
+}
+`
+
+// Array.from over iterator values — rewires \`Array.from(x)\` in iterator-
+// minting programs: protocol values materialize, arrays COPY (from() always
+// returns a fresh array), array-likes build by length. Injected on use only.
+export const ITER_ARR_RUNTIME = `
+let __it_arr = (v) => {
+  if (v == null) throw 'TypeError: value is not iterable'
+  let w = v
+  if (typeof w === 'object' && w[Symbol.iterator] != null) w = w[Symbol.iterator]()
+  if (typeof w === 'object' && w.next != null) {
+    let a = [], r = w.next()
+    while (!r.done) { a.push(r.value); r = w.next() }
+    return a
+  }
+  let a = [], n = v.length
+  for (let i = 0; i < n; i++) a.push(v[i])
+  return a
+}
+`
+
+export function createGeneratorLowering({ transform, err, generatorNames, genTemp, iterProto }) {
   // Collect every let/const binding name in the body — generator locals live in
   // the factory scope so they survive across next() resumes. Shadowing across
   // sibling blocks would collide after hoisting — reject (rename support later).
@@ -94,13 +227,16 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
     // plain indexed iterable (array/string) yields element-wise (fork mirrors
     // desugarForOfProtocol; both arms decompose like any generator-body loop).
     const desugarYieldStar = (expr, target) => {
-      const it = genTemp('yi'), r = genTemp('yr'), sent = genTemp('ys'), ix = genTemp('yx')
-      locals.add(it); locals.add(r); locals.add(sent); locals.add(ix)
+      // yw copies the source before the @@iterator() unwrap — never reassign
+      // a precisely-kinded local from a dynamic call (reassigned-local kind bug).
+      const src = genTemp('yv'), it = genTemp('yi'), r = genTemp('yr'), sent = genTemp('ys'), ix = genTemp('yx')
+      locals.add(src); locals.add(it); locals.add(r); locals.add(sent); locals.add(ix)
       const NULL = [null, null]
       return ['{}', [';',
-        ['=', it, expr],
-        ['if', ['&&', ['!=', it, NULL], ['!=', ['.', it, '@@iterator'], NULL]],
-          ['=', it, ['()', ['.', it, '@@iterator'], null]]],
+        ['=', src, expr],
+        ['=', it, src],
+        ['if', ['&&', ['!=', src, NULL], ['!=', ['.', src, '@@iterator'], NULL]],
+          ['=', it, ['()', ['.', src, '@@iterator'], null]]],
         ['if', ['&&', ['!=', it, NULL], ['!=', ['.', it, 'next'], NULL]],
           ['{}', [';',
             ['=', r, ['()', ['.', it, 'next'], null]],
@@ -276,17 +412,28 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
       ['const', ['=', '__next', ['=>', '__in', nextBody]]],
     ]
 
+    const nextFn = ['=>', '__v', ['()', '__next', '__v']]
+    const returnFn = ['=>', '__v', ['{}', [';',
+      ['=', S.NEXT, [null, -1]],
+      ['return', ['{}', [',', [':', 'value', '__v'], [':', 'done', [null, true]]]]]]]]
+    // throw(v): no try may span a yield (v1 rejects it), so every injected
+    // exception is unhandled by spec — close the machine, rethrow to the
+    // caller of throw() (catchable jz throw).
+    const throwFn = ['=>', '__v', ['{}', [';',
+      ['=', S.NEXT, [null, -1]],
+      ['throw', '__v']]]]
+
+    // Helper-bearing programs mint through __it_mk (decorated iterator —
+    // map/filter/… as value-position methods); others keep the bare record.
+    if (iterProto?.helpers) {
+      iterProto.helpersUsed = true
+      return ['=>', params, ['{}', [';', ...decls,
+        ['return', ['()', '__it_mk', [',', nextFn, returnFn, throwFn]]]]]]
+    }
     const genObj = ['{}', [',',
-      [':', 'next', ['=>', '__v', ['()', '__next', '__v']]],
-      [':', 'return', ['=>', '__v', ['{}', [';',
-        ['=', S.NEXT, [null, -1]],
-        ['return', ['{}', [',', [':', 'value', '__v'], [':', 'done', [null, true]]]]]]]]],
-      // throw(v): no try may span a yield (v1 rejects it), so every injected
-      // exception is unhandled by spec — close the machine, rethrow to the
-      // caller of throw() (catchable jz throw).
-      [':', 'throw', ['=>', '__v', ['{}', [';',
-        ['=', S.NEXT, [null, -1]],
-        ['throw', '__v']]]]],
+      [':', 'next', nextFn],
+      [':', 'return', returnFn],
+      [':', 'throw', throwFn],
     ]]
 
     return ['=>', params, ['{}', [';', ...decls, ['return', genObj]]]]
@@ -327,11 +474,17 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
       const { h, args } = stages[i]
       const inner = build
       if (h === 'map') {
-        const fn = args[0]
-        build = () => [['=', x, ['()', fn, x]], ...inner()]
+        // spec: fn(value, counter)
+        const fn = args[0], c = temp('mc')
+        build = () => [['=', x, ['()', fn, [',', x, c]]], ['=', c, ['+', c, [null, 1]]], ...inner()]
+        build.decls = [[c, [null, 0]]].concat(inner.decls || [])
       } else if (h === 'filter') {
-        const fn = args[0]
-        build = () => [['if', ['()', fn, x], ['{}', [';', ...inner()]]]]
+        const fn = args[0], c = temp('fc'), hv = temp('fh')
+        build = () => [
+          ['=', hv, ['()', fn, [',', x, c]]],
+          ['=', c, ['+', c, [null, 1]]],
+          ['if', hv, ['{}', [';', ...inner()]]]]
+        build.decls = [[c, [null, 0]], [hv, [null, undefined]]].concat(inner.decls || [])
       } else if (h === 'take') {
         const n = args[0], c = temp('tk')
         build = () => [
@@ -379,33 +532,53 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
     const last = stages[stages.length - 1]
     if (!TERMINAL_HELPERS.has(last.h)) return null
     const mid = stages.slice(0, -1)
-    const x = temp('gx'), acc = temp('ga')
+    const x = temp('gx'), acc = temp('ga'), cn = temp('gc')
     const T = last.h, A = last.args
     const ret = (v) => ['return', v]
+    const bump = ['=', cn, ['+', cn, [null, 1]]]
+    // spec: every terminal callback receives (…, value, counter)
     let prologue = [], emit, epilogue
     if (T === 'toArray') {
       prologue = [['let', ['=', acc, ['[]', null]]]]
       emit = () => [['()', ['.', acc, 'push'], x]]
       epilogue = [ret(acc)]
     } else if (T === 'reduce') {
-      prologue = [['let', ['=', acc, A[1] === undefined ? [null, undefined] : A[1]]]]
-      emit = () => [['=', acc, ['()', A[0], [',', acc, x]]]]
-      epilogue = [ret(acc)]
+      // no initial value → the first element seeds the accumulator (counter
+      // starts at 1 for the first reducer call); empty + no init throws.
+      const first = temp('gf')
+      const noInit = A[1] === undefined
+      prologue = [['let', ['=', cn, [null, 0]], ['=', first, [null, noInit]],
+        ['=', acc, noInit ? [null, undefined] : A[1]]]]
+      emit = () => [
+        ['if', first,
+          ['{}', [';', ['=', acc, x], ['=', first, [null, false]]]],
+          ['{}', [';', ['=', acc, ['()', A[0], [',', acc, x, cn]]]]]],
+        bump]
+      epilogue = [
+        ...(noInit ? [['if', first, ['throw', [null, 'Reduce of empty iterator with no initial value']]]] : []),
+        ret(acc)]
     } else if (T === 'forEach') {
-      emit = () => [['()', A[0], x]]
+      prologue = [['let', ['=', cn, [null, 0]]]]
+      emit = () => [['()', A[0], [',', x, cn]], bump]
       epilogue = [ret([null, undefined])]
     } else if (T === 'some') {
-      emit = () => [['if', ['()', A[0], x], ['{}', [';', ret([null, true])]]]]
+      prologue = [['let', ['=', cn, [null, 0]]]]
+      emit = () => [['if', ['()', A[0], [',', x, cn]], ['{}', [';', ret([null, true])]]], bump]
       epilogue = [ret([null, false])]
     } else if (T === 'every') {
-      emit = () => [['if', ['!', ['()', A[0], x]], ['{}', [';', ret([null, false])]]]]
+      prologue = [['let', ['=', cn, [null, 0]]]]
+      emit = () => [['if', ['!', ['()', A[0], [',', x, cn]]], ['{}', [';', ret([null, false])]]], bump]
       epilogue = [ret([null, true])]
     } else if (T === 'find') {
-      emit = () => [['if', ['()', A[0], x], ['{}', [';', ret(x)]]]]
+      prologue = [['let', ['=', cn, [null, 0]]]]
+      emit = () => [['if', ['()', A[0], [',', x, cn]], ['{}', [';', ret(x)]]], bump]
       epilogue = [ret([null, undefined])]
     } else return null
     const body = fusedLoop(root, mid, temp, x, emit, prologue, epilogue)
-    return ['()', ['=>', ['()', null], body], null]
+    const iife = ['()', ['=>', ['()', null], body], null]
+    // a loop-bearing arrow with multiple boolean returns loses bool kind
+    // (stringifies as '1') — !! restores it for the predicate terminals
+    return T === 'some' || T === 'every' ? ['!', ['!', iife]] : iife
   }
 
   // for-of over a KNOWN generator call → while-next desugar (fusion-friendly:
@@ -435,26 +608,30 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
   // programs without iterator producers never take this shape (iterProto
   // gate) — they compile byte-identically.
   function desugarForOfProtocol(decl, iterExpr, body, temp) {
-    const v = temp('gv'), r = temp('gr')
+    // `w` starts as a COPY of the source and takes the @@iterator() result —
+    // never reassign the precisely-kinded source local from a dynamic call
+    // (the recorded reassigned-local kind bug poisons subsequent prop reads).
+    const v = temp('gv'), w = temp('gw'), r = temp('gr')
     const NULL = [null, null]
     const isDecl = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const')
     const bind = isDecl ? [decl[0], ['=', decl[1], ['.', r, 'value']]] : ['=', decl, ['.', r, 'value']]
     const bodyStmts = Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
     return ['{}', [';',
       ['let', ['=', v, iterExpr]],
+      ['let', ['=', w, v]],
       ['if', ['&&', ['!=', v, NULL], ['!=', ['.', v, '@@iterator'], NULL]],
-        ['=', v, ['()', ['.', v, '@@iterator'], null]]],
-      ['if', ['&&', ['!=', v, NULL], ['!=', ['.', v, 'next'], NULL]],
+        ['=', w, ['()', ['.', v, '@@iterator'], null]]],
+      ['if', ['&&', ['!=', w, NULL], ['!=', ['.', w, 'next'], NULL]],
         ['{}', [';',
           ['let', ['=', r, [null, undefined]]],
           ['while', [null, true], ['{}', [';',
-            ['=', r, ['()', ['.', v, 'next'], null]],
+            ['=', r, ['()', ['.', w, 'next'], null]],
             ['if', ['.', r, 'done'], ['{}', [';', ['break']]]],
             bind,
             ...bodyStmts,
           ]]],
         ]],
-        ['for', ['of-idx', decl, v], body]],
+        ['for', ['of-idx', decl, w], body]],
     ]]
   }
 

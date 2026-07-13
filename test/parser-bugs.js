@@ -353,3 +353,64 @@ export let go = () => { (async () => 42)().then((v) => { mark() }, mark); return
         is(inst.exports.check(), 1, `optimize:${optimize}`)
     }
 })
+
+test('KNOWN GAP: string-index assign of a data-interned key invisible to prehashed dot reads', () => {
+    // Found the same session: `it['@@iterator'] = fn` (string-INDEX assign,
+    // key too long for SSO) does not land where the prehashed dot read
+    // (`['.', v, '@@iterator']` — canonSymbols output of v[Symbol.iterator])
+    // probes on an imprecisely-kinded receiver: the read serves the stale
+    // mint-time value, the guarded call silently yields undefined. Writing
+    // through the canonical dot form (`it[Symbol.iterator] = fn`, which
+    // canonSymbols folds to the dot assign) is coherent — jzify's runtimes do.
+    const src = (assign) => `
+        let mk = (nx) => {
+          let it = { next: nx, '@@iterator': undefined, map: undefined }
+          ${assign}
+          it.map = (f) => mk((v) => { let r = it.next(v); if (r.done) return r; return { value: f(r.value), done: false } })
+          return it
+        }
+        let dyn = (o, k) => o[k]
+        let mkg = () => { let i = 0; return mk((v) => { i++; if (i <= 2) return { value: i, done: false }; return { value: undefined, done: true } }) }
+        export let f = () => {
+          let v = mkg().map((x) => x + 1)
+          let u = v[Symbol.iterator]()
+          return '' + (u === v) + '|' + (u != null && u.next != null)
+        }`
+    is(jz(src('it[Symbol.iterator] = () => it')).exports.f(), 'true|true')   // dot-canonical write — correct
+    const broken = jz(src("it['@@iterator'] = () => it")).exports.f()
+    is(broken, 'false|false')  // WRONG — should be true|true; flips when index-assign mirrors where prehashed dot reads probe
+})
+
+test('KNOWN GAP: @@iterator method literal invisible to runtime dyn read when invoked post-init (async-runtime modules)', () => {
+    // Found wiring Promise.any's GetIterator (2026-07-13). In a module carrying
+    // the async runtime, a combinator invoked FROM AN EXPORT reads a literal's
+    // canonicalized [Symbol.iterator] METHOD as missing (never called → the
+    // combinator rejects as non-iterable with callCount 0); the same call run
+    // during MODULE INIT observes it. Small mimics without the async runtime
+    // pass either way — same dyn-read family as the data-interned-key pin.
+    // test262 xfails: built-ins/Promise/any/iter-returns-*-reject.js (7 files).
+    // control: the same read shape WITHOUT the async runtime — correct.
+    is(jz(`
+        let dyn = (o, k) => o[k]
+        let read = (w) => w['@@iterator'] != null && typeof w['@@iterator'] === 'function' ? w['@@iterator']() : 'missing'
+        export let f = () => {
+          let callCount = 0
+          let obj = { [Symbol.iterator]() { callCount++; return 42 } }
+          let r = read(obj)
+          return '' + r + '|' + callCount
+        }`, { jzify: true }).exports.f(), '42|1')
+    // broken: identical read via the async runtime's __p_list (GetIterator).
+    const code = `
+        let st0 = '@pending'
+        let done = (m) => { st0 = m }
+        export let check = () => st0
+        let callCount = 0
+        let obj = { [Symbol.iterator]() { callCount++; return false } }
+        let go = () => { Promise.any(obj).then(() => done('resolved'), (e) => done('cc=' + callCount)) }
+        export let _run = () => { go(); return 1 }`
+    const inst = jz(code, { jzify: true })
+    inst.exports._run()
+    let st = inst.exports.check()
+    for (let i = 0; i < 100 && st === '@pending'; i++) st = inst.exports.check()
+    is(st, 'cc=0')  // WRONG — should be cc=1; flips when the dyn-read gap is fixed
+})
