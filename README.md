@@ -21,7 +21,7 @@ JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_D
 | Good for                     | Not for                   |
 |------------------------------|---------------------------|
 | DSP, audio, synthesis        | UI, DOM, the frontend     |
-| Image, video, pixels         | Servers, APIs, I/O        |
+| Image, video, pixels         | Serving HTTP, hot I/O     |
 | Simulation, physics, games   | I/O-bound orchestration   |
 | Parsers, codecs, compression | Dynamic, polymorphic, OOP |
 | Scientific, numeric, ML      | Security crypto, big-ints |
