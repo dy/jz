@@ -1017,7 +1017,7 @@
       (noise band — recorded 0.89 LEAD on quiet). V1 bench mandate is
       at its practical ceiling pending the quiet-machine session.
 * [ ] sourcemaps
-* [ ] jzify
+* [x] jzify
 * [ ] floatbeat
 * [ ] color-space
 * [ ] audiojs
@@ -3493,3 +3493,35 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   row. 3) fft dual-IV butterfly recognizer (design above). 4) strbuild
   itoa-into-arena + sized concat chains (ledger). 5) shapes tag-switch devirt
   (ledger, biggest single gap).
+
+## Lever grind (2026-07-13, session 3) — four landings + watr 5.3.9
+- LANDED 6e4eac59 vectorize: tryButterfly — the radix-2 dual-IV FFT inner loop
+  (j carries the exit test, k walks twiddles by STEP) strips 2-wide: adjacent
+  re/im a/b pairs as v128 (b = a+half is a second invariant base), twiddles as
+  scalar-pair + lane combine, rotation lanes with NO reassociation/fusion ⇒
+  checksum-identical through SIMD (parity contract held). Strip guard j+1<half
+  keeps {a,a+1}/{b,b+1} disjoint; the scalar tail IS the original loop.
+  fft: EXACT cs, +8% over scalar, AHEAD of rust-wasm — WASM_TODO → WON (the
+  FMA floor closed by vectorization, not by breaking parity). provenance rode
+  the same recognizer: EXACT cs, +32.5%. Matched on the canonical 17-statement
+  emit shape; simd pin covers N=2 (tail-only) → N=64; bench:fuzz PASS.
+- LANDED aac55a43 optimize: WRITTEN params excluded from the trunc-range
+  single-def map — a param's implicit entry def is invisible to the textual
+  scan, so `(p)=>{ use(1>>>Math.abs(p)); p=0 }` resolved p→0 and the collapsed
+  bare trunc_sat saturated -Infinity to a 31-lane shift (ToUint32(∞)=0; fuzz
+  seeds 6465/7026, opt≥1, PRE-EXISTING — surfaced by the butterfly-branch fuzz
+  run). Non-param pre-def reads are zero/undef-NaN (trunc_sat ≡ ToInt32 on
+  both) and unwritten params never entered the map → sound firings untouched.
+  Pinned; fresh 6000-program fuzz zero-divergence.
+- WATR 5.3.9 PUBLISHED + LANDED decd0740: walkN/walkPostN (arrays-only) with
+  89 leaf-blind optimizer callbacks migrated; plain walk/walkPost kept for the
+  flat-form token scanners (bare string opcodes ARE instructions — jump/trap
+  detection). Corpus byte-identical (221/228; rest self-embedded). SELF-HOST
+  KERNEL −9%: 29.3 vs 32.6 ms (3 interleaved quiet rounds, cs equal) — the
+  jz-row moves ~1.15× → ~1.07× behind V8-node. Host-side compile delta ~0
+  (V8 inlines the leaf callbacks; only the kernel paid). node_modules + lock
+  HAND-PATCHED (registry integrity via npm view) — npm install stays banned.
+- LEVER NOTES: walkers' remaining kernel cost is the callback dispatch itself
+  (closure-param calls) — further gains = jz-side closure-param devirt class.
+  NEXT (unstarted, ranked): STR_INTERN_BIT name interning (__str_eq 6.8% +
+  wordcount 10× row), strbuild arena-itoa, shapes tag-switch devirt.
