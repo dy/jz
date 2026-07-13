@@ -3332,3 +3332,30 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   locals explosion → expect phase-1 ~2-3x fdlibm, not 15x) → re-bench →
   THEN decide default-CR vs level-gated (speed keeps fdlibm?) with real
   numbers. Vector gate test/pow-cr.js rides the branch either way.
+
+## CR-pow LANDED on main (2026-07-12, 33ffaca4)
+- Fast-forward merge of cr-pow: injectTable hardening (2dfd031f), the
+  correctly-rounded two-phase Ziv dd/td kernel gate 0/0 (2218c1ce), and the
+  opt-in wiring (33ffaca4). DEFAULT POW IS UNTOUCHED — byte-identical WAT vs
+  pre-landing main on colorpq/colorlch/colorlog (0-line diffs), same
+  checksums, same compile times (~0.2s probe; the 4s cliff exists only under
+  the flag). `optimize: { crPow: true }` routes **/Math.pow through
+  $math.pow_transcend — CORRECTLY ROUNDED, 0/5152 on the mpmath gate
+  (test/pow-cr.js rides main permanently); fifthroot under crPow needs
+  approxPow:true (correctness-by-default under the flag).
+- The rebase surfaced and FIXED a false-premise restoration: the earlier
+  "pre-branch default" was reconstructed from a never-merged exploratory
+  base (59f55561/aa8c2932 — the compensated-fold experiments). Ground-truth
+  main never had pow_fold/splitHiLo/4-step-fifthroot: off-flag emitPow
+  lowers const exponents to plain exp(c·log x), splitHiLo is gone, and
+  fifthroot-ulp.js now states the REAL 3-Newton-step worst case (~2.65M ulp,
+  honest ceiling) instead of the abandoned branch's ~473.
+- Ring 2 (8418c255) pow-adjacent deltas (BigInt-exponent rejection,
+  f16round, PI literal exactness) preserved verbatim; user's async/await +
+  waves + lenia commits rebased over cleanly (one auto-merged TESTS line).
+  Suite on the landed tree: 2889/2895 pass, 0 fail. selfhost 21/21.
+- REMAINING pow threads: crPow's ~14-19s compile cost (table registration +
+  kernel codegen — only when opted in; scratch-register pool landed but the
+  kernel is intrinsically large); a future session may consider making
+  crPow the default IF a leaner phase-1 emission reaches old-kernel speed
+  (the 15x→pool history says codegen, not math, is the lever).
