@@ -3594,3 +3594,20 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   unlifted code). (a) loop versioning (pre-loop bounds guard, unswitch
   precedent) covers the scalar remainder. Land Root F only with (b), else the
   checked forms tax every SIMD kernel.
+
+## strbuild lever executed via evidence, not the stale plan (2026-07-13)
+- LANDED 876c9fd2: strcat literal-ASCII inline stores in BOTH fused-concat
+  emitters (strcat bind = templates; tryConcatChain = + chains). A literal
+  part's bytes/length are compile-time facts → const-folded total + grouped
+  4/2/1-wide stores; no value temp, no __str_byteLen, no __str_copy per
+  separator. strbuild −15.5% (1192→1008µs interleaved, cs EXACT, −33B) —
+  most of the rust-wasm 1.3× ledger gap. Suite 2906/0, selfhost 21/21,
+  strings pin asserts copies == dynamic-part count on both paths.
+- PROCESS NOTE (the stale-ledger trap): the recorded strbuild plan named
+  chain-fusion — which ALREADY EXISTED (emit tryConcatChain); a duplicate
+  prepare-level flattener was built and REVERTED after byte-identical bench
+  output exposed it. The quiet names:true profile then gave the REAL split
+  (__str_copy 22.7% + __str_byteLen 16.0% on tiny parts; __itoa only 13.4%)
+  and the executed lever. Measure before building, even against own records.
+- strbuild residual (~1.10× est.): __itoa 13.4% (scratch-render into the
+  concat buffer = the remaining ledger lever), __mkstr 6.7%, __alloc 4.6%.
