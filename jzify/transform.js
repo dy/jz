@@ -210,7 +210,10 @@ export function createTransform(opts) {
   }
 
   // Promise statics → the injected plain-jz runtime helpers.
-  const P_STATIC = { resolve: '__p_resolve', reject: '__p_reject', all: '__p_all', race: '__p_race' }
+  const P_STATIC = {
+    resolve: '__p_resolve', reject: '__p_reject', all: '__p_all', race: '__p_race',
+    allSettled: '__p_allSettled', any: '__p_any', try: '__p_try', withResolvers: '__p_withResolvers',
+  }
 
   // Spread of a possibly-iterator value (iterator-minting programs only):
   // `...E` → `...__drain(E)` — pass-through for arrays/strings, materializes

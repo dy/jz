@@ -834,10 +834,7 @@ function runTest(src, options = {}) {
   }
 
   try {
-    // asyncDone runs at optimize:false — the optimizer round-trip miscompiles
-    // async-runtime modules that also contain an indexed array loop (pinned in
-    // test/parser-bugs.js KNOWN GAP; semantics-correct at O0). Re-enable when fixed.
-    const result = jz(code, options.asyncDone ? { jzify: true, optimize: false } : { jzify: true })
+    const result = jz(code, { jzify: true })
     if (!result || !result.exports) return { status: 'fail', error: 'no output' }
     if (result.exports._run) result.exports._run()
     if (options.asyncDone) {

@@ -10,8 +10,10 @@
  *
  * v1 surface (precise rejects elsewhere): no try/catch across an await (the
  * machine constraint — an awaited rejection rejects the async function);
- * `new Promise(executor)`, `Promise.resolve/reject/all/race`, `.then/.catch/
- * .finally` chains all work (canonicalized to the injected helpers).
+ * `new Promise(executor)`, `Promise.resolve/reject/all/race/allSettled/any/
+ * try/withResolvers`, `.then/.catch/.finally` chains all work (canonicalized
+ * to the injected helpers). AggregateError surfaces as a fixed-shape
+ * `{ name, message, errors }` value (errors are untagged in jz).
  * Divergences (documented): unhandled rejections don't report; job ordering
  * is per-drain-cycle (boundary/timer granularity), not per-continuation.
  *
@@ -42,7 +44,7 @@ let __drain = () => {
 let __state = (p) => p != null && typeof p === 'object' && p.__p === 1 ? p.st : -1
 let __value = (p) => p.val
 let __p_new = () => {
-  let p = { __p: 1, st: 0, val: undefined, cbs: [], then: undefined, catch: undefined, finally: undefined }
+  let p = { __p: 1, st: 0, rs: 0, val: undefined, cbs: [], then: undefined, catch: undefined, finally: undefined }
   p.then = (ok, err) => {
     let q = __p_new()
     __p_sub(p, (st, v) => {
@@ -59,18 +61,37 @@ let __p_sub = (p, h) => {
   if (p.st > 0) { let st = p.st, v = p.val; __mt.push(() => h(st, v)) }
   else p.cbs.push(h)
 }
-let __p_settle = (p, st, v) => {
+let __p_fin = (p, st, v) => {
   if (p.st > 0) return
-  if (st === 1 && v != null && typeof v === 'object' && v.__p === 1) {
-    __p_sub(v, (st2, v2) => __p_settle(p, st2, v2))
-    return
-  }
   p.st = st
   p.val = v
   if (p.cbs.length > 0) __sq.push(p)
 }
+let __p_settle = (p, st, v) => {
+  if (p.st > 0 || p.rs === 1) return
+  if (st === 1 && v != null && typeof v === 'object') {
+    if (v.__p === 1) { p.rs = 1; __p_sub(v, (st2, v2) => __p_fin(p, st2, v2)); return }
+    // plain-object thenable (spec: any object with callable then) — adopt in a
+    // job; the resolve/reject pair shares one already-called latch, and a
+    // then() throw after that latch is ignored (25.4.1.3.2).
+    if (typeof v.then === 'function') {
+      p.rs = 1
+      __mt.push(() => {
+        let done = 0
+        try {
+          v.then(
+            (x) => { if (done) return; done = 1; p.rs = 0; __p_settle(p, 1, x) },
+            (e) => { if (done) return; done = 1; __p_fin(p, 2, e) })
+        } catch (e2) { if (done === 0) __p_fin(p, 2, e2) }
+      })
+      return
+    }
+  }
+  __p_fin(p, st, v)
+}
 let __await = (v, ok, err) => {
-  if (v != null && typeof v === 'object' && v.__p === 1) __p_sub(v, (st, x) => { if (st === 1) ok(x); else err(x) })
+  if (v != null && typeof v === 'object' && (v.__p === 1 || typeof v.then === 'function'))
+    __p_sub(__p_resolve(v), (st, x) => { if (st === 1) ok(x); else err(x) })
   else { __mt.push(() => ok(v)) }
 }
 let __async_run = (it) => {
@@ -87,12 +108,19 @@ let __async_run = (it) => {
   return p
 }
 let __p_exec = (fn) => {
-  if (fn == null) throw 'Promise executor is not callable'
+  if (fn == null || typeof fn !== 'function') throw 'Promise executor is not callable'
   let p = __p_new()
-  fn((v) => __p_settle(p, 1, v), (e) => __p_settle(p, 2, e))
+  let done = 0
+  try {
+    fn((v) => { if (done) return; done = 1; __p_settle(p, 1, v) },
+       (e) => { if (done) return; done = 1; __p_settle(p, 2, e) })
+  } catch (e2) { if (done === 0) __p_settle(p, 2, e2) }
   return p
 }
-let __p_resolve = (v) => { let p = __p_new(); __p_settle(p, 1, v); return p }
+let __p_resolve = (v) => {
+  if (v != null && typeof v === 'object' && v.__p === 1) return v
+  let p = __p_new(); __p_settle(p, 1, v); return p
+}
 let __p_reject = (e) => { let p = __p_new(); __p_settle(p, 2, e); return p }
 let __p_all = (arr) => {
   let p = __p_new(), n = arr.length, out = [], left = n
@@ -107,6 +135,36 @@ let __p_race = (arr) => {
   let p = __p_new()
   for (let i = 0; i < arr.length; i++) __await(arr[i], (v) => __p_settle(p, 1, v), (e) => __p_settle(p, 2, e))
   return p
+}
+let __p_allSettled = (arr) => {
+  let p = __p_new(), n = arr.length, out = [], left = n
+  if (n === 0) { __p_settle(p, 1, out); return p }
+  for (let i = 0; i < n; i++) {
+    let k = i
+    __await(arr[k],
+      (v) => { out[k] = { status: 'fulfilled', value: v, reason: undefined }; left--; if (left === 0) __p_settle(p, 1, out) },
+      (e) => { out[k] = { status: 'rejected', value: undefined, reason: e }; left--; if (left === 0) __p_settle(p, 1, out) })
+  }
+  return p
+}
+let __p_any = (arr) => {
+  let p = __p_new(), n = arr.length, errs = [], left = n
+  if (n === 0) { __p_settle(p, 2, { name: 'AggregateError', message: 'All promises were rejected', errors: errs }); return p }
+  for (let i = 0; i < n; i++) {
+    let k = i
+    __await(arr[k], (v) => __p_settle(p, 1, v),
+      (e) => { errs[k] = e; left--; if (left === 0) __p_settle(p, 2, { name: 'AggregateError', message: 'All promises were rejected', errors: errs }) })
+  }
+  return p
+}
+let __p_try = (fn, ...aa) => {
+  let p = __p_new()
+  try { __p_settle(p, 1, fn(...aa)) } catch (e) { __p_settle(p, 2, e) }
+  return p
+}
+let __p_withResolvers = () => {
+  let p = __p_new()
+  return { promise: p, resolve: (v) => __p_settle(p, 1, v), reject: (e) => __p_settle(p, 2, e) }
 }
 export let __mt_drain = () => __drain()
 export let __p_state = (p) => __state(p)

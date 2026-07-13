@@ -202,6 +202,12 @@ const TRACKED_BUILTIN_PATHS = [
   'RegExp/prototype/global',
   'RegExp/prototype/sticky',
   'RegExp/prototype/unicode',
+  // Promise pool wired 2026-07-13: the jzify async runtime implements
+  // resolve/reject/all/race/allSettled/any/try/withResolvers + executor +
+  // then/catch/finally; flags:[async] tests run through the $DONE shim
+  // (module-level, polled via __t262_check — same design as the language
+  // runner). Subclassing/species/descriptor tests absorb as skips.
+  'Promise',
 ]
 
 const FUNCTIONAL_TESTS = new Set([
@@ -758,6 +764,21 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/Object/assign/OnlyOneArgument.js', 'primitive ToObject boxing — out of scope'],
   ['built-ins/Object/fromEntries/string-entry-string-object-succeeds.js', 'Object.fromEntries iterable/entry coercion — out of scope'],
   ['built-ins/Object/fromEntries/supports-symbols.js', 'Object.fromEntries Symbol keys — out of scope'],
+  // Promise — jz promises are fixed-shape values adopted STRUCTURALLY
+  // (`__p === 1` → subscribe), not via a dynamic `.then` lookup, so overriding
+  // `.then` on a native promise is not observed (documented divergence).
+  ['built-ins/Promise/prototype/then/resolve-pending-fulfilled-prms-cstm-then.js', 'overridden .then on a native promise — structural adoption divergence'],
+  ['built-ins/Promise/prototype/then/resolve-pending-rejected-prms-cstm-then.js', 'overridden .then on a native promise — structural adoption divergence'],
+  ['built-ins/Promise/prototype/then/resolve-settled-fulfilled-prms-cstm-then.js', 'overridden .then on a native promise — structural adoption divergence'],
+  ['built-ins/Promise/prototype/then/resolve-settled-rejected-prms-cstm-then.js', 'overridden .then on a native promise — structural adoption divergence'],
+  ['built-ins/Promise/race/resolve-prms-cstm-then.js', 'overridden .then on a native promise — structural adoption divergence'],
+  ['built-ins/Promise/resolve-prms-cstm-then-deferred.js', 'overridden .then on a native promise — structural adoption divergence'],
+  ['built-ins/Promise/resolve-prms-cstm-then-immed.js', 'overridden .then on a native promise — structural adoption divergence'],
+  // Promise — function-object / namespace reflection
+  ['built-ins/Promise/constructor.js', 'typeof Promise as first-class value — out of scope'],
+  ['built-ins/Promise/exec-args.js', 'executor resolve/reject .length reflection — out of scope'],
+  ['built-ins/Promise/prototype/catch/S25.4.5.1_A2.1_T1.js', 'instanceof Function reflection — out of scope'],
+  ['built-ins/Promise/withResolvers/resolvers.js', 'resolve/reject .name/.length reflection — out of scope'],
   // parseInt / parseFloat
   ['built-ins/parseInt/S15.1.2.2_A1_T7.js', 'parseInt object-arg ToPrimitive coercion — out of scope'],
   ['built-ins/parseInt/S15.1.2.2_A3.1_T7.js', 'parseInt object-radix ToPrimitive coercion — out of scope'],
@@ -826,6 +847,12 @@ function countJs(dir) {
   return count
 }
 
+// flags:[async] — the test calls $DONE(err?) when its promise chain settles;
+// runTest runs it through the module-level shim and polls __t262_check.
+function isAsyncFlagged(content) {
+  return /flags:\s*\[[^\]]*\basync\b/.test(content) || /\$DONE/.test(content)
+}
+
 function shouldSkip(content, rel) {
   if (DATE_UNSUPPORTED_TESTS.has(rel)) return DATE_UNSUPPORTED_TESTS.get(rel)
   if (isFunctionalTest(rel)) return null
@@ -839,9 +866,9 @@ function shouldSkip(content, rel) {
   if (/Reflect\./.test(content)) return 'Reflect'
   if (/\bFunction\b\s*\(/.test(content)) return 'Function global ctor'
   if (/\bclass\b/.test(content)) return 'class'
-  if (/async|await/.test(content)) return 'async'
   if (/\bProxy\b/.test(content)) return 'Proxy'
   if (/\bWeak(Ref|Map|Set)\b/.test(content)) return 'Weak collection'
+  if (/\bAggregateError\s*\(/.test(content) || /instanceof AggregateError/.test(content)) return 'AggregateError constructor semantics'
   if (/Symbol\.(species|toPrimitive|iterator|hasInstance|asyncIterator|match|replace|search|split)/.test(content)) return 'Symbol runtime hook'
   if (/\biterator\b/i.test(content)) return 'iterator semantics'
   if (/\bgenerator\b/i.test(content) || /\byield\b/.test(content)) return 'generator semantics'
@@ -853,11 +880,10 @@ function shouldSkip(content, rel) {
   if (/Object\.getOwnProperty/.test(content)) return 'descriptor introspection'
   if (/Object\.preventExtensions|Object\.freeze|Object\.seal/.test(content)) return 'object integrity'
   if (/\.constructor\b/.test(content)) return 'constructor semantics'
-  if (/\bnew\s+(?!Map|Set|Array|Error|TypeError|RangeError|ReferenceError|SyntaxError|URIError|EvalError)/.test(content)) return 'custom new'
+  if (/\bnew\s+(?!Map|Set|Array|Promise|Error|TypeError|RangeError|ReferenceError|SyntaxError|URIError|EvalError)/.test(content)) return 'custom new'
   if (/\bnew\s+(Boolean|Number|String|Object)\b/.test(content)) return 'wrapper object new'
   if (/\bfor\s*\([^)]*\bof\b/.test(content)) return 'for-of'
   if (/\busing\b/.test(content)) return 'using keyword'
-  if (/\$DONE|Test262:Async/.test(content)) return 'async harness dependency'
   if (/negative:\s*\n\s+phase:\s+(parse|runtime)/.test(content)) return 'negative test'
   if (/\bundefined\s*=/.test(content)) return 'global undefined assignment'
   return null
@@ -865,21 +891,50 @@ function shouldSkip(content, rel) {
 
 const { default: jz } = await import(join(ROOT, 'index.js'))
 
-function runTest(src) {
+// flags:[async] tests — module-level $DONE shim (doneprintHandle.js stand-in);
+// the host polls __t262_check, each call draining the module's microtask queue
+// at the boundary. Same design as the language runner's ASYNC_DONE_SHIM.
+const ASYNC_DONE_SHIM = `
+let __t262d = 0
+let __t262e = undefined
+let $DONE = (e) => { if (__t262d) return; __t262d = 1; if (e != null && e !== false) __t262e = '' + e }
+let asyncTest = (fn) => { fn().then(() => $DONE(), (e) => $DONE(e == null ? 'rejected' : e)) }
+export let __t262_check = () => __t262d === 0 ? '@pending' : __t262e == null ? '@ok' : __t262e
+`
+
+function runTest(src, isAsync) {
   let code = src
     .replace(/\/\*---[\s\S]*?---\*\//, '')
     .replace(/^#![^\n]*(?:\n|$)/, '')
     .replace(/\$DONOTEVALUATE\(\)/g, 'return')
 
   if (!/export\s+(let|const|function|default)/.test(code)) {
-    code = `export let _run = () => {\n${ASSERT_HARNESS}\n${code}\nreturn 1\n}`
+    // asyncDone: the assert harness hoists to MODULE level (nesting it inside
+    // _run trips the closure-state visibility gap even at O0 — see the KNOWN
+    // GAP pins in test/parser-bugs.js); module bindings are visible either way.
+    code = isAsync
+      ? `export let _run = () => {\n${code}\nreturn 1\n}`
+      : `export let _run = () => {\n${ASSERT_HARNESS}\n${code}\nreturn 1\n}`
   } else {
     code = `${ASSERT_HARNESS}\n${code}`
   }
+  if (isAsync) code = `${ASYNC_DONE_SHIM}\n${ASSERT_HARNESS}\n${code}`
 
   try {
     const inst = jz(code, { jzify: true })
     if (inst.exports._run) inst.exports._run()
+    if (isAsync) {
+      return (async () => {
+        try {
+          for (let i = 0; i < 300; i++) {
+            const st = inst.exports.__t262_check()
+            if (st !== '@pending') return st === '@ok' ? { status: 'pass' } : { status: 'fail', error: String(st).slice(0, 120) }
+            await new Promise(r => setTimeout(r, 1))
+          }
+          return { status: 'fail', error: 'async $DONE timeout' }
+        } catch (e) { return { status: 'fail', error: (e.message || String(e)).slice(0, 120) } }
+      })()
+    }
     return { status: 'pass' }
   } catch (e) {
     const msg = e.message || String(e)
@@ -895,6 +950,7 @@ function runTest(src) {
         msg.includes('not declared') || msg.includes('Unknown global') ||
         msg.includes('cannot be used as a first-class value') ||
         msg.includes('requires object with known schema') ||
+        msg.includes('outside the v1 async surface') ||
         msg.includes('Unknown instruction')) {
       return { status: 'skip', error: msg.slice(0, 80) }
     }
@@ -926,7 +982,7 @@ function collectWork() {
 // ─── Worker: classify + compile/run an assigned slice of the work list ──────
 // Pure given its inputs (jz resets all state per call), so a worker's tallies
 // are identical to running the same files sequentially.
-function runChunk(items) {
+async function runChunk(items) {
   const perPath = Object.create(null)
   const results = { pass: 0, fail: 0, xfail: 0, skip: 0 }
   const fails = []
@@ -944,7 +1000,7 @@ function runChunk(items) {
         continue
       }
 
-      const { status, error } = runTest(src)
+      const { status, error } = await runTest(src, isAsyncFlagged(src))
       const xfReason = expectedFailReason(rel)
       if (status === 'fail' && xfReason) {
         results.xfail++
@@ -965,7 +1021,7 @@ function runChunk(items) {
 
 if (!isMainThread) {
   // Spawned worker: run the assigned slice and report tallies back.
-  parentPort.postMessage(runChunk(workerData.items))
+  runChunk(workerData.items).then(r => parentPort.postMessage(r))
 } else {
   // ─── Main: collect work, fan out to a worker pool, aggregate ──────────────
   const allBuiltinsFiles = countJs(builtinsDir)
