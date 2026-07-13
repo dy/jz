@@ -30,6 +30,7 @@ let a, b               // wave height now / previous (leapfrog pair)
 let L                  // light-density map, rebuilt every frame
 let Ls                 // blur scratch
 let sponge             // per-cell sponge multiplier (1 inside, dips at the walls)
+let wk                 // per-cell WAKE damping — the stick's trail is briefly lossy water
 let glut               // Int32Array(1024) — density → exposure, rebuilt when gamma moves
 let gLast = new Float64Array(1)   // gamma the LUT was built for
 let sp = new Float64Array(3)      // stick trail: previous (x, y) + active flag — fractional
@@ -50,6 +51,9 @@ export let resize = (w, h) => {
   a = new Float64Array(w * h); b = new Float64Array(w * h)
   L = new Float64Array(w * h); Ls = new Float64Array(w * h)
   sponge = new Float32Array(w * h)
+  wk = new Float32Array(w * h)
+  let iw = 0
+  while (iw < w * h) { wk[iw] = 1.0; iw++ }
   px = new Uint32Array(w * h)
   sp[2] = 0.0
   gLast[0] = 0.0
@@ -96,7 +100,7 @@ let buildLut = (gamma) => {
 
 export let clear = () => {
   let n = W * H, i = 0
-  while (i < n) { a[i] = 0.0; b[i] = 0.0; i++ }
+  while (i < n) { a[i] = 0.0; b[i] = 0.0; wk[i] = 1.0; i++ }
   sp[2] = 0.0
   i = 0
   while (i < NQ * 5) { dq[i] = 0.0; i++ }
@@ -160,7 +164,7 @@ let step = (c2, damp) => {
       let c = rc + x, ac = a[c]
       let lap = O * (a[c - 1] + a[c + 1] + a[rn + x] + a[rsw + x])
         + D * (a[rn + x - 1] + a[rn + x + 1] + a[rsw + x - 1] + a[rsw + x + 1]) + CEN * ac
-      b[c] = (2.0 * ac - b[c] + c2 * lap) * (damp * sponge[c])
+      b[c] = (2.0 * ac - b[c] + c2 * lap) * (damp * sponge[c] * wk[c])
       x++
     }
     y++
@@ -201,6 +205,10 @@ export let frame = (t, sx, sy, stick, foc, c2, visc, damp, gamma, strength) => {
     }
     k++
   }
+
+  // the wake heals: stirred water settles back to normal loss over a few seconds
+  let iw = 0
+  while (iw < n) { let v = wk[iw]; if (v < 1.0) wk[iw] = v + (1.0 - v) * 0.018; iw++ }
 
   let s = 0
   while (s < SUB) { step(c2, damp); s++ }
@@ -244,6 +252,12 @@ export let frame = (t, sx, sy, stick, foc, c2, visc, damp, gamma, strength) => {
           let tgt = depth * stick * E
           if (a[c] > tgt) a[c] = a[c] + (tgt - a[c]) * 0.55
           if (b[c] > tgt) b[c] = b[c] + (tgt - b[c]) * 0.55
+          // the stick's WAKE: stirred water is briefly lossy, so the released groove
+          // collapses critically damped — no elastic rebound ridge along the stroke's
+          // spine (that rebound crest was focusing a white centerline into the black).
+          // The groove mode's period is ~30 frames, so critical damping needs ~0.8 here.
+          let wt = 1.0 - 0.20 * E
+          if (wk[c] > wt) wk[c] = wt
         }
         x++
       }
