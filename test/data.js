@@ -933,6 +933,35 @@ test('Regression: negative literal index reads undefined, not heap (array + type
   is(inb(), 20)  // in-bounds read unchanged
 })
 
+test('Root F proof boundary: literal/masked indexes on static-length arrays stay unchecked; computed lengths stay checked', () => {
+  // typedStaticLen rides the ctor tracker (multi-def invalidated); typedIdxProven
+  // admits literals and `x & m` masks under it. The boundary is WAT-observable in
+  // the exported fn: a proven read carries NO bounds compare (i32.lt_u) — watr may
+  // inline __len, so the compare (not the call) is the stable observable.
+  const fnWat = (src) => {
+    const w = compile(src, { wat: true, optimize: 2 })
+    return w.split(/(?=\(func \$)/).find(p => p.startsWith('(func $f')) || ''
+  }
+  const provenLit = fnWat(`const a = new Float64Array(4)
+    export let f = () => { a[1] = 5; return a[0] + a[3] }`)
+  ok(!/i32\.lt_u/.test(provenLit), 'literal idx < static len: unchecked')
+  const provenMask = fnWat(`const a = new Float64Array(8)
+    export let f = (x) => a[x & 7]`)
+  ok(!/i32\.lt_u/.test(provenMask), 'x & 7 on len-8: unchecked')
+  const unprovenMask = fnWat(`const a = new Float64Array(8)
+    export let f = (x) => a[x & 8]`)
+  ok(/i32\.lt_u/.test(unprovenMask), 'x & 8 on len-8 can reach 8: checked')
+  const computed = fnWat(`export let f = (n, i) => { const a = new Float64Array(n); return a[i & 3] }`)
+  ok(/i32\.lt_u/.test(computed), 'computed length: no static proof, checked')
+  // stale-length hygiene: a sibling function\'s same-named local must not prove this one
+  const sibling = run(`
+    let g = () => { const a = new Float64Array(16); return a[9] }
+    export let f = () => { const a = new Float64Array(4); let i = 9; return a[i & 15] === undefined ? -1 : 0 }
+    export let both = () => g() + (f() === -1 ? 1 : 0)`)
+  is(sibling.f(), -1)
+  is(sibling.both(), 1)
+})
+
 test('Regression (Root F): RUNTIME-variable typed index — OOB reads undefined, OOB writes are ignored', () => {
   // The known-elem `.typed:[]` fast path emitted a raw `data + (i<<shift)` load/store
   // with NO bounds check for a runtime index: in-range-but-past-the-end silently read

@@ -447,6 +447,9 @@ function analyzeFuncForEmit(func, programFacts) {
   ctx.func.boxed = new Map()
   ctx.func.localReps = null
   ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
+  // typedLen mirrors typedElem's per-function lifecycle EXACTLY — a stale entry from a
+  // sibling function's same-named local would prove a wrong bound (names are per-function).
+  ctx.types.typedLen = ctx.scope.globalTypedLen ? new Map(ctx.scope.globalTypedLen) : null
 
   const _reps = paramReps.get(name)
   if (_reps) {
@@ -719,6 +722,7 @@ function analyzeFuncForEmit(func, programFacts) {
     cseLoadBases,
     distinctParams: func.distinctParams || null,
     typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null,
+    typedLen: ctx.types.typedLen ? new Map(ctx.types.typedLen) : null,
     localReps: cloneRepMap(ctx.func.localReps),
   }
 }
@@ -1112,6 +1116,8 @@ function emitFunc(func, funcFacts, programFacts) {
   ctx.func.sliceViews = new Set(funcFacts.sliceViews)
   ctx.func.localReps = cloneRepMap(funcFacts.localReps)
   ctx.types.typedElem = funcFacts.typedElem ? new Map(funcFacts.typedElem) : null
+  ctx.types.typedLen = funcFacts.typedLen ? new Map(funcFacts.typedLen)
+    : ctx.scope.globalTypedLen ? new Map(ctx.scope.globalTypedLen) : null
 
   // D: Apply call-site param facts (only if body analysis didn't already set them).
   // Schema bindings additionally write into ctx.schema.vars so prop-access dispatch
@@ -1466,6 +1472,12 @@ function emitClosureBody(cb) {
   } else {
     ctx.types.typedElem = prevTypedElems
   }
+  // Static typed lengths ride the same channel (module globals + per-body): the
+  // typedIdxProven bounds proof reads the merged view.
+  const globalTL = ctx.scope.globalTypedLen
+  ctx.types.typedLen = cb.typedLens
+    ? (globalTL ? new Map([...globalTL, ...cb.typedLens]) : new Map(cb.typedLens))
+    : (globalTL ? new Map(globalTL) : null)
   // In closure bodies, boxed captures use the original name as both var and cell local
   ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
   // i32-narrowed cells: the owner decided the cell width (funcFacts.cellTypes);

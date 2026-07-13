@@ -11,7 +11,7 @@ import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, NULL_NAN, TRUE_NAN, FA
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
-import { inBoundsArrIdx } from '../src/type.js'
+import { typedIdxProven } from '../src/type.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
 import { inc, PTR, LAYOUT, registerGetter } from '../src/ctx.js'
@@ -1343,8 +1343,7 @@ export default (ctx) => {
     const r = resolveElem(arr)
     if (r == null) return null // unknown type, fallback to generic
     const { et, isView, isBigInt } = r
-    const proven = typeof arr === 'string' && typeof i === 'string'
-      && inBoundsArrIdx(ctx).has(arr + '\x00' + i)
+    const proven = typedIdxProven(arr, i)
     const loadOf = (off) => isBigInt ? ['f64.reinterpret_i64', ['i64.load', off]]
       : et === 7 ? ['f64.load', off]
       : et === 6 ? ['f64.promote_f32', ['f32.load', off]]
@@ -1377,8 +1376,7 @@ export default (ctx) => {
     const r = resolveElem(arr)
     if (r == null) return null
     const { et, isView, isBigInt } = r
-    const proven = typeof arr === 'string' && typeof i === 'string'
-      && inBoundsArrIdx(ctx).has(arr + '\x00' + i)
+    const proven = typedIdxProven(arr, i)
     const pre = []
     let vi
     if (proven) vi = idx(i)

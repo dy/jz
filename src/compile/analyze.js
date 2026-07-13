@@ -23,7 +23,7 @@ import { ctx, err } from '../ctx.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from '../kind.js'
 import { intLiteralValue, nonNegIntLiteral, constIntExpr, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid } from '../static.js'
-import { typedElemCtor, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, inBoundsCharCodeAt, exprType, intCertainMap } from '../type.js'
+import { typedElemCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, inBoundsCharCodeAt, exprType, intCertainMap } from '../type.js'
 import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux } from '../../layout.js'
 
 // ValueRep field docs + ParamReps lattice helpers — storage lives in src/reps.js.
@@ -110,9 +110,9 @@ const makeValTracker = (get, set, del) => {
     set(name, vt)
   }
 }
-const makeTypedTracker = (get, set, del) => {
+const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
   const poison = new Set()
-  const invalidate = (name) => { poison.add(name); del(name) }
+  const invalidate = (name) => { poison.add(name); del(name); if (delLen) delLen(name) }
   // Resolve a variable-name ternary branch to its known typed-array ctor: a
   // local typed binding (`get`), or a module global promoted typed by plan
   // (`inferModuleLetTypes` populates `globalTypedElem`, copied into
@@ -131,7 +131,21 @@ const makeTypedTracker = (get, set, del) => {
       if (typeof c === 'string' && c.endsWith('.view')) ctx.features.typedView = true
       const prev = get(name)
       if (prev && prev !== c) invalidate(name)
-      else set(name, c)
+      else {
+        set(name, c)
+        // Static length rides the ctor's stability (fixed-length arrays): a redef
+        // with an unknown or conflicting length drops the entry — typedStaticLen is
+        // null for subarray/copy/ternary/computed rhs, so those invalidate for free.
+        // Same live-closure style as get/set/del (call-time ctx deref, per the
+        // makeValTracker comment above — a captured Map would orphan on the
+        // per-function ctx.types reset).
+        if (setLen) {
+          const len = typedStaticLen(rhs)
+          const prevLen = getLen(name)
+          if (len == null || (prevLen !== undefined && prevLen !== len)) delLen(name)
+          else setLen(name, len)
+        }
+      }
     }
     const ctor = typedElemCtor(rhs)
     if (ctor) return setOrInvalidate(ctor)
@@ -209,6 +223,7 @@ export function analyzeBody(body) {
   // resolve as that typed array so `arr[i][j]` / `let o = arr[i]; o[j]` inline.
   const arrElemTypedCtors = new Map()
   const typedElems = new Map()
+  const typedLens = new Map()
   const escapes = new Map() // name → bool: local holds allocation, true if it escapes
 
   const doSchemas = !!ctx.schema?.register
@@ -289,7 +304,8 @@ export function analyzeBody(body) {
 
   // Local-Map slices: bind the Map's get/set/delete as the tracker's three ops.
   const trackVal = makeValTracker(n => valTypes.get(n), (n, vt) => valTypes.set(n, vt), n => valTypes.delete(n))
-  const trackTyped = makeTypedTracker(n => typedElems.get(n), (n, c) => typedElems.set(n, c), n => typedElems.delete(n))
+  const trackTyped = makeTypedTracker(n => typedElems.get(n), (n, c) => typedElems.set(n, c), n => typedElems.delete(n),
+    n => typedLens.get(n), (n, l) => typedLens.set(n, l), n => typedLens.delete(n))
 
   // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===
   const processDecl = (name, rhs) => {
@@ -645,7 +661,7 @@ export function analyzeBody(body) {
   // Never-relocated array bindings — reads may skip the realloc-forwarding follow.
   const neverGrown = doSchemas ? scanNeverGrown(body) : new Set()
 
-  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, arrElemTypedCtors, typedElems, escapes, flatObjects, sliceViews, unsignedLocals, neverGrown, numericFill }
+  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, arrElemTypedCtors, typedElems, typedLens, escapes, flatObjects, sliceViews, unsignedLocals, neverGrown, numericFill }
   _bodyFactsCache.set(body, result)
   return result
 }
@@ -858,6 +874,9 @@ export function analyzeValTypes(body) {
     (n) => ctx.types.typedElem?.get(n),
     (n, c) => (ctx.types.typedElem ??= new Map()).set(n, c),
     (n) => ctx.types.typedElem?.delete(n),
+    (n) => ctx.types.typedLen?.get(n),
+    (n, l) => (ctx.types.typedLen ??= new Map()).set(n, l),
+    (n) => ctx.types.typedLen?.delete(n),
   )
   // Total write count for `name` across the whole body, recursing into nested
   // closures so a closure that reassigns the var is also counted. Capped at 2 —

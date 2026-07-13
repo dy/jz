@@ -38,7 +38,7 @@ import {
   containsDeclOf, cloneWithSubst, containsKnownTypedArrayIndex,
   smallConstForTripCount, isTerminator, scanBoundedLoops, inBoundsCharCodeAt,
   exprType, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
-  inBoundsArrIdx,
+  inBoundsArrIdx, typedIdxProven,
 } from '../type.js'
 import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
@@ -1795,7 +1795,7 @@ const nullableOperand = (n) => {
   if (typeof n === 'string') return !!(repOf(n)?.nullable || repOfGlobal(n)?.nullable)
   if (Array.isArray(n) && n[0] === '[]' && n.length === 3
       && typeof n[1] === 'string' && lookupValType(n[1]) === VAL.TYPED)
-    return !(typeof n[2] === 'string' && inBoundsArrIdx(ctx).has(n[1] + '\x00' + n[2]))
+    return !typedIdxProven(n[1], n[2])
   return false
 }
 

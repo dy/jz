@@ -48,7 +48,7 @@ import { collectParamNames, ASSIGN_OPS } from '../ast.js'
 import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
 import { staticObjectProps, staticArrayElems } from '../static.js'
 import { isNullishLit } from '../ir.js'
-import { typedElemCtor } from '../type.js'
+import { typedElemCtor, typedStaticLen } from '../type.js'
 import { ctorFromElemAux } from '../../layout.js'
 import { shapeOfObjectLiteralAst, valTypeOf } from '../kind.js'
 import { includeForStringValue } from '../autoload.js'
@@ -356,7 +356,12 @@ export function recordGlobalRep(name, expr) {
     if (vt === VAL.REGEX && ctx.runtime.regex) ctx.runtime.regex.vars.set(name, expr)
   }
   const ctor = typedElemCtor(expr)
-  if (ctor) (ctx.scope.globalTypedElem ||= new Map()).set(name, ctor)
+  if (ctor) {
+    ;(ctx.scope.globalTypedElem ||= new Map()).set(name, ctor)
+    const len = typedStaticLen(expr)
+    if (len != null) (ctx.scope.globalTypedLen ||= new Map()).set(name, len)
+    else ctx.scope.globalTypedLen?.delete(name)
+  }
   // Module-level const array literal with a uniform element val-type (e.g. a numeric
   // table `const FREQS = [261.63, …]`): record it so `FREQS[i]` reads in any using
   // function are typed (NUMBER) rather than untyped. Without this an untyped element

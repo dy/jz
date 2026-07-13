@@ -41,6 +41,55 @@ export function typedElemCtor(rhs) {
   return isView ? rhs[1] + '.view' : rhs[1]
 }
 
+/** Static element count for `new T(<int literal>)` / `new T([literals…])`, or null
+ *  for views (buffer, off, len), buffer/array copies, ternaries and computed sizes.
+ *  Typed arrays are FIXED-LENGTH, so a binding's length is exactly as stable as its
+ *  ctor — the tracker applies the same multi-def invalidation to both. */
+export function typedStaticLen(rhs) {
+  if (!Array.isArray(rhs) || rhs[0] !== '()' || typeof rhs[1] !== 'string' || !rhs[1].startsWith('new.')) return null
+  if (!rhs[1].endsWith('Array') || rhs[1] === 'new.ArrayBuffer') return null
+  const args = rhs[2]
+  if (args === undefined) return 0
+  if (Array.isArray(args) && args[0] === ',') return null        // view form
+  const n = intLiteralValue(args)
+  if (n != null) return n >= 0 ? n : null
+  // `new T([a,b,c])` — BOTH literal shapes: parse-time `['[]', [',', …]]` (the
+  // module-scope infer site) and post-prepare `['[', …elems]` (the analyze tracker).
+  if (Array.isArray(args) && args[0] === '[]' && args.length === 2) {
+    const inner = args[1]
+    return inner === undefined ? 0
+      : Array.isArray(inner) && inner[0] === ',' ? inner.length - 1 : 1
+  }
+  if (Array.isArray(args) && args[0] === '['
+      && !args.slice(1).some(e => Array.isArray(e) && e[0] === '...')) return args.length - 1
+  return null
+}
+
+/** `recv[idx]` provably within [0, recv.length) for a typed receiver — the gate the
+ *  checked `.typed:[]` forms and the identity folds share. Proof classes:
+ *  1. the canonical-loop structural pair (inBoundsArrIdx);
+ *  2. a literal index against the binding's STATIC length (ctx.types.typedLen /
+ *     ctx.scope.globalTypedLen — `new T(<n>)`, tracker-invalidated on redef);
+ *  3. the masked form `x & m` / `m & x` (ToInt32 & clears the sign for m ≥ 0, so the
+ *     result is in [0, m]) with m < that static length. */
+export function typedIdxProven(recv, idx) {
+  if (typeof recv !== 'string') return false
+  if (typeof idx === 'string' && inBoundsArrIdx(ctx).has(recv + '\x00' + idx)) return true
+  const len = ctx.types.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
+  if (len == null) return false
+  const k = intLiteralValue(idx)
+  if (k != null) return k >= 0 && k < len
+  if (Array.isArray(idx) && idx[0] === '&' && idx.length === 3) {
+    const m = intLiteralValue(idx[1]) ?? intLiteralValue(idx[2])
+    if (m != null) return m >= 0 && m < len
+  }
+  if (typeof idx === 'string') {
+    const B = litBoundArrIdx(ctx).get(recv + '\x00' + idx)
+    if (B != null) return B <= len
+  }
+  return false
+}
+
 /** Sentinel returned by `ternaryCtorOfRhs` when ternary branches resolve to
  *  different typed-array ctors — caller should drop any cached entry rather
  *  than leave a stale ctor (which would lock the wrong store width). */
@@ -211,7 +260,7 @@ function collectBoundedArrIdx(node, recv, idxVar, set) {
  *  `[0, recv.length)` by an enclosing canonical loop `for (let i = C; i < recv.length;
  *  i++)`. Same loop contract as `scanBoundedLoops` (charCodeAt) — sibling proof for
  *  the ARRAY indexed-read fast path in `module/array.js`. */
-export function scanBoundedArrIdx(node, set) {
+export function scanBoundedArrIdx(node, set, litSet) {
   if (!Array.isArray(node)) return
   if (node[0] === 'for' && node.length === 5) {
     const [, init, cond, step, body] = node
@@ -231,8 +280,43 @@ export function scanBoundedArrIdx(node, set) {
         && (boundVar == null || !isReassigned(body, boundVar))
         && !redeclaresName(body, idx))
       collectBoundedArrIdx(body, recv, idx, set)
+    // LITERAL-bound loop `for (let i = C≥0; i < B; i++)`: every `X[i]` read is in
+    // [C, B) — provable against a receiver whose STATIC length ≥ B (typedIdxProven
+    // consults litSet's recorded bound vs ctx.types.typedLen). Collected for every
+    // receiver name in the body; per-receiver reassignment guarded like the
+    // .length form. Two loops sharing (recv, i) names keep the MAX bound —
+    // conservative for the proof.
+    if (litSet && !(idx && recv)) {
+      // re-derive idx with the same start guard (the .length branch nulled it only
+      // when recv didn't resolve — recompute cleanly for the literal branch)
+      if (Array.isArray(cond) && cond[0] === '<' && typeof cond[1] === 'string') {
+        const decls = new Map()
+        collectDecls(init, decls)
+        const idx2 = cond[1]
+        const start = decls.has(idx2) ? intLiteralValue(decls.get(idx2)) : null
+        let bound = cond[2]
+        if (typeof bound === 'string' && decls.has(bound)) bound = decls.get(bound)
+        const B = intLiteralValue(bound)
+        if (start != null && start >= 0 && B != null && B >= 0
+            && isUnitIncrement(step, idx2) && !isReassigned(body, idx2) && !redeclaresName(body, idx2)) {
+          const recvs = new Set()
+          const collectRecvs = (n) => {
+            if (!Array.isArray(n) || n[0] === '=>') return
+            if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[2] === idx2) recvs.add(n[1])
+            for (let k = 1; k < n.length; k++) collectRecvs(n[k])
+          }
+          collectRecvs(body)
+          for (const r of recvs) {
+            if (r === idx2 || isReassigned(body, r)) continue
+            const key = r + '\x00' + idx2
+            const prev = litSet.get(key)
+            litSet.set(key, prev == null ? B : Math.max(prev, B))
+          }
+        }
+      }
+    }
   }
-  for (let k = 1; k < node.length; k++) scanBoundedArrIdx(node[k], set)
+  for (let k = 1; k < node.length; k++) scanBoundedArrIdx(node[k], set, litSet)
 }
 
 /** Set of `"recv\x00idx"` keys for `recv[idx]` reads in the current function proven
@@ -242,11 +326,22 @@ export function inBoundsArrIdx(ctx) {
   if (!Array.isArray(body)) return NO_BOUNDED_CC
   if (ctx.func._aiBody === body) return ctx.func.aiInBounds
   const set = new Set()
-  scanBoundedArrIdx(body, set)
+  const litSet = new Map()
+  scanBoundedArrIdx(body, set, litSet)
   ctx.func.aiInBounds = set
+  ctx.func.aiLitBounds = litSet
   ctx.func._aiBody = body
   return set
 }
+
+/** Map of `"recv\x00idx"` → max literal loop bound for `recv[idx]` reads under
+ *  `for (let i = C≥0; i < LIT; i++)` — proven in-bounds iff LIT ≤ the receiver's
+ *  static length (typedIdxProven). Memoised with inBoundsArrIdx. */
+export function litBoundArrIdx(ctx) {
+  inBoundsArrIdx(ctx)
+  return ctx.func?.aiLitBounds || NO_LIT_BOUNDS
+}
+const NO_LIT_BOUNDS = new Map()
 
 // === Loop unroll / AST transforms (emit + plan) ===
 
