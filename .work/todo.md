@@ -3525,3 +3525,31 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   (closure-param calls) — further gains = jz-side closure-param devirt class.
   NEXT (unstarted, ranked): STR_INTERN_BIT name interning (__str_eq 6.8% +
   wordcount 10× row), strbuild arena-itoa, shapes tag-switch devirt.
+
+## Root F attacked: three layers built + pinned, landing blocked on proof breadth (2026-07-13)
+- BRANCH typedoob (worktree oob-wt2, WIP cff3c769) — KEEP: the .typed:[] hole is
+  real and DEMONSTRATED (known-elem receiver + runtime index: far idx TRAPS,
+  near-OOB silently reads/corrupts adjacent heap; JS wants undefined-read /
+  ignored-write). What's built and validated by the data.js pin family:
+  emit-layer checked forms (u< len; negatives folded in; RHS effects preserved;
+  proven canonical loops byte-identical), VT stays NUMBER (the undef box IS NaN
+  through every arithmetic path — nulling VT broke 137 tests: vectorizer/
+  narrowing/numeric arms; the coincidence argument is load-bearing), and the
+  identity-fold class (===undefined, ==null, ??, typeof, truthiness) routed
+  through nullableOperand — all spec-exact on OOB, probed at both tiers.
+- WHY NOT LANDED: inBoundsArrIdx (canonical `i<arr.length` loops only) leaves
+  ~118 ecosystem regressions on the checked path: literal idx on literal-sized
+  arrays (`new T(4); a[0]`), masked idx (`i & (N-1)`), hoisted `n = a.length`
+  bounds, param-bounded map loops (rfft `cep[i]=x[i]/N`). ALSO: importing
+  type.js into kind.js is a MODULE CYCLE the self-host bundler rejects (host
+  Node tolerates it — the selfhost build is the honest gate).
+- NEXT (the proof-strengthening layer, in order): 1) staticLen recorded at
+  typedElem registration (`new T(<literal>)` / `new T([..])`) → literal and
+  f64Range-bounded indexes prove against it; 2) bound-var tracing (`const n =
+  a.length` dominating the loop); 3) unswitch-style loop VERSIONING for
+  param-coupled lengths (pre-loop `n <= a.length` guard selecting the fast
+  loop — the only sound answer for rfft-class kernels). Land only when the
+  corpus sweep shows checked forms confined to genuinely-unprovable sites.
+- Fragility note: the spread `{...src,k1,k2}` HASH-vs-OBJECT class already has
+  its kind-layer guard (VT['{}'] mirrors emitObjectSpread — unknown-schema
+  spread ⇒ HASH type carried); the todo's "guarded only at cloneSig" is stale.
