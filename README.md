@@ -204,18 +204,17 @@ Each follows one rule: **JZ takes WASM/native conventions over JS edge-cases whe
 - **Pseudo-classical constructors** — `function P(x) { this.x = x }` + `P.prototype.m = function () {…}` fold into the class lowering automatically (the pre-`class` npm idiom); arrow-valued members keep lexical `this` and stay out.
 - **Generators (sync) + iterator helpers** — `function*`/`yield` compile to regenerator-style state machines (no stack suspension): `next(v)`/`return(v)` are ordinary closure calls, `for-of` over a generator call desugars to a plain loop, and ES2025 helper chains (`g().map(f).filter(p).take(n)`, terminals `toArray`/`reduce`/`some`/`every`/`find`/`forEach`) fuse into ONE loop — no intermediate iterator objects. `yield*` delegates to any iterable, `for-of` drives any iterator value (stored machines, hand-rolled `{ next }`, `[Symbol.iterator]()` providers) lazily, and `[...g()]` spreads via the fused path. v1 scope: no `try` across yield — rejects with a precise message.
 - **async/await + Promise, no engine event loop** — an `async` function lowers to the same state machine (`await` ≡ `yield`) driven by a plain-jz promise runtime compiled into the module (pay-per-use: sync programs link none of it). Promises are ordinary fixed-shape objects with `then`/`catch`/`finally`; `Promise.resolve/reject/all/race` and `new Promise(executor)` work. The job queue drains at host boundaries (export return, timer tick) — an async export returns a real host `Promise` that settles when the machine completes (including across `setTimeout` awaits). Divergences: job ordering is per-drain-cycle rather than per-continuation, no unhandled-rejection reporting, no `try` across `await` in v1 (precise reject), and `memory.reset()` while a promise is pending is out of contract.
-- **`fetch` (and any async host API) via async host imports** — a host import that returns a `Promise` becomes awaitable in jz. I/O stays host-side (the doctrine), asynchrony crosses the boundary:
+- **`fetch` just works** — a bare `fetch(url)` binds from the JS host automatically (no import statement); the `Response` crosses as a live external handle, so `r.text()`/`r.json()` dispatch host-side and are awaitable in turn. Any custom host function returning a `Promise` is likewise awaitable via `{ imports }`. I/O stays host-side (the doctrine), asynchrony crosses the boundary:
   ```js
   const { exports } = jz(`
-    import { fetchText } from 'host'
     export let title = async (url) => {
-      let body = await fetchText(url)
+      let r = await fetch(url)
+      let body = await r.text()
       return body.slice(body.indexOf('<title>') + 7, body.indexOf('</title>'))
-    }`,
-    { imports: { host: { fetchText: (url) => fetch(url).then(r => r.text()) } } })
+    }`)
   await exports.title('https://example.com')
   ```
-  Works identically in browser and Node — no WASI needed (WASI preview1 has no networking; wasi-http needs the component model, which stays future). Keep host wrappers thin and value-shaped (strings, numbers, arrays) — a raw `Response` would cross as a deep copy.
+  Identical in browser and Node — no WASI involved (WASI preview1 has no networking; wasi-http needs the component model, which stays future). Under `--host wasi` a warning tells you to wire `env.fetch` yourself.
 - **Workers v1 (shared-memory SPMD)** — `sharedMemory: true` compiles against a shared `WebAssembly.Memory` (atomic heap bump, wasm `shared` memtype); `Atomics.*` on Int32Array lowers to wasm thread ops (`wait`/`notify` included); `jz.pool(src, {threads})` runs the same kernel across node worker_threads over one memory — annotate shared-array params as `(arr = new Int32Array(0))`. v1 contract: shared typed arrays + scalars; strings/objects stay thread-local.
 - **`String(number)` is ES-spec exact** — shortest round-trip digits via a built-in Ryū formatter (`String(0.1 + 0.2)` → `"0.30000000000000004"`, `String(Math.PI)` → `"3.141592653589793"`), including exponential notation and subnormals; its ~9.7 KB power-of-5 table is lazily included only in modules that stringify floats.
 - **Errors are just their message** — a caught error is the value you threw (no `.message`, not `instanceof Error`), and `null.x` yields `undefined` instead of throwing. It keeps `throw` and member reads free of object machinery and per-access checks.

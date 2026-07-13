@@ -344,7 +344,12 @@ test('KNOWN GAP: optimizer round-trip breaks async modules containing an indexed
     // `a.length` — microtask callbacks queued via .then never run after the
     // optimizer pipeline touches the module. O0 is correct; at L1 EACH of the
     // three enabled passes ALONE (fusedRewrite / sortLocalsByUse / treeshake)
-    // breaks it — implicating the shared WAT round-trip, not one pass.
+    // breaks it — implicating shared infrastructure, not one pass.
+    // DIAGNOSIS (2026-07-13): emit-time closure-slot divergence — the same
+    // source emits __jz_table size 30 at O0 vs 27 at O1 (3 closures lose
+    // their funcref slots) and every static-data offset shifts; a stale index
+    // survives somewhere, so queued callbacks dispatch into wrong slots.
+    // Async-runtime modules only (a sync closure-queue module holds 3/3).
     // The test262 runner pins asyncDone tests at optimize:false meanwhile.
     const SRC = `let hitFlag = 0
 let mark = (e) => { hitFlag = 1 }

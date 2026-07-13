@@ -975,6 +975,7 @@ function prep(node) {
 export const GLOBALS = Object.assign(Object.create(null), {
   Math: 'math',
   fs: 'fs',
+  fetch: 'web',
   Number: 'Number',
   Array: 'Array',
   Object: 'Object',

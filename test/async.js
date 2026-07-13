@@ -99,21 +99,30 @@ test('async: host imports returning promises are awaitable', async () => {
   is(await out2.exports.f(), 'caught:nope')
 })
 
-test('async: real fetch through a host import (local http server)', async () => {
+test('async: bare fetch binds from the JS host — Response methods await in turn', async () => {
   if (onWasi() || onKernel()) return
   const { createServer } = await import('node:http')
   const srv = createServer((req, res) => res.end('pong:' + req.url)).listen(0)
   await new Promise(r => srv.once('listening', r))
   try {
     const base = 'http://localhost:' + srv.address().port
-    const out = jz(`import { fetchText } from 'host'
-      async function probe(base) {
-        let a = await fetchText(base + '/alpha')
-        let b = await fetchText(base + '/beta')
+    // no import statement: module/web.js lowers the bare call to env.fetch,
+    // interop binds globalThis.fetch; the Response crosses as an external
+    // handle so .text() dispatches host-side and is awaitable too
+    const out = jz(`async function probe(base) {
+        let r = await fetch(base + '/alpha')
+        let a = await r.text()
+        let r2 = await fetch(base + '/beta')
+        let b = await r2.text()
         return a + '|' + b
       }
-      export let f = (base) => probe(base)`,
-      { imports: { host: { fetchText: (url) => fetch(url).then(r => r.text()) } } })
+      export let f = (base) => probe(base)`)
     is(await out.exports.f(base), 'pong:/alpha|pong:/beta')
   } finally { srv.close() }
+})
+
+test('fetch: host wasi warns (bind env.fetch yourself)', () => {
+  const warnings = { entries: [] }
+  jz.compile('async function g() { let r = await fetch("x"); return r } export let f = () => g()', { host: 'wasi', warnings })
+  ok(warnings.entries.some(w => w.code === 'host-global'), 'wasi warning present')
 })

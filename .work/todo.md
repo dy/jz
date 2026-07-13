@@ -1279,12 +1279,18 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
     sibling closures' reads of that state; unexported → correct. The async
     runtime dodges both (settled-queue drain + thin export forwarders); root fix
     belongs in closure-env/schema aliasing analysis.
-  * OPTIMIZER ROUND-TRIP (worst of the family): an async-runtime module that
-    also contains ANY sibling fn looping `a[i]` over `a.length` loses its
-    queued microtask callbacks — at L1 EACH enabled pass alone (fusedRewrite /
-    sortLocalsByUse / treeshake) reproduces it, implicating the shared WAT
-    round-trip; O0 correct. Pinned (parser-bugs KNOWN GAP); the test262 runner
-    holds asyncDone tests at optimize:false until fixed.
+  * OPTIMIZER CLOSURE-SLOT DIVERGENCE (worst of the family; diagnosed
+    2026-07-13): an async-runtime module + ANY sibling fn looping `a[i]` over
+    `a.length` loses queued microtask callbacks at O1+ — the same source emits
+    __jz_table 30 slots at O0 vs 27 at O1 (three closures lose funcref slots,
+    all static-data offsets shift); a stale index survives and callbacks
+    dispatch into wrong slots. EMIT-TIME divergence (ctx.closure.table built
+    during emission), async-runtime-specific (sync closure modules stable);
+    each L1 pass alone triggers. Next: trace which 3 closures lose slots and
+    which consumer keeps the O0-shaped index (suspect: lazy-injected spans /
+    closure records in static data — the injectTable neighborhood). Pinned
+    (parser-bugs KNOWN GAP); test262 asyncDone runs at optimize:false until
+    fixed.
   * assert-harness-shaped code NESTED in a wrapper fn breaks the drain even at
     O0 (module-level hoist heals) — third variant, same family.
   * reassigned PARAM whose new value comes from a dynamic closure call poisons

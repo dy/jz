@@ -817,6 +817,26 @@ export const wrap = (memSrc, inst, state) => {
   return exports
 }
 
+// Host-call return marshalling shared by opts.imports wrappers, __ext_call and
+// the auto-wired web globals: a thenable becomes a jz promise (awaitable in
+// the module — settled via the async runtime's exports, then drain + sweep);
+// everything else boxes through wrapVal.
+const hostRet = (state, ret) => {
+  if (ret != null && typeof ret.then === 'function' && state.pmake) {
+    const praw = state.pmake()
+    const box = (v) => bits(state.mem ? state.mem.wrapVal(v) : coerce(v))
+    ret.then(
+      (v) => { state.pfinish(praw, 1, box(v)); state.afterTick?.() },
+      (e) => { state.pfinish(praw, 2, box(e instanceof Error ? e.message : e)); state.afterTick?.() })
+    return typeof praw === 'bigint' ? praw : bits(praw)
+  }
+  return bits(state.mem ? state.mem.wrapVal(ret) : coerce(ret))
+}
+
+// Callable web globals auto-wired from globalThis when the module imports them
+// (module/web.js lowers bare `fetch(...)` etc. to env imports under host:'js').
+const WEB_GLOBALS = new Set(['fetch'])
+
 const prepareInterop = (opts) => {
   const state = { extMap: [null], mem: null }
   opts._interp = opts._interp || {}
@@ -854,7 +874,7 @@ const prepareInterop = (opts) => {
     const obj = state.extMap[offset(objBig)]
     const prop = state.mem.read(propBig)
     const args = state.mem.read(argsBig)
-    return bits(state.mem.wrapVal(obj[prop].apply(obj, args)))
+    return hostRet(state, obj[prop].apply(obj, args))
   }
   return state
 }
@@ -866,6 +886,15 @@ const installDefaultEnvImports = (mod, imports, state) => {
   const envFns = envFuncNames(mod)
   if (!envFns.size) return
   if (!imports.env) imports.env = {}
+  // Web globals (fetch, …): the module imported them because bare calls were
+  // lowered by module/web.js — bind from globalThis with full marshalling;
+  // thenables adopt into jz promises. opts.imports.env overrides win.
+  for (const name of envFns) {
+    if (imports.env[name] || !WEB_GLOBALS.has(name)) continue
+    const host = globalThis[name]
+    if (typeof host !== 'function') continue
+    imports.env[name] = (...args) => hostRet(state, host(...args.map(a => state.mem ? state.mem.read(a) : decode(a))))
+  }
   if (envFns.has('print') && !imports.env.print) {
     const buf = ['', '', '']  // fd 0/1/2 line buffers
     const pending = []
@@ -1016,18 +1045,7 @@ const buildImports = (mod, opts, state) => {
           // i64 carrier: args arrive as BigInt bits (box) or number; decode with integer
           // ops — never materialize a box as f64. Return the i64 bits of the wrapped result.
           const decoded = args.map(a => state.mem ? state.mem.read(a) : decode(a))
-          const ret = fn.call(fns, ...decoded)
-          // Async host import: thenable → jz promise the module can await.
-          // Settlement re-enters via __p_finish, then drains + sweeps.
-          if (ret != null && typeof ret.then === 'function' && state.pmake) {
-            const praw = state.pmake()
-            const box = (v) => bits(state.mem ? state.mem.wrapVal(v) : coerce(v))
-            ret.then(
-              (v) => { state.pfinish(praw, 1, box(v)); state.afterTick?.() },
-              (e) => { state.pfinish(praw, 2, box(e instanceof Error ? e.message : e)); state.afterTick?.() })
-            return typeof praw === 'bigint' ? praw : bits(praw)
-          }
-          return bits(state.mem ? state.mem.wrapVal(ret) : coerce(ret))
+          return hostRet(state, fn.call(fns, ...decoded))
         }
     }
   }
