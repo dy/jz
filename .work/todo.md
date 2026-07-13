@@ -1200,13 +1200,10 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
     isArray-of-derived-promotion (12 xfails); mixed `??`/`||`/`?:` bool-carrier
     JOIN family (in-flight carrier work's domain); js-string-builtins deepening;
     memory64/multi-memory YAGNI until a workload.
-  * **test262 headroom estimate (measured 2026-07-12)** — in-philosophy pools left,
-    largest first: (1) **built-ins Atomics 390 + SharedArrayBuffer 104 + Iterator
-    514 — 1,008 files, all UNTRACKED** while the features now exist (dual-width
-    atomics, sharedMemory, fused helpers); needs the test262 agent harness
-    (jz.pool is the substrate) + general iterator-protocol values (helper chains
-    stored as VALUES — desugar to generator-object wrappers; the recorded
-    out-of-v1 gap). Est +300–600 passes. (2) **generator dirs**: 543 skips —
+  * **test262 headroom estimate (updated 2026-07-13)** — pool (1) LANDED:
+    Atomics/SharedArrayBuffer/Iterator/Promise all tracked (builtins 973/0,
+    language 2972/0 — see the coverage-pools record); remaining in that family
+    is the $262.agent harness (112 files). (2) **generator dirs**: 543 skips —
     ~85 flat-dir files clear the generator arm yet die on later generic filters
     (harness includes, Symbol) — runner-honesty pass est +50–150; method syntax
     (55+) stays parser-blocked. `.throw()` skip lifted (stale — feature landed).
@@ -1256,46 +1253,57 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
   arena. jz's own wasi.js shim stays console-only — real FS comes from the
   actual WASI host (wasmtime, node:wasi); test via node --experimental-wasi in
   test/wasi.js. Sync by construction (WASI IS sync) — no event-loop breach.
-- [ ] **Coverage surface, remaining pools (precise, 2026-07-12).** (a) built-ins/
-  Iterator 514: track in test262-builtins.js; helper CHAINS on arbitrary iterator
-  values need machine objects to carry map/filter/... methods (or an Iterator-
-  helper wrapper lowering) — the fused paths cover known chains only; expect
-  heavy %Iterator.prototype% reflection skips. (b) built-ins/Atomics 390 +
-  SharedArrayBuffer 104: need the $262.agent harness (agent.start/broadcast/
-  getReport) — jz.pool is the substrate; map agent scripts to pool workers.
-  (c) built-ins/Promise 703: the $DONE harness now exists in the language
-  runner — port it to test262-builtins.js; species/subclass/reflection families
-  will dominate skips. (d) language async-generator/for-await (~2.2k): needs
-  async iteration (machines + @@asyncIterator + await-in-yield) — out of the
-  sync-async v1 by design, revisit after the optimizer round-trip bug fix.
-- [ ] **Closure-state visibility miscompiles, open** (surfaced building the async
-  runtime 2026-07-12; BOTH host-side, both pinned to current-wrong in
-  test/parser-bugs.js "KNOWN GAP" — they flip loudly when fixed):
-  * a fn that writes props through an object param AND mints a closure inside a
-    for-loop body (capturing the body-let) makes prop reads through the factory's
-    other closures see STALE values — even when the loop never runs. One delta:
-    inline the write or call the loop closures directly → heals.
-  * `export`ing a closure that mutates module-level captured arrays breaks
-    sibling closures' reads of that state; unexported → correct. The async
-    runtime dodges both (settled-queue drain + thin export forwarders); root fix
-    belongs in closure-env/schema aliasing analysis.
-  * OPTIMIZER CLOSURE-SLOT DIVERGENCE (worst of the family; diagnosed
-    2026-07-13): an async-runtime module + ANY sibling fn looping `a[i]` over
-    `a.length` loses queued microtask callbacks at O1+ — the same source emits
-    __jz_table 30 slots at O0 vs 27 at O1 (three closures lose funcref slots,
-    all static-data offsets shift); a stale index survives and callbacks
-    dispatch into wrong slots. EMIT-TIME divergence (ctx.closure.table built
-    during emission), async-runtime-specific (sync closure modules stable);
-    each L1 pass alone triggers. Next: trace which 3 closures lose slots and
-    which consumer keeps the O0-shaped index (suspect: lazy-injected spans /
-    closure records in static data — the injectTable neighborhood). Pinned
-    (parser-bugs KNOWN GAP); test262 asyncDone runs at optimize:false until
-    fixed.
-  * assert-harness-shaped code NESTED in a wrapper fn breaks the drain even at
-    O0 (module-level hoist heals) — third variant, same family.
+- [x] **Coverage pools LANDED (2026-07-13).** All four wired at 0 fail:
+  (a) built-ins/Promise 703 → 127 pass: $DONE shim ported to test262-builtins.js;
+  runtime gained allSettled/any/try/withResolvers, plain-object thenable adoption
+  (already-called latch, 25.4.1.3.2), executor abrupt→reject, resolve identity,
+  non-callable then-handler pass-through, __p_list GetIterator (non-iterables
+  reject TypeError). (b) built-ins/Iterator 514 → 75 pass: helper results are
+  first-class VALUES — helper-using programs mint generator objects through
+  __it_mk (map/filter/take/drop/flatMap + terminals, value+counter callbacks,
+  callable guards, ToNumber'd limits, IteratorClose through flatMap, no return
+  on indexed mints); `instanceof Iterator` shape probe; Array.from → __it_arr;
+  `[lit][Symbol.iterator]()` → __it_from. Fusion kept (spec counters + reduce
+  seeding + bool-kinded some/every added). (c) language async-generator/
+  for-await → +178 language passes (2794→2972): async function* lowers to the
+  SAME machine with TAGGED yields ({a:1}=await, {a:0}=yield) driven by __ag_run
+  (serialized next(), yielded values awaited, yield* over async/sync/indexed
+  sources); `for await` desugars to plain awaits, works in async fns too.
+  (d) built-ins/Atomics 390 + SharedArrayBuffer 104 → 20 pass:
+  `new SharedArrayBuffer(n)` canonicalizes to ArrayBuffer (sharedness is a
+  jz.pool LINKING concern, not an object property); Atomics ops work on views
+  over buffers in non-shared memory. Builtins total 973/0; baselines
+  language 2972 / builtins 973.
+- [ ] **Atomics $262.agent harness over jz.pool** (the remaining 112 agent
+  tests + notify/wait blocking): agent.start(src) → compile src as a jz module
+  sharing the pool memory in a worker; broadcast/report/leaving over a small
+  shared mailbox; sleep via Atomics.wait. jz.pool is the substrate. Also
+  recorded: SharedArrayBuffer/ArrayBuffer `.slice()` edge clamping (negative /
+  exceeding indices — xfail-prefixed in the builtins runner), and Promise.any's
+  7 iter-returns xfails (see the @@iterator dyn-read KNOWN GAP below).
+- [x] **Closure-state visibility miscompiles — ROOT-FIXED 2026-07-13.** The
+  whole pinned family (loop-minted-closure visibility, exported-closure
+  siblings, optimizer closure-slot divergence, nested-harness drain) was ONE
+  bug: when a module contains any dynamic key access (`x[expr]`), object
+  literals mint with a props sidecar seeded per schema key (needsDynShadow),
+  and __dyn_get probes that sidecar BEFORE the schema slots — but emit-assign's
+  ptrAux and chained-receiver arms stored schema slots WITHOUT the __dyn_set
+  mirror, so dyn reads served the stale mint-time copy (e.g. `p.then = closure`
+  silently dropped subscriptions in the async runtime; delta-reduced from
+  `Promise.all([p]).then()`). Both arms now honor the shadow contract; the
+  three pins flipped to correct-behavior regressions; test262 asyncDone runs
+  fully optimized; perf pins hold (ratchet 6/6, self-host warm 1.003×).
+- [ ] **Dyn-read gaps still open** (both pinned KNOWN GAP in parser-bugs.js):
+  * string-INDEX assign of a data-interned key (`it['@@iterator'] = fn`) is
+    invisible to prehashed dot reads on an imprecisely-kinded receiver — the
+    dot-canonical write (`it[Symbol.iterator] = fn`, canonSymbols) is coherent;
+    jzify runtimes now use it (prepend() runs canonSymbols on runtimes).
+  * a literal's canonicalized @@iterator METHOD reads as missing through the
+    async runtime's dyn read when the combinator runs post-init (Promise.any's
+    7 iter-returns xfails observe it; rejection itself is still correct).
   * reassigned PARAM whose new value comes from a dynamic closure call poisons
-    the fn's return kind (spread __drain hit it; fresh local heals) — matches
-    the transplanted ir.js writeVar family.
+    the fn's return kind (spread __drain hit it; fresh local heals) — the
+    desugars all use fresh locals / single-init temps.
 - [ ] **Self-host fragility guards, live** (from the deleted fragilities doc — each
   neutralized only at its one known trigger, unguarded in general): Root F `.typed:[]`
   runtime-variable OOB index unchecked (module/typedarray.js fast path — silent adjacent-
