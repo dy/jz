@@ -997,10 +997,11 @@ function prep(node) {
 
   const [op, ...args] = node
   if (op === 'void' && ctx.transform.strict) err('strict mode: `void` is prohibited — write `undefined`.')
-  // jz's `==`/`!=` already never coerce (identical to `===`/`!==`), so default mode accepts them.
-  // strict enforces the canonical subset, where `===`/`!==` are the one spelling — reject the loose form.
+  // jz's `==`/`!=` follow JS loose equality (statically-known mixed types coerce:
+  // `1 == "1"` is true), so default mode accepts them for JS parity. strict enforces
+  // the canonical subset, where `===`/`!==` are the one spelling — reject the loose form.
   if ((op === '==' || op === '!=') && ctx.transform.strict)
-    err(`strict mode: \`${op}\` is prohibited — use \`${op}=\`. (jz's \`${op}\` doesn't coerce, but the canonical subset is \`===\`/\`!==\` only.)`)
+    err(`strict mode: \`${op}\` is prohibited — use \`${op}=\` (\`jz --jzify\` converts). jz's \`${op}\` follows JS loose equality; the canonical subset spells equality \`===\`/\`!==\` only.`)
   // A builtin-namespace member alias (`let sin = Math.sin`, `let {sin} = Math`)
   // carries no storage — writing through it would silently target nothing.
   // Catch every write form (`=`, compound `+=`-family, `++`/`--`) here, ahead

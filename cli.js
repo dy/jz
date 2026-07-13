@@ -132,7 +132,9 @@ async function handleJzify(args) {
   if (!inputFile) throw new Error('No input file specified')
   if (!outputFile) outputFile = inputFile.replace(/\.js$/, '.jz')
   const code = readFileSync(inputFile, 'utf8')
-  const out = transform(code) + '\n'
+  const warnings = { entries: [] }
+  const out = transform(code, { warnings }) + '\n'
+  for (const w of warnings.entries) console.warn(formatWarning(w))
   if (outputFile === '-') {
     process.stdout.write(out)
   } else {

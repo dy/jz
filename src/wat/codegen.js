@@ -20,6 +20,19 @@ function wrapBlock(node, depth) {
   return '{ ' + codegen(node, depth) + '; }'
 }
 
+// Effective precedence of a node in expression position: binaries from `prec`,
+// ternary/arrow/comma below them, atoms/calls/members bind tightest.
+const ASSOC = new Set(['&&', '||', '+', '*', '&', '|', '^'])
+const cprec = (n) => !Array.isArray(n) || n[0] == null ? Infinity
+  : prec[n[0]] != null ? prec[n[0]]
+  : n[0] === '?' || n[0] === '?:' ? 1.5
+  : n[0] === '=>' ? 0.7
+  : n[0] === ',' ? 0.1
+  : Infinity
+
+/** Print child, parenthesized when it binds looser than the context. */
+const paren = (n, ctx) => cprec(n) < ctx ? '(' + codegen(n) + ')' : codegen(n)
+
 /** Generate jz source from AST. Enforces semicolons. */
 export function codegen(node, depth = 0) {
   if (node == null) return ''
@@ -102,6 +115,17 @@ export function codegen(node, depth = 0) {
     if (a.length === 3) return 'try ' + codegen(a[0], depth) + ' catch (' + a[1] + ') ' + codegen(a[2], depth)
     return 'try ' + codegen(a[0], depth) + ' catch ' + codegen(a[1], depth)
   }
+  // Parser shape: ['try', body, ['catch', param|null, cbody]?, ['finally', fbody]?] —
+  // bodies arrive unbraced (bare statement or `;`-list); JS requires the blocks back.
+  if (op === 'try') {
+    let s = 'try ' + wrapBlock(a[0], depth)
+    for (const c of a.slice(1)) {
+      if (!Array.isArray(c)) continue
+      if (c[0] === 'catch') s += (c[1] != null ? ' catch (' + codegen(c[1]) + ') ' : ' catch ') + wrapBlock(c[2], depth)
+      else if (c[0] === 'finally') s += ' finally ' + wrapBlock(c[1], depth)
+    }
+    return s
+  }
 
   // Arrow
   if (op === '=>') {
@@ -178,20 +202,35 @@ export function codegen(node, depth = 0) {
   // Unary prefix
   if (a.length === 1) {
     if (op === '++' || op === '--') return a[0] == null ? op : op + codegen(a[0])
-    if (op === 'typeof') return 'typeof ' + codegen(a[0])
-    if (op === 'u-') return '-' + codegen(a[0])
-    if (op === 'u+') return '+' + codegen(a[0])
-    return op + codegen(a[0])
+    if (op === 'typeof') return 'typeof ' + paren(a[0], 14)
+    if (op === 'u-') return '-' + paren(a[0], 14)
+    if (op === 'u+') return '+' + paren(a[0], 14)
+    return op + paren(a[0], 14)
   }
 
   // Postfix
   if (a.length === 2 && a[1] === null) return codegen(a[0]) + op
 
-  // Binary
-  if (a.length === 2 && prec[op]) return codegen(a[0]) + ' ' + op + ' ' + codegen(a[1])
+  // Binary — parenthesize looser-binding children: parse preserves user parens as
+  // '()' group nodes, but jzify/canon-synthesized trees are bare, so `&&` over a
+  // synthesized `||` must print `a && (b || c)`, not re-associate on re-parse.
+  if (a.length === 2 && prec[op]) {
+    const P = prec[op]
+    // `??` may not mix with bare `&&`/`||` at all (JS SyntaxError) — force parens.
+    const force = (n) => op === '??' && Array.isArray(n) && (n[0] === '&&' || n[0] === '||')
+    const left = force(a[0]) || cprec(a[0]) < P || (cprec(a[0]) === P && op === '**')  // ** is right-assoc
+      ? '(' + codegen(a[0]) + ')' : codegen(a[0])
+    // Assignment RHS takes any assignment-expression bare (arrows, ternaries,
+    // chained `=`) — only a comma-sequence needs parens there.
+    const rmin = P === 1 ? 0.5 : P
+    const right = force(a[1]) || cprec(a[1]) < rmin || (cprec(a[1]) === rmin && !(ASSOC.has(op) && a[1][0] === op))
+      ? '(' + codegen(a[1]) + ')' : codegen(a[1])
+    return left + ' ' + op + ' ' + right
+  }
 
-  // Ternary
-  if (op === '?' || op === '?:') return codegen(a[0]) + ' ? ' + codegen(a[1]) + ' : ' + codegen(a[2])
+  // Ternary — only the condition slot needs guarding (branches take any
+  // assignment-expression; ?: is right-associative)
+  if (op === '?' || op === '?:') return paren(a[0], 2) + ' ? ' + codegen(a[1]) + ' : ' + codegen(a[2])
 
   // Fallback
   return op + '(' + a.map(x => codegen(x)).join(', ') + ')'

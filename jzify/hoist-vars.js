@@ -84,6 +84,33 @@ export function hoistVars(node, names) {
     }
     return ['for', h2, hoistVars(node[2], names)]
   }
+  // `export var x = 1, y` — the var splits into a hoisted `let` + in-place
+  // assignment, so the `export` keyword can't stay on the declarator
+  // (`export x = 1` is not JS). Assignments stay in place; the export moves
+  // to a clause: `x = 1; export { x, y }` — live bindings, same semantics.
+  // A function-valued declarator instead keeps decl+init together in place
+  // (`export let f = fn`) so the compiler sees a function binding, not a
+  // closure-valued global — mirrors the `;`-handler's arrow-in-place rule.
+  if (op === 'export' && Array.isArray(node[1]) && node[1][0] === 'var') {
+    const isFnInit = v => Array.isArray(v) && (v[0] === '=>' || v[0] === 'function')
+    const stmts = [], exported = []
+    for (let i = 1; i < node[1].length; i++) {
+      const d = node[1][i]
+      if (typeof d === 'string') { names.add(d); exported.push(d) }
+      else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+        if (isFnInit(d[2])) { stmts.push(['export', ['let', ['=', d[1], hoistVars(d[2], names)]]]); continue }
+        names.add(d[1]); exported.push(d[1])
+        stmts.push(['=', d[1], hoistVars(d[2], names)])
+      } else if (Array.isArray(d) && d[0] === '=' && isDestructurePat(d[1])) {
+        const local = new Set()
+        stmts.push(['=', hoistVarPattern(d[1], local), hoistVars(d[2], names)])
+        for (const n of local) { names.add(n); exported.push(n) }
+      }
+    }
+    if (exported.length) stmts.push(['export', ['{}', exported.length === 1 ? exported[0] : [',', ...exported]]])
+    if (!stmts.length) return null
+    return stmts.length === 1 ? stmts[0] : [';', ...stmts]
+  }
   if (op === 'var') {
     const decls = []
     for (let i = 1; i < node.length; i++) {
