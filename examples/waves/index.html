@@ -14,8 +14,9 @@ import { runDemo } from "../lib/jzdemo.js"
 // net. Click presses a dip — the water itself makes the ring. Drag is a STICK drawn through
 // the water: one continuous wake. Scroll sets the POOL DEPTH (shallow barely bends the
 // light, deep folds every ripple hard). Dice throws a few drops.
-let foc = 210                         // pool depth (focal length of the refraction)
-let dragging = false, sx = 0, sy = 0  // stick state, in backing pixels
+let foc = 240                         // pool depth (focal length of the refraction)
+let down = false, stick = false       // stick engages only after real movement — a clean
+let sx = 0, sy = 0, dx0 = 0, dy0 = 0  // click must NOT press the stick under its own drop
 
 const demo = runDemo({
   name: "waves",
@@ -23,7 +24,7 @@ const demo = runDemo({
   size: { budget: 420000 },
   bg: "#2b98ac",
   load: (e) => { e.clear() },
-  frame: (e, t) => { e.frame(t, sx, sy, dragging ? 1.0 : 0.0, foc) },
+  frame: (e, t) => { e.frame(t, sx, sy, stick ? 1.0 : 0.0, foc) },
   randomize: (e, d) => {
     for (let i = 0; i < 3; i++) e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7))
   },
@@ -36,13 +37,20 @@ const toPx = (e) => {
 }
 demo.cv.addEventListener("pointerdown", (e) => {
   toPx(e)
-  demo.engine?.drop(sx, sy)
-  dragging = true
+  down = true; stick = false; dx0 = sx; dy0 = sy
   try { demo.cv.setPointerCapture(e.pointerId) } catch {}
 })
-demo.cv.addEventListener("pointermove", (e) => { if (dragging) toPx(e) })
-demo.cv.addEventListener("pointerup", (e) => { dragging = false; try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
-demo.cv.addEventListener("pointerleave", () => { dragging = false })
+demo.cv.addEventListener("pointermove", (e) => {
+  if (!down) return
+  toPx(e)
+  if (!stick && Math.hypot(sx - dx0, sy - dy0) > 8) stick = true   // it's a drag — engage the stick
+})
+demo.cv.addEventListener("pointerup", (e) => {
+  if (down && !stick) demo.engine?.drop(dx0, dy0)                  // it was a clean click — drop
+  down = false; stick = false
+  try { demo.cv.releasePointerCapture(e.pointerId) } catch {}
+})
+demo.cv.addEventListener("pointerleave", () => { down = false; stick = false })
 demo.cv.addEventListener("wheel", (e) => {
   e.preventDefault()
   foc *= Math.exp(-e.deltaY * 0.001)

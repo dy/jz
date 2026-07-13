@@ -29,13 +29,13 @@ let glut               // Int32Array(1024) — photon density → pool-water col
 
 const C2 = 0.20        // wave speed² (CFL-stable for the 9-point stencil at ≤0.5) — unhurried
 const SUB = 1          // one leapfrog substep per frame — the pool shimmers, it doesn't race
-const DAMP = 0.993     // a click's rings ride out and settle into the ambient net in ~3 s
+const DAMP = 0.9955    // rings reverberate — a drop stays audible for a good while
 const MARGIN = 18      // edge-sponge width (cells)
 const MARGINDAMP = 0.94
 const RAIN = 0.7       // a rare soft plop — the pool mostly rests
 const RAINA = 0.35     // plop amplitude (signs alternate → zero-mean surface)
-const VISC = 0.030     // per-frame ∇² smoothing of the surface: fine ripples die in a beat,
-                       // the broad swell rolls on — the water feels thick
+const VISC = 0.015     // per-frame ∇² smoothing of the surface: fine chop still dies in a
+                       // beat, but a drop's ring — a longer wave — now rolls on and on
 const O = 0.66667, D = 0.16667, CEN = -3.33333   // 9-point isotropic Laplacian weights
 
 export let resize = (w, h) => {
@@ -184,7 +184,7 @@ export let frame = (t, sx, sy, stick, foc) => {
         if (q < 9.0) {
           let c = row + x
           let E = Math.exp(-q)
-          a[c] = a[c] + (-0.9 * stick * E - a[c]) * 0.25 * E
+          a[c] = a[c] + (-0.6 * stick * E - a[c]) * 0.2 * E
         }
         x++
       }
