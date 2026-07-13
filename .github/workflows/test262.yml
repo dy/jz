@@ -50,7 +50,7 @@ jobs:
           # pattern declarators dropped; for-of head cover-grammar `{x=1}`
           # mis-destructured), residues precisely skip-classified or xfail-tracked
           # (bool-carrier family flips to xpass when that work lands — prune then).
-          JZ_TEST262_BASELINE: 2794
+          JZ_TEST262_BASELINE: 2972
         run: npm run test:262
 
   test262-builtins:
@@ -88,5 +88,5 @@ jobs:
           # so no jz regression; upstream simply changed/removed one test). Bumped the
           # cache key to `-v2` so both jobs re-clone current test262, where this run
           # measures 722 pass / 0 in-scope fail.
-          JZ_TEST262_BASELINE: 737
+          JZ_TEST262_BASELINE: 973
         run: npm run test:262:builtins

@@ -432,6 +432,17 @@ export function createTransform(opts) {
         if (lit) return lit
       }
       const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
+      // SharedArrayBuffer canonicalizes to ArrayBuffer: within one module the
+      // buffer IS jz's linear memory — sharedness is a jz.pool linking concern
+      // (sharedMemory: true), not a per-buffer object property. Atomics accept
+      // proven Int32Array views either way. (`new X(args)` parses with the
+      // args INSIDE the ctor call node — rename the callee, keep the rest.)
+      if (name === 'SharedArrayBuffer') {
+        const ctor2 = Array.isArray(ctor) && ctor[0] === '()'
+          ? ['()', 'ArrayBuffer', ...ctor.slice(2).map(transform)]
+          : 'ArrayBuffer'
+        return ['new', ctor2, ...cargs.map(transform)]
+      }
       // Preserve `new` for native constructors the compiler resolves under its own
       // `new` handler (prepare/index.js): typed arrays/Array/RegExp need the `new`
       // form, and `new URL(rel, import.meta.url)` lowers to a static href string there.
@@ -455,7 +466,8 @@ export function createTransform(opts) {
         return ['&&', ['===', ['typeof', t0], [null, 'object']], ['!=', ['.', t0, 'next'], [null, null]]]
       }
       const t = transform(val)
-      const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
+      let name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
+      if (name === 'SharedArrayBuffer') name = 'ArrayBuffer'   // same canonicalization as `new`
       const fold = staticInstanceofFold(val, name)
       if (fold != null) return [null, fold]
       if (typeof name === 'string' && ERROR_INSTANCEOF.has(name)) {

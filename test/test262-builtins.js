@@ -214,6 +214,14 @@ const TRACKED_BUILTIN_PATHS = [
   // methods, Symbol.iterator identity, `instanceof Iterator` shape probe.
   // %Iterator.prototype% reflection / Iterator-as-constructor absorb as skips.
   'Iterator',
+  // Atomics/SharedArrayBuffer pool wired 2026-07-13: SharedArrayBuffer
+  // canonicalizes to ArrayBuffer (within one module the buffer IS jz's linear
+  // memory — sharedness is a jz.pool LINKING concern, not an object property);
+  // Atomics map to wasm atomic ops on proven Int32Array views (module/
+  // atomics.js). $262.agent multi-thread tests need the agent harness over
+  // jz.pool — a recorded follow-up; they absorb as skips meanwhile.
+  'Atomics',
+  'SharedArrayBuffer',
 ]
 
 const FUNCTIONAL_TESTS = new Set([
@@ -706,6 +714,8 @@ const EXPECTED_FAIL_PREFIXES = [
   ['built-ins/BigInt/', 'BigInt arithmetic/coercion — out of scope (no BigInt type)'],
   ['built-ins/RegExp/prototype/exec/', 'dynamic RegExp lastIndex / u-flag exec — out of scope'],
   ['built-ins/ArrayBuffer/', 'resizable ArrayBuffer options — out of scope'],
+  ['built-ins/SharedArrayBuffer/', 'growable/maxByteLength options + slice edge clamping — out of scope / recorded gap'],
+  ['built-ins/Atomics/notify/', 'notify/wait blocking semantics need the agent harness; resizable-buffer edges out of scope'],
   ['built-ins/Symbol/', 'Symbol primitive semantics — out of scope'],
 ]
 const EXPECTED_FAIL_FILES = new Map([
@@ -888,7 +898,8 @@ function shouldSkip(raw, rel) {
   // matching — their pass/skip balance was hand-curated under that rule, and
   // code-only matching there admits hundreds of coercion/sparse-array tests
   // that need individual triage first.
-  const codeOnly = /^built-ins\/(Iterator|Promise)\//.test(rel)
+  const codeOnly = /^built-ins\/(Iterator|Promise|Atomics|SharedArrayBuffer)\//.test(rel)
+  if (codeOnly && /\$262\b/.test(raw)) return '$262.agent harness (multi-thread pool follow-up)'
   const content = codeOnly ? raw.replace(/\/\*---[\s\S]*?---\*\//, '') : raw
   if (codeOnly) {
     // compareArray.js is implemented by ASSERT_HARNESS — only OTHER helpers skip.
@@ -925,7 +936,7 @@ function shouldSkip(raw, rel) {
   if (/Object\.getOwnProperty/.test(content)) return 'descriptor introspection'
   if (/Object\.preventExtensions|Object\.freeze|Object\.seal/.test(content)) return 'object integrity'
   if (/\.constructor\b/.test(content)) return 'constructor semantics'
-  if (/\bnew\s+(?!Map|Set|Array|Promise|Error|TypeError|RangeError|ReferenceError|SyntaxError|URIError|EvalError)/.test(content)) return 'custom new'
+  if (/\bnew\s+(?!Map|Set|Array|Promise|SharedArrayBuffer|ArrayBuffer|DataView|Int8Array|Uint8Array|Uint8ClampedArray|Int16Array|Uint16Array|Int32Array|Uint32Array|Float32Array|Float64Array|Error|TypeError|RangeError|ReferenceError|SyntaxError|URIError|EvalError)/.test(content)) return 'custom new'
   if (/\bnew\s+(Boolean|Number|String|Object)\b/.test(content)) return 'wrapper object new'
   if (/negative:\s*\n\s+phase:\s+(parse|runtime)/.test(content)) return 'negative test'
   if (/\bundefined\s*=/.test(content)) return 'global undefined assignment'
