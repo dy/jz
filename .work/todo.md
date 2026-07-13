@@ -1279,9 +1279,17 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
     reads REBOX) may unbox pointer params. The 7 Promise.any iter-returns
     xfails pruned as passes — builtins 977 → 984 / 0 fail; perf pins hold
     (warm 0.997×, ratchet 6/6).
-  * still recorded: reassigned PARAM whose new value comes from a dynamic
-    closure call poisons the fn's return kind (spread __drain hit it; fresh
-    local heals) — the desugars all use fresh locals / single-init temps.
+  * the reassigned-param residue — ROOT-FIXED 2026-07-13, TWO real bugs:
+    (1) applyPointerParamAbi/applyTypedPointerParamAbi narrowed params to
+    unboxed i32 offsets WITHOUT the body-write guard the wasm-type narrowing
+    applies — a body reassignment stored a boxed f64 into the i32 local (wasm
+    validation failure); both passes now skip body-mutated params. (2) VT['[]']
+    typed ANY 2-arg [] read on a known array by ELEMENT kind — a non-numeric
+    STRING-literal key ('@@iterator') is a PROPERTY read (undefined), so
+    `a['@@iterator'] != null` folded TRUE and the drain guards called undefined
+    (table OOB). Both kind arms now bail to unknown on non-numeric string keys.
+    __it_drain un-dodged to the natural param-reassign form; regression pins in
+    parser-bugs.js.
 - [ ] **Self-host fragility guards, live** (from the deleted fragilities doc — each
   neutralized only at its one known trigger, unguarded in general): Root F `.typed:[]`
   runtime-variable OOB index unchecked (module/typedarray.js fast path — silent adjacent-

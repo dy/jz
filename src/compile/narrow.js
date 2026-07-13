@@ -145,6 +145,13 @@ function applyPointerParamAbi(paramReps, valueUsed, hardParamVal) {
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    // A pointer-narrowed param is a CALLER-side contract (unboxed i32 offset,
+    // reads rebox via ptrKind/ptrAux). The body keeps it only if it never
+    // WRITES the param: a reassignment (`v = v['@@iterator']()`) stores a
+    // boxed f64 into the i32 local — mixed views, wasm validation failure
+    // (the recorded reassigned-param kind bug). Same rule the wasm-type
+    // narrowing applies, for the same reason.
+    let mutated = null
     for (const [k, r] of reps) {
       // Re-fold call sites HARD (the shared val lattice is soft, so r.val may be a
       // partial consensus from typed sites alone) — only specialize when every site
@@ -156,6 +163,11 @@ function applyPointerParamAbi(paramReps, valueUsed, hardParamVal) {
       const p = func.sig.params[k]
       if (p.type === 'i32') continue
       if (func.defaults?.[p.name] != null) continue
+      if (mutated === null) {
+        mutated = new Set()
+        if (func.body) findMutations(func.body, new Set(func.sig.params.map(q => q.name)), mutated)
+      }
+      if (mutated.has(p.name)) continue
       // OBJECT is the one PTR_ABI_KINDS member whose unboxed i32 offset is
       // ambiguous without a schema id: SET/MAP/BUFFER have a fixed runtime layout
       // (aux always 0, per narrowPointerResults), but an OBJECT's payload slots are
@@ -233,6 +245,7 @@ function applyTypedPointerParamAbi(paramReps, valueUsed) {
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    let mutated = null   // body-write guard — same contract as applyPointerParamAbi
     for (const [k, r] of reps) {
       const ctor = r.typedCtor
       if (ctor == null) continue
@@ -241,6 +254,11 @@ function applyTypedPointerParamAbi(paramReps, valueUsed) {
       const p = func.sig.params[k]
       if (p.type === 'i32') continue
       if (func.defaults?.[p.name] != null) continue
+      if (mutated === null) {
+        mutated = new Set()
+        if (func.body) findMutations(func.body, new Set(func.sig.params.map(q => q.name)), mutated)
+      }
+      if (mutated.has(p.name)) continue
       const aux = typedElemAux(ctor)
       if (aux == null) continue
       p.type = 'i32'

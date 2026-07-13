@@ -57,12 +57,10 @@ transformSwitch = createSwitchLowering(transform, names)
 const ITER_RUNTIME = `
 let __it_drain = (v) => {
   if (v == null) return v
-  // fresh local, never reassign the param (recorded reassigned-param kind bug)
-  let w = v
-  if (typeof w === 'object' && w['@@iterator'] != null) w = w['@@iterator']()
-  if (typeof w !== 'object' || w.next == null) return w
-  let r = w.next(), a = []
-  while (!r.done) { a.push(r.value); r = w.next() }
+  if (typeof v === 'object' && v['@@iterator'] != null) v = v['@@iterator']()
+  if (typeof v !== 'object' || v.next == null) return v
+  let r = v.next(), a = []
+  while (!r.done) { a.push(r.value); r = v.next() }
   return a
 }
 `

@@ -227,8 +227,8 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
     // plain indexed iterable (array/string) yields element-wise (fork mirrors
     // desugarForOfProtocol; both arms decompose like any generator-body loop).
     const desugarYieldStar = (expr, target) => {
-      // yw copies the source before the @@iterator() unwrap — never reassign
-      // a precisely-kinded local from a dynamic call (reassigned-local kind bug).
+      // the source copies before the @@iterator() unwrap — single-assignment
+      // locals keep the probe reads on the precise kind.
       const src = genTemp('yv'), it = genTemp('yi'), r = genTemp('yr'), sent = genTemp('ys'), ix = genTemp('yx')
       locals.add(src); locals.add(it); locals.add(r); locals.add(sent); locals.add(ix)
       const NULL = [null, null]
@@ -609,8 +609,8 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
   // gate) — they compile byte-identically.
   function desugarForOfProtocol(decl, iterExpr, body, temp) {
     // `w` starts as a COPY of the source and takes the @@iterator() result —
-    // never reassign the precisely-kinded source local from a dynamic call
-    // (the recorded reassigned-local kind bug poisons subsequent prop reads).
+    // the source local stays single-assignment so its precise kind keeps
+    // serving the probe reads above the fork.
     const v = temp('gv'), w = temp('gw'), r = temp('gr')
     const NULL = [null, null]
     const isDecl = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const')

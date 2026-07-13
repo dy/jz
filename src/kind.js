@@ -204,6 +204,18 @@ VT['[]'] = (args) => {
   // element type. Returning a numeric elem type here would let `a[-1] === undefined`
   // fold to false (a NUMBER can't be undefined), silently dropping the guard.
   { const li = intLiteralValue(args[1]); if (li != null && li < 0) return null }
+  // A non-numeric STRING-literal key is a PROPERTY read, not an element read:
+  // on arrays/typed arrays it yields undefined (or a builtin method), never the
+  // element kind. Typing it by elem let `a['@@iterator'] != null` fold TRUE on
+  // a known array — the drain/GetIterator guards then called undefined (table
+  // OOB). Canonical numeric strings ('0','1',…) DO address elements
+  // (ToPropertyKey) and keep the elem typing below.
+  {
+    const k = args[1]
+    const lit = Array.isArray(k) && k.length === 2 && k[0] == null ? k[1]
+      : Array.isArray(k) && k[0] === 'str' ? k[1] : undefined
+    if (typeof lit === 'string' && !/^(0|[1-9][0-9]*)$/.test(lit)) return null
+  }
   // SRoA flat-array slot read: `a[k]` (static index) where `a` dissolved into
   // scalar `a#i` locals (scanFlatObjects). A write-once slot's value-type is its
   // element literal's — same numeric-binding as the `VT['.']` object case, so
@@ -535,7 +547,14 @@ export function shapeOf(expr) {
   }
   if (op === '[]' && args.length === 2) {
     const parent = shapeOf(args[0])
-    if (parent?.val === VAL.ARRAY) return parent.elem || null
+    if (parent?.val === VAL.ARRAY) {
+      // non-numeric string-literal key = PROPERTY read, not an element (see VT['[]'])
+      const k = args[1]
+      const lit = Array.isArray(k) && k.length === 2 && k[0] == null ? k[1]
+        : Array.isArray(k) && k[0] === 'str' ? k[1] : undefined
+      if (typeof lit === 'string' && !/^(0|[1-9][0-9]*)$/.test(lit)) return null
+      return parent.elem || null
+    }
   }
   return null
 }

@@ -415,3 +415,30 @@ test('param narrowing: pointer-carrying i32 args are not integer evidence', () =
     for (let i = 0; i < 100 && st === '@pending'; i++) st = inst.exports.check()
     is(st, 'cc=1')  // was cc=0 before the fix (@@iterator never called)
 })
+
+test('pointer-ABI params: body-reassigned params stay boxed (reassigned-param kind bug)', () => {
+    // Was the last recorded dyn-read residue — FIXED 2026-07-13. Root: the
+    // pointer-param ABI passes (applyPointerParamAbi / applyTypedPointerParamAbi)
+    // narrowed params to unboxed i32 offsets WITHOUT the body-write guard the
+    // wasm-type narrowing applies — a body reassignment (`v = v['@@iterator']()`)
+    // then stored a boxed f64 into the i32 local: mixed views, wasm validation
+    // failure ("i64.reinterpret_f64[0] expected type f64"). Both passes now
+    // skip body-mutated params, so the natural param-reassign drain idiom works.
+    const src = `
+        let mk = () => ({ next: () => ({ value: 7, done: true }) })
+        let drain = (v) => {
+          if (typeof v === 'object' && v['@@iterator'] != null) v = v['@@iterator']()
+          if (typeof v !== 'object' || v.next == null) return 'no-next'
+          return v.next().value
+        }
+        export let f = () => {
+          let o = { [Symbol.iterator]() { return mk() } }
+          return drain(o)
+        }`
+    is(jz(src, { jzify: true }).exports.f(), 7)
+    // typed-array leg: reassigned typed param keeps the boxed lane too
+    const src2 = `
+        let scale = (a) => { if (a.length === 0) a = new Float64Array(1); return a[0] * 2 }
+        export let f = () => { let t = new Float64Array([21]); return scale(t) }`
+    for (const optimize of [false, true]) is(jz(src2, { optimize }).exports.f(), 42)
+})
