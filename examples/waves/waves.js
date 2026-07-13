@@ -24,13 +24,14 @@ let dampField          // per-cell damping = global damp × edge sponge
 let rs = 0             // xorshift32 — the rain (i32 wraps identically in JS and jz)
 let glut               // Int32Array(1024) — photon density → pool-water color
 
-const C2 = 0.35        // wave speed² (CFL-stable for the 9-point stencil at ≤0.5)
+const C2 = 0.20        // wave speed² (CFL-stable for the 9-point stencil at ≤0.5) — unhurried
 const SUB = 1          // one leapfrog substep per frame — the pool shimmers, it doesn't race
 const DAMP = 0.993     // a click's rings ride out and settle into the ambient net in ~3 s
 const MARGIN = 18      // edge-sponge width (cells)
 const MARGINDAMP = 0.94
-const RAIN = 8.0       // soft plops per second — the source of the ambient swell
-const RAINA = 0.38     // plop amplitude (signs alternate → zero-mean surface)
+const RAIN = 6.0       // soft plops per second — the source of the ambient swell
+const RAINA = 0.28     // plop amplitude (signs alternate → zero-mean surface); quiet enough
+                       // that a clicked or drawn wave clearly OWNS the pool
 const O = 0.66667, D = 0.16667, CEN = -3.33333   // 9-point isotropic Laplacian weights
 
 export let resize = (w, h) => {
@@ -125,7 +126,7 @@ let plop = (cx, cy, r, amp, both) => {
 // cleanly outward with no ingoing rebound and no velocity shock) plus a soft dip at the
 // centre where the drop landed
 export let drop = (cx, cy) => {
-  let R0 = 7.0, WD = 5.5, AMP = 1.5
+  let R0 = 7.0, WD = 6.0, AMP = 1.2
   let cs = Math.sqrt(C2)                   // lattice wave speed, px per substep
   let rO = R0 + WD * 3.0
   let x0 = (cx - rO) | 0, x1 = (cx + rO) | 0, y0 = (cy - rO) | 0, y1 = (cy + rO) | 0
@@ -150,8 +151,9 @@ export let drop = (cx, cy) => {
     }
     y++
   }
-  plop(cx, cy, 4.5, -1.1, 1)               // the dip where the droplet punched through
-}
+  plop(cx, cy, 7.0, -0.7, 1)               // the dip where the droplet punched through — wide
+}                                          // and shallow: sharp small features excite the
+                                           // stencil's lattice anisotropy (hexagonal fronts)
 
 // one leapfrog substep of the linear wave equation
 let step = () => {
@@ -199,9 +201,13 @@ export let frame = (t, foc) => {
       let gx = (a[c + 1] - a[c - 1]) * 0.5
       let gy = (a[c + w] - a[c - w]) * 0.5
       // refraction bends the ray TOWARD the surface normal (air → water), so the floor hit
-      // shifts DOWNHILL: crests converge light (bright), pressed dimples diverge it (dark)
-      let xf = x + foc * gx
-      let yf = y + foc * gy
+      // shifts DOWNHILL: crests converge light (bright), pressed dimples diverge it (dark).
+      // Each ray starts from a hash-jittered sub-pixel origin — one ray per exact texel
+      // centre imprints the sampling GRID wherever the refraction map stretches (a dotted
+      // lattice in every dark core); the jitter turns that into noise the blur then absorbs.
+      let hj = (x * 1103515245 + 12345) ^ (y * 12820163 + 9301)
+      let xf = x + foc * gx + ((hj & 255) - 127.5) * 0.0035
+      let yf = y + foc * gy + (((hj >> 8) & 255) - 127.5) * 0.0035
       if (xf >= 0.0 && xf < w - 1.001 && yf >= 0.0 && yf < h - 1.001) {
         let xi = xf | 0, yi = yf | 0
         let fx = xf - xi, fy = yf - yi
