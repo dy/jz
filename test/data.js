@@ -933,6 +933,32 @@ test('Regression: negative literal index reads undefined, not heap (array + type
   is(inb(), 20)  // in-bounds read unchanged
 })
 
+test('Regression (Root F): RUNTIME-variable typed index — OOB reads undefined, OOB writes are ignored', () => {
+  // The known-elem `.typed:[]` fast path emitted a raw `data + (i<<shift)` load/store
+  // with NO bounds check for a runtime index: in-range-but-past-the-end silently read
+  // or CORRUPTED adjacent heap; far indexes trapped. JS: typed OOB reads are
+  // `undefined`, typed OOB writes are no-ops (the RHS still evaluates). The direct
+  // unchecked form is now gated on the structural in-bounds proof (the canonical
+  // `for (i=C; i<a.length; i++)` scan) — proven loops keep byte-identical emit — and
+  // every unproven index takes the checked form (`i u< len`, negatives included).
+  const { rd, wr, neigh, fx, loopSum } = run(`
+    const a = new Float64Array(4)
+    const b = new Float64Array(4)
+    export let rd = (i) => { a[0] = 7; a[3] = 9; return a[i] === undefined ? -1 : a[i] }
+    export let wr = (i, v) => { a[i] = v; return a[3] }
+    export let neigh = (i, v) => { b[0] = 5; a[i] = v; return b[0] }
+    export let fx = (i) => { let hit = 0; a[i] = (hit = 1, 42); return hit }
+    export let loopSum = () => { let s = 0; for (let k = 0; k < a.length; k++) s += a[k]; return s }
+  `)
+  is(rd(0), 7); is(rd(3), 9)
+  is(rd(4), -1); is(rd(1e7), -1); is(rd(-1), -1)      // OOB / far / negative → undefined
+  is(wr(3, 2.5), 2.5); is(wr(4, 111), 2.5)            // OOB write ignored, a[3] intact
+  is(wr(1e7, 222), 2.5); is(wr(-2, 333), 2.5)
+  is(neigh(4, 123.456), 5)                             // adjacent array NOT corrupted
+  is(fx(1000), 1)                                      // RHS effects still run on OOB write
+  is(loopSum(), 7 + 2.5)                               // proven loop reads all elements (a[3] was overwritten to 2.5)
+})
+
 // ES2025 Set algebra (2026-07-11, Ring 2): union/intersection/difference/
 // symmetricDifference return a NEW Set (receiver untouched) in the spec result
 // order (test262 result-order.js: union = A then B-not-in-A; intersection

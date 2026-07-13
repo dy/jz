@@ -11,6 +11,7 @@ import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, NULL_NAN, TRUE_NAN, FA
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
+import { inBoundsArrIdx } from '../src/type.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
 import { inc, PTR, LAYOUT, registerGetter } from '../src/ctx.js'
@@ -1330,58 +1331,97 @@ export default (ctx) => {
   }
   ctx.core.emit['.typed:sort'] = (arr, fn) => emitTypedSort(emit(arr), fn)
 
-  // Type-aware TypedArray read: arr[i]
+  // Type-aware TypedArray read: arr[i]. The DIRECT unchecked load is gated on the
+  // structural in-bounds proof (inBoundsArrIdx — the same canonical `for (i=C≥0;
+  // i<arr.length; i++)` scan the generic ARRAY read uses), which keeps every proven
+  // hot loop byte-identical (the vectorizer's shapes). An UNPROVEN index takes the
+  // checked form: JS reads `undefined` past the end — the unchecked load read
+  // ADJACENT HEAP or trapped past memory (the Root F silent-corruption class).
+  // `i32.lt_u` folds the negative case in (a negative i32 is a huge u32). The
+  // checked result is number|undefined, so it carries NO valKind tag.
   ctx.core.emit['.typed:[]'] = (arr, i) => {
     const r = resolveElem(arr)
     if (r == null) return null // unknown type, fallback to generic
     const { et, isView, isBigInt } = r
+    const proven = typeof arr === 'string' && typeof i === 'string'
+      && inBoundsArrIdx(ctx).has(arr + '\x00' + i)
+    const loadOf = (off) => isBigInt ? ['f64.reinterpret_i64', ['i64.load', off]]
+      : et === 7 ? ['f64.load', off]
+      : et === 6 ? ['f64.promote_f32', ['f32.load', off]]
+      : [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[et], off]]
+    if (!proven) {
+      inc('__len')
+      const ti = tempI32('tbi')
+      const off = ['i32.add', typedDataAddr(emit(arr), isView), ['i32.shl', ['local.get', `$${ti}`], ['i32.const', SHIFT[et]]]]
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${ti}`, idx(i)],
+        ['if', ['result', 'f64'],
+          ['i32.lt_u', ['local.get', `$${ti}`], ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(arr))]]],
+          ['then', loadOf(off)],
+          ['else', undefExpr()]]], 'f64')
+    }
     const objIR = emit(arr), vi = idx(i)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
-    if (isBigInt) return typed(['f64.reinterpret_i64', ['i64.load', off]], 'f64')
+    if (isBigInt) return typed(loadOf(off), 'f64')
     // Non-bigint typed elements are plain NUMBERS — tag the load so numeric-arm
     // predicates (isNumArm: `+` dispatch numSide, ?:/?? canon) skip box guards.
-    const num = (n) => { const t = typed(n, 'f64'); t.valKind = VAL.NUMBER; return t }
-    if (et === 7) return num(['f64.load', off]) // Float64Array
-    if (et === 6) return num(['f64.promote_f32', ['f32.load', off]]) // Float32Array
-    // Integer types: load and convert to f64 (unsigned types use unsigned conversion)
-    return num([(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[et], off]])
+    const t = typed(loadOf(off), 'f64'); t.valKind = VAL.NUMBER; return t
   }
 
-  // Type-aware TypedArray write: arr[i] = val
+  // Type-aware TypedArray write: arr[i] = val. Same proof gate as the read: proven
+  // indexes keep the direct unchecked store byte-identical; unproven ones evaluate
+  // the RHS (its effects and the assignment's value are unconditional per spec),
+  // then store only when `i u< len` — JS silently IGNORES out-of-bounds typed
+  // writes, where the unchecked store corrupted adjacent heap (Root F).
   ctx.core.emit['.typed:[]='] = (arr, i, val, void_ = false) => {
     const r = resolveElem(arr)
     if (r == null) return null
     const { et, isView, isBigInt } = r
-    const objIR = emit(arr), vi = idx(i), valIR = emit(val)
+    const proven = typeof arr === 'string' && typeof i === 'string'
+      && inBoundsArrIdx(ctx).has(arr + '\x00' + i)
+    const pre = []
+    let vi
+    if (proven) vi = idx(i)
+    else {
+      inc('__len')
+      const ti = tempI32('tbi')
+      pre.push(['local.set', `$${ti}`, idx(i)])
+      vi = ['local.get', `$${ti}`]
+    }
+    // Wrap a store statement in the bounds guard on the unproven path. The value
+    // temp is set OUTSIDE the guard (spec: RHS evaluates regardless).
+    const guard = (store) => proven ? store
+      : ['if', ['i32.lt_u', vi, ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(arr))]]], ['then', store]]
+    const objIR = emit(arr), valIR = emit(val)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     if (isBigInt) {
       const vt = temp('tw')
-      return typed(void_ ? ['block',
+      return typed(void_ ? ['block', ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        ['i64.store', off, ['i64.reinterpret_f64', ['local.get', `$${vt}`]]]]
-        : ['block', ['result', 'f64'],
+        guard(['i64.store', off, ['i64.reinterpret_f64', ['local.get', `$${vt}`]]])]
+        : ['block', ['result', 'f64'], ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        ['i64.store', off, ['i64.reinterpret_f64', ['local.get', `$${vt}`]]],
+        guard(['i64.store', off, ['i64.reinterpret_f64', ['local.get', `$${vt}`]]]),
         ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
     }
     if (et === 7) {
       const vt = temp('tw')
-      return typed(void_ ? ['block',
+      return typed(void_ ? ['block', ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        ['f64.store', off, ['local.get', `$${vt}`]]]
-        : ['block', ['result', 'f64'],
+        guard(['f64.store', off, ['local.get', `$${vt}`]])]
+        : ['block', ['result', 'f64'], ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        ['f64.store', off, ['local.get', `$${vt}`]],
+        guard(['f64.store', off, ['local.get', `$${vt}`]]),
         ['local.get', `$${vt}`]], void_ ? 'void' : 'f64') // Float64Array
     }
     if (et === 6) {
       const vt = temp('tw')
-      return typed(void_ ? ['block',
+      return typed(void_ ? ['block', ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        ['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]]]
-        : ['block', ['result', 'f64'],
+        guard(['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]])]
+        : ['block', ['result', 'f64'], ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        ['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]],
+        guard(['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]]),
         ['local.get', `$${vt}`]], void_ ? 'void' : 'f64') // Float32Array
     }
     // Integer store: when the source is already i32-typed (bitwise ops, |0, known-i32 var) —
@@ -1395,18 +1435,19 @@ export default (ctx) => {
     const i32Backed = valIR.type === 'i32' ||
       (Array.isArray(valIR) && (valIR[0] === 'f64.convert_i32_s' || valIR[0] === 'f64.convert_i32_u'))
     if (i32Backed) {
-      const vi = asI32(valIR)
-      const cheap = Array.isArray(vi) &&
-        ((vi[0] === 'local.get' && typeof vi[1] === 'string') ||
-         (vi[0] === 'i32.const' && (typeof vi[1] === 'number' || typeof vi[1] === 'string')))
-      if (void_ && cheap) return typed([STORE[et], off, vi], 'void')
+      const vi32 = asI32(valIR)
+      const cheap = Array.isArray(vi32) &&
+        ((vi32[0] === 'local.get' && typeof vi32[1] === 'string') ||
+         (vi32[0] === 'i32.const' && (typeof vi32[1] === 'number' || typeof vi32[1] === 'string')))
+      if (void_ && cheap && proven) return typed([STORE[et], off, vi32], 'void')
+      if (void_ && cheap) return typed(['block', ...pre, guard([STORE[et], off, vi32])], 'void')
       const v32 = tempI32('tw')
-      return typed(void_ ? ['block',
-        ['local.set', `$${v32}`, vi],
-        [STORE[et], off, ['local.get', `$${v32}`]]]
-        : ['block', ['result', 'f64'],
-        ['local.set', `$${v32}`, vi],
-        [STORE[et], off, ['local.get', `$${v32}`]],
+      return typed(void_ ? ['block', ...pre,
+        ['local.set', `$${v32}`, vi32],
+        guard([STORE[et], off, ['local.get', `$${v32}`]])]
+        : ['block', ['result', 'f64'], ...pre,
+        ['local.set', `$${v32}`, vi32],
+        guard([STORE[et], off, ['local.get', `$${v32}`]]),
         [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['local.get', `$${v32}`]]], void_ ? 'void' : 'f64')
     }
     const vt = temp('tw')
@@ -1414,12 +1455,12 @@ export default (ctx) => {
       ['if', ['result', 'i64'], ['f64.lt', ['local.get', `$${vt}`], ['f64.const', 0]],
         ['then', ['i64.trunc_sat_f64_s', ['local.get', `$${vt}`]]],
         ['else', ['i64.trunc_sat_f64_u', ['local.get', `$${vt}`]]]]]
-    return typed(void_ ? ['block',
+    return typed(void_ ? ['block', ...pre,
       ['local.set', `$${vt}`, asF64(valIR)],
-      [STORE[et], off, i32val]]
-      : ['block', ['result', 'f64'],
+      guard([STORE[et], off, i32val])]
+      : ['block', ['result', 'f64'], ...pre,
       ['local.set', `$${vt}`, asF64(valIR)],
-      [STORE[et], off, i32val],
+      guard([STORE[et], off, i32val]),
       ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
   }
 

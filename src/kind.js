@@ -232,6 +232,11 @@ VT['[]'] = (args) => {
   }
   // Indexed read on a known typed-array receiver yields Number except for
   // BigInt64Array/BigUint64Array, whose i64 carriers must stay BigInt-typed.
+  // An UNPROVEN index can read past the end (= undefined per spec), but the undef
+  // box is a NaN bit-pattern, so it COINCIDES with ToNumber(undefined) through
+  // every numeric path — the NUMBER claim stays sound for dispatch (numeric arms,
+  // the vectorizer). Only identity observations diverge; those folds consult
+  // typedReadMaybeOob below and keep the runtime compare.
   if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.TYPED)
     return typedCtorElemValType(ctx.types.typedElem?.get(args[0])) || VAL.NUMBER
   // Indexed read on a STRING returns a 1-char string (SSO at runtime).

@@ -38,6 +38,7 @@ import {
   containsDeclOf, cloneWithSubst, containsKnownTypedArrayIndex,
   smallConstForTripCount, isTerminator, scanBoundedLoops, inBoundsCharCodeAt,
   exprType, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
+  inBoundsArrIdx,
 } from '../type.js'
 import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
@@ -1786,8 +1787,17 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 // nullish literal) can hold null/undefined at runtime, so `x === null` / `x == null`
 // must NOT fold to a constant even when `val` is a definite non-null kind. Only bare
 // variable reads carry the flag; literals/fresh allocations are inherently non-null.
-const nullableOperand = (n) =>
-  typeof n === 'string' && !!(repOf(n)?.nullable || repOfGlobal(n)?.nullable)
+// An UNPROVEN typed-index read joins the set: `ta[i]` reads `undefined` past the end
+// (the checked .typed:[] form), while its VT stays NUMBER for numeric dispatch — the
+// undef box IS a NaN through arithmetic; only these identity folds must stay live.
+// `ta[i] === undefined` is the idiomatic bounds probe, so folding it kills real code.
+const nullableOperand = (n) => {
+  if (typeof n === 'string') return !!(repOf(n)?.nullable || repOfGlobal(n)?.nullable)
+  if (Array.isArray(n) && n[0] === '[]' && n.length === 3
+      && typeof n[1] === 'string' && lookupValType(n[1]) === VAL.TYPED)
+    return !(typeof n[2] === 'string' && inBoundsArrIdx(ctx).has(n[1] + '\x00' + n[2]))
+  return false
+}
 
 // An emitted value whose bit pattern is an i32, paired with how it widens to f64: a
 // `f64.convert_i32_s/u(x)` peels to its i32 source `x`; a bare i32 widens signed. Used to compare
