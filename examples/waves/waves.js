@@ -7,14 +7,17 @@
 // singularities of the light map. After KZ_LAB_E's caustics simulation
 // (x.com/KZ_LAB_E/status/1979210373921411098).
 //
-// The pool is CALM: a steady drizzle of soft zero-mean plops (deterministic xorshift)
-// sustains a gentle random swell — and gentle swell under a deep focus is exactly the
-// classic swimming-pool caustic net, slowly shimmering. Clicks are the only other
-// disturbance: drop(x,y) presses a WIDE splash whose rings ride out thick and fade within
-// a few seconds. A 9-point isotropic Laplacian keeps fronts round, an edge sponge swallows
+// The pool is CALM: an occasional soft plop (deterministic xorshift) sustains a gentle
+// random swell — and gentle swell under a deep focus is exactly the classic swimming-pool
+// caustic net, slowly shimmering. drop(x,y) presses a dip and lets the PHYSICS make the
+// ring; dragging presses a small moving dimple — a stick drawn through the water, one
+// continuous wake. The water is VISCOUS: a per-frame frequency-selective smoothing kills
+// fine ripples fast while the broad swell rolls on — thick, syrupy motion, and no lattice
+// junk survives. A 9-point isotropic Laplacian keeps fronts round, an edge sponge swallows
 // wall reflections, one 3×3 blur softens the photon map, and the tone LUT maps light onto
-// POOL WATER — white caustics over turquoise, deep teal in the shadows.
-// frame(t, foc); clear() stills the pool. resize(w,h) → Uint32Array (ARGB).
+// POOL WATER — hard white caustics over turquoise, deep navy shadows.
+// frame(t, sx, sy, stick, foc): stick > 0 presses the moving dimple at (sx,sy).
+// clear() stills the pool. resize(w,h) → Uint32Array (ARGB).
 
 let W = 0, H = 0, px
 let a, b               // wave height now / previous (leapfrog pair)
@@ -29,9 +32,10 @@ const SUB = 1          // one leapfrog substep per frame — the pool shimmers, 
 const DAMP = 0.993     // a click's rings ride out and settle into the ambient net in ~3 s
 const MARGIN = 18      // edge-sponge width (cells)
 const MARGINDAMP = 0.94
-const RAIN = 6.0       // soft plops per second — the source of the ambient swell
-const RAINA = 0.28     // plop amplitude (signs alternate → zero-mean surface); quiet enough
-                       // that a clicked or drawn wave clearly OWNS the pool
+const RAIN = 2.2       // occasional soft plops — just enough to keep the ambient swell alive
+const RAINA = 0.5      // plop amplitude (signs alternate → zero-mean surface)
+const VISC = 0.030     // per-frame ∇² smoothing of the surface: fine ripples die in a beat,
+                       // the broad swell rolls on — the water feels thick
 const O = 0.66667, D = 0.16667, CEN = -3.33333   // 9-point isotropic Laplacian weights
 
 export let resize = (w, h) => {
@@ -63,14 +67,14 @@ export let resize = (w, h) => {
   let i = 0
   while (i < 1024) {
     let v = i * 0.00390625                 // bucket ↔ density v = i/256, range 0..4
-    let vp = v * Math.sqrt(Math.sqrt(v))   // v^1.25 — mild gamma steepens the fold flanks
-    let t = 1.0 - Math.exp(-0.7 * vp)
+    let vp = v * Math.sqrt(v)              // v^1.5 — hard gamma: darks crush, folds blaze
+    let t = 1.0 - Math.exp(-0.8 * vp)
     let r = 0.0, g = 0.0, bl = 0.0
     if (t < 0.55) {
       let f = t / 0.55
-      r = 6.0 + (44.0 - 6.0) * f
-      g = 32.0 + (178.0 - 32.0) * f
-      bl = 54.0 + (195.0 - 54.0) * f
+      r = 3.0 + (44.0 - 3.0) * f
+      g = 18.0 + (178.0 - 18.0) * f
+      bl = 34.0 + (195.0 - 34.0) * f
     } else {
       let f = (t - 0.55) / 0.45
       r = 44.0 + (255.0 - 44.0) * f
@@ -121,39 +125,9 @@ let plop = (cx, cy, r, amp, both) => {
   }
 }
 
-// the click: a droplet ring — a wide raised crest launched OUTGOING (d'Alembert: the
-// previous-step buffer holds the same ring one wave-step smaller, so the crest rides
-// cleanly outward with no ingoing rebound and no velocity shock) plus a soft dip at the
-// centre where the drop landed
-export let drop = (cx, cy) => {
-  let R0 = 7.0, WD = 6.0, AMP = 1.2
-  let cs = Math.sqrt(C2)                   // lattice wave speed, px per substep
-  let rO = R0 + WD * 3.0
-  let x0 = (cx - rO) | 0, x1 = (cx + rO) | 0, y0 = (cy - rO) | 0, y1 = (cy + rO) | 0
-  if (x0 < 1) x0 = 1
-  if (y0 < 1) y0 = 1
-  if (x1 > W - 2) x1 = W - 2
-  if (y1 > H - 2) y1 = H - 2
-  let iw2 = 1.0 / (WD * WD)
-  let y = y0
-  while (y <= y1) {
-    let dy = y - cy, row = y * W, x = x0
-    while (x <= x1) {
-      let dx = x - cx
-      let d = Math.sqrt(dx * dx + dy * dy)
-      let e = d - R0
-      let q = e * e * iw2
-      if (q < 9.0) a[row + x] = a[row + x] + AMP * Math.exp(-q)
-      let e2 = d - R0 + cs                 // one substep earlier the ring was smaller
-      let q2 = e2 * e2 * iw2
-      if (q2 < 9.0) b[row + x] = b[row + x] + AMP * Math.exp(-q2)
-      x++
-    }
-    y++
-  }
-  plop(cx, cy, 7.0, -0.7, 1)               // the dip where the droplet punched through — wide
-}                                          // and shallow: sharp small features excite the
-                                           // stencil's lattice anisotropy (hexagonal fronts)
+// the click: press a dip and let the WATER make the ring — a zero-velocity release relaxes
+// into a natural outgoing wave, nothing hand-drawn
+export let drop = (cx, cy) => { plop(cx, cy, 6.5, -1.7, 1) }
 
 // one leapfrog substep of the linear wave equation
 let step = () => {
@@ -175,7 +149,7 @@ let step = () => {
 
 // foc = focal depth × refraction: how far a ray shears per unit slope — the POOL DEPTH.
 // Shallow (≈50) barely bends the light; deep (≈140) folds every ripple into hard caustics.
-export let frame = (t, foc) => {
+export let frame = (t, sx, sy, stick, foc) => {
   let w = W, h = H, n = w * h
 
   // drizzle: soft alternating-sign plops accumulate into the pool's gentle standing swell
@@ -189,6 +163,57 @@ export let frame = (t, foc) => {
 
   let s = 0
   while (s < SUB) { step(); s++ }
+
+  // the stick: a small dimple pressed wherever the drag is — moving it leaves ONE
+  // continuous wake, exactly a stick drawn through water
+  if (stick > 0.0) {
+    let R = 0.018 * (w < h ? w : h) + 2.0
+    let x0 = (sx - 3.0 * R) | 0, x1 = (sx + 3.0 * R) | 0, y0 = (sy - 3.0 * R) | 0, y1 = (sy + 3.0 * R) | 0
+    if (x0 < 1) x0 = 1
+    if (y0 < 1) y0 = 1
+    if (x1 > w - 2) x1 = w - 2
+    if (y1 > h - 2) y1 = h - 2
+    let ir2 = 1.0 / (R * R)
+    let yy = y0
+    while (yy <= y1) {
+      let dy = yy - sy, row = yy * w, x = x0
+      while (x <= x1) {
+        let dx = x - sx
+        let q = (dx * dx + dy * dy) * ir2
+        if (q < 9.0) {
+          let c = row + x
+          let E = Math.exp(-q)
+          a[c] = a[c] + (-1.6 * stick * E - a[c]) * 0.3 * E
+        }
+        x++
+      }
+      yy++
+    }
+  }
+
+  // viscosity: smooth BOTH leapfrog sheets a little every frame — a frequency-selective
+  // loss (∝ k²) that snuffs fine chop in a beat while the broad swell rolls on
+  let vp = 0
+  while (vp < 2) {
+    let f = vp === 0 ? a : b
+    let y = 1
+    while (y < h - 1) {
+      let row = y * w, x = 1
+      while (x < w - 1) {
+        let c = row + x
+        Ls[c] = f[c] * (1.0 - 4.0 * VISC) + (f[c - 1] + f[c + 1] + f[c - w] + f[c + w]) * VISC
+        x++
+      }
+      y++
+    }
+    y = 1
+    while (y < h - 1) {
+      let row = y * w, x = 1
+      while (x < w - 1) { f[row + x] = Ls[row + x]; x++ }
+      y++
+    }
+    vp++
+  }
 
   // ── caustics: refract one ray per texel through the surface, splat where it lands ──
   let i = 0
@@ -221,9 +246,9 @@ export let frame = (t, foc) => {
     }
     y++
   }
-  // one separable 3-tap blur pass — softens splat shimmer into the silky reference look
+  // two separable 3-tap blur passes — the hard tone gamma would re-expose splat noise
   let bp = 0
-  while (bp < 1) {
+  while (bp < 2) {
     y = 0
     while (y < h) {
       let row = y * w

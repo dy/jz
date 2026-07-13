@@ -99,7 +99,7 @@ test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact'
         const px = exports.resize(128, 96);
         exports.clear();
         exports.drop(64, 48); exports.drop(44, 56);
-        for (let f = 0; f < 60; f++) exports.frame(f / 60, 150);
+        for (let f = 0; f < 60; f++) exports.frame(f / 60, 30 + f, 48, 1.0, 210);   // dragged stick
         return Array.from(px);
     };
     const simd = run({ ...OPT }), scal = run({ ...OPT, experimentalStencil: false });

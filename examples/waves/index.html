@@ -9,53 +9,45 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
-// Swimming-pool caustics (see waves.js — after KZ_LAB_E's caustics simulation): a calm pool
-// whose gentle swell folds sunlight into the classic slowly-shimmering caustic net. Click to
-// splash; DRAG to draw — droplet rings laid along the stroke merge into a drawn wavefront.
-// Scroll sets the POOL DEPTH (shallow barely bends the light, deep folds every ripple hard).
-// Dice throws splashes.
-let foc = 150                         // pool depth (focal length of the refraction)
-let drawing = false, lx = 0, ly = 0   // stroke state, in backing pixels
+// Swimming-pool caustics (see waves.js — after KZ_LAB_E's caustics simulation): a calm
+// viscous pool whose gentle swell folds sunlight into the classic slowly-shimmering caustic
+// net. Click presses a dip — the water itself makes the ring. Drag is a STICK drawn through
+// the water: one continuous wake. Scroll sets the POOL DEPTH (shallow barely bends the
+// light, deep folds every ripple hard). Dice throws a few drops.
+let foc = 210                         // pool depth (focal length of the refraction)
+let dragging = false, sx = 0, sy = 0  // stick state, in backing pixels
 
 const demo = runDemo({
   name: "waves",
-  hint: "a calm pool folding sunlight — real caustics · click to splash · drag to draw · scroll = depth",
+  hint: "a calm pool folding sunlight — real caustics · click to drop · drag a stick through the water · scroll = depth",
   size: { budget: 420000 },
   bg: "#2b98ac",
   load: (e) => { e.clear() },
-  frame: (e, t) => { e.frame(t, foc) },
+  frame: (e, t) => { e.frame(t, sx, sy, dragging ? 1.0 : 0.0, foc) },
   randomize: (e, d) => {
-    for (let i = 0; i < 4; i++) e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7))
+    for (let i = 0; i < 3; i++) e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7))
   },
 })
 
 const toPx = (e) => {
   const r = demo.cv.getBoundingClientRect()
-  return [(e.clientX - r.left) / r.width * demo.W, (e.clientY - r.top) / r.height * demo.H]
+  sx = (e.clientX - r.left) / r.width * demo.W
+  sy = (e.clientY - r.top) / r.height * demo.H
 }
 demo.cv.addEventListener("pointerdown", (e) => {
-  const [x, y] = toPx(e)
-  demo.engine?.drop(x, y)
-  drawing = true; lx = x; ly = y
+  toPx(e)
+  demo.engine?.drop(sx, sy)
+  dragging = true
   try { demo.cv.setPointerCapture(e.pointerId) } catch {}
 })
-demo.cv.addEventListener("pointermove", (e) => {
-  if (!drawing || !demo.engine) return
-  const [x, y] = toPx(e)
-  // lay droplet rings along the stroke, one every ~14 px — they superpose into a line wave
-  const dx = x - lx, dy = y - ly, d = Math.hypot(dx, dy)
-  if (d < 14) return
-  const n = Math.ceil(d / 14)
-  for (let i = 1; i <= n; i++) demo.engine.drop(lx + dx * i / n, ly + dy * i / n)
-  lx = x; ly = y
-})
-demo.cv.addEventListener("pointerup", (e) => { drawing = false; try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
-demo.cv.addEventListener("pointerleave", () => { drawing = false })
+demo.cv.addEventListener("pointermove", (e) => { if (dragging) toPx(e) })
+demo.cv.addEventListener("pointerup", (e) => { dragging = false; try { demo.cv.releasePointerCapture(e.pointerId) } catch {} })
+demo.cv.addEventListener("pointerleave", () => { dragging = false })
 demo.cv.addEventListener("wheel", (e) => {
   e.preventDefault()
   foc *= Math.exp(-e.deltaY * 0.001)
-  if (foc < 60) foc = 60
-  if (foc > 280) foc = 280
+  if (foc < 80) foc = 80
+  if (foc > 360) foc = 360
 }, { passive: false })
 </script>
 </body>
