@@ -375,7 +375,9 @@ export default (ctx) => {
     __ryu_mulshift: ['__ryu_mulhi'],
     __ryu_mulhi: [],
     __ryu_pow5div: [],
-    __i32_to_str: ['__itoa', '__mkstr'],
+    __i32_to_str: ['__itoa_s', '__mkstr'],
+    __itoa_s: ['__itoa'],
+    __ilen: [],
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
     __radix_str: ['__mkstr'],
     __num_radix: ['__ftoa', '__mkstr'],
@@ -436,25 +438,52 @@ export default (ctx) => {
     ${reverseBytesWat()}
     (local.get $len))`
 
-  // __i32_to_str(val: i32) → f64 (NaN-boxed string) — ToString for a value the
-  // compiler proved is a signed i32. The whole point is to bypass __ftoa's float
-  // machinery (shortest-repr search, __toExp, __pow10): a known integer renders with
-  // just __itoa over its magnitude plus a sign byte. Lets `"id " + (n|0)` and integer
-  // templates skip the ~2 KB float formatter the generic ToString hard-pulls.
-  ctx.core.stdlib['__i32_to_str'] = `(func $__i32_to_str (param $val i32) (result f64)
-    (local $buf i32) (local $len i32) (local $u i32)
-    (local.set $buf (call $__alloc (i32.const 12)))
+  // __ilen(val: i32) → i32 — exact byte length of ToString(val): sign + decimal
+  // digits over the unsigned magnitude (INT_MIN negates to itself; read unsigned the
+  // ladder still lands on 10). Must agree with __itoa_s byte-for-byte: the fused
+  // concat emitters alloc from __ilen totals and render with __itoa_s at the cursor —
+  // a one-byte disagreement is heap corruption (pinned differentially in test/strings.js).
+  ctx.core.stdlib['__ilen'] = `(func $__ilen (param $val i32) (result i32)
+    (local $u i32) (local $n i32)
+    (local.set $u (local.get $val))
+    (if (i32.lt_s (local.get $val) (i32.const 0))
+      (then
+        (local.set $u (i32.sub (i32.const 0) (local.get $val)))
+        (local.set $n (i32.const 1))))
+    (if (i32.lt_u (local.get $u) (i32.const 10)) (then (return (i32.add (local.get $n) (i32.const 1)))))
+    (if (i32.lt_u (local.get $u) (i32.const 100)) (then (return (i32.add (local.get $n) (i32.const 2)))))
+    (if (i32.lt_u (local.get $u) (i32.const 1000)) (then (return (i32.add (local.get $n) (i32.const 3)))))
+    (if (i32.lt_u (local.get $u) (i32.const 10000)) (then (return (i32.add (local.get $n) (i32.const 4)))))
+    (if (i32.lt_u (local.get $u) (i32.const 100000)) (then (return (i32.add (local.get $n) (i32.const 5)))))
+    (if (i32.lt_u (local.get $u) (i32.const 1000000)) (then (return (i32.add (local.get $n) (i32.const 6)))))
+    (if (i32.lt_u (local.get $u) (i32.const 10000000)) (then (return (i32.add (local.get $n) (i32.const 7)))))
+    (if (i32.lt_u (local.get $u) (i32.const 100000000)) (then (return (i32.add (local.get $n) (i32.const 8)))))
+    (if (i32.lt_u (local.get $u) (i32.const 1000000000)) (then (return (i32.add (local.get $n) (i32.const 9)))))
+    (i32.add (local.get $n) (i32.const 10)))`
+
+  // __itoa_s(val: i32, buf: i32) → i32 (bytes written) — signed decimal render at
+  // buf: '-' + digits over the unsigned magnitude. The render core shared by
+  // __i32_to_str (temp-string ToString) and the fused concat emitters (render
+  // directly at the destination cursor — no temp string, no copy).
+  ctx.core.stdlib['__itoa_s'] = `(func $__itoa_s (param $val i32) (param $buf i32) (result i32)
     (if (i32.lt_s (local.get $val) (i32.const 0))
       (then
         (i32.store8 (local.get $buf) (i32.const 45))   ;; '-'
-        ;; magnitude as unsigned: negate via 0 - val (INT_MIN maps to itself, read u below)
-        (local.set $u (i32.sub (i32.const 0) (local.get $val)))
-        (local.set $len (call $__itoa (local.get $u) (i32.add (local.get $buf) (i32.const 1))))
-        (return (call $__mkstr (local.get $buf) (i32.add (local.get $len) (i32.const 1)))))
-      (else
-        (local.set $len (call $__itoa (local.get $val) (local.get $buf)))
-        (return (call $__mkstr (local.get $buf) (local.get $len)))))
-    (f64.const 0))`
+        ;; magnitude as unsigned: negate via 0 - val (INT_MIN maps to itself, __itoa reads unsigned)
+        (return (i32.add
+          (call $__itoa (i32.sub (i32.const 0) (local.get $val)) (i32.add (local.get $buf) (i32.const 1)))
+          (i32.const 1)))))
+    (call $__itoa (local.get $val) (local.get $buf)))`
+
+  // __i32_to_str(val: i32) → f64 (NaN-boxed string) — ToString for a value the
+  // compiler proved is a signed i32. The whole point is to bypass __ftoa's float
+  // machinery (shortest-repr search, __toExp, __pow10): a known integer renders with
+  // just __itoa_s over a scratch buffer. Lets `"id " + (n|0)` and integer
+  // templates skip the ~2 KB float formatter the generic ToString hard-pulls.
+  ctx.core.stdlib['__i32_to_str'] = `(func $__i32_to_str (param $val i32) (result f64)
+    (local $buf i32)
+    (local.set $buf (call $__alloc (i32.const 12)))
+    (call $__mkstr (local.get $buf) (call $__itoa_s (local.get $val) (local.get $buf))))`
 
   // __radix_str(val: i64, radix: i32) → f64 (NaN-boxed string)
   // Signed integer → radix string for BigInt.prototype.toString(radix). Digits go

@@ -960,13 +960,7 @@ function tryConcatChain(a, b, selfAccum) {
   // (STRING/OBJECT/BOOL/NUMBER) or unknown-through-__to_str. BIGINT joins
   // numerically elsewhere — bail so the existing lowering keeps its path.
   for (const l of leaves) if (valTypeOf(l) === VAL.BIGINT) return null
-  inc('__str_byteLen', '__alloc', '__mkptr', '__str_copy', '__sso_norm')
-  const leafI64 = (n) => {
-    const vt = valTypeOf(n)
-    if (vt === VAL.STRING) return ['i64.reinterpret_f64', asF64(emit(n))]
-    if (vt === VAL.BOOL) return ['i64.reinterpret_f64', emitBoolStr(n)]
-    return toStrI64(n, emit(n))   // OBJECT (compile-time ToPrimitive), NUMBER, unknown
-  }
+  inc('__alloc', '__mkptr', '__sso_norm')
   // LITERAL ASCII leaves (the serializer separators — ',', '\n', 'k=' …) carry
   // their bytes and length at compile time: no box/len temps, no __str_byteLen,
   // no __str_copy — the length const-folds into the total and the bytes store
@@ -978,14 +972,32 @@ function tryConcatChain(a, b, selfAccum) {
     return n[1]
   }
   const lits = leaves.map(litOf)
-  const bT = leaves.map((_, k) => lits[k] != null ? null : tempI64('cc'))
-  const lT = leaves.map((_, k) => lits[k] != null ? null : tempI32('cl'))
+  const bT = [], nT = [], lT = leaves.map((_, k) => lits[k] != null ? null : tempI32('cl'))
   const offT = tempI32('co'), curT = tempI32('cu')
   const seq = []
   let litTotal = 0
   leaves.forEach((n, k) => {
     if (lits[k] != null) { litTotal += lits[k].length; return }
-    seq.push(['local.set', `$${bT[k]}`, leafI64(n)])
+    const vt = valTypeOf(n)
+    // BOOL renders through emitBoolStr(node); every other leaf emits its value once here.
+    const v = vt === VAL.BOOL ? null : emit(n)
+    // i32-PROVEN leaf (exactly toStrI64's __i32_to_str class): keep the raw value,
+    // not a temp string — __ilen joins the total and __itoa_s renders the digits
+    // directly at the cursor. Drops the per-number __i32_to_str (alloc+itoa+mkstr),
+    // __str_byteLen and __str_copy — the whole temp-string round trip.
+    if ((vt === VAL.NUMBER || vt == null) && v.type === 'i32' && v.ptrKind == null) {
+      inc('__ilen', '__itoa_s')
+      nT[k] = tempI32('cn')
+      seq.push(['local.set', `$${nT[k]}`, v])
+      seq.push(['local.set', `$${lT[k]}`, ['call', '$__ilen', ['local.get', `$${nT[k]}`]]])
+      return
+    }
+    inc('__str_byteLen', '__str_copy')
+    bT[k] = tempI64('cc')
+    seq.push(['local.set', `$${bT[k]}`,
+      vt === VAL.STRING ? ['i64.reinterpret_f64', asF64(v)] :
+      vt === VAL.BOOL ? ['i64.reinterpret_f64', emitBoolStr(n)] :
+      toStrI64(n, v)])   // OBJECT (compile-time ToPrimitive), NUMBER, unknown
     seq.push(['local.set', `$${lT[k]}`, ['call', '$__str_byteLen', ['local.get', `$${bT[k]}`]]])
   })
   const totalIR = () => {
@@ -1014,6 +1026,14 @@ function tryConcatChain(a, b, selfAccum) {
         seq.push(['i32.store8', ...at(j), ['i32.const', s.charCodeAt(j)]])
       if (k < leaves.length - 1)
         seq.push(['local.set', `$${curT}`, ['i32.add', ['local.get', `$${curT}`], ['i32.const', s.length]]])
+      return
+    }
+    if (nT[k] != null) {
+      // digits render at the cursor; the returned byte count (== $lT) advances it
+      seq.push(k < leaves.length - 1
+        ? ['local.set', `$${curT}`, ['i32.add',
+            ['call', '$__itoa_s', ['local.get', `$${nT[k]}`], ['local.get', `$${curT}`]], ['local.get', `$${curT}`]]]
+        : ['drop', ['call', '$__itoa_s', ['local.get', `$${nT[k]}`], ['local.get', `$${curT}`]]])
       return
     }
     seq.push(['call', '$__str_copy', ['local.get', `$${bT[k]}`], ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]])

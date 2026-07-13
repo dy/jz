@@ -1855,12 +1855,13 @@ export default (ctx) => {
   // A VAL.BOOL part rides the 0/1 carrier, so __to_str would render "1"/"0".
   // bool selects the interned "true"/"false" literal (constant-folded
   // when the operand is known); every other part goes through __to_str.
-  const partStrI64 = (p) => valTypeOf(p) === VAL.BOOL ? asI64(bool(p)) : toStrI64(p, emit(p))
+  // `v` is the part's pre-emitted value when the caller already emitted it.
+  const partStrI64 = (p, v) => valTypeOf(p) === VAL.BOOL ? asI64(bool(p)) : toStrI64(p, v ?? emit(p))
 
   bind('strcat', (...parts) => {
-    inc('__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy', '__sso_norm')
     if (!parts.length) return mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
     if (parts.length === 1) return typed(['f64.reinterpret_i64', partStrI64(parts[0])], 'f64')
+    inc('__alloc', '__mkptr', '__sso_norm')
 
     // LITERAL ASCII parts (the serializer separators: ',', '\n', 'x=' …) carry their
     // bytes and length at compile time: no value temp, no __str_byteLen call, no
@@ -1875,7 +1876,7 @@ export default (ctx) => {
     }
     const lits = parts.map(litBytes)
 
-    const vals = parts.map((_, i) => lits[i] != null ? null : temp('s'))
+    const vals = [], nums = []
     const lens = parts.map((_, i) => lits[i] != null ? null : tempI32('sl'))
     const total = tempI32('st')
     const off = tempI32('so')
@@ -1885,7 +1886,22 @@ export default (ctx) => {
 
     for (let i = 0; i < parts.length; i++) {
       if (lits[i] != null) { litTotal += lits[i].length; continue }
-      ir.push(['local.set', `$${vals[i]}`, ['f64.reinterpret_i64', partStrI64(parts[i])]])
+      const vt = valTypeOf(parts[i])
+      const v = vt === VAL.BOOL ? null : emit(parts[i])
+      // i32-PROVEN part (exactly toStrI64's __i32_to_str class): keep the raw value,
+      // not a temp string — __ilen joins the total and __itoa_s renders the digits
+      // directly at dst. Drops the per-number __i32_to_str (alloc+itoa+mkstr),
+      // __str_byteLen and __str_copy — the whole temp-string round trip.
+      if ((vt === VAL.NUMBER || vt == null) && v.type === 'i32' && v.ptrKind == null) {
+        inc('__ilen', '__itoa_s')
+        nums[i] = tempI32('sn')
+        ir.push(['local.set', `$${nums[i]}`, v])
+        ir.push(['local.set', `$${lens[i]}`, ['call', '$__ilen', ['local.get', `$${nums[i]}`]]])
+        continue
+      }
+      inc('__str_byteLen', '__str_copy')
+      vals[i] = temp('s')
+      ir.push(['local.set', `$${vals[i]}`, ['f64.reinterpret_i64', partStrI64(parts[i], v)]])
       ir.push(['local.set', `$${lens[i]}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${vals[i]}`]]]])
     }
     ir.push(['local.set', `$${total}`, ['i32.const', litTotal]])
@@ -1914,6 +1930,12 @@ export default (ctx) => {
         alloc.push(['local.set', `$${dst}`, ['i32.add', ['local.get', `$${dst}`], ['i32.const', s.length]]])
         continue
       }
+      if (nums[i] != null) {
+        // digits render at dst; the returned byte count (== $lens[i]) advances it
+        alloc.push(['local.set', `$${dst}`, ['i32.add',
+          ['call', '$__itoa_s', ['local.get', `$${nums[i]}`], ['local.get', `$${dst}`]], ['local.get', `$${dst}`]]])
+        continue
+      }
       alloc.push(['call', '$__str_copy', ['i64.reinterpret_f64', ['local.get', `$${vals[i]}`]], ['local.get', `$${dst}`], ['local.get', `$${lens[i]}`]])
       alloc.push(['local.set', `$${dst}`, ['i32.add', ['local.get', `$${dst}`], ['local.get', `$${lens[i]}`]]])
     }
@@ -1921,9 +1943,13 @@ export default (ctx) => {
     // the module invariant; a leaked short heap string breaks bare-i64.eq ===.
     alloc.push(['call', '$__sso_norm',
       ['call', '$__mkptr', ['i32.const', PTR.STRING], ['i32.const', 0], ['local.get', `$${off}`]]])
-    ir.push(['if', ['result', 'f64'], ['i32.eqz', ['local.get', `$${total}`]],
-      ['then', mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)],
-      ['else', ['block', ['result', 'f64'], ...alloc]]])
+    // A non-empty literal or a number part (≥1 digit) proves the result non-empty —
+    // skip the empty-total branch entirely.
+    ir.push(litTotal > 0 || nums.some(t => t != null)
+      ? ['block', ['result', 'f64'], ...alloc]
+      : ['if', ['result', 'f64'], ['i32.eqz', ['local.get', `$${total}`]],
+          ['then', mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)],
+          ['else', ['block', ['result', 'f64'], ...alloc]]])
     return typed(['block', ['result', 'f64'], ...ir], 'f64')
   })
 

@@ -359,6 +359,33 @@ test('fused concat: literal ASCII parts store inline — no per-separator copy o
   is((tfn.match(/call \$__str_copy/g) || []).length, 1, 'template: one copy for the one dynamic part')
 })
 
+test('fused concat: i32-proven parts render digits at the cursor — no temp string, no copy', () => {
+  // An i32-proven part (`n|0`, a loop counter) needs no ToString temp: __ilen joins
+  // the total, __itoa_s writes sign+digits at the cursor. __ilen and __itoa_s MUST
+  // agree byte-for-byte (the alloc is sized from __ilen; a one-byte disagreement is
+  // heap corruption) — pinned differentially over every digit-count boundary,
+  // INT_MIN (negates to itself, read unsigned), INT_MAX, and zero.
+  const edges = [0, 1, -1, 9, 10, -9, -10, 99, 100, 999, 1000, 9999, 10000, 99999, 100000,
+    999999, 1000000, 9999999, 10000000, 99999999, 100000000, 999999999, 1000000000,
+    -999999999, -1000000000, 2147483647, -2147483648]
+  const src = `export let f = (i, v) => 'x' + (i|0) + ',' + (v|0) + '!'`
+  const r = jz(src)
+  for (const a of edges) for (const b of [0, -1, 2147483647, -2147483648])
+    is(r.memory.read(r.exports.f(a, b)), 'x' + (a | 0) + ',' + (b | 0) + '!')
+  const wat = compile(src, { wat: true, optimize: { level: 2, watr: false } })
+  const fn = wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func ', wat.indexOf('(func $f') + 1))
+  is((fn.match(/call \$__itoa_s/g) || []).length, 2, 'both int parts render at the cursor')
+  is((fn.match(/call \$__str_copy/g) || []).length, 0, 'no copies — no dynamic string parts')
+  is((fn.match(/call \$__i32_to_str/g) || []).length, 0, 'no temp-string ToString')
+  // ≤6-ASCII totals must SSO-normalize (`1,2` — the module invariant); and the
+  // template path shares the machinery.
+  const s6 = jz(`export let f = (i, v) => '' + (i|0) + ',' + (v|0)`)
+  is(s6.memory.read(s6.exports.f(1, 2)), '1,2')
+  is(s6.exports.f(1, 2), s6.exports.f(1, 2), 'SSO-normalized: bit-identical boxes')
+  const t = jz('export let f = (i) => `[${i|0}]`')
+  for (const a of edges) is(t.memory.read(t.exports.f(a)), '[' + (a | 0) + ']')
+})
+
 // === .slice ===
 
 test('string: .slice basic', () => {
