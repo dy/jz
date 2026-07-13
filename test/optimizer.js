@@ -2250,14 +2250,16 @@ test('schemaSlotIntCertain: int slot via local intCertain binding', () => {
 // Each pins one optimizer pass against a class of value-corrupting regression.
 // Behavioural (run + assert), since the failure mode is a wrong runtime value.
 
-test('dropDeadZeroInit: -0.0 initializer is preserved (not coerced to +0)', () => {
+test('zero-init drop (watr zeroinit): -0.0 initializer is preserved (not coerced to +0)', () => {
   // -0 and +0 share an i64/f64 zero bit pattern under `===`, but `1/-0` is
-  // -Infinity. The dead-zero-init drop must exclude -0.0 (Object.is guard).
+  // -Infinity. The zero-init drop must exclude -0.0 (locals default to +0.0).
+  // (jz's own dropDeadZeroInit pass was retired — both ablation sweeps showed it
+  // net-harmful: watr reaches a smaller fixpoint from the un-dropped form.)
   is(run('export let main = () => { let x = -0.0; return 1 / x }').main(), -Infinity)
   is(run('export let main = () => { let x = 0.0; return 1 / x }').main(), Infinity)
 })
 
-test('dropDeadZeroInit: i64 0n zero-init survives into later arithmetic', () => {
+test('zero-init drop (watr zeroinit): i64 0n zero-init survives into later arithmetic', () => {
   // BigInt locals init to `i64.const 0`; the i32/f64 zero-init dropper must not
   // touch the i64 slot. (A raw `bigint` return now crosses as a Number too — see test/data.js.)
   is(run('export let main = () => { let x = 0n; return Number(x + 5n) }').main(), 5)

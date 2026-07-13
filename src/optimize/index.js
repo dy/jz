@@ -112,7 +112,6 @@ export const PASS_NAMES = [
   'cseScalarLoad',
   'csePureExpr',
   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)
-  'dropDeadZeroInit',
   'propagateSingleUse',       // forward-substitute single-def/single-use pure temps (watr's "propagate")
   'foldSetToTee',             // sink a single-def local's RHS into its first use as a tee (simplify-locals watr leaves)
   'promoteGlobals',          // read-only global.get → local for multi-read globals
@@ -1819,73 +1818,6 @@ export function csePureExpr(fn) {
 
 
 /**
- * Drop redundant zero-initialisation of fresh function-scope locals.
- *
- * WASM zero-initialises every local on entry (0 / 0.0 / null). jz lowers source
- * `let x = 0` to `(local $x …)` + `(local.set $x (<zero const>))` at the top of
- * the function body — the explicit set is a no-op when nothing has touched `$x`
- * yet. `wasm-opt -Oz` elides these; do the same so jz's own output is minimal.
- *
- * Only removes a `(local.set $L (i32|i64|f64|f32.const 0))` when:
- *   - `$L` is a non-param local (a param's "default" is the incoming arg, not 0),
- *   - it is a *top-level* body statement (never descend into block/loop/if — a
- *     nested zero-set inside a loop genuinely re-initialises across iterations),
- *   - `$L` has not been referenced by any earlier top-level statement (so the
- *     local still holds its entry-time zero at this point),
- *   - `$L` is read (`local.get`) somewhere in the function (otherwise leave the
- *     store for deadStoreElim and avoid orphaning the `(local $L …)` decl),
- *   - the constant is +0 / +0.0 (a `-0.0` f64 set is *not* redundant — locals
- *     default to +0.0, which differs in bits from -0.0).
- */
-export function dropDeadZeroInit(fn) {
-  if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const bodyStart = findBodyStart(fn)
-  if (bodyStart < 0) return
-
-  const seen = new Set()           // params + locals referenced by an earlier stmt
-  const reads = new Set()          // locals read by `local.get` anywhere
-  for (const c of fn) if (Array.isArray(c) && c[0] === 'param' && typeof c[1] === 'string') seen.add(c[1])
-
-  const collectGets = (node) => {
-    if (!Array.isArray(node)) return
-    if (node[0] === 'local.get' && typeof node[1] === 'string') reads.add(node[1])
-    for (let i = 1; i < node.length; i++) collectGets(node[i])
-  }
-  for (let i = bodyStart; i < fn.length; i++) collectGets(fn[i])
-
-  const collectRefs = (node) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if ((op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string') seen.add(node[1])
-    for (let i = 1; i < node.length; i++) collectRefs(node[i])
-  }
-  const isPlusZeroConst = (e) => {
-    if (!Array.isArray(e) || e.length !== 2) return false
-    if (e[0] !== 'i32.const' && e[0] !== 'i64.const' && e[0] !== 'f64.const' && e[0] !== 'f32.const') return false
-    const v = e[1]
-    if (typeof v === 'bigint') return v === 0n
-    if (typeof v === 'number') return v === 0 && !Object.is(v, -0)
-    if (typeof v === 'string') { const t = v.trim(); return t === '0' || t === '0.0' || t === '+0' || t === '+0.0' }
-    return false
-  }
-
-  const drop = []
-  for (let i = bodyStart; i < fn.length; i++) {
-    const node = fn[i]
-    if (!Array.isArray(node)) continue
-    if (node[0] === 'local.set' && node.length === 3 && typeof node[1] === 'string' &&
-        !seen.has(node[1]) && reads.has(node[1]) && isPlusZeroConst(node[2])) {
-      drop.push(i)
-      seen.add(node[1])
-      continue
-    }
-    collectRefs(node)
-  }
-  for (let i = drop.length - 1; i >= 0; i--) fn.splice(drop[i], 1)
-}
-
-
-/**
  * Forward-substitute a single-def / single-use local into its sole use, eliminating the local,
  * its `local.set` and its `local.get`. This is watr's "propagate": jz emits short-lived address/
  * index temps (`set $t (i32.add …); … (load $t) …`) that the WAT optimizer folds away — the
@@ -3318,7 +3250,6 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
       cfg.hoistAddrBase === false &&
       cfg.cseScalarLoad === false &&
       cfg.csePureExpr === false &&
-      cfg.dropDeadZeroInit === false &&
       cfg.propagateSingleUse === false &&
       cfg.promoteGlobals === false &&
       cfg.sortLocalsByUse === false &&
@@ -3348,7 +3279,6 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
-  if (!cfg || cfg.dropDeadZeroInit !== false) dropDeadZeroInit(fn)
   if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites)
   if (cfg && cfg.vectorizeLaneLocal === true) {
     // Vectorization is jz LOWERING — it always runs pre-watr (never in a post-watr
