@@ -31,7 +31,7 @@ import { i64Hex } from '../../layout.js'
 import { T, isBlockBody, isReassigned, refsName, REFS_IN_EXPR, returnExprs } from '../ast.js'
 import { valTypeOf } from '../kind.js'
 import { intLiteralValue } from '../static.js'
-import { intCertainMap } from '../type.js'
+import { intCertainMap, typedStaticLen } from '../type.js'
 import {
   analyzeBody, unboxablePtrs, cseSafeLoadBases, boxedCaptures,
   analyzeStructInline, invalidateLocalsCache,
@@ -1839,6 +1839,18 @@ export default function compile(ast, profiler) {
         }
       }
     }
+  }
+
+  // Typed-ctor sizes parked at prepare (`new T(CIN*H*W)` — names only now folded):
+  // re-run the static-len derivation with constInts populated. Feeds the interval
+  // proof's receiver lengths (typedIdxProven class 5).
+  if (ctx.scope.pendingTypedLens) {
+    for (const [name, rhs] of ctx.scope.pendingTypedLens) {
+      const len = typedStaticLen(rhs)
+      if (len != null && ctx.scope.globalTypedElem?.has(name))
+        (ctx.scope.globalTypedLen ||= new Map()).set(name, len)
+    }
+    ctx.scope.pendingTypedLens = null
   }
 
   // Whole-program constant fold of module-scope aggregate literals — `var x=[1,2,3];

@@ -609,7 +609,13 @@ function scanIntervalIdx(body, out, lens) {
     if (Array.isArray(n)) for (let k = 1; k < n.length; k++) collectNames(n[k], set)
   }
   collectClosureWrites(body, false)
-  const setEnv = (name, v) => env.set(name, closureWrites.has(name) || !ipOk(v) ? null : v)
+  const activeFacts = new Map()   // name → [lo, hi] theorem stamped by a rewrite pass (peel)
+  const setEnv = (name, v) => {
+    if (closureWrites.has(name) || !ipOk(v)) v = null
+    const f = activeFacts.get(name)
+    if (f) v = v ? [Math.max(v[0], f[0]), Math.min(v[1], f[1])] : f
+    env.set(name, v)
+  }
   const constInt = (e) => {
     const n = intLiteralValue(e)
     if (n != null) return n
@@ -626,7 +632,13 @@ function scanIntervalIdx(body, out, lens) {
     if (typeof e === 'string') return closureWrites.has(e) ? null : env.get(e) ?? null
     if (!Array.isArray(e)) return null
     const [op, x, y] = e
-    if (e.length === 2 && op === '-') { const v = ev(x); return ipOk(v) && v ? [-v[1], -v[0]] : null }
+    if (e.length === 2 && op === '()') return ev(x)   // grouping, not a call
+    if (e.length === 2 && (op === '-' || op === 'u-')) { const v = ev(x); return ipOk(v) && v ? [-v[1], -v[0]] : null }
+    if (op === '?:' && e.length === 4) {   // join of both arms (either may run)
+      visit(x)
+      const a = ev(e[2]), b = ev(e[3])
+      return a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null
+    }
     // any non-arithmetic node (call, assignment, ternary, indexing…) routes through
     // visit so its env effects and access proofs are processed, value unknown
     if (e.length !== 3 || !ARITH.has(op)) { visit(e); return null }
@@ -659,8 +671,12 @@ function scanIntervalIdx(body, out, lens) {
   const refine = (c, negate) => {
     if (!Array.isArray(c) || c.length !== 3) return null
     let [op, l, r] = c
-    if (typeof l !== 'string' || constInt(r) == null) return null
-    const K = constInt(r), v = env.get(l)
+    // rhs: an int literal/module const, or a body-known SINGLETON interval (`xi >= ww`
+    // where `const ww = 64|0` is function-local)
+    const rE = typeof r === 'string' ? env.get(r) : null
+    const rv = constInt(r) ?? (rE && rE[0] === rE[1] ? rE[0] : null)
+    if (typeof l !== 'string' || rv == null) return null
+    const K = rv, v = env.get(l)
     if (!v) return null
     if (negate) op = op === '<' ? '>=' : op === '<=' ? '>' : op === '>' ? '<=' : op === '>=' ? '<' : null
     if (op === '<') return [l, [v[0], Math.min(v[1], K - 1)]]
@@ -681,6 +697,7 @@ function scanIntervalIdx(body, out, lens) {
   }
   const visit = (n) => {
     if (!Array.isArray(n) || n[0] === '=>') return
+    if (n._rangeFacts) return visitWithFacts(n)
     const op = n[0]
     if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {
       const idxV = ev(n[2])
@@ -716,8 +733,13 @@ function scanIntervalIdx(body, out, lens) {
       let iv = null, range = null
       if (Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && typeof cond[1] === 'string') {
         const decls = new Map(); collectDecls(init, decls)
-        const A = decls.has(cond[1]) ? constInt(decls.get(cond[1])) : null
-        const B = constInt(cond[2])
+        // start/bound through the full evaluator: function-local consts (`x < ww`)
+        // and computed starts (`k = -rr`) resolve as singleton intervals
+        const dv = decls.get(cond[1])
+        const As = dv != null ? ev(dv) : null
+        const Bs = cond[2] != null ? ev(cond[2]) : null
+        const A = As && As[0] === As[1] ? As[0] : null
+        const B = Bs && Bs[0] === Bs[1] ? Bs[0] : null
         if (A != null && B != null && isUnitIncrement(step, cond[1])
             && !isReassigned(lbody, cond[1]) && !redeclaresName(lbody, cond[1])) {
           iv = cond[1]; range = [A, cond[0] === '<' ? B - 1 : B]
@@ -730,7 +752,24 @@ function scanIntervalIdx(body, out, lens) {
       if (iv) env.set(iv, null)   // iv holds the exit value after the loop
       return
     }
-    if (op === 'while' || op === 'do' || op === 'for-of' || op === 'for-in' || op === 'label'
+    if (op === 'while') {
+      // `while (iv < B)` with a known iv at entry, monotone +1 advances, and a
+      // bounded B: inside the body iv ∈ [entryLo, B_hi-1] (cond holds at body top);
+      // at exit iv ∈ [min(entryLo, B_lo), max(entryHi, B_hi)] — the peel's split
+      // loops chain through this. Anything else: kill and walk.
+      const [, c, wbody] = n
+      let iv = null, entry = null, brange = null
+      if (Array.isArray(c) && c[0] === '<' && typeof c[1] === 'string' && wbody != null) {
+        entry = env.get(c[1]); brange = c[2] != null ? ev(c[2]) : null
+        if (entry && brange && ivMonotoneInc(wbody, c[1]) && !redeclaresName(wbody, c[1])) iv = c[1]
+      }
+      killAssigned(n)
+      if (iv) env.set(iv, [entry[0], brange[1] - 1])
+      for (let k = 2; k < n.length; k++) visit(n[k])
+      if (iv) env.set(iv, [Math.min(entry[0], brange[0]), Math.max(entry[1], brange[1])])
+      return
+    }
+    if (op === 'do' || op === 'for-of' || op === 'for-in' || op === 'label'
         || op === 'switch' || op === 'try') {
       killAssigned(n)   // unknown trip count / branch selection: no interval survives entry
       for (let k = 1; k < n.length; k++) visit(n[k])
@@ -758,6 +797,7 @@ function scanIntervalIdx(body, out, lens) {
       }
       return
     }
+    if (op === '()' && n.length === 2) { visit(n[1]); return }   // grouping, not a call
     if (op === '()' || op === 'new') {   // a call may reassign module globals
       for (let k = 1; k < n.length; k++) visit(n[k])
       for (const [k2] of env) if (!closureWrites.has(k2) && (ctx.scope?.globalTypes?.has?.(k2) || ctx.types?.typedElem?.has?.(k2))) env.set(k2, null)
@@ -766,7 +806,41 @@ function scanIntervalIdx(body, out, lens) {
     for (let k = 1; k < n.length; k++) visit(n[k])
   }
   // the function root is itself an `=>` node — enter its body; only NESTED closures skip
+  // A rewrite pass (peelClampedStencil) stamps `_rangeFacts` — theorems about names
+  // inside the stamped subtree (`ci ∈ [0, bound-1]`, established by ITS soundness
+  // argument). They intersect every env write of that name while the subtree walks.
+  const visitWithFacts = (n) => {
+    const popped = []
+    for (const [name, boundName] of n._rangeFacts) {
+      const B = boundName != null ? ev(boundName) : null
+      if (B && !activeFacts.has(name)) { activeFacts.set(name, [0, B[1] - 1]); popped.push(name) }
+    }
+    const facts = n._rangeFacts
+    delete n._rangeFacts   // re-entry through visit() below must not recurse
+    visit(n)
+    n._rangeFacts = facts
+    for (const name of popped) activeFacts.delete(name)
+  }
   visit(Array.isArray(body) && body[0] === '=>' ? body[body.length - 1] : body)
+}
+
+/** Every write to `iv` in `node` is a strictly-positive unit step (++iv / iv+=1 /
+ *  iv=(iv+1)|0 / iv=iv+1) — the while-iv interval model requires monotone advance. */
+function ivMonotoneInc(node, iv) {
+  if (!Array.isArray(node)) return true
+  if ((node[0] === '++' || node[0] === '--') && node[1] === iv) return node[0] === '++'
+  if (ASSIGN_OPS.has(node[0]) && node[1] === iv) {
+    if (node[0] === '+=' && intLiteralValue(node[2]) >= 1) return true
+    if (node[0] === '=') {
+      let rhs = node[2]
+      if (Array.isArray(rhs) && rhs[0] === '|' && intLiteralValue(rhs[2]) === 0) rhs = rhs[1]
+      if (Array.isArray(rhs) && rhs[0] === '+' && rhs.length === 3
+          && ((rhs[1] === iv && intLiteralValue(rhs[2]) >= 1) || (rhs[2] === iv && intLiteralValue(rhs[1]) >= 1))) return true
+    }
+    return false
+  }
+  for (let k = 1; k < node.length; k++) if (!ivMonotoneInc(node[k], iv)) return false
+  return true
 }
 const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '**='])
 

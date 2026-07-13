@@ -206,6 +206,11 @@ function tryPeel(stmt, cm) {
   // for: append the step to each split loop's body; while: body already increments.
   const mk = (B, bod) => ['while', ['<', iv, B], step ? [';', ...bod.slice(1), step] : bod]
   const loops = [mk(xs, body), mk(xe, interiorBody), mk(bound, body)]
+  // Range theorem for the interval proof (typedIdxProven class 5): the peel's own
+  // bit-exactness argument — for interior iv, `ci = iv + k ∈ [0, bound-1]` WITHOUT
+  // the clamp. Stamped on the interior loop's FINAL body node (mk may rebuild it);
+  // the interval walk intersects ci's env writes with it while inside the subtree.
+  loops[1][2]._rangeFacts = [[clamp.ci, bound]]
   return init ? [init, seed, ...loops] : [seed, ...loops]
 }
 

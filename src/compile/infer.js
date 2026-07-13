@@ -360,7 +360,13 @@ export function recordGlobalRep(name, expr) {
     ;(ctx.scope.globalTypedElem ||= new Map()).set(name, ctor)
     const len = typedStaticLen(expr)
     if (len != null) (ctx.scope.globalTypedLen ||= new Map()).set(name, len)
-    else ctx.scope.globalTypedLen?.delete(name)
+    else {
+      ctx.scope.globalTypedLen?.delete(name)
+      // `new T(CIN*H*W)` — the size is a const expression whose names fold AFTER
+      // prepare (the compile-time constInts fixpoint). Park the rhs; the fold's tail
+      // re-runs typedStaticLen over these (see "Pre-fold const globals").
+      ;(ctx.scope.pendingTypedLens ||= new Map()).set(name, expr)
+    }
   }
   // Module-level const array literal with a uniform element val-type (e.g. a numeric
   // table `const FREQS = [261.63, …]`): record it so `FREQS[i]` reads in any using
