@@ -3446,3 +3446,50 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   "Sierpinski Chords" ~2.0× V8 on both pre/post trees — its own investigation
   thread. bench-gate fft/sort/qoi reds are known-gap/jitter rows (byte-identical
   or improved builds).
+
+## Perf sweep: remaining cases (2026-07-13, session 2)
+- LANDED d9106f4c prepare: hoistIndexedConstLiterals — `[c0,c1,…][i]` in a
+  function body allocated per EVALUATION ('[' static lowering is module-scope
+  gated); receiver-position literals can't escape/be-written → synthetic module
+  const (one data segment, content-interned, staticArrs fold; const indexes fold
+  to constants). Write-position reads ([1,2][0]=5 / ++ / delete / destructuring)
+  banned via pre-scan — hoisted they'd corrupt the shared segment (pinned).
+  FLOATBEAT RESULT: Sierpinski (3 tables×144B/sample) 2.42× behind V8 → 0.75×
+  AHEAD; jukebox geomean 0.380×, all 12 beats win; second beat (5×7-entry
+  tables/sample) rides the same fix. NOTE the "gross codegen regression" gate
+  red predating this session is CLOSED.
+- LANDED ffc632cb bench ledger: sort joins WASM_TODO — sift loop verified
+  optimal scalar (unswitched typed path, 0 bounds checks, 0 calls, i32+offset=
+  fused, select child-pick); residual = LLVM scheduling on the dependent-load
+  chain, qoi/dict class. fft entry now carries the CONSTRUCTIVE design:
+  2-wide butterflies over consecutive j (all four re/im a/b accesses are
+  ADJACENT pairs; b=a+half is a second invariant base; twiddles runtime-strided
+  → 2 scalar loads + lane combine; no reassociation/no FMA ⇒ checksum-identical;
+  half even for len≥4 ⇒ no tail). BLOCKER: dual-IV scaffold (j++, k+=step) —
+  matchBlockLoop accepts one IV, the lift never attempts the loop. Needs the
+  dual-IV affine extension + paired read-write lanes + the 76k differential
+  fuzz gate (SIMD-adjacent). Own-session scale.
+- PROFILES (names:true — appendFunctionNames symbolication; the wat-order
+  index mapping is UNRELIABLE, wat text ≠ binary order):
+  jz-row (self-host, compile-only workload): watr m51_util walk 6.4% +
+  walkPost 3.9% (the 5.3.7 direct-recursion technique generalizes — or a
+  watr-core walk() cheapening lifts every pass), __str_eq 6.8% (already
+  maximally short-circuited: bit-eq/SSO/canonical/len/4B-chunks — the residual
+  is equal-length NON-CANONICAL name strings from map probes → the intern gap:
+  concat-BUILT names never canonicalize; wordcount's STR_INTERN_BIT lever is
+  the same story), __ptr_offset 4.2%, dyn band (__dyn_get/set+__len) ~8%.
+  jessie (subscript 10.7.0): ONE watr-inlined mega-closure 21% (155KB body,
+  % includes inlinees; closure numbering is per-compile — identify by size),
+  asi 9.8% + space workers ~13% + step/expr/id ~12%, hashNode 6.8% NOW INSIDE
+  the timed region (was outside pre-10.7.0). IC-class verdict stands.
+- JITTER-BAND VERDICT: tokenizer/crc32/immutable/qoi fastest-wasm rows flip
+  in/out of the 1.05 tolerance across byte-identical builds (4 gate runs:
+  sort/qoi red→green, tokenizer/crc32/immutable green→red) — measurement band,
+  not gaps; no ledger entries (immutable already has its allocation-churn one).
+- NEXT LEVERS (ranked): 1) watr walk() core cheapening (≈10% of self-host,
+  benefits every pass; the "fresh-closure-per-scope never JIT-warms" finding
+  bounds the design). 2) name-string interning at concat/mangle time
+  (STR_INTERN_BIT) — collapses __str_eq residual AND wordcount's 10× ledger
+  row. 3) fft dual-IV butterfly recognizer (design above). 4) strbuild
+  itoa-into-arena + sized concat chains (ledger). 5) shapes tag-switch devirt
+  (ledger, biggest single gap).
