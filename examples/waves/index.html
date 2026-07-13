@@ -10,40 +10,26 @@
 import { runDemo } from "../lib/jzdemo.js"
 
 // Swimming-pool caustics (see waves.js — after KZ_LAB_E's caustics simulation): a calm pool
-// whose gentle swell folds sunlight into the classic slowly-shimmering caustic net. Moving
-// the cursor trails fingertip ripples; click for a splash; scroll sets the POOL DEPTH
+// whose gentle swell folds sunlight into the classic slowly-shimmering caustic net. Click to
+// splash — a thick ring rides out and fades in a few seconds. Scroll sets the POOL DEPTH
 // (shallow barely bends the light, deep folds every ripple hard). Dice throws splashes.
-let tx = 0.5, ty = 0.5                // fingertip position, canvas fractions
-let touch = 0                         // touch strength — fades when the pointer rests
 let foc = 150                         // pool depth (focal length of the refraction)
-let lastMove = -10, nowT = 0
 
 const demo = runDemo({
   name: "waves",
-  hint: "a calm pool folding sunlight — real caustics · move to ripple · click to splash · scroll = depth",
+  hint: "a calm pool folding sunlight — real caustics · click to splash · scroll = depth",
   size: { budget: 420000 },
   bg: "#2b98ac",
   load: (e) => { e.clear() },
-  frame: (e, t) => {
-    nowT = t
-    touch = t - lastMove < 0.4 ? 1.0 : touch * 0.9    // the touch lifts off ~half a second after rest
-    e.frame(t, tx * demo.W, ty * demo.H, touch, foc)
-  },
+  frame: (e, t) => { e.frame(t, foc) },
   randomize: (e, d) => {
     for (let i = 0; i < 4; i++) e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7))
   },
 })
 
-const toFrac = (e) => {
-  const r = demo.cv.getBoundingClientRect()
-  tx = (e.clientX - r.left) / r.width
-  ty = (e.clientY - r.top) / r.height
-  lastMove = nowT
-}
-demo.cv.addEventListener("pointermove", toFrac)
 demo.cv.addEventListener("pointerdown", (e) => {
-  toFrac(e)
-  demo.engine?.drop(tx * demo.W, ty * demo.H)
+  const r = demo.cv.getBoundingClientRect()
+  demo.engine?.drop((e.clientX - r.left) / r.width * demo.W, (e.clientY - r.top) / r.height * demo.H)
 })
 demo.cv.addEventListener("wheel", (e) => {
   e.preventDefault()

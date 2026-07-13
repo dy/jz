@@ -7,14 +7,14 @@
 // singularities of the light map. After KZ_LAB_E's caustics simulation
 // (x.com/KZ_LAB_E/status/1979210373921411098).
 //
-// The pool is CALM: a steady drizzle of soft zero-mean plops (deterministic xorshift),
-// barely damped, accumulates into a gentle random swell — and gentle swell under a deep
-// focus is exactly the classic swimming-pool caustic net, slowly shimmering. The pointer is
-// a fingertip: a light touch trailing ripples, not a churn. A 9-point isotropic Laplacian
-// keeps fronts round, an edge sponge swallows wall reflections, one 3×3 blur softens the
-// photon map, and the tone LUT maps light onto POOL WATER — white caustics over turquoise,
-// deep teal in the shadows. frame(t, sx, sy, stir): fingertip position (px) + touch 0..1.
-// drop(x,y) splashes; clear() stills the pool. resize(w,h) → Uint32Array (ARGB).
+// The pool is CALM: a steady drizzle of soft zero-mean plops (deterministic xorshift)
+// sustains a gentle random swell — and gentle swell under a deep focus is exactly the
+// classic swimming-pool caustic net, slowly shimmering. Clicks are the only other
+// disturbance: drop(x,y) presses a WIDE splash whose rings ride out thick and fade within
+// a few seconds. A 9-point isotropic Laplacian keeps fronts round, an edge sponge swallows
+// wall reflections, one 3×3 blur softens the photon map, and the tone LUT maps light onto
+// POOL WATER — white caustics over turquoise, deep teal in the shadows.
+// frame(t, foc); clear() stills the pool. resize(w,h) → Uint32Array (ARGB).
 
 let W = 0, H = 0, px
 let a, b               // wave height now / previous (leapfrog pair)
@@ -26,11 +26,11 @@ let glut               // Int32Array(1024) — photon density → pool-water col
 
 const C2 = 0.35        // wave speed² (CFL-stable for the 9-point stencil at ≤0.5)
 const SUB = 1          // one leapfrog substep per frame — the pool shimmers, it doesn't race
-const DAMP = 0.9985    // barely damped: the drizzle accumulates into a standing gentle swell
+const DAMP = 0.993     // a click's rings ride out and settle into the ambient net in ~3 s
 const MARGIN = 18      // edge-sponge width (cells)
 const MARGINDAMP = 0.94
-const RAIN = 9.0       // soft plops per second — the source of the swell
-const RAINA = 0.16     // plop amplitude (signs alternate → zero-mean surface)
+const RAIN = 8.0       // soft plops per second — the source of the ambient swell
+const RAINA = 0.38     // plop amplitude (signs alternate → zero-mean surface)
 const O = 0.66667, D = 0.16667, CEN = -3.33333   // 9-point isotropic Laplacian weights
 
 export let resize = (w, h) => {
@@ -91,8 +91,8 @@ let rnd = () => {
   return (((rs >>> 9) | 0) + 1) / 8388609.0
 }
 
-// gaussian plop pressed into the current field — a splash that rings out as a real front
-export let drop = (cx, cy) => { plop(cx, cy, 4.5, -2.2) }
+// gaussian plop pressed into the current field — a WIDE splash whose rings ride out thick
+export let drop = (cx, cy) => { plop(cx, cy, 10.0, -1.8) }
 
 let plop = (cx, cy, r, amp) => {
   let rO = r * 3.0
@@ -135,7 +135,7 @@ let step = () => {
 
 // foc = focal depth × refraction: how far a ray shears per unit slope — the POOL DEPTH.
 // Shallow (≈50) barely bends the light; deep (≈140) folds every ripple into hard caustics.
-export let frame = (t, sx, sy, stir, foc) => {
+export let frame = (t, foc) => {
   let w = W, h = H, n = w * h
 
   // drizzle: soft alternating-sign plops accumulate into the pool's gentle standing swell
@@ -143,38 +143,12 @@ export let frame = (t, sx, sy, stir, foc) => {
   let d = 0
   while (d < drops) {
     let sgn = rnd() < 0.5 ? -1.0 : 1.0
-    plop(6.0 + rnd() * (w - 12.0), 6.0 + rnd() * (h - 12.0), 4.0 + rnd() * 5.0, sgn * RAINA * (0.4 + rnd()))
+    plop(6.0 + rnd() * (w - 12.0), 6.0 + rnd() * (h - 12.0), 5.0 + rnd() * 6.0, sgn * RAINA * (0.4 + rnd()))
     d++
   }
 
   let s = 0
   while (s < SUB) { step(); s++ }
-  // the fingertip: a light touch at (sx,sy) — dragging it trails gentle ripples
-  if (stir > 0.0) {
-    let R = 0.016 * (w < h ? w : h) + 2.0
-    let x0 = (sx - 3.0 * R) | 0, x1 = (sx + 3.0 * R) | 0, y0 = (sy - 3.0 * R) | 0, y1 = (sy + 3.0 * R) | 0
-    if (x0 < 1) x0 = 1
-    if (y0 < 1) y0 = 1
-    if (x1 > w - 2) x1 = w - 2
-    if (y1 > h - 2) y1 = h - 2
-    let ir2 = 1.0 / (R * R)
-    let press = 0.25 * stir
-    let yy = y0
-    while (yy <= y1) {
-      let dy = yy - sy, row = yy * w, x = x0
-      while (x <= x1) {
-        let dx = x - sx
-        let q = (dx * dx + dy * dy) * ir2
-        if (q < 9.0) {
-          let c = row + x
-          let E = Math.exp(-q)
-          a[c] = a[c] + (-1.4 * stir * E - a[c]) * press * E
-        }
-        x++
-      }
-      yy++
-    }
-  }
 
   // ── caustics: refract one ray per texel through the surface, splat where it lands ──
   let i = 0
