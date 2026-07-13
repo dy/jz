@@ -71,9 +71,13 @@ export function typedStaticLen(rhs) {
  *  2. a literal index against the binding's STATIC length (ctx.types.typedLen /
  *     ctx.scope.globalTypedLen — `new T(<n>)`, tracker-invalidated on redef);
  *  3. the masked form `x & m` / `m & x` (ToInt32 & clears the sign for m ≥ 0, so the
- *     result is in [0, m]) with m < that static length. */
+ *     result is in [0, m]) with m < that static length;
+ *  4. a versioned-loop assumption (ctx.types.assumedBounds) — the emitter is inside
+ *     the guarded arm of a loop whose runtime extent check covers exactly this
+ *     (recv, idx) pair (see versionableTypedFor / the 'for' emitter). */
 export function typedIdxProven(recv, idx) {
   if (typeof recv !== 'string') return false
+  if (ctx.types.assumedBounds?.has(idxKey(recv, idx))) return true
   if (typeof idx === 'string' && inBoundsArrIdx(ctx).has(recv + '\x00' + idx)) return true
   const len = ctx.types.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
   if (len == null) return false
@@ -88,6 +92,209 @@ export function typedIdxProven(recv, idx) {
     if (B != null) return B <= len
   }
   return false
+}
+
+/** Structural key for a `recv[idx]` site — the assumedBounds channel between the
+ *  versioning scan and typedIdxProven. JSON is structural, so the key matches even
+ *  when the prover sees a clone of the scanned node. */
+export const idxKey = (recv, idx) => recv + '\x00' + (typeof idx === 'string' ? idx : JSON.stringify(idx))
+
+/** Decompose `idx` as `a*iv + bName + bConst`: literal iv-coefficient a ≥ 0, at most
+ *  one symbolic body-invariant name (coefficient 1), an int constant. `env` maps
+ *  single-def body-let names to their own affine forms (`const j = 3*i` → uses of
+ *  `j`, `j+1` resolve through it). Additive combine over `+`/`-`/literal-`*`; two
+ *  symbolic names, a scaled name, or a negative final iv-coefficient reject. The
+ *  kernel shapes: `i`, `3*i+1` (AoS), `j+half` via env (butterfly), `irow+kx`
+ *  (conv), plain invariant `base` (a = 0). */
+export function affineIdxOfIV(idx, iv, body, env) {
+  const slotEq = (p, q) => p === q || (typeof p !== 'string' && typeof q !== 'string'
+    && JSON.stringify(p) === JSON.stringify(q))
+  const aff = (e) => {
+    if (e === iv) return { a: 1, k: 0, bSlot: null, bConst: 0 }
+    const n = intLiteralValue(e)
+    if (n != null) return { a: 0, k: 0, bSlot: null, bConst: n }
+    if (typeof e === 'string') {
+      // a name the env KNOWS (declared in this body) must resolve through it — a
+      // null entry is a body-varying non-affine value the guard cannot pre-read
+      if (env?.has(e)) return env.get(e)
+      return isReassigned(body, e) ? null : { a: 0, k: 1, bSlot: e, bConst: 0 }
+    }
+    if (!Array.isArray(e)) return null
+    const [op, x, y] = e
+    if (e.length === 3 && op === '*') {
+      const L = intLiteralValue(x) ?? intLiteralValue(y)
+      if (L != null) {
+        const t = aff(intLiteralValue(x) != null ? y : x)
+        if (t) return { a: t.a * L, k: t.k * L, bSlot: t.bSlot, bConst: t.bConst * L }
+      }
+      // fall through: a non-literal product (`y*w`) may still be an invariant slot
+    }
+    if (e.length === 3 && (op === '+' || op === '-')) {
+      const l = aff(x), r = aff(y)
+      if (l && r) {
+        const s = op === '+' ? 1 : -1
+        // one symbolic slot per idx — same slot combines, different slots reject
+        // (falling through to the whole-expr slot instead: `y*w + x*2`-style sums
+        // of invariants still resolve as a single slot when iv-free)
+        if (l.bSlot == null || r.bSlot == null || slotEq(l.bSlot, r.bSlot))
+          return { a: l.a + s * r.a, k: l.k + s * r.k, bSlot: l.bSlot ?? r.bSlot,
+            bConst: l.bConst + s * r.bConst }
+      }
+      // fall through to the whole-expr slot
+    }
+    // WHOLE-EXPR SLOT: an iv-free pure arithmetic expression over stable outer names
+    // (`y*w`, `(oy+ky)*IW`) — the guard evaluates it once at loop entry; runtime
+    // `integral ∧ |v| ≤ 2^31` conjuncts (the 'f64' slot kind) make the int model exact.
+    return invariantIdxExpr(e, iv, body, env) ? { a: 0, k: 1, bSlot: e, bConst: 0 } : null
+  }
+  const r = aff(idx)
+  return r && r.a >= 0 && Number.isInteger(r.a) && Number.isInteger(r.k) && Number.isInteger(r.bConst)
+    ? (r.bSlot != null && r.k === 0 ? { ...r, bSlot: null } : r) : null
+}
+
+/** `e` is a pure arithmetic expression whose value cannot change across the loop:
+ *  literals and stable outer names under numeric operators — no calls, no indexing,
+ *  no property reads, no assignments, no iv, no body-declared names (they don't
+ *  exist at guard time). The slot whitelist matches what the guard can safely
+ *  re-evaluate before the loop. */
+const SLOT_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
+function invariantIdxExpr(e, iv, body, env) {
+  if (intLiteralValue(e) != null) return true
+  if (typeof e === 'string')
+    return e !== iv && !env?.has(e) && !isReassigned(body, e) && !redeclaresName(body, e)
+  if (!Array.isArray(e) || !SLOT_OPS.has(e[0]) || e.length > 3) return false
+  for (let k = 1; k < e.length; k++) if (!invariantIdxExpr(e[k], iv, body, env)) return false
+  return true
+}
+
+/** Single-def body-let affine environment for `affineIdxOfIV`: names declared
+ *  EXACTLY once in `body`, never written, whose rhs is itself iv-affine (through
+ *  earlier env entries — decls resolve in walk order: `const j = 3*i; const k = j+1`).
+ *  A second decl of the same name (block shadowing) evicts it permanently. */
+export function bodyAffineEnv(body, iv) {
+  const env = new Map()   // name → affine, or null = body-declared but unresolvable
+  const walk = (n) => {
+    if (!Array.isArray(n) || n[0] === '=>') return
+    if (n[0] === 'let' || n[0] === 'const') {
+      for (let k = 1; k < n.length; k++) {
+        const d = n[k]
+        const name = typeof d === 'string' ? d : Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? d[1] : null
+        if (name == null) continue
+        if (env.has(name)) { env.set(name, null); continue }   // shadowing second decl — evict
+        env.set(name, typeof d === 'string' || isReassigned(body, name) ? null
+          : affineIdxOfIV(d[2], iv, body, env))
+      }
+    }
+    for (let k = 1; k < n.length; k++) walk(n[k])
+  }
+  walk(body)
+  return env
+}
+
+/** Loop-versioning scan for the 'for' emitter: a countable loop
+ *  `for (let iv = C≥0; iv < BOUND; iv++)` whose body indexes TYPED receivers with
+ *  iv-affine indices that no static class proves. Returns null or
+ *  `{ iv, startC, bound, cands }` — each cand `{ recv, idx, a, bName, bConst }`.
+ *  The caller emits `if (∀ extents in bounds) fast-arm else checked-arm`, assuming
+ *  exactly `cands`' keys inside the fast arm, so every judgment here is
+ *  load-bearing for memory safety:
+ *  - BOUND re-evaluates in the guard → must be pure AND i32-machine-typed (an f64
+ *    bound like `i < 5.5` admits iv = trunc-extent + 1 — the guard would under-
+ *    estimate); literal int, an unwritten i32 name, or an unwritten typed
+ *    receiver's `.length`;
+ *  - bName terms must be i32-typed for the same reason;
+ *  - closures in the body would be cloned per arm (two instances) — bail;
+ *  - a candidate whose static low extent `a*C + bConst` is provably negative is
+ *    DROPPED (its first iterations are genuinely OOB — the checked form is the
+ *    semantics, a guard would just always fail). */
+export function versionableTypedFor(init, cond, step, body, locals) {
+  if (!Array.isArray(cond) || (cond[0] !== '<' && cond[0] !== '<=') || typeof cond[1] !== 'string') return null
+  if (containsNestedClosure(body)) return null
+  const iv = cond[1], incl = cond[0] === '<='
+  if (redeclaresName(body, iv)) return null
+  // iv start: a static init decl (`for (let i = 0; …)`) folds the lo conjunct;
+  // otherwise (while-shapes: `let i = 0; while (i < n) …`) the guard reads the
+  // ENTRY value of iv at runtime — the extent math is entry-relative either way.
+  const decls = new Map()
+  collectDecls(init, decls)
+  const startC = decls.has(iv) ? intLiteralValue(decls.get(iv)) : null
+  if (startC != null && startC < 0) return null   // statically-negative start: guard is dead weight
+  // iv advance: a unit-increment step slot (for-loops), or — when the step slot is
+  // empty — a SINGLE body write of shape `i = (i+LIT)|0` / `i = i+LIT` / `i += LIT` /
+  // `i++` with int LIT ≥ 1 (while-loops). A body-advanced iv is visible PAST the
+  // bound inside its final iteration (cond passes at B-1, the increment runs mid-
+  // body), so the max-iv widens by LIT (`bump`). Any other write shape rejects.
+  let bump = 0
+  if (isUnitIncrement(step, iv)) {
+    if (isReassigned(body, iv)) return null
+  } else if (step == null && isReassigned(body, iv)) {
+    const writes = []
+    const collectW = (n) => {
+      if (!Array.isArray(n)) return
+      if (((n[0] === '=' || n[0] === '+=') && n[1] === iv) || ((n[0] === '++' || n[0] === '--') && n[1] === iv))
+        writes.push(n)
+      for (let k = 1; k < n.length; k++) collectW(n[k])
+    }
+    collectW(body)
+    if (writes.length !== 1) return null
+    const w = writes[0]
+    const incOf = (n) => {
+      if (n[0] === '++') return 1
+      if (n[0] === '+=') return intLiteralValue(n[2])
+      if (n[0] !== '=') return null
+      let rhs = n[2]
+      if (Array.isArray(rhs) && rhs[0] === '|' && intLiteralValue(rhs[2]) === 0) rhs = rhs[1]   // (i+LIT)|0
+      if (Array.isArray(rhs) && rhs[0] === '+' && rhs.length === 3) {
+        if (rhs[1] === iv) return intLiteralValue(rhs[2])
+        if (rhs[2] === iv) return intLiteralValue(rhs[1])
+      }
+      return null
+    }
+    const L = incOf(w)
+    if (L == null || L < 1 || !Number.isInteger(L)) return null
+    bump = L
+  } else return null
+  const bound = cond[2]
+  // a name the guard re-reads must denote the same binding for the whole loop
+  const stable = (name) => !isReassigned(body, name) && !redeclaresName(body, name)
+  // bKind drives the guard's conversion to a max-iv i64:
+  //   'i32' — literal, i32-machine name, or a typed receiver's .length: exact extend;
+  //   'f64' — any other stable name (an untyped param, a NaN-boxed unknown): the
+  //     emitter adds a runtime `|B| ≤ 2^31` conjunct — box bit patterns are NaN, so
+  //     abs-compare fails and the checked arm takes over; a genuine number converts
+  //     exactly via ceil/floor + trunc_sat (never traps, saturation is conjunct-dead).
+  const bKind = intLiteralValue(bound) != null ? 'i32'
+    : (() => { const r = lengthRecv(bound); return r != null && ctx.types.typedElem?.has(r) && stable(r) })() ? 'i32'
+    : typeof bound === 'string' && stable(bound) ? (exprType(bound, locals) === 'i32' ? 'i32' : 'f64')
+    : null
+  if (bKind == null) return null
+  const env = bodyAffineEnv(body, iv)
+  const cands = []
+  const seen = new Set()
+  const scan = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[1] !== iv
+        && ctx.types.typedElem?.has(n[1]) && stable(n[1])) {
+      const aff = affineIdxOfIV(n[2], iv, body, env)
+      // symbolic offsets: i32-machine slots are exact; any other slot rides the f64
+      // path with runtime `integral ∧ |v| ≤ 2^31` conjuncts (nKind 'f64')
+      const nKind = aff?.bSlot == null ? null
+        : exprType(aff.bSlot, locals) === 'i32' ? 'i32' : 'f64'
+      if (aff
+          // statically-negative low extent: the checked form IS the semantics, a
+          // guard would always fail (runtime-entry loops keep the runtime lo check)
+          && !(aff.bSlot == null && startC != null && aff.a * startC + aff.bConst < 0)
+          && !typedIdxProven(n[1], n[2])) {
+        const key = idxKey(n[1], n[2])
+        if (!seen.has(key)) { seen.add(key); cands.push({ recv: n[1], idx: n[2], ...aff, nKind }) }
+      }
+    }
+    for (let k = 1; k < n.length; k++) scan(n[k])
+  }
+  scan(body)
+  return cands.length
+    ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, cands }
+    : null
 }
 
 /** Sentinel returned by `ternaryCtorOfRhs` when ternary branches resolve to

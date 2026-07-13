@@ -38,7 +38,7 @@ import {
   containsDeclOf, cloneWithSubst, containsKnownTypedArrayIndex,
   smallConstForTripCount, isTerminator, scanBoundedLoops, inBoundsCharCodeAt,
   exprType, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
-  inBoundsArrIdx, typedIdxProven,
+  inBoundsArrIdx, typedIdxProven, versionableTypedFor, idxKey,
 } from '../type.js'
 import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
@@ -4059,6 +4059,121 @@ export const emitter = {
     if (!labeledContinue && (!ctx.transform.optimize || ctx.transform.optimize.forInUnroll !== false)) {
       const fu = unrollForIn(init, cond, step, body)
       if (fu) return fu
+    }
+    // Typed-bounds loop VERSIONING (Root F): a countable loop whose body indexes typed
+    // receivers with iv-affine indices no static class proves gets a ONCE-per-entry
+    // runtime extent guard. The fast arm re-emits with those (recv, idx) pairs assumed
+    // in-bounds — bare loads/stores, i.e. the vectorizer's shapes — while the else arm
+    // keeps the checked forms verbatim (also the correct semantics for a failing guard:
+    // OOB reads yield undefined, OOB writes are ignored). Guard arithmetic runs in i64:
+    // a*(B-1)+b overflows i32 near the edge, and a wrapped guard that passes is heap
+    // corruption. `_tbVersioned` brakes the arms' re-entry into this same intercept.
+    if (!labeledContinue && !body._tbVersioned
+        && (!ctx.transform.optimize || ctx.transform.optimize.versionTypedBounds !== false)) {
+      const vs = versionableTypedFor(init, cond, step, body, ctx.func.locals)
+      if (vs) {
+        body._tbVersioned = true
+        inc('__len')
+        const result = []
+        if (init != null) result.push(...emitVoid(init))
+        const i64c = (n) => ['i64.const', n]
+        const ext = (ir) => ['i64.extend_i32_s', ir]
+        const conjs = []
+        // max iv as i64. An 'f64' bound (untyped param, unknown box) converts via
+        // ceil (`<`: the max int iv under B) / floor (`<=`) + trunc_sat — never traps —
+        // with a `|B| ≤ 2^31` conjunct making the conversion exact: NaN and box bit
+        // patterns fail the abs-compare and fall to the checked arm; saturated garbage
+        // past the limit is conjunct-dead. i64 extents then never overflow
+        // (|terms| ≤ 2^31, a is an i32 literal → |hi| < 2^63).
+        const maxIv = tempI64('tvq')
+        if (vs.bKind === 'f64') {
+          const bF = temp('tvf')
+          result.push(['local.set', `$${bF}`, asF64(emit(vs.bound))])
+          conjs.push(['f64.le', ['f64.abs', ['local.get', `$${bF}`]], ['f64.const', 2147483648]])
+          result.push(['local.set', `$${maxIv}`,
+            ['i64.trunc_sat_f64_s', [vs.incl ? 'f64.floor' : 'f64.ceil', ['local.get', `$${bF}`]]]])
+          if (vs.bump - (vs.incl ? 0 : 1)) result.push(['local.set', `$${maxIv}`,
+            ['i64.add', ['local.get', `$${maxIv}`], i64c(vs.bump - (vs.incl ? 0 : 1))]])
+        } else {
+          const adj = vs.bump - (vs.incl ? 0 : 1)
+          result.push(['local.set', `$${maxIv}`,
+            adj ? ['i64.add', ext(asI32(emit(vs.bound))), i64c(adj)] : ext(asI32(emit(vs.bound)))])
+        }
+        // one evaluation per symbolic-offset slot (a stable name or an invariant pure
+        // expr like `y*w`); an 'f64' slot adds `v integral ∧ |v| ≤ 2^31` conjuncts —
+        // the int model of `a*iv + v` is exact only for integral v (trunc does NOT
+        // distribute over f64 sums)
+        const slotKey = (s) => typeof s === 'string' ? s : JSON.stringify(s)
+        const slots = new Map()
+        const slotI64 = (slot, kind) => {
+          const key = slotKey(slot)
+          let s = slots.get(key)
+          if (s) return s
+          if (kind === 'i32') {
+            const nT = tempI64('tvm')
+            result.push(['local.set', `$${nT}`, ext(asI32(emit(slot)))])
+            s = ['local.get', `$${nT}`]
+          } else {
+            const nF = temp('tvn')
+            result.push(['local.set', `$${nF}`, asF64(emit(slot))])
+            conjs.push(['f64.eq', ['local.get', `$${nF}`], ['f64.floor', ['local.get', `$${nF}`]]])
+            conjs.push(['f64.le', ['f64.abs', ['local.get', `$${nF}`]], ['f64.const', 2147483648]])
+            const nT = tempI64('tvm')
+            result.push(['local.set', `$${nT}`, ['i64.trunc_sat_f64_s', ['local.get', `$${nF}`]]])
+            s = ['local.get', `$${nT}`]
+          }
+          slots.set(key, s)
+          return s
+        }
+        // one extent conjunct per (recv, a, k, slot) group: hi = a*maxIv+k*slot+maxC < len,
+        // plus lo = a*entry+k*slot+minC ≥ 0 — folded away when a static start proves it,
+        // read from the live iv local at guard time otherwise (while-shapes)
+        const groups = new Map()
+        for (const c of vs.cands) {
+          const gk = c.recv + '\x00' + c.a + '\x00' + c.k + '\x00' + (c.bSlot == null ? '' : slotKey(c.bSlot))
+          const g = groups.get(gk)
+          if (!g) groups.set(gk, { recv: c.recv, a: c.a, k: c.k, bSlot: c.bSlot, nKind: c.nKind, maxC: c.bConst, minC: c.bConst })
+          else { g.maxC = Math.max(g.maxC, c.bConst); g.minC = Math.min(g.minC, c.bConst) }
+        }
+        const slotTerm = (g) => {
+          const s = slotI64(g.bSlot, g.nKind)
+          return g.k === 1 ? s : ['i64.mul', i64c(g.k), s]
+        }
+        for (const g of groups.values()) {
+          const len64 = ['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(g.recv))]]]
+          let hi = ['i64.mul', i64c(g.a), ['local.get', `$${maxIv}`]]
+          if (g.bSlot != null) hi = ['i64.add', hi, slotTerm(g)]
+          if (g.maxC) hi = ['i64.add', hi, i64c(g.maxC)]
+          conjs.push(['i64.lt_s', hi, len64])
+          // low extent: static start folds (candidates with a provably-negative static
+          // lo were filtered), runtime entry reads iv through the slot machinery (an
+          // f64 iv gets the integral∧range conjuncts — entry integrality carries
+          // through integer advances)
+          if (vs.startC != null && g.bSlot == null) continue
+          let lo = vs.startC != null ? i64c(g.a * vs.startC)
+            : g.a === 1 ? slotI64(vs.iv, vs.ivKind)
+            : ['i64.mul', i64c(g.a), slotI64(vs.iv, vs.ivKind)]
+          if (g.bSlot != null) lo = ['i64.add', lo, slotTerm(g)]
+          if (g.minC) lo = ['i64.add', lo, i64c(g.minC)]
+          conjs.push(['i64.ge_s', lo, i64c(0)])
+        }
+        let guard = conjs[0]
+        for (let k = 1; k < conjs.length; k++) guard = ['i32.and', guard, conjs[k]]
+        const added = []
+        if (!ctx.types.assumedBounds) ctx.types.assumedBounds = new Set()
+        for (const c of vs.cands) {
+          const k = idxKey(c.recv, c.idx)
+          if (!ctx.types.assumedBounds.has(k)) { ctx.types.assumedBounds.add(k); added.push(k) }
+        }
+        const fast = emitter['for'](null, cond, step, body)
+        for (const k of added) ctx.types.assumedBounds.delete(k)
+        const checked = emitter['for'](null, cond, step, body)
+        const stmts = (r) => Array.isArray(r[0]) ? r : [r]
+        result.push(['if', typed(guard, 'i32'),
+          ['then', ...stmts(fast)],
+          ['else', ...stmts(checked)]])
+        return result
+      }
     }
     // Lift constant array/object literals out of the loop (allocate once, not per
     // iteration) when they are read-only + non-escaping inside it. Strip them from the
