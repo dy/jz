@@ -86,7 +86,7 @@ test('bool identity: preset-table idiom (the kernel divergence chain)', async ()
   // resolveOptimize's exact shape: fromEntries -> freeze -> spread -> number
   // level from JSON.parse -> `=== true` branch test -> `!== false` pass gates.
   const SRC = `
-  const NAMES = ['csePureExpr', 'foldSetToTee', 'treeshake', 'fusedRewrite']
+  const NAMES = ['cseScalarLoad', 'foldSetToTee', 'treeshake', 'fusedRewrite']
   const ALL_ON = Object.freeze(Object.fromEntries(NAMES.map(n => [n, true])))
   const ALL_OFF = Object.freeze(Object.fromEntries(NAMES.map(n => [n, false])))
   const P1 = Object.freeze({ ...ALL_OFF, treeshake: true, fusedRewrite: true })
@@ -100,7 +100,7 @@ test('bool identity: preset-table idiom (the kernel divergence chain)', async ()
   export const probe = (optJSON) => {
     const cfg = resolve(JSON.parse(optJSON))
     return [
-      cfg.csePureExpr !== false ? 'ON' : 'off',
+      cfg.cseScalarLoad !== false ? 'ON' : 'off',
       cfg.treeshake ? 'on' : 'OFF',
       Object.keys(cfg).length,
     ].join('|')

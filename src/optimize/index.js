@@ -110,7 +110,6 @@ export const PASS_NAMES = [
   'hoistAddrBase',
   'boolConvertToSelect',      // f64 ± (cond?1:0) → branchless select (kills i32↔f64 domain cross on recurrences)
   'cseScalarLoad',
-  'csePureExpr',
   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)
   'propagateSingleUse',       // forward-substitute single-def/single-use pure temps (watr's "propagate")
   'foldSetToTee',             // sink a single-def local's RHS into its first use as a tee (simplify-locals watr leaves)
@@ -1679,144 +1678,6 @@ export function cseScalarLoad(fn) {
  *     the surrounding `local.set/tee` handles that)
  *   - `br/br_if/br_table/return/unreachable` → NO clear (pure values still valid)
  */
-// Commutative WASM binops — csePureExpr uses these for canonical
-// operand-key ordering (a*b and b*a hash to one entry). OP_TYPE tables stay local:
-// the two passes cover deliberately different op sets.
-const COMMUTATIVE = new Set(['f64.mul', 'f64.add', 'i32.mul', 'i32.add', 'i32.and', 'i32.or', 'i32.xor', 'i64.mul', 'i64.add', 'i64.and', 'i64.or', 'i64.xor'])
-
-export function csePureExpr(fn) {
-  if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const bodyStart = findBodyStart(fn)
-  if (bodyStart < 0) return
-
-  // Skip vectorized functions (same gate as propagateSingleUse): the pass runs post-lift,
-  // and teeing scalar residue between lane sequences only adds register pressure.
-  let hasV128 = false
-  const scanV = (n) => { if (hasV128 || !Array.isArray(n)) return; const op = n[0]; if (typeof op === 'string' && (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op))) { hasV128 = true; return } for (let i = 1; i < n.length; i++) scanV(n[i]) }
-  for (let i = bodyStart; i < fn.length && !hasV128; i++) scanV(fn[i])
-  if (hasV128) return
-
-  // High-water mark across ALL surviving `$__pe<N>` locals, not the first gap.
-  // A prior csePureExpr run + watr.coalesce can leave non-contiguous numbering
-  // (e.g. $__pe0,$__pe1,$__pe5,$__pe20 — coalesce removed the merged ones); picking
-  // the first gap (2) then allocating sequentially would collide on $__pe5 / $__pe20.
-  let snapId = 0
-  for (const n of fn) {
-    if (!Array.isArray(n) || n[0] !== 'local' || typeof n[1] !== 'string') continue
-    const m = /^\$__pe(\d+)$/.exec(n[1])
-    if (m) { const k = +m[1]; if (k >= snapId) snapId = k + 1 }
-  }
-  const newLocals = []
-  let refcount = null   // lazily built on the first dedup — most fns never CSE
-
-  const TARGET_OPS = new Set([
-    'f64.mul', 'f64.add', 'f64.sub',
-    'i32.mul', 'i32.add', 'i32.sub', 'i32.shl', 'i32.shr_u', 'i32.shr_s', 'i32.and', 'i32.or', 'i32.xor',
-    'i64.mul', 'i64.add', 'i64.sub', 'i64.shl', 'i64.shr_u', 'i64.shr_s', 'i64.and', 'i64.or', 'i64.xor',
-  ])
-  const OP_TYPE = {
-    'f64.mul': 'f64', 'f64.add': 'f64', 'f64.sub': 'f64',
-    'i32.mul': 'i32', 'i32.add': 'i32', 'i32.sub': 'i32', 'i32.shl': 'i32', 'i32.shr_u': 'i32', 'i32.shr_s': 'i32', 'i32.and': 'i32', 'i32.or': 'i32', 'i32.xor': 'i32',
-    'i64.mul': 'i64', 'i64.add': 'i64', 'i64.sub': 'i64', 'i64.shl': 'i64', 'i64.shr_u': 'i64', 'i64.shr_s': 'i64', 'i64.and': 'i64', 'i64.or': 'i64', 'i64.xor': 'i64',
-  }
-
-  // Encode a leaf operand to a stable string key. Returns null if not pure-leaf.
-  const leafKey = (n) => {
-    if (!Array.isArray(n)) return null
-    if (n[0] === 'local.get' && typeof n[1] === 'string') return `L:${n[1]}`
-    if (n[0] === 'f64.const' || n[0] === 'i32.const' || n[0] === 'i64.const' || n[0] === 'f32.const') return `C:${n[0]}:${n[1]}`
-    return null
-  }
-
-  // table: key → { snapName | null, anchorParent, anchorIdx, locals: Set<string> }
-  const table = new Map()
-
-  const invalidateLocal = (X) => {
-    for (const [key, entry] of table) {
-      if (entry.locals.has(X)) table.delete(key)
-    }
-  }
-
-  const walk = (node, parent, idx) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-
-    if (op === 'loop' || op === 'if') {
-      const saved = new Map(table)
-      table.clear()
-      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
-      table.clear()
-      saved.clear()
-      return
-    }
-
-    // `then`/`else` branches of an `if` are mutually exclusive at runtime —
-    // a snap tee cached in the `then` branch is unset when the `else` runs.
-    // Isolate per-branch tables so a sibling branch can't reach into another's
-    // CSE entries.
-    if (op === 'then' || op === 'else') {
-      table.clear()
-      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
-      table.clear()
-      return
-    }
-
-    if (op === 'call' || op === 'call_ref' || op === 'call_indirect') {
-      // Calls don't write locals; recurse, no clear.
-      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
-      return
-    }
-
-    if (op === 'local.set' || op === 'local.tee') {
-      for (let i = 2; i < node.length; i++) walk(node[i], node, i)
-      const X = node[1]
-      if (typeof X === 'string') invalidateLocal(X)
-      return
-    }
-
-    // Try CSE on (OP A B) where A,B are pure leaves.
-    if (TARGET_OPS.has(op) && node.length === 3) {
-      const ka = leafKey(node[1])
-      const kb = leafKey(node[2])
-      if (ka && kb) {
-        const key = COMMUTATIVE.has(op) && ka > kb ? `${op}|${kb}|${ka}` : `${op}|${ka}|${kb}`
-        const entry = table.get(key)
-        if (entry) {
-          if (!entry.snapName) {
-            // A shared (DAG) anchor breaks the in-place tee: the `%` fast-path emits
-            // `a - trunc(a/b)*b` reusing ONE `a` node object, so the anchor and the
-            // local.get replacement land on the SAME physical slot and the local.get
-            // clobbers the tee — orphaning $__pe (reads 0). Skip when the anchor's
-            // parent is shared; watr's DAG-aware CSE still dedupes.
-            if (((refcount ??= buildRefcount(fn)).get(entry.anchorParent) || 0) > 1) return
-            const snapName = `$__pe${snapId++}`
-            entry.snapName = snapName
-            newLocals.push(['local', snapName, OP_TYPE[op] || 'f64'])
-            const orig = entry.anchorParent[entry.anchorIdx]
-            entry.anchorParent[entry.anchorIdx] = ['local.tee', snapName, orig]
-          }
-          parent[idx] = ['local.get', entry.snapName]
-          return
-        } else {
-          const locals = new Set()
-          if (ka.startsWith('L:')) locals.add(ka.slice(2))
-          if (kb.startsWith('L:')) locals.add(kb.slice(2))
-          table.set(key, { snapName: null, anchorParent: parent, anchorIdx: idx, locals })
-          return
-        }
-      }
-      // Fall through to recurse.
-    }
-
-    for (let i = 0; i < node.length; i++) walk(node[i], node, i)
-  }
-
-  for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
-
-  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
-}
-
-
 /**
  * Forward-substitute a single-def / single-use local into its sole use, eliminating the local,
  * its `local.set` and its `local.get`. This is watr's "propagate": jz emits short-lived address/
@@ -3237,9 +3098,11 @@ export function unswitchTypedParamLoop(fn) {
  * @param cfg optional resolved config from resolveOptimize() — when omitted, all on.
  * @param globalTypes optional global name → wasm type map (for promoteGlobals)
  * @param volatileGlobals optional set of callee-mutable globals (see collectVolatileGlobals)
- * (The former 'post' phase and its csePureExprLoop arm are deleted — jz's
- * optimizer runs exactly once, before watr. splitLoopPrivateScratch remains as
- * the flag-gated migration seed; see the splitScratch gate below.)
+ * (The former 'post' phase and its csePureExprLoop arm are deleted, and the
+ * straight-line csePureExpr followed in the 2026-07 ablation sweeps — watr's
+ * write-clock CSE reaches a smaller fixpoint on its own; jz's optimizer runs
+ * exactly once, before watr. splitLoopPrivateScratch remains as the flag-gated
+ * migration seed; see the splitScratch gate below.)
  */
 export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWrites) {
   if (cfg && cfg.hoistPtrType === false &&
@@ -3249,7 +3112,6 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
       cfg.fusedRewrite === false &&
       cfg.hoistAddrBase === false &&
       cfg.cseScalarLoad === false &&
-      cfg.csePureExpr === false &&
       cfg.propagateSingleUse === false &&
       cfg.promoteGlobals === false &&
       cfg.sortLocalsByUse === false &&
@@ -3308,11 +3170,6 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
     // iteration, the hot-loop waste audit-fixpoint.mjs flagged on dot/sum.
     foldV128Memargs(fn)
   }
-  // CSE pure scalar subexprs — AFTER the vectorizer, same rationale as propagateSingleUse below:
-  // its `$__pe` tees have no lift arm, so one teed subexpr bails the whole SIMD lift (colorconv's
-  // cbrt/fifthroot batch kernels fell scalar with the pass in the pre-vectorize slot). Like that
-  // pass it skips any function already lifted to v128 (lane sequences are register-tight).
-  if (!cfg || cfg.csePureExpr !== false) csePureExpr(fn)
   // Forward-substitute single-use temps — AFTER the vectorizer, never before: it pattern-matches a
   // STRAIGHT-LINE `s += a[i]*2`, and folding an address/index temp out scrambles it (the typed-array
   // loop fell from a SIMD body to a scalar unroll, +231 B). For watr:false the whole pipeline is the
@@ -4185,7 +4042,7 @@ export function devirtSchemaReads(fn) {
       : n[0] === 'call' && n[1] === '$__ptr_type' ? n.slice(2).every(pureOp)
       : PURE_I64.has(n[0]) ? n.slice(1).every(pureOp)
       : isPureIR(n)
-    // `local.tee` operands (foldSetToTee / csePureExprLoop fold shared tag/CSE
+    // `local.tee` operands (foldSetToTee folds shared tag/CSE
     // locals into the FIRST read's call, possibly nested) are hoisted to
     // standalone sets before the dispatch, innermost first — the original call
     // evaluated them unconditionally, so unconditional sets are observationally
