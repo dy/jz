@@ -17,7 +17,8 @@ let foc = 320                         // pool depth (focal length of the refract
 let down = false, stick = false       // stick engages only after real movement — a clean
 let sx = 0, sy = 0, dx0 = 0, dy0 = 0  // click must NOT press the stick under its own drop
 let nextDrop = 0, breakTrail = false
-const scheduleDrop = (t) => { nextDrop = t + 2.5 + Math.random() * 2.5 }
+const scheduleDrop = (t) => { nextDrop = t + 1.2 + Math.random() * 1.6 }   // a lively rain:
+                                       // interference needs several ring families in flight
 
 const demo = runDemo({
   name: "waves",

@@ -39,9 +39,10 @@ const C2 = 0.45        // wave speed² — deliberately NEAR the stencil's stabi
                        // (≤0.75): leapfrog dispersion vanishes toward the limit and blooms
                        // far below it (the "high-frequency side-waves" of low C2)
 const SUB = 1          // one leapfrog substep per frame
-const DAMP = 0.9985    // rings linger — a drop keeps ringing long after it lands
-const VISC = 0.03      // ∇² smoothing per frame — water thickness: fine chop dies in a
-                       // beat, the broad swell rolls on
+const DAMP = 0.999     // rings LAST — the pool holds several generations of waves at once,
+                       // and interference webbing needs them all alive together
+const VISC = 0.05      // ∇² smoothing per frame — thick water: fine chop dies in a beat,
+                       // the broad swell rolls on, bands render smooth and heavy
 const MARGIN = 26      // edge-sponge width (cells) — wide and gentle: an abrupt sponge
                        // reflects, and reflections pile up as corner surges
 const O = 0.66667, D = 0.16667, CEN = -3.33333   // 9-point isotropic Laplacian weights
@@ -91,8 +92,10 @@ export let resize = (w, h) => {
   i = 0
   while (i < 1024) {
     let v = i * 0.00390625                 // bucket ↔ density v = i/256, range 0..4
-    let vp = v * v * v                     // v³ — hard contrast: mids crush toward black,
-    let lum = 255.0 * (1.0 - Math.exp(-0.967 * vp))   // folds blaze; density 1 stays #9e9e9e
+    let vp = v * v                         // v² — strong but GRADED: overlapping rings
+    let lum = 255.0 * (1.0 - Math.exp(-0.967 * vp))   // modulate instead of crushing to flat
+                                           // black (v³ made bands binary and killed the
+                                           // interference); density 1 stays #9e9e9e
     let c = lum | 0
     glut[i] = (255 << 24) | (c << 16) | (c << 8) | c
     i++
