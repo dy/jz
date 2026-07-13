@@ -88,5 +88,5 @@ jobs:
           # so no jz regression; upstream simply changed/removed one test). Bumped the
           # cache key to `-v2` so both jobs re-clone current test262, where this run
           # measures 722 pass / 0 in-scope fail.
-          JZ_TEST262_BASELINE: 973
+          JZ_TEST262_BASELINE: 977
         run: npm run test:262:builtins

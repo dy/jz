@@ -649,20 +649,22 @@ export default (ctx) => {
 
   // buf.slice(begin?, end?) on a BUFFER → fresh BUFFER with the byte range copied.
   // Only dispatches statically when obj is a tracked ArrayBuffer/DataView variable.
+  // Indices normalize through __clamp_idx (negative wraps from the end, then
+  // clamp to [0, byteLength]) — the same bounds dance as every other range op.
   ctx.core.emit['.buf:slice'] = (obj, beginExpr, endExpr) => {
+    inc('__clamp_idx')
     const src = temp('bss')
     const beg = tempI32('bsb')
     const end = tempI32('bse')
     const bytes = tempI32('bsn')
     const out = allocPtr({ type: PTR.BUFFER, len: ['local.get', `$${bytes}`], stride: 1, tag: 'bsd' })
+    const lenWat = ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]
     const beginWat = beginExpr == null ? ['i32.const', 0] : asI32(emit(beginExpr))
-    const endWat = endExpr == null
-      ? ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]
-      : asI32(emit(endExpr))
+    const endWat = endExpr == null ? lenWat : asI32(emit(endExpr))
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${src}`, asF64(emit(obj))],
-      ['local.set', `$${beg}`, beginWat],
-      ['local.set', `$${end}`, endWat],
+      ['local.set', `$${beg}`, ['call', '$__clamp_idx', beginWat, lenWat]],
+      ['local.set', `$${end}`, ['call', '$__clamp_idx', endWat, lenWat]],
       ['local.set', `$${bytes}`, ['i32.sub', ['local.get', `$${end}`], ['local.get', `$${beg}`]]],
       ['if',
         ['i32.lt_s', ['local.get', `$${bytes}`], ['i32.const', 0]],

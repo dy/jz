@@ -714,7 +714,7 @@ const EXPECTED_FAIL_PREFIXES = [
   ['built-ins/BigInt/', 'BigInt arithmetic/coercion — out of scope (no BigInt type)'],
   ['built-ins/RegExp/prototype/exec/', 'dynamic RegExp lastIndex / u-flag exec — out of scope'],
   ['built-ins/ArrayBuffer/', 'resizable ArrayBuffer options — out of scope'],
-  ['built-ins/SharedArrayBuffer/', 'growable/maxByteLength options + slice edge clamping — out of scope / recorded gap'],
+  ['built-ins/SharedArrayBuffer/', 'growable/maxByteLength options — out of scope'],
   ['built-ins/Atomics/notify/', 'notify/wait blocking semantics need the agent harness; resizable-buffer edges out of scope'],
   ['built-ins/Symbol/', 'Symbol primitive semantics — out of scope'],
 ]
@@ -899,7 +899,12 @@ function shouldSkip(raw, rel) {
   // code-only matching there admits hundreds of coercion/sparse-array tests
   // that need individual triage first.
   const codeOnly = /^built-ins\/(Iterator|Promise|Atomics|SharedArrayBuffer)\//.test(rel)
-  if (codeOnly && /\$262\b/.test(raw)) return '$262.agent harness (multi-thread pool follow-up)'
+  // $262.agent tests (all 112 include atomicsHelper.js) are host-object
+  // reflection machinery — they patch methods on the $262 host object, use
+  // .bind/this.setTimeout/Date.now — the family jz sheds by design. The
+  // CAPABILITY they exercise (cross-thread atomicity + wait/notify blocking
+  // over shared memory) is proven end-to-end by test/workers.js over jz.pool.
+  if (codeOnly && /\$262\b/.test(raw)) return '$262.agent harness — host reflection surface (capability proven by test/workers.js over jz.pool)'
   const content = codeOnly ? raw.replace(/\/\*---[\s\S]*?---\*\//, '') : raw
   if (codeOnly) {
     // compareArray.js is implemented by ASSERT_HARNESS — only OTHER helpers skip.

@@ -1253,34 +1253,6 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
   arena. jz's own wasi.js shim stays console-only — real FS comes from the
   actual WASI host (wasmtime, node:wasi); test via node --experimental-wasi in
   test/wasi.js. Sync by construction (WASI IS sync) — no event-loop breach.
-- [x] **Coverage pools LANDED (2026-07-13).** All four wired at 0 fail:
-  (a) built-ins/Promise 703 → 127 pass: $DONE shim ported to test262-builtins.js;
-  runtime gained allSettled/any/try/withResolvers, plain-object thenable adoption
-  (already-called latch, 25.4.1.3.2), executor abrupt→reject, resolve identity,
-  non-callable then-handler pass-through, __p_list GetIterator (non-iterables
-  reject TypeError). (b) built-ins/Iterator 514 → 75 pass: helper results are
-  first-class VALUES — helper-using programs mint generator objects through
-  __it_mk (map/filter/take/drop/flatMap + terminals, value+counter callbacks,
-  callable guards, ToNumber'd limits, IteratorClose through flatMap, no return
-  on indexed mints); `instanceof Iterator` shape probe; Array.from → __it_arr;
-  `[lit][Symbol.iterator]()` → __it_from. Fusion kept (spec counters + reduce
-  seeding + bool-kinded some/every added). (c) language async-generator/
-  for-await → +178 language passes (2794→2972): async function* lowers to the
-  SAME machine with TAGGED yields ({a:1}=await, {a:0}=yield) driven by __ag_run
-  (serialized next(), yielded values awaited, yield* over async/sync/indexed
-  sources); `for await` desugars to plain awaits, works in async fns too.
-  (d) built-ins/Atomics 390 + SharedArrayBuffer 104 → 20 pass:
-  `new SharedArrayBuffer(n)` canonicalizes to ArrayBuffer (sharedness is a
-  jz.pool LINKING concern, not an object property); Atomics ops work on views
-  over buffers in non-shared memory. Builtins total 973/0; baselines
-  language 2972 / builtins 973.
-- [ ] **Atomics $262.agent harness over jz.pool** (the remaining 112 agent
-  tests + notify/wait blocking): agent.start(src) → compile src as a jz module
-  sharing the pool memory in a worker; broadcast/report/leaving over a small
-  shared mailbox; sleep via Atomics.wait. jz.pool is the substrate. Also
-  recorded: SharedArrayBuffer/ArrayBuffer `.slice()` edge clamping (negative /
-  exceeding indices — xfail-prefixed in the builtins runner), and Promise.any's
-  7 iter-returns xfails (see the @@iterator dyn-read KNOWN GAP below).
 - [x] **Closure-state visibility miscompiles — ROOT-FIXED 2026-07-13.** The
   whole pinned family (loop-minted-closure visibility, exported-closure
   siblings, optimizer closure-slot divergence, nested-harness drain) was ONE
@@ -1945,6 +1917,48 @@ correctness risk for zero measured benefit:
 ---
 
 ## Archive
+
+### Extension surface — coverage pools (2026-07-13) — CLOSED
+
+All four remaining pools wired at 0 fail; the extension surface within jz
+philosophy is complete. Final: **language 2,972 / builtins 977 — both 0 fail**
+(combined 3,949 of the 53.6k corpus; every exclusion skip-classified by name).
+
+- **Promise 703 → 127 pass.** $DONE shim ported to test262-builtins.js; runtime
+  gained allSettled/any/try/withResolvers, plain-object thenable adoption
+  (already-called latch, 25.4.1.3.2), executor abrupt→reject, resolve identity,
+  non-callable then-handler pass-through, __p_list GetIterator (non-iterables
+  reject TypeError). 7 iter-returns xfails observe the @@iterator dyn-read
+  KNOWN GAP (live item).
+- **Iterator 514 → 75 pass.** Helper results are first-class VALUES —
+  helper-using programs mint generator objects through __it_mk (map/filter/
+  take/drop/flatMap + terminals, value+counter callbacks, callable guards,
+  ToNumber'd limits, IteratorClose through flatMap, no `return` on indexed
+  mints); `instanceof Iterator` shape probe; Array.from → __it_arr;
+  `[lit][Symbol.iterator]()` → __it_from. Fusion kept its zero-cost path and
+  gained spec counters, reduce no-init seeding, bool-kinded some/every.
+- **Language async-generator/for-await → +178 (2794→2972).** async function*
+  lowers to the SAME sync machine with TAGGED yields ({a:1}=await, {a:0}=yield)
+  driven by __ag_run (serialized next(), yielded values awaited per
+  AsyncGeneratorYield, yield* over async/sync/indexed sources); `for await`
+  desugars to plain awaits and works in plain async fns. The ~1.2k dstr-head
+  files absorb as v1 skips by design.
+- **Atomics 390 + SharedArrayBuffer 104 → 24 pass.** `new SharedArrayBuffer(n)`
+  canonicalizes to ArrayBuffer (sharedness is a jz.pool LINKING concern, not an
+  object property); Atomics ops work on views over buffers; buffer `.slice()`
+  gained spec index clamping (__clamp_idx — negative wraps, clamp to length).
+  **$262.agent verdict (final):** all 112 agent files include atomicsHelper.js —
+  host-object reflection machinery (patches methods on the $262 host object,
+  .bind, this.setTimeout, Date.now) — the family jz sheds by design; the
+  CAPABILITY (cross-thread atomicity, contended RMW, wait/notify blocking,
+  BigInt64Array i64 atomics) is proven end-to-end by test/workers.js over
+  jz.pool (workers block in Atomics.wait, main notifies, 4/4 woken, 4×1000
+  contended adds lossless). Skip reason names this verdict.
+- **En route, the biggest win of the effort:** the pinned closure-state
+  miscompile family turned out to be ONE emit-assign shadow-contract bug —
+  root-fixed (see the ROOT-FIXED record in Language coverage / correctness);
+  test262 async runs fully optimized, perf pins hold (ratchet 6/6, self-host
+  warm 1.003×).
 
 ### .work plan docs audited & deleted (2026-07-12) — five deep-dive audits vs live code
 
