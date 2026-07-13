@@ -153,20 +153,27 @@ let step = () => {
 export let frame = (t, sx, sy, stick, foc) => {
   let w = W, h = H, n = w * h
 
-  // drizzle: soft alternating-sign plops accumulate into the pool's gentle standing swell
-  let drops = (RAIN / 60.0 + rnd()) | 0    // fractional rate via random rounding
-  let d = 0
-  while (d < drops) {
-    let sgn = rnd() < 0.5 ? -1.0 : 1.0
-    plop(6.0 + rnd() * (w - 12.0), 6.0 + rnd() * (h - 12.0), 7.0 + rnd() * 7.0, sgn * RAINA * (0.4 + rnd()), 0)
-    d++
+  // drizzle: soft alternating-sign plops accumulate into the pool's gentle standing swell —
+  // paused while the stick is in the water, so a drag is YOUR wave alone
+  if (stick <= 0.0) {
+    let drops = (RAIN / 60.0 + rnd()) | 0  // fractional rate via random rounding
+    let d = 0
+    while (d < drops) {
+      let sgn = rnd() < 0.5 ? -1.0 : 1.0
+      plop(6.0 + rnd() * (w - 12.0), 6.0 + rnd() * (h - 12.0), 7.0 + rnd() * 7.0, sgn * RAINA * (0.4 + rnd()), 0)
+      d++
+    }
   }
 
   let s = 0
   while (s < SUB) { step(); s++ }
 
   // the stick: a small dimple pressed wherever the drag is — moving it leaves ONE
-  // continuous wake, exactly a stick drawn through water
+  // continuous wake, exactly a stick drawn through water. BOTH leapfrog sheets relax
+  // toward the dimple: a displacement constraint, no direct velocity injection — pressing
+  // only the current sheet is a velocity kick every frame, and circular strokes then meet
+  // their own wake in phase and pump it exponentially (measured ×1.4 per lap). Constraining
+  // both sheets also makes the stick locally ABSORBING, like a real stick held in ripples.
   if (stick > 0.0) {
     let R = 0.018 * (w < h ? w : h) + 2.0
     let x0 = (sx - 3.0 * R) | 0, x1 = (sx + 3.0 * R) | 0, y0 = (sy - 3.0 * R) | 0, y1 = (sy + 3.0 * R) | 0
@@ -184,7 +191,10 @@ export let frame = (t, sx, sy, stick, foc) => {
         if (q < 9.0) {
           let c = row + x
           let E = Math.exp(-q)
-          a[c] = a[c] + (-0.6 * stick * E - a[c]) * 0.2 * E
+          let tgt = -0.6 * stick * E
+          let g = 0.2 * E
+          a[c] = a[c] + (tgt - a[c]) * g
+          b[c] = b[c] + (tgt - b[c]) * g
         }
         x++
       }
