@@ -615,14 +615,26 @@ export function emitPropertyAssign(obj, prop, val) {
   // in ctx.schema.vars under the name — so schema.slotOf(name) misses and the write
   // would fall to __dyn_set (propsPtr) while the READ resolves the slot via ptrAux,
   // targeting different memory (write lost). Match the read.
+  // SHADOW CONTRACT: when the module may read this object dynamically
+  // (needsDynShadow), the literal mint seeded a props sidecar with each schema
+  // key's INITIAL value, and __dyn_get probes that sidecar BEFORE the schema
+  // slots — so a slot-only write here is invisible to dyn reads (the stale
+  // sidecar copy masks it; this silently dropped `p.then = closure` in the
+  // async runtime whenever any `x[expr]` appeared in the module). Mirror into
+  // __dyn_set exactly like the named-receiver schema arm below.
   {
     const vaProbe = emit(obj)
     if (vaProbe?.ptrKind === VAL.OBJECT && vaProbe.ptrAux != null) {
       const sch = ctx.schema.list[vaProbe.ptrAux]
       const si = sch ? sch.indexOf(prop) : -1
-      if (si >= 0) return withTemp(storedValue(val), t => [
-        ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`]),
-        ['local.get', `$${t}`]])
+      if (si >= 0) {
+        const shadow = needsDynShadow(typeof obj === 'string' ? obj : null)
+        if (shadow) inc('__dyn_set')
+        return withTemp(storedValue(val), t => [
+          ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`]),
+          ...(shadow ? [['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', asF64(emit(obj))], asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]] : []),
+          ['local.get', `$${t}`]])
+      }
     }
   }
   // Schema-based object → f64.store at fixed offset.
@@ -652,9 +664,16 @@ export function emitPropertyAssign(obj, prop, val) {
     const sh = shapeOf(obj)
     if (sh?.val === VAL.OBJECT && sh.names) {
       const i = sh.names.indexOf(prop)
-      if (i >= 0) return withTemp(storedValue(val), t => [
-        ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), i, ['local.get', `$${t}`]),
-        ['local.get', `$${t}`]])
+      if (i >= 0) {
+        // Same SHADOW CONTRACT as the ptrAux arm above: a slot-only write on a
+        // shadowed object is masked by the mint-seeded sidecar for dyn reads.
+        const shadow = needsDynShadow(null)
+        if (shadow) inc('__dyn_set')
+        return withTemp(storedValue(val), t => [
+          ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), i, ['local.get', `$${t}`]),
+          ...(shadow ? [['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', asF64(emit(obj))], asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]] : []),
+          ['local.get', `$${t}`]])
+      }
     }
   }
   if (typeof obj === 'string') {

@@ -299,32 +299,32 @@ export let main = () => p.step?.(21)`
     is(jz('let f = null\nexport let main = () => f?.() === undefined ? 1 : 0').exports.main(), 1)
 })
 
-test('KNOWN GAP: loop-minted closure in a writer fn breaks captured-object prop visibility', () => {
-    // Surfaced building the async runtime (2026-07-12). A fn that (a) writes
-    // props through an object param AND (b) mints a closure INSIDE a for-loop
-    // body capturing the body-let — makes prop READS through the factory's
-    // OTHER closures see stale values. One delta: inline the write (or call
-    // the loop's closures directly) and it heals. The async runtime dodges it
-    // (settled-queue + direct-call drain); fix belongs in the closure-env /
-    // schema aliasing analysis. Pinned to CURRENT (wrong) behavior — flips
-    // loudly when fixed.
+test('shadow contract: schema-slot writes stay visible to dyn reads (loop-minted closures)', () => {
+    // Was KNOWN GAP (2026-07-12), root-caused and FIXED 2026-07-13. The whole
+    // pinned closure family (this + the two below) was ONE bug: when a module
+    // contains any dynamic key access (`x[expr]`), object literals are minted
+    // with a props sidecar seeded per schema key (needsDynShadow), and
+    // __dyn_get probes that sidecar BEFORE the schema slots. emit-assign's
+    // ptrAux and chained-receiver arms stored schema slots WITHOUT mirroring
+    // into __dyn_set, so later dyn reads (e.g. fetching `p.then` at an
+    // imprecisely-kinded call site) served the STALE mint-time copy — the
+    // subscription silently vanished. The "loop", "export", and "optimizer"
+    // deltas never mattered; they only shifted which read sites went dynamic.
+    // Both arms now honor the shadow contract (mirror when needsDynShadow).
     const src = (settleBody) => `
         let mt = []
         let mk = () => { let p = { st: 0, val: undefined, cbs: [], then: undefined }; p.then = (ok) => { let q = mk(); if (p.st > 0) { let v = p.val; mt.push(() => { q.st = 1; q.val = ok(v) }) } else p.cbs.push((v) => { q.st = 1; q.val = ok(v) }); return q }; return p }
         let settle = (p, v) => { ${settleBody} }
         let g = () => { let p = mk(); settle(p, 4); return p }
         export let f = () => { let q = g().then((v) => v + 1); while (mt.length > 0) { let cb = mt.shift(); cb() } return q.val }`
-    // control: no loop-minted closure — correct
+    // control: no loop-minted closure
     is(jz(src('p.st = 1; p.val = v')).exports.f(), 5)
-    // the gap: identical flow + a (never-entered!) loop minting closures
-    const broken = jz(src('p.st = 1; p.val = v; let cbs = p.cbs; for (let i = 0; i < cbs.length; i++) { let cb = cbs[i]; mt.push(() => cb(v)) }')).exports.f()
-    is(broken, undefined)  // WRONG — should be 5; flips when the aliasing gap is fixed
+    // regression pin: identical flow + a (never-entered) loop minting closures
+    is(jz(src('p.st = 1; p.val = v; let cbs = p.cbs; for (let i = 0; i < cbs.length; i++) { let cb = cbs[i]; mt.push(() => cb(v)) }')).exports.f(), 5)
 })
 
-test('KNOWN GAP: exporting a state-mutating closure breaks sibling closures of the same state', () => {
-    // Same session. `export let drain = () => {…mutates module arrays…}` makes
-    // reads through OTHER closures of that shared state stale — remove the
-    // `export` and it heals. The async runtime exports thin forwarders instead.
+test('shadow contract: exported state-mutating closure keeps sibling closures fresh', () => {
+    // Was KNOWN GAP — same single root cause as above; fixed 2026-07-13.
     const src = (kw) => `
         let mt = []
         let sq = []
@@ -334,32 +334,22 @@ test('KNOWN GAP: exporting a state-mutating closure breaks sibling closures of t
         let settle = (p, st, v) => { if (p.st > 0) return; p.st = st; p.val = v; if (p.cbs.length > 0) sq.push(p) }
         let res = (v) => { let p = mkp(); settle(p, 1, v); return p }
         export let f = () => { let q = res(4).then((v) => v + 1); drain(); return q.val }`
-    is(jz(src('')).exports.f(), 5)              // unexported drain — correct
-    is(jz(src('export')).exports.f(), undefined) // WRONG — should be 5; flips when fixed
+    is(jz(src('')).exports.f(), 5)       // unexported drain
+    is(jz(src('export')).exports.f(), 5) // exported drain — was undefined before the fix
 })
 
-test('KNOWN GAP: optimizer round-trip breaks async modules containing an indexed array loop', () => {
-    // Minimal pair (2026-07-12, found wiring the async test262 pool): a module
-    // with the async promise runtime AND any sibling fn looping `a[i]` over
-    // `a.length` — microtask callbacks queued via .then never run after the
-    // optimizer pipeline touches the module. O0 is correct; at L1 EACH of the
-    // three enabled passes ALONE (fusedRewrite / sortLocalsByUse / treeshake)
-    // breaks it — implicating shared infrastructure, not one pass.
-    // DIAGNOSIS (2026-07-13): emit-time closure-slot divergence — the same
-    // source emits __jz_table size 30 at O0 vs 27 at O1 (3 closures lose
-    // their funcref slots) and every static-data offset shifts; a stale index
-    // survives somewhere, so queued callbacks dispatch into wrong slots.
-    // Async-runtime modules only (a sync closure-queue module holds 3/3).
-    // The test262 runner pins asyncDone tests at optimize:false meanwhile.
+test('shadow contract: async modules with an indexed array loop survive the optimizer', () => {
+    // Was KNOWN GAP ("optimizer round-trip / closure-slot divergence") — same
+    // single root cause; the O0/O1 table-size delta was a symptom of stale
+    // sidecar reads, not a pass bug. Fixed 2026-07-13.
     const SRC = `let hitFlag = 0
 let mark = (e) => { hitFlag = 1 }
 export let check = () => hitFlag
 let cmp = (a, b, m) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) throw m }
 export let go = () => { (async () => 42)().then((v) => { mark() }, mark); return 1 }`
-    const ok = jz(SRC, { optimize: false })
-    ok.exports.go()
-    is(ok.exports.check(), 1)                    // O0 correct
-    const bad = jz(SRC, { optimize: 1 })
-    bad.exports.go()
-    is(bad.exports.check(), 0)                   // WRONG — flips to 1 when the round-trip bug is fixed
+    for (const optimize of [false, 1, true]) {
+        const inst = jz(SRC, { optimize })
+        inst.exports.go()
+        is(inst.exports.check(), 1, `optimize:${optimize}`)
+    }
 })
