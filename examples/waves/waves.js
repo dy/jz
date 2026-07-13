@@ -57,7 +57,13 @@ export let resize = (w, h) => {
       let rxe = w - 1 - x; if (rxe < ed) ed = rxe
       let rye = h - 1 - y; if (rye < ed) ed = rye
       let s = DAMP
-      if (ed < MARGIN) s = MARGINDAMP + (DAMP - MARGINDAMP) * (ed / MARGIN)
+      if (ed < MARGIN) {
+        // QUADRATIC ramp — zero slope where the sponge begins, so waves enter it without
+        // seeing a boundary (a linear ramp's kink partially reflects, and that read as the
+        // pool having a padded inner wall)
+        let f = (MARGIN - ed) / MARGIN
+        s = DAMP - (DAMP - MARGINDAMP) * f * f
+      }
       dampField[y * w + x] = s
       x++
     }
@@ -172,15 +178,15 @@ export let frame = (t, sx, sy, stick, foc) => {
   let s = 0
   while (s < SUB) { step(); s++ }
 
-  // the stick: a dimple SWEPT along the drag as a capsule — the press covers the whole
-  // segment from last frame's position to this one, so a fast stroke is one continuous
-  // groove, never a chain of stamps. BOTH leapfrog sheets relax toward the dimple: a
-  // displacement constraint, no direct velocity injection — pressing only the current
-  // sheet is a velocity kick every frame, and circular strokes then meet their own wake
-  // in phase and pump it exponentially (measured ×1.4 per lap). Constraining both sheets
-  // also makes the stick locally ABSORBING, like a real stick held in ripples.
+  // the stick: a dimple CARVED along the drag as a capsule — the sweep covers the whole
+  // segment from last frame's position to this one, and every touched cell is pressed to
+  // the full dimple depth at once (min on BOTH leapfrog sheets). Depth is instant and
+  // uniform at any stroke speed — a relaxation press deepens with dwell time, so fast
+  // strokes came out shallow and banded, reading as a chain of small drops. Carving both
+  // sheets injects no velocity and is locally ABSORBING (it can only remove motion), so
+  // circular strokes cannot pump their own wake.
   if (stick > 0.0) {
-    let R = 0.018 * (w < h ? w : h) + 2.0
+    let R = 0.020 * (w < h ? w : h) + 2.0
     let ax0 = sp[2] > 0.5 ? sp[0] : sx, ay0 = sp[2] > 0.5 ? sp[1] : sy
     let vx = sx - ax0, vy = sy - ay0
     let vv = vx * vx + vy * vy
@@ -208,10 +214,9 @@ export let frame = (t, sx, sy, stick, foc) => {
         if (q < 9.0) {
           let c = row + x
           let E = Math.exp(-q)
-          let tgt = -1.1 * stick * E
-          let g = 0.2 * E
-          a[c] = a[c] + (tgt - a[c]) * g
-          b[c] = b[c] + (tgt - b[c]) * g
+          let tgt = -1.3 * stick * E
+          if (a[c] > tgt) a[c] = tgt
+          if (b[c] > tgt) b[c] = tgt
         }
         x++
       }
