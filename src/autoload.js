@@ -109,6 +109,8 @@ export const CALL_MODULES = dict({
   'Date.now': ['core', 'console'],
   'performance.now': ['core', 'console'],
   'readStdin': ['core', 'console'],
+  'fs.read': ['core', 'string', 'fs'],
+  'fs.write': ['core', 'string', 'fs'],
   'String.fromCharCode': ['core', 'string'],
   'String.fromCodePoint': ['core', 'string'],
   'BigInt.asIntN': ['number'],

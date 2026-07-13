@@ -1247,7 +1247,7 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
     three fix attempts failed to localize — the groundtruth doc's git history has the trail.
   * parked: SROA re-land (tag fix works natively, closures 89/0; miscompiles
     m5_parse$expr in the kernel bundle — needs a flatten stack-shape audit).
-- [ ] **WASI basic file IO — designed, next up.** `import { readFile, writeFile }
+- [x] **WASI basic file IO — LANDED 2026-07-12.** `import { readFile, writeFile }
   from 'fs'` as a built-in module (module/fs.js), host:'wasi' only (host:'js'
   rejects cleanly: "wire fs via {imports} or compile --host wasi"). readFile(path)
   → string (jz strings are raw UTF-8 bytes — binary-lossless), writeFile(path,

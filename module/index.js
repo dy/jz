@@ -15,4 +15,5 @@ import regex from './regex.js'
 import timer from './timer.js'
 import date from './date.js'
 import simd from './simd.js'
-export { math, core, array, object, string, number, fn, typedarray, collection, symbol, console, json, regex, timer, date, simd , atomics }
+import fs from './fs.js'
+export { math, core, array, object, string, number, fn, typedarray, collection, symbol, console, json, regex, timer, date, simd , atomics, fs }

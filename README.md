@@ -172,6 +172,7 @@ JZ is a **strict modern JS subset**. Built-in jzify transform extends support to
 │ │   parseInt  parseFloat  encodeURIComponent  Error  BigInt          │ │
 │ │   console  setTimeout/setInterval  Date  performance               │ │
 │ │   structuredClone  groupBy  Set algebra  iterator helpers          │ │
+│ │   fs.read/write (--host wasi)                                      │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
 │ jz default (jzify)                                                     │
 │   var  function  arguments  switch  new Foo()                          │

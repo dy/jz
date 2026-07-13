@@ -974,6 +974,7 @@ function prep(node) {
 // need a list of these names to know what to emit, so the table lives here either way.
 export const GLOBALS = Object.assign(Object.create(null), {
   Math: 'math',
+  fs: 'fs',
   Number: 'Number',
   Array: 'Array',
   Object: 'Object',

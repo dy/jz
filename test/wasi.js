@@ -411,3 +411,35 @@ test('WASI: wasmer native', () => {
   const out = execSync('wasmer /tmp/jz_wasi_test.wasm 2>/dev/null', { encoding: 'utf-8' })
   ok(out.includes('jz-wasmer'))
 })
+
+// === fs — file IO over WASI preopens (module/fs.js) ===
+// fs.read(path) → string (raw UTF-8 bytes, binary-lossless), fs.write(path, s).
+// Paths resolve against the first preopen (fd 3); errno throws as a number.
+test('fs: read + write round-trip under node:wasi preopens', async () => {
+  const { WASI } = await import('node:wasi')
+  const { mkdtempSync, writeFileSync: wf, readFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'jz-fs-'))
+  wf(join(dir, 'data.txt'), 'hello wasi files')
+  const wasm = compile(`
+    export let f = () => fs.read("data.txt")
+    export let w = () => { fs.write("out.txt", "len:" + fs.read("data.txt").length) }
+    export let missing = () => { try { fs.read("nope.txt"); return -1 } catch (e) { return e } }`,
+    { host: 'wasi' })
+  const w = new WASI({ version: 'preview1', preopens: { '/': dir } })
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), w.getImportObject())
+  w.initialize(inst)
+  const { memory } = await import('../interop.js')
+  const mem = memory({ exports: inst.exports })
+  is(mem.read(inst.exports.f()), 'hello wasi files')
+  inst.exports.w()
+  is(readFileSync(join(dir, 'out.txt'), 'utf8'), 'len:16')
+  is(mem.read(inst.exports.missing()), 44)   // WASI errno 44 = NOENT
+})
+
+test('fs: host js rejects at compile with the wiring hint', () => {
+  let e
+  try { compile('export let f = () => fs.read("x")') } catch (x) { e = x }
+  ok(e && /WASI host/.test(e.message), `hint present: ${e?.message?.slice(0, 60)}`)
+})
