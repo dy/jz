@@ -51,7 +51,7 @@ export function typedStaticLen(rhs) {
   const args = rhs[2]
   if (args === undefined) return 0
   if (Array.isArray(args) && args[0] === ',') return null        // view form
-  const n = intLiteralValue(args)
+  const n = constIntExpr(args)
   if (n != null) return n >= 0 ? n : null
   // `new T([a,b,c])` — BOTH literal shapes: parse-time `['[]', [',', …]]` (the
   // module-scope infer site) and post-prepare `['[', …elems]` (the analyze tracker).
@@ -65,6 +65,24 @@ export function typedStaticLen(rhs) {
   return null
 }
 
+/** Fold an int-const expression: literals, module int consts (`const N = 3`), and
+ *  +,-,*,<< over them — `new Int8Array(CIN*H*W)` sizes are static facts. */
+export function constIntExpr(e) {
+  const n = intLiteralValue(e)
+  if (n != null) return n
+  if (typeof e === 'string') {
+    const ci = ctx.scope?.constInts?.get?.(e)
+    return ci != null && isI32(ci) ? ci : null
+  }
+  if (!Array.isArray(e) || e.length !== 3) return null
+  const [op, x, y] = e
+  if (op !== '+' && op !== '-' && op !== '*' && op !== '<<') return null
+  const A = constIntExpr(x), B = constIntExpr(y)
+  if (A == null || B == null) return null
+  const r = op === '+' ? A + B : op === '-' ? A - B : op === '*' ? A * B : A * 2 ** B
+  return Number.isSafeInteger(r) && isI32(r) ? r : null
+}
+
 /** `recv[idx]` provably within [0, recv.length) for a typed receiver — the gate the
  *  checked `.typed:[]` forms and the identity folds share. Proof classes:
  *  1. the canonical-loop structural pair (inBoundsArrIdx);
@@ -74,10 +92,13 @@ export function typedStaticLen(rhs) {
  *     result is in [0, m]) with m < that static length;
  *  4. a versioned-loop assumption (ctx.types.assumedBounds) — the emitter is inside
  *     the guarded arm of a loop whose runtime extent check covers exactly this
- *     (recv, idx) pair (see versionableTypedFor / the 'for' emitter). */
+ *     (recv, idx) pair (see versionableTypedFor / the 'for' emitter);
+ *  5. the static interval walk (intervalProvenIdx) — const-bound nests whose index
+ *     chains (incl. the clamp idiom) provably fit a static receiver length. */
 export function typedIdxProven(recv, idx) {
   if (typeof recv !== 'string') return false
   if (ctx.types.assumedBounds?.has(idxKey(recv, idx))) return true
+  if (intervalProvenIdx(ctx).has(idxKey(recv, idx))) return true
   if (typeof idx === 'string' && inBoundsArrIdx(ctx).has(recv + '\x00' + idx)) return true
   const len = ctx.types.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
   if (len == null) return false
@@ -550,6 +571,219 @@ export function litBoundArrIdx(ctx) {
 }
 const NO_LIT_BOUNDS = new Map()
 
+// === Static interval proof (typedIdxProven class 5) ===
+// A tiny abstract interpreter over integer INTERVALS for const-bound loop nests —
+// the conv2d/blur shape class: every dimension folds to a literal, every index is a
+// chain of decls over ivs (`const irow = inCh+(oy+ky)*W+ox`), and the clamp idiom
+// (`if(xi<0)xi=0; else if(xi>=w)xi=w-1`) bounds the tap. No runtime guard can help
+// there (nest-level recognizers must see the BARE nest), and none is needed — the
+// whole computation is static. Accesses whose idx interval fits a STATIC receiver
+// length are recorded proven; everything else stays checked/versioned.
+
+const IP_LIM = 0x40000000   // endpoints beyond ±2^30 widen to unknown (i32 headroom)
+const ipOk = (v) => v != null && v[0] >= -IP_LIM && v[1] <= IP_LIM
+
+/** Walk one function body, recording proven `recv[idx]` keys into `out`.
+ *  `lens(name)` → static element count or null. Soundness posture: `out` only ever
+ *  ADDS proofs, so every unknown/bail direction is safe — the sharp edges are all
+ *  in keeping `env` honest (kills before loops/switch, closure-captured writes,
+ *  assignments embedded in expressions). */
+function scanIntervalIdx(body, out, lens) {
+  const env = new Map()   // name → [lo, hi] | null (unknown)
+  // names written inside ANY closure in this body: a later call can change them at
+  // any point — they never hold a trusted interval
+  const closureWrites = new Set()
+  const collectClosureWrites = (n, inClosure) => {
+    if (!Array.isArray(n)) return
+    const into = inClosure || n[0] === '=>'
+    if (into && (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--')) {
+      if (typeof n[1] === 'string') closureWrites.add(n[1])
+      // member writes (`o[i]=…`, `o.p=…`) rebind no name; only PATTERN targets do
+      else if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.')
+        collectNames(n[1], closureWrites)
+    }
+    for (let k = 1; k < n.length; k++) collectClosureWrites(n[k], into)
+  }
+  const collectNames = (n, set) => {
+    if (typeof n === 'string') { set.add(n); return }
+    if (Array.isArray(n)) for (let k = 1; k < n.length; k++) collectNames(n[k], set)
+  }
+  collectClosureWrites(body, false)
+  const setEnv = (name, v) => env.set(name, closureWrites.has(name) || !ipOk(v) ? null : v)
+  const constInt = (e) => {
+    const n = intLiteralValue(e)
+    if (n != null) return n
+    if (typeof e === 'string' && !closureWrites.has(e)) {
+      const ci = ctx.scope?.constInts?.get?.(e)
+      if (ci != null && isI32(ci)) return ci
+    }
+    return null
+  }
+  const ARITH = new Set(['+', '-', '*', '<<', '>>', '>>>', '&', '%', '|'])
+  const ev = (e) => {
+    const n = constInt(e)
+    if (n != null) return [n, n]
+    if (typeof e === 'string') return closureWrites.has(e) ? null : env.get(e) ?? null
+    if (!Array.isArray(e)) return null
+    const [op, x, y] = e
+    if (e.length === 2 && op === '-') { const v = ev(x); return ipOk(v) && v ? [-v[1], -v[0]] : null }
+    // any non-arithmetic node (call, assignment, ternary, indexing…) routes through
+    // visit so its env effects and access proofs are processed, value unknown
+    if (e.length !== 3 || !ARITH.has(op)) { visit(e); return null }
+    // `x|0` — ToInt32 is identity on an in-range interval
+    if (op === '|' && intLiteralValue(y) === 0) { const v = ev(x); return ipOk(v) ? v : null }
+    const A = ev(x), B = ev(y)
+    if (!A || !B) {
+      // a const mask bounds one-sidedly even when the other side is unknown
+      if (op === '&') {
+        const m = intLiteralValue(x) ?? intLiteralValue(y)
+        if (m != null && m >= 0) return [0, m]
+      }
+      return null
+    }
+    let r = null
+    if (op === '+') r = [A[0] + B[0], A[1] + B[1]]
+    else if (op === '-') r = [A[0] - B[1], A[1] - B[0]]
+    else if (op === '*') {
+      const p = [A[0] * B[0], A[0] * B[1], A[1] * B[0], A[1] * B[1]]
+      r = [Math.min(...p), Math.max(...p)]
+    }
+    else if (op === '<<' && B[0] === B[1] && B[0] >= 0 && B[0] <= 20) r = [A[0] * 2 ** B[0], A[1] * 2 ** B[0]]
+    else if (op === '>>' && B[0] === B[1] && B[0] >= 0 && B[0] <= 31) r = [A[0] >> B[0], A[1] >> B[0]]
+    else if (op === '>>>' && B[0] === B[1] && B[0] >= 0 && A[0] >= 0) r = [A[0] >>> B[0], A[1] >>> B[0]]
+    else if (op === '&' && B[0] === B[1] && B[0] >= 0) r = [0, B[0]]
+    else if (op === '%' && B[0] === B[1] && B[0] > 0 && A[0] >= 0) r = [0, Math.min(A[1], B[0] - 1)]
+    return ipOk(r) ? r : null
+  }
+  // condition refinement for if-arms: `name < K` / `name >= K` … over a known name
+  const refine = (c, negate) => {
+    if (!Array.isArray(c) || c.length !== 3) return null
+    let [op, l, r] = c
+    if (typeof l !== 'string' || constInt(r) == null) return null
+    const K = constInt(r), v = env.get(l)
+    if (!v) return null
+    if (negate) op = op === '<' ? '>=' : op === '<=' ? '>' : op === '>' ? '<=' : op === '>=' ? '<' : null
+    if (op === '<') return [l, [v[0], Math.min(v[1], K - 1)]]
+    if (op === '<=') return [l, [v[0], Math.min(v[1], K)]]
+    if (op === '>') return [l, [Math.max(v[0], K + 1), v[1]]]
+    if (op === '>=') return [l, [Math.max(v[0], K), v[1]]]
+    return null
+  }
+  const killAssigned = (n) => {
+    if (!Array.isArray(n)) return   // descend into closures too — capture-writes stay dead
+    if (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') {
+      if (typeof n[1] === 'string') env.set(n[1], null)
+      else if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.') {
+        const s = new Set(); collectNames(n[1], s); for (const x of s) env.set(x, null)
+      }
+    }
+    for (let k = 1; k < n.length; k++) killAssigned(n[k])
+  }
+  const visit = (n) => {
+    if (!Array.isArray(n) || n[0] === '=>') return
+    const op = n[0]
+    if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {
+      const idxV = ev(n[2])
+      const L = lens(n[1])
+      if (L != null && idxV && idxV[0] >= 0 && idxV[1] < L) out.add(idxKey(n[1], n[2]))
+      return
+    }
+    if (op === 'let' || op === 'const') {
+      for (let k = 1; k < n.length; k++) {
+        const d = n[k]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') setEnv(d[1], ev(d[2]))
+        else if (typeof d === 'string') env.set(d, null)
+        else if (Array.isArray(d)) { visit(d); const s = new Set(); collectNames(d[0] === '=' ? d[1] : d, s); for (const x of s) env.set(x, null) }
+      }
+      return
+    }
+    if (op === '=' && typeof n[1] === 'string') { setEnv(n[1], ev(n[2])); return }
+    if (ASSIGN_OPS.has(op) || op === '++' || op === '--') {
+      for (let k = 2; k < n.length; k++) visit(n[k])
+      if (typeof n[1] === 'string') env.set(n[1], null)
+      else {
+        visit(n[1])   // records the member-write access proof (`out[idx] = …`)
+        if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.') {
+          const s = new Set(); collectNames(n[1], s); for (const x of s) env.set(x, null)
+        }
+      }
+      return
+    }
+    if (op === 'for' && n.length === 5) {
+      const [, init, cond, step, lbody] = n
+      visit(init)
+      // canonical literal-interval iv: `for (iv = A; iv </<= B; iv++)`, A/B const
+      let iv = null, range = null
+      if (Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && typeof cond[1] === 'string') {
+        const decls = new Map(); collectDecls(init, decls)
+        const A = decls.has(cond[1]) ? constInt(decls.get(cond[1])) : null
+        const B = constInt(cond[2])
+        if (A != null && B != null && isUnitIncrement(step, cond[1])
+            && !isReassigned(lbody, cond[1]) && !redeclaresName(lbody, cond[1])) {
+          iv = cond[1]; range = [A, cond[0] === '<' ? B - 1 : B]
+        }
+      }
+      killAssigned(lbody)
+      if (iv && range[0] <= range[1] && !closureWrites.has(iv)) env.set(iv, range)
+      else if (iv) env.set(iv, null)
+      visit(lbody)
+      if (iv) env.set(iv, null)   // iv holds the exit value after the loop
+      return
+    }
+    if (op === 'while' || op === 'do' || op === 'for-of' || op === 'for-in' || op === 'label'
+        || op === 'switch' || op === 'try') {
+      killAssigned(n)   // unknown trip count / branch selection: no interval survives entry
+      for (let k = 1; k < n.length; k++) visit(n[k])
+      return
+    }
+    if (op === 'if') {
+      const [, c, thenB, elseB] = n
+      visit(c)
+      const save = new Map(env)
+      const rT = refine(c, false)
+      if (rT && !closureWrites.has(rT[0])) env.set(rT[0], rT[1])
+      visit(thenB)
+      const afterThen = new Map(env)
+      env.clear(); for (const [k2, v2] of save) env.set(k2, v2)
+      if (elseB !== undefined) {
+        const rE = refine(c, true)
+        if (rE && !closureWrites.has(rE[0])) env.set(rE[0], rE[1])
+        visit(elseB)
+      }
+      // join: both arms merge (min lo, max hi); known-in-one-arm-only joins unknown
+      const keys = new Set([...afterThen.keys(), ...env.keys()])
+      for (const k2 of keys) {
+        const a = afterThen.get(k2), b = env.get(k2)
+        env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
+      }
+      return
+    }
+    if (op === '()' || op === 'new') {   // a call may reassign module globals
+      for (let k = 1; k < n.length; k++) visit(n[k])
+      for (const [k2] of env) if (!closureWrites.has(k2) && (ctx.scope?.globalTypes?.has?.(k2) || ctx.types?.typedElem?.has?.(k2))) env.set(k2, null)
+      return
+    }
+    for (let k = 1; k < n.length; k++) visit(n[k])
+  }
+  // the function root is itself an `=>` node — enter its body; only NESTED closures skip
+  visit(Array.isArray(body) && body[0] === '=>' ? body[body.length - 1] : body)
+}
+const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '**='])
+
+/** Memoized per-function set of interval-proven `recv[idx]` keys. */
+export function intervalProvenIdx(ctx) {
+  const body = ctx.func?.body
+  if (!Array.isArray(body)) return NO_INTERVAL_PROVEN
+  if (ctx.func._ipBody === body) return ctx.func.ipProven
+  const out = new Set()
+  const lens = (name) => ctx.types.typedLen?.get(name) ?? ctx.scope?.globalTypedLen?.get(name) ?? null
+  scanIntervalIdx(body, out, lens)
+  ctx.func.ipProven = out
+  ctx.func._ipBody = body
+  return out
+}
+const NO_INTERVAL_PROVEN = new Set()
+
 // === Loop unroll / AST transforms (emit + plan) ===
 
 export const MAX_SMALL_FOR_UNROLL = 8
@@ -606,7 +840,9 @@ export function cloneWithSubst(node, subst, rename = null) {
     if (node === name) return [null, value]
     if (!Array.isArray(node)) return node
     if (node[0] === '=>') return node
-    return node.map(x => cloneWithSubst(x, name, value))
+    const out = node.map(x => cloneWithSubst(x, name, value))
+    stampClonedIdxProof(node, out)
+    return out
   }
   const ren = rename instanceof Map ? rename : new Map()
   if (typeof node === 'string') {
@@ -619,7 +855,21 @@ export function cloneWithSubst(node, subst, rename = null) {
   if (op === '=>') return node
   if (op === '.' || op === '?.') return [op, cloneWithSubst(node[1], subst, ren), node[2]]
   if (op === ':') return [op, node[1], cloneWithSubst(node[2], subst, ren)]
-  return node.map((part, i) => i === 0 ? part : cloneWithSubst(part, subst, ren))
+  const out = node.map((part, i) => i === 0 ? part : cloneWithSubst(part, subst, ren))
+  stampClonedIdxProof(node, out)
+  return out
+}
+
+/** Proof carry-over for clones: substitution only SHRINKS an index's value set (an
+ *  unrolled iv becomes one literal from its proven range), so a proven typed access
+ *  stays proven under its post-substitution key — without this, loop unrolling
+ *  silently re-checks every access the interval walk or a versioned guard covered. */
+function stampClonedIdxProof(node, out) {
+  if (node[0] !== '[]' || node.length !== 3 || typeof node[1] !== 'string' || out[1] !== node[1]) return
+  const k = idxKey(node[1], node[2])
+  const ip = intervalProvenIdx(ctx)   // memoized; NO_INTERVAL_PROVEN when no function ctx
+  if (ip.has(k)) ip.add(idxKey(out[1], out[2]))
+  if (ctx.types?.assumedBounds?.has(k)) ctx.types.assumedBounds.add(idxKey(out[1], out[2]))
 }
 
 const clonePlain = node => Array.isArray(node) ? node.map(clonePlain) : node

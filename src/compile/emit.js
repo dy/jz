@@ -4159,14 +4159,15 @@ export const emitter = {
         }
         let guard = conjs[0]
         for (let k = 1; k < conjs.length; k++) guard = ['i32.and', guard, conjs[k]]
-        const added = []
-        if (!ctx.types.assumedBounds) ctx.types.assumedBounds = new Set()
-        for (const c of vs.cands) {
-          const k = idxKey(c.recv, c.idx)
-          if (!ctx.types.assumedBounds.has(k)) { ctx.types.assumedBounds.add(k); added.push(k) }
-        }
+        // arm-scoped assumption set: snapshot/RESTORE (not add/delete) — unrolls
+        // inside the fast arm stamp clone keys (cloneWithSubst proof carry-over)
+        // that must NOT survive into the checked arm, which runs exactly when the
+        // guard failed
+        const saved = ctx.types.assumedBounds
+        ctx.types.assumedBounds = new Set(saved ?? [])
+        for (const c of vs.cands) ctx.types.assumedBounds.add(idxKey(c.recv, c.idx))
         const fast = emitter['for'](null, cond, step, body)
-        for (const k of added) ctx.types.assumedBounds.delete(k)
+        ctx.types.assumedBounds = saved
         const checked = emitter['for'](null, cond, step, body)
         const stmts = (r) => Array.isArray(r[0]) ? r : [r]
         result.push(['if', typed(guard, 'i32'),
