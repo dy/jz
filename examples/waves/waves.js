@@ -5,42 +5,59 @@
 // fronts read as bright seams against darker troughs — genuine density changes,
 // nothing outlined.
 //
-// drop(x,y) presses a dip and lets the physics make the ring. Dragging carves a
-// small moving dimple. A 9-point isotropic Laplacian keeps fronts round, an edge
-// sponge absorbs wall reflections, mild ∇² smoothing merges brush chop while the
-// broad swell rolls on.
-// frame(t, sx, sy, stick, foc): stick > 0 presses the moving dimple at (sx,sy).
+// drop(x,y,strength) presses a dip and lets the physics make the ring — then the
+// crater REBOUNDS: a smaller opposite pulse ~⅓ s later and a fainter dip after
+// that, the damped oscillation of a real drop, so each splash rings outward as a
+// TRAIN of waves, not one lonely front. Dragging carves a small moving dimple.
+// A 9-point isotropic Laplacian keeps fronts round, an edge sponge absorbs wall
+// reflections.
+//
+// The physics itself is LIVE-TUNABLE — frame passes every knob:
+//   frame(t, sx, sy, stick, foc, c2, visc, damp, gamma, strength)
+//     foc      pool depth: how far a ray shears per unit slope (≈60 shallow … 360 deep)
+//     c2       wave speed² — keep NEAR the stencil's stability limit (≤0.75): leapfrog
+//              dispersion vanishes toward the limit and blooms far below it (the
+//              "high-frequency side-waves" of low c2)
+//     visc     ∇² smoothing per frame — water thickness; fine chop dies, swell rolls on
+//     damp     amplitude kept per step — reverb: how long rings ride
+//     gamma    exposure contrast: lum = 1 − exp(−0.967·v^gamma), anchored so density 1
+//              is always the same neutral #9e9e9e
+//     strength scales every touch: drop depth, rebound train, stick carve
 // clear() stills the sheet. resize(w,h) → Uint32Array (ARGB).
 
 let W = 0, H = 0, px
 let a, b               // wave height now / previous (leapfrog pair)
 let L                  // light-density map, rebuilt every frame
 let Ls                 // blur scratch
-let dampField          // per-cell damping = global damp × edge sponge
-let glut               // Int32Array(1024) — density → exposure
-let sp = new Float64Array(3)   // stick trail: previous (x, y) + active flag — fractional
-                               // module scalars live in a Float64Array (i32-narrowing)
+let sponge             // per-cell sponge multiplier (1 inside, dips at the walls)
+let glut               // Int32Array(1024) — density → exposure, rebuilt when gamma moves
+let gLast = new Float64Array(1)   // gamma the LUT was built for
+let sp = new Float64Array(3)      // stick trail: previous (x, y) + active flag — fractional
+                                  // module scalars live in a Float64Array (i32-narrowing)
 
-const C2 = 0.45        // wave speed² — deliberately NEAR the stencil's stability limit
-                       // (≤0.75): leapfrog dispersion vanishes toward the limit and blooms
-                       // far below it, and that dispersion was the "high-frequency
-                       // side-waves" flanking every front at the old C2 = 0.20
 const SUB = 1          // one leapfrog substep per frame
-const DAMP = 0.9985    // rings linger — a drop keeps ringing long after it lands
 const MARGIN = 26      // edge-sponge width (cells) — wide and gentle: an abrupt sponge
-const MARGINDAMP = 0.95   // reflects, and reflections pile up as corner surges
-const VISC = 0.02      // a whisper of ∇² smoothing — with dispersion tamed at the source,
-                       // this only eats residual grid wiggles; more blunts the fronts
+                       // reflects, and reflections pile up as corner surges
 const O = 0.66667, D = 0.16667, CEN = -3.33333   // 9-point isotropic Laplacian weights
+
+// the drop's rebound train: 8 slots × (x, y, countdown, stage, strength)
+const NQ = 8
+let dq = new Float64Array(NQ * 5)
+const REBOUND = 21     // frames between the pulses of one splash (~⅓ s)
 
 export let resize = (w, h) => {
   W = w; H = h
   a = new Float64Array(w * h); b = new Float64Array(w * h)
   L = new Float64Array(w * h); Ls = new Float64Array(w * h)
-  dampField = new Float32Array(w * h)
+  sponge = new Float32Array(w * h)
   px = new Uint32Array(w * h)
   sp[2] = 0.0
-  // per-cell damping: global DAMP, ramped down within MARGIN cells of any edge
+  gLast[0] = 0.0
+  let i = 0
+  while (i < NQ * 5) { dq[i] = 0.0; i++ }
+  // sponge: full strength inside, an extra ~5% loss at the very wall, ramped QUADRATICALLY —
+  // zero slope where the sponge begins, so waves enter it without seeing a boundary (a
+  // linear ramp's kink partially reflects, and that read as a padded inner wall)
   let y = 0
   while (y < h) {
     let x = 0
@@ -49,39 +66,40 @@ export let resize = (w, h) => {
       if (y < ed) ed = y
       let rxe = w - 1 - x; if (rxe < ed) ed = rxe
       let rye = h - 1 - y; if (rye < ed) ed = rye
-      let s = DAMP
+      let s = 1.0
       if (ed < MARGIN) {
-        // QUADRATIC ramp — zero slope where the sponge begins, so waves enter it without
-        // seeing a boundary (a linear ramp's kink partially reflects, and that read as the
-        // pool having a padded inner wall)
         let f = (MARGIN - ed) / MARGIN
-        s = DAMP - (DAMP - MARGINDAMP) * f * f
+        s = 1.0 - 0.0486 * f * f
       }
-      dampField[y * w + x] = s
+      sponge[y * w + x] = s
       x++
     }
     y++
   }
-  // Neutral exposure: one undisturbed ray per pixel is #9e9e9e. The v^1.5 shoulder
-  // keeps broad converging regions silver and reserves pure white for the sharpest
-  // seams, while stretched regions can still fall all the way to black.
   glut = new Int32Array(1024)
+  return px
+}
+
+// Neutral exposure: one undisturbed ray per pixel is #9e9e9e whatever the contrast —
+// the gamma reshapes only how fast mids fall dark and folds blaze white around it.
+let buildLut = (gamma) => {
   let i = 0
   while (i < 1024) {
     let v = i * 0.00390625                 // bucket ↔ density v = i/256, range 0..4
-    let lum = 255.0 * (1.0 - Math.exp(-0.967 * v * v))   // v² gamma: same #9e9e9e at v = 1,
-                                           // but mids fall darker and folds blaze harder
+    let lum = 255.0 * (1.0 - Math.exp(-0.967 * Math.pow(v, gamma)))
     let c = lum | 0
     glut[i] = (255 << 24) | (c << 16) | (c << 8) | c
     i++
   }
-  return px
+  gLast[0] = gamma
 }
 
 export let clear = () => {
   let n = W * H, i = 0
   while (i < n) { a[i] = 0.0; b[i] = 0.0; i++ }
   sp[2] = 0.0
+  i = 0
+  while (i < NQ * 5) { dq[i] = 0.0; i++ }
 }
 
 // A soft Gaussian pressed into BOTH leapfrog buffers: a zero-velocity release that relaxes
@@ -111,13 +129,29 @@ let plop = (cx, cy, r, amp) => {
   }
 }
 
-// the click: press a dip and let the WATER make the ring — a zero-velocity release relaxes
-// into a natural outgoing wave, nothing hand-drawn. Steep enough to fold the light hard:
-// the dip wall's slope IS the caustic's strength.
-export let drop = (cx, cy) => { plop(cx, cy, 7.0, -1.4) }
+// the click: press a dip and let the WATER make the ring — then schedule the crater's
+// rebound (a smaller upward pulse) and its second collapse, the damped oscillation a real
+// drop makes. Each pulse launches its own ring: a reverberating train, like actual water.
+export let drop = (cx, cy, strength) => {
+  let s = strength
+  if (!(s > 0.0)) s = 1.0                  // NaN/0/missing → default touch
+  plop(cx, cy, 7.0, -1.4 * s)
+  let k = 0
+  while (k < NQ) {
+    let o = k * 5
+    if (dq[o + 3] < 0.5) {                 // a free slot
+      dq[o] = cx; dq[o + 1] = cy
+      dq[o + 2] = REBOUND
+      dq[o + 3] = 1.0                      // stage 1: awaiting the rebound peak
+      dq[o + 4] = s
+      k = NQ
+    }
+    k++
+  }
+}
 
 // one leapfrog substep of the linear wave equation
-let step = () => {
+let step = (c2, damp) => {
   let w = W, h = H
   let y = 1
   while (y < h - 1) {
@@ -126,7 +160,7 @@ let step = () => {
       let c = rc + x, ac = a[c]
       let lap = O * (a[c - 1] + a[c + 1] + a[rn + x] + a[rsw + x])
         + D * (a[rn + x - 1] + a[rn + x + 1] + a[rsw + x - 1] + a[rsw + x + 1]) + CEN * ac
-      b[c] = (2.0 * ac - b[c] + C2 * lap) * dampField[c]
+      b[c] = (2.0 * ac - b[c] + c2 * lap) * (damp * sponge[c])
       x++
     }
     y++
@@ -134,19 +168,47 @@ let step = () => {
   let tmp = a; a = b; b = tmp              // swap → a is current
 }
 
-// foc: how far a ray shears per unit slope — the pool depth. Shallow (≈50) barely
-// bends the light; deep (≈140) turns every ripple into hard bright seams.
-export let frame = (t, sx, sy, stick, foc) => {
+export let frame = (t, sx, sy, stick, foc, c2, visc, damp, gamma, strength) => {
   let w = W, h = H, n = w * h
+  // clamp the live knobs to their safe/meaningful ranges
+  if (!(c2 > 0.05)) c2 = 0.05
+  if (c2 > 0.7) c2 = 0.7                   // CFL limit for the 9-point stencil is 0.75
+  if (!(damp > 0.98)) damp = 0.98
+  if (damp > 0.9998) damp = 0.9998
+  if (!(visc > 0.0)) visc = 0.0
+  if (visc > 0.09) visc = 0.09
+  if (!(gamma > 1.2)) gamma = 1.2
+  if (gamma > 3.5) gamma = 3.5
+  if (!(strength > 0.0)) strength = 1.0
+  if (gamma !== gLast[0]) buildLut(gamma)
+
+  // the rebound train: fire scheduled pulses of every live splash
+  let k = 0
+  while (k < NQ) {
+    let o = k * 5
+    if (dq[o + 3] > 0.5) {
+      dq[o + 2] = dq[o + 2] - 1.0
+      if (dq[o + 2] <= 0.0) {
+        if (dq[o + 3] < 1.5) {             // stage 1 → the crater rebounds upward
+          plop(dq[o], dq[o + 1], 5.5, 0.85 * dq[o + 4])
+          dq[o + 2] = REBOUND
+          dq[o + 3] = 2.0
+        } else {                           // stage 2 → a fainter second collapse, then done
+          plop(dq[o], dq[o + 1], 5.0, -0.45 * dq[o + 4])
+          dq[o + 3] = 0.0
+        }
+      }
+    }
+    k++
+  }
 
   let s = 0
-  while (s < SUB) { step(); s++ }
+  while (s < SUB) { step(c2, damp); s++ }
 
   // the stick: a dimple CARVED along the drag as a capsule — the sweep covers the whole
-  // segment from last frame's position to this one, and every touched cell is pressed to
-  // the full dimple depth at once (min on BOTH leapfrog sheets). Depth is instant and
-  // uniform at any stroke speed — a relaxation press deepens with dwell time, so fast
-  // strokes came out shallow and banded, reading as a chain of small drops. Carving both
+  // segment from last frame's position to this one, every touched cell pressed toward the
+  // full dimple depth by a fast soft blend (~96% in 4 frames): depth is uniform at any
+  // stroke speed, and no hard min splices curvature kinks into the surface. Pressing BOTH
   // sheets injects no velocity and is locally ABSORBING (it can only remove motion), so
   // circular strokes cannot pump their own wake.
   if (stick > 0.0) {
@@ -162,6 +224,7 @@ export let frame = (t, sx, sy, stick, foc) => {
     if (x1 > w - 2) x1 = w - 2
     if (y1 > h - 2) y1 = h - 2
     let ir2 = 1.0 / (R * R)
+    let depth = -1.3 * strength
     let yy = y0
     while (yy <= y1) {
       let row = yy * w, x = x0
@@ -178,9 +241,7 @@ export let frame = (t, sx, sy, stick, foc) => {
         if (q < 9.0) {
           let c = row + x
           let E = Math.exp(-q)
-          let tgt = -1.3 * stick * E
-          // fast soft blend toward the carve depth (~96% in 4 frames) — a hard min splices
-          // the surface with curvature kinks whose high frequencies flank the stroke
+          let tgt = depth * stick * E
           if (a[c] > tgt) a[c] = a[c] + (tgt - a[c]) * 0.55
           if (b[c] > tgt) b[c] = b[c] + (tgt - b[c]) * 0.55
         }
@@ -220,28 +281,30 @@ export let frame = (t, sx, sy, stick, foc) => {
     sp[2] = 0.0
   }
 
-  // viscosity: smooth BOTH leapfrog sheets a little every frame — a frequency-selective
-  // loss (∝ k²) that snuffs fine chop in a beat while the broad swell rolls on
-  let vp = 0
-  while (vp < 2) {
-    let f = vp === 0 ? a : b
-    let y = 1
-    while (y < h - 1) {
-      let row = y * w, x = 1
-      while (x < w - 1) {
-        let c = row + x
-        Ls[c] = f[c] * (1.0 - 4.0 * VISC) + (f[c - 1] + f[c + 1] + f[c - w] + f[c + w]) * VISC
-        x++
+  // viscosity — the water's thickness: smooth BOTH leapfrog sheets a little every frame, a
+  // frequency-selective loss (∝ k²) that snuffs fine chop while the broad swell rolls on
+  if (visc > 0.0) {
+    let vp = 0
+    while (vp < 2) {
+      let f = vp === 0 ? a : b
+      let y = 1
+      while (y < h - 1) {
+        let row = y * w, x = 1
+        while (x < w - 1) {
+          let c = row + x
+          Ls[c] = f[c] * (1.0 - 4.0 * visc) + (f[c - 1] + f[c + 1] + f[c - w] + f[c + w]) * visc
+          x++
+        }
+        y++
       }
-      y++
+      y = 1
+      while (y < h - 1) {
+        let row = y * w, x = 1
+        while (x < w - 1) { f[row + x] = Ls[row + x]; x++ }
+        y++
+      }
+      vp++
     }
-    y = 1
-    while (y < h - 1) {
-      let row = y * w, x = 1
-      while (x < w - 1) { f[row + x] = Ls[row + x]; x++ }
-      y++
-    }
-    vp++
   }
 
   // ── shade: bend one ray per texel through the surface, splat where it lands ──
@@ -255,19 +318,28 @@ export let frame = (t, sx, sy, stick, foc) => {
       let gx = (a[c + 1] - a[c - 1]) * 0.5
       let gy = (a[c + w] - a[c - w]) * 0.5
       // The ray bends toward the surface normal, so the hit shifts DOWNHILL: crests
-      // converge light (bright), pressed dimples diverge it (dark). Exact texel centres
-      // make a perfectly flat sheet perfectly flat; the blur below absorbs the sparse
-      // sampling only where the map stretches.
+      // converge light (bright), pressed dimples diverge it (dark).
       let xf = x + foc * gx
       let yf = y + foc * gy
+      // One ray per exact texel centre imprints the sampling GRID wherever the map
+      // stretches — a checkered tiling around every wave. Rays that shear more than half
+      // a pixel start from a hash-jittered sub-pixel origin instead (deterministic i32
+      // scramble), turning the lattice into noise the blur absorbs; perfectly flat and
+      // near-flat texels keep exact centres, so still water stays perfectly still.
+      let shx = xf - x, shy = yf - y
+      if (shx * shx + shy * shy > 0.25) {
+        let hj = (x * 1103515245 + 12345) ^ (y * 12820163 + 9301)
+        xf = xf + ((hj & 255) - 127.5) * 0.0035
+        yf = yf + (((hj >> 8) & 255) - 127.5) * 0.0035
+      }
       if (xf >= 0.0 && xf < w - 1.001 && yf >= 0.0 && yf < h - 1.001) {
         let xi = xf | 0, yi = yf | 0
         let fx = xf - xi, fy = yf - yi
-        let c2 = yi * w + xi
-        L[c2] = L[c2] + (1.0 - fx) * (1.0 - fy)
-        L[c2 + 1] = L[c2 + 1] + fx * (1.0 - fy)
-        L[c2 + w] = L[c2 + w] + (1.0 - fx) * fy
-        L[c2 + w + 1] = L[c2 + w + 1] + fx * fy
+        let c2i = yi * w + xi
+        L[c2i] = L[c2i] + (1.0 - fx) * (1.0 - fy)
+        L[c2i + 1] = L[c2i + 1] + fx * (1.0 - fy)
+        L[c2i + w] = L[c2i + w] + (1.0 - fx) * fy
+        L[c2i + w + 1] = L[c2i + w + 1] + fx * fy
       }
       x++
     }
@@ -296,9 +368,9 @@ export let frame = (t, sx, sy, stick, foc) => {
     }
     bp++
   }
-  // The interior ray loop cannot feed the outermost texels on a flat sheet, and the
-  // blur spreads that deficit inward. Pin the three-pixel frame to neutral exposure
-  // instead of showing a synthetic black outline around an otherwise flat field.
+  // The interior ray loop cannot feed the outermost texels on a flat sheet, and the blur
+  // spreads that deficit inward. Pin the three-pixel frame to neutral exposure instead of
+  // showing a synthetic black outline around an otherwise flat field.
   let edge = 0
   while (edge < 3) {
     let ex = 0
