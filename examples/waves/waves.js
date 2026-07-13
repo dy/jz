@@ -32,8 +32,8 @@ const SUB = 1          // one leapfrog substep per frame — the pool shimmers, 
 const DAMP = 0.993     // a click's rings ride out and settle into the ambient net in ~3 s
 const MARGIN = 18      // edge-sponge width (cells)
 const MARGINDAMP = 0.94
-const RAIN = 2.2       // occasional soft plops — just enough to keep the ambient swell alive
-const RAINA = 0.5      // plop amplitude (signs alternate → zero-mean surface)
+const RAIN = 0.7       // a rare soft plop — the pool mostly rests
+const RAINA = 0.35     // plop amplitude (signs alternate → zero-mean surface)
 const VISC = 0.030     // per-frame ∇² smoothing of the surface: fine ripples die in a beat,
                        // the broad swell rolls on — the water feels thick
 const O = 0.66667, D = 0.16667, CEN = -3.33333   // 9-point isotropic Laplacian weights
@@ -126,8 +126,9 @@ let plop = (cx, cy, r, amp, both) => {
 }
 
 // the click: press a dip and let the WATER make the ring — a zero-velocity release relaxes
-// into a natural outgoing wave, nothing hand-drawn
-export let drop = (cx, cy) => { plop(cx, cy, 6.5, -1.7, 1) }
+// into a natural outgoing wave, nothing hand-drawn. Wide and shallow: the dip wall's slope
+// is what the caustic amplifies, so gentleness here is a soft first front out there.
+export let drop = (cx, cy) => { plop(cx, cy, 9.5, -0.9, 1) }
 
 // one leapfrog substep of the linear wave equation
 let step = () => {
@@ -157,7 +158,7 @@ export let frame = (t, sx, sy, stick, foc) => {
   let d = 0
   while (d < drops) {
     let sgn = rnd() < 0.5 ? -1.0 : 1.0
-    plop(6.0 + rnd() * (w - 12.0), 6.0 + rnd() * (h - 12.0), 5.0 + rnd() * 6.0, sgn * RAINA * (0.4 + rnd()), 0)
+    plop(6.0 + rnd() * (w - 12.0), 6.0 + rnd() * (h - 12.0), 7.0 + rnd() * 7.0, sgn * RAINA * (0.4 + rnd()), 0)
     d++
   }
 
@@ -183,7 +184,7 @@ export let frame = (t, sx, sy, stick, foc) => {
         if (q < 9.0) {
           let c = row + x
           let E = Math.exp(-q)
-          a[c] = a[c] + (-1.6 * stick * E - a[c]) * 0.3 * E
+          a[c] = a[c] + (-0.9 * stick * E - a[c]) * 0.25 * E
         }
         x++
       }
