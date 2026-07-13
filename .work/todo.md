@@ -1256,6 +1256,18 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
   arena. jz's own wasi.js shim stays console-only — real FS comes from the
   actual WASI host (wasmtime, node:wasi); test via node --experimental-wasi in
   test/wasi.js. Sync by construction (WASI IS sync) — no event-loop breach.
+- [ ] **Coverage surface, remaining pools (precise, 2026-07-12).** (a) built-ins/
+  Iterator 514: track in test262-builtins.js; helper CHAINS on arbitrary iterator
+  values need machine objects to carry map/filter/... methods (or an Iterator-
+  helper wrapper lowering) — the fused paths cover known chains only; expect
+  heavy %Iterator.prototype% reflection skips. (b) built-ins/Atomics 390 +
+  SharedArrayBuffer 104: need the $262.agent harness (agent.start/broadcast/
+  getReport) — jz.pool is the substrate; map agent scripts to pool workers.
+  (c) built-ins/Promise 703: the $DONE harness now exists in the language
+  runner — port it to test262-builtins.js; species/subclass/reflection families
+  will dominate skips. (d) language async-generator/for-await (~2.2k): needs
+  async iteration (machines + @@asyncIterator + await-in-yield) — out of the
+  sync-async v1 by design, revisit after the optimizer round-trip bug fix.
 - [ ] **Closure-state visibility miscompiles, open** (surfaced building the async
   runtime 2026-07-12; BOTH host-side, both pinned to current-wrong in
   test/parser-bugs.js "KNOWN GAP" — they flip loudly when fixed):
@@ -1267,6 +1279,17 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
     sibling closures' reads of that state; unexported → correct. The async
     runtime dodges both (settled-queue drain + thin export forwarders); root fix
     belongs in closure-env/schema aliasing analysis.
+  * OPTIMIZER ROUND-TRIP (worst of the family): an async-runtime module that
+    also contains ANY sibling fn looping `a[i]` over `a.length` loses its
+    queued microtask callbacks — at L1 EACH enabled pass alone (fusedRewrite /
+    sortLocalsByUse / treeshake) reproduces it, implicating the shared WAT
+    round-trip; O0 correct. Pinned (parser-bugs KNOWN GAP); the test262 runner
+    holds asyncDone tests at optimize:false until fixed.
+  * assert-harness-shaped code NESTED in a wrapper fn breaks the drain even at
+    O0 (module-level hoist heals) — third variant, same family.
+  * reassigned PARAM whose new value comes from a dynamic closure call poisons
+    the fn's return kind (spread __drain hit it; fresh local heals) — matches
+    the transplanted ir.js writeVar family.
 - [ ] **Self-host fragility guards, live** (from the deleted fragilities doc — each
   neutralized only at its one known trigger, unguarded in general): Root F `.typed:[]`
   runtime-variable OOB index unchecked (module/typedarray.js fast path — silent adjacent-

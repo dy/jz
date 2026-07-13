@@ -212,6 +212,18 @@ export function createTransform(opts) {
   // Promise statics → the injected plain-jz runtime helpers.
   const P_STATIC = { resolve: '__p_resolve', reject: '__p_reject', all: '__p_all', race: '__p_race' }
 
+  // Spread of a possibly-iterator value (iterator-minting programs only):
+  // `...E` → `...__drain(E)` — pass-through for arrays/strings, materializes
+  // machines/@@iterator providers. Array literals skip (statically safe).
+  const wrapSpreadDrain = (e) => {
+    if (!_gen?.iterProto?.on) return null
+    const v = e[1]
+    if (Array.isArray(v) && (v[0] === '[]' || v[0] == null)) return null
+    _gen.iterProto.drain = true
+    return ['...', ['()', '__it_drain', transform(v)]]
+  }
+  const wrapArg = (a) => (Array.isArray(a) && a[0] === '...' && wrapSpreadDrain(a)) || transform(a)
+
   const handlers = {
     // async function/arrow → (...aa) => __async_run((function* …)(...aa))
     'async'(inner) {
@@ -221,6 +233,10 @@ export function createTransform(opts) {
         const params = Array.isArray(inner[1]) && inner[1][0] === '()' ? inner[1][1] : inner[1]
         return transform(_gen.lowerAsync(params, inner[2]))
       }
+      // `async function () {}()` — the parser binds the CALL inside the async
+      // wrapper; lower the callee, keep the call.
+      if (inner[0] === '()' && Array.isArray(inner[1]) && (inner[1][0] === 'function' || inner[1][0] === '=>'))
+        return transform(['()', ['async', inner[1]], ...inner.slice(2)])
     },
 
     '()'(callee, ...rest) {
@@ -248,6 +264,16 @@ export function createTransform(opts) {
       if (callee === 'Array') {
         const lit = lowerArrayConstructor(rest[0])
         if (lit) return lit
+      }
+      // spread ARG of a possibly-iterator value → __drain (iterator programs only)
+      if (_gen?.iterProto?.on && rest.length === 1 && Array.isArray(rest[0])) {
+        const args = rest[0]
+        if (args[0] === ',' && args.slice(1).some(x => Array.isArray(x) && x[0] === '...'))
+          return ['()', transform(callee), [',', ...args.slice(1).map(wrapArg)]]
+        if (args[0] === '...') {
+          const w = wrapSpreadDrain(args)
+          if (w) return ['()', transform(callee), w]
+        }
       }
       if (Array.isArray(callee) && callee[0] === '()' && Array.isArray(callee[1]) && callee[1][0] === 'function' && callee[1][1]) {
         const [, name, params, body] = callee[1]
@@ -317,17 +343,20 @@ export function createTransform(opts) {
       // 2-arg form is INDEXING (obj[key]) — not ours. The 1-arg form is the
       // array LITERAL: rewrite a spread of a generator / helper chain into a
       // spread of the FUSED toArray (a plain array) — the existing
-      // array-spread machinery takes it from there.
+      // array-spread machinery takes it from there. In an iterator-minting
+      // program, any OTHER spread of a non-literal wraps in __drain (returns
+      // the value untouched unless it's an iterator — then materializes it).
       if (!_gen || idx !== undefined) return
       const rewrite = (e) => {
-        if (Array.isArray(e) && e[0] === '...' && Array.isArray(e[1])) {
+        if (!Array.isArray(e) || e[0] !== '...') return null
+        if (Array.isArray(e[1])) {
           const chain = _gen.unwindChain(e[1])
           if (chain && (!chain.stages.length || !_gen.isTerminal(chain.stages[chain.stages.length - 1].h))) {
             const fused = _gen.fuseTerminal({ root: chain.root, stages: [...chain.stages, { h: 'toArray', args: [] }] }, names.genTemp)
             if (fused) return ['...', transform(fused)]
           }
         }
-        return null
+        return wrapSpreadDrain(e)
       }
       if (payload === undefined) return
       if (Array.isArray(payload) && payload[0] === ',') {
@@ -379,6 +408,12 @@ export function createTransform(opts) {
     },
 
     'instanceof'(val, ctor) {
+      // promise-shape probe — promises are fixed-shape objects, no ctor chain
+      if (ctor === 'Promise' && _gen?.noteAsync) {
+        _gen.noteAsync()
+        const t0 = transform(val)
+        return ['&&', ['!=', t0, [null, null]], ['==', ['.', t0, '__p'], [null, 1]]]
+      }
       const t = transform(val)
       const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
       const fold = staticInstanceofFold(val, name)

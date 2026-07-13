@@ -337,3 +337,24 @@ test('KNOWN GAP: exporting a state-mutating closure breaks sibling closures of t
     is(jz(src('')).exports.f(), 5)              // unexported drain — correct
     is(jz(src('export')).exports.f(), undefined) // WRONG — should be 5; flips when fixed
 })
+
+test('KNOWN GAP: optimizer round-trip breaks async modules containing an indexed array loop', () => {
+    // Minimal pair (2026-07-12, found wiring the async test262 pool): a module
+    // with the async promise runtime AND any sibling fn looping `a[i]` over
+    // `a.length` — microtask callbacks queued via .then never run after the
+    // optimizer pipeline touches the module. O0 is correct; at L1 EACH of the
+    // three enabled passes ALONE (fusedRewrite / sortLocalsByUse / treeshake)
+    // breaks it — implicating the shared WAT round-trip, not one pass.
+    // The test262 runner pins asyncDone tests at optimize:false meanwhile.
+    const SRC = `let hitFlag = 0
+let mark = (e) => { hitFlag = 1 }
+export let check = () => hitFlag
+let cmp = (a, b, m) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) throw m }
+export let go = () => { (async () => 42)().then((v) => { mark() }, mark); return 1 }`
+    const ok = jz(SRC, { optimize: false })
+    ok.exports.go()
+    is(ok.exports.check(), 1)                    // O0 correct
+    const bad = jz(SRC, { optimize: 1 })
+    bad.exports.go()
+    is(bad.exports.check(), 0)                   // WRONG — flips to 1 when the round-trip bug is fixed
+})

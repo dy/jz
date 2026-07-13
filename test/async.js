@@ -80,3 +80,40 @@ test('async: v1 rejects try across await with a precise message', () => {
   try { jz.compile(`async function g() { try { await 1 } catch (x) {} } export let f = () => 1`) } catch (x) { e = x }
   ok(e && e.message.includes('across `await`'), `precise reject: ${e?.message?.slice(0, 80)}`)
 })
+
+// Async HOST IMPORTS — a host function returning a thenable becomes a jz
+// promise the module can await (made + settled via the runtime's __p_make/
+// __p_finish exports; settlement drains + sweeps). This is the fetch story:
+// no WASI networking — I/O stays host-side, awaitable in jz.
+test('async: host imports returning promises are awaitable', async () => {
+  if (onWasi() || onKernel()) return
+  const src = `import { ft } from 'host'
+    async function m(u) { let b = await ft(u); return b.length + ':' + b }
+    export let f = (u) => m(u)`
+  const out = jz(src, { imports: { host: { ft: (u) => new Promise((res) => setTimeout(() => res('hey:' + u), 5)) } } })
+  is(await out.exports.f('x'), '5:hey:x')
+  const out2 = jz(`import { bad } from 'host'
+    async function m() { let v = await bad(); return v }
+    export let f = () => m().catch((e) => 'caught:' + e)`,
+    { imports: { host: { bad: () => Promise.reject(new Error('nope')) } } })
+  is(await out2.exports.f(), 'caught:nope')
+})
+
+test('async: real fetch through a host import (local http server)', async () => {
+  if (onWasi() || onKernel()) return
+  const { createServer } = await import('node:http')
+  const srv = createServer((req, res) => res.end('pong:' + req.url)).listen(0)
+  await new Promise(r => srv.once('listening', r))
+  try {
+    const base = 'http://localhost:' + srv.address().port
+    const out = jz(`import { fetchText } from 'host'
+      async function probe(base) {
+        let a = await fetchText(base + '/alpha')
+        let b = await fetchText(base + '/beta')
+        return a + '|' + b
+      }
+      export let f = (base) => probe(base)`,
+      { imports: { host: { fetchText: (url) => fetch(url).then(r => r.text()) } } })
+    is(await out.exports.f(base), 'pong:/alpha|pong:/beta')
+  } finally { srv.close() }
+})

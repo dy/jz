@@ -701,7 +701,20 @@ export const wrap = (memSrc, inst, state) => {
     if (st === 2) return Promise.reject(readSettled(raw))
     return new Promise((resolve, reject) => pending.push({ raw, resolve, reject }))
   }
-  if (asyncMod && state) state.afterTick = sweep
+  if (asyncMod && state) {
+    state.afterTick = sweep
+    // Async host imports: a thenable returned by a host import becomes a jz
+    // promise (made + settled through the runtime's exports, lane-matched).
+    const mk = realInst.exports.__p_make, fin = realInst.exports.__p_finish
+    if (mk && fin) {
+      const lanes = i64Exp.get('__p_finish')
+      state.pmake = () => mk()
+      state.pfinish = (praw, st, vbits) => fin(
+        lanes?.p?.has(0) ? (typeof praw === 'bigint' ? praw : bits(praw)) : (typeof praw === 'bigint' ? i64ToF64(praw) : praw),
+        lanes?.p?.has(1) ? f64ToI64(st) : st,
+        lanes?.p?.has(2) ? vbits : i64ToF64(vbits))
+    }
+  }
   const finishRet = (raw, read) => asyncMod ? adopt(raw, read) : read(raw)
   const lastErrBits = realInst.exports.__jz_last_err_bits
   const decodeThrown = error => {
@@ -1004,6 +1017,16 @@ const buildImports = (mod, opts, state) => {
           // ops — never materialize a box as f64. Return the i64 bits of the wrapped result.
           const decoded = args.map(a => state.mem ? state.mem.read(a) : decode(a))
           const ret = fn.call(fns, ...decoded)
+          // Async host import: thenable → jz promise the module can await.
+          // Settlement re-enters via __p_finish, then drains + sweeps.
+          if (ret != null && typeof ret.then === 'function' && state.pmake) {
+            const praw = state.pmake()
+            const box = (v) => bits(state.mem ? state.mem.wrapVal(v) : coerce(v))
+            ret.then(
+              (v) => { state.pfinish(praw, 1, box(v)); state.afterTick?.() },
+              (e) => { state.pfinish(praw, 2, box(e instanceof Error ? e.message : e)); state.afterTick?.() })
+            return typeof praw === 'bigint' ? praw : bits(praw)
+          }
           return bits(state.mem ? state.mem.wrapVal(ret) : coerce(ret))
         }
     }

@@ -4,6 +4,21 @@
 // Everything else those families used to blanket now runs. Regenerate by
 // re-running the JZ_AUDIT sweep after landing a feature that shrinks a family.
 export const AUDITED_OUT = new Map([
+  ['test/language/expressions/async-arrow-function/async-lineterminator-identifier-throws.js', 'async [no LineTerminator] restricted production not enforced (recorded divergence)'],
+  ['test/language/statements/async-function/syntax-declaration-no-line-terminator.js', 'async [no LineTerminator] restricted production not enforced (recorded divergence)'],
+  ['test/language/statements/using/block-local-closure-get-before-initialization.js', 'TDZ ReferenceError not synthesized (permissive by design)'],
+  ['test/language/statements/using/block-local-use-before-initialization-in-prior-statement.js', 'TDZ ReferenceError not synthesized (permissive by design)'],
+  ['test/language/statements/using/function-local-closure-get-before-initialization.js', 'TDZ ReferenceError not synthesized (permissive by design)'],
+  ['test/language/statements/using/function-local-use-before-initialization-in-prior-statement.js', 'TDZ ReferenceError not synthesized (permissive by design)'],
+  ['test/language/statements/using/global-closure-get-before-initialization.js', 'TDZ ReferenceError not synthesized (permissive by design)'],
+  ['test/language/statements/using/initializer-disposed-at-end-of-generatorbody.js', 'using across generator suspension outside v1'],
+  ['test/language/statements/using/syntax/using-declaring-let-split-across-two-lines.js', 'using [no LineTerminator] restriction not enforced (recorded divergence)'],
+  ['test/language/statements/using/syntax/using-for-statement.js', 'using in for-statement heads outside the jzify lowering'],
+  ['test/language/statements/using/syntax/using-invalid-assignment-next-expression-for.js', 'using in for-statement heads outside the jzify lowering'],
+  ['test/language/statements/using/syntax/using-invalid-assignment-statement-body-for-of.js', 'using in for-statement heads outside the jzify lowering'],
+  ['test/language/statements/using/syntax/using-outer-inner-using-bindings.js', 'using in for-statement heads outside the jzify lowering'],
+  ['test/language/statements/using/throws-if-initializer-Symbol.dispose-property-not-callable.js', 'dispose callability check (v1 checks presence only)'],
+  ['test/language/statements/using/throws-suppressederror-if-multiple-errors-during-disposal.js', 'no SuppressedError aggregation (documented divergence)'],
   ['test/language/computed-property-names/class/static/generator-prototype.js', 'generator reflection outside jzify subset'],
   ['test/language/expressions/array/spread-err-mult-err-expr-throws.js', 'spread iterator protocol unsupported'],
   ['test/language/expressions/array/spread-err-mult-err-itr-get-call.js', 'spread iterator protocol unsupported'],

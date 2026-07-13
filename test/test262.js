@@ -183,6 +183,8 @@ const GENERATOR_EXCLUDED_PATTERNS = [
   /\bSymbol\b/, /iterator/i,
   /dynamic[\s-]*import/i, /import\.meta/i, /\bexport\s+default\b/,
 ]
+const isAsyncFnTest = (rel) =>
+  /\/(expressions\/(async-function|async-arrow-function|await)|statements\/async-function)\//.test(rel)
 const isGeneratorTest = (rel) => /\/(expressions|statements)\/generators\//.test(rel) || /\/expressions\/yield\//.test(rel)
 
 // Quick mode: limit tests per subdirectory
@@ -710,6 +712,20 @@ function shouldSkipBase(content, rel = '') {
     if (/Object\.(getPrototypeOf|setPrototypeOf|getOwnPropertyDescriptor|defineProperty|keys|getOwnPropertyNames|create|freeze)/.test(codeContent)) return 'object reflection outside jzify subset'
     if (CLASS_EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
     // fall through to the harness/negative-test filters below
+  } else if (isAsyncFnTest(rel)) {
+    // async fns landed (jzify/async.js state machines + promise runtime) —
+    // narrow exclusions for the async dirs; the rest RUN via the $DONE shim.
+    if (/async\s+function\s*\*|async\s*\*|for\s+await|asyncDispose|async\s*generator/i.test(codeContent)) return 'async generators / for-await outside the sync-async v1'
+    if (/throwsAsync/.test(content)) return 'assert.throwsAsync harness outside the current shim'
+    if (/\.name\b|\.length\b|\.constructor\b|\bprototype\b/.test(codeContent)) return 'function reflection unsupported'
+    if (/dflt-params|params-dflt|arguments/.test(rel)) return 'default-param/arguments reflection outside jz scope'
+    // fall through to the generic filters below
+  } else if (rel.includes('/statements/using/')) {
+    // `using` landed (jzify try/finally + [Symbol.dispose], subscript 10.6).
+    // Narrow exclusions; the rest RUN.
+    if (/await|asyncDispose/i.test(codeContent)) return 'await using / asyncDispose outside the sync dispose model'
+    if (/getOwnProperty|defineProperty|propertyHelper|\bProxy\b/i.test(codeContent)) return 'descriptor reflection outside jz scope'
+    // fall through to the generic filters below
   } else if (isGeneratorTest(rel)) {
     // v1 machines: function*-declaration/expression bodies with statement-
     // position yields. Everything else is a named out-of-scope family.
@@ -741,8 +757,8 @@ function shouldSkipBase(content, rel = '') {
   // (Legacy Sputnik tests `throw new Test262Error(...)` directly — jz compiles
   // and runs that fine via ASSERT_HARNESS, so no skip is needed for them.)
   // Skip tests with harness-specific directives
-  if (content.includes('$DONE') && !content.includes('runTest')) return 'harness dependency'
-  if (content.includes('Test262:Async')) return 'async test'
+  if (content.includes('$DONE') && !content.includes('runTest') && !isAsyncFnTest(rel)) return 'harness dependency'
+  if (content.includes('Test262:Async') && !isAsyncFnTest(rel)) return 'async test (outside the wired async dirs)'
   if (content.includes('propertyHelper')) return 'propertyHelper'
   if (content.includes('verifyProperty')) return 'verifyProperty'
   // Parser gaps tracked upstream in subscript; do not count as jz runtime failures.
@@ -755,8 +771,6 @@ function shouldSkipBase(content, rel = '') {
   if (content.includes('MAX_ITERATIONS')) return 'MAX_ITERATIONS harness'
   if (/\.prototype\b/.test(codeContent)) return 'prototype chain outside current jz scope'
   if (/\bnew\s+(Boolean|Number|String)\b/.test(codeContent)) return 'boxed primitive object outside current jz scope'
-  // Skip tests using `using` keyword (explicit resource management)
-  if (/\busing\b/.test(codeContent)) return 'using keyword'
   // Multi-file module fixtures (not self-contained)
   if (content.includes('import ') && content.includes('_FIXTURE')) return 'fixture dependency'
   // A fixture SUPPORT file itself (…_FIXTURE.js) is not a test.
@@ -777,6 +791,14 @@ try {
   process.exit(1)
 }
 
+const ASYNC_DONE_SHIM = `
+let __t262d = 0
+let __t262e = undefined
+let $DONE = (e) => { if (__t262d) return; __t262d = 1; if (e != null && e !== false) __t262e = '' + e }
+let asyncTest = (fn) => { fn().then(() => $DONE(), (e) => $DONE(e == null ? 'rejected' : e)) }
+export let __t262_check = () => __t262d === 0 ? '@pending' : __t262e == null ? '@ok' : __t262e
+`
+
 function runTest(src, options = {}) {
   // Strip test262 harness directives and includes
   let code = src
@@ -789,12 +811,20 @@ function runTest(src, options = {}) {
   // test262 tests are typically bare scripts with assert() calls
   // We wrap them so jz can compile as a module
   const hasExport = /export\s+(let|const|function|default)/.test(code)
+  // asyncDone: the assert harness hoists to MODULE level (nesting it inside
+  // _run trips the closure-state visibility gap even at O0 — see the KNOWN
+  // GAP pins); module bindings are visible inside _run either way.
+  const nestedHarness = options.assertHarness && !options.asyncDone ? ASSERT_HARNESS : ''
   if (!hasExport) {
     // Bare script — wrap in a function so jz can compile it
-    code = `export let _run = () => {\n${options.assertHarness ? ASSERT_HARNESS : ''}\n${code}\nreturn 1\n}`
+    code = `export let _run = () => {\n${nestedHarness}\n${code}\nreturn 1\n}`
   } else {
-    code = `${options.assertHarness ? ASSERT_HARNESS : ''}\n${code}`
+    code = `${nestedHarness}\n${code}`
   }
+  // flags:[async] tests call $DONE(err?) — module-level shim replaces
+  // doneprintHandle.js; the host polls __t262_check (each call drains the
+  // module's microtask queue at the boundary; timers ride real setTimeout).
+  if (options.asyncDone) code = `${ASYNC_DONE_SHIM}\n${options.assertHarness ? ASSERT_HARNESS : ''}\n${code}`
 
   // Inverted mode for negative-parse tests: report whether jz REJECTS the
   // source ('reject') or silently accepts it ('pass' — the caller fails it).
@@ -804,9 +834,24 @@ function runTest(src, options = {}) {
   }
 
   try {
-    const result = jz(code, { jzify: true })
+    // asyncDone runs at optimize:false — the optimizer round-trip miscompiles
+    // async-runtime modules that also contain an indexed array loop (pinned in
+    // test/parser-bugs.js KNOWN GAP; semantics-correct at O0). Re-enable when fixed.
+    const result = jz(code, options.asyncDone ? { jzify: true, optimize: false } : { jzify: true })
     if (!result || !result.exports) return { status: 'fail', error: 'no output' }
     if (result.exports._run) result.exports._run()
+    if (options.asyncDone) {
+      return (async () => {
+        try {
+          for (let i = 0; i < 300; i++) {
+            const st = result.exports.__t262_check()
+            if (st !== '@pending') return st === '@ok' ? { status: 'pass' } : { status: 'fail', error: String(st).slice(0, 120) }
+            await new Promise(r => setTimeout(r, 1))
+          }
+          return { status: 'fail', error: 'async $DONE timeout' }
+        } catch (e) { return { status: 'fail', error: (e.message || String(e)).slice(0, 120) } }
+      })()
+    }
     return { status: 'pass' }
   } catch (e) {
     let msg = e.message || ''
@@ -823,6 +868,7 @@ function runTest(src, options = {}) {
         msg.includes('Unknown module') || msg.includes('Unknown instruction') ||
         msg.includes('Unknown global') ||
         msg.includes('is not in scope') ||
+        msg.includes('outside the v1 async surface') ||
         msg.includes('Imports argument must be present') ||
         msg.includes('function import requires a callable')) {
       return { status: 'skip', error: msg.slice(0, 80) }
@@ -980,7 +1026,7 @@ function expectedFailReason(rel) {
 // ─── Worker: classify + compile/run an assigned slice of the work list ──────
 // Pure given its inputs (jz resets all state per call), so a worker's tallies
 // are identical to running the same files sequentially.
-function runChunk(items) {
+async function runChunk(items) {
   const perDir = Object.create(null)
   const fails = [], xfails = [], xpasses = [], negaccepts = []
   const dirOf = (subdir) => perDir[subdir] || (perDir[subdir] = { pass: 0, fail: 0, skip: 0, xfail: 0, negpass: 0, negaccept: 0 })
@@ -1005,7 +1051,10 @@ function runChunk(items) {
       }
       const __skipR = shouldSkip(src, rel)
       if (__skipR) { d.skip++; if (process.env.JZ_SKIP_DEBUG && rel.includes(process.env.JZ_SKIP_DEBUG)) console.log('SKIP', rel.split('/').pop(), '→', __skipR); continue }
-      const { status, error } = runTest(src, { assertHarness: needsAssertHarness(src, rel) })
+      const { status, error } = await runTest(src, {
+        assertHarness: needsAssertHarness(src, rel),
+        asyncDone: isAsyncFnTest(rel) && /Test262:Async|\$DONE/.test(src),
+      })
       if (status === 'fail') {
         const reason = expectedFailReason(rel)
         if (reason) { d.xfail++; xfails.push(`${rel} — ${reason}`) }
@@ -1023,7 +1072,7 @@ function runChunk(items) {
 
 if (!isMainThread) {
   // Spawned worker: run the assigned slice and report tallies back.
-  parentPort.postMessage(runChunk(workerData.items))
+  runChunk(workerData.items).then(r => parentPort.postMessage(r))
 } else {
   // ─── Main: collect work, fan out to a worker pool, aggregate ──────────────
   const languageTest262Files = countJs(testDir)

@@ -185,3 +185,18 @@ test('using: scope-exit disposal', () => {
         export let f = () => '' + g() + log`), '9bd')
   is(j(`export let f = () => { try { using a = { x: 1 }; return 'no' } catch (e) { return e.includes('dispose') ? 'threw' : e } }`), 'threw')
 })
+
+// Spread of iterator VALUES: __drain normalizes at the site (pass-through for
+// arrays/strings; materializes machines and @@iterator providers) — injected
+// only in iterator-minting programs.
+test('iterator protocol: spread of iterator values', () => {
+  is(j(`function* g(n) { for (let i = 0; i < n; i++) yield i }
+        export let f = () => { let it = g(3); return [...it].join('-') }`), '0-1-2')
+  is(j(`function* g() { yield 1; yield 2 }
+        let sum = (...xs) => { let s = 0; for (const x of xs) s += x; return s }
+        export let f = () => sum(...g(), 10)`), 13)
+  is(j(`class R { *[Symbol.iterator]() { yield 7; yield 8 } }
+        export let f = () => [...new R()].join('')`), '78')
+  is(j(`function* g() { yield 3 }
+        export let f = () => { let a = [1, 2]; return [...a, ...g()].join('') }`), '123')
+})

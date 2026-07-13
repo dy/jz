@@ -50,6 +50,23 @@ const { lowerAsync, noteAsync, asyncUsed, resetAsync } = createAsyncLowering({ g
 bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, noteAsync, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)
 
+// Spread normalization for iterator values — injected only when a spread site
+// wrapped in __drain (iterProto.drain). Arrays/strings/Sets/Maps pass through
+// untouched (the existing spread machinery owns them); machines and
+// @@iterator providers materialize.
+const ITER_RUNTIME = `
+let __it_drain = (v) => {
+  if (v == null) return v
+  // fresh local, never reassign the param (recorded reassigned-param kind bug)
+  let w = v
+  if (typeof w === 'object' && w['@@iterator'] != null) w = w['@@iterator']()
+  if (typeof w !== 'object' || w.next == null) return w
+  let r = w.next(), a = []
+  while (!r.done) { a.push(r.value); r = w.next() }
+  return a
+}
+`
+
 const isSymbolWellKnown = (n, which) => Array.isArray(n) && n[0] === '.' && n[1] === 'Symbol' && n[2] === which
 const WELL_KNOWN = { iterator: '@@iterator', dispose: '@@dispose' }
 // Entry walk, two jobs in one pass:
@@ -111,15 +128,20 @@ export default function jzify(ast) {
   if (hoisted.size) ast = prependDecls(ast, hoisted)
   if (Array.isArray(ast) && ast[0] === ';') ast = [';', ...foldPseudoClassical(ast.slice(1))]
   resetAsync()
+  iterProto.drain = false
   let out = transformScope(ast)
-  // async somewhere in the program → splice the plain-jz promise runtime
-  // (microtask queue, __async_run driver, promise shape + boundary readers)
-  // ahead of user code. Sync programs never reach this — byte-identical.
-  if (asyncUsed()) {
-    const rt = transformScope(parse(ASYNC_RUNTIME))
+  const prepend = (src) => {
+    const rt = transformScope(parse(src))
     const rtStmts = Array.isArray(rt) && rt[0] === ';' ? rt.slice(1) : [rt]
     const outStmts = Array.isArray(out) && out[0] === ';' ? out.slice(1) : [out]
     out = [';', ...rtStmts, ...outStmts]
   }
+  // spread-of-iterator sites wrapped in __drain → splice the helper
+  // (pass-through for arrays/strings; materializes machines/providers).
+  if (iterProto.drain) prepend(ITER_RUNTIME)
+  // async somewhere in the program → splice the plain-jz promise runtime
+  // (microtask queue, __async_run driver, promise shape + boundary readers)
+  // ahead of user code. Sync programs never reach this — byte-identical.
+  if (asyncUsed()) prepend(ASYNC_RUNTIME)
   return foldStaticBundlerHelpers(foldStaticExportHelpers(canonicalizeObjectIdioms(out)))
 }

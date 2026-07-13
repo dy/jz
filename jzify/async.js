@@ -87,6 +87,7 @@ let __async_run = (it) => {
   return p
 }
 let __p_exec = (fn) => {
+  if (fn == null) throw 'Promise executor is not callable'
   let p = __p_new()
   fn((v) => __p_settle(p, 1, v), (e) => __p_settle(p, 2, e))
   return p
@@ -110,6 +111,8 @@ let __p_race = (arr) => {
 export let __mt_drain = () => __drain()
 export let __p_state = (p) => __state(p)
 export let __p_value = (p) => __value(p)
+export let __p_make = () => __p_new()
+export let __p_finish = (p, st, v) => __p_settle(p, st, v)
 `
 
 export function createAsyncLowering({ genTemp, err }) {
@@ -124,7 +127,7 @@ export function createAsyncLowering({ genTemp, err }) {
     if (FN_OPS.has(node[0])) return node
     if (node[0] === 'await') return ['yield', mapAwait(node[1])]
     if (node[0] === 'try' && refsAwait(node))
-      err('jzify: try/catch across `await` is outside the v1 async surface — let the rejection reject the async function, or move the try into a sync helper')
+      err('try/catch across `await` is outside the v1 async surface — let the rejection reject the async function, or move the try into a sync helper')
     return node.map((n, i) => i === 0 ? n : mapAwait(n))
   }
   function refsAwait(node) {
