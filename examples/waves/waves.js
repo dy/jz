@@ -142,7 +142,7 @@ let plop = (cx, cy, r, amp) => {
 // rebound (a smaller upward pulse) and its second collapse, the damped oscillation a real
 // drop makes. Each pulse launches its own ring: a reverberating train, like actual water.
 export let drop = (cx, cy) => {
-  plop(cx, cy, 7.0, -1.4)
+  plop(cx, cy, 7.0, -2.0)
   let k = 0
   while (k < NQ) {
     let o = k * 4
@@ -187,11 +187,11 @@ export let frame = (t, sx, sy, stick, foc) => {
       dq[o + 2] = dq[o + 2] - 1.0
       if (dq[o + 2] <= 0.0) {
         if (dq[o + 3] < 1.5) {             // stage 1 → the crater rebounds upward
-          plop(dq[o], dq[o + 1], 5.5, 0.85)
+          plop(dq[o], dq[o + 1], 5.5, 1.2)
           dq[o + 2] = REBOUND
           dq[o + 3] = 2.0
         } else {                           // stage 2 → a fainter second collapse, then done
-          plop(dq[o], dq[o + 1], 5.0, -0.45)
+          plop(dq[o], dq[o + 1], 5.0, -0.65)
           dq[o + 3] = 0.0
         }
       }
@@ -241,7 +241,7 @@ export let frame = (t, sx, sy, stick, foc) => {
         if (q < 9.0) {
           let c = row + x
           let E = Math.exp(-q)
-          let tgt = -1.3 * stick * E
+          let tgt = -1.8 * stick * E
           if (a[c] > tgt) a[c] = a[c] + (tgt - a[c]) * 0.55
           if (b[c] > tgt) b[c] = b[c] + (tgt - b[c]) * 0.55
           // the stick's WAKE: stirred water is briefly lossy, so the released groove
