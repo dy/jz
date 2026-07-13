@@ -88,6 +88,57 @@ test('SIMD f64x2 - rounding ops (floor/ceil/trunc) lift, bit-exact at edges', ()
   ok(/f64x2\.floor/.test(w) && /f64x2\.ceil/.test(w) && /f64x2\.trunc/.test(w), 'expected f64x2 rounding ops')
 })
 
+// === Radix-2 butterfly (tryButterfly) — the Cooley-Tukey inner loop ===
+// Dual-IV scaffold (j carries the exit test, k walks the twiddles by STEP): the shape no
+// generic lane lift takes. Lanes j/j+1 pair every re/im a/b access adjacently, the twiddle
+// pair loads scalar+combines, and the rotation lanes with no reassociation and no fusion —
+// BIT-EXACT by construction (the cross-engine checksum contract). Odd tails and half<2
+// fall through to the kept scalar loop.
+
+test('SIMD butterfly - radix-2 FFT inner loop strips 2-wide, bit-exact', () => {
+  // The kernel takes typed-array PARAMS (the bench structure): unswitchTypedParamLoop
+  // proves the bounds away and the body reaches the recognizer as the canonical
+  // 17-statement butterfly. N arrives as a param too — a literal N constant-folds
+  // half/step and the tiny-FFT unroller takes the loop apart first.
+  const src = `let fft = (re, im, wre, wim, n) => {
+    for (let len = 2; len <= n; len <<= 1) {
+      const half = len >> 1
+      const step = (n / len) | 0
+      for (let i = 0; i < n; i += len) {
+        for (let j = 0, k = 0; j < half; j++, k += step) {
+          const wr = wre[k], wi = wim[k]
+          const a = i + j, b = a + half
+          const xr = re[b], xi = im[b]
+          const tr = wr * xr - wi * xi
+          const ti = wr * xi + wi * xr
+          re[b] = re[a] - tr
+          im[b] = im[a] - ti
+          re[a] = re[a] + tr
+          im[a] = im[a] + ti
+        }
+      }
+    }
+  }
+  export let main = (nn) => {
+    const N = nn | 0
+    const re = new Float64Array(N), im = new Float64Array(N)
+    const wre = new Float64Array(N >> 1), wim = new Float64Array(N >> 1)
+    for (let i = 0; i < N; i++) { re[i] = Math.sin(i * 2.3) * 5; im[i] = Math.cos(i * 1.1) }
+    for (let k = 0; k < (N >> 1); k++) { wre[k] = Math.cos(k * 0.7); wim[k] = -Math.sin(k * 0.7) }
+    fft(re, im, wre, wim, N)
+    let h = 0
+    for (let i = 0; i < N; i++) { const u = (re[i] * 1e6) | 0, v = (im[i] * 1e6) | 0; h = ((h ^ u) * 16777619 + v) | 0 }
+    return h
+  }`
+  const von = runVec(src, SIMD_OPT).main, voff = runVec(src, NOVEC).main
+  for (const n of [2, 4, 8, 64]) {  // n=2 → half=1: tail-only, strip never enters
+    is(von(n), voff(n), `butterfly N=${n} bit-exact`)
+  }
+  const w = wat(src, SIMD_OPT)
+  ok(/__bf\d+_/.test(w), 'butterfly strip emitted')
+  ok(/f64x2\.mul/.test(w) && /v128\.load/.test(w) && /v128\.store/.test(w), 'rotation lanes + paired loads/stores')
+})
+
 // === AoS (array-of-structs) de-interleave — interleaved-channel loops `base[P*i + c]` ===
 // A stride-P loop (interleaved RGB / vec3 / complex) gathers each channel's two-pixel pair into an
 // f64x2, computes per-channel, scatters back. Each kernel is checked bit-exact vs the scalar oracle
