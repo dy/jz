@@ -3382,3 +3382,61 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   kernel is intrinsically large); a future session may consider making
   crPow the default IF a leaner phase-1 emission reaches old-kernel speed
   (the 15x→pool history says codegen, not math, is the lever).
+
+## P1 ablations executed → two passes retired, one watr soundness fix, vectorizer ordering repaired (2026-07-13)
+- FIVE LANDINGS on main this session, each independently gated (suite green,
+  selfhost 21/21, byte-proofs where applicable):
+  1. 8dc26acf vectorize: crPow module-flag fix — the const-exponent pow arm read
+     `ctx.transform.optimize` off the LIFT ctx (never carries it) → EVERY
+     AoS+pure-fn-pow compile crashed (colorpq at default tier; the general AoS
+     shape at every tier). Pin: colorpq-shape test in test/optimizer.js,
+     element-wise bit compare (default lift ≡ speed emit; pow_fold_v ≡ pow_fold).
+  2. f36b95b8 vectorize: TWO coupled pass-interaction defects — (a) eager
+     tryStrengthReduceIV consumed inner reduction loops before outer recognizers
+     ran (metaballs' pixel loop lost its whole outer-strip); now DEFERRED
+     post-walk, applied only outside SIMD-consumed subtrees (wrapper tails alias
+     original nodes — rewriting them corrupts the lanes; first attempt did
+     exactly that, caught by the bit-exact pin). (b) csePureExpr ran
+     pre-vectorizer and its __pe tees bailed lane lifts (colorconv's cbrt/
+     fifthroot kernels fell scalar) — moved post-vectorizer; its tees had ALSO
+     been shielding inner loops from (a), the coupling that hid both. Measured:
+     colorconv 0.859× (-14.1%, cs exact) vs pre-reorder.
+  3. 215b466e dropDeadZeroInit RETIRED — both sweeps: kernel 2.5-2.9KB SMALLER
+     off (watr zeroinit reaches a smaller fixpoint from the un-dropped form);
+     deletion byte-proven ≡ flag-off 222/228 (6 = self-embedded kernels, shrink
+     further); corpus net -36KB. Pins retitled to watr zeroinit.
+  4. b0f6ad1b watr 5.3.8 lock — see below.
+  5. 35d8b14c csePureExpr RETIRED — size-negative every tier (kernel -3.2-3.5KB
+     off), speed-NEUTRAL (interleaved 10-case check: mat4/fft/spmv faster OFF,
+     dotprod +2% on 150µs); byte-proof 222/228; corpus net -79KB vs pass-on.
+     The 0278309f "watr subsumes them" P1 premise was FALSIFIED for all three
+     candidates (propagateSingleUse KEPT: output GROWS +0.4-1.6KB/tier off —
+     the old "smaller and faster off" deferred-list claim is dead); the
+     deletions won on net-harm evidence instead.
+- WATR 5.3.8 PUBLISHED (e0007df, tag v5.3.8): brif's br_if-pair merge
+  speculated B past A — isPure admits loads (value-pure) and hasTrap only
+  covers div/rem/trunc, so `br_if exit (i≥cap); br_if skip (load slot(i))`
+  merged into an unconditional probe → OOB trap. jz's for-in-over-dict hit it
+  the moment csePureExpr stopped normalizing the shape (LATENT since the merge
+  existed; cpe's tees masked it). Fix: readsMemory gates the merge (the
+  convention watr's own cse/licm speculation sites already follow). Two
+  regression tests (merge-still-works + never-across-a-guard). watr suite
+  590/0. IMPURE_SUBSTRINGS comment corrected (claimed loads flagged; never were).
+- ⚠ node_modules/subscript is HAND-MANAGED (live 10.7.0 swapped over the
+  10.5.2 lock; .subscript-*-stashes sit alongside). `npm update watr` clobbered
+  it with registry 10.5.2 → generators/computed-member tests failed; restored
+  byte-exact from ~/projects/subscript (clean @ 263c8e3 10.7.0). NEVER run npm
+  install/update in jz — patch node_modules or the lock by hand.
+- QUIET-MACHINE NUMBERS (load ~4, interleaved medians, landed tree):
+  colorpq crPow 12.889× (54.6ms→704ms, cs differs BY DESIGN — correct rounding
+  vs engine parity) → crPow-as-default revisit CLOSED: no emission-leaning
+  closes 12.9×; stays opt-in. jessie 1.91ms = 1.35× behind V8-node / 1.82×
+  behind JSC-bun, parity ok (IC-class verdict stands). jz-row (self-host)
+  31.34ms = 1.15× behind V8-node / 1.25× behind JSC, parity ok — the workload
+  GREW again (spread-drain/async/using landed this week, untuned); the old
+  dead-even number described a smaller compiler. NEXT LEVER: profile the fresh
+  async/using lowering in the kernel (never profiled).
+- PRE-EXISTING RED (not from this session, identical on control): floatbeat
+  "Sierpinski Chords" ~2.0× V8 on both pre/post trees — its own investigation
+  thread. bench-gate fft/sort/qoi reds are known-gap/jitter rows (byte-identical
+  or improved builds).
