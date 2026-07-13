@@ -6,26 +6,14 @@
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon" />
 </head>
 <body>
-<!-- the physics desk: every knob of the simulation, live. Values feed frame() directly. -->
-<div id="knobs" style="position:fixed;right:10px;top:52px;z-index:40;display:flex;flex-direction:column;gap:2px;
-  padding:8px 10px;background:rgba(10,10,10,.55);border-radius:8px;backdrop-filter:blur(4px);
-  font:11px/1.5 ui-monospace,Menlo,monospace;color:#ddd;user-select:none"></div>
-
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
 // Monochrome caustics after KZ_LAB_E's simulation: drops and pointer pressure disturb a
 // neutral sheet, then the wave equation opens them into silver fold lines. Each drop
 // REBOUNDS — a damped train of rings, like real water. Click adds a drop, drag draws a
-// stroke, scroll changes depth — and the knobs panel exposes the physics itself.
-const P = {
-  foc:      { label: "depth",     min: 60,    max: 360,    step: 5,      v: 240 },
-  c2:       { label: "speed",     min: 0.10,  max: 0.65,   step: 0.01,   v: 0.45 },
-  visc:     { label: "thickness", min: 0,     max: 0.08,   step: 0.002,  v: 0.03 },
-  damp:     { label: "reverb",    min: 0.990, max: 0.999,  step: 0.0002, v: 0.9985 },
-  gamma:    { label: "contrast",  min: 1.5,   max: 3.2,    step: 0.1,    v: 2.5 },
-  strength: { label: "touch",     min: 0.4,   max: 2.5,    step: 0.1,    v: 1.0 },
-}
+// stroke, scroll changes the refraction depth.
+let foc = 240                         // pool depth (focal length of the refraction)
 let down = false, stick = false       // stick engages only after real movement — a clean
 let sx = 0, sy = 0, dx0 = 0, dy0 = 0  // click must NOT press the stick under its own drop
 let nextDrop = 0, breakTrail = false
@@ -33,46 +21,24 @@ const scheduleDrop = (t) => { nextDrop = t + 2.5 + Math.random() * 2.5 }
 
 const demo = runDemo({
   name: "waves",
-  hint: "monochrome caustics — click to drop · drag through the sheet · scroll = depth · knobs tune the physics",
-  size: { budget: 420000 },
+  hint: "monochrome caustics — click to drop · drag through the sheet · scroll = depth",
+  size: { budget: 360000 },          // 4 rays/texel — a notch coarser keeps 60fps headroom
   bg: "#9e9e9e",
   load: (e, d) => { e.clear(); nextDrop = d.t + 0.8 },
   frame: (e, t, d) => {
     if (!down && t >= nextDrop) {
-      e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7), P.strength.v)
+      e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7))
       scheduleDrop(t)
     }
     let active = stick ? 1.0 : 0.0
     if (breakTrail) { active = 0.0; breakTrail = false }
-    e.frame(t, sx, sy, active, P.foc.v, P.c2.v, P.visc.v, P.damp.v, P.gamma.v, P.strength.v)
+    e.frame(t, sx, sy, active, foc)
   },
   randomize: (e, d) => {
     scheduleDrop(d.t)
-    for (let i = 0; i < 3; i++) e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7), P.strength.v)
+    for (let i = 0; i < 3; i++) e.drop(d.W * (0.15 + Math.random() * 0.7), d.H * (0.15 + Math.random() * 0.7))
   },
 })
-
-// ── the knobs panel ──
-const knobs = document.getElementById("knobs")
-const fmt = (k) => P[k].step >= 1 ? P[k].v.toFixed(0) : P[k].v.toFixed(P[k].step < 0.001 ? 4 : P[k].step < 0.01 ? 3 : 2)
-const vals = {}
-for (const k of Object.keys(P)) {
-  const row = document.createElement("label")
-  row.style.cssText = "display:flex;align-items:center;gap:6px"
-  const name = document.createElement("span")
-  name.textContent = P[k].label
-  name.style.cssText = "width:62px;opacity:.75"
-  const inp = document.createElement("input")
-  inp.type = "range"; inp.min = P[k].min; inp.max = P[k].max; inp.step = P[k].step; inp.value = P[k].v
-  inp.style.cssText = "width:90px;accent-color:#bbb"
-  const val = document.createElement("span")
-  val.style.cssText = "width:44px;text-align:right;opacity:.9"
-  val.textContent = fmt(k)
-  inp.addEventListener("input", () => { P[k].v = +inp.value; val.textContent = fmt(k) })
-  row.append(name, inp, val)
-  knobs.append(row)
-  vals[k] = { inp, val }
-}
 
 const toPx = (e, snap = false) => {
   const r = demo.cv.getBoundingClientRect()
@@ -94,7 +60,7 @@ demo.cv.addEventListener("pointermove", (e) => {
   if (!stick && Math.hypot(sx - dx0, sy - dy0) > 8) stick = true   // it's a drag — engage the stick
 })
 demo.cv.addEventListener("pointerup", (e) => {
-  if (down && !stick) demo.engine?.drop(dx0, dy0, P.strength.v)    // it was a clean click — drop
+  if (down && !stick) demo.engine?.drop(dx0, dy0)                  // it was a clean click — drop
   down = false; stick = false
   try { demo.cv.releasePointerCapture(e.pointerId) } catch {}
 })
@@ -102,12 +68,9 @@ demo.cv.addEventListener("pointerleave", () => { down = false; stick = false })
 demo.cv.addEventListener("pointercancel", () => { down = false; stick = false })
 demo.cv.addEventListener("wheel", (e) => {
   e.preventDefault(); scheduleDrop(demo.t)
-  let f = P.foc.v * Math.exp(-e.deltaY * 0.001)
-  if (f < P.foc.min) f = P.foc.min
-  if (f > P.foc.max) f = P.foc.max
-  P.foc.v = f
-  vals.foc.inp.value = f
-  vals.foc.val.textContent = fmt("foc")
+  foc *= Math.exp(-e.deltaY * 0.001)
+  if (foc < 80) foc = 80
+  if (foc > 360) foc = 360
 }, { passive: false })
 </script>
 </body>

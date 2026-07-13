@@ -75,9 +75,9 @@ const FRAME_ARGS = {
   waves:         (f) => {                         // overlapping drops, never a synthetic drag
     if (f >= 620 && f <= 755 && (f - 620) % 15 === 0) {
       const k = (f - 620) / 15
-      exports.drop(W * (0.5 + 0.22 * Math.sin(k * 2.4)), H * (0.5 + 0.22 * Math.cos(k * 1.7)), 1.0)
+      exports.drop(W * (0.5 + 0.22 * Math.sin(k * 2.4)), H * (0.5 + 0.22 * Math.cos(k * 1.7)))
     }
-    return [f / 60, 0, 0, 0, 240, 0.45, 0.03, 0.9985, 2.5, 1.0]   // the driver's home knobs
+    return [f / 60, 0, 0, 0, 240]                 // the driver's home depth
   },
   bifurcation:   () => [0, 2.5, 4.0, 0.0, 1.0],
   lorenz:        (f) => [f / 60, -0.4],
