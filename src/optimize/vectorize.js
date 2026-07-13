@@ -2675,6 +2675,10 @@ let _whyNotReason = null
 // on unconditionally. Armed for the duration of a vectorizeLaneLocal call.
 let _relaxF32 = false
 
+// optimize.crPow, armed the same way — the const-exponent pow arm picks its lowering
+// from it (lift ctx objects don't carry the optimize config; module flag is the pattern).
+let _crPow = false
+
 // Mark a lift bail and record its reason. First-write-wins: the innermost failing op
 // sets ctx.failReason; outer frames see ctx.fail already set and return without
 // overwriting, so the reason names the actual blocking op, not a wrapper.
@@ -3229,7 +3233,7 @@ function liftExprV(expr, ctx) {
     else if (isArr(ex) && ex[0] === 'local.get' && ctx.constLocals && ctx.constLocals.has(ex[1])) c = ctx.constLocals.get(ex[1])
     if (c != null && Number.isFinite(c) && !Number.isInteger(c)) {
       const base = liftExprV(expr[2], ctx); if (ctx.fail) return null
-      if (ctx.transform.optimize?.crPow) {
+      if (_crPow) {
         return ['call', '$math.pow_fold_v', base, ['f64x2.splat', ['f64.const', c]]]
       }
       return ['call', '$math.exp_v', ['f64x2.mul', ['f64x2.splat', ex], ['call', '$math.log_v', base]]]
@@ -6374,7 +6378,7 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
 //   multiAcc, relaxedFma, blurMP, whyNot, stencil, outerStrip, pureFuncMap, toneMap.
 export function vectorizeLaneLocal(fn, opts = {}) {
   const { multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false,
-    stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false, slp = false } = opts
+    stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false, slp = false, crPow = false } = opts
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -6501,9 +6505,11 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   }
   _whyNotActive = whyNot
   _relaxF32 = relaxedFma
+  _crPow = crPow
   for (let i = bodyStart; i < fn.length; i++) walk(fn, i)
   _whyNotActive = false
   _relaxF32 = false
+  _crPow = false
 
   if (newLocalDeclsAll.length) {
     // Sibling loops (and the straight-line dot pass) can each lift the SAME source

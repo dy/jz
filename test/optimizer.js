@@ -3020,6 +3020,42 @@ test('propagateSingleUse: folds a single-def/single-use pure temp into its use (
   }
 })
 
+test('vectorizer const-exponent pow arm: AoS pure-fn ** with module-const exponent compiles at every tier (colorpq shape)', () => {
+  // Regression: the arm's crPow branch read the optimize config off the LIFT ctx, which never
+  // carries it (`ctx.transform` undefined → TypeError at compile). The config rides a module
+  // flag now (the _relaxF32 pattern). Reaching the arm needs the exact colorpq shape: a pure
+  // fn kept as a call (multi-site, so sourceInline declines), inlined only DURING lift, its
+  // const exponent found via ctx.constLocals inside an AoS interleaved-channel loop.
+  const src = `
+    const spow = (a, e) => { const s = a < 0 ? -1 : 1, av = a < 0 ? -a : a; return s * av ** e }
+    const nv = 2610 / 16384, p = 1.7 * 2523 / 32, c1 = 3424 / 4096, c2 = 2413 / 128, c3 = 2392 / 128
+    const kernel = (src, dst, n) => {
+      for (let i = 0; i < n; i++) {
+        const L = src[i * 3], M = src[i * 3 + 1], S = src[i * 3 + 2]
+        const tl = spow(L / 10000, nv), tm = spow(M / 10000, nv), ts = spow(S / 10000, nv)
+        const PL = spow((c1 + c2 * tl) / (1 + c3 * tl), p)
+        const PM = spow((c1 + c2 * tm) / (1 + c3 * tm), p)
+        const PS = spow((c1 + c2 * ts) / (1 + c3 * ts), p)
+        dst[i * 3] = PL; dst[i * 3 + 1] = PM; dst[i * 3 + 2] = PS
+      }
+    }
+    const a = new Float64Array(96), d = new Float64Array(96)
+    export let f = () => {
+      for (let i = 0; i < 96; i++) a[i] = i * 31.7 + 1
+      kernel(a, d, 32)
+    }
+    export let g = (k) => d[k]`
+  // Element-wise bit comparison (a float-sum checksum would confound this with the speed
+  // tier's reassociated vector reduction).
+  const dump = (opt) => {
+    const ex = jz(src, opt ? { optimize: opt } : undefined).exports
+    ex.f()
+    return Array.from({ length: 96 }, (_, k) => ex.g(k))
+  }
+  is(dump(), dump('speed'), 'default-tier lift lowering (exp_v(c·log_v x)) is bit-identical to the speed-tier emit lowering')
+  is(dump({ level: 2, crPow: true }), dump({ level: 'speed', crPow: true }), 'pow_fold_v (lift) is bit-identical to pow_fold (emit)')
+})
+
 test('foldSetToTee: sinks a single-def RHS into its first use as a tee (simplify-locals watr leaves)', () => {
   const getCount = (src, opt) => (compile(src, { wat: true, optimize: opt }).match(/\(local\.get /g) || []).length
   // multi-use single-def: the standalone set becomes a tee at the first use, dropping a get

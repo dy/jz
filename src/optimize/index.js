@@ -3376,6 +3376,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
       pureFuncMap: cfg._pureFuncMap || null,
       toneMap: cfg.experimentalToneMap !== false,
       slp: cfg.experimentalSlp !== false,  // SLP default-on (testing single-use fix)
+      crPow: cfg.crPow === true,
     }) && typeof fn[1] === 'string') (cfg._vectorizedFnNames ??= new Set()).add(fn[1])
     // The vectorizer emits `v128.load/store (i32.add base K)` for the unrolled
     // multi-accumulator reduction (a[i],a[i+2],a[i+4]…) and stencil/strided reads.
