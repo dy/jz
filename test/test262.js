@@ -18,6 +18,7 @@
  * Worker count: --jobs=N or JZ_TEST262_JOBS env, default availableParallelism().
  */
 import { readdirSync, statSync, readFileSync, existsSync } from 'fs'
+import { AUDITED_OUT } from './test262-out.js'
 import { join, relative } from 'path'
 import { execSync } from 'child_process'
 import { Worker, isMainThread, workerData, parentPort } from 'worker_threads'
@@ -365,7 +366,20 @@ const LEGACY_LANG_LIMITATIONS = new Map([
   ['test/language/rest-parameters/with-new-target.js', 'new.target inside function body outside jz scope'],
 ])
 
+// JZ_AUDIT=<regex>: bypass matching skip reasons so their files RUN — measures
+// which skip families eat would-pass files (audit tooling, not a gate).
 function shouldSkip(content, rel = '') {
+  const r = shouldSkipBase(content, rel)
+  if (r && process.env.JZ_AUDIT && new RegExp(process.env.JZ_AUDIT).test(String(r))) {
+    if (process.env.JZ_AUDIT_LOG) console.log('AUDIT', rel, '\u2192', r)
+    return null
+  }
+  return r
+}
+function shouldSkipBase(content, rel = '') {
+  // Exact-file audited-out ledger — replaces the broad family regexes below
+  // that ate would-pass files (JZ_AUDIT sweep 2026-07-12).
+  if (AUDITED_OUT.has(rel)) return AUDITED_OUT.get(rel)
   if (LEGACY_LANG_LIMITATIONS.has(rel)) return LEGACY_LANG_LIMITATIONS.get(rel)
   const codeContent = content
     .replace(/\/\*---[\s\S]*?---\*\//, '')
@@ -380,7 +394,6 @@ function shouldSkip(content, rel = '') {
   if (rel.includes('expressions/object/accessor-')) return 'object accessor outside fixed-shape subset'
   if (/\.name\b.*===.*['"]\w+['"]/.test(codeContent) || /assert\.sameValue\([^,]+\.name,/.test(codeContent)) return 'function .name reflection unsupported'
   // Spread in object/array literals requires iterator protocol — not supported in jz
-  if (rel.includes('expressions/array/spread-') || rel.includes('expressions/object/spread-')) return 'spread iterator protocol unsupported'
   // valueOf/toPrimitive coercion isn't called by jz numeric ops
   if (/\bvalueOf\b\s*:/.test(codeContent) || /\bvalueOf\s*:\s*function/.test(codeContent)) return 'valueOf coercion unsupported'
   if (rel.includes('language/arguments-object/') && !isArgumentsObjectTest(rel))
@@ -468,38 +481,15 @@ function shouldSkip(content, rel = '') {
   // super(...spread) forwarding is outside the jzify class lowering's ctor model.
   if (rel.includes('/expressions/super/call-spread-')) return 'super(...spread) outside jzify class lowering'
   // generators + generator methods landed (state machines; subscript 10.6
-  // grammar) — the per-dir generator arm below narrows what's still out.
-  // Named families surfaced by lifting the blanket (each out of the value
-  // model, not missing features):
+  // grammar). The broad family skips this lift surfaced were AUDITED
+  // (JZ_AUDIT bypass sweep, 2026-07-12): every file that genuinely fails now
+  // sits in the exact-path AUDITED_OUT ledger (test262-out.js) — the two
+  // regex families kept below hide no passing files (verified by bypass).
   // .caller/.arguments forbidden-extension reflection.
   if (rel.includes('/forbidden-ext/')) return 'function .caller/.arguments reflection outside jz scope'
-  // Array-pattern elision/rest DRIVE the iterator protocol (next() calls,
-  // next-throw propagation); jz destructures arrays by index.
-  if (/\/dstr\/.*((ary-ptrn|dflt-ary-ptrn)-elision\.js$|elem-ary-elision-init\.js$|rest-ary-(elision|empty)\.js$|rest-id-elision(-next-err)?\.js$)/.test(rel))
-    return 'array-pattern elision/rest ride the iterator protocol (jz destructures by index)'
-  // Spread of an ITERATOR VALUE in call/new args — recorded follow-up (needs
-  // the __drain normalization the for-of fork already does).
-  if (/spread-err-(sngl|mult)-err-expr-throws/.test(rel)) return 'spread of an iterator value in call args (recorded __drain follow-up)'
-  // arguments-object / default-param scope reflection.
-  if (/(params-dflt|dflt-params).*(args-unmapped|ref-arguments|ref-later|ref-self)|arguments-object-attributes|formal-parameters-after-reassignment/.test(rel))
-    return 'arguments/default-param scope reflection outside jz scope'
-  // Params/body own var-environment semantics (same class as static-init-scope).
-  if (/scope-.*paramsbody-var|scope-name-var-close/.test(rel)) return 'params/body/fn-name own var-environment semantics outside jzify subset'
   // Function-name binding immutability + IsConstructor reflection.
   if (/-reassign-fn-name-in-body|invoke-as-constructor|invoke-ctor|isCtor-after-args-eval/.test(rel))
     return 'function-name binding / constructor reflection outside jz scope'
-  // fn.length reflection — only trailing-comma tests that actually assert .length.
-  if (/params-trailing-comma/.test(rel) && /\.length\b/.test(codeContent)) return 'function .length reflection unsupported'
-  // Generator function/prototype reflection outside the machine model.
-  if (/generator-prototype|generator-invoke-ctor/.test(rel)) return 'generator reflection outside jzify subset'
-  // `yield` as an identifier — reserved throughout the jz subset.
-  if (/yield-identifier-non-strict|yield-as-identifier|yield-identifier-spread-non-strict/.test(rel))
-    return 'yield as an identifier (reserved in the jz subset)'
-  // Operand-position yield (`yield yield`, `[...yield]`) stays out of the v1 machine surface.
-  if (/rhs-yield\.js$|yield-as-yield-operand|yield-spread-arr/.test(rel)) return 'yield in arbitrary expression positions (v1 machine surface)'
-  // Regex value identity through untyped carriers (yield slot → .source/.test) —
-  // regex method dispatch needs static kind; recorded dispatch-class gap.
-  if (rel.endsWith('/yield/rhs-regexp.js')) return 'regex method dispatch through untyped carriers (recorded)'
   // Method shorthand has [[Construct]] absence — jz can't distinguish from arrow.
   if (rel.endsWith('/method-definition/name-invoke-ctor.js')) return 'method shorthand non-ctor outside current jz scope'
   // Computed property name with throwing initializer — non-literal computed keys outside jz subset.
