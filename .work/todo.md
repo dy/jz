@@ -3611,3 +3611,30 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   and the executed lever. Measure before building, even against own records.
 - strbuild residual (~1.10× est.): __itoa 13.4% (scratch-render into the
   concat buffer = the remaining ledger lever), __mkstr 6.7%, __alloc 4.6%.
+
+## strbuild WON + __str_eq interning verdict (2026-07-13)
+- LANDED f9d6b62b: i32-proven concat parts render digits AT THE CURSOR in both
+  fused emitters (tryConcatChain + strcat bind) — new stdlib pair __ilen (exact
+  ToString length, digit ladder over unsigned magnitude, INT_MIN-safe) sizes
+  the alloc so the total-before-alloc invariant holds; __itoa_s (sign+digits,
+  returns len) writes at dst. Kills the WHOLE temp-string round trip per number:
+  __i32_to_str (alloc+itoa+mkstr) + __str_byteLen + __str_copy → one render
+  call. strbuild −51.5% (1038→503µs interleaved, cs EXACT): jz 0.46ms leads
+  every string-producing rival — rust-wasm/native-C ~3.1×, V8 ~3.7× behind;
+  only zig's NO-ALLOCATION stack-buffer formatter sits 1.09× ahead. Ledger
+  entry deleted → WON note. Suite 2908/0, selfhost 21/21, fuzz 2000/0,
+  differential pin over every digit-count boundary (ilen/itoa_s agreement IS
+  the heap-safety invariant).
+- BONUS from per-class incs (strcat's blanket inc dropped): corpus sweep 224
+  pairs → net −183.7KB, self-host bundle −52..−78KB PER TIER (the compiler's
+  WAT-emission templates are int-part-dense); watr −0.2KB; jessie +148B
+  (stdlib inclusion). 209/224 byte-identical.
+- __str_eq CALLER ATTRIBUTION (the interning prerequisite, measured):
+  7.09% of jz-row kernel, DIFFUSE — top parent __hash_get_local_h«__dyn_get 6.1%,
+  then a ~20-closure tail of watr walk callbacks comparing >6-byte opcode
+  tokens vs literals (len-unequal compares already exit early; the pain is
+  len-equal false + true compares). No concentrated payer ⇒ STR_INTERN_BIT
+  needs whole-producer coverage (every slice/token interned at creation) for a
+  ~5% single-case ceiling with probe-tax risk on slice-heavy cases (tokenizer).
+  PARKED: the walk-callback closure-param devirt class ranks higher on the same
+  profile; wordcount's table-resident-key interning case is separate and stands.
