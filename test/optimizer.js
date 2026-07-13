@@ -290,6 +290,22 @@ test('hoistIndexedConstLiterals: `[consts][i]` reads one shared data segment —
   is(wp(0), 1); is(wp(1), 2)
 })
 
+test('trunc-range fold: a WRITTEN param must not resolve to its later write (ToUint32(Infinity) = 0)', () => {
+  // The single-textual-def map behind the bare-trunc_sat range fold saw `p0 = 0` and
+  // resolved p0 -> [0,0] at a USE BEFORE the write — but a param's entry value is the
+  // caller's: `1 >>> Math.abs(-Infinity)` must shift by ToUint32(Inf) = 0, not by a
+  // saturated 31. (fuzz seeds 6465/7026.) Params are now excluded from the map;
+  // unwritten params never entered it, so sound firings are untouched.
+  const s1 = `export let f = (p0, p1, p2) => { p1 = (1 >>> Math.abs(p0)); p0 = 0; return p1; }`
+  const s2 = `export let f = (p0, p1, p2) => { let v0 = p0; let i4 = 0; while (i4 < 14) { p2 = 0; p0 = 0; i4 = (i4 + 1); } return (1 >> Math.abs(v0)); }`
+  for (const o of [1, 2, 'speed']) {
+    is(run(s1, { optimize: o }).f(-Infinity, 0.5, 3520.439785003662), 1, `s1 opt=${o}`)
+    is(run(s2, { optimize: o }).f(-Infinity, 0.5, 3520.439785003662), 1, `s2 opt=${o}`)
+    is(run(s1, { optimize: o }).f(NaN, 0, 0), 1, `s1 NaN opt=${o}`)
+    is(run(s1, { optimize: o }).f(33, 0, 0), 0, `s1 in-range opt=${o}`)
+  }
+})
+
 test('rotateLoops: speed tier rotates a scan loop to a fused conditional back-edge', () => {
   // The lz/qoi class of hot scalar loop. Top-test `loop { br_if exit ¬C; body; br loop }`
   // → guarded `br_if exit ¬C; loop { body; br_if loop C }`. The fused `br_if $loop`

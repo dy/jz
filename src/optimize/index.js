@@ -3459,13 +3459,23 @@ function fusedRewrite(fn, counts) {
   // Single-textual-def locals → their defining value node, so the trunc_sat range fold (below)
   // can see through the temps inlining introduces when proving an index/packed value fits i32.
   // Multi-def (incl. loop-carried self-referential) locals are excluded: their value is not the
-  // one def's, so its range wouldn't bound them. Pure read of the IR — value-preserving rewrites
-  // during this same walk keep the captured def's RANGE intact, so a lazily-built map stays sound.
-  // Built on first query only (most functions carry no guarded-trunc form → zero cost).
+  // one def's, so its range wouldn't bound them. PARAMS are excluded outright: a param carries an
+  // IMPLICIT entry def the textual scan can't see, and it is the one local class whose pre-write
+  // value is externally controlled — `f = (p) => { use(1 >>> Math.abs(p)); p = 0 }` resolved p→0,
+  // claimed range [0,0], and the collapsed bare trunc_sat saturated an incoming -Infinity to a
+  // 31-lane shift (ToUint32(∞) is 0; the fuzzer's seed-6465 miscompile). Non-param pre-def reads
+  // can only be the zero/undef-NaN init, and trunc_sat maps BOTH exactly as ToInt32 does, so the
+  // textual rule stays sound for every other local. Pure read of the IR — value-preserving
+  // rewrites during this same walk keep the captured def's RANGE intact, so a lazily-built map
+  // stays sound. Built on first query only.
   let defVal
   const get = (name) => {
     if (defVal === undefined) {
       defVal = new Map(); const defCnt = new Map()
+      for (let i = 2; i < fn.length; i++) {
+        const d = fn[i]
+        if (Array.isArray(d) && d[0] === 'param' && typeof d[1] === 'string') defCnt.set(d[1], 2)
+      }
       const scanDefs = (n) => {
         if (!Array.isArray(n)) return
         if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') { defCnt.set(n[1], (defCnt.get(n[1]) || 0) + 1); defVal.set(n[1], n[2]) }
