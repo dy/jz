@@ -797,17 +797,6 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/Iterator/prototype/map/throws-typeerror-when-generator-is-running.js', 'running-generator reentrancy guard — out of scope'],
   ['built-ins/Iterator/prototype/filter/throws-typeerror-when-generator-is-running.js', 'running-generator reentrancy guard — out of scope'],
   ['built-ins/Iterator/prototype/flatMap/throws-typeerror-when-generator-is-running.js', 'running-generator reentrancy guard — out of scope'],
-  // Promise.any GetIterator observation — the @@iterator METHOD literal is
-  // read as missing by the runtime's dyn read when the combinator is invoked
-  // from an export (KNOWN GAP pin in test/parser-bugs.js); rejection is still
-  // correct, but these 7 assert callCount === 1.
-  ['built-ins/Promise/any/iter-returns-false-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
-  ['built-ins/Promise/any/iter-returns-null-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
-  ['built-ins/Promise/any/iter-returns-number-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
-  ['built-ins/Promise/any/iter-returns-string-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
-  ['built-ins/Promise/any/iter-returns-symbol-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
-  ['built-ins/Promise/any/iter-returns-true-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
-  ['built-ins/Promise/any/iter-returns-undefined-reject.js', '@@iterator method literal invisible to post-init dyn read — KNOWN GAP'],
   // Promise — function-object / namespace reflection
   ['built-ins/Promise/constructor.js', 'typeof Promise as first-class value — out of scope'],
   ['built-ins/Promise/exec-args.js', 'executor resolve/reject .length reflection — out of scope'],

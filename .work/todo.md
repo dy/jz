@@ -1265,17 +1265,23 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
   `Promise.all([p]).then()`). Both arms now honor the shadow contract; the
   three pins flipped to correct-behavior regressions; test262 asyncDone runs
   fully optimized; perf pins hold (ratchet 6/6, self-host warm 1.003×).
-- [ ] **Dyn-read gaps still open** (both pinned KNOWN GAP in parser-bugs.js):
-  * string-INDEX assign of a data-interned key (`it['@@iterator'] = fn`) is
-    invisible to prehashed dot reads on an imprecisely-kinded receiver — the
-    dot-canonical write (`it[Symbol.iterator] = fn`, canonSymbols) is coherent;
-    jzify runtimes now use it (prepend() runs canonSymbols on runtimes).
-  * a literal's canonicalized @@iterator METHOD reads as missing through the
-    async runtime's dyn read when the combinator runs post-init (Promise.any's
-    7 iter-returns xfails observe it; rejection itself is still correct).
-  * reassigned PARAM whose new value comes from a dynamic closure call poisons
-    the fn's return kind (spread __drain hit it; fresh local heals) — the
-    desugars all use fresh locals / single-init temps.
+- [x] **Dyn-read gaps — BOTH FIXED 2026-07-13** (pins flipped to regressions):
+  * string-INDEX assign of a schema key was the THIRD arm violating the
+    shadow contract (emit-assign's literal-key indexed arm stored the slot
+    without the __dyn_set mirror) — now mirrors like the dot-path arms.
+  * "@@iterator method literal invisible post-init" root: the call-site `wasm`
+    lattice counted an i32-lane POINTER argument as plain-integer evidence, so
+    the callee's param narrowed to numeric i32 and reads widened the raw
+    offset with f64.convert_i32_s (object arrived as a small NUMBER; every
+    prop probe missed — Promise.any(obj) → __p_any → __p_list never saw
+    @@iterator). argWasmType now reports the boxed f64 lane for pointer-kinded
+    bare-name args; only applyPointerParamAbi (which stamps ptrKind/ptrAux so
+    reads REBOX) may unbox pointer params. The 7 Promise.any iter-returns
+    xfails pruned as passes — builtins 977 → 984 / 0 fail; perf pins hold
+    (warm 0.997×, ratchet 6/6).
+  * still recorded: reassigned PARAM whose new value comes from a dynamic
+    closure call poisons the fn's return kind (spread __drain hit it; fresh
+    local heals) — the desugars all use fresh locals / single-init temps.
 - [ ] **Self-host fragility guards, live** (from the deleted fragilities doc — each
   neutralized only at its one known trigger, unguarded in general): Root F `.typed:[]`
   runtime-variable OOB index unchecked (module/typedarray.js fast path — silent adjacent-

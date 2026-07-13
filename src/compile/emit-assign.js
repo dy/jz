@@ -427,11 +427,20 @@ export function emitElementAssign(arr, idx, val) {
       ['local.get', `$${t}`]])
   }
   // 2. Schema field literal key → direct payload-slot write.
+  // SHADOW CONTRACT (same as the dot-path arms): when the module may read this
+  // object dynamically, the mint seeded a props sidecar that __dyn_get probes
+  // BEFORE the schema slots — a slot-only write here is masked by the stale
+  // seed (this dropped `it['@@iterator'] = fn` for prehashed dot reads).
   if (litKey != null && typeof arr === 'string' && ctx.schema.slotOf) {
     const slot = ctx.schema.slotOf(arr, litKey)
-    if (slot >= 0) return withTemp(valueExpr, t => [
-      ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`]),
-      ['local.get', `$${t}`]])
+    if (slot >= 0) {
+      const shadow = needsDynShadow(arr)
+      if (shadow) inc('__dyn_set')
+      return withTemp(valueExpr, t => [
+        ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`]),
+        ...(shadow ? [['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', asF64(emit(arr))], asI64(emit(['str', litKey])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]] : []),
+        ['local.get', `$${t}`]])
+    }
   }
   // 3. Known-ARRAY receiver + literal numeric key → __arr_set_idx_ptr.
   const arrIndex = litKey != null ? arrayIndexKey(litKey) : null

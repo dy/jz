@@ -941,8 +941,22 @@ export default function narrowSignatures(programFacts, ast) {
     }
     const prev = ctx.func.localTypedElemsOverlay
     ctx.func.localTypedElemsOverlay = state._teOverlay
-    try { return exprType(arg, state.callerLocals) }
+    let wt
+    try { wt = exprType(arg, state.callerLocals) }
     finally { ctx.func.localTypedElemsOverlay = prev }
+    // An i32-typed BARE NAME that carries a POINTER kind in the caller (a local
+    // or param already narrowed to an unboxed i32 offset) is NOT integer
+    // evidence: narrowing the callee's param to plain i32 on it makes every
+    // callee read widen the raw offset NUMERICALLY (f64.convert_i32_s) — the
+    // pointer arrives as a small number and every prop probe silently misses
+    // (this ate `Promise.any(obj)`'s GetIterator through __p_any → __p_list).
+    // Report the boxed f64 lane instead; only applyPointerParamAbi — which
+    // stamps ptrKind/ptrAux so reads REBOX — may unbox pointer params.
+    if (wt === 'i32' && typeof arg === 'string') {
+      const vk = state.callerValTypes?.get?.(arg)
+      if (vk != null && vk !== VAL.NUMBER && vk !== VAL.BOOL) return 'f64'
+    }
+    return wt
   }
   const runFixpoint = () => runCallsiteLattice([
     // val runs SOFT (monotone): a TYPED param's val only becomes inferable after the

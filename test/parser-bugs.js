@@ -354,14 +354,13 @@ export let go = () => { (async () => 42)().then((v) => { mark() }, mark); return
     }
 })
 
-test('KNOWN GAP: string-index assign of a data-interned key invisible to prehashed dot reads', () => {
-    // Found the same session: `it['@@iterator'] = fn` (string-INDEX assign,
-    // key too long for SSO) does not land where the prehashed dot read
-    // (`['.', v, '@@iterator']` — canonSymbols output of v[Symbol.iterator])
-    // probes on an imprecisely-kinded receiver: the read serves the stale
-    // mint-time value, the guarded call silently yields undefined. Writing
-    // through the canonical dot form (`it[Symbol.iterator] = fn`, which
-    // canonSymbols folds to the dot assign) is coherent — jzify's runtimes do.
+test('shadow contract: string-index assign of a schema key mirrors for prehashed dot reads', () => {
+    // Was KNOWN GAP — FIXED 2026-07-13: the literal-string INDEX assign
+    // (`it['@@iterator'] = fn`) resolved the schema slot and stored WITHOUT
+    // the __dyn_set mirror (the third arm violating the shadow contract, after
+    // the dot-path ptrAux/chained arms). It now mirrors when needsDynShadow,
+    // so prehashed dot reads (`v[Symbol.iterator]` → dot '@@iterator') see
+    // the write on imprecisely-kinded receivers.
     const src = (assign) => `
         let mk = (nx) => {
           let it = { next: nx, '@@iterator': undefined, map: undefined }
@@ -376,19 +375,21 @@ test('KNOWN GAP: string-index assign of a data-interned key invisible to prehash
           let u = v[Symbol.iterator]()
           return '' + (u === v) + '|' + (u != null && u.next != null)
         }`
-    is(jz(src('it[Symbol.iterator] = () => it')).exports.f(), 'true|true')   // dot-canonical write — correct
-    const broken = jz(src("it['@@iterator'] = () => it")).exports.f()
-    is(broken, 'false|false')  // WRONG — should be true|true; flips when index-assign mirrors where prehashed dot reads probe
+    is(jz(src('it[Symbol.iterator] = () => it')).exports.f(), 'true|true')   // dot-canonical write
+    is(jz(src("it['@@iterator'] = () => it")).exports.f(), 'true|true')       // index write — was false|false before the fix
 })
 
-test('KNOWN GAP: @@iterator method literal invisible to runtime dyn read when invoked post-init (async-runtime modules)', () => {
-    // Found wiring Promise.any's GetIterator (2026-07-13). In a module carrying
-    // the async runtime, a combinator invoked FROM AN EXPORT reads a literal's
-    // canonicalized [Symbol.iterator] METHOD as missing (never called → the
-    // combinator rejects as non-iterable with callCount 0); the same call run
-    // during MODULE INIT observes it. Small mimics without the async runtime
-    // pass either way — same dyn-read family as the data-interned-key pin.
-    // test262 xfails: built-ins/Promise/any/iter-returns-*-reject.js (7 files).
+test('param narrowing: pointer-carrying i32 args are not integer evidence', () => {
+    // Was KNOWN GAP ("@@iterator method literal invisible post-init") — FIXED
+    // 2026-07-13. Root: the call-site `wasm` lattice counted an i32-lane
+    // POINTER argument (a caller local/param already narrowed to an unboxed
+    // offset) as plain-integer evidence, so the callee's param narrowed to
+    // numeric i32 and every read widened the raw offset with f64.convert_i32_s
+    // — the object arrived as a small NUMBER and every prop probe missed
+    // (Promise.any(obj) → __p_any → __p_list never saw @@iterator). argWasmType
+    // now reports the boxed f64 lane for pointer-kinded bare-name args; only
+    // applyPointerParamAbi (which stamps ptrKind/ptrAux so reads REBOX) may
+    // unbox pointer params.
     // control: the same read shape WITHOUT the async runtime — correct.
     is(jz(`
         let dyn = (o, k) => o[k]
@@ -412,5 +413,5 @@ test('KNOWN GAP: @@iterator method literal invisible to runtime dyn read when in
     inst.exports._run()
     let st = inst.exports.check()
     for (let i = 0; i < 100 && st === '@pending'; i++) st = inst.exports.check()
-    is(st, 'cc=0')  // WRONG — should be cc=1; flips when the dyn-read gap is fixed
+    is(st, 'cc=1')  // was cc=0 before the fix (@@iterator never called)
 })
