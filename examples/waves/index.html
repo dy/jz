@@ -13,7 +13,7 @@ import { runDemo } from "../lib/jzdemo.js"
 // neutral sheet, then the wave equation opens them into silver fold lines. Each drop
 // REBOUNDS — a damped train of rings, like real water. Click adds a drop, drag draws a
 // stroke, scroll changes the refraction depth.
-let foc = 240                         // pool depth (focal length of the refraction)
+let foc = 320                         // pool depth (focal length of the refraction)
 let down = false, stick = false       // stick engages only after real movement — a clean
 let sx = 0, sy = 0, dx0 = 0, dy0 = 0  // click must NOT press the stick under its own drop
 let nextDrop = 0, breakTrail = false
@@ -70,7 +70,7 @@ demo.cv.addEventListener("wheel", (e) => {
   e.preventDefault(); scheduleDrop(demo.t)
   foc *= Math.exp(-e.deltaY * 0.001)
   if (foc < 80) foc = 80
-  if (foc > 360) foc = 360
+  if (foc > 480) foc = 480
 }, { passive: false })
 </script>
 </body>

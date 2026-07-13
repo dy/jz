@@ -91,8 +91,8 @@ export let resize = (w, h) => {
   i = 0
   while (i < 1024) {
     let v = i * 0.00390625                 // bucket ↔ density v = i/256, range 0..4
-    let vp = v * v * Math.sqrt(v)          // v^2.5, in exact ops
-    let lum = 255.0 * (1.0 - Math.exp(-0.967 * vp))
+    let vp = v * v * v                     // v³ — hard contrast: mids crush toward black,
+    let lum = 255.0 * (1.0 - Math.exp(-0.967 * vp))   // folds blaze; density 1 stays #9e9e9e
     let c = lum | 0
     glut[i] = (255 << 24) | (c << 16) | (c << 8) | c
     i++
