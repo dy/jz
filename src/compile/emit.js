@@ -4125,37 +4125,61 @@ export const emitter = {
           slots.set(key, s)
           return s
         }
-        // one extent conjunct per (recv, a, k, slot) group: hi = a*maxIv+k*slot+maxC < len,
-        // plus lo = a*entry+k*slot+minC ≥ 0 — folded away when a static start proves it,
-        // read from the live iv local at guard time otherwise (while-shapes)
-        const groups = new Map()
+        // one extent conjunct pair per (recv, a, slots) group: hi = a*maxIv+Σkᵢ·slotᵢ+maxC
+        // < len, plus lo = a*entry+Σkᵢ·slotᵢ+minC ≥ 0 — folded away when a static start
+        // proves it, read from the live iv local at guard time otherwise (while-shapes)
+        const groups = new Map(), indGroups = new Map()
         for (const c of vs.cands) {
-          const gk = c.recv + '\x00' + c.a + '\x00' + c.k + '\x00' + (c.bSlot == null ? '' : slotKey(c.bSlot))
+          if (c.ind != null) {
+            const gk = c.recv + '\x00' + c.ind
+            if (!indGroups.has(gk)) indGroups.set(gk, c)
+            continue
+          }
+          const gk = c.recv + '\x00' + c.a + '\x00' + c.slots.map(t => t.k + '*' + slotKey(t.e)).join('+')
           const g = groups.get(gk)
-          if (!g) groups.set(gk, { recv: c.recv, a: c.a, k: c.k, bSlot: c.bSlot, nKind: c.nKind, maxC: c.bConst, minC: c.bConst })
+          if (!g) groups.set(gk, { recv: c.recv, a: c.a, slots: c.slots, maxC: c.bConst, minC: c.bConst })
           else { g.maxC = Math.max(g.maxC, c.bConst); g.minC = Math.min(g.minC, c.bConst) }
         }
-        const slotTerm = (g) => {
-          const s = slotI64(g.bSlot, g.nKind)
-          return g.k === 1 ? s : ['i64.mul', i64c(g.k), s]
+        const slotSum = (base, list) => {
+          let r = base
+          for (const t of list) {
+            const s = slotI64(t.e, t.kind)
+            r = ['i64.add', r, t.k === 1 ? s : ['i64.mul', i64c(t.k), s]]
+          }
+          return r
         }
+        const len64Of = (recv) => ['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(recv))]]]
         for (const g of groups.values()) {
-          const len64 = ['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(g.recv))]]]
-          let hi = ['i64.mul', i64c(g.a), ['local.get', `$${maxIv}`]]
-          if (g.bSlot != null) hi = ['i64.add', hi, slotTerm(g)]
+          let hi = slotSum(['i64.mul', i64c(g.a), ['local.get', `$${maxIv}`]], g.slots)
           if (g.maxC) hi = ['i64.add', hi, i64c(g.maxC)]
-          conjs.push(['i64.lt_s', hi, len64])
+          conjs.push(['i64.lt_s', hi, len64Of(g.recv)])
           // low extent: static start folds (candidates with a provably-negative static
           // lo were filtered), runtime entry reads iv through the slot machinery (an
           // f64 iv gets the integral∧range conjuncts — entry integrality carries
           // through integer advances)
-          if (vs.startC != null && g.bSlot == null) continue
-          let lo = vs.startC != null ? i64c(g.a * vs.startC)
-            : g.a === 1 ? slotI64(vs.iv, vs.ivKind)
-            : ['i64.mul', i64c(g.a), slotI64(vs.iv, vs.ivKind)]
-          if (g.bSlot != null) lo = ['i64.add', lo, slotTerm(g)]
+          if (vs.startC != null && !g.slots.length) continue
+          let lo = slotSum(vs.startC != null ? i64c(g.a * vs.startC)
+            : ['i64.mul', i64c(g.a), slotI64(vs.iv, vs.ivKind)], g.slots)
           if (g.minC) lo = ['i64.add', lo, i64c(g.minC)]
           conjs.push(['i64.ge_s', lo, i64c(0)])
+        }
+        // induction cursors (`k += step` in a comma step): value at iteration t is
+        // entry + slope*t, t ∈ [0, maxIv - ivEntry] — monotone either direction, so
+        // BOTH endpoints guard in [0, len) and every intermediate value is covered
+        for (const c of indGroups.values()) {
+          const kE = slotI64(c.ind, exprType(c.ind, ctx.func.locals) === 'i32' ? 'i32' : 'f64')
+          const slopeLit = intLiteralValue(c.slope)
+          const slope64 = slopeLit != null ? i64c(slopeLit)
+            : slotI64(c.slope, exprType(c.slope, ctx.func.locals) === 'i32' ? 'i32' : 'f64')
+          const ivE = vs.startC != null ? i64c(vs.startC) : slotI64(vs.iv, vs.ivKind)
+          const endT = tempI64('tvi')
+          result.push(['local.set', `$${endT}`, ['i64.add', kE,
+            ['i64.mul', slope64, ['i64.sub', ['local.get', `$${maxIv}`], ivE]]]])
+          const len64 = len64Of(c.recv)
+          conjs.push(['i64.ge_s', kE, i64c(0)])
+          conjs.push(['i64.lt_s', kE, len64])
+          conjs.push(['i64.ge_s', ['local.get', `$${endT}`], i64c(0)])
+          conjs.push(['i64.lt_s', ['local.get', `$${endT}`], len64Of(c.recv)])
         }
         let guard = conjs[0]
         for (let k = 1; k < conjs.length; k++) guard = ['i32.and', guard, conjs[k]]

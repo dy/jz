@@ -130,15 +130,25 @@ export const idxKey = (recv, idx) => recv + '\x00' + (typeof idx === 'string' ? 
 export function affineIdxOfIV(idx, iv, body, env) {
   const slotEq = (p, q) => p === q || (typeof p !== 'string' && typeof q !== 'string'
     && JSON.stringify(p) === JSON.stringify(q))
+  const MAX_SLOTS = 2   // butterfly's `b = i + j + half` carries two symbolic terms
+  const addSlots = (A, B, s) => {
+    const out = A.map(t => ({ k: t.k, e: t.e }))
+    for (const t of B) {
+      const hit = out.find(o => slotEq(o.e, t.e))
+      if (hit) hit.k += s * t.k
+      else out.push({ k: s * t.k, e: t.e })
+    }
+    return out.filter(t => t.k !== 0)
+  }
   const aff = (e) => {
-    if (e === iv) return { a: 1, k: 0, bSlot: null, bConst: 0 }
+    if (e === iv) return { a: 1, slots: [], bConst: 0 }
     const n = intLiteralValue(e)
-    if (n != null) return { a: 0, k: 0, bSlot: null, bConst: n }
+    if (n != null) return { a: 0, slots: [], bConst: n }
     if (typeof e === 'string') {
       // a name the env KNOWS (declared in this body) must resolve through it — a
       // null entry is a body-varying non-affine value the guard cannot pre-read
       if (env?.has(e)) return env.get(e)
-      return isReassigned(body, e) ? null : { a: 0, k: 1, bSlot: e, bConst: 0 }
+      return isReassigned(body, e) ? null : { a: 0, slots: [{ k: 1, e }], bConst: 0 }
     }
     if (!Array.isArray(e)) return null
     const [op, x, y] = e
@@ -146,7 +156,7 @@ export function affineIdxOfIV(idx, iv, body, env) {
       const L = intLiteralValue(x) ?? intLiteralValue(y)
       if (L != null) {
         const t = aff(intLiteralValue(x) != null ? y : x)
-        if (t) return { a: t.a * L, k: t.k * L, bSlot: t.bSlot, bConst: t.bConst * L }
+        if (t) return { a: t.a * L, slots: t.slots.map(u => ({ k: u.k * L, e: u.e })), bConst: t.bConst * L }
       }
       // fall through: a non-literal product (`y*w`) may still be an invariant slot
     }
@@ -154,23 +164,20 @@ export function affineIdxOfIV(idx, iv, body, env) {
       const l = aff(x), r = aff(y)
       if (l && r) {
         const s = op === '+' ? 1 : -1
-        // one symbolic slot per idx — same slot combines, different slots reject
-        // (falling through to the whole-expr slot instead: `y*w + x*2`-style sums
-        // of invariants still resolve as a single slot when iv-free)
-        if (l.bSlot == null || r.bSlot == null || slotEq(l.bSlot, r.bSlot))
-          return { a: l.a + s * r.a, k: l.k + s * r.k, bSlot: l.bSlot ?? r.bSlot,
-            bConst: l.bConst + s * r.bConst }
+        const slots = addSlots(l.slots, r.slots, s)
+        if (slots.length <= MAX_SLOTS)
+          return { a: l.a + s * r.a, slots, bConst: l.bConst + s * r.bConst }
       }
       // fall through to the whole-expr slot
     }
     // WHOLE-EXPR SLOT: an iv-free pure arithmetic expression over stable outer names
     // (`y*w`, `(oy+ky)*IW`) — the guard evaluates it once at loop entry; runtime
     // `integral ∧ |v| ≤ 2^31` conjuncts (the 'f64' slot kind) make the int model exact.
-    return invariantIdxExpr(e, iv, body, env) ? { a: 0, k: 1, bSlot: e, bConst: 0 } : null
+    return invariantIdxExpr(e, iv, body, env) ? { a: 0, slots: [{ k: 1, e }], bConst: 0 } : null
   }
   const r = aff(idx)
-  return r && r.a >= 0 && Number.isInteger(r.a) && Number.isInteger(r.k) && Number.isInteger(r.bConst)
-    ? (r.bSlot != null && r.k === 0 ? { ...r, bSlot: null } : r) : null
+  return r && r.a >= 0 && Number.isInteger(r.a) && Number.isInteger(r.bConst)
+    && r.slots.every(t => Number.isInteger(t.k)) ? r : null
 }
 
 /** `e` is a pure arithmetic expression whose value cannot change across the loop:
@@ -245,9 +252,28 @@ export function versionableTypedFor(init, cond, step, body, locals) {
   // `i++` with int LIT ≥ 1 (while-loops). A body-advanced iv is visible PAST the
   // bound inside its final iteration (cond passes at B-1, the increment runs mid-
   // body), so the max-iv widens by LIT (`bump`). Any other write shape rejects.
-  let bump = 0
+  // a name the guard re-reads must denote the same binding for the whole loop
+  const stable = (name) => !isReassigned(body, name) && !redeclaresName(body, name)
+  let bump = 0, inds = null
   if (isUnitIncrement(step, iv)) {
     if (isReassigned(body, iv)) return null
+  } else if (Array.isArray(step) && step[0] === ',') {
+    // comma step (`j++, k += step`): exactly one unit-inc of iv; every other part
+    // `cursor += slope` (int literal or invariant name, cursor unwritten in body)
+    // declares an INDUCTION — cursor value at iteration t is entry + slope*t, so a
+    // plain `arr[cursor]` access guards by its two endpoints (either slope sign).
+    let unit = 0
+    inds = new Map()
+    for (const p of step.slice(1)) {
+      if (isUnitIncrement(p, iv)) { unit++; continue }
+      if (Array.isArray(p) && p[0] === '+=' && typeof p[1] === 'string' && p[1] !== iv
+          && stable(p[1])
+          && (intLiteralValue(p[2]) != null || (typeof p[2] === 'string' && p[2] !== iv && stable(p[2])))) {
+        inds.set(p[1], p[2]); continue
+      }
+      inds = null; break
+    }
+    if (!inds || unit !== 1 || !inds.size || isReassigned(body, iv)) return null
   } else if (step == null && isReassigned(body, iv)) {
     const writes = []
     const collectW = (n) => {
@@ -276,8 +302,6 @@ export function versionableTypedFor(init, cond, step, body, locals) {
     bump = L
   } else return null
   const bound = cond[2]
-  // a name the guard re-reads must denote the same binding for the whole loop
-  const stable = (name) => !isReassigned(body, name) && !redeclaresName(body, name)
   // bKind drives the guard's conversion to a max-iv i64:
   //   'i32' — literal, i32-machine name, or a typed receiver's .length: exact extend;
   //   'f64' — any other stable name (an untyped param, a NaN-boxed unknown): the
@@ -290,24 +314,34 @@ export function versionableTypedFor(init, cond, step, body, locals) {
     : null
   if (bKind == null) return null
   const env = bodyAffineEnv(body, iv)
+  // induction cursors vary per iteration — they must not leak into slot terms
+  // (the affine env blocks them); their PLAIN `arr[cursor]` reads are their own
+  // candidate class below
+  if (inds) for (const nm of inds.keys()) env.set(nm, null)
   const cands = []
   const seen = new Set()
   const scan = (n) => {
     if (!Array.isArray(n)) return
     if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[1] !== iv
         && ctx.types.typedElem?.has(n[1]) && stable(n[1])) {
-      const aff = affineIdxOfIV(n[2], iv, body, env)
-      // symbolic offsets: i32-machine slots are exact; any other slot rides the f64
-      // path with runtime `integral ∧ |v| ≤ 2^31` conjuncts (nKind 'f64')
-      const nKind = aff?.bSlot == null ? null
-        : exprType(aff.bSlot, locals) === 'i32' ? 'i32' : 'f64'
-      if (aff
-          // statically-negative low extent: the checked form IS the semantics, a
-          // guard would always fail (runtime-entry loops keep the runtime lo check)
-          && !(aff.bSlot == null && startC != null && aff.a * startC + aff.bConst < 0)
-          && !typedIdxProven(n[1], n[2])) {
-        const key = idxKey(n[1], n[2])
-        if (!seen.has(key)) { seen.add(key); cands.push({ recv: n[1], idx: n[2], ...aff, nKind }) }
+      const key = idxKey(n[1], n[2])
+      if (!seen.has(key) && !typedIdxProven(n[1], n[2])) {
+        if (typeof n[2] === 'string' && inds?.has(n[2])) {
+          seen.add(key)
+          cands.push({ recv: n[1], idx: n[2], ind: n[2], slope: inds.get(n[2]) })
+        } else {
+          const aff = affineIdxOfIV(n[2], iv, body, env)
+          // symbolic slots: i32-machine exprs are exact; any other rides the f64
+          // path with runtime `integral ∧ |v| ≤ 2^31` conjuncts (kind 'f64')
+          if (aff
+              // statically-negative low extent: the checked form IS the semantics, a
+              // guard would always fail (runtime-entry loops keep the runtime lo check)
+              && !(aff.slots.length === 0 && startC != null && aff.a * startC + aff.bConst < 0)) {
+            seen.add(key)
+            const slots = aff.slots.map(t => ({ ...t, kind: exprType(t.e, locals) === 'i32' ? 'i32' : 'f64' }))
+            cands.push({ recv: n[1], idx: n[2], a: aff.a, slots, bConst: aff.bConst })
+          }
+        }
       }
     }
     for (let k = 1; k < n.length; k++) scan(n[k])
