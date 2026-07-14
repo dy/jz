@@ -51,13 +51,30 @@
     watr 5.4.2 PUBLISHED (3c056f8 intguard rules, 23861b0 print tokens,
     f0e6499 whole-temp+param fix, 0eea517 subset hardening) — jz dep
     bumped ^5.4.2 (978aad46), node_modules hand-synced; package-lock
-    awaits an npm install. KERNEL-SEMANTICS BUG HUNT (found via watr
-    self-host leg, all repro'd): (1) `x !== x` on NaN in-kernel
-    bit-compares → false (JS: true); (2) a let + conditional-reassign
-    union local reads numbers as empty strings; (3) Number.isFinite /
-    Object.is in-kernel misfold (finite ints classed non-finite). Own
-    arc. Parked-with-evidence rows stand: immutable (SROA/escape),
-    nqueens/raytrace/sort/qoi/dict (LLVM-class verdicts, no jz-side fix).
+    awaits an npm install. KERNEL-SEMANTICS CLOSED 2026-07-14 (worktree
+    agent, merged 9f403a80/5934bf59/14714c97): (1) was emitTypeofCmp's
+    `typeof x === 'number'` fast path — the v===v idiom is wrong for the
+    one NaN that IS a number; $__typeof's carve-out mirrored, 18/18 paths
+    pinned. (2) was makeValTracker treating an UNRESOLVABLE value-type
+    observation as no-information — a conditional string reassign won the
+    fact and `+` skipped ToString on a number box (closure-only: the
+    top-level pre-seed poisoned first); unresolvable now poisons. (3) was
+    not independent — the composed typeof-guarded chain, pinned. Gates:
+    suite 2930/0, fuzz 2000/0, selfhost 21/21 on the fixed kernel. The
+    watr print.js subset workarounds (0eea517) can revert once a jz with
+    these fixes rebuilds watr's kernel — noted, harmless meanwhile.
+    2026-07-14 CI+size arc: bench workflow timing gates informational on
+    CI (37-run dead-red exposed real size regressions); -Os lean lowering
+    landed (crc32 0.98/mandelbrot 0.94/bitwise 0.91 BELOW asc -Oz, aos
+    tie); v0.9.1 released (npm+tag+gh, 0.9.0 deprecated — raced dist);
+    dist/jz.js −8.6% wat-strip with parity gate in prepare. OPEN: sort
+    1.08/hash 1.02/wav 1.18/base64 1.23 vs asc -Oz — owner READ-VALUE
+    BINDING NARROWING (`const a = src[i]` binds f64 element|undefined;
+    bind i32 with undefined→0 when every use is int-class) + const-index
+    store-run guard coalescing; tried-and-reverted: $__typed_idx call
+    route (+900 B), sourceInline:false (bigger everywhere). Parked rows
+    stand: immutable (SROA/escape), nqueens/raytrace/sort/qoi/dict
+    (LLVM-class verdicts, no jz-side fix).
   * [x] 10 more bench cases - each area covered
   * STATE 2026-07-09 (JSC leg measured): quiet-machine full table, 49 cases ran.
     GEOMEAN: jz beats every engine — V8 1.89x, deno 1.83x, JSC 1.50x, bun 1.52x
