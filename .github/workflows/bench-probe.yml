@@ -1,0 +1,35 @@
+name: bench-probe
+# Diagnostic, manual-only: repeated jz-vs-V8 medians for selected cases on the
+# CI runner. Separates shared-runner noise from systematic x86/µarch gaps when
+# a case's lead differs from the reference M4 numbers (wordcount/immutable/
+# shapes flipped to losses on the 07-14 EPYC snapshot while dispatch/strbuild
+# kept 2.5× leads on the same run — noise degrades everything, µarch picks
+# favorites). Prints per-round tables + cpuinfo; not a gate, writes nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: comma-separated case ids
+        default: wordcount,immutable,shapes,dispatch,hash
+      repeats:
+        description: alternating rounds
+        default: '5'
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - name: machine
+        run: |
+          grep -m1 "model name" /proc/cpuinfo || true
+          nproc; free -m | head -2
+      - name: probe rounds
+        run: |
+          for i in $(seq 1 ${{ inputs.repeats }}); do
+            echo "════ round $i ════"
+            node bench/bench.mjs --cases=${{ inputs.cases }} --targets=v8,jz 2>&1 | grep -E "\[run\]" || true
+          done
