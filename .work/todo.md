@@ -3813,3 +3813,32 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   3) size ×2-3: checked-twin dedup (shared slow-path fn or size-tier gating).
 - Sweep re-run may have died with the task (backgrounded child); re-launch at
   next stretch start (oob-final-sweep2.log).
+
+## Root F round 6 (2026-07-14): SIMD bench ALL-PARITY — the 6.1x closed to 1.014
+- BRANCH typedoob: the three merge-blockers measured and CLOSED where it counts:
+  conv2d 6.12x → 1.014 (nest levels BRAKE their own re-versioning — per-level
+  re-guards compounded 2^depth checked twins; hull cands owned by the TOP arm so
+  UNROLLED inner loops, which have no frame, still validate); fft 1.35x → 1.014
+  (guard lens inline as header loads — a $__len call per re-entered inner-loop
+  entry was the cost; static-entry inductions lift with their level; MONOTONE
+  NON-UNIT strides version (`i += len` block stride, positivity conjunct) so the
+  guard hoists out of the re-entered level entirely); aos 1.000, colorconv
+  1.007, blur 0.997. cs EXACT everywhere. Fast arms verified 0-tbi.
+- Gates: suite 2904/6 → now 4 reds after pin work; selfhost 21/21; fuzz 2000/0.
+  Pins greened honestly: |0 kernel mask-proven with post-load scoping (s-exprs
+  print OUTERMOST-first — the earlier slice cut the wrong side), row-offset
+  fast-arm paren-matched. REMAINING 4 with owners:
+  1) recurrence pin (RED = true degradation): fast+checked arms share source-
+     named locals → def-counts double → propagateSingleUse dies function-wide
+     (the teed $on blinds boolConvertToSelect). Fix designed AND attempted:
+     alpha-rename the checked twin — REVERTED (renamed locals orphan narrow's
+     per-name reps/typed facts → twin miscompiles; needs rep-ALIASING old→new
+     across ctx.types/reps before it lands).
+  2-3) inference masked-param pins: RANGE-ONLY versioning (non-'<' loops can
+     take a hull-conjunct guard with no iv analysis) — designed, unbuilt.
+  4) diffusion toroidal: needs SYMBOLIC interval bounds (W/H mutable) + the
+     wrap-ternary as a bounded symbol; ===/!== endpoint refinement + per-arm
+     ternary refinement landed as groundwork.
+- Twin SIZE (x1.5-3 per versioned fn) still the open merge question: dedup the
+  checked twin (shared slow-path fn) or gate versioning off at size tier;
+  corpus sweep to quantify. Then ff-merge.
