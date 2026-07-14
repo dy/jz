@@ -1635,6 +1635,17 @@ test('dictionary RMW fusion: computed-key counters accumulate exactly', () => {
     is(exports.go(10), 10, `O${optimize}: uneven distribution still sums to n`)
     is(exports.missing(), 5, `O${optimize}: missing key reads as 0 through the fused probe`)
   }
+  // Probe openings inline box→offset with the forwarding hop folded into the
+  // cap load (-1 sentinel → cold $__ptr_offset_fwd): the per-probe
+  // $__ptr_offset call is gone from every collection probe/upsert (wordcount
+  // −8%). The fwd helper itself must stay linked for the growth hop.
+  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const slotAt = wat.indexOf('(func $__hash_slot')
+  ok(slotAt >= 0, 'fused RMW probe present')
+  const slotWat = wat.slice(slotAt, wat.indexOf('(func $', slotAt + 1))
+  ok(!slotWat.includes('call $__ptr_offset ') && !slotWat.includes('call $__ptr_offset\n'),
+    'probe opening pays no $__ptr_offset call')
+  ok(slotWat.includes('call $__ptr_offset_fwd'), 'forward hop stays behind the -1 sentinel')
 })
 
 test('spread merge: enumeration sees the spread keys, not just the literal ones', () => {

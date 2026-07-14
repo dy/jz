@@ -314,8 +314,14 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
     (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
     (local $oldslot i32) (local $newidx i32) (local $newslot i32) (local $zb i32) (local $ztr i32)
     ${typeGuard}
-    (local.set $off (call $__ptr_offset (local.get $coll)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    ;; the cap load IS the forward check: -1 sentinel hops via the cold helper,
+    ;; the live path pays zero extra — the per-probe __ptr_offset call drops
+    (if (i32.eq (local.get $cap) (i32.const -1))
+      (then
+        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
+        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
     ;; Grow at 75% load (size*4 >= cap*3): 2× table, rehash, forward-mark old header.
     (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
@@ -445,8 +451,14 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32) (local $tries i32)
     (local $i i32) (local $j i32) (local $k i32) (local $n i32)
     (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (return (i32.const 0))))
-    (local.set $off (call $__ptr_offset (local.get $coll)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    ;; the cap load IS the forward check: -1 sentinel hops via the cold helper,
+    ;; the live path pays zero extra — the per-probe __ptr_offset call drops
+    (if (i32.eq (local.get $cap) (i32.const -1))
+      (then
+        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
+        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     (local.set $h (call ${hashFn} (local.get $key)))
     ${probeStart(entrySize)}
     (block $found
@@ -509,8 +521,14 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
     (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
     (local $oldslot i32) (local $newidx i32) (local $newslot i32) (local $zb i32) (local $ztr i32)
     ${typeGuard}
-    (local.set $off (call $__ptr_offset (local.get $obj)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    ;; the cap load IS the forward check: -1 sentinel hops via the cold helper,
+    ;; the live path pays zero extra — the per-probe __ptr_offset call drops
+    (if (i32.eq (local.get $cap) (i32.const -1))
+      (then
+        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
+        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
     ;; Grow if load factor > 75%: size * 4 >= cap * 3
     (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
@@ -608,8 +626,14 @@ function genSlotUpsert(name, entrySize, hashFn, eqExpr) {
     (local $kaux i32) (local $koff i32)
     (if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${PTR.HASH}))
       (then (return (i32.const 0))))
-    (local.set $off (call $__ptr_offset (local.get $obj)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    ;; the cap load IS the forward check: -1 sentinel hops via the cold helper,
+    ;; the live path pays zero extra — the per-probe __ptr_offset call drops
+    (if (i32.eq (local.get $cap) (i32.const -1))
+      (then
+        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
+        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
       (then
@@ -704,8 +728,14 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
           (i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
           (i32.const ${expectedType}))
       (then (return (i64.const ${missing}))))
-    (local.set $off (call $__ptr_offset (local.get $coll)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    ;; the cap load IS the forward check: -1 sentinel hops via the cold helper,
+    ;; the live path pays zero extra — the per-probe __ptr_offset call drops
+    (if (i32.eq (local.get $cap) (i32.const -1))
+      (then
+        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
+        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     (local.set $h (call ${hashFn} (local.get $key)))
     ${probeStart(entrySize)}
     (block $done (loop $probe
@@ -737,13 +767,17 @@ function genLookupStrictPrehashed(name, entrySize, eqExpr, expectedType, missing
           (else ${onEmpty}))))`
     : `(if (i32.ne ${tExpr} (i32.const ${expectedType}))
       (then ${onEmpty}))`
-  // SET/MAP/HASH grow by forward-marking; a boxed pointer may be stale → follow the chain.
-  const offExpr = '(call $__ptr_offset (local.get $coll))'
   return `(func $${name} (param $coll i64) (param $key i64) (param $h i32) (result ${rt})
     (local $off i32) (local $cap i32) (local $end i32) (local $slot i32) (local $tries i32)
     ${typeGuard}
-    (local.set $off ${offExpr})
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    ;; the cap load IS the forward check: -1 sentinel hops via the cold helper,
+    ;; the live path pays zero extra — the per-probe __ptr_offset call drops
+    (if (i32.eq (local.get $cap) (i32.const -1))
+      (then
+        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
+        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     ${probeStart(entrySize)}
     (block $done (loop $probe
       (if (i64.eqz (i64.load (local.get $slot))) (then ${onEmpty}))
@@ -762,8 +796,14 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType) {
           (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
           (i32.const ${expectedType}))
       (then (return (local.get $obj))))
-    (local.set $off (call $__ptr_offset (local.get $obj)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    ;; the cap load IS the forward check: -1 sentinel hops via the cold helper,
+    ;; the live path pays zero extra — the per-probe __ptr_offset call drops
+    (if (i32.eq (local.get $cap) (i32.const -1))
+      (then
+        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
+        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     ${probeStart(entrySize)}
     ;; zombie-aware probe (durable-slot heal, TOMB_NAN keys) — see genUpsert.
     (block $done (loop $probe
@@ -825,24 +865,24 @@ export default (ctx) => {
     // log (durableEntryLogIR) still calls $__durable_slot_log — without the
     // explicit edge the kernel leg drops the helper (auto-scan divergence, the
     // selfhost-includes class) and every `new Set(...)` fails to compile there.
-    __set_add: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
-    __set_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset'],
+    __set_add: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __set_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __set_delete: ['__map_hash', '__same_value_zero'],
-    __set_add_all: ['__ptr_offset', '__cap', '__len', '__coll_order', '__set_add'],
-    __set_filter: ['__ptr_offset', '__cap', '__len', '__coll_order', '__set_add', '__set_has', '__map_has'],
-    __set_all: ['__ptr_offset', '__cap', '__len', '__coll_order', '__set_has', '__map_has'],
+    __set_add_all: ['__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order', '__set_add'],
+    __set_filter: ['__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order', '__set_add', '__set_has', '__map_has'],
+    __set_all: ['__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order', '__set_has', '__map_has'],
     __sclone: ['__sclone_rec', '__mkptr', '__alloc_hdr_n'],
-    __sclone_rec: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_from', '__obj_clone', '__sclone_hash_vals'],
+    __sclone_rec: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_from', '__obj_clone', '__sclone_hash_vals'],
     __sclone_hash_vals: ['__sclone_rec'],
-    __map_set: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__alloc_hdr_n']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
-    __map_get: () => ctx.features.external ? ['__ext_prop', '__map_set', '__ptr_offset'] : ['__map_set', '__ptr_offset'],
-    __map_get_h: () => ctx.features.external ? ['__ext_prop', '__same_value_zero', '__ptr_offset'] : ['__same_value_zero', '__ptr_offset'],
-    __map_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset'],
+    __map_set: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __map_get: () => ctx.features.external ? ['__ext_prop', '__map_set', '__ptr_offset', '__ptr_offset_fwd'] : ['__map_set', '__ptr_offset', '__ptr_offset_fwd'],
+    __map_get_h: () => ctx.features.external ? ['__ext_prop', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
+    __map_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     // Prehashed has-probes: caller folds the hash, so no __map_hash dependency.
-    __map_has_h: () => ctx.features.external ? ['__same_value_zero', '__ptr_offset', '__ext_has'] : ['__same_value_zero', '__ptr_offset'],
-    __set_has_h: () => ctx.features.external ? ['__same_value_zero', '__ptr_offset', '__ext_has'] : ['__same_value_zero', '__ptr_offset'],
+    __map_has_h: () => ctx.features.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
+    __set_has_h: () => ctx.features.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __map_delete: ['__map_hash', '__same_value_zero'],
-    __map_from: ['__ptr_type', '__ptr_offset', '__len', '__typed_idx', '__map_set', '__mkptr', '__alloc_hdr_n', '__coll_order'],
+    __map_from: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__len', '__typed_idx', '__map_set', '__mkptr', '__alloc_hdr_n', '__coll_order'],
     // own edge: __map_new's body calls $__alloc_hdr_n — auto-scan-only
     // reachability vanishes under self-host (test/selfhost-includes.js)
     __map_new: ['__alloc_hdr_n'],
@@ -863,33 +903,33 @@ export default (ctx) => {
     __hash_get_local_h: ['__str_eq'],
     __hash_set_local_h: () => ['__str_eq', ...slotLogDeps()],
     __hash_set_local: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
-    __hash_slot: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __hash_slot: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __slot_write: () => slotLogDeps(),
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
     __dyn_get_t_h: ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__str_arr_idx', '__str_byteLen'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
-    __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset'],
+    __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
     __dyn_get_expr_t_h: ['__dyn_get_t_h', '__hash_get_local_h'],
     __dyn_get_expr: ['__dyn_get_expr_t', '__ptr_type'],
     __dyn_get_any: ['__dyn_get_any_t', '__ptr_type'],
     __dyn_get_any_t: () => ctx.features.external
-      ? ['__dyn_get_t', '__hash_get_local', '__ext_prop', '__is_str_key', '__to_str', '__ptr_offset']
-      : ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset'],
+      ? ['__dyn_get_t', '__hash_get_local', '__ext_prop', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd']
+      : ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
     __dyn_get_any_t_h: () => ctx.features.external
       ? ['__dyn_get_t_h', '__hash_get_local_h', '__ext_prop']
       : ['__dyn_get_t_h', '__hash_get_local_h'],
     __dyn_get_or: ['__dyn_get'],
-    __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx'],
+    __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: ['__str_hash', '__str_eq', '__ptr_type'],
     __dyn_del: ['__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx'],
     __str_arr_idx: ['__str_byteLen', '__char_at'],
-    __coll_clear: ['__ptr_type', '__ptr_offset'],
+    __coll_clear: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd'],
   })
 
-  inc('__ptr_offset', '__cap')
+  inc('__ptr_offset', '__ptr_offset_fwd', '__cap')
 
   // Monotonic insertion counter packed into each entry's hash-word high 32 bits
   // (see seqStore). Restores JS insertion order at iteration without growing
@@ -1326,7 +1366,7 @@ export default (ctx) => {
   // the uniform closure width (forEach autoloads array → closure floor 2). Uses
   // the closure-call path like typedarray:forEach — forEach isn't a hot path.
   const collForEach = (stride, valOff, keyOff) => (expr, fn) => {
-    inc('__ptr_offset', '__cap', '__len', '__coll_order')
+    inc('__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order')
     const t = temp('fe'), cb = temp('fecb')
     const off = tempI32('feo'), cap = tempI32('fec'), n = tempI32('fen')
     const i = tempI32('fei'), ord = tempI32('fer'), slot = tempI32('fes')
@@ -2960,7 +3000,7 @@ export default (ctx) => {
 // picks the column: 8 = key (Set element / Map key), 16 = Map value. Mirrors
 // object.js's hash*FromTemp. Used by `__iter_arr` and `.keys()`/`.values()`.
 function collKeysFromTemp(t, stride, fieldOff = 8) {
-  inc('__ptr_offset', '__cap', '__len', '__coll_order')
+  inc('__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order')
   const off = tempI32('cko'), cap = tempI32('ckc'), n = tempI32('ckn')
   const i = tempI32('cki'), ord = tempI32('ckr'), slot = tempI32('cks')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'cka' })
@@ -2988,7 +3028,7 @@ function collKeysFromTemp(t, stride, fieldOff = 8) {
 // [slot+aOff, slot+bOff] boxed into the output: Map entries use (8,16) → [k,v];
 // Set entries use (8,8) → [v,v].
 function collEntriesFromTemp(t, stride, aOff = 8, bOff = 16) {
-  inc('__ptr_offset', '__cap', '__len', '__alloc_hdr', '__coll_order')
+  inc('__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__alloc_hdr', '__coll_order')
   const off = tempI32('ceo'), cap = tempI32('cec'), n = tempI32('cen')
   const i = tempI32('cei'), ord = tempI32('cer'), slot = tempI32('ces'), pair = tempI32('cep')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'cea' })
@@ -3035,7 +3075,7 @@ function arrIdxFromTemp(t) {
 
 // Array.prototype.entries() → dense Array of [index, element] pair arrays.
 function arrEntriesFromTemp(t) {
-  inc('__len', '__ptr_offset', '__alloc_hdr')
+  inc('__len', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr')
   const n = tempI32('aen'), i = tempI32('aei'), src = tempI32('aes'), pair = tempI32('aep')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'aea' })
   const id = ctx.func.uniq++
