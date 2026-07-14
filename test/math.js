@@ -506,6 +506,29 @@ test('Number.isInteger', async () => {
   is(await evaluate('Number.isInteger(0)'), true)
 })
 
+test('Number.isFinite / Object.is: exact boolean chain — typeof guard && (!isFinite || Object.is(-0))', () => {
+  // watr's print.js used exactly this composition (typeof-guarded, ||-short-
+  // circuited) to decide whether a number leaf needs a WAT non-finite/-0 token.
+  // Number.isFinite and Object.is are each correct standalone (pinned above /
+  // in test/objects.js) — this pins the FULL composed chain, since the reported
+  // in-kernel symptom ("finite 150 classified non-finite/-0") traced entirely to
+  // the `typeof x === 'number'` fast-path folding false for NaN (see
+  // test/statements.js's "typeof: NaN is still number" pin): once that's fixed,
+  // this chain needs no changes of its own — verified here so a regression in
+  // either operand would be caught immediately by the composition, not just in
+  // isolation.
+  const src = `export let f = (v) =>
+    (typeof v === 'number' && (!Number.isFinite(v) || Object.is(v, -0))) ? 1 : 0`
+  const { f } = jz(src).exports
+  is(f(150), 0, '150: finite, not -0 — chain false')
+  is(f(0), 0, '0: finite, not -0 (Object.is(0,-0) is false) — chain false')
+  is(f(-5), 0, '-5: finite, not -0 — chain false')
+  is(f(-0), 1, '-0: finite but Object.is(-0,-0) — chain true')
+  is(f(NaN), 1, 'NaN: not finite — chain true')
+  is(f(Infinity), 1, 'Infinity: not finite — chain true')
+  is(f(-Infinity), 1, '-Infinity: not finite — chain true')
+})
+
 // ============================================
 // Random
 // ============================================
