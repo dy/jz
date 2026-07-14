@@ -3796,3 +3796,20 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   still blocked on the 8 reds → next stretch: range-only versioning (closes
   inference 2), diffusion trace, lyapunov recognizer, pin extractor, then
   full gates + ff-merge.
+
+## Root F merge gate: BLOCKED by timing — the three residual costs, measured (2026-07-14)
+- SIMD bench A/B (branch fc1cba39 vs main, interleaved, cs EXACT everywhere):
+  colorconv 0.996 ✓, blur 1.007 ✓ — but conv2d 6.12× SLOWER, fft 1.067,
+  aos 1.035; sizes ×1.5–3.3 (the checked twins). ff-merge OFF until:
+  1) conv2d: the BENCH kernel is NOT interval-proven (the minimal probe was —
+     tbi 0) — some bench-shape piece (imul fills / bias / q-clamp chain) defeats
+     the walk → hot inner loop runs checked selects = 6×. Diff probe-vs-bench,
+     extend the walk.
+  2) guard-entry overhead (fft/aos): versioned guards on re-entered INNER loops
+     evaluate per entry and call $__len per cand — inline the header-load len in
+     GUARDS too (same trick as checked reads; needs elem width at the guard via
+     ctx.types.typedElem), and lift more inner levels (induction entries are
+     top-only today).
+  3) size ×2-3: checked-twin dedup (shared slow-path fn or size-tier gating).
+- Sweep re-run may have died with the task (backgrounded child); re-launch at
+  next stretch start (oob-final-sweep2.log).
