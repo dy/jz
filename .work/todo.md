@@ -3696,3 +3696,28 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   ff-merge typedoob. The Root F hole (silent adjacent-heap corruption on
   runtime-variable typed OOB) closes with JS-exact semantics at zero hot-loop
   cost.
+
+## Root F round 3 CORRECTION + incident (2026-07-13, late)
+- INCIDENT: shell cwd RESETS at turn boundaries — a stretch of "branch" work after
+  a wakeup actually ran against MAIN: probes measured main's compiler (false
+  greens), and `git add src/compile/emit.js && commit` on main swept an
+  UNCOMMITTED USER emit.js change (+4/−1) into mislabeled commit c064599d (sits
+  above the user's a43b8fc9). Main history is the user's call — undo via
+  `git reset --soft HEAD~1` returns the change to the working tree; nothing else
+  of main was altered (main src/type.js verified clean of branch code).
+  PROCESS RULE hardened: every stateful command leads with cd-in-invocation or
+  absolute paths; verify `pwd` after any turn boundary before git/edit ops.
+- BRANCH truth (typedoob @ c366e879): SIMD 157/157 and data 115/115 REAL
+  (verified in-worktree); elem-range + ctx.func-keyed brake re-applied and
+  committed FOR REAL. Honest remaining residue — 5 optimizer + 8 example tests,
+  all "checked form where a proof should reach":
+  optimizer: arr[i+k] address-fusion pin; integer === i32 pin; if-conversion
+  select pin; param-distinctness LICM pin; narrowI32 const-divisor (`a[i]%10`).
+  examples: interference outer-strip; watercolor + waves STENCIL pass (a
+  different vectorizer entry than the clamp-peel — likely needs its own
+  range-fact stamp or interval coverage); plasma per-pixel lift; chladni.
+- Earlier "final gates 2913/0 + selfhost 21/21" measured MAIN — branch suite
+  gate NOT yet run clean; corpus sweep was dirty (mid-run patch) — both re-queued.
+- Next stretch, mechanically: (1) per-class trace on the 13 (the tooling and
+  engine-extension pattern is established); (2) clean branch suite + selfhost;
+  (3) corpus byte-sweep re-run; (4) SIMD bench timing A/B; (5) ff-merge.
