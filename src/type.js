@@ -1062,7 +1062,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
       if (B && !activeFacts.has(name)) { activeFacts.set(name, [0, B[1] - 1]); popped.push(name) }
     }
     const facts = n._rangeFacts
-    delete n._rangeFacts   // re-entry through visit() below must not recurse
+    n._rangeFacts = null   // re-entry brake (the self-host subset has no delete)
     visit(n)
     n._rangeFacts = facts
     for (const name of popped) activeFacts.delete(name)
