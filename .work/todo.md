@@ -18,10 +18,23 @@
     2000/0. Detail in the MERGED archive section below. "Shapes tag-switch
     devirt" was a STALE ROW — already landed 07-07 (2159fa64
     devirtSchemaReads br_table; shapes LEADS both engines per the leg-3
-    queue state). Remaining named levers: dispatch (c) branchless
-    select-tree (JSC 2.29 vs jz ~7.9, predictor-bound), immutable i32 slot
-    storage (1.7× vs V8), shapes .prop CSE, EL-table size recovery (row
-    below). Parked-with-evidence rows stand: wordcount (table-key
+    queue state). Dispatch (c) select-tree LANDED 2026-07-14 watr-side
+    (watr main 3c056f8: intguard ToNumber t==t + exact-int ring collapse
+    the inlined arm coercions, seltree then fires on the devirt ladder) —
+    dispatch −31% interleaved (10.14→7.02ms, cs exact, 20.4→17.7 kB;
+    corpus collateral ZERO — conv2d/fft/shapes/wordcount/json
+    byte-identical), fresh table jz 7.01 vs JSC 3.24 (2.17× from 2.97×),
+    V8 12.25 beaten 1.75×. Remaining dispatch gap owner: per-arm ToInt32
+    guard-selects survive via coalesce-shared temps (resolve-in-round-1
+    flow-facts design; NOTE the guard-only collapse counter-result —
+    −350 B but +9%, predicted cmov beats trunc serialization — leaner ≠
+    faster, kill the convert∘trunc pair or leave the guard). 2026-07-14
+    fresh standings: immutable WON (0.50 leads V8 0.63 + JSC 0.91 —
+    leg-4 hoist flipped it, old 1.7×-behind row stale), wordcount 1.12×
+    (from 1.5×), shapes 1.03 borderline behind V8 (.prop CSE remains).
+    node_modules/watr carries the two unpublished watr commits
+    (3c056f8 intguard + 23861b0 print inf/-0 tokens) — publish, then
+    bump the dep. Parked-with-evidence rows stand: wordcount (table-key
     interning), immutable (SROA/escape), nqueens/raytrace/sort/qoi/dict
     (LLVM-class verdicts, no jz-side fix).
   * [x] 10 more bench cases - each area covered
@@ -3906,3 +3919,22 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   parity and +0.1% size, replacing silent adjacent-heap corruption.
   Follow-up (quality, not blocker): recurrence-pin owner — scoped
   alpha-renamer or tee-aware boolConvertToSelect.
+
+## 2026-07-14 — test262 regression from the implicit-binding local: CORRECTED
+- The emit-side writeVar mint ("implicit-binding local", landed with the 07-13
+  lane) regressed 50 test262 in-scope language pins + 9 builtins: legalizing ANY
+  unknown-name write let a later-emitted read of the same undeclared name
+  resolve to 0 instead of rejecting (`x = x`, `x++`, `x + (x = 1)` must throw
+  ReferenceError; emission visits the write before the read, so even a
+  void-gated mint leaked through analysis passes).
+- REPLACED with the structural fix: the ONLY motivating case was the bare
+  undeclared for-in binder (`for (let in {}) {}`, test/statements.js) — prepare's
+  for-in lowering now declares it in the loop's own decls when it resolves
+  nowhere (isDeclared/hasFunc/userGlobals all miss). Loop-scoped, documented
+  divergence from JS's implicit global.
+- test262 language 2975/0 (baseline 2972→2975 lifted), builtins 984/0; all four
+  legs 2917/0; selfhost 21/0 (warm 1.004×, fresh 1.079×). Pushed fd47c0de.
+- CI note: bench workflow fails on Root F example-corpus perf gates
+  (game-of-life 0.60×, rfft 0.81×, biquad/bytebeat win-limits) — Root F owner's
+  lane, not touched here. Prior selfhost run hit its 4h timeout (cancelled)
+  pre-kernel-fix; watching the fd47c0de run.
