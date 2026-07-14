@@ -337,7 +337,8 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
       if (!seen.has(key) && !typedIdxProven(n[1], n[2])) {
         if (typeof n[2] === 'string' && inds?.has(n[2])) {
           seen.add(key)
-          cands.push({ recv: n[1], idx: n[2], ind: n[2], slope: inds.get(n[2]) })
+          cands.push({ recv: n[1], idx: n[2], ind: n[2], slope: inds.get(n[2]),
+            entryC: decls.has(n[2]) ? intLiteralValue(decls.get(n[2])) : null })
         } else {
           const aff = affineIdxOfIV(n[2], iv, body, env)
           // symbolic slots: i32-machine exprs are exact; any other rides the f64
@@ -433,10 +434,12 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     if (!L.top) {
       if (L.startC == null) return false
       const n0 = L.cands.length
-      L.cands = L.cands.filter(c => c.ind == null)
+      // an induction whose ENTRY is a static init literal (`for (let j=0, k=0; …)`)
+      // lifts like any extent — only runtime-entry cursors are per-inner-entry
+      L.cands = L.cands.filter(c => c.ind == null || c.entryC != null)
       if (!L.cands.length) return false
-      // induction cands dropped (entry values are per-inner-entry): the level still
-      // needs ITS OWN intercept for them — the top guard must not brake it
+      // runtime-entry inductions dropped: the level still needs ITS OWN intercept
+      // for them — the top guard must not brake it
       if (L.cands.length !== n0) L.partial = true
     }
     // names the lifted guard READS at top entry (iv itself is NOT read — inner

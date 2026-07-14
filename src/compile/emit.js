@@ -27,7 +27,7 @@ import {
   ASSIGN_OPS,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT } from '../ctx.js'
-import { i64Hex, encodePtrHi, STR_HCACHE_BIT } from '../../layout.js'
+import { i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux } from '../../layout.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
 import { FITS_I32_MAX } from '../widen.js'
@@ -4080,7 +4080,6 @@ export const emitter = {
         // every LIFTED level is proven by THIS guard — brake their own intercepts
         // (re-versioning per level compounds 2^depth checked twins)
         for (const vs of levels) if (vs.bodyNode && !vs.partial) vs.bodyNode._tbVersioned = ctx.func
-        inc('__len')
         const result = []
         if (init != null) result.push(...emitVoid(init))
         const i64c = (n) => ['i64.const', n]
@@ -4120,7 +4119,22 @@ export const emitter = {
           }
           return r
         }
-        const len64Of = (recv) => ['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(recv))]]]
+        // len as ONE inline header load for a RESOLVED elem type (owned byteLen at
+        // base-8, view at descriptor[0]; elemCount = byteLen >> shift) — a call in
+        // the guard costs per LOOP ENTRY on re-entered inner nests (fft measured
+        // 1.35x with calls, parity without); unresolved receivers keep $__len.
+        const len64Of = (recv) => {
+          const aux = typedElemAux(ctx.types.typedElem?.get(recv))
+          if (aux == null) {
+            inc('__len')
+            return ['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(recv))]]]
+          }
+          const et = aux & 7, isView = (aux & 8) !== 0
+          const shift = (aux & 16) ? 3 : et <= 1 ? 0 : et <= 3 ? 1 : et <= 6 ? 2 : 3
+          const base = ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(emit(recv))], ['i64.const', LAYOUT.OFFSET_MASK]]]
+          return ['i64.extend_i32_u', ['i32.shr_u',
+            ['i32.load', isView ? base : ['i32.sub', base, ['i32.const', 8]]], ['i32.const', shift]]]
+        }
         // one guard covers the whole NEST — each level contributes its own max-iv
         // and extent conjuncts (nested recognizers need the BARE nest in the fast
         // arm, and one guard per nest beats one per row)
@@ -4188,7 +4202,8 @@ export const emitter = {
           // entry + slope*t, t ∈ [0, maxIv - ivEntry] — monotone either direction, so
           // BOTH endpoints guard in [0, len) and every intermediate value is covered
           for (const c of indGroups.values()) {
-            const kE = slotI64(c.ind, exprType(c.ind, ctx.func.locals) === 'i32' ? 'i32' : 'f64')
+            const kE = c.entryC != null ? i64c(c.entryC)
+              : slotI64(c.ind, exprType(c.ind, ctx.func.locals) === 'i32' ? 'i32' : 'f64')
             const slopeLit = intLiteralValue(c.slope)
             const slope64 = slopeLit != null ? i64c(slopeLit)
               : slotI64(c.slope, exprType(c.slope, ctx.func.locals) === 'i32' ? 'i32' : 'f64')
