@@ -1378,3 +1378,76 @@ test('census: const-table arrow args in a bundled init reach the param lattice',
   is(exports.go(1, 255), (510n).toString(16), 'bigint arg through the init table dispatches .bigint:toString')
   is(exports.go(0, 255), (765n).toString(16), 'both table arms typed')
 })
+
+// Cross-function STATIC LENGTH (paramReps.typedLen): when every call site of a
+// module-local function passes a typed array of ONE known static length, the
+// param carries it — the callee's `.length` folds to the literal and the
+// static-length proof family (typedIdxProven, the interval walk) drops bounds
+// machinery. Exact-agreement only; exported/value-used callees never take the
+// fact (the host can call them with anything).
+test('typedLen: unanimous static length folds the callee .length literal', () => {
+  const wat = jz.compile(`
+    const tally = (a) => {
+      let s = 0
+      for (let i = 0; i < a.length; i++) s += a[i]
+      return s + a.length
+    }
+    export let go = () => {
+      const b = new Float64Array(4242)
+      b[0] = 7
+      return tally(b)
+    }
+  `, { wat: true })
+  ok(count(wat, /4242/g) >= 1, 'callee .length folded to the call-site literal')
+  is(count(wat, /\$__len\b/g), 0, 'no runtime length read survives')
+})
+
+test('typedLen: disagreeing call sites poison the fact', () => {
+  // tally is loop-bodied so it survives inlining — the call boundary (where
+  // the fact would live) must keep a RUNTIME length read when sites disagree.
+  const wat = jz.compile(`
+    const tally = (a) => {
+      let s = 0
+      for (let i = 0; i < a.length; i++) s += a[i]
+      return s + a.length
+    }
+    export let go = (k) => {
+      const b = new Float64Array(4242)
+      const c = new Float64Array(17)
+      b[0] = 1; c[0] = 2
+      return k ? tally(b) : tally(c)
+    }
+  `, { wat: true })
+  const tallySeg = wat.slice(wat.indexOf('(func $tally'), wat.indexOf('(func $go'))
+  is(count(tallySeg, /4242|(?<!\d)17(?!\d)/g), 0, 'neither site length folds into tally')
+  ok(count(tallySeg, /i32\.load\b/g) >= 1, 'runtime header length read survives')
+  const { exports } = jz(`
+    const tally = (a) => {
+      let s = 0
+      for (let i = 0; i < a.length; i++) s += a[i]
+      return s + a.length
+    }
+    export let go = (k) => {
+      const b = new Float64Array(4242)
+      const c = new Float64Array(17)
+      b[0] = 1; c[0] = 2
+      return k ? tally(b) : tally(c)
+    }
+  `, { memory: 64 })
+  is(exports.go(1), 4243, 'site-1 value exact')
+  is(exports.go(0), 19, 'site-2 value exact')
+})
+
+test('typedLen: exported callee never takes the call-site length', () => {
+  // go calls read with a 4242-length array, but read is HOST-REACHABLE — a JS
+  // caller can pass any array, so the length must stay a runtime read.
+  const src = `
+    export let read = (a) => a.length
+    export let go = () => read(new Float64Array(4242))
+  `
+  const wat = jz.compile(src, { wat: true })
+  is(count(wat, /4242(?![\d])/g) <= 1, true, 'length not baked into read (alloc const only)')
+  const { exports } = jz(src, { memory: 64 })
+  is(exports.read(new Float64Array(3)), 3, 'host call with a different length stays correct')
+  is(exports.go(), 4242, 'internal call unchanged')
+})

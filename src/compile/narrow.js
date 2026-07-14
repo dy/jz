@@ -14,7 +14,7 @@ import {
   analyzeBody, findMutations, invalidateLocalsCache, mayBeNullish,
 } from './analyze.js'
 import { staticObjectProps } from '../static.js'
-import { scanBoundedLoops, exprType, typedElemCtor } from '../type.js'
+import { scanBoundedLoops, exprType, typedElemCtor, typedStaticLen } from '../type.js'
 import { typedElemAux, ctorFromElemAux } from '../../layout.js'
 import { observeProgramSlots } from './program-facts.js'
 import { valTypeOf } from '../kind.js'
@@ -114,6 +114,33 @@ function applyI32ParamSpecialization(paramReps, valueUsed, { skipTyped = false }
       if (skipTyped && r.val === VAL.TYPED) continue
       p.type = 'i32'
     }
+  }
+}
+
+// typedLen rides the same safety rails as intConst: only module-local direct
+// callees (not exported / value-used / raw), no rest/default positions, and a
+// body that never writes the param. Additionally requires the SETTLED typedCtor
+// — length evidence for a receiver that never proved typed is dead weight the
+// `.length` fold must not trust.
+function validateTypedLenParams(paramReps, valueUsed) {
+  for (const func of ctx.func.list) {
+    const hostReachable = func.exported || func.raw || valueUsed.has(func.name)
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    let candidates = null
+    for (const [k, r] of reps) {
+      if (r.typedLen == null) continue
+      if (hostReachable || !func.body || k === restIdx || k >= func.sig.params.length ||
+          r.typedCtor == null) { r.typedLen = null; continue }
+      const pname = func.sig.params[k].name
+      if (func.defaults?.[pname] != null) { r.typedLen = null; continue }
+      ;(candidates ||= new Map()).set(pname, r)
+    }
+    if (!candidates) continue
+    const mutated = new Set()
+    findMutations(func.body, new Set(candidates.keys()), mutated)
+    for (const name of mutated) candidates.get(name).typedLen = null
   }
 }
 
@@ -237,6 +264,28 @@ function buildCallerTypedCtx() {
     callerTypedCtx.set(func, callerTypedElemsFor(func, globalTE))
   }
   return callerTypedCtx
+}
+
+// Static LENGTHS visible per caller — analyzeBody's typedLens (stable
+// single-def `new T(<n>)` bindings; the tracker poisons on redef) shadowing
+// module globals, same shadowing rule as callerTypedElemsFor.
+function buildCallerTypedLenCtx() {
+  const out = new Map()
+  const globalTL = ctx.scope.globalTypedLen || new Map()
+  out.set(null, globalTL)
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    const facts = analyzeBody(func.body)
+    const local = facts.typedLens || new Map()
+    if (!globalTL.size) { out.set(func, local); continue }
+    const shadowed = new Set(facts.locals.keys())
+    for (const p of func.sig?.params || []) shadowed.add(p.name)
+    const merged = new Map()
+    for (const [k, v] of globalTL) if (!shadowed.has(k)) merged.set(k, v)
+    for (const [k, v] of local) merged.set(k, v)
+    out.set(func, merged)
+  }
+  return out
 }
 
 function applyTypedPointerParamAbi(paramReps, valueUsed) {
@@ -1196,6 +1245,27 @@ export default function narrowSignatures(programFacts, ast) {
   const runTypedFixpoint = () => runArrElemFixpoint('typedCtor', inferTypedCtor, callerTypedCtx, callerSidsCtx)
   runTypedFixpoint()
   runTypedFixpoint()
+
+  // STATIC LENGTH down call chains: when every call site passes a typed array
+  // of ONE known static length (`new Float64Array(8192)` — directly, via a
+  // stable caller binding, or via the caller's own already-settled param), the
+  // param carries it. Unlocks the whole static-length proof family inside
+  // callees — typedIdxProven's literal/masked/interval classes and the
+  // `.length` literal fold — where the length was born one frame up (heapsort
+  // reading `a` sized in main; a codec writing `out` sized at the call site).
+  // Exact-agreement only (mergeParamFact poisons on mismatch): the fact also
+  // feeds `.length` folds, so an under-approximating min would miscompile.
+  // Transitive via the same soft-fixpoint + hard-validate driver as typedCtor.
+  const callerTypedLenCtx = buildCallerTypedLenCtx()
+  const inferTypedLen = (arg, callerLens, paramFacts) => {
+    if (typeof arg === 'string') return callerLens?.get(arg) ?? paramFacts?.get(arg) ?? null
+    return typedStaticLen(arg)
+  }
+  runArrElemFixpoint('typedLen', inferTypedLen, callerTypedLenCtx)
+  // A length without a settled ctor is unusable evidence (the receiver never
+  // takes the typed read path) and a length on a host-reachable or rebound
+  // param is unsound — same exclusion discipline as intConst.
+  validateTypedLenParams(paramReps, valueUsed)
 
   // G: TYPED pointer-ABI narrowing — once .typedCtor agrees on a single
   // ctor across all call sites, narrow the param from NaN-boxed f64 to raw

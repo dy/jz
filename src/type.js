@@ -26,8 +26,8 @@ import { typedElemAux } from '../layout.js'
  *  NOT be mistaken for a typed-array construction (else its global misdispatches as
  *  a TypedArray, e.g. `map.set(k,v)` lowering to `arr.set(src,offset)`). */
 const TYPED_FAMILY_CTORS = new Set([
-  'Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
-  'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array', 'ArrayBuffer', 'DataView',
+  'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+  'Float16Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array', 'ArrayBuffer', 'DataView',
 ])
 
 /** Extract typed-array ctor name ('new.Float32Array', 'new.Int8Array.view', etc) from RHS,
@@ -924,6 +924,14 @@ function scanIntervalIdx(body, out, lens, ranges) {
       const r = NARROW_ELEM_RANGE[ctx.types.typedElem?.get(x)]
       return r ?? null
     }
+    // `X.length` of a typed receiver with a known static length — the length-
+    // identity atom: `const n = a.length` binds a singleton, `(a.length-1)>>1`
+    // style index math evaluates exactly. Typed lengths are fixed for the
+    // binding's lifetime (the tracker drops the entry on any rebinding).
+    if ((op === '.' || op === '?.') && e.length === 3 && typeof x === 'string' && e[2] === 'length') {
+      const L = lens(x)
+      if (L != null) return [L, L]
+    }
     if (e.length === 2 && op === '()') return ev(x)   // grouping, not a call
     if (e.length === 2 && (op === '-' || op === 'u-')) { const v = ev(x); return ipOk(v) && v ? [-v[1], -v[0]] : null }
     if (op === '?:' && e.length === 4) {   // join of both arms, each under its refinement
@@ -1472,7 +1480,8 @@ export function exprType(expr, locals) {
       const ctor = typedElemCtorOf(args[0], locals)
       if (ctor) {
         const aux = typedElemAux(ctor)
-        if (aux != null && (aux & 7) <= 5) return 'i32'
+        // int family only — Float16Array shares code 3 with a flag; its elements are floats
+        if (aux != null && (aux & 7) <= 5 && !(aux & 32)) return 'i32'
       }
     }
     return 'f64'

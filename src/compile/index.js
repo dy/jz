@@ -485,6 +485,13 @@ function analyzeFuncForEmit(func, programFacts) {
         if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
         if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, r.typedCtor)
         updateRep(pname, { val: VAL.TYPED })
+        // Unanimous static length from the call sites (validateTypedLenParams:
+        // module-local callee, never-written param, settled ctor) — the body's
+        // reads gain the static-length proof family, `.length` folds literal.
+        if (r.typedLen != null) {
+          if (!ctx.types.typedLen) ctx.types.typedLen = new Map()
+          if (!ctx.types.typedLen.has(pname)) ctx.types.typedLen.set(pname, r.typedLen)
+        }
       }
       if (r.val && !reassigned && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
       if (r.arrayElemSchema != null) updateRep(pname, { arrayElemSchema: r.arrayElemSchema })
@@ -1143,6 +1150,10 @@ function emitFunc(func, funcFacts, programFacts) {
         if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
         if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, r.typedCtor)
         if (!ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: VAL.TYPED })
+        if (r.typedLen != null) {
+          if (!ctx.types.typedLen) ctx.types.typedLen = new Map()
+          if (!ctx.types.typedLen.has(pname)) ctx.types.typedLen.set(pname, r.typedLen)
+        }
       }
       if (r.schemaId != null && !reassigned && !exported && !ctx.schema.vars.has(pname)) {
         ctx.schema.vars.set(pname, r.schemaId)

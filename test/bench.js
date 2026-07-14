@@ -173,18 +173,20 @@ const SIZE = {
   mandelbrot:     { as: 'win',  porf: 'win' },
   bitwise:        { as: 'win',  porf: 'win' },
   tokenizer:      { as: 'todo', porf: 'win' },
-  // aos/sort re-pinned after checked-by-default typed indexing (Root F):
+  // aos/sort were re-pinned after checked-by-default typed indexing (Root F):
   // JS-exact OOB semantics cost bytes per unproven site that AS's trap
-  // doesn't pay. The -Os lean lowering (if-form reads, function-entry len
-  // hoist, guard-inline pure stores, read→store i32 pairing) already restored
-  // crc32/mandelbrot/bitwise BELOW asc -Oz; the remaining owner is READ-VALUE
-  // BINDING NARROWING (`const a = src[i]` binds f64 element|undefined and
-  // every use pays ToInt32 — bind i32 with undefined→0 when all uses are
-  // int-class). Ratchet each row back to `win` as it lands. (A $__typed_idx
-  // call route was tried and REVERTED: +900 B helper chain vs ~3 inline sites.)
-  aos:            { as: 'tie',  porf: 'win' },
+  // doesn't pay. Restored by three engine waves: -Os lean lowering (if-form
+  // reads, len hoist, guard-inline pure stores), watr 5.5.0 intguard
+  // checked-read collapse (ToInt32-guarded reads → i32 if-forms through the
+  // -Os const pool), and the cross-function PARAM TYPEDLEN channel
+  // (narrow.js: unanimous static call-site lengths seed the callee's proof
+  // family — heapsort/codec params read main-sized arrays). aos 0.977 WIN;
+  // sort 1.027 TIE — its residue is flow-sensitive loop guard facts
+  // (`while (child < n)` refinement in scanIntervalIdx), the named owner.
+  // (Tried and REVERTED: $__typed_idx call route, +900 B vs ~3 inline sites.)
+  aos:            { as: 'win',  porf: 'win' },
   json:           { as: 'na',   porf: 'win' },
-  sort:           { as: 'todo', porf: 'win' },
+  sort:           { as: 'tie',  porf: 'win' },
   crc32:          { as: 'win',  porf: 'win' },
   dotprod:        { as: 'win',  porf: 'win' },
   // Integer kernels: jz wasm is smaller than AS. Transcendental-heavy pipelines
@@ -198,13 +200,16 @@ const SIZE = {
   // scaffolding lowers ~1.35× AS's lean -Oz output (wasm-opt finds <10% slack, so it's
   // jz's codegen shape, not bloat). Honest `todo` like synth/fft, not a size-win claim.
   blur:           { as: 'todo', porf: 'win' },
-  // Integer codec/hash kernels: runtime-length loops (the one class only
-  // loop-versioning proves; -Os drops the twins) — post-lean-lowering
-  // hash 1.02×, wav 1.18×, base64 1.23× vs asc -Oz; the binding-narrowing
-  // owner above closes these. `todo` until it lands, then ratchet to win.
-  hash:           { as: 'todo', porf: 'win' },
-  base64:         { as: 'todo', porf: 'win' },
-  wav:            { as: 'todo', porf: 'win' },
+  // Integer codec/hash kernels — ALL WIN. Two engine waves: watr 5.5.0
+  // intguard checked-read collapse (ToInt32-guarded reads → i32 if-forms,
+  // single-read ring, const pool) took hash to 0.94; the param typedLen
+  // channel + the `.length` interval atom then PROVED the codec loops and
+  // header stores outright (encode's `out` is main-sized — wav's 24 RIFF
+  // header guards and both verify loops dropped): hash 0.85, wav 0.98,
+  // base64 0.9995 (win by 1 byte — watch it), aos 0.98.
+  hash:           { as: 'win',  porf: 'win' },
+  base64:         { as: 'win',  porf: 'win' },
+  wav:            { as: 'win',  porf: 'win' },
   conv2d:         { as: 'win',  porf: 'win' },
   // lz/qoi carry larger match-finder / codec state machines than AS's lean -Oz
   // output — honest `todo` (printed, unasserted), not a size-parity claim.
