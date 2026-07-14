@@ -4148,6 +4148,18 @@ export const emitter = {
           // start proves it, read from the live iv local otherwise (top level only)
           const groups = new Map(), indGroups = new Map()
           for (const c of vs.cands) {
+            if (c.range != null) {
+              // interval-hulled idx against a dynamic length (the affine fallback).
+              // Numeric hull: one `hi < len` conjunct. Symbolic hull (wrap cursor vs
+              // a MUTABLE bound C): cursor ∈ [0, C-1] relative to C's runtime value —
+              // `C ≥ entryHi+1` (the entry fits) ∧ `C+bias < len` close it.
+              if (c.range.hiName != null) {
+                const cS = slotI64(c.range.hiName, exprType(c.range.hiName, ctx.func.locals) === 'i32' ? 'i32' : 'f64')
+                conjs.push(['i64.ge_s', cS, i64c(c.range.entryHi + 1)])
+                conjs.push(['i64.lt_s', ['i64.add', cS, i64c(c.range.hiBias)], len64Of(c.recv)])
+              } else conjs.push(['i64.lt_s', i64c(c.range[1]), len64Of(c.recv)])
+              continue
+            }
             if (c.ind != null) {
               const gk = c.recv + '\x00' + c.ind
               if (!indGroups.has(gk)) indGroups.set(gk, c)

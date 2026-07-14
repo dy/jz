@@ -349,6 +349,16 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
             seen.add(key)
             const slots = aff.slots.map(t => ({ ...t, kind: exprType(t.e, locals) === 'i32' ? 'i32' : 'f64' }))
             cands.push({ recv: n[1], idx: n[2], a: aff.a, slots, bConst: aff.bConst })
+          } else {
+            // LAST resort — beyond the affine model (masked ring cursors, wrap
+            // idioms): an interval HULL the static walk bounded but couldn't
+            // discharge (dynamic receiver length) closes with one runtime
+            // `hull.hi < len` conjunct. Strictly a fallback: it must never steal
+            // an affine candidate (whose per-iv extents are tighter).
+            const rng = intervalIdxRanges(ctx).get(key)
+            if (rng && (rng.hiName == null || stable(rng.hiName))) {
+              seen.add(key); cands.push({ recv: n[1], idx: n[2], range: rng })
+            }
           }
         }
       }
@@ -431,6 +441,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     if (typeof L.bound === 'string') names.push(L.bound)
     for (const c of L.cands) {
       names.push(c.recv)
+      if (c.range != null) { if (c.range.hiName != null) names.push(c.range.hiName); continue }
       if (c.ind != null) { names.push(c.ind); if (typeof c.slope === 'string') names.push(c.slope) }
       else for (const t of c.slots) { if (typeof t.e === 'string') names.push(t.e); else exprNames(t.e, names) }
     }
@@ -788,6 +799,7 @@ const ipOk = (v) => v != null && v[0] >= -IP_LIM && v[1] <= IP_LIM
  *  assignments embedded in expressions). */
 function scanIntervalIdx(body, out, lens, ranges) {
   const env = new Map()   // name → [lo, hi] | null (unknown)
+  const symEnv = new Map()   // name → { h: symbolic hull, incNode } — wrap cursors vs mutable bounds
   // names written inside ANY closure in this body: a later call can change them at
   // any point — they never hold a trusted interval
   const closureWrites = new Set()
@@ -916,6 +928,14 @@ function scanIntervalIdx(body, out, lens, ranges) {
         const k = idxKey(n[1], n[2]), prev = ranges.get(k)
         ranges.set(k, prev ? [Math.min(prev[0], idxV[0]), Math.max(prev[1], idxV[1])] : idxV)
       }
+      // symbolic wrap hull (`seq[si]` with si ∈ [0, SEQLEN-1], SEQLEN mutable):
+      // exported only while the cursor's pre-increment window is open; a numeric
+      // or conflicting prior sighting voids the key (one symbolic form per key)
+      else if (idxV == null && typeof n[2] === 'string' && symEnv.has(n[2]) && ranges) {
+        const k = idxKey(n[1], n[2]), h = symEnv.get(n[2]).h, prev = ranges.get(k)
+        if (prev == null) ranges.set(k, h)
+        else if (prev.hiName !== h.hiName || prev.hiBias !== h.hiBias) ranges.set(k, null)
+      }
       return
     }
     if (op === 'let' || op === 'const') {
@@ -927,8 +947,13 @@ function scanIntervalIdx(body, out, lens, ranges) {
       }
       return
     }
-    if (op === '=' && typeof n[1] === 'string') { setEnv(n[1], ev(n[2])); return }
+    if (op === '=' && typeof n[1] === 'string') {
+      if (symEnv.get(n[1])?.incNode === n) symEnv.delete(n[1])   // past the increment: window closed
+      setEnv(n[1], ev(n[2]))
+      return
+    }
     if (ASSIGN_OPS.has(op) || op === '++' || op === '--') {
+      if (typeof n[1] === 'string' && symEnv.get(n[1])?.incNode === n) symEnv.delete(n[1])
       for (let k = 2; k < n.length; k++) visit(n[k])
       if (typeof n[1] === 'string') env.set(n[1], null)
       else {
@@ -980,7 +1005,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
       // index of table-driven maps): the pair is self-closing on [0, C-1], so an
       // entry inside that range keeps the name there for the WHOLE loop. Seeded
       // before the kill; the pair must be the name's only writes in this loop.
-      const wraps = []
+      const wraps = [], symWraps = []
       if (wbody != null) {
         const stmts = Array.isArray(wbody) && (wbody[0] === ';' || wbody[0] === '{}') ? wbody : [';', wbody]
         for (let k = 1; k < stmts.length - 1; k++) {
@@ -995,24 +1020,33 @@ function scanIntervalIdx(body, out, lens, ranges) {
               && Array.isArray(b2[1]) && b2[1][0] === '>=' && b2[1][1] === nm
               && Array.isArray(b2[2]) && b2[2][0] === '=' && b2[2][1] === nm && intLiteralValue(b2[2][2]) === 0)) continue
           const C = constInt(b2[1][2])
-          if (C == null || C < 1) continue
+          const Cname = C == null && typeof b2[1][2] === 'string' ? b2[1][2] : null
+          if ((C == null || C < 1) && Cname == null) continue
           const e0 = env.get(nm)
-          if (!e0 || e0[0] < 0 || e0[1] > C - 1) continue
+          if (!e0 || e0[0] < 0 || (C != null && e0[1] > C - 1)) continue
           // the pair must be the only writes (2 exact: the add and the reset)
           let writes = 0
           const cw = (x) => { if (!Array.isArray(x)) return
             if ((ASSIGN_OPS.has(x[0]) || x[0] === '++' || x[0] === '--') && x[1] === nm) writes++
             for (let j = 1; j < x.length; j++) cw(x[j]) }
           cw(wbody)
-          if (writes === 2) wraps.push([nm, [0, C - 1]])
+          if (writes !== 2) continue
+          if (C != null) wraps.push([nm, [0, C - 1]])
+          // symbolic bound (`let SEQLEN = 5` — mutable): the invariant is
+          // si ∈ [0, C-1] RELATIVE to C's runtime value — recorded as a symbolic
+          // hull for reads BEFORE the increment (the versioning guard closes it
+          // with `C ≥ entryHi+1 ∧ C ≤ len`); no numeric env seeding is possible
+          else symWraps.push([nm, { lo: 0, hiName: Cname, hiBias: -1, entryHi: e0[1] }, a2])
         }
       }
       killAssigned(n)
       if (iv) env.set(iv, [entry[0], brange[1] - 1])
       for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)
+      for (const [nm, h, incNode] of symWraps) if (!closureWrites.has(nm)) symEnv.set(nm, { h, incNode })
       for (let k = 2; k < n.length; k++) visit(n[k])
       if (iv) env.set(iv, [Math.min(entry[0], brange[0]), Math.max(entry[1], brange[1])])
       for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)   // holds at exit too
+      for (const [nm] of symWraps) symEnv.delete(nm)
       return
     }
     if (op === 'do' || op === 'for-of' || op === 'for-in' || op === 'label'
