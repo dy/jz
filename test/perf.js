@@ -721,16 +721,24 @@ test('codegen: float→int |0 of a finite, in-range value drops the +∞-guard s
   // the guard is gone AND the result still equals JS ToInt32 across in-range, wrap-boundary, ±∞.
   // `set` owns the byte STORE (its own param→u8 coercion); `pack`/`wide` read the byte via a load,
   // so their function bodies contain ONLY the |0 truncation under test — no confounding coercion.
-  const src = `let n=4; let u8=new Uint8Array(n);
-    export let set = (i,b) => { u8[i]=b }
-    export let pack = (i) => (10.0+200.0*(u8[i]/255.0))|0
-    export let wide = (i) => (u8[i]*10000000.0)|0
+  // Root F: an arbitrary-index u8[i] is a branchless checked select-read by design —
+  // a CONST length + masked index keeps the loads proven-bare so the fn body contains
+  // ONLY the |0 truncation under test.
+  // Root F: `u8[i&3]` is mask-PROVEN against the const length (bare load), but the
+  // f64→i32 INDEX coercion of the param carries its own documented ∞-guard select +
+  // i64 trunc — the |0-under-test is everything AFTER the load, so the pins scope
+  // to the post-load slice.
+  const src = `const n=4; let u8=new Uint8Array(n);
+    export let set = (i,b) => { u8[i&3]=b }
+    export let pack = (i) => (10.0+200.0*(u8[i&3]/255.0))|0
+    export let wide = (i) => (u8[i&3]*10000000.0)|0
     export let vardiv = (a,c) => (a*1.0/c)|0`
   const wat = compile(src, { optimize: 'speed', wat: true })
-  const pack = wat.match(/\(func \$pack[\s\S]*?\n  \)/)[0]
+  const beforeLoad = (fn) => fn.slice(0, fn.indexOf('i32.load8_u'))   // s-exprs print outermost-first
+  const pack = beforeLoad(wat.match(/\(func \$pack[\s\S]*?\n  \)/)[0])
   ok(/i32\.trunc_sat_f64_s/.test(pack) && !/\bselect\b/.test(pack) && !/i64\.trunc_sat/.test(pack),
     'in-range |0 is a bare i32.trunc_sat_f64_s — no +∞-guard select, no i64 round-trip')
-  const wide = wat.match(/\(func \$wide[\s\S]*?\n  \)/)[0]
+  const wide = beforeLoad(wat.match(/\(func \$wide[\s\S]*?\n  \)/)[0])
   ok(!/\bselect\b/.test(wide), 'finite-but-large |0 drops the +∞ guard (keeps the mod-2^32 wrap)')
   const { exports } = jz(src, { optimize: 'speed' })
   const u = (i, b) => { exports.set(i, b); return i }
@@ -1017,8 +1025,19 @@ test('codegen: f64 threshold in a recurrence lowers to a branchless select at sp
       return acc
     }`
   const n = (w, re) => (w.match(re) || []).length
-  const watSpeed = compile(src, { wat: true, optimize: 'speed' })
-  const watDefault = compile(src, { wat: true, optimize: 2 })  // pin level 2 (pass off) — JZ_TEST_OPTIMIZE must not flip the gated half of this codegen pin
+  // Root F versioning wraps the loop; the recurrence contract is the $sweep FAST
+  // arm's (paren-matched — the arm holds the select under test; the cold checked
+  // twin legitimately converts).
+  const sweepArm = (w) => {
+    const f = w.match(/\(func \$sweep[\s\S]*?\n  \)/)?.[0] ?? w
+    const t = f.indexOf('(then')
+    if (t < 0) return f
+    let d = 0, i = t
+    for (; i < f.length; i++) { if (f[i] === '(') d++; else if (f[i] === ')' && --d === 0) break }
+    return f.slice(t, i + 1)
+  }
+  const watSpeed = sweepArm(compile(src, { wat: true, optimize: 'speed' }))
+  const watDefault = sweepArm(compile(src, { wat: true, optimize: 2 }))  // pin level 2 (pass off) — JZ_TEST_OPTIMIZE must not flip the gated half of this codegen pin
   ok(n(watSpeed, /\bselect\b/g) >= 1, 'speed: threshold lowered to a select')
   is(n(watSpeed, /f64\.convert_i32_s/g), 0, 'speed: no i32→f64 convert left on the recurrence')
   is(n(watDefault, /f64\.convert_i32_s/g), 1, 'default level keeps the convert (pass is speed-gated)')
@@ -1059,7 +1078,17 @@ test('codegen: named i32 index feeder (let idx = y*W + x) computes in native i32
       return s
     }`, { wat: true })
   const at = wat.indexOf('(func $sum')
-  const fn = wat.slice(at, wat.indexOf('(func', at + 6))
+  let fn = wat.slice(at, wat.indexOf('(func', at + 6))
+  // Root F versioning: the checked twin's f64 paths are by design — measure the
+  // FAST arm (paren-matched: the arm holds its own ifs)
+  {
+    const t = fn.indexOf('(then')
+    if (t >= 0) {
+      let d = 0, i = t
+      for (; i < fn.length; i++) { if (fn[i] === '(') d++; else if (fn[i] === ')' && --d === 0) break }
+      fn = fn.slice(t, i + 1)
+    }
+  }
   const n = (re) => (fn.match(re) || []).length
   is(n(/i32\.trunc_sat_f64_s/g), 0, 'no f64→i32 truncation of the index')
   is(n(/f64\.mul/g), 0, 'row offset py*w is an i32.mul, not f64.mul')
