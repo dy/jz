@@ -250,8 +250,10 @@ const SIZE_BUDGET = {
   callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
   bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750,
   dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 245000,
-  // wav 2050 → 2250: Root F checked reads in the runtime-length sample loop (+100 measured)
-  hash: 1500, base64: 2300, wav: 2250, conv2d: 5600, lz: 9200, qoi: 10500,
+  // wav 2050 → 2250, base64 2300 → 2400: Root F checked reads/versioning in
+  // the runtime-length codec loops (+100/+55 measured). Ratchet down with the
+  // binding-narrowing round.
+  hash: 1500, base64: 2400, wav: 2250, conv2d: 5600, lz: 9200, qoi: 10500,
   // hashjoin 1500 → 1900: checked-by-default typed indexing (Root F) added
   // inline bounds/undefined semantics to the probe/insert loops' unproven
   // reads (+343 B measured). Ratchet down with any checked-read size shrink.
