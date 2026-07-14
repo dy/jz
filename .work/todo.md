@@ -31,12 +31,19 @@
     faster, kill the convert∘trunc pair or leave the guard). 2026-07-14
     fresh standings: immutable WON (0.50 leads V8 0.63 + JSC 0.91 —
     leg-4 hoist flipped it, old 1.7×-behind row stale), wordcount 1.12×
-    (from 1.5×), shapes 1.03 borderline behind V8 (.prop CSE remains).
-    node_modules/watr carries the two unpublished watr commits
-    (3c056f8 intguard + 23861b0 print inf/-0 tokens) — publish, then
-    bump the dep. Parked-with-evidence rows stand: wordcount (table-key
-    interning), immutable (SROA/escape), nqueens/raytrace/sort/qoi/dict
-    (LLVM-class verdicts, no jz-side fix).
+    (from 1.5×). shapes WON 2026-07-14 (782860e3): .prop CSE landed as a
+    devirt duplicate-read memo — a second read of the same (never-written
+    receiver, prop) in a straight-line region reuses the first's tee'd
+    i64, the whole sid-dispatch drops (clobber/arm/loop-aware; pure
+    tee-free operands only; a NUL byte in the memo-key template broke the
+    self-host PARSE — subset gate caught it, scrubbed). −5.7% interleaved
+    cs exact; same-run table jz 4.28 LEADS V8 5.16 + JSC 15.10; suite
+    2918/0 + selfhost 21/21 (rebuilt kernel) + fuzz 2000/0; pin in
+    test/optimizer.js (171/171). node_modules/watr carries the two
+    unpublished watr commits (3c056f8 intguard + 23861b0 print inf/-0
+    tokens) — publish, then bump the dep. Parked-with-evidence rows
+    stand: wordcount (table-key interning), immutable (SROA/escape),
+    nqueens/raytrace/sort/qoi/dict (LLVM-class verdicts, no jz-side fix).
   * [x] 10 more bench cases - each area covered
   * STATE 2026-07-09 (JSC leg measured): quiet-machine full table, 49 cases ran.
     GEOMEAN: jz beats every engine — V8 1.89x, deno 1.83x, JSC 1.50x, bun 1.52x
