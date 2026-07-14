@@ -24,25 +24,39 @@
     dispatch −31% interleaved (10.14→7.02ms, cs exact, 20.4→17.7 kB;
     corpus collateral ZERO — conv2d/fft/shapes/wordcount/json
     byte-identical), fresh table jz 7.01 vs JSC 3.24 (2.17× from 2.97×),
-    V8 12.25 beaten 1.75×. Remaining dispatch gap owner: per-arm ToInt32
-    guard-selects survive via coalesce-shared temps (resolve-in-round-1
-    flow-facts design; NOTE the guard-only collapse counter-result —
-    −350 B but +9%, predicted cmov beats trunc serialization — leaner ≠
-    faster, kill the convert∘trunc pair or leave the guard). 2026-07-14
-    fresh standings: immutable WON (0.50 leads V8 0.63 + JSC 0.91 —
-    leg-4 hoist flipped it, old 1.7×-behind row stale), wordcount 1.12×
-    (from 1.5×). shapes WON 2026-07-14 (782860e3): .prop CSE landed as a
-    devirt duplicate-read memo — a second read of the same (never-written
-    receiver, prop) in a straight-line region reuses the first's tee'd
-    i64, the whole sid-dispatch drops (clobber/arm/loop-aware; pure
-    tee-free operands only; a NUL byte in the memo-key template broke the
-    self-host PARSE — subset gate caught it, scrubbed). −5.7% interleaved
-    cs exact; same-run table jz 4.28 LEADS V8 5.16 + JSC 15.10; suite
-    2918/0 + selfhost 21/21 (rebuilt kernel) + fuzz 2000/0; pin in
-    test/optimizer.js (171/171). node_modules/watr carries the two
-    unpublished watr commits (3c056f8 intguard + 23861b0 print inf/-0
-    tokens) — publish, then bump the dep. Parked-with-evidence rows
-    stand: wordcount (table-key interning), immutable (SROA/escape),
+    V8 12.25 beaten 1.75×. Dispatch RESIDUAL closed 2026-07-14 (watr
+    f0e6499): intguard whole-temp collapse — every use of a single-tee'd
+    convert temp being a guard/trunc rewrites atomically to one fresh i32
+    tee + gets (the per-site count gate rightly refused; merge/coalesce
+    then poisoned the temps — this resolves in the round the shape is
+    born). Arms fully RAW; another −7.8% (cum −36%). Fuzz seed 794 caught
+    a param-fact hole (a param's one write is NOT single-def — pre-write
+    reads see the caller's fractional value) — params excluded from every
+    single-def fact, pinned. Quiet-machine final: dispatch jz 4.37 vs JSC
+    2.39 (1.83× from 2.97×), V8 8.56 beaten 1.96×; residual = the tree's
+    structural floor (all 8 arms + 7 selects vs JSC's profiled JIT).
+    NOTE the guard-only collapse counter-result stands: −350 B but +9%,
+    predicted cmov beats trunc serialization — leaner ≠ faster; the win
+    was killing convert∘trunc∘guard TOGETHER. 2026-07-14 standings:
+    immutable WON (0.50 leads V8 0.63 + JSC 0.91), shapes WON (782860e3
+    devirt duplicate-read memo, −5.7% — quiet-machine 2.85 leads V8 3.42
+    + JSC 9.73; NUL-byte-in-template broke the self-host parse, subset
+    gate caught it). wordcount 1.09× behind V8 (from 1.5×; beats JSC
+    2.97): collections fwd-inline landed (d43a98b5) — probe openings
+    inline box→offset, the cap load IS the forward check (-1 sentinel →
+    cold __ptr_offset_fwd), the per-probe __ptr_offset call (23.5% self)
+    gone from every hash/map/set probe/upsert, −8% interleaved cs exact;
+    profile now one flat probe kernel (~85% self: inline hash + walk +
+    guards vs V8 dictionary ICs) — remaining row open, structural.
+    watr 5.4.2 PUBLISHED (3c056f8 intguard rules, 23861b0 print tokens,
+    f0e6499 whole-temp+param fix, 0eea517 subset hardening) — jz dep
+    bumped ^5.4.2 (978aad46), node_modules hand-synced; package-lock
+    awaits an npm install. KERNEL-SEMANTICS BUG HUNT (found via watr
+    self-host leg, all repro'd): (1) `x !== x` on NaN in-kernel
+    bit-compares → false (JS: true); (2) a let + conditional-reassign
+    union local reads numbers as empty strings; (3) Number.isFinite /
+    Object.is in-kernel misfold (finite ints classed non-finite). Own
+    arc. Parked-with-evidence rows stand: immutable (SROA/escape),
     nqueens/raytrace/sort/qoi/dict (LLVM-class verdicts, no jz-side fix).
   * [x] 10 more bench cases - each area covered
   * STATE 2026-07-09 (JSC leg measured): quiet-machine full table, 49 cases ran.
