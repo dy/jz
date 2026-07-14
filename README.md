@@ -27,9 +27,6 @@ JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_D
 | Scientific, numeric, ML      | Security crypto, big-ints |
 | Hashing, checksums, RNG      | Glue, plumbing, orchestration |
 
-Output `.wasm` is portable — run it in any host (browser, Node, Deno, edge, plugins), or take it native via [wasm2c](https://github.com/WebAssembly/wabt) (wasm → C → binary).
-
-
 ## Usage
 
 `npm install jz`
