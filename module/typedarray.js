@@ -1349,15 +1349,25 @@ export default (ctx) => {
       : et === 6 ? ['f64.promote_f32', ['f32.load', off]]
       : [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[et], off]]
     if (!proven) {
-      inc('__len')
-      const ti = tempI32('tbi')
-      const off = ['i32.add', typedDataAddr(emit(arr), isView), ['i32.shl', ['local.get', `$${ti}`], ['i32.const', SHIFT[et]]]]
+      // BRANCHLESS checked read: `select(load(in ? idx : 0), undefined, in)`. The
+      // address clamp makes the load unconditionally safe (index 0 of the data
+      // region is mapped arena even for a 0-length array — the loaded value is
+      // select-discarded), and the branch-free shape keeps checked reads inside
+      // straight-line kernel bodies the SIMD recognizers can still lift.
+      // len inlines to one header load for a RESOLVED elem type (no call — the
+      // SIMD recognizers require call-free kernel bodies): owned byteLen at
+      // base-8, view byteLen at descriptor[0]; elemCount = byteLen >> shift.
+      const ti = tempI32('tbi'), tin = tempI32('tbn')
+      const lenIR = ['i32.shr_u',
+        ['i32.load', isView ? typedBase(emit(arr)) : ['i32.sub', typedBase(emit(arr)), ['i32.const', 8]]],
+        ['i32.const', SHIFT[et]]]
+      const off = ['i32.add', typedDataAddr(emit(arr), isView),
+        ['i32.shl', ['select', ['local.get', `$${ti}`], ['i32.const', 0], ['local.get', `$${tin}`]],
+          ['i32.const', SHIFT[et]]]]
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${ti}`, idx(i)],
-        ['if', ['result', 'f64'],
-          ['i32.lt_u', ['local.get', `$${ti}`], ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(arr))]]],
-          ['then', loadOf(off)],
-          ['else', undefExpr()]]], 'f64')
+        ['local.set', `$${tin}`, ['i32.lt_u', ['local.get', `$${ti}`], lenIR]],
+        ['select', loadOf(off), undefExpr(), ['local.get', `$${tin}`]]], 'f64')
     }
     const objIR = emit(arr), vi = idx(i)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
@@ -1389,7 +1399,9 @@ export default (ctx) => {
     // Wrap a store statement in the bounds guard on the unproven path. The value
     // temp is set OUTSIDE the guard (spec: RHS evaluates regardless).
     const guard = (store) => proven ? store
-      : ['if', ['i32.lt_u', vi, ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(arr))]]], ['then', store]]
+      : ['if', ['i32.lt_u', vi, ['i32.shr_u',
+          ['i32.load', isView ? typedBase(emit(arr)) : ['i32.sub', typedBase(emit(arr)), ['i32.const', 8]]],
+          ['i32.const', SHIFT[et]]]], ['then', store]]
     const objIR = emit(arr), valIR = emit(val)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     if (isBigInt) {

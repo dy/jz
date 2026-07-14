@@ -38,7 +38,7 @@ import {
   containsDeclOf, cloneWithSubst, containsKnownTypedArrayIndex,
   smallConstForTripCount, isTerminator, scanBoundedLoops, inBoundsCharCodeAt,
   exprType, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
-  inBoundsArrIdx, typedIdxProven, versionableTypedFor, idxKey,
+  inBoundsArrIdx, typedIdxProven, versionableTypedNest, idxKey,
 } from '../type.js'
 import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
@@ -4073,8 +4073,8 @@ export const emitter = {
     // skipping.
     if (!labeledContinue && body._tbVersioned !== ctx.func
         && (!ctx.transform.optimize || ctx.transform.optimize.versionTypedBounds !== false)) {
-      const vs = versionableTypedFor(init, cond, step, body, ctx.func.locals)
-      if (vs) {
+      const levels = versionableTypedNest(init, cond, step, body, ctx.func.locals)
+      if (levels) {
         body._tbVersioned = ctx.func
         inc('__len')
         const result = []
@@ -4082,26 +4082,6 @@ export const emitter = {
         const i64c = (n) => ['i64.const', n]
         const ext = (ir) => ['i64.extend_i32_s', ir]
         const conjs = []
-        // max iv as i64. An 'f64' bound (untyped param, unknown box) converts via
-        // ceil (`<`: the max int iv under B) / floor (`<=`) + trunc_sat — never traps —
-        // with a `|B| ≤ 2^31` conjunct making the conversion exact: NaN and box bit
-        // patterns fail the abs-compare and fall to the checked arm; saturated garbage
-        // past the limit is conjunct-dead. i64 extents then never overflow
-        // (|terms| ≤ 2^31, a is an i32 literal → |hi| < 2^63).
-        const maxIv = tempI64('tvq')
-        if (vs.bKind === 'f64') {
-          const bF = temp('tvf')
-          result.push(['local.set', `$${bF}`, asF64(emit(vs.bound))])
-          conjs.push(['f64.le', ['f64.abs', ['local.get', `$${bF}`]], ['f64.const', 2147483648]])
-          result.push(['local.set', `$${maxIv}`,
-            ['i64.trunc_sat_f64_s', [vs.incl ? 'f64.floor' : 'f64.ceil', ['local.get', `$${bF}`]]]])
-          if (vs.bump - (vs.incl ? 0 : 1)) result.push(['local.set', `$${maxIv}`,
-            ['i64.add', ['local.get', `$${maxIv}`], i64c(vs.bump - (vs.incl ? 0 : 1))]])
-        } else {
-          const adj = vs.bump - (vs.incl ? 0 : 1)
-          result.push(['local.set', `$${maxIv}`,
-            adj ? ['i64.add', ext(asI32(emit(vs.bound))), i64c(adj)] : ext(asI32(emit(vs.bound)))])
-        }
         // one evaluation per symbolic-offset slot (a stable name or an invariant pure
         // expr like `y*w`); an 'f64' slot adds `v integral ∧ |v| ≤ 2^31` conjuncts —
         // the int model of `a*iv + v` is exact only for integral v (trunc does NOT
@@ -4128,21 +4108,6 @@ export const emitter = {
           slots.set(key, s)
           return s
         }
-        // one extent conjunct pair per (recv, a, slots) group: hi = a*maxIv+Σkᵢ·slotᵢ+maxC
-        // < len, plus lo = a*entry+Σkᵢ·slotᵢ+minC ≥ 0 — folded away when a static start
-        // proves it, read from the live iv local at guard time otherwise (while-shapes)
-        const groups = new Map(), indGroups = new Map()
-        for (const c of vs.cands) {
-          if (c.ind != null) {
-            const gk = c.recv + '\x00' + c.ind
-            if (!indGroups.has(gk)) indGroups.set(gk, c)
-            continue
-          }
-          const gk = c.recv + '\x00' + c.a + '\x00' + c.slots.map(t => t.k + '*' + slotKey(t.e)).join('+')
-          const g = groups.get(gk)
-          if (!g) groups.set(gk, { recv: c.recv, a: c.a, slots: c.slots, maxC: c.bConst, minC: c.bConst })
-          else { g.maxC = Math.max(g.maxC, c.bConst); g.minC = Math.min(g.minC, c.bConst) }
-        }
         const slotSum = (base, list) => {
           let r = base
           for (const t of list) {
@@ -4152,47 +4117,124 @@ export const emitter = {
           return r
         }
         const len64Of = (recv) => ['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(recv))]]]
-        for (const g of groups.values()) {
-          let hi = slotSum(['i64.mul', i64c(g.a), ['local.get', `$${maxIv}`]], g.slots)
-          if (g.maxC) hi = ['i64.add', hi, i64c(g.maxC)]
-          conjs.push(['i64.lt_s', hi, len64Of(g.recv)])
-          // low extent: static start folds (candidates with a provably-negative static
-          // lo were filtered), runtime entry reads iv through the slot machinery (an
-          // f64 iv gets the integral∧range conjuncts — entry integrality carries
-          // through integer advances)
-          if (vs.startC != null && !g.slots.length) continue
-          let lo = slotSum(vs.startC != null ? i64c(g.a * vs.startC)
-            : ['i64.mul', i64c(g.a), slotI64(vs.iv, vs.ivKind)], g.slots)
-          if (g.minC) lo = ['i64.add', lo, i64c(g.minC)]
-          conjs.push(['i64.ge_s', lo, i64c(0)])
+        // one guard covers the whole NEST — each level contributes its own max-iv
+        // and extent conjuncts (nested recognizers need the BARE nest in the fast
+        // arm, and one guard per nest beats one per row)
+        const levelInfo = new Map()
+        for (const vs of levels) {
+          // max iv as i64. An 'f64' bound (untyped param, unknown box) converts via
+          // ceil (`<`: the max int iv under B) / floor (`<=`) + trunc_sat — never
+          // traps — with a `|B| ≤ 2^31` conjunct making the conversion exact: NaN and
+          // box bit patterns fail the abs-compare and fall to the checked arm;
+          // saturated garbage past the limit is conjunct-dead. i64 extents then never
+          // overflow (|terms| ≤ 2^31, a is an i32 literal → |hi| < 2^63).
+          const maxIv = tempI64('tvq')
+          if (vs.bKind === 'f64') {
+            const bF = temp('tvf')
+            result.push(['local.set', `$${bF}`, asF64(emit(vs.bound))])
+            conjs.push(['f64.le', ['f64.abs', ['local.get', `$${bF}`]], ['f64.const', 2147483648]])
+            result.push(['local.set', `$${maxIv}`,
+              ['i64.trunc_sat_f64_s', [vs.incl ? 'f64.floor' : 'f64.ceil', ['local.get', `$${bF}`]]]])
+            if (vs.bump - (vs.incl ? 0 : 1)) result.push(['local.set', `$${maxIv}`,
+              ['i64.add', ['local.get', `$${maxIv}`], i64c(vs.bump - (vs.incl ? 0 : 1))]])
+          } else {
+            const adj = vs.bump - (vs.incl ? 0 : 1)
+            result.push(['local.set', `$${maxIv}`,
+              adj ? ['i64.add', ext(asI32(emit(vs.bound))), i64c(adj)] : ext(asI32(emit(vs.bound)))])
+          }
+          levelInfo.set(vs, { maxIv, entryIR: () => vs.startC != null ? i64c(vs.startC) : slotI64(vs.iv, vs.ivKind) })
+          // one extent conjunct pair per (recv, a, slots) group: hi = a*maxIv+Σkᵢ·slotᵢ
+          // +maxC < len, plus lo = a*entry+Σkᵢ·slotᵢ+minC ≥ 0 — folded when the static
+          // start proves it, read from the live iv local otherwise (top level only)
+          const groups = new Map(), indGroups = new Map()
+          for (const c of vs.cands) {
+            if (c.ind != null) {
+              const gk = c.recv + '\x00' + c.ind
+              if (!indGroups.has(gk)) indGroups.set(gk, c)
+              continue
+            }
+            const gk = c.recv + '\x00' + c.a + '\x00' + c.slots.map(t => t.k + '*' + slotKey(t.e)).join('+')
+            const g = groups.get(gk)
+            if (!g) groups.set(gk, { recv: c.recv, a: c.a, slots: c.slots, maxC: c.bConst, minC: c.bConst })
+            else { g.maxC = Math.max(g.maxC, c.bConst); g.minC = Math.min(g.minC, c.bConst) }
+          }
+          for (const g of groups.values()) {
+            let hi = slotSum(['i64.mul', i64c(g.a), ['local.get', `$${maxIv}`]], g.slots)
+            if (g.maxC) hi = ['i64.add', hi, i64c(g.maxC)]
+            conjs.push(['i64.lt_s', hi, len64Of(g.recv)])
+            if (vs.startC != null && !g.slots.length) continue
+            let lo = slotSum(vs.startC != null ? i64c(g.a * vs.startC)
+              : ['i64.mul', i64c(g.a), slotI64(vs.iv, vs.ivKind)], g.slots)
+            if (g.minC) lo = ['i64.add', lo, i64c(g.minC)]
+            conjs.push(['i64.ge_s', lo, i64c(0)])
+          }
+          // induction cursors (`k += step` in a comma step): value at iteration t is
+          // entry + slope*t, t ∈ [0, maxIv - ivEntry] — monotone either direction, so
+          // BOTH endpoints guard in [0, len) and every intermediate value is covered
+          for (const c of indGroups.values()) {
+            const kE = slotI64(c.ind, exprType(c.ind, ctx.func.locals) === 'i32' ? 'i32' : 'f64')
+            const slopeLit = intLiteralValue(c.slope)
+            const slope64 = slopeLit != null ? i64c(slopeLit)
+              : slotI64(c.slope, exprType(c.slope, ctx.func.locals) === 'i32' ? 'i32' : 'f64')
+            const ivE = vs.startC != null ? i64c(vs.startC) : slotI64(vs.iv, vs.ivKind)
+            const endT = tempI64('tvi')
+            result.push(['local.set', `$${endT}`, ['i64.add', kE,
+              ['i64.mul', slope64, ['i64.sub', ['local.get', `$${maxIv}`], ivE]]]])
+            const len64 = len64Of(c.recv)
+            conjs.push(['i64.ge_s', kE, i64c(0)])
+            conjs.push(['i64.lt_s', kE, len64])
+            conjs.push(['i64.ge_s', ['local.get', `$${endT}`], i64c(0)])
+            conjs.push(['i64.lt_s', ['local.get', `$${endT}`], len64Of(c.recv)])
+          }
         }
-        // induction cursors (`k += step` in a comma step): value at iteration t is
-        // entry + slope*t, t ∈ [0, maxIv - ivEntry] — monotone either direction, so
-        // BOTH endpoints guard in [0, len) and every intermediate value is covered
-        for (const c of indGroups.values()) {
-          const kE = slotI64(c.ind, exprType(c.ind, ctx.func.locals) === 'i32' ? 'i32' : 'f64')
-          const slopeLit = intLiteralValue(c.slope)
-          const slope64 = slopeLit != null ? i64c(slopeLit)
-            : slotI64(c.slope, exprType(c.slope, ctx.func.locals) === 'i32' ? 'i32' : 'f64')
-          const ivE = vs.startC != null ? i64c(vs.startC) : slotI64(vs.iv, vs.ivKind)
-          const endT = tempI64('tvi')
-          result.push(['local.set', `$${endT}`, ['i64.add', kE,
-            ['i64.mul', slope64, ['i64.sub', ['local.get', `$${maxIv}`], ivE]]]])
-          const len64 = len64Of(c.recv)
-          conjs.push(['i64.ge_s', kE, i64c(0)])
-          conjs.push(['i64.lt_s', kE, len64])
-          conjs.push(['i64.ge_s', ['local.get', `$${endT}`], i64c(0)])
-          conjs.push(['i64.lt_s', ['local.get', `$${endT}`], len64Of(c.recv)])
+        // FLAT-CURSOR endpoint guards: `j++` once per pixel across the nest —
+        // value spans [j0, j0 + slope·(Π trips − (pre ? 1 : 0))]; the steps cap
+        // keeps the slope product overflow-free, a negative trip (empty level)
+        // fails its conjunct into the checked arm
+        for (const cur of levels.cursors ?? []) {
+          const j0 = slotI64(cur.name, cur.kind)
+          let steps = null
+          for (const L of cur.chain) {
+            const info = levelInfo.get(L)
+            if (!info) { steps = null; break }
+            const trip = tempI64('tvt')
+            result.push(['local.set', `$${trip}`,
+              ['i64.add', ['i64.sub', ['local.get', `$${info.maxIv}`], info.entryIR()], i64c(1)]])
+            conjs.push(['i64.ge_s', ['local.get', `$${trip}`], i64c(0)])
+            steps = steps ? ['i64.mul', steps, ['local.get', `$${trip}`]] : ['local.get', `$${trip}`]
+          }
+          if (!steps) { cur.dead = true; continue }
+          const stepsT = tempI64('tvs')
+          result.push(['local.set', `$${stepsT}`, steps])
+          conjs.push(['i64.le_s', ['local.get', `$${stepsT}`], i64c(2147483648)])
+          const seen = new Set()
+          for (const c of cur.cands) {
+            const gk = c.recv + ' ' + c.post
+            if (seen.has(gk)) continue
+            seen.add(gk)
+            const endT = tempI64('tvz')
+            result.push(['local.set', `$${endT}`, ['i64.add', j0,
+              ['i64.mul', i64c(cur.slope), c.post ? ['local.get', `$${stepsT}`]
+                : ['i64.sub', ['local.get', `$${stepsT}`], i64c(1)]]]])
+            conjs.push(['i64.ge_s', j0, i64c(0)])
+            conjs.push(['i64.lt_s', ['local.get', `$${endT}`], len64Of(c.recv)])
+          }
         }
         let guard = conjs[0]
         for (let k = 1; k < conjs.length; k++) guard = ['i32.and', guard, conjs[k]]
-        // arm-scoped assumption set: snapshot/RESTORE (not add/delete) — unrolls
-        // inside the fast arm stamp clone keys (cloneWithSubst proof carry-over)
-        // that must NOT survive into the checked arm, which runs exactly when the
-        // guard failed
+        // arm-scoped assumption MAP key → OWNING loop body: an assumption is honored
+        // only while its loop's frame is on the emission stack (typedIdxProven checks
+        // frame.bodyNode) — a textual twin of an inner access OUTSIDE that loop (the
+        // cursor past its bound) must NOT inherit the proof. Snapshot/RESTORE (not
+        // add/delete): unrolls inside the fast arm stamp clone keys that must not
+        // survive into the checked arm, which runs exactly when the guard failed.
         const saved = ctx.types.assumedBounds
-        ctx.types.assumedBounds = new Set(saved ?? [])
-        for (const c of vs.cands) ctx.types.assumedBounds.add(idxKey(c.recv, c.idx))
+        ctx.types.assumedBounds = new Map(saved ?? [])
+        for (const vs of levels)
+          for (const c of vs.cands) ctx.types.assumedBounds.set(idxKey(c.recv, c.idx), vs.bodyNode ?? body)
+        // cursor claims hold across the WHOLE nest (entry → end) — owned by the top
+        for (const cur of levels.cursors ?? [])
+          if (!cur.dead) for (const c of cur.cands) ctx.types.assumedBounds.set(idxKey(c.recv, c.idx), body)
         const fast = emitter['for'](null, cond, step, body)
         ctx.types.assumedBounds = saved
         const checked = emitter['for'](null, cond, step, body)
@@ -4218,7 +4260,7 @@ export const emitter = {
     // can target the loop label directly, saving a redundant `block`.
     const needsCont = step && (hasOwnContinue(body) || labeledContinue)
     const cont = needsCont ? `$cont${id}` : loop
-    ctx.func.stack.push({ brk, loop: cont })
+    ctx.func.stack.push({ brk, loop: cont, bodyNode: body })
     const frame = ctx.func.stack[ctx.func.stack.length - 1]
     if (myLabel != null) frame.contLabel = myLabel   // so `continue <myLabel>` targets this loop's step/test
     // Per-iteration fresh cells for boxed locals declared in the body — allocated

@@ -950,10 +950,14 @@ test('nested small const-count for-loop unroll is opt-in', () => {
 })
 
 test('typed-array address fusion: arr[i + k] uses one base plus offsets', () => {
+  // Static len + masked idx: the accesses are PROVEN in-bounds (mask class), so the
+  // bare loads the fusion peephole matches survive Root F's checked-by-default
+  // typed indexing (unprovable single accesses now emit branchless checked selects,
+  // which have no shared-base contract).
   const wat = jz.compile(`
-    export const main = (arr, idx) => {
-      const a = new Float64Array(arr)
-      const i = idx | 0
+    export const main = (idx) => {
+      const a = new Float64Array(64)
+      const i = idx & 31
       return a[i + 0] + a[i + 1] + a[i + 2] + a[i + 3]
     }
   `, { wat: true, optimize: { watr: false } })
@@ -1312,7 +1316,11 @@ test('integer === integer compares in i32 — no f64.eq widen', () => {
   `
   const wat = jz.compile(SRC, { wat: true })   // eqcount is called twice → stays its own function
   const start = wat.indexOf('(func $eqcount')
-  const body = wat.slice(start, wat.indexOf('\n  (func ', start + 10) + 1 || undefined)
+  let body = wat.slice(start, wat.indexOf('\n  (func ', start + 10) + 1 || undefined)
+  // Root F versions the param-bound loops: the cold checked twin (else arm)
+  // legitimately compares f64 (a checked read is number|undefined) — the pin
+  // measures the FAST arm.
+  if (body.includes('(else')) body = body.slice(0, body.indexOf('(else'))
   is(/f64\.eq|f64\.ne/.test(body), false, 'no f64 equality — integer operands compare in i32')
   ok(/i32\.eq/.test(body), 'lowers to i32.eq')
   const ref = (() => { const a = [], b = []; for (let i = 0; i < 16; i++) { a[i] = (i * 7) & 7; b[i] = (i * 5) & 7 }
@@ -1339,9 +1347,12 @@ test('if-conversion: `if (cond) x = cheapPure` → branchless select (speed tier
     }
   `
   const grab = (wat) => wat.slice(wat.indexOf('(func $reduce'), wat.indexOf('\n  (func ', wat.indexOf('(func $reduce') + 10) + 1 || undefined)
-  const fn = grab(jz.compile(SRC, { wat: true, optimize: { level: 'speed' } }))
+  // Root F versioning wraps the loop in a guard `if` with a cold checked twin —
+  // the if-conversion contract holds within the FAST arm.
+  const fastArm = (fn) => fn.includes('(else') ? fn.slice(0, fn.indexOf('(else')) : fn
+  const fn = fastArm(grab(jz.compile(SRC, { wat: true, optimize: { level: 'speed' } })))
   ok(/\bselect\b/.test(fn), 'guarded update lowered to select at speed tier')
-  is(/\(if\b/.test(fn), false, 'no branch left for the guarded update')
+  is(/\(if\b\s*$|\(if\s+\(/m.test(fn.slice(fn.indexOf('(loop'))), false, 'no branch left for the guarded update')
   // Default tier keeps the branch (select is speed-only). Pin level 2 so
   // JZ_TEST_OPTIMIZE=3 can't flip this half to speed (cf. test/perf.js threshold pin).
   const fnD = grab(jz.compile(SRC, { wat: true, optimize: 2 }))
@@ -1400,7 +1411,10 @@ test('if→select: a condition that MUTATES a var the value arm reads is NOT con
     }
   `
   const grab = (wat) => wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func ', wat.indexOf('(func $f') + 4) + 1 || undefined)
-  const fn = grab(jz.compile(SRC, { wat: true, optimize: { level: 'speed' } }))
+  // fast arm only: the versioned checked twin reads via branchless selects — the
+  // reorder-safety contract is about the guarded UPDATE in the hot loop
+  let fn = grab(jz.compile(SRC, { wat: true, optimize: { level: 'speed' } }))
+  if (fn.includes('(else')) fn = fn.slice(0, fn.indexOf('(else'))
   is(/\bselect\b/.test(fn), false, 'side-effecting condition keeps the branch (not folded to select)')
   const ref = (() => { const a = []; for (let i = 0; i < 32; i++) a[i] = (i * 7) & 31
     const f = (n) => { let x = 0, acc = -1; for (let i = 0; i < n; i++) { if ((x = x + a[i]) > 100) acc = x } return acc }; return (f(32) + f(32)) | 0 })()
@@ -1471,7 +1485,9 @@ test('param-distinctness LICM: invariant load from a proven-distinct param hoist
     }
   `
   const wat = jz.compile(SRC, { wat: true, optimize: { level: 'speed' } })
-  const fn = wat.slice(wat.indexOf('(func $proc'), wat.indexOf('\n  (func ', wat.indexOf('(func $proc') + 10) + 1 || undefined)
+  let fn = wat.slice(wat.indexOf('(func $proc'), wat.indexOf('\n  (func ', wat.indexOf('(func $proc') + 10) + 1 || undefined)
+  // fast arm only: the versioned checked twin keeps in-loop checked loads by design
+  if (fn.includes('(else')) fn = fn.slice(0, fn.indexOf('(else'))
   const li = fn.indexOf('(loop')   // the dst-store loop
   is(/f64\.load/.test(fn.slice(li)), false, 'invariant src loads hoisted OUT of the loop (alias-distinct from dst)')
   ok(/f64\.load/.test(fn.slice(0, li)), 'the src loads moved to the pre-header')
@@ -2536,8 +2552,11 @@ test('narrowI32: const-divisor div/mod/mul loops run pure i32', () => {
     }`
     const wat = jz.compile(src, { wat: true, optimize: 3 })
     const fi = wat.indexOf('(func $f')
-    const body = wat.slice(fi, wat.indexOf('\n  (func', fi + 5))
-    const loop = body.slice(body.lastIndexOf('(loop'))
+    let body = wat.slice(fi, wat.indexOf('\n  (func', fi + 5))
+    // Root F versioning: the cold checked twin (else arm) legitimately round-trips
+    // f64 (checked reads are number|undefined) — measure the FAST arm's loop.
+    if (body.includes('(else')) body = body.slice(0, body.indexOf('(else'))
+    const loop = body.slice(body.indexOf('(loop'))
     ok(!/f64\.(add|sub|mul|div|trunc)/.test(loop.slice(0, loop.indexOf('(br '))),
       `no f64 round-trip in loop for: ${stmt}`)
   }

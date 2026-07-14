@@ -97,7 +97,11 @@ export function constIntExpr(e) {
  *     chains (incl. the clamp idiom) provably fit a static receiver length. */
 export function typedIdxProven(recv, idx) {
   if (typeof recv !== 'string') return false
-  if (ctx.types.assumedBounds?.has(idxKey(recv, idx))) return true
+  // a versioned assumption is scoped to its OWNING loop: honored only while that
+  // loop's frame is on the emission stack (a textual twin of the access OUTSIDE
+  // the loop sees the cursor past its bound and must stay checked)
+  const owner = ctx.types.assumedBounds?.get(idxKey(recv, idx))
+  if (owner != null && ctx.func.stack?.some(f => f.bodyNode === owner)) return true
   if (intervalProvenIdx(ctx).has(idxKey(recv, idx))) return true
   if (typeof idx === 'string' && inBoundsArrIdx(ctx).has(recv + '\x00' + idx)) return true
   const len = ctx.types.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
@@ -235,7 +239,7 @@ export function bodyAffineEnv(body, iv) {
  *  - a candidate whose static low extent `a*C + bConst` is provably negative is
  *    DROPPED (its first iterations are genuinely OOB — the checked form is the
  *    semantics, a guard would just always fail). */
-export function versionableTypedFor(init, cond, step, body, locals) {
+export function versionableTypedFor(init, cond, step, body, locals, entryHint = null) {
   if (!Array.isArray(cond) || (cond[0] !== '<' && cond[0] !== '<=') || typeof cond[1] !== 'string') return null
   if (containsNestedClosure(body)) return null
   const iv = cond[1], incl = cond[0] === '<='
@@ -245,7 +249,9 @@ export function versionableTypedFor(init, cond, step, body, locals) {
   // ENTRY value of iv at runtime — the extent math is entry-relative either way.
   const decls = new Map()
   collectDecls(init, decls)
-  const startC = decls.has(iv) ? intLiteralValue(decls.get(iv)) : null
+  // entryHint: a sibling `let b = 0` right before a while — the nest scan's decl
+  // tracking supplies the static entry the empty init slot can't
+  const startC = decls.has(iv) ? intLiteralValue(decls.get(iv)) : entryHint
   if (startC != null && startC < 0) return null   // statically-negative start: guard is dead weight
   // iv advance: a unit-increment step slot (for-loops), or — when the step slot is
   // empty — a SINGLE body write of shape `i = (i+LIT)|0` / `i = i+LIT` / `i += LIT` /
@@ -354,6 +360,161 @@ export function versionableTypedFor(init, cond, step, body, locals) {
     ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, cands }
     : null
 }
+
+/** Nest-level versioning scan: the intercepted loop PLUS every nested loop whose
+ *  guard is evaluable at the TOP entry — one guard for the whole nest, so the
+ *  outer-strip / per-pixel / iterated-reduce recognizers see a BARE nest in the
+ *  fast arm (an inner-loop guard would blind them, and per-row guards are dearer
+ *  than one per nest anyway). A nested level lifts only when
+ *  - its iv entry is STATIC (init literal or the `let b = 0; while (b < n)`
+ *    sibling-decl pattern — a runtime entry read at top-entry would be stale),
+ *  - it carries no induction cursors (their entry values are per-inner-entry),
+ *  - every name its guard reads is neither written NOR DECLARED anywhere in the
+ *    top body (redeclaresName catches inner decls — a per-row offset slot must
+ *    not be read before its row exists). Unliftable levels simply keep their own
+ *    inner versioning during arm emission — graceful degradation, not a bail. */
+export function versionableTypedNest(init, cond, step, body, locals) {
+  if (containsNestedClosure(body)) return null
+  const levels = []
+  const walkLoop = (i2, c2, s2, b2, hint, isTop) => {
+    const spec = versionableTypedFor(i2, c2, s2, b2, locals, hint)
+    if (spec) { spec.top = isTop; spec.bodyNode = b2; levels.push(spec) }
+    scanStmts(b2)
+  }
+  const scanStmts = (n) => {
+    if (!Array.isArray(n) || n[0] === '=>') return
+    if (n[0] === 'while' && n.length === 3 && Array.isArray(n[1])) { walkLoop(null, n[1], null, n[2], null, false); return }
+    if (n[0] === 'for' && n.length === 5) { walkLoop(n[1], n[2], n[3], n[4], null, false); return }
+    if (n[0] === ';' || n[0] === '{}') {
+      let lastDecls = new Map()
+      for (let k = 1; k < n.length; k++) {
+        const st = n[k]
+        if (Array.isArray(st) && (st[0] === 'let' || st[0] === 'const')) {
+          for (let j = 1; j < st.length; j++) {
+            const d = st[j]
+            if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+              const v = intLiteralValue(d[2])
+              if (v != null && v >= 0) lastDecls.set(d[1], v); else lastDecls.delete(d[1])
+            } else if (typeof d === 'string') lastDecls.delete(d)
+          }
+          continue
+        }
+        if (Array.isArray(st) && st[0] === 'while' && st.length === 3
+            && Array.isArray(st[1]) && typeof st[1][1] === 'string') {
+          walkLoop(null, st[1], null, st[2], lastDecls.get(st[1][1]) ?? null, false)
+        } else if (Array.isArray(st) && st[0] === 'for' && st.length === 5) {
+          walkLoop(st[1], st[2], st[3], st[4], null, false)
+        } else scanStmts(st)
+        lastDecls = new Map()   // any other statement may disturb tracked entries
+      }
+      return
+    }
+    for (let k = 1; k < n.length; k++) scanStmts(n[k])
+  }
+  walkLoop(init, cond, step, body, null, true)
+  const stableTop = (name) => typeof name !== 'string'
+    || (!isReassigned(body, name) && !redeclaresName(body, name))
+  const exprNames = (e, out) => {
+    if (typeof e === 'string') out.push(e)
+    else if (Array.isArray(e)) for (let k = 1; k < e.length; k++) exprNames(e[k], out)
+  }
+  const keepPre = levels.filter((L) => {
+    if (!L.top) {
+      if (L.startC == null) return false
+      L.cands = L.cands.filter(c => c.ind == null)
+      if (!L.cands.length) return false
+    }
+    // names the lifted guard READS at top entry (iv itself is NOT read — inner
+    // entries are static by the filter above, and only the top may read its iv)
+    const names = []
+    exprNames(L.bound, names)
+    if (typeof L.bound === 'string') names.push(L.bound)
+    for (const c of L.cands) {
+      names.push(c.recv)
+      if (c.ind != null) { names.push(c.ind); if (typeof c.slope === 'string') names.push(c.slope) }
+      else for (const t of c.slots) { if (typeof t.e === 'string') names.push(t.e); else exprNames(t.e, names) }
+    }
+    // the top level's own iv/bound legitimately live in the top body — only names
+    // read by LIFTED (inner) guards need top-stability; the top spec re-checks
+    // nothing new here beyond its own scan
+    return L.top || names.every(stableTop)
+  })
+  const keep = keepPre
+  if (!keep.length) return null
+  // FLAT-CURSOR inductions: `j++` exactly once in the whole nest (the universal
+  // image-kernel pixel cursor `px[j] = …; j++`). Its value spans
+  // [j0, j0 + slope·(Π level-trips − 1 or − 0)] — every containing loop must be a
+  // LIFTED level (trip = maxIv − entry + 1 known at the guard); a pre-increment
+  // read tops out one slope earlier than a post-increment one, so each access
+  // carries its position. Entry j0 reads at the nest top (the cursor lives in an
+  // enclosing scope by construction — a body-declared cursor is rejected by
+  // redeclaresName).
+  const cursorWrites = new Map()   // name → { node, slope } | null (disqualified)
+  const collectCW = (n) => {
+    if (!Array.isArray(n)) return
+    if ((ASSIGN_OPS_V.has(n[0]) || n[0] === '++' || n[0] === '--') && typeof n[1] === 'string') {
+      const name = n[1]
+      const L = n[0] === '++' ? 1
+        : n[0] === '--' ? null
+        : n[0] === '+=' ? intLiteralValue(n[2])
+        : n[0] === '=' ? (() => {
+            let rhs = n[2]
+            if (Array.isArray(rhs) && rhs[0] === '|' && intLiteralValue(rhs[2]) === 0) rhs = rhs[1]
+            if (Array.isArray(rhs) && rhs[0] === '+' && rhs.length === 3) {
+              if (rhs[1] === name) return intLiteralValue(rhs[2])
+              if (rhs[2] === name) return intLiteralValue(rhs[1])
+            }
+            return null
+          })()
+        : null
+      cursorWrites.set(name, cursorWrites.has(name) || L == null || L < 1 || !Number.isInteger(L)
+        ? null : { node: n, slope: L })
+    }
+    for (let k = 1; k < n.length; k++) collectCW(n[k])
+  }
+  collectCW(body)
+  const contains = (hay, needle) => hay === needle
+    || (Array.isArray(hay) && hay.some((x, i) => i > 0 && contains(x, needle)))
+  const allLoopBodies = []
+  const collectLoops = (n) => {
+    if (!Array.isArray(n) || n[0] === '=>') return
+    if (n[0] === 'while' && n.length === 3) allLoopBodies.push(n[2])
+    else if (n[0] === 'for' && n.length === 5) allLoopBodies.push(n[4])
+    for (let k = 1; k < n.length; k++) collectLoops(n[k])
+  }
+  collectLoops(body)
+  const keptBodies = new Set(keep.map(L => L.bodyNode))
+  const cursors = []
+  for (const [name, w] of cursorWrites) {
+    if (w == null) continue
+    if (redeclaresName(body, name)) continue
+    // every loop containing the write must be a lifted level (trips known);
+    // the top level's own body contains it by construction
+    const containing = allLoopBodies.filter(b => contains(b, w.node))
+    if (!containing.every(b => keptBodies.has(b) || b === body)) continue
+    if (!keptBodies.has(body) && containing.length === 0) continue
+    const chain = keep.filter(L => contains(L.bodyNode, w.node) || L.bodyNode === body)
+    if (!chain.length) continue
+    // accesses arr[name]: position vs the write decides the endpoint
+    const cands = []
+    let seenWrite = false
+    const scanC = (n) => {
+      if (!Array.isArray(n)) return
+      if (n === w.node) { seenWrite = true }
+      if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[2] === name
+          && ctx.types.typedElem?.has(n[1])
+          && !isReassigned(body, n[1]) && !redeclaresName(body, n[1]))
+        cands.push({ recv: n[1], idx: n[2], post: seenWrite })
+      for (let k = 1; k < n.length; k++) scanC(n[k])
+    }
+    scanC(body)
+    if (cands.length) cursors.push({ name, slope: w.slope, chain, cands,
+      kind: exprType(name, locals) === 'i32' ? 'i32' : 'f64' })
+  }
+  keep.cursors = cursors
+  return keep
+}
+const ASSIGN_OPS_V = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '**='])
 
 /** Sentinel returned by `ternaryCtorOfRhs` when ternary branches resolve to
  *  different typed-array ctors — caller should drop any cached entry rather
@@ -625,7 +786,7 @@ const ipOk = (v) => v != null && v[0] >= -IP_LIM && v[1] <= IP_LIM
  *  ADDS proofs, so every unknown/bail direction is safe — the sharp edges are all
  *  in keeping `env` honest (kills before loops/switch, closure-captured writes,
  *  assignments embedded in expressions). */
-function scanIntervalIdx(body, out, lens) {
+function scanIntervalIdx(body, out, lens, ranges) {
   const env = new Map()   // name → [lo, hi] | null (unknown)
   // names written inside ANY closure in this body: a later call can change them at
   // any point — they never hold a trusted interval
@@ -748,6 +909,13 @@ function scanIntervalIdx(body, out, lens) {
       const idxV = ev(n[2])
       const L = lens(n[1])
       if (L != null && idxV && idxV[0] >= 0 && idxV[1] < L) out.add(idxKey(n[1], n[2]))
+      // a bounded idx against an UNKNOWN length is half a proof — export the hull
+      // (joined over every sighting of this key) for the versioning guard to close
+      // with a runtime `hi < len` conjunct (the wrap-cursor + dynamic-table class)
+      else if (idxV && idxV[0] >= 0 && ranges) {
+        const k = idxKey(n[1], n[2]), prev = ranges.get(k)
+        ranges.set(k, prev ? [Math.min(prev[0], idxV[0]), Math.max(prev[1], idxV[1])] : idxV)
+      }
       return
     }
     if (op === 'let' || op === 'const') {
@@ -808,10 +976,43 @@ function scanIntervalIdx(body, out, lens) {
         entry = env.get(c[1]); brange = c[2] != null ? ev(c[2]) : null
         if (entry && brange && ivMonotoneInc(wbody, c[1]) && !redeclaresName(wbody, c[1])) iv = c[1]
       }
+      // WRAPPING-CURSOR invariant (`si = si + K; if (si >= C) si = 0` — the ring
+      // index of table-driven maps): the pair is self-closing on [0, C-1], so an
+      // entry inside that range keeps the name there for the WHOLE loop. Seeded
+      // before the kill; the pair must be the name's only writes in this loop.
+      const wraps = []
+      if (wbody != null) {
+        const stmts = Array.isArray(wbody) && (wbody[0] === ';' || wbody[0] === '{}') ? wbody : [';', wbody]
+        for (let k = 1; k < stmts.length - 1; k++) {
+          const a2 = stmts[k], b2 = stmts[k + 1]
+          let nm = null, K = null
+          if (Array.isArray(a2) && a2[0] === '=' && typeof a2[1] === 'string'
+              && Array.isArray(a2[2]) && a2[2][0] === '+' && a2[2][1] === a2[1]) { nm = a2[1]; K = intLiteralValue(a2[2][2]) }
+          else if (Array.isArray(a2) && a2[0] === '+=' && typeof a2[1] === 'string') { nm = a2[1]; K = intLiteralValue(a2[2]) }
+          else if (Array.isArray(a2) && a2[0] === '++' && typeof a2[1] === 'string') { nm = a2[1]; K = 1 }
+          if (nm == null || K == null || K < 1) continue
+          if (!(Array.isArray(b2) && b2[0] === 'if' && b2.length === 3
+              && Array.isArray(b2[1]) && b2[1][0] === '>=' && b2[1][1] === nm
+              && Array.isArray(b2[2]) && b2[2][0] === '=' && b2[2][1] === nm && intLiteralValue(b2[2][2]) === 0)) continue
+          const C = constInt(b2[1][2])
+          if (C == null || C < 1) continue
+          const e0 = env.get(nm)
+          if (!e0 || e0[0] < 0 || e0[1] > C - 1) continue
+          // the pair must be the only writes (2 exact: the add and the reset)
+          let writes = 0
+          const cw = (x) => { if (!Array.isArray(x)) return
+            if ((ASSIGN_OPS.has(x[0]) || x[0] === '++' || x[0] === '--') && x[1] === nm) writes++
+            for (let j = 1; j < x.length; j++) cw(x[j]) }
+          cw(wbody)
+          if (writes === 2) wraps.push([nm, [0, C - 1]])
+        }
+      }
       killAssigned(n)
       if (iv) env.set(iv, [entry[0], brange[1] - 1])
+      for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)
       for (let k = 2; k < n.length; k++) visit(n[k])
       if (iv) env.set(iv, [Math.min(entry[0], brange[0]), Math.max(entry[1], brange[1])])
+      for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)   // holds at exit too
       return
     }
     if (op === 'do' || op === 'for-of' || op === 'for-in' || op === 'label'
@@ -900,13 +1101,22 @@ export function intervalProvenIdx(ctx) {
   const body = ctx.func?.body
   if (!Array.isArray(body)) return NO_INTERVAL_PROVEN
   if (ctx.func._ipBody === body) return ctx.func.ipProven
-  const out = new Set()
+  const out = new Set(), ranges = new Map()
   const lens = (name) => ctx.types.typedLen?.get(name) ?? ctx.scope?.globalTypedLen?.get(name) ?? null
-  scanIntervalIdx(body, out, lens)
+  scanIntervalIdx(body, out, lens, ranges)
   ctx.func.ipProven = out
+  ctx.func.ipRanges = ranges
   ctx.func._ipBody = body
   return out
 }
+
+/** Idx-interval hulls the walk computed but could not discharge (receiver length
+ *  unknown) — the versioning guard closes them with a runtime `hi < len`. */
+export function intervalIdxRanges(ctx) {
+  intervalProvenIdx(ctx)
+  return ctx.func?.ipRanges || NO_INTERVAL_RANGES
+}
+const NO_INTERVAL_RANGES = new Map()
 const NO_INTERVAL_PROVEN = new Set()
 
 // === Loop unroll / AST transforms (emit + plan) ===
@@ -994,7 +1204,8 @@ function stampClonedIdxProof(node, out) {
   const k = idxKey(node[1], node[2])
   const ip = intervalProvenIdx(ctx)   // memoized; NO_INTERVAL_PROVEN when no function ctx
   if (ip.has(k)) ip.add(idxKey(out[1], out[2]))
-  if (ctx.types?.assumedBounds?.has(k)) ctx.types.assumedBounds.add(idxKey(out[1], out[2]))
+  const owner = ctx.types?.assumedBounds?.get(k)
+  if (owner != null) ctx.types.assumedBounds.set(idxKey(out[1], out[2]), owner)
 }
 
 const clonePlain = node => Array.isArray(node) ? node.map(clonePlain) : node
