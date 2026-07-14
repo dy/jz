@@ -111,6 +111,13 @@ const tryI32Arith = (wasmOp, astOp, a, b, va, vb) => {
 // own emit (math.js / unary `-`), so they reach canonNum already canonical.
 const NAN_MINTING = new Set(['f64.div', 'f64.add', 'f64.sub', 'f64.mul'])
 
+// Sign+exponent mask isolating "negative NaN or -Infinity" — used only after an
+// f64.eq(v,v) self-check has already failed (so -Infinity is excluded, leaving
+// only negative NaN). Pointers/atoms are always emitted sign-clear (nanPrefixMaskHex,
+// layout.js), so a sign-bit-set NaN can only be a genuine float NaN. Mirrors
+// $__typeof's dynamic dispatch (module/core.js) bit-for-bit.
+const NEG_NAN_MASK = 0xFFF0000000000000n
+
 const canonNum = (node) => {
   // Fold a possibly-non-canonical NaN to the canonical number-NaN before it reaches a
   // bit-comparing consumer (__is_truthy / untyped === / typeof), which match the canonical
@@ -329,7 +336,19 @@ export function emitTypeofCmp(a, b, cmpOp) {
   if (code === TYPEOF.number) {
     // typeof "number": v===v rejects NaN-box pointers; BOOL carrier is 0/1 → still typeof "boolean".
     if (resolveValType(typeofExpr, valTypeOf, lookupValType) === VAL.BOOL) return typed(['i32.const', eq ? 0 : 1], 'i32')
-    return typed([eq ? 'f64.eq' : 'f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]], 'i32')
+    // v===v alone is WRONG for the one payload that legitimately means "the number
+    // NaN": the canonical box prefix (tag=ATOM aux=0) that $__typeof (module/core.js)
+    // also carves out, plus any sign-bit-set NaN (pointers are always emitted
+    // sign-clear, so a negative NaN — e.g. x86's uncanonicalized 0/0 — can only be a
+    // real float NaN). Must mirror $__typeof's dynamic dispatch exactly, or
+    // `typeof NaN === 'number'` folds to false here while the general path says true.
+    const again = ['local.get', `$${t}`]
+    const notNan = ['f64.eq', ['local.tee', `$${t}`, va], again]
+    const bits = ['i64.reinterpret_f64', again]
+    const numberNan = ['i32.or',
+      ['i64.eq', bits, ['i64.const', i64Hex(LAYOUT.NAN_PREFIX_BITS)]],
+      ['i64.eq', ['i64.and', bits, ['i64.const', i64Hex(NEG_NAN_MASK)]], ['i64.const', i64Hex(NEG_NAN_MASK)]]]
+    return wrap(['i32.or', notNan, numberNan])
   }
   if (code === TYPEOF.string) return isPtrKind(PTR.STRING)
   if (code === TYPEOF.undefined) return wrap(isNullish(va))

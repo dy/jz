@@ -840,6 +840,24 @@ test('typeof: number check', () => {
   is(jz('export let f = () => typeof "hello" === "number"').exports.f(), false)
 })
 
+test('typeof: NaN is still "number" (not a NaN-box pointer)', () => {
+  // Regression: `typeof x === 'number'` fast-pathed via a raw v===v self-compare
+  // to reject NaN-boxed pointers (mirroring isPtrKind's "isPtr" idiom) — but the
+  // canonical number-NaN bit pattern collides with that same "is this a box" test
+  // (IEEE: NaN !== itself), so a genuine NaN parameter folded to false instead of
+  // 'number'. Caught via watr's print.js: `typeof sub === 'number' && ...` never
+  // entered its non-finite branch for a real NaN leaf.
+  is(jz('export let f = (x) => typeof x === "number"').exports.f(NaN), true)
+  is(jz('export let f = (x) => typeof x !== "number"').exports.f(NaN), false)
+  // Sibling compare paths (general !==/===/==/!= dispatch, not the typeof fast
+  // path) were already correct — pinned alongside so a future regression in
+  // either direction is caught.
+  is(jz('export let f = (x) => x !== x').exports.f(NaN), true)
+  is(jz('export let f = (x) => x === x').exports.f(NaN), false)
+  is(jz('export let f = (x) => x == x').exports.f(NaN), false)
+  is(jz('export let f = (x) => x != x').exports.f(NaN), true)
+})
+
 test('typeof: string check', () => {
   is(jz('export let f = () => typeof "hello" === "string"').exports.f(), true)
   is(jz('export let f = () => typeof 42 === "string"').exports.f(), false)
