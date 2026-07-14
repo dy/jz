@@ -3772,3 +3772,27 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
 - Still queued before ff-merge: corpus byte-sweep vs main (size cost of twins/
   selects), SIMD bench timing A/B (colorconv/blur/conv2d/fft/aos parity),
   range-bridge validation, the perf/inference pin sweep after it.
+
+## Root F round 5 (2026-07-13/14): bridge validated in, wrap idioms grow, honest reds enumerated
+- BRANCH typedoob @ fc1cba39: range bridge LANDED battery-neutral this time
+  (atomic apply + count-asserted patches; the round-4 crash was the nest keep-
+  filter iterating slots on range cands — fixed). Grew two engine idioms:
+  SYMBOLIC hulls (wrap cursor vs MUTABLE bound: si ∈ [0,C-1] relative to C,
+  guard closes with C ≥ entryHi+1 ∧ C+bias < len; validity window ends at the
+  increment via symEnv), and the one-statement MASK cursor (`dir = (dir+1)&3`
+  ulam ring — seeds [0,M], static tables discharge with NO guard).
+- Battery @ fc1cba39: simd 157/157, data 115/115, optimizer 170/170,
+  examples 19/2, inference 75/2, perf 49/4 (was 48/5 — mask-wrap greened one).
+  REMAINING REDS (8, all quality pins or recognizer depth, none correctness):
+  lyapunov (guards in place, tryIteratedReduce still refuses the versioned
+  shape — needs recognizer-side work), diffusion (untraced), inference 2
+  (masked reads on PARAM arrays — needs RANGE-ONLY versioning: loops with
+  non-`<` conds can still take a hull-conjunct guard; designed, unbuilt),
+  perf 4 (whole-fn counts over twin/guard shapes — fast-arm scoping needs a
+  paren-matched then-arm extractor; naive `(else` slicing truncates arms with
+  their own ifs — first attempts reverted rather than left half-verified).
+- Sweep + SIMD timing A/B vs main launched (colorconv/conv2d/fft/blur/aos);
+  results decide the size/perf side of the ff-merge gate. The merge itself
+  still blocked on the 8 reds → next stretch: range-only versioning (closes
+  inference 2), diffusion trace, lyapunov recognizer, pin extractor, then
+  full gates + ff-merge.
