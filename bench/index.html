@@ -105,7 +105,7 @@ a.lab.lnk:hover, a.lab.lnk:focus-visible { text-decoration-color: currentColor; 
 .row .val .sz { color: var(--mid); margin-left: 9px; font-size: 10.5px; }   /* binary size, secondary to the time */
 #geomean .val { text-align: right; }   /* corpus rows carry only the multiplier — pin it to the right edge, no dead gap */
 .bar { height: 15px; position: relative; background: transparent; }
-.bar i { position: absolute; inset: 0 auto 0 0; border: 1px solid light-dark(#b6b9be, var(--ink)); background: light-dark(#e7e9ec, var(--paper)); min-width: 2px; }   /* competitors: a faintly whitish fill + soft gray border in light (the solid black JZ bar still stands out); outline-only on black in dark */
+.bar i { position: absolute; inset: 0 auto 0 0; border: 1px solid var(--mid); background: transparent; min-width: 2px; }   /* competitors: transparent fill + mid-gray border — darker than the page's whites so it can't read as an empty input; the solid-ink JZ bar stays dominant */
 .bar i.solid { background: var(--ink); }
 .bar i.diff { border-color: var(--red); }
 /* class glyph (.cico base + themed cls-* colours live in assets/site.css) — here just its
