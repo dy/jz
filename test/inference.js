@@ -1149,8 +1149,19 @@ test('param i32-narrowing: scalar param fed integer typed-array elements narrows
     let run = (keys, src, n) => { let s = 0, i = 0; while (i < n) { s = (s + probe(keys, src[i]) + probe(keys, src[i]+1)) | 0; i++ } return s }
     export let main = () => { let keys = new Int32Array(1024), src = new Int32Array(512); return run(keys, src, 512) }
   `, { wat: true, optimize: { level: 'speed', sourceInline: false } })
-  const probe = dictWat.match(/\(func \$probe\b[\s\S]*?\n  \)/)[0]
+  let probe = dictWat.match(/\(func \$probe\b[\s\S]*?\n  \)/)[0]
   ok(/\(param \$k i32\)/.test(probe), 'probe key param narrows to i32 (fed int typed-array elements)')
+  // Root F range-only versioning wraps the ring loop — the probe's contract is the
+  // FAST arm's (paren-matched); the checked twin legitimately compares f64
+  // (a checked read is number|undefined).
+  {
+    const t = probe.indexOf('(then')
+    if (t >= 0) {
+      let d = 0, i = t
+      for (; i < probe.length; i++) { if (probe[i] === '(') d++; else if (probe[i] === ')' && --d === 0) break }
+      probe = probe.slice(0, probe.indexOf('(then')) + probe.slice(t, i + 1)
+    }
+  }
   ok(!/f64\.eq|f64\.ne|trunc_sat/.test(probe), 'no f64 compare / trunc round-trip in the probe loop')
 
   // noise-shaped: hash from a LOCAL `aa = perm[…]` (typed-pointer param element) → grad(aa,…).
@@ -1231,9 +1242,20 @@ test('result i32-narrowing: a typed-array-element return narrows to i32 (post-ty
       return s
     }
   `, { wat: true, optimize: { level: 'speed', sourceInline: false } })
-  const lookup = wat.match(/\(func \$lookup\b[\s\S]*?\n  \)/)[0]
+  let lookup = wat.match(/\(func \$lookup\b[\s\S]*?\n  \)/)[0]
   ok(/\(result i32\)/.test(lookup), 'typed-element return narrows the result to i32 (not NaN-boxed f64)')
-  ok(!/__to_str|__typed_idx|trunc_sat/.test(lookup), 'no ToNumber/__typed_idx dispatch on the returned element')
+  ok(!/__to_str|__typed_idx/.test(lookup), 'no ToNumber/__typed_idx dispatch on the returned element')
+  // Root F range-only versioning: the checked twin's reads legitimately convert and
+  // trunc (number|undefined) — the element-stays-i32 contract is the FAST arm's.
+  {
+    const t = lookup.indexOf('(then')
+    if (t >= 0) {
+      let d = 0, i = t
+      for (; i < lookup.length; i++) { if (lookup[i] === '(') d++; else if (lookup[i] === ')' && --d === 0) break }
+      lookup = lookup.slice(t, i + 1)
+    }
+  }
+  ok(!/trunc_sat/.test(lookup), 'no trunc round-trip on the returned element')
   ok(!/convert_i32/.test(lookup), 'no i32→f64 rebox inside lookup — the element stays i32 end to end')
 })
 

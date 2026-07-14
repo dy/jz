@@ -401,8 +401,33 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
 export function versionableTypedNest(init, cond, step, body, locals) {
   if (containsNestedClosure(body)) return null
   const levels = []
+  // RANGE-ONLY level: a loop the canonical-iv analysis rejects (`while (keys[h]
+  // !== k)` — no `<` cond, no countable iv) can still guard its hull-bounded
+  // accesses: hull conjuncts need no iv at all. The masked ring cursor over a
+  // dynamic-length param table is exactly this shape.
+  const rangeOnly = (c2, b2) => {
+    const cands = [], seen = new Set()
+    const stable2 = (nm) => !isReassigned(b2, nm) && !redeclaresName(b2, nm)
+    const scan = (n) => {
+      if (!Array.isArray(n) || n[0] === '=>') return
+      if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string'
+          && ctx.types.typedElem?.has(n[1]) && stable2(n[1])) {
+        const key = idxKey(n[1], n[2])
+        if (!seen.has(key) && !typedIdxProven(n[1], n[2])) {
+          const rng = intervalIdxRanges(ctx).get(key)
+          if (rng && (rng.hiName == null || stable2(rng.hiName))) {
+            seen.add(key); cands.push({ recv: n[1], idx: n[2], range: rng })
+          }
+        }
+      }
+      for (let k = 1; k < n.length; k++) scan(n[k])
+    }
+    scan(c2)   // `while (keys[h] !== k)` — the accesses live in the COND
+    scan(b2)
+    return cands.length ? { rangeOnly: true, cands } : null
+  }
   const walkLoop = (i2, c2, s2, b2, hint, isTop) => {
-    const spec = versionableTypedFor(i2, c2, s2, b2, locals, hint)
+    const spec = versionableTypedFor(i2, c2, s2, b2, locals, hint) ?? rangeOnly(c2, b2)
     if (spec) { spec.top = isTop; spec.bodyNode = b2; levels.push(spec) }
     scanStmts(b2)
   }
@@ -445,7 +470,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
   }
   const keepPre = levels.filter((L) => {
     if (!L.top) {
-      if (L.startC == null) return false
+      if (!L.rangeOnly && L.startC == null) return false
       const n0 = L.cands.length
       // an induction whose ENTRY is a static init literal (`for (let j=0, k=0; …)`)
       // lifts like any extent — only runtime-entry cursors are per-inner-entry
@@ -1099,6 +1124,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
       if (iv) env.set(iv, [entry[0], brange[1] - 1])
       for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)
       for (const [nm, h, incNode] of symWraps) if (!closureWrites.has(nm)) symEnv.set(nm, { h, incNode })
+      visit(c)   // cond accesses (`while (keys[h] !== k)`) see the seeded ranges too
       for (let k = 2; k < n.length; k++) visit(n[k])
       if (iv) env.set(iv, [Math.min(entry[0], brange[0]), Math.max(entry[1], brange[1])])
       for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)   // holds at exit too

@@ -4146,6 +4146,17 @@ export const emitter = {
           // box bit patterns fail the abs-compare and fall to the checked arm;
           // saturated garbage past the limit is conjunct-dead. i64 extents then never
           // overflow (|terms| ≤ 2^31, a is an i32 literal → |hi| < 2^63).
+          // a RANGE-ONLY level guards hull conjuncts alone — no iv, no max-iv
+          if (vs.rangeOnly) {
+            for (const c of vs.cands) {
+              if (c.range.hiName != null) {
+                const cS = slotI64(c.range.hiName, exprType(c.range.hiName, ctx.func.locals) === 'i32' ? 'i32' : 'f64')
+                conjs.push(['i64.ge_s', cS, i64c(c.range.entryHi + 1)])
+                conjs.push(['i64.lt_s', ['i64.add', cS, i64c(c.range.hiBias)], len64Of(c.recv)])
+              } else conjs.push(['i64.lt_s', i64c(c.range[1]), len64Of(c.recv)])
+            }
+            continue
+          }
           const maxIv = tempI64('tvq')
           if (vs.bKind === 'f64') {
             const bF = temp('tvf')
