@@ -118,6 +118,12 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 :root[data-theme="light"] .theme-toggle .i-sun  { display: none; }
 :root[data-theme="light"] .theme-toggle .i-moon { display: block; }   /* light theme → show the moon */
 
+/* ─── CTA chip — the ONE call-to-action button, shared: the bench page's "Report a slow case" and the
+   landing's "Sponsor the dev". Outline box in ink on paper; inverts on hover. Pattern: a plain 16px
+   question in a centred section, then this chip 14px below it. ─── */
+.report { display: inline-block; margin-top: 14px; font-family: var(--font); font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink); background: var(--paper); border: 1px solid var(--ink); padding: 8px 15px; text-decoration: none; transition: background .14s, color .14s; }
+.report:hover { background: var(--ink); color: var(--paper); }
+
 /* ─── Footer — shared on landing, bench, examples. Logo + nav columns grouped left; the credit sits
    above the "MIT · ॐ" license line, both bottom-right (two stacked rows). ─── */
 footer { padding: clamp(48px,7vw,80px) var(--padx) 56px; background: var(--paper); }

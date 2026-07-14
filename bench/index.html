@@ -77,8 +77,7 @@ button:disabled:hover { background: var(--paper); color: var(--ink); }
 button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 #honest { margin-top: 0; padding: 96px 0 56px; text-align: center; }
 #honest p { max-width: none; }   /* full-width so the centered text lands on the column centre, aligned with the button */
-.report { display: inline-block; margin-top: 14px; font-family: var(--sans); font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink); background: var(--paper); border: 1px solid var(--ink); padding: 8px 15px; text-decoration: none; transition: background .14s, color .14s; }
-.report:hover { background: var(--ink); color: var(--paper); }
+/* .report (the CTA chip) is the shared component in assets/site.css — reused verbatim by the landing's sponsor call */
 .runall { margin: 0; display: flex; gap: 12px; align-items: center; font-size: 12.5px; flex-wrap: wrap; }
 #globalstat { color: var(--mid); }
 

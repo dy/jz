@@ -831,6 +831,22 @@
         color: #9aa0a8;
       }
 
+      /* ── SPONSOR — the closing ask. Identical component to the bench page's "Report a slow case":
+   the .report chip lives in assets/site.css (ONE definition, both pages). Only this section wrapper
+   is local — it mirrors bench's #honest (centred, 16px question, chip 14px under it). ── */
+      .sponsor {
+        background: var(--paper);
+        padding: 56px var(--padx) 0;
+        text-align: center;
+      }
+
+      .sponsor p {
+        margin: 0;
+        font-size: 16px;
+        line-height: 24px;
+        color: var(--ink);
+      }
+
       /* type-on reveal: JS empties .cmd + adds .caret-on when the chip scrolls into view, then types it back. The block caret blinks. */
       .install .cmd {
         white-space: pre;
@@ -1474,6 +1490,13 @@
           <a class="ex-all" href="examples/">More →</a>
         </div>
       </div>
+    </section>
+
+    <!-- the closing ask — same shape as bench's "Slower than your JS? → Report a slow case":
+     a plain question, then the shared .report chip. One dev, no funding; no hard sell. -->
+    <section class="sponsor">
+      <p>Find it useful?</p>
+      <a class="report" href="https://github.com/sponsors/dy" target="_blank" rel="noopener">Sponsor the dev</a>
     </section>
 
     <footer>
