@@ -74,7 +74,7 @@ export const examples = [
   { name: 'percolation',  title: 'Percolation',       blurb: 'occupy sites at probability p — the spanning cluster snaps in at p_c, P∞(p) charted live' },
   { name: 'watercolor',   title: 'Watercolor',        blurb: 'ink on flowing water — a vortical fluid bath; drops bloom, strokes comb' },
   { name: 'marble',       title: 'Marbling',          blurb: 'paper marbling — stacked drops push into concentric stones, combs draw them to swirls' },
-  { name: 'dithering',    title: 'Dithering',         blurb: "Sculpted lips, a pyramid, a cube, a torus — one shadow-casting relief, seven 1-bit dithers, ordered through Floyd–Steinberg" },
+  { name: 'dithering',    title: 'Dithering',         blurb: "David's lips from the real scan, a pyramid, a cube, a torus — one shadow-casting relief, seven 1-bit dithers" },
   { name: 'raytrace',     title: 'Raytrace',          blurb: 'per-pixel ray tracing — soft shadows, a mirror sphere, and a refractive glass ball' },
   { name: 'pathtracer',   title: 'Path Tracer',       blurb: 'path-traced Cornell box — soft shadows, glass, color bleeding; converges live from noise' },
 ]
@@ -165,6 +165,7 @@ export const WIKI = {
 // The specific work an example reproduces (rendered as an "original" link in the demo HUD) —
 // distinct from WIKI, which explains the underlying mathematics.
 export const ORIGIN = {
+  'dithering': 'https://commons.wikimedia.org/wiki/File:David_(Michelangelo).stl',
   'plume':   'https://x.com/Rainmaker1973/status/2075485116856504794',
   'spectra': 'https://x.com/S_Conradi/status/2075661669854843080',
   'waves':   'https://x.com/KZ_LAB_E/status/1979210373921411098',
