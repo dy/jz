@@ -625,3 +625,14 @@ test('Math: hypot arities (const-fold and runtime agree)', () => {
   const r = run(`export let f = (a, b, c) => Math.hypot(a, b, c)`)
   is(r.f(3, 4, 12), 13)
 })
+
+// Decimal→f64 parse at the extremes — full-range Eisel-Lemire (references: host
+// Number/parseFloat, V8; all values are exact IEEE-754 bit patterns).
+test('Number/parseFloat: subnormals, deep exponents, 19-digit significands', async () => {
+  for (const s of ['5e-324', '4.9406564584124654e-324', '2.2250738585072014e-308',
+    '2.2250738585072011e-308', '1e-309', '9.99e-321', '5.357543035931338e+300',
+    '1.7976931348623157e308', '1e309', '1152921504606847359', '1152921504606847105']) {
+    is(await evaluate(`Number('${s}')`), Number(s), `Number('${s}')`)
+    is(await evaluate(`parseFloat('${s}')`), parseFloat(s), `parseFloat('${s}')`)
+  }
+})

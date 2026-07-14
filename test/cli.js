@@ -234,6 +234,7 @@ test('cli: -D / --define injects a compile-time constant', () => {
   cli(input, '-D', 'N=42', '-o', output)
   const mod = new WebAssembly.Module(readFileSync(output))
   const inst = new WebAssembly.Instance(mod)
+  inst.exports._initialize?.()  // wasi leg: reactor init (js leg ran the start section)
   is(adaptI64(mod, inst.exports).f(), 42)
   unlinkSync(output)
 })

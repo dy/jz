@@ -10,6 +10,7 @@ function evalStr(code) {
   const wasm = compile(`export let main = () => ${code}`)
   const mod = new WebAssembly.Module(wasm)
   const inst = new WebAssembly.Instance(mod)
+  inst.exports._initialize?.()  // wasi leg: reactor init (js leg ran the start section)
   const m = jz.memory({ module: mod, instance: inst })
   return m.read(adaptI64(mod, inst.exports).main())
 }
@@ -355,6 +356,7 @@ test('regex: str.replace(str, str) fallback through __str_replace', () => {
   `)
   const mod = new WebAssembly.Module(wasm)
   const inst = new WebAssembly.Instance(mod)
+  inst.exports._initialize?.()  // wasi leg: reactor init (js leg ran the start section)
   const m = jz.memory({ module: mod, instance: inst })
   const exports = adaptI64(mod, inst.exports)
   is(m.read(exports.a()), 'hello there')

@@ -636,6 +636,7 @@ test('inferModuleLetTypes: 3-buffer rotation keeps typed loads', () => {
 })
 
 test('inferModuleLetTypes: global aliased from a typed-returning user fn', () => {
+  if (belowOpt(1)) return  // codegen-SHAPE pin (no dispatch fork) — the fork legitimately remains at O0
   // `a = mk(n)` — globals are typed before inlining runs, so the call is opaque to
   // the forward pass. The `@ret:mk` virtual node carries mk's return ctor across.
   // BOTH arrow-body forms must anchor @ret: an arrow EXPR-body is the implicit
@@ -658,6 +659,7 @@ test('inferModuleLetTypes: global aliased from a typed-returning user fn', () =>
 })
 
 test('inferModuleLetTypes: global aliased from a ctor-preserving typed method', () => {
+  if (belowOpt(1)) return  // codegen-SHAPE pin — see above
   // `.subarray()` / `.slice()` return the receiver's typed-array kind.
   const wat = jz.compile(`
     let a, b

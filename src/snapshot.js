@@ -72,11 +72,15 @@ export function snapshotInit(module, watrCompile) {
   if (typeof WebAssembly === 'undefined') return false
   if (!Array.isArray(module) || module[0] !== 'module') return false
 
+  // Init lives in a `(start)` directive (js host) or, under the WASI reactor
+  // convention, in a func exported as `_initialize` (host: 'wasi' never emits a
+  // start section — the p1 ABI forbids WASI calls there).
   const startDir = findNode(module, n => n[0] === 'start')
-  if (!startDir) return false                                      // nothing to snapshot
-  const startName = startDir[1]
-  const startFn = findNode(module, n => n[0] === 'func' && n[1] === startName)
-  if (!startFn) return false
+  const startFn = startDir
+    ? findNode(module, n => n[0] === 'func' && n[1] === startDir[1])
+    : findNode(module, n => n[0] === 'func' && n.some(c => Array.isArray(c) && c[0] === 'export' && c[1] === '"_initialize"'))
+  if (!startFn) return false                                       // nothing to snapshot
+  const startName = startFn[1]
   const startText = JSON.stringify(startFn)
   if (startText.includes('__timer_loop')) return false             // non-returning start
 
@@ -122,11 +126,14 @@ export function snapshotInit(module, watrCompile) {
     for (const imp of imports) {
       const fn = imp.find(c => Array.isArray(c) && c[0] === 'func')
       const gl = imp.find(c => Array.isArray(c) && c[0] === 'global')
-      const name = JSON.parse(imp[2])
-      if (fn) stubs[name] = () => { throw new Error('__hermetic__') }
-      else if (gl) stubs[name] = new WebAssembly.Global({ value: 'i64' }, 0n)
+      const modName = JSON.parse(imp[1]), name = JSON.parse(imp[2])  // keyed by import module: env AND wasi_snapshot_preview1
+      if (fn) (stubs[modName] ||= {})[name] = () => { throw new Error('__hermetic__') }
+      else if (gl) (stubs[modName] ||= {})[name] = new WebAssembly.Global({ value: 'i64' }, 0n)
     }
-    inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), { env: stubs })
+    inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), stubs)
+    // Reactor form: init doesn't run at instantiation — drive it explicitly so the
+    // hermeticity stubs get their chance to throw (start-section form ran above).
+    if (!startDir) inst.exports._initialize()
   } catch (e) {
     module.length -= getters.length                                // restore, decline
     return false
@@ -170,7 +177,18 @@ export function snapshotInit(module, watrCompile) {
     if (typeof memNode[i] === 'string' && /^\d+$/.test(memNode[i])) { if (Number(memNode[i]) < pages) memNode[i] = String(pages); break }
     else if (typeof memNode[i] === 'number') { if (memNode[i] < pages) memNode[i] = pages; break }
   // __start is spent
-  module.splice(module.indexOf(startDir), 1)
+  if (startDir) module.splice(module.indexOf(startDir), 1)
   module.splice(module.indexOf(startFn), 1)
+  // Reactor form: WASI command wrappers self-init via a void `call $__start` —
+  // init is baked into the image now, so those calls must go with the func.
+  const stripCalls = (n) => {
+    for (let i = n.length - 1; i >= 0; i--) {
+      const c = n[i]
+      if (!Array.isArray(c)) continue
+      if (c[0] === 'call' && c[1] === startName && c.length === 2) n.splice(i, 1)
+      else stripCalls(c)
+    }
+  }
+  for (const f of findAll(module, n => n[0] === 'func')) stripCalls(f)
   return true
 }

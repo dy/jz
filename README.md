@@ -360,6 +360,8 @@ There's two possible `host` targets:
 - **`js`** (default) — runs inside a JavaScript host (browser, Node, Deno, Bun). `jz()` and `jz/interop` wire the needed `env.*` services automatically (overridable via `opts.imports.env`), and you get full value marshaling across the boundary.
 - **`wasi`** — runs on a standalone WASM engine with no JavaScript (wasmtime, wasmer, deno run). JZ emits WASI Preview 1, so the module needs no host shims — but there's no host-side marshaler, so heap values must be passed by hand.
 
+Under `--host wasi` module init ships as the standard WASI reactor export `_initialize` (never a wasm start section — the p1 ABI forbids WASI calls there). ABI-following hosts (wasmtime, node:wasi `initialize()`, `jz/wasi`, `jz/interop`) call it after wiring memory; instantiating by hand, call `instance.exports._initialize?.()` once before anything else. Command entries (`run`, `_start`) self-init, so invoking them directly also works.
+
 Either way the `.wasm` carries at most one import namespace (none, `env`, or `wasi_snapshot_preview1`). The difference is only in how a few runtime services are serviced:
 
 | What your code does | `js` (default) | `wasi` |

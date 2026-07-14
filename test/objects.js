@@ -1532,6 +1532,7 @@ test('devirt schema-slot: dynamic write to a schema-named key stays visible thro
     export const getA = (o) => o.a
     export const setDyn = (o, k, v) => { o[k] = v; return o }
   `)
+  if (onWasi()) return  // wasi: js-object arg (no mem.External re-entry)
   const obj = r.build()
   is(r.getA(obj), 1)
   r.setDyn(obj, 'a', 999)
@@ -1568,6 +1569,9 @@ test('devirt schema-slot: two schemas sharing a field name at different slots ne
     export const buildB = () => mkB()
     export const getA = (o) => o.a
   `)
+  // wasi: js-object arg (no mem.External re-entry) — the per-schema slot layout is
+  // still validated by the outbound decode of each materialized copy.
+  if (onWasi()) { is(r.buildA().a, 1); is(r.buildB().a, 99); return }
   is(r.getA(r.buildA()), 1)
   is(r.getA(r.buildB()), 99)
 })
@@ -1598,6 +1602,10 @@ test('devirt schema-slot: recursive OBJECT param keeps its real schema id, not s
     export const buildOther = () => other()
     export const roundTrip = (n) => chaseFromMk(n)
   `)
+  // wasi: js-object arg (no mem.External re-entry) — the schema id the recursive
+  // param carries is still validated by the outbound decode of the materialized copy
+  // (a defaulted-to-0 aux would decode with other's layout, not mk's).
+  if (onWasi()) { is(r.roundTrip(0).a, 111); is(r.roundTrip(5).a, 111); is(r.buildOther().a, 99); return }
   is(r.getA(r.roundTrip(0)), 111, 'base case (n=0): mk real schema id, not schema 0')
   is(r.getA(r.roundTrip(1)), 111, 'one recursive hop keeps the real schema id')
   is(r.getA(r.roundTrip(5)), 111, 'five recursive hops keep the real schema id')

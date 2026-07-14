@@ -438,8 +438,21 @@ test('fs: read + write round-trip under node:wasi preopens', async () => {
   is(mem.read(inst.exports.missing()), 44)   // WASI errno 44 = NOENT
 })
 
+test('init: top-level WASI calls run via _initialize (reactor), not a start section', () => {
+  // The p1 ABI forbids WASI calls inside the wasm start section — it runs during
+  // `new WebAssembly.Instance`, before ANY host can wire memory, so a top-level
+  // console.log/Date.now crashed the JS shim ("Cannot read properties of null").
+  // host:'wasi' ships init as the standard `_initialize` reactor export instead.
+  const mod = new WebAssembly.Module(compile(`console.log('init'); export let f = () => 1`, { host: 'wasi' }))
+  ok(WebAssembly.Module.exports(mod).some(e => e.name === '_initialize'), '_initialize exported')
+  const { exports: e } = jz(`console.log('init side effect'); let t = Date.now(); export let f = () => t > 0`, { host: 'wasi' })
+  is(Number(e.f()), 1, 'init ran after memory wiring')
+})
+
 test('fs: host js rejects at compile with the wiring hint', () => {
   let e
-  try { compile('export let f = () => fs.read("x")') } catch (x) { e = x }
+  // host pinned: under the test:wasi leg the env default flips host to 'wasi',
+  // where fs.read compiles fine — the premise here is the JS host's rejection.
+  try { compile('export let f = () => fs.read("x")', { host: 'js' }) } catch (x) { e = x }
   ok(e && /WASI host/.test(e.message), `hint present: ${e?.message?.slice(0, 60)}`)
 })

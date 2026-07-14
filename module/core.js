@@ -1050,7 +1050,12 @@ export default (ctx) => {
     // prehashed body — no __str_hash on every access.
     if (typeof prop === 'string') {
       inc('__dyn_get_expr_t_h')
-      return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr_t_h', receiver, key, emitTypeTag(receiver, vt), ['i32.const', strHashLiteral(prop)]]], 'f64')
+      const call = ['call', '$__dyn_get_expr_t_h', receiver, key, emitTypeTag(receiver, vt), ['i32.const', strHashLiteral(prop)]]
+      // Schema-set devirt marker — same contract as emitDynGetAnyTyped below
+      // (identical 4-arg layout); without it the wasi host (features.external
+      // off routes reads here) never devirtualizes megamorphic prop reads.
+      if (ctx.transform.optimize) call.dvProp = prop
+      return typed(['f64.reinterpret_i64', call], 'f64')
     }
     inc('__dyn_get_expr_t')
     return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr_t', receiver, key, emitTypeTag(receiver, vt)]], 'f64')
@@ -1375,12 +1380,15 @@ export default (ctx) => {
   // notNullish inlines an isNullish check — (i32.or (i64.eq X NULL)
   // (i64.eq X UNDEF)) — that duplicates its operand, so a tee'd
   // side-effecting value would run twice.
+  // asF64 on the taken arm: the dispatched access may come back i32-narrowed
+  // (an int-certain slot read at O0 keeps its raw i32), and the f64-typed if
+  // fails validation ("type error in fallthru: expected f64, got i32").
   const optionalGuard = (t, va, thenIR) =>
     typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, va],
       ['if', ['result', 'f64'],
         notNullish(typed(['local.get', `$${t}`], 'f64')),
-        ['then', thenIR],
+        ['then', asF64(thenIR)],
         ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]], 'f64')
 
   // Receiver-evaluate-once: allocate a fresh hoist-temp `$t`, emit `value` into

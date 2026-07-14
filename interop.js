@@ -1077,6 +1077,11 @@ const buildImports = (mod, opts, state) => {
 
 const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   if (needsWasi) imports._setMemory(inst.exports.memory)
+  // WASI reactor convention: a `host: 'wasi'` module ships its init as the standard
+  // `_initialize` export (never a wasm start section — WASI calls there would fire
+  // before _setMemory above). Called for ANY module exporting it, imports or not:
+  // a hostless wasi module (no console/Date use) still needs its init run.
+  inst.exports._initialize?.()
 
   // Trampoline used by env.setTimeout/clearTimeout to fire scheduled closures.
   state.invoke = inst.exports.__invoke_closure || null

@@ -3069,6 +3069,7 @@ test('propagateSingleUse: folds a single-def/single-use pure temp into its use (
 })
 
 test('vectorizer const-exponent pow arm: AoS pure-fn ** with module-const exponent compiles at every tier (colorpq shape)', () => {
+  if (belowOpt(2)) return  // tier bit-identity premise needs BOTH sides vectorized — the opt0 leg forces the default side scalar
   // Regression: the arm's crPow branch read the optimize config off the LIFT ctx, which never
   // carries it (`ctx.transform` undefined → TypeError at compile). The config rides a module
   // flag now (the _relaxF32 pattern). Reaching the arm needs the exact colorpq shape: a pure

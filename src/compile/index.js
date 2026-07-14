@@ -2157,6 +2157,33 @@ export default function compile(ast, profiler) {
 
   pruneUnusedThrowRuntime(sec)
 
+  // WASI reactor convention: the p1 ABI forbids WASI calls inside the wasm start
+  // section — a JS shim literally cannot serve them (fd_write during `new
+  // WebAssembly.Instance` has no memory to read; a top-level console.log/Date.now
+  // crashed with "Cannot read properties of null"). Ship module init as the
+  // standard `_initialize` export instead: hosts (jz/wasi + interop shims, node:wasi
+  // initialize(), wasmtime) call it once memory is wired. Command entries
+  // (`run`/`_start`) self-init through the same once-guard, so a runtime that
+  // invokes a command without calling `_initialize` still runs init exactly once.
+  if (ctx.transform.host === 'wasi') {
+    const sFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func')
+    const sDirIdx = sec.start.findIndex(n => Array.isArray(n) && n[0] === 'start')
+    if (sFn) {
+      sec.globals.push(['global', '$__init_done', ['mut', 'i32'], ['i32.const', 0]])
+      let at = 2
+      while (at < sFn.length && Array.isArray(sFn[at]) && sFn[at][0] === 'local') at++
+      sFn.splice(at, 0,
+        ['if', ['global.get', '$__init_done'], ['then', ['return']]],
+        ['global.set', '$__init_done', ['i32.const', 1]])
+      sFn.splice(2, 0, ['export', '"_initialize"'])
+      if (sDirIdx !== -1) sec.start.splice(sDirIdx, 1)
+      for (const name of wasiCommandExports) {
+        const w = sec.funcs.find(f => Array.isArray(f) && f[1] === `$${name}$wasi`)
+        if (w) w.splice(w.findIndex(n => Array.isArray(n) && n[0] === 'drop'), 0, ['call', '$__start'])
+      }
+    }
+  }
+
   // Reorder non-import funcs by call count: hot callees get low LEB128 indices.
   // `call $f` encodes funcidx as ULEB128 (1 B for idx < 128, 2 B for idx < 16384).
   // On watr self-host this saves ~6 KB (hot specialized helpers migrate to idx < 128).

@@ -938,12 +938,12 @@ test('devirtGlobalCalls: ??= chain resolves the pre-wrap value (subscript asi.js
     base.method = (x) => x + 1
     const saved = base._saved ??= base.method
     base.method = (x) => saved(x) * 2
-    export let run = () => {
+    export let go = () => {
       let acc = 0
       for (let i = 0; i < 5; i = i + 1) acc = acc + base.method(i)
       return acc
     }`
-  is(runHost(src).run(), 30)  // saved=x=>x+1; method=x=>saved(x)*2; Σ(i+1)*2, i=0..4 = 2+4+6+8+10
+  is(runHost(src).go(), 30)  // saved=x=>x+1; method=x=>saved(x)*2; Σ(i+1)*2, i=0..4 = 2+4+6+8+10
   ok(!/call_indirect/.test(wat(src)), 'no call_indirect left — both saved() and method() devirtualize')
 })
 
@@ -956,12 +956,12 @@ test('devirtGlobalCalls: chained assignment (const x = obj.prop = arrow) resolve
   const src = `
     function base() { return 0 }
     const alias = base.method = (x) => x * 3
-    export let run = () => {
+    export let go = () => {
       let acc = 0
       for (let i = 0; i < 5; i = i + 1) acc = acc + alias(i)
       return acc
     }`
-  is(runHost(src).run(), 30)  // Σ(i*3), i=0..4 = 0+3+6+9+12
+  is(runHost(src).go(), 30)  // Σ(i*3), i=0..4 = 0+3+6+9+12
   ok(!/call_indirect/.test(wat(src)), 'no call_indirect — chained assignment resolved through')
 })
 
@@ -976,15 +976,15 @@ test('devirtGlobalCalls: raw arrow literal lifted through a bare ??=; value-use 
   const src = `
     let g
     g ??= (x) => x + 1
-    export let run = () => {
+    export let go = () => {
       let acc = 0
       for (let i = 0; i < 5; i = i + 1) acc = acc + g(i)
       return acc
     }
     export let keep = (h) => h(9)
     export let value = () => keep(g)`
-  const { run, value } = runHost(src)
-  is(run(), 15)    // Σ(i+1), i=0..4 = 1+2+3+4+5
+  const { go, value } = runHost(src)
+  is(go(), 15)     // Σ(i+1), i=0..4 = 1+2+3+4+5
   is(value(), 10)  // g(9) through the generic closure param — g is still a real callable value
   const w = wat(src)
   // Exactly one call_indirect survives — keep()'s generic `h(9)` dispatch (h's

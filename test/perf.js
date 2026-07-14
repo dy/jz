@@ -1532,7 +1532,13 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 // round-trip core (__ftoa_shortest + $__ryu_pow5 + an 828-byte seed table,
 // small-table variant) — ES-spec-exact String(number) instead of the 9-digit
 // truncation. A correctness feature that costs ~1.2 KB wherever __ftoa links.
-golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 9857)
+// 9857→18335: full-range Eisel-Lemire table (exp10 ∈ [-342..308], 10.4 KB vs
+// the 2 KB trim). The trimmed table flushed |exp10| > 308 literals to 0 via the
+// overflowing 10^e fallback and double-rounded the subnormal boundary — the
+// self-hosted watr.wasm failed official float_literals/const on real parses.
+// Correctness owns the trade; size-recovery follow-up recorded in todo (derive
+// the reciprocal half at init via 256÷128 long division instead of shipping it).
+golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 18335)
 // Baseline 7789→8196: an empty literal `{}` grown by computed `p[k]=…` carries
 // per-object dyn props the literal's static schema doesn't enumerate. Reads
 // (`p[k]` after the write, `Object.keys`/`values`/`entries`, `JSON.stringify`,
@@ -1586,6 +1592,7 @@ golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; 
 // growth is the cost of the parser actually working.
 // 6736→7149: same __ftoa fraction-recovery + big-int-clamp correctness fix as the
 // known-shape pin above (this program pulls in number→string via its stdlib).
+// 14375→22856: full-range EL table (see the known-shape history above).
 golden('closure-heavy parser', `export let f = (s) => {
   let i = 0, n = s.length
   let peek = () => i < n ? s[i] : ''
@@ -1594,7 +1601,7 @@ golden('closure-heavy parser', `export let f = (s) => {
   let total = 0
   while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
   return total
-}`, 14375) // 7149→10315: same Eisel-Lemire __dec_to_f64 + trimmed table cost as the known-shape pin above
+}`, 22856) // 7149→10315: same Eisel-Lemire __dec_to_f64 + trimmed table cost as the known-shape pin above
 // 12623→14375: Ryū shortest String(number) (__ftoa_shortest + seed table), as above.
 // 10315→12623: ES own-prop shadowing on unknown receivers (the builtin-shadow sidecar probe,
 // session 7) — a closure-heavy parser is all unknown-receiver method calls. Timing pins stayed

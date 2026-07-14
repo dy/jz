@@ -614,9 +614,12 @@ function narrowPointerResults(funcs, paramReps) {
       if (func.sig.ptrKind == null) {
         const pp = passthroughPtrParam(func)
         if (pp) {
+          // OBJECT reboxes by schema-id; TYPED by the param's ELEM-TYPE bits
+          // (pp.ptrAux) — without them the caller reboxes with aux 0 (Int8
+          // dispatch) and every read of the returned array mis-strides to 0.
           const aux = pp.ptrKind === VAL.OBJECT
             ? paramFactsOf(paramReps, func, 'schemaId')?.get(pp.name) ?? null
-            : null
+            : pp.ptrAux ?? null
           // OBJECT needs a known schema-id to rebox; a polymorphic pass-through
           // (conflicting schemas → null) keeps its current handling.
           if (pp.ptrKind !== VAL.OBJECT || aux != null) {
@@ -1223,6 +1226,15 @@ export default function narrowSignatures(programFacts, ast) {
   // (callback bench: mix is FNV — params and result all i32-shaped, but inferred
   // only after E phase narrowed mix's result).
   phase.refreshLocals()
+  // I1: Re-run POINTER results now that Phase G has tagged typed params — a
+  // pass-through like `norm = (w) => { …w[i]…; return w }` gains w.ptrKind only
+  // in G, AFTER the first narrowPointerResults sweep, so its sig.ptrKind stayed
+  // null and the I2 numeric-results pass below then STOLE the return as plain
+  // i32 — the caller f64.convert_i32_s'd the returned offset into a bogus float
+  // (the cross-module memo miscompile: `g._w = norm(w)` stored a number, the
+  // slot read dispatched on it as a pointer → undefined). The rerun stamps
+  // sig.ptrKind first; I2's f64-results guard then skips these functions.
+  narrowPointerResults(funcsWithNarrowableResult, paramReps)
   // I2: Re-narrow i32 RESULTS now that Phase G (applyTypedPointerParamAbi) has tagged
   // typed-array params ptrKind=TYPED. Phase E ran before G, so a function returning a
   // typed-array element — dict's `lookup = (keys, vals, k) => { … return vals[h] }` with
