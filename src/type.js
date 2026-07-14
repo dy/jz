@@ -873,9 +873,17 @@ function scanIntervalIdx(body, out, lens, ranges) {
     }
     if (e.length === 2 && op === '()') return ev(x)   // grouping, not a call
     if (e.length === 2 && (op === '-' || op === 'u-')) { const v = ev(x); return ipOk(v) && v ? [-v[1], -v[0]] : null }
-    if (op === '?:' && e.length === 4) {   // join of both arms (either may run)
+    if (op === '?:' && e.length === 4) {   // join of both arms, each under its refinement
       visit(x)
-      const a = ev(e[2]), b = ev(e[3])
+      const rT = refine(x, false), rE = refine(x, true)
+      const sT = rT ? env.get(rT[0]) : null
+      if (rT) env.set(rT[0], rT[1])
+      const a = ev(e[2])
+      if (rT) env.set(rT[0], sT)
+      const sE = rE ? env.get(rE[0]) : null
+      if (rE) env.set(rE[0], rE[1])
+      const b = ev(e[3])
+      if (rE) env.set(rE[0], sE)
       return a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null
     }
     // any non-arithmetic node (call, assignment, ternary, indexing…) routes through
@@ -917,11 +925,16 @@ function scanIntervalIdx(body, out, lens, ranges) {
     if (typeof l !== 'string' || rv == null) return null
     const K = rv, v = env.get(l)
     if (!v) return null
-    if (negate) op = op === '<' ? '>=' : op === '<=' ? '>' : op === '>' ? '<=' : op === '>=' ? '<' : null
+    if (negate) op = op === '<' ? '>=' : op === '<=' ? '>' : op === '>' ? '<=' : op === '>=' ? '<'
+      : op === '===' ? '!==' : op === '!==' ? '===' : null
     if (op === '<') return [l, [v[0], Math.min(v[1], K - 1)]]
     if (op === '<=') return [l, [v[0], Math.min(v[1], K)]]
     if (op === '>') return [l, [Math.max(v[0], K + 1), v[1]]]
     if (op === '>=') return [l, [Math.max(v[0], K), v[1]]]
+    if (op === '===') return [l, [Math.max(v[0], K), Math.min(v[1], K)]]
+    // ≠K tightens only at an ENDPOINT (interior point removal keeps the hull) —
+    // exactly the toroidal-wrap ternary (`y === 0 ? h-1 : y-1`)
+    if (op === '!==') return [l, [v[0] === K ? K + 1 : v[0], v[1] === K ? K - 1 : v[1]]]
     return null
   }
   const killAssigned = (n) => {
