@@ -4029,6 +4029,20 @@ export function devirtSchemaReads(fn) {
     }
     return ['local.get', sidT]
   }
+  // Evaluation-order safety class shared by the rewrite and the duplicate-read
+  // memo: arms/reuse evaluate ONLY the receiver (or nothing); the original call
+  // also evaluates key/tag/hash operands. All must be pure for the paths to be
+  // observationally identical (they are in practice: local reads + constants —
+  // the emitDynGetAnyTyped shape). `call $__ptr_type` is a pure bit extract.
+  const PURE_I64 = new Set(['i64.const', 'i64.reinterpret_f64', 'f64.reinterpret_i64',
+    'i64.and', 'i64.or', 'i64.xor', 'i64.shr_u', 'i64.shl', 'i64.eq', 'i64.ne', 'i64.eqz',
+    'i64.extend_i32_u', 'i64.extend_i32_s',
+    'i32.const', 'i32.wrap_i64', 'i32.and', 'i32.or', 'i32.xor', 'i32.shr_u', 'i32.shl',
+    'i32.add', 'i32.sub', 'i32.eq', 'i32.ne', 'i32.eqz'])
+  const pureOp = (n) => !Array.isArray(n) ? true
+    : n[0] === 'call' && n[1] === '$__ptr_type' ? n.slice(2).every(pureOp)
+    : PURE_I64.has(n[0]) ? n.slice(1).every(pureOp)
+    : isPureIR(n)
   const rewrite = (parent, i) => {
     const node = parent[i]
     const prop = node.dvProp
@@ -4038,20 +4052,6 @@ export function devirtSchemaReads(fn) {
       if (slot >= 0) withProp.push([sid, slot])
     }
     if (!withProp.length) return
-    // Evaluation-order safety: the arms evaluate ONLY the receiver; the original
-    // call also evaluates key/tag/hash operands. All four must be pure for the
-    // two paths to be observationally identical (they are in practice: local
-    // reads + constants — the emitDynGetAnyTyped shape). `call $__ptr_type`
-    // (the tag operand for an unknown-kind receiver) is a pure bit extract.
-    const PURE_I64 = new Set(['i64.const', 'i64.reinterpret_f64', 'f64.reinterpret_i64',
-      'i64.and', 'i64.or', 'i64.xor', 'i64.shr_u', 'i64.shl', 'i64.eq', 'i64.ne', 'i64.eqz',
-      'i64.extend_i32_u', 'i64.extend_i32_s',
-      'i32.const', 'i32.wrap_i64', 'i32.and', 'i32.or', 'i32.xor', 'i32.shr_u', 'i32.shl',
-      'i32.add', 'i32.sub', 'i32.eq', 'i32.ne', 'i32.eqz'])
-    const pureOp = (n) => !Array.isArray(n) ? true
-      : n[0] === 'call' && n[1] === '$__ptr_type' ? n.slice(2).every(pureOp)
-      : PURE_I64.has(n[0]) ? n.slice(1).every(pureOp)
-      : isPureIR(n)
     // `local.tee` operands (foldSetToTee folds shared tag/CSE
     // locals into the FIRST read's call, possibly nested) are hoisted to
     // standalone sets before the dispatch, innermost first — the original call
@@ -4138,25 +4138,106 @@ export function devirtSchemaReads(fn) {
       dfltCall]
   }
   let seen = 0
-  // pre-scan: count tagged reads per stable receiver so sidRead can choose
-  // entry-hoist (>=2 reads) vs inline-at-site (1 read)
+  // pre-scan: count tagged reads per stable receiver (sidRead's entry-hoist
+  // choice) AND per (receiver, prop) key — only keys read ≥2× tee their result
+  // for the duplicate-read memo below (a lone read must not pay a local write)
+  const keyReads = new Map()
+  const memoKey = (c) => {
+    const st = stableRecv(c[2])
+    return st && c.dvProp != null ? `${st.name} ${c.dvProp}` : null
+  }
   const countScan = (n) => {
     if (!Array.isArray(n)) return
     if (n[0] === 'call' && n.dvProp) {
       const st = stableRecv(n[2])
-      if (st) recvReads.set(st.name, (recvReads.get(st.name) || 0) + 1)
+      if (st) {
+        recvReads.set(st.name, (recvReads.get(st.name) || 0) + 1)
+        const k = `${st.name} ${n.dvProp}`
+        keyReads.set(k, (keyReads.get(k) || 0) + 1)
+      }
     }
     for (let i = 1; i < n.length; i++) countScan(n[i])
   }
   countScan(fn)
+  // Duplicate-read elimination riding the rewrite walk: a SECOND tagged read
+  // of the SAME (stable receiver, prop) in the same straight-line region
+  // reuses the first read's tee'd i64 — the whole sid-dispatch + slot load
+  // drops (measure()'s `imul(o.r, imul(o.r, 3))` pays one read). Soundness:
+  // the receiver is a never-written local and a jz OBJECT's shape never
+  // changes, so only an intervening WRITE could change the value — any
+  // non-readonly call, store, global.set or memory.grow clears the memo.
+  // Conditional regions (if arms, labeled blocks a br may skip) keep entries
+  // born inside them local: snapshot on entry, restore on exit (outer entries
+  // stay usable inside — the first read dominates). A LOOP whose body clobbers
+  // clears up front: an entry born before iteration 1's clobber must not serve
+  // iteration 2. Replacing a read drops its operand evaluation — legal for
+  // exactly the pure class rewrite() enforces; tee'd operands refuse (their
+  // set would vanish).
+  const READONLY_CALL = /^\$(__dyn_get|__ptr_type$|math\.)/
+  const isClobberNode = (x) => {
+    const op = x[0]
+    if (op === 'call' && !x.dvProp && typeof x[1] === 'string' && !READONLY_CALL.test(x[1])) return true
+    return typeof op === 'string' && (op.includes('.store') || op === 'global.set' || op === 'memory.grow')
+  }
+  const hasClobber = (x) => {
+    if (!Array.isArray(x)) return false
+    if (isClobberNode(x)) return true
+    for (let i = 1; i < x.length; i++) if (hasClobber(x[i])) return true
+    return false
+  }
+  const noTee = (x) => !Array.isArray(x) ? true
+    : x[0] === 'local.tee' ? false
+    : x.slice(1).every(noTee)
+  const memo = new Map()
+  let clobbers = 0
+  const scoped = (walkBody) => {
+    const snap = new Map(memo), pre = clobbers
+    walkBody()
+    memo.clear()
+    if (clobbers === pre) for (const [k, v] of snap) memo.set(k, v)
+  }
+  const visitChild = (n, i) => {
+    const c = n[i]
+    if (!Array.isArray(c)) return
+    walkDSR(c)
+    if (c[0] === 'call' && c.dvProp) {
+      seen++
+      const key = memoKey(c)
+      const hit = key && memo.get(key)
+      if (hit && c.slice(2).every(o => pureOp(o) && noTee(o))) { n[i] = ['local.get', hit]; return }
+      rewrite(n, i)
+      if (key && (keyReads.get(key) || 0) >= 2 && Array.isArray(n[i])) {
+        if (uid === null) uid = nextLocalId(fn, '$__dsr')
+        const L = `$__dsrm${uid++}`
+        newDecls.push(['local', L, 'i64'])
+        n[i] = ['local.tee', L, n[i]]
+        memo.set(key, L)
+      }
+      return
+    }
+    if (isClobberNode(c)) { memo.clear(); clobbers++ }
+  }
   const walkDSR = (n) => {
     if (!Array.isArray(n)) return
-    for (let i = 1; i < n.length; i++) {
-      const c = n[i]
-      if (!Array.isArray(c)) continue
-      walkDSR(c)
-      if (c[0] === 'call' && c.dvProp) { seen++; rewrite(n, i) }
+    if (n[0] === 'if') {
+      for (let i = 1; i < n.length; i++) {
+        const c = n[i]
+        if (!Array.isArray(c)) continue
+        if (c[0] === 'then' || c[0] === 'else') scoped(() => walkDSR(c))
+        else visitChild(n, i)
+      }
+      return
     }
+    if (n[0] === 'loop') {
+      if (hasClobber(n)) { memo.clear(); clobbers++ }
+      scoped(() => { for (let i = 1; i < n.length; i++) visitChild(n, i) })
+      return
+    }
+    if (n[0] === 'block' && typeof n[1] === 'string') {
+      scoped(() => { for (let i = 1; i < n.length; i++) visitChild(n, i) })
+      return
+    }
+    for (let i = 1; i < n.length; i++) visitChild(n, i)
   }
   walkDSR(fn)
   if (DBG_DSR && String(fn[1]).includes('measure')) console.error('[dsr]', fn[1], 'schemas:', schemas.length, 'tagged seen:', seen)

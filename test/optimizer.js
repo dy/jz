@@ -241,6 +241,43 @@ test('devirtSchemaReads: stable receiver hoists one sid; discriminant field coll
   is(f(), ref, 'refined reads bit-match the generic path')
 })
 
+test('devirtSchemaReads: duplicate read of the same (receiver, prop) reuses one dispatch', () => {
+  // The shapes-bench k=1/6 residual: `o.r * (o.r + 3)` paid TWO full
+  // sid-dispatch blocks. The receiver is a never-written local and a jz
+  // OBJECT's shape never changes, so within a straight-line region the second
+  // read IS the first — tee'd i64, reused. A non-readonly call between the
+  // reads could dyn-write the slot, so it clears the memo.
+  const mkSrc = (body) => `const mkRows = () => {
+    const rows = []
+    for (let i = 0; i < 9; i++) {
+      const k = i % 3
+      if (k === 0) rows.push({ t: k, x: i + 1, y: i + 2 })
+      else if (k === 1) rows.push({ t: k, r: i + 1, x: i + 2 })
+      else rows.push({ t: k, w: i + 1, h: i + 2 })
+    }
+    return rows
+  }
+  const geo = (o) => { const s = o.t; return s === 0 ? o.x * 2 + o.y : s === 1 ? ${body} : o.w * o.h }
+  export let f = () => { const rows = mkRows(); let acc = 0; for (let i = 0; i < rows.length; i++) acc += geo(rows[i]); return acc }`
+  const src = mkSrc('o.r * (o.r + 3)')
+  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const gAt = w.indexOf('(func $geo')
+  const geoWat = w.slice(gAt, w.indexOf('(func', gAt + 1))
+  ok(/\$__dsrm\d+/.test(geoWat), 'duplicated read tees its i64 into a memo local')
+  is((geoWat.match(/0x7ffa4400000000/g) || []).length <= 3, true,
+    'one dispatch per distinct prop key (t, x-or-r…), not per occurrence')
+  const geoJs = (o) => { const s = o.t; return s === 0 ? o.x * 2 + o.y : s === 1 ? o.r * (o.r + 3) : o.w * o.h }
+  const rows = []
+  for (let i = 0; i < 9; i++) {
+    const k = i % 3
+    rows.push(k === 0 ? { t: k, x: i + 1, y: i + 2 } : k === 1 ? { t: k, r: i + 1, x: i + 2 } : { t: k, w: i + 1, h: i + 2 })
+  }
+  let ref = 0
+  for (let i = 0; i < rows.length; i++) ref += geoJs(rows[i])
+  const { f } = run(src, { optimize: 'speed' })
+  is(f(), ref, 'memoized read bit-matches the generic path')
+})
+
 test('devirtConstFnArrayCalls: const-arrow-table indexed call switches to direct calls', () => {
   // The dispatch-bench shape: a module-const array of capture-free operators,
   // one data-indexed call site. The generic call_indirect (bounds + sig check
