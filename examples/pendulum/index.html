@@ -14,7 +14,7 @@ import { runDemo } from "../lib/jzdemo.js"
 // while the corner widget swings the same state as real rods; the trail bursts the moment
 // the lower arm flips (the very event the map colors). Idle launches keep it breathing.
 let nextLaunch = 0
-const schedule = (t) => { nextLaunch = t + 5 + Math.random() * 4 }
+const schedule = (t) => { nextLaunch = t + 1.2 + Math.random() * 0.6 }
 
 const demo = runDemo({
   name: "pendulum",

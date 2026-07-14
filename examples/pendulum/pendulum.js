@@ -22,7 +22,7 @@ const MAX_STEPS = 567
 const DT = 0.06
 
 // ── live trajectories ──
-const NL = 3                     // simultaneous live pendulums
+const NL = 6                     // simultaneous live pendulums
 const TRAIL = 420                // trail length, positions
 let live = new Float64Array(NL * 4)      // θ1,θ2,ω1,ω2 per slot
 let lstate = new Int32Array(NL * 2)      // [age, burst] per slot: age<0 → free, burst>0 → flip flash
