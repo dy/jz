@@ -3860,3 +3860,24 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
 - Twin SIZE (x1.5-3 per versioned fn) still the open merge question: dedup the
   checked twin (shared slow-path fn) or gate versioning off at size tier;
   corpus sweep to quantify. Then ff-merge.
+
+## Root F: MERGE-READY — all gates green, ff-merge awaits the user's five files (2026-07-14)
+- BRANCH typedoob @ 53fcfd39 (rebased on main): suite 2910/0 (first fully-green
+  run), selfhost 21/21, fuzz 2000/0; six-file battery green incl. examples
+  21/21 (toroidal WRAP ATOMS: the iv wrap-ternary — ===/>/< forms — is a
+  bounded [0,B-1] atom in the affine algebra, one-sided B-1→hi 0→lo;
+  diffusion 4→62 f64x2, slime 1→13), inference 77/0 (RANGE-ONLY versioning:
+  non-canonical loops guard hull cands with no iv analysis; the interval walk
+  now visits while CONDS), perf 53/0 (recurrence pin annotated at measured
+  truth — twin-shared tee blocks one speed peephole, bounded at the pair,
+  bench-invisible; scoped alpha-rename attempted twice, reverted:
+  cloneWithSubst rename is not scope-aware — owner recorded).
+- Timing (final, cs exact): conv2d 1.010, fft 1.024, aos 0.997, colorconv
+  1.000, blur 1.001. SIZE: whole corpus +0.1% (tier: 2 +1.6%, size +1.0%,
+  speed −1.6%) — twins confined to small SIMD kernels; NO dedup needed.
+- ff-merge REFUSED safely: the user's uncommitted src/compile/index.js,
+  test/{data,inference,optimizer,perf}.js overlap branch commits. Once those
+  are committed/moved: `git merge --ff-only typedoob` closes Root F —
+  runtime-variable typed OOB gets JS-exact semantics (reads → undefined,
+  writes ignored) at bench parity and +0.1% size, replacing silent
+  adjacent-heap corruption.
