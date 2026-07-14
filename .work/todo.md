@@ -67,14 +67,66 @@
     CI (37-run dead-red exposed real size regressions); -Os lean lowering
     landed (crc32 0.98/mandelbrot 0.94/bitwise 0.91 BELOW asc -Oz, aos
     tie); v0.9.1 released (npm+tag+gh, 0.9.0 deprecated — raced dist);
-    dist/jz.js −8.6% wat-strip with parity gate in prepare. OPEN: sort
-    1.08/hash 1.02/wav 1.18/base64 1.23 vs asc -Oz — owner READ-VALUE
-    BINDING NARROWING (`const a = src[i]` binds f64 element|undefined;
-    bind i32 with undefined→0 when every use is int-class) + const-index
-    store-run guard coalescing; tried-and-reverted: $__typed_idx call
-    route (+900 B), sourceInline:false (bigger everywhere). Parked rows
-    stand: immutable (SROA/escape), nqueens/raytrace/sort/qoi/dict
-    (LLVM-class verdicts, no jz-side fix).
+    dist/jz.js −8.6% wat-strip with parity gate in prepare.
+    2026-07-14 BINDING-NARROWING CLOSED WATR-SIDE (watr 6a8403c, the
+    intguard rule-5 family): the ToInt32-guarded checked read collapses
+    to `(if C X (i32.const 0))` (ToInt32(undef)=0 exact) — per-cluster
+    self-contained sweep (murmur's 5-tee scratch temp), single-read RING
+    with hoisted bounds cond (`buf[j]+1` — leaf-narrowing gives 1 where
+    NaN→0; NaN propagates to the top, so the whole tree gates), guarded
+    const-init fold, bare trunc∘checked-read (index contexts), guard/else
+    consts resolved through the immutable f64 const-global POOL (jz -Os
+    pools inf/undef — the literal-only match had blanked EVERY rule on
+    -Os output; pool refreshes after round-1 stripmut since declGlobal
+    pools arrive `(mut f64)`, grown pool drops the dirty filter) + dead
+    and-masks before narrowing stores (store8 & 0xff). Measured -Os:
+    hash 1288 WIN 0.942 / crc32 1272 0.936 / mandelbrot 1206 / bitwise
+    1175 / aos 1979 (1.011 tie) / sort 2022 (1.070) / wav 2025 (1.157) /
+    base64 2203 (1.144). Gates on vendored watr: suite 2930/0, selfhost
+    21/21, fuzz 2000/0. watr 5.5.0 committed (e4aaf5c) — npm publish
+    PENDING USER (session gate blocked autonomous publish); SIZE-pin
+    ratchet (hash→win, budgets down) blocked on that publish since CI
+    installs watr from npm. Remaining owners: sort = bounds-PROOF
+    (heapsort's `child<n` with n=a.length dominates every read —
+    length-identity + non-neg range facts at -Os, no twins needed);
+    wav/base64 = store-guard density (44-byte RIFF header = ~24 guarded
+    const-index stores; writeU32 helper is 4 guarded stores ≈ 90 B vs AS
+    28 B) + the both-sides-checked f64.ne verify loops (i32-narrowing
+    those is UNSOUND: undef!==undef is false, f64.ne(NaN,NaN) true —
+    needs proofs, not narrowing). Also found+fixed: watr's fuzz-794
+    param pin had a missing close-paren and NEVER RAN (test/optimize.js
+    'Unclosed parenthesis' was pre-existing at HEAD, masked in npm-test
+    tail). Tried-and-reverted stands: $__typed_idx call route (+900 B),
+    sourceInline:false, guard-only collapse (+9%). Parked rows stand:
+    immutable (SROA/escape), nqueens/raytrace/qoi/dict (LLVM-class).
+    2026-07-14 EPYC ARC (user CI finding — live site publishing losses):
+    wordcount/immutable/shapes flipped to 0.75/0.69/0.58 on the EPYC CI
+    runner while the SAME builds lead on M4 (today-engine M4: 1.03/1.32-
+    lead/1.35-lead — todo claims reproduce exactly). bench-probe workflow
+    ADDED (aa9a2892, workflow_dispatch, repeated rounds): runner is
+    STABLE ±2% over 5 rounds — systematic µarch, NOT noise (same rounds:
+    dispatch leads 2.43×, hash 1.19×). jz degrades 1.3-1.9× MORE than V8
+    on the machine change (immutable 4.4× vs 2.3×). M4 profile: wordcount
+    = $__hash_slot 79.7% self — the open-addressing probe (24 B entries,
+    linear probe, byte-verify via __str_eq; V8's x64 Map = SwissTable-
+    style SIMD group probing in C++). OWNER: probe-kernel µarch work —
+    control-byte/group probing or entry-layout change + wordized verify
+    (i64-chunk memcmp) + possibly load-factor drop; test on M4 (must not
+    regress) then bench-probe on EPYC decides. Share-passes variant ruled
+    OUT (outline/tailmerge −3.5% bytes only, ±1% time — not I-cache from
+    duplication). bench snapshot-publish RACE fixed (28fdc748): two waves
+    rebase-conflicted on generated bench.svg — `-X theirs` + retry loop.
+    2026-07-14 KERNEL-LEG BISECT (per-file, timeout-fenced): the 7 h
+    "grind" was an INFINITE LOOP in one wasm call (sample: all frames in
+    one JSToWasm call). Verdict map: HANGS errors/generators/parser-bugs/
+    transform (420 s fence); module-resolver-class fails (destruct/
+    closures/inference — Unknown module, need onKernel guards);
+    optimizer-shape-class (simd/optimizer/never-grown/slot-hazards — the
+    kernel runs optimize:false, shape asserts need guards); REAL kernel
+    bugs: bigint mixed-op TypeError paths, string OOB index, JSON.parse
+    memory OOB, Object.assign unknown-schema, speculate plan-field,
+    preeval rational-carry, pow-fold OOB. Feeds the selfhost-workflow
+    fix; scratchpad/kernel-bisect.mjs is the harness.
   * [x] 10 more bench cases - each area covered
   * STATE 2026-07-09 (JSC leg measured): quiet-machine full table, 49 cases ran.
     GEOMEAN: jz beats every engine — V8 1.89x, deno 1.83x, JSC 1.50x, bun 1.52x
