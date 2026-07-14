@@ -9,18 +9,21 @@
     landed f9d6b62b + 876c9fd2, self-host bundle −77KB, jz-row −1.4%);
     __str_eq interning PARKED with evidence (7.09% kernel, diffuse across ~20
     walk callbacks — no concentrated payer); fft WON earlier via tryButterfly.
-    ACTIVE — Root F (branch typedoob @ ca02b0f1): checked-by-default typed
-    indexing with SIMD bench ALL-PARITY (conv2d 1.014 from 6.12×, fft 1.014
-    from 1.35×, aos 1.000, colorconv 1.007, blur 0.997, cs exact; suites
-    simd 157/data 115/optimizer 170, selfhost 21/21, fuzz 2000/0). Before
-    ff-merge: 4 reds with owners (recurrence pin = twin-local alpha-rename +
-    rep-alias; inference ×2 = range-only versioning, designed; diffusion =
-    symbolic bounds) + twin-size decision (×1.5-3: dedup shared slow-path fn
-    or size-tier gate; sweep to quantify). THEN shapes tag-switch devirt (the
-    ledger's widest gap, ~16× vs AS — bounded schema unions → tag-switched
-    direct slot loads), the last big lever. Parked-with-evidence ledger rows
-    stand: wordcount (table-key interning), immutable (SROA/escape),
-    nqueens/raytrace/sort/qoi/dict (LLVM-class verdicts, no jz-side fix).
+    Root F CLOSED — MERGED 2026-07-14 (89ca3b8e..dc2934b7, 21 commits):
+    checked-by-default typed indexing — runtime-variable OOB reads →
+    undefined, writes ignored (JS-exact) instead of silent adjacent-heap
+    corruption, at bench parity (conv2d 1.010, fft 1.024, aos 0.997,
+    colorconv 1.000, blur 1.001, cs exact) and +0.1% corpus size. Battery
+    on the rebase (== merged main): suite 2917/0, selfhost 21/21, fuzz
+    2000/0. Detail in the MERGED archive section below. "Shapes tag-switch
+    devirt" was a STALE ROW — already landed 07-07 (2159fa64
+    devirtSchemaReads br_table; shapes LEADS both engines per the leg-3
+    queue state). Remaining named levers: dispatch (c) branchless
+    select-tree (JSC 2.29 vs jz ~7.9, predictor-bound), immutable i32 slot
+    storage (1.7× vs V8), shapes .prop CSE, EL-table size recovery (row
+    below). Parked-with-evidence rows stand: wordcount (table-key
+    interning), immutable (SROA/escape), nqueens/raytrace/sort/qoi/dict
+    (LLVM-class verdicts, no jz-side fix).
   * [x] 10 more bench cases - each area covered
   * STATE 2026-07-09 (JSC leg measured): quiet-machine full table, 49 cases ran.
     GEOMEAN: jz beats every engine — V8 1.89x, deno 1.83x, JSC 1.50x, bun 1.52x
@@ -1283,6 +1286,24 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
   `Promise.all([p]).then()`). Both arms now honor the shadow contract; the
   three pins flipped to correct-behavior regressions; test262 asyncDone runs
   fully optimized; perf pins hold (ratchet 6/6, self-host warm 1.003×).
+- [x] **Warm-kernel heap exhaustion from hex-table decode — ROOT-FIXED 2026-07-13.**
+  Stdlib setup decoded hex tables with `s += String.fromCharCode(...)` per compile —
+  Σ1..n ≈ n²/2 bytes of dead strings each time (full-range EL 10.4 KB → 54 MB/compile;
+  math.js pow tables 2×6 KB → ~38 MB/compile, pre-existing). A warm no-_clear kernel
+  instance (test/selfhost.js Map+prop stress) exhausted its heap after ~70 compiles —
+  reproduced 3/3 with the EL table in-kernel, 0/3 without; the pre-existing pow-table
+  cost is likely the same flake the corruption-hunt sessions chase. Fix: char-array +
+  one join (linear) — module/number.js hexToBytes (EL + Ryū) and math.js powHexToBytes.
+  Suite 21/21 ×3 with the fully-patched kernel.
+- [x] **WASI reactor `_initialize` — LANDED 2026-07-13.** host:'wasi' shipped module
+  init as a wasm `(start)` section, which the p1 ABI forbids calling WASI APIs from —
+  a JS shim literally cannot serve them mid-instantiation (top-level console.log /
+  Date.now crashed with "Cannot read properties of null (reading 'buffer')"). Now
+  init exports as the standard reactor `_initialize` (once-guarded; `run`/`_start`
+  command wrappers self-init), jz/wasi + interop call it after memory wiring,
+  node:wasi initialize() finds it natively, snapshotInit recognizes the reactor form
+  (and stubs imports per import-module, so wasi_snapshot_preview1 hermeticity-probes
+  properly). Raw instantiators must call `instance.exports._initialize?.()` (README).
 - [ ] **EL-table size recovery** (full-range Eisel-Lemire costs 10.4 KB data on
   __to_num modules — golden pins re-baselined 9857→18335 / 14375→22856): derive
   the reciprocal (negative-exp10) half at __start via 256÷128 long division from
@@ -3861,7 +3882,7 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   checked twin (shared slow-path fn) or gate versioning off at size tier;
   corpus sweep to quantify. Then ff-merge.
 
-## Root F: MERGE-READY — all gates green, ff-merge awaits the user's five files (2026-07-14)
+## Root F: MERGED 2026-07-14 — main 89ca3b8e..dc2934b7 (ARCHIVE)
 - BRANCH typedoob @ 53fcfd39 (rebased on main): suite 2910/0 (first fully-green
   run), selfhost 21/21, fuzz 2000/0; six-file battery green incl. examples
   21/21 (toroidal WRAP ATOMS: the iv wrap-ternary — ===/>/< forms — is a
@@ -3875,9 +3896,13 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
 - Timing (final, cs exact): conv2d 1.010, fft 1.024, aos 0.997, colorconv
   1.000, blur 1.001. SIZE: whole corpus +0.1% (tier: 2 +1.6%, size +1.0%,
   speed −1.6%) — twins confined to small SIMD kernels; NO dedup needed.
-- ff-merge REFUSED safely: the user's uncommitted src/compile/index.js,
-  test/{data,inference,optimizer,perf}.js overlap branch commits. Once those
-  are committed/moved: `git merge --ff-only typedoob` closes Root F —
-  runtime-variable typed OOB gets JS-exact semantics (reads → undefined,
-  writes ignored) at bench parity and +0.1% size, replacing silent
-  adjacent-heap corruption.
+- MERGED after the user's lane landed (89ca3b8e: wasi reactor _initialize,
+  full-range EL table, pointer-results rerun post-G, implicit-binding local,
+  watr 5.4.1): branch rebased clean (21 commits onto 89ca3b8e), full battery
+  re-run on the rebase — suite 2917/0 (2923 total incl. both lanes' new
+  tests), selfhost 21/21, fuzz 2000/0 — then `git merge --ff-only typedoob`
+  fast-forwarded main to dc2934b7. Root F CLOSED: runtime-variable typed OOB
+  gets JS-exact semantics (reads → undefined, writes ignored) at bench
+  parity and +0.1% size, replacing silent adjacent-heap corruption.
+  Follow-up (quality, not blocker): recurrence-pin owner — scoped
+  alpha-renamer or tee-aware boolConvertToSelect.
