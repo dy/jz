@@ -4067,12 +4067,15 @@ export const emitter = {
     // keeps the checked forms verbatim (also the correct semantics for a failing guard:
     // OOB reads yield undefined, OOB writes are ignored). Guard arithmetic runs in i64:
     // a*(B-1)+b overflows i32 near the edge, and a wrapped guard that passes is heap
-    // corruption. `_tbVersioned` brakes the arms' re-entry into this same intercept.
-    if (!labeledContinue && !body._tbVersioned
+    // corruption. `_tbVersioned` brakes the arms' re-entry into this same intercept —
+    // keyed by ctx.func identity so a REUSED AST (same source compiled twice, the
+    // self-host warm path) versions afresh in the next compile instead of silently
+    // skipping.
+    if (!labeledContinue && body._tbVersioned !== ctx.func
         && (!ctx.transform.optimize || ctx.transform.optimize.versionTypedBounds !== false)) {
       const vs = versionableTypedFor(init, cond, step, body, ctx.func.locals)
       if (vs) {
-        body._tbVersioned = true
+        body._tbVersioned = ctx.func
         inc('__len')
         const result = []
         if (init != null) result.push(...emitVoid(init))

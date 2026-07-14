@@ -666,6 +666,14 @@ function scanIntervalIdx(body, out, lens) {
     if (typeof e === 'string') return closureWrites.has(e) ? null : env.get(e) ?? null
     if (!Array.isArray(e)) return null
     const [op, x, y] = e
+    // a NARROW typed load is range-bound by its element width (`table[in[j]]` — a
+    // Uint8Array read is [0,255] wherever j lands; even an unproven-idx read's
+    // undefined coerces through ToInt32 to 0, inside every narrow range)
+    if (op === '[]' && e.length === 3 && typeof x === 'string') {
+      visit(e)   // record the access's own proof attempt
+      const r = NARROW_ELEM_RANGE[ctx.types.typedElem?.get(x)]
+      return r ?? null
+    }
     if (e.length === 2 && op === '()') return ev(x)   // grouping, not a call
     if (e.length === 2 && (op === '-' || op === 'u-')) { const v = ev(x); return ipOk(v) && v ? [-v[1], -v[0]] : null }
     if (op === '?:' && e.length === 4) {   // join of both arms (either may run)
@@ -877,6 +885,12 @@ function ivMonotoneInc(node, iv) {
   return true
 }
 const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '**='])
+const NARROW_ELEM_RANGE = {
+  'new.Int8Array': [-128, 127], 'new.Uint8Array': [0, 255], 'new.Uint8ClampedArray': [0, 255],
+  'new.Int16Array': [-32768, 32767], 'new.Uint16Array': [0, 65535],
+  'new.Int8Array.view': [-128, 127], 'new.Uint8Array.view': [0, 255], 'new.Uint8ClampedArray.view': [0, 255],
+  'new.Int16Array.view': [-32768, 32767], 'new.Uint16Array.view': [0, 65535],
+}
 
 /** Memoized per-function set of interval-proven `recv[idx]` keys. */
 export function intervalProvenIdx(ctx) {
