@@ -260,9 +260,22 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   // body), so the max-iv widens by LIT (`bump`). Any other write shape rejects.
   // a name the guard re-reads must denote the same binding for the whole loop
   const stable = (name) => !isReassigned(body, name) && !redeclaresName(body, name)
-  let bump = 0, inds = null
+  let bump = 0, inds = null, stepBy = null
   if (isUnitIncrement(step, iv)) {
     if (isReassigned(body, iv)) return null
+  } else if (Array.isArray(step) && (step[0] === '+=' && step[1] === iv
+      || (step[0] === '=' && step[1] === iv && Array.isArray(step[2]) && step[2][0] === '+'
+          && (step[2][1] === iv || step[2][2] === iv)))) {
+    // MONOTONE non-unit advance (`i += len` — the fft block stride): extents only
+    // need iv ⊆ [start, maxIv], which any positive stride preserves. A literal
+    // stride proves positivity statically; a stable-name stride adds a runtime
+    // `stride ≥ 1` conjunct (zero/negative falls to the checked arm).
+    const x = step[0] === '+=' ? step[2] : step[2][1] === iv ? step[2][2] : step[2][1]
+    const lit = intLiteralValue(x)
+    if (lit != null ? lit < 1 : !(typeof x === 'string' && x !== iv
+        && !isReassigned(body, x) && !redeclaresName(body, x))) return null
+    if (isReassigned(body, iv)) return null
+    stepBy = lit != null ? { lit } : { name: x, kind: exprType(x, locals) === 'i32' ? 'i32' : 'f64' }
   } else if (Array.isArray(step) && step[0] === ',') {
     // comma step (`j++, k += step`): exactly one unit-inc of iv; every other part
     // `cursor += slope` (int literal or invariant name, cursor unwritten in body)
@@ -369,7 +382,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   scan(body)
   if (globalThis.process?.env?.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, cands.slice(0,3).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : ':aff')).join(' '))
   return cands.length
-    ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, cands }
+    ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, stepBy, cands }
     : null
 }
 
