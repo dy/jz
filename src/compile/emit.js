@@ -2403,11 +2403,14 @@ function emitMethodCallSpread(objArg, methodEmitter, parsed, method) {
  *  the nullish-guard scaffold stays in one place. */
 function withNullGuard(headExpr, body, tag = 'ng') {
   const t = temp(tag)
+  // asF64 on the taken arm: the continuation may come back i32-narrowed (an
+  // int-certain slot read at O0 kept its raw i32), and the f64-typed if would
+  // fail validation ("type error in fallthru: expected f64, got i32").
   return block64(
     ['local.set', `$${t}`, headExpr],
     ['if', ['result', 'f64'],
       ['i32.eqz', isNullish(['local.get', `$${t}`])],
-      ['then', body(t)],
+      ['then', asF64(body(t))],
       ['else', undefExpr()]])
 }
 
