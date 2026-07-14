@@ -8,6 +8,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
+import { isReassigned, T } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
@@ -1339,6 +1340,30 @@ export default (ctx) => {
   // ADJACENT HEAP or trapped past memory (the Root F silent-corruption class).
   // `i32.lt_u` folds the negative case in (a negative i32 is a huge u32). The
   // checked result is number|undefined, so it carries NO valKind tag.
+  // Elem-count for a checked site. A TypedArray's length is immutable, so for
+  // a stable PARAM receiver (readable at entry, never reassigned in the body)
+  // the shifted count materializes ONCE as a function-entry local shared by
+  // every checked read/write guard of that receiver — the size-tier
+  // complement of the speed tier's loop hoists (drained by collectParamInits,
+  // the probeHoist mechanism). Non-params (mid-body inits) and reassigned
+  // names keep the inline header load.
+  const leanLen = (arr, et, isView) => {
+    const lenIR = () => ['i32.shr_u',
+      ['i32.load', isView ? typedBase(emit(arr)) : ['i32.sub', typedBase(emit(arr)), ['i32.const', 8]]],
+      ['i32.const', SHIFT[et]]]
+    if (!ctx.transform.optimize?.leanCheckedIdx ||
+        typeof arr !== 'string' ||
+        !ctx.func.current?.params?.some(p => p.name === arr) ||
+        !ctx.func.body || isReassigned(ctx.func.body, arr)) return lenIR()
+    const memo = (ctx.func.lenHoist ??= new Map())
+    const key = `${arr} ${SHIFT[et]}${isView ? 'v' : ''}`
+    let h = memo.get(key)
+    if (!h) {
+      h = { t: tempI32('tlen'), init: lenIR() }
+      memo.set(key, h)
+    }
+    return ['local.get', `$${h.t}`]
+  }
   ctx.core.emit['.typed:[]'] = (arr, i) => {
     const r = resolveElem(arr)
     if (r == null) return null // unknown type, fallback to generic
@@ -1349,6 +1374,22 @@ export default (ctx) => {
       : et === 6 ? ['f64.promote_f32', ['f32.load', off]]
       : [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[et], off]]
     if (!proven) {
+      // (A $__typed_idx call per site was tried for the size tier and REVERTED:
+      // the helper + its __len/__ptr_offset chain cost ~+900 B while these
+      // kernels have 1-3 unproven sites — inline wins until many sites share it.)
+      // Size tier: IF-form checked read — guard hits load DIRECTLY (no address
+      // clamp, no select pair), guard misses yield undefined. ~6 ops/site
+      // leaner than the branchless form below, whose only reason is keeping
+      // SPEED-tier kernel bodies branch-free for the SIMD lift (off at -Os).
+      if (ctx.transform.optimize?.leanCheckedIdx) {
+        const ti = tempI32('tbi')
+        const off = ['i32.add', typedDataAddr(emit(arr), isView),
+          ['i32.shl', ['local.get', `$${ti}`], ['i32.const', SHIFT[et]]]]
+        return typed(['if', ['result', 'f64'],
+          ['i32.lt_u', ['local.tee', `$${ti}`, idx(i)], leanLen(arr, et, isView)],
+          ['then', loadOf(off)],
+          ['else', undefExpr()]], 'f64')
+      }
       // BRANCHLESS checked read: `select(load(in ? idx : 0), undefined, in)`. The
       // address clamp makes the load unconditionally safe (index 0 of the data
       // region is mapped arena even for a 0-length array — the loaded value is
@@ -1377,6 +1418,25 @@ export default (ctx) => {
     const t = typed(loadOf(off), 'f64'); t.valKind = VAL.NUMBER; return t
   }
 
+  // A store value that can evaluate INSIDE the bounds guard when the assignment
+  // is a statement (void): pure reads/arithmetic — including a checked-read
+  // if-form and compiler-owned tees (the ${'$'}+T temp namespace; their writes are
+  // site-private) — but never calls or writes to user-visible names. Spec-wise
+  // the RHS evaluates regardless of bounds; for a PURE value that is
+  // unobservable, and dropping the temp+set per site is the -Os win on codec
+  // kernels (out[op+k] = pure-int-expr).
+  const PURE_STORE_OP = /^(i32|i64|f32|f64)\.(load(8_[su]|16_[su]|32_[su])?|const|add|sub|mul|div(_[su])?|and|or|xor|shl|shr_[su]|rotl|rotr|eqz|eq|ne|[lg][te](_[su])?|clz|ctz|popcnt|convert_i(32|64)_[su]|promote_f32|demote_f64|reinterpret_(i32|i64|f32|f64)|trunc_sat_f(32|64)_[su]|wrap_i64|extend(8|16|32)?_(s|i32_[su])|neg|abs|min|max|sqrt|ceil|floor|trunc|nearest|copysign)$/
+  const pureStorable = (n) => {
+    if (!Array.isArray(n)) return true
+    const op = n[0]
+    if (op === 'local.get') return typeof n[1] === 'string'
+    if (op === 'local.tee') return typeof n[1] === 'string' && n[1].startsWith('$' + T) && pureStorable(n[2])
+    if (op === 'select' || op === 'if' || op === 'block' || op === 'then' || op === 'else' || op === 'result')
+      return n.slice(1).every(pureStorable)
+    if (PURE_STORE_OP.test(op)) return n.slice(1).every(pureStorable)
+    return false
+  }
+
   // Type-aware TypedArray write: arr[i] = val. Same proof gate as the read: proven
   // indexes keep the direct unchecked store byte-identical; unproven ones evaluate
   // the RHS (its effects and the assignment's value are unconditional per spec),
@@ -1399,12 +1459,12 @@ export default (ctx) => {
     // Wrap a store statement in the bounds guard on the unproven path. The value
     // temp is set OUTSIDE the guard (spec: RHS evaluates regardless).
     const guard = (store) => proven ? store
-      : ['if', ['i32.lt_u', vi, ['i32.shr_u',
-          ['i32.load', isView ? typedBase(emit(arr)) : ['i32.sub', typedBase(emit(arr)), ['i32.const', 8]]],
-          ['i32.const', SHIFT[et]]]], ['then', store]]
-    const objIR = emit(arr), valIR = emit(val)
+      : ['if', ['i32.lt_u', vi, leanLen(arr, et, isView)], ['then', store]]
+    const objIR = emit(arr); let valIR = emit(val)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     if (isBigInt) {
+      if (void_ && ctx.transform.optimize?.leanCheckedIdx && pureStorable(valIR)) return typed(['block', ...pre,
+        guard(['i64.store', off, ['i64.reinterpret_f64', asF64(valIR)]])], 'void')
       const vt = temp('tw')
       return typed(void_ ? ['block', ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
@@ -1415,6 +1475,8 @@ export default (ctx) => {
         ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
     }
     if (et === 7) {
+      if (void_ && ctx.transform.optimize?.leanCheckedIdx && pureStorable(valIR)) return typed(['block', ...pre,
+        guard(['f64.store', off, asF64(valIR)])], 'void')
       const vt = temp('tw')
       return typed(void_ ? ['block', ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
@@ -1425,6 +1487,8 @@ export default (ctx) => {
         ['local.get', `$${vt}`]], void_ ? 'void' : 'f64') // Float64Array
     }
     if (et === 6) {
+      if (void_ && ctx.transform.optimize?.leanCheckedIdx && pureStorable(valIR)) return typed(['block', ...pre,
+        guard(['f32.store', off, ['f32.demote_f64', asF64(valIR)]])], 'void')
       const vt = temp('tw')
       return typed(void_ ? ['block', ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
@@ -1442,13 +1506,32 @@ export default (ctx) => {
     // and `dst[i] = src[j]` (base64, qoi, wav, blur) — where both sides are integer elements.
     // `store8/16` mask the low bits, so storing the convert's i32 source is bit-identical; the
     // non-void result reboxes that i32 to f64 (the assignment's RHS value, in element range here).
+    // A lean checked READ as the store value (out[op] = src[i] — the codec
+    // byte-transform class): ToInt32 composes through it — the hit arm's
+    // convert peels to the raw i32 load, the undefined miss arm is NaN → 0.
+    // Rebuilding as an i32 if-form keeps the store on the integer path
+    // (no f64 round-trip, no temp) — the -Os pairing of the two emitters.
+    if (Array.isArray(valIR) && valIR[0] === 'if' &&
+        Array.isArray(valIR[1]) && valIR[1][1] === 'f64' &&
+        Array.isArray(valIR[3]) && valIR[3][0] === 'then' &&
+        Array.isArray(valIR[3][1]) && (valIR[3][1][0] === 'f64.convert_i32_s' || valIR[3][1][0] === 'f64.convert_i32_u') &&
+        Array.isArray(valIR[4]) && valIR[4][0] === 'else' &&
+        Array.isArray(valIR[4][1]) && valIR[4][1][0] === 'f64.const' && String(valIR[4][1][1]).startsWith('nan:')) {
+      valIR = typed(['if', ['result', 'i32'], valIR[2],
+        ['then', valIR[3][1][1]],
+        ['else', ['i32.const', 0]]], 'i32')
+    }
     const i32Backed = valIR.type === 'i32' ||
       (Array.isArray(valIR) && (valIR[0] === 'f64.convert_i32_s' || valIR[0] === 'f64.convert_i32_u'))
     if (i32Backed) {
       const vi32 = asI32(valIR)
-      const cheap = Array.isArray(vi32) &&
-        ((vi32[0] === 'local.get' && typeof vi32[1] === 'string') ||
-         (vi32[0] === 'i32.const' && (typeof vi32[1] === 'number' || typeof vi32[1] === 'string')))
+      // lean (-Os) widens "cheap" to any pure value (inline into the guard, no
+      // temp); SPEED tiers keep the narrow form — the temp'd store is the shape
+      // the SIMD widening/in-place recognizers pattern-match (battery-caught).
+      const cheap = ctx.transform.optimize?.leanCheckedIdx ? pureStorable(vi32)
+        : Array.isArray(vi32) &&
+          ((vi32[0] === 'local.get' && typeof vi32[1] === 'string') ||
+           (vi32[0] === 'i32.const' && (typeof vi32[1] === 'number' || typeof vi32[1] === 'string')))
       if (void_ && cheap && proven) return typed([STORE[et], off, vi32], 'void')
       if (void_ && cheap) return typed(['block', ...pre, guard([STORE[et], off, vi32])], 'void')
       const v32 = tempI32('tw')

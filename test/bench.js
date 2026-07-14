@@ -173,9 +173,18 @@ const SIZE = {
   mandelbrot:     { as: 'win',  porf: 'win' },
   bitwise:        { as: 'win',  porf: 'win' },
   tokenizer:      { as: 'todo', porf: 'win' },
-  aos:            { as: 'win',  porf: 'win' },
+  // aos/sort re-pinned after checked-by-default typed indexing (Root F):
+  // JS-exact OOB semantics cost bytes per unproven site that AS's trap
+  // doesn't pay. The -Os lean lowering (if-form reads, function-entry len
+  // hoist, guard-inline pure stores, read→store i32 pairing) already restored
+  // crc32/mandelbrot/bitwise BELOW asc -Oz; the remaining owner is READ-VALUE
+  // BINDING NARROWING (`const a = src[i]` binds f64 element|undefined and
+  // every use pays ToInt32 — bind i32 with undefined→0 when all uses are
+  // int-class). Ratchet each row back to `win` as it lands. (A $__typed_idx
+  // call route was tried and REVERTED: +900 B helper chain vs ~3 inline sites.)
+  aos:            { as: 'tie',  porf: 'win' },
   json:           { as: 'na',   porf: 'win' },
-  sort:           { as: 'tie',  porf: 'win' },
+  sort:           { as: 'todo', porf: 'win' },
   crc32:          { as: 'win',  porf: 'win' },
   dotprod:        { as: 'win',  porf: 'win' },
   // Integer kernels: jz wasm is smaller than AS. Transcendental-heavy pipelines
@@ -189,10 +198,13 @@ const SIZE = {
   // scaffolding lowers ~1.35× AS's lean -Oz output (wasm-opt finds <10% slack, so it's
   // jz's codegen shape, not bloat). Honest `todo` like synth/fft, not a size-win claim.
   blur:           { as: 'todo', porf: 'win' },
-  // Integer codec/hash/ML kernels: jz size-preset wasm is smaller than AS -Oz.
-  hash:           { as: 'win',  porf: 'win' },
-  base64:         { as: 'win',  porf: 'win' },
-  wav:            { as: 'win',  porf: 'win' },
+  // Integer codec/hash kernels: runtime-length loops (the one class only
+  // loop-versioning proves; -Os drops the twins) — post-lean-lowering
+  // hash 1.02×, wav 1.18×, base64 1.23× vs asc -Oz; the binding-narrowing
+  // owner above closes these. `todo` until it lands, then ratchet to win.
+  hash:           { as: 'todo', porf: 'win' },
+  base64:         { as: 'todo', porf: 'win' },
+  wav:            { as: 'todo', porf: 'win' },
   conv2d:         { as: 'win',  porf: 'win' },
   // lz/qoi carry larger match-finder / codec state machines than AS's lean -Oz
   // output — honest `todo` (printed, unasserted), not a size-parity claim.
@@ -238,8 +250,12 @@ const SIZE_BUDGET = {
   callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
   bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750,
   dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 245000,
-  hash: 1500, base64: 2300, wav: 2050, conv2d: 5600, lz: 9200, qoi: 10500,
-  hashjoin: 1500,
+  // wav 2050 → 2250: Root F checked reads in the runtime-length sample loop (+100 measured)
+  hash: 1500, base64: 2300, wav: 2250, conv2d: 5600, lz: 9200, qoi: 10500,
+  // hashjoin 1500 → 1900: checked-by-default typed indexing (Root F) added
+  // inline bounds/undefined semantics to the probe/insert loops' unproven
+  // reads (+343 B measured). Ratchet down with any checked-read size shrink.
+  hashjoin: 1900,
 }
 
 // ── Fastest-wasm claim (AGENTS.md §Performance claims) ───────────────────────
@@ -540,7 +556,10 @@ const benchlibHostSource = () => {
 const sizeCompile = id => compile(readFileSync(join(ROOT, `bench/${id}/${id}.js`), 'utf8'), {
   modules: { '../_lib/benchlib.js': benchlibHostSource() },
   imports: { env: { logResult: { params: 5 } }, performance: { now: { params: 0, returns: 'number' } } },
-  optimize: { smallConstForUnroll: false, scalarTypedArrayLen: 8 },
+  // the SIZE preset (as the name of these pins says) — an object base defaults
+  // to level 2, which carries speed-tier trades (loop-versioning twins put
+  // mat4 at 3172 B against its 2500 budget while `-Os` compiles to ~2 kB)
+  optimize: { level: 'size', smallConstForUnroll: false, scalarTypedArrayLen: 8 },
   alloc: false,
 }).length
 test('bench: mat4 size-optimized compile ≤ 2500 B', () => { const b = sizeCompile('mat4'); ok(b <= 2500, `mat4 size-optimized compile: ${b} B exceeds 2500 B`) })

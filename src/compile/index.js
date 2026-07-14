@@ -400,6 +400,7 @@ function enterFunc(sig, body, { uniq = 0, directClosures = null } = {}) {
   ctx.func.charDecomp = null
   ctx.func.charDecompGlobals = false  // only emitFunc's named path drains — it re-arms
   ctx.func.probeHoist = null
+  ctx.func.lenHoist = null
   if (ctx.transform.optimize) {
     scanAndTagNonEscapingClosures(body)
   }
@@ -1242,6 +1243,10 @@ function emitFunc(func, funcFacts, programFacts) {
     // answer is loop-invariant for a stable-global receiver — resolve it once.
     // Mirrors sidecarOverride's arm: primitives (real numbers, strings) can
     // never carry an own override, so only NaN-boxed non-STRING receivers probe.
+    // Function-invariant typed lens (module/typedarray.js leanLen): a stable
+    // PARAM receiver's element count, shared by every checked read/write guard.
+    if (ctx.func.lenHoist) for (const h of ctx.func.lenHoist.values())
+      inits.push(['local.set', `$${h.t}`, h.init])
     if (ctx.func.probeHoist) for (const ph of ctx.func.probeHoist.values()) {
       const g = () => ['i64.reinterpret_f64', ph.recvIR()]
       inits.push(

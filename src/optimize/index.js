@@ -166,6 +166,7 @@ const LEVEL_PRESETS = Object.freeze({
     unrollRecurrence: false,  // ×2 body duplication is a size regression — speed-only
     clampPeel: false,         // edge-clamp peel triples a stencil loop (clamp-free interior + 2 edges) to vectorize — speed-only
     versionTypedBounds: false,// typed-bounds loop versioning duplicates every proven nest (guarded fast arm + checked twin, ×1.5-3 on small kernels) — the branchless checked reads alone are the size-tier lowering; speed-only trade
+    leanCheckedIdx: true,     // unproven typed reads emit the if-form (guard → direct load, else undefined) — ~6 ops/site smaller than the select-clamp form, which exists only so SPEED-tier kernel bodies stay branch-free for the SIMD lift (off here)
 
     boolConvertToSelect: false,  // adds a const + op per site — speed-only latency trade
     devirtIndirect: false,    // guards + duplicated args grow bytes — speed-only trade
