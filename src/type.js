@@ -311,6 +311,9 @@ export function versionableTypedFor(init, cond, step, body, locals) {
   const bKind = intLiteralValue(bound) != null ? 'i32'
     : (() => { const r = lengthRecv(bound); return r != null && ctx.types.typedElem?.has(r) && stable(r) })() ? 'i32'
     : typeof bound === 'string' && stable(bound) ? (exprType(bound, locals) === 'i32' ? 'i32' : 'f64')
+    // an invariant pure EXPRESSION bound (`x < w - 1` — the stencil interior) re-
+    // evaluates safely in the guard; machine-f64 rides the runtime-conjunct path
+    : invariantIdxExpr(bound, iv, body, null) ? (exprType(bound, locals) === 'i32' ? 'i32' : 'f64')
     : null
   if (bKind == null) return null
   const env = bodyAffineEnv(body, iv)
