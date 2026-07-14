@@ -1,8 +1,11 @@
 name: bench
 # Competitive-regression gate (see CONTRIBUTING.md "Performance & size invariant").
-# Runs on every push and PR: jz must stay at least as fast/small as V8,
-# AssemblyScript and Porffor on the bench corpus, and `wasm-opt -Oz` must not
-# find meaningful slack in jz's own output.
+# Runs on every push and PR. HARD-GATED here: checksums/parity, wasm sizes, and
+# compile success. TIMING ratios (speed pins, geomeans, fastest-wasm, examples,
+# floatbeat, perf-fuzz) print informational on CI — a shared 2-core runner reads
+# identical builds up to 15× slower, so timing is asserted off-CI where the
+# release discipline runs `npm run test:bench` on stable hardware (test/bench.js
+# okTiming).
 on:
   push:
     paths-ignore:

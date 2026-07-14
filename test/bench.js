@@ -112,15 +112,18 @@ const SPEED = {
   watr:           { v8: 'trail', as: 'na',  porf: 'na'   },
 }
 const SPEED_TOL = { win: 1.0, tie: 1.05, near: 1.10, trail: 1.25 }
-// Per-case competitive gates are tripwires; the geomean caps below are the real
-// guarantee (they average out per-run jitter). A sub-millisecond microbench on a
-// shared 2-core CI runner picks up enough scheduling jitter to flip a 1.0×/1.05×
-// per-case gate even when jz wins comfortably in isolation (json/fft read ~0.8×
-// locally yet have tripped at 1.02×/1.08× on a loaded runner). So relax the
-// per-case tripwire by a jitter margin on CI — same rationale as the floatbeat
-// backstop (2.0× on CI vs 1.05× local) and native-C parity being informational on
-// CI. The geomean caps stay tight on CI and catch any genuine regression.
-const CI_SPEED_JITTER = process.env.CI ? 1.10 : 1.0
+// TIMING POLICY (extends the native-C rule below to every timing gate): a shared
+// 2-core CI runner does not measure time — identical jz builds have read 15×
+// slower there (biquad 30ms vs ~2ms local), and a ×1.10 jitter margin left the
+// workflow red for 37 straight runs, which is zero signal. So every RATIO
+// assertion (per-case speed, speed geomeans, fastest-wasm, perf-fuzz, examples,
+// floatbeat) is ASSERTED off-CI — where the measurement is trustworthy and the
+// release discipline runs it — and PRINTED as informational on CI. Checksums,
+// parity, sizes and compile success stay hard-gated everywhere: CI red means
+// real breakage again.
+const okTiming = (cond, msg) => process.env.CI
+  ? (cond || console.log(`  timing (informational on CI): ${msg}`))
+  : ok(cond, msg)
 // Aggregate speed ceiling: jz must not be slower than the field on average.
 // (1.0 = parity; tighten as we win more.) Over cases with matching checksums.
 const SPEED_GEOMEAN_MAX = { v8: 1.0, as: 1.0, porf: 1.10 }
@@ -405,8 +408,8 @@ for (const [id, claims] of Object.entries(SPEED)) {
       ok(r?.jz && r?.[tid], `missing data: jz=${!!r?.jz} ${tid}=${!!r?.[tid]}`)
       ok(r.jz.checksum === r[tid].checksum, `${id}: checksum mismatch jz=${r.jz.checksum} ${tid}=${r[tid].checksum} — pin should be 'diff'`)
       const ratio = r.jz.medianUs / r[tid].medianUs
-      const limit = SPEED_TOL[claim] * CI_SPEED_JITTER
-      ok(ratio <= limit, `${id}: jz ${(r.jz.medianUs / 1000).toFixed(2)}ms / ${tid} ${(r[tid].medianUs / 1000).toFixed(2)}ms = ${ratio.toFixed(3)}× > ${claim} limit ${limit.toFixed(3)}×`)
+      const limit = SPEED_TOL[claim]
+      okTiming(ratio <= limit, `${id}: jz ${(r.jz.medianUs / 1000).toFixed(2)}ms / ${tid} ${(r[tid].medianUs / 1000).toFixed(2)}ms = ${ratio.toFixed(3)}× > ${claim} limit ${limit.toFixed(3)}×`)
     })
   }
 }
@@ -416,7 +419,7 @@ for (const tid of ['v8', 'as', 'porf']) {
   const g = geoSpeed(tid)
   if (g == null) continue
   test(`bench: speed geomean jz/${tid} ≤ ${SPEED_GEOMEAN_MAX[tid]}×`, () => {
-    ok(g <= SPEED_GEOMEAN_MAX[tid], `geomean jz/${tid} = ${g.toFixed(3)}× > ${SPEED_GEOMEAN_MAX[tid]}×`)
+    okTiming(g <= SPEED_GEOMEAN_MAX[tid], `geomean jz/${tid} = ${g.toFixed(3)}× > ${SPEED_GEOMEAN_MAX[tid]}×`)
   })
 }
 
@@ -440,9 +443,9 @@ for (const tid of ['v8', 'as', 'porf']) {
     const br = bestRival(id); if (br == null) continue   // no comparable wasm rival ran (e.g. self-host rows)
     test(`bench: fastest-wasm ${id} (jz ≤ every wasm rival)`, () => {
       const ratio = jz.medianUs / br.us
-      const limit = WASM_LEAD_TOL * CI_SPEED_JITTER
+      const limit = WASM_LEAD_TOL
       const why = WASM_TODO[id] ? ` [known gap → ${WASM_TODO[id]}]` : ''
-      ok(ratio <= limit, `${id}: jz ${(jz.medianUs / 1000).toFixed(2)}ms TRAILS ${br.who} ${(br.us / 1000).toFixed(2)}ms = ${ratio.toFixed(3)}× > ${limit.toFixed(3)}× — not the fastest wasm.${why}`)
+      okTiming(ratio <= limit, `${id}: jz ${(jz.medianUs / 1000).toFixed(2)}ms TRAILS ${br.who} ${(br.us / 1000).toFixed(2)}ms = ${ratio.toFixed(3)}× > ${limit.toFixed(3)}× — not the fastest wasm.${why}`)
     })
   }
 }
@@ -553,8 +556,8 @@ test('bench: biquad size-optimized compile ≤ 3000 B', () => { const b = sizeCo
 test('bench: perf-fuzz median jz/v8 ≤ 1.15× per category (broad speed win)', () => {
   let out
   try { out = execFileSync('node', [FUZZBENCH, '--count=30', '--n=150000', '--iters=12'], { encoding: 'utf8', cwd: ROOT }) }
-  catch (e) { ok(false, `perf-fuzz regression (gate exit ${e.status}):\n${e.stdout || ''}${e.stderr || ''}`); return }
-  ok(/^PASS:/m.test(out), `perf-fuzz did not report PASS:\n${out}`)
+  catch (e) { okTiming(false, `perf-fuzz regression (gate exit ${e.status}):\n${e.stdout || ''}${e.stderr || ''}`); return }
+  okTiming(/^PASS:/m.test(out), `perf-fuzz did not report PASS:\n${out}`)
 })
 
 // ── Examples corpus gate: every demo's per-frame hot path, jz vs V8 ─────────
@@ -567,8 +570,8 @@ test('bench: perf-fuzz median jz/v8 ≤ 1.15× per category (broad speed win)', 
 test('bench: examples corpus — jz beats V8 per frame (geomean > 1, winners ≥ 0.9×)', () => {
   let out
   try { out = execFileSync('node', [join(ROOT, 'examples/bench.mjs')], { encoding: 'utf8', cwd: ROOT }) }
-  catch (e) { ok(false, `examples perf regression (gate exit ${e.status}):\n${e.stdout || ''}${e.stderr || ''}`); return }
-  ok(/✓ jz faster overall/.test(out), `examples bench did not report pass:\n${out}`)
+  catch (e) { okTiming(false, `examples perf regression (gate exit ${e.status}):\n${e.stdout || ''}${e.stderr || ''}`); return }
+  okTiming(/✓ jz faster overall/.test(out), `examples bench did not report pass:\n${out}`)
 })
 
 // ── Floatbeat perf gate ──────────────────────────────────────────────────────
@@ -603,22 +606,18 @@ console.log(`  geomean jz/v8 ${fbGeo?.toFixed(3) ?? '—'}×\n`)
 // locks that in: losing the bound-narrowing (or the vectorizer behind it)
 // regresses the geomean past it even while the kernel corpus stays green.
 test('bench: floatbeat geomean jz/v8 ≤ 0.85× (jz wins the jukebox corpus, SIMD fill pinned)', () => {
-  ok(fbGeo != null && fbGeo <= 0.85,
+  okTiming(fbGeo != null && fbGeo <= 0.85,
     `floatbeat geomean jz/v8 = ${fbGeo?.toFixed(3)}× > 0.85× — slow beats: ${fbRatios.filter(r => r.ratio > 1).map(r => `${r.name} ${r.ratio.toFixed(2)}×`).join(', ') || 'none'}`)
 })
 // Per-beat backstop: catch a single beat regressing grossly (an __ptr_offset-style 4× cliff)
-// that the corpus geomean would absorb. The jz/V8 per-beat ratio is host-bound on shared CI
-// runners — a transcendental/allocation-heavy beat (Celesta: 9 sin + 5 exp + 4 const arrays
-// per sample) runs ~1.4× there but <0.8× locally on the *identical* wasm — the same reason
-// native-C parity is informational on CI. So the backstop is a gross-regression net on CI
-// (2×, shared-runner noise; ratchet down as the slowest beats gain margin) and ~parity
-// (1.05×) off-CI where hardware is stable — every beat runs ≤ 0.93× locally, so any beat
-// merely TYING V8 on a dev machine now fails; the geomean ≤ 0.85× above is the per-corpus
-// guarantee on every runner. End state: ≤ 1.0 per beat, everywhere — the faster-than-JS
-// guarantee is per-program, not on-average; each compiler win should tighten these.
-const fbBackstop = process.env.CI ? 2.0 : 1.05
+// that the corpus geomean would absorb. ~Parity (1.05×) asserted off-CI where hardware is
+// stable — every beat runs ≤ 0.93× locally, so any beat merely TYING V8 on a dev machine
+// fails; on CI it prints informational like every timing gate (policy at okTiming). End
+// state: ≤ 1.0 per beat, everywhere — the faster-than-JS guarantee is per-program, not
+// on-average; each compiler win should tighten these.
+const fbBackstop = 1.05
 for (const { name, ratio } of fbRatios) {
   test(`bench: floatbeat "${name}" jz ≤ ${fbBackstop}× V8 (no gross regression)`, () => {
-    ok(ratio <= fbBackstop, `floatbeat ${name}: jz ${ratio.toFixed(2)}× V8 > ${fbBackstop}× — gross codegen regression`)
+    okTiming(ratio <= fbBackstop, `floatbeat ${name}: jz ${ratio.toFixed(2)}× V8 > ${fbBackstop}× — gross codegen regression`)
   })
 }

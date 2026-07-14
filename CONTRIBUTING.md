@@ -117,7 +117,11 @@ fast and at least as small as the alternatives.** Concretely, enforced by
 `test/bench.js` (run by CI on every push/PR — `.github/workflows/bench.yml`):
 
 - **Speed** (`-O` speed-tuned build): JZ median ≤ V8, AssemblyScript (`asc -O3`)
-  and Porffor on every comparable case, and ≤ them on geomean.
+  and Porffor on every comparable case, and ≤ them on geomean. *Timing ratios are
+  asserted off-CI only (local `npm run test:bench` on stable hardware — the
+  release discipline); on CI they print informational, since a shared 2-core
+  runner reads identical builds up to 15× slower. Checksums, sizes and compile
+  success stay hard-gated on CI.*
 - **Native parity** *(asserted only when `clang` is on PATH — i.e. locally; CI
   runners have no clang, so this pin is printed but not gated there)*: JZ wasm runs
   at `clang -O3` speed — geomean jz/C ≈ 0.86–0.98×
