@@ -94,11 +94,17 @@ jobs:
           node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf,jz,jz-w2c,wat,numpy --json || exit 1
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git pull --rebase origin main || true
           # Only the measured dataset is committed here (results.json + the geomean
           # SVG). dist/ and bench/web/*.wasm are build output — pages.yml rebuilds
           # and serves them from the deploy artifact, never from tracked files.
           git add bench/results.json bench/bench.svg
           git diff --cached --quiet || git commit -m 'bench: refresh results.json + bench.svg [skip ci]'
-          # a push landing mid-run rejects ours — rebase once and retry
-          git push || (git pull --rebase origin main && git push)
+          # Two waves pushed minutes apart both refresh the same GENERATED files —
+          # a plain rebase conflicts on the SVG and kills the run. `-X theirs`
+          # (in rebase terms: the commit being replayed, i.e. OUR snapshot) auto-
+          # resolves; whichever measurement lands last winning is right for a
+          # generated dataset. Retry covers a push landing mid-rebase.
+          for i in 1 2 3; do
+            git push && break
+            git pull --rebase -X theirs origin main || { git rebase --abort || true; exit 1; }
+          done
