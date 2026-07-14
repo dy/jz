@@ -3,6 +3,24 @@
 ## V1
 
 * [ ] Beat all bench cases, all examples - pinned
+  * STATE 2026-07-14 (lever grind, sessions 3-4): DONE & ARCHIVED — strbuild
+    WON (itoa-at-cursor −51.5%; jz 0.46ms leads every string-producing rival,
+    rust-wasm 3.1× behind; ledger note + differential pin test/strings.js;
+    landed f9d6b62b + 876c9fd2, self-host bundle −77KB, jz-row −1.4%);
+    __str_eq interning PARKED with evidence (7.09% kernel, diffuse across ~20
+    walk callbacks — no concentrated payer); fft WON earlier via tryButterfly.
+    ACTIVE — Root F (branch typedoob @ ca02b0f1): checked-by-default typed
+    indexing with SIMD bench ALL-PARITY (conv2d 1.014 from 6.12×, fft 1.014
+    from 1.35×, aos 1.000, colorconv 1.007, blur 0.997, cs exact; suites
+    simd 157/data 115/optimizer 170, selfhost 21/21, fuzz 2000/0). Before
+    ff-merge: 4 reds with owners (recurrence pin = twin-local alpha-rename +
+    rep-alias; inference ×2 = range-only versioning, designed; diffusion =
+    symbolic bounds) + twin-size decision (×1.5-3: dedup shared slow-path fn
+    or size-tier gate; sweep to quantify). THEN shapes tag-switch devirt (the
+    ledger's widest gap, ~16× vs AS — bounded schema unions → tag-switched
+    direct slot loads), the last big lever. Parked-with-evidence ledger rows
+    stand: wordcount (table-key interning), immutable (SROA/escape),
+    nqueens/raytrace/sort/qoi/dict (LLVM-class verdicts, no jz-side fix).
   * [x] 10 more bench cases - each area covered
   * STATE 2026-07-09 (JSC leg measured): quiet-machine full table, 49 cases ran.
     GEOMEAN: jz beats every engine — V8 1.89x, deno 1.83x, JSC 1.50x, bun 1.52x
