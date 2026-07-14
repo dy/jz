@@ -3184,3 +3184,41 @@ test('foldSetToTee: sinks a single-def RHS into its first use as a tee (simplify
     for (const a of args) is(onF(...a), offF(...a), `foldSetToTee on===off ${JSON.stringify(a)}`)
   }
 })
+
+// Mirror index in the versioning guard: `inp[N−k]` (symmetric fill — FFT
+// log-magnitude, reverse copies) has iv-coefficient −1; affineIdxOfIV used to
+// reject a<0 outright, so the versioned FAST arm kept a per-iteration bounds
+// check + header load on the mirror store. Extremes now follow the sign of a
+// (max at ENTRY, min at maxIv), and the fast arm stores raw.
+test('versioning: mirror store a[N−k] joins the guard — raw in the fast arm', () => {
+  const src = `
+    const fill = (spec, inp, n, half) => {
+      let k = 1
+      while (k < half) {
+        let lm = spec[k] * 2
+        inp[k] = lm
+        inp[n - k] = lm
+        k++
+      }
+    }
+    export let go = (n, m) => {
+      const spec = new Float64Array(n >> 1)
+      const inp = new Float64Array(m)
+      let i = 0
+      while (i < (n >> 1)) { spec[i] = i + 1; i++ }
+      fill(spec, inp, n, n >> 1)
+      return inp[3] * 1000 + (m > n - 3 ? inp[n - 3] : 0)
+    }`
+  const wat = jz.compile(src, { optimize: 'speed', wat: true })
+  // fast arm: a loop body with two f64 stores and NO in-loop header length
+  // re-read (i32.load of base−8). The checked twin keeps per-site guards.
+  const loops = [...wat.matchAll(/\(loop \$[^\s)]+[\s\S]*?f64\.store[\s\S]*?f64\.store[\s\S]*?br(_if)? \$/g)].map(m => m[0])
+  ok(loops.length >= 1, 'two-store loop bodies exist')
+  ok(loops.some(l => !/\(i32\.sub[\s\S]{0,60}\(i32\.const 8\)/.test(l)),
+    'a versioned two-store body runs without header re-reads (raw mirror store)')
+  // behavior: exact on the fast path; an undersized receiver (mirror OOB)
+  // falls to the checked twin — in-range writes land, OOB drop silently.
+  const { exports } = jz(src, { memory: 64 })
+  is(exports.go(16, 16), 8008, 'forward + mirror stores land (fast arm)')
+  is(exports.go(16, 8), 8000, 'undersized: checked twin drops the OOB mirror, keeps in-range')
+})

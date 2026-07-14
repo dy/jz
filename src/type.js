@@ -208,7 +208,10 @@ export function affineIdxOfIV(idx, iv, body, env) {
     return invariantIdxExpr(e, iv, body, env) ? { a: 0, slots: [{ k: 1, e }], bConst: 0 } : null
   }
   const r = aff(idx)
-  return r && r.a >= 0 && Number.isInteger(r.a) && Number.isInteger(r.bConst)
+  // Negative iv-coefficients are admitted (the mirror index `N−k` of symmetric
+  // fills): the guard emitter picks extremes by the SIGN of a — a·iv is maximal
+  // at maxIv for a ≥ 0 but at ENTRY for a < 0, and minimal at the other end.
+  return r && Number.isInteger(r.a) && Number.isInteger(r.bConst)
     && r.slots.every(t => Number.isInteger(t.k)) ? r : null
 }
 

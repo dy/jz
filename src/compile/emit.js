@@ -4244,12 +4244,18 @@ export const emitter = {
             else { g.maxC = Math.max(g.maxC, c.bConst); g.minC = Math.min(g.minC, c.bConst) }
           }
           for (const g of groups.values()) {
-            let hi = slotSum(['i64.mul', i64c(g.a), ['local.get', `$${maxIv}`]], g.slots)
+            // extremes follow the SIGN of a: a·iv is maximal at maxIv for a ≥ 0
+            // but at ENTRY for a < 0 (mirror index `N−k` of symmetric fills),
+            // and minimal at the other end.
+            const entryIR = () => vs.startC != null ? i64c(vs.startC) : slotI64(vs.iv, vs.ivKind)
+            let hi = slotSum(['i64.mul', i64c(g.a), g.a >= 0 ? ['local.get', `$${maxIv}`] : entryIR()], g.slots)
             if (g.maxC) hi = ['i64.add', hi, i64c(g.maxC)]
             conjs.push(['i64.lt_s', hi, len64Of(g.recv)])
-            if (vs.startC != null && !g.slots.length) continue
-            let lo = slotSum(vs.startC != null ? i64c(g.a * vs.startC)
-              : ['i64.mul', i64c(g.a), slotI64(vs.iv, vs.ivKind)], g.slots, true)
+            // a ≥ 0 with a STATIC start: lo = a·startC+minC was validated
+            // non-negative at candidate time (slotless), nothing to emit.
+            if (g.a >= 0 && vs.startC != null && !g.slots.length) continue
+            let lo = slotSum(g.a >= 0 && vs.startC != null ? i64c(g.a * vs.startC)
+              : ['i64.mul', i64c(g.a), g.a >= 0 ? slotI64(vs.iv, vs.ivKind) : ['local.get', `$${maxIv}`]], g.slots, true)
             if (g.minC) lo = ['i64.add', lo, i64c(g.minC)]
             conjs.push(['i64.ge_s', lo, i64c(0)])
           }
