@@ -156,11 +156,39 @@ export function affineIdxOfIV(idx, iv, body, env) {
     }
     if (!Array.isArray(e)) return null
     const [op, x, y] = e
+    // TOROIDAL WRAP of this loop's OWN iv — `iv === 0 ? B-1 : iv-1` (backward) or
+    // `iv === B-1 ? 0 : iv+1` (forward): a bounded ATOM ∈ [0, B-1]. Asymmetric by
+    // nature — it contributes B-1 to the HI extent and 0 to the LO — carried as a
+    // wrap-flagged slot the emitter accounts one-sidedly.
+    if (op === '?:' && e.length === 4 && Array.isArray(x) && x.length === 3) {
+      const [cop, cl, cr] = x
+      const isMinus1 = (n, B) => Array.isArray(n) && n[0] === '-' && n.length === 3
+        && slotEq(n[1], B) && intLiteralValue(n[2]) === 1
+      let B = null
+      if (cop === '===' && cl === iv && intLiteralValue(cr) === 0
+          && Array.isArray(e[3]) && e[3][0] === '-' && e[3][1] === iv && intLiteralValue(e[3][2]) === 1
+          && Array.isArray(e[2]) && e[2][0] === '-' && intLiteralValue(e[2][2]) === 1)
+        B = e[2][1]   // iv===0 ? B-1 : iv-1
+      else if (cop === '===' && cl === iv && isMinus1(cr, Array.isArray(cr) ? cr[1] : cr)
+          && intLiteralValue(e[2]) === 0
+          && Array.isArray(e[3]) && e[3][0] === '+' && e[3][1] === iv && intLiteralValue(e[3][2]) === 1)
+        B = cr[1]     // iv===B-1 ? 0 : iv+1
+      else if (cop === '>' && cl === iv && intLiteralValue(cr) === 0
+          && Array.isArray(e[2]) && e[2][0] === '-' && e[2][1] === iv && intLiteralValue(e[2][2]) === 1
+          && Array.isArray(e[3]) && e[3][0] === '-' && intLiteralValue(e[3][2]) === 1)
+        B = e[3][1]   // iv>0 ? iv-1 : B-1
+      else if (cop === '<' && cl === iv && isMinus1(cr, Array.isArray(cr) ? cr[1] : cr)
+          && Array.isArray(e[2]) && e[2][0] === '+' && e[2][1] === iv && intLiteralValue(e[2][2]) === 1
+          && intLiteralValue(e[3]) === 0)
+        B = cr[1]     // iv<B-1 ? iv+1 : 0
+      if (B != null && invariantIdxExpr(B, iv, body, env))
+        return { a: 0, slots: [{ k: 1, e: B, wrap: true }], bConst: 0 }
+    }
     if (e.length === 3 && op === '*') {
       const L = intLiteralValue(x) ?? intLiteralValue(y)
       if (L != null) {
         const t = aff(intLiteralValue(x) != null ? y : x)
-        if (t) return { a: t.a * L, slots: t.slots.map(u => ({ k: u.k * L, e: u.e })), bConst: t.bConst * L }
+        if (t) return { a: t.a * L, slots: t.slots.map(u => ({ ...u, k: u.k * L })), bConst: t.bConst * L }
       }
       // fall through: a non-literal product (`y*w`) may still be an invariant slot
     }

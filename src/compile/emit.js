@@ -4111,9 +4111,16 @@ export const emitter = {
           slots.set(key, s)
           return s
         }
-        const slotSum = (base, list) => {
+        const slotSum = (base, list, lo = false) => {
           let r = base
           for (const t of list) {
+            // a WRAP atom (toroidal iv ternary ∈ [0, B-1]) is one-sided: B-1 into
+            // the hi extent, nothing into the lo
+            if (t.wrap) {
+              if (!lo) r = ['i64.add', r,
+                ['i64.mul', i64c(t.k), ['i64.sub', slotI64(t.e, t.kind), i64c(1)]]]
+              continue
+            }
             const s = slotI64(t.e, t.kind)
             r = ['i64.add', r, t.k === 1 ? s : ['i64.mul', i64c(t.k), s]]
           }
@@ -4208,7 +4215,7 @@ export const emitter = {
             conjs.push(['i64.lt_s', hi, len64Of(g.recv)])
             if (vs.startC != null && !g.slots.length) continue
             let lo = slotSum(vs.startC != null ? i64c(g.a * vs.startC)
-              : ['i64.mul', i64c(g.a), slotI64(vs.iv, vs.ivKind)], g.slots)
+              : ['i64.mul', i64c(g.a), slotI64(vs.iv, vs.ivKind)], g.slots, true)
             if (g.minC) lo = ['i64.add', lo, i64c(g.minC)]
             conjs.push(['i64.ge_s', lo, i64c(0)])
           }
