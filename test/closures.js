@@ -1318,3 +1318,61 @@ test('closures: reassigned module function bindings stay live', () => {
   is(r.shadowed(), 8, 'same-named local shadows — does not demote')
   is(r.kval(), 9, 'the un-reassigned module binding stays lifted and correct')
 })
+
+// Regression: inside a NESTED closure specifically (top-level functions were
+// unaffected), a `let` local whose declaration initializer has no statically
+// provable type — here a closure param, itself unresolved at analysis time —
+// and which is CONDITIONALLY reassigned to a string literal got typed as
+// STRING outright. The value-type walk (analyzeValTypes/analyzeBody, both
+// sharing makeValTracker) has no control-flow/dominance notion of "this write
+// is under an `if`, not unconditional" — it treated the declaration's
+// unresolved (null) observation as "no information" rather than as an
+// observation of an unknown-but-possibly-conflicting kind, so it never poisoned
+// the binding when the later definite (string) write arrived. `+`/`+=` then
+// trusted the STRING classification and skipped ToString: on the not-reassigned
+// (number) path, the number's box bits were handed straight to the string
+// concat helper — empty output instead of the digits. Caught via watr's
+// print.js `sub` local, in-kernel.
+test('closures: let + conditional-reassign union local concats correctly (both arms)', () => {
+  const r = run(`
+    export function outer(n) {
+      return inner(n)
+      function inner(n) {
+        let s = n
+        if (n < 0) s = 'neg'
+        return '' + s
+      }
+    }
+  `)
+  is(r.outer(5), '5')
+  is(r.outer(150), '150')
+  is(r.outer(0), '0')
+  is(r.outer(-5), 'neg')
+})
+
+test('closures: union local + typeof/isFinite/Object.is guard prints WAT-style tokens (watr print.js shape)', () => {
+  // The exact composition that surfaced all three kernel-semantics bugs at once:
+  // typeof x === 'number' on a genuine NaN (bug: typeof fast-path), the
+  // conditionally-reassigned union local (bug: this test), and the
+  // Number.isFinite/Object.is boolean chain (verified elsewhere to be a pure
+  // downstream symptom of the typeof bug, not an independent fault) — all
+  // inside a nested closure, matching watr's printNode.
+  const r = run(`
+    export function outer(v) {
+      return fmt(v)
+      function fmt(raw) {
+        let sub = raw
+        if (typeof sub === 'number' && (!Number.isFinite(sub) || Object.is(sub, -0)))
+          sub = sub !== sub ? 'nan' : sub === Infinity ? 'inf' : sub === -Infinity ? '-inf' : '-0'
+        return '' + sub
+      }
+    }
+  `)
+  is(r.outer(150), '150')
+  is(r.outer(0), '0')
+  is(r.outer(-5), '-5')
+  is(r.outer(NaN), 'nan')
+  is(r.outer(Infinity), 'inf')
+  is(r.outer(-Infinity), '-inf')
+  is(r.outer(-0), '-0')
+})

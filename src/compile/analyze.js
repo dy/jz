@@ -100,12 +100,26 @@ export function resetBodyFactsCache() { _bodyFactsCache = new WeakMap() }
 // (updateRep), so the param would be polymorphic (Map | object) — which the self-host
 // kernel cannot statically type, mis-dispatching `store.set` on the object form to the
 // Map builtin. Direct closure calls sidestep method dispatch entirely.
+//
+// An UNRESOLVABLE observation (`vt` null — `let sub = node[i]` where the RHS's type
+// isn't provable) is STILL an observation and must poison exactly like a conflicting
+// definite one, not merely a no-op when nothing was set yet. The walk has no CFG/
+// dominance info, so it cannot tell a later definite write (`sub = 'nan'`) that
+// UNCONDITIONALLY overwrites the unresolved initializer (safe to adopt) from one
+// reachable only on some paths (`if (...) sub = 'nan'` — the initializer's value
+// survives on the other path). Treating "unresolved" as "no information" let the
+// conditional case's definite arm win outright: `valTypeOf(sub)` then reported
+// STRING everywhere, so `content += sub` skipped ToString and read a raw NUMBER
+// box as string bits — empty output instead of the number's digits. Poisoning here
+// costs only the narrow straight-line-overwrite case (`let x = f(); x = 5` no longer
+// infers NUMBER for the dead initializer) — "default is never wrong, only sometimes
+// wider than necessary" (module header, src/infer.js).
 const makeValTracker = (get, set, del) => {
   const poison = new Set()
   return (name, vt) => {
     if (poison.has(name)) return
+    if (!vt) { poison.add(name); del(name); return }
     const prev = get(name)
-    if (!vt) { if (prev) poison.add(name); del(name); return }
     if (prev && prev !== vt) { poison.add(name); del(name); return }
     set(name, vt)
   }
