@@ -1008,6 +1008,27 @@ function scanIntervalIdx(body, out, lens, ranges) {
       const wraps = [], symWraps = []
       if (wbody != null) {
         const stmts = Array.isArray(wbody) && (wbody[0] === ';' || wbody[0] === '{}') ? wbody : [';', wbody]
+        // one-statement MASK cursor `nm = (nm + K) & M` (the ulam direction ring):
+        // self-closing on [0, M] for any entry inside it — no reset pair needed
+        for (let k = 1; k < stmts.length; k++) {
+          const a2 = stmts[k]
+          if (!(Array.isArray(a2) && a2[0] === '=' && typeof a2[1] === 'string')) continue
+          let rhs = a2[2]
+          if (!(Array.isArray(rhs) && rhs[0] === '&' && rhs.length === 3)) continue
+          const M = intLiteralValue(rhs[1]) ?? intLiteralValue(rhs[2])
+          const inner = intLiteralValue(rhs[1]) != null ? rhs[2] : rhs[1]
+          if (M == null || M < 0) continue
+          const grp = Array.isArray(inner) && inner[0] === '()' && inner.length === 2 ? inner[1] : inner
+          if (!(Array.isArray(grp) && grp[0] === '+' && (grp[1] === a2[1] || grp[2] === a2[1]))) continue
+          const e0 = env.get(a2[1])
+          if (!e0 || e0[0] < 0 || e0[1] > M) continue
+          let writes = 0
+          const cw = (x) => { if (!Array.isArray(x)) return
+            if ((ASSIGN_OPS.has(x[0]) || x[0] === '++' || x[0] === '--') && x[1] === a2[1]) writes++
+            for (let j = 1; j < x.length; j++) cw(x[j]) }
+          cw(wbody)
+          if (writes === 1) wraps.push([a2[1], [0, M]])
+        }
         for (let k = 1; k < stmts.length - 1; k++) {
           const a2 = stmts[k], b2 = stmts[k + 1]
           let nm = null, K = null
