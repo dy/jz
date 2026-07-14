@@ -9,13 +9,33 @@
 <script type="module">
 import { runDemo } from "../lib/jzdemo.js"
 
+// The time-to-flip fractal is PLAYABLE: click any pixel to launch that initial condition as
+// a live double pendulum — its (θ1,θ2) trajectory snakes over the map with a comet trail
+// while the corner widget swings the same state as real rods; the trail bursts the moment
+// the lower arm flips (the very event the map colors). Idle launches keep it breathing.
+let nextLaunch = 0
+const schedule = (t) => { nextLaunch = t + 5 + Math.random() * 4 }
+
 const demo = runDemo({
   name: "pendulum",
-  hint: "Double pendulum fractal — each pixel is an initial angle pair, colored by time-to-flip",
+  hint: "each pixel an initial angle pair, colored by time-to-flip · click to launch that pendulum live",
   size: { budget: 90000 },
   frame: (e, t) => {
+    if (nextLaunch === 0) { schedule(t - 3) }             // first launch soon after load
+    if (t >= nextLaunch) {
+      e.launch(demo.W * (0.1 + Math.random() * 0.8), demo.H * (0.1 + Math.random() * 0.8))
+      schedule(t)
+    }
     e.frame(t)
   },
+  randomize: (e, d) => {
+    for (let i = 0; i < 3; i++) e.launch(d.W * (0.1 + Math.random() * 0.8), d.H * (0.1 + Math.random() * 0.8))
+  },
+})
+
+demo.cv.addEventListener("pointerdown", (e) => {
+  const r = demo.cv.getBoundingClientRect()
+  demo.engine?.launch((e.clientX - r.left) / r.width * demo.W, (e.clientY - r.top) / r.height * demo.H)
 })
 </script>
 </body>

@@ -35,6 +35,7 @@
 let W = 0, H = 0, px, map
 let aspect = 1.0
 let cursor = new Int32Array(1)     // progressive-fill row cursor (pendulum.js pattern)
+let phase = new Int32Array(1)      // 0 = coarse block sweep (instant reshape), 1 = AA refine
 let inited = 0
 
 // ── world ↔ pixel (fixed view, no pan/zoom — aspect-correct like newton.js) ──
@@ -254,6 +255,7 @@ export let resize = (w, h) => {
   px = new Uint32Array(w * h)
   map = new Uint32Array(w * h)
   cursor[0] = 0
+  phase[0] = 0
   bobActive = 0
   trailHead = 0; trailCount = 0
   if (!inited) {
@@ -270,6 +272,7 @@ export let setMagnet = (i, x, y) => {
   mx[idx] = pxToWorldX(x)
   my[idx] = pxToWorldY(y)
   cursor[0] = 0            // restart the progressive fill — the fractal reshapes live
+  phase[0] = 0             // coarse pass first: the whole map re-blocks in a dozen frames
 }
 
 // nearest magnet to (x,y) within a grab radius, else -1 (host then launches a bob instead).
@@ -297,17 +300,54 @@ export let randomize = () => {
   }
   damp[0] = 0.10 + Math.random() * 0.18
   cursor[0] = 0
+  phase[0] = 0
   bobActive = 0
   trailHead = 0; trailCount = 0
 }
 
 const PASSES = 280     // >= a typical H, so batchSize lands at 1 row/frame (pendulum.js's row-batch pattern)
 export let frame = (t) => {
+  // ── phase 0: COARSE sweep — one integration per 3×3 block, flat-filled. ~36× cheaper
+  // than the AA pass, so dragging a magnet reshapes the whole fractal in a dozen frames;
+  // the AA sweep then refines over it row by row. ──
+  if (phase[0] === 0) {
+    let brow = cursor[0]
+    let bATCH = 8
+    let done = 0
+    while (done < bATCH && brow < H) {
+      let b2 = (((brow + 1.5) / H) * 2.0 - 1.0) * SCALE
+      let col = 0
+      while (col < W) {
+        let b1 = (((col + 1.5) / W) * 2.0 - 1.0) * SCALE * aspect
+        let gg = shade(integrate(b1, b2))
+        let v = (255 << 24) | (gg << 16) | (gg << 8) | gg
+        let ry = 0
+        while (ry < 3) {
+          let yy = brow + ry
+          if (yy < H) {
+            let rx2 = 0
+            while (rx2 < 3) {
+              let xx = col + rx2
+              if (xx < W) map[yy * W + xx] = v
+              rx2++
+            }
+          }
+          ry++
+        }
+        col = col + 3
+      }
+      brow = brow + 3
+      done++
+    }
+    cursor[0] = brow
+    if (brow >= H) { phase[0] = 1; cursor[0] = 0 }
+  }
+
   let batchSize = ((H + PASSES - 1) / PASSES) | 0
   if (batchSize < 1) batchSize = 1
 
   let row = cursor[0]
-  if (row < H) {
+  if (phase[0] === 1 && row < H) {
     let endRow = row + batchSize
     if (endRow > H) endRow = H
     let oh = SCALE * aspect / W * 0.5, ov = SCALE / H * 0.5   // quarter-pixel offsets (2×2 supersample)
