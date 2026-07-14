@@ -1265,6 +1265,16 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
   `Promise.all([p]).then()`). Both arms now honor the shadow contract; the
   three pins flipped to correct-behavior regressions; test262 asyncDone runs
   fully optimized; perf pins hold (ratchet 6/6, self-host warm 1.003×).
+- [ ] **EL-table size recovery** (full-range Eisel-Lemire costs 10.4 KB data on
+  __to_num modules — golden pins re-baselined 9857→18335 / 14375→22856): derive
+  the reciprocal (negative-exp10) half at __start via 256÷128 long division from
+  the positive 5^q half instead of shipping it — ~8 KB data back for ~1 KB init
+  code; entries are floor(2^k/5^-q), verified generator in scratch history.
+- [ ] **Number/parseFloat >19-digit midpoints**: correctly rounded to 19
+  significant digits (u64-exact + full EL); crafted 20-digit midpoint literals
+  (const.wast 5.3575430359313371995e+300 family) need an arbitrary-precision
+  slow path to disambiguate — watr's wasm-leg runner skip-carves them with the
+  reason; implement big-decimal compare if a real workload ever hits it.
 - [x] **Dyn-read gaps — BOTH FIXED 2026-07-13** (pins flipped to regressions):
   * string-INDEX assign of a schema key was the THIRD arm violating the
     shadow contract (emit-assign's literal-key indexed arm stored the slot
@@ -3721,3 +3731,44 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
 - Next stretch, mechanically: (1) per-class trace on the 13 (the tooling and
   engine-extension pattern is established); (2) clean branch suite + selfhost;
   (3) corpus byte-sweep re-run; (4) SIMD bench timing A/B; (5) ff-merge.
+
+## Root F round 4 (2026-07-13, close): recognizer residue → 2 example classes; branchless checked reads land
+- BRANCH typedoob verified state @ 916aea65: SIMD 157/157, data 115/115,
+  optimizer 170/170, selfhost 21/21 (delete-free _rangeFacts brake — the
+  self-host subset rejects `delete`), fuzz 2000/0 (earlier commit). Remaining
+  reds: examples 19/2 (lyapunov ring-cursor, diffusion toroidal wrap),
+  inference 75/2 (masked reads on PARAM arrays), perf 48/5 (|0-guard pins over
+  fns that now carry checked selects/twins) — ALL one class: static idx-hull
+  vs DYNAMIC receiver length.
+- LANDED on the branch this round: NEST-level versioning (one guard per nest,
+  loop-OWNED assumption map — a key is honored only while its loop's frame is
+  on the emission stack, closing the textual-twin hole); flat-cursor endpoint
+  guards (`px[j]`/`j++` across lifted nests, steps = Π level trips, pre/post-inc
+  position picks the endpoint); wrap-cursor interval idiom (`si=si+1; if(si>=C)
+  si=0` seeds [0,C-1] when entry fits and the pair is the only writes);
+  versioning bounds accept invariant pure exprs (`x < w-1` stencil interiors);
+  BRANCHLESS CHECKED READS — `select(load(in?idx:0), undefined, in)` with the
+  len INLINED as one header load (owned at base-8, view at desc[0], >>shift):
+  checked semantics with NO branch and NO call, so kernels lift THROUGH their
+  checked reads — plasma 288 f64x2 vs main's 165 (+75%), metaballs 36 both
+  tiers vs main's strip-only 21. Twin-class pins scoped to the fast arm
+  (optimizer + metaballs updated; the checked twin legitimately carries f64).
+- RANGE BRIDGE (the one mechanism closing all remaining reds): interval hulls
+  the walk bounded but couldn't discharge (dynamic len) + one runtime
+  `hull.hi < len(recv)` conjunct in the versioning guard, STRICTLY as an
+  affine-fallback (the first attempt stole affine candidates: SIMD 157→133).
+  Attempt 2 crashed fft (`c.slots is not iterable` — scan side landed without
+  the emit branch); a HEAD-vs-bridge battery showed HEAD strictly better, so
+  the bridge is REVERTED and stays designed-not-validated. Next session: apply
+  scan+emit sides atomically, then the six-file battery before anything else.
+- PROCESS TRAPS that produced false measurements this round (both now load-
+  bearing knowledge): (1) the shell cwd RESETS to the primary dir at TURN
+  boundaries — two separate "all green" batteries actually measured MAIN
+  (inference 77/perf 53/examples 21 are main's numbers); lead every stateful
+  invocation with cd or absolute paths, and re-verify pwd after any wakeup.
+  (2) the harness `grep` is ugrep with --ignore-files — it SILENTLY SKIPS
+  files under ignored paths (the scratchpad worktree!), returning empty and
+  faking "vanished code"; use /usr/bin/grep for worktree greps.
+- Still queued before ff-merge: corpus byte-sweep vs main (size cost of twins/
+  selects), SIMD bench timing A/B (colorconv/blur/conv2d/fft/aos parity),
+  range-bridge validation, the perf/inference pin sweep after it.
