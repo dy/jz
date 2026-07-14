@@ -4047,6 +4047,7 @@ export const emitter = {
     // An enclosing labeled statement (`outer: for …`) hands its label down so `continue outer`
     // can target this loop's continue point. The immediately-enclosed loop consumes it.
     const myLabel = ctx.func.pendingLabel; ctx.func.pendingLabel = null
+    const bodyNode0 = body   // identity for assumption owners — survives the hoist rebind below
     const labeledContinue = myLabel != null && hasLabeledContinueTo(body, myLabel)
     // Don't unroll a loop that is the target of a `continue <label>` — unrolling would lose the
     // continue edge. (Plain loops with no labeled-continue still unroll.)
@@ -4076,6 +4077,9 @@ export const emitter = {
       const levels = versionableTypedNest(init, cond, step, body, ctx.func.locals)
       if (levels) {
         body._tbVersioned = ctx.func
+        // every LIFTED level is proven by THIS guard — brake their own intercepts
+        // (re-versioning per level compounds 2^depth checked twins)
+        for (const vs of levels) if (vs.bodyNode && !vs.partial) vs.bodyNode._tbVersioned = ctx.func
         inc('__len')
         const result = []
         if (init != null) result.push(...emitVoid(init))
@@ -4243,7 +4247,11 @@ export const emitter = {
         const saved = ctx.types.assumedBounds
         ctx.types.assumedBounds = new Map(saved ?? [])
         for (const vs of levels)
-          for (const c of vs.cands) ctx.types.assumedBounds.set(idxKey(c.recv, c.idx), vs.bodyNode ?? body)
+          for (const c of vs.cands)
+            // hull cands are position-independent (the hull joins EVERY sighting of
+            // the key) — owned by the TOP arm so unrolled inner loops (no frame of
+            // their own) still validate; affine/induction extents stay level-owned
+            ctx.types.assumedBounds.set(idxKey(c.recv, c.idx), c.range != null ? body : vs.bodyNode ?? body)
         // cursor claims hold across the WHOLE nest (entry → end) — owned by the top
         for (const cur of levels.cursors ?? [])
           if (!cur.dead) for (const c of cur.cands) ctx.types.assumedBounds.set(idxKey(c.recv, c.idx), body)
@@ -4272,7 +4280,7 @@ export const emitter = {
     // can target the loop label directly, saving a redundant `block`.
     const needsCont = step && (hasOwnContinue(body) || labeledContinue)
     const cont = needsCont ? `$cont${id}` : loop
-    ctx.func.stack.push({ brk, loop: cont, bodyNode: body })
+    ctx.func.stack.push({ brk, loop: cont, bodyNode: bodyNode0 })
     const frame = ctx.func.stack[ctx.func.stack.length - 1]
     if (myLabel != null) frame.contLabel = myLabel   // so `continue <myLabel>` targets this loop's step/test
     // Per-iteration fresh cells for boxed locals declared in the body — allocated

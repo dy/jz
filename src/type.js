@@ -366,6 +366,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     for (let k = 1; k < n.length; k++) scan(n[k])
   }
   scan(body)
+  if (globalThis.process?.env?.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, cands.slice(0,3).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : ':aff')).join(' '))
   return cands.length
     ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, cands }
     : null
@@ -431,8 +432,12 @@ export function versionableTypedNest(init, cond, step, body, locals) {
   const keepPre = levels.filter((L) => {
     if (!L.top) {
       if (L.startC == null) return false
+      const n0 = L.cands.length
       L.cands = L.cands.filter(c => c.ind == null)
       if (!L.cands.length) return false
+      // induction cands dropped (entry values are per-inner-entry): the level still
+      // needs ITS OWN intercept for them — the top guard must not brake it
+      if (L.cands.length !== n0) L.partial = true
     }
     // names the lifted guard READS at top entry (iv itself is NOT read — inner
     // entries are static by the filter above, and only the top may read its iv)
@@ -920,6 +925,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
     if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {
       const idxV = ev(n[2])
       const L = lens(n[1])
+      if (globalThis.process?.env?.JZ_DBG_IP) console.error('IPW', n[1], JSON.stringify(n[2]).slice(0,50), JSON.stringify(idxV), 'len', L)
       if (L != null && idxV && idxV[0] >= 0 && idxV[1] < L) out.add(idxKey(n[1], n[2]))
       // a bounded idx against an UNKNOWN length is half a proof — export the hull
       // (joined over every sighting of this key) for the versioning guard to close
@@ -1259,6 +1265,8 @@ function stampClonedIdxProof(node, out) {
   const k = idxKey(node[1], node[2])
   const ip = intervalProvenIdx(ctx)   // memoized; NO_INTERVAL_PROVEN when no function ctx
   if (ip.has(k)) ip.add(idxKey(out[1], out[2]))
+  const rng = ctx.func?.ipRanges?.get(k)
+  if (rng != null) ctx.func.ipRanges.set(idxKey(out[1], out[2]), rng)   // hulls survive substitution too
   const owner = ctx.types?.assumedBounds?.get(k)
   if (owner != null) ctx.types.assumedBounds.set(idxKey(out[1], out[2]), owner)
 }
