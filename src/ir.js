@@ -1273,15 +1273,12 @@ export function writeVar(name, valIR, void_) {
       ['global.set', dollar(name), ['local.get', `$${t}`]],
       ['local.get', `$${t}`]], gt)
   }
-  // Sloppy implicit binding: a write to a name declared NOWHERE (not a local,
-  // param, global, or boxed capture — those all resolved above) registers a
-  // fresh f64 local, so `for (k in o)` / `u = 5` with an undeclared name
-  // compiles at EVERY level instead of leaking watr's "Unknown local $u" at
-  // O0 (O2 only masked it by constant-propagating the name away). Function-
-  // scoped rather than JS's implicit global — the subset has no
-  // globals-by-assignment (documented divergence).
-  if (!ctx.func.locals.has(name) && !ctx.func.current?.params?.some(p => p.name === name))
-    ctx.func.locals.set(name, 'f64')
+  // NOTE: an unknown name is NOT minted here — a write-legalized binding lets a
+  // later-emitted read of the same undeclared name resolve to 0 instead of
+  // rejecting (test262 pins the ReferenceError: `x = x`, `x++`, `x + (x = 1)`
+  // — 50 in-scope failures from an unconditional mint). The one structural
+  // write-only binder, a bare undeclared `for (k in o)` head, is declared at
+  // its prepare lowering instead.
   const t = ctx.func.locals.get(name) || 'f64'
   const ptrKind = repOf(name)?.ptrKind
   let coerced

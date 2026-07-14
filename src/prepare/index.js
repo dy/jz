@@ -2895,6 +2895,17 @@ const handlers = {
         ['=', ks, keysExpr],
         ['=', ix, [, 0]],
         ['=', lenV, ['|', ['.', ks, 'length'], [, 0]]]]
+      // Assignment-form bare name that resolves NOWHERE (`for (k in o)` /
+      // `for (let in {})` with k undeclared — sloppy JS mints an implicit
+      // global): declare it in the loop's own decls so the binding exists at
+      // every opt level (emit otherwise leaks watr's "Unknown local $k"; O2
+      // only masked it by constant-propagating the name away). Loop-scoped
+      // rather than JS's implicit global (documented subset divergence). Only
+      // this structural write-only binder mints — a general write-legalization
+      // in emit let undeclared READS resolve (test262 ReferenceError pins).
+      if (!isMemberTarget && !isDecl && typeof target === 'string'
+          && !isDeclared(target) && !hasFunc(target) && !ctx.scope.userGlobals?.has?.(target))
+        decls.push(['=', target, [null]])
       // Member targets AND assignment-form bare names (`for (k in o)`) assign
       // the existing binding — a `let` wrap shadowed the outer k, so after-loop
       // reads saw the stale value. Only decl heads take a fresh binding.
