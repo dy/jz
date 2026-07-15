@@ -565,3 +565,23 @@ test('example: rfft cepstrum map vectorizes via convert-splat', () => {
     const src = fs.readFileSync(new URL('../examples/rfft/rfft.js', import.meta.url), 'utf8');
     ok((jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length > 0, 'rfft gains f64x2 (cep[i]=x[i]/N maps once convert(N) splats)');
 });
+
+test('example: game-of-life self-drives (in-module rAF loop)', async () => {
+  // The module owns simulation time: start() schedules step()+roll on its own
+  // requestAnimationFrame (Node: interop's 16 ms timer fallback), stop() halts,
+  // frameCount()/stepTime() feed the page's passive observer. start() is
+  // idempotent (no leaked second loop).
+  const { exports } = jz(golSrc);
+  const mem = exports.init(48, 48, 0xffffff | 1, 0, 10);
+  exports.start();
+  exports.start();   // idempotent — must not double-tick
+  await new Promise(r => setTimeout(r, 120));
+  exports.stop();
+  const frames = exports.frameCount();
+  ok(frames >= 3 && frames <= 10, `self-drove ~6 frames at 16ms fallback, got ${frames}`);
+  ok(exports.stepTime() >= 0, 'stepTime meters');
+  const alive = [...mem.subarray(48 * 48)].filter(v => v & 1).length;
+  ok(alive > 0, 'life evolved in-module');
+  await new Promise(r => setTimeout(r, 50));
+  is(exports.frameCount(), frames, 'stop() halts the loop');
+});

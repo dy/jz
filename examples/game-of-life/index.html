@@ -37,28 +37,35 @@ const size = () => W * H
 
 async function start(kind) {
   const my = ++gen
-  engine = await loadEngine(kind, { js: './game-of-life.js', wasm: './game-of-life.wasm' })
+  engine?.stop?.()          // halt the outgoing engine's own loop before swapping
+  engine = null
+  const e = await loadEngine(kind, { js: './game-of-life.js', wasm: './game-of-life.wasm' })
   if (my !== gen) return
   // size to the framed canvas box (between masthead + bar) so it fills edge-to-edge
   W = Math.round((cv.clientWidth || innerWidth) * dpr) >> 1 << 1
   H = Math.round((cv.clientHeight || innerHeight) * dpr) >> 1 << 1
   cv.width = W; cv.height = H
   imageData = ctx.createImageData(W, H); argb = new Uint32Array(imageData.data.buffer)
-  mem = engine.init(W, H, rgb2bgr(RGB_ALIVE) | 1, rgb2bgr(RGB_DEAD) & ~1, BIT_ROT)
-  loop()
+  mem = e.init(W, H, rgb2bgr(RGB_ALIVE) | 1, rgb2bgr(RGB_DEAD) & ~1, BIT_ROT)
+  // The MODULE owns simulation time: its in-module requestAnimationFrame loop
+  // rolls buffers + steps + meters itself (same source self-drives as plain JS
+  // when the js engine is picked). The page below merely observes and paints.
+  e.start()
+  lastFrame = -1
+  engine = e
 }
 
-const loop = () => {
-  requestAnimationFrame(() => { if (engine) loop() })
+let lastFrame = -1
+const observe = () => {
+  requestAnimationFrame(observe)
+  if (!engine || engine.frameCount() === lastFrame) return
+  lastFrame = engine.frameCount()
   const sz = size()
-  mem.copyWithin(0, sz, 2 * sz)
-  const t0 = performance.now()
-  engine.step()
-  const ms = performance.now() - t0
   ui.paint(mem.subarray(sz, 2 * sz), argb)
   ctx.putImageData(imageData, 0, 0)
-  ui.frame(ms)
+  ui.frame(engine.stepTime())
 }
+observe()
 
 const ui = hud({
   kind: 'jz',

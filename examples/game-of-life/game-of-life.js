@@ -63,3 +63,28 @@ export let fill = (x, y, p) => {
         if (Math.random() < p) mem[offset + (iy * width + x)] = (BGR_ALIVE | 0xff000000) >>> 0;
     }
 };
+
+// ── self-driving loop: the module owns simulation time ─────────────────────
+// In-module requestAnimationFrame schedules step() (double-buffer roll
+// included); the page's rAF merely observes frameCount() and repaints when it
+// advanced. stepTime() feeds the FPS meter — measured in-module, so it reads
+// pure kernel throughput on either engine (jz-wasm or this same source as JS).
+let raf = 0, frame = 0, stepMs = 0;
+
+export let frameCount = () => frame;
+export let stepTime = () => stepMs;
+
+export let start = () => {
+    cancelAnimationFrame(raf);   // idempotent — a second start() must not leak a second loop
+    let tick = () => {
+        mem.copyWithin(0, offset, offset * 2);   // roll NEXT → CURRENT
+        let t0 = performance.now();
+        step();
+        stepMs = performance.now() - t0;
+        frame = frame + 1;
+        raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+};
+
+export let stop = () => { cancelAnimationFrame(raf); };
