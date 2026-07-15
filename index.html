@@ -1419,7 +1419,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>On the cross-target corpus, the same source runs <b>over 2× faster than V8 and Rust→WASM</b> at <b>near-native speed</b> (geomean; per-case numbers and every loss are on the <a href="bench/">bench page</a>). JZ auto-vectorizes where the Rust/C→WASM paths do not. A rival win remains a bug to close, not an exception to hide.</p>
+            <p>The performance bar is uncompromising: on the cross-target corpus, the same source runs <b>over 2× faster than V8 and Rust→WASM</b> at <b>near-native speed</b> (geomean; per-case numbers and every loss are on the <a href="bench/">bench page</a>). JZ auto-vectorizes where the Rust/C→WASM paths do not. A rival win remains a bug to close, not an exception to hide.</p>
             <a href="bench/" class="bench-svg" id="bench-chart" role="img" aria-label="Geomean speed across the bench corpus — jz vs V8, Rust, Go, AssemblyScript, Porffor, all compiled to WASM and run in V8; native C the lone reference, jz = 1.00× baseline"></a>
             <p>If you hit a slow case, <a href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">report it →</a></p>
           </div>
