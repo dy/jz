@@ -272,6 +272,56 @@
     Next concrete step: wasm2wat both upsert loops side by side, count the
     per-probe ops, cut the diff — then re-run wordcount/shapes/dict on M4
     + CI bench-probe.
+    SORT WON + S2 NARROWING WAVE (2026-07-15, the post-sweep loss table's
+    top row): the honest full-field M4 sweep after units 1-3 put the
+    geomean at JZ 1.00× / C 1.85× / AS 1.99× / V8 2.14× with THREE
+    losses (colorpq accuracy-hold, jessie IC-class, self-host row —
+    see below); the stale-row re-verdict left sort (1.67× c-wasm) and
+    vm (1.38×) as the real remaining M4 rows. Both closed:
+    (1) S2 NARROWING PASSES (src/type.js loopFixpoint, ≤2 decreasing
+    passes after the widen/verify): a name with no cond conjunct to
+    re-clamp it sat at ±IP_LIM even when the loop's range is finite —
+    heapsort's `i = child` copy chain. Each pass recomputes
+    hull(entry, F(joined ∩ cond)) ∩ previous — sound (F monotone over a
+    post-fixpoint) and strictly tightening. (2) SHORT-CIRCUIT
+    REFINEMENT: `&&`'s rhs evaluates under the lhs verdict (the
+    lookahead read `child+1 < n && a[child] < a[child+1]`), `||`'s rhs
+    under ¬lhs; if-then applies refineAll (ALL conjuncts) not one.
+    (3) RANGE-RHS refine: `child < end` with end a RANGE-valued name
+    (the extract loop's downward iv) bounds by the op-side endpoint
+    (hi for </<=, lo for >/>=). (4) typedLen ALIAS ARM
+    (analyze.js makeTypedTracker): a bare-name alias (`let x = a` —
+    the inliner's param-alias splice) carries the source's ctor AND
+    static length (typed arrays never resize; views arrive via the
+    subarray arm). heapsort sort: undefs 9→1, M4 5.5-5.7ms —
+    jz BEATS c-wasm (1.04-1.05× behind us), AS 1.57× and V8 1.64×
+    behind; -Os sort 1814→1647 B (the "sort = bounds-PROOF" owner
+    closed at BOTH tiers). (5) watr 5.7.4 (repo committed, publish
+    user-gated): f64.eq/ne of a checked-read IF-form vs a CONST
+    distributes into the arms when both simplify (hit arm
+    convert→raw i32 compare, NaN/const miss arm→const) — the vm JNZ
+    cluster (`reg[a] !== 0`) drops its outer f64.ne + convert + NaN
+    materialization: vm runKernel now 100% integer, −3.3% M4 (8.83→
+    8.54ms); one-side-const ONLY (both-sides-checked f64.ne stays —
+    undef!==undef=false vs f64.ne(NaN,NaN)=true, the recorded
+    unsoundness). jz node_modules hand-synced (untracked — CI needs
+    the npm publish before these rows move there).
+    GROWING-BOUND UNSOUNDNESS KILLED (found by this wave's fail-closed
+    pin, PRE-EXISTING — dist-reproduced on every canonical loop form):
+    the canonical-iv seed `iv ∈ [entry, B−1]` is re-applied per pass as
+    a body-independent theorem — FALSE when the body writes the bound
+    (`while (i < n) { …; if (g) n = 12 }` read a[4..11] RAW → jz 36 vs
+    JS NaN; for/</<= twins identical). Fix: boundInvariant — every name
+    the bound reads must be unwritten AND undeclared in the body, gated
+    at BOTH recognizers (canonical-for + while-iv). The residual
+    undefined-vs-NaN flavor was the SENTINEL seam in compoundAssign:
+    `s += a[i]` used bare asF64 (the '+' emitter's toNumF64
+    checkedNumRead fold never ran) — the UNDEF payload rode f64 adds to
+    the boundary; += now folds the miss arm like '+'. Pins:
+    test/optimizer.js ×4 (heapsort both-loops proven + values;
+    growing-bound fail-closed with NaN semantics; typedLen alias
+    two-hop; += accumulator implied). Corpus checksums re-verified
+    exact (20-case sweep incl. all 8 known references).
     STRUCTURAL-SLOTOF CORRUPTION KILLED (2026-07-15, the queued hunt —
     the "unique-prop read" diagnosis was one layer off): slotOf's
     STRUCTURAL arm (receiver proven OBJECT, sid unknown) checked slot

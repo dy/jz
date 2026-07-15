@@ -3372,3 +3372,113 @@ test('versioning: ||-cond never versions (accesses run past the bound)', () => {
   is(exports.go(1), 3, 'runs past the bound conjunct until a[len] ≥ 3 (checked semantics)')
   is(exports.go(6), 6, 'bound-first exit exact')
 })
+
+// S2 narrowing + short-circuit refinement + range-rhs — the heapsort family:
+// copy-chain hulls (`i = child` — i only ever receives root- or cond-clamped
+// child-values; the widened ±IP_LIM invariant narrows back to the true range),
+// `&&`-guarded lookahead reads (`child+1 < n && a[child] < a[child+1]` — the
+// rhs conjunct evaluates under the lhs), and var-bounded whiles
+// (`while (child < end)` — end is the enclosing downward iv; the refine takes
+// the range's hi endpoint). All of heapsort's reads/writes prove — no undef
+// arms in the kernel.
+test('interval walk: heapsort proves both sift loops (narrowing + && + range-rhs)', () => {
+  const src = `
+const heapsort = (a) => {
+  const n = a.length
+  for (let root = (n >> 1) - 1; root >= 0; root--) {
+    let i = root
+    let child = 2 * i + 1
+    while (child < n) {
+      if (child + 1 < n && a[child] < a[child + 1]) child++
+      if (a[i] >= a[child]) break
+      const t = a[i]; a[i] = a[child]; a[child] = t
+      i = child
+      child = 2 * i + 1
+    }
+  }
+  for (let end = n - 1; end > 0; end--) {
+    const t = a[0]; a[0] = a[end]; a[end] = t
+    let i = 0
+    let child = 1
+    while (child < end) {
+      if (child + 1 < end && a[child] < a[child + 1]) child++
+      if (a[i] >= a[child]) break
+      const u = a[i]; a[i] = a[child]; a[child] = u
+      i = child
+      child = 2 * i + 1
+    }
+  }
+}
+export let main = () => {
+  const a = new Float64Array(64)
+  for (let i = 0; i < 64; i++) a[i] = ((i * 37) % 64)
+  heapsort(a)
+  let s = 0
+  for (let i = 0; i < 64; i++) s += a[i] * (i + 1)
+  return s
+}`
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || ''
+  is((m.match(/nan:0x7FF80002/g) || []).length, 0, 'every heapsort read/write proven — no undef arms')
+  const exportsJs = {}
+  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+  is(run(src, { optimize: 'speed' }).main(), exportsJs.main(), 'sorted checksum bit-matches JS')
+})
+
+test('interval walk: a bound written inside the loop stays checked (fail-closed)', () => {
+  // `n` grows mid-loop — the cond-∩ refinement must not lock the entry bound
+  // in; reads keep their checks and JS OOB semantics (undefined → NaN skips).
+  const src = `
+export let main = (g) => {
+  const a = new Float64Array(8)
+  for (let i = 0; i < 8; i++) a[i] = i + 1
+  let n = 4
+  let s = 0
+  let i = 0
+  while (i < n) {
+    s += a[i]
+    if (i === 2 && g) n = 12
+    i++
+  }
+  return s
+}`
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || ''
+  // the miss arm folds to CANONICAL nan (toNumF64's checkedNumRead seam via
+  // the += accumulator) — the checked arm itself must survive
+  ok(/f64\.const nan/.test(m), 'growing bound: the read keeps its checked arm')
+  const exportsJs = {}
+  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+  is(run(src, { optimize: 'speed' }).main(0), exportsJs.main(0), 'g=0 exact')
+  ok(Number.isNaN(run(src, { optimize: 'speed' }).main(1)), 'g=1: OOB tail is NaN, matching JS (not raw reads, not undefined)')
+})
+
+test('typedLen: static length flows through param hops and inline aliases', () => {
+  // main ctor → runKernel param → helper param (inlined as a bare-name alias):
+  // the alias inherits the source's static length, `.length` folds, and the
+  // helper's cond-bounded reads prove against the static len.
+  const src = `
+const acc = (a) => {
+  const n = a.length
+  let s = 0
+  let k = 1
+  while (k < n) { s += a[k]; k = 2 * k }
+  return s
+}
+const runKernel = (a, src) => {
+  for (let i = 0; i < a.length; i++) a[i] = src[i] * 2
+  return acc(a)
+}
+export let main = () => {
+  const src = new Float64Array(32)
+  const a = new Float64Array(32)
+  for (let i = 0; i < 32; i++) src[i] = i
+  return runKernel(a, src)
+}`
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || ''
+  is((m.match(/nan:0x7FF80002/g) || []).length, 0, 'geometric-cursor reads proven via the alias-carried static len')
+  const exportsJs = {}
+  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+  is(run(src, { optimize: 'speed' }).main(), exportsJs.main(), 'value exact')
+})

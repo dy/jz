@@ -3105,7 +3105,13 @@ function compoundAssign(name, val, f64op, i32op) {
   }
   if (i32op && va.type === 'i32' && vbi.type === 'i32')
     return writeVar(name, i32op(va, vbi), void_)
-  return writeVar(name, f64op(asF64(va), asF64(vb)), void_)
+  // A checked typed read coerces like a '+' operand: toNumF64's checkedNumRead
+  // seam folds the UNDEF miss arm to canonical NaN. A bare asF64 carries the
+  // sentinel payload through f64 arithmetic to the boundary (decoded back as
+  // `undefined`; JS: NaN) — `s += a[i]` is the accumulator shape the binary
+  // '+' emitter never sees.
+  const vbn = vb.checkedNumRead ? toNumF64(val, vb) : vb
+  return writeVar(name, f64op(asF64(va), asF64(vbn)), void_)
 }
 
 // Ring 0.3 (re-landed after the dispatch rework dropped the uncommitted original):

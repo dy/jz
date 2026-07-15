@@ -154,7 +154,13 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
         // makeValTracker comment above — a captured Map would orphan on the
         // per-function ctx.types reset).
         if (setLen) {
-          const len = typedStaticLen(rhs)
+          // A name alias (`let x = a` — the inliner's param-alias splice) carries
+          // the source's static length: typed arrays never resize, and typedLen
+          // facts are single-def-stable by construction (validate strips written
+          // params; the tracker invalidates redefs), so the copy is exact.
+          const len = typedStaticLen(rhs) ?? (typeof rhs === 'string'
+            ? getLen(rhs) ?? ctx.types.typedLen?.get(rhs) ?? ctx.scope?.globalTypedLen?.get(rhs) ?? null
+            : null)
           const prevLen = getLen(name)
           if (len == null || (prevLen !== undefined && prevLen !== len)) delLen(name)
           else setLen(name, len)
@@ -163,6 +169,16 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
     }
     const ctor = typedElemCtor(rhs)
     if (ctor) return setOrInvalidate(ctor)
+    // Bare name alias (`let x = a` — the inliner's param-alias splice): the
+    // source's settled ctor and static length copy to the alias — typed arrays
+    // never resize, and a buffer-sharing VIEW arrives via the subarray arm
+    // below, never as a bare name. A name with no typed fact stays untracked
+    // (same silence as today).
+    if (typeof rhs === 'string') {
+      const c = resolveName(rhs)
+      if (c) return setOrInvalidate(c)
+      return
+    }
     // `recv.subarray(...)` is a zero-copy VIEW aliasing the receiver's buffer — its elem
     // ctor is the receiver's type with the `.view` flag, so the binding unboxes to a typed
     // pointer and element writes take the descriptor-indirected path (not desc-as-data).

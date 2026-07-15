@@ -1052,35 +1052,42 @@ function scanIntervalIdx(body, out, lens, ranges) {
   const refine = (c, negate) => {
     if (!Array.isArray(c) || c.length !== 3) return null
     let [op, l, r] = c
-    // rhs: an int literal/module const, a body-known SINGLETON interval (`xi >= ww`
-    // where `const ww = 64|0` is function-local), or a folded access-free expression
+    // rhs: an int literal/module const, a body-known interval (`xi >= ww`, or a
+    // RANGE-valued name — `child < end` inside the extract loop, where end is
+    // the enclosing downward iv: the sound bound is the range's op-side
+    // endpoint, hi for </<=, lo for >/>=), or a folded access-free expression
     const rE = typeof r === 'string' ? env.get(r) : null
-    let rv = constInt(r) ?? (rE && rE[0] === rE[1] ? rE[0] : null)
-    if (rv == null && Array.isArray(r) && pureExpr(r)) {
+    let rLo = constInt(r), rHi = rLo
+    if (rLo == null && rE) { rLo = rE[0]; rHi = rE[1] }
+    if (rLo == null && Array.isArray(r) && pureExpr(r)) {
       const rr = ev(r)
-      if (rr && rr[0] === rr[1]) rv = rr[0]
+      if (rr) { rLo = rr[0]; rHi = rr[1] }
     }
-    if (rv == null) return null
+    if (rLo == null) return null
     if (Array.isArray(l) && l.length === 3 && (l[0] === '+' || l[0] === '-')) {
       const cR = intLiteralValue(l[2]), cL = intLiteralValue(l[1])
-      if (typeof l[1] === 'string' && cR != null) { rv = l[0] === '+' ? rv - cR : rv + cR; l = l[1] }
-      else if (l[0] === '+' && typeof l[2] === 'string' && cL != null) { rv = rv - cL; l = l[2] }
+      if (typeof l[1] === 'string' && cR != null) { rLo = l[0] === '+' ? rLo - cR : rLo + cR; rHi = l[0] === '+' ? rHi - cR : rHi + cR; l = l[1] }
+      else if (l[0] === '+' && typeof l[2] === 'string' && cL != null) { rLo = rLo - cL; rHi = rHi - cL; l = l[2] }
     }
     if (typeof l !== 'string') return null
-    const K = rv, v = env.get(l)
+    const v = env.get(l)
     if (!v) return null
     if (negate) op = op === '<' ? '>=' : op === '<=' ? '>' : op === '>' ? '<=' : op === '>=' ? '<'
       : op === '===' ? '!==' : op === '!==' ? '===' : null
-    if (op === '<') return [l, [v[0], Math.min(v[1], K - 1)]]
-    if (op === '<=') return [l, [v[0], Math.min(v[1], K)]]
-    if (op === '>') return [l, [Math.max(v[0], K + 1), v[1]]]
-    if (op === '>=') return [l, [Math.max(v[0], K), v[1]]]
-    if (op === '===') return [l, [Math.max(v[0], K), Math.min(v[1], K)]]
+    if (op === '<') return [l, [v[0], Math.min(v[1], rHi - 1)]]
+    if (op === '<=') return [l, [v[0], Math.min(v[1], rHi)]]
+    if (op === '>') return [l, [Math.max(v[0], rLo + 1), v[1]]]
+    if (op === '>=') return [l, [Math.max(v[0], rLo), v[1]]]
+    if (op === '===') return [l, [Math.max(v[0], rLo), Math.min(v[1], rHi)]]
     // ≠K tightens only at an ENDPOINT (interior point removal keeps the hull) —
-    // exactly the toroidal-wrap ternary (`y === 0 ? h-1 : y-1`)
-    if (op === '!==') return [l, [v[0] === K ? K + 1 : v[0], v[1] === K ? K - 1 : v[1]]]
+    // exactly the toroidal-wrap ternary (`y === 0 ? h-1 : y-1`); singleton rhs only
+    if (op === '!==' && rLo === rHi) return [l, [v[0] === rLo ? rLo + 1 : v[0], v[1] === rLo ? rLo - 1 : v[1]]]
     return null
   }
+  // every conjunct of an `&&` chain holds where the whole condition held
+  const refineAll = (c2) => Array.isArray(c2) && c2[0] === '&&'
+    ? [...refineAll(c2[1]), ...refineAll(c2[2])]
+    : (() => { const r = refine(c2, false); return r ? [r] : [] })()
   const killAssigned = (n) => {
     if (!Array.isArray(n)) return   // descend into closures too — capture-writes stay dead
     if (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') {
@@ -1090,6 +1097,17 @@ function scanIntervalIdx(body, out, lens, ranges) {
       }
     }
     for (let k = 1; k < n.length; k++) killAssigned(n[k])
+  }
+  // A canonical-iv range `iv ∈ [entry, B−1]` is a body-independent THEOREM only
+  // while B is invariant: a body-written bound (`while (i < n) { …; n = 12 }`)
+  // admits iv past the entry bound — the seed then "proved" raw OOB reads
+  // (dist-reproduced on every canonical loop form). Every name the bound reads
+  // must be unwritten AND undeclared in the body.
+  const boundInvariant = (bexpr, body) => {
+    if (bexpr == null) return false
+    const s = new Set(); collectNames(bexpr, s)
+    for (const bn of s) if (isReassigned(body, bn) || redeclaresName(body, bn)) return false
+    return true
   }
   // ABRUPT EDGES. A `break` reaches the loop's exit — and a `continue` its back
   // edge — carrying the flow state AT the statement, which the fall-through walk
@@ -1114,9 +1132,6 @@ function scanIntervalIdx(body, out, lens, ranges) {
   // iv ranges, wrap cursors) each pass; `condNode` refines at body top,
   // descending `&&` (both conjuncts hold when the loop is entered).
   const loopFixpoint = (seedFn, walkFn, condNode, exitBodyEnd = false) => {
-    const refineAll = (c2) => Array.isArray(c2) && c2[0] === '&&'
-      ? [...refineAll(c2[1]), ...refineAll(c2[2])]
-      : (() => { const r = refine(c2, false); return r ? [r] : [] })()
     const applyCond = () => { if (condNode != null) for (const r of refineAll(condNode)) if (!closureWrites.has(r[0])) env.set(r[0], r[1]) }
     const restore = (m) => { env.clear(); for (const [k2, v2] of m) env.set(k2, v2) }
     // every pass walks under a loop frame: continue edges are back-edges too,
@@ -1151,6 +1166,25 @@ function scanIntervalIdx(body, out, lens, ranges) {
     for (const [k2, v2] of env) {
       const j = joined.get(k2)
       if (!(v2 && j && v2[0] >= j[0] && v2[1] <= j[1])) joined.set(k2, null)
+    }
+    // NARROWING (≤2 decreasing passes): the widened invariant is sound but
+    // loose — a name with no cond conjunct to re-clamp it sits at ±IP_LIM even
+    // when the loop's true range is finite (`i = child` copy chains: i only
+    // ever receives root- or cond-clamped child-values, so hull(entry,
+    // end-state) is the real invariant). Each pass recomputes the hull from
+    // the stable state — every reachable back-edge state ⊆ F(joined ∩ cond),
+    // so hull(entry, F(joined ∩ cond)) contains them all and only TIGHTENS
+    // (meet with the previous invariant keeps the sequence decreasing).
+    for (let np = 0; np < 2; np++) {
+      restore(joined); seedFn(); applyCond(); walkPass(); applyCond()
+      let changed = false
+      for (const [k2, j] of joined) {
+        const a = entryEnv.get(k2), b = env.get(k2)
+        if (!j || !a || !b) continue
+        const nl = Math.max(j[0], Math.min(a[0], b[0])), nh = Math.min(j[1], Math.max(a[1], b[1]))
+        if (nl > j[0] || nh < j[1]) { joined.set(k2, [nl, nh]); changed = true }
+      }
+      if (!changed) break
     }
     recording = prevRec
     restore(joined); seedFn(); applyCond()
@@ -1269,6 +1303,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
         const A = As && As[0] === As[1] ? As[0] : null
         const B = Bs && Bs[0] === Bs[1] ? Bs[0] : null
         if (A != null && B != null && !isReassigned(lbody, cond[1]) && !redeclaresName(lbody, cond[1])
+            && (cond[2] == null || boundInvariant(cond[2], lbody))
             && (down ? isUnitDecrement(step, cond[1]) : isUnitIncrement(step, cond[1]))) {
           iv = cond[1]
           range = down ? [cond[0] === '>' ? B + 1 : B, A] : [A, cond[0] === '<' ? B - 1 : B]
@@ -1302,7 +1337,8 @@ function scanIntervalIdx(body, out, lens, ranges) {
       let iv = null, entry = null, brange = null
       if (Array.isArray(c) && c[0] === '<' && typeof c[1] === 'string' && wbody != null) {
         entry = env.get(c[1]); brange = c[2] != null ? ev(c[2]) : null
-        if (entry && brange && ivMonotoneInc(wbody, c[1]) && !redeclaresName(wbody, c[1])) iv = c[1]
+        if (entry && brange && ivMonotoneInc(wbody, c[1]) && !redeclaresName(wbody, c[1])
+            && boundInvariant(c[2], wbody)) iv = c[1]
       }
       // WRAPPING-CURSOR invariant (`si = si + K; if (si >= C) si = 0` — the ring
       // index of table-driven maps): the pair is self-closing on [0, C-1], so an
@@ -1407,8 +1443,9 @@ function scanIntervalIdx(body, out, lens, ranges) {
       const [, c, thenB, elseB] = n
       visit(c)
       const save = new Map(env)
-      const rT = refine(c, false)
-      if (rT && !closureWrites.has(rT[0])) env.set(rT[0], rT[1])
+      // every `&&` conjunct holds on the then path (`if (child+1 < n && a[child] <
+      // a[child+1]) child++` — the ++ under BOTH bounds)
+      for (const rT of refineAll(c)) if (!closureWrites.has(rT[0])) env.set(rT[0], rT[1])
       visit(thenB)
       const afterThen = new Map(env)
       env.clear(); for (const [k2, v2] of save) env.set(k2, v2)
@@ -1421,6 +1458,25 @@ function scanIntervalIdx(body, out, lens, ranges) {
       const keys = new Set([...afterThen.keys(), ...env.keys()])
       for (const k2 of keys) {
         const a = afterThen.get(k2), b = env.get(k2)
+        env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
+      }
+      return
+    }
+    // Short-circuit operands evaluate under the left side's verdict: `&&`'s rhs
+    // runs only where lhs HELD (`child + 1 < n && a[child] < a[child + 1]` — the
+    // lookahead read is bounds-guarded by its sibling conjunct), `||`'s rhs only
+    // where lhs FAILED. Reads inside the rhs prove under that refinement; writes
+    // there ran conditionally, so the exit state joins both possibilities.
+    if ((op === '&&' || op === '||') && n.length === 3) {
+      visit(n[1])
+      const save = new Map(env)
+      if (op === '&&') { for (const r of refineAll(n[1])) if (!closureWrites.has(r[0])) env.set(r[0], r[1]) }
+      else { const r = refine(n[1], true); if (r && !closureWrites.has(r[0])) env.set(r[0], r[1]) }
+      visit(n[2])
+      const after = new Map(env)
+      env.clear(); for (const [k2, v2] of save) env.set(k2, v2)
+      for (const k2 of new Set([...after.keys(), ...env.keys()])) {
+        const a = after.get(k2), b = env.get(k2)
         env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
       }
       return
