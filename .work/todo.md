@@ -218,7 +218,13 @@
     (17.1→10.4ms), checksums exact. chainTable COUNTER-RESULT FLIPPED and
     the pass REJOINS the speed profile: 2.3%-slower was measured on FAT
     arms; with collapsed arms the table wins +6.3% (9.76 vs 10.37ms) —
-    arm weight decides. CI re-baseline pending next bench refresh.
+    arm weight decides. CI RE-BASELINE LANDED (faab41b6 bench, Xeon):
+    vm 71.9→21.5ms (−70% — the runner paid MORE for the f64 detour than
+    M4's −49%): vs c-wasm 8.00→2.07×, v8 6.60→1.50×, as 3.80→1.34×,
+    go-wasm 1.85→0.49× (jz now wins 2×), porffor beaten 5.7×. Residual
+    2.07× owners: the one surviving cluster (JNZ's `reg[a] !== 0` — an
+    f64.ne consumer, not ToInt32), code[o..o+2] fetch triple, dispatch
+    structure vs C's direct-local br_table.
     RIVAL-WASM CAMPAIGN BASELINE (user directive; CI Xeon 6973P results
     f4053b6, honest WASM FIELD only — the `rust`/`go`/`zig` result columns
     are NATIVE binaries (target-cpu=native), not wasm; use *-wasm ids):
