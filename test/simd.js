@@ -2833,3 +2833,44 @@ test('conv-column i16x8 - int8 conv2d strip-mines the output column, bit-exact +
   ok(/i16x8\.mul/.test(w) && /v128\.load64_zero/.test(w), `conv2d column loop vectorizes (${(w.match(/i16x8\.mul/g) || []).length} i16x8.mul, ${(w.match(/v128\.load64_zero/g) || []).length} gathers)`)
   ok(!/i16x8\.mul/.test(wat(CONV_SRC, CV_NO)), 'experimentalOuterStrip:false leaves it scalar (isolates the pass)')
 })
+
+// Mirror-lane store: `inp[N−k] = lm` inside a lane-mapped loop targets
+// contiguous DESCENDING addresses — one v128 store at N−k−1 with the f64
+// lanes swapped (i8x16.shuffle). Unlocks the f64x2 transcendental twins on
+// symmetric fills (rfft's cepstrum log-magnitude: log_v computes both lanes
+// in one evaluation). Module-global receivers, the rfft shape; the scalar
+// remainder keeps the plain form.
+test('SIMD mirror store - symmetric log fill vectorizes with swapped lanes, bit-exact', () => {
+  const src = `
+    let N = 0, half = 0
+    let spec, inp
+    export let init = (n) => {
+      N = n; half = n >> 1
+      spec = new Float64Array(half)
+      inp = new Float64Array(n)
+      let i = 0
+      while (i < half) { spec[i] = i * 0.37 + 0.001; i++ }
+      return 0
+    }
+    export let fill = () => {
+      let k = 1
+      while (k < half) {
+        let lm = Math.log(spec[k] + 1e-6)
+        inp[k] = lm
+        inp[N - k] = lm
+        k++
+      }
+      let h = 0.0, i = 0
+      while (i < N) { h += inp[i] * (i + 1); i++ }
+      return h
+    }`
+  const w = wat(src, { optimize: 'speed' })
+  ok(/call \$math\.log_v/.test(w), 'log_v twin lifted')
+  ok(/i8x16\.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7/.test(w.replace(/\s+/g, ' ')), 'swapped-lane mirror store emitted')
+  const von = runVec(src, { optimize: 'speed' })
+  const voff = runVec(src, { optimize: { level: 'speed', vectorizeLaneLocal: false } })
+  von.init(64); voff.init(64)
+  is(von.fill(), voff.fill(), 'mirror fill bit-exact vs scalar (even trip)')
+  von.init(62); voff.init(62)
+  is(von.fill(), voff.fill(), 'odd-tail trip bit-exact')
+})

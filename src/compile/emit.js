@@ -4198,6 +4198,12 @@ export const emitter = {
             }
             continue
           }
+          // maxIv = the TRUE max iv value at PRE-increment access sites:
+          // bound−1 (strict) / bound (inclusive). A body-advanced iv (bump>0)
+          // exceeds this only AFTER its write — those accesses carry cand.post
+          // and their group widens by a·bump in the extent constants below.
+          // (The old unconditional widening made `maxIv < len` fail exactly
+          // when len == bound — every symmetric half-spectrum loop.)
           const maxIv = tempI64('tvq')
           if (vs.bKind === 'f64') {
             const bF = temp('tvf')
@@ -4205,10 +4211,10 @@ export const emitter = {
             conjs.push(['f64.le', ['f64.abs', ['local.get', `$${bF}`]], ['f64.const', 2147483648]])
             result.push(['local.set', `$${maxIv}`,
               ['i64.trunc_sat_f64_s', [vs.incl ? 'f64.floor' : 'f64.ceil', ['local.get', `$${bF}`]]]])
-            if (vs.bump - (vs.incl ? 0 : 1)) result.push(['local.set', `$${maxIv}`,
-              ['i64.add', ['local.get', `$${maxIv}`], i64c(vs.bump - (vs.incl ? 0 : 1))]])
+            if (!vs.incl) result.push(['local.set', `$${maxIv}`,
+              ['i64.add', ['local.get', `$${maxIv}`], i64c(-1)]])
           } else {
-            const adj = vs.bump - (vs.incl ? 0 : 1)
+            const adj = vs.incl ? 0 : -1
             result.push(['local.set', `$${maxIv}`,
               adj ? ['i64.add', ext(asI32(emit(vs.bound))), i64c(adj)] : ext(asI32(emit(vs.bound)))])
           }
@@ -4240,23 +4246,27 @@ export const emitter = {
             }
             const gk = c.recv + '\x00' + c.a + '\x00' + c.slots.map(t => t.k + '*' + slotKey(t.e)).join('+')
             const g = groups.get(gk)
-            if (!g) groups.set(gk, { recv: c.recv, a: c.a, slots: c.slots, maxC: c.bConst, minC: c.bConst })
-            else { g.maxC = Math.max(g.maxC, c.bConst); g.minC = Math.min(g.minC, c.bConst) }
+            if (!g) groups.set(gk, { recv: c.recv, a: c.a, slots: c.slots, maxC: c.bConst, minC: c.bConst, anyPost: !!c.post })
+            else { g.maxC = Math.max(g.maxC, c.bConst); g.minC = Math.min(g.minC, c.bConst); if (c.post) g.anyPost = true }
           }
           for (const g of groups.values()) {
             // extremes follow the SIGN of a: a·iv is maximal at maxIv for a ≥ 0
             // but at ENTRY for a < 0 (mirror index `N−k` of symmetric fills),
-            // and minimal at the other end.
+            // and minimal at the other end. post-increment groups see iv up to
+            // maxIv+bump — widen through the extent CONSTANT (a·bump).
+            const postW = g.anyPost ? g.a * vs.bump : 0
+            const hiC = g.maxC + (g.a >= 0 ? postW : 0)
+            const loC = g.minC + (g.a < 0 ? postW : 0)
             const entryIR = () => vs.startC != null ? i64c(vs.startC) : slotI64(vs.iv, vs.ivKind)
             let hi = slotSum(['i64.mul', i64c(g.a), g.a >= 0 ? ['local.get', `$${maxIv}`] : entryIR()], g.slots)
-            if (g.maxC) hi = ['i64.add', hi, i64c(g.maxC)]
+            if (hiC) hi = ['i64.add', hi, i64c(hiC)]
             conjs.push(['i64.lt_s', hi, len64Of(g.recv)])
             // a ≥ 0 with a STATIC start: lo = a·startC+minC was validated
             // non-negative at candidate time (slotless), nothing to emit.
             if (g.a >= 0 && vs.startC != null && !g.slots.length) continue
             let lo = slotSum(g.a >= 0 && vs.startC != null ? i64c(g.a * vs.startC)
               : ['i64.mul', i64c(g.a), g.a >= 0 ? slotI64(vs.iv, vs.ivKind) : ['local.get', `$${maxIv}`]], g.slots, true)
-            if (g.minC) lo = ['i64.add', lo, i64c(g.minC)]
+            if (loC) lo = ['i64.add', lo, i64c(loC)]
             conjs.push(['i64.ge_s', lo, i64c(0)])
           }
           // induction cursors (`k += step` in a comma step): value at iteration t is

@@ -979,6 +979,32 @@ function matchLaneOffset(off, ind, offsetTees, allowAos, aosPix, idxTees) {
 }
 
 /**
+ * Mirror lane address: `base + ((INV − iv) << K)` — the DESCENDING twin of the
+ * canonical lane address (symmetric fills: `inp[N−k] = lm`). INV is an i32
+ * const or a bare local; the CALLER must verify a named INV is body-invariant
+ * (not in the body writes set). f64 store sites only (2 lanes): the vector for
+ * (iv, iv+1) mirrors to (INV−iv, INV−iv−1) — contiguous descending, stored as
+ * one v128 at INV−iv−1 with the lanes swapped.
+ */
+function matchMirrorAddr(addr, ind) {
+  if (!isArr(addr) || addr[0] !== 'i32.add' || addr.length !== 3) return null
+  for (const k of [1, 2]) {
+    const off = addr[k]
+    if (!isArr(off) || off[0] !== 'i32.shl' || off.length !== 3) continue
+    const K = constNum(off[2])
+    if (K == null || K < 0 || K > 3) continue
+    const sub = off[1]
+    if (!isArr(sub) || sub[0] !== 'i32.sub' || sub.length !== 3) continue
+    if (!isLocalGet(sub[2], ind)) continue
+    const inv = sub[1]
+    const invName = isArr(inv) && inv[0] === 'local.get' && typeof inv[1] === 'string' ? inv[1] : null
+    if (!invName && constNum(inv) == null) continue
+    return { base: addr[k === 1 ? 2 : 1], invExpr: inv, invName, strideLog2: K }
+  }
+  return null
+}
+
+/**
  * Match an address expression `(i32.add base OFFSET)`, with optional outer
  * `(local.tee $A ...)`. OFFSET is matched by matchLaneOffset (which also
  * accepts a CSE'd `(local.tee $T (i32.shl ind K))` / `(local.get $T)` pair).
@@ -1267,6 +1293,7 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
   const allowAos = true
   const aosPix = new Map()
   let aosPixelStride = 1
+  const mirrorSites = []   // mirror stores a[INV−iv] — invariance of INV checked post-scan
   // Pixel-INDEX locals: `$J = P*i` (the `const j = 3*i` of an AoS loop, kept as its own local
   // pre-watr). A channel address is then `base + ((local.get $J) << K)`; idxTees lets
   // matchLaneOffset resolve $J → pixel-stride P. Value -1 marks an inconsistent local (bail).
@@ -1357,8 +1384,20 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
       if (laneType != null && sty !== laneType && !narrowing) return false
       if (laneType == null) { laneType = sty; stride = LANE_INFO[laneType].stride }
       const memarg = typeof node[1] === 'string' && node[1].startsWith('offset=')
-      const m = matchLaneAddr(memAddr(node), incVar, addrLocals, offsetTees, allowAos, aosPix, idxTees)
-      if (!m) return false
+      let m = matchLaneAddr(memAddr(node), incVar, addrLocals, offsetTees, allowAos, aosPix, idxTees)
+      if (!m) {
+        // mirror store `a[INV − iv] = lane` (f64, full-width, no memarg): the
+        // descending twin — accepted as its own site class; INV invariance is
+        // verified post-scan against the body writes set.
+        const mm = !memarg && sty === 'f64' && laneType === 'f64' && matchMirrorAddr(memAddr(node), incVar)
+        if (mm && (1 << mm.strideLog2) === stride) {
+          mirrorSites.push(mm)
+          siteStrides.push(1)
+          loadStoreSites.push({ parent, idx: pi, kind: 'store' })
+          return scanForLoadsStores(node[2], node, 2)
+        }
+        return false
+      }
       if ((1 << m.strideLog2) !== (narrowing ? LANE_INFO[sty].stride : stride)) return false
       if (!recordAos(m)) return false
       if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, pixelStride: m.pixelStride, base: m.base })
@@ -1410,6 +1449,10 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
   const writes = new Set()
   for (const s of body) collectWrites(s, writes)
   if (boundLocal && writes.has(boundLocal)) return null  // bound varies in body → bail
+  // a mirror INV written in the body is not invariant — the descending window would drift
+  for (const mm of mirrorSites) if (mm.invName && writes.has(mm.invName)) return null
+  // AoS gather/scatter and mirror windows don't compose (distinct per-step deltas)
+  if (mirrorSites.length && aosPixelStride > 1) return null
 
   const localKind = new Map()  // name → 'lane' | 'invariant' | 'addr'
   // Walk to collect ALL referenced names
@@ -1542,9 +1585,14 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
     ]
   ]
 
-  // Bound setup: simdBoundName = bound & ~(lanes-1)
+  // Bound setup: align the SPAN, not the bound — simdBound = iv + ((bound − iv)
+  // & ~(lanes−1)). `bound & mask` assumed a 0 entry: a loop entering at k=1
+  // (symmetric fills start past the DC bin) would run its last vector step at
+  // k = bound−1 and overrun one lane past the bound. iv holds the entry value
+  // here (the setup precedes the SIMD block).
   const boundSetup = ['local.set', simdBoundName,
-    ['i32.and', boundExpr, ['i32.const', mask]]]
+    ['i32.add', ['local.get', incVar],
+      ['i32.and', ['i32.sub', boundExpr, ['local.get', incVar]], ['i32.const', mask]]]]
 
   // Synthetic outer wrapper — has no result, no label, just sequences.
   // A clone of any LICM-hoisted preamble runs first (so the SIMD block sees the
@@ -2359,7 +2407,10 @@ function tryMapReduceVectorize(bl, fnLocals, freshIdRef) {
       ...lifted,
       ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', 2]]],
       ['br', simdLoop]]]
-  const boundSetup = ['local.set', simdBoundName, ['i32.and', boundExpr, ['i32.const', -2]]]
+  // span-aligned (same entry≠0 hazard as tryVectorize's bound — see there)
+  const boundSetup = ['local.set', simdBoundName,
+    ['i32.add', ['local.get', incVar],
+      ['i32.and', ['i32.sub', boundExpr, ['local.get', incVar]], ['i32.const', -2]]]]
   const wrapper = ['block', boundSetup, simdBlock, bl.blockNode]
   return { wrapper, newLocalDecls: [['local', simdBoundName, 'i32'], ...newLocalDecls] }
 }
@@ -2807,6 +2858,26 @@ function liftStmt(stmt, ctx) {
     // Handle memarg if present (last positional after addr/val): unlikely in
     // pre-watr IR for this shape; bail if more than 3 children.
     if (stmt.length !== 3) return liftFail(ctx, `${op} with memarg`)
+    // Mirror store `a[INV − iv] = lane` (f64, 2 lanes): the vector's lanes
+    // (iv, iv+1) mirror to (INV−iv, INV−iv−1) — one v128 store at INV−iv−1
+    // with the f64 lanes SWAPPED. The scalar remainder keeps the plain form.
+    if (ctx.laneType === 'f64' && sty === 'f64') {
+      const mm = matchMirrorAddr(addr, ctx.incVar)
+      if (mm) {
+        const v = liftExprV(stmt[2], ctx)
+        if (ctx.fail) return null
+        const vt = `$__mirv${ctx.freshIdRef.next++}`
+        ctx.extraLocals.push(['local', vt, 'v128'])
+        const mAddr = ['i32.add', mm.base,
+          ['i32.shl', ['i32.sub', ['i32.sub', mm.invExpr, ['local.get', ctx.incVar]], ['i32.const', 1]],
+            ['i32.const', mm.strideLog2]]]
+        return ['__seq__',
+          ['local.set', vt, v],
+          ['v128.store', mAddr,
+            ['i8x16.shuffle', '8', '9', '10', '11', '12', '13', '14', '15', '0', '1', '2', '3', '4', '5', '6', '7',
+              ['local.get', vt], ['local.get', vt]]]]
+      }
+    }
     // Narrowing store: a narrower element written from a wider float lane (`o[i] =
     // narrow(f(x))` — codec encode / downsample). The scalar store value carries a
     // conversion (f32.demote_f64, or the float→int ToInt32 idiom); peel it, lift the
@@ -3992,7 +4063,10 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
       ...lifted,
       ...scaledIncs,
       ['br', simdLoopLabel]]]
-  const boundSetup = ['local.set', simdBoundName, ['i32.and', boundExpr, ['i32.const', -LANES]]]
+  // span-aligned (same entry≠0 hazard as tryVectorize's bound — see there)
+  const boundSetup = ['local.set', simdBoundName,
+    ['i32.add', ['local.get', ivName],
+      ['i32.and', ['i32.sub', boundExpr, ['local.get', ivName]], ['i32.const', -LANES]]]]
   const wrapper = ['block', boundSetup, simdBlock, blockNode]
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],

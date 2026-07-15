@@ -373,6 +373,21 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   if (inds) for (const nm of inds.keys()) env.set(nm, null)
   const cands = []
   const seen = new Set()
+  // A body-advanced iv (bump > 0) exceeds bound−1 only AFTER its increment
+  // runs — accesses in top-level statements strictly BEFORE the write see
+  // iv ≤ bound−1 and need no widening. The canonical tail-increment while
+  // (`…reads…; k++`) then guards exactly; only genuinely post-increment
+  // accesses widen. Nested/mid-expression writes keep everything `post`.
+  let ivWriteAt = -1
+  const seqBody = Array.isArray(body) && (body[0] === '{}' || body[0] === ';')
+  if (bump > 0 && seqBody) {
+    for (let s = 1; s < body.length; s++) {
+      const st = body[s]
+      if (Array.isArray(st) && ((st[0] === '=' || st[0] === '+=') && st[1] === iv || (st[0] === '++' || st[0] === '--') && st[1] === iv)) { ivWriteAt = s; break }
+    }
+  }
+  let scanTop = -1   // current top-level statement index during scan
+  const isPost = () => bump > 0 && (ivWriteAt === -1 || scanTop === -1 || scanTop >= ivWriteAt)
   const scan = (n) => {
     if (!Array.isArray(n)) return
     if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[1] !== iv
@@ -393,7 +408,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
               && !(aff.slots.length === 0 && startC != null && aff.a * startC + aff.bConst < 0)) {
             seen.add(key)
             const slots = aff.slots.map(t => ({ ...t, kind: exprType(t.e, locals) === 'i32' ? 'i32' : 'f64' }))
-            cands.push({ recv: n[1], idx: n[2], a: aff.a, slots, bConst: aff.bConst })
+            cands.push({ recv: n[1], idx: n[2], a: aff.a, slots, bConst: aff.bConst, post: isPost() })
           } else {
             // LAST resort — beyond the affine model (masked ring cursors, wrap
             // idioms): an interval HULL the static walk bounded but couldn't
@@ -410,8 +425,11 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     }
     for (let k = 1; k < n.length; k++) scan(n[k])
   }
-  scan(body)
-  if (globalThis.process?.env?.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, cands.slice(0,3).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : ':aff')).join(' '))
+  if (seqBody) {
+    for (let s = 1; s < body.length; s++) { scanTop = s; scan(body[s]) }
+    scanTop = -1
+  } else scan(body)
+  if (globalThis.process?.env?.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, 'bump', bump, 'ivWriteAt', ivWriteAt, 'body0', Array.isArray(body) ? body[0] : typeof body, cands.slice(0,4).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : ':aff') + (c.post ? ':POST' : '')).join(' '))
   return cands.length
     ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, stepBy, cands }
     : null
@@ -651,6 +669,15 @@ export function isUnitIncrement(step, name) {
   if (step[0] === '++' && step[1] === name) return true
   // postfix `i++` in value position lowers to `(++i) - 1`
   if (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++'
+      && step[1][1] === name && intLiteralValue(step[2]) === 1) return true
+  return false
+}
+
+export function isUnitDecrement(step, name) {
+  if (!Array.isArray(step)) return false
+  if (step[0] === '--' && step[1] === name) return true
+  // postfix `i--` in value position lowers to `(--i) + 1`
+  if (step[0] === '+' && Array.isArray(step[1]) && step[1][0] === '--'
       && step[1][1] === name && intLiteralValue(step[2]) === 1) return true
   return false
 }
@@ -1066,9 +1093,12 @@ function scanIntervalIdx(body, out, lens, ranges) {
     if (op === 'for' && n.length === 5) {
       const [, init, cond, step, lbody] = n
       visit(init)
-      // canonical literal-interval iv: `for (iv = A; iv </<= B; iv++)`, A/B const
+      // canonical literal-interval iv: `for (iv = A; iv </<= B; iv++)` — or the
+      // DOWNWARD twin `for (iv = A; iv >/>= B; iv--)` (heapify roots, reverse
+      // scans) — A/B singleton through the full evaluator
       let iv = null, range = null
-      if (Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && typeof cond[1] === 'string') {
+      const down = Array.isArray(cond) && (cond[0] === '>' || cond[0] === '>=')
+      if (Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=' || down) && typeof cond[1] === 'string') {
         const decls = new Map(); collectDecls(init, decls)
         // start/bound through the full evaluator: function-local consts (`x < ww`)
         // and computed starts (`k = -rr`) resolve as singleton intervals
@@ -1077,9 +1107,10 @@ function scanIntervalIdx(body, out, lens, ranges) {
         const Bs = cond[2] != null ? ev(cond[2]) : null
         const A = As && As[0] === As[1] ? As[0] : null
         const B = Bs && Bs[0] === Bs[1] ? Bs[0] : null
-        if (A != null && B != null && isUnitIncrement(step, cond[1])
-            && !isReassigned(lbody, cond[1]) && !redeclaresName(lbody, cond[1])) {
-          iv = cond[1]; range = [A, cond[0] === '<' ? B - 1 : B]
+        if (A != null && B != null && !isReassigned(lbody, cond[1]) && !redeclaresName(lbody, cond[1])
+            && (down ? isUnitDecrement(step, cond[1]) : isUnitIncrement(step, cond[1]))) {
+          iv = cond[1]
+          range = down ? [cond[0] === '>' ? B + 1 : B, A] : [A, cond[0] === '<' ? B - 1 : B]
         }
       }
       killAssigned(lbody)

@@ -3222,3 +3222,62 @@ test('versioning: mirror store a[N−k] joins the guard — raw in the fast arm'
   is(exports.go(16, 16), 8008, 'forward + mirror stores land (fast arm)')
   is(exports.go(16, 8), 8000, 'undersized: checked twin drops the OOB mirror, keeps in-range')
 })
+
+// While-loop versioning guard off-by-one: maxIv used the EXCLUSIVE bound, so
+// `maxIv < len` failed exactly when len == bound — every half-spectrum /
+// tail-increment while loop (cepstrum's log fill, medianUs) silently ran the
+// CHECKED arm forever. maxIv is now the true pre-increment max (bound−1);
+// only genuinely post-increment accesses widen (cand.post).
+test('versioning: len == bound while-loop takes the fast arm at runtime', () => {
+  const src = `
+    const fill = (spec, inp, n, half) => {
+      let k = 1
+      while (k < half) {
+        let lm = spec[k] * 3
+        inp[k] = lm
+        inp[n - k] = lm
+        k++
+      }
+    }
+    export let go = (n) => {
+      const spec = new Float64Array(n >> 1)   // len(spec) == half == bound
+      const inp = new Float64Array(n)
+      let i = 0
+      while (i < (n >> 1)) { spec[i] = i; i++ }
+      fill(spec, inp, n, n >> 1)
+      let s = 0
+      i = 0
+      while (i < n) { s += inp[i]; i++ }
+      return s
+    }`
+  // Structural: the versioned guard must NOT compare the raw exclusive bound
+  // against len — maxIv arrives as bound−1 (an i64.add … -1 feeding the tvq set).
+  const wat = jz.compile(src, { optimize: 'speed', wat: true })
+  ok(/local\.tee \$tvq\d*[\s\S]{0,120}i64\.const -1|i64\.add[\s\S]{0,80}i64\.const -1/.test(wat),
+    'maxIv computed as bound−1')
+  // Behavioral: values exact through the fast arm.
+  const { exports } = jz(src, { memory: 64 })
+  // forward writes 1..half−1 (k*3) + mirror duplicates: sum = 2*3*Σ(1..half−1)
+  const n = 64, half = 32
+  is(exports.go(n), 2 * 3 * (half - 1) * half / 2, 'symmetric fill sums exact')
+})
+
+// Downward canonical for-loop joins the interval walk: `for (r = A; r >= 0; r--)`
+// bounds r ∈ [0, A] — heapify roots, reverse scans. (Upward-only before.)
+test('interval walk: downward for-loop proves its reads', () => {
+  const src = `
+    export let go = () => {
+      const a = new Float64Array(64)
+      for (let i = 0; i < 64; i++) a[i] = i
+      let s = 0
+      for (let r = 62; r >= 0; r--) s += a[r + 1]
+      return s
+    }`
+  const wat = jz.compile(src, { optimize: { level: 'size' }, wat: true })
+  // -Os with static len: a proven read is a bare f64.load — no checked-read
+  // else-arm (undef NaN const/global) may survive in go.
+  const go = wat.slice(wat.indexOf('(func $go'))
+  is((go.match(/nan:0x/g) || []).length, 0, 'downward-loop read proven — no undef arm')
+  const { exports } = jz(src, { memory: 64 })
+  is(exports.go(), 63 * 64 / 2, 'reverse scan sums exact')
+})
