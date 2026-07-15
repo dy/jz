@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, onWasi } from './_matrix.js'
 import jz from '../index.js'
 
 const run = (code, opts) => {
@@ -123,6 +123,7 @@ test('queueMicrotask: drains at export boundary, orders with promise jobs', asyn
 // === requestAnimationFrame ===
 
 test('requestAnimationFrame: fires with timestamp; cancel works', async () => {
+  if (onWasi()) return // rAF is JS-host-only (the wasi build rejects it with the curated error — pinned below)
   const { exports } = jz(`
     let last = -1, frames = 0
     export let start = () => requestAnimationFrame((t) => { last = t; frames = frames + 1 })
@@ -280,6 +281,7 @@ test('method chains on fresh typed ctors resolve the element kind', () => {
 // === clean errors for the ext-dispatch class ===
 
 test('unknown builtin method fails with a named error, not a host TypeError', () => {
+  if (onWasi()) return // ext-dispatch is the JS-host bridge — no host to dispatch to under wasi
   let msg = ''
   try { jz(`export let f = () => new TextEncoder().fooBar(1)`).exports.f() } catch (e) { msg = e.message }
   ok(msg.includes(`'fooBar'`), `names the method: ${msg}`)

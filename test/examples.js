@@ -4,6 +4,7 @@ import jz from '../index.js';
 import fs from 'fs';
 import { FLOATBEATS, moduleSrc } from '../examples/jukebox/floatbeats.js';
 import { OPT } from '../examples/build.mjs';
+import { onWasi } from './_matrix.js';
 
 let mandelbrotSrc = fs.readFileSync(new URL('../examples/mandelbrot/mandelbrot.js', import.meta.url), 'utf8');
 
@@ -465,6 +466,7 @@ test('example: jukebox floatbeats stay box-free (V8-parity ratchet)', () => {
 });
 
 test('example: game-of-life output natively matches WASM', () => {
+    if (onWasi()) return // the example owns an in-module rAF loop — JS-host-only (curated wasi error)
     let nativeExports = (() => {
         let BGR_ALIVE = 0;
         let BGR_DEAD = 0;
@@ -567,6 +569,7 @@ test('example: rfft cepstrum map vectorizes via convert-splat', () => {
 });
 
 test('example: game-of-life self-drives (in-module rAF loop)', async () => {
+  if (onWasi()) return // rAF loop is JS-host-only (curated wasi error)
   // The module owns simulation time: start() schedules step()+roll on its own
   // requestAnimationFrame (Node: interop's 16 ms timer fallback), stop() halts,
   // frameCount()/stepTime() feed the page's passive observer. start() is

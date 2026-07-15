@@ -1030,7 +1030,10 @@ test('codegen: f64 threshold in a recurrence lowers to a branchless select at sp
   // twin legitimately converts).
   const sweepArm = (w) => {
     const f = w.match(/\(func \$sweep[\s\S]*?\n  \)/)?.[0] ?? w
-    const t = f.indexOf('(then')
+    let t = f.indexOf('(then')
+    // wasi leg: exported fns open with the reactor's self-arming guard —
+    // `(then (call $__start))` is not the versioning arm; skip to the next
+    while (t >= 0 && /^\(then\s*\(call \$__start\)/.test(f.slice(t))) t = f.indexOf('(then', t + 1)
     if (t < 0) return f
     let d = 0, i = t
     for (; i < f.length; i++) { if (f[i] === '(') d++; else if (f[i] === ')' && --d === 0) break }
@@ -1087,7 +1090,9 @@ test('codegen: named i32 index feeder (let idx = y*W + x) computes in native i32
   // Root F versioning: the checked twin's f64 paths are by design — measure the
   // FAST arm (paren-matched: the arm holds its own ifs)
   {
-    const t = fn.indexOf('(then')
+    let t = fn.indexOf('(then')
+    // skip the wasi reactor's self-arming `(then (call $__start))` prologue
+    while (t >= 0 && /^\(then\s*\(call \$__start\)/.test(fn.slice(t))) t = fn.indexOf('(then', t + 1)
     if (t >= 0) {
       let d = 0, i = t
       for (; i < fn.length; i++) { if (fn[i] === '(') d++; else if (fn[i] === ')' && --d === 0) break }
