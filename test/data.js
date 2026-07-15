@@ -1109,3 +1109,46 @@ test('dictionary delete: removes own entries', () => {
   is(j(`export let f = (k, k2) => { let d = {}; d[k] = 1; d[k2] = 2; delete d[k]; d[k] = 9; return Object.keys(d).join(",") + "=" + d[k] }`, 'a', 'b'), 'b,a=9')
   is(j(`export let f = (k, k2) => { let d = {}; d[k] = 1; d[k2] = 2; let r = ""; for (let x in d) r += x; delete d[k]; for (let x in d) r += "|" + x; return r }`, 'a', 'b'), 'ab|b')
 })
+
+// Probe hash-lane integrity (collection.js): every table carries an i32 hash
+// lane after its entries — the only thing probes walk — maintained by insert,
+// grow-rehash, backward-shift delete, .clear and Map-from-pairs (the ctor that
+// once allocated LANE-LESS and let inserts write past the table: entries
+// "vanished" because probes read a foreign lane). Churn all of those paths and
+// compare against the host verbatim.
+test('hash lane: churn (from-pairs, delete-shift, grow, clear, dict) matches host', () => {
+  const SRC = `export let f = () => {
+    let out = ''
+    // Map from pairs (the lane-less-alloc regression), then grow past 75%
+    let m = new Map([['k0', 0], ['k1', 1]])
+    for (let i = 2; i < 40; i++) m.set('k' + i, i)
+    out += m.get('k0') + ',' + m.get('k25') + ',' + m.size
+    // delete every third key — backward-shift must carry lane words
+    for (let i = 0; i < 40; i += 3) m.delete('k' + i)
+    out += '|' + m.size + ',' + (m.get('k3') === undefined) + ',' + m.get('k4')
+    // reinsert over the shifted table, then grow again
+    for (let i = 40; i < 80; i++) m.set('k' + i, i * 2)
+    out += '|' + m.get('k70') + ',' + m.get('k1') + ',' + m.size
+    // clear zeroes lane + entries
+    m.clear()
+    m.set('kz', 9)
+    out += '|' + m.size + ',' + m.get('kz')
+    // dictionary-mode object: same table family via __hash_*
+    let d = {}
+    for (let i = 0; i < 50; i++) d['w' + i] = i
+    for (let i = 0; i < 50; i += 7) delete d['w' + i]
+    let s = 0
+    for (let k in d) s = s + d[k]
+    out += '|' + s + ',' + (d.w7 === undefined) + ',' + d.w8
+    // Set: add/delete/has across growth
+    let st = new Set()
+    for (let i = 0; i < 30; i++) st.add(i * 3)
+    for (let i = 0; i < 30; i += 2) st.delete(i * 3)
+    out += '|' + st.size + ',' + st.has(3) + ',' + st.has(6)
+    return out
+  }`
+  const host = new Function(SRC.replace('export let f', 'let f') + '; return f()')()
+  const { exports, memory } = jz(SRC)
+  const got = exports.f()
+  is(typeof got === 'bigint' ? memory.read(got) : got, host)
+})

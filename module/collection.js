@@ -1,9 +1,12 @@
 /**
  * Collection module — Set, Map, HASH (dynamic string-keyed objects).
  *
- * Set: type=8, open addressing hash table. Entries: [hash:f64, key:f64] (16B each).
- * Map: type=9, same but entries: [hash:f64, key:f64, val:f64] (24B each).
+ * Set: type=8, open addressing hash table. Entries: [hash|seq:8, key:8] (16B each).
+ * Map: type=9, same but entries: [hash|seq:8, key:8, val:8] (24B each).
  * HASH: type=7, same layout as Map but uses content-based string hash + equality.
+ * Every table additionally carries an i32 HASH LANE (cap × 4 B) AFTER the entry
+ * region — the only thing probes walk (see probeStart) — so allocations are
+ * cap × (entrySize + 4) bytes; entry offsets and iteration are unchanged.
  *
  * @module collection
  */
@@ -229,46 +232,56 @@ const litKeyHash = (key) => {
   return null
 }
 
-// Equality expressions for probe templates
-const sameValueZeroEq = '(call $__same_value_zero (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
-const strEq = '(call $__str_eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
-
-// Hash-first probe guard: each slot stores the key's hash in its low 32 bits
-// (high 32 = insertion seq), so a collision step can reject on one i32 compare
-// instead of a full key compare. Equal keys always have equal stored hashes
-// (the insert wrote strHash/mapHash of that very key), so the guard never
-// skips a true match — it only skips the ~all-of-them unequal probes that were
-// walking shared-prefix bytes through __str_eq (31M unequal content-compares
-// per self-host bench run before this). If-expression for short-circuit:
-// i32.and would still evaluate the call.
-//
-// On a hash hit, an inline `storedKey == queryKey` (one i64.eq on the slot's key
-// word) decides the overwhelmingly-common identity case — interned/SSO literals and
-// the same heap pointer are bit-equal — WITHOUT the __str_eq / __same_value_zero call
-// frame. Sound for both: bit-equality implies string-equality and SameValueZero (the
-// only cross-bit-pattern equals — +0/-0, distinct NaN payloads — fall through to the
-// full compare, never the reverse). Only a content-equal-but-bit-distinct key (a heap
-// string vs a literal) still pays the call. This attacks the __str_eq call tax directly
-// and helps the runtimes that DON'T inline tiny callees (wasmtime, wasm2c).
-const hashGuard = (eqExpr) =>
-  `(if (result i32) (i32.eq (i32.load (local.get $slot)) (local.get $h))
-    (then (if (result i32)
+// Key-equality expressions for probe templates — run only after a LANE hash hit
+// (the probe skeleton compares hashes; these decide the hit). The inline
+// `storedKey == queryKey` bit-eq decides the overwhelmingly-common identity case
+// — interned/SSO literals and the same heap pointer are bit-equal — WITHOUT the
+// __str_eq / __same_value_zero call frame. Sound for both: bit-equality implies
+// string-equality and SameValueZero (the only cross-bit-pattern equals — +0/-0,
+// distinct NaN payloads — fall through to the full compare, never the reverse).
+const keyEq = (fullEq) =>
+  `(if (result i32)
         (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))
         (then (i32.const 1))
-        (else ${eqExpr})))
-    (else (i32.const 0)))`
-const strEqG = hashGuard(strEq)
-const sameValueZeroEqG = hashGuard(sameValueZeroEq)
+        (else ${fullEq}))`
+const strEqG = keyEq('(call $__str_eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))')
+const sameValueZeroEqG = keyEq('(call $__same_value_zero (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))')
+const bitEq = '(i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
 
-// Open-addressing probe walked additively by entrySize: avoids an i32.mul + mask per
-// step (vs recomputing slot = off + idx*entrySize). Needs $off/$cap/$h set and $end/$slot
-// locals declared. `idxExpr` is the first-slot index (defaults to h mod cap; cap is pow2).
+// HASH-LANE probe. Entries keep the classic layout ([hash|seq:8][key:8][val:8] —
+// iteration, heal, durable logs, delete-shift and clones are untouched), but a
+// parallel i32 HASH LANE (cap × 4 B, zero-filled, AFTER the entry region) is what
+// probes WALK: one 4-byte load per step, 16 hash checks per cache line where the
+// 24-byte entry stride gave 2-3, and a miss chain touches an 8 kB lane instead of
+// sweeping a 48 kB table through L1 (the wordcount-vs-C probe-footprint gap).
+// Empty ⇔ lane word 0 (hash clamp keeps real hashes ≥ 2); healed zombies KEEP
+// their stale hash in the lane and are passed by the key compare exactly as the
+// entry-walk passed them. $ls walks the lane ($lb/$end its bounds); $slot (the
+// entry address) derives only on a hash hit / at the insert slot. Every table
+// alloc pays entrySize+4 per slot; the entry region offsets are unchanged.
+const LANE = 4
 const probeStart = (entrySize, idxExpr = '(i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1)))') =>
-  `(local.set $end (i32.add (local.get $off) (i32.mul (local.get $cap) (i32.const ${entrySize}))))
-    (local.set $slot (i32.add (local.get $off) (i32.mul ${idxExpr} (i32.const ${entrySize}))))`
-const probeNext = (entrySize) =>
-  `(local.set $slot (i32.add (local.get $slot) (i32.const ${entrySize})))
-      (if (i32.ge_u (local.get $slot) (local.get $end)) (then (local.set $slot (local.get $off))))`
+  `(local.set $lb (i32.add (local.get $off) (i32.mul (local.get $cap) (i32.const ${entrySize}))))
+    (local.set $end (i32.add (local.get $lb) (i32.shl (local.get $cap) (i32.const 2))))
+    (local.set $ls (i32.add (local.get $lb) (i32.shl ${idxExpr} (i32.const 2))))`
+const probeNext = () =>
+  `(local.set $ls (i32.add (local.get $ls) (i32.const 4)))
+      (if (i32.ge_u (local.get $ls) (local.get $end)) (then (local.set $ls (local.get $lb))))`
+// entry address of the lane cursor's slot
+const slotFromLane = (entrySize) =>
+  `(local.set $slot (i32.add (local.get $off)
+        (i32.mul (i32.shr_u (i32.sub (local.get $ls) (local.get $lb)) (i32.const 2)) (i32.const ${entrySize}))))`
+// probe-loop locals shared by every template
+const laneLocals = '(local $lb i32) (local $ls i32) (local $hw i32)'
+// cap-tries exhausted with no remembered zombie: rescan for any TOMB key via
+// the shared cold helper (an all-zombies-with-foreign-hashes table —
+// durable-heal-heavy warm embedders only; the lane probe only notices zombies
+// on a hash hit). $__zomb_scan falls back to slot 0 when the table is truly
+// full of live keys, which the 75%-load grow makes unreachable.
+const zombieRescan = (entrySize) => `(if (i32.eqz (local.get $zb)) (then
+            (local.set $zb (call $__zomb_scan (local.get $off) (local.get $cap) (i32.const ${entrySize})))
+            (local.set $zbl (i32.add (local.get $lb)
+              (i32.shl (i32.div_u (i32.sub (local.get $zb) (local.get $off)) (i32.const ${entrySize})) (i32.const 2))))))`
 
 // Store a fresh entry's hash word, packing a monotonic insertion sequence
 // (global $__seq) into its free high 32 bits. The hash itself only ever occupies
@@ -313,6 +326,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32)
     (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
     (local $oldslot i32) (local $newidx i32) (local $newslot i32) (local $zb i32) (local $ztr i32)
+    ${laneLocals} (local $zbl i32) (local $nlb i32)
     ${typeGuard}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -327,7 +341,8 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
     (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
       (then
         (local.set $newcap (i32.shl (local.get $cap) (i32.const 1)))
-        (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${entrySize})))
+        (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${entrySize + LANE})))
+        (local.set $nlb (i32.add (local.get $newptr) (i32.mul (local.get $newcap) (i32.const ${entrySize}))))
         (i64.store (i32.sub (local.get $newptr) (i32.const 16)) (i64.load (i32.sub (local.get $off) (i32.const 16))))
         (local.set $i (i32.const 0))
         (block $rd (loop $rl
@@ -344,6 +359,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
                 (br $probe2)))
               (i64.store (local.get $newslot) (i64.load (local.get $oldslot)))
               (i64.store (i32.add (local.get $newslot) (i32.const 8)) (i64.load (i32.add (local.get $oldslot) (i32.const 8))))${rehashVal}
+              (i32.store (i32.add (local.get $nlb) (i32.shl (local.get $newidx) (i32.const 2))) (local.get $h))
               (i32.store (i32.sub (local.get $newptr) (i32.const 8))
                 (i32.add (i32.load (i32.sub (local.get $newptr) (i32.const 8))) (i32.const 1)))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
@@ -355,27 +371,39 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
         (local.set $cap (local.get $newcap))))
     (local.set $h (call ${hashFn} (local.get $key)))
     ${probeStart(entrySize)}
-    ;; zombie-aware probe (durable-slot heal, TOMB_NAN keys): remember the first
-    ;; zombie, keep probing to empty/match, insert into the zombie when the chain
-    ;; ends (or when cap tries exhaust — physically-full-of-zombies table).
+    ;; zombie-aware LANE probe (durable-slot heal, TOMB_NAN keys): a zombie keeps
+    ;; its stale hash in the lane, so it is only NOTICED on a hash hit (key reads
+    ;; TOMB) — reuse still catches the dominant re-insert-same-key case, and the
+    ;; cap-tries fallback rescans for any zombie before giving up.
     (block $done (loop $probe
-      (if (i64.eqz (i64.load (local.get $slot)))
+      (local.set $hw (i32.load (local.get $ls)))
+      (if (i32.eqz (local.get $hw))
         (then
-          (if (local.get $zb) (then (local.set $slot (local.get $zb))))
+          (if (local.get $zb)
+            (then (local.set $slot (local.get $zb)) (local.set $ls (local.get $zbl)))
+            (else ${slotFromLane(entrySize)}))
           ${seqStore}
+          (i32.store (local.get $ls) (local.get $h))
           (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeVal}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
             (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
           (br $done)))
-      (if (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN}))
-        (then (if (i32.eqz (local.get $zb)) (then (local.set $zb (local.get $slot)))))
-        (else (if ${eqExpr} ${onMatch})))
-      ${probeNext(entrySize)}
+      (if (i32.eq (local.get $hw) (local.get $h))
+        (then
+          ${slotFromLane(entrySize)}
+          (if (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN}))
+            (then (if (i32.eqz (local.get $zb))
+              (then (local.set $zb (local.get $slot)) (local.set $zbl (local.get $ls)))))
+            (else (if ${eqExpr} ${onMatch})))))
+      ${probeNext()}
       (local.set $ztr (i32.add (local.get $ztr) (i32.const 1)))
       (if (i32.ge_s (local.get $ztr) (local.get $cap))
         (then
+          ${zombieRescan(entrySize)}
           (local.set $slot (local.get $zb))
+          (local.set $ls (local.get $zbl))
           ${seqStore}
+          (i32.store (local.get $ls) (local.get $h))
           (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeVal}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
             (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
@@ -414,15 +442,20 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, has
 
   return `(func $${name} (param $coll i64) (param $key i64) (result ${rt})
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32) (local $tries i32)
+    ${laneLocals}
     ${typeGuard}
     (local.set $off ${offExpr})
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
     ${probeStart(entrySize)}
     (block $done (loop $probe
-      (if (i64.eqz (i64.load (local.get $slot))) (then ${onEmpty}))
-      (if ${eqExpr} (then ${onFound}))
-      ${probeNext(entrySize)}
+      (local.set $hw (i32.load (local.get $ls)))
+      (if (i32.eqz (local.get $hw)) (then ${onEmpty}))
+      (if (i32.eq (local.get $hw) (local.get $h))
+        (then
+          ${slotFromLane(entrySize)}
+          (if ${eqExpr} (then ${onFound}))))
+      ${probeNext()}
       (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
       (br_if $done (i32.ge_s (local.get $tries) (local.get $cap)))
       (br $probe)))
@@ -450,6 +483,7 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
   return `(func $${name} (param $coll i64) (param $key i64) (result i32)
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32) (local $tries i32)
     (local $i i32) (local $j i32) (local $k i32) (local $n i32)
+    ${laneLocals} (local $li i32) (local $lj i32)
     (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (return (i32.const 0))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -463,20 +497,29 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
     ${probeStart(entrySize)}
     (block $found
       (block $absent (loop $probe
-        (if (i64.eqz (i64.load (local.get $slot))) (then (br $absent)))
-        (if ${eqExpr} (then (br $found)))
-        ${probeNext(entrySize)}
+        (local.set $hw (i32.load (local.get $ls)))
+        (if (i32.eqz (local.get $hw)) (then (br $absent)))
+        (if (i32.eq (local.get $hw) (local.get $h))
+          (then
+            ${slotFromLane(entrySize)}
+            (if ${eqExpr} (then (br $found)))))
+        ${probeNext()}
         (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
         (br_if $absent (i32.ge_s (local.get $tries) (local.get $cap)))
         (br $probe)))
       (return (i32.const 0)))
-    ;; $slot holds the entry to remove. Walk forward; move back any entry whose home
-    ;; is not cyclically within (i, j], else it would become unreachable from its home.
+    ;; $slot holds the entry to remove ($ls its lane word). Walk forward; move back
+    ;; any entry whose home is not cyclically within (i, j], else it would become
+    ;; unreachable from its home. The lane word travels with each moved entry.
     (local.set $i (local.get $slot))
     (local.set $j (local.get $slot))
+    (local.set $li (local.get $ls))
+    (local.set $lj (local.get $ls))
     (block $stop (loop $shift
       (local.set $j (i32.add (local.get $j) (i32.const ${entrySize})))
-      (if (i32.ge_u (local.get $j) (local.get $end)) (then (local.set $j (local.get $off))))
+      (local.set $lj (i32.add (local.get $lj) (i32.const 4)))
+      (if (i32.ge_u (local.get $lj) (local.get $end))
+        (then (local.set $j (local.get $off)) (local.set $lj (local.get $lb))))
       (br_if $stop (i64.eqz (i64.load (local.get $j))))
       ;; Empty slot ends the cluster (load < 100%). A 100%-full table has none — lookups
       ;; tolerate that via the $tries<cap bound, so delete must too: after $cap advances $j
@@ -489,10 +532,13 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
         (then (br_if $shift (i32.and (i32.lt_u (local.get $i) (local.get $k)) (i32.le_u (local.get $k) (local.get $j)))))
         (else (br_if $shift (i32.or  (i32.lt_u (local.get $i) (local.get $k)) (i32.le_u (local.get $k) (local.get $j))))))
       (memory.copy (local.get $i) (local.get $j) (i32.const ${entrySize}))
+      (i32.store (local.get $li) (i32.load (local.get $lj)))
       (local.set $i (local.get $j))
+      (local.set $li (local.get $lj))
       (br $shift)))
     (i64.store (local.get $i) (i64.const 0))
     (i64.store (i32.add (local.get $i) (i32.const 8)) (i64.const 0))
+    (i32.store (local.get $li) (i32.const 0))
     ${enumcInval}(i32.store (i32.sub (local.get $off) (i32.const 8))
       (i32.sub (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
     (i32.const 1))`
@@ -520,6 +566,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32)
     (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
     (local $oldslot i32) (local $newidx i32) (local $newslot i32) (local $zb i32) (local $ztr i32)
+    ${laneLocals} (local $zbl i32) (local $nlb i32)
     ${typeGuard}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -534,7 +581,8 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
     (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
       (then
         (local.set $newcap (i32.shl (local.get $cap) (i32.const 1)))
-        (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${entrySize})))
+        (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${entrySize + LANE})))
+        (local.set $nlb (i32.add (local.get $newptr) (i32.mul (local.get $newcap) (i32.const ${entrySize}))))
         (local.set $i (i32.const 0))
         (block $rd (loop $rl
           (br_if $rd (i32.ge_s (local.get $i) (local.get $cap)))
@@ -551,6 +599,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
               (i64.store (local.get $newslot) (i64.load (local.get $oldslot)))
               (i64.store (i32.add (local.get $newslot) (i32.const 8)) (i64.load (i32.add (local.get $oldslot) (i32.const 8))))
               (i64.store (i32.add (local.get $newslot) (i32.const 16)) (i64.load (i32.add (local.get $oldslot) (i32.const 16))))
+              (i32.store (i32.add (local.get $nlb) (i32.shl (local.get $newidx) (i32.const 2))) (local.get $h))
               (i32.store (i32.sub (local.get $newptr) (i32.const 8))
                 (i32.add (i32.load (i32.sub (local.get $newptr) (i32.const 8))) (i32.const 1)))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
@@ -576,29 +625,40 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
     ;; Insert/update
     (local.set $h (call ${hashFn} (local.get $key)))
     ${probeStart(entrySize)}
-    ;; zombie-aware probe (durable-slot heal, TOMB_NAN keys) — see genUpsert.
+    ;; zombie-aware LANE probe (durable-slot heal, TOMB_NAN keys) — see genUpsert.
     (block $done (loop $probe
-      (if (i64.eqz (i64.load (local.get $slot)))
+      (local.set $hw (i32.load (local.get $ls)))
+      (if (i32.eqz (local.get $hw))
         (then
-          (if (local.get $zb) (then (local.set $slot (local.get $zb))))
+          (if (local.get $zb)
+            (then (local.set $slot (local.get $zb)) (local.set $ls (local.get $zbl)))
+            (else ${slotFromLane(entrySize)}))
           ${seqStore}
+          (i32.store (local.get $ls) (local.get $h))
           (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}
           (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
             (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
           (br $done)))
-      (if (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN}))
-        (then (if (i32.eqz (local.get $zb)) (then (local.set $zb (local.get $slot)))))
-        (else (if ${eqExpr}
-          (then
-            (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
-            (br $done)))))
-      ${probeNext(entrySize)}
+      (if (i32.eq (local.get $hw) (local.get $h))
+        (then
+          ${slotFromLane(entrySize)}
+          (if (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN}))
+            (then (if (i32.eqz (local.get $zb))
+              (then (local.set $zb (local.get $slot)) (local.set $zbl (local.get $ls)))))
+            (else (if ${eqExpr}
+              (then
+                (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
+                (br $done)))))))
+      ${probeNext()}
       (local.set $ztr (i32.add (local.get $ztr) (i32.const 1)))
       (if (i32.ge_s (local.get $ztr) (local.get $cap))
         (then
+          ${zombieRescan(entrySize)}
           (local.set $slot (local.get $zb))
+          (local.set $ls (local.get $zbl))
           ${seqStore}
+          (i32.store (local.get $ls) (local.get $h))
           (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}
           (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
@@ -624,6 +684,7 @@ function genSlotUpsert(name, entrySize, hashFn, eqExpr) {
     (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
     (local $oldslot i32) (local $newidx i32) (local $newslot i32) (local $zb i32) (local $ztr i32)
     (local $kaux i32) (local $koff i32)
+    ${laneLocals} (local $zbl i32) (local $nlb i32)
     (if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${PTR.HASH}))
       (then (return (i32.const 0))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
@@ -638,7 +699,8 @@ function genSlotUpsert(name, entrySize, hashFn, eqExpr) {
     (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
       (then
         (local.set $newcap (i32.shl (local.get $cap) (i32.const 1)))
-        (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${entrySize})))
+        (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${entrySize + LANE})))
+        (local.set $nlb (i32.add (local.get $newptr) (i32.mul (local.get $newcap) (i32.const ${entrySize}))))
         (local.set $i (i32.const 0))
         (block $rd (loop $rl
           (br_if $rd (i32.ge_s (local.get $i) (local.get $cap)))
@@ -655,6 +717,7 @@ function genSlotUpsert(name, entrySize, hashFn, eqExpr) {
               (i64.store (local.get $newslot) (i64.load (local.get $oldslot)))
               (i64.store (i32.add (local.get $newslot) (i32.const 8)) (i64.load (i32.add (local.get $oldslot) (i32.const 8))))
               (i64.store (i32.add (local.get $newslot) (i32.const 16)) (i64.load (i32.add (local.get $oldslot) (i32.const 16))))
+              (i32.store (i32.add (local.get $nlb) (i32.shl (local.get $newidx) (i32.const 2))) (local.get $h))
               (i32.store (i32.sub (local.get $newptr) (i32.const 8))
                 (i32.add (i32.load (i32.sub (local.get $newptr) (i32.const 8))) (i32.const 1)))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
@@ -694,24 +757,35 @@ function genSlotUpsert(name, entrySize, hashFn, eqExpr) {
     : `(local.set $h (call ${hashFn} (local.get $key)))`}
     ${probeStart(entrySize)}
     (block $done (loop $probe
-      (if (i64.eqz (i64.load (local.get $slot)))
+      (local.set $hw (i32.load (local.get $ls)))
+      (if (i32.eqz (local.get $hw))
         (then
-          (if (local.get $zb) (then (local.set $slot (local.get $zb))))
+          (if (local.get $zb)
+            (then (local.set $slot (local.get $zb)) (local.set $ls (local.get $zbl)))
+            (else ${slotFromLane(entrySize)}))
           ${seqStore}
+          (i32.store (local.get $ls) (local.get $h))
           (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}
           (i64.store (i32.add (local.get $slot) (i32.const 16)) (i64.const ${UNDEF_NAN}))
           (i32.store (i32.sub (local.get $off) (i32.const 8))
             (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
           (br $done)))
-      (if (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN}))
-        (then (if (i32.eqz (local.get $zb)) (then (local.set $zb (local.get $slot)))))
-        (else (if ${eqExpr} (then (br $done)))))
-      ${probeNext(entrySize)}
+      (if (i32.eq (local.get $hw) (local.get $h))
+        (then
+          ${slotFromLane(entrySize)}
+          (if (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN}))
+            (then (if (i32.eqz (local.get $zb))
+              (then (local.set $zb (local.get $slot)) (local.set $zbl (local.get $ls)))))
+            (else (if ${eqExpr} (then (br $done)))))))
+      ${probeNext()}
       (local.set $ztr (i32.add (local.get $ztr) (i32.const 1)))
       (if (i32.ge_s (local.get $ztr) (local.get $cap))
         (then
+          ${zombieRescan(entrySize)}
           (local.set $slot (local.get $zb))
+          (local.set $ls (local.get $zbl))
           ${seqStore}
+          (i32.store (local.get $ls) (local.get $h))
           (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}
           (i64.store (i32.add (local.get $slot) (i32.const 16)) (i64.const ${UNDEF_NAN}))
           (i32.store (i32.sub (local.get $off) (i32.const 8))
@@ -724,6 +798,7 @@ function genSlotUpsert(name, entrySize, hashFn, eqExpr) {
 function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing = UNDEF_NAN) {
   return `(func $${name} (param $coll i64) (param $key i64) (result i64)
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32) (local $tries i32)
+    ${laneLocals}
     (if (i32.ne
           (i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
           (i32.const ${expectedType}))
@@ -739,11 +814,15 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
     (local.set $h (call ${hashFn} (local.get $key)))
     ${probeStart(entrySize)}
     (block $done (loop $probe
-      (if (i64.eqz (i64.load (local.get $slot)))
+      (local.set $hw (i32.load (local.get $ls)))
+      (if (i32.eqz (local.get $hw))
         (then (return (i64.const ${missing}))))
-      (if ${eqExpr}
-        (then (return (i64.load (i32.add (local.get $slot) (i32.const 16))))))
-      ${probeNext(entrySize)}
+      (if (i32.eq (local.get $hw) (local.get $h))
+        (then
+          ${slotFromLane(entrySize)}
+          (if ${eqExpr}
+            (then (return (i64.load (i32.add (local.get $slot) (i32.const 16))))))))
+      ${probeNext()}
       (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
       (br_if $done (i32.ge_s (local.get $tries) (local.get $cap)))
       (br $probe)))
@@ -769,6 +848,7 @@ function genLookupStrictPrehashed(name, entrySize, eqExpr, expectedType, missing
       (then ${onEmpty}))`
   return `(func $${name} (param $coll i64) (param $key i64) (param $h i32) (result ${rt})
     (local $off i32) (local $cap i32) (local $end i32) (local $slot i32) (local $tries i32)
+    ${laneLocals}
     ${typeGuard}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -780,9 +860,13 @@ function genLookupStrictPrehashed(name, entrySize, eqExpr, expectedType, missing
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     ${probeStart(entrySize)}
     (block $done (loop $probe
-      (if (i64.eqz (i64.load (local.get $slot))) (then ${onEmpty}))
-      (if ${eqExpr} (then ${onFound}))
-      ${probeNext(entrySize)}
+      (local.set $hw (i32.load (local.get $ls)))
+      (if (i32.eqz (local.get $hw)) (then ${onEmpty}))
+      (if (i32.eq (local.get $hw) (local.get $h))
+        (then
+          ${slotFromLane(entrySize)}
+          (if ${eqExpr} (then ${onFound}))))
+      ${probeNext()}
       (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
       (br_if $done (i32.ge_s (local.get $tries) (local.get $cap)))
       (br $probe)))
@@ -792,6 +876,7 @@ function genLookupStrictPrehashed(name, entrySize, eqExpr, expectedType, missing
 function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType) {
   return `(func $${name} (param $obj i64) (param $key i64) (param $h i32) (param $val i64) (result i64)
     (local $off i32) (local $cap i32) (local $end i32) (local $slot i32) (local $zb i32) (local $ztr i32)
+    ${laneLocals} (local $zbl i32)
     (if (i32.ne
           (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
           (i32.const ${expectedType}))
@@ -805,29 +890,40 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType) {
         (local.set $off (call $__ptr_offset_fwd (local.get $off)))
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     ${probeStart(entrySize)}
-    ;; zombie-aware probe (durable-slot heal, TOMB_NAN keys) — see genUpsert.
+    ;; zombie-aware LANE probe (durable-slot heal, TOMB_NAN keys) — see genUpsert.
     (block $done (loop $probe
-      (if (i64.eqz (i64.load (local.get $slot)))
+      (local.set $hw (i32.load (local.get $ls)))
+      (if (i32.eqz (local.get $hw))
         (then
-          (if (local.get $zb) (then (local.set $slot (local.get $zb))))
+          (if (local.get $zb)
+            (then (local.set $slot (local.get $zb)) (local.set $ls (local.get $zbl)))
+            (else ${slotFromLane(entrySize)}))
           ${seqStore}
+          (i32.store (local.get $ls) (local.get $h))
           (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}
           (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
             (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
           (br $done)))
-      (if (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN}))
-        (then (if (i32.eqz (local.get $zb)) (then (local.set $zb (local.get $slot)))))
-        (else (if ${eqExpr}
-          (then
-            (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
-            (br $done)))))
-      ${probeNext(entrySize)}
+      (if (i32.eq (local.get $hw) (local.get $h))
+        (then
+          ${slotFromLane(entrySize)}
+          (if (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN}))
+            (then (if (i32.eqz (local.get $zb))
+              (then (local.set $zb (local.get $slot)) (local.set $zbl (local.get $ls)))))
+            (else (if ${eqExpr}
+              (then
+                (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
+                (br $done)))))))
+      ${probeNext()}
       (local.set $ztr (i32.add (local.get $ztr) (i32.const 1)))
       (if (i32.ge_s (local.get $ztr) (local.get $cap))
         (then
+          ${zombieRescan(entrySize)}
           (local.set $slot (local.get $zb))
+          (local.set $ls (local.get $zbl))
           ${seqStore}
+          (i32.store (local.get $ls) (local.get $h))
           (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}
           (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
@@ -865,7 +961,7 @@ export default (ctx) => {
     // log (durableEntryLogIR) still calls $__durable_slot_log — without the
     // explicit edge the kernel leg drops the helper (auto-scan divergence, the
     // selfhost-includes class) and every `new Set(...)` fails to compile there.
-    __set_add: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __set_add: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __set_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __set_delete: ['__map_hash', '__same_value_zero'],
     __set_add_all: ['__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order', '__set_add'],
@@ -874,7 +970,7 @@ export default (ctx) => {
     __sclone: ['__sclone_rec', '__mkptr', '__alloc_hdr_n'],
     __sclone_rec: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_from', '__obj_clone', '__sclone_hash_vals'],
     __sclone_hash_vals: ['__sclone_rec'],
-    __map_set: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __map_set: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __map_get: () => ctx.features.external ? ['__ext_prop', '__map_set', '__ptr_offset', '__ptr_offset_fwd'] : ['__map_set', '__ptr_offset', '__ptr_offset_fwd'],
     __map_get_h: () => ctx.features.external ? ['__ext_prop', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __map_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
@@ -888,6 +984,7 @@ export default (ctx) => {
     __map_new: ['__alloc_hdr_n'],
     __hash_set: () => [
       ...(ctx.features.external ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set'] : ['__str_hash', '__str_eq', '__ptr_type', '__dyn_set']),
+      '__zomb_scan',
       ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),
       ...slotLogDeps(),
     ],
@@ -901,12 +998,12 @@ export default (ctx) => {
     __hash_new_small: ['__alloc_hdr_n', '__mkptr'],
     __hash_get_local: ['__str_hash', '__str_eq'],
     __hash_get_local_h: ['__str_eq'],
-    __hash_set_local_h: () => ['__str_eq', ...slotLogDeps()],
-    __hash_set_local: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
-    __hash_slot: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __hash_set_local_h: () => ['__str_eq', '__zomb_scan', ...slotLogDeps()],
+    __hash_set_local: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __hash_slot: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __slot_write: () => slotLogDeps(),
     __ihash_get_local: ['__map_hash'],
-    __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', ...slotLogDeps()],
+    __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
     __dyn_get_t_h: ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__str_arr_idx', '__str_byteLen'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
@@ -1038,14 +1135,14 @@ export default (ctx) => {
   // __map_new() → f64 — allocate empty Map (for JSON.parse, runtime creation)
   ctx.core.stdlib['__map_new'] = `(func $__map_new (result f64)
     (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
-      (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))`
+      (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY + LANE}))))`
 
   // === Set ===
 
   ctx.core.emit['new.Set'] = (iterExpr) => {
     ctx.features.set = true
     if (iterExpr == null) {
-      const out = allocPtr({ type: PTR.SET, len: 0, cap: INIT_CAP, stride: SET_ENTRY, tag: 'set' })
+      const out = allocPtr({ type: PTR.SET, len: 0, cap: INIT_CAP, stride: SET_ENTRY + LANE, tag: 'set' })
       return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
     }
     // new Set(iterable): __iter_arr normalizes any iterable to an index-iterable
@@ -1067,7 +1164,7 @@ export default (ctx) => {
         ['i32.sub',
           ['i32.add', ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', 1]], ['i32.const', INIT_CAP]],
           ['i32.const', 1]]]]]
-    const out = allocPtr({ type: PTR.SET, len: 0, cap: capExpr, stride: SET_ENTRY, tag: 'set' })
+    const out = allocPtr({ type: PTR.SET, len: 0, cap: capExpr, stride: SET_ENTRY + LANE, tag: 'set' })
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${arrL}`, asF64(emit(['()', '__iter_arr', iterExpr]))],
       ['local.set', `$${lenL}`, ['i32.const', 0]],
@@ -1148,7 +1245,7 @@ export default (ctx) => {
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
         (memory.fill (local.get $off) (i32.const 0)
           (i32.mul (local.get $cap)
-            (i32.add (i32.const ${SET_ENTRY})
+            (i32.add (i32.const ${SET_ENTRY + LANE})
               (i32.shl (i32.eq (local.get $t) (i32.const ${PTR.MAP})) (i32.const 3)))))
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.const 0))))
     (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))`
@@ -1271,7 +1368,7 @@ export default (ctx) => {
   ctx.core.emit['new.Map'] = (iterExpr) => {
     ctx.features.map = true
     if (iterExpr == null) {
-      const out = allocPtr({ type: PTR.MAP, len: 0, cap: INIT_CAP, stride: MAP_ENTRY, tag: 'map' })
+      const out = allocPtr({ type: PTR.MAP, len: 0, cap: INIT_CAP, stride: MAP_ENTRY + LANE, tag: 'map' })
       return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
     }
     // new Map(iterable): seed from another Map or an array of [key, value] pairs.
@@ -1415,7 +1512,7 @@ export default (ctx) => {
   }
   // Build the fresh-dst + threaded-walker-call sequence, returning the dst temp.
   const buildSet = (steps, tag) => {
-    const dst = allocPtr({ type: PTR.SET, len: 0, cap: INIT_CAP, stride: SET_ENTRY, tag })
+    const dst = allocPtr({ type: PTR.SET, len: 0, cap: INIT_CAP, stride: SET_ENTRY + LANE, tag })
     const dstT = temp('sopd')
     const dI = () => ['i64.reinterpret_f64', ['local.get', `$${dstT}`]]
     const seq = ['block', ['result', 'f64'], dst.init, ['local.set', `$${dstT}`, dst.ptr]]
@@ -1486,7 +1583,7 @@ export default (ctx) => {
     const resI64 = ['i64.reinterpret_f64', ['local.get', `$${result}`]]
     const nb = allocPtr({ type: PTR.ARRAY, len: 0, cap: 0, tag: 'gbn' })
     const initResult = isMap
-      ? (() => { const out = allocPtr({ type: PTR.MAP, len: 0, cap: INIT_CAP, stride: MAP_ENTRY, tag: 'gbm' })
+      ? (() => { const out = allocPtr({ type: PTR.MAP, len: 0, cap: INIT_CAP, stride: MAP_ENTRY + LANE, tag: 'gbm' })
           return ['block', ['result', 'f64'], out.init, out.ptr] })()
       : ['call', '$__hash_new']
     const keyOf = (cbResult) => isMap ? asI64(cbResult) : ['call', '$__to_str', asI64(cbResult)]
@@ -1546,7 +1643,7 @@ export default (ctx) => {
   ctx.core.stdlib['__sclone'] = `(func $__sclone (param $v f64) (result f64)
     (call $__sclone_rec (local.get $v)
       (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
-        (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))))`
+        (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY + LANE}))))))`
 
   // Deep-clone the values of a freshly copied HASH table, in place.
   ctx.core.stdlib['__sclone_hash_vals'] = `(func $__sclone_hash_vals (param $off i32) (param $memo i64)
@@ -1639,7 +1736,7 @@ export default (ctx) => {
         (local.set $src (call $__ptr_offset (local.get $bits)))
         (local.set $cap (i32.load (i32.sub (local.get $src) (i32.const 4))))
         (local.set $out (call $__mkptr (local.get $t) (i32.const 0)
-          (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (local.get $stride))))
+          (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.add (local.get $stride) (i32.const ${LANE})))))
         (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
         ;; walk the source in insertion order; ≤len inserts into cap slots never grow,
         ;; so $out's bits stay canonical (the memo entry above remains the pointer)
@@ -1739,7 +1836,7 @@ export default (ctx) => {
       (i32.sub (i32.const 32) (i32.clz
         (i32.sub (i32.add (i32.shl (local.get $n) (i32.const 1)) (i32.const ${INIT_CAP})) (i32.const 1))))))
     (local.set $map (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
-      (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${MAP_ENTRY})))))
+      (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${MAP_ENTRY + LANE})))))
     (if (i32.eq (local.get $t) (i32.const ${PTR.MAP}))
       (then
         ;; Copy in source insertion order so the new map enumerates identically.
@@ -1834,9 +1931,23 @@ export default (ctx) => {
     (if (local.get $cs) (then (i32.store (local.get $cs) (local.get $h))))
     (local.get $h))`
 
+  // Cold shared rescan for the upsert templates' cap-tries fallback: first
+  // TOMB-keyed (zombied) slot of the table, or slot 0 when none exists (a
+  // truly-full-of-live-keys table — unreachable behind the 75%-load grow).
+  ctx.core.stdlib['__zomb_scan'] = `(func $__zomb_scan (param $off i32) (param $cap i32) (param $es i32) (result i32)
+    (local $slot i32) (local $end i32)
+    (local.set $slot (local.get $off))
+    (local.set $end (i32.add (local.get $off) (i32.mul (local.get $cap) (local.get $es))))
+    (block $d (loop $l
+      (br_if $d (i32.ge_u (local.get $slot) (local.get $end)))
+      (br_if $d (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN})))
+      (local.set $slot (i32.add (local.get $slot) (local.get $es)))
+      (br $l)))
+    (select (local.get $off) (local.get $slot) (i32.ge_u (local.get $slot) (local.get $end))))`
+
   ctx.core.stdlib['__hash_new'] = `(func $__hash_new (result f64)
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
-      (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))`
+      (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY + LANE}))))`
 
   // Small initial capacity for propsPtr-style hashes (per-object dyn props).
   // Most receivers in real code carry 0-2 dyn props; paying 8-slot up-front
@@ -1846,7 +1957,7 @@ export default (ctx) => {
   const smallCap = Math.max(ctx.transform.optimize?.hashSmallInitCap | 0, 2)
   ctx.core.stdlib['__hash_new_small'] = `(func $__hash_new_small (result f64)
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
-      (call $__alloc_hdr_n (i32.const 0) (i32.const ${smallCap}) (i32.const ${MAP_ENTRY}))))`
+      (call $__alloc_hdr_n (i32.const 0) (i32.const ${smallCap}) (i32.const ${MAP_ENTRY + LANE}))))`
 
   ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH)
   ctx.core.stdlib['__hash_get_local_h'] = genLookupStrictPrehashed('__hash_get_local_h', MAP_ENTRY, strEqG, PTR.HASH)

@@ -403,9 +403,12 @@ export const memory = (src) => {
     const entries = Object.entries(obj)
     let cap = 8
     while (entries.length * 4 >= cap * 3) cap <<= 1   // stay under the 75% grow trigger
-    const off = hdr(entries.length, cap, cap * 24)
+    // cap × (24-B entry + 4-B probe hash lane) — collection.js's exact layout;
+    // the lane (after the entries) is what wasm probes walk
+    const off = hdr(entries.length, cap, cap * 28)
     // Stage every slot as i64 bits (empty = 0) — same NaN-canonicalization dodge as mem.Array.
     const staged = new BigInt64Array(cap * 3)
+    const lane = new Int32Array(cap)
     entries.forEach(([k, v], seq) => {
       const keyBox = mem.String(k)
       const h = jzStrHash(keyBox)
@@ -414,9 +417,11 @@ export const memory = (src) => {
       staged[idx * 3] = (BigInt(seq) << 32n) | BigInt(h >>> 0)
       staged[idx * 3 + 1] = bits(keyBox)
       staged[idx * 3 + 2] = bits(mem.wrapVal(v))
+      lane[idx] = h | 0
     })
     const dst = new BigInt64Array(mem.buffer, off, cap * 3)
     dst.set(staged)
+    new Int32Array(mem.buffer, off + cap * 24, cap).set(lane)
     return ptr(7, 0, off)
   }
 

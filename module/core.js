@@ -928,11 +928,13 @@ export default (ctx) => {
       (then
         (local.set $cap (call $__cap (local.get $bits)))
         (local.set $src (call $__ptr_offset (local.get $bits)))
-        (local.set $dst (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.const 24)))
+        ;; 28 = MAP_ENTRY + the probe hash lane (collection.js) — the wholesale
+        ;; copy must carry the lane or the clone's probes see stale zeros
+        (local.set $dst (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.const 28)))
         (memory.copy
           (i32.sub (local.get $dst) (i32.const 16))
           (i32.sub (local.get $src) (i32.const 16))
-          (i32.add (i32.const 16) (i32.mul (local.get $cap) (i32.const 24))))
+          (i32.add (i32.const 16) (i32.mul (local.get $cap) (i32.const 28))))
         (return (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (local.get $dst)))))
     (local.get $v))`
 
