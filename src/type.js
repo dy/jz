@@ -429,7 +429,9 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     for (let s = 1; s < body.length; s++) { scanTop = s; scan(body[s]) }
     scanTop = -1
   } else scan(body)
-  if (globalThis.process?.env?.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, 'bump', bump, 'ivWriteAt', ivWriteAt, 'body0', Array.isArray(body) ? body[0] : typeof body, cands.slice(0,4).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : ':aff') + (c.post ? ':POST' : '')).join(' '))
+  // typeof-process guard, not globalThis.process — a bare `globalThis` read
+  // compiles to an env.globalThis import in the self-host build; typeof folds dead
+  if (typeof process !== 'undefined' && process.env.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, 'bump', bump, 'ivWriteAt', ivWriteAt, 'body0', Array.isArray(body) ? body[0] : typeof body, cands.slice(0,4).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : ':aff') + (c.post ? ':POST' : '')).join(' '))
   return cands.length
     ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, stepBy, cands }
     : null
@@ -1146,7 +1148,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
       const idxV = ev(n[2])
       if (!recording) return   // exploratory fixpoint pass: env effects only
       const L = lens(n[1])
-      if (globalThis.process?.env?.JZ_DBG_IP) console.error('IPW', n[1], JSON.stringify(n[2]).slice(0,50), JSON.stringify(idxV), 'len', L)
+      if (typeof process !== 'undefined' && process.env.JZ_DBG_IP) console.error('IPW', n[1], JSON.stringify(n[2]).slice(0,50), JSON.stringify(idxV), 'len', L)
       if (L != null && idxV && idxV[0] >= 0 && idxV[1] < L) out.add(idxKey(n[1], n[2]))
       // a bounded idx against an UNKNOWN length is half a proof — export the hull
       // (joined over every sighting of this key) for the versioning guard to close

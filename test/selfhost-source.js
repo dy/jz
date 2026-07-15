@@ -76,3 +76,34 @@ test('selfhost-source: self-host kernel is free of labeled-statement misparses',
       ? `self-host source would break the self-host build (dist/jz.wasm) — ${offenders.length} labeled-statement misparse(s):\n  ${offenders.join('\n  ')}`
       : `clean across ${Object.keys(sources).length} self-host kernel files`)
 })
+
+// A bare `globalThis` READ in compiler source compiles to an env.globalThis
+// import in the self-host build — the module then fails to INSTANTIATE
+// (LinkError) in import-free hosts, and the failure is silent in the fast
+// suite (the bench self-host row just vanishes). Debug hooks must use the
+// house pattern `typeof process !== 'undefined' && process.env.X` — prep
+// folds the typeof dead, no import. (String/comment mentions are fine; this
+// scans PARSED source for a `globalThis` member-access base.)
+test('selfhost-source: no bare globalThis reads (env.globalThis import would break instantiation)', () => {
+  const g = resolveModuleGraph(SELF, { resolveNode: true })
+  const sources = { 'scripts/self.js': g.code }
+  for (const [path, src] of Object.entries(g.modules))
+    if (!path.includes('node_modules')) sources[path.replace(ROOT + '/', '')] = src
+
+  const offenders = []
+  const scan = (n, path) => {
+    if (!Array.isArray(n)) return
+    if ((n[0] === '.' || n[0] === '?.' || n[0] === '[]') && n[1] === 'globalThis')
+      offenders.push(`${path}: globalThis.${typeof n[2] === 'string' ? n[2] : '…'}`)
+    for (let i = 1; i < n.length; i++) scan(n[i], path)
+  }
+  for (const [path, src] of Object.entries(sources)) {
+    let ast
+    try { ast = parse(src) } catch { continue }
+    scan(ast, path)
+  }
+  ok(offenders.length === 0,
+    offenders.length
+      ? `bare globalThis read(s) in self-host source — each becomes an env.globalThis import:\n  ${offenders.join('\n  ')}\n  use \`typeof process !== 'undefined' && process.env.X\` instead`
+      : `clean across ${Object.keys(sources).length} self-host kernel files`)
+})

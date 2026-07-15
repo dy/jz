@@ -202,6 +202,70 @@
     families: sort 1941→1814 (0.96 WIN — ratcheted), wav 1721→1646,
     base64 1924→1847 (1-byte squeak → comfortable), hash 1164→1086,
     aos 1913→1894. medianUs insertion scan proven corpus-wide.
+    2026-07-15 VM ARC CLOSED (watr 5.7.2, published): the reg[a] cluster
+    class — jz's BRANCHLESS checked read is a BLOCK form ((block (result
+    f64) (set $bi)(set $bn) (select cv(load(clamped)) UNDEF (get $bn))))
+    that checkedRead/ring1 refused, so intguard rule 5 never saw the vm's
+    register file; and unclamp ran AFTER intguard, whose if-form landed a
+    round late into coalesced temps (the round-2-shapes trap, again). Fixes:
+    checkedRead grows the block form + its post-unclamp if-tail twin (the
+    set prefix rides {pre} ahead of the collapsed if), ring1 takes the
+    block leaf, unclamp moves BEFORE intguard, and 5.7.1's unclamp accepts
+    cv-wrapped loads + DEFINING-tee guards (the tee moves into the if
+    condition; shared len tees keep defining for the arm's store guard).
+    END STATE: runKernel ZERO selects / ZERO trunc_sat / one bounds branch
+    + raw i32 load per register access — C's exact shape. vm −40% on M4
+    (17.1→10.4ms), checksums exact. chainTable COUNTER-RESULT FLIPPED and
+    the pass REJOINS the speed profile: 2.3%-slower was measured on FAT
+    arms; with collapsed arms the table wins +6.3% (9.76 vs 10.37ms) —
+    arm weight decides. CI re-baseline pending next bench refresh.
+    RIVAL-WASM CAMPAIGN BASELINE (user directive; CI Xeon 6973P results
+    f4053b6, honest WASM FIELD only — the `rust`/`go`/`zig` result columns
+    are NATIVE binaries (target-cpu=native), not wasm; use *-wasm ids):
+    vm 8.0× c-wasm / 6.6 v8 / 3.8 as (PRE-collapse numbers — re-baseline);
+    immutable 3.9× c-wasm / 2.4 go-wasm / 2.0 v8 (fresh-record idiom —
+    rust source gets value semantics free; jz must SCALARIZE the record
+    replace across ps[i] (object-churn SRoA), currently loses to V8's
+    escape analysis on CI); shapes 3.8× as / 3.7 c-wasm + wordcount 1.58
+    c-wasm (hash-slot unit owns); lz 2.5× / qoi 1.75 / base64 1.7 c-wasm
+    (codec family — dissect c-wasm loops); tail: noise 1.43 v8, sort 1.43
+    as, mandelbrot 1.35 as, jessie 1.31 v8, crc32 1.23 v8, synth/wav ~1.1
+    c-wasm. Campaign order: vm re-baseline (free) → hash-slot → immutable
+    → codec family → tail.
+    IMMUTABLE DESIGN (campaign case, next-session unit): the kernel is
+    `const p = ps[i]; …; ps[i] = {x,y,vx,vy}` over a 4096-record array of
+    ONE literal schema, int-certain fields, no surviving alias (the read
+    projection dies per iteration; ps single-owner from initParticles).
+    Engine transform: ARRAY-OF-RECORDS FLATTENING — when an array binding
+    provably holds only one literal schema and is used solely via field
+    projections + WHOLESALE literal replacement, lower to packed lanes
+    (4×i32 here): `ps[i] = {…}` → 4 in-place stores, `p.x` → lane load,
+    zero allocation, zero boxing. This is rust's value-semantics answer
+    (3.9× c-wasm today; jz loses even to V8's escape analysis) and covers
+    the reducer/state-machine fresh-record class generally. Builds on the
+    existing schema/SRoA machinery; the new piece is the array-slot
+    monomorphism proof + identity-unobservability gate (no alias escapes,
+    no ===/Map-key use of the records).
+    SELF-HOST BENCH CASE DNF ROOT-CAUSED (was failing on CI results
+    f4053b6 too, masked in the loss table): MY S2-commit debug hooks in
+    src/type.js used `globalThis.process?.env?.JZ_DBG_*` — a bare
+    `globalThis` read compiles to an env.globalThis import in the
+    self-host build → LinkError. House pattern is `typeof process !==
+    'undefined' && process.env.…` (prep folds it dead) — fixed, case runs
+    again (62.0ms M4, parity ok). watr 5.7.3 adds the missing
+    constant-index br_table → br fold (branch) so chainTable'd dispatches
+    keep folding post-inline like the if-chains they replace.
+    HASH-SLOT PREMISE CORRECTED by the campaign method itself: wordcount.c
+    wins 1.58× with a PLAIN FNV-1a + linear-probe + strcmp table — no
+    SwissTable, no control bytes, same probing topology as jz. The c-wasm
+    gap is per-probe INSTRUCTION COST (24-B seq+key+val entries vs C's
+    lean slots; __ptr_type/offset unbox; cap-forward check; load-factor
+    test placement), not probing strategy — and jz's SSO bit-equal compare
+    is already cheaper than C's strcmp. SwissTable group probing stays
+    relevant ONLY for the V8-row comparison (V8 x64 = SwissTable; 1.22×).
+    Next concrete step: wasm2wat both upsert loops side by side, count the
+    per-probe ops, cut the diff — then re-run wordcount/shapes/dict on M4
+    + CI bench-probe.
     chainTable COUNTER-RESULT (watr 5.7.0, published): dense
     same-scrutinee if/else-if chain → br_table (C's switch lowering,
     result-typed chains br the arm value out) — correct on the vm
