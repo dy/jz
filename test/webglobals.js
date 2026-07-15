@@ -1,5 +1,6 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
+import { onKernel } from './_matrix.js'
 import jz from '../index.js'
 
 const run = (code, opts) => {
@@ -93,6 +94,7 @@ test('crypto.getRandomValues: fills, guards, returns receiver', () => {
 })
 
 test('crypto.randomUUID: v4 shape; randomSeed reproducible', () => {
+  if (onKernel()) return // options channel: kernel compile takes source only (no randomSeed)
   const uuid = run(`export let f = () => crypto.randomUUID()`)
   ok(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(uuid), `v4 shape: ${uuid}`)
   const a = run(`export let f = () => { let a = new Uint8Array(6); crypto.getRandomValues(a); return a }`, { randomSeed: 42 })
@@ -103,6 +105,7 @@ test('crypto.randomUUID: v4 shape; randomSeed reproducible', () => {
 // === queueMicrotask ===
 
 test('queueMicrotask: drains at export boundary, orders with promise jobs', async () => {
+  if (onKernel()) return // async-runtime class (see async.js kernel guards)
   const { exports } = jz(`
     let x = 0
     export let f = () => { queueMicrotask(() => { x = 42 }); return x }
@@ -141,6 +144,7 @@ test('requestAnimationFrame: fires with timestamp; cancel works', async () => {
 })
 
 test('requestAnimationFrame: clean error under wasi', () => {
+  if (onKernel()) return // warnings/err channel class (KERNEL_EXCLUDE 'warnings')
   throws(() => jz(`export let f = () => requestAnimationFrame(() => 1)`, { host: 'wasi' }))
 })
 
@@ -175,6 +179,7 @@ test('URLSearchParams: sort, escaping, inits, iteration', () => {
 // === navigator.hardwareConcurrency ===
 
 test('navigator.hardwareConcurrency: ≥1 on js host; wasi warns + folds to 1', () => {
+  if (onKernel()) return // warnings-sink channel class (KERNEL_EXCLUDE 'warnings')
   ok(run(`export let f = () => navigator.hardwareConcurrency`) >= 1)
   const w = { entries: [] }
   jz(`export let f = () => navigator.hardwareConcurrency`, { host: 'wasi', warnings: w })
