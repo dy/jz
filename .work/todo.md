@@ -127,6 +127,39 @@
     memory OOB, Object.assign unknown-schema, speculate plan-field,
     preeval rational-carry, pow-fold OOB. Feeds the selfhost-workflow
     fix; scratchpad/kernel-bisect.mjs is the harness.
+    2026-07-14/15 SIZE ARC CLOSED — FOUR WINS + TIE, CI-GREEN: typedLen
+    param channel (df1a9600) + watr 5.5.0 intguard family → -Os vs asc
+    -Oz: hash 1164 (0.851), wav 1721 (0.983), base64 1924 (0.9995 — win
+    by ONE byte, watch it), aos 1913 (0.977), sort 1941 (1.027 TIE).
+    sort's last 51 B + medianUs proofs = S2 WHILE-BODY FIXPOINT in
+    scanIntervalIdx (2-round widening, cond refinement incl && descent,
+    record-on-stable-pass; S1 downward-for LANDED) — the named owner.
+    2026-07-15 RFFT ARC (V8 got faster in node 25.9; row was 0.83/0.72):
+    (1) watr 5.6.0 unclamp (speed profile) — surviving select-clamped
+    checked reads → if-forms; transform's 82 clamp selects → 10;
+    interleaved +15.4% rfft / +12.3% cepstrum. (2) versioning-guard
+    OFF-BY-ONE: maxIv used the EXCLUSIVE bound so `maxIv < len` failed
+    exactly when len == bound — every half-spectrum/tail-increment while
+    (cepstrum log fill, medianUs) silently ran the CHECKED arm forever;
+    maxIv is now the true pre-increment max, only genuinely
+    post-increment accesses widen (cand.post; bodies are ';'-sequences
+    not '{}' — the position scan handles both). (3) mirror-lane v128
+    store in tryVectorize (`inp[N−k]` = contiguous DESCENDING → one
+    v128.store at N−k−1 with swapped f64 lanes) — unlocks log_v on
+    symmetric fills. (4) spans, not bounds: `bound & -lanes` assumed a
+    0 entry — a k=1 loop ran its last vector step one lane PAST the
+    bound (caught by the odd-tail pin; masked in rfft only because the
+    source overwrites the Nyquist bin) — ×3 recognizers now align
+    iv + ((bound−iv) & -lanes). NET: rfft 0.83→0.95×, cepstrum
+    0.72→1.05× BEATS V8, unit interleaved 1.52×, bit-exact. Pins:
+    optimizer.js ×3 (mirror guard, len==bound fast arm, downward-for),
+    simd.js ×1 (log_v + swapped shuffle + odd-tail parity).
+    TRIED-AND-REJECTED: hash-table load factor 75→62.5% (one-line grow
+    threshold) — wordcount −5.4% on M4, immutable/shapes neutral; bigger
+    tables cost more than shorter probes buy. EPYC owner unchanged:
+    group probing (SwissTable-style control bytes + v128 group scan) +
+    wordized verify in genSlotUpsert — bench-probe workflow is the
+    EPYC-side verdict instrument.
   * [x] 10 more bench cases - each area covered
   * STATE 2026-07-09 (JSC leg measured): quiet-machine full table, 49 cases ran.
     GEOMEAN: jz beats every engine — V8 1.89x, deno 1.83x, JSC 1.50x, bun 1.52x
