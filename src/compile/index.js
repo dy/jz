@@ -2241,9 +2241,21 @@ export default function compile(ast, profiler) {
         ['global.set', '$__init_done', ['i32.const', 1]])
       sFn.splice(2, 0, ['export', '"_initialize"'])
       if (sDirIdx !== -1) sec.start.splice(sDirIdx, 1)
-      for (const name of wasiCommandExports) {
-        const w = sec.funcs.find(f => Array.isArray(f) && f[1] === `$${name}$wasi`)
-        if (w) w.splice(w.findIndex(n => Array.isArray(n) && n[0] === 'drop'), 0, ['call', '$__start'])
+      // REACTOR self-arming: EVERY exported function (commands and plain
+      // reactor exports alike) ensures init ran. A raw `new WebAssembly.
+      // Instance` embedder that never calls `_initialize` (the reactor
+      // contract wasmtime honors automatically) otherwise runs against
+      // unseeded state — `_clear()` resets the heap from a zero
+      // `__heap_reset` and the next alloc writes out of bounds (the
+      // color-space batch harness). One predicted global check per
+      // boundary call; `__init_done` keeps init exactly-once either way.
+      for (const f of sec.funcs) {
+        if (!Array.isArray(f) || f[0] !== 'func') continue
+        if (!f.some(x => Array.isArray(x) && x[0] === 'export')) continue
+        let at = 2
+        while (at < f.length && Array.isArray(f[at]) &&
+          (f[at][0] === 'export' || f[at][0] === 'param' || f[at][0] === 'result' || f[at][0] === 'local')) at++
+        f.splice(at, 0, ['if', ['i32.eqz', ['global.get', '$__init_done']], ['then', ['call', '$__start']]])
       }
     }
   }

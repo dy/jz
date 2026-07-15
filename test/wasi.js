@@ -456,3 +456,29 @@ test('fs: host js rejects at compile with the wiring hint', () => {
   try { compile('export let f = () => fs.read("x")', { host: 'js' }) } catch (x) { e = x }
   ok(e && /WASI host/.test(e.message), `hint present: ${e?.message?.slice(0, 60)}`)
 })
+
+// REACTOR self-arming: a raw `new WebAssembly.Instance` embedder that never
+// calls `_initialize` (wasmtime does it automatically; plain-JS consumers of
+// the import-free wasi build don't) must still see seeded state — every
+// exported function checks the once-guard. Without it, `_clear()` reset the
+// heap from a zero `__heap_reset` and the next alloc wrote out of bounds
+// (the color-space batch harness, jz 0.9.1 report).
+test('init: exports self-arm without _initialize (raw-instance _clear + grow)', () => {
+  const src = `
+    let buf = new Float64Array(4)   // module-scope init: the start body exists
+    export let alloc = (n) => { buf = new Float64Array(n * 3); return 1 }
+    export let poke = (i, v) => { buf[i] = v; return buf[i] }`
+  const bin = compile(src, { host: 'wasi', optimize: 'speed' })
+  const ex = new WebAssembly.Instance(new WebAssembly.Module(bin), {}).exports
+  ok(!!ex._initialize, 'reactor _initialize exported')
+  // deliberately NO _initialize call
+  if (ex._clear) ex._clear()
+  const f2b = (x) => new BigInt64Array(new Float64Array([x]).buffer)[0]
+  const arg = (x) => { try { ex.alloc.length } catch {} ; return x }
+  const call1 = (fn, a) => { try { return fn(a) } catch (e) { if (/BigInt/.test(e.message)) return fn(f2b(a)); throw e } }
+  const call2 = (fn, a, b) => { try { return fn(a, b) } catch (e) { if (/BigInt/.test(e.message)) return fn(f2b(a), f2b(b)); throw e } }
+  const b2f = (v) => typeof v === 'bigint' ? new Float64Array(new BigInt64Array([v]).buffer)[0] : v
+  is(b2f(call1(ex.alloc, 5000)), 1, 'alloc past one page succeeds')
+  ok(ex.memory.buffer.byteLength > 65536, 'memory grew on demand')
+  is(b2f(call2(ex.poke, 14999, 42)), 42, 'far element writes land')
+})
