@@ -123,6 +123,11 @@ export default function plan(ast, profiler) {
   }
 
   t('narrowSignatures', () => narrowSignatures(programFacts, ast))
+  // Boolean/bigint result kinds for funcs the call-site census can't reach —
+  // value-used-only functions have no direct sites, but their results still
+  // cross boxed positions (closure trampolines, boundary wrappers). Guarded:
+  // only ever SETS an unset valResult (see narrowBoolResults doc).
+  t('narrowBoolResults', () => narrowBoolResults())
   // Pass 2: narrowSignatures has now settled `programFacts.paramReps`, so a
   // global written from a bare parameter alias (`cur = s`, subscript's parse-
   // state shape) resolves — pass 1 saw only an untyped param and poisoned it.

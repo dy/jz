@@ -67,6 +67,7 @@ import {
   valKindToPtr, findBodyStart, tcoTailRewrite,
   boolBoxIR,
   I32_MIN, I32_MAX, dollar,
+  carrierF64,
 } from '../ir.js'
 import plan from './plan/index.js'
 import { foldStaticConstAggregates } from './plan/literals.js'
@@ -395,6 +396,7 @@ function enterFunc(sig, body, { uniq = 0, directClosures = null } = {}) {
   ctx.func.uniq = uniq
   ctx.func.current = sig
   ctx.func.body = body
+  ctx.func.boxedResult = false        // closure-convention bodies set true after enterFunc (ftN boxed result)
   ctx.func.directClosures = directClosures
   ctx.func.localProps = null
   ctx.func.charDecomp = null
@@ -1530,6 +1532,9 @@ function emitClosureBody(cb) {
     uniq: Math.max(ctx.func.uniq, 100),
     directClosures: cb.directClosures ? new Map(cb.directClosures) : null,
   })
+  // The ftN f64 result is a boxed-value position: `return <bool>` must cross
+  // as the true/false atom (emit.js 'return' consults this; enterFunc clears it).
+  ctx.func.boxedResult = true
 
   const fn = ['func', `$${cb.name}`]
   fn.push(['param', '$__env', 'f64'])
@@ -1613,7 +1618,7 @@ function emitClosureBody(cb) {
     }
     bodyIR = emitBlockBody(cb.body)
   } else {
-    bodyIR = [asF64(emit(cb.body))]
+    bodyIR = [carrierF64(cb.body, emit(cb.body))]
   }
 
   // Pre-allocate cache locals for env unpacking

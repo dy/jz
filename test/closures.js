@@ -1376,3 +1376,35 @@ test('closures: union local + typeof/isFinite/Object.is guard prints WAT-style t
   is(r.outer(-Infinity), '-inf')
   is(r.outer(-0), '-0')
 })
+
+test('boolean identity survives every closure-ABI result position', () => {
+  // The ftN f64 result is a boxed-value slot: bool results must cross as the
+  // true/false ATOM, not 0/1 — through the fn-as-value trampoline (lifted
+  // function held in a field), through =>-closure bodies (expression and
+  // block), and out to the host (arrays of bools decode as booleans).
+  const t = (src) => jz(src).exports.f()
+  is(t(`let g = () => true
+let o = { m: undefined }
+o.m = g
+export let f = () => o.m() === true`), true)
+  is(t(`let o = { m: undefined }
+o.m = (x) => x > 1
+export let f = () => o.m(5) === true && typeof o.m(5) === 'boolean'`), true)
+  is(t(`let o = { m: undefined }
+o.m = (x) => { return x > 1 }
+export let f = () => o.m(1) === false`), true)
+  is(t(`let flag = true
+let o = { m: undefined }
+o.m = () => flag
+export let f = () => o.m() === true`), true)
+  // numeric results keep the plain lane (no boxing tax, no value change)
+  is(t(`let o = { m: undefined }
+o.m = (x) => x * 2
+export let f = () => o.m(21)`), 42)
+  // host boundary: bools inside a returned array decode as booleans
+  const { exports, memory } = jz(`let o = { m: undefined }
+o.m = (x) => x > 1
+export let f = () => [o.m(5), o.m(0)]`)
+  const arr = memory.read(exports.f())
+  ok(arr[0] === true && arr[1] === false, `decoded [${arr}]`)
+})

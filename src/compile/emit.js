@@ -3274,7 +3274,13 @@ export const emitter = {
     // to a local first" — pinned in test/parser-bugs.js rather than chased further into
     // the kernel's own call/branch codegen. See .work/todo.md (groundtruth archive).
     const emitted = emit(expr)
-    const ir = pk != null ? asPtrOffset(emitted, pk) : asParamType(emitted, rt)
+    // Closure-convention bodies return into a boxed-value position (the ftN f64
+    // slot): a BOOL value must cross as its true/false atom — the result-side
+    // mirror of closure.call's carrierF64 args. Raw funcs keep the plain 0/1
+    // (their direct callers read valResult; boundary/trampoline rebox).
+    const ir = pk != null ? asPtrOffset(emitted, pk)
+      : (ctx.func.boxedResult && rt === 'f64') ? carrierF64(expr, emitted)
+      : asParamType(emitted, rt)
     const ty = pk != null ? 'i32' : rt
     const tcoed = tcoTailRewrite(ir, ty)
     if (Array.isArray(tcoed) && tcoed[0] === 'return_call' && finalizers.length === 0) {
@@ -4665,13 +4671,20 @@ export function emit(node, expect) {
           // number, silently losing the pointer (a Map came back as e.g. 480360.0,
           // so a caller's `for…of`/`.size` saw a number and read nothing).
           const ptrResult = func?.sig.ptrKind != null
+          // A BOOL-result func carries 0/1 in its raw ABI; the closure ABI is a
+          // boxed-value position, so rebox to the true/false ATOM — the exact
+          // mirror of the boundary wrapper (index.js resultBool). Without it a
+          // field-held function's `=== true` / typeof observed a plain number.
+          const boolResult = !ptrResult && func?.valResult === VAL.BOOL
           const wrapped = ptrResult
             ? `(call $__mkptr (i32.const ${valKindToPtr(func.sig.ptrKind)}) (i32.const ${func.sig.ptrAux ?? 0}) ${callExpr})`
-            : resType === 'i32'
-              ? (func.sig.unsignedResult ? `(f64.convert_i32_u ${callExpr})` : `(f64.convert_i32_s ${callExpr})`)
-              : resType === 'i64'
-                ? `(f64.reinterpret_i64 ${callExpr})`
-                : callExpr
+            : boolResult
+              ? `(select (f64.const nan:${TRUE_NAN}) (f64.const nan:${FALSE_NAN}) ${resType === 'i32' ? `(i32.ne ${callExpr} (i32.const 0))` : `(f64.ne ${callExpr} (f64.const 0))`})`
+              : resType === 'i32'
+                ? (func.sig.unsignedResult ? `(f64.convert_i32_u ${callExpr})` : `(f64.convert_i32_s ${callExpr})`)
+                : resType === 'i64'
+                  ? `(f64.reinterpret_i64 ${callExpr})`
+                  : callExpr
           ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) ${restLocals}${restPrelude}${wrapped})`
           inc(trampolineName, ...(ptrResult ? ['__mkptr'] : []), ...(restIdx >= 0 ? ['__alloc_hdr', '__mkptr'] : []))
         }
