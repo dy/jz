@@ -3281,3 +3281,94 @@ test('interval walk: downward for-loop proves its reads', () => {
   const { exports } = jz(src, { memory: 64 })
   is(exports.go(), 63 * 64 / 2, 'reverse scan sums exact')
 })
+
+// `&&`-cond while versioning: the LZ match scan `while (len < max &&
+// src[j+len] === src[ip+len]) len++` — the countable bound is the LEFTMOST
+// conjunct; the comparison conjunct short-circuits after it, so its accesses
+// run only at iv < bound (exact pre-increment extents) and can only exit the
+// loop early. The fast arm compares raw bytes (no checked-read undef arms in
+// the scan loop); a bound-not-first shape stays fully checked (fail-closed).
+test('versioning: &&-cond match-scan while takes the fast arm', () => {
+  const src = `
+    const scan = (src, n) => {
+      let best = 0
+      for (let ip = 1; ip < n; ip++) {
+        let maxLen = n - ip
+        if (maxLen > 18) maxLen = 18
+        for (let j = ip - 1; j >= 0; j--) {
+          let len = 0
+          while (len < maxLen && src[j + len] === src[ip + len]) len++
+          if (len > best) best = len
+        }
+      }
+      return best
+    }
+    export let go = (n) => {
+      const buf = new Uint8Array(64)
+      for (let i = 0; i < 64; i++) buf[i] = (i * 7) & 15
+      return scan(buf, n | 0)
+    }`
+  const wat = jz.compile(src, { optimize: 'speed', wat: true })
+  // a fast-arm scan loop exists: byte loads + eq with NO undef else-arm inside
+  const loops = [...wat.matchAll(/\(loop \$[^\s)]+[\s\S]*?i32\.load8_u[\s\S]*?i32\.load8_u[\s\S]*?br(_if)? \$/g)].map(m => m[0])
+  ok(loops.length >= 1, 'byte-compare loops exist')
+  ok(loops.some(l => !/nan:0x7FF8000200000000/.test(l)),
+    'a versioned match-scan body compares raw bytes (no checked-read undef arm)')
+  const { exports } = jz(src)
+  // period-16 ramp: maxLen-capped 18-byte matches exist → best = min(18, …)
+  const jsScan = (buf, n) => {
+    let best = 0
+    for (let ip = 1; ip < n; ip++) {
+      let maxLen = Math.min(n - ip, 18)
+      for (let j = ip - 1; j >= 0; j--) {
+        let len = 0
+        while (len < maxLen && buf[j + len] === buf[ip + len]) len++
+        if (len > best) best = len
+      }
+    }
+    return best
+  }
+  const buf = new Uint8Array(64)
+  for (let i = 0; i < 64; i++) buf[i] = (i * 7) & 15
+  is(exports.go(64), jsScan(buf, 64), 'match lengths bit-match JS (full)')
+  is(exports.go(17), jsScan(buf, 17), 'match lengths bit-match JS (short n)')
+})
+
+test('versioning: bound-not-first &&-cond stays checked (fail-closed)', () => {
+  // access conjunct BEFORE the bound: it evaluates at iv == bound too — the
+  // tight guard would under-cover, so the shape must not version at all.
+  const src = `
+    export let go = (n) => {
+      const a = new Uint8Array(8)
+      for (let i = 0; i < 8; i++) a[i] = i
+      let len = 0
+      while (a[len] < 6 && len < n) len++
+      return len * 10 + (a[len] | 0)
+    }`
+  const wat = jz.compile(src, { optimize: 'speed', wat: true })
+  const go = wat.slice(wat.indexOf('(func $go'))
+  ok(/nan:0x7FF8000200000000/.test(go), 'checked reads survive (no fast twin assumed)')
+  const { exports } = jz(src)
+  is(exports.go(100), 60 + 6, 'stops at a[6]=6 (checked semantics exact)')
+  is(exports.go(3), 30 + 3, 'bound conjunct still exits at n')
+})
+
+test('versioning: ||-cond never versions (accesses run past the bound)', () => {
+  // `while (len < n || a[len] < 9)` evaluates the access exactly when the
+  // bound conjunct is FALSE (len ≥ n) — no extent is implied; the shape must
+  // keep checked reads (only && chains with a leftmost bound may version).
+  const src = `
+    export let go = (n) => {
+      const a = new Uint8Array(8)
+      for (let i = 0; i < 8; i++) a[i] = i
+      let len = 0
+      while (len < n || a[len] < 3) len++
+      return len
+    }`
+  const wat = jz.compile(src, { optimize: 'speed', wat: true })
+  const go = wat.slice(wat.indexOf('(func $go'))
+  ok(/nan:0x7FF8000200000000/.test(go), '||-cond keeps checked reads')
+  const { exports } = jz(src)
+  is(exports.go(1), 3, 'runs past the bound conjunct until a[len] ≥ 3 (checked semantics)')
+  is(exports.go(6), 6, 'bound-first exit exact')
+})

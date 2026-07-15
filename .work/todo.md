@@ -272,6 +272,32 @@
     Next concrete step: wasm2wat both upsert loops side by side, count the
     per-probe ops, cut the diff — then re-run wordcount/shapes/dict on M4
     + CI bench-probe.
+    LZ WON — &&-COND WHILE VERSIONING (2026-07-15, the campaign's unit 3,
+    the "symbolic-sum bounds" owner resolved WITHOUT a relational domain):
+    the LZ match scan `while (len < maxLen && src[j+len] === src[ip+len])
+    len++` needed j+len < srcLen from len < maxLen ≤ n−ip ∧ j < ip — but
+    the EXISTING loop-versioning machinery (versionableTypedFor) already
+    expresses it as affine extents (j + maxIv < srcLen, maxIv = maxLen−1);
+    it just refused &&-conds and never scanned cond accesses. Extension
+    (src/type.js): the countable bound must be the LEFTMOST conjunct —
+    later conjuncts short-circuit AFTER it, so their accesses run only at
+    iv < bound (EXACT pre-increment extents, forcePre) and a false
+    conjunct only exits early (iv range never grows); rest conjuncts are
+    scanned for candidates AFTER the body so a shared-key post-increment
+    body access keeps its wider extent; the nest scan's sibling-decl
+    entryHint sees through the && spine (condIvName). Bound-not-first
+    shapes (`while (a[len] < 6 && len < n)`) reject outright — the access
+    evaluates at iv == bound, fail-closed to fully-checked (pinned).
+    M4 QUIET VERDICT (cs=2900100982 exact): lz 12.18 ms — LEADS c-wasm
+    14.81 (1.22×) and V8 23.32 (1.92×); the pre-wave "1.71× behind" M4
+    reading and the earlier 67 ms c-wasm number were suite-load-
+    contended — quiet ratio moved ~2× on jz's side (the per-byte checked-
+    read battery died: 2 lt_u+select+undef per compare → raw load8+eq).
+    Family quiet table: qoi 10.68 vs c 9.22 (1.16×), base64 4.06 vs 3.59
+    (1.13×) — tail-class, both beat V8. -Os rows byte-identical (speed-
+    tier pass). Corpus sweep parity ok (conv2d/fft/blur/mandelbrot/vm/
+    wav/crc32/sort/tokenizer/noise). Pins: test/optimizer.js ×2 (fast-arm
+    raw byte compare + values at n=64/17; bound-not-first fail-closed).
     IMMUTABLE WON — ARRAY-OF-RECORDS FLATTENING LANDED (2026-07-15, the
     campaign's unit 2): the structInline carrier existed (Array<S> as K
     inline f64 cells) but REFUSED the immutable idiom at exactly one

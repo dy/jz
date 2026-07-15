@@ -271,9 +271,24 @@ export function bodyAffineEnv(body, iv) {
  *    DROPPED (its first iterations are genuinely OOB — the checked form is the
  *    semantics, a guard would just always fail). */
 export function versionableTypedFor(init, cond, step, body, locals, entryHint = null) {
-  if (!Array.isArray(cond) || (cond[0] !== '<' && cond[0] !== '<=') || typeof cond[1] !== 'string') return null
+  // `&&`-cond whiles (`while (len < max && src[j+len] === src[ip+len]) len++`
+  // — the LZ match scan): the countable bound must be the LEFTMOST conjunct.
+  // Every later conjunct short-circuits AFTER it, so its accesses run only at
+  // iv < bound (exactly the pre-increment extent), and a false conjunct only
+  // exits the loop EARLY — the iv range never grows. The rest conjuncts ride
+  // into both arms verbatim; their typed accesses are candidates (scanned
+  // after the body so a same-key BODY access — possibly post-increment, wider
+  // — registers its extent first).
+  let condRest = null
+  let c = cond
+  while (Array.isArray(c) && c[0] === '&&' && Array.isArray(c[1])) {
+    condRest = condRest == null ? c[2] : ['&&', c[2], condRest]   // scan-only bag
+    c = c[1]
+  }
+  if (!Array.isArray(c) || (c[0] !== '<' && c[0] !== '<=') || typeof c[1] !== 'string') return null
   if (containsNestedClosure(body)) return null
-  const iv = cond[1], incl = cond[0] === '<='
+  if (condRest != null && containsNestedClosure(condRest)) return null
+  const iv = c[1], incl = c[0] === '<='
   if (redeclaresName(body, iv)) return null
   // iv start: a static init decl (`for (let i = 0; …)`) folds the lo conjunct;
   // otherwise (while-shapes: `let i = 0; while (i < n) …`) the guard reads the
@@ -351,7 +366,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     if (L == null || L < 1 || !Number.isInteger(L)) return null
     bump = L
   } else return null
-  const bound = cond[2]
+  const bound = c[2]
   // bKind drives the guard's conversion to a max-iv i64:
   //   'i32' — literal, i32-machine name, or a typed receiver's .length: exact extend;
   //   'f64' — any other stable name (an untyped param, a NaN-boxed unknown): the
@@ -387,7 +402,10 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     }
   }
   let scanTop = -1   // current top-level statement index during scan
-  const isPost = () => bump > 0 && (ivWriteAt === -1 || scanTop === -1 || scanTop >= ivWriteAt)
+  // cond-rest accesses are exactly pre-increment: short-circuit order proves
+  // they evaluate only when `iv < bound` already held this iteration
+  let forcePre = false
+  const isPost = () => !forcePre && bump > 0 && (ivWriteAt === -1 || scanTop === -1 || scanTop >= ivWriteAt)
   const scan = (n) => {
     if (!Array.isArray(n)) return
     if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[1] !== iv
@@ -429,6 +447,9 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     for (let s = 1; s < body.length; s++) { scanTop = s; scan(body[s]) }
     scanTop = -1
   } else scan(body)
+  // `&&`-cond rest conjuncts — scanned AFTER the body so a shared-key body
+  // access (potentially post-increment, wider extent) wins the seen-set
+  if (condRest != null) { forcePre = true; scan(condRest); forcePre = false }
   // typeof-process guard, not globalThis.process — a bare `globalThis` read
   // compiles to an env.globalThis import in the self-host build; typeof folds dead
   if (typeof process !== 'undefined' && process.env.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, 'bump', bump, 'ivWriteAt', ivWriteAt, 'body0', Array.isArray(body) ? body[0] : typeof body, cands.slice(0,4).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : ':aff') + (c.post ? ':POST' : '')).join(' '))
@@ -449,6 +470,14 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
  *    top body (redeclaresName catches inner decls — a per-row offset slot must
  *    not be read before its row exists). Unliftable levels simply keep their own
  *    inner versioning during arm emission — graceful degradation, not a bail. */
+/** The countable-iv name of a (possibly `&&`-chained) loop cond — the leftmost
+ *  conjunct's lhs. Feeds the sibling-decl entryHint lookup for while-shapes. */
+const condIvName = (cnd) => {
+  let c = cnd
+  while (Array.isArray(c) && c[0] === '&&' && Array.isArray(c[1])) c = c[1]
+  return Array.isArray(c) && (c[0] === '<' || c[0] === '<=') && typeof c[1] === 'string' ? c[1] : null
+}
+
 export function versionableTypedNest(init, cond, step, body, locals) {
   if (containsNestedClosure(body)) return null
   const levels = []
@@ -501,8 +530,8 @@ export function versionableTypedNest(init, cond, step, body, locals) {
           continue
         }
         if (Array.isArray(st) && st[0] === 'while' && st.length === 3
-            && Array.isArray(st[1]) && typeof st[1][1] === 'string') {
-          walkLoop(null, st[1], null, st[2], lastDecls.get(st[1][1]) ?? null, false)
+            && Array.isArray(st[1]) && condIvName(st[1]) != null) {
+          walkLoop(null, st[1], null, st[2], lastDecls.get(condIvName(st[1])) ?? null, false)
         } else if (Array.isArray(st) && st[0] === 'for' && st.length === 5) {
           walkLoop(st[1], st[2], st[3], st[4], null, false)
         } else scanStmts(st)
