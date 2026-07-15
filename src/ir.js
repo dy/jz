@@ -835,7 +835,7 @@ export const cloneIR = (n) => Array.isArray(n) ? n.map(cloneIR) : n
  *  anything else → itself. `valIR` must be side-effect-free (a local read) — it is duplicated,
  *  so each occurrence gets a fresh clone. Used for bindings flagged in ctx.func.maybeNullish;
  *  a real number isn't either sentinel, so it falls through the `else` unchanged. */
-const coerceNullishToNum = (valIR) => typed(
+export const coerceNullishToNum = (valIR) => typed(
   ['if', ['result', 'f64'],
     ['i64.eq', ['i64.reinterpret_f64', cloneIR(valIR)], ['i64.const', NULL_NAN]],
     ['then', ['f64.const', 0]],
@@ -857,6 +857,26 @@ export function toNumF64(node, v) {
   // not a number — skipping coercion would reinterpret pointer bits as an f64.
   // Only a plain i32 (loop counter, `x|0`) is genuinely already-numeric.
   if ((v.type === 'i32' && v.ptrKind == null) || isLit(v)) return asF64(v)
+  // Checked typed-array read (`.typed:[]` tags checkedNumRead): number|undefined
+  // with the undefined confined to a CONSTANT miss arm. ToNumber of that arm
+  // folds statically (undefined → canonical NaN) — the hit arm is already a
+  // plain-number load. Without the fold the UNDEF sentinel enters f64 arithmetic
+  // as a "number" (valTypeOf claims NUMBER from the ELEMENT type, blind to the
+  // OOB path — checked BEFORE the vt fast-outs below for exactly that reason),
+  // and hardware NaN propagation carries its PAYLOAD to the escape, where the
+  // boundary decodes it back as `undefined` (JS: NaN).
+  if (v.checkedNumRead && Array.isArray(v)) {
+    const foldArm = (n) => Array.isArray(n) && n[0] === 'f64.const' && n[1] === `nan:${UNDEF_NAN}`
+      ? ['f64.const', 'nan'] : n
+    if (v[0] === 'if')   // (if (result f64) cond (then load) (else UNDEF))
+      return typed(v.map(c => Array.isArray(c) && c[0] === 'else' && c.length === 2
+        ? ['else', foldArm(c[1])] : c), 'f64')
+    if (v[0] === 'block') {   // (block (result f64) …sets (select load UNDEF in))
+      const tail = v[v.length - 1]
+      if (Array.isArray(tail) && tail[0] === 'select')
+        return typed([...v.slice(0, -1), ['select', tail[1], foldArm(tail[2]), tail[3]]], 'f64')
+    }
+  }
   // A binding assigned a nullish literal may hold null/undefined here — coerce per ToNumber
   // (null→+0, undefined→NaN); a real number falls through unchanged. Only flagged bindings pay
   // this, so the numeric kernels jz optimizes for (which never assign null) stay untouched.

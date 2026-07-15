@@ -58,6 +58,7 @@ const TESTS = [
   'slot-hazards',
   'never-grown',
   'bool-identity',
+  'abrupt-oob',
   'hoist-loop-global',
   'iteration',
   'slp',

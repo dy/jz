@@ -160,6 +160,61 @@
     group probing (SwissTable-style control bytes + v128 group scan) +
     wordized verify in genSlotUpsert — bench-probe workflow is the
     EPYC-side verdict instrument.
+    2026-07-15 MISCOMPILE FAMILY (found by S2 probes, ALL SHIPPED at every
+    opt level, 20/20 probe battery now green): (1) ABRUPT-EDGE EXIT STATES —
+    the interval walk published fall-through-only exit states; a `break`
+    (also labeled, do/for-of, switch-select, try-throw) reaches the exit
+    with a mid-body state → post-loop `a[x]` emitted RAW → trap/wrong-value.
+    Fix: loop frames snapshot env at break/continue, exits/back-edges hull
+    them in; kill-class constructs (do/for-of/for-in/label/switch/try +
+    the LOWERED 'catch'/'finally' the walk actually receives) walk each
+    child from the killed entry state and exit at it. (2) watr deadset was
+    try_table-BLIND (straight-line scan reached the killer store through
+    the call→catch edge; `x=1e6; try{throw; x=0}catch; get x` returned 0)
+    — 5.6.1 published: catch continuations must prove 'set' at try entry
+    AND for candidates inside; throw/throw_ref/rethrow are terminal.
+    (3) SENTINEL→NaN: checked f64 reads yield the UNDEF sentinel in the
+    miss arm; hardware NaN propagation carries the PAYLOAD through
+    f64 arithmetic to the boundary → `s + a[OOB]` decoded as undefined
+    (JS: NaN). Fix at the producer/consumer seam: `.typed:[]` tags
+    checkedNumRead; toNumF64 folds the miss arm statically (undefined→
+    canonical nan, BEFORE the valTypeOf NUMBER fast-out, which claims the
+    element type and is blind to the OOB path) — zero hot-path cost;
+    f64 typed stores route the RHS through toNumF64 (spec ToNumber;
+    provably-numeric RHS byte-identical); scalarized f64 slots coerce via
+    `u+`; uninit `let` flags maybeNullish UNLESS firstRefKind proves the
+    first evaluation-order ref is an unconditional write (both-arm if/
+    ternary joins count — ast.js firstRefKind; the blanket flag broke the
+    mandelbrot escape recognizer via canon selects on setView's
+    both-arms-assigned locals). (4) scalarization pushed unsafe-for-a
+    statements RAW, skipping slot rewrites for OTHER arrays in them
+    (`b[0] = a[i]` referenced dissolved `b` → compile error).
+    2026-07-15 S2 COMPLETE — the for-body adoption + the REAL mechanism:
+    the old kill+walk never killed STEP writes, so `for (; op+3 <= N;
+    op += 3)` leaked iteration-1 flow state into proofs that were only
+    runtime-safe because the cond bounds the index. The fixpoint now
+    DERIVES that bound: widening join (escaping bound → ±IP_LIM),
+    cond-∩ escape check (the back edge re-evaluates the condition),
+    affine refine (`name ± c ⋚ K`, rhs = any access-free singleton incl
+    `src.length|0`), strided transfer (`x += K`/`--` compute instead of
+    null), canonical-for body-end exit gated on proven ≥1 trip. The
+    strided-cursor invariant class (op ∈ [0, N−3]) erased whole checked
+    families: sort 1941→1814 (0.96 WIN — ratcheted), wav 1721→1646,
+    base64 1924→1847 (1-byte squeak → comfortable), hash 1164→1086,
+    aos 1913→1894. medianUs insertion scan proven corpus-wide.
+    PULL-CHAIN AUDIT ANSWERED (color-space __to_str): kernel fns'
+    untyped-param arithmetic → toNumF64 t==t + __to_num cold call →
+    __to_num's spec fallback (module/number.js: non-string pointers go
+    ToString per ToNumber(ToPrimitive)) statically deps __to_str → its
+    number arm IS the Ryū printer (~28 kB riding a cold diagnostic arm).
+    Levers, unimplemented: (a) boundary-owns-coercion — the JS export
+    wrapper ToNumbers f64-lane args host-side (exact, zero wasm bytes),
+    in-module params become provably numeric, chain severed; (b) split
+    __to_num's non-string-pointer arm into __to_num_obj included only
+    when object/array values can reach a ToNumber site. Also latent,
+    recorded: scalarized f64 compound `slot += "3"` string-RHS edge;
+    zero-trip body-end exit predates S2 for non-canonical loops (now
+    GATED on proven trip ≥ 1 — strictly sounder than shipped).
   * [x] 10 more bench cases - each area covered
   * STATE 2026-07-09 (JSC leg measured): quiet-machine full table, 49 cases ran.
     GEOMEAN: jz beats every engine — V8 1.89x, deno 1.83x, JSC 1.50x, bun 1.52x

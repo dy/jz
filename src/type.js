@@ -1008,15 +1008,34 @@ function scanIntervalIdx(body, out, lens, ranges) {
     else if (op === '%' && B[0] === B[1] && B[0] > 0 && A[0] >= 0) r = [0, Math.min(A[1], B[0] - 1)]
     return ipOk(r) ? r : null
   }
-  // condition refinement for if-arms: `name < K` / `name >= K` … over a known name
+  // condition refinement for if-arms: `name < K` / `name >= K` … over a known name.
+  // The lhs also admits the AFFINE form `name ± c` (`inl_i + 3 <= N` — the strided
+  // codec cursors): the comparison re-biases to `name OP K∓c`. The rhs admits any
+  // ACCESS-FREE expression the evaluator folds to a singleton (`src.length | 0`).
+  const pureExpr = (e) => {
+    if (!Array.isArray(e)) return true
+    if (e[0] === '[]' || e[0] === '()' || e[0] === 'new' || e[0] === '?:' || e[0] === '=' || ASSIGN_OPS.has(e[0])) return false
+    for (let k = 1; k < e.length; k++) if (!pureExpr(e[k])) return false
+    return true
+  }
   const refine = (c, negate) => {
     if (!Array.isArray(c) || c.length !== 3) return null
     let [op, l, r] = c
-    // rhs: an int literal/module const, or a body-known SINGLETON interval (`xi >= ww`
-    // where `const ww = 64|0` is function-local)
+    // rhs: an int literal/module const, a body-known SINGLETON interval (`xi >= ww`
+    // where `const ww = 64|0` is function-local), or a folded access-free expression
     const rE = typeof r === 'string' ? env.get(r) : null
-    const rv = constInt(r) ?? (rE && rE[0] === rE[1] ? rE[0] : null)
-    if (typeof l !== 'string' || rv == null) return null
+    let rv = constInt(r) ?? (rE && rE[0] === rE[1] ? rE[0] : null)
+    if (rv == null && Array.isArray(r) && pureExpr(r)) {
+      const rr = ev(r)
+      if (rr && rr[0] === rr[1]) rv = rr[0]
+    }
+    if (rv == null) return null
+    if (Array.isArray(l) && l.length === 3 && (l[0] === '+' || l[0] === '-')) {
+      const cR = intLiteralValue(l[2]), cL = intLiteralValue(l[1])
+      if (typeof l[1] === 'string' && cR != null) { rv = l[0] === '+' ? rv - cR : rv + cR; l = l[1] }
+      else if (l[0] === '+' && typeof l[2] === 'string' && cL != null) { rv = rv - cL; l = l[2] }
+    }
+    if (typeof l !== 'string') return null
     const K = rv, v = env.get(l)
     if (!v) return null
     if (negate) op = op === '<' ? '>=' : op === '<=' ? '>' : op === '>' ? '<=' : op === '>=' ? '<'
@@ -1041,6 +1060,20 @@ function scanIntervalIdx(body, out, lens, ranges) {
     }
     for (let k = 1; k < n.length; k++) killAssigned(n[k])
   }
+  // ABRUPT EDGES. A `break` reaches the loop's exit — and a `continue` its back
+  // edge — carrying the flow state AT the statement, which the fall-through walk
+  // never sees (`if (c) { x = BIG; break } x = 0` exits with x = BIG). Loop walks
+  // push a frame; break/continue snapshot env into it; exits/joins hull the
+  // snapshots in. Bare break binds to the innermost frame (a `switch` frame
+  // swallows it); bare continue to the innermost LOOP frame; labeled forms can
+  // cross any number of frames, so they conservatively feed every open one.
+  const loopStack = []   // { kind: 'loop' | 'switch', breaks: [], continues: [] }
+  const hullInto = (snap) => {
+    for (const k2 of new Set([...env.keys(), ...snap.keys()])) {
+      const a = env.get(k2), b = snap.get(k2)
+      env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
+    }
+  }
   // LOOP BODY FIXPOINT (2-round widening). Pass A walks from the ENTRY state
   // (∩ cond) and yields the back-edge state; the JOIN hulls entry with it (a
   // name known on only one edge → null); pass B re-walks from join∩cond and
@@ -1049,30 +1082,61 @@ function scanIntervalIdx(body, out, lens, ranges) {
   // loop invariant. `seedFn` re-applies body-independent theorems (canonical
   // iv ranges, wrap cursors) each pass; `condNode` refines at body top,
   // descending `&&` (both conjuncts hold when the loop is entered).
-  const loopFixpoint = (seedFn, walkFn, condNode) => {
+  const loopFixpoint = (seedFn, walkFn, condNode, exitBodyEnd = false) => {
     const refineAll = (c2) => Array.isArray(c2) && c2[0] === '&&'
       ? [...refineAll(c2[1]), ...refineAll(c2[2])]
       : (() => { const r = refine(c2, false); return r ? [r] : [] })()
     const applyCond = () => { if (condNode != null) for (const r of refineAll(condNode)) if (!closureWrites.has(r[0])) env.set(r[0], r[1]) }
     const restore = (m) => { env.clear(); for (const [k2, v2] of m) env.set(k2, v2) }
+    // every pass walks under a loop frame: continue edges are back-edges too,
+    // so their snapshots hull into the pass-end state before any join/verify
+    const walkPass = () => {
+      const lc = { kind: 'loop', breaks: [], continues: [] }
+      loopStack.push(lc); walkFn(); loopStack.pop()
+      for (const s of lc.continues) hullInto(s)
+      return lc
+    }
     const entryEnv = new Map(env)
     const prevRec = recording
     recording = false
-    seedFn(); applyCond(); walkFn()                     // pass A: discovery
+    seedFn(); applyCond(); walkPass()                   // pass A: discovery
+    // WIDENING JOIN: an escaping bound widens to the i32 extreme instead of the
+    // one-step hull — the pass-B seed's cond refinement then clamps it to the
+    // loop bound. This is what turns `for (; x + 3 <= N; x += 3)` into the
+    // invariant x ∈ [0, N−3] (the strided-accumulator class) rather than
+    // null: hull(entry, one step) can never contain step №2, so without the
+    // widen every advancing cursor escapes to unknown.
     const joined = new Map()
     for (const k2 of new Set([...entryEnv.keys(), ...env.keys()])) {
       const a = entryEnv.get(k2), b = env.get(k2)
-      joined.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
+      joined.set(k2, a && b
+        ? [b[0] < a[0] ? -IP_LIM : Math.min(a[0], b[0]), b[1] > a[1] ? IP_LIM : Math.max(a[1], b[1])]
+        : null)
     }
-    restore(joined); seedFn(); applyCond(); walkFn()    // pass B: verify
+    restore(joined); seedFn(); applyCond(); walkPass()  // pass B: verify
+    // the back edge re-evaluates the condition before re-entering the body, so
+    // the state to verify against the invariant is walk-end ∩ cond
+    applyCond()
     for (const [k2, v2] of env) {
       const j = joined.get(k2)
       if (!(v2 && j && v2[0] >= j[0] && v2[1] <= j[1])) joined.set(k2, null)
     }
     recording = prevRec
     restore(joined); seedFn(); applyCond()
-    walkFn()                                            // FINAL: record on the stable env
-    restore(joined)
+    const lcF = walkPass()                              // FINAL: record on the stable env
+    // exit state:
+    //  - default: the invariant (joined) — sound for any trip count.
+    //  - exitBodyEnd (caller proved ≥1 trip): the final walk's BODY-END state —
+    //    tighter for defined-every-iteration names (an inlined preamble's
+    //    `inl_i = 0` keeps [0,0] where the join would null it), and sound
+    //    because the walk ran from the verified invariant, so its end state
+    //    covers every real last-iteration state. Zero-trip loops must NOT use
+    //    it: their real exit is the ENTRY state, which body-end doesn't cover.
+    if (!exitBodyEnd) restore(joined)
+    // ∪ break-edge states (a break bypasses the loop condition and reaches the
+    // exit mid-body; the caller's tighter iv/wrap exit forms stay sound — each
+    // is an every-point invariant that covers break states)
+    for (const s of lcF.breaks) hullInto(s)
   }
   const visit = (n) => {
     if (!Array.isArray(n) || n[0] === '=>') return
@@ -1118,12 +1182,41 @@ function scanIntervalIdx(body, out, lens, ranges) {
     if (ASSIGN_OPS.has(op) || op === '++' || op === '--') {
       if (typeof n[1] === 'string' && symEnv.get(n[1])?.incNode === n) symEnv.delete(n[1])
       for (let k = 2; k < n.length; k++) visit(n[k])
-      if (typeof n[1] === 'string') env.set(n[1], null)
+      if (typeof n[1] === 'string') {
+        // `x += K` / `x -= K` / `x++` / `x--` transfer exactly — a strided
+        // accumulator keeps a computable back-edge for the loop fixpoint
+        // (cond-clamped by the widening join); anything else is unknown
+        const cur = env.get(n[1])
+        let nv = null
+        if (cur) {
+          if (op === '++') nv = [cur[0] + 1, cur[1] + 1]
+          else if (op === '--') nv = [cur[0] - 1, cur[1] - 1]
+          else if (op === '+=' || op === '-=') {
+            const d = ev(n[2])
+            if (d) nv = op === '+=' ? [cur[0] + d[0], cur[1] + d[1]] : [cur[0] - d[1], cur[1] - d[0]]
+          }
+        }
+        setEnv(n[1], nv)
+      }
       else {
         visit(n[1])   // records the member-write access proof (`out[idx] = …`)
         if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.') {
           const s = new Set(); collectNames(n[1], s); for (const x of s) env.set(x, null)
         }
+      }
+      return
+    }
+    if (op === 'break' || op === 'continue') {
+      if (typeof n[1] === 'string') {   // labeled: may cross frames — feed every open one
+        for (const fr of loopStack) if (fr.kind === 'loop') { fr.breaks.push(new Map(env)); fr.continues.push(new Map(env)) }
+      }
+      else if (op === 'break') {
+        const fr = loopStack[loopStack.length - 1]
+        if (fr && fr.kind === 'loop') fr.breaks.push(new Map(env))
+      }
+      else {
+        const fr = loopStack.findLast(f => f.kind === 'loop')
+        if (fr) fr.continues.push(new Map(env))
       }
       return
     }
@@ -1150,18 +1243,22 @@ function scanIntervalIdx(body, out, lens, ranges) {
           range = down ? [cond[0] === '>' ? B + 1 : B, A] : [A, cond[0] === '<' ? B - 1 : B]
         }
       }
-      // NOTE(S2, next unit): wiring loopFixpoint here (like `while` below)
-      // regressed base64/hash/aos -Os by 50-130 B — in-body defined-before-use
-      // singleton chains (`inl_i = 0; src[inl_i]…` from inlined/peeled
-      // preambles) lose their flow-sensitive proofs through the join. The
-      // fixpoint needs def-dominated reads exempted from the entry join before
-      // the for-body can adopt it; heapsort's `child` chains (sort's last
-      // 51 B) sit behind exactly that. Trace: JZ_DBG_IP on base64 —
-      // src[inl6_i(+1|+2)] [0,0]/[1,1]/[2,2] → null.
-      killAssigned(lbody)
-      if (iv && range[0] <= range[1] && !closureWrites.has(iv)) env.set(iv, range)
-      else if (iv) env.set(iv, null)
-      visit(lbody)
+      // Body fixpoint (same engine as `while` below): the canonical-iv range is
+      // a body-independent theorem re-seeded each pass; everything else
+      // discovers its invariant. This is what proves heapsort's `child` chains
+      // (`child = 2*i+1; while-ish descend`) and medianUs's `samples[mid]`.
+      // Exit state: a canonical iv with a non-empty LITERAL range proves ≥1
+      // trip, so the tighter body-end exit is sound (post-loop peel tails read
+      // `src[inl_i+…]` off exactly that state); anything else takes the joined
+      // invariant (zero-trip exit = entry state ⊆ joined).
+      const seeded = iv && range[0] <= range[1] && !closureWrites.has(iv)
+      const seeds = () => {
+        if (seeded) env.set(iv, range)
+        else if (iv) env.set(iv, null)
+      }
+      loopFixpoint(seeds,
+        () => { if (cond != null) visit(cond); visit(lbody); if (step != null) visit(step) },
+        cond, seeded)
       if (iv) env.set(iv, null)   // iv holds the exit value after the loop
       return
     }
@@ -1254,9 +1351,25 @@ function scanIntervalIdx(body, out, lens, ranges) {
       return
     }
     if (op === 'do' || op === 'for-of' || op === 'for-in' || op === 'label'
-        || op === 'switch' || op === 'try') {
+        || op === 'switch' || op === 'try' || op === 'catch' || op === 'finally') {
+      // ('try' is the parser shape; prepare lowers it to 'catch'/'finally' nodes,
+      // which is what this walk actually receives)
       killAssigned(n)   // unknown trip count / branch selection: no interval survives entry
-      for (let k = 1; k < n.length; k++) visit(n[k])
+      // Each child walks from the killed entry state and the construct EXITS at
+      // it: case selection enters any child directly, an exception can leave a
+      // `try` child mid-statement, a `do` body can break out — so neither a
+      // sibling's nor the last child's flow state is the construct's. In-child
+      // straight-line proofs (defined-before-use chains) still record.
+      const killed = new Map(env)
+      const fr = op === 'switch' ? { kind: 'switch', breaks: [], continues: [] }
+        : op === 'do' || op === 'for-of' || op === 'for-in' ? { kind: 'loop', breaks: [], continues: [] }
+        : null   // label/try: transparent — abrupt edges bind to enclosing frames
+      if (fr) loopStack.push(fr)
+      for (let k = 1; k < n.length; k++) {
+        visit(n[k])
+        env.clear(); for (const [k2, v2] of killed) env.set(k2, v2)
+      }
+      if (fr) loopStack.pop()
       return
     }
     if (op === 'if') {

@@ -246,7 +246,11 @@ const rewriteScalarTypedArrayUses = (node, arrays) => {
     const slot = slotFor(node[1][2], entry)
     if (!slot) return node
     const rhs = node.slice(2).map(part => rewriteScalarTypedArrayUses(part, arrays))
-    return op === '=' && entry.coerce ? ['=', slot, coerceAST(entry.coerce, rhs[0])] : [op, slot, ...rhs]
+    // f64 slots (coerce '') still apply the store's ToNumber via unary plus —
+    // free for a provably numeric RHS, and it folds a checked read's undefined
+    // arm to NaN (raw sentinel bits in the slot would read back as undefined)
+    return op === '=' ? ['=', slot, entry.coerce ? coerceAST(entry.coerce, rhs[0]) : ['u+', rhs[0]]]
+      : [op, slot, ...rhs]
   }
   return node.map((part, i) => i === 0 ? part : rewriteScalarTypedArrayUses(part, arrays))
 }
@@ -359,7 +363,12 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
     }
     if (unsafe.length) {
       for (const [name, arr] of unsafe) out.push(...scalarTypedArrayStores(name, arr))
-      out.push(stmts[i])
+      // Only the synced (unsafe-here) arrays go through memory in this
+      // statement — every OTHER scalarized array's uses still rewrite to
+      // slots. Pushing the statement raw left e.g. `b[0] = a[i]` (unsafe for
+      // mirrored `a`, safe for candidate `b`) referencing the dissolved `b`.
+      const rest = new Map([...arrays].filter(([nm]) => !unsafe.some(([un]) => un === nm)))
+      out.push(rest.size ? rewriteScalarTypedArrayUses(stmts[i], rest) : stmts[i])
       for (const [name, arr] of unsafe) out.push(...scalarTypedArrayLoads(name, arr))
       changed = true
     } else {

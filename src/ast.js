@@ -93,6 +93,59 @@ export function isReassigned(body, name) {
   return false
 }
 
+/** First reference to `name` in EVALUATION order: 'write' (an unconditional
+ *  plain assignment reached before any read — definitely-assigned), 'read'
+ *  (a read, a compound/inc write — those read first — or ANY reference inside
+ *  conditionally-executed code: if/ternary/short-circuit arms, loop bodies and
+ *  steps, switch cases, try/catch regions, closures), or null (no reference).
+ *  Drives the uninit-`let` maybeNullish flag: only a first-ref 'write' proves
+ *  the binding never reads its `undefined` init (`let s; while ((s = …) < K)`). */
+export function firstRefKind(n, name) {
+  const hasRef = (m) => m === name || (Array.isArray(m) && m.slice(1).some(hasRef))
+  const condRef = (...parts) => parts.some(hasRef) ? 'read' : null
+  const walk = (m) => {
+    if (m === name) return 'read'
+    if (!Array.isArray(m)) return null
+    const op = m[0]
+    if (op === '=>') return condRef(m)                       // body runs at call time
+    if (op === '=' && m[1] === name) return walk(m[2]) ?? 'write'   // rhs evaluates first
+    if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && m[1] === name) return 'read'
+    if (op === 'let' || op === 'const') {
+      for (let k = 1; k < m.length; k++) {
+        const d = m[k]
+        if (d === name) return null                          // the decl itself, not a read
+        if (Array.isArray(d) && d[0] === '=' && d[1] === name) return walk(d[2]) ?? 'write'
+        const r = walk(d)
+        if (r) return r
+      }
+      return null
+    }
+    if (op === 'if' || op === '?:') {
+      const c = walk(m[1])
+      if (c) return c
+      // two-armed if/ternary where BOTH arms' first ref is an unconditional
+      // write: the join is definitely-assigned (`let s; if (c) s = a; else
+      // s = b` — the mandelbrot setView preamble shape)
+      if (m.length === 4 && m[3] !== undefined) {
+        const t = walk(m[2]), e = walk(m[3])
+        if (t === 'write' && e === 'write') return 'write'
+        return (t || e) ? 'read' : null
+      }
+      return condRef(...m.slice(2))
+    }
+    if (op === '&&' || op === '||' || op === '??') return walk(m[1]) ?? condRef(m[2])
+    if (op === 'while') return walk(m[1]) ?? condRef(m[2])   // cond evaluates ≥ once
+    if (op === 'for' && m.length === 5)                      // init + first cond eval run once
+      return walk(m[1]) ?? walk(m[2]) ?? condRef(m[3], m[4])
+    if (op === 'for-of' || op === 'for-in') return walk(m[2]) ?? condRef(m[1], m[3])
+    if (op === 'switch') return walk(m[1]) ?? condRef(...m.slice(2))
+    if (op === 'try' || op === 'catch' || op === 'finally' || op === '?.') return condRef(m)
+    for (let k = 1; k < m.length; k++) { const r = walk(m[k]); if (r) return r }
+    return null
+  }
+  return walk(n)
+}
+
 // A deeply-constant array literal (every element a compile-time literal), safe to
 // allocate once and share. At emit time an array literal is `['[', e0, e1, …]` (flat
 // elements); an INDEX access is `['[]', base, idx]` (op `[]`) — NOT a literal.

@@ -24,7 +24,7 @@
 import {
   commaList, T, isBlockBody, isReassigned, mutatesArrayLength, isConstLiteral, constLiteralHoistable,
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
-  ASSIGN_OPS,
+  ASSIGN_OPS, firstRefKind,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT } from '../ctx.js'
 import { i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux } from '../../layout.js'
@@ -1204,6 +1204,16 @@ export function emitDecl(...inits) {
     const i = inits[ii]
     if (typeof i === 'string') {
       const undef = undefExpr()
+      // An uninitialized `let x` holds `undefined` until its first assignment —
+      // a read may see the sentinel, so arithmetic on it must coerce (same flag
+      // as explicit nullish inits below) UNLESS the first reference in
+      // evaluation order is an UNCONDITIONAL write (`let ixSq; while ((ixSq =
+      // …) …)` — the fractal-kernel shape): definitely-assigned-before-read
+      // needs no coercion, and the per-read canon would break the SIMD
+      // recognizers' body shapes. i32-narrowed locals are exempt either way:
+      // the narrowing proof is assigned-before-read, and they zero-init.
+      if (ctx.func.locals.get(i) !== 'i32' && firstRefKind(ctx.func.body, i) !== 'write')
+        ctx.func.maybeNullish?.add(i)
       if (ctx.func.boxed.has(i)) {
         const cell = ctx.func.boxed.get(i)
         ctx.func.locals.set(cell, 'i32')

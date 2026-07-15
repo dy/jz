@@ -180,13 +180,15 @@ const SIZE = {
   // checked-read collapse (ToInt32-guarded reads → i32 if-forms through the
   // -Os const pool), and the cross-function PARAM TYPEDLEN channel
   // (narrow.js: unanimous static call-site lengths seed the callee's proof
-  // family — heapsort/codec params read main-sized arrays). aos 0.977 WIN;
-  // sort 1.027 TIE — its residue is flow-sensitive loop guard facts
-  // (`while (child < n)` refinement in scanIntervalIdx), the named owner.
+  // family — heapsort/codec params read main-sized arrays). The S2 loop-body
+  // FIXPOINT (widening join + cond-∩ escape check + affine cond refinement +
+  // strided `x += K` transfer in scanIntervalIdx) then proved the remaining
+  // cond-bounded cursor classes outright — heapsort's child chains and
+  // medianUs's insertion scan: sort 1814 B (was 1941, 0.96 WIN), aos 1894.
   // (Tried and REVERTED: $__typed_idx call route, +900 B vs ~3 inline sites.)
   aos:            { as: 'win',  porf: 'win' },
   json:           { as: 'na',   porf: 'win' },
-  sort:           { as: 'tie',  porf: 'win' },
+  sort:           { as: 'win',  porf: 'win' },
   crc32:          { as: 'win',  porf: 'win' },
   dotprod:        { as: 'win',  porf: 'win' },
   // Integer kernels: jz wasm is smaller than AS. Transcendental-heavy pipelines
@@ -200,13 +202,16 @@ const SIZE = {
   // scaffolding lowers ~1.35× AS's lean -Oz output (wasm-opt finds <10% slack, so it's
   // jz's codegen shape, not bloat). Honest `todo` like synth/fft, not a size-win claim.
   blur:           { as: 'todo', porf: 'win' },
-  // Integer codec/hash kernels — ALL WIN. Two engine waves: watr 5.5.0
+  // Integer codec/hash kernels — ALL WIN. Three engine waves: watr 5.5.0
   // intguard checked-read collapse (ToInt32-guarded reads → i32 if-forms,
   // single-read ring, const pool) took hash to 0.94; the param typedLen
   // channel + the `.length` interval atom then PROVED the codec loops and
   // header stores outright (encode's `out` is main-sized — wav's 24 RIFF
-  // header guards and both verify loops dropped): hash 0.85, wav 0.98,
-  // base64 0.9995 (win by 1 byte — watch it), aos 0.98.
+  // header guards and both verify loops dropped); the S2 loop fixpoint's
+  // strided-cursor invariants (`for (; op + 3 <= N; op += 3)` proves
+  // op ∈ [0, N−3]) erased the remaining checked families: hash 1086 B,
+  // wav 1646, base64 1847 — comfortable margins where base64 was a
+  // 1-byte squeak.
   hash:           { as: 'win',  porf: 'win' },
   base64:         { as: 'win',  porf: 'win' },
   wav:            { as: 'win',  porf: 'win' },

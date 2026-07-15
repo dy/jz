@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
 import { isReassigned, T } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -1482,10 +1482,14 @@ export default (ctx) => {
         const ti = tempI32('tbi')
         const off = ['i32.add', typedDataAddr(emit(arr), isView),
           ['i32.shl', ['local.get', `$${ti}`], ['i32.const', SHIFT[et]]]]
-        return typed(['if', ['result', 'f64'],
+        const rd = typed(['if', ['result', 'f64'],
           ['i32.lt_u', ['local.tee', `$${ti}`, idx(i)], leanLen(arr, et, isView)],
           ['then', loadOf(off)],
           ['else', undefExpr()]], 'f64')
+        // number|undefined with the undefined confined to a CONST arm — a numeric
+        // consumer (toNumF64) folds ToNumber into that arm statically
+        if (!isBigInt) rd.checkedNumRead = true
+        return rd
       }
       // BRANCHLESS checked read: `select(load(in ? idx : 0), undefined, in)`. The
       // address clamp makes the load unconditionally safe (index 0 of the data
@@ -1502,10 +1506,12 @@ export default (ctx) => {
       const off = ['i32.add', typedDataAddr(emit(arr), isView),
         ['i32.shl', ['select', ['local.get', `$${ti}`], ['i32.const', 0], ['local.get', `$${tin}`]],
           ['i32.const', SHIFT[et]]]]
-      return typed(['block', ['result', 'f64'],
+      const rd = typed(['block', ['result', 'f64'],
         ['local.set', `$${ti}`, idx(i)],
         ['local.set', `$${tin}`, ['i32.lt_u', ['local.get', `$${ti}`], lenIR]],
         ['select', loadOf(off), undefExpr(), ['local.get', `$${tin}`]]], 'f64')
+      if (!isBigInt) rd.checkedNumRead = true
+      return rd
     }
     const objIR = emit(arr), vi = idx(i)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
@@ -1584,17 +1590,33 @@ export default (ctx) => {
         guard(['i64.store', off, ['i64.reinterpret_f64', ['local.get', `$${vt}`]]]),
         ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
     }
-    if (et === 7) {
-      if (void_ && ctx.transform.optimize?.leanCheckedIdx && pureStorable(valIR)) return typed(['block', ...pre,
-        guard(['f64.store', off, asF64(valIR)])], 'void')
+    if (et === 7) { // Float64Array
+      // ToNumber on the STORED value (spec: TypedArray stores coerce). Via
+      // toNumF64, so a provably-numeric RHS keeps the raw store byte-identical
+      // and a checked-read RHS folds its sentinel arm statically — raw sentinel
+      // BITS in an f64 slot read back as `undefined` at the boundary where JS
+      // stores (and reads back) NaN. The assignment's own VALUE (non-void
+      // result) is the RHS pre-coercion per spec, so that path coerces a COPY
+      // at the store only (nullish-canon on the temp — no strings can hide in
+      // a no-__to_num program, so the sentinel canon IS full ToNumber there).
+      const stored = toNumF64(val, valIR)
+      if (void_) {
+        if (ctx.transform.optimize?.leanCheckedIdx && pureStorable(stored)) return typed(['block', ...pre,
+          guard(['f64.store', off, asF64(stored)])], 'void')
+        const vt = temp('tw')
+        return typed(['block', ...pre,
+          ['local.set', `$${vt}`, asF64(stored)],
+          guard(['f64.store', off, ['local.get', `$${vt}`]])], 'void')
+      }
       const vt = temp('tw')
-      return typed(void_ ? ['block', ...pre,
+      const reread = typed(['local.get', `$${vt}`], 'f64')
+      const storeV = stored === valIR ? reread
+        : ctx.core.stdlib['__to_num'] ? toNumF64(val, reread)
+        : coerceNullishToNum(reread)
+      return typed(['block', ['result', 'f64'], ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        guard(['f64.store', off, ['local.get', `$${vt}`]])]
-        : ['block', ['result', 'f64'], ...pre,
-        ['local.set', `$${vt}`, asF64(valIR)],
-        guard(['f64.store', off, ['local.get', `$${vt}`]]),
-        ['local.get', `$${vt}`]], void_ ? 'void' : 'f64') // Float64Array
+        guard(['f64.store', off, asF64(storeV)]),
+        ['local.get', `$${vt}`]], 'f64')
     }
     if (et === 6) {
       if (void_ && ctx.transform.optimize?.leanCheckedIdx && pureStorable(valIR)) return typed(['block', ...pre,
