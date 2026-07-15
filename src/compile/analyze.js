@@ -1434,6 +1434,13 @@ export function analyzeStructInline(funcFacts, programFacts) {
   const bracketKeyed = new Set()    // sids with `p['x']` cursor reads — those route
                                     // through the boxed dyn path (f64 slots), so
                                     // they stay on f64 cells (no i32 packing)
+  // A no-array frame needs the call-composition walk ONLY when some function
+  // program-wide returns an `Array<S>` (its result could flow into an
+  // un-sanctioned call position here). With zero such functions, no `mk()`
+  // call can carry an inline array, so the walk is a guaranteed no-op — skip
+  // it (compile-time: the self-host compiler has hundreds of array-free frames
+  // whose full-body walk was pure waste).
+  const anyArrRetFn = ctx.func.list.some(f => f?.arrayElemSchema != null && !f.raw)
   for (const [func, facts] of funcFacts) {
     const body = func?.body
     // A reps-less frame (zero locals/params — a composing `main`) still gets
@@ -1450,12 +1457,13 @@ export function analyzeStructInline(funcFacts, programFacts) {
       cand.add(sid)
       arrName.set(name, sid)
     }
-    // No early-out on empty arrName: a frame with no tracked arrays of its
-    // own can still FORWARD inline-carried returns through call compositions
-    // (`use(mk())` in a helper-free main, `mk().length`) — the verify walk's
-    // call rules must see those sites (every other arm no-ops on the empty
-    // maps). This closed a live wrong-value: `mk().length` read the PHYSICAL
-    // cell count (K·n) whenever the consumer frame carried no elem fact.
+    // A frame with no tracked arrays of its own still gets the walk when the
+    // program has Array<S>-returning functions: it can FORWARD inline-carried
+    // returns through call compositions (`use(mk())` in a helper-free main,
+    // `mk().length`) — the verify walk's call rules must see those sites (this
+    // closed a live wrong-value: `mk().length` read the PHYSICAL cell count
+    // K·n). When nothing returns Array<S>, the walk is provably a no-op.
+    if (!arrName.size && !anyArrRetFn) continue
 
     // A structInline `Array<S>` value is only ever born from an empty `[]`
     // grown by structInline `.push`. `expr` is such a producer of `Array<sid>`

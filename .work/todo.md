@@ -1000,6 +1000,39 @@
       + br/br_if forms (recorded, optional).
 * [ ] jz.wasm beats v8
   * I need your expertize to make jz.wasm faster than v8. I suspect there's too many string ops, or strings are too complex and could be done simpler OR not versatile enough, or there's some internal structure missing or redundant, or some internal optimizations possible, to reach the level of jz.wasm performing faster than jz.js. Now it's seemingly slower and we need to beat V8 and JSC. The point is not optimizing the source, but making current structures more efficient, so that generally any compiled WASM is faster than V8.
+  * SELF-HOST-ROW "REGRESSION" INVESTIGATED + DISPROVEN AS A REGRESSION
+    (2026-07-15): the sweep put the jz self-host row at 74.7ms vs V8 33.5
+    (2.23×), read as a regression from the ledger's "41.75 DEAD EVEN"
+    (2026-07-12). GROUND-TRUTH A/B (worktree at 54877403 = the SESSION-START
+    commit, before ALL 5 of today's commits, vs HEAD, same quiet machine):
+    baseline jz.wasm 74.0 / 66.2ms (1.97× / 2.02×) — IDENTICAL to HEAD
+    (60-74ms, 1.73-2.15×). So today's work (packed arrays, &&-versioning,
+    slotOf, S2 wave) did NOT regress the row; the "41.75 dead-even" was a
+    quiet-machine reading on a different day. THE ROW GAP IS METHODOLOGY,
+    definitively: the fresh-instance perf-ratchet (test:self, 22 programs,
+    jz.wasm vs jz.js-on-V8) shows jz.wasm 0.968× — jz.wasm BEATS V8. The ONLY
+    difference from the row is that the row reuses ONE no-GC wasm instance for
+    45 compiles (~0.5GB arena watermark, ~11MB gross bump-alloc/compile of a
+    10-line program, never freed) while the ratchet uses a FRESH instance per
+    program. jz.js GCs the transient churn (heap Δ only 644KB net/compile);
+    the wasm arena keeps ALL of it. Heap-alloc profile: the compiler's own
+    per-compile allocation is DIFFUSE (walkN 0.54MB, scan 0.53, emitElementAssign
+    0.52, scalarize 0.52 — no single dominant jz allocator; the 9.8MB `decode`
+    top-line is node-internal TextDecoder, not the wasm arena). So there is NO
+    single lever — beating V8 on the accumulating row is the broad gross-
+    allocation-reduction campaign this item names (or the known-open warm-
+    instance _clear-reuse soundness fix — the ratchet documents it traps on a
+    trivial WAT compiled twice in one instance, "root cause not yet found").
+    A V2-scale structural effort, NOT a today-regression. LANDED alongside:
+    two proven-safe (byte-identical -Os output across all 8 size cases)
+    compile-time reductions to TODAY's features — narrowing runs its ≤2 extra
+    interval-walk passes only when a name widened to ±IP_LIM (the widening join
+    sets any escaping endpoint to the sentinel, so IP_LIM-presence is exactly
+    the narrowing precondition — non-escaped names sit at their exact one-step
+    hull and cannot narrow); structInline's per-frame call-composition walk
+    skips array-free frames when no function returns Array<S> (a provable
+    no-op). Neither moves the row (its 3 test programs trigger neither) but
+    both trim the S2/packed-array analyzer cost on loop-heavy + large inputs.
   * STATE 2026-07-09: warm self-host compile = 1.004x jz.js GEOMEAN (sort 0.97,
     mandelbrot 0.98, crc32 1.00 BEAT it; mat4 1.06 lags), fresh-instance 1.097x.
     The item reduces to: mat4-shape warm gap + fresh-instance init cost. Not a

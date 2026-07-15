@@ -1175,7 +1175,21 @@ function scanIntervalIdx(body, out, lens, ranges) {
     // the stable state — every reachable back-edge state ⊆ F(joined ∩ cond),
     // so hull(entry, F(joined ∩ cond)) contains them all and only TIGHTENS
     // (meet with the previous invariant keeps the sequence decreasing).
-    for (let np = 0; np < 2; np++) {
+    //
+    // GATE (exact, not heuristic — a raw compile-time win jz.wasm pays for):
+    // ONLY a name at an ±IP_LIM endpoint can narrow. The join gave every
+    // non-escaping name its exact one-step hull (min/max of entry ∪ back-edge),
+    // which is already the tightest interval containing both edges — a fresh
+    // walk reproduces the same stable end-state, so the meet is a no-op there.
+    // The escaped names (widened to the sentinel) are the sole candidates. If
+    // NONE widened, skip both extra body walks (the common case: cond-clamped
+    // ivs never escape). Turns the heapsort-class cost into zero on every
+    // ordinary loop.
+    const widened = () => {
+      for (const [, j] of joined) if (j && (j[0] === -IP_LIM || j[1] === IP_LIM)) return true
+      return false
+    }
+    for (let np = 0; np < 2 && widened(); np++) {
       restore(joined); seedFn(); applyCond(); walkPass(); applyCond()
       let changed = false
       for (const [k2, j] of joined) {
