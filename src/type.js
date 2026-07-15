@@ -903,6 +903,9 @@ const ipOk = (v) => v != null && v[0] >= -IP_LIM && v[1] <= IP_LIM
  *  assignments embedded in expressions). */
 function scanIntervalIdx(body, out, lens, ranges) {
   const env = new Map()   // name → [lo, hi] | null (unknown)
+  // While-body fixpoint passes walk EXPLORATORILY — env may be transiently too
+  // narrow, so proof/hull recording is suppressed until the stable final pass.
+  let recording = true
   const symEnv = new Map()   // name → { h: symbolic hull, incNode } — wrap cursors vs mutable bounds
   // names written inside ANY closure in this body: a later call can change them at
   // any point — they never hold a trusted interval
@@ -1038,12 +1041,46 @@ function scanIntervalIdx(body, out, lens, ranges) {
     }
     for (let k = 1; k < n.length; k++) killAssigned(n[k])
   }
+  // LOOP BODY FIXPOINT (2-round widening). Pass A walks from the ENTRY state
+  // (∩ cond) and yields the back-edge state; the JOIN hulls entry with it (a
+  // name known on only one edge → null); pass B re-walks from join∩cond and
+  // any name whose back-edge escapes its join widens to unknown; the FINAL
+  // pass walks the stable env with proof recording ON, leaving env at the
+  // loop invariant. `seedFn` re-applies body-independent theorems (canonical
+  // iv ranges, wrap cursors) each pass; `condNode` refines at body top,
+  // descending `&&` (both conjuncts hold when the loop is entered).
+  const loopFixpoint = (seedFn, walkFn, condNode) => {
+    const refineAll = (c2) => Array.isArray(c2) && c2[0] === '&&'
+      ? [...refineAll(c2[1]), ...refineAll(c2[2])]
+      : (() => { const r = refine(c2, false); return r ? [r] : [] })()
+    const applyCond = () => { if (condNode != null) for (const r of refineAll(condNode)) if (!closureWrites.has(r[0])) env.set(r[0], r[1]) }
+    const restore = (m) => { env.clear(); for (const [k2, v2] of m) env.set(k2, v2) }
+    const entryEnv = new Map(env)
+    const prevRec = recording
+    recording = false
+    seedFn(); applyCond(); walkFn()                     // pass A: discovery
+    const joined = new Map()
+    for (const k2 of new Set([...entryEnv.keys(), ...env.keys()])) {
+      const a = entryEnv.get(k2), b = env.get(k2)
+      joined.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
+    }
+    restore(joined); seedFn(); applyCond(); walkFn()    // pass B: verify
+    for (const [k2, v2] of env) {
+      const j = joined.get(k2)
+      if (!(v2 && j && v2[0] >= j[0] && v2[1] <= j[1])) joined.set(k2, null)
+    }
+    recording = prevRec
+    restore(joined); seedFn(); applyCond()
+    walkFn()                                            // FINAL: record on the stable env
+    restore(joined)
+  }
   const visit = (n) => {
     if (!Array.isArray(n) || n[0] === '=>') return
     if (n._rangeFacts) return visitWithFacts(n)
     const op = n[0]
     if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {
       const idxV = ev(n[2])
+      if (!recording) return   // exploratory fixpoint pass: env effects only
       const L = lens(n[1])
       if (globalThis.process?.env?.JZ_DBG_IP) console.error('IPW', n[1], JSON.stringify(n[2]).slice(0,50), JSON.stringify(idxV), 'len', L)
       if (L != null && idxV && idxV[0] >= 0 && idxV[1] < L) out.add(idxKey(n[1], n[2]))
@@ -1113,6 +1150,14 @@ function scanIntervalIdx(body, out, lens, ranges) {
           range = down ? [cond[0] === '>' ? B + 1 : B, A] : [A, cond[0] === '<' ? B - 1 : B]
         }
       }
+      // NOTE(S2, next unit): wiring loopFixpoint here (like `while` below)
+      // regressed base64/hash/aos -Os by 50-130 B — in-body defined-before-use
+      // singleton chains (`inl_i = 0; src[inl_i]…` from inlined/peeled
+      // preambles) lose their flow-sensitive proofs through the join. The
+      // fixpoint needs def-dominated reads exempted from the entry join before
+      // the for-body can adopt it; heapsort's `child` chains (sort's last
+      // 51 B) sit behind exactly that. Trace: JZ_DBG_IP on base64 —
+      // src[inl6_i(+1|+2)] [0,0]/[1,1]/[2,2] → null.
       killAssigned(lbody)
       if (iv && range[0] <= range[1] && !closureWrites.has(iv)) env.set(iv, range)
       else if (iv) env.set(iv, null)
@@ -1190,12 +1235,19 @@ function scanIntervalIdx(body, out, lens, ranges) {
           else symWraps.push([nm, { lo: 0, hiName: Cname, hiBias: -1, entryHi: e0[1] }, a2])
         }
       }
-      killAssigned(n)
-      if (iv) env.set(iv, [entry[0], brange[1] - 1])
-      for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)
-      for (const [nm, h, incNode] of symWraps) if (!closureWrites.has(nm)) symEnv.set(nm, { h, incNode })
-      visit(c)   // cond accesses (`while (keys[h] !== k)`) see the seeded ranges too
-      for (let k = 2; k < n.length; k++) visit(n[k])
+      // Body fixpoint (loopFixpoint below): the monotone-iv/wrap/symWrap seeds
+      // are theorems independent of the body, re-applied each pass; everything
+      // else discovers its invariant. Bounds heapsort's `while (child < n)`
+      // chains, medianUs's downward insertion scan, and interpreter
+      // `while (pc < N)` dispatch — shapes the single-kill walk lost entirely.
+      const seeds = () => {
+        if (iv) env.set(iv, [entry[0], brange[1] - 1])
+        for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)
+        for (const [nm, h, incNode] of symWraps) if (!closureWrites.has(nm)) symEnv.set(nm, { h, incNode })
+      }
+      loopFixpoint(seeds, () => { visit(c); for (let k = 2; k < n.length; k++) visit(n[k]) }, c)
+      // exit state: the invariant (already in env) hulls entry ∪ back-edges;
+      // iv/wraps publish their tighter exit forms
       if (iv) env.set(iv, [Math.min(entry[0], brange[0]), Math.max(entry[1], brange[1])])
       for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)   // holds at exit too
       for (const [nm] of symWraps) symEnv.delete(nm)
