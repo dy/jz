@@ -9,8 +9,8 @@ import { isDestructurePat } from './hoist-vars.js'
 
 const ERROR_INSTANCEOF = new Set(['Error', 'TypeError', 'SyntaxError', 'RangeError', 'ReferenceError', 'URIError', 'EvalError'])
 
-const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Int32Array','Uint32Array',
-  'Int16Array','Uint16Array','Int8Array','Uint8Array',
+const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Float16Array','Int32Array','Uint32Array',
+  'Int16Array','Uint16Array','Int8Array','Uint8Array','Uint8ClampedArray',
   'ArrayBuffer','BigInt64Array','BigUint64Array','DataView'])
 
 const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'prototype'
@@ -263,6 +263,19 @@ export function createTransform(opts) {
           _gen.noteAsync()
           return ['()', P_STATIC[callee[2]], ...rest.map(a => a == null ? a : transform(a))]
         }
+        // queueMicrotask(fn) IS the runtime's job queue: push onto __mt, drained
+        // at the same host boundaries promise jobs are. Evaluates to undefined
+        // per spec (push's return length is discarded by the comma).
+        if (callee === 'queueMicrotask' && rest.length) {
+          _gen.noteAsync()
+          return [',', ['()', ['.', '__mt', 'push'], ...rest.map(a => a == null ? a : transform(a))], 'undefined']
+        }
+      }
+      // URLSearchParams rides a spliced jz-source runtime (jzify/webrt.js);
+      // `new URLSearchParams(x)` unwraps to this same call via the `new` handler.
+      if (callee === 'URLSearchParams' && _gen?.webrt) {
+        _gen.webrt.usp = true
+        return ['()', '__usp_new', ...rest.map(a => a == null ? a : transform(a))]
       }
       // Terminal iterator helper (toArray/reduce/forEach/some/every/find) on a
       // chain rooted at a known generator call → fused IIFE loop.
@@ -448,6 +461,12 @@ export function createTransform(opts) {
       // form, and `new URL(rel, import.meta.url)` lowers to a static href string there.
       // User classes (lowered to factory arrows by jzify) become plain calls below.
       if (typeof name === 'string' && (TYPED_ARRAYS.has(name) || name === 'Array' || name === 'RegExp' || name === 'URL')) return ['new', transform(ctor), ...cargs.map(transform)]
+      // paren-less `new URLSearchParams` (ctor arrives as a bare string —
+      // the call-node form unwraps through the '()' handler below)
+      if (name === 'URLSearchParams' && typeof ctor === 'string' && _gen?.webrt) {
+        _gen.webrt.usp = true
+        return ['()', '__usp_new']
+      }
       if (Array.isArray(ctor) && ctor[0] === '()') return transform(ctor)
       return ['()', transform(ctor), ...(cargs.length ? cargs.map(transform) : [null])]
     },

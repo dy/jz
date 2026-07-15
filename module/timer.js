@@ -28,7 +28,7 @@
 
 import { typed, asF64, asI64, UNDEF_NAN, MAX_CLOSURE_ARITY, temp, tempI64 } from '../src/ir.js'
 import { emit, deps, hostImport } from '../src/bridge.js'
-import { inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
+import { inc, err, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 
 const MAX_TIMERS = 64
 const ENTRY_SIZE = 40
@@ -42,6 +42,19 @@ const invokeClosureFn = (exported) => `(func $__invoke_closure${exported ? ' (ex
     (f64.reinterpret_i64 (local.get $clos))
     (i32.const 0)
     ${Array.from({length: MAX_CLOSURE_ARITY}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n    ')}
+    (i32.wrap_i64 (i64.and
+      (i64.shr_u (local.get $clos) (i64.const ${LAYOUT.AUX_SHIFT}))
+      (i64.const ${LAYOUT.AUX_MASK})))))`
+
+// One-arg variant: first $ftN slot carries a real f64 (the rAF timestamp),
+// the rest pad UNDEF_NAN. Exported so the host frame loop can pass the
+// DOMHighResTimeStamp through to the callback.
+const invokeClosure1Fn = (exported) => `(func $__invoke_closure1${exported ? ' (export "__invoke_closure1")' : ''} (param $clos i64) (param $a0 f64) (result f64)
+  (call_indirect (type \$ftN)
+    (f64.reinterpret_i64 (local.get $clos))
+    (i32.const 0)
+    (local.get $a0)
+    ${Array.from({length: MAX_CLOSURE_ARITY - 1}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n    ')}
     (i32.wrap_i64 (i64.and
       (i64.shr_u (local.get $clos) (i64.const ${LAYOUT.AUX_SHIFT}))
       (i64.const ${LAYOUT.AUX_MASK})))))`
@@ -263,6 +276,14 @@ const setupWasi = (ctx) => {
     inc('__timer_cancel')
     return typed(['call', '$__timer_cancel', asF64(emit(idExpr))], 'f64')
   }
+
+  // rAF is a display-loop service — it has no WASI meaning (and warning +
+  // declaring env.* here would break the one-import-namespace shape). Reject
+  // with the architecture that DOES work standalone: the embedder owns the
+  // frame loop and calls an exported step per frame.
+  const noWasiRaf = () => err(`requestAnimationFrame needs a JS host (host:'js') — under wasi export a per-frame function and drive it from the embedder's loop`)
+  ctx.core.emit['requestAnimationFrame'] = noWasiRaf
+  ctx.core.emit['cancelAnimationFrame'] = noWasiRaf
 }
 
 const setupJsHost = (ctx) => {
@@ -298,6 +319,26 @@ const setupJsHost = (ctx) => {
   }
   ctx.core.emit['clearTimeout'] = emitClear
   ctx.core.emit['clearInterval'] = emitClear
+
+  // requestAnimationFrame(cb) / cancelAnimationFrame(id) — the same env-service
+  // shape as setTimeout: the host schedules (real rAF in browsers, a 16 ms
+  // timer fallback elsewhere — interop.js) and fires the callback through the
+  // exported __invoke_closure1 trampoline with the frame timestamp.
+  const needRaf = () => hostImport('env', 'requestAnimationFrame',
+    ['func', '$__raf', ['param', 'i64'], ['result', 'f64']])
+  const needCancelRaf = () => hostImport('env', 'cancelAnimationFrame',
+    ['func', '$__craf', ['param', 'f64'], ['result', 'f64']])
+  ctx.core.stdlib['__invoke_closure1'] = invokeClosure1Fn(true)
+
+  ctx.core.emit['requestAnimationFrame'] = (cbExpr) => {
+    needRaf()
+    inc('__invoke_closure1')
+    return typed(['call', '$__raf', ['i64.reinterpret_f64', asF64(emit(cbExpr))]], 'f64')
+  }
+  ctx.core.emit['cancelAnimationFrame'] = (idExpr) => {
+    needCancelRaf()
+    return typed(['call', '$__craf', asF64(emit(idExpr))], 'f64')
+  }
 }
 
 export default (ctx) => {

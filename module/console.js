@@ -194,6 +194,8 @@ const setupWasi = (ctx) => {
   makeConsole('log', 1)
   makeConsole('warn', 2)
   makeConsole('error', 2)
+  makeConsole('info', 1)   // spec/Node: info & debug are log-level -> stdout
+  makeConsole('debug', 1)
 
   const needClock = () => hostImport('wasi_snapshot_preview1', 'clock_time_get',
     ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']])
@@ -266,6 +268,8 @@ const setupJsHost = (ctx) => {
   makeConsole('log', 1)
   makeConsole('warn', 2)
   makeConsole('error', 2)
+  makeConsole('info', 1)   // spec/Node: info & debug are log-level -> stdout
+  makeConsole('debug', 1)
 
   reg('Date.now', [], () => {
     needNow()

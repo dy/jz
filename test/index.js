@@ -24,6 +24,7 @@ const TESTS = [
   'date',
   'wasi',
   'web-smoke',
+  'webglobals',
   'snapshot',
   'mem',
   'buffer',

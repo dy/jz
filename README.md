@@ -166,8 +166,12 @@ JZ is a **strict modern JS subset**. Built-in jzify transform extends support to
 │ │   operators  strings  booleans  numbers  arrays  objects  `${}`    │ │
 │ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol  null  │ │
 │ │   ArrayBuffer  DataView  TypedArray  Map  Set  Atomics             │ │
-│ │   parseInt  parseFloat  encodeURIComponent  Error  BigInt          │ │
-│ │   console  setTimeout/setInterval  Date  performance               │ │
+│ │   Float16Array  Uint8ClampedArray  Math.f16round  get/setFloat16   │ │
+│ │   parseInt  parseFloat  encodeURI(Component)  Error  BigInt        │ │
+│ │   Uint8Array.fromBase64/toBase64/fromHex/toHex  atob  btoa         │ │
+│ │   crypto.getRandomValues  crypto.randomUUID  TextEncoder(Into)     │ │
+│ │   console  setTimeout/setInterval  requestAnimationFrame  Date     │ │
+│ │   performance  navigator.hardwareConcurrency                       │ │
 │ │   structuredClone  groupBy  Set algebra  iterator helpers          │ │
 │ │   fs.read/write (WASI hosts)  fetch via async host imports         │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
@@ -176,6 +180,7 @@ JZ is a **strict modern JS subset**. Built-in jzify transform extends support to
 │   class  new  this  extends  super  static  #private                   │
 │   function*  yield  yield*  Foo.prototype.m = …                        │
 │   async/await  async function*  for await  Promise  using             │
+│   queueMicrotask  URLSearchParams                                      │
 │   Symbol.iterator  Symbol.asyncIterator  Symbol.dispose               │
 │   SharedArrayBuffer (→ ArrayBuffer)                                    │
 │   ==  !=  instanceof  undefined  WeakMap  WeakSet                      │
@@ -184,7 +189,7 @@ JZ is a **strict modern JS subset**. Built-in jzify transform extends support to
 Not supported
   delete  getters/setters  eval  Function  with
   Proxy  Reflect
-  import()  DOM  fetch  Intl  Node APIs
+  import()  DOM  Intl  Node APIs
 ```
 
 
@@ -218,7 +223,9 @@ Each follows one rule: **JZ takes WASM/native conventions over JS edge-cases whe
 - **`String(number)` is ES-spec exact** — shortest round-trip digits via a built-in Ryū formatter (`String(0.1 + 0.2)` → `"0.30000000000000004"`, `String(Math.PI)` → `"3.141592653589793"`), including exponential notation and subnormals; its ~9.7 KB power-of-5 table is lazily included only in modules that stringify floats.
 - **Errors are just their message** — a caught error is the value you threw (no `.message`, not `instanceof Error`), and `null.x` yields `undefined` instead of throwing. It keeps `throw` and member reads free of object machinery and per-access checks.
 - **`Date` getters return UTC** (`getHours` ≡ `getUTCHours`) – the IANA timezone database is hundreds of KB.
-- **`Math.random` is seedable** — default draws host entropy; pass `randomSeed: n` for a reproducible stream.
+- **`Math.random` is seedable** — default draws host entropy; pass `randomSeed: n` for a reproducible stream. `crypto.getRandomValues`/`randomUUID` ride the same switch: default entropy mode IS the host CSPRNG (WASI `random_get` / `env.random`), a numeric `randomSeed` makes both deterministic — reproducible sims, explicitly not cryptographic.
+- **Float16Array is exactly rounded** — stores round ties-to-even straight off the f64 value (no f32 double-rounding), `Math.f16round` and `DataView.getFloat16/setFloat16` included; `Uint8ClampedArray` stores are spec `ToUint8Clamp` (round-half-even). Neither kind auto-vectorizes in v1 (conversion is a call, not a lane op).
+- **Web codecs & friends are byte-string exact** — `atob`/`btoa` work on byte-strings (`charCodeAt` reads the byte, so binary-string consumers match JS exactly; non-ASCII text encodes its UTF-8 bytes instead of throwing). `Uint8Array.fromBase64/toBase64/fromHex/toHex` + `setFrom*` follow the ES2026 spec with compile-time-literal options and `lastChunkHandling: 'loose'` (the default; others reject cleanly). `URLSearchParams` is WHATWG-faithful (forgiving decode, form-urlencoded escaping) except: `keys()/values()/entries()` return arrays (iterable, not live iterators), `sort()` compares UTF-8 bytes, and the object itself isn't iterable — iterate `.entries()`. `queueMicrotask` enqueues on the promise runtime's job queue (drains at host boundaries, same granularity as promise jobs). `requestAnimationFrame` binds the host's rAF; hosts without one (Node) fall back to a 16 ms timer with a real timestamp.
 </details>
 
 <details>

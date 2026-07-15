@@ -17,4 +17,6 @@ import date from './date.js'
 import simd from './simd.js'
 import fs from './fs.js'
 import web from './web.js'
-export { math, core, array, object, string, number, fn, typedarray, collection, symbol, console, json, regex, timer, date, simd , atomics, fs, web }
+import crypto from './crypto.js'
+import navigator from './navigator.js'
+export { math, core, array, object, string, number, fn, typedarray, collection, symbol, console, json, regex, timer, date, simd , atomics, fs, web, crypto, navigator }

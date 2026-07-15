@@ -80,14 +80,20 @@ export const ptrBits = (type, aux = 0, offset = 0) =>
 // `module/typedarray` stdlib.
 // =============================================================================
 
-/** Base element-type codes for PTR.TYPED aux (0–7). BigInt ctors share 7 + TYPED_ELEM_BIGINT_FLAG. */
+/** Base element-type codes for PTR.TYPED aux (0–7). Flag-sharing kinds ride a
+ *  base code (which fixes stride/shift) plus a discriminator bit: BigInt ctors
+ *  share 7 + BIGINT_FLAG, Float16Array shares 3 (u16 storage) + F16_FLAG,
+ *  Uint8ClampedArray shares 1 (u8 storage) + CLAMPED_FLAG. */
 export const TYPED_ELEM_CODE = {
   Int8Array: 0, Uint8Array: 1, Int16Array: 2, Uint16Array: 3,
   Int32Array: 4, Uint32Array: 5, Float32Array: 6, Float64Array: 7,
   BigInt64Array: 7, BigUint64Array: 7,
+  Float16Array: 3, Uint8ClampedArray: 1,
 }
 export const TYPED_ELEM_VIEW_FLAG = 8
 export const TYPED_ELEM_BIGINT_FLAG = 16
+export const TYPED_ELEM_F16_FLAG = 32
+export const TYPED_ELEM_CLAMPED_FLAG = 64
 
 export const TYPED_ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
   'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']
@@ -97,7 +103,9 @@ export function encodeTypedElemAux(name, isView = false) {
   const et = TYPED_ELEM_CODE[name]
   if (et == null) return null
   return et | (isView ? TYPED_ELEM_VIEW_FLAG : 0) |
-    (name === 'BigInt64Array' || name === 'BigUint64Array' ? TYPED_ELEM_BIGINT_FLAG : 0)
+    (name === 'BigInt64Array' || name === 'BigUint64Array' ? TYPED_ELEM_BIGINT_FLAG : 0) |
+    (name === 'Float16Array' ? TYPED_ELEM_F16_FLAG : 0) |
+    (name === 'Uint8ClampedArray' ? TYPED_ELEM_CLAMPED_FLAG : 0)
 }
 
 /** Encode a `typedElemCtor` string ('new.Int32Array' | 'new.Int32Array.view') to the 4-bit
@@ -116,7 +124,9 @@ export function typedElemAux(ctor) {
 export function ctorFromElemAux(aux) {
   if (aux == null) return null
   const isView = (aux & 8) !== 0
-  const name = (aux & 16) !== 0 ? 'BigInt64Array' : TYPED_ELEM_NAMES[aux & 7]
+  const name = (aux & TYPED_ELEM_F16_FLAG) !== 0 ? 'Float16Array'
+    : (aux & TYPED_ELEM_CLAMPED_FLAG) !== 0 ? 'Uint8ClampedArray'
+    : (aux & 16) !== 0 ? 'BigInt64Array' : TYPED_ELEM_NAMES[aux & 7]
   if (!name) return null
   return isView ? `new.${name}.view` : `new.${name}`
 }

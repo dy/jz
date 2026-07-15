@@ -203,6 +203,9 @@ const ELEMS = {
   Uint32Array: [5, 4, 'getUint32', 'setUint32'],
   Float32Array: [6, 4, 'getFloat32', 'setFloat32'],
   Float64Array: [7, 8, 'getFloat64', 'setFloat64'],
+  // flag-carrying kinds: elemId = base code | flag (32 = f16, 64 = clamped)
+  Float16Array: [35, 2, 'getFloat16', 'setFloat16'],
+  Uint8ClampedArray: [65, 1, 'getUint8', 'setUint8'],
 }
 // Pre-built lookup by element ID (avoids Object.values on each access)
 const ELEM_BY_ID = Object.values(ELEMS)
@@ -474,7 +477,10 @@ export const memory = (src) => {
     if (t === 3) {  // TYPED
       const elem = a & 7
       const [, stride] = ELEM_BY_ID[elem]
-      const Ctor = [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array][elem]
+      const Ctor = (a & 32)
+        ? (globalThis.Float16Array ?? (() => { throw new Error('decoding a Float16Array result needs a host with Float16Array (Node ≥ 24 / modern browsers)') })())
+        : (a & 64) ? Uint8ClampedArray
+        : [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array][elem]
       if (a & 8) {
         const byteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
         return new Ctor(mem.buffer, dataOff, byteLen / stride)
@@ -574,6 +580,8 @@ export const memory = (src) => {
   // the target (same stride), use .set() for a fast memcpy instead of
   // per-element DataView writes. Falls back to DataView for mismatched types.
   const TA = [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array]
+  TA[65] = Uint8ClampedArray
+  if (globalThis.Float16Array) TA[35] = globalThis.Float16Array
   for (const [name, [elemId, stride, , setter]] of Object.entries(ELEMS)) {
     mem[name] = (data) => {
       const n = data.length, bytes = n * stride, off = hdr(bytes, bytes, bytes)
@@ -844,13 +852,24 @@ const prepareInterop = (opts) => {
   // in JS) — see module/collection.js header for rationale. f64 returns are
   // wrapped back to BigInt so the wasm side reinterprets a non-canonicalized
   // bit pattern.
-  opts._interp.__ext_prop = (objBig, propBig) => {
+  // A dynamic member op can reach the host with a receiver that is NOT an
+  // external handle (extMap[0] is null — e.g. a builtin's placeholder value, or
+  // a number that inference couldn't type whose method jz doesn't implement).
+  // Without the guard that surfaces as a bare host TypeError ("Cannot read
+  // properties of null") — a mystery. Name the actual failure instead.
+  const extRecv = (objBig, prop, what) => {
     const obj = state.extMap[offset(objBig)]
+    if (obj == null) throw new Error(`'${prop}' — jz dispatched this ${what} to the host, but the receiver is not a host object (an unsupported builtin method, or a receiver type jz couldn't resolve)`)
+    return obj
+  }
+  opts._interp.__ext_prop = (objBig, propBig) => {
     const prop = state.mem.read(propBig)
+    const obj = extRecv(objBig, prop, 'property read')
     return bits(state.mem.wrapVal(typeof obj[prop] === 'function' ? obj[prop].bind(obj) : obj[prop]))
   }
   opts._interp.__ext_has = (objBig, propBig) => {
-    return (state.mem.read(propBig) in state.extMap[offset(objBig)]) ? 1 : 0
+    const prop = state.mem.read(propBig)
+    return (prop in extRecv(objBig, prop, 'membership test')) ? 1 : 0
   }
   opts._interp.__ext_set = (objBig, propBig, valBig) => {
     let v = state.mem.read(valBig)
@@ -867,13 +886,16 @@ const prepareInterop = (opts) => {
     // same-ctor copy — exactly `new Ctor(view)` with no manual size/offset
     // bookkeeping — and a no-op for every other decoded value shape.
     if (ArrayBuffer.isView(v)) v = v.slice()
-    state.extMap[offset(objBig)][state.mem.read(propBig)] = v
+    const prop = state.mem.read(propBig)
+    extRecv(objBig, prop, 'property write')[prop] = v
     return 1
   }
   opts._interp.__ext_call = (objBig, propBig, argsBig) => {
-    const obj = state.extMap[offset(objBig)]
     const prop = state.mem.read(propBig)
+    const obj = extRecv(objBig, prop, 'method call')
     const args = state.mem.read(argsBig)
+    if (typeof obj[prop] !== 'function')
+      throw new Error(`'${prop}' is not a function on this host ${obj?.constructor?.name ?? 'object'}`)
     return hostRet(state, obj[prop].apply(obj, args))
   }
   return state
@@ -935,6 +957,19 @@ const installDefaultEnvImports = (mod, imports, state) => {
       return a[0] | 0
     }
   }
+  // Byte-fill entropy for crypto.getRandomValues/randomUUID (module/crypto.js).
+  // Fills wasm linear memory directly; the view is created per call — never
+  // cached — so a Memory.grow between calls can't leave a detached view.
+  if (envFns.has('random') && !imports.env.random) {
+    imports.env.random = (off, len) => {
+      const view = new Uint8Array(state.mem.buffer, off, len)
+      if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(view)
+      else for (let i = 0; i < len; i++) view[i] = (Math.random() * 256) >>> 0
+    }
+  }
+  if (envFns.has('hardwareConcurrency') && !imports.env.hardwareConcurrency) {
+    imports.env.hardwareConcurrency = () => globalThis.navigator?.hardwareConcurrency ?? 1
+  }
   if (envFns.has('parseFloat') && !imports.env.parseFloat) {
     imports.env.parseFloat = (valBig) => {
       const s = readArgBits(state, valBig)
@@ -970,6 +1005,31 @@ const installDefaultEnvImports = (mod, imports, state) => {
       return id
     }
     if (envFns.has('clearTimeout') && !imports.env.clearTimeout) imports.env.clearTimeout = (id) => {
+      const c = cancel.get(id)
+      if (c) { c(); cancel.delete(id) }
+      return 0
+    }
+  }
+  // requestAnimationFrame wiring: real rAF where the host has one; a 16 ms
+  // timer elsewhere (Node) so frame-driven modules still run — the callback
+  // receives a real timestamp either way via __invoke_closure1.
+  if (envFns.has('requestAnimationFrame') || envFns.has('cancelAnimationFrame')) {
+    const cancel = new Map()
+    let nextId = 1
+    if (envFns.has('requestAnimationFrame') && !imports.env.requestAnimationFrame) imports.env.requestAnimationFrame = (cbBig) => {
+      const id = nextId++
+      const fire = (t) => { cancel.delete(id); state.invoke1?.(cbBig, t); state.afterTick?.() }
+      const raf = globalThis.requestAnimationFrame
+      if (typeof raf === 'function') {
+        const h = raf(fire)
+        cancel.set(id, () => globalThis.cancelAnimationFrame?.(h))
+      } else {
+        const h = setTimeout(() => fire(typeof performance !== 'undefined' ? performance.now() : Date.now()), 16)
+        cancel.set(id, () => clearTimeout(h))
+      }
+      return id
+    }
+    if (envFns.has('cancelAnimationFrame') && !imports.env.cancelAnimationFrame) imports.env.cancelAnimationFrame = (id) => {
       const c = cancel.get(id)
       if (c) { c(); cancel.delete(id) }
       return 0
@@ -1085,6 +1145,8 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
 
   // Trampoline used by env.setTimeout/clearTimeout to fire scheduled closures.
   state.invoke = inst.exports.__invoke_closure || null
+  // One-arg variant — env.requestAnimationFrame passes the frame timestamp.
+  state.invoke1 = inst.exports.__invoke_closure1 || null
 
   // Drive WASM timer queue via JS scheduling (non-blocking, no-op if absent).
   attachTimers(inst)

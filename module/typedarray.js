@@ -12,7 +12,7 @@ import { isReassigned, T } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
-import { typedIdxProven } from '../src/type.js'
+import { typedIdxProven, typedElemCtor } from '../src/type.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
 import { inc, PTR, LAYOUT, registerGetter } from '../src/ctx.js'
@@ -209,8 +209,9 @@ export default (ctx) => {
     __byte_length: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
-    __typed_set_idx: ['__ptr_aux', '__ptr_offset'],
-    __typed_get_idx: ['__ptr_aux', '__ptr_offset'],
+    __typed_set_idx: () => ['__ptr_aux', '__ptr_offset',
+      ...(ctx.features.f16 ? ['__f64_to_f16'] : []), ...(ctx.features.clamped ? ['__u8_clamp'] : [])],
+    __typed_get_idx: () => ['__ptr_aux', '__ptr_offset', ...(ctx.features.f16 ? ['__f16_to_f64'] : [])],
     // __clamp_idx is body-called by every range op (fill/copyWithin/subarray/slice). It has NO
     // other manual-dep edge in the whole stdlib, so it's reachable ONLY via resolveIncludes'
     // auto-scan — which diverges under self-host (jz.wasm), dropping it ("Unknown func
@@ -368,7 +369,7 @@ export default (ctx) => {
     (local.set $byteLen (i32.shl (local.get $n) (local.get $shift)))
     (local.set $dst (call $__alloc_hdr_n (local.get $byteLen) (local.get $byteLen) (i32.const 1)))
     (memory.copy (local.get $dst) (i32.add (local.get $src) (i32.shl (local.get $lo) (local.get $shift))) (local.get $byteLen))
-    (call $__mkptr (i32.const ${PTR.TYPED}) (i32.and (local.get $aux) (i32.const 23)) (local.get $dst)))`
+    (call $__mkptr (i32.const ${PTR.TYPED}) (i32.and (local.get $aux) (i32.const 119)) (local.get $dst)))`
 
   // Constructor: new Float64Array(len) | new F64Array(arr) | new F64Array(buf) | new F64Array(buf, off, len)
   for (const [name, elemType] of Object.entries(TYPED_ELEM_CODE)) {
@@ -376,6 +377,8 @@ export default (ctx) => {
     const stride = STRIDE[elemType]
     ctx.core.emit[`new.${name}`] = (lenExpr, offsetExpr, lenExpr2) => {
       ctx.features.typedarray = true
+      if (name === 'Float16Array') ctx.features.f16 = true
+      if (name === 'Uint8ClampedArray') ctx.features.clamped = true
       const srcType = typeof lenExpr === 'string' ? lookupValType(lenExpr) : valTypeOf(lenExpr)
       // Subview: new TypedArray(buffer, byteOffset, length) — true JS-parity view.
       // Allocates a 16-byte descriptor [byteLen:i32][dataOff:i32][parentOff:i32][pad]
@@ -413,15 +416,17 @@ export default (ctx) => {
         const conv = FROM_F64[elemType]
         const srcElem = ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${srcTemp}`]], ['local.get', `$${ci}`]]
         const cid = ctx.func.uniq++
+        const dstOff = ['i32.add', ['local.get', `$${out.local}`], ['i32.mul', ['local.get', `$${ci}`], ['i32.const', stride]]]
+        const storeIR = (name === 'Float16Array' || name === 'Uint8ClampedArray')
+          ? elemStoreIR({ et: elemType, isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }, dstOff, srcElem)
+          : [STORE[elemType], dstOff, conv ? [conv, srcElem] : srcElem]
         return ['block', ['result', 'f64'],
           ['local.set', `$${cl}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${srcTemp}`]]]],
           out.init,
           ['local.set', `$${ci}`, ['i32.const', 0]],
           ['block', `$tcb${cid}`, ['loop', `$tclp${cid}`,
             ['br_if', `$tcb${cid}`, ['i32.ge_s', ['local.get', `$${ci}`], ['local.get', `$${cl}`]]],
-            [STORE[elemType],
-              ['i32.add', ['local.get', `$${out.local}`], ['i32.mul', ['local.get', `$${ci}`], ['i32.const', stride]]],
-              conv ? [conv, srcElem] : srcElem],
+            storeIR,
             ['local.set', `$${ci}`, ['i32.add', ['local.get', `$${ci}`], ['i32.const', 1]]],
             ['br', `$tclp${cid}`]]],
           out.ptr]
@@ -976,12 +981,66 @@ export default (ctx) => {
     }
   }
 
+  // DataView.getFloat16 / setFloat16 (ES2025) — the 2-byte binary16 payload
+  // around the same descriptor/bounds/LE machinery as get/setUint16, with the
+  // core conversion kernels at the value edge.
+  ctx.core.emit['.getFloat16'] = (dv, off, leNode) => {
+    inc('__f16_to_f64')
+    const desc = tempI32('dvD')
+    const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(off, 2, dvViewSize(desc))]
+    const cvt = (raw16) => typed(['call', '$__f16_to_f64', raw16], 'f64')
+    const le = staticLE(leNode)
+    let body
+    if (le === true) body = cvt(['i32.load16_u', addr])
+    else if (le === false) body = cvt(bswap16I32(typed(['i32.load16_u', addr], 'i32')))
+    else {
+      const aT = tempI32('dvga'), leT = tempI32('dvgle')
+      body = typed(['block', ['result', 'f64'],
+        ['local.set', `$${aT}`, addr],
+        ['local.set', `$${leT}`, truthyIR(emit(leNode))],
+        ['if', ['result', 'f64'], ['local.get', `$${leT}`],
+          ['then', cvt(['i32.load16_u', ['local.get', `$${aT}`]])],
+          ['else', cvt(bswap16I32(typed(['i32.load16_u', ['local.get', `$${aT}`]], 'i32')))]]], 'f64')
+    }
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${desc}`, dvDescriptor(dv)],
+      asF64(body)], 'f64')
+  }
+
+  ctx.core.emit['.setFloat16'] = (dv, off, val, leNode) => {
+    inc('__f64_to_f16')
+    const desc = tempI32('dvD'), aT = tempI32('dvsa'), vT = tempI32('dvsv16')
+    const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(off, 2, dvViewSize(desc))]
+    const le = staticLE(leNode)
+    const store = (bits) => ['i32.store16', ['local.get', `$${aT}`], bits]
+    const bitsLE = ['local.get', `$${vT}`]
+    const bitsBE = () => bswap16I32(typed(['local.get', `$${vT}`], 'i32'))
+    let storeIR
+    if (le === true) storeIR = store(bitsLE)
+    else if (le === false) storeIR = store(bitsBE())
+    else {
+      const leT = tempI32('dvsle')
+      storeIR = ['block',
+        ['local.set', `$${leT}`, truthyIR(emit(leNode))],
+        ['if', ['local.get', `$${leT}`], ['then', store(bitsLE)], ['else', store(bitsBE())]]]
+    }
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${desc}`, dvDescriptor(dv)],
+      ['local.set', `$${aT}`, addr],
+      ['local.set', `$${vT}`, ['call', '$__f64_to_f16', asF64(emit(val))]],
+      storeIR,
+      undefExpr()], 'f64')
+  }
+
   // TypedArray.from(arr) — convert regular array to typed array
   for (const [name, elemType] of Object.entries(TYPED_ELEM_CODE)) {
     const aux = typedAux(name)
     const stride = STRIDE[elemType], store = STORE[elemType]
     ctx.core.emit[`${name}.from`] = (src) => {
       ctx.features.typedarray = true
+      if (name === 'Float16Array') ctx.features.f16 = true
+      if (name === 'Uint8ClampedArray') ctx.features.clamped = true
+      const fl = { et: elemType, isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }
       // Bare array-literal source (`Int32Array.from([…])`, `new Int32Array([…])`): build the
       // typed array directly — alloc + one native-typed store per element — instead of
       // materializing an intermediate f64 ARRAY (every element a 9-byte f64.const) plus a
@@ -997,6 +1056,7 @@ export default (ctx) => {
         for (let k = 0; k < elems.length; k++) {
           const addr = k === 0 ? ['local.get', `$${out.local}`]
             : ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * stride]]
+          if (fl.isF16 || fl.isClamped) { body.push(elemStoreIR(fl, addr, asF64(emit(elems[k])))); continue }
           const v = elemType <= 5 ? asI32(emit(elems[k]))
             : elemType === 6 ? ['f32.demote_f64', asF64(emit(elems[k]))]
             : asF64(emit(elems[k]))
@@ -1013,9 +1073,10 @@ export default (ctx) => {
       const id = ctx.func.uniq++
       const conv = FROM_F64[elemType]
       const srcF64 = ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
-      const storeExpr = [store,
-        ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]],
-        conv ? [conv, srcF64] : srcF64]
+      const dstAddr = ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]]
+      const storeExpr = (fl.isF16 || fl.isClamped)
+        ? elemStoreIR(fl, dstAddr, srcF64)
+        : [store, dstAddr, conv ? [conv, srcF64] : srcF64]
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${srcL}`, asF64(emit(src))],
         ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${srcL}`]]]],
@@ -1061,11 +1122,40 @@ export default (ctx) => {
         ? ctx.func.localReps?.get(receiver[1])?.arrayElemTypedCtor
         : null)
       || (typeof receiver === 'string' && ctx.types.typedElem?.get(receiver))
+      // Direct fresh-ctor receiver: `new Int32Array([…]).map(f)` — the ctor call
+      // node IS the receiver, no binding to look up. Without this the chain fell
+      // to the plain-array emitters, which read f64 slots — silently wrong for
+      // every element kind except Float64Array.
+      || typedElemCtor(receiver)
     if (!ctor) return null
     const isView = viewOutput || (!chainOutput && ctor.endsWith('.view'))
     const name = ctor.endsWith('.view') ? ctor.slice(4, -5) : ctor.slice(4)
     const et = TYPED_ELEM_CODE[name]
-    return et == null ? null : { et, isView, isBigInt: name === 'BigInt64Array' || name === 'BigUint64Array' }
+    if (name === 'Float16Array') ctx.features.f16 = true
+    if (name === 'Uint8ClampedArray') ctx.features.clamped = true
+    return et == null ? null : { et, isView, name,
+      isBigInt: name === 'BigInt64Array' || name === 'BigUint64Array',
+      isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }
+  }
+
+  // Canonical element accessors — the ONE home for kind-aware load/store IR.
+  // r is a resolveElem result (or {et,...} with optional flags). f16 rides the
+  // u16 slot with a conversion kernel each way; clamped is a u8 with the
+  // ToUint8Clamp store. Everything else keeps the exact historical opcodes.
+  const elemLoadIR = (r, off) => {
+    if (r.isBigInt) return ['f64.reinterpret_i64', ['i64.load', off]]
+    if (r.isF16) { inc('__f16_to_f64'); return ['call', '$__f16_to_f64', ['i32.load16_u', off]] }
+    if (r.et === 7) return ['f64.load', off]
+    if (r.et === 6) return ['f64.promote_f32', ['f32.load', off]]
+    return [(r.et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[r.et], off]]
+  }
+  const elemStoreIR = (r, off, valF64) => {
+    if (r.isBigInt) return ['i64.store', off, ['i64.reinterpret_f64', valF64]]
+    if (r.isF16) { inc('__f64_to_f16'); return ['i32.store16', off, ['call', '$__f64_to_f16', valF64]] }
+    if (r.isClamped) { inc('__u8_clamp'); return ['i32.store8', off, ['call', '$__u8_clamp', valF64]] }
+    if (r.et === 7) return ['f64.store', off, valF64]
+    if (r.et === 6) return ['f32.store', off, ['f32.demote_f64', valF64]]
+    return [STORE[r.et], off, [(r.et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', valF64]]
   }
 
   /** Emit the real data byte-address for a typed array IR node.
@@ -1088,7 +1178,7 @@ export default (ctx) => {
 
   // Runtime-dispatch typed index: checks ptr_type + aux to load with correct stride.
   // For TYPED views (aux bit 3), $off indirects through descriptor[4] to real data.
-  ctx.core.stdlib['__typed_set_idx'] = `(func $__typed_set_idx (param $ptr i64) (param $i i32) (param $v f64) (result f64)
+  ctx.core.stdlib['__typed_set_idx'] = () => `(func $__typed_set_idx (param $ptr i64) (param $i i32) (param $v f64) (result f64)
     (local $off i32) (local $aux i32) (local $et i32) (local $bits i32) (local $vb i64)
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
@@ -1111,6 +1201,14 @@ export default (ctx) => {
             (if (i32.or (i64.eq (local.get $vb) (i64.const ${FALSE_NAN}))
                         (i64.eq (local.get $vb) (i64.const ${NULL_NAN})))
               (then (local.set $v (f64.const 0))))))
+        ${ctx.features.f16 ? `(if (i32.and (local.get $aux) (i32.const 32)) (then
+          (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1)))
+            (call $__f64_to_f16 (local.get $v)))
+          (return (local.get $v))))` : ''}
+        ${ctx.features.clamped ? `(if (i32.and (local.get $aux) (i32.const 64)) (then
+          (i32.store8 (i32.add (local.get $off) (local.get $i))
+            (call $__u8_clamp (local.get $v)))
+          (return (local.get $v))))` : ''}
         (if (i32.eq (local.get $et) (i32.const 7))
           (then (f64.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (local.get $v)))
           (else
@@ -1151,7 +1249,7 @@ export default (ctx) => {
   // Integers convert by signedness (et&1 ⇒ unsigned); BigInt returns the raw i64 bits
   // reinterpreted as f64 so a get→set roundtrip is bit-exact (set_idx stores the bits
   // back unchanged). Used by the in-place algorithms below for random-access reads.
-  ctx.core.stdlib['__typed_get_idx'] = `(func $__typed_get_idx (param $ptr i64) (param $i i32) (result f64)
+  ctx.core.stdlib['__typed_get_idx'] = () => `(func $__typed_get_idx (param $ptr i64) (param $i i32) (result f64)
     (local $off i32) (local $aux i32) (local $et i32)
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
@@ -1169,9 +1267,11 @@ export default (ctx) => {
               (then (f64.convert_i32_u (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))
               (else (f64.convert_i32_s (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
             (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 2))
-              (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
+              (then ${ctx.features.f16 ? `(if (result f64) (i32.and (local.get $aux) (i32.const 32))
+                (then (call $__f16_to_f64 (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
+                (else ` : ''}(if (result f64) (i32.and (local.get $et) (i32.const 1))
                 (then (f64.convert_i32_u (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
-                (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))))
+                (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1)))))))${ctx.features.f16 ? '))' : ''})
               (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
                 (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
                 (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))))))`
@@ -1369,10 +1469,7 @@ export default (ctx) => {
     if (r == null) return null // unknown type, fallback to generic
     const { et, isView, isBigInt } = r
     const proven = typedIdxProven(arr, i)
-    const loadOf = (off) => isBigInt ? ['f64.reinterpret_i64', ['i64.load', off]]
-      : et === 7 ? ['f64.load', off]
-      : et === 6 ? ['f64.promote_f32', ['f32.load', off]]
-      : [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[et], off]]
+    const loadOf = (off) => elemLoadIR(r, off)
     if (!proven) {
       // (A $__typed_idx call per site was tried for the size tier and REVERTED:
       // the helper + its __len/__ptr_offset chain cost ~+900 B while these
@@ -1462,6 +1559,19 @@ export default (ctx) => {
       : ['if', ['i32.lt_u', vi, leanLen(arr, et, isView)], ['then', store]]
     const objIR = emit(arr); let valIR = emit(val)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
+    if (r.isF16 || r.isClamped) {
+      // conversion is not a truncation — always through the kernel (RTNE /
+      // ToUint8Clamp); the i32Backed shortcut below would store raw low bits
+      const vt = temp('tw')
+      const conv = elemStoreIR(r, off, ['local.get', `$${vt}`])
+      return typed(void_ ? ['block', ...pre,
+        ['local.set', `$${vt}`, asF64(valIR)],
+        guard(conv)]
+        : ['block', ['result', 'f64'], ...pre,
+        ['local.set', `$${vt}`, asF64(valIR)],
+        guard(conv),
+        ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
+    }
     if (isBigInt) {
       if (void_ && ctx.transform.optimize?.leanCheckedIdx && pureStorable(valIR)) return typed(['block', ...pre,
         guard(['i64.store', off, ['i64.reinterpret_f64', asF64(valIR)]])], 'void')
@@ -1576,9 +1686,7 @@ export default (ctx) => {
     if (r) {
       const { et } = r
       const addr = ['i32.add', ['local.get', `$${dst}`], ['i32.shl', idx, ['i32.const', SHIFT[et]]]]
-      store = et === 7 ? ['f64.store', addr, val]
-        : et === 6 ? ['f32.store', addr, ['f32.demote_f64', val]]
-        : [STORE[et], addr, [(et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', val]]
+      store = elemStoreIR(r, addr, val)
     } else {
       store = ['drop', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${dst}`]], idx, val]]
     }
@@ -1605,9 +1713,7 @@ export default (ctx) => {
     const r = resolveElem(arr)
     const elemType = r?.et
     const isView = r?.isView
-    const elemName = r && (r.isBigInt
-      ? (elemType === 7 ? 'BigInt64Array' : 'BigUint64Array')  // unreachable: SIMD path gated below
-      : ['Int8Array','Uint8Array','Int16Array','Uint16Array','Int32Array','Uint32Array','Float32Array','Float64Array'][elemType])
+    const elemName = r?.name
 
     // BigInt typed arrays: SIMD path doesn't support them; defer to scalar map.
     if (r?.isBigInt) {
@@ -1616,8 +1722,9 @@ export default (ctx) => {
       return null
     }
 
-    // Try SIMD: inline arrow with recognizable pattern
-    if (elemType != null && Array.isArray(fn) && fn[0] === '=>') {
+    // Try SIMD: inline arrow with recognizable pattern (f16/clamped decline —
+    // their element conversion is a call, not a lane op)
+    if (elemType != null && !r.isF16 && !r.isClamped && Array.isArray(fn) && fn[0] === '=>') {
       const [, rawParam, body] = fn
       const param = Array.isArray(rawParam) && rawParam[0] === '()' ? rawParam[1] : rawParam
       const pattern = analyzeSimd(body, param)
@@ -1645,15 +1752,11 @@ export default (ctx) => {
 
       const loadElem = () => {
         const off = ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', shift]]]
-        if (elemType === 7) return typed(['f64.load', off], 'f64')
-        if (elemType === 6) return typed(['f64.promote_f32', ['f32.load', off]], 'f64')
-        return typed([(elemType & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[elemType], off]], 'f64')
+        return typed(elemLoadIR(r, off), 'f64')
       }
       const storeElem = (val) => {
         const off = ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', shift]]]
-        if (elemType === 7) return ['f64.store', off, val]
-        if (elemType === 6) return ['f32.store', off, ['f32.demote_f64', val]]
-        return [STORE[elemType], off, [(elemType & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', val]]
+        return elemStoreIR(r, off, val)
       }
 
       const id = ctx.func.uniq++
@@ -1701,9 +1804,7 @@ export default (ctx) => {
       inc('__len')
       const loadElem = () => {
         const off = ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', SHIFT[et]]]]
-        if (et === 7) return typed(['f64.load', off], 'f64')
-        if (et === 6) return typed(['f64.promote_f32', ['f32.load', off]], 'f64')
-        return typed([(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[et], off]], 'f64')
+        return typed(elemLoadIR(r, off), 'f64')
       }
       const setup = [
         ['local.set', `$${ptr}`, typedDataAddr(asF64(va), isView)],
@@ -1987,17 +2088,13 @@ export default (ctx) => {
     inc('__len')
     const loadAt = (ptrLoc, iLoc) => {
       const off = ['i32.add', ['local.get', `$${ptrLoc}`], ['i32.shl', ['local.get', `$${iLoc}`], ['i32.const', SHIFT[et]]]]
-      if (et === 7) return typed(['f64.load', off], 'f64')
-      if (et === 6) return typed(['f64.promote_f32', ['f32.load', off]], 'f64')
-      return typed([(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[et], off]], 'f64')
+      return typed(elemLoadIR(r, off), 'f64')
     }
     const storeAt = (ptrLoc, iLoc, valF64) => {
       const off = ['i32.add', ['local.get', `$${ptrLoc}`], ['i32.shl', ['local.get', `$${iLoc}`], ['i32.const', SHIFT[et]]]]
-      if (et === 7) return ['f64.store', off, valF64]
-      if (et === 6) return ['f32.store', off, ['f32.demote_f64', valF64]]
-      return [STORE[et], off, [(et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', valF64]]
+      return elemStoreIR(r, off, valF64)
     }
-    const dst = allocPtr({ type: PTR.TYPED, aux: typedAux(ET_NAME[et]),
+    const dst = allocPtr({ type: PTR.TYPED, aux: typedAux(r.name || ET_NAME[et]),
       len: ['i32.shl', ['local.get', `$${maxLen}`], ['i32.const', SHIFT[et]]],
       stride: 1, tag: 'tfd' })
     const id = ctx.func.uniq++
@@ -2070,7 +2167,7 @@ export default (ctx) => {
             ['i32.gt_s', ['local.get', `$${idx}`], ['local.get', `$${srcLen}`]]],
           ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]]]]
     }
-    const dst = allocPtr({ type: PTR.TYPED, aux: typedAux(ET_NAME[et]),
+    const dst = allocPtr({ type: PTR.TYPED, aux: typedAux(r.name || ET_NAME[et]),
       len: ['i32.shl', ['local.get', `$${n}`], ['i32.const', SHIFT[et]]],
       stride: 1, tag: 'tsd' })
     return typed(['block', ['result', 'f64'],
@@ -2187,5 +2284,113 @@ export default (ctx) => {
         ['i32.add', ['local.get', `$${data}`], ['i32.shl', ['local.get', `$${lo}`], ['i32.const', shift]]]],
       ['i32.store', ['i32.add', ['local.get', `$${desc}`], ['i32.const', 8]], ['local.get', `$${root}`]],
       mkPtrIR(PTR.TYPED, viewAux, ['local.get', `$${desc}`])], 'f64')
+  }
+
+  // === ES2026 Uint8Array base64/hex codecs ===
+  // Kernels live in module/string.js (byte↔text is string domain); these
+  // emitters wire the typed-array surface: u8.toBase64()/toHex()/setFrom*()
+  // and the Uint8Array.fromBase64/fromHex statics. Options are compile-time
+  // literals (jz doctrine: no per-call option-bag parsing) — alphabet
+  // 'base64'|'base64url', omitPadding, and lastChunkHandling:'loose' (the
+  // default; other modes are rejected with a clean error).
+  const codecOpts = (node, method, allowPad) => {
+    let url = 0, pad = 1
+    if (node === undefined) return { url, pad }
+    if (!Array.isArray(node) || (node[0] !== '{' && node[0] !== '{}'))
+      err(`${method} options must be a literal object — jz resolves codec options at compile time`)
+    // prepared literals arrive as ['{}'|'{', ...entries] (entries may also ride
+    // a single ','/';' wrapper node)
+    const entries = node.length === 2 && Array.isArray(node[1]) && (node[1][0] === ',' || node[1][0] === ';')
+      ? node[1].slice(1) : node.slice(1).filter(e => e != null)
+    const lit = (v) => Array.isArray(v) && v[0] === 'str' ? v[1]
+      : Array.isArray(v) && v[0] === 'bool' ? !!v[1]
+      : Array.isArray(v) && v[0] == null ? v[1] : undefined
+    for (const it of entries) {
+      if (!Array.isArray(it) || it[0] !== ':') err(`${method} options must use literal keys and values`)
+      const k = typeof it[1] === 'string' ? it[1] : Array.isArray(it[1]) && it[1][0] === 'str' ? it[1][1] : null
+      const v = lit(it[2])
+      if (k === 'alphabet') {
+        if (v === 'base64url') url = 1
+        else if (v !== 'base64') err(`${method}: unknown alphabet ${JSON.stringify(v)} — 'base64' or 'base64url'`)
+      } else if (k === 'omitPadding' && allowPad) pad = v ? 0 : 1
+      else if (k === 'lastChunkHandling') {
+        if (v !== 'loose') err(`${method}: only lastChunkHandling:'loose' (the default) is supported`)
+      } else err(`${method}: unsupported option '${k}'`)
+    }
+    return { url, pad }
+  }
+
+  // {read, written} result record for setFromBase64/setFromHex — a one-shot
+  // dictionary (HASH) object, same shape TextEncoder.encodeInto returns.
+  const readWrittenHash = (rwIR) => {
+    inc('__hash_new', '__hash_set')
+    const rw = tempI64('sfrw'), h = temp('sfh')
+    const hI64 = ['i64.reinterpret_f64', ['local.get', `$${h}`]]
+    const field = (hi) => ['i64.reinterpret_f64', ['f64.convert_i32_s',
+      ['i32.wrap_i64', hi ? ['i64.shr_u', ['local.get', `$${rw}`], ['i64.const', 32]] : ['local.get', `$${rw}`]]]]
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${rw}`, rwIR],
+      ['local.set', `$${h}`, ['call', '$__hash_new']],
+      ['local.set', `$${h}`, ['f64.reinterpret_i64',
+        ['call', '$__hash_set', hI64, asI64(emit(['str', 'read'])), field(true)]]],
+      ['local.set', `$${h}`, ['f64.reinterpret_i64',
+        ['call', '$__hash_set', hI64, asI64(emit(['str', 'written'])), field(false)]]],
+      ['local.get', `$${h}`]], 'f64')
+  }
+
+  const emitToBase64 = (arr, opts) => {
+    const { url, pad } = codecOpts(opts, 'toBase64', true)
+    ctx.runtime.throws = true
+    inc('__u8_data', '__b64_enc', '__len')
+    const t = temp('tb64')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, asF64(emit(arr))],
+      ['call', '$__b64_enc',
+        ['call', '$__u8_data', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
+        ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
+        ['i32.const', url], ['i32.const', pad]]], 'f64')
+  }
+  ctx.core.emit['.typed:toBase64'] = ctx.core.emit['.toBase64'] = emitToBase64
+
+  const emitToHex = (arr) => {
+    ctx.runtime.throws = true
+    inc('__u8_data', '__hex_enc', '__len')
+    const t = temp('thex')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, asF64(emit(arr))],
+      ['call', '$__hex_enc',
+        ['call', '$__u8_data', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
+        ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
+  }
+  ctx.core.emit['.typed:toHex'] = ctx.core.emit['.toHex'] = emitToHex
+
+  const emitSetFromBase64 = (arr, str, opts) => {
+    const { url } = codecOpts(opts, 'setFromBase64', false)
+    ctx.runtime.throws = true
+    inc('__b64_set')
+    return readWrittenHash(['call', '$__b64_set', asI64(emit(arr)), asI64(emit(str)), ['i32.const', url]])
+  }
+  ctx.core.emit['.typed:setFromBase64'] = ctx.core.emit['.setFromBase64'] = emitSetFromBase64
+
+  const emitSetFromHex = (arr, str) => {
+    ctx.runtime.throws = true
+    inc('__hex_set')
+    return readWrittenHash(['call', '$__hex_set', asI64(emit(arr)), asI64(emit(str))])
+  }
+  ctx.core.emit['.typed:setFromHex'] = ctx.core.emit['.setFromHex'] = emitSetFromHex
+
+  ctx.core.emit['Uint8Array.fromBase64'] = (str, opts) => {
+    const { url } = codecOpts(opts, 'fromBase64', false)
+    ctx.runtime.throws = true
+    ctx.features.typedarray = true
+    inc('__b64_from')
+    return typed(['call', '$__b64_from', asI64(emit(str)), ['i32.const', url]], 'f64')
+  }
+
+  ctx.core.emit['Uint8Array.fromHex'] = (str) => {
+    ctx.runtime.throws = true
+    ctx.features.typedarray = true
+    inc('__hex_from')
+    return typed(['call', '$__hex_from', asI64(emit(str))], 'f64')
   }
 }

@@ -10,6 +10,7 @@
 import { JZIFY_CLASS_ERRORS as JC } from '../src/op-policy.js'
 import { parse } from '../src/parse.js'
 import { createAsyncLowering, ASYNC_RUNTIME, ASYNC_GEN_RUNTIME } from './async.js'
+import { USP_RUNTIME } from './webrt.js'
 import { createNames } from './names.js'
 import { foldStaticExportHelpers, foldStaticBundlerHelpers, canonicalizeObjectIdioms } from './bundler.js'
 import { createSwitchLowering, normalizeCaseBody } from './switch.js'
@@ -47,7 +48,9 @@ const iterProto = { on: false }
 const genErr = (msg) => { throw new Error('jzify: ' + msg) }
 const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t), iterProto })
 const { lowerAsync, lowerAsyncGen, noteAsync, asyncUsed, agenUsed, resetAsync } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
-bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, noteAsync, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal })
+// Web-runtime splice flags (URLSearchParams, …) — reset per transform run.
+const webrt = { usp: false }
+bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, noteAsync, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal, webrt })
 transformSwitch = createSwitchLowering(transform, names)
 
 // Spread normalization for iterator values — injected only when a spread site
@@ -140,6 +143,7 @@ export default function jzify(ast) {
   if (Array.isArray(ast) && ast[0] === ';') ast = [';', ...foldPseudoClassical(ast.slice(1))]
   resetAsync()
   iterProto.drain = false
+  webrt.usp = false
   let out = transformScope(ast)
   const prepend = (src) => {
     // runtimes ride the same well-known-symbol canonicalization as user code
@@ -159,6 +163,8 @@ export default function jzify(ast) {
   // [Symbol.iterator]() mints (__it_from) → splice the decorated-iterator
   // factory. Programs without value-position helpers never take this shape.
   if (iterProto.helpersUsed || iterProto.fromUsed) prepend(ITER_HELPERS_RUNTIME)
+  // URLSearchParams sites → splice the jz-source implementation (webrt.js).
+  if (webrt.usp) prepend(USP_RUNTIME)
   // async generators → splice the tagged-yield driver (before the promise
   // runtime prepend so it lands AFTER it in module order — it calls __p_*).
   if (agenUsed()) prepend(ASYNC_GEN_RUNTIME)

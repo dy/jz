@@ -35,6 +35,10 @@ export const PROP_MODULES = Object.assign(Object.create(null), {
   indexOf: ['core', 'string', 'array'], lastIndexOf: ['core', 'string', 'array'],
   includes: ['core', 'string', 'array'],
   length: ['core', 'string', 'array', 'typedarray'],
+  toBase64: ['core', 'typedarray', 'string'], toHex: ['core', 'typedarray', 'string'],
+  setFromBase64: ['core', 'typedarray', 'string', 'collection'],
+  setFromHex: ['core', 'typedarray', 'string', 'collection'],
+  encodeInto: ['core', 'string', 'typedarray', 'collection'],
 })
 
 export const OP_MODULES = {
@@ -56,7 +60,7 @@ export const OP_MODULES = {
   '**=': ['math'],  // desugars to `name = name ** val` at emit — needs the same module
 }
 
-export const TYPED_CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','ArrayBuffer','DataView']
+export const TYPED_CTORS = ['Float64Array','Float32Array','Float16Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','Uint8ClampedArray','BigInt64Array','BigUint64Array','ArrayBuffer','DataView']
 
 export const CALL_MODULES = dict({
   ArrayBuffer: ['core', 'typedarray'],
@@ -67,6 +71,8 @@ export const CALL_MODULES = dict({
   parseInt: ['number', 'string'],
   encodeURIComponent: ['core', 'string', 'number'],
   decodeURIComponent: ['core', 'string', 'number'],
+  encodeURI: ['core', 'string', 'number'],
+  decodeURI: ['core', 'string', 'number'],
   String: ['core', 'string', 'number'],
   Number: ['number', 'string'],
   Boolean: ['number'],
@@ -77,6 +83,8 @@ export const CALL_MODULES = dict({
   'console.log': ['core', 'string', 'number', 'console'],
   'console.warn': ['core', 'string', 'number', 'console'],
   'console.error': ['core', 'string', 'number', 'console'],
+  'console.info': ['core', 'string', 'number', 'console'],
+  'console.debug': ['core', 'string', 'number', 'console'],
   'Object.fromEntries': ['core', 'object', 'collection', 'string'],
   'Object.keys': ['core', 'object', 'string'],
   'Object.getOwnPropertyNames': ['core', 'object', 'string'],
@@ -114,6 +122,12 @@ export const CALL_MODULES = dict({
   'fs.write': ['core', 'string', 'fs'],
   'String.fromCharCode': ['core', 'string'],
   'String.fromCodePoint': ['core', 'string'],
+  'Uint8Array.fromBase64': ['core', 'typedarray', 'string'],
+  'Uint8Array.fromHex': ['core', 'typedarray', 'string'],
+  atob: ['core', 'string'],
+  btoa: ['core', 'string'],
+  'crypto.getRandomValues': ['core', 'typedarray', 'crypto'],
+  'crypto.randomUUID': ['core', 'string', 'crypto'],
   'BigInt.asIntN': ['number'],
   'BigInt.asUintN': ['number'],
   ...Object.fromEntries(TYPED_CTORS.filter(n => n.endsWith('Array')).map(n => [`${n}.from`, ['core', 'typedarray', 'array']])),
@@ -133,17 +147,19 @@ export const GENERIC_METHOD_MODULES = dict({
   hasOwnProperty: ['core', 'object', 'string', 'collection'],
 })
 
-export const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','Set','Map','WeakSet','WeakMap','Date']
+export const CTORS = ['Float64Array','Float32Array','Float16Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','Uint8ClampedArray','BigInt64Array','BigUint64Array','Set','Map','WeakSet','WeakMap','Date']
 // WeakSet/WeakMap fold to Set/Map (the `new` handler rewrites the ctor name).
 // jz has no GC, so weakness is unobservable; this also accepts primitive keys
 // (real WeakMap throws TypeError) and exposes `.size`/iteration — a deliberate
 // semantic deviation documented in README. Compilers lean on them as identity
 // caches / cycle-detection sets and never observe the missing weak semantics.
 export const COLLECTION_CTORS = ['Set', 'Map', 'WeakSet', 'WeakMap']
-export const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'])
+export const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame'])
 
 const MOD_DEPS = {
   number: ['core', 'string'],
+  crypto: ['core'],
+  navigator: ['core'],
   atomics: ['core', 'typedarray'],
   string: ['core', 'number'],
   array: ['core'],
