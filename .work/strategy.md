@@ -80,10 +80,15 @@ transitively with **no trust decision of their own**:
 1. **`unplugin-jz`** — the wasm-bundler wound is documented and named
    (brotli-wasm#8: "affects all Vite users for all wasm-pack projects";
    hash-wasm base64-embeds its binary + eats a 10× cold-start to dodge it).
-   The plugin answers a complaint already being voiced, verbatim.
-2. **Dogfood own libs** (digital-filter, color-space, web-audio-api) — makes
-   "used internally by" true with zero permission needed, and each lib's own
-   users become transitive jz users.
+   **Prototype shipped locally (`~/projects/unplugin-jz`, 2026-07-15):** a
+   `kernel.js?jz` import compiles an import-free numeric kernel at build time,
+   inlines the bytes, and instantiates synchronously; real Rollup/Vite/esbuild
+   builds pass. Next boundary: emitted asset mode, bundled source imports, and
+   boxed-value interop.
+2. **Dogfood own libs.** **color-space v3 now ships this proof:** its 27-space
+   `color-space/wasm` backend is built by JZ from valid JS into an import-free,
+   precompiled module, with scalar↔WASM parity tests. digital-filter and
+   web-audio-api remain open; each library's users become transitive jz users.
 3. **Audio workbench / AudioWorklet template** — the worklet loading story
    (sync instantiate, no fetch) productized as a 30-line template.
 4. Seasonal culture rides: WASM-4 / godot-wasm templates, js13k (August),
@@ -119,13 +124,13 @@ artifact-dense patience. Plan cadence for that, not for a viral week.
 
 **Phase 0 — legibility (days).** The demo must be *legible as proof* before any
 post. Site-audit-verified (2026-07-01, details in `marketing.md` §2′).
-Shipped 2026-07-01: og:image regenerated (was v0.7.0 + old numbers), hero
+Shipped by 2026-07-15: og:image regenerated (was v0.7.0 + old numbers), hero
 install chip (>960px; stacked layouts keep the CLI-section chip), ejectability
 line in the production-ready FAQ, H1 → "Same JS, native WASM" (mechanism-first),
-"MIT" link beside ॐ in the footer, GitHub Discussions enabled, stale nav
-version fallback fixed. Still open: REPL copy-link button (hash-state already
-works, the affordance is missing); worst-case-floor line; GitHub release per
-npm publish (npm 0.8.1, latest tag v0.8.0).
+color-space v3 real-use proof, "MIT" link beside ॐ in the footer, GitHub
+Discussions, aligned npm/tag/GitHub releases, and live nav versioning. Still
+open: REPL copy-link button (hash-state already works, the affordance is
+missing); worst-case-floor line.
 
 > **Owner decision (2026-07-01): audio artifacts — floatbeat, jukebox/zzfx/rfft
 > gallery entries, the audio wedge — are DEFERRED.** They belong to the coming
@@ -142,9 +147,11 @@ JavaScript Weekly, Changelog News, wasm-weekly (if alive), awesome-webaudio
 (propose "Performance / WASM" section, be its first entry), awesome-wasm,
 awesome-compilers.
 
-**Phase 2 — friction to zero (weeks).** `unplugin-jz`; dogfood digital-filter +
-color-space (publish the internal-use credit only when true); sync-instantiate /
-no-async-init documented as a first-class feature.
+**Phase 2 — friction to zero (active).** `unplugin-jz` has a working inline,
+sync-instantiation prototype; color-space v3 is the first shipped internal-use
+proof and is now credited in the README/site. Next: prove emitted-asset vs inline
+tradeoffs, then dogfood digital-filter; document sync instantiate / no async init
+as a first-class feature.
 
 **Phase 3 — Kernel PRs (months).** 3–5 Dream-100 attempts, one at a time, each
 a complete artifact (fork + kernel swap + differential test + honest bench on

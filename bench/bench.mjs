@@ -981,7 +981,7 @@ if (JSON_PATH) {
   const usedTargets = new Set()
   for (const c of Object.values(jsonOut.cases)) for (const tid of Object.keys(c.targets)) usedTargets.add(tid)
   jsonOut.meta = {
-    date: new Date().toISOString().slice(0, 10),
+    date: new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
     commit: (() => { try { return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim() } catch { return null } })(),
     host: { platform: process.platform, arch: process.arch, cpu: cpus()[0]?.model ?? null },
     versions: Object.fromEntries(Object.entries({

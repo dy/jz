@@ -2,7 +2,7 @@
 
 ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](http://npmjs.org/package/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
 
-**JZ** (_javascript zero_) is **minimal functional JS** that compiles to performant WASM.
+**JZ** (_javascript zero_) compiles the **numeric JavaScript you already test** to fast, GC-free WASM — same source, no type annotations, no runtime.
 
 ```js
 import jz from 'jz'
@@ -16,7 +16,11 @@ dist(3, 4) // 5
 
 ## Why?
 
-JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**: no runtime, no GC, no legacy, no spec creep, near-native perf with unlocked SIMD. **Valid JZ is valid JS** – run and test as JS, compile to WASM.
+Keep one codebase. JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and compiles its numeric core ahead-of-time to WASM: no runtime, no GC, no legacy, no spec creep, near-native performance with unlocked SIMD. **Valid JZ is valid JS** — your existing JS tests remain the compiler's tests, and removing JZ leaves the same source and fallback intact.
+
+Rust, Go, and C are excellent when a rewrite and a second toolchain make sense. JZ is for the hot path you want to keep in JavaScript — one source, one test suite, a JS fallback, and comparable WASM or native performance.
+
+The performance bar is uncompromising: on the published cross-target corpus, JZ is **over 2× faster than V8 and Rust→WASM** by geomean. Every rival win remains visible and is treated as a bug to close, never an exception to hide.
 
 | Good for                     | Not for                   |
 |------------------------------|---------------------------|
@@ -26,6 +30,10 @@ JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_D
 | Parsers, codecs, compression | Dynamic, polymorphic, OOP |
 | Scientific, numeric, ML      | Security crypto, big-ints |
 | Hashing, checksums, RNG      | Glue, plumbing, orchestration |
+
+## Used by
+
+[**color-space v3**](https://github.com/colorjs/color-space) uses JZ to build its 27-space [`color-space/wasm`](https://github.com/colorjs/color-space#wasm) backend from valid JavaScript. The published module is precompiled, import-free, and parity-tested against the library's scalar implementation.
 
 ## Usage
 

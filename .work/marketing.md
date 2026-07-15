@@ -227,7 +227,7 @@ honest boundaries; the mechanism line ("valid jz is valid JS") does the differen
   It's exp-heavy pulse tails — jz's best class, NOT the arithmetic-loop tie the todo warns about. So
   *leaning on the live toggle as the #1 proof is safe and true.* The page already shows live per-frame
   ms (honest) rather than a claimed multiple — keep it that way.
-- **✅ Stale "Used internally by" credit** — commented-out/false per todo.md. Make it true (dogfood) or leave removed; not currently visible, so low urgency.
+- **✅ "Used by" is now true and surfaced.** color-space v3 builds its 27-space `color-space/wasm` backend with JZ from valid JS; the output is import-free and precompiled, with scalar↔WASM parity tests. README and production-readiness FAQ now carry the concrete proof rather than a generic badge.
 - **⚠️ Suspected stale `bench/README.md` numbers** (callback 27.56×, audio-showcase ms, aggregate
   geomean) — flagged by the research agents, BUT the adversarial pass caught those agents mis-stating
   some numbers (wrong direction). **Do not trust their replacements. Regenerate from `results.json`
@@ -250,7 +250,7 @@ trust than any win).
 | FAQ: "Does it fit my build pipeline?" (honest gap) | kills the "toy?" doubt for persona #2 | 6 | **done** |
 | Caption the JS/JZ toggle ("Same source. Flip to compile to WASM.") | turns verified-11.8× proof from decoration to proof | 8 | todo — verify visually |
 | Move `npm install jz` chip into the hero | conversion action shouldn't be 4 screens down | 8 | todo — verify visually |
-| Rewrite H1 benefit-first | 5× read headline vs body | 8 | todo — opinionated, propose |
+| Rewrite H1 mechanism-first: “Same JS, native WASM” | 5× read headline vs body; carries the unique claim | 8 | **done 2026-07-15** |
 | FAQ: "What JS semantics differ?" + "Can I debug it?" | answer diligence on-page | 5 | todo |
 | Remove `FIXME` comment (`index.html:384`) | hygiene | 2 | todo |
 
@@ -279,5 +279,6 @@ The ordered play now lives in [`strategy.md`](strategy.md) (§3 sequence): Phase
 legibility (floatbeat linked, permalinks, ejectability + worst-case-floor lines, version chip);
 Phase 1 = the audio wedge artifact + post; Phase 2 = `unplugin-jz` + dogfood; Phase 3 =
 Kernel PRs into Dream-100 targets. Earlier items from this list that shipped: meta description,
-hero sub, build-pipeline FAQ, bench/README regeneration. Still open from the old list: toggle
-caption + H1 (see §2′ audit), `unplugin-jz`/dogfood (now Phase 2).
+hero sub, build-pipeline FAQ, bench/README regeneration, mechanism-first H1, and
+color-space v3 as the first dogfood proof. Still open from the old list: toggle
+caption and hardening the working `unplugin-jz` prototype (now Phase 2).

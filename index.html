@@ -6,14 +6,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>(() => { try { const s = localStorage.getItem('theme'); document.documentElement.dataset.theme = s || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') } catch (e) { } })()</script>
     <title>JZ — JS→WASM compiler for numeric code (DSP, audio, math)</title>
-    <meta name="description" content="Compile JavaScript's numeric core to GC-free WebAssembly, ahead-of-time. Valid JZ is valid JS — no rewrite. Over 2× faster than V8, near-native speed.">
+    <meta name="description" content="Compile the numeric JavaScript you already test to GC-free WebAssembly — no rewrite, annotations, or runtime. Over 2× faster than V8 and Rust→WASM.">
     <link rel="canonical" href="https://dy.github.io/jz/">
     <meta name="theme-color" content="#000000">
     <!-- social card — 1200×630 og:image (assets/og.png) for a rich preview -->
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://dy.github.io/jz/">
     <meta property="og:title" content="JZ — JS→WASM compiler for numeric code (DSP, audio, math)">
-    <meta property="og:description" content="Compile JavaScript's numeric core to GC-free WebAssembly, ahead-of-time. Valid JZ is valid JS — no rewrite. Over 2× faster than V8, near-native speed.">
+    <meta property="og:description" content="Compile the numeric JavaScript you already test to GC-free WebAssembly — no rewrite, annotations, or runtime. Over 2× faster than V8 and Rust→WASM.">
     <meta property="og:image" content="https://dy.github.io/jz/assets/og.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -1276,9 +1276,9 @@
         <div class="pcol pleft">
           <div class="phead">
             <a class="logo" href="./" aria-label="JZ — home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
-            <h1>Computational JS <br class="hb">at native speed</h1>
+            <h1>Same JS, <br class="hb">native WASM</h1>
           </div>
-          <p class="sub">Compile your JS to WASM. No runtime, no GC, tiny output.<br> For DSP, math, visuals and more.</p>
+          <p class="sub">Compile the numeric code you already test — no rewrite, no second toolchain.<br> No runtime, no GC, tiny output.</p>
         </div>
 
         <div class="pcol pright">
@@ -1290,7 +1290,7 @@
               <div class="mstats">
                 <a class="stat" href="bench/"><b :text="v8">1.9×</b><span data-cls="js">V8<i>(average)</i></span></a>
                 <a class="stat" href="bench/"><b :text="asspeed">1.7×</b><span data-cls="wasm">AssemblyScript</span></a>
-                <a class="stat" href="bench/"><b :text="rust">1.7×</b><span data-cls="wasm">Rust<i>(wasm)</i></span></a>
+                <a class="stat" href="bench/"><b :text="rust">2×</b><span data-cls="wasm">Rust<i>(wasm)</i></span></a>
               </div>
             </div>
           </div>
@@ -1324,8 +1324,8 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>A compiler for a distilled JavaScript subset — Crockford’s “good parts”. </p>
-            <p><b>Valid JZ is valid JS</b>. Same source runs as plain JS or compiles to <code>.wasm</code> – sandboxed, portable, memory-safe. No runtime, no GC, no type annotations, auto-SIMD, deterministic output.</p>
+            <p>JZ compiles the numeric JavaScript you already test into native-grade WASM.</p>
+            <p><b>Valid JZ is valid JS</b>. The same source remains your JS implementation and fallback, or compiles to sandboxed, portable <code>.wasm</code>. No rewrite, runtime, GC, or type annotations; auto-SIMD and deterministic output.</p>
             <table>
               <thead>
                 <tr>
@@ -1391,8 +1391,7 @@
           <summary><span class="fq">Why no types?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">Clean code already carries them: <code>let x = 0.5</code>, <code>Float32Array</code>, index, counter in a loop — you know the types without being told, and so does JZ. Annotations add nothing a reader (or a model) can’t already
-            see; they just smear a second language onto a program logic. Anything dynamic falls back to a slower, always-correct path.</div>
+          <div class="ans">Ordinary code already carries useful type evidence: <code>let x = 0.5</code>, <code>Float32Array</code>, an array index, a loop counter. JZ infers it instead of turning the file into another language. Ambiguous values take a slower, always-correct dynamic path.</div>
         </details>
 
 
@@ -1410,7 +1409,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>A matter of preference. JS is more common – if you can compile it to WASM or <a href="#native">native</a> with comparable performance — why second language to keep in sync?</p>
+            <p>Rust, Go, and C are excellent when a rewrite and second toolchain make sense. JZ is for the hot path you want to keep in JavaScript: one source, one test suite, a JS fallback, and comparable WASM or <a href="#native">native</a> performance.</p>
           </div>
         </details>
 
@@ -1420,7 +1419,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>Same source, <b>over 2× faster than V8</b> at <b>near-native speed</b> — geomean across the bench corpus (chart below; per-case numbers on the <a href="bench/">bench page</a>), also ahead of Rust→wasm and AssemblyScript→wasm. JZ auto-vectorizes (SIMD) where the Rust/C→wasm paths don’t; a few cases Rust native vectorizes better — a limitation of WASM.</p>
+            <p>On the cross-target corpus, the same source runs <b>over 2× faster than V8 and Rust→WASM</b> at <b>near-native speed</b> (geomean; per-case numbers and every loss are on the <a href="bench/">bench page</a>). JZ auto-vectorizes where the Rust/C→WASM paths do not. A rival win remains a bug to close, not an exception to hide.</p>
             <a href="bench/" class="bench-svg" id="bench-chart" role="img" aria-label="Geomean speed across the bench corpus — jz vs V8, Rust, Go, AssemblyScript, Porffor, all compiled to WASM and run in V8; native C the lone reference, jz = 1.00× baseline"></a>
             <p>If you hit a slow case, <a href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">report it →</a></p>
           </div>
@@ -1449,7 +1448,8 @@
             </svg></summary>
           <div class="ans">
             <p>It’s <b>experimental</b> (pre-1.0) — ABI can still shift.</p>
-            <p>But: CI gates the full suite, test262, the bench, and the self-compile. A fuzzer diffs every kernel against the same source in V8.</p>
+            <p>But real code already ships on it: <a href="https://github.com/colorjs/color-space#wasm" target="_blank" rel="noopener">color-space v3</a> builds its precompiled 27-space WASM backend with JZ.</p>
+            <p>CI gates the full suite, test262, the bench, and the self-compile. A fuzzer diffs every kernel against the same source in V8.</p>
             <p>And the exit is free: valid JZ is valid JS — drop the compile step and the same file keeps running.</p>
           </div>
         </details>

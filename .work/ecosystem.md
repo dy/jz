@@ -7,7 +7,8 @@ become known across the dev spectrum.
 > **Status (2026-06).** The example/gallery axis is largely **shipped** (~70
 > demos in `examples/`, the `floatbeat/` playground, the `repl/` WAT REPL — see
 > §2). The live expansion items are now **integration & reach**, not more demos:
-> `unplugin-jz`, dogfooding the author's libs, the unifying playground site,
+> hardening the working `unplugin-jz` prototype, extending the shipped color-space
+> v3 proof to the author's remaining libs, the unifying playground site,
 > embedded-MCU (§3.6), and two remaining flagship kernels (CHIP-8, QOI). Audience
 > **personas** are canonical in [`marketing.md`](marketing.md); this doc is the
 > **expansion map** (overlap, integration surfaces, channels).
@@ -358,9 +359,11 @@ embeddable in C / Rust / Python — hacker/embedded reach without jz ever growin
 its own native backend.
 
 ### 3.7 Dogfood the author's own libraries — *highest-trust proof*
-`color-space`, `digital-filter`, `web-audio-api` (all in the workspace). Ship
-their compute cores on jz. This is the "integrations as validation" todo item and
-the most credible benchmark: the author's published libs measurably faster.
+**First proof shipped:** color-space v3 builds its 27-space `color-space/wasm`
+backend with JZ from valid JS. The output is import-free and precompiled; scalar
+and batch paths are parity-tested, and the same scalar kernels feed each batch
+loop. This is the first honest "used by" credit. digital-filter and web-audio-api
+remain open; extending the pattern there is more valuable than another demo.
 
 ### 3.8 Wasm-UDF hosts — databases & stream processors (2026-07 scan)
 A whole class of hosts runs user functions as WASM on a scalar ABI —
@@ -441,14 +444,13 @@ the demo itself.
    (`examples/rfft/bench.mjs`).
 3. **Floatbeat playground — shipped** (`floatbeat/`): the vibecoder + live-coding +
    audio proof in one artifact.
-4. **`unplugin-jz`** — still the highest-leverage *open* integration; turns jz into
-   a drop-in build speedup with zero workflow change. Doubly load-bearing now:
-   the 2026-07 VOC scan found bundler-wasm pain is a *documented, named* wound for
-   library authors (brotli-wasm#8 "affects all Vite users for all wasm-pack
-   projects"; hash-wasm base64-embeds its binary to dodge it) — the plugin is the
-   answer to a complaint they're already voicing.
-5. **Dogfood** color-space / digital-filter / web-audio-api as the trust anchor —
-   still open, and (with unplugin) the move that manufactures real-adoption proof.
+4. **Harden `unplugin-jz`.** The local prototype now compiles `kernel.js?jz` to
+   sync-instantiated inline WASM and passes real Rollup/Vite/esbuild builds. Test
+   the emitted-asset alternative, source-module graph, and boxed-value boundary;
+   keep the default path zero-fetch and zero-async if the size trade holds.
+5. **Extend the color-space proof.** color-space v3 already ships a JZ-built
+   27-space backend; use that integration as the trust anchor, then apply the
+   same source+fallback+parity pattern to digital-filter or web-audio-api.
 6. **Unifying playground site** — thread the shipped gallery + floatbeat + REPL into
    one shareable front door (§2).
 7. **UDF surfaces (§3.8)** — SingleStore + ScyllaDB examples are S-effort standalone
