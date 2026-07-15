@@ -1618,7 +1618,12 @@ golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, 
 // program, correctness (arr['1'], dyn-write/static-read unification) corpus-wide.
 // 10665→12285: Ryū shortest String(number) (same ~1.2 KB __ftoa_shortest cost as
 // the known-shape pin, plus the dyn path's extra __to_str call sites).
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 12285)
+// 12285→13009: the probe HASH LANE (collection.js) — every table carries an i32
+// hash lane the probes walk (C's 4-byte-stride footprint; wordcount +9%, dict
+// +64% rel, immutable +72% rel on the CI runner). Lane maintenance across the
+// 8 upsert/lookup/delete templates + the shared cold $__zomb_scan ride along
+// with every dyn pull; pure size on this object-only program.
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 13009)
 // 3719→6736: this parser reads chars from an untyped string receiver and does
 // `c >= '0'` / `c <= '9'` on them. Two fixes net out here. (1) The NUMBER-keyed
 // `s[i]` read skips the now-dead `__is_str_key` dispatch (module/array.js

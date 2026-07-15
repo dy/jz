@@ -272,6 +272,35 @@
     Next concrete step: wasm2wat both upsert loops side by side, count the
     per-probe ops, cut the diff — then re-run wordcount/shapes/dict on M4
     + CI bench-probe.
+    HASH LANE LANDED (the SoA increment, variant C — minimal blast
+    radius): every Set/Map/HASH table carries an i32 hash lane (cap×4 B,
+    zero-filled, AFTER the entries) — the only thing probes walk (one
+    4-byte load/step, 16 hash checks per cache line vs 2-3 at 24-B
+    stride; miss chains touch an 8 kB lane instead of sweeping 48 kB
+    through L1). Entries keep [hash|seq][key][val] — iteration, heal,
+    durable logs, delete-shift, coll_order UNTOUCHED; unconverted
+    readers (e.g. __dyn_get_t_h's inline sidecar probe — the jessie
+    path, named follow-up) degrade to the entry walk, never corrupt.
+    Writers all maintain the lane: 8 templates, grow-rehash,
+    backward-shift delete (parallel lane cursors), .clear, __map_from
+    (the lane-less alloc that let inserts write PAST the table —
+    caught by the bool-identity gate, pinned via the data.js lane-churn
+    differential), obj_clone byte-copy (28-stride), interop mem.Hash.
+    Zombies keep their stale lane hash (noticed on hash-hit; cap-tries
+    fallback rescans via shared cold $__zomb_scan). VERDICTS — M4:
+    wordcount +7.2% cs exact, dict neutral, immutable/shapes −3..−11%
+    PROVEN layout-class (hot fn byte-identical modulo call indices);
+    CI bench-probe (Xeon, 5 rounds, jz/v8 ratio-normalized across two
+    machine instances): wordcount 1.37→1.25 (+9%), dict 0.73→0.445
+    (+64% — jz 2.1× faster absolute), immutable 2.06→1.20 (+72% — the
+    M4 loss FLIPS on the runner the losses were reported from),
+    shapes 1.27→1.44 (−13%, uncertain: different runner instances,
+    v8 base differed 25%; M4 says ~−3%; shapes' hot loop touches NO
+    tables — cold dyn-miss arms shifted). Dyn-object golden
+    re-baselined 12285→13009 (documented in-chain). FOLLOW-UPS:
+    convert __dyn_get_t_h's inline probe to the lane (jessie),
+    re-baseline shapes on one runner instance, consider outlining the
+    guarded-slot dyn-miss arms (cold-code layout sensitivity).
     UPSERT DISSECTION DONE (zig cc -O3 wordcount.c → wat, probe loop at
     FNV sites): C's probe = shl 2 + load keys[h] + CALL strcmp (LLVM does
     NOT inline it) + (h+1)&2047 reload; hash = byte-at-a-time FNV per
