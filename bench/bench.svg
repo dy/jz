@@ -8,7 +8,7 @@
     <text x="156" y="56" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">clang -O3 · ref</text>
     <text x="662" y="49" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">0.75×</text>
     <circle cx="182.0" cy="45" r="8" fill="currentColor" fill-opacity="0.4">
-      <animate attributeName="cx" dur="1.204753378831919s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="1.2067470427674198s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-0.00s"/>
     </circle>
   </g>
@@ -30,9 +30,9 @@
     <line x1="650" y1="138" x2="650" y2="152" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
     <text x="156" y="141" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">C</text>
     <text x="156" y="156" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">clang → wasm</text>
-    <text x="662" y="149" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">1.77×</text>
+    <text x="662" y="149" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">1.75×</text>
     <circle cx="182.0" cy="145" r="8" fill="currentColor" fill-opacity="0.4">
-      <animate attributeName="cx" dur="2.829714518524118s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="2.7983604052520934s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-0.82s"/>
     </circle>
   </g>
@@ -42,9 +42,9 @@
     <line x1="650" y1="188" x2="650" y2="202" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
     <text x="156" y="191" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">AssemblyScript</text>
     <text x="156" y="206" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">asc -O3</text>
-    <text x="662" y="199" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">1.87×</text>
+    <text x="662" y="199" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">1.84×</text>
     <circle cx="182.0" cy="195" r="8" fill="currentColor" fill-opacity="0.4">
-      <animate attributeName="cx" dur="2.9931401168266407s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="2.9500077878743505s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-1.23s"/>
     </circle>
   </g>
@@ -54,9 +54,9 @@
     <line x1="650" y1="238" x2="650" y2="252" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
     <text x="156" y="241" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">V8</text>
     <text x="156" y="256" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">Node (JS)</text>
-    <text x="662" y="249" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">1.92×</text>
+    <text x="662" y="249" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">1.94×</text>
     <circle cx="182.0" cy="245" r="8" fill="currentColor" fill-opacity="0.4">
-      <animate attributeName="cx" dur="3.0659248152825365s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="3.098695502831558s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-1.64s"/>
     </circle>
   </g>
@@ -66,9 +66,9 @@
     <line x1="650" y1="288" x2="650" y2="302" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
     <text x="156" y="291" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">Porffor</text>
     <text x="156" y="306" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">runs 4 / 45</text>
-    <text x="662" y="299" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">3.64×</text>
+    <text x="662" y="299" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">3.59×</text>
     <circle cx="182.0" cy="295" r="8" fill="currentColor" fill-opacity="0.4">
-      <animate attributeName="cx" dur="5.860942630078486s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="5.751595917536692s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-2.05s"/>
     </circle>
   </g>
@@ -78,9 +78,9 @@
     <line x1="650" y1="338" x2="650" y2="352" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
     <text x="156" y="341" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">Go</text>
     <text x="156" y="356" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">gc → wasm</text>
-    <text x="662" y="349" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">4.11×</text>
+    <text x="662" y="349" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">3.84×</text>
     <circle cx="182.0" cy="345" r="8" fill="currentColor" fill-opacity="0.4">
-      <animate attributeName="cx" dur="6.578805431836949s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="6.1463038073707335s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-2.46s"/>
     </circle>
   </g>
