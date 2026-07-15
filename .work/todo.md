@@ -4061,3 +4061,49 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   (game-of-life 0.60×, rfft 0.81×, biquad/bytebeat win-limits) — Root F owner's
   lane, not touched here. Prior selfhost run hit its 4h timeout (cancelled)
   pre-kernel-fix; watching the fd47c0de run.
+
+## RIVAL-WAT CAMPAIGN (2026-07-15, user directive: "up to 5× slowdowns are failures — find their methods, beat them")
+
+EPYC CI table (6b589bc, rival/jz, <1 = rival faster): vm C 0.20 / AS 0.29;
+shapes AS 0.23 / C 0.27; immutable C 0.46; wordcount C 0.61; lz AS+C 0.66;
+sort AS 0.66; qoi C 0.64 / AS 0.83; base64 C 0.64 / AS 0.87; spmv AS 0.91;
+wav C 0.90 / AS 0.95; mandelbrot AS 0.94. CAVEATS: (a) predates unclamp —
+vm re-measured locally 1.48× vs AS (from 3.4×); (b) EPYC µarch skews the
+hash/dispatch cases (see the $__hash_slot arc). Re-baseline each case on
+BOTH machines before designing.
+
+vm DEEP-DIVE (done): AS's method = RAW unchecked loads (--noAssert: UB on
+OOB) + plain if-chain + an f64 Math.imul polyfill CALL (still 1.48× faster).
+C adds br_table for the switch. jz pays JS-exact checked access per
+dispatch step (indices come FROM memory — checks are load-bearing
+semantics, not eliminable). Counters, ranked:
+  1. S2 while-fixpoint (scanIntervalIdx): `while (pc < NINSTR)` bounds
+     pc.hi → o+2 ≤ 23 < typedLen(code)=24 static → the check reduces to
+     one lt_u-vs-CONST (no header load, one-sided). S2 now owns THREE
+     arcs: sort -Os win, medianUs corpus-wide, the interpreter class.
+  2. chainTable (watr): dense int if-chain → br_table (C's method; helps
+     vm/lz/qoi state machines).
+  3. reg[a] checks stay (a unbounded from memory — JS semantics).
+Remaining cases to dissect: shapes, immutable, wordcount (× C — the
+$__hash_slot group-probing redesign likely owns all three), lz, sort
+(S2), qoi, base64, spmv, wav, mandelbrot.
+
+COLOR-SPACE 0.9.1 REPORT (2026-07-15): wasi "no-grow" was the REACTOR
+INIT CONTRACT — raw WebAssembly.Instance embedders never called
+_initialize; _clear() then reset the heap from a zero __heap_reset → OOB.
+FIXED f7df5377: every wasi export self-arms on the __init_done once-guard
+(+714 B / 50 exports), pinned in test/wasi.js. SIZE 33.5→62 kB
+(0.8.1→0.9.1 speed) attributed per-function: $math.pow 4.7k→33k wat
+(default pow impl grew — crPow flag does NOT gate it, investigate),
+Ryū printer +28k ($__to_str/$__ryu_pow5/concat — find batch.js's pull
+chain), Root F checked loops ×3 per *_n fn (typedLen channel didn't
+reach: receivers are module-globals set in init(n) with RUNTIME n —
+different class), versioning twins +6.3 kB (speed only). -Os floor
+47.2 kB. Levers to design: pow-impl size tiering, Ryū pull-chain audit,
+module-global-receiver length facts.
+
+SELFHOST WORKFLOW (2026-07-15): KERNEL_EXCLUDE extended with the bisect
+debt list (4 hangs + resolver/shape classes + 12 real-kernel-bug files,
+each documented in test/index.js) — the kernel leg turns into a
+regression gate on the passing majority; burn the list down as kernel
+fixes land.
