@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - run: npm install
       - name: test (${{ matrix.variant }})
         run: |
@@ -61,7 +61,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - run: npm install
       # JZ_DEBUG_INVARIANTS=1 turns on the per-phase structural checks (ctx
       # invariants + verifyFn on optimizer output) so a malformed-IR bug surfaces

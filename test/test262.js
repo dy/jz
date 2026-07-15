@@ -1033,7 +1033,6 @@ const EXPECTED_FAIL_FILES = new Map([
     'test/language/statements/throw/S12.13_A2_T3.js',
     'test/language/statements/try/S12.14_A18_T3.js',
     'test/language/expressions/logical-and/S11.11.1_A2.1_T4.js',
-    'test/language/function-code/S10.2.1_A1.js',
     'test/language/literals/regexp/S7.8.5_A3.1_T2.js',
     'test/language/literals/regexp/S7.8.5_A3.1_T3.js',
     'test/language/statements/throw/S12.13_A3_T1.js',

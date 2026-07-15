@@ -187,17 +187,21 @@ test('navigator.hardwareConcurrency: ≥1 on js host; wasi warns + folds to 1', 
 })
 
 // === Float16Array ===
+// Host-parity tests: they differentially compare against the host's own
+// Float16Array (Node ≥ 24 / modern browsers). On older hosts there is nothing
+// to compare against — skip, mirroring the runtime's own decode guard.
 
+const skipF16 = { skip: typeof Float16Array === 'undefined' }
 const f16 = (x) => new Float16Array([x])[0]
 
-test('Float16Array: store/load round exactly like the host', () => {
+test('Float16Array: store/load round exactly like the host', skipF16, () => {
   for (const v of [1.5, 0.1, 0.30000000000000004, 65504, 65519.999, 65520, 5.96e-8, 2.98e-8, -2.5, 1 / 3, 1e-10])
     is(run(`export let f = () => { let a = new Float16Array(1); a[0] = ${v}; return a[0] }`), f16(v))
   ok(run(`export let f = () => { let a = new Float16Array(1); a[0] = 0/0; return a[0] !== a[0] }`), 'NaN round-trips')
   is(run(`export let f = () => { let a = new Float16Array(1); a[0] = 65520; return a[0] }`), Infinity)
 })
 
-test('Float16Array: ctor forms, methods keep the kind', () => {
+test('Float16Array: ctor forms, methods keep the kind', skipF16, () => {
   is(run(`export let f = () => { let a = new Float16Array([1.1, 2.2]); return a[0] }`), f16(1.1))
   is(run(`export let f = () => new Float16Array([1, 2, 3]).length`), 3)
   is(run(`export let f = () => { let b = new Float16Array([1, 2, 3]).map(x => x * 0.1); return b[2] }`), f16(3 * 0.1))
@@ -206,7 +210,7 @@ test('Float16Array: ctor forms, methods keep the kind', () => {
   is(run(`export let f = () => new Float16Array([1.5, 2.5]).reduce((a, b) => a + b, 0)`), 4)
 })
 
-test('Float16Array: loops sum exactly at every optimize level', () => {
+test('Float16Array: loops sum exactly at every optimize level', skipF16, () => {
   const src = `export let f = () => {
     let a = new Float16Array(100)
     for (let i = 0; i < 100; i++) a[i] = i * 0.1
@@ -218,7 +222,7 @@ test('Float16Array: loops sum exactly at every optimize level', () => {
   for (const optimize of [0, 2, 3, 'size']) is(run(src, { optimize }), ref)
 })
 
-test('Math.f16round matches host', () => {
+test('Math.f16round matches host', skipF16, () => {
   for (const v of [0.1, 1 / 3, 65519.999, 5.96e-8]) is(run(`export let f = () => Math.f16round(${v})`), f16(v))
 })
 
@@ -229,7 +233,7 @@ test('DataView.getFloat16/setFloat16: LE + BE', () => {
   is(beBytes[1], 0x3E) // big-endian high byte first
 })
 
-test('Float16Array: marshals both directions', () => {
+test('Float16Array: marshals both directions', skipF16, () => {
   const { exports, memory } = jz(`
     export let mk = () => new Float16Array([1.5, 2.5])
     export let bump = (a = new Float16Array(0)) => { a[0] = 0.1; return a }
@@ -270,7 +274,7 @@ test('method chains on fresh typed ctors resolve the element kind', () => {
   is(run(`export let f = () => new Int32Array([1, 2, 3]).map(x => x * 2)[2]`), 6)
   is(run(`export let f = () => new Uint8Array([1, 2, 3]).map(x => x + 1)[1]`), 3)
   is(run(`export let f = () => new Float64Array([1, 2, 3]).map(x => x * 0.5)[2]`), 1.5)
-  is(run(`export let f = () => new Float16Array([1, 2, 3]).map(x => x * 0.1)[2]`), f16(3 * 0.1))
+  if (!skipF16.skip) is(run(`export let f = () => new Float16Array([1, 2, 3]).map(x => x * 0.1)[2]`), f16(3 * 0.1))
 })
 
 // === clean errors for the ext-dispatch class ===
