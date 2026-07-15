@@ -202,6 +202,21 @@
     families: sort 1941→1814 (0.96 WIN — ratcheted), wav 1721→1646,
     base64 1924→1847 (1-byte squeak → comfortable), hash 1164→1086,
     aos 1913→1894. medianUs insertion scan proven corpus-wide.
+    chainTable COUNTER-RESULT (watr 5.7.0, published): dense
+    same-scrutinee if/else-if chain → br_table (C's switch lowering,
+    result-typed chains br the arm value out) — correct on the vm
+    dispatch (checksums exact, ladder fully gone) but 2.3% SLOWER
+    interleaved on M4: the vm's op stream is PATTERNED (2,3,4,5 loop),
+    the chain predicts nearly free, the indirect jump pays its own
+    prediction. Shipped as an opt-in pass, NOT in the speed profile
+    (seltree's caveat, mirrored). EPYC verdict pending (needs a
+    bench-probe leg that opts the pass in). vm's REAL remaining owner
+    (both machines): the reg[a] checked-read select clusters that
+    intguard rule-5 refuses — the len temp (`$o`) tees inside one
+    cluster and is REUSED by the arm's store guard, failing the
+    self-contained gate; the extension is a hoisted shared-bounds form
+    (one `lt_u a len` tee feeding both the read collapse and the store
+    guard).
     PULL-CHAIN AUDIT ANSWERED (color-space __to_str): kernel fns'
     untyped-param arithmetic → toNumF64 t==t + __to_num cold call →
     __to_num's spec fallback (module/number.js: non-string pointers go
