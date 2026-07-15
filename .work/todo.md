@@ -266,6 +266,20 @@
     Next concrete step: wasm2wat both upsert loops side by side, count the
     per-probe ops, cut the diff — then re-run wordcount/shapes/dict on M4
     + CI bench-probe.
+    UPSERT DISSECTION DONE (zig cc -O3 wordcount.c → wat, probe loop at
+    FNV sites): C's probe = shl 2 + load keys[h] + CALL strcmp (LLVM does
+    NOT inline it) + (h+1)&2047 reload; hash = byte-at-a-time FNV per
+    call (~5 ops × len). jz's per-probe INSTRUCTIONS are already cheaper
+    (SSO arithmetic hash ~8 ops flat beats FNV on ≤8-char words; i64
+    bit-compare beats a strcmp call). THE GAP IS PROBE FOOTPRINT: C
+    probes a 4-byte-stride key-pointer array (2048×4 = 8 kB, L1-resident;
+    counts touched only on hit) while jz probes 24-byte entries
+    ([seq][key][val], 2048×24 = 48 kB, stride-24 with the key at +8) —
+    6× the probe bytes, L1-evicting. OWNER: SoA dict layout — contiguous
+    i64 KEY LANE (16 kB at cap 2048) probed alone; seq+val in a parallel
+    region indexed by slot; growth/iteration/durable logs re-based on the
+    two-lane layout. Fresh-session unit (touches every gen* fn); verdict
+    loop = wordcount/shapes/dict M4 interleaved + CI bench-probe.
     chainTable COUNTER-RESULT (watr 5.7.0, published): dense
     same-scrutinee if/else-if chain → br_table (C's switch lowering,
     result-typed chains br the arm value out) — correct on the vm
