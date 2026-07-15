@@ -272,6 +272,36 @@
     Next concrete step: wasm2wat both upsert loops side by side, count the
     per-probe ops, cut the diff — then re-run wordcount/shapes/dict on M4
     + CI bench-probe.
+    STRUCTURAL-SLOTOF CORRUPTION KILLED (2026-07-15, the queued hunt —
+    the "unique-prop read" diagnosis was one layer off): slotOf's
+    STRUCTURAL arm (receiver proven OBJECT, sid unknown) checked slot
+    consistency only among schemas CONTAINING the prop — an OBJECT of a
+    schema LACKING it read the foreign slot (`p.x` on {z,w,q} → z) and
+    the WRITE sibling CORRUPTED it in place (`p.x = 99` overwrote z —
+    probe: 9901 vs JS 301 at O0; O2 correct by accident of facts). The
+    "NaNInfin static-pool deref" manifestation was the PRE-fix
+    composition with the call-position holes (unit 2 closed those).
+    Fix at the root (module/schema.js, one condition): the structural
+    bet is sound only under the FULL closed world — prop at the SAME
+    slot in EVERY registered schema (bucket.length === list.length);
+    unique-prop receivers keep guardedSlotOf's runtime-guarded devirt,
+    everything else goes dynamic. Corpus census (JZ_DBG_SLOTOF sweep):
+    the arm fired in exactly ONE bench (provenance memo.wre/wim,
+    single-schema program — still fires ✓) — zero bench cost; shapes/
+    jessie/wordcount ride the GUARDED path, parity re-verified. Pins:
+    test/slot-hazards.js ×2 (cross-schema read+write JS-exact at both
+    levels; shared-slot-everywhere keeps the fast path).
+    FOLLOW-UP CLOSED AS STALE: "__dyn_get_t_h inline sidecar probe →
+    lane" — the helper delegates to genLookupStrict(Prehashed)/
+    __ihash_get_local, ALL lane-converted at the landing (scan proves
+    no 24-B-stride probe loop remains anywhere in collection.js).
+    wordcount's Xeon residual (~1.3× vs V8) therefore has NO cheap
+    lever left — SwissTable-style v128 group probing stays the
+    recorded V2-class idea. CODEC TAILS DISSECTED AND PARKED: qoi
+    runKernel has ZERO undef sentinels / ZERO trunc_sat (54 lt_u =
+    algorithm compares + store guards), base64 similar (9/2) — the
+    checked-read class is fully burned; 1.16×/1.13× vs c-wasm are
+    algorithmic/µarch territory, both beat V8.
     LZ WON — &&-COND WHILE VERSIONING (2026-07-15, the campaign's unit 3,
     the "symbolic-sum bounds" owner resolved WITHOUT a relational domain):
     the LZ match scan `while (len < maxLen && src[j+len] === src[ip+len])

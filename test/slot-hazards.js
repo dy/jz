@@ -221,3 +221,44 @@ export let main = (n) => {
   ok(!/call \$__to_num/.test(m), 'shaped record field reads pay no __to_num')
   is(run(src, { optimize: 2 }).main(4), 4 * (2 * 3.5 + 1), 'value exact')
 })
+
+// Structural slotOf closed-world hole: the old form checked slot-consistency
+// only among schemas CONTAINING the prop — an OBJECT receiver of a schema
+// LACKING it read (and WROTE) the foreign slot. `p.x` on a {z,w,q} record
+// returned z; `p.x = v` corrupted z in place. Sound form: the prop must live
+// at the same slot in EVERY registered schema; unique-prop receivers keep the
+// runtime-guarded devirt (guardedSlotOf), everything else goes dynamic.
+test('slot-hazards: structural slotOf refuses schemas lacking the prop (read + write)', () => {
+  const src = `
+const mk = () => { const a = []; a.push({ x: 41, y: 2 }); return a }
+const other = () => { const b = []; b.push({ z: 3, w: 4, q: 5 }); return b }
+const rd = (ps) => { const p = ps[0]; return p.x }
+const wr = (ps) => { const p = ps[0]; p.x = 99 }
+export let main = () => {
+  const missing = rd(other()) === undefined ? 1 : 0   // JS: undefined, not z
+  const hit = rd(mk())                                 // 41
+  const o = other()
+  wr(mk())
+  wr(o)                                                // JS: expando x, z untouched
+  const t = o[0]
+  return (hit * 1000 + missing * 100 + t.z * 10 + (t.x === 99 ? 1 : 0)) | 0   // 41131
+}`
+  for (const optimize of LEVELS) {
+    const exportsJs = {}
+    new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+    is(run(src, { optimize }).main(), exportsJs.main(), `O${optimize}: cross-schema prop read/write JS-exact`)
+  }
+})
+
+test('slot-hazards: all-schemas-share-the-slot keeps the structural fast path', () => {
+  // Both registered schemas carry `tag` at slot 0 — the closed-world condition
+  // holds, so the unresolved receiver reads the slot directly (values exact
+  // for both shapes through one binding).
+  const src = `
+const mk = () => { const a = []; a.push({ tag: 7, u: 1 }); return a }
+const other = () => { const b = []; b.push({ tag: 9, v: 2 }); return b }
+const use = (ps) => ps[0].tag
+export let main = () => (use(mk()) * 10 + use(other())) | 0`
+  for (const optimize of LEVELS)
+    is(run(src, { optimize }).main(), 79, `O${optimize}: shared-slot structural read exact`)
+})

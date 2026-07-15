@@ -97,12 +97,20 @@ export function initSchema(ctx) {
     if (ctx.schema.poisoned?.has(varName)) return -1
     const vt = lookupValType(varName)
     if (vt !== VAL.OBJECT) return -1
-    // Structural subtyping: walk only schemas that contain this prop.
-    // Consistent slot across all → return slot; any mismatch → -1 (dynamic lookup).
+    // Structural subtyping — sound only under the FULL closed-world condition:
+    // the prop lives at the SAME slot in EVERY registered schema, so whatever
+    // sid this OBJECT receiver carries, the slot is right. Checking only the
+    // schemas that CONTAIN the prop (the old form) bet that no other schema's
+    // instance could flow here — wrong the moment two shapes share a binding:
+    // `p.x` on a {z,w,q} receiver read z (slot 0 of a foreign schema), and the
+    // write sibling `p.x = v` CORRUPTED z. Receivers with a genuinely unique
+    // prop still devirtualize via guardedSlotOf's runtime-guarded path.
     const bucket = byProp.get(prop)
-    if (!bucket) return -1
+    if (!bucket || bucket.length !== ctx.schema.list.length) return -1
     const slot = bucket[0].slot
     for (let i = 1; i < bucket.length; i++) if (bucket[i].slot !== slot) return -1
+    if (typeof process !== 'undefined' && process.env?.JZ_DBG_SLOTOF)
+      console.error('[slotof-structural]', varName, '.', prop, 'slot', slot, 'bucket', bucket.length, 'of', ctx.schema.list.length, 'schemas')
     return slot
   }
 
