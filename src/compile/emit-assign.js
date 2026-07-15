@@ -12,16 +12,16 @@
 
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT } from '../ctx.js'
 import { T } from '../ast.js'
-import { staticPropertyKey, staticIndexKey, staticObjectProps } from '../static.js'
+import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey } from '../static.js'
+import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi } from '../../layout.js'
-import { inplaceKey } from './inplace-store.js'
 import { recordDynFnTableWrite } from './dyn-closure-tables.js'
 import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
   ptrOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
-  usesDynProps, needsDynShadow, boolBoxIR, carrierF64, mkPtrIR, isNumericIR,
+  usesDynProps, needsDynShadow, boolBoxIR, carrierF64, mkPtrIR, isNumericIR, undefExpr,
 } from '../ir.js'
 import { emit } from '../bridge.js'
 
@@ -324,7 +324,7 @@ function tryInplaceReplaceStore(arr, idx, val) {
   const reuse = aliasOk && aliasType === 'f64' ? ['local.get', `$${entry.alias}`] : null
   inc('__alloc_hdr')
   if (!reuse) inc('__arr_idx')
-  const kT = tempI32('ipk'), eT = temp('ipe'), oT = tempI32('ipo'), hT = tempI32('iph')
+  const kT = tempI32('ipk'), eT = temp('ipe'), oT = tempI32('ipo'), hT = tempI32('iph'), aTb = temp('ipa')
   const bitsE = () => ['i64.reinterpret_f64', ['local.get', `$${eT}`]]
   const fast = ['block', ['result', 'f64'],
     ['local.set', `$${oT}`, ['i32.wrap_i64', bitsE()]],
@@ -333,18 +333,105 @@ function tryInplaceReplaceStore(arr, idx, val) {
   const slow = ['block', ['result', 'f64'],
     ['local.set', `$${hT}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ops.allocSlots(schema.length)]]],
     ...slots.map((slot, i) => ops.store(['local.get', `$${hT}`], slot, ['local.get', `$${vTs[i]}`])),
-    storeArrayPayload(asF64(emit(arr)), ['f64.convert_i32_s', ['local.get', `$${kT}`]],
+    storeArrayPayload(typed(['local.get', `$${aTb}`], 'f64'), ['f64.convert_i32_s', ['local.get', `$${kT}`]],
       mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${hT}`]), persistBinding(arr))]
+  // JS member-store order: GetValue(base), then the property key, then the RHS
+  // values — `a[i++] = {x: i}`'s x must see the incremented i while the store
+  // still lands at the old index (caught by a differential probe; the values-
+  // first order shipped that divergence at every optimize level).
   return typed(['block', ['result', 'f64'],
-    ...parsed.values.map((v, i) => ['local.set', `$${vTs[i]}`, storedValue(v)]),
+    ['local.set', `$${aTb}`, asF64(emit(arr))],
     ['local.set', `$${kT}`, asI32(emit(idx))],
-    ['local.set', `$${eT}`, reuse ?? ['call', '$__arr_idx', asI64(emit(arr)), ['local.get', `$${kT}`]]],
+    ...parsed.values.map((v, i) => ['local.set', `$${vTs[i]}`, storedValue(v)]),
+    ['local.set', `$${eT}`, reuse ?? ['call', '$__arr_idx', ['i64.reinterpret_f64', ['local.get', `$${aTb}`]], ['local.get', `$${kT}`]]],
     ['if', ['result', 'f64'],
       ['i64.eq',
         ['i64.and', bitsE(), ['i64.const', '0xFFFFFFFF00000000']],
         ['i64.const', i64Hex(BigInt(encodePtrHi(PTR.OBJECT, sid)) << 32n)]],
       ['then', fast],
       ['else', slow]]], 'f64')
+}
+
+/** structInline Array<S> wholesale element replace `a[i] = {S-literal}` — K
+ *  f64 cell stores into the element's inline cells: no allocation, no box
+ *  read, no identity guard (cells cannot hold aliens — the layout is fixed by
+ *  analyzeStructInline's whole-program proof, which accepted this store via
+ *  the inplace sweep's alias-liveness + reuse verdicts).
+ *
+ *  Evaluation order (JS: member target before RHS): the index and — on the
+ *  non-cursor path — the receiver box spill FIRST, then the slot values (they
+ *  may read the old element's fields: `a[i] = {x: p.y, y: p.x}` swaps).
+ *
+ *  Bounds: one `cellIdx < physLen` u-compare. In-bounds → K stores; anything
+ *  else — i ≥ length (JS: array-extend) or a negative int-certain index
+ *  (JS: sidecar property) — DROPS the write, the same contract as the
+ *  checked-by-default typed store (OOB writes ignored). By then JS itself
+ *  would have thrown at the cursor's `p.x` projection (undefined.x), which
+ *  the carrier's unchecked cursor read already deviates on; the analyzer only
+ *  accepts stores preceded by a same-index cursor read (reuse verdict), so
+ *  append-idiom builders (`out[out.length] = {…}`) stay on the plain layout.
+ *  No grow call exists in the arm, so loop-invariant base hoists stay sound.
+ *
+ *  Address: with the sweep's target-binding reuse, the cursor IS the cell
+ *  address — base derives as `cursor − cellIdx*8` (pure arith); otherwise via
+ *  __ptr_offset on the spilled box. */
+function tryStructInlineReplaceStore(arr, idx, val) {
+  if (typeof arr !== 'string') return null
+  const sid = inlineArraySid(arr)
+  if (sid == null) return null
+  const schema = ctx.schema.list[sid]
+  const fields = structLiteralFields(val, sid)
+  // analyzeStructInline accepted every store site for this sid — a shape this
+  // arm cannot lower here means the phases disagree; never fall through to a
+  // boxed store on cell memory.
+  if (!fields) err(`structInline replace-store expects { ${schema.join(', ')} } literal`)
+  const void_ = ctx.func._expect === 'void'
+  const K = schema.length
+  const packed = ctx.schema.inlineCellI32?.has(sid)
+  const cpe = structInline(K, packed).cpe   // physical 8-byte cells per element
+  const ops = packed ? packedI32.ops : ctx.abi.object.ops
+  const entry = ctx.schema.inplaceStores?.get(inplaceKey(arr, val))
+  // Cursor reuse under the same conditions as tryInplaceReplaceStore's
+  // strongest form: the tracked alias is an unboxed i32 OBJECT pointer of this
+  // schema reading the same index — for the inline carrier that IS the cell
+  // address (array.js '[]' structInline arm).
+  const alias = entry?.alias && typeof idx === 'string' && idx === entry.idx &&
+    !ctx.func.boxed?.has(entry.alias) && ctx.func.locals.get(entry.alias) === 'i32' &&
+    repOf(entry.alias)?.ptrKind === VAL.OBJECT &&
+    (ctx.schema.vars.get(entry.alias) ?? repOf(entry.alias)?.schemaId) === sid
+    ? entry.alias : null
+  const kT = tempI32('sik'), cT = tempI32('sic'), bT = tempI32('sib'), aT = tempI32('sia')
+  const vTs = fields.map(() => packed ? tempI32('siv') : temp('siv'))
+  const boxT = alias ? null : temp('sit')
+  if (!alias) inc('__ptr_offset')
+  const cellIdx = cpe === 1 ? ['local.get', `$${kT}`] : ['i32.mul', ['local.get', `$${kT}`], ['i32.const', cpe]]
+  const body = [
+    ['local.set', `$${kT}`, asI32(emit(idx))],
+    ...(boxT ? [['local.set', `$${boxT}`, asF64(emit(arr))]] : []),
+    // packed values are int32-exact by the slotI32Certain census
+    ...fields.map((v, i) => ['local.set', `$${vTs[i]}`, packed ? asI32(emit(v)) : storedValue(v)]),
+    ['local.set', `$${cT}`, cellIdx],
+    ['local.set', `$${bT}`, alias
+      ? ['i32.sub', ['local.get', `$${alias}`], ['i32.shl', ['local.get', `$${cT}`], ['i32.const', 3]]]
+      : ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${boxT}`]]]],
+  ]
+  const inBounds = ['i32.lt_u', ['local.get', `$${cT}`],
+    ['i32.load', ['i32.sub', ['local.get', `$${bT}`], ['i32.const', 8]]]]
+  const stores = [
+    ['local.set', `$${aT}`, ['i32.add', ['local.get', `$${bT}`], ['i32.shl', ['local.get', `$${cT}`], ['i32.const', 3]]]],
+    ...fields.map((v, i) => ops.store(['local.get', `$${aT}`], i, ['local.get', `$${vTs[i]}`])),
+  ]
+  if (void_) return typed(['block', ...body, ['if', inBounds, ['then', ...stores]]], 'void')
+  // Value position is analyzer-poisoned (sweep candidates are statement-only);
+  // belt for exotic statement shapes: yield the element as a boxed pointer —
+  // under the inline carrier the cell address IS the object identity. A
+  // PACKED cell address cannot be boxed (slot reads through a box assume f64
+  // cells), so the phases disagreeing there is a compile error, not bytes.
+  if (packed) err('structInline packed replace-store in value position — analyzeStructInline must poison this shape')
+  return typed(['block', ['result', 'f64'], ...body,
+    ['if', ['result', 'f64'], inBounds,
+      ['then', ...stores, mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${aT}`])],
+      ['else', undefExpr()]]], 'f64')
 }
 
 export function emitElementAssign(arr, idx, val) {
@@ -389,6 +476,11 @@ export function emitElementAssign(arr, idx, val) {
         ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
       ['local.get', `$${resultTmp}`])
   }
+  // structInline receivers first: once analyzeStructInline committed the sid
+  // to the inline-cell layout, a boxed store (generic/inplace paths below)
+  // would corrupt cell memory — this arm is the only sound lowering.
+  const sIn = tryStructInlineReplaceStore(arr, idx, val)
+  if (sIn) return sIn
   const rmw = ctx.transform.optimize ? tryHashRmwFusion(arr, idx, val) : null
   if (rmw) return rmw
   const inplace = ctx.transform.optimize ? tryInplaceReplaceStore(arr, idx, val) : null
@@ -646,6 +738,18 @@ export function emitPropertyAssign(obj, prop, val) {
       if (si >= 0) {
         const shadow = needsDynShadow(typeof obj === 'string' ? obj : null)
         if (shadow) inc('__dyn_set')
+        // Packed i32 cells (structInline cursor, `.cellI32` node tag): the
+        // field is a raw i32 at +si*4 — i32.store, no f64 boxing. The store
+        // value is int32-exact by the slotI32Certain census (packing
+        // precondition); the expression result converts back at one op.
+        if (vaProbe.cellI32) {
+          const t = tempI32('pcw')
+          return block64(
+            ['local.set', `$${t}`, asI32(emit(val))],
+            packedI32.ops.store(ptrOffsetIR(vaProbe, VAL.OBJECT), si, ['local.get', `$${t}`]),
+            ...(shadow ? [['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', asF64(emit(obj))], asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${t}`]]]]]] : []),
+            ['f64.convert_i32_s', ['local.get', `$${t}`]])
+        }
         return withTemp(storedValue(val), t => [
           ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`]),
           ...(shadow ? [['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', asF64(emit(obj))], asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]] : []),

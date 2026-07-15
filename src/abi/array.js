@@ -66,23 +66,31 @@ export const taggedLinear = {
   },
 }
 
-// structInline(K) — SRoA carrier factory. Logical element `idx` occupies K
-// consecutive 8-byte cells; the carrier hands back the byte address of the
-// element's first cell, and field `f` is then a plain `+f*8` composed by the
-// schema slot machinery (`ctx.abi.object.ops`). Built on demand per schema
+// structInline(K, packed) — SRoA carrier factory. Logical element `idx`
+// occupies `cpe` consecutive 8-byte cells: K for f64 fields, ⌈K/2⌉ when the
+// schema packs i32 fields (ctx.schema.inlineCellI32 — two i32s per physical
+// cell, odd K pads). The carrier hands back the byte address of the element's
+// first cell; field `f` is then `+f*8` (tagged f64 slots) or `+f*4`
+// (packedI32) composed by the schema slot machinery. `len`/`cap` count
+// physical 8-byte cells either way, so every stride-8 helper (`__alloc_hdr`,
+// `__arr_grow*`, `__len`) is reused untouched. Built on demand per schema
 // (`K = ctx.schema.list[sid].length`) — not a `ctx.abi` default.
-export const structInline = (K) => ({
-  K,
-  ops: {
-    // Byte address of logical element `idx`'s first cell off i32 `base`.
-    // A JS-integer idx folds to a constant; an IR-node idx emits `idx*K`
-    // then the `<<3` (via `addr`).
-    elemAddr: (base, idx) =>
-      typeof idx === 'number'
-        ? addr(base, idx * K)
-        : addr(base, K === 1 ? idx : ['i32.mul', idx, ['i32.const', K]]),
-  },
-})
+export const structInline = (K, packed = false) => {
+  const cpe = packed ? (K + 1) >> 1 : K   // physical 8-byte cells per element
+  return {
+    K,
+    cpe,
+    ops: {
+      // Byte address of logical element `idx`'s first cell off i32 `base`.
+      // A JS-integer idx folds to a constant; an IR-node idx emits `idx*cpe`
+      // then the `<<3` (via `addr`).
+      elemAddr: (base, idx) =>
+        typeof idx === 'number'
+          ? addr(base, idx * cpe)
+          : addr(base, cpe === 1 ? idx : ['i32.mul', idx, ['i32.const', cpe]]),
+    },
+  }
+}
 
 // Default carrier — picked when the narrower has no stronger evidence.
 // Reached via `ctx.abi.array`.

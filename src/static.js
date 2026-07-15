@@ -163,6 +163,37 @@ export function objLiteralSchemaId(expr) {
   return parsed ? ctx.schema.register(parsed.names) : null
 }
 
+/** Canonical content key for an inplace/structInline replace-store site —
+ *  the ','-wrapper around literal props is normalized away between plan and
+ *  emit, so flatten before serializing. Shared by scanInplaceStores (plan),
+ *  analyzeStructInline (eligibility), and the emit arms; lives here so the
+ *  three importers stay acyclic (the self-host resolver rejects cycles). */
+export const inplaceKey = (arrName, lit) => {
+  const props = lit.slice(1)
+  const flat = props.length === 1 && Array.isArray(props[0]) && props[0][0] === ',' ? props[0].slice(1) : props
+  return `${arrName}|${JSON.stringify(flat)}`
+}
+
+/** K schema-ordered field-value AST nodes of an object literal `{S}` — the
+ *  cell-store order for a structInline `.push({S})` / `a[i] = {S}` — or null if
+ *  `lit` is not a plain static-key `{}` literal carrying exactly schema `sid`'s
+ *  fields. Mapped by name into schema order so sites with differing key order
+ *  flatten to the same cell run. */
+export function structLiteralFields(lit, sid) {
+  if (!Array.isArray(lit) || lit[0] !== '{}') return null
+  const parsed = staticObjectProps(lit.slice(1))
+  const schema = ctx.schema.list[sid]
+  if (!parsed || parsed.names.length !== schema.length) return null
+  const byName = new Map()
+  for (let i = 0; i < parsed.names.length; i++) byName.set(parsed.names[i], parsed.values[i])
+  const out = []
+  for (const name of schema) {
+    if (!byName.has(name)) return null
+    out.push(byName.get(name))
+  }
+  return out
+}
+
 /** Resolve schemaId of an expression, given a per-function schemaId map for locals.
  *  Used for both intra-function arr elem-schema observation and func.arrayElemSchema
  *  return inference. Recognizes: object literals, var names with bound schemaId,

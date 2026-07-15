@@ -15,6 +15,7 @@ import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { inlineArraySid } from '../src/static.js'
+import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal } from '../src/ctx.js'
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
@@ -1024,6 +1025,9 @@ export default (ctx) => {
     const base = (baseExpr?.ptrKind != null && baseExpr.ptrKind !== VAL.ARRAY)
       ? baseExpr
       : (baseExpr?.type === 'f64' ? baseExpr : asF64(baseExpr))
+    // Packed i32 cells (structInline + inlineCellI32, flag rides the cursor
+    // node): the field IS a raw i32 at +idx*4 — one i32.load, no trunc_sat.
+    if (baseExpr?.cellI32) return typed(packedI32.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx), 'i32')
     const load = ctx.abi.object.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx)
     // Strict-int32 slot (ctx.schema.slotI32CertainAt — every censused write is
     // exactly-int32, never -0): land the value directly in i32. trunc_sat of
@@ -1379,13 +1383,15 @@ export default (ctx) => {
       if (Array.isArray(obj) && (obj[0] === 'str' || obj[0] == null) && typeof obj[1] === 'string') {
         return typed(['f64.const', new TextEncoder().encode(obj[1]).length], 'f64')
       }
-      // structInline Array<S>: the header `len` counts physical f64 cells (K
-      // per element), so the JS array length is `physicalLen / K`.
+      // structInline Array<S>: the header `len` counts physical 8-byte cells
+      // (K per element, ⌈K/2⌉ when packed i32), so the JS array length is
+      // `physicalLen / cellsPerElem`.
       const inlSid = inlineArraySid(obj)
       if (inlSid != null) {
         const K = ctx.schema.list[inlSid].length
+        const cpe = structInline(K, ctx.schema.inlineCellI32?.has(inlSid)).cpe
         const physLen = ['i32.load', ['i32.sub', ptrOffsetIR(asF64(emit(obj)), VAL.ARRAY), ['i32.const', 8]]]
-        return typed(['f64.convert_i32_s', K > 1 ? ['i32.div_s', physLen, ['i32.const', K]] : physLen], 'f64')
+        return typed(['f64.convert_i32_s', cpe > 1 ? ['i32.div_s', physLen, ['i32.const', cpe]] : physLen], 'f64')
       }
       const rep = typeof obj === 'string' ? repOf(obj) : null
       const vt = rep ? rep.val : valTypeOf(obj)

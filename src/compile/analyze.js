@@ -22,7 +22,7 @@ import { commaList, ASSIGN_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralSt
 import { ctx, err } from '../ctx.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from '../kind.js'
-import { intLiteralValue, nonNegIntLiteral, constIntExpr, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid } from '../static.js'
+import { intLiteralValue, nonNegIntLiteral, constIntExpr, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
 import { typedElemCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, inBoundsCharCodeAt, exprType, intCertainMap } from '../type.js'
 import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux } from '../../layout.js'
 
@@ -1360,6 +1360,9 @@ export function analyzeStructInline(funcFacts, programFacts) {
   if (!inlineArray || !ctx.schema?.list) return
   const { paramReps } = programFacts
   const cand = new Set()      // sids observed as an `Array<S>` element schema
+  // env-gated debug — dist/jz.js runs in browsers where `process` doesn't
+  // exist, and WASI hosts strip `process.env`
+  const DBG = typeof process !== 'undefined' && process.env?.JZ_DBG_INLARR
   const black = new Set()     // sids disqualified by some use
 
   const propsOf = (sid) => ctx.schema.list[sid] || []
@@ -1411,10 +1414,16 @@ export function analyzeStructInline(funcFacts, programFacts) {
     for (let i = 1; i < node.length; i++) poisonAll(node[i])
   }
 
+  const cursorsByFunc = new Map()   // sig → Map<name, sid> — feeds inlineCellCursors
+  const bracketKeyed = new Set()    // sids with `p['x']` cursor reads — those route
+                                    // through the boxed dyn path (f64 slots), so
+                                    // they stay on f64 cells (no i32 packing)
   for (const [func, facts] of funcFacts) {
     const body = func?.body
-    const reps = facts?.localReps
-    if (func?.raw || !reps || body == null || typeof body !== 'object') continue
+    // A reps-less frame (zero locals/params — a composing `main`) still gets
+    // the walk: its call compositions can forward inline-carried returns.
+    const reps = facts?.localReps ?? new Map()
+    if (func?.raw || body == null || typeof body !== 'object') continue
 
     // `Array<S>` bindings of this function (codegen truth) and their schemas.
     const arrName = new Map()       // name → sid
@@ -1425,13 +1434,20 @@ export function analyzeStructInline(funcFacts, programFacts) {
       cand.add(sid)
       arrName.set(name, sid)
     }
-    if (!arrName.size) continue
+    // No early-out on empty arrName: a frame with no tracked arrays of its
+    // own can still FORWARD inline-carried returns through call compositions
+    // (`use(mk())` in a helper-free main, `mk().length`) — the verify walk's
+    // call rules must see those sites (every other arm no-ops on the empty
+    // maps). This closed a live wrong-value: `mk().length` read the PHYSICAL
+    // cell count (K·n) whenever the consumer frame carried no elem fact.
 
     // A structInline `Array<S>` value is only ever born from an empty `[]`
     // grown by structInline `.push`. `expr` is such a producer of `Array<sid>`
     // iff it is: a tracked `Array<sid>` alias, an empty `[]` literal, or a call
-    // to a user function (whose returned array is structInline whenever sid
-    // survives this whole-program pass). Every other source — a non-empty
+    // to a user function whose settled return fact IS `Array<sid>` (narrow's
+    // fact — the exact agreement the receiving binding's own rep derives from;
+    // a fact-less callee could return an inline-carried array into a binding
+    // read as plain, `mk().length`-class). Every other source — a non-empty
     // `[{S},…]` literal, a builtin call (`JSON.parse`, `Object.values`, `.map`,
     // `.slice`, a member access onto a parsed object) — yields a taggedLinear
     // array and must poison sid.
@@ -1440,8 +1456,10 @@ export function analyzeStructInline(funcFacts, programFacts) {
       if (!Array.isArray(expr)) return false
       const elems = staticArrayElems(expr)
       if (elems) return elems.length === 0
-      return expr[0] === '()' && typeof expr[1] === 'string' && !!ctx.func.map?.has(expr[1])
+      return expr[0] === '()' && typeof expr[1] === 'string' &&
+        ctx.func.map?.get(expr[1])?.arrayElemSchema === sid
     }
+    const isUserCall = (e) => Array.isArray(e) && e[0] === '()' && typeof e[1] === 'string'
 
     // Pass 1 — collect `const p = a[i]` cursors; drop on name clash / re-decl.
     const cursor = new Map()        // name → sid
@@ -1466,6 +1484,7 @@ export function analyzeStructInline(funcFacts, programFacts) {
       for (let i = 1; i < node.length; i++) collectCursors(node[i])
     }
     collectCursors(body)
+    if (cursor.size) cursorsByFunc.set(func.sig, cursor)
 
     // A `['[]', arrName, idx]` element read of a tracked array → its sid.
     const elemArrSid = (n) =>
@@ -1481,6 +1500,29 @@ export function analyzeStructInline(funcFacts, programFacts) {
       return false
     }
     const visitChild = (c) => { if (!flag(c)) verify(c) }
+
+    // Argument walk of a direct user call — the one sanctioned way to verify
+    // a call node. `Array<S>` values may cross a call boundary only when the
+    // callee's param carries the same settled elem fact (a structInline-
+    // carried array read as plain on the other side misinterprets cells —
+    // both name args and `g(mk())` call-expr args need the agreement).
+    function verifyCall(node) {
+      const callee = node[1]
+      const args = argsOf(node)
+      const known = typeof callee === 'string' && ctx.func.map?.has(callee)
+      const cParams = known ? paramReps?.get(callee) : null
+      for (let k = 0; k < args.length; k++) {
+        const arg = args[k]
+        if (typeof arg === 'string' && arrName.has(arg)) {
+          const sid = arrName.get(arg)
+          if (!(known && cParams?.get(k)?.arrayElemSchema === sid)) black.add(sid)
+        } else if (isUserCall(arg) && ctx.func.map?.get(arg[1])?.arrayElemSchema != null) {
+          const rsid = ctx.func.map.get(arg[1]).arrayElemSchema
+          if (!(known && cParams?.get(k)?.arrayElemSchema === rsid)) black.add(rsid)
+          verifyCall(arg)
+        } else if (!flag(arg)) verify(arg)
+      }
+    }
 
     function verify(node) {
       if (!Array.isArray(node)) return
@@ -1515,16 +1557,70 @@ export function analyzeStructInline(funcFacts, programFacts) {
         const o = node[1], k = node[2]
         if (typeof o === 'string') {
           if (arrName.has(o)) black.add(arrName.get(o))   // element value escape
-          else if (cursor.has(o)) { if (!(isStrLit(k) && inSchema(cursor.get(o), k[1]))) black.add(cursor.get(o)) }
+          else if (cursor.has(o)) {
+            if (!(isStrLit(k) && inSchema(cursor.get(o), k[1]))) black.add(cursor.get(o))
+            else bracketKeyed.add(cursor.get(o))   // legal, but f64-cells-only
+          }
           if (k != null) visitChild(k)
           return
         }
         const esid = elemArrSid(o)
         if (esid != null) {
           if (!(isStrLit(k) && inSchema(esid, k[1]))) black.add(esid)
+          else bracketKeyed.add(esid)
           visitChild(o[2])
         } else if (o != null) visitChild(o)
         if (k != null) visitChild(k)
+        return
+      }
+
+      // Property WRITES on a tracked array (`a.length = n`, `a.length++`) —
+      // the `.` receiver rule below allows `.length` READS only; a resize in
+      // LOGICAL units through the physical-cell header would corrupt the
+      // carrier's length semantics. Any dot-target write/update poisons.
+      if ((op === '++' || op === '--' || ASSIGN_OPS.has(op)) &&
+          Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
+          typeof node[1][1] === 'string' && arrName.has(node[1][1])) {
+        black.add(arrName.get(node[1][1]))
+        for (let i = 2; i < node.length; i++) visitChild(node[i])
+        return
+      }
+
+      // Wholesale element replace `a[i] = {S-literal}` — the immutable-update
+      // idiom. Handled iff the whole-program alias sweep (scanInplaceStores)
+      // proved every same-content store safe (content-keyed — node identity
+      // does not survive analyzeFuncForEmit's loop rewrites) WITH target-
+      // binding reuse: a same-index tracked cursor precedes the store, so the
+      // replace idiom is separated from append-builders (`out[len] = {…}`),
+      // which stay on the plain layout where extend keeps JS semantics. A
+      // value-position `x = (a[i] = {…})` poisons the sid inside the sweep
+      // itself (its `[]` target walks as a value read), so a surviving verdict
+      // implies statement position. Index must be an int-certain name — a
+      // fractional/negative index is a sidecar PROPERTY write in JS, which the
+      // inline arm cannot express (it drops OOB writes like the checked typed
+      // store). Emit lowers via emit-assign's tryStructInlineReplaceStore.
+      if (op === '=' && Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 3 &&
+          typeof node[1][1] === 'string' && arrName.has(node[1][1])) {
+        const sid = arrName.get(node[1][1])
+        const rhs = node[2], idx = node[1][2]
+        const entry = Array.isArray(rhs) && rhs[0] === '{}'
+          ? ctx.schema.inplaceStores?.get(inplaceKey(node[1][1], rhs)) : null
+        const ok = typeof idx === 'string' && reps.get(idx)?.intCertain === true &&
+          entry != null && entry.alias != null && entry.idx === idx &&
+          objLiteralSchemaId(rhs) === sid
+        if (!ok) {
+          if (DBG) console.error('[inlarr-store-reject]', func.name, node[1][1], 'sid', sid,
+            'idxIntCertain', typeof idx === 'string' && reps.get(idx)?.intCertain === true,
+            'entry', entry, 'litSid', Array.isArray(rhs) ? objLiteralSchemaId(rhs) : null)
+          black.add(sid)
+          if (idx != null) visitChild(idx)
+          if (rhs != null) visitChild(rhs)
+          return
+        }
+        if (idx != null) visitChild(idx)
+        // literal is a fresh value consumed by the store — verify slot values only
+        const props = rhs.length === 2 && Array.isArray(rhs[1]) && rhs[1][0] === ',' ? rhs[1].slice(1) : rhs.slice(1)
+        for (const pr of props) visitChild(Array.isArray(pr) && pr[0] === ':' ? pr[2] : pr)
         return
       }
 
@@ -1534,6 +1630,7 @@ export function analyzeStructInline(funcFacts, programFacts) {
       if (op === '=' && typeof node[1] === 'string' && arrName.has(node[1])) {
         const sid = arrName.get(node[1])
         if (!safeArrSource(node[2], sid)) black.add(sid)
+        else if (isUserCall(node[2])) verifyCall(node[2])
         else if (typeof node[2] !== 'string') visitChild(node[2])
         return
       }
@@ -1564,16 +1661,17 @@ export function analyzeStructInline(funcFacts, programFacts) {
           return
         }
         if (typeof callee === 'string') {
-          const args = argsOf(node)
-          const known = ctx.func.map?.has(callee)
-          const cParams = paramReps?.get(callee)
-          for (let k = 0; k < args.length; k++) {
-            const arg = args[k]
-            if (typeof arg === 'string' && arrName.has(arg)) {
-              const sid = arrName.get(arg)
-              if (!(known && cParams?.get(k)?.arrayElemSchema === sid)) black.add(sid)
-            } else if (!flag(arg)) verify(arg)
-          }
+          // A call reached through GENERIC descent is an un-sanctioned
+          // position for an `Array<S>`-returning callee — a receiver
+          // (`mk().length` reads the PHYSICAL cell count), an operand, a
+          // spread, a bare statement. Sanctioned positions (decl init /
+          // return with fact agreement, agreement-checked call args) route
+          // through verifyCall directly and never reach this poison. An
+          // expression-bodied arrow's whole body is its return position —
+          // sanction it under the same fact agreement.
+          const retSid = ctx.func.map?.get(callee)?.arrayElemSchema
+          if (retSid != null && !(node === body && func.arrayElemSchema === retSid)) black.add(retSid)
+          verifyCall(node)
           return
         }
         visitChild(callee)
@@ -1594,6 +1692,15 @@ export function analyzeStructInline(funcFacts, programFacts) {
           black.add(func.arrayElemSchema)
         const esid = elemArrSid(e)
         if (esid != null) { black.add(esid); visitChild(e[2]); return }
+        if (isUserCall(e)) {
+          // `return g()` in a function with NO matching elem fact lets an
+          // inline-carried array escape into fact-less land — poison unless
+          // the facts agree (the agreeing case is the sanctioned position).
+          const rsid = ctx.func.map?.get(e[1])?.arrayElemSchema
+          if (rsid != null && func.arrayElemSchema !== rsid) black.add(rsid)
+          verifyCall(e)
+          return
+        }
         if (e != null) visitChild(e)
         return
       }
@@ -1611,7 +1718,9 @@ export function analyzeStructInline(funcFacts, programFacts) {
           if (typeof name === 'string' && arrName.has(name)) {
             const sid = arrName.get(name)
             if (!safeArrSource(rhs, sid)) black.add(sid)               // non-structInline producer
-            else if (typeof rhs !== 'string') visitChild(rhs)          // [] / user-call — verify subtree
+            // [] / fact-agreeing user call — sanctioned; verify args/subtree
+            else if (isUserCall(rhs)) verifyCall(rhs)
+            else if (typeof rhs !== 'string') visitChild(rhs)
             continue
           }
           if (typeof name !== 'string') visitChild(name)
@@ -1630,6 +1739,28 @@ export function analyzeStructInline(funcFacts, programFacts) {
   if (ctx.module?.moduleInits) for (const mi of ctx.module.moduleInits) poisonAll(mi)
 
   for (const sid of cand) if (!black.has(sid)) inlineArray.add(sid)
+
+  // Packed i32 cells (inlineCellI32): all slots strict-int32 (slotI32Certain —
+  // every censused write exactly-int32, never -0, hazard-belted), K ≥ 2 (a
+  // 1-field element still occupies one 8-byte cell — packing buys nothing),
+  // and no bracket-keyed cursor reads (those route through the boxed dyn
+  // path, which assumes f64 slots). Elements then pack K raw i32 fields into
+  // ⌈K/2⌉ physical cells — C's record layout; loads/stores drop the
+  // trunc_sat/convert layer. The packed decision is consumed through cursor
+  // nodes (inlineCellCursors → readVar's `.cellI32` tag), never the bare sid:
+  // a standalone `{S}` object of the same sid keeps tagged f64 slots.
+  for (const sid of inlineArray) {
+    const props = propsOf(sid)
+    if (props.length >= 2 && !bracketKeyed.has(sid) &&
+        props.every(p => ctx.schema.slotI32CertainBySid?.(sid, p)))
+      ctx.schema.inlineCellI32.add(sid)
+  }
+  for (const [sig, cur] of cursorsByFunc) {
+    let set = null
+    for (const [name, sid] of cur) if (ctx.schema.inlineCellI32.has(sid)) (set ??= new Set()).add(name)
+    if (set) ctx.schema.inlineCellCursors.set(sig, set)
+  }
+  if (DBG) console.error('[inlarr]', 'eligible:', [...inlineArray], 'packedI32:', [...ctx.schema.inlineCellI32])
 }
 
 /** Schema id when `name` is bound (codegen truth) to a structInline `Array<S>`,

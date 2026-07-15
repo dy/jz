@@ -33,6 +33,23 @@
 // untouched — matches `slotAddr` so routed sites stay byte-identical.
 const addr = (base, i) => i === 0 ? base : ['i32.add', base, ['i32.const', i * 8]]
 
+// 4-byte sibling for packed i32 cells.
+const addr4 = (base, i) => i === 0 ? base : ['i32.add', base, ['i32.const', i * 4]]
+
+/** Packed i32 field cells — the carrier for structInline arrays whose schema
+ *  is all-strict-int32 (ctx.schema.inlineCellI32): field `i` is a raw i32 at
+ *  `base + i*4`. Values are exact by the slotI32Certain census (every write
+ *  provably int32, never -0), so loads/stores skip the f64 boxing layer
+ *  entirely. Reached only through cursor/cell nodes tagged `.cellI32` — a
+ *  standalone object of the same schema keeps `tagged` f64 slots. */
+export const packedI32 = {
+  ops: {
+    addr: addr4,
+    load: (base, i) => ['i32.load', addr4(base, i)],
+    store: (base, i, val) => ['i32.store', addr4(base, i), val],
+  },
+}
+
 export const tagged = {
   // Field operations the compiler routes object access through.
   ops: {

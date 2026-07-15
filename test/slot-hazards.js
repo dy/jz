@@ -134,10 +134,11 @@ export let main = () => {
 })
 
 test('slot-hazards: strict-i32 slots load raw i32 on the immutable kernel', () => {
-  // The immutable-update kernel's four slots are strict (bitwise/int32-literal
-  // writes through the optimistic fixpoint): every field read lands as
-  // `i32.trunc_sat_f64_s(load)` with NO ToInt32 NaN-guard select left in the
-  // inner loop, and the ternary locals declare i32.
+  // The immutable-update kernel's slots are strict (bitwise/int32-literal
+  // writes through the optimistic fixpoint): the structInline carrier then
+  // packs the elements into raw i32 cells (inlineCellI32) — field reads are
+  // bare `i32.load`, zero trunc_sat/convert in the inner loop, and the
+  // ternary locals declare i32.
   const src = `
 const step = (ps) => {
   let sum = 0
@@ -166,7 +167,9 @@ export let main = () => step(init())`
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
   const stepBody = wat.split('(func ').find(c => /^\$step\b/.test(c)) || ''
   ok(/\(local \$x i32\)/.test(stepBody), 'ternary local x declared i32')
-  ok(/i32.trunc_sat_f64_s\s*\(f64.load/.test(stepBody.replace(/\n\s*/g, ' ')), 'slot reads land raw i32')
+  const loop = stepBody.slice(stepBody.indexOf('(loop'))
+  ok(/i32\.load/.test(loop), 'packed cells: slot reads are bare i32.load')
+  ok(!/trunc_sat/.test(loop), 'no f64→i32 conversion left in the kernel loop')
   const exportsJs = {}
   new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
   is(run(src, { optimize: 'speed' }).main(), exportsJs.main(), 'bit-matches plain JS')

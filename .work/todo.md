@@ -272,6 +272,76 @@
     Next concrete step: wasm2wat both upsert loops side by side, count the
     per-probe ops, cut the diff — then re-run wordcount/shapes/dict on M4
     + CI bench-probe.
+    IMMUTABLE WON — ARRAY-OF-RECORDS FLATTENING LANDED (2026-07-15, the
+    campaign's unit 2): the structInline carrier existed (Array<S> as K
+    inline f64 cells) but REFUSED the immutable idiom at exactly one
+    form — the wholesale replace `ps[i] = {S-literal}` (analyze.js
+    poisoned every indexed store). Landed as two increments:
+    (v1) analyzeStructInline accepts the replace store when the inplace
+    sweep (scanInplaceStores, content-keyed — node identity dies in
+    analyzeFuncForEmit's loop rewrites) proved alias-liveness AND
+    target-binding reuse (same-index cursor precedes → separates the
+    replace idiom from append-builders, which keep plain-layout JS
+    extend); idx must be an int-certain name (fractional/negative = JS
+    sidecar property, inexpressible inline). Emit arm
+    (tryStructInlineReplaceStore, FIRST in emitElementAssign): spill
+    box→idx→values (JS member-store order), ONE lt_u bounds check
+    against physLen, K cell stores through the cursor-derived base
+    (cursor − cellIdx·8, no __ptr_offset call); OOB writes DROP (the
+    checked-typed-store contract; no grow call in the loop keeps base
+    hoists sound). (v2) PACKED i32 CELLS (ctx.schema.inlineCellI32):
+    all-slots-strict-int32 (slotI32Certain, hazard-belted) + K ≥ 2 +
+    no bracket-keyed cursor reads → K raw i32 fields in ⌈K/2⌉ cells —
+    C's exact record layout (immutable: stride 16, 4× i32.load /
+    i32.store, ZERO trunc_sat/convert). The packed decision rides
+    CURSOR NODES (inlineCellCursors → readVar's .cellI32 tag), never
+    the bare sid — a standalone {S} object of the same sid keeps f64
+    slots. New packedI32 carrier in src/abi/object.js (the seam's
+    promised "packed" sibling); structInline(K, packed) grows cpe;
+    push/length/slot-read/dot-write/replace-store all branch on it.
+    M4 FIELD VERDICT (quiet, cs=1726748178 exact everywhere): jz
+    0.24 ms LEADS ALL — c-wasm 0.42 (1.79×), go-wasm 0.46 (1.94×),
+    rust-wasm 0.55 (2.32×), V8 0.63 (2.64×), AS 0.99 (4.18×) — from
+    3.9× BEHIND c-wasm; jz binary 1.8 kB vs C 925 kB. The C residual
+    explained honestly: same 4-load/4-store loop but LLVM lowered the
+    rare bounce conditionals to flat selects (dependency chains every
+    iteration); jz's branches predict not-taken ≈ free. -Os rows
+    byte-stable (aos 1894 / sort 1814 / hash 1086 — aos is floats, no
+    packing). THREE PRE-EXISTING HOLES FOUND + CLOSED en route (all
+    dist-reproduced, pinned in test/struct-inline.js):
+    (1) tryInplaceReplaceStore spilled VALUES before the INDEX —
+    `a[i++] = {x: i}` computed x from pre-increment i at every
+    optimize level (fix: box→idx→values order, + box spilled once).
+    (2) Call-expr compositions were invisible to the eligibility walk:
+    frames with no tracked arrays were SKIPPED (`!reps` + arrName-empty
+    early-outs) so `use(mk())` in a helper-free main never checked
+    param agreement, and `mk().length` (an un-sanctioned call position)
+    read the PHYSICAL cell count — dist returns 2 for a 1-element
+    K=3 array TODAY. Fix: every frame walks; verifyCall does the
+    arg-agreement (name AND call-expr args); safeArrSource requires
+    exact return-fact match; un-sanctioned Array<S>-returning call
+    positions poison (expression-body return sanctioned on agreement).
+    (3) OPEN, minimal repro saved (probe-min2.mjs): missing-prop reads
+    on an unresolved receiver resolve UNGUARDED when the prop names a
+    field on exactly one schema — `use(ps){ const p = ps[0]; p.x }`
+    with callers passing Array<{x,y}> AND Array<{z,w,q}> emits a RAW
+    slot-0 load (no schema guard, no dyn fallback, both opt levels):
+    the {z,w,q} leg returns z's value (3) instead of undefined. The
+    bare-getter-hijack sibling for USER props. PRE-FIX this composed
+    into static-pool derefs (f64 bits 0x6e69666e494e614e = ASCII
+    "NaNInfin" — the formatter literals read as numbers); this unit's
+    call-composition fixes already removed that manifestation — the
+    residual is the wrong-slot VALUE, not memory garbage. NEXT
+    correctness hunt: the unresolved-receiver unique-prop read must
+    guard (emitSchemaSlotGuarded) or fall to dyn.
+    Pins: test/struct-inline.js (11 tests: packed engagement wat +
+    values, f64-cells leg, odd-K pad, cursor write, alias-after-store
+    JS identity, value-position store, element escape, call-expr
+    .length agreement, push logical length, OOB-drop contract, idx
+    eval order); slot-hazards + inference wat asserts re-pinned to the
+    packed shape. FOLLOW-UPS: shapes/wordcount re-check on CI probe;
+    SoA (per-field lanes) only if a vectorizable consumer shows up —
+    AoS is C's layout and won the row.
     HASH LANE LANDED (the SoA increment, variant C — minimal blast
     radius): every Set/Map/HASH table carries an i32 hash lane (cap×4 B,
     zero-filled, AFTER the entries) — the only thing probes walk (one
@@ -1395,7 +1465,7 @@
   - [x] Mobile version
   - [x] Light theme?
   - [ ] Sponsor call
-  - [ ] Used by (projects list)
+  - [x] Used by — color-space v3 ships its 27-space `color-space/wasm` backend built with JZ
 - [ ] Examples
   - [ ] Each example must be a high-quality hero-screen-able configurable entertaing piece of art
   - [ ] Each example must be presentable to authors: lovely code editor, lovely settings panel,
@@ -1411,11 +1481,13 @@
   pre-built .wasm (looks like AssemblyScript's gallery); the differentiator (compiles
   in-browser) is invisible. rfft demo already has a source panel; ~30 lines (textarea →
   debounce → jz(src) → postMessage(bytes) → instantiate in worklet).
-- [ ] **unplugin-jz** — one plugin covers Vite/Rollup/webpack/esbuild/Rspack. `import { fib }
-  from './fib.js?jz'` → WASM at build time. ~100 lines. Leapfrogs AS's rollup-plugin + as-loader.
-- [ ] **Dogfood own libs** — color-space, digital-filter biquad, web-audio-api,
-  fourier-transform. Highest-trust bench. biquad: bench proves jz 1.23× faster than Node;
-  the "Used internally by" README credit is commented-out (false) → make it true.
+- [~] **unplugin-jz** — working prototype in `~/projects/unplugin-jz`: `kernel.js?jz`
+  compiles import-free numeric exports to inline, sync-instantiated WASM; real
+  Vite/Rollup/esbuild builds pass and webpack/Rspack adapters are exposed. Next:
+  emitted-asset A/B, source-module graph, boxed-value interop.
+- [~] **Dogfood own libs** — color-space v3 SHIPPED: 27-space `color-space/wasm`,
+  import-free prebuilt JZ module with scalar↔WASM parity tests; README/site credit live.
+  Remaining: digital-filter biquad, web-audio-api, fourier-transform.
 - [~] **REPL** — ~~engine choice (porffor/awasm/jco)~~; download wasm; show produced WAT; auto
   var→let / function→arrow on paste; auto-import implicit globals; resolve npm packages (url);
   document interop.

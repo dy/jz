@@ -6,7 +6,7 @@
 
 import nanboxF64 from './number.js'
 import sso, { jsstring } from './string.js'
-import tagged from './object.js'
+import tagged, { packedI32 } from './object.js'
 import taggedLinear, { structInline } from './array.js'
 
 /** All carriers per value type — keyed by stable id for rep.carrier lookup. */
@@ -48,4 +48,4 @@ export function makeAbi() {
   return { ...DEFAULTS, carriers: CARRIERS, resolve: resolveCarrier }
 }
 
-export { nanboxF64, sso, jsstring, tagged, taggedLinear, structInline }
+export { nanboxF64, sso, jsstring, tagged, packedI32, taggedLinear, structInline }

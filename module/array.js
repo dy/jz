@@ -13,7 +13,7 @@ import { inBoundsArrIdx } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
-import { staticPropertyKey, staticObjectProps, inlineArraySid, staticIndexKey, intLiteralValue } from '../src/static.js'
+import { staticPropertyKey, staticObjectProps, inlineArraySid, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, updateRep } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat } from '../src/ctx.js'
@@ -61,25 +61,6 @@ function hoistArrayValue(arr) {
 }
 
 const arrayLenFromPtr = ptr => ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]
-
-/** K schema-ordered field-value AST nodes of an object literal `{S}` for a
- *  structInline `.push({S})`, or null if `lit` is not a plain static-key `{}`
- *  literal carrying exactly schema `sid`'s fields. Mapped by name into schema
- *  order so push sites with differing key order flatten to the same cell run. */
-function structLiteralFields(lit, sid) {
-  if (!Array.isArray(lit) || lit[0] !== '{}') return null
-  const parsed = staticObjectProps(lit.slice(1))
-  const schema = ctx.schema.list[sid]
-  if (!parsed || parsed.names.length !== schema.length) return null
-  const byName = new Map()
-  for (let i = 0; i < parsed.names.length; i++) byName.set(parsed.names[i], parsed.values[i])
-  const out = []
-  for (const name of schema) {
-    if (!byName.has(name)) return null
-    out.push(byName.get(name))
-  }
-  return out
-}
 
 // Pure-expression check: no statements, binders, control flow, or assignments.
 // Inlining is only safe for these — anything else needs the full closure machinery.
@@ -854,11 +835,16 @@ export default (ctx) => {
       if (inlSid != null) {
         const baseI32 = tempI32('ab')
         const K = ctx.schema.list[inlSid].length
-        const cell = typed(structInline(K).ops.elemAddr(
+        const packed = ctx.schema.inlineCellI32?.has(inlSid)
+        const cell = typed(structInline(K, packed).ops.elemAddr(
           ['local.tee', `$${baseI32}`, arrBase()],
           vi), 'i32')
         cell.ptrKind = VAL.OBJECT
         cell.ptrAux = inlSid
+        // Packed i32 cells: slot access through this node (and through cursor
+        // locals bound to it — readVar re-derives via inlineCellCursors) must
+        // pick the packedI32 ops.
+        if (packed) cell.cellI32 = true
         return cell
       }
       // Known-ARRAY → __arr_idx (single forwarding follow + inline bounds check),
@@ -1010,14 +996,18 @@ export default (ctx) => {
     // statement-position hint now so a dropped `xs.push(v)` can skip computing
     // the JS return length while still performing the mutation/writeback.
     const void_ = ctx.func._expect === 'void'
-    // structInline Array<S>: `.push({S})` writes the K schema fields as K
-    // consecutive f64 cells. Flatten the struct literal into K schema-ordered
+    // structInline Array<S>: `.push({S})` writes the K schema fields as
+    // consecutive cells. Flatten the struct literal into K schema-ordered
     // field-value nodes and fall through to the general multi-value store path
-    // — `len`/`cap` count physical cells, so `__arr_grow_known` and the cell
-    // loop are reused untouched; `.push` then returns the logical element count
-    // (`len / K`). K=1 stays a single value → the `__arr_push1` fast path.
+    // — `len`/`cap` count physical 8-byte cells, so `__arr_grow_known` and the
+    // cell loop are reused untouched; `.push` then returns the logical element
+    // count (`len / cellsPerElem`). K=1 stays a single value → the
+    // `__arr_push1` fast path. Packed schemas (inlineCellI32) store K raw i32
+    // fields into ⌈K/2⌉ cells — the store loop below branches per layout.
     const inlSid = inlineArraySid(arr)
     const inlK = inlSid != null ? ctx.schema.list[inlSid].length : 0
+    const inlPacked = inlSid != null && ctx.schema.inlineCellI32?.has(inlSid)
+    const inlCpe = inlSid != null ? structInline(inlK, inlPacked).cpe : 1
     if (inlSid != null) {
       const flat = []
       for (const v of vals) {
@@ -1027,6 +1017,8 @@ export default (ctx) => {
       }
       vals = flat
     }
+    // Physical cells this push appends (grow target + len increment basis).
+    const pushCells = inlPacked ? inlCpe * (vals.length / inlK) : vals.length
     // Out-of-line fast path: single value, named known-ARRAY receiver. One call +
     // var update instead of ~30 inlined instructions — the dominant size cost of
     // push-heavy code (e.g. watr's WASM emitter).
@@ -1071,31 +1063,45 @@ export default (ctx) => {
         ['if',
           ['i32.lt_s',
             ['i32.load', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 4]]],
-            ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]],
+            ['i32.add', ['local.get', `$${len}`], ['i32.const', pushCells]]],
           ['then',
             ['local.set', `$${t}`, ['call', `$${grow}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]],
-              ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]]],
+              ['i32.add', ['local.get', `$${len}`], ['i32.const', pushCells]]]],
             ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]],
       )
     } else {
       body.push(
         ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-        // Grow if needed: ensure cap >= len + vals.length
+        // Grow if needed: ensure cap >= len + pushCells
         ['local.set', `$${t}`, ['call', `$${grow}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]],
-          ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]]],
+          ['i32.add', ['local.get', `$${len}`], ['i32.const', pushCells]]]],
         ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
       )
     }
 
-    // Store each value and increment len
-    for (const val of vals) {
-      const vv = carrierF64(val, emit(val))
-      body.push(
-        ['f64.store',
-          ['i32.add', ['local.get', `$${pushBase}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]],
-          vv],
-        ['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['i32.const', 1]]]
-      )
+    if (inlPacked) {
+      // Packed i32 cells: per element, K raw i32 stores at `base + len*8 + j*4`
+      // (schema order — structLiteralFields already ordered the flatten), then
+      // len advances by ⌈K/2⌉ physical cells. Values are exact by the
+      // slotI32Certain census (packing precondition).
+      for (let e = 0; e < vals.length; e += inlK) {
+        for (let j = 0; j < inlK; j++) {
+          const off = ['i32.add', ['local.get', `$${pushBase}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]
+          body.push(['i32.store', j === 0 ? off : ['i32.add', off, ['i32.const', j * 4]], asI32(emit(vals[e + j]))])
+        }
+        body.push(['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['i32.const', inlCpe]]])
+      }
+    } else {
+      // Store each value and increment len
+      for (const val of vals) {
+        const vv = carrierF64(val, emit(val))
+        body.push(
+          ['f64.store',
+            ['i32.add', ['local.get', `$${pushBase}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]],
+            vv],
+          ['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['i32.const', 1]]]
+        )
+      }
     }
 
     // Update length header (write directly via the offset we already hold —
@@ -1113,9 +1119,10 @@ export default (ctx) => {
         body.push(['local.set', `$${arr}`, ['local.get', `$${t}`]])
     }
     // structInline: `len` counts physical cells — `.push` returns the JS array
-    // length, i.e. the logical element count `len / K`.
-    body.push(['f64.convert_i32_s', inlK > 1
-      ? ['i32.div_s', ['local.get', `$${len}`], ['i32.const', inlK]]
+    // length, i.e. the logical element count `len / cellsPerElem`.
+    const lenDiv = inlPacked ? inlCpe : inlK
+    body.push(['f64.convert_i32_s', lenDiv > 1
+      ? ['i32.div_s', ['local.get', `$${len}`], ['i32.const', lenDiv]]
       : ['local.get', `$${len}`]])
 
     return typed(['block', ['result', 'f64'], ...body], 'f64')

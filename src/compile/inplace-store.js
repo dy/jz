@@ -36,17 +36,12 @@
  */
 import { ctx } from '../ctx.js'
 import { analyzeBody } from './analyze.js'
-import { staticObjectProps } from '../static.js'
+import { staticObjectProps, inplaceKey } from '../static.js'
 import { VAL } from '../reps.js'
 
-/** Canonical content key for a store site — the ','-wrapper around literal
- *  props is normalized away between plan and emit, so flatten before
- *  serializing. Shared by the sweep and emitElementAssign. */
-export const inplaceKey = (arrName, lit) => {
-  const props = lit.slice(1)
-  const flat = props.length === 1 && Array.isArray(props[0]) && props[0][0] === ',' ? props[0].slice(1) : props
-  return `${arrName}|${JSON.stringify(flat)}`
-}
+// Content key for a store site: `inplaceKey` (src/static.js) — shared with
+// analyzeStructInline and the emit arms; hosted there to keep the import
+// graph acyclic (the self-host resolver rejects cycles).
 
 // env-gated debug — dist/jz.js runs in browsers where `process` doesn't exist
 const DBG = typeof process !== 'undefined' && process.env.JZ_DBG_INPLACE
@@ -291,6 +286,12 @@ export function scanInplaceStores(programFacts) {
     return false
   }
 
+  // Verdicts are CONTENT-keyed (see inplaceKey): body transforms between this
+  // sweep and its consumers (analyzeFuncForEmit's loop rewrites, emit-time
+  // inlining) rebuild trees, so node identity does not survive. Sound for the
+  // structInline consumer too: a value-position `x = (a[i] = {…})` is never a
+  // candidate, but its `[]` target IS walked as a value read (walkVal) and
+  // poisons the sid — so every same-content verdict of that sid is false.
   const verdict = new Map()  // key → false | { alias, idx } | { alias: null }
   for (const c of candidates) {
     const key = inplaceKey(c.arrName, c.lit)

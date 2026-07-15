@@ -317,7 +317,9 @@ test('inferArrElemSchema: consistent caller schemas → direct slot load', () =>
   `, { wat: true })
   is(count(wat, /\$__dyn_get_/g), 0, 'schema-aware → no __dyn_get fallback')
   is(count(wat, /\$__is_str_key\b/g), 0, 'schema-aware → no string-key dispatch')
-  ok(/f64\.load offset=\d+/.test(wat), 'expected direct schema-slot load')
+  // all-strict-int32 {x,y} packs to i32 cells (r.y → i32.load offset=4);
+  // non-strict schemas keep the f64 slot load — either is the direct form
+  ok(/(f64|i32)\.load offset=\d+/.test(wat), 'expected direct schema-slot load')
 })
 
 test('inferTypedCtor: Float64Array arg unlocks SIMD vectorization', () => {

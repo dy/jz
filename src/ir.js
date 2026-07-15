@@ -1260,6 +1260,11 @@ export function readVar(name) {
     node.ptrKind = rep.ptrKind
     const aux = rep.ptrAux ?? ctx.schema.idOf?.(name)
     if (aux != null) node.ptrAux = aux
+    // structInline cursor into a PACKED (i32-cell) array: slot access must
+    // pick the packedI32 ops, not the f64 slot layout — the flag rides the
+    // node because a standalone object of the same sid keeps f64 slots.
+    if (rep.ptrKind === VAL.OBJECT && ctx.schema.inlineCellCursors?.get(ctx.func.current)?.has(name))
+      node.cellI32 = true
   }
   return node
 }

@@ -385,6 +385,20 @@ export function reset(proto, globals, bridge) {
                                 //   Populated whole-program by `analyzeStructInline`
                                 //   (default-disqualify); read by the array
                                 //   push/index/length codegen.
+    inlineCellI32: new Set(),   // inlineArray subset — every slot strict-int32
+                                //   (slotI32Certain) and K ≥ 2, so the element
+                                //   packs K raw i32 cells (⌈K/2⌉ physical 8-byte
+                                //   cells, C's exact record layout): raw i32
+                                //   loads/stores, no trunc_sat/convert per field.
+                                //   Standalone `{S}` objects of the same sid keep
+                                //   f64 slots — the packed decision rides the
+                                //   CURSOR (inlineCellCursors → node.cellI32),
+                                //   never the bare sid.
+    inlineCellCursors: new Map(), // sig → Set<name>: `const p = a[i]` cursor
+                                //   locals of packed (inlineCellI32) arrays in
+                                //   that function — readVar tags their reads
+                                //   with `.cellI32` so slot access picks the
+                                //   packed i32 ops instead of f64 cells.
   }
 
   ctx.closure = {
