@@ -62,6 +62,12 @@ jobs:
         run: |
           curl https://wasmtime.dev/install.sh -sSf | bash || true
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+      # Rust→wasm baseline needs the wasm target added to the preinstalled rustc —
+      # the runner ships rustc but NOT the wasm32-wasip1 std, so without this every
+      # rust-wasm case fails ("can't find crate for std") and the hero's Rust→wasm
+      # stat goes null (why the 3rd hero stat was dropped in 83d6add5).
+      - name: rust wasm target
+        run: rustup target add wasm32-wasip1 || true
       # Competitor toolchains + binaryen (provides wasm-opt).
       - run: npm install --no-save assemblyscript@~0.27.0 porffor@~0.61.0 binaryen
       - name: expose toolchains on PATH
