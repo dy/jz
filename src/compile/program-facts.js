@@ -415,6 +415,11 @@ export function observeProgramSlots(ast, opts) {
   if (!ctx.schema?.register) return
   const slotTypes = ctx.schema.slotTypes
   const slotCtors = ctx.schema.slotTypedCtors
+  const slotConstInts = ctx.schema.slotConstInts
+  // Unlike type facts, discriminant constants are rebuilt from the complete
+  // program on every facts pass. This avoids emitter/function-order coupling:
+  // codegen only consumes a settled whole-program census.
+  slotConstInts.clear()
   const observeSlot = (sid, idx, vt) => {
     if (!vt) return
     let arr = slotTypes.get(sid)
@@ -490,6 +495,26 @@ export function observeProgramSlots(ast, opts) {
     if (arr[idx] === undefined) arr[idx] = ctor
     else if (arr[idx] !== ctor) arr[idx] = null
   }
+  const observeConstInt = (sid, idx, value) => {
+    let arr = slotConstInts.get(sid)
+    if (!arr) { arr = []; slotConstInts.set(sid, arr) }
+    while (arr.length <= idx) arr.push(undefined)
+    if (arr[idx] === null) return
+    if (value == null || !Number.isInteger(value)) arr[idx] = null
+    else if (arr[idx] === undefined) arr[idx] = value
+    else if (arr[idx] !== value) arr[idx] = null
+  }
+  const intLiteral = n => typeof n === 'number' && Number.isInteger(n) ? n
+    : Array.isArray(n) && n[0] == null && Number.isInteger(n[1]) ? n[1]
+    : null
+  const thenIntRefs = (cond, refs) => {
+    const out = new Map(refs || [])
+    if (!Array.isArray(cond) || cond[0] !== '===') return out
+    const a = cond[1], b = cond[2], av = intLiteral(a), bv = intLiteral(b)
+    if (typeof a === 'string' && bv != null) out.set(a, bv)
+    else if (typeof b === 'string' && av != null) out.set(b, av)
+    return out
+  }
   let teOverlay = null
   const ctorOfValue = (expr) => {
     if (typeof expr === 'string')
@@ -502,17 +527,28 @@ export function observeProgramSlots(ast, opts) {
     }
     return null
   }
-  const visit = (node) => {
+  const visit = (node, intRefs = null) => {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') return
+    // Preserve exact branch-local constants while censusing literals such as
+    // `if (kind === 3) rows.push({kind, ...})`. Else arms intentionally keep
+    // no negative fact; only a positive strict equality is exact.
+    if (op === 'if' || op === '?:') {
+      visit(node[1], intRefs)
+      visit(node[2], thenIntRefs(node[1], intRefs))
+      if (node[3] != null) visit(node[3], intRefs)
+      return
+    }
     if (op === '{}') {
       const parsed = staticObjectProps(node.slice(1))
       if (parsed) {
         const sid = ctx.schema.register(parsed.names)
         for (let i = 0; i < parsed.values.length; i++) {
-          observeSlot(sid, i, valTypeOf(parsed.values[i]))
-          observeCtor(sid, i, ctorOfValue(parsed.values[i]))
+          const value = parsed.values[i]
+          observeSlot(sid, i, valTypeOf(value))
+          observeCtor(sid, i, ctorOfValue(value))
+          observeConstInt(sid, i, intLiteral(value) ?? (typeof value === 'string' ? intRefs?.get(value) : null))
         }
       }
     } else if (PROP_WRITE_OPS.has(op) && Array.isArray(node[1]) &&
@@ -531,7 +567,7 @@ export function observeProgramSlots(ast, opts) {
         else poisonSlot(sid, idx)
       }
     }
-    for (let i = 1; i < node.length; i++) visit(node[i])
+    for (let i = 1; i < node.length; i++) visit(node[i], intRefs)
   }
   const prevOverlay = ctx.func.localValTypesOverlay
   if (ast) { ctx.func.localValTypesOverlay = null; teOverlay = null; visit(ast) }
@@ -548,28 +584,40 @@ export function observeProgramSlots(ast, opts) {
     for (const mi of ctx.module.moduleInits) {
       const hit = _moduleInitSlotCache.get(mi)
       if (hit?.gen === _programFactsGen) {
-        for (const [sid, idx, vt, ctor] of hit.obs) { observeSlot(sid, idx, vt); observeCtor(sid, idx, ctor) }
+        for (const [sid, idx, vt, ctor, ci] of hit.obs) {
+          observeSlot(sid, idx, vt); observeCtor(sid, idx, ctor); observeConstInt(sid, idx, ci)
+        }
         continue
       }
       const obs = []
-      const record = (sid, idx, vt, ctor) => {
-        if (vt || ctor) obs.push([sid, idx, vt, ctor])
+      const record = (sid, idx, vt, ctor, ci) => {
+        obs.push([sid, idx, vt, ctor, ci])
         observeSlot(sid, idx, vt)
         observeCtor(sid, idx, ctor)
+        observeConstInt(sid, idx, ci)
       }
-      const visitInit = (node) => {
+      const visitInit = (node, intRefs = null) => {
         if (!Array.isArray(node)) return
         const op = node[0]
         if (op === '=>') return
+        if (op === 'if' || op === '?:') {
+          visitInit(node[1], intRefs)
+          visitInit(node[2], thenIntRefs(node[1], intRefs))
+          if (node[3] != null) visitInit(node[3], intRefs)
+          return
+        }
         if (op === '{}') {
           const parsed = staticObjectProps(node.slice(1))
           if (parsed) {
             const sid = ctx.schema.register(parsed.names)
-            for (let i = 0; i < parsed.values.length; i++)
-              record(sid, i, valTypeOf(parsed.values[i]), ctorOfValue(parsed.values[i]))
+            for (let i = 0; i < parsed.values.length; i++) {
+              const value = parsed.values[i]
+              record(sid, i, valTypeOf(value), ctorOfValue(value),
+                intLiteral(value) ?? (typeof value === 'string' ? intRefs?.get(value) : null))
+            }
           }
         }
-        for (let i = 1; i < node.length; i++) visitInit(node[i])
+        for (let i = 1; i < node.length; i++) visitInit(node[i], intRefs)
       }
       teOverlay = null
       visitInit(mi)

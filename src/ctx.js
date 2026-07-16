@@ -287,7 +287,7 @@ export function reset(proto, globals, bridge) {
     current: null,
     locals: new Map(),
     localReps: null,
-    refinements: new Map(),  // flow-sensitive: name → {val?: VAL.*, notString?: true} inside a type-guarded branch
+    refinements: new Map(),  // flow-sensitive: name → {val?: VAL.*, notString?: true, schemaId?: number} inside a guarded branch
     boxed: new Map(),
     cellTypes: new Set(), // boxed vars whose CELL stores raw i32 (closure-capture narrowing)
     stack: [],
@@ -336,6 +336,11 @@ export function reset(proto, globals, bridge) {
                            // returns the slot's kind for `.prop` AST nodes, letting
                            // `+`/`===`/method dispatch elide `__is_str_key` checks
                            // on numeric properties of known shapes.
+    slotConstInts: new Map(), // schemaId → Array<int | null | undefined>
+                              //   integer discriminants observed at every source
+                              //   literal construction of a schema. null means
+                              //   conflicting/non-constant; consumed only for
+                              //   branch refinement, never as a value substitute.
     slotTypedCtors: new Map(),  // schemaId → Array<ctor-string | null | undefined>
                                 //   undefined: no observation, null: ≥2 distinct
                                 //   ctors, string: every observed value of the slot

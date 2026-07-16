@@ -9,7 +9,7 @@
  */
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, carrierF64, isPureIR } from '../src/ir.js'
-import { inBoundsArrIdx } from '../src/type.js'
+import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
@@ -694,6 +694,22 @@ export default (ctx) => {
     }
     const keyType = typeof idx === 'string' ? lookupValType(idx) : valTypeOf(idx)
     const useRuntimeKeyDispatch = keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING)
+    // A proven count/histogram dictionary stores only each value's observable
+    // ToInt32 bits. All reads were proven bitwise-coerced, so wrap the standard
+    // hash lookup's low word directly (missing undefined has low word zero).
+    if (typeof arr === 'string' && ctx.func.i32HashLocals?.has(arr)) {
+      inc('__hash_get_local')
+      const obj = asI64(emit(arr))
+      if (keyType === VAL.STRING || isLiteralStr(idx))
+        return typed(['i32.wrap_i64', ['call', '$__hash_get_local', obj, asI64(emit(idx))]], 'i32')
+      inc('__is_str_key', '__to_str')
+      const kt = temp()
+      return typed(['block', ['result', 'i32'],
+        ['local.set', `$${kt}`, asF64(emit(idx))],
+        ['if', ['i32.eqz', ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${kt}`]]]],
+          ['then', ['local.set', `$${kt}`, ['f64.reinterpret_i64', ['call', '$__to_str', ['i64.reinterpret_f64', ['local.get', `$${kt}`]]]]]]],
+        ['i32.wrap_i64', ['call', '$__hash_get_local', obj, ['i64.reinterpret_f64', ['local.get', `$${kt}`]]]]], 'i32')
+    }
     // TypedArray: type-aware load
     if (typeof arr === 'string' && ctx.core.emit['.typed:[]'] &&
         lookupValType(arr) === 'typed') {
@@ -872,9 +888,9 @@ export default (ctx) => {
       // element-kind-independent. Skipping the bounds check on an arbitrary numeric
       // index is unsound: `a[1]` on a length-1 array would read the raw cell instead
       // of undefined; those fall through to the inline bounds-checked load below.
-      const idxProvenInBounds = keyIsNum
-        && typeof arr === 'string' && typeof idx === 'string'
-        && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)
+      const idxProvenInBounds = keyIsNum && typeof arr === 'string' && (
+        (typeof idx === 'string' && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)) ||
+        (ctx.func.localReps?.get(arr)?.arrayLen != null && typedIdxProven(arr, idx)))
       // Tag reads whose receiver folded to a compile-time constant box: when the
       // decl registers the same bits as a STATIC array (ctx.scope.staticArrs) and
       // the program never resizes/aliases the name, optimize's

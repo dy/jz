@@ -227,7 +227,20 @@ function tryHashRmwFusion(arr, idx, val) {
     : n.map((c, i) => i === 0 ? c : subst(c))
   const oT = temp('rmo'), kT = temp('rmk'), oldT = temp('rmold'), resT = temp('rmres')
   const slotT = tempI32('rms')
-  inc('__hash_slot', '__dyn_set')
+  const lean = ctx.func.leanHashLocals?.has(arr)
+  const i32Values = lean && ctx.func.i32HashLocals?.has(arr)
+  const domain = lean ? ctx.func.leanHashDomains?.get(arr) : null
+  const domainLen = domain ? repOf(domain)?.arrayLen : null
+  // The no-growth probe is valid only when analysis proved the source domain's
+  // length immutable. A runtime `.length` preallocation hint alone is not a
+  // finite-domain proof: the source array may grow while keys are inserted.
+  const fixed = domainLen != null
+  const slotFn = fixed ? '$__hash_slot_eph_fixed' : lean ? '$__hash_slot_eph' : '$__hash_slot'
+  let capHint = 0
+  if (fixed) { capHint = 2; while (capHint < domainLen * 4) capHint *= 2 }
+  const slotCall = (obj, key) => ['call', slotFn, obj, key,
+    ...(fixed ? [['i32.const', capHint]] : [])]
+  inc(fixed ? '__hash_slot_eph_fixed' : lean ? '__hash_slot_eph' : '__hash_slot', '__dyn_set')
   const resIR = asF64(emit(subst(val)))
   // Statically-numeric result (isNumericIR — the counting idiom's
   // `(o[k]|0)+1`): a plain number is never an ephemeral pointer, so
@@ -239,6 +252,37 @@ function tryHashRmwFusion(arr, idx, val) {
     ? ['i64.store', ['local.get', `$${slotT}`], ['i64.reinterpret_f64', ['local.get', `$${resT}`]]]
     : ['call', '$__slot_write', ['local.get', `$${slotT}`],
       ['i64.reinterpret_f64', ['local.get', `$${resT}`]]]
+  // Proven HASH receiver: __hash_slot cannot take its non-HASH return-0 arm.
+  // Normalize an unresolved key once through ToPropertyKey's string path, then
+  // emit only probe→load→compute→store. This removes the enormous generic
+  // __dyn_set fallback from dictionary-count loops and gives the optimizer a
+  // compact hot function; the receiver's HASH fact was established before emit.
+  if (at === VAL.HASH) {
+    if (!keyStr) inc('__to_str')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${oT}`, asF64(emit(arr))],
+      ['local.set', `$${kT}`, asF64(emit(idx))],
+      ...(!keyStr ? [['if',
+        ['i32.eqz', ['i32.and',
+          ['f64.ne', ['local.get', `$${kT}`], ['local.get', `$${kT}`]],
+          ['i64.eq',
+            ['i64.and', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${kT}`]],
+              ['i64.const', String(LAYOUT.TAG_SHIFT)]], ['i64.const', String(LAYOUT.TAG_MASK)]],
+            ['i64.const', String(PTR.STRING)]]]],
+        ['then', ['local.set', `$${kT}`,
+          ['f64.reinterpret_i64', ['call', '$__to_str', ['i64.reinterpret_f64', ['local.get', `$${kT}`]]]]]]]] : []),
+      ['local.set', `$${slotT}`, slotCall(
+        ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
+        ['i64.reinterpret_f64', ['local.get', `$${kT}`]])],
+      ['local.set', `$${oldT}`, i32Values
+        ? ['f64.convert_i32_s', ['i32.load', ['local.get', `$${slotT}`]]]
+        : ['f64.load', ['local.get', `$${slotT}`]]],
+      ['local.set', `$${resT}`, resIR],
+      i32Values
+        ? ['i32.store', ['local.get', `$${slotT}`], asI32(typed(['local.get', `$${resT}`], 'f64'))]
+        : writeBack,
+      ['local.get', `$${resT}`]], 'f64')
+  }
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${oT}`, asF64(emit(arr))],
     ['local.set', `$${kT}`, asF64(emit(idx))],
@@ -246,9 +290,9 @@ function tryHashRmwFusion(arr, idx, val) {
     // inline — `f64.ne(k,k)` (only NaN patterns carry pointers) AND tag ==
     // STRING is 6 ops against a per-token call in the counting idiom's loop.
     ['local.set', `$${slotT}`, keyStr
-      ? ['call', '$__hash_slot',
+      ? slotCall(
         ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
-        ['i64.reinterpret_f64', ['local.get', `$${kT}`]]]
+        ['i64.reinterpret_f64', ['local.get', `$${kT}`]])
       : ['if', ['result', 'i32'],
         ['i32.and',
           ['f64.ne', ['local.get', `$${kT}`], ['local.get', `$${kT}`]],
@@ -256,9 +300,9 @@ function tryHashRmwFusion(arr, idx, val) {
             ['i64.and', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${kT}`]],
               ['i64.const', String(LAYOUT.TAG_SHIFT)]], ['i64.const', String(LAYOUT.TAG_MASK)]],
             ['i64.const', String(PTR.STRING)]]],
-        ['then', ['call', '$__hash_slot',
+        ['then', slotCall(
           ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
-          ['i64.reinterpret_f64', ['local.get', `$${kT}`]]]],
+          ['i64.reinterpret_f64', ['local.get', `$${kT}`]])],
         ['else', ['i32.const', 0]]]],
     ['if', ['result', 'f64'], ['i32.eqz', ['local.get', `$${slotT}`]],
       // non-HASH receiver: the generic dynamic write of the ORIGINAL rhs (its

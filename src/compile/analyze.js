@@ -311,6 +311,11 @@ export function analyzeBody(body) {
 
   const exprElemSourceVal = (expr) => {
     if (typeof expr === 'string') {
+      // Prefer this body walk's settled local slice. localReps is intentionally
+      // sparse and globalValTypes cannot describe locals; omitting valTypes made
+      // `let s = ...; strings.push(s)` poison an otherwise monomorphic array.
+      const localVt = valTypes.get(expr)
+      if (localVt) return localVt
       const repVt = ctx.func.localReps?.get(expr)?.val
       if (repVt) return repVt
       return ctx.scope.globalValTypes?.get(expr) || null
@@ -946,6 +951,94 @@ export function analyzeValTypes(body) {
     const sid = objLiteralSchemaId(rhs)
     if (sid != null && writeCount(body, name, 0) === expectWrites) updateRep(name, { schemaId: sid })
   }
+  // Non-escaping computed-key dictionary: every use of `name` is exactly the
+  // receiver of `name[key]` (read or write), apart from its declaration. Such
+  // a fresh HASH never deletes/enumerates/escapes, so its upsert may use the
+  // lean no-tombstone/no-order/no-durable-log probe.
+  const leanDictUse = (name) => {
+    const verify = (n) => {
+      if (typeof n === 'string') return n !== name
+      if (!Array.isArray(n)) return true
+      const op = n[0]
+      if (op === '[]' && n[1] === name) return verify(n[2])
+      if (op === 'let' || op === 'const') {
+        for (let i = 1; i < n.length; i++) {
+          const d = n[i]
+          if (Array.isArray(d) && d[0] === '=' && d[1] === name) { if (!verify(d[2])) return false; continue }
+          if (!verify(d)) return false
+        }
+        return true
+      }
+      if (op === ':' && n.length >= 3) return verify(n[2])
+      if ((op === '.' || op === '?.') && n.length >= 3) return verify(n[1])
+      for (let i = 1; i < n.length; i++) if (!verify(n[i])) return false
+      return true
+    }
+    return verify(body)
+  }
+  // Count/histogram dictionaries: if every read is immediately bitwise-
+  // coerced and every write is a statement, the slot may retain only the
+  // observable ToInt32 bits. Missing `undefined|0` and a zero slot are equal.
+  const i32DictUse = (name) => {
+    let ok = true, reads = 0, writes = 0
+    const bitwise = new Set(['&', '|', '^', '<<', '>>', '>>>'])
+    const walk = (n, parent = null, pos = -1, grand = null) => {
+      if (!ok || !Array.isArray(n) || n[0] === '=>') return
+      if (n[0] === '[]' && n[1] === name) {
+        if (parent && ASSIGN_OPS.has(parent[0]) && pos === 1) {
+          writes++
+          // Only an expression statement discards the assignment value.
+          // In a condition/update (`if (d[k] = x)`, `for (; d[k] = x;)`)
+          // replacing the boxed result with ToInt32 would be observable.
+          if (!(grand && (grand[0] === ';' || grand[0] === '{}'))) ok = false
+        } else {
+          reads++
+          if (!(parent && bitwise.has(parent[0]))) ok = false
+        }
+        walk(n[2], n, 2, parent)
+        return
+      }
+      for (let i = 1; i < n.length; i++) walk(n[i], n, i, parent)
+    }
+    walk(body)
+    return ok && reads > 0 && writes > 0
+  }
+  // Upper bound on distinct keys: `const k = domain[index]; dict[k] = …`
+  // cannot insert more unique keys than domain.length. Capacity planning uses
+  // this only as a preallocation hint (the table still grows), so a missed
+  // alias costs speed while an over/underestimate cannot affect semantics.
+  const dictDomain = (name) => {
+    const defs = new Map(), clashes = new Set()
+    const collect = (n) => {
+      if (!Array.isArray(n) || n[0] === '=>') return
+      if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+          if (defs.has(d[1])) clashes.add(d[1]); else defs.set(d[1], d[2])
+        }
+      }
+      for (let i = 1; i < n.length; i++) collect(n[i])
+    }
+    collect(body)
+    for (const n of clashes) defs.delete(n)
+    let domain = null, bad = false, writes = 0
+    const sourceOf = (idx) => {
+      const e = typeof idx === 'string' ? defs.get(idx) : idx
+      return Array.isArray(e) && e[0] === '[]' && typeof e[1] === 'string' ? e[1] : null
+    }
+    const scan = (n) => {
+      if (!Array.isArray(n) || n[0] === '=>') return
+      if (ASSIGN_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1][1] === name) {
+        writes++
+        const d = sourceOf(n[1][2])
+        if (!d || (domain && domain !== d)) bad = true
+        else domain = d
+      }
+      for (let i = 1; i < n.length; i++) scan(n[i])
+    }
+    scan(body)
+    return writes && !bad ? domain : null
+  }
   function walk(node) {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
@@ -967,7 +1060,21 @@ export function analyzeValTypes(body) {
     if (op === 'let' || op === 'const') {
       for (const a of args) {
         if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
-        const vt = valTypeOf(a[2])
+        // Empty object used exclusively as a computed-key sink is represented
+        // as HASH by object.js. Stamp the same kind during analysis (before
+        // emission), so every subsequent read/write takes the strict one-table
+        // path and hash-RMW fusion needs no speculative runtime-type fallback.
+        const merged = ctx.schema.resolve?.(a[1])
+        const dict = Array.isArray(a[2]) && a[2][0] === '{}' && a[2].length === 1 &&
+          ctx.types.dynWriteVars?.has(a[1]) && !merged?.length
+        const vt = dict ? VAL.HASH : valTypeOf(a[2])
+        const leanDict = dict && leanDictUse(a[1])
+        if (leanDict) {
+          (ctx.func.leanHashLocals ??= new Set()).add(a[1])
+          if (i32DictUse(a[1])) (ctx.func.i32HashLocals ??= new Set()).add(a[1])
+          const domain = dictDomain(a[1])
+          if (domain) (ctx.func.leanHashDomains ??= new Map()).set(a[1], domain)
+        }
         setVal(a[1], vt)
         if (mayBeNullish(a[2])) updateRep(a[1], { nullable: true })
         if (vt === VAL.REGEX) trackRegex(a[1], a[2])
@@ -1027,7 +1134,16 @@ export function analyzeValTypes(body) {
     }
     if (op === '=' && typeof args[0] === 'string') {
       walk(args[1])
-      const vt = valTypeOf(args[1])
+      const merged = ctx.schema.resolve?.(args[0])
+      const dict = Array.isArray(args[1]) && args[1][0] === '{}' && args[1].length === 1 &&
+        ctx.types.dynWriteVars?.has(args[0]) && !merged?.length
+      const vt = dict ? VAL.HASH : valTypeOf(args[1])
+      if (dict && leanDictUse(args[0])) {
+        (ctx.func.leanHashLocals ??= new Set()).add(args[0])
+        if (i32DictUse(args[0])) (ctx.func.i32HashLocals ??= new Set()).add(args[0])
+        const domain = dictDomain(args[0])
+        if (domain) (ctx.func.leanHashDomains ??= new Map()).set(args[0], domain)
+      }
       setVal(args[0], vt)
       if (mayBeNullish(args[1])) updateRep(args[0], { nullable: true })
       if (vt === VAL.REGEX) trackRegex(args[0], args[1])

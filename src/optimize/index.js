@@ -91,6 +91,7 @@ const FALSE_BITS = atomNanHex(4)
 export const PASS_NAMES = [
   'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)
   'devirtIndirect',           // call_indirect w/ known closure consts → guarded direct calls (WAT-level, grows bytes)
+  'speculateSchemaBranches',  // one schema guard around multi-field tagged-union branch bodies (speed-for-size)
   'hoistPtrType',
   'hoistInvariantPtrOffset',
   'hoistInvariantLoop',       // unified LICM (subsumes the former ToInt32/PtrOffsetLoop/CellLoads hoists)
@@ -139,7 +140,7 @@ const LEVEL_PRESETS = Object.freeze({
   // watr pipeline. `inline` stays off by watr's own default — opt-in only.
   // boolConvertToSelect off at the default level: it's a latency-for-size trade (adds a
   // const + op per site) that only pays off on serial recurrences — speed-tier only.
-  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', boolConvertToSelect: false, recursionUnroll: false, watrProfile: 'speed' }),
+  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, watrProfile: 'speed' }),
   // L3/'speed' trades a bit of heap headroom for fewer __arr_grow / __hash growth
   // cycles. arrayMinCap=16 means `[]` and `new Array()` skip the first two doublings
   // (0→2→4→8→16); hashSmallInitCap=8 keeps per-object __dyn_props at the same load
@@ -169,6 +170,7 @@ const LEVEL_PRESETS = Object.freeze({
     leanCheckedIdx: true,     // unproven typed reads emit the if-form (guard → direct load, else undefined) — ~6 ops/site smaller than the select-clamp form, which exists only so SPEED-tier kernel bodies stay branch-free for the SIMD lift (off here)
 
     boolConvertToSelect: false,  // adds a const + op per site — speed-only latency trade
+    speculateSchemaBranches: false, // duplicates the dynamic fallback body — speed-only tagged-union PIC
     devirtIndirect: false,    // guards + duplicated args grow bytes — speed-only trade
     internStrings: false,     // the intern index costs ~16 B per eligible literal — speed-only trade
     promoteGlobals: false,    // snapshots a multi-read global into an entry local — pure speed (V8 can't CSE a mutable global); the snapshot is dead size weight at -Os
@@ -4004,29 +4006,35 @@ export function devirtSchemaReads(fn) {
   const sidCache = new Map()  // receiver local name → sid i32 local
   const sidInit = []
   const recvReads = new Map()  // receiver local name → tagged-read count (pre-scan)
+  const recvAllObject = new Map() // every tagged read already proves OBJECT by static VAL
   const clone = (n) => Array.isArray(n) ? n.map(clone) : n
   // select(aux, -1, tag==OBJECT) — both operands pure, no branch
-  const sidExprFor = (bits) => ['select',
-    ['i32.wrap_i64', ['i64.and',
-      ['i64.shr_u', clone(bits), ['i64.const', LAYOUT.AUX_SHIFT]],
-      ['i64.const', LAYOUT.AUX_MASK]]],
-    ['i32.const', -1],
-    ['i32.eq',
-      ['i32.wrap_i64', ['i64.and',
-        ['i64.shr_u', clone(bits), ['i64.const', LAYOUT.TAG_SHIFT]],
-        ['i64.const', LAYOUT.TAG_MASK]]],
-      ['i32.const', PTR.OBJECT]]]
+  const sidExprFor = (bits, objectKnown = false) => objectKnown
+    ? ['i32.wrap_i64', ['i64.and',
+        ['i64.shr_u', clone(bits), ['i64.const', LAYOUT.AUX_SHIFT]],
+        ['i64.const', LAYOUT.AUX_MASK]]]
+    : ['select',
+        ['i32.wrap_i64', ['i64.and',
+          ['i64.shr_u', clone(bits), ['i64.const', LAYOUT.AUX_SHIFT]],
+          ['i64.const', LAYOUT.AUX_MASK]]],
+        ['i32.const', -1],
+        ['i32.eq',
+          ['i32.wrap_i64', ['i64.and',
+            ['i64.shr_u', clone(bits), ['i64.const', LAYOUT.TAG_SHIFT]],
+            ['i64.const', LAYOUT.TAG_MASK]]],
+          ['i32.const', PTR.OBJECT]]]
   // ≥2 reads on the receiver: amortize into an entry-hoisted local. A single
   // read inlines the select at its site instead — an eager entry compute would
   // tax every call of a function whose lone read sits on a cold path (the
   // self-host kernel's shape; measured 0.9% compile-time regression).
   const sidRead = (stable) => {
-    if ((recvReads.get(stable.name) || 0) < 2) return sidExprFor(stable.bits)
+    const objectKnown = recvAllObject.get(stable.name) === true
+    if ((recvReads.get(stable.name) || 0) < 2) return sidExprFor(stable.bits, objectKnown)
     let sidT = sidCache.get(stable.name)
     if (!sidT) {
       sidT = `$__dsrs${uid++}`
       newDecls.push(['local', sidT, 'i32'])
-      sidInit.push(['local.set', sidT, sidExprFor(stable.bits)])
+      sidInit.push(['local.set', sidT, sidExprFor(stable.bits, objectKnown)])
       sidCache.set(stable.name, sidT)
     }
     return ['local.get', sidT]
@@ -4154,6 +4162,7 @@ export function devirtSchemaReads(fn) {
       const st = stableRecv(n[2])
       if (st) {
         recvReads.set(st.name, (recvReads.get(st.name) || 0) + 1)
+        recvAllObject.set(st.name, (recvAllObject.get(st.name) ?? true) && n.dvObject === true)
         const k = `${st.name} ${n.dvProp}`
         keyReads.set(k, (keyReads.get(k) || 0) + 1)
       }

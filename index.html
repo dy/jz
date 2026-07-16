@@ -6,14 +6,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>(() => { try { const s = localStorage.getItem('theme'); document.documentElement.dataset.theme = s || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') } catch (e) { } })()</script>
     <title>JZ — JS→WASM compiler for numeric code (DSP, audio, math)</title>
-    <meta name="description" content="Compile the numeric JavaScript you already test to GC-free WebAssembly — no rewrite, annotations, or runtime. Over 2× faster than V8 and Rust→WASM.">
+    <meta name="description" content="Compile the numeric JavaScript you already test to GC-free WebAssembly — no rewrite, annotations, runtime, or GC.">
     <link rel="canonical" href="https://dy.github.io/jz/">
     <meta name="theme-color" content="#000000">
     <!-- social card — 1200×630 og:image (assets/og.png) for a rich preview -->
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://dy.github.io/jz/">
     <meta property="og:title" content="JZ — JS→WASM compiler for numeric code (DSP, audio, math)">
-    <meta property="og:description" content="Compile the numeric JavaScript you already test to GC-free WebAssembly — no rewrite, annotations, or runtime. Over 2× faster than V8 and Rust→WASM.">
+    <meta property="og:description" content="Compile the numeric JavaScript you already test to GC-free WebAssembly — no rewrite, annotations, runtime, or GC.">
     <meta property="og:image" content="https://dy.github.io/jz/assets/og.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -199,7 +199,7 @@
 
       /* the pitch — a width-limited column, centred as a block but set LEFT (Swiss / Futura wants the flush-left axis).
    Left: logo + title, then the description and npm CTA. Right: a "Speed" line and the live JS↔WASM switch.
-   The Speed line shows vs V8 / vs AssemblyScript / vs Rust→wasm — peak SIMD, Porffor and the size
+   The Speed line shows covered-corpus geomeans vs V8 / AssemblyScript — peak SIMD, other targets and size
    figures live on the bench strip (the expanded view). */
       .pitch {
         position: relative;
@@ -1290,7 +1290,6 @@
               <div class="mstats">
                 <a class="stat" href="bench/"><b :text="v8">1.9×</b><span data-cls="js">V8<i>(average)</i></span></a>
                 <a class="stat" href="bench/"><b :text="asspeed">1.7×</b><span data-cls="wasm">AssemblyScript</span></a>
-                <a class="stat" href="bench/"><b :text="rust">2×</b><span data-cls="wasm">Rust<i>(wasm)</i></span></a>
               </div>
             </div>
           </div>
@@ -1419,7 +1418,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>The performance bar is uncompromising: on the cross-target corpus, the same source runs <b>over 2× faster than V8 and Rust→WASM</b> at <b>near-native speed</b> (geomean; per-case numbers and every loss are on the <a href="bench/">bench page</a>). JZ auto-vectorizes where the Rust/C→WASM paths do not. A rival win remains a bug to close, not an exception to hide.</p>
+            <p>The performance bar is uncompromising: JZ leads V8 and AssemblyScript by geomean on the covered corpus and targets near-native speed. The release gate is stricter than an average: JZ must be the fastest WASM on every case. Per-case numbers, missing target coverage, and every measured loss stay visible on the <a href="bench/">bench page</a>; a rival win remains a bug to close, not an exception to hide.</p>
             <a href="bench/" class="bench-svg" id="bench-chart" role="img" aria-label="Geomean speed across the bench corpus — jz vs V8, Rust, Go, AssemblyScript, Porffor, all compiled to WASM and run in V8; native C the lone reference, jz = 1.00× baseline"></a>
             <p>If you hit a slow case, <a href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">report it →</a></p>
           </div>
@@ -1538,7 +1537,7 @@
         // which we fill from the fresh bench numbers so the row always reflects the latest run.
         ; (async () => {
           const m = sprae(document.querySelector('.pitch'),
-            { v8: '1.9×', asspeed: '1.7×', rust: '1.7×', peak: '13.3×' })   // hero stats; v8 (geomean) + peak (best SIMD case) also feed the sub
+            { v8: '1.9×', asspeed: '1.7×', peak: '13.3×' })   // hero stats; v8 (geomean) + peak (best SIMD case) also feed the sub
           // prepend the substrate-class glyph to each stat label (JS · WASM · native),
           // the same marks the bench chart uses — one shared source (CLS_ICO).
           for (const el of document.querySelectorAll('.metrics .stat span[data-cls]'))
@@ -1549,7 +1548,6 @@
             if (s.v8) m.v8 = s.v8                     // same source, faster than V8 (geomean)
             if (s.peak) m.peak = s.peak              // best single-case SIMD win → the sub's "up to 13.5×"
             if (s.asspeed) m.asspeed = s.asspeed     // jz vs AssemblyScript, speed geomean
-            if (s.rust) m.rust = s.rust              // jz vs Rust → wasm — apples-to-apples, same engine
           } catch { }
         })()
 

@@ -452,6 +452,9 @@ function analyzeFuncForEmit(func, programFacts) {
   const block = isBlockBody(body)
   ctx.func.boxed = new Map()
   ctx.func.localReps = null
+  ctx.func.leanHashLocals = new Set()
+  ctx.func.i32HashLocals = new Set()
+  ctx.func.leanHashDomains = new Map()
   ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
   // typedLen mirrors typedElem's per-function lifecycle EXACTLY — a stale entry from a
   // sibling function's same-named local would prove a wrong bound (names are per-function).
@@ -498,6 +501,8 @@ function analyzeFuncForEmit(func, programFacts) {
       if (r.val && !reassigned && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
       if (r.arrayElemSchema != null) updateRep(pname, { arrayElemSchema: r.arrayElemSchema })
       if (r.arrayElemValType != null) updateRep(pname, { arrayElemValType: r.arrayElemValType })
+      if (r.arrayElemRange != null) updateRep(pname, { arrayElemRange: r.arrayElemRange })
+      if (r.arrayLen != null) updateRep(pname, { arrayLen: r.arrayLen })
       if (r.intConst != null) updateRep(pname, { intConst: r.intConst })
       // Cross-function never-relocation proof (analyzeParamNeverGrown) — the
       // raw-base array read (module/array.js arrBase) keys off this rep.
@@ -734,6 +739,9 @@ function analyzeFuncForEmit(func, programFacts) {
     sliceViews: new Set(ctx.func.sliceViews),
     cseLoadBases,
     distinctParams: func.distinctParams || null,
+    leanHashLocals: new Set(ctx.func.leanHashLocals || []),
+    i32HashLocals: new Set(ctx.func.i32HashLocals || []),
+    leanHashDomains: new Map(ctx.func.leanHashDomains || []),
     typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null,
     typedLen: ctx.types.typedLen ? new Map(ctx.types.typedLen) : null,
     localReps: cloneRepMap(ctx.func.localReps),
@@ -1128,6 +1136,9 @@ function emitFunc(func, funcFacts, programFacts) {
   ctx.func.flatObjects = new Map(funcFacts.flatObjects)
   ctx.func.sliceViews = new Set(funcFacts.sliceViews)
   ctx.func.localReps = cloneRepMap(funcFacts.localReps)
+  ctx.func.leanHashLocals = new Set(funcFacts.leanHashLocals || [])
+  ctx.func.i32HashLocals = new Set(funcFacts.i32HashLocals || [])
+  ctx.func.leanHashDomains = new Map(funcFacts.leanHashDomains || [])
   ctx.types.typedElem = funcFacts.typedElem ? new Map(funcFacts.typedElem) : null
   ctx.types.typedLen = funcFacts.typedLen ? new Map(funcFacts.typedLen)
     : ctx.scope.globalTypedLen ? new Map(ctx.scope.globalTypedLen) : null
@@ -1485,6 +1496,9 @@ function emitClosureBody(cb) {
   // Reset per-function state for closure body
   ctx.func.locals = new Map()
   ctx.func.localReps = null
+  ctx.func.leanHashLocals = new Set()
+  ctx.func.i32HashLocals = new Set()
+  ctx.func.leanHashDomains = new Map()
   if (cb.intConsts) for (const [name, v] of cb.intConsts) updateRep(name, { intConst: v })
   if (cb.intCertain) for (const name of cb.intCertain) updateRep(name, { intCertain: true })
   if (cb.nullables) for (const name of cb.nullables) updateRep(name, { nullable: true })

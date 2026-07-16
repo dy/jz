@@ -190,15 +190,15 @@ test('devirtSchemaReads: megamorphic property read switches on schemaId to direc
   is(f(9), ref, 'devirted reads bit-match the generic path')
 })
 
-test('devirtSchemaReads: stable receiver hoists one sid; discriminant field collapses to a bare load', () => {
+test('devirtSchemaReads: stable receiver hoists one sid; proven discriminant field is a bare load', () => {
   // Receiver-stable refinement (shapes bench residual): a never-written
   // receiver's schemaId is constant (aux bits; jz OBJECT shape never changes),
   // so a multi-read function computes `sid | -1` ONCE (entry-hoisted select)
   // and every read drops its per-read __ptr_type guard + aux extract. A prop
   // that EVERY schema carries at the SAME slot (`.t` first key of every
-  // variant — the discriminant pattern) needs no dispatch at all:
-  // `(u32)sid < count ? load : generic` (u32 also routes runtime-minted sids
-  // to the generic arm).
+  // variant — the discriminant pattern) needs no dispatch at all. Caller
+  // element-shape propagation proves this receiver belongs to the registered
+  // schema set, so the read is a bare fixed-slot load.
   // Receiver flows through a mixed array (rows[i] — the shapes-bench shape), so
   // emit can't specialize and the reads reach the pass tagged. `x` sits at
   // DIFFERENT slots across schemas (slot 1 vs slot 2), forcing a real br_table;
@@ -223,7 +223,7 @@ test('devirtSchemaReads: stable receiver hoists one sid; discriminant field coll
   ok(/select/.test(geoWat), 'sid computed branch-free (select over tag test)')
   ok(/br_table/.test(geoWat), 'slot-conflicting prop still dispatches via br_table')
   ok(!/br_if[^\n]*\n?[^\n]*call \$__ptr_type/.test(geoWat), 'no per-read tag-guard call in the dispatches')
-  ok(/i32\.lt_u/.test(geoWat), 'discriminant read collapses to a coverage compare')
+  ok(/local\.set \$s\s*\(f64\.load/.test(geoWat), 'proven discriminant read collapses to a bare slot load')
   const mkRowsJs = () => {
     const rows = []
     for (let i = 0; i < 9; i++) {
@@ -239,6 +239,28 @@ test('devirtSchemaReads: stable receiver hoists one sid; discriminant field coll
   for (let i = 0; i < rowsJs.length; i++) ref += geoJs(rowsJs[i])
   const { f } = run(src, { optimize: 'speed' })
   is(f(), ref, 'refined reads bit-match the generic path')
+})
+
+test('schema discriminant hint narrows one guard but preserves alien-schema fallback', () => {
+  // `const k=o.k; if(k===K)` may predict the schema whose immutable tag is K,
+  // but it cannot prove host/dynamic schemas never carry K. The optimization
+  // must keep an exact-sid guard and the ordinary dynamic miss arm.
+  const src = `
+    // Consumer deliberately precedes producers: the census is a whole-program
+    // fact, never an emitter/function-order side effect.
+    const visit = (o) => { const k = o.k; if (k === 0) return (o.x + o.y) | 0; return (o.r * 3) | 0 }
+    const expected = (k) => k === 0 ? { k: k, x: 7, y: 9 } : { k: k, r: 5 }
+    const alien = (k) => ({ k: k, z: 41 })
+    export const f = (useAlien) => visit(useAlien ? alien(0) : expected(0))
+  `
+  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const at = w.indexOf('(func $visit')
+  const visitWat = w.slice(at, w.indexOf('(func', at + 1))
+  ok(/i64\.eq/.test(visitWat), 'predicted schema still has an exact-sid runtime guard')
+  ok(/call \$__dyn_get/.test(visitWat), 'guard miss retains dynamic property semantics')
+  const { f } = run(src, { optimize: 'speed' })
+  is(f(0), 16, 'predicted schema takes direct slots')
+  is(f(1), 0, 'same tag on alien schema takes dynamic missing-field path')
 })
 
 test('devirtSchemaReads: duplicate read of the same (receiver, prop) reuses one dispatch', () => {
@@ -3453,6 +3475,88 @@ export let main = (g) => {
   ok(Number.isNaN(run(src, { optimize: 'speed' }).main(1)), 'g=1: OOB tail is NaN, matching JS (not raw reads, not undefined)')
 })
 
+test('interval walk: strided companion cursor + packed OR index erase codec bounds checks', () => {
+  // A 3→4 codec loop has two coupled induction variables. The output cursor's
+  // pre-increment window is [0, 12], while the two masked fields OR to [0,63].
+  // Both output stores and table reads should therefore be raw.
+  const src = `
+const pack = (input, table, out) => {
+  let op = 0
+  for (let i = 0; i + 3 <= 12; i += 3) {
+    const a = input[i], b = input[i + 1]
+    out[op] = table[((a & 3) << 4) | (b >>> 4)]
+    out[op + 1] = table[a & 63]
+    op += 2
+  }
+  return op
+}
+export let main = () => {
+  const input = new Uint8Array(12), table = new Uint8Array(64), out = new Uint8Array(8)
+  for (let i = 0; i < 12; i++) input[i] = i * 17
+  for (let i = 0; i < 64; i++) table[i] = i + 1
+  return pack(input, table, out) + out[0] + out[7]
+}`
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || wat
+  ok((m.match(/i32\.lt_u/g) || []).length <= 1, 'codec accesses need no checks (only allocator growth may retain lt_u)')
+  const exportsJs = {}
+  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+  is(run(src, { optimize: 'speed' }).main(), exportsJs.main(), 'codec kernel stays exact')
+})
+
+test('typed RMW: one guard covers the pure read and ignored OOB store', () => {
+  const src = `
+const step = (a, i, x) => {
+  a[i] = (a[i] + x) | 0
+  a[i] = Math.imul(a[i], 3)
+  a[i] = a[i] ^ (a[i] >>> 5)
+}
+export let main = (i) => {
+  const a = new Int32Array(4)
+  a[0] = 7; a[1] = 11; a[2] = 13; a[3] = 17
+  step(a, i, 9)
+  return a[0] ^ a[1] ^ a[2] ^ a[3]
+}`
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || wat
+  is((m.match(/i32\.lt_u/g) || []).length, 4, 'three RMW guards plus one allocator guard — no read+write pairs')
+  const exportsJs = {}
+  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+  const wasm = run(src, { optimize: 'speed' }).main
+  for (const i of [-1, 0, 2, 3, 4, 99]) is(wasm(i), exportsJs.main(i), `RMW i=${i} exact including OOB`)
+})
+
+test('typed fetch bundle: static table length proves an interpreter fetch group', () => {
+  const src = `
+const exec = (code, reg) => {
+  let pc = 0
+  while (pc < 3) {
+    const o = pc * 3
+    const op = code[o], a = code[o + 1], b = code[o + 2]
+    if (op === 0) { reg[a] = b; pc++ }
+    else if (op === 1) pc = b
+    else pc = 3
+  }
+  return reg[0]
+}
+export let main = () => {
+  const code = new Int32Array(9), reg = new Int32Array(2)
+  code[0] = 0; code[1] = 0; code[2] = 37
+  code[3] = 1; code[4] = 0; code[5] = 2
+  code[6] = 2; code[7] = 0; code[8] = 0
+  return exec(code, reg)
+}`
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const execWat = wat.split('(func ').find(c => /^\$exec\b/.test(c)) || wat
+  ok(!/\$[^ )]*tbg/.test(execWat), 'known length and pc hull retire the fetch guard entirely')
+  ok(/i32\.load offset=4 \(local\.get \$__ab\d+\)/.test(execWat) &&
+    /i32\.load offset=8 \(local\.get \$__ab\d+\)/.test(execWat),
+  'adjacent fetches share one raw base address')
+  is(run(src, { optimize: 'speed' }).main(), 37, 'interpreter result exact')
+  const tooShort = src.replace('new Int32Array(9)', 'new Int32Array(8)')
+  ok(!/\$[^ )]*tbg/.test(jz.compile(tooShort, { wat: true, optimize: 'speed' })), 'undersized code table stays independently checked')
+})
+
 test('typedLen: static length flows through param hops and inline aliases', () => {
   // main ctor → runKernel param → helper param (inlined as a bare-name alias):
   // the alias inherits the source's static length, `.length` folds, and the
@@ -3481,4 +3585,137 @@ export let main = () => {
   const exportsJs = {}
   new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
   is(run(src, { optimize: 'speed' }).main(), exportsJs.main(), 'value exact')
+})
+
+test('pure boolean chains lower eagerly while effectful RHS stays short-circuited', () => {
+  const pure = `export let f=(a,b,c)=>a>0&&b>0&&c>0`
+  const wat = jz.compile(pure, { wat: true, optimize: { level: 'speed', watr: false } })
+  const fw = wat.split('(func $f')[1]?.split('(func ')[0] || ''
+  ok((fw.match(/i32\.and/g) || []).length >= 2, 'pure boolean chain uses branchless i32.and')
+  ok(!/\(if/.test(fw), 'pure chain has no short-circuit control frame')
+  const effect = `export let f=(x)=>{let n=0;const y=x>0&&++n>0;return n*10+(y|0)}`
+  const f = run(effect, { optimize: 'speed' }).f
+  is(f(0), 0, 'false lhs does not evaluate effectful rhs')
+  is(f(1), 11, 'true lhs evaluates effectful rhs once')
+})
+
+test('typed postfix index keeps the old index without add/sub cancellation', () => {
+  const src = `export let f=()=>{const a=new Uint8Array(1);let i=0;a[i++]=7;a[i++]=9;return a[0]*10+i}`
+  is(run(src, { optimize: 'speed' }).f(), 72, 'first store lands, OOB second store is ignored, cursor advances twice')
+  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const fw = wat.split('(func $f')[1]?.split('(func ')[0] || ''
+  ok(!/i32\.add[\s\S]{0,100}i32\.sub/.test(fw), 'postfix address does not increment then subtract one')
+})
+
+test('monotone cursor budget proves mutually-exclusive codec reads', () => {
+  const src = `const dec=(inp,out)=>{let ip=0;for(let p=0;p<4;p++){const tag=inp[ip++];let v=tag;if((tag&1)===0){v+=inp[ip++];v+=inp[ip++];v+=inp[ip++]}else if((tag&2)===0){v+=inp[ip++]}out[p]=v}return ip}
+    export let f=()=>{const inp=new Uint8Array(20),out=new Uint8Array(4);for(let i=0;i<20;i++)inp[i]=i;return dec(inp,out)+out[0]+out[3]}`
+  const decWat = (s) => {
+    const wat = jz.compile(s, { wat: true, optimize: { level: 'speed', watr: false } })
+    return wat.split('(func $dec')[1]?.split('(func ')[0] || ''
+  }
+  is((decWat(src).match(/i32\.lt_u/g) || []).length, 0,
+    'max branch advance × trip count fits the static input length')
+  const short = src.replace('new Uint8Array(20)', 'new Uint8Array(15)')
+  ok(/i32\.lt_u/.test(decWat(short)), 'insufficient capacity keeps each checked read')
+  const exportsJs = {}
+  new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(exportsJs)
+  is(run(src, { optimize: 'speed' }).f(), exportsJs.f(), 'budgeted post-increment reads stay exact')
+
+  const rle = `const enc=(inp,out)=>{let op=0,run=0;for(let p=0;p<8;p++){const x=inp[p];if(x===0)run++;else{if(run>0){out[op++]=run;run=0}out[op++]=x;out[op++]=1}}return op}
+    export let f=()=>{const inp=new Uint8Array(8),out=new Uint8Array(16);inp[0]=0;inp[1]=3;inp[2]=4;return enc(inp,out)+out[0]+out[1]+out[2]}`
+  const encWat = (s) => {
+    const wat = jz.compile(s, { wat: true, optimize: { level: 'speed', watr: false } })
+    return wat.split('(func $enc')[1]?.split('(func ')[0] || ''
+  }
+  is((encWat(rle).match(/i32\.lt_u/g) || []).length, 0,
+    'credit reset pays for the rare extra RLE output byte')
+  ok(/i32\.lt_u/.test(encWat(rle.replace('new Uint8Array(16)', 'new Uint8Array(15)'))),
+    'amortized output bound still fails closed one byte short')
+  is(run(rle, { optimize: 'speed' }).f(), 10, 'amortized RLE stores stay exact')
+})
+
+test('typed value hulls fail closed on wraparound, aliases, and closure writes', () => {
+  const cases = {
+    wrap: `const get=(t,i)=>t[i]|0
+      export let f=()=>{const idx=new Uint8Array(1),t=new Int32Array(32);idx[0]=-100;t[0]=7;return get(t,idx[0])}`,
+    alias: `const get=(t,i)=>t[i]|0
+      export let f=()=>{const idx=new Int32Array(1),t=new Int32Array(32);const b=idx;b[0]=999;t[0]=7;return get(t,idx[0])}`,
+    closure: `const get=(t,i)=>t[i]|0
+      export let f=()=>{const idx=new Int32Array(1),t=new Int32Array(32);const set=()=>{idx[0]=999};set();t[0]=7;return get(t,idx[0])}`,
+  }
+  for (const [name, src] of Object.entries(cases)) {
+    const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+    const getWat = wat.split('(func $get')[1]?.split('(func ')[0] || ''
+    ok(/i32\.lt_u/.test(getWat), `${name}: unproven element hull keeps the bounds check`)
+    is(run(src, { optimize: 'speed' }).f(), 0, `${name}: OOB reads retain JS ToInt32 semantics`)
+  }
+})
+
+test('plain-array length proofs reject conditional growth, aliases, and extending writes', () => {
+  const conditional = `const build=(x)=>{const a=[];if(x)a.push(7);return a}
+    const get=(a)=>a[0]|0;export let f=(x)=>get(build(x))`
+  const wat = jz.compile(conditional, { wat: true, optimize: { level: 'speed', watr: false } })
+  const getWat = wat.split('(func $get')[1]?.split('(func ')[0] || ''
+  ok(/i32\.lt_u/.test(getWat), 'conditional push cannot become a fixed returned length')
+  const c = run(conditional, { optimize: 'speed' }).f
+  is(c(0), 0, 'empty conditional result stays OOB')
+  is(c(1), 7, 'taken conditional push remains visible')
+
+  const alias = `const get=(a)=>a[1]|0;export let f=()=>{const a=[7];const b=a;b.push(9);return get(a)}`
+  const extend = `const get=(a)=>a[4]|0;export let f=()=>{const a=[];a[4]=9;return get(a)}`
+  is(run(alias, { optimize: 'speed' }).f(), 9, 'alias mutation poisons the literal length')
+  is(run(extend, { optimize: 'speed' }).f(), 9, 'indexed extension poisons the literal length')
+})
+
+test('finite-domain hash probe requires an immutable domain length', () => {
+  const safe = `const count=(keys)=>{const d={};for(let i=0;i<keys.length;i++){const k=keys[i];d[k]=(d[k]|0)+1}return d[keys[0]]|0}
+    export let f=()=>{const keys=['a','b','a'];return count(keys)}`
+  const grow = `const count=(keys)=>{const d={};for(let i=0;i<8;i++){keys.push('k'+i);const k=keys[i];d[k]=(d[k]|0)+1}return d[keys[0]]|0}
+    export let f=()=>{const keys=['a'];return count(keys)}`
+  const safeWat = jz.compile(safe, { wat: true, optimize: { level: 'speed', watr: false } })
+  const growWat = jz.compile(grow, { wat: true, optimize: { level: 'speed', watr: false } })
+  ok(/call \$__hash_slot_eph_fixed/.test(safeWat), 'immutable finite key domain uses the no-growth probe')
+  ok(!/call \$__hash_slot_eph_fixed/.test(growWat) && /call \$__hash_slot_eph\b/.test(growWat),
+    'growing key source retains the growable probe')
+  is(run(safe, { optimize: 'speed' }).f(), 2, 'fixed probe count exact')
+  is(run(grow, { optimize: 'speed' }).f(), 1, 'growable fallback terminates and stays exact')
+
+  const repeated = `const rounds=(keys,n)=>{let sum=0;for(let r=0;r<n;r++){const d={};for(let i=0;i<keys.length;i++){const k=keys[i];d[k]=(d[k]|0)+1}sum+=d[keys[0]]|0}return sum}
+    export let f=(n)=>{const keys=['a','b','a'];return rounds(keys,n)}`
+  const f = run(repeated, { optimize: 'speed' }).f
+  for (const n of [1, 5, 2, 20, 0, 3]) is(f(n), n * 2, `reused ephemeral table survives reset/call sequence n=${n}`)
+})
+
+test('i32 count slots preserve missing keys, negative counts, and assignment values', () => {
+  const negative = `const count=(a,b)=>{const d={};d[a]=(d[a]|0)-1;d[a]=(d[a]|0)-1;return (d[a]|0)*10+(d[b]|0)}
+    export let f=()=>count('seen','missing')`
+  is(run(negative, { optimize: 'speed' }).f(), -20, 'i32 slots preserve negative bits and missing-key zero')
+
+  // 2^32 is truthy as a JS assignment result but ToInt32(2^32) is zero. The
+  // write therefore cannot use the i32-only slot representation when its value
+  // is consumed by the `if` condition, even though every later read is `|0`.
+  const src = `const count=(k)=>{const d={};let r=0;if(d[k]=4294967296)r=1;return r+(d[k]|0)}
+    export let f=()=>count('x')`
+  is(run(src, { optimize: 'speed' }).f(), 1, 'condition observes the original boxed assignment value')
+})
+
+test('interval walk: bit-field equality narrows bounded opcode/table indices', () => {
+  const src = `
+export let main = (tag) => {
+  const table = new Int32Array(64)
+  for (let i = 0; i < 64; i++) table[i] = i * 3
+  tag = tag & 255
+  if ((tag & 192) === 0) return table[tag]
+  return -1
+}`
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || wat
+  is((m.match(/nan:0x7FF80002/g) || []).length, 0, 'masked equality proves the 64-slot table read')
+  const wasm = run(src, { optimize: 'speed' }).main
+  for (const tag of [-1, 0, 1, 63, 64, 127, 255, 256, 0x12340])
+    is(wasm(tag), ((tag & 255) < 64 ? (tag & 255) * 3 : -1), `tag=${tag} exact`)
+  const negated = src.replace('=== 0', '!== 0')
+  ok(/nan:0x7FF80002/.test(jz.compile(negated, { wat: true, optimize: 'speed' })),
+    'non-contiguous negated class stays checked')
 })

@@ -13,7 +13,7 @@ import { isLiteralStr, I32_MIN, I32_MAX } from '../ir.js'
 import {
   analyzeBody, findMutations, invalidateLocalsCache, mayBeNullish,
 } from './analyze.js'
-import { staticObjectProps } from '../static.js'
+import { staticArrayElems, staticObjectProps } from '../static.js'
 import { scanBoundedLoops, exprType, typedElemCtor, typedStaticLen } from '../type.js'
 import { typedElemAux, ctorFromElemAux } from '../../layout.js'
 import { observeProgramSlots } from './program-facts.js'
@@ -820,6 +820,429 @@ function narrowReturnArrayElems(field, paramReps, valueUsed) {
   }
 }
 
+// Fixed lengths of internal arrays built from a literal plus unconditional
+// pushes in canonical constant-trip loops. Any alias, unknown call, conditional
+// push, indexed write, or control exit rejects the array. This captures table
+// builders without pretending mutable JS arrays are generally fixed-size.
+function inferInternalArrayLengths(paramReps) {
+  const cint = (n) => {
+    if (typeof n === 'number' && Number.isInteger(n)) return n
+    if (Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && Number.isInteger(n[1])) return n[1]
+    if (typeof n === 'string') return ctx.scope.constInts?.get(n) ?? null
+    return null
+  }
+  const declInit = (n, name) => {
+    if (!Array.isArray(n)) return null
+    if (n[0] === 'let' || n[0] === 'const' || n[0] === ';') for (let i = 1; i < n.length; i++) {
+      const d = n[i]
+      if (Array.isArray(d) && d[0] === '=' && d[1] === name) return cint(d[2])
+      const v = declInit(d, name); if (v != null) return v
+    }
+    return null
+  }
+  const unitInc = (n, name) => Array.isArray(n) &&
+    ((n[0] === '++' && n[1] === name) || (n[0] === '+=' && n[1] === name && cint(n[2]) === 1))
+  const refs = (n, name) => {
+    if (n === name) return true
+    if (!Array.isArray(n) || n[0] === '=>') return false
+    for (let i = 1; i < n.length; i++) if (refs(n[i], name)) return true
+    return false
+  }
+  const pushCount = (n, arr) => {
+    if (!Array.isArray(n)) return 0
+    if (n[0] === '=>') return refs(n, arr) ? null : 0
+    if (n[0] === '()') {
+      if (Array.isArray(n[1]) && n[1][0] === '.' && n[1][1] === arr)
+        return n[1][2] === 'push' && callArgs(n).length > 0 && !callArgs(n).some(a => refs(a, arr))
+          ? callArgs(n).length : null
+      if (callArgs(n).some(a => refs(a, arr)) || refs(n[1], arr)) return null
+    }
+    if (n[0] === 'if' || n[0] === '?:' || n[0] === 'while' || n[0] === 'do' || n[0] === 'for' || n[0] === 'switch')
+      return refs(n, arr) ? null : 0
+    if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue') return null
+    if (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') {
+      if (n[1] === arr || refs(n[1], arr) || refs(n[2], arr)) return null
+    }
+    let total = 0
+    for (let i = 1; i < n.length; i++) {
+      const c = pushCount(n[i], arr)
+      if (c == null) return null
+      total += c
+    }
+    return total
+  }
+  const hasOp = (n, op) => {
+    if (!Array.isArray(n) || n[0] === '=>') return false
+    if (n[0] === op) return true
+    for (let i = 1; i < n.length; i++) if (hasOp(n[i], op)) return true
+    return false
+  }
+  const returnedName = (body) => {
+    const rs = returnExprs(body)
+    return rs.length && rs.every(x => typeof x === 'string' && x === rs[0]) ? rs[0] : null
+  }
+  const mutatesName = (n, name) => {
+    if (!Array.isArray(n) || n[0] === '=>') return false
+    if ((ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') && n[1] === name) return true
+    for (let i = 1; i < n.length; i++) if (mutatesName(n[i], name)) return true
+    return false
+  }
+  const funcLens = new Map()
+  for (const f of ctx.func.list) {
+    if (f.raw || !Array.isArray(f.body)) continue
+    const arr = returnedName(f.body)
+    if (!arr) continue
+    let len = null, bad = false, defNode = null
+    const walk = (n) => {
+      if (bad || !Array.isArray(n)) return
+      if (n[0] === '=>') { if (refs(n, arr)) bad = true; return }
+      if ((n[0] === 'let' || n[0] === 'const')) for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (Array.isArray(d) && d[0] === '=' && d[1] === arr) {
+          if (defNode) { bad = true; return }
+          const elems = staticArrayElems(d[2])
+          if (elems) { len = elems.length; defNode = d } else bad = true
+        }
+      }
+      if ((n[0] === 'if' || n[0] === '?:' || n[0] === 'while' || n[0] === 'do' || n[0] === 'switch') && refs(n, arr)) {
+        bad = true
+        return
+      }
+      if (n[0] === 'for' && n.length === 5 && refs(n[4], arr)) {
+        const initNames = new Set()
+        const findIv = (x) => {
+          if (!Array.isArray(x)) return
+          if (x[0] === '=' && typeof x[1] === 'string' && cint(x[2]) != null) initNames.add(x[1])
+          for (let i = 1; i < x.length; i++) findIv(x[i])
+        }
+        findIv(n[1])
+        const iv = [...initNames].find(x => Array.isArray(n[2]) && n[2][0] === '<' && n[2][1] === x && unitInc(n[3], x))
+        const start = iv ? declInit(n[1], iv) : null
+        const bound = iv ? cint(n[2][2]) : null
+        const per = iv ? pushCount(n[4], arr) : null
+        if (len == null || start == null || bound == null || bound < start || per == null ||
+            hasOp(n[4], 'break') || hasOp(n[4], 'continue') || hasOp(n[4], 'return') || hasOp(n[4], 'throw') ||
+            mutatesName(n[4], iv)) bad = true
+        else len += (bound - start) * per
+        return
+      }
+      if (n[0] === '()' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][1] === arr && n[1][2] === 'push') {
+        if (len == null || !callArgs(n).length || callArgs(n).some(a => refs(a, arr))) bad = true
+        else len += callArgs(n).length
+        return
+      }
+      if (n[0] === '()' && (refs(n[1], arr) || callArgs(n).some(a => refs(a, arr)))) { bad = true; return }
+      if (n !== defNode && (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') &&
+          (n[1] === arr || refs(n[1], arr) || refs(n[2], arr))) { bad = true; return }
+      if (n[0] === 'return' && n[1] === arr) return
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    walk(f.body)
+    if (!bad && len != null) { f.arrayLen = len; funcLens.set(f.name, len) }
+  }
+  // Length-preserving parameter summaries let a caller retain a local length
+  // fact across known reader helpers. Any alias, closure capture, return,
+  // indexed/property write, method call, or unknown call poisons the summary.
+  const carries = (n, name) => {
+    if (n === name) return true
+    if (!Array.isArray(n)) return false
+    if (n[0] === '?:') return carries(n[2], name) || carries(n[3], name)
+    if (n[0] === '&&' || n[0] === '||') return carries(n[1], name) || carries(n[2], name)
+    if (n[0] === ',') return carries(n[n.length - 1], name)
+    return false
+  }
+  const funcs = ctx.func.list.filter(f => !f.raw && Array.isArray(f.body))
+  const safeParams = new Map(funcs.map(f => [f.name, f.sig.params.map(() => true)]))
+  for (const f of funcs) {
+    const ps = new Map(f.sig.params.map((p, i) => [p.name, i])), safe = safeParams.get(f.name)
+    const walk = (n) => {
+      if (!Array.isArray(n)) return
+      if (n[0] === '=>') { for (const [name, k] of ps) if (refs(n, name)) safe[k] = false; return }
+      if (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') for (const [name, k] of ps) {
+        if (n[1] === name || carries(n[2], name) || (Array.isArray(n[1]) && refs(n[1], name))) safe[k] = false
+      }
+      if (n[0] === 'return') for (const [name, k] of ps) if (carries(n[1], name)) safe[k] = false
+      if (n[0] === '()') {
+        const args = callArgs(n), callee = typeof n[1] === 'string' ? n[1] : null
+        for (const [name, k] of ps) {
+          if (refs(n[1], name)) safe[k] = false
+          for (const a of args) if (carries(a, name) && (a !== name || !safeParams.has(callee))) safe[k] = false
+        }
+      }
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    walk(f.body)
+  }
+  let safeChanged = true
+  while (safeChanged) {
+    safeChanged = false
+    for (const f of funcs) {
+      const ps = new Map(f.sig.params.map((p, i) => [p.name, i])), safe = safeParams.get(f.name)
+      const walk = (n) => {
+        if (!Array.isArray(n) || n[0] === '=>') return
+        if (n[0] === '()' && typeof n[1] === 'string' && safeParams.has(n[1])) {
+          const args = callArgs(n), target = safeParams.get(n[1])
+          for (let k = 0; k < args.length; k++) if (ps.has(args[k]) && !target[k] && safe[ps.get(args[k])]) {
+            safe[ps.get(args[k])] = false
+            safeChanged = true
+          }
+        }
+        for (let i = 1; i < n.length; i++) walk(n[i])
+      }
+      walk(f.body)
+    }
+  }
+
+  const locals = new Map()
+  for (const f of funcs) {
+    const candidates = new Map(), defs = new Map()
+    const collect = (n) => {
+      if (!Array.isArray(n) || n[0] === '=>') return
+      if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+        const elems = staticArrayElems(d[2])
+        const len = elems ? elems.length
+          : Array.isArray(d[2]) && d[2][0] === '()' && typeof d[2][1] === 'string' ? funcLens.get(d[2][1])
+          : null
+        if (len != null) { candidates.set(d[1], len); defs.set(d[1], d) }
+      }
+      for (let i = 1; i < n.length; i++) collect(n[i])
+    }
+    collect(f.body)
+    const m = new Map()
+    for (const [name, len] of candidates) {
+      let ok = true
+      const verify = (n) => {
+        if (!ok || !Array.isArray(n)) return
+        if (n[0] === '=>') { if (refs(n, name)) ok = false; return }
+        if (n !== defs.get(name) && (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') &&
+            (n[1] === name || carries(n[2], name) || (Array.isArray(n[1]) && refs(n[1], name)))) { ok = false; return }
+        if (n[0] === 'return' && carries(n[1], name)) { ok = false; return }
+        if (n[0] === '()') {
+          const args = callArgs(n), callee = typeof n[1] === 'string' ? n[1] : null
+          if (refs(n[1], name)) { ok = false; return }
+          for (let k = 0; k < args.length; k++) if (carries(args[k], name) &&
+              (args[k] !== name || !safeParams.get(callee)?.[k])) { ok = false; return }
+        }
+        for (let i = 1; i < n.length; i++) verify(n[i])
+      }
+      verify(f.body)
+      if (ok) m.set(name, len)
+    }
+    locals.set(f, m)
+  }
+  return { funcLens, locals }
+}
+
+// Whole-program typed-element hulls for fresh local typed arrays. A callee
+// summary records only values written through each parameter; callers union
+// that effect with the fresh array's initial zero. This is deliberately not a
+// general alias analysis: aliases, external calls, returns, unknown writes, and
+// closures poison the fact. The useful class is broad nevertheless — fill(a)
+// helpers followed by compute(a), common in codecs and generated kernels.
+function inferTypedValueRanges(paramReps) {
+  const hull = (a, b) => !a ? b && [...b] : !b ? [...a] : [Math.min(a[0], b[0]), Math.max(a[1], b[1])]
+  const literal = (n) => {
+    if (typeof n === 'number' && Number.isInteger(n)) return n
+    if (Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && Number.isInteger(n[1])) return n[1]
+    if (Array.isArray(n) && n[0] === 'u-' && typeof n[1] === 'number' && Number.isInteger(n[1])) return -n[1]
+    if (typeof n === 'string') return ctx.scope.constInts?.get(n) ?? null
+    if (Array.isArray(n) && n.length === 3 && (n[0] === '+' || n[0] === '-' || n[0] === '*')) {
+      const a = literal(n[1]), b = literal(n[2])
+      if (a != null && b != null) return n[0] === '+' ? a + b : n[0] === '-' ? a - b : a * b
+    }
+    return null
+  }
+  const exprRange = (n) => {
+    const c = literal(n)
+    if (c != null) return [c, c]
+    if (!Array.isArray(n)) return null
+    const op = n[0]
+    if (op === '?:') { const a = exprRange(n[2]), b = exprRange(n[3]); return a && b ? hull(a, b) : null }
+    if (op === '&') {
+      const m = literal(n[1]) ?? literal(n[2])
+      if (m != null && m >= 0) return [0, m]
+    }
+    if (op === '>>>') {
+      const s = literal(n[2])
+      if (s != null && (s & 31) !== 0) return [0, 0xFFFFFFFF >>> (s & 31)]
+    }
+    if (op === 'u-' || op === '-') {
+      if (n.length === 2) { const a = exprRange(n[1]); return a ? [-a[1], -a[0]] : null }
+    }
+    if (op === '+' || op === '-' || op === '*') {
+      const a = exprRange(n[1]), b = exprRange(n[2])
+      if (!a || !b) return null
+      if (op === '+') return [a[0] + b[0], a[1] + b[1]]
+      if (op === '-') return [a[0] - b[1], a[1] - b[0]]
+      const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]
+      return [Math.min(...p), Math.max(...p)]
+    }
+    return null
+  }
+  // Model integer typed-array stores. A source interval that crosses the
+  // element representation's wrap/clamp boundary widens to the full stored
+  // range; retaining the source interval there would be an unsound under-
+  // approximation (e.g. `Uint8Array[0] = -100` stores 156).
+  const elemBounds = new Map([
+    ['new.Int8Array', [-128, 127]], ['new.Uint8Array', [0, 255]], ['new.Uint8ClampedArray', [0, 255]],
+    ['new.Int16Array', [-32768, 32767]], ['new.Uint16Array', [0, 65535]],
+    ['new.Int32Array', [-2147483648, 2147483647]], ['new.Uint32Array', [0, 4294967295]],
+  ])
+  const storedRange = (ctor, r) => {
+    const base = ctor?.endsWith('.view') ? ctor.slice(0, -5) : ctor
+    const lim = elemBounds.get(base)
+    if (!lim || !r || !Number.isFinite(r[0]) || !Number.isFinite(r[1])) return null
+    return r[0] >= lim[0] && r[1] <= lim[1] ? [...r] : [...lim]
+  }
+  const initialRange = (rhs, ctor) => {
+    const args = rhs?.[2]
+    if (args == null || literal(args) != null) return [0, 0]
+    const elems = staticArrayElems(args)
+    if (!elems) return null
+    let out = null
+    for (const e of elems) {
+      const r = storedRange(ctor, exprRange(e))
+      if (!r) return null
+      out = hull(out, r)
+    }
+    return out || [0, 0]
+  }
+  const mentions = (n, name) => {
+    if (n === name) return true
+    if (!Array.isArray(n)) return false
+    for (let i = 1; i < n.length; i++) if (mentions(n[i], name)) return true
+    return false
+  }
+  // Expressions that can evaluate to the array object itself. Element/property
+  // reads merely consume it and must not be mistaken for aliases.
+  const carries = (n, name) => {
+    if (n === name) return true
+    if (!Array.isArray(n)) return false
+    if (n[0] === '?:') return carries(n[2], name) || carries(n[3], name)
+    if (n[0] === '&&' || n[0] === '||') return carries(n[1], name) || carries(n[2], name)
+    if (n[0] === ',') return carries(n[n.length - 1], name)
+    return false
+  }
+  const funcs = ctx.func.list.filter(f => !f.raw && Array.isArray(f.body))
+  const summaries = new Map()
+  for (const f of funcs) summaries.set(f.name, f.sig.params.map(() => ({ range: null, writes: false, bad: false })))
+
+  // Direct effects first. User-call forwarding is folded to a fixpoint below.
+  for (const f of funcs) {
+    const ps = new Map(f.sig.params.map((p, i) => [p.name, i]))
+    const sum = summaries.get(f.name)
+    const walk = (n, inClosure = false) => {
+      if (!Array.isArray(n)) return
+      const closure = inClosure || n[0] === '=>'
+      if (closure && n !== f.body) {
+        for (const [name, k] of ps) if (mentions(n, name)) sum[k].bad = true
+        return
+      }
+      if (ASSIGN_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && ps.has(n[1][1])) {
+        const s = sum[ps.get(n[1][1])], r = n[0] === '=' ? exprRange(n[2]) : null
+        s.writes = true
+        if (!r) s.bad = true; else s.range = hull(s.range, r)
+      }
+      // Aliases/returns escape the receiver; element/property reads do not.
+      if (n[0] === 'return') for (const [name, k] of ps) if (carries(n[1], name)) sum[k].bad = true
+      if (ASSIGN_OPS.has(n[0])) for (const [name, k] of ps) {
+        if (n[1] === name || carries(n[2], name)) sum[k].bad = true
+        if (Array.isArray(n[1]) && n[1][0] !== '[]' && mentions(n[1], name)) sum[k].bad = true
+      }
+      if (n[0] === '()') {
+        const args = callArgs(n)
+        const callee = typeof n[1] === 'string' ? n[1] : null
+        for (const [name, k] of ps) {
+          // Calling a method on the receiver may mutate it. A direct argument
+          // to a known user function is handled by the summary fixpoint;
+          // unknown or expression-hidden aliases poison immediately.
+          if (mentions(n[1], name)) sum[k].bad = true
+          for (const a of args) if (carries(a, name) && (!callee || !summaries.has(callee) || a !== name)) sum[k].bad = true
+        }
+      }
+      for (let i = 1; i < n.length; i++) walk(n[i], closure)
+    }
+    walk(f.body)
+  }
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const f of funcs) {
+      const ps = new Map(f.sig.params.map((p, i) => [p.name, i])), sum = summaries.get(f.name)
+      const walk = (n) => {
+        if (!Array.isArray(n) || n[0] === '=>') return
+        if (n[0] === '()' && typeof n[1] === 'string' && summaries.has(n[1])) {
+          const args = callArgs(n), target = summaries.get(n[1])
+          for (let k = 0; k < args.length; k++) if (ps.has(args[k])) {
+            const s = sum[ps.get(args[k])], t = target[k]
+            if (!t || t.bad) { if (!s.bad) { s.bad = true; changed = true } }
+            else if (t.writes) {
+              const r = hull(s.range, t.range)
+              if (!s.writes || r[0] !== s.range?.[0] || r[1] !== s.range?.[1]) { s.writes = true; s.range = r; changed = true }
+            }
+          }
+        }
+        for (let i = 1; i < n.length; i++) walk(n[i])
+      }
+      walk(f.body)
+    }
+  }
+
+  const locals = new Map()
+  for (const f of funcs) {
+    const ranges = new Map(), ctors = new Map(), poisoned = new Set(), freshDefs = new Set()
+    const merge = (name, r) => {
+      if (poisoned.has(name)) return
+      if (!r) { poisoned.add(name); ranges.delete(name); return }
+      ranges.set(name, hull(ranges.get(name), r))
+    }
+    const walk = (n) => {
+      if (!Array.isArray(n)) return
+      if (n[0] === '=>') {
+        for (const name of [...ranges.keys()]) if (mentions(n, name)) merge(name, null)
+        return
+      }
+      if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && typedStaticLen(d[2]) != null) {
+          const ctor = typedElemCtor(d[2]), init = initialRange(d[2], ctor)
+          if (ctor && init) {
+            ranges.set(d[1], init)
+            ctors.set(d[1], ctor)
+            freshDefs.add(d)
+          }
+        }
+      }
+      if (ASSIGN_OPS.has(n[0])) {
+        if (Array.isArray(n[1]) && n[1][0] === '[]' && ranges.has(n[1][1]))
+          merge(n[1][1], n[0] === '=' ? storedRange(ctors.get(n[1][1]), exprRange(n[2])) : null)
+        for (const name of [...ranges.keys()]) {
+          if (!freshDefs.has(n) && (n[1] === name || carries(n[2], name))) merge(name, null)
+          if (Array.isArray(n[1]) && n[1][0] !== '[]' && mentions(n[1], name)) merge(name, null)
+        }
+      }
+      if (n[0] === 'return') for (const name of [...ranges.keys()]) if (carries(n[1], name)) merge(name, null)
+      if (n[0] === '()') {
+        const args = callArgs(n), callee = typeof n[1] === 'string' ? n[1] : null
+        const target = callee ? summaries.get(callee) : null
+        for (const name of [...ranges.keys()]) {
+          if (mentions(n[1], name)) merge(name, null)
+          for (let k = 0; k < args.length; k++) if (carries(args[k], name)) {
+            if (args[k] !== name || !target?.[k] || target[k].bad) merge(name, null)
+            else if (target[k].writes) merge(name, storedRange(ctors.get(name), target[k].range))
+          }
+        }
+      }
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    walk(f.body)
+    locals.set(f, ranges)
+  }
+  return { locals, summaries, hull, initialRange }
+}
+
 export default function narrowSignatures(programFacts, ast) {
   const { callSites, valueUsed, paramReps, hasSchemaLiterals } = programFacts
 
@@ -845,6 +1268,9 @@ export default function narrowSignatures(programFacts, ast) {
   // callerCtx[null] (top-level) uses module globals for both locals and valTypes.
   const phase = createPhaseState()
   const { callerCtx } = phase
+  const typedValueRanges = inferTypedValueRanges(paramReps)
+  const internalArrayLengths = inferInternalArrayLengths(paramReps)
+  const callerArrValTypes = phase.callerElems('arrElemValTypes')
   const intConstArg = (arg) => {
     let raw = null
     if (typeof arg === 'number') raw = arg
@@ -908,6 +1334,14 @@ export default function narrowSignatures(programFacts, ast) {
     const v = inferValType(arg, state.callerValTypes)
     if (v != null) return v
     if (typeof arg !== 'string') {
+      // Plain Array<T> element passed directly to a helper. valTypeOf runs in
+      // the callee's ambient context here, so resolve through the caller's own
+      // body/param element facts instead (`visit(rows[i])` → OBJECT).
+      if (Array.isArray(arg) && arg[0] === '[]' && typeof arg[1] === 'string') {
+        const v = callerArrValTypes.get(state.callerFunc)?.get(arg[1])
+          ?? state.callerParamFacts('arrayElemValType')?.get(arg[1])
+        if (v != null) return v
+      }
       // Typed-array element read `recv[i]` where the receiver is a TYPED param/local of the CALLER:
       // valTypeOf can't see this (it queries ctx.func, not the caller), so `f(src[i])` with a
       // Float64Array PARAM `src` never propagated Number to f's param. Mirror VT['[]'] exactly,
@@ -1163,6 +1597,73 @@ export default function narrowSignatures(programFacts, ast) {
   // through helper chains: `init()→main→runKernel`.
   runArrValTypeFixpoint()
   runArrValTypeFixpoint()
+  // Array<T> facts can make a direct `helper(rows[i])` argument precise only
+  // now; settle the ordinary val lattice once more with that caller context.
+  runFixpoint()
+
+  // Internal fixed Array lengths flow through call parameters just like element
+  // kinds. Only the builder proof above can originate this fact.
+  const arrayLenAtSite = (arg, state) => {
+    if (typeof arg === 'string')
+      return internalArrayLengths.locals.get(state.callerFunc)?.get(arg)
+        ?? state.callerParamFacts('arrayLen')?.get(arg)
+        ?? null
+    if (Array.isArray(arg) && arg[0] === '()' && typeof arg[1] === 'string')
+      return internalArrayLengths.funcLens.get(arg[1]) ?? null
+    const elems = staticArrayElems(arg)
+    return elems ? elems.length : null
+  }
+  let arrayLenChanged = true
+  while (arrayLenChanged) {
+    arrayLenChanged = false
+    runCallsiteLattice([{
+      missing: poison('arrayLen'),
+      apply(r, arg, _k, state) {
+        const v = arrayLenAtSite(arg, state)
+        if (v == null || r.arrayLen === null) return
+        const before = r.arrayLen
+        mergeParamFact(r, 'arrayLen', v)
+        if (r.arrayLen !== before) arrayLenChanged = true
+      },
+    }])
+  }
+  runCallsiteLattice([mergeRule('arrayLen', (arg, _k, state) => arrayLenAtSite(arg, state))])
+
+  // Fresh typed-array element hulls: propagate fill-helper effects into later
+  // compute helpers. Unknown sites poison; known sites union, since all call
+  // paths remain within the resulting closed interval.
+  const rangeAtSite = (arg, state) => {
+    if (typeof arg === 'string')
+      return typedValueRanges.locals.get(state.callerFunc)?.get(arg)
+        ?? state.callerParamFacts('arrayElemRange')?.get(arg)
+        ?? null
+    const ctor = typedElemCtor(arg)
+    return ctor && typedStaticLen(arg) != null ? typedValueRanges.initialRange(arg, ctor) : null
+  }
+  const mergeRange = (r, v) => {
+    if (r.arrayElemRange === null || !v) { r.arrayElemRange = null; return false }
+    const next = typedValueRanges.hull(r.arrayElemRange, v)
+    const changed = !r.arrayElemRange || next[0] !== r.arrayElemRange[0] || next[1] !== r.arrayElemRange[1]
+    r.arrayElemRange = next
+    return changed
+  }
+  let rangeChanged = true
+  while (rangeChanged) {
+    rangeChanged = false
+    runCallsiteLattice([{
+      missing: poison('arrayElemRange'),
+      apply(r, arg, _k, state) {
+        const v = rangeAtSite(arg, state)
+        // During the soft fixpoint, unresolved forwarded params are neutral.
+        if (v && mergeRange(r, v)) rangeChanged = true
+      },
+    }])
+  }
+  // Hard validation: one unresolved live site invalidates the theorem.
+  runCallsiteLattice([{
+    missing: poison('arrayElemRange'),
+    apply(r, arg, _k, state) { mergeRange(r, rangeAtSite(arg, state)) },
+  }])
   // E3: pointer-kind result narrowing — once valResult is set, lift the wasm
   // return type to i32 + ptrKind/ptrAux when aux is statically resolvable.
   narrowPointerResults(funcsWithNarrowableResult, paramReps)

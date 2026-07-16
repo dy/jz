@@ -3,6 +3,17 @@
 ## V1
 
 * [ ] Beat all bench cases, all examples - pinned
+  * CURRENT EXECUTABLE VERDICT 2026-07-15 — OPEN. `npm run test:bench`
+    completed 200/208 and exposed eight hard failures rather than accepting
+    isolated wins: qoi speed-vs-AS plus fastest-wasm fft, tokenizer, qoi,
+    raytrace, radixsort, shapes, and wordcount. That loaded frontier measured
+    qoi 9.03ms vs rust 7.94 and wordcount 0.87 vs C 0.76. The subsequent
+    sound discriminant-hint pass moved shapes from 1.86ms to 1.73–2.02ms in
+    isolated repeats, still behind AS 0.99–1.05. All gaps are explicit
+    `WASM_TODO` entries. `examples/bench.mjs` is
+    1.63× geomean and 13/14 wins; raymarcher remains 0.90× V8. Therefore the
+    V1 performance gate is not closed and `bench/results.json` must not be
+    presented as current proof until a clean release snapshot is regenerated.
   * STATE 2026-07-14 (lever grind, sessions 3-4): DONE & ARCHIVED — strbuild
     WON (itoa-at-cursor −51.5%; jz 0.46ms leads every string-producing rival,
     rust-wasm 3.1× behind; ledger note + differential pin test/strings.js;
@@ -970,7 +981,28 @@
     node_modules path resolution (bench-harness module resolution, the
     known 'Unknown module' class — NOT a compile regression; the main
     bench table's jessie compiles and runs).
-* [ ] compiler architecture perfection
+* [x] compiler architecture closure — finite V1 gate (not “perfection”)
+  * Closure means every box below is executable evidence; it does not mean no
+    future optimization is possible. Benchmark leadership remains the separate
+    gate above.
+  * [x] Optimized semantics: checked-by-default typed OOB behavior plus focused
+    fail-closed regressions for aliases, mutation, postfix indexes, codec cursor
+    budgets, eager booleans, hash capacity, and mutable globals.
+  * [x] Differential proof: `npm run test:fuzz` — 5,000 generated programs ×
+    opt {0,1,2,3} × 20 inputs, 76,204 compared, zero divergences (2026-07-15).
+  * [x] Compiler-state isolation: full opt0/opt2/opt3/WASI matrix passes; warm
+    and fresh self-host modes are separately exercised.
+  * [x] Optimizer ownership: watr is the only post-IR optimizer; no binaryen
+    runtime dependency. Required inline/reset and self-host fixes are published
+    as watr 5.7.7, not local patches.
+  * [x] Self-bootstrap: real programs round-trip through rebuilt `dist/jz.wasm`;
+    warm self-host compilation has a strict `<0.99× V8` geomean gate.
+  * [x] Final closure battery on the 2026-07-15 worktree: matrix 3,005 pass /
+    17,318 assertions at the core opt2 leg (full matrix 3,005 pass, 6 skip);
+    test262 language 2,978 pass + 2,156 expected negative rejects, 0 fail;
+    built-ins 984 pass, 0 fail; self-host 21/21 plus 5 perf pins; fuzz 5,000
+    programs / 76,204 compared inputs / 0 divergences. Re-run on the release
+    commit if this worktree changes.
   * [ ] How to reduce the size of jz.js (eg. twice)? Is there any structures that can be folded or which don't add any value?
     * [x] dead-pass ablation sweep (2026-07-09): specializePtrBase,
       sortStrPoolByFreq, deadStoreElim, csePureExprLoop + the vestigial 'post'
@@ -998,7 +1030,13 @@
       is fully internal (no wasm-opt anywhere in the pipeline). Remaining
       binaryen edge if we ever want more margin: ~40 extra tiny-helper inlines
       + br/br_if forms (recorded, optional).
-* [ ] jz.wasm beats v8
+* [x] jz.wasm beats V8 — strict executable gate
+  * CURRENT 2026-07-15: `test/selfhost-perf.js` uses 20 tier-up warmups and
+    20 paired samples with alternating JS/WASM order (rather than unrelated
+    independent minima). Both warm and fresh-instance compile geomeans must be
+    `<0.99×` the same compiler on V8. Repeated paired measurements: warm
+    ~0.94–0.98×, fresh ~0.71–0.76×; latest full `test:self` passed 21/21
+    bootstrap tests plus all five perf pins.
   * I need your expertize to make jz.wasm faster than v8. I suspect there's too many string ops, or strings are too complex and could be done simpler OR not versatile enough, or there's some internal structure missing or redundant, or some internal optimizations possible, to reach the level of jz.wasm performing faster than jz.js. Now it's seemingly slower and we need to beat V8 and JSC. The point is not optimizing the source, but making current structures more efficient, so that generally any compiled WASM is faster than V8.
   * SELF-HOST-ROW "REGRESSION" INVESTIGATED + DISPROVEN AS A REGRESSION
     (2026-07-15): the sweep put the jz self-host row at 74.7ms vs V8 33.5

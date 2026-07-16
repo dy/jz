@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore, boolBoxIR, carrierF64 } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore, boolBoxIR, carrierF64 } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -80,9 +80,12 @@ export default (ctx) => {
       // object at the boundary.
       if (target && !merged?.length && ctx.types.dynWriteVars?.has(target)) {
         ctx.module.include('collection')
-        inc('__hash_new_small')
+        const domain = ctx.func.leanHashDomains?.get(target)
+        const old = asI64(emit(target))
+        inc('__hash_reuse_eph')
         updateRep(target, { val: VAL.HASH })
-        return typed(['call', '$__hash_new_small'], 'f64')
+        const want = domain ? asI32(emit(['*', ['.', domain, 'length'], 4])) : ['i32.const', 8]
+        return typed(['call', '$__hash_reuse_eph', old, want], 'f64')
       }
       // Register the empty schema so schemaId always indexes a real schema.list
       // entry — __json_obj and dyn-get load keys via $__schema_tbl[sid] and would

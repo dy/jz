@@ -1131,7 +1131,12 @@ export default (ctx) => {
       // Schema-set devirt marker — same contract as emitDynGetAnyTyped below
       // (identical 4-arg layout); without it the wasi host (features.external
       // off routes reads here) never devirtualizes megamorphic prop reads.
-      if (ctx.transform.optimize) call.dvProp = prop
+      // A branch-versioned fallback is already dominated by a failed exact-sid
+      // guard; rebuilding per-read schema tables there is dead overhead.
+      if (ctx.transform.optimize && !ctx.func._schemaSpecSlow) {
+        call.dvProp = prop
+        call.dvObject = vt === VAL.OBJECT
+      }
       return typed(['f64.reinterpret_i64', call], 'f64')
     }
     inc('__dyn_get_expr_t')
@@ -1150,7 +1155,10 @@ export default (ctx) => {
       // direct slot loads per schema, this call as the always-sound default arm.
       // Tagged here (not built) because schema.list is still growing while
       // function bodies emit; the pass runs after module init completes.
-      if (ctx.transform.optimize) call.dvProp = prop
+      if (ctx.transform.optimize && !ctx.func._schemaSpecSlow) {
+        call.dvProp = prop
+        call.dvObject = vt === VAL.OBJECT
+      }
       return typed(['f64.reinterpret_i64', call], 'f64')
     }
     inc('__dyn_get_any_t')
@@ -1232,8 +1240,24 @@ export default (ctx) => {
       }
     }
     const key = asI64(emit(['str', prop]))
-    if (schemaIdx >= 0) return emitSchemaSlotRead(va, schemaIdx,
-      typeof obj === 'string' && ctx.schema.slotI32CertainAt?.(obj, prop))
+    if (schemaIdx >= 0) {
+      // A precise schema id proves this is a fixed-size OBJECT allocation, not
+      // an ARRAY value that may have relocated. Extract the payload offset from
+      // the NaN-box directly instead of calling the generic forwarding-aware
+      // __ptr_offset for every field. Branch-local schema speculation supplies
+      // the same proof after its exact tag+sid guard, so an N-field variant pays
+      // one guard and zero pointer-helper calls.
+      let base = va
+      const sid = typeof obj === 'string' ? ctx.schema.idOf(obj) : null
+      const guardedIds = typeof obj === 'string' ? ctx.func.refinements?.get(obj)?.schemaIds : null
+      if ((sid != null || guardedIds?.length || (typeof obj === 'string' && lookupValType(obj) === VAL.OBJECT)) && va?.type === 'f64') {
+        base = typed(['i32.wrap_i64', ['i64.reinterpret_f64', va]], 'i32')
+        base.ptrKind = VAL.OBJECT
+        base.ptrAux = sid ?? guardedIds?.[0]
+      }
+      return emitSchemaSlotRead(base, schemaIdx,
+        typeof obj === 'string' && ctx.schema.slotI32CertainAt?.(obj, prop))
+    }
     if (typeof obj === 'string') {
       const vt = lookupValType(obj)
       if (usesDynProps(vt)) {
@@ -1261,7 +1285,7 @@ export default (ctx) => {
         // `prop` uniquely identifies one registered schema program-wide, so
         // guard on it instead of always paying the full dynamic dispatch
         // (durable-receiver check + ihash probe + schema-table scan).
-        const guard = ctx.schema.guardedSlotOf(prop)
+        const guard = ctx.func._schemaSpecSlow ? null : ctx.schema.guardedSlotOf(prop)
         return guard ? emitSchemaSlotGuarded(va, guard, slow, prop) : slow()
       }
       // Primitive receiver (number/boolean/bigint): no dynamic props — `(5).foo` is

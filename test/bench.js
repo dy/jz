@@ -90,9 +90,9 @@ const SPEED = {
   conv2d:         { v8: 'win',  as: 'win',  porf: 'todo' },
   // lz: LZSS greedy match finder + inflate round-trip; branchy byte twiddling.
   lz:             { v8: 'win',  as: 'tie',  porf: 'todo' },
-  // qoi: QOI image codec encode+decode; loop-carried run/index/diff/luma — no
-  // target can vectorize it, so it's a pure scalar-codegen race. jz lands within
-  // ~5% of AS (medians straddle 1.0–1.05× run-to-run), pinned `near` to stay non-flaky.
+  // qoi: amortized cursor bounds erase all codec checks and pure boolean
+  // chains lower to branchless i32.and. Isolated runs often win; the full
+  // loaded frontier still lands ~1.06× AS, so keep the non-flaky near pin.
   qoi:            { v8: 'win',  as: 'near', porf: 'todo' },
   // hashjoin: probe-dominated relational hash join — the boss case. jz TRAILED V8
   // until valResult=NUMBER stamping (0fbe6ee) killed the polymorphic + on probe()'s
@@ -290,7 +290,11 @@ const WASM_TODO = {
   // to be branchless if→select on the gradient sign-flips `(h&1)===0 ? x : -x` — 3245→1299µs, now
   // the fastest wasm (0.90× rust). (SLP stays disproven: the 4 corners need different per-lane
   // inputs, hand-vectorized perlin measured 65% SLOWER. Don't re-chase the quad-grad SLP.)
-  // fft: WON (tryButterfly) — the dual-IV radix-2 inner loop now strips 2-wide: adjacent
+  // fft's dual-IV butterfly is vectorized and normally leads; under the full
+  // loaded frontier rust-wasm can edge it by ~5.4%, just outside the 5% band.
+  fft:      'dual-IV SIMD butterfly is structurally present; full-suite loaded run measured jz 1.04ms vs rust-wasm 0.98ms (1.054×). Re-measure and shave the residual rather than silently accepting it.',
+  tokenizer: 'full loaded frontier measured jz ~0.06ms vs AS ~0.05ms; tiny absolute medians amplify timer quantization, but the >5% rival win must remain visible until a stable grouped/repeated gate proves leadership.',
+  // fft: tryButterfly strips the dual-IV radix-2 inner loop 2-wide: adjacent
   // re/im a/b pairs as v128, strided twiddles as scalar-pair+combine, rotation lanes with no
   // reassociation/fusion ⇒ checksum-identical (the parity contract held through SIMD).
   // 8% over scalar, ahead of rust-wasm; provenance rode the same recognizer for -32%.
@@ -300,17 +304,18 @@ const WASM_TODO = {
   // that rust`s winning 0-SIMD form hoists the OUTER-loop-invariant partial products out of the
   // n-loop (only a[0],a[5],b[0],b[5] mutate, so most of each a[r]·b[c] dot is constant). jz now
   // does the same (hoistReductionInvariantsIn, speed tier): 2068→1079µs, beats rust-wasm 1.5×.
-  qoi:      'loop-carried run/index/diff state — scalar codegen race, clang/rustc lead ~1.1× (within CI jitter band).',
+  qoi:      'amortized cursor bounds + branchless pure boolean chains cut jz from ~10.5ms to ~7.4–9.3ms and win many isolated runs, but loaded full-frontier runs still put rust-wasm at ~7.94–8.26ms vs jz ~9.03–9.21ms. All typed checks are gone; the residual is scalar scheduling/code shape under V8 wasm.',
   sort:     'heapsort sift-down — rust-wasm leads ~1.1-1.2×. NOT a jz lowering gap: the emitted sift loop is verified optimal scalar (unswitched typed path, zero bounds checks, zero calls, i32 indexes with fused offset= addressing, select for the child pick, 2 f64 compares — the op set LLVM emits). The residual is the dependent-load chain (a[child] feeds the next iteration`s address) where LLVM`s scheduling squeezes latency V8`s wasm tier does not. Same scalar-codegen-race class as qoi/dict; no jz-side shape fix.',
   dict:     'open-addressing linear-probe hash table — AS leads ~1.09×. NOT a narrowing leak: the hot insert/probe/lookup loop is verified clean i32 (0 trunc_sat / 0 f64.convert / 0 reinterpret in $runKernel; the 2 f64.const-nan are discarded void-insert returns, the module f64 is all in benchlib). Same scalar-codegen-race class as qoi — the probe loop`s branch/bounds quality, no jz-side narrowing fix.',
-  shapes:   'megamorphic-shape property access — the deopt kernel aimed at the schema union. measure() reads records of 8 object shapes at one site, and every field load lowers through the __dyn_get_any_t_h dynamic-property probe (23 sites in the emitted WAT) instead of schema slots: jz ~18 ms vs AS ~1.1 ms (flat kind-tagged struct, ties native C) and V8 ~3.4 ms (megamorphic IC stub). The widest gap in the suite, by design. The general fix is shape-set devirt: a BOUNDED schema union at an access site should lower to a tag-switch over direct slot loads (the static mirror of a polymorphic IC), never per-field dynamic probes.',
+  shapes:   'megamorphic shape scan — schema-union devirtualization, one-guard branch speculation, and constant-discriminant schema hints cut jz from ~18ms to ~1.73–2.02ms and reduce each tagged branch to one exact-sid guard plus a sound alien-schema fallback. AS still leads at ~0.99–1.05ms with one flat kind-tagged 5×i32 record. The residual class is a sound closed heterogeneous-record representation: jz still pointer-chases an array of separately boxed f64-slot objects; AS scans flat i32 records. The attempted packed-cell shortcut was rejected after module-graph semantic failures.',
+  radixsort: 'full loaded frontier measured jz 2.46ms vs rust-wasm 2.30ms (1.069×), beyond the 5% lead band; keep tracked pending a repeated mechanism-level diagnosis.',
   // strbuild: WON (876c9fd2 + f9d6b62b). Two fused-concat leaf classes killed the row cost:
   // literal ASCII parts store inline (-15.5%), then i32-proven parts render digits at the
   // cursor — __ilen sizes the alloc, __itoa_s writes; no __i32_to_str temp string, no
   // __str_byteLen, no __str_copy (another -51%, 1038→503µs, checksum exact). jz 0.46 ms now
   // leads every string-producing rival — rust-wasm/native-C ~3.1× behind, V8 ~3.7× — with only
   // zig-wasm's no-allocation stack-buffer formatter 1.09× ahead (it never builds a string value).
-  wordcount: 'string-keyed dictionary counting (counts[w] = (counts[w]|0)+1 over 512 dynamic keys) — the c-wasm open-addressing strcmp table leads ~10×; the AS Map (~8.2 ms) roughly ties jz (~8.8 ms), and V8 dictionary mode is ~3.3× ahead. Every insert/lookup pays __hash string-hash + equality + boxed store per op. The lever is interning (STR_INTERN_BIT): table-resident keys hashed once, repeated-key lookups collapsing to pointer compares.',
+  wordcount: 'finite-domain capacity planning + immutable domain-length proof, reusable ephemeral occupancy lanes, no-growth probing, i32 count slots, and propagated array facts cut jz from ~8.8ms to ~0.65ms in isolated runs. Under the full loaded frontier jz measured 0.87ms vs C-wasm 0.76ms, so leadership is not yet a hard worst-case proof.',
   immutable: 'immutable-update allocation churn (ps[i] = {x,y,vx,vy} per particle per step) — every wasm rival leads (c-wasm ~4.3×, AS ~1.9×; value-semantics natives get it free). jz bump-allocates each escaping object with no scalar replacement and no reclamation. The general fix is SROA/escape analysis for same-schema replace-stores (the store kills the previous object, so the fields can live in place or in a reused cell), not per-object arena growth.',
 }
 const WASM_LEAD_TOL = 1.05  // jz median ≤ best-rival × this counts as "leads" (microbench jitter band)

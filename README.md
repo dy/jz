@@ -20,7 +20,7 @@ Keep one codebase. JZ distills **"the good parts"** ([Crockford](https://www.you
 
 Rust, Go, and C are excellent when a rewrite and a second toolchain make sense. JZ is for the hot path you want to keep in JavaScript — one source, one test suite, a JS fallback, and comparable WASM or native performance.
 
-The performance bar is uncompromising: on the published cross-target corpus, JZ is **over 2× faster than V8 and Rust→WASM** by geomean. Every rival win remains visible and is treated as a bug to close, never an exception to hide.
+The performance bar is uncompromising: JZ leads V8 and AssemblyScript by geomean on the covered corpus, but the release gate is stricter than an average — JZ must be the fastest WASM on every case. Missing target coverage and every rival win remain visible and suppress broader claims until closed.
 
 | Good for                     | Not for                   |
 |------------------------------|---------------------------|

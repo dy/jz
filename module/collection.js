@@ -795,6 +795,162 @@ function genSlotUpsert(name, entrySize, hashFn, eqExpr) {
     (i32.add (local.get $slot) (i32.const 16)))`
 }
 
+// Fresh non-escaping HASH upsert. The compiler proves this dictionary is used
+// only by computed get/RMW sites: no delete (therefore no tombstones), no
+// enumeration (therefore no insertion-order sequence), and no escape across a
+// heap reset (therefore no durable forwarding/slot logs). Keep the standard
+// HASH layout so ordinary strict lookups remain compatible, but make the hot
+// upsert the textbook open-addressing loop emitted by C.
+function genEphemeralSlotUpsert(name, entrySize) {
+  return `(func $${name} (param $obj i64) (param $key i64) (result i32)
+    (local $off i32) (local $cap i32) (local $size i32) (local $h i32) (local $kaux i32) (local $koff i32)
+    (local $i i32) (local $idx i32) (local $slot i32) (local $hw i32)
+    (local $lb i32) (local $ls i32) (local $end i32)
+    (local $oldlb i32) (local $oldslot i32)
+    (local $newptr i32) (local $newcap i32) (local $newlb i32) (local $newslot i32)
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    (if (i32.eq (local.get $cap) (i32.const -1))
+      (then
+        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
+        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+    (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
+    (if (i32.ge_s (i32.shl (local.get $size) (i32.const 2)) (i32.mul (local.get $cap) (i32.const 3)))
+      (then
+        (local.set $newcap (i32.shl (local.get $cap) (i32.const 1)))
+        (local.set $newptr (call $__alloc_hash_eph (i32.const 0) (local.get $newcap)))
+        (local.set $oldlb (i32.add (local.get $off) (i32.mul (local.get $cap) (i32.const ${entrySize}))))
+        (local.set $newlb (i32.add (local.get $newptr) (i32.mul (local.get $newcap) (i32.const ${entrySize}))))
+        (local.set $i (i32.const 0))
+        (block $rd (loop $rl
+          (br_if $rd (i32.ge_s (local.get $i) (local.get $cap)))
+          (local.set $h (i32.load (i32.add (local.get $oldlb) (i32.shl (local.get $i) (i32.const 2)))))
+          (if (local.get $h)
+            (then
+              (local.set $oldslot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const ${entrySize}))))
+              (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $newcap) (i32.const 1))))
+              (block $ins (loop $pl2
+                (local.set $ls (i32.add (local.get $newlb) (i32.shl (local.get $idx) (i32.const 2))))
+                (br_if $ins (i32.eqz (i32.load (local.get $ls))))
+                (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $newcap) (i32.const 1))))
+                (br $pl2)))
+              (local.set $newslot (i32.add (local.get $newptr) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
+              (i64.store (local.get $newslot) (i64.load (local.get $oldslot)))
+              (i64.store offset=8 (local.get $newslot) (i64.load offset=8 (local.get $oldslot)))
+              (i64.store offset=16 (local.get $newslot) (i64.load offset=16 (local.get $oldslot)))
+              (i32.store (local.get $ls) (local.get $h))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $rl)))
+        (i32.store (i32.sub (local.get $newptr) (i32.const 8)) (local.get $size))
+        (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
+        (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+        (local.set $off (local.get $newptr))
+        (local.set $cap (local.get $newcap))))
+    ;; Cached/tiny string hash fast paths inline (same contract as __str_hash).
+    (local.set $kaux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+    (local.set $koff (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $h (i32.const 0))
+    (if (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.STRING}))
+      (then
+        (if (i32.shr_u (local.get $kaux) (i32.const 14))
+          (then
+            (local.set $h (i32.mul
+              (i32.xor (local.get $koff) (i32.mul (i32.xor (i32.and (local.get $kaux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))
+              (i32.const 0xC2B2AE35)))
+            (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15))))
+            (if (i32.le_s (local.get $h) (i32.const 1)) (then (local.set $h (i32.add (local.get $h) (i32.const 2))))))
+          (else
+            (if (i32.and (i32.ge_u (local.get $koff) (i32.const 8))
+                  (i32.eq (i32.and (local.get $kaux) (i32.const ${LAYOUT.SLICE_BIT | STR_HCACHE_BIT})) (i32.const ${STR_HCACHE_BIT})))
+              (then (local.set $h (i32.load (i32.sub (local.get $koff) (i32.const 8))))))))))
+    (if (i32.eqz (local.get $h)) (then (local.set $h (call $__str_hash (local.get $key)))))
+    (local.set $lb (i32.add (local.get $off) (i32.mul (local.get $cap) (i32.const ${entrySize}))))
+    (local.set $end (i32.add (local.get $lb) (i32.shl (local.get $cap) (i32.const 2))))
+    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
+    (local.set $ls (i32.add (local.get $lb) (i32.shl (local.get $idx) (i32.const 2))))
+    (block $done (loop $probe
+      (local.set $hw (i32.load (local.get $ls)))
+      (if (i32.eqz (local.get $hw))
+        (then
+          (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
+          (i64.store (local.get $slot) (i64.extend_i32_u (local.get $h)))
+          (i64.store offset=8 (local.get $slot) (local.get $key))
+          (i64.store offset=16 (local.get $slot) (i64.const ${UNDEF_NAN}))
+          (i32.store (local.get $ls) (local.get $h))
+          (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.add (local.get $size) (i32.const 1)))
+          (br $done)))
+      (if (i32.eq (local.get $hw) (local.get $h))
+        (then
+          (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
+          (br_if $done
+            (if (result i32)
+              (i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))
+              (then (i32.const 1))
+              (else (call $__str_eq (i64.load offset=8 (local.get $slot)) (local.get $key)))))))
+      (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
+      (local.set $ls (i32.add (local.get $ls) (i32.const 4)))
+      (if (i32.ge_u (local.get $ls) (local.get $end)) (then (local.set $ls (local.get $lb))))
+      (br $probe)))
+    (i32.add (local.get $slot) (i32.const 16)))`
+}
+
+// Capacity-planned sibling: analysis proved all inserted keys originate from
+// one finite domain and allocated ≥4× that domain, so growth/forwarding and the
+// size counter are unreachable. capHint folds the header load for a fixed-size
+// domain; zero retains the dynamic-domain form.
+function genEphemeralFixedSlot(name, entrySize) {
+  return `(func $${name} (param $obj i64) (param $key i64) (param $capHint i32) (result i32)
+    (local $off i32) (local $cap i32) (local $h i32) (local $kaux i32) (local $koff i32)
+    (local $idx i32) (local $slot i32) (local $hw i32) (local $lb i32) (local $ls i32) (local $end i32)
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $cap (local.get $capHint))
+    (if (i32.eqz (local.get $cap))
+      (then (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+    (local.set $kaux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+    (local.set $koff (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $h (i32.const 0))
+    (if (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.STRING}))
+      (then
+        (if (i32.shr_u (local.get $kaux) (i32.const 14))
+          (then
+            (local.set $h (i32.mul
+              (i32.xor (local.get $koff) (i32.mul (i32.xor (i32.and (local.get $kaux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))
+              (i32.const 0xC2B2AE35)))
+            (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15))))
+            (if (i32.le_s (local.get $h) (i32.const 1)) (then (local.set $h (i32.add (local.get $h) (i32.const 2))))))
+          (else
+            (if (i32.and (i32.ge_u (local.get $koff) (i32.const 8))
+                  (i32.eq (i32.and (local.get $kaux) (i32.const ${LAYOUT.SLICE_BIT | STR_HCACHE_BIT})) (i32.const ${STR_HCACHE_BIT})))
+              (then (local.set $h (i32.load (i32.sub (local.get $koff) (i32.const 8))))))))))
+    (if (i32.eqz (local.get $h)) (then (local.set $h (call $__str_hash (local.get $key)))))
+    (local.set $lb (i32.add (local.get $off) (i32.mul (local.get $cap) (i32.const ${entrySize}))))
+    (local.set $end (i32.add (local.get $lb) (i32.shl (local.get $cap) (i32.const 2))))
+    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
+    (local.set $ls (i32.add (local.get $lb) (i32.shl (local.get $idx) (i32.const 2))))
+    (block $done (loop $probe
+      (local.set $hw (i32.load (local.get $ls)))
+      (if (i32.eqz (local.get $hw))
+        (then
+          (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
+          (i64.store (local.get $slot) (i64.extend_i32_u (local.get $h)))
+          (i64.store offset=8 (local.get $slot) (local.get $key))
+          (i64.store offset=16 (local.get $slot) (i64.const ${UNDEF_NAN}))
+          (i32.store (local.get $ls) (local.get $h))
+          (br $done)))
+      (if (i32.eq (local.get $hw) (local.get $h))
+        (then
+          (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
+          (br_if $done
+            (if (result i32) (i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))
+              (then (i32.const 1))
+              (else (call $__str_eq (i64.load offset=8 (local.get $slot)) (local.get $key)))))))
+      (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
+      (local.set $ls (i32.add (local.get $ls) (i32.const 4)))
+      (if (i32.ge_u (local.get $ls) (local.get $end)) (then (local.set $ls (local.get $lb))))
+      (br $probe)))
+    (i32.add (local.get $slot) (i32.const 16)))`
+}
+
 function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing = UNDEF_NAN) {
   return `(func $${name} (param $coll i64) (param $key i64) (result i64)
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32) (local $tries i32)
@@ -996,11 +1152,18 @@ export default (ctx) => {
       : ['__str_hash', '__str_eq', '__ptr_type'],
     __hash_new: ['__alloc_hdr_n'],
     __hash_new_small: ['__alloc_hdr_n', '__mkptr'],
+    __hash_new_cap: ['__alloc_hdr_n', '__mkptr'],
     __hash_get_local: ['__str_hash', '__str_eq'],
     __hash_get_local_h: ['__str_eq'],
     __hash_set_local_h: () => ['__str_eq', '__zomb_scan', ...slotLogDeps()],
     __hash_set_local: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __hash_slot: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __hash_slot_eph: ['__str_hash', '__str_eq', '__alloc_hash_eph', '__ptr_offset_fwd'],
+    __hash_slot_eph_fixed: ['__str_hash', '__str_eq'],
+    __alloc_hash_eph: ['__alloc'],
+    __hash_new_eph: ['__alloc_hash_eph', '__mkptr'],
+    __hash_new_eph_cap: ['__alloc_hash_eph', '__mkptr'],
+    __hash_reuse_eph: ['__ptr_type', '__ptr_offset_fwd', '__alloc_hash_eph', '__mkptr'],
     __slot_write: () => slotLogDeps(),
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...slotLogDeps()],
@@ -1958,6 +2121,67 @@ export default (ctx) => {
   ctx.core.stdlib['__hash_new_small'] = `(func $__hash_new_small (result f64)
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
       (call $__alloc_hdr_n (i32.const 0) (i32.const ${smallCap}) (i32.const ${MAP_ENTRY + LANE}))))`
+  // Fresh, non-escaping dictionaries key occupancy exclusively off the compact
+  // hash lane. Reused heap bytes in the 24-byte entry region are unreachable
+  // while that lane is zero, so clear only cap*4 bytes instead of cap*28.
+  ctx.core.stdlib['__alloc_hash_eph'] = `(func $__alloc_hash_eph (param $len i32) (param $cap i32) (result i32)
+    (local $ptr i32) (local $data i32) (local $lanes i32)
+    (local.set $ptr (call $__alloc (i32.add (i32.const 16) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY + LANE})))))
+    (i64.store (local.get $ptr) (i64.const 0))
+    (i32.store offset=8 (local.get $ptr) (local.get $len))
+    (i32.store offset=12 (local.get $ptr) (local.get $cap))
+    (local.set $data (i32.add (local.get $ptr) (i32.const 16)))
+    (local.set $lanes (i32.add (local.get $data) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY}))))
+    (memory.fill (local.get $lanes) (i32.const 0) (i32.shl (local.get $cap) (i32.const 2)))
+    (local.get $data))`
+  ctx.core.stdlib['__hash_new_eph'] = `(func $__hash_new_eph (result f64)
+    (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
+      (call $__alloc_hash_eph (i32.const 0) (i32.const ${smallCap}))))`
+  ctx.core.stdlib['__hash_new_cap'] = `(func $__hash_new_cap (param $want i32) (result f64)
+    (local $cap i32)
+    (local.set $cap (i32.const 2))
+    (block $done (loop $grow
+      (br_if $done (i32.ge_u (local.get $cap) (local.get $want)))
+      (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
+      (br $grow)))
+    (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
+      (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.const ${MAP_ENTRY + LANE}))))`
+  ctx.core.stdlib['__hash_new_eph_cap'] = `(func $__hash_new_eph_cap (param $want i32) (result f64)
+    (local $cap i32)
+    (local.set $cap (i32.const 2))
+    (block $done (loop $grow
+      (br_if $done (i32.ge_u (local.get $cap) (local.get $want)))
+      (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
+      (br $grow)))
+    (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
+      (call $__alloc_hash_eph (i32.const 0) (local.get $cap))))`
+  // A non-escaping lexical dictionary can retain its table across loop
+  // iterations. Clearing the occupancy lane is its complete observable reset;
+  // no entry is live afterwards. First execution allocates, later executions
+  // reuse the same capacity and avoid bump-allocation/page traffic.
+  ctx.core.stdlib['__hash_reuse_eph'] = `(func $__hash_reuse_eph (param $old i64) (param $want i32) (result f64)
+    (local $off i32) (local $cap i32)
+    (if (i32.eq (call $__ptr_type (local.get $old)) (i32.const ${PTR.HASH}))
+      (then
+        (local.set $off (i32.wrap_i64 (i64.and (local.get $old) (i64.const ${LAYOUT.OFFSET_MASK}))))
+        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+        (if (i32.eq (local.get $cap) (i32.const -1))
+          (then (local.set $off (call $__ptr_offset_fwd (local.get $off)))
+                (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+        (if (i32.ge_u (local.get $cap) (local.get $want))
+          (then
+            (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.const 0))
+            (memory.fill
+              (i32.add (local.get $off) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY})))
+              (i32.const 0) (i32.shl (local.get $cap) (i32.const 2)))
+            (return (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (local.get $off)))))))
+    (local.set $cap (i32.const 2))
+    (block $done (loop $grow
+      (br_if $done (i32.ge_u (local.get $cap) (local.get $want)))
+      (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
+      (br $grow)))
+    (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
+      (call $__alloc_hash_eph (i32.const 0) (local.get $cap))))`
 
   ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH)
   ctx.core.stdlib['__hash_get_local_h'] = genLookupStrictPrehashed('__hash_get_local_h', MAP_ENTRY, strEqG, PTR.HASH)
@@ -1968,6 +2192,8 @@ export default (ctx) => {
   // would eagerly evaluate (same reasoning as module/core.js's __obj_clone).
   ctx.core.stdlib['__hash_set_local'] = () => genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, true, false, true)
   ctx.core.stdlib['__hash_slot'] = () => genSlotUpsert('__hash_slot', MAP_ENTRY, '$__str_hash', strEqG)
+  ctx.core.stdlib['__hash_slot_eph'] = genEphemeralSlotUpsert('__hash_slot_eph', MAP_ENTRY)
+  ctx.core.stdlib['__hash_slot_eph_fixed'] = genEphemeralFixedSlot('__hash_slot_eph_fixed', MAP_ENTRY)
   // The RMW fusion's value update — the store plus the durable-heal protocol
   // (mirrors durableSlotLogIR exactly; kept in the kernel so heal logic has one home).
   ctx.core.stdlib['__slot_write'] = () => ctx.scope.globals.has('__heap_reset')

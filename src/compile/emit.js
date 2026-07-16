@@ -60,7 +60,7 @@ import {
   extractF64Bits,
 } from '../ir.js'
 import { isBoundName } from '../ir.js'
-import { extractRefinements, withRefinements } from './flow-types.js'
+import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from './flow-types.js'
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
 
 const stringOps = (node) => {
@@ -395,6 +395,27 @@ export const emitBoolStr = (node) =>
 
 const CMP_SET = new Set(['>', '<', '>=', '<=', '==', '!=', '!'])
 const isCmp = n => Array.isArray(n) && CMP_SET.has(n[0])
+const BOOL_EXPR_OPS = new Set(['>', '<', '>=', '<=', '==', '!=', '===', '!==', '!'])
+const isCanonicalBoolExpr = n => Array.isArray(n) &&
+  (BOOL_EXPR_OPS.has(n[0]) || ((n[0] === '&&' || n[0] === '||') && isCanonicalBoolExpr(n[1]) && isCanonicalBoolExpr(n[2])))
+// Eager boolean chains win in leaf numeric kernels but regress orchestration/
+// compiler code whose first guard usually rejects before a costly RHS. Limit
+// the latency trade to call-free function bodies — a general leaf-kernel
+// criterion, not a benchmark identity. Nested closures are separate bodies.
+const boolEagerBody = () => {
+  const body = ctx.func.body
+  if (ctx.func._boolEagerBody === body) return ctx.func._boolEagerValue
+  let calls = false
+  const walk = (n, root = false) => {
+    if (calls || !Array.isArray(n)) return
+    if (!root && n[0] === '=>') return
+    if (n[0] === '()' || n[0] === 'new') { calls = true; return }
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  walk(body, true)
+  ctx.func._boolEagerBody = body
+  return (ctx.func._boolEagerValue = !calls)
+}
 
 // Map/Set methods whose generic (`.${method}`) emitter assumes a collection
 // receiver and dereferences a key/value argument. Every one needs ≥1 argument
@@ -3866,6 +3887,11 @@ export const emitter = {
     // skip f64 round-trip and __is_truthy call entirely.
     if (va.type === 'i32') {
       const vb = emitRight()
+      // Boolean-only short circuit with a pure RHS is safe to evaluate
+      // eagerly. Comparisons are canonical 0/1, so bitwise AND preserves the
+      // value while removing the nested if/tee ladder in scalar predicates.
+      if (vb.type === 'i32' && boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b) && isPureIR(vb))
+        return typed(['i32.and', va, vb], 'i32')
       const t = tempI32()
       if (vb.type === 'i32') {
         return typed(['if', ['result', 'i32'],
@@ -3926,6 +3952,10 @@ export const emitter = {
     }
     if (va.type === 'i32') {
       const vb = emitRight()
+      // Boolean twin of && above: eager pure RHS + canonical 0/1 values make
+      // bitwise OR exactly equivalent to short-circuit OR.
+      if (vb.type === 'i32' && boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b) && isPureIR(vb))
+        return typed(['i32.or', va, vb], 'i32')
       const t = tempI32()
       if (vb.type === 'i32') {
         return typed(['if', ['result', 'i32'],
@@ -4090,9 +4120,69 @@ export const emitter = {
     // Flow-sensitive type refinement: narrow types within each branch based on the guard.
     const thenRefs = extractRefinements(cond, new Map(), true)
     const elseRefs = extractRefinements(cond, new Map(), false)
-    const thenBody = withRefinements(thenRefs, then, () => emitVoid(then))
+
+    // Tagged-union branch versioning: several fields read from one unresolved
+    // receiver can identify a single compile-time schema. Guard that schema ONCE
+    // and emit fixed-slot accesses in the hot arm; every other value executes the
+    // original dynamic body. This is the AOT analogue of a polymorphic inline
+    // cache and removes one schema dispatch per field from record visitors.
+    const emitBranch = (branch, refs) => {
+      // An `else if` node is a dispatcher, not one variant body. Speculating
+      // the whole remaining chain clones every suffix at every nesting level
+      // (quadratic/exponential code growth and tiering pressure). Let its own
+      // emitter recurse and speculate only the eventual leaf bodies.
+      let spec = ctx.transform.optimize?.speculateSchemaBranches !== false &&
+        !(Array.isArray(branch) && branch[0] === 'if')
+        ? inferSchemaBranch(branch) : null
+      if (!spec) return withRefinements(refs, branch, () => emitVoid(branch))
+      // A constant tag census predicts one schema, but cannot prove that host
+      // or dynamically-constructed objects never carry the same tag. Narrow
+      // the version guard to that sid while retaining the dynamic miss arm.
+      const hint = refs.get(spec.name)?.schemaHint
+      if (hint != null) {
+        const schema = ctx.schema.list[hint]
+        const slots = new Map()
+        let valid = !!schema
+        for (const prop of spec.schemaSlots.keys()) {
+          const slot = schema?.indexOf(prop) ?? -1
+          if (slot < 0) { valid = false; break }
+          slots.set(prop, slot)
+        }
+        if (valid) spec = { ...spec, schemaIds: [hint], schemaId: hint, schemaSlots: slots }
+      }
+
+      const fastRefs = new Map(refs)
+      mergeRefinement(fastRefs, spec.name, {
+        val: VAL.OBJECT, schemaId: spec.schemaId,
+        schemaIds: spec.schemaIds, schemaSlots: spec.schemaSlots,
+      })
+      const fast = withRefinements(fastRefs, branch, () => emitVoid(branch))
+
+      // The fallback is already dominated by `sid !== spec.schemaId`; do not
+      // rebuild per-read schema guards/devirt tables inside this cold arm.
+      const prevSlow = ctx.func._schemaSpecSlow
+      ctx.func._schemaSpecSlow = true
+      let slow
+      try { slow = withRefinements(refs, branch, () => emitVoid(branch)) }
+      finally { ctx.func._schemaSpecSlow = prevSlow }
+
+      const raw = readVar(spec.name)
+      // An unresolved schema-bearing value uses the boxed f64 carrier. A raw
+      // pointer would already carry ptrAux/schemaId and never reach this pass.
+      if (raw.type !== 'f64') return slow
+      let schemaGuard = null
+      for (const sid of spec.schemaIds) {
+        const eq = ['i64.eq',
+          ['i64.and', ['i64.reinterpret_f64', readVar(spec.name)], ['i64.const', '0xFFFFFFFF00000000']],
+          ['i64.const', i64Hex(BigInt(encodePtrHi(PTR.OBJECT, sid)) << 32n)]]
+        schemaGuard = schemaGuard == null ? eq : ['i32.or', schemaGuard, eq]
+      }
+      return [['if', schemaGuard, ['then', ...fast], ['else', ...slow]]]
+    }
+
+    const thenBody = emitBranch(then, thenRefs)
     if (els != null) {
-      const elseBody = withRefinements(elseRefs, els, () => emitVoid(els))
+      const elseBody = emitBranch(els, elseRefs)
       return ['if', c, ['then', ...thenBody], ['else', ...elseBody]]
     }
     return ['if', c, ['then', ...thenBody]]

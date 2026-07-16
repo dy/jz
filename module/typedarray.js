@@ -8,11 +8,11 @@
  */
 
 import { typed, asF64, asI32, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
-import { isReassigned, T } from '../src/ast.js'
+import { isReassigned, T, ASSIGN_OPS } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
-import { typedIdxProven, typedElemCtor } from '../src/type.js'
+import { typedIdxProven, typedElemCtor, idxKey, constIntExpr } from '../src/type.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
 import { inc, PTR, LAYOUT, registerGetter } from '../src/ctx.js'
@@ -1447,7 +1447,18 @@ export default (ctx) => {
   // complement of the speed tier's loop hoists (drained by collectParamInits,
   // the probeHoist mechanism). Non-params (mid-body inits) and reassigned
   // names keep the inline header load.
+  const staticTypedLen = (arr) => {
+    if (typeof arr !== 'string') return null
+    // globalTypedLen originates at the declaration. A mutable module global may
+    // later receive a same-ctor array of another length inside any function;
+    // until an all-writers length lattice proves otherwise, never substitute
+    // its declaration length into a guard.
+    if (ctx.scope?.globals?.get(arr)?.mut && !ctx.func.locals?.has(arr)) return null
+    return ctx.types.typedLen?.get(arr) ?? ctx.scope?.globalTypedLen?.get(arr) ?? null
+  }
   const leanLen = (arr, et, isView) => {
+    const staticLen = staticTypedLen(arr)
+    if (staticLen != null) return ['i32.const', staticLen]
     const lenIR = () => ['i32.shr_u',
       ['i32.load', isView ? typedBase(emit(arr)) : ['i32.sub', typedBase(emit(arr)), ['i32.const', 8]]],
       ['i32.const', SHIFT[et]]]
@@ -1464,13 +1475,125 @@ export default (ctx) => {
     }
     return ['local.get', `$${h.t}`]
   }
+  // Coalesce the checked fetch bundle of an interpreter/decoder loop. For
+  // `while (pc < N) { o = pc*W; x=code[o]; y=code[o+1]; … }`, a static
+  // `code.length >= N*W` means every fetch is in-bounds whenever pc>=0. One
+  // signed guard can therefore feed the whole adjacent bundle; negative pc
+  // still yields each read's normal undefined arm. The dispatch/state body is
+  // NOT cloned (unlike whole-loop versioning), so V8 sees one compact loop.
+  const typedBundleGuard = (arr, i) => {
+    if (typeof arr !== 'string') return null
+    if (ctx.func._typedBundleBody !== ctx.func.body) {
+      ctx.func._typedBundleBody = ctx.func.body
+      ctx.func._typedBundleGuards = new Map()
+      const stmtsOf = (b) => {
+        while (Array.isArray(b) && b[0] === '{}' && b.length === 2) b = b[1]
+        return Array.isArray(b) && (b[0] === ';' || b[0] === '{}') ? b.slice(1) : [b]
+      }
+      const declsIn = (s) => {
+        const out = []
+        if (Array.isArray(s) && (s[0] === 'let' || s[0] === 'const'))
+          for (let k = 1; k < s.length; k++) if (Array.isArray(s[k]) && s[k][0] === '=' && typeof s[k][1] === 'string') out.push(s[k])
+        return out
+      }
+      const hasWrite = (n, name) => {
+        if (!Array.isArray(n)) return false
+        if ((ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') && n[1] === name) return true
+        for (let k = 1; k < n.length; k++) if (hasWrite(n[k], name)) return true
+        return false
+      }
+      const scan = (n) => {
+        if (!Array.isArray(n) || n[0] === '=>') return
+        if (n[0] === 'while' && Array.isArray(n[1]) && n[1][0] === '<' && typeof n[1][1] === 'string') {
+          const pc = n[1][1], bound = constIntExpr(n[1][2]), stmts = stmtsOf(n[2])
+          if (bound != null && bound > 0) {
+            for (const s of stmts) for (const d of (Array.isArray(s) && s[0] === 'const' ? declsIn(s) : [])) {
+              const rhs = d[2]
+              if (!(Array.isArray(rhs) && rhs[0] === '*' && rhs.length === 3)) continue
+              const c1 = constIntExpr(rhs[1]), c2 = constIntExpr(rhs[2])
+              const width = rhs[1] === pc ? c2 : rhs[2] === pc ? c1 : null
+              if (width == null || width < 1) continue
+              const base = d[1], groups = new Map(), bad = new Set()
+              let pcWritten = false
+              const walkReads = (x, visit) => {
+                if (!Array.isArray(x) || x[0] === '=>') return
+                if (x[0] === '[]' && typeof x[1] === 'string') {
+                  let off = null
+                  if (x[2] === base) off = 0
+                  else if (Array.isArray(x[2]) && x[2][0] === '+' && x[2].length === 3) {
+                    if (x[2][1] === base) off = constIntExpr(x[2][2])
+                    else if (x[2][2] === base) off = constIntExpr(x[2][1])
+                  }
+                  if (off != null && off >= 0 && off < width) visit(x[1], off, idxKey(x[1], x[2]))
+                }
+                for (let k = 1; k < x.length; k++) walkReads(x[k], visit)
+              }
+              for (const st of stmts) {
+                const directDecl = Array.isArray(st) && (st[0] === 'let' || st[0] === 'const')
+                const writesPcHere = hasWrite(st, pc)
+                walkReads(st, (recv, off, key) => {
+                  if (pcWritten || writesPcHere || !directDecl) bad.add(recv)
+                  else {
+                    let g = groups.get(recv)
+                    if (!g) groups.set(recv, g = { offsets: [], keys: [] })
+                    if (!g.offsets.includes(off)) { g.offsets.push(off); g.keys.push(key) }
+                  }
+                })
+                if (hasWrite(st, pc)) pcWritten = true
+              }
+              for (const [recv, g] of groups) {
+                const len = staticTypedLen(recv)
+                if (bad.has(recv) || g.keys.length < 2 || len == null || len < bound * width) continue
+                const guard = { pc, primary: g.keys[0], temp: null }
+                for (const key of g.keys) ctx.func._typedBundleGuards.set(key, guard)
+              }
+            }
+          }
+        }
+        for (let k = 1; k < n.length; k++) scan(n[k])
+      }
+      scan(ctx.func.body)
+    }
+    const key = idxKey(arr, i), g = ctx.func._typedBundleGuards.get(key)
+    if (!g) return null
+    if (!g.temp) g.temp = tempI32('tbg')
+    return key === g.primary
+      ? ['local.tee', `$${g.temp}`, ['i32.ge_s', ['local.get', `$${g.pc}`], ['i32.const', 0]]]
+      : ['local.get', `$${g.temp}`]
+  }
+
+  // Prepared postfix indices have the canonical i32 form `(++i) - 1`.
+  // Materialize the old value and advance separately: this preserves JS's
+  // reference-before-RHS order while avoiding add→sub cancellation plus two
+  // tees at every codec byte access.
+  const postIncI32Index = (i) => {
+    if (!(Array.isArray(i) && i[0] === '-' && constIntExpr(i[2]) === 1 &&
+        Array.isArray(i[1]) && i[1][0] === '++' && typeof i[1][1] === 'string')) return null
+    const name = i[1][1], old = emit(name)
+    if (old?.type !== 'i32') return null
+    const t = tempI32('tpi')
+    return {
+      pre: [['local.set', `$${t}`, old], emit(['++', name], 'void')],
+      value: ['local.get', `$${t}`],
+    }
+  }
+
   ctx.core.emit['.typed:[]'] = (arr, i) => {
     const r = resolveElem(arr)
     if (r == null) return null // unknown type, fallback to generic
     const { et, isView, isBigInt } = r
-    const proven = typedIdxProven(arr, i)
+    const key = idxKey(arr, i)
+    const rmwRead = ctx.types.rmwReads?.get(key)
+    if (rmwRead && et <= 5) {
+      const rd = typed([(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s',
+        ['local.get', `$${rmwRead}`]], 'f64')
+      rd.valKind = VAL.NUMBER
+      return rd
+    }
+    const proven = typedIdxProven(arr, i) || ctx.types.rmwBounds?.has(key)
     const loadOf = (off) => elemLoadIR(r, off)
     if (!proven) {
+      const bundleIn = typedBundleGuard(arr, i)
       // (A $__typed_idx call per site was tried for the size tier and REVERTED:
       // the helper + its __len/__ptr_offset chain cost ~+900 B while these
       // kernels have 1-3 unproven sites — inline wins until many sites share it.)
@@ -1483,7 +1606,9 @@ export default (ctx) => {
         const off = ['i32.add', typedDataAddr(emit(arr), isView),
           ['i32.shl', ['local.get', `$${ti}`], ['i32.const', SHIFT[et]]]]
         const rd = typed(['if', ['result', 'f64'],
-          ['i32.lt_u', ['local.tee', `$${ti}`, idx(i)], leanLen(arr, et, isView)],
+          bundleIn
+            ? ['block', ['result', 'i32'], ['local.set', `$${ti}`, idx(i)], bundleIn]
+            : ['i32.lt_u', ['local.tee', `$${ti}`, idx(i)], leanLen(arr, et, isView)],
           ['then', loadOf(off)],
           ['else', undefExpr()]], 'f64')
         // number|undefined with the undefined confined to a CONST arm — a numeric
@@ -1508,17 +1633,18 @@ export default (ctx) => {
           ['i32.const', SHIFT[et]]]]
       const rd = typed(['block', ['result', 'f64'],
         ['local.set', `$${ti}`, idx(i)],
-        ['local.set', `$${tin}`, ['i32.lt_u', ['local.get', `$${ti}`], lenIR]],
+        ['local.set', `$${tin}`, bundleIn || ['i32.lt_u', ['local.get', `$${ti}`], lenIR]],
         ['select', loadOf(off), undefExpr(), ['local.get', `$${tin}`]]], 'f64')
       if (!isBigInt) rd.checkedNumRead = true
       return rd
     }
-    const objIR = emit(arr), vi = idx(i)
+    const objIR = emit(arr), post = postIncI32Index(i), vi = post?.value ?? idx(i)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
-    if (isBigInt) return typed(loadOf(off), 'f64')
+    const value = post ? ['block', ['result', 'f64'], ...post.pre, loadOf(off)] : loadOf(off)
+    if (isBigInt) return typed(value, 'f64')
     // Non-bigint typed elements are plain NUMBERS — tag the load so numeric-arm
     // predicates (isNumArm: `+` dispatch numSide, ?:/?? canon) skip box guards.
-    const t = typed(loadOf(off), 'f64'); t.valKind = VAL.NUMBER; return t
+    const t = typed(value, 'f64'); t.valKind = VAL.NUMBER; return t
   }
 
   // A store value that can evaluate INSIDE the bounds guard when the assignment
@@ -1551,10 +1677,12 @@ export default (ctx) => {
     const { et, isView, isBigInt } = r
     const proven = typedIdxProven(arr, i)
     const pre = []
+    const post = postIncI32Index(i)
     let vi
-    if (proven) vi = idx(i)
+    if (!proven) inc('__len')
+    if (post) { pre.push(...post.pre); vi = post.value }
+    else if (proven) vi = idx(i)
     else {
-      inc('__len')
       const ti = tempI32('tbi')
       pre.push(['local.set', `$${ti}`, idx(i)])
       vi = ['local.get', `$${ti}`]
@@ -1563,7 +1691,54 @@ export default (ctx) => {
     // temp is set OUTSIDE the guard (spec: RHS evaluates regardless).
     const guard = (store) => proven ? store
       : ['if', ['i32.lt_u', vi, leanLen(arr, et, isView)], ['then', store]]
-    const objIR = emit(arr); let valIR = emit(val)
+    const objIR = emit(arr)
+    // Checked typed-array read/modify/write fusion. A statement such as
+    // `a[i] = (a[i] + x) | 0` used to emit TWO guards (one for the RHS read,
+    // one for the store), two length loads, and duplicate address arithmetic.
+    // With a stable bare receiver/index and a side-effect-free i32 RHS, JS's
+    // OOB behavior is equivalent to skipping the whole operation: the read's
+    // undefined is consumed only by pure arithmetic and the write is ignored.
+    // Emit one guard around a direct read + store. The temporary proof is
+    // lexical to RHS emission; no other site or later statement inherits it.
+    const sameIdx = (n) => Array.isArray(n) && n[0] === '[]' && n[1] === arr && idxKey(arr, n[2]) === idxKey(arr, i)
+    const safeRmwAst = (n) => {
+      if (!Array.isArray(n)) return true
+      if (sameIdx(n)) return true
+      const op = n[0]
+      if (op === '()' && n.length > 2) {
+        const callee = n[1]
+        if (!(callee === 'math.imul' ||
+            (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math' && callee[2] === 'imul'))) return false
+        return safeRmwAst(n[2])
+      }
+      if (op === '[]' || op === '.' || op === '?.' || op === 'new' || op === '=>' ||
+          op === '++' || op === '--' || ASSIGN_OPS.has(op)) return false
+      for (let k = 1; k < n.length; k++) if (!safeRmwAst(n[k])) return false
+      return true
+    }
+    const hasSameRead = (n) => {
+      if (!Array.isArray(n)) return false
+      if (sameIdx(n)) return true
+      for (let k = 1; k < n.length; k++) if (hasSameRead(n[k])) return true
+      return false
+    }
+    const i32Rhs = sameIdx(val) || (Array.isArray(val) &&
+      (val[0] === '&' || val[0] === '|' || val[0] === '^' || val[0] === '<<' || val[0] === '>>' || val[0] === '>>>' ||
+       (val[0] === '()' && val.length > 2 && (val[1] === 'math.imul' ||
+         (Array.isArray(val[1]) && val[1][0] === '.' && val[1][1] === 'Math' && val[1][2] === 'imul')))))
+    const rmwKey = typeof arr === 'string' && typeof i === 'string' ? idxKey(arr, i) : null
+    const rmwCandidate = !proven && void_ && et <= 5 && !r.isClamped && rmwKey != null &&
+      i32Rhs && hasSameRead(val) && safeRmwAst(val)
+    let valIR, rmwAddr = null, rmwValue = null
+    if (rmwCandidate) {
+      rmwAddr = tempI32('tra')
+      rmwValue = tempI32('trv')
+      const forced = (ctx.types.rmwBounds ??= new Set())
+      const reads = (ctx.types.rmwReads ??= new Map())
+      forced.add(rmwKey)
+      reads.set(rmwKey, rmwValue)
+      try { valIR = emit(val) } finally { forced.delete(rmwKey); reads.delete(rmwKey) }
+    } else valIR = emit(val)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     if (r.isF16 || r.isClamped) {
       // conversion is not a truncation — always through the kernel (RTNE /
@@ -1657,6 +1832,11 @@ export default (ctx) => {
       (Array.isArray(valIR) && (valIR[0] === 'f64.convert_i32_s' || valIR[0] === 'f64.convert_i32_u'))
     if (i32Backed) {
       const vi32 = asI32(valIR)
+      if (rmwCandidate && pureStorable(vi32))
+        return typed(['block', ...pre, guard(['block',
+          ['local.set', `$${rmwAddr}`, off],
+          ['local.set', `$${rmwValue}`, [LOAD[et], ['local.get', `$${rmwAddr}`]]],
+          [STORE[et], ['local.get', `$${rmwAddr}`], vi32]])], 'void')
       // lean (-Os) widens "cheap" to any pure value (inline into the guard, no
       // temp); SPEED tiers keep the narrow form — the temp'd store is the shape
       // the SIMD widening/in-place recognizers pattern-match (battery-caught).
@@ -1664,7 +1844,9 @@ export default (ctx) => {
         : Array.isArray(vi32) &&
           ((vi32[0] === 'local.get' && typeof vi32[1] === 'string') ||
            (vi32[0] === 'i32.const' && (typeof vi32[1] === 'number' || typeof vi32[1] === 'string')))
-      if (void_ && cheap && proven) return typed([STORE[et], off, vi32], 'void')
+      if (void_ && cheap && proven) return typed(pre.length
+        ? ['block', ...pre, [STORE[et], off, vi32]]
+        : [STORE[et], off, vi32], 'void')
       if (void_ && cheap) return typed(['block', ...pre, guard([STORE[et], off, vi32])], 'void')
       const v32 = tempI32('tw')
       return typed(void_ ? ['block', ...pre,

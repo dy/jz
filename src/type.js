@@ -105,6 +105,7 @@ export function typedIdxProven(recv, idx) {
   if (intervalProvenIdx(ctx).has(idxKey(recv, idx))) return true
   if (typeof idx === 'string' && inBoundsArrIdx(ctx).has(recv + '\x00' + idx)) return true
   const len = ctx.types.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
+    ?? ctx.func.localReps?.get(recv)?.arrayLen
   if (len == null) return false
   const k = intLiteralValue(idx)
   if (k != null) return k >= 0 && k < len
@@ -549,6 +550,17 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     else if (Array.isArray(e)) for (let k = 1; k < e.length; k++) exprNames(e[k], out)
   }
   const keepPre = levels.filter((L) => {
+    // A numeric hull that already exceeds a receiver's STATIC length can never
+    // satisfy the emitted version guard. Drop that candidate instead of
+    // cloning an entire containing loop behind a compile-time-dead fast arm
+    // (QOI's byte `b0` ∈ [0,255] against 64-entry colour tables used to clone
+    // the full encode/decode kernel, then always execute the checked twin).
+    L.cands = L.cands.filter(c => {
+      if (!Array.isArray(c.range) || c.range.hiName != null) return true
+      const len = ctx.types.typedLen?.get(c.recv) ?? ctx.scope?.globalTypedLen?.get(c.recv)
+      return len == null || c.range[1] < len
+    })
+    if (!L.cands.length) return false
     if (!L.top) {
       if (!L.rangeOnly && L.startC == null) return false
       const n0 = L.cands.length
@@ -938,6 +950,11 @@ function scanIntervalIdx(body, out, lens, ranges) {
   // narrow, so proof/hull recording is suppressed until the stable final pass.
   let recording = true
   const symEnv = new Map()   // name → { h: symbolic hull, incNode } — wrap cursors vs mutable bounds
+  // Positive companion induction variables (`for (i += 3) { out[op] = …; op += 4 }`).
+  // Unlike env's loop invariant, this hull is valid only BEFORE the companion's
+  // direct increment in each iteration. Keeping that window explicit proves
+  // codec/output cursors without pretending the post-increment value is in-bounds.
+  const coupledEnv = new Map() // name → { h: [lo, hi], incNode }
   // names written inside ANY closure in this body: a later call can change them at
   // any point — they never hold a trusted interval
   const closureWrites = new Set()
@@ -977,7 +994,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
   const ev = (e) => {
     const n = constInt(e)
     if (n != null) return [n, n]
-    if (typeof e === 'string') return closureWrites.has(e) ? null : env.get(e) ?? null
+    if (typeof e === 'string') return closureWrites.has(e) ? null : coupledEnv.get(e)?.h ?? env.get(e) ?? null
     if (!Array.isArray(e)) return null
     const [op, x, y] = e
     // a NARROW typed load is range-bound by its element width (`table[in[j]]` — a
@@ -985,7 +1002,8 @@ function scanIntervalIdx(body, out, lens, ranges) {
     // undefined coerces through ToInt32 to 0, inside every narrow range)
     if (op === '[]' && e.length === 3 && typeof x === 'string') {
       visit(e)   // record the access's own proof attempt
-      const r = NARROW_ELEM_RANGE[ctx.types.typedElem?.get(x)]
+      const written = ctx.func.localReps?.get(x)?.arrayElemRange
+      const r = written ?? NARROW_ELEM_RANGE[ctx.types.typedElem?.get(x)]
       return r ?? null
     }
     // `X.length` of a typed receiver with a known static length — the length-
@@ -997,6 +1015,13 @@ function scanIntervalIdx(body, out, lens, ranges) {
       if (L != null) return [L, L]
     }
     if (e.length === 2 && op === '()') return ev(x)   // grouping, not a call
+    // Prepared post-increment indices use `(++cursor) - 1`. Transfer the
+    // mutation and return the incremented interval so the outer subtraction
+    // recovers the exact pre-increment index hull.
+    if (e.length === 2 && (op === '++' || op === '--') && typeof x === 'string') {
+      visit(e)
+      return env.get(x) ?? null
+    }
     if (e.length === 2 && (op === '-' || op === 'u-')) { const v = ev(x); return ipOk(v) && v ? [-v[1], -v[0]] : null }
     if (op === '?:' && e.length === 4) {   // join of both arms, each under its refinement
       visit(x)
@@ -1036,6 +1061,14 @@ function scanIntervalIdx(body, out, lens, ranges) {
     else if (op === '>>' && B[0] === B[1] && B[0] >= 0 && B[0] <= 31) r = [A[0] >> B[0], A[1] >> B[0]]
     else if (op === '>>>' && B[0] === B[1] && B[0] >= 0 && A[0] >= 0) r = [A[0] >>> B[0], A[1] >>> B[0]]
     else if (op === '&' && B[0] === B[1] && B[0] >= 0) r = [0, B[0]]
+    // OR of two known non-negative fields cannot set a bit above either
+    // operand's highest possible bit. This covers packed table indices such as
+    // `((a & 3) << 4) | (b >>> 4)` without assuming the fields are disjoint.
+    else if (op === '|' && A[0] >= 0 && B[0] >= 0) {
+      const m = Math.max(A[1], B[1])
+      const hi = m === 0 ? 0 : 2 ** Math.ceil(Math.log2(m + 1)) - 1
+      r = [0, hi]
+    }
     else if (op === '%' && B[0] === B[1] && B[0] > 0 && A[0] >= 0) r = [0, Math.min(A[1], B[0] - 1)]
     return ipOk(r) ? r : null
   }
@@ -1064,6 +1097,21 @@ function scanIntervalIdx(body, out, lens, ranges) {
       if (rr) { rLo = rr[0]; rHi = rr[1] }
     }
     if (rLo == null) return null
+    // Bit-field discriminator: `(tag & MASK) === VALUE` narrows a bounded
+    // integer source to the matching hull. Enumerating at most 65K values is a
+    // compile-time-only, fail-closed operation and handles byte/word opcode
+    // classes exactly (QOI's `(b0 & 0xc0) === 0` ⇒ b0 ∈ [0,63]).
+    if (!negate && (op === '===' || op === '==') && rLo === rHi &&
+        Array.isArray(l) && l[0] === '&' && l.length === 3) {
+      const mask = intLiteralValue(l[1]) ?? intLiteralValue(l[2])
+      const name = typeof l[1] === 'string' ? l[1] : typeof l[2] === 'string' ? l[2] : null
+      const v = name != null ? env.get(name) : null
+      if (mask != null && mask >= 0 && name != null && v && v[1] - v[0] <= 65536) {
+        let lo = null, hi = null
+        for (let x = v[0]; x <= v[1]; x++) if ((x & mask) === rLo) { if (lo == null) lo = x; hi = x }
+        if (lo != null) return [name, [lo, hi]]
+      }
+    }
     if (Array.isArray(l) && l.length === 3 && (l[0] === '+' || l[0] === '-')) {
       const cR = intLiteralValue(l[2]), cL = intLiteralValue(l[1])
       if (typeof l[1] === 'string' && cR != null) { rLo = l[0] === '+' ? rLo - cR : rLo + cR; rHi = l[0] === '+' ? rHi - cR : rHi + cR; l = l[1] }
@@ -1255,11 +1303,13 @@ function scanIntervalIdx(body, out, lens, ranges) {
     }
     if (op === '=' && typeof n[1] === 'string') {
       if (symEnv.get(n[1])?.incNode === n) symEnv.delete(n[1])   // past the increment: window closed
+      if (coupledEnv.get(n[1])?.incNode === n) coupledEnv.delete(n[1])
       setEnv(n[1], ev(n[2]))
       return
     }
     if (ASSIGN_OPS.has(op) || op === '++' || op === '--') {
       if (typeof n[1] === 'string' && symEnv.get(n[1])?.incNode === n) symEnv.delete(n[1])
+      if (typeof n[1] === 'string' && coupledEnv.get(n[1])?.incNode === n) coupledEnv.delete(n[1])
       for (let k = 2; k < n.length; k++) visit(n[k])
       if (typeof n[1] === 'string') {
         // `x += K` / `x -= K` / `x++` / `x--` transfer exactly — a strided
@@ -1302,44 +1352,321 @@ function scanIntervalIdx(body, out, lens, ranges) {
     if (op === 'for' && n.length === 5) {
       const [, init, cond, step, lbody] = n
       visit(init)
-      // canonical literal-interval iv: `for (iv = A; iv </<= B; iv++)` — or the
-      // DOWNWARD twin `for (iv = A; iv >/>= B; iv--)` (heapify roots, reverse
-      // scans) — A/B singleton through the full evaluator
-      let iv = null, range = null
+      // canonical literal-interval iv: `for (iv = A; iv </<= B; iv += STEP)` —
+      // including affine tests (`iv + WIDTH <= B`) — or the DOWNWARD unit-step
+      // twin (heapify roots, reverse scans). A/B fold through the full evaluator.
+      let iv = null, range = null, ivStep = null
+      const decls = new Map(); collectDecls(init, decls)
+      const stepDelta = (s, name) => {
+        if (!Array.isArray(s)) return null
+        if (s[0] === '++' && s[1] === name) return 1
+        if (s[0] === '+=' && s[1] === name) return constInt(s[2])
+        if (s[0] === '=' && s[1] === name && Array.isArray(s[2]) && s[2][0] === '+') {
+          if (s[2][1] === name) return constInt(s[2][2])
+          if (s[2][2] === name) return constInt(s[2][1])
+        }
+        return null
+      }
       const down = Array.isArray(cond) && (cond[0] === '>' || cond[0] === '>=')
-      if (Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=' || down) && typeof cond[1] === 'string') {
-        const decls = new Map(); collectDecls(init, decls)
-        // start/bound through the full evaluator: function-local consts (`x < ww`)
-        // and computed starts (`k = -rr`) resolve as singleton intervals
-        const dv = decls.get(cond[1])
-        const As = dv != null ? ev(dv) : null
-        const Bs = cond[2] != null ? ev(cond[2]) : null
-        const A = As && As[0] === As[1] ? As[0] : null
-        const B = Bs && Bs[0] === Bs[1] ? Bs[0] : null
-        if (A != null && B != null && !isReassigned(lbody, cond[1]) && !redeclaresName(lbody, cond[1])
-            && (cond[2] == null || boundInvariant(cond[2], lbody))
-            && (down ? isUnitDecrement(step, cond[1]) : isUnitIncrement(step, cond[1]))) {
-          iv = cond[1]
-          range = down ? [cond[0] === '>' ? B + 1 : B, A] : [A, cond[0] === '<' ? B - 1 : B]
+      if (Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=' || down)) {
+        let name = cond[1], bias = 0
+        if (!down && Array.isArray(name) && name.length === 3 && (name[0] === '+' || name[0] === '-')) {
+          const r = constInt(name[2]), l = constInt(name[1])
+          if (typeof name[1] === 'string' && r != null) { bias = name[0] === '+' ? r : -r; name = name[1] }
+          else if (name[0] === '+' && typeof name[2] === 'string' && l != null) { bias = l; name = name[2] }
+        }
+        if (typeof name === 'string') {
+          const dv = decls.get(name)
+          const As = dv != null ? ev(dv) : env.get(name)
+          const Bs = cond[2] != null ? ev(cond[2]) : null
+          const A = As && As[0] === As[1] ? As[0] : null
+          const B = Bs && Bs[0] === Bs[1] ? Bs[0] : null
+          const delta = down ? null : stepDelta(step, name)
+          if (A != null && B != null && !isReassigned(lbody, name) && !redeclaresName(lbody, name)
+              && (cond[2] == null || boundInvariant(cond[2], lbody))
+              && (down ? isUnitDecrement(step, name) : delta != null && delta > 0)) {
+            iv = name
+            ivStep = down ? -1 : delta
+            range = down ? [cond[0] === '>' ? B + 1 : B, A]
+              : [A, B - bias - (cond[0] === '<' ? 1 : 0)]
+          }
+        }
+      }
+      // Companion-IV theorem. If a positive cursor has one direct positive
+      // increment in the loop body, its value BEFORE that increment is bounded
+      // by the statically known trip count. This is deliberately a lexical
+      // window: after the increment the theorem is removed, so `out[op+k]`
+      // becomes raw while a post-increment access remains checked.
+      const coupled = []
+      // Multi-branch monotone cursor budget. A codec cursor often advances a
+      // different number of times in mutually-exclusive arms (`ip++` once for
+      // INDEX, five times for RGBA). Compute the MAXIMUM positive constant
+      // advance along any one body path; over a literal-trip loop this gives a
+      // whole-body invariant `entry <= cursor <= entry + trips*maxAdvance`.
+      // Unknown writes, nested control loops, abrupt edges, or closures reject.
+      const advanceBudget = (root, name) => {
+        const seq = (xs) => { let n = 0; for (const x of xs) { const d = eff(x); if (d == null) return null; n += d } return n }
+        const delta = (n) => {
+          if (!Array.isArray(n) || n[1] !== name) return null
+          if (n[0] === '++') return 1
+          if (n[0] === '+=') { const d = constInt(n[2]); return d != null && d > 0 ? d : null }
+          if (n[0] === '=' && Array.isArray(n[2]) && n[2][0] === '+') {
+            const d = n[2][1] === name ? constInt(n[2][2]) : n[2][2] === name ? constInt(n[2][1]) : null
+            return d != null && d > 0 ? d : null
+          }
+          return null
+        }
+        const eff = (n) => {
+          if (!Array.isArray(n)) return 0
+          const op2 = n[0]
+          if (op2 === '=>') return closureWrites.has(name) ? null : 0
+          if ((ASSIGN_OPS.has(op2) || op2 === '++' || op2 === '--') && n[1] === name) return delta(n)
+          if (op2 === 'if') {
+            const c = eff(n[1]), a = eff(n[2]), b = n.length > 3 ? eff(n[3]) : 0
+            return c == null || a == null || b == null ? null : c + Math.max(a, b)
+          }
+          if (op2 === '?:') {
+            const c = eff(n[1]), a = eff(n[2]), b = eff(n[3])
+            return c == null || a == null || b == null ? null : c + Math.max(a, b)
+          }
+          if (op2 === '&&' || op2 === '||') {
+            const a = eff(n[1]), b = eff(n[2])
+            return a == null || b == null ? null : a + Math.max(0, b)
+          }
+          if (op2 === 'while' || op2 === 'for' || op2 === 'do' || op2 === 'for-of' || op2 === 'for-in' ||
+              op2 === 'switch' || op2 === 'try' || op2 === 'catch' || op2 === 'finally' ||
+              op2 === 'break' || op2 === 'continue' || op2 === 'return' || op2 === 'throw')
+            return isReassigned(n, name) ? null : 0
+          return seq(n.slice(1))
+        }
+        return eff(root)
+      }
+      // Two-counter amortized budget. Track `cursor + credit` path-sensitively
+      // through one loop body. This proves buffered/RLE emitters where a rare
+      // path writes K+1 bytes only after `credit > 0` and resets the credit:
+      // the extra byte spends accumulated credit, so the per-iteration
+      // potential still rises by at most K. Only positive constant cursor
+      // advances and affine/zero credit writes are accepted; complex control
+      // or state explosion fails closed.
+      const potentialAdvance = (root, cursor, credit) => {
+        const LIM = 128, INF = IP_LIM
+        const norm = (xs) => {
+          const m = new Map()
+          for (const s of xs) {
+            if (s.lo > s.hi) continue
+            const k = `${s.mode},${s.rv},${s.lo},${s.hi}`
+            const p = m.get(k)
+            if (!p || s.c > p.c) m.set(k, s)
+          }
+          const out = [...m.values()]
+          return out.length <= LIM ? out : null
+        }
+        const addC = (xs, d) => d != null && d > 0 ? xs.map(s => ({ ...s, c: s.c + d })) : null
+        const setCredit = (xs, mode, rv) => xs.map(s => ({ ...s, mode, rv }))
+        const cmp = (a, op2, b) => op2 === '<' ? a < b : op2 === '<=' ? a <= b : op2 === '>' ? a > b
+          : op2 === '>=' ? a >= b : op2 === '===' || op2 === '==' ? a === b : a !== b
+        const split = (xs, cond2, truth) => {
+          if (!Array.isArray(cond2) || cond2.length !== 3 ||
+              !['<', '<=', '>', '>=', '===', '==', '!==', '!='].includes(cond2[0])) return xs.map(s => ({ ...s }))
+          let op2 = cond2[0], k = constInt(cond2[2])
+          if (cond2[1] !== credit || k == null) {
+            if (cond2[2] === credit && (k = constInt(cond2[1])) != null)
+              op2 = op2 === '<' ? '>' : op2 === '<=' ? '>=' : op2 === '>' ? '<' : op2 === '>=' ? '<=' : op2
+            else return xs.map(s => ({ ...s }))
+          }
+          if (!truth) op2 = op2 === '<' ? '>=' : op2 === '<=' ? '>' : op2 === '>' ? '<=' : op2 === '>=' ? '<'
+            : op2 === '===' || op2 === '==' ? '!==' : '==='
+          const out = []
+          for (const s of xs) {
+            if (s.mode === 'const') { if (cmp(s.rv, op2, k)) out.push({ ...s }); continue }
+            const q = k - s.rv
+            let lo = s.lo, hi = s.hi
+            if (op2 === '<') hi = Math.min(hi, q - 1)
+            else if (op2 === '<=') hi = Math.min(hi, q)
+            else if (op2 === '>') lo = Math.max(lo, q + 1)
+            else if (op2 === '>=') lo = Math.max(lo, q)
+            else if (op2 === '===' || op2 === '==') { lo = Math.max(lo, q); hi = Math.min(hi, q) }
+            // `!=` removes an interior point which an interval cannot express;
+            // retain the wider interval (safe, merely less precise).
+            if (lo <= hi) out.push({ ...s, lo, hi })
+          }
+          return out
+        }
+        const directDelta = (n, name) => {
+          if (!Array.isArray(n) || n[1] !== name) return null
+          if (n[0] === '++') return 1
+          if (n[0] === '--') return -1
+          if (n[0] === '+=' || n[0] === '-=') { const d = constInt(n[2]); return d == null ? null : n[0] === '+=' ? d : -d }
+          if (n[0] === '=' && Array.isArray(n[2]) && (n[2][0] === '+' || n[2][0] === '-')) {
+            if (n[2][1] !== name) return null
+            const d = constInt(n[2][2]); return d == null ? null : n[2][0] === '+' ? d : -d
+          }
+          return null
+        }
+        const walk = (n, xs) => {
+          if (!xs) return null
+          if (!Array.isArray(n)) return xs
+          const op2 = n[0]
+          if (op2 === '=>') return isReassigned(n, cursor) || isReassigned(n, credit) ? null : xs
+          if ((ASSIGN_OPS.has(op2) || op2 === '++' || op2 === '--') && (n[1] === cursor || n[1] === credit)) {
+            // Evaluate embedded lhs/rhs effects first only when they are not the
+            // direct recurrence itself; accepted recurrences contain no calls.
+            if (n[1] === cursor) return addC(xs, directDelta(n, cursor))
+            if (op2 === '=' && constInt(n[2]) != null) return setCredit(xs, 'const', constInt(n[2]))
+            const d = directDelta(n, credit)
+            if (d == null) return null
+            return xs.map(s => ({ ...s, rv: s.rv + d }))
+          }
+          if (op2 === 'if') {
+            let base = walk(n[1], xs)
+            if (!base) return null
+            const a = walk(n[2], split(base, n[1], true))
+            const b = n.length > 3 ? walk(n[3], split(base, n[1], false)) : split(base, n[1], false)
+            return a && b ? norm([...a, ...b]) : null
+          }
+          if (op2 === '?:') {
+            let base = walk(n[1], xs)
+            if (!base) return null
+            const a = walk(n[2], split(base, n[1], true)), b = walk(n[3], split(base, n[1], false))
+            return a && b ? norm([...a, ...b]) : null
+          }
+          if (op2 === '&&' || op2 === '||') {
+            const left = walk(n[1], xs)
+            if (!left) return null
+            const right = walk(n[2], left)
+            return right ? norm([...left, ...right]) : null // RHS may be skipped
+          }
+          if (op2 === 'break' || op2 === 'continue' || op2 === 'return' || op2 === 'throw') return null
+          if (op2 === 'while' || op2 === 'for' || op2 === 'do' || op2 === 'for-of' || op2 === 'for-in' ||
+              op2 === 'switch' || op2 === 'try' || op2 === 'catch' || op2 === 'finally')
+            return isReassigned(n, cursor) || isReassigned(n, credit) ? null : xs
+          let out = xs
+          for (let j = 1; j < n.length; j++) { out = walk(n[j], out); if (!out) return null }
+          return out
+        }
+        const end = walk(root, [{ c: 0, mode: 'rel', rv: 0, lo: 0, hi: INF }])
+        if (!end?.length) return null
+        let max = 0
+        for (const s of end) {
+          const creditLo = s.mode === 'rel' ? s.lo + s.rv : s.rv
+          if (creditLo < 0 || s.c < 0) return null
+          const d = s.mode === 'rel' ? s.c + s.rv : s.c + s.rv - s.lo
+          if (!Number.isInteger(d)) return null
+          max = Math.max(max, d)
+        }
+        return max
+      }
+      const budgeted = []
+      if (iv && ivStep > 0 && range && range[0] <= range[1]) {
+        const trips = Math.floor((range[1] - range[0]) / ivStep) + 1
+        const stmts = Array.isArray(lbody) && (lbody[0] === ';' || lbody[0] === '{}') ? lbody.slice(1) : [lbody]
+        const writesTo = (root, name) => {
+          let count = 0
+          const walk = (x) => {
+            if (!Array.isArray(x)) return
+            if (ASSIGN_OPS.has(x[0]) || x[0] === '++' || x[0] === '--') {
+              if (x[1] === name) count++
+              else if (Array.isArray(x[1]) && x[1][0] !== '[]' && x[1][0] !== '.' && x[1][0] !== '?.') {
+                const names = new Set(); collectNames(x[1], names)
+                if (names.has(name)) count++
+              }
+            }
+            for (let j = 1; j < x.length; j++) walk(x[j])
+          }
+          walk(root)
+          return count
+        }
+        for (const incNode of stmts) {
+          if (!Array.isArray(incNode)) continue
+          const name = typeof incNode[1] === 'string' ? incNode[1] : null
+          if (!name || name === iv || closureWrites.has(name) || redeclaresName(lbody, name)) continue
+          let delta = null
+          if (incNode[0] === '++') delta = 1
+          else if (incNode[0] === '+=') delta = constInt(incNode[2])
+          else if (incNode[0] === '=' && Array.isArray(incNode[2]) && incNode[2][0] === '+') {
+            if (incNode[2][1] === name) delta = constInt(incNode[2][2])
+            else if (incNode[2][2] === name) delta = constInt(incNode[2][1])
+          }
+          const entry = env.get(name)
+          const h = entry && delta != null && delta > 0
+            ? [entry[0], entry[1] + (trips - 1) * delta] : null
+          if (ipOk(h) && writesTo(lbody, name) === 1) coupled.push([name, h, incNode])
+        }
+        const changedNames = new Set()
+        const collectChanged = (x) => {
+          if (!Array.isArray(x) || x[0] === '=>') return
+          if ((ASSIGN_OPS.has(x[0]) || x[0] === '++' || x[0] === '--') && typeof x[1] === 'string') changedNames.add(x[1])
+          for (let j = 1; j < x.length; j++) collectChanged(x[j])
+        }
+        collectChanged(lbody)
+        // Only build cursor budgets for names that actually feed a typed index
+        // in this loop. The amortized path scanner is intentionally demand-
+        // driven: running it for every pair of mutated scalar locals made the
+        // compiler itself pay O(locals²) on unrelated arithmetic loops.
+        const indexCaps = new Map()
+        const collectIndexCaps = (x) => {
+          if (!Array.isArray(x) || x[0] === '=>') return
+          if (x[0] === '[]' && typeof x[1] === 'string' && ctx.types.typedElem?.has(x[1])) {
+            const L = lens(x[1])
+            if (L != null) {
+              const names = new Set(); collectNames(x[2], names)
+              for (const name of names) if (changedNames.has(name)) {
+                let a = indexCaps.get(name); if (!a) indexCaps.set(name, a = [])
+                if (!a.includes(L)) a.push(L)
+              }
+            }
+          }
+          for (let j = 1; j < x.length; j++) collectIndexCaps(x[j])
+        }
+        collectIndexCaps(lbody)
+        for (const name of changedNames) {
+          const caps = indexCaps.get(name)
+          if (!caps?.length) continue
+          if (name === iv || closureWrites.has(name) || redeclaresName(lbody, name)) continue
+          const entry = env.get(name), maxAdvance = advanceBudget(lbody, name)
+          let h = entry && entry[0] >= 0 && maxAdvance != null && maxAdvance > 0
+            ? [entry[0], entry[1] + trips * maxAdvance] : null
+          // Try every non-negative changed counter as an amortization credit;
+          // keep only a strictly tighter, fully verified potential budget.
+          if (h && caps.some(L => h[1] >= L)) for (const credit of changedNames) {
+            if (credit === name || credit === iv || closureWrites.has(credit) || redeclaresName(lbody, credit)) continue
+            const ce = env.get(credit)
+            if (!ce || ce[0] < 0) continue
+            const K = potentialAdvance(lbody, name, credit)
+            const ph = K != null && K >= 0 ? [entry[0], entry[1] + ce[1] + trips * K] : null
+            if (ipOk(ph) && ph[1] < h[1]) h = ph
+          }
+          if (ipOk(h)) budgeted.push([name, h])
         }
       }
       // Body fixpoint (same engine as `while` below): the canonical-iv range is
       // a body-independent theorem re-seeded each pass; everything else
-      // discovers its invariant. This is what proves heapsort's `child` chains
-      // (`child = 2*i+1; while-ish descend`) and medianUs's `samples[mid]`.
-      // Exit state: a canonical iv with a non-empty LITERAL range proves ≥1
-      // trip, so the tighter body-end exit is sound (post-loop peel tails read
-      // `src[inl_i+…]` off exactly that state); anything else takes the joined
-      // invariant (zero-trip exit = entry state ⊆ joined).
-      const seeded = iv && range[0] <= range[1] && !closureWrites.has(iv)
+      // discovers its invariant. This is what proves heapsort's `child` chains,
+      // medianUs's `samples[mid]`, and strided codec input/output cursors.
+      const seeded = iv && ipOk(range) && range[0] <= range[1] && !closureWrites.has(iv)
+      const priorCoupled = new Map(coupled.map(([name]) => [name, coupledEnv.get(name)]))
+      const priorFacts = new Map(budgeted.map(([name]) => [name, activeFacts.get(name)]))
+      for (const [name, h] of budgeted) activeFacts.set(name, h)
       const seeds = () => {
         if (seeded) env.set(iv, range)
         else if (iv) env.set(iv, null)
+        for (const [name, h, incNode] of coupled) coupledEnv.set(name, { h, incNode })
+        for (const [name, h] of budgeted) setEnv(name, h)
       }
       loopFixpoint(seeds,
         () => { if (cond != null) visit(cond); visit(lbody); if (step != null) visit(step) },
         cond, seeded)
+      for (const [name] of budgeted) {
+        const prior = priorFacts.get(name)
+        if (prior) activeFacts.set(name, prior)
+        else activeFacts.delete(name)
+      }
       if (iv) env.set(iv, null)   // iv holds the exit value after the loop
+      for (const [name] of coupled) {
+        const prior = priorCoupled.get(name)
+        if (prior) coupledEnv.set(name, prior)
+        else coupledEnv.delete(name)
+      }
       return
     }
     if (op === 'while') {
@@ -1554,7 +1881,8 @@ export function intervalProvenIdx(ctx) {
   if (!Array.isArray(body)) return NO_INTERVAL_PROVEN
   if (ctx.func._ipBody === body) return ctx.func.ipProven
   const out = new Set(), ranges = new Map()
-  const lens = (name) => ctx.types.typedLen?.get(name) ?? ctx.scope?.globalTypedLen?.get(name) ?? null
+  const lens = (name) => ctx.types.typedLen?.get(name) ?? ctx.scope?.globalTypedLen?.get(name)
+    ?? ctx.func.localReps?.get(name)?.arrayLen ?? null
   scanIntervalIdx(body, out, lens, ranges)
   ctx.func.ipProven = out
   ctx.func.ipRanges = ranges

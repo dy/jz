@@ -56,6 +56,8 @@ export const VAL = {
  * @property {boolean} [notString]        proven not a string (skips string-path guards).
  * @property {number}  [arrayElemSchema]  element object-schema id for arrays.
  * @property {string}  [arrayElemValType] element VAL.* kind for arrays.
+ * @property {number[]} [arrayElemRange] closed integer hull for a typed array's observable elements.
+ * @property {number}   [arrayLen] fixed length of a whole-program internal plain array.
  * @property {string}  [arrayElemElemValType] nested element VAL.* kind (`X[i][j]`) for arrays of arrays.
  * @property {string}  [arrayElemTypedCtor] element TypedArray ctor (`new.Float32Array`) for an
  *   array whose elements are all typed arrays of one ctor (`Array.from(n,()=>new Float32Array())`),
@@ -71,7 +73,7 @@ export const VAL = {
  */
 export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
-  'arrayElemSchema', 'arrayElemValType', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape',
+  'arrayElemSchema', 'arrayElemValType', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape',
   'typedCtor', 'wasm', 'nullable', 'neverGrown',
 ])
 

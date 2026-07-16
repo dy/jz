@@ -45,8 +45,15 @@ export function initSchema(ctx) {
    *  Poisoned names (shape-disagreeing assignments, see prepare's
    *  bindAssignSchema) resolve to NO schema regardless of store: a fixed-slot
    *  read against one literal's layout would misread the other sources. */
-  ctx.schema.idOf = (name) => ctx.schema.poisoned?.has(name) ? undefined
-    : repOf(name)?.schemaId ?? ctx.schema.vars.get(name)
+  ctx.schema.idOf = (name) => {
+    // A branch-local runtime schema guard is stronger than durable flow facts:
+    // inside its fast arm even a deliberately-poisoned union binding has one
+    // exact layout. The guarded slow arm retains the ordinary dynamic path.
+    const refined = ctx.func.refinements?.get(name)?.schemaId
+    if (refined != null) return refined
+    return ctx.schema.poisoned?.has(name) ? undefined
+      : repOf(name)?.schemaId ?? ctx.schema.vars.get(name)
+  }
 
   /** Resolve variable name to its schema props array, or null. */
   ctx.schema.resolve = (varName) => {
@@ -82,6 +89,10 @@ export function initSchema(ctx) {
    *  `Object.assign(arr, {p}); arr.p`). A non-builtin name dispatches correctly.
    *  Mirrors the abi string `concat`→`cat` rename for the same root cause. */
   ctx.schema.slotOf = (varName, prop) => {
+    // A branch-local guarded schema UNION may not have one sid, but if every
+    // member agrees on this field's slot the fixed offset is still exact.
+    const refinedSlot = ctx.func.refinements?.get(varName)?.schemaSlots?.get(prop)
+    if (refinedSlot != null) return refinedSlot
     // Precise: variable has known schema
     const id = ctx.schema.idOf(varName)
     if (id != null) return ctx.schema.list[id]?.indexOf(prop) ?? -1
@@ -164,6 +175,18 @@ export function initSchema(ctx) {
   }
 
   ctx.schema.slotVT = (varName, prop) => {
+    const ids = ctx.func.refinements?.get(varName)?.schemaIds
+    if (ids?.length) {
+      let kind = null
+      for (const id of ids) {
+        if (slotHazarded(id, prop, true)) return null
+        const idx = ctx.schema.list[id]?.indexOf(prop)
+        const k = idx >= 0 ? ctx.schema.slotTypes.get(id)?.[idx] ?? null : null
+        if (k == null || (kind != null && kind !== k)) return null
+        kind = k
+      }
+      return kind
+    }
     const id = ctx.schema.idOf(varName)
     if (id == null || slotHazarded(id, prop, true)) return null
     const idx = ctx.schema.list[id]?.indexOf(prop)
@@ -214,6 +237,12 @@ export function initSchema(ctx) {
    *  to have a bound `schemaId`. Consumers (Math.floor elision, toNumF64 skip,
    *  intIndexIR) treat `false`/`null` identically (no narrowing). */
   ctx.schema.slotIntCertainAt = (varName, prop) => {
+    const ids = ctx.func.refinements?.get(varName)?.schemaIds
+    if (ids?.length) return ids.every(id => {
+      if (slotHazarded(id, prop)) return false
+      const idx = ctx.schema.list[id]?.indexOf(prop)
+      return idx >= 0 && ctx.schema.slotIntCertain.get(id)?.[idx] === true
+    })
     const id = ctx.schema.idOf(varName)
     if (id == null || slotHazarded(id, prop)) return false
     const idx = ctx.schema.list[id]?.indexOf(prop)
@@ -226,6 +255,12 @@ export function initSchema(ctx) {
    *  Feeds raw i32 slot loads + i32 local typing — a wrong answer here is a
    *  wrong VALUE (saturation), so it shares every fail-closed belt. */
   ctx.schema.slotI32CertainAt = (varName, prop) => {
+    const ids = ctx.func.refinements?.get(varName)?.schemaIds
+    if (ids?.length) return ids.every(id => {
+      if (slotHazarded(id, prop)) return false
+      const idx = ctx.schema.list[id]?.indexOf(prop)
+      return idx >= 0 && ctx.schema.slotI32Certain.get(id)?.[idx] === true
+    })
     const id = ctx.schema.idOf(varName)
     if (id == null || slotHazarded(id, prop)) return false
     const idx = ctx.schema.list[id]?.indexOf(prop)

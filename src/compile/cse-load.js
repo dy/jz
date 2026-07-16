@@ -129,7 +129,7 @@ export function cseLoads(body, isTypedArray, freshName) {
     const flush = () => avail.clear()
     const invalidateVar = (name) => { for (const [k, e] of avail) if (e.arr === name || e.idxVars.has(name)) avail.delete(k) }
 
-    const reads = (node, parent, pi, si) => {
+    const reads = (node, parent, pi, si, noCseKey = null) => {
       if (!isArr(node) || node[0] === 'str') return
       // Element/member assignment targets must stay targets. Plain `=` does not
       // read the slot; compound/update ops do, but rewriting the LHS node itself
@@ -138,11 +138,21 @@ export function cseLoads(body, isTypedArray, freshName) {
       if (ASSIGN.has(node[0]) && isArr(node[1]) && (node[1][0] === '[]' || node[1][0] === '.' || node[1][0] === '?.')) {
         const lhs = node[1]
         reads(lhs[0] === '[]' ? lhs[2] : lhs[1], lhs, lhs[0] === '[]' ? 2 : 1, si)   // index / receiver
-        for (let i = 2; i < node.length; i++) reads(node[i], node, i, si)            // rhs value
+        // Leave same-slot i32 RMW reads intact for typedarray.js's stronger
+        // one-guard fusion. Turning `a[i] ^ (a[i] >>> k)` into a pre-statement
+        // temp forces the first checked load back outside that guard.
+        const rhs = node[2]
+        const i32Rmw = node[0] === '=' && lhs[0] === '[]' && isName(lhs[1]) && stableIdx(lhs[2]) && isArr(rhs) &&
+          (['&', '|', '^', '<<', '>>', '>>>'].includes(rhs[0]) ||
+           (rhs[0] === '()' && rhs.length > 2 && (rhs[1] === 'math.imul' ||
+             (isArr(rhs[1]) && rhs[1][0] === '.' && rhs[1][1] === 'Math' && rhs[1][2] === 'imul'))))
+        const ownKey = i32Rmw ? `${lhs[1]}|${idxKey(lhs[2])}` : null
+        for (let i = 2; i < node.length; i++) reads(node[i], node, i, si, ownKey)    // rhs value
         return
       }
       if (node[0] === '[]' && isName(node[1]) && isTypedArray(node[1]) && stableIdx(node[2])) {
         const arr = node[1], key = `${arr}|${idxKey(node[2])}`
+        if (key === noCseKey) return
         const e = avail.get(key)
         if (e) {
           if (e.temp === null) {
@@ -158,8 +168,8 @@ export function cseLoads(body, isTypedArray, freshName) {
         avail.set(key, { arr, idxNode: node[2], idxVars: vars, temp: null, firstParent: parent, firstIdx: pi, firstStmt: si })
         return                                            // don't descend into a stable index
       }
-      if (node[0] === '()' || node[0] === 'call') { flush(); for (let i = 1; i < node.length; i++) reads(node[i], node, i, si); return }
-      for (let i = 1; i < node.length; i++) reads(node[i], node, i, si)
+      if (node[0] === '()' || node[0] === 'call') { flush(); for (let i = 1; i < node.length; i++) reads(node[i], node, i, si, noCseKey); return }
+      for (let i = 1; i < node.length; i++) reads(node[i], node, i, si, noCseKey)
     }
 
     const writes = (node) => {
