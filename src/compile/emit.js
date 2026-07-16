@@ -37,7 +37,7 @@ import {
   containsNestedClosure, containsNestedLoop, nestedSmallLoopBudget,
   containsDeclOf, cloneWithSubst, containsKnownTypedArrayIndex,
   smallConstForTripCount, isTerminator, scanBoundedLoops, inBoundsCharCodeAt,
-  exprType, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
+  exprType, constIntExpr, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
   inBoundsArrIdx, typedIdxProven, versionableTypedNest, idxKey,
 } from '../type.js'
 import { valTypeOf, shapeOf } from '../kind.js'
@@ -399,9 +399,8 @@ const BOOL_EXPR_OPS = new Set(['>', '<', '>=', '<=', '==', '!=', '===', '!==', '
 const isCanonicalBoolExpr = n => Array.isArray(n) &&
   (BOOL_EXPR_OPS.has(n[0]) || ((n[0] === '&&' || n[0] === '||') && isCanonicalBoolExpr(n[1]) && isCanonicalBoolExpr(n[2])))
 // Eager boolean chains win in leaf numeric kernels but regress orchestration/
-// compiler code whose first guard usually rejects before a costly RHS. Limit
-// the latency trade to call-free function bodies — a general leaf-kernel
-// criterion, not a benchmark identity. Nested closures are separate bodies.
+// compiler code whose first guard usually rejects before a costly RHS. Keep
+// the latency trade in call-free bodies; nested closures are separate bodies.
 const boolEagerBody = () => {
   const body = ctx.func.body
   if (ctx.func._boolEagerBody === body) return ctx.func._boolEagerValue
@@ -498,7 +497,22 @@ function tryI32Index(e) {
   }
   return exprType(e, ctx.func.locals) === 'i32' ? asI32(emit(e)) : null
 }
-export const emitIndex = (idx) => tryI32Index(idx) ?? asI32(emit(idx))
+export const emitIndex = (index) => {
+  const direct = tryI32Index(index)
+  if (direct) return direct
+  // A checked typed read used as another computed index must carry its miss
+  // bit outward: ToInt32(undefined) is 0, but JS's property key remains
+  // `undefined` and must not access element zero. Demand-drive the metadata
+  // context only for the direct nested-read shape; arithmetic around the read
+  // has its own JS coercion semantics (`undefined|0` really does become zero).
+  if (!Array.isArray(index) || index[0] !== '[]') return asI32(emit(index))
+  ctx.types.indexConsumer = (ctx.types.indexConsumer || 0) + 1
+  let value
+  try { value = emit(index) } finally { ctx.types.indexConsumer-- }
+  const out = asI32(value)
+  if (value?.indexValid) out.indexValid = value.indexValid
+  return out
+}
 
 /**
  * True when `e` is a pure integer `+`/`-`/`*` tree whose leaves are all i32-typed
@@ -701,19 +715,54 @@ function fuseRangeCheckOr(a, b) {
 // from there — see the import block at the top of this file.
 
 function unrollSmallConstFor(init, cond, step, body) {
-  const end = smallConstForTripCount(init, cond, step)
-  if (end == null) return null
-  const name = init[1][1]
+  // Keep the overwhelmingly-common `for(i=0;i<N;i++)` path allocation-free;
+  // only strided/nonzero-start control loops pay for an explicit value list.
+  const simpleEnd = smallConstForTripCount(init, cond, step)
+  let name, values = null, tripCount
+  if (simpleEnd != null) {
+    name = init[1][1]
+    tripCount = simpleEnd
+  } else {
+    if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2 ||
+        !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return null
+    name = init[1][1]
+    const start = constIntExpr(init[1][2])
+    if (start == null || !Array.isArray(cond) || cond[0] !== '<' || cond[1] !== name) return null
+    const end = constIntExpr(cond[2])
+    let delta = null
+    if (Array.isArray(step) && step[0] === '++' && step[1] === name) delta = 1
+    else if (Array.isArray(step) && step[0] === '+=' && step[1] === name) delta = constIntExpr(step[2])
+    if (end == null || delta == null || delta <= 0 || start < 0 || start >= end) return null
+    values = []
+    for (let v = start; v < end && values.length <= MAX_SMALL_FOR_UNROLL; v += delta) values.push(v)
+    if (!values.length || values.length > MAX_SMALL_FOR_UNROLL) return null
+    tripCount = values.length
+  }
   if (containsNestedLoop(body)) {
     const nestedMode = ctx.transform.optimize?.nestedSmallConstForUnroll
     if (nestedMode !== true && (nestedMode !== 'auto' || !containsKnownTypedArrayIndex(body))) return null
-    if (end * nestedSmallLoopBudget(body) > MAX_NESTED_FOR_UNROLL) return null
+    const budget = tripCount * nestedSmallLoopBudget(body)
+    if (budget > MAX_NESTED_FOR_UNROLL) {
+      // A tiny outer CONTROL loop can still profitably specialize a large
+      // inner kernel when its induction value selects machine operations
+      // (radix shifts, lane selectors). The inner loops remain loops; code
+      // growth is bounded directly instead of multiplying their trip counts.
+      let controlsOp = false
+      const scan = n => {
+        if (controlsOp || !Array.isArray(n) || n[0] === '=>') return
+        if ((n[0] === '>>>' || n[0] === '>>' || n[0] === '<<') && n[2] === name) { controlsOp = true; return }
+        for (let i = 1; i < n.length; i++) scan(n[i])
+      }
+      scan(body)
+      if (!controlsOp || tripCount > 4 || tripCount * forInBodyCost(body) > 600) return null
+    }
   }
   if (hasOwnBreakOrContinue(body) || containsNestedClosure(body) || containsDeclOf(body, name)) return null
   if (isReassigned(body, name)) return null
 
   const out = []
-  for (let i = 0; i < end; i++) out.push(...emitVoid(cloneWithSubst(body, name, i)))
+  if (values) for (const value of values) out.push(...emitVoid(cloneWithSubst(body, name, value)))
+  else for (let i = 0; i < simpleEnd; i++) out.push(...emitVoid(cloneWithSubst(body, name, i)))
   return out
 }
 
@@ -1844,8 +1893,14 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 const nullableOperand = (n) => {
   if (typeof n === 'string') return !!(repOf(n)?.nullable || repOfGlobal(n)?.nullable)
   if (Array.isArray(n) && n[0] === '[]' && n.length === 3
-      && typeof n[1] === 'string' && lookupValType(n[1]) === VAL.TYPED)
+      && typeof n[1] === 'string' && lookupValType(n[1]) === VAL.TYPED) {
+    // A statically in-range OUTER access can still miss when its direct index
+    // is itself a checked typed read (`out[count[d]]`, d OOB). Keep identity
+    // tests live so the propagated miss bit can produce `undefined`.
+    if (Array.isArray(n[2]) && n[2][0] === '[]' && typeof n[2][1] === 'string' &&
+        lookupValType(n[2][1]) === VAL.TYPED && !typedIdxProven(n[2][1], n[2][2])) return true
     return !typedIdxProven(n[1], n[2])
+  }
   return false
 }
 

@@ -248,15 +248,15 @@ test('schema discriminant hint narrows one guard but preserves alien-schema fall
   const src = `
     // Consumer deliberately precedes producers: the census is a whole-program
     // fact, never an emitter/function-order side effect.
-    const visit = (o) => { const k = o.k; if (k === 0) return (o.x + o.y) | 0; return (o.r * 3) | 0 }
-    const expected = (k) => k === 0 ? { k: k, x: 7, y: 9 } : { k: k, r: 5 }
+    const visit = (o) => { const k = o.k; if (k === 0) return (o.x + o.y) | 0; else if (k === 1) return (o.r * 3) | 0; else if (k === 2) return (o.w * o.h) | 0; return -1 }
+    const expected = (k) => k === 0 ? { k: k, x: 7, y: 9 } : k === 1 ? { k: k, r: 5 } : { k: k, w: 4, h: 6 }
     const alien = (k) => ({ k: k, z: 41 })
     export const f = (useAlien) => visit(useAlien ? alien(0) : expected(0))
   `
   const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   const at = w.indexOf('(func $visit')
   const visitWat = w.slice(at, w.indexOf('(func', at + 1))
-  ok(/i64\.eq/.test(visitWat), 'predicted schema still has an exact-sid runtime guard')
+  ok((visitWat.match(/i64\.eq/g) || []).length >= 3, 'each predicted branch keeps an exact runtime SID guard')
   ok(/call \$__dyn_get/.test(visitWat), 'guard miss retains dynamic property semantics')
   const { f } = run(src, { optimize: 'speed' })
   is(f(0), 16, 'predicted schema takes direct slots')
@@ -1526,6 +1526,15 @@ test('Math.floor(bounded)|0 → single i32.trunc_sat (no i64 round-trip / +∞ g
   const ref = (() => { const buf = [], out = []; for (let i = 0; i < 8; i++) buf[i] = (i * 31) & 255
     const f = (b, o, n) => { for (let i = 0; i < n; i++) o[i] = (Math.floor(b[i] * 0.5) | 0) & 255 }; f(buf, out, 8); f(buf, out, 8); return out[3] | 0 })()
   is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'floor result bit-exact vs JS')
+})
+
+test('vectorized single-caller helper still participates in inlineOnce', () => {
+  const src = `const map=(a,o)=>{for(let i=0;i<64;i++)o[i]=a[i]+1}
+    export let f=()=>{const a=new Float64Array(64),o=new Float64Array(64);map(a,o);return o[3]}`
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  ok(/v128/.test(wat), 'helper loop vectorizes')
+  ok(!/\(func \$map\b|call \$map\b/.test(wat), 'cosmetic SIMD markers do not pin an internal helper')
+  is(run(src, { optimize: 'speed' }).f(), 1, 'inlined SIMD helper stays exact')
 })
 
 test('param-distinctness LICM: invariant load from a proven-distinct param hoists across a store', () => {
@@ -3633,6 +3642,42 @@ test('monotone cursor budget proves mutually-exclusive codec reads', () => {
   ok(/i32\.lt_u/.test(encWat(rle.replace('new Uint8Array(16)', 'new Uint8Array(15)'))),
     'amortized output bound still fails closed one byte short')
   is(run(rle, { optimize: 'speed' }).f(), 10, 'amortized RLE stores stay exact')
+})
+
+test('decomposed charCodeAt unswitches SSO vs heap outside leaf byte loops', () => {
+  const src = `const scan=(s,n)=>{let h=0;for(let i=0;i<n;i++)h=(h+s.charCodeAt(i))|0;return h}
+    export let small=()=>scan('abc',3)
+    export let heap=()=>{let s='';for(let i=0;i<16;i++)s=s+'ab';return scan(s,s.length)}`
+  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const sw = w.split('(func $scan')[1]?.split('\n  (func ')[0] || ''
+  ok(/\$s\$ccsso/.test(sw), 'string parameter is decomposed once at entry')
+  is((sw.match(/\(local\.get \$s\$ccsso\)/g) || []).length, 2,
+    'representation is tested once per split loop, not once per byte')
+  ok((sw.match(/\(loop/g) || []).length >= 4, 'SSO and heap loop versions are materialized')
+  const ex = run(src, { optimize: 'speed' })
+  is(ex.small(), 294, 'SSO loop version stays exact')
+  is(ex.heap(), 3120, 'heap loop version stays exact')
+})
+
+test('a checked typed read used as an index carries its miss outward', () => {
+  const src = `export let f=(d)=>{const count=new Int32Array(1),out=new Uint8Array(2);count[0]=1;out[count[d]]=9;return out[0]*10+out[1]}
+    export let g=(d)=>{const count=new Uint8Array(1),out=new Uint8Array(256);count[0]=1;out[0]=7;out[1]=9;return out[count[d]]===undefined?-1:out[count[d]]}`
+  const { f, g } = run(src, { optimize: 'speed' })
+  is(f(0), 9, 'in-range inner read addresses the outer array')
+  is(f(-1), 0, 'inner undefined does not become outer index zero')
+  is(f(2), 0, 'far inner miss keeps the outer write ignored')
+  is(g(0), 9, 'proven-range outer read keeps the in-range value')
+  is(g(-1), -1, 'proven-range outer read still preserves inner undefined')
+})
+
+test('small strided outer control loop specializes nested typed kernels', () => {
+  const src = `const pass=(a,out)=>{for(let shift=0;shift<32;shift+=8){for(let i=0;i<16;i++)out[i]=(a[i]>>>shift)&255}}
+    export let f=()=>{const a=new Uint32Array(16),out=new Uint32Array(16);a[0]=0x12345678;pass(a,out);return out[0]}`
+  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const pw = wat.split('(func $pass')[1]?.split('(func ')[0] || ''
+  ok(!/local\.get \$shift/.test(pw), 'outer induction is fully specialized')
+  ok((pw.match(/i32\.shr_u/g) || []).length >= 3, 'four radix/lane variants remain as constant shifts')
+  is(run(src, { optimize: 'speed' }).f(), 0x12, 'last specialized pass stays exact')
 })
 
 test('typed value hulls fail closed on wraparound, aliases, and closure writes', () => {

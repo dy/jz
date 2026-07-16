@@ -553,23 +553,55 @@ export const analyzeParamDistinctness = (programFacts) => {
     if (!site.callerFunc) continue
     const l = sitesByCallee.get(site.callee); l ? l.push(site) : sitesByCallee.set(site.callee, [site])
   }
+  const pending = []
+  // Preserve the old common path without candidate records/callbacks: direct
+  // fresh arrays prove in one pass. Only a failed direct proof allocates a
+  // record for the forwarding fixpoint below.
   for (const func of ctx.func.list) {
+    func.distinctParams = null
     const params = func.sig?.params, sites = sitesByCallee.get(func.name)
     if (!params || !sites?.length) continue
     const typedIdx = []
     for (let i = 0; i < params.length; i++) if (params[i].ptrKind === VAL.TYPED) typedIdx.push(i)
-    if (typedIdx.length < 2) continue   // distinctness only matters with ≥2 typed-array params
+    if (typedIdx.length < 2) continue
     let ok = true
     for (const site of sites) {
-      const seen = new Set()
+      const seen = new Set(), fresh = freshByFunc.get(site.callerFunc)
       for (const i of typedIdx) {
         const arg = site.argList?.[i]
-        if (typeof arg !== 'string' || !freshByFunc.get(site.callerFunc)?.has(arg) || seen.has(arg)) { ok = false; break }
+        if (typeof arg !== 'string' || seen.has(arg) || !fresh?.has(arg)) { ok = false; break }
         seen.add(arg)
       }
       if (!ok) break
     }
     if (ok) func.distinctParams = new Set(typedIdx.map(i => params[i].name))
+    else pending.push({ func, params, sites, typedIdx })
+  }
+  const proveForwarded = ({ func, params, sites, typedIdx }) => {
+    for (const site of sites) {
+      const seen = new Set(), fresh = freshByFunc.get(site.callerFunc)
+      const forwarded = site.callerFunc?.distinctParams
+      for (const i of typedIdx) {
+        const arg = site.argList?.[i]
+        if (typeof arg !== 'string' || seen.has(arg) || (!fresh?.has(arg) && !forwarded?.has(arg))) return false
+        seen.add(arg)
+      }
+    }
+    func.distinctParams = new Set(typedIdx.map(i => params[i].name))
+    return true
+  }
+  // Only unresolved forwarding wrappers enter the fixpoint, avoiding an
+  // unconditional second full-program scan in ordinary kernels/self-host.
+  let unresolved = pending
+  let changed = true
+  while (changed && unresolved.length) {
+    changed = false
+    const next = []
+    for (const c of unresolved) {
+      if (proveForwarded(c)) changed = true
+      else next.push(c)
+    }
+    unresolved = next
   }
 }
 

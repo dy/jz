@@ -3,17 +3,29 @@
 ## V1
 
 * [ ] Beat all bench cases, all examples - pinned
-  * CURRENT EXECUTABLE VERDICT 2026-07-15 — OPEN. `npm run test:bench`
-    completed 200/208 and exposed eight hard failures rather than accepting
-    isolated wins: qoi speed-vs-AS plus fastest-wasm fft, tokenizer, qoi,
-    raytrace, radixsort, shapes, and wordcount. That loaded frontier measured
-    qoi 9.03ms vs rust 7.94 and wordcount 0.87 vs C 0.76. The subsequent
-    sound discriminant-hint pass moved shapes from 1.86ms to 1.73–2.02ms in
-    isolated repeats, still behind AS 0.99–1.05. All gaps are explicit
-    `WASM_TODO` entries. `examples/bench.mjs` is
-    1.63× geomean and 13/14 wins; raymarcher remains 0.90× V8. Therefore the
-    V1 performance gate is not closed and `bench/results.json` must not be
-    presented as current proof until a clean release snapshot is regenerated.
+  * CURRENT EXECUTABLE VERDICT 2026-07-15 — OPEN. The last completed
+    `npm run test:bench` passed 204/208 and exposed four fastest-WASM losses:
+    fft, QOI, raytrace, and shapes. The string-representation unswitch keeps
+    tokenizer closed even under that loaded frontier.
+    The follow-up mechanism batch adds call-free pure eager booleans,
+    transitive typed-parameter distinctness, tiny strided-loop specialization,
+    internal SIMD-helper inlining, and watr 5.7.8's conservative branch-loop ×2
+    unroll. The audit rejected a histogram/prefix/scatter theorem after its ~4%
+    radix gain destabilized the stricter self-host gate, retained the underlying
+    nested checked-index correctness fix, and unswitched decomposed
+    strings' trap-safe SSO/heap choice outside leaf scans. Repeated focused
+    evidence has wordcount as an outright win; radixsort remains
+    inside the hard 5% band (jz 2.34–2.40ms vs rust 2.29–2.30ms),
+    and tokenizer (jz 43–48µs vs AS 51–55µs) as wins. A whole-chain exact-SID
+    dispatch moved shapes only ~3% and was rejected after it broke the strict
+    warm self-host gate; AS remains ~1.00–1.05ms. The open
+    frontier is shapes, load-sensitive QOI (focused jz 7.6–9.4ms vs rust
+    7.5–8.1), raytrace (focused jz 1.14–1.32ms vs rust 0.97–1.00), and
+    borderline FFT (latest loaded ratio 1.060×). Each remains an explicit
+    `WASM_TODO`. `examples/bench.mjs` is 1.60× geomean and 13/14 wins;
+    raymarcher remains ~0.84–0.92× V8. Therefore the V1 performance gate is not
+    closed and `bench/results.json` must not be presented as current proof
+    until a clean release snapshot is regenerated.
   * STATE 2026-07-14 (lever grind, sessions 3-4): DONE & ARCHIVED — strbuild
     WON (itoa-at-cursor −51.5%; jz 0.46ms leads every string-producing rival,
     rust-wasm 3.1× behind; ledger note + differential pin test/strings.js;

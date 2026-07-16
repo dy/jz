@@ -99,10 +99,15 @@ function emitDecompCharRead(dec, iI32, ctx, oobNan, inBounds = false) {
     ['i64.shr_u', ['local.get', `$${dec.ptr64}`], ['i64.mul', ['i64.extend_i32_u', idx], ['i64.const', 7]]],
     ['i64.const', '0x7f']]]
   const heapByteExpr = ['i32.load8_u', ['i32.add', ['local.get', `$${dec.loadbase}`], idx]]
-  const ccByte = ['if', ['result', 'i32'],
-    ['local.get', `$${dec.sso}`],
-    ['then', ssoByteExpr],
-    ['else', heapByteExpr]]
+  // Both arms are trap-free: the prologue routes an SSO receiver's speculative
+  // heap load to memory[0 + idx], and an in-bounds SSO idx is at most 6. Speed
+  // tier in a compact graph uses a select that unswitchStringRepLoop can fold
+  // out of the loop. Other tiers/large graphs keep the predictable branch —
+  // evaluating both arms without the unswitch regresses the self-host parser.
+  const canUnswitch = ctx.transform.optimize?.unswitchStringRepLoop === true && ctx.func.list.length <= 64
+  const ccByte = canUnswitch
+    ? ['select', ssoByteExpr, heapByteExpr, ['local.get', `$${dec.sso}`]]
+    : ['if', ['result', 'i32'], ['local.get', `$${dec.sso}`], ['then', ssoByteExpr], ['else', heapByteExpr]]
   // `inBounds`: the index is proven in [0, len) by an enclosing canonical scan
   // (analyze.js inBoundsCharCodeAt / splitCharScanLoops' in-bounds main loop), so
   // the OOB arm is dead — drop the per-char `i >= len` compare. This is what turns

@@ -118,7 +118,14 @@ if (spraeEntry) {
 // ── dist/jz.wasm — the jz compiler, compiled to wasm by jz (full self-host) ───
 const wasmOut = resolve(OUT, 'jz.wasm')
 const g = resolveModuleGraph(resolve(ROOT, 'scripts/self.js'), { resolveNode: true })
-const wasm = compile(g.code, { modules: g.modules, memory: 8192, optimize: false })
+// Match selfhost-build.mjs's measured release profile: this artifact is a
+// compiler executable, not a size-distributed web asset. O3 keeps its warm
+// compile geomean decisively below the same pipeline on V8.
+const wasm = compile(g.code, {
+  modules: g.modules,
+  memory: 8192,
+  optimize: { level: 3, watrGuard: false, snapshotInit: true },
+})
 new WebAssembly.Module(wasm)  // validate before writing
 writeFileSync(wasmOut, wasm)
 console.log('wrote dist/jz.wasm', kb(wasmOut))

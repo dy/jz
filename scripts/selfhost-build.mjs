@@ -21,11 +21,11 @@ const t0 = Date.now()
 // an infinite loop on its own code; root cause was `sourceInline` dropping a statement-
 // position callee's side-effecting return expression — the parser's `seek = n => idx = n`
 // stopped advancing `idx`, looping comment-skip forever. Fixed in src/compile/plan/inline.js.)
-// -O2, not -O3: the compiler is integer/string/pointer work with no float/SIMD compute, so
-// O3's extras (relaxedSimd, aggressive size-for-speed inline, reduceUnroll) don't help it —
-// the corpus-compile ratio is identical at O1/O2/O3 (the cost is the kernel NaN-box/string/
-// map tax, not the compiler's own code). Override with JZ_SELFHOST_OPT (e.g. =3, =false).
-const SELF_OPT = process.env.JZ_SELFHOST_OPT ?? '2'
+// -O3 is now the measured self-host profile: internal lifted helpers can dissolve
+// through inlineOnce and speed-tier loop shaping keeps the warm compiler clear of
+// V8 (0.952× vs O2's load-sensitive ~0.99–1.02× on the pinned corpus). Dist size
+// is irrelevant for this unpublished compiler artifact. Override for diagnosis.
+const SELF_OPT = process.env.JZ_SELFHOST_OPT ?? '3'
 const HELPER_COUNTERS = /^(1|true|yes)$/i.test(process.env.JZ_HELPER_COUNTERS || '')
 const HELPER_SITES = process.env.JZ_HELPER_SITES || ''
 const HELPER_SITES_ON = !!HELPER_SITES && !/^(0|false|no)$/i.test(HELPER_SITES)

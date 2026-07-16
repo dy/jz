@@ -738,12 +738,18 @@ const jzCompileInner = (code, opts = {}) => {
   if (cfg.watr) {
     if (watrOpts === true) watrOpts = {}
     watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED] : SIMD_PINNED
-    // Boundary-wrapped functions (`$name`/`$name$exp`) the vectorizer just lifted: keep
-    // watr's default inlineOnce from merging $name into $name$exp, which would otherwise
-    // rename every $__ppc*/$__esc*/... local & label the lift produced with its own
-    // $__inl{N}_ prefix, burying the marker's leading `$` (cosmetic-only cost: one
-    // un-eliminated wrapper call per top-level invocation, not per loop iteration).
-    if (cfg._vectorizedFnNames?.size) watrOpts.pin = [...watrOpts.pin, ...cfg._vectorizedFnNames]
+    // Partial unrolling overlaps branch latency in compact codecs, but duplicates
+    // too many cold compiler/parser loops in large module graphs and loses the
+    // warm self-host I-cache race. Users may still opt in explicitly.
+    if (watrOpts.unroll2 == null && ctx.func.list.length > 64) watrOpts.unroll2 = false
+    // Keep only JS-boundary vectorized functions intact: their `$name$exp`
+    // wrapper must not swallow the body/markers structural host tests inspect.
+    // Internal lifted helpers remain inlineable — SIMD survives the splice,
+    // while caller-level constant propagation and hot-call removal become live.
+    if (cfg._vectorizedFnNames?.size) {
+      const boundaryPins = [...cfg._vectorizedFnNames].filter(name => ctx.func.map.get(name.slice(1))?.exported)
+      if (boundaryPins.length) watrOpts.pin = [...watrOpts.pin, ...boundaryPins]
+    }
   }
   const optimized = cfg.watr ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
   // Stable-pointee module globals: resolve the __ptr_offset once per function. Never-forwarding

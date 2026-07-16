@@ -1605,12 +1605,26 @@ export default (ctx) => {
         const ti = tempI32('tbi')
         const off = ['i32.add', typedDataAddr(emit(arr), isView),
           ['i32.shl', ['local.get', `$${ti}`], ['i32.const', SHIFT[et]]]]
-        const rd = typed(['if', ['result', 'f64'],
-          bundleIn
-            ? ['block', ['result', 'i32'], ['local.set', `$${ti}`, idx(i)], bundleIn]
-            : ['i32.lt_u', ['local.tee', `$${ti}`, idx(i)], leanLen(arr, et, isView)],
-          ['then', loadOf(off)],
-          ['else', undefExpr()]], 'f64')
+        // Preserve the old zero-metadata path for ordinary reads. Only a read
+        // currently serving as another index pays to materialize its miss bit.
+        if (!ctx.types.indexConsumer) {
+          const rd = typed(['if', ['result', 'f64'],
+            bundleIn
+              ? ['block', ['result', 'i32'], ['local.set', `$${ti}`, idx(i)], bundleIn]
+              : ['i32.lt_u', ['local.tee', `$${ti}`, idx(i)], leanLen(arr, et, isView)],
+            ['then', loadOf(off)], ['else', undefExpr()]], 'f64')
+          if (!isBigInt) rd.checkedNumRead = true
+          return rd
+        }
+        const tin = tempI32('tbn'), innerIdx = idx(i), innerValid = innerIdx.indexValid
+        const ownValid = bundleIn || ['i32.lt_u', ['local.get', `$${ti}`], leanLen(arr, et, isView)]
+        const condition = innerValid ? ['i32.and', innerValid, ownValid] : ownValid
+        const rd = typed(['block', ['result', 'f64'],
+          ['local.set', `$${ti}`, innerIdx],
+          ['local.set', `$${tin}`, condition],
+          ['if', ['result', 'f64'], ['local.get', `$${tin}`], ['then', loadOf(off)], ['else', undefExpr()]],
+        ], 'f64')
+        rd.indexValid = ['local.get', `$${tin}`]
         // number|undefined with the undefined confined to a CONST arm — a numeric
         // consumer (toNumF64) folds ToNumber into that arm statically
         if (!isBigInt) rd.checkedNumRead = true
@@ -1631,20 +1645,37 @@ export default (ctx) => {
       const off = ['i32.add', typedDataAddr(emit(arr), isView),
         ['i32.shl', ['select', ['local.get', `$${ti}`], ['i32.const', 0], ['local.get', `$${tin}`]],
           ['i32.const', SHIFT[et]]]]
+      const innerIdx = idx(i)
+      const innerValid = ctx.types.indexConsumer ? innerIdx.indexValid : null
+      const ownValid = bundleIn || ['i32.lt_u', ['local.get', `$${ti}`], lenIR]
       const rd = typed(['block', ['result', 'f64'],
-        ['local.set', `$${ti}`, idx(i)],
-        ['local.set', `$${tin}`, bundleIn || ['i32.lt_u', ['local.get', `$${ti}`], lenIR]],
+        ['local.set', `$${ti}`, innerIdx],
+        ['local.set', `$${tin}`, innerValid ? ['i32.and', innerValid, ownValid] : ownValid],
         ['select', loadOf(off), undefExpr(), ['local.get', `$${tin}`]]], 'f64')
+      if (ctx.types.indexConsumer) rd.indexValid = ['local.get', `$${tin}`]
       if (!isBigInt) rd.checkedNumRead = true
       return rd
     }
-    const objIR = emit(arr), post = postIncI32Index(i), vi = post?.value ?? idx(i)
+    const objIR = emit(arr), post = postIncI32Index(i)
+    const nestedIndex = Array.isArray(i) && i[0] === '[]'
+    let vi = post?.value ?? idx(i), indexPre = null, indexValid = nestedIndex ? vi.indexValid : null
+    if (!post && indexValid) {
+      const ti = tempI32('tbi')
+      indexPre = ['local.set', `$${ti}`, vi]
+      vi = ['local.get', `$${ti}`]
+    }
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
-    const value = post ? ['block', ['result', 'f64'], ...post.pre, loadOf(off)] : loadOf(off)
+    const value = post ? ['block', ['result', 'f64'], ...post.pre, loadOf(off)]
+      : indexPre ? ['block', ['result', 'f64'], indexPre,
+          ['if', ['result', 'f64'], indexValid, ['then', loadOf(off)], ['else', undefExpr()]]]
+      : loadOf(off)
     if (isBigInt) return typed(value, 'f64')
     // Non-bigint typed elements are plain NUMBERS — tag the load so numeric-arm
     // predicates (isNumArm: `+` dispatch numSide, ?:/?? canon) skip box guards.
-    const t = typed(value, 'f64'); t.valKind = VAL.NUMBER; return t
+    const t = typed(value, 'f64')
+    if (indexValid) t.checkedNumRead = true
+    else t.valKind = VAL.NUMBER
+    return t
   }
 
   // A store value that can evaluate INSIDE the bounds guard when the assignment
@@ -1676,6 +1707,7 @@ export default (ctx) => {
     if (r == null) return null
     const { et, isView, isBigInt } = r
     const proven = typedIdxProven(arr, i)
+    const nestedIndex = Array.isArray(i) && i[0] === '[]'
     const pre = []
     const post = postIncI32Index(i)
     let vi
@@ -1683,14 +1715,20 @@ export default (ctx) => {
     if (post) { pre.push(...post.pre); vi = post.value }
     else if (proven) vi = idx(i)
     else {
-      const ti = tempI32('tbi')
-      pre.push(['local.set', `$${ti}`, idx(i)])
+      const ti = tempI32('tbi'), emittedIdx = idx(i)
+      pre.push(['local.set', `$${ti}`, emittedIdx])
       vi = ['local.get', `$${ti}`]
+      if (nestedIndex && emittedIdx.indexValid) vi.indexValid = emittedIdx.indexValid
     }
     // Wrap a store statement in the bounds guard on the unproven path. The value
     // temp is set OUTSIDE the guard (spec: RHS evaluates regardless).
-    const guard = (store) => proven ? store
-      : ['if', ['i32.lt_u', vi, leanLen(arr, et, isView)], ['then', store]]
+    const inheritedValid = vi.indexValid
+    const guard = (store) => {
+      if (proven && !inheritedValid) return store
+      const inRange = proven ? inheritedValid : ['i32.lt_u', vi, leanLen(arr, et, isView)]
+      const condition = inheritedValid && !proven ? ['i32.and', inheritedValid, inRange] : inRange
+      return ['if', condition, ['then', store]]
+    }
     const objIR = emit(arr)
     // Checked typed-array read/modify/write fusion. A statement such as
     // `a[i] = (a[i] + x) | 0` used to emit TWO guards (one for the RHS read,

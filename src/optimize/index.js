@@ -112,6 +112,7 @@ export const PASS_NAMES = [
   'boolConvertToSelect',      // f64 ± (cond?1:0) → branchless select (kills i32↔f64 domain cross on recurrences)
   'cseScalarLoad',
   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)
+  'unswitchStringRepLoop',    // leaf char scans: hoist invariant SSO/heap selection out of the byte loop
   'propagateSingleUse',       // forward-substitute single-def/single-use pure temps (watr's "propagate")
   'foldSetToTee',             // sink a single-def local's RHS into its first use as a tee (simplify-locals watr leaves)
   'promoteGlobals',          // read-only global.get → local for multi-read globals
@@ -140,7 +141,7 @@ const LEVEL_PRESETS = Object.freeze({
   // watr pipeline. `inline` stays off by watr's own default — opt-in only.
   // boolConvertToSelect off at the default level: it's a latency-for-size trade (adds a
   // const + op per site) that only pays off on serial recurrences — speed-tier only.
-  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, watrProfile: 'speed' }),
+  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, watrProfile: 'speed' }),
   // L3/'speed' trades a bit of heap headroom for fewer __arr_grow / __hash growth
   // cycles. arrayMinCap=16 means `[]` and `new Array()` skip the first two doublings
   // (0→2→4→8→16); hashSmallInitCap=8 keeps per-object __dyn_props at the same load
@@ -170,6 +171,7 @@ const LEVEL_PRESETS = Object.freeze({
     leanCheckedIdx: true,     // unproven typed reads emit the if-form (guard → direct load, else undefined) — ~6 ops/site smaller than the select-clamp form, which exists only so SPEED-tier kernel bodies stay branch-free for the SIMD lift (off here)
 
     boolConvertToSelect: false,  // adds a const + op per site — speed-only latency trade
+    unswitchStringRepLoop: false, // duplicates the scan loop for SSO/heap — speed-only
     speculateSchemaBranches: false, // duplicates the dynamic fallback body — speed-only tagged-union PIC
     devirtIndirect: false,    // guards + duplicated args grow bytes — speed-only trade
     internStrings: false,     // the intern index costs ~16 B per eligible literal — speed-only trade
@@ -3090,6 +3092,70 @@ export function unswitchTypedParamLoop(fn) {
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
 }
 
+/** Hoist the SSO/heap choice out of a leaf byte-scan loop.
+ *
+ * `emitDecompCharRead` deliberately makes both select arms trap-free: SSO
+ * routes the speculative heap load to memory[0+idx], while heap receivers may
+ * harmlessly evaluate the packed-byte shift. A loop-invariant select is still
+ * paid per byte, however. For a compact call-free loop, version the loop once
+ * on `$param$ccsso` and fold every matching select in each clone. This is a
+ * representation-level loop unswitch, not a source/benchmark special case.
+ * Large or call-bearing parser loops fail closed to avoid I-cache growth. */
+function unswitchStringRepLoop(fn) {
+  const clone = n => Array.isArray(n) ? n.map(clone) : n
+  const size = n => !Array.isArray(n) ? 1 : 1 + n.slice(1).reduce((s, x) => s + size(x), 0)
+  const containsName = (n, name) => {
+    if (!Array.isArray(n)) return false
+    if (n[0] === 'local.get' && n[1] === name) return true
+    for (let i = 1; i < n.length; i++) if (containsName(n[i], name)) return true
+    return false
+  }
+  const match = n => {
+    if (!Array.isArray(n) || n[0] !== 'select' || n.length !== 4) return null
+    const c = n[3]
+    if (!Array.isArray(c) || c[0] !== 'local.get' || typeof c[1] !== 'string' || !c[1].endsWith('$ccsso')) return null
+    const stem = c[1].slice(0, -6)
+    if (!containsName(n[1], `${stem}$ccp64`) || !containsName(n[2], `${stem}$ccldb`)) return null
+    return c[1]
+  }
+  const hasCallOrWrite = (n, flag) => {
+    if (!Array.isArray(n)) return false
+    if (n[0] === 'call' || n[0] === 'call_indirect' || n[0] === 'return_call' ||
+        ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === flag)) return true
+    for (let i = 1; i < n.length; i++) if (hasCallOrWrite(n[i], flag)) return true
+    return false
+  }
+  const collect = (n, out, nested = false) => {
+    if (!Array.isArray(n)) return
+    if (nested && n[0] === 'loop') return
+    const m = match(n)
+    if (m) out.push(m)
+    for (let i = 1; i < n.length; i++) collect(n[i], out, nested || n[0] === 'loop')
+  }
+  const choose = (n, flag, arm) => {
+    if (!Array.isArray(n)) return n
+    if (match(n) === flag) return choose(n[arm], flag, arm)
+    return n.map(x => choose(x, flag, arm))
+  }
+  const visit = (n, parent, idx) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'loop' && parent && size(n) <= 250 &&
+        !n.some(x => Array.isArray(x) && (x[0] === 'result' || x[0] === 'param'))) {
+      const flags = []
+      collect(n, flags)
+      const flag = flags[0]
+      if (flag && flags.every(x => x === flag) && !hasCallOrWrite(n, flag)) {
+        parent[idx] = ['if', ['local.get', flag],
+          ['then', choose(clone(n), flag, 1)],
+          ['else', choose(clone(n), flag, 2)]]
+        return
+      }
+    }
+    for (let i = 1; i < n.length; i++) visit(n[i], n, i)
+  }
+  visit(fn, null, -1)
+}
+
 /**
  * Run all per-function IR optimizations on a single function node.
  * hoistPtrType runs first — it introduces new locals (`$__ptN`) that the fused
@@ -3116,6 +3182,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
       cfg.fusedRewrite === false &&
       cfg.hoistAddrBase === false &&
       cfg.cseScalarLoad === false &&
+      cfg.unswitchStringRepLoop === false &&
       cfg.propagateSingleUse === false &&
       cfg.promoteGlobals === false &&
       cfg.sortLocalsByUse === false &&
@@ -3141,6 +3208,9 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
   const counts = new Map()
   if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn, counts)
+  if (cfg && cfg.unswitchStringRepLoop === true && ctx.func.list.length <= 64 &&
+      fn.some(n => Array.isArray(n) && n[0] === 'local' && typeof n[1] === 'string' && n[1].endsWith('$ccsso')))
+    unswitchStringRepLoop(fn)
   if (cfg && cfg.boolConvertToSelect === true) boolConvertToSelect(fn)
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
