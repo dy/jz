@@ -34,14 +34,21 @@
     verdicts before cross-function facts settled and collapsed vm to
     12.8ms); the correct home is an emit-time widen pass in the
     per-function prep (uncached, full typedIdxProven) + a narrow-side veto
-    for params/results (built, in the patch). REMAINING BLOCKERS: (1) the
-    result-narrowing surface (c) needs the same veto in narrowI32Results;
-    (2) vm's pc/op/a/b chain IS provable (pc=b bounded via code's
-    arrayElemRange) but the fact never settles — the batch's hand-rolled
-    arrayElemRange fixpoint has the audit-#4 convergence bug (hull()
-    allocates fresh; reference-equality change-detection never reports) —
-    fix #4 FIRST, then the widen pass stops taxing vm and the class lands
-    whole. Digital Rain ratchet 12→14 was reverted with the park (stays 12). SHAPES: the closed heterogeneous-record chain is
+    for params/results (built, in the patch). REMAINING BLOCKERS
+    (re-verified 2026-07-17): (1) the result-narrowing surface (c) needs
+    the same veto in narrowI32Results; (2) vm's pc=b proof CANNOT come
+    from arrayElemRange — that fixpoint CONVERGES fine (endpoint
+    value-compare present; the audit-#4 "hull() fresh-alloc" convergence
+    claim does NOT hold on current code — #4's live remainder is only the
+    reshape-onto-runArrElemFixpoint dedup). The range is HONESTLY
+    full-i32: runKernel's `code[2] = (seed+it)|0` patches an immediate
+    into the SAME array as the jump targets, so the per-array hull covers
+    negatives. True unblockers: per-stride-lane element ranges
+    (code[3k+2] as its own lane) OR the versioned-loop arm (runtime
+    `b >>> 0 < NINSTR` guard keeps the raw-i32 interpreter, miss path
+    JS-exact) — the versioning machinery exists; that is the landing path
+    for the class WITHOUT taxing vm. Digital Rain ratchet 12→14 stands
+    (two static compound-seam coercion sites, documented at the pin). SHAPES: the closed heterogeneous-record chain is
     BUILT — closed elem-schema union census (+ return/param/elem-arg narrow
     channels), else-arm discriminant census by mask-exclusion, closed-union
     PROOF refinement (guard-free singleton slot reads riding the user's own
