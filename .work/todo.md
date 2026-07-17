@@ -3,6 +3,27 @@
 ## V1
 
 * [ ] Beat all bench cases, all examples - pinned
+  * EXECUTABLE VERDICT 2026-07-17 (quiet M4, checksums exact everywhere) —
+    OPEN on FOUR rows, each dissected with a recorded landing path:
+    - shapes: jz 1.86–1.92ms vs AS 1.05–1.11 (1.7×). The closed-union chain
+      LANDED (dyn reads 21→2, module 27.5→13.7 kB) but the guarded PIC
+      already carried the hot path (−2% runtime). Residual = RECORD LAYOUT
+      (f64 slots + unbox/trunc per field vs AS's raw i32 fields). Landing
+      path: the union structInline carrier — max-K-stride packed i32 cells
+      (20 B/record, contiguous; beats AS's ref-chasing StaticArray), cursor
+      crosses `measure(rows[i])` via the pointer-ABI param spec, analyze
+      verification mirrors the discriminant refinement.
+    - qoi: jz 8.59ms vs rust 6.50 (1.32×); jz BEATS as 8.64 + v8 10.77.
+      Loop-carried scalar byte-twiddling (no SIMD possible) — a pure
+      scalar-codegen-quality dissection, not yet started in earnest.
+    - raytrace: jz 1.070ms vs rust 1.000 (7% — just outside the 5% band);
+      beats as 1.80 + v8 2.02.
+    - fft: jz 1.069 vs rust 1.029 = 3.9% — INSIDE the hard 5% band (PASS);
+      beats as 1.26 + v8 1.40.
+    Examples: 12/14 strict wins, geomean 1.62×; ulam (1.01/0.99/0.91 over
+    3 runs) and raymarcher (0.98/1.00/0.99) are STATISTICAL PARITY at the
+    noise floor — no structural deficit visible, but not strict wins under
+    the letter of the gate.
   * STATE 2026-07-17 (correctness wave + closed-union chain): the mechanism
     batch LANDED (8fd8561e, battery-verified twice incl. independently:
     suite 3013/0, fuzz 5000/76k zero-div, warm self-host 0.949×). On top,
