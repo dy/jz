@@ -12,7 +12,8 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
+import { ctx } from '../src/ctx.js'
 import { run } from './util.js'
 
 const jsEval = (src) => {
@@ -276,4 +277,43 @@ export let main = () => {
   return (a[0].x * 1000 + i + dummy) | 0   // 101008
 }`
   both(src)
+})
+
+// --- closed-union carrier eligibility (analyzeUnionInline, stage 1) ---
+// The verifier must accept the canonical tagged-record stream (cursor + tag
+// alias + discriminant chain incl. the exclusion-proven trailing else) and
+// fail closed on a stale tag alias or an unguarded variant read.
+test('union inline: eligibility verdicts (positive + fail-closed negatives)', () => {
+  const BODY = (reads) => `
+    const NSHAPES = 4
+    export let main = () => {
+      const rows = []
+      let s = 0x1234abcd | 0
+      for (let i = 0; i < 64; i++) {
+        s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+        const k = s & (NSHAPES - 1)
+        const a = (s >>> 3) & 255, b = (s >>> 13) & 255
+        if (k === 0) rows.push({ k: k, x: a, y: b })
+        else if (k === 1) rows.push({ k: k, r: a })
+        else if (k === 2) rows.push({ k: k, w: a, h: b })
+        else rows.push({ k: k, n: a, s: b })
+      }
+      let h = 0
+      for (let i = 0; i < rows.length; i++) {
+        const o = rows[i]
+        ${reads}
+      }
+      return h
+    }`
+  const elig = (src) => { compile(src, { optimize: 'speed' }); return [...(ctx.schema.inlineUnion?.keys() || [])] }
+  is(elig(BODY(`const k = o.k
+        if (k === 0) h = (h + o.x) | 0
+        else if (k === 1) h = (h + o.r) | 0
+        else if (k === 2) h = (h + o.w) | 0
+        else h = (h + o.n) | 0`)).join(';'), '0,1,2,3', 'discriminant chain eligible')
+  is(elig(BODY(`let k = o.k
+        k = 0
+        if (k === 0) h = (h + o.x) | 0`)).join(';'), '', 'stale tag alias fails closed')
+  is(elig(BODY(`h = (h + o.x) | 0`)).join(';'), '', 'unguarded variant read fails closed')
+  is(elig(BODY(`h = (h + o.k) | 0`)).join(';'), '0,1,2,3', 'union-agreeing tag read eligible')
 })

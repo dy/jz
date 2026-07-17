@@ -399,6 +399,14 @@ export function reset(proto, globals, bridge) {
                                 //   f64 slots — the packed decision rides the
                                 //   CURSOR (inlineCellCursors → node.cellI32),
                                 //   never the bare sid.
+    inlineUnion: new Map(),     // canonical 'a,b,…' key → { sids, stride } —
+                                //   CLOSED heterogeneous unions whose Array
+                                //   instances store max-K-stride packed i32
+                                //   cells (analyzeUnionInline; fail-closed)
+    inlineUnionArrays: new Map(), // sig → Map<name, key>: union-array locals
+    inlineUnionCursors: new Map(), // sig → Map<name, key>: `const o = a[i]`
+                                //   cursors of union arrays (reads resolve
+                                //   via refinement/agreeing slots to cells)
     inlineCellCursors: new Map(), // sig → Set<name>: `const p = a[i]` cursor
                                 //   locals of packed (inlineCellI32) arrays in
                                 //   that function — readVar tags their reads

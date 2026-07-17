@@ -34,7 +34,7 @@ import { intLiteralValue } from '../static.js'
 import { intCertainMap, typedStaticLen } from '../type.js'
 import {
   analyzeBody, unboxablePtrs, cseSafeLoadBases, boxedCaptures,
-  analyzeStructInline, invalidateLocalsCache,
+  analyzeStructInline, analyzeUnionInline, invalidateLocalsCache,
 } from './analyze.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep, REP_FIELDS } from '../reps.js'
@@ -1941,6 +1941,7 @@ export default function compile(ast, profiler) {
   // `structInline` carrier. Runs once the per-function reps have settled (they
   // are codegen truth) and before any function is emitted.
   timePhase(profiler, 'structInline', () => analyzeStructInline(funcFacts, programFacts))
+  timePhase(profiler, 'unionInline', () => analyzeUnionInline(funcFacts, programFacts))
   const funcs = timePhase(profiler, 'emitFuncs', () => ctx.func.list.map(func => emitFunc(func, funcFacts.get(func), programFacts)))
   funcs.push(...synthesizeBoundaryWrappers())
 

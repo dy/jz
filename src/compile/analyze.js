@@ -1950,6 +1950,331 @@ export function analyzeStructInline(funcFacts, programFacts) {
   if (DBG) console.error('[inlarr]', 'eligible:', [...inlineArray], 'packedI32:', [...ctx.schema.inlineCellI32])
 }
 
+/** Closed heterogeneous unions as max-K-stride packed i32 cell arrays — the
+ *  tagged-record stream layout (shapes class): `rows.push({k, …variant})` over
+ *  a CLOSED schema set stores each record as `stride` raw i32 cells (stride =
+ *  max member K; every member's slot i is cell i), contiguous — no per-record
+ *  heap object, no element pointer. Reads devirt through the landed
+ *  closed-union chain: the tag (union-agreeing slot) directly; variant fields
+ *  under the user's own `tag === C` branches (discriminant refinement).
+ *
+ *  FAIL-CLOSED like analyzeStructInline: a union inlines only when EVERY use
+ *  of every union-array binding and cursor — across all functions — is a
+ *  handled shape, and every cursor field read RESOLVES statically (agreeing
+ *  slot, or discriminant-narrowed members that agree). Anything else
+ *  blacklists the union. v1 scope: packed-only (every member all-slots
+ *  strict-int32), same-function cursors (`measure(rows[i])` param cursors are
+ *  stage 3 — the pointer-ABI seam), reads only (element replace poisons).
+ */
+export function analyzeUnionInline(funcFacts, programFacts) {
+  const registry = ctx.schema?.inlineUnion
+  if (!registry || !ctx.schema?.list) return
+  const DBG = typeof process !== 'undefined' && process.env?.JZ_DBG_INLARR
+  const propsOf = (sid) => ctx.schema.list[sid] || []
+  const keyOf = (sids) => sids.join(',')
+  const black = new Set()                    // union keys disqualified
+  const cand = new Map()                     // key → sids
+  const uArraysByFunc = new Map(), uCursorsByFunc = new Map()
+
+  const intLit = (n) => typeof n === 'number' && Number.isInteger(n) ? n
+    : Array.isArray(n) && n[0] == null && Number.isInteger(n[1]) ? n[1] : null
+  const litOfConst = (n) => intLit(n) ?? (typeof n === 'string' ? ctx.scope.constInts?.get(n) ?? null : null)
+
+  // Union-agreeing slot for prop across MEMBERS (all contain it at one slot).
+  const agreeSlot = (sids, prop) => {
+    let slot = null
+    for (const sid of sids) {
+      const idx = propsOf(sid).indexOf(prop)
+      if (idx < 0 || (slot != null && slot !== idx)) return -1
+      slot = idx
+    }
+    return slot ?? -1
+  }
+
+  for (const [func, facts] of funcFacts) {
+    const body = func?.body
+    if (func?.raw || body == null || typeof body !== 'object') continue
+    const reps = facts?.localReps ?? new Map()
+
+    // Union-array bindings of this frame (rep channel — the landed census).
+    const uArr = new Map()                   // name → key
+    for (const [name, r] of reps) {
+      const set = r?.arrayElemSchemaSet
+      if (!set || set.length < 2) continue
+      const key = keyOf(set)
+      if (!cand.has(key)) cand.set(key, set)
+      uArr.set(name, key)
+    }
+    if (!uArr.size) continue
+    uArraysByFunc.set(func.sig, uArr)
+
+    // `const t = o.PROP` aliases (discriminant reads) + `const o = a[i]` cursors.
+    const cursor = new Map()                 // name → key
+    const tagAlias = new Map()               // tagLocal → { obj, prop }
+    const declSeen = new Set()
+    const maskMax = new Map()                // name → max for `x = Y & LIT`
+    const assigned = new Set()               // names written outside their decl
+    ;(function collect(n) {
+      if (!Array.isArray(n)) return
+      if (n[0] === '=>') {
+        // closure writes count too — a captured tag/mask local can change
+        ;(function cw(m) {
+          if (!Array.isArray(m)) return
+          if ((ASSIGN_OPS.has(m[0]) || m[0] === '++' || m[0] === '--') && typeof m[1] === 'string') assigned.add(m[1])
+          for (let i = 1; i < m.length; i++) cw(m[i])
+        })(n)
+        return
+      }
+      if ((ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') && typeof n[1] === 'string') assigned.add(n[1])
+      if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+        const name = d[1], rhs = d[2]
+        if (declSeen.has(name)) { const k = cursor.get(name); if (k != null) black.add(k); cursor.delete(name); tagAlias.delete(name) }
+        declSeen.add(name)
+        if (Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 &&
+            typeof rhs[1] === 'string' && uArr.has(rhs[1])) cursor.set(name, uArr.get(rhs[1]))
+        else if (Array.isArray(rhs) && rhs[0] === '.' && typeof rhs[1] === 'string' && typeof rhs[2] === 'string')
+          tagAlias.set(name, { obj: rhs[1], prop: rhs[2] })
+        if (Array.isArray(rhs) && rhs[0] === '&') {
+          const l = litOfConst(rhs[1]), r2 = litOfConst(rhs[2])
+          const m = l != null && l >= 0 ? l : r2 != null && r2 >= 0 ? r2 : null
+          if (m != null && m <= 0xFFFF) maskMax.set(name, m)
+        }
+      }
+      if (n[0] === 'let' || n[0] === 'const') {
+        // own the descent: the generic loop would re-visit each decl's inner
+        // `=` node and count the INITIALIZER as an assignment, purging every
+        // alias/mask the arm just recorded. Descend into the RHS values only.
+        for (let i = 1; i < n.length; i++) {
+          const d = n[i]
+          if (Array.isArray(d) && d[0] === '=' && d[2] != null) collect(d[2])
+          else collect(d)
+        }
+        return
+      }
+      for (let i = 1; i < n.length; i++) collect(n[i])
+    })(body)
+    // A tag alias or mask fact is single-def only: any assignment (incl. from
+    // a closure) makes the refinement stale — unsound to narrow by. Drop.
+    for (const name of assigned) { tagAlias.delete(name); maskMax.delete(name) }
+    if (cursor.size) uCursorsByFunc.set(func.sig, cursor)
+
+    // Discriminant narrowing of a member set under refs (Map tagLocal → int
+    // exact | Set excluded). A member whose censused const for the tag slot
+    // contradicts the refinement is excluded; unknown-const members stay.
+    const narrow = (sids, oName, refs) => {
+      if (!refs) return sids
+      let out = sids
+      for (const [t, v] of refs) {
+        const al = tagAlias.get(t)
+        if (!al || al.obj !== oName) continue
+        out = out.filter(sid => {
+          const slot = propsOf(sid).indexOf(al.prop)
+          if (slot < 0) return typeof v !== 'number'   // missing prop reads undefined ≠ any int
+          const cv = ctx.schema.slotConstInts?.get(sid)?.[slot]
+          if (cv == null) return true                  // unknown const — keep (superset-sound)
+          return typeof v === 'number' ? cv === v : !v.has(cv)
+        })
+      }
+      return out
+    }
+
+    const condNV = (cond) => {
+      if (!Array.isArray(cond) || cond[0] !== '===') return null
+      const a = cond[1], b = cond[2], av = intLit(a), bv = intLit(b)
+      if (typeof a === 'string' && bv != null) return [a, bv]
+      if (typeof b === 'string' && av != null) return [b, av]
+      return null
+    }
+    const thenRefs = (cond, refs) => {
+      const nv = condNV(cond); if (!nv) return refs
+      const out = new Map(refs || []); out.set(nv[0], nv[1]); return out
+    }
+    const elseRefs = (cond, refs) => {
+      const nv = condNV(cond); if (!nv) return refs
+      const [name, v] = nv
+      const out = new Map(refs || [])
+      const prev = out.get(name)
+      if (typeof prev === 'number') return out
+      const excl = new Set(prev instanceof Set ? prev : []); excl.add(v)
+      const max = maskMax.get(name)
+      if (max != null && excl.size === max) {
+        for (let c = 0; c <= max; c++) if (!excl.has(c)) { out.set(name, c); return out }
+      }
+      out.set(name, excl)
+      return out
+    }
+
+    // A cursor field read resolves iff the refs-narrowed members that could
+    // reach it all CONTAIN prop at one slot, and no reachable member lacks it
+    // (a lacking member's read is `undefined` — inexpressible in raw cells).
+    const readResolves = (key, oName, prop, refs) => {
+      const sids = cand.get(key)
+      const reach = narrow(sids, oName, refs)
+      if (!reach.length) return true                   // branch unreachable for the union
+      if (reach.some(sid => propsOf(sid).indexOf(prop) < 0)) return false
+      return agreeSlot(reach, prop) >= 0
+    }
+
+    const flag = (c) => {
+      if (typeof c !== 'string') return false
+      if (uArr.has(c)) { black.add(uArr.get(c)); return true }
+      if (cursor.has(c)) { black.add(cursor.get(c)); return true }
+      return false
+    }
+
+    ;(function verify(node, refs) {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (op === 'str') return
+      const visit = (c) => { if (!flag(c)) verify(c, refs) }
+      if (op === '=>') {                     // closures un-walked — poison mentions
+        const touches = (n, name) => typeof n === 'string' ? n === name
+          : Array.isArray(n) ? n.slice(1).some(c => touches(c, name)) : false
+        for (const [n, k] of uArr) if (touches(node, n)) black.add(k)
+        for (const [n, k] of cursor) if (touches(node, n)) black.add(k)
+        return
+      }
+      if (op === 'if' || op === '?:') {
+        verify(node[1], refs)
+        const isTern = op === '?:'
+        verify(node[2], thenRefs(node[1], refs))
+        const elseArm = isTern ? node[3] : node[3]
+        if (elseArm != null) verify(elseArm, elseRefs(node[1], refs))
+        if (isTern && node.length > 4) for (let i = 4; i < node.length; i++) verify(node[i], refs)
+        return
+      }
+      if (op === '.' || op === '?.') {
+        const o = node[1], p = node[2]
+        if (typeof o === 'string') {
+          if (uArr.has(o)) { if (!(op === '.' && p === 'length')) black.add(uArr.get(o)) }
+          else if (cursor.has(o)) { if (!(op === '.' && readResolves(cursor.get(o), o, p, refs))) black.add(cursor.get(o)) }
+          return
+        }
+        // direct `a[i].p` — treated as an anonymous cursor of a[i]'s union
+        if (Array.isArray(o) && o[0] === '[]' && typeof o[1] === 'string' && uArr.has(o[1])) {
+          const key = uArr.get(o[1])
+          // no alias name → only union-agreeing props resolve
+          if (!(op === '.' && agreeSlot(cand.get(key), p) >= 0)) black.add(key)
+          verify(o[2], refs)
+          return
+        }
+        visit(o)
+        return
+      }
+      if (op === '[]') {
+        const o = node[1], k = node[2]
+        if (typeof o === 'string' && uArr.has(o)) {
+          // bare a[i] in value position outside a cursor decl → escape; the
+          // cursor decls were collected up front and are re-matched here so
+          // the generic descent doesn't double-reject them (decl handling).
+          black.add(uArr.get(o))
+          if (k != null) verify(k, refs)
+          return
+        }
+        if (typeof o === 'string' && cursor.has(o)) { black.add(cursor.get(o)); if (k != null) verify(k, refs); return }
+        if (o != null) visit(o)
+        if (k != null) verify(k, refs)
+        return
+      }
+      if (op === 'let' || op === 'const') {
+        for (let i = 1; i < node.length; i++) {
+          const d = node[i]
+          if (!Array.isArray(d) || d[0] !== '=') { verify(d, refs); continue }
+          const name = d[1], rhs = d[2]
+          if (typeof name === 'string' && cursor.has(name) && Array.isArray(rhs) && rhs[0] === '[]') {
+            if (rhs[2] != null) verify(rhs[2], refs)   // sanctioned cursor decl — index only
+            continue
+          }
+          if (typeof name === 'string' && uArr.has(name)) {
+            const key = uArr.get(name)
+            const elems = staticArrayElems(rhs)
+            if (!(elems && elems.length === 0)) black.add(key)   // only `[]` births a union array (v1)
+            continue
+          }
+          if (typeof name !== 'string') verify(name, refs)
+          if (rhs != null) visit(rhs)
+        }
+        return
+      }
+      if ((op === '++' || op === '--' || ASSIGN_OPS.has(op))) {
+        const lhs = node[1]
+        if (Array.isArray(lhs) && (lhs[0] === '.' || lhs[0] === '?.' || lhs[0] === '[]') && typeof lhs[1] === 'string') {
+          if (uArr.has(lhs[1])) { black.add(uArr.get(lhs[1])); return }   // element replace / length write — v1 reads-only
+          if (cursor.has(lhs[1])) { black.add(cursor.get(lhs[1])); return }
+        }
+        if (typeof lhs === 'string' && (uArr.has(lhs) || cursor.has(lhs))) { flag(lhs); return }
+        for (let i = 1; i < node.length; i++) visit(node[i])
+        return
+      }
+      if (op === '()') {
+        const callee = node[1]
+        const args = node[2] == null ? [] : (Array.isArray(node[2]) && node[2][0] === ',') ? node[2].slice(1) : [node[2]]
+        if (Array.isArray(callee) && callee[0] === '.' && typeof callee[1] === 'string' && uArr.has(callee[1])) {
+          const key = uArr.get(callee[1])
+          if (callee[2] !== 'push' || !args.length) { black.add(key); return }
+          for (const arg of args) {
+            const sid = Array.isArray(arg) && arg[0] === '{}' ? objLiteralSchemaId(arg) : null
+            if (sid == null || !cand.get(key).includes(sid)) { black.add(key); continue }
+            const props = arg.length === 2 && Array.isArray(arg[1]) && arg[1][0] === ',' ? arg[1].slice(1) : arg.slice(1)
+            for (const pr of props) visit(Array.isArray(pr) && pr[0] === ':' ? pr[2] : pr)
+          }
+          return
+        }
+        // A union ARRAY may cross a direct user-call boundary when the callee's
+        // param carries the SAME settled union (narrow's arrayElemSchemaSet
+        // channel — canonical string key). Cursor args stay stage 3.
+        if (typeof callee === 'string') {
+          const cParams = programFacts.paramReps?.get(callee)
+          for (let k = 0; k < args.length; k++) {
+            const a = args[k]
+            if (typeof a === 'string' && uArr.has(a)) {
+              if (cParams?.get(k)?.arrayElemSchemaSet !== uArr.get(a)) black.add(uArr.get(a))
+            } else visit(a)
+          }
+          return
+        }
+        if (callee != null && typeof callee !== 'string') visit(callee)
+        for (const a of args) visit(a)                  // union array/cursor as arg → flag → poison (stage 3 lifts)
+        return
+      }
+      // `return rows` — sanctioned when this function's OWN settled return
+      // fact is the same union (narrowReturnArrayElems' canonical key).
+      if (op === 'return') {
+        const v = node[1]
+        if (typeof v === 'string' && uArr.has(v)) {
+          if (func.arrayElemSchemaSet !== uArr.get(v)) black.add(uArr.get(v))
+          return
+        }
+        if (v != null) visit(v)
+        return
+      }
+      for (let i = 1; i < node.length; i++) visit(node[i])
+    })(body, null)
+  }
+
+  // v1: packed-only — every member all-slots strict-int32 and stride ≥ 2.
+  for (const [key, sids] of cand) {
+    if (black.has(key)) continue
+    const stride = Math.max(...sids.map(sid => propsOf(sid).length))
+    const packed = stride >= 2 && sids.every(sid => propsOf(sid).every(p => ctx.schema.slotI32CertainBySid?.(sid, p)))
+    if (!packed) continue
+    registry.set(key, { sids, stride })
+  }
+  for (const [sig, m] of uArraysByFunc) {
+    let keep = null
+    for (const [name, key] of m) if (registry.has(key)) (keep ??= new Map()).set(name, key)
+    if (keep) ctx.schema.inlineUnionArrays.set(sig, keep)
+  }
+  for (const [sig, m] of uCursorsByFunc) {
+    let keep = null
+    for (const [name, key] of m) if (registry.has(key)) (keep ??= new Map()).set(name, key)
+    if (keep) ctx.schema.inlineUnionCursors.set(sig, keep)
+  }
+  if (DBG) console.error('[inlarr-union]', 'eligible:', [...registry.keys()], 'black:', [...black])
+}
+
 /** Schema id when `name` is bound (codegen truth) to a structInline `Array<S>`,
  *  else null. `ctx.func.localReps` is the per-function rep map the emitter
  *  consults for element-schema facts; `ctx.schema.inlineArray` is the
