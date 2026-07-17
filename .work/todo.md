@@ -14,8 +14,13 @@
       crosses `measure(rows[i])` via the pointer-ABI param spec, analyze
       verification mirrors the discriminant refinement.
     - qoi: jz 8.59ms vs rust 6.50 (1.32×); jz BEATS as 8.64 + v8 10.77.
-      Loop-carried scalar byte-twiddling (no SIMD possible) — a pure
-      scalar-codegen-quality dissection, not yet started in earnest.
+      DISSECTED 2026-07-17: the kernel's codegen is already near-minimal —
+      ZERO calls, ZERO bounds checks (raw store8/load8 throughout), zero
+      reinterprets; 55 store8 / 33 load8 / 44 cmp / 27 if / 16 br_if is the
+      six-op chain itself. Only visible fold: `(x<<24)>>24` → i32.extend8_s
+      (6 sites, watr peephole, ~1-2%). The residual is LLVM-CLASS branch
+      scheduling of the op chain (V8 tiering vs rustc static sched) —
+      V2-class; no jz-side lever found at this shape.
     - raytrace: jz 1.070ms vs rust 1.000 (7% — just outside the 5% band);
       beats as 1.80 + v8 2.02.
     - fft: jz 1.069 vs rust 1.029 = 3.9% — INSIDE the hard 5% band (PASS);
