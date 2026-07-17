@@ -4,8 +4,9 @@
  * # Stage contract
  *   IN:  WAT-as-array IR (function body or module-level).
  *   OUT: equivalent WAT-as-array IR (same semantics, smaller encoding).
- *   INVARIANTS: pure IR→IR rewrite. No ctx reads/writes. No new top-level declarations except
- *        the ones explicitly surfaced via `addGlobal` (hoistConstantPool only).
+ *   INVARIANTS: semantics-preserving IR→IR rewrites. Leaf passes are context-free;
+ *        explicitly documented module-proof passes may read immutable ctx facts. No ctx writes.
+ *        No new top-level declarations except those surfaced via `addGlobal`.
  *
  * Each pass is orthogonal. Apply order matters: structural hoists (hoistPtrType) introduce
  * new locals before the fused walk, which mixes peephole rebox folds, ptr-helper inlining,
@@ -45,6 +46,20 @@ const NULL_BITS = atomNanHex(1)
 const UNDEF_BITS = atomNanHex(2)
 const FALSE_BITS = atomNanHex(4)
 
+// IR is usually a tree but optimizer nodes may share large subgraphs. Keep
+// feature probes linear rather than recursively revisiting a shared DAG.
+export function hasIROp(roots, opcode) {
+  const stack = Array.isArray(roots) ? [...roots] : [roots], seen = new Set()
+  while (stack.length) {
+    const node = stack.pop()
+    if (!Array.isArray(node) || seen.has(node)) continue
+    seen.add(node)
+    if (node[0] === opcode) return true
+    for (let i = 1; i < node.length; i++) if (Array.isArray(node[i])) stack.push(node[i])
+  }
+  return false
+}
+
 /**
  * Optimization passes, partitioned by phase. The `level` presets pick which
  * passes are on by default; the user can override individual passes via an
@@ -83,10 +98,11 @@ const FALSE_BITS = atomNanHex(4)
  *     layer's inlining, and its output feeds that layer's fold/branch cleanup
  *     within the same fixpoint rounds.
  * Sequencing: optimizeFunc runs ONCE, in the 'pre' phase (src/wat/assemble.js
- * optimizeModule), then watOptimize is the sole and final optimizer. There is no
- * post-watr re-run — re-running jz's leaf passes on watr's output both violated the
- * "watr is the only optimizer, once, fixpoint" architecture and miscompiled (dropped a
- * reassigned-param tee, corrupted SIMD frames).
+ * optimizeModule), then watOptimize is the sole generic fixpoint optimizer. We never
+ * re-run optimizeFunc after watr — doing so dropped reassigned-param tees and corrupted
+ * SIMD frames. index.js may run only narrow whole-module proof repairs after watr
+ * (stable pointer/cell hoists and masked pure-suffix guarding); those are idempotent,
+ * fail-closed, and exist because watr can expose their final address/control shape.
  */
 export const PASS_NAMES = [
   'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)
@@ -106,6 +122,8 @@ export const PASS_NAMES = [
   'unrollRecurrence',         // unit-stride DP/scan: scalar-replace arr[j-1]/arr[j] recurrence + ×2 unroll
   'clampPeel',                // edge-clamp stencil: split into clamp-free interior (vectorizes) + edges
   'hoistGlobalPtrOffset',     // stable typed GLOBALS: __ptr_offset resolve → once per function (post-watr, module-level)
+  'hoistGlobalConstLoads',    // immutable fixed global typed cells → function-entry locals
+  'maskedSuffixGuard',        // all-false SIMD masks skip large pure producer suffixes
   'hoistLoopGlobalPtrOffset', // per-loop complement: narrower write/call scan lets a clean loop hoist inside an otherwise-poisoned function
   'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
   'hoistAddrBase',
@@ -123,6 +141,7 @@ export const PASS_NAMES = [
   'sourceInline',
   'smallConstForUnroll',
   'nestedSmallConstForUnroll',
+  'splitScratch',             // SSA-split scalar scratch from unrolled loop copies, then LICM
   'vectorizeLaneLocal',       // SIMD-128 lift for lane-pure typed-array loops
   'recursionUnroll',          // inline a single non-tail self-call to depth N (tree-recursion call-overhead)
   'arenaRewind',              // per-call heap rewind for no-arg scalar allocator kernels
@@ -141,7 +160,7 @@ const LEVEL_PRESETS = Object.freeze({
   // watr pipeline. `inline` stays off by watr's own default — opt-in only.
   // boolConvertToSelect off at the default level: it's a latency-for-size trade (adds a
   // const + op per site) that only pays off on serial recurrences — speed-tier only.
-  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, watrProfile: 'speed' }),
+  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, watrProfile: 'speed' }),
   // L3/'speed' trades a bit of heap headroom for fewer __arr_grow / __hash growth
   // cycles. arrayMinCap=16 means `[]` and `new Array()` skip the first two doublings
   // (0→2→4→8→16); hashSmallInitCap=8 keeps per-object __dyn_props at the same load
@@ -163,7 +182,8 @@ const LEVEL_PRESETS = Object.freeze({
   size: Object.freeze({
     ...ALL_ON,
     watrProfile: null,        // keep watr's OWN size-leaning default (outline/tailmerge/rettail on) — the one tier where those size-for-speed folds belong
-    smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false, splitCharScan: false,
+    smallConstForUnroll: false, nestedSmallConstForUnroll: false, splitScratch: false, vectorizeLaneLocal: false, splitCharScan: false,
+    hoistGlobalConstLoads: false, maskedSuffixGuard: false,
     recursionUnroll: false,   // body tripling is a size regression — speed-only
     unrollRecurrence: false,  // ×2 body duplication is a size regression — speed-only
     clampPeel: false,         // edge-clamp peel triples a stencil loop (clamp-free interior + 2 edges) to vectorize — speed-only
@@ -830,7 +850,7 @@ function buildBaseParamOf(fn, bodyStart, distinctParams) {
 // teed invariant; a free `local.get` must be unwritten by the loop). Memory leaves are admitted
 // only under the summary: a `$__cell_`/distinct-param load iff no aliasing store + no call; a
 // SAFE_OFFSET/READONLY_MEM call iff no unsafe call (+ no direct store for heap reads).
-function loopInvariance(loopNode, { distinctParams, baseParamOf }) {
+function loopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSets = false }) {
   const locals = new Set(), globals = new Set(), storedCells = new Set(), storedBases = new Set()
   let hasUnsafeCall = false, hasAnyCall = false, hasDirectStore = false, hasV128 = false
   const scan = (node) => {
@@ -867,11 +887,14 @@ function loopInvariance(loopNode, { distinctParams, baseParamOf }) {
     if (op === 'global.get') return typeof node[1] === 'string' && !globals.has(node[1]) && !hasUnsafeCall
     if (op === 'local.tee') {
       if (typeof node[1] !== 'string') return false
-      // The operand is evaluated BEFORE the tee writes $X, so a `local.get $X` inside
-      // it reads the loop-carried (previous-iteration) value, not the teed one. Drop
-      // $X from `bound` for the operand: `local.tee $X (… $X …)` is a loop recurrence
-      // (X = f(X) — e.g. the `while ((nn = nn >>> 1))` induction), NOT invariant.
+      // The operand is evaluated BEFORE the tee writes $X, so a `local.get $X`
+      // inside it reads the loop-carried value, not the newly written one.
       const inner = bound.has(node[1]) ? new Set([...bound].filter(b => b !== node[1])) : bound
+      return pureGiven(node[2], inner)
+    }
+    if (op === 'local.set') {
+      if (!allowPrivateSets || typeof node[1] !== 'string' || !bound.has(node[1])) return false
+      const inner = new Set([...bound].filter(b => b !== node[1]))
       return pureGiven(node[2], inner)
     }
     if ((op === 'f64.load' || op === 'i32.load') && node.length === 2) {
@@ -904,6 +927,18 @@ function loopInvariance(loopNode, { distinctParams, baseParamOf }) {
       if (READONLY_MEM_CALLS.has(node[1]))
         return !hasUnsafeCall && !hasDirectStore && node.slice(2).every(c => pureGiven(c, bound))
       return false
+    }
+    // A value-producing block with private scratch sets is pure when every
+    // statement is pure. This is the canonical-NaN wrapper shape emitted for
+    // `const ox = -typed[i]`: block(result f64, set tmp, select …). The caller's
+    // bound/private-use proof is what makes moving the internal set sound.
+    if (op === 'block' && allowPrivateSets) {
+      for (let i = 1; i < node.length; i++) {
+        const c = node[i]
+        if (!Array.isArray(c) || c[0] === 'result') continue
+        if (!pureGiven(c, bound)) return false
+      }
+      return true
     }
     // A value-producing `if` whose condition and both arms are pure is itself
     // pure — the tag-dispatch idiom `(if (result f64) tag-check (then read-A)
@@ -967,11 +1002,20 @@ export function splitLoopPrivateScratch(fn) {
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
   const SCALAR = new Set(['i32', 'i64', 'f64', 'f32'])
+  const UNROLLED_PREFIXES = [`$${T}ul`, `$${T}us`]
+  const isUnrolledScratch = name => UNROLLED_PREFIXES.some(p => name.startsWith(p))
   const localTypes = new Map()
+  let hasUnrolledScratch = false
   for (let i = 2; i < bodyStart; i++) {
     const c = fn[i]
-    if (Array.isArray(c) && (c[0] === 'param' || c[0] === 'local') && typeof c[1] === 'string') localTypes.set(c[1], c[2])
+    if (Array.isArray(c) && (c[0] === 'param' || c[0] === 'local') && typeof c[1] === 'string') {
+      localTypes.set(c[1], c[2])
+      if (isUnrolledScratch(c[1])) hasUnrolledScratch = true
+    }
   }
+  // Demand-driven: ordinary functions retain the allocation-free optimizer
+  // path. Only loops expanded by the AST/emitter unrollers mint these names.
+  if (!hasUnrolledScratch) return
   // Whole-function reference count per local (to verify a candidate is loop-local).
   const fnRefs = new Map()
   const countRefs = (n) => {
@@ -1002,7 +1046,7 @@ export function splitLoopPrivateScratch(fn) {
     const seen = new Set()
     for (let i = 2; i < loop.length; i++) {
       const s = loop[i]
-      if (Array.isArray(s) && s[0] === 'local.set' && typeof s[1] === 'string') seen.add(s[1])
+      if (Array.isArray(s) && s[0] === 'local.set' && typeof s[1] === 'string' && isUnrolledScratch(s[1])) seen.add(s[1])
     }
     // Stage 1 — collect SAFE candidates (loop-local, straight-line, first-write, set-only,
     // ≥2 defs) and record each one's def RHS list for the invariance fixpoint.
@@ -1034,7 +1078,7 @@ export function splitLoopPrivateScratch(fn) {
         for (let i = 1; i < n.length; i++) scan(n[i], depth + (ctrl ? 1 : 0))
       }
       for (let i = 2; i < loop.length; i++) scan(loop[i], 0)
-      if (safe && first === 'w' && defs.length >= 2) cand.set(name, defs)
+      if (safe && first === 'w' && defs.length >= 1) cand.set(name, defs)
     }
     if (!cand.size) return
     // Stage 2 — invariance fixpoint over the SHARED proven predicate. `pureGiven(def, hoistable)`
@@ -1047,15 +1091,38 @@ export function splitLoopPrivateScratch(fn) {
     // elsewhere (pureGiven already rejects set/store/global.set/unsafe-call). This replaces the old
     // address-local-disjointness load test, which was unsound in general (two distinct locals can
     // hold the same address) and only worked by luck on the bench shapes.
-    const { pureGiven } = loopInvariance(loop, { distinctParams, baseParamOf })
+    const { pureGiven } = loopInvariance(loop, { distinctParams, baseParamOf, allowPrivateSets: true })
     const motionSafe = (n) => { if (!Array.isArray(n)) return true; if (n[0] === 'local.tee') return false; for (let i = 1; i < n.length; i++) if (!motionSafe(n[i])) return false; return true }
+    const countName = (n, name) => {
+      if (!Array.isArray(n)) return 0
+      let c = ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) ? 1 : 0
+      for (let i = 1; i < n.length; i++) c += countName(n[i], name)
+      return c
+    }
+    const privateInternalWrites = (def, base) => {
+      const bound = new Set(base), writes = new Set()
+      const gather = n => {
+        if (!Array.isArray(n)) return
+        if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') writes.add(n[1])
+        for (let i = 1; i < n.length; i++) gather(n[i])
+      }
+      gather(def)
+      for (const name of writes) {
+        if (countName(loop, name) !== countName(def, name)) return null
+        bound.add(name)
+      }
+      return bound
+    }
     const hoistable = new Set()
     let changed = true
     while (changed) {
       changed = false
       for (const [name, defs] of cand) {
         if (hoistable.has(name)) continue
-        if (defs.every(d => motionSafe(d) && pureGiven(d, hoistable))) { hoistable.add(name); changed = true }
+        if (defs.every(d => {
+          const bound = privateInternalWrites(d, hoistable)
+          return bound && motionSafe(d) && pureGiven(d, bound)
+        })) { hoistable.add(name); changed = true }
       }
     }
     // Stage 3 — one linear pass over the loop body: each hoistable def is RENAMED to a
@@ -2159,6 +2226,387 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
   fn.splice(bodyStart, 0, ...decls, ...snaps)
 }
 
+// Constant element reads from a fixed typed-array global are immutable for the
+// dynamic extent of a function when neither that function nor any reachable
+// callee stores through the same global base. Cache those cells once at entry.
+// This is load-CSE across the call/loop boundary: ordinary CSE cannot retain a
+// memory value past an unrelated store (for example, writes to an output
+// buffer), even when both bases are proven-distinct module allocations.
+const typedGlobalByteLengths = () => {
+  const widths = new Map([
+    ['new.Int8Array', 1], ['new.Uint8Array', 1], ['new.Uint8ClampedArray', 1],
+    ['new.Int16Array', 2], ['new.Uint16Array', 2],
+    ['new.Int32Array', 4], ['new.Uint32Array', 4], ['new.Float32Array', 4],
+    ['new.BigInt64Array', 8], ['new.BigUint64Array', 8], ['new.Float64Array', 8],
+  ])
+  const out = new Map()
+  for (const [name, len] of ctx.scope.globalTypedLen || []) {
+    const width = widths.get(ctx.scope.globalTypedElem?.get(name))
+    if (width && Number.isInteger(len) && len >= 0) out.set(`$${name}`, len * width)
+  }
+  return out
+}
+
+const irI32Const = n => {
+  if (!Array.isArray(n)) return null
+  if (n[0] === 'i32.const' && Number.isInteger(n[1])) return n[1]
+  if (n.length !== 3) return null
+  const a = irI32Const(n[1]), b = irI32Const(n[2])
+  if (a == null || b == null) return null
+  if (n[0] === 'i32.add') return (a + b) | 0
+  if (n[0] === 'i32.sub') return (a - b) | 0
+  if (n[0] === 'i32.mul') return Math.imul(a, b)
+  if (n[0] === 'i32.shl') return a << b
+  return null
+}
+const globalBaseAliases = fn => {
+  const aliases = new Map(), assigns = [], poisoned = new Set()
+  const scan = n => {
+    if (!Array.isArray(n)) return
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') assigns.push([n[1], n[2]])
+    for (let i = 1; i < n.length; i++) scan(n[i])
+  }
+  scan(fn)
+  const resolve = rhs => {
+    // Snapshot shape emitted by hoistGlobalPtrOffset:
+    // i32.wrap_i64(i64.and(i64.reinterpret_f64(global.get $G), MASK))
+    const g = Array.isArray(rhs) && rhs[0] === 'i32.wrap_i64' &&
+      Array.isArray(rhs[1]) && rhs[1][0] === 'i64.and' &&
+      Array.isArray(rhs[1][1]) && rhs[1][1][0] === 'i64.reinterpret_f64' &&
+      Array.isArray(rhs[1][1][1]) && rhs[1][1][1][0] === 'global.get'
+      ? rhs[1][1][1][1] : null
+    if (typeof g === 'string') return { global: g, offset: 0 }
+    if (Array.isArray(rhs) && rhs[0] === 'local.get') return aliases.get(rhs[1]) || null
+    if (Array.isArray(rhs) && rhs[0] === 'i32.add') {
+      const a = rhs[1], b = rhs[2], ac = irI32Const(a), bc = irI32Const(b)
+      if (bc != null) {
+        const base = resolve(a); return base && { global: base.global, offset: base.offset == null ? null : base.offset + bc }
+      }
+      if (ac != null) {
+        const base = resolve(b); return base && { global: base.global, offset: base.offset == null ? null : base.offset + ac }
+      }
+      const ra = resolve(a), rb = resolve(b)
+      if (ra && !rb) return { global: ra.global, offset: null }
+      if (rb && !ra) return { global: rb.global, offset: null }
+    }
+    return null
+  }
+  // All writes to an address alias must resolve to the same global+offset.
+  // Conflicting or non-address writes poison it rather than retaining the first.
+  for (let changed = true; changed;) {
+    changed = false
+    for (const [name, rhs] of assigns) {
+      if (poisoned.has(name)) continue
+      const rec = resolve(rhs)
+      if (!rec) continue
+      const old = aliases.get(name)
+      if (old && (old.global !== rec.global || old.offset !== rec.offset)) { aliases.delete(name); poisoned.add(name); changed = true }
+      else if (!old) { aliases.set(name, rec); changed = true }
+    }
+  }
+  // A write that never resolved as an address conflicts with any inferred alias
+  // unless it is the snapshot expression itself waiting on no local fact.
+  for (const [name, rhs] of assigns) if (aliases.has(name) && !resolve(rhs)) aliases.delete(name)
+  return aliases
+}
+
+const memAddress = n => {
+  let i = 1, offset = 0
+  while (typeof n[i] === 'string' && (n[i].startsWith('offset=') || n[i].startsWith('align='))) {
+    if (n[i].startsWith('offset=')) offset += Number(n[i].slice(7)) || 0
+    i++
+  }
+  let addr = n[i]
+  // Address-base CSE often materializes a constant address with a tee on its
+  // first load, followed by local.get uses. Preserve the embedded offset.
+  if (Array.isArray(addr) && addr[0] === 'local.tee' && addr.length === 3) addr = addr[2]
+  if (Array.isArray(addr) && addr[0] === 'i32.add') {
+    const a = addr[1], b = addr[2], ac = irI32Const(a), bc = irI32Const(b)
+    if (bc != null) { addr = a; offset += bc }
+    else if (ac != null) { addr = b; offset += ac }
+  }
+  return { addr, offset }
+}
+const plainLoadOp = op => typeof op === 'string' &&
+  /^(?:v128|f32|f64|i32|i64)\.load(?:8|16|32)?(?:_[su])?$/.test(op)
+const memGlobal = (n, aliases) => {
+  const { addr, offset } = memAddress(n)
+  if (Array.isArray(addr) && addr[0] === 'local.get' && aliases.has(addr[1])) {
+    const rec = aliases.get(addr[1])
+    return { global: rec.global, offset: rec.offset == null ? offset : rec.offset + offset, exact: rec.offset != null }
+  }
+  const found = new Set()
+  const bases = x => {
+    if (!Array.isArray(x)) return
+    if (x[0] === 'local.get' && aliases.has(x[1])) { found.add(aliases.get(x[1]).global); return }
+    for (let i = 1; i < x.length; i++) bases(x[i])
+  }
+  bases(addr)
+  return { global: found.size === 1 ? [...found][0] : null, offset, exact: false }
+}
+
+/** Per-function transitive set of typed globals written through memory; `*` is unknown aliasing. */
+export function collectReachableMemoryWrites(funcs) {
+  const direct = new Map(), calls = new Map(), names = new Set()
+  for (const fn of funcs) if (Array.isArray(fn) && fn[0] === 'func' && typeof fn[1] === 'string') names.add(fn[1])
+  for (const fn of funcs) {
+    if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') continue
+    const aliases = globalBaseAliases(fn), writes = new Set(), callees = new Set()
+    const scan = n => {
+      if (!Array.isArray(n)) return
+      const op = n[0]
+      if (typeof op === 'string' && (op.endsWith('.store') || op.includes('.store8') || op.includes('.store16') || op.includes('.store32'))) {
+        const { global } = memGlobal(n, aliases)
+        writes.add(global || '*')
+      } else if (op === 'memory.copy' || op === 'memory.fill' || op === 'memory.init') writes.add('*')
+      else if ((op === 'call' || op === 'return_call') && typeof n[1] === 'string') {
+        // A missing target is a host import. It can observe an exported memory
+        // through its JS closure and mutate arbitrary bytes: fail closed.
+        if (names.has(n[1])) callees.add(n[1]); else writes.add('*')
+      } else if (op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect') writes.add('*')
+      for (let i = 1; i < n.length; i++) scan(n[i])
+    }
+    scan(fn)
+    direct.set(fn[1], writes); calls.set(fn[1], callees)
+  }
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [name, writes] of direct) {
+      const before = writes.size
+      for (const callee of calls.get(name) || []) for (const g of direct.get(callee) || ['*']) writes.add(g)
+      if (writes.size !== before) changed = true
+    }
+  }
+  return direct
+}
+
+export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachableGlobalWrites) {
+  if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') return
+  const aliases = globalBaseAliases(fn)
+  if (!aliases.size) return
+  const byteLens = typedGlobalByteLengths()
+  if (!byteLens.size) return
+  const writes = reachableMemoryWrites?.get(fn[1]) || new Set(['*'])
+  const globalWrites = reachableGlobalWrites?.get(fn[1]) || new Set(['*'])
+  if (writes.has('*') || globalWrites.has('*')) return
+  const opWidth = op => op.startsWith('v128.') ? 16
+    : op.startsWith('f64.') || op.startsWith('i64.') ? 8
+    : op.includes('load8') ? 1 : op.includes('load16') ? 2 : 4
+  const sites = new Map()
+  const scan = (n, depth = 0) => {
+    if (!Array.isArray(n)) return
+    const d = n[0] === 'loop' ? depth + 1 : depth
+    const op = n[0]
+    if (plainLoadOp(op)) {
+      const { global, offset, exact } = memGlobal(n, aliases)
+      const width = opWidth(op), limit = byteLens.get(global)
+      if (global && exact && !writes.has(global) && Number.isInteger(offset) && offset >= 0 && offset + width <= limit) {
+        // Keep sign/zero-extending loads distinct even at the same cell.
+        const key = `${op}|${global}|${offset}`
+        let rec = sites.get(key)
+        if (!rec) sites.set(key, rec = { nodes: [], op, global, offset, depth: 0, type: op.startsWith('f64.') ? 'f64' : op.startsWith('f32.') ? 'f32' : op.startsWith('i64.') ? 'i64' : op.startsWith('v128.') ? 'v128' : 'i32' })
+        rec.nodes.push(n); rec.depth = Math.max(rec.depth, d)
+        return
+      }
+    }
+    for (let i = 1; i < n.length; i++) scan(n[i], d)
+  }
+  scan(fn)
+  const baseByGlobal = new Map()
+  for (const [name, rec] of aliases) if (rec.offset === 0 && !baseByGlobal.has(rec.global)) baseByGlobal.set(rec.global, name)
+  const chosen = [...sites.values()].filter(rec =>
+    (rec.nodes.length >= 2 || rec.depth > 0) && baseByGlobal.has(rec.global) && !globalWrites.has(rec.global))
+  if (!chosen.length) return
+
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+  const used = new Set()
+  const ids = n => { if (Array.isArray(n)) { if (n[0] === 'local' && typeof n[1] === 'string') used.add(n[1]); for (let i = 1; i < n.length; i++) ids(n[i]) } }
+  ids(fn)
+  let seq = 0
+  const fresh = () => {
+    let n = `$__gl${seq++}`
+    while (used.has(n)) n = `$__gl${seq++}`
+    used.add(n)
+    return n
+  }
+  const copy = n => Array.isArray(n) ? n.map(copy) : n
+  const chosenGlobals = new Set(chosen.map(rec => rec.global))
+  // A base snapshot may originally live inside the first load's local.tee.
+  // Since that load is about to become a cached local.get, materialize every
+  // chosen base explicitly before its cache initializers.
+  const baseInits = []
+  for (const global of chosenGlobals) {
+    const base = baseByGlobal.get(global)
+    baseInits.push(['local.set', base,
+      ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ['global.get', global]], ['i64.const', LAYOUT.OFFSET_MASK]]]])
+  }
+  // Address-base CSE locals whose defining tees disappear with the replaced
+  // loads are initialized canonically from the stable global snapshot.
+  const aliasInits = []
+  for (const [name, rec] of aliases) {
+    if (!chosenGlobals.has(rec.global)) continue
+    const base = baseByGlobal.get(rec.global)
+    if (rec.offset == null || name === base) continue
+    const addr = rec.offset === 0 ? ['local.get', base]
+      : ['i32.add', ['local.get', base], ['i32.const', rec.offset]]
+    aliasInits.push(['local.set', name, addr])
+  }
+  const decls = [], inits = [], cachedLoads = new Set()
+  for (const rec of chosen) {
+    const name = fresh(), base = baseByGlobal.get(rec.global)
+    const init = rec.offset === 0 ? [rec.op, ['local.get', base]]
+      : [rec.op, `offset=${rec.offset}`, ['local.get', base]]
+    cachedLoads.add(name)
+    decls.push(['local', name, rec.type]); inits.push(['local.set', name, init])
+    for (const n of rec.nodes) { n.length = 2; n[0] = 'local.get'; n[1] = name }
+  }
+
+  // Vector kernels commonly broadcast a fixed scalar configuration cell on
+  // every helper invocation. Once the cell itself is cached above, its pure
+  // splat/conversion is invariant too; cache that v128 value rather than doing
+  // f64→f32+splat in every inner iteration.
+  const broadcasts = new Map()
+  const scanBroadcasts = (n, depth = 0) => {
+    if (!Array.isArray(n)) return
+    const d = n[0] === 'loop' ? depth + 1 : depth
+    let load = null
+    if (n[0] === 'f32x4.splat' && Array.isArray(n[1]) && n[1][0] === 'f32.demote_f64' &&
+        Array.isArray(n[1][1]) && n[1][1][0] === 'local.get' && cachedLoads.has(n[1][1][1])) load = n[1][1][1]
+    else if (n[0] === 'f64x2.splat' && Array.isArray(n[1]) && n[1][0] === 'local.get' && cachedLoads.has(n[1][1])) load = n[1][1]
+    if (load) {
+      const key = `${n[0]}|${load}`
+      let rec = broadcasts.get(key)
+      if (!rec) broadcasts.set(key, rec = { nodes: [], depth: 0, exemplar: copy(n) })
+      rec.nodes.push(n); rec.depth = Math.max(rec.depth, d)
+      return
+    }
+    for (let i = 1; i < n.length; i++) scanBroadcasts(n[i], d)
+  }
+  scanBroadcasts(fn)
+  for (const rec of broadcasts.values()) {
+    if (rec.nodes.length < 2 && rec.depth === 0) continue
+    const name = fresh()
+    decls.push(['local', name, 'v128']); inits.push(['local.set', name, rec.exemplar])
+    for (const n of rec.nodes) { n.length = 2; n[0] = 'local.get'; n[1] = name }
+  }
+
+  fn.splice(bodyStart, 0, ...decls)
+  // Explicit base/alias initialization above is self-contained, so place the
+  // cache at true function entry. Waiting for arbitrary original alias sets can
+  // put initialization after a use when an address temp is minted mid-body.
+  fn.splice(bodyStart + decls.length, 0, ...baseInits, ...aliasInits, ...inits)
+}
+
+// Turn a large, pure SIMD producer ending in
+//   out = bitselect(value, fallback, mask)
+// into a guarded suffix when `mask` is derived from state produced by an
+// earlier convergence loop. If every lane selects the fallback, none of the
+// expensive producer (normal/shadow/AO-style vector work) needs to run. Mixed
+// groups retain the exact original bitselect and lane semantics.
+export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
+  if (!Array.isArray(fn) || fn[0] !== 'func' || !hasIROp(fn, 'v128.bitselect')) return
+  const copy = n => Array.isArray(n) ? n.map(copy) : n
+  const aliases = globalBaseAliases(fn), byteLens = typedGlobalByteLengths()
+  const memoryWrites = reachableMemoryWrites?.get(fn[1]) || new Set(['*'])
+  const safeLoad = n => {
+    if (memoryWrites.has('*')) return false
+    const { global, offset, exact } = memGlobal(n, aliases)
+    const op = n[0]
+    if (!plainLoadOp(op)) return false
+    const width = op.startsWith('v128.') ? 16 : op.startsWith('f64.') || op.startsWith('i64.') ? 8
+      : op.includes('load8') ? 1 : op.includes('load16') ? 2 : 4
+    return global && exact && !memoryWrites.has(global) && Number.isInteger(offset) &&
+      offset >= 0 && offset + width <= (byteLens.get(global) ?? -1)
+  }
+  const reads = (n, out = new Set()) => {
+    if (!Array.isArray(n)) return out
+    if (n[0] === 'local.get' && typeof n[1] === 'string') out.add(n[1])
+    for (let i = 1; i < n.length; i++) reads(n[i], out)
+    return out
+  }
+  const writes = (n, out = new Set()) => {
+    if (!Array.isArray(n)) return out
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') out.add(n[1])
+    for (let i = 1; i < n.length; i++) writes(n[i], out)
+    return out
+  }
+  const nodeCount = n => Array.isArray(n) ? 1 + n.slice(1).reduce((s, x) => s + nodeCount(x), 0) : 0
+  const safeRegion = region => {
+    const defs = new Set(), refs = []
+    const scan = n => {
+      if (!Array.isArray(n)) return true
+      const op = n[0]
+      if ((op === 'block' || op === 'loop') && typeof n[1] === 'string') defs.add(n[1])
+      if ((op === 'br' || op === 'br_if') && typeof n[1] === 'string') refs.push(n[1])
+      if (op === 'call' || op === 'return_call' || op === 'call_indirect' || op === 'call_ref' ||
+          op === 'return' || op === 'unreachable' || op === 'global.set' ||
+          (typeof op === 'string' && (op === 'memory.grow' || op.startsWith('memory.') ||
+            /^(?:i32|i64)\.(?:div|rem|trunc_f)/.test(op))) ||
+          (typeof op === 'string' && (op.includes('.store') || (op.includes('.load') && !safeLoad(n))))) return false
+      for (let i = 1; i < n.length; i++) if (!scan(n[i])) return false
+      return true
+    }
+    for (const n of region) if (!scan(n)) return false
+    return refs.every(label => defs.has(label))
+  }
+  const processLoop = loop => {
+    // Work from the end so replacing one suffix cannot invalidate earlier indices.
+    for (let end = loop.length - 1; end >= 2; end--) {
+      const stmt = loop[end]
+      if (!Array.isArray(stmt) || stmt[0] !== 'local.set' || typeof stmt[1] !== 'string') continue
+      const rhs = stmt[2]
+      if (!Array.isArray(rhs) || rhs[0] !== 'v128.bitselect' || rhs.length !== 4) continue
+      const mask = rhs[3]
+      if (!Array.isArray(mask) || !/^f(?:32x4|64x2)\./.test(mask[0]) || !/(?:eq|ne|lt|le|gt|ge)$/.test(mask[0])) continue
+      // The guard evaluates the mask once before the original bitselect. A tee
+      // in the comparison would therefore write twice on the true path.
+      if (writes(mask).size) continue
+      const maskReads = reads(mask)
+      let boundary = -1
+      for (let i = 2; i < end; i++) {
+        const ws = writes(loop[i])
+        for (const name of maskReads) if (ws.has(name)) boundary = i
+      }
+      if (boundary < 2 || boundary + 1 >= end) continue
+      const start = boundary + 1, region = loop.slice(start, end + 1)
+      if (nodeCount(region) < 300 || !safeRegion(region)) continue
+      const regionWrites = new Set(); for (const n of region) writes(n, regionWrites)
+      // A suffix write observed before `start` is loop-carried into the next
+      // iteration. Skipping it would leave stale state even if no same-iteration
+      // use follows the bitselect.
+      const outsideReads = new Set(), overwritten = new Set()
+      for (let i = 2; i < start; i++) {
+        const stmtReads = reads(loop[i])
+        for (const name of stmtReads) if (!overwritten.has(name)) outsideReads.add(name)
+        // Only an unconditional top-level set definitely kills the prior
+        // iteration's value before any later read. Nested/conditional writes
+        // remain fail-closed.
+        const s = loop[i]
+        if (Array.isArray(s) && s[0] === 'local.set' && typeof s[1] === 'string') overwritten.add(s[1])
+      }
+      for (let i = end + 1; i < loop.length; i++) reads(loop[i], outsideReads)
+      let escapes = false
+      for (const name of regionWrites) if (name !== stmt[1] && outsideReads.has(name)) { escapes = true; break }
+      // The all-false arm skips the region, so its fallback must not depend on
+      // a value produced inside that region.
+      if (!escapes) for (const name of reads(rhs[2])) if (regionWrites.has(name)) { escapes = true; break }
+      if (escapes) continue
+      const guarded = ['if', ['v128.any_true', copy(mask)], ['then', ...region],
+        ['else', ['local.set', stmt[1], copy(rhs[2])]]]
+      loop.splice(start, region.length, guarded)
+      end = start
+    }
+  }
+  const walk = n => {
+    if (!Array.isArray(n)) return
+    for (let i = 1; i < n.length; i++) walk(n[i])
+    if (n[0] === 'loop') processLoop(n)
+  }
+  walk(fn)
+}
+
 /**
  * Loop-scoped complement to `hoistGlobalPtrOffset`. That pass requires the
  * WHOLE FUNCTION to be clean w.r.t. a global (no write anywhere, no
@@ -3244,6 +3692,13 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
     // iteration, the hot-loop waste audit-fixpoint.mjs flagged on dot/sum.
     foldV128Memargs(fn)
   }
+  // Preserve source-unrolled SSA scratch before propagation sinks its single
+  // definition into a local.tee. The transform is gated while it matures; when
+  // enabled, its moved invariants ride the normal LICM pass once more below.
+  if (cfg && cfg.splitScratch === true && (!cfg || cfg.hoistInvariantLoop !== false)) {
+    splitLoopPrivateScratch(fn)
+    hoistInvariantLoop(fn)
+  }
   // Forward-substitute single-use temps — AFTER the vectorizer, never before: it pattern-matches a
   // STRAIGHT-LINE `s += a[i]*2`, and folding an address/index temp out scrambles it (the typed-array
   // loop fell from a SIMD body to a scalar unroll, +231 B). For watr:false the whole pipeline is the
@@ -3256,14 +3711,12 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   // Then sink single-def RHS into first use as a tee — captures the simplify-locals slack
   // watr's use-count propagate leaves (set→tee fold, incl. effectful single-use forward).
   if (!cfg || cfg.foldSetToTee !== false) foldSetToTee(fn)
-  // SSA-split loop-private unrolled scratch, then re-run LICM to hoist the freed per-iteration
-  // invariants (rust/LLVM's free-after-unroll register hoist — the raytrace per-sphere `c_i`
-  // recompute). Its input is UNROLLED/INLINED scratch, which today only exists after watr's
-  // inlining — so pre-watr it's a no-op (raytrace stays regressed). Gated OFF (`cfg.splitScratch`,
-  // default false) until jz gains pre-watr inlining (phase-2); the logic is the migration target.
+  // A second idempotent sweep catches fresh opportunities exposed by
+  // propagation/fold-to-tee. The first sweep above does the important work
+  // while source-level SSA names are still explicit.
   if (cfg && cfg.splitScratch === true && (!cfg || cfg.hoistInvariantLoop !== false)) {
     splitLoopPrivateScratch(fn)
-    for (let k = 0; k < 4; k++) hoistInvariantLoop(fn)
+    hoistInvariantLoop(fn)
   }
   // Const-fn-array dispatch devirt: emit tagged the call_indirect of
   // `constOps[idx](args)` (the decl's candidate set only fills when module init

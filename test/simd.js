@@ -2103,12 +2103,16 @@ const ESC_SCALAR = { optimize: { level: 'speed', vectorizeLaneLocal: false } }
 const escRun = (src) => {
   const s = runVec(src, ESC_SCALAR), d = runVec(src, ESC_VEC)
   s.render(); d.render()
-  return [s.cs() >>> 0, d.cs() >>> 0, /v128\.bitselect/.test(wat(src, ESC_VEC))]
+  return [s.cs() >>> 0, d.cs() >>> 0, /f64x2\./.test(wat(src, ESC_VEC))]
 }
 
 test('escape-time f64x2 - mandelbrot bit-exact + vectorized', () => {
-  const [sc, dc, vec] = escRun(escKern(64,64,256,-2.0,2.5/64,-1.25,2.5/64, MANDEL))
-  is(dc, sc); ok(vec, 'SIMD lockstep fired')
+  const src = escKern(64,64,256,-2.0,2.5/64,-1.25,2.5/64, MANDEL)
+  const [sc, dc, vec] = escRun(src)
+  is(dc, sc); ok(vec, 'SIMD escape lift fired')
+  const w = wat(src, ESC_VEC)
+  ok(/v128\.any_true/.test(w) && !/v128\.bitselect/.test(w),
+    'pre-update escape uses break-on-first SIMD, not per-iteration lane freezing')
 })
 
 test('escape-time f64x2 - odd width falls to scalar tail (bit-exact)', () => {
@@ -2365,7 +2369,9 @@ test('escape-time f64x2 - per-pixel threshold derived from a c-var', () => {
     const s = runVec(src, ESC_SCALAR), d = runVec(src, ESC_VEC)
     s.render(); d.render()
     is(d.cs() >>> 0, s.cs() >>> 0, `bail=${bail}`)
-    ok(/v128\.bitselect/.test(wat(src, ESC_VEC)), `bail=${bail} vectorized`)
+    const w = wat(src, ESC_VEC)
+    ok(/f64x2\./.test(w), `bail=${bail} vectorized`)
+    ok(!/v128\.bitselect/.test(w), `bail=${bail} pre-update escape takes the fast path`)
   }
 })
 

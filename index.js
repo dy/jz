@@ -53,7 +53,11 @@ import { preEval } from './src/prepare/pre-eval.js'
 import compile from './src/compile/index.js'
 import { resetProgramFactsCache } from './src/compile/program-facts.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
-import { collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames, resolveOptimize, SIMD_PINNED } from './src/optimize/index.js'
+import {
+  collectReachableGlobalWrites, collectReachableMemoryWrites,
+  hoistGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix, hasIROp, stablePtrGlobalNames,
+  resolveOptimize, SIMD_PINNED,
+} from './src/optimize/index.js'
 import { VAL } from './src/reps.js'
 import jzify from './jzify/index.js'
 import { T } from './src/ast.js'
@@ -752,28 +756,34 @@ const jzCompileInner = (code, opts = {}) => {
     }
   }
   const optimized = cfg.watr ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
-  // Stable-pointee module globals: resolve the __ptr_offset once per function. Never-forwarding
-  // kinds — every PTR tag outside __ptr_offset's forwarding set {ARRAY, HASH, SET, MAP} — give the
-  // same offset for the same bits, so the snapshot only needs the global's VALUE stable through the
-  // function: the reachable-writes call graph proves that precisely. This is the ONE jz pass still
-  // touching WAT after watr; it exists because watr has no stable-global-offset hoist of its own
-  // (the module-global DSP programs it serves — rfft, diffusion — run with watr auto-OFF anyway).
-  // TODO(phase-2): migrate into watr so the "watr is the sole optimizer" invariant holds fully.
-  if (cfg.hoistGlobalPtrOffset !== false) {
-    const stableGlobals = stablePtrGlobalNames()
+  // Narrow whole-module proof repairs may consume the final address/control shape watr exposes:
+  // stable pointer offsets, immutable fixed typed cells, and all-false masked SIMD suffixes. These
+  // are idempotent, fail-closed module rewrites — not a second generic optimization pipeline.
+  if (cfg.hoistGlobalPtrOffset !== false || cfg.hoistGlobalConstLoads !== false || cfg.maskedSuffixGuard !== false) {
+    const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
+    const stableGlobals = cfg.hoistGlobalPtrOffset !== false ? stablePtrGlobalNames() : new Set()
+    let reach = null
     if (stableGlobals.size) {
-      const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
-      const reach = collectReachableGlobalWrites(funcs)
+      reach = collectReachableGlobalWrites(funcs)
       for (const node of funcs) hoistGlobalPtrOffset(node, stableGlobals, reach)
     }
+    const wantLoads = cfg.hoistGlobalConstLoads !== false && !!ctx.scope.globalTypedLen?.size
+    const mayHaveMasks = cfg.maskedSuffixGuard !== false && funcs.some(fn =>
+      fn.some(node => Array.isArray(node) && node[0] === 'local' && node[2] === 'v128'))
+    const wantMasks = mayHaveMasks && hasIROp(funcs, 'v128.bitselect')
+    if (wantLoads || wantMasks) {
+      if (wantLoads && !reach) reach = collectReachableGlobalWrites(funcs)
+      const memoryWrites = collectReachableMemoryWrites(funcs)
+      for (const node of funcs) {
+        if (wantLoads) hoistStableGlobalConstLoads(node, memoryWrites, reach)
+        if (wantMasks) guardMaskedVectorSuffix(node, memoryWrites)
+      }
+    }
   }
-  // NO post-watr optimizer. jz does ALL lowering — including auto-vectorization — BEFORE watr
-  // (src/wat/assemble.js optimizeModule → optimizeFunc 'pre'); watr is the sole optimizer and runs
-  // exactly ONCE, as a fixpoint. Re-running jz's leaf passes on watr's output (the former 'post'
-  // phase) both violated that architecture AND miscompiled: its propagate/fold sweep dropped a
-  // reassigned-param `local.tee` write and corrupted the divergent-escape SIMD frame (mandelbrot).
-  // The f64x2 stdlib mirrors the pre-watr vectorizer injects are appended in the emit phase
-  // (optimizeModule's appendLateStdlib); nothing post-watr needs to touch the module.
+  // NO post-watr generic optimizer. jz does all lowering — including auto-vectorization — before
+  // watr (src/wat/assemble.js optimizeModule → optimizeFunc); watr is the sole generic fixpoint and
+  // runs exactly once. Re-running jz's leaf pipeline here dropped a reassigned-param local.tee and
+  // corrupted divergent-escape SIMD. The proof repairs above are the deliberately narrow exception.
   // Pre-eval tier 3 — module-init snapshotting (src/snapshot.js): run __start once
   // NOW, bake the post-init heap image + global values into the artifact, delete
   // __start. Opt-in (optimize.snapshotInit); declined cleanly (dynamically-proven

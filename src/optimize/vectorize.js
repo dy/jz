@@ -4969,10 +4969,15 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
   // pixels (both lanes to MAX) run clean 2× with zero mask overhead — exactly where the masked
   // loop bled its speedup. Other shapes (escape-at-top, body after the break) take the masked path.
   // escape-at-MID: `…updates…; if (|z|²>T) break` (burning-ship). escape-at-TOP: the escape gates
-  // the loop head — a `while (|z|²<T)` (mandelbrot) or the second half of a compound `while (it<MAX
-  // && |z|²<T)` (Julia). Both take the fast path; only the tail's `it` resume point differs.
+  // the loop head — either syntactically in the while condition, or after only temporary
+  // computations such as `x2=zx*zx; y2=zy*zy` and before every carried-state update. The latter
+  // is canonical `while(limit){ squares; if(escape) break; update }`. Both take the fast path;
+  // only a true post-update break advances `it` before the lagging-lane tail resumes.
   const escAtMid = !compoundTop && kMid === 'escape' && midIdx === ibody.length - 1
-  const escAtTop = compoundTop || kTop === 'escape'
+  const escBeforeCarry = !compoundTop && kMid === 'escape' && midIdx >= 0 &&
+    ibody.slice(0, midIdx).every(s => temp.has(s[1])) &&
+    ibody.slice(midIdx + 1).some(s => carried.has(s[1]))
+  const escAtTop = compoundTop || kTop === 'escape' || escBeforeCarry
   const fastPath = escAtMid || escAtTop
   let simdInner, epiLane, postLoop = []
 

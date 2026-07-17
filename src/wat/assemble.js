@@ -41,7 +41,11 @@ export const clearStdlibParseCache = () => { stdlibParseCache = new Map() }
 import { T } from '../ast.js'
 import { analyzeValTypes, analyzeBody } from '../compile/analyze.js'
 import { VAL } from '../reps.js'
-import { optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, stablePtrGlobalNames, hoistConstantPool, specializeMkptr, arenaRewindModule, buildPureFuncMap, inlinePureFnsInFn } from '../optimize/index.js'
+import {
+  optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, collectReachableMemoryWrites,
+  hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix, hasIROp, stablePtrGlobalNames,
+  hoistConstantPool, specializeMkptr, arenaRewindModule, buildPureFuncMap, inlinePureFnsInFn,
+} from '../optimize/index.js'
 import { emit, emitVoid } from '../compile/emit.js'
 import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart, extractF64Bits, asF64, appendStaticSlots } from '../ir.js'
 import { staticArrayPtr } from '../../module/array.js'
@@ -1023,6 +1027,21 @@ export function optimizeModule(sec, profiler) {
     ctx.scope.dvArmFns = new Map(allFuncs.filter(f => Array.isArray(f) && candNames.has(f[1])).map(f => [f[1], f]))
   }
   t('optimizeFuncs', () => { for (const s of allFuncs) optimizeFunc(s, cfg, globalTypesMap, volatileGlobals, reachableWrites) })
+  if (!cfg || cfg.hoistGlobalConstLoads !== false || cfg.maskedSuffixGuard !== false) t('hoistGlobalConstLoads', () => {
+    const wantLoads = cfg.hoistGlobalConstLoads !== false && !!ctx.scope.globalTypedLen?.size
+    // The guarded form necessarily writes a declared v128 local. Keep scalar
+    // programs on the old allocation-free path; only SIMD functions pay for
+    // the DAG-safe deep opcode probe.
+    const mayHaveMasks = cfg.maskedSuffixGuard !== false && allFuncs.some(fn =>
+      fn.some(n => Array.isArray(n) && n[0] === 'local' && n[2] === 'v128'))
+    const wantMasks = mayHaveMasks && hasIROp(allFuncs, 'v128.bitselect')
+    if (!wantLoads && !wantMasks) return
+    const memoryWrites = collectReachableMemoryWrites(allFuncs)
+    for (const s of allFuncs) {
+      if (wantLoads) hoistStableGlobalConstLoads(s, memoryWrites, reachableWrites)
+      if (wantMasks) guardMaskedVectorSuffix(s, memoryWrites)
+    }
+  })
   // The lane vectorizer can inject f64x2 stdlib mirrors ($math.log_v, $math.cos2, …)
   // absent from the already-pulled+treeshaken module. Append any now-referenced mirror
   // body to sec.stdlib — the pre-watr analogue of index.js's post-watr appendLateStdlib.

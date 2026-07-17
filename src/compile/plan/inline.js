@@ -37,6 +37,40 @@ import {
 // Returns { prefix, value } where prefix is the substituted body statements
 // (excluding any trailing `return X`), and value is the substituted return
 // expression — null if void or no trailing return value.
+// Preserve a call-free leaf's eager-boolean optimization when source inlining
+// moves it into a caller containing unrelated calls. Pure scalar comparison
+// trees are non-trapping and canonical 0/1, so &&/|| can become &/| in the
+// cloned AST without changing evaluation or value semantics.
+const BOOL_LEAF_OPS = new Set(['>', '<', '>=', '<=', '==', '!=', '===', '!=='])
+const PURE_SCALAR_OPS = new Set([
+  'u-', 'u+', '~', '+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>',
+])
+const pureScalarExpr = n => {
+  if (typeof n === 'number' || typeof n === 'string') return true
+  if (!Array.isArray(n)) return false
+  if (n[0] == null) return true
+  return PURE_SCALAR_OPS.has(n[0]) && n.slice(1).every(pureScalarExpr)
+}
+const pureCanonicalBool = n => Array.isArray(n) && (
+  (BOOL_LEAF_OPS.has(n[0]) && pureScalarExpr(n[1]) && pureScalarExpr(n[2])) ||
+  (n[0] === '!' && pureCanonicalBool(n[1])) ||
+  ((n[0] === '&&' || n[0] === '||') && pureCanonicalBool(n[1]) && pureCanonicalBool(n[2])))
+const eagerCallFreeBooleans = n => {
+  if (!Array.isArray(n) || n[0] === '=>') return n
+  // Encode leaf provenance in an internal AST operator rather than an array
+  // side-property: subsequent plan transforms clone arrays but preserve op
+  // strings. Emit still proves both lowered operands pure before going eager,
+  // so generic parameters that need coercion retain short-circuit semantics.
+  if ((n[0] === '&&' || n[0] === '||') && pureCanonicalBool(n)) {
+    for (let i = 1; i < n.length; i++) eagerCallFreeBooleans(n[i])
+    n[0] = n[0] === '&&' ? '__eager&&' : '__eager||'
+    return n
+  }
+  for (let i = 1; i < n.length; i++) eagerCallFreeBooleans(n[i])
+  return n
+}
+const bodyHasCall = body => some(body, n => n[0] === '()' || n[0] === 'new')
+
 const inlinedBody = (func, args) => {
   const params = func.sig.params
   if (args.length !== params.length) return null
@@ -67,14 +101,15 @@ const inlinedBody = (func, args) => {
   for (const name of locals) rename.set(name, `${T}inl${ctx.func.uniq++}_${name}`)
 
   const stmts = blockStmts(func.body)
+  const mark = bodyHasCall(func.body) ? n => n : eagerCallFreeBooleans
   // Expression-bodied arrow `(c) => expr`: no statement block; the whole body
   // *is* the return value. Treat as zero-prefix + value.
-  if (!stmts) return { prefix: argPrefix, value: cloneWithSubst(func.body, subst, rename) }
+  if (!stmts) return { prefix: argPrefix, value: mark(cloneWithSubst(func.body, subst, rename)) }
   const last = stmts.length ? stmts[stmts.length - 1] : null
   const isTrailingReturn = Array.isArray(last) && last[0] === 'return'
   const prefixSrc = isTrailingReturn ? stmts.slice(0, -1) : stmts
-  const prefix = prefixSrc.map(stmt => cloneWithSubst(stmt, subst, rename))
-  const value = isTrailingReturn && last.length > 1 ? cloneWithSubst(last[1], subst, rename) : null
+  const prefix = prefixSrc.map(stmt => mark(cloneWithSubst(stmt, subst, rename)))
+  const value = isTrailingReturn && last.length > 1 ? mark(cloneWithSubst(last[1], subst, rename)) : null
   return { prefix: argPrefix.length ? [...argPrefix, ...prefix] : prefix, value }
 }
 
@@ -130,12 +165,23 @@ const PURE_FLATTEN_OPS = new Set([
   // into its multi-call caller `perlin` — `lerp(grad(a), grad(b), u)` then collapses end to end.
   '<', '<=', '>', '>=', '==', '!=', '===', '!==', '&&', '||', '!', '~', '?:',
 ])
+const pureSIMDCall = n => Array.isArray(n) && n[0] === '()' &&
+  typeof n[1] === 'string' && /^(?:v128|[ifu](?:8|16|32|64)x\d+)\./.test(n[1]) &&
+  !/\.(?:load|store)/.test(n[1])
 const pureFlattenExpr = (n) => {
   if (typeof n === 'number' || typeof n === 'string') return true  // literal or ident
   if (!Array.isArray(n)) return false
   const op = n[0]
   if (op == null) return true                                       // boxed literal [null, v]
   if (op === '()' && n.length === 2) return pureFlattenExpr(n[1])   // grouping parens
+  // Native SIMD constructors/arithmetic are effect-free and non-trapping. Let
+  // expression-bodied v128 wrappers flatten complex SIMD arguments just like
+  // scalar arithmetic; this enables the normal statement inliner to reach a
+  // larger block-bodied helper nested underneath (sdf → sdRep).
+  if (pureSIMDCall(n)) {
+    const args = callArgs(n)
+    return !!args && args.every(pureFlattenExpr)
+  }
   return PURE_FLATTEN_OPS.has(op) && n.slice(1).every(pureFlattenExpr)
 }
 const substIdents = (n, subst) => {
@@ -153,7 +199,7 @@ const flattenPrefix = (shape) => {
     subst.set(d[1], substIdents(d[2], subst))  // earlier decls feed later RHSs
   }
   const value = substIdents(shape.value, subst)
-  if (nodeSize(value) > 100) return null  // duplication blow-up guard
+  if (nodeSize(value) > 200) return null  // duplication blow-up guard
   return { prefix: [], value }
 }
 
@@ -296,7 +342,7 @@ const OPTIONAL_CHAIN = new Set(['?.', '?.[]', '?.()'])
 const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '**=', '&&=', '||=', '??=', '++', '--'])
 // Does evaluating this expression have an observable side effect (a call or assignment)?
 const containsEffect = (n) => Array.isArray(n) && n[0] !== '=>' &&
-  (n[0] === '()' || n[0] === '?.()' || ASSIGN_OPS.has(n[0]) || n.slice(1).some(containsEffect))
+  ((n[0] === '()' && !pureSIMDCall(n)) || n[0] === '?.()' || ASSIGN_OPS.has(n[0]) || n.slice(1).some(containsEffect))
 
 // Hoist an unconditionally-evaluated NESTED call to a block-body candidate out to a
 // preceding `const __h = call(...)` temp. inlineInStmt folds block-body candidates only at
@@ -334,7 +380,7 @@ const hoistNestedCalls = (body, blockNames) => {
     if (SHORT_CIRCUIT.has(n[0]))
       return [n[0], hExpr(n[1], pre, cond, eff), ...n.slice(2).map(c => hExpr(c, pre, true, eff))]
     const out = [n[0], ...n.slice(1).map(c => hExpr(c, pre, cond, eff))]
-    if (n[0] === '()' || ASSIGN_OPS.has(n[0])) eff.seen = true  // a call/assign left in place is an effect
+    if ((n[0] === '()' && !pureSIMDCall(n)) || ASSIGN_OPS.has(n[0])) eff.seen = true  // an effectful call/assign left in place is an effect
     return out
   }
   // A RHS that is DIRECTLY a candidate call is already folded by inlineInStmt's
@@ -504,8 +550,24 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       // per-cell tax on Node ≤ 22 — and still saves call setup on newer tiers.
       // The in-loop cap is generous because the gate above bounds non-tiny leaves
       // to ≤2 sites, so the spliced duplication is at most ~2× a bounded body.
-      const allSitesInLoop = sites.every(site =>
-        site.callerFunc?.body && containsNode(site.callerFunc.body, site.node, false))
+      const transitiveHotSite = (site, seen = new Set()) => {
+        if (site.callerFunc?.body && containsNode(site.callerFunc.body, site.node, false)) return true
+        const callerFunc = site.callerFunc
+        const caller = callerFunc?.name
+        // A tiny non-escaping wrapper may not be a candidate *yet* because it
+        // calls the leaf currently being considered (sdRep ← sdf). Looking
+        // through it breaks that harmless caller/callee collection cycle and
+        // recognizes the same transitive hot path the next fixpoint would.
+        const prospectiveLeaf = callerFunc && !callerFunc.exported &&
+          !programFacts.valueUsed.has(caller) && loopDepth(callerFunc.body, 0) === 0 &&
+          nodeSize(callerFunc.body) <= 48
+        if (!caller || (!candidates.has(caller) && !prospectiveLeaf) || seen.has(caller)) return false
+        const callerSites = sitesByCallee.get(caller)
+        if (!callerSites?.length) return false
+        const next = new Set(seen); next.add(caller)
+        return callerSites.every(parent => transitiveHotSite(parent, next))
+      }
+      const allSitesInLoop = sites.every(site => transitiveHotSite(site))
       // Non-in-loop cap is 40 (not 30) so a small leaf called from a straight-line but
       // transitively-hot caller still inlines (noise's grad is called from perlin, which has
       // no loop of its own but is itself the per-pixel kernel). Still tightly bounded.

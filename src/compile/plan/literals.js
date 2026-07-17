@@ -38,6 +38,7 @@ import { includeModule } from '../../autoload.js'
 import { analyzeBody, invalidateLocalsCache } from '../analyze.js'
 import {
   isSimpleArg, fixedScalarTypedArray, fixedTypedArraysInBody, maxScalarTypedArrayLen, freshTypedArrayLocals,
+  collectBindings,
 } from './common.js'
 
 // === Loop unrolling & scalarization ===
@@ -434,8 +435,16 @@ const unrollTypedArrayLoops = (node, names) => {
     if (trip && containsTypedArrayAccess(node[4], names) && scalarTypedLoopBudget(node[4]) * trip.end <= maxScalarTypedNestedUnroll() &&
         !hasControlTransfer(node[4]) && !containsDeclOf(node[4], trip.name) && !isReassigned(node[4], trip.name)) {
       const out = [';']
+      const bindings = new Set()
+      if (ctx.transform.optimize?.splitScratch === true) collectBindings(node[4], bindings)
       for (let i = 0; i < trip.end; i++) {
-        const cloned = cloneWithSubst(node[4], new Map([[trip.name, [null, i]]]), new Map())
+        // A block-scoped let/const is a distinct binding on every source-loop
+        // iteration. Keep that identity in the expanded AST so later IR LICM
+        // sees one SSA-like definition per copy instead of a multi-def scratch
+        // local shared by all copies (the same shape LLVM gets after unroll).
+        const rename = new Map()
+        for (const b of bindings) rename.set(b, `${T}ul${ctx.func.uniq++}_${b}`)
+        const cloned = cloneWithSubst(node[4], new Map([[trip.name, [null, i]]]), rename)
         const r = unrollTypedArrayLoops(cloned, names)
         out.push(...stmtList(r.node))
       }

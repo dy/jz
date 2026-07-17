@@ -830,6 +830,45 @@ test('nested small const-count typed-array loops auto-unroll', () => {
   ok(!/\(loop\b/.test(wat), 'known typed-array nested loops should auto-unroll')
 })
 
+test('unrolled scalar scratch keeps per-copy SSA and hoists invariant compounds', () => {
+  if (belowOpt(3) || onKernel()) return
+  // Any small typed-index loop nested in a larger loop has this shape: each
+  // unrolled copy defines scalar scratch from invariant table entries, then a
+  // varying expression consumes it. Sharing one wasm local across copies makes
+  // every scratch multi-def and blocks LICM; fresh per-copy bindings let the
+  // complete `ox² + oy² - r²` compound move before the outer loop.
+  const src = `
+    const kernel = (out, x, y, rr, n) => {
+      for (let p = 0; p < n; p++) {
+        let sum = 0.0
+        for (let s = 0; s < 2; s++) {
+          const ox = -x[s], oy = -y[s]
+          const c = ox * ox + oy * oy - rr[s] * rr[s]
+          const b = ox * p + oy
+          sum += b * b - c
+        }
+        out[p] = sum
+      }
+    }
+    export let main = (n) => {
+      const out = new Float64Array(64), x = new Float64Array(2)
+      const y = new Float64Array(2), rr = new Float64Array(2)
+      x[0] = 1.25; x[1] = 2.5; y[0] = 3.5; y[1] = 4.75
+      rr[0] = 0.5; rr[1] = 0.75
+      kernel(out, x, y, rr, n)
+      return out[(n - 1) & 63]
+    }`
+  const opts = { level: 'speed', watr: false, sourceInline: false, versionTypedBounds: false }
+  const onTree = parse(src, { ...opts, splitScratch: true })
+  const offTree = parse(src, { ...opts, splitScratch: false })
+  const muls = tree => loopCount(findFunc(tree, '$kernel'), n => n[0] === 'f64.mul')
+  ok(muls(onTree) < muls(offTree), 'invariant per-copy products leave the outer loop')
+
+  const on = jz(src, { optimize: { ...opts, splitScratch: true } }).exports.main
+  const off = jz(src, { optimize: { ...opts, splitScratch: false } }).exports.main
+  for (const n of [0, 1, 7, 64]) is(on(n), off(n), `SSA-LICM on===off at n=${n}`)
+})
+
 test('fixed Float64Array locals scalar-replace static slots', () => {
   const src = `
     export const main = () => {
@@ -3606,6 +3645,83 @@ test('pure boolean chains lower eagerly while effectful RHS stays short-circuite
   const f = run(effect, { optimize: 'speed' }).f
   is(f(0), 0, 'false lhs does not evaluate effectful rhs')
   is(f(1), 11, 'true lhs evaluates effectful rhs once')
+})
+
+test('source-inlined call-free boolean leaves stay eager inside call-bearing callers', () => {
+  const src = `
+    const leaf=(r,g,b,a)=>{return r===g&&g===b&&b===a&&a>0}
+    export let f=m=>{let r=2|0,g=2|0,b=m|0,a=2|0;const z=Math.sin(m)
+      let s=0,i=0;while(i<2){s+=leaf(r,g,b,a)|0;i++}return s+(z>2?1:0)}`
+  const tree = parse(src, { level: 'speed', watr: false })
+  const f = findFunc(tree, '$f')
+  let ands = 0, leafCalls = 0
+  walk(f, n => { if (n[0] === 'i32.and') ands++; if (n[0] === 'call' && n[1] === '$leaf') leafCalls++ })
+  is(leafCalls, 0, 'leaf is source-inlined')
+  ok(ands >= 3, 'its pure comparison chain remains branchless after entering a call-bearing body')
+  const ex = run(src, { optimize: 'speed' }).f
+  is(ex(2), 2, 'true chain exact')
+  is(ex(3), 0, 'false chain exact')
+})
+
+test('fixed global typed cells cache across loops but reachable mutation fails closed', () => {
+  const stable = `
+    let cfg=new Float64Array(2),out=new Float64Array(64);cfg[0]=3;cfg[1]=4
+    export let f=n=>{let s=0;for(let i=0;i<n;i++){s+=cfg[0]*cfg[1];out[i&63]=s}return s}`
+  const stableTree = parse(stable, { level: 'speed' })
+  is(loopCount(findFunc(stableTree, '$f'), n => n[0] === 'f64.load'), 0,
+    'constant cfg cells load once at entry, past unrelated output stores')
+  is(run(stable, { optimize: 'speed' }).f(7), 84, 'cached cells exact')
+
+  const mutating = `
+    let cfg=new Float64Array(1);cfg[0]=2
+    const bump=()=>{cfg[0]=cfg[0]+1}
+    export let f=n=>{let s=0;for(let i=0;i<n;i++){s+=cfg[0];bump()}return s}`
+  const mutTree = parse(mutating, { level: 'speed' })
+  ok(loopCount(findFunc(mutTree, '$f'), n => n[0] === 'f64.load') >= 1,
+    'a reachable element write keeps the load in the loop')
+  is(run(mutating, { optimize: 'speed' }).f(4), 14, 'mutating fallback exact')
+
+  // Replacing a first-load local.tee must not leave cache initializers reading
+  // the wasm local's default zero before the typed-array base is decoded.
+  const nestedBase = jz(`
+    let cfg=new Float64Array(2);cfg[1]=3.25
+    export let f=n=>{let s=0,i=0;while(i<n){s+=cfg[1];i++}return s}
+  `, { optimize: 'speed' }).exports
+  is(nestedBase.f(4), 13, 'nested first-load base initializes before its cached cell')
+
+  const reassigned = jz(`
+    let cfg=new Float64Array(1);cfg[0]=2
+    let swap=()=>{cfg=new Float64Array(1);cfg[0]=7}
+    export let f=n=>{let s=cfg[0];swap();let i=0;while(i<n){s+=cfg[0];i++}return s}
+  `, { optimize: 'speed' }).exports
+  is(reassigned.f(2), 16, 'reachable global pointer reassignment prevents stale caching')
+})
+
+test('all-false SIMD masks guard large pure producer suffixes', () => {
+  if (onKernel()) return
+  const heavy = Array.from({ length: 72 }, () => 'x=f32x4.add(x,c)').join(';')
+  const src = `export let f=(n,hit)=>{let sum=0;let i=0;while(i<n){
+    let res=f32x4.splat(-1),k=0;while(k<1){res=f32x4.splat(hit);k++}
+    let c=f32x4.splat(0.125),x=f32x4.splat(i);${heavy};
+    let v=v128.bitselect(x,f32x4.splat(0),f32x4.ge(res,f32x4.splat(0)))
+    sum+=f32x4.lane(v,0);i++}return sum}`
+  const onTree = parse(src, { level: 'speed' })
+  const fn = findFunc(onTree, '$f') || findFunc(onTree, '$f$exp')
+  ok(loopCount(fn, n => n[0] === 'v128.any_true') >= 1,
+    'one all-lanes guard dominates the expensive suffix')
+  const on = jz(src, { optimize: 'speed' }).exports.f
+  const off = jz(src, { optimize: { level: 'speed', maskedSuffixGuard: false } }).exports.f
+  for (const args of [[0, -1], [3, -1], [1, 1], [4, 1]])
+    is(on(...args), off(...args), `masked suffix on===off ${args}`)
+
+  const dependentFallback = `export let f=(n,hit)=>{let sum=0,i=0;while(i<n){
+    let res=f32x4.splat(-1),k=0;while(k<1){res=f32x4.splat(hit);k++}
+    let c=f32x4.splat(.125),x=f32x4.splat(i);${heavy};let fb=f32x4.add(x,c)
+    let v=v128.bitselect(x,fb,f32x4.ge(res,f32x4.splat(0)))
+    sum+=f32x4.lane(v,0);i++}return sum}`
+  const depTree = parse(dependentFallback, { level: 'speed', watr: false })
+  is(loopCount(findFunc(depTree, '$f'), n => n[0] === 'v128.any_true'), 0,
+    'a fallback produced inside the skipped suffix prevents guarding')
 })
 
 test('typed postfix index keeps the old index without add/sub cancellation', () => {

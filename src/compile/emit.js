@@ -397,7 +397,9 @@ const CMP_SET = new Set(['>', '<', '>=', '<=', '==', '!=', '!'])
 const isCmp = n => Array.isArray(n) && CMP_SET.has(n[0])
 const BOOL_EXPR_OPS = new Set(['>', '<', '>=', '<=', '==', '!=', '===', '!==', '!'])
 const isCanonicalBoolExpr = n => Array.isArray(n) &&
-  (BOOL_EXPR_OPS.has(n[0]) || ((n[0] === '&&' || n[0] === '||') && isCanonicalBoolExpr(n[1]) && isCanonicalBoolExpr(n[2])))
+  (BOOL_EXPR_OPS.has(n[0]) ||
+    ((n[0] === '&&' || n[0] === '||' || n[0] === '__eager&&' || n[0] === '__eager||') &&
+      isCanonicalBoolExpr(n[1]) && isCanonicalBoolExpr(n[2])))
 // Eager boolean chains win in leaf numeric kernels but regress orchestration/
 // compiler code whose first guard usually rejects before a costly RHS. Keep
 // the latency trade in call-free bodies; nested closures are separate bodies.
@@ -714,6 +716,60 @@ function fuseRangeCheckOr(a, b) {
 // predicateRefinement, mergeRefinement, withRefinements). emit.js imports them
 // from there — see the import block at the top of this file.
 
+// Preserve the per-iteration SSA shape of block-scoped scalar scratch when a
+// small loop is expanded. Reusing one wasm local for every unrolled `const x`
+// makes it multi-def; LICM must then conservatively leave expressions such as
+// `x*x + y*y` in an enclosing hot loop. Native optimizers retain one SSA value
+// per source iteration and hoist each expression. Since closures are rejected
+// by unrollSmallConstFor, a loop-body let/const binding has no observable
+// identity across iterations and each emitted copy may use a fresh wasm local.
+//
+// Rename the already-emitted IR rather than the AST: analysis and all typed/
+// schema proofs still run under the original binding, while the final scalar
+// IR exposes independent defs to LICM. Pointer-shaped locals are excluded —
+// their name can key side metadata (flat slots/schema/typed ctor); this pass is
+// specifically for numeric/boolean scratch.
+function freshenUnrolledScalarBindings(body, ir) {
+  if (ctx.transform.optimize?.splitScratch !== true) return ir
+  const names = new Set()
+  const collect = n => {
+    if (!Array.isArray(n) || n[0] === '=>') return
+    if (n[0] === 'let' || n[0] === 'const') {
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        const name = Array.isArray(d) && d[0] === '=' ? d[1] : d
+        if (typeof name === 'string') names.add(name)
+      }
+    }
+    for (let i = 1; i < n.length; i++) collect(n[i])
+  }
+  collect(body)
+  if (!names.size) return ir
+
+  const rename = new Map()
+  for (const name of names) {
+    const type = ctx.func.locals.get(name)
+    if (type !== 'i32' && type !== 'f64' && type !== 'i64' && type !== 'f32') continue
+    if (ctx.func.boxed?.has(name) || ctx.func.flatObjects?.has(name) ||
+        ctx.types.typedElem?.has(name)) continue
+    const rep = ctx.func.localReps?.get(name)
+    if (rep?.val != null && rep.val !== VAL.NUMBER && rep.val !== VAL.BOOL) continue
+    const fresh = `${T}us${ctx.func.uniq++}_${name}`
+    ctx.func.locals.set(fresh, type)
+    rename.set(`$${name}`, `$${fresh}`)
+  }
+  if (!rename.size) return ir
+
+  const rewrite = n => {
+    if (!Array.isArray(n)) return
+    if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && rename.has(n[1]))
+      n[1] = rename.get(n[1])
+    for (let i = 1; i < n.length; i++) rewrite(n[i])
+  }
+  for (const n of ir) rewrite(n)
+  return ir
+}
+
 function unrollSmallConstFor(init, cond, step, body) {
   // Keep the overwhelmingly-common `for(i=0;i<N;i++)` path allocation-free;
   // only strided/nonzero-start control loops pay for an explicit value list.
@@ -761,8 +817,12 @@ function unrollSmallConstFor(init, cond, step, body) {
   if (isReassigned(body, name)) return null
 
   const out = []
-  if (values) for (const value of values) out.push(...emitVoid(cloneWithSubst(body, name, value)))
-  else for (let i = 0; i < simpleEnd; i++) out.push(...emitVoid(cloneWithSubst(body, name, i)))
+  const emitCopy = value => {
+    const copy = cloneWithSubst(body, name, value)
+    out.push(...freshenUnrolledScalarBindings(copy, emitVoid(copy)))
+  }
+  if (values) for (const value of values) emitCopy(value)
+  else for (let i = 0; i < simpleEnd; i++) emitCopy(i)
   return out
 }
 
@@ -943,14 +1003,33 @@ function withFinallyStack(stack, fn) {
 export function toBool(node) {
   const op = Array.isArray(node) ? node[0] : null
   if (CMP_SET.has(op)) return emit(node)
+  if (op === '__eager&&' || op === '__eager||') {
+    const la = toBool(node[1]), lb = toBool(node[2])
+    if (isCanonicalBoolExpr(node[1]) && isCanonicalBoolExpr(node[2]) && isPureIR(la) && isPureIR(lb))
+      return typed([op === '__eager&&' ? 'i32.and' : 'i32.or', la, lb], 'i32')
+    return op === '__eager&&'
+      ? typed(['if', ['result', 'i32'], la, ['then', lb], ['else', ['i32.const', 0]]], 'i32')
+      : typed(['if', ['result', 'i32'], la, ['then', ['i32.const', 1]], ['else', lb]], 'i32')
+  }
   if (op === '&&') {
     const la = toBool(node[1]), lb = toBool(node[2])
-    if (isCmp(node[1]) && isCmp(node[2])) return typed(['i32.and', la, lb], 'i32')
+    // `if (a && b)` reaches toBool directly (not the value-producing `&&`
+    // emitter below), so apply the same call-free canonical-boolean rule here.
+    // Requiring BOTH emitted trees pure makes a nested comparison chain fold
+    // recursively to i32.and while checked/raw memory reads and any effect keep
+    // short-circuit control. This closes the codec predicate shape where the
+    // old immediate-isCmp check handled only the first pair, then rebuilt an
+    // if ladder for every remaining comparison.
+    if ((isCmp(node[1]) && isCmp(node[2])) ||
+        (boolEagerBody() && isCanonicalBoolExpr(node[1]) && isCanonicalBoolExpr(node[2]) &&
+          isPureIR(la) && isPureIR(lb))) return typed(['i32.and', la, lb], 'i32')
     return typed(['if', ['result', 'i32'], la, ['then', lb], ['else', ['i32.const', 0]]], 'i32')
   }
   if (op === '||') {
     const la = toBool(node[1]), lb = toBool(node[2])
-    if (isCmp(node[1]) && isCmp(node[2])) return typed(['i32.or', la, lb], 'i32')
+    if ((isCmp(node[1]) && isCmp(node[2])) ||
+        (boolEagerBody() && isCanonicalBoolExpr(node[1]) && isCanonicalBoolExpr(node[2]) &&
+          isPureIR(la) && isPureIR(lb))) return typed(['i32.or', la, lb], 'i32')
     return typed(['if', ['result', 'i32'], la, ['then', ['i32.const', 1]], ['else', lb]], 'i32')
   }
   return toBoolFromEmitted(emit(node))
@@ -4885,6 +4964,7 @@ export function emit(node, expect) {
   if (!Array.isArray(node)) return typed(['f64.const', 0], 'f64')
 
   const [op, ...args] = node
+  if (op === '__eager&&' || op === '__eager||') return toBool(node)
   // WASM IR passthrough: internally-generated IR nodes (from statement flattening) pass through
   if (typeof op === 'string' && !ctx.core.emit[op] && (op.includes('.') || WASM_OPS.has(op))) return node
 
