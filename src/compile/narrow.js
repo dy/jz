@@ -24,7 +24,7 @@ import {
   paramFactsOf, ensureParamRep, mergeParamFact,
 } from '../param-reps.js'
 import {
-  inferArrElemSchema, inferArrElemValType,
+  inferArrElemSchema, inferArrElemSchemaSet, inferArrElemValType,
   inferSchemaId, inferValType, inferTypedCtor, inferParams,
 } from './infer.js'
 
@@ -761,6 +761,7 @@ function createPhaseState() {
 
 const _FIELD_TO_SLICE = {
   arrayElemSchema: 'arrElemSchemas',
+  arrayElemSchemaSet: 'arrElemSchemaSets',
   arrayElemValType: 'arrElemValTypes',
 }
 
@@ -788,10 +789,15 @@ function narrowReturnArrayElems(field, paramReps, valueUsed) {
       const localElems = facts[sliceKey]
       ctx.func.locals = savedLocals
       const paramElemMap = paramFactsOf(paramReps, func, field) || new Map()
+      // Set-valued slices ride as canonical 'a,b,…' keys so the exact-agreement
+      // lattice below works unchanged; size-1 sets are the singular fact (skip).
+      const canon = (v) => v instanceof Set
+        ? (v.size >= 2 ? [...v].sort((x, y) => x - y).join(',') : null)
+        : v
       const resolveExpr = (expr) => {
         if (typeof expr === 'string') {
           if (localElems.has(expr)) {
-            const v = localElems.get(expr)
+            const v = canon(localElems.get(expr))
             if (v != null) return v
           }
           if (paramElemMap.has(expr)) return paramElemMap.get(expr)
@@ -842,9 +848,12 @@ function inferInternalArrayLengths(paramReps) {
   }
   const unitInc = (n, name) => Array.isArray(n) &&
     ((n[0] === '++' && n[1] === name) || (n[0] === '+=' && n[1] === name && cint(n[2]) === 1))
+  // Descends into arrows: a closure capture can read/alias/mutate the name at
+  // any time, so it counts as a reference everywhere this predicate gates a
+  // reject. A shadowing arrow param matches by string and over-rejects — sound.
   const refs = (n, name) => {
     if (n === name) return true
-    if (!Array.isArray(n) || n[0] === '=>') return false
+    if (!Array.isArray(n)) return false
     for (let i = 1; i < n.length; i++) if (refs(n[i], name)) return true
     return false
   }
@@ -881,8 +890,10 @@ function inferInternalArrayLengths(paramReps) {
     const rs = returnExprs(body)
     return rs.length && rs.every(x => typeof x === 'string' && x === rs[0]) ? rs[0] : null
   }
+  // Also descends into arrows: a captured-iv write (`arr.forEach(() => i++)`)
+  // changes the trip count as surely as a direct one. Shadowing over-rejects.
   const mutatesName = (n, name) => {
-    if (!Array.isArray(n) || n[0] === '=>') return false
+    if (!Array.isArray(n)) return false
     if ((ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') && n[1] === name) return true
     for (let i = 1; i < n.length; i++) if (mutatesName(n[i], name)) return true
     return false
@@ -1472,8 +1483,13 @@ export default function narrowSignatures(programFacts, ast) {
     {
       missing: poison('wasm'),
       apply(r, arg, _k, state) {
+        // Positive maybe-miss evidence rides to the param: emit flags it
+        // maybeNullish so arithmetic coerces the UNDEF box (NaN), and the rep
+        // turns nullable. Distinct from the unknown-caller nullable — only
+        // proven-possible misses pay the coercion.
         if (r.wasm === null) return
         const wt = argWasmType(arg, state)
+        if (state._lastArgMiss) r.missArg = true
         if (r.wasm === undefined) r.wasm = wt
         else if (r.wasm !== wt) r.wasm = null
       },
@@ -1507,6 +1523,35 @@ export default function narrowSignatures(programFacts, ast) {
     runCallsiteLattice([mergeRule(field, infer)])
   }
   const runArrFixpoint = () => runArrElemFixpoint('arrayElemSchema', inferArrElemSchema, phase.callerElems('arrElemSchemas'))
+  const runArrSetFixpoint = () => runArrElemFixpoint('arrayElemSchemaSet', inferArrElemSchemaSet, phase.callerElems('arrElemSchemaSets'))
+  // OBJECT-param closed union: `measure(rows[i])` — every call site passes an
+  // element of a set-carrying array (body census or the caller's own param
+  // fact), or forwards a set-carrying object param. Canonical 'a,b,…' keys ride
+  // the exact-agreement lattice; compile/index.js decodes into rep.schemaIdSet,
+  // which discriminant refinement (flow-types) and union-agreeing slot reads
+  // (schema.slotOf) consume — the guard-free tagged-union chain.
+  const runSchemaIdSetFixpoint = () => {
+    const setsBy = phase.callerElems('arrElemSchemaSets')
+    const infer = (arg, _k, state) => {
+      if (Array.isArray(arg) && arg[0] === '[]' && typeof arg[1] === 'string') {
+        const s = setsBy.get(state.callerFunc)?.get(arg[1])
+        if (s instanceof Set && s.size >= 2) return [...s].sort((a, b) => a - b).join(',')
+        const p = state.callerParamFacts('arrayElemSchemaSet')?.get(arg[1])
+        if (typeof p === 'string') return p
+        return null
+      }
+      if (typeof arg === 'string') return state.callerParamFacts('schemaIdSet')?.get(arg) ?? null
+      return null
+    }
+    let changed
+    const bump = (r, v) => { if (v == null || r.schemaIdSet === null) return; const b = r.schemaIdSet; mergeParamFact(r, 'schemaIdSet', v); if (r.schemaIdSet !== b) changed = true }
+    const soft = {
+      missing(r, k, state) { const def = defaultArg(state, k); if (def != null) bump(r, infer(def, k, state)) },
+      apply(r, arg, k, state) { bump(r, infer(arg, k, state)) },
+    }
+    do { changed = false; runCallsiteLattice([soft]) } while (changed)
+    runCallsiteLattice([mergeRule('schemaIdSet', infer)])
+  }
   const runArrValTypeFixpoint = () => runArrElemFixpoint('arrayElemValType', inferArrElemValType, phase.callerElems('arrElemValTypes'))
 
   // E2 (VAL-kind result inference) FIRST: it's body-driven and call-chain self-
@@ -1576,6 +1621,7 @@ export default function narrowSignatures(programFacts, ast) {
   // during the first D pass have stale (null) `valTypeOf(call)` results because
   // valResult was unset back then.
   narrowReturnArrayElems('arrayElemSchema', paramReps, valueUsed)
+  narrowReturnArrayElems('arrayElemSchemaSet', paramReps, valueUsed)
   narrowReturnArrayElems('arrayElemValType', paramReps, valueUsed)
   phase.invalidateBodyFacts()
   phase.refreshValTypes()
@@ -1592,7 +1638,11 @@ export default function narrowSignatures(programFacts, ast) {
   runFixpoint()
   // Now that .val is refreshed, dedicated arr-elem-schema fixpoint.
   runArrFixpoint()
+  runArrSetFixpoint()
+  runSchemaIdSetFixpoint()
   runArrFixpoint()
+  runArrSetFixpoint()
+  runSchemaIdSetFixpoint()
   // Parallel arr-elem-val fixpoint (NUMBER/STRING/…). Twice for transitive closure
   // through helper chains: `init()→main→runKernel`.
   runArrValTypeFixpoint()

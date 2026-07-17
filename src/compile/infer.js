@@ -500,6 +500,27 @@ export function inferArrElemSchema(expr, callerArrElems, callerArrParams) {
   return null
 }
 
+/** Infer arg closed elem-schema UNION as its canonical 'a,b,…' key. Mirrors
+ *  inferArrElemSchema; sources: caller's body set census (Set values), caller's
+ *  param fact (already canonical), or a set-narrowed user fn return. */
+export function inferArrElemSchemaSet(expr, callerSets, callerSetParams) {
+  const canon = (v) => v instanceof Set
+    ? (v.size >= 2 ? [...v].sort((a, b) => a - b).join(',') : null)
+    : typeof v === 'string' ? v : null
+  if (typeof expr === 'string') {
+    const v = canon(callerSets?.get(expr))
+    if (v != null) return v
+    const p = canon(callerSetParams?.get(expr))
+    if (p != null) return p
+    return null
+  }
+  if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
+    const f = ctx.func.map?.get(expr[1])
+    if (typeof f?.arrayElemSchemaSet === 'string') return f.arrayElemSchemaSet
+  }
+  return null
+}
+
 /** Infer arg arr-elem-VAL. Mirrors inferArrElemSchema but tracks VAL.* element kind. */
 export function inferArrElemValType(expr, callerArrElemVals, callerArrValParams) {
   if (typeof expr === 'string') {

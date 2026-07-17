@@ -3,7 +3,58 @@
 ## V1
 
 * [ ] Beat all bench cases, all examples - pinned
-  * CURRENT EXECUTABLE VERDICT 2026-07-15 — OPEN. The last completed
+  * STATE 2026-07-17 (correctness wave + closed-union chain): the mechanism
+    batch LANDED (8fd8561e, battery-verified twice incl. independently:
+    suite 3013/0, fuzz 5000/76k zero-div, warm self-host 0.949×). On top,
+    TWO silent-miscompile classes fixed and pinned, plus the compound-assign /
+    sentinel seams: (1) closure-captured array mutation invisible to
+    inferInternalArrayLengths (arrow-blind refs/mutatesName — a captured pop
+    OVERcounted the static length; bounds proofs would justify raw reads past
+    the real end); (2) static-array folds served PRE-MUTATION values
+    (`S.push('c'); \`${S.join('')}\`` folded stale — in-walk invalidation +
+    module mutation census gating all three bind sites). Independent seams
+    landed with them: compoundAssign routes BOTH operands through toNumF64
+    (uninit-var UNDEF leaked through `s += u`), the plain-array inline checked
+    read tags checkedNumRead, toNumF64 folds direct UNDEF/NULL sentinel
+    consts, and the typed bundle guard compares in the iv cell's own type.
+  * MAYBE-MISS i32 CLASS — DIAGNOSED IN FULL, PARKED (patch:
+    scratchpad/miss-class-full.patch, 413 lines; pins parked in-place in
+    test/data.js with PARKED markers). THE CLASS: a possibly-OOB int-elem
+    read is number|undefined; any i32 STORAGE erases the miss arm
+    (trunc_sat(NaN)=0). FIVE surfaces: (a) i32 local cells (`let s=0; for
+    (i<7) s+=u8[i]` over len 3 → 0, JS NaN; `const x=a[oob]` → 0, JS
+    undefined); (b) i32 param spec (`use(u8[oob])` → callee sees 0);
+    (c) fn-result narrowing (returns trunc the NaN at the boundary);
+    (d) value-claim consumers are FINE (ToInt32 coerces undefined→0 — the
+    exprType i32 claim is correct in value context; the split is
+    value-vs-storage); (e) the typed bundle guard's raw i32 sign-compare
+    (FIXED + kept — f64-cell ivs compare in f64, NaN → checked path).
+    ARCHITECTURE (learned the hard way): the veto CANNOT live in cached
+    analyzeBody (context-purity — first-touch caching froze conservative
+    verdicts before cross-function facts settled and collapsed vm to
+    12.8ms); the correct home is an emit-time widen pass in the
+    per-function prep (uncached, full typedIdxProven) + a narrow-side veto
+    for params/results (built, in the patch). REMAINING BLOCKERS: (1) the
+    result-narrowing surface (c) needs the same veto in narrowI32Results;
+    (2) vm's pc/op/a/b chain IS provable (pc=b bounded via code's
+    arrayElemRange) but the fact never settles — the batch's hand-rolled
+    arrayElemRange fixpoint has the audit-#4 convergence bug (hull()
+    allocates fresh; reference-equality change-detection never reports) —
+    fix #4 FIRST, then the widen pass stops taxing vm and the class lands
+    whole. Digital Rain ratchet 12→14 was reverted with the park (stays 12). SHAPES: the closed heterogeneous-record chain is
+    BUILT — closed elem-schema union census (+ return/param/elem-arg narrow
+    channels), else-arm discriminant census by mask-exclusion, closed-union
+    PROOF refinement (guard-free singleton slot reads riding the user's own
+    if-chain), union-agreeing unbranched reads. Effect: dynamic reads 21→2
+    (dead fallbacks), module 27.5→13.7 kB, runtime −2% — the guarded PIC
+    already carried the hot path; the honest residual vs AS (1.86 vs 1.05,
+    quiet M4) is the RECORD LAYOUT: f64 slot cells + unbox/trunc per field vs
+    AS's raw i32 fields. NEXT (recorded, designed): the union structInline
+    carrier — max-K-stride packed i32 cells (20 B/record, contiguous — beats
+    AS's ref-chasing StaticArray), cursor-as-call-arg via the pointer-ABI
+    param spec (`measure(rows[i])`; AST inline blocked by returnCount>1),
+    analyze-time read verification mirroring the discriminant refinement.
+  * PRIOR VERDICT 2026-07-15 — OPEN. The last completed
     `npm run test:bench` passed 204/208 and exposed four fastest-WASM losses:
     fft, QOI, raytrace, and shapes. The string-representation unswitch keeps
     tokenizer closed even under that loaded frontier.

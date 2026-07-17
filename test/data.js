@@ -1152,3 +1152,102 @@ test('hash lane: churn (from-pairs, delete-shift, grow, clear, dict) matches hos
   const got = exports.f()
   is(typeof got === 'bigint' ? memory.read(got) : got, host)
 })
+
+// --- ToNumber discipline for undefined through compound assignment ---
+// UNDEF is a quiet-NaN payload; raw f64.add propagates it to the boundary where
+// it decodes back as `undefined` (JS: NaN). compoundAssign routes both operands
+// through toNumF64; the plain-array inline checked read tags checkedNumRead so
+// the miss arm folds to canonical NaN (module/array.js).
+test('compound assign: undefined operands coerce to NaN, never leak the sentinel', () => {
+  const m = run(`
+    export let oobAcc = () => { const a = [1, 2]; let s = 0; s += a[5]; return s }
+    export let undefVar = () => { let u; let s = 0; s += u; return s }
+    export let undefLhs = () => { let s; s += 1; return s }
+  `)
+  ok(Number.isNaN(m.oobAcc()), 'a[oob] += accumulates to NaN')
+  ok(Number.isNaN(m.undefVar()), 'uninitialized rhs coerces to NaN')
+  ok(Number.isNaN(m.undefLhs()), 'uninitialized lhs coerces to NaN')
+  // PARKED (maybe-miss i32-cell class, .work/todo.md): `let s=0; for(i<7) s+=a[i]`
+  // over len-3 — the i32-narrowed accumulator trunc_sats the miss's NaN to 0.
+  // The emit-time widen pass that fixes this is parked with its patch — it
+  // entangles with the arrayElemRange fixpoint convergence bug (vm row).
+})
+
+// --- i32 cell typing requires proven-in-bounds reads (exprType [] gate) ---
+// A maybe-miss read is number|undefined; an i32 accumulator cell trunc_sats the
+// NaN to 0. Proven shapes (canonical loop pair, literal idx vs static length)
+// must KEEP the fast i32 path — only unproven reads widen.
+test('int elem reads: proven shapes stay i32-exact', () => {
+  // PARKED (maybe-miss i32-cell class, .work/todo.md): the u8oob variant
+  // (`for(i<7) s+=u8[i]` over len 3 → NaN) and the oobDecl variant
+  // (`const x = a[5]` OOB → x must stay undefined, not trunc-sat 0) both
+  // require the emit-time widen pass parked with the miss-class patch.
+  const m = run(`
+    export let u8sum = () => { const a = new Uint8Array(3); a[0]=5; a[1]=6; a[2]=7; let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }
+    export let i32lit = () => { const a = new Int32Array(4); a[3]=9; return a[3] + a[0] }
+  `)
+  is(m.u8sum(), 18)
+  is(m.i32lit(), 9)
+})
+
+// --- closure-visible array mutation rejects the static-length fact ---
+// inferInternalArrayLengths (narrow.js) must see into arrows: a captured push
+// undercounts (stale .length folds), a captured pop OVERcounts — bounds proofs
+// from the stale fact would justify raw reads past the real end.
+test('internal array length: arrow-captured mutation rejects the fact, values stay JS-exact', () => {
+  const m = run(`
+    const grow = () => { const a = [1]; const g = () => a.push(7); g(); return a }
+    const shrink = () => { const a = [1, 2, 3, 4, 5, 6, 7]; const g = () => { a.pop() }; g(); g(); return a }
+    export let growLen = () => { const A = grow(); return A.length }
+    export let growTail = () => { const A = grow(); return A[A.length - 1] }
+    export let shrinkLen = () => { const B = shrink(); return B.length }
+    export let shrinkSum = () => { const B = shrink(); let s = 0; for (let i = 0; i < 7; i++) s += B[i]; return s }
+  `)
+  is(m.growLen(), 2)
+  is(m.growTail(), 7)
+  is(m.shrinkLen(), 5)
+  ok(Number.isNaN(m.shrinkSum()), 'reads past the popped end are undefined -> NaN, not stale cells')
+})
+
+// PARKED (maybe-miss call-arg class, .work/todo.md): `use(u8[oob])` — the i32
+// param spec trunc_sats the UNDEF box at the boundary (callee sees 0/1; JS:
+// undefined/NaN). The argWasmType veto + missArg param coercion are parked in
+// the miss-class patch alongside the cell-widen pass.
+
+// --- closed heterogeneous-record union: guard-free devirt stays JS-exact ---
+// The tagged-union chain (closed elem-schema set -> discriminant census incl.
+// the mask-excluded trailing else -> proof refinement) must keep exact values
+// through build/measure, and an ALIASED (open) array must stay dynamic-correct.
+test('closed-union tagged records: exact values, trailing-else variant, open-array fallback', () => {
+  const SRC = `
+    const initRows = () => {
+      const rows = []
+      let s = 0x1234abcd | 0
+      for (let i = 0; i < 512; i++) {
+        s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+        const k = s & 3
+        const a = (s >>> 3) & 255, b = (s >>> 13) & 255
+        if (k === 0) rows.push({ k: k, x: a, y: b })
+        else if (k === 1) rows.push({ k: k, r: a })
+        else if (k === 2) rows.push({ k: k, w: a, h: b })
+        else rows.push({ k: k, n: a, s: b })
+      }
+      return rows
+    }
+    const measure = (o) => {
+      const k = o.k
+      if (k === 0) return (o.x + o.y) | 0
+      else if (k === 1) return Math.imul(o.r, 3)
+      else if (k === 2) return Math.imul(o.w, o.h)
+      return Math.imul(o.n, o.s)
+    }
+    const runKernel = (rows) => {
+      let h = 0
+      for (let it = 0; it < 3; it++) { let sum = it | 0; for (let i = 0; i < rows.length; i++) sum = (sum + measure(rows[i])) | 0; h = (Math.imul(h, 31) + sum) | 0 }
+      return h
+    }
+    export let main = () => runKernel(initRows())
+  `
+  const host = new Function(SRC.replace('export let main =', 'const main =').replace(/const /g, 'var ') + '; return main()')()
+  is(run(SRC).main(), host)
+})

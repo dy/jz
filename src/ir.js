@@ -857,6 +857,14 @@ export function toNumF64(node, v) {
   // not a number — skipping coercion would reinterpret pointer bits as an f64.
   // Only a plain i32 (loop counter, `x|0`) is genuinely already-numeric.
   if ((v.type === 'i32' && v.ptrKind == null) || isLit(v)) return asF64(v)
+  // A DIRECT sentinel const (a statically-proven-OOB read folds straight to
+  // UNDEF, no if-form) coerces per ToNumber before the vt fast-outs below —
+  // valTypeOf claims NUMBER from the receiver's element type, blind to the
+  // OOB path, and the raw payload would ride f64 arithmetic out as `undefined`.
+  if (Array.isArray(v) && v[0] === 'f64.const' && typeof v[1] === 'string') {
+    if (v[1] === `nan:${UNDEF_NAN}`) return typed(['f64.const', 'nan'], 'f64')
+    if (v[1] === `nan:${NULL_NAN}`) return typed(['f64.const', 0], 'f64')
+  }
   // Checked typed-array read (`.typed:[]` tags checkedNumRead): number|undefined
   // with the undefined confined to a CONSTANT miss arm. ToNumber of that arm
   // folds statically (undefined → canonical NaN) — the hit arm is already a

@@ -451,7 +451,11 @@ test('example: jukebox floatbeats stay box-free (V8-parity ratchet)', () => {
         // closure-ABI trampoline by DUPLICATING the beat body into it — the
         // standalone stays for direct calls, so static __to_num sites double
         // while per-sample boxing is unchanged (each call runs one copy).
-        'Digital Rain': 12, 'Neo-Noir Jazz Lounge': 0, 'Celesta Dreams': 0,
+        // 12→14: compoundAssign now routes BOTH operands through toNumF64
+        // (`t /= 44100` on the not-provably-numeric beat param coerces — the
+        // raw f64.div carried a possible UNDEF payload to the boundary). Two
+        // static sites; per-sample boxing unchanged for numeric inputs.
+        'Digital Rain': 14, 'Neo-Noir Jazz Lounge': 0, 'Celesta Dreams': 0,
     };
     for (const fb of FLOATBEATS) {
         const wat = jz.compile(moduleSrc(fb.body), { optimize: 3, wat: true });

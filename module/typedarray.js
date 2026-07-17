@@ -1557,8 +1557,14 @@ export default (ctx) => {
     const key = idxKey(arr, i), g = ctx.func._typedBundleGuards.get(key)
     if (!g) return null
     if (!g.temp) g.temp = tempI32('tbg')
+    // The iv's CELL may be f64 (a maybe-miss def widened it — `pc = code[t]`
+    // where the read can miss). Compare in the cell's own type: f64.ge(NaN, 0)
+    // is false, so an undefined-flow iv correctly takes the checked path.
+    const sign = ctx.func.locals.get(g.pc) === 'f64'
+      ? ['f64.ge', ['local.get', `$${g.pc}`], ['f64.const', 0]]
+      : ['i32.ge_s', ['local.get', `$${g.pc}`], ['i32.const', 0]]
     return key === g.primary
-      ? ['local.tee', `$${g.temp}`, ['i32.ge_s', ['local.get', `$${g.pc}`], ['i32.const', 0]]]
+      ? ['local.tee', `$${g.temp}`, sign]
       : ['local.get', `$${g.temp}`]
   }
 

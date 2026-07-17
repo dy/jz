@@ -82,6 +82,44 @@ function refineIntegerDiscriminant(a, b, out) {
 
   const alias = constPropAliases().get(name)
   if (!alias || ctx.module.writtenProps?.has(alias.prop)) return
+
+  // CLOSED-UNION PROOF channel: the receiver provably holds one of a closed
+  // schema set (`const o = rows[i]` over a censused heterogeneous stream —
+  // rep.schemaIdSet, or an enclosing refinement's narrowed set). Inside
+  // `tag === C`, members whose censused const tag differs from C cannot reach
+  // this branch, and members LACKING the tag prop read `undefined` (≠ C) — both
+  // excluded. A member whose tag isn't censused-const stays in (superset-sound).
+  // The result is a PROOF — schemaId/schemaIds refinement, raw slot reads, NO
+  // runtime guard — because the union's closure already excludes host/foreign
+  // objects. Without a closed set, fall back to the speculation hint below.
+  const closedSet = ctx.func.refinements?.get(alias.obj)?.schemaIdSet
+    ?? ctx.func.localReps?.get(alias.obj)?.schemaIdSet
+  if (closedSet?.length) {
+    const matches = []
+    for (const sid of closedSet) {
+      const slot = ctx.schema.list[sid]?.indexOf(alias.prop) ?? -1
+      if (slot < 0) continue
+      const cv = ctx.schema.slotConstInts?.get(sid)?.[slot]
+      if (cv === value || cv == null) matches.push(sid)
+    }
+    if (matches.length) {
+      // Agreeing-slot map across the narrowed members: singleton → the full
+      // schema; union → every prop laid at one shared slot in all members.
+      const schemaSlots = new Map()
+      for (const prop of ctx.schema.list[matches[0]] || []) {
+        let slot = ctx.schema.list[matches[0]].indexOf(prop)
+        for (let i = 1; i < matches.length && slot >= 0; i++)
+          if (ctx.schema.list[matches[i]]?.indexOf(prop) !== slot) slot = -1
+        if (slot >= 0) schemaSlots.set(prop, slot)
+      }
+      const fact = { val: VAL.OBJECT, schemaIds: matches, schemaIdSet: matches, schemaSlots }
+      if (matches.length === 1) fact.schemaId = matches[0]
+      mergeRefinement(out, alias.obj, fact)
+      return
+    }
+    return
+  }
+
   const matches = []
   for (let sid = 0; sid < ctx.schema.list.length; sid++) {
     if (ctx.schema.externSlotSids?.has(sid)) continue

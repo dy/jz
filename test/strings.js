@@ -1212,3 +1212,19 @@ test('strings: normalize is identity (typed + generic receivers)', () => {
   is(run(`export let f = () => "abc".normalize("NFD") === "abc" ? 1 : 0`).f(), 1)
   is(run(`export let f = (s) => s.normalize().length`).f !== undefined, true)
 })
+
+// --- static-array folds must not survive mutation (stale-fold miscompile) ---
+// prepare's in-walk template/concat folds consume shapeStrArrays; a push or
+// indexed write BEFORE the fold site must invalidate the fact at the mutation
+// point (statement order = execution order), not only in the post-prep sweep.
+test('static array fold: mutation before the fold site ends the fact', () => {
+  const m1 = run(`const S=['a','b']; S.push('c'); const T = \`[\${S.join('')}]\`; export let t = () => T`)
+  is(m1.t(), '[abc]')
+  const m2 = run(`const S=['a','b']; S[0]='x'; const T = \`<\${S.join('-')}>\`; export let t = () => T`)
+  is(m2.t(), '<x-b>')
+  const m3 = run(`const S=['a','b']; f(); const T = \`(\${S.join('')})\`; export let t = () => T; function f(){ S.push('c') }`)
+  is(m3.t(), '(abc)')
+  // No mutation -> the fold must still fire and stay correct.
+  const m4 = run(`const S=['a','b']; const T = \`=\${S.join('')}=\`; export let t = () => T`)
+  is(m4.t(), '=ab=')
+})

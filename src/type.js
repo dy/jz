@@ -2108,7 +2108,14 @@ export function exprType(expr, locals) {
       const ctor = typedElemCtorOf(args[0], locals)
       if (ctor) {
         const aux = typedElemAux(ctor)
-        // int family only — Float16Array shares code 3 with a flag; its elements are floats
+        // int family only — Float16Array shares code 3 with a flag; its elements are floats.
+        // NOTE the i32 claim is a VALUE-context answer (ToInt32 consumers fold a
+        // miss's undefined to 0, correctly). STORAGE narrowing (an i32 local
+        // cell) must additionally prove the read cannot miss — the cell would
+        // trunc_sat the miss's NaN to 0 — and that veto lives with the cell
+        // writers in analyze.js (body-local proofs, cache-pure), not here:
+        // exprType runs inside the context-pure cached analyzeBody where the
+        // emit-time prover state (typedIdxProven) is unavailable/foreign.
         if (aux != null && (aux & 7) <= 5 && !(aux & 32)) return 'i32'
       }
     }

@@ -96,6 +96,23 @@ export function initSchema(ctx) {
     // Precise: variable has known schema
     const id = ctx.schema.idOf(varName)
     if (id != null) return ctx.schema.list[id]?.indexOf(prop) ?? -1
+    // CLOSED schema union (rep channel — `const o = rows[i]` over a proven
+    // heterogeneous stream): when every member schema lays `prop` at ONE slot,
+    // the fixed offset is exact with NO runtime guard — the union's closure is
+    // the proof (the tag read `o.k` @ slot 0 across all variants). A member
+    // lacking the prop, or slot disagreement, falls through to dynamic dispatch.
+    if (typeof varName === 'string') {
+      const set = repOf(varName)?.schemaIdSet
+      if (set?.length) {
+        let slot = null
+        for (const sid of set) {
+          const idx = ctx.schema.list[sid]?.indexOf(prop) ?? -1
+          if (idx < 0 || (slot != null && slot !== idx)) { slot = null; break }
+          slot = idx
+        }
+        if (slot != null) return slot
+      }
+    }
     // Structural subtyping requires positive evidence the receiver is OBJECT.
     // Without it (varName is null, or its valType is unknown / not OBJECT) we
     // can match HASH/ARRAY/etc. values as if they had OBJECT layout, producing

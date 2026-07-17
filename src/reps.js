@@ -55,6 +55,14 @@ export const VAL = {
  * @property {boolean} [intCertain]       integer-valued on every path.
  * @property {boolean} [notString]        proven not a string (skips string-path guards).
  * @property {number}  [arrayElemSchema]  element object-schema id for arrays.
+ * @property {number[]} [arrayElemSchemaSet] CLOSED element-schema union for arrays whose
+ *   every element provably carries one of these sids (heterogeneous record streams —
+ *   the tagged-union shape). Poison rules identical to arrayElemSchema except that
+ *   mere sid disagreement accumulates instead of poisoning; any unknown-schema
+ *   source still kills the fact. Sorted, deduped, length ≥ 2.
+ * @property {number[]} [schemaIdSet] closed schema union for an OBJECT binding drawn
+ *   from a set-carrying array element (`const o = rows[i]`). Enables union-agreeing
+ *   slot reads and discriminant refinement without a runtime guard.
  * @property {string}  [arrayElemValType] element VAL.* kind for arrays.
  * @property {number[]} [arrayElemRange] closed integer hull for a typed array's observable elements.
  * @property {number}   [arrayLen] fixed length of a whole-program internal plain array.
@@ -73,7 +81,7 @@ export const VAL = {
  */
 export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
-  'arrayElemSchema', 'arrayElemValType', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape',
+  'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape',
   'typedCtor', 'wasm', 'nullable', 'neverGrown',
 ])
 

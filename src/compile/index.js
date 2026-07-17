@@ -500,6 +500,16 @@ function analyzeFuncForEmit(func, programFacts) {
       }
       if (r.val && !reassigned && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
       if (r.arrayElemSchema != null) updateRep(pname, { arrayElemSchema: r.arrayElemSchema })
+      // Closed-union param facts ride the lattice as canonical 'a,b,…' keys.
+      if (typeof r.arrayElemSchemaSet === 'string')
+        updateRep(pname, { arrayElemSchemaSet: r.arrayElemSchemaSet.split(',').map(Number) })
+      if (typeof r.schemaIdSet === 'string' && !reassigned)
+        updateRep(pname, { schemaIdSet: r.schemaIdSet.split(',').map(Number), val: VAL.OBJECT })
+      // Proven-possible maybe-miss arg (narrow's veto): the UNDEF box can
+      // arrive, so this param's arithmetic coerces (undefined → NaN) and its
+      // nullish compares stay live. Targeted — unknown-caller params keep the
+      // cheaper nullable-only treatment below.
+      if (r.missArg) updateRep(pname, { nullable: true, missArg: true })
       if (r.arrayElemValType != null) updateRep(pname, { arrayElemValType: r.arrayElemValType })
       if (r.arrayElemRange != null) updateRep(pname, { arrayElemRange: r.arrayElemRange })
       if (r.arrayLen != null) updateRep(pname, { arrayLen: r.arrayLen })

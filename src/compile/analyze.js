@@ -231,7 +231,7 @@ export function analyzeBody(body) {
   // Non-object bodies (`() => 0`, `() => x`, missing) have nothing to observe
   // for any slice and can't be WeakMap-keyed. Return empty maps without caching.
   if (body === null || typeof body !== 'object') return {
-    locals: new Map(), valTypes: new Map(), arrElemSchemas: new Map(),
+    locals: new Map(), valTypes: new Map(), arrElemSchemas: new Map(), arrElemSchemaSets: new Map(),
     arrElemValTypes: new Map(), arrElemTypedCtors: new Map(), typedElems: new Map(), escapes: new Map(),
     flatObjects: new Map(),
   }
@@ -241,6 +241,7 @@ export function analyzeBody(body) {
   const locals = new Map()
   const valTypes = new Map()
   const arrElemSchemas = new Map()
+  const arrElemSchemaSets = new Map()  // name → Set<sid> | null — closed heterogeneous union
   const arrElemValTypes = new Map()
   // Nested element kind: `name`'s elements are themselves arrays whose elements
   // share this VAL.*. Lets `chord = padChord[i]; chord[j]` (floatbeat pad voicings,
@@ -272,6 +273,19 @@ export function analyzeBody(body) {
   const observeArrSchema = (arr, sid) => {
     if (!doSchemas) return
     if (typeof arr !== 'string') return
+    // Set lattice rides every singular observation: sid disagreement ACCUMULATES
+    // (the tagged-union stream — 8 record variants pushed into one array) while
+    // an unknown-schema source (sid == null) poisons both lattices. The closed
+    // union is what discriminant refinement and union-agreeing slot reads
+    // consume; the singular fact keeps its monomorphic consumers unchanged.
+    if (arrElemSchemaSets.get(arr) !== null) {
+      if (sid == null) arrElemSchemaSets.set(arr, null)
+      else {
+        let s = arrElemSchemaSets.get(arr)
+        if (!s) arrElemSchemaSets.set(arr, s = new Set())
+        s.add(sid)
+      }
+    }
     if (arrElemSchemas.get(arr) === null) return
     if (sid == null) { arrElemSchemas.set(arr, null); return }
     if (!arrElemSchemas.has(arr)) arrElemSchemas.set(arr, sid)
@@ -384,14 +398,21 @@ export function analyzeBody(body) {
       if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
         const f = ctx.func.map?.get(rhs[1])
         if (f?.arrayElemSchema != null) observeArrSchema(name, f.arrayElemSchema)
+        // Return-channel closed union ('a,b,…' canonical key from
+        // narrowReturnArrayElems): fold each member through the observer —
+        // the set lattice unions, the singular lattice poisons. Exactly right.
+        else if (typeof f?.arrayElemSchemaSet === 'string')
+          for (const sid of f.arrayElemSchemaSet.split(',')) observeArrSchema(name, +sid)
       }
       if (typeof rhs === 'string' && arrElemSchemas.has(rhs)) {
         const sid2 = arrElemSchemas.get(rhs)
         if (sid2 != null) observeArrSchema(name, sid2)
+        else { const s2 = arrElemSchemaSets.get(rhs); if (s2) for (const sid of s2) observeArrSchema(name, sid) }
       }
       if (typeof rhs === 'string') {
         const repSid = ctx.func.localReps?.get(rhs)?.arrayElemSchema
         if (repSid != null) observeArrSchema(name, repSid)
+        else { const rs = ctx.func.localReps?.get(rhs)?.arrayElemSchemaSet; if (rs) for (const sid of rs) observeArrSchema(name, sid) }
       }
     }
 
@@ -696,7 +717,7 @@ export function analyzeBody(body) {
   // Never-relocated array bindings — reads may skip the realloc-forwarding follow.
   const neverGrown = doSchemas ? scanNeverGrown(body) : new Set()
 
-  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, arrElemTypedCtors, typedElems, typedLens, escapes, flatObjects, sliceViews, unsignedLocals, neverGrown, numericFill }
+  const result = { locals, valTypes, arrElemSchemas, arrElemSchemaSets, arrElemValTypes, arrElemTypedCtors, typedElems, typedLens, escapes, flatObjects, sliceViews, unsignedLocals, neverGrown, numericFill }
   _bodyFactsCache.set(body, result)
   return result
 }
@@ -890,6 +911,11 @@ export function analyzeValTypes(body) {
   for (const [name, sid] of arrElems) {
     if (sid != null) updateRep(name, { arrayElemSchema: sid })
   }
+  // Closed heterogeneous unions (≥2 sids, no unknown source) ride to reps the
+  // same way — size-1 sets are exactly the singular fact and stay off the rep.
+  for (const [name, set] of facts.arrElemSchemaSets || []) {
+    if (set != null && set.size >= 2) updateRep(name, { arrayElemSchemaSet: [...set].sort((a, b) => a - b) })
+  }
   // Resolve a name's array-elem-schema, preferring rep.arrayElemSchema (set from
   // paramReps[k].arrayElemSchema at emit start) over local body observations.
   const arrElemSchemaOf = (name) => {
@@ -898,6 +924,14 @@ export function analyzeValTypes(body) {
     if (repSid != null) return repSid
     const localSid = arrElems.get(name)
     return localSid != null ? localSid : null
+  }
+  // Set sibling of arrElemSchemaOf — rep channel first (param-carried unions).
+  const arrElemSchemaSetOf = (name) => {
+    if (typeof name !== 'string') return null
+    const repSet = ctx.func.localReps?.get(name)?.arrayElemSchemaSet
+    if (repSet != null) return repSet
+    const s = facts.arrElemSchemaSets?.get(name)
+    return s != null && s.size >= 2 ? [...s].sort((a, b) => a - b) : null
   }
   function trackRegex(name, rhs) {
     if (ctx.runtime.regex && Array.isArray(rhs) && rhs[0] === '//') ctx.runtime.regex.vars.set(name, rhs)
@@ -1128,6 +1162,19 @@ export function analyzeValTypes(body) {
             updateRep(a[1], { schemaId: elemSid })
             // Also set the val so structural call dispatch + valTypeOf see VAL.OBJECT.
             setVal(a[1], VAL.OBJECT)
+          } else {
+            // Closed heterogeneous union: `const o = rows[i]` over a
+            // set-carrying array — o is provably ONE of the union's schemas.
+            // Discriminant refinement (flow-types) narrows per-branch; the
+            // union-agreeing slot path (schema.slotOf) serves unbranched reads
+            // like the tag itself.
+            // Decl-only binding (no reassignment anywhere, incl. closures) — a
+            // second write could carry a foreign schema the set doesn't cover.
+            const elemSet = arrElemSchemaSetOf(a[2][1])
+            if (elemSet != null && writeCount(body, a[1], 0) === 0) {
+              updateRep(a[1], { schemaIdSet: elemSet })
+              setVal(a[1], VAL.OBJECT)
+            }
           }
         }
       }

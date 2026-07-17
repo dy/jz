@@ -926,7 +926,7 @@ export default (ctx) => {
       // the check would read raw memory for OOB indices (e.g. `a[1]` on a length-1 array).
       if (keyIsNum) {
         const baseI32 = tempI32('ab'), idxI32 = tempI32('ai')
-        return typed(saTag(['if', ['result', 'f64'],
+        const rd = typed(saTag(['if', ['result', 'f64'],
           ['i32.lt_u',
             ['local.tee', `$${idxI32}`, vi],
             ['i32.load', ['i32.sub',
@@ -934,6 +934,16 @@ export default (ctx) => {
               ['i32.const', 8]]]],
           ['then', ctx.abi.array.ops.load(['local.get', `$${baseI32}`], ['local.get', `$${idxI32}`])],
           ['else', undefExpr()]]), 'f64')
+        // Same number|undefined contract as the typed checked read — but ONLY
+        // when the elements are PROVEN numeric (arrayElemValType): a plain
+        // array is heterogeneous, and tagging a string-element read would make
+        // toNumF64 skip the full ToNumber ("hi" * 2 must be NaN, not the
+        // pointer payload riding f64.mul to the boundary). Numeric-proven
+        // receivers get the fold (miss arm → canonical NaN); the rest keep
+        // the ordinary coercion path.
+        if (typeof arr === 'string' && ctx.func.localReps?.get(arr)?.arrayElemValType === VAL.NUMBER)
+          rd.checkedNumRead = true
+        return rd
       }
       const baseTmp = temp()
       // Numeric key (literal or known-NUMBER name) → skip __is_str_key dispatch;

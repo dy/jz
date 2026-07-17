@@ -64,6 +64,7 @@ let depth          // arrow nesting depth (0=top-level, >0=inside function)
 let scopes         // block scope stack: [{names: Set, renames: Map}]
 let staticConstScopes  // lexical const facts: [{strings: Map, arrays: Map}]
 let assignedStaticGlobals
+let mutatedArrayNames  // raw names with any indexed/.length/mutating-method op anywhere (census)
 // Per-arrow set of names already declared anywhere in the function body. Used
 // to force a rename when the same identifier is declared in two sibling blocks
 // (else-if arms, separate { ... } chunks): without renaming, both decls lower
@@ -92,6 +93,7 @@ const resetPrepState = () => {
   scopes = []
   staticConstScopes = []
   assignedStaticGlobals = new Set()
+  mutatedArrayNames = new Set()
   funcLocalNames = [new Set()]
   funcValueNames = [new Set()]
   reassignedTopLevel = new Set()
@@ -336,12 +338,21 @@ function eachTopLevelStatement(node, fn) {
   }
 }
 
-function collectAssignmentWrites(node, writes) {
+function collectAssignmentWrites(node, writes, mutated) {
   if (!Array.isArray(node)) return
   const [op, lhs] = node
-  if (op === '=' && typeof lhs === 'string') writes.set(lhs, (writes.get(lhs) || 0) + 1)
-  if ((op === '++' || op === '--') && typeof lhs === 'string') writes.set(lhs, (writes.get(lhs) || 0) + 1)
-  for (let i = 1; i < node.length; i++) collectAssignmentWrites(node[i], writes)
+  const bump = (name) => writes.set(name, (writes.get(name) || 0) + 1)
+  if (op === '=' && typeof lhs === 'string') bump(lhs)
+  if ((op === '++' || op === '--') && typeof lhs === 'string') bump(lhs)
+  // Element/length writes and mutating method calls are writes too — a seeded
+  // static array whose values change after init would serve stale folds. The
+  // `mutated` census gates the const-decl and first-assign binds: execution
+  // order (hoisted function bodies, call-before-decl) can run any of these
+  // before a later fold site, so ANY such op anywhere ends the name's
+  // static-array eligibility outright.
+  if (op === '=' && Array.isArray(lhs) && (lhs[0] === '[]' || (lhs[0] === '.' && lhs[2] === 'length')) && typeof lhs[1] === 'string') { bump(lhs[1]); mutated?.add(lhs[1]) }
+  if (op === '()' && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && MUTATING_ARRAY_METHODS.has(lhs[2])) { bump(lhs[1]); mutated?.add(lhs[1]) }
+  for (let i = 1; i < node.length; i++) collectAssignmentWrites(node[i], writes, mutated)
 }
 
 function collectTopLevelStaticAssignments(node, facts) {
@@ -424,7 +435,7 @@ function seedStaticGlobalAssignments(node) {
   // resolve the same constants they would see after module initialization.
   const writes = new Map()
   const facts = new Map()
-  collectAssignmentWrites(node, writes)
+  collectAssignmentWrites(node, writes, mutatedArrayNames)
   eachTopLevelStatement(node, stmt => collectTopLevelStaticAssignments(stmt, facts))
   for (const [name, fact] of facts) {
     if (writes.get(name) === 1) bindStaticGlobal(name, fact.str, fact.arr)
@@ -772,6 +783,21 @@ function bindStaticGlobal(name, str, arr) {
 
 function deleteStaticGlobal(name) {
   ctx.scope.shapeStrs?.delete(name)
+  ctx.scope.shapeStrArrays?.delete(name)
+}
+
+// A mutation observed mid-walk — indexed write (`S[0] = x`), `.length` write,
+// or mutating method call (`S.push(…)`) — ends the name's static-array fact
+// NOW, in every scope that could serve a later fold: the in-walk folds
+// (`S.join('')`, concat parts) must not consume pre-mutation values. Statement
+// order equals execution order here (jzify hoists function declarations the
+// way JS does), so invalidating at the mutation point is exact, not
+// conservative. Whole-name reassignment already invalidates at the `=` depth-0
+// site; the post-prep reassignment sweep still covers compile-phase consumers
+// — this closes the in-walk fold window those two leave open.
+function invalidateMutatedArray(name) {
+  if (typeof name !== 'string') return
+  for (const s of staticConstScopes) s.arrays.delete(name)
   ctx.scope.shapeStrArrays?.delete(name)
 }
 
@@ -1636,7 +1662,13 @@ function prepDecl(op, ...inits) {
       // the binding so `.caller`/`.callee` on it reads as prohibited introspection.
       if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '=>')
         funcValueNames[funcValueNames.length - 1]?.add(declName)
-      if (op === 'const') bindStaticConst(declName, staticStr, staticArr)
+      // The mutation census (indexed/.length/mutating-method anywhere, raw
+      // names) gates every ARRAY-fact bind: execution can reach the mutation
+      // before a later fold site regardless of textual order (hoisted function
+      // bodies, call-before-decl), so eligibility is program-wide, not
+      // positional. String facts stay — no such op mutates a string.
+      const arrEligible = staticArr && !mutatedArrayNames.has(name) ? staticArr : null
+      if (op === 'const') bindStaticConst(declName, staticStr, arrEligible)
       // Local const: record the (post-rename) name for the assignment guard —
       // isConst covers only module scope, so `const c = 2; c = 3` inside a
       // function used to compile and mutate silently.
@@ -1648,12 +1680,12 @@ function prepDecl(op, ...inits) {
           declName = `${ctx.module.currentPrefix}$${declName}`
           ctx.scope.chain[name] = declName
         }
-        if (op === 'const') bindStaticGlobal(declName, staticStr, staticArr)
+        if (op === 'const') bindStaticGlobal(declName, staticStr, arrEligible)
         if (op === 'const') {
           if (!ctx.scope.consts) ctx.scope.consts = new Set()
           ctx.scope.consts.add(declName)
           if (staticStr != null) (ctx.scope.constStrs ||= new Map()).set(declName, staticStr)
-          const strs = staticArr || stringArrayValues(normed)
+          const strs = arrEligible || (!mutatedArrayNames.has(name) && stringArrayValues(normed))
           if (strs) (ctx.scope.shapeStrArrays ||= new Map()).set(declName, strs)
         } else if (op === 'let' && ctx.scope.consts?.has(declName)) {
           ctx.scope.consts.delete(declName)
@@ -2038,6 +2070,9 @@ const handlers = {
     const staticArr = staticStringArrayValues(rhs)
     const plhs = prep(lhs)
     const prhs = prep(rhs)
+    // Element/length writes mutate the array behind a static-array fact.
+    if (Array.isArray(plhs) && (plhs[0] === '[]' || (plhs[0] === '.' && plhs[2] === 'length')))
+      invalidateMutatedArray(plhs[1])
     if (depth === 0 && typeof plhs === 'string' && ctx.scope.globals.has(plhs)) {
       // First assignment fixes the global's representation + object schema.
       if (!ctx.scope.globalReps?.has(plhs)) {
@@ -2048,7 +2083,10 @@ const handlers = {
         } else bindAssignSchema(plhs, null)
       } else bindAssignSchema(plhs, objLiteralSid(prhs))
       // Static string/array facts hold only while every assignment is constant.
-      if (!assignedStaticGlobals.has(plhs) && (staticStr != null || staticArr)) bindStaticGlobal(plhs, staticStr, staticArr)
+      // Array facts additionally require the census-clean name (no indexed/
+      // method mutation anywhere — see the const-decl gate).
+      const arrOk = staticArr && !(typeof lhs === 'string' && mutatedArrayNames.has(lhs)) ? staticArr : null
+      if (!assignedStaticGlobals.has(plhs) && (staticStr != null || arrOk)) bindStaticGlobal(plhs, staticStr, arrOk)
       else deleteStaticGlobal(plhs)
       assignedStaticGlobals.add(plhs)
     }
@@ -2611,6 +2649,11 @@ const handlers = {
     const result = preppedArgs.length ? ['()', callee, ...preppedArgs] : ['()', callee, null]
 
     if (callee === 'Object.assign' && ctx.schema.register) inferAssignSchema(result)
+
+    // `S.push(…)` / `S.sort()` / … mutate the receiver — end its static-array
+    // fact before any later fold consumes the pre-mutation values.
+    if (Array.isArray(callee) && callee[0] === '.' && MUTATING_ARRAY_METHODS.has(callee[2]))
+      invalidateMutatedArray(callee[1])
 
     return result
   },
