@@ -224,6 +224,19 @@ export function exprSchemaId(expr, localSchemaMap) {
   return null
 }
 
+/** Closed-union inline carrier for `name` (Array of a packed heterogeneous
+ *  union — analyzeUnionInline). Same function-local-only rule as
+ *  inlineArraySid, keyed by the rep's canonical set. */
+export function inlineArrayUnion(name) {
+  if (typeof name !== 'string') return null
+  if (ctx.scope.globals?.has(name)) return null
+  const set = ctx.func.localReps?.get(name)?.arrayElemSchemaSet
+  if (!set || set.length < 2) return null
+  const key = set._k ??= set.join(',')   // canonical key cached on the rep's array
+  const u = ctx.schema.inlineUnion?.get(key)
+  return u ? { key, sids: u.sids, stride: u.stride } : null
+}
+
 export function inlineArraySid(name) {
   if (typeof name !== 'string') return null
   // structInline is keyed on the per-function `localReps` rep, so it is only

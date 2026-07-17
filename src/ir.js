@@ -1273,6 +1273,12 @@ export function readVar(name) {
     // node because a standalone object of the same sid keeps f64 slots.
     if (rep.ptrKind === VAL.OBJECT && ctx.schema.inlineCellCursors?.get(ctx.func.current)?.has(name))
       node.cellI32 = true
+    // Union cursor (analyzeUnionInline): packed i32 cells; the slot comes from
+    // the refinement chain (schema.slotOf), never a single sid aux.
+    if (rep.ptrKind === VAL.OBJECT && ctx.schema.inlineUnionCursors?.get(ctx.func.current)?.has(name)) {
+      node.cellI32 = true
+      node.unionKey = ctx.schema.inlineUnionCursors.get(ctx.func.current).get(name)
+    }
   }
   return node
 }

@@ -87,6 +87,51 @@
     AS's ref-chasing StaticArray), cursor-as-call-arg via the pointer-ABI
     param spec (`measure(rows[i])`; AST inline blocked by returnCount>1),
     analyze-time read verification mirroring the discriminant refinement.
+  * SELFHOST KERNEL-LEG RED — BISECTED (2026-07-17/18): CI selfhost fails 2
+    (`bool identity: containers round-trip` = a JS-side memory.read
+    RECURSION on a mis-built structure; `for-in deopt: heavy body stays
+    pooled` = the kernel over-unrolls where native doesn't). REPRO: full
+    kernel leg only — `JZ_TEST_TARGET=jz.wasm node test/index.js` fails
+    DETERMINISTICALLY on Node 24 AND 25, while both tests pass in ISOLATION
+    on every Node with fresh kernels → the discriminator is single-instance
+    ACCUMULATION across ~1100 kernel compiles (state/arena dependent), not
+    environment. ATTRIBUTION: bisect worktrees — 1bae2742 FAILS,
+    de642b85 FAILS, parent 1cfe89bc = the v0.9.2-green line (confirm leg
+    ran at session end) → the regression entered in de642b85 ("optimize
+    codec loops and harden nested indices"); commits A/B and the union
+    carrier are exonerated (fail identically WITHOUT them). MECHANISM
+    SUSPECTS (the commit's own machinery): the nested-index `indexValid`
+    channel — expando metadata on IR nodes (`rd.indexValid = ['local.get',
+    $tbn]` shared-reference splicing) + the `ctx.types.indexConsumer`
+    depth counter — the exact self-host-fragile class the ledger already
+    documents (array expandos + behavioral divergence of the KERNEL's own
+    compiled analysis; the for-in budget divergence smells like the
+    kernel's `nestedSmallLoopBudget` arithmetic reading a maybe-miss value
+    that native folds to NaN/undefined and kernel-compiled reads as
+    garbage — note the PARKED maybe-miss class predicts precisely this
+    divergence shape). NEXT: reproduce the minimal pair under the kernel
+    with JZ_DBG on the de642b85 machinery; the fix belongs at the
+    indexValid metadata channel (make it structural, not expando) or the
+    budget arithmetic's miss-coercion.
+  * UNION CARRIER STATE (2026-07-17, session tail): stage 1 (fail-closed
+    verifier + registries) COMMITTED; stage 2 (the carrier: []/push/length
+    arms, packed-cell reads via the refinement chain, flow-types' negative-
+    sense EXCLUSION twin — the else-ladder narrows member sets level by
+    level) WORKS: one-function shapes variant JS-EXACT with ZERO dynamic
+    reads and raw i32.load offset= fields; pins struct-inline 15 assertions
+    incl. exported-return fail-closed. Suite 3018/0 + fuzz clean; warm gate
+    straddles 0.99 under load (0.965–0.992) — re-judge quiet before the
+    stage-2 commit. STAGE 3 (the real bench row's missing link) — cursor
+    crosses `measure(rows[i])`: narrow's pointer-ABI param spec extends to
+    union cursors (arg = elem-of-union-array at EVERY site + callee param
+    rep carries schemaIdSet ⇒ param.type = i32 cell address, reads inside
+    the callee resolve via the SAME refinement chain; the verifier's
+    cursor-as-arg poison lifts only under that agreement; address validity
+    = no grow between arg computation and the call's last read — callee
+    must not push/grow ANY union array reachable from args, verifier-
+    checked). FOLLOW-UP (craft, audit-dedup theme): the exclusion lattice
+    now lives ×3 (program-facts census / analyze verifier / flow-types
+    emitter) — extract one shared discriminant-lattice module.
   * PRIOR VERDICT 2026-07-15 — OPEN. The last completed
     `npm run test:bench` passed 204/208 and exposed four fastest-WASM losses:
     fft, QOI, raytrace, and shapes. The string-representation unswitch keeps

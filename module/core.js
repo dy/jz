@@ -14,7 +14,7 @@ import { emit, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
-import { inlineArraySid } from '../src/static.js'
+import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal } from '../src/ctx.js'
@@ -1411,9 +1411,10 @@ export default (ctx) => {
       // (K per element, ⌈K/2⌉ when packed i32), so the JS array length is
       // `physicalLen / cellsPerElem`.
       const inlSid = inlineArraySid(obj)
-      if (inlSid != null) {
-        const K = ctx.schema.list[inlSid].length
-        const cpe = structInline(K, ctx.schema.inlineCellI32?.has(inlSid)).cpe
+      const inlU = inlSid == null ? inlineArrayUnion(obj) : null
+      if (inlSid != null || inlU != null) {
+        const cpe = inlU != null ? Math.ceil(inlU.stride / 2)
+          : structInline(ctx.schema.list[inlSid].length, ctx.schema.inlineCellI32?.has(inlSid)).cpe
         const physLen = ['i32.load', ['i32.sub', ptrOffsetIR(asF64(emit(obj)), VAL.ARRAY), ['i32.const', 8]]]
         return typed(['f64.convert_i32_s', cpe > 1 ? ['i32.div_s', physLen, ['i32.const', cpe]] : physLen], 'f64')
       }

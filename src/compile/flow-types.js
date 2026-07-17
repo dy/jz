@@ -40,6 +40,7 @@ export function extractRefinements(cond, out, sense = true) {
   if ((op === '==' || op === '===' || op === '!=' || op === '!==')) {
     const positiveEq = (op === '==' || op === '===') ? sense : !sense
     if (positiveEq) refineIntegerDiscriminant(cond[1], cond[2], out)
+    else excludeIntegerDiscriminant(cond[1], cond[2], out)
     const tp = typeofPredicate(cond)
     if (tp) {
       const wantPositive = tp.eq ? sense : !sense
@@ -130,6 +131,46 @@ function refineIntegerDiscriminant(a, b, out) {
   // construction site with a dynamic tag may share the same runtime value.
   // emitBranch must retain an exact-sid guard and the original dynamic fallback.
   if (matches.length === 1) mergeRefinement(out, alias.obj, { schemaHint: matches[0] })
+}
+
+/** Negative-sense twin: inside the ELSE of `tag === C` (or the then of !==),
+ *  a CLOSED-union receiver excludes the members whose censused tag const IS C
+ *  — the chained else-if ladder then narrows level by level until the trailing
+ *  else holds a singleton (the verifier's exclusion mirror; unknown-const
+ *  members are kept — superset-sound). Open receivers get nothing (a hint
+ *  would be speculation with no guard to back it). */
+function excludeIntegerDiscriminant(a, b, out) {
+  const lit = n => typeof n === 'number' && Number.isInteger(n) ? n
+    : Array.isArray(n) && n[0] == null && Number.isInteger(n[1]) ? n[1]
+    : null
+  let name, value
+  const bv = lit(b), av = lit(a)
+  if (typeof a === 'string' && bv != null) { name = a; value = bv }
+  else if (typeof b === 'string' && av != null) { name = b; value = av }
+  else return
+  const alias = constPropAliases().get(name)
+  if (!alias || ctx.module.writtenProps?.has(alias.prop)) return
+  const closedSet = out.get(alias.obj)?.schemaIdSet
+    ?? ctx.func.refinements?.get(alias.obj)?.schemaIdSet
+    ?? ctx.func.localReps?.get(alias.obj)?.schemaIdSet
+  if (!closedSet?.length) return
+  const rest = closedSet.filter(sid => {
+    const slot = ctx.schema.list[sid]?.indexOf(alias.prop) ?? -1
+    if (slot < 0) return true                       // missing prop reads undefined ≠ C — stays
+    const cv = ctx.schema.slotConstInts?.get(sid)?.[slot]
+    return cv == null || cv !== value
+  })
+  if (!rest.length || rest.length === closedSet.length) return
+  const schemaSlots = new Map()
+  for (const prop of ctx.schema.list[rest[0]] || []) {
+    let slot = ctx.schema.list[rest[0]].indexOf(prop)
+    for (let i = 1; i < rest.length && slot >= 0; i++)
+      if (ctx.schema.list[rest[i]]?.indexOf(prop) !== slot) slot = -1
+    if (slot >= 0) schemaSlots.set(prop, slot)
+  }
+  const fact = { val: VAL.OBJECT, schemaIds: rest, schemaIdSet: rest, schemaSlots }
+  if (rest.length === 1) fact.schemaId = rest[0]
+  mergeRefinement(out, alias.obj, fact)
 }
 
 /** Map immutable `const tag = obj.kind` aliases in the current function. */

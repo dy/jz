@@ -316,4 +316,67 @@ test('union inline: eligibility verdicts (positive + fail-closed negatives)', ()
         if (k === 0) h = (h + o.x) | 0`)).join(';'), '', 'stale tag alias fails closed')
   is(elig(BODY(`h = (h + o.x) | 0`)).join(';'), '', 'unguarded variant read fails closed')
   is(elig(BODY(`h = (h + o.k) | 0`)).join(';'), '0,1,2,3', 'union-agreeing tag read eligible')
+  // Exported return crosses to the HOST — memory.read would decode packed
+  // cells as a plain array. narrowReturnArrayElems never sets the fact on
+  // exported functions, so the return sanction must fail closed.
+  const exp = `
+    export let make = () => {
+      const rows = []
+      let s = 1
+      for (let i = 0; i < 8; i++) {
+        s = (s * 3) | 0
+        const k = s & 1
+        if (k === 0) rows.push({ k: k, x: s })
+        else rows.push({ k: k, r: s, q: s })
+      }
+      return rows
+    }`
+  compile(exp, { optimize: 'speed' })
+  is([...(ctx.schema.inlineUnion?.keys() || [])].join(';'), '', 'exported union return fails closed')
+})
+
+// --- union carrier end-to-end: packed cells, exact values ---
+// One-function tagged-record stream through the max-K-stride packed i32
+// carrier: contiguous ⌈stride/2⌉-cell records, raw i32 field reads resolved
+// by the discriminant ladder (positive + exclusion refinements). Value must
+// equal the JS oracle exactly; the WAT must carry ZERO dynamic reads.
+test('union inline: packed carrier is JS-exact and fully devirtualized', () => {
+  const SRC = `
+    const NSHAPES = 4
+    export let main = () => {
+      const rows = []
+      let s = 0x1234abcd | 0
+      for (let i = 0; i < 256; i++) {
+        s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+        const k = s & (NSHAPES - 1)
+        const a = (s >>> 3) & 255, b = (s >>> 13) & 255
+        if (k === 0) rows.push({ k: k, x: a, y: b })
+        else if (k === 1) rows.push({ k: k, r: a })
+        else if (k === 2) rows.push({ k: k, w: a, h: b })
+        else rows.push({ k: k, n: a, s: b })
+      }
+      let h = 0
+      for (let it = 0; it < 4; it++) {
+        let sum = it | 0
+        for (let i = 0; i < rows.length; i++) {
+          const o = rows[i]
+          const k = o.k
+          let m = 0
+          if (k === 0) m = (o.x + o.y) | 0
+          else if (k === 1) m = Math.imul(o.r, 3)
+          else if (k === 2) m = Math.imul(o.w, o.h)
+          else m = Math.imul(o.n, o.s)
+          sum = (sum + m) | 0
+        }
+        h = (Math.imul(h, 31) + sum) | 0
+      }
+      return h
+    }`
+  const host = jsEval(SRC).main()
+  is(run(SRC, { optimize: 'speed' }).main(), host)
+  const wat = compile(SRC, { optimize: { level: 'speed', watr: false }, wat: true })
+  const seg = String(wat)
+  const mainSeg = seg.slice(seg.indexOf('(func $main'), seg.indexOf('\n  (func ', seg.indexOf('(func $main') + 10))
+  is((mainSeg.match(/__dyn_get/g) || []).length, 0, 'zero dynamic reads in the kernel')
+  ok(/i32\.load offset=/.test(mainSeg), 'raw packed-cell field reads')
 })

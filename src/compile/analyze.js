@@ -23,7 +23,7 @@ import { ctx, err } from '../ctx.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from '../kind.js'
 import { intLiteralValue, nonNegIntLiteral, constIntExpr, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
-import { typedElemCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, inBoundsCharCodeAt, exprType, intCertainMap } from '../type.js'
+import { typedElemCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, scanBoundedArrIdx, inBoundsCharCodeAt, exprType, intCertainMap } from '../type.js'
 import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux } from '../../layout.js'
 
 // ValueRep field docs + ParamReps lattice helpers — storage lives in src/reps.js.
@@ -1306,8 +1306,13 @@ export function unboxablePtrs(body, locals, boxed) {
       // subsequent `p.x` reads then become direct `f64.load offset=K (local.get $p)`
       // (since ptrOffsetIR sees ptrKind=OBJECT and skips the per-access wrap).
       if (expr[0] === '[]' && typeof expr[1] === 'string') {
-        const repSid = ctx.func.localReps?.get(expr[1])?.arrayElemSchema
-        return repSid != null
+        const r = ctx.func.localReps?.get(expr[1])
+        if (r?.arrayElemSchema != null) return true
+        // Closed-union element: an OBJECT of some member schema on EITHER
+        // layout (plain ptr or inline cell) — unboxing to a raw offset is
+        // valid regardless of whether analyzeUnionInline (which runs later)
+        // admits the packed carrier.
+        return (r?.arrayElemSchemaSet?.length ?? 0) >= 2
       }
       return false
     }
@@ -2010,6 +2015,8 @@ export function analyzeUnionInline(funcFacts, programFacts) {
 
     // `const t = o.PROP` aliases (discriminant reads) + `const o = a[i]` cursors.
     const cursor = new Map()                 // name → key
+    const inbCursorPairs = new Set()
+    scanBoundedArrIdx(body, inbCursorPairs, new Map())
     const tagAlias = new Map()               // tagLocal → { obj, prop }
     const declSeen = new Set()
     const maskMax = new Map()                // name → max for `x = Y & LIT`
@@ -2033,7 +2040,14 @@ export function analyzeUnionInline(funcFacts, programFacts) {
         if (declSeen.has(name)) { const k = cursor.get(name); if (k != null) black.add(k); cursor.delete(name); tagAlias.delete(name) }
         declSeen.add(name)
         if (Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 &&
-            typeof rhs[1] === 'string' && uArr.has(rhs[1])) cursor.set(name, uArr.get(rhs[1]))
+            typeof rhs[1] === 'string' && uArr.has(rhs[1])) {
+          // Index must be the canonical bounded pair (`for (i < a.length)` —
+          // scanBoundedArrIdx): an unproven index mints a raw cell address
+          // with no miss path. Fail closed otherwise.
+          if (typeof rhs[2] === 'string' && inbCursorPairs.has(rhs[1] + '\x00' + rhs[2]))
+            cursor.set(name, uArr.get(rhs[1]))
+          else black.add(uArr.get(rhs[1]))
+        }
         else if (Array.isArray(rhs) && rhs[0] === '.' && typeof rhs[1] === 'string' && typeof rhs[2] === 'string')
           tagAlias.set(name, { obj: rhs[1], prop: rhs[2] })
         if (Array.isArray(rhs) && rhs[0] === '&') {

@@ -13,7 +13,7 @@ import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
-import { staticPropertyKey, staticObjectProps, inlineArraySid, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
+import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, updateRep } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat } from '../src/ctx.js'
@@ -847,6 +847,19 @@ export default (ctx) => {
       // unboxed OBJECT pointer (schema S); `arr[i].field` then composes a plain
       // `+field*8` off it. The narrower proved every use of this binding is one
       // structInline handles (src/analyze.js analyzeStructInline).
+      const u = inlineArrayUnion(arr)
+      if (u != null) {
+        // Union cell cursor: element i = ⌈stride/2⌉ 8-byte cells of packed i32
+        // fields, base + i·cells·8. Reads resolve per-branch via slotOf
+        // (refinement chain); the verifier proved every use resolves.
+        const baseI32 = tempI32('ub')
+        const cell = typed(structInline(u.stride, true).ops.elemAddr(
+          ['local.tee', `$${baseI32}`, arrBase()], vi), 'i32')
+        cell.ptrKind = VAL.OBJECT
+        cell.cellI32 = true
+        cell.unionKey = u.key
+        return cell
+      }
       const inlSid = inlineArraySid(arr)
       if (inlSid != null) {
         const baseI32 = tempI32('ab')
@@ -1030,11 +1043,34 @@ export default (ctx) => {
     // count (`len / cellsPerElem`). K=1 stays a single value → the
     // `__arr_push1` fast path. Packed schemas (inlineCellI32) store K raw i32
     // fields into ⌈K/2⌉ cells — the store loop below branches per layout.
-    const inlSid = inlineArraySid(arr)
-    const inlK = inlSid != null ? ctx.schema.list[inlSid].length : 0
-    const inlPacked = inlSid != null && ctx.schema.inlineCellI32?.has(inlSid)
-    const inlCpe = inlSid != null ? structInline(inlK, inlPacked).cpe : 1
-    if (inlSid != null) {
+    const inlUnion = typeof arr === 'string' ? inlineArrayUnion(arr) : null
+    let inlSid = inlineArraySid(arr)
+    let inlK = inlSid != null ? ctx.schema.list[inlSid].length : 0
+    let inlPacked = inlSid != null && ctx.schema.inlineCellI32?.has(inlSid)
+    let inlCpe = inlSid != null ? structInline(inlK, inlPacked).cpe : 1
+    if (inlUnion) {
+      // Union push: each member literal stores its OWN K fields at slots
+      // 0..K-1 then zero-fills to the uniform ⌈stride/2⌉·2 i32 lane count
+      // (incl. the odd pad) — after which the packed store loop below handles
+      // it exactly like a single-sid packed push of K = 2·cpe fields.
+      const cpe = Math.ceil(inlUnion.stride / 2)
+      const flat = []
+      for (const v of vals) {
+        const parsed = Array.isArray(v) && v[0] === '{}' ? staticObjectProps(v.slice(1)) : null
+        const msid = parsed ? ctx.schema.register(parsed.names) : null
+        if (msid == null || !inlUnion.sids.includes(msid))
+          err('union structInline Array.push expects a member-schema literal')
+        const fields = structLiteralFields(v, msid)
+        flat.push(...fields)
+        for (let z = fields.length; z < cpe * 2; z++) flat.push([, 0])
+      }
+      vals = flat
+      inlSid = inlUnion.sids[0]     // any member — only gates the flatten path below (skipped)
+      inlK = cpe * 2
+      inlPacked = true
+      inlCpe = cpe
+    }
+    if (inlSid != null && !inlUnion) {
       const flat = []
       for (const v of vals) {
         const fields = structLiteralFields(v, inlSid)
