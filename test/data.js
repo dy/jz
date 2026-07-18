@@ -1251,3 +1251,27 @@ test('closed-union tagged records: exact values, trailing-else variant, open-arr
   const host = new Function(SRC.replace('export let main =', 'const main =').replace(/const /g, 'var ') + '; return main()')()
   is(run(SRC).main(), host)
 })
+
+// --- dict-use walkers terminate + stay JS-exact (leanDictUse/i32DictUse/dictDomain) ---
+// These three analyzeBody gates (lean-hash, i32-histogram, domain-cap) were
+// nested self-recursive closures with heavy capture — the exact shape the
+// SELF-HOSTED kernel miscompiled into infinite recursion (bool-identity leg
+// red, bisected to 83d6add5). Rewritten as module-scope iterative worklists.
+// The kernel-leg bool-identity test is the recursion pin (native never hung);
+// this differential pins that the iterative verdicts keep values JS-exact.
+test('dict-use idioms: lean-hash, i32-histogram, domain-keyed all JS-exact', () => {
+  const m = run(`
+    export let lean = (n) => { let h = {}; for (let i = 0; i < n; i++) { let k = 'x' + i; h[k] = i * i }; let s = 0; for (let i = 0; i < n; i++) { let k = 'x' + i; s += h[k] }; return s }
+    export let hist = (n) => { let d = {}; for (let i = 0; i < n; i++) { let k = 'w' + (i & 7); d[k] = (d[k] | 0) + 1 }; let s = 0; for (let i = 0; i < 8; i++) s = (s + (d['w' + i] | 0)) | 0; return s }
+    export let domain = (n) => { let ks = ['p', 'q', 'r']; let o = {}; for (let i = 0; i < 3; i++) o[ks[i]] = i + 1; let s = 0; for (let i = 0; i < 3; i++) s += o[ks[i]]; return s }
+  `)
+  const host = new Function(`
+    return {
+      lean: (n) => { let h = {}; for (let i = 0; i < n; i++) { let k = 'x' + i; h[k] = i * i }; let s = 0; for (let i = 0; i < n; i++) { let k = 'x' + i; s += h[k] }; return s },
+      hist: (n) => { let d = {}; for (let i = 0; i < n; i++) { let k = 'w' + (i & 7); d[k] = (d[k] | 0) + 1 }; let s = 0; for (let i = 0; i < 8; i++) s = (s + (d['w' + i] | 0)) | 0; return s },
+      domain: (n) => { let ks = ['p', 'q', 'r']; let o = {}; for (let i = 0; i < 3; i++) o[ks[i]] = i + 1; let s = 0; for (let i = 0; i < 3; i++) s += o[ks[i]]; return s },
+    }`)()
+  is(m.lean(20), host.lean(20))
+  is(m.hist(50), host.hist(50))
+  is(m.domain(3), host.domain(3))
+})

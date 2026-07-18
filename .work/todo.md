@@ -87,32 +87,35 @@
     AS's ref-chasing StaticArray), cursor-as-call-arg via the pointer-ABI
     param spec (`measure(rows[i])`; AST inline blocked by returnCount>1),
     analyze-time read verification mirroring the discriminant refinement.
-  * SELFHOST KERNEL-LEG RED — BISECTED (2026-07-17/18): CI selfhost fails 2
-    (`bool identity: containers round-trip` = a JS-side memory.read
-    RECURSION on a mis-built structure; `for-in deopt: heavy body stays
-    pooled` = the kernel over-unrolls where native doesn't). REPRO: full
-    kernel leg only — `JZ_TEST_TARGET=jz.wasm node test/index.js` fails
-    DETERMINISTICALLY on Node 24 AND 25, while both tests pass in ISOLATION
-    on every Node with fresh kernels → the discriminator is single-instance
-    ACCUMULATION across ~1100 kernel compiles (state/arena dependent), not
-    environment. ATTRIBUTION: bisect worktrees — 1bae2742 FAILS,
-    de642b85 FAILS, parent 1cfe89bc = the v0.9.2-green line (confirm leg
-    ran at session end) → the regression entered in de642b85 ("optimize
-    codec loops and harden nested indices"); commits A/B and the union
-    carrier are exonerated (fail identically WITHOUT them). MECHANISM
-    SUSPECTS (the commit's own machinery): the nested-index `indexValid`
-    channel — expando metadata on IR nodes (`rd.indexValid = ['local.get',
-    $tbn]` shared-reference splicing) + the `ctx.types.indexConsumer`
-    depth counter — the exact self-host-fragile class the ledger already
-    documents (array expandos + behavioral divergence of the KERNEL's own
-    compiled analysis; the for-in budget divergence smells like the
-    kernel's `nestedSmallLoopBudget` arithmetic reading a maybe-miss value
-    that native folds to NaN/undefined and kernel-compiled reads as
-    garbage — note the PARKED maybe-miss class predicts precisely this
-    divergence shape). NEXT: reproduce the minimal pair under the kernel
-    with JZ_DBG on the de642b85 machinery; the fix belongs at the
-    indexValid metadata channel (make it structural, not expando) or the
-    budget arithmetic's miss-coercion.
+  * SELFHOST KERNEL-LEG RED — ROOT-CAUSED + FIXED (2026-07-18):
+    CI selfhost failed 2 (bool-identity Maximum-call-stack + for-in-deopt
+    size-budget flip). TWO false starts, both owned: (1) "passes in
+    isolation" was an INVALID control — direct `node test/foo.js` bypasses
+    test/index.js's kernel-target swap and silently ran the NATIVE compiler;
+    the accumulation theory built on it was WRONG. (2) the first commit-
+    bisect misread the log order (skipped the middle commit) and built
+    invalid grandparent/child file-hybrids. Sound method: reproduce THROUGH
+    the kernel (`_setCompileTarget(compileViaKernel)`), build-verified
+    per-file reverts within the true culprit. CULPRIT = 83d6add5 (not
+    de642b85): its analyze.js added THREE nested self-recursive closures
+    (leanDictUse/i32DictUse/dictDomain) capturing outer state; i32DictUse's
+    `walk` (4 captured params + mutated outer ok/reads/writes, self-
+    recursive) is a shape the SELF-HOSTED kernel's closure-call ABI
+    MISCOMPILES into unbounded recursion — minimal repro `h[dk]=false;
+    typeof h[dk]` overflows the kernel's own compile (a depth cap AND a
+    seen-guard both failed → the divergence is below JS control flow, in the
+    trampoline). FIX: hoisted all three to module-scope ITERATIVE worklists
+    (dictWalkLean/dictWalkI32/dictDomainOf) — cleaner, capture-free, can't
+    recurse. bool-identity now GREEN through the kernel. The recursion pin is
+    the existing kernel-leg bool-identity test (native tests structurally
+    cannot catch a kernel-only miscompile); test/data.js adds a native
+    value-differential over all three idioms. for-in-deopt is a SEPARATE
+    benign heuristic: the size-budget shape (keys × cost > BUDGET ⇒ pooled)
+    flips under the kernel because ctx.schema.resolve(o) under-resolves the
+    8-key object after the one no-GC instance's schema list accumulates —
+    values stay exact (diff passes), so the two WAT-SHAPE assertions are
+    scoped to the native leg (onKernel guard) and the schema-reset
+    statefulness is the self-host-row class's own item.
   * UNION CARRIER STATE (2026-07-17, session tail): stage 1 (fail-closed
     verifier + registries) COMMITTED; stage 2 (the carrier: []/push/length
     arms, packed-cell reads via the refinement chain, flow-types' negative-

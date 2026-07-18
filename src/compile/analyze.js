@@ -868,6 +868,114 @@ export function mayBeNullish(n, nameNullable = (name) => !!repOf(name)?.nullable
   return true
 }
 
+/** True iff `name` appears in `body` ONLY as the receiver of an indexed read
+ *  `name[k]` (the lean-dict idiom) — a bare reference, a `.`-target, or any
+ *  other position disqualifies. ITERATIVE (explicit worklist) by necessity:
+ *  the original nested self-recursive closure (`verify` capturing `name` +
+ *  `body`) MISCOMPILED under the self-hosted kernel into non-termination —
+ *  the `h[dk]=v` dict idiom sent the dist kernel leg red (bisected to
+ *  83d6add5's analyze.js additions; a depth cap and a `seen` identity-guard
+ *  both failed, so the divergence is in the kernel's closure-call ABI, below
+ *  JS control flow — a worklist sidesteps the fragile construct entirely).
+ *  The kernel two-level-capture-recursion miscompile is ledgered for its own
+ *  dissection. Module-scope so no capture, no recursion. */
+function dictWalkLean(body, name) {
+  const stack = [body]
+  while (stack.length) {
+    const n = stack.pop()
+    if (typeof n === 'string') { if (n === name) return false; continue }
+    if (!Array.isArray(n)) continue
+    const op = n[0]
+    if (op === '=>' || op === 'str') continue
+    if (op === '[]' && n[1] === name) { if (n[2] != null) stack.push(n[2]); continue }
+    if ((op === ':' || op === '.' || op === '?.') && n.length >= 3) { stack.push(n[op === ':' ? 2 : 1]); continue }
+    // let/const: the decl values; every other op: all children.
+    for (let i = 1; i < n.length; i++) {
+      const c = n[i]
+      if (op === 'let' || op === 'const') {
+        if (Array.isArray(c) && c[0] === '=') { if (c[2] != null) stack.push(c[2]) }
+        else stack.push(c)
+      } else stack.push(c)
+    }
+  }
+  return true
+}
+
+const I32_DICT_BITWISE = new Set(['&', '|', '^', '<<', '>>', '>>>'])
+/** Count/histogram dict test: `name` used only as `name[k]`, every READ
+ *  immediately bitwise-coerced and every WRITE a discarded statement (so the
+ *  slot may keep only ToInt32 bits). ITERATIVE for the same reason as
+ *  dictWalkLean — the original nested self-recursive `walk` (four captured
+ *  params + mutated outer state) is the exact shape the self-hosted kernel
+ *  miscompiled into non-termination (bisected culprit of the 83d6add5
+ *  kernel-leg red). Module-scope, worklist of (node,parent,pos,grand). */
+function dictWalkI32(body, name) {
+  let reads = 0, writes = 0
+  const stack = [[body, null, -1, null]]
+  while (stack.length) {
+    const [n, parent, pos, grand] = stack.pop()
+    if (!Array.isArray(n) || n[0] === '=>') continue
+    if (n[0] === '[]' && n[1] === name) {
+      if (parent && ASSIGN_OPS.has(parent[0]) && pos === 1) {
+        writes++
+        // Only an expression statement discards the value; in a
+        // condition/update replacing the boxed result with ToInt32 is observable.
+        if (!(grand && (grand[0] === ';' || grand[0] === '{}'))) return false
+      } else {
+        reads++
+        if (!(parent && I32_DICT_BITWISE.has(parent[0]))) return false
+      }
+      if (n[2] != null) stack.push([n[2], n, 2, parent])
+      continue
+    }
+    for (let i = 1; i < n.length; i++) stack.push([n[i], n, i, parent])
+  }
+  return reads > 0 && writes > 0
+}
+
+/** Preallocation-hint domain for a computed-key dict `name`: the single array
+ *  `dom` such that every `name[k] = …` uses a key `k = dom[i]` (a missed/wrong
+ *  alias only costs a resize, never semantics). ITERATIVE for the same reason
+ *  as dictWalkLean/dictWalkI32 — the original TWO nested self-recursive
+ *  closures (`collect`, `scan`, both capturing outer state) are the kernel-
+ *  fragile shape (83d6add5 leg red). Module-scope, two worklist passes. */
+function dictDomainOf(body, name) {
+  // Pass 1: single-def `let/const x = value` map (clashing names dropped).
+  const defs = new Map(), clashes = new Set()
+  let stack = [body]
+  while (stack.length) {
+    const n = stack.pop()
+    if (!Array.isArray(n) || n[0] === '=>') continue
+    if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
+      const d = n[i]
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+        if (defs.has(d[1])) clashes.add(d[1]); else defs.set(d[1], d[2])
+      }
+    }
+    for (let i = 1; i < n.length; i++) stack.push(n[i])
+  }
+  for (const n of clashes) defs.delete(n)
+  const sourceOf = (idx) => {
+    const e = typeof idx === 'string' ? defs.get(idx) : idx
+    return Array.isArray(e) && e[0] === '[]' && typeof e[1] === 'string' ? e[1] : null
+  }
+  // Pass 2: every `name[k] = …` must draw k from one shared domain array.
+  let domain = null, bad = false, writes = 0
+  stack = [body]
+  while (stack.length) {
+    const n = stack.pop()
+    if (!Array.isArray(n) || n[0] === '=>') continue
+    if (ASSIGN_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1][1] === name) {
+      writes++
+      const dom = sourceOf(n[1][2])
+      if (!dom || (domain && domain !== dom)) bad = true
+      else domain = dom
+    }
+    for (let i = 1; i < n.length; i++) stack.push(n[i])
+  }
+  return writes && !bad ? domain : null
+}
+
 /**
  * Analyze all local value types from declarations and assignments.
  * Writes the per-name `val` field of `ctx.func.localReps` for method dispatch
@@ -989,90 +1097,16 @@ export function analyzeValTypes(body) {
   // receiver of `name[key]` (read or write), apart from its declaration. Such
   // a fresh HASH never deletes/enumerates/escapes, so its upsert may use the
   // lean no-tombstone/no-order/no-durable-log probe.
-  const leanDictUse = (name) => {
-    const verify = (n) => {
-      if (typeof n === 'string') return n !== name
-      if (!Array.isArray(n)) return true
-      const op = n[0]
-      if (op === '[]' && n[1] === name) return verify(n[2])
-      if (op === 'let' || op === 'const') {
-        for (let i = 1; i < n.length; i++) {
-          const d = n[i]
-          if (Array.isArray(d) && d[0] === '=' && d[1] === name) { if (!verify(d[2])) return false; continue }
-          if (!verify(d)) return false
-        }
-        return true
-      }
-      if (op === ':' && n.length >= 3) return verify(n[2])
-      if ((op === '.' || op === '?.') && n.length >= 3) return verify(n[1])
-      for (let i = 1; i < n.length; i++) if (!verify(n[i])) return false
-      return true
-    }
-    return verify(body)
-  }
+  const leanDictUse = (name) => dictWalkLean(body, name)
   // Count/histogram dictionaries: if every read is immediately bitwise-
   // coerced and every write is a statement, the slot may retain only the
   // observable ToInt32 bits. Missing `undefined|0` and a zero slot are equal.
-  const i32DictUse = (name) => {
-    let ok = true, reads = 0, writes = 0
-    const bitwise = new Set(['&', '|', '^', '<<', '>>', '>>>'])
-    const walk = (n, parent = null, pos = -1, grand = null) => {
-      if (!ok || !Array.isArray(n) || n[0] === '=>') return
-      if (n[0] === '[]' && n[1] === name) {
-        if (parent && ASSIGN_OPS.has(parent[0]) && pos === 1) {
-          writes++
-          // Only an expression statement discards the assignment value.
-          // In a condition/update (`if (d[k] = x)`, `for (; d[k] = x;)`)
-          // replacing the boxed result with ToInt32 would be observable.
-          if (!(grand && (grand[0] === ';' || grand[0] === '{}'))) ok = false
-        } else {
-          reads++
-          if (!(parent && bitwise.has(parent[0]))) ok = false
-        }
-        walk(n[2], n, 2, parent)
-        return
-      }
-      for (let i = 1; i < n.length; i++) walk(n[i], n, i, parent)
-    }
-    walk(body)
-    return ok && reads > 0 && writes > 0
-  }
+  const i32DictUse = (name) => dictWalkI32(body, name)
   // Upper bound on distinct keys: `const k = domain[index]; dict[k] = …`
   // cannot insert more unique keys than domain.length. Capacity planning uses
   // this only as a preallocation hint (the table still grows), so a missed
   // alias costs speed while an over/underestimate cannot affect semantics.
-  const dictDomain = (name) => {
-    const defs = new Map(), clashes = new Set()
-    const collect = (n) => {
-      if (!Array.isArray(n) || n[0] === '=>') return
-      if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
-        const d = n[i]
-        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
-          if (defs.has(d[1])) clashes.add(d[1]); else defs.set(d[1], d[2])
-        }
-      }
-      for (let i = 1; i < n.length; i++) collect(n[i])
-    }
-    collect(body)
-    for (const n of clashes) defs.delete(n)
-    let domain = null, bad = false, writes = 0
-    const sourceOf = (idx) => {
-      const e = typeof idx === 'string' ? defs.get(idx) : idx
-      return Array.isArray(e) && e[0] === '[]' && typeof e[1] === 'string' ? e[1] : null
-    }
-    const scan = (n) => {
-      if (!Array.isArray(n) || n[0] === '=>') return
-      if (ASSIGN_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1][1] === name) {
-        writes++
-        const d = sourceOf(n[1][2])
-        if (!d || (domain && domain !== d)) bad = true
-        else domain = d
-      }
-      for (let i = 1; i < n.length; i++) scan(n[i])
-    }
-    scan(body)
-    return writes && !bad ? domain : null
-  }
+  const dictDomain = (name) => dictDomainOf(body, name)
   function walk(node) {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
