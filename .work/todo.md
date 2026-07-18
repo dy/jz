@@ -116,6 +116,34 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * UNION CARRIER STAGE 3 — ANALYSIS DONE, EMIT REMAINS (2026-07-18;
+    WIP saved scratchpad/stage3-wip.patch, 102 lines; tree reverted to the
+    green stage-2 state because the emit half traps). The ANALYSIS side is
+    COMPLETE and verified: on the REAL shapes bench the union now REGISTERS
+    (`eligible: 0..7, black: []`) — three fixes made it: (1) the verifier
+    sanctions an element-cursor crossing `measure(rows[i])` when the callee
+    param's settled schemaIdSet equals the union key AND the index is a
+    proven bounded pair (analyzeUnionInline `()` handler); (2) a union array
+    born from a user CALL whose return arrayElemSchemaSet is the key
+    (`const rows = initRows()`) or an alias is sanctioned at the decl rule
+    (was poisoned — only `[]` was allowed); (3) union-CELL params (rep
+    schemaIdSet ∈ registry) register into inlineUnionCursors at the finale.
+    The multi-hop propagation VERIFIED end to end: initRows return
+    arrayElemSchemaSet 0..7 → main local → runKernel param arrayElemSchemaSet
+    → measure param schemaIdSet 0..7 (runArrSetFixpoint + runSchemaIdSetFix-
+    point, both landed). EMIT is the remainder: measure's `o.field` reads
+    still emit `f64.load` (heap-object carrier), not packed `i32.load` — the
+    boxed-f64 param's cellI32 tag from readVar (relaxed to fire without
+    ptrKind in the WIP) is LOST before core.js's emitSchemaSlotRead packed
+    branch (baseExpr.cellI32 unset at the slot read; emit(o) in the prop-
+    access path likely re-coerces through asF64 and drops the expando, or
+    slotOf's base isn't the tagged node). FIX LOCUS: the emitPropAccess →
+    emitSchemaSlotRead chain for a boxed-f64 union-cursor param base —
+    thread cellI32/unionKey to the slot read, unbox the NaN-boxed cell to its
+    i32 address, packedI32.load. Then: 2-3 residual __dyn_get to clear, the
+    checksum differential (2400445253), and HARD gating (touches narrow +
+    the closure/param ABI — the self-host-fragile area that caused the
+    07-18 CI red, so full kernel leg + fuzz are mandatory before landing).
   * UNION CARRIER STATE (2026-07-17, session tail): stage 1 (fail-closed
     verifier + registries) COMMITTED; stage 2 (the carrier: []/push/length
     arms, packed-cell reads via the refinement chain, flow-types' negative-
