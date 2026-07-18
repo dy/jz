@@ -116,6 +116,41 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * RE-AUDIT RESPONSE — SAFETY PATCH LANDED (2026-07-18b): the external
+    re-audit found a REAL cross-function miscompile class (confirmed by
+    repro): a cursor-param body using NON-GRAMMAR reads — `o['x']` bracket
+    (wrong values), `const q = o` alias (OOB trap), `helper(o)` forward
+    (OOB at O0) — because stage-3 registration trusted schemaIdSet equality
+    as carrier provenance WITHOUT verifying the callee body. ROOT CAUSE was
+    structural: `if (!uArr.size) continue` skipped callee bodies (no union
+    arrays of their own) from the verify walk entirely. FIX (fail-closed,
+    one shared verdict): candidate cursor-params are SEEDED into the same
+    per-function `cursor` map, so the ONE existing grammar walk covers
+    them — bracket/alias/write/escape/forward/closure-capture all hit the
+    existing black rules, and a violation BLACKS the union key program-
+    wide (the caller then never packs — correctness on both sides). The
+    unsound finale param-registration block is DELETED (audit kill-list
+    #1); params now register through the same verified keep-filter as
+    local cursors. The verifier ALSO gained the terminator-ladder suffix
+    narrowing (mirrors emitBlockBody via its own elseRefs — without it the
+    canonical trailing-fallback read failed closed and deactivated the
+    real bench). PINS: +5-case audit-class batch (bracket, alias, ret_obj,
+    capture, forward — value-exact at O0+speed; 17/17 struct-inline).
+    Shapes carrier intact after the patch: 3370 B, checksum exact.
+    AUDIT TRIAGE: perf section STALE (measured pre-cost-gate watr; the
+    br_table regression was independently found + fixed with the
+    chainTable cost gate, landed watr 5.7.9 with pins — audit kill-list
+    #6 done better than asked). DEFERRED (recorded, real): StorageRep/
+    carrier-provenance as first-class facts split from schemaSet;
+    carrier-specialized function variants (measure$union — kills the
+    NaN-box seam + hoistUnionCursorUnbox); 20-byte byte-stride records
+    (current cells pad to 24 B); consolidating the 4 discriminant-
+    refinement implementations; unionInline:false reference mode;
+    final-substrate control-shape corpus; pass manager/MIR architecture.
+    OPEN DECISIONS (the audit's questions, user's to answer): O0-as-
+    reference semantics; internal fn cloning for carriers; V8-only vs
+    wasmtime-competitive "fastest wasm"; stock wasm2c as the native gate;
+    WIP-on-main policy.
   * UNION CARRIER STAGES 3+4 — COMPLETE, GATED (2026-07-18): shapes' cross-
     call packed carrier LANDED end to end. measure(rows[i]) reads its cursor
     param through the packed cells: ONE entry unbox, raw `i32.load offset=`

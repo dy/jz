@@ -23,7 +23,7 @@ import { ctx, err } from '../ctx.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from '../kind.js'
 import { intLiteralValue, nonNegIntLiteral, constIntExpr, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
-import { typedElemCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, scanBoundedArrIdx, inBoundsCharCodeAt, exprType, intCertainMap } from '../type.js'
+import { typedElemCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, scanBoundedArrIdx, inBoundsCharCodeAt, exprType, intCertainMap, isTerminator } from '../type.js'
 import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux } from '../../layout.js'
 
 // ValueRep field docs + ParamReps lattice helpers — storage lives in src/reps.js.
@@ -2044,15 +2044,35 @@ export function analyzeUnionInline(funcFacts, programFacts) {
       if (!cand.has(key)) cand.set(key, set)
       uArr.set(name, key)
     }
-    if (!uArr.size) continue
-    uArraysByFunc.set(func.sig, uArr)
+    // Candidate cursor-PARAMS (stage 3): a param whose settled schemaIdSet
+    // keys a union. Schema membership alone is NOT carrier provenance — the
+    // body must survive the same cursor grammar as a local cursor (direct
+    // narrowed dot reads only; any alias, bracket read, write, escape,
+    // forward, or closure capture reinterprets the packed cell as a generic
+    // object → miscompile). Seeding them into `cursor` runs the full verify
+    // walk over this body and BLACKS the key on any violation — which also
+    // keeps the CALLER from packing (one shared verdict, fail-closed).
+    const cursorParams = new Map()
+    const preps = programFacts.paramReps?.get(func.name)
+    if (preps && func.sig?.params) for (let k = 0; k < func.sig.params.length; k++) {
+      const set = preps.get(k)?.schemaIdSet
+      const key = typeof set === 'string' ? set : Array.isArray(set) ? keyOf(set) : null
+      if (!key || !key.includes(',')) continue
+      cursorParams.set(func.sig.params[k].name, key)
+      if (!cand.has(key)) cand.set(key, key.split(',').map(Number))
+    }
+    if (!uArr.size && !cursorParams.size) continue
+    if (uArr.size) uArraysByFunc.set(func.sig, uArr)
 
-    // `const t = o.PROP` aliases (discriminant reads) + `const o = a[i]` cursors.
-    const cursor = new Map()                 // name → key
+    // `const t = o.PROP` aliases (discriminant reads) + `const o = a[i]`
+    // cursors — pre-seeded with this function's candidate cursor-params so
+    // the one grammar verifies (and later registers) both.
+    const cursor = new Map(cursorParams)     // name → key
     const inbCursorPairs = new Set()
     scanBoundedArrIdx(body, inbCursorPairs, new Map())
     const tagAlias = new Map()               // tagLocal → { obj, prop }
     const declSeen = new Set()
+    const shadowed = new Set()               // param names shadow-declared in the body
     const maskMax = new Map()                // name → max for `x = Y & LIT`
     const assigned = new Set()               // names written outside their decl
     ;(function collect(n) {
@@ -2071,6 +2091,14 @@ export function analyzeUnionInline(funcFacts, programFacts) {
         const d = n[i]
         if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
         const name = d[1], rhs = d[2]
+        // First decl over a PRE-SEEDED cursor param = a block-scoped shadow:
+        // the flow-insensitive maps cannot hold two meanings for one name, so
+        // poison the param's key and bar the name from cursor re-admission
+        // (a subsequent `[]`-cursor decl of the same name blacks that union
+        // too — reads elsewhere in the body are ambiguous).
+        if (cursor.has(name) && !declSeen.has(name)) {
+          black.add(cursor.get(name)); cursor.delete(name); tagAlias.delete(name); shadowed.add(name)
+        }
         if (declSeen.has(name)) { const k = cursor.get(name); if (k != null) black.add(k); cursor.delete(name); tagAlias.delete(name) }
         declSeen.add(name)
         if (Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 &&
@@ -2078,7 +2106,7 @@ export function analyzeUnionInline(funcFacts, programFacts) {
           // Index must be the canonical bounded pair (`for (i < a.length)` —
           // scanBoundedArrIdx): an unproven index mints a raw cell address
           // with no miss path. Fail closed otherwise.
-          if (typeof rhs[2] === 'string' && inbCursorPairs.has(rhs[1] + '\x00' + rhs[2]))
+          if (!shadowed.has(name) && typeof rhs[2] === 'string' && inbCursorPairs.has(rhs[1] + '\x00' + rhs[2]))
             cursor.set(name, uArr.get(rhs[1]))
           else black.add(uArr.get(rhs[1]))
         }
@@ -2177,6 +2205,27 @@ export function analyzeUnionInline(funcFacts, programFacts) {
       const op = node[0]
       if (op === 'str') return
       const visit = (c) => { if (!flag(c)) verify(c, refs) }
+      // Statement sequence: statements AFTER a terminator else-if ladder see
+      // the stacked exclusion refinements — control past `if (c0) return …
+      // else if (c1) return …` implies ¬cN for every level whose then-arm
+      // terminates, up to the first non-terminator arm (mirrors
+      // emitBlockBody's narrowing; without this the canonical trailing-
+      // fallback read fails closed on props the excluded members lack).
+      if (op === ';') {
+        let cur = refs
+        for (let i = 1; i < node.length; i++) {
+          const s = node[i]
+          verify(s, cur)
+          if (Array.isArray(s) && s[0] === 'if' && isTerminator(s[2])) {
+            let t = s
+            while (Array.isArray(t) && t[0] === 'if' && isTerminator(t[2])) {
+              cur = elseRefs(t[1], cur)
+              t = t[3]
+            }
+          }
+        }
+        return
+      }
       if (op === '=>') {                     // closures un-walked — poison mentions
         const touches = (n, name) => typeof n === 'string' ? n === name
           : Array.isArray(n) ? n.slice(1).some(c => touches(c, name)) : false
@@ -2247,6 +2296,15 @@ export function analyzeUnionInline(funcFacts, programFacts) {
               ctx.func.map?.get(rhs[1])?.arrayElemSchemaSet === key
             const bornAlias = typeof rhs === 'string' && uArr.get(rhs) === key
             if (!(bornEmpty || bornCall || bornAlias)) black.add(key)
+            continue
+          }
+          // Shadow decl of a cursor name (a block-scoped `const o = other`
+          // over a cursor PARAM, or a non-sanctioned cursor redecl): later
+          // reads of the name would keep the packed-cell tag while holding
+          // an arbitrary value. Fail closed.
+          if (typeof name === 'string' && cursor.has(name)) {
+            black.add(cursor.get(name))
+            if (rhs != null) visit(rhs)
             continue
           }
           if (typeof name !== 'string') verify(name, refs)
@@ -2335,34 +2393,17 @@ export function analyzeUnionInline(funcFacts, programFacts) {
     for (const [name, key] of m) if (registry.has(key)) (keep ??= new Map()).set(name, key)
     if (keep) ctx.schema.inlineUnionArrays.set(sig, keep)
   }
+  // Registers LOCAL cursors and cursor-PARAMS alike — both entered `cursor`
+  // in the per-function walk, so registration here is registration of a
+  // VERIFIED name only (a param whose body violated the cursor grammar
+  // blacked its key above, dropping it from the registry). The param stays
+  // f64 in the sig (the cell address rides the OBJECT NaN-box across the
+  // call, unboxed at first read) — no sig-type narrowing, no cross-phase
+  // ordering hazard.
   for (const [sig, m] of uCursorsByFunc) {
     let keep = null
     for (const [name, key] of m) if (registry.has(key)) (keep ??= new Map()).set(name, key)
     if (keep) ctx.schema.inlineUnionCursors.set(sig, keep)
-  }
-  // Union-CELL PARAMS (stage 3): a param whose settled schemaIdSet is a
-  // registered union — `measure(rows[i])` passes the packed cell address, so
-  // the callee reads `o.field` through the same packed carrier. Register it as
-  // a cursor of its function's sig so readVar tags reads cellI32 + unionKey and
-  // slotOf resolves via the discriminant chain. The param stays f64 (the cell
-  // address rides the OBJECT NaN-box across the call, unboxed at first read) —
-  // no sig-type narrowing, so no cross-phase ordering hazard.
-  const { paramReps } = programFacts
-  for (const func of ctx.func.list) {
-    if (func.raw || !func.sig?.params) continue
-    const reps = paramReps?.get(func.name)
-    if (!reps) continue
-    let keep = ctx.schema.inlineUnionCursors.get(func.sig) || null
-    for (let k = 0; k < func.sig.params.length; k++) {
-      const set = reps.get(k)?.schemaIdSet
-      const key = Array.isArray(set) ? set.join(',') : typeof set === 'string' ? set : null
-      if (!key || !registry.has(key)) continue
-      // A body reassignment (`o = other`) invalidates every read tag past the
-      // write — the entry fact only covers the incoming value. Fail closed.
-      if (isReassigned(func.body, func.sig.params[k].name)) continue
-      ;(keep ??= new Map()).set(func.sig.params[k].name, key)
-    }
-    if (keep) ctx.schema.inlineUnionCursors.set(func.sig, keep)
   }
   if (DBG) console.error('[inlarr-union]', 'eligible:', [...registry.keys()], 'black:', [...black])
 }

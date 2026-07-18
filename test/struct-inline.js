@@ -431,6 +431,59 @@ test('union inline: cursor param crosses the call — packed, i32 ladder, exact'
   is((seg.match(/i64\.reinterpret_f64/g) || []).length, 1, 'single entry unbox of the cell address')
 })
 
+// The 2026-07-18 re-audit's miscompile class: a cursor-param body whose uses
+// escape the cursor grammar (bracket read, alias, return, closure capture,
+// forwarding) must BLACK the union — schema membership alone is not carrier
+// provenance. Each case pins VALUE EXACTNESS at both opt levels (pre-patch:
+// bracket read WRONG VALUES, alias/forward OOB TRAP).
+test('union inline: non-grammar cursor-param uses fail closed, values exact', () => {
+  const SRC = (read, extra = '') => `
+    ${extra}
+    const measure = (o) => {
+      const k = o.k
+      if (k === 0) { ${read} }
+      else if (k === 1) return Math.imul(o.r, 3)
+      else if (k === 2) return Math.imul(o.w, o.h)
+      return Math.imul(o.n, o.s)
+    }
+    export let main = () => {
+      const rows = []
+      let s = 0x1234abcd | 0
+      for (let i = 0; i < 256; i++) {
+        s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+        const k = s & 3
+        const a = (s >>> 3) & 255, b = (s >>> 13) & 255
+        if (k === 0) rows.push({ k: k, x: a, y: b })
+        else if (k === 1) rows.push({ k: k, r: a })
+        else if (k === 2) rows.push({ k: k, w: a, h: b })
+        else rows.push({ k: k, n: a, s: b })
+      }
+      let h = 0
+      for (let i = 0; i < rows.length; i++) {
+        const m = measure(rows[i])
+        h = (h + (typeof m === 'number' ? m : (m.x | 0))) | 0
+      }
+      return h
+    }`
+  const CASES = {
+    bracket: [`return (o['x'] + o['y']) | 0`],
+    alias: [`const q = o
+      return (q.x + q.y) | 0`],
+    ret_obj: [`return o.x ? { x: o.x } : { x: o.y }`],
+    capture: [`const f = () => o.x
+      return f() | 0`],
+    forward: [`return helper(o)`, 'const helper = (p) => (p.x + p.y) | 0'],
+    shadow: [`{ const o = { k: 0, x: 7, y: 9 }
+        return (o.x + o.y) | 0 }`],
+  }
+  for (const [name, [read, extra = '']] of Object.entries(CASES)) {
+    const src = SRC(read, extra)
+    const truth = jsEval(src).main()
+    for (const optimize of [false, 'speed'])
+      is(run(src, { optimize }).main(), truth, `${name} JS-exact (optimize:${optimize})`)
+  }
+})
+
 // A body reassignment of the cursor param invalidates the entry fact — the
 // registration must fail closed (correct value through the plain path).
 test('union inline: reassigned cursor param fails closed, value exact', () => {

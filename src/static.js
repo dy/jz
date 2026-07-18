@@ -232,7 +232,7 @@ export function inlineArrayUnion(name) {
   if (ctx.scope.globals?.has(name)) return null
   const set = ctx.func.localReps?.get(name)?.arrayElemSchemaSet
   if (!set || set.length < 2) return null
-  const key = set._k ??= set.join(',')   // canonical key cached on the rep's array
+  const key = set.join(',')              // canonical key — tiny join, no expando on the shared rep array
   const u = ctx.schema.inlineUnion?.get(key)
   return u ? { key, sids: u.sids, stride: u.stride } : null
 }
