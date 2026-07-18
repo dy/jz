@@ -2237,8 +2237,16 @@ export function analyzeUnionInline(funcFacts, programFacts) {
           }
           if (typeof name === 'string' && uArr.has(name)) {
             const key = uArr.get(name)
+            // A union array is born from an empty `[]` (built by member pushes)
+            // OR from a user call whose settled return union IS this key
+            // (`const rows = initRows()`), OR aliased from another union-key
+            // binding. Any other producer poisons.
             const elems = staticArrayElems(rhs)
-            if (!(elems && elems.length === 0)) black.add(key)   // only `[]` births a union array (v1)
+            const bornEmpty = elems && elems.length === 0
+            const bornCall = Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string' &&
+              ctx.func.map?.get(rhs[1])?.arrayElemSchemaSet === key
+            const bornAlias = typeof rhs === 'string' && uArr.get(rhs) === key
+            if (!(bornEmpty || bornCall || bornAlias)) black.add(key)
             continue
           }
           if (typeof name !== 'string') verify(name, refs)
@@ -2270,15 +2278,27 @@ export function analyzeUnionInline(funcFacts, programFacts) {
           }
           return
         }
-        // A union ARRAY may cross a direct user-call boundary when the callee's
-        // param carries the SAME settled union (narrow's arrayElemSchemaSet
-        // channel — canonical string key). Cursor args stay stage 3.
+        // Two sanctioned cross-call flows to a direct user callee:
+        //   1. a union ARRAY arg — callee param carries the same settled
+        //      arrayElemSchemaSet (canonical key).
+        //   2. a CURSOR arg `arr[i]` (an element of a union array) — callee
+        //      param carries the same settled schemaIdSet, i.e. it reads `o`
+        //      through the packed-cell union carrier (`measure(rows[i])`).
+        //      The cell address is stable across the call only if the callee
+        //      grows NO union array reachable from its args; here the union
+        //      arrays are function-local (never params), so a callee cannot
+        //      reach one — trivially safe. (Passing a union array itself as a
+        //      grow-capable arg is covered by case 1's array-agreement gate.)
         if (typeof callee === 'string') {
           const cParams = programFacts.paramReps?.get(callee)
           for (let k = 0; k < args.length; k++) {
             const a = args[k]
             if (typeof a === 'string' && uArr.has(a)) {
               if (cParams?.get(k)?.arrayElemSchemaSet !== uArr.get(a)) black.add(uArr.get(a))
+            } else if (Array.isArray(a) && a[0] === '[]' && typeof a[1] === 'string' && uArr.has(a[1]) &&
+                       inbCursorPairs.has(a[1] + '\x00' + a[2])) {
+              // element cursor crossing — needs param schemaIdSet agreement.
+              if (cParams?.get(k)?.schemaIdSet !== uArr.get(a[1])) black.add(uArr.get(a[1]))
             } else visit(a)
           }
           return
@@ -2319,6 +2339,30 @@ export function analyzeUnionInline(funcFacts, programFacts) {
     let keep = null
     for (const [name, key] of m) if (registry.has(key)) (keep ??= new Map()).set(name, key)
     if (keep) ctx.schema.inlineUnionCursors.set(sig, keep)
+  }
+  // Union-CELL PARAMS (stage 3): a param whose settled schemaIdSet is a
+  // registered union — `measure(rows[i])` passes the packed cell address, so
+  // the callee reads `o.field` through the same packed carrier. Register it as
+  // a cursor of its function's sig so readVar tags reads cellI32 + unionKey and
+  // slotOf resolves via the discriminant chain. The param stays f64 (the cell
+  // address rides the OBJECT NaN-box across the call, unboxed at first read) —
+  // no sig-type narrowing, so no cross-phase ordering hazard.
+  const { paramReps } = programFacts
+  for (const func of ctx.func.list) {
+    if (func.raw || !func.sig?.params) continue
+    const reps = paramReps?.get(func.name)
+    if (!reps) continue
+    let keep = ctx.schema.inlineUnionCursors.get(func.sig) || null
+    for (let k = 0; k < func.sig.params.length; k++) {
+      const set = reps.get(k)?.schemaIdSet
+      const key = Array.isArray(set) ? set.join(',') : typeof set === 'string' ? set : null
+      if (!key || !registry.has(key)) continue
+      // A body reassignment (`o = other`) invalidates every read tag past the
+      // write — the entry fact only covers the incoming value. Fail closed.
+      if (isReassigned(func.body, func.sig.params[k].name)) continue
+      ;(keep ??= new Map()).set(func.sig.params[k].name, key)
+    }
+    if (keep) ctx.schema.inlineUnionCursors.set(func.sig, keep)
   }
   if (DBG) console.error('[inlarr-union]', 'eligible:', [...registry.keys()], 'black:', [...black])
 }

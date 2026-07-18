@@ -116,6 +116,76 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * UNION CARRIER STAGES 3+4 — COMPLETE, GATED (2026-07-18): shapes' cross-
+    call packed carrier LANDED end to end. measure(rows[i]) reads its cursor
+    param through the packed cells: ONE entry unbox, raw `i32.load offset=`
+    fields, all-i32 discriminant ladder, ZERO dynamic reads; watr then
+    inlines measure into runKernel (kernel census: 43 i32.load, 0 f64 ops,
+    12 reinterpret). Checksum 2400445253 EXACT (O0 + speed, differential vs
+    V8 on the same source). Module 13.7 → 3.37 kB. GATE (full, on the final
+    tree): native/O0/O3/wasi 3019/0 ×4, kernel leg 1139/0, selfhost 21/0,
+    fuzz 5000 clean. FIVE whole-class pieces:
+    (1) EMIT CARRIER: emitPropAccess's f64→i32 base rebuild fires on
+        `va.cellI32` and carries cellI32/unionKey through — the packed
+        branch in emitSchemaSlotRead sees the tag (the WIP's lost-tag bug).
+    (2) TERMINATOR ELSE-IF LADDER NARROWING (emitBlockBody): early-return
+        refinement generalized from `if (c) return` (no else) to full
+        terminator ladders — control past the statement implies ¬cN for
+        every level whose then-arm terminates, up to the first non-
+        terminator arm; exclusion facts STACK level by level so the
+        trailing fallback narrows to the singleton member (killed measure's
+        last 3 __dyn_get in the k===7 tail). Tail-reassignment guarded.
+    (3) i32 DISCRIMINANT LOCAL: slotI32CertainAt/slotIntCertainAt grew the
+        closed-union rep channel (mirrors slotOf's) — `const k = o.k` plans
+        an i32 local via exprType; the ladder compares i32 (7 f64.convert +
+        7 f64.eq → 0). Resolves in index.js's existing strict-slot locals
+        re-derivation (post-settlement — no cache hazard).
+    (4) ENTRY UNBOX HOIST (hoistUnionCursorUnbox, sibling of
+        hoistInvariantParamCoercions): per-read wrap(reinterpret($o))
+        chains strip to one entry i32 local — one unbox per record after
+        inlining instead of per field (34 reinterpret + 24 wrap → 12 + 2).
+    (5) SPECULATION SKIP: a sanctioned union cursor reads under
+        discriminant PROOFS — emitBranch's schema speculation cloned the
+        body into two identical packed arms behind a redundant tag guard;
+        skipped for registered cursors (3.8 → 3.37 kB).
+    SOUNDNESS HOLES CLOSED (own review): (a) cursor-param registration
+    fails closed on body reassignment (stale cellI32 tags + stale hoisted
+    cell otherwise); (b) the readVar param tag does NOT stamp ptrKind on
+    the f64 node — ptrKind on an f64-typed node makes asF64/asI64 box it
+    as a raw i32 offset (the documented f64-global hazard); tag is
+    cellI32/unionKey only, and the untagged fallback stays value-correct
+    through __ptr_offset. PINS: struct-inline +2 (16/16) — full cross-call
+    shape (JS-exact O0+speed, zero dyn, all-i32 ladder, `(local $k i32)`,
+    single entry unbox) and reassigned-cursor-param fail-closed. AS ground
+    truth (wasm2wat on the bench artifact): AS does NOT inline measure and
+    does NOT br_table — call-per-record with a raw i32 receiver param;
+    jz's kernel now matches that shape minus the sig carrier and watr
+    additionally inlines. Bench: loaded-machine first read 1.42 ms (from
+    1.86–1.92) BEFORE pieces (3)-(5); quiet verdict below.
+    REGRESSION CAUGHT + FIXED (same session, watr-side): the first quiet
+    bench read 4.59 ms — WORSE than stage-2, and O0 BEAT the speed build.
+    Mid-flight probe numbers (1363→6510µs right after piece 3) had been
+    dismissed as machine load — WRONG; own the miss. ROOT CAUSE: with the
+    ladder in i32 (piece 3), watr's chainTable pass converted it to a
+    br_table — one indirect branch that MISPREDICTS per record on the
+    data-shuffled stream (~15-20 cy), where the compare chain is 7 biased
+    (~87.5%) individually-predictable branches (~0.5 mispredict/record).
+    Its seltree dual (built for exactly this) could not rescue: the arms
+    load memory — unspeculable. FIX (watr optimize.js): chainTable cost
+    gate — every arm LIGHT (no store/call/nested control, ≤48 tokens) AND
+    some arm LOADS ⇒ keep the chain (the tagged-union record-dispatch
+    regime); all-pure light arms still table→seltree (branchless, best);
+    heavy arms (stores/calls — the interpreter regime) keep the table. vm
+    KEEPS its br_table (5.90 ms, ~2× ahead of AS 11.28) and dispatch LEADS
+    ALL incl. native C (4.51 vs 4.78). PLUS a second watr fold:
+    wrap∘or(hiC_low-zero) — the NaN-box pointer BOX at watr-inline joins
+    now unwinds completely (kernel: i64.or 0, i64.extend 0; propagate +
+    ROUNDTRIP + this compose bottom-up); i64 consts compared as canonical
+    hex STRINGS (self-host contract, no BigInt). watr suites 276/0 +
+    591/0, jz ratchet 6/6. Shapes after: 1092 µs scratch / 1.21 ms noisy
+    harness vs AS 0.99-1.10 — statistical AS parity, quiet verdict below.
+    watr changes need a PUBLISH (user-gated) before jz CI benches see them
+    — local node_modules/watr is a symlink to the watr repo.
   * UNION CARRIER STAGE 3 — ANALYSIS DONE, EMIT REMAINS (2026-07-18;
     WIP saved scratchpad/stage3-wip.patch, 102 lines; tree reverted to the
     green stage-2 state because the emit half traps). The ANALYSIS side is

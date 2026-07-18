@@ -1250,10 +1250,18 @@ export default (ctx) => {
       let base = va
       const sid = typeof obj === 'string' ? ctx.schema.idOf(obj) : null
       const guardedIds = typeof obj === 'string' ? ctx.func.refinements?.get(obj)?.schemaIds : null
-      if ((sid != null || guardedIds?.length || (typeof obj === 'string' && lookupValType(obj) === VAL.OBJECT)) && va?.type === 'f64') {
+      // A union-cursor param (stage 3) carries the packed cell address as an f64
+      // NaN-box (`va.cellI32`, tagged in readVar): unbox to the raw i32 address
+      // here too, then carry cellI32/unionKey so emitSchemaSlotRead takes the
+      // packed i32.load. Without the unbox the f64 node would reach the packed
+      // load as an address (ptrOffsetIR returns a ptrKind'd node as-is → f64 used
+      // as an address, invalid wasm). The discriminant read `o.k` has no
+      // refinement/sid, so `va.cellI32` is the trigger that fires the unbox.
+      if ((sid != null || guardedIds?.length || va?.cellI32 || (typeof obj === 'string' && lookupValType(obj) === VAL.OBJECT)) && va?.type === 'f64') {
         base = typed(['i32.wrap_i64', ['i64.reinterpret_f64', va]], 'i32')
         base.ptrKind = VAL.OBJECT
         base.ptrAux = sid ?? guardedIds?.[0]
+        if (va.cellI32) { base.cellI32 = true; base.unionKey = va.unionKey }
       }
       return emitSchemaSlotRead(base, schemaIdx,
         typeof obj === 'string' && ctx.schema.slotI32CertainAt?.(obj, prop))

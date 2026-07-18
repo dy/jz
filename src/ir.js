@@ -1280,6 +1280,20 @@ export function readVar(name) {
       node.unionKey = ctx.schema.inlineUnionCursors.get(ctx.func.current).get(name)
     }
   }
+  // Union-cursor PARAM (stage 3): the packed cell address rides the OBJECT
+  // NaN-box across the call, so the param has val=OBJECT but no ptrKind (it's a
+  // boxed f64, not an unboxed local). Tag its reads cellI32 + unionKey; the
+  // slot read (emitPropAccess) unboxes to the cell address then packedI32-loads.
+  // NO ptrKind on the tag: the node's storage IS f64 (the NaN-box), and
+  // ptrKind on an f64-typed node makes asF64/asI64 box it as if it were a raw
+  // i32 offset (the f64-global hazard above) — any non-field-read use of the
+  // param (dyn fallback, logging, compare) must keep the plain f64 carrier.
+  // (A local cursor is caught by the ptrKind branch above; this is the
+  // f64-carrier param case only.)
+  else if (ctx.schema.inlineUnionCursors?.get(ctx.func.current)?.has(name)) {
+    node.cellI32 = true
+    node.unionKey = ctx.schema.inlineUnionCursors.get(ctx.func.current).get(name)
+  }
   return node
 }
 

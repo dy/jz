@@ -1904,11 +1904,27 @@ export function emitBlockBody(node) {
       out.push(...emitVoid(s))
       // `let`/`const` decls self-record via emitDecl; only a bare reassignment needs it here.
       if (Array.isArray(s) && s[0] === '=' && typeof s[1] === 'string') setFlowVal(s[1], valTypeOf(s[2]))
-      // After an `if (cond) terminator` (no else), narrow types from !cond for subsequent statements.
-      // Skip names that are reassigned later — refinement would be unsound past the assignment.
-      if (Array.isArray(s) && s[0] === 'if' && s[3] == null && isTerminator(s[2])) {
-        const refs = extractRefinements(s[1], new Map(), false)
+      // After an `if (cond) terminator` — including a terminator else-if LADDER
+      // (`if (c0) return … else if (c1) return …`) — narrow types from the
+      // negated conditions for subsequent statements. Control reaching the next
+      // statement implies ¬cN for every level whose then-arm terminates, up to
+      // the first non-terminator arm (control can fall out of that one, but any
+      // such path still passed the falsy tests above it, so facts collected
+      // BEFORE it stay sound). Negative discriminant facts stack level by level
+      // (excludeIntegerDiscriminant reads the accumulating map first), so a
+      // closed-union receiver narrows to the trailing singleton — the canonical
+      // tag-dispatch-with-trailing-fallback shape.
+      // Skip names that are reassigned later — refinement would be unsound past
+      // the assignment — or inside the fall-through tail arm.
+      if (Array.isArray(s) && s[0] === 'if' && isTerminator(s[2])) {
+        const refs = new Map()
+        let tail = s
+        while (Array.isArray(tail) && tail[0] === 'if' && isTerminator(tail[2])) {
+          extractRefinements(tail[1], refs, false)
+          tail = tail[3]
+        }
         for (const [name, fact] of refs) {
+          if (tail != null && isReassigned(tail, name)) continue
           let reassigned = false
           for (let j = i + 1; j < stmts.length; j++)
             if (isReassigned(stmts[j], name)) { reassigned = true; break }
@@ -4269,6 +4285,11 @@ export const emitter = {
       let spec = ctx.transform.optimize?.speculateSchemaBranches !== false &&
         !(Array.isArray(branch) && branch[0] === 'if')
         ? inferSchemaBranch(branch) : null
+      // A sanctioned union CURSOR (analyzeUnionInline) already reads through
+      // the packed carrier under discriminant-refinement PROOFS — the union's
+      // closure is the guard. Speculating here clones the body into two
+      // identical packed arms behind a redundant runtime tag check.
+      if (spec && ctx.schema.inlineUnionCursors?.get(ctx.func.current)?.has(spec.name)) spec = null
       if (!spec) return withRefinements(refs, branch, () => emitVoid(branch))
       // A constant tag census predicts one schema, but cannot prove that host
       // or dynamically-constructed objects never carry the same tag. Narrow

@@ -261,10 +261,22 @@ export function initSchema(ctx) {
       return idx >= 0 && ctx.schema.slotIntCertain.get(id)?.[idx] === true
     })
     const id = ctx.schema.idOf(varName)
-    if (id == null || slotHazarded(id, prop)) return false
-    const idx = ctx.schema.list[id]?.indexOf(prop)
-    if (idx < 0) return false
-    return ctx.schema.slotIntCertain.get(id)?.[idx] === true
+    if (id != null) {
+      if (slotHazarded(id, prop)) return false
+      const idx = ctx.schema.list[id]?.indexOf(prop)
+      return idx >= 0 && ctx.schema.slotIntCertain.get(id)?.[idx] === true
+    }
+    // CLOSED schema union (rep channel — mirrors slotOf): the receiver provably
+    // holds one of a closed schema set. The claim is per-VALUE, so no slot
+    // agreement needed — but the prop must exist in EVERY member (a miss reads
+    // undefined, whose ToNumber is NaN, not an int).
+    const set = process.env.JZ_NO_UNION_CERT ? null : repOf(varName)?.schemaIdSet
+    if (set?.length) return set.every(sid => {
+      if (slotHazarded(sid, prop)) return false
+      const idx = ctx.schema.list[sid]?.indexOf(prop) ?? -1
+      return idx >= 0 && ctx.schema.slotIntCertain.get(sid)?.[idx] === true
+    })
+    return false
   }
 
   /** Strict-int32 sibling of slotIntCertainAt: every write is exactly-int32
@@ -279,10 +291,21 @@ export function initSchema(ctx) {
       return idx >= 0 && ctx.schema.slotI32Certain.get(id)?.[idx] === true
     })
     const id = ctx.schema.idOf(varName)
-    if (id == null || slotHazarded(id, prop)) return false
-    const idx = ctx.schema.list[id]?.indexOf(prop)
-    if (idx < 0) return false
-    return ctx.schema.slotI32Certain.get(id)?.[idx] === true
+    if (id != null) {
+      if (slotHazarded(id, prop)) return false
+      const idx = ctx.schema.list[id]?.indexOf(prop)
+      return idx >= 0 && ctx.schema.slotI32Certain.get(id)?.[idx] === true
+    }
+    // CLOSED schema union (rep channel — mirrors slotOf / slotIntCertainAt):
+    // strict-int32 in every member ⇒ strict for the union value. Prop must
+    // exist in every member (a miss's NaN would trunc_sat-saturate).
+    const set = process.env.JZ_NO_UNION_CERT ? null : repOf(varName)?.schemaIdSet
+    if (set?.length) return set.every(sid => {
+      if (slotHazarded(sid, prop)) return false
+      const idx = ctx.schema.list[sid]?.indexOf(prop) ?? -1
+      return idx >= 0 && ctx.schema.slotI32Certain.get(sid)?.[idx] === true
+    })
+    return false
   }
   ctx.schema.slotI32CertainBySid = (id, prop) => {
     if (id == null || slotHazarded(id, prop)) return false

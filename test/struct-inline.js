@@ -380,3 +380,81 @@ test('union inline: packed carrier is JS-exact and fully devirtualized', () => {
   is((mainSeg.match(/__dyn_get/g) || []).length, 0, 'zero dynamic reads in the kernel')
   ok(/i32\.load offset=/.test(mainSeg), 'raw packed-cell field reads')
 })
+
+// --- union carrier stage 3: cursor crosses a user call (measure(rows[i])) ---
+// The shapes-bench shape: rows born from a returning call, the element cursor
+// passed to a callee whose param carries the settled union, a full terminator
+// else-if ladder with a TRAILING fallback (narrowed by exclusion stacking),
+// the discriminant local typed i32, and ONE entry unbox for the cell address.
+test('union inline: cursor param crosses the call — packed, i32 ladder, exact', () => {
+  const SRC = `
+    const NSHAPES = 4
+    const initRows = () => {
+      const rows = []
+      let s = 0x1234abcd | 0
+      for (let i = 0; i < 256; i++) {
+        s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+        const k = s & (NSHAPES - 1)
+        const a = (s >>> 3) & 255, b = (s >>> 13) & 255
+        if (k === 0) rows.push({ k: k, x: a, y: b })
+        else if (k === 1) rows.push({ k: k, r: a })
+        else if (k === 2) rows.push({ k: k, w: a, h: b })
+        else rows.push({ k: k, n: a, s: b })
+      }
+      return rows
+    }
+    const measure = (o) => {
+      const k = o.k
+      if (k === 0) return (o.x + o.y) | 0
+      else if (k === 1) return Math.imul(o.r, 3)
+      else if (k === 2) return Math.imul(o.w, o.h)
+      return Math.imul(o.n, o.s)
+    }
+    export let main = () => {
+      const rows = initRows()
+      let h = 0
+      for (let it = 0; it < 4; it++) {
+        let sum = it | 0
+        for (let i = 0; i < rows.length; i++) sum = (sum + measure(rows[i])) | 0
+        h = (Math.imul(h, 31) + sum) | 0
+      }
+      return h
+    }`
+  const host = jsEval(SRC).main()
+  for (const optimize of [false, 'speed']) is(run(SRC, { optimize }).main(), host, `JS-exact (optimize:${optimize})`)
+  const wat = String(compile(SRC, { optimize: { level: 'speed', watr: false }, wat: true }))
+  const m0 = wat.indexOf('(func $measure')
+  const seg = wat.slice(m0, wat.indexOf('\n  (func ', m0 + 10))
+  is((seg.match(/__dyn_get/g) || []).length, 0, 'zero dynamic reads in measure')
+  is((seg.match(/f64\.(eq|convert|load)/g) || []).length, 0, 'all-i32 dispatch (no f64 ladder)')
+  ok(seg.includes('(local $k i32)'), 'discriminant local typed i32')
+  is((seg.match(/i64\.reinterpret_f64/g) || []).length, 1, 'single entry unbox of the cell address')
+})
+
+// A body reassignment of the cursor param invalidates the entry fact — the
+// registration must fail closed (correct value through the plain path).
+test('union inline: reassigned cursor param fails closed, value exact', () => {
+  const SRC = `
+    const measure = (o, alt) => {
+      o = alt
+      const k = o.k
+      if (k === 0) return (o.x + o.y) | 0
+      return Math.imul(o.n, o.s)
+    }
+    export let main = () => {
+      const rows = []
+      let s = 1
+      for (let i = 0; i < 32; i++) {
+        s = (Math.imul(s, 3) + 7) | 0
+        const k = s & 1
+        if (k === 0) rows.push({ k: k, x: s & 255, y: (s >>> 8) & 255 })
+        else rows.push({ k: 1, n: s & 255, s: (s >>> 8) & 255 })
+      }
+      const alt = { k: 0, x: 3, y: 4 }
+      let h = 0
+      for (let i = 0; i < rows.length; i++) h = (h + measure(rows[i], alt)) | 0
+      return h
+    }`
+  const host = jsEval(SRC).main()
+  for (const optimize of [false, 'speed']) is(run(SRC, { optimize }).main(), host, `JS-exact (optimize:${optimize})`)
+})
