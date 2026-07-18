@@ -6,9 +6,9 @@
     <line x1="650" y1="38" x2="650" y2="52" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
     <text x="156" y="41" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">native C</text>
     <text x="156" y="56" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">clang -O3 · ref</text>
-    <text x="662" y="49" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">0.88×</text>
+    <text x="662" y="49" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">0.87×</text>
     <circle cx="182.0" cy="45" r="8" fill="currentColor" fill-opacity="0.4">
-      <animate attributeName="cx" dur="1.4076429879093282s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="1.397804446454845s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-0.00s"/>
     </circle>
   </g>
@@ -30,9 +30,9 @@
     <line x1="650" y1="138" x2="650" y2="152" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
     <text x="156" y="141" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">Rust</text>
     <text x="156" y="156" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">rustc → wasm</text>
-    <text x="662" y="149" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">1.98×</text>
+    <text x="662" y="149" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">1.92×</text>
     <circle cx="182.0" cy="145" r="8" fill="currentColor" fill-opacity="0.4">
-      <animate attributeName="cx" dur="3.1724406867613144s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="3.0660985416510584s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-0.82s"/>
     </circle>
   </g>
@@ -42,9 +42,9 @@
     <line x1="650" y1="188" x2="650" y2="202" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
     <text x="156" y="191" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">C</text>
     <text x="156" y="206" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">clang → wasm</text>
-    <text x="662" y="199" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">2.06×</text>
+    <text x="662" y="199" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">1.96×</text>
     <circle cx="182.0" cy="195" r="8" fill="currentColor" fill-opacity="0.4">
-      <animate attributeName="cx" dur="3.292826660226537s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="3.1431122374378604s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-1.23s"/>
     </circle>
   </g>
@@ -52,11 +52,11 @@
     <rect x="174" y="243.5" width="476" height="3" rx="1.5" fill="currentColor" fill-opacity="0.1"/>
     <line x1="174" y1="238" x2="174" y2="252" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
     <line x1="650" y1="238" x2="650" y2="252" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
-    <text x="156" y="241" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">V8</text>
-    <text x="156" y="256" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">Node (JS)</text>
-    <text x="662" y="249" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">2.19×</text>
+    <text x="156" y="241" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">AssemblyScript</text>
+    <text x="156" y="256" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">asc -O3</text>
+    <text x="662" y="249" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">2.10×</text>
     <circle cx="182.0" cy="245" r="8" fill="currentColor" fill-opacity="0.4">
-      <animate attributeName="cx" dur="3.5025704274504843s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="3.3656548666010373s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-1.64s"/>
     </circle>
   </g>
@@ -64,11 +64,11 @@
     <rect x="174" y="293.5" width="476" height="3" rx="1.5" fill="currentColor" fill-opacity="0.1"/>
     <line x1="174" y1="288" x2="174" y2="302" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
     <line x1="650" y1="288" x2="650" y2="302" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
-    <text x="156" y="291" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">AssemblyScript</text>
-    <text x="156" y="306" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">asc -O3</text>
-    <text x="662" y="299" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">2.21×</text>
+    <text x="156" y="291" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">V8</text>
+    <text x="156" y="306" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">Node (JS)</text>
+    <text x="662" y="299" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">2.20×</text>
     <circle cx="182.0" cy="295" r="8" fill="currentColor" fill-opacity="0.4">
-      <animate attributeName="cx" dur="3.536988519989734s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="3.5165479960487356s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-2.05s"/>
     </circle>
   </g>
@@ -78,9 +78,9 @@
     <line x1="650" y1="338" x2="650" y2="352" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
     <text x="156" y="341" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">Go</text>
     <text x="156" y="356" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">gc → wasm</text>
-    <text x="662" y="349" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">4.76×</text>
+    <text x="662" y="349" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">4.22×</text>
     <circle cx="182.0" cy="345" r="8" fill="currentColor" fill-opacity="0.4">
-      <animate attributeName="cx" dur="7.620124862856018s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="6.7480078006776925s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-2.46s"/>
     </circle>
   </g>
@@ -90,9 +90,9 @@
     <line x1="650" y1="388" x2="650" y2="402" stroke="currentColor" stroke-opacity="0.3" stroke-width="2"/>
     <text x="156" y="391" text-anchor="end" font-size="14" font-weight="500" fill="currentColor" fill-opacity="0.82">Porffor</text>
     <text x="156" y="406" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.46">runs 4 / 45</text>
-    <text x="662" y="399" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">5.12×</text>
+    <text x="662" y="399" font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6">5.17×</text>
     <circle cx="182.0" cy="395" r="8" fill="currentColor" fill-opacity="0.4">
-      <animate attributeName="cx" dur="8.198826819269767s" repeatCount="indefinite" calcMode="linear"
+      <animate attributeName="cx" dur="8.274015678861566s" repeatCount="indefinite" calcMode="linear"
         keyTimes="0;0.5;1" values="182.0;642.0;182.0" begin="-2.87s"/>
     </circle>
   </g>
