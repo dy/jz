@@ -422,6 +422,10 @@ test('union inline: cursor param crosses the call — packed, i32 ladder, exact'
     }`
   const host = jsEval(SRC).main()
   for (const optimize of [false, 'speed']) is(run(SRC, { optimize }).main(), host, `JS-exact (optimize:${optimize})`)
+  // Reference mode: unionInline:false disables the representation wholesale —
+  // the three-way differential leg (off / on / plain JS above).
+  is(run(SRC, { optimize: { level: 'speed', unionInline: false } }).main(), host, 'JS-exact (unionInline:false)')
+  is([...(ctx.schema.inlineUnion?.keys() || [])].join(';'), '', 'reference mode registers no union')
   const wat = String(compile(SRC, { optimize: { level: 'speed', watr: false }, wat: true }))
   const m0 = wat.indexOf('(func $measure')
   const seg = wat.slice(m0, wat.indexOf('\n  (func ', m0 + 10))

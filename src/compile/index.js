@@ -1979,8 +1979,13 @@ export default function compile(ast, profiler) {
   // Whole-program SRoA: pick the schemas whose `Array<S>` instances use the
   // `structInline` carrier. Runs once the per-function reps have settled (they
   // are codegen truth) and before any function is emitted.
-  timePhase(profiler, 'structInline', () => analyzeStructInline(funcFacts, programFacts))
-  timePhase(profiler, 'unionInline', () => analyzeUnionInline(funcFacts, programFacts))
+  // `optimize: { structInline/unionInline: false }` disable a representation
+  // wholesale — the REFERENCE MODES for three-way differentials (off / on /
+  // plain JS); with an empty registry every consumer takes the plain path.
+  if (ctx.transform.optimize?.structInline !== false)
+    timePhase(profiler, 'structInline', () => analyzeStructInline(funcFacts, programFacts))
+  if (ctx.transform.optimize?.unionInline !== false)
+    timePhase(profiler, 'unionInline', () => analyzeUnionInline(funcFacts, programFacts))
   const funcs = timePhase(profiler, 'emitFuncs', () => ctx.func.list.map(func => emitFunc(func, funcFacts.get(func), programFacts)))
   funcs.push(...synthesizeBoundaryWrappers())
 

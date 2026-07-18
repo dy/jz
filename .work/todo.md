@@ -116,6 +116,37 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * AUDIT DECISIONS ADOPTED (2026-07-18c, all five answered):
+    (1) REFERENCE MODE: LANDED — `optimize: { unionInline: false }` (and
+        structInline twin) disable the representation wholesale; three-way
+        differential pins (off / on / plain JS) in struct-inline. Follow-up:
+        wire the flag into the fuzz matrix as a fourth leg.
+    (2) CARRIER-SPECIALIZED CLONES: YES — the next major unit (design
+        below). Kills the NaN-box seam, hoistUnionCursorUnbox, and the
+        all-or-nothing black on mixed callsites; the credible path to the
+        shapes strict win.
+    (3) "FASTEST WASM" = V8 headline + WASMTIME NO-REGRESSION column (the
+        chainTable episode proved substrate-sensitive reversals exist;
+        jz-wasmtime rides the bench already — the rule makes it a gate).
+    (4) NATIVE GATE = STOCK wasm2c → clang -O3 (reproducible; measures the
+        compiler's output, not pipeline heroics). Current: shapes ~12%
+        behind native C through stock w2c.
+    (5) WIP-ON-MAIN: allowed ONLY with fail-closed verification +
+        adversarial pins (the bracket/alias/escape/forward/capture/shadow
+        template) in the SAME commit — the standing rule.
+    CLONE UNIT DESIGN (the decision-2 implementation sketch, entry points
+    verified this session): for each function with VERIFIED cursor-params
+    (inlineUnionCursors post-verification), emit a sibling
+    `$name$union` whose cursor params are RAW I32 cell addresses
+    (p.type='i32', rep ptrKind=OBJECT + cursor registration → the
+    EXISTING local-cursor read path emits packed loads with zero unbox);
+    sanctioned callsites (the `()` handler's elem-cursor agreement)
+    call the clone with the raw address (no NaN-box); generic/host
+    callsites keep the f64 original. Mixed callsites then STOP blacking
+    the union (today's all-or-nothing lifts). Precedent machinery:
+    speculateTypedParams + emitSpeculativeCall (provenance leg 2) and
+    synthesizeBoundaryWrappers (sig-cloning emit). Retire
+    hoistUnionCursorUnbox + the readVar f64-param tag once landed.
   * RE-AUDIT RESPONSE — SAFETY PATCH LANDED (2026-07-18b): the external
     re-audit found a REAL cross-function miscompile class (confirmed by
     repro): a cursor-param body using NON-GRAMMAR reads — `o['x']` bracket
