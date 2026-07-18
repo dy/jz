@@ -270,7 +270,7 @@ export function initSchema(ctx) {
     // holds one of a closed schema set. The claim is per-VALUE, so no slot
     // agreement needed — but the prop must exist in EVERY member (a miss reads
     // undefined, whose ToNumber is NaN, not an int).
-    const set = process.env.JZ_NO_UNION_CERT ? null : repOf(varName)?.schemaIdSet
+    const set = repOf(varName)?.schemaIdSet
     if (set?.length) return set.every(sid => {
       if (slotHazarded(sid, prop)) return false
       const idx = ctx.schema.list[sid]?.indexOf(prop) ?? -1
@@ -299,7 +299,7 @@ export function initSchema(ctx) {
     // CLOSED schema union (rep channel — mirrors slotOf / slotIntCertainAt):
     // strict-int32 in every member ⇒ strict for the union value. Prop must
     // exist in every member (a miss's NaN would trunc_sat-saturate).
-    const set = process.env.JZ_NO_UNION_CERT ? null : repOf(varName)?.schemaIdSet
+    const set = repOf(varName)?.schemaIdSet
     if (set?.length) return set.every(sid => {
       if (slotHazarded(sid, prop)) return false
       const idx = ctx.schema.list[sid]?.indexOf(prop) ?? -1
