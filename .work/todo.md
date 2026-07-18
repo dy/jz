@@ -186,6 +186,23 @@
     harness vs AS 0.99-1.10 — statistical AS parity, quiet verdict below.
     watr changes need a PUBLISH (user-gated) before jz CI benches see them
     — local node_modules/watr is a symlink to the watr repo.
+    QUIET VERDICT (2026-07-18, landed 800c70ab jz + 03e686e watr): shapes
+    jz → V8 1.15–1.23 ms / wasmtime 1.11–1.17 vs AS 0.99–1.10 across five
+    quiet runs — SECOND WASM by median (~1.1×, from 1.7×), ahead of every
+    native row (C 1.25-1.96, Rust 1.26-1.81, Zig var). STEADY-STATE proof:
+    three sequential main() in one process → 1223/1118/1101 µs — the
+    fully-warm kernel is INSIDE AS's band; the harness's single-main
+    protocol carries the warm-up (both modules pay the same rules; V8
+    warms AS's smaller module faster). Op census: jz does FEWER per-record
+    ops than AS (no call, no rows[i] pointer indirection, same select-
+    based abs, same biased i32 ladder) — no structural slop remains; the
+    A/B disproved de-inlining (1813 vs 1155 µs). CLASSIFICATION: AS
+    statistical parity (the ulam/raymarcher category), not a strict median
+    win. Resumable strict-win lever: V8 profile (Instruments) of the
+    ~0.5 cy/record residual; op-level levers are exhausted. Blast-radius
+    spot-checks all green with checksums exact: vm 5.90 (keeps br_table,
+    ~2× ahead of AS), dispatch LEADS ALL incl. native C, raytrace 1.04
+    LEADS ALL, fft 1.04 LEADS ALL, qoi 7.70 beats AS 8.56 (1.23× rust).
   * UNION CARRIER STAGE 3 — ANALYSIS DONE, EMIT REMAINS (2026-07-18;
     WIP saved scratchpad/stage3-wip.patch, 102 lines; tree reverted to the
     green stage-2 state because the emit half traps). The ANALYSIS side is
