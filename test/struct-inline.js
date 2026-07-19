@@ -427,12 +427,16 @@ test('union inline: cursor param crosses the call — packed, i32 ladder, exact'
   is(run(SRC, { optimize: { level: 'speed', unionInline: false } }).main(), host, 'JS-exact (unionInline:false)')
   is([...(ctx.schema.inlineUnion?.keys() || [])].join(';'), '', 'reference mode registers no union')
   const wat = String(compile(SRC, { optimize: { level: 'speed', watr: false }, wat: true }))
-  const m0 = wat.indexOf('(func $measure')
+  // The carrier-specialized CLONE (audit decision 2): raw-i32 cell-address
+  // param, packed loads, no NaN-box anywhere in the callee.
+  const m0 = wat.indexOf('(func $measure$union')
+  ok(m0 >= 0, 'carrier-specialized clone emitted')
   const seg = wat.slice(m0, wat.indexOf('\n  (func ', m0 + 10))
-  is((seg.match(/__dyn_get/g) || []).length, 0, 'zero dynamic reads in measure')
+  ok(/\(param \$o i32\)/.test(seg), 'cursor param is a raw i32 cell address')
+  is((seg.match(/__dyn_get/g) || []).length, 0, 'zero dynamic reads in measure$union')
   is((seg.match(/f64\.(eq|convert|load)/g) || []).length, 0, 'all-i32 dispatch (no f64 ladder)')
   ok(seg.includes('(local $k i32)'), 'discriminant local typed i32')
-  is((seg.match(/i64\.reinterpret_f64/g) || []).length, 1, 'single entry unbox of the cell address')
+  is((seg.match(/i64\.reinterpret_f64/g) || []).length, 0, 'ZERO unbox — the address arrives raw')
 })
 
 // The 2026-07-18 re-audit's miscompile class: a cursor-param body whose uses

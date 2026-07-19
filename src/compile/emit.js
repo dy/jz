@@ -1077,7 +1077,14 @@ function tryIntDivTrunc(aNode, bNode) {
  *  must survive. A val-known param (narrow stamped `p.val`) keeps the raw 0/1
  *  ABI its body assumes; i32/pointer params are numeric positions. */
 function coerceArg(ir, param, node) {
-  if (param?.ptrKind != null) return ptrOffsetIR(ir, param.ptrKind)
+  if (param?.ptrKind != null) {
+    // PTR.OBJECT never forwards (FORWARDING_MASK — only ARRAY/HASH/SET/MAP
+    // headers relocate on growth), so the offset extracts inline instead of
+    // the forwarding-aware __ptr_offset call. The union-cursor clone's cell
+    // address rides this; watr's box∘unbox folds then erase the round-trip.
+    if (param.ptrKind === VAL.OBJECT) return asPtrOffset(ir, param.ptrKind)
+    return ptrOffsetIR(ir, param.ptrKind)
+  }
   if (node !== undefined && (param == null || (param.type !== 'i32' && param.val == null)) &&
       valTypeOf(node) === VAL.BOOL)
     return carrierF64(node, ir)

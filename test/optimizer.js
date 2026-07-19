@@ -3880,3 +3880,37 @@ export let main = (tag) => {
   ok(/nan:0x7FF80002/.test(jz.compile(negated, { wat: true, optimize: 'speed' })),
     'non-contiguous negated class stays checked')
 })
+
+// cseScalarLoad: sibling if-arms are EXCLUSIVE paths — a CSE anchor minted in
+// the then-arm must not serve loads in the else-arm (the $__cs local is unset
+// on that path; the 2026-07-18 re-audit's class). Float fields keep the union
+// carrier off so the reads stay f64 slot loads the pass targets; the record
+// stream starts on the ELSE arm so wasm zero-init cannot mask the leak.
+test('cseScalarLoad: no cross-arm anchor reuse (values exact at O2+)', () => {
+  const src = `
+export let main = () => {
+  const rows = []
+  let s = 0x1234abcd | 0
+  for (let i = 0; i < 64; i++) {
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+    const k = s & 1
+    if (k === 0) rows.push({ k: k, x: ((s >>> 3) & 255) + 0.5, y: ((s >>> 13) & 255) + 0.5 })
+    else rows.push({ k: 1, n: ((s >>> 3) & 255) + 0.5, s: ((s >>> 13) & 255) + 0.5 })
+  }
+  let h = 0
+  for (let i = 0; i < rows.length; i++) {
+    const o = rows[i]
+    const k = o.k
+    if (k === 0) h = (h + o.x + o.y) | 0
+    else h = (h + Math.imul(o.n, o.s)) | 0
+  }
+  return h
+}`
+  const truth = (() => {
+    const exports = {}
+    new Function('exports', src.replace(/export let (\w+) =/g, 'const $1 = exports.$1 ='))(exports)
+    return exports.main()
+  })()
+  for (const optimize of [false, 2, 'speed'])
+    is(run(src, { optimize }).main(), truth, `JS-exact (optimize:${optimize})`)
+})

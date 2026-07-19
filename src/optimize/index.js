@@ -117,6 +117,11 @@ export const PASS_NAMES = [
   // gated by these flags. Listing them here is load-bearing: ALL_OFF sets them false so level 0/1
   // (the self-host fast path) actually skip them, instead of `undefined !== false` running them
   // unconditionally at every level. ALL_ON keeps them on at level 2+ where they belong.
+  // REPRESENTATION passes (audit decision: optimize false/0/1 is the
+  // representation-free REFERENCE tier — plain layouts, an independent oracle
+  // for three-way differentials; `{ level: 0, unionInline: true }` re-enables):
+  'structInline',             // Array<S> packed inline cells (whole-program SRoA)
+  'unionInline',              // closed heterogeneous-record union carrier + cursor clones
   'loopIVDivMod',             // strength-reduce per-iter `i%w` / `(i/w)|0` → incremental i32 counters
   'loopSquare',               // bounded `i*i < CONST` → Math.imul (i32 product chain)
   'unrollRecurrence',         // unit-stride DP/scan: scalar-replace arr[j-1]/arr[j] recurrence + ×2 unroll
@@ -1642,14 +1647,17 @@ export function cseScalarLoad(fn) {
     }
 
     if (op === 'loop' || op === 'if') {
-      // Save table state isn't useful; recurse with cleared table, then clear after.
-      const saved = new Map(table)
+      // Recurse with a cleared table, then clear after (the compound may have
+      // written). SIBLING ARMS ARE EXCLUSIVE PATHS: a CSE anchor minted in the
+      // then-arm does not dominate the else-arm — an entry surviving into the
+      // sibling reads a $__cs local that was never set on this path (wrong
+      // value, or the zero-init). Each then/else arm gets its own fresh table.
       table.clear()
-      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
-      // After leaving compound, conservatively assume invalidation.
+      for (let i = 1; i < node.length; i++) {
+        if (Array.isArray(node[i]) && (node[i][0] === 'then' || node[i][0] === 'else')) table.clear()
+        walk(node[i], node, i)
+      }
       table.clear()
-      // Restore? No — restoring would be unsafe since the compound may have written.
-      saved.clear()
       return
     }
 

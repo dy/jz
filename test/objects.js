@@ -6,7 +6,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { i64ToF64 } from '../interop.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, belowOpt } from './_matrix.js'
 import { run } from './util.js'
 
 test('Regression: Object.assign overwrites existing field from subset schema', () => {
@@ -520,6 +520,9 @@ test('Regression: deeply nested anonymous literals', () => {
 })
 
 test('Regression: anonymous fixed-shape object literals do not allocate dynamic shadows', () => {
+  // Optimizer-output claim: at the reference tier (O0/O1, representations off)
+  // the conservative anyDynKey shadow-write legitimately emits __dyn_set.
+  if (belowOpt(2)) return
   const wat = compile(`export let f = (items) => {
     let output = []
     for (let i = 0; i < items.length; i = i + 1) {

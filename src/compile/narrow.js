@@ -2416,6 +2416,119 @@ export function specializeBimorphicTyped(programFacts) {
   }
 }
 
+/** Module-scope ITERATIVE call-site walk for specializeUnionCursorParams —
+ *  capture-free worklist, never recursive (a nested self-recursive closure
+ *  mutating captured state is the exact shape the self-hosted kernel's
+ *  closure ABI miscompiles — the dictWalk* lesson). */
+function collectUnionSites(body, callerFunc, candidateNames, sitesByCallee) {
+  const stack = [body]
+  while (stack.length) {
+    const n = stack.pop()
+    if (!Array.isArray(n)) continue
+    if (n[0] === '()' && typeof n[1] === 'string' && candidateNames.has(n[1])) {
+      const argList = n[2] == null ? [] : (Array.isArray(n[2]) && n[2][0] === ',') ? n[2].slice(1) : [n[2]]
+      // SCHEMA-IDENTITY CONTRACT (kernel-fragility episode 3): this literal
+      // must be SHAPE-IDENTICAL to program-facts' callSites entries
+      // ({ callee, argList, callerFunc, node } — same keys, same order) so it
+      // registers as the SAME schema. A new shape sharing `argList`/`node` at
+      // different slots shifts the schema table and trips the OPEN
+      // unguarded-unique-prop structural-resolution hole INSIDE the kernel's
+      // own compiled passes (rest-spec broke by presence alone).
+      const site = { callee: n[1], argList, callerFunc, node: n }
+      const list = sitesByCallee.get(n[1])
+      if (list) list.push(site); else sitesByCallee.set(n[1], [site])
+    }
+    for (let i = 1; i < n.length; i++) stack.push(n[i])
+  }
+}
+
+/** Carrier-specialized union-cursor clones (audit decision 2): a function
+ *  whose params are VERIFIED union cursors (analyzeUnionInline's grammar walk
+ *  + registry) gets a `$union` sibling whose cursor params are RAW I32
+ *  packed-cell addresses (type 'i32', ptrKind OBJECT — PTR.OBJECT never
+ *  forwards, so the address is call-stable). The clone body rides the
+ *  EXISTING local-cursor emit path (readVar's rep.ptrKind +
+ *  inlineUnionCursors branch → packed i32 loads, ZERO unbox); every
+ *  sanctioned callsite (`measure(rows[i])`) rewrites to the clone and passes
+ *  the raw address — no NaN-box crosses the call. The f64 original keeps the
+ *  generic body for any caller specialization can't see.
+ *  Runs AFTER analyzeUnionInline (registry + verified cursors settled),
+ *  BEFORE emitFuncs. Sites are collected FRESH over the current AST
+ *  (programFacts.callSites is stale at this phase — plan's loop rewrites
+ *  clone body nodes). KERNEL-SAFE STYLE throughout: plain loops (no nested
+ *  predicate arrows), manual Map copies — this function is compiled INTO
+ *  the self-host kernel and its earlier form broke the kernel by presence.
+ */
+export function specializeUnionCursorParams(programFacts) {
+  const clones = []
+  const cursorsBySig = ctx.schema.inlineUnionCursors
+  if (!cursorsBySig?.size) return clones
+  const { valueUsed, paramReps } = programFacts
+  const candidateNames = new Set()
+  for (const func of ctx.func.list)
+    if (!func.raw && func.sig && cursorsBySig.get(func.sig)?.size) candidateNames.add(func.name)
+  const sitesByCallee = new Map()
+  for (const func of ctx.func.list) if (!func.raw && func.body)
+    collectUnionSites(func.body, func, candidateNames, sitesByCallee)
+  const originals = ctx.func.list.slice()
+  for (const func of originals) {
+    if (func.exported || func.raw || func.rest || !func.body || valueUsed.has(func.name)) continue
+    const cursors = cursorsBySig.get(func.sig)
+    if (!cursors?.size) continue
+    const idxs = []
+    for (let k = 0; k < func.sig.params.length; k++) {
+      const p = func.sig.params[k]
+      if (p.type !== 'i32' && p.ptrKind == null && cursors.has(p.name) && func.defaults?.[p.name] == null)
+        idxs.push(k)
+    }
+    if (!idxs.length) continue
+    const sites = sitesByCallee.get(func.name)
+    if (!sites?.length) continue
+    // Every static site must pass an element of a REGISTERED union array of
+    // the CALLING function whose key matches the callee's cursor registration
+    // — explicit carrier PROVENANCE, not shape-matching. Fail closed.
+    let ok = true
+    for (let si = 0; si < sites.length && ok; si++) {
+      for (let ii = 0; ii < idxs.length && ok; ii++) {
+        const k = idxs[ii]
+        const a = sites[si].argList[k]
+        if (!(Array.isArray(a) && a[0] === '[]' && typeof a[1] === 'string' &&
+          ctx.schema.inlineUnionArrays?.get(sites[si].callerFunc?.sig)?.get(a[1]) === cursors.get(func.sig.params[k].name)))
+          ok = false
+      }
+    }
+    if (!ok) continue
+    let cloneName = `${func.name}$union`
+    let n = 0
+    while (ctx.func.names.has(cloneName)) cloneName = `${func.name}$union$${++n}`
+    const cloneParams = []
+    for (let k = 0; k < func.sig.params.length; k++) {
+      const p = func.sig.params[k]
+      // Same contract: match specializeBimorphicTyped's param-literal shape
+      // ({ name, type, ptrKind, ptrAux } — ptrAux null behaves as absent).
+      if (idxs.includes(k)) cloneParams.push({ name: p.name, type: 'i32', ptrKind: VAL.OBJECT, ptrAux: null })
+      else cloneParams.push({ ...p })
+    }
+    const cloneSig = { params: cloneParams, results: [...func.sig.results] }
+    const clone = { ...func, name: cloneName, sig: cloneSig }
+    ctx.func.list.push(clone)
+    ctx.func.map.set(cloneName, clone)
+    ctx.func.names.add(cloneName)
+    clones.push(clone)
+    const reps = paramReps.get(func.name)
+    if (reps) {
+      const cloneReps = new Map()
+      for (const [k, r] of reps) cloneReps.set(k, { ...r })
+      paramReps.set(cloneName, cloneReps)
+    }
+    const cloneCursors = new Map()
+    for (const [cn, ck] of cursors) cloneCursors.set(cn, ck)
+    cursorsBySig.set(cloneSig, cloneCursors)
+    for (const site of sites) site.node[1] = cloneName
+  }
+  return clones
+}
+
 /**
  * Speculative typed-param specialization — the GUARDED sibling of
  * specializeBimorphicTyped, for params whose args can never be statically

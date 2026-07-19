@@ -42,6 +42,7 @@ import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { narrowBoundedSquare } from './loop-square.js'
+import { specializeUnionCursorParams } from './narrow.js'
 import { unrollRecurrence } from './loop-recurrence.js'
 import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
@@ -1984,8 +1985,22 @@ export default function compile(ast, profiler) {
   // plain JS); with an empty registry every consumer takes the plain path.
   if (ctx.transform.optimize?.structInline !== false)
     timePhase(profiler, 'structInline', () => analyzeStructInline(funcFacts, programFacts))
-  if (ctx.transform.optimize?.unionInline !== false)
+  if (ctx.transform.optimize?.unionInline !== false) {
     timePhase(profiler, 'unionInline', () => analyzeUnionInline(funcFacts, programFacts))
+    // Carrier-specialized clones (after the registry settles): verified
+    // cursor-param functions get a raw-i32 `$union` sibling; sanctioned
+    // callsites rewrite to it — no NaN-box crosses the call.
+    // The clone's facts must derive under ITS sig (the pointer-ABI param
+    // registration + reps seeding live in analyzeFuncForEmit) — re-run it
+    // per clone rather than sharing the original's f64-sig facts.
+    timePhase(profiler, 'unionClones', () => {
+      for (const clone of specializeUnionCursorParams(programFacts)) {
+        const facts = analyzeFuncForEmit(clone, programFacts)
+        funcFacts.set(clone, facts)
+        captureFuncInspect(clone, facts, programFacts)
+      }
+    })
+  }
   const funcs = timePhase(profiler, 'emitFuncs', () => ctx.func.list.map(func => emitFunc(func, funcFacts.get(func), programFacts)))
   funcs.push(...synthesizeBoundaryWrappers())
 

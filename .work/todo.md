@@ -10,7 +10,8 @@
       already carried the hot path (−2% runtime). Residual = RECORD LAYOUT
       (f64 slots + unbox/trunc per field vs AS's raw i32 fields). Landing
       path: the union structInline carrier — max-K-stride packed i32 cells
-      (20 B/record, contiguous; beats AS's ref-chasing StaticArray), cursor
+      (24 B/record — ⌈stride/2⌉ 8-byte cells incl. one pad lane; exact 20 B
+      needs the byte-stride follow-up; beats AS's ref-chasing StaticArray), cursor
       crosses `measure(rows[i])` via the pointer-ABI param spec, analyze
       verification mirrors the discriminant refinement.
     - qoi: jz 8.59ms vs rust 6.50 (1.32×); jz BEATS as 8.64 + v8 10.77.
@@ -83,8 +84,9 @@
     already carried the hot path; the honest residual vs AS (1.86 vs 1.05,
     quiet M4) is the RECORD LAYOUT: f64 slot cells + unbox/trunc per field vs
     AS's raw i32 fields. NEXT (recorded, designed): the union structInline
-    carrier — max-K-stride packed i32 cells (20 B/record, contiguous — beats
-    AS's ref-chasing StaticArray), cursor-as-call-arg via the pointer-ABI
+    carrier — max-K-stride packed i32 cells (24 B/record — ⌈stride/2⌉ 8-byte
+    cells incl. a pad lane; 20 B needs the byte-stride follow-up), contiguous
+    — beats AS's ref-chasing StaticArray), cursor-as-call-arg via the pointer-ABI
     param spec (`measure(rows[i])`; AST inline blocked by returnCount>1),
     analyze-time read verification mirroring the discriminant refinement.
   * SELFHOST KERNEL-LEG RED — ROOT-CAUSED + FIXED (2026-07-18):
@@ -116,6 +118,107 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * KERNEL-FRAGILITY EPISODE 3 — SCHEMA-IDENTITY CONTRACT (2026-07-19): the
+    clone-pass batch broke the kernel leg (rest-clone WAT + rest-sum parity)
+    by PRESENCE ALONE — the pass never executed in-kernel (unionInline off
+    at the kernel's optimize:false) yet its compilation in corrupted the
+    kernel's own rest specialization. FOUR-STEP BISECT (each dist rebuild +
+    filtered kernel run): PASS_NAMES revert → still red (+OOB morph when
+    the union verifier re-ran in-kernel); coerceArg + ladder revert → still
+    red (both exonerated); clone-pass STUB → GREEN 86/86; kernel-safe STYLE
+    rewrite (plain loops, manual Map copies) → still red — style wasn't it.
+    MECHANISM (confirmed by the fix): the pass introduced NEW OBJECT-LITERAL
+    SCHEMAS — a 3-key site `{ argList, node, callerSig }` and a 3-key param
+    `{ name, type, ptrKind }` — whose props collide at DIFFERENT SLOTS with
+    existing shapes (program-facts' 4-key `{ callee, argList, callerFunc,
+    node }` site; bimorphic's 4-key param). The schema-table shift trips the
+    RECORDED OPEN unguarded-unique-prop structural-resolution hole INSIDE
+    the kernel's own compiled passes: rest-spec's `site.argList`/`site.node`
+    reads mis-resolved. FIX (the slotOf-not-find contract pattern): new
+    literals in compiler source must be SHAPE-IDENTICAL (same keys, same
+    order) to the existing schema they conceptually share — sites now build
+    `{ callee, argList, callerFunc, node }` (callerFunc carries the func;
+    .sig read at use), params `{ name, type, ptrKind, ptrAux: null }`.
+    Kernel 86/86 with the FULL pass present; pins 17/17. THE ROOT CAUSE is
+    the open unique-prop hole — PROMOTED to the next correctness hunt with
+    this episode as its third live manifestation (probe-min2.mjs is the
+    minimal repro; the guarded/dyn fix is the recorded remedy). The kernel
+    leg is the standing pin for the class (native legs structurally cannot
+    catch kernel-only schema-shift corruption).
+  * AUDIT R2 QUESTIONS ANSWERED (2026-07-18f, all three adopted):
+    (Q1) THE 5% BAND IS ABSOLUTE — "statistical parity" never satisfies the
+        gate; it only classifies. The fairness concern moves to Q3 (measure
+        correctly rather than weaken the criterion). shapes stays RED until
+        a paired-median verdict lands inside 1.05× of AS.
+    (Q2) LANDED — optimize false/0/1 is now the REPRESENTATION-FREE
+        REFERENCE TIER: structInline + unionInline registered as first-class
+        PASS_NAMES (kills the audit's hidden-flags item too) with ALL_OFF
+        defaults at 0/1 and ALL_ON at 2+/speed/size;
+        `{ level: 0, unionInline: true }` re-enables explicitly. The fuzz
+        matrix {0,1,2,3} is now automatically a reference-vs-representation
+        differential on every seed. O0/kernel legs re-gated (battery).
+    (Q3) ADOPTED AS POLICY — release verdicts use PAIRED, order-aware
+        measurement: per-run jz/AS ratios from the same harness invocation
+        (never cross-run absolutes), ≥4 repetitions, medians of ratios;
+        full-table single-pass runs are demoted to smoke evidence (the
+        11-fail full run vs green focused reruns proved the instability).
+        Harness `--paired` mode is the recorded follow-up.
+  * RE-AUDIT ROUND 2 RESPONSE (2026-07-18e): the second audit CONFIRMED the
+    prior fixes (carrier fail-closed cases, chainTable gate, reference mode,
+    clone direction) and found ONE new deterministic miscompile:
+    cseScalarLoad CROSS-ARM ANCHOR REUSE — the pass cleared its table at
+    if-entry but walked ALL children with ONE shared table, so a load
+    CSE'd in the then-arm anchored a $__cs local the ELSE-arm then read
+    (unset on that path; fires at O2+ on f64 slot loads — the union
+    carrier masks it on int records, floats expose it: repro 358296 vs
+    224288). FIX: per-arm table isolation (each then/else clears on
+    entry — sibling arms are exclusive paths, no dominance). Sibling
+    sweep: the pure-binop CSE twin was already DELETED in the ablation
+    sweep (orphaned doc comment); cse-load.js is sound (per-';'-sequence
+    tables, control flushes; ternary cross-arm merge hoists a pure-index
+    CHECKED read — no trap, value-exact). PIN: test/optimizer.js
+    first-iteration-else float differential (201/201). AUDIT'S CLONE
+    FINDING WAS STALE: it measured the tree BEFORE the fresh-site-
+    collection fix landed in the working tree — the clone now receives
+    calls (pin asserts clone presence at watr:false, where jz's own DCE
+    would drop an uncalled clone; probe shows call sites rewritten).
+    LEDGER CORRECTIONS per kill-list: 20 B/record claim → 24 B (⌈5/2⌉
+    8-byte cells, one pad lane; exact 20 B = byte-stride follow-up).
+    "Statistical parity" LANGUAGE: retained as a classification ONLY —
+    the hard 5% per-case band stays RED on shapes until the user answers
+    audit Q1 (parity-overrides-band); the V1 checkbox stays open.
+    AUDIT'S NEW QUESTIONS (user's to answer): (1) is the 5% band absolute
+    or may parity override; (2) should optimize:false imply
+    unionInline:false by default; (3) must release measurements be
+    paired/order-alternated (11-fail full run vs green focused reruns —
+    harness instability is real).
+  * CARRIER-SPECIALIZED CLONES LANDED (2026-07-18d — audit decision 2
+    implemented): specializeUnionCursorParams (narrow.js, mirrors
+    specializeBimorphicTyped's construction rules) — a function whose params
+    are VERIFIED union cursors gets a `$union` sibling with RAW I32
+    cell-address params (type 'i32', ptrKind OBJECT); the clone body rides
+    the EXISTING stage-2 local-cursor emit path with ZERO new emit
+    machinery: `$measure$union (param $o i32)` emits `i32.load($o)` /
+    `i32.load($o+4)` — the AssemblyScript-exact shape, ZERO unbox, ZERO
+    NaN-box crossing the call (pinned: zero i64.reinterpret in the clone).
+    Sanctioned callsites rewrite to the clone; the f64 original remains as
+    the generic fallback (treeshakes when uncalled). coerceArg gained the
+    OBJECT inline offset extraction (PTR.OBJECT never forwards — no
+    __ptr_offset call for OBJECT-kind pointer args, benefits all pointer-ABI
+    OBJECT params). TWO integration bugs root-caused en route: (1) the clone
+    needs its OWN analyzeFuncForEmit run (facts derive under ITS sig — the
+    pointer-ABI registration lives there; sharing the original's f64-sig
+    facts emitted numeric coercions of the address); (2) programFacts.
+    callSites are STALE at the emit gateway — plan's loop rewrites clone
+    body nodes, so the early site refs silently no-op'd the rewrite (worked
+    at O0, masked at speed by watr's box∘unbox folds); the pass now
+    collects sites FRESH over the current AST. Steady-state A/B: clone
+    ≥ pre-clone (~4% on a thermal-degraded machine); kernel census leanest
+    yet (24 i32.load, 48 local.get, zero box ops). Retirement of the f64
+    fallback machinery (hoistUnionCursorUnbox, readVar f64 tag,
+    emitPropAccess cellI32 trigger) deferred until the fallback proves dead
+    across the corpus. Quiet strict-win re-verdict owed (machine ~40%
+    thermal-degraded at measurement time).
   * AUDIT DECISIONS ADOPTED (2026-07-18c, all five answered):
     (1) REFERENCE MODE: LANDED — `optimize: { unionInline: false }` (and
         structInline twin) disable the representation wholesale; three-way
@@ -1340,7 +1443,7 @@
       internStrings, propagateSingleUse — disabling it is smaller AND faster to
       compile). THE fold that halves jz.js: migrate src/optimize (vectorize.js
       369KB + index.js 229KB) INTO watr — one optimizer, one walker infra.
-  * [ ] How to increase the compilation speed of jz.js? Is there pipeline optimizations, streamlining or better abstraction altogether to make compilation speed multiple times faster? Some folding or waste cutout possible - what can be killed of merged without effect?
+  * [ ] How to increase the compilation speed of jz.js? Is there pipeline optimizations, streamlining or better abs3traction altogether to make compilation speed multiple times faster? Some folding or waste cutout possible - what can be killed of merged without effect?
     * measured: watr's generic walkers = ~30% of compile (walk 679ms/profile);
       tallyLocals specialized upstream (watr e83c858); dead-pass deletions bought
       ~5-8%/corpus. Next: specialize writesOf/cseFactsOf/hashFunc callbacks or
