@@ -437,6 +437,11 @@ test('union inline: cursor param crosses the call — packed, i32 ladder, exact'
   is((seg.match(/f64\.(eq|convert|load)/g) || []).length, 0, 'all-i32 dispatch (no f64 ladder)')
   ok(seg.includes('(local $k i32)'), 'discriminant local typed i32')
   is((seg.match(/i64\.reinterpret_f64/g) || []).length, 0, 'ZERO unbox — the address arrives raw')
+  // Byte-stride ratchet: this union's max member is 3 fields → records are
+  // 12 B (stride·4, NO pad cell — not ⌈3/2⌉·8 = 16). The caller's element
+  // math must multiply by the byte stride.
+  ok(/\(i32\.mul[\s\S]{0,80}?\(i32\.const 12\)|\(i32\.const 12\)[\s\S]{0,80}?\(i32\.mul/.test(wat),
+    'byte-stride element math (12 B records, no pad cell)')
 })
 
 // The 2026-07-18 re-audit's miscompile class: a cursor-param body whose uses

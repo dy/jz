@@ -849,12 +849,19 @@ export default (ctx) => {
       // structInline handles (src/analyze.js analyzeStructInline).
       const u = inlineArrayUnion(arr)
       if (u != null) {
-        // Union cell cursor: element i = ⌈stride/2⌉ 8-byte cells of packed i32
-        // fields, base + i·cells·8. Reads resolve per-branch via slotOf
-        // (refinement chain); the verifier proved every use resolves.
+        // Union cell cursor: BYTE-STRIDE records — element i lives at
+        // base + i·stride·4 (stride i32 fields, NO pad lane: a stride-5
+        // record is 20 B, not ⌈5/2⌉·8 = 24). The header len counts physical
+        // 8-byte cells (⌈n·s/8⌉ — alloc/grow untouched); the logical count
+        // recovers exactly as ⌊len·8/s⌋ for every s ≥ 8. Reads resolve
+        // per-branch via slotOf (refinement chain); the verifier proved
+        // every use resolves.
+        const strideB = u.stride * 4
         const baseI32 = tempI32('ub')
-        const cell = typed(structInline(u.stride, true).ops.elemAddr(
-          ['local.tee', `$${baseI32}`, arrBase()], vi), 'i32')
+        const base = ['local.tee', `$${baseI32}`, arrBase()]
+        const cell = typed(typeof vi === 'number'
+          ? (vi === 0 ? base : ['i32.add', base, ['i32.const', vi * strideB]])
+          : ['i32.add', base, ['i32.mul', vi, ['i32.const', strideB]]], 'i32')
         cell.ptrKind = VAL.OBJECT
         cell.cellI32 = true
         cell.unionKey = u.key
@@ -1048,12 +1055,13 @@ export default (ctx) => {
     let inlK = inlSid != null ? ctx.schema.list[inlSid].length : 0
     let inlPacked = inlSid != null && ctx.schema.inlineCellI32?.has(inlSid)
     let inlCpe = inlSid != null ? structInline(inlK, inlPacked).cpe : 1
+    let unionB = 0                  // byte stride of a union element (0 = not a union push)
     if (inlUnion) {
-      // Union push: each member literal stores its OWN K fields at slots
-      // 0..K-1 then zero-fills to the uniform ⌈stride/2⌉·2 i32 lane count
-      // (incl. the odd pad) — after which the packed store loop below handles
-      // it exactly like a single-sid packed push of K = 2·cpe fields.
-      const cpe = Math.ceil(inlUnion.stride / 2)
+      // BYTE-STRIDE union push: each member literal stores its OWN K fields
+      // at slots 0..K-1 then zero-fills to the uniform `stride` i32 lanes —
+      // a record is stride·4 bytes with NO pad cell (stride 5 → 20 B, not
+      // 24). The union-specific store loop below keeps the header len in
+      // physical 8-byte cells (⌈n·strideB/8⌉ — alloc/grow untouched).
       const flat = []
       for (const v of vals) {
         const parsed = Array.isArray(v) && v[0] === '{}' ? staticObjectProps(v.slice(1)) : null
@@ -1062,13 +1070,10 @@ export default (ctx) => {
           err('union structInline Array.push expects a member-schema literal')
         const fields = structLiteralFields(v, msid)
         flat.push(...fields)
-        for (let z = fields.length; z < cpe * 2; z++) flat.push([, 0])
+        for (let z = fields.length; z < inlUnion.stride; z++) flat.push([, 0])
       }
       vals = flat
-      inlSid = inlUnion.sids[0]     // any member — only gates the flatten path below (skipped)
-      inlK = cpe * 2
-      inlPacked = true
-      inlCpe = cpe
+      unionB = inlUnion.stride * 4
     }
     if (inlSid != null && !inlUnion) {
       const flat = []
@@ -1080,7 +1085,9 @@ export default (ctx) => {
       vals = flat
     }
     // Physical cells this push appends (grow target + len increment basis).
-    const pushCells = inlPacked ? inlCpe * (vals.length / inlK) : vals.length
+    // Union: ⌈elems·strideB/8⌉ — a safe over-reserve (ceil(a+b) ≤ ceil a + ceil b).
+    const pushCells = unionB ? Math.ceil((vals.length / inlUnion.stride) * unionB / 8)
+      : inlPacked ? inlCpe * (vals.length / inlK) : vals.length
     // Out-of-line fast path: single value, named known-ARRAY receiver. One call +
     // var update instead of ~30 inlined instructions — the dominant size cost of
     // push-heavy code (e.g. watr's WASM emitter).
@@ -1141,7 +1148,29 @@ export default (ctx) => {
       )
     }
 
-    if (inlPacked) {
+    const ulg = unionB ? tempI32('ul') : null
+    if (unionB) {
+      // BYTE-STRIDE union store: logical count ⌊len·8/strideB⌋ (exact — see
+      // the [] arm), byte cursor from it; each element writes `stride` raw
+      // i32 lanes then advances by strideB bytes; the header len lands back
+      // in physical cells as ⌈logical·strideB/8⌉.
+      const nl = inlUnion.stride
+      const ubc = tempI32('uc')
+      body.push(
+        ['local.set', `$${ulg}`, ['i32.div_s', ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]], ['i32.const', unionB]]],
+        ['local.set', `$${ubc}`, ['i32.add', ['local.get', `$${pushBase}`], ['i32.mul', ['local.get', `$${ulg}`], ['i32.const', unionB]]]])
+      for (let e = 0; e < vals.length; e += nl) {
+        for (let j = 0; j < nl; j++)
+          body.push(['i32.store',
+            j === 0 ? ['local.get', `$${ubc}`] : ['i32.add', ['local.get', `$${ubc}`], ['i32.const', j * 4]],
+            asI32(emit(vals[e + j]))])
+        body.push(
+          ['local.set', `$${ubc}`, ['i32.add', ['local.get', `$${ubc}`], ['i32.const', unionB]]],
+          ['local.set', `$${ulg}`, ['i32.add', ['local.get', `$${ulg}`], ['i32.const', 1]]])
+      }
+      body.push(['local.set', `$${len}`,
+        ['i32.shr_s', ['i32.add', ['i32.mul', ['local.get', `$${ulg}`], ['i32.const', unionB]], ['i32.const', 7]], ['i32.const', 3]]])
+    } else if (inlPacked) {
       // Packed i32 cells: per element, K raw i32 stores at `base + len*8 + j*4`
       // (schema order — structLiteralFields already ordered the flatten), then
       // len advances by ⌈K/2⌉ physical cells. Values are exact by the
@@ -1181,11 +1210,13 @@ export default (ctx) => {
         body.push(['local.set', `$${arr}`, ['local.get', `$${t}`]])
     }
     // structInline: `len` counts physical cells — `.push` returns the JS array
-    // length, i.e. the logical element count `len / cellsPerElem`.
+    // length, i.e. the logical element count (byte-stride unions carry it in
+    // `ulg` directly; cell carriers divide by cells-per-element).
     const lenDiv = inlPacked ? inlCpe : inlK
-    body.push(['f64.convert_i32_s', lenDiv > 1
-      ? ['i32.div_s', ['local.get', `$${len}`], ['i32.const', lenDiv]]
-      : ['local.get', `$${len}`]])
+    body.push(['f64.convert_i32_s', unionB ? ['local.get', `$${ulg}`]
+      : lenDiv > 1
+        ? ['i32.div_s', ['local.get', `$${len}`], ['i32.const', lenDiv]]
+        : ['local.get', `$${len}`]])
 
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }

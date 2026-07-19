@@ -118,6 +118,38 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * BYTE-STRIDE CARRIER + QOI FOLD + SHAPES HONESTY CORRECTION (2026-07-19b):
+    (1) BYTE-STRIDE 20 B UNION RECORDS LANDED (audit layout item): union
+        arrays now pack elements at stride·4 bytes with NO pad cell (stride 5
+        → 20 B, was 24). Header len stays PHYSICAL 8-byte cells (⌈n·s/8⌉ —
+        alloc/grow untouched); logical count = ⌊len·8/s⌋, EXACT for every
+        stride ≥ 2 (ceil(x) − x < 1 < s/8·… proof at the [] arm). Three
+        sites: [] elemAddr (base + i·strideB — one mul, SIMPLER than the
+        cell mul+shl), length read, push (stride lanes + byte cursor +
+        ceil-cell header; init-only cost). Pins 17/17 + the 12-B stride
+        ratchet assertion; checksums exact. PERF: NEUTRAL on shapes by
+        paired A/B (records are L2-resident + prefetched — the pad lane
+        cost no time); kept as the honest FOOTPRINT win (−17%/record) +
+        simpler hot-path math.
+    (2) QOI extend8_s LANDED (watr 5.7.10, published + jz dep bumped):
+        strength fold `(x<<K)>>K → i32.extend{8,16}_s` — qoi's 6 recorded
+        sites mint, zero shift-pairs left; A/B neutral-to-positive
+        (2/3 pairs favor, checksums exact); sound + smaller, keep. Pinned
+        in watr (278/0) incl. mismatched-shift negative.
+    (3) SHAPES CLAIM CORRECTED (own measurement error): the earlier
+        "steady-state parity" compared jz's warm 3rd-main against AS's
+        HARNESS number — apples-oranges. Clean alternated FOCUSED pairs
+        (both runners, no in-loop compiles, 6 rounds): AS ~950-965 µs,
+        jz ~1100-1165 → ratio ≈ 1.13-1.15 STABLE, warm included. The
+        full-harness paired protocol is additionally contaminated for jz's
+        row by its own in-process compile heat (jz 1.13-1.51 swings; AS
+        stable) — the alternated-focused form is the canonical Q3 protocol.
+        A/B EXHAUSTED at op level: inline beats call (1.13 vs 1.70 with
+        the raw-i32 clone callee), 20B ≈ 24B, census ≤ AS. The ~0.8
+        cy/record residual is V8-codegen-level (regalloc/scheduling of the
+        fused loop) — next lever = machine-code profiling (Instruments/
+        xctrace or a V8 debug build), recorded as the frontier. shapes
+        stays RED under the absolute band at ≈1.14×.
   * KERNEL-FRAGILITY EPISODE 3 — SCHEMA-IDENTITY CONTRACT (2026-07-19): the
     clone-pass batch broke the kernel leg (rest-clone WAT + rest-sum parity)
     by PRESENCE ALONE — the pass never executed in-kernel (unionInline off

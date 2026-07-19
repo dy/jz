@@ -1421,9 +1421,16 @@ export default (ctx) => {
       const inlSid = inlineArraySid(obj)
       const inlU = inlSid == null ? inlineArrayUnion(obj) : null
       if (inlSid != null || inlU != null) {
-        const cpe = inlU != null ? Math.ceil(inlU.stride / 2)
-          : structInline(ctx.schema.list[inlSid].length, ctx.schema.inlineCellI32?.has(inlSid)).cpe
         const physLen = ['i32.load', ['i32.sub', ptrOffsetIR(asF64(emit(obj)), VAL.ARRAY), ['i32.const', 8]]]
+        // Union arrays are BYTE-STRIDE (stride·4 B/record, header len in
+        // physical 8-byte cells): logical = ⌊len·8 / strideB⌋ — exact for
+        // every stride ≥ 2 (ceil(n·s/8)·8 < (n+1)·s always holds there).
+        if (inlU != null) {
+          const strideB = inlU.stride * 4
+          return typed(['f64.convert_i32_s',
+            ['i32.div_s', ['i32.shl', physLen, ['i32.const', 3]], ['i32.const', strideB]]], 'f64')
+        }
+        const cpe = structInline(ctx.schema.list[inlSid].length, ctx.schema.inlineCellI32?.has(inlSid)).cpe
         return typed(['f64.convert_i32_s', cpe > 1 ? ['i32.div_s', physLen, ['i32.const', cpe]] : physLen], 'f64')
       }
       const rep = typeof obj === 'string' ? repOf(obj) : null
