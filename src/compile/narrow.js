@@ -2427,13 +2427,12 @@ function collectUnionSites(body, callerFunc, candidateNames, sitesByCallee) {
     if (!Array.isArray(n)) continue
     if (n[0] === '()' && typeof n[1] === 'string' && candidateNames.has(n[1])) {
       const argList = n[2] == null ? [] : (Array.isArray(n[2]) && n[2][0] === ',') ? n[2].slice(1) : [n[2]]
-      // SCHEMA-IDENTITY CONTRACT (kernel-fragility episode 3): this literal
-      // must be SHAPE-IDENTICAL to program-facts' callSites entries
-      // ({ callee, argList, callerFunc, node } — same keys, same order) so it
-      // registers as the SAME schema. A new shape sharing `argList`/`node` at
-      // different slots shifts the schema table and trips the OPEN
-      // unguarded-unique-prop structural-resolution hole INSIDE the kernel's
-      // own compiled passes (rest-spec broke by presence alone).
+      // Shape-identical to program-facts' callSites entries — shares their
+      // schema instead of minting a new one. (Episode 3's hard "schema-identity
+      // contract" is retired: prepare's binding census now bars cross-function
+      // name collisions from the vars channel, so a differently-shaped literal
+      // is no longer a correctness hazard — matching the shape is just schema-
+      // table hygiene.)
       const site = { callee: n[1], argList, callerFunc, node: n }
       const list = sitesByCallee.get(n[1])
       if (list) list.push(site); else sitesByCallee.set(n[1], [site])

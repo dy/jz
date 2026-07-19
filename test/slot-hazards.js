@@ -262,3 +262,57 @@ export let main = () => (use(mk()) * 10 + use(other())) | 0`
   for (const optimize of LEVELS)
     is(run(src, { optimize }).main(), 79, `O${optimize}: shared-slot structural read exact`)
 })
+
+// Cross-function bare-name binding collision (the kernel-fragility episodes'
+// TRUE root, three times manifested): ctx.schema.vars is module-global and
+// keyed by BARE NAME, so one function's `const site = {…}` literal used to
+// resolve ANOTHER function's same-named binding — a for-of binding, a param, a
+// non-literal decl — through the literal's layout: a RAW fixed-slot load at a
+// foreign offset, no guard, no dyn fallback, at EVERY optimize level (the
+// self-host kernel's rest-spec read `site.callee` off the wrong slot when an
+// unrelated pass added a differently-ordered literal). prepare's binding
+// census now bars such names from the vars channel (per-function ValueReps
+// keep devirtualizing); reads fall to the guarded/dyn path.
+test('slot-hazards: literal decl in one function must not type another function\'s for-of binding', () => {
+  const src = `
+const use = (arr) => { let s = 0; for (const site of arr) s += site.callee; return s }
+const mk = () => { const a = []; a.push({ callee: 5, argList: 1, callerFunc: 2, node: 3 }); return a }
+const other = () => { const site = { argList: 9, callerFunc: 8, node: 7, callee: 6 }; return site.node }
+export let main = () => use(mk()) + other()`
+  for (const optimize of LEVELS)
+    is(run(src, { optimize }).main(), 12, `O${optimize}: for-of binding reads its own layout`)
+})
+
+test('slot-hazards: literal decl in one function must not type another function\'s param', () => {
+  const src = `
+const use = (site) => site.callee
+const mk = () => ({ callee: 5, argList: 1, callerFunc: 2, node: 3 })
+const other = () => { const site = { argList: 9, callerFunc: 8, node: 7, callee: 6 }; return site.node }
+export let main = () => use(mk()) + other()`
+  for (const optimize of LEVELS)
+    is(run(src, { optimize }).main(), 12, `O${optimize}: param reads its own layout`)
+})
+
+test('slot-hazards: binding-order independence + own-function devirt survives the bar', () => {
+  // Literal decl FIRST (binds vars before the collision arrives) — the census
+  // must bar retroactively; and `other`'s own read stays value-exact through
+  // its per-function rep (barring gates only the module-global name channel).
+  const src = `
+const other = () => { const site = { argList: 9, callerFunc: 8, node: 7, callee: 6 }; return site.node * 10 + site.callee }
+const use = (arr) => { let s = 0; for (const site of arr) s += site.callee; return s }
+const mk = () => { const a = []; a.push({ callee: 5, argList: 1, callerFunc: 2, node: 3 }); return a }
+export let main = () => other() * 100 + use(mk())`
+  for (const optimize of LEVELS)
+    is(run(src, { optimize }).main(), 7605, `O${optimize}: 76*100 + 5`)
+})
+
+test('slot-hazards: unique-bound literal name keeps the vars-channel devirt', () => {
+  // No collision — a single-function literal binding still compiles `cfg.mode`
+  // through the schema slot (structural pin: no dyn dispatcher for the read).
+  const src = `
+export let main = () => { const cfg = { mode: 3, bias: 4 }; return cfg.mode + cfg.bias }`
+  const wat = jz.compile(src, { wat: true, optimize: 2 })
+  const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || ''
+  ok(!/__dyn_get/.test(m), 'unique literal binding stays slot-resolved')
+  is(run(src, { optimize: 2 }).main(), 7, 'value exact')
+})

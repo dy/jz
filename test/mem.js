@@ -2,11 +2,15 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { i64ToF64 } from '../interop.js'
+import { i64ToF64, instantiate } from '../interop.js'
 import { onWasi, onKernel, adaptI64 } from './_matrix.js'
 
+// interop's instantiate (not raw WebAssembly.instantiate): a module whose
+// unproven-receiver reads pull the env external machinery declares imports —
+// interop supplies them; the tests still consume the RAW instance exports
+// (i64 BigInt carriers), not the wrapped ones.
 async function run(code, opts) {
-  const r = await WebAssembly.instantiate(compile(code, opts))
+  const r = instantiate(compile(code, opts))
   return { module: r.module, instance: { exports: adaptI64(r.module, r.instance.exports) } }
 }
 

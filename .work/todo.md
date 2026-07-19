@@ -118,6 +118,59 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * BINDING-CENSUS ROOT FIX — KERNEL-FRAGILITY CLASS KILLED (2026-07-19c, the
+    promoted correctness hunt): the "unguarded-unique-prop" diagnosis was one
+    layer off (again). TRUE ROOT: ctx.schema.vars is MODULE-GLOBAL, keyed by
+    BARE NAME, and function locals are never alpha-renamed across functions —
+    one function's `const site = {…}` bound vars('site'), and ANOTHER
+    function's same-named binding (for-of binding, param, non-literal decl)
+    resolved PRECISE through idOf's vars fallback → a RAW fixed-slot load at
+    the foreign layout: no guard, no dyn fallback, wrong VALUES at EVERY
+    optimize level incl. O0, the reference tier (probe-collide: for-of and
+    param collisions returned 10 for 12, natively). The three kernel episodes
+    were all this: a new/reordered literal in a pass shifted which schema
+    'site' resolved to inside rest-spec's OWN compiled body — slot-debug
+    showed [slot:precise] site.callee → the colliding literal's sid, slot 3
+    (canonical callSites lays callee at slot 0); kernel WAT dump of
+    $specializeFixedRestCalls confirmed the bare `f64.load offset=24` →
+    map.get(wrong value) missed → the pass silently no-oped → "expected
+    fixed-arity rest clone". Diagnosis: a semantically-neutral key REORDER of
+    the site literal re-broke the kernel leg alone; slotOf arm instrumentation
+    (JZ_DBG_SLOT) fingered idOf's vars fallback, not any structural arm.
+    FIX (prepare's binding census): EVERY binding form censuses its bare
+    name — decls (literal → sid; non-literal/no-init/unknown-spread → unknown;
+    for-of/for-in/catch arrive as lowered decls), lifted-func name + params,
+    closure params, destructure targets (raw + module-prefixed). A name with
+    ≥2 sites that aren't all same-sid literal decls is BARRED:
+    ctx.schema.varsBarred + vars.delete, order-insensitive, barred never
+    (re)binds — gates bindDeclSchema (the new consensus setter replacing
+    prepDecl's and defFunc-default's UNCONDITIONAL vars.set), bindAssignSchema,
+    and plan/scope's refineFieldProvenance. Unlike poison, barring gates ONLY
+    the vars channel: per-function ValueReps keep their per-body provenance
+    and devirt (pinned: own-function reads stay exact; a unique-bound literal
+    keeps its slot-resolved WAT). Single-binding names behave exactly as
+    before; `let x; x = {…}` keeps the assignment-consensus path.
+    CONSEQUENCES: the SCHEMA-IDENTITY CONTRACT IS RETIRED (audit kill-list #1;
+    narrow.js comment rewritten — shape-matching is schema-table hygiene now,
+    not a correctness rule); object literals are safe to introduce anywhere.
+    test/mem.js run() switched to interop's instantiate: exported
+    unproven-receiver reads that previously rode the leak now correctly take
+    the guarded/dyn path (which declares env imports — the raw
+    WebAssembly.instantiate had been relying on the unsound binding; the mem
+    API's own "unknown schema marshals as hash" contract REQUIRES the dyn
+    path, so the leak also broke that composition). KNOWN REMAINING SIBLING
+    (ledgered, narrow): a single `let x = f()` decl followed by `x = {A}`
+    assignment binds A via assignment consensus while reads before the
+    reassignment see f()'s value — the decl-initializer is not an assignment
+    event; entangled with refineFieldProvenance's const-provenance channel,
+    deferred. BATTERY: native 3020/0, slot-hazards 16/16 (4 new collision
+    pins), kernel 1139/0 (canonical literal restored), O0/O3/wasi 3024/0 ×3,
+    bench 207/208 (only the standing shapes red; focused wasmtime rows stable
+    1.65–1.68 vs AS 1.50 ≈ 1.10× — carrier untouched, jz binary 3.3 kB
+    unchanged), selfhost 21/21 + warm 0.971× / fresh 0.709× (both inside
+    caps; warm IMPROVED from 0.980×), fuzz 5000 zero-divergence.
+    dist/jz.wasm 11560→11789 kB (+2%): the kernel loses the unsound
+    cross-function devirt its own colliding names enjoyed — honest cost.
   * BYTE-STRIDE CARRIER + QOI FOLD + SHAPES HONESTY CORRECTION (2026-07-19b):
     (1) BYTE-STRIDE 20 B UNION RECORDS LANDED (audit layout item): union
         arrays now pack elements at stride·4 bytes with NO pad cell (stride 5
