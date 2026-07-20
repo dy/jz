@@ -146,7 +146,24 @@
         reads off a loop-invariant, unwritten, unaliased receiver (the
         existing inplace/alias census supplies the proof) hoist above the
         loop — one len guard, K raw loads into locals. Directly biquad's
-        gap; likely touches synth/wav class too.
+        gap; likely touches synth/wav class too. IMPLEMENTATION SPEC
+        (refined from the biquad WAT): the source reads are `coeffs[c+k]`
+        (c = s*5, inner stage loop) — indices become CONSTANT only after
+        jz's own inner unroll, so an AST-level pre-pass never sees them:
+        the hoist must run AT/AFTER the unroll layer, or hoist at source
+        level as "reads indexed by inner-loop-IV-affine expressions are
+        invariant across the OUTER loop" (hoist the whole coefficient
+        block, not per-element). SOUNDNESS: body writes go through `state`/
+        `out` — hoisting coeffs reads across them needs coeffs∉body-write
+        set AND coeffs≠out/state provenance: analyzeParamDistinctness
+        (already a pass) supplies exactly this for the single-call-site
+        distinct-args shape; name-level mutation census (mutatedArrayNames)
+        covers the rest. Checked-read hoist is observation-free in jz's
+        subset (no getters; OOB reads undefined, hoisted value dead when
+        the loop is zero-trip). ALSO hoistable cheaply even without full
+        element hoist: the per-read HEADER LEN re-load (`load(a−8)>>3` per
+        element per iteration) — one pre-loop len local per invariant
+        receiver kills 5 loads/sample immediately.
     (B) SMALL-LOOP UNROLL ×2 at speed tier for byte-codec recurrence loops
         (crc32/lz/qoi class): body ≤ N ops, single recurrence chain — chain
         two iterations, halve IV/branch overhead; remainder peel.
