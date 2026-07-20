@@ -43,7 +43,7 @@ import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
-import { unrollRecurrence } from './loop-recurrence.js'
+import { unrollRecurrence, unrollScalarChains } from './loop-recurrence.js'
 import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
 import {
@@ -443,6 +443,10 @@ function analyzeFuncForEmit(func, programFacts) {
   // hides but Cranelift/baseline don't. Scalar-replace the recurrence + unroll ×2 (clang's fix).
   // Off at L0 / `unrollRecurrence:false`.
   if (_o && _o.unrollRecurrence !== false && isBlockBody(func.body)) func.body = unrollRecurrence(func.body)
+  // Serial-chain ×2 unroll (crc/hash class): an address-carried scalar makes the
+  // loop non-vectorizable, so pairing iterations halves loop overhead with no
+  // recognizer downstream to blind. Speed/L3 only (`unrollScalarChain: true`).
+  if (_o && _o.unrollScalarChain === true && isBlockBody(func.body)) func.body = unrollScalarChains(func.body)
   // Edge-clamp peeling: split a clamped stencil loop into clamp-free interior + edges
   // (the interior then lifts to SIMD). Before analyze so the new loops are analyzed.
   if (_o && _o.clampPeel !== false && isBlockBody(func.body)) func.body = peelClampedStencil(func.body)

@@ -131,6 +131,15 @@ export function cseLoads(body, isTypedArray, freshName) {
 
     const reads = (node, parent, pi, si, noCseKey = null) => {
       if (!isArr(node) || node[0] === 'str') return
+      // A CONTROL boundary nested INSIDE a statement (a while inside a `{}`
+      // block, an if arm): its body re-executes / conditionally executes, so an
+      // element read in there is NOT the same value as a textual twin outside —
+      // `while (…) { s ^= a[i]; i++ }  s ^= a[i]` must not CSE across the loop
+      // (the pair+tail unroll shape exposed this: the tail's a[i] fused with
+      // the loop body's and hoisted a loop-VARYING load above the while).
+      // descend() gives each nested sequence its own table; here we stop and
+      // flush — nothing cached before a control edge survives it.
+      if (CONTROL.has(node[0])) { flush(); return }
       // Element/member assignment targets must stay targets. Plain `=` does not
       // read the slot; compound/update ops do, but rewriting the LHS node itself
       // turns the eventual store into a temp assignment. Only inspect receiver /

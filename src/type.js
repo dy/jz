@@ -71,7 +71,7 @@ export function constIntExpr(e) {
   const n = intLiteralValue(e)
   if (n != null) return n
   if (typeof e === 'string') {
-    const ci = ctx.scope?.constInts?.get?.(e)
+    const ci = ctx.func?.localReps?.get?.(e)?.intConst ?? ctx.scope?.constInts?.get?.(e)
     return ci != null && isI32(ci) ? ci : null
   }
   if (!Array.isArray(e) || e.length !== 3) return null
@@ -102,6 +102,18 @@ export function typedIdxProven(recv, idx) {
   // the loop sees the cursor past its bound and must stay checked)
   const owner = ctx.types.assumedBounds?.get(idxKey(recv, idx))
   if (owner != null && ctx.func.stack?.some(f => f.bodyNode === owner)) return true
+  // 4b. per-RECEIVER guarded const hull — the value-level twin of the key channel.
+  //     The versioned guard proved every CONSTANT extent ≤ hull.max < recv.length,
+  //     so any read whose index is a compile-time constant within the hull is
+  //     in-bounds regardless of how many clone/rename layers (plan unroll, per-arm
+  //     emit unroll, inline suffixes) rewrote the index NODE since the scan — the
+  //     AST-JSON assumption keys break under those; the receiver name + value do
+  //     not. Same owner-frame scoping as the key channel.
+  const hull = ctx.types.assumedConstHull?.get(recv)
+  if (hull != null && ctx.func.stack?.some(f => f.bodyNode === hull.owner)) {
+    const v = constIntExpr(idx)
+    if (v != null && v >= 0 && v <= hull.max) return true
+  }
   if (intervalProvenIdx(ctx).has(idxKey(recv, idx))) return true
   if (typeof idx === 'string' && inBoundsArrIdx(ctx).has(recv + '\x00' + idx)) return true
   const len = ctx.types.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)

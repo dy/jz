@@ -4606,18 +4606,42 @@ export const emitter = {
         // add/delete): unrolls inside the fast arm stamp clone keys that must not
         // survive into the checked arm, which runs exactly when the guard failed.
         const saved = ctx.types.assumedBounds
+        const savedHull = ctx.types.assumedConstHull
         ctx.types.assumedBounds = new Map(saved ?? [])
+        // Per-receiver guarded CONST hull (typedIdxProven class 4b): every a=0
+        // pure-const candidate's extent is guard-checked against recv.length, so
+        // the fast arm may assume ANY const index ≤ the receiver's max guarded
+        // extent — value-keyed, immune to the clone/rename layers that break the
+        // per-node assumption keys (plan unroll + per-arm emit unroll re-mint
+        // ids every emission; the biquad cascade lost all 40 coefficient/state
+        // assumptions that way and re-emitted the checked forms inside the
+        // guarded arm).
+        ctx.types.assumedConstHull = new Map(savedHull ?? [])
         for (const vs of levels)
-          for (const c of vs.cands)
-            // hull cands are position-independent (the hull joins EVERY sighting of
-            // the key) — owned by the TOP arm so unrolled inner loops (no frame of
-            // their own) still validate; affine/induction extents stay level-owned
-            ctx.types.assumedBounds.set(idxKey(c.recv, c.idx), c.range != null ? body : vs.bodyNode ?? body)
+          for (const c of vs.cands) {
+            if (c.range == null && c.ind == null && c.a === 0 && (!c.slots || !c.slots.length) && c.bConst >= 0) {
+              const h = ctx.types.assumedConstHull.get(c.recv)
+              if (!h || c.bConst > h.max) ctx.types.assumedConstHull.set(c.recv, { max: c.bConst, owner: body })
+            }
+            // TOP-owned, every kind: each kept level is LIFTED — its extents are
+            // proven by the top guard reading the inner bound at top entry — so
+            // the proof holds anywhere inside the top body. Level-owned scoping
+            // (the old form for affine cands) broke exactly when the inner loop
+            // UNROLLED in the fast arm: an unrolled loop pushes no frame, so its
+            // level-owned assumptions could never validate and the guarded arm
+            // re-emitted every checked form (biquad's 40 coefficient reads at
+            // 5.6% vs zig-wasm; 1.7% after this fix). Index names are the
+            // level's own body-lets/iv (unreachable outside it) or invariant
+            // slots — a textual twin outside the level cannot exist with the
+            // same key, so top-ownership loses no safety.
+            ctx.types.assumedBounds.set(idxKey(c.recv, c.idx), body)
+          }
         // cursor claims hold across the WHOLE nest (entry → end) — owned by the top
         for (const cur of levels.cursors ?? [])
           if (!cur.dead) for (const c of cur.cands) ctx.types.assumedBounds.set(idxKey(c.recv, c.idx), body)
         const fast = emitter['for'](null, cond, step, body)
         ctx.types.assumedBounds = saved
+        ctx.types.assumedConstHull = savedHull
         const checked = emitter['for'](null, cond, step, body)
         const stmts = (r) => Array.isArray(r[0]) ? r : [r]
         result.push(['if', typed(guard, 'i32'),

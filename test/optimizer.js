@@ -3914,3 +3914,131 @@ export let main = () => {
   for (const optimize of [false, 2, 'speed'])
     is(run(src, { optimize }).main(), truth, `JS-exact (optimize:${optimize})`)
 })
+
+test('versioned nest: inner-unrolled level keeps its assumptions (fast arm raw)', () => {
+  // The biquad cascade shape: outer sample loop versioned at the top, inner
+  // stage loop (const trip) unrolls INSIDE the arms. Level-owned assumption
+  // scoping broke here — an unrolled loop pushes no frame, so its cands could
+  // never validate and the guarded arm re-emitted every checked read (40
+  // coefficient loads, 5.6% → 1.7% vs zig-wasm). Assumptions are top-owned
+  // now; the fast arm must be sentinel-free while the checked twin keeps the
+  // exact semantics (guard-fail = OOB reads undefined).
+  const src = `
+const proc = (x, coeffs, state, nStages, out) => {
+  const n = x.length
+  for (let i = 0; i < n; i++) {
+    let v = x[i]
+    for (let s = 0; s < nStages; s++) {
+      const c = s * 5
+      const sb = s * 4
+      const b0 = coeffs[c + 0], b1 = coeffs[c + 1], b2 = coeffs[c + 2], a1 = coeffs[c + 3], a2 = coeffs[c + 4]
+      const x1 = state[sb + 0], x2 = state[sb + 1], y1 = state[sb + 2], y2 = state[sb + 3]
+      const y = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+      state[sb + 0] = v; state[sb + 1] = x1; state[sb + 2] = y; state[sb + 3] = y1
+      v = y
+    }
+    out[i] = v
+  }
+}
+export let run = (n, nStages) => {
+  const x = new Float64Array(n), out = new Float64Array(n)
+  const coeffs = new Float64Array(nStages * 5), state = new Float64Array(nStages * 4)
+  for (let i = 0; i < nStages * 5; i++) coeffs[i] = (i % 7) * 0.1 - 0.2
+  for (let i = 0; i < n; i++) x[i] = Math.sin(i * 0.3)
+  proc(x, coeffs, state, nStages, out)
+  let t = 0
+  for (let i = 0; i < n; i++) t += out[i]
+  return t
+}`
+  const jsExports = {}
+  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(jsExports)
+  for (const optimize of [0, 2, 'speed']) {
+    const r = run(src, { optimize }).run(64, 8)
+    almost(r, jsExports.run(64, 8), 1e-9, `O${optimize}: cascade values JS-exact`)
+  }
+  // Structural: the guarded fast arm carries ZERO checked-read sentinels.
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  // proc inlines into run (single caller) — find the hot function by mul count
+  const fn = wat.split('(func ').sort((a, b) =>
+    (b.match(/f64\.mul/g) || []).length - (a.match(/f64\.mul/g) || []).length)[0] || ''
+  const guardAt = (() => { const i = fn.indexOf('i64.lt_s'); return i >= 0 ? i : fn.indexOf('i64.le_s') })()
+  ok(guardAt > 0, 'versioned guard present')
+  const thenAt = fn.indexOf('(then', guardAt)
+  const elseAt = (() => {   // matching else at the same paren depth as the then
+    let d = 0
+    for (let i = thenAt; i < fn.length; i++) {
+      if (fn[i] === '(') d++
+      else if (fn[i] === ')' && --d === 0) return fn.indexOf('(else', i)
+    }
+    return -1
+  })()
+  ok(elseAt > thenAt, 'both arms present')
+  const fastArm = fn.slice(thenAt, elseAt)
+  ok(!/nan:0x7FF8000200000000/.test(fastArm), 'fast arm carries no checked-read sentinels')
+})
+
+test('serial-chain unroll: crc-class loop pairs iterations, values exact', () => {
+  // Address-carried scalar chain (`crc = table[(crc ^ buf[i]) & 255] ^ ...`)
+  // is non-vectorizable, so the speed tier pairs iterations (×2 + tail) to
+  // halve loop overhead. Values must be exact for even AND odd trip counts
+  // (the tail iteration), and the paired body shows two chained lookups per
+  // backedge.
+  const src = `
+const mkTable = () => {
+  const t = new Int32Array(256)
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    t[n] = c | 0
+  }
+  return t
+}
+export let crc = (len) => {
+  const table = mkTable()
+  const buf = new Uint8Array(len)
+  for (let i = 0; i < len; i++) buf[i] = (i * 37 + 11) & 0xff
+  let c = -1
+  for (let i = 0; i < len; i++) c = table[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
+  return (c ^ -1) | 0
+}`
+  const jsExports = {}
+  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(jsExports)
+  for (const optimize of [0, 2, 'speed'])
+    for (const n of [0, 1, 63, 64])
+      is(run(src, { optimize }).crc(n), jsExports.crc(n), `O${optimize} n=${n}: crc exact (tail + pair arms)`)
+  // Structural: at speed, the paired main loop carries TWO chained table
+  // lookups between backedges (the ×2 unroll fired).
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const hot = wat.split('(func ').sort((a, b) =>
+    (b.match(/i32\.xor/g) || []).length - (a.match(/i32\.xor/g) || []).length)[0] || ''
+  const loops = hot.split('(loop')
+  const paired = loops.some(l => {
+    const seg = l.split('(loop')[0]
+    return (seg.match(/i32\.load\b/g) || []).length >= 2 && (seg.match(/i32\.xor/g) || []).length >= 4
+  })
+  ok(paired, 'a loop body carries two chained table lookups (×2 unroll engaged)')
+})
+
+test('cse-load: element read must not CSE across a control boundary', () => {
+  // Pre-existing latent hole exposed by the pair+tail unroll shape: reads()
+  // walked INTO a while nested in a block statement, so the loop body's a[i]
+  // (loop-VARYING) shared a CSE key with a textual twin after the loop and the
+  // "common" load hoisted above the while — reading a[0] forever. reads() now
+  // stops and flushes at control boundaries; each nested sequence gets its own
+  // table via descend().
+  const src = `
+export let main = () => {
+  const a = new Int32Array(8)
+  for (let k = 0; k < 8; k++) a[k] = (k + 1) * 10
+  let s = 0
+  {
+    let i = 0
+    while (i < 6) { s = (s + a[i]) | 0; i = (i + 2) | 0 }
+    if (i < 8) { s = (s + a[i]) | 0 }
+  }
+  return s
+}`
+  // JS: a[0]+a[2]+a[4] + a[6] = 10+30+50+70 = 160 (broken CSE read a[0] in the tail → 100)
+  for (const optimize of [0, 2, 'speed'])
+    is(run(src, { optimize }).main(), 160, `O${optimize}: no cross-loop CSE of a[i]`)
+})

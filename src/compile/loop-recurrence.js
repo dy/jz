@@ -165,3 +165,103 @@ export function unrollRecurrence(body) {
   const cm = closureMutatedVars(body)
   return rewriteBlocks(body, stmt => tryUnroll(stmt, cm))
 }
+
+// ── Serial-chain ×2 unroll (speed tier) ──────────────────────────────────────
+//
+// The crc/hash class: a countable unit-stride loop whose body carries a SCALAR
+// through an element-read whose ADDRESS depends on that scalar
+// (`crc = table[(crc ^ buf[i]) & 255] ^ (crc >>> 8)`). The address-carried
+// dependency makes the loop provably non-vectorizable (no SIMD recognizer can
+// ever take it — the next address needs this iteration's value), so unrolling
+// ×2 costs nothing downstream and halves the loop overhead (IV update + bound
+// compare + branch per TWO elements — LLVM does exactly this; measured ~13 vs
+// ~8.5 ops/byte against clang's wasm on the crc32 kernel).
+//
+// Recognized: `for (let i = LO; i </<= HI; i++)` (LO literal ≥ 0, HI invariant
+// name/literal), body a plain statement list with NO element stores, no calls /
+// control / closures / nested loops (hasUnsafe), iv written only by the step,
+// and ≥1 element read whose index mentions a body-ASSIGNED outer scalar (the
+// carried chain). The transform emits pair + tail:
+//   let i = LO; while (i < HI-1) { body; body[i+1]; i += 2 } ; if (i </<= HI) body
+// Each copy is a verbatim iteration (checked reads and all), so values are
+// exact for every input incl. OOB — only the iteration grouping changes.
+function tryUnrollScalarChain(stmt, cm) {
+  const DBG = typeof process !== 'undefined' && process.env?.JZ_DBG_USC
+  const L = normalizeLoop(stmt)
+  if (!L || L.kind !== 'for') { if (DBG && isArr(stmt) && (stmt[0] === 'for' || stmt[0] === 'while')) console.error('[usc] not-for', stmt[0]); return null }
+  // a single-statement body arrives bare (`for (…) c = …`) — normalize to a list
+  const body = isArr(L.body) && L.body[0] === ';' ? L.body
+    : isArr(L.body) ? [';', L.body] : null
+  if (!body) { if (DBG) console.error('[usc] body-shape'); return null }
+  const iv = unitIncVar(L.step)
+  if (!iv) { if (DBG) console.error('[usc] no-unit-iv'); return null }
+  if (!(isArr(L.init) && L.init[0] === 'let' && isArr(L.init[1]) && L.init[1][0] === '=' && L.init[1][1] === iv)) { if (DBG) console.error('[usc] init-shape'); return null }
+  const LO = L.init[1][2], loVal = litVal(LO)
+  if (loVal == null || loVal < 0) { if (DBG) console.error('[usc] lo', JSON.stringify(LO)); return null }
+  if (!(isArr(L.cond) && (L.cond[0] === '<=' || L.cond[0] === '<') && L.cond[1] === iv)) { if (DBG) console.error('[usc] cond-shape'); return null }
+  const cmpOp = L.cond[0], HI = L.cond[2]
+  if (!(typeof HI === 'string' || litVal(HI) != null)) { if (DBG) console.error('[usc] hi', JSON.stringify(HI)); return null }
+  if (hasUnsafe(body)) { if (DBG) console.error('[usc] unsafe'); return null }
+  const stmts = body.slice(1)
+
+  // no element/property stores anywhere — the class is a pure scan
+  let hasStore = false
+  const scanStore = (n) => {
+    if (!isArr(n) || hasStore) return
+    if ((n[0] === '=' || (typeof n[0] === 'string' && n[0].endsWith('=') && n[0] !== '==' && n[0] !== '<=' && n[0] !== '>=' && n[0] !== '!=' && n[0] !== '===' && n[0] !== '!=='))
+        && isArr(n[1]) && (n[1][0] === '[]' || n[1][0] === '.')) { hasStore = true; return }
+    n.forEach(scanStore)
+  }
+  scanStore(body)
+  if (hasStore) return null
+
+  // carried scalars: outer names assigned at body top level (not declared here)
+  const declared = new Set()
+  for (const s of stmts) if (isArr(s) && (s[0] === 'let' || s[0] === 'const'))
+    for (let k = 1; k < s.length; k++) if (isArr(s[k]) && s[k][0] === '=' && typeof s[k][1] === 'string') declared.add(s[k][1])
+  const carried = new Set()
+  const scanAssign = (n) => {
+    if (!isArr(n)) return
+    if (typeof n[1] === 'string' && n[1] !== iv && !declared.has(n[1])
+        && (n[0] === '=' || n[0] === '+=' || n[0] === '-=' || n[0] === '^=' || n[0] === '|=' || n[0] === '&=' || n[0] === '*=' || n[0] === '>>=' || n[0] === '>>>=' || n[0] === '<<='))
+      carried.add(n[1])
+    n.forEach(scanAssign)
+  }
+  scanAssign(body)
+  if (!carried.size) return null
+
+  // the chain proof: some element read's INDEX mentions a carried scalar
+  const mentions = (n, name) => n === name || (isArr(n) && n.some(c => mentions(c, name)))
+  let chained = false
+  const scanChain = (n) => {
+    if (!isArr(n) || chained) return
+    if (n[0] === '[]' && n.length === 3) for (const s of carried) if (mentions(n[2], s)) { chained = true; return }
+    n.forEach(scanChain)
+  }
+  scanChain(body)
+  if (!chained) { if (DBG) console.error('[usc] no-chain, carried:', [...carried]); return null }
+
+  // stability: iv written only by the step; carried names + HI not closure-mutated
+  const ivMut = new Set(); findMutations(body, new Set([iv]), ivMut)
+  if (ivMut.has(iv) || cm.has(iv)) return null
+  for (const s of carried) if (cm.has(s)) return null
+  if (typeof HI === 'string') { const hiMut = new Set(); findMutations(body, new Set([HI]), hiMut); if (hiMut.has(HI) || cm.has(HI)) return null }
+
+  // --- transform: pair + tail ---
+  const id = freshLoopId()
+  const cell = () => stmts.map(clone)
+  const cell1 = renameDecls(stmts.map(s => subPlus1(clone(s), iv)), `$c${id}`)
+  const letIv = ['let', ['=', iv, clone(LO)]]
+  const twoFit = cmpOp === '<=' ? ['<', iv, clone(HI)] : ['<', iv, ['-', clone(HI), 1]]
+  const main = ['while', twoFit,
+    [';', ['{}', [';', ...cell()]], ['{}', [';', ...cell1]], ['=', iv, ['+', iv, 2]]]]
+  const tail = ['if', [cmpOp, iv, clone(HI)],
+    ['{}', [';', ...cell(), ['=', iv, ['+', iv, 1]]]]]
+  return [['{}', [';', letIv, main, tail]]]
+}
+
+/** Speed-tier pass: ×2-unroll every serial-chain scan loop in `body`. */
+export function unrollScalarChains(body) {
+  const cm = closureMutatedVars(body)
+  return rewriteBlocks(body, stmt => tryUnrollScalarChain(stmt, cm))
+}

@@ -118,6 +118,61 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * MECHANISMS A+B LANDED — VERSIONED-NEST ASSUMPTION REPAIR + SERIAL-CHAIN
+    UNROLL + TWO LATENT MISCOMPILE CLASSES KILLED (2026-07-20d):
+    (A) BIQUAD IN-BAND (1.056× → 1.017× vs zig-wasm, cs exact). Root: the
+        versioned-nest fast arm was RE-EMITTING CHECKED FORMS for every
+        lifted-inner-level candidate — level-owned assumption scoping requires
+        the owning loop's frame on the emission stack, but an inner loop that
+        UNROLLS inside the arm pushes no frame, so its 40 coefficient-read
+        assumptions could never validate (guard paid, nothing gained — arms
+        both checked). Diagnosis chain: paired-quiet 5.6% → WAT arm split
+        (fast arm 40 sentinels) → [vers]/[assume]/[tip] instrumentation →
+        owner-frame mismatch. THREE engine fixes:
+        1. TOP-OWNERSHIP for every kept level's cands (each kept level is
+           lifted = proven by the top guard at top entry; index names are the
+           level's own body-lets/iv, unreachable outside — no textual-twin
+           hazard). Fast arm now 0 sentinels (pinned structurally + values,
+           optimizer suite).
+        2. assumedConstHull — per-RECEIVER guarded const hull (typedIdxProven
+           class 4b): a=0 pure-const cands register recv→maxConst; any read
+           whose index CONST-RESOLVES within the hull is proven regardless of
+           clone/rename layers (plan unroll + per-arm emit unroll re-mint ids
+           every emission and break the AST-JSON assumption keys).
+        3. constIntExpr (type.js) resolves per-function localReps intConst —
+           body-let consts (`const c = 3*5` post-substitution) now fold in
+           bound/hull/index positions.
+    (B) SERIAL-CHAIN ×2 UNROLL (speed/L3, `unrollScalarChain: true` preset
+        flag): the crc/hash class — a carried scalar feeding a LOAD ADDRESS
+        (`crc = table[(crc^buf[i])&255] ^ crc>>>8`) is provably
+        non-vectorizable (next address needs this value), so pairing
+        iterations (main `while (i < HI-1) {body; body[i+1]; i+=2}` + one-shot
+        tail) halves loop overhead with no recognizer downstream to blind.
+        Recognizer in loop-recurrence.js (tryUnrollScalarChain — reuses
+        subPlus1/renameDecls/hasUnsafe): unit-stride countable for, literal
+        LO ≥ 0, invariant name/literal HI, NO element/property stores, no
+        calls/control/closures, iv written only by the step, ≥1 element read
+        whose index mentions a body-assigned outer scalar. Single-statement
+        bodies arrive BARE post-prepare (`for (…) c = …`) — normalized to a
+        ';' list (first fire missed this). crc32 1.051× (from 1.055 — the
+        loop is load-latency-bound; the remaining lever is the static-base
+        fold, mechanism C). Pinned: values exact at trips 0/1/63/64 (tail +
+        pair arms) + structural two-lookups-per-backedge.
+    (B2) CSE-LOAD CROSS-CONTROL MISCOMPILE KILLED (pre-existing, exposed by
+        B's pair+tail shape, found via checksum divergence 304463882 →
+        20405715 on the REAL crc kernel while the isolated pin passed):
+        cse-load.js's reads() descended INTO control nodes nested in a
+        statement (a while inside a `{}` block), so the loop body's a[i]
+        (loop-VARYING) shared a CSE key with the tail's textual twin and the
+        "common" load hoisted ABOVE the while — reading a[0] forever. Same
+        class as the audit-R2 cseScalarLoad cross-arm hole, one level up
+        (AST cse vs WAT cse). Fix: reads() stops AND flushes at control
+        boundaries (descend() already gives nested sequences their own
+        tables). Pinned with the while+tail value case (160 vs the broken
+        100). LESSON (recurring): region-scoped caches must treat EVERY
+        control boundary as a wall — three instances of this class now
+        (cseScalarLoad arms, cse-load control descent, assumedBounds frame
+        scoping).
   * FASTEST-WASM RED ROWS — QUIET PAIRED VERDICTS + WAT DISSECTIONS
     (2026-07-20c, the campaign map; measurements are ABBA paired, M4 quiet):
     VERDICT TABLE: shapes/AS 1.210× (real, the recorded V8-codegen frontier);
