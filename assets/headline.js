@@ -15,7 +15,7 @@
 // The ONE definition, shared by every consumer: bench/bench.mjs (geomean SVG +
 // web emit), bench/index.html (page corpus + `lab` chip), scripts/bench-readme.mjs
 // (README aggregate table), and headlineStats below (hero + strip).
-export const LAB = new Set(['watr', 'jessie', 'jz', 'colorconv', 'colorlch', 'colorlog', 'colorpq'])
+export const LAB = new Set(['watr', 'jessie', 'jz', 'colorconv', 'colorlch', 'colorlog', 'colorpq', 'deltae'])
 
 export function headlineStats(results) {
   const cases = Object.entries(results.cases || {}).filter(([id]) => !LAB.has(id)).map(([, c]) => c)

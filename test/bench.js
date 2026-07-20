@@ -44,6 +44,21 @@ const natAvailable = have('clang')
 //  diff — not comparable (different checksum, e.g. tokenizer AS uses unicode tables)
 //  na   — target unavailable / unable to run this case
 const SPEED = {
+  // ── the domain-matrix cases (colorjs/audio/font/generative closure — see bench/README
+  // "The guarantee"). Local calibration 2026-07: jz beats rust-wasm on slices/resample/
+  // glyfparse (the last also edges native C), ties bezfit; TRAILS rust-wasm on delayline
+  // (1.24×: masked-ring bounds checks + /65536 not strength-reduced), sdf (1.26×, AS also
+  // ahead: strided column walks + f[v[k]] gather re-derivation) and trace (1.41×: the
+  // branch-dense follow loop — branch layout + per-step bounds checks). Those three are
+  // the open codegen work; the matching shape-classes (ring/fgather/slice/condref) are
+  // ratcheted in test/perf-ratchet.js so progress is machine-independently pinned.
+  slices:         { v8: 'win',  as: 'win',  porf: 'todo' },
+  trace:          { v8: 'win',  as: 'tie',  porf: 'todo' },
+  bezfit:         { v8: 'win',  as: 'win',  porf: 'todo' },
+  sdf:            { v8: 'win',  as: 'todo', porf: 'todo' },
+  resample:       { v8: 'todo', as: 'win',  porf: 'todo' },
+  delayline:      { v8: 'tie',  as: 'tie',  porf: 'todo' },
+  glyfparse:      { v8: 'win',  as: 'win',  porf: 'todo' },
   callback:       { v8: 'win',  as: 'win',  porf: 'todo' },
   mat4:           { v8: 'win',  as: 'win',  porf: 'todo' },
   poly:           { v8: 'win',  as: 'tie',  porf: 'todo' },
@@ -140,6 +155,7 @@ const SPEED_GEOMEAN_MAX = { v8: 1.0, as: 1.0, porf: 1.10 }
 // the jz hot loop is byte-identical to when this gate was first pinned, so the
 // honest claim is parity (jz/C ≈ 1.06), not a win.
 const NATIVE = {
+  slices: 'tie', resample: 'win', glyfparse: 'tie', trace: 'na', bezfit: 'na', sdf: 'na', delayline: 'na',
   callback: 'tie',  mat4: 'win',     poly: 'win',  biquad: 'near',
   mandelbrot: 'tie', bitwise: 'tie', tokenizer: 'win', aos: 'tie',
   json: 'near',     sort: 'win',     crc32: 'tie', watr: 'na',
@@ -166,6 +182,13 @@ const NATIVE_GEOMEAN_MAX = 1.05
 // single-use runtime-helper inlining + merging `$f$exp` wrappers is the next lever.
 // porf bundles a JS runtime, so jz is ~20× smaller there; that pin is a backstop.
 const SIZE = {
+  slices:         { as: 'todo', porf: 'todo' },
+  trace:          { as: 'todo', porf: 'todo' },
+  bezfit:         { as: 'todo', porf: 'todo' },
+  sdf:            { as: 'todo', porf: 'todo' },
+  resample:       { as: 'todo', porf: 'todo' },
+  delayline:      { as: 'todo', porf: 'todo' },
+  glyfparse:      { as: 'todo', porf: 'todo' },
   callback:       { as: 'win',  porf: 'win' },
   mat4:           { as: 'todo', porf: 'win' },
   poly:           { as: 'win',  porf: 'win' },

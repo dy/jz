@@ -84,6 +84,45 @@ const genNestExpr = (g, d) => (d <= 0 || g() < 0.4)
   : `((${genNestExpr(g, d - 1)} ${pick(g, ['+', '-', '*', '^', '|', '&'])} ${genNestExpr(g, d - 1)}) | 0)`
 const progNest = (g) => `export let f = (a, n) => { let acc = 0 | 0; for (let i = 0; i < n; i = i + 1) { for (let j = 0; j < n; j = j + 1) { acc = (acc + (${genNestExpr(g, 3)})) | 0 } } return acc | 0 }`
 
+
+// SLICE: block processing over RUNTIME SUB-VIEWS of one buffer — `a[o + i]` with `o`
+// loaded per block from a schedule. The class the Flow-Lenia kernel fell off (channel
+// bases at runtime → generic dispatch, ~100×) and the audio/font-table access pattern
+// bench/slices pins as a case. The ratchet guards that the base decodes ONCE per block,
+// not per element.
+const SLICE_LEAF = ['a[o + i]', 'i + 0.0', '0.5', '2.0', '-1.0']
+const genSliceExpr = (g, d) => (d <= 0 || g() < 0.4)
+  ? pick(g, SLICE_LEAF)
+  : `(${genSliceExpr(g, d - 1)} ${pick(g, ['+', '-', '*'])} ${genSliceExpr(g, d - 1)})`
+const progSlice = (g) => `export let f = (a, offs, m, n) => { for (let b = 0; b < m; b = b + 1) { const o = offs[b]; for (let i = 0; i < n; i = i + 1) { a[o + i] = ${genSliceExpr(g, 3)} } } }`
+
+// RING: wrap-masked delay-line indexing — `buf[(h − K) & MASK]` taps + `buf[h & MASK]`
+// write + head increment, the pattern under every delay/reverb (bench/delayline pins the
+// full case). Guards strength-reduction of the mask chain and the loop-carried head.
+const progRing = (g) => {
+  const k1 = 1 + Math.floor(g() * 200), k2 = 1 + Math.floor(g() * 900)
+  const fb = (0.3 + g() * 0.5).toFixed(2)
+  return `export let f = (buf, x, n) => { let h = 0 | 0; for (let i = 0; i < n; i = i + 1) { const t = buf[(h - ${k1}) & 8191] + buf[(h - ${k2}) & 8191] * ${fb}; const y = x[i] + t * ${fb}; buf[h & 8191] = y; h = (h + 1) | 0 } }`
+}
+
+// CONDREF: conditional ARRAY-REF selection before a hot loop — `const t = k ? a : b` —
+// the other half of the Flow-Lenia pathology: the selected ref must keep the typed
+// fast path through the ternary (single-assignment select is the idiomatic form).
+const CONDREF_LEAF = ['t[i]', 'u[i]', 'i + 0.0', '1.5']
+const genCondRefExpr = (g, d) => (d <= 0 || g() < 0.4)
+  ? pick(g, CONDREF_LEAF)
+  : `(${genCondRefExpr(g, d - 1)} ${pick(g, ['+', '-', '*'])} ${genCondRefExpr(g, d - 1)})`
+const progCondRef = (g) => `export let f = (a, b, k, n) => { const t = k === 1 ? a : b; const u = k === 1 ? b : a; for (let i = 0; i < n; i = i + 1) { t[i] = ${genCondRefExpr(g, 3)} } }`
+
+// FGATHER: float-computed gather — a phase accumulator truncated to an index each
+// iteration (`ph | 0`), the resampler pattern (bench/resample pins the case; jz
+// currently trails V8 ~1.05× there). Guards that float→index truncation stays on the
+// typed-load fast path.
+const progFGather = (g) => {
+  const step = (0.5 + g() * 0.9).toFixed(6)
+  return `export let f = (a, out, n) => { let ph = 1.0; for (let k = 0; k < n; k = k + 1) { const idx = ph | 0; const fr = ph - idx; out[k] = a[idx] + (a[idx + 1] - a[idx]) * fr; ph = ph + ${step} } }`
+}
+
 export const CATEGORIES = {
   int: { gen: genInt, init: '0|0', step: (e) => `acc = (acc + (${e})) | 0`, ret: 'acc | 0', callable: true },
   float: { gen: genFloat, init: '0', step: (e) => `acc = acc + (${e})`, ret: 'acc', callable: true },
@@ -92,6 +131,10 @@ export const CATEGORIES = {
   cond: { gen: genCond, init: '0|0', step: (e) => `acc = (acc + (${e})) | 0`, ret: 'acc | 0', callable: false },
   buf: { program: progBuf, callable: false },
   nest: { program: progNest, callable: false },
+  slice: { program: progSlice, callable: false },
+  ring: { program: progRing, callable: false },
+  condref: { program: progCondRef, callable: false },
+  fgather: { program: progFGather, callable: false },
 }
 
 export const genProgram = (cat, seed) => {

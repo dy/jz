@@ -3,6 +3,10 @@
   "float": 560,
   "mixed": 790,
   "cond": 593,
-  "buf": 14067,
-  "nest": 9780
+  "buf": 13767,
+  "nest": 9769,
+  "slice": 42520,
+  "ring": 98120,
+  "condref": 95919,
+  "fgather": 62880
 }

@@ -85,6 +85,14 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 | [`jessie`](jessie/jessie.js) | the subscript/jessie JS parser over a realistic source corpus; branch-, allocation- and recursion-heavy front-end work |
 | [`jz`](jz/jz.js) | the JZ compiler itself (scripts/self.js pipeline) compiling three small programs at L2 — the self-host row runs jz.wasm compiling JavaScript; output bytes are checksummed so the parity gate doubles as a determinism proof |
+| [`slices`](slices/slices.js) | block processing over runtime sub-views of one arena (`a[off+i]`, off from a schedule) — the audio-bus / font-table access class; guards base hoisting |
+| [`trace`](trace/trace.js) | square-tracing contour following over a bitmap — bitmap→vector stage one; data-dependent state machine, unpredictable branches, 2-D indexing |
+| [`bezfit`](bezfit/bezfit.js) | least-squares cubic Bézier fitting (Schneider) with one Newton reparameterization — font autotracing's core; small hot loops, ÷ and √ only |
+| [`sdf`](sdf/sdf.js) | exact Euclidean distance transform (Felzenszwalb) of a glyph-like bitmap — SDF text pipeline; parabola-hull scratch loops with data-dependent pops |
+| [`resample`](resample/resample.js) | fractional-rate audio resampling, 4-point Hermite — float-derived gather indices + fractional phase accumulator |
+| [`delayline`](delayline/delayline.js) | modulated feedback comb through a power-of-two ring — wrap-masked indexing, genuine loop-carried feedback, q16 fraction splits |
+| [`glyfparse`](glyfparse/glyfparse.js) | TrueType `glyf`-style flag/coordinate decoding — variable-length byte grammar, bit tests, running accumulators |
+| [`deltae`](deltae/deltae.js) | CIEDE2000 over Lab pairs — branchy transcendental colorimetry (lab row, like the other colorjs probes: per-libm checksums) |
 
 The **`lab` rows** — the self-referential `watr`/`jessie`/`jz` (JZ or its deps
 compiling code) and the JS-only intrinsic probes `colorconv`/`colorlch`/
@@ -148,6 +156,46 @@ The Go arm64 backend auto-fuses `a*b + c` to `FMADDD` (mandatory in ARMv8,
 no compiler flag to disable it), which alters bit-level rounding on
 recurrence-style loops like `biquad`. Result is still IEEE-754
 correctly-rounded; cascade is the same algorithm.
+
+## The guarantee
+
+The suite's claim is precise and falsifiable: **for every kernel class arising in
+JZ's target domains, jz emits the fastest wasm in the field** — per case, against
+every rival compiled to the same substrate (C/Rust/Go/Zig → wasm32-wasi,
+AssemblyScript, Porffor, all run in V8), enforced by CI (`test/bench.js`: the
+fastest-wasm gate over the full corpus, required-rival availability, per-rival
+coverage floors). Size is the second axis, gated the same way on the `-Os` build.
+Native C stays a labeled ceiling, never a beat-claim.
+
+The scope of "every kernel class" is this matrix — each cell names the case that
+pins it. A domain need that has no case is a hole in the guarantee, and the fix
+is a new case, not a smaller claim:
+
+| kernel class | color science | audio DSP | font / vectorization | generative graphics |
+| --- | --- | --- | --- | --- |
+| dense float pipelines | `colorconv` `colorlog` `colorpq` | `biquad` `synth` | — | `alpha` `blur` |
+| transforms / spectra | — | `fft` `fftplan` | — | `heat` |
+| runtime sub-views (base hoisting) | — | `slices` (busses) | `slices` (tables) | — |
+| gather by computed index | — | `resample` | — | `noise` |
+| ring / wrap indexing | — | `delayline` | — | — |
+| loop-carried feedback | — | `biquad` `delayline` | — | `lorenz` |
+| state machines / tracing | — | — | `trace` | `mandelbrot` (escape) |
+| small-system solves / fitting | — | — | `bezfit` | `raytrace` |
+| envelope / hull scratch loops | — | — | `sdf` | — |
+| byte grammars / parsing | — | `wav` | `glyfparse` | `qoi` |
+| branchy transcendental scalar | `deltae` `colorlch` | — | — | — |
+| sort / partition / histogram | — | — | — | `radixsort` `sort` |
+| hashing / dictionaries | — | — | `wordcount` (shaping caches) | `dict` `hashjoin` |
+| interpreter dispatch | — | `bytebeat` | `vm` (hinting VMs) | `dispatch` |
+| matrix / geometry batches | `colorconv` (3×3) | — | `mat4` (transforms) | `matmul` `nbody` `particle` |
+
+Beyond named cases, the **shape-class fuzzers** guard whole families the cases
+sample: `scripts/perf-corpus.mjs` generates seeded programs per class — including
+the deopt classes found in production kernels (`slice` runtime-base views, `ring`
+wrap-masked taps, `condref` conditional array-ref selection, `fgather`
+float-computed gathers) — and `test/perf-ratchet.js` ratchets their loop-body op
+counts so a fast path that stops firing reds CI machine-independently, while
+`scripts/fuzz-bench.mjs` times the scalar classes against V8.
 
 ## Targets
 
