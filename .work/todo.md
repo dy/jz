@@ -118,6 +118,32 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * ARCHITECTURE STAGE 0 — PASS REGISTRY COMPLETE + FORMATTING INVARIANCE
+    (2026-07-20f, first unit of .work/architecture-plan.md): (1) REGISTRY:
+    PASS_NAMES gained the audit's six unregistered flags (loadCSE,
+    intDivLower, forInUnroll, versionTypedBounds, hoistConstLit,
+    rationalConst) + unrollScalarChain + NINE more the new coverage gate
+    found on its first run (foldStaticArrReads, blurMultiPixel,
+    experimentalStencil/OuterStrip/ToneMap/Slp, devirtFnArrays,
+    devirtSchemaReads, inlineDevirtArms); TUNING_KEYS exported (19 legal
+    non-pass knobs incl. whyNotSimd/crPow/inlinePureFns). ALL_OFF now
+    genuinely disables them at O0/O1 — six passes previously ran at the
+    "reference" tier via `undefined !== false`. Speed-only passes explicitly
+    false at level 2 and size (unrollScalarChain, forInUnroll size).
+    (2) COVERAGE GATE (test/passes.js): greps every optimize-config read
+    (optimize?./_o./cfg. against !==/===) across src+module+index, comments
+    stripped; any name outside PASS_NAMES ∪ TUNING_KEYS fails. Found 9 real
+    escapees immediately — the audit's count was an undercount.
+    (3) FORMATTING INVARIANCE: the auto-tuner's `code.length` metrics are
+    GONE — decisions key on AST totalNodes (~500 ≈ the old 4000-char
+    threshold), and the scan ACTIVATION length-gate is dropped too (a
+    comment could flip whether the scan ran at all → different bytes; one
+    linear walk on default-level compiles is the honest cost). Pinned:
+    compile ±10 KB of comments at O0/2/speed/size/default → byte-identical
+    (the pre-fix repro measured 70 B → 204 B, 2.9×).
+    (4) HYGIENE: snapshot-declined advisory now routes through warn() (the
+    old `.push` on {sink,seen} silently vanished); emit.js's literal NUL
+    byte escaped (file greppable again).
   * MECHANISMS C–F CLOSED OUT — PROFILES DELIVERED, SPECS RECORDED
     (2026-07-20e, completes the user's A–F mandate; A+B landed a818ccfd):
     (C) STATIC TYPED-ARRAY PLACEMENT — SPEC'D, DEFERRED TO THE SOLVER WORLD:

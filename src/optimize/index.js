@@ -152,6 +152,43 @@ export const PASS_NAMES = [
   'arenaRewind',              // per-call heap rewind for no-arg scalar allocator kernels
   'treeshake',
   'jsstring',                 // boundary opt-in: flip exported string params to externref
+  // Registry completion (architecture plan Stage 0): every flag a call site
+  // reads MUST be listed here — an unlisted name is `undefined !== false` and
+  // silently runs at O0, breaking the representation-free reference tier.
+  // test/passes.js greps every gate read against this list + TUNING_KEYS.
+  'loadCSE',                  // straight-line typed element-load CSE (compile-level, pre-analyze)
+  'intDivLower',              // i32/i32 constant-divisor strength lowering
+  'forInUnroll',              // for-in over a static schema → key-literal-substituted body copies
+  'versionTypedBounds',       // typed-bounds loop versioning (guarded fast arm + checked twin)
+  'hoistConstLit',            // loop-invariant const array/object literal hoist (allocate once)
+  'unrollScalarChain',        // serial-chain (address-carried scalar) ×2 pairing — speed-only
+  // WAT-pipeline passes previously gated only by `undefined !== false` inside
+  // optimizeFunc (found by the registry-coverage gate on its first run):
+  'foldStaticArrReads',       // const-index reads of static-data arrays → immediates
+  'blurMultiPixel',           // stencil vectorizer's multi-pixel mode
+  'experimentalStencil',      // stencil vectorizer (bit-exact pure win; listed for the O0 contract)
+  'experimentalOuterStrip',   // outer-loop strip-mining vectorizer
+  'experimentalToneMap',      // tone-map reduction vectorizer
+  'experimentalSlp',          // superword-level parallelism (adjacent-scalar packing)
+  'devirtFnArrays',           // const fn-array call_indirect → guarded direct calls
+  'devirtSchemaReads',        // megamorphic dyn-get probe → br_table over registered schemas
+  'inlineDevirtArms',         // inline the devirt guard's direct-call arms
+]
+
+/** Numeric/string tuning knobs the presets may set — legal config keys that are
+ *  NOT on/off passes. The registry-coverage test accepts these; anything else
+ *  read off the optimize object is an unregistered flag and fails the gate. */
+export const TUNING_KEYS = [
+  'level', 'arrayMinCap', 'hashSmallInitCap', 'watrProfile', 'watrGuard', 'watrLicm',
+  'reduceUnroll', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset',
+  'scalarTypedLoopUnroll', 'scalarTypedNestedUnroll', 'scalarTypedArrayLen',
+  'snapshotInit',
+  'rationalConst',            // SEMANTIC precision lowering (rational constant carry — pinned
+                              // by the precision suite at EVERY tier incl. O0), opt-out only:
+                              // not a level-gated optimization, so not in PASS_NAMES/ALL_OFF
+  'whyNotSimd',               // diagnostic: print vectorizer rejection reasons
+  'crPow',                    // opt-in experimental pow vectorization
+  'inlinePureFns',            // opt-in pure-function WAT inlining (assemble)
 ]
 
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
@@ -165,7 +202,7 @@ const LEVEL_PRESETS = Object.freeze({
   // watr pipeline. `inline` stays off by watr's own default — opt-in only.
   // boolConvertToSelect off at the default level: it's a latency-for-size trade (adds a
   // const + op per site) that only pays off on serial recurrences — speed-tier only.
-  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, watrProfile: 'speed' }),
+  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, watrProfile: 'speed' }),
   // L3/'speed' trades a bit of heap headroom for fewer __arr_grow / __hash growth
   // cycles. arrayMinCap=16 means `[]` and `new Array()` skip the first two doublings
   // (0→2→4→8→16); hashSmallInitCap=8 keeps per-object __dyn_props at the same load
@@ -191,6 +228,8 @@ const LEVEL_PRESETS = Object.freeze({
     hoistGlobalConstLoads: false, maskedSuffixGuard: false,
     recursionUnroll: false,   // body tripling is a size regression — speed-only
     unrollRecurrence: false,  // ×2 body duplication is a size regression — speed-only
+    unrollScalarChain: false, // ×2 body duplication is a size regression — speed-only
+    forInUnroll: false,       // one body copy per schema key — speed-only
     clampPeel: false,         // edge-clamp peel triples a stencil loop (clamp-free interior + 2 edges) to vectorize — speed-only
     versionTypedBounds: false,// typed-bounds loop versioning duplicates every proven nest (guarded fast arm + checked twin, ×1.5-3 on small kernels) — the branchless checked reads alone are the size-tier lowering; speed-only trade
     leanCheckedIdx: true,     // unproven typed reads emit the if-form (guard → direct load, else undefined) — ~6 ops/site smaller than the select-clamp form, which exists only so SPEED-tier kernel bodies stay branch-free for the SIMD lift (off here)

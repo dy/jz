@@ -4586,7 +4586,7 @@ export const emitter = {
           conjs.push(['i64.le_s', ['local.get', `$${stepsT}`], i64c(2147483648)])
           const seen = new Set()
           for (const c of cur.cands) {
-            const gk = c.recv + ' ' + c.post
+            const gk = c.recv + '\x00' + c.post
             if (seen.has(gk)) continue
             seen.add(gk)
             const endT = tempI64('tvz')

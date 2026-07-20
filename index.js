@@ -46,7 +46,7 @@ import watrCompile from "watr/compile";
 import { snapshotInit } from "./src/snapshot.js";
 import watrPrint from "watr/print";
 import watOptimize from "watr/optimize";
-import { ctx, reset, err, initWarnings, assertCtxInvariants } from './src/ctx.js'
+import { ctx, reset, err, warn, initWarnings, assertCtxInvariants } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import { liftIIFEs } from './src/prepare/lift-iife.js'
 import { preEval } from './src/prepare/pre-eval.js'
@@ -402,6 +402,7 @@ const autoCfgNodeSize = (node) => {
 
 const autoCfgScanNode = (node, stats, loopDepth) => {
   if (!Array.isArray(node)) return
+  stats.totalNodes++
   const op = node[0]
   if (AUTO_CFG_LOOP_OPS.has(op)) {
     stats.loopCount++
@@ -430,7 +431,7 @@ const autoCfgScanNode = (node, stats, loopDepth) => {
  *  Returns an object of pass overrides; empty object means "use defaults". */
 const detectOptimizeConfig = (ast, code) => {
   const s = {
-    sourceChars: code?.length || 0,
+    totalNodes: 0,
     funcCount: 0, maxFuncBodySize: 0,
     loopCount: 0, maxLoopDepth: 0,
     typedArrayCount: 0, maxTypedArrayLen: 0,
@@ -457,7 +458,11 @@ const detectOptimizeConfig = (ast, code) => {
   // and without it the v128 spills to memory every iteration (~2× slower on the
   // trig-bound attractors kernel). Explicit SIMD is a perf opt-in — keep watr on.
   const usesSimd = !!ctx.module?.modules?.simd
-  const isLarge = s.sourceChars > 4000 || s.funcCount > 40 || s.maxFuncBodySize > 300
+  // AST-node metric, NEVER raw source length: a 5 KB comment must not change
+  // codegen (measured 2.9× size delta pre-fix — the formatting-invariance
+  // test pins this). ~500 nodes ≈ the old 4000-char threshold on idiomatic
+  // source, calibrated against the same corpus.
+  const isLarge = s.totalNodes > 500 || s.funcCount > 40 || s.maxFuncBodySize > 300
   const isMachineLike = s.callSites > 300 && s.stringLiteralCount < 10
   if ((isLarge || isMachineLike) && !usesSimd) { cfg.watr = false; cfg.splitCharScan = false }
   // Typed-array heavy: tighten scalarization thresholds when we see large
@@ -618,7 +623,10 @@ const jzCompileInner = (code, opts = {}) => {
   // touches typed arrays or is large enough for the machine-code heuristic to
   // bite. `code.length` is the one signal free without scanning; gating on it
   // keeps small programs (the common case) on the no-scan fast path.
-  if (opts.optimize == null && (ctx.module.modules.typedarray || code.length > 4000)) {
+  // No source-length activation gate: the decision metrics are AST-shaped, and
+  // the activation must be too, or a comment could flip whether the scan runs
+  // (and with it the output bytes). One linear walk on default-level compiles.
+  if (opts.optimize == null) {
     const autoCfg = detectOptimizeConfig(ast, code)
     if (Object.keys(autoCfg).length) {
       ctx.transform.optimize = resolveOptimize(autoCfg)
@@ -790,7 +798,7 @@ const jzCompileInner = (code, opts = {}) => {
   // hermeticity) when init touches the host, loops forever, or memory is shared.
   if (cfg.snapshotInit) {
     const took = time('snapshotInit', () => snapshotInit(optimized, watrCompile))
-    if (!took && opts.warnings) ctx.warnings?.push?.({ code: 'snapshot-declined', message: 'init snapshot declined (host-touching, timer, or shared-memory init) — compiled without it' })
+    if (!took && opts.warnings) warn('snapshot-declined', 'init snapshot declined (host-touching, timer, or shared-memory init) — compiled without it')
   }
   try {
     if (opts.wat) {

@@ -40,6 +40,7 @@ const TESTS = [
   'external',
   'watr',
   'optimizer',
+  'passes',
   'dyn-closure-tables',
   'preeval',
   'inference',
