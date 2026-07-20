@@ -118,6 +118,37 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * SCALAR RANGE FACTS — THE CANONICAL INT-HULL CHANNEL (2026-07-20g):
+    delayline 1.24× → 1.020 IN-BAND (cs exact 1887209008), trace kernels
+    checked-read-free. ONE evaluator, `intExprRange` (static.js): const
+    chains via constIntExpr, masks `& m` → [0,m] (m ≤ 2^31−1 — see below),
+    `>>>`, ternary hulls, ±/* interval arithmetic (fl-monotone, so computed
+    endpoints are sound), name case = durable `range` rep ∩ branch-local
+    refinement. FEEDERS: (1) analyze stamps `range` ValueRep on
+    never-reassigned decls with finite init hulls (chains decl-to-decl);
+    (2) flow-types refineIntCompareRange: ordered compares vs
+    constIntExpr-resolvable bounds (`x >= 0 && x < W` → x ∈ [0, W−1] in the
+    guarded arm; K−1 int tightening sound because every consumer gates on
+    exprType i32). CONSUMERS, all lock-step: exprType `*` small() via range
+    (a named DSPAN proves like a literal — THE delayline root cause);
+    emit `*` mulRangeFitsI32 (exact product interval ⊆ i32);
+    `(a/2^k)|0` with a ≥ 0 proven → i32.shr_u (13-cycle sdiv → 1-cycle
+    shift); f64 `x/2^k` → bit-exact reciprocal multiply (|k| ≤ 1000 keeps
+    1/d normal; pinned Object.is-exact over NaN/±0/±Inf/1e300);
+    typedIdxProven class 6 (i32-typed idx, hull ⊆ [0, len)). REVIEW CATCH
+    BEFORE LANDING: `x & 0x80000000` — `&` is ToInt32, a mask with bit 31
+    set yields 0 or −2^31, so [0, m] for m ≥ 2^31 is UNSOUND (repro'd:
+    div→shr_u gave 32768 vs JS −32768). Guarded m ≤ 0x7fffffff at ALL
+    FOUR hull sites (intExprRange + the pre-existing twins in type.js
+    typed-value-range walk ×2 and narrow.js exprRange); pinned at
+    O0/2/speed. Sibling ruled sound: emit i32TopBitClear is bit-level.
+    NOTED, pre-existing, out of scope: `(x & 0xffffffff) * 2` wraps on
+    HEAD via mulFitsI32's small-literal shortcut — product −2^32 exceeds
+    i32, i.e. the documented i32-contract exclusion the fuzzer skips;
+    the honest fix is the solver-world product-range verdict (Stage 2).
+    RESIDUALS: trace 1.40 = branch-layout class (checks are gone); sdf
+    1.22 = edt1d `f[v[k]]` loaded-value range class (needs value hulls
+    THROUGH memory, recorded).
   * ARCHITECTURE STAGE 0 — PASS REGISTRY COMPLETE + FORMATTING INVARIANCE
     (2026-07-20f, first unit of .work/architecture-plan.md): (1) REGISTRY:
     PASS_NAMES gained the audit's six unregistered flags (loadCSE,

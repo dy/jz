@@ -31,7 +31,7 @@ import { i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux } from '../../layout.
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
 import { FITS_I32_MAX } from '../widen.js'
-import { nonNegIntLiteral, intLiteralValue, staticPropertyKey } from '../static.js'
+import { nonNegIntLiteral, intLiteralValue, intExprRange, staticPropertyKey } from '../static.js'
 import { findFreeVars } from './analyze.js'
 import {
   containsNestedClosure, containsNestedLoop, nestedSmallLoopBudget,
@@ -302,6 +302,16 @@ const i32Mag = (v) =>
 // the i32 ABI (one op, no f64 round-trip) on V8 / JSC / wasmtime alike, and the i32
 // product is lane-vectorizable where the f64 form was not.
 const mulBoundedFaithful = (va, vb) => i32Mag(va) * i32Mag(vb) <= 0x7fffffff
+// AST-level range twin (intExprRange resolves const names + ranged decl reps):
+// the EXACT product interval must fit signed i32 — then i32.mul is faithful in
+// every consumer context, same contract as mulBoundedFaithful. Keeps exprType's
+// range-proven i32 verdict (type.js `*`) in lock-step at the emit site.
+const mulRangeFitsI32 = (aAst, bAst) => {
+  const ra = intExprRange(aAst), rb = intExprRange(bAst)
+  if (!ra || !rb) return false
+  const p = [ra[0] * rb[0], ra[0] * rb[1], ra[1] * rb[0], ra[1] * rb[1]]
+  return Math.min(...p) >= -0x80000000 && Math.max(...p) <= 0x7fffffff
+}
 
 /** Emit typeof comparison: typeof x == typeCode → type-aware check. */
 export function emitTypeofCmp(a, b, cmpOp) {
@@ -1054,6 +1064,14 @@ function tryIntDivTrunc(aNode, bNode) {
     const va = asI32(emit(aNode))
     if (dv === 0) return typed(['block', ['result', 'i32'], ['drop', va], ['i32.const', 0]], 'i32')
     if (dv === -1) return typed(['i32.sub', ['i32.const', 0], va], 'i32')  // -a, wraps at INT_MIN
+    // Power-of-two divisor with a PROVEN-non-negative dividend truncates the
+    // same as a logical shift (`(dq/65536)|0` ≡ `dq >>> 16` for dq ≥ 0 — the
+    // q16 fixed-point split). intExprRange supplies the proof through masked/
+    // ternary/bounded-product decl chains; sdiv is ~13 cycles, shr is 1.
+    if (dv > 0 && (dv & (dv - 1)) === 0) {
+      const r = intExprRange(aNode)
+      if (r && r[0] >= 0) return typed(['i32.shr_u', va, ['i32.const', 31 - Math.clz32(dv)]], 'i32')
+    }
     return typed(['i32.div_s', va, ['i32.const', dv | 0]], 'i32')
   }
   // Runtime divisor needs a,b repeated across the guard; only intercept when both are
@@ -3779,7 +3797,8 @@ export const emitter = {
     if (isLit(va) && litVal(va) === 0 && finiteFactor(vb)) return isLit(vb) ? va : typed(['block', ['result', va.type], vb, 'drop', va], va.type)
     // `.unsigned` operand is a uint32 ([0, 2^32)); its product can exceed i32, so
     // `i32.mul` would wrap ((2^32-1)*2 → -2). Widen to f64 — see `+` above.
-    if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb) && (mulFitsI32(va, vb) || mulBoundedFaithful(va, vb))) return typed(['i32.mul', va, vb], 'i32')
+    if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb)
+        && (mulFitsI32(va, vb) || mulBoundedFaithful(va, vb) || mulRangeFitsI32(a, b))) return typed(['i32.mul', va, vb], 'i32')
     // Typed-element reads arrive PRE-converted (`.typed:[]` returns
     // f64.convert_i32_{s,u}(loadN)), so the faithful-product gate above never
     // sees them. Peel the convert to expose the bounded integer source: when
@@ -3804,6 +3823,17 @@ export const emitter = {
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a / b, b => b !== 0)
     if (_f) return _f
     if (isLit(vb) && litVal(vb) === 1) return toNumF64(a, va)
+    // Division by an exact power of two is a BIT-EXACT multiply by its
+    // reciprocal (2^-k is representable; per-element scaling is exact for every
+    // finite/NaN/±0 input — IEEE 754 multiplication by a power of two only
+    // adjusts the exponent). f64.mul is ~4× cheaper than f64.div on every
+    // relevant core (the q16 fraction split `(dq - dInt*65536)/65536.0`).
+    if (isLit(vb)) {
+      const d = litVal(vb)
+      const k = Math.log2(Math.abs(d))
+      if (Number.isInteger(k) && Number.isFinite(d) && d !== 0 && Math.abs(k) <= 1000)
+        return typed(['f64.mul', stripCanon(toNumF64(a, va)), ['f64.const', 1 / d]], 'f64')
+    }
     return typed(['f64.div', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '%': (a, b) => {

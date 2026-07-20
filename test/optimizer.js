@@ -4042,3 +4042,56 @@ export let main = () => {
   for (const optimize of [0, 2, 'speed'])
     is(run(src, { optimize }).main(), 160, `O${optimize}: no cross-loop CSE of a[i]`)
 })
+
+test('scalar range facts: q16 chain stays i32 end-to-end (delayline class)', () => {
+  // Module-const names (DSPAN) failed the product-i32 rule's literal check, so
+  // the whole q16 chain fell to f64 (f64.div + trunc per sample). intExprRange
+  // chains const names + ranged decl reps (mask → ternary hull → bounded
+  // product); the divide strength-reduces to one logical shift and the f64
+  // fraction split multiplies by the exact reciprocal.
+  const src = `
+const DMIN = 96, DSPAN = 2000
+export let f = (p) => {
+  const r = p & 0x1ffff
+  const t = r < 0x10000 ? r : 0x20000 - r
+  const d = DMIN * 65536 + t * DSPAN
+  const di = (d / 65536) | 0
+  const fr = (d - di * 65536) / 65536.0
+  return di + fr
+}`
+  const jsF = (p) => { const r = p & 0x1ffff; const t = r < 0x10000 ? r : 0x20000 - r; const d = 96 * 65536 + t * 2000; const di = (d / 65536) | 0; return di + (d - di * 65536) / 65536.0 }
+  for (const optimize of [0, 2, 'speed']) {
+    const { f } = run(src, { optimize })
+    for (const p of [0, 1, 0xffff, 0x10000, 0x1ffff, 0x20000, -1, -123456, 2147483647])
+      is(f(p), jsF(p), `O${optimize} p=${p}: q16 split exact`)
+  }
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const fn = wat.split('(func ').find(c => c.startsWith('$f')) || ''
+  ok(!/f64\.div|i32\.div/.test(fn), 'no divides anywhere in the chain')
+  ok(/i32\.shr_u/.test(fn), 'integer split is a logical shift')
+})
+
+test('sign-bit mask yields no non-negative hull (x & 0x80000000 can be negative)', () => {
+  // `&` is ToInt32: a mask with bit 31 set produces 0 or -2^31, never [0, m].
+  // The unguarded hull let div→shr_u strength-reduce a negative dividend
+  // (wasm 32768 vs JS -32768). Same class in narrow's walk and the typed
+  // value-range walk — all three sites gate m ≤ 0x7fffffff now. (Products that
+  // EXCEED i32 under such masks are outside the i32 contract — the fuzzer's
+  // "i32 contract exceeded" exclusion — so only in-range results are pinned.)
+  const src = `export let f = (x) => ((x & 0x80000000) / 65536) | 0`
+  for (const optimize of [0, 2, 'speed']) {
+    const { f } = run(src, { optimize })
+    for (const x of [-1, 0x80000000, -2147483648, 5, 0])
+      is(f(x), ((x & 0x80000000) / 65536) | 0, `O${optimize} x=${x}: sign-bit mask divide`)
+  }
+})
+
+test('f64 power-of-two division folds to exact reciprocal multiply', () => {
+  const src = `export let f = (x) => x / 1024`
+  const { f } = run(src, { optimize: 2 })
+  for (const x of [0, -0, 1, 3.7, -5.25, 1e300, -1e-300, NaN, Infinity, -Infinity])
+    is(Object.is(f(x), x / 1024), true, `x=${x} exact`)
+  const wat = jz.compile(src, { wat: true, optimize: 2 })
+  const fn = wat.split('(func ').find(c => c.startsWith('$f')) || ''
+  ok(!/f64\.div/.test(fn) && /f64\.mul/.test(fn), 'div-by-2^k emitted as multiply')
+})

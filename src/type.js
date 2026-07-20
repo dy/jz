@@ -16,7 +16,7 @@ import { FITS_I32_MAX } from './widen.js'
 import { VAL, lookupValType } from './reps.js'
 import { valTypeOf } from './kind.js'
 import { propValType, CMP_OPS } from './kind-traits.js'
-import { NO_VALUE, staticValue, intLiteralValue } from './static.js'
+import { NO_VALUE, staticValue, intLiteralValue, intExprRange } from './static.js'
 import { typedElemAux } from '../layout.js'
 
 /** Byte-backed constructors whose `new X()` yields a PTR.TYPED / PTR.BUFFER value:
@@ -124,6 +124,14 @@ export function typedIdxProven(recv, idx) {
   if (Array.isArray(idx) && idx[0] === '&' && idx.length === 3) {
     const m = intLiteralValue(idx[1]) ?? intLiteralValue(idx[2])
     if (m != null) return m >= 0 && m < len
+  }
+  // 6. refined-range proof: an i32-typed index whose closed hull (branch-local
+  //    compare refinements ∩ ranged decl reps ∩ const chains) fits [0, len).
+  //    The i32 gate makes the int-tightened refinement bounds sound (a
+  //    fractional value cannot type i32).
+  if (exprType(idx, ctx.func.locals) === 'i32') {
+    const r = intExprRange(idx)
+    if (r && r[0] >= 0 && r[1] < len) return true
   }
   if (typeof idx === 'string') {
     const B = litBoundArrIdx(ctx).get(recv + '\x00' + idx)
@@ -1057,8 +1065,9 @@ function scanIntervalIdx(body, out, lens, ranges) {
     if (!A || !B) {
       // a const mask bounds one-sidedly even when the other side is unknown
       if (op === '&') {
+        // m ≥ 2^31 masks the SIGN bit (ToInt32) — result can be negative
         const m = intLiteralValue(x) ?? intLiteralValue(y)
-        if (m != null && m >= 0) return [0, m]
+        if (m != null && m >= 0 && m <= 0x7fffffff) return [0, m]
       }
       return null
     }
@@ -1072,7 +1081,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
     else if (op === '<<' && B[0] === B[1] && B[0] >= 0 && B[0] <= 20) r = [A[0] * 2 ** B[0], A[1] * 2 ** B[0]]
     else if (op === '>>' && B[0] === B[1] && B[0] >= 0 && B[0] <= 31) r = [A[0] >> B[0], A[1] >> B[0]]
     else if (op === '>>>' && B[0] === B[1] && B[0] >= 0 && A[0] >= 0) r = [A[0] >>> B[0], A[1] >>> B[0]]
-    else if (op === '&' && B[0] === B[1] && B[0] >= 0) r = [0, B[0]]
+    else if (op === '&' && B[0] === B[1] && B[0] >= 0 && B[0] <= 0x7fffffff) r = [0, B[0]]
     // OR of two known non-negative fields cannot set a bit above either
     // operand's highest possible bit. This covers packed table indices such as
     // `((a & 3) << 4) | (b >>> 4)` without assuming the fields are disjoint.
@@ -2193,9 +2202,13 @@ export function exprType(expr, locals) {
     // `mulFitsI32`. exprType only proves the static-literal case — a strict SUBSET of
     // emit's i32 verdict (emit also admits masked-bound operands), which is the safe
     // direction: never claim i32 where emit might widen to f64.
+    // Range-resolved smallness (intExprRange chains module const-ints and
+    // ranged decl reps — masks/ternaries/bounded products): a named DSPAN or a
+    // masked-derived operand proves exactly like a literal. Lock-step with
+    // emit's `*` (which gets the same AST-level range check).
     const small = e => {
-      const v = staticValue(e)
-      return v !== NO_VALUE && typeof v === 'number' && Math.abs(v) <= FITS_I32_MAX
+      const r = intExprRange(e)
+      return r != null && Math.max(Math.abs(r[0]), Math.abs(r[1])) <= FITS_I32_MAX
     }
     return small(args[0]) || small(args[1]) ? 'i32' : 'f64'
   }

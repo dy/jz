@@ -22,7 +22,7 @@ import { commaList, ASSIGN_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralSt
 import { ctx, err } from '../ctx.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from '../kind.js'
-import { intLiteralValue, nonNegIntLiteral, constIntExpr, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
+import { intLiteralValue, nonNegIntLiteral, constIntExpr, intExprRange, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
 import { typedElemCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, scanBoundedArrIdx, inBoundsCharCodeAt, exprType, intCertainMap, isTerminator } from '../type.js'
 import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux } from '../../layout.js'
 
@@ -1145,6 +1145,14 @@ export function analyzeValTypes(body) {
         }
         setVal(a[1], vt)
         if (mayBeNullish(a[2])) updateRep(a[1], { nullable: true })
+        // Closed integer hull for never-reassigned decls whose init the range
+        // evaluator can bound (masks, ternary hulls, bounded products) — chains
+        // through earlier ranged decls via intExprRange's repOf hook. Feeds the
+        // i32-provability of products and div-by-2^k strength reduction (the
+        // delayline q16 chain: raw = lfo & 0x1ffff → tri → dq stays i32).
+        const declRange = intExprRange(a[2])
+        if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && writeCount(body, a[1], 0) === 0)
+          updateRep(a[1], { range: declRange })
         if (vt === VAL.REGEX) trackRegex(a[1], a[2])
         // VAL gate covers definite-typed RHS; `?:`/`&&`/`||` slip through valTypeOf
         // returning null but may still need ctor unification (or poisoning when

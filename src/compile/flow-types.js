@@ -21,6 +21,7 @@ import { ctx } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { isReassigned, TYPEOF } from '../ast.js'
 import { typeofPredicate } from './infer.js'
+import { constIntExpr } from '../static.js'
 
 const TYPEOF_CODE_TO_VAL = { [TYPEOF.number]: VAL.NUMBER, [TYPEOF.string]: VAL.STRING, [TYPEOF.function]: VAL.CLOSURE }
 
@@ -37,6 +38,15 @@ export function extractRefinements(cond, out, sense = true) {
   if (op === '&&' && sense)  { extractRefinements(cond[1], out, true);  extractRefinements(cond[2], out, true);  return out }
   if (op === '||' && !sense) { extractRefinements(cond[1], out, false); extractRefinements(cond[2], out, false); return out }
   // typeof x == 'number' | 'string' | 'function' — sense must be positive for "==", negative for "!="
+  // Ordered int compares refine a name's closed integer hull for the guarded
+  // arm (`x >= 0 && x < W` → x ∈ [0, W-1] inside the chain — the int twin of
+  // the discriminant refinements; trace's dominating bounds conjuncts).
+  // Consumers (intExprRange via mul/div/index proofs) are gated on the name
+  // being i32-typed, so the int tightening (K−1 for `<`) is sound there.
+  if (op === '<' || op === '<=' || op === '>' || op === '>=') {
+    refineIntCompareRange(op, cond[1], cond[2], out, sense)
+    return out
+  }
   if ((op === '==' || op === '===' || op === '!=' || op === '!==')) {
     const positiveEq = (op === '==' || op === '===') ? sense : !sense
     if (positiveEq) refineIntegerDiscriminant(cond[1], cond[2], out)
@@ -209,6 +219,25 @@ export function predicateRefinement(callee) {
 
 /** Merge a refinement fact into the per-name slot. Later facts override; non-overlapping
  *  fields union. Keeps the call-side simple (always assign through this). */
+/** `name OP const` (either side) under `sense` → tightest closed int bound.
+ *  Bounds come from constIntExpr (literals + module const-ints), so a named
+ *  W/H/MASK proves like a literal. Repeated conjuncts intersect. */
+function refineIntCompareRange(op, a, b, out, sense) {
+  const ka = constIntExpr(a), kb = constIntExpr(b)
+  let name = null, k = null, dir = op
+  if (typeof a === 'string' && kb != null && Number.isInteger(kb)) { name = a; k = kb }
+  else if (typeof b === 'string' && ka != null && Number.isInteger(ka)) {
+    name = b; k = ka
+    dir = op === '<' ? '>' : op === '<=' ? '>=' : op === '>' ? '<' : '<='
+  } else return
+  if (!sense) dir = dir === '<' ? '>=' : dir === '<=' ? '>' : dir === '>' ? '<=' : '<'
+  if (dir === '<') { dir = '<='; k = k - 1 }
+  if (dir === '>') { dir = '>='; k = k + 1 }
+  const cur = out.get(name)
+  if (dir === '<=') mergeRefinement(out, name, { rhi: cur?.rhi != null ? Math.min(cur.rhi, k) : k })
+  else mergeRefinement(out, name, { rlo: cur?.rlo != null ? Math.max(cur.rlo, k) : k })
+}
+
 export function mergeRefinement(out, name, fact) {
   const cur = out.get(name)
   out.set(name, cur ? { ...cur, ...fact } : fact)

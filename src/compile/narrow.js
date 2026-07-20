@@ -1072,8 +1072,9 @@ function inferTypedValueRanges(paramReps) {
     const op = n[0]
     if (op === '?:') { const a = exprRange(n[2]), b = exprRange(n[3]); return a && b ? hull(a, b) : null }
     if (op === '&') {
+      // m ≥ 2^31 masks the SIGN bit (ToInt32) — result can be negative
       const m = literal(n[1]) ?? literal(n[2])
-      if (m != null && m >= 0) return [0, m]
+      if (m != null && m >= 0 && m <= 0x7fffffff) return [0, m]
     }
     if (op === '>>>') {
       const s = literal(n[2])

@@ -52,6 +52,59 @@ export function constIntExpr(node) {
 }
 
 
+/** Closed integer hull [lo, hi] of an int expression, or null. Resolves names
+ *  through constIntExpr (module const-ints + per-function intConst reps) and
+ *  models the range-bearing operators: masks (`x & m` ⇒ [0, m]), unsigned
+ *  shifts, ternary hulls, and ± / * interval arithmetic. The canonical range
+ *  evaluator — narrow's typed-value-range walk and emit's i32-provability
+ *  (product safety, power-of-two division strength reduction) share it. */
+export function intExprRange(n) {
+  const c = constIntExpr(n)
+  if (c != null && Number.isInteger(c)) return [c, c]
+  if (typeof n === 'string') {
+    // Branch-local range refinements (flow-types: `x >= 0 && x < W` inside the
+    // guarded arm) intersect with the binding's durable range rep. Analyze-time
+    // stamping never sees refinements (they install only during emit), so decl
+    // range reps stay context-free.
+    const rf = ctx.func?.refinements?.get(n)
+    const rep = repOf(n)?.range
+    let lo = rep ? rep[0] : -Infinity, hi = rep ? rep[1] : Infinity
+    if (rf?.rlo != null && rf.rlo > lo) lo = rf.rlo
+    if (rf?.rhi != null && rf.rhi < hi) hi = rf.rhi
+    return Number.isFinite(lo) && Number.isFinite(hi) ? [lo, hi] : null
+  }
+  if (!Array.isArray(n)) return null
+  const op = n[0]
+  if (op === '?:' && n.length === 4) {
+    const a = intExprRange(n[2]), b = intExprRange(n[3])
+    return a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null
+  }
+  if (op === '&' && n.length === 3) {
+    const m = constIntExpr(n[1]) ?? constIntExpr(n[2])
+    // `&` is ToInt32: for m ≥ 2^31 the mask bit is the SIGN bit, so the result
+    // can be negative (x & 0x80000000 → 0 or -2^31) — only i31-safe masks
+    // yield the [0, m] hull.
+    if (m != null && m >= 0 && m <= 0x7fffffff) return [0, m]
+  }
+  if (op === '>>>' && n.length === 3) {
+    const sh = constIntExpr(n[2])
+    if (sh != null && (sh & 31) !== 0) return [0, 0xFFFFFFFF >>> (sh & 31)]
+  }
+  if ((op === 'u-' || op === '-') && n.length === 2) {
+    const a = intExprRange(n[1])
+    return a ? [-a[1], -a[0]] : null
+  }
+  if ((op === '+' || op === '-' || op === '*') && n.length === 3) {
+    const a = intExprRange(n[1]), b = intExprRange(n[2])
+    if (!a || !b) return null
+    if (op === '+') return [a[0] + b[0], a[1] + b[1]]
+    if (op === '-') return [a[0] - b[1], a[1] - b[0]]
+    const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]
+    return [Math.min(...p), Math.max(...p)]
+  }
+  return null
+}
+
 export const NO_VALUE = Symbol('no-static-property-key')
 
 export function staticPropertyKey(node) {

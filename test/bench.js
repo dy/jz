@@ -46,12 +46,15 @@ const natAvailable = have('clang')
 const SPEED = {
   // ── the domain-matrix cases (colorjs/audio/font/generative closure — see bench/README
   // "The guarantee"). Local calibration 2026-07: jz beats rust-wasm on slices/resample/
-  // glyfparse (the last also edges native C), ties bezfit; TRAILS rust-wasm on delayline
-  // (1.24×: masked-ring bounds checks + /65536 not strength-reduced), sdf (1.26×, AS also
-  // ahead: strided column walks + f[v[k]] gather re-derivation) and trace (1.41×: the
-  // branch-dense follow loop — branch layout + per-step bounds checks). Those three are
-  // the open codegen work; the matching shape-classes (ring/fgather/slice/condref) are
-  // ratcheted in test/perf-ratchet.js so progress is machine-independently pinned.
+  // glyfparse (the last also edges native C), ties bezfit AND (since the scalar
+  // range-facts wave) delayline — paired 1.020× vs rust-wasm, cs exact: the q16 chain
+  // stays i32 end-to-end, /65536 strength-reduces to shr_u, the fraction split to an
+  // exact reciprocal multiply (pinned in test/optimizer.js). TRAILS rust-wasm on sdf
+  // (1.22×, AS also ahead: edt1d f[v[k]] gather — needs value hulls THROUGH memory) and
+  // trace (1.40×: checked reads are GONE via compare-range refinements; residual is
+  // LLVM's hot-path fall-through branch layout). The matching shape-classes
+  // (ring/fgather/slice/condref) are ratcheted in test/perf-ratchet.js so progress is
+  // machine-independently pinned.
   slices:         { v8: 'win',  as: 'win',  porf: 'todo' },
   trace:          { v8: 'win',  as: 'tie',  porf: 'todo' },
   bezfit:         { v8: 'win',  as: 'win',  porf: 'todo' },
