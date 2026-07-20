@@ -118,6 +118,51 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * FASTEST-WASM RED ROWS — QUIET PAIRED VERDICTS + WAT DISSECTIONS
+    (2026-07-20c, the campaign map; measurements are ABBA paired, M4 quiet):
+    VERDICT TABLE: shapes/AS 1.210× (real, the recorded V8-codegen frontier);
+    strbuild/zig 1.156× (real — zig's no-allocation stack formatter, jz rounds
+    noisy 600-726µs); crc32/c 1.056×, biquad/zig 1.056×, fft/rust 1.053×
+    (band-edge trio, all REAL but ≤5.6%); lz/zig 1.037× — INSIDE the band
+    (green under the paired protocol; the loaded-gate red was measurement);
+    raymarcher/V8 0.96× quiet (real 4%, not CI noise). WAT DISSECTIONS
+    (wasm2wat diff vs the winning rival — both sides wasm, apples-to-apples):
+    - crc32 vs c-wasm: LLVM runs the byte loop (a) UNROLLED ×2 (two chained
+      table lookups per iteration — legal for the loop-carried crc, it's just
+      chaining, no reassociation), (b) ONE count-to-zero IV (starts −16384,
+      back-edge `br_if i≠0`, byte addresses = iv + folded consts) vs jz's TWO
+      IVs + lt_s compare, (c) LUT base FOLDED into `i32.load offset=` (the
+      table sits at a static address; jz's runtime-allocated Int32Array pays
+      `i32.add base` per lookup). Net ~8.5 vs ~13 ops/byte.
+    - biquad vs zig-wasm: zig keeps the whole cascade in constant-offset
+      loads/stores off two base pointers. jz's HOT LOOP RE-READS THE
+      LOOP-INVARIANT COEFFICIENT ARRAY EVERY SAMPLE — per-element CHECKED
+      reads (`i < len ? f64.load : NaN` ×5) plus a header len re-read
+      (`load(a−8)>>3`) per iteration; the array is a plain JS array the
+      typed-focused versioning machinery never proved. loads 151 vs 76,
+      stores 110 vs 38.
+    GENERAL MECHANISMS (the units, in leverage order — never input tweaks):
+    (A) LOOP-INVARIANT CHECKED-READ HOISTING for plain arrays: const-index
+        reads off a loop-invariant, unwritten, unaliased receiver (the
+        existing inplace/alias census supplies the proof) hoist above the
+        loop — one len guard, K raw loads into locals. Directly biquad's
+        gap; likely touches synth/wav class too.
+    (B) SMALL-LOOP UNROLL ×2 at speed tier for byte-codec recurrence loops
+        (crc32/lz/qoi class): body ≤ N ops, single recurrence chain — chain
+        two iterations, halve IV/branch overhead; remainder peel.
+    (C) STATIC PLACEMENT of module-lifetime fixed-size typed arrays (module
+        let, ctor size const, never reassigned): reserve a fixed heap offset
+        → element addressing folds the base into `load offset=` (crc32 LUT,
+        fft twiddles, dict table). ValueRep carries staticBase; alloc emits
+        at the reserved address (headers included, so aliases still box).
+    (D) shapes 1.21×: stands on the recorded frontier — machine-code
+        profiling (xctrace / V8 debug) before any further jz-side change.
+    (E) strbuild/zig 1.156×: zig never materializes the string; jz's
+        parity would need string-SROA (format into a stack region when the
+        string provably dies into the checksum) — V2-class, recorded.
+    (F) raymarcher 0.96×: profile the frame (SIMD-4 kernel loses to V8
+        scalar JIT by 4% — suspect helper-call or lane-shuffle overhead in
+        the hot SDF; needs per-function profile before touching codegen).
   * VARS-CHANNEL SCOPE SPLIT — LOCALS OUT OF THE MODULE MAP (2026-07-20b, the
     binding-identity item's first structural cut): the audit's second α-case
     (`use({x:5}) + other()`: shared name 1310 B, renamed 5320 B — the SHARED
