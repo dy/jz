@@ -32,7 +32,7 @@ const FUZZBENCH = join(ROOT, 'scripts/fuzz-bench.mjs')
 
 const have = cmd => spawnSync('which', [cmd], { stdio: 'ignore' }).status === 0
 const ascAvailable = have('asc')
-const porfAvailable = have('porf')
+const porfAvailable = have(process.env.PORF_BIN || 'porf')
 const wasmOptAvailable = have('wasm-opt')
 const natAvailable = have('clang')
 
@@ -67,14 +67,14 @@ const SPEED = {
   // ── audio + image showcase cases (cross-language, bit-exact) ──
   // bytebeat: pure-i32 one-line synthesis; jz beats the JS field, native
   // auto-vectorizes the stateless formula (so it's not in NATIVE — honest).
-  bytebeat:       { v8: 'win',  as: 'win',  porf: 'na'   },
+  bytebeat:       { v8: 'win',  as: 'win',  porf: 'todo'   },
   // fft: radix-2 Cooley–Tukey; jz beats V8/AS and ties native (Rust/Zig).
-  fft:            { v8: 'win',  as: 'tie',  porf: 'na'   },
+  fft:            { v8: 'win',  as: 'tie',  porf: 'todo'   },
   // synth: poly-sin osc + ADSR + biquad; jz is fastest of ALL targets here,
   // including native (the loop is loop-carried, so native can't vectorize either).
-  synth:          { v8: 'win',  as: 'tie',  porf: 'na'   },
+  synth:          { v8: 'win',  as: 'tie',  porf: 'todo'   },
   // blur: separable RGBA box blur; jz beats the JS field, native SIMDs the stencil.
-  blur:           { v8: 'win',  as: 'win',  porf: 'na'   },
+  blur:           { v8: 'win',  as: 'win',  porf: 'todo'   },
   // ── codec / compression / hashing / ML showcase cases (cross-language, bit-exact) ──
   // hash: MurmurHash3 x86_32 — table-free multiply/rotate/xor; jz ties V8 and sits
   // at native-C parity (the integer mixing chain is jz's home turf). vs AS it's a
@@ -99,7 +99,7 @@ const SPEED = {
   // typed-array-param return (sum + probe() was lowering through __is_str_key/
   // __str_concat); now jz is the fastest target — beats V8, AS, native C, and every
   // wasm rival. Recheck-stabilised below (the V8 margin is real ~0.91× but slim).
-  hashjoin:       { v8: 'win',  as: 'win',  porf: 'na'   },
+  hashjoin:       { v8: 'win',  as: 'win',  porf: 'todo'   },
   // watr is the one large real-program case (jz compiling the watr WAT encoder —
   // string-tokenizing + byte-array emission). jz's linear-memory strings
   // structurally trail V8's native strings + JIT here, so it lands ~1.12-1.20× of
@@ -504,12 +504,34 @@ for (const tid of ['v8', 'as', 'porf']) {
   // every available rival must produce comparable rows for a MAJORITY of the
   // cases it attempted (ran or failed). A toolchain-version breakage (e.g.
   // zig API churn taking a rival to 0/43) reads as red, not as a free win.
+  // MANDATORY rivals: the "fastest wasm" claim names these producers, so an
+  // ABSENT one must not silently shrink the field — a missing toolchain makes
+  // the claim unproven, not satisfied. Asserted where the full rig is expected
+  // (CI, or JZ_FULL_RIG=1); on a dev box missing one it prints, so local runs
+  // stay usable. This is the counterpart to the coverage floor below: that
+  // catches a rival that ran and failed, this catches one that never ran.
+  const REQUIRED_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'tinygo', 'zig-wasm', 'as']
+  {
+    const missing = REQUIRED_RIVALS.filter(t => !wasmRivalAvail[t])
+    const fullRig = process.env.CI || process.env.JZ_FULL_RIG
+    test('bench: required wasm rivals present (the claim names them)', () => {
+      const msg = `missing mandatory rival toolchain(s): ${missing.join(', ')} — the fastest-wasm claim is UNPROVEN against them, not satisfied`
+      if (fullRig) ok(missing.length === 0, msg)
+      else ok(true, missing.length ? `(dev rig) ${msg}` : 'all mandatory rivals available')
+    })
+  }
   // Per-rival coverage floor. Default: a majority of attempted cases must
   // produce comparable rows (a toolchain rival that compiles the corpus).
-  // porf is a PARTIAL engine by design (fenced reference — it compiles a
-  // handful of the cases and always has), so its expectation is presence,
-  // not majority; raising it would gate on porffor's roadmap, not on jz.
-  const RIVAL_COVERAGE_MIN = { porf: 1 }
+  // porf's floor is VERSION-AWARE: the npm 0.61.x engine is partial by design
+  // (ran 13/52 — presence, not majority), but the 2026 rewrite (git main,
+  // "pre-alpha" versioning; CI pins it via PORF_BIN in bench.yml) runs 49/52
+  // with parity — only the three self-host compiler giants (watr/jessie/jz)
+  // exceed it. Gate accordingly so a coverage regression in either vintage reds.
+  const porfIsNew = (() => {
+    try { return /pre-alpha/.test(execFileSync(process.env.PORF_BIN || 'porf', ['--version'], { encoding: 'utf8' })) }
+    catch { return false }
+  })()
+  const RIVAL_COVERAGE_MIN = { porf: porfIsNew ? 40 : 1 }
   for (const t of WASM_RIVALS) {
     const attempted = speedCases.filter(id => runs[id]?.[t]).length
     if (!attempted) continue   // no eligible sources for this rival — not measured, not asserted

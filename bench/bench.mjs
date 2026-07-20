@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, execSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -33,6 +33,17 @@ const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const JSC_BIN = process.env.JSC_BIN || ''
 const PORF_BIN = process.env.PORF_BIN || 'porf'
+// Porffor's 2026 rewrite ("pre-alpha 1", git main) replaced the CLI: no `run` subcommand,
+// no --allocator-chunks (the new allocator sizes itself). Probe the version once and pick
+// the invocation shape, so both the npm release (0.61.x) and a git checkout work.
+let _porfNew = null
+const porfIsNew = () => {
+  if (_porfNew === null) {
+    try { _porfNew = /pre-alpha/.test(execSync(`${PORF_BIN} --version 2>&1 || true`, { encoding: 'utf8', shell: true })) }
+    catch { _porfNew = false }
+  }
+  return _porfNew
+}
 
 mkdirSync(BUILD, { recursive: true })
 
@@ -321,8 +332,9 @@ if (typeof preciseTime === 'function') __benchGlobal.performance = { now: () => 
 else if (typeof __benchGlobal.performance === 'undefined') __benchGlobal.performance = { now: typeof dateNow === 'function' ? dateNow : () => Date.now() }
 // Shell engines (jsc) ship no Web encoding APIs; the compiler-class cases
 // (jz/watr) encode strings to UTF-8 bytes. Full UTF-8, not ASCII-only.
-if (typeof __benchGlobal.TextEncoder === 'undefined') {
-  __benchGlobal.TextEncoder = class {
+var TextEncoder = __benchGlobal.TextEncoder, TextDecoder = __benchGlobal.TextDecoder
+if (typeof TextEncoder === 'undefined') {
+  TextEncoder = __benchGlobal.TextEncoder = class {
     encode(s) {
       const b = []
       for (let i = 0; i < s.length; i++) {
@@ -336,7 +348,7 @@ if (typeof __benchGlobal.TextEncoder === 'undefined') {
       return new Uint8Array(b)
     }
   }
-  __benchGlobal.TextDecoder = class {
+  TextDecoder = __benchGlobal.TextDecoder = class {
     decode(u) {
       u = u instanceof Uint8Array ? u : new Uint8Array(u.buffer || u, u.byteOffset || 0, u.byteLength ?? undefined)
       let s = '', i = 0
@@ -580,9 +592,10 @@ const targets = {
     name: 'Porffor',
     available: () => has(PORF_BIN),
     bin: flatPath,
-    // --allocator-chunks=128 lifts the default 1 MB malloc budget so larger
-    // typed arrays (biquad: 3.84 MB, aos: 0.4 MB) don't OOB at runtime.
-    run: c => tryRun('porf', c, () => writeFlat(c), [PORF_BIN, '--allocator-chunks=128', 'run', flatPath(c)]),
+    // Old CLI: --allocator-chunks=128 lifts the 1 MB malloc budget so larger typed
+    // arrays (biquad: 3.84 MB) don't OOB. New CLI: just the file.
+    run: c => tryRun('porf', c, () => writeFlat(c),
+      porfIsNew() ? [PORF_BIN, flatPath(c)] : [PORF_BIN, '--allocator-chunks=128', 'run', flatPath(c)]),
   },
   jz: {
     name: 'jz → V8 wasm',

@@ -72,19 +72,19 @@ jobs:
           version: 0.16.0
       # TinyGo (the lean go→wasm rival — a separate row from go-wasm's stock
       # toolchain). Non-fatal: the target self-gates on availability.
+      # TinyGo must MATCH the runner's Go: 0.35 caps at go1.23 and the runner
+      # ships go1.24, which produced 43 silent FAIL rows on the first hard-gate
+      # run. Pin a release that accepts the installed Go, and smoke-build
+      # wasip1 so a version skew fails THIS step loudly instead of degrading
+      # into an absent rival (the required-rivals gate in test/bench.js reds
+      # when a mandatory producer is missing).
       - name: install tinygo
         run: |
-          curl -fsSL -o /tmp/tinygo.deb https://github.com/tinygo-org/tinygo/releases/download/v0.35.0/tinygo_0.35.0_amd64.deb \
-            && sudo dpkg -i /tmp/tinygo.deb || true
-          tinygo version || true
-          # Smoke-build wasip1: a PRESENT-but-unbuildable tinygo (Go-version
-          # skew etc — first CI run produced 43 FAIL rows) must probe as
-          # ABSENT (a skip), not as a wall of failures; the reason stays in
-          # this step's log. The hard coverage gate still reds a toolchain
-          # that half-works.
+          curl -fsSL -o /tmp/tinygo.deb https://github.com/tinygo-org/tinygo/releases/download/v0.41.1/tinygo_0.41.1_amd64.deb
+          sudo dpkg -i /tmp/tinygo.deb
+          tinygo version
           printf 'package main\nfunc main() {}\n' > /tmp/tg.go
-          tinygo build -target=wasip1 -o /tmp/tg.wasm /tmp/tg.go \
-            || { echo 'tinygo smoke build FAILED — removing tinygo (rival probes as absent)'; sudo dpkg -r tinygo || true; }
+          tinygo build -target=wasip1 -o /tmp/tg.wasm /tmp/tg.go
       # Rust→wasm baseline needs the wasm target added to the preinstalled rustc —
       # the runner ships rustc but NOT the wasm32-wasip1 std, so without this every
       # rust-wasm case fails ("can't find crate for std") and the hero's Rust→wasm
@@ -92,14 +92,23 @@ jobs:
       - name: rust wasm target
         run: rustup target add wasm32-wasip1 || true
       # Competitor toolchains + binaryen (provides wasm-opt).
-      - run: npm install --no-save assemblyscript@~0.27.0 porffor@~0.61.0 binaryen
+      - run: npm install --no-save assemblyscript@~0.27.0 binaryen
+      # Porffor: the 2026 rewrite (fixes typed-array OOB, module-scope refs, JSON - bench
+      # coverage 13/52 -> full sweep) lives on git main only (npm 0.61.x is the old engine,
+      # and the restructured repo is not npm-installable yet). Pin a known-good commit;
+      # bench.mjs probes the CLI shape via --version, so either vintage works.
+      - name: porffor (git, pinned)
+        run: |
+          git clone https://github.com/CanadaHonk/porffor.git "$RUNNER_TEMP/porffor" || true
+          git -C "$RUNNER_TEMP/porffor" checkout 257e8437bea2f00c8a1453a325561071d32be9cd || true
+          echo "PORF_BIN=$RUNNER_TEMP/porffor/porf" >> "$GITHUB_ENV"
       - name: expose toolchains on PATH
         run: echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
       - name: versions
         run: |
           node --version
           asc --version || true
-          porf --version || true
+          "$PORF_BIN" --version || true
           wasm-opt --version || true
       - run: npm run test:bench
       # Refresh the bench-page dataset (results.json + bench.svg). Push-to-main
