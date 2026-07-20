@@ -87,6 +87,7 @@ let funcValueNames
 // (writable, indirect-callable); devirtGlobalCalls re-devirts the init-order-
 // resolvable cases afterward. Stacked per module (recursive imports swap it).
 let reassignedTopLevel
+let assignSid      // name → sid|null of the agreed literal shape across `=` assignments (consensus/poison; vars binding is module-scope only)
 let bindSites      // name → {n: binding sites, sid: shared literal-decl sid | -1} — the binding census (censusBinding)
 let declInitUnknown  // name → Set<ownerId> — bindings whose value source the `=`-assignment
                      // consensus never sees (explicit non-literal decl initializer, params,
@@ -120,6 +121,7 @@ const resetPrepState = () => {
   funcValueNames = [new Set()]
   reassignedTopLevel = new Set()
   bindSites = new Map()
+  assignSid = new Map()
   declInitUnknown = new Map()
   assignBindOwners = new Map()
   ownerStack = [0]
@@ -843,10 +845,18 @@ function objLiteralSid(prhs) {
 // so compile-time fixed-slot reads can't be aimed at one shape while the
 // variable holds another (the misread class: `.x` returning a foreign
 // object's slot-0 value). Compile consumes the END state — order-insensitive.
-function bindAssignSchema(name, sid) {
-  const had = ctx.schema.vars.get(name)
+function bindAssignSchema(name, sid, bind = true) {
+  // Consensus (poison) is tracked for EVERY assignment; only module-scope
+  // names additionally BIND into ctx.schema.vars — that map is module-global,
+  // and publishing a function local there both mis-keys it and costs real
+  // codegen (a local in vars blocked scalar replacement: 5320 → 1310 B, and
+  // made output depend on whether an unrelated function reused the name).
+  // Function locals resolve through their per-function ValueReps instead;
+  // their poison still has to be recorded, or a disagreeing literal would
+  // serve a fixed slot to a value of another shape.
+  const had = assignSid.get(name)
   if (had != null) {
-    if (had !== sid) { ctx.schema.vars.delete(name); ctx.schema.poisoned?.add(name) }
+    if (had !== sid) { assignSid.delete(name); ctx.schema.vars.delete(name); ctx.schema.poisoned?.add(name) }
   } else if (sid != null) {
     // An unknown-shape BINDING this assignment can reach (owner id on the
     // current stack) is a disagreeing source the `=` consensus never observed
@@ -856,7 +866,8 @@ function bindAssignSchema(name, sid) {
     const owners = declInitUnknown.get(name)
     if (owners && ownerStack.some(id => owners.has(id))) { ctx.schema.poisoned?.add(name); return }
     if (!ctx.schema.poisoned?.has(name) && !ctx.schema.varsBarred.has(name)) {
-      ctx.schema.vars.set(name, sid)
+      assignSid.set(name, sid)
+      if (bind) ctx.schema.vars.set(name, sid)
       let ao = assignBindOwners.get(name)
       if (!ao) assignBindOwners.set(name, ao = new Set())
       for (const id of ownerStack) ao.add(id)
@@ -2212,7 +2223,9 @@ const handlers = {
     // other sources' objects (e.g. `.x` returning another shape's slot-0 value).
     // Compile reads the END state, so the conflict check is order-insensitive.
     else if (typeof plhs === 'string') {
-      bindAssignSchema(plhs, objLiteralSid(prhs))
+      // depth > 0: consensus/poison only — a function local never publishes
+      // into the module-global vars map (see bindAssignSchema).
+      bindAssignSchema(plhs, objLiteralSid(prhs), false)
     }
     return ['=', plhs, prhs]
   },

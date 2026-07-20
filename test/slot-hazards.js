@@ -370,6 +370,22 @@ export let main = () => other()`
   const sa = jzc(A, { optimize: 2 }).length, sb = jzc(B, { optimize: 2 }).length
   is(sa, sb, 'same-length param rename does not change output size')
   for (const optimize of LEVELS) is(run(A, { optimize }).main(), 3, `O${optimize}: values exact`)
+  // Second placement (the audit's 4× case): a CALLED use + a sibling local.
+  // Locals no longer publish into the module vars map, so both spellings take
+  // the lean scalar-replaced form — byte-identical AND free of the generic-+
+  // string machinery the pessimistic path pulled.
+  const C = `
+const use = (o) => o.x
+const other = () => { let o; o = { x: 1 }; return o.x }
+export let main = () => use({ x: 5 }) + other()`
+  const D = C.replace('(o) => o.x', '(p) => p.x')
+  const sc = jzc(C, { optimize: 2 }).length, sd = jzc(D, { optimize: 2 }).length
+  is(sc, sd, 'called-use placement: rename does not change output size')
+  ok(!/__str_concat/.test(jzc(D, { optimize: 2, wat: true })), 'renamed variant stays lean (no generic-+ string arm)')
+  for (const optimize of LEVELS) {
+    is(run(C, { optimize }).main(), 6, `O${optimize}: C values exact`)
+    is(run(D, { optimize }).main(), 6, `O${optimize}: D values exact`)
+  }
 })
 
 test('slot-hazards: object-literal param default must not type supplied arguments', () => {

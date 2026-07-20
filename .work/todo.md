@@ -118,6 +118,28 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * VARS-CHANNEL SCOPE SPLIT — LOCALS OUT OF THE MODULE MAP (2026-07-20b, the
+    binding-identity item's first structural cut): the audit's second α-case
+    (`use({x:5}) + other()`: shared name 1310 B, renamed 5320 B — the SHARED
+    spelling was the lean one!) traced to bindAssignSchema PUBLISHING function
+    locals into module-global ctx.schema.vars: `other`'s local `o = {x:1}`
+    landed in vars, and its mere PRESENCE pessimized `other`'s own compile
+    (blocked scalar replacement → generic-+ string arm → __str_concat/ryu
+    pulled, 4× size) — while the shared-name spelling escaped only because the
+    collision BAR deleted the entry. FIX: assignment consensus (poison) is
+    tracked for every assignment in a separate assignSid map; only depth-0
+    (module-scope) names BIND into vars. Locals resolve through per-function
+    ValueReps — which this case proves are STRONGER than the module channel,
+    not weaker (1310 both spellings now; suite 3029/0 with the two prior
+    poison-behavior tests holding via assignSid). The module vars map now
+    holds only module-scope names, whose bare name IS their binding identity
+    (modulo shadow renames prep already does) — the practical core of
+    "binding-identity keys". REMAINING name-global channels (ledgered, next
+    cuts): ctx.schema.poisoned (a poisoned name still kills OTHER functions'
+    reps via idOf's poison-first check) and bindSites' bar (now mostly belt
+    for locals since locals never enter vars). Pins: rename-invariance test
+    extended with the called-use placement — byte-equality both spellings +
+    the renamed variant asserts NO __str_concat (leanness, not just parity).
   * AUDIT ROUND-5 — DEFAULT-PARAM UNSOUND FEATURE DELETED + PAIRED ABBA +
     HARD COVERAGE (2026-07-20): (1) MISCOMPILE (round-4 regression of a
     PRE-EXISTING hole): restoring defFunc's default-object-literal schema
