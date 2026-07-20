@@ -146,7 +146,7 @@ console.log('(★ = throughput winner · ◇ = recurrence/reduction, compiler-op
 console.log('example             frame                V8 µs       jz µs    speedup')
 console.log('─'.repeat(74))
 
-let geo = 1, n = 0, wins = 0, regressed = []
+let geo = 1, n = 0, wins = 0, regressed = [], notStrict = []
 for (const { name, frame, make, opt, jzSrc, floor: kFloor } of EXAMPLES) {
   // `jzSrc` lets jz compile a different source than the V8 baseline imports — used for
   // the SIMD examples, where jz runs a hand-vectorized kernel against V8's best scalar
@@ -166,6 +166,7 @@ for (const { name, frame, make, opt, jzSrc, floor: kFloor } of EXAMPLES) {
   geo *= sp; n++
   if (sp > 1) wins++
   if (!opt && sp < (kFloor ?? FLOOR)) regressed.push(`${name} ${sp.toFixed(2)}×`)   // gate winners only (per-kernel floor override for load-sensitive ones)
+  if (sp <= 1) notStrict.push(`${name}${opt ? '◇' : ''} ${sp.toFixed(2)}×`)   // V1 strict-wins letter covers EVERY example, opt (◇) included (reported; test/bench.js asserts off-CI)
   const tag = opt ? '◇' : '★'
   console.log(`${tag} ${name.padEnd(18)} ${frame.padEnd(20)} ${jsT.toFixed(1).padStart(8)} ${jzT.toFixed(1).padStart(11)}    ${sp.toFixed(2)}×`)
 }
@@ -177,4 +178,12 @@ if (gm <= 1 || regressed.length) {
   console.error(`\n✗ FAIL — ${gm <= 1 ? `geomean ${gm.toFixed(2)}× not > 1` : `regressed: ${regressed.join(', ')}`}`)
   process.exit(1)
 }
+// Strict-wins status line (the V1 letter: EVERY example strictly beats V8 —
+// opt-flagged (◇) included; they're host-bound, but the claim is the claim).
+// Reported here, asserted by test/bench.js off-CI (okTiming) — the ≥FLOOR exit
+// code above stays the regression guard so this script's own pass/fail doesn't
+// flake on the frontier cases.
+console.log(notStrict.length
+  ? `strict: ${n - notStrict.length}/${n} — not strict: ${notStrict.join(', ')}`
+  : 'strict: all examples strictly beat V8')
 console.log(`\n✓ jz faster overall (${gm.toFixed(2)}×); winners ≥ ${FLOOR}×, opt-targets tracked`)

@@ -118,6 +118,130 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * AUDIT ROUND-5 — DEFAULT-PARAM UNSOUND FEATURE DELETED + PAIRED ABBA +
+    HARD COVERAGE (2026-07-20): (1) MISCOMPILE (round-4 regression of a
+    PRE-EXISTING hole): restoring defFunc's default-object-literal schema
+    install "bar-aware" resurrected its original unsoundness — the default's
+    shape holds only on the OMITTED-argument arm, but the install typed EVERY
+    call: `(o = {x:1,y:2}) => o.x` with `f({y:9,x:6})` read the default's
+    slot 0 → 9 for 6 at every tier (round-3's census had accidentally killed
+    the feature by double-counting params into a bar — the bug PREDATES this
+    campaign; round 4 faithfully restored it). FIX: the feature is DELETED —
+    a param is supplied-shape ∪ default-shape; only call-evidence channels
+    may devirt it. Pinned both arms (omitted → 1, supplied {y,x} → 6, all
+    LEVELS). (2) RENAME DIVERGENCE DISSECTED (audit's 1310-vs-5320 case):
+    isolated to the o↔o collision (renaming the OTHER function's local
+    restores 5320) — the shared-name variant's LEANNESS is itself a residual
+    name-keyed channel leak (some unanimity-gated census folds use's o.x to
+    NUMBER off other's o). Weaponization attempts FAIL closed (alien shape /
+    string value / shape-miss all value-exact — the channel requires full
+    name-unanimity and any divergence deopts honestly), so this is
+    α-INSTABILITY, not unsoundness: same class as the recorded architecture
+    item — BINDING-IDENTITY (scope-qualified) keys for every name-keyed
+    census channel is the durable fix, stays promoted. (3) PAIRED MODE v2:
+    counted rounds now run ABBA (forward+reverse WITHIN each round, per-round
+    value = mean of the two position-symmetric runs) — kills the first-runner
+    bias alternation only halves (crc32 smoke: rounds 7631/7631, ratios
+    0.895/0.898); ratios PERSIST under cases[id].paired with --json (the
+    release-verdict record; gate consumption of stored ratios = recorded
+    follow-up). (4) COVERAGE HARD: [run]-FAIL lines now parse into runs[];
+    the rival-coverage gate is a HARD ok() (compile success is deterministic
+    — checksums-class policy, asserted on CI too): comparable rows must be
+    >0 AND ≥ half of attempted; CI pins zig 0.16.0 (mlugg/setup-zig — the
+    runner's 0.13 was the 0/43 zig-wasm wipeout the audit flagged).
+  * AUDIT ROUND-4 — OWNER-SCOPED CENSUS (THE RENAME CLIFF) + GATE COVERAGE
+    (2026-07-19e): the round-3 declInitUnknown poison was NAME-GLOBAL — every
+    param entered it by bare name, so `const use = (o) => o.x` POISONED an
+    unrelated sibling's `let o; o = {x:1}` (rep devirt died): measured 1.57×
+    SIZE cliff from a pure α-rename (8331 → 5320 B). FIX — binding-owner
+    scoping: prepare keeps an arrow-id ownerStack ([0]=module, '=>' pushes);
+    declInitUnknown becomes name → Set<ownerId>; a literal assignment poisons
+    ONLY a binding it can REACH (owner id on the assignment's stack — shadows
+    are renamed, so reachable-same-name ⇒ same binding); assignBindOwners
+    records which scopes' assignments bound vars(name), so the RETRO case
+    (unknown binding censused after the assignment) distinguishes same-binding
+    disagreement (assignment stack contained THIS binding's owner → poison)
+    from a foreign-binding name collision (→ bar, vars-channel only —
+    directionality matters: checking the whole current stack would match
+    module id 0 on every assignment and over-poison). defFunc's duplicate
+    param census REMOVED (the '=>' handler censuses the same params under the
+    arrow's own id — double-counting self-barred every param name); its
+    default-literal binding is now census-free but bar/poison/disagreement-
+    gated. Cliff verdict: 5320 = 5320 B, ratio 1.00; probes all exact; PINNED
+    (rename-invariance byte-equality + values, slot-hazards 20/20). The
+    DURABLE fix stays recorded: binding-identity (scope-qualified) keys for
+    poisoned/vars/census — bare-name channels are inherently approximate;
+    this scoping removes the measured cliff class, not the name-keying itself.
+    GATE COVERAGE (round-4 audit items): c-wasm availability probes `zig`
+    (its actual builder — was clang); rival ZERO-COVERAGE assertion (an
+    available toolchain producing 0 comparable rows fails the gate off-CI —
+    zig-wasm's 0/43 zig-0.16 breakage now shows as red instead of silently
+    uncontesting the fastest-wasm gate; porting bench zig sources to 0.16 is
+    the recorded task); strict-examples line covers EVERY example incl.
+    opt-flagged (◇) per the V1 letter; paired mode got a WARM uncounted round
+    + per-(target,case) prep memo — counted rounds execute prebuilt artifacts
+    only (no compile churn between timed runs; crc32 smoke: rounds within 4%);
+    CI installs tinygo (v0.35.0 deb, self-gating) and the snapshot targets
+    gained tinygo. Expanded coverage makes the local gate REDDER and honest:
+    zig-wasm rows now contest strbuild (1.09×) etc — those are open V1 rows,
+    not regressions.
+  * AUDIT ROUND-3 CLOSURE — CENSUS COMPLETED + BENCH-INFRA HONESTY (2026-07-19d):
+    the re-audit found TWO live escapes of the binding census, both repro'd and
+    killed at the root:
+    (1) PLAIN CATCH BINDINGS never reach prepDecl (only PATTERN catch lowers to
+        a decl) — `catch (site) { site.callee }` read the colliding literal's
+        slot 3 (37 for 57) at every level. Fix: the try-handler censuses the
+        plain catch param directly.
+    (2) THE DECL-INIT SIBLING WAS LIVE (ledgered as deferred, audit repro'd it:
+        `let o = mk(); o.x; o = {y,x}` → 59 for 56): the decl initializer is a
+        shape source the `=`-assignment consensus never observed, so the later
+        literal assignment bound vars(o) and the PRE-reassignment read used the
+        literal's layout. Fix: declInitUnknown — every unknown-shape BINDING
+        (explicit non-literal decl init, params, catch, destructure targets;
+        for-of/for-in arrive as unknown-init decls) joins the set; a literal
+        assignment to such a name POISONS (exactly the documented
+        disagreeing-sources contract — as if the init were an assignment),
+        with the retro flavor (assignment bound first, decl seen later)
+        poisoning at the decl. `const p = arr[0]` (never reassigned) keeps its
+        rep devirt — poison only fires when a literal assignment JOINS the
+        unknown init; bare `let x; x = {…}` hoist-form keeps binding (decl-
+        no-init defers to assignment consensus as before). Pinned ×3
+        (catch collision, decl-init reassignment, param reassignment — the
+        generalized flavor the audit didn't list). idOf grew the defensive
+        varsBarred belt (audit item 3); the two remaining prepare-time
+        unconditional vars.set sites (object-REST destructure target,
+        Object.assign schema-merge) now respect barred/poisoned — the full
+        setter sweep is: bindDeclSchema, bindAssignSchema, defFunc-default,
+        rest-target, assign-merge (gated) + minted-temp sites (collision-free).
+    BATTERY (post-fix): native 3027/0, kernel 1139/0, O0/O3/wasi 3027/0 ×3,
+    selfhost 21/21 + warm 0.915× / fresh 0.721×, fuzz 5000/76204 zero-div.
+    BENCH-INFRA (audit items, landed):
+    - WASM_RIVALS coverage: go-wasm availability probed `tinygo` (!) — machines
+      with go but no tinygo silently dropped go-wasm from the fastest-wasm
+      gate; now probes `go`, and tinygo + zig-wasm are their own gated rivals
+      (absent toolchain/failed build → no row → bestRival skips, honest).
+    - WASM_TODO.shapes rewritten (was stale pre-carrier text): 20 B raw-i32
+      byte-stride carrier landed; residual ≈1.10–1.15× is V8-codegen-level;
+      next lever = machine-code profiling, not representation.
+    - PAIRED MODE (Q3 follow-up): `bench.mjs --paired[=N]` — N order-REVERSING
+      rounds per case, per-round ratios vs the first target, median-of-ratios
+      verdict; normal table/json fed by median-of-round-medians; round-aligned
+      pairing (a failed round drops that round's pair, never cross-pairs).
+    - STRICT EXAMPLE GATE (V1 letter): examples/bench.mjs reports a
+      `strict:` line (winners must be > 1.0×, not ≥ 0.9 floor); test/bench.js
+      asserts it off-CI (okTiming) — honestly RED until raymarcher closes,
+      same pattern as the shapes row. The 0.9 floor stays as the regression
+      guard so the script's own exit code doesn't flake.
+    - STALE-SNAPSHOT GUARD (bench.yml): before each push retry, the publish
+      step compares its measured $GITHUB_SHA against main's newest SOURCE
+      commit (skipping generated 'bench: refresh' commits) — a late-finishing
+      older run now SKIPS instead of overwriting fresher evidence.
+    - jz-wasmtime added to the CI snapshot targets (wasmtime was installed but
+      the row never measured). DEFERRED: jz-w2c CI wiring — needs an
+      ABI-MATCHED wabt checkout (wasm2c binary must match wasm-rt-impl.c
+      runtime sources + simde headers); wiring apt-wabt against a cloned
+      runtime blind risks silent version skew, so it stays self-gated until a
+      pinned wabt build lands in the workflow.
   * BINDING-CENSUS ROOT FIX — KERNEL-FRAGILITY CLASS KILLED (2026-07-19c, the
     promoted correctness hunt): the "unguarded-unique-prop" diagnosis was one
     layer off (again). TRUE ROOT: ctx.schema.vars is MODULE-GLOBAL, keyed by

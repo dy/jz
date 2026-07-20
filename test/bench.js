@@ -277,8 +277,15 @@ const SIZE_BUDGET = {
 // rival's (within tolerance) UNLESS the case is in WASM_TODO — the explicit, shrinking gap list.
 // A case that leaves the lead set (regresses below a rival) trips the gate; closing a WASM_TODO
 // case (jz takes the lead) should delete it here. This is the ratchet behind the headline claim.
-const wasmRivalAvail = { 'c-wasm': natAvailable, 'rust-wasm': have('rustc'), 'go-wasm': have('tinygo'), as: ascAvailable, porf: porfAvailable }
-const WASM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'as', 'porf'].filter(t => wasmRivalAvail[t])
+// Availability probes match each target's ACTUAL builder: c-wasm compiles with
+// `zig cc -target wasm32-wasi` (not clang), go-wasm with the standard Go
+// toolchain (GOOS=wasip1, not tinygo — that mismatch silently dropped go-wasm
+// from the gate on machines with go but no tinygo). tinygo and zig-wasm are
+// their own rivals: each gates when its toolchain is present; a rival whose
+// build fails produces no row and bestRival skips it — the coverage assertion
+// below keeps that skip from silently zeroing out a whole producer.
+const wasmRivalAvail = { 'c-wasm': have('zig'), 'rust-wasm': have('rustc'), 'go-wasm': have('go'), tinygo: have('tinygo'), 'zig-wasm': have('zig'), as: ascAvailable, porf: porfAvailable }
+const WASM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'tinygo', 'zig-wasm', 'as', 'porf'].filter(t => wasmRivalAvail[t])
 // Cases where a wasm rival is currently faster than jz — the gap to close (general techniques,
 // not per-bench tweaks; see AGENTS.md). Each notes who leads and why; delete on overtake.
 // Root causes below are MEASURED, not assumed — each was verified against the emitted WAT, and the
@@ -307,7 +314,7 @@ const WASM_TODO = {
   qoi:      'amortized cursor bounds, call-free pure boolean chains, and branch-loop unrolling cut jz from ~10.5ms to ~7.6–9.4ms. Rust-wasm is ~7.5–8.1ms and still crosses the 5% band in loaded runs. Typed checks are gone; the remaining broad class is branch-heavy scalar scheduling/code shape under V8 wasm.',
   sort:     'heapsort sift-down — rust-wasm leads ~1.1-1.2×. NOT a jz lowering gap: the emitted sift loop is verified optimal scalar (unswitched typed path, zero bounds checks, zero calls, i32 indexes with fused offset= addressing, select for the child pick, 2 f64 compares — the op set LLVM emits). The residual is the dependent-load chain (a[child] feeds the next iteration`s address) where LLVM`s scheduling squeezes latency V8`s wasm tier does not. Same scalar-codegen-race class as qoi/dict; no jz-side shape fix.',
   dict:     'open-addressing linear-probe hash table — AS leads ~1.09×. NOT a narrowing leak: the hot insert/probe/lookup loop is verified clean i32 (0 trunc_sat / 0 f64.convert / 0 reinterpret in $runKernel; the 2 f64.const-nan are discarded void-insert returns, the module f64 is all in benchlib). Same scalar-codegen-race class as qoi — the probe loop`s branch/bounds quality, no jz-side narrowing fix.',
-  shapes:   'megamorphic shape scan — schema-union devirtualization and exact-SID branch speculation cut jz from ~18ms to ~1.73–2.02ms while retaining dynamic alien-schema fallbacks. AS still leads at ~1.00–1.05ms with fixed i32 record slots. The residual class is a sound closed heterogeneous-record representation: jz still loads f64 slots and truncates each proven integer field. A whole-chain dispatch saved only ~3% and was rejected because its compiler hot-path/code-size cost broke the strict warm self-host gate; the earlier packed-cell shortcut also failed semantics.',
+  shapes:   'megamorphic shape scan — the closed heterogeneous-record representation LANDED end to end: byte-stride packed raw-i32 union records (20 B at stride 5, no pad cell), guard-free discriminant-refined reads, carrier-specialized raw-i32 clones ($measure$union takes (param i32), zero unbox). Focused alternated pairs put jz ≈1.10–1.15× AS, stable; op census ≤ AS and every A/B lever is exhausted (inline beats call, 20 B ≈ 24 B). The residual ~0.8 cy/record is V8-codegen-level (regalloc/scheduling of the fused loop) — next lever is machine-code profiling (Instruments/xctrace or a V8 debug build), not a representation change.',
   // radixsort: within the hard 5% frontier band. Distinct typed-parameter
   // forwarding and tiny strided-control specialization repeat at 2.34–2.40ms
   // vs rust-wasm 2.29–2.30ms. A larger histogram theorem bought ~4% but was
@@ -345,6 +352,10 @@ function parseBenchOutput(text) {
     if (!cur) continue
     const run = line.match(/^\[run\]\s+(\w[\w-]*)\s+.*…\s*(\d+) µs\s+cs=(-?\d+)/)
     if (run) { parsed[cur][run[1]] = { medianUs: +run[2], checksum: (+run[3]) >>> 0 }; continue }
+    // Attempted-but-failed builds — captured so the coverage gate can compare
+    // succeeded vs attempted instead of silently ignoring a broken toolchain.
+    const fail = line.match(/^\[run\]\s+(\w[\w-]*)\s+.*…\s*FAIL/)
+    if (fail) { parsed[cur][fail[1]] = { failed: true }; continue }
     const row = line.match(/^ {2}(jz → V8 wasm|V8 \(node\)|AssemblyScript \(asc -O3\)|Porffor)\s+[\d.]+ ms.*?\s(\d+(?:\.\d+)?) (B|kB|MB)\s+(\w+)\s*$/)
     if (row) {
       const tid = TARGET_BY_NAME[row[1]]
@@ -485,6 +496,21 @@ for (const tid of ['v8', 'as', 'porf']) {
       okTiming(ratio <= limit, `${id}: jz ${(jz.medianUs / 1000).toFixed(2)}ms TRAILS ${br.who} ${(br.us / 1000).toFixed(2)}ms = ${ratio.toFixed(3)}× > ${limit.toFixed(3)}× — not the fastest wasm.${why}`)
     })
   }
+  // Coverage backstop: an AVAILABLE rival whose builds all fail contributes
+  // zero rows — bestRival then skips it everywhere and the fastest-wasm gate
+  // can stay green with no competition at all. HARD assertion (compile success
+  // is deterministic — same policy as checksums/parity, asserted on CI too):
+  // every available rival must produce comparable rows for a MAJORITY of the
+  // cases it attempted (ran or failed). A toolchain-version breakage (e.g.
+  // zig API churn taking a rival to 0/43) reads as red, not as a free win.
+  for (const t of WASM_RIVALS) {
+    const attempted = speedCases.filter(id => runs[id]?.[t]).length
+    if (!attempted) continue   // no eligible sources for this rival — not measured, not asserted
+    const rows = speedCases.filter(id => runs[id]?.[t]?.checksum != null && runs[id][t].checksum === runs[id]?.jz?.checksum).length
+    test(`bench: rival coverage ${t} (comparable rows ≥ half of attempted)`, () => {
+      ok(rows > 0 && rows * 2 >= attempted, `${t}: ${rows}/${attempted} comparable rows — builds failing or diverging; the fastest-wasm gate is under-contested by this producer`)
+    })
+  }
 }
 
 // ── Native-C parity (the headline guarantee) ────────────────────────────────
@@ -612,6 +638,12 @@ test('bench: examples corpus — jz beats V8 per frame (geomean > 1, winners ≥
   try { out = execFileSync('node', [join(ROOT, 'examples/bench.mjs')], { encoding: 'utf8', cwd: ROOT }) }
   catch (e) { okTiming(false, `examples perf regression (gate exit ${e.status}):\n${e.stdout || ''}${e.stderr || ''}`); return }
   okTiming(/✓ jz faster overall/.test(out), `examples bench did not report pass:\n${out}`)
+  // The V1 letter — STRICT wins, not ≥0.9×. The floor above stays the
+  // regression guard; this is the absolute claim gate (Q1 discipline: the band
+  // never weakens to "statistical parity"), red until every gated example
+  // strictly beats V8.
+  const strict = out.match(/^strict: .*$/m)?.[0] ?? 'strict: (line missing)'
+  okTiming(/strictly beat V8/.test(strict), `examples not strict wins — ${strict}`)
 })
 
 // ── Floatbeat perf gate ──────────────────────────────────────────────────────

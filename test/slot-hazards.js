@@ -316,3 +316,74 @@ export let main = () => { const cfg = { mode: 3, bias: 4 }; return cfg.mode + cf
   ok(!/__dyn_get/.test(m), 'unique literal binding stays slot-resolved')
   is(run(src, { optimize: 2 }).main(), 7, 'value exact')
 })
+
+test('slot-hazards: plain catch binding must not resolve through a foreign literal', () => {
+  // Plain `catch (site)` never passes through prepDecl — it censuses directly;
+  // pre-fix it read the colliding literal's slot 3 (37) instead of slot 0.
+  const src = `
+const use = () => {
+  try { throw { callee: 5, argList: 1, callerFunc: 2, node: 3 } }
+  catch (site) { return site.callee }
+}
+const other = () => { const site = { argList: 9, callerFunc: 8, node: 7, callee: 6 }; return site.node }
+export let main = () => use() * 10 + other()`
+  for (const optimize of LEVELS)
+    is(run(src, { optimize }).main(), 57, `O${optimize}: catch binding reads the thrown object's layout`)
+})
+
+test('slot-hazards: non-literal decl init + shaped reassignment reads the init value first', () => {
+  // The decl initializer is a shape source the `=`-consensus never saw — a
+  // later literal assignment must poison, not bind (pre-fix: before read the
+  // reassignment literal's slot → 59).
+  const src = `
+const mk = () => ({ x: 5, y: 2 })
+export let main = () => {
+  let o = mk()
+  const before = o.x
+  o = { y: 9, x: 6 }
+  return before * 10 + o.x
+}`
+  for (const optimize of LEVELS)
+    is(run(src, { optimize }).main(), 56, `O${optimize}: read before reassignment sees mk()'s layout`)
+})
+
+test('slot-hazards: param + shaped reassignment reads the caller value first', () => {
+  // Same class through a param binding: the caller's arg is the unseen source.
+  const src = `
+const use = (o) => { const before = o.x; o = { y: 9, x: 6 }; return before * 10 + o.x }
+export let main = () => use({ x: 5, y: 2 })`
+  for (const optimize of LEVELS)
+    is(run(src, { optimize }).main(), 56, `O${optimize}: param read before reassignment exact`)
+})
+
+test('slot-hazards: unrelated same-named param must not deopt another function\'s binding (rename invariance)', () => {
+  // Owner-scoped census: `use`'s param `o` and `other`'s assignment-bound `o`
+  // are different bindings — the bare-name poison here was a measured 1.57×
+  // SIZE cliff (rename-dependent codegen). Same-length rename must be
+  // byte-count-identical, and the shared name must compile to the LEAN form.
+  const jzc = jz.compile
+  const A = `
+const use = (o) => o.x
+const other = () => { let o; o = { x: 1 }; return o.x + use({ x: 2 }) }
+export let main = () => other()`
+  const B = A.replace('(o) => o.x', '(p) => p.x')
+  const sa = jzc(A, { optimize: 2 }).length, sb = jzc(B, { optimize: 2 }).length
+  is(sa, sb, 'same-length param rename does not change output size')
+  for (const optimize of LEVELS) is(run(A, { optimize }).main(), 3, `O${optimize}: values exact`)
+})
+
+test('slot-hazards: object-literal param default must not type supplied arguments', () => {
+  // The default shape holds only on the omitted-arm; a caller's differently-
+  // ordered object stores x elsewhere — the unconditional default-schema
+  // install read the default's slot (6 → 9 at every tier). The param is
+  // supplied-shape ∪ default-shape: only call-evidence channels may devirt.
+  const src = `
+const f = (o = { x: 1, y: 2 }) => o.x
+export let omitted = () => f()
+export let supplied = () => f({ y: 9, x: 6 })`
+  for (const optimize of LEVELS) {
+    const e = run(src, { optimize })
+    is(e.omitted(), 1, `O${optimize}: omitted arg takes the default's layout`)
+    is(e.supplied(), 6, `O${optimize}: supplied arg reads its OWN layout`)
+  }
+})

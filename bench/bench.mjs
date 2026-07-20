@@ -191,10 +191,17 @@ const runProc = (argv, opts = {}) => {
   return parsed
 }
 
+// In paired mode, each (target, case) builds ONCE — the warm round runs prep,
+// counted rounds re-execute the built artifact only (rebuild churn between
+// timed runs is exactly the machine-load asymmetry paired measurement exists
+// to remove). Keyed set filled by tryRun, cleared per case by the paired loop.
+const pairedBuilt = new Set()
+let PAIRED_REUSE = false
 const tryRun = (id, c, prep, argv, opts = {}) => {
   try {
     mkdirSync(caseBuild(c), { recursive: true })
-    if (prep) prep()
+    const key = `${id}:${c.id}`
+    if (prep && !(PAIRED_REUSE && pairedBuilt.has(key))) { prep(); pairedBuilt.add(key) }
     const parsed = runProc(argv, opts)
     return parsed.error ? { id, error: parsed.error } : { id, ...parsed }
   } catch (e) {
@@ -760,8 +767,22 @@ let selectedTargets = targetIds
 // path pages.yml runs to (re)build the live-runner artifacts at deploy time.
 let JSON_PATH = null
 let EMIT_WEB = false
+// --paired[=N]: the release-verdict measurement protocol. Each case first runs
+// one UNCOUNTED warm round (builds every artifact once — tryRun memoizes the
+// prep — and heats caches), then N counted rounds (default 4), each executing
+// the targets in ABBA order (forward then reverse WITHIN the round) so both
+// position classes contribute equally to every round — a per-round value is
+// the mean of its two position-symmetric runs, killing the first-runner bias
+// a plain alternating order only halves. Verdict: per-round ratios vs the
+// first selected target, median of ratios (never cross-run absolutes),
+// persisted under cases[id].paired when --json is on. The normal table/json
+// rows still get each target's median-of-round values. Use focused:
+// `bench.mjs --paired --targets=jz,as shapes --json`.
+let PAIRED = 0
 for (const arg of process.argv.slice(2)) {
   if (arg.startsWith('--targets=')) selectedTargets = arg.slice(10).split(',').filter(Boolean)
+  else if (arg === '--paired') PAIRED = 4
+  else if (arg.startsWith('--paired=')) PAIRED = Math.max(2, +arg.slice(9) || 4)
   else if (arg.startsWith('--cases=')) selectedCases = arg.slice(8).split(',').filter(Boolean)
   else if (arg.startsWith('--workloads=')) selectedCases = arg.slice(12).split(',').filter(Boolean)
   else if (arg === '--json') JSON_PATH = join(BENCH_DIR, 'results.json')
@@ -822,6 +843,59 @@ for (const cid of selectedCases) {
   // compile or run — the honest "did not compile" signal. Distinct from a skip
   // (toolchain absent / no source for this case), which is simply not measured.
   const failures = []
+  let pairedInfo = null   // per-pair {ratios, median} when --paired (persisted into cases[id].paired)
+  if (PAIRED) {
+    // Order-aware paired rounds (see --paired above): reverse the target order
+    // every round, verdict = median of per-round ratios vs the first target.
+    const avail = selectedTargets.filter(tid => targets[tid].available(c))
+    for (const tid of selectedTargets) if (!avail.includes(tid))
+      console.log(`[skip] ${tid.padEnd(targetIdWidth)} ${targets[tid].name}`)
+    const rounds = []   // Array<Map<tid, result>> — round-aligned so ratios pair same-round runs
+    // WARM round (uncounted): builds every artifact (tryRun memoizes the prep)
+    // and heats caches/tiering, so counted rounds execute prebuilt binaries
+    // only — no compile churn between timed runs.
+    PAIRED_REUSE = true
+    pairedBuilt.clear()
+    for (const tid of avail) {
+      const r = targets[tid].run(c)
+      if (r.error) failures.push({ id: tid, reason: r.error })
+    }
+    for (let round = 0; round < PAIRED; round++) {
+      // ABBA: forward then reverse within the round; per-target round value =
+      // mean of the two position-symmetric runs.
+      const seq = [...avail, ...[...avail].reverse()]
+      const acc = new Map()
+      for (const tid of seq) {
+        const r = targets[tid].run(c)
+        if (r.error) continue
+        const a = acc.get(tid)
+        if (a) a.push(r); else acc.set(tid, [r])
+      }
+      const m = new Map()
+      for (const [tid, rs] of acc)
+        m.set(tid, { ...rs[0], medianUs: Math.round(rs.reduce((s, r) => s + r.medianUs, 0) / rs.length) })
+      rounds.push(m)
+    }
+    PAIRED_REUSE = false
+    for (const tid of avail) {
+      const rs = rounds.map(m => m.get(tid)).filter(Boolean)
+      if (!rs.length) continue
+      const med = [...rs].sort((a, b) => a.medianUs - b.medianUs)[rs.length >> 1]
+      console.log(`[paired] ${tid.padEnd(targetIdWidth)} rounds ${rs.map(r => r.medianUs).join(' ')} µs → median ${med.medianUs} µs  cs=${med.checksum}`)
+      results.push(med)
+    }
+    const base = avail[0]
+    for (const tid of avail.slice(1)) {
+      const ratios = rounds
+        .filter(m => m.has(base) && m.has(tid))
+        .map(m => m.get(base).medianUs / m.get(tid).medianUs)
+        .sort((a, b) => a - b)
+      if (!ratios.length) continue
+      const med = ratios[ratios.length >> 1]
+      console.log(`[paired] ${base}/${tid} per-round ratios ${ratios.map(r => r.toFixed(3)).join(' ')} → median ${med.toFixed(3)}×`)
+      ;(pairedInfo ??= {})[`${base}/${tid}`] = { ratios: ratios.map(r => +r.toFixed(4)), median: +med.toFixed(4) }
+    }
+  } else
   for (const tid of selectedTargets) {
     const t = targets[tid]
     if (!t.available(c)) {
@@ -886,6 +960,9 @@ for (const cid of selectedCases) {
         // can render coverage honestly instead of silently dropping the row.
         ...failures.map(f => [f.id, { status: 'fail', reason: f.reason }]),
       ]),
+      // --paired: order-symmetric per-round ratios + median (the release
+      // verdict form — consumers gate on these, never cross-run absolutes).
+      ...(pairedInfo && { paired: pairedInfo }),
     }
   }
 

@@ -62,6 +62,21 @@ jobs:
         run: |
           curl https://wasmtime.dev/install.sh -sSf | bash || true
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+      # Pin zig: the runner's preinstalled zig (0.13) fails every bench zig/
+      # zig-wasm build (API churn) — 0/43 rows made those rivals silently
+      # uncontested until the coverage gate hardened. Match the version the
+      # sources build with locally.
+      - name: pin zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      # TinyGo (the lean go→wasm rival — a separate row from go-wasm's stock
+      # toolchain). Non-fatal: the target self-gates on availability.
+      - name: install tinygo
+        run: |
+          curl -fsSL -o /tmp/tinygo.deb https://github.com/tinygo-org/tinygo/releases/download/v0.35.0/tinygo_0.35.0_amd64.deb \
+            && sudo dpkg -i /tmp/tinygo.deb || true
+          tinygo version || true
       # Rust→wasm baseline needs the wasm target added to the preinstalled rustc —
       # the runner ships rustc but NOT the wasm32-wasip1 std, so without this every
       # rust-wasm case fails ("can't find crate for std") and the hero's Rust→wasm
@@ -97,7 +112,7 @@ jobs:
       - name: publish bench snapshot
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf,jz,jz-w2c,wat,numpy --json || exit 1
+          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf,jz,jz-wasmtime,jz-w2c,wat,numpy --json || exit 1
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           # Only the measured dataset is committed here (results.json + the geomean
@@ -108,9 +123,18 @@ jobs:
           # Two waves pushed minutes apart both refresh the same GENERATED files —
           # a plain rebase conflicts on the SVG and kills the run. `-X theirs`
           # (in rebase terms: the commit being replayed, i.e. OUR snapshot) auto-
-          # resolves; whichever measurement lands last winning is right for a
-          # generated dataset. Retry covers a push landing mid-rebase.
+          # resolves. Retry covers a push landing mid-rebase. STALE GUARD: the
+          # dataset measured $GITHUB_SHA — if main's newest SOURCE commit (skip
+          # generated snapshot commits) has moved past it, a late-finishing run
+          # would overwrite fresher evidence with older; skip and let the newer
+          # push's own bench run publish.
           for i in 1 2 3; do
+            git fetch origin main
+            latest_src=$(git log origin/main --format='%H %s' -n 50 | grep -v 'bench: refresh' | head -1 | cut -d' ' -f1)
+            if [ -n "$latest_src" ] && [ "$latest_src" != "$GITHUB_SHA" ]; then
+              echo "stale snapshot: measured $GITHUB_SHA, main source tip is $latest_src — skipping publish"
+              exit 0
+            fi
             git push && break
             git pull --rebase -X theirs origin main || { git rebase --abort || true; exit 1; }
           done
