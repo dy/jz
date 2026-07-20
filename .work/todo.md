@@ -118,6 +118,44 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * MECHANISMS C–F CLOSED OUT — PROFILES DELIVERED, SPECS RECORDED
+    (2026-07-20e, completes the user's A–F mandate; A+B landed a818ccfd):
+    (C) STATIC TYPED-ARRAY PLACEMENT — SPEC'D, DEFERRED TO THE SOLVER WORLD:
+        crc32's LUT is a FUNCTION-LOCAL `new Int32Array(256)` escaping into
+        the kernel call — folding its base into `load offset=` (LLVM's .bss
+        win, the last ~3-5% of crc32's 1.05×) requires a SINGLE-INSTANTIATION
+        + ESCAPE proof (an export may be called twice; a static region would
+        alias the second call's array). That proof is FunctionPlan/solver
+        territory (the architecture plan) — not landable sound as a one-off.
+        Module-SCOPE const-size typed arrays are the easy subset when a case
+        needs it.
+    (D) SHAPES MACHINE-CODE VERDICT (TurboFan arm64, --print-wasm-code,
+        tick-confirmed single hot fn at 47%): JZ loop 131 instrs vs AS 103.
+        LOADS ARE EQUAL (33 vs 31) — the byte-stride carrier holds. The gap:
+        +4 cmp incl. 2× `b.ls` (unsigned bounds-class branches SURVIVING in
+        the loop) and +6 const REMATERIALIZATIONS (movz/movk — NaN-box-class
+        i64 constants rebuilt per iteration where AS's small-int tag compares
+        need one movz), + a few moves. The frontier is now two named targets:
+        kill the 2 in-loop u-branches, stop rematerializing the wide consts
+        (hoistable to a register or replaced by small-int compares).
+    (E) STRBUILD — jz hot iteration makes 7 helper calls + 2 allocs where
+        zig formats call-free into a stack buffer. Lever = string-SROA:
+        when a built string provably dies into length/byte/checksum reads,
+        format into a reused scratch region (no alloc, no header, no copy).
+        V2-class; composes with the solver's escape facts.
+    (F) RAYMARCHER — the frame kernel is ONE 2307-instr TurboFan fn:
+        SPILL-BOUND (497 ldr + 185 str + 185 mov = live-vector pressure from
+        the fully-fused SIMD SDF), 40 fcvt conversions, 60/51 movz/movk
+        remat. V8's scalar JS keeps the SDF in f64 registers with V8's own
+        scheduling. Levers: live-range reduction (split the fused kernel's
+        vector state), lane-width strategy audit (fcvt traffic), const
+        hoisting. Codegen-scheduling class, 4% gap — recorded, not chased
+        with input tweaks.
+    CAMPAIGN SCOREBOARD (quiet ABBA-paired, cs exact everywhere):
+    biquad 1.056→1.017 IN-BAND ✓ · crc32 1.055→1.049-1.051 boundary ·
+    fft 1.050 boundary · lz 1.037-1.074 straddling · shapes 1.138 (two named
+    machine-level targets) · strbuild 1.139 (SROA spec) · raymarcher 0.96
+    (spill-bound, spec).
   * MECHANISMS A+B LANDED — VERSIONED-NEST ASSUMPTION REPAIR + SERIAL-CHAIN
     UNROLL + TWO LATENT MISCOMPILE CLASSES KILLED (2026-07-20d):
     (A) BIQUAD IN-BAND (1.056× → 1.017× vs zig-wasm, cs exact). Root: the
