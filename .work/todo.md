@@ -118,6 +118,74 @@
     values stay exact (diff passes), so the two WAT-SHAPE assertions are
     scoped to the native leg (onKernel guard) and the schema-reset
     statefulness is the self-host-row class's own item.
+  * TRACE LEVER IDENTIFIED — DISJOINT-ARM UPDATE CHAIN → SELECT ACCUMULATION
+    (2026-07-20i): the follow loop's `if (dir===0) x++; else if (dir===1)
+    y++; …` is a dense-int if-chain whose arms update DISJOINT scalars by
+    constants, with dir data-dependent (bitmap-driven → branch-unpredictable
+    — exactly why LLVM's layout advantage shows). General transform (noise's
+    if→select family, one step up): for each updated scalar, fold the chain
+    into a select tree / tiny const table (`x += sel(dir==0,1,sel(dir==2,-1,0))`),
+    branchless. Recognizer condition: if/else-if on one int var vs distinct
+    consts, arms = const add/assign to disjoint locals, no other effects.
+    Candidate for the loop-model classifier world (Stage 3) or a standalone
+    speed pass; design AFTER Stage 1a/1b land.
+  * SDF RESIDUAL DISSECTED — THE HULL-CURSOR CLASS IS THE HARD TAIL
+    (2026-07-20i): the elem-hull plumbing EXISTS (typedValueRanges locals +
+    callsite-lattice arrayElemRange in narrow.js; consumer in type.js's
+    range walk) and v's hull [0,383] is derivable from its stores (v[k]=q,
+    q<n, n=384 via paramReps). The real blocker: k is a DATA-DEPENDENT hull
+    cursor (k++/k--) whose k ≥ 0 rests on the z[0] = -INF sentinel — an
+    algorithmic invariant no static range fact captures. Unproven k ⇒ v[k]
+    stays a checked read yielding possibly-undefined ⇒ the f64 conversion
+    cascade and f[v[k]]'s check follow from THAT, not from missing elem
+    hulls. sdf 1.22× is the genuinely-hard tail (same family as nqueens/
+    sort scheduling): needs sentinel-invariant discovery or loop versioning
+    on a mutating cursor — no cheap general lever; recorded, not chased.
+  * KERNEL-LEG HANG ON THE SHADOW UNIT — ROOT-CAUSED + FIXED: THE
+    COMMA-GROUP SHORTHAND HOLE (2026-07-20j): the unit's battery span
+    1h17m in the kernel fuzz gate (seed 1 opt2 → "Unknown local $_pg0" →
+    corrupted-state spin). CHAIN: destructure-target rename fires on ~153
+    shadowed destructures in the COMPILER'S OWN source → substPattern
+    recursed into the parser's comma-grouped multi-prop object patterns
+    (['{}', [',', 'a', 'b']]) with ARRAY-element semantics, renaming the
+    bare shorthand strings and destroying their implied property KEY
+    ({a}→{a@1} reads a nonexistent prop → undefined) → promote-globals'
+    `for (const [, { lName, type }] of replacements)` bound undefined →
+    its local decls vanished — and the wrong code only RUNS inside the
+    built kernel (native suite structurally blind; the kernel leg is the
+    sole witness — its purpose vindicated). Single-prop patterns hit the
+    correct branch, which is why every earlier pin passed. METHOD:
+    JZ_PR_LIMIT bisect gate over applied-rename count (built kernels at
+    log₂(153) points), then a 5-line native differential of the exact
+    promote-globals shape (46 vs 20). FIX: substObjItem — object-pattern
+    items get their own walk (bare string = shorthand → keyed [':' k v@n];
+    shorthand-with-default → [':' k ['=' v@n d]]; ':' keeps key; ','
+    groups; '...' renames target). Pinned ×4 in destruct.js incl. the
+    promote-globals shape and shorthand-defaults both firing and not.
+    Seed-1 green at all 4 opt levels through the rebuilt kernel.
+    BONUS: scripts/battery.mjs — the battery as a parallel DAG
+    (native/O0/O3/wasi/fuzz ∥, build → kernel+self), ~3× wall-clock.
+  * STAGE 1a FOUNDATION — THREE SHADOW-BINDING MISCOMPILE CLASSES KILLED
+    (2026-07-20h, .work/stage1-bindingid.md is the stage design): prepare's
+    shadow rename decided at DECL TRAVERSAL, so anything that referenced the
+    binding before the decl statement — or bound outside prepDecl — resolved
+    to the WRONG binding. (1) FORWARD-CLOSURE CAPTURE: `let x = 100; { let f
+    = () => x; let x = 5; f() }` returned 100 (JS block hoisting says 5) —
+    prescanBlockDecls pre-registers every block's plain+pattern decl renames
+    at scope entry ('{'/'{}' handlers); prepDecl consumes the mapping,
+    synthetic mid-prep decls keep the traversal rule. Direct forward READS
+    are TDZ errors in JS (invalid inputs, unconstrained). (2) CATCH PARAM:
+    `{ let e = 6; try { throw 1 } catch (e) { e } }` returned the outer e
+    (and aliased its WASM slot) — catch now pushes a scope frame and
+    shadow-renames its param like any decl. (3) DESTRUCTURE TARGETS:
+    `{ let {x} = o }` under an outer x bound the OUTER x — targets now
+    rename via substPattern, which preserves property keys (`{x}` →
+    `{x: x@n}`, keyed/nested/rest/default forms covered; a default
+    referencing a sibling pattern binding sees the NEW binding per spec).
+    Pinned: closures.js forward-capture ×4, destruct.js catch+pattern ×9.
+    NOTE: raw WebAssembly.instantiate shows boxed-result exports as i64
+    BigInts — that is the documented host-interop ABI (jz()'s wrapper
+    decodes), chased and ruled NOT a bug during this unit.
   * SCALAR RANGE FACTS — THE CANONICAL INT-HULL CHANNEL (2026-07-20g):
     delayline 1.24× → 1.020 IN-BAND (cs exact 1887209008), trace kernels
     checked-read-free. ONE evaluator, `intExprRange` (static.js): const

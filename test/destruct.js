@@ -618,3 +618,34 @@ test('destruct: catch patterns / var-pattern heads / assignment-form targets', (
   is(run(`export let f = () => { let a = 0; for ([a] of [[9]]) { } return a }`).f(), 9)
   is(run(`export let f = () => { let k = 0; for (k in { z: 1 }) { } return k.length }`).f(), 1)
 })
+
+// Shadow renames for catch params + destructure targets (2026-07-20): a catch
+// param or pattern target shadowing an outer (renamed) binding used to resolve
+// handler/block reads to the OUTER binding — and the catch local aliased its
+// WASM slot. Catch now gets its own scope frame + rename; pattern targets
+// rename via substPattern (prop keys stay source-spelled: `{x}` → `{x: x@n}`).
+test('destruct: shadowed catch params and pattern targets bind their own local', () => {
+  is(run(`export let main = () => { let e = 5; { let e = 6; try { throw 1 } catch (e) { return e } } }`).main(), 1)
+  is(run(`export let main = () => { let e = 5; try { throw 1 } catch (e) { e = e + 10 } return e }`).main(), 5)
+  is(run(`export let main = () => { try { throw 1 } catch (e) { try { throw 2 } catch (e) { return e } } }`).main(), 2)
+  is(run(`export let main = () => { let x = 50; { let x = 60; try { throw { x: 2 } } catch ({ x }) { return x } } }`).main(), 2)
+  is(run(`export let main = () => { let x = 50; let r = 0; { let { x } = { x: 2 }; r = x } return r * 100 + x }`).main(), 250)
+  is(run(`export let main = () => { let v = 50; let r = 0; { let { k: v } = { k: 3 }; r = v } return r * 100 + v }`).main(), 350)
+  is(run(`export let main = () => { let a = 9; let r = 0; { let [a, ...rs] = [1, 2, 3]; r = a * 10 + rs[1] } return r * 100 + a }`).main(), 1309)
+  is(run(`export let main = () => { let x = 50; let r = 0; { let { o: { x } } = { o: { x: 8 } }; r = x } return r * 100 + x }`).main(), 850)
+  // sibling pattern binding referenced from a default sees the NEW binding
+  is(run(`export let main = () => { let r = 0; { let { a, b = a + 1 } = { a: 5 }; r = a * 10 + b } return r }`).main(), 56)
+})
+
+// The comma-group hole: the parser groups multi-prop object patterns as
+// ['{}', [',', 'a', 'b']] — renaming those bare strings as array-style targets
+// destroyed the shorthand's implied KEY ({a}→{a@1}, reads a nonexistent prop).
+// This shape is all over the compiler's own source (for (const [, {lName, type}]
+// of replacements) in promote-globals) — the miscompiled pass only RUNS inside
+// the built kernel, so the kernel leg was the sole witness (1h17m fuzz-gate spin).
+test('destruct: renamed multi-prop object patterns keep property keys', () => {
+  is(run(`export let f = () => { const a = 100, b = 200; let out = a + b; { const [, { a, b }] = [0, { a: 1, b: 2 }]; out = out * 10 + a + b } return out }`).f(), 3003)
+  is(run(`export let f = () => { const m = new Map(); m.set('gA', { a: 1, b: 2 }); m.set('gB', { a: 3, b: 4 }); const a = 100, b = 200; let out = a + b; for (const [, { a, b }] of m) out = out * 10 + a + b; return out }`).f(), 30037)
+  is(run(`export let f = () => { const a = 9; let r = 0; { const { a = 5 } = {}; r = a } return r * 10 + a }`).f(), 59)
+  is(run(`export let f = () => { const a = 9; let r = 0; { const { a = 5 } = { a: 3 }; r = a } return r * 10 + a }`).f(), 39)
+})

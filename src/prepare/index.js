@@ -787,6 +787,33 @@ function isDeclared(name) {
   return scopes.some(s => s.has(name))
 }
 
+/** Pre-register a block's immediate plain `let`/`const` binding names in the
+ *  just-pushed scope frame (JS block hoisting): a closure textually BEFORE the
+ *  decl must capture the BLOCK's binding, not an outer same-named one — the
+ *  rename decision has to exist before the block's statements are traversed
+ *  (`let x = 100; { let f = () => x; let x = 5; f() }` returns 5, not 100's
+ *  bits). Rename policy is identical to prepDecl's traversal-time rule; the
+ *  decl handler then consumes the mapping instead of minting its own.
+ *  Destructure patterns keep their traversal-time registration (they never
+ *  rename today; totality is the Stage-1a follow-up). Direct forward READS
+ *  of a block `let` are TDZ errors in JS — invalid inputs, unconstrained. */
+function prescanBlockDecls(node) {
+  const top = scopes[scopes.length - 1]
+  if (!top) return
+  const fnNames = funcLocalNames[funcLocalNames.length - 1]
+  const stmts = Array.isArray(node) && node[0] === ';' ? node.slice(1) : [node]
+  for (const s of stmts) {
+    if (!Array.isArray(s) || (s[0] !== 'let' && s[0] !== 'const')) continue
+    for (let i = 1; i < s.length; i++) {
+      const d = s[i], t = Array.isArray(d) && d[0] === '=' ? d[1] : d
+      for (const name of bindingNames(t)) {
+        if (typeof name !== 'string' || top.has(name)) continue
+        top.set(name, (isDeclared(name) || fnNames?.has(name)) ? `${name}${T}${ctx.func.uniq++}` : name)
+      }
+    }
+  }
+}
+
 function pushScope(scope = new Map()) {
   scopes.push(scope)
   staticConstScopes.push({ strings: new Map(), arrays: new Map(), consts: new Set() })
@@ -1299,6 +1326,39 @@ function substIdents(node, map) {
   return [node[0], ...node.slice(1).map(n => substIdents(n, map))]
 }
 
+/** Rename BINDING positions of a destructure pattern per `map`, preserving
+ *  property keys: `{x}` shorthand becomes `{x: x@1}` (the key stays the source
+ *  prop name), `{k: v}` keys stay, defaults rename by ordinary ident rules
+ *  (a default may reference a sibling pattern binding — `{a, b = a}`).
+ *  Object items need their OWN walk: the parser comma-groups multi-prop
+ *  patterns (`['{}', [',', 'a', 'b']]`), and a bare string INSIDE an object
+ *  pattern is shorthand (its spelling IS the property key) while inside an
+ *  array pattern it is a plain target — renaming a shorthand string directly
+ *  turned `{a}` into `{a@1}` and read a nonexistent property. */
+function substPattern(p, map) {
+  if (typeof p === 'string') return map.get(p) ?? p
+  if (!Array.isArray(p)) return p
+  if (p[0] === '{}') return ['{}', ...p.slice(1).map(it => substObjItem(it, map))]
+  if (p[0] === ':') return [':', p[1], substPattern(p[2], map)]
+  if (p[0] === '...') return ['...', substPattern(p[1], map)]
+  if (p[0] === '=') return ['=', substPattern(p[1], map), substIdents(p[2], map)]
+  if (p[0] === '[]' || p[0] === ',') return [p[0], ...p.slice(1).map(it => substPattern(it, map))]
+  return p
+}
+function substObjItem(it, map) {
+  if (typeof it === 'string') return map.has(it) ? [':', it, map.get(it)] : it
+  if (!Array.isArray(it)) return it
+  if (it[0] === ',') return [',', ...it.slice(1).map(x => substObjItem(x, map))]
+  if (it[0] === ':') return [':', it[1], substPattern(it[2], map)]
+  // shorthand-with-default `{ a = 1 }` — expand to keyed form so the key
+  // keeps the source spelling while the target renames
+  if (it[0] === '=' && typeof it[1] === 'string')
+    return map.has(it[1]) ? [':', it[1], ['=', map.get(it[1]), substIdents(it[2], map)]]
+      : ['=', it[1], substIdents(it[2], map)]
+  if (it[0] === '...') return ['...', substPattern(it[1], map)]
+  return substPattern(it, map)
+}
+
 function pushPatternAssign(target, valueExpr, out, decls = null) {
   if (Array.isArray(target) && target[0] === '=') {
     // Destructuring default fires ONLY on undefined (ES §13.15.5.3) — `??` would
@@ -1636,15 +1696,20 @@ function prepDecl(op, ...inits) {
         // of arrow + a later `X = …` assignment). Without registering here, the
         // name is invisible to scope predicates like `isUnresolvableBareIdent`
         // until the assignment runs — which is after any reference to it.
+        // Prescan may have pre-registered (and renamed) it — consume that.
         const fnNames = funcLocalNames[funcLocalNames.length - 1]
+        if (scopes.length > 0) {
+          const top = scopes[scopes.length - 1]
+          if (top.has(declName)) declName = top.get(declName)
+          else top.set(declName, declName)
+        }
         if (fnNames) fnNames.add(declName)
-        if (scopes.length > 0) scopes[scopes.length - 1].set(declName, declName)
       }
       censusBinding(declName)
       rest.push(declName)
       continue
     }
-    const [, name, init] = i
+    let [, name, init] = i
     // `const alias = fn` whose RHS is a bare identifier naming a known function
     // is a compile-time function alias — the ES `export { fn as alias }` written
     // in declaration form (a recurring kernel idiom: paramList = extractParams,
@@ -1733,18 +1798,31 @@ function prepDecl(op, ...inits) {
       // `typeof x` would mis-fold to 'undefined' (spec §13.5.3) before emit ever
       // sees the binding — see the bare-hoisted-decl branch above for the same fix.
       const fnNames = funcLocalNames[funcLocalNames.length - 1]
+      // Shadow rename for destructure targets (depth ≠ 0): consume the prescan
+      // mapping (or decide traversal-time for synthetic patterns), then rewrite
+      // the pattern's VALUE-side idents so expandDestruct binds the renamed
+      // locals (`{ let x; { let {x} = o; … } }` bound the OUTER x before).
+      const patRenames = new Map()
       for (const n of bindingNames(name)) {
-        declareGlobal(n)
+        let declName = n
+        if (depth !== 0 && typeof n === 'string' && scopes.length > 0) {
+          const top = scopes[scopes.length - 1]
+          if (top.has(n)) declName = top.get(n)
+          else if (isDeclared(n) || fnNames?.has(n)) {
+            declName = `${n}${T}${ctx.func.uniq++}`
+            top.set(n, declName)
+          } else top.set(n, n)
+          if (declName !== n) patRenames.set(n, declName)
+        }
+        declareGlobal(declName)
         // Destructure targets hold source-prop values of unknown shape — census
         // as non-literal binding sites (raw + module-prefixed key for depth-0
         // globals; whichever spelling later consumers resolve through is barred).
-        censusUnknownInitDecl(n)
+        censusUnknownInitDecl(declName)
         if (depth === 0 && ctx.module.currentPrefix && typeof n === 'string') censusUnknownInitDecl(`${ctx.module.currentPrefix}$${n}`)
-        if (depth !== 0 && typeof n === 'string') {
-          if (fnNames) fnNames.add(n)
-          if (scopes.length > 0) scopes[scopes.length - 1].set(n, n)
-        }
+        if (depth !== 0 && typeof declName === 'string' && fnNames) fnNames.add(declName)
       }
+      if (patRenames.size) name = substPattern(name, patRenames)
       // A bare-identifier source needs no temp: reads are idempotent and
       // side-effect-free, so we destructure straight off it. This keeps each
       // element's static type tag (e.g. `let [, x] = strs` resolves `x` to the
@@ -1768,16 +1846,20 @@ function prepDecl(op, ...inits) {
 
     if (!defFunc(name, normed)) {
       let declName = name
-      // Block scope: rename if shadowing an outer declaration, OR if a sibling
-      // block at the same arrow scope already declared this name (sibling
-      // blocks both lower to the same WASM local; see funcLocalNames comment).
+      // Block scope: the block's own decls are pre-registered (with their
+      // rename decision) by prescanBlockDecls at scope entry — consume that
+      // mapping. Synthetic decls minted mid-prep (do-flags, loop temps) miss
+      // the prescan and keep the traversal-time rule: rename if shadowing an
+      // outer declaration OR if a sibling block already declared this name
+      // (sibling blocks both lower to the same WASM local; see funcLocalNames).
       const fnNames = funcLocalNames[funcLocalNames.length - 1]
-      const inCurrentBlock = scopes.length > 0 && scopes[scopes.length - 1].has(name)
-      if (typeof name === 'string' && scopes.length > 0 && (isDeclared(name) || (fnNames?.has(name) && !inCurrentBlock))) {
-        declName = `${name}${T}${ctx.func.uniq++}`
-        scopes[scopes.length - 1].set(name, declName)
-      } else if (typeof name === 'string' && scopes.length > 0) {
-        scopes[scopes.length - 1].set(name, name)
+      if (typeof name === 'string' && scopes.length > 0) {
+        const top = scopes[scopes.length - 1]
+        if (top.has(name)) declName = top.get(name)
+        else if (isDeclared(name) || fnNames?.has(name)) {
+          declName = `${name}${T}${ctx.func.uniq++}`
+          top.set(name, declName)
+        } else top.set(name, name)
       }
       if (typeof declName === 'string' && fnNames) fnNames.add(declName)
       // A nested arrow stays a closure value (defFunc only lifts depth-0). Record
@@ -2257,9 +2339,26 @@ const handlers = {
     if (typeof cParam === 'string') censusUnknownInitDecl(cParam)
     // prep(handler) ONCE — it has side effects (uniq++, scope pushes, includes), so
     // the no-finally catch branch must reuse `caught`, not re-prep (FE-3 fix).
-    const caught = catchClause
-      ? ['catch', tryBody, cParam, prep(cHandler)]
-      : tryBody
+    // The catch param is its OWN binding: without a scope frame + shadow rename,
+    // handler reads resolve to an outer same-named binding (`{ let e; try {…}
+    // catch (e) { e } }` read the outer e, not the caught value — and the
+    // catch local aliased the outer binding's WASM slot).
+    let caught = tryBody
+    if (catchClause) {
+      const scope = new Map()
+      if (typeof cParam === 'string') {
+        const fnNames = funcLocalNames[funcLocalNames.length - 1]
+        if (isDeclared(cParam) || fnNames?.has(cParam)) {
+          const renamed = `${cParam}${T}${ctx.func.uniq++}`
+          scope.set(cParam, renamed)
+          cParam = renamed
+        } else scope.set(cParam, cParam)
+        fnNames?.add(cParam)
+      }
+      pushScope(scope)
+      caught = ['catch', tryBody, cParam, prep(cHandler)]
+      popScope()
+    }
     return finallyClause ? ['finally', caught, prep(finallyClause[1])] : caught
   },
   'throw'(expr) { return ['throw', prep(expr)] },
@@ -2822,6 +2921,7 @@ const handlers = {
   // Bare block statement: push scope for let/const shadowing
   '{'(inner) {
     pushScope()
+    prescanBlockDecls(inner)
     const result = ['{', prep(inner)]
     popScope()
     return result
@@ -2835,6 +2935,7 @@ const handlers = {
     if (args.length === 1 && Array.isArray(inner) && STMT_OPS.has(inner[0])) {
       // Block body: push block scope for let/const shadowing
       pushScope()
+      prescanBlockDecls(inner)
       const result = ['{}', prep(inner)]
       popScope()
       return result

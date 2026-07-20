@@ -1377,6 +1377,21 @@ test('closures: union local + typeof/isFinite/Object.is guard prints WAT-style t
   is(r.outer(-0), '-0')
 })
 
+test('closures: forward capture binds the block-hoisted shadowed decl', () => {
+  // JS block hoisting: a closure textually BEFORE `let x` in the same block
+  // captures THAT x, not an outer same-named one. Prepare's shadow rename used
+  // to decide only at decl traversal, so the earlier closure body resolved to
+  // the OUTER binding (returned 100, not 5). prescanBlockDecls pre-registers
+  // the block's rename decisions at scope entry, before any statement preps.
+  is(run(`export let main = () => { let x = 100; { let f = () => x; let x = 5; return f() } }`).main(), 5)
+  // sibling-block rename (same-arrow sibling blocks share one WASM local space)
+  is(run(`export let main = () => { { let x = 1 } { let f = () => x; let x = 7; return f() } }`).main(), 7)
+  // write-capture: the closure's write must hit the block's binding, outer stays
+  is(run(`export let main = () => { let x = 100; let r = 0; { let g = () => { x = 9 }; let x = 5; g(); r = x }; return r * 1000 + x }`).main(), 9100)
+  // no-collision forward capture keeps working
+  is(run(`export let main = () => { let f = () => y; let y = 3; return f() }`).main(), 3)
+})
+
 test('boolean identity survives every closure-ABI result position', () => {
   // The ftN f64 result is a boxed-value slot: bool results must cross as the
   // true/false ATOM, not 0/1 — through the fn-as-value trampoline (lifted
