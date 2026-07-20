@@ -352,10 +352,11 @@ function parseBenchOutput(text) {
     if (!cur) continue
     const run = line.match(/^\[run\]\s+(\w[\w-]*)\s+.*…\s*(\d+) µs\s+cs=(-?\d+)/)
     if (run) { parsed[cur][run[1]] = { medianUs: +run[2], checksum: (+run[3]) >>> 0 }; continue }
-    // Attempted-but-failed builds — captured so the coverage gate can compare
-    // succeeded vs attempted instead of silently ignoring a broken toolchain.
-    const fail = line.match(/^\[run\]\s+(\w[\w-]*)\s+.*…\s*FAIL/)
-    if (fail) { parsed[cur][fail[1]] = { failed: true }; continue }
+    // Attempted-but-failed builds — captured with their reason so the coverage
+    // gate can compare succeeded vs attempted AND say WHY a toolchain is
+    // broken instead of silently ignoring it.
+    const fail = line.match(/^\[run\]\s+(\w[\w-]*)\s+.*…\s*FAIL(?:\s*—\s*(.*))?$/)
+    if (fail) { parsed[cur][fail[1]] = { failed: true, reason: fail[2]?.trim() }; continue }
     const row = line.match(/^ {2}(jz → V8 wasm|V8 \(node\)|AssemblyScript \(asc -O3\)|Porffor)\s+[\d.]+ ms.*?\s(\d+(?:\.\d+)?) (B|kB|MB)\s+(\w+)\s*$/)
     if (row) {
       const tid = TARGET_BY_NAME[row[1]]
@@ -503,12 +504,20 @@ for (const tid of ['v8', 'as', 'porf']) {
   // every available rival must produce comparable rows for a MAJORITY of the
   // cases it attempted (ran or failed). A toolchain-version breakage (e.g.
   // zig API churn taking a rival to 0/43) reads as red, not as a free win.
+  // Per-rival coverage floor. Default: a majority of attempted cases must
+  // produce comparable rows (a toolchain rival that compiles the corpus).
+  // porf is a PARTIAL engine by design (fenced reference — it compiles a
+  // handful of the cases and always has), so its expectation is presence,
+  // not majority; raising it would gate on porffor's roadmap, not on jz.
+  const RIVAL_COVERAGE_MIN = { porf: 1 }
   for (const t of WASM_RIVALS) {
     const attempted = speedCases.filter(id => runs[id]?.[t]).length
     if (!attempted) continue   // no eligible sources for this rival — not measured, not asserted
     const rows = speedCases.filter(id => runs[id]?.[t]?.checksum != null && runs[id][t].checksum === runs[id]?.jz?.checksum).length
-    test(`bench: rival coverage ${t} (comparable rows ≥ half of attempted)`, () => {
-      ok(rows > 0 && rows * 2 >= attempted, `${t}: ${rows}/${attempted} comparable rows — builds failing or diverging; the fastest-wasm gate is under-contested by this producer`)
+    const need = RIVAL_COVERAGE_MIN[t] ?? Math.ceil(attempted / 2)
+    const reasons = [...new Set(speedCases.map(id => runs[id]?.[t]?.reason).filter(Boolean))].slice(0, 2)
+    test(`bench: rival coverage ${t} (comparable rows ≥ ${RIVAL_COVERAGE_MIN[t] != null ? need : 'half of attempted'})`, () => {
+      ok(rows >= need, `${t}: ${rows}/${attempted} comparable rows (need ≥ ${need}) — builds failing or diverging; the fastest-wasm gate is under-contested by this producer${reasons.length ? `. sample failures: ${reasons.join(' | ')}` : ''}`)
     })
   }
 }

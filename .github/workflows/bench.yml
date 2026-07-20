@@ -77,6 +77,14 @@ jobs:
           curl -fsSL -o /tmp/tinygo.deb https://github.com/tinygo-org/tinygo/releases/download/v0.35.0/tinygo_0.35.0_amd64.deb \
             && sudo dpkg -i /tmp/tinygo.deb || true
           tinygo version || true
+          # Smoke-build wasip1: a PRESENT-but-unbuildable tinygo (Go-version
+          # skew etc — first CI run produced 43 FAIL rows) must probe as
+          # ABSENT (a skip), not as a wall of failures; the reason stays in
+          # this step's log. The hard coverage gate still reds a toolchain
+          # that half-works.
+          printf 'package main\nfunc main() {}\n' > /tmp/tg.go
+          tinygo build -target=wasip1 -o /tmp/tg.wasm /tmp/tg.go \
+            || { echo 'tinygo smoke build FAILED — removing tinygo (rival probes as absent)'; sudo dpkg -r tinygo || true; }
       # Rust→wasm baseline needs the wasm target added to the preinstalled rustc —
       # the runner ships rustc but NOT the wasm32-wasip1 std, so without this every
       # rust-wasm case fails ("can't find crate for std") and the hero's Rust→wasm

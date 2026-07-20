@@ -149,6 +149,14 @@
     — checksums-class policy, asserted on CI too): comparable rows must be
     >0 AND ≥ half of attempted; CI pins zig 0.16.0 (mlugg/setup-zig — the
     runner's 0.13 was the 0/43 zig-wasm wipeout the audit flagged).
+    FIRST-CI-RUN CALIBRATION (the hard gate fired immediately, 2/2 honest):
+    porf 4/52 — porffor is a PARTIAL engine by design, majority was the wrong
+    expectation → per-rival floor map (porf: presence ≥1; toolchains keep the
+    majority rule); tinygo 0/43 with NO visible reason → FAIL lines now carry
+    their reason into the gate message, and CI's tinygo install smoke-builds a
+    wasip1 hello and REMOVES the package on failure (present-but-unbuildable
+    probes as absent-with-logged-reason, not as 43 FAIL rows; a half-working
+    toolchain still reds the gate). zig-wasm coverage green on 0.16.0 ✓.
   * AUDIT ROUND-4 — OWNER-SCOPED CENSUS (THE RENAME CLIFF) + GATE COVERAGE
     (2026-07-19e): the round-3 declInitUnknown poison was NAME-GLOBAL — every
     param entered it by bare name, so `const use = (o) => o.x` POISONED an
