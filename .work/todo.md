@@ -141,6 +141,17 @@
     hulls. sdf 1.22× is the genuinely-hard tail (same family as nqueens/
     sort scheduling): needs sentinel-invariant discovery or loop versioning
     on a mutating cursor — no cheap general lever; recorded, not chased.
+  * STAGE 2 SLICE 3a — BODY-FACTS CACHE ON AN EXPLICIT-LIFECYCLE MAP
+    (2026-07-21j): the WeakMap replaced by a plain Map — lifecycle was
+    already explicit (reset per compile), so weak semantics bought
+    nothing natively, and in the self-hosted kernel the WeakMap's
+    arena-backed store rewound by warm-instance _clear made cache
+    behavior GC/timing-dependent — the leading theory for the flaky
+    JSON-walk knife-edge (2026-07-21i). Removed by construction; strong
+    refs bounded by one compile's bodies. Full battery green 10.6 min
+    incl. kernel. The knife-edge pair can now be re-run on top of 3a for
+    theory evidence (flaky → repetition needed for confidence; recorded
+    as the pending statistics harness entry point).
   * KNIFE-EDGE VERDICT REVISED — FLAKY UNDER STATE, ARENA/GC THEORY
     (2026-07-21i): the SAME one-block B side that was RED (bat4m3ui4)
     ran GREEN on the next full-leg cycle (bkd8gzjg7; only a test-file

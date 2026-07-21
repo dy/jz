@@ -81,13 +81,15 @@ import {
 
 export { findFreeVars, findMutations, boxedCaptures } from './analyze-scans.js'
 
-let _bodyFactsCache = new WeakMap()
-// Self-host-only: see resetProgramFactsCache (program-facts.js) — the WeakMap's own
-// backing storage is an arena allocation that a warm-instance `_clear` rewinds, so
-// a compile-clear-compile loop must swap in a fresh instance, not just rely on
-// per-body identity misses (which natively is enough since AST nodes are fresh
-// each compile and the old WeakMap contents just become GC-unreachable).
-export function resetBodyFactsCache() { _bodyFactsCache = new WeakMap() }
+// Stage 2 slice 3a: a plain Map, NOT a WeakMap. Lifecycle is explicit — one
+// compile's bodies, cleared by resetBodyFactsCache at compile start — so weak
+// semantics bought nothing, and in the self-hosted kernel the WeakMap's
+// GC/arena interaction was the leading theory for the flaky JSON-walk
+// knife-edge (ledger 2026-07-21i): the arena-backed weak store rewound by a
+// warm-instance `_clear` mid-lifecycle made cache behavior timing-dependent.
+// Strong refs are bounded by program size and dropped at the next reset.
+let _bodyFactsCache = new Map()
+export function resetBodyFactsCache() { _bodyFactsCache = new Map() }
 
 // Per-name monotone fact trackers over a pluggable {get,set,delete} store. First
 // observation wins; a conflicting later one poisons the name (and clears the store
