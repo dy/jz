@@ -11,6 +11,7 @@ import { ctx, reset } from '../src/ctx.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from '../src/compile/emit.js'
 import { analyzeValTypes, analyzeIntCertain, analyzeBody } from '../src/compile/analyze.js'
 import { repOf, updateRep, VAL } from '../src/reps.js'
+import { T } from '../src/ast.js'
 
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 
@@ -864,10 +865,14 @@ function runAnalyze(code, paramVals) {
     || ctx.func.list[0]
   const body = fn.body
   ctx.func.locals = analyzeBody(body).locals
-  if (paramVals) for (const [n, v] of Object.entries(paramVals)) updateRep(n, { val: v })
+  // BindingId totality renames locals/params to `name<T>f<id>_<n>` — resolve a
+  // test's source spelling to the actual binding key (unique bare prefix).
+  const keys = () => [...(ctx.func.locals?.keys() ?? []), ...(fn.sig?.params?.map(p => p.name) ?? []), ...(ctx.func.localReps?.keys() ?? [])]
+  const resolveLocal = (name) => keys().find(k => k === name) ?? keys().find(k => k.startsWith(name + T)) ?? name
+  if (paramVals) for (const [n, v] of Object.entries(paramVals)) updateRep(resolveLocal(n), { val: v })
   analyzeValTypes(body)
   analyzeIntCertain(body)
-  return new Proxy({}, { get: (_, name) => repOf(name)?.intCertain === true })
+  return new Proxy({}, { get: (_, name) => repOf(resolveLocal(name))?.intCertain === true })
 }
 
 test('intCertain: integer literal init', () => {

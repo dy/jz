@@ -265,3 +265,153 @@ export function unrollScalarChains(body) {
   const cm = closureMutatedVars(body)
   return rewriteBlocks(body, stmt => tryUnrollScalarChain(stmt, cm))
 }
+
+// ── Disjoint-arm update chain → select accumulation ─────────────────────────
+// A dense-int if/else-if chain whose arms each bump a DIFFERENT scalar by a
+// constant — square-tracing's direction step:
+//   if (dir === 0) x++; else if (dir === 1) y++; else if (dir === 2) x--; else y--
+// With dir data-dependent (bitmap-driven) the branches are unpredictable — the
+// dominant residual vs LLVM's layout on the trace bench. Rewrite each updated
+// scalar to one unconditional add of a const ternary chain (branchless select):
+//   x += (dir === 0 ? 1 : dir === 2 ? -1 : 0); y += (dir === 1 ? 1 : dir === 3 ? -1 : 0)
+// SOUNDNESS: `v += 0` maps -0 → +0, so every updated scalar must be PROVEN
+// integer-valued: declared in this function with an int-literal init and only
+// ever written by ++/--/+= int-literal/-= int-literal (scanned function-wide).
+// The discriminant must be a plain local, not updated by the arms.
+
+const armUpdate = (s) => {
+  if (!isArr(s)) return null
+  if (s[0] === '{}' && isArr(s[1]) && s[1][0] === ';' && s[1].length === 2) return armUpdate(s[1][1])
+  if (s[0] === ';' && s.length === 2) return armUpdate(s[1])
+  if ((s[0] === '++' || s[0] === '--') && typeof s[1] === 'string') return { v: s[1], d: s[0] === '++' ? 1 : -1 }
+  if ((s[0] === '+=' || s[0] === '-=') && typeof s[1] === 'string') {
+    const c = litVal(s[2])
+    if (c != null && Number.isInteger(c)) return { v: s[1], d: s[0] === '+=' ? c : -c }
+  }
+  return null
+}
+
+function trySelectArmUpdates(stmt, zeroSafe) {
+  if (!isArr(stmt) || stmt[0] !== 'if') return null
+  // walk the else-if spine collecting (const, {v, d}) arms
+  const arms = []
+  let d = null, node = stmt, elseArm = null
+  while (isArr(node) && node[0] === 'if') {
+    const [, cond, then, els] = node
+    if (!(isArr(cond) && (cond[0] === '===' || cond[0] === '==') && typeof cond[1] === 'string')) return null
+    if (d == null) d = cond[1]
+    else if (cond[1] !== d) return null
+    const k = litVal(cond[2])
+    if (k == null || !Number.isInteger(k)) return null
+    const u = armUpdate(then)
+    if (!u) return null
+    arms.push({ k, u })
+    node = els
+  }
+  if (node != null) {
+    elseArm = armUpdate(node)
+    if (!elseArm) return null
+  }
+  if (arms.length + (elseArm ? 1 : 0) < 3) return null
+  if (new Set(arms.map(a => a.k)).size !== arms.length) return null
+  const vars = new Set([...arms.map(a => a.u.v), ...(elseArm ? [elseArm.v] : [])])
+  if (vars.has(d)) return null
+  if (!zeroSafe(vars)) return null
+  // per-var delta chain over the FULL arm list (an arm not touching v
+  // contributes 0 — the else delta applies only when NO chain const matches):
+  //   v += (d === k0 ? δ0 : d === k1 ? δ1 : … : elseδ)
+  const out = [';']
+  for (const v of vars) {
+    let expr = [, elseArm && elseArm.v === v ? elseArm.d : 0]
+    for (let i = arms.length - 1; i >= 0; i--)
+      expr = ['?:', ['===', d, [, arms[i].k]], [, arms[i].u.v === v ? arms[i].u.d : 0], expr]
+    out.push(['+=', v, expr])
+  }
+  return [out]
+}
+
+/** The rewrite's ONLY semantic delta is `v += 0` turning -0 into +0 — so the
+ *  soundness condition is that v's ±0 distinction can never reach a sensitive
+ *  sink. Comparisons (=== < <= > >=), ToInt32 ops (| & ^ << >> >>>), and index
+ *  positions are ±0-blind; +/-/* chains stay safe only while their RESULT
+ *  also feeds a blind sink (walked top-down with a sink flag). Any other
+ *  escape of the bare name — return, call arg, store, property value, /, %,
+ *  unknown op — is conservatively unsafe. Writes to v itself are fine (they
+ *  replace the value). */
+const ZERO_BLIND = new Set(['==', '===', '!=', '!==', '<', '<=', '>', '>=', '|', '&', '^', '<<', '>>', '>>>', '!', '&&', '||'])
+const ARITH_PASS = new Set(['+', '-', '*'])
+function minusZeroSafe(body, vars) {
+  let safe = true
+  const walk = (n, blind) => {
+    if (!safe) return
+    if (typeof n === 'string') { if (vars.has(n) && !blind) safe = false; return }
+    if (!isArr(n)) return
+    const op = n[0]
+    if (op === 'str' || op == null) return
+    // writes to a tracked var replace its value — target slot is fine, RHS walks
+    if ((op === '=' || op === '+=' || op === '-=' || op === '++' || op === '--') && typeof n[1] === 'string') {
+      for (let i = 2; i < n.length; i++) walk(n[i], false)
+      return
+    }
+    if (op === '[]' && n.length === 3) { walk(n[1], false); walk(n[2], true); return }   // index is ToInt32
+    const childBlind = ZERO_BLIND.has(op) ? true : ARITH_PASS.has(op) ? blind : false
+    for (let i = 1; i < n.length; i++) walk(n[i], childBlind)
+  }
+  // statement level: expression results are dropped → blind at the top of each
+  // statement; control-flow conditions are blind (boolean context)
+  const stmts = (n) => {
+    if (!safe || !isArr(n)) return
+    const op = n[0]
+    if (op === ';' || op === '{}' || op === '{') { for (let i = 1; i < n.length; i++) stmts(n[i]); return }
+    if (op === 'if' || op === 'while') { walk(n[1], true); for (let i = 2; i < n.length; i++) stmts(n[i]); return }
+    if (op === 'for') { for (let i = 1; i < n.length - 1; i++) stmts(n[i]); stmts(n[n.length - 1]); return }
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < n.length; i++) if (isArr(n[i]) && n[i][0] === '=') walk(n[i][2], false)
+      return
+    }
+    walk(n, true)
+  }
+  stmts(body)
+  return safe
+}
+
+/** Speed-tier pass: branchless select accumulation for disjoint-arm update
+ *  chains inside loops (the square-tracing direction-step class). */
+export function selectArmUpdatesIn(body) {
+  const cm = closureMutatedVars(body)
+  const memo = new Map()
+  const zeroSafe = (vars) => {
+    for (const v of vars) if (cm.has(v)) return false
+    const key = [...vars].sort().join(',')
+    let r = memo.get(key)
+    if (r == null) memo.set(key, r = minusZeroSafe(body, vars))
+    return r
+  }
+  // only rewrite chains INSIDE loops — straight-line chains predict fine
+  const rewriteIn = (n) => {
+    if (!isArr(n)) return n
+    if (n[0] === 'for' || n[0] === 'while') {
+      const walkStmts = (m) => {
+        if (!isArr(m)) return m
+        if (m[0] === ';' || m[0] === '{}' || m[0] === '{') {
+          for (let i = 1; i < m.length; i++) {
+            const r = isArr(m[i]) && m[i][0] === 'if' ? trySelectArmUpdates(m[i], zeroSafe) : null
+            m[i] = r ? r[0] : walkStmts(m[i])
+          }
+          return m
+        }
+        if (m[0] === 'if') {
+          const r = trySelectArmUpdates(m, zeroSafe)
+          if (r) return r[0]
+        }
+        for (let i = 1; i < m.length; i++) m[i] = walkStmts(m[i])
+        return m
+      }
+      for (let i = 1; i < n.length; i++) n[i] = walkStmts(n[i])
+      return n
+    }
+    for (let i = 1; i < n.length; i++) n[i] = rewriteIn(n[i])
+    return n
+  }
+  return rewriteIn(body)
+}

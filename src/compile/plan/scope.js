@@ -212,9 +212,9 @@ export const refineFieldProvenance = (ast) => {
         if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
         const name = d[1], rhs = d[2]
         if (!ctx.scope.userGlobals.has(name) || !ctx.scope.consts?.has(name)) continue
-        // varsBarred: a second same-named binding elsewhere would resolve through
-        // this const's inferred layout — provenance holds only for unique names.
-        if (!ctx.schema.vars.has(name) && !ctx.schema.poisoned?.has(name) && !ctx.schema.varsBarred?.has(name)) {
+        // BindingId totality: names are binding-unique, so provenance holds by
+        // construction (the varsBarred second-binding guard is deleted).
+        if (!ctx.schema.vars.has(name) && !ctx.schema.poisoned?.has(name)) {
           const sid = inferSchemaId(rhs, null)
           if (sid != null) ctx.schema.vars.set(name, sid)
         }

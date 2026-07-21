@@ -32,18 +32,34 @@ const legs = [
   run('wasi', ['test/index.js'], { JZ_TEST_HOST: 'wasi' }),
   run('fuzz', ['test/fuzz.js']),
 ]
-if (!fast) legs.push(
-  run('build', ['scripts/build-dist.mjs']).then(async (b) => {
-    if (b.code !== 0) return [b, { name: 'kernel', code: -1 }, { name: 'self', code: -1 }]
-    return [b, ...await Promise.all([
-      run('kernel', ['test/index.js'], { JZ_TEST_TARGET: 'jz.wasm' }),
-      run('self', ['test/selfhost.js']),
-    ])]
-  })
-)
+if (!fast) legs.push((async () => {
+  // Skip the ~5-min dist rebuild when no compiler input changed since the last
+  // build (pure test/bench edits): hash src/ module/ index.js layout.js.
+  const { createHash } = await import('node:crypto')
+  const { readFileSync, readdirSync, statSync, writeFileSync, existsSync } = await import('node:fs')
+  const h = createHash('sha256')
+  const walk = (d) => { for (const f of readdirSync(d).sort()) { const p = `${d}/${f}`; statSync(p).isDirectory() ? walk(p) : f.endsWith('.js') && h.update(readFileSync(p)) } }
+  for (const d of ['src', 'module']) walk(d)
+  for (const f of ['index.js', 'layout.js', 'interop.js', 'transform.js']) h.update(readFileSync(f))
+  const digest = h.digest('hex')
+  const stamp = 'dist/.build-hash'
+  const fresh = existsSync(stamp) && existsSync('dist/jz.wasm') && readFileSync(stamp, 'utf8') === digest
+  let b = { name: 'build', code: 0 }
+  if (fresh) console.log(`✓ build   [0s] unchanged (dist reused, hash ${digest.slice(0, 8)})`)
+  else {
+    b = await run('build', ['scripts/build-dist.mjs'])
+    if (b.code === 0) writeFileSync(stamp, digest)
+  }
+  if (b.code !== 0) return [b, { name: 'kernel', code: -1 }, { name: 'self', code: -1 }]
+  return [b, ...await Promise.all([
+    run('kernel', ['test/index.js'], { JZ_TEST_TARGET: 'jz.wasm' }),
+    run('self', ['test/selfhost.js']),
+  ])]
+})())
 
 const results = (await Promise.all(legs)).flat(2)
 const failed = results.filter(r => r.code !== 0)
+// verdict FIRST (callers may tail-truncate; the verdict must survive any cut)
 console.log(`\n${failed.length === 0 ? 'BATTERY GREEN' : 'BATTERY RED: ' + failed.map(f => f.name).join(', ')} (${((performance.now() - t0) / 60000).toFixed(1)} min)`)
-for (const f of failed) console.log(`\n── ${f.name} ──\n${(f.out || '').split('\n').filter(l => l.includes('✗') || l.includes('fail') || l.includes('Error')).slice(0, 20).join('\n')}`)
+for (const f of failed) console.log(`\n── ${f.name} ──\n${(f.out || '').split('\n').filter(l => l.includes('✗') || l.includes('fail')).slice(0, 20).join('\n')}`)
 process.exit(failed.length ? 1 : 0)

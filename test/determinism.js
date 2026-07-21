@@ -62,3 +62,30 @@ test('determinism: compilation is independent of prior compiles (no ctx leak)', 
   ok(eq(refB, afterA), 'compile(B) changed after compile(A) — prior ctx state leaked through reset()')
   ok(eq(refB, afterPoly), 'compile(B) changed after compile(poly) — prior ctx state leaked through reset()')
 })
+
+// α-rename invariance (Stage-1 BindingId): renaming every USER binding must
+// leave output bytes untouched — binaries carry no name section, so any diff
+// means a name-keyed fact channel (schema vars, static consts, bound-idx keys)
+// leaked binding-identity through the SPELLING instead of the binding. The
+// program is shadow-rich on purpose: params, sibling blocks, catch, patterns,
+// closures — every rename surface prepare owns.
+test('determinism: α-renamed source compiles byte-identical', () => {
+  const mk = (p, q, r, s, t, u) => `
+    const LIM = 7
+    export let f = (${p}, ${q} = ${p} + 1) => {
+      let ${r} = ${p} * ${q}
+      { let ${r} = ${p} + 2; ${s}(${r}) }
+      const ${t} = [[1, { a: 2, b: 3 }]]
+      for (const [, { a, b }] of ${t}) ${r} += a * b
+      try { if (${r} > LIM) throw ${r} } catch (${u}) { ${r} = ${u} - 1 }
+      const ${s}2 = (${u}) => ${u} * ${r}
+      return ${s}2(${q})
+    }
+    let ${s} = (x) => x`
+  const base = mk('p', 'q', 'r', 's', 't', 'u')
+  const renamed = mk('alpha', 'beta', 'gamma', 'delta', 'eps', 'zeta')
+  for (const optimize of [0, 2, 'speed']) {
+    const a = compile(base, { optimize }), b = compile(renamed, { optimize })
+    ok(a.length === b.length && a.every((x, i) => x === b[i]), `O${optimize}: α-rename changed bytes (${a.length} vs ${b.length})`)
+  }
+})

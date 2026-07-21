@@ -325,17 +325,9 @@ export function reset(proto, globals, bridge) {
                            //   sources' objects. Populated by prepare's `=` handler;
                            //   end-of-prepare state is what compile reads, so the
                            //   conflict is order-insensitive.
-    varsBarred: new Set(), // names excluded from the `vars` channel by the BINDING
-                           //   census (prepare's censusBinding): ≥2 binding sites
-                           //   module-wide that aren't all same-shape literal decls.
-                           //   `vars` is keyed by BARE NAME and function locals are
-                           //   not alpha-renamed across functions, so one function's
-                           //   literal-bound name would resolve ANOTHER function's
-                           //   same-named binding (param, for-of, non-literal decl)
-                           //   through the wrong layout — a raw unguarded fixed-slot
-                           //   read at a foreign offset. Unlike `poisoned`, barring
-                           //   gates only this channel: per-function ValueReps carry
-                           //   their own per-body provenance and keep devirtualizing.
+    // (varsBarred deleted — BindingId totality makes cross-function bare-name
+    //  collisions unrepresentable; same name ⇒ same binding, so the bar census
+    //  and its belt had nothing left to guard.)
     register: null,
     find: null,
     targetStack: [],

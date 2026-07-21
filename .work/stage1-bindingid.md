@@ -53,16 +53,34 @@ no new class of output). `#` rejected: no need for a second convention.
   assert identical output bytes on programs with no collisions, identical
   VALUES everywhere. Battery + α-rename fuzz mode (rename every user
   binding at random → byte-identical output modulo name section).
-- **1b. Census collapse**: with unique names, `bindSites/assignSid/
-  declInitUnknown/ownerStack(as poison scope)/assignBindOwners` — the
-  prepare-internal containment (≈200 lines, prepare/index.js:57-129,
-  848-940) — reduce to: `poisoned` = "THIS binding observed conflicting
-  shapes" (same-binding `=` disagreement only), `varsBarred` = DELETED
-  (nothing to bar — a barred name cannot exist), `vars` = one map keyed by
-  unique names, locals allowed back in (the vars-scope split's
-  save/restore choreography in compile/index.js:1202-1385, 1548-1833
-  simplifies later, Stage 2 owns that).
-  idOf's belt re-check (module/schema.js:58) becomes a plain lookup.
+- **1b. Census collapse** (1a landed; exact deletion list): with unique
+  names, cross-binding collision is unrepresentable, so:
+  - DELETE `bindSites` + `censusBinding` (the ≥2-sites disagreement census
+    existed only to detect bare-name collisions).
+  - DELETE `varsBarred` + `barSchemaVar` (nothing to bar) — idOf's belt
+    re-check (module/schema.js:58) becomes a plain lookup; the write-time
+    guards in bindAssignSchema/bindDeclSchema/1413/3232 drop.
+  - DELETE `assignBindOwners` and `declInitUnknown`'s Set<ownerId> payload:
+    poison scoping by owner reachability existed because a SIBLING
+    function's same-named binding could collide; now same-name ⇒ same
+    binding, so `declInitUnknown` reduces to a plain Set<name> ("this
+    binding's value source is unknown") and bindAssignSchema's poison rule
+    is simply: assignment disagrees with the binding's known sid, or the
+    binding has an unknown-source site → poison THIS binding.
+  - KEEP `assignSid` (per-binding `=`-consensus — that's genuine value
+    tracking, now trivially per-binding) and `poisoned` (same-binding
+    conflicts only). KEEP ownerStack only if other users remain (grep).
+  - CAUTION: module-scope bindings are still bare and can collide with
+    NOTHING now (locals renamed, module names unique among themselves) —
+    but locals of DIFFERENT modules in a bundle share the module-prefix
+    channel; verify `${prefix}$${name}` spellings stay disjoint from
+    local mints (they contain `$`, mints contain T — disjoint ✓).
+  - Totality-off escape hatch: while `totalRename: false` exists, the
+    census must STAY behind the flag... NO — simpler: 1b makes the flag
+    LOAD-BEARING for correctness, which violates the tuning-key contract.
+    Decision: 1b DELETES the flag too (totality becomes the only mode;
+    the α-rename pin + differential are the permanent guards). The
+    Stage-0 registry gate enforces no stray reads remain.
 - **1c. assumedBounds keys**: idxKey(recv, idx) keeps its shape but recv/idx
   names are now binding-unique — the CLONE fragility (stampClonedIdxProof,
   type.js:1999-2012) remains only for structural idx rewrites; move key to

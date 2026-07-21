@@ -51,11 +51,11 @@ export function initSchema(ctx) {
     // exact layout. The guarded slow arm retains the ordinary dynamic path.
     const refined = ctx.func.refinements?.get(name)?.schemaId
     if (refined != null) return refined
-    // varsBarred belt: every vars setter already skips barred names (binding
-    // census), so the map should never hold one — but a barred name must never
-    // resolve through the shared name-keyed store even if a setter slips.
+    // BindingId totality: names are binding-unique module-wide, so the shared
+    // store is a plain lookup (the old varsBarred belt guarded cross-function
+    // bare-name collisions, now unrepresentable).
     return ctx.schema.poisoned?.has(name) ? undefined
-      : repOf(name)?.schemaId ?? (ctx.schema.varsBarred?.has(name) ? undefined : ctx.schema.vars.get(name))
+      : repOf(name)?.schemaId ?? ctx.schema.vars.get(name)
   }
 
   /** Resolve variable name to its schema props array, or null. */

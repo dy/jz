@@ -43,7 +43,7 @@ import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
-import { unrollRecurrence, unrollScalarChains } from './loop-recurrence.js'
+import { unrollRecurrence, unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
 import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
 import {
@@ -75,6 +75,7 @@ import { foldStaticConstAggregates } from './plan/literals.js'
 import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
   pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadLazyTables,
+  stripLocalRenameSuffixes,
 } from '../wat/assemble.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 
@@ -447,6 +448,9 @@ function analyzeFuncForEmit(func, programFacts) {
   // loop non-vectorizable, so pairing iterations halves loop overhead with no
   // recognizer downstream to blind. Speed/L3 only (`unrollScalarChain: true`).
   if (_o && _o.unrollScalarChain === true && isBlockBody(func.body)) func.body = unrollScalarChains(func.body)
+  // Disjoint-arm update chains → branchless select accumulation (the square-
+  // tracing direction-step class: data-dependent arm choice defeats prediction).
+  if (_o && _o.selectArmUpdates === true && isBlockBody(func.body)) func.body = selectArmUpdatesIn(func.body)
   // Edge-clamp peeling: split a clamped stencil loop into clamp-free interior + edges
   // (the interior then lifts to SIMD). Before analyze so the new loops are analyzed.
   if (_o && _o.clampPeel !== false && isBlockBody(func.body)) func.body = peelClampedStencil(func.body)
@@ -2363,6 +2367,13 @@ export default function compile(ast, profiler) {
   const sortedFuncs = [
     ...sec.stdlib, ...sec.funcs, ...(startFn ? [startFn] : []),
   ].sort(byCalls)
+
+  // BindingId suffixes off the WAT surface LAST — every internal pass keys
+  // facts (distinctParams, boxed cells, alias bases) by the full renamed
+  // spelling; stripping earlier desyncs those sets from the tokens (the
+  // param-distinctness LICM pin caught exactly that). Display-only: binaries
+  // carry no name section.
+  stripLocalRenameSuffixes(sortedFuncs)
 
   // Assemble: named slots → flat section list.
   const sections = [

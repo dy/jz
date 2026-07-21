@@ -88,28 +88,18 @@ let funcValueNames
 // resolvable cases afterward. Stacked per module (recursive imports swap it).
 let reassignedTopLevel
 let assignSid      // name → sid|null of the agreed literal shape across `=` assignments (consensus/poison; vars binding is module-scope only)
-let bindSites      // name → {n: binding sites, sid: shared literal-decl sid | -1} — the binding census (censusBinding)
-let declInitUnknown  // name → Set<ownerId> — bindings whose value source the `=`-assignment
-                     // consensus never sees (explicit non-literal decl initializer, params,
-                     // catch, destructure targets), keyed by the OWNING function's arrow id.
-                     // A literal assignment poisons ONLY when it can reach such a binding
-                     // (an owner id on the current ownerStack): `let o = mk(); o = {…}` —
-                     // reads before the reassignment hold mk()'s value. An unrelated
-                     // same-named binding in a SIBLING function must NOT poison (bare-name
-                     // poison was a measured 1.57× size cliff: a param named `o` anywhere
-                     // deopted every other function's `o`) — the cross-binding hazard is the
-                     // vars channel's, handled by the BAR. A bare `let x` (no init) is not
-                     // here: its only values come from `=` assignments, which the existing
-                     // consensus covers (the var-hoist idiom keeps binding).
-let assignBindOwners // name → Set<ownerId> — the scopes whose literal assignments BOUND
-                     // vars(name) (bindAssignSchema), so a later unknown-shape binding
-                     // census can tell same-binding disagreement (→ poison) from a foreign
-                     // binding colliding on the bare name (→ bar).
+let declInitUnknown  // Set<name> — bindings whose value source the `=`-assignment consensus
+                     // never sees (explicit non-literal decl initializer, params, catch,
+                     // destructure targets). BindingId totality makes this a plain
+                     // per-binding fact — the old owner-scoped reachability + bar census
+                     // (bindSites/assignBindOwners) existed only because bare names could
+                     // collide across functions, which is now unrepresentable.
 let ownerStack     // arrow-nesting ids: [0] = module scope; '=>' pushes a fresh id. A
                    // binding's owner is the arrow that declares it; an assignment can reach
                    // any binding whose owner id is on the assignment's stack (shadows are
                    // renamed by prep, so reachable-same-name ⇒ same binding).
 let ownerUniq
+let renameSerial   // per-arrow mint counters for BindingId names (parallel to ownerStack)
 
 const resetPrepState = () => {
   depth = 0
@@ -120,13 +110,20 @@ const resetPrepState = () => {
   funcLocalNames = [new Set()]
   funcValueNames = [new Set()]
   reassignedTopLevel = new Set()
-  bindSites = new Map()
   assignSid = new Map()
-  declInitUnknown = new Map()
-  assignBindOwners = new Map()
+  declInitUnknown = new Set()
   ownerStack = [0]
   ownerUniq = 0
+  renameSerial = [0]
 }
+
+/** BindingId totality: every function-local binding renames to the
+ *  module-wide-unique `name<T>f<fnId>_<serial>` — fnId = the owning arrow's
+ *  ownerStack id, serial = a per-arrow traversal counter (names stay stable
+ *  under sibling-function edits). Bare names survive only at module scope
+ *  (exports/diagnostics/constInts keep their spelling). Not flagged: the
+ *  census collapse (1b) makes unique names load-bearing for correctness. */
+const mintLocal = (name) => `${name}${T}f${ownerStack[ownerStack.length - 1]}_${renameSerial[renameSerial.length - 1]++}`
 
 // Bare-name write targets across a module root, scope-tracked: a write to a
 // same-named LOCAL (arrow param, or a let/const anywhere in the enclosing
@@ -801,17 +798,22 @@ function prescanBlockDecls(node) {
   const top = scopes[scopes.length - 1]
   if (!top) return
   const fnNames = funcLocalNames[funcLocalNames.length - 1]
-  const stmts = Array.isArray(node) && node[0] === ';' ? node.slice(1) : [node]
-  for (const s of stmts) {
-    if (!Array.isArray(s) || (s[0] !== 'let' && s[0] !== 'const')) continue
+  const scan = (s) => {
+    if (!Array.isArray(s)) return
+    // a nested bare [';' …] list is the SAME block scope (only {} creates one) —
+    // the for-of lowering wraps bodies as [';', bindStmt, origBody]
+    if (s[0] === ';') { for (let i = 1; i < s.length; i++) scan(s[i]); return }
+    if (s[0] !== 'let' && s[0] !== 'const') return
     for (let i = 1; i < s.length; i++) {
       const d = s[i], t = Array.isArray(d) && d[0] === '=' ? d[1] : d
       for (const name of bindingNames(t)) {
-        if (typeof name !== 'string' || top.has(name)) continue
-        top.set(name, (isDeclared(name) || fnNames?.has(name)) ? `${name}${T}${ctx.func.uniq++}` : name)
+        if (typeof name !== 'string' || top.has(name) || name.includes(T)) continue
+        top.set(name, depth !== 0 ? mintLocal(name)
+          : (isDeclared(name) || fnNames?.has(name)) ? `${name}${T}${ctx.func.uniq++}` : name)
       }
     }
   }
+  scan(node)
 }
 
 function pushScope(scope = new Map()) {
@@ -876,93 +878,43 @@ function bindAssignSchema(name, sid, bind = true) {
   // Consensus (poison) is tracked for EVERY assignment; only module-scope
   // names additionally BIND into ctx.schema.vars — that map is module-global,
   // and publishing a function local there both mis-keys it and costs real
-  // codegen (a local in vars blocked scalar replacement: 5320 → 1310 B, and
-  // made output depend on whether an unrelated function reused the name).
+  // codegen (a local in vars blocked scalar replacement: 5320 → 1310 B).
   // Function locals resolve through their per-function ValueReps instead;
   // their poison still has to be recorded, or a disagreeing literal would
   // serve a fixed slot to a value of another shape.
+  // BindingId totality: same name ⇒ same binding, module-wide. The old
+  // cross-binding containment (bindSites bar census, owner-scoped poison
+  // reachability, assignBindOwners) is unrepresentable and deleted — a
+  // binding with any unknown-source site simply has disagreeing sources.
   const had = assignSid.get(name)
   if (had != null) {
     if (had !== sid) { assignSid.delete(name); ctx.schema.vars.delete(name); ctx.schema.poisoned?.add(name) }
   } else if (sid != null) {
-    // An unknown-shape BINDING this assignment can reach (owner id on the
-    // current stack) is a disagreeing source the `=` consensus never observed
-    // — poison, exactly as two disagreeing assignments would. An unreachable
-    // same-named binding is a DIFFERENT variable: no poison (the cross-binding
-    // hazard is the vars channel's, covered by the bar) — see declInitUnknown.
-    const owners = declInitUnknown.get(name)
-    if (owners && ownerStack.some(id => owners.has(id))) { ctx.schema.poisoned?.add(name); return }
-    if (!ctx.schema.poisoned?.has(name) && !ctx.schema.varsBarred.has(name)) {
+    if (declInitUnknown.has(name)) { ctx.schema.poisoned?.add(name); return }
+    if (!ctx.schema.poisoned?.has(name)) {
       assignSid.set(name, sid)
       if (bind) ctx.schema.vars.set(name, sid)
-      let ao = assignBindOwners.get(name)
-      if (!ao) assignBindOwners.set(name, ao = new Set())
-      for (const id of ownerStack) ao.add(id)
     }
   } else ctx.schema.poisoned?.add(name)
 }
 
-// BINDING census for the name-keyed schema channel. `ctx.schema.vars` is
-// module-global and function locals are not alpha-renamed across functions, so
-// its fixed-slot claim is sound only while EVERY binding of the bare name —
-// decl (any scope), param, destructure target; for-of/for-in/catch arrive here
-// as lowered decls — agrees on one literal shape. A second non-agreeing binding
-// bars the name: one function's `const site = {…}` must not resolve another
-// function's `site` (a param, a for-of binding) through its layout — that emits
-// a RAW slot load at a foreign offset, no guard, no dyn fallback (the
-// self-host kernel's rest-spec corrupted exactly this way: a new differently-
-// ordered literal elsewhere in the compiler shifted `site.callee` reads onto
-// the wrong slot). Unlike `poisoned`, barring gates ONLY the vars channel —
-// per-function ValueReps carry per-body provenance and keep devirtualizing.
-// Order-insensitive: same-sid literal decls accumulate freely; the first
-// disagreeing site (different sid, or any `sid == null` binding form joining a
-// counted name) trips the bar, and barred names never (re)bind.
-function censusBinding(name, sid = null) {
+// A BINDING whose value source the assignment consensus never sees — explicit
+// non-literal decl initializer (`let o = mk()`, `= [...spread]`), params,
+// catch params, destructure targets. Under BindingId totality this is a plain
+// per-binding fact: sources disagree, so any literal-shape claim dies.
+function censusUnknownInitDecl(name) {
   if (typeof name !== 'string') return
-  let r = bindSites.get(name)
-  if (!r) bindSites.set(name, r = { n: 0, sid: sid ?? -1 })
-  else if (sid == null || r.sid !== sid) r.sid = -1
-  r.n++
-  if (r.n >= 2 && r.sid === -1) barSchemaVar(name)
-}
-function barSchemaVar(name) {
-  ctx.schema.varsBarred.add(name)
-  ctx.schema.vars.delete(name)
-}
-// Census a BINDING whose value source the assignment consensus never sees —
-// explicit non-literal decl initializer (`let o = mk()`, `= [...spread]`),
-// params, catch params, destructure targets. The site counts in the bar census
-// AND joins declInitUnknown under the OWNING arrow's id, so only a literal
-// assignment that can actually reach this binding poisons (see declInitUnknown
-// — bare-name poison was a measured 1.57× size cliff). Retro flavor: a vars
-// entry already bound by an assignment REACHABLE from here is the same
-// binding → sources disagree NOW → poison; an unreachable entry is a foreign
-// same-named binding → bar (vars-channel only, its function's reps live).
-// Order-insensitive end state either way.
-function censusUnknownInitDecl(name, owner = ownerStack[ownerStack.length - 1]) {
-  censusBinding(name)
-  if (typeof name !== 'string') return
-  let owners = declInitUnknown.get(name)
-  if (!owners) declInitUnknown.set(name, owners = new Set())
-  owners.add(owner)
-  if (ctx.schema.vars.has(name)) {
-    // Directional: the earlier assignment hit THIS binding only if its site
-    // sat inside this binding's owner scope (ao recorded the assignment's
-    // full stack — membership of `owner` alone decides; checking the whole
-    // current stack would match module id 0 on every assignment).
-    const ao = assignBindOwners.get(name)
-    if (ao && ao.has(owner)) { ctx.schema.vars.delete(name); ctx.schema.poisoned?.add(name) }
-    else barSchemaVar(name)
-  }
+  declInitUnknown.add(name)
+  if (ctx.schema.vars.has(name)) { ctx.schema.vars.delete(name); ctx.schema.poisoned?.add(name) }
 }
 // Consensus setter for literal-shape BINDINGS (`const x = {…}` at any scope,
 // object-literal param defaults) — the decl-initializer sibling of
 // bindAssignSchema (which owns the `=`-assignment channel and its poison).
 function bindDeclSchema(name, sid) {
-  censusBinding(name, sid)
-  if (ctx.schema.varsBarred.has(name) || ctx.schema.poisoned?.has(name)) return
+  if (typeof name !== 'string') return
+  if (ctx.schema.poisoned?.has(name) || declInitUnknown.has(name)) return
   const had = ctx.schema.vars.get(name)
-  if (had != null && had !== sid) return barSchemaVar(name)
+  if (had != null && had !== sid) { ctx.schema.vars.delete(name); ctx.schema.poisoned?.add(name); return }
   ctx.schema.vars.set(name, sid)
 }
 
@@ -1345,6 +1297,27 @@ function substPattern(p, map) {
   if (p[0] === '[]' || p[0] === ',') return [p[0], ...p.slice(1).map(it => substPattern(it, map))]
   return p
 }
+/** Resolve computed property keys inside a decl pattern: `{[k]: x}`'s key is
+ *  an ordinary EXPRESSION read from outer scope, not a binding position — it
+ *  must resolve through prep like any read (a renamed outer binding included).
+ *  Assignment-form destructures prep the whole node and never needed this;
+ *  the decl path skips whole-node prep, so keys were passed raw and only
+ *  matched while outer names kept their source spelling. */
+function prepPatternKeys(p) {
+  if (!Array.isArray(p)) return p
+  if (p[0] === ':') {
+    // computed-key marker `['[]', expr]` (len 2): prep the INNER expr only —
+    // string / numeric-literal keys stay raw (they are names, not reads)
+    const k = p[1]
+    const key = Array.isArray(k) && k[0] === '[]' && k.length === 2 ? ['[]', prep(k[1])] : k
+    return [':', key, prepPatternKeys(p[2])]
+  }
+  if (p[0] === '{}' || p[0] === '[]' || p[0] === ',') return [p[0], ...p.slice(1).map(prepPatternKeys)]
+  if (p[0] === '=') return ['=', prepPatternKeys(p[1]), p[2]]
+  if (p[0] === '...') return ['...', prepPatternKeys(p[1])]
+  return p
+}
+
 function substObjItem(it, map) {
   if (typeof it === 'string') return map.has(it) ? [':', it, map.get(it)] : it
   if (!Array.isArray(it)) return it
@@ -1469,8 +1442,8 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
         const restProps = remaining.map(k => [':', k, ['.', source, k]])
         const restObj = ['{}', remaining.length === 1 ? restProps[0] : [',', ...restProps]]
         // Register schema for the rest variable so property access works
-        // (barred/poisoned names stay out of the shared channel — censusBinding).
-        if (typeof restTarget === 'string' && !ctx.schema.varsBarred.has(restTarget) && !ctx.schema.poisoned?.has(restTarget))
+        // (poisoned names stay out of the shared channel).
+        if (typeof restTarget === 'string' && !ctx.schema.poisoned?.has(restTarget))
           ctx.schema.vars.set(restTarget, ctx.schema.register(remaining))
         pushPatternAssign(restTarget, restObj, out, decls)
       } else {
@@ -1701,11 +1674,14 @@ function prepDecl(op, ...inits) {
         if (scopes.length > 0) {
           const top = scopes[scopes.length - 1]
           if (top.has(declName)) declName = top.get(declName)
-          else top.set(declName, declName)
+          else if (depth !== 0 && !declName.includes(T)) {
+            const m = mintLocal(declName)
+            top.set(declName, m)
+            declName = m
+          } else top.set(declName, declName)
         }
         if (fnNames) fnNames.add(declName)
       }
-      censusBinding(declName)
       rest.push(declName)
       continue
     }
@@ -1808,7 +1784,10 @@ function prepDecl(op, ...inits) {
         if (depth !== 0 && typeof n === 'string' && scopes.length > 0) {
           const top = scopes[scopes.length - 1]
           if (top.has(n)) declName = top.get(n)
-          else if (isDeclared(n) || fnNames?.has(n)) {
+          else if (!n.includes(T)) {
+            declName = mintLocal(n)
+            top.set(n, declName)
+          } else if (isDeclared(n) || fnNames?.has(n)) {
             declName = `${n}${T}${ctx.func.uniq++}`
             top.set(n, declName)
           } else top.set(n, n)
@@ -1823,6 +1802,7 @@ function prepDecl(op, ...inits) {
         if (depth !== 0 && typeof declName === 'string' && fnNames) fnNames.add(declName)
       }
       if (patRenames.size) name = substPattern(name, patRenames)
+      name = prepPatternKeys(name)
       // A bare-identifier source needs no temp: reads are idempotent and
       // side-effect-free, so we destructure straight off it. This keeps each
       // element's static type tag (e.g. `let [, x] = strs` resolves `x` to the
@@ -1856,7 +1836,10 @@ function prepDecl(op, ...inits) {
       if (typeof name === 'string' && scopes.length > 0) {
         const top = scopes[scopes.length - 1]
         if (top.has(name)) declName = top.get(name)
-        else if (isDeclared(name) || fnNames?.has(name)) {
+        else if (depth !== 0 && !name.includes(T)) {
+          declName = mintLocal(name)
+          top.set(name, declName)
+        } else if (isDeclared(name) || fnNames?.has(name)) {
           declName = `${name}${T}${ctx.func.uniq++}`
           top.set(name, declName)
         } else top.set(name, name)
@@ -1982,9 +1965,11 @@ function dispatchConstructorCall(callee, args) {
 // silently returned undefined (.call/.apply) or trapped (table OOB, .bind).
 function foldFnCallApplyBind(callee, args) {
   if (!Array.isArray(callee) || callee[0] !== '.') return undefined
-  const [, name, meth] = callee
+  let [, name, meth] = callee
   if (typeof name !== 'string' || (meth !== 'call' && meth !== 'apply' && meth !== 'bind')) return undefined
-  if (!hasFunc(name) && !isFuncValueLocal(name)) return undefined
+  // funcValueNames holds POST-RENAME keys — resolve the receiver spelling first
+  const key = scopes.length && isDeclared(name) ? resolveScope(name) : name
+  if (!hasFunc(key) && !isFuncValueLocal(key)) return undefined
   const [thisArg, ...rest] = handlerArgs(args)
   const trivialThis = thisArg == null || typeof thisArg === 'string' ||
     (Array.isArray(thisArg) && thisArg[0] == null)
@@ -2348,7 +2333,11 @@ const handlers = {
       const scope = new Map()
       if (typeof cParam === 'string') {
         const fnNames = funcLocalNames[funcLocalNames.length - 1]
-        if (isDeclared(cParam) || fnNames?.has(cParam)) {
+        if (depth !== 0) {
+          const renamed = mintLocal(cParam)
+          scope.set(cParam, renamed)
+          cParam = renamed
+        } else if (isDeclared(cParam) || fnNames?.has(cParam)) {
           const renamed = `${cParam}${T}${ctx.func.uniq++}`
           scope.set(cParam, renamed)
           cParam = renamed
@@ -2356,6 +2345,7 @@ const handlers = {
         fnNames?.add(cParam)
       }
       pushScope(scope)
+      prescanBlockDecls(cHandler)
       caught = ['catch', tryBody, cParam, prep(cHandler)]
       popScope()
     }
@@ -2558,16 +2548,21 @@ const handlers = {
   'let': (...inits) => prepDecl('let', ...inits),
   'const': (...inits) => prepDecl('const', ...inits),
 
-  // Block-scoped control flow: push scope for bodies so inner let/const shadows correctly
+  // Block-scoped control flow: push scope for bodies so inner let/const shadows
+  // correctly. Prescan accompanies EVERY push — a body can arrive as a bare
+  // [';' …] list (post-jzify) that never routes through the '{}' handler, and
+  // its decls must pre-register before traversal (forward closure refs; see
+  // prescanBlockDecls). A '{}' body double-prescans harmlessly (its own frame
+  // re-registers on top).
   'if': (cond, then, els) => {
     const c = prep(stripBoolNot(cond))
-    pushScope(); const t = dropDeadPostfix(prep(then)); popScope()
-    if (els != null) { pushScope(); const e = dropDeadPostfix(prep(els)); popScope(); return ['if', c, t, e] }
+    pushScope(); prescanBlockDecls(then); const t = dropDeadPostfix(prep(then)); popScope()
+    if (els != null) { pushScope(); prescanBlockDecls(els); const e = dropDeadPostfix(prep(els)); popScope(); return ['if', c, t, e] }
     return ['if', c, t]
   },
   'while': (cond, body) => {
     const c = prep(stripBoolNot(cond))
-    pushScope(); const b = dropDeadPostfix(prep(body)); popScope()
+    pushScope(); prescanBlockDecls(body); const b = dropDeadPostfix(prep(body)); popScope()
     return ['while', c, b]
   },
   // do { body } while (cond) → flag-guarded while: `flag=true; while (flag||cond) { flag=false; body }`.
@@ -2671,13 +2666,18 @@ const handlers = {
   '=>': (params, body) => {
     if (depth > 0) { includeForCallableValue() }
     const raw = extractParams(params)
+    // Owner id + serial counter FIRST: param mints (totality) belong to THIS
+    // arrow's BindingId space, and the fnScope mapping must exist before any
+    // default-value prep (a default may reference an earlier param).
+    ownerStack.push(++ownerUniq)   // binding-owner id for this arrow (census scoping)
+    renameSerial.push(0)
     const fnScope = new Map()
-    for (const n of collectParamNames(raw)) fnScope.set(n, n)
+    for (const n of collectParamNames(raw)) fnScope.set(n, mintLocal(n))
+    const pName = (n) => fnScope.get(n) ?? n
 
     depth++
     pushScope(fnScope)
-    ownerStack.push(++ownerUniq)   // binding-owner id for this arrow (census scoping)
-    funcLocalNames.push(new Set(collectParamNames(raw)))
+    funcLocalNames.push(new Set(fnScope.values()))
     funcValueNames.push(new Set())
 
     const nextParams = []
@@ -2690,15 +2690,15 @@ const handlers = {
         // when the body never names an array literal (e.g. `(...xs) => 0`),
         // otherwise the call-site rest construction hits "Unknown op: [".
         includeForArrayLiteral()
-        censusUnknownInitDecl(c.name)   // closure params: unknown-shape binding sites (see censusUnknownInitDecl)
-        nextParams.push(r)
-        if (typeof c.name === 'string') fnScope.set(c.name, c.name)
+        if (typeof c.name === 'string' && !fnScope.has(c.name)) fnScope.set(c.name, mintLocal(c.name))
+        censusUnknownInitDecl(pName(c.name))   // closure params: unknown-shape binding sites (see censusUnknownInitDecl)
+        nextParams.push(typeof c.name === 'string' ? ['...', pName(c.name)] : r)
       } else if (c.kind === 'plain') {
-        censusUnknownInitDecl(c.name)
-        nextParams.push(c.name)
+        censusUnknownInitDecl(pName(c.name))
+        nextParams.push(pName(c.name))
       } else if (c.kind === 'default') {
-        censusUnknownInitDecl(c.name)
-        nextParams.push(['=', c.name, prep(c.defValue)])
+        censusUnknownInitDecl(pName(c.name))
+        nextParams.push(['=', pName(c.name), prep(c.defValue)])
       } else {
         const tmp = `${T}p${ctx.func.uniq++}`
         fnScope.set(tmp, tmp)
@@ -2728,6 +2728,7 @@ const handlers = {
     const result = ['=>', Array.isArray(params) && params[0] === '()' ? ['()', inner] : inner, preparedBody]
     popScope()
     ownerStack.pop()
+    renameSerial.pop()
     funcLocalNames.pop()
     funcValueNames.pop()
     depth--
@@ -3050,6 +3051,10 @@ const handlers = {
       }
     }
     pushScope()
+    // NOTE: no prescan here for for-of/for-in heads — they LOWER and re-enter
+    // this handler as a classic for, whose branch below prescans the lowered
+    // inner list in ITS frame (prescanning the raw body here would mint into
+    // this frame while the decls re-mint in the re-entered one — dangling refs).
     // A comma/sequence Expression in a for-IN head RHS — `for (x in a, b)` — is valid (the RHS is
     // an Expression): evaluate left-to-right for side effects, value as the last element. (for-OF's
     // RHS is an AssignmentExpression — no comma — so it is left alone.) subscript ≥10.5.1 parses
@@ -3067,6 +3072,7 @@ const handlers = {
     }
     let r
     if (Array.isArray(head) && head[0] === ';') {
+      prescanBlockDecls(body)
       let [, init, cond, step] = head
       cond = stripBoolNot(cond)
       // Keep a `.length` / `.size` / `.byteLength` for-bound i32 without snapshotting it:
@@ -3220,7 +3226,10 @@ const handlers = {
     // stack introspection — prohibited as bad practice. On a plain data object
     // they are ordinary field names (e.g. an ESTree call node's `.callee`), so
     // the ban keys off a known-function receiver, not the bare property name.
-    if ((obj === 'arguments' || hasFunc(obj) || isFuncValueLocal(obj)) && (prop === 'caller' || prop === 'callee'))
+    // funcValueNames holds POST-RENAME binding keys (totality) — resolve the
+    // receiver spelling through scopes before the membership check.
+    const objKey = typeof obj === 'string' && scopes.length && isDeclared(obj) ? resolveScope(obj) : obj
+    if ((obj === 'arguments' || hasFunc(objKey) || isFuncValueLocal(objKey)) && (prop === 'caller' || prop === 'callee'))
       err('`.caller`/`.callee` are prohibited: deprecated function stack introspection')
     if (prop === 'url' && isImportMeta(obj)) return staticString(importMetaUrl())
     // A user binding named like a builtin namespace (`let Math = {…}`) shadows it
@@ -3329,8 +3338,8 @@ function inferAssignSchema(callNode) {
     }
     if (srcProps) for (const p of srcProps) if (!merged.includes(p)) merged.push(p)
   }
-  // Barred/poisoned names stay out of the shared channel (censusBinding).
-  if (merged.length && !ctx.schema.varsBarred.has(target) && !ctx.schema.poisoned?.has(target))
+  // Poisoned names stay out of the shared channel.
+  if (merged.length && !ctx.schema.poisoned?.has(target))
     ctx.schema.vars.set(target, ctx.schema.register(merged))
 }
 
@@ -3400,7 +3409,6 @@ function defFunc(name, node) {
   if (hasRest.length) funcInfo.rest = hasRest[0]  // track rest param name
   ctx.func.list.push(funcInfo)
   ctx.func.names.add(name)
-  censusBinding(name)   // the lifted function name is itself a binding site
   return true
 }
 

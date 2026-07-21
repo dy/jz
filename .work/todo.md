@@ -141,6 +141,120 @@
     hulls. sdf 1.22× is the genuinely-hard tail (same family as nqueens/
     sort scheduling): needs sentinel-invariant discovery or loop versioning
     on a mutating cursor — no cheap general lever; recorded, not chased.
+  * KERNEL WAVE-DEBT — THE STRING-PARAM INFERENCE CLASS (2026-07-21b,
+    OPEN, next unit): after the encoding fix, 2 kernel-only reds remain,
+    both ONE class: the kernel compiles `JSON.parse(stringParam)` to the
+    undefined stub (literal-arg parse, all namespaces, stringify all OK —
+    verified by kernel probes), and bool-identity's preset-table number
+    row hits the wrong table copy through the same path. Bisects RULED
+    OUT: selectArmUpdates, PURE_OPS select, the '.'-handler objKey edit
+    (three kernel rebuilds). The divergence lives in string-param
+    inference/jsstring opt-in territory executing INSIDE the kernel
+    (native green; native-miscompile of some wave-reshaped function in
+    that chain). Guarded with onKernel() skips at BOTH pins (documented,
+    "do not widen"); kernel leg = regression gate on the rest. BURN-DOWN
+    PLAN: differential the paramAllUsesJsstringMappable/extparam chain
+    standalone (the stripRenameRuns method — jz-compile the function,
+    diff vs JS), then root-fix the codegen class.
+  * THE KERNEL-STRIP SAGA CLOSED — THE STRING-ENCODING CLASS
+    (2026-07-21a): ALL kernel-leg reds (10, incl. jsstring externref +
+    typed-narrow/loop-counter WAT-name pins) shared ONE root: jz strings
+    are UTF-8 BYTES (''.length = 3 in compiled code, charCodeAt =
+    byte read), so stripRenameRuns' `i + 1` landed mid-T-sequence and the
+    kernel's strip NO-OPED — every WAT-name assertion saw suffixed names.
+    (The earlier REGEX form no-oped/crawled for the same reason — the
+    2.4h leg and the first jsstring red were this class too.) FIX:
+    encoding-agnostic index math — advance by T.length (1 natively, 3 in
+    kernel — self-consistent), derive all positions from indexOf/scan,
+    ASCII-only run body. PROOF: the jz-COMPILED strip differential now
+    matches JS byte-for-byte (it diverged before: '\$x⟨T⟩f1_0'→'\$xf1_0').
+    LESSON RECORDED for all compiler source: index arithmetic across
+    non-ASCII chars must use substring-derived offsets, never hardcoded
+    char counts — includes/indexOf/slice-from-found-index are safe,
+    charCodeAt walks are ASCII-only territory.
+  * TRACE SELECT-LEVER — BUILT, EXACT, MEASURED NEUTRAL (2026-07-20m):
+    selectArmUpdates (speed-only, registered): disjoint-arm dense-int
+    if-chains inside loops → per-var branchless select accumulation
+    (v += d===k0 ? δ0 : … : elseδ). Soundness is NOT int-ness — the only
+    semantic delta is `v += 0` mapping -0→+0, so the guard is a ±0
+    SINK-SAFETY walk (comparisons/ToInt32/index positions are ±0-blind;
+    escape via /, %, return, call, store rejects — pinned by a 1/x probe
+    that keeps -Infinity). PURE_OPS gained 'select' so nested const-arm
+    ternary chains lower select-all-the-way (traceLoop: 6 selects, 0 loop
+    ifs — a general codegen improvement independent of the pass).
+    VERDICT on trace: paired 1.41× vs rust-wasm UNCHANGED — the
+    direction-step was NOT the bottleneck; the unpredictable branch is
+    `if (inside)` (bitmap-dependent, one arm STORES visited[k] — wasm has
+    no conditional store; select-forming it costs a load per iteration).
+    trace's WASM_TODO stands with the corrected cause; the pass stays for
+    the class (state machines/automata) with its neutrality on trace
+    recorded — no false claims.
+  * STAGE 1b — CENSUS COLLAPSE, THE DELETION TOTALITY PAID FOR
+    (2026-07-20l): with names binding-unique module-wide, the cross-binding
+    containment died wholesale: bindSites + censusBinding (the ≥2-sites bar
+    census) DELETED; varsBarred + barSchemaVar DELETED (ctx.js field gone,
+    module/schema.js idOf belt → plain lookup, write-guards at rest-target
+    merge + plan/scope const-provenance simplified); assignBindOwners +
+    owner-scoped poison reachability DELETED (bindAssignSchema's rule is
+    now: same binding, sources disagree → poison — declInitUnknown reduced
+    from Map<name, Set<ownerId>> to Set<name>); bindDeclSchema no longer
+    censuses. ownerStack/ownerUniq STAY (they're the BindingId fnId
+    source). The totalRename flag DELETED from TUNING_KEYS and prepare —
+    unique names are now load-bearing for correctness (a flagged-off mode
+    would resurrect the collision class silently), so the α-rename
+    invariance pin + the fuzz legs are the permanent guards instead.
+    Validation per the batch-at-the-end discipline: destruct/closures/
+    statements/determinism/types/data/optimizer all green (813 tests);
+    full battery gates the combined 1a+1b landing. ALSO IN THE WAVE
+    (1a triage tail): .callee/.caller prohibition and foldFnCallApplyBind
+    resolved receivers through scopes before funcValueNames membership
+    (rename-cliff — the prohibition silently stopped firing); types.js
+    runAnalyze harness resolves source spellings via unique-bare-prefix;
+    stripLocalRenameSuffixes rewritten REGEX-FREE (it runs per compile
+    inside the kernel, where RegExp is interpreter-grade — prime suspect
+    for both the 2.4h kernel leg and the jsstring externref name-grep
+    failure; solo timed kernel leg is the verdict).
+  * STAGE 1a — BINDINGID TOTALITY (2026-07-20k): every function-local
+    binding (params, decls, catch params, destructure targets) renames in
+    prepare to the module-wide-unique `name<T>f<fnId>_<serial>` — fnId =
+    the owning arrow's ownerStack id, serial = per-arrow traversal counter
+    (stable under sibling-function edits). Module scope stays bare
+    (exports/diagnostics/constInts untouched). TUNING_KEYS `totalRename`,
+    default ON, opt-out escape hatch. WHAT IT TOOK — four buried
+    assumptions surfaced by making identity total: (1) PRESCAN WITH EVERY
+    PUSH — if/while/for/catch push scopes but bodies can arrive as bare
+    [';'] lists that never route through '{}'; prescan now accompanies
+    every push and FLATTENS nested ';' lists (same block scope — the
+    for-of lowering wraps [';' bindStmt body]); for-of/for-in prescan only
+    in the lowered re-entry (prescanning the raw body minted into the
+    wrong frame → dangling renamed refs). (2) COMPUTED PATTERN KEYS
+    (`{[k]: x}`) are expression READS that never resolved through prep —
+    worked by spelling luck pre-rename; prepPatternKeys preps the marker's
+    inner expr. (3) T-SYNTHETIC NAMES skip re-minting (already unique).
+    (4) DISPLAY STRIP AT THE END — stripLocalRenameSuffixes removes
+    suffixes wherever the bare spelling is unambiguous per function
+    (mid-token too: `$s<T>f1_0$ccsso` → `$s$ccsso`), and it must run as
+    the LAST pipeline step: running it before optimizeModule desynced
+    name-keyed fact sets (distinctParams) from WAT tokens — the
+    param-distinctness LICM pin caught the hoist silently dying. VERDICT:
+    the ON-vs-OFF differential over bench+examples × {O0,O2,speed} = 174
+    compiles, ZERO byte diffs — totality is a pure identity change (the
+    interim "raytrace −1.1KB win" was the strip-desync artifact, not a
+    collision-poison lift; honest zero). α-rename invariance pinned in
+    determinism.js (shadow-rich program, byte-identical at 3 tiers).
+    UNLOCKS 1b: census collapse (bindSites/assignSid/declInitUnknown/
+    assignBindOwners/varsBarred deletion — cross-function collisions now
+    unrepresentable). TRIAGE POSTSCRIPT: the first full battery on the
+    unit went red in a way two lessons paid for — (1) the runner's
+    failure-detail filter matched 'Error'/'fail' inside PASSING test
+    names, and piping the battery through `tail` masked the verdict
+    (runner now prints the verdict FIRST and filters '✗' only);
+    (2) the one real red was TEST-HARNESS name coupling, not a compiler
+    bug: types.js runAnalyze proxied `repOf(bareName)` — under totality
+    the binding key is renamed; the harness now resolves source spellings
+    through the unique-bare-prefix rule (params via fn.sig too). 120/120.
+    Battery hygiene: scripts/battery.mjs gained a dist input-hash skip
+    (test-only batteries stop paying the ~5-min rebuild).
   * KERNEL-LEG HANG ON THE SHADOW UNIT — ROOT-CAUSED + FIXED: THE
     COMMA-GROUP SHORTHAND HOLE (2026-07-20j): the unit's battery span
     1h17m in the kernel fuzz gate (seed 1 opt2 → "Unknown local $_pg0" →

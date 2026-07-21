@@ -577,7 +577,9 @@ const PURE_OPS = new Set(['i32.const', 'f64.const', 'local.get', 'global.get',
   'i32.add', 'i32.sub', 'i32.mul', 'i32.and', 'i32.or', 'i32.xor',
   'f64.convert_i32_s', 'f64.convert_i32_u', 'i32.trunc_sat_f64_s',
   'i32.wrap_i64', 'i64.trunc_sat_f64_s', 'f64.eq', 'f64.ne', 'f64.lt', 'f64.gt', 'f64.le', 'f64.ge',
-  'i32.eq', 'i32.ne', 'i32.lt_s', 'i32.gt_s', 'i32.le_s', 'i32.ge_s', 'i32.eqz'])
+  'i32.eq', 'i32.ne', 'i32.lt_s', 'i32.gt_s', 'i32.le_s', 'i32.ge_s', 'i32.eqz',
+  'select'])   // select of pure operands: both arms evaluate eagerly, no trap/effect — a nested
+               // select chain (the branchless arm-update accumulator) stays select all the way
 export const isPureIR = n => Array.isArray(n) && PURE_OPS.has(n[0]) && n.slice(1).every(c => !Array.isArray(c) || isPureIR(c))
 
 /** Ops whose f64 result is always a plain number (never a NaN-boxed pointer).
