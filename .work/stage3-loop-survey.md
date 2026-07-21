@@ -130,6 +130,18 @@ algorithm, not a duplicate. Documented in-code. Cross-IR unification with
 type.js affineIdxOfIV also rejected (different node shapes; an abstraction
 layer would add confusion, not remove it).
 
+## Deliberate skip: bound-literalness field (2026-07-21)
+
+The 5 sites sharing `!boundLocal && !isI32Const(bound)` stay as-is: a
+record field for a one-line visible predicate adds indirection, not
+clarity (yukta-vairagya — not every duplication is worth absorbing).
+The classifier step (4) was likewise re-assessed: the `??` chain IS an
+explicit ordered dispatch table and every recognizer now routes through
+matchBlockLoop envelopes; the remaining Stage-3 substance is per-loop
+FACTS on the record (trip ranges from exitInfo, dependence from the
+standing model) if/when a new transform needs them — build on demand,
+not speculatively.
+
 ## Order of attack (matches plan Stage 3)
 
 1. Grow loop-model.js into the record builder on the AST tier (its 6
