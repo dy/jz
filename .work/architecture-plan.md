@@ -135,14 +135,26 @@ flipping default.
 ##   (solver storage, no WeakMap) — LANDED 878d3685; 3b = D1 onto the
 ##   worklist — LANDED b01dbfb2 (applySiteRules + caller-indexed
 ##   edge-driven re-enqueue; confluent, order-independent); 3c = D3
-##   emit-writer relocation (slice 4's door). 3c CENSUS (2026-07-21):
-##   14 write sites — emit.js ×6 (incl. the ptrKind discovery at ~1581),
-##   module/object.js ×4 (Object.assign schema binds incl. 2
-##   schema.vars.set), module/core.js ×2 (copy val propagation),
-##   module/array.js ×2. Each is a mid-emit DECISION; relocation =
-##   determine when its input is plan-time-available, move, and the
-##   exit grep (updateRep|schema.vars.set in emit/module → 0) closes
-##   slice 4's door.
+##   emit-writer relocation (slice 4's door). 3c CENSUS + CLASSIFICATION
+##   (2026-07-21, site-by-site read): 14 sites split into TWO KINDS —
+##   (a) EMISSION-LOCAL TEMP SEEDS (core.js ?.[]/?.() evalOnce temps ×2,
+##       array.js fresh temps ×2, object.js:86 HASH seed): the written
+##       name is MINTED DURING EMISSION and lives one expression — these
+##       are not durable-fact writes at all; migrate them to the
+##       transient localValTypesOverlay channel (tier #2, torn down with
+##       scope). PREREQ: guarantee the overlay is installed for the
+##       whole emission of every function (today it is context-dependent
+##       — emit.js:1852 guards on null), and audit the ptr/typedElem
+##       side-channels these temps also seed (typedElem.set at core:1566
+##       needs a transient twin).
+##   (b) GENUINE DISCOVERY WRITES (emit.js decl ptrKind-inheritance
+##       cluster ×5-6 ~1581-1602, object.js Object.assign schema binds
+##       ×3): the fact is discovered from the EMITTED init's shape.
+##       Relocation = a pre-emit exprPtrKind/schema predictor — which is
+##       exactly closing the valTypeOf-vs-emit gap (destructure temps,
+##       assign results). This IS slice 4's substance: FunctionPlan
+##       finalization computes these facts via the predictor; emit
+##       ASSERTS agreement instead of writing. Exit grep unchanged.
 
 Replace the rerun choreography (runFixpoint ×2, 13 plan-time refresh points,
 28 analyzeBody call sites, emit-time rep updates) with:
