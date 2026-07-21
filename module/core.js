@@ -1557,11 +1557,12 @@ export default (ctx) => {
   // Optional index: arr?.[i] → null if arr is null, else arr[i]
   // Cache base in temp, propagate valType so []'s type dispatch works
   ctx.core.emit['?.[]'] = (arr, idx) => evalOnce(arr, (t) => {
-    // Emit-time rep seed on fresh `?.[]` hoist-temp (lifecycle: analysis-vs-emit).
-    // Propagate source type to temp so [] dispatch (string, typed, etc.) works
-    // when the inner `ctx.core.emit['[]'](t, idx)` re-enters dispatch.
+    // Transient seed on the fresh `?.[]` hoist-temp (slice 3c-a): the temp
+    // lives one expression — its kind goes on the OVERLAY (tier #2, torn
+    // down with scope), not on durable reps. enterFunc/buildStartFn
+    // guarantee the overlay exists for all emission.
     const srcType = typeof arr === 'string' ? repOf(arr)?.val : null
-    if (srcType) updateRep(t, { val: srcType })
+    if (srcType) ctx.func.localValTypesOverlay.set(t, srcType)
     if (typeof arr === 'string' && ctx.types.typedElem?.has(arr)) {
       if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
       ctx.types.typedElem.set(t, ctx.types.typedElem.get(arr))
@@ -1594,9 +1595,9 @@ export default (ctx) => {
       if (ctx.core.emit[`.${method}`]) {
         const recv = callee[1]
         return evalOnce(recv, (t) => {
-          // Emit-time rep seed on fresh `?.()` recv-temp so the dispatch fast-paths fire.
+          // Transient seed on the fresh `?.()` recv-temp (slice 3c-a, see ?.[]).
           const vt = typeof recv === 'string' ? repOf(recv)?.val : valTypeOf(recv)
-          if (vt) updateRep(t, { val: vt })
+          if (vt) ctx.func.localValTypesOverlay.set(t, vt)
           // Re-enter the full `()` method dispatch (runtime string/array dispatch,
           // charCodeAt, schema, …) rather than the bare generic `.${method}` emitter
           // — that emitter is the *array* `includes`/`indexOf`/… and would mis-run on

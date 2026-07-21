@@ -150,6 +150,7 @@ function applyArenaRewind(func, fn, safeCallees) {
 
 export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   ctx.func.locals = new Map()
+  ctx.func.localValTypesOverlay = new Map()   // transient temp-seed channel (slice 3c-a), mirrors enterFunc
   ctx.func.localReps = null
   ctx.func.boxed = new Map()
   ctx.func.cellTypes = new Set()

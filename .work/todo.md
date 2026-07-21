@@ -141,6 +141,18 @@
     hulls. sdf 1.22× is the genuinely-hard tail (same family as nqueens/
     sort scheduling): needs sentinel-invariant discovery or loop versioning
     on a mutating cursor — no cheap general lever; recorded, not chased.
+  * STAGE 2 SLICE 3c-a — TEMP SEEDS OFF THE DURABLE REPS (2026-07-21l):
+    site-by-site reading of the 14 emit-time writers reclassified two of
+    my own calls (object.js:86 is a DURABLE hash conversion of a real
+    binding; array.js:136 is a multi-field inlining frame — both stay
+    class (b)). The true class (a) = three val-only seeds on
+    emission-minted temps (core.js ?.[]/?.() evalOnce temps, array.js
+    hoist temp): migrated to the TRANSIENT overlay channel (tier #2),
+    with the overlay now GUARANTEED for all emission — installed at
+    enterFunc and buildStartFn (emitBlockBody already layers per-block
+    copies). Durable reps stay emit-clean for these; remaining emit
+    writers = the discovery class (b), which is slice 4's predictor
+    substance. Exit grep progress: 14 → 11 sites.
   * STAGE 2 SLICE 3b — PARAMREPS ON A TRUE WORKLIST (2026-07-21k):
     the core callsite fixpoint is now edge-driven: applySiteRules
     extracted from the sweeping lattice runner; runFixpointConverged

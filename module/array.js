@@ -677,9 +677,9 @@ export default (ctx) => {
     if (typeof arr !== 'string' && !(Array.isArray(arr) && arr[0] === 'local.get')) {
       const vtArr = valTypeOf(arr)
       const h = temp('ai')
-      // Emit-time rep seed on fresh hoist-temp `h` so the recursive emit
-      // below (`ctx.core.emit['[]'](h, idx)`) takes the typed-arr fast path.
-      if (vtArr) updateRep(h, { val: vtArr })
+      // Transient seed on the fresh hoist-temp `h` (slice 3c-a): overlay, not
+      // durable reps — the temp lives one expression.
+      if (vtArr) ctx.func.localValTypesOverlay.set(h, vtArr)
       // Inline field-read receiver (`plan.tw[i]`): carry the schema slot's
       // program-wide typed kind onto the temp — VAL.TYPED alone has no element
       // width, so without the ctor the read decays to the dynamic path.
