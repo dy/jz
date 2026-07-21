@@ -155,7 +155,15 @@
     "do not widen"); kernel leg = regression gate on the rest. BURN-DOWN
     PLAN: differential the paramAllUsesJsstringMappable/extparam chain
     standalone (the stripRenameRuns method — jz-compile the function,
-    diff vs JS), then root-fix the codegen class.
+    diff vs JS), then root-fix the codegen class. PROGRESS: the walk CORE
+    (recursive closure + mutated captures + Set-of-node-identities + two
+    Sets + typeof dispatch) differentials CLEAN vs JS — ruled out. (An
+    interim 'divergence' was a HAND-COMPUTED want with the wrong safeCC
+    element — the differential must always RUN the JS side, never assert
+    by hand.) NEXT CANDIDATES: scanBoundedLoops, func.defaults
+    name-keying, valueUsed, the reps channel (r.val) feeding
+    applyJsstringBoundaryCarrier — each with REAL prepare output as
+    input, then the chain composed.
   * THE KERNEL-STRIP SAGA CLOSED — THE STRING-ENCODING CLASS
     (2026-07-21a): ALL kernel-leg reds (10, incl. jsstring externref +
     typed-narrow/loop-counter WAT-name pins) shared ONE root: jz strings
