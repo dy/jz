@@ -154,23 +154,40 @@ export default function jzify(ast) {
     const outStmts = Array.isArray(out) && out[0] === ';' ? out.slice(1) : [out]
     out = [';', ...rtStmts, ...outStmts]
   }
-  // spread-of-iterator sites wrapped in __drain → splice the helper
-  // (pass-through for arrays/strings; materializes machines/providers).
-  if (iterProto.drain) prepend(ITER_RUNTIME)
-  // Array.from-over-iterators sites → splice __it_arr (materialize/copy).
-  if (iterProto.arr) prepend(ITER_ARR_RUNTIME)
-  // helper-bearing generator mints (__it_mk) or literal-receiver
-  // [Symbol.iterator]() mints (__it_from) → splice the decorated-iterator
-  // factory. Programs without value-position helpers never take this shape.
-  if (iterProto.helpersUsed || iterProto.fromUsed) prepend(ITER_HELPERS_RUNTIME)
-  // URLSearchParams sites → splice the jz-source implementation (webrt.js).
-  if (webrt.usp) prepend(USP_RUNTIME)
-  // async generators → splice the tagged-yield driver (before the promise
-  // runtime prepend so it lands AFTER it in module order — it calls __p_*).
-  if (agenUsed()) prepend(ASYNC_GEN_RUNTIME)
-  // async somewhere in the program → splice the plain-jz promise runtime
-  // (microtask queue, __async_run driver, promise shape + boundary readers)
-  // ahead of user code. Sync programs never reach this — byte-identical.
-  if (asyncUsed()) prepend(ASYNC_RUNTIME)
+  // Runtime splices, to QUIESCENCE: each prepended runtime is itself
+  // transformed, and that transform can flag a need whose check has already
+  // passed in a single linear chain — ASYNC_RUNTIME's `__p_try` holds
+  // `fn(...aa)`, which wraps to `fn(...__it_drain(aa))`, so a linear chain
+  // left `__it_drain` a free name (→ `local.get` of an undeclared local in
+  // `$__p_try`). Loop until no runtime is newly needed; each splices once.
+  // First pass preserves the historical order exactly:
+  //  - spread-of-iterator sites wrapped in __drain → ITER_RUNTIME
+  //    (pass-through for arrays/strings; materializes machines/providers).
+  //  - Array.from-over-iterators sites → __it_arr (materialize/copy).
+  //  - helper-bearing generator mints (__it_mk) or literal-receiver
+  //    [Symbol.iterator]() mints (__it_from) → decorated-iterator factory.
+  //  - URLSearchParams sites → the jz-source implementation (webrt.js).
+  //  - async generators → tagged-yield driver, checked BEFORE the promise
+  //    runtime so it lands AFTER it in module order (it calls __p_*).
+  //  - async anywhere → the plain-jz promise runtime (microtask queue,
+  //    __async_run driver, promise shape + boundary readers) ahead of user
+  //    code. Sync programs never reach this — byte-identical.
+  const spliced = {}
+  const spliceOnce = () => {
+    let did = false
+    const need = (key, cond, src) => {
+      if (!cond || spliced[key]) return
+      spliced[key] = did = true
+      prepend(src)
+    }
+    need('drain', iterProto.drain, ITER_RUNTIME)
+    need('arr', iterProto.arr, ITER_ARR_RUNTIME)
+    need('helpers', iterProto.helpersUsed || iterProto.fromUsed, ITER_HELPERS_RUNTIME)
+    need('usp', webrt.usp, USP_RUNTIME)
+    need('agen', agenUsed(), ASYNC_GEN_RUNTIME)
+    need('async', asyncUsed(), ASYNC_RUNTIME)
+    return did
+  }
+  while (spliceOnce()) {}
   return foldStaticBundlerHelpers(foldStaticExportHelpers(canonicalizeObjectIdioms(out)))
 }

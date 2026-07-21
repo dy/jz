@@ -3672,6 +3672,10 @@ function unswitchStringRepLoop(fn) {
  * migration seed; see the splitScratch gate below.)
  */
 export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWrites) {
+  // Entry verify attributes an invalid-IR failure to EMIT (already bad here)
+  // vs an optimizer pass (bad only at the exit check) — the jzify free-name
+  // `local.get $__it_drain` class was pinned this way. Debug-only cost.
+  if (DBG_IR) { const bad = verifyFn(fn); if (bad) throw new Error(`[ir verify] fn ${fn[1]} invalid at optimizeFunc ENTRY (emit-produced): ${bad}`) }
   if (cfg && cfg.hoistPtrType === false &&
       cfg.hoistInvariantPtrOffset === false &&
       cfg.hoistInvariantLoop === false &&

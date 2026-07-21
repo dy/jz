@@ -12,7 +12,7 @@ import { emit } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
-import { ctx, err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/ctx.js'
 import { isReassigned } from '../src/ast.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
@@ -55,6 +55,11 @@ const heapResetIR = () => ctx.scope.globals.has('__heap_reset') ? ['global.get',
 
 export default (ctx) => {
   inc('__mkptr', '__alloc', '__alloc_hdr', '__ptr_offset', '__len', '__ptr_type')
+  // Pure schema resolver for expressions (name → bound schema, literal → keys,
+  // spread literal → merged) — exposed as a ctx hook so plan-time passes
+  // (analyze's Object.assign predictor, slice-4 P3) mirror emit's resolution
+  // exactly instead of duplicating it.
+  ctx.schema.resolveExpr = resolveSchema
 
   // Object literal: {x: 1, y: 2} → allocate, fill, return pointer with schemaId.
   // OBJECT alloc uses __alloc_hdr (16-byte header at off-16) to enable per-object
@@ -83,7 +88,12 @@ export default (ctx) => {
         const domain = ctx.func.leanHashDomains?.get(target)
         const old = asI64(emit(target))
         inc('__hash_reuse_eph')
-        updateRep(target, { val: VAL.HASH })
+        // The dict decision is made at PLAN time (analyze's dynWriteVars +
+        // empty-merged gate stamps VAL.HASH on both decl and `=` paths) —
+        // this branch's own condition is the same predicate, so the rep is
+        // already HASH here. Assert-only tripwire (slice-4 P4 flip).
+        if (DBG_INVARIANTS && repOf(target)?.val !== VAL.HASH)
+          throw new Error(`P4 dict-mode drift: ${target} reaches the HASH branch with plan val=${repOf(target)?.val}`)
         const want = domain ? asI32(emit(['*', ['.', domain, 'length'], 4])) : ['i32.const', 8]
         return typed(['call', '$__hash_reuse_eph', old, want], 'f64')
       }
@@ -124,7 +134,13 @@ export default (ctx) => {
     if (target) {
       const merged = ctx.schema.resolve(target)
       if (merged && names.every(n => merged.includes(n))) schemaId = ctx.schema.idOf(target)
-      else if (names.length) ctx.schema.vars.set(target, litId)
+      // Non-superset merged schema: the literal is authoritative for its own
+      // shape — schemaId stays litId for THIS allocation. The var's binding is
+      // plan state and already litId (plan-time literal binding; the stale
+      // cross-function collision this branch once repaired died with Stage-1
+      // binding totality). Assert-only tripwire (slice-4 P3 flip).
+      else if (names.length && DBG_INVARIANTS && ctx.schema.vars.get(target) !== litId)
+        throw new Error(`P3 literal-rebind drift: ${target} bound to sid=${ctx.schema.vars.get(target)}, literal is sid=${litId}`)
     }
     const schema = ctx.schema.list[schemaId]
     const t = tempI32('obj')
@@ -523,14 +539,13 @@ export default (ctx) => {
           for (const p of s) if (!allProps.includes(p)) allProps.push(p)
         }
         const boxedSchema = ['__inner__', ...allProps]
+        // register() dedupes by shape, so this returns the id the plan-time
+        // predictor (analyze's Object.assign post-walk pass) already bound to
+        // the target — the binding + externSlotSids belt are plan state now.
+        // Assert-only tripwire (slice-4 P3 flip).
         const schemaId = ctx.schema.register(boxedSchema)
-        // Extern-write belt: source slot values copied in below, unseen by the censuses.
-        ctx.schema.externSlotSids?.add(schemaId)
-        ctx.schema.vars.set(target, schemaId)
-        // Emit-time rep mutation: Object.assign's target gains a freshly-registered
-        // boxed-schema binding here; downstream `.prop` reads in the same emit pass
-        // depend on schemaId being live on the rep, not just in ctx.schema.vars.
-        updateRep(target, { schemaId })
+        if (DBG_INVARIANTS && ctx.schema.idOf(target) !== schemaId)
+          throw new Error(`P3 Object.assign drift: ${target} plan-bound sid=${ctx.schema.idOf(target)}, emit computes sid=${schemaId}`)
         const t = tempI32('bx'), s = temp('bs')
         const body = [
           ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(boxedSchema.length)]]],

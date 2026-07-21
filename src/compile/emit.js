@@ -26,7 +26,7 @@ import {
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
   ASSIGN_OPS, firstRefKind,
 } from '../ast.js'
-import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS } from '../ctx.js'
 import { i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux } from '../../layout.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
@@ -1570,36 +1570,29 @@ export function emitDecl(...inits) {
       continue
     }
     const localType = ctx.func.locals.get(name) || 'f64'
-    let ptrKind = repOf(name)?.ptrKind
-    // Emit-time rep mutation (lifecycle: analysis → emit transition).
-    // Inherit ptrKind from a pointer-ABI RHS: destructure temps (`__d0 = v`) and other
-    // fresh let-bindings whose init is already an unboxed pointer. Without this, readVar
-    // returns an untyped i32 local.get and later `asF64` emits a numeric convert instead
-    // of a ptr-rebox. Safe because emitDecl runs once per let/const binding — no prior
-    // emit-time read could have observed the unset rep.
-    if (ptrKind == null && val.ptrKind != null && localType === 'i32' && !ctx.func.boxed?.has(name)) {
-      updateRep(name, { ptrKind: val.ptrKind })
-      ptrKind = val.ptrKind
-      if (val.ptrAux != null) {
-        updateRep(name, { ptrAux: val.ptrAux })
-        // OBJECT-only: aux *is* the schemaId; mirror to ctx.schema.vars + rep.schemaId so
-        // .prop slot resolution sees a precise binding. TYPED/CLOSURE aux carries other
-        // semantics (elem code / funcIdx) and must not leak into schema lookups.
-        // Poisoned names (shape-disagreeing assignments) must stay schema-free.
-        if (val.ptrKind === VAL.OBJECT && !ctx.schema.vars?.has(name) && !ctx.schema.poisoned?.has(name)) {
-          ctx.schema.vars.set(name, val.ptrAux)
-          updateRep(name, { schemaId: val.ptrAux })
-        }
-      }
+    const ptrKind = repOf(name)?.ptrKind
+    // ptrKind inheritance for alias-init decls is predicted at PLAN time
+    // (inheritPtrAliases — slice-4 P1); emit only asserts parity here.
+    // Miss (val carries a ptrKind the plan didn't predict) means the predictor
+    // lost an init form; drift (plan predicted, emit's val disagrees) means a
+    // rep changed between plan and emit. Both are predictor bugs — fail loud.
+    if (DBG_INVARIANTS) {
+      if (ptrKind == null && val.ptrKind != null && localType === 'i32' && !ctx.func.boxed?.has(name))
+        throw new Error(`P1 predictor miss: ${ctx.func.name || '(top)'}/${name} init carries ptrKind=${val.ptrKind} unpredicted`)
+      if (ptrKind != null && ctx.func.p1Predicted?.has(name) && val.ptrKind !== ptrKind)
+        throw new Error(`P1 predictor drift: ${ctx.func.name || '(top)'}/${name} predicted ${ptrKind}, emit sees ${val.ptrKind}`)
     }
     let coerced
     if (ptrKind != null) {
       // Unboxed pointer local — extract i32 offset from NaN-boxed f64 via reinterpret, not numeric trunc.
-      // CLOSURE init carries funcIdx in val.closureFuncIdx; persist it on the rep so a later
-      // asF64 (escape: store, return, indirect-call rebox) reconstructs the correct table slot.
-      // Emit-time mutation — analyzeValTypes never sees closureFuncIdx.
-      if (ptrKind === VAL.CLOSURE && val.closureFuncIdx != null && repOf(name)?.ptrAux == null)
-        updateRep(name, { ptrAux: val.closureFuncIdx })
+      // CLOSURE init carries funcIdx in val.closureFuncIdx — a table index MINTED at
+      // emission, i.e. emission state, not an analysis fact. Carry it in the per-function
+      // closureAux channel (slice-4 P2) so a later asF64 (escape: store, return,
+      // indirect-call rebox) reconstructs the correct table slot; readVar consults it.
+      // First write wins (parity with the retired rep write's aux==null guard).
+      if (ptrKind === VAL.CLOSURE && val.closureFuncIdx != null && repOf(name)?.ptrAux == null &&
+          !ctx.func.closureAux?.has(name))
+        (ctx.func.closureAux ??= new Map()).set(name, val.closureFuncIdx)
       coerced = val.ptrKind === ptrKind ? val
         : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(val)]], 'i32')
     } else if (localType === 'i32' && val.type !== 'i32' && isI32ArithTree(init)) {
@@ -2479,11 +2472,12 @@ function emitSpreadElementLoop(spreadExpr, bodyFn, { reverse = false } = {}) {
   const len = `${T}splen${ctx.func.uniq++}`
   const idx = `${T}spidx${ctx.func.uniq++}`
   ctx.func.locals.set(arr, 'f64'); ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(idx, 'i32')
-  // Emit-time rep seeding for a fresh spread-staging local (no prior reader).
-  // Without this, the loop body's `[]` read on `arr` falls back to polymorphic
-  // dispatch — VAL.* on the rep elides STRING gate for ARRAY/TYPED spreads.
+  // Emission-minted temp seed → transient overlay (slice 3c-a class): the fresh
+  // spread-staging local's VT rides the overlay for the loop-body IR generation.
+  // Without it, the body's `[]` read on `arr` falls back to polymorphic dispatch —
+  // VAL.* elides the STRING gate for ARRAY/TYPED spreads. Durable reps stay clean.
   const spreadVT = valTypeOf(spreadExpr)
-  if (spreadVT) updateRep(arr, { val: spreadVT })
+  if (spreadVT) ctx.func.localValTypesOverlay.set(arr, spreadVT)
   inc('__len')
   const n = multiCount(spreadExpr)
   const loopId = ctx.func.uniq++

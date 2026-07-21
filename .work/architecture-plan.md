@@ -173,8 +173,41 @@ Replace the rerun choreography (runFixpoint ×2, 13 plan-time refresh points,
 
 Exit: `grep 'updateRep\|schema\.vars\.set' src/compile/emit.js module/` → 0.
 
-## SLICE 4 PREDICTOR SPEC (2026-07-21, opening contract for the 11 remaining
-## discovery writers): a pure pre-emit `declInitFacts(name, init)` computed at
+## SLICE 4 — DONE (2026-07-21). Exit grep = 0; FunctionPlan FROZEN with DBG
+## enforcement (`ctx.func.repsFrozen` set at every body-emission start;
+## updateRep throws under JZ_DEBUG_INVARIANTS when frozen — zero violations
+## across the O3 suite). How each cluster landed vs the spec below:
+##   P1 → `inheritPtrAliases` (analyze.js): program-order plan walk mirroring
+##        readVar/attachSigMeta tag sources; wired after cseLoadBases
+##        (enterFunc) + closure path. Measured population: ONE class — name-
+##        alias inits of unboxed ptrs later reassigned (radixsort ping-pong);
+##        zero hits in every test suite. Emit asserts miss+drift under DBG.
+##        Bench WAT byte-parity vs pre-flip HEAD proven (worktree diff).
+##   P2 → NOT a predictor: closure funcIdx is a table index MINTED at emission
+##        (emission product, not analysis fact). Moved to per-function
+##        `ctx.func.closureAux` channel (guaranteed at enterFunc/buildStartFn);
+##        readVar consults it. Plan-time table pre-minting would have
+##        duplicated emit's encounter-order state — rejected.
+##   P3 → Object.assign boxed-target: plan predictor in analyze's post-walk
+##        (final-val gate == what emit reads; sources via ctx.schema.resolveExpr
+##        — module/object.js's resolveSchema exposed as a ctx hook, one
+##        resolver for plan + emit). register() dedupe makes plan/emit sids
+##        equal; emit asserts. Literal-rebind (object.js:127): measured no-op
+##        (prevSid==litId always; the cross-function collision it repaired died
+##        with Stage-1 totality) → assert-only. Spread val (emit.js) + array.js
+##        inliner param seeds (all producers val-only): 3c-a class → overlay.
+##   P4 → dict-HASH conversion: analyze's dynWriteVars+empty-merged gate ALREADY
+##        stamps HASH on decl and `=` paths (44/44 measured planVal=hash) —
+##        emit branch condition is the same predicate → assert-only tripwire.
+## Found & fixed en route: jzify runtime-splice ordering bug — ASYNC_RUNTIME's
+## `__p_try` spread wraps in `__it_drain` AFTER the drain check ran, leaving a
+## free name that emitted `local.get $__it_drain` (undeclared; masked
+## miscompile). Fix: splice-to-quiescence loop (first pass preserves historical
+## order). optimizeFunc gained a DBG entry-verify to attribute invalid IR to
+## emit vs optimizer (this is how the class was pinned).
+##
+## Original spec (for the record):
+## a pure pre-emit `declInitFacts(name, init)` computed at
 ## plan finalization, covering exactly the emit-observed gaps:
 ##   P1 ptrKind/ptrAux inheritance for decl inits that emit to unboxed
 ##      pointers (destructure temps `__d0 = v`, pointer-ABI RHS): predict
@@ -198,6 +231,11 @@ Exit: `grep 'updateRep\|schema\.vars\.set' src/compile/emit.js module/` → 0.
 ##   FunctionPlan (emit reads plans only).
 
 ## Stage 3 — Loop model as the vectorizer's substrate
+
+(Opening survey DONE 2026-07-21 → .work/stage3-loop-survey.md: full
+recognizer→class map, the ×4 IV-scaffold + ×3-4 affine duplications, the
+prose-only dependence model, and the `_rangeFacts` seed pattern; attack
+order recorded there.)
 
 `loop-model.js` grows into the canonical per-loop record: IVs + trip ranges,
 affine accesses (the affineIdxOfIV language, incl. scaled-IV), dependence

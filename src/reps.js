@@ -99,7 +99,15 @@ const assertRepFields = (name, fields) => {
 export const repOf = name => ctx.func.localReps?.get(name)
 
 export const updateRep = (name, fields) => {
-  if (DBG_REPS) assertRepFields(name, fields)
+  if (DBG_REPS) {
+    assertRepFields(name, fields)
+    // FunctionPlan freeze (Stage 2 exit): once a function's body emission
+    // begins, its durable reps are read-only. Discovery belongs in plan
+    // passes; emission products ride transient channels (localValTypesOverlay,
+    // closureAux). A throw here means a new discovery write crept into emit.
+    if (ctx.func.repsFrozen)
+      throw new Error(`updateRep('${name}', {${Object.keys(fields)}}) during emission — FunctionPlan is frozen`)
+  }
   const m = ctx.func.localReps ||= new Map()
   const prev = m.get(name) || {}
   const next = { ...prev, ...fields }

@@ -5776,3 +5776,42 @@ debt list (4 hangs + resolver/shape classes + 12 real-kernel-bug files,
 each documented in test/index.js) — the kernel leg turns into a
 regression gate on the passing majority; burn the list down as kernel
 fixes land.
+
+SLICE 4 COMPLETE — FunctionPlan FROZEN (2026-07-21): exit grep
+(`updateRep|schema.vars.set` in emit.js + module/) 11 → 0, and the freeze
+is ENFORCED: `ctx.func.repsFrozen` set at every body-emission start
+(emitFunc, emitClosureBody block+expr, buildStartFn per-unit toggles);
+updateRep THROWS under JZ_DEBUG_INVARIANTS when frozen. Zero violations
+across the O3 suite (3045 pass, DBG-armed). Method per cluster:
+MEASURE population first (instrument → run corpus), then predictor/
+channel → emit assert → delete write; bench WAT byte-parity vs pre-flip
+HEAD proven via worktree diff at every step.
+  P1 ptrKind inheritance → inheritPtrAliases plan walk (analyze.js),
+    mirrors readVar/attachSigMeta tag sources, after cseLoadBases for
+    strict parity. Population: ONE class (radixsort ping-pong aliases);
+    zero hits in all test suites. Emit asserts miss AND drift.
+  P2 closure funcIdx → RECLASSIFIED: emission product, not analysis fact
+    (table idx minted at emit). Per-function ctx.func.closureAux channel;
+    readVar consults. Plan-time pre-minting rejected (would duplicate
+    encounter-order state).
+  P3 Object.assign boxed-target → plan predictor in analyze post-walk
+    (final-val gate; ctx.schema.resolveExpr = object.js's resolveSchema
+    exposed as ctx hook — ONE resolver for plan+emit; register() dedupe
+    equates plan/emit sids). Literal-rebind site: measured pure no-op
+    (prevSid==litId 2/2; its cross-function-collision purpose died with
+    Stage-1 totality) → assert-only. Spread-temp + inliner argReps seeds
+    (measured val-only) → localValTypesOverlay (3c-a class).
+  P4 dict-HASH → analyze's dynWriteVars gate already stamps HASH on both
+    decl and `=` paths (44/44 planVal=hash) → assert-only tripwire.
+FOUND EN ROUTE (pre-existing miscompile, fixed): jzify runtime-splice
+ordering — ASYNC_RUNTIME's __p_try `fn(...aa)` wraps in __it_drain AFTER
+the drain check ran → free name → `local.get $__it_drain` (undeclared,
+zero-init garbage → call_indirect table[0]; masked because the path was
+dead in the corpus). Fix: splice-to-quiescence loop in jzify/index.js
+(first pass preserves historical order exactly). Pinned by the new
+optimizeFunc DBG ENTRY-verify (attributes invalid IR to emit vs
+optimizer — how this class was found).
+LESSON (recorded): a worktree `cd` in a compound command left the shell
+in the HEAD copy — several test runs validated the WRONG tree until a
+"reverted file" contradiction exposed it. Absolute paths for harness
+runs; `pwd` check when results contradict known file state.

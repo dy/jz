@@ -151,6 +151,8 @@ function applyArenaRewind(func, fn, safeCallees) {
 export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   ctx.func.locals = new Map()
   ctx.func.localValTypesOverlay = new Map()   // transient temp-seed channel (slice 3c-a), mirrors enterFunc
+  ctx.func.closureAux = new Map()             // emission-minted closure idx channel (slice-4 P2), mirrors enterFunc
+  ctx.func.repsFrozen = false                 // __start plan phase opens (last emitted function left it frozen)
   ctx.func.localReps = null
   ctx.func.boxed = new Map()
   ctx.func.cellTypes = new Set()
@@ -178,18 +180,23 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   const moduleInits = []
   if (ctx.module.moduleInits) {
     for (const mi of ctx.module.moduleInits) {
+      ctx.func.repsFrozen = false   // __start interleaves per-unit plan → emit
       analyzeValTypes(mi)
       seedGeneratedLocals(mi)
+      ctx.func.repsFrozen = true
       moduleInits.push(...normalizeIR(emit(mi)))
     }
   }
+  ctx.func.repsFrozen = false  // (last moduleInit left it frozen) — seed/plan below before the main emission
   seedGeneratedLocals(ast)
   // __start has no result: emit the top-level program in void context so a stray
   // value is dropped. `ast` is normally a `;` statement-sequence (each statement
   // already void-dropped), but jzify unwraps a single-statement program to its
   // bare expression — emitting that in value context leaves a value on the stack
   // and the start function fails validation. emitVoid handles both shapes.
+  ctx.func.repsFrozen = true   // FunctionPlan freeze: __start body emission (analyzeValTypes(ast) ran above)
   const init = emitVoid(ast)
+  ctx.func.repsFrozen = false  // post-emission synthesis below (boxInit/snapshot) is not user-AST emission
   ctx.func.atModuleScope = false
 
   // Module-scope object literals can create closure bodies while `emit(ast)`

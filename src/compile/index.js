@@ -33,7 +33,7 @@ import { valTypeOf } from '../kind.js'
 import { intLiteralValue } from '../static.js'
 import { intCertainMap, typedStaticLen } from '../type.js'
 import {
-  analyzeBody, unboxablePtrs, cseSafeLoadBases, boxedCaptures,
+  analyzeBody, unboxablePtrs, inheritPtrAliases, cseSafeLoadBases, boxedCaptures,
   analyzeStructInline, analyzeUnionInline, invalidateLocalsCache,
 } from './analyze.js'
 import { typedElemAux } from '../../layout.js'
@@ -391,10 +391,12 @@ function scanAndTagNonEscapingClosures(body) {
 // their synthetic labels can't collide with the parent frame's.
 function enterFunc(sig, body, { uniq = 0, directClosures = null } = {}) {
   ctx.func.stack = []
+  ctx.func.repsFrozen = false   // plan phase opens — reps writable until body emission starts
   // Overlay (tier #2) present for the WHOLE emission of every function —
   // emitBlockBody layers per-block copies on top. Guarantees emission-minted
   // temp seeds (Stage 2 slice 3c-a) always have their transient channel.
   ctx.func.localValTypesOverlay = new Map()
+  ctx.func.closureAux = new Map()     // emission-minted closure table idx per unboxed CLOSURE local (slice-4 P2) — emission state, not analysis
   ctx.func.zeroInitSeen = new Set()   // names whose `let x=0` zero-init was elided once; a 2nd is a real re-init (unrolled bodies)
   ctx.func.maybeNullish = new Set()   // bindings assigned a nullish literal → coerce in arithmetic (null-flow)
   ctx.func.refinements = new Map()     // flow-sensitive type facts (typeof/instanceof guards) — per-function; clear so none leak across bodies
@@ -699,6 +701,12 @@ function analyzeFuncForEmit(func, programFacts) {
   const cseLoadBases = block
     ? cseSafeLoadBases(body, ctx.func.locals, ctx.func.localReps)
     : new Set()
+
+  // P1 predictor (slice 4): plan-time ptrKind inheritance for alias-init decls
+  // (the reassigned ping-pong class unboxablePtrs rejects). AFTER cseLoadBases
+  // for strict parity with the retired emit-time write, which also ran after
+  // cse planning. Emit asserts agreement under JZ_DEBUG_INVARIANTS.
+  if (block) inheritPtrAliases(body, ctx.func.locals, ctx.func.boxed)
 
   // Closure-capture narrowing: a boxed var whose every defining RHS — owner
   // body AND nested arrows — is integer-valued keeps its CELL in i32, so
@@ -1354,6 +1362,7 @@ function emitFunc(func, funcFacts, programFacts) {
     return inits
   }
 
+  ctx.func.repsFrozen = true   // FunctionPlan freeze: body emission begins — durable reps read-only
   if (block) {
     const stmts = emitBlockBody(body)
     // Hoist loop-invariant `__to_num(param)` coercions to a single entry rebind.
@@ -1556,6 +1565,7 @@ function emitClosureBody(cb) {
   const prevSchemaVars = ctx.schema.vars
   const prevTypedElems = ctx.types.typedElem
   // Reset per-function state for closure body
+  ctx.func.repsFrozen = false   // closure plan phase opens (restores below are plan writes)
   ctx.func.locals = new Map()
   ctx.func.localReps = null
   ctx.func.leanHashLocals = new Set()
@@ -1692,8 +1702,12 @@ function emitClosureBody(cb) {
       ctx.func.locals.set(name, 'i32')
       updateRep(name, fields)
     }
+    // P1 predictor (slice 4) — closure-body plan pass; see enterFunc site.
+    inheritPtrAliases(cb.body, ctx.func.locals, ctx.func.boxed)
+    ctx.func.repsFrozen = true   // FunctionPlan freeze: closure body emission begins
     bodyIR = emitBlockBody(cb.body)
   } else {
+    ctx.func.repsFrozen = true   // FunctionPlan freeze: expression-body emission
     bodyIR = [carrierF64(cb.body, emit(cb.body))]
   }
 

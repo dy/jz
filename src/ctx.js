@@ -539,7 +539,7 @@ export function reset(proto, globals, bridge) {
  *   - `post-prepare`   : module + scope populated; func.list possibly empty.
  *   - `pre-emit`       : func.current set; locals Map present; rep maps live.
  *   - `post-compile`   : no transient temps leaked (func.uniq stable across calls). */
-const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
+export const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 export function assertCtxInvariants(phase) {
   if (!DBG_INVARIANTS) return
   const fail = msg => { throw new Error(`[ctx invariant] ${phase}: ${msg}`) }

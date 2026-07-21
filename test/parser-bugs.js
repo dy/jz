@@ -414,6 +414,18 @@ test('param narrowing: pointer-carrying i32 args are not integer evidence', () =
     let st = inst.exports.check()
     for (let i = 0; i < 100 && st === '@pending'; i++) st = inst.exports.check()
     is(st, 'cc=1')  // was cc=0 before the fix (@@iterator never called)
+
+    // jzify runtime-splice quiescence: ASYNC_RUNTIME's own transform wraps
+    // `__p_try`'s `fn(...aa)` in `__it_drain` AFTER the linear splice chain
+    // already checked the drain flag — the reference was left a FREE NAME and
+    // emitted `local.get $__it_drain` (undeclared local, zero-init garbage →
+    // call_indirect table[0]; masked because the path was dead here). The
+    // splice loop now re-checks to quiescence: every referenced runtime helper
+    // must be DEFINED in the module, not merely referenced.
+    const wat0 = compile(code, { jzify: true, wat: true, optimize: 0 })
+    ok(wat0.includes('(func $__it_drain'), 'async-runtime-introduced drain helper is spliced at O0 (defined, not a free name)')
+    const watS = compile(code, { jzify: true, wat: true })
+    ok(!watS.includes('local.get $__it_drain'), 'no free-name drain reference survives at the default tier (inline/treeshake of the DEFINED helper is fine)')
 })
 
 test('pointer-ABI params: body-reassigned params stay boxed (reassigned-param kind bug)', () => {

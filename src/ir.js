@@ -1268,7 +1268,9 @@ export function readVar(name) {
   if (t === 'i32' && rep?.unsigned) { node.unsigned = true; node.wrapSafe = true }
   if (rep?.ptrKind != null) {
     node.ptrKind = rep.ptrKind
-    const aux = rep.ptrAux ?? ctx.schema.idOf?.(name)
+    // closureAux: emission-minted table idx for an unboxed CLOSURE local (slice-4 P2) —
+    // per-function emission state; the map only ever holds CLOSURE names.
+    const aux = rep.ptrAux ?? ctx.func.closureAux?.get(name) ?? ctx.schema.idOf?.(name)
     if (aux != null) node.ptrAux = aux
     // structInline cursor into a PACKED (i32-cell) array: slot access must
     // pick the packedI32 ops, not the f64 slot layout — the flag rides the

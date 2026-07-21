@@ -3,7 +3,7 @@
 // run as a DAG instead of a serial chain — wall-clock ≈ the kernel leg alone
 // (~3× faster than the serial form, identical coverage).
 //
-//   independent: native, O0, O3, wasi, fuzz
+//   independent: native, O0, O3, dbg (O3 + JZ_DEBUG_INVARIANTS), wasi, fuzz
 //   build → kernel, self          (kernel/self run the dist the build wrote)
 //
 // Usage: node scripts/battery.mjs            all legs
@@ -29,6 +29,11 @@ const legs = [
   run('native', ['test/index.js']),
   run('O0', ['test/index.js'], { JZ_TEST_OPTIMIZE: '0' }),
   run('O3', ['test/index.js'], { JZ_TEST_OPTIMIZE: '3' }),
+  // The invariant moat: FunctionPlan freeze (reps read-only during emission),
+  // IR verify at optimizeFunc entry+exit, rep-field checks, phase asserts —
+  // all live only under JZ_DEBUG_INVARIANTS, so a battery without this leg
+  // never runs them. One armed leg keeps the guarantees load-bearing.
+  run('dbg', ['test/index.js'], { JZ_TEST_OPTIMIZE: '3', JZ_DEBUG_INVARIANTS: '1' }),
   run('wasi', ['test/index.js'], { JZ_TEST_HOST: 'wasi' }),
   run('fuzz', ['test/fuzz.js']),
 ]

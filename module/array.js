@@ -14,9 +14,9 @@ import { emit, spread, deps, idx as emitIndex } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
-import { VAL, lookupValType, lookupNotString, updateRep } from '../src/reps.js'
+import { VAL, lookupValType, lookupNotString } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
-import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat } from '../src/ctx.js'
+import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, DBG_INVARIANTS } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR } from './collection.js'
 
 
@@ -125,15 +125,20 @@ function makeCallback(fn, argReps) {
               : typed(['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]], 'f64')
             stmts.push(['local.set', `$${fresh}`, ae])
           }
-          // Emit-time rep seeding for inliner-fresh param locals (lifecycle:
-          // analysis already finished; these `inl_i` names didn't exist then).
-          // Apply argReps hints (caller knows recv elem val type) to inlined-param
-          // reps so emit(subst) sees `inl_i.val=NUMBER` and elides __to_num/__is_str_key.
+          // Emission-minted temp seeds → transient overlay (slice 3c-a class):
+          // these `inl_i` names didn't exist at analysis time. The argReps hints
+          // (caller knows recv elem val type) ride the overlay so emit(subst)
+          // sees `inl_i.val=NUMBER` and elides __to_num/__is_str_key; durable
+          // reps stay clean. Every producer (callbackArgReps, upReps) is
+          // val-only — a future non-val hint needs its own transient channel,
+          // not a durable write, so fail loud rather than drop it silently.
           if (argReps) {
             for (let i = 0; i < raw.length && i < argReps.length; i++) {
               const fresh = freshNames[i]
               if (!fresh || !argReps[i]) continue
-              updateRep(fresh, argReps[i])
+              if (DBG_INVARIANTS && Object.keys(argReps[i]).some(k => k !== 'val'))
+                throw new Error(`inline argReps hint carries non-val fields: ${Object.keys(argReps[i])}`)
+              if (argReps[i].val) ctx.func.localValTypesOverlay.set(fresh, argReps[i].val)
             }
           }
           const subst = substExpr(body, mapping)

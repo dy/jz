@@ -1113,6 +1113,15 @@ export function analyzeValTypes(body) {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
     if (op === '=>') return  // don't leak inner-closure val types
+    // Collect Object.assign(name, …) sites for the post-walk boxed-schema
+    // predictor (slice-4 P3) — decided AFTER the walk so the target's FINAL
+    // val kind matches what emit reads.
+    if (op === '()' && args[0] === 'Object.assign') {
+      let aa = args.slice(1)
+      if (aa.length === 1 && Array.isArray(aa[0]) && aa[0][0] === ',') aa = aa[0].slice(1)
+      if (typeof aa[0] === 'string' && aa.length > 1)
+        objAssignSites.push({ target: aa[0], sources: aa.slice(1) })
+    }
     // Propagate typed array type through method calls (e.g. buf.map → typed)
     function propagateTyped(name, rhs) {
       if (!Array.isArray(rhs) || rhs[0] !== '()') return
@@ -1255,7 +1264,32 @@ export function analyzeValTypes(body) {
     }
     for (const a of args) walk(a)
   }
+  const objAssignSites = []
   walk(body)
+
+  // Slice-4 P3 predictor: `Object.assign(x, …)` onto a non-OBJECT binding
+  // (boxed primitive / array carrier) allocates an `__inner__` record at emit;
+  // the schema BINDING is plan state — register + bind here, mirroring
+  // module/object.js's emit site (which now asserts instead of writing).
+  // Post-walk so the target's FINAL val kind matches what emit reads; the
+  // shared ctx.schema.resolveExpr keeps source resolution identical to emit's.
+  for (const { target, sources } of objAssignSites) {
+    const vt = repOf(target)?.val
+    if (!vt || vt === VAL.OBJECT || !ctx.schema.resolveExpr) continue
+    const allProps = []
+    let known = true
+    for (const src of sources) {
+      const s = ctx.schema.resolveExpr(src)
+      if (!s) { known = false; break }
+      for (const p of s) if (!allProps.includes(p)) allProps.push(p)
+    }
+    if (!known) continue   // emit errs on unknown-source schemas — nothing to bind
+    const sid = ctx.schema.register(['__inner__', ...allProps])
+    // Extern-write belt: source slot values copied in at emit, unseen by censuses.
+    ctx.schema.externSlotSids?.add(sid)
+    ctx.schema.vars.set(target, sid)
+    updateRep(target, { schemaId: sid })
+  }
 
   // Register boxed schemas for local variables with property assignments
   if (ctx.func.localProps) {
@@ -1406,6 +1440,88 @@ export function unboxablePtrs(body, locals, boxed) {
     if (ok) result.set(name, vt)
   }
   return result
+}
+
+/**
+ * Plan-time ptrKind inheritance for decl inits (slice-4 P1 predictor).
+ *
+ * The class `unboxablePtrs` rejects but emit resolves anyway: a `let/const`
+ * whose init VALUE is already an unboxed pointer, where the binding itself is
+ * later reassigned — radixsort's ping-pong (`let a = src, b = tmp; …
+ * const t = a; a = b; b = t`). analyzeBody types the local i32 (RHS is an i32
+ * pointer), so without the inherited ptrKind a read reboxes numerically
+ * instead of via reinterpret.
+ *
+ * Predicts exactly what emitDecl's `val.ptrKind` observes, from the same
+ * sources it derives from:
+ *   bare local  → readVar tag: repOf(y).ptrKind, aux = ptrAux ?? schema.idOf(y)
+ *                 (intConst substitution carries no tag — mirrored)
+ *   bare global → tag iff i32-stored && repOfGlobal(y).ptrKind (constInts /
+ *                 constNums substitutions carry no tag — mirrored)
+ *   direct call → attachSigMeta: ctx.func.map.get(f).sig.ptrKind / ptrAux
+ *
+ * Program-order walk so alias chains (`a ← src; t ← a`) resolve through reps
+ * exactly as sequential emitDecl calls would; nested '=>' bodies are skipped
+ * (each closure runs its own plan pass). Names written here are recorded in
+ * `ctx.func.p1Predicted`; the emit site ASSERTS agreement (both directions)
+ * under JZ_DEBUG_INVARIANTS instead of writing.
+ */
+export function inheritPtrAliases(body, locals, boxed) {
+  const isGlobalName = n => ctx.scope.globals.has(n) && !locals?.has(n) &&
+    !ctx.func.current?.params?.some(p => p.name === n)
+  const predictPtr = init => {
+    if (typeof init === 'string') {
+      const y = init
+      if (boxed?.has(y)) return null
+      if (isGlobalName(y)) {
+        if (ctx.scope.constInts?.get?.(y) != null && isI32(ctx.scope.constInts.get(y))) return null
+        if (ctx.scope.constNums?.get?.(y) != null) return null
+        if ((ctx.scope.globalTypes.get(y) || 'f64') !== 'i32') return null
+        const g = repOfGlobal(y)
+        return g?.ptrKind != null ? { ptrKind: g.ptrKind, ptrAux: g.ptrAux ?? null } : null
+      }
+      const r = ctx.func.localReps?.get(y)
+      if (r?.intConst != null) return null
+      if (r?.ptrKind != null) return { ptrKind: r.ptrKind, ptrAux: r.ptrAux ?? ctx.schema.idOf?.(y) ?? null }
+      return null
+    }
+    if (Array.isArray(init) && init[0] === '()' && typeof init[1] === 'string') {
+      const f = ctx.func.map?.get(init[1])
+      if (f?.sig?.ptrKind != null) return { ptrKind: f.sig.ptrKind, ptrAux: f.sig.ptrAux ?? null }
+    }
+    return null
+  }
+  const predicted = (ctx.func.p1Predicted ??= new Set())
+  ;(function walk(node) {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') return
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+        const name = d[1]
+        if (locals.get(name) !== 'i32' || boxed?.has(name)) continue
+        if (ctx.func.localReps?.get(name)?.ptrKind != null) continue
+        const p = predictPtr(d[2])
+        if (!p) continue
+        updateRep(name, { ptrKind: p.ptrKind })
+        predicted.add(name)
+        if (p.ptrAux != null) {
+          updateRep(name, { ptrAux: p.ptrAux })
+          // OBJECT-only: aux IS the schemaId — mirror to schema.vars + rep so
+          // .prop slot resolution binds precisely. TYPED/CLOSURE aux carries
+          // other semantics (elem code / funcIdx). Poisoned names stay bare.
+          if (p.ptrKind === VAL.OBJECT && !ctx.schema.vars?.has(name) && !ctx.schema.poisoned?.has(name)) {
+            ctx.schema.vars.set(name, p.ptrAux)
+            updateRep(name, { schemaId: p.ptrAux })
+          }
+        }
+      }
+      return
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  })(body)
 }
 
 /**
