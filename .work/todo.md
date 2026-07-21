@@ -141,6 +141,22 @@
     hulls. sdf 1.22× is the genuinely-hard tail (same family as nqueens/
     sort scheduling): needs sentinel-invariant discovery or loop versioning
     on a mutating cursor — no cheap general lever; recorded, not chased.
+  * ONE-BLOCK MINIMAL PAIR CONFIRMED + SIGNATURE SHARPENED
+    (2026-07-21h): adding ONLY the `repEvents.onUpdate = (name) => {...}`
+    dead-guarded module-init closure (captures _bodyDeps +
+    _bodyFactsCache) to the otherwise-GREEN exact-2a reconstruction turns
+    the full kernel leg RED on the JSON.parse slot-walk test —
+    deterministic single-block pair achieved. SIGNATURE: the degradation
+    is PARTIAL — __dyn_get stays 0 and slot loads survive; the walk gains
+    __to_num (coercion-path change, not dispatch fallback) — the first
+    dump condition missed it (now widened to all four assertion axes).
+    SUSPECT CLASS: native codegen of a module-init closure over module
+    Maps inside a dead env-guard subtly shifts a numeric-coercion
+    decision in ONE later JSON walk compile under accumulated kernel
+    state. NEXT CYCLE (specified): rerun the one-block pair with the
+    widened JZ_DEBUG_KNIFE dump → read the exact __to_num sites + the
+    literal-arg control verdict → differential the coercion-decision
+    function natively.
   * KNIFE-EDGE NARROWED TO ONE BLOCK (2026-07-21g): the in-situ dump
     run (exact-2a + JZ_DEBUG_KNIFE full kernel leg) came back GREEN — and
     the reconstruction that run used differed from the red one
