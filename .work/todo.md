@@ -141,6 +141,23 @@
     hulls. sdf 1.22× is the genuinely-hard tail (same family as nqueens/
     sort scheduling): needs sentinel-invariant discovery or loop versioning
     on a mutating cursor — no cheap general lever; recorded, not chased.
+  * KNIFE-EDGE REFINED — COMBINATION + SUITE-STATE, NOT LAYOUT ALONE
+    (2026-07-21f): follow-up discriminations on the 2a kernel red:
+    (1) +dead-const kernel: full-leg GREEN — trivial layout does NOT flip.
+    (2) reps-only and analyze-only 2a halves: isolated probes GREEN.
+    (3) EXACT 2a combination (both files): full kernel leg RED on the same
+    single test, deterministic. CONCLUSION: the latent kernel bug needs
+    the exact-2a shape combination AND full-suite kernel state (the
+    accumulation class) to express — small analyze/reps changes are SAFE
+    (Stage 2 unblocked; every slice validates via full battery as
+    always). BURN-DOWN RECIPE (refined): exact-2a tree (reconstruction
+    script in session scratchpad, reproducible from this entry's
+    description) + full kernel leg = deterministic red on "JSON.parse
+    (let SRC) walk uses slot loads"; instrument THAT test env-gated to
+    dump the walk WAT + shapeStrs/schema state in situ at the failure,
+    then differential the implicated compiler function natively.
+    Parked beside the string-param class (same JSON/jsonConstString
+    neighborhood — plausibly one root).
   * STAGE 2 SLICE 2a — PARKED; TWO REFUTATIONS AND A KNIFE-EDGE FINDING
     (2026-07-21e): the "declared invalidation" increment is WITHDRAWN, and
     the evidence is worth more than the code would have been. (1) Live

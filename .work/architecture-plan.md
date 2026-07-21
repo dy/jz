@@ -84,6 +84,13 @@ land behind a registry flag with a differential leg (renamed vs not) before
 flipping default.
 
 ## Stage 2 — One fact solver, frozen plans
+## CRITICAL PATH REFINED (2026-07-21f): the kernel knife-edge needs the
+## EXACT-2a combination + full-suite kernel state — dead-const and halved
+## variants are green, so SMALL analyze/reps changes land safely and Stage 2
+## is NOT blocked (every slice still validates via the full battery). The
+## latent kernel class (JSON/jsonConstString neighborhood, plausibly one
+## root with the string-param class) is parked with a deterministic
+## reproduction recipe (ledger 2026-07-21f); burn it down as its own unit.
 ## STATUS: slice 1 LANDED 7e570e58 — change-driven fixpoint (latticeMeet
 ## signal through every meet; all 5 callsite-lattice sweeps converge instead
 ## of fixed-count guesses). SLICE 2 DESIGN (inventoried 2026-07-21): 27
