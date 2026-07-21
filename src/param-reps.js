@@ -43,6 +43,13 @@ export const paramFactsOf = (paramReps, callerFunc, key) => {
   return out
 }
 
+/** Convergence signal for change-driven fixpoints (Stage 2 solver): every
+ *  lattice transition through the meet below (and the few direct-writer rules
+ *  in narrow.js) sets `changed`; a fixpoint loop clears it per sweep and stops
+ *  on the first quiet sweep. Replaces the "run it twice" guess — a fixed
+ *  iteration count either wastes a sweep or, on deep call chains, stops short. */
+export const latticeMeet = { changed: false }
+
 /** The meet itself: fold `observed` into a param's ValueRep field. BOTTOM
  *  (undefined) → observed; equal → unchanged; disagreement → TOP (null, sticky).
  *  A null `observed` is "can't tell" — whether that means BOTTOM (skip) or TOP
@@ -50,9 +57,9 @@ export const paramFactsOf = (paramReps, callerFunc, key) => {
  *  calling here; the hard mergeRule / missing-arg path poisons by passing null. */
 export const mergeParamFact = (rep, key, observed) => {
   if (rep[key] === null) return                                  // already TOP — sticky
-  if (observed == null) { rep[key] = null; return }              // caller chose to poison (hard path)
-  if (rep[key] === undefined) rep[key] = observed                // BOTTOM → first observation
-  else if (rep[key] !== observed) rep[key] = null                // disagreement → TOP
+  if (observed == null) { rep[key] = null; latticeMeet.changed = true; return }     // caller chose to poison (hard path)
+  if (rep[key] === undefined) { rep[key] = observed; latticeMeet.changed = true }   // BOTTOM → first observation
+  else if (rep[key] !== observed) { rep[key] = null; latticeMeet.changed = true }   // disagreement → TOP
 }
 
 /** Get-or-create per-param rep at (funcName, paramIdx) on a paramReps map. */

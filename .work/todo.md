@@ -141,6 +141,23 @@
     hulls. sdf 1.22× is the genuinely-hard tail (same family as nqueens/
     sort scheduling): needs sentinel-invariant discovery or loop versioning
     on a mutating cursor — no cheap general lever; recorded, not chased.
+  * STAGE 2 SLICE 1 — CHANGE-DRIVEN FIXPOINT (2026-07-21d): the audit's
+    "rerun sequencing" P0 first cut. param-reps.js gains `latticeMeet`
+    (the convergence signal set by every meet transition — mergeParamFact
+    + narrow.js's direct writers: mergeRule null-poisons, poison(),
+    the wasm rule's undefined→wt/null moves); narrow's core callsite
+    lattice runs `runFixpointConverged()` — sweep until a quiet pass,
+    32-belt — replacing the `runFixpoint(); runFixpoint()` guess AND the
+    four post-enrichment single-sweep guesses (same class: enrichment
+    cascades through chains deeper than one sweep reaches). Cost: +1
+    quiet verification sweep where 2 sufficed; win: deep chains converge
+    instead of stopping short. PIN NOTE (honest): synthetic 4-deep-chain
+    pins are erased by whole-chain inlining at O2 (values exact, funcs
+    gone) — coverage rides the full suite + fuzz (30k inputs, no
+    divergence) + ratchet (counts unchanged). Stage 1c CLOSED by
+    consequence (see architecture-plan.md status note): rename fragility
+    unrepresentable under totality, clone transfer explicit and sound,
+    (BindingId, canonical-idx) folds into Stage 2's FunctionPlan.
   * KERNEL WAVE-DEBT — THE STRING-PARAM INFERENCE CLASS (2026-07-21b,
     OPEN, next unit): after the encoding fix, 2 kernel-only reds remain,
     both ONE class: the kernel compiles `JSON.parse(stringParam)` to the

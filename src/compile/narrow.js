@@ -21,7 +21,7 @@ import { valTypeOf } from '../kind.js'
 import { typedCtorElemValType } from '../kind-traits.js'
 import { VAL, updateRep } from '../reps.js'
 import {
-  paramFactsOf, ensureParamRep, mergeParamFact,
+  paramFactsOf, ensureParamRep, mergeParamFact, latticeMeet,
 } from '../param-reps.js'
 import {
   inferArrElemSchema, inferArrElemSchemaSet, inferArrElemValType,
@@ -1336,7 +1336,7 @@ export default function narrowSignatures(programFacts, ast) {
     }
   }
 
-  const poison = field => r => { r[field] = null }
+  const poison = field => r => { if (r[field] !== null) { r[field] = null; latticeMeet.changed = true } }
   // Default-aware val inference. Adds two fallbacks beyond inferValType's
   // body-local `callerValTypes` lookup so a hot recursive helper like
   // `uleb(n, buffer = []) { ... return uleb(n, buffer) }` resolves the
@@ -1408,12 +1408,12 @@ export default function narrowSignatures(programFacts, ast) {
       if (r[field] === null) return
       const def = defaultArg(state, k)
       if (def != null) mergeParamFact(r, field, infer(def, k, state))
-      else r[field] = null
+      else { r[field] = null; latticeMeet.changed = true }
     },
     apply(r, arg, k, state) {
       if (r[field] === null) return
       const v = infer(arg, k, state)
-      if (v == null) { if (!soft) r[field] = null; return }
+      if (v == null) { if (!soft) { r[field] = null; latticeMeet.changed = true } return }
       mergeParamFact(r, field, v)
     },
   })
@@ -1490,9 +1490,9 @@ export default function narrowSignatures(programFacts, ast) {
         // proven-possible misses pay the coercion.
         if (r.wasm === null) return
         const wt = argWasmType(arg, state)
-        if (state._lastArgMiss) r.missArg = true
-        if (r.wasm === undefined) r.wasm = wt
-        else if (r.wasm !== wt) r.wasm = null
+        if (state._lastArgMiss && !r.missArg) { r.missArg = true; latticeMeet.changed = true }
+        if (r.wasm === undefined) { if (wt !== undefined) { r.wasm = wt; latticeMeet.changed = true } }
+        else if (r.wasm !== wt) { r.wasm = null; latticeMeet.changed = true }
       },
     },
     mergeRule('schemaId', (arg, _k, state) => inferSchemaId(arg, state.callerParamFacts('schemaId'))),
@@ -1581,8 +1581,19 @@ export default function narrowSignatures(programFacts, ast) {
       }
     }
   }
-  runFixpoint()
-  runFixpoint()
+  // Change-driven convergence (Stage 2 slice 1): sweep until a quiet pass.
+  // The facts are monotone meets over finite-height lattices, so this
+  // terminates; 32 is a safety belt far above any real chain depth. Replaces
+  // the "run twice" guess — deep caller chains (main→f→g→h) need more sweeps,
+  // shallow programs need one.
+  const runFixpointConverged = () => {
+    for (let i = 0; i < 32; i++) {
+      latticeMeet.changed = false
+      runFixpoint()
+      if (!latticeMeet.changed) return
+    }
+  }
+  runFixpointConverged()
 
   // Apply i32 specialization: for non-value-used funcs with consistent i32 call
   // sites and no defaults/rest at that position, narrow sig.params[k].type.
@@ -1636,7 +1647,7 @@ export default function narrowSignatures(programFacts, ast) {
   // Re-run with refreshed callerValTypes + the new program-slot observations. (No
   // clearStickyNull needed: valResult was known before the first pass — see E2 hoist
   // above — so val/schemaId never got the can't-tell-yet poison this used to undo.)
-  runFixpoint()
+  runFixpointConverged()
   // Now that .val is refreshed, dedicated arr-elem-schema fixpoint.
   runArrFixpoint()
   runArrSetFixpoint()
@@ -1650,7 +1661,7 @@ export default function narrowSignatures(programFacts, ast) {
   runArrValTypeFixpoint()
   // Array<T> facts can make a direct `helper(rows[i])` argument precise only
   // now; settle the ordinary val lattice once more with that caller context.
-  runFixpoint()
+  runFixpointConverged()
 
   // Internal fixed Array lengths flow through call parameters just like element
   // kinds. Only the builder proof above can originate this fact.
@@ -1837,7 +1848,7 @@ export default function narrowSignatures(programFacts, ast) {
   // this rerun — now that enrichment has put VAL.TYPED into callerValTypes — simply
   // fills it in (array.js then skips __is_str_key + __str_idx dispatch on `arr[i]`).
   enrichCallerValTypesFromPointerParams(callerCtx)
-  runFixpoint()
+  runFixpointConverged()
 
   // I: Post-E re-narrow of numeric (i32) params. The first numeric narrowing pass
   // ran before E narrowed any result types, so callerLocals saw `let h = mix(...)`
@@ -1872,7 +1883,7 @@ export default function narrowSignatures(programFacts, ast) {
   // yet). clearStickyNull only resets null; here we need to reset f64-observed too
   // so the refreshed exprType view propagates.
   resetParamWasmFacts(paramReps)
-  runFixpoint()
+  runFixpointConverged()
   // Settle val HARD now that every producer (results, typedCtor, enrichment) has run
   // and the soft lattice has converged: re-fold each param's sites and poison any
   // whose val isn't unanimous (a site left BOTTOM = genuinely untyped). After this,

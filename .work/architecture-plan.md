@@ -53,6 +53,16 @@ Exit: one authority for "what runs at level L"; fuzz matrix reads the registry
 instead of a hand-list.
 
 ## Stage 1 — BindingId (kills the whole bare-name class)
+## STATUS: 1a+1b LANDED 4a0102d2 (totality + census collapse). 1c RESOLVED
+## BY CONSEQUENCE: assumedBounds keys now embed binding-unique deterministic
+## names (the rename fragility class is unrepresentable — the biquad break's
+## root); clone substitution transfers proofs explicitly via
+## stampClonedIdxProof (sound: substitution only shrinks value sets), and the
+## α-rename byte-identity pin covers the whole proof channel. The
+## (BindingId, canonical-idx) reformulation folds into Stage 2's frozen
+## FunctionPlan (proofs become plan data). 1d (display) landed as the
+## encoding-agnostic strip. Open debt: the kernel string-param class
+## (ledger 2026-07-21c, 2 guarded pins).
 
 Prepare assigns every binding a stable id (alpha-rename internally:
 `name#fnId#serial`; bare names survive only in exports/diagnostics/name
