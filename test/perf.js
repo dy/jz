@@ -1263,6 +1263,16 @@ test('codegen: JSON.parse(let SRC) walk uses slot loads — no __dyn_get/__to_nu
   const fMatch = wat.match(/\(func \$walk[\s\S]*?^  \)$/m)
   ok(fMatch, 'expected $walk function in WAT')
   const body = fMatch[0]
+  // In-situ dump for the kernel knife-edge (ledger 2026-07-21f): under the
+  // env, when the slot-walk claim died, print the emitted body + a literal-arg
+  // CONTROL compiled at this exact suite-state point — discriminates "shape
+  // channel dead here entirely" vs "this program shape specifically".
+  if (process.env?.JZ_DEBUG_KNIFE === '1' && (body.includes('__dyn_get') || !/f64\.load offset=\d+/.test(body))) {
+    console.error('[knife] walk body:\n' + body.slice(0, 2000))
+    const ctl = compile(`export let walk = () => { let o = JSON.parse('{"meta":{"k":7}}'); return o.meta.k }`, { wat: true })
+    const cm = ctl.match(/\(func \$walk[\s\S]*?^  \)$/m)?.[0] || ''
+    console.error('[knife] literal-arg control dyn_get=' + (cm.match(/__dyn_get/g) || []).length + ' slots=' + /f64\.load offset=/.test(cm))
+  }
   is((body.match(/__dyn_get/g) || []).length, 0)
   is((body.match(/__to_num/g) || []).length, 0)
   is((body.match(/__is_str_key/g) || []).length, 0)

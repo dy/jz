@@ -141,6 +141,21 @@
     hulls. sdf 1.22× is the genuinely-hard tail (same family as nqueens/
     sort scheduling): needs sentinel-invariant discovery or loop versioning
     on a mutating cursor — no cheap general lever; recorded, not chased.
+  * KNIFE-EDGE NARROWED TO ONE BLOCK (2026-07-21g): the in-situ dump
+    run (exact-2a + JZ_DEBUG_KNIFE full kernel leg) came back GREEN — and
+    the reconstruction that run used differed from the red one
+    (b2rowi700) by exactly ONE omitted piece: the
+    `repEvents.onUpdate = (name) => {...}` module-init closure
+    assignment (captures _bodyDeps + _bodyFactsCache, sits inside the
+    dead `if (DEP_DIAG)`). NEXT SINGLE DISCRIMINATOR: re-add ONLY that
+    block to the otherwise-green reconstruction + full kernel leg — red
+    confirms a one-block minimal pair (a dead-guarded module-init
+    closure over module Maps flips an unrelated JSON slot-walk compile
+    through the kernel → prime native-codegen-of-module-init suspect for
+    the whole JSON-neighborhood family). test/perf.js now carries the
+    env-gated in-situ dump (JZ_DEBUG_KNIFE=1) as a permanent debug
+    affordance — on failure it prints the walk body + a literal-arg
+    control compiled at the same suite state.
   * KNIFE-EDGE REFINED — COMBINATION + SUITE-STATE, NOT LAYOUT ALONE
     (2026-07-21f): follow-up discriminations on the 2a kernel red:
     (1) +dead-const kernel: full-leg GREEN — trivial layout does NOT flip.
