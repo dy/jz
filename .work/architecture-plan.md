@@ -173,6 +173,30 @@ Replace the rerun choreography (runFixpoint ×2, 13 plan-time refresh points,
 
 Exit: `grep 'updateRep\|schema\.vars\.set' src/compile/emit.js module/` → 0.
 
+## SLICE 4 PREDICTOR SPEC (2026-07-21, opening contract for the 11 remaining
+## discovery writers): a pure pre-emit `declInitFacts(name, init)` computed at
+## plan finalization, covering exactly the emit-observed gaps:
+##   P1 ptrKind/ptrAux inheritance for decl inits that emit to unboxed
+##      pointers (destructure temps `__d0 = v`, pointer-ABI RHS): predict
+##      from repOf(rhsName).ptrKind / known-builtin results — the same
+##      sources emit's val.ptrKind ultimately derives from; emit ASSERTS
+##      agreement (JZ_DEBUG_INVARIANTS) instead of writing.
+##   P2 CLOSURE funcIdx (emit.js ~1602): available at plan time from the
+##      closure table once direct-closure resolution runs pre-emit — order
+##      the plan phase after closure minting.
+##   P3 Object.assign/spread schema results (object.js ×3, emit.js:2486
+##      spread val): predict via the existing staticObjectProps/spread
+##      union machinery in analyze (already computes shapes for other
+##      consumers — reuse, don't duplicate).
+##   P4 hash conversion (object.js:86): a REAL lifecycle transition —
+##      model as a plan-time binding-state edge (binding becomes HASH at
+##      stmt S), not a predictor case.
+##   METHOD per site: implement predictor case → emit asserts equality
+##   under JZ_DEBUG_INVARIANTS across the full suite → flip the write to
+##   plan finalization → delete the emit write. One battery per site
+##   cluster; the exit grep is the finish line, opening the frozen
+##   FunctionPlan (emit reads plans only).
+
 ## Stage 3 — Loop model as the vectorizer's substrate
 
 `loop-model.js` grows into the canonical per-loop record: IVs + trip ranges,
