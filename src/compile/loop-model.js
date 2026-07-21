@@ -77,6 +77,20 @@ export function closureMutatedVars(body) {
 // consumer bails). This is the `while`-loop IV-increment discovery each pass
 // re-derived with its own scan; a `for`'s IV comes from unitIncVar(L.step).
 // (Increments of OTHER variables are ignored — same as every original scan.)
+// The sole unit-increment statement of ANY variable in a `;`-body — { iv, ivIdx }
+// when exactly one statement is a `+1` increment (of whatever variable), else null.
+// This is loop-divmod's IV DISCOVERY form: no candidate IV is known up front, and a
+// second increment (even of another var) is ambiguous. Contrast uniqueUnitIncOf.
+export function soleUnitInc(body) {
+  if (!Array.isArray(body) || body[0] !== ';') return null
+  let iv = null, ivIdx = -1
+  for (let k = 1; k < body.length; k++) {
+    const v = unitIncVar(body[k])
+    if (v) { if (iv) return null; iv = v; ivIdx = k }
+  }
+  return iv ? { iv, ivIdx } : null
+}
+
 export function uniqueUnitIncOf(body, iv) {
   if (!Array.isArray(body) || body[0] !== ';') return null
   let ivIdx = -1

@@ -106,12 +106,13 @@ closure-mutation set `cm` + per-loop findMutations with the IV's own
 increment excludable). SEMANTIC TRAPS pinned during design: cm MUST be
 computed over the FUNCTION body (closure defined outside the loop, called
 inside), and the unit-inc scan is per-target-iv, not any-iv.
-CONVERTED: loop-square.js (exemplar, both for/while arms).
-REMAINING (same mechanical pattern): loop-divmod.js :49/:71-74 (w + iv
-sites), loop-recurrence.js :139/:142, :245/:248 (iv + HI sites ×2 — note
-:142/:248 combine hiMut.has||cm.has exactly as hz.mutated), peel-stencil.js
-:195 (bound+r joint findMutations — needs a 2-name call or two mutated()
-calls; check r/bound semantics before converting).
+Step 1 DONE: all four consumers converted — loop-square (exemplar),
+loop-divmod (+ `soleUnitInc`, the ANY-var discovery form its IV scan
+needed — distinct from per-target uniqueUnitIncOf), loop-recurrence ×2,
+peel-stencil (bound+r as two mutated() calls; iv keeps raw cm check,
+direct writes vetted by ivMonotonic). findMutations imports are GONE from
+every loop pass — the hazard predicate has one home. WAT parity identical;
+battery-gated.
 
 ## Order of attack (matches plan Stage 3)
 

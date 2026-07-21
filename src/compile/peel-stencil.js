@@ -19,9 +19,8 @@
 // y-loop) match. Number literals are sparse-array holes (`n[0]` is undefined), so
 // literal tests use `== null`; created literals are bare numbers.
 
-import { findMutations } from './analyze-scans.js'
 import { ASSIGN_OPS } from '../ast.js'
-import { litN, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks, freshLoopId } from './loop-model.js'
+import { litN, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks, freshLoopId, loopHazards } from './loop-model.js'
 
 const isVar = (n) => typeof n === 'string'
 
@@ -192,9 +191,9 @@ function tryPeel(stmt, cm) {
   // Soundness: iv advances monotonically (else the interior re-runs at an edge index),
   // and bound/r are loop-invariant (else the once-computed xs/xe go stale mid-loop).
   if (!ivMonotonic(body, iv)) return null
-  const mut = new Set(); findMutations(body, new Set([bound, r]), mut)
-  if (mut.has(bound) || mut.has(r)) return null
-  if (cm.has(iv) || cm.has(bound) || cm.has(r)) return null  // closure-mutable → unsafe
+  const hz = loopHazards(cm, body)
+  if (hz.mutated(bound) || hz.mutated(r)) return null
+  if (cm.has(iv)) return null  // closure-mutable IV → unsafe (direct writes vetted by ivMonotonic)
 
   const id = freshLoopId()
   const xs = `__pks${id}`, xe = `__pke${id}`

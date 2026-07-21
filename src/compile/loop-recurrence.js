@@ -17,8 +17,7 @@
 // keeps the seed load in step with the original (which reads `arr[LO-1]` only when it iterates),
 // and falls back to the untouched loop on the empty range — sound for any trip count.
 
-import { findMutations } from './analyze-scans.js'
-import { litVal, litN, unitIncVar, normalizeLoop, freshLoopId } from './loop-model.js'
+import { litVal, litN, unitIncVar, normalizeLoop, freshLoopId, loopHazards } from './loop-model.js'
 import { rewriteBlocks, closureMutatedVars } from './loop-model.js'
 
 const isArr = (n) => Array.isArray(n)   // wrap (not alias): the self-host kernel rejects a builtin used as a first-class value
@@ -136,10 +135,9 @@ function tryUnroll(stmt, cm) {
   for (let k = storeIdx + 1; k < stmts.length; k++) if (readsRec(stmts[k])) return null
 
   // iv assigned only by the step; iv/arr/HI loop-invariant (not mutated, incl. via a closure call)
-  const ivMut = new Set(); findMutations(body, new Set([iv]), ivMut)
-  if (ivMut.has(iv)) return null
-  if (cm.has(iv) || cm.has(arr)) return null
-  if (typeof HI === 'string') { const hiMut = new Set(); findMutations(body, new Set([HI]), hiMut); if (hiMut.has(HI) || cm.has(HI)) return null }
+  const hz = loopHazards(cm, body)
+  if (hz.mutated(iv) || cm.has(arr)) return null
+  if (typeof HI === 'string' && hz.mutated(HI)) return null
 
   // --- transform ---
   const id = freshLoopId()
@@ -242,10 +240,10 @@ function tryUnrollScalarChain(stmt, cm) {
   if (!chained) { if (DBG) console.error('[usc] no-chain, carried:', [...carried]); return null }
 
   // stability: iv written only by the step; carried names + HI not closure-mutated
-  const ivMut = new Set(); findMutations(body, new Set([iv]), ivMut)
-  if (ivMut.has(iv) || cm.has(iv)) return null
+  const hz = loopHazards(cm, body)
+  if (hz.mutated(iv)) return null
   for (const s of carried) if (cm.has(s)) return null
-  if (typeof HI === 'string') { const hiMut = new Set(); findMutations(body, new Set([HI]), hiMut); if (hiMut.has(HI) || cm.has(HI)) return null }
+  if (typeof HI === 'string' && hz.mutated(HI)) return null
 
   // --- transform: pair + tail ---
   const id = freshLoopId()

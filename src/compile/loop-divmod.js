@@ -19,8 +19,7 @@
 // desync the counters). Number literals are sparse-array holes `[, v]` (n[0] is the
 // hole = undefined), so literal tests use `== null`; created literals are bare numbers.
 
-import { findMutations } from './analyze-scans.js'
-import { litN, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks, freshLoopId } from './loop-model.js'
+import { litN, normalizeLoop, closureMutatedVars, rewriteBlocks, freshLoopId, soleUnitInc, loopHazards } from './loop-model.js'
 
 const isMod = (n, i, w) => Array.isArray(n) && n[0] === '%' && n[1] === i && n[2] === w
 const isFloorDiv = (n, i, w) =>
@@ -44,12 +43,9 @@ function tryReduce(stmt, cm) {
   if (!Array.isArray(lbody) || lbody[0] !== ';') return null
 
   // exactly one IV incremented by +1
-  let iv = null, ivIdx = -1
-  for (let k = 1; k < lbody.length; k++) {
-    const v = unitIncVar(lbody[k])
-    if (v) { if (iv) return null; iv = v; ivIdx = k }
-  }
-  if (!iv) return null
+  const inc = soleUnitInc(lbody)
+  if (!inc) return null
+  const { iv, ivIdx } = inc
 
   // a single invariant divisor `w` (`i % w` / `(i/w)|0` all share it)
   let w = null
@@ -67,14 +63,11 @@ function tryReduce(stmt, cm) {
   const usesDiv = usesPattern(lbody, iv, w, isFloorDiv)
   if (!usesMod && !usesDiv) return null
 
-  // soundness: w invariant, iv written ONLY by the increment, no continue/closure capture
-  const wMut = new Set(); findMutations(lbody, new Set([w]), wMut)
-  if (wMut.has(w)) return null
-  const ivMut = new Set()
-  findMutations([';', ...lbody.slice(1).filter((_, k) => k !== ivIdx - 1)], new Set([iv]), ivMut)
-  if (ivMut.has(iv)) return null
+  // soundness: w invariant, iv written ONLY by the increment (both incl. closure
+  // writes — a call in the loop can invoke a mutating `=>`), no outer continue
+  const hz = loopHazards(cm, lbody)
+  if (hz.mutated(w) || hz.mutated(iv, ivIdx)) return null
   if (hasOuterContinue(lbody)) return null
-  if (cm.has(iv) || cm.has(w)) return null  // IV/divisor mutable via a closure call
 
   const id = freshLoopId()
   const cx = `__lsrx${id}`, cy = `__lsry${id}`
