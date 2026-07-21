@@ -84,6 +84,23 @@ land behind a registry flag with a differential leg (renamed vs not) before
 flipping default.
 
 ## Stage 2 — One fact solver, frozen plans
+## STATUS: slice 1 LANDED 7e570e58 — change-driven fixpoint (latticeMeet
+## signal through every meet; all 5 callsite-lattice sweeps converge instead
+## of fixed-count guesses). SLICE 2 DESIGN (inventoried 2026-07-21): 27
+## analyzeBody call sites (narrow 11, program-facts 4, compile/index 3,
+## literals/inplace-store 2 each, assemble/plan-scope 1); the body-facts
+## cache is "intentionally staleable" with invalidateLocalsCache placed at
+## phase boundaries by hand. Slice 2 = DECLARED invalidation: (a) one
+## `invalidateBodyFacts(body, reason)` entry point; (b) every ctx mutation
+## that can stale a body's facts (rep updates during narrowing, schema
+## binds, typedLen changes) routes through it with the reason string;
+## (c) the phase-boundary blanket invalidations become coverage ASSERTIONS
+## (a debug mode records which bodies were invalidated by declaration vs
+## blanket — a blanket-only invalidation is a missing declaration);
+## (d) exit = the blanket calls delete. Slice 3 = per-domain worklists over
+## the declared edges (the full solver); slice 4 = frozen FunctionPlan
+## consumed by emit (the three emit-time writers move to plan finalization,
+## assumption keys become plan data — subsumes old Stage-1c reformulation).
 
 Replace the rerun choreography (runFixpoint ×2, 13 plan-time refresh points,
 28 analyzeBody call sites, emit-time rep updates) with:
