@@ -21,10 +21,9 @@
 // incremented by +1 and NOT otherwise mutated (so within a body iteration i ∈ {entry, +1},
 // both squares < 2³¹). Mirrors strength-reduce-divmod's structure (post-prepare `while`).
 
-import { findMutations } from './analyze-scans.js'
 import { includeMods } from '../autoload.js'
 import { ctx } from '../ctx.js'
-import { litVal, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks } from './loop-model.js'
+import { litVal, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks, loopHazards, uniqueUnitIncOf } from './loop-model.js'
 
 const SQUARE_BOUND_MAX = 2 ** 30
 // The constant numeric value of a bound: a literal, OR a module const folded to an int
@@ -69,20 +68,16 @@ function tryNarrow(stmt, cm) {
   if (!iv) return null
   if (cm.has(iv)) return null   // mutable via a closure call — entry value unprovable
 
+  const hz = loopHazards(cm, body)
   if (isFor) {
     // The `for` update is the IV's sole, +1 mutation; the body must not reassign i.
     if (unitIncVar(step) !== iv) return null
-    const ivMut = new Set(); findMutations(body, new Set([iv]), ivMut)
-    if (ivMut.has(iv)) return null
+    if (hz.mutated(iv)) return null
   } else {
     // `while`: the increment lives in the body (exactly one +1; nothing else mutates i).
-    if (!Array.isArray(body) || body[0] !== ';') return null
-    let ivIdx = -1
-    for (let k = 1; k < body.length; k++) if (unitIncVar(body[k]) === iv) { if (ivIdx >= 0) return null; ivIdx = k }
-    if (ivIdx < 0) return null
-    const ivMut = new Set()
-    findMutations([';', ...body.slice(1).filter((_, k) => k !== ivIdx - 1)], new Set([iv]), ivMut)
-    if (ivMut.has(iv)) return null
+    const ivIdx = uniqueUnitIncOf(body, iv)
+    if (ivIdx == null || ivIdx < 0) return null
+    if (hz.mutated(iv, ivIdx)) return null
   }
 
   // We're injecting `math.imul` after prepare's auto-import step, so ensure the math module

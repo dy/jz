@@ -96,6 +96,23 @@ blur's narrower i32.eqz∘lt_s exit stays its own residual),
 preamble, nothing after the loop). Net −104 lines. Bench WAT byte-parity
 vs HEAD proven; battery-gated. The 4 duplicated scans are dead.
 
+## Step 1 IN PROGRESS — AST-tier hazard/IV oracles (2026-07-21)
+
+loop-model.js gained the two idioms every pass re-derived by hand:
+`uniqueUnitIncOf(body, iv)` (the while-loop IV-increment discovery — per
+TARGET iv, other vars' increments ignored, two increments of iv = null)
+and `loopHazards(cm, body)` (`mutated(name, exceptIdx)` — function-wide
+closure-mutation set `cm` + per-loop findMutations with the IV's own
+increment excludable). SEMANTIC TRAPS pinned during design: cm MUST be
+computed over the FUNCTION body (closure defined outside the loop, called
+inside), and the unit-inc scan is per-target-iv, not any-iv.
+CONVERTED: loop-square.js (exemplar, both for/while arms).
+REMAINING (same mechanical pattern): loop-divmod.js :49/:71-74 (w + iv
+sites), loop-recurrence.js :139/:142, :245/:248 (iv + HI sites ×2 — note
+:142/:248 combine hiMut.has||cm.has exactly as hz.mutated), peel-stencil.js
+:195 (bound+r joint findMutations — needs a 2-name call or two mutated()
+calls; check r/bound semantics before converting).
+
 ## Order of attack (matches plan Stage 3)
 
 1. Grow loop-model.js into the record builder on the AST tier (its 6

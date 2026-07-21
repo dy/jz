@@ -11,6 +11,7 @@
 
 import { ASSIGN_OPS } from '../ast.js'
 import { ctx } from '../ctx.js'
+import { findMutations } from './analyze-scans.js'
 
 // Fresh id for a loop transform's generated locals (`__lsrx<id>`, `__pks<id>`, …). Backed by
 // a per-compile counter (reset in ctx.reset), NOT a module-global: a module-`let` counter
@@ -69,6 +70,38 @@ export function closureMutatedVars(body) {
   }
   walk(body)
   return out
+}
+
+// The unique `+1` increment OF `iv` in a `;`-body: returns its statement index, or
+// -1 when absent, or null when `iv` has TWO unit increments (ambiguous — every
+// consumer bails). This is the `while`-loop IV-increment discovery each pass
+// re-derived with its own scan; a `for`'s IV comes from unitIncVar(L.step).
+// (Increments of OTHER variables are ignored — same as every original scan.)
+export function uniqueUnitIncOf(body, iv) {
+  if (!Array.isArray(body) || body[0] !== ';') return null
+  let ivIdx = -1
+  for (let k = 1; k < body.length; k++) {
+    if (unitIncVar(body[k]) === iv) { if (ivIdx >= 0) return null; ivIdx = k }
+  }
+  return ivIdx
+}
+
+// One safety oracle per loop: is `name` written by the loop body? Combines the
+// two channels every pass paired by hand — direct writes (findMutations over the
+// LOOP body) and closure writes (`cm` — closureMutatedVars over the FUNCTION
+// body, since a closure defined outside the loop can be called inside it).
+// `exceptIdx` excludes a statement (the IV's own increment) from the
+// direct-write scan — the idiom of every IV-safety check.
+export function loopHazards(cm, body) {
+  return {
+    mutated(name, exceptIdx = -1) {
+      if (cm.has(name)) return true
+      const src = exceptIdx >= 0 ? [';', ...body.slice(1).filter((_, k) => k !== exceptIdx - 1)] : body
+      const m = new Set()
+      findMutations(src, new Set([name]), m)
+      return m.has(name)
+    },
+  }
 }
 
 // Post-order block rewriter: walk `body`; for every `;`-sequence, apply `tryStmt` to
