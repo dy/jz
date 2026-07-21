@@ -160,10 +160,18 @@
     Sets + typeof dispatch) differentials CLEAN vs JS — ruled out. (An
     interim 'divergence' was a HAND-COMPUTED want with the wrong safeCC
     element — the differential must always RUN the JS side, never assert
-    by hand.) NEXT CANDIDATES: scanBoundedLoops, func.defaults
-    name-keying, valueUsed, the reps channel (r.val) feeding
-    applyJsstringBoundaryCarrier — each with REAL prepare output as
-    input, then the chain composed.
+    by hand.) REFINED REPRO MATRIX (kernel, deterministic on FIRST
+    compile — no state accumulation): JSON.parse(stringParam) →
+    undef-folded body + generic i64 export wrapper (no inner $f at all);
+    JSON.parse("lit") OK, JSON.parse("" + numParam) OK,
+    JSON.stringify(param) OK, Math.sqrt(param) OK. The divergence sits
+    precisely where a STRING-TYPED PARAM meets JSON.parse's
+    include/typing path. NEXT CANDIDATES: the parse-entry arg
+    classification in module/json.js (repOf/valTypeOf on the renamed
+    param), func.defaults name-keying, valueUsed, and
+    applyJsstringBoundaryCarrier's reps read — differential each
+    natively-compiled (the kernel executes the same binary), with REAL
+    prepare output as input, then the chain composed.
   * THE KERNEL-STRIP SAGA CLOSED — THE STRING-ENCODING CLASS
     (2026-07-21a): ALL kernel-leg reds (10, incl. jsstring externref +
     typed-narrow/loop-counter WAT-name pins) shared ONE root: jz strings
