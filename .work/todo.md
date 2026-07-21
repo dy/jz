@@ -166,7 +166,21 @@
     JSON.parse("lit") OK, JSON.parse("" + numParam) OK,
     JSON.stringify(param) OK, Math.sqrt(param) OK. The divergence sits
     precisely where a STRING-TYPED PARAM meets JSON.parse's
-    include/typing path. RAZOR EDGE (final narrowing):
+    include/typing path. DIAGNOSTIC STATE (2026-07-21c, parked with full
+    map): (1) fails at O0 TOO — core compile path, not any optimization;
+    jsstring:false doesn't fix. (2) `const r = JSON.parse(s); return r`
+    ALSO stubs — not the forwarding shape; the trigger is "param whose
+    ONLY use is the parse argument" (adding s.length rescues). (3) the
+    hybrid wave-file bisect convicted prepare/index.js BUT wave-prepare
+    against pre-wave consumers is semantically incoherent (totality
+    names vs bare-name-keyed pre-wave code) — treat as involvement, not
+    mechanism. (4) module/json.js has its own 2-arg jsonConstString (no
+    signature bug); param name → constStrs miss → null ✓. NEXT:
+    fingerprint the JSON.parse emitter's param branch in-kernel — likely
+    a THROW inside the kernel-executed emitter (temp/valTypeOf/inc
+    chain) surfacing as the undefined fallback; widen the emitter catch
+    in a kernel build, or differential valTypeOf/temp natively-compiled.
+    RAZOR EDGE (earlier narrowing):
     `JSON.parse(s) + s.length` WORKS through the kernel — only the PURE
     FORWARDING shape `(s) => JSON.parse(s)` stubs, and the stub has NO
     inner $f at all (native: $f = return_call $__jp(__to_str(s)) +
