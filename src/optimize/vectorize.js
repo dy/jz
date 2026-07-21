@@ -1136,6 +1136,10 @@ const hasSideEffect = (node) => {
  *   `preamble` (pure & loop-invariant by construction — safe to clone/re-run);
  *   a non-`$__li` preamble, an impure value, or any array content AFTER the loop
  *   bails. When false, ANY non-loop array content in the block bails.
+ *
+ * Three opt-ins below cover recognizers whose acceptance genuinely differs — see each for
+ * its exact contract: `opts.multiInc` (tryRampMap), `opts.envelope: 'loose'`
+ * (tryBlurMultiPixel/tryChannelReduce), `opts.envelope: 'pixelIV'` (matchOuterPixelLoop).
  */
 // A transparent block — no label (first child isn't a `$label` string) and no result — is
 // pure statement grouping: wasm locals are function-scoped, and an unlabeled resultless block
@@ -1205,9 +1209,45 @@ function canonicalizeIfBr(node) {
   }
 }
 
+// Shared tail of every envelope below: the loop's own label (position 1) and its bottom
+// `(br label)` back-edge. Returns { loopLabel, endIdx } or null.
+function matchLoopBrEnd(loopNode) {
+  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
+  if (!loopLabel) return null
+  const endIdx = loopNode.length - 1
+  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
+  return { loopLabel, endIdx }
+}
+
 function matchBlockLoop(blockNode, opts = {}) {
   if (!isArr(blockNode) || blockNode[0] !== 'block') return null
-  const allowPreamble = !!opts.allowPreamble
+
+  // envelope: 'pixelIV' — matchOuterPixelLoop's scaffold (see its own header doc); exit-guard
+  // and increment stay matchOuterPixelLoop's own residual.
+  if (opts.envelope === 'pixelIV') {
+    if (!(typeof blockNode[1] === 'string' && blockNode[1].startsWith('$'))) return null
+    const blockLabel = blockNode[1]
+    let loopNode = null
+    const preamble = []
+    for (let i = 2; i < blockNode.length; i++) {
+      const c = blockNode[i]
+      if (!isArr(c)) return null
+      if (c[0] === 'loop') { if (loopNode) return null; loopNode = c }
+      else if (loopNode) return null              // statement after the loop → bail
+      else if (c[0] !== 'local.set') return null  // preamble must be pure local.set
+      else preamble.push(c)
+    }
+    if (!loopNode) return null
+    const le = matchLoopBrEnd(loopNode)
+    if (!le) return null
+    return { blockNode, blockLabel, loopNode, loopLabel: le.loopLabel, endIdx: le.endIdx, preamble }
+  }
+
+  // envelope: 'loose' (tryBlurMultiPixel/tryChannelReduce) tolerates ANY non-loop content
+  // anywhere — before or after the loop — with no validation at all; woven into the same
+  // scan as the default/allowPreamble envelope below rather than duplicating it.
+  const loose = opts.envelope === 'loose'
+  const allowPreamble = loose || !!opts.allowPreamble
   let blockLabel = null, loopNode = null
   const preamble = []
   for (let i = 1; i < blockNode.length; i++) {
@@ -1217,6 +1257,7 @@ function matchBlockLoop(blockNode, opts = {}) {
       if (loopNode) return null  // multiple loops
       loopNode = c
     } else if (isArr(c)) {
+      if (loose) continue
       // `loopNode` truthy ⇒ this content is AFTER the loop ⇒ bail (even for a $__li set).
       // A LICM-hoisted invariant is `$__liN`; INLINING renames it (e.g. `$__inl7___li0`). Default
       // accepts only un-inlined `$__li*` (keeps the existing recognizers byte-identical);
@@ -1233,11 +1274,34 @@ function matchBlockLoop(blockNode, opts = {}) {
   }
   if (!loopNode || !blockLabel) return null
 
-  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
-  if (!loopLabel) return null
+  const le = matchLoopBrEnd(loopNode)
+  if (!le) return null
+  const { loopLabel, endIdx } = le
+  if (loose) return { blockNode, blockLabel, loopNode, loopLabel, endIdx }
 
-  const endIdx = loopNode.length - 1
-  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
+  // multiInc (tryRampMap) — trailing RUN of `x += C` (matchIncN); the exit IV must be in
+  // the run stepping by exactly 1. Other constraints on the run are tryRampMap's residual.
+  if (opts.multiInc) {
+    const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
+    if (!exitInfo) return null
+    const increments = []
+    let bodyEnd = endIdx - 1
+    while (bodyEnd >= 2) {
+      const inc = matchIncN(loopNode[bodyEnd])
+      if (!inc) break
+      increments.unshift(inc)
+      bodyEnd--
+    }
+    if (!increments.length) return null
+    const ivInc = increments.find(x => x.name === exitInfo.ind)
+    if (!ivInc || ivInc.c !== 1) return null
+    const incVar = exitInfo.ind
+    const bound = exitInfo.bound
+    const boundLocal = isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string' ? bound[1] : null
+    const body = loopNode.slice(3, bodyEnd + 1)
+    return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incVar, exitInfo, bound, boundLocal, body, preamble, increments }
+  }
+
   const incIdx = endIdx - 1
   let incVar = matchInc1(loopNode[incIdx])
   // CSE'd increment (gated): O3 may fold `x+1` into a body tee (the `xe = x+1` wrap) and write the
@@ -3754,44 +3818,12 @@ function matchChannelGroup(body) {
 // `i8x16.shuffle` selects the low byte of each lane — never saturates — so no
 // value-range assumption is needed.
 function tryRampMap(blockNode, fnLocals, freshIdRef) {
-  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
-  // Envelope: (block $brk (loop $L …)) — identical to tryVectorize.
-  let blockLabel = null, loopNode = null
-  for (let i = 1; i < blockNode.length; i++) {
-    const c = blockNode[i]
-    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
-    if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
-    else if (isArr(c)) return null
-  }
-  if (!loopNode || !blockLabel) return null
-  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
-  if (!loopLabel) return null
-
-  // End = (br $L); preceded by a run of trailing `x += C` increments.
-  const endIdx = loopNode.length - 1
-  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
-  const increments = []
-  let bodyEnd = endIdx - 1
-  while (bodyEnd >= 2) {
-    const inc = matchIncN(loopNode[bodyEnd])
-    if (!inc) break
-    increments.unshift(inc)
-    bodyEnd--
-  }
-  if (!increments.length) return null
-
-  // First stmt = exit guard → logical IV + bound. IV must advance by exactly 1.
-  const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
-  if (!exitInfo) return null
-  const ivName = exitInfo.ind
-  const ivInc = increments.find(x => x.name === ivName)
-  if (!ivInc || ivInc.c !== 1) return null
-  let bound = exitInfo.bound, boundLocal = null
-  if (isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string') boundLocal = bound[1]
-  else if (!isI32Const(bound)) return null
-
-  const body = []
-  for (let i = 3; i <= bodyEnd; i++) body.push(loopNode[i])
+  // Strict envelope (identical to tryVectorize's) + trailing RUN of increments; the "every
+  // increment shares the IV's name" check below is tryRampMap's own residual.
+  const bl = matchBlockLoop(blockNode, { multiInc: true })
+  if (!bl) return null
+  const { incVar: ivName, bound, boundLocal, body, increments } = bl
+  if (!boundLocal && !isI32Const(bound)) return null
   if (!body.length) return null
   if (body.some(hasGlobalSet)) return null
 
@@ -4215,18 +4247,12 @@ function buildPivotCoeff(loopNode, pivot) {
 // over a unit-stride x, then a 4-byte RGBA store `dst[ab1+c] = f(acc_c)`. r≥127 →
 // i16 overflow → bail. Leaves a scalar remainder loop for the ≤3 trailing pixels.
 function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef) {
-  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
-  let blockLabel = null, loopNode = null
-  for (let i = 1; i < blockNode.length; i++) {
-    const c = blockNode[i]
-    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
-    if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
-  }
-  if (!loopNode || !blockLabel) return null
-  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
-  if (!loopLabel) return null
-  const endIdx = loopNode.length - 1
-  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
+  // Loose envelope (block/loop/label/br-end only) — the exit guard below accepts NO label
+  // check and lt_s only (not lt_u), a strictly narrower shape than matchExitBrIf, so it stays
+  // this recognizer's own residual rather than folding into the shared scaffold.
+  const bl = matchBlockLoop(blockNode, { envelope: 'loose' })
+  if (!bl) return null
+  const { loopNode, endIdx } = bl
   // exit guard: br_if $brk (i32.eqz (i32.lt_s x BOUND))
   const exit = loopNode[2]
   if (!(isArr(exit) && exit[0] === 'br_if' && isArr(exit[2]) && exit[2][0] === 'i32.eqz'
@@ -4411,23 +4437,13 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef) {
 }
 
 function tryChannelReduce(blockNode, fnLocals, freshIdRef) {
-  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
-  // Outer pixel loop: (block $brk [invariant preamble…] (loop $L …)). When the
-  // pixel loop is nested in an outer row loop, LICM hoists the invariant edge-clamp
-  // bound (`w-1`) into this block ahead of the loop; allow any such non-loop
-  // preamble — it is preserved verbatim by the wrapper rebuild, which rewrites only
-  // the loop. Exactly one loop is still required (a second → bail).
-  let blockLabel = null, loopNode = null
-  for (let i = 1; i < blockNode.length; i++) {
-    const c = blockNode[i]
-    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
-    if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
-  }
-  if (!loopNode || !blockLabel) return null
-  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
-  if (!loopLabel) return null
-  const endIdx = loopNode.length - 1
-  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
+  // Loose envelope: LICM may hoist an invariant edge-clamp bound ahead of the loop when
+  // this pixel loop nests in an outer row loop; preserved verbatim by the wrapper rebuild.
+  // Unlike tryBlurMultiPixel this never validates the exit/inc shape — it trusts
+  // `bodyStart..bodyEnd` as the body outright.
+  const bl = matchBlockLoop(blockNode, { envelope: 'loose' })
+  if (!bl) return null
+  const { loopNode, endIdx } = bl
 
   // Pixel-loop body (between the exit guard and the back-branch). Find: four
   // `acc_c = 0` inits and the inner accumulation loop that sums into them.
@@ -4584,23 +4600,9 @@ const matchPixelExit = (stmt, label) => {
  *   a constant, or a local/global the loop nest never writes (`writesName`).
  */
 function matchOuterPixelLoop(blockNode) {
-  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
-  const oLabel = (typeof blockNode[1] === 'string' && blockNode[1].startsWith('$')) ? blockNode[1] : null
-  if (!oLabel) return null
-  let loopNode = null, loopPos = -1
-  for (let i = 2; i < blockNode.length; i++) {
-    const c = blockNode[i]
-    if (!isArr(c)) return null
-    if (c[0] === 'loop') { if (loopNode) return null; loopNode = c; loopPos = i }
-    else if (loopNode) return null              // statement after the loop → bail
-    else if (c[0] !== 'local.set') return null  // preamble must be pure local.set
-  }
-  if (!loopNode) return null
-  const preamble = blockNode.slice(2, loopPos)
-  const llabel = (typeof loopNode[1] === 'string' && loopNode[1].startsWith('$')) ? loopNode[1] : null
-  if (!llabel) return null
-  const oEnd = loopNode.length - 1
-  if (!(isArr(loopNode[oEnd]) && loopNode[oEnd][0] === 'br' && loopNode[oEnd][1] === llabel)) return null
+  const bl = matchBlockLoop(blockNode, { envelope: 'pixelIV' })
+  if (!bl) return null
+  const { blockLabel: oLabel, loopNode, preamble, endIdx: oEnd } = bl
   const pixelIVs = []   // [{ name, type }]
   let pivStart = oEnd
   for (let i = oEnd - 1; i >= 3; i--) {

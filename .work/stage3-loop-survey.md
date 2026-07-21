@@ -69,6 +69,33 @@ canonical per-loop record: IVs + trip ranges, affine accesses (one
 language absorbing all four derivations), dependence sets (solver
 aliasing), reductions/recurrences, masks/effects, profitability.
 
+## Dispatch-semantics correction (2026-07-21, before anyone refactors wrong)
+
+The two tiers have DIFFERENT composition semantics and must be unified
+differently:
+- **WASM tier** is genuine first-match-wins per block (`??` chain) — class
+  dispatch over a shared record is semantics-preserving there.
+- **AST tier** is a COMPOSE-PIPELINE: all 6 passes sweep the whole body in
+  sequence, and a loop rewritten by pass k can legitimately re-match pass
+  k+1 (divmod-reduced loop later clamp-peeled). Collapsing it into one
+  first-match walk CHANGES semantics. The correct AST-tier unification is
+  sharing the per-loop RECORD computation (normalizeLoop + unitIncVar +
+  closureMutatedVars + findMutations once per loop per sweep, invalidated
+  on rewrite), keeping the pipeline order.
+
+## Step 3 DONE first (2026-07-21) — WASM scaffold unification
+
+matchBlockLoop is now the ONLY block/loop IV scaffold. `matchLoopBrEnd`
+extracted (loop label + br back-edge, shared by every envelope); three
+opt-ins each preserving its consumer's exact acceptance set:
+`multiInc` (tryRampMap: trailing `x += C` run, exit IV steps 1; bound
+local/const stays the consumer residual), `envelope:'loose'`
+(tryBlurMultiPixel + tryChannelReduce: any non-loop content tolerated;
+blur's narrower i32.eqz∘lt_s exit stays its own residual),
+`envelope:'pixelIV'` (matchOuterPixelLoop: labeled block, pure local.set
+preamble, nothing after the loop). Net −104 lines. Bench WAT byte-parity
+vs HEAD proven; battery-gated. The 4 duplicated scans are dead.
+
 ## Order of attack (matches plan Stage 3)
 
 1. Grow loop-model.js into the record builder on the AST tier (its 6
