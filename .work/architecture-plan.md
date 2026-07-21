@@ -109,6 +109,32 @@ flipping default.
 ## consumed by emit (the three emit-time writers move to plan finalization,
 ## assumption keys become plan data — subsumes old Stage-1c reformulation).
 
+## SLICE 3 DOMAIN MAP (2026-07-21, from this campaign's surveys — the
+## implementation contract; each domain becomes a pure function of its
+## declared inputs, computed by one worklist):
+##   D1 paramReps      owner narrow.js runCallsiteLattice (CONVERGED since
+##      slice 1); inputs: callSites × caller bodyFacts × defaults; edges:
+##      callee param ← caller args.
+##   D2 bodyFacts      owner analyze.js analyzeBody (the staleable cache);
+##      inputs: body AST × localReps(val/typedCtor) × schema sets ×
+##      globalValTypes; THE flaky-arena WeakMap lives here — slice 3
+##      replaces the cache with solver-owned storage keyed (funcName,
+##      domain), removing the WeakMap-arena interaction entirely (also the
+##      leading theory for the kernel knife-edge class — the solver may
+##      fix it by construction).
+##   D3 localReps      owners: plan.js seeding + analyze boxing + narrow
+##      enrichment + THREE emit-time writers (audit); slice 4 moves emit
+##      writers to plan finalization.
+##   D4 typedLen/schema/constStr channels   owners: prepare census (now
+##      per-binding post-1b) + plan/scope const provenance; module-scoped,
+##      write-once-ish — natural solver seeds.
+##   D5 ranges         owner static.js intExprRange (canonical since the
+##      range wave) — pure already; reads D3.range reps.
+##   ORDER: D4 → D2 → D1 → D3-enrichment → (fixpoint D1/D2/D3) → freeze
+##   FunctionPlan → emit reads plans only. Slice 3a = D2 ownership move
+##   (solver storage, no WeakMap); 3b = D1 onto the worklist; 3c = D3
+##   emit-writer relocation (slice 4's door).
+
 Replace the rerun choreography (runFixpoint ×2, 13 plan-time refresh points,
 28 analyzeBody call sites, emit-time rep updates) with:
 
