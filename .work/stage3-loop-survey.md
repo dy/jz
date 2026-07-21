@@ -114,6 +114,22 @@ direct writes vetted by ivMonotonic). findMutations imports are GONE from
 every loop pass — the hazard predicate has one home. WAT parity identical;
 battery-gated.
 
+## Step 2 (WASM-tier affine) DONE (2026-07-21) — with a load-bearing negative
+
+matchAffineAddr is now a thin wrapper over matchLaneAddr/matchLaneOffset
+(new `allowTee=false` opt-out; both-operand-orders + bare-non-IV-base stay
+its residual). Acceptance set verified field-by-field (k∈[0,3], bare-IV shl
+operand, AoS/tee/offsetTees arms dead under the wrapper's args).
+NEGATIVE RESULT (do not retry): matchConstMulIV and buildPivotCoeff.delta()
+CANNOT join this core without acceptance drift — matchConstMulIV is a
+deliberate direct-operand syntactic check (a recursive engine would accept
+`(i32.mul 8 (i32.add ind 0))` — real widening, unfolded chains occur
+pre-fold); delta() is a multi-statement program-order dataflow propagation
+(coeff Map over add/sub/mul/shl/tee/select/f64-conv) — a different
+algorithm, not a duplicate. Documented in-code. Cross-IR unification with
+type.js affineIdxOfIV also rejected (different node shapes; an abstraction
+layer would add confusion, not remove it).
+
 ## Order of attack (matches plan Stage 3)
 
 1. Grow loop-model.js into the record builder on the AST tier (its 6

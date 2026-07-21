@@ -939,14 +939,15 @@ function matchConstMulIV(node, ind) {
   return null
 }
 
-function matchLaneOffset(off, ind, offsetTees, allowAos, aosPix, idxTees) {
+// `allowTee` gates the CSE-tee unwrap — matchAffineAddr passes false to stay tee-free.
+function matchLaneOffset(off, ind, offsetTees, allowAos, aosPix, idxTees, allowTee = true) {
   if (isArr(off) && off[0] === 'local.get' && typeof off[1] === 'string' &&
       offsetTees && offsetTees.has(off[1])) {
     return { strideLog2: offsetTees.get(off[1]), pixelStride: (aosPix && aosPix.get(off[1])) || 1, teeName: null }
   }
   let teeName = null
   let n = off
-  if (isArr(n) && n[0] === 'local.tee' && n.length === 3) { teeName = n[1]; n = n[2] }
+  if (allowTee && isArr(n) && n[0] === 'local.tee' && n.length === 3) { teeName = n[1]; n = n[2] }
   // (i32.shl <ind-scaled> (i32.const K))
   if (isArr(n) && n[0] === 'i32.shl' && n.length === 3) {
     const k = constNum(n[2])
@@ -1012,9 +1013,10 @@ function matchMirrorAddr(addr, ind) {
  *
  * Returns { strideLog2, base, teeName?, offsetTeeName?, viaLocal? } or null.
  *   `strideLog2` = K for i32.shl form, 0 for plain add form.
- *   `base` is the loop-invariant base subtree.
+ *   `base` is the loop-invariant base subtree. `allowTee` threads to matchLaneOffset;
+ *   matchAffineAddr passes false to stay tee-free.
  */
-function matchLaneAddr(addr, ind, addrLocals, offsetTees, allowAos, aosPix, idxTees) {
+function matchLaneAddr(addr, ind, addrLocals, offsetTees, allowAos, aosPix, idxTees, allowTee = true) {
   let teeName = null
   let n = addr
   // (local.get $A) where $A holds a previously-tee'd FULL lane-address.
@@ -1028,7 +1030,7 @@ function matchLaneAddr(addr, ind, addrLocals, offsetTees, allowAos, aosPix, idxT
   }
   if (!isArr(n) || n[0] !== 'i32.add' || n.length !== 3) return null
   const a = n[1], b = n[2]
-  const off = matchLaneOffset(b, ind, offsetTees, allowAos, aosPix, idxTees)
+  const off = matchLaneOffset(b, ind, offsetTees, allowAos, aosPix, idxTees, allowTee)
   if (!off) return null
   return { strideLog2: off.strideLog2, pixelStride: off.pixelStride || 1, base: a, teeName, offsetTeeName: off.teeName }
 }
@@ -3401,18 +3403,14 @@ function liftExprV(expr, ctx) {
 // Match `(i32.add (local.get $base) (i32.shl (local.get $ind) (i32.const K)))` in either
 // operand order, or `(i32.add (local.get $base) (local.get $ind))` (K=0). Returns
 // {base, k} — the address of element $ind in array $base, byte stride 1<<k — or null.
+// Thin wrapper over matchLaneAddr (tee/CSE/AoS-free); both operand orders + bare-local base are this fn's own residual.
 function matchAffineAddr(node, ind) {
   if (!isArr(node) || node[0] !== 'i32.add' || node.length !== 3) return null
-  const pair = (baseN, offN) => {
-    if (!isLocalGet(baseN) || baseN[1] === ind) return null
-    if (isLocalGet(offN, ind)) return { base: baseN[1], k: 0 }
-    if (isArr(offN) && offN[0] === 'i32.shl' && offN.length === 3 && isLocalGet(offN[1], ind)) {
-      const k = constNum(offN[2])
-      if (k != null && k >= 0 && k <= 3) return { base: baseN[1], k }
-    }
-    return null
+  const fromOrder = (addr) => {
+    const m = matchLaneAddr(addr, ind, undefined, undefined, false, undefined, undefined, false)
+    return (m && isLocalGet(m.base) && m.base[1] !== ind) ? { base: m.base[1], k: m.strideLog2 } : null
   }
-  return pair(node[1], node[2]) || pair(node[2], node[1])
+  return fromOrder(node) || fromOrder(['i32.add', node[2], node[1]])
 }
 
 /**
