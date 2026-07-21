@@ -54,8 +54,8 @@ import compile from './src/compile/index.js'
 import { resetProgramFactsCache } from './src/compile/program-facts.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
 import {
-  collectReachableGlobalWrites, collectReachableMemoryWrites,
-  hoistGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix, hasIROp, stablePtrGlobalNames,
+  collectReachableGlobalWrites,
+  hoistGlobalPtrOffset, stablePtrGlobalNames,
   resolveOptimize, SIMD_PINNED,
 } from './src/optimize/index.js'
 import { VAL } from './src/reps.js'
@@ -783,38 +783,48 @@ const jzCompileInner = (code, opts = {}) => {
       : [],
   })
   const optimized = watrOpts ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
-  // Narrow whole-module proof repairs may consume the final address/control shape watr exposes:
-  // stable pointer offsets, immutable fixed typed cells, and all-false masked SIMD suffixes. These
-  // are idempotent, fail-closed module rewrites — not a second generic optimization pipeline.
-  if (cfg.hoistGlobalPtrOffset !== false || cfg.hoistGlobalConstLoads !== false || cfg.maskedSuffixGuard !== false) {
+  // Narrow whole-module proof repair: hoistGlobalPtrOffset may consume the final address shape
+  // watr exposes — a stable-pointee global decoded once per FUNCTION pre-watr (jz's own
+  // src/wat/assemble.js optimizeModule copy) can end up decoded at multiple sites within one
+  // function once watr's own inliner merges several such functions into a single caller (e.g. a
+  // driver function absorbing its per-step helpers), crossing this pass's multi-site hoist
+  // threshold in a shape that only exists after watr runs. Idempotent, fail-closed — not a second
+  // generic optimization pipeline.
+  //
+  // Measured (2026-07-21, stage4 increment 2): instrumented all three post-watr proof repairs
+  // (hoistGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix) across the bench
+  // corpus (171 compiles, all bench/ specimens × speed/size/O0) and the full test suite
+  // (JZ_TEST_OPTIMIZE=3, 3051 tests / 17595 assertions). hoistGlobalPtrOffset fired 12 times (all
+  // in examples/watercolor's `$frame` driver + one optimizer.js inline-hoist case) — load-bearing,
+  // kept. hoistStableGlobalConstLoads and guardMaskedVectorSuffix fired ZERO times anywhere; their
+  // pre-watr copy (src/wat/assemble.js optimizeModule) already does everything watr's fixpoint
+  // leaves for them to find, so the post-watr copies were dead duplicate work — deleted.
+  if (cfg.hoistGlobalPtrOffset !== false) {
     const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
-    const stableGlobals = cfg.hoistGlobalPtrOffset !== false ? stablePtrGlobalNames() : new Set()
-    let reach = null
+    const stableGlobals = stablePtrGlobalNames()
     if (stableGlobals.size) {
-      reach = collectReachableGlobalWrites(funcs)
+      const reach = collectReachableGlobalWrites(funcs)
       for (const node of funcs) hoistGlobalPtrOffset(node, stableGlobals, reach)
-    }
-    const wantLoads = cfg.hoistGlobalConstLoads !== false && !!ctx.scope.globalTypedLen?.size
-    const mayHaveMasks = cfg.maskedSuffixGuard !== false && funcs.some(fn =>
-      fn.some(node => Array.isArray(node) && node[0] === 'local' && node[2] === 'v128'))
-    const wantMasks = mayHaveMasks && hasIROp(funcs, 'v128.bitselect')
-    if (wantLoads || wantMasks) {
-      if (wantLoads && !reach) reach = collectReachableGlobalWrites(funcs)
-      const memoryWrites = collectReachableMemoryWrites(funcs)
-      for (const node of funcs) {
-        if (wantLoads) hoistStableGlobalConstLoads(node, memoryWrites, reach)
-        if (wantMasks) guardMaskedVectorSuffix(node, memoryWrites)
-      }
     }
   }
   // NO post-watr generic optimizer. jz does all lowering — including auto-vectorization — before
   // watr (src/wat/assemble.js optimizeModule → optimizeFunc); watr is the sole generic fixpoint and
   // runs exactly once. Re-running jz's leaf pipeline here dropped a reassigned-param local.tee and
-  // corrupted divergent-escape SIMD. The proof repairs above are the deliberately narrow exception.
+  // corrupted divergent-escape SIMD. The proof repair above is the deliberately narrow exception.
   // Pre-eval tier 3 — module-init snapshotting (src/snapshot.js): run __start once
   // NOW, bake the post-init heap image + global values into the artifact, delete
   // __start. Opt-in (optimize.snapshotInit); declined cleanly (dynamically-proven
   // hermeticity) when init touches the host, loops forever, or memory is shared.
+  // Stays HERE (post-watr, post-repair), not grouped earlier with pre-watr passes: it calls
+  // watrCompile(optimized) to instantiate a real probe module, and the shape it must instantiate,
+  // decline-check, and bake IS the shipped shape — the fully watr-optimized, repair-hoisted module.
+  // `sec` inside src/wat/assemble.js optimizeModule (where the pre-watr repair copies live) is not
+  // an assembled module at all (bare {funcs, stdlib, start} arrays, no imports/exports/data
+  // sections) — watrCompile can't consume it, so snapshotInit has no earlier valid point to run at.
+  // Running it before watOptimize instead (module is valid there too) is possible but would change
+  // what watr's own fixpoint sees (baked constants vs a live __start) and shift output bytes for
+  // every snapshotInit-enabled compile — a real pipeline-order change, not a duplicate-work delete,
+  // and out of this increment's scope.
   if (cfg.snapshotInit) {
     const took = time('snapshotInit', () => snapshotInit(optimized, watrCompile))
     if (!took && opts.warnings) warn('snapshot-declined', 'init snapshot declined (host-touching, timer, or shared-memory init) — compiled without it')

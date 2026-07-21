@@ -55,11 +55,20 @@ Stage-4 choice: (a) formalize target enum gating EH/guard/trap choices, or
 ad hoc env vars.
 
 ## Increment order (chosen)
-1. audit:fixpoint as a battery leg (hard-fail on hot-loop delta) — small,
-   dbg-leg pattern.
-2. Post-watr rewrite migration: move the three repairs + snapshotInit before
-   the final watr run (or watr plugins) — kills the double-run; index.js's
-   "no post-watr pass" claim becomes literally true.
+1. DONE (9fdc5d4e): audit:fixpoint battery leg — and the deeper find: the
+   audit compared against watr's bare size-leaning defaults; resolveWatrOpts
+   extracted as the single tier→options source consumed by pipeline + audit;
+   10/10 kernels verified at hot-loop fixpoint (the 4 reds were measurement
+   drift, not misses).
+2. DONE (measured, not assumed): of the three post-watr repairs, TWO
+   (hoistStableGlobalConstLoads, guardMaskedVectorSuffix) fired ZERO times
+   across the whole corpus post-watr — deleted. hoistGlobalPtrOffset IS
+   load-bearing post-watr: watr's inliner merges per-step helpers into a
+   driver (watercolor $frame), re-creating multi-site pointer-decode shapes
+   that only exist after watr — kept, with the measurement recorded in-code.
+   snapshotInit stays post-watr structurally (needs an assembled instantiable
+   module; sec is bare arrays pre-assembly); moving it pre-watOptimize would
+   change what the fixpoint sees — out of scope, recorded.
 3. CompileSession: mechanical extraction AFTER 1-2; start from the two
    in-tree precedents (vectorize local ctx, narrow save/restore); the
    module/ tier's ctx.core registry installs are load-time and stay.
