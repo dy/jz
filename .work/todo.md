@@ -166,12 +166,17 @@
     JSON.parse("lit") OK, JSON.parse("" + numParam) OK,
     JSON.stringify(param) OK, Math.sqrt(param) OK. The divergence sits
     precisely where a STRING-TYPED PARAM meets JSON.parse's
-    include/typing path. NEXT CANDIDATES: the parse-entry arg
-    classification in module/json.js (repOf/valTypeOf on the renamed
-    param), func.defaults name-keying, valueUsed, and
-    applyJsstringBoundaryCarrier's reps read — differential each
-    natively-compiled (the kernel executes the same binary), with REAL
-    prepare output as input, then the chain composed.
+    include/typing path. RAZOR EDGE (final narrowing):
+    `JSON.parse(s) + s.length` WORKS through the kernel — only the PURE
+    FORWARDING shape `(s) => JSON.parse(s)` stubs, and the stub has NO
+    inner $f at all (native: $f = return_call $__jp(__to_str(s)) +
+    $f$exp wrapper; kernel: only $f$exp with an undef-const body). The
+    kernel loses the LIFTED FUNCTION ITSELF on single-expression
+    builtin-forward exports — suspect set: defFunc lift → export
+    resolution → treeshake chain for the forward shape (1b deleted
+    defFunc's censusBinding call — pure census, but verify), or $exp
+    wrapper generation when the inner body is a bare builtin
+    return_call. Differential those natively-compiled with this source.
   * THE KERNEL-STRIP SAGA CLOSED — THE STRING-ENCODING CLASS
     (2026-07-21a): ALL kernel-leg reds (10, incl. jsstring externref +
     typed-narrow/loop-counter WAT-name pins) shared ONE root: jz strings
