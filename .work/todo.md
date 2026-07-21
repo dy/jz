@@ -141,6 +141,29 @@
     hulls. sdf 1.22× is the genuinely-hard tail (same family as nqueens/
     sort scheduling): needs sentinel-invariant discovery or loop versioning
     on a mutating cursor — no cheap general lever; recorded, not chased.
+  * STAGE 2 SLICE 2a — PARKED; TWO REFUTATIONS AND A KNIFE-EDGE FINDING
+    (2026-07-21e): the "declared invalidation" increment is WITHDRAWN, and
+    the evidence is worth more than the code would have been. (1) Live
+    auto-invalidation (closure-chain AND iterative-stack recorder forms)
+    turned the kernel leg red on "codegen: JSON.parse(let SRC) walk uses
+    slot loads" — the staleable body-facts cache's invalidation PLACEMENT
+    is semantically load-bearing, as analyze.js's header warns; fresher
+    is not safer. (2) Even a BYTE-INERT diagnostic variant (conditional
+    accessor definitions, production forms identical; dead branches in
+    analyzeBody) flipped the SAME kernel test, while a fee17c77 HEAD
+    control kernel passes it — i.e. ANY reshape of reps.js/analyze.js
+    flips this test through the kernel. VERDICT: that test sits on a
+    LAYOUT-SENSITIVE LATENT KERNEL MISCOMPILE in the JSON.parse/
+    string-param neighborhood — the same family as the parked
+    string-param class (2026-07-21c), now with a powerful lever: the
+    bug's expression toggles with unrelated compiler-source layout, so a
+    MINIMAL PAIR of kernels (HEAD vs HEAD+one-dead-branch-in-analyze)
+    differing in exactly this test is available on demand — diff their
+    WAT for the failing test's compile path to localize the miscompiled
+    kernel function. Source reverted to fee17c77; lessons + the minimal-
+    pair recipe are the deliverable. Slice 3 (pure-function solver)
+    remains the real path — no more freshness increments into the
+    staleness-tolerant choreography.
   * STAGE 2 SLICE 1 — CHANGE-DRIVEN FIXPOINT (2026-07-21d): the audit's
     "rerun sequencing" P0 first cut. param-reps.js gains `latticeMeet`
     (the convergence signal set by every meet transition — mergeParamFact
