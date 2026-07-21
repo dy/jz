@@ -141,6 +141,24 @@
     hulls. sdf 1.22× is the genuinely-hard tail (same family as nqueens/
     sort scheduling): needs sentinel-invariant discovery or loop versioning
     on a mutating cursor — no cheap general lever; recorded, not chased.
+  * KNIFE-EDGE VERDICT REVISED — FLAKY UNDER STATE, ARENA/GC THEORY
+    (2026-07-21i): the SAME one-block B side that was RED (bat4m3ui4)
+    ran GREEN on the next full-leg cycle (bkd8gzjg7; only a test-file
+    dump-condition string changed — host-side, not kernel-compiled). So
+    the expression is NOT deterministic per tree: red appeared in 4 of 6
+    full-leg runs across 2a variants, green in 2. COHERENT THEORY: the
+    onUpdate closure touches _bodyFactsCache (a WeakMap whose BACKING IS
+    ARENA-ALLOCATED in the self-hosted kernel — analyze.js's own
+    resetBodyFactsCache comment); GC/arena timing interactions make a
+    later JSON-walk compile's coercion facts occasionally corrupt —
+    which also fits the string-param family (state-dependent JSON
+    neighborhood). STATUS: grind paused at the right boundary — further
+    progress needs REPETITION statistics per pair side (expensive) or a
+    direct arena/WeakMap audit in the kernel runtime (module/…
+    collection/heapReset path) — recorded as the class's next two entry
+    points. All claims of determinism in 2026-07-21f/g are revised by
+    this entry. The JZ_DEBUG_KNIFE affordance stays. Stage-2 small
+    slices remain safe-to-land (unchanged conclusion).
   * ONE-BLOCK MINIMAL PAIR CONFIRMED + SIGNATURE SHARPENED
     (2026-07-21h): adding ONLY the `repEvents.onUpdate = (name) => {...}`
     dead-guarded module-init closure (captures _bodyDeps +
