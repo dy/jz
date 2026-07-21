@@ -141,6 +141,18 @@
     hulls. sdf 1.22× is the genuinely-hard tail (same family as nqueens/
     sort scheduling): needs sentinel-invariant discovery or loop versioning
     on a mutating cursor — no cheap general lever; recorded, not chased.
+  * STAGE 2 SLICE 3b — PARAMREPS ON A TRUE WORKLIST (2026-07-21k):
+    the core callsite fixpoint is now edge-driven: applySiteRules
+    extracted from the sweeping lattice runner; runFixpointConverged
+    seeds every site once and re-enqueues ONLY sites whose CALLER is the
+    callee that just gained facts (sitesByCaller index; per-site
+    latticeMeet scoping; monotone meets are confluent so the fixpoint is
+    order-independent — same bytes as the sweep form). "Run the sweep
+    until quiet" (slice 1) becomes "the worklist isn't empty yet" — the
+    plan's exact phrase. The post-enrichment re-sweeps keep the sweep
+    form (they exist to re-derive after external enrichment, where a
+    full pass is the correct semantics). Compile-time: O(changed edges)
+    instead of O(sites × iterations); the selfhost-perf gate prices it.
   * STAGE 2 SLICE 3a — BODY-FACTS CACHE ON AN EXPLICIT-LIFECYCLE MAP
     (2026-07-21j): the WeakMap replaced by a plain Map — lifecycle was
     already explicit (reset per compile), so weak semantics bought

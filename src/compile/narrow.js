@@ -1313,26 +1313,31 @@ export default function narrowSignatures(programFacts, ast) {
       },
     }
   }
+  // Per-site rule application, extracted so both the sweeping lattice runner
+  // and the worklist fixpoint drive the same body (Stage 2 slice 3b).
+  const applySiteRules = (state, rules) => {
+    const { func, argList } = state
+    const recursive = state.callee === state.callerFunc?.name
+    for (let k = 0; k < func.sig.params.length; k++) {
+      const r = ensureParamRep(paramReps, state.callee, k)
+      if (k >= argList.length) { for (const rule of rules) rule.missing(r, k, state); continue }
+      const arg = argList[k]
+      // Recursive identity arg — `f(…, p, …)` calling itself with its own param p threaded
+      // through at the same position — is a fixpoint identity: it carries whatever type p
+      // settles to, so it constrains nothing. Skip it, else exprType(p) reads p's not-yet-
+      // narrowed f64 and the meet poisons the type the non-recursive call sites would prove
+      // (nqueens' `solve(all, …)` — `all` stuck f64 while cols/d1/d2, passed as i32 bitwise
+      // exprs, narrowed fine).
+      const pname = func.sig.params[k].name
+      if (recursive && (arg === pname || (Array.isArray(arg) && arg[0] === 'local.get' && arg[1] === pname))) continue
+      for (const rule of rules) rule.apply(r, arg, k, state)
+    }
+  }
   const runCallsiteLattice = (rules) => {
     for (let s = 0; s < callSites.length; s++) {
       const state = siteState(callSites[s])
       if (!state) continue
-      const { func, argList } = state
-      const recursive = state.callee === state.callerFunc?.name
-      for (let k = 0; k < func.sig.params.length; k++) {
-        const r = ensureParamRep(paramReps, state.callee, k)
-        if (k >= argList.length) { for (const rule of rules) rule.missing(r, k, state); continue }
-        const arg = argList[k]
-        // Recursive identity arg — `f(…, p, …)` calling itself with its own param p threaded
-        // through at the same position — is a fixpoint identity: it carries whatever type p
-        // settles to, so it constrains nothing. Skip it, else exprType(p) reads p's not-yet-
-        // narrowed f64 and the meet poisons the type the non-recursive call sites would prove
-        // (nqueens' `solve(all, …)` — `all` stuck f64 while cols/d1/d2, passed as i32 bitwise
-        // exprs, narrowed fine).
-        const pname = func.sig.params[k].name
-        if (recursive && (arg === pname || (Array.isArray(arg) && arg[0] === 'local.get' && arg[1] === pname))) continue
-        for (const rule of rules) rule.apply(r, arg, k, state)
-      }
+      applySiteRules(state, rules)
     }
   }
 
@@ -1474,7 +1479,7 @@ export default function narrowSignatures(programFacts, ast) {
     }
     return wt
   }
-  const runFixpoint = () => runCallsiteLattice([
+  const fixpointRules = [
     // val runs SOFT (monotone): a TYPED param's val only becomes inferable after the
     // typedCtor fixpoint + pointer-ABI enrichment, so an early hard merge would
     // sticky-poison it (the old clearStickyNull undid that). Soft leaves it BOTTOM;
@@ -1503,7 +1508,8 @@ export default function narrowSignatures(programFacts, ast) {
         else if (r.intConst !== null) mergeParamFact(r, 'intConst', intConstArg(arg))
       },
     },
-  ])
+  ]
+  const runFixpoint = () => runCallsiteLattice(fixpointRules)
   // Transitive ctor/schema propagation down call chains. A naive single-pass
   // mergeRule poisons a callee's param on the *first* sweep if the caller's own
   // param (the very thing that supplies the ctor) hasn't been typed yet — and the
@@ -1586,11 +1592,42 @@ export default function narrowSignatures(programFacts, ast) {
   // terminates; 32 is a safety belt far above any real chain depth. Replaces
   // the "run twice" guess — deep caller chains (main→f→g→h) need more sweeps,
   // shallow programs need one.
+  // Worklist fixpoint (Stage 2 slice 3b): the edge is site(caller→callee) —
+  // a callee's param reps derive from its CALLER's facts, so when function
+  // F's reps change, only sites where F is the CALLER need revisiting.
+  // Seed = every site once; termination = monotone meets over finite-height
+  // lattices (the same argument as the sweep form, minus the wasted quiet
+  // sweep and the re-application to unaffected sites). Sweep callers of
+  // runFixpoint elsewhere (arrElem enrichment re-sweeps) are unchanged.
   const runFixpointConverged = () => {
-    for (let i = 0; i < 32; i++) {
+    const rules = fixpointRules
+    const sitesByCaller = new Map()
+    for (let s = 0; s < callSites.length; s++) {
+      const cf = callSites[s].callerFunc?.name
+      if (cf == null) continue
+      let a = sitesByCaller.get(cf)
+      if (!a) sitesByCaller.set(cf, a = [])
+      a.push(s)
+    }
+    const queued = new Array(callSites.length).fill(false)
+    const queue = []
+    for (let s = 0; s < callSites.length; s++) { queue.push(s); queued[s] = true }
+    let head = 0
+    let guard = callSites.length * 64   // belt far above any real edge count
+    while (head < queue.length && guard-- > 0) {
+      const s = queue[head++]
+      queued[s] = false
+      const state = siteState(callSites[s])
+      if (!state) continue
       latticeMeet.changed = false
-      runFixpoint()
-      if (!latticeMeet.changed) return
+      applySiteRules(state, rules)
+      if (latticeMeet.changed) {
+        // this site's CALLEE gained facts → sites where the callee CALLS out
+        const dep = sitesByCaller.get(state.callee)
+        if (dep) for (const d of dep) if (!queued[d]) { queue.push(d); queued[d] = true }
+      }
+      // compact the spent prefix occasionally so queue stays bounded
+      if (head > 4096 && head * 2 > queue.length) { queue.splice(0, head); head = 0 }
     }
   }
   runFixpointConverged()
