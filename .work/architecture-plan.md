@@ -132,8 +132,17 @@ flipping default.
 ##      range wave) — pure already; reads D3.range reps.
 ##   ORDER: D4 → D2 → D1 → D3-enrichment → (fixpoint D1/D2/D3) → freeze
 ##   FunctionPlan → emit reads plans only. Slice 3a = D2 ownership move
-##   (solver storage, no WeakMap); 3b = D1 onto the worklist; 3c = D3
-##   emit-writer relocation (slice 4's door).
+##   (solver storage, no WeakMap) — LANDED 878d3685; 3b = D1 onto the
+##   worklist — LANDED b01dbfb2 (applySiteRules + caller-indexed
+##   edge-driven re-enqueue; confluent, order-independent); 3c = D3
+##   emit-writer relocation (slice 4's door). 3c CENSUS (2026-07-21):
+##   14 write sites — emit.js ×6 (incl. the ptrKind discovery at ~1581),
+##   module/object.js ×4 (Object.assign schema binds incl. 2
+##   schema.vars.set), module/core.js ×2 (copy val propagation),
+##   module/array.js ×2. Each is a mid-emit DECISION; relocation =
+##   determine when its input is plan-time-available, move, and the
+##   exit grep (updateRep|schema.vars.set in emit/module → 0) closes
+##   slice 4's door.
 
 Replace the rerun choreography (runFixpoint ×2, 13 plan-time refresh points,
 28 analyzeBody call sites, emit-time rep updates) with:
