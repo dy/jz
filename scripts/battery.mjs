@@ -36,6 +36,10 @@ const legs = [
   run('dbg', ['test/index.js'], { JZ_TEST_OPTIMIZE: '3', JZ_DEBUG_INVARIANTS: '1' }),
   run('wasi', ['test/index.js'], { JZ_TEST_HOST: 'wasi' }),
   run('fuzz', ['test/fuzz.js']),
+  // Tier-2 local-optimality: is jz's own output a fixpoint of jz's own rewrite
+  // system (re-running watr, config-matched, removes nothing)? A non-fixpoint
+  // is a rewrite jz's pipeline could have made but didn't — see the script header.
+  run('fixpoint', ['scripts/audit-fixpoint.mjs']),
 ]
 if (!fast) legs.push((async () => {
   // Skip the ~5-min dist rebuild when no compiler input changed since the last

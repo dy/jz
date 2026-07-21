@@ -15,11 +15,19 @@
 // watr is jz's own rewrite system, so its delta is unconfounded: a drop is a
 // rewrite jz's pipeline could have made but didn't.
 //
-// Not a CI gate (yet): the bare watr/optimize runs DEFAULT settings, which may be
-// more aggressive than jz's tier-specific watr config, so a small delta can be a
-// config choice rather than a true miss. Run on demand (`npm run audit:fixpoint`);
-// a non-fixpoint is a candidate to investigate, not an automatic bug.
-import { compile } from '../index.js'
+// CI gate: the second pass re-runs watr with the SAME options `compile()` itself
+// resolved for this tier (`resolveWatrOpts`, index.js) — not watr's bare defaults.
+// watr's bare defaults lean size (outline/tailmerge/rettail ON: fold repeated
+// code into out-of-line calls), which the 'speed' tier deliberately disables
+// (measured 1.433→1.316 self-host slowdown with them on — see resolveWatrOpts'
+// `watrProfile` comment). Comparing against bare defaults made every kernel with
+// duplicated NaN-box tag-classification code (any exported fn boundary-boxing a
+// param) look like a miss, when it was watr running a DIFFERENT rewrite system
+// than the one jz configured — not jz leaving a rewrite on the table. Matching
+// the options closes the false positives; a delta that survives THIS comparison
+// is real waste, so this script exits non-zero on any.
+import { compile, resolveWatrOpts } from '../index.js'
+import { resolveOptimize } from '../src/optimize/index.js'
 import parseWat from 'watr/parse'
 import { optimize as watOptimize } from 'watr/optimize'
 import { countOps, loopCount } from './wat-probe.mjs'
@@ -53,6 +61,13 @@ const CORPUS = [
   { name: 'fib (recursion)', src: `export let fib=(n)=> n<2 ? n : fib(n-1)+fib(n-2)` },
 ]
 
+// The exact watr config the 'speed' tier resolves to (index.js's compile() builds
+// this per-compile from live ctx; the two ctx-only refinements — function count
+// for the unroll2 partial-unroll gate, JS-boundary vectorized-fn pins — don't
+// change the verdict for this single-function corpus, so the cfg-only call is
+// a faithful stand-in).
+const SPEED_WATR_OPTS = resolveWatrOpts(resolveOptimize('speed'))
+
 const pad = (s, n) => String(s).padEnd(n)
 const padL = (s, n) => String(s).padStart(n)
 
@@ -67,12 +82,13 @@ for (const { name, src } of CORPUS) {
   try {
     const tree = parseWat(compile(src, { optimize: 'speed', wat: true }))
     lb = loopOps(tree)
-    const re = watOptimize(tree)
+    const re = watOptimize(tree, SPEED_WATR_OPTS)
     lbAfter = loopOps(re)
     realDrop = realLoopOps(tree) - realLoopOps(re)   // hot-path arithmetic/memory/SIMD only
     modDrop = countOps(tree) - countOps(re)          // whole-module, secondary
   } catch (e) {
     console.log(`${pad(name, 28)} ${padL('ERR', 5)}  ${e.message.slice(0, 36)}`)
+    misses.push({ name, drop: `ERR: ${e.message.slice(0, 60)}` })
     continue
   }
   checked++
@@ -91,5 +107,6 @@ if (!misses.length) {
 } else {
   console.log(`ATTENTION: ${misses.length} kernel(s) have a non-fixpoint LOOP BODY — real per-iteration waste:`)
   for (const m of misses) console.log(`  ${m.name}: a second watr pass removes ${m.drop} more loop-body ops`)
-  console.log(`(These are genuine hot-path candidates — the fix is in the vectorizer/post-phase output, e.g. the v128 memarg fold in src/optimize/index.js foldV128Memargs.)`)
+  console.log(`(These are genuine hot-path candidates, measured under jz's OWN speed-tier watr config — see resolveWatrOpts in index.js — so this is not a config-choice artifact.)`)
+  process.exitCode = 1
 }
