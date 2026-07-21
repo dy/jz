@@ -208,11 +208,37 @@ const runProc = (argv, opts = {}) => {
 // to remove). Keyed set filled by tryRun, cleared per case by the paired loop.
 const pairedBuilt = new Set()
 let PAIRED_REUSE = false
+// Persistent cross-run prep cache: a rival toolchain rebuild (rustc/zig/asc/go,
+// seconds each) is pure waste when the case's sources haven't changed — with the
+// cache a measurement run is warmup + counted runs (~1s/case-target). Keyed on
+// the max mtime of the case's source dir vs a per-(target,case) stamp written
+// after a successful prep. jz* rows are NEVER cached (the compiler under
+// development changes constantly; its compiles are cheap). JZ_BENCH_REBUILD=1
+// forces every prep.
+const _srcMtimeMemo = new Map()
+const maxSrcMtime = (c) => {
+  let m = _srcMtimeMemo.get(c.id)
+  if (m == null) {
+    m = 0
+    for (const f of readdirSync(c.dir)) {
+      const st = statSync(join(c.dir, f))
+      if (st.isFile() && st.mtimeMs > m) m = st.mtimeMs
+    }
+    _srcMtimeMemo.set(c.id, m)
+  }
+  return m
+}
 const tryRun = (id, c, prep, argv, opts = {}) => {
   try {
     mkdirSync(caseBuild(c), { recursive: true })
     const key = `${id}:${c.id}`
-    if (prep && !(PAIRED_REUSE && pairedBuilt.has(key))) { prep(); pairedBuilt.add(key) }
+    if (prep && !(PAIRED_REUSE && pairedBuilt.has(key))) {
+      const stamp = join(caseBuild(c), `.prep-${id}`)
+      const cacheable = !process.env.JZ_BENCH_REBUILD && !id.startsWith('jz')
+      const fresh = cacheable && existsSync(stamp) && statSync(stamp).mtimeMs > maxSrcMtime(c)
+      if (!fresh) { prep(); if (cacheable) writeFileSync(stamp, '') }
+      pairedBuilt.add(key)
+    }
     const parsed = runProc(argv, opts)
     return parsed.error ? { id, error: parsed.error } : { id, ...parsed }
   } catch (e) {
