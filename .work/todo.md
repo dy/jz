@@ -6352,3 +6352,20 @@ and READ the argument wiring of the group-map → $expr call — the
 miscompiled slot will be visible in the IR (this is jz's own output; no
 more inference needed). Restore checklist stands (subscript package
 probes: parse.js, asi.js, collection.js, accessor.js).
+
+SKM ROUND 10 — THEORY CORRECTED BY THE TRAIL (2026-07-22): kernel expr
+trail `0/- 9/- 19.5/- 0/125 4.5/- 0/41`: the group map's expr(0,125) has
+CORRECT arguments (leak theory DEAD); the anomaly is a bare expr(4.5)
+(no end — ASI's exact signature; block passes end=125) running BETWEEN
+the string step's SUCCESS (bs=A) and the '(' step — impossible from MY
+instrumented asi layer (bs ?? short-circuits) ⇒ the 4.5 caller is a
+DIFFERENT step-wrapper layer (statement.js? switch.js? — parse.step is
+reassigned by several features; my probe sits in asi's layer only).
+ALSO NOTED: this round's "kernel FAIL" is MY cc=40 err truncating the
+parse — the kernel had built the call node and was proceeding; the
+actual failure path needs the probe err REMOVED and the natural error
+re-observed with the trail intact (log-and-continue, err only at
+Unclosed). NEXT: (a) read statement.js/switch.js step wrappers for the
+expr(4.5) caller; (b) convert BCA/BCE to passive accumulation + report
+from parse.js's err() itself (append trails to every error message) —
+one build, full natural-flow evidence.
