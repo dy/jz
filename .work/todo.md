@@ -6065,3 +6065,12 @@ SOURCE (covers paths no test executes), zero runtime cost, no subset
 constraint. LESSON: enforcement code in kernel-compiled files must stay
 inside the jz subset; prefer static source gates over runtime tripwires
 when the invariant is syntactic. Battery 10/10 (kernel 1146).
+
+JZ-W2C REGRESSION GATE LANDED (2026-07-22, stage-5 claims item): CI ran
+the jz-w2c row but nothing asserted on it. test/bench.js now gates the
+COMMITTED evidence (results.json): per-case w2c/jz ≤ 3.5× (native-lowering
+blowup detector — EH/trap misuse, guard-page breaks) + geomean ≤ 1.35×,
+≥20 parity-ok rows required. Calibration: 54 rows, geomean 1.208, worst
+tokenizer 2.79 (structural: V8 v128 vs wasm2c scalar C — inside the
+ceiling by design). The wasm2c TargetProfile enum stays deferred until the
+native lane consumes it (YAGNI — recorded in stage4 survey W4).

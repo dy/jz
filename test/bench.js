@@ -608,6 +608,30 @@ if (natAvailable && !process.env.CI) {
   })
 }
 
+// ── jz-w2c native-lowering regression gate (stage-5: jz-w2c as a regression
+// target, now asserted — CI runs the row but nothing gated it). Reads the
+// COMMITTED evidence (bench/results.json, refreshed at HEAD by the bench
+// workflow): a catastrophic wasm2c-lane regression (EH/trap misuse,
+// guard-page assumption break) blows these ratios up, while the structural
+// SIMD gap (tokenizer/dotprod: V8's v128 vs wasm2c's scalar C lowering,
+// ~2.4-2.8×) sits inside the ceilings. Calibration 2026-07-22: geomean
+// 1.208 over 54 parity-ok cases, worst 2.79.
+const W2C_GEOMEAN_MAX = 1.35, W2C_CASE_MAX = 3.5
+test('bench: jz-w2c native lowering within regression bands (committed evidence)', () => {
+  const res = JSON.parse(readFileSync(join(ROOT, 'bench/results.json'), 'utf8'))
+  const ratios = []
+  for (const [name, c] of Object.entries(res.cases)) {
+    const jz = c.targets?.jz, w2c = c.targets?.['jz-w2c']
+    if (jz?.medianUs && w2c?.medianUs && jz.parity === 'ok' && w2c.parity === 'ok')
+      ratios.push([name, w2c.medianUs / jz.medianUs])
+  }
+  ok(ratios.length >= 20, `too few jz-w2c rows in results.json (${ratios.length}) — native lane missing from the evidence refresh`)
+  for (const [name, x] of ratios)
+    ok(x <= W2C_CASE_MAX, `${name}: w2c/jz ${x.toFixed(2)}× > ${W2C_CASE_MAX}× — native-lowering blowup`)
+  const gm = Math.exp(ratios.reduce((s, [, x]) => s + Math.log(x), 0) / ratios.length)
+  ok(gm <= W2C_GEOMEAN_MAX, `w2c/jz geomean ${gm.toFixed(3)}× > ${W2C_GEOMEAN_MAX}×`)
+})
+
 // ── Assertions: size ────────────────────────────────────────────────────────
 for (const [id, claims] of Object.entries(SIZE)) {
   for (const tid of ['as', 'porf']) {
