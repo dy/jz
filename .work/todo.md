@@ -6271,3 +6271,22 @@ dispatch breadcrumb logging (d.op, d.p, curPrec, skip-decision) per
 descriptor, kernel vs native. Then extract the jz-level minimal miscompile
 (a compare or slot-read idiom) → fix in codegen → clear features red +
 possibly the whole parked kernel-fragility family.
+
+SKM ROUND 7 RECONCILED (2026-07-22): kernel brace decision IDENTICAL
+({/200/19.5/TRY — group map runs). Reconciling all rounds: the group's
+expr(0,125) body loop EXITED after the string step (step returned falsy
+despite the string handler producing [,s]) → expr threw Unclosed{ → an
+outer ASI try caught → statement retry expr(4.5) → '(' dispatched at
+4.5/u ✓ all observations fit. The falsy-step suspect: dispatch's
+`return loc(r, from)` — if loc() returns undefined in-kernel for the
+string node, dispatch falls through → step falsy. Bare names BYPASS
+dispatch (next(parse.id), no loc) — explains their immunity. OPEN
+CONTRADICTION to resolve: `{ "k": 1 }` also routes string+loc and WORKS —
+so loc's failure must be state/shape-dependent (check loc's impl: node
+property write on the sparse [,s] array? position pairs?). FINAL ROUND:
+log r-truthiness and loc(r)-truthiness at the DQUOTE descriptor in
+dispatch, kernel vs native, on BOTH `{ "k": 1 }` (works) and `{ "k"() {} }`
+(fails) — the pair difference isolates the exact miscompiled expression.
+Then: minimal jz repro of that idiom → codegen fix → battery + restore
+node_modules/subscript (accessor.orig.js + clean parse.js REQUIRED before
+any landing).
