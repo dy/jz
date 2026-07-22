@@ -6027,3 +6027,13 @@ class); vm/qoi correctly ineligible (no false fires); flag loop correctly
 non-versioning (iv p 2 writes). 23-assertion differential pins incl.
 guard-fail OOB semantics at O0/2/speed. Dead-code pin made env-aware
 (O0 leg keeps dead code BY DESIGN — treeshake off). Battery 10/10.
+
+CORRECTION (2026-07-22): the "IMMUTABLE LEVER DESIGN" entry above restated
+an ALREADY-LANDED lever — in-place replace-stores shipped 2026-07-08..15
+(2365e367, a87baee1, 57ca2f72: plan-level scanInplaceStores + emit-assign
+tryStructInlineReplaceStore + packed i32 cells; test/inplace-store.js +
+struct-inline.js pin both transform and alias-live-non-transform). Fresh
+measurement: immutable jz 0.14ms LEADS c-wasm 2.1×, rust-wasm 3×, AS 4.6×.
+Both my ledger entry and the re-audit's row were stale. LESSON: before
+designing a lever from an audit row, measure the row and grep git log —
+the audit was 44 commits behind on evidence and so was I.

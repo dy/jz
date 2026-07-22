@@ -355,7 +355,11 @@ const WASM_TODO = {
   // zig-wasm's no-allocation stack-buffer formatter 1.09× ahead (it never builds a string value).
   // wordcount: WON. Finite-domain no-growth hashing plus i32 count slots now
   // repeats at 0.60–0.66ms, ahead of c-wasm's ~0.75–0.77ms.
-  immutable: 'immutable-update allocation churn (ps[i] = {x,y,vx,vy} per particle per step) — every wasm rival leads (c-wasm ~4.3×, AS ~1.9×; value-semantics natives get it free). jz bump-allocates each escaping object with no scalar replacement and no reclamation. The general fix is SROA/escape analysis for same-schema replace-stores (the store kills the previous object, so the fields can live in place or in a reused cell), not per-object arena growth.',
+  // immutable: WON (2365e367 + a87baee1 + 57ca2f72, 2026-07-08..15): in-place replace-stores
+  // (plan-level scanInplaceStores alias/escape sweep -> packed-i32-cell field stores, zero
+  // alloc in the step loop). 2026-07-22 re-measure: jz 0.14ms BEATS c-wasm 0.29 (2.1x),
+  // rust-wasm 0.43 (3x), AS 0.66 (4.6x). A 2026-07-22 ledger "design" entry restated this
+  // already-landed lever from a stale audit row — check git log before designing levers.
 }
 const WASM_LEAD_TOL = 1.05  // jz median ≤ best-rival × this counts as "leads" (microbench jitter band)
 
