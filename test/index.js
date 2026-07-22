@@ -132,7 +132,7 @@ const argFilters = process.argv.slice(2)
 const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'wat-invariants', 'loop-square', 'slp', 'cond-vectorize', 'unswitch-typed-param', 'selfhost-source', 'selfhost-includes', 'abi', 'examples',
   'errors', 'generators', 'parser-bugs', 'transform',
   'destruct', 'closures', 'inference',
-  'simd', 'optimizer', 'never-grown', 'slot-hazards',
+  'simd', 'optimizer', 'slot-hazards',
   'statements', 'data', 'strings', 'spread', 'json', 'async', 'objects', 'preeval', 'speculate', 'pow-fold-ulp', 'fifthroot-ulp', 'features'])
 const onKernelTarget = process.env.JZ_TEST_TARGET === 'jz.wasm'
 
