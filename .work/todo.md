@@ -6411,3 +6411,23 @@ slot arm), audit __str_eq/__str_hash mixed-representation, add the pin
 file (test/dyn-keys.js), RESTORE node_modules/subscript probes, rebuild,
 battery, land — expect features + speculate + strings SSO-hash reds to
 clear together if the root is shared.
+
+★★ TRUE ROOT — LEAN-WRITE/GENERIC-READ LAYOUT MISMATCH (2026-07-22):
+bisection: direct-key writes fine; LOOP-BUILT dict (d[ks[i]]=i) then ANY
+missing-key read TRAPS OOB (present-key reads may wrong-hit). By
+construction: emit-assign routes qualifying dict WRITES through
+__hash_slot_eph/_fixed (ephemeral layout; leanHashLocals), but module/
+array.js's '[]' READ path has NO lean arm (leanHashLocals consumers =
+emit-assign ONLY) — reads probe the STANDARD hash layout against
+eph-written memory. Garbage in-bounds = the prec[u] wrong-hit (kernel
+SKM chain, both tiers); walk-out = the OOB traps (incl. probably the
+speculate warm-instance OOB and possibly strings SSO-hash red). FIX
+OPTIONS: (a) add the lean read arm probing the eph layout in the '[]'
+HASH path (+ '?.[]', delete, in/for-in enumeration audits), or
+(b) tighten the lean qualification to writes-AND-reads-covered receivers.
+(a) is the perf-preserving fix; (b) is the safe fallback. PINS: the
+bisect2 four-case matrix + prech/ssoeq probes as differential tests at
+O0/2/speed vs V8 truth. Then subscript-restore + rebuild + battery —
+expect features/speculate/strings kernel reds to clear together.
+VERIFY FIRST next window: read genEphemeralSlotUpsert's entry layout vs
+__hash_get_local's expected layout to name the exact field disagreement.
