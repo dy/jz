@@ -6307,3 +6307,24 @@ computed end, and the p seen inside the first body step) — decides
 argument-vs-end corruption. Then jz-minimal repro of that idiom (default
 params in closure factories / charCodeAt(1) on 2-char SSO strings are
 both established fragility classes) → codegen fix.
+
+SKM ROOT SHAPE FOUND (2026-07-22): kernel BCA log — string step bs=A ✓,
+'(' step bs=A (a node WAS made) but BC-entry silent ⇒ the :19 method
+handler was SKIPPED while :160 CALL fired ⇒ curPrec ∈ [19,160) at the
+'(' dispatch ⇒ the OBJECT-GROUP BODY parses at p≈19.5 in-kernel (native
+0): **the group map's `expr(0, end)` call arrives at expr with p ≠ 0 —
+the literal first argument is lost and the CALLER'S p leaks through**
+(earlier build leaked 4.5 — value varies with context ⇒ stale-state leak,
+not a constant). expr is a MUTABLE `let`-assigned arrow `(p = 0, end) =>`
+called through closure captures — the jz bug class: DEFAULT-PARAM (p=0)
+resolution on a mutable-binding closure call with an explicit literal 0 —
+the kernel takes the stale/outer value instead of the passed 0.
+MINIMAL-REPRO SKETCH: `let f; f = (p = 0, e) => e ? p : 0; const g =
+(x) => f(0, 5); export let t = () => { f(9.5); return g() }` — expect 0,
+kernel may return 9.5-ish. Iterate the sketch to the smallest failing
+form natively-vs-kernel, then fix the codegen path (default-param arg
+slot on mutable-closure calls). This likely owns the ENTIRE parked
+kernel-fragility family (speculate/SSO-hash/knife-edge all involve
+closure-heavy compiled code). RESTORE node_modules/subscript before any
+battery: accessor.orig.js in scratchpad; parse.js/asi.js/collection.js
+carry probes — `npm i subscript` or git-restore the package.
