@@ -74,3 +74,33 @@ ad hoc env vars.
    module/ tier's ctx.core registry installs are load-time and stay.
 4. Target profiles: host enum grows 'wasm2c'|'wasmtime' rows gating the
    existing branch sites + noTailCall; native lane consumes the profile.
+
+## CompileSession increment plan (2026-07-22, incr 3 design)
+
+Not a big-bang 60-importer rewrite. Sequence of battery-gated waves, each
+deleting implicit ownership:
+
+W1 — session record + explicit phase transitions: `createSession(opts)` in
+src/ctx.js returns the existing ctx SHAPE (no importer churn) but reset()
+becomes session construction; assertCtxInvariants phases become session
+STATE TRANSITIONS (plan→analyze→emit→assemble→optimize) asserted in order
+under DBG. Deliverable: the lifecycle table becomes executable contract.
+
+W2 — repsFrozen generalizes: the per-function freeze (Stage 2) grows into
+per-PHASE write ownership — schema.vars writable only in plan/analyze
+phases, func.* only pre-emit-of-that-function (already enforced), module/
+scope writable only in prepare. Each phase's owner set from the importer
+census (survey top). DBG-only cost, battery dbg leg carries it.
+
+W3 — the two precedents formalized: vectorize's local ctx shadow and
+narrow's save/restore swap become the documented session-view pattern;
+emitClosureBody's manual save/restore joins it.
+
+W4 — TargetProfile (incr 4): ctx.transform.host grows 'wasm2c'|'wasmtime'
+rows; the ~20 existing wasi branch sites read profile fields (noEH,
+guardPages, trapSemantics, noTailCall) instead of comparing host strings;
+scripts/native/build.sh consumes a profile dump (jz --print-profile
+wasm2c) instead of hardcoded flags. jz-w2c joins CI as a bench row gate.
+
+Order W1→W2 (contract first), W3 cosmetic-with-W2, W4 independent (can go
+first if CI value dominates).
