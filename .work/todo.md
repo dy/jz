@@ -5911,3 +5911,20 @@ new 'fast' preset (L2 shapes + watr:false + splitCharScan:false — measured
 2-3× faster compiles on large inputs at ~+30% size; REPL/bundler loops, not
 shipping builds). L2 preset body extracted as L2_PRESET const shared by both.
 Preset error messages list 'fast'. Battery 10/10 green.
+
+IMMUTABLE LEVER DESIGN (2026-07-22, pre-implementation): in-place
+replace-store. Shape: `cell = {…same-schema literal…}` where (a) the
+literal's schema == the cell's occupant schema (arrayElemSchema /
+schema.vars), (b) the OLD occupant is DEAD at the store — no alias read
+after it (in the specimen `const p = ps[i]` reads all precede the store;
+liveness proof needed for every alias, incl. cross-iteration), (c) the NEW
+literal never escapes the cell (no other store/return/capture — else
+identity becomes observable: `old === cell` must stay false and a reused
+cell would break it for LIVE old refs only, hence (b)). Transform: emit
+field stores into the existing occupant's slots (t = cell; t.x=…; …) —
+zero alloc per iteration, killing the young-gen churn that costs jz 1.9×
+vs AS / 4.3× vs c-wasm on immutable. Placement: plan-level eligibility
+(schema equality + scanBindingUses liveness/escape for old + new), emit
+lowering of the eligible '=' form. Guard: cell occupant must provably BE
+schema-S (init loop fills ps with same-literal objects — arrayElemSchema
+covers it); poisoned/unknown cells keep the alloc path.
