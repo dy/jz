@@ -6160,3 +6160,13 @@ REPRO CONFIRMED (2026-07-22): one-liner `var o = { "k"(x) { return x+1 } }`
 → kernel "Unclosed { at 1:18", native OK. Crisp differential banked
 (scratchpad skm-repro.mjs pattern; _setCompileTarget + compileViaKernel).
 Next: bisect inside the kernel parser path for string-keyed shorthand.
+
+SKM BUG BISECT STATE (2026-07-22): probe matrix run — ONLY `"k"(x){...}`
+(string-literal key + shorthand method) fails in-kernel; bare/computed
+methods and string-key values all OK. Error originates in subscript
+parse.js:56 (the compiled-in parser) ⇒ jz MISCOMPILES a subscript parse
+path on this input. NEXT CLASSIFICATION STEP: build an O0 kernel (patch
+scripts/build-dist.mjs:127 optimize {level:3}→0 in a worktree, ~5 min) and
+rerun the one-liner — O0-clean ⇒ optimizer miscompile (bisect passes via
+resolveOptimize overrides); O0-dirty ⇒ core codegen (differential the
+subscript parse fn WATs). Repro harness: scratchpad skm-matrix.mjs.
