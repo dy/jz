@@ -5815,3 +5815,23 @@ LESSON (recorded): a worktree `cd` in a compound command left the shell
 in the HEAD copy — several test runs validated the WRONG tree until a
 "reverted file" contradiction exposed it. Absolute paths for harness
 runs; `pwd` check when results contradict known file state.
+
+TRACE PERF WAVE — CLEAN NEGATIVE, REVERTED (2026-07-21): the 1.40× residual
+is the `if(inside)` branch MISPREDICTION itself (data-dependent ~50/50 over
+the bitmap), not compute or checks. Both levers now measured neutral:
+select-arm accumulation (prior wave) AND store-side redundant-bounds-check
+elision (this wave — a const-alias look-through in extractRefinements
+letting `if (inside)` refine as its initializer expr would; eliminated the
+check, WAT-verified, 384-compile corpus sweep showed only trace's bytes
+changed... and wall time moved 1.403→1.406 = noise). REVERTED for two
+reasons: neutral perf AND a REAL soundness corner — with the look-through,
+kernel/self legs went red (memory OOB, grid-current parity, warm-instance
+reuse): the const-inliner/refinement interaction has a corner the corpus
+sweep didn't exercise. HAZARD RECORDED: anyone re-attempting const-alias
+refinement look-through must battery-gate on kernel+self specifically.
+Small unexplored lever (expected marginal): fuseRangeCheck misses the
+y-pair (`y>=0`/`y<H` non-adjacent after left-assoc parsing; x-pair fuses).
+ALSO OBSERVED: full parallel battery on this machine has pre-existing
+resource-contention flakes (self "build exit null", dbg "clearInterval") —
+isolated reruns green; treat single-leg reds under full load with isolated
+rerun before diagnosing.
