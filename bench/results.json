@@ -1,39 +1,43 @@
 {
  "meta": {
-  "date": "2026-07-20 07:37 UTC",
-  "commit": "9edd8ec",
+  "date": "2026-07-22 13:58 UTC",
+  "commit": "da396123",
   "host": {
-   "platform": "linux",
-   "arch": "x64",
-   "cpu": "Intel(R) Xeon(R) 6973P-C"
+   "platform": "darwin",
+   "arch": "arm64",
+   "cpu": "Apple M4 Max"
   },
   "versions": {
    "jz": "0.9.2",
-   "node": "v22.23.1",
-   "asc": "Version 0.27.37",
+   "node": "v25.9.0",
+   "asc": "Version 0.28.19",
    "porffor": "0.61.13",
    "bun": "1.3.14",
-   "deno": "deno 2.9.3 (stable, release, x86_64-unknown-linux-gnu)",
-   "clang": "Ubuntu clang version 18.1.3 (1ubuntu1)"
+   "deno": "deno 2.6.7 (stable, release, aarch64-apple-darwin)",
+   "clang": "Homebrew clang version 19.1.6"
   },
   "invocations": {
    "nat": "clang -O3 -march=native -ffp-contract=off <case>.c",
-   "c-wasm": "zig cc -target wasm32-wasi -O3 -ffp-contract=off <case>.c → node (V8 wasm)",
-   "rust-wasm": "rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)",
-   "go-wasm": "GOOS=wasip1 GOARCH=wasm go build <case>.go → node (V8 wasm)",
-   "zig-wasm": "zig build-exe -target wasm32-wasi -O ReleaseFast <case>.zig (no libc) → node (V8 wasm)",
    "rust": "rustc -C opt-level=3 -C target-cpu=native <case>.rs",
    "go": "go build -ldflags=\"-s -w\" <case>.go",
+   "zig": "zig build-exe <case>.zig -O ReleaseFast (shared _lib/bench.zig)",
    "v8": "node run-v8.mjs <case>.js",
    "deno": "deno run --allow-read --allow-env run-v8.mjs <case>.js",
    "bun": "bun run-v8.mjs <case>.js",
    "jsc": "jsc <case>-flat.js",
-   "as": "time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)",
    "jz": "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
+   "as": "time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)",
+   "rust-wasm": "rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)",
+   "go-wasm": "GOOS=wasip1 GOARCH=wasm go build <case>.go → node (V8 wasm)",
+   "zig-wasm": "zig build-exe -target wasm32-wasi -O ReleaseFast <case>.zig (no libc) → node (V8 wasm)",
+   "c-wasm": "zig cc -target wasm32-wasi -O3 -ffp-contract=off <case>.c → node (V8 wasm)",
    "jz-wasmtime": "jz --host wasi -O3 <case>.js → wasmtime --invoke main",
-   "zig": "zig build-exe <case>.zig -O ReleaseFast (shared _lib/bench.zig)",
+   "jz-w2c": "jz --host wasi -O3 → wasm2c → clang -O3 -ffp-contract=off",
+   "javy": "javy compile <case>-flat.js → node (V8 wasm) · fenced interpreter reference",
+   "moonbit": "moon build --target wasm --release <case>.mbt → moonrun (V8 wasm)",
    "porf": "porf --allocator-chunks=128 run <case>-flat.js",
-   "numpy": "python3 <case>.npy.py"
+   "numpy": "python3 <case>.npy.py",
+   "wat": "wat2wasm <case>.wat → node run-wat.mjs (V8 wasm)"
   }
  },
  "cases": {
@@ -45,85 +49,180 @@
    "ref": 633180752,
    "targets": {
     "nat": {
-     "medianUs": 120,
-     "bytes": 22736,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 1063,
-     "bytes": 955519,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 1109,
-     "bytes": 2119167,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 2359,
-     "bytes": 2406485,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 982,
-     "bytes": 978968,
+     "medianUs": 34,
+     "bytes": 33720,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 96,
-     "bytes": 356472,
+     "medianUs": 34,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 539,
-     "bytes": 1454264,
+     "medianUs": 523,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 532,
+     "bytes": 377896,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 1149,
+     "medianUs": 765,
      "bytes": 2067,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 840,
+     "medianUs": 523,
      "bytes": 2067,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 639,
+     "medianUs": 432,
      "bytes": 2067,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 641,
-     "bytes": 5283,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 1723,
-     "bytes": 1309,
+     "medianUs": 440,
+     "bytes": 5382,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 161,
+     "medianUs": 320,
      "bytes": 1062,
      "parity": "ok"
     },
+    "as": {
+     "medianUs": 1514,
+     "bytes": 1271,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 1181,
+     "bytes": 2028935,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 2113,
+     "bytes": 2588498,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 819,
+     "bytes": 978067,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 899,
+     "bytes": 947330,
+     "parity": "ok"
+    },
     "jz-wasmtime": {
-     "medianUs": 105,
+     "medianUs": 326,
      "bytes": 7916,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/alpha/alpha-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/alpha/alpha.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2451: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 316,
+     "bytes": 70376,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 120000,
+     "bytes": 1249420,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 1982,
+     "bytes": 12707,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 192.6
+   "compileMs": 151.6
+  },
+  "bezfit": {
+   "name": "bezfit",
+   "samples": 73728,
+   "stages": 3,
+   "runs": 21,
+   "ref": 3345492967,
+   "targets": {
+    "nat": {
+     "medianUs": 500,
+     "bytes": 33720,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 569,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 857,
+     "bytes": 6054,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 866,
+     "bytes": 6054,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 813,
+     "bytes": 6054,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 830,
+     "bytes": 9368,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 792,
+     "bytes": 3601,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 957,
+     "bytes": 3017,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 782,
+     "bytes": 2031047,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 828,
+     "bytes": 956010,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 809,
+     "bytes": 25091,
+     "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 960,
+     "bytes": 86680,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 225000,
+     "bytes": 1299624,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: ReferenceError: s is not defined"
+    }
+   },
+   "compileMs": 848.3
   },
   "blur": {
    "name": "blur",
@@ -133,85 +232,101 @@
    "ref": 3578880432,
    "targets": {
     "nat": {
-     "medianUs": 1459,
-     "bytes": 22736,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 5444,
-     "bytes": 957711,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 16676,
-     "bytes": 2121063,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 31502,
-     "bytes": 2410200,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 5365,
-     "bytes": 981779,
+     "medianUs": 631,
+     "bytes": 33720,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 4556,
-     "bytes": 356056,
+     "medianUs": 2190,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 10935,
-     "bytes": 1458360,
+     "medianUs": 5862,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 736,
+     "bytes": 378088,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 13099,
+     "medianUs": 8168,
      "bytes": 2942,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 12624,
+     "medianUs": 7992,
      "bytes": 2942,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 8845,
+     "medianUs": 5179,
      "bytes": 2942,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 8872,
-     "bytes": 6158,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 6763,
-     "bytes": 1753,
+     "medianUs": 5202,
+     "bytes": 6257,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2301,
-     "bytes": 1519,
+     "medianUs": 874,
+     "bytes": 1515,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 4823,
+     "bytes": 1724,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 11172,
+     "bytes": 2030834,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 14810,
+     "bytes": 2592180,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 4269,
+     "bytes": 980878,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 4056,
+     "bytes": 949522,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 2405,
+     "medianUs": 1156,
      "bytes": 12179,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/blur/blur-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/blur/blur.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2466: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 827,
+     "bytes": 70408,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 738000,
+     "bytes": 1261424,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 11203,
+     "bytes": 13862,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 218.9
+   "compileMs": 237.5
   },
   "bytebeat": {
    "name": "bytebeat",
@@ -221,85 +336,234 @@
    "ref": 3667072453,
    "targets": {
     "nat": {
-     "medianUs": 431,
-     "bytes": 22736,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 3620,
-     "bytes": 954940,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 3998,
-     "bytes": 2118642,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 5567,
-     "bytes": 2406267,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 4641,
-     "bytes": 976684,
+     "medianUs": 550,
+     "bytes": 33728,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 323,
-     "bytes": 357176,
+     "medianUs": 626,
+     "bytes": 389856,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 3089,
-     "bytes": 1454264,
+     "medianUs": 1468,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1319,
+     "bytes": 377920,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 3282,
+     "medianUs": 2230,
      "bytes": 2055,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 3279,
+     "medianUs": 2180,
      "bytes": 2055,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 2570,
+     "medianUs": 1681,
      "bytes": 2055,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 2570,
-     "bytes": 5271,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 3802,
-     "bytes": 1198,
+     "medianUs": 1673,
+     "bytes": 5370,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2182,
+     "medianUs": 1435,
      "bytes": 921,
      "parity": "ok"
     },
+    "as": {
+     "medianUs": 3061,
+     "bytes": 1164,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 4210,
+     "bytes": 2028401,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 4135,
+     "bytes": 2588154,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2850,
+     "bytes": 975783,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 2873,
+     "bytes": 946751,
+     "parity": "ok"
+    },
     "jz-wasmtime": {
-     "medianUs": 2522,
+     "medianUs": 1338,
      "bytes": 7454,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/bytebeat/bytebeat-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/bytebeat/bytebeat.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2441: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 1466,
+     "bytes": 70448,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 237000,
+     "bytes": 1248917,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 2646,
+     "bytes": 12434,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 111
+   "compileMs": 139.9
+  },
+  "delayline": {
+   "name": "delayline",
+   "samples": 524288,
+   "stages": 4,
+   "runs": 21,
+   "ref": 1887209008,
+   "targets": {
+    "nat": {
+     "medianUs": 423,
+     "bytes": 33760,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 449,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 812,
+     "bytes": 2878,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 676,
+     "bytes": 2878,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 872,
+     "bytes": 2878,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 875,
+     "bytes": 6192,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 614,
+     "bytes": 1626,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 747,
+     "bytes": 1470,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 601,
+     "bytes": 2029113,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 1446,
+     "bytes": 948214,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 694,
+     "bytes": 8189,
+     "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 633,
+     "bytes": 53696,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 132000,
+     "bytes": 1257913,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: ReferenceError: s is not defined"
+    }
+   },
+   "compileMs": 134.1
+  },
+  "deltae": {
+   "name": "deltae",
+   "samples": 450000,
+   "stages": 1,
+   "runs": 21,
+   "ref": 3180227460,
+   "targets": {
+    "v8": {
+     "medianUs": 55450,
+     "bytes": 4458,
+     "parity": "DIFF"
+    },
+    "deno": {
+     "medianUs": 54593,
+     "bytes": 4458,
+     "parity": "DIFF"
+    },
+    "bun": {
+     "medianUs": 59537,
+     "bytes": 4458,
+     "parity": "DIFF"
+    },
+    "jsc": {
+     "medianUs": 59081,
+     "bytes": 7772,
+     "parity": "DIFF"
+    },
+    "jz": {
+     "medianUs": 43086,
+     "bytes": 3578,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 43831,
+     "bytes": 10996,
+     "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 39197,
+     "bytes": 70152,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 881000,
+     "bytes": 1273225,
+     "parity": "DIFF"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: ReferenceError: s is not defined"
+    }
+   },
+   "compileMs": 159.8
   },
   "dotprod": {
    "name": "dotprod",
@@ -309,86 +573,102 @@
    "ref": 199828677,
    "targets": {
     "nat": {
-     "medianUs": 803,
-     "bytes": 18640,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 1608,
-     "bytes": 953690,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 1416,
-     "bytes": 2118303,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 3265,
-     "bytes": 2406365,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 1380,
-     "bytes": 976876,
+     "medianUs": 904,
+     "bytes": 33720,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 787,
-     "bytes": 354808,
+     "medianUs": 876,
+     "bytes": 389856,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 856,
-     "bytes": 1454264,
+     "medianUs": 1571,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1331,
+     "bytes": 377896,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 1336,
+     "medianUs": 2097,
      "bytes": 1500,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 7582,
+     "medianUs": 2103,
      "bytes": 1500,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 787,
+     "medianUs": 1138,
      "bytes": 1500,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 791,
-     "bytes": 4723,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 3179,
-     "bytes": 1211,
+     "medianUs": 1122,
+     "bytes": 4822,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 14340,
-     "bytes": 4723,
+     "medianUs": 7203,
+     "bytes": 4822,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 341,
-     "bytes": 1011,
+     "medianUs": 154,
+     "bytes": 1008,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 5252,
+     "bytes": 1177,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 2035,
+     "bytes": 2028065,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 3117,
+     "bytes": 2588391,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2030,
+     "bytes": 975975,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 2065,
+     "bytes": 945501,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 371,
+     "medianUs": 159,
      "bytes": 7738,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/dotprod/dotprod-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/dotprod/dotprod.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2449: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 338,
+     "bytes": 53576,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 105000,
+     "bytes": 1248913,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 2031,
+     "bytes": 12482,
+     "parity": "ok"
     }
    },
-   "compileMs": 117.5
+   "compileMs": 110.5
   },
   "fft": {
    "name": "fft",
@@ -398,85 +678,101 @@
    "ref": 4234940375,
    "targets": {
     "nat": {
-     "medianUs": 1186,
-     "bytes": 22752,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 1459,
-     "bytes": 957719,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 1365,
-     "bytes": 2119777,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 3240,
-     "bytes": 2410401,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 1496,
-     "bytes": 986731,
+     "medianUs": 1284,
+     "bytes": 33800,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 1266,
-     "bytes": 356160,
+     "medianUs": 1147,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 1563,
-     "bytes": 1458360,
+     "medianUs": 1154,
+     "bytes": 1674306,
+     "parity": "fma"
+    },
+    "zig": {
+     "medianUs": 1187,
+     "bytes": 377992,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 2164,
+     "medianUs": 1420,
      "bytes": 4344,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 1788,
+     "medianUs": 1334,
      "bytes": 4344,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 1426,
+     "medianUs": 1129,
      "bytes": 4344,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 1445,
-     "bytes": 7559,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 1866,
-     "bytes": 1800,
+     "medianUs": 1156,
+     "bytes": 7658,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 1500,
+     "medianUs": 1086,
      "bytes": 2336,
      "parity": "ok"
     },
+    "as": {
+     "medianUs": 1244,
+     "bytes": 1758,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 1046,
+     "bytes": 2029556,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 1819,
+     "bytes": 2592365,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 1439,
+     "bytes": 985830,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 1134,
+     "bytes": 949530,
+     "parity": "ok"
+    },
     "jz-wasmtime": {
-     "medianUs": 1456,
+     "medianUs": 1035,
      "bytes": 10548,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/fft/fft-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/fft/fft.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2467: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 1360,
+     "bytes": 70040,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 119000,
+     "bytes": 1266580,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 3332,
+     "bytes": 14524,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 181.6
+   "compileMs": 177.8
   },
   "fftplan": {
    "name": "fftplan",
@@ -486,33 +782,43 @@
    "ref": 2894300847,
    "targets": {
     "v8": {
-     "medianUs": 3250,
+     "medianUs": 2916,
      "bytes": 6131,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 3024,
+     "medianUs": 2438,
      "bytes": 6131,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 2799,
+     "medianUs": 1890,
      "bytes": 6131,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 2829,
-     "bytes": 9346,
+     "medianUs": 1897,
+     "bytes": 9445,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2759,
-     "bytes": 29687,
+     "medianUs": 1972,
+     "bytes": 29684,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 2617,
+     "medianUs": 1543,
      "bytes": 36266,
+     "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 3026,
+     "bytes": 105400,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 338000,
+     "bytes": 1282023,
      "parity": "ok"
     },
     "porf": {
@@ -520,7 +826,86 @@
      "reason": "exit 1: ReferenceError: re is not defined"
     }
    },
-   "compileMs": 420.2
+   "compileMs": 401.2
+  },
+  "glyfparse": {
+   "name": "glyfparse",
+   "samples": 7200,
+   "stages": 1,
+   "runs": 21,
+   "ref": 4073289688,
+   "targets": {
+    "nat": {
+     "medianUs": 2865,
+     "bytes": 33680,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 3049,
+     "bytes": 389856,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 4004,
+     "bytes": 4921,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 4636,
+     "bytes": 4921,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 3533,
+     "bytes": 4921,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 3174,
+     "bytes": 8243,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 3590,
+     "bytes": 2836,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 10801,
+     "bytes": 2408,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 3930,
+     "bytes": 2030771,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 2670,
+     "bytes": 950043,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 3137,
+     "bytes": 11797,
+     "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 2888,
+     "bytes": 70256,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 172000,
+     "bytes": 1273466,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: ReferenceError: s is not defined"
+    }
+   },
+   "compileMs": 221.8
   },
   "hashjoin": {
    "name": "hashjoin",
@@ -530,85 +915,101 @@
    "ref": 730663173,
    "targets": {
     "nat": {
-     "medianUs": 11325,
-     "bytes": 14536,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 16480,
-     "bytes": 955055,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 18090,
-     "bytes": 2120145,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 25835,
-     "bytes": 2408669,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 18202,
-     "bytes": 984554,
+     "medianUs": 6179,
+     "bytes": 33552,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 10872,
-     "bytes": 357000,
+     "medianUs": 6218,
+     "bytes": 389904,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 13542,
-     "bytes": 1454264,
+     "medianUs": 8667,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 4117,
+     "bytes": 377920,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 16016,
+     "medianUs": 6530,
      "bytes": 4119,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 15039,
+     "medianUs": 5199,
      "bytes": 4119,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 13112,
+     "medianUs": 5130,
      "bytes": 4119,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 13608,
-     "bytes": 7342,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 15591,
-     "bytes": 1597,
+     "medianUs": 7036,
+     "bytes": 7441,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 13609,
-     "bytes": 1444,
+     "medianUs": 4972,
+     "bytes": 1441,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 7611,
+     "bytes": 1561,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 9342,
+     "bytes": 2029904,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 16632,
+     "bytes": 2590613,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 10086,
+     "bytes": 983653,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 9669,
+     "bytes": 946965,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 13538,
+     "medianUs": 5230,
      "bytes": 8243,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/hashjoin/hashjoin-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/hashjoin/hashjoin.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2460: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 4506,
+     "bytes": 53632,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 374000,
+     "bytes": 1262110,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 9800,
+     "bytes": 13226,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 119.5
+   "compileMs": 135
   },
   "lorenz": {
    "name": "lorenz",
@@ -618,85 +1019,101 @@
    "ref": 4004855102,
    "targets": {
     "nat": {
-     "medianUs": 14172,
-     "bytes": 18624,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 14159,
-     "bytes": 954816,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 14157,
-     "bytes": 2118691,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 14115,
-     "bytes": 2407263,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 14160,
-     "bytes": 37884,
+     "medianUs": 13980,
+     "bytes": 33624,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 15977,
-     "bytes": 354648,
+     "medianUs": 14322,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 15011,
-     "bytes": 1454264,
+     "medianUs": 10882,
+     "bytes": 1674306,
+     "parity": "fma"
+    },
+    "zig": {
+     "medianUs": 13988,
+     "bytes": 53128,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 14290,
+     "medianUs": 14382,
      "bytes": 2685,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 14000,
+     "medianUs": 14476,
      "bytes": 2685,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 16149,
+     "medianUs": 14252,
      "bytes": 2685,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 16154,
-     "bytes": 5900,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 14186,
-     "bytes": 1609,
+     "medianUs": 13981,
+     "bytes": 5999,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 14091,
-     "bytes": 1513,
+     "medianUs": 13742,
+     "bytes": 1510,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 13514,
+     "bytes": 1571,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 13975,
+     "bytes": 2028461,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 14260,
+     "bytes": 2589207,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 13780,
+     "bytes": 37738,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 13677,
+     "bytes": 946726,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 14296,
+     "medianUs": 13336,
      "bytes": 8044,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/lorenz/lorenz-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/lorenz/lorenz.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2402: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 13677,
+     "bytes": 53576,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 624000,
+     "bytes": 1255628,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 14247,
+     "bytes": 13147,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 105.7
+   "compileMs": 169.2
   },
   "nbody": {
    "name": "nbody",
@@ -706,85 +1123,101 @@
    "ref": 784143951,
    "targets": {
     "nat": {
-     "medianUs": 21428,
-     "bytes": 22720,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 21863,
-     "bytes": 958009,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 21900,
-     "bytes": 2119931,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 30704,
-     "bytes": 2412287,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 24305,
-     "bytes": 40623,
+     "medianUs": 7969,
+     "bytes": 33624,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 21415,
-     "bytes": 359064,
+     "medianUs": 8044,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 50607,
-     "bytes": 1458360,
+     "medianUs": 10506,
+     "bytes": 1674306,
+     "parity": "fma"
+    },
+    "zig": {
+     "medianUs": 15791,
+     "bytes": 53384,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 27216,
+     "medianUs": 11995,
      "bytes": 3413,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 28942,
+     "medianUs": 12678,
      "bytes": 3413,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 22061,
+     "medianUs": 11534,
      "bytes": 3413,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 22073,
-     "bytes": 6628,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 23696,
-     "bytes": 2208,
+     "medianUs": 11514,
+     "bytes": 6727,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 14777,
-     "bytes": 2189,
+     "medianUs": 9213,
+     "bytes": 2186,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 12726,
+     "bytes": 2174,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 13341,
+     "bytes": 2029709,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 15076,
+     "bytes": 2594174,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 26490,
+     "bytes": 40477,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 13156,
+     "bytes": 949919,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 14151,
+     "medianUs": 8211,
      "bytes": 10562,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/nbody/nbody-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/nbody/nbody.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2409: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 8187,
+     "bytes": 70504,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 1597000,
+     "bytes": 1263133,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 22129,
+     "bytes": 14645,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: ReferenceError: px is not defined"
     }
    },
-   "compileMs": 130.4
+   "compileMs": 142.9
   },
   "particle": {
    "name": "particle",
@@ -794,85 +1227,101 @@
    "ref": 1275530752,
    "targets": {
     "nat": {
-     "medianUs": 8838,
-     "bytes": 18624,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 104200,
-     "bytes": 955634,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 36257,
-     "bytes": 2120774,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 51329,
-     "bytes": 2409236,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 36368,
-     "bytes": 979975,
+     "medianUs": 7231,
+     "bytes": 33632,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 8700,
-     "bytes": 357528,
+     "medianUs": 7274,
+     "bytes": 389856,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 16961,
-     "bytes": 1458360,
+     "medianUs": 13081,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 10708,
+     "bytes": 377920,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 27959,
+     "medianUs": 31629,
      "bytes": 2685,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 38382,
+     "medianUs": 25838,
      "bytes": 2685,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 16868,
+     "medianUs": 11023,
      "bytes": 2685,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 16649,
-     "bytes": 5900,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 44755,
-     "bytes": 1583,
+     "medianUs": 11135,
+     "bytes": 5999,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 9624,
-     "bytes": 1580,
+     "medianUs": 6978,
+     "bytes": 1577,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 46982,
+     "bytes": 1549,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 35306,
+     "bytes": 2030533,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 45591,
+     "bytes": 2590940,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 36852,
+     "bytes": 979074,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 31364,
+     "bytes": 947544,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 10151,
+     "medianUs": 6836,
      "bytes": 8404,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/particle/particle-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/particle/particle.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2450: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 12149,
+     "bytes": 70496,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 1848000,
+     "bytes": 1253747,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 61358,
+     "bytes": 13438,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: ReferenceError: s is not defined"
     }
    },
-   "compileMs": 111.6
+   "compileMs": 152.3
   },
   "provenance": {
    "name": "provenance",
@@ -882,33 +1331,43 @@
    "ref": 842980037,
    "targets": {
     "v8": {
-     "medianUs": 2810,
+     "medianUs": 2352,
      "bytes": 5783,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 2646,
+     "medianUs": 1923,
      "bytes": 5783,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 2355,
+     "medianUs": 1584,
      "bytes": 5783,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 2336,
-     "bytes": 9006,
+     "medianUs": 1583,
+     "bytes": 9105,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2501,
-     "bytes": 28950,
+     "medianUs": 1396,
+     "bytes": 28947,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 2168,
+     "medianUs": 1193,
      "bytes": 35413,
+     "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 1688,
+     "bytes": 105616,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 260000,
+     "bytes": 1283523,
      "parity": "ok"
     },
     "porf": {
@@ -916,7 +1375,244 @@
      "reason": "exit 1: ReferenceError: wreRet is not defined"
     }
    },
-   "compileMs": 407
+   "compileMs": 501.3
+  },
+  "resample": {
+   "name": "resample",
+   "samples": 690000,
+   "stages": 2,
+   "runs": 21,
+   "ref": 1711808418,
+   "targets": {
+    "nat": {
+     "medianUs": 1383,
+     "bytes": 33728,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 1381,
+     "bytes": 389872,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 1312,
+     "bytes": 2954,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 1325,
+     "bytes": 2954,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 1307,
+     "bytes": 2954,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 1277,
+     "bytes": 6268,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 1354,
+     "bytes": 1895,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 1482,
+     "bytes": 1463,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 1473,
+     "bytes": 2029436,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 1449,
+     "bytes": 948842,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 1347,
+     "bytes": 9201,
+     "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 1770,
+     "bytes": 70224,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 166000,
+     "bytes": 1256679,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: ReferenceError: s is not defined"
+    }
+   },
+   "compileMs": 155.2
+  },
+  "sdf": {
+   "name": "sdf",
+   "samples": 589824,
+   "stages": 2,
+   "runs": 21,
+   "ref": 1749682117,
+   "targets": {
+    "nat": {
+     "medianUs": 6236,
+     "bytes": 33752,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 4776,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 7646,
+     "bytes": 3656,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 7050,
+     "bytes": 3656,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 6271,
+     "bytes": 3656,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 5871,
+     "bytes": 6970,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 6670,
+     "bytes": 2716,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 5931,
+     "bytes": 2209,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 5748,
+     "bytes": 2030360,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 5479,
+     "bytes": 950835,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 6781,
+     "bytes": 11573,
+     "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 7567,
+     "bytes": 70120,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 593000,
+     "bytes": 1267178,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: ReferenceError: s is not defined"
+    }
+   },
+   "compileMs": 214.9
+  },
+  "slices": {
+   "name": "slices",
+   "samples": 12288,
+   "stages": 3,
+   "runs": 21,
+   "ref": 3020911897,
+   "targets": {
+    "nat": {
+     "medianUs": 2837,
+     "bytes": 33752,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 2996,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 3292,
+     "bytes": 2925,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 3207,
+     "bytes": 2925,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 3358,
+     "bytes": 2925,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 3427,
+     "bytes": 6239,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 2890,
+     "bytes": 2090,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 3031,
+     "bytes": 1657,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 2999,
+     "bytes": 2029639,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 2775,
+     "bytes": 949812,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 2759,
+     "bytes": 9240,
+     "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 3210,
+     "bytes": 70136,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 180000,
+     "bytes": 1257185,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: ReferenceError: s is not defined"
+    }
+   },
+   "compileMs": 135.2
   },
   "synth": {
    "name": "synth",
@@ -926,85 +1622,180 @@
    "ref": 41574153,
    "targets": {
     "nat": {
-     "medianUs": 3193,
-     "bytes": 18640,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 3419,
-     "bytes": 955811,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 3382,
-     "bytes": 2118941,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 6970,
-     "bytes": 2408044,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 3391,
-     "bytes": 978869,
+     "medianUs": 2615,
+     "bytes": 33720,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 3416,
-     "bytes": 355368,
+     "medianUs": 2643,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 3409,
-     "bytes": 1458360,
+     "medianUs": 2586,
+     "bytes": 1674306,
+     "parity": "fma"
+    },
+    "zig": {
+     "medianUs": 2750,
+     "bytes": 378040,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 5592,
+     "medianUs": 3021,
      "bytes": 3646,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 5090,
+     "medianUs": 3319,
      "bytes": 3646,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 3931,
+     "medianUs": 2195,
      "bytes": 3646,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 3926,
-     "bytes": 6861,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 4353,
-     "bytes": 1831,
+     "medianUs": 2197,
+     "bytes": 6960,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 3460,
-     "bytes": 1849,
+     "medianUs": 2734,
+     "bytes": 1843,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 2493,
+     "bytes": 1797,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 2572,
+     "bytes": 2028714,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 5021,
+     "bytes": 2590024,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2585,
+     "bytes": 977968,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 2534,
+     "bytes": 947622,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 2974,
-     "bytes": 8938,
+     "medianUs": 2085,
+     "bytes": 8364,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/synth/synth-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/synth/synth.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2448: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 2930,
+     "bytes": 53736,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 240000,
+     "bytes": 1260477,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 2229,
+     "bytes": 13297,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 120.8
+   "compileMs": 155.7
+  },
+  "trace": {
+   "name": "trace",
+   "samples": 1048576,
+   "stages": 1,
+   "runs": 21,
+   "ref": 1827210493,
+   "targets": {
+    "nat": {
+     "medianUs": 603,
+     "bytes": 33544,
+     "parity": "ok"
+    },
+    "rust": {
+     "medianUs": 635,
+     "bytes": 389848,
+     "parity": "ok"
+    },
+    "v8": {
+     "medianUs": 1719,
+     "bytes": 4039,
+     "parity": "ok"
+    },
+    "deno": {
+     "medianUs": 913,
+     "bytes": 4039,
+     "parity": "ok"
+    },
+    "bun": {
+     "medianUs": 1227,
+     "bytes": 4039,
+     "parity": "ok"
+    },
+    "jsc": {
+     "medianUs": 986,
+     "bytes": 7361,
+     "parity": "ok"
+    },
+    "jz": {
+     "medianUs": 964,
+     "bytes": 19846,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 1015,
+     "bytes": 2013,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 697,
+     "bytes": 2030272,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 662,
+     "bytes": 948404,
+     "parity": "ok"
+    },
+    "jz-wasmtime": {
+     "medianUs": 974,
+     "bytes": 22220,
+     "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 587,
+     "bytes": 88040,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 95000,
+     "bytes": 1266101,
+     "parity": "ok"
+    },
+    "porf": {
+     "status": "fail",
+     "reason": "exit 1: ReferenceError: s is not defined"
+    }
+   },
+   "compileMs": 217.3
   },
   "biquad": {
    "name": "biquad filter cascade",
@@ -1014,90 +1805,110 @@
    "ref": 422839881,
    "targets": {
     "nat": {
-     "medianUs": 3820,
-     "bytes": 18624,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 5566,
-     "bytes": 957039,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 5302,
-     "bytes": 2120430,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 29811,
-     "bytes": 2410008,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 5294,
-     "bytes": 983459,
+     "medianUs": 3935,
+     "bytes": 33496,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 3847,
-     "bytes": 357736,
+     "medianUs": 3914,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 8539,
-     "bytes": 1458360,
+     "medianUs": 6515,
+     "bytes": 1674306,
+     "parity": "fma"
+    },
+    "zig": {
+     "medianUs": 3702,
+     "bytes": 378008,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 2141209,
+     "bytes": 2592,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 14204,
+     "medianUs": 8947,
      "bytes": 3284,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 11732,
+     "medianUs": 8702,
      "bytes": 3284,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 6737,
+     "medianUs": 5419,
      "bytes": 3284,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 6737,
-     "bytes": 6499,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 9880,
-     "bytes": 1884,
+     "medianUs": 5463,
+     "bytes": 6598,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 7853,
+     "medianUs": 4739,
      "bytes": 1829,
      "parity": "ok"
     },
+    "as": {
+     "medianUs": 6542,
+     "bytes": 1830,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 5467,
+     "bytes": 2030200,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 11473,
+     "bytes": 2591916,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 4710,
+     "bytes": 982558,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 5419,
+     "bytes": 948949,
+     "parity": "ok"
+    },
     "jz-wasmtime": {
-     "medianUs": 8371,
-     "bytes": 12982,
+     "medianUs": 4644,
+     "bytes": 11975,
      "parity": "ok"
     },
-    "numpy": {
-     "medianUs": 2527737,
-     "bytes": 2592,
+    "jz-w2c": {
+     "medianUs": 8359,
+     "bytes": 70104,
      "parity": "ok"
     },
-    "zig": {
+    "javy": {
+     "medianUs": 1183000,
+     "bytes": 1259142,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 23485,
+     "bytes": 13902,
+     "parity": "ok"
+    },
+    "wat": {
      "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/biquad/biquad-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/biquad/biquad.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2453: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+     "reason": "exit 1: node:internal/errors:998\n  const err = new Error(message);\n              ^\n\nError: Command failed: wat2wasm \"/Users/div/projects/jz/bench/biquad/biquad.wat\" -o \"/var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/biquad/biquad-wat.was"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 318.7
+   "compileMs": 325.6
   },
   "mat4": {
    "name": "mat4 multiply",
@@ -1107,91 +1918,111 @@
    "ref": 2929747182,
    "targets": {
     "nat": {
-     "medianUs": 2908,
-     "bytes": 18624,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 3575,
-     "bytes": 954348,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 1681,
-     "bytes": 2119978,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 51762,
-     "bytes": 2408013,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 3259,
-     "bytes": 40732,
+     "medianUs": 1962,
+     "bytes": 33624,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 1984,
-     "bytes": 355320,
+     "medianUs": 1457,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 9825,
-     "bytes": 1454264,
+     "medianUs": 8775,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1981,
+     "bytes": 53096,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 286230,
+     "bytes": 1606,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 16954,
+     "medianUs": 8723,
      "bytes": 1198,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 9521,
+     "medianUs": 7712,
      "bytes": 1198,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 4060,
+     "medianUs": 2544,
      "bytes": 1198,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 3988,
-     "bytes": 4413,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 10199,
-     "bytes": 1485,
+     "medianUs": 2535,
+     "bytes": 4512,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 106367,
-     "bytes": 4413,
+     "medianUs": 67193,
+     "bytes": 4512,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 678,
+     "medianUs": 753,
      "bytes": 1491,
      "parity": "ok"
     },
+    "as": {
+     "medianUs": 6748,
+     "bytes": 1456,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 1194,
+     "bytes": 2029754,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 25350,
+     "bytes": 2589981,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2391,
+     "bytes": 40586,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 2711,
+     "bytes": 946258,
+     "parity": "ok"
+    },
     "jz-wasmtime": {
-     "medianUs": 916,
+     "medianUs": 676,
      "bytes": 9297,
      "parity": "ok"
     },
-    "numpy": {
-     "medianUs": 408994,
-     "bytes": 1606,
+    "jz-w2c": {
+     "medianUs": 769,
+     "bytes": 70056,
      "parity": "ok"
     },
-    "zig": {
+    "javy": {
+     "medianUs": 1168000,
+     "bytes": 1253387,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 17656,
+     "bytes": 13225,
+     "parity": "ok"
+    },
+    "wat": {
      "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/mat4/mat4-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/mat4/mat4.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2406: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+     "reason": "exit 1: node:internal/errors:998\n  const err = new Error(message);\n              ^\n\nError: Command failed: wat2wasm \"/Users/div/projects/jz/bench/mat4/mat4.wat\" -o \"/var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/mat4/mat4-wat.wasm\"\n/User"
     }
    },
-   "compileMs": 135.5
+   "compileMs": 167.9
   },
   "poly": {
    "name": "polymorphic reduce",
@@ -1201,90 +2032,111 @@
    "ref": 3026383685,
    "targets": {
     "nat": {
-     "medianUs": 342,
-     "bytes": 18640,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 757,
-     "bytes": 953880,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 734,
-     "bytes": 2118366,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 2437,
-     "bytes": 2406697,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 736,
-     "bytes": 977654,
+     "medianUs": 472,
+     "bytes": 33720,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 338,
-     "bytes": 355384,
+     "medianUs": 361,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 475,
-     "bytes": 1454264,
+     "medianUs": 617,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 572,
+     "bytes": 377896,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 441,
+     "bytes": 1237,
+     "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 589,
+     "bytes": 359,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 1430,
+     "medianUs": 1677,
      "bytes": 1014,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 6320,
+     "medianUs": 1645,
      "bytes": 1014,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 1540,
+     "medianUs": 957,
      "bytes": 1014,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 1405,
-     "bytes": 4237,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 631,
-     "bytes": 1325,
+     "medianUs": 946,
+     "bytes": 4336,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 137,
-     "bytes": 1059,
+     "medianUs": 139,
+     "bytes": 1056,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 809,
+     "bytes": 1291,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 928,
+     "bytes": 2028137,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 2546,
+     "bytes": 2588577,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 922,
+     "bytes": 976753,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 923,
+     "bytes": 945691,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 143,
+     "medianUs": 138,
      "bytes": 7838,
      "parity": "ok"
     },
-    "numpy": {
-     "medianUs": 632,
-     "bytes": 1237,
+    "jz-w2c": {
+     "medianUs": 143,
+     "bytes": 53544,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/poly/poly-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/poly/poly.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2457: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "javy": {
+     "medianUs": 74000,
+     "bytes": 1250987,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 998,
+     "bytes": 12670,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 112.6
+   "compileMs": 192.1
   },
   "bitwise": {
    "name": "bitwise mix",
@@ -1294,90 +2146,111 @@
    "ref": 3216842766,
    "targets": {
     "nat": {
-     "medianUs": 871,
-     "bytes": 22736,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 7134,
-     "bytes": 955341,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 7437,
-     "bytes": 2119630,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 20431,
-     "bytes": 2406716,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 6657,
-     "bytes": 980279,
+     "medianUs": 955,
+     "bytes": 33720,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 882,
-     "bytes": 356520,
+     "medianUs": 962,
+     "bytes": 389856,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 5121,
-     "bytes": 1454264,
+     "medianUs": 4215,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3133,
+     "bytes": 377896,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 11186,
+     "bytes": 1620,
+     "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 3526,
+     "bytes": 355,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 7312,
+     "medianUs": 3837,
      "bytes": 1005,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 6484,
+     "medianUs": 3650,
      "bytes": 1005,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 5003,
+     "medianUs": 3151,
      "bytes": 1005,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 5300,
-     "bytes": 4220,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 10584,
-     "bytes": 1353,
+     "medianUs": 3059,
+     "bytes": 4319,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 1836,
-     "bytes": 1070,
+     "medianUs": 952,
+     "bytes": 1067,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 9408,
+     "bytes": 1319,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 6885,
+     "bytes": 2029392,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 15159,
+     "bytes": 2588585,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 5920,
+     "bytes": 979378,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 6159,
+     "bytes": 947152,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 1763,
+     "medianUs": 1089,
      "bytes": 7752,
      "parity": "ok"
     },
-    "numpy": {
-     "medianUs": 7672,
-     "bytes": 1620,
+    "jz-w2c": {
+     "medianUs": 1100,
+     "bytes": 70424,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/bitwise/bitwise-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/bitwise/bitwise.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2450: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "javy": {
+     "medianUs": 1266000,
+     "bytes": 1252546,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 13568,
+     "bytes": 12604,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 108.7
+   "compileMs": 135.1
   },
   "tokenizer": {
    "name": "tokenizer scan",
@@ -1387,91 +2260,112 @@
    "ref": 2031286465,
    "targets": {
     "nat": {
-     "medianUs": 52,
-     "bytes": 18640,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 98,
-     "bytes": 954308,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 125,
-     "bytes": 2118295,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 230,
-     "bytes": 2417355,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 192,
-     "bytes": 976883,
+     "medianUs": 115,
+     "bytes": 33728,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 89,
-     "bytes": 354728,
+     "medianUs": 93,
+     "bytes": 389856,
      "parity": "ok"
     },
     "go": {
+     "medianUs": 57,
+     "bytes": 1674322,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 90,
+     "bytes": 377968,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 3011,
+     "bytes": 2024,
+     "parity": "ok"
+    },
+    "wat": {
      "medianUs": 59,
-     "bytes": 1462456,
+     "bytes": 344,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 215,
+     "medianUs": 139,
      "bytes": 1997,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 175,
+     "medianUs": 236,
      "bytes": 1997,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 159,
+     "medianUs": 120,
      "bytes": 1997,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 161,
-     "bytes": 5220,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 81,
-     "bytes": 1585,
+     "medianUs": 125,
+     "bytes": 5319,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 474,
-     "bytes": 5220,
+     "medianUs": 293,
+     "bytes": 5319,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 56,
+     "medianUs": 50,
      "bytes": 2016,
      "parity": "ok"
     },
+    "as": {
+     "medianUs": 59,
+     "bytes": 1551,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 154,
+     "bytes": 2028051,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 185,
+     "bytes": 2599006,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 96,
+     "bytes": 975982,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 82,
+     "bytes": 946119,
+     "parity": "ok"
+    },
     "jz-wasmtime": {
-     "medianUs": 68,
+     "medianUs": 56,
      "bytes": 8946,
      "parity": "ok"
     },
-    "numpy": {
-     "medianUs": 3538,
-     "bytes": 2024,
+    "jz-w2c": {
+     "medianUs": 95,
+     "bytes": 70256,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/tokenizer/tokenizer-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/tokenizer/tokenizer.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2450: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "javy": {
+     "medianUs": 7000,
+     "bytes": 1253119,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 277,
+     "bytes": 14495,
+     "parity": "ok"
     }
    },
-   "compileMs": 126.7
+   "compileMs": 170.8
   },
   "callback": {
    "name": "callback map",
@@ -1481,90 +2375,111 @@
    "ref": 893685701,
    "targets": {
     "nat": {
-     "medianUs": 298,
-     "bytes": 22736,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 718,
-     "bytes": 955595,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 721,
-     "bytes": 2118465,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 1743,
-     "bytes": 2406579,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 389,
-     "bytes": 978763,
+     "medianUs": 289,
+     "bytes": 33728,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 293,
-     "bytes": 358072,
+     "medianUs": 284,
+     "bytes": 389856,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 330,
-     "bytes": 1454264,
+     "medianUs": 335,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 336,
+     "bytes": 377920,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 33221,
+     "bytes": 1095,
+     "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 348,
+     "bytes": 266,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 853,
+     "medianUs": 617,
      "bytes": 1315,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 764,
+     "medianUs": 613,
      "bytes": 1315,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 1367,
+     "medianUs": 694,
      "bytes": 1315,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 892,
-     "bytes": 4538,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 1098,
-     "bytes": 1850,
+     "medianUs": 719,
+     "bytes": 4637,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 631,
-     "bytes": 1521,
+     "medianUs": 268,
+     "bytes": 1517,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 806,
+     "bytes": 1814,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 410,
+     "bytes": 2028224,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 908,
+     "bytes": 2588511,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 378,
+     "bytes": 977862,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 488,
+     "bytes": 947406,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 250,
+     "medianUs": 270,
      "bytes": 7899,
      "parity": "ok"
     },
-    "numpy": {
-     "medianUs": 45302,
-     "bytes": 1095,
+    "jz-w2c": {
+     "medianUs": 315,
+     "bytes": 53632,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/callback/callback-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/callback/callback.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2458: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "javy": {
+     "medianUs": 35000,
+     "bytes": 1246520,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 608,
+     "bytes": 12288,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: ReferenceError: scale is not defined"
     }
    },
-   "compileMs": 110.4
+   "compileMs": 155.2
   },
   "aos": {
    "name": "AoS to SoA",
@@ -1574,90 +2489,111 @@
    "ref": 2813671365,
    "targets": {
     "nat": {
-     "medianUs": 1192,
-     "bytes": 22736,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 2490,
-     "bytes": 957713,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 2626,
-     "bytes": 2119658,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 3363,
-     "bytes": 2408711,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 2445,
-     "bytes": 981908,
+     "medianUs": 863,
+     "bytes": 33720,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 736,
-     "bytes": 357272,
+     "medianUs": 870,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 1613,
-     "bytes": 1454264,
+     "medianUs": 704,
+     "bytes": 1674370,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 680,
+     "bytes": 377896,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 1554,
+     "bytes": 1448,
+     "parity": "ok"
+    },
+    "wat": {
+     "medianUs": 780,
+     "bytes": 481,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 1940,
+     "medianUs": 1393,
      "bytes": 1089,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 1720,
+     "medianUs": 1531,
      "bytes": 1089,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 2231,
+     "medianUs": 1645,
      "bytes": 1089,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 2243,
-     "bytes": 4304,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 1998,
-     "bytes": 2010,
+     "medianUs": 1665,
+     "bytes": 4403,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 1179,
-     "bytes": 1888,
+     "medianUs": 706,
+     "bytes": 1885,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 1463,
+     "bytes": 1957,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 2740,
+     "bytes": 2029432,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 3043,
+     "bytes": 2590376,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2534,
+     "bytes": 981007,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 2739,
+     "bytes": 949524,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 1215,
+     "medianUs": 678,
      "bytes": 8644,
      "parity": "ok"
     },
-    "numpy": {
-     "medianUs": 2604,
-     "bytes": 1448,
+    "jz-w2c": {
+     "medianUs": 1309,
+     "bytes": 70424,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/aos/aos-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/aos/aos.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2461: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "javy": {
+     "medianUs": 222000,
+     "bytes": 1251990,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 5126,
+     "bytes": 13108,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 123.7
+   "compileMs": 190.9
   },
   "mandelbrot": {
    "name": "mandelbrot escape",
@@ -1667,86 +2603,102 @@
    "ref": 3520419621,
    "targets": {
     "nat": {
-     "medianUs": 9039,
-     "bytes": 22736,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 13138,
-     "bytes": 955739,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 13180,
-     "bytes": 2120167,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 12303,
-     "bytes": 2406772,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 13563,
-     "bytes": 981870,
+     "medianUs": 9365,
+     "bytes": 33728,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 9134,
-     "bytes": 356200,
+     "medianUs": 9367,
+     "bytes": 389856,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 9314,
-     "bytes": 1454264,
+     "medianUs": 9585,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 9016,
+     "bytes": 377920,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 10405,
+     "medianUs": 10029,
      "bytes": 1841,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 9701,
+     "medianUs": 10055,
      "bytes": 1841,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 9006,
+     "medianUs": 8995,
      "bytes": 1841,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 9037,
-     "bytes": 5056,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 9296,
-     "bytes": 1339,
+     "medianUs": 8985,
+     "bytes": 5155,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 11013,
-     "bytes": 5056,
+     "medianUs": 9851,
+     "bytes": 5155,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 5048,
-     "bytes": 1078,
+     "medianUs": 4877,
+     "bytes": 1074,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 9034,
+     "bytes": 1301,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 15817,
+     "bytes": 2029917,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 9300,
+     "bytes": 2588724,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 15684,
+     "bytes": 980969,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 15973,
+     "bytes": 947550,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 4922,
+     "medianUs": 4786,
      "bytes": 8175,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/mandelbrot/mandelbrot-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/mandelbrot/mandelbrot.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2450: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 4847,
+     "bytes": 70512,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 445000,
+     "bytes": 1250041,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 9243,
+     "bytes": 12622,
+     "parity": "ok"
     }
    },
-   "compileMs": 119
+   "compileMs": 165.9
   },
   "json": {
    "name": "JSON parse+walk (single literal source)",
@@ -1756,85 +2708,101 @@
    "ref": 2797819845,
    "targets": {
     "nat": {
-     "medianUs": 210,
-     "bytes": 22744,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 376,
-     "bytes": 1000456,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 438,
-     "bytes": 2144973,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 7292,
-     "bytes": 3056552,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 974,
-     "bytes": 1169194,
+     "medianUs": 192,
+     "bytes": 33832,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 289,
-     "bytes": 379864,
+     "medianUs": 326,
+     "bytes": 407528,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 1315,
-     "bytes": 1806520,
+     "medianUs": 923,
+     "bytes": 2060786,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 557,
+     "bytes": 437576,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 868,
+     "bytes": 1202,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 314,
+     "medianUs": 277,
      "bytes": 1226,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 321,
+     "medianUs": 270,
      "bytes": 1226,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 273,
+     "medianUs": 192,
      "bytes": 1226,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 154,
-     "bytes": 4449,
+     "medianUs": 155,
+     "bytes": 4548,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 222,
+     "medianUs": 134,
      "bytes": 8080,
      "parity": "ok"
     },
+    "rust-wasm": {
+     "medianUs": 311,
+     "bytes": 2054564,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 4485,
+     "bytes": 3266361,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 720,
+     "bytes": 1168105,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 260,
+     "bytes": 990785,
+     "parity": "ok"
+    },
     "jz-wasmtime": {
-     "medianUs": 83,
+     "medianUs": 69,
      "bytes": 16348,
      "parity": "ok"
     },
-    "numpy": {
-     "medianUs": 1085,
-     "bytes": 1202,
+    "jz-w2c": {
+     "medianUs": 109,
+     "bytes": 70536,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/json/json-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/json/json.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2667: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "javy": {
+     "medianUs": 1000,
+     "bytes": 1246903,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 2526,
+     "bytes": 17807,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RangeError: Start offset -2146238172 is outside the bounds of the buffer"
     }
    },
-   "compileMs": 211.7
+   "compileMs": 301.8
   },
   "sort": {
    "name": "in-place heapsort",
@@ -1844,90 +2812,106 @@
    "ref": 1238395589,
    "targets": {
     "nat": {
-     "medianUs": 11351,
-     "bytes": 14528,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 11638,
-     "bytes": 954364,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 12691,
-     "bytes": 2119169,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 20379,
-     "bytes": 2408551,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 11588,
-     "bytes": 36882,
+     "medianUs": 6922,
+     "bytes": 33496,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 10186,
-     "bytes": 355424,
+     "medianUs": 7151,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 11454,
-     "bytes": 1454264,
+     "medianUs": 10144,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 7759,
+     "bytes": 53064,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 3857,
+     "bytes": 1373,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 13283,
+     "medianUs": 8810,
      "bytes": 1602,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 13022,
+     "medianUs": 9074,
      "bytes": 1602,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 12275,
+     "medianUs": 7680,
      "bytes": 1602,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 12240,
-     "bytes": 4817,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 9936,
-     "bytes": 1916,
+     "medianUs": 7020,
+     "bytes": 4916,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 6718,
-     "bytes": 1646,
+     "medianUs": 5575,
+     "bytes": 1642,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 8078,
+     "bytes": 1889,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 6998,
+     "bytes": 2028945,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 13074,
+     "bytes": 2590466,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 5159,
+     "bytes": 36736,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 6578,
+     "bytes": 946274,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 7586,
+     "medianUs": 6558,
      "bytes": 8221,
      "parity": "ok"
     },
-    "numpy": {
-     "medianUs": 772,
-     "bytes": 1373,
+    "jz-w2c": {
+     "medianUs": 9365,
+     "bytes": 53544,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/sort/sort-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/sort/sort.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2405: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "javy": {
+     "medianUs": 336000,
+     "bytes": 1257849,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 14338,
+     "bytes": 13834,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 114.2
+   "compileMs": 145.8
   },
   "crc32": {
    "name": "CRC-32 table hash",
@@ -1937,91 +2921,107 @@
    "ref": 304463882,
    "targets": {
     "nat": {
-     "medianUs": 7098,
-     "bytes": 14528,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 7909,
-     "bytes": 954274,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 8666,
-     "bytes": 2120011,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 9511,
-     "bytes": 2407153,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 8916,
-     "bytes": 37157,
+     "medianUs": 7970,
+     "bytes": 33496,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 6910,
-     "bytes": 357304,
+     "medianUs": 7019,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 6919,
-     "bytes": 1454264,
+     "medianUs": 6767,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 6879,
+     "bytes": 53064,
+     "parity": "ok"
+    },
+    "numpy": {
+     "medianUs": 177,
+     "bytes": 1240,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 7007,
+     "medianUs": 9656,
      "bytes": 1873,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 9980,
+     "medianUs": 9636,
      "bytes": 1873,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 8073,
+     "medianUs": 7085,
      "bytes": 1873,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 7116,
-     "bytes": 5096,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 8654,
-     "bytes": 1397,
+     "medianUs": 6654,
+     "bytes": 5195,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 61039,
-     "bytes": 5096,
+     "medianUs": 59548,
+     "bytes": 5195,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 8644,
-     "bytes": 1073,
+     "medianUs": 8641,
+     "bytes": 1070,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 8788,
+     "bytes": 1359,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 8782,
+     "bytes": 2029795,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 9548,
+     "bytes": 2589189,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 9004,
+     "bytes": 37011,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 8490,
+     "bytes": 946184,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 8641,
-     "bytes": 8032,
+     "medianUs": 8904,
+     "bytes": 8102,
      "parity": "ok"
     },
-    "numpy": {
-     "medianUs": 944,
-     "bytes": 1240,
+    "jz-w2c": {
+     "medianUs": 8977,
+     "bytes": 53528,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/crc32/crc32-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/crc32/crc32.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2416: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "javy": {
+     "medianUs": 173000,
+     "bytes": 1254053,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 8430,
+     "bytes": 12592,
+     "parity": "ok"
     }
    },
-   "compileMs": 112
+   "compileMs": 141.4
   },
   "matmul": {
    "name": "matrix multiply (A·Bᵀ)",
@@ -2031,85 +3031,101 @@
    "ref": 1299645893,
    "targets": {
     "nat": {
-     "medianUs": 6776,
-     "bytes": 22736,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 12642,
-     "bytes": 956561,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 13113,
-     "bytes": 2119546,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 37944,
-     "bytes": 2406877,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 15207,
-     "bytes": 981071,
+     "medianUs": 5567,
+     "bytes": 33720,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 6743,
-     "bytes": 356264,
+     "medianUs": 5569,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 7139,
-     "bytes": 1454264,
+     "medianUs": 9575,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 7685,
+     "bytes": 377896,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 12658,
+     "medianUs": 9876,
      "bytes": 1984,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 9209,
+     "medianUs": 9972,
      "bytes": 1984,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 11826,
+     "medianUs": 11696,
      "bytes": 1984,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 11814,
-     "bytes": 5199,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 11132,
-     "bytes": 1323,
+     "medianUs": 11953,
+     "bytes": 5298,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2527,
-     "bytes": 1341,
+     "medianUs": 2045,
+     "bytes": 1338,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 11671,
+     "bytes": 1285,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 19511,
+     "bytes": 2029311,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 31541,
+     "bytes": 2589010,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 18200,
+     "bytes": 980170,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 18253,
+     "bytes": 948372,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 2556,
+     "medianUs": 1989,
      "bytes": 8089,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/matmul/matmul-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/matmul/matmul.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2450: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 4263,
+     "bytes": 53544,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 895000,
+     "bytes": 1250788,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 18192,
+     "bytes": 12646,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 106.6
+   "compileMs": 129
   },
   "heat": {
    "name": "2-D heat diffusion (5-point stencil)",
@@ -2119,85 +3135,101 @@
    "ref": 2564029013,
    "targets": {
     "nat": {
-     "medianUs": 1826,
-     "bytes": 22736,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 12223,
-     "bytes": 956536,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 12301,
-     "bytes": 2119282,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 24324,
-     "bytes": 2408716,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 12405,
-     "bytes": 979839,
+     "medianUs": 1726,
+     "bytes": 33720,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 1840,
-     "bytes": 356632,
+     "medianUs": 1629,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 7516,
-     "bytes": 1458360,
+     "medianUs": 4994,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3614,
+     "bytes": 377896,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 14499,
+     "medianUs": 9204,
      "bytes": 2739,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 12843,
+     "medianUs": 7865,
      "bytes": 2739,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 8136,
+     "medianUs": 6478,
      "bytes": 2739,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 8135,
-     "bytes": 5954,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 9546,
-     "bytes": 1397,
+     "medianUs": 5708,
+     "bytes": 6053,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 3708,
-     "bytes": 1422,
+     "medianUs": 2210,
+     "bytes": 1419,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 8344,
+     "bytes": 1364,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 9208,
+     "bytes": 2029053,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 12506,
+     "bytes": 2590598,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 9205,
+     "bytes": 978938,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 9260,
+     "bytes": 948347,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 3821,
+     "medianUs": 2391,
      "bytes": 8129,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/heat/heat-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/heat/heat.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2457: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 3502,
+     "bytes": 70040,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 914000,
+     "bytes": 1254892,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 23000,
+     "bytes": 12887,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 103.1
+   "compileMs": 160
   },
   "conv2d": {
    "name": "int8 conv2d layer (NN inference)",
@@ -2207,85 +3239,101 @@
    "ref": 2649699616,
    "targets": {
     "nat": {
-     "medianUs": 1185,
-     "bytes": 18624,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 4237,
-     "bytes": 956456,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 3861,
-     "bytes": 2119683,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 53931,
-     "bytes": 2409076,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 5482,
-     "bytes": 986697,
+     "medianUs": 1096,
+     "bytes": 33496,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 923,
-     "bytes": 357800,
+     "medianUs": 859,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 17089,
-     "bytes": 1458360,
+     "medianUs": 8293,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1791,
+     "bytes": 378008,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 24082,
+     "medianUs": 14676,
      "bytes": 3595,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 15837,
+     "medianUs": 13324,
      "bytes": 3595,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 13952,
+     "medianUs": 8314,
      "bytes": 3595,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 13416,
-     "bytes": 6806,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 15746,
-     "bytes": 1734,
+     "medianUs": 9409,
+     "bytes": 6905,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2703,
-     "bytes": 1448,
+     "medianUs": 1964,
+     "bytes": 1445,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 7954,
+     "bytes": 1696,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 2532,
+     "bytes": 2029453,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 47222,
+     "bytes": 2591009,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2848,
+     "bytes": 985796,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 2571,
+     "bytes": 948366,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 2927,
+     "medianUs": 2024,
      "bytes": 11715,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/conv2d/conv2d-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/conv2d/conv2d.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2511: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 1654,
+     "bytes": 70088,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 1265000,
+     "bytes": 1260515,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 21240,
+     "bytes": 13485,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 225.9
+   "compileMs": 298.3
   },
   "qoi": {
    "name": "QOI image codec (encode + decode)",
@@ -2295,85 +3343,101 @@
    "ref": 1486080151,
    "targets": {
     "nat": {
-     "medianUs": 11395,
-     "bytes": 14528,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 12941,
-     "bytes": 959477,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 13422,
-     "bytes": 2122188,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 30279,
-     "bytes": 2418109,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 13877,
-     "bytes": 986514,
+     "medianUs": 7361,
+     "bytes": 33496,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 11942,
-     "bytes": 360264,
+     "medianUs": 6943,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 16178,
-     "bytes": 1462456,
+     "medianUs": 9455,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 8483,
+     "bytes": 377992,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 22199,
+     "medianUs": 12216,
      "bytes": 6376,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 17988,
+     "medianUs": 10928,
      "bytes": 6376,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 15917,
+     "medianUs": 8974,
      "bytes": 6376,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 15960,
-     "bytes": 9599,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 16216,
-     "bytes": 3046,
+     "medianUs": 9740,
+     "bytes": 9698,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 15239,
-     "bytes": 2804,
+     "medianUs": 9405,
+     "bytes": 2800,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 9531,
+     "bytes": 3012,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 8770,
+     "bytes": 2031970,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 19388,
+     "bytes": 2599943,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 9291,
+     "bytes": 985613,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 8673,
+     "bytes": 951387,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 14300,
+     "medianUs": 8935,
      "bytes": 10300,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/qoi/qoi-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/qoi/qoi.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2467: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 8080,
+     "bytes": 70040,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 613000,
+     "bytes": 1284557,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 19176,
+     "bytes": 17474,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 211.3
+   "compileMs": 268.1
   },
   "hash": {
    "name": "MurmurHash3 (x86 32-bit)",
@@ -2383,86 +3447,102 @@
    "ref": 1334379566,
    "targets": {
     "nat": {
-     "medianUs": 3194,
-     "bytes": 14528,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 5975,
-     "bytes": 954079,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 6181,
-     "bytes": 2118851,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 6417,
-     "bytes": 2407736,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 6757,
-     "bytes": 36851,
+     "medianUs": 3706,
+     "bytes": 33496,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 3186,
-     "bytes": 354824,
+     "medianUs": 3991,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 3642,
-     "bytes": 1454264,
+     "medianUs": 3722,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3828,
+     "bytes": 53064,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 5177,
+     "medianUs": 3961,
      "bytes": 2288,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 5168,
+     "medianUs": 3795,
      "bytes": 2288,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 4175,
+     "medianUs": 4325,
      "bytes": 2288,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 4181,
-     "bytes": 5511,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 3632,
-     "bytes": 1401,
+     "medianUs": 4292,
+     "bytes": 5610,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 133703,
-     "bytes": 5511,
+     "medianUs": 49834,
+     "bytes": 5610,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 3294,
-     "bytes": 1086,
+     "medianUs": 3841,
+     "bytes": 1083,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 3986,
+     "bytes": 1367,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 4522,
+     "bytes": 2028622,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 5007,
+     "bytes": 2589637,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 6010,
+     "bytes": 36705,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 6406,
+     "bytes": 945989,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 4131,
+     "medianUs": 4382,
      "bytes": 7609,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/hash/hash-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/hash/hash.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2405: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 4105,
+     "bytes": 53512,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 787000,
+     "bytes": 1255232,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 6688,
+     "bytes": 12731,
+     "parity": "ok"
     }
    },
-   "compileMs": 108.8
+   "compileMs": 125.2
   },
   "lz": {
    "name": "LZSS compress + inflate",
@@ -2472,86 +3552,102 @@
    "ref": 2900100982,
    "targets": {
     "nat": {
-     "medianUs": 9989,
-     "bytes": 14528,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 14144,
-     "bytes": 956711,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 25759,
-     "bytes": 2120288,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 121061,
-     "bytes": 2411035,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 23133,
-     "bytes": 39298,
+     "medianUs": 9777,
+     "bytes": 33496,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 16522,
-     "bytes": 357360,
+     "medianUs": 11141,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 23114,
-     "bytes": 1458360,
+     "medianUs": 14665,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 10269,
+     "bytes": 53160,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 26272,
+     "medianUs": 23625,
      "bytes": 4556,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 23090,
+     "medianUs": 20444,
      "bytes": 4556,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 14495,
+     "medianUs": 17890,
      "bytes": 4556,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 14316,
-     "bytes": 7779,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 20226,
-     "bytes": 1944,
+     "medianUs": 18285,
+     "bytes": 7878,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 109358,
-     "bytes": 7779,
+     "medianUs": 62842,
+     "bytes": 7878,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 17543,
-     "bytes": 1891,
+     "medianUs": 11488,
+     "bytes": 1887,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 15048,
+     "bytes": 1910,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 14457,
+     "bytes": 2030070,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 65872,
+     "bytes": 2592898,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 11100,
+     "bytes": 39152,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 14505,
+     "bytes": 948621,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 14459,
+     "medianUs": 10563,
      "bytes": 9054,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/lz/lz-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/lz/lz.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2410: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 7684,
+     "bytes": 53512,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 1195000,
+     "bytes": 1268555,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 30758,
+     "bytes": 14095,
+     "parity": "ok"
     }
    },
-   "compileMs": 144.7
+   "compileMs": 199.1
   },
   "base64": {
    "name": "Base64 encode + decode",
@@ -2561,85 +3657,101 @@
    "ref": 1353105291,
    "targets": {
     "nat": {
-     "medianUs": 3522,
-     "bytes": 18624,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 3871,
-     "bytes": 955689,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 4159,
-     "bytes": 2119746,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 10334,
-     "bytes": 2412554,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 4133,
-     "bytes": 39292,
+     "medianUs": 3059,
+     "bytes": 33496,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 4476,
-     "bytes": 362984,
+     "medianUs": 2779,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 4925,
-     "bytes": 1458360,
+     "medianUs": 4142,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3254,
+     "bytes": 53176,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 6566,
+     "medianUs": 4987,
      "bytes": 3339,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 6102,
+     "medianUs": 4514,
      "bytes": 3339,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 5395,
+     "medianUs": 4065,
      "bytes": 3339,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 4858,
-     "bytes": 6550,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 4948,
-     "bytes": 1966,
+     "medianUs": 4107,
+     "bytes": 6649,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 4142,
-     "bytes": 1626,
+     "medianUs": 3437,
+     "bytes": 1623,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 4125,
+     "bytes": 1924,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 3444,
+     "bytes": 2029516,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 6756,
+     "bytes": 2594438,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 3526,
+     "bytes": 39146,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 3514,
+     "bytes": 947599,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 4317,
+     "medianUs": 3705,
      "bytes": 8427,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/base64/base64-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/base64/base64.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2426: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 4773,
+     "bytes": 53592,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 454000,
+     "bytes": 1264743,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 10140,
+     "bytes": 14554,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 146.5
+   "compileMs": 198.9
   },
   "wav": {
    "name": "WAV PCM-16 encode",
@@ -2649,85 +3761,101 @@
    "ref": 211188261,
    "targets": {
     "nat": {
-     "medianUs": 4598,
-     "bytes": 14528,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 9329,
-     "bytes": 954142,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 9217,
-     "bytes": 2118679,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 18811,
-     "bytes": 2412843,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 9229,
-     "bytes": 979504,
+     "medianUs": 4589,
+     "bytes": 33496,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 6360,
-     "bytes": 355784,
+     "medianUs": 5185,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 9548,
-     "bytes": 1458360,
+     "medianUs": 7935,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 7638,
+     "bytes": 377992,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 11142,
+     "medianUs": 7521,
      "bytes": 3481,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 10884,
+     "medianUs": 7339,
      "bytes": 3481,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 10513,
+     "medianUs": 5894,
      "bytes": 3481,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 9478,
-     "bytes": 6692,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 10496,
-     "bytes": 1780,
+     "medianUs": 5771,
+     "bytes": 6791,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 9783,
-     "bytes": 1608,
+     "medianUs": 5799,
+     "bytes": 1605,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 6103,
+     "bytes": 1751,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 6116,
+     "bytes": 2028458,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 11632,
+     "bytes": 2594819,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 6113,
+     "bytes": 978603,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 5548,
+     "bytes": 946052,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 7972,
+     "medianUs": 6354,
      "bytes": 8335,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/wav/wav-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/wav/wav.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2459: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 6146,
+     "bytes": 53528,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 720000,
+     "bytes": 1261493,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 9804,
+     "bytes": 13837,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 138.1
+   "compileMs": 162.9
   },
   "raytrace": {
    "name": "sphere ray tracer (closest-hit + Lambert)",
@@ -2736,86 +3864,103 @@
    "runs": 21,
    "ref": 306875421,
    "targets": {
-    "c-wasm": {
-     "medianUs": 2788,
-     "bytes": 958522,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 3043,
-     "bytes": 2121239,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 7194,
-     "bytes": 2411232,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 2763,
-     "bytes": 990075,
+    "nat": {
+     "medianUs": 1386,
+     "bytes": 33728,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 2219,
-     "bytes": 357600,
+     "medianUs": 1169,
+     "bytes": 389856,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 3328,
-     "bytes": 1458360,
+     "medianUs": 1520,
+     "bytes": 1674306,
+     "parity": "fma"
+    },
+    "zig": {
+     "medianUs": 1519,
+     "bytes": 378016,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 3816,
+     "medianUs": 2041,
      "bytes": 4239,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 3621,
+     "medianUs": 1639,
      "bytes": 4239,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 2995,
+     "medianUs": 1571,
      "bytes": 4239,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 2991,
-     "bytes": 7454,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 3565,
-     "bytes": 2045,
+     "medianUs": 1582,
+     "bytes": 7553,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 36156,
-     "bytes": 7454,
+     "medianUs": 18733,
+     "bytes": 7553,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 2546,
-     "bytes": 2217,
+     "medianUs": 1053,
+     "bytes": 2213,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 1784,
+     "bytes": 2007,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 1051,
+     "bytes": 2031003,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 3677,
+     "bytes": 2593428,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 1358,
+     "bytes": 989174,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 1372,
+     "bytes": 950333,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 2263,
+     "medianUs": 1078,
      "bytes": 11812,
      "parity": "ok"
     },
-    "nat": {
-     "status": "fail",
-     "reason": "Command failed: clang -O3 -march=native -ffp-contract=off -o /tmp/jz-bench/raytrace/raytrace-nat /home/runner/work/jz/jz/bench/raytrace/raytrace.c\nwarning: invalid feature combination:  +avx10.1-256; will be promoted to avx10.1-512 [-Winvalid-feature-combination]\n1 warning generated.\n/usr/bin/ld: /tmp/raytrace-eecbd5.o: in function `render':\nraytrace.c:(.text+0x1ca7): undefined reference to `sqrt'\n/usr/bin/ld: raytrace.c:(.text+0x1d8d): undefined reference to `sqrt'\n/usr/bin/ld: raytrace.c:(.text+0x1e6d): undefined reference to `sqrt'\n/usr/bin/ld: raytrace.c:(.text+0x1f4d): undefined reference to `sqrt'\n/usr/bin/ld: raytrace.c:(.text+0x202d): undefined reference to `sqrt'\n/usr/bin/ld: /tmp/raytrace-eecbd5.o:raytrace.c:(.text+0x210d): more undefined references to `sqrt' follow\nclang: error: linker command failed with exit code 1 (use -v to see invocation)\n"
+    "jz-w2c": {
+     "medianUs": 1233,
+     "bytes": 70144,
+     "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/raytrace/raytrace-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/raytrace/raytrace.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2476: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "javy": {
+     "medianUs": 234000,
+     "bytes": 1267177,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 4944,
+     "bytes": 14918,
+     "parity": "ok"
     }
    },
-   "compileMs": 207.5
+   "compileMs": 288.3
   },
   "noise": {
    "name": "Perlin fBm noise field",
@@ -2825,85 +3970,101 @@
    "ref": 2977367493,
    "targets": {
     "nat": {
-     "medianUs": 2446,
-     "bytes": 22736,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 7946,
-     "bytes": 958335,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 7262,
-     "bytes": 2119833,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 9482,
-     "bytes": 2411116,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 8014,
-     "bytes": 981316,
+     "medianUs": 1578,
+     "bytes": 33720,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 2319,
-     "bytes": 357888,
+     "medianUs": 1409,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 4711,
-     "bytes": 1462456,
+     "medianUs": 3521,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1656,
+     "bytes": 377992,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 5616,
+     "medianUs": 3688,
      "bytes": 3465,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 5174,
+     "medianUs": 3371,
      "bytes": 3465,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 5285,
+     "medianUs": 4139,
      "bytes": 3465,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 5254,
-     "bytes": 6680,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 6404,
-     "bytes": 1906,
+     "medianUs": 4078,
+     "bytes": 6779,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 4539,
-     "bytes": 2140,
+     "medianUs": 1245,
+     "bytes": 2136,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 1521,
+     "bytes": 1868,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 1417,
+     "bytes": 2029590,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 7217,
+     "bytes": 2593014,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 1519,
+     "bytes": 980415,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 1592,
+     "bytes": 950146,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 2986,
+     "medianUs": 939,
      "bytes": 10828,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/noise/noise-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/noise/noise.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2459: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 1023,
+     "bytes": 70072,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 328000,
+     "bytes": 1261794,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 4809,
+     "bytes": 13920,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 240
+   "compileMs": 343.8
   },
   "radixsort": {
    "name": "LSD radix sort (u32 keys)",
@@ -2913,85 +4074,101 @@
    "ref": 2475082232,
    "targets": {
     "nat": {
-     "medianUs": 2639,
-     "bytes": 22744,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 6077,
-     "bytes": 956711,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 3227,
-     "bytes": 2120680,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 9479,
-     "bytes": 2408823,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 3359,
-     "bytes": 982237,
+     "medianUs": 1906,
+     "bytes": 33760,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 2537,
-     "bytes": 357432,
+     "medianUs": 2096,
+     "bytes": 389856,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 4607,
-     "bytes": 1458360,
+     "medianUs": 2545,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 2098,
+     "bytes": 378016,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 5856,
+     "medianUs": 3285,
      "bytes": 2639,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 5205,
+     "medianUs": 2507,
      "bytes": 2639,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 5326,
+     "medianUs": 4770,
      "bytes": 2639,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 5523,
-     "bytes": 5854,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 5094,
-     "bytes": 1595,
+     "medianUs": 3078,
+     "bytes": 5953,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 3794,
-     "bytes": 1381,
+     "medianUs": 2399,
+     "bytes": 1377,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 3278,
+     "bytes": 1557,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 2399,
+     "bytes": 2030441,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 6829,
+     "bytes": 2590807,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2333,
+     "bytes": 981336,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 6010,
+     "bytes": 948522,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 3634,
+     "medianUs": 2563,
      "bytes": 9020,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/radixsort/radixsort-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/radixsort/radixsort.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2455: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 5949,
+     "bytes": 70512,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 454000,
+     "bytes": 1256132,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 15002,
+     "bytes": 13439,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 146.7
+   "compileMs": 179.7
   },
   "levenshtein": {
    "name": "Levenshtein edit-distance DP",
@@ -3001,86 +4178,102 @@
    "ref": 981953199,
    "targets": {
     "nat": {
-     "medianUs": 4460,
-     "bytes": 30928,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 5866,
-     "bytes": 956564,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 10086,
-     "bytes": 2120037,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 8349,
-     "bytes": 2408527,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 6386,
-     "bytes": 987199,
+     "medianUs": 1656,
+     "bytes": 50240,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 4933,
-     "bytes": 355912,
+     "medianUs": 2146,
+     "bytes": 389856,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 4947,
-     "bytes": 1458360,
+     "medianUs": 5976,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 2101,
+     "bytes": 378016,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 8437,
+     "medianUs": 5861,
      "bytes": 2864,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 7561,
+     "medianUs": 5070,
      "bytes": 2864,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 7462,
+     "medianUs": 4748,
      "bytes": 2864,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 7463,
-     "bytes": 6087,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 5183,
-     "bytes": 1598,
+     "medianUs": 4873,
+     "bytes": 6186,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 41806,
-     "bytes": 6087,
+     "medianUs": 24052,
+     "bytes": 6186,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 2504,
-     "bytes": 1245,
+     "medianUs": 1774,
+     "bytes": 1242,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 2009,
+     "bytes": 1564,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 5272,
+     "bytes": 2029784,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 6501,
+     "bytes": 2590364,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 5524,
+     "bytes": 986298,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 5087,
+     "bytes": 948375,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 2504,
+     "medianUs": 2636,
      "bytes": 8320,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/levenshtein/levenshtein-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/levenshtein/levenshtein.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2456: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 2748,
+     "bytes": 53728,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 241000,
+     "bytes": 1255713,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 7189,
+     "bytes": 13109,
+     "parity": "ok"
     }
    },
-   "compileMs": 116.5
+   "compileMs": 166.5
   },
   "nqueens": {
    "name": "N-Queens bitmask backtracking",
@@ -3090,86 +4283,101 @@
    "ref": 1121018765,
    "targets": {
     "nat": {
-     "medianUs": 4356,
-     "bytes": 14528,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 5508,
-     "bytes": 953925,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 5476,
-     "bytes": 2119203,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 11157,
-     "bytes": 2407905,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 5476,
-     "bytes": 40374,
+     "medianUs": 3503,
+     "bytes": 33496,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 4330,
-     "bytes": 356480,
+     "medianUs": 3082,
+     "bytes": 390160,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 4878,
-     "bytes": 1454264,
+     "medianUs": 3674,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3187,
+     "bytes": 53192,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 7448,
+     "medianUs": 6276,
      "bytes": 2922,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 7203,
+     "medianUs": 5576,
      "bytes": 2922,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 6652,
+     "medianUs": 3976,
      "bytes": 2922,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 6697,
-     "bytes": 6145,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 6025,
-     "bytes": 1445,
+     "medianUs": 4196,
+     "bytes": 6244,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 21785,
-     "bytes": 6145,
+     "medianUs": 13723,
+     "bytes": 6244,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 4542,
+     "medianUs": 2843,
      "bytes": 1100,
      "parity": "ok"
     },
+    "as": {
+     "medianUs": 3929,
+     "bytes": 1410,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 2962,
+     "bytes": 2028975,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 7081,
+     "bytes": 2589851,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2973,
+     "bytes": 40228,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 2947,
+     "bytes": 945835,
+     "parity": "ok"
+    },
     "jz-wasmtime": {
-     "medianUs": 5697,
+     "medianUs": 3729,
      "bytes": 7832,
      "parity": "ok"
     },
-    "zig": {
+    "javy": {
+     "medianUs": 97000,
+     "bytes": 1253970,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 3326,
+     "bytes": 12708,
+     "parity": "ok"
+    },
+    "jz-w2c": {
      "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/nqueens/nqueens-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/nqueens/nqueens.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2422: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+     "reason": "Command failed: wasm2c /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/nqueens/nqueens.wasm -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/nqueens/nqueens-w2c.c\n0001548: error: unexpected opcode: 0x12\n"
     }
    },
-   "compileMs": 114.4
+   "compileMs": 157.7
   },
   "dict": {
    "name": "open-addressing hash table",
@@ -3179,85 +4387,101 @@
    "ref": 1968764697,
    "targets": {
     "nat": {
-     "medianUs": 1387,
-     "bytes": 14536,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 4925,
-     "bytes": 954321,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 5503,
-     "bytes": 2119912,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 11321,
-     "bytes": 2408220,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 5009,
-     "bytes": 983423,
+     "medianUs": 1199,
+     "bytes": 33544,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 1545,
-     "bytes": 357048,
+     "medianUs": 1399,
+     "bytes": 389896,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 5416,
-     "bytes": 1454264,
+     "medianUs": 1805,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1336,
+     "bytes": 377896,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 4584,
+     "medianUs": 2944,
      "bytes": 2847,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 3854,
+     "medianUs": 2083,
      "bytes": 2847,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 3370,
+     "medianUs": 1524,
      "bytes": 2847,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 3521,
-     "bytes": 6070,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 4119,
-     "bytes": 1503,
+     "medianUs": 1523,
+     "bytes": 6169,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 3124,
-     "bytes": 1280,
+     "medianUs": 1980,
+     "bytes": 1276,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 2438,
+     "bytes": 1467,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 3592,
+     "bytes": 2029683,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 6618,
+     "bytes": 2590153,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 3725,
+     "bytes": 982522,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 3699,
+     "bytes": 946231,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 3604,
+     "medianUs": 1345,
      "bytes": 7936,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/dict/dict-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/dict/dict.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2450: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 1610,
+     "bytes": 53544,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 260000,
+     "bytes": 1256882,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 4505,
+     "bytes": 13045,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 118
+   "compileMs": 140
   },
   "sieve": {
    "name": "Sieve of Eratosthenes",
@@ -3267,85 +4491,101 @@
    "ref": 3811242000,
    "targets": {
     "nat": {
-     "medianUs": 5798,
-     "bytes": 18648,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 6568,
-     "bytes": 956521,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 6387,
-     "bytes": 2119062,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 15456,
-     "bytes": 2407014,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 6762,
-     "bytes": 978620,
+     "medianUs": 3947,
+     "bytes": 33752,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 6800,
-     "bytes": 355504,
+     "medianUs": 3855,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 7677,
-     "bytes": 1454264,
+     "medianUs": 6495,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 5078,
+     "bytes": 377992,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 12466,
+     "medianUs": 7957,
      "bytes": 1822,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 9050,
+     "medianUs": 7552,
      "bytes": 1822,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 9940,
+     "medianUs": 7227,
      "bytes": 1822,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 9081,
-     "bytes": 5038,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 7863,
-     "bytes": 1295,
+     "medianUs": 7529,
+     "bytes": 5137,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 6367,
-     "bytes": 1042,
+     "medianUs": 5097,
+     "bytes": 1039,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 6731,
+     "bytes": 1261,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 5395,
+     "bytes": 2028835,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 16646,
+     "bytes": 2588975,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 5375,
+     "bytes": 977719,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 5627,
+     "bytes": 948332,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 6371,
+     "medianUs": 4984,
      "bytes": 7681,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/sieve/sieve-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/sieve/sieve.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2444: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 5135,
+     "bytes": 70392,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 639000,
+     "bytes": 1249243,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 13006,
+     "bytes": 12602,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 104.2
+   "compileMs": 148.1
   },
   "vm": {
    "name": "bytecode interpreter dispatch",
@@ -3355,86 +4595,102 @@
    "ref": 750010871,
    "targets": {
     "nat": {
-     "medianUs": 5902,
-     "bytes": 18624,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 9248,
-     "bytes": 953399,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 8718,
-     "bytes": 2119039,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 38385,
-     "bytes": 2408937,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 10146,
-     "bytes": 980511,
+     "medianUs": 5855,
+     "bytes": 33624,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 5720,
-     "bytes": 355208,
+     "medianUs": 5594,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 8565,
-     "bytes": 1458360,
+     "medianUs": 7756,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 3648,
+     "bytes": 377944,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 10883,
+     "medianUs": 8154,
      "bytes": 3268,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 9959,
+     "medianUs": 6958,
      "bytes": 3268,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 7151,
+     "medianUs": 5510,
      "bytes": 3268,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 7479,
-     "bytes": 6491,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 18892,
-     "bytes": 1728,
+     "medianUs": 5559,
+     "bytes": 6590,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 94292,
-     "bytes": 6491,
+     "medianUs": 44199,
+     "bytes": 6590,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 12122,
-     "bytes": 1489,
+     "medianUs": 6457,
+     "bytes": 1486,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 11744,
+     "bytes": 1694,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 6142,
+     "bytes": 2028821,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 20383,
+     "bytes": 2590725,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 14954,
+     "bytes": 979610,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 6241,
+     "bytes": 945309,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 12612,
+     "medianUs": 57925,
      "bytes": 8052,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/vm/vm-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/vm/vm.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2450: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 6967,
+     "bytes": 53560,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 637000,
+     "bytes": 1259366,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 16058,
+     "bytes": 13327,
+     "parity": "ok"
     }
    },
-   "compileMs": 119.5
+   "compileMs": 128.4
   },
   "spmv": {
    "name": "sparse matrix×vector (CSR)",
@@ -3444,85 +4700,101 @@
    "ref": 187360325,
    "targets": {
     "nat": {
-     "medianUs": 1947,
-     "bytes": 22736,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 6134,
-     "bytes": 958075,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 11566,
-     "bytes": 2122962,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 16093,
-     "bytes": 2410604,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 6165,
-     "bytes": 987079,
+     "medianUs": 1759,
+     "bytes": 33720,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 2729,
-     "bytes": 358120,
+     "medianUs": 2041,
+     "bytes": 389848,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 3330,
-     "bytes": 1458360,
+     "medianUs": 2550,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1944,
+     "bytes": 377896,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 6205,
+     "medianUs": 3535,
      "bytes": 3063,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 4642,
+     "medianUs": 3156,
      "bytes": 3063,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 3648,
+     "medianUs": 2601,
      "bytes": 3063,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 4313,
-     "bytes": 6278,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 4860,
-     "bytes": 1931,
+     "medianUs": 2567,
+     "bytes": 6377,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 3451,
-     "bytes": 1898,
+     "medianUs": 2320,
+     "bytes": 1895,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 2430,
+     "bytes": 1897,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 12684,
+     "bytes": 2032733,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 7995,
+     "bytes": 2592481,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 6231,
+     "bytes": 986178,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 6456,
+     "bytes": 949886,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 3591,
+     "medianUs": 3142,
      "bytes": 9018,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/spmv/spmv-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/spmv/spmv.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2463: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 3391,
+     "bytes": 70136,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 323000,
+     "bytes": 1255311,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 10364,
+     "bytes": 13480,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: ReferenceError: s is not defined"
     }
    },
-   "compileMs": 120.8
+   "compileMs": 176.6
   },
   "dispatch": {
    "name": "function-table dispatch",
@@ -3532,85 +4804,101 @@
    "ref": 2625728358,
    "targets": {
     "nat": {
-     "medianUs": 5233,
-     "bytes": 14608,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 10332,
-     "bytes": 955578,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 10762,
-     "bytes": 2119952,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 14433,
-     "bytes": 2409910,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 10387,
-     "bytes": 980358,
+     "medianUs": 5034,
+     "bytes": 33504,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 5241,
-     "bytes": 355568,
+     "medianUs": 4356,
+     "bytes": 389872,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 8411,
-     "bytes": 1454264,
+     "medianUs": 5891,
+     "bytes": 1674386,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 4389,
+     "bytes": 378736,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 10888,
+     "medianUs": 9277,
      "bytes": 2543,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 10474,
+     "medianUs": 8859,
      "bytes": 2543,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 8430,
+     "medianUs": 2488,
      "bytes": 2543,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 8614,
-     "bytes": 5766,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 12508,
-     "bytes": 1648,
+     "medianUs": 2323,
+     "bytes": 5865,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 5493,
-     "bytes": 17239,
+     "medianUs": 4687,
+     "bytes": 17235,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 12993,
+     "bytes": 1614,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 12238,
+     "bytes": 2029750,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 11499,
+     "bytes": 2591928,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 11539,
+     "bytes": 979457,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 12135,
+     "bytes": 947488,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 4633,
+     "medianUs": 4523,
      "bytes": 18880,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/dispatch/dispatch-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/dispatch/dispatch.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2452: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 5356,
+     "bytes": 88464,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 61000,
+     "bytes": 1256910,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 9538,
+     "bytes": 13161,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: TypeError: undefined is not a function"
     }
    },
-   "compileMs": 136
+   "compileMs": 159.1
   },
   "shapes": {
    "name": "polymorphic shape scan",
@@ -3620,86 +4908,102 @@
    "ref": 2400445253,
    "targets": {
     "nat": {
-     "medianUs": 4607,
-     "bytes": 14528,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 4895,
-     "bytes": 954014,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 5676,
-     "bytes": 2119150,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 10512,
-     "bytes": 2409306,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 8382,
-     "bytes": 37476,
+     "medianUs": 1463,
+     "bytes": 33496,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 5235,
-     "bytes": 355304,
+     "medianUs": 1481,
+     "bytes": 389864,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 5370,
-     "bytes": 1454264,
+     "medianUs": 1533,
+     "bytes": 1674386,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 995,
+     "bytes": 53032,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 12180,
+     "medianUs": 3796,
      "bytes": 3212,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 12103,
+     "medianUs": 3631,
      "bytes": 3212,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 12346,
+     "medianUs": 11912,
      "bytes": 3212,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 12228,
-     "bytes": 6435,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 5931,
-     "bytes": 1743,
+     "medianUs": 10328,
+     "bytes": 6534,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 89942,
-     "bytes": 6435,
+     "medianUs": 38519,
+     "bytes": 6534,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 4922,
-     "bytes": 3399,
+     "medianUs": 1345,
+     "bytes": 3395,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 1085,
+     "bytes": 1695,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 4969,
+     "bytes": 2028868,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 4816,
+     "bytes": 2591194,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2868,
+     "bytes": 37330,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 4448,
+     "bytes": 945924,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 4713,
+     "medianUs": 1180,
      "bytes": 9783,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/shapes/shapes-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/shapes/shapes.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2402: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 1559,
+     "bytes": 70568,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 142000,
+     "bytes": 1261226,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 7442,
+     "bytes": 13171,
+     "parity": "ok"
     }
    },
-   "compileMs": 148.6
+   "compileMs": 201.6
   },
   "strbuild": {
    "name": "per-record string formatting",
@@ -3709,86 +5013,102 @@
    "ref": 545957244,
    "targets": {
     "nat": {
-     "medianUs": 1248,
-     "bytes": 14616,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 2659,
-     "bytes": 961506,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 2218,
-     "bytes": 2122383,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 4088,
-     "bytes": 2408071,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 575,
-     "bytes": 983608,
+     "medianUs": 1451,
+     "bytes": 33696,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 1560,
-     "bytes": 358320,
+     "medianUs": 2074,
+     "bytes": 390016,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 1176,
-     "bytes": 1454264,
+     "medianUs": 993,
+     "bytes": 1674386,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 383,
+     "bytes": 378848,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 2425,
+     "medianUs": 1737,
      "bytes": 2722,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 2228,
+     "medianUs": 1631,
      "bytes": 2722,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 2578,
+     "medianUs": 1324,
      "bytes": 2722,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 2150,
-     "bytes": 5945,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 2293,
-     "bytes": 2514,
+     "medianUs": 1479,
+     "bytes": 6044,
      "parity": "ok"
     },
     "porf": {
-     "medianUs": 16094,
-     "bytes": 5945,
+     "medianUs": 6679,
+     "bytes": 6044,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 987,
-     "bytes": 2205,
+     "medianUs": 393,
+     "bytes": 1857,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 1488,
+     "bytes": 2480,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 1370,
+     "bytes": 2032156,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 2652,
+     "bytes": 2590035,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 408,
+     "bytes": 982707,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 1956,
+     "bytes": 952844,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 1067,
-     "bytes": 8050,
+     "medianUs": 642,
+     "bytes": 7896,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/strbuild/strbuild-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/strbuild/strbuild.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2447: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 504,
+     "bytes": 53872,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 46000,
+     "bytes": 1252939,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 5372,
+     "bytes": 13256,
+     "parity": "ok"
     }
    },
-   "compileMs": 112.2
+   "compileMs": 160.9
   },
   "wordcount": {
    "name": "word-frequency map (string keys)",
@@ -3798,85 +5118,101 @@
    "ref": 2370237189,
    "targets": {
     "nat": {
-     "medianUs": 3005,
-     "bytes": 14552,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 3107,
-     "bytes": 956228,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 5293,
-     "bytes": 2137633,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 13167,
-     "bytes": 2411535,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 4128,
-     "bytes": 1020440,
+     "medianUs": 1963,
+     "bytes": 33632,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 4058,
-     "bytes": 371536,
+     "medianUs": 3682,
+     "bytes": 390976,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 2670,
-     "bytes": 1462456,
+     "medianUs": 3407,
+     "bytes": 1674418,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 1151,
+     "bytes": 395008,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 3587,
+     "medianUs": 2615,
      "bytes": 3168,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 3600,
+     "medianUs": 2911,
      "bytes": 3168,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 5286,
+     "medianUs": 4014,
      "bytes": 3168,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 5495,
-     "bytes": 6391,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 14076,
-     "bytes": 3525,
+     "medianUs": 2666,
+     "bytes": 6490,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2033,
-     "bytes": 19512,
+     "medianUs": 629,
+     "bytes": 19508,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 8324,
+     "bytes": 3480,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 4734,
+     "bytes": 2045873,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 9184,
+     "bytes": 2593676,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 2337,
+     "bytes": 1019492,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 790,
+     "bytes": 947940,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 1953,
+     "medianUs": 1052,
      "bytes": 22003,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/wordcount/wordcount-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/wordcount/wordcount.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2547: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 600,
+     "bytes": 88160,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 24000,
+     "bytes": 1258088,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 11696,
+     "bytes": 16424,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 184.3
+   "compileMs": 234.2
   },
   "immutable": {
    "name": "immutable-update particle step",
@@ -3886,85 +5222,101 @@
    "ref": 1726748178,
    "targets": {
     "nat": {
-     "medianUs": 77,
-     "bytes": 14528,
-     "parity": "ok"
-    },
-    "c-wasm": {
-     "medianUs": 451,
-     "bytes": 955082,
-     "parity": "ok"
-    },
-    "rust-wasm": {
-     "medianUs": 438,
-     "bytes": 2120593,
-     "parity": "ok"
-    },
-    "go-wasm": {
-     "medianUs": 732,
-     "bytes": 2407634,
-     "parity": "ok"
-    },
-    "zig-wasm": {
-     "medianUs": 446,
-     "bytes": 41712,
+     "medianUs": 54,
+     "bytes": 33504,
      "parity": "ok"
     },
     "rust": {
-     "medianUs": 51,
-     "bytes": 359632,
+     "medianUs": 75,
+     "bytes": 389872,
      "parity": "ok"
     },
     "go": {
-     "medianUs": 294,
-     "bytes": 1454264,
+     "medianUs": 136,
+     "bytes": 1674306,
+     "parity": "ok"
+    },
+    "zig": {
+     "medianUs": 113,
+     "bytes": 53056,
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 880,
+     "medianUs": 432,
      "bytes": 2836,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 716,
+     "medianUs": 449,
      "bytes": 2836,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 857,
+     "medianUs": 349,
      "bytes": 2836,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 588,
-     "bytes": 6059,
-     "parity": "ok"
-    },
-    "as": {
-     "medianUs": 1782,
-     "bytes": 1520,
+     "medianUs": 666,
+     "bytes": 6158,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 240,
-     "bytes": 1815,
+     "medianUs": 141,
+     "bytes": 1811,
+     "parity": "ok"
+    },
+    "as": {
+     "medianUs": 734,
+     "bytes": 1481,
+     "parity": "ok"
+    },
+    "rust-wasm": {
+     "medianUs": 448,
+     "bytes": 2030294,
+     "parity": "ok"
+    },
+    "go-wasm": {
+     "medianUs": 330,
+     "bytes": 2589576,
+     "parity": "ok"
+    },
+    "zig-wasm": {
+     "medianUs": 401,
+     "bytes": 41566,
+     "parity": "ok"
+    },
+    "c-wasm": {
+     "medianUs": 301,
+     "bytes": 946992,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 238,
+     "medianUs": 176,
      "bytes": 8388,
      "parity": "ok"
     },
-    "zig": {
-     "status": "fail",
-     "reason": "Command failed: zig build-exe -O ReleaseFast -femit-bin=/tmp/jz-bench/immutable/immutable-zig --cache-dir /tmp/jz-bench/zig-cache --global-cache-dir /tmp/jz-bench/zig-global-cache --dep bench -Mroot=/home/runner/work/jz/jz/bench/immutable/immutable.zig -Mbench=/home/runner/work/jz/jz/bench/_lib/bench.zig\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:10657:12: error: dependency on libc must be explicitly specified in the build command\npub extern \"c\" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;\n           ^~~\nreferenced by:\n    writeAll: _lib/bench.zig:48:18\n    printResult__anon_2396: _lib/bench.zig:57:13\n    6 reference(s) hidden; use '-freference-trace=8' to see all references\n/home/runner/work/_temp/3c7a481b-f5e2-478b-9c52-6326f510af5c/zig-x86_64-linux-0.16.0/lib/std/c.zig:11468:12: error: dependency on libc must be explicitly specified in the build command\n    extern \"c\" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;\n           ^~~\n"
+    "jz-w2c": {
+     "medianUs": 261,
+     "bytes": 53744,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 53000,
+     "bytes": 1256818,
+     "parity": "ok"
+    },
+    "moonbit": {
+     "medianUs": 1530,
+     "bytes": 12896,
+     "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 120.6
+   "compileMs": 165.5
   },
   "colorconv": {
    "name": "sRGB → Oklab batch",
@@ -3974,41 +5326,51 @@
    "ref": 754011132,
    "targets": {
     "v8": {
-     "medianUs": 166861,
+     "medianUs": 41794,
      "bytes": 2484,
      "parity": "DIFF"
     },
     "deno": {
-     "medianUs": 71239,
+     "medianUs": 43285,
      "bytes": 2484,
      "parity": "DIFF"
     },
     "bun": {
-     "medianUs": 77199,
+     "medianUs": 29354,
      "bytes": 2484,
      "parity": "DIFF"
     },
     "jsc": {
-     "medianUs": 79088,
-     "bytes": 5699,
+     "medianUs": 29087,
+     "bytes": 5798,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 54478,
+     "medianUs": 32150,
      "bytes": 2421,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 46057,
+     "medianUs": 31004,
      "bytes": 12037,
      "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 29822,
+     "bytes": 70144,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 572000,
+     "bytes": 1253775,
+     "parity": "DIFF"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 171.2
+   "compileMs": 248.9
   },
   "colorlch": {
    "name": "sRGB → OkLCh (fused)",
@@ -4018,77 +5380,97 @@
    "ref": 621217593,
    "targets": {
     "v8": {
-     "medianUs": 203787,
+     "medianUs": 93249,
      "bytes": 2406,
      "parity": "DIFF"
     },
     "deno": {
-     "medianUs": 110106,
+     "medianUs": 97086,
      "bytes": 2406,
      "parity": "DIFF"
     },
     "bun": {
-     "medianUs": 112449,
+     "medianUs": 95769,
      "bytes": 2406,
      "parity": "DIFF"
     },
     "jsc": {
-     "medianUs": 112297,
-     "bytes": 5621,
+     "medianUs": 97455,
+     "bytes": 5720,
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 82939,
+     "medianUs": 64790,
      "bytes": 2883,
      "parity": "ok"
     },
     "jz-wasmtime": {
-     "medianUs": 71210,
+     "medianUs": 59709,
      "bytes": 13111,
      "parity": "ok"
+    },
+    "jz-w2c": {
+     "medianUs": 49525,
+     "bytes": 70176,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 745000,
+     "bytes": 1256384,
+     "parity": "DIFF"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 190.7
+   "compileMs": 257.4
   },
   "colorlog": {
    "name": "ARRI LogC4 → XYZ",
    "samples": 1000000,
    "stages": 1,
    "runs": 21,
-   "ref": 1781444031,
+   "ref": 3137122272,
    "targets": {
     "v8": {
-     "medianUs": 122195,
+     "medianUs": 15370,
      "bytes": 1950,
-     "parity": "DIFF"
+     "parity": "ok"
     },
     "deno": {
-     "medianUs": 42249,
+     "medianUs": 15672,
      "bytes": 1950,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 38158,
+     "medianUs": 10349,
      "bytes": 1950,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 36626,
-     "bytes": 5165,
+     "medianUs": 10279,
+     "bytes": 5264,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 14042,
+     "medianUs": 8678,
      "bytes": 1980,
      "parity": "DIFF"
     },
     "jz-wasmtime": {
-     "medianUs": 10718,
+     "medianUs": 6557,
      "bytes": 10873,
+     "parity": "DIFF"
+    },
+    "jz-w2c": {
+     "medianUs": 6070,
+     "bytes": 70128,
+     "parity": "DIFF"
+    },
+    "javy": {
+     "medianUs": 648000,
+     "bytes": 1252718,
      "parity": "DIFF"
     },
     "porf": {
@@ -4096,43 +5478,53 @@
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 154.4
+   "compileMs": 179.9
   },
   "colorpq": {
    "name": "sRGB → JzAzBz (PQ)",
    "samples": 1000000,
    "stages": 1,
    "runs": 21,
-   "ref": 3697961850,
+   "ref": 2275727820,
    "targets": {
     "v8": {
-     "medianUs": 258025,
+     "medianUs": 58993,
      "bytes": 2743,
-     "parity": "DIFF"
+     "parity": "ok"
     },
     "deno": {
-     "medianUs": 91934,
+     "medianUs": 57614,
      "bytes": 2743,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 135728,
+     "medianUs": 78475,
      "bytes": 2743,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 135727,
-     "bytes": 5958,
+     "medianUs": 79388,
+     "bytes": 6057,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 112163,
+     "medianUs": 70032,
      "bytes": 5002,
      "parity": "DIFF"
     },
     "jz-wasmtime": {
-     "medianUs": 86324,
+     "medianUs": 58702,
      "bytes": 20693,
+     "parity": "DIFF"
+    },
+    "jz-w2c": {
+     "medianUs": 50117,
+     "bytes": 103176,
+     "parity": "DIFF"
+    },
+    "javy": {
+     "medianUs": 1586000,
+     "bytes": 1257715,
      "parity": "DIFF"
     },
     "porf": {
@@ -4140,7 +5532,7 @@
      "reason": "exit 1: RuntimeError: memory access out of bounds"
     }
    },
-   "compileMs": 306.7
+   "compileMs": 316.6
   },
   "watr": {
    "name": "watr WAT compiler",
@@ -4150,28 +5542,33 @@
    "ref": 3419154861,
    "targets": {
     "v8": {
-     "medianUs": 1830,
+     "medianUs": 982,
      "bytes": 2645,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 1917,
+     "medianUs": 877,
      "bytes": 2645,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 2008,
+     "medianUs": 987,
      "bytes": 2645,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 2167,
-     "bytes": 83056,
+     "medianUs": 1011,
+     "bytes": 83095,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 2200,
-     "bytes": 243428,
+     "medianUs": 903,
+     "bytes": 241215,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 9000,
+     "bytes": 2126815,
      "parity": "ok"
     },
     "porf": {
@@ -4181,6 +5578,10 @@
     "jz-wasmtime": {
      "status": "fail",
      "reason": "exit 1: Error: failed to parse WebAssembly module\n\nCaused by:\n    exceptions proposal not enabled (at offset 0x7e8)"
+    },
+    "jz-w2c": {
+     "status": "fail",
+     "reason": "Command failed: wasm2c /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/watr/watr.wasm -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/watr/watr-w2c.c\n00007e8: error: invalid section code: 13\n"
     }
    }
   },
@@ -4192,37 +5593,38 @@
    "ref": 2418067300,
    "targets": {
     "v8": {
-     "medianUs": 2955,
+     "medianUs": 1774,
      "bytes": 2700,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 2541,
+     "medianUs": 1595,
      "bytes": 2700,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 2325,
+     "medianUs": 1219,
      "bytes": 2700,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 1705,
-     "bytes": 35060,
+     "medianUs": 1283,
+     "bytes": 35159,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 3830,
-     "bytes": 77178,
+     "medianUs": 2094,
+     "bytes": 77151,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 31000,
+     "bytes": 1639316,
      "parity": "ok"
     },
     "porf": {
      "status": "fail",
      "reason": "exit 1: ReferenceError: ASSIGN is not defined"
-    },
-    "jz-wasmtime": {
-     "status": "fail",
-     "reason": "exit 1: Error: failed to parse WebAssembly module\n\nCaused by:\n    exceptions proposal not enabled (at offset 0x307)"
     }
    }
   },
@@ -4234,37 +5636,38 @@
    "ref": 4074416626,
    "targets": {
     "v8": {
-     "medianUs": 69792,
+     "medianUs": 35477,
      "bytes": 2657,
      "parity": "ok"
     },
     "deno": {
-     "medianUs": 58370,
+     "medianUs": 39199,
      "bytes": 2657,
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 60795,
+     "medianUs": 35703,
      "bytes": 2657,
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 64977,
-     "bytes": 3279438,
+     "medianUs": 32606,
+     "bytes": 3314048,
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 95413,
-     "bytes": 6490428,
+     "medianUs": 73465,
+     "bytes": 6539673,
+     "parity": "ok"
+    },
+    "javy": {
+     "medianUs": 402000,
+     "bytes": 37401143,
      "parity": "ok"
     },
     "porf": {
      "status": "fail",
-     "reason": "exit 1: CompileError: WebAssembly.Module(): Compiling function #1118 failed: expected 2 elements on the stack for branch, found 1 @+1182975"
-    },
-    "jz-wasmtime": {
-     "status": "fail",
-     "reason": "Command failed: node /home/runner/work/jz/jz/cli.js /home/runner/work/jz/jz/bench/jz/jz.js --host wasi -O3 -o /tmp/jz-bench/jz/jz.wasm\nError: Unknown module 'subscript/feature/jessie'. Provide it via { modules: { 'subscript/feature/jessie': source } } or { imports: { 'subscript/feature/jessie': {...} } }\n    at err (file:///home/runner/work/jz/jz/src/ctx.js:630:66)\n    at Object.from (file:///home/runner/work/jz/jz/src/prepare/index.js:2423:5)\n    at import (file:///home/runner/work/jz/jz/src/prepare/index.js:2294:28)\n    at prep (file:///home/runner/work/jz/jz/src/prepare/index.js:1156:20)\n    at Array.map (<anonymous>)\n    at ; (file:///home/runner/work/jz/jz/src/prepare/index.js:2444:27)\n    at prep (file:///home/runner/work/jz/jz/src/prepare/index.js:1156:20)\n    at prepareModule (file:///home/runner/work/jz/jz/src/prepare/index.js:3400:22)\n    at Object.from (file:///home/runner/work/jz/jz/src/prepare/index.js:2374:24)\n    at import (file:///home/runner/work/jz/jz/src/prepare/index.js:2294:28)\n"
+     "reason": "exit 1: CompileError: WebAssembly.Module(): Compiling function #1119 failed: expected 2 elements on the stack for branch, found 1 @+1212243"
     }
    }
   }

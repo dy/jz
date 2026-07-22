@@ -272,9 +272,9 @@ wasm-in-V8 would be a wrong-class single-case compare.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **4.68 ms** | **1.94×** | **1.7 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 6.59 ms | 1.38× | 1.8 kB | ok |
-| V8 (node) raw JS | 9.09 ms | 1.00× | 3.2 kB | ok |
+| **JZ → V8 wasm** | **4.74 ms** | **1.89×** | **1.8 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 6.54 ms | 1.37× | 1.8 kB | ok |
+| V8 (node) raw JS | 8.95 ms | 1.00× | 3.2 kB | ok |
 | hand-WAT → V8 wasm | 6.49 ms | 1.90× | 767 B | ok |
 
 JZ beats V8 raw JS by 2.1× and AS by 1.4×. The typed-array scalarization,
@@ -285,9 +285,9 @@ that matches the hand-WAT floor.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.77 ms** | **11.15×** | **1.5 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 6.72 ms | 1.28× | 1.4 kB | ok |
-| V8 (node) raw JS | 8.60 ms | 1.00× | 1.2 kB | ok |
+| **JZ → V8 wasm** | **0.75 ms** | **11.58×** | **1.5 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 6.75 ms | 1.29× | 1.4 kB | ok |
+| V8 (node) raw JS | 8.72 ms | 1.00× | 1.2 kB | ok |
 | hand-WAT → V8 wasm | 8.12 ms | 1.47× | 414 B | ok |
 
 JZ is 5.9× faster than V8 raw JS and 4.6× faster than AS. The scalarized
@@ -298,9 +298,9 @@ this from JS source.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.13 ms** | **12.30×** | **1.0 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 0.79 ms | 2.06× | 1.3 kB | ok |
-| V8 (node) raw JS | 1.64 ms | 1.00× | 1014 B | ok |
+| **JZ → V8 wasm** | **0.14 ms** | **12.06×** | **1.0 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 0.81 ms | 2.07× | 1.3 kB | ok |
+| V8 (node) raw JS | 1.68 ms | 1.00× | 1014 B | ok |
 
 JZ is 12.9× faster than V8 raw JS and 5.9× faster than AS. The bimorphic
 `sum` (called with both `Float64Array` and `Int32Array`) stays on typed
@@ -310,10 +310,10 @@ paths without falling back to generic dispatch.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.99 ms** | **3.81×** | **1.0 kB** | **ok** |
-| V8 (node) raw JS | 3.77 ms | 1.00× | 1005 B | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 9.11 ms | 0.41× | 1.3 kB | ok |
-| hand-WAT → V8 wasm | 3.49 ms | 1.08× | 355 B | ok |
+| **JZ → V8 wasm** | **0.95 ms** | **4.03×** | **1.0 kB** | **ok** |
+| V8 (node) raw JS | 3.84 ms | 1.00× | 1005 B | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 9.41 ms | 0.41× | 1.3 kB | ok |
+| hand-WAT → V8 wasm | 3.53 ms | 1.09× | 355 B | ok |
 
 JZ is 4.0× faster than V8 raw JS and 8.8× faster than AS. The i32 hot path
 (`Math.imul`, `|0`, `>>>0`) now lowers to raw `i32` ops without NaN-box
@@ -323,8 +323,8 @@ overhead on every operation.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.06 ms** | **2.16×** | **2.0 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 0.06 ms | 2.13× | 1.5 kB | ok |
+| **JZ → V8 wasm** | **0.05 ms** | **2.78×** | **2.0 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 0.06 ms | 2.36× | 1.5 kB | ok |
 | V8 (node) raw JS | 0.14 ms | 1.00× | 2.0 kB | ok |
 
 JZ is 2.4× faster than V8 raw JS and now edges out AS by ~1.2× on this
@@ -334,9 +334,9 @@ JZ is 2.4× faster than V8 raw JS and now edges out AS by ~1.2× on this
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.27 ms** | **2.25×** | **1.4 kB** | **ok** |
-| V8 (node) raw JS | 0.60 ms | 1.00× | 1.3 kB | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 0.80 ms | 0.76× | 1.8 kB | ok |
+| **JZ → V8 wasm** | **0.27 ms** | **2.30×** | **1.5 kB** | **ok** |
+| V8 (node) raw JS | 0.62 ms | 1.00× | 1.3 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 0.81 ms | 0.77× | 1.8 kB | ok |
 
 JZ is 2.3× faster than V8 raw JS and 2.9× faster than AS. Closure +
 `Array.map` lowers to a preallocated typed loop with no per-iteration alloc.
@@ -346,9 +346,9 @@ V8's JIT does not inline the closure across the `map` boundary.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.67 ms** | **2.00×** | **1.7 kB** | **ok** |
-| V8 (node) raw JS | 1.34 ms | 1.00× | 1.1 kB | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 1.40 ms | 0.96× | 1.9 kB | ok |
+| **JZ → V8 wasm** | **0.71 ms** | **1.97×** | **1.8 kB** | **ok** |
+| V8 (node) raw JS | 1.39 ms | 1.00× | 1.1 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 1.46 ms | 0.95× | 1.9 kB | ok |
 
 JZ is 1.9× faster than V8 raw JS and 2.0× faster than AS. Schema-slot
 reads are direct field offsets; the gap is small because the workload is
@@ -358,9 +358,9 @@ memory-bound.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| AssemblyScript (asc -O3 --runtime stub) | 8.85 ms | 1.11× | 1.3 kB | ok |
-| **JZ → V8 wasm** | **8.45 ms** | **1.16×** | **1.1 kB** | **ok** |
-| V8 (node) raw JS | 9.83 ms | 1.00× | 1.8 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 9.03 ms | 1.11× | 1.3 kB | ok |
+| **JZ → V8 wasm** | **4.88 ms** | **2.06×** | **1.0 kB** | **ok** |
+| V8 (node) raw JS | 10.03 ms | 1.00× | 1.8 kB | ok |
 
 JZ is 1.1× faster than V8 raw JS and ties AS. The dense f64 hot loop with
 conditional break compacts to 1.0 kB — the smallest wasm in the suite.
@@ -369,8 +369,8 @@ conditional break compacts to 1.0 kB — the smallest wasm in the suite.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.22 ms** | **1.22×** | **9.7 kB** | **ok** |
-| V8 (node) raw JS | 0.27 ms | 1.00× | 1.2 kB | ok |
+| **JZ → V8 wasm** | **0.13 ms** | **2.07×** | **7.9 kB** | **ok** |
+| V8 (node) raw JS | 0.28 ms | 1.00× | 1.2 kB | ok |
 
 JZ is 1.3× faster than V8 raw JS. The runtime parser is specialized to the
 inferred JSON shape; AS is skipped because it cannot parse JSON at runtime.
@@ -379,9 +379,9 @@ inferred JSON shape; AS is skipped because it cannot parse JSON at runtime.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **5.41 ms** | **1.64×** | **1.6 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 7.93 ms | 1.12× | 1.8 kB | ok |
-| V8 (node) raw JS | 8.87 ms | 1.00× | 1.6 kB | ok |
+| **JZ → V8 wasm** | **5.58 ms** | **1.58×** | **1.6 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 8.08 ms | 1.09× | 1.8 kB | ok |
+| V8 (node) raw JS | 8.81 ms | 1.00× | 1.6 kB | ok |
 
 JZ is 1.6× faster than V8 raw JS and 1.4× faster than AS. Call-heavy
 nested loops with typed-array index propagation stay on the i32 path.
@@ -390,9 +390,9 @@ nested loops with typed-array index propagation stay on the i32 path.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **8.62 ms** | **1.12×** | **1.0 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 8.74 ms | 1.10× | 1.3 kB | ok |
-| V8 (node) raw JS | 9.62 ms | 1.00× | 1.8 kB | ok |
+| **JZ → V8 wasm** | **8.64 ms** | **1.12×** | **1.0 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 8.79 ms | 1.10× | 1.3 kB | ok |
+| V8 (node) raw JS | 9.66 ms | 1.00× | 1.8 kB | ok |
 
 JZ is 1.2× faster than V8 raw JS and ties AS. Integer narrowing and
 typed-array parameter propagation keep the LUT lookup on raw i32.
@@ -537,8 +537,8 @@ pinned red in `WASM_TODO` — the deopt work list, loudest first.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| V8 (node) raw JS | 0.97 ms | 1.00× | 2.6 kB | ok |
-| **JZ → V8 wasm** | **0.96 ms** | **1.00×** | **244.3 kB** | **DIFF** |
+| V8 (node) raw JS | 0.98 ms | 1.00× | 2.6 kB | ok |
+| **JZ → V8 wasm** | **0.90 ms** | **1.09×** | **235.6 kB** | **ok** |
 
 JZ is 1.07× slower than V8 raw JS on this large compiler bundle. The size
 (144 kB) is the full jz-compiled watr parser + encoder + optimizer; V8's JIT
@@ -550,8 +550,8 @@ Aggregate geomean (JZ / target):
 
 | target | speed | size |
 | --- | ---: | ---: |
-| V8 (node) | **0.53×** | — |
-| AssemblyScript | **0.58×** | **1.06×** |
+| V8 (node) | **0.46×** | — |
+| AssemblyScript | **0.49×** | **1.11×** |
 
 JZ wins or ties V8 on every dense kernel case; the open V8 losses are the
 self-host lab rows (`watr`, `jessie`) and the deliberate deopt probes above

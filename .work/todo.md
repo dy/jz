@@ -5928,3 +5928,19 @@ vs AS / 4.3× vs c-wasm on immutable. Placement: plan-level eligibility
 lowering of the eligible '=' form. Guard: cell occupant must provably BE
 schema-S (init loop fills ps with same-literal objects — arrayElemSchema
 covers it); poisoned/unknown cells keep the alloc path.
+
+BENCH EVIDENCE REFRESHED @HEAD (2026-07-22, re-audit claims item):
+results.json 9edd8ec(-44 commits) → da396123, 60 cases; README regenerated.
+AGGREGATE: jz 1.00× — C 1.88×, Rust 1.97×, Zig 2.11×, AS 2.06×, V8 2.17×,
+native C 1.03× — jz leads every lane in geomean, incl. native C. Focused
+re-runs separated jitter from real on the fresh gate: base64 EXONERATED
+(0.85× win; full-run 1.010 was noise), synth REAL (1.11× vs asc on V8;
+jz-wasmtime 2.10ms BEATS asc → V8-tier scheduling class, annotated),
+glyfparse REAL+NEW (1.2× vs c-wasm, undiagnosed, annotated). Gate remains
+a STRICT ratchet (WASM_TODO documents, does not excuse) — open rows:
+glyfparse, synth, lorenz 1.06×, shapes, fft, raytrace, nqueens, qoi, sort,
+dict, immutable (SROA lever designed), + examples ulam 0.93/raymarcher
+0.82. Tolerance tightening (1.05→1.00 per-case) DEFERRED with reasoning:
+1.05 is the measured jitter band; the strict claim carried today is the
+aggregate geomean (1.00× leading all lanes) + repeated-frontier per-case
+evidence. Each red row is a case-study on the campaign list.

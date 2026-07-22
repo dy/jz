@@ -319,6 +319,8 @@ const WASM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'tinygo', 'zig-wasm', 'as
 // genuinely-hard tail; each needs a new vectorizer pass or has no jz-side fix. Don't re-chase the
 // disproven hypotheses.
 const WASM_TODO = {
+  synth:    'focused runs: jz 2.70ms vs asc 2.43ms = 1.11× on V8 — while jz-wasmtime (2.10ms) BEATS asc outright, placing the residual in the V8-tier scheduling class (shapes/sort/dict/qoi family), not jz codegen. Open lever: machine-code profiling.',
+  glyfparse: 'NEW case (post-9edd8ec): jz 3.1-3.3ms trails c-wasm 2.6ms ≈ 1.2× consistently (jz-w2c 2.8ms sits between — part interpreter-tier, part codegen). Undiagnosed — needs the standard WAT dump + hot-loop census pass.',
   // noise: WON (84af634). The "tighter scalar shape" the disproven-SLP note called for turned out
   // to be branchless if→select on the gradient sign-flips `(h&1)===0 ? x : -x` — 3245→1299µs, now
   // the fastest wasm (0.90× rust). (SLP stays disproven: the 4 corners need different per-lane
