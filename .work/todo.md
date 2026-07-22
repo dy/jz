@@ -5860,3 +5860,16 @@ br_table, implemented in WATR's optimizer (watr encodes br_table but has
 no chain→table transform; constant-br_table fold exists at optimize.js
 :1316 as a seed). Minor secondary: duplicate same-offset loads within an
 arm (o.r ×2) — same-address loads, likely V8-absorbed, not the gap.
+
+SHAPES chainTable REFUTED (2026-07-21): watr ALREADY has chainTable (on in
+speed profile) and its cost gate deliberately keeps the CHAIN for shapes'
+exact class — light loading arms, measured 3.6× chain-over-table on an
+8-way shuffled shape-polymorphic reader (optimize.js:2089-2099, commit
+03e686e). Each chain level is an (N-1)/N-biased individually-predictable
+branch; the table's indirect br mispredicts ~15-20cy per shuffled hit.
+The ledger's "chainTable helps vm/lz/qoi" is the HEAVY-arm interpreter
+class (stores/calls amortize + BTB correlates), not this. => The asc gap
+(1.08 vs 1.24) is NOT dispatch. OPEN: diff asc's emitted measure() against
+jz's — candidates: record stride/layout (asc classes = fixed 20B? padding?),
+field offset normalization enabling common-prefix loads, or loop overhead.
+Entry: bench/shapes/shapes.as.ts, asc -O3 --textFile.
