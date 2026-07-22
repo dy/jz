@@ -1751,8 +1751,10 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(resolveOptimize(undefined).sourceInline, true)
   is(resolveOptimize(undefined).nestedSmallConstForUnroll, 'auto')
   // string presets. 'balanced' was removed (it was a pure synonym for the default
-  // level 2); a stray 'balanced' now falls back to the default like any unknown string.
-  for (const n of PASS_NAMES) is(resolveOptimize('balanced')[n], resolveOptimize(2)[n], `removed 'balanced' falls back to level 2: ${n}`)
+  // level 2); a stray 'balanced' now FAILS like any unknown preset — the silent
+  // level-2 fallback shipped the wrong pipeline on typos ('sped') with no signal.
+  try { resolveOptimize('balanced'); ok(false, `removed 'balanced' must throw`) }
+  catch (e) { ok(/Unknown optimize preset/.test(String(e.message)), `removed 'balanced' throws the unknown-preset error`) }
   const size = resolveOptimize('size')
   is(size.watr, true)
   is(size.smallConstForUnroll, false)
@@ -1768,7 +1770,8 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(speed.nestedSmallConstForUnroll, true)
   is(speed.smallConstForUnroll, true)
   // unknown string falls back to level 2
-  is(resolveOptimize('bogus').sourceInline, true)
+  try { resolveOptimize('bogus'); ok(false, `unknown preset must throw`) }
+  catch (e) { ok(/Unknown optimize preset/.test(String(e.message)), `unknown preset throws`) }
   // object with string level base + override
   const sizePlusVec = resolveOptimize({ level: 'size', vectorizeLaneLocal: true })
   is(sizePlusVec.vectorizeLaneLocal, true)

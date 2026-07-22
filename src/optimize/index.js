@@ -190,6 +190,8 @@ export const TUNING_KEYS = [
   'whyNotSimd',               // diagnostic: print vectorizer rejection reasons
   'crPow',                    // opt-in experimental pow vectorization
   'inlinePureFns',            // opt-in pure-function WAT inlining (assemble)
+  'approxPow',                // opt-in low-precision pow fifthroot gate (module/math.js emitPow)
+  'noSimd',                   // suppress every jz-emitted v128 (lane vectorizer + SLP) — true scalar baseline
 ]
 
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
@@ -278,10 +280,17 @@ export function resolveOptimize(opt) {
   // index against an object (returns undefined — literal `obj[2]` is fine), so a bare
   // `LEVEL_PRESETS[opt]`/`[baseLevel]` would drop the level-2 default to ALL_ON and
   // (worse, via the partial result) leave `watr` unset — disabling watOptimize.
-  if (typeof opt === 'number' || typeof opt === 'string') return { ...(LEVEL_PRESETS[String(opt)] || LEVEL_PRESETS[2]) }
+  if (typeof opt === 'number' || typeof opt === 'string') {
+    const p = LEVEL_PRESETS[String(opt)]
+    // Unknown preset used to silently mean level 2 — a typo ('sped') then shipped
+    // the wrong pipeline with no signal. Levels: 0-3, 'size', 'speed'.
+    if (!p) throw new Error(`Unknown optimize preset '${opt}' — valid: 0, 1, 2, 3, 'size', 'speed'`)
+    return { ...p }
+  }
   if (typeof opt === 'object') {
     const baseLevel = typeof opt.level === 'number' || typeof opt.level === 'string' ? opt.level : 2
-    const base = LEVEL_PRESETS[String(baseLevel)] || ALL_ON
+    const base = LEVEL_PRESETS[String(baseLevel)]
+    if (!base) throw new Error(`Unknown optimize level '${opt.level}' — valid: 0, 1, 2, 3, 'size', 'speed'`)
     const out = { ...base }
     for (const n of PASS_NAMES) {
       if (!(n in opt)) continue
@@ -292,8 +301,22 @@ export function resolveOptimize(opt) {
       else if (n === 'watr' && typeof v === 'object') out[n] = v
       else out[n] = !!v
     }
-    // Preserve non-pass tuning keys (e.g. plan.js thresholds)
-    for (const k of Object.keys(opt)) if (!PASS_NAMES.includes(k)) out[k] = opt[k]
+    // Tuning keys carry through — but ONLY registered ones. A silent passthrough
+    // accepted `{ watrLcm: true }` as a no-op (the audit's coverage hole); every
+    // read site is enumerated in TUNING_KEYS, so an unknown key is a typo — fail
+    // with the nearest registered name.
+    for (const k of Object.keys(opt)) {
+      if (PASS_NAMES.includes(k)) continue
+      if (!TUNING_KEYS.includes(k)) {
+        const dist = (a, b) => { if (Math.abs(a.length - b.length) > 2) return 9
+          let d = 0; for (let i = 0; i < Math.max(a.length, b.length); i++) if (a[i] !== b[i]) d++
+          return d }
+        const all = [...PASS_NAMES, ...TUNING_KEYS]
+        const near = all.reduce((m, n) => dist(k, n) < dist(k, m) ? n : m, all[0])
+        throw new Error(`Unknown optimize key '${k}'${dist(k, near) <= 3 ? ` — did you mean '${near}'?` : ''} (registered passes: PASS_NAMES, tuning: TUNING_KEYS in src/optimize/index.js)`)
+      }
+      out[k] = opt[k]
+    }
     // noSimd: suppress EVERY jz-emitted v128 — both the lane vectorizer AND the SLP
     // store-pair packer. First-class here so `{ level:'speed', noSimd:true }` is a TRUE
     // scalar baseline whether passed nested or via the top-level opts.noSimd flag; the

@@ -5889,3 +5889,15 @@ missArg write removed (no reader, not a REP_FIELD, would throw under DBG
 if exercised; the maybe-miss fact lives in the param lattice). Sibling
 sweep: only _programFactsGen remains (by-design generation key, never
 emitted). Battery 10/10 green.
+
+REGISTRY VALIDATION (2026-07-21, re-audit item 2, right-altitude form):
+validation, not a metadata machine (no consumer for stage/kind descriptors
+today — YAGNI). approxPow + noSimd joined TUNING_KEYS (approxPow was read
+via transform.optimize?. and silently accepted-but-unregistered — the
+audit's hole). resolveOptimize now THROWS on: unknown object keys (with
+nearest-name suggestion — watrLcm → "did you mean watrLicm"), unknown
+preset strings ('sped' silently meant level 2 before), unknown levels.
+test/passes.js scan widened to bare optional-chain reads (the idiom that
+escaped the comparison-shaped regex); pins added for all three throw
+paths; two old tests that PINNED the silent fallback updated to the new
+contract. Suite 3047, battery 10/10 green.

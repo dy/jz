@@ -34,11 +34,16 @@ test('passes: every optimize-config read is a registered pass or tuning key', ()
   // `_o.NAME !==/===`, `cfg.NAME ===/!==`, `o.NAME === false` — the receiver
   // must be an optimize-config alias, so key off the known alias spellings.
   const re = /(?:optimize\??|_o|cfg)\s*\.\s*([A-Za-z_$][\w$]*)\s*(?:!==|===)\s*(?:false|true|'|")/g
+  // Bare truthy reads escape the comparison-shaped idiom above — the exact hole
+  // that let `transform.optimize?.approxPow` (module/math.js) go unregistered
+  // while this test claimed coverage. The canonical module-tier read path is
+  // unambiguous, so match it in ANY expression context.
+  const reBare = /transform\.optimize\?\.\s*([A-Za-z_$][\w$]*)/g
   const unknown = new Map()
   for (const p of files) {
     // strip line + block comments so documented idioms don't false-positive
     const src = readFileSync(p, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
-    for (const m of src.matchAll(re)) {
+    for (const rx of [re, reBare]) for (const m of src.matchAll(rx)) {
       const name = m[1]
       if (!registered.has(name)) {
         if (!unknown.has(name)) unknown.set(name, [])
@@ -74,4 +79,22 @@ test('passes: comments and whitespace never change output bytes', () => {
       ok(Buffer.from(plain).equals(Buffer.from(padded)), `O${optimize}: bytes identical`)
     }
   }
+})
+
+test('passes: unknown optimize keys and presets fail loudly', () => {
+  // Silent acceptance shipped wrong pipelines: { watrLcm: true } was a no-op
+  // typo of watrLicm; optimize: 'sped' silently meant level 2.
+  const throws = (fn, match, msg) => {
+    try { fn() } catch (e) { ok(match.test(String(e.message)), `${msg}: ${e.message}`); return }
+    ok(false, `${msg}: did not throw`)
+  }
+  throws(() => compile('export let f = () => 1', { optimize: { watrLcm: true } }), /watrLicm/,
+    'typo key suggests the registered name')
+  throws(() => compile('export let f = () => 1', { optimize: 'sped' }), /Unknown optimize preset/,
+    'unknown preset string throws')
+  throws(() => compile('export let f = () => 1', { optimize: { level: 7 } }), /Unknown optimize level/,
+    'unknown level throws')
+  // Registered tuning keys still pass through.
+  compile('export let f = (x) => Math.pow(x, 0.2)', { optimize: { approxPow: true } })
+  compile('export let f = () => 1', { optimize: { noSimd: true } })
 })
