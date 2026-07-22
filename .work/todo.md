@@ -6240,3 +6240,17 @@ kernel vs native; the first diverging transition names the miscompiled
 construct. Harness: marker-gated err() in parse.js, build-dist ~4min,
 skm-repro.mjs. RESTORE node_modules/subscript (accessor.orig.js in
 scratchpad + git-clean parse.js from the package) before any battery.
+
+SKM ROUND 5 (2026-07-22): registration order + newline EXONERATED —
+kernel BCOPS identical to native (nl=0, ops=(:19 (:160 (:170). The :19
+method descriptor is FIRST in-kernel too, yet its map never runs
+(round-1). ⇒ The skip is INSIDE dispatch's per-descriptor conditions
+(parse.js:145-152): kw-gate, op-match (incl. d.word + parse.id lookahead),
+curPrec>=d.p, prop-gate. Note bare-name methods PASS in-kernel with the
+same 'x' after '(' — so a d.word/parse.id misread alone can't explain it
+(would break bare too); the divergence must be a-dependent state BEFORE
+dispatch (prev round: p=4.5/a=u ⇒ an ASI retry started although nl=0 at
+'(' — check whether parse.newline flips DURING the failed dispatch, or
+the p=4.5 context was entered even earlier). NEXT: dispatch-internal
+breadcrumb logging WHICH continue-branch skips the :19 descriptor, with
+(a-type, curPrec) — one build round.
