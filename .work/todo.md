@@ -6170,3 +6170,16 @@ scripts/build-dist.mjs:127 optimize {level:3}→0 in a worktree, ~5 min) and
 rerun the one-liner — O0-clean ⇒ optimizer miscompile (bisect passes via
 resolveOptimize overrides); O0-dirty ⇒ core codegen (differential the
 subscript parse fn WATs). Repro harness: scratchpad skm-matrix.mjs.
+
+SKM BUG CLASSIFIED: CORE CODEGEN (2026-07-22): O0-built kernel fails the
+one-liner identically ⇒ NOT an optimizer pass — jz's reference tier
+miscompiles a subscript parse construct. NEXT HUNT (focused): standalone
+differential — compile ONLY subscript's parser with jz O0 into its own
+wasm, run parse('var o = { "k"(x) { return 1 } }') wasm-vs-native-JS,
+then binary-search subscript internals (early-return patched copies of
+the object/jessie feature path) to the diverging function; then extract
+the jz-lowering minimal repro from that function's idiom. Prior kernel-
+fragility art to check first: UTF-8 byte-string charCode arithmetic,
+prototype-less dict lookups, interpreter-grade regex (all ledger 07-20/21
+classes) — the string-key-then-( lookahead touches charCode + space
+skipping, squarely in the first class's territory.
