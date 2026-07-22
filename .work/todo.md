@@ -6145,3 +6145,13 @@ unswitch on the Float64Array self-map shape; value-correct, structure
 assertion fails). Queue order by value: features parse divergence first
 (correctness), then unswitch parity, harness-ABI last (needs kernel
 compile-entry ABI extension: modules dict + warnings sink + wat flag).
+
+PARSE-DIVERGENCE REPRO NARROWED (2026-07-22): the features/jzify kernel
+red's specimen line 24:25 is `"values"(exports) { … }` — a STRING-KEYED
+SHORTHAND METHOD. Kernel parser fails "Unclosed {" where native subscript
+parses fine ⇒ either jz miscompiles subscript's string-keyed-method path
+or an SSO/string-compare divergence in the compiled parser. MINIMAL REPRO
+entry: kernel-vs-native `jz.compile('var o = { "k"(x) { return 1 } }',
+{jzify:true})` — bisect the parser path from there (JZ_PR_LIMIT-style if
+needed; the comma-group shorthand-key kernel bug from the totality
+campaign is the nearest prior art — see 2026-07-20 ledger entries).
