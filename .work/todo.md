@@ -6328,3 +6328,15 @@ kernel-fragility family (speculate/SSO-hash/knife-edge all involve
 closure-heavy compiled code). RESTORE node_modules/subscript before any
 battery: accessor.orig.js in scratchpad; parse.js/asi.js/collection.js
 carry probes — `npm i subscript` or git-restore the package.
+
+DP-REPRO ITERATION 1 (2026-07-22): plain sketch (let-assigned default-
+param arrow + closure wrapper) passes in-kernel (950=950). The failing
+form needs more real-shape ingredients — iterate toward parse.js's exact
+structure: (a) expr declared in a MULTI-DECLARATOR comma list
+(`loc = ..., expr = (p=0,end)=>..., peek = ...`), (b) the call routed
+through an OBJECT-STORED dispatch closure (lookup[c] = factory-made fn
+capturing expr), (c) the factory pattern (dispatch = (ops,tail,fn=...) =>
+(fn.ops=ops, fn)). Iterations are CHEAP (no rebuild — probes are marker-
+gated off for unmarked sources; current dist serves). When kernel ≠
+native: shrink to minimal, fix jz codegen, RESTORE subscript package,
+full battery, land + clear features/statements/etc from KERNEL_EXCLUDE.
