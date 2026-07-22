@@ -6088,3 +6088,17 @@ converted: resetParamWasmFacts (discard+rebuild — different semantics,
 future measured pass) and the 13 plan-refresh sites (staleness placement
 is load-bearing per the 2a refutation; needs its own careful campaign).
 Battery 10/10 (kernel 1146).
+
+KERNEL_EXCLUDE BURN-DOWN OPENED (2026-07-22): probe of 4 debt entries
+(destruct, closures, statements, strings) against TODAY'S kernel:
+503 pass / 10 fail — the exclusion list (frozen 07-15) is far staler than
+reality after the totality/jzify/cursor campaigns. The 10 reds triage:
+(a) multi-module 'Unknown module ./dep.js' class = KERNEL-TARGET HARNESS
+gap (kernel ABI takes source only; host opts documented as not reaching
+it — kernel-target.js:11) — clearing it needs a modules-dict marshalling
+in the kernel compile ABI, not a compiler fix; (b) statements BigInt
+mixed-ops should-throw (kernel doesn't throw — real semantic gap);
+(c) strings SSO-hash JSON.parse prehashed probe (real, likely the parked
+kernel string-param class from the ledger). NEXT: run the FULL excluded
+set for the true pass-rate map, then clear entries whose files go green,
+then triage (b)/(c) as differential kernel bugs.
