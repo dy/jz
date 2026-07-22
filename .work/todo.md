@@ -6369,3 +6369,26 @@ Unclosed). NEXT: (a) read statement.js/switch.js step wrappers for the
 expr(4.5) caller; (b) convert BCA/BCE to passive accumulation + report
 from parse.js's err() itself (append trails to every error message) —
 one build, full natural-flow evidence.
+
+★ SKM ROOT BUG FOUND (2026-07-22, hunt rounds 1-11): jz's HASH-MODE dict
+lookup with an UNDEFINED key returns a WRONG HIT at BOTH tiers (minimal:
+`const d = {}; d.x = 1; d[undefined]` → jz non-undefined, V8 undefined;
+probe: V8 2112 vs jz 1122 — both prec[u]<=5 and prec[u]===undefined
+diverge). JS semantics: property keys coerce via ToPropertyKey —
+d[undefined] reads key "undefined". jz's dyn-get key path treats the
+UNDEF NaN-box as numeric-ish → collides with a real slot. WHY ONLY THE
+KERNEL SHOWED IT: src/parse.js runs as pure V8 JS natively; only the
+self-host kernel executes COMPILED subscript — where isStmt's
+prec[n[0]] (n[0]=sparse hole=undefined) wrongly hit → asi's upper step
+branch fired for cc='(' after literal-key nodes → expr(4.5) statement
+retry inside the object body → "Unclosed {". Bare names immune
+(isNode(string)=false), colon-forms immune (cc≠PAREN) — every observation
+explained. FIX: ToPropertyKey coercion for undefined (and audit
+null/NaN/true/false keys — same class) in the dyn-get/dyn-set hash key
+normalization (module/collection.js / emit-assign hash paths). PINS:
+d[undefined]/d[null]/d[NaN] read+write differentials vs V8 at O0/2/speed.
+THEN: restore node_modules/subscript (probes in parse.js/asi.js/
+collection.js/accessor.js; accessor.orig.js backup in scratchpad — or
+reinstall the package), rebuild dist, rerun features/statements probes —
+expect the literal-key method class to clear; battery; land; clear
+KERNEL_EXCLUDE entries that go green.
