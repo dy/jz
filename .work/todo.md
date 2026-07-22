@@ -5987,3 +5987,28 @@ with a MONOTONE CURSOR kind:
   scans. TESTS: differential OOB semantics (guard-fail path must keep
   checked semantics: synthesize np lying about stream length → checksum
   must equal the checked build), plus bench glyfparse before/after.
+
+CURSOR-VERSIONING EMIT MAP (2026-07-22, completes the spec above):
+type.js side — new eligibility in the scan's else-branch (after affine
+fails, BEFORE the range fallback at :456): monotoneCursorOf(idx) → {c,K0}
+for bare name / ['+',c,lit] / ['+',lit,c]; maxCursorAdvance(body,c) → K
+(seq sum, if→max(arms), expression-position c++/c+=lit counted, any
+=/-=/--/nested-loop-write → null); push {recv, idx, cursor:c, K, cConst}.
+NOTE stable(c) must NOT be required (c is body-written by design); c must
+not be the iv; require unit iv advance (isUnitIncrement step OR bump===1)
+for v1 trips = maxIv − start + 1.
+emit.js side — in the levels loop (~4610), cursor cands add two conjuncts
+mirroring the range kind's shape: entry read `const eT = slotI64(c.cursor,
+'i32')` (cursor entry AT LOOP ENTRY — slotI64 already evaluates once in
+`result` before the guard ✓ correct position), then
+`i64.lt_s( add(add(eT, mul(i64c(K), add(sub(maxIv64, start64), i64c(1)))),
+i64c(K0)), len64Of(recv) )`. start64: literal startC → i64c; else slotI64
+of the iv entry (same pre-guard read). PLUS `i64.ge_s(eT, i64c(0))` (a
+negative entry cursor breaks the lo side — checked arm handles it).
+Fast-arm assumption plumbing: cursor cands join vs.cands so the twin
+re-emit marks (recv, idx) assumed like affine cands — check how
+`typedIdxProven`/assumption set consumes cands (the '=' between arms) and
+register idx keys identically. GATES: differential guard-fail test (lie
+about len → checksum equals checked build), glyfparse bench (expect the
+x/y loops check-free; flag loop stays checked — its iv p has 2 writes,
+never versions), full battery.
