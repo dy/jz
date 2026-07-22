@@ -6102,3 +6102,17 @@ mixed-ops should-throw (kernel doesn't throw — real semantic gap);
 kernel string-param class from the ledger). NEXT: run the FULL excluded
 set for the true pass-rate map, then clear entries whose files go green,
 then triage (b)/(c) as differential kernel bugs.
+
+BURN-DOWN MAP EXTENDED (2026-07-22): 12 more debt entries probed on
+today's kernel (inference simd optimizer data spread json objects preeval
+speculate features never-grown slot-hazards): 858 pass / 47 fail (~95%).
+Combined with the first probe: the 40-entry KERNEL_EXCLUDE list massively
+overstates the debt — most files are green or near-green. PROTOCOL for
+clearing: per file, run JZ_TEST_TARGET=jz.wasm on it alone; 0 reds →
+delete from KERNEL_EXCLUDE (battery kernel leg then guards it forever);
+>0 reds → extract each red as a minimal differential (kernel vs native
+output), classify harness-ABI vs semantic, fix root or record with a pin.
+Known red classes so far: multi-module harness ABI, BigInt should-throw,
+SSO-hash JSON.parse probe, + the 47 to classify (raw ✗ lines need
+capturing without the collapsed-name grouping — test names don't carry
+file prefixes; use per-file runs).
