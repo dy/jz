@@ -6392,3 +6392,22 @@ collection.js/accessor.js; accessor.orig.js backup in scratchpad — or
 reinstall the package), rebuild dist, rerun features/statements probes —
 expect the literal-key method class to clear; battery; land; clear
 KERNEL_EXCLUDE entries that go green.
+
+★ NULLISH-KEY CLASS FULLY MAPPED (2026-07-22): second manifestation —
+`const u = undefined; d[u]` TRAPS memory-OOB at the NATIVE tier (wasm),
+on top of the wrong-hit via hole-read boxes. Likely the SAME OOB as the
+speculate kernel red (warm-instance memory OOB). The dyn-get generic path
+DOES coerce (__is_str_key→__to_str, dyn_get_t comment confirms
+ToPropertyKey intent) — the breakage is in specific shapes: statically-
+undefined-typed key bindings (emit may take a numeric/slot path before
+the runtime coercion) and possibly mixed SSO/heap __str_eq/__str_hash
+(the known strings red family). FIX MATRIX (differential pins vs V8, all
+tiers): keys {undefined-hole, undefined-binding, null, NaN, true, false,
+heap-built string} × ops {read, write, delete, RMW} × dict modes
+{schema-obj sidecar, hash-mode, lean, fixed-domain}. Implementation
+window: fix emit's key-typing fast paths to route non-number-non-string
+STATIC key types through the __to_str normalization (never the numeric/
+slot arm), audit __str_eq/__str_hash mixed-representation, add the pin
+file (test/dyn-keys.js), RESTORE node_modules/subscript probes, rebuild,
+battery, land — expect features + speculate + strings SSO-hash reds to
+clear together if the root is shared.
