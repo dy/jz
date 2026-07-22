@@ -6224,3 +6224,19 @@ marker-gated err() + build-dist (~4 min/round); marker must be
 split-string ('__BC'+'PROBE__') — the bundle self-reference trap is
 recorded. accessor.orig.js backup in scratchpad; RESTORE before any
 landing battery.
+
+SKM SMOKING GUN (2026-07-22): step breadcrumb differential — kernel
+reaches cc='(' with aT=undefined p=4.5; native has aT=object/arr p=0.
+The literal node is LOST in the compiled Pratt loop's a-threading before
+the '(' step (and the precedence context differs: 4.5 = the colon/prop
+region vs 0). With a=undefined the method handler's `if (!a) return`
+bails correctly → `(x)` parses as a group → `{` dangles → "Unclosed {".
+ROOT CLASS: jz miscompiles the a-THREADING (or an early-exit path) in
+subscript's expr/step Pratt iteration for literal-node operands at the
+prop precedence — string keys parse fine before ':' (probe OK) so the
+loss is specific to the continued-climb path. NEXT ROUND: breadcrumb
+expr()'s loop — log (p, aT) transition sequence for the probe source,
+kernel vs native; the first diverging transition names the miscompiled
+construct. Harness: marker-gated err() in parse.js, build-dist ~4min,
+skm-repro.mjs. RESTORE node_modules/subscript (accessor.orig.js in
+scratchpad + git-clean parse.js from the package) before any battery.
