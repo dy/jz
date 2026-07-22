@@ -50,9 +50,11 @@ import {
   scanDynClosureTableCandidates, recordParamClosureDefault, recordDirectReturnClosure, resolveDynFnTables,
 } from './dyn-closure-tables.js'
 
-// Monotonic across all functions so a CSE temp never collides (even after later inlining).
-let __cseCtr = 0
-const freshCseName = () => `${T}cse${__cseCtr++}`
+// Monotonic across all functions so a CSE temp never collides (even after later
+// inlining). Per-compile (ctx.transform.cseId, reset in ctx.reset — the
+// freshLoopId pattern): a module-level counter made warm-process WAT text
+// history-dependent (`cse0/1` then `cse2/3` for the same program).
+const freshCseName = () => `${T}cse${ctx.transform.cseId++}`
 import { emit, emitter, emitVoid, emitBlockBody } from './emit.js'
 import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from '../abi/string.js'
 import {
@@ -525,7 +527,9 @@ function analyzeFuncForEmit(func, programFacts) {
       // arrive, so this param's arithmetic coerces (undefined → NaN) and its
       // nullish compares stay live. Targeted — unknown-caller params keep the
       // cheaper nullable-only treatment below.
-      if (r.missArg) updateRep(pname, { nullable: true, missArg: true })
+      // (nullable only: rep-level `missArg` had no reader and isn't a REP_FIELD —
+      // the maybe-miss distinction lives in the param lattice, not the ValueRep.)
+      if (r.missArg) updateRep(pname, { nullable: true })
       if (r.arrayElemValType != null) updateRep(pname, { arrayElemValType: r.arrayElemValType })
       if (r.arrayElemRange != null) updateRep(pname, { arrayElemRange: r.arrayElemRange })
       if (r.arrayLen != null) updateRep(pname, { arrayLen: r.arrayLen })

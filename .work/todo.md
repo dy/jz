@@ -5873,3 +5873,19 @@ class (stores/calls amortize + BTB correlates), not this. => The asc gap
 jz's — candidates: record stride/layout (asc classes = fixed 20B? padding?),
 field offset normalization enabling common-prefix loads, or loop overhead.
 Entry: bench/shapes/shapes.as.ts, asc -O3 --textFile.
+
+P0 STATE-LEAK WAVE (2026-07-21, re-audit item 1): the class = module-level
+mutable state surviving compile boundaries. (a) resetBodyFactsCache wired
+into the native compile entry beside resetProgramFactsCache — was only
+called by scripts/self.js, so a long-lived process retained every analyzed
+body AST (real service leak). Within-compile staleness placement untouched
+(the 2a-refutation property). (b) __cseCtr → ctx.transform.cseId (the
+loopXformId per-compile pattern) — warm recompiles emitted cse2/3 for the
+same program. (c) WATR had the same class ×4: ctUid/outUid/tmUid/inlineUid
+reset at optimize() entry (watr commit 1bf8620, its suite 591 green) —
+found by the NEW warm-process determinism pin (test/determinism.js), which
+failed on __inl4→__inl14 drift after (b) was already fixed. (d) rep-level
+missArg write removed (no reader, not a REP_FIELD, would throw under DBG
+if exercised; the maybe-miss fact lives in the param lattice). Sibling
+sweep: only _programFactsGen remains (by-design generation key, never
+emitted). Battery 10/10 green.

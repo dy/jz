@@ -52,6 +52,7 @@ import { liftIIFEs } from './src/prepare/lift-iife.js'
 import { preEval } from './src/prepare/pre-eval.js'
 import compile from './src/compile/index.js'
 import { resetProgramFactsCache } from './src/compile/program-facts.js'
+import { resetBodyFactsCache } from './src/compile/analyze.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
 import {
   collectReachableGlobalWrites,
@@ -512,6 +513,7 @@ const setupCtx = (code, opts) => {
   }
   reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread })
   resetProgramFactsCache()
+  resetBodyFactsCache()   // explicit-lifecycle body-facts cache (analyze.js) — per-compile, else a long-lived process retains every analyzed body AST
   ctx.error.src = code
   initWarnings(opts.warnings)
   if (typeof opts.memory === 'number') ctx.memory.pages = opts.memory

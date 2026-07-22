@@ -89,3 +89,22 @@ test('determinism: α-renamed source compiles byte-identical', () => {
     ok(a.length === b.length && a.every((x, i) => x === b[i]), `O${optimize}: α-rename changed bytes (${a.length} vs ${b.length})`)
   }
 })
+
+test('determinism: warm-process recompile is text-identical (per-compile counters/caches)', () => {
+  // A module-level counter or cache surviving between compile() calls makes the
+  // SECOND compile of the same program differ — the __cseCtr class (cse0/1 →
+  // cse2/3 on recompile) and the analyzeBody cache lifetime. WAT text (not just
+  // bytes: local names aren't encoded into binaries) must be history-free.
+  const src = `
+    const N = 64
+    export let f = (a) => {
+      let s = 0
+      for (let i = 0; i < N; i++) s += a[i] * a[i] + a[i]   // load-CSE shape
+      return s
+    }`
+  for (const optimize of [2, 'speed']) {
+    const a = compile(src, { optimize, wat: true })
+    const b = compile(src, { optimize, wat: true })
+    ok(a === b, `O${optimize}: warm recompile changed WAT text`)
+  }
+})
