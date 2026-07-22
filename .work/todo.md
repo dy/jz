@@ -6254,3 +6254,20 @@ dispatch (prev round: p=4.5/a=u ⇒ an ASI retry started although nl=0 at
 the p=4.5 context was entered even earlier). NEXT: dispatch-internal
 breadcrumb logging WHICH continue-branch skips the :19 descriptor, with
 (a-type, curPrec) — one build round.
+
+SKM ROUND 6 — CIRCLE CLOSED TO ONE COMPARE (2026-07-22): kernel dispatch
+at the :19 descriptor receives aT=u cp=4.5 (native aT=A cp=0) ⇒ the '('
+is inside expr(4.5,125) = if.js's BLOCK body ⇒ in-kernel the `{` after
+`=` dispatched to the STATEMENT-BLOCK descriptor, not collection.js's
+object-literal group. Native skips block via `curPrec(19.5) >= d.p(5)` →
+continue; object group (d.p=200) wins. Kernel takes the block ⇒ THE
+FRACTIONAL-PREC COMPARE `19.5 >= 5` (or the d.p slot read) miscompiles at
+this site — the f64-vs-i32 class flagged in round 4. Explains bare-name
+methods passing: their `{` sits in the SAME context... (verify: bare
+probe's `{` succeeded ⇒ the compare is input-dependent — maybe d.p slot
+read on the SPECIFIC descriptor object, or 19.5-vs-5 only fails after the
+string handler ran — state-dependent). NEXT ROUND (one build): cc=123
+dispatch breadcrumb logging (d.op, d.p, curPrec, skip-decision) per
+descriptor, kernel vs native. Then extract the jz-level minimal miscompile
+(a compare or slot-read idiom) → fix in codegen → clear features red +
+possibly the whole parked kernel-fragility family.
