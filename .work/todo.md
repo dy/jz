@@ -5847,3 +5847,16 @@ take the unchanged path. MEASURED: strbuild 458→392 µs (14%, jz already
 fastest; lead extended); corpus sweep — ONLY strbuild's bytes changed
 (smaller: 74905→73366 speed). Full 10-leg battery green. (Agent built the
 lever, died mid-gates on session restart; verification re-run from scratch.)
+
+SHAPES DIAGNOSIS (2026-07-21): jz 1.24-1.29ms already beats native C
+(1.26), Rust, Go, V8-JS (3.8) — the remaining first-WASM competitor is
+AssemblyScript 1.08. The emitted hot loop is near-optimal: measure() fully
+inlined, records PACKED to 20-byte i32 cells, direct offset loads, select
+abs, no boxing/bounds-checks, fused back-edge. The gap is DISPATCH: 7-deep
+sequential if-else on dense k∈[0,7] over data-shuffled records (worst case
+for a chain — per-record mispredict × depth). The general lever is the
+ledger's chainTable counter (vm deep-dive #2): dense-int if-chain →
+br_table, implemented in WATR's optimizer (watr encodes br_table but has
+no chain→table transform; constant-br_table fold exists at optimize.js
+:1316 as a seed). Minor secondary: duplicate same-offset loads within an
+arm (o.r ×2) — same-address loads, likely V8-absorbed, not the gap.
