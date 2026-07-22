@@ -394,93 +394,6 @@ const AUTO_CFG_TYPED_CTORS = new Set([
   'new.Uint8ClampedArray',
 ])
 
-const autoCfgNodeSize = (node) => {
-  if (!Array.isArray(node)) return 1
-  let n = 1
-  for (let i = 1; i < node.length; i++) n += autoCfgNodeSize(node[i])
-  return n
-}
-
-const autoCfgScanNode = (node, stats, loopDepth) => {
-  if (!Array.isArray(node)) return
-  stats.totalNodes++
-  const op = node[0]
-  if (AUTO_CFG_LOOP_OPS.has(op)) {
-    stats.loopCount++
-    const d = loopDepth + 1
-    if (d > stats.maxLoopDepth) stats.maxLoopDepth = d
-    for (let i = 1; i < node.length; i++) autoCfgScanNode(node[i], stats, d)
-    return
-  }
-  if (op === '()') {
-    stats.callSites++
-    const callee = node[1]
-    if (typeof callee === 'string' && AUTO_CFG_TYPED_CTORS.has(callee)) {
-      stats.typedArrayCount++
-      const args = node[2]
-      const argList = args == null ? [] : (Array.isArray(args) && args[0] === ',') ? args.slice(1) : [args]
-      const lenLit = typeof argList[0] === 'number' ? argList[0] : null
-      if (lenLit != null && lenLit > stats.maxTypedArrayLen) stats.maxTypedArrayLen = lenLit
-    }
-  }
-  if (op === 'str') stats.stringLiteralCount++
-  if (op === '=>') stats.closureCount++
-  for (let i = 1; i < node.length; i++) autoCfgScanNode(node[i], stats, loopDepth)
-}
-
-/** Detect optimization config from source characteristics.
- *  Returns an object of pass overrides; empty object means "use defaults". */
-const detectOptimizeConfig = (ast, code) => {
-  const s = {
-    totalNodes: 0,
-    funcCount: 0, maxFuncBodySize: 0,
-    loopCount: 0, maxLoopDepth: 0,
-    typedArrayCount: 0, maxTypedArrayLen: 0,
-    stringLiteralCount: 0, closureCount: 0, callSites: 0,
-  }
-  if (ctx.func?.list) {
-    s.funcCount = ctx.func.list.length
-    for (const f of ctx.func.list) {
-      if (f.body) {
-        const sz = autoCfgNodeSize(f.body)
-        if (sz > s.maxFuncBodySize) s.maxFuncBodySize = sz
-        autoCfgScanNode(f.body, s, 0)
-      }
-    }
-  }
-  if (ast) autoCfgScanNode(ast, s, 0)
-
-  const cfg = {}
-  // Machine-generated or large code: watr's WAT-level CSE/DCE/inline fights
-  // jz's already-optimized IR and inflates output. Disable it automatically —
-  // EXCEPT when the module uses SIMD intrinsics. A v128 helper call (e.g.
-  // f64x2.sin → $math.sin2) leaves v128 params/results across the call boundary;
-  // watr's inliner folds the helper into the loop and coalesces those vectors,
-  // and without it the v128 spills to memory every iteration (~2× slower on the
-  // trig-bound attractors kernel). Explicit SIMD is a perf opt-in — keep watr on.
-  const usesSimd = !!ctx.module?.modules?.simd
-  // AST-node metric, NEVER raw source length: a 5 KB comment must not change
-  // codegen (measured 2.9× size delta pre-fix — the formatting-invariance
-  // test pins this). ~500 nodes ≈ the old 4000-char threshold on idiomatic
-  // source, calibrated against the same corpus.
-  const isLarge = s.totalNodes > 500 || s.funcCount > 40 || s.maxFuncBodySize > 300
-  const isMachineLike = s.callSites > 300 && s.stringLiteralCount < 10
-  if ((isLarge || isMachineLike) && !usesSimd) { cfg.watr = false; cfg.splitCharScan = false }
-  // Typed-array heavy: tighten scalarization thresholds when we see large
-  // fixed-size arrays; keep defaults for small/dynamic ones.
-  if (s.typedArrayCount > 0 && s.maxTypedArrayLen > 0) {
-    cfg.scalarTypedArrayLen = Math.min(32, Math.max(8, s.maxTypedArrayLen + 4))
-    cfg.scalarTypedLoopUnroll = s.maxLoopDepth > 1 ? 8 : 16
-    cfg.scalarTypedNestedUnroll = s.maxLoopDepth > 1 ? 32 : 128
-  }
-  // Closure-heavy: ptr hoists pay off.
-  if (s.closureCount > 4) {
-    cfg.hoistPtrType = true
-    cfg.hoistInvariantPtrOffset = true
-  }
-  return cfg
-}
-
 // Test-matrix bridge: when JZ_TEST_* env vars are set, inject them as default
 // opts so the npm test suite can be re-run under varying configurations (opt
 // levels, host, jzify, …) without source changes. User-supplied opts always win
@@ -707,24 +620,13 @@ const jzCompileInner = (code, opts = {}) => {
   // over the prepared AST + every ctx.func.list body, before compile ever sees them.
   ast = time('preEval', () => preEval(ast))
 
-  // Auto-detect optimization tuning from source characteristics when the user
-  // hasn't provided any optimize option. detectOptimizeConfig has two *live*
-  // overrides over the level-2 preset: the typed-array scalarization thresholds,
-  // and `watr: false` for large/machine-generated code (whose WAT-level CSE/DCE
-  // fights jz's already-optimized IR and inflates output). watr is ON at level 2,
-  // so that switch is a real override — run the scan when the program either
-  // touches typed arrays or is large enough for the machine-code heuristic to
-  // bite. `code.length` is the one signal free without scanning; gating on it
-  // keeps small programs (the common case) on the no-scan fast path.
-  // No source-length activation gate: the decision metrics are AST-shaped, and
-  // the activation must be too, or a comment could flip whether the scan runs
-  // (and with it the output bytes). One linear walk on default-level compiles.
-  if (opts.optimize == null) {
-    const autoCfg = detectOptimizeConfig(ast, code)
-    if (Object.keys(autoCfg).length) {
-      ctx.transform.optimize = resolveOptimize(autoCfg)
-    }
-  }
+  // Hidden AST-shape auto-configuration REMOVED (2026-07-22): the default tier
+  // silently flipped watr:false / retuned thresholds past size heuristics, so
+  // DEAD code changed the optimization of retained code (+30% output size
+  // measured at the threshold crossing) and "default" named no stable pipeline.
+  // Default now IS the level-2 preset, always. Compile budget is an explicit
+  // choice: `optimize: 'fast'` (level-2 shapes with watr off — the former auto
+  // behavior, ~2-3× faster compiles on large inputs, bigger/slower output).
 
   // opts.noSimd: force auto-vectorization off regardless of opt level — a
   // portability escape hatch for engines without the SIMD proposal (parallels

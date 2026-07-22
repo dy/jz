@@ -5901,3 +5901,13 @@ test/passes.js scan widened to bare optional-chain reads (the idiom that
 escaped the comparison-shaped regex); pins added for all three throw
 paths; two old tests that PINNED the silent fallback updated to the new
 contract. Suite 3047, battery 10/10 green.
+
+HIDDEN AUTO-TUNER REMOVED (2026-07-22, re-audit item 3): detectOptimizeConfig
+deleted wholesale (~89 lines — watr:false size flip AND the typed-threshold/
+closure-hoist retunes: same dead-code-sensitivity class). Default tier = the
+level-2 preset, always; the audit's repro now byte-STABLE (pinned in
+passes.js: 60 appended dead fns change nothing). Compile budget is explicit:
+new 'fast' preset (L2 shapes + watr:false + splitCharScan:false — measured
+2-3× faster compiles on large inputs at ~+30% size; REPL/bundler loops, not
+shipping builds). L2 preset body extracted as L2_PRESET const shared by both.
+Preset error messages list 'fast'. Battery 10/10 green.

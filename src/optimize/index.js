@@ -196,6 +196,9 @@ export const TUNING_KEYS = [
 
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
+// Default (level 2) preset body — shared with 'fast' below, which derives from it.
+const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, watrProfile: 'speed' })
+
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
   1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true }),
@@ -205,7 +208,14 @@ const LEVEL_PRESETS = Object.freeze({
   // watr pipeline. `inline` stays off by watr's own default — opt-in only.
   // boolConvertToSelect off at the default level: it's a latency-for-size trade (adds a
   // const + op per site) that only pays off on serial recurrences — speed-tier only.
-  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, watrProfile: 'speed' }),
+  2: L2_PRESET,
+  // 'fast': COMPILE-BUDGET preset — level-2 shapes with watr (the final WAT
+  // fixpoint) and splitCharScan off. ~2-3× faster compiles on large inputs at
+  // ~+30% output size (measured). This is the EXPLICIT form of the retired
+  // hidden auto-tuner that used to flip watr:false past AST-size thresholds
+  // (dead code changed retained code's bytes — the default must name ONE
+  // stable pipeline). For REPL/bundler feedback loops, not shipping builds.
+  fast: Object.freeze({ ...L2_PRESET, watr: false, splitCharScan: false }),
   // L3/'speed' trades a bit of heap headroom for fewer __arr_grow / __hash growth
   // cycles. arrayMinCap=16 means `[]` and `new Array()` skip the first two doublings
   // (0→2→4→8→16); hashSmallInitCap=8 keeps per-object __dyn_props at the same load
@@ -284,13 +294,13 @@ export function resolveOptimize(opt) {
     const p = LEVEL_PRESETS[String(opt)]
     // Unknown preset used to silently mean level 2 — a typo ('sped') then shipped
     // the wrong pipeline with no signal. Levels: 0-3, 'size', 'speed'.
-    if (!p) throw new Error(`Unknown optimize preset '${opt}' — valid: 0, 1, 2, 3, 'size', 'speed'`)
+    if (!p) throw new Error(`Unknown optimize preset '${opt}' — valid: 0, 1, 2, 3, 'size', 'speed', 'fast'`)
     return { ...p }
   }
   if (typeof opt === 'object') {
     const baseLevel = typeof opt.level === 'number' || typeof opt.level === 'string' ? opt.level : 2
     const base = LEVEL_PRESETS[String(baseLevel)]
-    if (!base) throw new Error(`Unknown optimize level '${opt.level}' — valid: 0, 1, 2, 3, 'size', 'speed'`)
+    if (!base) throw new Error(`Unknown optimize level '${opt.level}' — valid: 0, 1, 2, 3, 'size', 'speed', 'fast'`)
     const out = { ...base }
     for (const n of PASS_NAMES) {
       if (!(n in opt)) continue

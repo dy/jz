@@ -100,3 +100,15 @@ test('passes: unknown optimize keys and presets fail loudly', () => {
   compile('export let f = (x) => Math.pow(x, 0.2)', { optimize: { approxPow: true } })
   compile('export let f = () => 1', { optimize: { noSimd: true } })
 })
+
+test('passes: dead code never changes retained-code bytes (no hidden auto-tuning)', () => {
+  // The retired AST-shape auto-tuner flipped watr:false past size thresholds,
+  // so appending DEAD functions changed the LIVE function's optimization
+  // (+30% size at the crossing). Default must name one stable pipeline.
+  const live = `export let f = (x) => x * 2 + 1`
+  const dead = live + '\n' + Array.from({ length: 60 }, (_, i) =>
+    `let unused${i} = (a) => { let s = 0; for (let k = 0; k < 9; k++) s += a * k; return s }`).join('\n')
+  const a = compile(live), b = compile(dead)
+  is(a.length, b.length, 'byte count stable under appended dead code')
+  ok(Buffer.from(a).equals(Buffer.from(b)), 'bytes identical under appended dead code')
+})
