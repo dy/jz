@@ -118,3 +118,29 @@ test('passes: dead code never changes retained-code bytes (no hidden auto-tuning
     ok(Buffer.from(a).equals(Buffer.from(b)), `bytes identical under appended dead code (${opts.optimize ?? 'default'})`)
   }
 })
+
+test('passes: emission tier never writes durable analysis state (slice-4 exit grep)', () => {
+  // Stage 2's finish line, held statically: emit and the module/ tier contain
+  // ZERO updateRep / schema.vars.set calls — discovery lives in plan passes,
+  // emission products in transient channels (localValTypesOverlay, closureAux).
+  // A static source check beats a runtime tripwire here: it needs no subset
+  // support in the self-host kernel (a Proxy-based guard broke the kernel
+  // build — 'Proxy' is not jz) and covers paths no test executes.
+  const files = []
+  const walkDir = (dir) => {
+    for (const f of readdirSync(dir)) {
+      const p = join(dir, f)
+      if (statSync(p).isDirectory()) walkDir(p)
+      else if (f.endsWith('.js')) files.push(p)
+    }
+  }
+  walkDir(join(ROOT, 'module'))
+  files.push(join(ROOT, 'src/compile/emit.js'))
+  const offenders = []
+  for (const p of files) {
+    const src = readFileSync(p, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+    for (const pat of [/\bupdateRep\s*\(/g, /schema\.vars\.set\s*\(/g])
+      if (pat.test(src)) offenders.push(`${p.slice(ROOT.length + 1)}: ${pat.source}`)
+  }
+  is(offenders.join(', '), '', `emission-tier durable writes: ${offenders.join('; ')}`)
+})

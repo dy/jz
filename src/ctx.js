@@ -486,6 +486,7 @@ export function reset(proto, globals, bridge) {
                             // helper callsites after optimization, so hot helpers can be traced
                             // back to the compiled function that calls them.
     loopXformId: 0,     // monotonic id for the per-function loop transforms' generated locals
+    sessionPhase: null, // W1 lifecycle contract: last completed ordered phase (assertCtxInvariants)
     cseId: 0,           // monotonic id for CSE temps (freshCseName) — per-compile, so warm-process WAT text is deterministic
                         // (loop-model freshLoopId). Per-compile (reset here), not a module-global —
                         // so compile(P) is deterministic regardless of prior compiles in the process.
@@ -541,10 +542,23 @@ export function reset(proto, globals, bridge) {
  *   - `pre-emit`       : func.current set; locals Map present; rep maps live.
  *   - `post-compile`   : no transient temps leaked (func.uniq stable across calls). */
 export const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
+
+// Session wave W1 (stage 4): the lifecycle table above is an executable,
+// ORDERED contract — each named phase must follow its predecessor within one
+// compile session ('pre-emit' is a per-function interleave, unordered).
+// A skipped or repeated phase is a pipeline-wiring bug caught here instead of
+// as a distant stale-state failure.
+const PHASE_ORDER = ['post-reset', 'post-prepare', 'post-compile']
 export function assertCtxInvariants(phase) {
   if (!DBG_INVARIANTS) return
   const fail = msg => { throw new Error(`[ctx invariant] ${phase}: ${msg}`) }
   const must = (cond, msg) => { if (!cond) fail(msg) }
+  const po = PHASE_ORDER.indexOf(phase)
+  if (po >= 0) {
+    if (po > 0) must(ctx.transform.sessionPhase === PHASE_ORDER[po - 1],
+      `phase out of order (previous: '${ctx.transform.sessionPhase}', expected '${PHASE_ORDER[po - 1]}')`)
+    ctx.transform.sessionPhase = phase
+  }
 
   must(ctx.core && ctx.module && ctx.scope && ctx.func && ctx.transform && ctx.features,
        'sub-contexts present')

@@ -6051,3 +6051,17 @@ research-tier feature (symbolic/relational hulls), stays the hard tail.
 The interval walk ALREADY consults arrayElemRange for gather indices
 (type.js ~1104 `table[in[j]]`) — the constant-hull gather class is served;
 sdf needs the symbolic extension.
+
+SESSION W1 + STATIC W2 LANDED (2026-07-22): W1 — the ctx lifecycle table
+is an executable ORDERED contract (PHASE_ORDER post-reset→post-prepare→
+post-compile asserted in assertCtxInvariants under DBG; sessionPhase in
+ctx.transform). W2 PIVOTED after a kernel lesson: the first cut used a
+DBG-only Proxy over schema.vars (write-ownership on the repsFrozen
+signal) — the SELF-HOST BUILD BROKE: 'Proxy' is not in the jz subset and
+ctx.js compiles INTO the kernel. Reverted; replaced with the STRICTLY
+BETTER static form: the slice-4 exit grep (zero updateRep/schema.vars.set
+calls in emit.js + module/) as a permanent passes.js test — checks the
+SOURCE (covers paths no test executes), zero runtime cost, no subset
+constraint. LESSON: enforcement code in kernel-compiled files must stay
+inside the jz subset; prefer static source gates over runtime tripwires
+when the invariant is syntactic. Battery 10/10 (kernel 1146).
