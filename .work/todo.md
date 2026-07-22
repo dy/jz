@@ -5944,3 +5944,19 @@ dict, immutable (SROA lever designed), + examples ulam 0.93/raymarcher
 1.05 is the measured jitter band; the strict claim carried today is the
 aggregate geomean (1.00× leading all lanes) + repeated-frontier per-case
 evidence. Each red row is a case-study on the campaign list.
+
+GLYFPARSE DIAGNOSED (2026-07-22): joins the vm/interpreter CLASS. WAT
+census (speed tier): parseAll fully inlined into runKernel, all-i32
+locals/params, zero boxing in the hot fn, 4 selects — the loop is clean;
+the cost is ~1 bounds check PER stream byte load (18 lt_u/ge_u : 18
+load8_u). Cursor r is data-dependent (flag-branch advances by 1-2 from
+memory bytes) → JS-exact OOB semantics make checks load-bearing; c-wasm
+pays zero (UB). GENERAL LEVER (extends ledger vm counter #1): S2
+while-fixpoint grows RUNTIME-BOUND VERSIONING — per glyph, r's hull is
+r0 + 3·np (worst case: flag + rep + 2-byte coords); guard once
+`r0 + 3*np <= stream.len` → enter a check-free body clone, else the
+checked fallback. One guard per glyph amortizes ~3np per-load checks.
+Same transform serves vm (pc-bounded interpreter step) and any
+monotone-cursor byte-grammar parser (lz, qoi scans). This is the next
+substantive engine lever on the campaign list alongside immutable's
+in-place replace-store.

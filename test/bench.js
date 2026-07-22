@@ -320,7 +320,7 @@ const WASM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'tinygo', 'zig-wasm', 'as
 // disproven hypotheses.
 const WASM_TODO = {
   synth:    'focused runs: jz 2.70ms vs asc 2.43ms = 1.11× on V8 — while jz-wasmtime (2.10ms) BEATS asc outright, placing the residual in the V8-tier scheduling class (shapes/sort/dict/qoi family), not jz codegen. Open lever: machine-code profiling.',
-  glyfparse: 'NEW case (post-9edd8ec): jz 3.1-3.3ms trails c-wasm 2.6ms ≈ 1.2× consistently (jz-w2c 2.8ms sits between — part interpreter-tier, part codegen). Undiagnosed — needs the standard WAT dump + hot-loop census pass.',
+  glyfparse: 'jz 3.1-3.3ms vs c-wasm 2.6ms ≈ 1.2×. DIAGNOSED (WAT census: all-i32 inlined parse, ~1 bounds check per stream byte load, 4 select, no boxing): the cursor r is data-dependent (advances 1-2 on flag branches from memory bytes), so JS-exact OOB semantics make every check load-bearing — the vm/interpreter class. c-wasm pays zero (UB on OOB). General lever = the S2 while-fixpoint interval work (vm counter #1): bound the cursor hull when the arithmetic closes; here r ≤ r0+3np with runtime np does NOT close statically — checks stay until S2 grows runtime-bound versioning (guard once per glyph: r0+3np ≤ len → checked-free body, fallback else).',
   // noise: WON (84af634). The "tighter scalar shape" the disproven-SLP note called for turned out
   // to be branchless if→select on the gradient sign-flips `(h&1)===0 ? x : -x` — 3245→1299µs, now
   // the fastest wasm (0.90× rust). (SLP stays disproven: the 4 corners need different per-lane
