@@ -5960,3 +5960,30 @@ Same transform serves vm (pc-bounded interpreter step) and any
 monotone-cursor byte-grammar parser (lz, qoi scans). This is the next
 substantive engine lever on the campaign list alongside immutable's
 in-place replace-store.
+
+CURSOR-VERSIONING SPEC (2026-07-22, ready to implement — JZ_DBG_VS
+evidence: glyfparse x/y loops version flagBuf[i]:aff but stream[r] yields
+NO candidate; r is not the iv, intervalIdxRanges can't hull its
+branch-dependent advance). Extend versionableTypedNest's candidate model
+with a MONOTONE CURSOR kind:
+  MATCH: idx = c or c+K0 (c a non-iv local name, K0 literal) inside a
+  countable loop (iv, start, bound, stepBy already derived). ELIGIBLE iff
+  every write to c in the body is c++ / c+=k (k positive int literal) —
+  any other write form, or a c-write inside a NESTED loop, BAILS.
+  K = per-iteration max advance: sum over sequential top-level statements;
+  'if' contributes max(arms); nested loops with NO c-writes contribute 0.
+  CAND: { recv, idx, cursor: c, K, cConst: K0 }.
+  GUARD conjunct (i64, entry values read at loop entry like other slots):
+  entryC + K·(bound − start) + K0 + 1 ≤ len(recv)  [for '<'; incl adds
+  one more K]. Trips bound holds because iv advances stepBy≥1 per iter.
+  EMIT: same fast/checked twin arms as affine/range cands — read emit.js
+  ~4534 conjunct builder for the 'range' kind and add 'cursor' kind
+  symmetrically (slotI64 for entryC and bound/start already exist).
+  COVERAGE: glyfparse flag loop (r ≤ r0+2np: while(p<np) has p-advance ≥1
+  per iter so trips ≤ np−p0; note the IV itself has variable advance —
+  trips bound needs iv-advance ≥ stepBy, which holds: p++ always runs) —
+  CAREFUL: flag loop iv p advances 1+rep (>1 ok, trips only shrink);
+  x/y loops (r ≤ r0+2np each, exact class). Also vm's pc cursor, lz/qoi
+  scans. TESTS: differential OOB semantics (guard-fail path must keep
+  checked semantics: synthesize np lying about stream length → checksum
+  must equal the checked build), plus bench glyfparse before/after.
