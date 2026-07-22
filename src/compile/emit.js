@@ -24,15 +24,16 @@
 import {
   commaList, T, isBlockBody, isReassigned, mutatesArrayLength, isConstLiteral, constLiteralHoistable,
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
-  ASSIGN_OPS, firstRefKind,
+  ASSIGN_OPS, firstRefKind, isLeaf,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS } from '../ctx.js'
-import { i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux } from '../../layout.js'
+import { i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR } from '../../layout.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
 import { FITS_I32_MAX } from '../widen.js'
 import { nonNegIntLiteral, intLiteralValue, intExprRange, staticPropertyKey } from '../static.js'
 import { findFreeVars } from './analyze.js'
+import { scanBindingUses, USE } from './analyze-scans.js'
 import {
   containsNestedClosure, containsNestedLoop, nestedSmallLoopBudget,
   containsDeclOf, cloneWithSubst, containsKnownTypedArrayIndex,
@@ -1132,8 +1133,19 @@ function emitCallArgs(argNodes, params) {
  *  re-copy. Self-accumulation (`line = line + …`) keeps the head pairwise:
  *  the TAIL fuses to one fresh string and the head takes the existing
  *  bump-extend concatRaw. A total ≤ 6 yields a short HEAP string where
- *  pairwise gave SSO — value-equal (SSO is representation, not semantics). */
-function tryConcatChain(a, b, selfAccum) {
+ *  pairwise gave SSO — value-equal (SSO is representation, not semantics).
+ *
+ *  `bufTarget` (a local name, from tryConcatBufferDecl below): the caller has
+ *  proven the chain's result never needs a String identity — every use in this
+ *  function is `.length` / `.charCodeAt(i)`, nothing that compares, hashes,
+ *  slices, returns, or captures it. The [hash][len] header and the
+ *  __mkptr/__sso_norm canonicalization exist ONLY to make the result a
+ *  representation-stable String value; skip both and hand back the bare
+ *  byte region + its statically-known length as two i32 locals instead of an
+ *  f64 box. Disabled under self-accumulation (`headAccum`): a bump-extend
+ *  accumulator is read back by ITS OWN next `+`, so it still needs to be a
+ *  real String. */
+function tryConcatChain(a, b, selfAccum, bufTarget) {
   // A `+` NODE is a string concat iff a side is statically STRING — the exact
   // gate the pairwise lowering uses. (BOOL/OBJECT must NOT qualify a node:
   // `(x===y) + (u===v)` is NUMERIC bool addition; they only stringify as
@@ -1154,7 +1166,9 @@ function tryConcatChain(a, b, selfAccum) {
   // (STRING/OBJECT/BOOL/NUMBER) or unknown-through-__to_str. BIGINT joins
   // numerically elsewhere — bail so the existing lowering keeps its path.
   for (const l of leaves) if (valTypeOf(l) === VAL.BIGINT) return null
-  inc('__alloc', '__mkptr', '__sso_norm')
+  const asBuf = bufTarget != null && headAccum == null
+  if (asBuf) inc('__alloc')
+  else inc('__alloc', '__mkptr', '__sso_norm')
   // LITERAL ASCII leaves (the serializer separators — ',', '\n', 'k=' …) carry
   // their bytes and length at compile time: no box/len temps, no __str_byteLen,
   // no __str_copy — the length const-folds into the total and the bytes store
@@ -1199,11 +1213,23 @@ function tryConcatChain(a, b, selfAccum) {
     for (let k = 0; k < leaves.length; k++) if (lT[k] != null) t = ['i32.add', t, ['local.get', `$${lT[k]}`]]
     return t
   }
-  seq.push(['local.set', `$${offT}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], totalIR()]]])
-  seq.push(['i32.store', ['local.get', `$${offT}`], ['i32.const', 0]])                       // lazy hash cell
-  seq.push(['i32.store', 'offset=4', ['local.get', `$${offT}`], totalIR()])                  // len
-  seq.push(['local.set', `$${offT}`, ['i32.add', ['local.get', `$${offT}`], ['i32.const', 8]]])
-  seq.push(['local.set', `$${curT}`, ['local.get', `$${offT}`]])
+  // asBuf: allocate EXACTLY the bytes (no [hash][len] header — nothing ever
+  // reads it back through the header-decoding accessors) and keep the total
+  // in its own local rather than the header word, so `.length` reads a plain
+  // `local.get` instead of a header re-decode.
+  let lenT = null
+  if (asBuf) {
+    lenT = tempI32('cbl')
+    seq.push(['local.set', `$${offT}`, ['call', '$__alloc', totalIR()]])
+    seq.push(['local.set', `$${lenT}`, totalIR()])
+    seq.push(['local.set', `$${curT}`, ['local.get', `$${offT}`]])
+  } else {
+    seq.push(['local.set', `$${offT}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], totalIR()]]])
+    seq.push(['i32.store', ['local.get', `$${offT}`], ['i32.const', 0]])                       // lazy hash cell
+    seq.push(['i32.store', 'offset=4', ['local.get', `$${offT}`], totalIR()])                  // len
+    seq.push(['local.set', `$${offT}`, ['i32.add', ['local.get', `$${offT}`], ['i32.const', 8]]])
+    seq.push(['local.set', `$${curT}`, ['local.get', `$${offT}`]])
+  }
   leaves.forEach((n, k) => {
     if (lits[k] != null) {
       const s = lits[k]
@@ -1234,6 +1260,9 @@ function tryConcatChain(a, b, selfAccum) {
     if (k < leaves.length - 1)
       seq.push(['local.set', `$${curT}`, ['i32.add', ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]]])
   })
+  // asBuf: return the raw (buf, len) locals directly — no value to box, the
+  // statements above already did everything the caller needs.
+  if (asBuf) return { statements: seq, buf: offT, len: lenT }
   // __sso_norm epilogue: every producer that hand-writes heap bytes must
   // re-canonicalize — a ≤6-ASCII result MUST be SSO or its hash diverges
   // from a literal/SSO-built equal string (representation-keyed fast paths:
@@ -1244,6 +1273,61 @@ function tryConcatChain(a, b, selfAccum) {
   if (headAccum != null)
     return typed(ctx.abi.string.ops.concatRaw(asF64(emit(headAccum)), fresh, ctx, true), 'f64')
   return fresh
+}
+
+/** True iff every mention of `name` in the current function is `.length` or a
+ *  `.charCodeAt(i)` CALL — the string-buffer-SRoA eligibility gate (see
+ *  tryConcatBufferDecl). `scanBindingUses` classifies a `.charCodeAt` member
+ *  access uniformly whether or not it's actually invoked (`const f =
+ *  line.charCodeAt` reads the same as `line.charCodeAt(0)`), so a second,
+ *  structural pass separately confirms every such access sits in a plain
+ *  1-arg call position — a bare reference would need a real closure value,
+ *  which a dissolved buffer doesn't have. Conservative: any doubt → false. */
+function concatBufEligible(name) {
+  const body = ctx.func.body
+  if (!body) return false
+  const uses = scanBindingUses(body).get(name)
+  if (!uses || uses.decls !== 1) return false
+  for (const u of uses.uses) {
+    if (u.kind === USE.MEMBER_R && !u.optional && !u.computed && (u.key === 'length' || u.key === 'charCodeAt')) continue
+    return false
+  }
+  const consumed = new WeakSet()
+  ;(function markCalls(n) {
+    if (!Array.isArray(n)) return
+    if (n[0] === '()') {
+      const callee = n[1], arg = n[2]
+      const oneArg = arg != null && !(Array.isArray(arg) && (arg[0] === ',' || arg[0] === '...'))
+      if (oneArg && Array.isArray(callee) && callee[0] === '.' && callee[1] === name && callee[2] === 'charCodeAt')
+        consumed.add(callee)
+    }
+    for (let i = 1; i < n.length; i++) markCalls(n[i])
+  })(body)
+  let bare = false
+  ;(function findBare(n) {
+    if (!Array.isArray(n) || bare) return
+    if (n[0] === '.' && n[1] === name && n[2] === 'charCodeAt' && !consumed.has(n)) { bare = true; return }
+    for (let i = 1; i < n.length; i++) findBare(n[i])
+  })(body)
+  return !bare
+}
+
+/** `const line = <concat chain>` whose result is proven (concatBufEligible)
+ *  to never need a String identity — dissolve it into raw `(buf, len)` i32
+ *  locals via tryConcatChain's bufTarget mode instead of materializing a real
+ *  boxed String. Registers `ctx.func.concatBufs` so the `.length` prop-read
+ *  hook (module/core.js) and the `.charCodeAt` call strategy
+ *  (tryConcatBufCharCodeAt below) route to the raw locals. Returns init
+ *  statements to splice, or null when ineligible — emitDecl's normal `const`
+ *  path then runs unchanged (purely additive, sound either way). */
+function tryConcatBufferDecl(name, init) {
+  if (!Array.isArray(init) || init[0] !== '+' || init.length !== 3) return null
+  if (!concatBufEligible(name)) return null
+  const chain = tryConcatChain(init[1], init[2], false, name)
+  if (!chain) return null
+  if (!ctx.func.concatBufs) ctx.func.concatBufs = new Map()
+  ctx.func.concatBufs.set(name, { buf: chain.buf, len: chain.len })
+  return chain.statements
 }
 
 /** Guarded dispatch to a speculative typed clone (narrow's speculateTypedParams).
@@ -1424,6 +1508,15 @@ export function emitDecl(...inits) {
         result.push(['local.set', `$${name}#${j}`,
           flatDecl.values[j] === undefined ? undefExpr() : asF64(emit(flatDecl.values[j]))])
       continue
+    }
+
+    // String-buffer SRoA: `const line = <concat chain>` that never needs a
+    // String identity (only `.length`/`.charCodeAt(i)` downstream) dissolves
+    // into raw (buf, len) i32 locals — no header, no __mkptr/__sso_norm. See
+    // tryConcatBufferDecl.
+    if (!ctx.func.boxed.has(name) && !isGlobal(name)) {
+      const bufStmts = tryConcatBufferDecl(name, init)
+      if (bufStmts) { result.push(...bufStmts); continue }
     }
 
     // Multi-value ephemeral destructuring — skip heap alloc when temp is
@@ -2668,7 +2761,39 @@ function tryFlatObjectMethod(callee, obj, method, parsed) {
   }
 }
 
-// 2. charCodeAt with a statically in-bounds index — emit the i32 (OOB-impossible)
+// 2. String-buffer SRoA: `line.charCodeAt(j)` where `line` was dissolved into
+// raw (buf, len) locals by tryConcatBufferDecl (emit.js, above) — a bare byte
+// load, never the SSO-vs-heap dispatch (we KNOW it's a plain heap region we
+// just wrote: no __mkptr/__sso_norm ever ran on it, so there is no SSO
+// representation to test for). MUST run before tryCharCodeAtFast below: a
+// dissolved `line` has no `$line` local — falling into the param/generic
+// paths would emit `local.get $line` for a binding that no longer exists.
+// Still bounds-checks unless inBoundsCharCodeAt separately proves the index
+// safe — concatBufEligible only proves every USE is length/charCodeAt, not
+// that every index is in range.
+function tryConcatBufCharCodeAt(callee, obj, method, parsed) {
+  if (method !== 'charCodeAt' || parsed.hasSpread || parsed.normal.length !== 1 || typeof obj !== 'string') return
+  const bufR = ctx.func.concatBufs?.get(obj)
+  if (!bufR) return
+  const rawLoad = (i) => ['f64.convert_i32_u', ['i32.load8_u', ['i32.add', ['local.get', `$${bufR.buf}`], i]]]
+  if (inBoundsCharCodeAt(ctx).has(callee))
+    return typed(rawLoad(asI32(emit(parsed.normal[0]))), 'f64')
+  const idxIR = asI32(emit(parsed.normal[0]))
+  if (isLeaf(idxIR))
+    return typed(['if', ['result', 'f64'],
+      ['i32.ge_u', idxIR, ['local.get', `$${bufR.len}`]],
+      ['then', oobNanIR()],
+      ['else', rawLoad(idxIR)]], 'f64')
+  const t = tempI32('cbi')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, idxIR],
+    ['if', ['result', 'f64'],
+      ['i32.ge_u', ['local.get', `$${t}`], ['local.get', `$${bufR.len}`]],
+      ['then', oobNanIR()],
+      ['else', rawLoad(['local.get', `$${t}`])]]], 'f64')
+}
+
+// 2b. charCodeAt with a statically in-bounds index — emit the i32 (OOB-impossible)
 // contract directly; the generic path keeps the f64/NaN JS-spec result. See
 // analyze.js inBoundsCharCodeAt.
 function tryCharCodeAtFast(callee, obj, method, parsed) {
@@ -2730,7 +2855,7 @@ function tryFnPropCall(callee, obj, method, parsed) {
   }
 }
 
-const LEADING_STRATEGIES = [tryFlatObjectMethod, tryCharCodeAtFast, trySpliceInsert, tryFnPropCall]
+const LEADING_STRATEGIES = [tryFlatObjectMethod, tryConcatBufCharCodeAt, tryCharCodeAtFast, trySpliceInsert, tryFnPropCall]
 
 // Strategies 5–12 share the receiver's resolved value type and the
 // `callMethod` shim — packaged once into a dispatch-context record `c` =

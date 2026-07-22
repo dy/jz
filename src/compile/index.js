@@ -408,6 +408,7 @@ function enterFunc(sig, body, { uniq = 0, directClosures = null } = {}) {
   ctx.func.directClosures = directClosures
   ctx.func.localProps = null
   ctx.func.charDecomp = null
+  ctx.func.concatBufs = null
   ctx.func.charDecompGlobals = false  // only emitFunc's named path drains — it re-arms
   ctx.func.probeHoist = null
   ctx.func.lenHoist = null

@@ -5835,3 +5835,15 @@ ALSO OBSERVED: full parallel battery on this machine has pre-existing
 resource-contention flakes (self "build exit null", dbg "clearInterval") —
 isolated reruns green; treat single-leg reds under full load with isolated
 rerun before diagnosing.
+
+STRBUILD STRING-SROA — LANDED (2026-07-21): concat-chain decls whose every
+use is `.length`/`.charCodeAt(i)` (proven by concatBufEligible: binding-use
+scan + structural bare-reference check) dissolve into raw (buf,len) i32
+locals — no [hash][len] header, no __mkptr/__sso_norm, no NaN-box; .length
+reads the len local, .charCodeAt does a bare byte load (bounds-checked
+unless inBoundsCharCodeAt proves otherwise; SSO dispatch skipped — the
+region provably never had an SSO form). Purely additive: ineligible decls
+take the unchanged path. MEASURED: strbuild 458→392 µs (14%, jz already
+fastest; lead extended); corpus sweep — ONLY strbuild's bytes changed
+(smaller: 74905→73366 speed). Full 10-leg battery green. (Agent built the
+lever, died mid-gates on session restart; verification re-run from scratch.)

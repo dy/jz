@@ -1378,6 +1378,14 @@ export default (ctx) => {
       if (fi >= 0) return typed(['local.get', `$${obj}#${fi}`], 'f64')
     }
 
+    // String-buffer SRoA: `line.length` where `line` dissolved into raw
+    // (buf, len) locals (src/compile/emit.js tryConcatBufferDecl) — the total
+    // was computed once at construction; no __str_byteLen re-decode.
+    if (prop === 'length' && typeof obj === 'string') {
+      const bufR = ctx.func.concatBufs?.get(obj)
+      if (bufR) return typed(['f64.convert_i32_s', ['local.get', `$${bufR.len}`]], 'f64')
+    }
+
     // Boxed object: delegate .length and .prop to inner value or schema
     if (typeof obj === 'string' && ctx.schema.isBoxed(obj)) {
       if (prop === 'length') {
