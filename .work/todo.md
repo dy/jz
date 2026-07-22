@@ -6037,3 +6037,17 @@ measurement: immutable jz 0.14ms LEADS c-wasm 2.1×, rust-wasm 3×, AS 4.6×.
 Both my ledger entry and the re-audit's row were stale. LESSON: before
 designing a lever from an audit row, measure the row and grep git log —
 the audit was 44 commits behind on evidence and so was I.
+
+SDF SHARPENED (2026-07-22): the hard tail decomposes into TWO missing
+capabilities, both beyond current models — (a) k's lower bound is a
+SENTINEL invariant (z[0]=-INF ⇒ `sMid <= z[k]` false at k=0 ⇒ k-- never
+crosses 0): semantic, not derivable from syntax; (b) f[v[k]] needs a
+SYMBOLIC per-call elem hull — v's elements written this call are ⊆
+[0, q_max] ⊆ [0, n-1] with RUNTIME n, i.e. a relational fact (elemRange
+bounded by a param), while arrayElemRange is a constant hull. A versioned
+fast arm would need entry guards f.len≥n ∧ v.len≥n ∧ d.len≥n ∧ z.len≥n+1
+PLUS the flow-sensitive symbolic elem hull for v. Honest classification:
+research-tier feature (symbolic/relational hulls), stays the hard tail.
+The interval walk ALREADY consults arrayElemRange for gather indices
+(type.js ~1104 `table[in[j]]`) — the constant-hull gather class is served;
+sdf needs the symbolic extension.
