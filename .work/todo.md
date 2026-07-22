@@ -6134,3 +6134,14 @@ bug in the speculation path for the Map-memo plan-field gather specimen
 Likely relative of the parked kernel string-param/knife-edge classes.
 Differential entry: compile PLAN_SRC (test/speculate.js) with kernel vs
 native, diff $kernel$spec + the $go dispatch WAT.
+
+TRIAGE CLASSIFIED ×3 (2026-07-22): warnings/whyNotSimd = HARNESS-ABI
+(diagnostic sink doesn't reach the kernel, same class as modules-dict);
+features "jzify esbuild CJS interop: Unclosed { at 24:25" = REAL kernel
+PARSE divergence (in-kernel parser/jzify fails a program native accepts —
+high-value differential: minimal-repro the brace path); unswitch-typed-
+param = optimization-parity gap (kernel-compiled compiler doesn't fire
+unswitch on the Float64Array self-map shape; value-correct, structure
+assertion fails). Queue order by value: features parse divergence first
+(correctness), then unswitch parity, harness-ABI last (needs kernel
+compile-entry ABI extension: modules dict + warnings sink + wat flag).
