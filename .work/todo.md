@@ -6125,3 +6125,12 @@ permanently. Near-green next in queue: unswitch-typed-param 6/1,
 warnings 27/1, speculate 5/1, features 48/1, preeval 25/2, slot-hazards
 17/4 — each red needs the differential protocol (extract → classify
 harness-ABI vs semantic → root fix or pin).
+
+SPECULATE KERNEL RED ATTRIBUTED (2026-07-22): "plan-field route is
+value-correct (fast path)" fails IDENTICALLY on the pre-cursor kernel
+(c0e0f544 build, 5/1) — cursor versioning exonerated; PRE-EXISTING kernel
+bug in the speculation path for the Map-memo plan-field gather specimen
+(tw[perm[i]] through a guarded typed clone; wrong VALUE, not a crash).
+Likely relative of the parked kernel string-param/knife-edge classes.
+Differential entry: compile PLAN_SRC (test/speculate.js) with kernel vs
+native, diff $kernel$spec + the $go dispatch WAT.
