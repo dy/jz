@@ -6155,3 +6155,8 @@ entry: kernel-vs-native `jz.compile('var o = { "k"(x) { return 1 } }',
 {jzify:true})` — bisect the parser path from there (JZ_PR_LIMIT-style if
 needed; the comma-group shorthand-key kernel bug from the totality
 campaign is the nearest prior art — see 2026-07-20 ledger entries).
+
+REPRO CONFIRMED (2026-07-22): one-liner `var o = { "k"(x) { return x+1 } }`
+→ kernel "Unclosed { at 1:18", native OK. Crisp differential banked
+(scratchpad skm-repro.mjs pattern; _setCompileTarget + compileViaKernel).
+Next: bisect inside the kernel parser path for string-keyed shorthand.
