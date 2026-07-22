@@ -6208,3 +6208,19 @@ ROUND: patch a subscript COPY (accessor.js + number.js) with breadcrumb
 returns, rebuild kernel against the patched copy (~4 min/round), run
 `{ 1() {} }` — bisect which guard line diverges. (modules override or
 node_modules patch + build-dist.)
+
+SKM HUNT DECISIVE (2026-07-22): gated breadcrumb at the ASSIGN-1 '('
+method handler's entry fires NATIVELY ("BC-entry a=object:arr0=undefined")
+but NEVER in-kernel (error stays "Unclosed {") ⇒ the handler is NEVER
+INVOKED in-kernel for literal operands. Everything inside the handler is
+eliminated; the divergence is in parse.js's token DISPATCH/precedence
+climb — suspects: the prec comparison in the binary loop for the
+ASSIGN-1='(' registration when `a` is a literal node (note FRACTIONAL
+precedences exist: HERITAGE=CALL-.5=159.5 — f64-vs-i32 compare class?),
+or the handler-chain offer order for literal operands. NEXT ROUND:
+gated breadcrumbs in parse.js's dispatch loop (which '(' handlers offered,
+with what prec, for literal vs bare-name `a`). Instrument harness proven:
+marker-gated err() + build-dist (~4 min/round); marker must be
+split-string ('__BC'+'PROBE__') — the bundle self-reference trap is
+recorded. accessor.orig.js backup in scratchpad; RESTORE before any
+landing battery.
