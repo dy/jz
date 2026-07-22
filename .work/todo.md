@@ -6183,3 +6183,15 @@ fragility art to check first: UTF-8 byte-string charCode arithmetic,
 prototype-less dict lookups, interpreter-grade regex (all ledger 07-20/21
 classes) — the string-key-then-( lookahead touches charCode + space
 skipping, squarely in the first class's territory.
+
+SKM CLASS CORRECTED (2026-07-22): probe round 2 — `1(x){}` (NUMBER key)
+FAILS identically; empty parens, empty body, 2nd-position all fail;
+single-quote fails. The class is LITERAL-KEY SHORTHAND METHODS (any
+literal followed directly by `(` in object context), NOT string-specific.
+Bare `k(x){}` and computed `["k"](x){}` both parse fine in-kernel.
+Native subscript parses `LIT(args)` as a CALL on the literal then the
+block; the compiled parser's group tracking desyncs at the method `{`
+after a call-on-literal ⇒ the divergence lives in subscript's group/call
+machinery as compiled by jz's O0 core. Differential next: instrument the
+group stack (parse.js:56 vicinity) in a standalone jz-compiled subscript
+build vs native on `{ 1() {} }`.
