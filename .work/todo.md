@@ -6340,3 +6340,15 @@ capturing expr), (c) the factory pattern (dispatch = (ops,tail,fn=...) =>
 gated off for unmarked sources; current dist serves). When kernel ≠
 native: shrink to minimal, fix jz codegen, RESTORE subscript package,
 full battery, land + clear features/statements/etc from KERNEL_EXCLUDE.
+
+DP-REPRO ITERATIONS 2-3 NEGATIVE (2026-07-22): comma-list + factory +
+object-store (19501=19501) and 7-param dispatch signature with params-as-
+locals + mid-list mutable default (0=0) both pass in-kernel. PIVOT for
+next round: stop black-box iterating — (a) plant a marker-gated probe
+INSIDE expr logging its received p (confirms the 19.5-despite-literal-0
+directly and, with BCA ordering, names the call site), then (b) DIFF THE
+WAT: compile the kernel bundle with wat:true (scripts/self.js pathway)
+and READ the argument wiring of the group-map → $expr call — the
+miscompiled slot will be visible in the IR (this is jz's own output; no
+more inference needed). Restore checklist stands (subscript package
+probes: parse.js, asi.js, collection.js, accessor.js).
