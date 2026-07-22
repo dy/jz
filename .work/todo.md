@@ -6195,3 +6195,16 @@ after a call-on-literal ⇒ the divergence lives in subscript's group/call
 machinery as compiled by jz's O0 core. Differential next: instrument the
 group stack (parse.js:56 vicinity) in a standalone jz-compiled subscript
 build vs native on `{ 1() {} }`.
+
+SKM HUNT ROUND 3 (2026-07-22): three hypotheses ELIMINATED by kernel
+probes — isMethodKey (strict a[0]===undefined on hole literals: 112=112),
+sparse-hole array reads (11=11), handler-chain closures fn()||prev?.()
+(11=11). All compile correctly in-kernel. Remaining suspects: idx/
+whitespace state divergence after the literal-key token (accessor's
+charCodeAt(idx)!==OPAREN guard failing → falls to CALL-on-literal → block
+dangles → "Unclosed {" CONSISTENT with symptoms), or precedence-climb
+divergence for literal operands in the binary loop. NEXT INSTRUMENT
+ROUND: patch a subscript COPY (accessor.js + number.js) with breadcrumb
+returns, rebuild kernel against the patched copy (~4 min/round), run
+`{ 1() {} }` — bisect which guard line diverges. (modules override or
+node_modules patch + build-dist.)
