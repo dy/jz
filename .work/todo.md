@@ -6116,3 +6116,12 @@ Known red classes so far: multi-module harness ABI, BigInt should-throw,
 SSO-hash JSON.parse probe, + the 47 to classify (raw ✗ lines need
 capturing without the collapsed-name grouping — test names don't carry
 file prefixes; use per-file runs).
+
+KERNEL_EXCLUDE: FIVE ENTRIES CLEARED (2026-07-22): never-grown (4/4),
+wat-invariants (23/23), loop-square (4/4), slp (8/8), cond-vectorize
+(3/3) — all fully green on today's kernel; full kernel leg 1146→1180 pass
+with zero fails. The battery kernel leg now guards all of them
+permanently. Near-green next in queue: unswitch-typed-param 6/1,
+warnings 27/1, speculate 5/1, features 48/1, preeval 25/2, slot-hazards
+17/4 — each red needs the differential protocol (extract → classify
+harness-ABI vs semantic → root fix or pin).
