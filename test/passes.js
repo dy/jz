@@ -90,7 +90,9 @@ test('passes: unknown optimize keys and presets fail loudly', () => {
   }
   throws(() => compile('export let f = () => 1', { optimize: { watrLcm: true } }), /watrLicm/,
     'typo key suggests the registered name')
-  throws(() => compile('export let f = () => 1', { optimize: 'sped' }), /Unknown optimize preset/,
+  // Under JZ_TEST_OPTIMIZE legs the harness merges the string into { level },
+  // so the throw comes from the level branch — accept either message.
+  throws(() => compile('export let f = () => 1', { optimize: 'sped' }), /Unknown optimize (preset|level)/,
     'unknown preset string throws')
   throws(() => compile('export let f = () => 1', { optimize: { level: 7 } }), /Unknown optimize level/,
     'unknown level throws')
