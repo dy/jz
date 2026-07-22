@@ -108,7 +108,13 @@ test('passes: dead code never changes retained-code bytes (no hidden auto-tuning
   const live = `export let f = (x) => x * 2 + 1`
   const dead = live + '\n' + Array.from({ length: 60 }, (_, i) =>
     `let unused${i} = (a) => { let s = 0; for (let k = 0; k < 9; k++) s += a * k; return s }`).join('\n')
-  const a = compile(live), b = compile(dead)
-  is(a.length, b.length, 'byte count stable under appended dead code')
-  ok(Buffer.from(a).equals(Buffer.from(b)), 'bytes identical under appended dead code')
+  // Explicit level 2 always; the bare-default form ONLY when no JZ_TEST_OPTIMIZE
+  // env override is in play — under the O0 battery leg treeshake is off BY DESIGN,
+  // so dead code legitimately stays and byte equality doesn't apply.
+  const envTier = typeof process !== 'undefined' && process.env?.JZ_TEST_OPTIMIZE != null
+  for (const opts of envTier ? [{ optimize: 2 }] : [{ optimize: 2 }, {}]) {
+    const a = compile(live, opts), b = compile(dead, opts)
+    is(a.length, b.length, `byte count stable under appended dead code (${opts.optimize ?? 'default'})`)
+    ok(Buffer.from(a).equals(Buffer.from(b)), `bytes identical under appended dead code (${opts.optimize ?? 'default'})`)
+  }
 })

@@ -3980,6 +3980,71 @@ export let run = (n, nStages) => {
   ok(!/nan:0x7FF8000200000000/.test(fastArm), 'fast arm carries no checked-read sentinels')
 })
 
+test('cursor-versioning: monotone stream cursor guards fast-arm bare loads, checked else preserves OOB semantics', () => {
+  // glyfparse's `stream[r++]` shape: `r` is a body-advanced CURSOR (not the
+  // loop's own iv) read across a countable loop's iterations — the affine
+  // model can't hull it (its per-iteration advance isn't iv-linear), so it
+  // needs its own MONOTONE CURSOR candidate kind. K = per-iteration max
+  // advance (here `r++` contributes 1, `r += 2` contributes 2 → K=3); the
+  // guard is `entryR + K·trips + K0 < len`, once per loop entry. The fast arm
+  // then reads `stream[r]` bare (typedIdxProven's assumedBounds channel); the
+  // checked else arm keeps the exact JS OOB semantics (numeric read past the
+  // end → undefined → NaN through arithmetic → `|0` → 0).
+  const src = `
+const cursorScan = (stream, out, n) => {
+  let r = 0
+  let h = 0
+  for (let i = 0; i < n; i++) {
+    const d = stream[r++]
+    const v = (d + stream[r] + stream[r + 1]) | 0
+    out[i] = v
+    h = (h + v) | 0
+    r += 2
+  }
+  return h
+}
+export let run = (n, len) => {
+  const stream = new Uint8Array(len)
+  for (let i = 0; i < len; i++) stream[i] = (i * 7 + 3) & 0xff
+  const out = new Int32Array(n)
+  return cursorScan(stream, out, n)
+}`
+  const jsExports = {}
+  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(jsExports)
+  // n=20 → K=3, K0max=1: the guard needs entryR(0) + 3·20 + 1 < len, i.e.
+  // len ≥ 62 to PASS. len=30 forces a REAL runtime OOB partway through (the
+  // checked arm's exact semantics must survive); len=61 fails the (sound but
+  // conservative — the guard's K·trips over-approximates the true max index
+  // by 2) guard despite every access staying actually in-bounds — the checked
+  // arm must still compute the identical answer either way.
+  for (const [n, len] of [[20, 30], [20, 61], [20, 62], [20, 70], [0, 5], [1, 3]]) {
+    const truth = jsExports.run(n, len)
+    for (const optimize of [0, 2, 'speed'])
+      is(run(src, { optimize }).run(n, len), truth, `n=${n} len=${len} O${optimize}: exact (checked semantics through guard-fail preserved)`)
+  }
+  // Structural: the guarded fast arm's cursor reads are bare loads (no bounds
+  // check idiom); the checked twin keeps its guarded reads.
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const fn = wat.split('(func ').find(f => f.startsWith('$cursorScan')) || ''
+  const guardAt = fn.indexOf('i64.lt_s')
+  ok(guardAt > 0, 'cursor guard present')
+  const thenAt = fn.indexOf('(then', guardAt)
+  const elseAt = (() => {   // matching else at the same paren depth as the then
+    let d = 0
+    for (let i = thenAt; i < fn.length; i++) {
+      if (fn[i] === '(') d++
+      else if (fn[i] === ')' && --d === 0) return fn.indexOf('(else', i)
+    }
+    return -1
+  })()
+  ok(elseAt > thenAt, 'both arms present')
+  const fastArm = fn.slice(thenAt, elseAt)
+  const checkedArm = fn.slice(elseAt)
+  is((fastArm.match(/i32\.load8_u/g) || []).length, 3, 'fast arm: 3 bare stream loads (r++, r, r+1)')
+  ok(!/i32\.lt_u|i32\.ge_u|select/.test(fastArm), 'fast arm carries no bounds-check idiom for the cursor')
+  ok(/i32\.lt_u|select/.test(checkedArm), 'checked arm keeps the guarded reads')
+})
+
 test('serial-chain unroll: crc-class loop pairs iterations, values exact', () => {
   // Address-carried scalar chain (`crc = table[(crc ^ buf[i]) & 255] ^ ...`)
   // is non-vectorizable, so the speed tier pairs iterations (×2 + tail) to

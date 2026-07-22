@@ -10,7 +10,7 @@
  *
  * @module type
  */
-import { isI32, isReassigned } from './ast.js'
+import { isI32, isReassigned, ASSIGN_OPS as WRITE_OPS } from './ast.js'
 import { ctx } from './ctx.js'
 import { FITS_I32_MAX } from './widen.js'
 import { VAL, lookupValType } from './reps.js'
@@ -275,6 +275,60 @@ export function bodyAffineEnv(body, iv) {
   return env
 }
 
+/** `idx` as a MONOTONE CURSOR reference: a bare non-iv local name `c`, or `c + K0`
+ *  / `K0 + c` with K0 an int literal — the shapes a data-dependent stream cursor
+ *  (`stream[r]`, `stream[r+1]`) is read at. A postfix `c++` used in VALUE position
+ *  lowers (prepare.js) to `(++c) - 1`: the read sees the OLD value, same as a bare
+ *  `c` — unwrapped here so `stream[r++]` matches like `stream[r]` (the ++ itself is
+ *  counted separately by maxCursorAdvance, wherever it appears in the body). */
+function monotoneCursorOf(idx, iv) {
+  const unwrapPost = (e) => Array.isArray(e) && e[0] === '-' && e.length === 3 && intLiteralValue(e[2]) === 1
+    && Array.isArray(e[1]) && e[1][0] === '++' && typeof e[1][1] === 'string' ? e[1][1] : e
+  const base = unwrapPost(idx)
+  if (typeof base === 'string') return base !== iv ? { c: base, K0: 0 } : null
+  if (Array.isArray(base) && base[0] === '+' && base.length === 3) {
+    const x = unwrapPost(base[1]), y = unwrapPost(base[2])
+    if (typeof x === 'string' && x !== iv) { const k = intLiteralValue(y); if (k != null) return { c: x, K0: k } }
+    if (typeof y === 'string' && y !== iv) { const k = intLiteralValue(x); if (k != null) return { c: y, K0: k } }
+  }
+  return null
+}
+
+/** Per-iteration MAX advance of cursor `c` anywhere in `body`: `c++` / `c+=LIT`
+ *  (LIT a positive int literal) contribute their amount wherever they occur
+ *  (top-level statement or nested inside an expression, e.g. `stream[r++]`);
+ *  sequential statements SUM; an `if` contributes its cond's advance plus
+ *  max(then, else); a nested loop with no `c`-write contributes 0. Any other
+ *  write to `c` (`=`, `-=`, `--`, …) — or a `c`-write inside a NESTED loop, whose
+ *  per-inner-iteration advance this per-outer-iteration walk cannot hull — is
+ *  non-monotone or unhullable and BAILS the whole candidate (null propagates up
+ *  through every sum/max on the way out). */
+function maxCursorAdvance(n, c) {
+  if (!Array.isArray(n)) return 0
+  const op = n[0]
+  if (op === '++' && n[1] === c) return 1
+  if (op === '--' && n[1] === c) return null
+  if (op === '+=' && n[1] === c) { const k = intLiteralValue(n[2]); return k != null && k > 0 ? k : null }
+  if (WRITE_OPS.has(op) && n[1] === c) return null
+  if (op === 'if') {
+    const [, cnd, thenB, elseB] = n
+    const cA = maxCursorAdvance(cnd, c)
+    if (cA == null) return null
+    const tA = maxCursorAdvance(thenB, c)
+    const eA = elseB !== undefined ? maxCursorAdvance(elseB, c) : 0
+    return tA == null || eA == null ? null : cA + Math.max(tA, eA)
+  }
+  if (op === 'for' || op === 'while' || op === 'do') return isReassigned(n, c) ? null : 0
+  if (op === '=>') return 0   // unreachable: containsNestedClosure already bailed the caller
+  let sum = 0
+  for (let k = 1; k < n.length; k++) {
+    const a = maxCursorAdvance(n[k], c)
+    if (a == null) return null
+    sum += a
+  }
+  return sum
+}
+
 /** Loop-versioning scan for the 'for' emitter: a countable loop
  *  `for (let iv = C≥0; iv < BOUND; iv++)` whose body indexes TYPED receivers with
  *  iv-affine indices that no static class proves. Returns null or
@@ -407,6 +461,19 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   // (the affine env blocks them); their PLAIN `arr[cursor]` reads are their own
   // candidate class below
   if (inds) for (const nm of inds.keys()) env.set(nm, null)
+  // MONOTONE CURSOR eligibility (v1): the guard's trips = maxIv − start + 1 is
+  // exact only when the iv advances by exactly 1 per iteration — a classic
+  // `for (;iv<bound;iv++)` step, or a body-advanced iv proven bump === 1 (a
+  // multi-write iv like the flag loop's `p` never reaches here — the writes-
+  // count check above already returned null for that whole loop).
+  const cursorIvOk = isUnitIncrement(step, iv) || bump === 1
+  const cursorKCache = new Map()
+  const cursorAdvanceOf = (name) => {
+    if (cursorKCache.has(name)) return cursorKCache.get(name)
+    const K = maxCursorAdvance(body, name)
+    cursorKCache.set(name, K)
+    return K
+  }
   const cands = []
   const seen = new Set()
   // A body-advanced iv (bump > 0) exceeds bound−1 only AFTER its increment
@@ -449,14 +516,27 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
             const slots = aff.slots.map(t => ({ ...t, kind: exprType(t.e, locals) === 'i32' ? 'i32' : 'f64' }))
             cands.push({ recv: n[1], idx: n[2], a: aff.a, slots, bConst: aff.bConst, post: isPost() })
           } else {
-            // LAST resort — beyond the affine model (masked ring cursors, wrap
-            // idioms): an interval HULL the static walk bounded but couldn't
-            // discharge (dynamic receiver length) closes with one runtime
-            // `hull.hi < len` conjunct. Strictly a fallback: it must never steal
-            // an affine candidate (whose per-iv extents are tighter).
-            const rng = intervalIdxRanges(ctx).get(key)
-            if (rng && (rng.hiName == null || stable(rng.hiName))) {
-              seen.add(key); cands.push({ recv: n[1], idx: n[2], range: rng })
+            // MONOTONE CURSOR (r not the iv, body-advanced only by c++/c+=LIT):
+            // `arr[r]` / `arr[r+K0]` / `arr[r++]` (postfix, unwrapped) — a data-
+            // dependent cursor the affine model can't hull (its per-iteration
+            // advance depends on runtime branches, not the iv). K bounds that
+            // advance from a static walk of the body; the emitter guards
+            // `entryR + K·trips + K0 < len` once, covering every access.
+            const mc = cursorIvOk ? monotoneCursorOf(n[2], iv) : null
+            const K = mc ? cursorAdvanceOf(mc.c) : null
+            if (mc && K != null) {
+              seen.add(key)
+              cands.push({ recv: n[1], idx: n[2], cursor: mc.c, K, cConst: mc.K0 })
+            } else {
+              // LAST resort — beyond the affine model (masked ring cursors, wrap
+              // idioms): an interval HULL the static walk bounded but couldn't
+              // discharge (dynamic receiver length) closes with one runtime
+              // `hull.hi < len` conjunct. Strictly a fallback: it must never steal
+              // an affine candidate (whose per-iv extents are tighter).
+              const rng = intervalIdxRanges(ctx).get(key)
+              if (rng && (rng.hiName == null || stable(rng.hiName))) {
+                seen.add(key); cands.push({ recv: n[1], idx: n[2], range: rng })
+              }
             }
           }
         }
@@ -473,7 +553,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   if (condRest != null) { forcePre = true; scan(condRest); forcePre = false }
   // typeof-process guard, not globalThis.process — a bare `globalThis` read
   // compiles to an env.globalThis import in the self-host build; typeof folds dead
-  if (typeof process !== 'undefined' && process.env.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, 'bump', bump, 'ivWriteAt', ivWriteAt, 'body0', Array.isArray(body) ? body[0] : typeof body, cands.slice(0,4).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : ':aff') + (c.post ? ':POST' : '')).join(' '))
+  if (typeof process !== 'undefined' && process.env.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, 'bump', bump, 'ivWriteAt', ivWriteAt, 'body0', Array.isArray(body) ? body[0] : typeof body, cands.slice(0,4).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : c.cursor != null ? `:cursor(${c.cursor},K=${c.K})` : ':aff') + (c.post ? ':POST' : '')).join(' '))
   return cands.length
     ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, stepBy, cands }
     : null
@@ -601,6 +681,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
       names.push(c.recv)
       if (c.range != null) { if (c.range.hiName != null) names.push(c.range.hiName); continue }
       if (c.ind != null) { names.push(c.ind); if (typeof c.slope === 'string') names.push(c.slope) }
+      else if (c.cursor != null) names.push(c.cursor)
       else for (const t of c.slots) { if (typeof t.e === 'string') names.push(t.e); else exprNames(t.e, names) }
     }
     // the top level's own iv/bound legitimately live in the top body — only names

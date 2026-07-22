@@ -4668,6 +4668,23 @@ export const emitter = {
               if (!indGroups.has(gk)) indGroups.set(gk, c)
               continue
             }
+            if (c.cursor != null) {
+              // MONOTONE CURSOR (glyfparse's `stream[r]`/`stream[r++]`): entryR (read
+              // once, at loop entry — same spot every other entry slot is read) plus
+              // K·trips plus the access's own K0 offset must clear len. trips reuses
+              // the level's own maxIv/entry (type.js's cursorIvOk admits only a
+              // unit-per-iteration iv, so trips is exactly the iteration count — no
+              // separate trips≥0 conjunct needed: a negative trips means the loop
+              // itself never runs, so no access happens regardless of the guard).
+              const eT = slotI64(c.cursor, 'i32')
+              conjs.push(['i64.ge_s', eT, i64c(0)])
+              const info = levelInfo.get(vs)
+              const trips = ['i64.add', ['i64.sub', ['local.get', `$${info.maxIv}`], info.entryIR()], i64c(1)]
+              let hi = ['i64.add', eT, ['i64.mul', i64c(c.K), trips]]
+              if (c.cConst) hi = ['i64.add', hi, i64c(c.cConst)]
+              conjs.push(['i64.lt_s', hi, len64Of(c.recv)])
+              continue
+            }
             const gk = c.recv + '\x00' + c.a + '\x00' + c.slots.map(t => t.k + '*' + slotKey(t.e)).join('+')
             const g = groups.get(gk)
             if (!g) groups.set(gk, { recv: c.recv, a: c.a, slots: c.slots, maxC: c.bConst, minC: c.bConst, anyPost: !!c.post })

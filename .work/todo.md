@@ -6012,3 +6012,18 @@ register idx keys identically. GATES: differential guard-fail test (lie
 about len → checksum equals checked build), glyfparse bench (expect the
 x/y loops check-free; flag loop stays checked — its iv p has 2 writes,
 never versions), full battery.
+
+CURSOR-VERSIONING LANDED (2026-07-22): monotone-cursor candidate kind in
+versionableTypedNest per the banked spec — monotoneCursorOf (bare c /
+c±K0, incl. prepare's postfix lowering `(++c)-1` unwrap), maxCursorAdvance
+(null-propagating K-walk: seq sum, if→cond+max(arms), nested-loop c-write
+bails; ternary falls to generic sum = conservative overcount, sound),
+guard `entryC ≥ 0 ∧ entryC + K·trips + K0 < len` reusing the level's
+maxIv/entryIR; cursor cands ride the existing assumption plumbing
+unchanged. Agent-implemented from the ledger spec; lift-stability crash
+on slot-less cands fixed en route. MEASURED: glyfparse 1.2× → 1.04-1.07×
+vs c-wasm; LZ 0.773× — BEATS C BY 23% (op/ip cursors, the lever's home
+class); vm/qoi correctly ineligible (no false fires); flag loop correctly
+non-versioning (iv p 2 writes). 23-assertion differential pins incl.
+guard-fail OOB semantics at O0/2/speed. Dead-code pin made env-aware
+(O0 leg keeps dead code BY DESIGN — treeshake off). Battery 10/10.
