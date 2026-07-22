@@ -6290,3 +6290,20 @@ dispatch, kernel vs native, on BOTH `{ "k": 1 }` (works) and `{ "k"() {} }`
 Then: minimal jz repro of that idiom → codegen fix → battery + restore
 node_modules/subscript (accessor.orig.js + clean parse.js REQUIRED before
 any landing).
+
+SKM ROUND 8 CONSTRAINTS (2026-07-22): no catch exists anywhere in
+subscript's parse path (try.js is the try-STATEMENT parser) — the
+swallowed-throw theory is DEAD. Hard constraint set: string step logs at
+p=0/u; NO further p=0 step; next step '(' at p=4.5/u; final error
+"Unclosed {" reports the METHOD-BODY brace (pos 18), not the object's
+(pos 11); the object's '{' dispatch logged group/200/19.5/TRY (map RAN).
+⇒ The divergence is INSIDE the '{}' group map itself: `!a && [op,
+expr(0, op.charCodeAt(1)) || null]` — either the literal 0 arrives as
+4.5 at expr (argument passing/default-param miscompile class), or
+op.charCodeAt(1) mis-evaluates so end≠125 and a nested statement path
+runs. NEXT PROBE (one build): replace collection.js's group('{}', TOKEN)
+with a hand-instrumented token('{', TOKEN, a => ...) logging (a, the
+computed end, and the p seen inside the first body step) — decides
+argument-vs-end corruption. Then jz-minimal repro of that idiom (default
+params in closure factories / charCodeAt(1) on 2-char SSO strings are
+both established fragility classes) → codegen fix.
