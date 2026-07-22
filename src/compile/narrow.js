@@ -1520,14 +1520,16 @@ export default function narrowSignatures(programFacts, ast) {
   // poisons params whose call sites still can't be proven (genuinely-untyped args).
   const runArrElemFixpoint = (field, inferFn, elemsCtxMap, sidsCtxMap) => {
     const infer = (arg, _k, state) => inferFn(arg, elemsCtxMap.get(state.callerFunc), state.callerParamFacts(field), sidsCtxMap?.get(state.callerFunc))
-    let changed
-    const bump = (r, v) => { if (v == null || r[field] === null) return; const b = r[field]; mergeParamFact(r, field, v); if (r[field] !== b) changed = true }
+    let changed, any = false
+    const bump = (r, v) => { if (v == null || r[field] === null) return; const b = r[field]; mergeParamFact(r, field, v); if (r[field] !== b) changed = any = true }
     const soft = {
       missing(r, k, state) { const def = defaultArg(state, k); if (def != null) bump(r, infer(def, k, state)) },
       apply(r, arg, k, state) { bump(r, infer(arg, k, state)) },
     }
     do { changed = false; runCallsiteLattice([soft]) } while (changed)
+    latticeMeet.changed = false
     runCallsiteLattice([mergeRule(field, infer)])
+    return any || latticeMeet.changed
   }
   const runArrFixpoint = () => runArrElemFixpoint('arrayElemSchema', inferArrElemSchema, phase.callerElems('arrElemSchemas'))
   const runArrSetFixpoint = () => runArrElemFixpoint('arrayElemSchemaSet', inferArrElemSchemaSet, phase.callerElems('arrElemSchemaSets'))
@@ -1550,14 +1552,16 @@ export default function narrowSignatures(programFacts, ast) {
       if (typeof arg === 'string') return state.callerParamFacts('schemaIdSet')?.get(arg) ?? null
       return null
     }
-    let changed
-    const bump = (r, v) => { if (v == null || r.schemaIdSet === null) return; const b = r.schemaIdSet; mergeParamFact(r, 'schemaIdSet', v); if (r.schemaIdSet !== b) changed = true }
+    let changed, any = false
+    const bump = (r, v) => { if (v == null || r.schemaIdSet === null) return; const b = r.schemaIdSet; mergeParamFact(r, 'schemaIdSet', v); if (r.schemaIdSet !== b) changed = any = true }
     const soft = {
       missing(r, k, state) { const def = defaultArg(state, k); if (def != null) bump(r, infer(def, k, state)) },
       apply(r, arg, k, state) { bump(r, infer(arg, k, state)) },
     }
     do { changed = false; runCallsiteLattice([soft]) } while (changed)
+    latticeMeet.changed = false
     runCallsiteLattice([mergeRule('schemaIdSet', infer)])
+    return any || latticeMeet.changed
   }
   const runArrValTypeFixpoint = () => runArrElemFixpoint('arrayElemValType', inferArrElemValType, phase.callerElems('arrElemValTypes'))
 
@@ -1685,17 +1689,19 @@ export default function narrowSignatures(programFacts, ast) {
   // clearStickyNull needed: valResult was known before the first pass — see E2 hoist
   // above — so val/schemaId never got the can't-tell-yet poison this used to undo.)
   runFixpointConverged()
-  // Now that .val is refreshed, dedicated arr-elem-schema fixpoint.
-  runArrFixpoint()
-  runArrSetFixpoint()
-  runSchemaIdSetFixpoint()
-  runArrFixpoint()
-  runArrSetFixpoint()
-  runSchemaIdSetFixpoint()
-  // Parallel arr-elem-val fixpoint (NUMBER/STRING/…). Twice for transitive closure
-  // through helper chains: `init()→main→runKernel`.
-  runArrValTypeFixpoint()
-  runArrValTypeFixpoint()
+  // Now that .val is refreshed, the arr-elem/schema-set domain GROUP loops to a
+  // full quiet round (each runner reports change): a schemaId settled in one
+  // domain enables an arr fact in another, and helper chains DEEPER than two
+  // now converge instead of silently truncating at the old "run twice" depth.
+  // Guard cap is a backstop — the lattices are finite and monotone.
+  for (let g = 16; g-- > 0; ) {
+    let dirty = false
+    if (runArrFixpoint()) dirty = true
+    if (runArrSetFixpoint()) dirty = true
+    if (runSchemaIdSetFixpoint()) dirty = true
+    if (runArrValTypeFixpoint()) dirty = true
+    if (!dirty) break
+  }
   // Array<T> facts can make a direct `helper(rows[i])` argument precise only
   // now; settle the ordinary val lattice once more with that caller context.
   runFixpointConverged()
@@ -1843,8 +1849,8 @@ export default function narrowSignatures(programFacts, ast) {
   // for outer, the second pass picks it up for inner). Reuses runArrElemFixpoint
   // (same shape — field/inferFn/elemsCtxMap parameterization).
   const runTypedFixpoint = () => runArrElemFixpoint('typedCtor', inferTypedCtor, callerTypedCtx, callerSidsCtx)
-  runTypedFixpoint()
-  runTypedFixpoint()
+  // Quiet-loop (was "run twice"): caller→callee typed-ctor chains of any depth.
+  for (let g = 16; g-- > 0 && runTypedFixpoint(); ) {}
 
   // STATIC LENGTH down call chains: when every call site passes a typed array
   // of ONE known static length (`new Float64Array(8192)` — directly, via a

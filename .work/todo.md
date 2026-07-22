@@ -6074,3 +6074,17 @@ blowup detector — EH/trap misuse, guard-page breaks) + geomean ≤ 1.35×,
 tokenizer 2.79 (structural: V8 v128 vs wasm2c scalar C — inside the
 ceiling by design). The wasm2c TargetProfile enum stays deferred until the
 native lane consumes it (YAGNI — recorded in stage4 survey W4).
+
+MULTI-DOMAIN WORKLIST LANDED (2026-07-22, re-audit item 4): the four
+"run twice" idioms in narrow.js (arr/arrSet/schemaIdSet group ×2,
+arrValType ×2, typedCtor ×2) were DEPTH-2 TRUNCATIONS documented as
+transitive-closure workarounds. Each runner now RETURNS overall change
+(internal do-while + the mergeRule pass via the slice-1 latticeMeet
+channel); the domain group loops to a full quiet round (guard-capped 16 —
+backstop only, lattices finite+monotone). Helper chains deeper than two
+now converge: the native suite gained a passing test (3049→3050) purely
+from this. Bench corpus byte-identical (no >2-deep chains there). NOT
+converted: resetParamWasmFacts (discard+rebuild — different semantics,
+future measured pass) and the 13 plan-refresh sites (staleness placement
+is load-bearing per the 2a refutation; needs its own careful campaign).
+Battery 10/10 (kernel 1146).
