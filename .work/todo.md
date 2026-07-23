@@ -152,7 +152,14 @@ with 'a miscompile. Pass-count gating alone would miss this'):
     now includes function*. test262 14→13; pinned in test/generators.js. ·
   switch-case/dflt-decl-onlystrict x2 (undefined) ·
   break/continue line-terminators x2 (CR between keyword and label) ·
-  for-in scope-body-lex-close/open/var-none x3 (per-iteration lex scope) ·
+  for-in scope-body-lex-close/open/var-none x3 — TRIAGED 2026-07-23:
+    destructured `let [x, _ = fn-default]` for-in HEADS with escaping
+    closures capturing the per-iteration binding; deep lexical-environment
+    corner (per-iteration env + head destructuring + default-initializer
+    closures). Decide: implement per-iteration for-in lex envs, or curate
+    as documented divergence if jz's loop-let model is single-slot. Check
+    first whether plain `for (let x of xs) push(() => x)` per-iteration
+    capture works — if yes, the gap is only the head-destructuring form. ·
   function S13_A15_T4 (arguments-object semantics → undefined).
 Each needs triage: some are documented-divergence candidates (curate with
 reasons: line-terminator ASI edges, arguments semantics), some REAL
