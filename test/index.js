@@ -134,10 +134,10 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22
   'never-grown',
   'selfhost-source', 'selfhost-includes', 'abi', 'examples',
-  'errors', 'generators', 'parser-bugs', 'transform',
+  'errors', 'generators', 'parser-bugs', 'transform',   // 'features' cleared 2026-07-23: 49/49 green once the kernel parsed literal-key shorthand methods (SKM family fix)
   'destruct', 'closures', 'inference',
   'simd', 'optimizer', 'slot-hazards',
-  'statements', 'data', 'strings', 'spread', 'json', 'async', 'objects', 'preeval', 'speculate', 'pow-fold-ulp', 'fifthroot-ulp', 'features'])
+  'statements', 'data', 'strings', 'spread', 'json', 'async', 'objects', 'preeval', 'speculate', 'pow-fold-ulp', 'fifthroot-ulp'])
 const onKernelTarget = process.env.JZ_TEST_TARGET === 'jz.wasm'
 
 const selected = (argFilters.length
