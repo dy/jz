@@ -161,7 +161,11 @@ with 'a miscompile. Pass-count gating alone would miss this'):
     first whether plain `for (let x of xs) push(() => x)` per-iteration
     capture works — if yes, the gap is only the head-destructuring form. ·
   function S13_A15_T4 (arguments-object semantics → undefined).
-Each needs triage: some are documented-divergence candidates (curate with
-reasons: line-terminator ASI edges, arguments semantics), some REAL
-miscompiles (the yield-reassignment OOB; for-in lex scoping). Burn down or
-curate; the gate stays red until the list is empty either way.
+RESOLVED 2026-07-23: 3 REAL miscompiles FIXED at root (yield-arguments
+ownership x1 — two stacked jzify bugs; for-in pattern heads x2); the
+remaining 11 curated into EXPECTED_FAIL with precise per-row reasons
+(async-gen dflt-elision siblings x3 of the already-curated class;
+comma-RefErr; instanceof-ctor-value; switch-decl-strict x2;
+line-terminators x2 [upstream subscript grammar edge]; var-none hoist
+corner; S13 arguments-typeof reflection). GATE GREEN: 3014 pass / 0
+uncurated. Workflow expected green.

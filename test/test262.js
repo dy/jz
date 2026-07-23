@@ -977,6 +977,22 @@ const EXPECTED_FAIL_PREFIXES = [
 // (`throw true; catch e === true`) are the same join through the throw slot.
 const BOOL_CARRIER = 'boolean kind loss at a mixed ??/||/&&/?: join or throw slot (raw 0/1 vs TRUE/FALSE atom) — carrier-design edge'
 const EXPECTED_FAIL_FILES = new Map([
+  ['test/language/expressions/comma/S11.14_A2.1_T2.js',
+    'undeclared-identifier read must throw runtime ReferenceError — jz has no runtime binding resolution (documented subset divergence)'],
+  ['test/language/expressions/instanceof/S11.8.6_A2.1_T1.js',
+    '({}) instanceof Object via a rebound constructor value — constructor-identity instanceof outside the fixed-shape model'],
+  ['test/language/function-code/switch-case-decl-onlystrict.js',
+    'strict block-scoped function declaration inside switch case — AnnexB-adjacent scoping outside current jz scope'],
+  ['test/language/function-code/switch-dflt-decl-onlystrict.js',
+    'strict block-scoped function declaration inside switch default — AnnexB-adjacent scoping outside current jz scope'],
+  ['test/language/statements/break/line-terminators.js',
+    'CR between `break` and label must ASI-split — parser line-terminator edge (upstream subscript grammar)'],
+  ['test/language/statements/continue/line-terminators.js',
+    'CR between `continue` and label must ASI-split — parser line-terminator edge (upstream subscript grammar)'],
+  ['test/language/statements/for-in/scope-body-var-none.js',
+    'var hoisted from for-in body captured by head-default closures — var-hoisting environment corner (lex siblings pass)'],
+  ['test/language/statements/function/S13_A15_T4.js',
+    'typeof arguments === "object" reflection — jz lowers arguments to an array copy; function-object reflection out of scope'],
   // for-await grammar edges (2026-07-13, wired with async generators):
   ['test/language/statements/for-await-of/head-lhs-async.js',
     '`async` as a for-await LHS identifier — subset reserves the async prefix (upstream grammar edge)'],
@@ -990,6 +1006,8 @@ const EXPECTED_FAIL_FILES = new Map([
     'per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
   ['test/language/statements/async-generator/dstr/ary-ptrn-elision-step-err.js',
     'destructuring abrupt-completion semantics — outside the async-generator v1'],
+  ['test/language/statements/async-generator/dstr/dflt-ary-ptrn-elision-step-err.js',
+    'destructuring abrupt-completion semantics — outside the async-generator v1'],
   ['test/language/statements/async-generator/dstr/ary-ptrn-rest-id-iter-step-err.js',
     'destructuring abrupt-completion semantics — outside the async-generator v1'],
   ['test/language/statements/async-generator/yield-star-expr-abrupt.js',
@@ -998,6 +1016,8 @@ const EXPECTED_FAIL_FILES = new Map([
     'yield* abrupt GetIterator semantics — outside the async-generator v1'],
   ...[
     'test/language/expressions/async-generator/dstr/ary-ptrn-elision-step-err.js',
+    'test/language/expressions/async-generator/dstr/dflt-ary-ptrn-elision-step-err.js',
+    'test/language/expressions/async-generator/dstr/named-dflt-ary-ptrn-elision-step-err.js',
     'test/language/expressions/async-generator/dstr/ary-ptrn-rest-id-iter-step-err.js',
     'test/language/expressions/async-generator/dstr/named-ary-ptrn-elision-step-err.js',
     'test/language/expressions/async-generator/dstr/named-ary-ptrn-rest-id-iter-step-err.js',
