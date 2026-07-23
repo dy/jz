@@ -9,7 +9,11 @@ import { isDestructurePat, prependDecls } from './hoist-vars.js'
 export function usesArguments(node) {
   if (node === 'arguments') return true
   if (!Array.isArray(node)) return false
-  if (node[0] === 'function') return false
+  // Nested function OR generator bodies own their own `arguments` — a
+  // `function*` was walked through here, so an outer function containing a
+  // generator that used `arguments` got the rest-param lowering applied to
+  // ITSELF and the generator's writes aliased the outer (empty) rest array.
+  if (node[0] === 'function' || node[0] === 'function*') return false
   // Literal node `[, value]` (op === null) — node[1] is a string/number VALUE, not an
   // identifier. A string literal `'arguments'` must not read as the arguments object.
   if (node[0] == null) return false
@@ -49,7 +53,7 @@ function bindsArguments(body) {
 function renameArguments(node, to) {
   if (node === 'arguments') return to
   if (!Array.isArray(node)) return node
-  if (node[0] === 'function') return node
+  if (node[0] === 'function' || node[0] === 'function*') return node
   // Literal node `[, value]` — node[1] is a value, not an identifier; leave untouched
   // so a string literal `'arguments'` survives the rename.
   if (node[0] == null) return node

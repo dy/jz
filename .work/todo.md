@@ -144,12 +144,12 @@ with 'a miscompile. Pass-count gating alone would miss this'):
      var iter = g(23,45,33); var result; result = iter.next()` → OOB.
     Necessary elements: UNSPECIFIED 4th param (3 args to 4 params) AND
     var-result reassignment (chained iter.next().value passes; 2-param
-    passes). Suspect: the arguments-copy interplay with the missing-param
-    undefined in the generator state machine — a raw args[3] read off the
-    3-length lowered args array under an assumed length, or the missing-
-    param handling in the state-machine env. Next: dump the jzify output
-    (transform()) for the failing shape, inspect the lowered arguments
-    copy + d's read. ·
+    passes). ROOT FIXED 2026-07-23: usesArguments/
+    renameArguments stopped at 'function' but walked THROUGH 'function*' —
+    the OUTER function got the rest-param lowering and the generator's
+    arguments aliased the outer empty rest array (visible in transform
+    output: generator body wrote arg0 = _run's own rest param). Boundary
+    now includes function*. test262 14→13; pinned in test/generators.js. ·
   switch-case/dflt-decl-onlystrict x2 (undefined) ·
   break/continue line-terminators x2 (CR between keyword and label) ·
   for-in scope-body-lex-close/open/var-none x3 (per-iteration lex scope) ·
