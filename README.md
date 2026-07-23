@@ -16,11 +16,7 @@ dist(3, 4) // 5
 
 ## Why?
 
-Keep one codebase. JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and compiles its numeric core ahead-of-time to WASM: no runtime, no GC, no legacy, no spec creep, near-native performance with unlocked SIMD. **Valid JZ is valid JS** — your existing JS tests remain the compiler's tests, and removing JZ leaves the same source and fallback intact.
-
-Rust, Go, and C are excellent when a rewrite and a second toolchain make sense. JZ is for the hot path you want to keep in JavaScript — one source, one test suite, a JS fallback, and comparable WASM or native performance.
-
-The performance bar is uncompromising: JZ leads V8 and AssemblyScript by geomean on the covered corpus, but the release gate is stricter than an average — JZ must be the fastest WASM on every case. Missing target coverage and every rival win remain visible and suppress broader claims until closed.
+JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) and **compiles JS ahead-of-time to WASM**: no runtime, no GC, no legacy, no spec creep, near-native perf with unlocked SIMD. **Valid JZ is valid JS** – run and test as JS, compile to WASM.
 
 | Good for                     | Not for                   |
 |------------------------------|---------------------------|
