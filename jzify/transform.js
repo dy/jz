@@ -556,6 +556,23 @@ export function createTransform(opts) {
         return transform(_gen.desugarForOfProtocol(head[1], head[2], body, names.genTemp))
       if (Array.isArray(head) && head[0] === ';')
         return ['for', [';', ...head.slice(1).map(s => s == null ? s : transform(s))], transform(body)]
+      // for-in with a DESTRUCTURING decl head (`for (let [x, y = d] in o)` —
+      // the KEY STRING destructures): bind the key to a temp and let the
+      // ordinary let-pattern lowering handle it at the body top. Patterns are
+      // jzify's job — prepare's for-in lowering synthesizes a raw
+      // `let PATTERN = key` that nothing downstream destructures ('x' is not
+      // in scope; test262 for-in scope-body-lex-*).
+      if (Array.isArray(head) && head[0] === 'in') {
+        const decl = head[1]
+        const isDecl = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const')
+        const pat = isDecl ? decl[1] : null
+        if (pat && isDestructurePat(pat)) {
+          const t = names.genTemp('fkp')
+          const bodyStmts = Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
+          return transform(['for', ['in', [decl[0], t], head[2]],
+            [';', [decl[0], ['=', pat, t]], ...bodyStmts]])
+        }
+      }
       return ['for', transform(head), transform(body)]
     },
 
