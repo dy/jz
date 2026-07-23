@@ -783,12 +783,22 @@ export default (ctx) => {
     const arrayLoad = (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], vi])
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()
-      inc('__is_str_key')
+      inc('__is_str_key', '__to_str')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${keyTmp}`, asF64(emit(idx))],
         ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
           ['then', dynLoad(objExpr, ['local.get', `$${keyTmp}`])],
-          ['else', numericLoad(['local.get', `$${keyTmp}`])]]], 'f64')
+          // Non-string key: a REAL number (f===f) is array/typed access — lean by
+          // design. Any OTHER box (undefined/null/bool: NaN-shaped, not a string
+          // ptr) takes ToPropertyKey: stringify → dyn read. The old two-way arm
+          // trunc_sat'd the box to index 0, so `prec[undefined]` READ SLOT 0 of
+          // whatever the receiver was — the wrong-hit that made subscript's
+          // isStmt(prec[hole]) truthy in the kernel (the literal-key shorthand
+          // method "Unclosed {" family — ledger 2026-07-22).
+          ['else', ['if', ['result', 'f64'],
+            ['f64.eq', ['local.get', `$${keyTmp}`], ['local.get', `$${keyTmp}`]],
+            ['then', numericLoad(['local.get', `$${keyTmp}`])],
+            ['else', dynLoad(objExpr, ['f64.reinterpret_i64', ['call', '$__to_str', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]]])]]]]], 'f64')
     }
     // Boxed object: string keys address the box, numeric keys address the inner array.
     if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {
