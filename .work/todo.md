@@ -6725,3 +6725,22 @@ user's README WIP). BATTERY 3066/0.
 STILL USER-BLOCKED (AUDIT-1 P0): watr publish (npm version/publish permission-
 gated) — needed to un-symlink determinism; jz reads resetNameUids optionally
 meanwhile.
+
+JSON SHAPED-PARSER KERNEL FAILURE CHARACTERIZED (2026-07-23) — the audit's
+test:wasm red + json kernel-leg 2: for ANY stable-let shaped source
+(`let SRC='{...}'; JSON.parse(SRC)`), the KERNEL COMPILE throws a value-lost
+error (host sees "Error: 0" via decodeThrown — the thrown jz value decodes to
+number 0, i.e. the error MESSAGE itself evaporates in-kernel). BC12/BC13
+differential proved: shapeStrs population + lookup IDENTICAL native/kernel;
+emitJsonShapeParser RETURNS __jp_shape_0 in-kernel with identical parsed
+shape — so the throw is POST-EMITTER: the generated shape-parser stdlib WAT
+being parsed by the in-kernel wat parser (suspect i64 hash-constant
+formatting — the nanPrefixMaskHex signed-i64 class), or a later err() whose
+template-built message miscompiles to 0. Discriminator matrix: no-read /
+flat {"bias":11} / every field-read variant ALL throw — source shape
+irrelevant once the stable-let path engages. NEXT: instrument the kernel's
+assemble/parse of ctx.core.stdlib entries (dump the generated __jp_shape_0
+TEXT in-kernel vs native — a diff names the bad byte), or wrap the throw site
+with a message-preserving channel. Probes: scratchpad/{bc12,bc13,shp,shp2}.mjs.
+Two additional latent bugs implied: (a) some in-kernel err() loses its
+message (throws 0), (b) possibly signed-i64 hex in generated WAT.
