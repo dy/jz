@@ -3,7 +3,7 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, collectParamNames, extractParams, REFS_IN_EXPR, refsName, T, isLiteralStr } from '../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, collectParamNames, extractParams, REFS_IN_EXPR, refsName, T, isLiteralStr } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { staticObjectProps, staticArrayElems, staticIndexKey, staticValue, NO_VALUE } from '../static.js'
 import { exprType } from '../type.js'
@@ -495,7 +495,7 @@ export function scanSliceViews(body) {
  * corrupts memory — so any unrecognized use disqualifies. (Growing an INNER array,
  * `a[0].push(x)`, never relocates `a` itself, so `a` stays eligible — see safeReads.)
  */
-const grownOrEscapes = (op) => ASSIGN_OPS.has(op) || op === '++' || op === '--' || op === 'delete'
+const grownOrEscapes = (op) => MUTATE_OPS.has(op) || op === 'delete'
 export function safeReads(node, name) {
   if (typeof node === 'string') return node !== name            // bare value use → escape
   if (!Array.isArray(node)) return true

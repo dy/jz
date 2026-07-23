@@ -2,7 +2,7 @@
  * Whole-program fact collection — dyn keys, call sites, schema slots.
  * @module program-facts
  */
-import { commaList, isFuncRef, isLiteralStr, ASSIGN_OPS } from '../ast.js'
+import { commaList, isFuncRef, isLiteralStr, ASSIGN_OPS, MUTATE_OPS } from '../ast.js'
 import { ctx, err } from '../ctx.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import { valTypeOf } from '../kind.js'
@@ -13,11 +13,9 @@ import { ctorFromElemAux } from '../../layout.js'
 import { analyzeBody } from './analyze.js'
 import { safeReads } from './analyze-scans.js'
 
-// Assignment-shaped ops whose first arg, when a `.`/`?.` member node, is a
-// PROPERTY WRITE — feeds `writtenProps` (any prop name ever written through
-// ANY receiver, including expression receivers like `m.get(k).n++`).
-const PROP_WRITE_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=',
-  '&=', '|=', '^=', '<<=', '>>=', '>>>=', '&&=', '||=', '??=', '++', '--'])
+// MUTATE_OPS (ast.js) is the property-write op set: any write op whose first
+// arg is a `.`/`?.` member node feeds `writtenProps` (any prop name ever
+// written through ANY receiver, incl. expression receivers like `m.get(k).n++`).
 
 // Array methods that can change length or relocate the payload (grow copies to a
 // new arena block and forwards the header). sort/reverse/fill/copyWithin mutate
@@ -76,7 +74,7 @@ export function observeNodeFacts(node, f) {
       }
     }
   }
-  if (PROP_WRITE_OPS.has(op) && Array.isArray(args[0])) {
+  if (MUTATE_OPS.has(op) && Array.isArray(args[0])) {
     if (args[0][0] === '[]') {
       let root = args[0][1]
       while (Array.isArray(root) && root[0] === '[]') root = root[1]
@@ -84,7 +82,7 @@ export function observeNodeFacts(node, f) {
     } else if ((args[0][0] === '.' || args[0][0] === '?.') && args[0][2] === 'length' && typeof args[0][1] === 'string')
       f.arrResized.add(args[0][1])
   }
-  if (PROP_WRITE_OPS.has(op) && Array.isArray(args[0]) &&
+  if (MUTATE_OPS.has(op) && Array.isArray(args[0]) &&
       (args[0][0] === '.' || args[0][0] === '?.') && typeof args[0][2] === 'string') {
     f.writtenProps.add(args[0][2])
     // Per-receiver literal-key writes: a key OUTSIDE the receiver's schema lands
@@ -101,7 +99,7 @@ export function observeNodeFacts(node, f) {
   }
   // Bracket form of the same: `o['zz'] = v` (isLiteralStr keeps it out of
   // dynWriteVars, so it must be recorded here or it's invisible to every gate).
-  if (PROP_WRITE_OPS.has(op) && Array.isArray(args[0]) && args[0][0] === '[]' &&
+  if (MUTATE_OPS.has(op) && Array.isArray(args[0]) && args[0][0] === '[]' &&
       isLiteralStr(args[0][2]) && typeof args[0][1] === 'string') {
     let s = f.literalWriteKeys.get(args[0][1])
     if (!s) f.literalWriteKeys.set(args[0][1], s = new Set())
@@ -113,7 +111,7 @@ export function observeNodeFacts(node, f) {
   // counts reads) so for-in / Object.keys key pooling can trust the static schema
   // for a receiver that is only computed-READ. (`isLiteralStr` excludes literal
   // string keys, which place in fixed schema slots.)
-  if (PROP_WRITE_OPS.has(op) && Array.isArray(args[0]) && args[0][0] === '[]') {
+  if (MUTATE_OPS.has(op) && Array.isArray(args[0]) && args[0][0] === '[]') {
     const [, wobj, widx] = args[0]
     // Flag the ROOT array var. `o[k]=v` → o; a NESTED write `o[i][j]=v` mutates an
     // element of o, so walk the receiver chain to its root identifier and flag that
@@ -579,7 +577,7 @@ export function observeProgramSlots(ast, opts) {
         for (let i = 1; i < n.length; i++)
           if (Array.isArray(n[i]) && n[i][0] === '=') note(n[i][1], n[i][2])
       } else if (n[0] === '=' && typeof n[1] === 'string') note(n[1], n[2])
-      else if ((ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') && typeof n[1] === 'string') out.set(n[1], null)
+      else if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') out.set(n[1], null)
       for (let i = 1; i < n.length; i++) walk(n[i])
     }
     walk(body)
@@ -622,7 +620,7 @@ export function observeProgramSlots(ast, opts) {
           observeConstInt(sid, i, intLiteral(value) ?? (typeof value === 'string' && typeof intRefs?.get(value) === 'number' ? intRefs.get(value) : null))
         }
       }
-    } else if (PROP_WRITE_OPS.has(op) && Array.isArray(node[1]) &&
+    } else if (MUTATE_OPS.has(op) && Array.isArray(node[1]) &&
         (node[1][0] === '.' || node[1][0] === '?.') && typeof node[1][1] === 'string' && typeof node[1][2] === 'string') {
       // Resolvable `.prop` writes: observe the written kind when it's
       // independently provable (writeVT), hard-poison otherwise — a slot's
@@ -821,7 +819,7 @@ export function collectSlotWriteHazards(ast, opts) {
   const visit = (node) => {
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (PROP_WRITE_OPS.has(op) && Array.isArray(node[1])) {
+    if (MUTATE_OPS.has(op) && Array.isArray(node[1])) {
       const lhs = node[1]
       if ((lhs[0] === '.' || lhs[0] === '?.') && typeof lhs[2] === 'string') propWrite(lhs[1], lhs[2])
       else if (lhs[0] === '[]') keyedWrite(lhs[1], lhs[2])
@@ -1024,7 +1022,7 @@ export function analyzeParamNeverGrown(paramReps) {
             if (maybeArray(c[1])) { dirty = true; return }
           } else if (!_NG_SAFE_METHODS.has(c[2])) { dirty = true; return }
         } else { dirty = true; return }   // computed callee — could be any user closure
-      } else if (PROP_WRITE_OPS.has(op) && Array.isArray(n[1])) {
+      } else if (MUTATE_OPS.has(op) && Array.isArray(n[1])) {
         const lhs = n[1]
         if ((lhs[0] === '.' || lhs[0] === '?.') && lhs[2] === 'length') { dirty = true; return }
         if (lhs[0] === '[]' && !isLiteralStr(lhs[2]) && maybeArray(lhs[1])) { dirty = true; return }
@@ -1173,7 +1171,7 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
         const sid = ctx.schema.register(parsed.names)
         for (let i = 0; i < parsed.values.length; i++) observeSlot(sid, i, isInt(parsed.values[i]))
       }
-    } else if (PROP_WRITE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '.') {
+    } else if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '.') {
       const [, obj, prop] = node[1]
       if (typeof obj === 'string') {
         // Same precise-path resolution as ctx.schema.slotVT — no structural

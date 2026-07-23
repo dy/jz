@@ -10,7 +10,7 @@
  *
  * @module type
  */
-import { isI32, isReassigned, ASSIGN_OPS as WRITE_OPS } from './ast.js'
+import { isI32, isReassigned, cloneNode, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS } from './ast.js'
 import { ctx } from './ctx.js'
 import { FITS_I32_MAX } from './widen.js'
 import { VAL, lookupValType } from './reps.js'
@@ -702,7 +702,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
   const cursorWrites = new Map()   // name → { node, slope } | null (disqualified)
   const collectCW = (n) => {
     if (!Array.isArray(n)) return
-    if ((ASSIGN_OPS_V.has(n[0]) || n[0] === '++' || n[0] === '--') && typeof n[1] === 'string') {
+    if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') {
       const name = n[1]
       const L = n[0] === '++' ? 1
         : n[0] === '--' ? null
@@ -764,7 +764,6 @@ export function versionableTypedNest(init, cond, step, body, locals) {
   keep.cursors = cursors
   return keep
 }
-const ASSIGN_OPS_V = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '**='])
 
 /** Sentinel returned by `ternaryCtorOfRhs` when ternary branches resolve to
  *  different typed-array ctors — caller should drop any cached entry rather
@@ -1062,7 +1061,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
   const collectClosureWrites = (n, inClosure) => {
     if (!Array.isArray(n)) return
     const into = inClosure || n[0] === '=>'
-    if (into && (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--')) {
+    if (into && MUTATE_OPS.has(n[0])) {
       if (typeof n[1] === 'string') closureWrites.add(n[1])
       // member writes (`o[i]=…`, `o.p=…`) rebind no name; only PATTERN targets do
       else if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.')
@@ -1180,7 +1179,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
   // ACCESS-FREE expression the evaluator folds to a singleton (`src.length | 0`).
   const pureExpr = (e) => {
     if (!Array.isArray(e)) return true
-    if (e[0] === '[]' || e[0] === '()' || e[0] === 'new' || e[0] === '?:' || e[0] === '=' || ASSIGN_OPS.has(e[0])) return false
+    if (e[0] === '[]' || e[0] === '()' || e[0] === 'new' || e[0] === '?:' || e[0] === '=' || WRITE_OPS.has(e[0])) return false
     for (let k = 1; k < e.length; k++) if (!pureExpr(e[k])) return false
     return true
   }
@@ -1240,7 +1239,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
     : (() => { const r = refine(c2, false); return r ? [r] : [] })()
   const killAssigned = (n) => {
     if (!Array.isArray(n)) return   // descend into closures too — capture-writes stay dead
-    if (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') {
+    if (MUTATE_OPS.has(n[0])) {
       if (typeof n[1] === 'string') env.set(n[1], null)
       else if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.') {
         const s = new Set(); collectNames(n[1], s); for (const x of s) env.set(x, null)
@@ -1409,7 +1408,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
       setEnv(n[1], ev(n[2]))
       return
     }
-    if (ASSIGN_OPS.has(op) || op === '++' || op === '--') {
+    if (MUTATE_OPS.has(op)) {
       if (typeof n[1] === 'string' && symEnv.get(n[1])?.incNode === n) symEnv.delete(n[1])
       if (typeof n[1] === 'string' && coupledEnv.get(n[1])?.incNode === n) coupledEnv.delete(n[1])
       for (let k = 2; k < n.length; k++) visit(n[k])
@@ -1522,7 +1521,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
           if (!Array.isArray(n)) return 0
           const op2 = n[0]
           if (op2 === '=>') return closureWrites.has(name) ? null : 0
-          if ((ASSIGN_OPS.has(op2) || op2 === '++' || op2 === '--') && n[1] === name) return delta(n)
+          if (MUTATE_OPS.has(op2) && n[1] === name) return delta(n)
           if (op2 === 'if') {
             const c = eff(n[1]), a = eff(n[2]), b = n.length > 3 ? eff(n[3]) : 0
             return c == null || a == null || b == null ? null : c + Math.max(a, b)
@@ -1610,7 +1609,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
           if (!Array.isArray(n)) return xs
           const op2 = n[0]
           if (op2 === '=>') return isReassigned(n, cursor) || isReassigned(n, credit) ? null : xs
-          if ((ASSIGN_OPS.has(op2) || op2 === '++' || op2 === '--') && (n[1] === cursor || n[1] === credit)) {
+          if (MUTATE_OPS.has(op2) && (n[1] === cursor || n[1] === credit)) {
             // Evaluate embedded lhs/rhs effects first only when they are not the
             // direct recurrence itself; accepted recurrences contain no calls.
             if (n[1] === cursor) return addC(xs, directDelta(n, cursor))
@@ -1666,7 +1665,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
           let count = 0
           const walk = (x) => {
             if (!Array.isArray(x)) return
-            if (ASSIGN_OPS.has(x[0]) || x[0] === '++' || x[0] === '--') {
+            if (MUTATE_OPS.has(x[0])) {
               if (x[1] === name) count++
               else if (Array.isArray(x[1]) && x[1][0] !== '[]' && x[1][0] !== '.' && x[1][0] !== '?.') {
                 const names = new Set(); collectNames(x[1], names)
@@ -1697,7 +1696,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
         const changedNames = new Set()
         const collectChanged = (x) => {
           if (!Array.isArray(x) || x[0] === '=>') return
-          if ((ASSIGN_OPS.has(x[0]) || x[0] === '++' || x[0] === '--') && typeof x[1] === 'string') changedNames.add(x[1])
+          if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string') changedNames.add(x[1])
           for (let j = 1; j < x.length; j++) collectChanged(x[j])
         }
         collectChanged(lbody)
@@ -1806,7 +1805,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
           if (!e0 || e0[0] < 0 || e0[1] > M) continue
           let writes = 0
           const cw = (x) => { if (!Array.isArray(x)) return
-            if ((ASSIGN_OPS.has(x[0]) || x[0] === '++' || x[0] === '--') && x[1] === a2[1]) writes++
+            if (MUTATE_OPS.has(x[0]) && x[1] === a2[1]) writes++
             for (let j = 1; j < x.length; j++) cw(x[j]) }
           cw(wbody)
           if (writes === 1) wraps.push([a2[1], [0, M]])
@@ -1830,7 +1829,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
           // the pair must be the only writes (2 exact: the add and the reset)
           let writes = 0
           const cw = (x) => { if (!Array.isArray(x)) return
-            if ((ASSIGN_OPS.has(x[0]) || x[0] === '++' || x[0] === '--') && x[1] === nm) writes++
+            if (MUTATE_OPS.has(x[0]) && x[1] === nm) writes++
             for (let j = 1; j < x.length; j++) cw(x[j]) }
           cw(wbody)
           if (writes !== 2) continue
@@ -1956,7 +1955,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
 function ivMonotoneInc(node, iv) {
   if (!Array.isArray(node)) return true
   if ((node[0] === '++' || node[0] === '--') && node[1] === iv) return node[0] === '++'
-  if (ASSIGN_OPS.has(node[0]) && node[1] === iv) {
+  if (WRITE_OPS.has(node[0]) && node[1] === iv) {
     if (node[0] === '+=' && intLiteralValue(node[2]) >= 1) return true
     if (node[0] === '=') {
       let rhs = node[2]
@@ -1969,7 +1968,6 @@ function ivMonotoneInc(node, iv) {
   for (let k = 1; k < node.length; k++) if (!ivMonotoneInc(node[k], iv)) return false
   return true
 }
-const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '**='])
 const NARROW_ELEM_RANGE = {
   'new.Int8Array': [-128, 127], 'new.Uint8Array': [0, 255], 'new.Uint8ClampedArray': [0, 255],
   'new.Int16Array': [-32768, 32767], 'new.Uint16Array': [0, 65535],
@@ -2063,7 +2061,7 @@ export function cloneWithSubst(node, subst, rename = null) {
   }
   const ren = rename instanceof Map ? rename : new Map()
   if (typeof node === 'string') {
-    if (subst.has(node)) return clonePlain(subst.get(node))
+    if (subst.has(node)) return cloneNode(subst.get(node))
     return ren.get(node) || node
   }
   if (!Array.isArray(node)) return node
@@ -2092,7 +2090,6 @@ function stampClonedIdxProof(node, out) {
   if (owner != null) ctx.types.assumedBounds.set(idxKey(out[1], out[2]), owner)
 }
 
-const clonePlain = node => Array.isArray(node) ? node.map(clonePlain) : node
 
 export function containsKnownTypedArrayIndex(body) {
   if (!Array.isArray(body)) return false

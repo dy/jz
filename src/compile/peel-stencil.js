@@ -19,7 +19,7 @@
 // y-loop) match. Number literals are sparse-array holes (`n[0]` is undefined), so
 // literal tests use `== null`; created literals are bare numbers.
 
-import { ASSIGN_OPS } from '../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS } from '../ast.js'
 import { litN, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks, freshLoopId, loopHazards } from './loop-model.js'
 
 const isVar = (n) => typeof n === 'string'
@@ -103,8 +103,7 @@ function countWrites(node, v) {
   let n = 0
   const visit = (x) => {
     if (!Array.isArray(x)) return
-    if ((x[0] === '++' || x[0] === '--') && x[1] === v) n++
-    else if (ASSIGN_OPS.has(x[0]) && x[1] === v) n++
+    if (MUTATE_OPS.has(x[0]) && x[1] === v) n++
     x.forEach(visit)
   }
   visit(node)
@@ -134,7 +133,7 @@ function ivWrittenInNestedLoop(body, iv) {
   let found = false
   const visit = (n, inLoop) => {
     if (!Array.isArray(n)) return
-    if (inLoop && (((n[0] === '++' || n[0] === '--') && n[1] === iv) || (ASSIGN_OPS.has(n[0]) && n[1] === iv))) found = true
+    if (inLoop && (MUTATE_OPS.has(n[0]) && n[1] === iv)) found = true
     const deeper = inLoop || n[0] === 'while' || n[0] === 'for'
     n.forEach(c => visit(c, deeper))
   }

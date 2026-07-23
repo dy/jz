@@ -25,7 +25,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  some, T, stmtList, refsName, REFS_IN_EXPR, ASSIGN_OPS, isReassigned, hasControlTransfer,
+  some, T, stmtList, refsName, REFS_IN_EXPR, ASSIGN_OPS, MUTATE_OPS, isReassigned, hasControlTransfer,
 } from '../../ast.js'
 import {
   intLiteralValue, nonNegIntLiteral, constIntExpr, staticObjectProps, staticPropertyKey,
@@ -76,27 +76,26 @@ const scalarObjectProps = (expr) => {
   return props
 }
 
-const ASSIGN_TARGET_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
 
 // `name.length = n` (resize) / `name.prop op= v` / `++name.length`: a member
 // write on the binding can't be modeled by fixed scalar slots — the fold would
 // turn the assignment TARGET into a literal (`[null, len] = v`).
 const isMemberWriteTarget = (op, node, name) =>
-  (ASSIGN_TARGET_OPS.has(op) || op === '++' || op === '--')
+  MUTATE_OPS.has(op)
   && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') && node[1][1] === name
 
 const safeScalarArrayUse = (node, name, len, parentOp = null) => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node)) return true
   const op = node[0]
-  if (ASSIGN_TARGET_OPS.has(op) && node[1] === name) return false
+  if (ASSIGN_OPS.has(op) && node[1] === name) return false
   if (isMemberWriteTarget(op, node, name)) return false
   if (isDeclOp(op) && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
   if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
   // Element write `name[idx] (op)= v` / `name[idx]++`: an out-of-bounds index
   // grows the array (sparse-array semantics), which the fixed scalar slot set
   // can't model — reject unless idx is a literal within the literal's bounds.
-  if ((ASSIGN_TARGET_OPS.has(op) || op === '++' || op === '--')
+  if (MUTATE_OPS.has(op)
       && Array.isArray(node[1]) && node[1][0] === '[]' && node[1][1] === name) {
     const idx = constIntExpr(node[1][2])
     if (idx == null || idx < 0 || idx >= len) return false
@@ -141,7 +140,7 @@ const safeScalarObjectUse = (node, name, keys) => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node)) return true
   const op = node[0]
-  if (ASSIGN_TARGET_OPS.has(op) && node[1] === name) return false
+  if (ASSIGN_OPS.has(op) && node[1] === name) return false
   if (isDeclOp(op) && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
   if ((op === '.' || op === '?.') && node[1] === name) return keys.has(node[2])
   if (op === '[]' && node[1] === name) {
@@ -188,7 +187,7 @@ const safeScalarTypedArrayUse = (node, name, len, coerce = '') => {
   if (op === '[]' && node[1] === name) return typedArraySlotIndex(node[2], len) != null
   if ((op === '++' || op === '--') && Array.isArray(node[1]) && node[1][0] === '[]' && node[1][1] === name)
     return !coerce && typedArraySlotIndex(node[1][2], len) != null
-  if (ASSIGN_TARGET_OPS.has(op)) {
+  if (ASSIGN_OPS.has(op)) {
     if (node[1] === name) return false
     if (Array.isArray(node[1]) && node[1][0] === '[]' && node[1][1] === name) {
       if (coerce && op !== '=') return false
@@ -242,7 +241,7 @@ const rewriteScalarTypedArrayUses = (node, arrays) => {
     const slot = slotFor(node[1][2], arrays.get(node[1][1]))
     return slot ? [op, slot] : node
   }
-  if (ASSIGN_TARGET_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]' && arrays.has(node[1][1])) {
+  if (ASSIGN_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]' && arrays.has(node[1][1])) {
     const entry = arrays.get(node[1][1])
     const slot = slotFor(node[1][2], entry)
     if (!slot) return node
@@ -274,7 +273,7 @@ const collectScalarTypedArrayWrites = (node, name, len, out = new Set()) => {
     return false
   }
   if ((op === '++' || op === '--') && addSlot(node[1])) return out
-  if (ASSIGN_TARGET_OPS.has(op) && addSlot(node[1])) {
+  if (ASSIGN_OPS.has(op) && addSlot(node[1])) {
     for (let i = 2; i < node.length; i++) collectScalarTypedArrayWrites(node[i], name, len, out)
     return out
   }
@@ -287,7 +286,7 @@ const hasScalarTypedArrayRead = (node, name) => {
   const op = node[0]
   const isTarget = target => Array.isArray(target) && target[0] === '[]' && target[1] === name
   if ((op === '++' || op === '--') && isTarget(node[1])) return true
-  if (ASSIGN_TARGET_OPS.has(op)) {
+  if (ASSIGN_OPS.has(op)) {
     if (isTarget(node[1])) {
       if (op !== '=') return true
       for (let i = 2; i < node.length; i++) if (hasScalarTypedArrayRead(node[i], name)) return true
@@ -750,7 +749,7 @@ function scalarizeObjectLiterals(node, escapes) {
 // scalarizers can't do this: the decl lives at module scope and may be read from
 // several function bodies, so the check must span the whole program.
 
-const ASSIGN_OR_UPDATE = (op) => ASSIGN_TARGET_OPS.has(op) || op === '++' || op === '--'
+const ASSIGN_OR_UPDATE = (op) => MUTATE_OPS.has(op)
 // Module-scope binding ops. `var` survives to compile at module scope (jzify only
 // lowers it to `let` inside functions), so fold it too — the reassignment guard
 // below keeps a re-bound `var` heap-backed.
@@ -1111,7 +1110,7 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet, valTypes)
 
   // Member write target `name.length = n` / `++name.length` — resize is an
   // ARRAY-only op (TYPED is fixed-size); disqualify.
-  if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') &&
+  if (MUTATE_OPS.has(op) &&
       Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
       typeof node[1][1] === 'string' && candidates.has(node[1][1])) {
     disqualified.add(node[1][1])

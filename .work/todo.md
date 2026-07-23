@@ -6661,3 +6661,24 @@ loose == (undefined→'null', silently parses) instead of === (undefined→
 'undefined' → SyntaxError per spec). One-token fix in module/json.js
 head-coercion + spec pin in test/json.js (incl. null-still-parses).
 Battery 3061/0.
+
+STAGE-5 DUPLICATION SWEEP LANDED (2026-07-23) — the architecture plan's
+LAST item. Canonical MUTATE_OPS (ast.js: ASSIGN_OPS ∪ {++,--}); deleted 7
+per-file assignment-op sets, THREE of which had silently drifted:
+plan/literals ASSIGN_TARGET_OPS and compile/index PARAM_REASSIGN_OPS were
+missing '**=', type.js's two locals were missing '||= &&= ??='. emit's
+SIDE_EFFECT_OPS now derived from MUTATE_OPS; the `ASSIGN_OPS.has(op) ||
+op==='++' || op==='--'` union rewritten to MUTATE_OPS across 8 files;
+type.js clonePlain → ast.js cloneNode. Left alone (semantically distinct,
+refactor-not-one-line-deletion per the plan's own bar): peel-stencil
+countWrites vs analyze writeCount (different decl-initializer semantics),
+plan/common clonePlain (plan-local), ir.js cloneIR (no .type carry,
+layering), kind-traits COMPOUND_NUMERIC_OPS (deliberately no '+='),
+advise SIMD_REDUCE_OPS (reduce semantics). BATTERY 3061/0.
+
+ARCHITECTURE PLAN: ALL STAGES COMPLETE (0-5). Perf goals: aggregate jz
+1.00× leads every lane (C 1.88× / Rust 1.97× / AS 2.06× / V8 2.17×,
+native C 1.11×), first-WASM per case attained. Remaining work is
+LONG-TAIL kernel parity (json shaped-parser 2 · bigint 3 · speculate 1 ·
+preeval 2 · pow/fifthroot 5 · async 1) and research-tier perf polish
+(sdf, ulam/raymarcher examples) — tracked, none plan-gating.

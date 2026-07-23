@@ -23,7 +23,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  callArgs, setCallArgs, some, blockStmts, T, refsName, refsAny, REFS_IN_EXPR,
+  callArgs, setCallArgs, some, blockStmts, T, refsName, refsAny, REFS_IN_EXPR, MUTATE_OPS,
   extractParams,
 } from '../../ast.js'
 import { cloneWithSubst } from '../../type.js'
@@ -339,10 +339,9 @@ const SHORT_CIRCUIT = new Set(['?:', '?', '&&', '||', '??'])
 // operand, not even the base, is hoisted out) to avoid colliding with that desugaring.
 const OPTIONAL_CHAIN = new Set(['?.', '?.[]', '?.()'])
 // Mutating expression operators — evaluating one is an observable side effect.
-const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '**=', '&&=', '||=', '??=', '++', '--'])
 // Does evaluating this expression have an observable side effect (a call or assignment)?
 const containsEffect = (n) => Array.isArray(n) && n[0] !== '=>' &&
-  ((n[0] === '()' && !pureSIMDCall(n)) || n[0] === '?.()' || ASSIGN_OPS.has(n[0]) || n.slice(1).some(containsEffect))
+  ((n[0] === '()' && !pureSIMDCall(n)) || n[0] === '?.()' || MUTATE_OPS.has(n[0]) || n.slice(1).some(containsEffect))
 
 // Hoist an unconditionally-evaluated NESTED call to a block-body candidate out to a
 // preceding `const __h = call(...)` temp. inlineInStmt folds block-body candidates only at
@@ -380,7 +379,7 @@ const hoistNestedCalls = (body, blockNames) => {
     if (SHORT_CIRCUIT.has(n[0]))
       return [n[0], hExpr(n[1], pre, cond, eff), ...n.slice(2).map(c => hExpr(c, pre, true, eff))]
     const out = [n[0], ...n.slice(1).map(c => hExpr(c, pre, cond, eff))]
-    if ((n[0] === '()' && !pureSIMDCall(n)) || ASSIGN_OPS.has(n[0])) eff.seen = true  // an effectful call/assign left in place is an effect
+    if ((n[0] === '()' && !pureSIMDCall(n)) || MUTATE_OPS.has(n[0])) eff.seen = true  // an effectful call/assign left in place is an effect
     return out
   }
   // A RHS that is DIRECTLY a candidate call is already folded by inlineInStmt's

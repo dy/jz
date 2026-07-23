@@ -31,7 +31,7 @@
  * @module prepare
  */
 
-import { handlerArgs, refsName, ASSIGN_OPS, JZ_NULL, JZ_UNDEF, TYPEOF } from '../ast.js'
+import { handlerArgs, refsName, ASSIGN_OPS, MUTATE_OPS, JZ_NULL, JZ_UNDEF, TYPEOF } from '../ast.js'
 import { ctx, err, derive, emitArity, declGlobal } from '../ctx.js'
 import { T } from '../ast.js'
 import { extractParams, collectParamNames, classifyParam } from '../ast.js'
@@ -229,7 +229,7 @@ const boundSafeCalls = node => {
 const writesReceiver = (node, recv) => {
   if (!Array.isArray(node)) return false
   const op = node[0]
-  if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') &&
+  if (MUTATE_OPS.has(op) &&
       (node[1] === recv ||
        (Array.isArray(node[1]) && (node[1][0] === '[]' || node[1][0] === '.') && node[1][1] === recv)))
     return true
@@ -1125,7 +1125,7 @@ function prep(node) {
   // carries no storage — writing through it would silently target nothing.
   // Catch every write form (`=`, compound `+=`-family, `++`/`--`) here, ahead
   // of per-op handlers, so none of them need their own copy of this check.
-  if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && typeof args[0] === 'string') {
+  if (MUTATE_OPS.has(op) && typeof args[0] === 'string') {
     const aliasKey = builtinAliasKeyOf(args[0])
     if (aliasKey) err(`Cannot reassign '${args[0]}' — bound to builtin '${aliasKey}' via alias/destructuring; builtin-namespace bindings are compile-time only, not writable storage`)
     // Assignment to a const binding is a compile error (ES: runtime TypeError).

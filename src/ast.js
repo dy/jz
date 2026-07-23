@@ -76,12 +76,14 @@ export const isLeaf = n => Array.isArray(n) && (n[0] === 'local.get' || n[0] ===
 /** Assignment operators — shared across analyze, plan, emit, abi. */
 export const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
 
+/** Every op that writes its first operand: assignments plus ++/--. */
+export const MUTATE_OPS = new Set([...ASSIGN_OPS, '++', '--'])
+
 /** Detect whether `name` is written to (=, +=, ++, --, etc.) anywhere within `body`. */
 export function isReassigned(body, name) {
   if (!Array.isArray(body)) return false
   const op = body[0]
-  if (ASSIGN_OPS.has(op) && body[1] === name) return true
-  if ((op === '++' || op === '--') && body[1] === name) return true
+  if (MUTATE_OPS.has(op) && body[1] === name) return true
   if (op === 'let' || op === 'const') {
     for (let i = 1; i < body.length; i++) {
       const d = body[i]
@@ -109,7 +111,7 @@ export function firstRefKind(n, name) {
     const op = m[0]
     if (op === '=>') return condRef(m)                       // body runs at call time
     if (op === '=' && m[1] === name) return walk(m[2]) ?? 'write'   // rhs evaluates first
-    if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && m[1] === name) return 'read'
+    if (MUTATE_OPS.has(op) && m[1] === name) return 'read'
     if (op === 'let' || op === 'const') {
       for (let k = 1; k < m.length; k++) {
         const d = m[k]
@@ -214,7 +216,7 @@ export function constLiteralHoistable(body, name) {
 export function mutatesArrayLength(body, name) {
   if (!Array.isArray(body)) return false
   const op = body[0]
-  if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && body[1] === name) return true
+  if (MUTATE_OPS.has(op) && body[1] === name) return true
   // write through `name` (`name.x = …`, `name[i] = …` — index write may extend length)
   if (ASSIGN_OPS.has(op) && Array.isArray(body[1]) && (body[1][0] === '.' || body[1][0] === '[]') && body[1][1] === name) return true
   if (op === '()') {

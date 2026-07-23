@@ -28,7 +28,7 @@
 import parseWat from 'watr/parse'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal } from '../ctx.js'
 import { i64Hex } from '../../layout.js'
-import { T, isBlockBody, isReassigned, refsName, REFS_IN_EXPR, returnExprs } from '../ast.js'
+import { T, isBlockBody, isReassigned, refsName, REFS_IN_EXPR, returnExprs, MUTATE_OPS } from '../ast.js'
 import { valTypeOf } from '../kind.js'
 import { intLiteralValue } from '../static.js'
 import { intCertainMap, typedStaticLen } from '../type.js'
@@ -850,9 +850,7 @@ function seedLocalIntConsts(body) {
 // never loads the helper, has no pattern to match, and is left byte-for-byte
 // alone, preserving the minimal-bundle / golden-size guarantee.
 
-// `=`/`+=`/`++`/… targets — reassigning the param breaks the coerce-once premise.
-const PARAM_REASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=',
-  '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=', '++', '--'])
+// Reassigning the param breaks the coerce-once premise (any write op).
 // Binary ops that unconditionally ToNumber BOTH operands, so a bare param operand
 // is a pure numeric use. `+` is excluded (may concatenate); `===`/`==` are excluded
 // (they branch on type, never coerce a string operand to number).
@@ -943,7 +941,7 @@ function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof = true)
       if (!shadowed) { walk(node[1]); walk(node[2]) }   // defaults + body; param names aren't in `names`
       return
     }
-    if (PARAM_REASSIGN_OPS.has(op) && names.has(node[1])) { ok = false; return }
+    if (MUTATE_OPS.has(op) && names.has(node[1])) { ok = false; return }
     if (NUM_BIN_OPS.has(op) && node.length === 3) {     // numeric binary: operands are ToNumber'd
       numOperand(node[1]); numOperand(node[2])
       return

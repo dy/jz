@@ -24,7 +24,7 @@
 import {
   commaList, T, isBlockBody, isReassigned, mutatesArrayLength, isConstLiteral, constLiteralHoistable,
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
-  ASSIGN_OPS, firstRefKind, isLeaf,
+  ASSIGN_OPS, MUTATE_OPS, firstRefKind, isLeaf,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS } from '../ctx.js'
 import { i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR } from '../../layout.js'
@@ -2164,8 +2164,7 @@ const isCheapPureVal = (n) => {
 // condition is evaluated exactly once whether the lowering branches or selects (any trap fires the
 // same in both, the read order vs the pure value arm is immaterial), so it need only avoid MUTATING
 // state the value arm could read — i.e. be side-effect-free, not unconditionally-evaluable.
-const SIDE_EFFECT_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '>>=', '<<=',
-  '>>>=', '||=', '&&=', '??=', '++', '--', '()', '=>', 'throw', 'new', 'await', 'yield'])
+const SIDE_EFFECT_OPS = new Set([...MUTATE_OPS, '()', '=>', 'throw', 'new', 'await', 'yield'])
 const isSideEffectFree = (n) => {
   if (!Array.isArray(n)) return true
   if (typeof n[0] === 'string' && SIDE_EFFECT_OPS.has(n[0])) return false

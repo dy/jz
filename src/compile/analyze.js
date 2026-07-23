@@ -18,7 +18,7 @@
  * @module analyze
  */
 
-import { commaList, ASSIGN_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR } from '../ast.js'
+import { commaList, ASSIGN_OPS, MUTATE_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR } from '../ast.js'
 import { ctx, err } from '../ctx.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from '../kind.js'
@@ -1113,7 +1113,7 @@ export function analyzeValTypes(body) {
   function writeCount(node, name, n) {
     if (n > 1 || !Array.isArray(node)) return n
     const o = node[0]
-    if ((ASSIGN_OPS.has(o) || o === '++' || o === '--') && node[1] === name) n++
+    if (MUTATE_OPS.has(o) && node[1] === name) n++
     if (o === 'let' || o === 'const') {
       for (let i = 1; i < node.length && n <= 1; i++) {
         const d = node[i]
@@ -1672,7 +1672,7 @@ export function cseSafeLoadBases(body, locals, localReps) {
       if (op === '[]' && node[2] != null) walk(node[2], closured)
       return
     }
-    if (ASSIGN_OPS.has(op) || op === '++' || op === '--' || op === 'delete') {
+    if (MUTATE_OPS.has(op) || op === 'delete') {
       const t = node[1]                            // write target — X here disqualifies
       if (typeof t === 'string') { if (cand.has(t)) live.delete(t) }
       else if (Array.isArray(t) && (t[0] === '.' || t[0] === '?.' || t[0] === '[]') &&
@@ -1696,7 +1696,7 @@ export function cseSafeLoadBases(body, locals, localReps) {
   const scanStores = (node) => {
     if (!Array.isArray(node)) return
     const op = node[0]
-    if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && Array.isArray(node[1]) &&
+    if (MUTATE_OPS.has(op) && Array.isArray(node[1]) &&
         (node[1][0] === '.' || node[1][0] === '?.' || node[1][0] === '[]') &&
         typeof node[1][1] === 'string') {
       const k = kindOf(node[1][1])
@@ -2258,12 +2258,12 @@ export function analyzeUnionInline(funcFacts, programFacts) {
         // closure writes count too — a captured tag/mask local can change
         ;(function cw(m) {
           if (!Array.isArray(m)) return
-          if ((ASSIGN_OPS.has(m[0]) || m[0] === '++' || m[0] === '--') && typeof m[1] === 'string') assigned.add(m[1])
+          if (MUTATE_OPS.has(m[0]) && typeof m[1] === 'string') assigned.add(m[1])
           for (let i = 1; i < m.length; i++) cw(m[i])
         })(n)
         return
       }
-      if ((ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') && typeof n[1] === 'string') assigned.add(n[1])
+      if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') assigned.add(n[1])
       if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
         const d = n[i]
         if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
