@@ -38,8 +38,18 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
     a jz-RUNTIME error code (raw 0) firing inside WATR-IN-KERNEL during
     watOptimize, and needs stripmut+globals BOTH enabled (disabling either
     rescues; all-off ok) — a jz miscompile of the stripmut→globals const-
-    fold interaction executing in-kernel. Next: read watr stripmut/globals
-    for jz-gap idioms; probe via patched node_modules + rebuild.
+    fold interaction executing in-kernel. NARROWED FURTHER: native watr on
+    the KERNEL'S OWN pre-watr tree is fine (pure execution miscompile);
+    only the shape module trips pair-only (sum/math/str/constg clean);
+    the trigger global is __schema_tbl (the module's ONLY never-written
+    global — stripmut immutabilizes it, globals' pricing then clones its
+    read anchors and runs watr fold() on them IN-KERNEL; suspect fold's
+    i64/BigInt arithmetic hitting the kernel bigint carrier gap — would
+    UNIFY this with the bigint-kernel family). NEXT: extract __schema_tbl
+    read anchors from the pre-watr WAT, run them through a jz-compiled
+    fold harness natively (no kernel rebuild needed) to name the exact
+    miscompiled watr idiom. Probes: scratchpad/{wbisect3,wpair,wnative,
+    wglob2}.mjs.
     RELATED NATIVE FINDINGS: Error.message unwired (String(e) works,
     e.message undefined even unthrown); jz runtime errors throw raw numeric
     codes (JSON.parse('nope') throws number) — the message-evaporation
