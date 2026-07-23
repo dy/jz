@@ -34,10 +34,16 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
 * [ ] Bench refresh at HEAD → commit results.json + re-check claims gates
       (was 50 commits stale with 7 red rows predating the perf wave).
 * [ ] Kernel long-tail (each characterized in the archive):
-  * shaped-parser: kernel compile throws value-lost "0" on any stable-let
-    shape source; post-emitter (BC-proved: selection + emitJsonShapeParser
-    identical native/kernel). Next: diff generated __jp_shape WAT text.
-    Implies: some in-kernel err() loses its message (throws 0).
+  * shaped-parser: LOCALIZED (BC14 + host-side pass bisect): the throw is
+    a jz-RUNTIME error code (raw 0) firing inside WATR-IN-KERNEL during
+    watOptimize, and needs stripmut+globals BOTH enabled (disabling either
+    rescues; all-off ok) — a jz miscompile of the stripmut→globals const-
+    fold interaction executing in-kernel. Next: read watr stripmut/globals
+    for jz-gap idioms; probe via patched node_modules + rebuild.
+    RELATED NATIVE FINDINGS: Error.message unwired (String(e) works,
+    e.message undefined even unthrown); jz runtime errors throw raw numeric
+    codes (JSON.parse('nope') throws number) — the message-evaporation
+    mechanism.
   * bigint family (statements 2 + data 1): both-bigint bitwise ops falsely
     mix-rejected in-kernel (subnormal-carrier typeof heuristic).
   * speculate 1 (plan-field) · preeval 2 (rational carry) ·
