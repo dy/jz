@@ -1,3 +1,4 @@
+import { OPTF } from '../src/ctx.js'
 /**
  * TypedArray module — Float64Array, Float32Array, Int32Array, etc.
  * SIMD auto-vectorization for .map() on recognized patterns.
@@ -1462,7 +1463,7 @@ export default (ctx) => {
     const lenIR = () => ['i32.shr_u',
       ['i32.load', isView ? typedBase(emit(arr)) : ['i32.sub', typedBase(emit(arr)), ['i32.const', 8]]],
       ['i32.const', SHIFT[et]]]
-    if (!ctx.transform.optimize?.leanCheckedIdx ||
+    if (!(ctx.transform.optFlags & OPTF.leanCheckedIdx) ||
         typeof arr !== 'string' ||
         !ctx.func.current?.params?.some(p => p.name === arr) ||
         !ctx.func.body || isReassigned(ctx.func.body, arr)) return lenIR()
@@ -1607,7 +1608,7 @@ export default (ctx) => {
       // clamp, no select pair), guard misses yield undefined. ~6 ops/site
       // leaner than the branchless form below, whose only reason is keeping
       // SPEED-tier kernel bodies branch-free for the SIMD lift (off at -Os).
-      if (ctx.transform.optimize?.leanCheckedIdx) {
+      if ((ctx.transform.optFlags & OPTF.leanCheckedIdx)) {
         const ti = tempI32('tbi')
         const off = ['i32.add', typedDataAddr(emit(arr), isView),
           ['i32.shl', ['local.get', `$${ti}`], ['i32.const', SHIFT[et]]]]
@@ -1808,7 +1809,7 @@ export default (ctx) => {
         ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
     }
     if (isBigInt) {
-      if (void_ && ctx.transform.optimize?.leanCheckedIdx && pureStorable(valIR)) return typed(['block', ...pre,
+      if (void_ && (ctx.transform.optFlags & OPTF.leanCheckedIdx) && pureStorable(valIR)) return typed(['block', ...pre,
         guard(['i64.store', off, ['i64.reinterpret_f64', asF64(valIR)]])], 'void')
       const vt = temp('tw')
       return typed(void_ ? ['block', ...pre,
@@ -1830,7 +1831,7 @@ export default (ctx) => {
       // a no-__to_num program, so the sentinel canon IS full ToNumber there).
       const stored = toNumF64(val, valIR)
       if (void_) {
-        if (ctx.transform.optimize?.leanCheckedIdx && pureStorable(stored)) return typed(['block', ...pre,
+        if ((ctx.transform.optFlags & OPTF.leanCheckedIdx) && pureStorable(stored)) return typed(['block', ...pre,
           guard(['f64.store', off, asF64(stored)])], 'void')
         const vt = temp('tw')
         return typed(['block', ...pre,
@@ -1848,7 +1849,7 @@ export default (ctx) => {
         ['local.get', `$${vt}`]], 'f64')
     }
     if (et === 6) {
-      if (void_ && ctx.transform.optimize?.leanCheckedIdx && pureStorable(valIR)) return typed(['block', ...pre,
+      if (void_ && (ctx.transform.optFlags & OPTF.leanCheckedIdx) && pureStorable(valIR)) return typed(['block', ...pre,
         guard(['f32.store', off, ['f32.demote_f64', asF64(valIR)]])], 'void')
       const vt = temp('tw')
       return typed(void_ ? ['block', ...pre,
@@ -1894,7 +1895,7 @@ export default (ctx) => {
       // lean (-Os) widens "cheap" to any pure value (inline into the guard, no
       // temp); SPEED tiers keep the narrow form — the temp'd store is the shape
       // the SIMD widening/in-place recognizers pattern-match (battery-caught).
-      const cheap = ctx.transform.optimize?.leanCheckedIdx ? pureStorable(vi32)
+      const cheap = (ctx.transform.optFlags & OPTF.leanCheckedIdx) ? pureStorable(vi32)
         : Array.isArray(vi32) &&
           ((vi32[0] === 'local.get' && typeof vi32[1] === 'string') ||
            (vi32[0] === 'i32.const' && (typeof vi32[1] === 'number' || typeof vi32[1] === 'string')))

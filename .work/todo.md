@@ -80,11 +80,14 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
     biquad 1.01, sort 1.02, crc32 1.00, mandelbrot 1.01) vs the 0.94-0.98
     baseline. Margin loss accumulated over today's waves (kernel source
     grew: declared-guard Set ops in hot analyze walks, MUTATE_OPS spreads,
-    watr-tail — each small, sum visible). RECOVER: profile kernel warm
-    compile (bench-selfhost.mjs JZ_BENCH_WARM), find the hot delta —
-    suspect the per-assignment `declared` Set ops in analyzeValTypes/
-    analyzeBody walks (in-wasm hash cost); consider Set→precomputed check
-    or fusing into existing walk state. Fresh gate healthy: 0.768×.
+    watr-tail — each small, sum visible). RECOVERED 2026-07-23: root was the
+    named-flag conversion itself — 19 hot per-node `cfg?.flag` PROPERTY
+    PROBES on the spread-built ~84-key resolved cfg (slot-cheap on V8,
+    HASH-priced in-kernel; the asymmetry moved the ratio). FIX: OPTF/
+    optFlagsOf (ctx.js, cycle-free) — hot flags flattened to ONE i32
+    bitmask on ctx.transform.optFlags at setup; sites mask-test a fixed
+    slot. Warm gate 0.966x first round (from 1.007-1.046 all-rounds);
+    fresh 0.768x. Battery 3069/0.
 * [ ] Audit big-ticket (5–6): canonical LoopPlan (vectorizer consumes
       loop-model.js; 16 first-match recognizers → class dispatch);
       CompileSession + TargetProfile (59 ctx importers).

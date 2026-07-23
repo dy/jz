@@ -1,3 +1,4 @@
+import { OPTF } from '../src/ctx.js'
 /**
  * Core module — NaN-boxing, bump allocator, property dispatch.
  *
@@ -1133,7 +1134,7 @@ export default (ctx) => {
       // off routes reads here) never devirtualizes megamorphic prop reads.
       // A branch-versioned fallback is already dominated by a failed exact-sid
       // guard; rebuilding per-read schema tables there is dead overhead.
-      if (ctx.transform.optimize?.devirtDynProps && !ctx.func._schemaSpecSlow) {
+      if ((ctx.transform.optFlags & OPTF.devirtDynProps) && !ctx.func._schemaSpecSlow) {
         call.dvProp = prop
         call.dvObject = vt === VAL.OBJECT
       }
@@ -1155,7 +1156,7 @@ export default (ctx) => {
       // direct slot loads per schema, this call as the always-sound default arm.
       // Tagged here (not built) because schema.list is still growing while
       // function bodies emit; the pass runs after module init completes.
-      if (ctx.transform.optimize?.devirtDynProps && !ctx.func._schemaSpecSlow) {
+      if ((ctx.transform.optFlags & OPTF.devirtDynProps) && !ctx.func._schemaSpecSlow) {
         call.dvProp = prop
         call.dvObject = vt === VAL.OBJECT
       }

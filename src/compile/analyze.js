@@ -1,3 +1,4 @@
+import { OPTF } from '../ctx.js'
 /**
  * Pre-analysis passes — type inference, local analysis, capture detection.
  *
@@ -1198,7 +1199,7 @@ export function analyzeValTypes(body) {
         const dict = Array.isArray(a[2]) && a[2][0] === '{}' && a[2].length === 1 &&
           ctx.types.dynWriteVars?.has(a[1]) && !merged?.length
         const vt = dict ? VAL.HASH : valTypeOf(a[2])
-        const leanDict = dict && ctx.transform.optimize?.hashRmwFusion && leanDictUse(a[1])
+        const leanDict = dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(a[1])
         if (leanDict) {
           (ctx.func.leanHashLocals ??= new Set()).add(a[1])
           if (i32DictUse(a[1])) (ctx.func.i32HashLocals ??= new Set()).add(a[1])
@@ -1289,7 +1290,7 @@ export function analyzeValTypes(body) {
       const dict = Array.isArray(args[1]) && args[1][0] === '{}' && args[1].length === 1 &&
         ctx.types.dynWriteVars?.has(args[0]) && !merged?.length
       const vt = dict ? VAL.HASH : valTypeOf(args[1])
-      if (dict && ctx.transform.optimize?.hashRmwFusion && leanDictUse(args[0])) {
+      if (dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(args[0])) {
         (ctx.func.leanHashLocals ??= new Set()).add(args[0])
         if (i32DictUse(args[0])) (ctx.func.i32HashLocals ??= new Set()).add(args[0])
         const domain = dictDomain(args[0])

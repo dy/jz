@@ -471,6 +471,9 @@ export function reset(proto, globals, bridge) {
     optimize: null,     // resolved {watr, hoistPtrType, ...} config — set in index.js via resolveOptimize().
                         // Read by optimizeModule() (compile.js) and the post-watr pass (index.js).
                         // null is treated as level 2 (all on) for back-compat with internal callers.
+    optFlags: 0,        // hot per-node pass flags flattened to an i32 bitmask (optimize/index.js
+                        // OPTF/optFlagsOf) — set beside `optimize` at compile setup; emit paths
+                        // mask-test this fixed slot instead of property-probing the cfg per node.
     importMetaUrl: null, // compile-time URL for import.meta.url / import.meta.resolve static lowering.
     host: 'js',         // 'js' (default): allow `env.__ext_*` imports to be wired by the JS host at
                         // instantiation time. 'wasi': error at compile time if any `__ext_*` import
@@ -541,6 +544,23 @@ export function reset(proto, globals, bridge) {
  *   - `post-prepare`   : module + scope populated; func.list possibly empty.
  *   - `pre-emit`       : func.current set; locals Map present; rep maps live.
  *   - `post-compile`   : no transient temps leaked (func.uniq stable across calls). */
+
+// Hot per-node pass flags flattened to ONE i32 bitmask (ctx.transform.optFlags,
+// set beside `optimize` at compile setup). Emit-path sites test a fixed-schema
+// integer slot instead of a property read on the ~84-key resolved cfg — on the
+// self-host kernel the cfg is a spread-built dictionary, so each per-node
+// `cfg?.flag` read was a HASH probe; the same read is slot-cheap on V8, and
+// that asymmetry alone moved the warm self-host ratio. Lives here (not
+// optimize/index.js) so ir.js/module consumers stay cycle-free.
+export const OPTF = Object.freeze({
+  inlineToNum: 1, hashRmwFusion: 2, inplaceStore: 4, staticClosureEnv: 8,
+  devirtClosureTables: 16, devirtDynProps: 32, leanCheckedIdx: 64,
+})
+export const optFlagsOf = (cfg) => !cfg ? 0 :
+  (cfg.inlineToNum ? 1 : 0) | (cfg.hashRmwFusion ? 2 : 0) | (cfg.inplaceStore ? 4 : 0) |
+  (cfg.staticClosureEnv ? 8 : 0) | (cfg.devirtClosureTables ? 16 : 0) |
+  (cfg.devirtDynProps ? 32 : 0) | (cfg.leanCheckedIdx ? 64 : 0)
+
 export const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
 // Session wave W1 (stage 4): the lifecycle table above is an executable,

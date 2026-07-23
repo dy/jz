@@ -13,7 +13,7 @@
 import { parse } from '../src/parse.js'
 import { compile as watrCompile } from 'watr'
 import watrPrint from 'watr/print'
-import { ctx, reset, initWarnings } from '../src/ctx.js'
+import { ctx, reset, initWarnings, optFlagsOf } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { liftIIFEs } from '../src/prepare/lift-iife.js'
 import compileAst from '../src/compile/index.js'
@@ -73,6 +73,7 @@ function setupSelf(strict, optJSON, modulesJSON) {
   ctx.transform.jzify = jzify
   ctx.transform.parse = parse    // module bundling (prepareModule) parses imported sources — same injection native does
   ctx.transform.optimize = optJSON ? resolveOptimize(JSON.parse(optJSON)) : resolveOptimize(false)
+  ctx.transform.optFlags = optFlagsOf(ctx.transform.optimize)
   ctx.transform.strict = !!strict
   // Bundled-module sources (the native opts.modules channel, index.js:450):
   // marshalled as one JSON dict over the wasm ABI — prepare's import

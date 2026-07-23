@@ -51,7 +51,7 @@ import watOptimize from "watr/optimize";
 // import, not silently degrade (the pre-5.7.11 optional-property fallback
 // masked exactly that hole).
 import { resetNameUids } from "watr/optimize";
-import { ctx, reset, err, warn, initWarnings, assertCtxInvariants } from './src/ctx.js'
+import { ctx, reset, err, warn, initWarnings, assertCtxInvariants, optFlagsOf } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import { liftIIFEs } from './src/prepare/lift-iife.js'
 import { preEval } from './src/prepare/pre-eval.js'
@@ -481,6 +481,7 @@ const setupCtx = (code, opts) => {
   }
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
   ctx.transform.optimize = resolveOptimize(opts.optimize)
+  ctx.transform.optFlags = optFlagsOf(ctx.transform.optimize)
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
       if (name.startsWith('__ext_')) continue
