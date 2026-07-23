@@ -134,7 +134,15 @@ with 'a miscompile. Pass-count gating alone would miss this'):
   async-gen dstr dflt-ary-ptrn-elision-step-err x3 (expr/named/stmt) ·
   comma S11.14_A2.1_T2 (ReferenceError not thrown) ·
   instanceof S11.8.6_A2.1_T1 (({}) instanceof Object) ·
-  yield formal-parameters-after-reassignment-strict (memory OOB!) ·
+  yield formal-parameters-after-reassignment-strict (memory OOB!) —
+    PARTIALLY FIXED: generators/async/async* now share lowerArguments
+    (jzify/transform.js argsLowered at 7 sites, gated on usesArguments —
+    ungated broke async+2600 test262: functionBodyBlock rewrap disturbs
+    unrelated bodies). Simple nested repro passes; the RUNNER SHAPE still
+    OOBs: needs _run-arrow + (__sameValue + assert-fn-prop harness) + the
+    FULL test body (4 params, 5 next()s, .done reads). Repro pair banked:
+    scratchpad/y262f.mjs (fails) vs y262g.mjs (passes) — bisect the body
+    delta next. ·
   switch-case/dflt-decl-onlystrict x2 (undefined) ·
   break/continue line-terminators x2 (CR between keyword and label) ·
   for-in scope-body-lex-close/open/var-none x3 (per-iteration lex scope) ·

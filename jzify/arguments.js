@@ -6,7 +6,7 @@
 import { paramList } from '../src/ast.js'
 import { isDestructurePat, prependDecls } from './hoist-vars.js'
 
-function usesArguments(node) {
+export function usesArguments(node) {
   if (node === 'arguments') return true
   if (!Array.isArray(node)) return false
   if (node[0] === 'function') return false

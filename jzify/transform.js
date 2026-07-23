@@ -5,6 +5,7 @@
 
 import { warn } from '../src/ctx.js'
 import { JZ_BLOCK_OPS, LABEL_BODY_OPS, STMT_ONLY_OPS, paramList } from '../src/ast.js'
+import { usesArguments } from './arguments.js'
 import { isDestructurePat } from './hoist-vars.js'
 
 const ERROR_INSTANCEOF = new Set(['Error', 'TypeError', 'SyntaxError', 'RangeError', 'ReferenceError', 'URIError', 'EvalError'])
@@ -128,6 +129,14 @@ export function createTransform(opts) {
     return inner
   }
 
+  // Generators/async functions receive the SAME `arguments` lowering as plain
+  // functions — they previously bypassed it entirely, so `arguments[0] = x`
+  // inside `function*` survived to prepare as a bare unknown identifier and
+  // compiled into a wild dynamic write (test262 yield/formal-parameters-…:
+  // memory OOB instead of either the args-copy semantics or a clean error).
+  const argsLowered = (params, body) =>
+    usesArguments(body) ? lowerArguments(params, functionBodyBlock(body)) : [params, body]
+
   function transformScope(node) {
     if (!Array.isArray(node)) return transform(node)
 
@@ -135,11 +144,11 @@ export function createTransform(opts) {
 
     if (op === 'function' && args[0]) return hoistFnDecl(...args)
     if (op === 'function*' && args[0] && _gen)
-      return ['const', ['=', args[0], _gen.lowerGenerator(args[1], args[2])]]
+      return ['const', ['=', args[0], _gen.lowerGenerator(...argsLowered(args[1], args[2]))]]
     if (op === 'async' && Array.isArray(args[0]) && args[0][0] === 'function' && args[0][1] && _gen?.lowerAsync)
-      return ['const', ['=', args[0][1], transform(_gen.lowerAsync(args[0][2], args[0][3]))]]
+      return ['const', ['=', args[0][1], transform(_gen.lowerAsync(...argsLowered(args[0][2], args[0][3])))]]
     if (op === 'async' && Array.isArray(args[0]) && args[0][0] === 'function*' && args[0][1] && _gen?.lowerAsyncGen)
-      return ['const', ['=', args[0][1], transform(_gen.lowerAsyncGen(args[0][2], args[0][3]))]]
+      return ['const', ['=', args[0][1], transform(_gen.lowerAsyncGen(...argsLowered(args[0][2], args[0][3])))]]
     if (op === 'class' && args[0]) return ['let', ['=', args[0], lowerClass(...args)]]
     if (op === 'using') return lowerUsing(args, [])
 
@@ -152,19 +161,19 @@ export function createTransform(opts) {
           continue
         }
         if (Array.isArray(stmt) && stmt[0] === 'function*' && stmt[1] && _gen) {
-          hoisted.push(['const', ['=', stmt[1], _gen.lowerGenerator(stmt[2], stmt[3])]])
+          hoisted.push(['const', ['=', stmt[1], _gen.lowerGenerator(...argsLowered(stmt[2], stmt[3]))]])
           continue
         }
         // async function DECLARATION — hoists like any function declaration.
         if (Array.isArray(stmt) && stmt[0] === 'async' && Array.isArray(stmt[1]) &&
             stmt[1][0] === 'function' && stmt[1][1] && _gen?.lowerAsync) {
-          hoisted.push(['const', ['=', stmt[1][1], transform(_gen.lowerAsync(stmt[1][2], stmt[1][3]))]])
+          hoisted.push(['const', ['=', stmt[1][1], transform(_gen.lowerAsync(...argsLowered(stmt[1][2], stmt[1][3])))]])
           continue
         }
         // async GENERATOR declaration — same hoisting, tagged-yield machine.
         if (Array.isArray(stmt) && stmt[0] === 'async' && Array.isArray(stmt[1]) &&
             stmt[1][0] === 'function*' && stmt[1][1] && _gen?.lowerAsyncGen) {
-          hoisted.push(['const', ['=', stmt[1][1], transform(_gen.lowerAsyncGen(stmt[1][2], stmt[1][3]))]])
+          hoisted.push(['const', ['=', stmt[1][1], transform(_gen.lowerAsyncGen(...argsLowered(stmt[1][2], stmt[1][3])))]])
           continue
         }
         if (Array.isArray(stmt) && stmt[0] === 'class' && stmt[1]) {
@@ -383,7 +392,7 @@ export function createTransform(opts) {
       // Expression form (`let g = function* () {…}`). Named statement forms are
       // hoisted in transformScope like plain function declarations.
       if (!_gen) return
-      return _gen.lowerGenerator(params, body)
+      return _gen.lowerGenerator(...argsLowered(params, body))
     },
 
     '[]'(payload, idx) {
