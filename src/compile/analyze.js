@@ -889,7 +889,27 @@ function dictWalkLean(body, name) {
     if (!Array.isArray(n)) continue
     const op = n[0]
     if (op === '=>' || op === 'str') continue
-    if (op === '[]' && n[1] === name) { if (n[2] != null) stack.push(n[2]); continue }
+    // WRITE/RMW target `name[k] (op)= v`: the ephemeral-slot upsert serves it.
+    // Inside the RHS, the RMW's OWN read (structurally equal to the target —
+    // emit-assign's _rmwStructEq fuses exactly that) is part of the same slot
+    // op; any OTHER same-name `[]` in the RHS is a plain read → reject below.
+    if (ASSIGN_OPS.has(op) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1][1] === name) {
+      const tgt = JSON.stringify(n[1])
+      if (n[1][2] != null) stack.push(n[1][2])
+      const pushSkippingFused = (m) => {
+        if (!Array.isArray(m)) { stack.push(m); return }
+        if (m[0] === '[]' && m[1] === name && JSON.stringify(m) === tgt) { if (m[2] != null) stack.push(m[2]); return }
+        if (m[0] === '[]' && m[1] === name) { stack.push(m); return }   // plain read — rejected by the arm below
+        for (let i = 1; i < m.length; i++) pushSkippingFused(m[i])
+      }
+      for (let i = 2; i < n.length; i++) pushSkippingFused(n[i])
+      continue
+    }
+    // PLAIN READ of the dict: the lean/ephemeral WRITE layout has no matching
+    // read path (module/array.js's `[]` read probes the STANDARD hash layout —
+    // garbage hits in-bounds, or walks OOB: the loop-built-dict trap class).
+    // A read-bearing receiver must take the standard hash everywhere.
+    if (op === '[]' && n[1] === name) return false
     if ((op === ':' || op === '.' || op === '?.') && n.length >= 3) { stack.push(n[op === ':' ? 2 : 1]); continue }
     // let/const: the decl values; every other op: all children.
     for (let i = 1; i < n.length; i++) {

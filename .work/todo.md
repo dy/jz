@@ -6453,3 +6453,24 @@ battery, land everything together.
 NB: dist/jz.wasm on disk was built WITH the stashed fix — stale vs the
 clean tree. Next window: `git stash pop` FIRST (the WIP wave), continue
 from there; any battery before popping must rebuild dist.
+
+★ SKM REPRO CLEARS — WAVE IN TRIAGE (2026-07-22): pipeline round 2:
+`kernel: OK` for the literal-key shorthand method one-liner — the
+12-round hunt's two fixes work (dictWalkLean read-disqualification +
+emitDynamicKeyDispatch ToPropertyKey third arm; prech = V8-truth 2112;
+dyn-keys pins 4/11 green). BATTERY RED with 3 attributable native fails
+to triage before landing:
+(1) "array index contract: i32-truncating, typed raw, plain
+bounds-checked" — likely pins the OLD trunc-semantics for dynamic
+box-keys; decide: scope the ToPropertyKey arm (receiver-type-dependent?)
+or update the pin to JS-exact (check the contract's doc intent);
+(2) "finite-domain hash probe requires an immutable domain length" —
+structural pin hit by the dictWalkLean tightening (its receiver may be
+RMW-only + summary read — check if the new rule over-tightens the
+final-read-after-RMW shape, which the eph path may legitimately serve
+IF the summary read goes through the RMW-fused or a matching probe);
+(3) warm-recompile O2 text drift recurrence — rerun isolated first
+(flake?) then diff.
+Kernel-probe fails (bigint×2, SSO×2, speculate) = pre-existing classes,
+unchanged. self "build exit null" = known contention flake shape (verify
+isolated). Wave stays IN TREE; land after the 3 triages.
