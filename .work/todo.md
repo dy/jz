@@ -6530,3 +6530,18 @@ importAsts path per index.js:87 note); kernel-target.js marshals
 opts.modules through. Clears inference + destruct(2) + closures(3) +
 scattered module-shaped reds across the map in ONE feature. Then the
 BigInt family differential, then spread schema.
+
+MODULES-ABI FRONTIER (2026-07-23): three-stage progress — (1) modulesJSON
+marshalling landed (compileSelf/compileWat/compileWarnings 4th param →
+ctx.module.importSources; kernel-target modulesJSONFor); (2) parse
+service injected in setupSelf (bundling requires ctx.transform.parse —
+native's injection mirrored); (3) NEW frontier: the kernel now COMPILES
+the bundle but the output module's export surface is wrong (exports.f
+not a function — the importing module's exports don't surface). The
+harness-ABI class is now a KERNEL BUNDLING correctness gap, not
+marshalling. Probe: scratchpad/mod-abi.mjs (native 5, kernel export-miss).
+NEXT: diff the kernel-vs-native WAT export sections for the two-module
+probe; suspect the kernel's prepareModule path (importAsts vs
+importSources interplay — self-host historically used importAsts per
+index.js:87-89 note). inference/destruct/closures counts unchanged
+(245/6) until this lands.
