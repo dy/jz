@@ -20,9 +20,9 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
 
 ## Open
 
-* [ ] USER: publish watr (npm version patch && npm publish && git push in
-      ~/projects/watr — has resetNameUids + default-export prop, suite 591
-      green), then bump+lock jz's watr dep and clean-`npm ci` verify.
+* [x] watr 5.7.11 PUBLISHED (user, 2026-07-23); jz dep bumped+locked,
+      determinism 5/5 against the LOCKED package (no sibling symlink) —
+      audit P0 CLOSED. Battery 3066/0 on published watr.
       Unblocks determinism-from-lockfile (audit P0) + CI determinism leg.
       CONFIRMED on CI @HEAD: test workflow fails ONLY 'determinism:
       warm-process recompile' x2 (published watr lacks the reset); watr
