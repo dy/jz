@@ -95,10 +95,15 @@ k(out,n)` — $k's checked-store BOUND decodes the already-ptr-NARROWED i32
 param as an f64 NaN-box (`i64.reinterpret_f64 (f64.convert_i32_s $o)`) →
 garbage address. Native AND kernel identically (bytes equal). The
 speculate kernel-leg red (PLAN_SRC) is THIS class (its `out` global via
-param), NOT a kernel divergence. Repro: scratchpad/spec7-10.mjs. FIX
-NEXT: the checked-idx len/guard path must use the narrowed direct
-header load when the receiver rep is ptrKind=TYPED i32, never the
-box-decode route.
+param), NOT a kernel divergence. Repro: scratchpad/spec7-10.mjs. MECHANISM REFINED: the guard's LEN path re-emits the receiver
+(second emit(arr) inside lenIR/typedBase) and that second emission
+returns the narrowed i32 offset NUMERICALLY coerced to f64
+(f64.convert_i32_s) — typedBase then takes its box-decode arm on a
+plain number → garbage base. First emission (store address) is correct.
+FIX: make the second emission preserve ptrKind (or reuse the first
+emission's local) so typedBase takes the direct arm; grep every
+typedBase(emit(arr)) / __len-on-narrowed site for the same
+double-emit pattern.
 
 AUDIT-v3 QUICK WINS LANDED THIS WAVE: resetNameUids now a REQUIRED named
 import (5.7.11 locked — capability regression fails loudly); typed-ctor
