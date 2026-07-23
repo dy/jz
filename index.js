@@ -46,6 +46,7 @@ import watrCompile from "watr/compile";
 import { snapshotInit } from "./src/snapshot.js";
 import watrPrint from "watr/print";
 import watOptimize from "watr/optimize";
+import { resetNameUids } from "watr/optimize";
 import { ctx, reset, err, warn, initWarnings, assertCtxInvariants } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import { liftIIFEs } from './src/prepare/lift-iife.js'
@@ -426,6 +427,7 @@ const setupCtx = (code, opts) => {
   }
   reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread })
   resetProgramFactsCache()
+  resetNameUids()         // watr's generated-name counters (inline/outline/…): per-compile, else warm recompiles emit history-dependent WAT text (__inl5 → __inl15)
   resetBodyFactsCache()   // explicit-lifecycle body-facts cache (analyze.js) — per-compile, else a long-lived process retains every analyzed body AST
   ctx.error.src = code
   initWarnings(opts.warnings)

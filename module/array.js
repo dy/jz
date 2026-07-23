@@ -788,17 +788,24 @@ export default (ctx) => {
         ['local.set', `$${keyTmp}`, asF64(emit(idx))],
         ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
           ['then', dynLoad(objExpr, ['local.get', `$${keyTmp}`])],
-          // Non-string key: a REAL number (f===f) is array/typed access — lean by
-          // design. Any OTHER box (undefined/null/bool: NaN-shaped, not a string
-          // ptr) takes ToPropertyKey: stringify → dyn read. The old two-way arm
-          // trunc_sat'd the box to index 0, so `prec[undefined]` READ SLOT 0 of
-          // whatever the receiver was — the wrong-hit that made subscript's
-          // isStmt(prec[hole]) truthy in the kernel (the literal-key shorthand
-          // method "Unclosed {" family — ledger 2026-07-22).
+          // Non-string key: an ATOM box (null/undefined/false/true — hi-word
+          // 0x7FF80001..5, aux 1..5 under the zero ATOM tag) takes ToPropertyKey:
+          // stringify → dyn read. The old two-way arm trunc_sat'd the box to
+          // index 0, so `prec[undefined]` READ SLOT 0 of whatever the receiver
+          // was — the wrong-hit that made subscript's isStmt(prec[hole]) truthy
+          // in the kernel (the literal-key shorthand method "Unclosed {" family,
+          // ledger 2026-07-22). EVERYTHING ELSE — real numbers AND canonical
+          // arithmetic NaN (hi 0x7FF80000, aux 0) — keeps the documented
+          // i32-truncating index contract (`a[NaN]` → a[0], a[1.5] → a[1];
+          // pinned in test/array-methods.js "array index contract").
           ['else', ['if', ['result', 'f64'],
-            ['f64.eq', ['local.get', `$${keyTmp}`], ['local.get', `$${keyTmp}`]],
-            ['then', numericLoad(['local.get', `$${keyTmp}`])],
-            ['else', dynLoad(objExpr, ['f64.reinterpret_i64', ['call', '$__to_str', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]]])]]]]], 'f64')
+            ['i32.le_u',
+              ['i32.sub',
+                ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]], ['i64.const', 32]]],
+                ['i32.const', 0x7FF80001]],
+              ['i32.const', 4]],
+            ['then', dynLoad(objExpr, ['f64.reinterpret_i64', ['call', '$__to_str', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]]])],
+            ['else', numericLoad(['local.get', `$${keyTmp}`])]]]]], 'f64')
     }
     // Boxed object: string keys address the box, numeric keys address the inner array.
     if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {

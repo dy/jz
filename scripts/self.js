@@ -27,6 +27,7 @@ import {
 } from '../src/compile/emit.js'
 import { resolveOptimize, SIMD_PINNED } from '../src/optimize/index.js'
 import watOptimize from 'watr/optimize'
+import { resetNameUids } from 'watr/optimize'
 import jzify from '../jzify/index.js'
 
 // Optimization tail, mirroring index.js's host-facing compile(): watOptimize is the SOLE, final
@@ -106,6 +107,11 @@ function lower(source, strict) {
  */
 export default function compileSelf(source, strict, optJSON) {
   setupSelf(strict, optJSON)
+  // Per-compile watr name-uid reset (mirrors index.js's call): the kernel is a
+  // long-lived instance compiling many programs — without this, watr's inline/
+  // outline counters grow monotonically across compiles and the kernel's text
+  // output becomes history-dependent (the warm-drift class, in-wasm edition).
+  resetNameUids()
   return watrCompile(optimizeTail(compileAst(prepare(lower(source, strict))), ctx.transform.optimize))
 }
 

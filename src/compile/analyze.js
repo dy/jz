@@ -883,6 +883,7 @@ export function mayBeNullish(n, nameNullable = (name) => !!repOf(name)?.nullable
  *  dissection. Module-scope so no capture, no recursion. */
 function dictWalkLean(body, name) {
   const stack = [body]
+  let plainRead = false
   while (stack.length) {
     const n = stack.pop()
     if (typeof n === 'string') { if (n === name) return false; continue }
@@ -905,11 +906,14 @@ function dictWalkLean(body, name) {
       for (let i = 2; i < n.length; i++) pushSkippingFused(n[i])
       continue
     }
-    // PLAIN READ of the dict: the lean/ephemeral WRITE layout has no matching
-    // read path (module/array.js's `[]` read probes the STANDARD hash layout —
-    // garbage hits in-bounds, or walks OOB: the loop-built-dict trap class).
-    // A read-bearing receiver must take the standard hash everywhere.
-    if (op === '[]' && n[1] === name) return false
+    // PLAIN READ of the dict: the lean/ephemeral write layout is only sound to
+    // read back when the read tolerates a fresh/zero slot — i.e. when EVERY
+    // read is immediately bitwise-coerced (the i32-dict rule: missing → 0 is
+    // the documented ToInt32 semantics). An uncoerced read (`d[k] === undefined`,
+    // `d[k] <= 5`) against eph-written memory got garbage in-bounds or walked
+    // OOB (the loop-built-dict trap class). Flag it; the final verdict defers
+    // to dictWalkI32, which validates the every-read-coerced property.
+    if (op === '[]' && n[1] === name) { plainRead = true; if (n[2] != null) stack.push(n[2]); continue }
     if ((op === ':' || op === '.' || op === '?.') && n.length >= 3) { stack.push(n[op === ':' ? 2 : 1]); continue }
     // let/const: the decl values; every other op: all children.
     for (let i = 1; i < n.length; i++) {
@@ -920,7 +924,7 @@ function dictWalkLean(body, name) {
       } else stack.push(c)
     }
   }
-  return true
+  return !plainRead || dictWalkI32(body, name)
 }
 
 const I32_DICT_BITWISE = new Set(['&', '|', '^', '<<', '>>', '>>>'])
