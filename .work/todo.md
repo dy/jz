@@ -6474,3 +6474,17 @@ IF the summary read goes through the RMW-fused or a matching probe);
 Kernel-probe fails (bigint×2, SSO×2, speculate) = pre-existing classes,
 unchanged. self "build exit null" = known contention flake shape (verify
 isolated). Wave stays IN TREE; land after the 3 triages.
+
+WAVE TRIAGE ROUND 2 (2026-07-23): all native gates green (suite 3050,
+pins, contracts) + SKM repro clears; kernel leg has 4 NEW reds — the
+KERNEL-compiled compiler's VECTORIZER stops firing on watercolor/waves/
+lyapunov/fern structural tests (52→52 f64x2, 0→0) while the SAME tests
+pass natively (same emitter!) ⇒ the kernel MIS-EXECUTES one of the three
+new code paths: (1) index.js resetNameUids import (bundle-graph/module-
+init change — prime suspect: whole-pass-not-firing smells like cfg/module
+init, not per-shape), (2) dictWalkLean→dictWalkI32 tail call (the
+self-recursion fragility class — though I32 walk is iterative), (3) the
+atom-check dispatch arm (emitted-shape — REFUTED: native passes same
+shapes). BISECT: revert index.js import/call only → rebuild → run the 4
+in-kernel; then analyze-only; then array-only. never-grown re-excluded
+w/ parity note (1 structural). Battery otherwise green at land3.
