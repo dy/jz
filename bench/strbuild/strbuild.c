@@ -39,7 +39,7 @@ static uint32_t run_kernel(const int32_t* c, const int32_t* v) {
   char line[64];
   for (int it = 0; it < N_ITERS; it++) {
     for (int i = 0; i < N; i++) {
-      int len = sprintf(line, "%d,%s,%d\n", i, NAMES[c[i]], (int)(v[i] + it));
+      int len = snprintf(line, sizeof(line), "%d,%s,%d\n", i, NAMES[c[i]], (int)(v[i] + it));
       for (int j = 0; j < len; j++) h = mix_u32(h, (uint32_t)(uint8_t)line[j]);
     }
   }
