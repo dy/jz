@@ -127,3 +127,19 @@ import (5.7.11 locked — capability regression fails loudly); typed-ctor
 16-round fixpoint (narrow.js) errs under invariants on exhaustion;
 kernel-parity divergences represented as REAL test.todo entries +
 tripwires (not passes mistakable for parity).
+
+TEST262 GATE — 14 IN-SCOPE FAILURES (2026-07-23, pre-existing; the workflow
+red persists after the unexpected-pass prune; local run confirms exit-fail
+with 'a miscompile. Pass-count gating alone would miss this'):
+  async-gen dstr dflt-ary-ptrn-elision-step-err x3 (expr/named/stmt) ·
+  comma S11.14_A2.1_T2 (ReferenceError not thrown) ·
+  instanceof S11.8.6_A2.1_T1 (({}) instanceof Object) ·
+  yield formal-parameters-after-reassignment-strict (memory OOB!) ·
+  switch-case/dflt-decl-onlystrict x2 (undefined) ·
+  break/continue line-terminators x2 (CR between keyword and label) ·
+  for-in scope-body-lex-close/open/var-none x3 (per-iteration lex scope) ·
+  function S13_A15_T4 (arguments-object semantics → undefined).
+Each needs triage: some are documented-divergence candidates (curate with
+reasons: line-terminator ASI edges, arguments semantics), some REAL
+miscompiles (the yield-reassignment OOB; for-in lex scoping). Burn down or
+curate; the gate stays red until the list is empty either way.
