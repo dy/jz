@@ -24,6 +24,10 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
       ~/projects/watr — has resetNameUids + default-export prop, suite 591
       green), then bump+lock jz's watr dep and clean-`npm ci` verify.
       Unblocks determinism-from-lockfile (audit P0) + CI determinism leg.
+      CONFIRMED on CI @HEAD: test workflow fails ONLY 'determinism:
+      warm-process recompile' x2 (published watr lacks the reset); watr
+      workflow GREEN. Still to triage: selfhost/bench/test262/pages reds
+      (test262 likely pre-existing curated-set drift).
 * [ ] Bench refresh at HEAD → commit results.json + re-check claims gates
       (was 50 commits stale with 7 red rows predating the perf wave).
 * [ ] Kernel long-tail (each characterized in the archive):
