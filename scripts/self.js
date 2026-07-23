@@ -25,43 +25,24 @@ import { clearStdlibParseCache } from '../src/wat/assemble.js'
 import {
   emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads,
 } from '../src/compile/emit.js'
-import { resolveOptimize, SIMD_PINNED } from '../src/optimize/index.js'
+import { resolveOptimize } from '../src/optimize/index.js'
+import { watrTail } from '../src/optimize/watr-tail.js'
 import watOptimize from 'watr/optimize'
 import jzify from '../jzify/index.js'
 
-// Optimization tail, mirroring index.js's host-facing compile(): watOptimize is the SOLE, final
-// optimizer. All lowering — incl. auto-vectorization and the f64x2 mirror append — already ran in
-// compileAst (src/compile/index.js → optimizeModule → optimizeFunc 'pre'), so there is NO post-watr
-// re-optimize here: re-running jz's leaf passes on watr's output miscompiled (dropped a reassigned-
-// param tee) and violated the "watr is the only optimizer, once, fixpoint" architecture — the exact
-// reason index.js's post-block was deleted. Gated on cfg.watr, so optimize:false is a no-op.
+// Final-optimizer tail: the EXACT module index.js's host pipeline uses
+// (src/optimize/watr-tail.js — watr options + watr once + the one post-watr
+// proof repair). Previously a hand-mirrored subset lived here and drifted
+// (missing ifset tiering, inlineWrappers, watr LICM, guard policy, the
+// large-module unroll2 rule, boundary pins, and the pointer repair), so
+// kernel O2/O3 output diverged from native on identical source.
 function optimizeTail(module, cfg) {
-  let watrOpts = typeof cfg.watr === 'object' ? { ...cfg.watr } : true
-  if (cfg.vectorizeLaneLocal) {
-    if (watrOpts === true) watrOpts = { loopify: false }
-    else if (typeof watrOpts === 'object' && watrOpts.loopify === undefined) watrOpts.loopify = false
-  }
-  if (cfg.devirtIndirect) {
-    if (watrOpts === true) watrOpts = { devirt: true }
-    else if (typeof watrOpts === 'object' && watrOpts.devirt === undefined) watrOpts.devirt = true
-  }
-  // Mirror index.js: SIMD-helper inlining on at the 'speed'/level-3 tier.
-  if (cfg.inlineFns) {
-    if (watrOpts === true) watrOpts = { inline: 'simd' }
-    else if (typeof watrOpts === 'object' && watrOpts.inline === undefined) watrOpts.inline = 'simd'
-  }
-  // guardRefine folds jz's NaN-box tag reads — default-off in watr (general WAT
-  // never matches it), so jz always enables it explicitly.
-  if (watrOpts === true) watrOpts = { guardRefine: true }
-  else if (typeof watrOpts === 'object' && watrOpts.guardRefine === undefined) watrOpts.guardRefine = true
-  // Mirror index.js: speed-tier presets carry watrProfile:'speed' (outline/tailmerge/
-  // rettail off); the 'size' preset keeps watr's size-leaning default.
-  if (typeof watrOpts === 'object' && watrOpts.profile === undefined && cfg.watrProfile) watrOpts.profile = cfg.watrProfile
-  if (!cfg.watr) return module
-  // Pin the scalar transcendentals + their f64x2 mirrors so watr's inliner keeps the calls the
-  // pre-watr vectorizer emitted (mirror index.js).
-  watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED] : SIMD_PINNED
-  return watOptimize(module, watrOpts)
+  return watrTail(module, cfg, {
+    funcCount: ctx.func.list.length,
+    boundaryPins: cfg._vectorizedFnNames?.size
+      ? [...cfg._vectorizedFnNames].filter(name => ctx.func.map.get(name.slice(1))?.exported)
+      : [],
+  })
 }
 
 // Shared front half of every kernel entry: reset ctx, apply the option JSON,

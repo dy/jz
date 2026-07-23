@@ -202,7 +202,7 @@ export default (ctx) => {
       return ir
     }
 
-    if (body._nonEscaping && ctx.transform.optimize) {
+    if (body._nonEscaping && ctx.transform.optimize?.staticClosureEnv) {
       // Allocate environmental slots in the static data segment
       const staticOff = appendStaticSlots(new Array(envCaptures.length).fill('0x0000000000000000'))
       const block = []

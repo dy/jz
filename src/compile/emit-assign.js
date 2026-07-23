@@ -525,9 +525,9 @@ export function emitElementAssign(arr, idx, val) {
   // would corrupt cell memory — this arm is the only sound lowering.
   const sIn = tryStructInlineReplaceStore(arr, idx, val)
   if (sIn) return sIn
-  const rmw = ctx.transform.optimize ? tryHashRmwFusion(arr, idx, val) : null
+  const rmw = ctx.transform.optimize?.hashRmwFusion ? tryHashRmwFusion(arr, idx, val) : null
   if (rmw) return rmw
-  const inplace = ctx.transform.optimize ? tryInplaceReplaceStore(arr, idx, val) : null
+  const inplace = ctx.transform.optimize?.inplaceStore ? tryInplaceReplaceStore(arr, idx, val) : null
   if (inplace) return inplace
   // _expect is clobbered by every sub-emit() — capture statement-position hint
   // up front so the typed-array element-write path can elide the value materialize.

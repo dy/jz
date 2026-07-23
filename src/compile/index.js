@@ -414,9 +414,7 @@ function enterFunc(sig, body, { uniq = 0, directClosures = null } = {}) {
   ctx.func.charDecompGlobals = false  // only emitFunc's named path drains — it re-arms
   ctx.func.probeHoist = null
   ctx.func.lenHoist = null
-  if (ctx.transform.optimize) {
-    scanAndTagNonEscapingClosures(body)
-  }
+  if (ctx.transform.optimize?.staticClosureEnv) scanAndTagNonEscapingClosures(body)
 }
 
 // Allocate + null-init a heap cell for every boxed local that isn't seeded
@@ -1990,7 +1988,7 @@ export default function compile(ast, profiler) {
   // write-family + call-site facts gathered during emission below only fire
   // for names in this set. Post-plan so the scan sees the AST shapes that will
   // actually emit.
-  if (ctx.transform.optimize) ctx.scope.dynFnTableCandidates = scanDynClosureTableCandidates(ast)
+  if (ctx.transform.optimize?.devirtClosureTables) ctx.scope.dynFnTableCandidates = scanDynClosureTableCandidates(ast)
 
   // Inspect sink: editor hosts opt in via { inspect: true } to read inferred shapes.
   // Initialized here (post-plan) so paramReps and schema.list are stable, populated
@@ -2131,7 +2129,7 @@ export default function compile(ast, profiler) {
   // callSites/paramClosureDefaults/directReturnClosures are complete — resolve
   // each candidate table's write family and (if monomorphic) hand it to
   // devirtConstFnArrayCalls via ctx.scope.constFnArrays, same as a const array.
-  if (ctx.transform.optimize) timePhase(profiler, 'resolveDynFnTables', () => resolveDynFnTables(programFacts))
+  if (ctx.transform.optimize?.devirtClosureTables) timePhase(profiler, 'resolveDynFnTables', () => resolveDynFnTables(programFacts))
 
   // Host globals (globalThis/process/WebAssembly/…) referenced as values are
   // recorded in ctx.core.hostGlobals during emit; register them as env imports

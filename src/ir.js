@@ -986,7 +986,7 @@ export function toNumF64(node, v) {
   // genuine NaN) take the call. One self-compare against a call per site; the
   // dictionary-count idiom (`o[k] | 0` on a number-or-undefined slot) drops a
   // per-token call this way. Optimize-gated: the O0 tier keeps the compact call.
-  if (ctx.transform.optimize) {
+  if (ctx.transform.optimize?.inlineToNum) {
     const t = temp('tnum')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(v)],

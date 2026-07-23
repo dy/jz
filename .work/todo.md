@@ -6691,3 +6691,37 @@ default export; jz reads it optionally (index.js `watOptimize.resetNameUids
 ?? no-op`, self.js `watOptimize.resetNameUids?.()`). Published watr → no-op
 (benign: fresh-instance runs never drift; warm-reset activates on the next
 watr release). Battery 3061/0.
+
+RE-AUDIT WAVE LANDED (2026-07-23) — items 2/3/4 of the recommended order:
+AUDIT-2 (P0 pipeline drift): src/optimize/watr-tail.js — ONE final-optimizer
+tail (resolveWatrOpts + watr-once + hoistGlobalPtrOffset repair) consumed
+verbatim by index.js AND scripts/self.js; the kernel's hand-mirrored subset
+(missing ifset/inlineWrappers/LICM/guard/unroll2/pins/repair) deleted.
+test/kernel-parity.js: native-vs-kernel WAT BYTE IDENTITY at O0/O2/O3 over a
+4-program corpus — O0 fully identical, O2 identical except dict, O3 math
+identical; PARITY_TODO graduating rows dict|2 dict|3 sum|3 arr|3 (pre-tail
+gaps: in-kernel vectorizer/unroller bails where native fires — kernel output
+consistently smaller at O3).
+AUDIT-3 (P1 O0 oracle): six formerly-implicit transforms registered as named
+passes (inlineToNum, staticClosureEnv, hashRmwFusion [incl. lean-dict layout],
+inplaceStore, devirtClosureTables, devirtDynProps) — bare
+`ctx.transform.optimize` truthiness gates eliminated (resolveOptimize(0)'s
+all-false object is truthy and ran them at O0); L1 keeps them (pre-existing
+tier), ALL_OFF now genuinely disables. passes.js exit-grep rejects any future
+bare-truthiness gate. EXPOSED + FIXED a latent O0 bug: lean-hash layout
+applied while its fused reader was off → write-lean/read-generic mismatch
+(dict counters read 0 at O0); lean now rides the same hashRmwFusion flag
+(one representation feature). O0 dict probe: generic __hash_get/set only.
+AUDIT-4 (P1 solver): buildCallerCtx COPIES analyzeBody's cached locals before
+adding params (was mutating shared immutable-by-contract cache entries); both
+convergence caps (site-worklist ×64, arr/schema group ×16) now err under
+JZ_DEBUG_INVARIANTS instead of silently truncating.
+ALSO: PR #108 (merged upstream as 00c7baee) completed — snprintf truncation
+CLAMP added (snprintf returns the untruncated length; the hash loop would
+have read OOB) + test/bench-c.js: clang ASan leg with dysfunctional-toolchain
+timeout fallback (macOS SDK interceptor spin) + pinned checksum 545957244.
+README divergences: dynamic-boolean-key line added (uncommitted — rides the
+user's README WIP). BATTERY 3066/0.
+STILL USER-BLOCKED (AUDIT-1 P0): watr publish (npm version/publish permission-
+gated) — needed to un-symlink determinism; jz reads resetNameUids optionally
+meanwhile.

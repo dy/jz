@@ -7,7 +7,7 @@
  * function `sig` records change.
  */
 
-import { ctx, warn, err } from '../ctx.js'
+import { ctx, warn, err, DBG_INVARIANTS } from '../ctx.js'
 import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, callArgs, ASSIGN_OPS, extractParams, classifyParam } from '../ast.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from '../ir.js'
 import {
@@ -68,12 +68,16 @@ function buildCallerCtx() {
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue
     const facts = analyzeBody(func.body)
-    for (const p of func.sig.params) if (!facts.locals.has(p.name)) facts.locals.set(p.name, p.type)
+    // COPY before adding params: analyzeBody's returned maps are shared cache
+    // entries (immutable by contract) — writing params into facts.locals leaked
+    // caller-view state into every later reader of the same cached facts.
+    const callerLocals = new Map(facts.locals)
+    for (const p of func.sig.params) if (!callerLocals.has(p.name)) callerLocals.set(p.name, p.type)
     // Shadow-aware local+global typed-array map: a `const buf = new Int32Array(…)`
     // local makes `buf[i]` arg reads type i32 at this caller's sites, so a callee
     // param fed only such elements narrows (else it stays f64 and `1 << p` drags in
     // __to_num → the whole string↔number stdlib). Mirrors callerTypedElemsFor.
-    callerCtx.set(func, { callerLocals: facts.locals, callerValTypes: facts.valTypes, callerTypedElems: callerTypedElemsFor(func, globalTE) })
+    callerCtx.set(func, { callerLocals, callerValTypes: facts.valTypes, callerTypedElems: callerTypedElemsFor(func, globalTE) })
   }
   return callerCtx
 }
@@ -1619,6 +1623,8 @@ export default function narrowSignatures(programFacts, ast) {
     let head = 0
     let guard = callSites.length * 64   // belt far above any real edge count
     while (head < queue.length && guard-- > 0) {
+      if (guard === 0 && DBG_INVARIANTS)
+        err(`param-lattice site worklist exhausted its ${callSites.length * 64}-visit guard without converging — a rule is non-monotone (invariants mode surfaces the silent truncation)`)
       const s = queue[head++]
       queued[s] = false
       const state = siteState(callSites[s])
@@ -1701,6 +1707,8 @@ export default function narrowSignatures(programFacts, ast) {
     if (runSchemaIdSetFixpoint()) dirty = true
     if (runArrValTypeFixpoint()) dirty = true
     if (!dirty) break
+    if (g === 0 && DBG_INVARIANTS)
+      err('arr/schema domain group hit its 16-round guard still dirty — a domain runner is non-monotone (invariants mode surfaces the silent truncation)')
   }
   // Array<T> facts can make a direct `helper(rows[i])` argument precise only
   // now; settle the ordinary val lattice once more with that caller context.

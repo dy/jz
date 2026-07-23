@@ -82,6 +82,8 @@ const TESTS = [
   'deopt',
   'minimal-output',
   'bench-svg',
+  'bench-c',
+  'kernel-parity',
   'headline',
   'examples',
 ]
@@ -130,7 +132,7 @@ const argFilters = process.argv.slice(2)
 //     (memory OOB), async (wasi-warning channel), objects (Object.assign
 //     unknown-schema), preeval (rational carry), speculate (plan-field),
 //     pow-fold-ulp + fifthroot-ulp (memory OOB), features (jzify parse).
-const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'unswitch-typed-param',
+const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'unswitch-typed-param', 'bench-c', 'kernel-parity',
   // never-grown: value-correct in-kernel; ONE structural assert (raw-base WAT
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22
   'never-grown',

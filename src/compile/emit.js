@@ -3373,7 +3373,7 @@ const tagFnArrayDispatch = (ir, arrName) => {
 /** Generic closure call: callee is a value holding a NaN-boxed closure pointer.
  *  Uniform convention: fn.call packs all args into an array and trampolines. */
 function emitGenericClosureCall(callee, parsed) {
-  const dvName = ctx.transform.optimize && !parsed.hasSpread &&
+  const dvName = ctx.transform.optimize?.devirtClosureTables && !parsed.hasSpread &&
     Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string' ? callee[1] : null
   if (parsed.hasSpread) {
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
@@ -4170,7 +4170,7 @@ export const emitter = {
     // a direct `V[idx](args)` gets tagged (emitGenericClosureCall below), so
     // devirtConstFnArrayCalls can rewrite it once dyn-closure-tables.js proves
     // V monomorphic. An unresolved/untagged V just leaves the tag inert.
-    const dvArrName = ctx.transform.optimize && Array.isArray(a) && a[0] === '=' &&
+    const dvArrName = ctx.transform.optimize?.devirtClosureTables && Array.isArray(a) && a[0] === '=' &&
       typeof a[1] === 'string' && Array.isArray(a[2]) && a[2][0] === '[]' &&
       typeof a[2][1] === 'string' && ctx.scope.dynFnTableCandidates?.has(a[2][1]) &&
       Array.isArray(b) && b[0] === '()' && b[1] === a[1] ? a[2][1] : null

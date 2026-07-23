@@ -107,6 +107,17 @@ export function hasIROp(roots, opcode) {
 export const PASS_NAMES = [
   'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)
   'devirtIndirect',           // call_indirect w/ known closure consts → guarded direct calls (WAT-level, grows bytes)
+  // Formerly-implicit emit-time transformations, gated on BARE `ctx.transform.optimize`
+  // truthiness — which resolveOptimize(0)'s all-false OBJECT still satisfied, so they
+  // silently ran at O0 and weakened it as the representation-free oracle (audit P1).
+  // Named here so ALL_OFF genuinely disables them; L1 keeps them (pre-existing tier
+  // behavior — they ran at every truthy cfg).
+  'inlineToNum',              // inline NaN-check ToNumber fast path (O0: compact __to_num call)
+  'staticClosureEnv',         // non-escaping closures: env slots in static data (scan + emit)
+  'hashRmwFusion',            // lean-dict layout + d[k]=f(d[k]) single-probe RMW fusion (one representation feature)
+  'inplaceStore',             // in-place replace store on the inline-cell layout
+  'devirtClosureTables',      // dyn fn-table candidates: scan + call-site tags + resolve
+  'devirtDynProps',           // megamorphic prop-read devirt markers (dvProp/dvObject)
   'speculateSchemaBranches',  // one schema guard around multi-field tagged-union branch bodies (speed-for-size)
   'hoistPtrType',
   'hoistInvariantPtrOffset',
@@ -201,7 +212,10 @@ const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', 
 
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
-  1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true }),
+  1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true,
+    // The formerly-implicit emit-time transforms ran at every truthy cfg — L1 keeps them.
+    inlineToNum: true, staticClosureEnv: true, hashRmwFusion: true, inplaceStore: true,
+    devirtClosureTables: true, devirtDynProps: true }),
   // Default (level 2 / 'balanced'): every stable pass + full watr. Pre-4.6.9 had to
   // force 'light' mode here (inline / inlineOnce / coalesce all off) to dodge the
   // W1a/W1b miscompiles; watr 4.6.9 fixes both, and the L2 default now runs the full

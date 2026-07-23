@@ -144,3 +144,32 @@ test('passes: emission tier never writes durable analysis state (slice-4 exit gr
   }
   is(offenders.join(', '), '', `emission-tier durable writes: ${offenders.join('; ')}`)
 })
+
+test('passes: no bare optimization-object truthiness gates (audit P1 exit grep)', () => {
+  // resolveOptimize(0) returns an all-false OBJECT — truthy. A transform gated
+  // on bare `ctx.transform.optimize` therefore ran at O0, silently weakening it
+  // as the representation-free correctness oracle. Every emit-time transform
+  // must read a NAMED registered flag (`ctx.transform.optimize?.pass`); the
+  // whole-object read is legal only for presence checks on properties.
+  const files = []
+  const walkDir = (dir) => {
+    for (const f of readdirSync(dir)) {
+      const p = join(dir, f)
+      if (statSync(p).isDirectory()) walkDir(p)
+      else if (f.endsWith('.js')) files.push(p)
+    }
+  }
+  walkDir(join(ROOT, 'module'))
+  walkDir(join(ROOT, 'src'))
+  const offenders = []
+  const BARE = /ctx\.transform\.optimize\s*(?:\)\s*\{|\?[^.]|&&)/g
+  for (const p of files) {
+    const src = readFileSync(p, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+    let m
+    while ((m = BARE.exec(src))) {
+      // `if (ctx.transform.optimize) {` / `… ? … :` / `… && …` — truthiness use
+      offenders.push(`${p.slice(ROOT.length + 1)}: …${src.slice(Math.max(0, m.index - 20), m.index + 30).replace(/\s+/g, ' ')}…`)
+    }
+  }
+  is(offenders.join(', '), '', `bare optimize-object gates: ${offenders.join('; ')}`)
+})

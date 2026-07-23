@@ -59,11 +59,9 @@ import compile from './src/compile/index.js'
 import { resetProgramFactsCache } from './src/compile/program-facts.js'
 import { resetBodyFactsCache } from './src/compile/analyze.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
-import {
-  collectReachableGlobalWrites,
-  hoistGlobalPtrOffset, stablePtrGlobalNames,
-  resolveOptimize, SIMD_PINNED,
-} from './src/optimize/index.js'
+import { resolveOptimize } from './src/optimize/index.js'
+import { resolveWatrOpts, watrTail } from './src/optimize/watr-tail.js'
+export { resolveWatrOpts }
 import { VAL } from './src/reps.js'
 import jzify from './jzify/index.js'
 import { T } from './src/ast.js'
@@ -511,96 +509,9 @@ const rejectReservedPrefix = (node) => {
   }
 }
 
-/**
- * Compute the watr optimizer options for a resolved jz `optimize` config (see
- * `resolveOptimize`) — the single source of truth for "which watr passes does THIS
- * jz tier ask for". Pulled out of jzCompileInner so a caller that already holds a
- * resolved cfg (e.g. scripts/audit-fixpoint.mjs, re-running watr on jz's own output
- * to check idempotence) builds the IDENTICAL options jz's own pipeline used, instead
- * of drifting to watr's bare defaults — which lean size (outline/tailmerge/rettail
- * ON) and would misreport a deliberate speed-tier trade as a missed rewrite.
- * `funcCount`/`boundaryPins` are the two refinements that need live compile ctx
- * (module function count, JS-boundary vectorized fn names) — omit them for a
- * cfg-only approximation (fine for small/synthetic corpora).
- * @returns {Object|false} watr options, or `false` when `cfg.watr` is off.
- */
-export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) {
-  if (!cfg.watr) return false
-  let watrOpts = typeof cfg.watr === 'object' ? { ...cfg.watr } : true
-  if (cfg.vectorizeLaneLocal) {
-    // Off at the speed tier: watr's loopify collapses the while-idiom to
-    // `loop { if C { …; br } }` (an UNfused back-jump — no win) AND would mangle the
-    // lane-vectorizer's loop shape. jz's own `rotateLoops` (optimize/index.js, post
-    // phase) does the rotation instead, emitting the FUSED `br_if $loop C` back-edge.
-    if (watrOpts === true) watrOpts = { loopify: false }
-    else if (typeof watrOpts === 'object' && watrOpts.loopify === undefined) watrOpts.loopify = false
-  }
-  if (cfg.devirtIndirect) {
-    if (watrOpts === true) watrOpts = { devirt: true }
-    else if (typeof watrOpts === 'object' && watrOpts.devirt === undefined) watrOpts.devirt = true
-  }
-  // Multi-caller small-function inlining (size-for-speed): on at the 'speed'/level-3
-  // tier only, like devirt above. Removes call overhead from hot inner loops at the
-  // cost of duplicating tiny bodies; level 2 (and the size budgets measured there)
-  // stay untouched.
-  if (cfg.inlineFns) {
-    if (watrOpts === true) watrOpts = { inline: 'simd' }
-    else if (typeof watrOpts === 'object' && watrOpts.inline === undefined) watrOpts.inline = 'simd'
-  }
-  // Wrapper elision (speed tier): dissolve adapter frames — closure-ABI
-  // trampolines for functions-as-values, thin dispatch heads like
-  // __dyn_get_expr — into their target at the wrapper site. The recorded
-  // "table entries native against ftN" restructure, done mechanically in the
-  // optimizer instead of per-case emit surgery (one wrapper = one duplicated
-  // target; treeshake collects whichever copy ends up unreferenced).
-  if (cfg.inlineFns) {
-    if (typeof watrOpts === 'object' && watrOpts.inlineWrappers === undefined) watrOpts.inlineWrappers = true
-  }
-  // watr LICM (speed tier): hoist loop-invariant pure arithmetic AFTER watr's inlining exposes it
-  // (the raytrace per-iteration NaN/Inf guard pairs). Mechanical — lives in watr, jz just enables it.
-  if (cfg.watrLicm) {
-    if (watrOpts === true) watrOpts = { licm: true }
-    else if (typeof watrOpts === 'object' && watrOpts.licm === undefined) watrOpts.licm = true
-  }
-  // guardRefine folds jz's NaN-box tag reads — default-off in watr (general WAT
-  // never matches it), so jz always enables it explicitly.
-  if (watrOpts === true) watrOpts = { guardRefine: true }
-  else if (typeof watrOpts === 'object' && watrOpts.guardRefine === undefined) watrOpts.guardRefine = true
-  // watr's ifset (one-armed conditional update → select) rides jz's select
-  // tiering: an unconditional-update trade belongs to the speed tier exactly
-  // like boolConvertToSelect. jz's DEFAULT tier also passes watrProfile:'speed'
-  // (for the outline/tailmerge shape), which would enable ifset via the
-  // profile — the explicit flag here overrides it in both directions.
-  if (typeof watrOpts === 'object' && watrOpts.ifset === undefined)
-    watrOpts.ifset = cfg.boolConvertToSelect === true || cfg.watrIfset === true
-  // jz's promise is runtime speed, but watr's OWN profile default leans size — outline/
-  // tailmerge/rettail fold repeated sequences into out-of-line calls (measured 1.433→1.316
-  // on the self-host kernel with them off, watr ≥5.2.0). Every speed-tier preset carries
-  // watrProfile:'speed' (src/optimize/index.js LEVEL_PRESETS); the 'size' preset keeps
-  // watr's size-leaning default. An explicit user profile always wins.
-  if (watrOpts.profile === undefined && cfg.watrProfile) watrOpts.profile = cfg.watrProfile
-  // Speed tier waives watr's size-revert guard (two full binary encodes per
-  // optimize — its costliest fixed overhead): inlining growth is the shape this
-  // tier asks for, and jz's own perf/size gates own the size budget. Level 2
-  // (default) and 'size' keep the guard — watr's never-inflate contract stands
-  // where the user didn't opt into speed-for-size.
-  if (watrOpts.guard === undefined && cfg.watrGuard === false) watrOpts.guard = false
-  // Pin jz's scalar transcendentals (the PPC_CALL2 keys the auto-vectorizer rewrites to f64x2
-  // mirrors) so watr's inline passes don't dissolve the call nodes the lift needs. The protection
-  // policy lives here in jz — watr just honours the `pin` list (no jz names hardcoded in watr).
-  if (watrOpts === true) watrOpts = {}
-  watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED] : SIMD_PINNED
-  // Partial unrolling overlaps branch latency in compact codecs, but duplicates
-  // too many cold compiler/parser loops in large module graphs and loses the
-  // warm self-host I-cache race. Users may still opt in explicitly.
-  if (watrOpts.unroll2 == null && funcCount > 64) watrOpts.unroll2 = false
-  // Keep only JS-boundary vectorized functions intact: their `$name$exp`
-  // wrapper must not swallow the body/markers structural host tests inspect.
-  // Internal lifted helpers remain inlineable — SIMD survives the splice,
-  // while caller-level constant propagation and hot-call removal become live.
-  if (boundaryPins.length) watrOpts.pin = [...watrOpts.pin, ...boundaryPins]
-  return watrOpts
-}
+// resolveWatrOpts + the post-watr proof repair moved to src/optimize/watr-tail.js
+// (ONE final-optimizer tail shared verbatim with the self-host kernel — the two
+// pipelines previously drifted); re-exported above for scripts/audit-fixpoint.mjs.
 
 const jzCompileInner = (code, opts = {}) => {
   if (opts.define) code = defineBindings(opts.define) + code
@@ -686,37 +597,21 @@ const jzCompileInner = (code, opts = {}) => {
   }
 
   const cfg = ctx.transform.optimize
-  const watrOpts = resolveWatrOpts(cfg, {
+  // The shared final-optimizer tail (src/optimize/watr-tail.js): watr options +
+  // watr (the sole generic fixpoint, once) + the ONE narrow post-watr proof
+  // repair (hoistGlobalPtrOffset — watr's inliner can merge stable-pointee
+  // decodes into one caller past the multi-site hoist threshold; measured
+  // load-bearing 2026-07-21, the other two repairs measured dead and deleted).
+  // NO post-watr generic optimizer — re-running jz's leaf pipeline here
+  // miscompiled (dropped a reassigned-param tee, corrupted divergent-escape
+  // SIMD). Shared VERBATIM with scripts/self.js so kernel output cannot drift.
+  const optimized = watrTail(module, cfg, {
     funcCount: ctx.func.list.length,
     boundaryPins: cfg._vectorizedFnNames?.size
       ? [...cfg._vectorizedFnNames].filter(name => ctx.func.map.get(name.slice(1))?.exported)
       : [],
+    time,
   })
-  const optimized = watrOpts ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
-  // Narrow whole-module proof repair: hoistGlobalPtrOffset may consume the final address shape
-  // watr exposes — a stable-pointee global decoded once per FUNCTION pre-watr (jz's own
-  // src/wat/assemble.js optimizeModule copy) can end up decoded at multiple sites within one
-  // function once watr's own inliner merges several such functions into a single caller (e.g. a
-  // driver function absorbing its per-step helpers), crossing this pass's multi-site hoist
-  // threshold in a shape that only exists after watr runs. Idempotent, fail-closed — not a second
-  // generic optimization pipeline.
-  //
-  // Measured (2026-07-21, stage4 increment 2): instrumented all three post-watr proof repairs
-  // (hoistGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix) across the bench
-  // corpus (171 compiles, all bench/ specimens × speed/size/O0) and the full test suite
-  // (JZ_TEST_OPTIMIZE=3, 3051 tests / 17595 assertions). hoistGlobalPtrOffset fired 12 times (all
-  // in examples/watercolor's `$frame` driver + one optimizer.js inline-hoist case) — load-bearing,
-  // kept. hoistStableGlobalConstLoads and guardMaskedVectorSuffix fired ZERO times anywhere; their
-  // pre-watr copy (src/wat/assemble.js optimizeModule) already does everything watr's fixpoint
-  // leaves for them to find, so the post-watr copies were dead duplicate work — deleted.
-  if (cfg.hoistGlobalPtrOffset !== false) {
-    const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
-    const stableGlobals = stablePtrGlobalNames()
-    if (stableGlobals.size) {
-      const reach = collectReachableGlobalWrites(funcs)
-      for (const node of funcs) hoistGlobalPtrOffset(node, stableGlobals, reach)
-    }
-  }
   // NO post-watr generic optimizer. jz does all lowering — including auto-vectorization — before
   // watr (src/wat/assemble.js optimizeModule → optimizeFunc); watr is the sole generic fixpoint and
   // runs exactly once. Re-running jz's leaf pipeline here dropped a reassigned-param local.tee and
