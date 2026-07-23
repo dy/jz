@@ -6621,3 +6621,19 @@ BONUS FIXES LANDED IN TREE (this wave, unpushed):
    throw SyntaxError (ToString coercion path; test json:43 class).
 PROBES: scratchpad/{sso,sso2..6,diag2,bc*,isarr*,concat2,nullish,streq,
 finret*,finloop,earlyret*,spread}.mjs.
+
+SSO/JSON LATTICE HUNT — repro status (2026-07-23): jz battery GREEN (3059/0)
+with patched subscript. Minimal unsound-fold repros DON'T fire natively:
+(a) dict-table closure w/ guarded x[0] reads → correct; (b) interprocedural
+back-prop via helper with ARRAY call sites elsewhere → correct. The real
+kernel compile's ARRAY inference for the JSON.parse emit-entry's x needs
+richer context. NEXT (direct evidence, no more shape guessing): instrument
+NATIVE compile of the self.js graph — in module/array.js Array.isArray
+emitter, when valTypeOf(x)===VAL.ARRAY fires log the receiver name +
+ctx.func.current.name (JZ_DBG env gate, host-side console.error — native
+compile only, no kernel rebuild needed); compile scripts/self.js graph;
+find which func/binding folds; then trace WHICH pass set that rep
+(localReps/paramReps writer). Fix = kill the unsound writer for
+value-escaping closures; rebuild kernel; expect json/objects/strings
+cluster (9/11/2) to clear. Also queued: JSON.parse(undefined) must throw
+SyntaxError (jz runtime __jp on undefined input / ToString coercion arm).
