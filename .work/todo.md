@@ -6517,3 +6517,16 @@ classes. NEXT: triage the three single-red files first (data, spread,
 inference — extract each red, classify, fix or pin), then the clusters
 by shared-class hypothesis (one SSO-hash fix may clear json+objects+
 strings together, same pattern as SKM clearing features).
+
+SINGLE-RED TRIAGE (2026-07-23): data = kernel-tier BigInt lattice
+divergence ("Cannot mix BigInt in `-`" thrown compiling a natively-green
+test) — joins statements' 2 BigInt reds as a 3-red BIGINT-IN-KERNEL
+family; spread = value divergence "var-assigned defaults provide source
+schema with jzify" (schema/defaults class, needs differential); inference
+= "Unknown module './t.jz'" = HARNESS-ABI class. HIGHEST-LEVERAGE NEXT:
+kernel compile-ABI modules extension — compileSelf(source, strict,
+optJSON) gains a modulesJSON param threaded to ctx.module (prepare's
+importAsts path per index.js:87 note); kernel-target.js marshals
+opts.modules through. Clears inference + destruct(2) + closures(3) +
+scattered module-shaped reds across the map in ONE feature. Then the
+BigInt family differential, then spread schema.
