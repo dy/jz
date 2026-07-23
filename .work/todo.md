@@ -73,7 +73,18 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
     pow-fold 3 / fifthroot 2 (memory OOB) · async 1 (wasi-warning channel).
   * kernel-parity TODO rows (dict|2, dict|3, sum|3, arr|3): in-kernel
     vectorizer/unroller bails where native fires (O3 output smaller).
-  * test:self warm perf gate: audit measured 1.081×/1.033× vs 0.99× cap.
+  * test:self WARM PERF REGRESSION CONFIRMED REAL (2026-07-23): sequential
+    3-round verdict landed (strict cap 0.99 unchanged; fail only when ALL
+    rounds exceed — kills boundary flakiness) and under it the gate fails
+    consistently: 1.035/1.046/1.007 (best per-case mat4 0.98, fft 1.01,
+    biquad 1.01, sort 1.02, crc32 1.00, mandelbrot 1.01) vs the 0.94-0.98
+    baseline. Margin loss accumulated over today's waves (kernel source
+    grew: declared-guard Set ops in hot analyze walks, MUTATE_OPS spreads,
+    watr-tail — each small, sum visible). RECOVER: profile kernel warm
+    compile (bench-selfhost.mjs JZ_BENCH_WARM), find the hot delta —
+    suspect the per-assignment `declared` Set ops in analyzeValTypes/
+    analyzeBody walks (in-wasm hash cost); consider Set→precomputed check
+    or fusing into existing walk state. Fresh gate healthy: 0.768×.
 * [ ] Audit big-ticket (5–6): canonical LoopPlan (vectorizer consumes
       loop-model.js; 16 first-match recognizers → class dispatch);
       CompileSession + TargetProfile (59 ctx importers).
