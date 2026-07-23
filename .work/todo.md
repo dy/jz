@@ -6450,3 +6450,6 @@ NEXT WINDOW ORDER: (a) fix the 0-miss residual (trace the exact arm via
 the typeof probe at O2 + targeted WAT dump of $f's read), (b) rerun SKM
 repro (expect clear), (c) triage never-grown structural, (d) full
 battery, land everything together.
+NB: dist/jz.wasm on disk was built WITH the stashed fix — stale vs the
+clean tree. Next window: `git stash pop` FIRST (the WIP wave), continue
+from there; any battery before popping must rebuild dist.
