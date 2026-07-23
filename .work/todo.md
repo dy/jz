@@ -27,7 +27,10 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
       CONFIRMED on CI @HEAD: test workflow fails ONLY 'determinism:
       warm-process recompile' x2 (published watr lacks the reset); watr
       workflow GREEN. Still to triage: selfhost/bench/test262/pages reds
-      (test262 likely pre-existing curated-set drift).
+      (test262 likely pre-existing curated-set drift). selfhost red = warm
+      perf gate 1.041x vs 0.99 cap — CI builds the kernel with PUBLISHED
+      watr@5.7.10, missing the local watr optimizer work the 0.949x baseline
+      was measured with — same watr-publish root as determinism.
 * [ ] Bench refresh at HEAD → commit results.json + re-check claims gates
       (was 50 commits stale with 7 red rows predating the perf wave).
 * [ ] Kernel long-tail (each characterized in the archive):
