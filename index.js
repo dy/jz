@@ -46,11 +46,11 @@ import watrCompile from "watr/compile";
 import { snapshotInit } from "./src/snapshot.js";
 import watrPrint from "watr/print";
 import watOptimize from "watr/optimize";
-// resetNameUids rides as a PROPERTY of the default export, not a named import:
-// published watr may predate it, and a missing named import is a hard module-
-// resolution error while a missing property degrades to a no-op (benign — the
-// reset only matters for warm same-process recompiles; see the call site).
-const resetNameUids = watOptimize.resetNameUids ?? (() => {})
+// Required capability since watr ^5.7.11 (locked): determinism of warm
+// recompiles depends on this reset — a missing export must fail LOUDLY at
+// import, not silently degrade (the pre-5.7.11 optional-property fallback
+// masked exactly that hole).
+import { resetNameUids } from "watr/optimize";
 import { ctx, reset, err, warn, initWarnings, assertCtxInvariants } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import { liftIIFEs } from './src/prepare/lift-iife.js'

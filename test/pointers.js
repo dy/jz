@@ -207,3 +207,15 @@ test('nan-box: JS roundtrip preserves bits', () => {
   is(pa(p), 42)
   is(po(p), 3072)
 })
+
+test('typed read indexed by typed read keeps the receiver element kind', () => {
+  // t[p[i]] — the nested index emit must not clobber the OUTER array's load
+  // op (self-host regression: deferred load closure re-read the elem kind
+  // AFTER the inner Uint32Array emit and loaded the f64 array as u32).
+  const { exports } = jz(`
+    export let one = () => { const t = new Float64Array(4); t[3] = 7; const p = new Uint32Array(4); p[0] = 3; return t[p[0]] }
+    export let sum = (n) => { const t = new Float64Array(n); const p = new Uint32Array(n); for (let i = 0; i < n; i++) { t[i] = i; p[i] = n - 1 - i } let s = 0; for (let i = 0; i < n; i++) s += t[p[i]]; return s }
+  `)
+  is(exports.one(), 7)
+  is(exports.sum(8), 28)
+})

@@ -6,7 +6,10 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-23)
 
-DONE — architecture plan Stages 0–5 complete; V1 perf goals attained
+STATUS (re-audit v3 corrected): plan stages 0-5 SUBSTANTIALLY advanced but
+NOT complete — open: unified solver (stage 2), LoopPlan (stage 3),
+CompileSession/TargetProfile (stage 4), claims enforcement + bench refresh
+(stage 5), kernel parity long-tail. Perf: V1 bench wins measured locally
 (aggregate jz 1.00× leads every WASM lane: C 1.88× / Rust 1.97× / AS 2.06× /
 V8 2.17×; native C 1.11×; strbuild/lz/immutable/glyfparse won). Re-audit
 items landed: shared final-optimizer tail (watr-tail.js) + kernel byte-parity
@@ -73,3 +76,32 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
       CompileSession + TargetProfile (59 ctx importers).
 * [ ] V2-class perf tails: qoi (LLVM branch sched), shapes record layout
       byte-stride follow-up, sdf research-tier, ulam/raymarcher parity noise.
+
+
+TYPED-INDEX KERNEL MISCOMPILE FIXED (2026-07-23): `t[p[i]]` (typed read
+indexed by typed read) loaded with the INNER array's opcode in-kernel
+(f64 array read as i32.load+convert → garbage) — the deferred `loadOf`
+closure re-read captured `r` AFTER the nested `idx(i)` emit (the
+closure-capture-after-nested-emit self-host class). FIX: eager load-IR
+construction before the index emission (byte-neutral natively) in all
+three unproven '.typed:[]' forms. Kernel probes green (7/28); native
+357 green. Store path (elemStoreIR after emit(val)) shares the exposure —
+NOT yet hardened (no observed failure; watch class).
+
+NEW NATIVE BUG (first-order, untested shape, 2026-07-23): module-global
+typed array passed AS PARAM to a storing callee TRAPS OOB NATIVELY:
+`const out = new Float64Array(64); const k = (o,n) => {o[i]=i...};
+k(out,n)` — $k's checked-store BOUND decodes the already-ptr-NARROWED i32
+param as an f64 NaN-box (`i64.reinterpret_f64 (f64.convert_i32_s $o)`) →
+garbage address. Native AND kernel identically (bytes equal). The
+speculate kernel-leg red (PLAN_SRC) is THIS class (its `out` global via
+param), NOT a kernel divergence. Repro: scratchpad/spec7-10.mjs. FIX
+NEXT: the checked-idx len/guard path must use the narrowed direct
+header load when the receiver rep is ptrKind=TYPED i32, never the
+box-decode route.
+
+AUDIT-v3 QUICK WINS LANDED THIS WAVE: resetNameUids now a REQUIRED named
+import (5.7.11 locked — capability regression fails loudly); typed-ctor
+16-round fixpoint (narrow.js) errs under invariants on exhaustion;
+kernel-parity divergences represented as REAL test.todo entries +
+tripwires (not passes mistakable for parity).

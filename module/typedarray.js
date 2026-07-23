@@ -1611,6 +1611,13 @@ export default (ctx) => {
         const ti = tempI32('tbi')
         const off = ['i32.add', typedDataAddr(emit(arr), isView),
           ['i32.shl', ['local.get', `$${ti}`], ['i32.const', SHIFT[et]]]]
+        // Build the load IR BEFORE the index emission below: `idx(i)` recurses
+        // into the emitter (the index may itself be a typed read), and under
+        // self-host the deferred `loadOf` closure re-reading `r` after that
+        // nested emit picked up the INNER array's element kind — `t[p[0]]` on a
+        // Float64Array loaded with the Uint32Array's opcode (i32.load+convert,
+        // value garbage). Eager construction pins the receiver's own kind.
+        const loadIR = loadOf(off)
         // Preserve the old zero-metadata path for ordinary reads. Only a read
         // currently serving as another index pays to materialize its miss bit.
         if (!ctx.types.indexConsumer) {
@@ -1618,7 +1625,7 @@ export default (ctx) => {
             bundleIn
               ? ['block', ['result', 'i32'], ['local.set', `$${ti}`, idx(i)], bundleIn]
               : ['i32.lt_u', ['local.tee', `$${ti}`, idx(i)], leanLen(arr, et, isView)],
-            ['then', loadOf(off)], ['else', undefExpr()]], 'f64')
+            ['then', loadIR], ['else', undefExpr()]], 'f64')
           if (!isBigInt) rd.checkedNumRead = true
           return rd
         }
@@ -1628,7 +1635,7 @@ export default (ctx) => {
         const rd = typed(['block', ['result', 'f64'],
           ['local.set', `$${ti}`, innerIdx],
           ['local.set', `$${tin}`, condition],
-          ['if', ['result', 'f64'], ['local.get', `$${tin}`], ['then', loadOf(off)], ['else', undefExpr()]],
+          ['if', ['result', 'f64'], ['local.get', `$${tin}`], ['then', loadIR], ['else', undefExpr()]],
         ], 'f64')
         rd.indexValid = ['local.get', `$${tin}`]
         // number|undefined with the undefined confined to a CONST arm — a numeric
@@ -1651,13 +1658,16 @@ export default (ctx) => {
       const off = ['i32.add', typedDataAddr(emit(arr), isView),
         ['i32.shl', ['select', ['local.get', `$${ti}`], ['i32.const', 0], ['local.get', `$${tin}`]],
           ['i32.const', SHIFT[et]]]]
+      // Eager load-IR: see the leanCheckedIdx comment above — the nested
+      // `idx(i)` emit below must not run before the receiver's load op is built.
+      const loadIR = loadOf(off)
       const innerIdx = idx(i)
       const innerValid = ctx.types.indexConsumer ? innerIdx.indexValid : null
       const ownValid = bundleIn || ['i32.lt_u', ['local.get', `$${ti}`], lenIR]
       const rd = typed(['block', ['result', 'f64'],
         ['local.set', `$${ti}`, innerIdx],
         ['local.set', `$${tin}`, innerValid ? ['i32.and', innerValid, ownValid] : ownValid],
-        ['select', loadOf(off), undefExpr(), ['local.get', `$${tin}`]]], 'f64')
+        ['select', loadIR, undefExpr(), ['local.get', `$${tin}`]]], 'f64')
       if (ctx.types.indexConsumer) rd.indexValid = ['local.get', `$${tin}`]
       if (!isBigInt) rd.checkedNumRead = true
       return rd

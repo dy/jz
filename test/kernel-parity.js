@@ -37,7 +37,10 @@ for (const opt of [0, 2, 3]) {
       const nat = String(compile(src, { wat: true, optimize: opt }))
       const ker = String(compileViaKernel(src, { wat: true, optimize: opt }))
       if (PARITY_TODO.has(`${name}|${opt}`)) {
-        is(ker !== nat, true, `${name} O${opt}: known divergence still present (graduate this row on fix)`)
+        // Divergence-still-present tripwire (not a success claim — the todo
+        // entries above carry the real status): flags a silent fix so the row
+        // graduates into the byte-identity set.
+        is(ker !== nat, true, `${name} O${opt}: known divergence vanished — graduate this row to byte-identity`)
         continue
       }
       is(ker === nat, true,

@@ -1858,7 +1858,10 @@ export default function narrowSignatures(programFacts, ast) {
   // (same shape — field/inferFn/elemsCtxMap parameterization).
   const runTypedFixpoint = () => runArrElemFixpoint('typedCtor', inferTypedCtor, callerTypedCtx, callerSidsCtx)
   // Quiet-loop (was "run twice"): caller→callee typed-ctor chains of any depth.
-  for (let g = 16; g-- > 0 && runTypedFixpoint(); ) {}
+  for (let g = 16; g-- > 0 && runTypedFixpoint(); ) {
+    if (g === 0 && DBG_INVARIANTS)
+      err('typed-ctor fixpoint hit its 16-round guard still dirty — non-monotone inference (invariants mode surfaces the silent truncation)')
+  }
 
   // STATIC LENGTH down call chains: when every call site passes a typed array
   // of ONE known static length (`new Float64Array(8192)` — directly, via a

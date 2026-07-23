@@ -27,7 +27,7 @@ import {
 } from '../src/compile/emit.js'
 import { resolveOptimize } from '../src/optimize/index.js'
 import { watrTail } from '../src/optimize/watr-tail.js'
-import watOptimize from 'watr/optimize'
+import { resetNameUids } from 'watr/optimize'
 import jzify from '../jzify/index.js'
 
 // Final-optimizer tail: the EXACT module index.js's host pipeline uses
@@ -96,9 +96,8 @@ export default function compileSelf(source, strict, optJSON, modulesJSON) {
   // long-lived instance compiling many programs — without this, watr's inline/
   // outline counters grow monotonically across compiles and the kernel's text
   // output becomes history-dependent (the warm-drift class, in-wasm edition).
-  // Property access, not a named import — published watr may predate the
-  // export; a missing property no-ops (fresh-instance runs never drift).
-  watOptimize.resetNameUids?.()
+  // Required since watr ^5.7.11 (locked) — see index.js.
+  resetNameUids()
   return watrCompile(optimizeTail(compileAst(prepare(lower(source, strict))), ctx.transform.optimize))
 }
 
