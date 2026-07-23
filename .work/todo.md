@@ -6682,3 +6682,12 @@ native C 1.11×), first-WASM per case attained. Remaining work is
 LONG-TAIL kernel parity (json shaped-parser 2 · bigint 3 · speculate 1 ·
 preeval 2 · pow/fifthroot 5 · async 1) and research-tier perf polish
 (sdf, ulam/raymarcher examples) — tracked, none plan-gating.
+
+CI FIX (2026-07-23): all workflows were failing at `import { resetNameUids }
+from 'watr/optimize'` — the export exists only in LOCAL watr commits;
+CI installs published watr. FIX: watr (local commit 00421e2, NOT pushed —
+user cuts releases) attaches optimize.resetNameUids as a property of the
+default export; jz reads it optionally (index.js `watOptimize.resetNameUids
+?? no-op`, self.js `watOptimize.resetNameUids?.()`). Published watr → no-op
+(benign: fresh-instance runs never drift; warm-reset activates on the next
+watr release). Battery 3061/0.
