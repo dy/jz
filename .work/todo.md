@@ -6655,3 +6655,9 @@ BATTERY 3060/0 (kernel leg now includes the 3 un-excluded suites).
 Burn-down remaining: json shaped-parser parity 2 · statements 2 + data 1
 (BigInt) · speculate 1 · preeval 2 · pow-fold 3 / fifthroot 2 (OOB) ·
 async 1 (wasi-warning channel) · JSON.parse(undefined) must throw.
+
+JSON.parse(undefined) FIXED (2026-07-23): the literal ToString fold used
+loose == (undefined→'null', silently parses) instead of === (undefined→
+'undefined' → SyntaxError per spec). One-token fix in module/json.js
+head-coercion + spec pin in test/json.js (incl. null-still-parses).
+Battery 3061/0.

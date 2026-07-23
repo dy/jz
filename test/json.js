@@ -48,6 +48,13 @@ test('JSON.parse: runtime boolean argument parses after ToString coercion', () =
   is(run(`export let f = value => JSON.stringify(JSON.parse(value < 2))`).f(1), 'true')
 })
 
+test('JSON.parse: undefined argument throws SyntaxError (ToString → "undefined")', () => {
+  // Spec: ToString(undefined) is 'undefined', which is not valid JSON. The
+  // literal fold mapped undefined → 'null' via loose ==, silently parsing.
+  is(run(`export let f = () => { try { JSON.parse(undefined); return 'no-throw' } catch (e) { return 'threw' } }`).f(), 'threw')
+  ok(run(`export let g = () => JSON.parse(null)`).g() === null, 'null still parses (ToString(null) = "null")')
+})
+
 test('JSON.parse: negative float', () => {
   is(run(`export let f = () => JSON.parse("-3.14")`).f(), -3.14)
 })

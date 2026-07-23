@@ -1569,7 +1569,9 @@ ${localDecls}
     // Literals reach the emitter as `[null, value]` nodes.
     if (x === undefined) x = ['str', 'undefined']
     else if (Array.isArray(x) && x[0] == null && typeof x[1] !== 'string')
-      x = ['str', x[1] == null ? 'null' : String(x[1])]
+      // === not ==: ToString(undefined) is 'undefined' (a SyntaxError when
+      // parsed, per spec) — loose == folded it to 'null', which parses.
+      x = ['str', x[1] === null ? 'null' : String(x[1])]
     const src = jsonConstString(ctx, x)
     if (src != null) {
       try { return emitJsonConstValue(JSON.parse(src)) }
