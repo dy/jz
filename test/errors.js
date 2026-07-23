@@ -681,3 +681,14 @@ test('try: discarded method result before return compiles and runs', () => {
   is(j(`export let f = () => { let a = [1]; try { a.with(5, 2); return 1 } catch (e) { return 2 } }`), 2) // OOB throws, caught
   is(j(`export let f = () => { let a = [1]; try { a.toSorted(); return 1 } catch (e) { return 2 } }`), 1) // default comparator pulls string module
 })
+
+// DOCUMENTED DIVERGENCE (README "Errors are their message strings"): the
+// Error family lowers to the message string itself — no error object.
+// throw/catch/String(e) carry the message; .message/.name read undefined.
+// Pinned so a future error-object model surfaces here deliberately.
+test('errors: Error IS its message string (documented divergence)', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => { try { throw new Error('boom') } catch (e) { return String(e) } }`), 'boom')
+  is(j(`export let f = () => { try { throw new TypeError('t') } catch (e) { return e } }`), 't')
+  is(j(`export let f = () => { try { throw new Error('x') } catch (e) { return e.message === undefined ? 1 : 0 } }`), 1)
+})
