@@ -10,6 +10,7 @@ import test from 'tst'
 import { is } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { compileViaKernel } from './kernel-target.js'
+import { onWasi } from './_matrix.js'
 
 const CORPUS = {
   sum: `export let sum = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i; return s }`,
@@ -29,6 +30,9 @@ const PARITY_TODO = new Set(['dict|2', 'dict|3', 'sum|3', 'arr|3'])
 
 for (const opt of [0, 2, 3]) {
   test(`kernel parity: byte-identical WAT at O${opt}`, () => {
+    // wasi matrix leg: native picks up the WASI boundary shims the kernel's
+    // js-host pipeline never emits — divergence by construction, not drift.
+    if (onWasi()) return
     for (const [name, src] of Object.entries(CORPUS)) {
       const nat = String(compile(src, { wat: true, optimize: opt }))
       const ker = String(compileViaKernel(src, { wat: true, optimize: opt }))
