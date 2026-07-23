@@ -6637,3 +6637,21 @@ find which func/binding folds; then trace WHICH pass set that rep
 value-escaping closures; rebuild kernel; expect json/objects/strings
 cluster (9/11/2) to clear. Also queued: JSON.parse(undefined) must throw
 SyntaxError (jz runtime __jp on undefined input / ToString coercion arm).
+
+SSO/JSON CLUSTER CLEARED (2026-07-23) — landed: the reassigned-param
+val-type unsoundness. analyzeBody + analyzeValTypes flow-insensitive val
+trackers stamped a reassigned PARAM/captured-outer binding with its RHS
+kind (`x = ['str',…]` in a branch → x:ARRAY everywhere → Array.isArray
+guard const-folded to 1 → array-typed reads on a string → the OOB/undefined
+class). FIX: `declared` set per walk; reassignment to an undeclared name
+poisons the val slice for STANDALONE PTR KINDS ONLY — scalars (NUMBER/BOOL/
+BIGINT: i32-narrowing locals/val coherence, unswitch guard) and coupled-
+tracker kinds (TYPED/BUFFER: trackTyped owns coherence, mandelbrot
+vectorize) keep settled behavior. SCORE: kernel json 9→2 (residual 2 =
+shaped-parser-selection STRUCTURAL asserts, parity gap not value bugs),
+objects 11→0, strings 2→0, spread 1→0 — KERNEL_EXCLUDE shrunk by 3.
+Pin: test/inference.js 'reassigned param poisons flow-insensitive val'.
+BATTERY 3060/0 (kernel leg now includes the 3 un-excluded suites).
+Burn-down remaining: json shaped-parser parity 2 · statements 2 + data 1
+(BigInt) · speculate 1 · preeval 2 · pow-fold 3 / fifthroot 2 (OOB) ·
+async 1 (wasi-warning channel) · JSON.parse(undefined) must throw.

@@ -138,7 +138,11 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
   'errors', 'generators', 'parser-bugs', 'transform',   // 'features' cleared 2026-07-23: 49/49 green once the kernel parsed literal-key shorthand methods (SKM family fix)
   'destruct', 'closures', 'inference',
   'simd', 'optimizer', 'slot-hazards',
-  'statements', 'data', 'strings', 'spread', 'json', 'async', 'objects', 'preeval', 'speculate', 'pow-fold-ulp', 'fifthroot-ulp'])
+  // 'objects','strings','spread' cleared 2026-07-23: reassigned-param val
+  // poisoning fixed the Array.isArray const-fold class (analyze.js declared-
+  // guard) — 14 kernel value bugs cleared in one fix; json keeps 2 structural
+  // shaped-parser-selection asserts (parity gap, not value bugs).
+  'statements', 'data', 'json', 'async', 'preeval', 'speculate', 'pow-fold-ulp', 'fifthroot-ulp'])
 const onKernelTarget = process.env.JZ_TEST_TARGET === 'jz.wasm'
 
 const selected = (argFilters.length

@@ -1453,3 +1453,22 @@ test('typedLen: exported callee never takes the call-site length', () => {
   is(exports.read(new Float64Array(3)), 3, 'host call with a different length stays correct')
   is(exports.go(), 4242, 'internal call unchanged')
 })
+
+test('reassigned param poisons flow-insensitive val: guard must not const-fold', async () => {
+  // A param reassigned to an array literal inside a branch has NO settled val —
+  // its entry kind is caller-determined. Stamping ARRAY flow-insensitively
+  // const-folded the very Array.isArray guard proving it isn't (the kernel's
+  // JSON.parse-emitter head-coercion: array-typed reads on a string → OOB).
+  const { exports } = jz(`
+    let table = {}
+    table['p'] = (x) => {
+      if (x === undefined) x = ['str', 'undefined']
+      else if (Array.isArray(x) && x[0] == null) x = ['str', 'null']
+      return Array.isArray(x) ? 'arr:' + x[1] : 'plain:' + x
+    }
+    export let f = (n, v) => table[n](v)
+  `)
+  is(exports.f('p', 'hello'), 'plain:hello', 'string arg keeps the runtime guard')
+  is(exports.f('p', undefined), 'arr:undefined', 'undefined arm coerces')
+  is(exports.f('p', [null, 7]), 'arr:null', 'real array arm coerces')
+})

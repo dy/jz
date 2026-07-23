@@ -353,6 +353,20 @@ export function analyzeBody(body) {
     return common
   }
 
+  // Names declared (`let`/`const`) in THIS body. A reassignment to any OTHER
+  // name — a parameter or a captured outer binding — merges with an entry
+  // value of caller-/outer-determined kind, so a POINTER-kind RHS must POISON
+  // the val slice, not settle it: `if (Array.isArray(x)) …; else x = ['str', v]`
+  // on a param would otherwise stamp x ARRAY flow-insensitively and const-fold
+  // the very guard that proves it isn't (the kernel's JSON.parse-emitter
+  // head-coercion — array-typed reads on a string, memory OOB). Scalar kinds
+  // (NUMBER/BOOL/BIGINT) and coupled-tracker kinds (TYPED/BUFFER, whose trackTyped slice owns coherence) keep the settled-kind behavior: the i32-narrowing
+  // machinery's locals/val coherence depends on it (unswitch reassigned-param
+  // guard), and scalar guards don't take part in the ptr-tag fold class.
+  const declared = new Set()
+  const poisonUndeclared = (name, vt) =>
+    !declared.has(name) && vt != null && vt !== VAL.NUMBER && vt !== VAL.BOOL && vt !== VAL.BIGINT && vt !== VAL.TYPED && vt !== VAL.BUFFER ? null : vt
+
   // Local-Map slices: bind the Map's get/set/delete as the tracker's three ops.
   const trackVal = makeValTracker(n => valTypes.get(n), (n, vt) => valTypes.set(n, vt), n => valTypes.delete(n))
   const trackTyped = makeTypedTracker(n => typedElems.get(n), (n, c) => typedElems.set(n, c), n => typedElems.delete(n),
@@ -360,6 +374,7 @@ export function analyzeBody(body) {
 
   // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===
   const processDecl = (name, rhs) => {
+    declared.add(name)
     // wasm type (locals slice). A `>>> 0` result is an unsigned uint32 that doesn't fit a
     // *signed* i32, so a binding initialized from one must be f64 — else reads and arithmetic
     // see the value as negative for inputs ≥ 2³¹. But `x >>> k` with a constant shift k where
@@ -626,7 +641,7 @@ export function analyzeBody(body) {
       markEscapeValue(rhs)
       const wt = exprType(rhs, locals)
       if (locals.has(name) && locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
-      trackVal(name, valTypeOf(rhs))
+      trackVal(name, poisonUndeclared(name, valTypeOf(rhs)))
       trackTyped(name, rhs)
       if (arrElemSchemas.has(name) && !isArrayProducingRhs(rhs)) observeArrSchema(name, null)
       if (arrElemValTypes.has(name) && !isArrayProducingRhs(rhs)) observeArrValType(name, null)
@@ -1016,6 +1031,17 @@ export function analyzeValTypes(body) {
     (n) => updateRep(n, { val: undefined }),
   )
   const getVal = name => ctx.func.localReps?.get(name)?.val
+  // Names declared in THIS body. A reassignment to any other name (parameter /
+  // captured outer binding) merges with an entry value of unknown kind, so a
+  // POINTER-kind RHS must POISON the val slice, not settle it — else a branch
+  // like `if (Array.isArray(x)) …; else x = ['str', v]` on a param stamps x
+  // ARRAY flow-insensitively and const-folds the very guard proving it isn't
+  // (the kernel JSON.parse-emitter head-coercion: array reads on a string →
+  // OOB). Scalar kinds (NUMBER/BOOL/BIGINT) and coupled-tracker kinds (TYPED/BUFFER, whose trackTyped slice owns coherence) keep the settled-kind behavior —
+  // see analyzeBody's poisonUndeclared for why.
+  const declared = new Set()
+  const poisonUndeclared = (name, vt) =>
+    !declared.has(name) && vt != null && vt !== VAL.NUMBER && vt !== VAL.BOOL && vt !== VAL.BIGINT && vt !== VAL.TYPED && vt !== VAL.BUFFER ? null : vt
   // Pre-walk: observe Array<schema> facts so `const p = arr[i]` can bind a schemaId
   // on `p`, unlocking schema slot reads + skipping str_key dispatch on `.prop` access.
   // Parallel arrElemValTypes walk records VAL.* element kinds into
@@ -1163,6 +1189,7 @@ export function analyzeValTypes(body) {
     if (op === 'let' || op === 'const') {
       for (const a of args) {
         if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
+        declared.add(a[1])
         // Empty object used exclusively as a computed-key sink is represented
         // as HASH by object.js. Stamp the same kind during analysis (before
         // emission), so every subsequent read/write takes the strict one-table
@@ -1268,7 +1295,7 @@ export function analyzeValTypes(body) {
         const domain = dictDomain(args[0])
         if (domain) (ctx.func.leanHashDomains ??= new Map()).set(args[0], domain)
       }
-      setVal(args[0], vt)
+      setVal(args[0], poisonUndeclared(args[0], vt))
       if (mayBeNullish(args[1])) updateRep(args[0], { nullable: true })
       if (vt === VAL.REGEX) trackRegex(args[0], args[1])
       if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(args[1])) trackTyped(args[0], args[1])
