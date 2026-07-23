@@ -6545,3 +6545,16 @@ probe; suspect the kernel's prepareModule path (importAsts vs
 importSources interplay — self-host historically used importAsts per
 index.js:87-89 note). inference/destruct/closures counts unchanged
 (245/6) until this lands.
+
+EXPORT-SURFACE FRONTIER NARROWED (2026-07-23): kernel-vs-native WAT diff
+via the new compileWat modules channel — native: exports f, func $f;
+kernel: EMPTY (no funcs, no exports — a hollow module). The kernel's
+prepare with importSources present drops the MAIN program's declarations
+entirely. Suspects: the importAsts-vs-importSources hybrid path (self-
+host historically parser-less via importAsts — index.js:87 note; now
+BOTH parse and importSources exist and prepare may take a broken hybrid
+branch), or in-kernel jzify of the import statement. NEXT: SKM-style
+breadcrumbs in prepare's prepareModule/import path (marker-gated err),
+2-4 rebuild rounds; harness = scratchpad/mod-wat.mjs. Isolated-rerun
+flake confirmation recorded (timers 5/5, O3 3050 green — battery reds
+were contention).
