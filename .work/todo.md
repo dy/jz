@@ -6507,3 +6507,13 @@ repairs lost twice to checkout-HEAD (commit-early discipline adopted);
 a Set-line end-of-line comment swallowed 4 entries (multi-line comments
 in list literals); npm reinstalls silently replace symlinked deps (watr
 relink check joins the restore checklist).
+
+BURN-DOWN MAP POST-SKM (2026-07-23): nine more entries probed on the
+fixed kernel — data 120/1, spread 39/1, inference 79/1 (nearest to
+clearing), preeval 25/2, slot-hazards 17/4, simd 151/7, optimizer 200/8,
+json 54/9, objects 117/11. ~95% green overall; the clusters (json/
+objects/simd/optimizer) are likely the SSO-hash + structural-parity
+classes. NEXT: triage the three single-red files first (data, spread,
+inference — extract each red, classify, fix or pin), then the clusters
+by shared-class hypothesis (one SSO-hash fix may clear json+objects+
+strings together, same pattern as SKM clearing features).
