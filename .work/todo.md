@@ -6488,3 +6488,22 @@ atom-check dispatch arm (emitted-shape — REFUTED: native passes same
 shapes). BISECT: revert index.js import/call only → rebuild → run the 4
 in-kernel; then analyze-only; then array-only. never-grown re-excluded
 w/ parity note (1 structural). Battery otherwise green at land3.
+
+★★★ SKM FAMILY LANDED, BATTERY GREEN (2026-07-23): the 12-round hunt's
+full resolution shipped — (1) atom-vs-NaN dyn-key split: atom boxes
+(hi 0x7FF80001..5) take ToPropertyKey → dyn read; real numbers AND
+canonical NaN keep the i32-trunc index contract; (2) dictWalkLean defers
+plain-read dicts to dictWalkI32 (uncoerced reads → standard hash;
+coerced histograms stay lean/eph — both the OOB-trap and wrong-hit
+classes closed); (3) resetNameUids per compile in BOTH drivers (index.js
++ scripts/self.js — the kernel is a long-lived instance); (4) the
+KERNEL_EXCLUDE comment-swallow repaired (4 entries restored). The
+kernel now PARSES literal-key shorthand methods (`{ "k"(x){} }`,
+`{ 1(){} }`) — subscript's isStmt(prec[hole]) chain fixed at its true
+root. Pins: test/dyn-keys.js matrix (trap class, ToPropertyKey, atom/NaN
+split, coerced-hit, bool-carrier gap documented). watr: resetNameUids
+export (2 commits, local repo). PROCESS LESSONS this wave: post-commit
+repairs lost twice to checkout-HEAD (commit-early discipline adopted);
+a Set-line end-of-line comment swallowed 4 entries (multi-line comments
+in list literals); npm reinstalls silently replace symlinked deps (watr
+relink check joins the restore checklist).
