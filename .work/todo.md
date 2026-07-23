@@ -46,10 +46,17 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
     read anchors and runs watr fold() on them IN-KERNEL; suspect fold's
     i64/BigInt arithmetic hitting the kernel bigint carrier gap — would
     UNIFY this with the bigint-kernel family). NEXT: extract __schema_tbl
-    read anchors from the pre-watr WAT, run them through a jz-compiled
-    fold harness natively (no kernel rebuild needed) to name the exact
-    miscompiled watr idiom. Probes: scratchpad/{wbisect3,wpair,wnative,
-    wglob2}.mjs.
+    read anchors: i64.load/store over __schema_tbl addr math (2 sites).
+    HARNESS REFUTATION (2026-07-23): a jz-compiled watr micro-kernel
+    (.work/watr-harness-entry.js graph, compiled at BOTH level:2 AND the
+    kernel's exact speed profile) runs pair-only on the SAME 84KB WAT
+    CLEAN — the miscompile does not reproduce outside the full kernel.
+    Conclusion: context-dependent (arena state/layout at 12MB bundle
+    scale, or warm-instance memory pressure when watOptimize runs after
+    compileAst in the same instance) — NOT input shape, NOT pass logic,
+    NOT tier alone. Costliest hunt class; deprioritized behind concrete
+    wins. Probes: scratchpad/{wbisect3,wpair,wnative,wglob2,wanchor,
+    watr-harness.mjs,wrun}.mjs + .work/watr-harness-entry.js.
     RELATED NATIVE FINDINGS: Error.message unwired (String(e) works,
     e.message undefined even unthrown); jz runtime errors throw raw numeric
     codes (JSON.parse('nope') throws number) — the message-evaporation
