@@ -977,8 +977,6 @@ const EXPECTED_FAIL_PREFIXES = [
 // (`throw true; catch e === true`) are the same join through the throw slot.
 const BOOL_CARRIER = 'boolean kind loss at a mixed ??/||/&&/?: join or throw slot (raw 0/1 vs TRUE/FALSE atom) — carrier-design edge'
 const EXPECTED_FAIL_FILES = new Map([
-  ['test/language/statements/function/13.2-2-s.js',
-    'strict-mode write to function `.caller` must throw TypeError — function-object/strict-mode property semantics out of scope'],
   // for-await grammar edges (2026-07-13, wired with async generators):
   ['test/language/statements/for-await-of/head-lhs-async.js',
     '`async` as a for-await LHS identifier — subset reserves the async prefix (upstream grammar edge)'],
@@ -990,10 +988,6 @@ const EXPECTED_FAIL_FILES = new Map([
     'per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
   ['test/language/expressions/await/for-await-of-interleaved.js',
     'per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
-  ['test/language/statements/async-generator/dstr/ary-init-iter-get-err.js',
-    'destructuring abrupt-completion semantics — outside the async-generator v1'],
-  ['test/language/statements/async-generator/dstr/ary-ptrn-elem-id-iter-step-err.js',
-    'destructuring abrupt-completion semantics — outside the async-generator v1'],
   ['test/language/statements/async-generator/dstr/ary-ptrn-elision-step-err.js',
     'destructuring abrupt-completion semantics — outside the async-generator v1'],
   ['test/language/statements/async-generator/dstr/ary-ptrn-rest-id-iter-step-err.js',
@@ -1003,12 +997,8 @@ const EXPECTED_FAIL_FILES = new Map([
   ['test/language/statements/async-generator/yield-star-getiter-sync-returns-abrupt.js',
     'yield* abrupt GetIterator semantics — outside the async-generator v1'],
   ...[
-    'test/language/expressions/async-generator/dstr/ary-init-iter-get-err.js',
-    'test/language/expressions/async-generator/dstr/ary-ptrn-elem-id-iter-step-err.js',
     'test/language/expressions/async-generator/dstr/ary-ptrn-elision-step-err.js',
     'test/language/expressions/async-generator/dstr/ary-ptrn-rest-id-iter-step-err.js',
-    'test/language/expressions/async-generator/dstr/named-ary-init-iter-get-err.js',
-    'test/language/expressions/async-generator/dstr/named-ary-ptrn-elem-id-iter-step-err.js',
     'test/language/expressions/async-generator/dstr/named-ary-ptrn-elision-step-err.js',
     'test/language/expressions/async-generator/dstr/named-ary-ptrn-rest-id-iter-step-err.js',
   ].map(f => [f, 'destructuring abrupt-completion semantics — outside the async-generator v1']),
