@@ -6558,3 +6558,32 @@ breadcrumbs in prepare's prepareModule/import path (marker-gated err),
 2-4 rebuild rounds; harness = scratchpad/mod-wat.mjs. Isolated-rerun
 flake confirmation recorded (timers 5/5, O3 3050 green — battery reds
 were contention).
+
+FINALLY-SCOPING BUG FOUND & FIXED (2026-07-23) — the hollow-module root cause,
+a GENERAL miscompile far bigger than the modules ABI: break/continue emitters
+ran ALL pending finalizers unconditionally (emit.js break/continue →
+emitFinalizers()). Any `continue`/`break` targeting a loop nested INSIDE a
+try{}finally{} wrongly executed the try's finally per-branch. In-kernel,
+prepareModule's export-collection loop continues drained moduleStack (push=1
+pop=2 → length -1) → every later defFunc saw moduleStack.length!==0 →
+exported=false → no export attr → treeshake emptied the module → `(module)`.
+Natively invisible (V8 executes prepare/index.js correctly — only jz-compiled
+code manifests it). FIX (conceptual, whole shape-class): finallyStack entries
+are {cleanup, depth: ctx.func.stack.length at try entry}; emitFinalizers(minDepth)
+runs only entries with depth >= minDepth (non-decreasing → suffix);
+break/continue pass targetFrameIndex+1, return passes 0. Labeled-break
+missing-label err preserved.
+HUNT METHOD (banked): BC1..BC5 marker-gated breadcrumb bisection (gate =
+sentinel key in opts.modules) walked prep→emit: prepareModule clean, prepare
+exit clean, sec.funcs clean, $f node MISSING export attr, defFunc stackLen=-1;
+then push/pop counters proved finally-ran-twice; then GROUND TRUTH: named
+kernel WAT (compile self.js graph wat:true, ~227MB) showed ~15 finalizer
+inlines at continue sites inside prepareModule's try. Native repro probes all
+missed it (no loop-inside-try shape) — lesson: differential-probe the exact
+IR shape, or read the emitted WAT sooner.
+ALSO: test/dyn-keys.js existed but was NEVER REGISTERED in test/index.js
+(pins didn't run); registered. VALIDATION: statements 194 (5 new scoping
+pins), kernel leg 1225, dyn-keys+parser-bugs 28, full import-syntax matrix
+green in-kernel (named sq/dq, default, namespace, trailing), mod-abi
+end-to-end native 5 = kernel 5, FULL BATTERY 3059/0. MODULES-ABI FRONTIER
+CLOSED: the kernel compiles+runs multi-module bundles.

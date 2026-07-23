@@ -987,15 +987,21 @@ const isUserFunc = name => !!ctx.func.map.get(name)?.body
 
 /** Emit pending `finally` cleanups for an abrupt control-flow exit.
  *  Inner cleanups run before outer cleanups. While emitting each cleanup, remove
- *  it from the active stack so `return` inside `finally` does not re-enter it. */
-function emitFinalizers() {
+ *  it from the active stack so `return` inside `finally` does not re-enter it.
+ *  `minDepth` scopes the exit: only trys ENTERED at control-frame depth >= minDepth
+ *  are being exited by this branch. A `continue`/`break` targeting a loop that
+ *  CONTAINS the try runs its finally (the branch leaves the try body); a try that
+ *  contains the whole loop stays live (control never leaves it) and must not run —
+ *  each entry records ctx.func.stack.length at try entry, so a frame at index i
+ *  scopes to entries with depth > i. `return` exits every frame (minDepth 0). */
+function emitFinalizers(minDepth = 0) {
   const stack = ctx.func.finallyStack || []
   if (stack.length === 0) return []
   const saved = stack.slice()
   const out = []
-  for (let i = saved.length - 1; i >= 0; i--) {
+  for (let i = saved.length - 1; i >= 0 && saved[i].depth >= minDepth; i--) {
     ctx.func.finallyStack = saved.slice(0, i)
-    out.push(...emitVoid(saved[i]))
+    out.push(...emitVoid(saved[i].cleanup))
   }
   ctx.func.finallyStack = saved
   return out
@@ -3536,7 +3542,7 @@ export const emitter = {
   'finally': (body, cleanup) => {
     if (!canThrow(body)) {
       const parentStack = ctx.func.finallyStack || []
-      const activeStack = parentStack.concat([cleanup])
+      const activeStack = parentStack.concat([{ cleanup, depth: ctx.func.stack.length }])
       const bodyIR = withFinallyStack(activeStack, () => emitVoid(body))
       const cleanupIR = isTerminator(body) ? [] : withFinallyStack(parentStack, () => emitVoid(cleanup))
       return [...bodyIR, ...cleanupIR]
@@ -3546,7 +3552,7 @@ export const emitter = {
     const id = ctx.func.uniq++
     const errLocal = temp('err')
     const parentStack = ctx.func.finallyStack || []
-    const activeStack = parentStack.concat([cleanup])
+    const activeStack = parentStack.concat([{ cleanup, depth: ctx.func.stack.length }])
 
     const prevTry = ctx.func.inTry
     ctx.func.inTry = true
@@ -4902,18 +4908,20 @@ export const emitter = {
     return result
   },
   'break': (label) => {
-    const target = label == null
-      ? loopTop().brk
-      : ctx.func.stack.findLast(frame => frame.label === label)?.brk
+    const idx = label == null
+      ? ctx.func.stack.length - 1
+      : ctx.func.stack.findLastIndex(frame => frame.label === label)
+    if (label != null && idx < 0) err(`break label '${label}' is not in scope`)
+    const target = (idx >= 0 ? ctx.func.stack[idx] : loopTop()).brk
     if (!target) err(`break label '${label}' is not in scope`)
-    return [...emitFinalizers(), ['br', target]]
+    return [...emitFinalizers(idx + 1), ['br', target]]
   },
   'continue': (label) => {
-    if (label == null) return [...emitFinalizers(), ['br', loopTop().loop]]
+    if (label == null) return [...emitFinalizers(ctx.func.stack.length), ['br', loopTop().loop]]
     // Labeled continue: target the continue point of the loop that adopted this label.
-    const frame = ctx.func.stack.findLast(f => f.contLabel === label)
-    if (!frame) err(`continue label '${label}' is not in scope`)
-    return [...emitFinalizers(), ['br', frame.loop]]
+    const idx = ctx.func.stack.findLastIndex(f => f.contLabel === label)
+    if (idx < 0) err(`continue label '${label}' is not in scope`)
+    return [...emitFinalizers(idx + 1), ['br', ctx.func.stack[idx].loop]]
   },
 
   // === Call ===

@@ -35,6 +35,7 @@ const TESTS = [
   'simd',
   'cli',
   'objects',
+  'dyn-keys',
   'interop',
   'abi',
   'external',

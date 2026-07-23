@@ -323,6 +323,26 @@ test('try/finally: continue in finally', () => {
   is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { try { if (i === 2) continue; s += i } finally { s += 10 } }; return s }').f(), 58)
 })
 
+// Finally scoping: a branch runs ONLY the finalizers of trys it actually exits.
+// Loop fully inside the try → continue/break stay inside → finally must NOT run
+// (the miscompile ran it per-branch: prepareModule's moduleStack drained to -1
+// in-kernel and every later func compiled unexported — the hollow-module bug).
+test('try/finally: continue in loop inside try does not run finally', () => {
+  is(run('let n = 0; export let f = () => { n = 0; try { for (let i = 0; i < 5; i++) { if (i % 2) continue } } finally { n += 1 }; return n }').f(), 1)
+})
+
+test('try/finally: break in loop inside try does not run finally', () => {
+  is(run('let n = 0; export let f = () => { n = 0; try { for (let i = 0; i < 5; i++) { if (i === 2) break } } finally { n += 1 }; return n }').f(), 1)
+})
+
+test('try/finally: labeled continue through try runs its finally each exit', () => {
+  is(run('export let f = () => { let n = 0; outer: for (let i = 0; i < 3; i++) { try { for (let j = 0; j < 3; j++) { if (j === 1) continue outer } } finally { n += 1 } }; return n }').f(), 3)
+})
+
+test('try/finally: throwable try with inner loop branches runs finally once', () => {
+  is(run('let n = 0; export let f = (x) => { n = 0; try { for (let i = 0; i < 5; i++) { if (i % 2) continue; if (i > 90) break } if (x < 0) throw 0; return n } finally { n += 1 } }; export let g = () => { f(1); return n }').g(), 1)
+})
+
 test('try/finally: finally with side effects on local', () => {
   is(run('export let f = (x) => { let r = 0; try { r = x * 2 } finally { r += 1 }; return r }').f(5), 11)
 })
