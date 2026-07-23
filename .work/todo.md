@@ -66,7 +66,10 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
     mechanism.
   * bigint family (statements 2 + data 1): both-bigint bitwise ops falsely
     mix-rejected in-kernel (subnormal-carrier typeof heuristic).
-  * speculate 1 (plan-field) · preeval 2 (rational carry) ·
+  * speculate CLEARED 2026-07-23 (narrowed-param versioning-guard fix:
+    len64Of box-decoded the raw i32 offset of a TYPED-narrowed receiver —
+    native+kernel OOB; now uses the offset directly; kernel leg 6/0,
+    KERNEL_EXCLUDE shrunk). preeval 2 (rational carry) ·
     pow-fold 3 / fifthroot 2 (memory OOB) · async 1 (wasi-warning channel).
   * kernel-parity TODO rows (dict|2, dict|3, sum|3, arr|3): in-kernel
     vectorizer/unroller bails where native fires (O3 output smaller).

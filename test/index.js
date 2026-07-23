@@ -144,7 +144,7 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
   // poisoning fixed the Array.isArray const-fold class (analyze.js declared-
   // guard) — 14 kernel value bugs cleared in one fix; json keeps 2 structural
   // shaped-parser-selection asserts (parity gap, not value bugs).
-  'statements', 'data', 'json', 'async', 'preeval', 'speculate', 'pow-fold-ulp', 'fifthroot-ulp'])
+  'statements', 'data', 'json', 'async', 'preeval', 'pow-fold-ulp', 'fifthroot-ulp'])  // 'speculate' cleared 2026-07-23: narrowed-param versioning-guard fix
 const onKernelTarget = process.env.JZ_TEST_TARGET === 'jz.wasm'
 
 const selected = (argFilters.length

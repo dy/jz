@@ -219,3 +219,16 @@ test('typed read indexed by typed read keeps the receiver element kind', () => {
   is(exports.one(), 7)
   is(exports.sum(8), 28)
 })
+
+test('module-global typed array passed as param: versioning guard uses the narrowed base', () => {
+  // The loop-versioning guard's length read box-decoded the ptr-NARROWED i32
+  // param (asF64 numerically coerced the offset, reinterpret extracted garbage
+  // bits) — a wild bound made a perfectly bounded loop trap OOB.
+  const { exports } = jz(`
+    const out = new Float64Array(64)
+    const k = (o, n) => { for (let i = 0; i < n; i++) o[i] = i; return o[5] }
+    export let go = (n) => k(out, n)
+  `)
+  is(exports.go(8), 5)
+  is(exports.go(64), 5)
+})

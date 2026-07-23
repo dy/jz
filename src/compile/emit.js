@@ -4601,7 +4601,20 @@ export const emitter = {
           }
           const et = aux & 7, isView = (aux & 8) !== 0
           const shift = (aux & 16) ? 3 : et <= 1 ? 0 : et <= 3 ? 1 : et <= 6 ? 2 : 3
-          const base = ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(emit(recv))], ['i64.const', LAYOUT.OFFSET_MASK]]]
+          // A ptr-NARROWED receiver (typed param/local carried as a raw i32
+          // offset) IS the base — asF64 on it would coerce the offset
+          // NUMERICALLY (f64.convert_i32_s) and the box-decode below would
+          // extract garbage bits from a plain number (module-global typed
+          // array passed as param → versioning guard read a wild length →
+          // OOB on a perfectly bounded loop).
+          const recvIR = emit(recv)
+          // Narrowed signal: an i32-typed emission of a TYPED binding IS the raw
+          // data offset (reps carry val=TYPED; ptrKind rides sig narrowing).
+          const rr = typeof recv === 'string' ? repOf(recv) : null
+          const narrowed = recvIR.type === 'i32' && (rr?.ptrKind === VAL.TYPED || rr?.val === VAL.TYPED)
+          const base = narrowed
+            ? recvIR
+            : ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(recvIR)], ['i64.const', LAYOUT.OFFSET_MASK]]]
           return ['i64.extend_i32_u', ['i32.shr_u',
             ['i32.load', isView ? base : ['i32.sub', base, ['i32.const', 8]]], ['i32.const', shift]]]
         }
