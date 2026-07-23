@@ -641,7 +641,12 @@ for (const [id, claims] of Object.entries(SIZE)) {
     if (tid === 'porf' && !porfAvailable) continue
     test(`bench: size ${id} jz ${claim} vs ${tid}`, () => {
       const s = sizes[id]
-      ok(s?.jz && s?.[tid], `missing size: jz=${s?.jz} ${tid}=${s?.[tid]}`)
+      ok(s?.jz, `missing jz size for ${id}`)
+      // A present-but-broken OPTIONAL rival (binary answers --version, lane
+      // compiles nothing — porf on CI) must not red every per-case row: only
+      // REQUIRED_RIVALS gate hard on absence. Skip the row, keep the signal
+      // in the log.
+      if (!s?.[tid]) return console.log(`  ⊘ ${tid} size missing for ${id} — optional lane produced no row`)
       const ratio = s.jz / s[tid]
       ok(ratio <= SIZE_TOL[claim], `${id}: jz ${s.jz} B / ${tid} ${s[tid]} B = ${ratio.toFixed(3)}× > ${claim} limit ${SIZE_TOL[claim]}×`)
     })
