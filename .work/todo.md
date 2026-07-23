@@ -6431,3 +6431,22 @@ O0/2/speed vs V8 truth. Then subscript-restore + rebuild + battery —
 expect features/speculate/strings kernel reds to clear together.
 VERIFY FIRST next window: read genEphemeralSlotUpsert's entry layout vs
 __hash_get_local's expected layout to name the exact field disagreement.
+
+TRAP-FIX PIPELINE STATE (2026-07-22, IN TREE, NOT LANDED): dictWalkLean
+tightening verified natively (trap repros fixed, test/dyn-keys.js 3/7
+green incl. histogram-RMW lean preservation) BUT the pipeline is red:
+(1) SKM repro STILL fails — the 0-miss residual (__dyn read of an
+undefined-key returning number 0 instead of undefined; localized to the
+__hash_get_local(_h) caller chain — genLookupStrict itself defaults
+missing=UNDEF_NAN ✓, so the 0 enters via a CALLER or a different arm;
+last WAT probe showed __dyn_get_any_t_h in play) keeps subscript's
+isStmt(prec[hole]) wrongly true — fixing IT is load-bearing for the
+whole SKM family; (2) the REBUILT kernel (with the analyze fix) fails
+never-grown's structural test ("token loop resolves no array base") —
+the tightening changed analysis outcomes inside the kernel's own build;
+likely re-exclude never-grown with a parity note OR trace the interplay;
+(3) two more legs show fail 3/fail 2 — details in scratchpad/land.log.
+NEXT WINDOW ORDER: (a) fix the 0-miss residual (trace the exact arm via
+the typeof probe at O2 + targeted WAT dump of $f's read), (b) rerun SKM
+repro (expect clear), (c) triage never-grown structural, (d) full
+battery, land everything together.
