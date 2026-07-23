@@ -6587,3 +6587,37 @@ pins), kernel leg 1225, dyn-keys+parser-bugs 28, full import-syntax matrix
 green in-kernel (named sq/dq, default, namespace, trailing), mod-abi
 end-to-end native 5 = kernel 5, FULL BATTERY 3059/0. MODULES-ABI FRONTIER
 CLOSED: the kernel compiles+runs multi-module bundles.
+
+SSO/JSON CLUSTER — ROOT CHAIN FULLY TRACED (2026-07-23), fix in progress:
+SYMPTOM: kernel-compiled JSON.parse(runtimeArg) → constant NULL ($f$exp
+returns 0x7ff8000100000000; runtime __jp* family absent from output).
+BC CHAIN (BC6→BC11, all differential native-vs-kernel, marker-gated via
+opts.modules sentinel keys): prepared bodies identical → '()' dispatcher
+identical (parsed.normal=['sf1_0']) → INSIDE emitter: typeof x='string' but
+Array.isArray(x)=TRUE (contradictory!). EXPLANATION (read module/array.js:319):
+Array.isArray COMPILE-TIME-FOLDS to const 1 when valTypeOf(x)===VAL.ARRAY —
+when NATIVE jz compiled the kernel, the inference (param lattice) typed the
+JSON.parse emit-entry closure's param x as VAL.ARRAY (unsound union over
+analyzable call sites; the spread call site ctx.core.emit[callee](...normal)
+in emitBuiltinCall passes arbitrary values). In-kernel then: isArr hardwired
+true → x[0] via __arr_idx which RETURNS UNDEF ON TAG MISMATCH (array.js
+__arr_idx tag guard) → x[0]==null true → head-coercion rewrites arg to
+['str','null'] → kernel's own JSON.parse('null')... const-folds to null.
+NEXT: find where the param lattice types value-escaping closure params (narrow
+param lattice / paramReps; valueUsed poisoning missing?) — the FIX is to
+poison lattice entries for funcs called via spread/closure-table with unknown
+args, killing the whole unsound-fold class (json 9 / objects 11 / strings 2
+cluster + likely speculate). The minted name is 'sf1_0' (T='',
+ast.js:10 — invisible in err dumps; 8 UTF-8 bytes).
+BONUS FIXES LANDED IN TREE (this wave, unpushed):
+1. subscript template.js: template chunks now cook \uXXXX/\xHH/\u{...}/
+   line-continuations via decodeEscape extracted+exported from string.js
+   (was: esc map {n r t b f v} only — backslash dropped, 'uE000' kept as
+   text). Fixed in /Users/div/projects/subscript (UNCOMMITTED — commit
+   locally, NEVER push) + jz node_modules copy + kernel rebuilt with it.
+   subscript suite 359 green. Probe: tmpl==lit now 1, len 8 (byte-len
+   semantics by design).
+2. (finding, unfixed) jz-compiled JSON.parse(undefined) returns null — must
+   throw SyntaxError (ToString coercion path; test json:43 class).
+PROBES: scratchpad/{sso,sso2..6,diag2,bc*,isarr*,concat2,nullish,streq,
+finret*,finloop,earlyret*,spread}.mjs.
