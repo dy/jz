@@ -245,6 +245,8 @@ Everything else is compiled, lowered by the built-in jzify pass, or rejected wit
 - **Intl, Temporal** — ICU/CLDR and timezone tables are hundreds of KB to MB, against single-digit-kB output. `Date` keeps deterministic UTC slices.
 - **UTF-16 string semantics & Unicode tables** — strings are UTF-8 bytes; `\p{…}` classes, `normalize` forms and locale case tables are the same multi-KB cost Intl was refused for.
 - **Arbitrary-precision BigInt** — BigInt is a raw 64-bit integer (wraps past ±2⁶³); bignum chains allocate unboundedly, and security crypto is explicitly out of scope.
+- **Boolean identity in dynamic keys** — booleans are bare-number carriers (`true` ≡ 1), so a runtime-flowing `o[b]` reads key `'1'`, not `'true'` (JS ToPropertyKey). Static boolean keys fold correctly; pinned in test/dyn-keys.js until the carrier learns ToPropertyKey.
+- **Errors are their message strings** — `new Error(msg)` (and the TypeError/RangeError/… family) lowers to `msg` itself: `throw`/`catch`/`String(e)` all carry the message, but `e.message`/`e.name`/`e.stack` read `undefined` (no error object exists). Runtime-raised errors (bounds, coercion) carry numeric codes. Pinned in test/errors.js.
 - **WeakRef, FinalizationRegistry** — no GC to observe; `WeakMap`/`WeakSet` fold to `Map`/`Set`.
 - **Annex B legacies, DOM, fetch, Node APIs** — the parts of JS the subset exists to shed; I/O stays host-side.
 
@@ -509,9 +511,9 @@ It's **experimental** (pre-1.0) — the supported subset and the wasm ABI may st
 <details>
 <summary><strong>Can I compile in the browser or a Worker?</strong></summary>
 
-Yes. The compiler is pure and synchronous (no I/O — you hand it the sources), so it runs anywhere JavaScript does — main thread, a Web Worker, or a build step — and compiling a kernel takes single-digit-to-tens of milliseconds, fast enough to do on the fly. The `.wasm` it produces is just a module: instantiate it in any WebAssembly host — browser main thread, Web/Service Worker, Node/Deno/Bun, or a standalone engine.
+Yes. The compiler is pure and synchronous (no I/O — you hand it the sources), so it runs anywhere JavaScript does — main thread, a Web Worker, or a build step — and compiling a kernel takes single-digit-to-tens of milliseconds. The `.wasm` it produces is just a module: instantiate it in any WebAssembly host — browser main thread, Web/Service Worker, Node/Deno/Bun, or a standalone engine.
 
-Because compiling is that cheap, WASM becomes a *live medium*, not just a build artifact: hot-swap a compute kernel without a reload, recompile user-supplied source on the fly, or treat compiling as part of scripting — not a deploy step.
+Because compiling is that cheap, WASM becomes a *live medium*, not just a build artifact: hot-swap a compute kernel without a reload, recompile user-supplied source on the fly, or treat compiling as part of scripting.
 
 </details>
 
@@ -519,7 +521,7 @@ Because compiling is that cheap, WASM becomes a *live medium*, not just a build 
 <details>
 <summary><strong>Can JZ compile itself?</strong></summary>
 
-Yes — fully. JZ compiles its own **entire** source to `dist/jz.wasm`: the whole pipeline (parse → jzify → prepare → compile → encode) runs inside WASM, taking a source string and returning wasm bytes with no host help. In other words, `dist/jz.wasm` is JZ compiled by JZ.
+Yes — fully. JZ compiles its own entire source to `dist/jz.wasm`: the whole pipeline (parse → jzify → prepare → compile → encode) runs inside WASM, taking a source string and returning wasm bytes with no host help.
 
 `npm run test:self` is the CI gate — it builds `dist/jz.wasm`, then round-trips real programs through the in-wasm compiler and runs their output, proving the wasm-hosted compiler produces working modules.
 

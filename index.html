@@ -1323,7 +1323,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>JZ compiles the distilled JavaScript subset – Crockford’s “good parts”, into native-grade WASM.</p>
+            <p>JZ compiles the distilled JavaScript subset – Crockford’s “good parts” – into native-grade WASM.</p>
             <p><b>Valid JZ is valid JS</b>. Same source runs as plain JS or compiles without rewrite to <code>.wasm</code> – sandboxed, portable, memory-safe. No runtime, no GC, no type annotations, auto-SIMD, deterministic output.</p>
             <table>
               <thead>
@@ -1399,7 +1399,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>AssemblyScript is a TypeScript dialect — can’t run in a JS engine. Porffor chases the whole JS spec that affects performance and cannot compile itself yet.</p>
+            <p>AssemblyScript is a TypeScript dialect — can’t run in a JS engine. Porffor chases the whole JS spec, which costs performance, and cannot compile itself yet.</p>
           </div>
         </details>
 
@@ -1418,7 +1418,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>The performance bar is uncompromising: JZ leads V8 and AssemblyScript by geomean on the covered corpus and targets near-native speed. The release gate is stricter than an average: JZ must be the fastest WASM on every case. Per-case numbers, missing target coverage, and every measured loss stay visible on the <a href="bench/">bench page</a>; a rival win remains a bug to close, not an exception to hide.</p>
+            <p>JZ leads V8 and AssemblyScript by geomean on the covered corpus and targets near-native speed. The release gate is stricter than an average: JZ must be the fastest WASM on every case. Per-case numbers, missing target coverage, and every measured loss stay visible on the <a href="bench/">bench page</a>; a rival win remains a bug to close, not an exception to hide.</p>
             <a href="bench/" class="bench-svg" id="bench-chart" role="img" aria-label="Geomean speed across the bench corpus — jz vs V8, Rust, Go, AssemblyScript, Porffor, all compiled to WASM and run in V8; native C the lone reference, jz = 1.00× baseline"></a>
             <p>If you hit a slow case, <a href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">report it →</a></p>
           </div>
@@ -1437,7 +1437,7 @@
           <summary><span class="fq">Can it compile itself?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">JZ compiles itself to <a href="https://github.com/dy/jz/releases/latest/" target="_blank" rel="noopener"><code>jz.wasm</code></a>, and CI passes self-compiled build the full test suite. <a href="https://github.com/dy/jz/actions/workflows/selfhost.yml" target="_blank"
+          <div class="ans">JZ compiles itself to <a href="https://github.com/dy/jz/releases/latest/" target="_blank" rel="noopener"><code>jz.wasm</code></a>, and the self-compiled build passes the full test suite in CI. <a href="https://github.com/dy/jz/actions/workflows/selfhost.yml" target="_blank"
               rel="noopener" aria-label="self-host CI status"><img src="https://github.com/dy/jz/actions/workflows/selfhost.yml/badge.svg" alt="self-host CI status" style="height:18px;vertical-align:middle"></a></div>
         </details>
 

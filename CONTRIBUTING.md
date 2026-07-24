@@ -44,11 +44,7 @@ transform.js    jzify as standalone source→source (`jz/transform`; parse → j
 
 Pipeline: `source → parse (subscript/jessie) → jzify (default-on; strict skips) → prepare → compile → optimize → watr (WAT→binary)`
 
-All values are f64. Heap types use NaN-boxing (see README). Shared `ctx` object — see [`src/ctx.js`](src/ctx.js) for the lifecycle ownership table (which phase owns which subkey, writers, readers).
-
-## State management
-
-The global `ctx` object (defined in `src/ctx.js`) is the single source of compilation state. Each namespace (`ctx.core`, `ctx.module`, `ctx.func`, `ctx.types`, etc.) has a declared lifecycle phase and clear ownership. The docstring at the top of `src/ctx.js` contains the full ownership table — consult it before adding new state to understand which phase should own it.
+All values are f64. Heap types use NaN-boxing (see README). The shared `ctx` object is the single source of compilation state — the docstring in [`src/ctx.js`](src/ctx.js) carries the lifecycle ownership table (which phase owns which subkey, writers, readers); consult it before adding new state.
 
 ## Adding a stdlib method
 

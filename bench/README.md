@@ -467,7 +467,7 @@ to a constant).
 | **nqueens** — backtracking | **6.05 ms** | **1.29×** | 0.93× | 0.78× | deep recursion + bitmask branch |
 | **dict** — hash table | 4.11 ms | 0.78× | 0.81× | 0.39× | hash scatter + probe-chain gather |
 
-The split is sharp and informative. **JZ is excellent at dense dispatch and
+**JZ is excellent at dense dispatch and
 in-cache gather**: it wins `vm` against the *entire* field — including native
 `clang -O3` (the if/else interpreter loop lowers to tight branches with no
 NaN-box overhead, where AS pays per-access bounds checks), and wins `spmv`/`sieve`
@@ -507,7 +507,7 @@ tagged unions, stack-buffer formatting, string hash maps, value-type structs.
 | **immutable** — fresh-object step | 1.32 ms | 0.33× | 0.52× | 0.06× | escape analysis / allocation churn |
 | **shapes** — 8-shape record scan | 18.1 ms | 0.19× | 0.06× | 0.09× | schema-union access vs megamorphic load IC |
 
-The probes split jz's dynamic story cleanly. On `dispatch` **jz leads the
+On `dispatch` **jz leads the
 systems-language wasm field** — AS 1.23×, Rust/C/Zig/Go→wasm 1.05–1.2× — its
 data-selected `call_indirect` is already tighter than what the systems
 languages ship through the same table (only MoonBit's moonrun row edges it);
