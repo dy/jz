@@ -2771,7 +2771,11 @@ const handlers = {
   '+'(a, b) {
     if (b === undefined) {
       const na = prep(a)
-      if (isLit(na) && typeof na[1] === 'number') return na
+      // Subnormals excluded structurally — same self-host bigint-carrier reason
+      // as the `-` fold below; the surviving `u+` lets emit raise the BigInt
+      // TypeError (native) or coerce at runtime (kernel).
+      if (isLit(na) && typeof na[1] === 'number' && typeof na[1] !== 'bigint' &&
+        !(na[1] !== 0 && Math.abs(na[1]) < 2.2250738585072014e-308)) return na
       includeForNumericCoercion()
       return ['u+', na]
     }
@@ -2797,7 +2801,17 @@ const handlers = {
     // i32 negation (i32 has no signed zero), collapsing -0→+0 — observable via sort's
     // -0<+0 tiebreak, Object.is, and 1/x. Leaving it as a runtime `u-` emits f64.neg,
     // which preserves the sign in both engines; V8 re-folds it, so no native cost.
-    if (b === undefined) { const na = prep(a); return isLit(na) && typeof na[1] === 'number' && typeof na[1] !== 'bigint' && na[1] !== 0 ? [, -na[1]] : ['u-', na] }
+    // Subnormals are excluded STRUCTURALLY (not via typeof): every bigint carrier
+    // with |i64| < 2^52 reads as a subnormal f64, and under self-host the typeof
+    // guard alone misses it here (the slot flows as a plain f64, not a boxed
+    // value), so `-5n` would fold via i32 negation into -0 garbage. A genuine
+    // subnormal literal stays a runtime `u-` (f64.neg; V8 refolds — no cost),
+    // same precedent as the unfolded -0 below.
+    if (b === undefined) {
+      const na = prep(a)
+      return isLit(na) && typeof na[1] === 'number' && typeof na[1] !== 'bigint' && na[1] !== 0 &&
+        !(Math.abs(na[1]) < 2.2250738585072014e-308) ? [, -na[1]] : ['u-', na]
+    }
     return ['-', prep(a), prep(b)]
   },
 

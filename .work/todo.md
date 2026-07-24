@@ -70,8 +70,32 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
     e.message undefined even unthrown); jz runtime errors throw raw numeric
     codes (JSON.parse('nope') throws number) — the message-evaporation
     mechanism.
-  * bigint family (statements 2 + data 1): both-bigint bitwise ops falsely
-    mix-rejected in-kernel (subnormal-carrier typeof heuristic).
+  * bigint family + preeval CLEARED 2026-07-24 (statements/data/preeval
+    un-excluded; kernel suite 1911/1918 [only shaped-parser assert],
+    battery 3075/0). Roots, all one family -- the parser CONFLATES small
+    bigints with subnormal f64 literals (5e-324 exports as 1n in-kernel):
+      - numLiteralNode ZERO-exemption ([, 0n] degrades to [, 0], so a
+        zero literal is not PROOF of number-ness; 0n|5n / 0n-5n cleared;
+        cost: literal-0 mixes accepted permissively);
+      - WIDE_BIGINT probe (ctx.js; shl-mask-proof + string-parse-of-2^64
+        double probe) gates rational carry OFF in-kernel -- it needs
+        arbitrary precision, the wrapping i64 folded silently-wrong
+        values in EVERY in-kernel compile; falls back to sequential
+        bit-exact-vs-JS folds; 2 precision tests onKernel-guarded;
+      - STRUCTURAL subnormal fold guards (typeof misses the carrier when
+        the slot flows as plain f64): prepare u+/u- folds, pre-eval
+        numLitResult (both literal readers), emitNeg (routes nonzero-
+        subnormal literals down the i64 path under !WIDE_BIGINT).
+    ONE curated row remains (-1n < 0n at O2+, onKernel-guarded in
+    statements.js): the (i64.sub 0 1) const chain reaches WATR's generic
+    fold IN-KERNEL, whose dynamically-typed compare reads the -1n carrier
+    (all-ones bits) as f64 NaN -> folds false. KEY UNIFICATION: this is
+    the same watr-in-kernel dynamic-compare-on-carrier class suspected in
+    the shaped-parser hunt (fold i64/BigInt arithmetic) -- one cure
+    (structural bigint literals through the parser, or proven-kind watr
+    fold paths) closes both. Emit-time kind-pinned const folds were tried
+    and REVERTED (rounds 6-7): String()/convention round-trips of negative
+    bigints in-kernel broke sibling rows -- don't re-attempt that route.
   * speculate CLEARED 2026-07-23 (narrowed-param versioning-guard fix:
     len64Of box-decoded the raw i32 offset of a TYPED-narrowed receiver —
     native+kernel OOB; now uses the offset directly; kernel leg 6/0,

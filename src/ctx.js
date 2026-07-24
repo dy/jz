@@ -552,6 +552,16 @@ export function reset(proto, globals, bridge) {
 // `cfg?.flag` read was a HASH probe; the same read is slot-cheap on V8, and
 // that asymmetry alone moved the warm self-host ratio. Lives here (not
 // optimize/index.js) so ir.js/module consumers stay cycle-free.
+/** True when the ENGINE RUNNING THE COMPILER has arbitrary-precision BigInt
+ *  (native JS). False under self-host: the kernel's BigInt is a wrapping i64
+ *  carrier, and small-bigint values are byte-identical to subnormal f64s —
+ *  consumers (pre-eval rational carry, emitNeg) pick carrier-safe paths on it.
+ *  Two probes because either alone can be defeated: wasm i64.shl masks the
+ *  shift count (1n<<64n wraps to 1n<<0n = 1n), and a compile-time pre-fold
+ *  could bake the shift probe's native answer into the kernel — the string
+ *  parse of 2^64 (wraps to 0 on i64 accumulation) re-checks at run time. */
+export const WIDE_BIGINT = (1n << 64n) !== 1n && BigInt('18446744073709551616') !== 0n
+
 export const OPTF = Object.freeze({
   inlineToNum: 1, hashRmwFusion: 2, inplaceStore: 4, staticClosureEnv: 8,
   devirtClosureTables: 16, devirtDynProps: 32, leanCheckedIdx: 64,

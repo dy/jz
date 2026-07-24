@@ -85,7 +85,7 @@
  */
 
 import { extractParams, classifyParam } from '../ast.js'
-import { ctx } from '../ctx.js'
+import { ctx, WIDE_BIGINT } from '../ctx.js'
 import { MATH_KERNEL, powFold } from './math-kernel.js'
 
 // ---------------------------------------------------------------------------
@@ -154,6 +154,14 @@ const boolResult = (v) => ({ t: 'bool', v: !!v })
 const NULL_RESULT = { t: 'null' }
 const UNDEF_RESULT = { t: 'undef' }
 
+// Nonzero-subnormal number literals are refused STRUCTURALLY: every bigint
+// carrier with |i64| < 2^52 reads as a subnormal f64, and under self-host
+// `typeof` reports it as 'number' at these sites (the slot flows as a plain
+// f64, not a boxed value), so folding would evaluate `5n` as 2.5e-323. A
+// genuine subnormal literal just stays unfolded — same trade as prepare's
+// unary ± guards.
+const numLitResult = (v) => v !== 0 && Math.abs(v) < 2.2250738585072014e-308 ? null : numResult(v)
+
 const isAsciiSafe = (s) => /^[\x00-\x7F]*$/.test(s)
 
 function isLiteralNode(node) {
@@ -167,7 +175,7 @@ function literalOf(node) {
   const op = node[0]
   if (op == null) {
     const v = node[1]
-    if (typeof v === 'number') return numResult(v)
+    if (typeof v === 'number') return numLitResult(v)
     if (v === null) return NULL_RESULT
     if (v === undefined) return UNDEF_RESULT
     if (typeof v === 'boolean') return boolResult(v)
@@ -360,7 +368,7 @@ function evalConst(node, env, state) {
 
   if (op == null) {
     const v = node[1]
-    if (typeof v === 'number') return numResult(v)
+    if (typeof v === 'number') return numLitResult(v)
     if (v === null) return NULL_RESULT
     if (v === undefined) return UNDEF_RESULT
     if (typeof v === 'boolean') return boolResult(v)
@@ -705,7 +713,10 @@ function foldFunctionBody(body, state) {
  *  the same funcInfo objects compile() reads). Single top-to-bottom pass; see module doc for
  *  why that's already a full fixpoint. */
 export function preEval(ast) {
-  const rationalOn = ctx.transform.optimize?.rationalConst !== false
+  // Rational carry needs arbitrary-precision BigInt (n/d grow past 64 bits in
+  // one fold) — on the narrow self-host carrier it would fold silently-wrong
+  // values, so fall back to sequential bit-exact-vs-JS folding there.
+  const rationalOn = WIDE_BIGINT && ctx.transform.optimize?.rationalConst !== false
   const funcByName = new Map(ctx.func.list.map(f => [f.name, f]))
   const state = { rationalOn, funcByName, evaluating: new Set() }
   for (const f of ctx.func.list) f.body = foldFunctionBody(f.body, state)

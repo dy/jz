@@ -27,7 +27,7 @@ import {
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
   ASSIGN_OPS, MUTATE_OPS, firstRefKind, isLeaf,
 } from '../ast.js'
-import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, WIDE_BIGINT } from '../ctx.js'
 import { i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR } from '../../layout.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
@@ -239,7 +239,16 @@ function builtinFunctionValue(name) {
 
 /** Emit unary negation: constant-fold, or i32 sub from 0 / f64.neg. */
 const emitNeg = (a) => {
-  if (valTypeOf(a) === VAL.BIGINT) return fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
+  // Under the narrow self-host carrier a nonzero-SUBNORMAL literal IS a small
+  // bigint the parser conflated (a genuine subnormal literal already misreads
+  // as bigint at every kernel boundary — `5e-324` exports as 1n), and typeof
+  // misses it here (the slot flows as a plain f64) — so take the i64 negation
+  // path structurally. Native (WIDE_BIGINT) never enters: real bigints hit the
+  // valTypeOf arm, real subnormals keep f64 semantics below.
+  if (valTypeOf(a) === VAL.BIGINT ||
+      (!WIDE_BIGINT && Array.isArray(a) && a[0] == null && typeof a[1] === 'number' &&
+        a[1] !== 0 && Math.abs(a[1]) < 2.2250738585072014e-308))
+    return fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
   const v = emit(a)
   if (isLit(v)) return emitNum(-litVal(v))
   if (isI32Num(v)) return typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32')
@@ -3441,8 +3450,14 @@ function compoundAssign(name, val, f64op, i32op) {
 // is PROVABLE from source — one side proven BIGINT, the other a NUMERIC LITERAL —
 // and stay permissive otherwise: kernel carriers read NUMBER as a kind-DEFAULT
 // (not a proof), so rejecting proven-BIGINT × default-NUMBER breaks sound kernels.
+// A ZERO literal is exempt from the proof: `0n`'s i64 carrier is bit-identical
+// to the number 0.0, so under self-host `[, 0n]` degrades to `[, 0]` and typeof
+// cannot tell them apart — treating literal 0 as proven-number falsely rejects
+// `0n | 5n` in-kernel. Cost: a literal-0 mix (`0 | 5n`) is accepted (permissive,
+// per the policy above) instead of throwing.
 const numLiteralNode = (n) =>
-  typeof n === 'number' || (Array.isArray(n) && n[0] == null && typeof n[1] === 'number')
+  (typeof n === 'number' && n !== 0) ||
+  (Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && n[1] !== 0)
 function bigintMixReject(op, a, b) {
   if (b === undefined) return
   const aBig = valTypeOf(a) === VAL.BIGINT, bBig = valTypeOf(b) === VAL.BIGINT

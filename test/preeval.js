@@ -154,6 +154,9 @@ test('value: Math.pow / ** constant fold — exact 3-way split emit.js already u
 // ============================================================================
 
 test('precision: rational carry beats sequential per-op rounding', () => {
+  // Native-only refinement: the kernel's i64 BigInt can't carry rationals, so
+  // preEval detects the narrow carrier and folds bit-exact-vs-JS instead.
+  if (onKernel()) return
   const naive = 0.1 + 0.2 - 0.3   // per-op: round(round(0.1+0.2) - 0.3) = 1/2^54
   const folded = run('export let f = () => 0.1 + 0.2 - 0.3').f()
   ok(Math.abs(folded) < Math.abs(naive), `expected |${folded}| < |${naive}|`)
@@ -167,6 +170,7 @@ test('precision: rationalConst:false falls back to bit-exact-vs-JS per-op roundi
 })
 
 test('precision: a case where naive intermediate rounding loses a whole unit, rational carry does not', () => {
+  if (onKernel()) return   // native-only refinement — same reason as above
   // naive: (1e16 + 1) rounds to 1e16 (1 is below the ULP there) -> minus 1e16 -> 0.
   // exact: the true value of the formula over the exact double literals is 1.
   const naive = 1e16 + 1 - 1e16
