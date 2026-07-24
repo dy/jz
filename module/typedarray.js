@@ -1589,15 +1589,19 @@ export default (ctx) => {
     const r = resolveElem(arr)
     if (r == null) return null // unknown type, fallback to generic
     const { et, isView, isBigInt } = r
-    const key = idxKey(arr, i)
-    const rmwRead = ctx.types.rmwReads?.get(key)
+    // idxKey builds a string (JSON.stringify for expression indices) — price
+    // it only when an RMW map is actually populated; the maps are empty on
+    // every non-fused read, and the per-read concat+hash was a measurable
+    // slice of the self-host warm ratio (the optFlags cost class).
+    const key = ctx.types.rmwReads?.size || ctx.types.rmwBounds?.size ? idxKey(arr, i) : null
+    const rmwRead = key != null ? ctx.types.rmwReads?.get(key) : undefined
     if (rmwRead && et <= 5) {
       const rd = typed([(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s',
         ['local.get', `$${rmwRead}`]], 'f64')
       rd.valKind = VAL.NUMBER
       return rd
     }
-    const proven = typedIdxProven(arr, i) || ctx.types.rmwBounds?.has(key)
+    const proven = typedIdxProven(arr, i) || (key != null && ctx.types.rmwBounds?.has(key))
     const loadOf = (off) => elemLoadIR(r, off)
     if (!proven) {
       const bundleIn = typedBundleGuard(arr, i)
