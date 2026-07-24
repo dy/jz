@@ -34,8 +34,14 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
       perf gate 1.041x vs 0.99 cap — CI builds the kernel with PUBLISHED
       watr@5.7.10, missing the local watr optimizer work the 0.949x baseline
       was measured with — same watr-publish root as determinism.
-* [ ] Bench refresh at HEAD → commit results.json + re-check claims gates
-      (was 50 commits stale with 7 red rows predating the perf wave).
+* [x] Bench refresh at HEAD: CI bench workflow now commits results.json
+      (18aa6245, measured at d74b3d6 on linux/EPYC) — durable evidence
+      current. NEW FINDING from the fresh numbers: strict-fastest-WASM is
+      MACHINE-DEPENDENT — EPYC runner: 37 strict / 4 band / 17 losing
+      (fft 1.33x, trace 1.86x, vm 1.90x, lz 1.20x vs c-wasm — cases that
+      WIN on the local M4 reference). V8 tiering/microarch differences.
+      CLAIMS DECISION NEEDED (user): scope the strict claim per reference
+      machine, or open an EPYC-targeted perf frontier.
 * [ ] Kernel long-tail (each characterized in the archive):
   * shaped-parser: LOCALIZED (BC14 + host-side pass bisect): the throw is
     a jz-RUNTIME error code (raw 0) firing inside WATR-IN-KERNEL during
