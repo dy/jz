@@ -2,7 +2,7 @@
 
 ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](http://npmjs.org/package/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
 
-**JZ** (_javascript zero_) compiles the **numeric JavaScript you already test** to fast, GC-free WASM — same source, no type annotations, no runtime.
+**JZ** (_javascript zero_) compiles numeric JavaScript to fast, GC-free WASM — same source, no type annotations, no runtime.
 
 ```js
 import jz from 'jz'
