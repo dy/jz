@@ -85,8 +85,20 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
     template construction — arena pressure or a slice/fromCharCode bounds
     bug in-kernel. number.js's IDENTICAL hexToBytes (el/ryu tables) works
     in-kernel, so suspect scale (2 tables + template) or the pow-specific
-    path. NEXT: BC-stage the crPow section (mark powHexToBytes vs
-    genPowTranscend vs wat() registration) via a kernel rebuild round.
+    path. FULLY PINNED 2026-07-24 (BC15 stages + no-rebuild probes):
+    tables build CORRECTLY in-kernel (6144B each); trap is inside
+    powResolvePool on the 603KB joined body — and the ROOT is that
+    KERNEL-COMPILED REGEX ERRS (code 0) on CONTROL-CHAR ESCAPES in
+    patterns (/\u0001(\d+)\u0002/ fails at ANY size; plain /X(\d+)Y/
+    exec+callback-replace work). TWO fixes: (a) pragmatic — rewrite
+    powResolvePool's two regex passes as manual indexOf/charCodeAt scans
+    (byte-identical output, kernel-safe, likely faster) → clears pow-fold
+    3 + fifthroot 2; (b) root — hunt the kernel regex escape path for
+    control chars (module/regex.js pattern compile or literal marshalling)
+    — banked as its own kernel item. ALSO NOTED: native quadratic-concat
+    arena exhaustion at ~500KB+ built strings (s += in loop, 60k reps) —
+    model-expected (no GC) but the concat-buffer SRoA doesn't catch the
+    mixed-chunk shape; potential future lever.
     async 1 (wasi-warning channel).
   * kernel-parity TODO rows (dict|2, dict|3, sum|3, arr|3): in-kernel
     vectorizer/unroller bails where native fires (O3 output smaller).
