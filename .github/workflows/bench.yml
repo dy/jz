@@ -16,6 +16,7 @@ on:
       - 'LICENSE'
       - 'CONTRIBUTING.md'
       - 'bench/results.json'
+      - 'bench/results-ci.json'
   pull_request:
     paths-ignore:
       - '**/*.md'
@@ -25,10 +26,11 @@ on:
       - 'LICENSE'
       - 'CONTRIBUTING.md'
       - 'bench/results.json'
+      - 'bench/results-ci.json'
 jobs:
   bench:
     runs-on: ubuntu-latest
-    # The publish step commits bench/results.json + bench.svg back to main;
+    # The publish step commits bench/results-ci.json back to main;
     # the default GITHUB_TOKEN is read-only and 403s that push without this.
     permissions:
       contents: write
@@ -132,11 +134,17 @@ jobs:
           node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf,jz,jz-wasmtime,jz-w2c,wat,numpy --json || exit 1
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          # Only the measured dataset is committed here (results.json + the geomean
-          # SVG). dist/ and bench/web/*.wasm are build output — pages.yml rebuilds
-          # and serves them from the deploy artifact, never from tracked files.
-          git add bench/results.json bench/bench.svg
-          git diff --cached --quiet || git commit -m 'bench: refresh results.json + bench.svg [skip ci]'
+          # PER-MACHINE datasets: bench/results.json is the REFERENCE-machine
+          # evidence (Apple M4, committed by the release discipline — the strict
+          # fastest-wasm claim and the jz-w2c native lane are scoped to it; this
+          # runner has no wasm2c toolchain and different V8 tiering, so letting
+          # it overwrite the reference file both dropped the native lane and
+          # made the headline numbers machine-dependent). The runner's own
+          # measurement is published as the SECONDARY dataset results-ci.json.
+          mv bench/results.json bench/results-ci.json
+          git checkout -- bench/results.json bench/bench.svg
+          git add bench/results-ci.json
+          git diff --cached --quiet || git commit -m 'bench: refresh results-ci.json (runner dataset) [skip ci]'
           # Two waves pushed minutes apart both refresh the same GENERATED files —
           # a plain rebase conflicts on the SVG and kills the run. `-X theirs`
           # (in rebase terms: the commit being replayed, i.e. OUR snapshot) auto-

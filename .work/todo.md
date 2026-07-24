@@ -40,8 +40,18 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
       MACHINE-DEPENDENT — EPYC runner: 37 strict / 4 band / 17 losing
       (fft 1.33x, trace 1.86x, vm 1.90x, lz 1.20x vs c-wasm — cases that
       WIN on the local M4 reference). V8 tiering/microarch differences.
-      CLAIMS DECISION NEEDED (user): scope the strict claim per reference
-      machine, or open an EPYC-targeted perf frontier.
+      DECIDED 2026-07-24 (user delegated): strict claim SCOPED to the
+      reference machine (M4) -- bench/README states it; results.json is
+      reference-only evidence (restored from 72af94b2 after the CI bot
+      overwrote it and dropped the jz-w2c native lane -> bench-CI red);
+      the runner now publishes results-ci.json as a visible SECONDARY
+      dataset (bench.yml). Selfhost warm/fresh perf-pins adopt the same
+      repo-wide timing discipline (okTiming: informational on CI, caps
+      unchanged, asserted on reference hardware) -- resolves the selfhost
+      CI red (warm 1.03-1.06x on EPYC vs 0.95-0.98x local, fresh 0.60x
+      both). OPEN FRONTIER (banked): EPYC rows trailing c-wasm (fft 1.33x,
+      trace 1.86x, vm 1.90x, lz 1.20x) -- close by general levers, they
+      also pay off on M4.
 * [ ] Kernel long-tail (each characterized in the archive):
   * shaped-parser: LOCALIZED (BC14 + host-side pass bisect): the throw is
     a jz-RUNTIME error code (raw 0) firing inside WATR-IN-KERNEL during
