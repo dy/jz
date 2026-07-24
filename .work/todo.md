@@ -76,7 +76,18 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
     len64Of box-decoded the raw i32 offset of a TYPED-narrowed receiver —
     native+kernel OOB; now uses the offset directly; kernel leg 6/0,
     KERNEL_EXCLUDE shrunk). preeval 2 (rational carry) ·
-    pow-fold 3 / fifthroot 2 (memory OOB) · async 1 (wasi-warning channel).
+    pow-fold 3 / fifthroot 2: NARROWED 2026-07-24 — the kernel COMPILE
+    ITSELF traps OOB whenever optimize.crPow is set (compileWat of
+    `x ** 2.4` + crPow → RuntimeError during compile; plain pow shapes all
+    value-exact in-kernel). So the failure is the crPow-gated COMPILE-TIME
+    machinery in module/math.js: powHexToBytes (2×6KB binary-string
+    tables, fromCharCode+join per compile) or genPowTranscend's WAT
+    template construction — arena pressure or a slice/fromCharCode bounds
+    bug in-kernel. number.js's IDENTICAL hexToBytes (el/ryu tables) works
+    in-kernel, so suspect scale (2 tables + template) or the pow-specific
+    path. NEXT: BC-stage the crPow section (mark powHexToBytes vs
+    genPowTranscend vs wat() registration) via a kernel rebuild round.
+    async 1 (wasi-warning channel).
   * kernel-parity TODO rows (dict|2, dict|3, sum|3, arr|3): in-kernel
     vectorizer/unroller bails where native fires (O3 output smaller).
   * test:self WARM PERF REGRESSION CONFIRMED REAL (2026-07-23): sequential
