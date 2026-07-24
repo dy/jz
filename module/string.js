@@ -1751,7 +1751,12 @@ export default (ctx) => {
 
   // Search args go through ToString per spec — coerce non-string-typed args
   // via __to_str so the underlying byte-compare receives an actual string.
-  const stringSearchMethod = (name) => (str, sfx) => {
+  const stringSearchMethod = (name) => (str, sfx, pos) => {
+    // The position argument was silently DROPPED (compiled as position 0) —
+    // silent wrong beats loud missing, so reject until the helper threads an
+    // offset (self-host hit this: powResolvePool's startsWith(s, i-10)
+    // classified nothing). Slice first, or use indexOf.
+    if (pos !== undefined) err(`${name === '__str_startswith' ? 'startsWith' : 'endsWith'} position argument not supported — slice the receiver first`)
     const guard = regexpSearchGuard(sfx); if (guard) return guard
     inc(name)
     const esfx = emit(sfx)

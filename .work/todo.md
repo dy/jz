@@ -76,29 +76,27 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
     len64Of box-decoded the raw i32 offset of a TYPED-narrowed receiver —
     native+kernel OOB; now uses the offset directly; kernel leg 6/0,
     KERNEL_EXCLUDE shrunk). preeval 2 (rational carry) ·
-    pow-fold 3 / fifthroot 2: NARROWED 2026-07-24 — the kernel COMPILE
-    ITSELF traps OOB whenever optimize.crPow is set (compileWat of
-    `x ** 2.4` + crPow → RuntimeError during compile; plain pow shapes all
-    value-exact in-kernel). So the failure is the crPow-gated COMPILE-TIME
-    machinery in module/math.js: powHexToBytes (2×6KB binary-string
-    tables, fromCharCode+join per compile) or genPowTranscend's WAT
-    template construction — arena pressure or a slice/fromCharCode bounds
-    bug in-kernel. number.js's IDENTICAL hexToBytes (el/ryu tables) works
-    in-kernel, so suspect scale (2 tables + template) or the pow-specific
-    path. FULLY PINNED 2026-07-24 (BC15 stages + no-rebuild probes):
-    tables build CORRECTLY in-kernel (6144B each); trap is inside
-    powResolvePool on the 603KB joined body — and the ROOT is that
-    KERNEL-COMPILED REGEX ERRS (code 0) on CONTROL-CHAR ESCAPES in
-    patterns (/\u0001(\d+)\u0002/ fails at ANY size; plain /X(\d+)Y/
-    exec+callback-replace work). TWO fixes: (a) pragmatic — rewrite
-    powResolvePool's two regex passes as manual indexOf/charCodeAt scans
-    (byte-identical output, kernel-safe, likely faster) → clears pow-fold
-    3 + fifthroot 2; (b) root — hunt the kernel regex escape path for
-    control chars (module/regex.js pattern compile or literal marshalling)
-    — banked as its own kernel item. ALSO NOTED: native quadratic-concat
-    arena exhaustion at ~500KB+ built strings (s += in loop, 60k reps) —
-    model-expected (no GC) but the concat-buffer SRoA doesn't catch the
-    mixed-chunk shape; potential future lever.
+    pow-fold/fifthroot CLEARED 2026-07-24 (both un-excluded from
+    KERNEL_EXCLUDE; kernel legs 7/0, kernel suite 1566/1573 [only the
+    shaped-parser structural assert red], native battery 3072/0): THREE
+    STACKED kernel gaps peeled inside powResolvePool via BC15 stage
+    bisection on the 603KB joined WAT body (tables were fine, 6144B each):
+      (1) kernel-compiled REGEX ERRS (code 0) on CONTROL-CHAR ESCAPES in
+          patterns (\u0001-class escapes fail at ANY size; plain patterns
+          + exec + callback-replace all work) -> resolver rewritten as a
+          manual indexOf/slice scan (byte-identical output; regex ROOT
+          hunt banked: module/regex.js pattern compile or marshalling);
+      (2) startsWith(s, pos) POSITIONAL ARG SILENTLY DROPPED by jz
+          (native+kernel) -> resolver slice-compares; stringSearchMethod
+          now LOUD-REJECTS the position arg (module/string.js) + pin in
+          test/strings.js; real position support = future item;
+      (3) numeric-keyed OBJECT read with a NUMERIC VARIABLE index
+          (typeOf[id] -> $pt_undefined_NaN locals) hit the documented
+          kernel obj[numVar] gap (2nd confirmed hit after
+          resolveOptimize) -> shared.type/lastUse/regOf are dense ARRAYS.
+    ALSO NOTED: native quadratic-concat arena exhaustion at ~500KB+ built
+    strings (s += in loop, 60k reps) -- model-expected (no GC) but the
+    concat-buffer SRoA misses the mixed-chunk shape; future lever.
     async 1 (wasi-warning channel).
   * kernel-parity TODO rows (dict|2, dict|3, sum|3, arr|3): in-kernel
     vectorizer/unroller bails where native fires (O3 output smaller).

@@ -131,7 +131,7 @@ const argFilters = process.argv.slice(2)
 //     (bigint mixed-op TypeError paths), strings (OOB index), spread, json
 //     (memory OOB), async (wasi-warning channel), objects (Object.assign
 //     unknown-schema), preeval (rational carry), speculate (plan-field),
-//     pow-fold-ulp + fifthroot-ulp (memory OOB), features (jzify parse).
+//     features (jzify parse).
 const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'unswitch-typed-param', 'bench-c', 'kernel-parity',
   // never-grown: value-correct in-kernel; ONE structural assert (raw-base WAT
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22
@@ -144,7 +144,11 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
   // poisoning fixed the Array.isArray const-fold class (analyze.js declared-
   // guard) — 14 kernel value bugs cleared in one fix; json keeps 2 structural
   // shaped-parser-selection asserts (parity gap, not value bugs).
-  'statements', 'data', 'json', 'async', 'preeval', 'pow-fold-ulp', 'fifthroot-ulp'])  // 'speculate' cleared 2026-07-23: narrowed-param versioning-guard fix
+  'statements', 'data', 'json', 'async', 'preeval'])  // 'speculate' cleared 2026-07-23: narrowed-param versioning-guard fix
+  // 'pow-fold-ulp','fifthroot-ulp' cleared 2026-07-24: three stacked kernel gaps
+  // peeled in powResolvePool — regex ctrl-char pattern escapes (→ manual scan),
+  // startsWith positional arg dropped (→ slice-compare), obj[numVar] object
+  // read (→ dense arrays for type/lastUse/regOf).
 const onKernelTarget = process.env.JZ_TEST_TARGET === 'jz.wasm'
 
 const selected = (argFilters.length

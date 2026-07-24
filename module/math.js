@@ -1154,7 +1154,11 @@ export default (ctx) => {
   //   sub-scopes, so they keep stable dedicated names exactly as before.
   const POW_TOK_1 = '\x01', POW_TOK_2 = '\x02'
   const powMkBuilder = (prefix, shared) => {
-    shared ??= { n: 0, type: {}, mutDecls: [] }
+    // type is an ARRAY, not a numeric-keyed object: the self-host kernel's
+    // computed member access obj[numVar] misreads against OBJECTS (returns
+    // undefined; the resolveOptimize LEVEL_PRESETS comment records the same
+    // gap) — ids are dense and monotone, so an array is the natural shape.
+    shared ??= { n: 0, type: [], mutDecls: [] }
     const stmts = []
     const tmp = (expr, type = 'f64') => {
       const id = shared.n++
@@ -1179,18 +1183,43 @@ export default (ctx) => {
   // token in `text` to a real, REUSED local name. Returns the extra `(local ...)` decls the
   // pool needs (concat with the mutable-local decls already collected) and the resolved text.
   const powResolvePool = (text, typeOf) => {
-    const tokenRe = /local\.(set|get) \x01(\d+)\x02/g
+    // Manual \x01…\x02 token scan, NOT regex: the self-host kernel's regex
+    // engine errs on control-char escapes in patterns, so the two regex
+    // passes here made EVERY crPow compile trap in-kernel (pow-fold /
+    // fifthroot kernel-leg OOBs). indexOf/slice reproduce the exact same
+    // event stream and replacement — byte-identical output, and no regex.
     const events = []
-    for (let m; (m = tokenRe.exec(text));) events.push({ isSet: m[1] === 'set', id: +m[2], at: m.index })
-    const lastUse = {}
+    for (let i = 0; (i = text.indexOf('\x01', i)) !== -1; ) {
+      const end = text.indexOf('\x02', i)
+      // slice-compare, not startsWith(s, pos): the positional arg is a
+      // recorded string-method gap under self-host (classified every event
+      // as neither set nor get → empty pool → $pt_undefined_undefined).
+      const prefix = i >= 10 ? text.slice(i - 10, i) : ''
+      const isSet = prefix === 'local.set '
+      const isGet = prefix === 'local.get '
+      if (isSet || isGet) events.push({ isSet, id: +text.slice(i + 1, end), at: i })
+      i = end
+    }
+    // lastUse/regOf are ARRAYS (dense numeric ids), same reason as shared.type:
+    // the kernel's obj[numVar] object read is a context-dependent miscompile.
+    const lastUse = []
     for (const e of events) if (!e.isSet) lastUse[e.id] = e.at   // last (highest-index) 'get' wins
-    const free = { f64: [], i32: [], i64: [] }, next = { f64: 0, i32: 0, i64: 0 }, regOf = {}
+    const free = { f64: [], i32: [], i64: [] }, next = { f64: 0, i32: 0, i64: 0 }, regOf = []
     for (const e of events) {
       const type = typeOf[e.id]
       if (e.isSet) regOf[e.id] = free[type].length ? free[type].pop() : next[type]++
       else if (e.at === lastUse[e.id]) free[type].push(regOf[e.id])
     }
-    const resolved = text.replace(/\x01(\d+)\x02/g, (_, idStr) => `$pt_${typeOf[+idStr]}_${regOf[+idStr]}`)
+    const parts = []
+    let p = 0
+    for (let i = 0; (i = text.indexOf('\x01', p)) !== -1; ) {
+      const end = text.indexOf('\x02', i)
+      const id = +text.slice(i + 1, end)
+      parts.push(text.slice(p, i), `$pt_${typeOf[id]}_${regOf[id]}`)
+      p = end + 1
+    }
+    parts.push(text.slice(p))
+    const resolved = parts.join('')
     const decls = []
     for (const type of ['f64', 'i32', 'i64']) for (let i = 0; i < next[type]; i++) decls.push(`(local $pt_${type}_${i} ${type})`)
     return { decls, resolved }

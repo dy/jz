@@ -1228,3 +1228,10 @@ test('static array fold: mutation before the fold site ends the fact', () => {
   const m4 = run(`const S=['a','b']; const T = \`=\${S.join('')}=\`; export let t = () => T`)
   is(m4.t(), '=ab=')
 })
+
+test('startsWith/endsWith position argument rejects loudly (was silently dropped)', () => {
+  // Compiled as position 0 before — silent wrong results (the self-host
+  // resolver classified nothing). Reject until an offset is threaded.
+  throws(() => jz(`export let f = (s) => s.startsWith('cd', 2)`), /position argument not supported/)
+  throws(() => jz(`export let f = (s) => s.endsWith('cd', 4)`), /position argument not supported/)
+})
