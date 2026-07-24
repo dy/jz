@@ -27,9 +27,9 @@ JZ distills **"the good parts"** ([Crockford](https://www.youtube.com/watch?v=_D
 | Scientific, numeric, ML      | Security crypto, big-ints |
 | Hashing, checksums, RNG      | Glue, plumbing, orchestration |
 
-## Used by
+### Used by
 
-[**color-space v3**](https://github.com/colorjs/color-space) uses JZ to build its 27-space [`color-space/wasm`](https://github.com/colorjs/color-space#wasm) backend from valid JavaScript. The published module is precompiled, import-free, and parity-tested against the library's scalar implementation.
+[**color-space**](https://github.com/colorjs/color-space)
 
 ## Usage
 
