@@ -21,7 +21,7 @@
  * @module string
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64 } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { emit, bool, method, deps, wat, bind } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
@@ -1794,8 +1794,8 @@ export default (ctx) => {
   })
 
   // replace(search, replacement). When `replacement` is a function, replace the
-  // FIRST occurrence of the (string) search with ToString(fn(match)) — per spec a
-  // string search matches once and the callback receives the matched substring.
+  // FIRST occurrence of the (string) search with ToString(fn(match, offset, string))
+  // — per spec a string search matches once.
   // (A regex search routes to `.string:replace` in the regex module, which also
   // handles the /g loop.) Without a closure runtime we can't invoke the callback,
   // so fall back to a clear error rather than silent data loss.
@@ -1808,7 +1808,12 @@ export default (ctx) => {
       const sI64 = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
       const match = typed(['call', '$__str_slice', sI64(), ['local.get', `$${idx}`],
         ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${mlen}`]]], 'f64')
-      const repIR = ['call', '$__to_str', asI64(ctx.closure.call(typed(['local.get', `$${fnL}`], 'f64'), [match]))]
+      // ES 22.1.3.19: the callback receives (match, offset, string) — clamped to
+      // the uniform closure width (width ≥ every declared param list, so a
+      // dropped arg is one no callee could name).
+      const repIR = ['call', '$__to_str', asI64(ctx.closure.call(typed(['local.get', `$${fnL}`], 'f64'), [match,
+        typed(['f64.convert_i32_s', ['local.get', `$${idx}`]], 'f64'),
+        typed(['local.get', `$${s}`], 'f64')].slice(0, ctx.closure.width ?? MAX_CLOSURE_ARITY)))]
       const head = typed(['call', '$__str_slice', sI64(), ['i32.const', 0], ['local.get', `$${idx}`]], 'f64')
       const tail = typed(['call', '$__str_slice', sI64(),
         ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${mlen}`]],

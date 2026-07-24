@@ -81,11 +81,26 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
     shaped-parser structural assert red], native battery 3072/0): THREE
     STACKED kernel gaps peeled inside powResolvePool via BC15 stage
     bisection on the 603KB joined WAT body (tables were fine, 6144B each):
-      (1) kernel-compiled REGEX ERRS (code 0) on CONTROL-CHAR ESCAPES in
-          patterns (\u0001-class escapes fail at ANY size; plain patterns
-          + exec + callback-replace all work) -> resolver rewritten as a
-          manual indexOf/slice scan (byte-identical output; regex ROOT
-          hunt banked: module/regex.js pattern compile or marshalling);
+      (1) kernel regex err on \u-escaped patterns -> resolver rewritten as
+          a manual indexOf/slice scan (kept: faster, allocation-free).
+          ROOT RESOLVED 2026-07-24 (rediagnosed): discriminator was NOT
+          control chars but ANY \uXXXX escape in a regex LITERAL --
+          subscript keeps the pattern atom raw, prepare's decodeIdent
+          normalizes it via s.replace(IDESC, cb), and jz's replace
+          callbacks NEVER RECEIVED CAPTURE GROUPS (only the match), so
+          in-kernel (_, b, p) read undefined -> fromCodePoint(parseInt
+          (undefined,16)=NaN) -> trap. FIXED at root: replace callbacks
+          now get (match, p1..pn, offset, string) per ES 22.1.3.19,
+          clamped to closure width (regex.js + string.js string-search
+          form). Fixing THAT exposed a second pre-existing matcher bug:
+          quantifier/alternation attempts never rolled back partial
+          capture writes -- failed (b)? attempts leaked garbage slices.
+          FIXED: per-attempt capture reset (ES RepeatMatcher clear) +
+          save/restore on attempt failure in compileRepeatN, reset per
+          alternation branch + lazy paths. Pins: replace-callback groups
+          x5, quantifier-reset x3, \u-literal x3 (test/regex.js). All 7
+          escape probe variants compile in-kernel; kernel suite
+          1569/1576 (only shaped-parser assert), battery 3075/0;
       (2) startsWith(s, pos) POSITIONAL ARG SILENTLY DROPPED by jz
           (native+kernel) -> resolver slice-compares; stringSearchMethod
           now LOUD-REJECTS the position arg (module/string.js) + pin in

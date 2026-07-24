@@ -7,7 +7,7 @@
  * @module regex
  */
 
-import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, mkPtrIR, temp, tempI32, toStrI64 } from '../src/ir.js'
+import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, mkPtrIR, temp, tempI32, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { emit, deps } from '../src/bridge.js'
 import { ctx, err, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js'
 import { valTypeOf } from '../src/kind.js'
@@ -416,7 +416,7 @@ const compileLazyBacktrack = (quant, rest, c) => {
   const max = op === '??' ? 1 : op === '{}?' ? qargs[1] : Infinity
 
   // Match minimum required
-  for (let i = 0; i < min; i++) compileNode(node, c)
+  for (let i = 0; i < min; i++) { resetCaptures(node, c); compileNode(node, c) }
 
   // Lazy expand loop: try rest first, on fail match one more and retry
   const okL = `$lz_ok_${c.labelId++}`
@@ -454,6 +454,7 @@ const compileLazyBacktrack = (quant, rest, c) => {
   const tryMore = `$lz_try_${c.labelId++}`
   c.code.push(`(block ${tryMore}`)
   const saved2 = c.failLabel; c.failLabel = tryMore
+  resetCaptures(node, c)
   compileNode(node, c)
   c.failLabel = saved2
   c.code.push(`(local.set ${countL} (i32.add (local.get ${countL}) (i32.const 1)))`)
@@ -527,6 +528,22 @@ const compileLiteral = (ch, c) => {
   c.code.push('(local.set $pos (i32.add (local.get $pos) (i32.const 1)))')
 }
 
+/** Capture group ids contained in a subpattern. Quantifier/alternation attempts
+ *  must clear these to -1 (undefined) before each try (ES RepeatMatcher clears
+ *  contained captures on every repetition; only the matching alternation branch
+ *  may leave captures set) — otherwise a failed attempt's partial `$gN_start`
+ *  write leaks into the published globals as a garbage slice. */
+const groupIdsIn = (node, out = []) => {
+  if (!Array.isArray(node)) return out
+  if (typeof node[0] === 'string' && node[0].charCodeAt(0) === 40 && typeof node[2] === 'number') out.push(node[2])
+  for (const ch of node) groupIdsIn(ch, out)
+  return out
+}
+const resetCaptures = (node, c) => {
+  for (const id of groupIdsIn(node))
+    c.code.push(`(local.set $g${id}_start (i32.const -1))`, `(local.set $g${id}_end (i32.const -1))`)
+}
+
 const compileAlt = (branches, c) => {
   const endLabel = `$alt_end_${c.labelId++}`
   c.code.push(`(block ${endLabel}`)
@@ -536,6 +553,7 @@ const compileAlt = (branches, c) => {
     if (!isLast) { c.code.push(`(block ${tryLabel}`); c.code.push('(local.set $save (local.get $pos))') }
     const saved = c.failLabel
     if (!isLast) c.failLabel = tryLabel
+    resetCaptures(['|', ...branches], c)
     compileNode(branches[i], c)
     c.failLabel = saved
     if (!isLast) {
@@ -552,31 +570,48 @@ const compileRepeatN = (node, min, max, greedy, c) => {
   c.code.unshift(`(local ${countLocal} i32)`)
   c.code.push(`(local.set ${countLocal} (i32.const 0))`)
 
+  // A failed attempt must not leak its partial capture writes: save contained
+  // captures beside $pos, restore both on the fail path. (A greedy give-back
+  // after a successful iteration keeps that iteration's captures — the one
+  // remaining divergence from ES's immutable-state backtracking.)
+  const gids = groupIdsIn(node)
+  const sv = new Map(gids.map(id => [id, [`$rsv${c.labelId}_g${id}s`, `$rsv${c.labelId}_g${id}e`]]))
+  c.labelId++
+  for (const [s, e] of sv.values()) c.code.unshift(`(local ${s} i32)`, `(local ${e} i32)`)
+  const saveCaptures = () => { for (const [id, [s, e]] of sv) c.code.push(`(local.set ${s} (local.get $g${id}_start))`, `(local.set ${e} (local.get $g${id}_end))`) }
+  const restoreCaptures = () => { for (const [id, [s, e]] of sv) c.code.push(`(local.set $g${id}_start (local.get ${s}))`, `(local.set $g${id}_end (local.get ${e}))`) }
+
   if (greedy) {
     c.code.push(`(block ${endLabel}`); c.code.push(`(loop ${loopLabel}`)
     if (max !== Infinity) c.code.push(`(br_if ${endLabel} (i32.ge_u (local.get ${countLocal}) (i32.const ${max})))`)
     c.code.push('(local.set $save (local.get $pos))')
+    saveCaptures()
     const tryLabel = `$rep_try_${c.labelId++}`
     c.code.push(`(block ${tryLabel}`)
     const saved = c.failLabel; c.failLabel = tryLabel
+    resetCaptures(node, c)   // ES RepeatMatcher: clear contained captures per attempt
     compileNode(node, c); c.failLabel = saved
     c.code.push(`(local.set ${countLocal} (i32.add (local.get ${countLocal}) (i32.const 1)))`)
     c.code.push(`(br ${loopLabel})`); c.code.push(')') // end try
     c.code.push('(local.set $pos (local.get $save))')
+    restoreCaptures()
     c.code.push(')'); c.code.push(')') // end loop, block
   } else {
-    for (let i = 0; i < min; i++) compileNode(node, c)
+    for (let i = 0; i < min; i++) { resetCaptures(node, c); compileNode(node, c) }
     if (max > min) {
       c.code.push(`(block ${endLabel}`); c.code.push(`(loop ${loopLabel}`)
       if (max !== Infinity) c.code.push(`(br_if ${endLabel} (i32.ge_u (local.get ${countLocal}) (i32.const ${max - min})))`)
       c.code.push('(local.set $save (local.get $pos))')
+      saveCaptures()
       const tryLabel = `$rep_try_${c.labelId++}`
       c.code.push(`(block ${tryLabel}`)
       const saved = c.failLabel; c.failLabel = tryLabel
+      resetCaptures(node, c)
       compileNode(node, c); c.failLabel = saved
       c.code.push(`(local.set ${countLocal} (i32.add (local.get ${countLocal}) (i32.const 1)))`)
       c.code.push(`(br ${loopLabel})`); c.code.push(')')
       c.code.push('(local.set $pos (local.get $save))')
+      restoreCaptures()
       c.code.push(')'); c.code.push(')')
     }
   }
@@ -1120,10 +1155,16 @@ export default (ctx) => {
   ctx.core.emit['.string:replace'] = (str, search, repl) => {
     const id = resolveRegex(search)
     const isFn = valTypeOf(repl) === VAL.CLOSURE && ctx.closure?.call
-    // ToString(fn(matchStr)) → i64 string. The closure value is hoisted into
-    // `fnL` once by the caller; each match passes its substring as the lone arg.
-    const callbackRepl = (fnL, matchStrIR) =>
-      ['call', '$__to_str', asI64(ctx.closure.call(typed(['local.get', `$${fnL}`], 'f64'), [matchStrIR]))]
+    // ToString(fn(match, p1..pn, offset, string)) → i64 string (ES 22.1.3.19:
+    // the callback receives the match, each capture group — undefined when
+    // unmatched — then the match offset and the whole string). The closure
+    // value is hoisted into `fnL` once by the caller. Args are clamped to the
+    // uniform closure width: width ≥ every declared param list (maxDef), so a
+    // dropped arg is one no callee could name — only a rest-param callback
+    // could observe the truncation (documented divergence).
+    const callbackRepl = (fnL, matchStrIR, extra = []) =>
+      ['call', '$__to_str', asI64(ctx.closure.call(typed(['local.get', `$${fnL}`], 'f64'),
+        [matchStrIR, ...extra].slice(0, ctx.closure.width ?? MAX_CLOSURE_ARITY)))]
     if (id == null) {
       if (isFn) {
         // String search + callback: replace the FIRST occurrence (spec: a string
@@ -1144,7 +1185,9 @@ export default (ctx) => {
             ['else', typed(['call', '$__str_concat',
               asI64(typed(['call', '$__str_concat',
                 asI64(typed(['call', '$__str_slice', sI64(), ['i32.const', 0], ['local.get', `$${idx}`]], 'f64')),
-                callbackRepl(fnL, match)], 'f64')),
+                callbackRepl(fnL, match, [
+                  typed(['f64.convert_i32_s', ['local.get', `$${idx}`]], 'f64'),
+                  typed(['local.get', `$${s}`], 'f64')])], 'f64')),
               asI64(typed(['call', '$__str_slice', sI64(),
                 ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${mlen}`]],
                 ['call', '$__str_byteLen', sI64()]], 'f64'))], 'f64')]]], 'f64')
@@ -1166,6 +1209,17 @@ export default (ctx) => {
       const accI64 = () => ['i64.reinterpret_f64', ['local.get', `$${acc}`]]
       const slice = (a, b) => typed(['call', '$__str_slice', sI64(), a, b], 'f64')
       const matchStr = slice(['local.get', `$${ms}`], ['local.get', `$${me}`])
+      // Capture groups + offset + string for the callback, read straight from
+      // the $__re_g* globals the matcher populated for THIS match (-1 → undefined).
+      const nGroups = ctx.runtime.regex.groups.get(id) || 0
+      const cbExtra = [
+        ...Array.from({ length: nGroups }, (_, k) => typed(['if', ['result', 'f64'],
+          ['i32.lt_s', ['global.get', `$__re_g${k + 1}_start`], ['i32.const', 0]],
+          ['then', ['f64.const', `nan:${UNDEF_NAN}`]],
+          ['else', ['call', '$__str_slice', sI64(), ['global.get', `$__re_g${k + 1}_start`], ['global.get', `$__re_g${k + 1}_end`]]]], 'f64')),
+        typed(['f64.convert_i32_s', ['local.get', `$${ms}`]], 'f64'),
+        typed(['local.get', `$${s}`], 'f64'),
+      ]
       const step = [
         ['local.set', `$${res}`, ['call', `$__regex_${id}`, ['local.get', `$${off}`], ['local.get', `$${len}`], ['local.get', `$${pos}`]]],
         ['if', ['i32.lt_s', ['local.get', `$${res}`], ['i32.const', 0]],
@@ -1173,7 +1227,7 @@ export default (ctx) => {
         ['local.set', `$${ms}`, ['local.get', `$${pos}`]],
         ['local.set', `$${me}`, ['local.get', `$${res}`]],
         ['local.set', `$${acc}`, ['call', '$__str_concat', accI64(), asI64(slice(['local.get', `$${pe}`], ['local.get', `$${ms}`]))]],
-        ['local.set', `$${acc}`, ['call', '$__str_concat', accI64(), callbackRepl(fnL, matchStr)]],
+        ['local.set', `$${acc}`, ['call', '$__str_concat', accI64(), callbackRepl(fnL, matchStr, cbExtra)]],
         ['local.set', `$${pe}`, ['local.get', `$${me}`]],
         ...(global ? [] : [['br', '$done']]),
         ['local.set', `$${pos}`, ['select', ['i32.add', ['local.get', `$${me}`], ['i32.const', 1]], ['local.get', `$${me}`], ['i32.eq', ['local.get', `$${ms}`], ['local.get', `$${me}`]]]],

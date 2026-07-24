@@ -698,6 +698,47 @@ test('regex: replace with a function replacer (single + /g)', () => {
     'hello'.replace(/z/g, m => m))                       // no match → unchanged
 })
 
+test('regex: replace callback receives capture groups + offset + string (ES 22.1.3.19)', () => {
+  const run = src => jz(src).exports.f
+  // Was: only the match was passed — groups read `undefined` (the self-host
+  // kernel's decodeIdent errs on any regex literal with \uXXXX because of it).
+  is(run('export let f = (s) => s.replace(/Q([0-9a-fA-F]{4})/g, (m, p, o, str) => m + "|" + p + "|" + o + "|" + str)')('xQ0041y'),
+    'xQ0041y'.replace(/Q([0-9a-fA-F]{4})/g, (m, p, o, str) => m + '|' + p + '|' + o + '|' + str))
+  // Unmatched alternation group arrives as undefined (the decodeIdent shape).
+  is(run('export let f = (s) => s.replace(/Q\\{([0-9a-fA-F]+)\\}|Q([0-9a-fA-F]{4})/g, (m, b, p) => String.fromCodePoint(parseInt(b || p, 16)))')('AQ0042B'),
+    'AQ0042B'.replace(/Q\{([0-9a-fA-F]+)\}|Q([0-9a-fA-F]{4})/g, (m, b, p) => String.fromCodePoint(parseInt(b || p, 16))))
+  // Optional group unmatched mid-string; non-/g replaces the first match only.
+  is(run('export let f = (s) => s.replace(/X(b)?/, (m, g) => "[" + (g === undefined ? "-" : g) + "]")')('aXbXc'),
+    'aXbXc'.replace(/X(b)?/, (m, g) => '[' + (g === undefined ? '-' : g) + ']'))
+  is(run('export let f = (s) => s.replace(/X(b)?/g, (m, g) => "[" + (g === undefined ? "-" : g) + "]")')('aXbXcX'),
+    'aXbXcX'.replace(/X(b)?/g, (m, g) => '[' + (g === undefined ? '-' : g) + ']'))
+  // String-search callback form gets (match, offset, string).
+  is(run('export let f = (s) => s.replace("world", (m, o, str) => m.toUpperCase() + "@" + o + "/" + str.length)')('hello world'),
+    'hello world'.replace('world', (m, o, str) => m.toUpperCase() + '@' + o + '/' + str.length))
+})
+
+test('regex: quantifier attempts reset contained captures (ES RepeatMatcher)', () => {
+  const run = src => jz(src).exports.f
+  // A later iteration matching the OTHER alternation branch clears the group.
+  is(run('export let f = (s) => { let m = /(?:(a)|b)+/.exec(s); return typeof m[1] }')('ab'),
+    'undefined')
+  // A failed extra attempt restores the last successful iteration's capture.
+  is(run('export let f = (s) => { let m = /(b)+x/.exec(s); return m[1] }')('bbx'), 'b')
+  // Failed-branch partial writes must not leak into later matches (/g walk).
+  is(run('export let f = (s) => s.replace(/(a)(z)?|X/g, (m, g1, g2) => "[" + g1 + "," + g2 + "]")')('abXcd'),
+    'abXcd'.replace(/(a)(z)?|X/g, (m, g1, g2) => '[' + g1 + ',' + g2 + ']'))
+})
+
+test('regex: \\uXXXX escapes in regex literals compile and match', () => {
+  const run = src => jz(src).exports.f
+  // The pattern atom keeps raw \uHHHH from the parser; decodeIdent normalizes
+  // it via IDESC replace — the shape that failed in-kernel before groups flowed.
+  is(run('export let f = (s) => /\\u0041B/.test(s) ? 1 : 0')('xABy'), 1)
+  is(run('export let f = (s) => /\\u0041B/.test(s) ? 1 : 0')('xaBy'), 0)
+  is(run('export let f = (s) => s.replace(/[\\u0030-\\u0039]+/g, "#")')('a12b345c'),
+    'a12b345c'.replace(/[0-9]+/g, '#'))
+})
+
 test('regex: matchAll collects all matches', () => {
   const run = src => jz(src).exports.f
   is(run('export let f = (s) => [...s.matchAll(/\\d+/g)].length')('a1b22c333'), 3)
