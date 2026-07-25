@@ -217,6 +217,20 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  CLAIMS RELEASE GATE LANDED 2026-07-25 (audit P0-4): test/
+  bench-claims.js -- committed-evidence-only hard gate wired into
+  prepublishOnly (npm run test:claims), three axes: FRESH (git log
+  meta.commit..HEAD over src/module/jzify/index.js/interop.js must
+  be empty), COMPLETE (every CLAIM_RIVAL incl. tinygo needs >=5
+  parity-valid rows), WINNING (no case beyond WASM_BAND_TOL of its
+  best rival; band = tie never lead). Currently red BY DESIGN:
+  10 stale commits, tinygo 0 rows, 8 red cases (fft 1.081 rust /
+  sdf 1.247 c / synth 1.091 as / trace 1.463 c / sort 1.113 c /
+  crc32 1.051 c / levenshtein 1.054 as / shapes 1.474 as). ORDER:
+  land synth levers -> refresh reference dataset at HEAD on this M4
+  (meta.host matches) incl. tinygo rows -> remaining reds = the perf
+  work queue (trace and shapes worst at ~1.46-1.47x -- next
+  dissection targets after synth).
   SYNTH DISSECTED WITH MEASURED SHARES 2026-07-25 (agent, WAT
   surgery + ABBA retimes, checksum 41574153 held): jz 2688-2707us vs
   asc-O3 2455-2478us = 1.084-1.093x. THREE deficits:

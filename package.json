@@ -44,6 +44,7 @@
     "test:wasm": "JZ_TEST_TARGET=jz.wasm node test/index.js",
     "test:matrix": "npm test && npm run test:opt0 && npm run test:opt3 && npm run test:wasi",
     "test:bench": "node test/bench.js",
+    "test:claims": "node test/bench-claims.js",
     "test:fuzz": "node test/fuzz.js --count=5000",
     "test:ratchet": "node test/perf-ratchet.js",
     "test:self": "node test/selfhost.js && node test/selfhost-perf.js",
@@ -60,7 +61,7 @@
     "audit:as": "node scripts/audit-assemblyscript.mjs",
     "build": "node scripts/build-dist.mjs",
     "build:examples": "node examples/build.mjs all",
-    "prepublishOnly": "npm test && npm run test:self",
+    "prepublishOnly": "npm test && npm run test:self && npm run test:claims",
     "prepare": "npm run build",
     "audit:fixpoint": "node scripts/audit-fixpoint.mjs"
   },
