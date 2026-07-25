@@ -217,6 +217,20 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  IN-SUITE PERF ASSERT CLEARED 2026-07-25 (bisect agent, three
+  independent runs): the perf.js 'JSON.parse walk uses slot loads'
+  in-suite-only failure NO LONGER REPRODUCES -- full kernel suite
+  1955/1963 with ONLY the user's 2 typedarray WIP rows red; the exact
+  34-file preceding subset re-run twice green; 0-200 padding compiles
+  + JZ_KERNEL_GC_EVERY parity probed, no effect. The same-day fix
+  waves (elemOrigin / bool-atom / recursionUnroll / earlier
+  string-compare + preboxed) closed the window of this heisenbug
+  class. Instance isolation verified structurally sound (fresh
+  Instance per compile over cached Module; setupSelf resets all
+  caches). IF IT RECURS: test/perf.js:1272 has JZ_DEBUG_KNIFE=1
+  built in -- capture the victim WAT at the red moment, don't
+  reconstruct sequences post-hoc. KERNEL SUITE VALUE-DEBT: ZERO
+  (excluding user WIP).
   KERNEL PARITY COMPLETE 2026-07-25 -- PARITY_TODO EMPTY: the
   recursionUnroll root was the SHARED-ACC RESET, not a guard fold:
   the fused inlined frame shares the caller's accumulator, but the
