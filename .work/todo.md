@@ -44,6 +44,24 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
       numeric-op expr / .length). numericLocals = let/const inits that are
       numeric literals or numeric ops (multi-decl handled). `(p,q)=>p<q`
       no longer stamps params NUMBER (was the factory-lambda break).
+  SHAPED-PARSER BREAKTHROUGH 2026-07-25 (post string-compare fixes): the
+  class NOW REPRODUCES STANDALONE -- watr-diff.mjs with the REAL pre-watr
+  shape module (scratchpad/shape-prewatr.wat, 140kB, generated via native
+  compile(src, {wat:true, optimize:{level:2, watr:false}}) of the json
+  shaped-parser test source) DIFFS at char 2949: node-watr OUTLINES
+  ($__out0 call) where wasm-watr keeps the inline i32.or/eq chain -- wasm
+  output 13kB bigger (158628 vs 145536). The kernel's compile-time err 0
+  is downstream of this pass divergence. hash32 primitive VERIFIED
+  identical node-vs-wasm (the asI32 wrap fix cured it). REMAINING
+  SUSPECTS in watr's outline pass (node_modules/watr/src/optimize.js
+  ~4620-4740): candidate `facts` build (ownBytes/resultType/ltype),
+  group Map iteration order, chosen[].sort tie-stability (b.net-a.net
+  ties broken by insertion order -- a Map-order divergence in-wasm would
+  reorder choices). NEXT: instrument the outline pass (temp probe export
+  like the earlier __bcProbe round -- REVERT node_modules after) to dump
+  per-group {h, sites, net} node-vs-wasm and bisect; 30s cycles via the
+  harness. This likely ALSO explains kernel-parity dict|2/dict|3/sum|3/
+  arr|3 rows (in-kernel output BIGGER = less outlining/dedup!).
   RESOLVED clamp-peel blocker: the rejecting node was the PEEL'S OWN
   synthesized `__pks0 = (r < w ? r : w)` bound -- both param proofs read
   the min-ternary arms as bare-use/string-escape rejects, un-proving the
