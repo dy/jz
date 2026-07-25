@@ -167,6 +167,11 @@ fastest-wasm gate over the full corpus, required-rival availability, per-rival
 coverage floors). Size is the second axis, gated the same way on the `-Os` build.
 Native C stays a labeled ceiling, never a beat-claim.
 
+Per case the gate distinguishes three verdicts, printed with every run:
+**strict** (ratio < 1.00 — jz genuinely fastest), **band** (≤ 1.05 — inside
+microbench jitter, tolerated but never called a lead), **red** (> 1.05 — a
+rival leads; fails the gate). A "band" row is a statistical tie, not a win.
+
 The speed claim is scoped to the **reference machine** (darwin/arm64, Apple M4
 Max) where the release discipline measures it — `bench/results.json` is that
 evidence. V8's tiering and the microarchitecture move individual rows by 2×

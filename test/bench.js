@@ -361,7 +361,14 @@ const WASM_TODO = {
   // rust-wasm 0.43 (3x), AS 0.66 (4.6x). A 2026-07-22 ledger "design" entry restated this
   // already-landed lever from a stale audit row — check git log before designing levers.
 }
-const WASM_LEAD_TOL = 1.05  // jz median ≤ best-rival × this counts as "leads" (microbench jitter band)
+// Three DISTINCT verdicts per case (the audit's strict-lead/band/red split —
+// a 1.04× row is a statistical TIE inside microbench jitter, not a "lead"):
+//   strict  ratio < 1.00          — jz genuinely fastest
+//   band    1.00 ≤ ratio ≤ 1.05   — inside the jitter band; tolerated, never called a lead
+//   red     ratio > 1.05          — a rival leads; fails the gate
+// The gate's failure bar is unchanged (red fails); the split changes what the
+// evidence CLAIMS: the strict/band/red counts print with every run.
+const WASM_BAND_TOL = 1.05
 
 // ── Run the speed harness ───────────────────────────────────────────────────
 // Full corpus (no --cases): the fastest-wasm claim is gated on EVERY case, not a curated
@@ -519,16 +526,20 @@ for (const tid of ['v8', 'as', 'porf']) {
     }
     return best == null ? null : { us: best, who }
   }
+  const verdicts = { strict: [], band: [], red: [] }
   for (const id of speedCases) {
     const jz = runs[id]?.jz; if (!jz) continue
     const br = bestRival(id); if (br == null) continue   // no comparable wasm rival ran (e.g. self-host rows)
+    const ratio = jz.medianUs / br.us
+    verdicts[ratio < 1.0 ? 'strict' : ratio <= WASM_BAND_TOL ? 'band' : 'red'].push(`${id} ${ratio.toFixed(2)}×${ratio >= 1.0 ? ` (${br.who})` : ''}`)
     test(`bench: fastest-wasm ${id} (jz ≤ every wasm rival)`, () => {
-      const ratio = jz.medianUs / br.us
-      const limit = WASM_LEAD_TOL
       const why = WASM_TODO[id] ? ` [known gap → ${WASM_TODO[id]}]` : ''
-      okTiming(ratio <= limit, `${id}: jz ${(jz.medianUs / 1000).toFixed(2)}ms TRAILS ${br.who} ${(br.us / 1000).toFixed(2)}ms = ${ratio.toFixed(3)}× > ${limit.toFixed(3)}× — not the fastest wasm.${why}`)
+      okTiming(ratio <= WASM_BAND_TOL, `${id}: jz ${(jz.medianUs / 1000).toFixed(2)}ms TRAILS ${br.who} ${(br.us / 1000).toFixed(2)}ms = ${ratio.toFixed(3)}× > ${WASM_BAND_TOL.toFixed(3)}× — not the fastest wasm.${why}`)
     })
   }
+  console.log(`\nfastest-wasm verdicts: ${verdicts.strict.length} strict / ${verdicts.band.length} band / ${verdicts.red.length} red`)
+  if (verdicts.band.length) console.log(`  band (jitter ties, NOT leads): ${verdicts.band.join(', ')}`)
+  if (verdicts.red.length) console.log(`  red: ${verdicts.red.join(', ')}`)
   // Coverage backstop: an AVAILABLE rival whose builds all fail contributes
   // zero rows — bestRival then skips it everywhere and the fastest-wasm gate
   // can stay green with no competition at all. HARD assertion (compile success
