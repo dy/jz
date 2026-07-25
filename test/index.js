@@ -118,17 +118,19 @@ const argFilters = process.argv.slice(2)
 // KERNEL-LEG DEBT (2026-07-15 per-file bisect, scratchpad/kernel-bisect.mjs —
 // each entry is a RECORDED kernel bug or leg-mismatch, not a permanent skip;
 // burn the list down as the kernel fixes land, re-including each file):
-//   HANGS (in-kernel infinite loop, 420 s fence): errors, generators,
-//     parser-bugs, transform — one nonterminating compile each; needs in-file
-//     bisection before per-test guards are possible.
+//   HANGS (in-kernel infinite loop, 420 s fence): errors, parser-bugs,
+//     transform — one nonterminating compile each; needs in-file bisection
+//     before per-test guards are possible. (generators/async cleared
+//     2026-07-25 — see the dated notes below the list.)
 //   Module-resolver class (kernel takes one AST, no host resolver — same as
 //     `watr` above, per-test onKernel guards pending): destruct, closures,
 //     inference.
 //   Optimizer-shape class (kernel runs optimize:false; shape asserts can't
 //     match — same as perf-ratchet above): simd, optimizer, never-grown,
 //     slot-hazards.
-//   REAL kernel value bugs (tracked in .work/todo.md): async (wasi-warning
-//     channel).
+//   (2026-07-25: no remaining recorded kernel VALUE bugs in this list — the
+//   json shaped-parser asserts cleared with the elemOrigin fix; what's left
+//   above is hang-bisection debt and leg-mismatch classes, not value bugs.)
 const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'unswitch-typed-param', 'bench-c', 'kernel-parity',
   // never-grown: value-correct in-kernel; ONE structural assert (raw-base WAT
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22

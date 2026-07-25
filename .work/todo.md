@@ -4,14 +4,24 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
-## Status (2026-07-23)
+## Status (2026-07-25, current truth)
 
-STATUS (re-audit v3 corrected): plan stages 0-5 SUBSTANTIALLY advanced but
-NOT complete — open: unified solver (stage 2), LoopPlan (stage 3),
-CompileSession/TargetProfile (stage 4), claims enforcement + bench refresh
-(stage 5), kernel parity long-tail. Perf: V1 bench wins measured locally
-(aggregate jz 1.00× leads every WASM lane: C 1.88× / Rust 1.97× / AS 2.06× /
-V8 2.17×; native C 1.11×; strbuild/lz/immutable/glyfparse won). Re-audit
+CLOSED: kernel byte-parity (PARITY_TODO empty, every corpus row identical at
+O0/O2/O3 -- three roots: elemOrigin gate, dyn-spread bool atom,
+recursionUnroll shared-acc reset); kernel suite value-debt zero excl. user
+WIP; front half unified (src/front.js: parse->guard->liftIIFEs->jzify->
+prepare->preEval consumed by index.js AND every self.js entry; audit-P0
+fold repros byte-identical; O0 fold rows in parity corpus); claims release
+gate landed (test/bench-claims.js in prepublishOnly: fresh/complete/winning,
+currently red by design). OPEN (audit 2026-07-25 order): P0-2 literal kind
+(5e-324 -> 1n self-host carrier), P0-3 warm margin (1.05-1.09x vs 0.99 cap),
+P0-4 reference refresh (stale 10 commits, tinygo 0 rows, 8 red cases -- worst
+trace 1.463x / shapes 1.474x), P1 session-owned fact solver + mandatory
+convergence throws, P1 canonical LoopPlan (descriptor shared, per-recognizer
+facts remain), P1 CompileSession/TargetProfile (59 ctx importers), P2 single
+pass registry, P2 kernel exclusions burn-down. Perf: aggregate jz leads every
+WASM lane; per-case reds are the claims-gate list; synth levers in review
+(select cost veto + stripCanon hoist-temp -- surgery proved 0.976x vs AS). Re-audit
 items landed: shared final-optimizer tail (watr-tail.js) + kernel byte-parity
 leg · six named O0 flags killing bare optimize-object gates (+ latent
 lean-hash O0 fix) · solver caller-ctx copies + throwing convergence caps ·
