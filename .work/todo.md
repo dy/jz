@@ -148,6 +148,21 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   instrumented (flags log at driver entry, OL-* logs at outline, __chk
   at finish tail); entry has drainLog + string-opts passthrough; harness
   memory 16384; ALL recipes reproducible from these notes.
+  ROUND 6 CORRECTION 2026-07-25: tokenizer EXONERATED -- commit()-level
+  anomaly probe (parse.js __pLog, drained post-trap) shows P[] EMPTY:
+  every token is born with correct length at 140kB scale. AND the same
+  log line that shows l0=0 PRINTS the string correctly (String(x) ok,
+  x && x.length reads 0) -- the isolated guarded-length probe passes
+  both engines, so the l0=0 evidence is DOWNGRADED to a possible probe-
+  context artifact (or a real but context-locked length-read miscompile
+  inside the compiled watr module -- unresolved). SOLID remaining facts:
+  the OOB trap fires INSIDE outline at scale with CORRECT pass flags and
+  CLEAN tokens; 'fold' alone OK, '+outline' traps. NEXT: binary-search
+  INSIDE outline via early returns (after the facts walk / after exact
+  grouping / after chosen / after apply) to pin the trapping stage; the
+  facts walk's hash-string churn (h += ',' + f.h; up to 64-char keys +
+  hash32 over ~86 groups x rounds) is the prime allocation-pressure
+  suspect. Then shrink THAT stage into a standalone jz repro.
   ROUND 5b MINIMAL-REPRO REFUTATIONS (guide the next shrink): (1) plain
   `buf += str[i++]` accumulator + push at 140kB scale: CORRECT in-wasm;
   (2) boxed-buf (commit-closure) + recursion (parseLevel shape) + nested
