@@ -188,6 +188,27 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   watr node_modules instrumented with counters + __guardTest (pristine
   restore = rm -rf node_modules/watr && npm install watr@5.7.11
   --no-save); entry has counts()/treeStat; flagprobe.mjs is the runner.
+  ROUND 9 -- ROOT MECHANISM NAMED 2026-07-25 (endgame): the harness
+  module's native-jz WAT (scratchpad/harness.wat, 24MB; outline =
+  $m0_optimize$outline, ~200 locals incl __li0..__li82 LICM-hoisted
+  i64 invariants) shows **__li slot ALIASING assignments mid-body**:
+  `(local.set $__li0 (local.get $__li2))` at body-offset ~17677 and
+  `(local.set $__li5 (local.get $__li11))` at ~48267 -- hoist slots
+  RENUMBERED/COALESCED so one invariant's slot is filled FROM another
+  long after function entry. Any use of $__li0 BEFORE its aliasing
+  assignment reads 0 -> the module-guard's SSO-'module' compare
+  (i64.eq against the hoisted literal bits) compares against ZERO ->
+  always unequal -> outline never fires in-wasm. Explains the
+  enclosing-scale dependence (hoists+coalescing only in huge loopy
+  fns), every isolated-probe pass, and likely the whole watr-in-kernel
+  family incl parity size rows. NEXT: (1) confirm the guard compare
+  reads an __li slot whose aliasing set is AFTER it (locate the actual
+  i64.eq in harness.wat guard region); (2) find the jz pass emitting
+  li-slot aliasing (hoistInvariantLoop / coalesceLocals interplay in
+  src/optimize) and fix the ORDERING (aliasing assignment must precede
+  every use, or slots must not be shared across hoist groups);
+  (3) rebuild kernel, expect json shaped-parser asserts + parity rows
+  to clear; (4) restore watr node_modules pristine + strip entry probes.
   ROUND 6 CORRECTION 2026-07-25: tokenizer EXONERATED -- commit()-level
   anomaly probe (parse.js __pLog, drained post-trap) shows P[] EMPTY:
   every token is born with correct length at 140kB scale. AND the same
