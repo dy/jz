@@ -911,6 +911,23 @@ function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof = true)
     }
     collect(body)
   }
+  // Locals with a provably-numeric init (`let x = 0`, `let k = -r`): a
+  // relational compare against one of these forces its partner numeric.
+  const numericLocals = new Set()
+  const numericInit = (e) => typeof e === 'number' ||
+    (Array.isArray(e) && (e[0] == null ? typeof e[1] === 'number' :
+      NUM_BIN_OPS.has(e[0]) || e[0] === 'u-' || e[0] === 'u+'))
+  ;(function collectNum(node) {
+    if (!Array.isArray(node)) return
+    if (node[0] === 'let' || node[0] === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && numericInit(d[2]))
+          numericLocals.add(d[1])
+      }
+    }
+    for (let i = 1; i < node.length; i++) collectNum(node[i])
+  })(body)
   let ok = true, proven = false
   // A param in a numeric-operand slot is a PROVING use; recurse into a non-param sub-expr.
   const numOperand = (n) => { if (names.has(n)) proven = true; else walk(n) }
@@ -945,9 +962,37 @@ function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof = true)
       numOperand(node[1]); numOperand(node[2])
       return
     }
-    if (REL_OPS.has(op) && node.length === 3) {         // relational: numeric unless a known string is present
+    // min/max ternary (`x < y ? x : y` — clampPeel synthesizes `__pks = min(r,w)`
+    // peel bounds INTO the body before this proof runs): pass-through — the value
+    // flows to the ternary's consumer; neither a numeric proof nor a reject.
+    // Without this the proof rejected the peel's OWN output as a bare use and
+    // un-proved the very params the peel had just relied on.
+    if (op === '?:' && Array.isArray(node[1]) && REL_OPS.has(node[1][0]) &&
+        ((node[2] === node[1][1] && node[3] === node[1][2]) ||
+         (node[2] === node[1][2] && node[3] === node[1][1]))) {
+      walk(node[1]); return
+    }
+    if (REL_OPS.has(op) && node.length === 3) {
+      // Relational proof requires a PROVABLY-NUMERIC PARTNER: `x < 0` or
+      // `k <= r` (k init `-r`) force ToNumber on the other side, but JS
+      // compares two strings lexicographically — `(p, q) => p < q` proves
+      // NOTHING about either param's kind. The old unconditional proof
+      // stamped watr's hex-string i64 comparators NUMBER and their compares
+      // took the raw-f64 path (NaN-boxed pointers compare as NaN → always
+      // false), folding i64.lt_s(-1, 0) to 0 in-kernel — the -1n<0n row and
+      // the shaped-parser family. Unproven params stay boxed and take
+      // cmpOp's runtime string/number dispatch.
       if (isStrLiteral(node[1]) || isStrLiteral(node[2])) { ok = false; return }
-      numOperand(node[1]); numOperand(node[2])
+      const numericPartner = (e) => typeof e === 'number' ||
+        (typeof e === 'string' && numericLocals.has(e)) ||
+        (Array.isArray(e) && (e[0] == null ? typeof e[1] === 'number' :
+          NUM_BIN_OPS.has(e[0]) || e[0] === 'u-' || e[0] === 'u+' ||
+          (e[0] === '.' && e[2] === 'length')))
+      const side = (self, other) => {
+        if (names.has(self)) { if (numericPartner(other)) proven = true }
+        else walk(self)
+      }
+      side(node[1], node[2]); side(node[2], node[1])
       return
     }
     // `new TypedArray(x)` / `new ArrayBuffer(x)`: the length argument is ToNumber'd
@@ -1087,6 +1132,13 @@ function paramNeverString(body, name) {
     if (op === '-' && (node.length === 2 || node.length === 3)) {
       for (let i = 1; i < node.length; i++) if (node[i] !== name) walk(node[i])
       return
+    }
+    // min/max ternary — same pass-through as paramAllUsesNumeric (clampPeel's
+    // synthesized `__pks = min(r,w)` bounds must not read as a string escape).
+    if (op === '?:' && Array.isArray(node[1]) && REL_OPS.has(node[1][0]) &&
+        ((node[2] === node[1][1] && node[3] === node[1][2]) ||
+         (node[2] === node[1][2] && node[3] === node[1][1]))) {
+      walk(node[1]); return
     }
     // Member access / method call on the param → it's a pointer, not an f64 number:
     // reject (out of contract). `.`/`?.`/`[]` with the name as receiver.
@@ -1668,7 +1720,7 @@ function emitClosureBody(cb) {
   // whole string runtime in. Call-site evidence (ptRow) already covers the monomorphic
   // case; this also catches params the lattice left unobserved.
   for (const p of cb.params) {
-    if (!ctx.func.localReps?.get(p)?.val && !cb.defaults?.[p] && paramAllUsesNumeric(cb.body, p))
+    if (!ctx.func.localReps?.get(p)?.val && !cb.defaults?.[p] && paramAllUsesNumeric(cb.body, p, new Set(), true, false))
       updateRep(p, { val: VAL.NUMBER })
   }
 

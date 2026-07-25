@@ -509,6 +509,18 @@ function narrowValResults(funcs) {
       const a = valTypeOfWithCalls(args[0], localValTypes), b = valTypeOfWithCalls(args[1], localValTypes)
       return a && a === b ? a : null
     }
+    // SOUND `+` at the result-stamping boundary: VT['+'] is optimistic
+    // (unknown side → NUMBER — load-bearing for local inference), but a
+    // func.valResult claim crosses into call-site compare dispatch, where a
+    // misproved NUMBER on a string-building helper (watr's `hex + hex` _sb)
+    // made `'7fff…' < '8000…'` compare raw NaN-boxed pointers (always false),
+    // folding watr-in-kernel's i64.lt_s(-1,0) to 0. Unknown side → no claim.
+    if (op === '+') {
+      const a = valTypeOfWithCalls(args[0], localValTypes), b = valTypeOfWithCalls(args[1], localValTypes)
+      if (a === VAL.STRING || b === VAL.STRING) return VAL.STRING
+      if (a == null || b == null) return null
+      return valTypeOf(expr)
+    }
     return valTypeOf(expr)
   }
   let changed = true

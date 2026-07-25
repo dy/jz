@@ -2438,6 +2438,28 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
     if (vb.type === 'i32' && ai != null) return typed([`i32.${i32op}`, ['i32.const', ai], vb], 'i32')
     if (va.type === 'i32' && vb.type === 'i32') return typed([`i32.${i32op}`, va, vb], 'i32')
   }
+  // BOTH operands runtime-unknown boxed carriers: two strings must compare
+  // lexicographically (the raw f64 compare below reads their NaN-boxed
+  // pointers as NaN — always false; this silently broke watr-in-kernel's
+  // hex-string i64 comparisons, folding `i64.lt_s(-1, 0)` to 0 and with it
+  // the -1n<0n row and the shaped-parser family). Same runtime dispatch as
+  // the one-known-string branch above, gated to non-i32 boxed operands so
+  // narrowed numeric compares never pay it: both strings → __str_cmp
+  // three-way; anything else → ToNumber compare (ES 7.2.13).
+  if (vta == null && vtb == null && va.type !== 'i32' && vb.type !== 'i32' && ctx.module.modules.string && stringOps(a)?.cmp) {
+    const ta = temp('cmp'), tb = temp('cmp')
+    inc('__is_str_key')
+    const getA = typed(['local.get', `$${ta}`], 'f64'), getB = typed(['local.get', `$${tb}`], 'f64')
+    const bothStr = ['i32.and',
+      ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${ta}`]]],
+      ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${tb}`]]]]
+    const strCmp = [`i32.${i32op}`, stringOps(a).cmp(getA, getB, ctx), ['i32.const', 0]]
+    const numCmp = [`f64.${f64op}`, toNumF64(a, getA), toNumF64(b, getB)]
+    return typed(['block', ['result', 'i32'],
+      ['local.set', `$${ta}`, asF64(va)],
+      ['local.set', `$${tb}`, asF64(vb)],
+      ['if', ['result', 'i32'], bothStr, ['then', strCmp], ['else', numCmp]]], 'i32')
+  }
   return typed([`f64.${f64op}`, asF64(va), asF64(vb)], 'i32')
 }
 

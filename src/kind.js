@@ -352,6 +352,13 @@ VT['+'] = (args) => {
   const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
   if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
   if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
+  // OPTIMISTIC NUMBER for unknown sides — load-bearing for local numeric
+  // inference (demoting it doubled the slice/nest loop-body op counts).
+  // The one consumer where this optimism is UNSOUND across a boundary is
+  // function-RESULT stamping: narrowValResults uses its own sound `+` rule
+  // (unknown side → no claim), so a string-building helper like watr's
+  // `hex + hex` _sb no longer gets a NUMBER valResult that sends call-site
+  // compares down the raw-f64 path.
   return VAL.NUMBER
 }
 

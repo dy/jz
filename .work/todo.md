@@ -23,6 +23,48 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
 
 ## Open
 
+* [x] STRING-COMPARE MISPROOF WAVE (LANDED 2026-07-25 --
+      the watr-in-kernel dynamic-compare family root; watr-diff harness
+      proves the cure but ONE perf-shape regression blocks landing):
+  STATE: watr-diff ALL SAME (i64.lt_s(-1,0) folds 1 in-wasm; was 0);
+  -1n<0n O2 kernel row returns TRUE (un-curate statements.js row on land);
+  ratchet 10/10; optimizer+simd 364/2 -- ONLY clamp-peel x2 red (stencil
+  peel stopped firing = perf shape, not correctness).
+  THE THREE FIXES IN TREE:
+   1. emit.js cmpOp: both-runtime-unknown compare fallback now runtime-
+      dispatches (is_str x2 -> __str_cmp three-way, else ToNumber f64),
+      gated on ctx.module.modules.string + non-i32 types. Was raw f64
+      compare of NaN-boxed string pointers = always false.
+   2. narrow.js valTypeOfWithCalls: SOUND '+' rule at the RESULT-STAMPING
+      boundary only (unknown side -> no claim); kind.js VT['+'] stays
+      OPTIMISTIC (demoting it doubled slice/nest ratchets -- reverted,
+      comments in both files point at each other).
+   3. compile/index.js paramAllUsesNumeric: relational proof now needs a
+      PROVABLY-NUMERIC PARTNER (number literal / numericLocals name /
+      numeric-op expr / .length). numericLocals = let/const inits that are
+      numeric literals or numeric ops (multi-decl handled). `(p,q)=>p<q`
+      no longer stamps params NUMBER (was the factory-lambda break).
+  RESOLVED clamp-peel blocker: the rejecting node was the PEEL'S OWN
+  synthesized `__pks0 = (r < w ? r : w)` bound -- both param proofs read
+  the min-ternary arms as bare-use/string-escape rejects, un-proving the
+  very params the peel had relied on. FIX: min/max-ternary pass-through
+  (arms mirror cond operands) in paramAllUsesNumeric + paramNeverString.
+  LANDED green: battery 3084/0, ratchet 10/10, watr-diff ALL SAME,
+  -1n<0n O2 kernel TRUE (row un-curated), kernel suite 1953/1962 (only
+  shaped-parser json asserts + user's 2 in-flight WIP rows). json's 2
+  structural asserts persist -- the in-context layer of the shaped-parser
+  bug is deeper than the compare misproof (context-dependent as the old
+  harness refutation showed); the watr-diff harness is the tool to peel
+  its next layer.
+  TOOLS (scratchpad, session-dir): watr-diff.mjs + .work/watr-diff-entry.mjs
+  (node-watr vs jz-compiled-watr, 30s cycles, killable children);
+  jzify-diff.mjs + .work/jzify-entry.mjs (same for jzify).
+  WATCH after land: sort-comparator closures `(a,b)=>a<b?...` now take the
+  runtime dispatch -- check bench sort/aos; cure would be callsite-lattice
+  number proof (ptRow), never raw compares.
+
+
+
 * [x] watr 5.7.11 PUBLISHED (user, 2026-07-23); jz dep bumped+locked,
       determinism 5/5 against the LOCKED package (no sibling symlink) —
       audit P0 CLOSED. Battery 3066/0 on published watr.
