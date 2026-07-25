@@ -217,6 +217,33 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  PARITY ROWS DIAGNOSED 2026-07-25 (post-elemOrigin, fresh evidence):
+  per-func diff dict|2 = ONLY 3 funcs differ ($__typed_shift, $__char_at
+  smaller in-kernel via select forms; $count$exp +118B); sum|3 kernel
+  856 vs native 991 (kernel hoists the loop-bound local.set out of the
+  br_if tee; native keeps the fused tee). INVERTED THEORY: kernel is
+  MORE optimized, not bailing. Eliminated: cfg (resolveOptimize(2) ==
+  {level:2} modulo unread 'level' key), preset spread-override shape
+  (differential-clean at 60-key scale), watr opts (replayed native
+  resolveWatrOpts base + every knob variant: base reproduces NATIVE
+  byte-exact, NOTHING reproduces kernel), watr engine (jz-compiled
+  standalone watr == node watr under BOTH O2- and O3-resolved opts,
+  SAME on the very pre-watr WAT), funcCount/unroll2 (no effect),
+  pre-watr pipeline (watr:false prints byte-IDENTICAL native vs
+  kernel; only watr-tail reads cfg.watr so no pre-watr stage branches
+  on it). REMAINING EXPLANATION: the tree HANDED to watr differs in
+  print-invisible ways -- native feeds jz IR arrays (typed() .type
+  props, shared subtrees via dup(), JS numbers) while parse(print(t))
+  canonicalizes; natively direct==parsed (991==991) but in-kernel
+  direct(856) != parsed(991) -- the kernel's direct tree unlocks folds
+  watr won't make on native's direct tree. NEXT PROBE (cheap,
+  decisive): capture native's direct pre-watr tree (hook watrTail or
+  export a debug tap), diff node-identity/props/number-vs-string
+  against parse(print()); then find which watr shape-check the native
+  metadata blocks -- fixing THAT likely makes native adopt the
+  kernel's better output (select folds + hoists = native wins left on
+  the table), and parity follows for free. Rows stay in PARITY_TODO
+  meanwhile.
   LANDED VERDICT (same day): battery 3084/0 green; kernel rebuilt;
   kernel-target suite 1953/1962 -- the json 'shaped runtime parser'
   assert CLEARED (was 2 shaped-parser fails, now 1), remaining fails =
