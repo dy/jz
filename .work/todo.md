@@ -217,6 +217,29 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  DICT ROWS -- FULL CLOSURE: recursionUnroll BUG, 5-LINE NATIVE REPRO
+  2026-07-25: build-dist.mjs line 127 builds the kernel at LEVEL 3
+  (recursionUnroll: true). Native repro, no kernel needed:
+    const cnt = (n) => { if (!Array.isArray(n)) return 1; let s = 1;
+      for (let i = 0; i < n.length; i++) s += cnt(n[i]); return s }
+    export let f = () => cnt(['op', ['a', 'b'], ['c', 1]])
+  node 8; jz O0/O2 8; jz O3 = 3 (WRONG); O3 + recursionUnroll:false =
+  8. So: recursionUnroll (inline a single non-tail self-call, O3/
+  speed only) miscompiles heterogeneous-arg self-recursion -- the
+  inlined copy's Array.isArray guard folds (or arg coerces) against a
+  misproven recursive-arg type. The 'kernel-scale' theory was wrong:
+  standalone probes were compiled at O2, the kernel binary at O3 --
+  its embedded count() is the miscompiled O3 form at runtime
+  regardless of requested compile level. Explains count(b)=3 and the
+  select fires (dict|2/dict|3 rows). NEXT (small, land-able): fix
+  recursionUnroll in src/optimize/index.js -- find where the inlined
+  self-call body folds the isArray/type guard on the substituted arg
+  (n[i] elem read must stay UNKNOWN absent a proof; likely the same
+  differing-primitive/valType fold family) -- add the repro above to
+  test/inference.js or optimizer tests, verify O3 returns 8, battery,
+  REBUILD KERNEL (O3 build bakes the fix in), expect dict|2 dict|3 to
+  graduate (kernel count() correct -> cap rejects -> select stops ->
+  byte parity), PARITY_TODO empty.
   DICT ROWS -- UNDERCOUNT PROVEN, NEW CLASS NAMED 2026-07-25 (heavy
   probe, two deterministic rebuild cycles): in-kernel gate counters
   676/144/81/5 vs node 685/153/145/0 -- gSuccess 5 in-kernel; the cap
