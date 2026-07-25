@@ -171,6 +171,23 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   trivial 100k-iteration export-let counter in isolation both engines.
   Then re-face (b): if counters lie, guard evidence needs a counter-free
   recheck (e.g. push a sentinel into the module node on guard-pass).
+  ROUND 8 -- ENDGAME LOCATED 2026-07-25: counter-free structural probes
+  settle everything: (a) node's 79122 token count was MY probe double-
+  importing the entry (parse ran across harness cases) -- both engines
+  tokenize identically (7915 strs, 4831 nodes, top=49); (b) tree[0] ===
+  'module' is TRUE in-wasm when compiled in the ENTRY module AND in a
+  fresh small fn ADDED to optimize.js (__guardTest export) called with
+  the same tree; (c) outline's OWN inline guard `ast[0] !== 'module'`
+  still rejects 55/55. CONCLUSION: the IDENTICAL compare expression
+  miscompiles ONLY inside outline's ~4600-line arrow body -- the
+  enclosing-function-scale/shape-dependent miscompile that underlies
+  this whole family. NEXT (the endgame): dump the harness module's
+  native-jz WAT (compile g.code {wat:true}), locate BOTH compare sites
+  (outline's guard vs __guardTest), diff the emitted idioms -- the wrong
+  instruction sequence names the emitter path to fix. Probe state:
+  watr node_modules instrumented with counters + __guardTest (pristine
+  restore = rm -rf node_modules/watr && npm install watr@5.7.11
+  --no-save); entry has counts()/treeStat; flagprobe.mjs is the runner.
   ROUND 6 CORRECTION 2026-07-25: tokenizer EXONERATED -- commit()-level
   anomaly probe (parse.js __pLog, drained post-trap) shows P[] EMPTY:
   every token is born with correct length at 140kB scale. AND the same
