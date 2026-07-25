@@ -62,6 +62,16 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   WATCH after land: sort-comparator closures `(a,b)=>a<b?...` now take the
   runtime dispatch -- check bench sort/aos; cure would be callsite-lattice
   number proof (ptRow), never raw compares.
+  WARM FOLLOW-UP 2026-07-25: the call-based dispatch cost ~4% warm
+  (1.076/1.080/1.035); non-NaN INLINE fast path added (two f64.eq, no
+  calls -- every NaN-boxed carrier is a NaN, so both-non-NaN => genuine
+  numbers => plain f64 compare; only NaN-ish operands pay is_str_key) --
+  recovered to 1.007/1.028/1.035 (pre-wave hover). STILL over the 0.99
+  cap: the hover predates this wave (audit measured 1.003-1.114 at the
+  previous HEAD). Worst case sort 1.04 -- kernel's own comparator-ish
+  compares still dispatching. NEXT margin levers: profile warm compile
+  for surviving dispatch sites in compiler-source hot paths and prove
+  their operand kinds (callsite lattice / valResult), not raw compares.
 
 
 

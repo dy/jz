@@ -2450,6 +2450,14 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
     const ta = temp('cmp'), tb = temp('cmp')
     inc('__is_str_key')
     const getA = typed(['local.get', `$${ta}`], 'f64'), getB = typed(['local.get', `$${tb}`], 'f64')
+    // FAST PATH first — two inline non-NaN tests, no calls: every NaN-boxed
+    // carrier (strings included) is a NaN, so both-non-NaN ⇒ genuine numbers ⇒
+    // plain f64 compare. Only NaN-ish operands (boxed values, real NaN) pay
+    // the is_str_key calls; the kernel's own hot compares are overwhelmingly
+    // numbers, and the call-based form alone cost ~4% warm self-host.
+    const bothNum = ['i32.and',
+      ['f64.eq', ['local.get', `$${ta}`], ['local.get', `$${ta}`]],
+      ['f64.eq', ['local.get', `$${tb}`], ['local.get', `$${tb}`]]]
     const bothStr = ['i32.and',
       ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${ta}`]]],
       ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${tb}`]]]]
@@ -2458,7 +2466,9 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${ta}`, asF64(va)],
       ['local.set', `$${tb}`, asF64(vb)],
-      ['if', ['result', 'i32'], bothStr, ['then', strCmp], ['else', numCmp]]], 'i32')
+      ['if', ['result', 'i32'], bothNum,
+        ['then', [`f64.${f64op}`, ['local.get', `$${ta}`], ['local.get', `$${tb}`]]],
+        ['else', ['if', ['result', 'i32'], bothStr, ['then', strCmp], ['else', numCmp]]]]], 'i32')
   }
   return typed([`f64.${f64op}`, asF64(va), asF64(vb)], 'i32')
 }
