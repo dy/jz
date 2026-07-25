@@ -126,6 +126,28 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   dynamically-keyed dicts consumed by static props); (3) then the OOB fn
   with correct flags may never run -- retest before hunting it separately.
   Harness memory now 16384; entry passes strings through (typeof check).
+  OUTLINE-HUNT ROUND 5 -- PRIMITIVE CAUGHT RED-HANDED 2026-07-25:
+  post-trap log drain WORKS (entry exports drainLog=__outLogRead; host
+  calls it AFTER catching the trap -- instance memory survives, jz string
+  machinery still functional; probe file scratchpad/flagprobe.mjs).
+  WASM'S ACTUAL STATE UNDER 'fold outline': flags CORRECT (fold=1
+  locals=0 cse=0 outline=1 -- earlier localReuse-runs-anyway theory DEAD,
+  the fn-index mapping was off); outline runs; BUT the guard log shows
+  **l0=0 in-wasm vs l0=4 in node** -- the parsed 'func' TAG STRING'S
+  .length READS 0 while typeof=string. A corrupt string carrier out of
+  watr's parse() at 140kB scale (SSO length bits zero) -- downstream
+  address math on such strings OOBs (the trap), comparisons misroute
+  (the guard/pass weirdness), sizes drift (parity rows). THE HUNT IS NOW:
+  which watr-parse token path builds strings with zeroed length bits at
+  scale, i.e. WHICH jz string-producing emitter (slice/substr/charCode
+  accumulation) skips SSO/length normalization on some scale-dependent
+  branch. NEXT PROBES: log typeof+length+charCodeAt(0) of the first ~10
+  parse() tokens in-wasm (instrument watr parse.js token fn, same
+  __outLog channel + post-trap drain); compare small vs 140kB source;
+  then differential-pin the jz emitter path. Probe state: watr optimize
+  instrumented (flags log at driver entry, OL-* logs at outline, __chk
+  at finish tail); entry has drainLog + string-opts passthrough; harness
+  memory 16384; ALL recipes reproducible from these notes.
   RESOLVED clamp-peel blocker: the rejecting node was the PEEL'S OWN
   synthesized `__pks0 = (r < w ? r : w)` bound -- both param proofs read
   the min-ternary arms as bare-use/string-escape rejects, un-proving the
