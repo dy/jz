@@ -217,6 +217,37 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  DICT ROWS -- NATIVE BLOCKER NAMED 2026-07-25 (tree-tap agent):
+  natively the select fold is blocked by watr's ARM-SIZE CAP
+  `count(a) > 6 || count(b) > 6` -- count() tallies every array
+  wrapper + op-name + leaf token, so ANY binary op on two leaves
+  costs 8 > 6 (typed_shift inner arm `(i32.shr_u (local.get $et)
+  (i32.const 1))` = 8; char_at arms 17..118). isPure/hasTrap/
+  readsMemory all pass. AND the tree-shape theory is DEAD:
+  __typed_shift/__char_at are STATIC WAT TEXT (module/core.js:650
+  stdlib strings) parsed by watr.parse -- direct tree byte-identical
+  to parse(print()) (336B JSON both). So the kernel's select can ONLY
+  mean the kernel's count()/cap evaluates differently in-kernel.
+  Standalone jz-compiled watr (module-graph path, watr-diff entry)
+  matches node exactly at gate granularity -- but the KERNEL is built
+  differently: scripts/build-dist.mjs ESBUILD-BUNDLES src/ + watr
+  first, THEN self-compiles the bundle. PRIME SUSPECT: the esbuild-
+  transformed watr text (renamed helpers, hoisted scopes) compiled by
+  jz behaves differently at count() (undercount -> cap passes ->
+  select fires; a .length/recursion miscompile class on the bundled
+  form only). NEXT LEG (decisive): extract the bundled watr's count/
+  select-rule region from the esbuild bundle (build-dist writes it --
+  check for an intermediate artifact or add a flag to keep it), run
+  the SAME gate-counter differential on THE BUNDLED FORM node-vs-
+  jz-wasm; a count() divergence there names the miscompile. ALSO
+  worth checking: is the fold DESIRABLE? arms are pure, kernel output
+  smaller -- if sound, the cap is miscalibrated in watr itself
+  (count() double-counts wrappers vs its own 'small cheap arms'
+  intent) -- but that's a watr-repo (user-owned) calibration call,
+  not a jz fix; parity direction should be decided AFTER the
+  in-kernel count() divergence is explained (an undercount is a
+  MISCOMPILE to fix even if the resulting fold happens to be sound).
+  Rows remaining: dict|2 dict|3.
   DICT ROWS -- GATE PROBE NEGATIVE 2026-07-25 (subagent, evidence
   exact): every early-return gate of watr's value-if->select rule
   counter-instrumented (gEntry/CondArr/Result/Arity/Pure/Trap/
