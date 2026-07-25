@@ -217,6 +217,29 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  SYNTH DISSECTED WITH MEASURED SHARES 2026-07-25 (agent, WAT
+  surgery + ABBA retimes, checksum 41574153 held): jz 2688-2707us vs
+  asc-O3 2455-2478us = 1.084-1.093x. THREE deficits:
+  (1) DOMINANT ~108% of gap: eager-select CASCADE for the ADSR
+  4-way ternary -- all three f64.div arms computed unconditionally
+  per sample (3 selects chained); rewriting to nested lazy
+  if(result f64) flips jz/AS to 0.993x (jz BEATS AS). Lever: the
+  '?:' select-gate (src/compile/emit.js ~4144/4186) treats
+  isPureIR as the ONLY criterion -- pure but EXPENSIVE arms
+  (f64.div/f64.sqrt) need a cost veto, especially cascaded N-way
+  chains. Must verify no regression on genuinely unpredictable
+  branch data before landing (eager-cheap-select can beat a
+  mispredicting branch). NOT previously ledgered.
+  (2) SECONDARY ~25%: stripCanon (emit.js 178-198, .canonOf from
+  emitNeg 270) cannot see through hoistNestedCalls' temp
+  (plan/inline.js ~365-384): `const __tmp = sinTau(ph)` severs the
+  structural link, NaN-canon guard survives per sample. 4 minimal
+  repros pin the boundary exactly. Lever: def-use closure through
+  the SINGLE-DEF compiler-generated temp at the same site. Together
+  1+2 measured 0.9756x = jz beats AS on synth.
+  (3) ToInt32 guard strip: VERIFIED V8-NEGATIVE (~2% slower
+  stripped, reproduced stacked and alone) -- DO NOT TOUCH; the
+  select-guard form is faster on V8 than bare trunc_sat here.
   LENGTH-HEADER LICM LANDED 2026-07-25: stable-header admission in
   hoistInvariantLoop -- `i32.load(i32.sub(local.get $X, 8))` is
   loop-invariant when $X is VAL.TYPED or ARRAY neverGrown (header
