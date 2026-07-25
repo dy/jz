@@ -18,7 +18,7 @@ import { compile } from '../index.js'
 import { optimize as watOptimize } from 'watr/optimize'
 import { run } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
-import { parse, loopCount, walk } from '../scripts/wat-probe.mjs'
+import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
 
 // Count `call $NAME` nodes that survive INSIDE a loop within the user function $f
 // only (scoped past module builtins, which carry their own loops).
@@ -79,6 +79,71 @@ test('LICM (watr): speed tier hoists post-inline invariants via watr licm', () =
   const on = jz(src, { optimize: 'speed' }).exports.f
   const off = jz(src, { optimize: { level: 'speed', watrLicm: false } }).exports.f
   for (const args of [[1.0, 4], [9.0, 4], [2.5, 3], [1.0, 0]]) is(on(...args), off(...args), `watr licm on===off ${JSON.stringify(args)}`)
+})
+
+test('LICM: checked-access length HEADER decode hoists once per function (neverGrown/TYPED pointer)', () => {
+  // sdf's edt1d (bench/sdf/sdf.js): a data-dependent hull cursor `k` indexes typed-array
+  // params `v`/`z` inside a while-pop nested in a for-loop — an UNPROVEN index (k isn't a
+  // canonical monotone `i<arr.length` counter), so every read takes the checked-access
+  // branchless form, whose length guard decodes the header fresh EVERY site:
+  // `i32.shr_u(i32.load(i32.sub(ptr, 8)), shift)`. `v`/`z` are TYPED-array params (fixed-size
+  // allocations — module/typedarray.js's typedBase: "no grow op, so it can never relocate")
+  // never reassigned in the body, so the DECODED LENGTH is loop-invariant — but was re-fetched
+  // from memory at every guard site regardless (ledger 'SDF GAP DISSECTED WITH SHARES
+  // 2026-07-25'). hoistInvariantLoop now admits this load (compile/index.js stamps
+  // `fn.stableHeaderNames` from VAL.TYPED / ARRAY-neverGrown reps; optimize/index.js's
+  // pureGiven recognizes `i32.load(i32.sub(local.get $X, i32.const 8))` for $X in that set as
+  // invariant with NO alias-analysis needed — the header word can never change once the
+  // receiver is allocated) — cascading bottom-up through the nested while and the outer for
+  // collapses every site to ONE decode, shared by both loops.
+  const src = `
+    const scan = (v, z, n) => {
+      let k = 0
+      let s = 0.0
+      for (let q = 1; q < n; q++) {
+        while (k > 0 && z[k] > 1.5) { k = k - 1 }
+        s = s + v[k]
+        k = k + 1
+      }
+      return s
+    }
+    export const f = (n) => {
+      const v = new Int32Array(n)
+      const z = new Float64Array(n)
+      for (let i = 0; i < n; i++) { v[i] = i + 1; z[i] = i % 2 === 0 ? 0.0 : 3.0 }
+      return scan(v, z, n)
+    }`
+  const isHeaderDecode = (n) => Array.isArray(n) && n[0] === 'i32.load' && Array.isArray(n[1]) && n[1][0] === 'i32.sub' &&
+    Array.isArray(n[1][1]) && n[1][1][0] === 'local.get' &&
+    Array.isArray(n[1][2]) && n[1][2][0] === 'i32.const' && Number(n[1][2][1]) === 8
+
+  const fnOn = findFunc(parse(src, 'speed'), '$scan')
+  is(loopCount(fnOn, isHeaderDecode), 0, 'length header decode fully hoisted out of both loops')
+  ok(count(fnOn, isHeaderDecode) <= 2, 'at most one decode per array (v, z) survives, at function scope')
+
+  const fnOff = findFunc(parse(src, { level: 'speed', hoistInvariantLoop: false }), '$scan')
+  ok(loopCount(fnOff, isHeaderDecode) >= 1, 'sanity: without hoistInvariantLoop the decode DOES recur in-loop')
+
+  // Bit-exact vs a plain-JS reference across the hull cursor's edge cases (n=0/1, cursor
+  // oscillation, cursor growth) — the hoist must not change which value each guard reads.
+  const ref = (n) => {
+    const v = new Int32Array(n), z = new Float64Array(n)
+    for (let i = 0; i < n; i++) { v[i] = i + 1; z[i] = i % 2 === 0 ? 0.0 : 3.0 }
+    let k = 0, s = 0.0
+    for (let q = 1; q < n; q++) {
+      while (k > 0 && z[k] > 1.5) k--
+      s += v[k]
+      k++
+    }
+    return s
+  }
+  const on = jz(src, { optimize: 'speed' }).exports.f
+  const off = jz(src, { optimize: { level: 'speed', hoistInvariantLoop: false } }).exports.f
+  for (const n of [0, 1, 2, 3, 5, 8, 17, 30, 64, 100]) {
+    const r = ref(n)
+    is(on(n), r, `n=${n}: hoisted result matches reference`)
+    is(off(n), r, `n=${n}: un-hoisted result matches reference (LICM changes nothing semantic)`)
+  }
 })
 
 test('recursionUnroll: non-zero acc init fuses as += (shared-acc reset bug)', () => {

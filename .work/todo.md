@@ -217,6 +217,27 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  LENGTH-HEADER LICM LANDED 2026-07-25: stable-header admission in
+  hoistInvariantLoop -- `i32.load(i32.sub(local.get $X, 8))` is
+  loop-invariant when $X is VAL.TYPED or ARRAY neverGrown (header
+  word immutable for the binding's lifetime; no alias analysis
+  needed) and $X itself passes the standard local.get invariance.
+  Stamp fn.stableHeaderNames in compile/index.js (mirrors
+  distinctParams), admission in loopInvariance, threaded in
+  hoistInvariantLoop. edt1d header decodes 20 -> 5 (v/z/f one each
+  at function scope, d one per its two nests). HONEST BENCH VERDICT:
+  no measurable sdf wall-clock change (bands overlap; V8 TurboFan
+  already LICMs this at JIT tier) -- the win is emitted-code
+  size/shape (golden-size class) + non-optimizing consumers
+  (baseline tiers, AOT). Regression test pins the shape + bit-exact
+  results (optimizer.js 210/210); battery 3088/0; perf golden sizes
+  53/53. Deliberately not covered (banked): boxed-pointer receivers
+  (isPtrBaseDecode chain match), subarray views (length at base+0 --
+  ambiguous with data loads, needs a distinct marker), plain-array
+  guard sites in module/array.js (verify the pattern fires there),
+  out-of-loop one-shot guards (cheap, skip). The remaining sdf gap
+  stays the research-tier symbolic hull (~53% share) -- next
+  frontier items: synth 1.09x vs as, raymarcher 0.96x, warm hover.
   SDF GAP DISSECTED WITH SHARES 2026-07-25 (diagnosis agent, WAT
   micro-surgery + retime): jz 6483us vs c-wasm 5228us = 1.24x. The
   edt1d hull-cursor `k` keyed accesses (v[k], z[k], z[k+1], stores)

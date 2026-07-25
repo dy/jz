@@ -951,7 +951,7 @@ function buildBaseParamOf(fn, bodyStart, distinctParams) {
 // teed invariant; a free `local.get` must be unwritten by the loop). Memory leaves are admitted
 // only under the summary: a `$__cell_`/distinct-param load iff no aliasing store + no call; a
 // SAFE_OFFSET/READONLY_MEM call iff no unsafe call (+ no direct store for heap reads).
-function loopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSets = false }) {
+function loopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSets = false, stableHeaderNames = null }) {
   const locals = new Set(), globals = new Set(), storedCells = new Set(), storedBases = new Set()
   let hasUnsafeCall = false, hasAnyCall = false, hasDirectStore = false, hasV128 = false
   const scan = (node) => {
@@ -1002,6 +1002,17 @@ function loopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSet
       const a = node[1]
       if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)
         && !hasAnyCall && !storedCells.has(a[1]) && (bound.has(a[1]) || !locals.has(a[1]))) return true
+      // Length-HEADER load: `i32.load(i32.sub(local.get $X, i32.const 8))` where $X is a
+      // proven stable-header pointer (stableHeaderNames — VAL.TYPED or ARRAY neverGrown, see
+      // the compile/index.js stamp). Unlike the cell/distinctParam admissions, this needs NO
+      // alias-analysis against the loop's stores: the header word is immutable for $X's whole
+      // lifetime (a typed array never resizes; a neverGrown array never relocates — no store
+      // this loop could contain ever targets it), so invariance follows purely from $X's own
+      // address being loop-invariant (the local.get rule just below, applied to $X itself).
+      if (op === 'i32.load' && stableHeaderNames && Array.isArray(a) && a[0] === 'i32.sub' && a.length === 3 &&
+          Array.isArray(a[1]) && a[1][0] === 'local.get' && typeof a[1][1] === 'string' && stableHeaderNames.has(a[1][1]) &&
+          Array.isArray(a[2]) && a[2][0] === 'i32.const' && Number(a[2][1]) === 8 &&
+          pureGiven(a[1], bound)) return true
       // Alias-analysis LICM: a load from a typed-array param PROVEN distinct from every buffer
       // this loop writes (base ∉ storedBases) is loop-invariant when its address is invariant —
       // even across the loop's stores, because they can't alias it. This is what lets rust/clang
@@ -1352,6 +1363,9 @@ export function hoistInvariantLoop(fn) {
   // `i32.add/sub`, and single-def snap locals ($__li/$__ab from prior ptr-offset hoisting).
   const distinctParams = fn.distinctParams || null
   const baseParamOf = buildBaseParamOf(fn, bodyStart, distinctParams)
+  // Stable-header pointer names (compile/index.js stamp) — see loopInvariance's
+  // i32.load admission for the length-HEADER hoist this enables.
+  const stableHeaderNames = fn.stableHeaderNames || null
 
   const processLoop = (loopNode, nested) => {
     // Inner loops first (bottom-up) — an inner hoist creates a local.get the
@@ -1361,7 +1375,7 @@ export function hoistInvariantLoop(fn) {
 
     // The loop's effect summary + the proven invariance/purity predicate (shared with
     // splitLoopPrivateScratch — see loopInvariance). `locals` is the loop's whole write-set.
-    const { pureGiven, locals, hasV128 } = loopInvariance(loopNode, { distinctParams, baseParamOf })
+    const { pureGiven, locals, hasV128 } = loopInvariance(loopNode, { distinctParams, baseParamOf, stableHeaderNames })
 
     // Per-subtree local-occurrence counts and write-sets, memoized bottom-up —
     // the tee-privacy check queries them for EVERY candidate node, and the old

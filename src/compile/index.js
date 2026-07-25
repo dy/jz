@@ -1309,6 +1309,20 @@ function emitFunc(func, funcFacts, programFacts) {
   // a load from one such param across a store to another (they can't alias).
   if (funcFacts.distinctParams?.size)
     fn.distinctParams = new Set([...funcFacts.distinctParams].map(n => `$${n}`))
+  // Stable-header pointer facts: bindings whose length-HEADER word (at base-8) is
+  // provably immutable for the binding's entire lifetime — VAL.TYPED (a typed array
+  // is a fixed-size allocation, no grow op exists — see module/typedarray.js typedBase)
+  // or ARRAY neverGrown (reps.js — no push/splice/relocating op reaches it). `$`-prefixed
+  // to match WAT local/param names; read by hoistInvariantLoop to admit the checked-access
+  // guard's length DECODE (`i32.shr_u(i32.load(i32.sub(ptr, 8)), shift)`) as loop-invariant
+  // — it needs no alias-analysis against the loop's stores (unlike the cell/distinctParam
+  // loads above) because nothing can ever write that word once the receiver is allocated.
+  if (funcFacts.localReps?.size) {
+    const stableHeaderNames = new Set()
+    for (const [nm, r] of funcFacts.localReps)
+      if (r && (r.val === VAL.TYPED || r.neverGrown === true)) stableHeaderNames.add(`$${nm}`)
+    if (stableHeaderNames.size) fn.stableHeaderNames = stableHeaderNames
+  }
   // Inline `(export ...)` attribute only for the syntactic inline-export
   // form (`export function foo`, snapshot in `func.exported` at defFunc
   // time). Re-exports (`function foo; export { foo }`) and aliases (`export
