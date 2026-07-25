@@ -146,7 +146,33 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
     ALSO NOTED: native quadratic-concat arena exhaustion at ~500KB+ built
     strings (s += in loop, 60k reps) -- model-expected (no GC) but the
     concat-buffer SRoA misses the mixed-chunk shape; future lever.
-    async 1 (wasi-warning channel).
+    async/generators ROOT FIXED 2026-07-25 (the biggest kernel class):
+    compileClosureBody populated ctx.func.preboxed AFTER emitting the body,
+    so every boxed decl re-allocated its heap cell at the decl site -- an
+    EARLIER-created closure had captured the function-entry cell (null) and
+    mutually-recursive const arrows (flattenList/flattenStmt in jzify's
+    generator machine) called through the stale cell and silently no-opped:
+    EVERY generator/async body flattened to zero states under self-host
+    (hollow machines; my first indexed-for sidestep turned that into
+    infinite dispatch loops -- both symptoms, one root). FIX: populateBoxedSets()
+    before emitBlockBody in the closure path (mirrors top-level emitFunc
+    order); pinned in test/closures.js at the trigger shape (mutual const
+    arrows inside a nested closure). KEY TOOL built for this and future
+    hunts: scratchpad jzify-diff.mjs -- compiles jzify standalone to a
+    753kB wasm via .work/jzify-entry.mjs and DIFFS node-jzify vs
+    wasm-jzify output; reproduces at optimize:false with 30s iteration
+    (vs 7min kernel rebuilds); ALL probes as SIGKILL-capped child
+    processes (sync-wasm infinite loops starve in-process timers).
+    Kernel async+generators legs 36/1 after fix (was fully hollow).
+    REMAINING 1 row ('manual next() protocol + return value'):
+    STATIC-ALLOCATED completion objects mis-serialize NEGATIVE f64 fields
+    in-kernel ({value:-1} reads back null; positives/strings fine; heap
+    objects fine; `return 0-1` computed also null -- the static-closure-env/
+    static-data writer's negative-f64 byte serialization) -- NEXT HUNT.
+    host ABI: 5th `host` param landed across self.js entries + kernel-target
+    marshal ('wasi'|'js' string, 0 = native undefined default); the wasi
+    fetch-warning row needs the async fix + this together.
+    async suite stays excluded until the negative-field row clears.
   * kernel-parity TODO rows (dict|2, dict|3, sum|3, arr|3): in-kernel
     vectorizer/unroller bails where native fires (O3 output smaller).
   * test:self WARM PERF REGRESSION CONFIRMED REAL (2026-07-23): sequential

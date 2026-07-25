@@ -1681,6 +1681,26 @@ function emitClosureBody(cb) {
   // Emit body
   const block = isBlockBody(cb.body)
   let bodyIR
+  const boxedSets = {}
+  const populateBoxedSets = () => {
+    const boxedCaptureNames = new Set(cb.captures.filter(name => parentBoxedCaptures.has(name)))
+    for (const name of boxedCaptureNames) ctx.func.preboxed.add(name)
+    const boxedValueCaptureNames = new Set(cb.captures.filter(name => ctx.func.boxed.has(name) && !parentBoxedCaptures.has(name)))
+    for (const name of boxedValueCaptureNames) {
+      ctx.func.locals.set(ctx.func.boxed.get(name), 'i32')
+      ctx.func.preboxed.add(name)
+    }
+    const boxedParamNames = new Set(cb.params.filter(name => ctx.func.boxed.has(name)))
+    for (const name of boxedParamNames) {
+      ctx.func.locals.set(ctx.func.boxed.get(name), 'i32')
+      ctx.func.preboxed.add(name)
+    }
+    // Boxed locals that aren't captures or params get a fresh null-init cell;
+    // captures/params already carry their incoming value.
+    const preboxedLocalInits = emitPreboxedLocalInits(name =>
+      boxedCaptureNames.has(name) || boxedValueCaptureNames.has(name) || boxedParamNames.has(name))
+    Object.assign(boxedSets, { boxedCaptureNames, boxedValueCaptureNames, boxedParamNames, preboxedLocalInits })
+  }
   if (block) {
     invalidateLocalsCache(cb.body)
     for (const [k, v] of analyzeBody(cb.body).locals) if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
@@ -1706,9 +1726,21 @@ function emitClosureBody(cb) {
     }
     // P1 predictor (slice 4) — closure-body plan pass; see enterFunc site.
     inheritPtrAliases(cb.body, ctx.func.locals, ctx.func.boxed)
+    // Populate boxed capture/param/local sets BEFORE body emission (mirrors the
+    // top-level emitFunc order): emitDecl consults ctx.func.preboxed to decide
+    // whether a boxed decl STORES into the entry-allocated cell or allocates a
+    // fresh one. Populating after the body (the old order) made every boxed
+    // decl re-allocate — an EARLIER-created closure had already captured the
+    // entry cell, so mutually-recursive const arrows (`const list = …stmt()…;
+    // const stmt = …list()…`) called through a stale null cell and silently
+    // no-opped: every generator/async machine body flattened to zero states
+    // under self-host (jzify runs as closures there — natively jzify's own
+    // function declarations compile through the correctly-ordered top level).
+    populateBoxedSets()
     ctx.func.repsFrozen = true   // FunctionPlan freeze: closure body emission begins
     bodyIR = emitBlockBody(cb.body)
   } else {
+    populateBoxedSets()
     ctx.func.repsFrozen = true   // FunctionPlan freeze: expression-body emission
     bodyIR = [carrierF64(cb.body, emit(cb.body))]
   }
@@ -1728,22 +1760,9 @@ function emitClosureBody(cb) {
     inc('__alloc_hdr', '__mkptr')
   }
 
-  const boxedCaptureNames = new Set(cb.captures.filter(name => parentBoxedCaptures.has(name)))
-  for (const name of boxedCaptureNames) ctx.func.preboxed.add(name)
-  const boxedValueCaptureNames = new Set(cb.captures.filter(name => ctx.func.boxed.has(name) && !parentBoxedCaptures.has(name)))
-  for (const name of boxedValueCaptureNames) {
-    ctx.func.locals.set(ctx.func.boxed.get(name), 'i32')
-    ctx.func.preboxed.add(name)
-  }
-  const boxedParamNames = new Set(cb.params.filter(name => ctx.func.boxed.has(name)))
-  for (const name of boxedParamNames) {
-    ctx.func.locals.set(ctx.func.boxed.get(name), 'i32')
-    ctx.func.preboxed.add(name)
-  }
-  // Boxed locals that aren't captures or params get a fresh null-init cell;
-  // captures/params already carry their incoming value.
-  const preboxedLocalInits = emitPreboxedLocalInits(name =>
-    boxedCaptureNames.has(name) || boxedValueCaptureNames.has(name) || boxedParamNames.has(name))
+  // populateBoxedSets ran BEFORE body emission (see the comment at the
+  // emitBlockBody call); its sets/inits are read here for splicing.
+  const { boxedCaptureNames, boxedValueCaptureNames, boxedParamNames, preboxedLocalInits } = boxedSets
 
   // Insert locals (captures + params + declared)
   // Build default-param initializer IR before local declarations are emitted:

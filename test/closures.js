@@ -1423,3 +1423,23 @@ export let f = () => [o.m(5), o.m(0)]`)
   const arr = memory.read(exports.f())
   ok(arr[0] === true && arr[1] === false, `decoded [${arr}]`)
 })
+
+test('closures: mutually-recursive const arrows inside a CLOSURE-compiled function (preboxed cell order)', () => {
+  // The mutual pair must live inside a nested closure (not a top-level function):
+  // the closure-compile path used to populate ctx.func.preboxed AFTER emitting the
+  // body, so each boxed decl re-allocated its cell — the earlier arrow's env kept
+  // the entry cell (null) and calls through it silently no-opped. Under self-host
+  // this hollowed EVERY generator/async machine (jzify's flattenList/flattenStmt
+  // pair). Fixed by mirroring the top-level order (populateBoxedSets before
+  // emitBlockBody); pinned here at the exact trigger shape.
+  const { f } = runHost(`export let f = () => {
+    const outer = () => {
+      const tag = new Set(['x'])
+      const list = (xs, c) => { for (const x of xs) { if (c == null) return null; c = stmt(x, c) } return c }
+      const stmt = (x, c) => tag.has('x') && !Array.isArray(x) ? c + x : list(x, c)
+      return list([1, [2, 3], 4], 10)
+    }
+    return outer()
+  }`)
+  is(f(), 20)
+})

@@ -61,7 +61,7 @@ function optimizeTail(module, cfg) {
 // surviving a `_clear` is a correctness bug (wrong bytes read back), not just
 // waste. Must run every compile (not just after the first `_clear`) since it's
 // cheap and callers may `_clear` in any pattern.
-function setupSelf(strict, optJSON, modulesJSON) {
+function setupSelf(strict, optJSON, modulesJSON, host) {
   reset(emitter, GLOBALS, {
     emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
   })
@@ -79,6 +79,10 @@ function setupSelf(strict, optJSON, modulesJSON) {
   // marshalled as one JSON dict over the wasm ABI — prepare's import
   // resolution reads ctx.module.importSources the same way native does.
   if (modulesJSON) ctx.module.importSources = JSON.parse(modulesJSON)
+  // Host profile (native opts.host, index.js:470): a plain string over the ABI
+  // ('wasi' | 'js'); 0/absent mirrors the native undefined default. Gates the
+  // same host-conditional emits + advisories (host-global warnings) in-kernel.
+  ctx.transform.host = host || undefined
 }
 function lower(source, strict) {
   const parsed = liftIIFEs(parse(source))   // mirror index.js: lift IIFEs before jzify
@@ -91,8 +95,8 @@ function lower(source, strict) {
  * @param {string} [optJSON] - optimize config as JSON (level / alias / per-pass object)
  * @returns {Uint8Array} compiled wasm bytes
  */
-export default function compileSelf(source, strict, optJSON, modulesJSON) {
-  setupSelf(strict, optJSON, modulesJSON)
+export default function compileSelf(source, strict, optJSON, modulesJSON, host) {
+  setupSelf(strict, optJSON, modulesJSON, host)
   // Per-compile watr name-uid reset (mirrors index.js's call): the kernel is a
   // long-lived instance compiling many programs — without this, watr's inline/
   // outline counters grow monotonically across compiles and the kernel's text
@@ -124,8 +128,8 @@ export default function compileSelf(source, strict, optJSON, modulesJSON) {
  * Lets the self-host leg satisfy the `warningsFor()` tests faithfully.
  * @returns {string} JSON array of `{ code, message, ... }` entries
  */
-export function compileWarnings(source, strict, optJSON, modulesJSON) {
-  setupSelf(strict, optJSON, modulesJSON)
+export function compileWarnings(source, strict, optJSON, modulesJSON, host) {
+  setupSelf(strict, optJSON, modulesJSON, host)
   const sink = { entries: [] }
   initWarnings(sink)
   optimizeTail(compileAst(prepare(lower(source, strict))), ctx.transform.optimize)
@@ -133,8 +137,8 @@ export function compileWarnings(source, strict, optJSON, modulesJSON) {
   return JSON.stringify(sink.entries)
 }
 
-export function compileWat(source, strict, optJSON, modulesJSON) {
-  setupSelf(strict, optJSON, modulesJSON)
+export function compileWat(source, strict, optJSON, modulesJSON, host) {
+  setupSelf(strict, optJSON, modulesJSON, host)
   return watrPrint(optimizeTail(compileAst(prepare(lower(source, strict))), ctx.transform.optimize))
 }
 
