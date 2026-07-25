@@ -217,6 +217,28 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  DICT ROWS -- NEXT PROBE READY 2026-07-25: the select conversion is
+  watr's value-if->select rule at node_modules/watr/src/optimize.js
+  ~1253 ((if (result T) c (then A)(else B)) -> (select A B c), gates:
+  non-const cond, result i/f 32/64, arm count()<=6, isPure both arms,
+  hasTrap/readsMemory reject, and a cond-writes-vs-arm-reads clash
+  scan under !isPure(cond) that probes OPCODE[n] membership). Kernel
+  fires it on __typed_shift/__char_at; native does NOT -- yet on
+  paper the gates pass for __typed_shift's inner if in both engines.
+  Per-func diff post-carrier-fix: ONLY $__typed_shift (nat 389/ker
+  281), $__char_at (2413/2335), $count$exp (72461/72579). NEXT: the
+  established probe pattern -- counter-instrument EACH early-return
+  gate of that rule in node_modules watr (allocation-free counters +
+  __counts getter, same as the outline hunt), run dict pre-watr WAT
+  through node-watr AND jz-compiled watr (watr-diff entry), diff
+  which gate diverges; suspects in order: (a) count()/size lookup
+  misread in-kernel (numdata/OPCODE dict reads -- the dyn-dict class),
+  (b) isPure OPCODE membership probe, (c) the fixpoint round budget
+  (ROUNDS caps) differing via an earlier pass count. Note the probe
+  must run BOTH the plain rule and the fixpoint context (rule may be
+  reached different number of times). Restore pristine watr@5.7.11
+  after (rm -rf node_modules/watr && npm install watr@5.7.11
+  --no-save). Remaining rows: dict|2 dict|3 only.
   PARITY sum|3 + arr|3 GRADUATED 2026-07-25 (same session, root
   found where the tree-metadata theory pointed away): the kernel's
   resolveOptimize PRESET CHAIN lost every literal-bool override --
