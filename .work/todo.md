@@ -228,18 +228,20 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   stdlib strings) parsed by watr.parse -- direct tree byte-identical
   to parse(print()) (336B JSON both). So the kernel's select can ONLY
   mean the kernel's count()/cap evaluates differently in-kernel.
-  Standalone jz-compiled watr (module-graph path, watr-diff entry)
-  matches node exactly at gate granularity -- but the KERNEL is built
-  differently: scripts/build-dist.mjs ESBUILD-BUNDLES src/ + watr
-  first, THEN self-compiles the bundle. PRIME SUSPECT: the esbuild-
-  transformed watr text (renamed helpers, hoisted scopes) compiled by
-  jz behaves differently at count() (undercount -> cap passes ->
-  select fires; a .length/recursion miscompile class on the bundled
-  form only). NEXT LEG (decisive): extract the bundled watr's count/
-  select-rule region from the esbuild bundle (build-dist writes it --
-  check for an intermediate artifact or add a flag to keep it), run
-  the SAME gate-counter differential on THE BUNDLED FORM node-vs-
-  jz-wasm; a count() divergence there names the miscompile. ALSO
+  Standalone jz-compiled watr (module-graph path, watr-diff entry,
+  987kB) matches node exactly at gate granularity. CORRECTION (esbuild
+  theory REFUTED by reading build-dist.mjs line 120): the kernel is
+  NOT esbuild-bundled -- it's resolveModuleGraph(scripts/self.js),
+  the SAME path as the standalone probe. esbuild only builds dist/
+  jz.js. Therefore the divergence is KERNEL-SCALE-DEPENDENT (987kB
+  faithful vs 12MB kernel diverging) -- the same enclosing-scale
+  class as the shaped-parser bug. count() is trivial (1 + sum over
+  children, Array.isArray + .length loop); an in-kernel undercount
+  means Array.isArray/.length/recursion misreads at 12MB scale, or
+  the cap compare itself. NEXT LEG (decisive, running as agent):
+  instrument watr counters + temp gateCounts export in scripts/
+  self.js, rebuild kernel WITH probes, compileWat(dict) via kernel,
+  read counters, compare to node; then restore pristine + rebuild. ALSO
   worth checking: is the fold DESIRABLE? arms are pure, kernel output
   smaller -- if sound, the cap is miscalibrated in watr itself
   (count() double-counts wrappers vs its own 'small cheap arms'
