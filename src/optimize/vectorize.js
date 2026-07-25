@@ -4273,11 +4273,11 @@ function buildPivotCoeff(loopNode, pivot) {
 // unless the body is exactly: clamp-free `xi=x+k; p=(row+xi)<<2; acc_c += u8[base+c]`
 // over a unit-stride x, then a 4-byte RGBA store `dst[ab1+c] = f(acc_c)`. r≥127 →
 // i16 overflow → bail. Leaves a scalar remainder loop for the ≤3 trailing pixels.
-function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef) {
-  // Loose envelope (block/loop/label/br-end only) — the exit guard below accepts NO label
-  // check and lt_s only (not lt_u), a strictly narrower shape than matchExitBrIf, so it stays
-  // this recognizer's own residual rather than folding into the shared scaffold.
-  const bl = matchBlockLoop(blockNode, { envelope: 'loose' })
+function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl) {
+  // Loose-envelope scaffold, matched once at the dispatch (LoopPlan). The exit
+  // guard below accepts NO label check and lt_s only (not lt_u), a strictly
+  // narrower shape than matchExitBrIf, so it stays this recognizer's own
+  // residual rather than folding into the shared scaffold.
   if (!bl) return null
   const { loopNode, endIdx } = bl
   // exit guard: br_if $brk (i32.eqz (i32.lt_s x BOUND))
@@ -4463,12 +4463,11 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef) {
   return { wrapper, newLocalDecls }
 }
 
-function tryChannelReduce(blockNode, fnLocals, freshIdRef) {
+function tryChannelReduce(blockNode, fnLocals, freshIdRef, bl) {
   // Loose envelope: LICM may hoist an invariant edge-clamp bound ahead of the loop when
   // this pixel loop nests in an outer row loop; preserved verbatim by the wrapper rebuild.
   // Unlike tryBlurMultiPixel this never validates the exit/inc shape — it trusts
-  // `bodyStart..bodyEnd` as the body outright.
-  const bl = matchBlockLoop(blockNode, { envelope: 'loose' })
+  // `bodyStart..bodyEnd` as the body outright. Loose scaffold from the dispatch.
   if (!bl) return null
   const { loopNode, endIdx } = bl
 
@@ -6743,6 +6742,9 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // `bl` (inner scaffold) + `op` (outer scaffold) together are the loop's
       // plan; a recognizer whose scaffold is null skips without walking.
       const op = matchOuterPixelLoop(node)
+      // Loose-envelope variant of the same scaffold (any non-loop content
+      // tolerated) — shared by blur-multi-pixel + channel-reduce.
+      const blLoose = matchBlockLoop(node, { envelope: 'loose' })
       let r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef, op)
         ?? tryMemCopyFill(bl, fnLocals, freshIdRef)
         ?? tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
@@ -6750,8 +6752,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryMapReduceVectorize(bl, fnLocals, freshIdRef)
         ?? tryStencil(node, fnLocals, freshIdRef, stencil, bl)
         ?? tryRampMap(node, fnLocals, freshIdRef)
-        ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef) : null)
-        ?? tryChannelReduce(node, fnLocals, freshIdRef)
+        ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef, blLoose) : null)
+        ?? tryChannelReduce(node, fnLocals, freshIdRef, blLoose)
         ?? tryByteScan(bl, fnLocals, freshIdRef)
         ?? tryPerPixelColor(node, fnLocals, freshIdRef, pureFuncMap, op)
         ?? tryOuterStrip(node, fnLocals, freshIdRef, outerStrip, op)
