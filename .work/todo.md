@@ -257,15 +257,21 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
       innerIdxs census) and the five outer-family recognizers
       (divergent-escape, per-pixel-color, outer-strip, iterated-reduce,
       conv-column) consume the shared descriptor — identical predicates
-      hoisted, 4 redundant outer matches + 4 inner-census scans per
-      candidate block gone. REMAINING CONVERSION PATH: (a) stencil/
-      ramp-map/blur/channel-reduce call matchBlockLoop with DIFFERENT
-      envelope opts — unify envelopes into the one dispatch-computed
-      plan (needs envelope reconciliation, the loose/pixelIV variants);
-      (b) butterfly is fully custom (17-stmt FFT shape) — leave last;
-      (c) then classify → route: plan.kind in {inner, outer+1inner,
-      outer+0inner, outer+Ninner} makes the first-match chain a class
-      dispatch (order within class preserved). Solver stage-2 slices
+      hoisted. SLICES 2a+2b LANDED same day (446a76c3, 5d0dc5eb):
+      stencil consumes the dispatch bl (identical opts); loose envelope
+      matched once for blur+channel-reduce. TERMINAL STATE of the
+      scaffold-sharing phase: the dispatch plan {bl, op, blLoose} is the
+      single scaffold authority for 15/16 recognizers (7 inner-family on
+      bl, 5 outer-family on op, 2 on blLoose, stencil on bl). JUSTIFIED
+      PRIVATE: ramp-map's multiInc variant (accepts trailing increment
+      RUNS the default rejects; single consumer — hoisting would compute
+      a 4th match on EVERY block) and butterfly (fully custom 17-stmt FFT
+      scaffold). Classification ROUTING assessed and declined: scaffold
+      classes overlap (a block can match bl AND op), so cross-class order
+      stays load-bearing — and with re-matching gone, the first-bails are
+      O(1) null checks; the audit's re-derivation complaint is resolved.
+      FUTURE (separate project): unify the per-recognizer BODY analyses
+      (load/store/stride scanning) the way scaffolds were unified. Solver stage-2 slices
       landed: lazy fact store (plan() owns freshness), convergence
       advisories in production. CompileSession + TargetProfile (59 ctx
       importers) still open.
