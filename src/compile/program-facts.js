@@ -395,10 +395,6 @@ export function collectProgramFacts(ast) {
   }
 }
 
-/** Re-collect program facts after a mutating plan pass. Unchanged function bodies
- *  reuse WeakMap-cached walks from the prior collectProgramFacts call. */
-export const refreshProgramFacts = (ast, _prev) => collectProgramFacts(ast)
-
 /** Walk `ast` + every user function body + module inits, observing slot types
  *  on each `{}` literal. Per-function bodies have their analyzeBody.valTypes
  *  installed as overlay so shorthand `{x}` resolves through local consts.

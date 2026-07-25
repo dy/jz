@@ -26,7 +26,7 @@
 
 import { ctx } from '../../ctx.js'
 import { invalidateLocalsCache } from '../analyze.js'
-import { collectProgramFacts, refreshProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown } from '../program-facts.js'
+import { collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown } from '../program-facts.js'
 import narrowSignatures, {
   specializeBimorphicTyped, speculateTypedParams, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, narrowBoolResults,
@@ -55,9 +55,22 @@ export default function plan(ast, profiler) {
   const t = profiler?.time ? (name, fn) => profiler.time(`plan:${name}`, fn) : (_, fn) => fn()
   // AST-mutating pass: run timed; on change, re-sweep program facts (timed
   // separately — the refreshes are usually the cost, not the passes).
-  let programFacts
+  // Fact freshness is OWNED HERE (stage-2 solver slice 1): mutating passes
+  // report that they changed the AST (truthy return) and the driver marks the
+  // fact store dirty; the store re-collects LAZILY at the next facts() READ.
+  // Passes no longer trigger eager whole-program refreshes — back-to-back
+  // mutations between reads collapse into ONE re-collect, and a pass cannot
+  // forget to refresh (reading through facts() is the only access). Laziness
+  // is scoped to the sweep window: after it, `programFacts` is materialized
+  // once and ENRICHED in place (narrowSignatures settles paramReps into the
+  // same object), so no later re-collect may discard those writes.
+  let _facts = null, _dirty = true
+  const facts = () => {
+    if (_dirty) { _facts = t('collectFacts', () => collectProgramFacts(ast)); _dirty = false }
+    return _facts
+  }
   const sweep = (name, pass) => {
-    if (t(name, pass)) programFacts = t('refreshFacts', () => refreshProgramFacts(ast, programFacts))
+    if (t(name, pass)) _dirty = true
   }
 
   t('inferModuleLetTypes', () => inferModuleLetTypes(ast))
@@ -68,7 +81,7 @@ export default function plan(ast, profiler) {
   t('unboxConstTypedGlobals', unboxConstTypedGlobals)
   t('inferModuleIntGlobals', () => inferModuleIntGlobals(ast))
 
-  programFacts = t('collectFacts', () => collectProgramFacts(ast))
+  facts()
   // Function-namespace SROA — dissolve reassigned `f.prop` slots into module
   // globals before inlining/narrowing, so all downstream passes see plain
   // globals instead of the dynamic property machinery.
@@ -83,11 +96,11 @@ export default function plan(ast, profiler) {
   // replacement (`scalarize*`) and array promotion gate on `optimizing()`: off only
   // under a fully-disabled optimizer, on for every enabled preset (incl. the
   // `optimize:{sourceInline:false}` heap-elision-test form, which is level-2 based).
-  sweep('inlineHotInternalCalls', () => inlineHotInternalCalls(programFacts, ast))
+  sweep('inlineHotInternalCalls', () => inlineHotInternalCalls(facts(), ast))
   sweep('bindNestedRowLengths', bindNestedRowLengths)
   sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
   sweep('inlineLocalLambdas', inlineLocalLambdas)
-  sweep('specializeFixedRestCalls', () => specializeFixedRestCalls(programFacts))
+  sweep('specializeFixedRestCalls', () => specializeFixedRestCalls(facts()))
   if (optimizing()) {
     sweep('splitCharScan', splitCharScanLoops)
     sweep('scalarizeArrayLiterals', scalarizeFunctionArrayLiterals)
@@ -98,8 +111,9 @@ export default function plan(ast, profiler) {
     // unrolling — currently it can't, since promotion produces the `[...]`-arg
     // form rather than `new Int32Array(N)`, but the ordering keeps the door open).
     sweep('promoteIntArrayLiterals', promoteIntArrayLiterals)
-    sweep('scalarizeTypedArrays', () => scalarizeFunctionTypedArrays(programFacts))
+    sweep('scalarizeTypedArrays', () => scalarizeFunctionTypedArrays(facts()))
   }
+  const programFacts = facts()
   ctx.types.dynKeyVars = programFacts.dynVars
   ctx.types.dynWriteVars = programFacts.dynWriteVars
   ctx.types.anyDynKey = programFacts.anyDyn
