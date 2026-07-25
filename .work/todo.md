@@ -217,7 +217,32 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
-  DICT ROWS -- NEXT PROBE READY 2026-07-25: the select conversion is
+  DICT ROWS -- GATE PROBE NEGATIVE 2026-07-25 (subagent, evidence
+  exact): every early-return gate of watr's value-if->select rule
+  counter-instrumented (gEntry/CondArr/Result/Arity/Pure/Trap/
+  ClashEval/Clash/Success) and run on the dict pre-watr WAT under the
+  exact resolved O2 opts: node 685/0/510/22/145/0/8/8/0 == wasm
+  IDENTICAL, output SHA-1 equal, gSuccess=0 BOTH ENGINES. The rule
+  never fires on the parse(print) tree in either engine -- watr's
+  gate logic is exonerated at gate granularity. THEREFORE the real
+  kernel's select forms come from the DIRECT in-memory IR tree its
+  own assemble/emit hands to watr (not parse-built): some tree
+  property present in the kernel's direct tree (and absent/blocked in
+  native's direct tree AND in parsed trees) lets the rule fire.
+  REFINED NEXT PROBE (cheap first leg fully native): re-add the
+  JZ_DBG_TREETAP tap in watr-tail.js (2-line env-gated stash, was
+  proven this session), instrument the select rule's gates in
+  node_modules watr, run the NATIVE pipeline (direct tree) and find
+  WHICH gate rejects __typed_shift's inner if natively (counters say
+  gPure=145 and gResult=510 are the busy rejects on parsed trees);
+  then reason/diff what the kernel's direct tree does differently at
+  that exact check (suspects: result-type annotation shape, isPure's
+  OPCODE membership on jz-built nodes, string-vs-number const args).
+  Probe scripts persist in scratchpad (gen-dict-wat.mjs, run-node.mjs,
+  wasm-probe.mjs, dict-prewatr.wat, dict-watropts.json). watr
+  restored pristine 5.7.11; entry restored; no commits by the agent.
+  Rows remaining: dict|2 dict|3 only.
+  DICT ROWS -- NEXT PROBE READY 2026-07-25 (superseded by the above): the select conversion is
   watr's value-if->select rule at node_modules/watr/src/optimize.js
   ~1253 ((if (result T) c (then A)(else B)) -> (select A B c), gates:
   non-const cond, result i/f 32/64, arm count()<=6, isPure both arms,
