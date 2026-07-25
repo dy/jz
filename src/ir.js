@@ -90,7 +90,17 @@ export const asI32 = n => {
     const inner = n[1]
     return Array.isArray(inner) ? typed(inner, 'i32') : inner
   }
-  return typed(['i32.trunc_sat_f64_s', n], 'i32')
+  // Provably i32-ranged values keep the single-op bare trunc (exact there —
+  // no saturation can fire); everything else wraps through i64: this coercion
+  // feeds i32-NARROWED param/cell boundaries, where the narrowing proof is
+  // "the value is consumed by int32 ops" — ES ToInt32 semantics, which WRAP
+  // mod 2^32. Bare trunc_sat saturates at INT32_MAX, so `(u >>> 0)` on a
+  // narrowed param read 0x7fffffff for any hi-word ≥ 2^31 (every negative
+  // f64's upper half — the bug that corrupted extractF64Bits' static slots
+  // for negative fields). Same lowering and |x| ≥ 2^63 boundary as toI32.
+  const rng = f64Range(n)
+  if (rng && rng.lo >= I32_MIN && rng.hi <= I32_MAX) return typed(['i32.trunc_sat_f64_s', n], 'i32')
+  return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
 }
 
 /** Coerce node to i32 offset for a ptr-narrowed return / store. Same-kind unboxed

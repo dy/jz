@@ -164,15 +164,24 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
     (vs 7min kernel rebuilds); ALL probes as SIGKILL-capped child
     processes (sync-wasm infinite loops starve in-process timers).
     Kernel async+generators legs 36/1 after fix (was fully hollow).
-    REMAINING 1 row ('manual next() protocol + return value'):
-    STATIC-ALLOCATED completion objects mis-serialize NEGATIVE f64 fields
-    in-kernel ({value:-1} reads back null; positives/strings fine; heap
-    objects fine; `return 0-1` computed also null -- the static-closure-env/
-    static-data writer's negative-f64 byte serialization) -- NEXT HUNT.
+    FULLY CLEARED 2026-07-25: async + generators UN-EXCLUDED (kernel legs
+    37/0; suite 1953/1962 -- only shaped-parser + user's 2 in-flight WIP
+    rows). The 'negative completion field reads null' remainder root was
+    DEEPER than serialization: asI32 (the i32-narrowed param/cell boundary
+    coercion, ir.js) lowered f64->i32 via BARE i32.trunc_sat_f64_s, which
+    SATURATES at INT32_MAX -- ES ToInt32 must WRAP mod 2^32. extractF64Bits'
+    _hx8 closure param (shift-consumed -> i32-narrowed) read 0x7fffffff for
+    EVERY negative f64's hi-word -> static slots 0x7FFFFFFF00000000 (NaN
+    space) -> read back null. FIX: asI32 wraps through i64 (range-proof
+    keeps the single-op bare trunc -- perf-ratchet slice +48 ops justified
+    + re-baselined; slices bench still leads v8 0.89x). CASCADE FIXES:
+    vectorize peelNarrowConv recognizes the bare wrap form (f32->i16 SIMD
+    kept); global-narrow EXCEEDS_I32_CALLS disqualifies clock results
+    (Date.now() ~1.7e12 was i32-narrowed -- old saturation masked it as
+    'positive', wasi init test caught the wrap). Pins: ToInt32-wrap
+    closure-param pin + preboxed mutual-arrow pin (test/closures.js).
     host ABI: 5th `host` param landed across self.js entries + kernel-target
-    marshal ('wasi'|'js' string, 0 = native undefined default); the wasi
-    fetch-warning row needs the async fix + this together.
-    async suite stays excluded until the negative-field row clears.
+    marshal ('wasi'|'js' string, 0 = native undefined default).
   * kernel-parity TODO rows (dict|2, dict|3, sum|3, arr|3): in-kernel
     vectorizer/unroller bails where native fires (O3 output smaller).
   * test:self WARM PERF REGRESSION CONFIRMED REAL (2026-07-23): sequential

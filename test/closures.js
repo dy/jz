@@ -1443,3 +1443,18 @@ test('closures: mutually-recursive const arrows inside a CLOSURE-compiled functi
   }`)
   is(f(), 20)
 })
+
+test('closures: i32-narrowed param coerces with ES ToInt32 WRAP, not saturation', () => {
+  // The param is shift-consumed so inference narrows it to i32; the call passes
+  // a value above 2^31. The boundary coercion (asI32) must wrap mod 2^32 like
+  // ES ToUint32/ToInt32 — the old bare i32.trunc_sat saturated to INT32_MAX,
+  // which corrupted extractF64Bits' static slots for every negative f64
+  // (hi-word ≥ 2^31) and read generator `return -1` completions back as null.
+  const { f } = runHost(`export let f = () => {
+    const hx = (u) => (u >>> 0).toString(16)
+    const B = new ArrayBuffer(8); const F = new Float64Array(B); const U = new Uint32Array(B)
+    F[0] = -1
+    return hx(U[1]) + hx(U[0])
+  }`)
+  is(f(), 'bff000000')
+})

@@ -522,6 +522,7 @@ export const inferModuleIntGlobals = (ast) => {
   const FRACTIONAL_MATH_CONSTS = new Set(['PI', 'E', 'LN2', 'LN10', 'LOG2E', 'LOG10E', 'SQRT2', 'SQRT1_2'])
   const fractionalMathKey = (k) => typeof k === 'string' && k.startsWith('math.')
     && (FRACTIONAL_MATH.has(k.slice(5)) || FRACTIONAL_MATH_CONSTS.has(k.slice(5)))
+  const EXCEEDS_I32_CALLS = new Set(['Date.now', 'performance.now', 'console.now', 'console.perfNow', 'Date.parse', 'Date.UTC'])
   const producesFraction = (e) => {
     if (e == null) return false
     if (typeof e === 'number') return !Number.isInteger(e)
@@ -538,6 +539,14 @@ export const inferModuleIntGlobals = (ast) => {
       if (Array.isArray(callee) && callee[0] === '?') return producesFraction(callee[2]) || producesFraction(callee[3])
       if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math' && FRACTIONAL_MATH.has(callee[2])) return true
       if (fractionalMathKey(callee)) return true
+      // Integer-valued but EXCEEDS the i32 range: epoch/monotonic-millisecond
+      // clocks (~1.7e12). The integer default would wrap them mod 2^32 at the
+      // i32 global store — the old saturating coercion masked this by clamping
+      // to INT32_MAX ("t > 0" stayed accidentally true); the ES-correct wrap
+      // surfaces it. Disqualify like a fractional producer.
+      if (typeof callee === 'string' && EXCEEDS_I32_CALLS.has(callee)) return true
+      if (Array.isArray(callee) && callee[0] === '.' && typeof callee[1] === 'string' &&
+          EXCEEDS_I32_CALLS.has(`${callee[1]}.${callee[2]}`)) return true
       return false  // unknown call → assume integer
     }
     for (let i = 1; i < e.length; i++) if (producesFraction(e[i])) return true

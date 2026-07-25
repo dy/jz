@@ -4140,7 +4140,20 @@ function peelNarrowConv(val, sty) {
     const u = isArr(elseA) && isArr(elseA[1]) && elseA[1][0] === 'i64.trunc_sat_f64_u' ? elseA[1][1] : null
     if (s && u && exprEq(s, u)) return s
   }
+  // wrapIntIR (module/typedarray.js) — the unified ES ToIntN store idiom (same
+  // outer shape as toI32's guarded select, sign-branched inner):
+  //   (select (i32.wrap_i64 (select (sat_s X) (sat_u X) (lt X 0))) (i32.const 0) (ne X Inf))
+  // narrowStore's f32→i8/i16 pack re-establishes the +Inf→0 lane semantics.
+  if (val[0] === 'select' && val.length === 4 && isI32Const(val[2]) && val[2][1] === 0 &&
+      isArr(val[1]) && val[1][0] === 'i32.wrap_i64' && isArr(val[1][1]) && val[1][1][0] === 'select') {
+    const sel = val[1][1]
+    const s = isArr(sel[1]) && sel[1][0] === 'i64.trunc_sat_f64_s' ? sel[1][1] : null
+    const u = isArr(sel[2]) && sel[2][0] === 'i64.trunc_sat_f64_u' ? sel[2][1] : null
+    if (s && u && exprEq(s, u)) return s
+  }
   if (val[0] === 'i32.trunc_sat_f64_s' || val[0] === 'i32.trunc_sat_f64_u') return val[1]
+  // Bare wrap-through-i64 (asI32's boundary coercion — ES ToInt32 wrap, no guard).
+  if (val[0] === 'i32.wrap_i64' && isArr(val[1]) && val[1][0] === 'i64.trunc_sat_f64_s') return val[1][1]
   return null
 }
 
@@ -4155,15 +4168,30 @@ function narrowStore(addr, val, laneType, sty, ctx) {
   ctx.extraLocals.push(['local', tmp, 'v128'])
   const g = ['local.get', tmp]
   const sh = (idx) => ['i8x16.shuffle', ...idx.map(String), g, g]
+  const sets = []
   let pre, lane8, store
   if (laneType === 'f64' && sty === 'f32') { pre = ['f32x4.demote_f64x2_zero', val]; lane8 = g; store = 'i64.store' }
   else if (laneType === 'f64' && sty === 'i32') { pre = ['i32x4.trunc_sat_f64x2_s_zero', val]; lane8 = g; store = 'i64.store' }
-  else if (laneType === 'f32' && sty === 'i16') { pre = ['i32x4.trunc_sat_f32x4_s', val]; lane8 = sh(PACK_I32_TO_I16); store = 'i64.store' }
-  else if (laneType === 'f32' && sty === 'i8')  { pre = ['i32x4.trunc_sat_f32x4_s', val]; lane8 = sh(PACK_I32_TO_I8); store = 'i32.store' }
+  else if (laneType === 'f32' && (sty === 'i16' || sty === 'i8')) {
+    // Scalar integer stores are wrapIntIR ToIntN: a +Inf lane stores 0 where the
+    // saturated lane packs to -1 (INT32_MAX's low bytes). andnot the lanes equal
+    // to +∞ (0x7F800000 as f32 bits) so the low-byte pack stays bit-identical to
+    // the scalar loop at EVERY input, not just finite ones. -Inf (INT32_MIN, low
+    // bytes 0) and NaN (trunc_sat → 0) lanes already agree.
+    const vt = `$__nvi${ctx.freshIdRef.next++}`
+    ctx.extraLocals.push(['local', vt, 'v128'])
+    const vg = ['local.get', vt]
+    sets.push(['local.set', vt, val])
+    pre = ['v128.andnot', ['i32x4.trunc_sat_f32x4_s', vg],
+      ['f32x4.eq', vg,
+        ['v128.const', 'i32x4', '2139095040', '2139095040', '2139095040', '2139095040']]]
+    lane8 = sh(sty === 'i16' ? PACK_I32_TO_I16 : PACK_I32_TO_I8)
+    store = sty === 'i16' ? 'i64.store' : 'i32.store'
+  }
   else return null
   // 8-byte stores extract an i64 lane; the 4-byte i8 pack extracts an i32 lane.
   const packed = store === 'i64.store' ? ['i64x2.extract_lane', 0, lane8] : ['i32x4.extract_lane', 0, lane8]
-  return ['block', ['local.set', tmp, pre], [store, addr, packed]]
+  return ['block', ...sets, ['local.set', tmp, pre], [store, addr, packed]]
 }
 
 function buildRampStore(storeOp, addr, vval, ctx) {
