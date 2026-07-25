@@ -77,7 +77,7 @@ import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTy
 import {
   findFreeVars, findMutations, boxedCaptures,
   collectI32SafeIndexVars, collectF64StridedIndexVars, narrowUint32, scanBindingUses,
-  scanFlatObjects, scanSliceViews, scanNeverGrown, scanNumericFill, USE,
+  scanFlatObjects, scanSliceViews, scanNeverGrown, scanNumericFill, isFreshArrayCtor, USE,
 } from './analyze-scans.js'
 
 export { findFreeVars, findMutations, boxedCaptures } from './analyze-scans.js'
@@ -365,6 +365,20 @@ export function analyzeBody(body) {
   // machinery's locals/val coherence depends on it (unswitch reassigned-param
   // guard), and scalar guards don't take part in the ptr-tag fold class.
   const declared = new Set()
+  // Names whose INITIAL element contents this body fully described: a decl whose
+  // array-literal elems were all statically visible (including the empty `[]`).
+  // Mutation observations (push / index-write) describe only elements ADDED here —
+  // they may settle an element fact only when the pre-existing contents are also
+  // known (elemOrigin, or an entry already recorded from a construction source:
+  // call-return fact, split/map chain, literal elems). A push on a PARAM or an
+  // unknown-origin alias proves nothing about the elements the array arrived
+  // with — watr's `outline(ast)` pushes `['func',…]` nodes onto the module tree,
+  // which settled arrayElemValType=ARRAY for the heterogeneous ['module', …]
+  // param and const-folded the very `ast[0] !== 'module'` guard protecting it
+  // (emitStrictEq's differing-primitive fold → outline dead in-kernel). Skip,
+  // don't poison: the array simply stays untyped, and a caller-proven preseed
+  // (index.js param facts) survives unchallenged.
+  const elemOrigin = new Set()
   const poisonUndeclared = (name, vt) =>
     !declared.has(name) && vt != null && vt !== VAL.NUMBER && vt !== VAL.BOOL && vt !== VAL.BIGINT && vt !== VAL.TYPED && vt !== VAL.BUFFER ? null : vt
 
@@ -437,6 +451,7 @@ export function analyzeBody(body) {
     // arr-elem val type (arrElemValTypes slice) — array-literal init + call return + alias + .map/.filter/.slice/.concat chain
     {
       const rawElems = staticArrayElems(rhs)
+      if ((rawElems && rawElems.every(e => e != null)) || isFreshArrayCtor(rhs)) elemOrigin.add(name)
       if (rawElems) {
         const elems = rawElems.filter(e => e != null)
         if (elems.length && elems.length === rawElems.length) {
@@ -609,26 +624,37 @@ export function analyzeBody(body) {
       markEscapeArgs(node[2])
     }
 
-    // arr.push(...) — observe both schemas and val types in one pass
+    // arr.push(...) — observe both schemas and val types in one pass. Mutation
+    // evidence describes only the ADDED elements — each slice may settle only
+    // when the array's prior contents are known (elemOrigin decl, or an entry
+    // this body already recorded from a construction source); see elemOrigin.
     if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'push' && typeof node[1][1] === 'string') {
       const arr = node[1][1]
+      const originVal = elemOrigin.has(arr) || arrElemValTypes.has(arr)
+      const originSchema = elemOrigin.has(arr) || arrElemSchemas.has(arr) || arrElemSchemaSets.has(arr)
+      const originCtor = elemOrigin.has(arr) || arrElemTypedCtors.has(arr)
       const list = commaList(node[2])
       for (const a of list) {
         if (Array.isArray(a) && a[0] === '...') {
-          observeArrSchema(arr, null); observeArrValType(arr, null); continue
+          if (originSchema) observeArrSchema(arr, null)
+          if (originVal) observeArrValType(arr, null)
+          continue
         }
-        observeArrSchema(arr, exprSchemaId(a, localSchemaMap))
-        observeArrValType(arr, exprElemSourceVal(a))
+        if (originSchema) observeArrSchema(arr, exprSchemaId(a, localSchemaMap))
+        if (originVal) observeArrValType(arr, exprElemSourceVal(a))
         // `ch.push(new Float32Array(m))` — track the element ctor so `ch[c][i]`
         // inlines, same as the Array.from / array-literal forms.
-        if (exprElemSourceVal(a) === VAL.TYPED) observeArrTypedCtor(arr, elemTypedCtorOf(a))
+        if (originCtor && exprElemSourceVal(a) === VAL.TYPED) observeArrTypedCtor(arr, elemTypedCtorOf(a))
       }
     }
 
     // `ch[c] = new Float32Array(m)` — index-fill construction of a typed-array-of-
-    // arrays (`let ch = new Array(n); for(c) ch[c] = new T(m)`). Mirror push.
+    // arrays (`let ch = new Array(n); for(c) ch[c] = new T(m)`). Mirror push,
+    // including the known-origin gate (an index-write on a param array proves
+    // nothing about its other elements).
     if (op === '=' && Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 3
-        && typeof node[1][1] === 'string' && valTypeOf(node[2]) === VAL.TYPED) {
+        && typeof node[1][1] === 'string' && valTypeOf(node[2]) === VAL.TYPED
+        && (elemOrigin.has(node[1][1]) || arrElemValTypes.has(node[1][1]) || arrElemTypedCtors.has(node[1][1]))) {
       observeArrValType(node[1][1], VAL.TYPED)
       observeArrTypedCtor(node[1][1], elemTypedCtorOf(node[2]))
     }

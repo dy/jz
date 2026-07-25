@@ -1472,3 +1472,27 @@ test('reassigned param poisons flow-insensitive val: guard must not const-fold',
   is(exports.f('p', undefined), 'arr:undefined', 'undefined arm coerces')
   is(exports.f('p', [null, 7]), 'arr:null', 'real array arm coerces')
 })
+
+test('push on a param settles no element fact: heterogeneous guard must not const-fold', async () => {
+  // Mutation evidence describes only the elements it ADDS. watr's outline pushes
+  // ['func',…] nodes onto its `ast` param — settling arrayElemValType=ARRAY from
+  // that push const-folded `ast[0] !== 'module'` (a differing-primitive fold) to
+  // TRUE, so the pass early-returned on every module in-kernel. The array arrived
+  // as ['module', str, …arrays]: element facts may settle only for arrays whose
+  // initial contents the body proved (elemOrigin gate in analyzeBody).
+  const { exports } = jz(`
+    let visit = (ast) => {
+      if (!Array.isArray(ast) || ast[0] !== 'module') return -1
+      let n = 0
+      for (let i = 1; i < ast.length; i++) if (Array.isArray(ast[i])) n++
+      ast.push([0, 1])
+      return n
+    }
+    export let f = (k) => {
+      let tree = k ? ['module', [1, 2], [3, 4]] : ['other', [1, 2]]
+      return visit(tree)
+    }
+  `)
+  is(exports.f(1), 2, 'module-tagged tree passes the guard and counts children')
+  is(exports.f(0), -1, 'non-module tag keeps the runtime compare live')
+})

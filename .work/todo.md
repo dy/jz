@@ -188,27 +188,48 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   watr node_modules instrumented with counters + __guardTest (pristine
   restore = rm -rf node_modules/watr && npm install watr@5.7.11
   --no-save); entry has counts()/treeStat; flagprobe.mjs is the runner.
-  ROUND 9 -- ROOT MECHANISM NAMED 2026-07-25 (endgame): the harness
-  module's native-jz WAT (scratchpad/harness.wat, 24MB; outline =
-  $m0_optimize$outline, ~200 locals incl __li0..__li82 LICM-hoisted
-  i64 invariants) shows **__li slot ALIASING assignments mid-body**:
-  `(local.set $__li0 (local.get $__li2))` at body-offset ~17677 and
-  `(local.set $__li5 (local.get $__li11))` at ~48267 -- hoist slots
-  RENUMBERED/COALESCED so one invariant's slot is filled FROM another
-  long after function entry. Any use of $__li0 BEFORE its aliasing
-  assignment reads 0 -> the module-guard's SSO-'module' compare
-  (i64.eq against the hoisted literal bits) compares against ZERO ->
-  always unequal -> outline never fires in-wasm. Explains the
-  enclosing-scale dependence (hoists+coalescing only in huge loopy
-  fns), every isolated-probe pass, and likely the whole watr-in-kernel
-  family incl parity size rows. NEXT: (1) confirm the guard compare
-  reads an __li slot whose aliasing set is AFTER it (locate the actual
-  i64.eq in harness.wat guard region); (2) find the jz pass emitting
-  li-slot aliasing (hoistInvariantLoop / coalesceLocals interplay in
-  src/optimize) and fix the ORDERING (aliasing assignment must precede
-  every use, or slots must not be shared across hoist groups);
-  (3) rebuild kernel, expect json shaped-parser asserts + parity rows
-  to clear; (4) restore watr node_modules pristine + strip entry probes.
+  ROUND 9 -- ROOT NAMED AND FIXED 2026-07-25 (endgame closed). The
+  __li-aliasing hypothesis of the previous entry was WRONG (those sets
+  precede their uses textually; red herring -- lesson: name a mechanism
+  only after reading the actual compare site). The real root, read
+  straight off outline's entry code in harness.wat: the guard
+  `!Array.isArray(ast) || ast[0] !== 'module'` compiled with its SECOND
+  DISJUNCT AS `(i32.const 1)` -- statically folded TRUE, so outline
+  always early-returned in-wasm (__cEntry 55 / __cGuard 0 exactly).
+  JZ_DBG_FOLD tracing pinned the fold: emitStrictEq's differing-
+  primitive-class rule fired because valTypeOf(ast[0]) returned
+  VAL.ARRAY -- analyzeBody's push observation (`ast.push(['func',…])`
+  inside outline) SETTLED arrayElemValType=ARRAY for a PARAM whose
+  pre-existing contents are unknown (watr trees are heterogeneous
+  ['module', str, …arrays]). Mutation evidence describes only ADDED
+  elements; treating it as element-type proof for arrays the body
+  didn't construct is the misproof class (also hit bf463_0/'block',
+  astf794_1 -- and transitively poisons the caller-side param lattice).
+  FIX (analyze.js + analyze-scans.js): elemOrigin set -- a name's
+  initial contents count as known only from a fully-static array-
+  literal decl (incl. empty) or fresh Array(n) ctor (isFreshArrayCtor,
+  now exported); push/index-write observations for ALL THREE slices
+  (val/schema/typedCtor) gate on elemOrigin-or-existing-entry, else
+  SKIP (not poison -- caller-proven preseeds survive). The construct-
+  then-fill and `let a=[]; a.push(x)` idioms keep their fast paths.
+  VERIFIED: flagprobe SAME 88387ch, counters identical node/wasm
+  (55/1/2/568/37/24/10 -- 10 outlines applied in-wasm); watr-diff ALL
+  SAME on pristine watr@5.7.11 incl. full default pipeline over the
+  real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
+  watr node_modules reinstalled pristine, entry probes removed).
+  LANDED VERDICT (same day): battery 3084/0 green; kernel rebuilt;
+  kernel-target suite 1953/1962 -- the json 'shaped runtime parser'
+  assert CLEARED (was 2 shaped-parser fails, now 1), remaining fails =
+  user's 2 typedarray WIP rows + ONE perf.js assert ('JSON.parse walk
+  uses slot loads') that PASSES standalone under the kernel target
+  (json.js 64/64, perf.js 53/53) and fails only in-suite -- the known
+  in-context/kernel-long-session state layer, a separate smaller class.
+  Parity rows did NOT graduate (misread tripwire messages: green =
+  divergence still present): dict|2 dict|3 sum|3 arr|3 remain, their
+  divergence is in-kernel jz pass decisions, not the watr class.
+  Regression test added (inference.js 'push on a param settles no
+  element fact'). Fix = analyze.js elemOrigin gate + analyze-scans.js
+  isFreshArrayCtor export; probes all stripped, scratch cleaned.
   ROUND 6 CORRECTION 2026-07-25: tokenizer EXONERATED -- commit()-level
   anomaly probe (parse.js __pLog, drained post-trap) shows P[] EMPTY:
   every token is born with correct length at 140kB scale. AND the same

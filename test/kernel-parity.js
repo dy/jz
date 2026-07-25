@@ -25,7 +25,10 @@ const CORPUS = {
 // unroller bails where native fires (the 'simd/optimizer shape' class);
 // dict also diverges at O2 (hash-path emit decision). Each row asserts the divergence STILL
 // exists — when a fix lands, the assertion flips and the row graduates into
-// the byte-identity set below.
+// the byte-identity set below. (2026-07-25: the push-on-param element-fact
+// misproof fix — analyzeBody elemOrigin gate — cured the watr-outline class
+// but NOT these rows; their divergence is in-kernel jz pass decisions, a
+// separate layer.)
 const PARITY_TODO = new Set(['dict|2', 'dict|3', 'sum|3', 'arr|3'])
 
 for (const opt of [0, 2, 3]) {

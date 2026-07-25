@@ -558,7 +558,7 @@ export function scanNeverGrown(body) {
 // Both `Array(n)` and `new Array(n)` normalize to a `new.Array` call by prepare; an
 // empty literal stays `['[]', null]`. (Typed ctors become `new.Float64Array` etc. — the
 // exact-match on `new.Array` keeps them out.)
-const isFreshArrayCtor = (rhs) =>
+export const isFreshArrayCtor = (rhs) =>
   Array.isArray(rhs) && (
     (rhs[0] === '[]' && rhs.length <= 2) ||             // empty `[]`
     (rhs[0] === '()' && rhs[1] === 'new.Array')         // `Array(n)` / `new Array(n)` / `Array()`
