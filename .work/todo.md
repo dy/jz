@@ -217,6 +217,36 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  DICT ROWS -- UNDERCOUNT PROVEN, NEW CLASS NAMED 2026-07-25 (heavy
+  probe, two deterministic rebuild cycles): in-kernel gate counters
+  676/144/81/5 vs node 685/153/145/0 -- gSuccess 5 in-kernel; the cap
+  operand count(b) for `(i32.shr_u (local.get $et)(i32.const 1))` is
+  8 in node, 3 IN-KERNEL (1 + op-leaf + 1 + 1: both recursive
+  self-calls return leaf-like 1). Second round pinned it exactly:
+  from INSIDE the rule, b.length=3, Array.isArray(b[1])/b[2]=1/1,
+  child lengths 2/2, and DIRECT external calls count(b[1])=3,
+  count(b[2])=3 are ALL CORRECT in-kernel -- only count()'s OWN
+  self-recursive invocations (`n += count(node[i])` in its for loop)
+  return wrong. CLASS: self-recursive call miscompile at kernel
+  scale -- recursion-site-dependent, NOT covered by elemOrigin (no
+  array mutation; plain numeric recursive accumulator). LIKELY
+  MECHANISM to test first: the recursive call site coerces node[i]
+  (element read stamped numeric by some lattice fact at 12MB caller
+  population -> f64 coercion strips the array box -> Array.isArray
+  false in the callee) -- i.e. an element-fact/param-fact misproof at
+  the RECURSIVE-ARG position; alternatives: recursive-call codegen
+  arg slot corruption, self-call inlining. NEXT LEG: instrument
+  count()'s BODY (log typeof/Array.isArray(node) + a marker of the
+  call path on re-entry) same heavy-probe discipline (temp export via
+  self.js + kernel rebuild + restore); or FIRST try cheap native
+  repros: a tiny jz program with `const count = n => Array.isArray(n)
+  ? n.reduce-style loop self-recursion : 1` at O2 compiled INTO a
+  large module context, checking count(nested) -- if the misproof is
+  lattice-driven it may reproduce below kernel scale with the right
+  caller mix (numeric-arg callers + array-arg callers of the same
+  recursive fn). Kernel restored pristine after probe, parity 3/3
+  green (dict tripwires correctly still red). Fix belongs in jz
+  (inference/codegen at recursive call sites), not watr.
   DICT ROWS -- NATIVE BLOCKER NAMED 2026-07-25 (tree-tap agent):
   natively the select fold is blocked by watr's ARM-SIZE CAP
   `count(a) > 6 || count(b) > 6` -- count() tallies every array
