@@ -148,6 +148,18 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   instrumented (flags log at driver entry, OL-* logs at outline, __chk
   at finish tail); entry has drainLog + string-opts passthrough; harness
   memory 16384; ALL recipes reproducible from these notes.
+  ROUND 5b MINIMAL-REPRO REFUTATIONS (guide the next shrink): (1) plain
+  `buf += str[i++]` accumulator + push at 140kB scale: CORRECT in-wasm;
+  (2) boxed-buf (commit-closure) + recursion (parseLevel shape) + nested
+  arrays at ~200kB: CORRECT. Remaining ingredients of the REAL tokenizer
+  not yet in the repro: `level.loc = pos` (PROPERTY WRITE ON ARRAYS --
+  dyn sidecar on array at scale, prime suspect), the q-state string/
+  comment branches (`buf += str[i]` TWO-char appends, `buf = str[i++] +
+  str[i++]` reset form), `level` reassignment through the closure, and
+  running INSIDE the full watr module (module-scale locals/globals).
+  Next shrink: add level.loc writes first, then the two-char append
+  forms; alternatively instrument watr's parse commit() in-place to log
+  buf.length vs pushed-token.length at scale (post-trap drain channel).
   RESOLVED clamp-peel blocker: the rejecting node was the PEEL'S OWN
   synthesized `__pks0 = (r < w ? r : w)` bound -- both param proofs read
   the min-ternary arms as bare-use/string-escape rejects, un-proving the
