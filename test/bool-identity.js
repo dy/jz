@@ -121,6 +121,27 @@ test('bool identity: preset-table idiom (the kernel divergence chain)', async ()
   }
 })
 
+test('bool identity: dyn-spread literal bool props keep the atom (=== true survives)', async () => {
+  // The rotateLoops loss: {...fromEntries(...), rotateLoops: true} lowers via
+  // emitDynamicSpread (unknown spread source → HASH); its explicit `k: v` writes
+  // stored `emit(v)` RAW — a literal true landed as 1.0 bits, not the TRUE atom —
+  // so every `cfg.flag === true` gate read false and speed-tier passes silently
+  // dropped in-kernel (sum|3 rotation, O3 preset flags). The write must go
+  // through storedValue/carrierF64 like every other container ingress.
+  const SRC = `
+  const AO = Object.fromEntries([['p', true]])
+  const P = { ...AO, a: true, b: false, s: 'speed', n: 16 }
+  export const probe = () => [
+    P.a === true ? 'A' : 'x', P.b === false ? 'B' : 'x',
+    P.p === true ? 'P' : 'x', P.s === 'speed' ? 'S' : 'x', P.n === 16 ? 'N' : 'x',
+    P.a ? 't' : 'x', typeof P.a,
+  ].join('|')`
+  for (const optimize of LEVELS) {
+    const { probe } = await run(SRC, { memory: 256, optimize })
+    is(probe(), 'A|B|P|S|N|t|boolean', `optimize:${optimize}`)
+  }
+})
+
 test('bool identity: typed-array element writes ToNumber the box', async () => {
   const SRC = `
   export const probe = () => {

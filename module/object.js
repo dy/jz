@@ -985,7 +985,11 @@ function emitDynamicSpread(props) {
   for (let pi = 0; pi < props.length; pi++) {
     const p = props[pi]
     if (Array.isArray(p) && p[0] === ':') {
-      body.push(setKey(asI64(emit(['str', String(p[1])])), asI64(emit(p[2]))))
+      // storedValue (carrierF64 ingress): a literal `true` must land as its TRUE
+      // atom, not raw 1 bits — hash reads are dynamic-unknown, so strict `=== true`
+      // compares IDENTITY against the atom (the resolveOptimize preset chain lost
+      // every literal bool override in-kernel through exactly this raw store).
+      body.push(setKey(asI64(emit(['str', String(p[1])])), asI64(storedValue(p[2]))))
       continue
     }
     const sSchema = spreadSourceSchema(p[1])

@@ -217,6 +217,25 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  PARITY sum|3 + arr|3 GRADUATED 2026-07-25 (same session, root
+  found where the tree-metadata theory pointed away): the kernel's
+  resolveOptimize PRESET CHAIN lost every literal-bool override --
+  {...ALL_ON, rotateLoops: true, ...} lowers via emitDynamicSpread
+  (fromEntries source = unknown schema -> HASH) whose explicit `k: v`
+  writes stored emit(v) RAW: literal true landed as 1.0 bits, not the
+  TRUE atom, so `cfg.rotateLoops === true` (strict identity vs atom)
+  read FALSE in-kernel and speed-tier passes silently dropped (sum|3
+  loop rotation, arr|3). Proof chain: explicit optJSON key rotateLoops
+  -> kernel output byte-identical; preset-delivered -> dropped;
+  standalone repro at 8 keys (fromEntries+spread+literal bool, ===
+  true fails, truthy read passes); fix = storedValue/carrierF64 at
+  emitDynamicSpread's explicit-prop write (module/object.js), one
+  line + comment. Regression pinned in test/bool-identity.js
+  ('dyn-spread literal bool props keep the atom') -- the existing
+  preset-table test read flags TRUTHILY, exactly how it missed this.
+  Battery 3084 green; kernel rebuilt; PARITY_TODO now ['dict|2',
+  'dict|3'] only (select forms in __typed_shift/__char_at -- the
+  watr-input-level mechanism, still per the DIAGNOSED entry below).
   PARITY ROWS DIAGNOSED 2026-07-25 (post-elemOrigin, fresh evidence):
   per-func diff dict|2 = ONLY 3 funcs differ ($__typed_shift, $__char_at
   smaller in-kernel via select forms; $count$exp +118B); sum|3 kernel

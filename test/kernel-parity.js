@@ -20,16 +20,16 @@ const CORPUS = {
 }
 
 // Residual known divergences AFTER the shared watr-tail landed (2026-07-23):
-// PRE-tail pipeline gaps, tracked in .work/todo.md. Pattern: kernel output is
-// consistently SMALLER at O3 (sum/dict/arr) — the in-kernel vectorizer/
-// unroller bails where native fires (the 'simd/optimizer shape' class);
-// dict also diverges at O2 (hash-path emit decision). Each row asserts the divergence STILL
-// exists — when a fix lands, the assertion flips and the row graduates into
-// the byte-identity set below. (2026-07-25: the push-on-param element-fact
-// misproof fix — analyzeBody elemOrigin gate — cured the watr-outline class
-// but NOT these rows; their divergence is in-kernel jz pass decisions, a
-// separate layer.)
-const PARITY_TODO = new Set(['dict|2', 'dict|3', 'sum|3', 'arr|3'])
+// PRE-tail pipeline gaps, tracked in .work/todo.md. Each row asserts the
+// divergence STILL exists — when a fix lands, the assertion flips and the row
+// graduates into the byte-identity set below.
+// 2026-07-25: sum|3 + arr|3 graduated — the dyn-spread raw-bool store
+// (emitDynamicSpread missing storedValue/carrierF64) made every literal bool
+// override in resolveOptimize's preset chain read false through `=== true`
+// gates in-kernel, silently dropping speed-tier passes (rotateLoops et al).
+// dict remains: kernel emits select forms in __typed_shift/__char_at where
+// native keeps if/else — a distinct watr-input-level mechanism, see ledger.
+const PARITY_TODO = new Set(['dict|2', 'dict|3'])
 
 for (const opt of [0, 2, 3]) {
   test(`kernel parity: byte-identical WAT at O${opt}`, () => {
