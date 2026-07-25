@@ -217,6 +217,26 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  KERNEL PARITY COMPLETE 2026-07-25 -- PARITY_TODO EMPTY: the
+  recursionUnroll root was the SHARED-ACC RESET, not a guard fold:
+  the fused inlined frame shares the caller's accumulator, but the
+  callee's own non-zero init (`let s = 1`, survives zeroinit) cloned
+  verbatim RESET the running total each level (watr count() returned
+  3 for an 8-node tree). FIX (src/optimize/recurse.js): acc-write
+  vetting on the template -- consume-shape `acc = acc +- X` clones
+  verbatim; ONE acc-free init as the first acc occurrence at loop
+  depth 0 rewrites to `acc += init` in cloneFuse (isConsumeShape +
+  readsLocal helpers); tee/reset/in-loop-init/acc-reading RHS bail;
+  plus `return V` where V reads acc non-trivially (s*2 double-count)
+  bails. Verified: cnt 8/8/8 at O0/O2/O3, zero-init sum exact,
+  s*2-return exact at O3, optimizer 209/209, battery 3085 green
+  (only the graduating tripwires red mid-run), kernel rebuilt TWICE
+  (incl. post-vet), parity 3/3 with PARITY_TODO EMPTY -- every
+  corpus row byte-identical at every tier. Regression pinned in
+  test/optimizer.js ('recursionUnroll: non-zero acc init fuses as
+  +='). The parity long-tail (architecture plan stage 5) is CLOSED:
+  three waves -- elemOrigin gate, dyn-spread bool atom, shared-acc
+  reset.
   DICT ROWS -- FULL CLOSURE: recursionUnroll BUG, 5-LINE NATIVE REPRO
   2026-07-25: build-dist.mjs line 127 builds the kernel at LEVEL 3
   (recursionUnroll: true). Native repro, no kernel needed:

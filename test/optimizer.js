@@ -81,6 +81,27 @@ test('LICM (watr): speed tier hoists post-inline invariants via watr licm', () =
   for (const args of [[1.0, 4], [9.0, 4], [2.5, 3], [1.0, 0]]) is(on(...args), off(...args), `watr licm on===off ${JSON.stringify(args)}`)
 })
 
+test('recursionUnroll: non-zero acc init fuses as += (shared-acc reset bug)', () => {
+  // watr's count(): `let s = 1; for(..) s += cnt(n[i]); return s`. The fused
+  // inlined frame SHARES the accumulator with the caller — the callee's own
+  // `s = 1` init (non-zero, survives zeroinit) cloned verbatim RESET the
+  // caller's running total at every unrolled level: cnt of a 3-child tree
+  // returned 3 instead of 8 at O3. The O3-built self-host kernel carried the
+  // miscompiled count() and mis-fired watr's select fold (dict parity rows).
+  // The init must clone as `acc += init`; zero-init accumulators stay exact.
+  const src = `
+    const cnt = (n) => { if (!Array.isArray(n)) return 1; let s = 1; for (let i = 0; i < n.length; i++) s += cnt(n[i]); return s }
+    const sum = (n) => { if (!Array.isArray(n)) return n; let s = 0; for (let i = 0; i < n.length; i++) s += sum(n[i]); return s }
+    export let f = (d) => cnt(['op', ['a', 'b'], ['c', 1], d ? [['x'], 'y'] : 'z'])
+    export let g = () => sum([1, [2, 3], [4, [5, 6]]])`
+  for (const optimize of [false, 2, 3, 'speed']) {
+    const { f, g } = jz(src, { optimize }).exports
+    is(Number(f(0)), 9, `cnt flat tail optimize:${JSON.stringify(optimize)}`)
+    is(Number(f(1)), 12, `cnt nested tail optimize:${JSON.stringify(optimize)}`)
+    is(Number(g()), 21, `zero-init acc stays exact optimize:${JSON.stringify(optimize)}`)
+  }
+})
+
 test('LICM: call inside loop must not hoist cell reads (mutated via closure)', () => {
   const { main } = run(`
     export const main = () => {

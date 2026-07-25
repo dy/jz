@@ -19,17 +19,17 @@ const CORPUS = {
   arr: `export let rev = (n) => { let a = []; for (let i = 0; i < n; i++) a.push(i * 2); let s = 0; for (let i = a.length - 1; i >= 0; i--) s += a[i]; return s }`,
 }
 
-// Residual known divergences AFTER the shared watr-tail landed (2026-07-23):
-// PRE-tail pipeline gaps, tracked in .work/todo.md. Each row asserts the
-// divergence STILL exists — when a fix lands, the assertion flips and the row
-// graduates into the byte-identity set below.
-// 2026-07-25: sum|3 + arr|3 graduated — the dyn-spread raw-bool store
-// (emitDynamicSpread missing storedValue/carrierF64) made every literal bool
-// override in resolveOptimize's preset chain read false through `=== true`
-// gates in-kernel, silently dropping speed-tier passes (rotateLoops et al).
-// dict remains: kernel emits select forms in __typed_shift/__char_at where
-// native keeps if/else — a distinct watr-input-level mechanism, see ledger.
-const PARITY_TODO = new Set(['dict|2', 'dict|3'])
+// Residual known divergences: NONE — every corpus row is byte-identical at
+// every tier. The long-tail fell in three waves (2026-07-25): the elemOrigin
+// gate (push-on-param element misproof), the dyn-spread raw-bool store
+// (emitDynamicSpread missing carrierF64 — preset `=== true` gates read false
+// in-kernel, dropping speed-tier passes; sum|3 + arr|3), and the
+// recursionUnroll shared-acc reset (the callee's non-zero acc init cloned
+// verbatim reset the caller's total — the O3-built kernel's embedded watr
+// count() undercounted arm sizes and mis-fired the select fold; dict|2 +
+// dict|3). If a change re-opens a divergence, re-add its `name|opt` key here
+// with a dated note.
+const PARITY_TODO = new Set([])
 
 for (const opt of [0, 2, 3]) {
   test(`kernel parity: byte-identical WAT at O${opt}`, () => {

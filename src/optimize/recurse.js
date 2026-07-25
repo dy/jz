@@ -62,7 +62,14 @@ function cloneFuse(node, c) {
   } else if (op === 'local.get') {
     out = ['local.get', node[1] === c.acc ? c.acc : (c.names.get(node[1]) || node[1])]
   } else if (op === 'local.set' || op === 'local.tee') {
-    out = [op, node[1] === c.acc ? c.acc : (c.names.get(node[1]) || node[1]), cloneFuse(node[2], c)]
+    let rhs = cloneFuse(node[2], c)
+    // The acc is SHARED with the caller: the callee's own sum INIT (`let s = 1`,
+    // a non-zero init survives zeroinit) would DISCARD the caller's running
+    // total. Fused semantics: the callee's total joins by addition, so the init
+    // becomes `acc += init`. Only the vetted init site reaches here (the gate in
+    // recursionUnroll bails on every other non-consume acc write).
+    if (node[1] === c.acc && !isConsumeShape(node[2], c.acc)) rhs = [c.add, ['local.get', c.acc], rhs]
+    out = [op, node[1] === c.acc ? c.acc : (c.names.get(node[1]) || node[1]), rhs]
   } else if ((op === 'block' || op === 'loop') && typeof node[1] === 'string' && node[1][0] === '$') {
     out = [op, c.labels.get(node[1]) || node[1]]
     for (let i = 2; i < node.length; i++) out.push(cloneFuse(node[i], c))
@@ -76,6 +83,15 @@ function cloneFuse(node, c) {
   if (node.type !== undefined) out.type = node.type
   return out
 }
+
+// `(ADD (local.get acc) X)` / `(ADD X (local.get acc))` — an accumulation into
+// acc, safe to clone verbatim (the shared-acc fusion contract).
+const isConsumeShape = (rhs, acc) => isArr(rhs) && ADD_OPS.has(rhs[0]) &&
+  ((isArr(rhs[1]) && rhs[1][0] === 'local.get' && rhs[1][1] === acc) ||
+   (isArr(rhs[2]) && rhs[2][0] === 'local.get' && rhs[2][1] === acc))
+
+const readsLocal = (n, name) => isArr(n) &&
+  ((n[0] === 'local.get' && n[1] === name) || n.some((c, i) => i > 0 && readsLocal(c, name)))
 
 // Find `(local.set A (ADD (local.get A) (call $self …)))` (either operand order).
 // That statement IS the recursive call's only consumer — the fusion site.
@@ -151,6 +167,40 @@ export function recursionUnroll(fn) {
   let bodyNodes = 0
   for (const s of template) bodyNodes += nodeCount(s)
   if (bodyNodes > MAX_BODY_NODES) return
+
+  // Acc-write vetting. The clone shares the accumulator with the caller, so the
+  // callee's own acc writes must all be expressible under fusion:
+  //   • consume-shape `acc = acc ± X` — accumulation, clones verbatim;
+  //   • ONE acc-free init (`let s = 1`) as the FIRST acc occurrence, at loop
+  //     depth 0 — cloneFuse rewrites it to `acc += init` (the callee's base
+  //     contribution). An init inside a loop re-executes (reset semantics), and
+  //     a later acc-free write is a RESET — neither is expressible as `+=`, and
+  //     a `local.tee $acc` yields the raw RHS as a value. Bail on all of those:
+  //     watr's own `count()` (`let n = 1` tree-size counter) hit the unvetted
+  //     clone and every fused level RESET the caller's total to 1 — the O3
+  //     kernel undercounted arm sizes and mis-fired its select fold (dict rows).
+  let accSeen = false, accBail = false
+  const vetAcc = (n, inLoop) => {
+    if (accBail || !isArr(n)) return
+    const op = n[0]
+    const loop = inLoop || op === 'loop'
+    if ((op === 'local.set' || op === 'local.tee') && n[1] === accName) {
+      if (isConsumeShape(n[2], accName)) { accSeen = true; vetAcc(n[2], loop); return }
+      if (op === 'local.tee' || accSeen || loop || readsLocal(n[2], accName)) { accBail = true; return }
+      accSeen = true; vetAcc(n[2], loop); return
+    }
+    if (op === 'local.get' && n[1] === accName) accSeen = true
+    // `return V` fuses as `acc += V` — sound only when V is the callee's total
+    // WITHOUT the shared acc folded in. A bare `return acc` becomes a plain br
+    // (handled in cloneFuse); any other acc-reading V (`return s*2`) would
+    // double-count the already-shared accumulation — no sound fusion, bail.
+    if (op === 'return' && n.length > 1 &&
+        !(isArr(n[1]) && n[1][0] === 'local.get' && n[1][1] === accName) &&
+        readsLocal(n[1], accName)) { accBail = true; return }
+    for (let i = 1; i < n.length; i++) vetAcc(n[i], loop)
+  }
+  for (const s of template) vetAcc(s, false)
+  if (accBail) return
 
   let loc = consume
   const newDecls = []
