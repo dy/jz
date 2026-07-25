@@ -79,6 +79,32 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   Object.fromEntries -- fromEntries + static reads may be the same
   enumeration gap). The kernel-parity dict|2/dict|3/sum|3/arr|3 rows and
   the 13kB size delta likely all reduce to skipped size passes in-wasm.
+  OUTLINE-HUNT ROUND 3 -- CRASH REPRODUCED STANDALONE 2026-07-25 (the
+  kernel's exact 'memory access out of bounds'/err-0, deterministic,
+  ~5min cycles): with probes {OL-called, OL-adjacent len, OL-guard
+  operand log} in watr's outline() entry (node_modules/watr/src/
+  optimize.js ~4614; probe scaffolding = same-module __outLog array +
+  __outLogRead getter exported, entry prepends ';;OUTLOG ' + drain),
+  the wasm harness run on scratchpad/shape-prewatr.wat THROWS OOB at
+  the guard-log's string reads (typeof ast[0] + .length concat) --
+  reading the ast node at 140kB scale hits CORRUPTED/STALE memory: the
+  durable-dangler / arena-reuse class (node pointers gone stale after
+  arena growth mid-compile). Chain established this session: wasm-watr
+  outline logs OL-called + OL-adjacent, never OL-post-guard -> with
+  operand logging it ODDLY takes the guard return or OOBs -- i.e. ast[0]
+  reads are already reading garbage at that point. ALSO: native first
+  OL-called shows op=func len=19 -- outline is invoked on a FUNC node by
+  a second caller (find it: grep 'outline(' -- tailmerge/rettail?) --
+  check whether the wasm crash is in THAT call or the module-level one.
+  NEXT WINDOW: (1) find the second outline caller; (2) bisect WHERE ast
+  went stale -- log the ast pointer-identity (e.g. push a marker prop on
+  the module node before optimize, test its presence at outline entry);
+  (3) suspect list: cse's tee'd locals pass right before outline (a =
+  cse(a) -> coalesceLocals -> localReuse -> outline -- one of these at
+  scale reallocs/clones into arena space later reused); (4) the fix
+  belongs in jz's arena/alloc or the pass's clone discipline, NOT watr.
+  Probes must be REVERTED from node_modules after the hunt (currently
+  IN PLACE for continuity -- restore recipe in ledger round-2 entry).
   RESOLVED clamp-peel blocker: the rejecting node was the PEEL'S OWN
   synthesized `__pks0 = (r < w ? r : w)` bound -- both param proofs read
   the min-ternary arms as bare-use/string-escape rejects, un-proving the
