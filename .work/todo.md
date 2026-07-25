@@ -227,6 +227,29 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  P0-2 LITERAL-KIND DESIGN 2026-07-25 (banked for post-land window):
+  mechanism read off emit.js typeof-bigint arm (~426) + pre-eval
+  157-161 -- the self-host BIGINT CARRIER is raw i64 bits
+  reinterpreted as f64, so small bigints occupy the SUBNORMAL bit
+  space (1n == 5e-324 bits) and the only disambiguation is the
+  magnitude heuristic |x| < MIN_NORMAL && x != 0 -> bigint; hence a
+  genuine subnormal literal misreads as bigint at every kernel
+  boundary (typeof, export -- audit repro 5e-324 -> 1n, 1e-320 ->
+  2024n). FIX DESIGN (audit-scoped to literals): make the KIND
+  explicit in the AST, never the bits -- parse/prepare rewrite
+  bigint literals to a TAGGED node ['bigint', '<decimal-string>']
+  (string payload = unambiguous in-kernel; number literals stay
+  [null, f64]); prepare/pre-eval/emit/valTypeOf key on the tag;
+  the magnitude heuristics in pre-eval (structural subnormal fold
+  refusal) and emit (typeof arm) then apply ONLY to runtime values,
+  and compile-time constants never misread. Runtime computed
+  subnormals vs bigint at typeof/export remain ambiguous by carrier
+  design -- that deeper redesign (boxed bigint) is out of audit
+  scope; document as known limit. Files: src/parse.js (or prepare
+  literal normalization), prepare/index.js, pre-eval.js, emit.js,
+  kind.js + native-vs-kernel pins for subnormals/signed subnormals/
+  2^52-adjacent bigints/64-bit boundaries per audit. CONFLICTS with
+  synth-lever files -- implement AFTER the joint land.
   CLAIMS RELEASE GATE LANDED 2026-07-25 (audit P0-4): test/
   bench-claims.js -- committed-evidence-only hard gate wired into
   prepublishOnly (npm run test:claims), three axes: FRESH (git log
