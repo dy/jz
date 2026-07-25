@@ -1635,8 +1635,13 @@ export default function narrowSignatures(programFacts, ast) {
     let head = 0
     let guard = callSites.length * 64   // belt far above any real edge count
     while (head < queue.length && guard-- > 0) {
-      if (guard === 0 && DBG_INVARIANTS)
-        err(`param-lattice site worklist exhausted its ${callSites.length * 64}-visit guard without converging — a rule is non-monotone (invariants mode surfaces the silent truncation)`)
+      if (guard === 0) {
+        // Exhaustion is a compiler bug either way: invariants mode fails loudly;
+        // production compiles on with the truncated (still-sound, less precise)
+        // lattice but SAYS SO on the advisory channel instead of silently.
+        if (DBG_INVARIANTS) err(`param-lattice site worklist exhausted its ${callSites.length * 64}-visit guard without converging — a rule is non-monotone (invariants mode surfaces the silent truncation)`)
+        warn('convergence', `param-lattice worklist truncated at ${callSites.length * 64} visits — narrowing may be incomplete (report this: a rule is non-monotone)`, {})
+      }
       const s = queue[head++]
       queued[s] = false
       const state = siteState(callSites[s])
@@ -1719,8 +1724,10 @@ export default function narrowSignatures(programFacts, ast) {
     if (runSchemaIdSetFixpoint()) dirty = true
     if (runArrValTypeFixpoint()) dirty = true
     if (!dirty) break
-    if (g === 0 && DBG_INVARIANTS)
-      err('arr/schema domain group hit its 16-round guard still dirty — a domain runner is non-monotone (invariants mode surfaces the silent truncation)')
+    if (g === 0) {
+      if (DBG_INVARIANTS) err('arr/schema domain group hit its 16-round guard still dirty — a domain runner is non-monotone (invariants mode surfaces the silent truncation)')
+      warn('convergence', 'arr/schema domain fixpoint truncated at 16 rounds — narrowing may be incomplete (report this: a domain runner is non-monotone)', {})
+    }
   }
   // Array<T> facts can make a direct `helper(rows[i])` argument precise only
   // now; settle the ordinary val lattice once more with that caller context.
@@ -1871,8 +1878,10 @@ export default function narrowSignatures(programFacts, ast) {
   const runTypedFixpoint = () => runArrElemFixpoint('typedCtor', inferTypedCtor, callerTypedCtx, callerSidsCtx)
   // Quiet-loop (was "run twice"): caller→callee typed-ctor chains of any depth.
   for (let g = 16; g-- > 0 && runTypedFixpoint(); ) {
-    if (g === 0 && DBG_INVARIANTS)
-      err('typed-ctor fixpoint hit its 16-round guard still dirty — non-monotone inference (invariants mode surfaces the silent truncation)')
+    if (g === 0) {
+      if (DBG_INVARIANTS) err('typed-ctor fixpoint hit its 16-round guard still dirty — non-monotone inference (invariants mode surfaces the silent truncation)')
+      warn('convergence', 'typed-ctor fixpoint truncated at 16 rounds — narrowing may be incomplete (report this: non-monotone inference)', {})
+    }
   }
 
   // STATIC LENGTH down call chains: when every call site passes a typed array
