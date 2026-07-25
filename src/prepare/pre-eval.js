@@ -85,7 +85,7 @@
  */
 
 import { extractParams, classifyParam } from '../ast.js'
-import { ctx, WIDE_BIGINT } from '../ctx.js'
+import { ctx, HOST_PROFILE } from '../ctx.js'
 import { MATH_KERNEL, powFold } from './math-kernel.js'
 
 // ---------------------------------------------------------------------------
@@ -716,7 +716,7 @@ export function preEval(ast) {
   // Rational carry needs arbitrary-precision BigInt (n/d grow past 64 bits in
   // one fold) — on the narrow self-host carrier it would fold silently-wrong
   // values, so fall back to sequential bit-exact-vs-JS folding there.
-  const rationalOn = WIDE_BIGINT && ctx.transform.optimize?.rationalConst !== false
+  const rationalOn = HOST_PROFILE.wideBigint && ctx.transform.optimize?.rationalConst !== false
   const funcByName = new Map(ctx.func.list.map(f => [f.name, f]))
   const state = { rationalOn, funcByName, evaluating: new Set() }
   for (const f of ctx.func.list) f.body = foldFunctionBody(f.body, state)

@@ -562,6 +562,15 @@ export function reset(proto, globals, bridge) {
  *  parse of 2^64 (wraps to 0 on i64 accumulation) re-checks at run time. */
 export const WIDE_BIGINT = (1n << 64n) !== 1n && BigInt('18446744073709551616') !== 0n
 
+/** CompilerHostProfile (stage-4 seed): capabilities of the ENGINE RUNNING THE
+ *  COMPILER, probed once at load. Consumers branch on named capabilities, not
+ *  scattered environment probes — new host-capability gates land HERE. (The
+ *  OUTPUT target's profile — host:'wasi'|'js' legalization — is a separate,
+ *  future TargetProfile; do not conflate the two.) */
+export const HOST_PROFILE = Object.freeze({
+  wideBigint: WIDE_BIGINT,   // arbitrary-precision BigInt (false: wrapping-i64 self-host carrier)
+})
+
 // Hot per-node pass flags: ONE list generates both the bitmask constants and
 // the cfg→mask mapping, so a flag cannot exist in one and be missed in the
 // other. Order = bit position — append-only. Every name must also be a

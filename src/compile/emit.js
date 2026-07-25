@@ -27,7 +27,7 @@ import {
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
   ASSIGN_OPS, MUTATE_OPS, firstRefKind, isLeaf,
 } from '../ast.js'
-import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, WIDE_BIGINT } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, HOST_PROFILE } from '../ctx.js'
 import { i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR } from '../../layout.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
@@ -246,7 +246,7 @@ const emitNeg = (a) => {
   // path structurally. Native (WIDE_BIGINT) never enters: real bigints hit the
   // valTypeOf arm, real subnormals keep f64 semantics below.
   if (valTypeOf(a) === VAL.BIGINT ||
-      (!WIDE_BIGINT && Array.isArray(a) && a[0] == null && typeof a[1] === 'number' &&
+      (!HOST_PROFILE.wideBigint && Array.isArray(a) && a[0] == null && typeof a[1] === 'number' &&
         a[1] !== 0 && Math.abs(a[1]) < 2.2250738585072014e-308))
     return fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
   const v = emit(a)
