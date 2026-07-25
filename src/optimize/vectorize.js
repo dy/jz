@@ -4647,24 +4647,23 @@ function matchOuterPixelLoop(blockNode) {
     if (writesName(loopNode, widthBound[1])) return null
   } else return null
   const obody = loopNode.slice(3, pivStart)     // between exit guard and the pixel-IV bumps
-  return { oLabel, loopNode, preamble, pixelIVs, pivStart, pxVar: oExit.ind, widthBound, pivType, obody, oExit }
-}
-
-function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef) {
-  // Outer per-pixel scaffold (+ LICM preamble feeding both SIMD path and tail).
-  const outer = matchOuterPixelLoop(blockNode)
-  if (!outer) return null
-  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit } = outer
-
-  let innerIdx = -1, innerBlock = null
+  // Inner block-loop census — every outer-pixel consumer re-derived this scan
+  // (exactly-one / none / at-least-one gates); one authoritative list here.
+  const innerIdxs = []
   for (let i = 0; i < obody.length; i++) {
     const s = obody[i]
-    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) {
-      if (innerBlock) return null
-      innerBlock = s; innerIdx = i
-    }
+    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) innerIdxs.push(i)
   }
-  if (!innerBlock) return null
+  return { oLabel, loopNode, preamble, pixelIVs, pivStart, pxVar: oExit.ind, widthBound, pivType, obody, oExit, innerIdxs }
+}
+
+function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
+  // Outer per-pixel scaffold (+ LICM preamble feeding both SIMD path and tail) —
+  // matched once at the dispatch (LoopPlan), consumed here.
+  if (!outer) return null
+  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit, innerIdxs } = outer
+  if (innerIdxs.length !== 1) return null   // exactly one inner escape loop
+  const innerIdx = innerIdxs[0], innerBlock = obody[innerIdx]
   const iLabel = (typeof innerBlock[1] === 'string' && innerBlock[1].startsWith('$')) ? innerBlock[1] : null
   if (!iLabel || innerBlock.length < 3) return null
   const innerLoop = innerBlock[innerBlock.length - 1]
@@ -5254,16 +5253,14 @@ export const SIMD_PINNED = [...new Set([...Object.keys(PPC_CALL2), ...Object.val
 // A call we can't yet vectorize (pow in Phase 1) just ends the SIMD prefix — its lane local and the
 // rest fall to the scalar epilogue, so the kernel still partially vectorizes. The original scalar
 // loop, re-run as the tail, finishes the odd last pixel for free (its own `x < W` guard).
-function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap) {
-  // Outer per-pixel scaffold — shared with tryDivergentEscapeVectorize; this pass
+function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
+  // Outer per-pixel scaffold — matched once at the dispatch (LoopPlan); this pass
   // takes the straight-line-body branch (no inner escape loop) below.
-  const outer = matchOuterPixelLoop(blockNode)
   if (!outer) return null
-  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit } = outer
+  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit, innerIdxs } = outer
 
   // ---- body: straight-line (no inner escape loop), no impure call ----
-  for (const s of obody)
-    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) return null  // inner escape loop → tryDivergentEscapeVectorize's job
+  if (innerIdxs.length) return null  // inner escape loop → tryDivergentEscapeVectorize's job
   // A non-pure call (e.g. a ray-march helper that writes a scratch global / memory) can mutate state
   // that a lane local — computed ONCE, before the per-lane epilogue runs the call — would then read
   // stale, breaking bit-exactness. $math.* helpers are pure (no global/memory writes), so allow them.
@@ -5537,21 +5534,14 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap) {
 // fold. The inner loop's trip count (b < count) is invariant, so its scaffold stays scalar;
 // only the f64 body lifts. Distinct base subtrees assumed non-aliasing (the standing model).
 // Gated behind cfg.experimentalOuterStrip until proven across the corpus.
-function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled) {
+function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (!enabled) return null
-  const outer = matchOuterPixelLoop(blockNode)
   if (!outer) return null
-  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit } = outer
+  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit, innerIdxs } = outer
 
   // Exactly one inner loop in obody; it is the per-pixel reduction.
-  let innerIdx = -1, innerBlock = null
-  for (let i = 0; i < obody.length; i++) {
-    const s = obody[i]
-    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) {
-      if (innerBlock) return null
-      innerBlock = s; innerIdx = i
-    }
-  }
+  if (innerIdxs.length !== 1) return null
+  const innerIdx = innerIdxs[0], innerBlock = obody[innerIdx]
   if (!innerBlock) return null
   const ibl = matchBlockLoop(innerBlock, { allowPreamble: true })
   if (!ibl) return null
@@ -5757,17 +5747,10 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled) {
 // (the helpers never trap). Gated behind cfg.experimentalOuterStrip; only fires when an inner loop
 // carries a transcendental (the latency-bound work SIMD actually accelerates — cheap-arithmetic
 // pixel loops are left to the scalar JIT, which already pipelines independent iterations).
-function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled) {
+function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (!enabled) return null
-  const outer = matchOuterPixelLoop(blockNode)
   if (!outer) return null
-  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit } = outer
-
-  const innerIdxs = []
-  for (let i = 0; i < obody.length; i++) {
-    const s = obody[i]
-    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) innerIdxs.push(i)
-  }
+  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit, innerIdxs } = outer
   if (!innerIdxs.length) return null
   const lastInner = innerIdxs[innerIdxs.length - 1]
   const innerSet = new Set(innerIdxs)
@@ -5952,13 +5935,12 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled) {
 // BIT-EXACT: integer arithmetic reorders nothing — each lane's i32 sum equals the scalar f64's exact
 // integer, and ToInt32(acc)>>SHIFT == lane>>SHIFT. Gated behind cfg.experimentalOuterStrip. ~5×
 // over the scalar reduction (the serial f64 add-chain is latency-bound; 8 columns hide it).
-function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled) {
+function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (!enabled) return null
-  const outer = matchOuterPixelLoop(blockNode)
   if (!outer) return null
-  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit } = outer
+  const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit, innerIdxs } = outer
   if (pivType.get(pxVar) !== 'i32') return null                 // strip-mine an integer column
-  for (const s of obody) if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) return null  // body must be unrolled (no inner loop)
+  if (innerIdxs.length) return null  // body must be unrolled (no inner loop)
   const impureCall = (n) => isArr(n) && ((n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.')) || n.some(impureCall))
   if (obody.some(impureCall)) return null
   const readsName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => readsName(c, name)))
@@ -6754,7 +6736,13 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // (hasSideEffect-guarded) and cloned ahead of the SIMD block, so this only widens
       // which loops the recognizers see, never changes a lifted result.
       const bl = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true })
-      let r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef)
+      // LoopPlan classification (stage-3 slice 1): the OUTER-pixel scaffold is
+      // matched ONCE here — the five outer-family recognizers consume this
+      // descriptor (with its inner-loop census) instead of each re-matching.
+      // `bl` (inner scaffold) + `op` (outer scaffold) together are the loop's
+      // plan; a recognizer whose scaffold is null skips without walking.
+      const op = matchOuterPixelLoop(node)
+      let r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef, op)
         ?? tryMemCopyFill(bl, fnLocals, freshIdRef)
         ?? tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
         ?? tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc)
@@ -6764,10 +6752,10 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef) : null)
         ?? tryChannelReduce(node, fnLocals, freshIdRef)
         ?? tryByteScan(bl, fnLocals, freshIdRef)
-        ?? tryPerPixelColor(node, fnLocals, freshIdRef, pureFuncMap)
-        ?? tryOuterStrip(node, fnLocals, freshIdRef, outerStrip)
-        ?? tryIteratedReduce(node, fnLocals, freshIdRef, outerStrip)
-        ?? tryConvColumn(node, fnLocals, freshIdRef, outerStrip)
+        ?? tryPerPixelColor(node, fnLocals, freshIdRef, pureFuncMap, op)
+        ?? tryOuterStrip(node, fnLocals, freshIdRef, outerStrip, op)
+        ?? tryIteratedReduce(node, fnLocals, freshIdRef, outerStrip, op)
+        ?? tryConvColumn(node, fnLocals, freshIdRef, outerStrip, op)
         ?? tryToneMap(bl, fnLocals, freshIdRef, toneMap)
         ?? tryButterfly(node, fnLocals, freshIdRef)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.

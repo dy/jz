@@ -251,9 +251,24 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
     bitmask on ctx.transform.optFlags at setup; sites mask-test a fixed
     slot. Warm gate 0.966x first round (from 1.007-1.046 all-rounds);
     fresh 0.768x. Battery 3069/0.
-* [ ] Audit big-ticket (5–6): canonical LoopPlan (vectorizer consumes
-      loop-model.js; 16 first-match recognizers → class dispatch);
-      CompileSession + TargetProfile (59 ctx importers).
+* [ ] Audit big-ticket: canonical LoopPlan — STAGE-3 SLICE 1 LANDED
+      2026-07-25: the dispatch now matches BOTH scaffolds once per block
+      (bl = inner matchBlockLoop, op = matchOuterPixelLoop w/ NEW
+      innerIdxs census) and the five outer-family recognizers
+      (divergent-escape, per-pixel-color, outer-strip, iterated-reduce,
+      conv-column) consume the shared descriptor — identical predicates
+      hoisted, 4 redundant outer matches + 4 inner-census scans per
+      candidate block gone. REMAINING CONVERSION PATH: (a) stencil/
+      ramp-map/blur/channel-reduce call matchBlockLoop with DIFFERENT
+      envelope opts — unify envelopes into the one dispatch-computed
+      plan (needs envelope reconciliation, the loose/pixelIV variants);
+      (b) butterfly is fully custom (17-stmt FFT shape) — leave last;
+      (c) then classify → route: plan.kind in {inner, outer+1inner,
+      outer+0inner, outer+Ninner} makes the first-match chain a class
+      dispatch (order within class preserved). Solver stage-2 slices
+      landed: lazy fact store (plan() owns freshness), convergence
+      advisories in production. CompileSession + TargetProfile (59 ctx
+      importers) still open.
 * [ ] V2-class perf tails: qoi (LLVM branch sched), shapes record layout
       byte-stride follow-up, sdf research-tier, ulam/raymarcher parity noise.
 
