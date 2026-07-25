@@ -148,6 +148,29 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   instrumented (flags log at driver entry, OL-* logs at outline, __chk
   at finish tail); entry has drainLog + string-opts passthrough; harness
   memory 16384; ALL recipes reproducible from these notes.
+  ROUND 7 -- GUARD PINNED + NEW ANOMALY 2026-07-25 (counters channel,
+  allocation-free; probe files: flagprobe.mjs + instrumented watr parse/
+  optimize in node_modules + entry counts()):
+  (a) TRAP WAS PROBE-INDUCED: pristine watr 'fold outline' completes on
+  BOTH engines -- log-string allocations at per-func call depth caused
+  the OOB (separate jz allocation bug, banked). Real divergence: node
+  88332ch outlined vs wasm 139597ch NOT outlined, no trap, minimal
+  config 'fold outline'.
+  (b) GUARD PINNED BY COUNTERS: outline entered 55x on both engines;
+  node passes the module guard once (rounds run, 568 cands, 10 applied);
+  wasm passes ZERO -- `!Array.isArray(ast) || ast[0] !== 'module'`
+  rejects even the real module node in-wasm.
+  (c) TOKEN-BIRTH strict-eq is FINE (modTok=2, modEq=1 both engines --
+  'module' vs 'memory' distinguished correctly at commit).
+  (d) NEW ANOMALY: parse token counter __cTok reads 7915 in-wasm vs
+  79122 in node (~exactly 10%) -- but wasm output is full-size, so
+  EITHER export-let counter increments drop ~90% at scale in-wasm
+  (a global-increment miscompile class!) OR the counter/export read path
+  lies. DISCRIMINATE NEXT: return level.length (structural top-level
+  count) + str.length from inside the entry -- no counters; also test a
+  trivial 100k-iteration export-let counter in isolation both engines.
+  Then re-face (b): if counters lie, guard evidence needs a counter-free
+  recheck (e.g. push a sentinel into the module node on guard-pass).
   ROUND 6 CORRECTION 2026-07-25: tokenizer EXONERATED -- commit()-level
   anomaly probe (parse.js __pLog, drained post-trap) shows P[] EMPTY:
   every token is born with correct length at 140kB scale. AND the same
