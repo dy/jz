@@ -1703,11 +1703,12 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
 //     the loop, so in-loop bases stay distinct globals — safe without a runtime guard.
 //   • Reassociation: summing neighbours reorders f64 adds across lanes (ulp, like
 //     float reductions) — gated behind cfg.experimentalStencil until proven.
-function tryStencil(node, fnLocals, freshIdRef, enabled) {
+function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
   if (!enabled) return null
-  // Gated, so match here with allowInlinedLi (accepts inlined LICM preambles `$__inl7___li*` —
-  // grid loops like schrodinger's stepR carry the row-base `y*w` as such a hoisted invariant).
-  const bl = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true })
+  // Consumes the dispatch-computed inner scaffold (LoopPlan) — the opts there
+  // ({ allowPreamble: true, allowInlinedLi: true }) are exactly what this pass
+  // matched for itself (inlined LICM preambles carry grid row-bases like
+  // schrodinger's `y*w`).
   if (!bl) return null
   const { incVar, bound, body, preamble } = bl   // preamble: LICM-hoisted $__li invariants
   if (body.some(hasGlobalSet)) return null
@@ -6747,7 +6748,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
         ?? tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc)
         ?? tryMapReduceVectorize(bl, fnLocals, freshIdRef)
-        ?? tryStencil(node, fnLocals, freshIdRef, stencil)
+        ?? tryStencil(node, fnLocals, freshIdRef, stencil, bl)
         ?? tryRampMap(node, fnLocals, freshIdRef)
         ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef) : null)
         ?? tryChannelReduce(node, fnLocals, freshIdRef)
