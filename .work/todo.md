@@ -105,6 +105,27 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   belongs in jz's arena/alloc or the pass's clone discipline, NOT watr.
   Probes must be REVERTED from node_modules after the hunt (currently
   IN PLACE for continuity -- restore recipe in ledger round-2 entry).
+  OUTLINE-HUNT ROUND 4 -- CRASH PINNED TO A FUNCTION 2026-07-25:
+  selective-pass matrix (entry now passes STRING opts through -- watr's
+  set-based normalize): 'fold' OK 139705ch, '+propagate deadcode vacuum'
+  OK, '+cse' OK 122084ch, '+outline' OOB; ALSO 'outline'/'fold outline'
+  alone OOB. V8 trap frame: wasm-function[403] @0x40bba = the
+  $m0_optimize$localReuse cluster (neighbors eliminateDeadInBlock/
+  canSubst; mapping +/-4 due to import-func counting -- refine with exact
+  index arithmetic next). TWO INTERTWINED FINDINGS: (a) localReuse-family
+  code executes under 'fold outline' selection where opts.locals should
+  be false -> IN-WASM PASS-FLAG READS ARE UNRELIABLE (the dyn-dict
+  static-read class: normalize writes m[p[0]]=..., driver reads
+  opts.locals) -- same mechanism as the Object.keys=empty finding; (b)
+  whichever localReuse-family fn runs, it OOBs on the 140kB tree
+  (NOT capacity: identical at memory 16384). NEXT: (1) exact index->name
+  mapping (count import funcs precisely; funcs regex currently matches
+  import-wrapped (func too)); (2) reproduce the dyn-dict flag misread in
+  isolation with normalize's exact shape (PASSES table -> m[p[0]]=bool ->
+  static reads) -- THE root to fix in jz (schema/hash read path for
+  dynamically-keyed dicts consumed by static props); (3) then the OOB fn
+  with correct flags may never run -- retest before hunting it separately.
+  Harness memory now 16384; entry passes strings through (typeof check).
   RESOLVED clamp-peel blocker: the rejecting node was the PEEL'S OWN
   synthesized `__pks0 = (r < w ? r : w)` bound -- both param proofs read
   the min-ternary arms as bare-use/string-escape rejects, un-proving the
