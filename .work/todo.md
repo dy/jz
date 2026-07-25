@@ -62,6 +62,23 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   per-group {h, sites, net} node-vs-wasm and bisect; 30s cycles via the
   harness. This likely ALSO explains kernel-parity dict|2/dict|3/sum|3/
   arr|3 rows (in-kernel output BIGGER = less outlining/dedup!).
+  OUTLINE-HUNT ROUND 2 FINDINGS (2026-07-25, probes REVERTED from
+  node_modules -- re-apply from these notes): instrumented watr's optimize
+  driver + outline pass with a same-module __outLog + getter (cross-module
+  ARRAY import mutation does NOT propagate in-wasm -- binding is a copy;
+  same-module push + exported getter works). Results: in-wasm
+  normalize(true) yields opts.outline=true, opts.fold=true (the drv log's
+  first 43 chars match node) BUT (a) `Object.keys(opts).length` string-
+  concats as EMPTY in-wasm (Object.keys on the normalize-built dict --
+  dynamic-key-written object -- returns nothing enumerable: THE
+  spread/dyn-key enumeration gap), and (b) the outline pass logs NOTHING
+  in-wasm even with outline=true -- its `for (const [name, fns] of ...)`
+  driver loop or the pass-fn table lookup drops it. NEXT PROBE: log inside
+  the ROUND LOOP which pass names actually execute in-wasm (push per-pass
+  name), then bisect the pass-table build (PASSES array -> OPTS
+  Object.fromEntries -- fromEntries + static reads may be the same
+  enumeration gap). The kernel-parity dict|2/dict|3/sum|3/arr|3 rows and
+  the 13kB size delta likely all reduce to skipped size passes in-wasm.
   RESOLVED clamp-peel blocker: the rejecting node was the PEEL'S OWN
   synthesized `__pks0 = (r < w ? r : w)` bound -- both param proofs read
   the min-ternary arms as bare-use/string-escape rejects, un-proving the
