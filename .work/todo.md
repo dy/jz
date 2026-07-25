@@ -217,6 +217,31 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  SDF GAP DISSECTED WITH SHARES 2026-07-25 (diagnosis agent, WAT
+  micro-surgery + retime): jz 6483us vs c-wasm 5228us = 1.24x. The
+  edt1d hull-cursor `k` keyed accesses (v[k], z[k], z[k+1], stores)
+  = 21-22 guarded sites; stripping ONLY those guard branches (tee
+  side effects preserved; checksum matches -> checks provably dead
+  for the specimen, just not provable to jz) retimes to 5812us =
+  1.11x -- the k-guards are ~53% OF THE ENTIRE GAP. That half is the
+  KNOWN research-tier item (archive 'SDF SHARPENED 2026-07-22':
+  sentinel invariant z[0]=-INF blocks k-- below 0 + relational elem
+  hull v[i] in [0, n-1] with runtime n) -- stays the hard tail.
+  NEW ACTIONABLE SECONDARY (unledgered until now): the LENGTH HEADER
+  RELOAD -- every guard re-fetches i32.shr_u(i32.load(v-8)) /
+  (z-8) from MEMORY per site though v/z are never-resized params
+  (loop-invariant): the pointer is cached in a local but the DECODED
+  LENGTH VALUE is not carried across the inner-loop scope. Lever:
+  extend the bounds-check emission / loadCSE to hoist a proven-
+  loop-invariant length decode once per enclosing loop nest (the
+  neverGrown/paramNeverGrown rep already exists as the resize-proof
+  anchor -- see reps.js neverGrown). Mechanical, isolated from the
+  symbolic-hull problem, should trim a real slice of the remaining
+  1.11x and helps every checked-access loop program-wide, not just
+  sdf. NOTE (process): the agent used `git checkout -- bench/
+  results.json` to undo an incidental bench write -- forbidden
+  command class; file verified clean, no damage; future agent briefs
+  must say 'revert by re-editing, never git checkout'.
   IN-SUITE PERF ASSERT CLEARED 2026-07-25 (bisect agent, three
   independent runs): the perf.js 'JSON.parse walk uses slot loads'
   in-suite-only failure NO LONGER REPRODUCES -- full kernel suite
