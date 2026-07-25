@@ -26,7 +26,7 @@
  * @module optimize
  */
 
-import { LAYOUT, ctx } from '../ctx.js'
+import { LAYOUT, ctx, OPTF } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, f64Range, I32_MIN, I32_MAX } from '../ir.js'
 
@@ -204,6 +204,14 @@ export const TUNING_KEYS = [
   'approxPow',                // opt-in low-precision pow fifthroot gate (module/math.js emitPow)
   'noSimd',                   // suppress every jz-emitted v128 (lane vectorizer + SLP) — true scalar baseline
 ]
+
+// Registry↔bitmask coherence: every hot flag (ctx.js OPTF/HOT_PASSES — this
+// file cannot be imported there, cycle) must be REGISTERED — a level-gated
+// pass (PASS_NAMES) or a tuning mode (TUNING_KEYS) — so a flag added on one
+// side but forgotten on the other fails at load, not as a silently-dead (or
+// silently-always-off) optimization.
+for (const n of Object.keys(OPTF)) if (!PASS_NAMES.includes(n) && !TUNING_KEYS.includes(n))
+  throw new Error(`OPTF flag '${n}' is not registered (PASS_NAMES / TUNING_KEYS) — register it or remove the flag`)
 
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))

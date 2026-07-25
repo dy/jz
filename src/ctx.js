@@ -562,14 +562,20 @@ export function reset(proto, globals, bridge) {
  *  parse of 2^64 (wraps to 0 on i64 accumulation) re-checks at run time. */
 export const WIDE_BIGINT = (1n << 64n) !== 1n && BigInt('18446744073709551616') !== 0n
 
-export const OPTF = Object.freeze({
-  inlineToNum: 1, hashRmwFusion: 2, inplaceStore: 4, staticClosureEnv: 8,
-  devirtClosureTables: 16, devirtDynProps: 32, leanCheckedIdx: 64,
-})
-export const optFlagsOf = (cfg) => !cfg ? 0 :
-  (cfg.inlineToNum ? 1 : 0) | (cfg.hashRmwFusion ? 2 : 0) | (cfg.inplaceStore ? 4 : 0) |
-  (cfg.staticClosureEnv ? 8 : 0) | (cfg.devirtClosureTables ? 16 : 0) |
-  (cfg.devirtDynProps ? 32 : 0) | (cfg.leanCheckedIdx ? 64 : 0)
+// Hot per-node pass flags: ONE list generates both the bitmask constants and
+// the cfg→mask mapping, so a flag cannot exist in one and be missed in the
+// other. Order = bit position — append-only. Every name must also be a
+// registered pass; src/optimize/index.js asserts that at module load (that
+// direction is cycle-free — this file cannot import the registry).
+const HOT_PASSES = ['inlineToNum', 'hashRmwFusion', 'inplaceStore', 'staticClosureEnv',
+  'devirtClosureTables', 'devirtDynProps', 'leanCheckedIdx']
+export const OPTF = Object.freeze(Object.fromEntries(HOT_PASSES.map((n, i) => [n, 1 << i])))
+export const optFlagsOf = (cfg) => {
+  if (!cfg) return 0
+  let m = 0
+  for (const n of HOT_PASSES) if (cfg[n]) m |= OPTF[n]
+  return m
+}
 
 export const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
