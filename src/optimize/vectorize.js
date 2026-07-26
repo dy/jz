@@ -4118,8 +4118,8 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
 // store{8,16}, never saturates). Returns the store stmt or null (unsupported).
 // Peel the scalar narrowing conversion off a store value, returning the inner float
 // expr to lift (narrowStore then applies the SIMD narrow). f32 store: f32.demote_f64(X).
-// int store: the ToInt32 idiom `i32.wrap_i64(X<0 ? trunc_sat_f64_s X : trunc_sat_f64_u X)`
-// (or a bare trunc_sat). The inner X is the f64/f32 lane value computed before the cast.
+// int store: toI32's guarded select, wrapIntIR's ToIntN select (module/typedarray.js),
+// or a bare trunc_sat. The inner X is the f64/f32 lane value computed before the cast.
 function peelNarrowConv(val, sty) {
   if (!isArr(val)) return null
   if (sty === 'f32') return val[0] === 'f32.demote_f64' ? val[1] : null
@@ -4134,12 +4134,6 @@ function peelNarrowConv(val, sty) {
     let inner = val[1][1][1]   // the f64 operand of the trunc, captured in a `(local.tee $inf …)`
     if (isArr(inner) && inner[0] === 'local.tee' && inner.length === 3) inner = inner[2]   // peel to the tee's VALUE
     return inner
-  }
-  if (val[0] === 'i32.wrap_i64' && isArr(val[1]) && val[1][0] === 'if') {
-    const iff = val[1], thenA = iff[3], elseA = iff[4]
-    const s = isArr(thenA) && isArr(thenA[1]) && thenA[1][0] === 'i64.trunc_sat_f64_s' ? thenA[1][1] : null
-    const u = isArr(elseA) && isArr(elseA[1]) && elseA[1][0] === 'i64.trunc_sat_f64_u' ? elseA[1][1] : null
-    if (s && u && exprEq(s, u)) return s
   }
   // wrapIntIR (module/typedarray.js) — the unified ES ToIntN store idiom (same
   // outer shape as toI32's guarded select, sign-branched inner):

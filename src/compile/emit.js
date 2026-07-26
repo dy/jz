@@ -49,7 +49,7 @@ import {
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY, TRUE_NAN, FALSE_NAN, NULL_NAN,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
   mkPtrIR, ptrOffsetIR, ptrTypeIR, ptrTypeEq, dispatchByPtrType, sidecarOverride, valKindToPtr,
-  isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64, toStrI64, maskBound,
+  isLit, litVal, isNullishLit, isPureIR, hasExpensiveOp, emitNum, f64rem, toNumF64, toStrI64, maskBound,
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, usesDynProps, needsDynShadow,
   temp, tempI32, tempI64, allocPtr,
@@ -167,6 +167,14 @@ const HOST_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'gl
 // use — wrapping is exactly its intended semantics, so it stays on the i32 path.
 const widensUnsigned = (v) => v.unsigned && !v.wrapSafe
 
+// hoistNestedCalls (plan/inline.js hExpr) names its hoisted `const __h = call(...)`
+// temps `${T}inl${uniq}_h` — a single-def, single-use compiler binding by construction
+// (each nested-call occurrence gets its own fresh temp, substituted at exactly the one
+// site it was found). Recognizing that exact shape lets stripCanon (below) carry
+// `.canonOf` provenance through the temp without risking a binding some OTHER reader
+// also depends on staying canonical.
+const isHoistTemp = (name) => typeof name === 'string' && name.startsWith(T + 'inl') && name.endsWith('_h')
+
 // Strip a redundant NaN-canon wrapper (math.js `canon`) from an operand that
 // feeds a NaN-propagating f64 op. `f64.sqrt`/`min`/`max` mint a sign-nondeterministic
 // NaN that math.js canon-izes so it can't be bit-confused with a NaN-boxed pointer in
@@ -192,6 +200,25 @@ const stripCanon = (v) => {
                && Array.isArray(v[4]) && v[4][0] === 'else' && v[4].length === 2) {
       const t = stripCanon(v[3][1]), e = stripCanon(v[4][1])
       if (t !== v[3][1] || e !== v[4][1]) return typed(['if', v[1], v[2], ['then', t], ['else', e]], 'f64')
+    } else if (v[0] === 'local.get' && typeof v[1] === 'string') {
+      // hoistNestedCalls' temp (see isHoistTemp above) severs the structural link a
+      // direct inline expression would keep: `const __tmp = sinTau(ph)` stores the
+      // FULL (possibly canon-guarded) return value, and the use site sees only a
+      // fresh `local.get $__tmp` with no `.canonOf` of its own. Since the temp is
+      // single-def/single-use by construction, its ONE reader gets to decide whether
+      // the guard is dead — recurse into the recorded def and, if anything strips,
+      // mutate that def NODE IN PLACE (same array object the earlier `local.set`
+      // already references) so the guard is gone at its one definition, not recomputed
+      // here. The read itself stays a bare `local.get` either way.
+      const def = ctx.func.hoistTempDefs?.get(v[1].slice(1))
+      if (def) {
+        const stripped = stripCanon(def)
+        if (stripped !== def) {
+          for (let i = 0; i < stripped.length; i++) def[i] = stripped[i]
+          def.length = stripped.length
+          def.type = stripped.type
+        }
+      }
     }
   }
   return v
@@ -421,6 +448,12 @@ const isCanonicalBoolExpr = n => Array.isArray(n) &&
   (BOOL_EXPR_OPS.has(n[0]) ||
     ((n[0] === '&&' || n[0] === '||' || n[0] === '__eager&&' || n[0] === '__eager||') &&
       isCanonicalBoolExpr(n[1]) && isCanonicalBoolExpr(n[2])))
+// Eager-select gate: pure (no trap/effect) AND cheap. isPureIR alone admits f64.div/
+// f64.sqrt — correct for `select` (no trap), but eagerly computing a division/sqrt-
+// bearing arm that a branch would have skipped can cost more than a mispredict. Every
+// select-gate call site (below, and the post-watr if→select fold in optimize/index.js)
+// uses this instead of a bare isPureIR check.
+const eagerSelectOK = (...ns) => ns.every(n => isPureIR(n) && !hasExpensiveOp(n))
 // Eager boolean chains win in leaf numeric kernels but regress orchestration/
 // compiler code whose first guard usually rejects before a costly RHS. Keep
 // the latency trade in call-free bodies; nested closures are separate bodies.
@@ -1032,7 +1065,7 @@ export function toBool(node) {
   if (CMP_SET.has(op)) return emit(node)
   if (op === '__eager&&' || op === '__eager||') {
     const la = toBool(node[1]), lb = toBool(node[2])
-    if (isCanonicalBoolExpr(node[1]) && isCanonicalBoolExpr(node[2]) && isPureIR(la) && isPureIR(lb))
+    if (isCanonicalBoolExpr(node[1]) && isCanonicalBoolExpr(node[2]) && eagerSelectOK(la, lb))
       return typed([op === '__eager&&' ? 'i32.and' : 'i32.or', la, lb], 'i32')
     return op === '__eager&&'
       ? typed(['if', ['result', 'i32'], la, ['then', lb], ['else', ['i32.const', 0]]], 'i32')
@@ -1047,16 +1080,16 @@ export function toBool(node) {
     // short-circuit control. This closes the codec predicate shape where the
     // old immediate-isCmp check handled only the first pair, then rebuilt an
     // if ladder for every remaining comparison.
-    if ((isCmp(node[1]) && isCmp(node[2])) ||
-        (boolEagerBody() && isCanonicalBoolExpr(node[1]) && isCanonicalBoolExpr(node[2]) &&
-          isPureIR(la) && isPureIR(lb))) return typed(['i32.and', la, lb], 'i32')
+    if (eagerSelectOK(la, lb) && ((isCmp(node[1]) && isCmp(node[2])) ||
+        (boolEagerBody() && isCanonicalBoolExpr(node[1]) && isCanonicalBoolExpr(node[2]))))
+      return typed(['i32.and', la, lb], 'i32')
     return typed(['if', ['result', 'i32'], la, ['then', lb], ['else', ['i32.const', 0]]], 'i32')
   }
   if (op === '||') {
     const la = toBool(node[1]), lb = toBool(node[2])
-    if ((isCmp(node[1]) && isCmp(node[2])) ||
-        (boolEagerBody() && isCanonicalBoolExpr(node[1]) && isCanonicalBoolExpr(node[2]) &&
-          isPureIR(la) && isPureIR(lb))) return typed(['i32.or', la, lb], 'i32')
+    if (eagerSelectOK(la, lb) && ((isCmp(node[1]) && isCmp(node[2])) ||
+        (boolEagerBody() && isCanonicalBoolExpr(node[1]) && isCanonicalBoolExpr(node[2]))))
+      return typed(['i32.or', la, lb], 'i32')
     return typed(['if', ['result', 'i32'], la, ['then', ['i32.const', 1]], ['else', lb]], 'i32')
   }
   return toBoolFromEmitted(emit(node))
@@ -1718,9 +1751,12 @@ export function emitDecl(...inits) {
     // genuine RE-inits between iterations (e.g. a nested reduce's accumulator). Elide only
     // the FIRST per name; emit the rest as resets. (Names are preserved — no renaming.)
     const zeroInit = isLit(coerced) && coerced[1] === 0 && !Object.is(coerced[1], -0) && !ctx.func.stack.length
-    if (!zeroInit || ctx.func.zeroInitSeen?.has(name))
+    if (!zeroInit || ctx.func.zeroInitSeen?.has(name)) {
       result.push(['local.set', `$${name}`, coerced])
-    else (ctx.func.zeroInitSeen ??= new Set()).add(name)
+      // Record the def node (by reference, not a copy) so stripCanon's single-use
+      // hoist-temp lookup (see isHoistTemp above) can mutate it in place later.
+      if (localType === 'f64' && isHoistTemp(name)) (ctx.func.hoistTempDefs ??= new Map()).set(name, coerced)
+    } else (ctx.func.zeroInitSeen ??= new Set()).add(name)
 
     const schemaId = ctx.schema.idOf?.(name)
     if (ctx.func.localProps?.has(name) && schemaId != null) {
@@ -4100,7 +4136,7 @@ export const emitter = {
         const fb = vtbM === VAL.BOOL ? boolBoxIR(vb) : asF64(vb)
         const fc = vtcM === VAL.BOOL ? boolBoxIR(vc) : asF64(vc)
         const ib = ['i64.reinterpret_f64', fb], ic = ['i64.reinterpret_f64', fc]
-        const bits = isPureIR(fb) && isPureIR(fc)
+        const bits = eagerSelectOK(fb, fc)
           ? ['select', ib, ic, cond]
           : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
         return typed(['f64.reinterpret_i64', bits], 'f64')
@@ -4141,7 +4177,7 @@ export const emitter = {
           }
           return n
         }
-        if (isPureIR(vb) && isPureIR(vc))
+        if (eagerSelectOK(vb, vc))
           return tagPtr(typed(['select', vb, vc, cond], 'i32'))
         return tagPtr(typed(['if', ['result', 'i32'], cond, ['then', vb], ['else', vc]], 'i32'))
       }
@@ -4178,12 +4214,12 @@ export const emitter = {
     if (refPayload) {
       const ib = ['i64.reinterpret_f64', branchB]
       const ic = ['i64.reinterpret_f64', branchC]
-      const bits = isPureIR(branchB) && isPureIR(branchC)
+      const bits = eagerSelectOK(branchB, branchC)
         ? ['select', ib, ic, cond]
         : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
       return typed(['f64.reinterpret_i64', bits], 'f64')
     }
-    if (!refPayload && isPureIR(branchB) && isPureIR(branchC))
+    if (!refPayload && eagerSelectOK(branchB, branchC))
       return markNumeric(typed(['select', branchB, branchC, cond], 'f64'))
     return markNumeric(typed(['if', ['result', 'f64'], cond, ['then', branchB], ['else', branchC]], 'f64'))
   },
@@ -4250,7 +4286,7 @@ export const emitter = {
       // Boolean-only short circuit with a pure RHS is safe to evaluate
       // eagerly. Comparisons are canonical 0/1, so bitwise AND preserves the
       // value while removing the nested if/tee ladder in scalar predicates.
-      if (vb.type === 'i32' && boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b) && isPureIR(vb))
+      if (vb.type === 'i32' && boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b) && eagerSelectOK(vb))
         return typed(['i32.and', va, vb], 'i32')
       const t = tempI32()
       if (vb.type === 'i32') {
@@ -4314,7 +4350,7 @@ export const emitter = {
       const vb = emitRight()
       // Boolean twin of && above: eager pure RHS + canonical 0/1 values make
       // bitwise OR exactly equivalent to short-circuit OR.
-      if (vb.type === 'i32' && boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b) && isPureIR(vb))
+      if (vb.type === 'i32' && boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b) && eagerSelectOK(vb))
         return typed(['i32.or', va, vb], 'i32')
       const t = tempI32()
       if (vb.type === 'i32') {

@@ -4249,3 +4249,91 @@ test('f64 power-of-two division folds to exact reciprocal multiply', () => {
   const fn = wat.split('(func ').find(c => c.startsWith('$f')) || ''
   ok(!/f64\.div/.test(fn) && /f64\.mul/.test(fn), 'div-by-2^k emitted as multiply')
 })
+
+test('select-gate cost veto: div-bearing ternary stays if/else, cheap ternary keeps select', () => {
+  // SYNTH DISSECTED WITH MEASURED SHARES (2026-07-25): the '?:' select gate (emit.js) and
+  // the post-watr f64 if→select fold (optimize/index.js) both chose `select` purely on
+  // isPureIR — which admits f64.div/f64.sqrt (non-trapping, so "pure", but 10-40+ cycle
+  // latency). The synth ADSR envelope's 4-way cascade (t/ATTACK : .../DECAY : SUSTAIN :
+  // .../RELEASE) got compiled to chained `select`s that eagerly pay for THREE f64.div
+  // every sample regardless of which arm is live — measured ~8% slower than a branch.
+  // hasExpensiveOp (ir.js, consulted as `eagerSelectOK` in emit.js) vetoes any arm whose
+  // subtree contains f64.div/f64.sqrt, recursively — so a cascade with a div ANYWHERE
+  // compiles entirely to nested if/else. A cheap ternary (no div/sqrt in either arm) must
+  // still take `select` — the noise lane's gradient sign-flip flagship, here reproduced as
+  // a tiny leaf inlined directly into a multiply (the shape that lets stripCanon clear its
+  // NaN-canon guard so the arms are pure AND cheap).
+  const divCascade = `export const f = (t) => t < 100 ? t / 3 : t < 200 ? t / 5 : t < 300 ? t / 7 : t * 2`
+  const jsDiv = (t) => t < 100 ? t / 3 : t < 200 ? t / 5 : t < 300 ? t / 7 : t * 2
+  for (const optimize of [2, 3, 'speed']) {
+    const tree = parse(divCascade, optimize)
+    const fn = findFunc(tree, '$f')
+    is(count(fn, n => n[0] === 'select'), 0, `O${JSON.stringify(optimize)}: div-bearing cascade never selects`)
+    ok(count(fn, n => n[0] === 'if') >= 1, `O${JSON.stringify(optimize)}: div-bearing cascade compiles as if/else`)
+  }
+  for (const optimize of [false, 2, 3, 'speed']) {
+    const { f } = run(divCascade, { optimize })
+    for (const t of [50, 150, 250, 350]) is(f(t), jsDiv(t), `O${JSON.stringify(optimize)} t=${t}: div cascade exact`)
+  }
+
+  const gradient = `
+    const grad = (h, x) => { const hh = h | 0; const xx = x + 0.0; return (hh & 1) === 0 ? xx : -xx }
+    export const f = (h, x, scale) => { const s = scale + 0.0; return grad(h, x) * s }`
+  const jsGrad = (h, x, scale) => (((h | 0) & 1) === 0 ? x : -x) * scale
+  for (const optimize of [2, 3, 'speed']) {
+    const tree = parse(gradient, optimize)
+    const fn = findFunc(tree, '$f')
+    ok(count(fn, n => n[0] === 'select') >= 1, `O${JSON.stringify(optimize)}: cheap sign-flip ternary keeps select`)
+  }
+  for (const optimize of [false, 2, 3, 'speed']) {
+    const { f } = run(gradient, { optimize })
+    for (const [h, x, scale] of [[0, 3, 2], [1, 3, 2], [2, -5.5, 1.5], [3, 7, -2]])
+      is(f(h, x, scale), jsGrad(h, x, scale), `O${JSON.stringify(optimize)} h=${h}: gradient select exact`)
+  }
+})
+
+test('stripCanon sees through a hoisted-call temp (hoistNestedCalls single-def binding)', () => {
+  // SYNTH DISSECTED WITH MEASURED SHARES (2026-07-25): stripCanon (emit.js) recurses
+  // structurally into `select`/`if` arms to drop a redundant NaN-canon guard (the guard is
+  // dead when the consumer re-canons its own escape) — but a NESTED call inside a bigger
+  // expression (`trig(ph) * env`, the synth's `sinTau(ph) * env` shape) gets rewritten by
+  // hoistNestedCalls (plan/inline.js) to `const __tmp = trig(ph); … __tmp * env` at the
+  // speed tier. The use site is then a bare fresh `local.get $__tmp` with no `.canonOf` of
+  // its own, severing stripCanon's walk — the guard survived every sample. The fix carries
+  // provenance through the single-def/single-use compiler temp (isHoistTemp + hoistTempDefs
+  // in emit.js): stripCanon looks up the temp's def and, if anything strips, mutates that
+  // def node in place. Direct (non-hoisted) inlining already worked; this pins the
+  // previously-broken call-inlined shape and checks it now matches (bit-exact, and — once
+  // canon-free — cheap enough to become the branchless `select` LEVER 1 restores).
+  const src = `
+    const trig = (ph) => {
+      const q = Math.sqrt(ph + 1)
+      const r = ph | 0
+      return r === 0 ? q : r === 1 ? -q : r === 2 ? q * 2 : -q
+    }
+    export const render = (env) => {
+      let acc = 0
+      for (let ph = 0; ph < 200; ph = ph + 1) {
+        const s = trig(ph) * env
+        acc = acc + s
+      }
+      return acc
+    }`
+  const jsTrig = (ph) => {
+    const q = Math.sqrt(ph + 1)
+    const r = ph | 0
+    return r === 0 ? q : r === 1 ? -q : r === 2 ? q * 2 : -q
+  }
+  const jsRender = (env) => { let acc = 0; for (let ph = 0; ph < 200; ph++) acc += jsTrig(ph) * env; return acc }
+  for (const optimize of [false, 2, 3, 'speed']) {
+    const { render } = run(src, { optimize })
+    is(render(2.5), jsRender(2.5), `O${JSON.stringify(optimize)}: hoisted-call-temp ternary exact`)
+    is(render(-1.75), jsRender(-1.75), `O${JSON.stringify(optimize)}: hoisted-call-temp ternary exact (neg env)`)
+  }
+  // At the speed tier (hoistNestedCalls active), the negation arms must be canon-guard-free
+  // (bare `f64.neg`, no `local.tee`-guarded NaN normalization) — the guard is dead because
+  // the caller's own `*` re-canons on its escape were it ever to matter for `===`/typeof.
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const fn = wat.split('(func ').find(c => c.startsWith('$render')) || ''
+  ok(!/local\.tee[\s\S]{0,40}f64\.neg/.test(fn), 'no tee-guarded NaN-canon wrapper survives around f64.neg')
+})

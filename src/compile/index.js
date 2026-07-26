@@ -472,6 +472,7 @@ function analyzeFuncForEmit(func, programFacts) {
   ctx.func.leanHashLocals = new Set()
   ctx.func.i32HashLocals = new Set()
   ctx.func.leanHashDomains = new Map()
+  ctx.func.hoistTempDefs = null
   ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
   // typedLen mirrors typedElem's per-function lifecycle EXACTLY — a stale entry from a
   // sibling function's same-named local would prove a wrong bound (names are per-function).
@@ -1639,6 +1640,7 @@ function emitClosureBody(cb) {
   ctx.func.leanHashLocals = new Set()
   ctx.func.i32HashLocals = new Set()
   ctx.func.leanHashDomains = new Map()
+  ctx.func.hoistTempDefs = null
   if (cb.intConsts) for (const [name, v] of cb.intConsts) updateRep(name, { intConst: v })
   if (cb.intCertain) for (const name of cb.intCertain) updateRep(name, { intCertain: true })
   if (cb.nullables) for (const name of cb.nullables) updateRep(name, { nullable: true })

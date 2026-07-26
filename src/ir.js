@@ -593,6 +593,20 @@ const PURE_OPS = new Set(['i32.const', 'f64.const', 'local.get', 'global.get',
                // select chain (the branchless arm-update accumulator) stays select all the way
 export const isPureIR = n => Array.isArray(n) && PURE_OPS.has(n[0]) && n.slice(1).every(c => !Array.isArray(c) || isPureIR(c))
 
+// Ops PURE_OPS admits into `select` (no trap, no effect) but whose LATENCY is high
+// enough that eagerly computing an arm that would otherwise be skipped can lose to a
+// well-predicted branch: f64.div and f64.sqrt are non-pipelined/10-40+ cycles on most
+// cores, unlike the single-cycle add/mul/compare/bitwise set PURE_OPS otherwise admits.
+// (i32.div_s/u, i32.rem_s/u, and any `call` are already excluded from PURE_OPS itself —
+// they trap or aren't provably effect-free — so they never reach a select gate at all;
+// only these two f64 ops are "pure but expensive".) A select-gate site must veto BOTH
+// arms with this predicate before choosing `select` over the lazy `if`/`else` — checked
+// recursively so a cascaded N-way ternary (each level itself a pure select) doesn't hide
+// an expensive op several levels down (a single div anywhere in the chain forces every
+// level above it to eagerly pay for it every time `select` nests arms eagerly).
+const EXPENSIVE_PURE_OPS = new Set(['f64.div', 'f64.sqrt'])
+export const hasExpensiveOp = n => Array.isArray(n) && (EXPENSIVE_PURE_OPS.has(n[0]) || n.some(hasExpensiveOp))
+
 /** Ops whose f64 result is always a plain number (never a NaN-boxed pointer).
  *  Used by toNumF64 to skip the __to_num wrapper when the value is provably numeric.
  *  NOTE: f64.const is NOT included — it may encode a NaN-boxed pointer. */
