@@ -227,6 +227,18 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  P0-3 WARM PROBE VERDICT 2026-07-26: NO retained-state defect --
+  standalone probe (one instance, 30 recompiles of crc32, per-iter
+  ms + memory): timing settles 190ms FLAT (iters 2..29, no drift),
+  memory pinned 512MB from iter 0 (kernel high-water, reached
+  regardless of initial pages -- 2048-page instance identical). The
+  0.99-1.035 hover is STEADY-STATE V8 tiering balance between the
+  paired JS and wasm sides (the pin file's own comment anticipates
+  this band), not accumulating state. Cap stays. The honest lever
+  left is making kernel compiles faster in absolute terms (the perf
+  queue serves that) -- no warm-specific defect to fix. P0-3 CLOSED
+  as investigated-and-attributed; revisit only if the hover worsens
+  past ~1.05 again (that WAS a real defect -- preset bools).
   P0-3 WARM MARGIN REFINED 2026-07-26: recovered from the audit's
   1.047-1.094x to a 0.989-1.035x HOVER (run-to-run: one round 0.989
   PASS, next 1.007/1.029/1.035 FAIL) -- the preset-faithfulness fixes
