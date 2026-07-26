@@ -227,6 +227,18 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  TRUE RED LIST via TARGETED PAIRED RUNS 2026-07-26 (user's call:
+  suspects only, quiet, ABBA-paired): fft jz LEADS 0.92x and
+  glyfparse LEADS 1.00x -- their 'red' readings in the concurrent-
+  work-polluted full refresh were noise (lesson: NEVER run the
+  reference refresh while working; the polluted results.json in tree
+  is NOT committed). REAL reds: trace 1.86x (c-wasm -- worst),
+  shapes 1.22x (as), sort 1.15x (zig), sdf 1.24-1.34x (research-tier
+  banked), crc32 1.05x borderline band-edge. synth + levenshtein
+  cleared by the select-veto wave. NEXT: trace dissection (sdf/synth
+  methodology -- measured shares via WAT surgery + ABBA retimes,
+  V8-neutrality verdicts); full reference refresh re-run LAST, on a
+  truly idle machine (overnight/user-idle), then claims gate.
   CI SIMD EVIDENCE CAPTURED 2026-07-26 (self-documenting assert paid
   off first run): on CI the f32->i16 specimen compiled SCALAR (no
   v128) with inline counter __inl4 vs local __inl2 -- watr made
