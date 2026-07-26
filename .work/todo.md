@@ -227,6 +227,22 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  CI SIMD EVIDENCE CAPTURED 2026-07-26 (self-documenting assert paid
+  off first run): on CI the f32->i16 specimen compiled SCALAR (no
+  v128) with inline counter __inl4 vs local __inl2 -- watr made
+  DIFFERENT INLINE DECISIONS within one compile on CI. Platform-
+  varying input found in watr: optimize.js:7660 dataNodes.sort uses
+  ma.localeCompare(mb) -- locale/ICU-dependent collation -> data
+  ordering -> offsets -> downstream size/inline decisions differ by
+  host = nondeterministic emitted module. LC_ALL=C did NOT repro
+  locally (macOS node full-ICU may mask; CI = linux node 24) so the
+  localeCompare fix is NECESSARY-but-maybe-not-sufficient: FIXED in
+  the watr SOURCE repo (/Users/div/projects/watr src/optimize.js,
+  codepoint compare, UNCOMMITTED -- user releases + bumps jz's watr
+  pin to pick it up; node_modules copy left pristine deliberately).
+  IF CI still red after the watr release+bump: next suspects are
+  other watr sorts (4692 net, 7829 callCounts -- look stable) and a
+  CI-side debug leg dumping the specimen WAT diff vs local.
   P0-3 WARM PROBE VERDICT 2026-07-26: NO retained-state defect --
   standalone probe (one instance, 30 recompiles of crc32, per-iter
   ms + memory): timing settles 190ms FLAT (iters 2..29, no drift),
