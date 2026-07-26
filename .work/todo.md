@@ -227,6 +227,31 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  SHAPES + SORT DISSECTED 2026-07-26 (parallel agents, ABBA-retimed):
+  SHAPES 1.27x vs AS = HONEST HARD TAIL -- mul-strength-reduction and
+  pointer-walk surgeries both V8-NEUTRAL (0.99-1.05x noise);
+  machine-code evidence (archive 2026-07-20e reconfirmed): +4 cmp
+  incl 2x b.ls heap-bounds branches TurboFan keeps + 6 const remat
+  per iter -- TurboFan regalloc/BCE below WAT level; ONLY remaining
+  jz candidate: confirm whether versionableTypedNest fires on the
+  record scan (JZ_DBG_VS, unmeasured share; would retire the 2
+  b.ls). todo.md:1048 'byte-stride follow-up' label is a STALE
+  MISNOMER (hypothesis falsified 07-20e). SORT 1.115x vs zig = ONE
+  REAL LEVER: the 'pick larger child' select's FLAG is a nested
+  data-dependent if (cond1 && f64.lt loads) -- branch-form surgery
+  (block + br_if skip-store, both heapify loops) retimed 1.063/
+  1.118x = closes ~all of the gap (extrapolated; direct paired
+  confirm needs the landed fix). NEW VETO AXIS: not arm cost
+  (hasExpensiveOp) but FLAG construction -- a select fed by a nested
+  if over data-dependent comparisons loses to the branch form on V8.
+  Sites: optimize/index.js post-watr if->select ~4272 + emit.js
+  eagerSelectOK ~456. Comparator-dispatch WATCH note ruled out
+  (raw f64.lt, no calls). BANKED neutral-but-real: cse-load.js
+  runSeq treats if-statements as opaque -- never scans the ALWAYS-
+  EVALUATED condition for available reads (redundant f64.load pair
+  in swap; V8 masks it; emit-quality item). Fill SIMD 1.88x local
+  but <1% share. Tooling note: wat2wasm rejects jz's U+E000 idents;
+  use watr assemble.mjs for surgery.
   narrowMutatedParams + CompileSession SLICE LANDED 2026-07-26 (all
   gates green): (1) mutated-param i32 specialization -- a body-
   written param admits i32 narrowing when every caller passes i32
