@@ -1496,3 +1496,60 @@ test('push on a param settles no element fact: heterogeneous guard must not cons
   is(exports.f(1), 2, 'module-tagged tree passes the guard and counts children')
   is(exports.f(0), -1, 'non-module tag keeps the runtime compare live')
 })
+
+test('narrowMutatedParams: monotone int-mutated param promotes to i32 param+result (cursor-through-helper)', () => {
+  // `i` is a body-written param AND the return value — the trace bench's `nc`
+  // shape (a monotone array-write cursor threaded through a helper: `i =
+  // bump(buf, i, k)` feeds the caller's own local back into the same slot).
+  // Was stuck f64 forever: applyI32ParamSpecialization excluded any body-
+  // written param outright, and even fixing that alone hits an anti-vacuous-
+  // fixpoint — the caller's `i` widens to f64 because bump's OWN result isn't
+  // narrowed yet, and bump's result narrows only from an already-i32 param.
+  // watr/sourceInline off so `bump` stays a real, separately emitted function
+  // whose own signature can be inspected directly.
+  const src = `
+    const bump = (buf, i, n) => {
+      buf[i++] = n
+      return i
+    }
+    export let run = (n) => {
+      const buf = new Int32Array(64)
+      let i = 0
+      for (let k = 0; k < n; k++) i = bump(buf, i, k)
+      return i
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
+  const bumpSeg = wat.slice(wat.indexOf('(func $bump'), wat.indexOf('(func $run'))
+  ok(/\(param \$i i32\)/.test(bumpSeg), 'mutated monotone-counter param narrows to i32')
+  ok(/\(result i32\)/.test(bumpSeg), 'result promotes to i32 too (narrowI32Results reads the updated param type)')
+  is(count(bumpSeg, /i64\.trunc_sat_f64_s|f64\.convert_i32/g), 0, 'no f64 round-trip left on the promoted counter')
+  const { exports } = jz(src, { memory: 4 })
+  is(exports.run(5), 5, 'functional result unchanged by the narrowing')
+})
+
+test('narrowMutatedParams: float-mutated param stays f64', () => {
+  // Same cursor-through-helper shape as above, but the mutation itself
+  // (`i = i + 0.5`) isn't int-preserving — intLevelMap must settle it below
+  // level 1 (a `+` between two int32-level operands needs BOTH integral; 0.5
+  // isn't), so the param stays f64. Never a miscompile risk either way — this
+  // pins the "bail on anything else" half of the lever's contract.
+  const src = `
+    const drift = (buf, i, n) => {
+      buf[i | 0] = n
+      i = i + 0.5
+      return i
+    }
+    export let run = (n) => {
+      const buf = new Float64Array(64)
+      let i = 0
+      for (let k = 0; k < n; k++) i = drift(buf, i, k)
+      return i
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
+  const driftSeg = wat.slice(wat.indexOf('(func $drift'), wat.indexOf('(func $run'))
+  ok(/\(param \$i f64\)/.test(driftSeg), 'non-int-preserving mutation (i = i + 0.5) keeps the param f64')
+  const { exports } = jz(src, { memory: 4 })
+  is(exports.run(3), 1.5, 'functional result unchanged')
+})

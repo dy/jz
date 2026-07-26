@@ -14,7 +14,7 @@ import {
   analyzeBody, findMutations, invalidateLocalsCache, mayBeNullish,
 } from './analyze.js'
 import { staticArrayElems, staticObjectProps } from '../static.js'
-import { scanBoundedLoops, exprType, typedElemCtor, typedStaticLen } from '../type.js'
+import { scanBoundedLoops, exprType, typedElemCtor, typedStaticLen, intLevelMap } from '../type.js'
 import { typedElemAux, ctorFromElemAux } from '../../layout.js'
 import { observeProgramSlots } from './program-facts.js'
 import { valTypeOf } from '../kind.js'
@@ -92,29 +92,126 @@ function buildCallerElems(sliceKey) {
   return m
 }
 
-function applyI32ParamSpecialization(paramReps, valueUsed, { skipTyped = false } = {}) {
+// narrowMutatedParams: admit a body-WRITTEN param into the i32 specialization
+// when every mutation of it is provably int-preserving. Reuses type.js's
+// intLevelMap fixpoint — the SAME prover that grounds ordinary intCertain
+// locals — rather than inventing a parallel one: seed the param optimistically
+// i32 (so a self-referential def like `nc = nc + 1` doesn't vacuously ground
+// at the anti-fixpoint's level 0, see intLevelMap's param-seeding comment) and
+// read back its settled level. collectIntDefs (intLevelMap's def-collector)
+// already recognizes exactly the classic shapes named in the ledger — `p++`,
+// `p += <int>`, `p = p + <int>`, `p = <int-expr of p>` desugar to the same
+// def-list entries a plain int-certain local would produce. Anything it can't
+// see (a write inside a nested arrow — capturedNames not passed) or that
+// doesn't reach level ≥1 (float ops, an unresolved call, a non-int rhs) fails
+// CLOSED: the level lookup misses or stays 0, so the optimistic seed is
+// reverted and the param stays f64 — never a miscompile, only a forgone
+// optimization. On success the seed IS the specialization (p.type stays
+// 'i32'); the reassignment then needs writeVar (src/ir.js) to honor the
+// param's declared type on the store side — the fix for the "generic f64
+// assign path" the old comment named (mirrors readVar's own params fallback).
+function isIntSafeMutatedParam(func, p) {
+  const saved = p.type
+  p.type = 'i32'
+  const savedCurrent = ctx.func.current
+  ctx.func.current = func.sig
+  const level = intLevelMap(func.body, undefined, null).get(p.name) ?? 0
+  ctx.func.current = savedCurrent
+  if (level < 1) { p.type = saved; return false }
+  return true
+}
+
+// Cross-function self-consistency check for a mutated param whose caller-side
+// evidence (paramReps' r.wasm) ISN'T already 'i32'. The cursor-through-helper
+// shape narrowMutatedParams targets (`nc = traceLoop(..., nc, ...)`) is
+// circular: the call-site lattice (built ONCE, before this narrowing) reads
+// the caller's own local through the SAME not-yet-narrowed analyzeBody pass —
+// which widens it to f64 because, at that time, this func's OWN result isn't
+// narrowed either (the callee-result half of the very cycle narrowI32Results
+// resolves, but only AFTER param specialization runs). Neither half can settle
+// first from its own evidence alone.
+//
+// Mirrors narrowI32Results' own "tentatively assume the i32 result, re-analyze,
+// keep only if self-consistent" idiom (see callsSelf handling above) one hop
+// further out: hypothesize this func's RESULT i32 (the param is already
+// optimistically i32 on `p`, set by isIntSafeMutatedParam just before this
+// runs) and ask the caller's OWN, unmodified analyzeBody — the exact prover
+// every other local classification in the program trusts — whether the
+// feeding argument settles i32 under that hypothesis. Committed only when
+// EVERY call site agrees; an argument that isn't even a bare name, a caller
+// with no body (raw/unknown), or a caller whose OTHER evidence disagrees fails
+// closed to f64 — never a miscompile, only a forgone optimization.
+function callerArgSelfConsistentI32(func, k, callSites) {
+  const savedResults = func.sig.results
+  func.sig.results = ['i32']
+  const touched = new Set()
+  let ok = true
+  for (const cs of callSites) {
+    if (!ok) break
+    if (cs.callee !== func.name) continue
+    const arg = cs.argList[k]
+    const callerFunc = cs.callerFunc
+    if (typeof arg !== 'string' || !callerFunc?.body) { ok = false; break }
+    invalidateLocalsCache(callerFunc.body)
+    touched.add(callerFunc.body)
+    const savedCurrent = ctx.func.current
+    ctx.func.current = callerFunc.sig
+    const locals = analyzeBody(callerFunc.body).locals
+    ctx.func.current = savedCurrent
+    if (locals.get(arg) !== 'i32') ok = false
+  }
+  func.sig.results = savedResults
+  // The hypothesis tainted analyzeBody's cache for every touched caller body —
+  // invalidate again so the next (real, non-hypothetical) read re-derives clean.
+  for (const body of touched) invalidateLocalsCache(body)
+  return ok
+}
+
+function applyI32ParamSpecialization(paramReps, valueUsed, callSites, { skipTyped = false } = {}) {
   for (const func of ctx.func.list) {
     if (func.raw || valueUsed.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
-    // A narrowed param type is a CALLER-side contract; the body keeps it only if it
-    // never writes the param (a body write emits through the generic f64 assign path
-    // — `a += 1` after an i32 narrow is a validation-failing local.set type clash).
-    // Same exclusion validateIntConstParams applies, for the same reason.
+    // A narrowed param type is a CALLER-side contract; a body-written param
+    // keeps it ONLY when narrowMutatedParams (isIntSafeMutatedParam /
+    // callerArgSelfConsistentI32, above) proves every mutation int-preserving
+    // AND the caller side self-consistent — otherwise the reassignment's RHS
+    // isn't provably representable as i32 and the param stays f64. The blanket
+    // "never written" exclusion still applies unmodified to
+    // validateTypedLenParams/validateIntConstParams/applyPointerParamAbi below:
+    // those guard DIFFERENT contracts (a static length, a literal constant, a
+    // pointer identity) that a value-preserving int mutation can still break,
+    // so they are not int-safety questions this lever answers.
     let mutated = null
     for (const [k, r] of reps) {
       if (k === restIdx || k >= func.sig.params.length) continue
       const p = func.sig.params[k]
       if (func.defaults?.[p.name] != null) continue
-      if (r.wasm !== 'v128' && (r.wasm !== 'i32' || p.type === 'i32')) continue
+      // Admit 'f64' evidence too (beyond the plain i32/v128 gate below) — ONLY
+      // the mutated branch may act on it, via the mutation-safety +
+      // caller-consistency proof; the non-mutated tail still requires a hard
+      // 'i32'/'v128' verdict, unchanged.
+      if (r.wasm !== 'v128' && r.wasm !== 'i32' && r.wasm !== 'f64') continue
+      if (r.wasm === 'i32' && p.type === 'i32') continue
       if (mutated === null) {
         mutated = new Set()
         if (func.body) findMutations(func.body, new Set(func.sig.params.map(p => p.name)), mutated)
       }
-      if (mutated.has(p.name)) continue
+      if (mutated.has(p.name)) {
+        if (r.wasm === 'f64') {
+          if (!func.body) continue
+          const origType = p.type
+          if (isIntSafeMutatedParam(func, p) && callerArgSelfConsistentI32(func, k, callSites)) continue
+          p.type = origType
+          continue
+        }
+        if (r.wasm === 'i32' && func.body) isIntSafeMutatedParam(func, p)
+        continue
+      }
       // SIMD: a param passed a v128 (lane vector) at every call site is a v128 param.
       if (r.wasm === 'v128') { p.type = 'v128'; continue }
+      if (r.wasm !== 'i32') continue
       if (skipTyped && r.val === VAL.TYPED) continue
       p.type = 'i32'
     }
@@ -1662,7 +1759,7 @@ export default function narrowSignatures(programFacts, ast) {
   // Apply i32 specialization: for non-value-used funcs with consistent i32 call
   // sites and no defaults/rest at that position, narrow sig.params[k].type.
   // Exports too — boundary wrapper handles the f64→i32 truncation at the JS edge.
-  applyI32ParamSpecialization(paramReps, valueUsed)
+  applyI32ParamSpecialization(paramReps, valueUsed, callSites)
 
   // intConst validation: a param marked with a unanimous integer literal at every call
   // site is only safe to substitute if the body never reassigns it. Clear intConst on any
@@ -2027,7 +2124,7 @@ export default function narrowSignatures(programFacts, ast) {
   // ctors at call sites). Their callers post-F pass them as i32 (pointer ABI),
   // so r.wasm flips to 'i32' here — but narrowing now breaks the clone path
   // that still needs to mint per-ctor sigs with ptrKind=TYPED, ptrAux=ctor-aux.
-  applyI32ParamSpecialization(paramReps, valueUsed, { skipTyped: true })
+  applyI32ParamSpecialization(paramReps, valueUsed, callSites, { skipTyped: true })
 
   // J: jsstring boundary opt-in — for exported funcs with a string param whose
   // every use is mappable to a wasm:js-string builtin, flip the param's wasm

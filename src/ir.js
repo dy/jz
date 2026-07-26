@@ -1361,7 +1361,16 @@ export function writeVar(name, valIR, void_) {
   // — 50 in-scope failures from an unconditional mint). The one structural
   // write-only binder, a bare undeclared `for (k in o)` head, is declared at
   // its prepare lowering instead.
-  const t = ctx.func.locals.get(name) || 'f64'
+  // A PARAMETER has no `let`/`const` decl for analyzeBody to seed into
+  // ctx.func.locals — mirrors readVar's identical fallback (above) to the
+  // signature's declared type. Needed once narrowMutatedParams (narrow.js)
+  // lets an i32-specialized param be reassigned: without this fallback the
+  // write defaulted to 'f64' (an i32 param was never written before this
+  // lever — the mutation guard excluded it), coercing the RHS through
+  // asF64 into a local the wasm signature declares i32 — a validation-
+  // failing local.set type clash (the narrow.js comment's "generic f64
+  // assign path").
+  const t = ctx.func.locals.get(name) || ctx.func.current?.params?.find(p => p.name === name)?.type || 'f64'
   const ptrKind = repOf(name)?.ptrKind
   let coerced
   if (ptrKind != null) {
