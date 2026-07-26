@@ -277,7 +277,13 @@ test('SIMD breadth - generic f32/int DSP patterns stay vectorized', () => {
     'f32→i8 narrow':       `export let f=(n)=>{let a=new Float32Array(n);let o=new Int8Array(n);for(let i=0;i<n;i++)o[i]=a[i]*127;return o}`,
     'f64 still vectorizes':`export let f=(n,k)=>{let a=new Float64Array(n);let o=new Float64Array(n);for(let i=0;i<n;i++)o[i]=a[i]*k;return o}`,
   }
-  for (const [name, src] of Object.entries(cases)) ok(hasV128(wat(src, SPEED)), `${name} vectorizes`)
+  for (const [name, src] of Object.entries(cases)) {
+    const w = wat(src, SPEED)
+    // Fail WITH the emitted body — the f32→i16 row failed on CI-linux only
+    // (2026-07-26; local green on every leg/platform/node): the next red run
+    // must carry its own WAT evidence instead of a bare boolean.
+    ok(hasV128(w), `${name} vectorizes${hasV128(w) ? '' : ` — emitted (no v128):\n${w.split('\n  (func ').find(c => /^\$f\b/.test(c))?.slice(0, 1200)}`}`)
+  }
 })
 
 test('SIMD narrowing - encode/downsample bit-identical to scalar (incl. clipping)', () => {
