@@ -227,6 +227,21 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  CI RED ROOT-CAUSED 2026-07-26: the 6 kernel-leg failures (null-vs-
+  undefined strict/loose, slice negative/no-args, boolean/nullish,
+  +1) are PRE-EVAL-IN-KERNEL FOLD BUGS introduced by the front-half
+  land (pre-eval now executes as kernel wasm): kernel-compiled
+  `undefined == null ? 1 : 0` FOLDS to 0 (native 1), slice folds to
+  0-length -- but the RUNTIME paths are proven correct in-kernel
+  (x==null with undefined -> 1, runtime slice(-3) -> 3). Class: host-
+  JS idioms inside evalConst that deviate under the self-host subset
+  (nullish literal classification, optional-chain undefined-arg
+  slice). NOT the select veto (that commit was merely the last push
+  CI ran). Fix delegated to the P0-2 agent (owns pre-eval.js
+  uncommitted); kernel leg is now a MANDATORY local gate pre-push.
+  Also: strings.js standalone reproduces 2 of the 6 -- the 'in-suite
+  only' theory was wrong this round; direct compileViaKernel repro
+  scripts are the tool (no suite needed).
   FRONT HALF + SYNTH LEVERS LANDED 2026-07-25 (joint, battery
   3090/0): (1) src/front.js canonical front half consumed by index.js
   AND all four self.js kernel entries; resetNameUids in setupSelf;
