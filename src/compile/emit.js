@@ -49,7 +49,7 @@ import {
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY, TRUE_NAN, FALSE_NAN, NULL_NAN,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
   mkPtrIR, ptrOffsetIR, ptrTypeIR, ptrTypeEq, dispatchByPtrType, sidecarOverride, valKindToPtr,
-  isLit, litVal, isNullishLit, isPureIR, hasExpensiveOp, emitNum, f64rem, toNumF64, toStrI64, maskBound,
+  isLit, litVal, isNullishLit, isPureIR, hasExpensiveOp, dataDependentFlag, emitNum, f64rem, toNumF64, toStrI64, maskBound,
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, usesDynProps, needsDynShadow,
   temp, tempI32, tempI64, allocPtr,
@@ -454,6 +454,14 @@ const isCanonicalBoolExpr = n => Array.isArray(n) &&
 // select-gate call site (below, and the post-watr if→select fold in optimize/index.js)
 // uses this instead of a bare isPureIR check.
 const eagerSelectOK = (...ns) => ns.every(n => isPureIR(n) && !hasExpensiveOp(n))
+// Separate cost axis from eagerSelectOK: that gate gauges the select's ARMS
+// (vb/vc — the values chosen between); this gauges the select's CONDITION. A cond
+// that lowers to a nested value-`if` over a memory load (dataDependentFlag, ir.js —
+// the short-circuit `&&`/`||` shape) pays load latency unconditionally when fed
+// eagerly into `select`, where the lazy if/else it came from would only pay it when
+// the fast clause passed. Every `?:` select site below composes this with
+// eagerSelectOK(arms) before choosing `select` over `if`.
+const selectCondOK = (cond) => !dataDependentFlag(cond)
 // Eager boolean chains win in leaf numeric kernels but regress orchestration/
 // compiler code whose first guard usually rejects before a costly RHS. Keep
 // the latency trade in call-free bodies; nested closures are separate bodies.
@@ -4148,7 +4156,7 @@ export const emitter = {
         const fb = vtbM === VAL.BOOL ? boolBoxIR(vb) : asF64(vb)
         const fc = vtcM === VAL.BOOL ? boolBoxIR(vc) : asF64(vc)
         const ib = ['i64.reinterpret_f64', fb], ic = ['i64.reinterpret_f64', fc]
-        const bits = eagerSelectOK(fb, fc)
+        const bits = eagerSelectOK(fb, fc) && selectCondOK(cond)
           ? ['select', ib, ic, cond]
           : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
         return typed(['f64.reinterpret_i64', bits], 'f64')
@@ -4189,7 +4197,7 @@ export const emitter = {
           }
           return n
         }
-        if (eagerSelectOK(vb, vc))
+        if (eagerSelectOK(vb, vc) && selectCondOK(cond))
           return tagPtr(typed(['select', vb, vc, cond], 'i32'))
         return tagPtr(typed(['if', ['result', 'i32'], cond, ['then', vb], ['else', vc]], 'i32'))
       }
@@ -4226,12 +4234,12 @@ export const emitter = {
     if (refPayload) {
       const ib = ['i64.reinterpret_f64', branchB]
       const ic = ['i64.reinterpret_f64', branchC]
-      const bits = eagerSelectOK(branchB, branchC)
+      const bits = eagerSelectOK(branchB, branchC) && selectCondOK(cond)
         ? ['select', ib, ic, cond]
         : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
       return typed(['f64.reinterpret_i64', bits], 'f64')
     }
-    if (!refPayload && eagerSelectOK(branchB, branchC))
+    if (!refPayload && eagerSelectOK(branchB, branchC) && selectCondOK(cond))
       return markNumeric(typed(['select', branchB, branchC, cond], 'f64'))
     return markNumeric(typed(['if', ['result', 'f64'], cond, ['then', branchB], ['else', branchC]], 'f64'))
   },

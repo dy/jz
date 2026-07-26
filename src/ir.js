@@ -607,6 +607,26 @@ export const isPureIR = n => Array.isArray(n) && PURE_OPS.has(n[0]) && n.slice(1
 const EXPENSIVE_PURE_OPS = new Set(['f64.div', 'f64.sqrt'])
 export const hasExpensiveOp = n => Array.isArray(n) && (EXPENSIVE_PURE_OPS.has(n[0]) || n.some(hasExpensiveOp))
 
+// A select's CONDITION is a cost axis distinct from hasExpensiveOp's ARMS. `&&`/`||`
+// lower short-circuit evaluation to a value-`if` whenever eager (i32.and/i32.or) isn't
+// sound or isn't cheap — canonically `x < n && a[x] < a[x+1]` (a bounds guard ANDed with
+// a load-bearing compare) becomes `if (result i32) (local.tee $t cond1) (then f64.lt
+// (load)(load)) (else (local.get $t))` (emit.js '&&', the i32 fast path). Feeding THAT
+// as a select's condition means every iteration pays the load's latency plus the tee/get
+// shuffle unconditionally — even on the (common) iterations where cond1 alone would have
+// short-circuited a lazy if/else past the load entirely. Measured on sort's "pick larger
+// child" (`child+1<n && a[child]<a[child+1]) ? child+1 : child`): branch-form surgery on
+// exactly this shape closed ~all of a 1.115x gap vs zig-wasm (checksum-stable).
+// Scoped narrowly to the shape that regressed: a nested value-`if` (the short-circuit
+// lowering, not a plain multi-compare chain — those either collapse to i32.and/i32.eqz
+// upstream or never touch memory) whose subtree carries a memory load. A cheap
+// comparison-only flag (`(h & 1) === 0`, noise's gradient sign-flip) never builds this
+// shape at all and must keep `select`; vetoing on load-freedom alone would wrongly catch
+// pointer-typed local.get reads too, so this checks for actual load OPS, not pointers.
+const hasLoadOp = n => Array.isArray(n) && (typeof n[0] === 'string' && MEM_OPS.test(n[0]) || n.some(hasLoadOp))
+export const dataDependentFlag = n => Array.isArray(n) &&
+  (n[0] === 'if' ? hasLoadOp(n) : n.some(dataDependentFlag))
+
 /** Ops whose f64 result is always a plain number (never a NaN-boxed pointer).
  *  Used by toNumF64 to skip the __to_num wrapper when the value is provably numeric.
  *  NOTE: f64.const is NOT included — it may encode a NaN-boxed pointer. */

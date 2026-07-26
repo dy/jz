@@ -4292,6 +4292,58 @@ test('select-gate cost veto: div-bearing ternary stays if/else, cheap ternary ke
   }
 })
 
+test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-compare cond keeps select', () => {
+  // SHAPES + SORT DISSECTED (2026-07-26): a DIFFERENT axis from the arm-cost veto above —
+  // this one is about the select's CONDITION, not its arms. `&&`'s short-circuit lowering
+  // (emit.js, the i32 fast path of the '&&' handler) builds a nested value-`if` — `if
+  // (result i32) (local.tee $t cond1) (then <cond2>) (else (local.get $t))` — whenever
+  // cond2 isn't eagerly-safe (a load-bearing comparison over array reads is the canonical
+  // case: eagerSelectOK already refuses it because f64.load isn't in PURE_OPS). Feeding
+  // that nested if straight into an outer `select` (the ternary's own select-gate, which
+  // only ever vetted its ARMS, never its `cond`) pays the load's latency and the tee/get
+  // shuffle on every iteration, where the lazy if/else it lowered from would only pay for
+  // it when cond1 passed. Sort's "pick larger child" (heapify's `if (child + 1 < n &&
+  // a[child] < a[child + 1]) child++`, if-converted to a select-fed ternary by
+  // boolConvertToSelect) is the exact measured repro: branch-form surgery on this shape
+  // closed a 1.115x gap vs zig-wasm. dataDependentFlag (ir.js) + selectCondOK (emit.js)
+  // veto scoped to nested-if conds that carry a memory load; a plain multi-compare flag
+  // (noise's `(h & 1) === 0` class) never builds this shape and must keep `select`.
+  const heap = new Float64Array([5, 1, 8, 3, 9, 2, 7, 4])
+  const pickChild = `
+    export const f = (n, child) => {
+      const a = new Float64Array([5, 1, 8, 3, 9, 2, 7, 4])
+      return (child + 1 < n && a[child] < a[child + 1]) ? child + 1 : child
+    }`
+  const jsPick = (n, child) => (child + 1 < n && heap[child] < heap[child + 1]) ? child + 1 : child
+  for (const optimize of [2, 3, 'speed']) {
+    const tree = parse(pickChild, optimize)
+    const fn = findFunc(tree, '$f') || findFunc(tree, '$f$exp')
+    is(count(fn, n => n[0] === 'select'), 0, `O${JSON.stringify(optimize)}: nested-if load-bearing flag never selects`)
+    ok(count(fn, n => n[0] === 'if') >= 1, `O${JSON.stringify(optimize)}: compiles as if/else`)
+  }
+  for (const optimize of [false, 2, 3, 'speed']) {
+    const { f } = run(pickChild, { optimize })
+    for (const [n, child] of [[8, 0], [8, 1], [8, 2], [8, 3], [8, 6], [8, 7], [5, 3], [1, 0]])
+      is(f(n, child), jsPick(n, child), `O${JSON.stringify(optimize)} n=${n} child=${child}: pick-larger-child exact`)
+  }
+
+  // Plain-comparison flag (both && operands cheap comparisons, no memory load) must keep
+  // select — the veto is scoped to load-bearing nested-if conds only, not comparison
+  // chains in general (which either collapse to i32.and upstream or never touch memory).
+  const plainFlag = `export const f = (x, y, z) => (x > 0 && y < 10) ? z + 1.0 : z - 1.0`
+  const jsPlain = (x, y, z) => (x > 0 && y < 10) ? z + 1.0 : z - 1.0
+  for (const optimize of [2, 3, 'speed']) {
+    const tree = parse(plainFlag, optimize)
+    const fn = findFunc(tree, '$f') || findFunc(tree, '$f$exp')
+    ok(count(fn, n => n[0] === 'select') >= 1, `O${JSON.stringify(optimize)}: plain-compare flag keeps select`)
+  }
+  for (const optimize of [false, 2, 3, 'speed']) {
+    const { f } = run(plainFlag, { optimize })
+    for (const [x, y, z] of [[1, 5, 2], [-1, 5, 2], [1, 20, 2], [-1, 20, 2]])
+      is(f(x, y, z), jsPlain(x, y, z), `O${JSON.stringify(optimize)}: plain-flag select exact`)
+  }
+})
+
 test('stripCanon sees through a hoisted-call temp (hoistNestedCalls single-def binding)', () => {
   // SYNTH DISSECTED WITH MEASURED SHARES (2026-07-25): stripCanon (emit.js) recurses
   // structurally into `select`/`if` arms to drop a redundant NaN-canon guard (the guard is

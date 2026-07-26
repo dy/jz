@@ -4282,7 +4282,14 @@ function walkRewrite(node, doInline, counts, freshI64, freshF64, get) {
     // `(if (result f64) is_truthy(local.tee $t a) (then get $t)(else b))` hides a `tee` in the
     // cond that the then-arm reads — reordering it after the arms reads $t stale. Requiring
     // isPureIR(cond) excludes every tee/call/short-circuit cond while admitting the pure
-    // comparison conds of real float ternaries (noise's `(h & 1) === 0`).
+    // comparison conds of real float ternaries (noise's `(h & 1) === 0`). This SAME
+    // isPureIR(cond) requirement also subsumes the sort-lane FLAG-construction veto
+    // (ir.js dataDependentFlag): a cond containing a nested value-`if` (the &&/||
+    // short-circuit shape a load-bearing clause forces) is never isPureIR — 'if' isn't in
+    // PURE_OPS — so this fold already can't fire on that shape; no separate check needed
+    // here (verified: emit.js's sibling `?:` select sites, which build `cond` once and
+    // reuse it across multiple i32/i64/f64 branches, DO need the explicit
+    // dataDependentFlag/selectCondOK gate because they don't run isPureIR(cond) at all).
     if (isPureIR(a) && isPureIR(b) && isPureIR(cond) && !hasExpensiveOp(a) && !hasExpensiveOp(b) &&
         !(toI32(a) && toI32(b))) return ['select', a, b, cond]
   }

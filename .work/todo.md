@@ -227,6 +227,20 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  SORT FLAG-VETO LANDED 2026-07-26 (all gates green): dataDependentFlag
+  predicate (ir.js ~610 -- select condition contains a nested value-if
+  carrying a memory load = the &&/|| short-circuit lowering over loads)
+  composed with eagerSelectOK at all four ?: select-emission sites
+  (emit.js ~456); post-watr fold already structurally excluded the
+  shape (isPureIR(cond) -- documented). Heapify pick-larger-child
+  sites now branch form; unrelated selects byte-identical. SORT
+  1.115x -> 0.969x then confirmed LEADING zig (11.76 vs 15.17ms on
+  the larger-n run); noise 0.830x kept its cheap-flag select, synth
+  1.022x, trace 1.463x (hard tail), fft 1.026x -- no regressions.
+  Battery 3096/0, optimizer 213/213 (flag-axis pin added), parity
+  18/18. RED LIST NOW: sdf ~1.3 (research tail), shapes 1.27
+  (TurboFan hard tail + one versionableTypedNest confirm), crc32
+  1.05 border. trace 1.47 hard tail. Every other lane LEADS.
   SHAPES + SORT DISSECTED 2026-07-26 (parallel agents, ABBA-retimed):
   SHAPES 1.27x vs AS = HONEST HARD TAIL -- mul-strength-reduction and
   pointer-walk surgeries both V8-NEUTRAL (0.99-1.05x noise);
