@@ -4,7 +4,7 @@
  */
 
 import { ASSIGN_OPS, MUTATE_OPS, collectParamNames, extractParams, REFS_IN_EXPR, refsName, T, isLiteralStr } from '../ast.js'
-import { ctx } from '../ctx.js'
+import { ctx, getFactStore } from '../ctx.js'
 import { staticObjectProps, staticArrayElems, staticIndexKey, staticValue, NO_VALUE } from '../static.js'
 import { exprType } from '../type.js'
 
@@ -149,11 +149,12 @@ export const USE = {
   DELETE_MEMBER: 11, // `delete name.member`
   BARE: 12,          // any other value position — the conservative catch-all
 }
-let _bindingUsesCache = new WeakMap()
-// Self-host-only: see resetProgramFactsCache (program-facts.js) — swap in a fresh
-// WeakMap so a warm-instance compile-clear-compile loop never reads a dangling
-// arena pointer out of the old backing storage.
-export function resetBindingUsesCache() { _bindingUsesCache = new WeakMap() }
+// Self-host-only: see resetProgramFactsCache (program-facts.js) — a fresh
+// factStore (src/session.js) swaps in a fresh WeakMap each session so a
+// warm-instance compile-clear-compile loop never reads a dangling arena
+// pointer out of the old backing storage. Session-owned (audit P1 stage 5) —
+// getFactStore().bindingUses, NOT a private module-level WeakMap.
+export function resetBindingUsesCache() { getFactStore().bindingUses = new WeakMap() }
 const _CMP_OPS = new Set(['==', '!=', '===', '!==', '<', '>', '<=', '>='])
 const _isNullishLit = (e) =>
   e === 'null' || e === 'undefined' ||
@@ -166,8 +167,9 @@ const _isNullishLit = (e) =>
 // cache (a different `trackNames` on the same body would otherwise read a stale
 // entry keyed only by `body`) — fine, this path is a one-shot pre-pass, not hot.
 export function scanBindingUses(body, trackNames) {
+  const bindingUses = getFactStore().bindingUses
   if (!trackNames) {
-    const hit = _bindingUsesCache.get(body)
+    const hit = bindingUses.get(body)
     if (hit) return hit
   }
 
@@ -339,7 +341,7 @@ export function scanBindingUses(body, trackNames) {
   // `body` can be null (a module whose every top-level statement got lifted
   // into ctx.func.list, e.g. a single `export const f = () => …` leaves
   // nothing at module scope) — WeakMap keys must be objects.
-  if (!trackNames && body != null && typeof body === 'object') _bindingUsesCache.set(body, summary)
+  if (!trackNames && body != null && typeof body === 'object') bindingUses.set(body, summary)
   return summary
 }
 

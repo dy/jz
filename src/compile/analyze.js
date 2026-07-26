@@ -1,4 +1,4 @@
-import { OPTF } from '../ctx.js'
+import { OPTF, getFactStore } from '../ctx.js'
 /**
  * Pre-analysis passes — type inference, local analysis, capture detection.
  *
@@ -89,8 +89,9 @@ export { findFreeVars, findMutations, boxedCaptures } from './analyze-scans.js'
 // knife-edge (ledger 2026-07-21i): the arena-backed weak store rewound by a
 // warm-instance `_clear` mid-lifecycle made cache behavior timing-dependent.
 // Strong refs are bounded by program size and dropped at the next reset.
-let _bodyFactsCache = new Map()
-export function resetBodyFactsCache() { _bodyFactsCache = new Map() }
+// Session-owned (audit P1 stage 5) — getFactStore().bodyFacts, NOT a private
+// module-level Map; see src/session.js's factStore DEPS table.
+export function resetBodyFactsCache() { getFactStore().bodyFacts.clear() }
 
 // Per-name monotone fact trackers over a pluggable {get,set,delete} store. First
 // observation wins; a conflicting later one poisons the name (and clears the store
@@ -238,7 +239,8 @@ export function analyzeBody(body) {
     arrElemValTypes: new Map(), arrElemTypedCtors: new Map(), typedElems: new Map(), escapes: new Map(),
     flatObjects: new Map(),
   }
-  const hit = _bodyFactsCache.get(body)
+  const bodyFacts = getFactStore().bodyFacts
+  const hit = bodyFacts.get(body)
   if (hit) return hit
 
   const locals = new Map()
@@ -762,7 +764,7 @@ export function analyzeBody(body) {
   const neverGrown = doSchemas ? scanNeverGrown(body) : new Set()
 
   const result = { locals, valTypes, arrElemSchemas, arrElemSchemaSets, arrElemValTypes, arrElemTypedCtors, typedElems, typedLens, escapes, flatObjects, sliceViews, unsignedLocals, neverGrown, numericFill }
-  _bodyFactsCache.set(body, result)
+  bodyFacts.set(body, result)
   return result
 }
 
@@ -867,7 +869,7 @@ function widenLocalTypes(body, locals) {
  *  `ctx.func.localReps` (drives exprType receiver-type lookups).
  *  Same hook as `invalidateValTypesCache` — split names preserve caller intent. */
 export function invalidateLocalsCache(body) {
-  if (body && typeof body === 'object') _bodyFactsCache.delete(body)
+  if (body && typeof body === 'object') getFactStore().bodyFacts.delete(body)
 }
 
 // Can this RHS expression produce null/undefined? FAIL-CLOSED: anything not

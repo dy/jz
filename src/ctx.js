@@ -219,6 +219,36 @@ export function resolveIncludes() {
   }
 }
 
+/**
+ * Fact-store storage (audit P1 stage 5) — see src/session.js's DEPS table for
+ * the full per-slice contract (what each slice caches, what invalidates it).
+ * Storage lives HERE rather than in session.js to avoid a module cycle:
+ * program-facts.js / analyze.js / analyze-scans.js each read their slice, and
+ * analyze.js is itself imported by wat/assemble.js, which session.js imports
+ * (clearStdlibParseCache) — routing the accessor through session.js would
+ * close analyze.js -> session.js -> wat/assemble.js -> analyze.js (jz's own
+ * self-host module resolver rejects import cycles outright, so this isn't
+ * just a style question — it breaks `npm run build`). ctx.js is the one leaf
+ * every one of those already depends on with nothing importing back, so
+ * ownership of WHERE the store lives sits here; session.js's beginSession
+ * still owns WHEN a fresh one is created (calls resetFactStore()) and
+ * re-exports getFactStore() as the public accessor.
+ */
+function createFactStore() {
+  return {
+    programFacts: { gen: 0, walkCache: new WeakMap(), moduleInitSlot: new WeakMap(), bodyIntCertain: new WeakMap(), hazard: null },
+    bodyFacts: new Map(),
+    bindingUses: new WeakMap(),
+  }
+}
+let _factStore = createFactStore()
+/** The current session's fact store. Prefer importing this from session.js
+ *  (the documented public seam) — exported here too since that's where the
+ *  storage actually lives (see the comment above). */
+export function getFactStore() { return _factStore }
+/** Start a fresh fact store (called once per session by beginSession). */
+export function resetFactStore() { _factStore = createFactStore() }
+
 /** Reset all compilation state. Called once per jz() invocation. */
 export function reset(proto, globals, bridge) {
   ctx.bridge = bridge

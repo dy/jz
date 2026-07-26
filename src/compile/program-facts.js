@@ -3,7 +3,7 @@
  * @module program-facts
  */
 import { commaList, isFuncRef, isLiteralStr, ASSIGN_OPS, MUTATE_OPS } from '../ast.js'
-import { ctx, err } from '../ctx.js'
+import { ctx, err, getFactStore } from '../ctx.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import { valTypeOf } from '../kind.js'
 import { extractParams, classifyParam } from '../ast.js'
@@ -148,31 +148,30 @@ export function observeNodeFacts(node, f) {
   }
 }
 
-let _programFactsCache = new WeakMap()
-let _moduleInitSlotCache = new WeakMap()
-let _bodyIntCertainCache = new WeakMap()
-let _programFactsGen = 0
-
-/** Drop all cached program-fact walks (called at compile entry).
- *  Natively the gen bump alone is enough (stale entries just go unreachable on a
- *  real GC heap). In the self-host kernel these WeakMaps' own backing storage is
- *  itself an arena allocation that `_clear` rewinds between compiles in a warm-
- *  instance loop — a post-`_clear` alloc can overwrite the WeakMap's internal
- *  bytes, so we also swap in fresh WeakMap instances (cheap: O(1), no traversal). */
+/** Drop all cached program-fact walks (called at compile entry — normally
+ *  implicit via beginSession's fresh factStore; exposed for any caller that
+ *  needs to force a mid-session drop). Natively the gen bump alone is enough
+ *  (stale entries just go unreachable on a real GC heap). In the self-host
+ *  kernel these WeakMaps' own backing storage is itself an arena allocation
+ *  that `_clear` rewinds between compiles in a warm-instance loop — a
+ *  post-`_clear` alloc can overwrite the WeakMap's internal bytes, so we also
+ *  swap in fresh WeakMap instances (cheap: O(1), no traversal). */
 export function resetProgramFactsCache() {
-  _programFactsGen++
-  _programFactsCache = new WeakMap()
-  _moduleInitSlotCache = new WeakMap()
-  _bodyIntCertainCache = new WeakMap()
+  const pf = getFactStore().programFacts
+  pf.gen++
+  pf.walkCache = new WeakMap()
+  pf.moduleInitSlot = new WeakMap()
+  pf.bodyIntCertain = new WeakMap()
 }
 
 /** Drop cached walks for specific AST roots (in-place module rewrites). */
 export function invalidateProgramFactsCache(...roots) {
+  const pf = getFactStore().programFacts
   for (const r of roots) {
     if (r == null || typeof r !== 'object') continue
-    _programFactsCache.delete(r)
-    _moduleInitSlotCache.delete(r)
-    _bodyIntCertainCache.delete(r)
+    pf.walkCache.delete(r)
+    pf.moduleInitSlot.delete(r)
+    pf.bodyIntCertain.delete(r)
   }
 }
 
@@ -214,9 +213,10 @@ function mergeWalkFacts(into, from) {
  *  so plan-phase rescans skip unchanged bodies after inlining/scalarization passes.
  *  Module AST is never cached — plan may mutate it in place (flattenFuncNamespaces). */
 function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
+  const pf = getFactStore().programFacts
   if (cache && full && root != null && typeof root === 'object') {
-    const hit = _programFactsCache.get(root)
-    if (hit?.gen === _programFactsGen) return hit.facts
+    const hit = pf.walkCache.get(root)
+    if (hit?.gen === pf.gen) return hit.facts
   }
   const acc = emptyWalkFacts()
   const walkFacts = (node, fullWalk, inArrow, caller) => {
@@ -306,7 +306,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
   }
   walkFacts(root, full, false, callerFunc)
   if (cache && full && root != null && typeof root === 'object')
-    _programFactsCache.set(root, { gen: _programFactsGen, facts: acc })
+    pf.walkCache.set(root, { gen: pf.gen, facts: acc })
   return acc
 }
 
@@ -407,6 +407,7 @@ export function collectProgramFacts(ast) {
  *  upgrade undefined slots without re-poisoning already-monomorphic ones. */
 export function observeProgramSlots(ast, opts) {
   if (!ctx.schema?.register) return
+  const pf = getFactStore().programFacts
   const slotTypes = ctx.schema.slotTypes
   const slotCtors = ctx.schema.slotTypedCtors
   const slotConstInts = ctx.schema.slotConstInts
@@ -648,8 +649,8 @@ export function observeProgramSlots(ast, opts) {
   if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) {
     ctx.func.localValTypesOverlay = null
     for (const mi of ctx.module.moduleInits) {
-      const hit = _moduleInitSlotCache.get(mi)
-      if (hit?.gen === _programFactsGen) {
+      const hit = pf.moduleInitSlot.get(mi)
+      if (hit?.gen === pf.gen) {
         for (const [sid, idx, vt, ctor, ci] of hit.obs) {
           observeSlot(sid, idx, vt); observeCtor(sid, idx, ctor); observeConstInt(sid, idx, ci)
         }
@@ -687,7 +688,7 @@ export function observeProgramSlots(ast, opts) {
       }
       teOverlay = null
       visitInit(mi)
-      if (mi != null && typeof mi === 'object') _moduleInitSlotCache.set(mi, { gen: _programFactsGen, obs })
+      if (mi != null && typeof mi === 'object') pf.moduleInitSlot.set(mi, { gen: pf.gen, obs })
     }
   }
   ctx.func.localValTypesOverlay = prevOverlay
@@ -757,7 +758,6 @@ export function effectiveWriteValue(op, lhs, rhs) {
 }
 
 const KEYED_EXEMPT_VALS = new Set([VAL.ARRAY, VAL.TYPED, VAL.HASH, VAL.MAP, VAL.SET, VAL.STRING])
-let _hazardCache = null
 
 /** Program-wide slot-write hazard scan → `{ all, sids, props, numeric,
  *  kindSafeSids }`, stashed on `ctx.schema.slotWriteHazards` for the census
@@ -771,9 +771,10 @@ let _hazardCache = null
  *  OBSERVES those kinds, slotIntCertain still poisons (a JSON number is any
  *  double). */
 export function collectSlotWriteHazards(ast, opts) {
+  const pf = getFactStore().programFacts
   const late = !!opts?.paramReps
-  if (_hazardCache && _hazardCache.gen === _programFactsGen && _hazardCache.late === late)
-    return (ctx.schema.slotWriteHazards = _hazardCache.hz)
+  if (pf.hazard && pf.hazard.gen === pf.gen && pf.hazard.late === late)
+    return (ctx.schema.slotWriteHazards = pf.hazard.hz)
   const hz = { all: false, sids: new Set(), props: new Set(), numeric: false, kindSafeSids: new Map() }
   let curSids = null, curParamVts = null
   const sidOf = (obj) => {
@@ -892,7 +893,7 @@ export function collectSlotWriteHazards(ast, opts) {
   ctx.func.localValTypesOverlay = null
   if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) visit(mi)
   ctx.func.localValTypesOverlay = prevOverlay
-  _hazardCache = { gen: _programFactsGen, late, hz }
+  pf.hazard = { gen: pf.gen, late, hz }
   return (ctx.schema.slotWriteHazards = hz)
 }
 
@@ -1080,6 +1081,7 @@ export function analyzeParamNeverGrown(paramReps) {
  *  (toNumF64 / floor elision / intIndexIR) reads at EMIT time, after this. */
 export function analyzeSchemaSlotIntCertain(ast, opts) {
   if (!ctx.schema?.register) return
+  const pf = getFactStore().programFacts
   // Working state is the LEVEL map (0 | 1 integral | 2 strict-int32 — see
   // type.js's lattice); the boolean projections slotIntCertain (≥1) and
   // slotI32Certain (≥2) are published for consumers after the rounds settle.
@@ -1145,12 +1147,12 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   const bodyIntCertainOf = (body, fresh) => {
     if (fresh) return intLevelChecker(body, slotLevelOf)
     if (body != null && typeof body === 'object') {
-      const hit = _bodyIntCertainCache.get(body)
-      if (hit?.gen === _programFactsGen) return hit.isInt
+      const hit = pf.bodyIntCertain.get(body)
+      if (hit?.gen === pf.gen) return hit.isInt
     }
     const isInt = intLevelChecker(body, slotLevelOf)
     if (body != null && typeof body === 'object')
-      _bodyIntCertainCache.set(body, { gen: _programFactsGen, isInt })
+      pf.bodyIntCertain.set(body, { gen: pf.gen, isInt })
     return isInt
   }
 
@@ -1211,13 +1213,15 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   // drop the cache and re-derive until the census is stable.
   let rounds = 0
   while (flipped && ++rounds <= 64) {
-    _bodyIntCertainCache = new WeakMap()
+    pf.bodyIntCertain = new WeakMap()
     flipped = false
     sweep(true)
   }
-  // Cap exhaustion (never expected — each slot descends ≤2 levels): the state
-  // may still carry stale optimism, so fail closed for the whole program.
-  if (flipped) for (const arr of slotIntLevels.values()) arr.fill(0)
+  // Cap exhaustion (never expected — each slot descends ≤2 levels, so `rounds`
+  // is bounded by slot count, not this constant) is ALWAYS a compiler bug —
+  // never silently fail closed (that's still a silent precision loss for
+  // every OTHER slot in the program, just a safe-looking one).
+  if (flipped) err(`internal: analyzeSchemaSlotIntCertain slot-int census failed to converge — still dirty after ${rounds} rounds of its 64-round guard (this is a jz bug — a slot descended more than its 2-level bound allows; please report with a minimal repro)`)
   // Publish the consumer projections: intCertain = integral (≥1) for the
   // ToNumber-skip / floor-elision family, i32Certain = strict (=2) for raw
   // i32 slot loads and i32 local typing.

@@ -1553,3 +1553,63 @@ test('narrowMutatedParams: float-mutated param stays f64', () => {
   const { exports } = jz(src, { memory: 4 })
   is(exports.run(3), 1.5, 'functional result unchanged')
 })
+
+// ============================================================================
+// Convergence-cap regression (audit P1: solver convergence exhaustion must
+// ALWAYS throw an internal compiler error — src/compile/narrow.js's
+// param-lattice worklist / arr-schema-domain / typed-ctor fixpoints and
+// src/compile/program-facts.js's slot-int census).
+//
+// A genuinely NON-MONOTONE rule can't be authored from JS source — the four
+// guarded loops close over lattices the surrounding code proves monotone by
+// construction (finite height: i32→f64 widening, 0|1|2 int-certainty
+// levels, meet-semilattice paramReps facts), so tripping the guard would
+// require literally breaking a rule's monotonicity in the compiler itself,
+// not compiling adversarial input. There is therefore no source-level
+// "deliberately non-converging shape" to compile here — attempting one
+// would only test whether `err()` throws (already covered generically by
+// the "compiler internal name conflict" case in test/errors.js), not real
+// compiler behavior.
+//
+// What IS a real, constructible regression: pathological-but-LEGITIMATE
+// DEPTH that could plausibly exceed a round cap without any rule being
+// non-monotone — a deep caller→callee forwarding chain (worklist cap) and a
+// long self-referential immutable-update schema domino (16-round domain
+// cap / 64-round slot-int census cap, both explicitly called out in the
+// surrounding doc comments as the stress shapes those caps exist for). Pin
+// both well past their guard's stated budget as a canary: if a future
+// change shrinks a cap, reorders a sweep from full-program to per-edge, or
+// otherwise makes these ordinary-if-extreme programs need more rounds than
+// budgeted, THIS throws the internal error (loudly, per the audit) instead
+// of the old silent truncation — a real user hitting it would get the same
+// diagnosis.
+// ============================================================================
+
+test('convergence caps: 100-deep caller->callee forwarding chain compiles (worklist budget canary)', () => {
+  if (onKernel()) return  // kernel: same narrowSignatures pipeline; redundant native-vs-kernel coverage, not worth the in-wasm compile cost
+  let src = ''
+  for (let i = 0; i < 100; i++) src += `function f${i}(a) { return f${i + 1}(a) }\n`
+  src += `function f100(a) { return a[0] + a[1] }\n`
+  src += `export let main = () => { const buf = new Float64Array(4); buf[0] = 1; buf[1] = 2; return f0(buf) }\n`
+  let error
+  let result
+  try { result = jz(src, { optimize: 3 }).exports.main() } catch (e) { error = e }
+  ok(!error, `100-level forwarding chain must not hit an internal convergence error: ${error?.message}`)
+  is(result, 3, 'chain still computes the right value')
+})
+
+test('convergence caps: 150-deep self-referential schema domino compiles (domain/slot-int census budget canary)', () => {
+  if (onKernel()) return
+  // Each schema is a fresh literal shape (`vN`) rebuilt from a read of the
+  // PREVIOUS schema's own slot — the exact "self-referential immutable-update
+  // idiom" analyzeSchemaSlotIntCertain's doc comment names as the reason its
+  // optimistic fixpoint exists.
+  let src = 'let s0 = { v0: 1 }\n'
+  for (let i = 1; i <= 150; i++) src += `let s${i} = { v${i}: s${i - 1}.v${i - 1} }\n`
+  src += 'export let main = () => s150.v150\n'
+  let error
+  let result
+  try { result = jz(src, { optimize: 3 }).exports.main() } catch (e) { error = e }
+  ok(!error, `150-deep schema domino must not hit an internal convergence error: ${error?.message}`)
+  is(result, 1, 'domino still resolves to the seed value')
+})

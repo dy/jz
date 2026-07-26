@@ -7,7 +7,7 @@
  * function `sig` records change.
  */
 
-import { ctx, warn, err, DBG_INVARIANTS } from '../ctx.js'
+import { ctx, warn, err } from '../ctx.js'
 import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, callArgs, ASSIGN_OPS, extractParams, classifyParam } from '../ast.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from '../ir.js'
 import {
@@ -1733,11 +1733,16 @@ export default function narrowSignatures(programFacts, ast) {
     let guard = callSites.length * 64   // belt far above any real edge count
     while (head < queue.length && guard-- > 0) {
       if (guard === 0) {
-        // Exhaustion is a compiler bug either way: invariants mode fails loudly;
-        // production compiles on with the truncated (still-sound, less precise)
-        // lattice but SAYS SO on the advisory channel instead of silently.
-        if (DBG_INVARIANTS) err(`param-lattice site worklist exhausted its ${callSites.length * 64}-visit guard without converging — a rule is non-monotone (invariants mode surfaces the silent truncation)`)
-        warn('convergence', `param-lattice worklist truncated at ${callSites.length * 64} visits — narrowing may be incomplete (report this: a rule is non-monotone)`, {})
+        // Exhaustion is ALWAYS a compiler bug (a supposedly-monotone rule turned
+        // out not to be) — never silently emit the truncated, less-precise
+        // lattice. Enough context to reproduce: the visit budget, how many
+        // sites were still queued, and which site was about to run next.
+        const budget = callSites.length * 64
+        const remaining = queue.length - head
+        const next = callSites[queue[head]]
+        const nextCaller = next?.callerFunc?.name ?? '?'
+        const nextCallee = typeof next?.callee === 'string' ? next.callee : '?'
+        err(`internal: narrowSignatures param-lattice worklist failed to converge — exhausted its ${budget}-visit guard (${callSites.length} call sites × 64) with ${remaining} site(s) still queued, next unresolved site ${nextCaller} → ${nextCallee} (this is a jz bug — a narrowing rule is non-monotone; please report with a minimal repro)`)
       }
       const s = queue[head++]
       queued[s] = false
@@ -1822,8 +1827,7 @@ export default function narrowSignatures(programFacts, ast) {
     if (runArrValTypeFixpoint()) dirty = true
     if (!dirty) break
     if (g === 0) {
-      if (DBG_INVARIANTS) err('arr/schema domain group hit its 16-round guard still dirty — a domain runner is non-monotone (invariants mode surfaces the silent truncation)')
-      warn('convergence', 'arr/schema domain fixpoint truncated at 16 rounds — narrowing may be incomplete (report this: a domain runner is non-monotone)', {})
+      err('internal: narrowSignatures arr/schema domain fixpoint failed to converge — still dirty after its 16-round guard (runArrFixpoint/runArrSetFixpoint/runSchemaIdSetFixpoint/runArrValTypeFixpoint) (this is a jz bug — a domain runner is non-monotone; please report with a minimal repro)')
     }
   }
   // Array<T> facts can make a direct `helper(rows[i])` argument precise only
@@ -1976,8 +1980,7 @@ export default function narrowSignatures(programFacts, ast) {
   // Quiet-loop (was "run twice"): caller→callee typed-ctor chains of any depth.
   for (let g = 16; g-- > 0 && runTypedFixpoint(); ) {
     if (g === 0) {
-      if (DBG_INVARIANTS) err('typed-ctor fixpoint hit its 16-round guard still dirty — non-monotone inference (invariants mode surfaces the silent truncation)')
-      warn('convergence', 'typed-ctor fixpoint truncated at 16 rounds — narrowing may be incomplete (report this: non-monotone inference)', {})
+      err('internal: narrowSignatures typed-ctor fixpoint failed to converge — still dirty after its 16-round guard (caller→callee typedCtor propagation) (this is a jz bug — non-monotone inference; please report with a minimal repro)')
     }
   }
 
