@@ -227,6 +227,27 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  SOLVER + LOOPPLAN SLICE 3 LANDED 2026-07-26 (combined tree, all
+  gates green: battery 3098/0, kernel leg 1958/2 user-WIP only,
+  parity 18/18, simd 158/158, dbg-invariants leg green, fresh dist):
+  (1) SOLVER: session-owned factStore (src/session.js createFactStore
+  -- programFacts{walkCache,moduleInitSlot,bodyIntCertain,hazard} +
+  bodyFacts + bindingUses slices, DEPS table documented, gen-counter
+  dependent-invalidation assert reasoning recorded); cache modules
+  (program-facts/analyze/analyze-scans) keep APIs but store through
+  getFactStore(); convergence exhaustion now THROWS internal compiler
+  errors in production (probe-first proved zero fires across battery
+  + kernel + bench compiles before flipping). invalidateLocalsCache
+  13 sites + analyzeBody staleability contract = declared next slice.
+  (2) LOOPPLAN slice 3: the most-duplicated recognizer fact class
+  hoisted into the dispatch descriptor (see agent inventory in
+  transcript), byte-identity-gated (zero WAT diffs on the bench
+  corpus), recognizers consume the plan. AUDIT P1 substantially
+  closed: solver ownership + convergence hard-fail DONE, LoopPlan
+  advanced (full candidate-proposal model = remaining vision),
+  CompileSession seam live. Remaining plan: P2 exclusions, quiet
+  reference refresh + claims gate, user unblocks (watr release,
+  CLT/tinygo), banked hunts.
   SORT FLAG-VETO LANDED 2026-07-26 (all gates green): dataDependentFlag
   predicate (ir.js ~610 -- select condition contains a nested value-if
   carrying a memory load = the &&/|| short-circuit lowering over loads)
