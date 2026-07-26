@@ -227,6 +227,27 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  CI STATUS 2026-07-26 (after 800185bb): selfhost workflow's 6
+  kernel-leg fails FIXED. Remaining CI red = ONE test: 'SIMD breadth
+  f32->i16 encode vectorizes' -- CI-LINUX-ONLY (passes locally on
+  all legs incl. opt0/opt3: simd 158/158, optimizer 212/212) and
+  LEG-VARYING (opt0 at 800185bb's run; wasi+opt3 at the front-half
+  run -- the accompanying select-veto matrix fail there self-resolved
+  at 800185bb). A WAT-shape assert varying by leg on one platform =
+  either platform-conditional test registration (CI totals 3092 vs
+  local 3099 -- 7 conditionally-registered tests differ) or a
+  remaining host-dependent codegen input (HOST_PROFILE is now EMPTY
+  -- wideBigint removed -- so enumerate what else differs: node
+  version on CI, V8 SIMD feature detection, relaxedSimd gating).
+  NEXT: reproduce CI-side -- add a temporary debug step to the test
+  workflow dumping the compiled WAT for the f32->i16 specimen (or a
+  matrix-env local repro: check test/simd.js for how that test gates
+  and what env the wasi/opt0 legs set; try JZ_TEST_HOST=wasi
+  locally), diff CI WAT vs local. Timing of first failure = the
+  front-half+veto push, so suspects are the veto's EXPENSIVE set
+  interaction with f32 conversion chains ON LINUX-BUILT... but
+  codegen must be host-independent -- if a host input is found, that
+  is the bug (determinism principle), not the test.
   P0-2 FINAL REPORT BANKED 2026-07-26 (agent, complete): collapse
   point was subscript's number lexer returning host BigInt (in-kernel
   = i64-bits carrier, indistinguishable from subnormal at node-build
