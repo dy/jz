@@ -8,6 +8,7 @@
  */
 
 import { makeAbi } from './abi/index.js'
+import { HOT_PASSES } from './passes.js'
 export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, ssoBitI64Hex, sliceBitI64Hex, ptrNanHex, ptrBoxPrefixBigInt, encodePtrHi, decodePtrType, decodePtrAux, ATOM_HI, oobNanLiteral, oobNanIR, followForwardingWat } from '../layout.js'
 
 // === Carrier layout ===
@@ -552,32 +553,27 @@ export function reset(proto, globals, bridge) {
 // `cfg?.flag` read was a HASH probe; the same read is slot-cheap on V8, and
 // that asymmetry alone moved the warm self-host ratio. Lives here (not
 // optimize/index.js) so ir.js/module consumers stay cycle-free.
-/** True when the ENGINE RUNNING THE COMPILER has arbitrary-precision BigInt
- *  (native JS). False under self-host: the kernel's BigInt is a wrapping i64
- *  carrier, and small-bigint values are byte-identical to subnormal f64s —
- *  consumers (pre-eval rational carry, emitNeg) pick carrier-safe paths on it.
- *  Two probes because either alone can be defeated: wasm i64.shl masks the
- *  shift count (1n<<64n wraps to 1n<<0n = 1n), and a compile-time pre-fold
- *  could bake the shift probe's native answer into the kernel — the string
- *  parse of 2^64 (wraps to 0 on i64 accumulation) re-checks at run time. */
-export const WIDE_BIGINT = (1n << 64n) !== 1n && BigInt('18446744073709551616') !== 0n
+// WIDE_BIGINT / HOST_PROFILE.wideBigint (audit P0-2, removed): used to gate pre-eval's
+// rational carry and emitNeg's literal-negation path on whether the ENGINE RUNNING THE
+// COMPILER had arbitrary-precision BigInt — false under self-host, where the kernel's
+// BigInt is a wrapping i64 carrier. Both consumers are now host-independent (bignum.js
+// u32-limb arithmetic for the rational carry; a structurally-tagged bigint-literal AST
+// node, not a magnitude probe, for emitNeg — see parse.js), so the capability gate has
+// no reader left; removed rather than kept as an unread flag.
 
 /** CompilerHostProfile (stage-4 seed): capabilities of the ENGINE RUNNING THE
  *  COMPILER, probed once at load. Consumers branch on named capabilities, not
  *  scattered environment probes — new host-capability gates land HERE. (The
  *  OUTPUT target's profile — host:'wasi'|'js' legalization — is a separate,
- *  future TargetProfile; do not conflate the two.) */
-export const HOST_PROFILE = Object.freeze({
-  wideBigint: WIDE_BIGINT,   // arbitrary-precision BigInt (false: wrapping-i64 self-host carrier)
-})
+ *  future TargetProfile; do not conflate the two.) Currently empty — no named
+ *  capability gate needs a host probe right now; keep the seed for the next one.
+ */
+export const HOST_PROFILE = Object.freeze({})
 
-// Hot per-node pass flags: ONE list generates both the bitmask constants and
-// the cfg→mask mapping, so a flag cannot exist in one and be missed in the
-// other. Order = bit position — append-only. Every name must also be a
-// registered pass; src/optimize/index.js asserts that at module load (that
-// direction is cycle-free — this file cannot import the registry).
-const HOT_PASSES = ['inlineToNum', 'hashRmwFusion', 'inplaceStore', 'staticClosureEnv',
-  'devirtClosureTables', 'devirtDynProps', 'leanCheckedIdx']
+// Hot per-node pass flags come from THE registry (src/passes.js — zero imports,
+// so this direction is cycle-free too): one list generates both the bitmask
+// constants and the cfg→mask mapping, and the registry-membership assert in
+// optimize/index.js covers the same source of truth.
 export const OPTF = Object.freeze(Object.fromEntries(HOT_PASSES.map((n, i) => [n, 1 << i])))
 export const optFlagsOf = (cfg) => {
   if (!cfg) return 0

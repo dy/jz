@@ -3,7 +3,7 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onKernel, onWasi, adaptI64 } from './_matrix.js'
+import { onWasi, adaptI64 } from './_matrix.js'
 
 function run(code, opts) {
   const { module, instance } = jz(code, opts)
@@ -23,15 +23,57 @@ test('bigint: a returned bigint crosses to JS as a real, lossless BigInt', () =>
   is(run('export let f = () => 10n - 3n').f(), 7n)
   is(run('export let f = () => 0n - 5n').f(), -5n)             // signed
   is(run('export let f = () => { return 7n * 6n }').f(), 42n)
-  // |value| ≥ 2^52 only on native: jz's inline bigint carrier is a subnormal-f64 NaN-box
-  // (emit's `typeof === 'bigint'` heuristic keys on subnormal magnitude), so only bigints
-  // whose i64 keeps the f64 exponent field zero (|v| < 2^52) stay distinguishable from
-  // numbers in the dynamic path. Native compiles via host JS BigInt (arbitrary precision,
-  // exact typeof) so the static VAL.BIGINT survives; the self-host kernel parses the literal
-  // into its own i64 bigint, whose large carrier reads as a normal float and loses the tag.
-  // Full 64-bit bigints need heap-bigints (no PTR.BIGINT yet) or a structurally-tagged
-  // literal node through the parser — a feature, not a codegen fix. See statements.js.
-  if (!onKernel()) is(run('export let f = () => 9007199254740993n').f(), 9007199254740993n)  // lossless past 2^53
+  // |value| ≥ 2^52 (past the f64-mantissa-as-subnormal carrier's "distinguishable from a
+  // number by magnitude alone" range) is now lossless on EVERY leg, native and kernel alike
+  // (audit P0-2: bigint LITERALS are tagged `['bigint', decimalStr]` at parse time — see
+  // parse.js — so the kernel's own literal-kind classification never depends on the
+  // magnitude heuristic in the first place; only a genuinely RUNTIME-COMPUTED bigint whose
+  // static kind isn't provable still rides the ambiguous carrier, a documented, unrelated
+  // limit — see statements.js 'typeof recognizes BigInt values' family).
+  is(run('export let f = () => 9007199254740993n').f(), 9007199254740993n)  // lossless past 2^53
+})
+
+// --- audit P0-2 pins: literal-kind tagging, native-vs-kernel differential ---
+// Every case below must agree byte-for-byte across BOTH legs (this file runs
+// under `node test/data.js` AND `JZ_TEST_TARGET=jz.wasm node test/data.js` —
+// no onKernel() branch needed once the literal's KIND rides the AST instead
+// of the subnormal-magnitude carrier bits). MIN_NORMAL is the audit's own
+// authoritative boundary (Number.MIN_VALUE * 2^52, i.e. 2^-1022 — the
+// smallest normal f64 / DBL_MIN, ECMA-262 Number.MIN_VALUE is the SUBNORMAL
+// floor 2^-1074 instead, hence the separate name here).
+const MIN_NORMAL = 2.2250738585072014e-308
+
+test('P0-2: subnormal NUMBER literals keep typeof "number" and their exact value on export (audit repro)', () => {
+  // The audit's own repro: kernel-compiled `() => 5e-324` used to export `1n` (the literal's
+  // OWN AST node misread as bigint via the magnitude heuristic, corrupting its export-boundary
+  // kind — see kind.js valTypeOf, emit.js emitNeg). 1e-320 used to export `2024n`.
+  const cases = [5e-324, -5e-324, 1e-320, MIN_NORMAL, MIN_NORMAL - Number.MIN_VALUE, MIN_NORMAL + Number.MIN_VALUE]
+  for (const v of cases) {
+    const f = run(`export let f = () => ${v}`).f
+    const r = f()
+    is(typeof r, 'number', `${v}: typeof`)
+    is(r, v, `${v}: exact value`)
+  }
+})
+
+test('P0-2: bigint literals near the 2^52 mantissa boundary stay bigint, exact', () => {
+  // 2^52-1 / 2^52+1 straddle the point where the i64 carrier's f64 exponent field would turn
+  // nonzero if it were EVER read as a plain float — both are still comfortably inside the
+  // dynamic-typeof heuristic's subnormal range, but the audit pins the LITERAL path
+  // specifically: the tag makes this exact regardless of magnitude, not just below 2^52.
+  is(run('export let f = () => 4503599627370495n').f(), 4503599627370495n)   // 2^52 - 1
+  is(run('export let f = () => 4503599627370497n').f(), 4503599627370497n)   // 2^52 + 1
+})
+
+test('P0-2: bigint literals at the 64-bit signed/unsigned boundaries', () => {
+  is(run('export let f = () => 9223372036854775807n').f(), 9223372036854775807n)     // 2^63 - 1 (i64 max)
+  is(run('export let f = () => -9223372036854775808n').f(), -9223372036854775808n)   // -2^63 (i64 min)
+  // 2^64 - 1: every bit set. The export boundary reinterprets the raw i64 SIGNED (matches
+  // wasm's native i64 signedness, same reinterpretation BigInt.asUintN(64,·) undoes on the
+  // way in) — "representable" here means round-trips to the SAME value on every leg, not
+  // that it equals the unsigned literal magnitude; that reinterpretation is the carrier's own
+  // documented signedness, not something this audit item changes.
+  is(run('export let f = () => 18446744073709551615n').f(), -1n)
 })
 
 test('bigint: internal calls keep the i64 carrier (only the JS boundary surfaces it)', () => {

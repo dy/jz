@@ -28,7 +28,8 @@ const NAN_BITS = nanPrefixHex()
 
 export default (ctx) => {
   deps({
-    __eq: ['__str_eq', '__ptr_type'],
+    __eq: ['__str_eq', '__ptr_type', '__is_nullish'],
+    __eq_strict: ['__eq', '__is_nullish'],
     __typeof: ['__ptr_type', '__is_nullish'],
     __len: ['__typed_shift', '__ptr_offset', '__ptr_offset_fwd'],
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
@@ -79,7 +80,17 @@ export default (ctx) => {
     (if (result i32) (i64.eq (local.get $a) (local.get $b))
       (then (i64.ne (local.get $a) (i64.const ${NAN_BITS})))
       (else
-        ;; Bits differ. Numeric path covers -0/+0 and any normal numeric inequality.
+        ;; Bits differ. JS loose ==: null == undefined is TRUE even though they're
+        ;; bit-DISTINCT NaN-box sentinels (NULL_NAN ≠ UNDEF_NAN) — the fast bit-equality
+        ;; check above can't catch it, and neither can the numeric/string paths below
+        ;; (both operands read back as NaN, neither is a STRING pointer, so without this
+        ;; check they fall through to the final "unequal" default). Checked before the
+        ;; numeric path so a nullish/nullish pair never even computes fa/fb.
+        (if (result i32)
+          (i32.and (call $__is_nullish (local.get $a)) (call $__is_nullish (local.get $b)))
+          (then (i32.const 1))
+          (else
+        ;; Numeric path covers -0/+0 and any normal numeric inequality.
         (local.set $fa (f64.reinterpret_i64 (local.get $a)))
         (local.set $fb (f64.reinterpret_i64 (local.get $b)))
         (if (result i32)
@@ -108,7 +119,23 @@ export default (ctx) => {
                     (i32.eq (i32.and (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const ${LAYOUT.AUX_SHIFT}))) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT})))
                   (then (i32.const 0))
                   (else (call $__str_eq (local.get $a) (local.get $b)))))
-              (else (i32.const 0))))))))`
+              (else (i32.const 0))))))))))`
+
+  // Strict `===` fallback for the fully-dynamic (neither-side-a-literal) case
+  // emitStrictEq delegates to — everywhere ELSE strict and loose equality agree
+  // bit-for-bit (that's why the delegation exists at all), EXCEPT the one loose-
+  // only exception __eq implements: null == undefined. A thin wrapper, not a
+  // duplicate of __eq's body: defer to __eq for every case, but intercept
+  // "bits differ, both nullish" (the exact condition __eq's own exception
+  // fires on) and force it back to unequal.
+  ctx.core.stdlib['__eq_strict'] = `(func $__eq_strict (param $a i64) (param $b i64) (result i32)
+    (if (result i32) (i64.eq (local.get $a) (local.get $b))
+      (then (call $__eq (local.get $a) (local.get $b)))
+      (else
+        (if (result i32)
+          (i32.and (call $__is_nullish (local.get $a)) (call $__is_nullish (local.get $b)))
+          (then (i32.const 0))
+          (else (call $__eq (local.get $a) (local.get $b)))))))`
 
   ctx.core.stdlib['__is_null'] = `(func $__is_null (param $v i64) (result i32)
     (i64.eq (local.get $v) (i64.const ${NULL_NAN})))`

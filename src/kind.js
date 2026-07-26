@@ -102,12 +102,18 @@ function literalBool(expr) {
  */
 const VT = Object.create(null)
 
-// Self-describing boolean literal from the host→kernel AST boundary (normalizeBigints).
+// Self-describing boolean literal (`['bool', 1|0]`, tagged at parse time —
+// see parse.js's `true`/`false` token overrides) — the self-host kernel's
+// `true`/`false` degrade to the plain number 1/0 otherwise, losing VAL.BOOL.
 VT.bool = () => VAL.BOOL
 // Boolean-result operators: relational/equality compares and logical-not always
 // yield a boolean. (`&&`/`||` are value-preserving, not boolean — excluded.)
 for (const op of BOOL_OPS) VT[op] = VT.bool
-// Self-describing bigint literal (`normalizeBigints`) — same VAL as a raw `255n`.
+// Self-describing bigint literal (`['bigint', decimalStr]`, tagged at parse
+// time — see parse.js's digit-lookup override, audit P0-2) — same VAL as a
+// raw `255n`, but immune to the self-host carrier's subnormal-magnitude
+// collapse (a bigint literal's OWN AST node op is now unambiguous, never a
+// bit pattern to misread).
 VT.bigint = () => VAL.BIGINT
 VT['['] = () => VAL.ARRAY
 VT.str = VT.strcat = () => VAL.STRING
@@ -436,12 +442,19 @@ export function valTypeOf(expr) {
 
   const [op, ...args] = expr
   if (op == null) {
-    // Literal forms: [] = undefined, [null, null] = null, [null, n] = number/bigint, [, bool] = boolean
+    // Literal forms: [] = undefined, [null, null] = null, [null, n] = number, [, bool] = boolean.
+    // Bigint literals are NEVER this shape — the parser tags them structurally
+    // as ['bigint', decimalStr] (see parse.js, VT.bigint below; audit P0-2),
+    // so a `typeof` probe here would be both unnecessary AND unsound: under
+    // self-host, `typeof` on an untagged subnormal-magnitude NUMBER literal
+    // reads 'bigint' too (the carrier is bit-identical — the very collapse
+    // this tag exists to avoid), which used to misclassify e.g. `5e-324`'s
+    // OWN literal node as VAL.BIGINT and corrupt its export boundary.
     if (args.length === 0) return null              // undefined literal
     if (args[0] == null) return null                // null literal
     if (typeof args[0] === 'boolean') return VAL.BOOL
     if (typeof args[0] === 'symbol') return null    // prepared null sentinel
-    return typeof args[0] === 'bigint' ? VAL.BIGINT : VAL.NUMBER
+    return VAL.NUMBER
   }
   return VT[op]?.(args) ?? null
 }

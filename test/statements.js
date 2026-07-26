@@ -209,16 +209,13 @@ test('bigint: typeof guard works through internal function parameter', () => {
 })
 
 test('bigint: compares full unsigned 64-bit bounds', () => {
-  // The 0x…n operands are ≥ 2^52, so under self-host they collapse before the compare:
-  // jz's inline bigint carrier is a subnormal-f64 NaN-box and only stays a bigint while its
-  // i64 keeps the f64 exponent field zero (|v| < 2^52). Native compiles via host JS BigInt
-  // (arbitrary precision) so the literal keeps its value and signedness; the kernel parses it
-  // into its own i64 bigint whose large carrier reads as a normal float — full 64-bit bigints
-  // need heap-bigints (no PTR.BIGINT) or a tagged literal node, a feature not a codegen fix.
-  if (!onKernel()) {
-    is(jz('export let f = () => 0x7fffffffffffffffn > 0xffffffffffffffffn').exports.f(), false)
-    is(jz('export let f = () => 0xffffffffffffffffn > 0x7fffffffffffffffn').exports.f(), true)
-  }
+  // The 0x…n operands are >= 2^52 — audit P0-2 fixed this row: bigint LITERALS are the
+  // tagged `['bigint', decimalStr]` node (parse.js), so bigintUnsignedBound (emit.js) reads
+  // the magnitude straight off the decimal STRING, unconditionally, on every leg. No more
+  // native-vs-kernel split (was gated on !onKernel() — the kernel's inline carrier used to
+  // collapse a literal this large into a plain float before the compare even ran).
+  is(jz('export let f = () => 0x7fffffffffffffffn > 0xffffffffffffffffn').exports.f(), false)
+  is(jz('export let f = () => 0xffffffffffffffffn > 0x7fffffffffffffffn').exports.f(), true)
   is(jz('export let f = () => -1n < 0n').exports.f(), true)   // un-curated 2026-07-25: string-compare misproof wave (see .work/todo.md)
 })
 

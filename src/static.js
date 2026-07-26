@@ -121,8 +121,10 @@ export function staticValue(node) {
   const [op, ...args] = node
   if (op == null) return args.length ? args[0] : undefined
   if (op === 'str') return args[0]
-  // Self-host kernel boundary marks a literal bool as `['bool', 1|0]` (interop
-  // normalizeBigints), where native keeps `[, true]` (caught by op==null above).
+  // parse.js tags a literal bool as `['bool', 1|0]` (self-host kernel boundary
+  // marker — the same convention as bigint literals' `['bigint', decimalStr]`,
+  // see kind.js), where native subscript's own literal shape `[, true]` would
+  // also work (caught by op==null above) but degrades once self-hosted.
   // Recover the boolean from its 0/1 carrier so const-folded keys/conditions
   // resolve on the kernel leg (e.g. `{ [true ? 3 : 4]: 5 }`).
   if (op === 'bool') { const c = staticValue(args[0]); return c === NO_VALUE ? NO_VALUE : !!c }

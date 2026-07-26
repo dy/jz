@@ -85,64 +85,109 @@
  */
 
 import { extractParams, classifyParam } from '../ast.js'
-import { ctx, HOST_PROFILE } from '../ctx.js'
+import { ctx } from '../ctx.js'
 import { MATH_KERNEL, powFold } from './math-kernel.js'
+import * as bn from '../bignum.js'
 
 // ---------------------------------------------------------------------------
-// Rational — exact value = n/d, n: signed BigInt, d: positive BigInt. Every
-// finite f64 IS an exact rational (double = mantissa * 2^exponent), so a
-// literal seeds an EXACT starting point; +,-,*,/ stay exact through a whole
-// formula; the f64 result is materialized via correctly-rounded decimal
-// string -> Number() ONCE, at the point the chain stops (crosses into a
-// non-arithmetic consumer, or reaches the top of a foldable subtree).
+// Rational — exact value = ±n/d, n/d: u32-limb magnitudes (bignum.js), sign
+// carried alongside as `negative` (never folded into the limbs — every limb
+// op is unsigned-magnitude-only). Every finite f64 IS an exact rational
+// (double = mantissa * 2^exponent), so a literal seeds an EXACT starting
+// point; +,-,*,/ stay exact through a whole formula; the f64 result is
+// materialized via correctly-rounded decimal string -> Number() ONCE, at the
+// point the chain stops (crosses into a non-arithmetic consumer, or reaches
+// the top of a foldable subtree).
+//
+// Host-independent by construction (audit P0-2 fold-fork): earlier revisions
+// carried n/d as native BigInt, gated on HOST_PROFILE.wideBigint — jz's own
+// self-host BigInt carrier is a WRAPPING i64 (see ctx.js), so any n/d past
+// 64 bits (routine here: a tiny subnormal's f64ToRational alone needs a
+// ~1075-bit denominator) silently corrupted in-kernel, forcing native and
+// kernel onto genuinely different fold algorithms — a compiler-output-
+// depends-on-compiler-host determinism violation (test/kernel-parity.js
+// fold|0/2/3, PARITY_TODO). bignum.js's limb arrays have no width ceiling
+// (growing the array IS the carry) and every element is a plain safe-integer
+// f64 — jz's own unambiguous number representation — so this module now
+// folds bit-identically whether it runs natively or self-hosted in-kernel.
 // ---------------------------------------------------------------------------
-const _buf = new ArrayBuffer(8)
-const _dv = new DataView(_buf)
-function f64Bits(x) { _dv.setFloat64(0, x, false); return _dv.getBigUint64(0, false) }
+const _f64buf = new ArrayBuffer(8)
+const _f64f = new Float64Array(_f64buf)
+const _f64u = new Uint32Array(_f64buf)   // native-endian halves: [0]=lo32, [1]=hi32 (matches ir.js's _F64_BITS_U32 convention)
+const ONE = bn.fromSmall(1)
 
-function ratGcd(a, b) { a = a < 0n ? -a : a; b = b < 0n ? -b : b; while (b) { [a, b] = [b, a % b] } return a || 1n }
-function ratMake(n, d) {
-  if (d < 0n) { n = -n; d = -d }
+/** Signed magnitude add: (sA,mA) + (sB,mB) -> [sign, magnitude]. The one place
+ *  sign combines across an add/sub of two (already-signed) rational terms —
+ *  the limb layer itself never carries sign. */
+function signedAdd(sA, mA, sB, mB) {
+  if (sA === sB) return [sA, bn.add(mA, mB)]
+  const c = bn.cmp(mA, mB)
+  if (c === 0) return [false, bn.ZERO]
+  return c > 0 ? [sA, bn.sub(mA, mB)] : [sB, bn.sub(mB, mA)]
+}
+
+function ratGcd(a, b) {
+  while (!bn.isZero(b)) { const [, r] = bn.divMod(a, b); const t = b; b = r; a = t }
+  return bn.isZero(a) ? ONE : a
+}
+/** n, d: magnitude limbs (d nonzero); negative: sign of the whole rational. */
+function ratMake(negative, n, d) {
+  if (bn.isZero(n)) return { negative: false, n: bn.ZERO, d: ONE }   // canonical zero, no signed-zero rational
   const g = ratGcd(n, d)
-  return { n: n / g, d: d / g }
+  const [nq] = bn.divMod(n, g)
+  const [dq] = bn.divMod(d, g)
+  return { negative, n: nq, d: dq }
 }
 /** Exact rational for a finite f64 (null for NaN/±Infinity — those bail the rational chain). */
 function f64ToRational(x) {
   if (!Number.isFinite(x)) return null
-  if (x === 0) return { n: 0n, d: 1n }
-  const bits = f64Bits(x)
-  const sign = (bits >> 63n) & 1n
-  let exp = Number((bits >> 52n) & 0x7ffn)
-  let mant = bits & 0xfffffffffffffn
+  if (x === 0) return { negative: false, n: bn.ZERO, d: ONE }
+  _f64f[0] = x
+  const lo = _f64u[0] >>> 0, hi = _f64u[1] >>> 0
+  const negative = (hi >>> 31) !== 0
+  let exp = (hi >>> 20) & 0x7ff
+  let mantHi = hi & 0xfffff
+  const mantLo = lo
   if (exp === 0) exp = 1
-  else mant |= 0x10000000000000n
+  else mantHi |= 0x100000
+  // mantHi (<= 0x1fffff, 21 bits) and mantLo (<= 0xffffffff, 32 bits) are each too
+  // wide for a single 15-bit limb (bignum.js's base — see its module doc for why
+  // 15, not 32) — build the combined 53-bit mantissa value (mantHi*2^32 + mantLo)
+  // through the limb API instead of hand-packing a [lo,hi] pair.
+  const mantissa = bn.add(bn.shiftLeft(bn.fromSmall(mantHi), 32), bn.fromSmall(mantLo))
   const e = exp - 1075
-  let n = mant, d = 1n
-  if (e >= 0) n <<= BigInt(e)
-  else d <<= BigInt(-e)
-  if (sign) n = -n
-  return ratMake(n, d)
+  const n = e >= 0 ? bn.shiftLeft(mantissa, e) : mantissa
+  const d = e >= 0 ? ONE : bn.shiftLeft(ONE, -e)
+  return ratMake(negative, n, d)
 }
-const ratAdd = (a, b) => ratMake(a.n * b.d + b.n * a.d, a.d * b.d)
-const ratSub = (a, b) => ratMake(a.n * b.d - b.n * a.d, a.d * b.d)
-const ratMul = (a, b) => ratMake(a.n * b.n, a.d * b.d)
-const ratDiv = (a, b) => b.n === 0n ? null : ratMake(a.n * b.d, a.d * b.n)
+function ratAdd(a, b) {
+  const [sign, mag] = signedAdd(a.negative, bn.mul(a.n, b.d), b.negative, bn.mul(b.n, a.d))
+  return ratMake(sign, mag, bn.mul(a.d, b.d))
+}
+function ratSub(a, b) {
+  const [sign, mag] = signedAdd(a.negative, bn.mul(a.n, b.d), !b.negative, bn.mul(b.n, a.d))
+  return ratMake(sign, mag, bn.mul(a.d, b.d))
+}
+const ratMul = (a, b) => ratMake(a.negative !== b.negative, bn.mul(a.n, b.n), bn.mul(a.d, b.d))
+const ratDiv = (a, b) => bn.isZero(b.n) ? null : ratMake(a.negative !== b.negative, bn.mul(a.n, b.d), bn.mul(a.d, b.n))
 /** Correctly-rounded rational -> f64: exact decimal expansion (generous digit budget,
  *  far beyond the 17 significant digits that suffice to round-trip any double) fed
  *  through the host's spec-mandated (round-to-nearest) string-to-Number parser. */
 function ratToF64(r) {
-  if (r.n === 0n) return 0
-  let n = r.n, neg = n < 0n
-  if (neg) n = -n
-  const d = r.d
-  const intPart = n / d
-  let rem = n % d
-  let s = intPart.toString()
-  if (rem !== 0n) {
+  if (bn.isZero(r.n)) return 0
+  const [intPart, rem0] = bn.divMod(r.n, r.d)
+  let s = bn.toDecimalString(intPart)
+  let rem = rem0
+  if (!bn.isZero(rem)) {
     s += '.'
-    for (let i = 0; i < 60 && rem !== 0n; i++) { rem *= 10n; const dig = rem / d; s += dig.toString(); rem %= d }
+    for (let i = 0; i < 60 && !bn.isZero(rem); i++) {
+      rem = bn.mulSmall(rem, 10)
+      const [dig, rem2] = bn.divMod(rem, r.d)   // dig < 10 by construction (rem < d before the *10)
+      s += bn.toDecimalString(dig)
+      rem = rem2
+    }
   }
-  return Number(neg ? '-' + s : s)
+  return Number(r.negative ? '-' + s : s)
 }
 
 // ---------------------------------------------------------------------------
@@ -154,28 +199,23 @@ const boolResult = (v) => ({ t: 'bool', v: !!v })
 const NULL_RESULT = { t: 'null' }
 const UNDEF_RESULT = { t: 'undef' }
 
-// Nonzero-subnormal number literals are refused STRUCTURALLY: every bigint
-// carrier with |i64| < 2^52 reads as a subnormal f64, and under self-host
-// `typeof` reports it as 'number' at these sites (the slot flows as a plain
-// f64, not a boxed value), so folding would evaluate `5n` as 2.5e-323. A
-// genuine subnormal literal just stays unfolded — same trade as prepare's
-// unary ± guards.
-const numLitResult = (v) => v !== 0 && Math.abs(v) < 2.2250738585072014e-308 ? null : numResult(v)
-
 const isAsciiSafe = (s) => /^[\x00-\x7F]*$/.test(s)
 
 function isLiteralNode(node) {
   if (!Array.isArray(node)) return false
   const op = node[0]
-  return op == null || op === 'str' || op === 'bool'
+  return op == null || op === 'str' || op === 'bool' || op === 'bigint'
 }
-/** Read an already-literal AST node into an EvalResult (no evaluation, just recognition). */
+/** Read an already-literal AST node into an EvalResult (no evaluation, just recognition).
+ *  A `[null, n]` node's payload is UNCONDITIONALLY a genuine number — bigint literals are
+ *  the distinct `['bigint', decimalStr]` node (parse.js, audit P0-2), never this shape, so
+ *  every literal number (subnormal included) folds with no magnitude heuristic here. */
 function literalOf(node) {
   if (!Array.isArray(node)) return null
   const op = node[0]
   if (op == null) {
     const v = node[1]
-    if (typeof v === 'number') return numLitResult(v)
+    if (typeof v === 'number') return numResult(v)
     if (v === null) return NULL_RESULT
     if (v === undefined) return UNDEF_RESULT
     if (typeof v === 'boolean') return boolResult(v)
@@ -212,6 +252,36 @@ function toBoolean(r) {
   return false   // null/undefined
 }
 
+/** ES Abstract/Strict Equality, dispatched off EvalResult's OWN `.t` tag — not host
+ *  `==`/`===` (the two call sites this replaced): those operators, evaluated HERE,
+ *  compile through jz's own runtime equality helpers once this file is itself self-
+ *  hosted, and the fully-dynamic fallback they hit for two untyped locals ($__eq /
+ *  $__eq_strict, module/core.js) implements only what user-program `==` needed
+ *  historically — not the full ES algorithm. Every EvalResult already carries an
+ *  explicit, compile-time-known type tag, so recursing on tags is both a correctness
+ *  fix (an explicit, spec-shaped algorithm instead of relying on a host operator) and
+ *  a self-host fix (never asks `==` to classify two runtime-dynamic operands itself).
+ *  Number()/plain `===` on same-tagged operands below stay reliable self-hosted —
+ *  same-type equality (NUMBER f64.eq/ REF_EQ/STRING content-eq) is the well-tested
+ *  path emitLooseEq/emitStrictEq already special-case; only the CROSS-tag coercion
+ *  and nullish-equivalence rules needed spelling out explicitly. */
+function looseEqResult(a, b) {
+  const aNil = a.t === 'null' || a.t === 'undef'
+  const bNil = b.t === 'null' || b.t === 'undef'
+  if (aNil || bNil) return aNil && bNil
+  if (a.t === 'bool') return looseEqResult(numResult(a.v ? 1 : 0), b)
+  if (b.t === 'bool') return looseEqResult(a, numResult(b.v ? 1 : 0))
+  if (a.t === b.t) return a.v === b.v
+  if (a.t === 'num' && b.t === 'str') return a.v === Number(b.v)
+  if (a.t === 'str' && b.t === 'num') return Number(a.v) === b.v
+  return false
+}
+function strictEqResult(a, b) {
+  if (a.t !== b.t) return false
+  if (a.t === 'null' || a.t === 'undef') return true
+  return a.v === b.v
+}
+
 function plainNumOp(op, a, b) {
   switch (op) {
     case '-': return a - b
@@ -244,18 +314,18 @@ function foldNumBinary(op, L, R, rationalOn) {
   if (!rationalOn || !RATIONAL_OPS.has(op) || !L.r || !R.r) return numResult(plain)
   const rr = op === '-' ? ratSub(L.r, R.r) : op === '*' ? ratMul(L.r, R.r) : ratDiv(L.r, R.r)
   if (!rr) return numResult(plain)
-  if (rr.n === 0n) return numResult(plain)
+  if (bn.isZero(rr.n)) return numResult(plain)
   return { t: 'num', v: ratToF64(rr), r: rr }
 }
 function foldNumAdd(L, R, rationalOn) {
   if (!rationalOn || !L.r || !R.r) return numResult(L.v + R.v)
   const rr = ratAdd(L.r, R.r)
-  if (rr.n === 0n) return numResult(L.v + R.v)
+  if (bn.isZero(rr.n)) return numResult(L.v + R.v)
   return { t: 'num', v: ratToF64(rr), r: rr }
 }
 function foldNumUnaryNeg(a) {
-  if (a.v === 0) return numResult(-a.v)   // exact sign flip incl. ±0; BigInt has no signed zero
-  return a.r ? { t: 'num', v: -a.v, r: { n: -a.r.n, d: a.r.d } } : numResult(-a.v)
+  if (a.v === 0) return numResult(-a.v)   // exact sign flip incl. ±0; limb magnitudes have no signed zero
+  return a.r ? { t: 'num', v: -a.v, r: { negative: !a.r.negative, n: a.r.n, d: a.r.d } } : numResult(-a.v)
 }
 
 function foldUnary(op, a) {
@@ -285,16 +355,15 @@ function foldBinary(op, a, b, rationalOn) {
   }
   if (CMP_OPS.has(op)) {
     if ((a.t === 'str' && !isAsciiSafe(a.v)) || (b.t === 'str' && !isAsciiSafe(b.v))) return null
-    const x = toJSValue(a), y = toJSValue(b)
     switch (op) {
-      case '<': return boolResult(x < y)
-      case '>': return boolResult(x > y)
-      case '<=': return boolResult(x <= y)
-      case '>=': return boolResult(x >= y)
-      case '==': return boolResult(x == y)
-      case '!=': return boolResult(x != y)
-      case '===': return boolResult(x === y)
-      case '!==': return boolResult(x !== y)
+      case '<': return boolResult(toJSValue(a) < toJSValue(b))
+      case '>': return boolResult(toJSValue(a) > toJSValue(b))
+      case '<=': return boolResult(toJSValue(a) <= toJSValue(b))
+      case '>=': return boolResult(toJSValue(a) >= toJSValue(b))
+      case '==': return boolResult(looseEqResult(a, b))
+      case '!=': return boolResult(!looseEqResult(a, b))
+      case '===': return boolResult(strictEqResult(a, b))
+      case '!==': return boolResult(!strictEqResult(a, b))
     }
   }
   return null
@@ -351,7 +420,19 @@ function evalStringMethod(name, s, args) {
   if (name === 'toLowerCase' && args.length === 0) return strResult(s.toLowerCase())
   if (name === 'trim' && args.length === 0) return strResult(s.trim())
   if (name === 'slice' && args.length <= 2 && args.every(isNumOrAbsent)) {
-    const r = s.slice(args[0]?.v, args[1]?.v)
+    // Explicit arity dispatch, not `s.slice(args[0]?.v, args[1]?.v)`: an omitted
+    // arg and an EXPLICITLY-passed `undefined` are the same value in host JS (so
+    // the two-arg form with optional-chained `undefined`s was spec-correct
+    // natively), but self-hosted this code compiles the CALL SITE itself — a
+    // 2-arg `.slice(x, undefined)` call is a different compiled shape than the
+    // 1-arg `.slice(x)` it's meant to mean, and jz's own `.slice` (module/
+    // string.js) didn't treat an explicit-undefined `end` as "default to
+    // length" the same way arity-omission does. Same class as the earlier
+    // computed-Math-member self-host-subset fixes — match the call shape the
+    // caller actually intends, never synthesize an explicit undefined arg.
+    const r = args.length === 0 ? s.slice()
+      : args.length === 1 ? s.slice(args[0].v)
+      : s.slice(args[0].v, args[1].v)
     return isAsciiSafe(r) ? strResult(r) : null
   }
   if (name === 'charAt' && args.length <= 1 && isNumOrAbsent(args[0])) return strResult(s.charAt(args[0]?.v ?? 0))
@@ -382,7 +463,7 @@ function evalConst(node, env, state) {
 
   if (op == null) {
     const v = node[1]
-    if (typeof v === 'number') return numLitResult(v)
+    if (typeof v === 'number') return numResult(v)   // bigint literals are the distinct 'bigint' op — never this shape
     if (v === null) return NULL_RESULT
     if (v === undefined) return UNDEF_RESULT
     if (typeof v === 'boolean') return boolResult(v)
@@ -524,7 +605,10 @@ function foldNode(node, env, state) {
   }
   if (!Array.isArray(node)) return node
   const op = node[0]
-  if (op == null || op === 'str' || op === 'bool') return node
+  // 'bigint': the tagged literal (parse.js, audit P0-2) — opaque here like str/bool;
+  // its payload is a decimal STRING, not a name to look up (the generic child-recursion
+  // fallback below would otherwise call foldNode on args[0] as if it were an identifier).
+  if (op == null || op === 'str' || op === 'bool' || op === 'bigint') return node
 
   const full = evalConst(node, env, state)
   if (full) return nodeOf(full)
@@ -727,10 +811,11 @@ function foldFunctionBody(body, state) {
  *  the same funcInfo objects compile() reads). Single top-to-bottom pass; see module doc for
  *  why that's already a full fixpoint. */
 export function preEval(ast) {
-  // Rational carry needs arbitrary-precision BigInt (n/d grow past 64 bits in
-  // one fold) — on the narrow self-host carrier it would fold silently-wrong
-  // values, so fall back to sequential bit-exact-vs-JS folding there.
-  const rationalOn = HOST_PROFILE.wideBigint && ctx.transform.optimize?.rationalConst !== false
+  // Rational carry runs on bignum.js's host-independent u32-limb arithmetic
+  // (audit P0-2 fold-fork) — no width ceiling, no native-BigInt dependency,
+  // so it's unconditionally available: native and the self-host kernel now
+  // fold identically (test/kernel-parity.js fold|0/2/3 graduated).
+  const rationalOn = ctx.transform.optimize?.rationalConst !== false
   const funcByName = new Map(ctx.func.list.map(f => [f.name, f]))
   const state = { rationalOn, funcByName, evaluating: new Set() }
   for (const f of ctx.func.list) f.body = foldFunctionBody(f.body, state)

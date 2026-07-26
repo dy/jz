@@ -227,6 +227,23 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  P0-2 + REGISTRY LANDED 2026-07-26 (all gates green): tagged bigint
+  literals -- kind rides the AST (parse/prepare tagged node, consumers
+  key on the tag), kernel 5e-324 -> 5e-324 number (was 1n), pins for
+  subnormals/2^52/64-bit boundaries in data/preeval/statements tests;
+  host-independent rational fold -- src/bignum.js u32-limb arithmetic
+  replaces native-BigInt rational carry, fold|0/2/3 parity rows
+  GRADUATED (PARITY_TODO empty again), HOST_PROFILE.wideBigint
+  REMOVED (both readers gone); pre-eval-in-kernel fold deviations
+  fixed (undefined==null folds 1, slice folds correct) -- the 6
+  CI-red kernel-leg failures cleared, kernel leg = only the 2
+  user-WIP typedarray rows; single pass registry src/passes.js
+  (62 passes/22 tuning/7 hot, zero imports) feeding ctx.js OPTF and
+  optimize/index.js presets/validation (audit P2). Verified: native
+  3093/0, kernel leg baseline-clean, parity 18/18, selfhost 21/21,
+  kernel pins direct. REMAINING audit order: P0-3 warm margin,
+  P0-4 reference refresh, P1 solver/LoopPlan/CompileSession, P2
+  exclusions burn-down.
   CI RED ROOT-CAUSED 2026-07-26: the 6 kernel-leg failures (null-vs-
   undefined strict/loose, slice negative/no-args, boolean/nullish,
   +1) are PRE-EVAL-IN-KERNEL FOLD BUGS introduced by the front-half

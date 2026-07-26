@@ -2771,11 +2771,13 @@ const handlers = {
   '+'(a, b) {
     if (b === undefined) {
       const na = prep(a)
-      // Subnormals excluded structurally — same self-host bigint-carrier reason
-      // as the `-` fold below; the surviving `u+` lets emit raise the BigInt
+      // `isLit` (op===null) already excludes a bigint literal — it's the
+      // distinct `['bigint', decimalStr]` node (parse.js, audit P0-2), never
+      // this shape — so no subnormal-magnitude guard is needed here anymore:
+      // a literal reaching this branch is unambiguously a genuine NUMBER.
+      // The surviving `u+` (bigint operand) lets emit raise the BigInt
       // TypeError (native) or coerce at runtime (kernel).
-      if (isLit(na) && typeof na[1] === 'number' && typeof na[1] !== 'bigint' &&
-        !(na[1] !== 0 && Math.abs(na[1]) < 2.2250738585072014e-308)) return na
+      if (isLit(na) && typeof na[1] === 'number') return na
       includeForNumericCoercion()
       return ['u+', na]
     }
@@ -2792,25 +2794,18 @@ const handlers = {
     return ['+', pa, pb]
   },
   '-'(a, b) {
-    // Fold `-<numeric literal>` to a literal, but NOT a bigint: jz's own `typeof` reports
-    // a bigint value as 'number' too (its carrier is an f64), so under self-host this test
-    // alone wrongly folds `-5n`, and negating the bigint here yields garbage (-2^63+5).
-    // `typeof !== 'bigint'` excludes it in both engines (real JS: 'bigint'; jz: matches
-    // 'bigint'). Bigint negation then flows to emit's i64.sub(0,·) path correctly.
+    // Fold `-<numeric literal>` to a literal. A bigint literal is a distinct
+    // `['bigint', decimalStr]` node (parse.js, audit P0-2) — `isLit` (op===null)
+    // already excludes it structurally, so no bigint-vs-number ambiguity
+    // reaches here at all (native or self-hosted alike); bigint negation flows
+    // through the `u-` runtime path below to emit's i64.sub(0,·).
     // `-0` is NOT folded: the self-host kernel evaluates the constant `-na[1]` with
     // i32 negation (i32 has no signed zero), collapsing -0→+0 — observable via sort's
     // -0<+0 tiebreak, Object.is, and 1/x. Leaving it as a runtime `u-` emits f64.neg,
     // which preserves the sign in both engines; V8 re-folds it, so no native cost.
-    // Subnormals are excluded STRUCTURALLY (not via typeof): every bigint carrier
-    // with |i64| < 2^52 reads as a subnormal f64, and under self-host the typeof
-    // guard alone misses it here (the slot flows as a plain f64, not a boxed
-    // value), so `-5n` would fold via i32 negation into -0 garbage. A genuine
-    // subnormal literal stays a runtime `u-` (f64.neg; V8 refolds — no cost),
-    // same precedent as the unfolded -0 below.
     if (b === undefined) {
       const na = prep(a)
-      return isLit(na) && typeof na[1] === 'number' && typeof na[1] !== 'bigint' && na[1] !== 0 &&
-        !(Math.abs(na[1]) < 2.2250738585072014e-308) ? [, -na[1]] : ['u-', na]
+      return isLit(na) && typeof na[1] === 'number' && na[1] !== 0 ? [, -na[1]] : ['u-', na]
     }
     return ['-', prep(a), prep(b)]
   },

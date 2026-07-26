@@ -27,7 +27,7 @@ import {
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
   ASSIGN_OPS, MUTATE_OPS, firstRefKind, isLeaf,
 } from '../ast.js'
-import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, HOST_PROFILE } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS } from '../ctx.js'
 import { i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR } from '../../layout.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
@@ -266,15 +266,15 @@ function builtinFunctionValue(name) {
 
 /** Emit unary negation: constant-fold, or i32 sub from 0 / f64.neg. */
 const emitNeg = (a) => {
-  // Under the narrow self-host carrier a nonzero-SUBNORMAL literal IS a small
-  // bigint the parser conflated (a genuine subnormal literal already misreads
-  // as bigint at every kernel boundary — `5e-324` exports as 1n), and typeof
-  // misses it here (the slot flows as a plain f64) — so take the i64 negation
-  // path structurally. Native (WIDE_BIGINT) never enters: real bigints hit the
-  // valTypeOf arm, real subnormals keep f64 semantics below.
-  if (valTypeOf(a) === VAL.BIGINT ||
-      (!HOST_PROFILE.wideBigint && Array.isArray(a) && a[0] == null && typeof a[1] === 'number' &&
-        a[1] !== 0 && Math.abs(a[1]) < 2.2250738585072014e-308))
+  // BigInt operands (literal or otherwise) always carry VAL.BIGINT statically —
+  // a bigint LITERAL is the self-describing `['bigint', decimalStr]` node
+  // (kind.js VT.bigint), never a raw `[null, number]` node (audit P0-2: the
+  // parser tags bigint literals structurally, off the source `n` suffix, so
+  // there's no longer a bit-pattern to conflate with a genuine subnormal
+  // NUMBER literal here — see parse.js). No magnitude heuristic needed for
+  // literals; the runtime magnitude heuristic (emit.js TYPEOF.bigint) remains
+  // for genuinely dynamic/unknown-kind values, a separate, real carrier limit.
+  if (valTypeOf(a) === VAL.BIGINT)
     return fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
   const v = emit(a)
   if (isLit(v)) return emitNum(-litVal(v))
@@ -2238,7 +2238,7 @@ function matchVoidLocalStore(s) {
   return null
 }
 
-function emitLooseEq(a, b, negate) {
+function emitLooseEq(a, b, negate, strict) {
   const eqOp = negate ? 'ne' : 'eq'
   const sentinel = emitNum(negate ? 1 : 0)
   const charCmp = emitSingleCharIndexCmp(a, b, negate); if (charCmp) return charCmp
@@ -2341,8 +2341,14 @@ function emitLooseEq(a, b, negate) {
         ['then', ['i32.const', 1]],
         ['else', tail]]], 'i32'))
   }
-  inc('__eq')
-  const call = typed(['call', '$__eq', asI64(va), asI64(vb)], 'i32')
+  // Every fast path above (i32/peeled-int/known-NUMBER/REF_EQ/STRING) agrees bit-
+  // for-bit between == and === — coercion never enters them. Only THIS final,
+  // fully-dynamic fallback can hit the one case where they diverge: both operands
+  // nullish at runtime but different atoms (null vs undefined) — loose treats
+  // that equal, strict does not. `strict` (set only by emitStrictEq's delegation
+  // below) picks the non-coercing helper.
+  inc(strict ? '__eq_strict' : '__eq')
+  const call = typed(['call', strict ? '$__eq_strict' : '$__eq', asI64(va), asI64(vb)], 'i32')
   return negate ? typed(['i32.eqz', call], 'i32') : call
 }
 
@@ -2394,8 +2400,14 @@ function emitStrictEq(a, b, negate) {
     const cmp = typed(['i64.eq', ['i64.reinterpret_f64', va], ['i64.reinterpret_f64', vb]], 'i32')
     return negate ? typed(['i32.eqz', cmp], 'i32') : cmp
   }
-  // Same type (or dynamic-unknown): identical bits to loose `==`/`!=`.
-  return emitter[negate ? '!=' : '=='](a, b)
+  // Same type (or dynamic-unknown): identical to loose `==`/`!=` EXCEPT the one
+  // case loose treats specially (null == undefined) — strict must still tell
+  // apart which nullish atom each side is, so this does NOT reuse the `==`/`!=`
+  // operator-table entry (that would inherit the loose exception); it calls
+  // emitLooseEq directly with strict=true, which routes the fully-dynamic
+  // fallback through $__eq_strict instead of $__eq (every other fast path
+  // inside emitLooseEq already agrees bit-for-bit with strict semantics).
+  return emitLooseEq(a, b, negate, true)
 }
 
 /** Comparison op factory with constant folding. */
@@ -5291,9 +5303,12 @@ export function emit(node, expect) {
   // WASM IR passthrough: internally-generated IR nodes (from statement flattening) pass through
   if (typeof op === 'string' && !ctx.core.emit[op] && (op.includes('.') || WASM_OPS.has(op))) return node
 
-  // Self-describing bigint literal (`normalizeBigints`, used at the host→kernel AST
-  // boundary). args[0] is the unsigned-64 decimal computed host-side, passed straight
-  // to i64.const — no in-kernel parse, byte-identical to the raw-primitive path above.
+  // Self-describing bigint literal, tagged at parse time (parse.js's digit-lookup
+  // override, audit P0-2) off the source `n` suffix — a purely structural signal,
+  // sound whether this code runs natively or self-hosted in-kernel. args[0] is
+  // the unsigned-64 decimal (BigInt.asUintN(64,·) semantics, computed via
+  // bignum.js's limb arithmetic at parse time — no host BigInt, no ambiguity),
+  // passed straight to i64.const — no in-kernel re-parse needed.
   if (op === 'bigint') return typed(['f64.reinterpret_i64', ['i64.const', args[0]]], 'f64')
 
   // Self-describing NaN literal — same reason bigints are self-describing: a raw NaN
@@ -5303,11 +5318,12 @@ export function emit(node, expect) {
   // f64 and survives, so it stays a plain literal.)
   if (op === 'nan') return typed(['f64.const', 'nan'], 'f64')
 
-  // Self-describing boolean literal (`normalizeBigints` at the host→kernel boundary).
-  // A raw `true`/`false` in the marshalled AST coerces to the number 1/0 and loses its
-  // VAL.BOOL kind, so the kernel returns a plain f64 instead of a NaN-boxed boolean.
-  // args[0] is 1/0 (prepare may wrap it as a `[, 1]` literal node) — emit it as that
-  // working rep; the BOOL boxing happens at the boundary via valTypeOf('bool')=VAL.BOOL.
+  // Self-describing boolean literal, tagged at parse time (parse.js's `true`/
+  // `false` token overrides) — same collapse class as bigint above: a raw
+  // `true`/`false` degrades to the plain number 1/0 across the self-host
+  // kernel's marshalling boundary, losing VAL.BOOL. args[0] is 1/0 (prepare
+  // may wrap it as a `[, 1]` literal node) — emit it as that working rep; the
+  // BOOL boxing happens at the boundary via valTypeOf('bool')=VAL.BOOL.
   if (op === 'bool') return emit(args[0])
 
   // Literal node [, value] — handle null/undefined values
