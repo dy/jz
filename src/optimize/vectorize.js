@@ -906,6 +906,22 @@ function firstAccess(node, name) {
 }
 
 /**
+ * Walk node, collect the set of local names TOUCHED (get/set/tee) anywhere within —
+ * the union of read and written names. Every "classify each local in the loop body"
+ * recognizer (tryVectorize, tryStencil, tryRampMap, tryToneMap) re-derived this exact
+ * walk over the loop body before classifying names via `writes`/firstAccess; hoisted
+ * here as the plan-level companion to collectWrites.
+ */
+function collectReferencedNames(node, out) {
+  if (!isArr(node)) return
+  const op = node[0]
+  if ((op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string') {
+    out.add(node[1])
+  }
+  for (let i = 0; i < node.length; i++) collectReferencedNames(node[i], out)
+}
+
+/**
  * Match the index-offset operand of a lane address — the part that scales the
  * induction variable inside `(i32.add base OFFSET)`. OFFSET is one of:
  *   (i32.shl (local.get IND) (i32.const K))            → strideLog2 K
@@ -1221,6 +1237,21 @@ function matchLoopBrEnd(loopNode) {
   return { loopLabel, endIdx }
 }
 
+// Per-loop-body facts every "classify each referenced local" recognizer re-derived
+// from `body` before doing its own recognizer-specific classification: `writes` (names
+// written anywhere in the body — loop-invariance/lane tests key off this),
+// `referenced` (all names touched, get or set/tee — the classification domain), and
+// `hasGlobalSet` (a global write breaks the "global.get is invariant" splat, checked
+// verbatim by tryVectorize/tryStencil/tryRampMap/tryToneMap). Computed once here per
+// LoopPlan; consumers read bl.writes/bl.referenced/bl.hasGlobalSet instead of re-walking.
+function bodyFacts(body) {
+  const writes = new Set()
+  for (const s of body) collectWrites(s, writes)
+  const referenced = new Set()
+  for (const s of body) collectReferencedNames(s, referenced)
+  return { writes, referenced, hasGlobalSet: body.some(hasGlobalSet) }
+}
+
 function matchBlockLoop(blockNode, opts = {}) {
   if (!isArr(blockNode) || blockNode[0] !== 'block') return null
 
@@ -1301,7 +1332,7 @@ function matchBlockLoop(blockNode, opts = {}) {
     const bound = exitInfo.bound
     const boundLocal = isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string' ? bound[1] : null
     const body = loopNode.slice(3, bodyEnd + 1)
-    return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incVar, exitInfo, bound, boundLocal, body, preamble, increments }
+    return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incVar, exitInfo, bound, boundLocal, body, preamble, increments, ...bodyFacts(body) }
   }
 
   const incIdx = endIdx - 1
@@ -1324,7 +1355,7 @@ function matchBlockLoop(blockNode, opts = {}) {
   const bound = exitInfo.bound
   const boundLocal = isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string' ? bound[1] : null
   const body = loopNode.slice(3, incIdx)
-  return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx, incVar, exitInfo, bound, boundLocal, body, preamble }
+  return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx, incVar, exitInfo, bound, boundLocal, body, preamble, ...bodyFacts(body) }
 }
 
 /**
@@ -1336,7 +1367,7 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
   // dispatch). The LICM `$__li` preamble is cloned ahead of the SIMD block; each
   // set is pure & loop-invariant, so the kept scalar tail harmlessly re-runs it.
   if (!bl) return null
-  const { incVar, bound, boundLocal, body, preamble } = bl
+  const { incVar, bound, boundLocal, body, preamble, hasGlobalSet: blHasGlobalSet, writes: blWrites, referenced: blReferenced } = bl
 
   // Bound must be loop-invariant: (local.get $L) or (i32.const N).
   if (!boundLocal && !isI32Const(bound)) return null
@@ -1495,7 +1526,7 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
   for (const stmt of body) {
     if (!scanForLoadsStores(stmt, null, -1)) return null
   }
-  if (body.some(hasGlobalSet)) return null  // a global write breaks the "global.get is invariant" splat
+  if (blHasGlobalSet) return null  // a global write breaks the "global.get is invariant" splat
   if (!laneType) return null  // no memory ops — vectorizing buys nothing
   if (loadStoreSites.length === 0) return null
   // Uniform stride gate: an AoS loop must have EVERY load/store at the same pixel stride. A mix of
@@ -1512,8 +1543,7 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
   // - induction var (incVar): exempt
   // - bound local (if any): must be invariant
   // - each other local: first access must not be a read-then-written pattern
-  const writes = new Set()
-  for (const s of body) collectWrites(s, writes)
+  const writes = blWrites
   if (boundLocal && writes.has(boundLocal)) return null  // bound varies in body → bail
   // a mirror INV written in the body is not invariant — the descending window would drift
   for (const mm of mirrorSites) if (mm.invName && writes.has(mm.invName)) return null
@@ -1521,16 +1551,8 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
   if (mirrorSites.length && aosPixelStride > 1) return null
 
   const localKind = new Map()  // name → 'lane' | 'invariant' | 'addr'
-  // Walk to collect ALL referenced names
-  const referenced = new Set()
-  const collectRefs = (n) => {
-    if (!isArr(n)) return
-    const op = n[0]
-    if ((op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof n[1] === 'string')
-      referenced.add(n[1])
-    for (let i = 1; i < n.length; i++) collectRefs(n[i])
-  }
-  for (const s of body) collectRefs(s)
+  // Plan-level referenced-names census (bl.referenced) — every locally-touched name.
+  const referenced = blReferenced
 
   for (const name of referenced) {
     if (name === incVar) continue
@@ -1710,8 +1732,8 @@ function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
   // matched for itself (inlined LICM preambles carry grid row-bases like
   // schrodinger's `y*w`).
   if (!bl) return null
-  const { incVar, bound, body, preamble } = bl   // preamble: LICM-hoisted $__li invariants
-  if (body.some(hasGlobalSet)) return null
+  const { incVar, bound, body, preamble, hasGlobalSet: blHasGlobalSet, writes, referenced: blReferenced } = bl   // preamble: LICM-hoisted $__li invariants
+  if (blHasGlobalSet) return null
 
   // Leaf-stencil guard: a stencil body is pure array arithmetic. A NESTED LOOP (the outer loop of a
   // 2-D sweep, whose body contains the inner loop) or a non-$math call must NOT be lifted as a
@@ -1721,9 +1743,6 @@ function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
     || (n[0] === 'call' && (typeof n[1] !== 'string' || !n[1].startsWith('$math.'))) || n[0] === 'call_indirect'
     || n.some(hasNestedLoopOrCall))
   if (body.some(hasNestedLoopOrCall)) return null
-
-  const writes = new Set()
-  for (const s of body) collectWrites(s, writes)
 
   // Bound is re-evaluated for the SIMD guard, so it must be a PURE loop-invariant
   // i32 expression (const / unwritten local / global / +,-,* thereof). Unlike the
@@ -1900,9 +1919,7 @@ function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
 
   // Classify locals by TYPE: i32 → addr (index/address, kept scalar), laneType
   // written → lane (first access must be a write), laneType unwritten → invariant.
-  const referenced = new Set()
-  const collectRefs = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') referenced.add(n[1]); for (let i = 1; i < n.length; i++) collectRefs(n[i]) }
-  for (const s of body) collectRefs(s)
+  const referenced = blReferenced
   const localKind = new Map()
   for (const name of referenced) {
     if (name === incVar) continue
@@ -3821,10 +3838,10 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   // increment shares the IV's name" check below is tryRampMap's own residual.
   const bl = matchBlockLoop(blockNode, { multiInc: true })
   if (!bl) return null
-  const { incVar: ivName, bound, boundLocal, body, increments } = bl
+  const { incVar: ivName, bound, boundLocal, body, increments, hasGlobalSet: blHasGlobalSet, writes: blWrites, referenced: blReferenced } = bl
   if (!boundLocal && !isI32Const(bound)) return null
   if (!body.length) return null
-  if (body.some(hasGlobalSet)) return null
+  if (blHasGlobalSet) return null
 
   // Find exactly one store. Its address is the inline lane address
   // `base + (i << K)` — the IV strength-reducer runs AFTER this pass, so the
@@ -3898,17 +3915,10 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   if (!loadsOk) return null
 
   // Every other body stmt must be `(local.set $lane EXPR)` — straight-line lane
-  // locals feeding the store. Classify locals for the lift.
-  const writes = new Set()
-  for (const s of body) collectWrites(s, writes)
+  // locals feeding the store. Classify locals for the lift (writes/referenced: plan-level census).
+  const writes = blWrites
   if (boundLocal && writes.has(boundLocal)) return null
-  const referenced = new Set()
-  const collectRefs = (n) => {
-    if (!isArr(n)) return
-    if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') referenced.add(n[1])
-    for (let i = 1; i < n.length; i++) collectRefs(n[i])
-  }
-  for (const s of body) collectRefs(s)
+  const referenced = blReferenced
 
   const localKind = new Map()
   for (const name of referenced) {
@@ -6166,7 +6176,7 @@ function _toneFirstWrite(body, name) {
 // Mixed-lane log-tonemap: i32 dens[i] → f64 log → i32 pack → px[i]. See the block comment above.
 function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   if (!enabled || !bl) return null
-  const { incVar, bound, boundLocal, body, preamble } = bl
+  const { incVar, bound, boundLocal, body, preamble, hasGlobalSet: blHasGlobalSet, writes: blWrites, referenced: blReferenced } = bl
   if (!boundLocal && !isI32Const(bound)) return null   // bound must be loop-invariant
 
   // Shape gate: exactly one i32.store + ≥1 i32.load, all at `base+(i<<2)`, plus the f64
@@ -6193,20 +6203,13 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   // 1 store (unconditional, attractors) or 2 (the then/else arms of a conditional store,
   // bifurcation/fern — both write the same pixel and collapse to one masked store).
   if (!ok || !hasConvert || storeCount < 1 || storeCount > 2 || loadCount < 1) return null
-  if (body.some(hasGlobalSet)) return null
+  if (blHasGlobalSet) return null
 
   // Classify locals (mirrors tryVectorize): written ⇒ lane (first access must be a write,
-  // else loop-carried), unwritten ⇒ invariant.
-  const writes = new Set()
-  for (const s of body) collectWrites(s, writes)
+  // else loop-carried), unwritten ⇒ invariant. writes/referenced: plan-level census (bl).
+  const writes = blWrites
   if (boundLocal && writes.has(boundLocal)) return null
-  const referenced = new Set()
-  const collectRefs = (n) => {
-    if (!isArr(n)) return
-    if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') referenced.add(n[1])
-    for (let i = 1; i < n.length; i++) collectRefs(n[i])
-  }
-  for (const s of body) collectRefs(s)
+  const referenced = blReferenced
   const localKind = new Map()
   for (const name of referenced) {
     if (name === incVar) continue
