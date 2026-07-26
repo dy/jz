@@ -227,6 +227,27 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  TRACE DISSECTED 2026-07-26 (agent, ABBA + WAT surgery, checksum
+  1827210493 held): 1.86x = TWO layers. (1) FIXABLE ~45% of gap,
+  V8-POSITIVE: monotone array-write cursor `nc` (param+return of
+  inlined traceLoop) carried as f64 through the hot loop -- f64->
+  i64->i32 round trip per iteration for the store index -- because
+  the INLINER CLONES THE CALLEE WITH PRE-INLINE CALL-BOUNDARY REP
+  BAKED IN (VAL.NUMBER at updateRep sites compile/index.js ~584/
+  1714/1740, boundaryI64 ~751/759) and never re-derives rep from the
+  flattened intra-procedural uses (hoistNestedCalls inline.js:355,
+  temp mint ~665). i32-shadow surgery: 1263->1004us = 1.258x
+  speedup, vs c-wasm 1.86->1.47x (confirmed twice). LEVER: re-run
+  int/range narrowing AFTER inlining per inlined-temp local (same
+  proof classes as plain locals); must not leak into non-inlined
+  call sites (f64 ABI contract stands). NOT covered by cursor-
+  versioning (that's bounds elim, this is representation). (2) HARD
+  TAIL ~1.47x: the already-ledgered branch-layout class (data-
+  dependent if(inside), no conditional store in wasm) -- correctly
+  stays. Deficits 2/3 (re-derived bounds check on tested index;
+  asymmetric y-half range fusion) RETIMED V8-NEUTRAL (1.003/1.004x)
+  -- emit-quality only, low priority. Surgery artifacts persist in
+  scratchpad (trace-*.wat/wasm, retime harnesses).
   TRUE RED LIST via TARGETED PAIRED RUNS 2026-07-26 (user's call:
   suspects only, quiet, ABBA-paired): fft jz LEADS 0.92x and
   glyfparse LEADS 1.00x -- their 'red' readings in the concurrent-
