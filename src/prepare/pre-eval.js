@@ -303,7 +303,12 @@ function foldBinary(op, a, b, rationalOn) {
 // ---------------------------------------------------------------------------
 // Math.* / string-method call evaluation
 // ---------------------------------------------------------------------------
-const MATH_CONST = new Set(['PI', 'E', 'LN2', 'LN10', 'LOG2E', 'LOG10E', 'SQRT2', 'SQRT1_2'])
+// Value map, not a Set + `Math[k]` — computed Math members are outside the
+// self-host subset (see HOST_EXACT_UNARY below).
+const MATH_CONST = {
+  PI: Math.PI, E: Math.E, LN2: Math.LN2, LN10: Math.LN10,
+  LOG2E: Math.LOG2E, LOG10E: Math.LOG10E, SQRT2: Math.SQRT2, SQRT1_2: Math.SQRT1_2,
+}
 // prepare resolves `Math.X` to a bare `'math.X'` STRING (both a niladic-call target
 // `['()','math.sqrt',args]` and, for the no-arg constants, a plain value reference
 // `'math.PI'` with no wrapping `()` at all) whenever it runs through the full host
@@ -317,7 +322,15 @@ function mathCalleeName(callee) {
 // sqrt/abs/floor/ceil/trunc: IEEE754-mandated correctly-rounded in both JS and wasm.
 // round/sign/fround: jz's WAT is deliberately engineered to reproduce these exact host
 // JS semantics (see module/math.js). All bit-exact vs the compiled kernel by construction.
-const HOST_EXACT_UNARY = new Set(['sqrt', 'abs', 'floor', 'ceil', 'trunc', 'round', 'fround', 'sign'])
+// Explicit per-name dispatch (not `Math[name](x)`): a computed member call on
+// the Math namespace is outside the self-host subset — pre-eval joined the
+// kernel graph with the front-half unification (src/front.js), so every shape
+// here must self-host-compile. Same convention as recurse.js's wrapped isArr.
+const HOST_EXACT_UNARY = {
+  sqrt: (x) => Math.sqrt(x), abs: (x) => Math.abs(x), floor: (x) => Math.floor(x),
+  ceil: (x) => Math.ceil(x), trunc: (x) => Math.trunc(x), round: (x) => Math.round(x),
+  fround: (x) => Math.fround(x), sign: (x) => Math.sign(x),
+}
 
 function evalMathCall(name, vs) {
   if (name === 'pow') return vs.length === 2 ? numResult(powFold(vs[0], vs[1])) : null
@@ -325,7 +338,8 @@ function evalMathCall(name, vs) {
   if (name === 'max') return numResult(vs.length ? Math.max(...vs) : -Infinity)
   if (name === 'imul') return vs.length === 2 ? numResult(Math.imul(vs[0], vs[1])) : null
   if (name === 'clz32') return vs.length === 1 ? numResult(Math.clz32(vs[0])) : null
-  if (HOST_EXACT_UNARY.has(name)) return vs.length === 1 ? numResult(Math[name](vs[0])) : null
+  const uf = HOST_EXACT_UNARY[name]
+  if (uf) return vs.length === 1 ? numResult(uf(vs[0])) : null
   const kfn = MATH_KERNEL['math.' + name]
   return kfn ? numResult(kfn(...vs)) : null
 }
@@ -360,7 +374,7 @@ function evalConst(node, env, state) {
   if (typeof node === 'string') {
     const b = env.get(node)
     if (b !== undefined) return b
-    if (node.startsWith('math.') && MATH_CONST.has(node.slice(5))) return numResult(Math[node.slice(5)])
+    if (node.startsWith('math.') && MATH_CONST[node.slice(5)] !== undefined) return numResult(MATH_CONST[node.slice(5)])
     return null
   }
   if (!Array.isArray(node)) return null
@@ -419,7 +433,7 @@ function evalConst(node, env, state) {
     return (other && other.t === picked.t) ? picked : null
   }
   if (op === '.' || op === '?.') {
-    if (node[1] === 'Math' && typeof node[2] === 'string' && MATH_CONST.has(node[2])) return numResult(Math[node[2]])
+    if (node[1] === 'Math' && typeof node[2] === 'string' && MATH_CONST[node[2]] !== undefined) return numResult(MATH_CONST[node[2]])
     const recv = evalConst(node[1], env, state)
     if (recv && recv.t === 'str' && node[2] === 'length' && isAsciiSafe(recv.v)) return numResult(recv.v.length)
     return null

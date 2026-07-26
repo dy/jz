@@ -227,6 +227,26 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  FRONT HALF + SYNTH LEVERS LANDED 2026-07-25 (joint, battery
+  3090/0): (1) src/front.js canonical front half consumed by index.js
+  AND all four self.js kernel entries; resetNameUids in setupSelf;
+  audit fold repros byte-identical node-side; kernel graph now
+  includes pre-eval -- TWO self-host-subset fixes needed (computed
+  Math members Math[name]/Math[CONST] -> explicit dispatch tables in
+  pre-eval.js); kernel 12.2MB builds green; parity corpus 18 rows,
+  mfold graduated (in-wasm preEval folds Math byte-identically --
+  earlier 'divergence' was a stale-dist artifact of the crashed
+  build), fold|0/2/3 tripwired = the RATIONAL fork (native rational
+  carry vs kernel IEEE under wideBigint=false -- compiler-host-
+  dependent output, determinism violation; fix = host-independent
+  u32-limb rational arithmetic in pre-eval, banked). (2) synth
+  levers: select cost veto (hasExpensiveOp) + stripCanon through
+  hoistTempDefs -- synth 1.09x RED -> 1.02x BAND vs AS (surgery
+  predicted 0.993x; residual gap = implementation vs ideal surgery,
+  acceptable; lane no longer red). LESSON (process): piping build
+  through tail masked its exit status -- bqvs1mwmd's parity ran on a
+  STALE dist and produced two wrong conclusions before the direct
+  build surfaced the real error; never pipe a gating build.
   P0-2 LITERAL-KIND DESIGN 2026-07-25 (banked for post-land window):
   mechanism read off emit.js typeof-bigint arm (~426) + pre-eval
   157-161 -- the self-host BIGINT CARRIER is raw i64 bits

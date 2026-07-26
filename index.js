@@ -53,8 +53,7 @@ import watOptimize from "watr/optimize";
 import { resetNameUids } from "watr/optimize";
 import { ctx, reset, err, warn, initWarnings, assertCtxInvariants, optFlagsOf } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
-import { liftIIFEs } from './src/prepare/lift-iife.js'
-import { preEval } from './src/prepare/pre-eval.js'
+import { frontHalf } from './src/front.js'
 import compile from './src/compile/index.js'
 import { resetProgramFactsCache } from './src/compile/program-facts.js'
 import { resetBodyFactsCache } from './src/compile/analyze.js'
@@ -499,16 +498,8 @@ const setupCtx = (code, opts) => {
 // position on the RAW parse (before jzify, which legitimately mints T-prefixed
 // temps of its own). String-literal nodes are `[null, …]` and skipped, so
 // `"……"` data is fine; only walked when the char is present in source.
-const rejectReservedPrefix = (node) => {
-  if (!Array.isArray(node)) return
-  if (node.length === 2 && node[0] == null) return   // [null, X] — value literal, not an identifier
-  for (let i = 1; i < node.length; i++) {
-    const v = node[i]
-    if (typeof v === 'string') {
-      if (v.includes(T)) err(`identifier '${v.split(T).join('\\uE000')}' contains the reserved compiler prefix (U+E000) — jz uses it for generated locals; rename it`)
-    } else rejectReservedPrefix(v)
-  }
-}
+// (moved to src/front.js — the canonical front half owns the guard so the
+// self-host kernel enforces it identically)
 
 // resolveWatrOpts + the post-watr proof repair moved to src/optimize/watr-tail.js
 // (ONE final-optimizer tail shared verbatim with the self-host kernel — the two
@@ -522,21 +513,14 @@ const jzCompileInner = (code, opts = {}) => {
   setupCtx(code, opts)
   assertCtxInvariants('post-reset')
 
-  let parsed = time('parse', () => parse(code))
-  if (typeof code === 'string' && code.includes(T)) rejectReservedPrefix(parsed)
-  // Lambda-lift immediately-invoked arrow literals to typed direct calls — lets SIMD
-  // flow through the f64-only closure ABI and drops the closure for every IIFE. Runs
-  // BEFORE jzify so it only sees USER arrow IIFEs, not jzify's synthetic wrapper IIFEs
-  // (named/recursive function expressions, method shorthand), which keep the closure
-  // path. A no-op when there are none.
-  parsed = time('liftIIFE', () => liftIIFEs(parsed))
-  if (!opts.strict) parsed = time('jzify', () => jzify(parsed))
-  let ast = time('prepare', () => prepare(parsed))
-  assertCtxInvariants('post-prepare')
-  // preEval: fold every statically-evaluable construct (numeric/string/bool chains,
-  // pure Math.* calls, zero-arg pure calls incl. lift-iife's IIFEs) down to literals,
-  // over the prepared AST + every ctx.func.list body, before compile ever sees them.
-  ast = time('preEval', () => preEval(ast))
+  // The canonical front half (src/front.js): parse → reserved-prefix guard →
+  // liftIIFEs → jzify → prepare → preEval — ONE function shared verbatim with
+  // every self-host kernel entry, so the two pipelines cannot drift (they did:
+  // the kernel skipped preEval — audit P0 2026-07-25).
+  let ast = frontHalf(code, {
+    strict: opts.strict, jzify, time,
+    afterPrepare: () => assertCtxInvariants('post-prepare'),
+  })
 
   // Hidden AST-shape auto-configuration REMOVED (2026-07-22): the default tier
   // silently flipped watr:false / retuned thresholds past size heuristics, so

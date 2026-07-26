@@ -15,7 +15,7 @@ import { compile as watrCompile } from 'watr'
 import watrPrint from 'watr/print'
 import { ctx, reset, initWarnings, optFlagsOf } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
-import { liftIIFEs } from '../src/prepare/lift-iife.js'
+import { frontHalf } from '../src/front.js'
 import compileAst from '../src/compile/index.js'
 import { resetProgramFactsCache } from '../src/compile/program-facts.js'
 import { resetBodyFactsCache } from '../src/compile/analyze.js'
@@ -83,10 +83,22 @@ function setupSelf(strict, optJSON, modulesJSON, host) {
   // ('wasi' | 'js'); 0/absent mirrors the native undefined default. Gates the
   // same host-conditional emits + advisories (host-global warnings) in-kernel.
   ctx.transform.host = host || undefined
+  // Per-compile watr name-uid reset (mirrors index.js): the kernel is a
+  // long-lived instance compiling many programs -- without this, watr's inline/
+  // outline counters grow monotonically across compiles and the output becomes
+  // history-dependent (the warm-drift class, in-wasm edition). Lives HERE so
+  // EVERY entry gets it -- it was previously only in compileSelf, so a
+  // compileWat/compileWarnings call after a compileSelf produced drifted names
+  // (audit P0 2026-07-25). Required since watr ^5.7.11 (locked).
+  resetNameUids()
 }
-function lower(source, strict) {
-  const parsed = liftIIFEs(parse(source))   // mirror index.js: lift IIFEs before jzify
-  return strict ? parsed : jzify(parsed)
+// The canonical front half (src/front.js) — the SAME function index.js's
+// jzCompileInner runs: parse -> reserved-prefix guard -> liftIIFEs -> jzify ->
+// prepare -> preEval. The kernel previously composed prepare(lower(...)) per
+// entry WITHOUT preEval, so statically-foldable programs compiled to different
+// bits than native (audit P0 2026-07-25: 0.1+0.2-0.3 fold, Math.sqrt(9) at O0).
+function front(source, strict) {
+  return frontHalf(source, { strict, jzify })
 }
 
 /**
@@ -97,13 +109,7 @@ function lower(source, strict) {
  */
 export default function compileSelf(source, strict, optJSON, modulesJSON, host) {
   setupSelf(strict, optJSON, modulesJSON, host)
-  // Per-compile watr name-uid reset (mirrors index.js's call): the kernel is a
-  // long-lived instance compiling many programs — without this, watr's inline/
-  // outline counters grow monotonically across compiles and the kernel's text
-  // output becomes history-dependent (the warm-drift class, in-wasm edition).
-  // Required since watr ^5.7.11 (locked) — see index.js.
-  resetNameUids()
-  return watrCompile(optimizeTail(compileAst(prepare(lower(source, strict))), ctx.transform.optimize))
+  return watrCompile(optimizeTail(compileAst(front(source, strict)), ctx.transform.optimize))
 }
 
 /**
@@ -132,14 +138,14 @@ export function compileWarnings(source, strict, optJSON, modulesJSON, host) {
   setupSelf(strict, optJSON, modulesJSON, host)
   const sink = { entries: [] }
   initWarnings(sink)
-  optimizeTail(compileAst(prepare(lower(source, strict))), ctx.transform.optimize)
+  optimizeTail(compileAst(front(source, strict)), ctx.transform.optimize)
   initWarnings(null)
   return JSON.stringify(sink.entries)
 }
 
 export function compileWat(source, strict, optJSON, modulesJSON, host) {
   setupSelf(strict, optJSON, modulesJSON, host)
-  return watrPrint(optimizeTail(compileAst(prepare(lower(source, strict))), ctx.transform.optimize))
+  return watrPrint(optimizeTail(compileAst(front(source, strict)), ctx.transform.optimize))
 }
 
 /**
@@ -154,7 +160,7 @@ export function compileWat(source, strict, optJSON, modulesJSON, host) {
 export function compileDiag(source, strict, optJSON) {
   setupSelf(strict, optJSON)
   ctx.core.diagSink = {}
-  compileAst(prepare(lower(source, strict)))
+  compileAst(front(source, strict))
   return JSON.stringify(ctx.core.diagSink)
 }
 

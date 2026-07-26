@@ -17,6 +17,13 @@ const CORPUS = {
   math: `export let f = (x) => Math.sqrt(x * x + 1) + Math.abs(x)`,
   dict: `export let count = (s) => { let d = {}; for (let i = 0; i < s.length; i++) { let c = s[i]; d[c] = (d[c] || 0) + 1 } return d['a'] || 0 }`,
   arr: `export let rev = (n) => { let a = []; for (let i = 0; i < n; i++) a.push(i * 2); let s = 0; for (let i = a.length - 1; i >= 0; i--) s += a[i]; return s }`,
+  // preEval coverage (audit P0 2026-07-25): the kernel entries used to skip the
+  // preEval front-half stage entirely, so statically-foldable programs emitted
+  // different bits than native AT EVERY TIER — and none of the rows above
+  // exercised constant folding. These two are the audit's own repros: float
+  // fold ordering (0.1+0.2-0.3 bit pattern) and pure-Math folding at O0.
+  fold: `export let f = () => 0.1 + 0.2 - 0.3`,
+  mfold: `export let g = () => Math.sqrt(9) + Math.abs(-2)`,
 }
 
 // Residual known divergences: NONE — every corpus row is byte-identical at
@@ -29,7 +36,21 @@ const CORPUS = {
 // count() undercounted arm sizes and mis-fired the select fold; dict|2 +
 // dict|3). If a change re-opens a divergence, re-add its `name|opt` key here
 // with a dated note.
-const PARITY_TODO = new Set([])
+// fold|*: the front-half unification (src/front.js) made the kernel RUN preEval
+// (it used to skip it — the 2026-07-25 audit P0), which exposed the next layer:
+// native folds 0.1+0.2-0.3 through the exact-rational carry (rationalConst,
+// gated on HOST_PROFILE.wideBigint) → 2.775…e-17, while the kernel's i64-carried
+// BigInt can't run the rational path and folds IEEE → 5.551…e-17. Compiled
+// output thus depends on the COMPILER HOST — a determinism violation. Real fix:
+// host-independent limb arithmetic (u32-limb arrays) for pre-eval's rational
+// module, so every host folds identically. mfold (integer Math fold) is
+// byte-identical — only the rational-carry path forks.
+// (mfold graduated 2026-07-25 the same day: the divergence was measured against
+// a STALE dist whose build had crashed — pre-eval.js used computed Math members
+// (`Math[name](x)`, `Math[CONST]`), outside the self-host subset, so the kernel
+// graph wouldn't compile once front.js pulled pre-eval in; explicit dispatch
+// tables fixed the build and the in-wasm preEval folds Math byte-identically.)
+const PARITY_TODO = new Set(['fold|0', 'fold|2', 'fold|3'])
 
 for (const opt of [0, 2, 3]) {
   test(`kernel parity: byte-identical WAT at O${opt}`, () => {
