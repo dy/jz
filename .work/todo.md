@@ -227,6 +227,26 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  narrowMutatedParams + CompileSession SLICE LANDED 2026-07-26 (all
+  gates green): (1) mutated-param i32 specialization -- a body-
+  written param admits i32 narrowing when every caller passes i32
+  AND every mutation RHS proves int-safe with the param seeded i32
+  (reuses type.js int machinery); the i32-specialized reassign path
+  emits native local.set; result narrowing picks it up through the
+  existing ordering. TRACE 1.86x -> 1.47x MEASURED via the real
+  runner (exactly the surgery share); the residual 1.47x is the
+  ledgered branch-layout hard tail. Regression pinned in
+  inference.js (int-mutated param promotes; float-mutated stays).
+  (2) CompileSession first slice: src/session.js beginSession owns
+  per-compile lifecycle (reset, ALL cache clears, name-uids,
+  warnings, strict/host/optimize normalization, post-reset assert);
+  setupCtx/setupSelf are thin host-policy wrappers -- setup drift
+  now structurally impossible (audit P1 stage-4 seam). VERIFIED:
+  native battery 3093/0, kernel leg 1958-class/2 user-WIP only,
+  parity 18/18, inference 84/84, optimizer 212/212, trace paired
+  1.47x, fresh dist. Reds remaining: shapes 1.22, sort 1.15, sdf
+  ~1.3 (research tail), crc32 border; polluted results.json + bench
+  svg NOT landed (quiet-machine refresh pending).
   TRACE LEVER MECHANISM CORRECTED 2026-07-26 (locator agent, file
   evidence): INLINER EXONERATED (inline.js has zero rep logic --
   it faithfully clones the signature narrow.js already fixed).

@@ -50,13 +50,11 @@ import watOptimize from "watr/optimize";
 // recompiles depends on this reset — a missing export must fail LOUDLY at
 // import, not silently degrade (the pre-5.7.11 optional-property fallback
 // masked exactly that hole).
-import { resetNameUids } from "watr/optimize";
-import { ctx, reset, err, warn, initWarnings, assertCtxInvariants, optFlagsOf } from './src/ctx.js'
+import { ctx, reset, err, warn, assertCtxInvariants } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import { frontHalf } from './src/front.js'
+import { beginSession } from './src/session.js'
 import compile from './src/compile/index.js'
-import { resetProgramFactsCache } from './src/compile/program-facts.js'
-import { resetBodyFactsCache } from './src/compile/analyze.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
 import { resolveOptimize } from './src/optimize/index.js'
 import { resolveWatrOpts, watrTail } from './src/optimize/watr-tail.js'
@@ -426,12 +424,17 @@ const setupCtx = (code, opts) => {
     for (const k of Object.keys(TEST_ENV_DEFAULTS)) if (merged[k] == null) merged[k] = TEST_ENV_DEFAULTS[k]
     opts = merged
   }
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread })
-  resetProgramFactsCache()
-  resetNameUids()         // watr's generated-name counters (inline/outline/…): per-compile, else warm recompiles emit history-dependent WAT text (__inl5 → __inl15)
-  resetBodyFactsCache()   // explicit-lifecycle body-facts cache (analyze.js) — per-compile, else a long-lived process retains every analyzed body AST
-  ctx.error.src = code
-  initWarnings(opts.warnings)
+  // Session lifecycle — shared verbatim with the self-host kernel's setupSelf
+  // (src/session.js): ctx reset, every cache clear, name-uids, warnings,
+  // strict/host/optimize normalization, post-reset invariants.
+  if (opts.host && opts.host !== 'js' && opts.host !== 'wasi') {
+    if (opts.host === 'gc') err(`host:'gc' is reserved for a planned wasm-gc backend, not yet implemented. Use 'js' (default — JS host with externref/js-string interop) or 'wasi' (standalone runtimes — no env imports).`)
+    err(`Invalid host '${opts.host}'. Expected 'js' (default) or 'wasi'.`)
+  }
+  beginSession({
+    emitter, globals: GLOBALS, hooks: { emit, flat, body, bool, idx, spread },
+    source: code, optimize: opts.optimize, warnings: opts.warnings, strict: opts.strict, host: opts.host,
+  })
   if (typeof opts.memory === 'number') ctx.memory.pages = opts.memory
   else if (opts.memory) ctx.memory.shared = true
   if (opts.importMemory) ctx.memory.shared = true   // import env.memory instead of exporting own
@@ -462,12 +465,6 @@ const setupCtx = (code, opts) => {
   // and the pure canonical subset is enforced. subscript handles ASI natively.
   if (!opts.strict) ctx.transform.jzify = jzify
   if (opts.noTailCall) ctx.transform.noTailCall = true
-  if (opts.strict) ctx.transform.strict = true
-  if (opts.host) {
-    if (opts.host === 'gc') err(`host:'gc' is reserved for a planned wasm-gc backend, not yet implemented. Use 'js' (default — JS host with externref/js-string interop) or 'wasi' (standalone runtimes — no env imports).`)
-    if (opts.host !== 'js' && opts.host !== 'wasi') err(`Invalid host '${opts.host}'. Expected 'js' (default) or 'wasi'.`)
-    ctx.transform.host = opts.host
-  }
   if (opts.alloc === false) ctx.transform.alloc = false
   if (opts.inspect) ctx.transform.inspect = true
   if (opts.helperCounters) ctx.transform.helperCounters = true
@@ -479,8 +476,6 @@ const setupCtx = (code, opts) => {
     ctx.transform.randomSeed = opts.randomSeed
   }
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
-  ctx.transform.optimize = resolveOptimize(opts.optimize)
-  ctx.transform.optFlags = optFlagsOf(ctx.transform.optimize)
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
       if (name.startsWith('__ext_')) continue
@@ -510,8 +505,7 @@ const jzCompileInner = (code, opts = {}) => {
   const profiler = compileProfiler(opts.profile)
   const time = (name, fn) => profiler ? profiler.time(name, fn) : fn()
 
-  setupCtx(code, opts)
-  assertCtxInvariants('post-reset')
+  setupCtx(code, opts)   // post-reset invariants assert inside beginSession
 
   // The canonical front half (src/front.js): parse → reserved-prefix guard →
   // liftIIFEs → jzify → prepare → preEval — ONE function shared verbatim with

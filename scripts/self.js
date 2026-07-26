@@ -13,13 +13,12 @@
 import { parse } from '../src/parse.js'
 import { compile as watrCompile } from 'watr'
 import watrPrint from 'watr/print'
-import { ctx, reset, initWarnings, optFlagsOf } from '../src/ctx.js'
+import { ctx, reset, initWarnings } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { frontHalf } from '../src/front.js'
+import { beginSession } from '../src/session.js'
 import compileAst from '../src/compile/index.js'
 import { resetProgramFactsCache } from '../src/compile/program-facts.js'
-import { resetBodyFactsCache } from '../src/compile/analyze.js'
-import { resetBindingUsesCache } from '../src/compile/analyze-scans.js'
 import { clearDollar } from '../src/ir.js'
 import { clearStdlibParseCache } from '../src/wat/assemble.js'
 import {
@@ -27,7 +26,6 @@ import {
 } from '../src/compile/emit.js'
 import { resolveOptimize } from '../src/optimize/index.js'
 import { watrTail } from '../src/optimize/watr-tail.js'
-import { resetNameUids } from 'watr/optimize'
 import jzify from '../jzify/index.js'
 
 // Final-optimizer tail: the EXACT module index.js's host pipeline uses
@@ -62,36 +60,25 @@ function optimizeTail(module, cfg) {
 // waste. Must run every compile (not just after the first `_clear`) since it's
 // cheap and callers may `_clear` in any pattern.
 function setupSelf(strict, optJSON, modulesJSON, host) {
-  reset(emitter, GLOBALS, {
-    emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads,
+  // Session lifecycle — the SAME beginSession native setupCtx runs
+  // (src/session.js): ctx reset, every cache clear, watr name-uids, warnings,
+  // strict/host/optimize normalization, post-reset invariants. Only the wasm-ABI
+  // unmarshaling (JSON strings, 0-defaults) and the kernel's transform
+  // injections remain here.
+  beginSession({
+    emitter, globals: GLOBALS,
+    hooks: { emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads },
+    optimize: optJSON ? JSON.parse(optJSON) : false,
+    strict: !!strict, host: host || undefined,
   })
-  resetProgramFactsCache()
-  resetBodyFactsCache()
-  resetBindingUsesCache()
-  clearDollar()
-  clearStdlibParseCache()
   ctx.transform.jzify = jzify
   ctx.transform.parse = parse    // module bundling (prepareModule) parses imported sources — same injection native does
-  ctx.transform.optimize = optJSON ? resolveOptimize(JSON.parse(optJSON)) : resolveOptimize(false)
-  ctx.transform.optFlags = optFlagsOf(ctx.transform.optimize)
-  ctx.transform.strict = !!strict
-  // Bundled-module sources (the native opts.modules channel, index.js:450):
-  // marshalled as one JSON dict over the wasm ABI — prepare's import
-  // resolution reads ctx.module.importSources the same way native does.
+  // Bundled-module sources (the native opts.modules channel): one JSON dict
+  // over the wasm ABI — prepare's import resolution reads importSources the
+  // same way native does.
   if (modulesJSON) ctx.module.importSources = JSON.parse(modulesJSON)
-  // Host profile (native opts.host, index.js:470): a plain string over the ABI
-  // ('wasi' | 'js'); 0/absent mirrors the native undefined default. Gates the
-  // same host-conditional emits + advisories (host-global warnings) in-kernel.
-  ctx.transform.host = host || undefined
-  // Per-compile watr name-uid reset (mirrors index.js): the kernel is a
-  // long-lived instance compiling many programs -- without this, watr's inline/
-  // outline counters grow monotonically across compiles and the output becomes
-  // history-dependent (the warm-drift class, in-wasm edition). Lives HERE so
-  // EVERY entry gets it -- it was previously only in compileSelf, so a
-  // compileWat/compileWarnings call after a compileSelf produced drifted names
-  // (audit P0 2026-07-25). Required since watr ^5.7.11 (locked).
-  resetNameUids()
 }
+
 // The canonical front half (src/front.js) — the SAME function index.js's
 // jzCompileInner runs: parse -> reserved-prefix guard -> liftIIFEs -> jzify ->
 // prepare -> preEval. The kernel previously composed prepare(lower(...)) per
