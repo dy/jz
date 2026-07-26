@@ -28,7 +28,7 @@
 
 import { LAYOUT, ctx, OPTF } from '../ctx.js'
 import { VAL } from '../reps.js'
-import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, f64Range, I32_MIN, I32_MAX } from '../ir.js'
+import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, hasExpensiveOp, f64Range, I32_MIN, I32_MAX } from '../ir.js'
 
 // Debug-mode IR structural check (JZ_DEBUG_INVARIANTS=1). Zero production cost.
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
@@ -4357,11 +4357,17 @@ function walkRewrite(node, doInline, counts, freshI64, freshF64, get) {
   // data-unpredictable conditions) on the whole class of float sign/clamp/reflect ternaries.
   // The flagship: noise's gradient `(h & 1) === 0 ? x : -x` (8 per perlin × 5 octaves × 65k px).
   // SOUND: wasm `select` evaluates BOTH arms unconditionally, and `isPureIR` admits only
-  // side-effect-free, non-trapping ops (no load/call/div/rem) — so eager evaluation is safe; it
-  // is the exact predicate emit.js uses for the same fold at emit time, now applied post-watr
-  // where the arms (e.g. `f64.neg (local.get $x)`) are clean after canon-DCE. Gated to NOT fire
-  // when BOTH arms are i32-narrowable — those stay an `if` for the ToInt32-through-if fold +
-  // the i32x4-bitselect conditional-map vectorizer (don't steal the integer path).
+  // side-effect-free, non-trapping ops (no load/call, no trapping i32.div_s/rem_s) — so eager
+  // evaluation never changes OBSERVABLE behavior; it is the exact predicate emit.js uses for the
+  // same fold at emit time, now applied post-watr where the arms (e.g. `f64.neg (local.get $x)`)
+  // are clean after canon-DCE. Gated to NOT fire when BOTH arms are i32-narrowable — those stay
+  // an `if` for the ToInt32-through-if fold + the i32x4-bitselect conditional-map vectorizer
+  // (don't steal the integer path). COST VETO: isPureIR admits f64.div/f64.sqrt too (non-trapping
+  // but NOT cheap — 10-40+ cycle latency, often non-pipelined) — eagerly computing a div/sqrt arm
+  // a predictable branch would have skipped can cost more than it saves (the synth ADSR's 4-way
+  // ternary with three f64.div arms measured ~8% slower selected than branched). hasExpensiveOp
+  // vetoes both arms recursively so a cascaded ternary (each level itself a nested select/if from
+  // this same fold) can't hide the div/sqrt a few levels down.
   if (op === 'if' && node.length === 5 && Array.isArray(node[1]) && node[1][0] === 'result' && node[1][1] === 'f64'
       && Array.isArray(node[3]) && node[3][0] === 'then' && node[3].length === 2
       && Array.isArray(node[4]) && node[4][0] === 'else' && node[4].length === 2) {
@@ -4372,7 +4378,8 @@ function walkRewrite(node, doInline, counts, freshI64, freshF64, get) {
     // cond that the then-arm reads — reordering it after the arms reads $t stale. Requiring
     // isPureIR(cond) excludes every tee/call/short-circuit cond while admitting the pure
     // comparison conds of real float ternaries (noise's `(h & 1) === 0`).
-    if (isPureIR(a) && isPureIR(b) && isPureIR(cond) && !(toI32(a) && toI32(b))) return ['select', a, b, cond]
+    if (isPureIR(a) && isPureIR(b) && isPureIR(cond) && !hasExpensiveOp(a) && !hasExpensiveOp(b) &&
+        !(toI32(a) && toI32(b))) return ['select', a, b, cond]
   }
 
   // f64.CMP(convert_i32 A, convert_i32 B) → i32.CMP(A, B). Comparing two i32 values is
