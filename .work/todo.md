@@ -227,6 +227,31 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  TRACE LEVER MECHANISM CORRECTED 2026-07-26 (locator agent, file
+  evidence): INLINER EXONERATED (inline.js has zero rep logic --
+  it faithfully clones the signature narrow.js already fixed).
+  Real trap, two cooperating refusals: (1) narrow.js
+  applyI32ParamSpecialization (line 95) EXCLUDES any body-written
+  param (findMutations, line 113/115 -- `nc++` is a write) because a
+  narrowed param's reassignment would emit through the generic f64
+  assign path and type-clash (comment 103-106); sibling read-only
+  params sx/sy DO promote -- exactly the observed split. Same
+  mutation-guard repeats in validateTypedLenParams/
+  validateIntConstParams/applyPointerParamAbi (systemic policy).
+  (2) type.js intLevelMap (2460-2507) seeds f64 params at level 0
+  (anti-vacuous-fixpoint, 2473-2484), so the self-referential
+  `nc = nc+1` def evaluates 0 && 2 = 0 forever -- structurally
+  unprovable once (1) refused. (3) narrowI32Results (400) runs
+  AFTER param specialization (1689 vs 1665) and types `return nc`
+  off the already-decided param type -- the f64-ness propagates to
+  the result automatically. LEVER (named): narrowMutatedParams --
+  extend applyI32ParamSpecialization to admit a mutated param when
+  every mutation RHS is provably int-safe (intExprChecker/
+  intLevelMap applied with the param optimistically seeded i32),
+  AND fix the generic-f64-assign limitation so specialized params
+  get i32-native local.set on reassignment. Expected: trace 1.86 ->
+  ~1.47 (the measured surgery share); general win for every
+  monotone-counter param (cursor-through-helper shape).
   TRACE DISSECTED 2026-07-26 (agent, ABBA + WAT surgery, checksum
   1827210493 held): 1.86x = TWO layers. (1) FIXABLE ~45% of gap,
   V8-POSITIVE: monotone array-write cursor `nc` (param+return of
