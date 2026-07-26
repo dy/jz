@@ -227,6 +227,38 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  P0-2 FINAL REPORT BANKED 2026-07-26 (agent, complete): collapse
+  point was subscript's number lexer returning host BigInt (in-kernel
+  = i64-bits carrier, indistinguishable from subnormal at node-build
+  time); fix = ['bigint', decimalStr] tagged node minted in the digit
+  wrapper (structural n-suffix detection), consumers simplified
+  (kind.js:444 NUMBER unconditional, prepare unary folds drop
+  magnitude guards, emitNeg drops subnormal fallback). bignum.js:
+  15-BIT LIMBS (not 32) -- forced by mulFitsI32 unsoundness: either-
+  operand <= 2^22 admits i32.mul without product-range check, 16-bit
+  limb halves both qualify yet product overflows i32 (verified live:
+  32768*65536 -> -2^31 in-kernel). FOUR NEW SELF-HOST BUG CLASSES
+  BANKED (leads for hunts): (1) mulFitsI32 product-range unsoundness
+  (emit.js -- REAL miscompile, worked around structurally, fix the
+  heuristic properly); (2) closure-in-loop capture miscompile --
+  `for(c){const orig=lookup[c]; lookup[c]=(a,b)=>...orig...}` all ten
+  closures shared ONE wrong captured binding in-kernel; (3) O3
+  cross-call-site parameter contamination -- same callee called with
+  literal-k and variable-k sites read each other's k (traced live,
+  time-boxed, worked around by fusing/masking; O3 miscompile hunt
+  lead); (4) $__eq null-vs-undefined nullish case was missing +
+  emitStrictEq delegated === to ==, needed $__eq_strict split.
+  RESIDUALS PROVEN PRE-EXISTING (parent-commit worktree comparison,
+  identical repro at 8fe2537b): json 'Bad int 9.06791031e-315' --
+  bits decode to ASCII "meta": SSO-packed property-NAME bits leak
+  into an integer position in dyn-prop-hash/json codegen
+  (collection.js strHashLiteral/ssoMix or json.js runtime parser
+  suspects); bench-selfhost 21 DIFF rows = kernel-vs-native BOUNDS-
+  CHECK INFERENCE GAP (mat4 $multiplyMany: kernel select-guarded
+  load vs native bare f64.load -- optimization parity, not value).
+  Both = new audit items. Kernel leg now 1958/2 (BETTER than the
+  1955 baseline). NOTE: agent used an isolated git worktree for the
+  parent build (sanctioned tooling, working tree untouched).
   P0-2 + REGISTRY LANDED 2026-07-26 (all gates green): tagged bigint
   literals -- kind rides the AST (parse/prepare tagged node, consumers
   key on the tag), kernel 5e-324 -> 5e-324 number (was 1n), pins for
