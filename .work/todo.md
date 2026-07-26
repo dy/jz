@@ -227,6 +227,23 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  P0-3 WARM MARGIN REFINED 2026-07-26: recovered from the audit's
+  1.047-1.094x to a 0.989-1.035x HOVER (run-to-run: one round 0.989
+  PASS, next 1.007/1.029/1.035 FAIL) -- the preset-faithfulness fixes
+  (bool-atom: kernel now truly runs its speed tier) did the bulk.
+  Key datum: FRESH instances geomean 0.771x while WARM hovers ~1.01
+  -- the warm instance is ~30% slower than a fresh one per compile,
+  so the debt is INSTANCE-REUSE state, not compile speed: suspects
+  (a) monotone memory growth (arena high-water -> grown wasm memory
+  never shrinks; locality/bounds-check costs), (b) V8 tiering state
+  on the long-lived instance, (c) retained-map costs cleared but
+  reallocated. NEXT PROBE: log memory.buffer.byteLength per warm
+  round (scripts/bench-selfhost.mjs JZ_BENCH_WARM path) and correlate
+  round-ratio vs memory size; if monotone-growth-correlated, the fix
+  is arena shrink/reset (memory.discard when available, or fresh-
+  instance-per-N-compiles policy in the WARM benchmark contract
+  itself -- decide vs the 'warm' definition in the pin's comment).
+  Do NOT loosen the cap (audit directive).
   CI STATUS 2026-07-26 (after 800185bb): selfhost workflow's 6
   kernel-leg fails FIXED. Remaining CI red = ONE test: 'SIMD breadth
   f32->i16 encode vectorizes' -- CI-LINUX-ONLY (passes locally on
