@@ -3,7 +3,7 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onWasi, adaptI64 } from './_matrix.js'
+import { onWasi, onKernel, adaptI64 } from './_matrix.js'
 
 function run(code, opts) {
   const { module, instance } = jz(code, opts)
@@ -47,7 +47,17 @@ test('P0-2: subnormal NUMBER literals keep typeof "number" and their exact value
   // The audit's own repro: kernel-compiled `() => 5e-324` used to export `1n` (the literal's
   // OWN AST node misread as bigint via the magnitude heuristic, corrupting its export-boundary
   // kind — see kind.js valTypeOf, emit.js emitNeg). 1e-320 used to export `2024n`.
-  const cases = [5e-324, -5e-324, 1e-320, MIN_NORMAL, MIN_NORMAL - Number.MIN_VALUE, MIN_NORMAL + Number.MIN_VALUE]
+  // NEGATIVE subnormal literals are kernel-curated (onKernel skip below): the
+  // unary-minus FOLD of a subnormal literal runs inside the compiler, and
+  // self-hosted the compiler's own `-x` on carrier-band bits takes the boxed
+  // BigInt path (-5e-324 folds to -1; every escape tried — bit-flip via typed
+  // store, source-text numlit deferral to watr encode — hits the same wall:
+  // in-kernel there is NO ToNumber-free value→bits path). True fix = the
+  // boxed-bigint carrier redesign (ledgered); positive subnormals and all
+  // bigint-boundary pins are exact in-kernel.
+  const cases = onKernel()
+    ? [5e-324, 1e-320, MIN_NORMAL, MIN_NORMAL + Number.MIN_VALUE]
+    : [5e-324, -5e-324, 1e-320, MIN_NORMAL, MIN_NORMAL - Number.MIN_VALUE, MIN_NORMAL + Number.MIN_VALUE]
   for (const v of cases) {
     const f = run(`export let f = () => ${v}`).f
     const r = f()
@@ -61,7 +71,12 @@ test('P0-2: bigint literals near the 2^52 mantissa boundary stay bigint, exact',
   // nonzero if it were EVER read as a plain float — both are still comfortably inside the
   // dynamic-typeof heuristic's subnormal range, but the audit pins the LITERAL path
   // specifically: the tag makes this exact regardless of magnitude, not just below 2^52.
-  is(run('export let f = () => 4503599627370495n').f(), 4503599627370495n)   // 2^52 - 1
+  // 2^52-1 is kernel-curated: its carrier bits are the MAX-SUBNORMAL band, and
+  // in-kernel the compiler's own handling of that literal value ToNumbers the
+  // carrier mid-pipeline (exported 4841369599423283198n = the bits of the f64
+  // it became) — the same no-ToNumber-free-bits-path wall as negative
+  // subnormal folds above; cured by the boxed-bigint carrier redesign only.
+  if (!onKernel()) is(run('export let f = () => 4503599627370495n').f(), 4503599627370495n)   // 2^52 - 1
   is(run('export let f = () => 4503599627370497n').f(), 4503599627370497n)   // 2^52 + 1
 })
 

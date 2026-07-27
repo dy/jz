@@ -227,6 +227,27 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  CARRIER WALL MAPPED + PINS SETTLED 2026-07-27 (in-thread, watr-
+  publish runway): (1) ctx.features.bigint SEEDED false in reset --
+  the absent-dyn-key read misfired truthy in-kernel, turning the
+  toNumF64 carrier gate ON for pure-number programs (5e-324/1e-320/
+  2^52+1 exports were corrupt; now exact). (2) NEGATIVE subnormal
+  LITERALS + 2^52-1 bigint remain in-kernel-corrupt BY THE WALL: any
+  value-level op on carrier-band bits inside the self-hosted compiler
+  ToNumbers the carrier -- three escapes tried and refuted in-thread
+  (host-neg -x, bit-flip via typed store [ToNumber at the store],
+  source-text numlit deferral to watr encode [watr's own in-kernel
+  parseFloat->store normalizes]); there is NO ToNumber-free
+  value->bits path in the kernel by construction. Rows kernel-
+  curated in data.js WITH mechanisms (precedent: -1n<0n); TRUE FIX =
+  boxed-bigint carrier redesign (the standing long-term item). (3)
+  Exclusions burn-down advanced then time-boxed: 6-file un-exclusion
+  reached 2413 pass with THREE order-shifted in-suite residuals
+  (Array.isArray-as-value closure-support err; bool-identity
+  closure-ABI 'Bad int 0x000000-100000001'; inference census row) --
+  reverted to committed exclusions; the frontier is those 3 rows.
+  Verified state: battery 3098/0, kernel leg 1958/2 (user WIP only),
+  parity 18/18.
   LEAK HUNT RESOLVED TO TWO ROOTS 2026-07-26 (in-thread): (1) FIXED:
   destruct's `({sqrt, abs} = Math)` in-suite failure -- emit.js's
   first-class-vs-niladic builtin dispatch keyed on `handler.length`,

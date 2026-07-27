@@ -559,6 +559,11 @@ export function reset(proto, globals, bridge) {
     set: false,       // Set. Set on Set construction; gates PTR.SET dispatch.
     map: false,       // Map. Set on Map construction; gates PTR.MAP dispatch.
     closure: false,   // First-class functions. Set when ctx.closure.table is populated.
+    bigint: false,    // BigInt construction anywhere (tagged literal / BigInt() call — prep()'s
+                      // scan). Gates ir.js toNumF64's carrier check. MUST be seeded, not an
+                      // absent key: the self-hosted kernel's absent-dyn-key read misfired
+                      // truthy, turning the carrier gate ON for pure-number programs and
+                      // exporting subnormals as bigint carriers (-5e-324 → -1, data.js pins).
     timers: false,          // Set by prepare.js when timer module is included
     blockingTimers: false,   // wasmtime CLI: include __timer_loop in _start
   }
