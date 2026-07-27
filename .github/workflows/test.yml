@@ -47,8 +47,12 @@ jobs:
           node -e "
           import('./index.js').then(({compile}) => {
             const src = 'export let f=(n)=>{let a=new Float32Array(n);let o=new Int16Array(n);for(let i=0;i<n;i++)o[i]=a[i]*32767;return o}'
-            const w = String(compile(src, { wat: true, optimize: { level: 'speed', whyNotSimd: true } }))
-            console.log('has v128:', /v128|i16x8|f32x4/.test(w))
+            const warnings = {}
+            const w = String(compile(src, { wat: true, warnings, optimize: { level: 'speed', whyNotSimd: true } }))
+            console.log('has v128:', /v128|i16x8|f32x4/.test(w), '| arch:', process.arch, process.platform, '| node:', process.version, '| v8:', process.versions.v8)
+            console.log('warnings:', JSON.stringify(warnings.entries ?? warnings).slice(0, 2000))
+            const fn = w.split(String.fromCharCode(10) + '  (func ').find(c => c.startsWith('\$f') && !c.startsWith('\$f\$'))
+            console.log('fn head:', JSON.stringify((fn ?? '').slice(0, 600)))
           })"
       - name: test (${{ matrix.variant }})
         run: |
