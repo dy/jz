@@ -71,3 +71,19 @@ jobs:
       - run: npm run test:fuzz
         env:
           JZ_DEBUG_INVARIANTS: '1'
+
+  # Committed-evidence claims gate (audit 2026-07-27: wired to CI, not only
+  # prepublishOnly). HONESTLY RED until the reference dataset is fresh,
+  # complete (every rival contested), and winning (strict + band) — the red is
+  # the point: the claim cannot silently regress or silently ship.
+  claims:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install
+      - run: node test/bench-claims.js

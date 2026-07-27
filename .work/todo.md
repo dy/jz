@@ -227,6 +227,22 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  CLAIMS GATE HARDENED 2026-07-27 (audit blocker 4): freshness scope
+  now includes layout.js + package.json + package-lock.json (the
+  watr-upgrade blind spot) PLUS a watr-version cross-check vs the
+  snapshot's meta (currently fails: snapshot lacks the field --
+  bench.mjs needs one line recording meta.versions.watr; user's live
+  session owns bench.mjs, deferred to them or next quiet window);
+  STRICT-LEADERSHIP test split from the band test (a 1.05 band row
+  proves tolerance not leadership) -- current in-tree evidence:
+  strict unproven on 16 cases, band-exceeded on 8 (results.json in
+  tree is the USER's uncommitted refresh w/ porf-native recontest;
+  their Porffor CLAIM_RIVALS change incorporated); claims job wired
+  into CI test.yml (honestly red until fresh+complete+winning).
+  Remaining audit blockers: user lands typedarray WIP (suite green),
+  boxed-bigint redesign (carrier rows), warm cap final margin, W2C
+  tokenizer 3.851 vs 3.5 cap (new signal in their refresh -- check
+  after their bench work lands), tinygo (CLT).
   TARGETPROFILE LANDED 2026-07-27 (the last untouched P1 item):
   named frozen per-target policy profile (js/wasi) constructed in
   beginSession from opts.host -- fields name the POLICY (wasiShims,
