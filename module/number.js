@@ -1473,7 +1473,20 @@ export default (ctx) => {
     (local $radix i32) (local $digit i32) (local $sbase i32)
     (local $result f64) (local $f f64) (local $mant i64)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
-    (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
+    ;; ToNumber(BigInt) must yield the bigint's mathematical value, not the raw
+    ;; carrier bits — unlike every other non-number kind, the self-host BigInt
+    ;; carrier is i64 bits reinterpreted as f64 directly (never NaN-boxed), so it
+    ;; passes the "not NaN" test below just like a genuine number. Detect it with
+    ;; the same magnitude heuristic \`typeof x === 'bigint'\` uses elsewhere
+    ;; (emit.js TYPEOF.bigint): finite, nonzero, subnormal abs — ambiguous with a
+    ;; genuine subnormal Number by carrier design (documented limit, P0-2), same
+    ;; heuristic applied consistently here.
+    (if (f64.eq (local.get $f) (local.get $f))
+      (then
+        (if (i32.and (f64.ne (local.get $f) (f64.const 0))
+                     (f64.lt (f64.abs (local.get $f)) (f64.const 2.2250738585072014e-308)))
+          (then (return (f64.convert_i64_s (local.get $v)))))
+        (return (local.get $f))))
     (if (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
     (if (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
     (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (f64.const 0))))

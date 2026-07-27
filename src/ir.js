@@ -1031,14 +1031,33 @@ export function toNumF64(node, v) {
   // genuine NaN) take the call. One self-compare against a call per site; the
   // dictionary-count idiom (`o[k] | 0` on a number-or-undefined slot) drops a
   // per-token call this way. Optimize-gated: the O0 tier keeps the compact call.
+  // EXCEPT a boxed BigInt carrier: unlike every other non-number kind it is raw
+  // i64 bits reinterpreted as f64, never NaN-boxed, so it also passes "not NaN"
+  // and must NOT take this shortcut unconverted. Only PAY for that extra check
+  // (same magnitude heuristic TYPEOF.bigint uses, emit.js: finite, nonzero,
+  // subnormal abs) in a program that can actually construct a BigInt anywhere
+  // (ctx.features.bigint, set once by prep()'s universal per-node scan on the
+  // sole two construction sites — a bigint literal or a `BigInt(x)` call) — a
+  // program with zero BigInt construction can never produce that carrier, so
+  // every dynamic coercion in it (e.g. an untyped array element read) is sound
+  // under the plain NaN check alone. Un-gated this taxed every hot-loop numeric
+  // coercion whether or not the program ever touches BigInt (ring/fgather
+  // perf-ratchet regression, .work/todo.md).
   if ((ctx.transform.optFlags & OPTF.inlineToNum)) {
     const t = temp('tnum')
+    const get = () => ['local.get', `$${t}`]
+    const notNan = ['f64.eq', get(), get()]
+    const cond = ctx.features.bigint
+      ? ['i32.and', notNan, ['i32.eqz', ['i32.and',
+          ['f64.ne', get(), ['f64.const', 0]],
+          ['f64.lt', ['f64.abs', get()], ['f64.const', 2.2250738585072014e-308]]]]]
+      : notNan
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(v)],
       ['if', ['result', 'f64'],
-        ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
-        ['then', ['local.get', `$${t}`]],
-        ['else', ['call', '$__to_num', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]], 'f64')
+        cond,
+        ['then', get()],
+        ['else', ['call', '$__to_num', ['i64.reinterpret_f64', get()]]]]], 'f64')
   }
   return typed(['call', '$__to_num', asI64(v)], 'f64')
 }

@@ -227,6 +227,20 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  SSO NAME-BITS LEAK FIXED 2026-07-26 (banked residual closed): the
+  json 'Bad int 9.06791031e-315' ("meta" ASCII bits in an integer
+  position) -- kernel-compiled `let SRC; JSON.parse(SRC).meta.scale`
+  failed to compile. Fix across module/number.js + src/ir.js +
+  src/prepare/index.js (agent-refined twice after the perf ratchet
+  caught the first two versions pessimizing hot loops: initial
+  ring +920/fgather +1600 scoped down to ring +520 only). Repro
+  returns 2 via kernel; bench-selfhost 22/22 (json row restored);
+  battery green except the one ratchet row; ring RE-BASELINED
+  98120 -> 98640 (+0.53%, one synthetic corpus category) --
+  JUSTIFIED: the residual cost is the value-correctness price after
+  two scoping rounds; a silent string-bits-into-integer corruption
+  class outweighs 0.53% loop-body ops on one synthetic shape.
+  fgather baseline unchanged (62880).
   SOLVER + LOOPPLAN SLICE 3 LANDED 2026-07-26 (combined tree, all
   gates green: battery 3098/0, kernel leg 1958/2 user-WIP only,
   parity 18/18, simd 158/158, dbg-invariants leg green, fresh dist):

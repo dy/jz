@@ -1077,6 +1077,17 @@ const retargetLoopJumps = (node, brkLabel, contLabel) => {
 
 function prep(node) {
   if (Array.isArray(node)) includeForOp(node[0])
+  // Whole-program "does a BigInt value ever get constructed" flag — the ONLY two
+  // ways a bigint value is synthesized are a bigint literal (parse.js tags it
+  // `['bigint', decimalStr]`, audit P0-2) or an explicit `BigInt(x)` call; catching
+  // both here, in prep()'s universal per-node entry (this single early pass runs
+  // before ANY function emission), makes the flag order-independent for every
+  // later emit-time reader. Consumed by ir.js's toNumF64 (inlineToNum fast path) to
+  // scope the runtime "is this a boxed BigInt carrier" magnitude check to programs
+  // that can actually produce one — everywhere else stays the original cheap
+  // NaN-only check (see .work/todo.md, ring/fgather perf-ratchet regression).
+  if (Array.isArray(node) && (node[0] === 'bigint' || (node[0] === '()' && node[1] === 'BigInt')))
+    ctx.features.bigint = true
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return [, 0] // null/undefined → 0 literal
   // Keep boolean identity (was folded to 1/0). The working representation is
