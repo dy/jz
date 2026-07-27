@@ -227,6 +227,25 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  EXCLUSIONS BURN-DOWN PROBED 2026-07-26 -- IN-SUITE LEAK CLASS
+  ISOLATED: all 7 debt files (errors 111, parser-bugs 23, transform
+  9, destruct 69, closures 105, inference 86, json 64 = ~467 tests)
+  pass FULL-FILE STANDALONE on today's kernel -- the hang class and
+  resolver class are CURED. But IN-SUITE (full kernel leg with them
+  included) ~6-8 rows fail DETERMINISTICALLY: destruct's
+  `({sqrt, abs} = Math)` errors with AST ["=","sqrt","math.sqrt"]
+  (a math-namespace binding leaking across kernel compiles),
+  data.js's new P0-2 subnormal/2^52 pins, inference's census row,
+  transform's canonicalize row. Standalone-clean + in-suite-red +
+  deterministic = the kernel long-session state class, now WITH a
+  reproducible inventory (unlike its heisenbug appearance 07-25).
+  REVERTED the un-exclusion to keep the committed gate green; the
+  burn-down lands after the leak hunt. HUNT RECIPE: file-subset
+  bisection on the kernel leg ending at destruct (the sqrt row is
+  the sharpest victim -- a namespace/binding table entry surviving
+  _clear between compiles; suspects: DOLLAR/interned-string maps
+  rebuilt but a consumer caching a stale index, or ctx.module
+  include state); each cycle ~minutes with targeted file lists.
   SSO NAME-BITS LEAK FIXED 2026-07-26 (banked residual closed): the
   json 'Bad int 9.06791031e-315' ("meta" ASCII bits in an integer
   position) -- kernel-compiled `let SRC; JSON.parse(SRC).meta.scale`
