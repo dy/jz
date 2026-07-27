@@ -37,23 +37,6 @@ jobs:
         with:
           node-version: 24
       - run: npm install
-      # TEMP DIAGNOSTIC (2026-07-27, remove when the linux-only f32→i16 SIMD
-      # divergence is closed): print the vectorizer's own rejection trace for
-      # the failing specimen — local (mac/arm64, node 24/25) always vectorizes,
-      # CI (linux/x64) does not, watr 5.7.12 ruled out locale; this surfaces
-      # the in-CI decision path.
-      - name: simd-divergence probe
-        run: |
-          node -e "
-          import('./index.js').then(({compile}) => {
-            const src = 'export let f=(n)=>{let a=new Float32Array(n);let o=new Int16Array(n);for(let i=0;i<n;i++)o[i]=a[i]*32767;return o}'
-            const warnings = {}
-            const w = String(compile(src, { wat: true, warnings, optimize: { level: 'speed', whyNotSimd: true } }))
-            console.log('has v128:', /v128|i16x8|f32x4/.test(w), '| arch:', process.arch, process.platform, '| node:', process.version, '| v8:', process.versions.v8)
-            console.log('warnings:', JSON.stringify(warnings.entries ?? warnings).slice(0, 2000))
-            const pre = String(compile(src, { wat: true, optimize: { level: 'speed', watr: false } }))
-            console.log('PRE-WATR-B64:', Buffer.from(pre).toString('base64'))
-          })"
       - name: test (${{ matrix.variant }})
         run: |
           case "${{ matrix.variant }}" in

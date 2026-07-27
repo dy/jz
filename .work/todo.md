@@ -227,6 +227,21 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  CI SIMD RED ROOT-PROVEN 2026-07-27: a clean-HEAD worktree
+  reproduces `has v128: false` LOCALLY -- the f32->i16 encode
+  vectorization depends on the USER'S UNCOMMITTED module/typedarray
+  WIP (every local verification had it in tree; CI compiles the
+  committed version whose ToInt emit shape peelNarrowConv no longer
+  matches). NOT platform-dependent; probe chain (self-documenting
+  assert -> whyNotSimd sink -> pre-watr b64 diff: local select-form
+  ToInt16 + inf-guard vs committed if-form without guard) and the
+  worktree discriminator close it. watr 5.7.12's codepoint sort was
+  a REAL determinism fix but not this cause. ACTION: user lands
+  their typedarray WIP (or the emit-shape part peel depends on);
+  temp CI probe step removed. Lesson: uncommitted WIP in the
+  verification tree can mask committed-state regressions -- clean-
+  worktree spot-checks belong in the landing discipline for emit-
+  shape-adjacent changes.
   WATR 5.7.12 PIN + LOOPPLAN SLICE 4 LANDED 2026-07-27: user
   published watr with the codepoint-order data sort (the CI-linux
   localeCompare nondeterminism fix, confirmed present in the
