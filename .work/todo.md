@@ -227,6 +227,20 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  WARM-MARGIN LEVER LOCATED 2026-07-27 (compileProfile diagnostic
+  landed in self.js -- per-stage kernel wall times over the ABI):
+  stage-share differential kernel-vs-native (crc32 corpus, 5 warm
+  reps each): optimizeTail (watr fixpoint) 79.6% in-kernel vs 57.9%
+  native = 1.38x RELATIVE share -- THE wasm-relatively-worse phase;
+  compileAst is relatively FASTER in-kernel (0.42 -- arena beats V8
+  GC); front/encode ~parity. The warm cap's remaining ~3% lives in
+  watr's allocation-heavy fixpoint running on jz's own Map/Set/hash
+  (module/collection.js) -- the lever is collection-op performance
+  under the fixpoint's churn profile (or watr-side allocation
+  reduction, user's lib). NEXT PROBE: helperCounters/callsites on a
+  kernel watOptimize run to rank __hash_get/__map_set/... shares,
+  then optimize the top collection op (general kernel win, not
+  warm-specific).
   EXCLUSIONS FRONTIER 2-OF-3 FIXED, FIVE FILES UN-EXCLUDED FOR GOOD
   2026-07-27 (frontier agent + in-thread land): the Array.isArray-
   as-value closure-support row and the bool-identity closure-ABI

@@ -145,6 +145,28 @@ export function compileWat(source, strict, optJSON, modulesJSON, host) {
  * the archaeology channel for the parity work (.work/todo.md, jz.wasm item).
  * @returns {string} JSON of { resolve: [...], sweep: {...} }
  */
+/**
+ * Per-stage wall-time profile of one kernel compile: front / compileAst /
+ * optimizeTail / encode, as a JSON dict of ms. The warm-margin probe channel:
+ * run this in-kernel AND mirror the same stages natively (index.js
+ * opts.profile), compare SHARES -- the stage whose share is relatively worse
+ * in-wasm is the warm-ratio lever (absolute times are machine-speed; shares
+ * are the signal). Date.now() lowers to __time_ms in-kernel.
+ */
+export function compileProfile(source, strict, optJSON, modulesJSON, host) {
+  setupSelf(strict, optJSON, modulesJSON, host)
+  const t0 = Date.now()
+  const ast = front(source, strict)
+  const t1 = Date.now()
+  const ir = compileAst(ast)
+  const t2 = Date.now()
+  const opted = optimizeTail(ir, ctx.transform.optimize)
+  const t3 = Date.now()
+  watrCompile(opted)
+  const t4 = Date.now()
+  return JSON.stringify({ front: t1 - t0, compileAst: t2 - t1, optimizeTail: t3 - t2, encode: t4 - t3 })
+}
+
 export function compileDiag(source, strict, optJSON) {
   setupSelf(strict, optJSON)
   ctx.core.diagSink = {}
