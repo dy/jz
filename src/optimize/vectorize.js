@@ -1125,6 +1125,22 @@ const hasSideEffect = (node) => {
   return false
 }
 
+// True if any node in the tree is a call whose callee is not a `$math.*` pure
+// helper. A non-pure call (writes a scratch global/memory) can mutate state that
+// a per-pixel lane local — computed once, before the outer-pixel recognizers'
+// per-lane epilogue re-runs the call — would then read stale, breaking bit-
+// exactness. Every outer-pixel recognizer that lifts a per-pixel body (strip,
+// iterated-reduce, conv-column) re-derived this exact scan over `obody` before
+// admitting the shape; hoisted as the LoopPlan companion to hasGlobalSet.
+// (tryPerPixelColor additionally exempts pureFuncMap-registered pure user
+// functions — a recognizer-specific admission, kept local there.)
+const hasImpureCall = (node) => {
+  if (!isArr(node)) return false
+  if (node[0] === 'call' && typeof node[1] === 'string' && !node[1].startsWith('$math.')) return true
+  for (let i = 1; i < node.length; i++) if (hasImpureCall(node[i])) return true
+  return false
+}
+
 // ---- Recognize a (block (loop)) pair --------------------------------------
 
 /**
@@ -4624,8 +4640,11 @@ const matchPixelExit = (stmt, label) => {
  *
  * Returns the shared FACTS, or null:
  *   { oLabel, loopNode, preamble, pixelIVs, pivStart, pxVar, widthBound, pivType,
- *     obody }  — obody = loopNode.slice(3, pivStart), the per-pixel work between
- *   the exit guard and the IV bumps. Both consumers branch on `obody` afterward.
+ *     obody, hasImpureCall }  — obody = loopNode.slice(3, pivStart), the per-pixel
+ *   work between the exit guard and the IV bumps; hasImpureCall = obody.some of the
+ *   module-level hasImpureCall predicate (strict: no $math.* exemption beyond the
+ *   builtin one). Every consumer branches on `obody` afterward; strip/iterated-
+ *   reduce/conv-column also read `hasImpureCall` directly instead of re-scanning.
  * The bound is re-evaluated for the SIMD guard, so it must be invariant + pure:
  *   a constant, or a local/global the loop nest never writes (`writesName`).
  */
@@ -4658,7 +4677,7 @@ function matchOuterPixelLoop(blockNode) {
     const s = obody[i]
     if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) innerIdxs.push(i)
   }
-  return { oLabel, loopNode, preamble, pixelIVs, pivStart, pxVar: oExit.ind, widthBound, pivType, obody, oExit, innerIdxs }
+  return { oLabel, loopNode, preamble, pixelIVs, pivStart, pxVar: oExit.ind, widthBound, pivType, obody, oExit, innerIdxs, hasImpureCall: obody.some(hasImpureCall) }
 }
 
 function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
@@ -5551,9 +5570,9 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (!ibl) return null
   if (ibl.preamble.length) return null
   const innerIV = ibl.incVar, ibody = ibl.body
-  // No impure calls (a non-pure call would read stale state in the per-lane epilogue). $math.* pure.
-  const impureCall = (n) => isArr(n) && ((n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.')) || n.some(impureCall))
-  if (obody.some(impureCall)) return null
+  // No impure calls (a non-pure call would read stale state in the per-lane epilogue). $math.*
+  // pure. Fact computed once at the dispatch (LoopPlan: matchOuterPixelLoop) — see hasImpureCall.
+  if (outer.hasImpureCall) return null
 
   const id = freshIdRef.next++
   const nm = (s) => `$__os${id}_${s}`
@@ -5759,8 +5778,8 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const lastInner = innerIdxs[innerIdxs.length - 1]
   const innerSet = new Set(innerIdxs)
 
-  const impureCall = (n) => isArr(n) && ((n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.')) || n.some(impureCall))
-  if (obody.some(impureCall)) return null
+  // No impure calls — fact computed once at the dispatch (LoopPlan: matchOuterPixelLoop).
+  if (outer.hasImpureCall) return null
 
   const id = freshIdRef.next++
   const nm = (s) => `$__ir${id}_${s}`
@@ -5945,8 +5964,8 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit, innerIdxs } = outer
   if (pivType.get(pxVar) !== 'i32') return null                 // strip-mine an integer column
   if (innerIdxs.length) return null  // body must be unrolled (no inner loop)
-  const impureCall = (n) => isArr(n) && ((n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.')) || n.some(impureCall))
-  if (obody.some(impureCall)) return null
+  // No impure calls — fact computed once at the dispatch (LoopPlan: matchOuterPixelLoop).
+  if (outer.hasImpureCall) return null
   const readsName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => readsName(c, name)))
 
   // Locals whose value depends on the column IV (transitively) — these address the per-pixel gather.

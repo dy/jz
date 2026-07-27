@@ -227,6 +227,16 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  WATR 5.7.12 PIN + LOOPPLAN SLICE 4 LANDED 2026-07-27: user
+  published watr with the codepoint-order data sort (the CI-linux
+  localeCompare nondeterminism fix, confirmed present in the
+  installed 5.7.12); jz pin bumped exact. LoopPlan slice 4: next
+  fact class hoisted into the dispatch descriptor (agent, byte-
+  identity-gated; spot-corroborated — blur/dotprod/sdf speed-tier
+  WATs byte-length-identical vs HEAD). Verified combined: simd
+  158/158, optimizer 213/213, determinism 5/5, parity 18/18,
+  battery 3098/0, kernel rebuilt on 5.7.12. CI should now go fully
+  green on the jz side (remaining red = user-WIP test262 rows).
   REFERENCE DATASET REFRESHED QUIET 2026-07-27 (blocking run, zero
   concurrent work): headline JZ 1.00x -- C 1.91x Rust 2.00x Zig 2.12x
   AS 2.09x Go 4.38x MoonBit 4.15x Porffor 4.67x V8 2.21x behind;
