@@ -136,14 +136,20 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22
   'never-grown',
   'selfhost-source', 'selfhost-includes', 'abi', 'examples',
-  'errors', 'parser-bugs', 'transform',   // 'features' cleared 2026-07-23: 49/49 green once the kernel parsed literal-key shorthand methods (SKM family fix)
-  'destruct', 'closures', 'inference',
+  'transform',   // 'features' cleared 2026-07-23: 49/49 green once the kernel parsed literal-key shorthand methods (SKM family fix)
+  // 'errors','parser-bugs','destruct','closures','json' UN-EXCLUDED FOR GOOD
+  // 2026-07-27: the frontier hunt fixed two of the three order-shifted rows
+  // (Array.isArray-as-value closure-support + bool-identity closure-ABI Bad
+  // int) — full kernel leg with these five in is baseline-clean.
+  'inference',   // ONE order-shifted row remains (census: const-table arrow args
+                 // in a bundled init — passes standalone, fails in-suite; the
+                 // last exclusions-frontier item, mechanism in .work/todo.md)
   'simd', 'optimizer', 'slot-hazards',
   // 'objects','strings','spread' cleared 2026-07-23: reassigned-param val
   // poisoning fixed the Array.isArray const-fold class (analyze.js declared-
   // guard) — 14 kernel value bugs cleared in one fix; json keeps 2 structural
   // shaped-parser-selection asserts (parity gap, not value bugs).
-  'json'])  // 'speculate' cleared 2026-07-23: narrowed-param versioning-guard fix
+  ])  // 'speculate' cleared 2026-07-23: narrowed-param versioning-guard fix
   // 'async','generators' cleared 2026-07-25: two roots — (1) closure-path boxed
   // cells now allocate before body emission (mutually-recursive const arrows no
   // longer capture stale null cells; every machine compiled hollow before);

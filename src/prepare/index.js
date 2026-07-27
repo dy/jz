@@ -41,6 +41,7 @@ import { VAL } from '../reps.js'
 import { STMT_OPS } from '../ast.js'
 import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from '../op-policy.js'
 import { recordGlobalRep } from '../compile/infer.js'
+import { FIRST_CLASS_BUILTIN_NAMES } from '../compile/emit.js'
 import { isFuncRef } from '../ir.js'
 import {
   CTORS, COLLECTION_CTORS, TIMER_NAMES,
@@ -681,6 +682,11 @@ export default function prepare(node) {
   // unless we catch them here.
   if (!ctx.module.modules.fn) {
     const funcNames = new Set(ctx.func.list.map(f => f.name))
+    // A bare reference is a first-class function VALUE if it names either a user
+    // function or a builtin `builtinFunctionValue` can mint a closure-table entry
+    // for (e.g. `xs.filter(Array.isArray)` — prep collapses the member access to
+    // the string "Array.isArray" before this scan runs, same shape as a user name).
+    const isFuncValueName = a => funcNames.has(a) || FIRST_CLASS_BUILTIN_NAMES.has(a)
     const visit = (n) => {
       if (!Array.isArray(n)) return false
       const [op, ...args] = n
@@ -694,7 +700,7 @@ export default function prepare(node) {
         }
         for (let i = 1; i < args.length; i++) {
           const a = args[i]
-          if (typeof a === 'string' && funcNames.has(a)) return true
+          if (typeof a === 'string' && isFuncValueName(a)) return true
           if (visit(a)) return true
         }
         return false
@@ -705,12 +711,19 @@ export default function prepare(node) {
         return visit(args[0])
       }
       for (const a of args) {
-        if (typeof a === 'string' && funcNames.has(a)) return true
+        if (typeof a === 'string' && isFuncValueName(a)) return true
         if (visit(a)) return true
       }
       return false
     }
     let needs = visit(ast)
+    // DEP-module top-level inits live in ctx.module.moduleInits, NOT the entry
+    // ast (same convention as plan/scope.js's walk, program-facts.js's
+    // initCallSites, dyn-closure-tables.js's topRoots, …) — without walking them
+    // a bundled `export const T = { x2: (x) => … }` const-table's arrow property
+    // is invisible to this scan, ctx.closure.table never gets set up, and the
+    // importing module's `T.x2(n)` call reaches emit with no table to index into.
+    if (!needs && ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) if (visit(mi)) { needs = true; break }
     if (!needs) for (const f of ctx.func.list) if (f.body && visit(f.body)) { needs = true; break }
     if (!needs && ctx.module.initFacts?.hasFuncValue) needs = true
     if (needs) includeForCallableValue()

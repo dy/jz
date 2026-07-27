@@ -1480,8 +1480,14 @@ export const isNull = (f64expr) => matchF64Bits(f64expr,
   (e) => typed(['i64.eq', ['i64.reinterpret_f64', e], ['i64.const', NULL_NAN]], 'i32'))
 
 /** Mask that clears the boolean atom's truth bit, mapping TRUE_NAN→FALSE_NAN.
- *  `(bits & BOOL_ATOM_MASK) === FALSE_NAN` recognizes both in one i64.and+i64.eq. */
-const BOOL_ATOM_MASK = '0x' + BigInt.asUintN(64, ~(1n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
+ *  `(bits & BOOL_ATOM_MASK) === FALSE_NAN` recognizes both in one i64.and+i64.eq.
+ *  Built via i64Hex (32-bit-half formatting), NOT raw `.toString(16)` on the
+ *  BigInt — this mask has bit 63 set, and under self-host BigInts are raw
+ *  signed i64 bits (kind-erased), so `.toString(16)` on a bit-63-set value
+ *  renders a signed "-…" fragment (the same nanPrefixMaskHex regression class
+ *  i64Hex exists to avoid — see layout.js). Confirmed root cause of the
+ *  in-kernel "Bad int 0x000000-100000001" watr parse failure. */
+const BOOL_ATOM_MASK = i64Hex(~(1n << BigInt(LAYOUT.AUX_SHIFT)))
 
 /** Check if f64 expr is a boxed-boolean atom (TRUE_NAN or FALSE_NAN). Returns i32.
  *  Single-eval: masks the truth bit and compares to FALSE_NAN once. */

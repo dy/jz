@@ -227,6 +227,21 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  EXCLUSIONS FRONTIER 2-OF-3 FIXED, FIVE FILES UN-EXCLUDED FOR GOOD
+  2026-07-27 (frontier agent + in-thread land): the Array.isArray-
+  as-value closure-support row and the bool-identity closure-ABI
+  'Bad int' row fixed at the root (emit.js + ir.js + prepare/
+  index.js — the host-side singleton class the structural-isCallable
+  fix opened); errors/parser-bugs/destruct/closures/json now
+  PERMANENTLY in the kernel gate (~430 tests joined; full leg =
+  only the 2 user-WIP typedarray rows). Remaining frontier: ONE row
+  — inference census (const-table arrow args in a bundled init),
+  standalone-green in-suite-red, inference stays excluded with the
+  note. Gates: battery 3100/0, parity 18/18, kernel leg baseline.
+  Warm-margin probe finding banked: watOptimize = 60% of compile
+  wall but runs on BOTH ratio sides — the ratio lever must be a
+  relatively-worse-in-wasm phase; next probe = kernel-side stage
+  timing hooks.
   BOXED-BIGINT DESIGN COMPLETE, IMPLEMENTATION GATED 2026-07-27
   (design agent, read-only, honest stop): REPRESENTATION = heap-boxed
   PTR.BIGINT (tag 5 free in layout.js TAG_MASK), 8-byte i64 heap

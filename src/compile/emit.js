@@ -244,6 +244,15 @@ const FIRST_CLASS_BUILTIN_BODY = {
     `(then (f64.const 1)) (else (f64.const 0)))`,
 }
 
+// Every builtin name `builtinFunctionValue` can mint a closure-table entry for.
+// prepare's pre-emit scans (post-prep `visit` below, and recordModuleInitFacts's
+// visitFuncValue) must recognize a bare reference to one of these as "needs the
+// closure table" exactly like a user function name — otherwise a program whose
+// ONLY first-class-function usage is a bare builtin reference (no user closures
+// anywhere to otherwise trigger `fn` module inclusion) reaches emit with
+// ctx.closure.table unset and builtinFunctionValue's precondition check fails.
+export const FIRST_CLASS_BUILTIN_NAMES = new Set([...Object.keys(FIRST_CLASS_UNARY_MATH), ...Object.keys(FIRST_CLASS_BUILTIN_BODY)])
+
 function builtinFunctionValue(name) {
   const op = FIRST_CLASS_UNARY_MATH[name]
   const bodyGen = FIRST_CLASS_BUILTIN_BODY[name]
