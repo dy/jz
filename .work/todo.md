@@ -227,6 +227,32 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  BOXED-BIGINT DESIGN COMPLETE, IMPLEMENTATION GATED 2026-07-27
+  (design agent, read-only, honest stop): REPRESENTATION = heap-boxed
+  PTR.BIGINT (tag 5 free in layout.js TAG_MASK), 8-byte i64 heap
+  cell, mkPtrIR-consistent with STRING/OBJECT -- unambiguous by
+  NAN_PREFIX disjointness from all subnormals; full 64-bit range
+  FORCES heap indirection (47-bit payload can't inline 2^63). SEAM =
+  NEW boxBigInt/unboxBigInt pair in ir.js beside asI64/fromI64
+  (those are a SHARED f64<->i64 bridge with 30+ non-bigint callers
+  -- NOT retaggable); substitute at the ~10 VAL.BIGINT-gated emit
+  sites + typeof arm + core.js $__typeof (currently NO bigint arm --
+  carrier bigints silently report "number") + $__eq (bit-eq fast
+  path must grow a PTR.BIGINT deref-compare arm) + number.js helpers
+  + interop export boundary. HARD BLOCKERS: (1) module/typedarray.js
+  = USER WIP, holds BigInt64Array raw-carrier I/O -- lockstep
+  dependency, two coexisting representations would silently break
+  typeof/===/arithmetic on array-roundtripped bigints; (2) $__eq
+  rewrite is semantic, not drive-by. OPEN DECISION (user): naive
+  always-box LEAKS 8B/iteration on bigint accumulator loops (no GC
+  for permanent tags) -- accept as documented boxed-type cost vs
+  measured small-int fast path. SEQUENCE: user lands typedarray ->
+  ONE atomic commit across layout/ir/emit/core/number/typedarray/
+  interop -> leak decision resolved BEFORE landing -> full gates.
+  No smaller honest checkpoint exists (partial migration fails
+  gates by construction; the fold corruption happens inside the
+  compiler's own self-hosted evaluation, so literal-only slices
+  address a symptom shape, not the mechanism).
   CLAIMS GATE HARDENED 2026-07-27 (audit blocker 4): freshness scope
   now includes layout.js + package.json + package-lock.json (the
   watr-upgrade blind spot) PLUS a watr-version cross-check vs the
