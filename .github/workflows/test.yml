@@ -51,8 +51,8 @@ jobs:
             const w = String(compile(src, { wat: true, warnings, optimize: { level: 'speed', whyNotSimd: true } }))
             console.log('has v128:', /v128|i16x8|f32x4/.test(w), '| arch:', process.arch, process.platform, '| node:', process.version, '| v8:', process.versions.v8)
             console.log('warnings:', JSON.stringify(warnings.entries ?? warnings).slice(0, 2000))
-            const fn = w.split(String.fromCharCode(10) + '  (func ').find(c => c.startsWith('\$f') && !c.startsWith('\$f\$'))
-            console.log('fn head:', JSON.stringify((fn ?? '').slice(0, 600)))
+            const pre = String(compile(src, { wat: true, optimize: { level: 'speed', watr: false } }))
+            console.log('PRE-WATR-B64:', Buffer.from(pre).toString('base64'))
           })"
       - name: test (${{ matrix.variant }})
         run: |
