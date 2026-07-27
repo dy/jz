@@ -22,7 +22,7 @@ import { inc, declGlobal, PTR } from '../src/ctx.js'
 export default (ctx) => {
   const seeded = typeof ctx.transform.randomSeed === 'number'
   const seedConst = seeded ? ((ctx.transform.randomSeed >>> 0) || 1) : 0 // xorshift dies on 0
-  const wasi = ctx.transform.host === 'wasi'
+  const wasi = ctx.transform.targetProfile.wasiShims
 
   const needEntropy = () => wasi
     ? hostImport('wasi_snapshot_preview1', 'random_get',

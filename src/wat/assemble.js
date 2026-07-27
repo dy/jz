@@ -345,7 +345,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     for (const s of ctx.runtime.typeofStrs)
       typeofInit.push(['global.set', `$__tof_${s}`, emit(['str', s])])
   }
-  const wasiTimers = ctx.features.timers && ctx.transform.host === 'wasi'
+  const wasiTimers = ctx.features.timers && ctx.transform.targetProfile.timerModel === 'blocking'
   if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length || wasiTimers) {
     const initIR = normalizeIR(init)
     const startFn = ['func', '$__start']
@@ -476,7 +476,7 @@ export function dedupClosureBodies(closureFuncs, sec) {
  * Phase: closure-table finalize + ABI shrink.
  */
 export function finalizeClosureTable(sec) {
-  let indirectUsed = ctx.transform.host === 'wasi'
+  let indirectUsed = ctx.transform.targetProfile.preserveClosureTable
   const scan = (n) => {
     if (!Array.isArray(n) || indirectUsed) return
     if (n[0] === 'call_indirect') { indirectUsed = true; return }

@@ -24,6 +24,66 @@ import { resetNameUids } from 'watr/optimize'
 export { getFactStore }
 
 /**
+ * TargetProfile (audit P1): the output target's compile-policy, named and frozen
+ * per target, replacing scattered `ctx.transform.host === 'wasi'` string checks
+ * (23 read sites across compile/emit/module before this — one string comparison,
+ * 23 places that could drift). Fields are named for the POLICY they gate, not the
+ * host they happen to come from today, so a third target (the 'gc' backend index.js
+ * already reserves the error message for) adds a profile entry, not a new axis
+ * threaded through every call site.
+ *
+ * Distinct from HOST_PROFILE (src/ctx.js) — that's the capabilities of the ENGINE
+ * RUNNING THE COMPILER (currently empty); this is the policy of the wasm OUTPUT's
+ * target host. Do not conflate the two (ctx.js says the same in the other direction).
+ *
+ * @typedef {Object} TargetProfile
+ * @property {boolean} envImports     `env.*` host-JS bridge is available as a
+ *   dynamic-dispatch fallback (__ext_call/__ext_set/__ext_prop, host globals via
+ *   env import, fetch, navigator.hardwareConcurrency, opts._interp glue). false
+ *   under wasi — wasmtime/wasmer/deno have no JS runtime to satisfy `env.__ext_*`,
+ *   so those paths must degrade (fold to undefined/1) or error at compile time
+ *   instead of emitting an import nothing will service.
+ * @property {boolean} jsStringInterop  the `wasm:js-string` builtin-import string
+ *   carrier (externref zero-copy reads) is usable. Needs a JS host to intercept the
+ *   `wasm:js-string` namespace (or polyfill it) — off under wasi, which must stay
+ *   portable across non-JS runtimes.
+ * @property {boolean} wasiShims      link the WASI-syscall module shims (module/
+ *   timer.js, console.js, fs.js setupWasi; module/math.js, crypto.js
+ *   wasi_snapshot_preview1 random_get) instead of the JS-host shims (setupJsHost;
+ *   env.rngSeed/env.random).
+ * @property {boolean} commandEntry   legalize WASI command-mode module structure:
+ *   re-export `run`/`_start` as `() -> ()` (wasmtime/wasmer reject f64-returning
+ *   entries under those names) and convert module init from the wasm `start`
+ *   section to the reactor `_initialize` export convention (WASI forbids WASI
+ *   calls inside `start` — no memory is wired yet for a top-level console.log).
+ * @property {'host'|'blocking'} timerModel  'host': a JS event loop drives
+ *   timers/rAF — jz emits no scheduler. 'blocking': no host scheduler exists, so
+ *   `__timer_init`/`__timer_loop` run inline in `__start` when the program uses
+ *   timers.
+ * @property {boolean} preserveClosureTable  keep the closure funcref table (and
+ *   the `$ftN` call_indirect type) live even when this compile's own scan finds no
+ *   `call_indirect` — a wasi build's embedder may supply table-calling host
+ *   functions the in-module scan can't see.
+ */
+const TARGET_PROFILES = Object.freeze({
+  js: Object.freeze({
+    envImports: true, jsStringInterop: true, wasiShims: false,
+    commandEntry: false, timerModel: 'host', preserveClosureTable: false,
+  }),
+  wasi: Object.freeze({
+    envImports: false, jsStringInterop: false, wasiShims: true,
+    commandEntry: true, timerModel: 'blocking', preserveClosureTable: true,
+  }),
+})
+
+/** Resolve a TargetProfile for a `ctx.transform.host` value. Unknown/undefined
+ *  hosts fall back to 'js' (beginSession's own default), so a caller can pass the
+ *  raw (possibly-undefined) opts.host through without a null-check. */
+export function targetProfileFor(host) {
+  return host === 'wasi' ? TARGET_PROFILES.wasi : TARGET_PROFILES.js
+}
+
+/**
  * Fact-store slices (audit P1, stage 5): program-facts.js / analyze.js /
  * analyze-scans.js used to keep their walk/body/binding-use memos in private
  * module-level Maps/WeakMaps, each cleared by its own resetXCache() export
@@ -121,6 +181,7 @@ export function beginSession({ emitter, globals, hooks, source, optimize, warnin
   initWarnings(warnings ?? null)
   if (strict) ctx.transform.strict = true
   if (host) ctx.transform.host = host
+  ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   ctx.transform.optimize = resolveOptimize(optimize)
   ctx.transform.optFlags = optFlagsOf(ctx.transform.optimize)
   assertCtxInvariants('post-reset')

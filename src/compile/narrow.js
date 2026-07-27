@@ -2159,7 +2159,7 @@ export default function narrowSignatures(programFacts, ast) {
  *  and wasi builds must stay portable (wasmtime/Go/Rust). Opt out on JS with
  *  `optimize: { jsstring: false }` (e.g. side-by-side benchmarks). */
 function jsstringEnabled() {
-  if (ctx.transform.host === 'wasi') return false
+  if (!ctx.transform.targetProfile.jsStringInterop) return false
   if (ctx.transform.optimize?.jsstring === false) return false
   return true
 }

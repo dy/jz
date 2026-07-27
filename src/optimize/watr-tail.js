@@ -109,16 +109,64 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
 }
 
 /**
- * Run the whole final-optimizer tail on an assembled `['module', …]` tree:
- * watr (the sole generic fixpoint, exactly once) followed by the one narrow
- * post-watr proof repair. See index.js's call-site comments for why the
- * repair exists (watr's inliner can merge stable-pointee decodes into one
- * caller past the multi-site hoist threshold) and why there is NO post-watr
- * generic optimizer. `time` is the host profiler hook; the kernel passes none.
+ * Target legalization (audit P1, TargetProfile stage): the seam for module-level,
+ * target-conditional rewrites that belong at THIS layer — the fully assembled
+ * `['module', …]` tree, right before watr's fixpoint runs — keyed off a
+ * TargetProfile (src/session.js targetProfileFor), not a raw host string. Called
+ * unconditionally from watrTail below, on both pipelines, so a future rewrite
+ * lands once here instead of being re-derived per call site.
+ *
+ * Currently the IDENTITY transform. The site inventory for this increment (grep
+ * every `ctx.transform.host` read, ~24 sites) found exactly two rewrites that are
+ * genuinely module-level and target-conditional — not per-node emit policy — but
+ * BOTH currently execute one pipeline stage earlier than this function, mutating
+ * the pre-assembly `sec` sections object built in src/compile/index.js's
+ * `compile()`, not the assembled tree this function receives:
+ *
+ *   - WASI command-mode export legalization (src/compile/index.js ~2189-2211,
+ *     gated on `targetProfile.commandEntry`): re-exports `run`/`_start` as
+ *     `() -> ()` wrapper funcs (wasmtime/wasmer reject f64-returning entries
+ *     under those names). Runs on `sec.funcs` BEFORE `optimizeModule(sec, …)` —
+ *     jz's own per-function optimizer pass observes the wrapper body. Moving the
+ *     rewrite here changes what that pass sees, not just where the wrapper is
+ *     built.
+ *   - WASI reactor `_initialize` conversion (src/compile/index.js ~2436-2464,
+ *     same gate): converts the wasm `start` section to the reactor `_initialize`
+ *     export convention (WASI forbids WASI calls inside `start` — no memory is
+ *     wired yet for a top-level console.log). Runs late in `compile()`, right
+ *     before the funcCount `byCalls` sort and `stripLocalRenameSuffixes` — closer
+ *     to this layer already, but still inside `sec`, ordered against those two
+ *     passes.
+ *
+ * Relocating either is a real pipeline-order change: this file's own
+ * `snapshotInit` placement comment (index.js) declines a structurally identical
+ * reorder for the same reason — moving a target-conditional rewrite across
+ * `optimizeModule` or the final sort changes what those passes observe, not
+ * merely where the code lives, and needs its own dedicated verification. Not
+ * bundled into this increment (an honest empty-but-wired stage beats folding an
+ * unverified reorder into an unrelated one). NEXT SLICE: port both to patch the
+ * assembled `['module', …]` node array directly (find/rewrite `func`/`start`
+ * nodes by name instead of mutating `sec.funcs`/`sec.start` in place), move
+ * their call sites here, and re-verify the WASI leg byte-for-byte.
  */
-export function watrTail(module, cfg, { funcCount = 0, boundaryPins = [], time = (n, f) => f() } = {}) {
+export function legalizeForTarget(module, targetProfile) {
+  return module
+}
+
+/**
+ * Run the whole final-optimizer tail on an assembled `['module', …]` tree:
+ * target legalization, then watr (the sole generic fixpoint, exactly once),
+ * then the one narrow post-watr proof repair. See index.js's call-site comments
+ * for why the repair exists (watr's inliner can merge stable-pointee decodes
+ * into one caller past the multi-site hoist threshold) and why there is NO
+ * post-watr generic optimizer. `time` is the host profiler hook; the kernel
+ * passes none. `targetProfile` (src/session.js targetProfileFor) is threaded
+ * through from both callers so a real legalization can consult it once landed.
+ */
+export function watrTail(module, cfg, { funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile } = {}) {
+  const legalized = legalizeForTarget(module, targetProfile)
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
-  const optimized = watrOpts ? time('watOptimize', () => watOptimize(module, watrOpts)) : module
+  const optimized = watrOpts ? time('watOptimize', () => watOptimize(legalized, watrOpts)) : legalized
   if (cfg.hoistGlobalPtrOffset !== false) {
     const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
     const stableGlobals = stablePtrGlobalNames()

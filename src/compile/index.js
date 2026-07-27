@@ -2186,7 +2186,7 @@ export default function compile(ast, profiler) {
   // wasmtime/wasmer reject f64-returning functions under those names.
   // Parametric entries skip this — a CLI invocation has no way to supply args.
   const wasiCommandExports = new Set()
-  if (ctx.transform.host === 'wasi') {
+  if (ctx.transform.targetProfile.commandEntry) {
     const WASI_ENTRIES = new Set(['run', '_start'])
     for (const [exportName, val] of Object.entries(ctx.func.exports)) {
       if (!WASI_ENTRIES.has(exportName)) continue
@@ -2433,7 +2433,7 @@ export default function compile(ast, profiler) {
   // initialize(), wasmtime) call it once memory is wired. Command entries
   // (`run`/`_start`) self-init through the same once-guard, so a runtime that
   // invokes a command without calling `_initialize` still runs init exactly once.
-  if (ctx.transform.host === 'wasi') {
+  if (ctx.transform.targetProfile.commandEntry) {
     const sFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func')
     const sDirIdx = sec.start.findIndex(n => Array.isArray(n) && n[0] === 'start')
     if (sFn) {

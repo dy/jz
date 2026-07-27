@@ -479,7 +479,7 @@ const setupCtx = (code, opts) => {
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
       if (name.startsWith('__ext_')) continue
-      if (ctx.transform.host === 'wasi') throw new Error(`host:'wasi' does not support _interp['${name}']: env imports are unavailable in WASI. Implement it natively.`)
+      if (!ctx.transform.targetProfile.envImports) throw new Error(`host:'wasi' does not support _interp['${name}']: env imports are unavailable in WASI. Implement it natively.`)
       ctx.features.external = true
       const params = Array(fn.length).fill(['param', 'f64'])
       ctx.module.imports.push(['import', '"env"', `"${name}"`, ['func', `$${name}`, ...params, ['result', 'f64']]])
@@ -566,7 +566,7 @@ const jzCompileInner = (code, opts = {}) => {
   // wrong output. Surface the gap at compile so the caller can pick a comparator,
   // type-annotate the receiver, or wait for native lowering. Read `extImports`
   // (populated in pullStdlib) — `core.includes` has had these removed by then.
-  if (ctx.transform.host === 'wasi' && ctx.core.extImports?.size) {
+  if (!ctx.transform.targetProfile.envImports && ctx.core.extImports?.size) {
     const ext = [...ctx.core.extImports].sort()
     err(
       `host: 'wasi' — compiled wasm would require JS-host imports that wasmtime/wasmer/deno cannot satisfy:\n  ` +
@@ -590,6 +590,7 @@ const jzCompileInner = (code, opts = {}) => {
       ? [...cfg._vectorizedFnNames].filter(name => ctx.func.map.get(name.slice(1))?.exported)
       : [],
     time,
+    targetProfile: ctx.transform.targetProfile,
   })
   // NO post-watr generic optimizer. jz does all lowering — including auto-vectorization — before
   // watr (src/wat/assemble.js optimizeModule → optimizeFunc); watr is the sole generic fixpoint and

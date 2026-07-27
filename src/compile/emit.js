@@ -3188,7 +3188,7 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
           ['i64.const', i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))]]],
       ['then', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]]],
       ['else', undefExpr()]], 'f64')
-    const closureOnly = usesDynProps(vt) || ctx.transform.host === 'wasi'
+    const closureOnly = usesDynProps(vt) || !ctx.transform.targetProfile.envImports
     inc('__dyn_get_expr', '__ptr_type')
     if (!closureOnly) { inc('__ext_call'); ctx.features.external = true }
     const extFallback = closureOnly ? undefExpr()
@@ -3228,7 +3228,7 @@ function externalMethodFallback({ obj, method, parsed }) {
   // no-op returning `undefined`. This is by-design so polymorphic code
   // can target js and wasi from one source; users who want fail-fast
   // pass `strict: true` (handled above).
-  if (ctx.transform.host === 'wasi') return undefExpr()
+  if (!ctx.transform.targetProfile.envImports) return undefExpr()
   warnDeopt('deopt-method', `method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(…)\` on a value whose type couldn't be resolved dispatches through the JS host (\`__ext_call\`) — a wasm→JS round-trip per call, orders of magnitude slower than a direct call. Restructure so the receiver's type is provable, or keep it off the hot path.`)
   inc('__ext_call')
   ctx.features.external = true
@@ -5304,7 +5304,7 @@ export function emit(node, expect) {
     // payload across the wasm↔JS global boundary (same hazard as env.print —
     // see module/console.js header). asF64() reinterprets to f64 at each read.
     if (HOST_GLOBALS.has(node) && !isBoundName(node) && !isGlobal(node)) {
-      if (ctx.transform.host === 'wasi') err(`host:'wasi': reference to host global \`${node}\` requires an env import. Remove the reference or use host:'js'.`)
+      if (!ctx.transform.targetProfile.envImports) err(`host:'wasi': reference to host global \`${node}\` requires an env import. Remove the reference or use host:'js'.`)
       ctx.features.external = true
       ctx.core.hostGlobals.add(node)
       return typed(['global.get', `$${node}`], 'i64')

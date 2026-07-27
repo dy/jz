@@ -23,7 +23,7 @@ const ARITY = { fetch: 2 }
 export default (ctx) => {
   for (const [name, arity] of Object.entries(ARITY)) {
     ctx.core.emit[name] = (...args) => {
-      if (ctx.transform.host === 'wasi')
+      if (!ctx.transform.targetProfile.envImports)
         warn('host-global', `\`${name}\` binds from the JS host — under host:'wasi' wire env.${name} yourself or instantiation will fail`, {})
       hostImport('env', name, ['func', `$__env_${name}`,
         ...Array.from({ length: arity }, () => ['param', 'i64']), ['result', 'i64']])

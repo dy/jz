@@ -510,6 +510,14 @@ export function reset(proto, globals, bridge) {
                         // instantiation time. 'wasi': error at compile time if any `__ext_*` import
                         // would be emitted, since wasmtime/wasmer hosts have no JS runtime to satisfy
                         // them and silent fallback would corrupt output.
+    targetProfile: null, // TargetProfile (audit P1): the named, frozen output-target policy object
+                        // derived from `host` — set right after `host` in session.js beginSession
+                        // (targetProfileFor). Consumers gate on ITS named fields (envImports,
+                        // jsStringInterop, wasiShims, commandEntry, timerModel,
+                        // preserveClosureTable), not on `host === 'wasi'` directly, so a third
+                        // target adds a profile, not a new string comparison at every call site.
+                        // Distinct from HOST_PROFILE below (compiler-engine capabilities) — this is
+                        // the OUTPUT target's policy, not the engine running the compiler.
     inspect: false,     // when true, compile() additionally populates ctx.inspect with the inferred
                         // per-function signatures, locals, and JSON shapes — readable by editor
                         // hosts for inlay hints / hover types without re-running the analyzer.

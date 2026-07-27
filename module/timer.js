@@ -342,6 +342,6 @@ const setupJsHost = (ctx) => {
 }
 
 export default (ctx) => {
-  if (ctx.transform.host === 'wasi') setupWasi(ctx)
+  if (ctx.transform.targetProfile.wasiShims) setupWasi(ctx)
   else setupJsHost(ctx)
 }

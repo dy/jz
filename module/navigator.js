@@ -16,7 +16,7 @@ import { warn } from '../src/ctx.js'
 
 export default (ctx) => {
   ctx.core.emit['navigator.hardwareConcurrency'] = () => {
-    if (ctx.transform.host === 'wasi') {
+    if (!ctx.transform.targetProfile.envImports) {
       warn('host-global', `\`navigator.hardwareConcurrency\` has no WASI source — folded to 1; size worker pools from the embedder instead`, {})
       return typed(['f64.const', 1], 'f64')
     }

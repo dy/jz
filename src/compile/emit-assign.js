@@ -508,7 +508,7 @@ export function emitElementAssign(arr, idx, val) {
     ctx.func.locals.set(objTmp, 'f64')
     ctx.func.locals.set(arrTmp, 'f64')
     ctx.func.locals.set(resultTmp, 'f64')
-    if (ctx.transform.host !== 'wasi') ctx.features.external = true
+    if (ctx.transform.targetProfile.envImports) ctx.features.external = true
     inc('__hash_set')
     const storeIR = emitElementAssign(arrTmp, idx, val)
     return block64(
@@ -856,7 +856,7 @@ export function emitPropertyAssign(obj, prop, val) {
       inc('__dyn_set')
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
     }
-    if (objType == null && ctx.transform.host !== 'wasi') {
+    if (objType == null && ctx.transform.targetProfile.envImports) {
       ctx.features.external = true
     }
     inc('__hash_set')
@@ -878,7 +878,7 @@ export function emitPropertyAssign(obj, prop, val) {
       return [writeback, tget]
     })
   }
-  if (ctx.transform.host !== 'wasi') ctx.features.external = true
+  if (ctx.transform.targetProfile.envImports) ctx.features.external = true
   inc('__dyn_set')
   return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
 }

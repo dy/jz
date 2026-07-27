@@ -135,7 +135,7 @@ const setupWasi = (ctx) => {
 }
 
 export default (ctx) => {
-  if (ctx.transform.host === 'wasi') setupWasi(ctx)
+  if (ctx.transform.targetProfile.wasiShims) setupWasi(ctx)
   else {
     const reject = (m) => () => err(`fs.${m} needs a WASI host — compile with host:'wasi' (CLI --host wasi), or wire your own file access via {imports}`)
     ctx.core.emit['fs.read'] = reject('read')

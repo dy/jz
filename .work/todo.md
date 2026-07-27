@@ -227,6 +227,19 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  TARGETPROFILE LANDED 2026-07-27 (the last untouched P1 item):
+  named frozen per-target policy profile (js/wasi) constructed in
+  beginSession from opts.host -- fields name the POLICY (wasiShims,
+  envImports, jsStringInterop, commandEntry, timerModel...) not the
+  host; the scattered ctx.transform.host boolean gates across src/ +
+  module/{console,core,crypto,fs,navigator,timer,web} migrated to
+  profile fields (spot pattern: `host === 'wasi'` ->
+  `targetProfile.wasiShims`); legalization seam threaded at
+  watr-tail. Gates: battery 3098/0, wasi leg 3100/0, parity 18/18,
+  kernel leg baseline (2 fails both user-WIP: typedarray row +
+  headline row from their live bench.js edits). With this, audit P1
+  = solver DONE, CompileSession seam DONE, TargetProfile DONE,
+  LoopPlan slices 1-4 (full candidate model remains).
   CI SIMD RED ROOT-PROVEN 2026-07-27: a clean-HEAD worktree
   reproduces `has v128: false` LOCALLY -- the f32->i16 encode
   vectorization depends on the USER'S UNCOMMITTED module/typedarray

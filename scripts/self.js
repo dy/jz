@@ -40,6 +40,7 @@ function optimizeTail(module, cfg) {
     boundaryPins: cfg._vectorizedFnNames?.size
       ? [...cfg._vectorizedFnNames].filter(name => ctx.func.map.get(name.slice(1))?.exported)
       : [],
+    targetProfile: ctx.transform.targetProfile,
   })
 }
 

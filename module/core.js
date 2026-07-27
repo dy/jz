@@ -1311,7 +1311,7 @@ export default (ctx) => {
       if (vt == null) {
         // In WASI mode, values are always JSON-derived (never PTR.EXTERNAL host objects).
         // Skip the external branch and dispatch through the typed HASH/OBJECT path.
-        const isWasi = ctx.transform.host === 'wasi'
+        const isWasi = !ctx.transform.targetProfile.envImports
         // `fromOptional` (a `?.prop` read) short-circuits on nullish, so its
         // PTR.EXTERNAL arm is dead unless host externals are already in play —
         // don't force the __ext_prop import just for an optional read.

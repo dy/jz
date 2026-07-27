@@ -7,6 +7,45 @@ import jz, { compile } from '../index.js'
 import { wasi } from '../wasi.js'
 import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'
+import { targetProfileFor } from '../src/session.js'
+import { ctx } from '../src/ctx.js'
+
+// === TargetProfile (audit P1) ===
+// Pins the js/wasi policy objects src/session.js's beginSession derives from
+// `host` — the single place ~24 scattered `ctx.transform.host === 'wasi'`
+// checks across compile/emit/module now read a named field from instead.
+// A field flip here means every consumer keyed on it flips too, so this is
+// the one test that has to catch a wrong default.
+
+test('TargetProfile: js vs wasi field values', () => {
+  const js = targetProfileFor('js')
+  const wasi_ = targetProfileFor('wasi')
+  is(js.envImports, true, 'js: env.* host bridge available')
+  is(js.jsStringInterop, true, 'js: wasm:js-string carrier usable')
+  is(js.wasiShims, false, 'js: JS-host module shims, not WASI syscalls')
+  is(js.commandEntry, false, 'js: no WASI command/reactor legalization')
+  is(js.timerModel, 'host', 'js: host event loop drives timers')
+  is(js.preserveClosureTable, false, 'js: closure table follows the call_indirect scan')
+
+  is(wasi_.envImports, false, 'wasi: no JS host to satisfy env.__ext_*')
+  is(wasi_.jsStringInterop, false, 'wasi: wasm:js-string needs a JS host')
+  is(wasi_.wasiShims, true, 'wasi: WASI-syscall module shims')
+  is(wasi_.commandEntry, true, 'wasi: command/reactor legalization required')
+  is(wasi_.timerModel, 'blocking', 'wasi: no host scheduler, inline __timer_loop')
+  is(wasi_.preserveClosureTable, true, 'wasi: table kept for embedder-supplied host fns')
+
+  ok(Object.isFrozen(js), 'js profile is frozen')
+  ok(Object.isFrozen(wasi_), 'wasi profile is frozen')
+  is(targetProfileFor(undefined), js, 'undefined host resolves to the js profile object')
+  is(targetProfileFor('bogus'), js, 'unrecognized host falls back to the js profile object')
+})
+
+test('TargetProfile: beginSession wires ctx.transform.targetProfile from host', () => {
+  compile(`export let f = () => 1`, { host: 'js' })
+  is(ctx.transform.targetProfile, targetProfileFor('js'), 'host:js compile installs the js profile')
+  compile(`export let f = () => 1`, { host: 'wasi' })
+  is(ctx.transform.targetProfile, targetProfileFor('wasi'), 'host:wasi compile installs the wasi profile')
+})
 
 // === console.log ===
 
