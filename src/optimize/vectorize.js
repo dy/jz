@@ -4680,6 +4680,33 @@ function matchOuterPixelLoop(blockNode) {
   return { oLabel, loopNode, preamble, pixelIVs, pivStart, pxVar: oExit.ind, widthBound, pivType, obody, oExit, innerIdxs, hasImpureCall: obody.some(hasImpureCall) }
 }
 
+/**
+ * Substitute every pixel-IV `local.get` in `n` with (IV + k), in the IV's own wasm type —
+ * the per-lane epilogue bump (lane k of a strip re-runs the scalar epilogue at pixel index
+ * base+k). Every outer-pixel recognizer (tryDivergentEscapeVectorize, tryPerPixelColor,
+ * tryOuterStrip, tryIteratedReduce, tryConvColumn) re-derived this exact walk, closed over
+ * its own local `pivType` — already a field of the LoopPlan's matchOuterPixelLoop descriptor
+ * (`outer.pivType`, Map pixel-IV name → wasm type); hoisted here parametrized on pivType.
+ */
+function bumpPixelIV(pivType, n, k) {
+  if (k === 0) return n
+  if (isArr(n) && n[0] === 'local.get' && pivType.has(n[1]))
+    return [pivType.get(n[1]) + '.add', n, [pivType.get(n[1]) + '.const', k]]
+  return isArr(n) ? n.map(c => bumpPixelIV(pivType, c, k)) : n
+}
+
+/**
+ * The two lanes of a pixel-IV local (or its alias) as an f64x2 ramp [v, v+1] — an i32 IV
+ * converts per lane. Every outer-pixel recognizer that builds a per-pixel coordinate lane
+ * (tryPerPixelColor, tryOuterStrip, tryIteratedReduce) re-derived this identically; hoisted
+ * as the LoopPlan companion to bumpPixelIV, same pivType parametrization.
+ */
+function rampPixelIV(pivType, piv) {
+  return pivType.get(piv) === 'f64'
+    ? ['f64x2.replace_lane', 1, ['f64x2.splat', ['local.get', piv]], ['f64.add', ['local.get', piv], ['f64.const', 1]]]
+    : ['f64x2.replace_lane', 1, ['f64x2.splat', ['f64.convert_i32_s', ['local.get', piv]]], ['f64.convert_i32_s', ['i32.add', ['local.get', piv], ['i32.const', 1]]]]
+}
+
 function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
   // Outer per-pixel scaffold (+ LICM preamble feeding both SIMD path and tail) —
   // matched once at the dispatch (LoopPlan), consumed here.
@@ -4950,10 +4977,7 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
     if (n[0] === 'global.get') return ['f64x2.splat', n]   // loop-invariant module global (e.g. R3)
     return [LANE_PURE.f64.get(n[0]).simd, ...n.slice(1).map(lift)]
   }
-  const bump = (n, k) => k === 0 ? n           // substitute every pixel-IV with (IV + k), in its type
-    : (isArr(n) && n[0] === 'local.get' && pivType.has(n[1]))
-      ? [pivType.get(n[1]) + '.add', n, [pivType.get(n[1]) + '.const', k]]
-      : (isArr(n) ? n.map(c => bump(c, k)) : n)
+  const bump = (n, k) => bumpPixelIV(pivType, n, k)   // LoopPlan: matchOuterPixelLoop's pivType
 
   // Build a per-pixel c-var's two lanes by lifting its init to f64x2: the pixel IV becomes the
   // ramp [v, v+1], a dependency on another c-var resolves to that c-var's already-built lane
@@ -5292,11 +5316,7 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
   const impureCall = (n) => isArr(n) && ((n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.') && !(pureFuncMap && pureFuncMap.has(n[1]))) || n.some(impureCall))
   if (obody.some(impureCall)) return null
 
-  // bump: substitute every pixel IV with (IV + k) in its own type — for the lane-k epilogue.
-  const bump = (n, k) => k === 0 ? n
-    : (isArr(n) && n[0] === 'local.get' && pivType.has(n[1]))
-      ? [pivType.get(n[1]) + '.add', n, [pivType.get(n[1]) + '.const', k]]
-      : (isArr(n) ? n.map(c => bump(c, k)) : n)
+  const bump = (n, k) => bumpPixelIV(pivType, n, k)   // LoopPlan: matchOuterPixelLoop's pivType
 
   // Pixel-coordinate aliases: a local consistently CSE'd to `convert_i32_s(pixelIV)` (jz tees the f64
   // pixel-x once — reused for the store address AND the per-pixel math — so it lives inside the i32
@@ -5315,9 +5335,7 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
     }
   }
   // The two lanes of a pixel IV (or its alias): [v, v+1], in f64 (an i32 IV is converted per lane).
-  const rampOf = (piv) => pivType.get(piv) === 'f64'
-    ? ['f64x2.replace_lane', 1, ['f64x2.splat', ['local.get', piv]], ['f64.add', ['local.get', piv], ['f64.const', 1]]]
-    : ['f64x2.replace_lane', 1, ['f64x2.splat', ['f64.convert_i32_s', ['local.get', piv]]], ['f64.convert_i32_s', ['i32.add', ['local.get', piv], ['i32.const', 1]]]]
+  const rampOf = (piv) => rampPixelIV(pivType, piv)   // LoopPlan: matchOuterPixelLoop's pivType
 
   const id = freshIdRef.next++
   const nm = (s) => `$__ppc${id}_${s}`
@@ -5576,12 +5594,8 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
 
   const id = freshIdRef.next++
   const nm = (s) => `$__os${id}_${s}`
-  const bump = (n, k) => k === 0 ? n
-    : (isArr(n) && n[0] === 'local.get' && pivType.has(n[1])) ? [pivType.get(n[1]) + '.add', n, [pivType.get(n[1]) + '.const', k]]
-    : (isArr(n) ? n.map(c => bump(c, k)) : n)
-  const rampOf = (piv) => pivType.get(piv) === 'f64'
-    ? ['f64x2.replace_lane', 1, ['f64x2.splat', ['local.get', piv]], ['f64.add', ['local.get', piv], ['f64.const', 1]]]
-    : ['f64x2.replace_lane', 1, ['f64x2.splat', ['f64.convert_i32_s', ['local.get', piv]]], ['f64.convert_i32_s', ['i32.add', ['local.get', piv], ['i32.const', 1]]]]
+  const bump = (n, k) => bumpPixelIV(pivType, n, k)   // LoopPlan: matchOuterPixelLoop's pivType
+  const rampOf = (piv) => rampPixelIV(pivType, piv)   // LoopPlan: matchOuterPixelLoop's pivType
   const readsName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => readsName(c, name)))
 
   const laneMap = new Map()   // f64 lane-local (per-pixel-varying) name → its v128 shadow
@@ -5787,12 +5801,8 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const shadowOf = (v) => { let s = laneMap.get(v); if (!s) { s = nm(v.replace(/\W/g, '')); laneMap.set(v, s) } return s }
   let sawHeavy = false            // a transcendental lifted inside a loop → SIMD is worth it
 
-  const bump = (n, k) => k === 0 ? n
-    : (isArr(n) && n[0] === 'local.get' && pivType.has(n[1])) ? [pivType.get(n[1]) + '.add', n, [pivType.get(n[1]) + '.const', k]]
-    : (isArr(n) ? n.map(c => bump(c, k)) : n)
-  const rampOf = (piv) => pivType.get(piv) === 'f64'
-    ? ['f64x2.replace_lane', 1, ['f64x2.splat', ['local.get', piv]], ['f64.add', ['local.get', piv], ['f64.const', 1]]]
-    : ['f64x2.replace_lane', 1, ['f64x2.splat', ['f64.convert_i32_s', ['local.get', piv]]], ['f64.convert_i32_s', ['i32.add', ['local.get', piv], ['i32.const', 1]]]]
+  const bump = (n, k) => bumpPixelIV(pivType, n, k)   // LoopPlan: matchOuterPixelLoop's pivType
+  const rampOf = (piv) => rampPixelIV(pivType, piv)   // LoopPlan: matchOuterPixelLoop's pivType
   const readsName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => readsName(c, name)))
   // Lane-invariant: reads no per-pixel lane local and no pixel IV → identical value in both lanes.
   const laneInvariant = (n) => !isArr(n) ? true
@@ -6062,9 +6072,7 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const findStore = (n) => { if (!isArr(n)) return; if (STORE_OPS[n[0]]) hasStore = true; n.forEach(findStore) }
   epilogue.forEach(findStore)
   if (!hasStore) return null
-  const bump = (n, k) => k === 0 ? n
-    : (isArr(n) && n[0] === 'local.get' && pivType.has(n[1])) ? [pivType.get(n[1]) + '.add', n, [pivType.get(n[1]) + '.const', k]]
-    : (isArr(n) ? n.map(c => bump(c, k)) : n)
+  const bump = (n, k) => bumpPixelIV(pivType, n, k)   // LoopPlan: matchOuterPixelLoop's pivType
   const epiLane = (k) => [
     ['local.set', accName, ['f64.convert_i32_s', ['i32x4.extract_lane', k & 3, ['local.get', k < 4 ? loV : hiV]]]],
     ...epilogue.map(s => bump(s, k)),
