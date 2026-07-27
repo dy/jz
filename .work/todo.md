@@ -227,6 +227,17 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  REFERENCE DATASET REFRESHED QUIET 2026-07-27 (blocking run, zero
+  concurrent work): headline JZ 1.00x -- C 1.91x Rust 2.00x Zig 2.12x
+  AS 2.09x Go 4.38x MoonBit 4.15x Porffor 4.67x V8 2.21x behind;
+  native C 1.02x. meta.commit = HEAD (claims FRESH axis GREEN).
+  Claims red list down to FOUR: trace 1.452 (branch-layout hard
+  tail), sdf 1.256 (symbolic-hull research tail), shapes 1.166
+  (TurboFan-level tail), glyfparse 1.151 (jittery lane -- led in
+  targeted pairs same week; borderline). sort/crc32/fft/synth/
+  levenshtein all CLEARED from committed evidence. tinygo axis
+  awaits user CLT + install. This is the honest pre-watr-publish
+  claims state.
   CARRIER WALL MAPPED + PINS SETTLED 2026-07-27 (in-thread, watr-
   publish runway): (1) ctx.features.bigint SEEDED false in reset --
   the absent-dyn-key read misfired truthy in-kernel, turning the
