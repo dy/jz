@@ -5279,13 +5279,21 @@ export function emit(node, expect) {
       return ir
     }
     // Emitter table: only namespace-resolved names (contain '.', e.g. 'math.PI') — safe from user variable collision.
-    // `handler.length` distinguishes the two flavors of entry: arity-0 handlers
-    // are constants (e.g. `math.PI` → emits `f64.const PI`) and can be invoked
-    // directly here. Arity-≥1 handlers expect the surrounding call node, so
-    // bare-name use of them is a first-class-value reference — wrap as a closure.
+    // Two flavors of entry: arity-0 handlers are constants (e.g. `math.PI` →
+    // emits `f64.const PI`) and can be invoked directly here; arity-≥1 handlers
+    // expect the surrounding call node, so bare-name use of them is a
+    // first-class-value reference — wrap as a closure. The flavor test is
+    // STRUCTURAL membership in the first-class tables, NOT `handler.length`:
+    // function arity reads are unsupported in jz output semantics, so when the
+    // compiler itself runs self-hosted, `.length` is undefined and an
+    // arity-based test routed every first-class builtin into the niladic
+    // handler() — an empty-IR internal error (`({sqrt} = Math)` in-kernel).
+    // `handler.length` remains only as the fallback that preserves the
+    // friendly "cannot be used as first-class value" error natively for
+    // callable builtins NOT in the tables.
     if (node.includes('.') && ctx.core.emit[node]) {
       const handler = ctx.core.emit[node]
-      const isCallable = handler.length > 0
+      const isCallable = FIRST_CLASS_UNARY_MATH[node] != null || FIRST_CLASS_BUILTIN_BODY[node] != null || handler.length > 0
       return isCallable ? builtinFunctionValue(node) : handler()
     }
     // Auto-import known host globals (WebAssembly, globalThis, etc.). Emit only

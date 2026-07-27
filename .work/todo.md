@@ -227,6 +227,31 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  LEAK HUNT RESOLVED TO TWO ROOTS 2026-07-26 (in-thread): (1) FIXED:
+  destruct's `({sqrt, abs} = Math)` in-suite failure -- emit.js's
+  first-class-vs-niladic builtin dispatch keyed on `handler.length`,
+  and function-arity reads are UNSUPPORTED in jz output semantics
+  (verified: f.length === undefined in both native-jz and kernel
+  output), so the self-hosted compiler routed every first-class
+  builtin into the niladic handler() -> empty-IR internal error.
+  Fix: STRUCTURAL membership (FIRST_CLASS_UNARY_MATH /
+  FIRST_CLASS_BUILTIN_BODY) with .length only as the native fallback
+  for the friendly unsupported-name error. Verified: native 248/248
+  (destruct+math+errors), kernel destruct standalone 69/69, the
+  10-file in-suite prefix -- destruct row GONE. (2) NAMED, OPEN: the
+  data.js P0-2 pin failures are NOT compile bugs -- direct
+  compileViaKernel compiles export -5e-324 and 2^52-bigints EXACTLY;
+  the harness jz() path exports -1 because the EXPORT-BOUNDARY KIND
+  MARSHALING is missing on the kernel leg: native compiles carry an
+  export-kind table the interop wrap consults to distinguish
+  bigint-carrier bits from genuine subnormals; the kernel returns
+  raw bytes without it -> host wrap falls back to the magnitude
+  heuristic -> carrier misread. FIX DIRECTION: kernel ABI conveys
+  export kinds (custom section or a kinds-JSON export) and interop
+  consults it on the kernel path exactly as native. The earlier
+  'SSO ir.js delta causes it' bisect verdict was confounded by
+  stale dists -- the interop-kind explanation fits all evidence
+  (bare instantiate path exact, jz() path misreads, native green).
   EXCLUSIONS BURN-DOWN PROBED 2026-07-26 -- IN-SUITE LEAK CLASS
   ISOLATED: all 7 debt files (errors 111, parser-bugs 23, transform
   9, destruct 69, closures 105, inference 86, json 64 = ~467 tests)
