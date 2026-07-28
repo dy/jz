@@ -227,6 +227,22 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  CENSUS ROW DEMYSTIFIED 2026-07-28: NOT order-dependent -- the row
+  fails STANDALONE on the current dist, and the mechanism is a plain
+  kernel compile bug with a 3-LINE REPRO: compileViaKernel of
+  `import { T } from "./m.jz"; export let f = (k) => T[k?"a":"b"](2)`
+  with modules {'./m.jz': 'export const T = { a: (x)=>x+1, b: (x)=>
+  x+2 }'} THROWS message "0" in-kernel (native OK). Bisected
+  ingredients: bigint irrelevant, plain imports OK, imported fn OK
+  -- the breaker is the IMPORTED CONST-TABLE-OF-ARROWS + DYNAMIC KEY
+  DISPATCH through the module-bundling path (closure-table/devirt
+  machinery meeting importSources in-kernel). Earlier 'passes
+  standalone' observations were stale-dist artifacts; the row's
+  in-suite-only reputation is dead. NEXT: hunt the throw site (err
+  with payload 0 -- likely a raw wasm throw or err(0) in the
+  closure-table build), fix, then inference joins the gate and the
+  exclusions burn-down is COMPLETE. Repro script: scratchpad/
+  census3.mjs.
   TIMING MEASUREMENTS SUSPENDED 2026-07-27 (laptop UNPLUGGED, user
   FYI): battery power = throttled/unstable clocks on macOS -- warm
   rounds read 1.020/1.053/0.927 with fft 0.64 (implausible spread =
