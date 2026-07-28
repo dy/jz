@@ -227,6 +227,15 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  TIMING MEASUREMENTS SUSPENDED 2026-07-27 (laptop UNPLUGGED, user
+  FYI): battery power = throttled/unstable clocks on macOS -- warm
+  rounds read 1.020/1.053/0.927 with fft 0.64 (implausible spread =
+  power noise). The collection-op agent's change measured as a warm
+  regression (1.039-1.073) in that window and was REVERTED to
+  baseline -- verdict UNRELIABLE, its diff persists in the agent
+  transcript for plugged-in re-evaluation. RULE: no warm-cap, paired
+  -bench, or reference-refresh conclusions on battery; correctness
+  gates (battery/parity/kernel leg) unaffected and stand.
   WARM-MARGIN LEVER LOCATED 2026-07-27 (compileProfile diagnostic
   landed in self.js -- per-stage kernel wall times over the ABI):
   stage-share differential kernel-vs-native (crc32 corpus, 5 warm
