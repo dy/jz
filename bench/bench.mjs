@@ -1142,6 +1142,9 @@ if (JSON_PATH) {
     host: { platform: process.platform, arch: process.arch, cpu: cpus()[0]?.model ?? null },
     versions: Object.fromEntries(Object.entries({
       jz: JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version,
+      // the codegen dependency the claims gate cross-checks (test/bench-claims.js
+      // freshness): evidence compiled with a different watr than installed is stale.
+      watr: JSON.parse(readFileSync(join(ROOT, 'node_modules/watr/package.json'), 'utf8')).version,
       node: process.version,
       asc: has('asc') && ver('asc'),
       porffor: has(PORF_BIN) && ver(PORF_BIN),

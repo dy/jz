@@ -329,6 +329,20 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   0.7 set from real portability -- go/zig port 43/60=0.72), applied
   uniformly to wasm+JIT+porf-native lanes. Producer side (meta.
   versions.watr emission, tinygo lane) remains user-WIP/CLT-gated.
+  CLEAN-WORKTREE CERTIFICATION 4b149108 (rule's first application):
+  3102 total / 3095 pass / 1 fail / 6 skip -- the one fail is the
+  predicted simd f32->i16 user-WIP dependency, FIXED at HEAD by
+  b1176b4a (ToIntN landing). invariants dbg leg 18/18 clean. HEAD
+  8ffad675 certification due after the legalizeForTarget slice lands.
+  WIP TREE FULLY LANDED 2026-07-28 (user directive "no other WIP,
+  commit or delete"): b1176b4a ToIntN/sumPrecise/atan2 (+2 kernel-leg
+  ToIntN rows = burn-down follow-up), c703f63a bench producer (memKb
+  peak-RSS axis, porf-native git lane, watr EH exclusion, evidence at
+  ab5e7026), afc7b381 site/docs, 8ffad675 goals+ledger. hash-lane
+  branch VERIFIED fully merged (ancestor, 0 ahead) and deleted
+  local+remote. NOTE: producer still does not emit meta.versions.watr
+  (claims freshness cross-check will fail on next refresh until
+  added) -- now solo-scope since bench.mjs is landed.
   EXCLUSIONS BURN-DOWN COMPLETE 2026-07-28: the census root =
   `new Set(undefined)` -- ES says the CONSTRUCTOR skips iteration on
   a nullish iterable (empty set), but jz's new.Set routed through
