@@ -25,7 +25,7 @@
  */
 
 import { ctx } from '../../ctx.js'
-import { invalidateLocalsCache } from '../analyze.js'
+import { invalidateAllBodyFacts } from '../analyze.js'
 import { collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown } from '../program-facts.js'
 import narrowSignatures, {
   specializeBimorphicTyped, speculateTypedParams, refineDynKeys,
@@ -178,7 +178,7 @@ export default function plan(ast, profiler) {
   t('refineSlotIntCensus', () => analyzeSchemaSlotIntCertain(ast, { paramReps: programFacts.paramReps }))
   // The late upgrades land through analyzeBody's trackers — drop the cached
   // walks so emit-time re-analysis sees the new field kinds.
-  for (const f of ctx.func.list) if (f.body && !f.raw) invalidateLocalsCache(f.body)
+  invalidateAllBodyFacts()
   strictBoundaryTypeCheck(programFacts)
 
   adviseProgram(programFacts)

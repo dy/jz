@@ -35,7 +35,7 @@ import { intLiteralValue } from '../static.js'
 import { intCertainMap, typedStaticLen } from '../type.js'
 import {
   analyzeBody, unboxablePtrs, inheritPtrAliases, cseSafeLoadBases, boxedCaptures,
-  analyzeStructInline, analyzeUnionInline, invalidateLocalsCache,
+  analyzeStructInline, analyzeUnionInline, reanalyzeBody,
 } from './analyze.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep, REP_FIELDS } from '../reps.js'
@@ -597,8 +597,7 @@ function analyzeFuncForEmit(func, programFacts) {
   // narrowSignatures called it before our pre-seed, when params still had no
   // inferred VAL.TYPED, so the cached widths reflect the pre-narrow state.
   // Re-walk now with reps in place.
-  invalidateLocalsCache(body)
-  const bodyFacts = block ? analyzeBody(body) : null
+  const bodyFacts = reanalyzeBody(body, () => block ? analyzeBody(body) : null)
   ctx.func.locals = bodyFacts ? bodyFacts.locals : new Map()
   if (bodyFacts?.valTypes) {
     // A PARAMETER name has no `let`/`const` declaration node inside body for
@@ -662,8 +661,7 @@ function analyzeFuncForEmit(func, programFacts) {
   // without an f64 round-trip. Gated: programs without strict slots skip the
   // extra walk.
   if (block && ctx.schema.slotI32Certain?.size) {
-    invalidateLocalsCache(body)
-    ctx.func.locals = analyzeBody(body).locals
+    ctx.func.locals = reanalyzeBody(body).locals
   }
   if (block) {
     boxedCaptures(body)
@@ -1770,8 +1768,7 @@ function emitClosureBody(cb) {
     Object.assign(boxedSets, { boxedCaptureNames, boxedValueCaptureNames, boxedParamNames, preboxedLocalInits })
   }
   if (block) {
-    invalidateLocalsCache(cb.body)
-    for (const [k, v] of analyzeBody(cb.body).locals) if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
+    for (const [k, v] of reanalyzeBody(cb.body).locals) if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
     // Usage-based shape inference for closure params not seeded by captureValTypes.
     // (Captures already have their parent's val type via cb.valTypes above.)
     inferLocals(cb.body, cb.params.filter(p => !ctx.func.localReps?.get(p)?.val))

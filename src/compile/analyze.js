@@ -1,4 +1,4 @@
-import { OPTF, getFactStore } from '../ctx.js'
+import { OPTF, getFactStore, DBG_INVARIANTS } from '../ctx.js'
 /**
  * Pre-analysis passes — type inference, local analysis, capture detection.
  *
@@ -225,11 +225,24 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
  *
  * NOTE on the cache (root A): entries are body-keyed and CAN read ctx that mutates
  * during narrowing (a `let x = f()` local's wasm type shifts when f's result
- * narrows). The cache is therefore *intentionally staleable* — invalidateLocalsCache
- * is placed at the phase boundaries where a stale read would matter, not "everywhere".
- * A recompute-vs-cache assertion was tried (JZ_DEBUG_CACHE) and abandoned: it fires
- * on benign staleness (the suite stays green through the divergence), so it can't
- * tell a real missing-invalidation from a harmless one. See .work/todo.md.
+ * narrows). The cache is therefore *intentionally staleable* — invalidation
+ * belongs at the phase boundaries where a stale read would matter, not
+ * "everywhere". A recompute-vs-cache assertion was tried (JZ_DEBUG_CACHE) and
+ * abandoned: it fires on benign staleness (the suite stays green through the
+ * divergence), so it can't tell a real missing-invalidation from a harmless
+ * one. See .work/todo.md.
+ *
+ * Ownership (audit P1 next-slice): callers no longer call invalidateLocalsCache
+ * directly (it stays exported for the rare bespoke case — see plan/literals.js's
+ * scalarizeFunctionObjectLiterals) — they go through reanalyzeBody / setFuncBody /
+ * invalidateBodies / invalidateAllBodyFacts (defined below, past invalidateLocalsCache),
+ * which fuse the mutation with its invalidation so there's no second call left
+ * to forget. A narrower, targeted safety net catches what fusion can't: a
+ * signature retype (param .type/.ptrKind/.ptrAux, sig.results/.ptrKind/
+ * .ptrAux/.unsignedResult) surviving under a stale cache HIT throws under
+ * JZ_DEBUG_INVARIANTS=1 (assertBodyFactsFresh, below analyzeBody) — see that
+ * function's doc for why it's scoped to signatures and not the full ambient
+ * staleness JZ_DEBUG_CACHE tried and failed at.
  */
 export function analyzeBody(body) {
   // Non-object bodies (`() => 0`, `() => x`, missing) have nothing to observe
@@ -241,7 +254,10 @@ export function analyzeBody(body) {
   }
   const bodyFacts = getFactStore().bodyFacts
   const hit = bodyFacts.get(body)
-  if (hit) return hit
+  if (hit) {
+    if (DBG_INVARIANTS) assertBodyFactsFresh(hit)
+    return hit
+  }
 
   const locals = new Map()
   const valTypes = new Map()
@@ -764,8 +780,62 @@ export function analyzeBody(body) {
   const neverGrown = doSchemas ? scanNeverGrown(body) : new Set()
 
   const result = { locals, valTypes, arrElemSchemas, arrElemSchemaSets, arrElemValTypes, arrElemTypedCtors, typedElems, typedLens, escapes, flatObjects, sliceViews, unsignedLocals, neverGrown, numericFill }
+  // null (not '') when ctx.func.current is unset at capture time — some legitimate
+  // callers (plan/literals.js's AST-rewrite passes, narrow.js's refreshCallerLocals)
+  // never set it, and a bare '' would then collide with a genuinely-empty signature's
+  // real fingerprint. null is an explicit "no reference to compare against" sentinel —
+  // see assertBodyFactsFresh, which skips the check whenever either side is null.
+  if (DBG_INVARIANTS) result.__sig = ctx.func.current ? sigFingerprint(ctx.func.current) : null
   bodyFacts.set(body, result)
   return result
+}
+
+/** DBG_INVARIANTS-only (src/ctx.js) signature fingerprint of the WASM-type
+ *  fields a retyping pass can flip: param .type/.ptrKind/.ptrAux and
+ *  sig.results/.ptrKind/.ptrAux/.unsignedResult. Used only by
+ *  assertBodyFactsFresh below — see that function's doc for why this is
+ *  narrower than a full recompute-and-compare (and why that's the point). */
+function sigFingerprint(sig) {
+  if (!sig) return ''
+  let s = ''
+  for (const p of sig.params) s += p.type + '.' + (p.ptrKind ?? '') + '.' + (p.ptrAux ?? '') + ','
+  return s + '|' + sig.results.join(',') + '|' + (sig.ptrKind ?? '') + '.' + (sig.ptrAux ?? '') + '.' + (sig.unsignedResult ?? '')
+}
+
+/** Freshness check for a bodyFacts cache HIT (audit P1 next-slice: the
+ *  invalidateLocalsCache staleability contract, formalized — see the DEPS
+ *  table in session.js). No-op unless JZ_DEBUG_INVARIANTS=1 (DBG_INVARIANTS,
+ *  same convention as assertCtxInvariants).
+ *
+ *  Deliberately NARROW: catches only a retype of THIS body's OWN function
+ *  signature (the fields sigFingerprint reads) surviving underneath a cache
+ *  entry captured before the retype — the "silent stale-types miscompile"
+ *  class the DEPS table calls out, and exactly the shape every hypothesis-
+ *  probe / emit-time site in narrow.js and index.js pairs an invalidate with
+ *  an immediate re-read to avoid (see reanalyzeBody below). Does NOT
+ *  recompute-and-compare the full facts — JZ_DEBUG_CACHE tried that and was
+ *  abandoned (.work/todo.md): it fired on ambient staleness the design
+ *  accepts as benign (ctx.func.localReps / ctx.types.typedElem overlay
+ *  swaps, ctx.schema.slotI32Certain rounds — the bodyFacts row's own
+ *  "intentionally staleable" comment above analyzeBody). A signature
+ *  fingerprint mismatch is never benign: the cached locals/valTypes were
+ *  derived from param/result WASM types that no longer hold.
+ *
+ *  Relies on ctx.func.current tracking "whose signature is this read
+ *  happening under" — the same save/restore idiom every retyping pass
+ *  already wraps its analyzeBody calls in. A caller that never sets it
+ *  (plan/literals.js's AST-rewrite passes; narrow.js's refreshCallerLocals,
+ *  which retypes ambient overlays, not the signature) captures/reads `null`
+ *  on that side; the check SKIPS whenever either side is null — no
+ *  reference to compare against is "unknown", not "known unchanged", so it
+ *  fails open rather than false-firing on a caller that was never part of
+ *  this contract. */
+function assertBodyFactsFresh(hit) {
+  if (hit.__sig == null || !ctx.func.current) return
+  const cur = sigFingerprint(ctx.func.current)
+  if (hit.__sig !== cur) {
+    err(`internal: analyzeBody cache read after an uninvalidated signature retype (fn: ${ctx.func.current?.name ?? '?'}) — a pass changed this function's param/result WASM type without invalidating its bodyFacts entry first (reanalyzeBody/setFuncBody/invalidateLocalsCache) (this is a jz bug — please report with a minimal repro)`)
+  }
 }
 
 /**
@@ -870,6 +940,80 @@ function widenLocalTypes(body, locals) {
  *  Same hook as `invalidateValTypesCache` — split names preserve caller intent. */
 export function invalidateLocalsCache(body) {
   if (body && typeof body === 'object') getFactStore().bodyFacts.delete(body)
+}
+
+/**
+ * Solver-owned bodyFacts mutation seam (audit P1 next-slice — see the DEPS
+ * table in session.js). The 14 pre-slice call sites across narrow.js/
+ * index.js/plan/literals.js/plan/index.js each independently paired a raw
+ * invalidateLocalsCache(body) with a later read or write and TRUSTED the
+ * author to keep the pairing intact — a dropped half is the "forgotten
+ * invalidation ⇒ silent stale-types miscompile" class the DEPS table names.
+ * These three functions collapse every such pairing into ONE call so there
+ * is no second half left to forget:
+ *
+ *   reanalyzeBody(body, read?)  — the "mutate ambient state, then read THIS
+ *     body's facts under the new state" pattern (hypothesis-probing param/
+ *     result narrowing in narrow.js; the params/localReps/typedElem/schema
+ *     overlay reseed immediately before an emit-time read in index.js).
+ *     Invalidates, then performs the read (default: analyzeBody(body); pass
+ *     `read` when the actual analyzeBody call is inside a callee, e.g.
+ *     narrow.js's evalTails). The read is unreachable without the
+ *     invalidate — there is no way to call this and skip it.
+ *
+ *   setFuncBody(func, node)     — the "structurally rewrite this function's
+ *     AST" pattern (plan/literals.js's loop unrolling / scalarization /
+ *     literal promotion). Assigns func.body AND drops any bodyFacts entry
+ *     for the new node in one step, covering both a fresh node (no-op
+ *     delete, cheap) and an in-place-mutated same-identity node (a real,
+ *     otherwise-easy-to-forget delete). Also the reason bindingUses' "no
+ *     surgical invalidation" contract (session.js DEPS table) stays honest:
+ *     every AST-rewriting pass reaches func.body through here, so a
+ *     restructured body is always a NEW object identity by construction,
+ *     and scanBindingUses' body-keyed cache naturally misses on it instead
+ *     of serving stale binding-use facts for the old shape.
+ *
+ *   invalidateBodies(bodies) / invalidateAllBodyFacts() — the phase-boundary
+ *     bulk flush (many bodies invalidated together, no immediate read):
+ *     narrow.js's per-phase sweeps, narrowReturnArrayElems's per-target
+ *     sweep, plan/index.js's post-narrowing flush before emit begins. Named
+ *     so a new phase boundary reaches for the existing primitive instead of
+ *     re-deriving its own `for (const f of ctx.func.list) invalidateLocalsCache(f.body)`.
+ *
+ * Ambient-overlay staleness (ctx.func.localReps / ctx.types.typedElem /
+ * ctx.schema.slotI32Certain changing WITHOUT a signature retype) stays the
+ * documented "intentionally staleable" surface above analyzeBody — the DBG
+ * freshness assert (assertBodyFactsFresh) deliberately does not cover it;
+ * see that function's doc for why. A pass that seeds one of those overlays
+ * and needs a fresh read still routes through reanalyzeBody, same as before
+ * — this slice changes WHO owns forgetting, not what the overlay contract
+ * permits.
+ */
+export function reanalyzeBody(body, read = () => analyzeBody(body)) {
+  invalidateLocalsCache(body)
+  return read()
+}
+
+/** Replace `func.body` and drop any bodyFacts entry for the new node — see
+ *  the seam doc above `invalidateLocalsCache`. */
+export function setFuncBody(func, node) {
+  func.body = node
+  invalidateLocalsCache(node)
+}
+
+/** Invalidate a known set of bodies (funcs already filtered by the caller —
+ *  e.g. narrowReturnArrayElems's `targets`). See the seam doc above. */
+export function invalidateBodies(bodies) {
+  for (const body of bodies) invalidateLocalsCache(body)
+}
+
+/** Invalidate every non-raw function body's bodyFacts entry — the
+ *  phase-boundary flush used when a signature-level fact just settled that
+ *  arbitrarily many caller bodies may have read stale (narrowing's own
+ *  callerLocals/valTypes lattices, or the final flush before emit begins).
+ *  See the seam doc above. */
+export function invalidateAllBodyFacts() {
+  for (const func of ctx.func.list) if (func.body && !func.raw) invalidateLocalsCache(func.body)
 }
 
 // Can this RHS expression produce null/undefined? FAIL-CLOSED: anything not

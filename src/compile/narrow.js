@@ -11,7 +11,8 @@ import { ctx, warn, err } from '../ctx.js'
 import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, callArgs, ASSIGN_OPS, extractParams, classifyParam } from '../ast.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from '../ir.js'
 import {
-  analyzeBody, findMutations, invalidateLocalsCache, mayBeNullish,
+  analyzeBody, findMutations, reanalyzeBody,
+  invalidateBodies, invalidateAllBodyFacts, mayBeNullish,
 } from './analyze.js'
 import { staticArrayElems, staticObjectProps } from '../static.js'
 import { scanBoundedLoops, exprType, typedElemCtor, typedStaticLen, intLevelMap } from '../type.js'
@@ -152,18 +153,17 @@ function callerArgSelfConsistentI32(func, k, callSites) {
     const arg = cs.argList[k]
     const callerFunc = cs.callerFunc
     if (typeof arg !== 'string' || !callerFunc?.body) { ok = false; break }
-    invalidateLocalsCache(callerFunc.body)
     touched.add(callerFunc.body)
     const savedCurrent = ctx.func.current
     ctx.func.current = callerFunc.sig
-    const locals = analyzeBody(callerFunc.body).locals
+    const locals = reanalyzeBody(callerFunc.body).locals
     ctx.func.current = savedCurrent
     if (locals.get(arg) !== 'i32') ok = false
   }
   func.sig.results = savedResults
   // The hypothesis tainted analyzeBody's cache for every touched caller body —
   // invalidate again so the next (real, non-hypothetical) read re-derives clean.
-  for (const body of touched) invalidateLocalsCache(body)
+  invalidateBodies(touched)
   return ok
 }
 
@@ -453,8 +453,7 @@ function refreshCallerLocals(callerCtx) {
       if (p.ptrKind === VAL.TYPED && p.ptrAux != null) { const c = ctorFromElemAux(p.ptrAux); if (c != null) te.set(p.name, c) }
     }
     ctx.types.typedElem = te
-    invalidateLocalsCache(func.body)
-    const fresh = analyzeBody(func.body).locals
+    const fresh = reanalyzeBody(func.body).locals
     for (const p of func.sig.params) if (!fresh.has(p.name)) fresh.set(p.name, p.type)
     callerCtx.get(func).callerLocals = fresh
   }
@@ -548,16 +547,14 @@ function narrowI32Results(funcs) {
       if (!r.allI32 && !r.allV128 && callsSelf(body, func.name)) {
         const saved = func.sig.results
         func.sig.results = ['i32']
-        invalidateLocalsCache(body)
-        const opt = evalTails(func, body, exprs)
+        const opt = reanalyzeBody(body, () => evalTails(func, body, exprs))
         if (opt.allI32 && (!opt.anyUnsigned || opt.allUnsigned)) {
           if (opt.allUnsigned) func.sig.unsignedResult = true
           changed = true
           continue
         }
         func.sig.results = saved
-        invalidateLocalsCache(body)
-        r = evalTails(func, body, exprs)
+        r = reanalyzeBody(body, () => evalTails(func, body, exprs))
       }
       // SIMD: every tail returns a lane vector → v128 result.
       if (r.allV128) {
@@ -854,9 +851,7 @@ function createPhaseState() {
     },
 
     invalidateBodyFacts() {
-      for (const func of ctx.func.list) {
-        if (func.body && !func.raw) invalidateLocalsCache(func.body)
-      }
+      invalidateAllBodyFacts()
       clearDerived()
     },
 
@@ -888,7 +883,7 @@ function narrowReturnArrayElems(field, paramReps, valueUsed) {
   let changed = true
   while (changed) {
     changed = false
-    for (const f of targets) invalidateLocalsCache(f.body)
+    invalidateBodies(targets.map(f => f.body))
     for (const func of targets) {
       if (func[field] != null) continue
       const isBlock = isBlockBody(func.body)

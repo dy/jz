@@ -35,7 +35,7 @@ import {
 } from '../../type.js'
 import { VAL } from '../../reps.js'
 import { includeModule } from '../../autoload.js'
-import { analyzeBody, invalidateLocalsCache } from '../analyze.js'
+import { analyzeBody, invalidateLocalsCache, setFuncBody } from '../analyze.js'
 import {
   isSimpleArg, fixedScalarTypedArray, fixedTypedArraysInBody, maxScalarTypedArrayLen, freshTypedArrayLocals,
   collectBindings,
@@ -530,14 +530,14 @@ export const scalarizeFunctionTypedArrays = (programFacts) => {
       while (guard++ < 6) {
         const r = unrollTypedArrayLoops(func.body, names)
         if (!r.changed) break
-        func.body = r.node
+        setFuncBody(func, r.node)
         changed = true
       }
     }
     const p = scalarizeTypedArrayParams(func, paramCands)
-    if (p.changed) { func.body = p.body; changed = true }
+    if (p.changed) { setFuncBody(func, p.body); changed = true }
     const l = scalarizeTypedArrayLiterals(func.body)
-    if (l.changed) { func.body = l.node; changed = true }
+    if (l.changed) { setFuncBody(func, l.node); changed = true }
     if (changed) invalidateLocalsCache(func.body)
   }
   return changed
@@ -1334,8 +1334,7 @@ export const promoteIntArrayLiterals = () => {
     if (!func.body || func.raw) continue
     const r = promoteIntArrayLiteralsInBody(func.body)
     if (r.changed) {
-      func.body = r.node
-      invalidateLocalsCache(func.body)
+      setFuncBody(func, r.node)
       if (!changed) includeModule('typedarray')
       changed = true
     }
@@ -1353,7 +1352,7 @@ export const scalarizeFunctionObjectLiterals = () => {
       invalidateLocalsCache(func.body)
       const r = scalarizeObjectLiterals(func.body, escapes)
       if (!r.changed) break
-      func.body = r.node
+      setFuncBody(func, r.node)
       changed = true
     }
   }

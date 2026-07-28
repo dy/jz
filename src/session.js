@@ -120,20 +120,50 @@ export function targetProfileFor(host) {
  *                                read, not a separate invalidation path.
  *   bodyFacts                    analyzeBody's per-function-body memo (locals,
  *                                valTypes, arrElemSchemas, …). Invalidated by:
- *                                (a) a fresh session (wholesale); (b)
- *                                invalidateLocalsCache(body) at the phase
- *                                boundaries where narrowing can retype a
- *                                body's locals underneath the cache — UNCHANGED
- *                                this increment (13 call sites; see
- *                                .work/todo.md next-slice note — this is the
- *                                staleability contract, not storage, so it's
- *                                out of scope here).
+ *                                (a) a fresh session (wholesale); (b) the
+ *                                solver-owned mutation seam (audit P1
+ *                                next-slice, src/compile/analyze.js, past
+ *                                invalidateLocalsCache) — reanalyzeBody(body,
+ *                                read?) fuses "mutate ambient state, read
+ *                                this body fresh" into one call;
+ *                                setFuncBody(func, node) fuses "rewrite this
+ *                                body's AST" with dropping its cache entry;
+ *                                invalidateBodies(bodies) /
+ *                                invalidateAllBodyFacts() name the
+ *                                phase-boundary bulk flush. The raw
+ *                                invalidateLocalsCache(body) primitive still
+ *                                exists (2 bespoke call sites remain in
+ *                                plan/literals.js) but is no longer the
+ *                                pass-author-facing API — a NEW pass reaches
+ *                                for one of the four seam functions instead
+ *                                of re-deriving its own invalidate-then-read
+ *                                pairing, so the "forgot the second half"
+ *                                failure mode is structural, not a matter of
+ *                                discipline. A signature-retyping miss that
+ *                                still slips through (raw `func.sig...=`
+ *                                without going through the seam) throws under
+ *                                JZ_DEBUG_INVARIANTS=1 (assertBodyFactsFresh,
+ *                                analyze.js, above analyzeBody) — scoped to
+ *                                param/result WASM-type fields only; a
+ *                                broader recompute-and-compare check
+ *                                (JZ_DEBUG_CACHE) was tried and abandoned —
+ *                                see analyzeBody's own module comment for why.
+ *                                Ambient-overlay staleness (ctx.func.localReps
+ *                                / ctx.types.typedElem / ctx.schema.slotI32Certain
+ *                                changing without a signature retype) stays
+ *                                the documented "intentionally staleable"
+ *                                surface — unchanged, still out of scope.
  *   bindingUses                  scanBindingUses's per-body free/mutated-name
  *                                summary. Invalidated by: a fresh session only
- *                                (wholesale) — no surgical invalidation exists;
- *                                callers that structurally mutate a body scan a
- *                                fresh body reference rather than reusing the
- *                                cached one.
+ *                                (wholesale) — no surgical invalidation exists,
+ *                                and this is fine, not a gap: every pass that
+ *                                restructures a body's AST now does so through
+ *                                setFuncBody (above), which always assigns a
+ *                                NEW func.body reference, so a caller reading
+ *                                scanBindingUses(func.body) after a rewrite is
+ *                                structurally reading a fresh WeakMap key, never
+ *                                a stale hit for the old shape (see the doc at
+ *                                resetBindingUsesCache, analyze-scans.js).
  *
  * ASSERT (a slice reset clears its dependents): programFacts's three
  * sub-caches share ONE `gen` counter and are always recreated together —

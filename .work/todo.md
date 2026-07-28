@@ -4,32 +4,33 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
-## Status (2026-07-25, current truth)
+## Status (2026-07-28, current truth — re-audit #3 reconciled)
 
-CLOSED: kernel byte-parity (PARITY_TODO empty, every corpus row identical at
-O0/O2/O3 -- three roots: elemOrigin gate, dyn-spread bool atom,
-recursionUnroll shared-acc reset); kernel suite value-debt zero excl. user
-WIP; front half unified (src/front.js: parse->guard->liftIIFEs->jzify->
-prepare->preEval consumed by index.js AND every self.js entry; audit-P0
-fold repros byte-identical; O0 fold rows in parity corpus); claims release
-gate landed (test/bench-claims.js in prepublishOnly: fresh/complete/winning,
-currently red by design). OPEN (audit 2026-07-25 order): P0-2 literal kind
-(5e-324 -> 1n self-host carrier), P0-3 warm margin (1.05-1.09x vs 0.99 cap),
-P0-4 reference refresh (stale 10 commits, tinygo 0 rows, 8 red cases -- worst
-trace 1.463x / shapes 1.474x), P1 session-owned fact solver + mandatory
-convergence throws, P1 canonical LoopPlan (descriptor shared, per-recognizer
-facts remain), P1 CompileSession/TargetProfile (59 ctx importers), P2 single
-pass registry, P2 kernel exclusions burn-down. Perf: aggregate jz leads every
-WASM lane; per-case reds are the claims-gate list; synth levers in review
-(select cost veto + stripCanon hoist-temp -- surgery proved 0.976x vs AS). Re-audit
-items landed: shared final-optimizer tail (watr-tail.js) + kernel byte-parity
-leg · six named O0 flags killing bare optimize-object gates (+ latent
-lean-hash O0 fix) · solver caller-ctx copies + throwing convergence caps ·
-PR #108 incorporated (snprintf clamp + ASan bench-c leg) · kernel modules-ABI
-(finally-scoping fix) · SSO/JSON cluster (reassigned-param val poisoning;
-objects/strings/spread cleared from KERNEL_EXCLUDE) · subscript
-template-escape fix (local commit) · JSON.parse(undefined) SyntaxError ·
-MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
+CLOSED: kernel byte-parity (PARITY_TODO empty, O0/O2/O3 identical); front
+half unified (src/front.js); claims gate landed + hardened (fresh incl.
+manifests/layout + watr cross-check, strict-leadership separate from band,
+CI job; red by design pending evidence); WARM MARGIN ATTAINED 07ffc292
+(inlinePtrOffsetFast: warm 0.93-0.97x vs 0.99 cap, audit-confirmed 0.927x
+clean; fresh 0.73); TargetProfile landed (frozen JS/WASI profiles,
+wasi leg 40/40 — legalizeForTarget still identity, native/w2c profile
+absent); pass registry single-authority (63 passes/22 keys/7 hot);
+exclusions burn-down (28 -> 22; errors/parser-bugs/destruct/closures/json/
+inference back in); solver convergence throws mandatory; session factStore.
+OPEN (re-audit #3 order): 1 land user typedarray WIP -> clean npm test at
+HEAD (clean-HEAD simd 157/1 f32->i16 — the ONLY battery red; my dirty-tree
+counts masked it, see LESSON below), 2 bench producer/claims integration
+(committed bench.mjs lacks meta.versions.watr + porf-native lane — user's
+uncommitted bench WIP likely carries both; coverage floor ">=5 rows" too
+weak -> eligible-count semantics), 3 reference refresh at HEAD (snapshot
+44cad082 now 7+ codegen commits stale; tinygo 0 rows CLT-gated, porf-native
+0 rows), 4 boxed-bigint (design banked; -5e-324/2^52-1n kernel rows remain
+curated until PTR.BIGINT), 5 JIT-leadership axis ungated in bench-claims
+(19 JIT losses / 9 cases in snapshot), 6 real legalizeForTarget + native
+TargetProfile + w2c cap recovery (jz-w2c geomean 1.330x, tokenizer 3.851x
+vs 3.5 cap), 7 solver-owned bodyFacts invalidation (in flight), 8 canonical
+LoopPlan (vectorize 6845 lines, 16-recognizer chain; no shared affine/
+alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
+4 red (glyfparse 1.151, sdf 1.256, trace 1.452, shapes 1.166).
 
 ## Open
 
@@ -263,6 +264,52 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   regression. Battery 3101/0, parity 18/18, ratchet 10/10 zero
   delta. The warm <=0.99 strict-win cap now passes on EVERY round
   -- last solo-scope committed-gate red is CLEARED.
+  RE-AUDIT #3 RECEIVED 2026-07-28 (verdicts reconciled into Status
+  header). LESSON (process, REPEAT OFFENSE): dirty-tree verification
+  again recorded green counts a clean HEAD cannot reproduce -- 72cc7fd1
+  said simd 158/158 but clean-committed HEAD fails f32->i16 encode
+  (157/1) because the user's uncommitted module/typedarray.js WIP
+  supplies the fix; the SAME confound was already dissected for the
+  linux-only CI red. RULE (now binding): any COMMIT-TIME green count
+  must come from a clean worktree of the exact commit (git worktree
+  add <tmp> <sha> + npm ci-equivalent + battery), or be reported as
+  "dirty-tree, user WIP present". In-tree runs remain fine for
+  RELATIVE pre/post checks of an unrelated diff. AUDIT CONFIRMS:
+  warm cap independently reproduced clean (0.927x warm / 0.725x
+  fresh, 5/5), targeted forwarding tests 4/4, TargetProfile wasi leg
+  40/40, inference kernel rows 86/86, parity 18/18 clean.
+  SOLVER-OWNED BODYFACTS INVALIDATION LANDED 2026-07-28 (audit item
+  7, declared next slice done): the 14 real invalidateLocalsCache
+  pairings (task said 16; import line + overcount) collapsed into
+  three seam primitives in compile/analyze.js -- reanalyzeBody(body,
+  read?) fuses invalidate+read (8 hypothesis-probe/emit-reseed
+  sites), setFuncBody(func,node) fuses AST-rewrite+invalidate (5
+  sites, also makes bindingUses' "no surgical invalidation" contract
+  structural: rewritten bodies are new identities by construction),
+  invalidateBodies/invalidateAllBodyFacts named phase-boundary
+  flushes (3 sites). 2 bespoke raw calls remain, both justified
+  (defensive trailing flush; read-invalidate-mutate fixpoint in
+  scalarizeFunctionObjectLiterals). SECOND NET: assertBodyFactsFresh
+  -- JZ_DEBUG_INVARIANTS-gated signature-fingerprint check on cache
+  HITS (params/results type+ptrKind+ptrAux only; null side skips --
+  the prior JZ_DEBUG_CACHE blanket-recompute attempt died of benign
+  ambient-staleness false fires, this one is scoped to genuine
+  signature retype misses); regression pins in test/invariants.js
+  plant a missing invalidation and prove the assert fires, and that
+  the seams never do. Ambient overlays (localReps/typedElem/
+  slotI32Certain) stay documented intentionally-staleable. GATES:
+  isolated npm test 3103/0 (+2 new), dbg-invariants leg 3101/0,
+  parity 18/18, ratchet 10/10 +0, dist clean, kernel leg 2419/2
+  user-WIP-only. DEPS table updated to the new API.
+  CLAIMS GATE STRENGTHENED 2026-07-28 (audit items 2-gate-side + 5):
+  JIT promise now gated -- JIT_RIVALS v8/deno/bun/jsc get the same
+  strict-leadership + 1.05-band tests as the wasm set (shared
+  caseRatios helper; snapshot truth: 13 JIT strict losses, 12 red,
+  worst dispatch 2.073x jsc -- red by design until evidence catches
+  up); coverage floor now >=70% of corpus per rival (was >=5 rows;
+  0.7 set from real portability -- go/zig port 43/60=0.72), applied
+  uniformly to wasm+JIT+porf-native lanes. Producer side (meta.
+  versions.watr emission, tinygo lane) remains user-WIP/CLT-gated.
   EXCLUSIONS BURN-DOWN COMPLETE 2026-07-28: the census root =
   `new Set(undefined)` -- ES says the CONSTRUCTOR skips iteration on
   a nullish iterable (empty set), but jz's new.Set routed through

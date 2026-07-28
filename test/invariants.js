@@ -12,7 +12,8 @@ import { is, ok } from 'tst/assert.js'
 import { readFileSync, readdirSync, statSync } from 'fs'
 import { join, relative } from 'path'
 import { compile } from '../index.js'
-import { ctx, reset } from '../src/ctx.js'
+import { ctx, reset, DBG_INVARIANTS } from '../src/ctx.js'
+import { analyzeBody, reanalyzeBody, setFuncBody } from '../src/compile/analyze.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from '../src/compile/emit.js'
 import { GLOBALS } from '../src/prepare/index.js'
 import { run } from './util.js'
@@ -119,6 +120,56 @@ test('invariant: i32 loop counter stays i32 in WAT', () => {
 test('invariant: division always produces f64 result', () => {
   const w = wat('export let f = (a, b) => a / b')
   ok(w.includes('f64.div'), 'division uses f64.div')
+})
+
+// ============================================================================
+// bodyFacts solver seam invariants (audit P1 next-slice — src/session.js DEPS
+// table, src/compile/analyze.js). The 14 pre-slice invalidateLocalsCache call
+// sites each independently paired a raw invalidate with a later read/write;
+// reanalyzeBody/setFuncBody/invalidateBodies/invalidateAllBodyFacts fuse that
+// pairing into one call so a new pass can't drop the invalidate half. As a
+// second, narrower net: a signature retype (param .type/.ptrKind/.ptrAux,
+// sig.results/…) that DOES slip through outside the seam is caught at
+// analyzeBody's cache-hit under JZ_DEBUG_INVARIANTS=1 (assertBodyFactsFresh)
+// — these tests plant exactly that "forgot to invalidate" bug and prove the
+// assert fires, then prove the seam itself never reproduces it.
+// ============================================================================
+
+test('invariant: analyzeBody cache-hit throws under JZ_DEBUG_INVARIANTS after an uninvalidated signature retype', () => {
+  if (onKernel()) return  // white-box probe of analyze.js internals — no in-kernel host ctx to inspect
+  if (!DBG_INVARIANTS) return  // the assert is a no-op outside the battery's dbg leg (JZ_DEBUG_INVARIANTS=1) — nothing to observe without it
+  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread })
+  compile('export let f = (a) => a + 1')
+  const func = ctx.func.map.get('f')
+  ctx.func.current = func.sig
+  analyzeBody(func.body) // populate/confirm the cache under the real, current signature
+  const p = func.sig.params[0]
+  const saved = p.type
+  p.type = saved === 'i32' ? 'f64' : 'i32' // simulate a pass retyping a param and FORGETTING to invalidate
+  let threw = null
+  try { analyzeBody(func.body) } catch (e) { threw = e }
+  p.type = saved
+  ok(threw && /uninvalidated signature retype/.test(threw.message),
+    `expected a stale-signature throw, got: ${threw ? threw.message : '(no throw)'}`)
+})
+
+test('invariant: the reanalyzeBody/setFuncBody seam never reproduces the stale-signature throw', () => {
+  if (onKernel()) return
+  if (!DBG_INVARIANTS) return
+  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread })
+  compile('export let f = (a) => a + 1')
+  const func = ctx.func.map.get('f')
+  ctx.func.current = func.sig
+  analyzeBody(func.body)
+  const p = func.sig.params[0]
+  p.type = p.type === 'i32' ? 'f64' : 'i32' // same retype as above, but read through the seam this time
+  const fresh = reanalyzeBody(func.body)
+  ok(fresh && fresh.locals instanceof Map, 'reanalyzeBody recomputes under the new signature instead of throwing')
+  // setFuncBody: an AST rewrite (structural, not a signature retype) must not
+  // leave a stale entry behind either — read the (same-identity) body again
+  // right after and confirm no throw.
+  setFuncBody(func, func.body)
+  analyzeBody(func.body)
 })
 
 // ============================================================================

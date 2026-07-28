@@ -8,11 +8,13 @@
  *
  *   1. FRESH    — no compiler-source commit may postdate the snapshot's
  *                 meta.commit: stale evidence proves nothing about HEAD.
- *   2. COMPLETE — every named wasm rival contributes parity-valid rows;
- *                 an absent rival is an uncontested (= unproven) claim.
- *   3. WINNING  — no case may trail its best comparable wasm rival beyond
- *                 the shared jitter band; band rows are ties, never leads,
- *                 and red rows void the "fastest wasm" claim outright.
+ *   2. COMPLETE — every named rival (wasm, JIT, porf-native) contributes
+ *                 parity-valid rows over ≥ COVERAGE_FLOOR of the corpus;
+ *                 an absent or token lane is an uncontested (= unproven) claim.
+ *   3. WINNING  — strict per-case leadership AND no case beyond the shared
+ *                 jitter band, for BOTH promises: "fastest wasm" (CLAIM_RIVALS)
+ *                 and "outruns the JIT" (JIT_RIVALS). Band rows are ties,
+ *                 never leads; red rows void the claim outright.
  */
 import test from 'tst'
 import { ok } from 'tst/assert.js'
@@ -29,6 +31,18 @@ const WASM_BAND_TOL = 1.05   // keep in lockstep with test/bench.js
 // native band as `porf-native`, presence-gated below, geomean-pinned in
 // test/bench.js.)
 const CLAIM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'tinygo', 'zig-wasm', 'as']
+// The OTHER published promise — "outruns the JIT" — same committed-evidence
+// discipline as the wasm claim (audit 2026-07-28: it was ungated; the snapshot
+// held 19 JIT losses across 9 cases that no test surfaced). Every JS-runtime
+// lane in the reference dataset counts; absence of a lane is a coverage hole,
+// not a pass (same COVERAGE_FLOOR as the wasm rivals).
+const JIT_RIVALS = ['v8', 'deno', 'bun', 'jsc']
+// Minimum per-rival coverage as a FRACTION of the corpus (audit 2026-07-28:
+// the old ">=5 rows" floor let 5 successes from a 60-case corpus count as
+// "contested"). 0.7 is set from real corpus portability, not convenience: the
+// least-portable maintained lanes (go/zig families) genuinely port 43/60 =
+// 0.72 of cases; a healthy lane clears 0.7, a token lane cannot.
+const COVERAGE_FLOOR = 0.7
 // Compiler-source scope for freshness: a commit touching only tests/docs/site
 // doesn't invalidate perf evidence; one touching these does.
 // EVERY codegen input (audit 2026-07-27: the old allowlist missed package.json/
@@ -61,63 +75,62 @@ test('claims: reference evidence is fresh (no compiler commits past meta.commit)
   ok(snapWatr === nowWatr, `reference dataset compiled with watr ${snapWatr}, installed is ${nowWatr} — re-run the reference bench`)
 })
 
-test('claims: every named wasm rival is contested (parity-valid rows present)', () => {
-  for (const rival of CLAIM_RIVALS) {
-    let rows = 0
-    for (const c of Object.values(cases)) {
-      const t = c.targets?.[rival]
-      if (t && t.medianUs > 0 && t.parity === 'ok') rows++
-    }
-    ok(rows >= 5, `rival '${rival}' has ${rows} parity-valid row(s) in the reference dataset (need ≥5) — the claim is uncontested against it`)
-  }
-})
-
-test('claims: Porffor contested via its native artifact (porf-native rows present)', () => {
+const parityRows = rival => {
   let rows = 0
   for (const c of Object.values(cases)) {
-    const t = c.targets?.['porf-native']
+    const t = c.targets?.[rival]
     if (t && t.medianUs > 0 && t.parity === 'ok') rows++
   }
-  ok(rows >= 5, `porf-native has ${rows} parity-valid row(s) in the reference dataset (need ≥5) — Porffor is uncontested in the evidence`)
-})
+  return rows
+}
 
-// STRICT LEADERSHIP — the actual "fastest wasm" claim: jz strictly faster than
-// the best rival on every case. Separate from the band test below (audit: a
-// ≤1.05 band row proves tolerance, not leadership). Both gate the release.
-test('claims: strict leadership — jz beats the best wasm rival on every case', () => {
-  const notLed = []
-  for (const [id, c] of Object.entries(cases)) {
-    const jz = c.targets?.jz
-    if (!jz || !(jz.medianUs > 0)) continue
-    let best = null, who = null
-    for (const rival of CLAIM_RIVALS) {
-      const t = c.targets?.[rival]
-      if (!t || !(t.medianUs > 0) || t.parity !== 'ok') continue
-      if (best == null || t.medianUs < best) { best = t.medianUs; who = rival }
-    }
-    if (best == null) continue
-    const ratio = jz.medianUs / best
-    if (ratio >= 1.0) notLed.push(`${id} ${ratio.toFixed(3)}× (${who})`)
+test('claims: every named rival is contested (coverage ≥ floor of the corpus)', () => {
+  const total = Object.keys(cases).length
+  const need = Math.ceil(total * COVERAGE_FLOOR)
+  for (const rival of [...CLAIM_RIVALS, ...JIT_RIVALS, 'porf-native']) {
+    const rows = parityRows(rival)
+    ok(rows >= need, `rival '${rival}' has ${rows}/${total} parity-valid rows (floor ${need}) — the claim is uncontested against it`)
   }
-  ok(notLed.length === 0, `strict leadership unproven on ${notLed.length} case(s): ${notLed.join(', ')}`)
 })
 
-test('claims: no red cases — jz within the band of the best wasm rival everywhere', () => {
-  const red = [], band = []
+// Per-case jz-vs-best-rival ratios for a rival set: [id, ratio, who].
+const caseRatios = rivals => {
+  const out = []
   for (const [id, c] of Object.entries(cases)) {
     const jz = c.targets?.jz
     if (!jz || !(jz.medianUs > 0)) continue
     let best = null, who = null
-    for (const rival of CLAIM_RIVALS) {
+    for (const rival of rivals) {
       const t = c.targets?.[rival]
       if (!t || !(t.medianUs > 0) || t.parity !== 'ok') continue
       if (best == null || t.medianUs < best) { best = t.medianUs; who = rival }
     }
-    if (best == null) continue
-    const ratio = jz.medianUs / best
-    if (ratio > WASM_BAND_TOL) red.push(`${id} ${ratio.toFixed(3)}× (${who})`)
-    else if (ratio >= 1.0) band.push(`${id} ${ratio.toFixed(3)}× (${who})`)
+    if (best != null) out.push([id, jz.medianUs / best, who])
+  }
+  return out
+}
+
+// STRICT LEADERSHIP — the actual claim: jz strictly faster than the best rival
+// on every case. Separate from the band test below (audit: a ≤1.05 band row
+// proves tolerance, not leadership). Both gate the release, for BOTH promises
+// (fastest-wasm vs CLAIM_RIVALS; outruns-the-JIT vs JIT_RIVALS).
+const strictTest = (label, rivals) => test(`claims: strict leadership — jz beats the best ${label} on every case`, () => {
+  const notLed = caseRatios(rivals).filter(([, r]) => r >= 1.0)
+    .map(([id, r, who]) => `${id} ${r.toFixed(3)}× (${who})`)
+  ok(notLed.length === 0, `strict ${label} leadership unproven on ${notLed.length} case(s): ${notLed.join(', ')}`)
+})
+
+const bandTest = (label, rivals) => test(`claims: no red cases — jz within the band of the best ${label} everywhere`, () => {
+  const red = [], band = []
+  for (const [id, r, who] of caseRatios(rivals)) {
+    if (r > WASM_BAND_TOL) red.push(`${id} ${r.toFixed(3)}× (${who})`)
+    else if (r >= 1.0) band.push(`${id} ${r.toFixed(3)}× (${who})`)
   }
   if (band.length) console.log(`  band (ties, not leads): ${band.join(', ')}`)
-  ok(red.length === 0, `red cases void the fastest-wasm claim: ${red.join(', ')}`)
+  ok(red.length === 0, `red cases void the ${label} claim: ${red.join(', ')}`)
 })
+
+strictTest('wasm rival', CLAIM_RIVALS)
+bandTest('wasm rival', CLAIM_RIVALS)
+strictTest('JIT', JIT_RIVALS)
+bandTest('JIT', JIT_RIVALS)
