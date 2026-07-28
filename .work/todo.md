@@ -32,6 +32,25 @@ LoopPlan (vectorize 6845 lines, 16-recognizer chain; no shared affine/
 alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
 4 red (glyfparse 1.151, sdf 1.256, trace 1.452, shapes 1.166).
 
+## Goals (2026-07-28 user directive — post-architecture perf/size/memory push)
+
+* [ ] SPEED, all lanes: EVERY bench case faster than v8, JSC (all JIT
+      runtimes) AND every wasm rival. Gates already encode it
+      (bench-claims strict-leadership wasm + JIT); current distance:
+      16 wasm strict losses (worst trace 1.449x), 13 JIT strict losses
+      (worst dispatch 2.073x jsc). Order: AFTER architecture complete.
+      Includes the w2c native-lowering tail (tokenizer 3.851x vs 3.5 cap).
+* [ ] SIZE: produced bundles must BEAT AssemblyScript by size (current
+      claim: "on par by geomean"). Producer: scripts/bench-size.mjs.
+      Needs: size-vs-AS per-case inventory, then codegen levers (dead
+      stdlib elision, header/allocator trim), then a strict size gate.
+* [ ] MEMORY: natives consume ~10x less peak RSS than the wasm lanes.
+      memKb axis now measured per-invocation (bench.mjs /usr/bin/time
+      wrapper, c703f63a). Investigate WHERE the footprint lives (linear
+      memory sizing/allocator growth policy vs engine overhead vs
+      instantiation copies), compare MoonBit-wasm's profile, target
+      MoonBit-level or better.
+
 ## Open
 
 * [x] STRING-COMPARE MISPROOF WAVE (LANDED 2026-07-25 --
@@ -1387,8 +1406,8 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
     closure-param pin + preboxed mutual-arrow pin (test/closures.js).
     host ABI: 5th `host` param landed across self.js entries + kernel-target
     marshal ('wasi'|'js' string, 0 = native undefined default).
-  * kernel-parity TODO rows (dict|2, dict|3, sum|3, arr|3): in-kernel
-    vectorizer/unroller bails where native fires (O3 output smaller).
+  * [x] kernel-parity TODO rows (dict|2, dict|3, sum|3, arr|3) RESOLVED
+    (PARITY_TODO empty since 2026-07-27; 18/18 byte-identical O0/O2/O3).
   * test:self WARM PERF REGRESSION CONFIRMED REAL (2026-07-23): sequential
     3-round verdict landed (strict cap 0.99 unchanged; fail only when ALL
     rounds exceed — kills boundary flakiness) and under it the gate fails
@@ -1424,10 +1443,14 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
       stays load-bearing — and with re-matching gone, the first-bails are
       O(1) null checks; the audit's re-derivation complaint is resolved.
       FUTURE (separate project): unify the per-recognizer BODY analyses
-      (load/store/stride scanning) the way scaffolds were unified. Solver stage-2 slices
-      landed: lazy fact store (plan() owns freshness), convergence
-      advisories in production. CompileSession + TargetProfile (59 ctx
-      importers) still open.
+      (load/store/stride scanning) the way scaffolds were unified.
+      SOLVER NOW COMPLETE (2026-07-28): session factStore + mandatory
+      convergence throws + solver-owned bodyFacts invalidation seam
+      (4b149108). TargetProfile LANDED (frozen JS/WASI profiles);
+      CompileSession seam live (beginSession owns lifecycle) — full ctx
+      isolation (62 importers) remains the long-term vision. LoopPlan
+      remaining: candidate-proposal protocol + shared body-analysis
+      (affine access/alias/dependence model) = audit item 8.
 * [ ] V2-class perf tails: qoi (LLVM branch sched), shapes record layout
       byte-stride follow-up, sdf research-tier, ulam/raymarcher parity noise.
 
