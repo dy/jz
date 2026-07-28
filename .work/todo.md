@@ -227,6 +227,18 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  WARM LEVER RANKED 2026-07-28 (AC power restored; instrumented
+  kernel via helperCounters, one crc32 compile): __ptr_offset 17.9M
+  calls DOMINATES (3.5x next: str_eq 5.0M, len 4.8M, length 3.6M,
+  alloc 3.6M, typed_idx 2.4M, str_hash 2.4M). Every NaN-box deref in
+  the self-hosted compiler is an out-of-line call (kept a fn by the
+  forwarding-pointer branch). Warm verdict on AC: 1.001/1.022/1.021
+  hover (fresh 0.787) -- the ~1-2% gap ≈ 17.9M call frames. LEVER:
+  inline the __ptr_offset fast path (non-forwarded case: pure bit
+  ops) at call sites with an out-of-line forwarding fallback -- or
+  watr inline-pin it in the kernel build. Bounded, measurable,
+  general (speeds every kernel compile). NEXT WINDOW: implement +
+  measure warm rounds (needs AC + quiet).
   EXCLUSIONS BURN-DOWN COMPLETE 2026-07-28: the census root =
   `new Set(undefined)` -- ES says the CONSTRUCTOR skips iteration on
   a nullish iterable (empty set), but jz's new.Set routed through
