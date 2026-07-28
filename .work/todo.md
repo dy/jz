@@ -362,6 +362,30 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   Remaining item-6 scope: module/math.js's 3 host checks (landed
   file now -- fold into targetProfile next touch), native/w2c
   TargetProfile + w2c cap recovery (6b).
+  BOXED-BIGINT ROUND 1: CORRECT BUT WARM-BLOCKED 2026-07-28 (honest
+  stop, tree restored to 32306df8): full PTR.BIGINT implementation
+  passed gates 1-6 (battery/wasi/dbg 3105/0 each, parity 18/18,
+  ratchet 10/10 with ring IMPROVED 98640->98600, kernel leg 2419/2
+  pre-existing-only, carrier rows -5e-324 + 2^52-1n GREEN both legs)
+  but warm cap failed 1.012/1.023/1.022 vs 0.99. ROOT (diagnosed,
+  confirmed not-a-bug): the compiler's OWN NaN-box math (layout.js
+  ptrBits/i64Hex, wat/assemble.js stripStaticDataPrefix) is heavy
+  idiomatic BigInt -- always-box at construction turns each op into
+  an alloc inside the kernel's hot path. THREE REAL BUGS found+fixed
+  en route (re-apply in round 2): __is_truthy had NO bigint arm
+  (boxed 0n truthy; fix needed in BOTH core.js WAT and the duplicate
+  inlined peephole copy in optimize/index.js, gated on
+  ctx.features.bigint to keep bigint-free output heap-free per
+  minimal-output.js); numLiteralNode missed the ['nan'] literal
+  marker (5n>NaN unsound i64 bit-compare); interop mem.read t===5.
+  ROUND 2 DIRECTION (decided): boundary boxing -- keep VAL.BIGINT
+  values as RAW i64 while kind-known (locals/params/typed chains;
+  the kind system already tracks it), materialize the box ONLY at
+  kind-erasure (f64 slot stores, dyn containers, export boundary,
+  mixed eq); unbox on kind-recovery. typeof/eq on known-bigint stay
+  static/raw. Kills the kernel warm cost structurally (layout.js
+  chains never box) AND the accumulator-loop leak for local chains
+  -- general engine lever, not input tuning.
   EXCLUSIONS BURN-DOWN COMPLETE 2026-07-28: the census root =
   `new Set(undefined)` -- ES says the CONSTRUCTOR skips iteration on
   a nullish iterable (empty set), but jz's new.Set routed through
