@@ -327,6 +327,14 @@ const FUNCTIONAL_TESTS = new Set([
   'built-ins/Math/sqrt/S15.8.2.17_A4.js',
   'built-ins/Math/sqrt/S15.8.2.17_A5.js',
   'built-ins/Math/sqrt/results.js',
+  // sumPrecise value-level tests (proposal-math-sum, Kevin Gibbons). Excluded:
+  // takes-iterable.js (generator/Symbol.iterator-override inputs — jz models
+  // arrays/typed arrays), throws-on-non-number.js + length/name/prop-desc/
+  // not-a-constructor (throw semantics + fn reflection out of scope).
+  'built-ins/Math/sumPrecise/sum.js',
+  'built-ins/Math/sumPrecise/sum-is-NaN.js',
+  'built-ins/Math/sumPrecise/sum-is-infinite.js',
+  'built-ins/Math/sumPrecise/sum-is-minus-zero.js',
   'built-ins/Math/tan/S15.8.2.18_A1.js',
   'built-ins/Math/tan/S15.8.2.18_A2.js',
   'built-ins/Math/tan/S15.8.2.18_A3.js',

@@ -17,6 +17,7 @@ import { emit, emitter, reg, deps, dual, tag, wat, hostImport } from '../src/bri
 import { inc, declGlobal, err } from '../src/ctx.js'
 import { repOf, VAL } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
+import { PTR, TYPED_ELEM_BIGINT_FLAG } from '../layout.js'
 
 export default (ctx) => {
   // `**`/Math.pow kernel select — see the single authoritative comment block just above
@@ -478,9 +479,23 @@ export default (ctx) => {
   })
 
   // Math.sumPrecise(iterable) — exact, correctly-rounded summation (ECMA-262).
-  // jz models the array case; the WAT routine sums via a fixed-point accumulator.
-  reg('math.sumPrecise', ['math.sumPrecise'], arr =>
-    typed(['call', '$math.sumPrecise', ['i64.reinterpret_f64', asF64(emit(arr))]], 'f64'))
+  // jz models arrays and typed arrays: the WAT routine dispatches on the pointer
+  // tag (packed f64 cells vs the kind-aware element read). Spec-TypeError inputs
+  // (numbers, atoms, strings, BigInt element kinds) yield NaN — jz's total error
+  // model. Only a literal scalar argument rejects at compile: an unannotated
+  // param defaults to the number rep, so a rep-based check would err legit code.
+  reg('math.sumPrecise', ['math.sumPrecise'], arr => {
+    // An AST-literal scalar (`[null, 5]` / bare number / string literal) is a
+    // proven wrong argument — loud reject. Param-shaped args stay runtime-total:
+    // an unannotated param defaults to the number rep, so a rep check would err
+    // legit code.
+    if (typeof arr === 'number' || (Array.isArray(arr) && ((arr[0] == null && typeof arr[1] === 'number') || arr[0] === 'str')))
+      err('Math.sumPrecise expects an array of numbers')
+    // Host callers can pass any TypedArray to an exported (arr) => … no matter
+    // what the source names — the kind-aware reader must exist unconditionally.
+    ctx.module.include('typedarray')
+    return typed(['call', '$math.sumPrecise', ['i64.reinterpret_f64', asF64(emit(arr))]], 'f64')
+  })
 
   // Integer/bit operations: return i32 directly. Consumers `asF64`-rebox at
   // store/return boundaries; consumers staying in i32 (bit chains, i32 locals)
@@ -1911,6 +1926,14 @@ export default (ctx) => {
     ;; If either argument is NaN, the result is NaN (ECMA-262 21.3.2.5).
     (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
     (if (f64.ne (local.get $y) (local.get $y)) (then (return (local.get $y))))
+    ;; ±∞/±∞ quadrant table (spec): ±π/4 when x is +∞, ±3π/4 when x is −∞, sign
+    ;; from y — the atan(y/x) fallback would see ∞/∞ = NaN.
+    (if (i32.and (f64.eq (f64.abs (local.get $y)) (f64.const inf))
+                 (f64.eq (f64.abs (local.get $x)) (f64.const inf)))
+      (then (return (f64.copysign
+        (select (f64.const ${PI / 4}) (f64.const ${3 * PI / 4})
+                (f64.gt (local.get $x) (f64.const 0.0)))
+        (local.get $y)))))
     (if (result f64) (f64.eq (local.get $x) (f64.const 0.0)) (then
       ;; y is ±0 too: result is ±0 when x is +0, ±π when x is -0; sign taken from y.
       (if (result f64) (f64.eq (local.get $y) (f64.const 0.0))
@@ -1922,7 +1945,9 @@ export default (ctx) => {
           (if (result f64) (f64.gt (local.get $y) (f64.const 0.0)) (then (f64.const ${HALF_PI})) (else (f64.neg (f64.const ${HALF_PI})))))))
       (else (if (result f64) (f64.ge (local.get $x) (f64.const 0.0))
         (then (call $math.atan (f64.div (local.get $y) (local.get $x))))
-        (else (if (result f64) (f64.ge (local.get $y) (f64.const 0.0))
+        ;; x < 0: shift by ±π with the sign of y INCLUDING -0 (copysign probe —
+        ;; a plain y ≥ 0 reads -0 as nonnegative, turning atan2(-0,-1) into +π).
+        (else (if (result f64) (f64.gt (f64.copysign (f64.const 1.0) (local.get $y)) (f64.const 0.0))
           (then (f64.add (call $math.atan (f64.div (local.get $y) (local.get $x))) (f64.const ${PI})))
           (else (f64.sub (call $math.atan (f64.div (local.get $y) (local.get $x))) (f64.const ${PI})))))))))`)
 
@@ -1953,13 +1978,22 @@ export default (ctx) => {
     (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (local.get $x))))
     ;; Preserve sign of zero: asinh(±0) = ±0.
     (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
+    ;; |x| ≥ 2^500: x² overflows to Inf (asinh(1e300) must be ~691.47, not Inf);
+    ;; asinh(x) → ±(log|x| + ln 2) — the O(x⁻²) tail is far beneath ulp here.
+    (if (f64.ge (f64.abs (local.get $x)) (f64.const ${2 ** 500}))
+      (then (return (f64.copysign
+        (f64.add (call $math.log (f64.abs (local.get $x))) (f64.const ${Math.LN2}))
+        (local.get $x)))))
     (call $math.log (f64.add (local.get $x) (f64.sqrt (f64.add (f64.mul (local.get $x) (local.get $x)) (f64.const 1.0))))))`)
 
   wat('math.acosh', `(func $math.acosh (param $x f64) (result f64)
     (if (f64.eq (local.get $x) (f64.const inf)) (then (return (f64.const inf))))
     ;; acosh is defined only for x >= 1; everything below (incl. -Inf) is NaN.
     (if (result f64) (f64.lt (local.get $x) (f64.const 1.0)) (then (f64.const nan)) (else
-      (call $math.log (f64.add (local.get $x) (f64.sqrt (f64.sub (f64.mul (local.get $x) (local.get $x)) (f64.const 1.0))))))))`)
+      ;; x ≥ 2^500: x² overflows; acosh(x) → log(x) + ln 2 (same tail bound as asinh).
+      (if (result f64) (f64.ge (local.get $x) (f64.const ${2 ** 500}))
+        (then (f64.add (call $math.log (local.get $x)) (f64.const ${Math.LN2})))
+        (else (call $math.log (f64.add (local.get $x) (f64.sqrt (f64.sub (f64.mul (local.get $x) (local.get $x)) (f64.const 1.0)))))))))))`)
 
   wat('math.atanh', `(func $math.atanh (param $x f64) (result f64)
     ;; Preserve sign of zero: atanh(±0) = ±0.
@@ -2023,10 +2057,29 @@ export default (ctx) => {
       (f64.lt (f64.abs (local.get $x)) (f64.const inf))))`)
 
   wat('math.hypot', `(func $math.hypot (param $x f64) (param $y f64) (result f64)
+    (local $ax f64) (local $ay f64) (local $big f64) (local $s f64)
     ;; Any ±Infinity argument ⇒ +Infinity, even when the other is NaN (ECMA-262 21.3.2.18).
     (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const inf))))
     (if (f64.eq (f64.abs (local.get $y)) (f64.const inf)) (then (return (f64.const inf))))
-    (f64.sqrt (f64.add (f64.mul (local.get $x) (local.get $x)) (f64.mul (local.get $y) (local.get $y)))))`)
+    (local.set $ax (f64.abs (local.get $x)))
+    (local.set $ay (f64.abs (local.get $y)))
+    (local.set $big (f64.max (local.get $ax) (local.get $ay)))
+    ;; Scale by a power of two (exact) so the squares can neither overflow
+    ;; (hypot(1e300,1e300) is ~1.414e300, not Inf) nor flush to zero. The runt
+    ;; arm may underflow in the big-scale branch — its relative contribution is
+    ;; < 2^-200, beneath rounding. A NaN big (no Inf partner) skips both scale
+    ;; branches and propagates through the square-sum as the result.
+    (local.set $s (f64.const 1.0))
+    (if (f64.ge (local.get $big) (f64.const ${2 ** 500}))
+      (then (local.set $s (f64.const ${2 ** 600}))
+        (local.set $ax (f64.mul (local.get $ax) (f64.const ${2 ** -600})))
+        (local.set $ay (f64.mul (local.get $ay) (f64.const ${2 ** -600}))))
+      (else (if (f64.le (local.get $big) (f64.const ${2 ** -500}))
+        (then (local.set $s (f64.const ${2 ** -600}))
+          (local.set $ax (f64.mul (local.get $ax) (f64.const ${2 ** 600})))
+          (local.set $ay (f64.mul (local.get $ay) (f64.const ${2 ** 600})))))))
+    (f64.mul (local.get $s)
+      (f64.sqrt (f64.add (f64.mul (local.get $ax) (local.get $ax)) (f64.mul (local.get $ay) (local.get $ay))))))`)
 
   // xorshift32 → [0,1). In entropy mode a one-shot prologue replaces the fixed
   // initial state with host entropy on first call (branch is well-predicted after).
@@ -2055,7 +2108,21 @@ export default (ctx) => {
     (local $sawNaN i32) (local $posInf i32) (local $negInf i32) (local $allNegZero i32)
     (local $L i32) (local $word i64) (local $resultNeg i32)
     (local $rwi i32) (local $rbo i32) (local $top i64) (local $roundBit i64) (local $sticky i32) (local $k i32)
-    (local $pow f64) (local $res f64)
+    (local $pow f64) (local $res f64) (local $ptype i32) (local $isTyped i32)
+    ;; Input dispatch on the pointer tag. A genuine (non-NaN-boxed) f64 is never a
+    ;; pointer — self-equality proves it — and it, like every non-ARRAY/non-TYPED
+    ;; tag (atoms, strings, objects) and the BigInt element kinds, is the spec's
+    ;; TypeError case: NaN under jz's total error model, before any memory read.
+    (if (f64.eq (f64.reinterpret_i64 (local.get $arr)) (f64.reinterpret_i64 (local.get $arr)))
+      (then (return (f64.const nan))))
+    (local.set $ptype (call $__ptr_type (local.get $arr)))
+    (if (i32.and (i32.ne (local.get $ptype) (i32.const ${PTR.ARRAY}))
+                 (i32.ne (local.get $ptype) (i32.const ${PTR.TYPED})))
+      (then (return (f64.const nan))))
+    (local.set $isTyped (i32.eq (local.get $ptype) (i32.const ${PTR.TYPED})))
+    (if (local.get $isTyped) (then
+      (if (i32.and (call $__ptr_aux (local.get $arr)) (i32.const ${TYPED_ELEM_BIGINT_FLAG}))
+        (then (return (f64.const nan))))))
     ;; allocate + zero 36 i64 words
     (local.set $acc (call $__alloc (i32.const 288)))
     (local.set $j (i32.const 0))
@@ -2072,7 +2139,11 @@ export default (ctx) => {
     (block $idone (loop $iter
       (br_if $idone (i32.ge_u (local.get $i) (local.get $n)))
       (block $next
-        (local.set $b (i64.load (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3)))))
+        ;; ARRAY: element cells are raw f64 bits at stride 8. TYPED: the canonical
+        ;; kind-aware read (u8…u32 exact int→f64, f16/f32 exact promote, views).
+        (local.set $b (if (result i64) (local.get $isTyped)
+          (then (i64.reinterpret_f64 (call $__typed_get_idx (local.get $arr) (local.get $i))))
+          (else (i64.load (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3)))))))
         (local.set $exp (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const 52)) (i64.const 0x7ff))))
         (local.set $sig (i64.and (local.get $b) (i64.const 0xfffffffffffff)))
         (local.set $neg (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const 63))))

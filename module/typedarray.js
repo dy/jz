@@ -8,7 +8,7 @@ import { OPTF } from '../src/ctx.js'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -34,10 +34,23 @@ const STORE = [
 ]
 // f64 value → this element's stored representation (paired with STORE). Signed
 // kinds trunc_s, unsigned trunc_u, f32 demotes, f64 stores as-is (null = identity).
-const FROM_F64 = [
-  'i32.trunc_f64_s', 'i32.trunc_f64_u', 'i32.trunc_f64_s', 'i32.trunc_f64_u',
-  'i32.trunc_f64_s', 'i32.trunc_f64_u', 'f32.demote_f64', null,
-]
+// ES ToIntN store conversion (SetValueInBuffer) — THE one semantic for every
+// integer element store: mod-2^32 via the sign-branched i64 sat route (exact
+// for all |x| < 2^64), NaN and ±Infinity → 0, and the 8/16/32-bit store keeps
+// the low bits — the narrower modulo. Only +Inf needs the guard (sat_u wraps
+// it to -1; spec says 0) — -Inf already lands on 0 via sat_s(i64::MIN)'s wrap
+// and NaN via sat's zero, so the ne-probe matches toI32's established shape.
+// Replaces the old per-site conversions: plain `i32.trunc_f64_*` TRAPPED
+// out-of-range and saturating `asI32` clamped (4e9 must wrap to -294967296,
+// not INT32_MAX). `v` must be a re-evaluable PURE node (local.get, load,
+// const) — the probes and both sat arms re-read it; temp a call first
+// (elemStoreIR does this internally).
+const wrapIntIR = (v) => ['select',
+  ['i32.wrap_i64',
+    ['select', ['i64.trunc_sat_f64_s', v], ['i64.trunc_sat_f64_u', v],
+      ['f64.lt', v, ['f64.const', 0]]]],
+  ['i32.const', 0],
+  ['f64.ne', v, ['f64.const', Infinity]]]
 
 // SIMD: vector width per element type (elements per v128)
 const VEC_WIDTH = [16, 16, 8, 8, 4, 4, 4, 2] // 128 bits / element bits
@@ -414,20 +427,24 @@ export default (ctx) => {
         const cl = tempI32('tcl'), ci = tempI32('tci')
         const out = allocPtr({ type: PTR.TYPED, aux,
           len: ['i32.mul', ['local.get', `$${cl}`], ['i32.const', stride]], stride: 1, tag: 'tc' })
-        const conv = FROM_F64[elemType]
         const srcElem = ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${srcTemp}`]], ['local.get', `$${ci}`]]
         const cid = ctx.func.uniq++
         const dstOff = ['i32.add', ['local.get', `$${out.local}`], ['i32.mul', ['local.get', `$${ci}`], ['i32.const', stride]]]
-        const storeIR = (name === 'Float16Array' || name === 'Uint8ClampedArray')
-          ? elemStoreIR({ et: elemType, isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }, dstOff, srcElem)
-          : [STORE[elemType], dstOff, conv ? [conv, srcElem] : srcElem]
+        const special = name === 'Float16Array' || name === 'Uint8ClampedArray'
+        const tcv = !special && elemType <= 5 ? temp('tcv') : null
+        const storeIRs = special
+          ? [elemStoreIR({ et: elemType, isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }, dstOff, srcElem)]
+          : tcv
+            // ES ToIntN, not trap/clamp — see wrapIntIR (srcElem is a call: temp it).
+            ? [['local.set', `$${tcv}`, srcElem], [STORE[elemType], dstOff, wrapIntIR(['local.get', `$${tcv}`])]]
+            : [[STORE[elemType], dstOff, elemType === 6 ? ['f32.demote_f64', srcElem] : srcElem]]
         return ['block', ['result', 'f64'],
           ['local.set', `$${cl}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${srcTemp}`]]]],
           out.init,
           ['local.set', `$${ci}`, ['i32.const', 0]],
           ['block', `$tcb${cid}`, ['loop', `$tclp${cid}`,
             ['br_if', `$tcb${cid}`, ['i32.ge_s', ['local.get', `$${ci}`], ['local.get', `$${cl}`]]],
-            storeIR,
+            ...storeIRs,
             ['local.set', `$${ci}`, ['i32.add', ['local.get', `$${ci}`], ['i32.const', 1]]],
             ['br', `$tclp${cid}`]]],
           out.ptr]
@@ -855,7 +872,14 @@ export default (ctx) => {
       if (valType === 'i64') v = typed(['i64.reinterpret_f64', asF64(emit(val))], 'i64')
       else if (valType === 'f64') v = asF64(toNumF64(val, emit(val)))
       else if (valType === 'f32') v = typed(['f32.demote_f64', asF64(toNumF64(val, emit(val)))], 'f32')
-      else v = asI32(toNumF64(val, emit(val)))
+      else {
+        // ES ToIntN (SetViewValue) for the integer stores: asI32's saturating
+        // trunc stored INT32_MAX for dv.setInt32(0, 4e9) — spec wraps mod 2^32.
+        const vf = temp('dvsw')
+        v = typed(['block', ['result', 'i32'],
+          ['local.set', `$${vf}`, asF64(toNumF64(val, emit(val)))],
+          wrapIntIR(['local.get', `$${vf}`])], 'i32')
+      }
 
       if (size === 1) return fin([storeOp, addr, v])
 
@@ -1058,8 +1082,19 @@ export default (ctx) => {
           const addr = k === 0 ? ['local.get', `$${out.local}`]
             : ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * stride]]
           if (fl.isF16 || fl.isClamped) { body.push(elemStoreIR(fl, addr, asF64(emit(elems[k])))); continue }
-          const v = elemType <= 5 ? asI32(emit(elems[k]))
-            : elemType === 6 ? ['f32.demote_f64', asF64(emit(elems[k]))]
+          if (elemType <= 5) {
+            // ES ToIntN, not saturation: a constant wraps exactly at compile time
+            // (JS `| 0` IS ToInt32 for any magnitude; store8/16 keeps the low
+            // bits = the narrower modulo). A runtime element takes a temp and
+            // the wrapIntIR i64 route — asI32's saturating trunc clamps wrong.
+            const e = emit(elems[k])
+            if (isLit(e)) { body.push([store, addr, ['i32.const', litVal(e) | 0]]); continue }
+            const tv = temp('tfe')
+            body.push(['local.set', `$${tv}`, asF64(e)],
+              [store, addr, wrapIntIR(['local.get', `$${tv}`])])
+            continue
+          }
+          const v = elemType === 6 ? ['f32.demote_f64', asF64(emit(elems[k]))]
             : asF64(emit(elems[k]))
           body.push([store, addr, v])
         }
@@ -1072,12 +1107,15 @@ export default (ctx) => {
         len: ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]], stride: 1, tag: 'tf' })
       const t = out.local
       const id = ctx.func.uniq++
-      const conv = FROM_F64[elemType]
       const srcF64 = ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
       const dstAddr = ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]]
-      const storeExpr = (fl.isF16 || fl.isClamped)
-        ? elemStoreIR(fl, dstAddr, srcF64)
-        : [store, dstAddr, conv ? [conv, srcF64] : srcF64]
+      const tfv = !fl.isF16 && !fl.isClamped && elemType <= 5 ? temp('tfv') : null
+      const storeExprs = (fl.isF16 || fl.isClamped)
+        ? [elemStoreIR(fl, dstAddr, srcF64)]
+        : tfv
+          // ES ToIntN, not trap — the old plain trunc trapped out-of-range.
+          ? [['local.set', `$${tfv}`, srcF64], [store, dstAddr, wrapIntIR(['local.get', `$${tfv}`])]]
+          : [[store, dstAddr, elemType === 6 ? ['f32.demote_f64', srcF64] : srcF64]]
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${srcL}`, asF64(emit(src))],
         ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${srcL}`]]]],
@@ -1086,7 +1124,7 @@ export default (ctx) => {
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,
           ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-          storeExpr,
+          ...storeExprs,
           ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
           ['br', `$loop${id}`]]],
         out.ptr], 'f64')
@@ -1156,7 +1194,12 @@ export default (ctx) => {
     if (r.isClamped) { inc('__u8_clamp'); return ['i32.store8', off, ['call', '$__u8_clamp', valF64]] }
     if (r.et === 7) return ['f64.store', off, valF64]
     if (r.et === 6) return ['f32.store', off, ['f32.demote_f64', valF64]]
-    return [STORE[r.et], off, [(r.et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', valF64]]
+    // Integer kinds: ES ToIntN via wrapIntIR — the old plain i32.trunc_f64_*
+    // trapped on out-of-range values (`t.set([4e9])`, `.map` results). valF64
+    // may be any node (a user-callback call in .typed:map): evaluate it ONCE
+    // into a temp; wrapIntIR re-reads only the local.
+    const t = temp('tes')
+    return ['block', ['local.set', `$${t}`, valF64], [STORE[r.et], off, wrapIntIR(['local.get', `$${t}`])]]
   }
 
   /** Emit the real data byte-address for a typed array IR node.
@@ -1216,6 +1259,11 @@ export default (ctx) => {
             (if (i32.eq (local.get $et) (i32.const 6))
               (then (f32.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))) (f32.demote_f64 (local.get $v))))
               (else
+                ;; ES ToIntN: +Infinity stores 0 (the sat_u route wraps it to -1;
+                ;; -Inf already wraps to 0 via sat_s). Integer kinds only —
+                ;; f16/f32/f64 keep their Inf.
+                (if (f64.eq (local.get $v) (f64.const inf))
+                  (then (local.set $v (f64.const 0))))
                 (local.set $bits
                   (i32.wrap_i64
                     (if (result i64) (f64.lt (local.get $v) (f64.const 0))
@@ -1917,10 +1965,7 @@ export default (ctx) => {
         [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['local.get', `$${v32}`]]], void_ ? 'void' : 'f64')
     }
     const vt = temp('tw')
-    const i32val = ['i32.wrap_i64',
-      ['if', ['result', 'i64'], ['f64.lt', ['local.get', `$${vt}`], ['f64.const', 0]],
-        ['then', ['i64.trunc_sat_f64_s', ['local.get', `$${vt}`]]],
-        ['else', ['i64.trunc_sat_f64_u', ['local.get', `$${vt}`]]]]]
+    const i32val = wrapIntIR(['local.get', `$${vt}`])
     return typed(void_ ? ['block', ...pre,
       ['local.set', `$${vt}`, asF64(valIR)],
       guard([STORE[et], off, i32val])]

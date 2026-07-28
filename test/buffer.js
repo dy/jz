@@ -772,3 +772,62 @@ test('new TypedArray(typedArray) COPIES — mutations do not alias (spec %TypedA
   const r = jz(`export default function f (data) { let copy = new Float64Array(data); data[0] = 999; return copy[0] }`)
   is(Number(r.exports.default(r.memory.Float64Array([1, 2]))), 1, 'host-marshaled source (runtime dispatch): copies')
 })
+
+// === Element conversion: ES ToIntN wrap (SetValueInBuffer), not saturate/trap ===
+
+test('typed construction wraps out-of-range values like ES ToIntN', () => {
+  // Three construction paths store integer elements: the array-literal fill
+  // (was: asI32 saturation — 4e9 clamped to INT32_MAX), the .from copy loop and
+  // the cross-kind TypedArray(typedArray) copy (both were trapping
+  // i32.trunc_f64_*). All now use the same semantics as __typed_set_idx's
+  // runtime store: JS `| 0` at compile for constants, the i64 sat+wrap route at
+  // runtime. References: ES ToInt32/ToUint32 (`x | 0`, `x >>> 0`).
+  const { exports: e } = jz(`
+    export let lit = () => new Int32Array([4000000000])[0]
+    export let lit8 = () => new Int8Array([4000000000])[0]
+    export let litU = () => new Uint32Array([4000000000])[0]
+    export let dyn = (x) => new Int32Array([x, 5])[0]
+    export let from = (x) => Int32Array.from([x])[0]
+    export let cross = (x) => new Int32Array(new Float64Array([x]))[0]
+  `)
+  is(e.lit(), 4000000000 | 0, 'literal Int32 wraps (-294967296)')
+  is(e.lit8(), 0, 'literal Int8: low byte of 0xEE6B2800')
+  is(e.litU(), 4000000000, 'literal Uint32 keeps u32-range value')
+  is(e.dyn(4000000000), 4000000000 | 0, 'runtime element in literal array wraps')
+  is(e.dyn(1e10), 1e10 | 0, 'runtime 1e10 wraps to 1410065408')
+  is(e.from(4000000000), 4000000000 | 0, '.from copy loop wraps, no trap')
+  is(e.cross(4000000000), 4000000000 | 0, 'cross-kind copy wraps, no trap')
+  is(e.dyn(NaN), 0, 'NaN stores 0')
+})
+
+test('integer stores share one ToIntN semantic: ±Infinity → 0, out-of-range wraps, no traps', () => {
+  // One semantic (wrapIntIR) across every integer store family — element writes
+  // (__typed_set_idx + the proven-kind path), .set/.map/.filter via
+  // elemStoreIR (was: trapping i32.trunc_f64_*), and DataView setIntN (was:
+  // saturating asI32). The i64 sat route alone wraps +Inf to -1; ES
+  // SetValueInBuffer stores 0. f16/f32/f64 and Uint8ClampedArray keep their own
+  // spec conversions (Inf stays Inf; clamped Inf → 255).
+  const { exports: e } = jz(`
+    export let setIdx = (x) => { let t = new Int32Array(1); t[0] = x; return t[0] }
+    export let setIdxU = (x) => { let t = new Uint32Array(1); t[0] = x; return t[0] }
+    export let setArr = (x) => { let t = new Int32Array(1); t.set([x]); return t[0] }
+    export let mapped = (x) => new Int32Array([1]).map((v) => v + x)[0]
+    export let dvI32 = (x) => { let d = new DataView(new ArrayBuffer(4)); d.setInt32(0, x); return d.getInt32(0) }
+    export let dvU32 = (x) => { let d = new DataView(new ArrayBuffer(4)); d.setUint32(0, x); return d.getUint32(0) }
+    export let dvBE = (x) => { let d = new DataView(new ArrayBuffer(4)); d.setInt32(0, x, false); return d.getInt32(0, false) }
+    export let f32Inf = (x) => { let t = new Float32Array(1); t[0] = x; return t[0] }
+    export let clampInf = (x) => { let t = new Uint8ClampedArray(1); t[0] = x; return t[0] }
+  `)
+  is(e.setIdx(Infinity), 0, 'element write Inf → 0')
+  is(e.setIdxU(Infinity), 0, 'u32 element write Inf → 0')
+  is(e.setIdx(-Infinity), 0, 'element write -Inf → 0')
+  is(e.setArr(4e9), 4e9 | 0, '.set wraps, no trap')
+  is(e.setArr(Infinity), 0, '.set Inf → 0')
+  is(e.mapped(3999999999), 4e9 | 0, '.map result wraps, no trap')
+  is(e.dvI32(4e9), 4e9 | 0, 'DataView setInt32 wraps, not saturates')
+  is(e.dvI32(Infinity), 0, 'DataView setInt32 Inf → 0')
+  is(e.dvU32(4e9), 4e9, 'DataView setUint32 keeps u32-range value')
+  is(e.dvBE(4e9), 4e9 | 0, 'big-endian path shares the semantic')
+  is(e.f32Inf(Infinity), Infinity, 'f32 store keeps Inf')
+  is(e.clampInf(Infinity), 255, 'ToUint8Clamp(Inf) = 255')
+})

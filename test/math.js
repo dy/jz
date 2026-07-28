@@ -659,3 +659,104 @@ test('Number/parseFloat: subnormals, deep exponents, 19-digit significands', asy
     is(await evaluate(`parseFloat('${s}')`), parseFloat(s), `parseFloat('${s}')`)
   }
 })
+
+// ============================================
+// Math.sumPrecise — exact, correctly-rounded summation (proposal-math-sum /
+// test262 built-ins/Math/sumPrecise). Reference values from an exact
+// BigInt-rational oracle: every finite f64 is k·2⁻¹⁰⁷⁴ with integer k; sum the
+// k exactly, round once ties-to-even. Fuzz-verified bit-exact over 4000+
+// random shapes (mixed magnitude, cancellation, sticky-tie, near-overflow).
+// ============================================
+
+test('Math.sumPrecise: correctly rounded where naive accumulation drifts', () => {
+  const { f } = run(`export let f = (a) => Math.sumPrecise(a)`)
+  is(f([0.1, 0.2]), 0.30000000000000004)           // exact sum of the two doubles — same as one IEEE add
+  is(f([0.1, 0.2, -0.3]), 2.7755575615628914e-17)  // 2⁻⁵⁵ exactly; stepwise JS rounds twice to 2⁻⁵⁴
+  is(f(Array(10000).fill(0.1)), 1000)              // naive += drifts below 1000
+  is(f([1e308, 1e308, -1e308]), 1e308)             // intermediate overflow must not poison the sum
+  is(f([-1e308, -1e308, 1e308]), -1e308)
+  is(f([1e308, 1e-308, -1e308]), 1e-308)           // ~2000-bit cancellation leaves the tiny term
+  is(f([2 ** 53, 1]), 2 ** 53)                     // exact halfway tie → even
+  is(f([2 ** 53, 1, 5e-324]), 2 ** 53 + 2)         // one min-subnormal sticky bit tips the tie up
+  is(f([1, 2 ** -53]), 1)
+  is(f([1, 2 ** -53, 2 ** -105]), 1 + 2 ** -52)
+})
+
+test('Math.sumPrecise: zeros, infinities, NaN (spec edge table)', () => {
+  const r = run(`
+    export let f = (a) => Math.sumPrecise(a)
+    export let inv = (a) => 1 / Math.sumPrecise(a)
+  `)
+  is(r.inv([]), -Infinity)              // empty → -0
+  is(r.inv([-0, -0]), -Infinity)        // all -0 → -0
+  is(r.inv([-0, 0]), Infinity)          // any +0 → +0
+  is(r.inv([1, -1]), Infinity)          // exact cancel → +0
+  is(r.f([Infinity, 1e308]), Infinity)
+  is(r.f([-Infinity, -1e308]), -Infinity)
+  ok(Number.isNaN(r.f([Infinity, -Infinity])))
+  ok(Number.isNaN(r.f([NaN, 1])))
+})
+
+test('Math.sumPrecise: typed arrays — kind-aware reads, not stride-8 misreads', () => {
+  // Int32Array elements are 4-byte lanes; the old raw stride-8 f64 load read
+  // pairs of them as one garbage double (8.48e-314 for [1,2,3]). Every element
+  // kind now routes through the runtime kind dispatch; int→f64 and f16/f32
+  // promotion are exact, so equality against JS is bit-for-bit.
+  const r = run(`
+    export let i32 = () => Math.sumPrecise(new Int32Array([1, 2, 3]))
+    export let u32 = (a, b) => Math.sumPrecise(new Uint32Array([a, b]))
+    export let f32 = () => Math.sumPrecise(new Float32Array([0.1, 0.2]))
+    export let f64v = () => Math.sumPrecise(new Float64Array([9, 1, 2, 3, 9]).subarray(1, 4))
+    export let big = () => Math.sumPrecise(new BigInt64Array(2))
+    export let bools = () => Math.sumPrecise([true, true])
+  `)
+  is(r.i32(), 6)
+  is(r.u32(4000000000, 1), 4000000001)
+  is(r.f32(), Math.fround(0.1) + Math.fround(0.2))
+  is(r.f64v(), 6)
+  // spec throws TypeError on non-number elements (BigInt, booleans); jz's total
+  // error model maps those to NaN (see README error-model limits)
+  ok(Number.isNaN(r.big()))
+  ok(Number.isNaN(r.bools()))
+  // host-marshaled TYPED param with no ctor named in source still dispatches
+  const lone = run(`export let sp = (a) => Math.sumPrecise(a)`)
+  is(lone.sp(new Int32Array([10, 20, 30])), 60)
+  is(lone.sp(new Float64Array([0.1, 0.2])), 0.30000000000000004)
+  ok(Number.isNaN(lone.sp(null)))       // spec TypeError → total NaN
+})
+
+test('Math.atan2: signed-zero and infinite-quadrant table (ES 21.3.2.5)', () => {
+  // The x<0 fixup adds ±π with the sign of y — a plain y≥0 test reads -0 as
+  // nonnegative (atan2(-0,-1) returned +π), and ∞/∞ reached atan(NaN).
+  const r = run(`
+    export let f = (y, x) => Math.atan2(y, x)
+    export let inv = (y, x) => 1 / Math.atan2(y, x)
+  `)
+  is(r.f(-0, -1), -Math.PI)
+  is(r.f(0, -1), Math.PI)
+  is(r.f(Infinity, Infinity), Math.PI / 4)
+  is(r.f(-Infinity, Infinity), -Math.PI / 4)
+  is(r.f(Infinity, -Infinity), 3 * Math.PI / 4)
+  is(r.f(-Infinity, -Infinity), -3 * Math.PI / 4)
+  is(r.f(Infinity, 1), Math.PI / 2)
+  is(r.inv(-0, 1), -Infinity)           // atan2(-0, +x) is -0
+  is(r.inv(-0, 0), -Infinity)           // atan2(-0, +0) is -0
+})
+
+test('Math.hypot/asinh/acosh: no spurious overflow/underflow at range extremes', () => {
+  // hypot scales by an exact power of two before squaring (x²+y² overflowed to
+  // Inf at 1e300 and flushed to 0 at 1e-300); asinh/acosh switch to
+  // log(x) + ln 2 once x² would overflow (asinh(1e300) returned Infinity).
+  const r = run(`
+    export let hy = (a, b) => Math.hypot(a, b)
+    export let as = (a) => Math.asinh(a)
+    export let ac = (a) => Math.acosh(a)
+  `)
+  is(r.hy(1e300, 1e300), 1.4142135623730952e+300)
+  ok(Math.abs(r.hy(1e-300, 1e-300) / 1.4142135623730952e-300 - 1) < 1e-15)  // √2·1e-300, kernel ±1 ulp
+  is(r.hy(5e-324, 0), 5e-324)
+  almost(r.as(1e300), 691.4686750787736, 1e-10)   // = log(1e300) + ln 2
+  almost(r.as(-1e300), -691.4686750787736, 1e-10)
+  almost(r.ac(1e300), 691.4686750787736, 1e-10)
+  ok(Number.isNaN(r.ac(0.5)))
+})
