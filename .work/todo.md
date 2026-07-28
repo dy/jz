@@ -227,6 +227,22 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   SAME on pristine watr@5.7.11 incl. full default pipeline over the
   real 140kB shape-module WAT. Probes stripped (emit.js/index.js dbg,
   watr node_modules reinstalled pristine, entry probes removed).
+  EXCLUSIONS BURN-DOWN COMPLETE 2026-07-28: the census root =
+  `new Set(undefined)` -- ES says the CONSTRUCTOR skips iteration on
+  a nullish iterable (empty set), but jz's new.Set routed through
+  __iter_arr's for-of normalizer which (spec-correctly for for-of)
+  throws TypeError(0) on nullish; natively masked (compiler runs
+  under host JS semantics), self-hosted the compiler's own
+  `new Set(skip)` in prepare's renameWalk threw -- localized via the
+  compileErrDiag probe channel (stage=front, thrown value = number
+  0, probeStage=renameWalk:init = the first walk with skip=
+  undefined). FIX: __iter_arr_ctor (nullish passthrough -> existing
+  non-ARRAY guard yields the empty seed; for-of/spread keep the
+  spec TypeError); spec pin in iteration.js (ctor-empty vs for-of-
+  throws). inference UN-EXCLUDED: full kernel leg with EVERY capable
+  file = only the 2 user-WIP rows; battery 3101/0; parity 18/18.
+  Audit item 8 CLOSED entirely -- remaining exclusions are host-only
+  legs + optimize:false shape-mismatch classes, by construction.
   CENSUS ROW DEMYSTIFIED 2026-07-28: NOT order-dependent -- the row
   fails STANDALONE on the current dist, and the mechanism is a plain
   kernel compile bug with a 3-LINE REPRO: compileViaKernel of

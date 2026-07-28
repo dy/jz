@@ -141,9 +141,11 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
   // 2026-07-27: the frontier hunt fixed two of the three order-shifted rows
   // (Array.isArray-as-value closure-support + bool-identity closure-ABI Bad
   // int) — full kernel leg with these five in is baseline-clean.
-  'inference',   // ONE order-shifted row remains (census: const-table arrow args
-                 // in a bundled init — passes standalone, fails in-suite; the
-                 // last exclusions-frontier item, mechanism in .work/todo.md)
+  // 'inference' cleared 2026-07-28: the census row was never order-dependent —
+  // `new Set(undefined)` threw the __iter_arr for-of TypeError when the
+  // compiler ran self-hosted (prepare's own `new Set(skip)`); the Set
+  // constructor is now spec-correct (nullish iterable → empty set,
+  // __iter_arr_ctor) and the whole exclusions burn-down is COMPLETE.
   'simd', 'optimizer', 'slot-hazards',
   // 'objects','strings','spread' cleared 2026-07-23: reassigned-param val
   // poisoning fixed the Array.isArray const-fold class (analyze.js declared-

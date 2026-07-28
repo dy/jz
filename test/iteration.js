@@ -29,3 +29,24 @@ test('for-of over nullish throws (catchable), iterables unaffected', async () =>
     is(m.spreadable(), 3, `optimize:${optimize} Set iterates`)
   }
 })
+
+test('Set/Map constructors: nullish iterable is an EMPTY collection, for-of still throws', () => {
+  // ES: the CONSTRUCTOR skips iteration for undefined/null (new Set(undefined)
+  // is empty — GetIterator never runs), while for-of/spread over nullish is a
+  // TypeError. The ctor path used to route through the for-of normalizer and
+  // threw — natively masked (host JS semantics), self-hosted it broke the
+  // compiler's own `new Set(maybeUndefined)` (the census-row class).
+  const { f } = run(`export let f = (use) => {
+    const base = use ? new Set(['x']) : undefined
+    const s = new Set(base)
+    const m = new Map(use ? undefined : null)
+    return (s.has('x') ? 1 : 0) + m.size * 10
+  }`).exports ?? run(`export let f = (use) => {
+    const base = use ? new Set(['x']) : undefined
+    const s = new Set(base)
+    const m = new Map(use ? undefined : null)
+    return (s.has('x') ? 1 : 0) + m.size * 10
+  }`)
+  is(Number(f(1)), 1)
+  is(Number(f(0)), 0)
+})

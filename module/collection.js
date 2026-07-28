@@ -1329,7 +1329,7 @@ export default (ctx) => {
           ['i32.const', 1]]]]]
     const out = allocPtr({ type: PTR.SET, len: 0, cap: capExpr, stride: SET_ENTRY + LANE, tag: 'set' })
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${arrL}`, asF64(emit(['()', '__iter_arr', iterExpr]))],
+      ['local.set', `$${arrL}`, asF64(emit(['()', '__iter_arr_ctor', iterExpr]))],
       ['local.set', `$${lenL}`, ['i32.const', 0]],
       ['if', ['i32.eq',
           ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]],
@@ -3245,6 +3245,32 @@ export default (ctx) => {
           ['then', collEntriesFromTemp(t, MAP_ENTRY)],
           ['else', ['local.get', `$${t}`]]]]]], 'f64')
   }
+
+  // Constructor-tolerant iterable normalization: ES's Set/Map CONSTRUCTORS
+  // treat a nullish iterable as "skip iteration" (new Set(undefined) is an
+  // EMPTY set — GetIterator is never reached), unlike for-of/spread where
+  // nullish is a TypeError (__iter_arr above, which throws per spec). A
+  // nullish value passes through unchanged here; the constructors' existing
+  // non-ARRAY ptr-type guard then leaves the seed length at 0. This is also
+  // self-host-load-bearing: prepare's own `new Set(skip)` with an undefined
+  // skip ran fine natively (host JS semantics) but threw the __iter_arr
+  // TypeError when the compiler itself runs in-kernel — the census-row class.
+  ctx.core.emit['__iter_arr_ctor'] = (src) => {
+    const vt = valTypeOf(src)
+    if (vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.TYPED || vt === VAL.BUFFER || vt === VAL.SET || vt === VAL.MAP)
+      return emit(['()', '__iter_arr', src])
+    inc('__is_nullish')
+    const t = temp('iterc')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, asF64(emit(src))],
+      ['if', ['result', 'f64'],
+        ['call', '$__is_nullish', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
+        ['then', ['local.get', `$${t}`]],
+        ['else', asF64(emit(['()', '__iter_arr', ['__raw_local', t]]))]]], 'f64')
+  }
+  // Raw pre-bound local reference for the tolerant path above — lets the
+  // non-nullish arm re-enter __iter_arr without re-evaluating the source expr.
+  ctx.core.emit['__raw_local'] = (name) => typed(['local.get', `$${name}`], 'f64')
 
   // === for...in on dynamic objects (HASH iteration) ===
 

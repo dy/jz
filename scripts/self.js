@@ -167,6 +167,7 @@ export function compileProfile(source, strict, optJSON, modulesJSON, host) {
   return JSON.stringify({ front: t1 - t0, compileAst: t2 - t1, optimizeTail: t3 - t2, encode: t4 - t3 })
 }
 
+
 export function compileDiag(source, strict, optJSON) {
   setupSelf(strict, optJSON)
   ctx.core.diagSink = {}
