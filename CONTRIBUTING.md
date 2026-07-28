@@ -112,8 +112,10 @@ JZ makes a load-bearing promise: **on the bench corpus, JZ wasm is at least as
 fast and at least as small as the alternatives.** Concretely, enforced by
 `test/bench.js` (run by CI on every push/PR — `.github/workflows/bench.yml`):
 
-- **Speed** (`-O` speed-tuned build): JZ median ≤ V8, AssemblyScript (`asc -O3`)
-  and Porffor on every comparable case, and ≤ them on geomean. *Timing ratios are
+- **Speed** (`-O` speed-tuned build): JZ median ≤ V8 and AssemblyScript (`asc -O3`)
+  on every comparable case, and ≤ them on geomean; ≤ Porffor's native artifact by
+  geomean (the `porf-native` lane, asserted from committed evidence — the 2026
+  Porffor rewrite emits no wasm, so it left the per-case wasm field). *Timing ratios are
   asserted off-CI only (local `npm run test:bench` on stable hardware — the
   release discipline); on CI they print informational, since a shared 2-core
   runner reads identical builds up to 15× slower. Checksums, sizes and compile
@@ -127,7 +129,8 @@ fast and at least as small as the alternatives.** Concretely, enforced by
   it too) and `json` is string-carrier bound. The geomean ceiling is the
   guarantee; the `near` per-case pins are regression backstops.
 - **Size** (`optimize: 'size'` build): JZ wasm ≤ AssemblyScript (`asc -Oz --converge`)
-  and ≤ Porffor on every comparable case, and ≤ them on geomean.
+  on every comparable case, and ≤ it on geomean. (Porffor left this axis with its
+  wasm target; its native binary sizes read on the bench page's native band.)
 - **Codegen slack**: `wasm-opt -Oz` should find little to remove in JZ's own
   output — whatever it shrinks is latent size headroom. Gated with margin today
   (`WASMOPT_SLACK_MIN=0.70` in `test/bench.js` — ~25–30% slack on size builds);
@@ -135,11 +138,12 @@ fast and at least as small as the alternatives.** Concretely, enforced by
 - **Correctness floor**: `test/differential.js` fuzzes jz-compiled wasm against
   the same source run as plain JS — "smallest/fastest" never via a wrong answer.
 
-Run locally (needs `asc`, `porf`, `wasm-opt` on PATH for the full picture):
+Run locally (needs `asc` and `wasm-opt` on PATH for the full picture; the
+`porf-native` lane picks up a Porffor git checkout via `PORF_BIN`):
 
 ```sh
 npm run test:bench   # the gate
-npm run bench:size       # just the wasm-size table (jz vs AS -Oz vs porf, + wasm-opt slack)
+npm run bench:size       # just the wasm-size table (jz vs AS -Oz, + wasm-opt slack)
 npm run bench            # just the speed harness
 ```
 

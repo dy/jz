@@ -32,8 +32,8 @@ test('headline: a WRONG-result (parity DIFF) run is excluded from the ratio', ()
 
 test('headline: an attempted-but-failed run ({status:"fail"}) is excluded, never NaN', () => {
   const r = { cases: {
-    a: C({ medianUs: 100, parity: 'ok' }, { porf: { medianUs: 300, parity: 'ok' } }),
-    b: C({ medianUs: 100, parity: 'ok' }, { porf: { status: 'fail', reason: 'memory access out of bounds' } }),  // didn't run → must not count, must not NaN
+    a: C({ medianUs: 100, parity: 'ok' }, { 'porf-native': { medianUs: 300, parity: 'ok' } }),
+    b: C({ medianUs: 100, parity: 'ok' }, { 'porf-native': { status: 'fail', reason: 'memory access out of bounds' } }),  // didn't run → must not count, must not NaN
   } }
   is(headlineStats(r).porf, '3×')   // only case `a`; the failed run is dropped, not pushed as undefined/jz
 })

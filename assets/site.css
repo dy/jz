@@ -23,7 +23,7 @@
   --mast-px: 24px;       /* header inset — matches the examples grid padding-x */
 
   /* ── Themed palette — ONE set of tokens, each a light-dark(LIGHT, DARK) pair. A page opts into theming
-     by setting data-theme on <html> (the no-flash snippet does this from localStorage / the OS); the
+     by setting data-theme on <html> (the no-flash snippet does this from localStorage, else the dark default); the
      toggle then flips `color-scheme` (below) and every token switches at once. Pages that DON'T opt in
      (the full-screen example demos, the repl) keep the dark default. The landing hero pins these back to
      their dark values (it's a fixed dark island over the live demo). ── */

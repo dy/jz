@@ -9,8 +9,10 @@ only the things that bite automated edits.
 These are the product's promises. They are CI-gated (`test/bench.js`), not aspirations:
 
 1. **Fastest wasm.** On every bench case, jz's wasm is the fastest among wasm producers —
-   ahead of `clang→wasm`, `rustc→wasm`, `tinygo→wasm`, AssemblyScript, Porffor. Native
-   `clang -O3` is the only thing allowed to be faster (and we aim within its parity band).
+   ahead of `clang→wasm`, `rustc→wasm`, `tinygo→wasm`, AssemblyScript. Native binaries
+   (`clang -O3`, Porffor's `porf native` — its 2026 rewrite emits no wasm) are the only
+   things allowed to be faster per-case; we hold the parity band vs C and stay ahead of
+   Porffor-native by geomean (committed evidence).
    A case where another *wasm* target wins is a bug to fix, tracked as `todo` in the gate
    until jz takes the lead — never silently accepted.
 2. **Faster than any JIT.** jz beats V8 (Node), and any other JIT (JSC, SpiderMonkey) on

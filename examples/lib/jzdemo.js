@@ -22,15 +22,14 @@ const titleOf = (n) => byName[n]?.title || n.replace(/-/g, ' ')
 // same regardless of the site theme.
 ;(() => {
   const root = document.documentElement
-  const stored = () => { try { return localStorage.getItem('theme') } catch { return null } }
   const set = (t) => { root.dataset.theme = t }
-  if (!root.dataset.theme) set(stored() || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'))
+  // dark by default (jz's identity); only an explicit toggle to light persists. OS preference ignored.
+  if (!root.dataset.theme) { try { set(localStorage.getItem('theme') || 'dark') } catch { set('dark') } }
   addEventListener('click', (e) => {
     if (!e.target.closest?.('.theme-toggle')) return
     const next = root.dataset.theme === 'light' ? 'dark' : 'light'; set(next)
     try { localStorage.setItem('theme', next) } catch {}
   })
-  matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => { if (!stored()) set(e.matches ? 'light' : 'dark') })
 })()
 
 // The demo is theme-INDEPENDENT: any kernel exporting setTheme(pr,pg,pb, ir,ig,ib) is always fed a

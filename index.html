@@ -4,7 +4,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <script>(() => { try { const s = localStorage.getItem('theme'); document.documentElement.dataset.theme = s || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') } catch (e) { } })()</script>
+    <script>(() => { try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark' } catch (e) { document.documentElement.dataset.theme = 'dark' } })()</script>
     <title>JZ — JS→WASM compiler for numeric code (DSP, audio, math)</title>
     <meta name="description" content="Compile numeric JavaScript to GC-free WebAssembly — no rewrite, annotations, runtime, or GC.">
     <link rel="canonical" href="https://dy.github.io/jz/">
@@ -410,6 +410,58 @@
         align-items: center;
         gap: 40px;
         flex: 0 0 auto;
+      }
+
+      /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4
+       * The existing demo already proves the product; this status makes that proof visible
+       * without introducing a new surface or competing with the JS/JZ control. */
+      .live-demo {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+        width: 100%;
+        min-width: 0;
+        max-width: 100%;
+      }
+
+      .compile-proof {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 4px 10px;
+        max-width: 100%;
+        margin: 0;
+        color: var(--dim);
+        font: 11px/16px var(--mono);
+        font-variant-numeric: tabular-nums;
+        letter-spacing: .01em;
+      }
+
+      .compile-proof .proof-data {
+        display: block;
+        flex: 1 1 100%;
+        width: 100%;
+        min-width: 0;
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+
+      .compile-proof .proof-kicker {
+        color: var(--soft);
+        font-family: var(--font);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: .13em;
+        text-transform: uppercase;
+      }
+
+      .compile-proof[data-state="loading"] .proof-data {
+        opacity: .65;
+      }
+
+      .compile-proof[data-state="error"] .proof-data {
+        color: var(--mute);
       }
 
       /* the CTA: the readout (sparkline + number) leads, the compact JS/JZ switch sits 40px to its right — further than the 28px inside the readout, so the switch reads as separate. switch stays first in the DOM for a11y; row-reverse only flips the visual order. */
@@ -1282,26 +1334,34 @@
         </div>
 
         <div class="pcol pright">
-          <!-- top-right quadrant: "Speed" over the three selling stats (one line) + bench link.
-           peak-SIMD, Porffor and the size figures live on the bench strip (the expanded view). -->
+          <!-- top-right quadrant: "Faster than" over the three selling stats (one line) + bench link.
+           V8 = your runtime, Porffor = the JS-AOT rival (its native artifact), AssemblyScript = the wasm-language
+           incumbent. peak-SIMD and the size/memory figures live on the bench strip (the expanded view). -->
           <div class="metrics">
             <span class="mlabel">Faster than</span>
             <div class="mrow">
               <div class="mstats">
-                <a class="stat" href="bench/"><b :text="v8">1.9×</b><span data-cls="js">V8<i>(average)</i></span></a>
-                <a class="stat" href="bench/"><b :text="asspeed">1.7×</b><span data-cls="wasm">AssemblyScript</span></a>
+                <a class="stat" href="bench/"><b :text="v8">2.2×</b><span data-cls="js">V8<i>(average)</i></span></a>
+                <a class="stat" href="bench/"><b :text="asspeed">2.1×</b><span data-cls="wasm">AssemblyScript</span></a>
+                <a class="stat" href="bench/"><b :text="porf">15×</b><span data-cls="native">Porffor</span></a>
               </div>
             </div>
           </div>
 
           <!-- bottom-right quadrant (drops to the description's level): the CTA — flip the live demo
            between plain JS and jz-compiled WASM; the fps/ms it drives reads right beside it. -->
-          <div class="cta-live">
-            <button class="engine jz" id="engine" role="switch" aria-checked="true" aria-label="Run the live demo as plain JS or as JZ-compiled WASM"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
-            <div class="fps" aria-label="compute throughput, operations per second">
-              <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric ms" title="Compute passes per second — how many times the engine runs the whole frame. Uncapped by your ~60 Hz display. Higher is better; flip JS/JZ to compare."><b
-                  id="ms-num">··</b><span class="unit">op/s</span></span>
+          <div class="live-demo">
+            <div class="cta-live">
+              <button class="engine jz" id="engine" role="switch" aria-checked="true" aria-label="Run the live demo as plain JS or as JZ-compiled WASM"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
+              <div class="fps" aria-label="compute throughput, operations per second">
+                <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric ms" title="Compute passes per second — how many times the engine runs the whole frame. Uncapped by your ~60 Hz display. Higher is better; flip JS/JZ to compare."><b
+                    id="ms-num">··</b><span class="unit">op/s</span></span>
+              </div>
             </div>
+            <p class="compile-proof" id="compile-proof" data-state="loading" role="status" aria-live="polite" aria-atomic="true" aria-busy="true">
+              <span class="proof-kicker">Compiled here</span>
+              <span class="proof-data" id="compile-proof-data">same source → compiling in your browser…</span>
+            </p>
           </div>
         </div>
       </section>
@@ -1395,11 +1455,12 @@
 
 
         <details name="faq">
-          <summary><span class="fq">Why not AssemblyScript, Porffor?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <summary><span class="fq">Why not Porffor, scriptc, or AssemblyScript?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>AssemblyScript is a TypeScript dialect — can’t run in a JS engine. Porffor chases the whole JS spec, which costs performance, and cannot compile itself yet.</p>
+            <p>Different aims. Porffor covers the full JS spec but emits no WASM (its 2026 rewrite compiles through C to native) and runs slower than V8 on the <a href="bench/">cases</a> it completes; scriptc makes native CLI binaries from TypeScript, no WASM target; AssemblyScript is a typed TypeScript dialect for WASM whose source can’t run as JS.</p>
+            <p>JZ compiles plain JS that still runs and tests as JS, and the release gate keeps its WASM fastest per case; the price is the overdynamic constructs it refuses.</p>
           </div>
         </details>
 
@@ -1419,7 +1480,7 @@
             </svg></summary>
           <div class="ans">
             <p>JZ leads V8 and AssemblyScript by geomean on the covered corpus and targets near-native speed. The release gate is stricter than an average: JZ must be the fastest WASM on every case. Per-case numbers, missing target coverage, and every measured loss stay visible on the <a href="bench/">bench page</a>; a rival win remains a bug to close, not an exception to hide.</p>
-            <a href="bench/" class="bench-svg" id="bench-chart" role="img" aria-label="Geomean speed across the bench corpus — jz vs V8, Rust, Go, AssemblyScript, Porffor, all compiled to WASM and run in V8; native C the lone reference, jz = 1.00× baseline"></a>
+            <a href="bench/" class="bench-svg" id="bench-chart" role="img" aria-label="Geomean speed across the bench corpus — jz vs the wasm field (C, Rust, Go, Zig, MoonBit, AssemblyScript, compiled to WASM and run in V8), V8 itself, and Porffor's native AOT; native C the lone reference, jz = 1.00× baseline"></a>
             <p>If you hit a slow case, <a href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">report it →</a></p>
           </div>
         </details>
@@ -1525,10 +1586,24 @@
       // One screen: the blueprint grid's electron pulses are a real jz program (assets/grid-current.js),
       // compiled HERE in the page. The JS/JZ switch flips between jz-compiled wasm and the same source run
       // as plain JS; the FPS/ms readout times its frame. The real REPL (wat · console) is embedded below.
-      import jz from './dist/jz.js'
+      import { compile as jzCompile, instantiate as instantiateJz } from './dist/jz.js'
       import sprae from './assets/sprae.js'
       import { headlineStats, CLS_ICO } from './assets/headline.js'
       const $ = id => document.getElementById(id)
+      const compileProof = $('compile-proof')
+      const compileProofData = $('compile-proof-data')
+      const setCompileProof = (state, text) => {
+        if (!compileProof || !compileProofData) return
+        compileProof.dataset.state = state
+        compileProof.setAttribute('aria-busy', state === 'loading' ? 'true' : 'false')
+        compileProofData.textContent = text
+      }
+      const formatCompileMs = ms => ms < .1 ? '<0.1 ms' : ms < 10 ? `${ms.toFixed(1)} ms` : `${Math.round(ms)} ms`
+      const formatWasmBytes = bytes => {
+        if (bytes < 1024) return `${bytes} B`
+        const kb = bytes / 1024
+        return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} kB`
+      }
 
         // Blueprint grid: inset --grid-pad from the band's top-left in pure CSS — stable, no JS origin to set.
 
@@ -1537,7 +1612,7 @@
         // which we fill from the fresh bench numbers so the row always reflects the latest run.
         ; (async () => {
           const m = sprae(document.querySelector('.pitch'),
-            { v8: '1.9×', asspeed: '1.7×', peak: '13.3×' })   // hero stats; v8 (geomean) + peak (best SIMD case) also feed the sub
+            { v8: '2.2×', asspeed: '2.1×', porf: '15×', peak: '12.4×' })   // hero stats; v8 (geomean) + peak (best SIMD case) also feed the sub
           // prepend the substrate-class glyph to each stat label (JS · WASM · native),
           // the same marks the bench chart uses — one shared source (CLS_ICO).
           for (const el of document.querySelectorAll('.metrics .stat span[data-cls]'))
@@ -1548,6 +1623,7 @@
             if (s.v8) m.v8 = s.v8                     // same source, faster than V8 (geomean)
             if (s.peak) m.peak = s.peak              // best single-case SIMD win → the sub's "up to 13.5×"
             if (s.asspeed) m.asspeed = s.asspeed     // jz vs AssemblyScript, speed geomean
+            if (s.porf) m.porf = s.porf              // jz vs Porffor's native artifact (porf-native lane), speed geomean
           } catch { }
         })()
 
@@ -1658,14 +1734,27 @@
       const demoSrc = () => document.documentElement.dataset.theme === 'light' ? 'assets/grid-life.js' : 'assets/grid-current.js'
       let loading = false, pendingTheme = null
       const loadSource = async (path) => {
+        setCompileProof('loading', 'same source → compiling in your browser…')
         let text
-        try { text = await (await fetch(path)).text() } catch { return }
+        try { text = await (await fetch(path)).text() }
+        catch { setCompileProof('error', 'demo source unavailable'); return }
         src = text
         let jzEng = null, jsEng = null, jzErr = null
-        // A compile failure here is a JZ BUG, not browser incompatibility — surface it
-        // loudly (an unguarded Node global once broke every loop compile in every
-        // browser while this silent catch mislabeled it "WASM unavailable").
-        try { jzEng = jz(src, { optimize: 3 }).exports } catch (e) { jzErr = e; console.error('jz hero compile failed:', e) }
+        // Compile ONCE, visibly: the proof line reports this exact source, compile duration and
+        // artifact — no canned benchmark. Instantiate the resulting bytes separately so the
+        // measurement is compiler time, not host startup or network time.
+        try {
+          const started = performance.now()
+          const wasm = jzCompile(src, { optimize: 3 })
+          const compileMs = performance.now() - started
+          jzEng = instantiateJz(wasm).exports
+          const lines = src.replace(/\s+$/, '').split(/\r?\n/).length
+          setCompileProof('success', `same ${lines}-line JS → ${formatWasmBytes(wasm.byteLength)} WASM in ${formatCompileMs(compileMs)}`)
+        } catch (e) {
+          jzErr = e
+          setCompileProof('error', 'same source → WASM compile unavailable in this browser')
+          console.error('jz hero compile failed:', e)
+        }
         try {                                                                   // the SAME source as plain JS, for the toggle. Safari can reject importing a blob: module — isolate it
           const u = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
           try { jsEng = await import(u) } finally { URL.revokeObjectURL(u) }

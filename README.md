@@ -171,6 +171,7 @@ JZ is a **strict modern JS subset**. Built-in jzify transform extends support to
 │ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol  null  │ │
 │ │   ArrayBuffer  DataView  TypedArray  Map  Set  Atomics             │ │
 │ │   Float16Array  Uint8ClampedArray  Math.f16round  get/setFloat16   │ │
+│ │   Math.sumPrecise                                                  │ │
 │ │   parseInt  parseFloat  encodeURI(Component)  Error  BigInt        │ │
 │ │   Uint8Array.fromBase64/toBase64/fromHex/toHex  atob  btoa         │ │
 │ │   crypto.getRandomValues  crypto.randomUUID  TextEncoder(Into)     │ │
@@ -204,7 +205,8 @@ Not supported
 
 Each follows one rule: **JZ takes WASM/native conventions over JS edge-cases when it's free and the f64 value-precision of real computation is preserved** ([rationale](CONTRIBUTING.md#principles)).
 
-- **Numbers are f64**; integer-proven values (loop counters, array idx, `| 0`) are `i32` and **wrap at ±2³¹**.
+- **Numbers are f64**; integer-proven values (loop counters, array idx, `| 0`) are `i32` and **wrap at ±2³¹**. `x | 0` of a huge f64 (|x| ≥ 2⁶³) saturates instead of ES-wrapping — the asm.js boundary.
+- **Math kernels are jz's own; summation is exact** — transcendentals (`sin`/`cos`/`exp`/`pow`/`cbrt`/…) are fast minimax/Newton approximations, deliberately not bit-identical to host libm (`optimize: { crPow: true }` opts `**`/`pow` into the correctly-rounded kernel); `sqrt`/`abs`/`floor`/`ceil`/`trunc`/`round`/`sign`/`fround`/`f16round` are IEEE-exact, and the spec edge tables hold (`atan2` signed zeros and ∞/∞ quadrants; `hypot`/`asinh`/`acosh` scale instead of overflowing at `1e300`). `Math.sumPrecise` implements the full proposal: exact fixed-point accumulation over arrays *and* typed arrays, one correctly-rounded result — `Math.sumPrecise(Array(1e7).fill(0.1))` is exactly `1000000`. Pre-eval folds constant chains the same way: exact rationals through `+ - * /`, rounded once — a folded `0.1 + 0.2 - 0.3` is the true `2.7755575615628914e-17` where stepwise JS gives `5.55e-17`, and `1e300*1e300/1e300` folds finite. Compiled constants are *more* accurate than run-as-JS, never less.
 - **Strings are UTF-8 bytes** — `.length`, `charCodeAt`, indexing, `slice`, `indexOf`, regex count bytes (`"中".length` is `3`); `toUpperCase`/`toLowerCase`/`trim` are ASCII-only. UTF-8 skips UTF-16's 2× and a multi-KB Unicode case table.
 - **Objects are fixed-shape structs** — literal keys sit in fixed slots; computed writes (`o[k] = v`) fall back to a per-object hash and enumerate normally, but a dot-key added after the literal (`o.b = 2`) stays readable without enumerating (`Object.keys`/`for…in`). Prefer `Map` for heavy dynamic keys.
 - **Array indices are integers, typed-array access is unchecked** — an index coerces to `i32` (asm.js-style), so a fractional or `NaN` index *truncates* (`a[1.5]`→`a[1]`, `a[NaN]`→`a[0]`) rather than yielding JS's `undefined`. A `Float64Array`/etc. is fixed-size (`arr.length = n` won't compile) and read **raw**: an out-of-bounds or negative index reads arbitrary linear memory (a large one traps), not `undefined` — pass valid in-bounds integers. Plain `[]` arrays *are* bounds-checked (`undefined` past the end / for a negative index).
@@ -426,7 +428,7 @@ Each compiled module exposes two call surfaces:
 <details>
 <summary><strong>How big is the output?</strong></summary>
 
-No runtime, no GC — a module is your code plus a small bump allocator. The geomean across the bench corpus is on par with AssemblyScript and smaller than Porffor; most modules are single-digit kB — the [ZzFX synth](examples/zzfx) is ~10 kB, [mandelbrot](examples/mandelbrot) ~7 kB. Shrink it further:
+No runtime, no GC — a module is your code plus a small bump allocator. The geomean across the bench corpus is on par with AssemblyScript; most modules are single-digit kB — the [ZzFX synth](examples/zzfx) is ~10 kB, [mandelbrot](examples/mandelbrot) ~7 kB. Shrink it further:
 
 - **`optimize: 'size'`** — keeps every size pass, drops loop unrolling and SIMD.
 - **`alloc: false`** — omit the allocator for pure-numeric modules that never marshal heap values.
@@ -496,6 +498,20 @@ export let half = (n) => n * 0.5    // f64 — 0.5 isn't an integer
 ```
 
 Literals (`0` vs `0.5`), operators (`|` `<<` `&` ⇒ i32), and how a value is used pin it to `i32`, `f64`, string, object, or typed array. Anything still ambiguous stays **dynamic** — always correct, just type-checked at runtime (a little slower).
+
+</details>
+
+
+<details>
+<summary><strong>Why not Porffor, scriptc, or AssemblyScript?</strong></summary>
+
+Each aims at a different thing:
+
+- **Porffor** — coverage: the full JS spec, grown against test262; its 2026 rewrite is an AOT engine through its own C backend (no wasm), and its native binaries run slower than V8 on the [bench](https://dy.github.io/jz/bench/) cases they complete.
+- **scriptc** — native executables: TypeScript (input must typecheck) to self-contained binaries, tuned for CLI startup and size; no WASM target. (Native output from JZ: `jz → wasm2c → clang`, [pipeline](scripts/native/README.md).)
+- **AssemblyScript** — WASM with explicit types: a TypeScript dialect, so the source doesn't run in a JS engine and carries its own test suite.
+
+JZ — efficiency from plain JS: the source runs, tests, and profiles as ordinary JS; the release gate holds output fastest-WASM-per-case on the covered corpus; the price is the overdynamic constructs it refuses (the "never support" list above).
 
 </details>
 
@@ -586,8 +602,9 @@ Small & fast JS subset → full JS spec & bundled engine:
 
 * [AssemblyScript](https://github.com/AssemblyScript/assemblyscript) — TS-like dialect → WASM; small, fast output, but needs type annotations (not JS).
 * [awasm-compiler](https://github.com/paulmillr/awasm-compiler) — reproducible WASM assembled through a typed *builder API*.
-* [Porffor](https://github.com/CanadaHonk/porffor) — AOT JS→WASM (and C) targeting the full spec, grown against test262.
+* [Porffor](https://github.com/CanadaHonk/porffor) — AOT JS engine targeting the full spec, grown against test262; the 2026 rewrite compiles through its own C backend (wasm target dropped).
 * [Static Hermes](https://github.com/facebook/hermes) — Meta's AOT JS → native via C/LLVM (no WASM target); full speed needs sound type annotations, untyped JS stays dynamic.
+* [scriptc](https://github.com/vercel-labs/scriptc) — Vercel's AOT TS → native via LLVM (no WASM target); typed TS compiles statically, untyped code falls back to an embedded QuickJS.
 * [jawsm](https://github.com/drogus/jawsm) — JS→WASM in Rust on WasmGC; no interpreter, but leans on the engine's GC.
 * [Javy](https://github.com/bytecodealliance/javy) — embeds QuickJS; runs almost any JS, but ships a full interpreter (large, interpreter-speed).
 * [ComponentizeJS / jco](https://github.com/bytecodealliance/ComponentizeJS) — WASM Component via embedded SpiderMonkey; standards-complete, but bundles a JS engine.
