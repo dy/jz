@@ -9,6 +9,7 @@ import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { targetProfileFor } from '../src/session.js'
 import { ctx } from '../src/ctx.js'
+import { legalizeForTarget } from '../src/optimize/watr-tail.js'
 
 // === TargetProfile (audit P1) ===
 // Pins the js/wasi policy objects src/session.js's beginSession derives from
@@ -38,6 +39,42 @@ test('TargetProfile: js vs wasi field values', () => {
   ok(Object.isFrozen(wasi_), 'wasi profile is frozen')
   is(targetProfileFor(undefined), js, 'undefined host resolves to the js profile object')
   is(targetProfileFor('bogus'), js, 'unrecognized host falls back to the js profile object')
+})
+
+// legalizeForTarget (src/optimize/watr-tail.js) now ports real WASI-only rewrites onto the
+// assembled module tree (command-entry legalization + reactor `_initialize` conversion),
+// both gated on targetProfile.commandEntry — false under js. Pin the js leg as an actual
+// identity transform so a future rewrite that forgets to gate on commandEntry, or narrows
+// its own gate, gets caught here instead of silently reshaping non-WASI output.
+
+test('legalizeForTarget: identity transform under the js TargetProfile (same reference, untouched tree)', () => {
+  const module = ['module',
+    ['func', '$run', ['export', '"run"'], ['f64.const', 1]],
+    ['func', '$__start', ['call', '$run']],
+    ['start', '$__start']]
+  const before = JSON.stringify(module)
+  const result = legalizeForTarget(module, targetProfileFor('js'))
+  is(result, module, 'js profile: legalizeForTarget returns the same array reference')
+  is(JSON.stringify(module), before, 'js profile: module tree left byte-for-byte untouched')
+})
+
+test('host:js compile output carries no WASI command/reactor legalization artifacts', () => {
+  // Same source shape that WOULD trigger both ported rewrites under host:'wasi'
+  // (a run/_start export plus a top-level side effect needing __start) — under
+  // host:'js' this must compile exactly as if legalizeForTarget did not exist.
+  const wasm = compile(`console.log('boot')
+export let run = () => { console.log('hi'); return 42 }`, { host: 'js' })
+  const mod = new WebAssembly.Module(wasm)
+  const exportNames = WebAssembly.Module.exports(mod).map(e => e.name)
+  ok(!exportNames.includes('_initialize'), 'js profile: no reactor _initialize export')
+  ok(!exportNames.includes('run') || WebAssembly.Module.exports(mod).find(e => e.name === 'run').kind === 'function',
+    'run stays a plain function export')
+  // Two js-host compiles of the identical source must be byte-identical (determinism through
+  // legalizeForTarget's no-op path).
+  const wasm2 = compile(`console.log('boot')
+export let run = () => { console.log('hi'); return 42 }`, { host: 'js' })
+  is(Buffer.from(wasm).toString('hex'), Buffer.from(wasm2).toString('hex'),
+    'js profile: repeat compile of the same source is byte-identical')
 })
 
 test('TargetProfile: beginSession wires ctx.transform.targetProfile from host', () => {

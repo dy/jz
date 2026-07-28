@@ -2179,31 +2179,14 @@ export default function compile(ast, profiler) {
 
   sec.funcs.push(...closureFuncs, ...funcs)
 
-  // WASI command-mode entries (`run`, `_start`) must export as () -> ();
-  // wasmtime/wasmer reject f64-returning functions under those names.
-  // Parametric entries skip this — a CLI invocation has no way to supply args.
-  const wasiCommandExports = new Set()
-  if (ctx.transform.targetProfile.commandEntry) {
-    const WASI_ENTRIES = new Set(['run', '_start'])
-    for (const [exportName, val] of Object.entries(ctx.func.exports)) {
-      if (!WASI_ENTRIES.has(exportName)) continue
-      const targetName = val === true ? exportName : val
-      if (typeof targetName !== 'string') continue
-      const func = ctx.func.list.find(f => f.name === targetName)
-      if (!func) continue
-      if (func.sig.params.length) continue
-      const inner = isBoundaryWrapped(func) ? `$${targetName}$exp` : `$${targetName}`
-      for (const f of sec.funcs) {
-        if (f[1] === inner || f[1] === `$${targetName}`) {
-          const expIdx = f.findIndex(n => Array.isArray(n) && n[0] === 'export')
-          if (expIdx >= 0) f.splice(expIdx, 1)
-        }
-      }
-      sec.funcs.push(['func', `$${exportName}$wasi`, ['export', `"${exportName}"`],
-        ['drop', ['call', inner]]])
-      wasiCommandExports.add(exportName)
-    }
-  }
+  // WASI command-mode entry legalization (`run`/`_start` re-exported as () -> ()) and
+  // the WASI reactor `_initialize` conversion used to live here and further down in this
+  // function, mutating `sec.funcs`/`sec.start` in place. Both are now target legalization
+  // (src/optimize/watr-tail.js legalizeForTarget), ported onto the fully assembled
+  // `['module', …]` tree — see that function's doc comment for why (and for the byte-
+  // identity evidence that the relocation is safe). Nothing here builds `wasiCommandExports`
+  // any more, so the "Named export aliases" loop below always emits the natural alias
+  // export entry for an aliased `run`/`_start` — legalizeForTarget rewrites it from there.
 
   if (ctx.closure.table?.length)
     sec.elem.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
@@ -2392,9 +2375,11 @@ export default function compile(ast, profiler) {
   if (i64Exports.length)
     sec.customs.push(['@custom', '"jz:i64exp"', `"${JSON.stringify(i64Exports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
-  // Named export aliases: export { name } or export { source as alias }
+  // Named export aliases: export { name } or export { source as alias }. A `run`/`_start`
+  // alias under host:'wasi' emits its natural entry here too — legalizeForTarget (audit
+  // P1 TargetProfile stage, src/optimize/watr-tail.js) rewrites it into the () -> () wrapper
+  // afterward, keyed off this same customs entry shape (no wasiCommandExports skip needed).
   for (const [name, val] of Object.entries(ctx.func.exports)) {
-    if (wasiCommandExports.has(name)) continue
     if (val === true) {
       if (ctx.scope.userGlobals?.has(name)) sec.customs.push(['export', `"${name}"`, ['global', `$${name}`]])
       continue
@@ -2422,44 +2407,15 @@ export default function compile(ast, profiler) {
 
   pruneUnusedThrowRuntime(sec)
 
-  // WASI reactor convention: the p1 ABI forbids WASI calls inside the wasm start
-  // section — a JS shim literally cannot serve them (fd_write during `new
-  // WebAssembly.Instance` has no memory to read; a top-level console.log/Date.now
-  // crashed with "Cannot read properties of null"). Ship module init as the
-  // standard `_initialize` export instead: hosts (jz/wasi + interop shims, node:wasi
-  // initialize(), wasmtime) call it once memory is wired. Command entries
-  // (`run`/`_start`) self-init through the same once-guard, so a runtime that
-  // invokes a command without calling `_initialize` still runs init exactly once.
-  if (ctx.transform.targetProfile.commandEntry) {
-    const sFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func')
-    const sDirIdx = sec.start.findIndex(n => Array.isArray(n) && n[0] === 'start')
-    if (sFn) {
-      sec.globals.push(['global', '$__init_done', ['mut', 'i32'], ['i32.const', 0]])
-      let at = 2
-      while (at < sFn.length && Array.isArray(sFn[at]) && sFn[at][0] === 'local') at++
-      sFn.splice(at, 0,
-        ['if', ['global.get', '$__init_done'], ['then', ['return']]],
-        ['global.set', '$__init_done', ['i32.const', 1]])
-      sFn.splice(2, 0, ['export', '"_initialize"'])
-      if (sDirIdx !== -1) sec.start.splice(sDirIdx, 1)
-      // REACTOR self-arming: EVERY exported function (commands and plain
-      // reactor exports alike) ensures init ran. A raw `new WebAssembly.
-      // Instance` embedder that never calls `_initialize` (the reactor
-      // contract wasmtime honors automatically) otherwise runs against
-      // unseeded state — `_clear()` resets the heap from a zero
-      // `__heap_reset` and the next alloc writes out of bounds (the
-      // color-space batch harness). One predicted global check per
-      // boundary call; `__init_done` keeps init exactly-once either way.
-      for (const f of sec.funcs) {
-        if (!Array.isArray(f) || f[0] !== 'func') continue
-        if (!f.some(x => Array.isArray(x) && x[0] === 'export')) continue
-        let at = 2
-        while (at < f.length && Array.isArray(f[at]) &&
-          (f[at][0] === 'export' || f[at][0] === 'param' || f[at][0] === 'result' || f[at][0] === 'local')) at++
-        f.splice(at, 0, ['if', ['i32.eqz', ['global.get', '$__init_done']], ['then', ['call', '$__start']]])
-      }
-    }
-  }
+  // WASI reactor `_initialize` conversion (the p1 ABI forbids WASI calls inside the wasm
+  // start section — top-level console.log/Date.now crashed with "Cannot read properties of
+  // null" since no host can service them before `new WebAssembly.Instance` finishes wiring
+  // memory) used to run here, mutating `sec.start`/`sec.funcs` in place. It's target
+  // legalization now (src/optimize/watr-tail.js legalizeForTarget), ported onto the fully
+  // assembled `['module', …]` tree together with the command-entry rewrite above — see that
+  // function's doc comment. `sec.start`'s `$__start` func and its `(start …)` directive are
+  // left exactly as built here; legalizeForTarget finds `$__start` by name and does the
+  // `_initialize` conversion + self-arming guard injection from there.
 
   // Reorder non-import funcs by call count: hot callees get low LEB128 indices.
   // `call $f` encodes funcidx as ULEB128 (1 B for idx < 128, 2 B for idx < 16384).

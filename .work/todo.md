@@ -342,7 +342,26 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   branch VERIFIED fully merged (ancestor, 0 ahead) and deleted
   local+remote. NOTE: producer still does not emit meta.versions.watr
   (claims freshness cross-check will fail on next refresh until
-  added) -- now solo-scope since bench.mjs is landed.
+  added) -- now solo-scope since bench.mjs is landed. [DONE 3523aaa9]
+  LEGALIZEFORTARGET REAL 2026-07-28 (audit item 6a): both WASI
+  target-conditional rewrites ported out of compile/index.js onto the
+  assembled module tree in watr-tail.js -- legalizeCommandEntries
+  (run/_start () -> () wrappers; targets discovered STRUCTURALLY from
+  export nodes, the wasiCommandExports skip-set deleted so aliases
+  emit naturally) + legalizeReactorInit (start-section -> _initialize
+  with $__init_done self-arm guards). Observation-order concern
+  resolved EMPIRICALLY not just argued: rewrite 2 always ran post-
+  optimizeModule/callCount; rewrite 1's new func was a zero-call
+  stable-sort tie whose slot insertLikeCompileFuncsPush reconstructs
+  exactly. Byte-identity: 13-case sha256 corpus + stress combos
+  (run+_start together, both-alias, wrapper+self-arm interaction) all
+  identical. New pins: legalizeForTarget identity under js profile
+  (same array ref) + no-WASI-artifacts end-to-end. Gates: wasi leg
+  42/42, wasi-host full suite 3105/0, battery 3105/0, parity 18/18,
+  ratchet 10/10 +0, kernel leg 2419/2 (ToIntN burn-down rows).
+  Remaining item-6 scope: module/math.js's 3 host checks (landed
+  file now -- fold into targetProfile next touch), native/w2c
+  TargetProfile + w2c cap recovery (6b).
   EXCLUSIONS BURN-DOWN COMPLETE 2026-07-28: the census root =
   `new Set(undefined)` -- ES says the CONSTRUCTOR skips iteration on
   a nullish iterable (empty set), but jz's new.Set routed through
