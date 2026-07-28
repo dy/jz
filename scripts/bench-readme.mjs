@@ -37,7 +37,7 @@ const LABELS = [
   [/Zig/i, 'zig'],
   [/\bGo\b/i, 'go'],
   [/NumPy/i, 'numpy'],
-  [/Porffor/i, 'porf'],
+  [/Porffor/i, 'porf-native'],
 ]
 const targetOf = (label) => LABELS.find(([re]) => re.test(label))?.[1] ?? null
 

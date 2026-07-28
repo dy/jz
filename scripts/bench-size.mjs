@@ -25,7 +25,6 @@ process.on('exit', () => { try { rmSync(TMP, { recursive: true, force: true }) }
 
 const has = cmd => spawnSync('which', [cmd], { stdio: 'ignore' }).status === 0
 const HAS_ASC = has('asc')
-const HAS_PORF = has('porf')
 const HAS_WASMOPT = has('wasm-opt')
 
 const args = process.argv.slice(2)
@@ -79,27 +78,6 @@ const asCompileSize = id => {
   } catch { return null }
 }
 
-// porf: bundles a JS runtime, so this is the "ship plain JS as wasm" baseline.
-const flattenForPorf = id => {
-  let src = readFileSync(join(BENCH, id, `${id}.js`), 'utf8')
-  let out = `const performance = globalThis.performance || { now: () => Date.now() }\n`
-  if (src.includes('../_lib/benchlib.js')) {
-    out += readFileSync(join(LIB, 'benchlib.js'), 'utf8').replace(/\bexport let\b/g, 'const') + '\n'
-    src = src.replace(/import\s+\{[^}]+\}\s+from\s+['"]\.\.\/_lib\/benchlib\.js['"]\s*\n?/g, '')
-  }
-  out += src.replace(/\bexport let main\b/, 'const main') + '\nmain()\n'
-  return out
-}
-const porfCompileSize = id => {
-  if (!HAS_PORF || id === 'watr') return null  // watr pulls deep ES modules porf won't bundle here
-  const flat = join(TMP, `${id}.flat.js`)
-  const out = join(TMP, `${id}.porf.wasm`)
-  try {
-    writeFileSync(flat, flattenForPorf(id))
-    execFileSync('porf', ['wasm', '-O2', flat, out], { stdio: 'pipe' })
-    return statSync(out).size
-  } catch { return null }
-}
 
 // wasm-opt -Oz on jz's own output: how much byte-level slack jz left behind.
 const wasmOptSize = bytes => {
@@ -129,32 +107,28 @@ for (const id of cases) {
   let jz = null, jzOpt = null
   try { const w = jzCompileSize(id); jz = w.byteLength ?? Buffer.byteLength(w); jzOpt = wasmOptSize(w) } catch (e) { jz = null }
   const as = asCompileSize(id)
-  const porf = porfCompileSize(id)
-  rows.push({ id, jz, jzOpt, as, porf })
+  rows.push({ id, jz, jzOpt, as })
 }
 
 if (asJson) {
-  for (const r of rows) console.log(`SIZE ${r.id} jz=${r.jz ?? ''} jz_wasmopt=${r.jzOpt ?? ''} as=${r.as ?? ''} porf=${r.porf ?? ''}`)
+  for (const r of rows) console.log(`SIZE ${r.id} jz=${r.jz ?? ''} jz_wasmopt=${r.jzOpt ?? ''} as=${r.as ?? ''}`)
 } else {
   console.log(`wasm size (smaller is better) — jz uses optimize:'size'`)
   if (!HAS_ASC) console.log('  note: asc not found — AssemblyScript column blank')
-  if (!HAS_PORF) console.log('  note: porf not found — Porffor column blank')
   if (!HAS_WASMOPT) console.log('  note: wasm-opt not found — headroom column blank')
   console.log()
-  console.log(`  ${'case'.padEnd(14)}  ${'jz'.padStart(10)}  ${'jz+wasmopt'.padStart(11)}  ${'slack'.padStart(7)}  ${'AS -Oz'.padStart(10)}  ${'vs AS'.padStart(7)}  ${'porf'.padStart(10)}  ${'vs porf'.padStart(8)}`)
-  console.log(`  ${'-'.repeat(14)}  ${'-'.repeat(10)}  ${'-'.repeat(11)}  ${'-'.repeat(7)}  ${'-'.repeat(10)}  ${'-'.repeat(7)}  ${'-'.repeat(10)}  ${'-'.repeat(8)}`)
+  console.log(`  ${'case'.padEnd(14)}  ${'jz'.padStart(10)}  ${'jz+wasmopt'.padStart(11)}  ${'slack'.padStart(7)}  ${'AS -Oz'.padStart(10)}  ${'vs AS'.padStart(7)}`)
+  console.log(`  ${'-'.repeat(14)}  ${'-'.repeat(10)}  ${'-'.repeat(11)}  ${'-'.repeat(7)}  ${'-'.repeat(10)}  ${'-'.repeat(7)}`)
   for (const r of rows) {
     const vsAs = r.jz && r.as ? `${(r.jz / r.as).toFixed(2)}×` : '—'
-    const vsPorf = r.jz && r.porf ? `${(r.jz / r.porf).toFixed(2)}×` : '—'
-    console.log(`  ${r.id.padEnd(14)}  ${fmtB(r.jz).padStart(10)}  ${fmtB(r.jzOpt).padStart(11)}  ${pct(r.jzOpt, r.jz).padStart(7)}  ${fmtB(r.as).padStart(10)}  ${vsAs.padStart(7)}  ${fmtB(r.porf).padStart(10)}  ${vsPorf.padStart(8)}`)
+    console.log(`  ${r.id.padEnd(14)}  ${fmtB(r.jz).padStart(10)}  ${fmtB(r.jzOpt).padStart(11)}  ${pct(r.jzOpt, r.jz).padStart(7)}  ${fmtB(r.as).padStart(10)}  ${vsAs.padStart(7)}`)
   }
   const geo = (sel) => {
     const xs = rows.map(sel).filter(x => x != null && isFinite(x) && x > 0)
     return xs.length ? Math.exp(xs.reduce((a, b) => a + Math.log(b), 0) / xs.length) : null
   }
   const gAs = geo(r => r.jz && r.as ? r.jz / r.as : null)
-  const gPorf = geo(r => r.jz && r.porf ? r.jz / r.porf : null)
   const gSlack = geo(r => r.jz && r.jzOpt ? r.jzOpt / r.jz : null)
   console.log()
-  console.log(`  geomean: jz/AS = ${gAs ? gAs.toFixed(3) + '×' : '—'}   jz/porf = ${gPorf ? gPorf.toFixed(3) + '×' : '—'}   jz/(jz+wasmopt) = ${gSlack ? gSlack.toFixed(3) + '×' : '—'}`)
+  console.log(`  geomean: jz/AS = ${gAs ? gAs.toFixed(3) + '×' : '—'}   jz/(jz+wasmopt) = ${gSlack ? gSlack.toFixed(3) + '×' : '—'}`)
 }

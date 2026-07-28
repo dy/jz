@@ -59,6 +59,10 @@ jobs:
       # NumPy native-reference rows (python3 is preinstalled on ubuntu).
       - name: install numpy
         run: python3 -m pip install --break-system-packages numpy || pip install numpy || true
+      # GNU time provides /usr/bin/time — bench.mjs wraps every measured run in it
+      # to read peak RSS (the memKb column). Non-fatal: absent, memKb stays null.
+      - name: install GNU time
+        run: sudo apt-get install -y time || true
       # wasmtime runs the standalone `jz → wasmtime` / `jz → wasm2c` reference rows.
       - name: install wasmtime
         run: |
@@ -87,7 +91,7 @@ jobs:
           tinygo version
           printf 'package main\nfunc main() {}\n' > /tmp/tg.go
           tinygo build -target=wasip1 -o /tmp/tg.wasm /tmp/tg.go
-      # Rust→wasm baseline needs the wasm target added to the preinstalled rustc —
+      # Rust→wasm baseline needs the wasm target added to the preinstalled rustc;
       # the runner ships rustc but NOT the wasm32-wasip1 std, so without this every
       # rust-wasm case fails ("can't find crate for std") and the hero's Rust→wasm
       # stat goes null (why the 3rd hero stat was dropped in 83d6add5).
@@ -97,12 +101,14 @@ jobs:
       - run: npm install --no-save assemblyscript@~0.27.0 binaryen
       # Porffor: the 2026 rewrite (fixes typed-array OOB, module-scope refs, JSON - bench
       # coverage 13/52 -> full sweep) lives on git main only (npm 0.61.x is the old engine,
-      # and the restructured repo is not npm-installable yet). Pin a known-good commit;
-      # bench.mjs probes the CLI shape via --version, so either vintage works.
+      # and the restructured repo is not npm-installable yet). Pin a known-good commit
+      # (2026-07-24 head — full-corpus sweep validated on the reference machine, 42
+      # parity-ok + porf-native lane); bench.mjs probes the CLI shape via --version,
+      # so either vintage works.
       - name: porffor (git, pinned)
         run: |
           git clone https://github.com/CanadaHonk/porffor.git "$RUNNER_TEMP/porffor" || true
-          git -C "$RUNNER_TEMP/porffor" checkout 257e8437bea2f00c8a1453a325561071d32be9cd || true
+          git -C "$RUNNER_TEMP/porffor" checkout 8ef8aaaad9199de14a35bd1aa214f4d3e23bf97a || true
           echo "PORF_BIN=$RUNNER_TEMP/porffor/porf" >> "$GITHUB_ENV"
       - name: expose toolchains on PATH
         run: echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
@@ -131,7 +137,7 @@ jobs:
       - name: publish bench snapshot
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf,jz,jz-wasmtime,jz-w2c,wat,numpy --json || exit 1
+          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf-native,jz,jz-wasmtime,jz-w2c,wat,numpy --json || exit 1
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           # PER-MACHINE datasets: bench/results.json is the REFERENCE-machine

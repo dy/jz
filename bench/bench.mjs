@@ -32,7 +32,11 @@ const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const JSC_BIN = process.env.JSC_BIN || ''
-const PORF_BIN = process.env.PORF_BIN || 'porf'
+// Porffor: prefer the git checkout — the 2026 rewrite ("pre-alpha 1") lives on git
+// main and moves weekly, while npm's 0.61.x is the frozen pre-rewrite line. Same
+// committed-absolute-path pattern as WABT_W2C_DIR; override via PORF_BIN.
+const PORF_GIT = '/Users/div/projects/porffor/porf'
+const PORF_BIN = process.env.PORF_BIN || (existsSync(PORF_GIT) ? PORF_GIT : 'porf')
 // Porffor's 2026 rewrite ("pre-alpha 1", git main) replaced the CLI: no `run` subcommand,
 // no --allocator-chunks (the new allocator sizes itself). Probe the version once and pick
 // the invocation shape, so both the npm release (0.61.x) and a git checkout work.
@@ -124,7 +128,9 @@ const caseMemory = (c) => c.id === 'jz' ? { memory: 64 } : {}
 // so a future wasmtime upgrade re-enables the row by itself. (The jz case
 // additionally needs a graph-flattened entry for CLI shell-outs — cli.js does
 // no node_modules resolution — so revisit that path when the gate lifts.)
-const NEEDS_EH = new Set(['jessie', 'jz'])
+// watr joined 2026-07: its jz-compiled module now carries a tag section too
+// (wasm2c: "invalid section code: 13"), the same structural exclusion.
+const NEEDS_EH = new Set(['jessie', 'jz', 'watr'])
 const wasmtimeHasEH = (() => {
   let v
   return () => v ??= /\bexceptions\b/.test(spawnSync('wasmtime', ['run', '-W', 'help'], { encoding: 'utf8' }).stdout || '')
@@ -189,8 +195,29 @@ const parseLine = stdout => {
   return { medianUs: +m[1], checksum: (+m[2]) >>> 0, samples: +m[3], stages: +m[4], runs: +m[5] }
 }
 
+// Peak memory per run: every measured invocation is wrapped in /usr/bin/time
+// (BSD `-l` on darwin reports maxrss in BYTES, GNU `-v` on linux in KB), parsed
+// off stderr — the child's stdout metric line is untouched and the wrapper adds
+// no measurable overhead (it just reads the child's rusage). The number is peak
+// RSS of the WHOLE process — engine + module + marshaling — i.e. what running
+// the case actually costs, the same footprint a deploy sees. No wrapper on the
+// host (CI images without GNU time) → memKb stays null and the page shows no
+// memory for those rows.
+const TIME_BIN = existsSync('/usr/bin/time') ? '/usr/bin/time' : null
+const TIME_ARGS = process.platform === 'darwin' ? ['-l'] : ['-v']
+const parseMaxRss = stderr => {
+  let m = stderr.match(/(\d+)\s+maximum resident set size/)         // BSD (darwin): bytes
+  if (m) return Math.round(+m[1] / 1024)
+  m = stderr.match(/Maximum resident set size \(kbytes\): (\d+)/)   // GNU (linux): KB
+  return m ? +m[1] : null
+}
 const runProc = (argv, opts = {}) => {
-  const r = spawnSync(argv[0], argv.slice(1), {
+  // Caveat for future opts.timeout users: with the wrapper, a timeout kill hits
+  // time(1), which does not forward signals — the bench child would orphan and
+  // keep burning CPU under later rows. No lane passes a timeout today; if one
+  // must, run it unwrapped (memKb null) rather than risk a hot orphan.
+  const wrapped = TIME_BIN ? [TIME_BIN, ...TIME_ARGS, ...argv] : argv
+  const r = spawnSync(wrapped[0], wrapped.slice(1), {
     cwd: BENCH_DIR,
     encoding: 'utf8',
     ...(opts.timeout ? { timeout: opts.timeout } : {}),
@@ -199,6 +226,7 @@ const runProc = (argv, opts = {}) => {
   if (r.status !== 0) return { error: `exit ${r.status}: ${(r.stderr || r.stdout || r.signal || '').trim().slice(0, 240)}` }
   const parsed = parseLine(r.stdout)
   if (!parsed) return { error: `unparseable stdout: ${(r.stdout || r.stderr || '').trim().slice(0, 240)}` }
+  parsed.memKb = TIME_BIN && r.stderr ? parseMaxRss(r.stderr) : null
   return parsed
 }
 
@@ -255,6 +283,7 @@ const jzHostWasmPath = c => join(caseBuild(c), `${c.id}-host.wasm`)
 const jzSizeWasmPath = c => join(caseBuild(c), `${c.id}-size.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
 const shermesBinPath = c => join(caseBuild(c), `${c.id}-shermes`)
+const porfNatPath = c => join(caseBuild(c), `${c.id}-porfnat`)
 const rustPath = c => join(caseBuild(c), `${c.id}-rust`)
 const goPath = c => join(caseBuild(c), `${c.id}-go`)
 const zigPath = c => join(caseBuild(c), `${c.id}-zig`)
@@ -608,20 +637,25 @@ const targets = {
       execFileSync(SHERMES_BIN, ['-O', flatPath(c), '-o', shermesBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, [shermesBinPath(c)]),
   },
+  // The ONE Porffor lane: `porf native` AOT-compiles JS through its C backend
+  // and links a standalone binary (cc/clang, -flto) — the rewrite's shipping
+  // artifact, native-band sibling of shermes. (The engine-style `porf <file>`
+  // run mode measures its in-process compiler alongside the workload and ships
+  // nothing, so it isn't showcased.) Rewrite CLI only.
+  'porf-native': {
+    name: 'Porffor → native (porf native)',
+    available: () => has(PORF_BIN) && porfIsNew(),
+    bin: porfNatPath,
+    run: c => tryRun('porf-native', c, () => {
+      writeFlat(c)
+      execFileSync(PORF_BIN, ['native', flatPath(c), porfNatPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+    }, [porfNatPath(c)]),
+  },
   graaljs: {
     name: 'GraalJS',
     available: () => !!graalJsBin(),
     bin: flatPath,
     run: c => tryRun('graaljs', c, () => writeFlat(c), [graalJsBin(), flatPath(c)]),
-  },
-  porf: {
-    name: 'Porffor',
-    available: () => has(PORF_BIN),
-    bin: flatPath,
-    // Old CLI: --allocator-chunks=128 lifts the 1 MB malloc budget so larger typed
-    // arrays (biquad: 3.84 MB) don't OOB. New CLI: just the file.
-    run: c => tryRun('porf', c, () => writeFlat(c),
-      porfIsNew() ? [PORF_BIN, flatPath(c)] : [PORF_BIN, '--allocator-chunks=128', 'run', flatPath(c)]),
   },
   jz: {
     name: 'jz → V8 wasm',
@@ -778,7 +812,7 @@ const TARGET_CMDS = {
   jsc: 'jsc <case>-flat.js',
   shermes: 'shermes -O <case>-flat.js -o <case>',
   graaljs: 'graaljs <case>-flat.js',
-  porf: 'porf --allocator-chunks=128 run <case>-flat.js',
+  'porf-native': 'porf native <case>-flat.js <case>-porfnat  (AOT via C, cc -flto) → run binary',
   jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
   as: 'time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)',
   'rust-wasm': 'rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)',
@@ -854,9 +888,10 @@ if (EMIT_WEB) {
 // Per-(case, target) valid medians, collected to drive the geomean bench.svg.
 const grid = {}
 // The engines in bench/bench.svg — the corpus headline: jz vs the WASM field
-// (Rust/Go/C/Zig compiled to wasm, AssemblyScript, Porffor — all run in node's
-// V8, apples-to-apples with jz) and V8 (plain JS). native C is the lone non-wasm
-// row, kept as a labeled speed-of-light reference (the aggregate ceiling), never
+// (Rust/Go/C/Zig compiled to wasm, AssemblyScript — all run in node's V8,
+// apples-to-apples with jz), V8 (plain JS), and Porffor (the 2026 rewrite:
+// an AOT engine through its own C backend — no wasm). native C is the lone
+// reference row, kept as a labeled speed-of-light ceiling, never
 // a beat-claim. Per case (bench/index.html) native gets its OWN fair lane —
 // jz-w2c (jz → wasm2c → clang) vs the native toolchains — so a native binary
 // never races jz-wasm directly; this corpus headline keeps native C as the
@@ -869,7 +904,7 @@ const SVG_TARGETS = [
   { id: 'zig-wasm', label: 'Zig', sub: 'zig → wasm' },
   { id: 'moonbit', label: 'MoonBit', sub: 'moonrun → wasm' },
   { id: 'as', label: 'AssemblyScript', sub: 'asc -O3' },
-  { id: 'porf', label: 'Porffor', sub: 'JS → wasm' },
+  { id: 'porf-native', label: 'Porffor', sub: 'JS → C · AOT' },
   { id: 'v8', label: 'V8', sub: 'Node (JS)' },
   { id: 'nat', label: 'native C', sub: 'clang -O3 · ref' },
 ]
@@ -920,6 +955,9 @@ for (const cid of selectedCases) {
       const rs = rounds.map(m => m.get(tid)).filter(Boolean)
       if (!rs.length) continue
       const med = [...rs].sort((a, b) => a.medianUs - b.medianUs)[rs.length >> 1]
+      // memory: cross-round median (peak RSS is stable run-to-run; median kills a stray outlier)
+      const mems = rs.map(r => r.memKb).filter(x => x != null).sort((a, b) => a - b)
+      if (mems.length) med.memKb = mems[mems.length >> 1]
       console.log(`[paired] ${tid.padEnd(targetIdWidth)} rounds ${rs.map(r => r.medianUs).join(' ')} µs → median ${med.medianUs} µs  cs=${med.checksum}`)
       results.push(med)
     }
@@ -993,6 +1031,7 @@ for (const cid of selectedCases) {
         ...results.map(r => [r.id, {
           medianUs: r.medianUs,
           bytes: r.bytes ?? null,
+          memKb: r.memKb ?? null,
           parity: r.checksum === refCs ? 'ok' : r.checksum === fmaCs ? 'fma' : 'DIFF',
         }]),
         // Attempted-but-failed targets carry their reason (no medianUs) so the page
@@ -1007,8 +1046,9 @@ for (const cid of selectedCases) {
 
   console.log()
   console.log(`samples=${results[0].samples} stages=${results[0].stages} runs=${results[0].runs} reference_checksum=${refCs}`)
-  console.log(`  ${'target'.padEnd(28)}  ${'median'.padStart(10)}  ${'×base'.padStart(8)}  ${'throughput'.padStart(10)}  ${'size'.padStart(10)}  ${'parity'.padStart(8)}`)
-  console.log(`  ${'-'.repeat(28)}  ${'-'.repeat(10)}  ${'-'.repeat(8)}  ${'-'.repeat(10)}  ${'-'.repeat(10)}  ${'-'.repeat(8)}`)
+  const fmtMem = kb => kb == null ? '—' : kb < 1024 ? `${kb} kB` : `${(kb / 1024).toFixed(1)} MB`
+  console.log(`  ${'target'.padEnd(28)}  ${'median'.padStart(10)}  ${'×base'.padStart(8)}  ${'throughput'.padStart(10)}  ${'size'.padStart(10)}  ${'mem'.padStart(9)}  ${'parity'.padStart(8)}`)
+  console.log(`  ${'-'.repeat(28)}  ${'-'.repeat(10)}  ${'-'.repeat(8)}  ${'-'.repeat(10)}  ${'-'.repeat(10)}  ${'-'.repeat(9)}  ${'-'.repeat(8)}`)
   for (const r of [...results].sort((a, b) => a.medianUs - b.medianUs)) {
     const ms = (r.medianUs / 1000).toFixed(2) + ' ms'
     const ratio = (r.medianUs / baseline.medianUs).toFixed(2) + '×'
@@ -1017,7 +1057,7 @@ for (const cid of selectedCases) {
     const parity = r.checksum === refCs ? 'ok'
       : r.checksum === fmaCs ? 'fma'
       : 'DIFF'
-    console.log(`  ${targets[r.id].name.padEnd(28)}  ${ms.padStart(10)}  ${ratio.padStart(8)}  ${throughput.padStart(10)}  ${size.padStart(10)}  ${parity.padStart(8)}`)
+    console.log(`  ${targets[r.id].name.padEnd(28)}  ${ms.padStart(10)}  ${ratio.padStart(8)}  ${throughput.padStart(10)}  ${size.padStart(10)}  ${fmtMem(r.memKb).padStart(9)}  ${parity.padStart(8)}`)
   }
 }
 
@@ -1038,7 +1078,7 @@ if (svgCases.every(cid => selectedCases.includes(cid))) {
     }
     if (!ratios.length) continue
     const geo = Math.exp(ratios.reduce((s, r) => s + Math.log(r), 0) / ratios.length)
-    rows.push({ label: t.label, ratio: geo, sub: t.id === 'porf' ? `runs ${ratios.length} / ${geoCases.length}` : t.sub })
+    rows.push({ label: t.label, ratio: geo, sub: t.id === 'porf-native' ? `runs ${ratios.length} / ${geoCases.length}` : t.sub })
   }
   if (rows.length > 1 && rows.some(r => r.label === 'JZ')) {
     renderBenchSvg(rows, geoCases.length)
@@ -1110,6 +1150,9 @@ if (JSON_PATH) {
       clang: has('clang') && ver('clang'),
     }).filter(([, v]) => v)),
     invocations: Object.fromEntries([...usedTargets].filter(tid => TARGET_CMDS[tid]).map(tid => [tid, TARGET_CMDS[tid]])),
+    // memKb methodology: peak RSS of the whole per-case process (engine + module),
+    // read from the child's rusage via the time(1) wrapper around every measured run.
+    ...(TIME_BIN && { memory: `peak RSS per process run (${TIME_BIN} ${TIME_ARGS[0]})` }),
   }
 
   // Per-case wasm for the in-page runner (playable cases only — the self-host

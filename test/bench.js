@@ -1,9 +1,11 @@
 // Bench pin tests — the competitive-regression gate.
 //
 // Project invariant (see docs/CONTRIBUTING.md): on the bench corpus, jz wasm is
-//   • at least as fast as V8, AssemblyScript and Porffor (speed-tuned build),
-//   • within the native-parity band of `clang -O3` (geomean jz/C ≈ parity), and
-//   • at least as small as AssemblyScript (-Oz) and Porffor (size-tuned build).
+//   • at least as fast as V8 and AssemblyScript (speed-tuned build),
+//   • within the native-parity band of `clang -O3` (geomean jz/C ≈ parity),
+//   • at least as small as AssemblyScript (-Oz), and
+//   • faster than Porffor's native artifact by geomean (committed evidence —
+//     the 2026 rewrite emits no wasm, so Porffor pins moved off the wasm field).
 // Plus a self-check: `wasm-opt -Oz` should not be able to meaningfully shrink
 // jz's own output (any slack it finds is a codegen-size bug).
 //
@@ -13,7 +15,7 @@
 //
 // Standalone runner: `npm run test:bench`. Skipped from `npm test` because
 // it spawns the bench harness (~15-30 s) and needs optional toolchains
-// (`asc`, `porf`, `wasm-opt`); CI installs all three (see .github/workflows/bench.yml).
+// (`asc`, `wasm-opt`); CI installs both (see .github/workflows/bench.yml).
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -32,7 +34,6 @@ const FUZZBENCH = join(ROOT, 'scripts/fuzz-bench.mjs')
 
 const have = cmd => spawnSync('which', [cmd], { stdio: 'ignore' }).status === 0
 const ascAvailable = have('asc')
-const porfAvailable = have(process.env.PORF_BIN || 'porf')
 const wasmOptAvailable = have('wasm-opt')
 const natAvailable = have('clang')
 
@@ -55,69 +56,69 @@ const SPEED = {
   // LLVM's hot-path fall-through branch layout). The matching shape-classes
   // (ring/fgather/slice/condref) are ratcheted in test/perf-ratchet.js so progress is
   // machine-independently pinned.
-  slices:         { v8: 'win',  as: 'win',  porf: 'todo' },
-  trace:          { v8: 'win',  as: 'tie',  porf: 'todo' },
-  bezfit:         { v8: 'win',  as: 'win',  porf: 'todo' },
-  sdf:            { v8: 'win',  as: 'todo', porf: 'todo' },
-  resample:       { v8: 'todo', as: 'win',  porf: 'todo' },
-  delayline:      { v8: 'tie',  as: 'tie',  porf: 'todo' },
-  glyfparse:      { v8: 'win',  as: 'win',  porf: 'todo' },
-  callback:       { v8: 'win',  as: 'win',  porf: 'todo' },
-  mat4:           { v8: 'win',  as: 'win',  porf: 'todo' },
-  poly:           { v8: 'win',  as: 'tie',  porf: 'todo' },
+  slices:         { v8: 'win',  as: 'win' },
+  trace:          { v8: 'win',  as: 'tie' },
+  bezfit:         { v8: 'win',  as: 'win' },
+  sdf:            { v8: 'win',  as: 'todo' },
+  resample:       { v8: 'todo', as: 'win' },
+  delayline:      { v8: 'tie',  as: 'tie' },
+  glyfparse:      { v8: 'win',  as: 'win' },
+  callback:       { v8: 'win',  as: 'win' },
+  mat4:           { v8: 'win',  as: 'win' },
+  poly:           { v8: 'win',  as: 'tie' },
   // dot-product / multiply-accumulate reduction. JZ vectorizes it to 4 independent
   // SIMD accumulators (a fixed deterministic reassociation), beating the strict-fp
   // serial sum V8/AS/native run — by a wide margin (jz/v8 ~0.07×, jz/as ~0.03×).
-  dotprod:        { v8: 'win',  as: 'win',  porf: 'todo' },
-  biquad:         { v8: 'win',  as: 'win',  porf: 'todo' },
-  mandelbrot:     { v8: 'tie',  as: 'tie',  porf: 'todo' },
-  bitwise:        { v8: 'win',  as: 'win',  porf: 'todo' },
-  tokenizer:      { v8: 'win',  as: 'diff', porf: 'todo' },
-  aos:            { v8: 'win',  as: 'win',  porf: 'todo' },
-  json:           { v8: 'win',  as: 'na',   porf: 'todo' },
+  dotprod:        { v8: 'win',  as: 'win' },
+  biquad:         { v8: 'win',  as: 'win' },
+  mandelbrot:     { v8: 'tie',  as: 'tie' },
+  bitwise:        { v8: 'win',  as: 'win' },
+  tokenizer:      { v8: 'win',  as: 'diff' },
+  aos:            { v8: 'win',  as: 'win' },
+  json:           { v8: 'win',  as: 'na' },
   // in-place heapsort over a Float64Array. The sift-down loop is deliberately
   // inline in the source so the case measures typed-array loop codegen, not
   // JS engine call overhead.
-  sort:           { v8: 'win',  as: 'todo', porf: 'todo' },
+  sort:           { v8: 'win',  as: 'todo' },
   // CRC-32 table hash — pure-integer kernel over a Uint8Array with an Int32Array
   // LUT, hot inner call `crc32(buf, table)`. jz beats V8 and matches `asc -O3`.
-  crc32:          { v8: 'win',  as: 'tie',  porf: 'todo' },
+  crc32:          { v8: 'win',  as: 'tie' },
   // ── audio + image showcase cases (cross-language, bit-exact) ──
   // bytebeat: pure-i32 one-line synthesis; jz beats the JS field, native
   // auto-vectorizes the stateless formula (so it's not in NATIVE — honest).
-  bytebeat:       { v8: 'win',  as: 'win',  porf: 'todo'   },
+  bytebeat:       { v8: 'win',  as: 'win'   },
   // fft: radix-2 Cooley–Tukey; jz beats V8/AS and ties native (Rust/Zig).
-  fft:            { v8: 'win',  as: 'tie',  porf: 'todo'   },
+  fft:            { v8: 'win',  as: 'tie'   },
   // synth: poly-sin osc + ADSR + biquad; jz is fastest of ALL targets here,
   // including native (the loop is loop-carried, so native can't vectorize either).
-  synth:          { v8: 'win',  as: 'tie',  porf: 'todo'   },
+  synth:          { v8: 'win',  as: 'tie'   },
   // blur: separable RGBA box blur; jz beats the JS field, native SIMDs the stencil.
-  blur:           { v8: 'win',  as: 'win',  porf: 'todo'   },
+  blur:           { v8: 'win',  as: 'win'   },
   // ── codec / compression / hashing / ML showcase cases (cross-language, bit-exact) ──
   // hash: MurmurHash3 x86_32 — table-free multiply/rotate/xor; jz ties V8 and sits
   // at native-C parity (the integer mixing chain is jz's home turf). vs AS it's a
   // parity-class race whose median straddles 1.0× run-to-run → `near` to stay non-flaky.
-  hash:           { v8: 'tie',  as: 'near', porf: 'todo' },
+  hash:           { v8: 'tie',  as: 'near' },
   // base64: 3→4 byte codec, encode+decode round-trip; pure integer shifts/masks.
-  base64:         { v8: 'win',  as: 'win',  porf: 'todo' },
+  base64:         { v8: 'win',  as: 'win' },
   // wav: PCM-16 encoder — per-sample clamp+quantize+pack; one f64 multiply (no FMA).
   // jz ~ties AS (medians straddle 1.0–1.05×) → `near` to stay non-flaky.
-  wav:            { v8: 'win',  as: 'near', porf: 'todo' },
+  wav:            { v8: 'win',  as: 'near' },
   // conv2d: int8 quantized NN conv (i32 MAC + ReLU requant); jz beats the wasm
   // field, native auto-vectorizes int8 (so it's not in NATIVE — honest).
-  conv2d:         { v8: 'win',  as: 'win',  porf: 'todo' },
+  conv2d:         { v8: 'win',  as: 'win' },
   // lz: LZSS greedy match finder + inflate round-trip; branchy byte twiddling.
-  lz:             { v8: 'win',  as: 'tie',  porf: 'todo' },
+  lz:             { v8: 'win',  as: 'tie' },
   // qoi: amortized cursor bounds erase all codec checks and pure boolean
   // chains lower to branchless i32.and. Isolated runs often win; the full
   // loaded frontier still lands ~1.06× AS, so keep the non-flaky near pin.
-  qoi:            { v8: 'win',  as: 'near', porf: 'todo' },
+  qoi:            { v8: 'win',  as: 'near' },
   // hashjoin: probe-dominated relational hash join — the boss case. jz TRAILED V8
   // until valResult=NUMBER stamping (0fbe6ee) killed the polymorphic + on probe()'s
   // typed-array-param return (sum + probe() was lowering through __is_str_key/
   // __str_concat); now jz is the fastest target — beats V8, AS, native C, and every
   // wasm rival. Recheck-stabilised below (the V8 margin is real ~0.91× but slim).
-  hashjoin:       { v8: 'win',  as: 'win',  porf: 'todo'   },
+  hashjoin:       { v8: 'win',  as: 'win'   },
   // watr is the one large real-program case (jz compiling the watr WAT encoder —
   // string-tokenizing + byte-array emission). jz's linear-memory strings
   // structurally trail V8's native strings + JIT here, so it lands ~1.12-1.20× of
@@ -127,7 +128,7 @@ const SPEED = {
   // (the aggregate guarantee, where jz wins decisively). The loop-bound hoist
   // already cut watr's absolute time (1.46→1.08ms); the residual gap is the string
   // substrate, not a single hotspot.
-  watr:           { v8: 'trail', as: 'na',  porf: 'na'   },
+  watr:           { v8: 'trail', as: 'na'   },
 }
 const SPEED_TOL = { win: 1.0, tie: 1.05, near: 1.10, trail: 1.25 }
 // TIMING POLICY (extends the native-C rule below to every timing gate): a shared
@@ -144,7 +145,7 @@ const okTiming = (cond, msg) => process.env.CI
   : ok(cond, msg)
 // Aggregate speed ceiling: jz must not be slower than the field on average.
 // (1.0 = parity; tighten as we win more.) Over cases with matching checksums.
-const SPEED_GEOMEAN_MAX = { v8: 1.0, as: 1.0, porf: 1.10 }
+const SPEED_GEOMEAN_MAX = { v8: 1.0, as: 1.0 }
 
 // ── Native-C parity pins (jz wasm vs `clang -O3`) ────────────────────────────
 // The headline guarantee: jz emits native-grade code. Measured geomean jz/C ≈
@@ -183,22 +184,21 @@ const NATIVE_GEOMEAN_MAX = 1.05
 // jz now runs ~1% larger than `asc -Oz` (geomean) on the kernels; only `biquad`,
 // `mat4`, `tokenizer` still trail (~1.1–1.2×). wasm-opt finds ~25-30% slack —
 // single-use runtime-helper inlining + merging `$f$exp` wrappers is the next lever.
-// porf bundles a JS runtime, so jz is ~20× smaller there; that pin is a backstop.
 const SIZE = {
-  slices:         { as: 'todo', porf: 'todo' },
-  trace:          { as: 'todo', porf: 'todo' },
-  bezfit:         { as: 'todo', porf: 'todo' },
-  sdf:            { as: 'todo', porf: 'todo' },
-  resample:       { as: 'todo', porf: 'todo' },
-  delayline:      { as: 'todo', porf: 'todo' },
-  glyfparse:      { as: 'todo', porf: 'todo' },
-  callback:       { as: 'win',  porf: 'win' },
-  mat4:           { as: 'todo', porf: 'win' },
-  poly:           { as: 'win',  porf: 'win' },
-  biquad:         { as: 'todo', porf: 'win' },
-  mandelbrot:     { as: 'win',  porf: 'win' },
-  bitwise:        { as: 'win',  porf: 'win' },
-  tokenizer:      { as: 'todo', porf: 'win' },
+  slices:         { as: 'todo' },
+  trace:          { as: 'todo' },
+  bezfit:         { as: 'todo' },
+  sdf:            { as: 'todo' },
+  resample:       { as: 'todo' },
+  delayline:      { as: 'todo' },
+  glyfparse:      { as: 'todo' },
+  callback:       { as: 'win' },
+  mat4:           { as: 'todo' },
+  poly:           { as: 'win' },
+  biquad:         { as: 'todo' },
+  mandelbrot:     { as: 'win' },
+  bitwise:        { as: 'win' },
+  tokenizer:      { as: 'todo' },
   // aos/sort were re-pinned after checked-by-default typed indexing (Root F):
   // JS-exact OOB semantics cost bytes per unproven site that AS's trap
   // doesn't pay. Restored by three engine waves: -Os lean lowering (if-form
@@ -212,22 +212,22 @@ const SIZE = {
   // cond-bounded cursor classes outright — heapsort's child chains and
   // medianUs's insertion scan: sort 1814 B (was 1941, 0.96 WIN), aos 1894.
   // (Tried and REVERTED: $__typed_idx call route, +900 B vs ~3 inline sites.)
-  aos:            { as: 'win',  porf: 'win' },
-  json:           { as: 'na',   porf: 'win' },
-  sort:           { as: 'win',  porf: 'win' },
-  crc32:          { as: 'win',  porf: 'win' },
-  dotprod:        { as: 'win',  porf: 'win' },
+  aos:            { as: 'win' },
+  json:           { as: 'na' },
+  sort:           { as: 'win' },
+  crc32:          { as: 'win' },
+  dotprod:        { as: 'win' },
   // Integer kernels: jz wasm is smaller than AS. Transcendental-heavy pipelines
   // (synth's poly-sin, fft's twiddles) emit more wasm than AS's lean output —
   // tracked as `todo` (printed, unasserted), not a size-parity claim.
-  bytebeat:       { as: 'win',  porf: 'win' },
-  fft:            { as: 'todo', porf: 'win' },
-  synth:          { as: 'todo', porf: 'win' },
+  bytebeat:       { as: 'win' },
+  fft:            { as: 'todo' },
+  synth:          { as: 'todo' },
   // blur is a SPEED kernel — its win is throughput (vectorized: ~9× V8, ~5× AS),
   // not size. The size-preset build is scalar (vectorizer off) and jz's RGBA-stencil
   // scaffolding lowers ~1.35× AS's lean -Oz output (wasm-opt finds <10% slack, so it's
   // jz's codegen shape, not bloat). Honest `todo` like synth/fft, not a size-win claim.
-  blur:           { as: 'todo', porf: 'win' },
+  blur:           { as: 'todo' },
   // Integer codec/hash kernels — ALL WIN. Three engine waves: watr 5.5.0
   // intguard checked-read collapse (ToInt32-guarded reads → i32 if-forms,
   // single-read ring, const pool) took hash to 0.94; the param typedLen
@@ -238,21 +238,21 @@ const SIZE = {
   // op ∈ [0, N−3]) erased the remaining checked families: hash 1086 B,
   // wav 1646, base64 1847 — comfortable margins where base64 was a
   // 1-byte squeak.
-  hash:           { as: 'win',  porf: 'win' },
-  base64:         { as: 'win',  porf: 'win' },
-  wav:            { as: 'win',  porf: 'win' },
-  conv2d:         { as: 'win',  porf: 'win' },
+  hash:           { as: 'win' },
+  base64:         { as: 'win' },
+  wav:            { as: 'win' },
+  conv2d:         { as: 'win' },
   // lz/qoi carry larger match-finder / codec state machines than AS's lean -Oz
   // output — honest `todo` (printed, unasserted), not a size-parity claim.
-  lz:             { as: 'todo', porf: 'win' },
-  qoi:            { as: 'todo', porf: 'win' },
+  lz:             { as: 'todo' },
+  qoi:            { as: 'todo' },
   // hashjoin carries two hash fns + open-addressing probe/insert scaffolding —
-  // ~2.2× AS's lean -Oz (honest `todo`, like lz/qoi), but 13× smaller than porf.
-  hashjoin:       { as: 'todo', porf: 'win' },
-  watr:           { as: 'na',   porf: 'na'  },
+  // ~2.2× AS's lean -Oz (honest `todo`, like lz/qoi).
+  hashjoin:       { as: 'todo' },
+  watr:           { as: 'na'  },
 }
 const SIZE_TOL = { win: 1.0, tie: 1.05 }
-const SIZE_GEOMEAN_MAX = { as: 1.05, porf: 0.40 }  // jz/target geomean ceiling; ratchet `as` toward 1.0 (currently ~1.01×)
+const SIZE_GEOMEAN_MAX = { as: 1.05 }  // jz/target geomean ceiling; ratchet `as` toward 1.0 (currently ~1.01×)
 // `wasm-opt -Oz` slack budget: jz_opt / jz_raw must stay ≥ this (wasm-opt may
 // remove ≤ (1-x) of jz output). Aspirational target: 0.95+. Current baseline
 // with margin — shrink the budget as codegen tightens.
@@ -298,7 +298,7 @@ const SIZE_BUDGET = {
 
 // ── Fastest-wasm claim (AGENTS.md §Performance claims) ───────────────────────
 // jz must be the fastest WASM producer on every case — ahead of clang→wasm, rustc→wasm,
-// tinygo→wasm, AssemblyScript, Porffor (native clang -O3 is the only allowed-faster target).
+// tinygo→wasm, AssemblyScript (native clang -O3 is the only allowed-faster target).
 // WASM_RIVALS are the wasm-emitting competitors; for each case jz's median must be ≤ the BEST
 // rival's (within tolerance) UNLESS the case is in WASM_TODO — the explicit, shrinking gap list.
 // A case that leaves the lead set (regresses below a rival) trips the gate; closing a WASM_TODO
@@ -310,8 +310,8 @@ const SIZE_BUDGET = {
 // their own rivals: each gates when its toolchain is present; a rival whose
 // build fails produces no row and bestRival skips it — the coverage assertion
 // below keeps that skip from silently zeroing out a whole producer.
-const wasmRivalAvail = { 'c-wasm': have('zig'), 'rust-wasm': have('rustc'), 'go-wasm': have('go'), tinygo: have('tinygo'), 'zig-wasm': have('zig'), as: ascAvailable, porf: porfAvailable }
-const WASM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'tinygo', 'zig-wasm', 'as', 'porf'].filter(t => wasmRivalAvail[t])
+const wasmRivalAvail = { 'c-wasm': have('zig'), 'rust-wasm': have('rustc'), 'go-wasm': have('go'), tinygo: have('tinygo'), 'zig-wasm': have('zig'), as: ascAvailable }
+const WASM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'tinygo', 'zig-wasm', 'as'].filter(t => wasmRivalAvail[t])
 // Cases where a wasm rival is currently faster than jz — the gap to close (general techniques,
 // not per-bench tweaks; see AGENTS.md). Each notes who leads and why; delete on overtake.
 // Root causes below are MEASURED, not assumed — each was verified against the emitted WAT, and the
@@ -372,7 +372,7 @@ const WASM_BAND_TOL = 1.05
 
 // ── Run the speed harness ───────────────────────────────────────────────────
 // Full corpus (no --cases): the fastest-wasm claim is gated on EVERY case, not a curated
-// subset. The per-target v8/as/porf SPEED table + its geomean stay scoped to their own keys.
+// subset. The per-target v8/as SPEED table + its geomean stay scoped to their own keys.
 const speedTargets = ['v8', 'jz', ...(natAvailable ? ['nat'] : []), ...WASM_RIVALS]
 console.log(`bench: speed — full corpus × {${speedTargets.join(',')}}…`)
 const speedOut = execFileSync('node', [BENCH, `--targets=${speedTargets.join(',')}`], { encoding: 'utf8', cwd: ROOT, maxBuffer: 64 * 1024 * 1024 })
@@ -380,7 +380,7 @@ const speedOut = execFileSync('node', [BENCH, `--targets=${speedTargets.join(','
 const SIZE_UNIT = { B: 1, kB: 1024, MB: 1024 * 1024 }
 const TARGET_BY_NAME = {
   'jz → V8 wasm': 'jz', 'V8 (node)': 'v8',
-  'AssemblyScript (asc -O3)': 'as', 'Porffor': 'porf',
+  'AssemblyScript (asc -O3)': 'as',
 }
 function parseBenchOutput(text) {
   const parsed = {}
@@ -396,7 +396,9 @@ function parseBenchOutput(text) {
     // broken instead of silently ignoring it.
     const fail = line.match(/^\[run\]\s+(\w[\w-]*)\s+.*…\s*FAIL(?:\s*—\s*(.*))?$/)
     if (fail) { parsed[cur][fail[1]] = { failed: true, reason: fail[2]?.trim() }; continue }
-    const row = line.match(/^ {2}(jz → V8 wasm|V8 \(node\)|AssemblyScript \(asc -O3\)|Porffor)\s+[\d.]+ ms.*?\s(\d+(?:\.\d+)?) (B|kB|MB)\s+(\w+)\s*$/)
+    // table row: label  median  ×base  throughput  size  mem  parity — capture size
+    // (first byte-unit column), then skip the mem column (`NN kB` / `N.N MB` / `—`)
+    const row = line.match(/^ {2}(jz → V8 wasm|V8 \(node\)|AssemblyScript \(asc -O3\))\s+[\d.]+ ms.*?\s(\d+(?:\.\d+)?) (B|kB|MB)\s+(?:[\d.]+ (?:kB|MB)|—)\s+(\w+)\s*$/)
     if (row) {
       const tid = TARGET_BY_NAME[row[1]]
       const r = parsed[cur][tid]
@@ -407,7 +409,7 @@ function parseBenchOutput(text) {
 }
 const runs = parseBenchOutput(speedOut)
 // Cases that actually ran (full corpus minus whatever the harness skipped). The fastest-wasm
-// gate iterates these; the curated v8/as/porf SPEED table iterates its own keys (∩ runs).
+// gate iterates these; the curated v8/as SPEED table iterates its own keys (∩ runs).
 const speedCases = Object.keys(runs)
 
 // These cases' medians are noisy run-to-run — take the median of a few extra
@@ -430,12 +432,12 @@ for (const id of ['watr', 'sort', 'crc32', 'callback', 'json', 'aos', 'hash', 'b
 }
 
 // ── Run the size harness ────────────────────────────────────────────────────
-console.log('bench: size — compiling jz/AS/porf + wasm-opt self-check…')
+console.log('bench: size — compiling jz/AS + wasm-opt self-check…')
 const sizeOut = execFileSync('node', [SIZE_SCRIPT, '--json'], { encoding: 'utf8', cwd: ROOT })
-const sizes = {}  // id → { jz, jzOpt, as, porf }
+const sizes = {}  // id → { jz, jzOpt, as }
 for (const line of sizeOut.split('\n')) {
-  const m = line.match(/^SIZE (\S+) jz=(\d*) jz_wasmopt=(\d*) as=(\d*) porf=(\d*)/)
-  if (m) sizes[m[1]] = { jz: +m[2] || null, jzOpt: +m[3] || null, as: +m[4] || null, porf: +m[5] || null }
+  const m = line.match(/^SIZE (\S+) jz=(\d*) jz_wasmopt=(\d*) as=(\d*)/)
+  if (m) sizes[m[1]] = { jz: +m[2] || null, jzOpt: +m[3] || null, as: +m[4] || null }
 }
 
 // ── Snapshot table ──────────────────────────────────────────────────────────
@@ -445,19 +447,17 @@ const mark = { win: '✓', tie: '≈', near: '~', todo: '✗', diff: '?', na: ' 
 const ratioCell = (claim, num, den) => num != null && den != null ? `${mark[claim]} ${(num / den).toFixed(2)}×` : `${mark[claim]}  —`
 
 console.log('\nbench snapshot (speed = median ms, size = wasm bytes; "×" = jz/target):')
-console.log(`  ${'case'.padEnd(13)}  ${'jz_ms'.padStart(6)}  spd.v8       spd.C        spd.as       spd.porf     ${'jz_sz'.padStart(7)}  sz.AS        sz.porf      slack`)
-console.log(`  ${'-'.repeat(13)}  ${'-'.repeat(6)}  -----------  -----------  -----------  -----------  ${'-'.repeat(7)}  -----------  -----------  ------`)
-for (const id of Object.keys(SPEED)) {   // curated v8/as/porf/native/size table (the fastest-wasm gate covers the full corpus below)
+console.log(`  ${'case'.padEnd(13)}  ${'jz_ms'.padStart(6)}  spd.v8       spd.C        spd.as       ${'jz_sz'.padStart(7)}  sz.AS        slack`)
+console.log(`  ${'-'.repeat(13)}  ${'-'.repeat(6)}  -----------  -----------  -----------  ${'-'.repeat(7)}  -----------  ------`)
+for (const id of Object.keys(SPEED)) {   // curated v8/as/native/size table (the fastest-wasm gate covers the full corpus below)
   const r = runs[id] || {}, sz = sizes[id] || {}
   const slack = sz.jz && sz.jzOpt ? `${((sz.jzOpt / sz.jz) * 100).toFixed(0)}%` : '  — '
   console.log(`  ${id.padEnd(13)}  ${fmtMs(r.jz?.medianUs)}  ` +
     `${ratioCell(SPEED[id].v8, r.jz?.medianUs, r.v8?.medianUs).padEnd(11)}  ` +
     `${ratioCell(NATIVE[id], r.jz?.medianUs, r.nat?.medianUs).padEnd(11)}  ` +
     `${ratioCell(SPEED[id].as, r.jz?.medianUs, r.as?.medianUs).padEnd(11)}  ` +
-    `${ratioCell(SPEED[id].porf, r.jz?.medianUs, r.porf?.medianUs).padEnd(11)}  ` +
     `${fmtKb(sz.jz)}  ` +
-    `${ratioCell(SIZE[id].as, sz.jz, sz.as).padEnd(11)}  ` +
-    `${ratioCell(SIZE[id].porf, sz.jz, sz.porf).padEnd(11)}  ${slack.padStart(5)}`)
+    `${ratioCell(SIZE[id].as, sz.jz, sz.as).padEnd(11)}  ${slack.padStart(5)}`)
 }
 
 const geomean = xs => xs.length ? Math.exp(xs.reduce((a, b) => a + Math.log(b), 0) / xs.length) : null
@@ -478,19 +478,18 @@ const geoSize = tid => geomean(Object.keys(SIZE)
   .filter(id => SIZE_TOL[SIZE[id][tid]] && sizes[id]?.jz && sizes[id]?.[tid])
   .map(id => sizes[id].jz / sizes[id][tid]))
 const geoSlack = geomean(Object.values(sizes).filter(s => s.jz && s.jzOpt).map(s => s.jzOpt / s.jz))
-const gV8 = geoSpeed('v8'), gNatT = geoNative(), gAsT = geoSpeed('as'), gPorfT = geoSpeed('porf')
-const gAsS = geoSize('as'), gPorfS = geoSize('porf')
-console.log(`\n  geomean speed jz/target:  v8 ${gV8?.toFixed(3) ?? '—'}×   C ${gNatT?.toFixed(3) ?? '—'}×   as ${gAsT?.toFixed(3) ?? '—'}×   porf ${gPorfT?.toFixed(3) ?? '—'}×`)
-console.log(`  geomean size  jz/target:  as ${gAsS?.toFixed(3) ?? '—'}×   porf ${gPorfS?.toFixed(3) ?? '—'}×   wasm-opt slack ${geoSlack?.toFixed(3) ?? '—'}×`)
+const gV8 = geoSpeed('v8'), gNatT = geoNative(), gAsT = geoSpeed('as')
+const gAsS = geoSize('as')
+console.log(`\n  geomean speed jz/target:  v8 ${gV8?.toFixed(3) ?? '—'}×   C ${gNatT?.toFixed(3) ?? '—'}×   as ${gAsT?.toFixed(3) ?? '—'}×`)
+console.log(`  geomean size  jz/target:  as ${gAsS?.toFixed(3) ?? '—'}×   wasm-opt slack ${geoSlack?.toFixed(3) ?? '—'}×`)
 console.log()
 
 // ── Assertions: speed ───────────────────────────────────────────────────────
 for (const [id, claims] of Object.entries(SPEED)) {
-  for (const tid of ['v8', 'as', 'porf']) {
+  for (const tid of ['v8', 'as']) {
     const claim = claims[tid]
     if (!SPEED_TOL[claim]) continue
     if (tid === 'as' && !ascAvailable) continue
-    if (tid === 'porf' && !porfAvailable) continue
     test(`bench: speed ${id} jz ${claim} vs ${tid}`, () => {
       const r = runs[id]
       ok(r?.jz && r?.[tid], `missing data: jz=${!!r?.jz} ${tid}=${!!r?.[tid]}`)
@@ -501,9 +500,8 @@ for (const [id, claims] of Object.entries(SPEED)) {
     })
   }
 }
-for (const tid of ['v8', 'as', 'porf']) {
+for (const tid of ['v8', 'as']) {
   if (tid === 'as' && !ascAvailable) continue
-  if (tid === 'porf' && !porfAvailable) continue
   const g = geoSpeed(tid)
   if (g == null) continue
   test(`bench: speed geomean jz/${tid} ≤ ${SPEED_GEOMEAN_MAX[tid]}×`, () => {
@@ -563,18 +561,9 @@ for (const tid of ['v8', 'as', 'porf']) {
       else ok(true, missing.length ? `(dev rig) ${msg}` : 'all mandatory rivals available')
     })
   }
-  // Per-rival coverage floor. Default: a majority of attempted cases must
-  // produce comparable rows (a toolchain rival that compiles the corpus).
-  // porf's floor is VERSION-AWARE: the npm 0.61.x engine is partial by design
-  // (ran 13/52 — presence, not majority), but the 2026 rewrite (git main,
-  // "pre-alpha" versioning; CI pins it via PORF_BIN in bench.yml) runs 49/52
-  // with parity — only the three self-host compiler giants (watr/jessie/jz)
-  // exceed it. Gate accordingly so a coverage regression in either vintage reds.
-  const porfIsNew = (() => {
-    try { return /pre-alpha/.test(execFileSync(process.env.PORF_BIN || 'porf', ['--version'], { encoding: 'utf8' })) }
-    catch { return false }
-  })()
-  const RIVAL_COVERAGE_MIN = { porf: porfIsNew ? 40 : 1 }
+  // Per-rival coverage floor: a majority of attempted cases must produce
+  // comparable rows (a toolchain rival that compiles the corpus).
+  const RIVAL_COVERAGE_MIN = {}
   for (const t of WASM_RIVALS) {
     const attempted = speedCases.filter(id => runs[id]?.[t]).length
     if (!attempted) continue   // no eligible sources for this rival — not measured, not asserted
@@ -643,18 +632,45 @@ test('bench: jz-w2c native lowering within regression bands (committed evidence)
   ok(gm <= W2C_GEOMEAN_MAX, `w2c/jz geomean ${gm.toFixed(3)}× > ${W2C_GEOMEAN_MAX}×`)
 })
 
+// ── memory-column pipeline gate (committed evidence): the refreshed dataset must
+// carry memKb (bench.mjs wraps every run in time(1) for peak RSS — the page's
+// memory axis). A macOS time-output format change or a wrapper regression would
+// silently null the whole column at the next refresh; this reds instead.
+test('bench: memKb present in committed evidence', () => {
+  const res = JSON.parse(readFileSync(join(ROOT, 'bench/results.json'), 'utf8'))
+  let n = 0
+  for (const c of Object.values(res.cases)) if (c.targets?.jz?.memKb > 0) n++
+  ok(n >= 40, `only ${n} cases carry jz memKb — the peak-RSS measurement pipeline broke (expected ≥ 40 of ~60)`)
+})
+
+// ── Porffor pin (committed evidence): the 2026 rewrite is an AOT-native engine
+// (no wasm target), benched as its shipping artifact via the `porf-native` lane.
+// The invariant leg: jz wasm stays at least as fast as Porffor's native binary
+// by geomean over parity-ok cases. Per-case Porffor detail lives on the bench
+// page; a per-case pin column would cross substrates for no extra signal.
+test('bench: faster than Porffor native by geomean (committed evidence)', () => {
+  const res = JSON.parse(readFileSync(join(ROOT, 'bench/results.json'), 'utf8'))
+  const ratios = []
+  for (const c of Object.values(res.cases)) {
+    const jz = c.targets?.jz, p = c.targets?.['porf-native']
+    if (jz?.medianUs && p?.medianUs && jz.parity === 'ok' && p.parity === 'ok') ratios.push(p.medianUs / jz.medianUs)
+  }
+  if (!ratios.length) return console.log('  ⊘ no porf-native rows in results.json yet — refresh the evidence')
+  const gm = Math.exp(ratios.reduce((s, x) => s + Math.log(x), 0) / ratios.length)
+  ok(gm >= 1.0, `porf-native/jz geomean ${gm.toFixed(3)}× < 1 over ${ratios.length} cases — Porffor's native artifact leads jz on average`)
+})
+
 // ── Assertions: size ────────────────────────────────────────────────────────
 for (const [id, claims] of Object.entries(SIZE)) {
-  for (const tid of ['as', 'porf']) {
+  for (const tid of ['as']) {
     const claim = claims[tid]
     if (!SIZE_TOL[claim]) continue
     if (tid === 'as' && !ascAvailable) continue
-    if (tid === 'porf' && !porfAvailable) continue
     test(`bench: size ${id} jz ${claim} vs ${tid}`, () => {
       const s = sizes[id]
       ok(s?.jz, `missing jz size for ${id}`)
       // A present-but-broken OPTIONAL rival (binary answers --version, lane
-      // compiles nothing — porf on CI) must not red every per-case row: only
+      // compiles nothing) must not red every per-case row: only
       // REQUIRED_RIVALS gate hard on absence. Skip the row, keep the signal
       // in the log.
       if (!s?.[tid]) return console.log(`  ⊘ ${tid} size missing for ${id} — optional lane produced no row`)
@@ -663,9 +679,8 @@ for (const [id, claims] of Object.entries(SIZE)) {
     })
   }
 }
-for (const tid of ['as', 'porf']) {
+for (const tid of ['as']) {
   if (tid === 'as' && !ascAvailable) continue
-  if (tid === 'porf' && !porfAvailable) continue
   const g = geoSize(tid)
   if (g == null) continue
   test(`bench: size geomean jz/${tid} ≤ ${SIZE_GEOMEAN_MAX[tid]}×`, () => {

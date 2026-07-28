@@ -237,7 +237,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `jz-wasmtime` | JZ output on wasmtime |
 | `jz-w2c` | JZ wasm translated by wabt `wasm2c`, then clang `-O3` |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
-| `porf` | Porffor (`porf run`) when installed |
+| `porf-native` | Porffor (git-main 2026 rewrite — an AOT engine through its own C backend, no wasm target): `porf native <case>-flat.js <bin>`, then the standalone binary is measured — its shipping artifact, the native-band sibling of `shermes`. The engine-style `porf <file>` run mode measures its in-process compiler alongside the workload and ships nothing, so it has no lane |
 | `jawsm` | jawsm (JS → WasmGC) when installed |
 | `javy` | Javy (`javy build` — JS in embedded QuickJS) when installed — fenced interpreter reference, never in the headline geomean |
 | `tinygo` | TinyGo → `wasm32-wasip1` (`tinygo build -target=wasip1 -opt=2`) — the Go corpus through LLVM, leaner wasm than `go-wasm`; run in node's V8 |
@@ -256,6 +256,16 @@ size comparison (`npm run bench:size`) builds with `optimize: 'size'` —
 typically ~2× smaller on the same kernel (biquad: 3.5 kB default vs 1.6 kB
 size-tuned). Pick the preset for what you ship; the two tables are not the
 same artifact.
+
+The `mem` column (`memKb` in `results.json`) is the peak resident set of the
+whole per-case process — engine + module + data — read from the child's rusage
+by wrapping every measured run in `time(1)` (`/usr/bin/time -l` on darwin, GNU
+`-v` on linux; no wrapper on the host → the field stays null, the page hides
+the row from the memory view). One number per lane run, the footprint a deploy
+actually pays: node-hosted rows carry the engine baseline (so same-host rows
+differ by their heap alone), native rows just the binary, `porf` compiles
+in-process each run (its deployment shape). Under `--paired` the recorded
+value is the cross-round median.
 
 Runtime command overrides:
 

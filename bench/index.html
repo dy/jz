@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script>(()=>{try{const s=localStorage.getItem('theme');document.documentElement.dataset.theme=s||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark')}catch(e){}})()</script>
+<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')||'dark'}catch(e){document.documentElement.dataset.theme='dark'}})()</script>
 <title>JZ bench</title>
 <link rel="icon" href="https://github.com/dy/jz/favicon.ico" type="image/x-icon">
 <link rel="stylesheet" href="../assets/site.css">
@@ -81,8 +81,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .runall { margin: 0; display: flex; gap: 12px; align-items: center; font-size: 12.5px; flex-wrap: wrap; }
 #globalstat { color: var(--mid); }
 
-/* stat strip — the SAME Speed/Size metric block as the landing hero (shared .mstats/.stat in
-   assets/site.css); the two groups sit side by side in one row under the title (wraps if narrow). */
+/* stat strip — the SAME Speed/Size/Memory metric block style as the landing hero (shared
+   .mstats/.stat in assets/site.css); the groups sit side by side in one row under the title
+   (wraps if narrow). */
 #strip { display: flex; flex-wrap: wrap; gap: clamp(28px, 5vw, 56px); align-items: flex-start; }
 /* bench hook: bolder than the shared landing-hero stat size, and a clearer group caption */
 #strip .stat b { font-size: clamp(34px, 4.6vw, 46px); letter-spacing: -.02em; }
@@ -101,8 +102,19 @@ a.lab.lnk:hover, a.lab.lnk:focus-visible { text-decoration-color: currentColor; 
 .row .lab .cico { vertical-align: -1.5px; margin-right: 4px; }   /* sits just before the label */
 .row .lab .sub { color: var(--mid); font-size: 11px; margin-left: 6px; }
 .row .val { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
-.row .val .sz { color: var(--mid); margin-left: 9px; font-size: 10.5px; }   /* binary size, secondary to the time */
-#geomean .val { text-align: right; }   /* corpus rows carry only the multiplier — pin it to the right edge, no dead gap */
+/* corpus: three fixed value slots per row (speed · mem · size multipliers) under a
+   clickable column header — right-pinned so the columns align down the chart */
+#geomean .row { grid-template-columns: 220px 1fr 184px; }
+#geomean .val { text-align: right; }
+#geomean .val .m { display: inline-block; width: 54px; text-align: left; }
+#geomean .val .m + .m, #geomean .mh + .mh { margin-left: 11px; }   /* breathing room between columns */
+#geomean .row.cols { padding: 0 0 4px; }
+/* title and values share one clear LEFT line per column; the active sort column
+   is inked — colour alone marks it, no link-like underline */
+#geomean .mh { display: inline-block; width: 54px; text-align: left; background: none; border: 0; padding: 0;
+  font: 700 9.5px/1.4 var(--sans); text-transform: uppercase; letter-spacing: .1em; color: var(--mid); cursor: pointer; }
+#geomean .mh:hover { background: none; color: var(--ink); }
+#geomean .mh.on { color: var(--ink); }
 .bar { height: 15px; position: relative; background: transparent; }
 .bar i { position: absolute; inset: 0 auto 0 0; border: 1px solid var(--mid); background: transparent; min-width: 2px; }   /* competitors: transparent fill + mid-gray border — darker than the page's whites so it can't read as an empty input; the solid-ink JZ bar stays dominant */
 .bar i.solid { background: var(--ink); }
@@ -140,14 +152,15 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 .card h3 .play .ico { display: block; }
 .card h3 .actions { margin-left: auto; display: inline-flex; align-items: baseline; padding-left: 18px; }   /* repl/src right-aligned in each card */
 .card h3 .play:hover { background: none; color: var(--ink); }
-.card .row { grid-template-columns: 110px 1fr 172px; font-size: 11.5px; padding: 2.5px 0; }
+.card .row { grid-template-columns: 110px 1fr 186px; font-size: 11.5px; padding: 2.5px 0; }   /* val fits "12.19 ms · 50.9 MB · 1.1 kB" */
 .card .bar { height: 12px; }
 
 @media (max-width: 640px) {
   .masthead, main { padding-inline: 20px; }   /* halve the side inset on phones */
-  .row, .card .row { grid-template-columns: 1fr max-content; gap: 0 10px; }
+  .row, .card .row, #geomean .row { grid-template-columns: 1fr max-content; gap: 0 10px; }
   .row .lab, .card .row .lab { grid-column: 1 / -1; text-align: left; }
   .row .val { font-size: 10.5px; }
+  #geomean .val .m, #geomean .mh { width: 52px; }
   .cards { grid-template-columns: 1fr; }
 }
 </style>
@@ -185,7 +198,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 
 <section id="speed">
   <h2>Corpus</h2>
-  <p class="dim">Each bar is the geometric mean, across the corpus, of a target's median run time ÷ JZ's — normalized so JZ = 1× (lower is faster). Only matching-checksum cases count.</p>
+  <p class="dim">Each row carries three geometric means vs JZ across the corpus — speed, memory, size — JZ = 1×, lower is better. Click a column to sort (the bar draws the sorted metric). Only matching-checksum cases count; memory is peak process RSS, size the shipped artifact.</p>
   <div id="geomean"></div>
 </section>
 
@@ -251,7 +264,6 @@ const TARGETS = {
   wat:   { label: 'hand-WAT', band: 'wasm', hatch: true },
   'jz-wasmtime': { label: 'JZ', sub: 'wasi', band: 'wasm', hatch: true },
   as:    { label: 'AssemblyScript', band: 'wasm' },
-  porf:  { label: 'Porffor', band: 'wasm' },
   'rust-wasm': { label: 'Rust', sub: 'rustc → wasm', band: 'wasm' },
   'go-wasm':   { label: 'Go', sub: 'gc → wasm', band: 'wasm' },
   'c-wasm':    { label: 'C', sub: 'clang → wasm', band: 'wasm' },
@@ -269,6 +281,7 @@ const TARGETS = {
   zig:   { label: 'Zig', sub: 'native', band: 'native', hatch: true },
   go:    { label: 'Go', sub: 'native', band: 'native', hatch: true },
   shermes: { label: 'Static Hermes', band: 'native', hatch: true },
+  'porf-native': { label: 'Porffor', sub: 'native', band: 'native', hatch: true },
   numpy: { label: 'NumPy', band: 'native', hatch: true },
 }
 // One-line engine descriptions — surfaced as the per-row label tooltip so the chart
@@ -284,7 +297,6 @@ const DESC = {
   wat: 'Hand-written WebAssembly text — the practical wasm floor for a kernel.',
   'jz-wasmtime': 'JZ’s wasm run standalone under Wasmtime (WASI) — no JS host.',
   as: 'AssemblyScript — a TypeScript-flavoured language compiled to wasm (asc -O3).',
-  porf: 'Porffor — an ahead-of-time JavaScript → wasm compiler.',
   'rust-wasm': 'Rust compiled to wasm (rustc → wasm32-wasi), run in this same V8.',
   'go-wasm': 'Go compiled to wasm (gc → wasm32-wasip1), run in this same V8.',
   'c-wasm': 'C compiled to wasm (clang → wasm32-wasi), run in this same V8.',
@@ -299,6 +311,7 @@ const DESC = {
   zig: 'Zig native binary (ReleaseFast).',
   go: 'Go native binary (gc).',
   shermes: 'Static Hermes — JavaScript ahead-of-time compiled to a native binary.',
+  'porf-native': 'Porffor’s `porf native` — JS AOT-compiled through its C backend into a standalone native binary (its shipping artifact).',
   numpy: 'NumPy — vectorized C kernels driven from Python.',
 }
 // Per-target source file — each row links to the exact implementation it measured, so you
@@ -308,7 +321,7 @@ const REPO = 'https://github.com/dy/jz/blob/main/bench'
 // limitation to fix, so the row links to a search of that project's issues for the error (find the
 // existing report, or file one from there). jz's own targets point back at jz.
 const REPOS = {
-  porf: 'CanadaHonk/porffor', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
+  'porf-native': 'CanadaHonk/porffor', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
   moonbit: 'moonbitlang/core', 'go-wasm': 'golang/go', go: 'golang/go', tinygo: 'tinygo-org/tinygo',
   'zig-wasm': 'ziglang/zig', zig: 'ziglang/zig', 'rust-wasm': 'rust-lang/rust', rust: 'rust-lang/rust',
   graaljs: 'oracle/graal', spidermonkey: 'mozilla/gecko-dev', shermes: 'facebook/hermes', jawsm: 'wasmerio/wasmer',
@@ -316,7 +329,7 @@ const REPOS = {
 }
 const SRC_EXT = {
   v8: '.js', deno: '.js', bun: '.js', jsc: '.js', spidermonkey: '.js', graaljs: '.js',
-  porf: '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js',
+  'porf-native': '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js',
   as: '.as.ts', 'rust-wasm': '.rs', rust: '.rs', 'c-wasm': '.c', nat: '.c',
   'go-wasm': '.go', go: '.go', tinygo: '.go', 'zig-wasm': '.zig', zig: '.zig',
   moonbit: '.mbt', wat: '.wat', numpy: '.npy.py',
@@ -467,9 +480,18 @@ let CORPUS = []     // cases with a jz row — geomeans, stats
 let CASES = []      // all cases — the per-case grid
 const local = {}    // caseId → { js, jzwasm }
 let filter = 'all'
+// Corpus sort column — every row shows all three multipliers (speed · mem · size,
+// each a geomean vs JZ); clicking a column header re-sorts and re-draws the bars
+// on that metric. speed = median run time · mem = peak process RSS (results.json
+// meta.memory) · size = shipped bytes (module / binary / script source).
+let sortBy = 'speed'
+const COLS = [['speed', 'speed'], ['mem', 'memory'], ['size', 'size']]
+// metric accessor over a results row — null/0 when this row can't be compared on it
+const mval = (r, m) => m === 'speed' ? r.medianUs : m === 'mem' ? r.memKb : r.bytes
 
 const fmtMs = us => us >= 100000 ? (us / 1000).toFixed(0) + ' ms' : us >= 1000 ? (us / 1000).toFixed(2) + ' ms' : us + ' µs'
 const fmtB = b => b == null ? '' : b < 1024 ? b + ' B' : (b / 1024).toFixed(1) + ' kB'
+const fmtMem = kb => kb == null ? '' : kb < 1024 ? kb + ' kB' : (kb / 1024).toFixed(1) + ' MB'
 const fmtX = x => x >= 100 ? x.toFixed(0) + '×' : x >= 10 ? x.toFixed(1) + '×' : x.toFixed(2) + '×'
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')
 const geo = xs => Math.exp(xs.reduce((s, x) => s + Math.log(x), 0) / xs.length)
@@ -483,7 +505,7 @@ const stripClassSub = (label, sub) =>
 
 // Linear, zero-based bars; rows past BREAK× the chart anchor are cut (full bar
 // + cut glyph) with the exact number printed. maxLin = largest uncut ratio.
-const rowHtml = ({ label, sub, rel, maxLin, text, solid, strong, parity, size, cls, tip, href }) => {
+const rowHtml = ({ label, sub, rel, maxLin, text, cells, solid, strong, parity, cls, tip, href }) => {
   const cut = rel > BREAK
   const w = cut ? 100 : (rel / maxLin * 100)
   const barCls = `${solid ? 'solid' : ''}${parity === 'DIFF' ? ' diff' : ''}`
@@ -492,10 +514,11 @@ const rowHtml = ({ label, sub, rel, maxLin, text, solid, strong, parity, size, c
   // the link to that target's source. No tip → no data-tip (no empty ghost bubble).
   const inner = `${icon}${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}`
   const lab = href ? `<a class="lab lnk" href="${esc(href)}" target="_blank" rel="noopener">${inner}</a>` : `<span class="lab">${inner}</span>`
+  // cells = pre-built column HTML (the corpus' three fixed-width slots); text = a plain string
   return `<div class="row${strong ? ' strong' : ''}"${tip ? ` data-tip="${esc(tip)}"` : ''}>
     ${lab}
     <span class="bar"><i class="${barCls}" style="width:${w.toFixed(2)}%"></i>${cut ? '<span class="cut"></span>' : ''}</span>
-    <span class="val">${esc(text)}${size ? `<span class="sz">${esc(fmtB(size))}</span>` : ''}${parity === 'DIFF' ? '<span class="par">DIFF</span>' : ''}</span>
+    <span class="val">${cells ?? esc(text ?? '')}${parity === 'DIFF' ? '<span class="par">DIFF</span>' : ''}</span>
   </div>`
 }
 
@@ -533,12 +556,14 @@ const coverage = tid => {
   return { ran, attempted: CORPUS.length }
 }
 
-// ── headline: banded geomeans, normalized to the fastest row ─────────────────
-const geoRatio = tid => {
+// ── headline: banded rows, three geomean columns (speed · mem · size) vs JZ ──
+// Same parity gate for every column: a wrong-result run did different work, so
+// its memory/size aren't comparable either.
+const geoRatio = (tid, m) => {
   const rs = []
   for (const c of CORPUS) {
     const r = c.targets[tid], j = c.targets.jz
-    if (r && j && r.status !== 'fail' && j.status !== 'fail' && r.parity !== 'DIFF') rs.push(r.medianUs / j.medianUs)
+    if (r && j && r.status !== 'fail' && j.status !== 'fail' && r.parity !== 'DIFF' && mval(r, m) && mval(j, m)) rs.push(mval(r, m) / mval(j, m))
   }
   return rs.length ? { geo: geo(rs), n: rs.length } : null
 }
@@ -554,21 +579,32 @@ const localGeo = () => {
 const renderGeomean = () => {
   const rows = []
   for (const [tid, t] of Object.entries(TARGETS)) {
-    const g = geoRatio(tid)
-    if (g) rows.push({ tid, band: t.band, ...t, ...g })
+    // g = per-column geomeans vs jz: { speed|mem|size: {geo,n}|null }
+    const g = Object.fromEntries(COLS.map(([m]) => [m, geoRatio(tid, m)]))
+    if (g.speed) rows.push({ tid, band: t.band, ...t, g, n: g.speed.n })
   }
   // your-browser rows fold in as regular rows, sorted with the rest: JZ browser
   // (your jz, = 1× like the reference JZ) and JS browser (your JS ÷ your jz).
+  // Speed column only — the in-page runner can't read its process RSS or bytes.
   const yours = localGeo()
   if (yours) {
-    rows.push({ tid: '__jzlive', band: 'wasm', label: 'JZ browser', geo: 1, n: yours.n, strong: true })
-    rows.push({ tid: '__jslive', band: 'js', label: 'JS browser', geo: yours.geo, n: yours.n })
+    rows.push({ tid: '__jzlive', band: 'wasm', label: 'JZ browser', g: { speed: { geo: 1, n: yours.n } }, n: yours.n, strong: true })
+    rows.push({ tid: '__jslive', band: 'js', label: 'JS browser', g: { speed: { geo: yours.geo, n: yours.n } }, n: yours.n })
   }
-  const min = Math.min(...rows.map(r => r.geo))
-  const maxLin = Math.max(...rows.map(r => r.geo / min).filter(r => r <= BREAK), 1)
-  let html = ''
+  // Sort key = the active column's geomean; a row without it sinks to the band
+  // tail (no bar, an em-dash in that cell) instead of faking a huge value.
+  const key = r => r.g[sortBy]?.geo ?? Infinity
+  const present = rows.map(key).filter(x => isFinite(x))
+  const min = Math.min(...present)
+  const maxLin = Math.max(...present.map(x => x / min).filter(x => x <= BREAK), 1)
+  // Column header rides the same grid as the rows, so the three labels sit
+  // exactly over their value slots; the active (sorting) one is inked.
+  let html = `<div class="row cols"><span class="lab"></span><span class="bar"></span><span class="val">${
+    COLS.map(([m, label]) => `<button class="mh${m === sortBy ? ' on' : ''}" data-sort="${m}">${label}</button>`).join('')}</span></div>`
   for (const [band, lab] of BANDS) {
-    const bandRows = rows.filter(r => r.band === band).sort((a, b) => a.geo - b.geo)
+    // `|| 0` keeps the comparator consistent when a whole column is unmeasured
+    // (Infinity − Infinity = NaN would make the sort order undefined)
+    const bandRows = rows.filter(r => r.band === band).sort((a, b) => (key(a) - key(b)) || 0)
     if (!bandRows.length) continue
     // The class glyph rides the group header here (the group already names the class),
     // so corpus rows stay icon-free — no redundant per-row glyph under the header.
@@ -584,12 +620,22 @@ const renderGeomean = () => {
       const tip = [DESC[r.tid], partial
         ? `ran ${cov.ran} of ${cov.attempted} — the rest failed or have no ${stripClassSub(r.label, r.sub)} port (see the cards)`
         : null].filter(Boolean).join('\n')
+      // All three multipliers per row (vs JZ itself, so JZ = 1× in every column and
+      // a better row reads <1×); the bar draws the SORTED column, scaled against
+      // the chart-best value so shortest-bar-wins geometry holds on any sort.
+      const cells = COLS.map(([m]) => `<span class="m">${r.g[m] ? fmtX(r.g[m].geo) : '—'}</span>`).join('')
       html += rowHtml({ label: stripClassSub(r.label, r.sub), sub, tip,
-        rel: r.geo / min, maxLin, text: fmtX(r.geo / min), solid: r.strong, strong: r.strong })
+        rel: isFinite(key(r)) ? key(r) / min : 0, maxLin, cells, solid: r.strong, strong: r.strong })
     }
   }
   $('geomean').innerHTML = html
 }
+// column-header sort clicks (the header re-renders with the chart, so delegate)
+$('geomean').addEventListener('click', e => {
+  const m = e.target.dataset?.sort
+  if (!m || m === sortBy) return
+  sortBy = m; renderGeomean()
+})
 
 // ── stat strip ───────────────────────────────────────────────────────────────
 // The headline figures — same source as the landing hero (it shows the top three) — computed by the shared
@@ -610,9 +656,16 @@ const STRIP = [
     ['rust', 'Rust wasm', 'wasm', 'jz vs Rust → wasm (rustc --target wasm32-wasip1 -C opt-level=3), run in this same V8.\njz beats a systems language, apples-to-apples.'],
     ['nat', 'C native', 'native', 'jz vs native C (clang -O3 -march=native -ffp-contract=off) — the speed-of-light ceiling,\nfrom plain JavaScript. Below 1× = native ahead; the deopt probes are the open gap.'],
   ]],
+  // (porfsize retired: the Porffor rewrite compiles through C in-process — it emits
+  // no wasm at all, so there are no "Porffor wasm bytes" to compare. MoonBit is the
+  // remaining real wasm-artifact rival with corpus-wide coverage.)
   ['Size', [
     ['assize', 'AssemblyScript', 'wasm', 'jz ÷ AssemblyScript wasm bytes, median over the corpus — each compiler at its smallest:\njz optimize:"size"  vs  asc -Osize --runtime stub --noAssert.\nLower = jz smaller.'],
-    ['porfsize', 'Porffor', 'wasm', 'jz ÷ Porffor wasm bytes, median — jz optimize:"size" vs porf default.\nPorffor bundles a JS runtime in every module, so its output is larger.'],
+    ['moonbitsize', 'MoonBit', 'wasm', 'jz ÷ MoonBit wasm bytes, median over the corpus — jz optimize:"size" vs\nmoon build --target wasm --release; the wasm-first language\'s compiler.'],
+  ]],
+  ['Memory', [
+    ['v8mem', 'V8', 'js', 'Node running the same source as plain JS ÷ jz — peak process RSS, geomean.\nSame V8 host for both, so the delta is JIT artifacts + GC heap vs jz\'s linear memory.'],
+    ['javymem', 'Javy QuickJS', 'wasm', 'Javy ÷ jz peak process RSS, geomean — the QuickJS interpreter + its heap inside\nthe module vs jz\'s no-runtime linear memory, same node host.'],
   ]],
 ]
 const renderStrip = () => {
@@ -649,15 +702,18 @@ const cardRows = c => {
   const ok = ran.filter(r => r.parity !== 'DIFF')
   if (!ok.length) return ''
   // anchor = fastest non-hatch row (≈ jz / browser-class), so a freak-fast native
-  // binary can't crush the scale; the printed × is vs this anchor too, so jz reads
-  // ≈ 1× and a faster native simply shows a fraction. Sort is by absolute time.
+  // binary can't crush the scale; jz's bar reads ≈ full and a faster native
+  // simply overshoots. Sort is by absolute time.
   const anchor = Math.min(...ok.filter(r => !r.hatch).map(r => r.medianUs), Infinity)
   const base = anchor < Infinity ? anchor : ok[0].medianUs
   const lab = r => stripClassSub(r.label, r.sub)
+  // row value = the measured facts, plain: time · peak RSS · artifact bytes
+  // (each only when measured — the bar already carries the relative story)
+  const vals = r => [fmtMs(r.medianUs), fmtMem(r.memKb), fmtB(r.bytes)].filter(Boolean).join(' · ')
   // When a native binary is many× faster than the wasm/JS anchor, that gap is a WebAssembly ISA
   // ceiling — 128-bit SIMD, no wide (byte) or carry-less multiply — not a jz codegen miss. The
-  // note explains the outsized × the row already shows (so it stays a "why", not a repeat of the
-  // number): e.g. alpha's per-byte blend, or crc32's carry-less-multiply folding.
+  // note explains the outsized bar (so it stays a "why", not a repeat of the number):
+  // e.g. alpha's per-byte blend, or crc32's carry-less-multiply folding.
   const NATIVE_EDGE = 8
   const simdTip = r => r.band === 'native' && base > 0 && base / r.medianUs >= NATIVE_EDGE
     ? `WebAssembly can't express this kernel as fast — its SIMD is 128-bit with no wide-byte or carry-less multiply, so native pulls far ahead here. A wasm ceiling, not a jz one.`
@@ -673,15 +729,15 @@ const cardRows = c => {
   const maxLin = Math.max(...[...ran.map(r => r.medianUs / base), ...lrows.map(r => r.medianUs / lbase)].filter(r => r <= BREAK), 1)
   // reference + your-browser rows in ONE list, sorted by bar ratio — so the just-measured
   // rows land in their proper place (each ratio is vs its group's fastest ≈ jz, machine-
-  // independent), not dumped at the end. The raw µs differs by machine; the × is the compare.
+  // independent), not dumped at the end. The raw µs differs by machine; the bar is the compare.
   const all = [
     ...ran.map(r => ({ rel: r.medianUs / base, p: {
       label: lab(r), rel: r.medianUs / base, maxLin, cls: r.band,
       tip: rowTip(r.tid, r.parity, simdTip(r)), href: srcHref(r.tid, c.id),
-      text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / base)}`, size: r.bytes, solid: r.strong, strong: r.strong, parity: r.parity } })),
+      text: vals(r), solid: r.strong, strong: r.strong, parity: r.parity } })),
     ...lrows.map(r => ({ rel: r.medianUs / lbase, p: {
       label: `${r.label} browser`, rel: r.medianUs / lbase, maxLin, cls: r.cls,
-      text: `${fmtMs(r.medianUs)} · ${fmtX(r.medianUs / lbase)}`, solid: r.k === 'jzwasm', parity: r.parity } })),
+      text: fmtMs(r.medianUs), solid: r.k === 'jzwasm', parity: r.parity } })),
   ]
   // attempted-but-failed targets close the card as muted rows (reason in tooltip),
   // so a missing competitor reads as "tried, couldn't" — not silently absent.
