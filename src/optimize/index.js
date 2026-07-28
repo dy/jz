@@ -26,7 +26,7 @@
  * @module optimize
  */
 
-import { LAYOUT, ctx, OPTF } from '../ctx.js'
+import { LAYOUT, ctx, OPTF, FORWARDING_MASK } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, hasExpensiveOp, f64Range, I32_MIN, I32_MAX } from '../ir.js'
 
@@ -121,7 +121,7 @@ for (const n of Object.keys(OPTF)) if (!PASS_NAMES.includes(n) && !TUNING_KEYS.i
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
 // Default (level 2) preset body — shared with 'fast' below, which derives from it.
-const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, watrProfile: 'speed' })
+const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, watrProfile: 'speed', inlinePtrOffsetFast: false })
 
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
@@ -176,6 +176,7 @@ const LEVEL_PRESETS = Object.freeze({
     leanCheckedIdx: true,     // unproven typed reads emit the if-form (guard → direct load, else undefined) — ~6 ops/site smaller than the select-clamp form, which exists only so SPEED-tier kernel bodies stay branch-free for the SIMD lift (off here)
 
     boolConvertToSelect: false,  // adds a const + op per site — speed-only latency trade
+    inlinePtrOffsetFast: false,  // ~15 ops/site vs. one call — speed-only trade
     unswitchStringRepLoop: false, // duplicates the scan loop for SSO/heap — speed-only
     speculateSchemaBranches: false, // duplicates the dynamic fallback body — speed-only tagged-union PIC
     devirtIndirect: false,    // guards + duplicated args grow bytes — speed-only trade
@@ -3661,7 +3662,8 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
       cfg.propagateSingleUse === false &&
       cfg.promoteGlobals === false &&
       cfg.sortLocalsByUse === false &&
-      cfg.vectorizeLaneLocal === false) return
+      cfg.vectorizeLaneLocal === false &&
+      cfg.inlinePtrOffsetFast === false) return
   // Static-const-array base/len fold runs FIRST: it matches the exact emit shape
   // via node tags (.saArr/.saBits), and any later pass that rebuilds a subtree
   // (CSE, fused rewrite, LICM temp-splitting) strips array properties — the tag
@@ -3719,6 +3721,18 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
     // iteration, the hot-loop waste audit-fixpoint.mjs flagged on dot/sum.
     foldV128Memargs(fn)
   }
+  // Speed-tier only, and deliberately LATE (after unswitchTypedParamLoop/
+  // vectorizeLaneLocal above, not bundled into fusedRewrite's earlier walk):
+  // unswitchTypedParamLoop's polymorphic-store recognizer pattern-matches the
+  // RAW `(call $__ptr_offset …)` shape inside the typed-array fallback store to
+  // prove a Float64Array param loop is safe to unswitch + SIMD-lift — running
+  // this inline first (it used to live in fusedRewrite) erased that shape and
+  // silently starved the unswitch of its match (a whole scalar→SIMD loop lift
+  // lost to save a handful of call frames — measured on the DSP self-map flagship
+  // shape, test/unswitch-typed-param.js). Running here, after that pass has had
+  // its pick, inlines whatever `$__ptr_offset` calls remain — still the large
+  // majority of sites.
+  if (cfg && cfg.inlinePtrOffsetFast === true) inlinePtrOffsetFastPass(fn)
   // Preserve source-unrolled SSA scratch before propagation sinks its single
   // definition into a local.tee. The transform is gated while it matures; when
   // enabled, its moved invariants ride the normal LICM pass once more below.
@@ -3785,6 +3799,102 @@ function foldV128Memargs(node) {
     }
   }
   for (let i = 1; i < node.length; i++) foldV128Memargs(node[i])
+}
+
+/** Speed-tier: inline `$__ptr_offset`'s own loop-free body (mask+tag test, then
+ *  followForwardingWat's bounds/sentinel check) at each surviving call site —
+ *  the cold relocation-chase call ($__ptr_offset_fwd, the only loop) stays
+ *  out-of-line. Trades bytes/site for the self-host kernel's dominant helper
+ *  call (17.9M/compile, 2026-07-28 helper-rank audit — every NaN-box deref is
+ *  an out-of-line call, kept a real function by the forwarding branch).
+ *
+ *  Deliberately its OWN late pass, not folded into fusedRewrite's earlier walk
+ *  (where a first version lived): unswitchTypedParamLoop's polymorphic-store
+ *  recognizer pattern-matches the RAW `(call $__ptr_offset …)` shape to prove a
+ *  Float64Array param loop safe to unswitch + SIMD-lift. Inlining eagerly
+ *  erased that shape before the unswitch ran and silently cost a whole
+ *  scalar→SIMD loop lift to save a handful of call frames (caught by
+ *  test/unswitch-typed-param.js). Running here — after unswitchTypedParamLoop
+ *  and vectorizeLaneLocal have had their pick — inlines whatever calls remain,
+ *  still the large majority of sites (hoistInvariantPtrOffset/hoistInvariantLoop
+ *  already collapsed same-argument repeats to one call each, earlier in 'pre').
+ *
+ *  `off` must survive past the tag-test branch (it's the return value on BOTH
+ *  the forwarding and non-forwarding arms), hence the i32 scratch + wrapping
+ *  value-block — the same `['block', ['result', ty], …]` shape the EMITTER
+ *  already uses pervasively (module/array.js etc.) for multi-statement f64/i32
+ *  expressions, just built by the optimizer instead. */
+function inlinePtrOffsetFastPass(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  // Skip $__ptr_offset's own body and its cold chase — they ARE the helper.
+  const name = typeof fn[1] === 'string' ? fn[1] : null
+  if (name && name.startsWith('$__ptr_')) return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+  const newDecls = []
+  // `$__poff<N>` — NOT `$__inl<N>...`, which is watr's OWN reserved namespace
+  // for its multi-caller function inliner (cfg.inlineFns → watr `inline`
+  // option, watr-tail.js, active at this same speed tier): sharing it produced
+  // a real `Duplicate local` assembler error when watr's inliner and this pass
+  // independently picked the same index. `__poffb<N>` is the i64 bits tee (only
+  // needed when the pointer expression isn't cheap to duplicate); `__poff<N>`
+  // is the i32 offset scratch. Continue numbering past any this function
+  // already has (defensive — this pass runs once per function today, but
+  // matches the collision-avoidance convention fusedRewrite's own scratch
+  // allocator uses).
+  let bN = 0, oN = 0
+  for (let i = 2; i < fn.length; i++) {
+    const d = fn[i]
+    if (Array.isArray(d) && d[0] === 'local' && typeof d[1] === 'string') {
+      const mb = d[1].match(/^\$__poffb(\d+)$/)
+      if (mb) bN = Math.max(bN, +mb[1] + 1)
+      const mo = d[1].match(/^\$__poff(\d+)$/)
+      if (mo) oN = Math.max(oN, +mo[1] + 1)
+    }
+  }
+  const freshI64 = () => { const n = `$__poffb${bN++}`; newDecls.push(['local', n, 'i64']); return n }
+  const freshI32 = () => { const n = `$__poff${oN++}`; newDecls.push(['local', n, 'i32']); return n }
+  const cheapPtr = (n) => Array.isArray(n) &&
+    (n[0] === 'local.get' || n[0] === 'global.get' ||
+      (n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1]) &&
+        (n[1][0] === 'local.get' || n[1][0] === 'global.get')))
+  const walk = (node) => {
+    if (!Array.isArray(node)) return node
+    for (let i = 0; i < node.length; i++) { const c = node[i]; if (Array.isArray(c)) node[i] = walk(c) }
+    if (node[0] === 'call' && node[1] === '$__ptr_offset' && node.length === 3) {
+      const X = node[2]
+      let bitsA = X, bitsB = X
+      if (!cheapPtr(X)) {
+        const t = freshI64()
+        bitsA = ['local.tee', t, X]
+        bitsB = ['local.get', t]
+      }
+      const off = freshI32()
+      const offGet = ['local.get', off]
+      return ['block', ['result', 'i32'],
+        ['local.set', off, ['i32.wrap_i64', ['i64.and', bitsA, ['i64.const', LAYOUT.OFFSET_MASK]]]],
+        ['if', ['result', 'i32'],
+          ['i32.and',
+            ['i32.shl', ['i32.const', 1],
+              ['i32.and', ['i32.wrap_i64', ['i64.shr_u', bitsB, ['i64.const', LAYOUT.TAG_SHIFT]]], ['i32.const', LAYOUT.TAG_MASK]]],
+            ['i32.const', FORWARDING_MASK]],
+          ['then',
+            ['if', ['result', 'i32'],
+              ['i32.and',
+                ['i32.ge_u', offGet, ['i32.const', 8]],
+                ['i64.le_u', ['i64.extend_i32_u', offGet], ['global.get', '$__heap_end64']]],
+              ['then',
+                ['if', ['result', 'i32'],
+                  ['i32.eq', ['i32.load', ['i32.sub', offGet, ['i32.const', 4]]], ['i32.const', -1]],
+                  ['then', ['call', '$__ptr_offset_fwd', offGet]],
+                  ['else', offGet]]],
+              ['else', offGet]]],
+          ['else', offGet]]]
+    }
+    return node
+  }
+  for (let i = bodyStart; i < fn.length; i++) fn[i] = walk(fn[i])
+  if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
 }
 
 // i32 comparison/eqz negations — used to flip a break-condition into the

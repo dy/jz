@@ -46,6 +46,15 @@ export const PASS_NAMES = [
   'maskedSuffixGuard',        // all-false SIMD masks skip large pure producer suffixes
   'hoistLoopGlobalPtrOffset', // per-loop complement: narrower write/call scan lets a clean loop hoist inside an otherwise-poisoned function
   'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
+  'inlinePtrOffsetFast',      // speed-tier only: inline __ptr_offset's loop-free body (mask+tag
+                              // test+forwarding bounds/sentinel check) at each surviving call site
+                              // — the cold relocation-chase call ($__ptr_offset_fwd) stays out-of-
+                              // line. Its own late pass (inlinePtrOffsetFastPass, optimize/index.js),
+                              // run AFTER unswitchTypedParamLoop/vectorizeLaneLocal so their raw-call
+                              // pattern match still gets first pick. Trades bytes/site for the
+                              // dominant self-host helper call (17.9M/compile, 2026-07-28 helper-
+                              // rank audit); opt-in like boolConvertToSelect (off at 'size'/level 2,
+                              // on at 'speed'/level 3).
   'hoistAddrBase',
   'boolConvertToSelect',      // f64 ± (cond?1:0) → branchless select (kills i32↔f64 domain cross on recurrences)
   'cseScalarLoad',

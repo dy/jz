@@ -239,6 +239,30 @@ MUTATE_OPS dedup (3 drifted sets fixed) · dyn-keys leg registered.
   watr inline-pin it in the kernel build. Bounded, measurable,
   general (speeds every kernel compile). NEXT WINDOW: implement +
   measure warm rounds (needs AC + quiet).
+  WARM CAP ATTAINED 2026-07-28: inlinePtrOffsetFast landed as a
+  speed-tier-gated LATE pass (src/optimize/index.js
+  inlinePtrOffsetFastPass + passes.js registry; off in L2/size
+  presets so default sizes/ratchet/goldens are byte-untouched).
+  Inlines $__ptr_offset's loop-free body (mask+tag test +
+  followForwardingWat guard) at each surviving call site; only the
+  cold $__ptr_offset_fwd relocation chase stays out-of-line. TWO
+  ORDERING/NAMESPACE TRAPS (both pinned by existing tests): (1)
+  $__inl<N> is watr's OWN inliner namespace -- sharing it duped
+  locals; scratch renamed $__poff<N>/$__poffb<N>; (2) MUST run
+  AFTER unswitchTypedParamLoop/vectorizeLaneLocal -- they pattern-
+  match the RAW (call $__ptr_offset) shape to prove SIMD lifts;
+  eager inlining inside fusedRewrite silently killed a whole
+  scalar->SIMD lift (caught by test/unswitch-typed-param.js).
+  never-grown.js structural pins extended to accept the __poff
+  marker. MEASURED: helper profile ptr_offset 17.9M -> 0 (top now
+  str_eq 5.0M); warm rounds 1.001/1.022/1.021 -> 0.965/0.968/0.964
+  agent runs, 0.973 my confirm run (ALL cases <=0.99: mat4 0.97
+  fft 0.98 biquad 0.98 sort 0.99 crc32 0.99 mandelbrot 0.93);
+  fresh 0.787 -> 0.763. Speed-tier size cost 139-483B/case
+  (~1.4-1.8%), checksums identical, paired sort/fft/synth no
+  regression. Battery 3101/0, parity 18/18, ratchet 10/10 zero
+  delta. The warm <=0.99 strict-win cap now passes on EVERY round
+  -- last solo-scope committed-gate red is CLEARED.
   EXCLUSIONS BURN-DOWN COMPLETE 2026-07-28: the census root =
   `new Set(undefined)` -- ES says the CONSTRUCTOR skips iteration on
   a nullish iterable (empty set), but jz's new.Set routed through
