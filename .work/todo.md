@@ -420,6 +420,20 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  WORDCOUNT ROOT NAMED 2026-07-29 (in-thread, same method): source
+  never stringifies a number yet Ryu is in the module -- __str_concat
+  is a MONOLITHIC generic helper whose unproven-operand arm calls
+  __to_str internally, so even proven string-to-string concat
+  (w += String.fromCharCode(...)) transitively drags the whole
+  ToString/Ryu formatter (~26% of wordcount's size module). LEVER
+  (agent implementing): helper STRATIFICATION -- strings-only concat
+  CORE (no __to_str dep) called directly from proven-STRING emit
+  sites; the coercing wrapper (ToString both -> core) only when an
+  unproven operand exists; dep graph reflects it so proven-only
+  modules never include Ryu. Sibling sweep in brief: __str_eq,
+  template-of-proven-string, int-only stringification vs float Ryu.
+  PARALLEL agent: imperative closure-table lattice (lookup[c]=fn,
+  the jessie/vm shape) extending 3c4898d3's literal-table lattice.
   CLOSURE-TABLE PARAM LATTICE LANDED 2026-07-29 (the dispatch lever;
   DOUBLE WIN): dispatch size 17090B -> 1770B (10.7x -> 1.10x vs AS,
   ~parity) AND speed 1.96x-behind-JSC -> 1.32x FASTER than JSC,
