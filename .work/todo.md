@@ -26,8 +26,13 @@ weak -> eligible-count semantics), 3 reference refresh at HEAD (snapshot
 0 rows), 4 boxed-bigint (design banked; -5e-324/2^52-1n kernel rows remain
 curated until PTR.BIGINT), 5 JIT-leadership axis ungated in bench-claims
 (19 JIT losses / 9 cases in snapshot), 6 real legalizeForTarget + native
-TargetProfile + w2c cap recovery (jz-w2c geomean 1.330x, tokenizer 3.851x
-vs 3.5 cap), 7 solver-owned bodyFacts invalidation (in flight), 8 canonical
+TargetProfile [6a DONE 32306df8; w2c cap RESOLVED-GREEN 2026-07-28: the
+audit's tokenizer 3.851x/geomean 1.330x were the PRE-refresh snapshot's
+contention noise -- c703f63a evidence has tokenizer 2.100x, geomean 1.147x,
+worst immutable 2.49x, all inside caps; residual tokenizer gap diagnosed =
+TurboFan branch-to-cmov vs clang -O3 on identical sequences, not a jz shape;
+guard-page memcheck already free, SIMD/call/flag levers all measured null],
+7 solver-owned bodyFacts invalidation (DONE 4b149108), 8 canonical
 LoopPlan (vectorize 6845 lines, 16-recognizer chain; no shared affine/
 alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
 4 red (glyfparse 1.151, sdf 1.256, trace 1.452, shapes 1.166).
@@ -39,7 +44,8 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
       (bench-claims strict-leadership wasm + JIT); current distance:
       16 wasm strict losses (worst trace 1.449x), 13 JIT strict losses
       (worst dispatch 2.073x jsc). Order: AFTER architecture complete.
-      Includes the w2c native-lowering tail (tokenizer 3.851x vs 3.5 cap).
+      (w2c lane already inside caps post-refresh: tokenizer 2.100x/3.5,
+      geomean 1.147x/1.35 -- the 3.851x figure was pre-refresh noise.)
 * [ ] SIZE: produced bundles must BEAT AssemblyScript by size (current
       claim: "on par by geomean"). Producer: scripts/bench-size.mjs.
       Needs: size-vs-AS per-case inventory, then codegen levers (dead
