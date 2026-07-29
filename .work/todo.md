@@ -420,6 +420,27 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  ROUND 3 STEPS 1-2 EXECUTED 2026-07-29 (agent, design-mandated stop
+  at the gap gate; tree restored): erasure-graph diagnostic built
+  (post-emit walk, JZ_DBG_BIGINT_ERASURE) + run: corpus 179 hits
+  (call-arg 145, return 25, dataview 6, ternary-nullish 3; ZERO
+  collection-shape hits -- suite barely exercises bigint-through-
+  collections), kernel graph 99 hits (call-arg 78, return 6,
+  dataview 9, closure-capture 1, ternary-nullish 5). Design §2
+  VALIDATED by spot-checks; ONE over-scope corrected: Atomics
+  receivers are compile-enforced proven -- only DataView.getBig64 is
+  the live row-8 risk. Diagnostic fires on ALL 9 sink shapes incl.
+  the round-2 dict repro. THE GAP (risk 1 confirmed): ARRAY
+  destructuring -- let [a,b]=[1,BigInt(v)] AND ([a,b])=>... --
+  silently DROPS the VAL.BIGINT kind fact (object destructure + 
+  direct bindings preserve it; diagnostic-walker miss ruled out by
+  controls). Root: kind.js/analyze.js destructuring path. ROUND-4
+  PREREQUISITE: fix array-destructure bigint kind preservation, re-
+  run the sibling repro until it fires, THEN steps 3-4. Driver trap
+  for future diagnostic runs: tst test() only REGISTERS -- use
+  TST_MANUAL=1 + await run() or the collector reads zero. Scratch:
+  session scratchpad run-corpus-diag2.mjs, corpus-hits2.json,
+  kernel-hits.json, repro-dict-bigint*.mjs.
   ROUND 3 DESIGN COMPLETE 2026-07-29: .work/bigint-round3-design.md
   -- solver-computed bigintBoxed rep fact (raw iff def+all reachable
   uses prove BIGINT; clone narrow.js's nullability lattice), boxes
