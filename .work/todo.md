@@ -386,6 +386,35 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   static/raw. Kills the kernel warm cost structurally (layout.js
   chains never box) AND the accumulator-loop leak for local chains
   -- general engine lever, not input tuning.
+  ROUND 2 WALL 2026-07-28 (honest stop, tree restored to 32306df8):
+  boundary boxing is CONCEPTUALLY INCOMPLETE as specified -- the
+  unbox fallback (runtime tag check on kind-UNPROVEN operands) is
+  unsound under self-hosting: the compiler's own layout.js/
+  assemble.js compute NaN-box-SHAPED bit patterns as ordinary raw
+  BigInt DATA (never boxed, never erased), and a runtime check
+  cannot tell raw-with-box-shaped-bits from a real heap box. Agent
+  fixed the universal instance (bigintPayload/cmpOp unconditional
+  deref) but a second narrower instance remains UNISOLATED: dict-
+  shaped programs (object/property access) trap OOB through the
+  kernel; bisected to core.js+emit.js+ir.js JOINTLY; ruled out:
+  bigintResultErased, ternary merge-boxing, emitLooseEq bigA/bigB,
+  __is_truthy arm, $__eq content arm. EIGHT REAL BUGS found+proven
+  in round 2 (re-apply in round 3, all were green natively at
+  3111/3111): emitLooseEq passed boxBigInt f64 as i64 to $__eq;
+  Array<BigInt> element reads returned box unread (array.js
+  elemOut/elemOutGuarded); reduce/reduceRight VT rule (kind.js);
+  DataView.getBig*64 methodValType (kind-traits.js); $__same_value_
+  zero + $__map_hash had no BigInt content arms (Set/Map bigint keys
+  always missed); ternary-beside-nullish wrongly boxed (nullishArm
+  raw idiom); $__box_bigint atom passthrough guard; interop
+  decodeBigintResult (4 reserved atoms). ROUND 3 PREREQUISITE
+  (design, not code): a SOUND boxing invariant -- the kind lattice
+  must make "raw iff both def AND all uses prove bigint" a
+  dataflow-checked property (solver-owned), OR every kind-erased
+  read must be dominated by a boxed def (no runtime disambiguation
+  ever). Until then carrier rows stay curated (audit accepts
+  explicit skips until PTR.BIGINT lands). Transcripts hold both
+  full diffs.
   EXCLUSIONS BURN-DOWN COMPLETE 2026-07-28: the census root =
   `new Set(undefined)` -- ES says the CONSTRUCTOR skips iteration on
   a nullish iterable (empty set), but jz's new.Set routed through
