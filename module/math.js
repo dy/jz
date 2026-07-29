@@ -32,6 +32,9 @@ export default (ctx) => {
   const rngSeedConst = typeof ctx.transform.randomSeed === 'number'
     ? ((ctx.transform.randomSeed >>> 0) || 1)   // xorshift dies on 0 → floor at 1
     : 12345
+  // Which entropy shim seeds the RNG: WASI's random_get syscall vs the JS-host
+  // env.rngSeed import (module/crypto.js mirrors this same wasiShims split).
+  const wasi = ctx.transform.targetProfile.wasiShims
   deps({
     'math.sin': ['math.sin_core'],
     'math.cos': ['math.cos_core'],
@@ -510,7 +513,7 @@ export default (ctx) => {
     // Entropy mode: pull the host randomness syscall on demand (only when
     // Math.random is actually used) — env.rngSeed (JS host) or WASI random_get.
     if (rngEntropy) {
-      if (ctx.transform.host === 'wasi')
+      if (wasi)
         hostImport('wasi_snapshot_preview1', 'random_get', ['func', '$__random_get', ['param', 'i32'], ['param', 'i32'], ['result', 'i32']])
       else
         hostImport('env', 'rngSeed', ['func', '$__env_rng_seed', ['result', 'i32']])
@@ -2281,7 +2284,7 @@ export default (ctx) => {
   if (rngEntropy) {
     declGlobal('math.rng_seeded', 'i32')
     // One i32 of host entropy, floored at 1 (xorshift32 is dead at state 0).
-    wat('__rng_seed', ctx.transform.host === 'wasi'
+    wat('__rng_seed', wasi
       ? `(func $__rng_seed (result i32)
     (local $buf i32) (local $s i32)
     (local.set $buf (call $__alloc (i32.const 4)))
@@ -2292,6 +2295,6 @@ export default (ctx) => {
     (local $s i32)
     (local.set $s (call $__env_rng_seed))
     (select (local.get $s) (i32.const 1) (local.get $s)))`,
-      ctx.transform.host === 'wasi' ? ['__alloc'] : [])
+      wasi ? ['__alloc'] : [])
   }
 }
