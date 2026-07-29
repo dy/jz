@@ -420,6 +420,26 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  DISPATCH DOUBLE-OUTLIER ROOT NAMED 2026-07-29 (in-thread after the
+  dissection agent died to 4x API-500s; diagnosis salvaged+completed):
+  the case's ENTIRE ~60% string/Ryu size cluster (__to_str 33%,
+  __str_concat, __ryu_pow5, __mkstr...) hangs off ONE unproven `+`
+  in `(x,k)=>(x+k)|0` -- the 8 integer closures are invoked through
+  a data-indexed table (ops[code[i]](x,k)) so no call-site lattice
+  reaches their params; the generic add's string arm pulls the whole
+  chain (verified: __str_concat's only callers are closure0/closure5/
+  to_str; producer-exact repro scratchpad/dispatch-size2.wat -- the
+  bytes producer IS like-for-like, benchlibHostSource patch
+  confirmed). SPEED gap (1.96x vs JSC) shares the root: generic
+  dispatch in the hot loop vs JIT inline caches. SAME CLASS as the
+  ledgered sort-comparator WATCH note. LEVER (agent implementing):
+  closure-TABLE call-site param lattice -- const never-escaping
+  array of closures invoked only via indexed calls => member params
+  adopt the JOIN of per-site arg kinds (extends narrow.js's direct-
+  call lattice; return-side analog = af731cf0's pre-pass); fail-open
+  on escape/non-indexed use/heterogeneous kinds. Expected: dispatch
+  size 17.2kB -> few kB (geomean vs AS flips below 1.0), speed
+  toward JIT parity; sort-comparator + jessie sibling checks.
   BOXED-BIGINT PARKED BY USER DECISION 2026-07-29 ("proceed with the
   goals" + "I think we wanted to keep that limitation"): the raw-i64
   carrier STAYS as documented semantics; curated carrier rows are
