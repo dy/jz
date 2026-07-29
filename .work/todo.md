@@ -420,6 +420,20 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  BOXED-BIGINT PARKED BY USER DECISION 2026-07-29 ("proceed with the
+  goals" + "I think we wanted to keep that limitation"): the raw-i64
+  carrier STAYS as documented semantics; curated carrier rows are
+  permanent documented divergences (subnormal-literal exports +
+  >2^52 bigints crossing kind-erased boundaries -- vanishingly rare
+  in real programs); the 64-bit wrap model was never in question.
+  Seven rounds banked a complete revisit map: design doc
+  (.work/bigint-round3-design.md incl. line-verified round-6
+  blueprint), solver fact LANDED and dormant (reps.bigintBoxed,
+  erasure-diag.js), and every adjacent real bug found en route was
+  FIXED and committed (compound-assign, closure return kinds,
+  destructure kinds, __is_truthy/numLiteralNode maps banked). If
+  ever revisited: start at the round-6 blueprint, $__eq arm first.
+  Round-7 agent stopped, its layout.js start restored.
   CLOSURE-RETURN-KIND PRE-PASS LANDED 2026-07-29 (round-6 prereq (a)
   DONE): (1) unary return kinds -- shared kind-generic
   valTypeOfWithLocals (kind.js) re-derives + ?: && || AND the unary
