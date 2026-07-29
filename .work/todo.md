@@ -420,6 +420,18 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  ROUND 3 DESIGN COMPLETE 2026-07-29: .work/bigint-round3-design.md
+  -- solver-computed bigintBoxed rep fact (raw iff def+all reachable
+  uses prove BIGINT; clone narrow.js's nullability lattice), boxes
+  materialize at last raw-eligible point, kind-erased readers
+  dispatch on the exact PTR.BIGINT tag (magnitude heuristics DIE),
+  W-sink/R-recovery inventory with file:line, dbg erasure-graph
+  assert (would have caught round-2's dict OOB at compile time),
+  implementation ORDER de-risked: diagnostic walk first as empirical
+  inventory -> dict repro must fire it -> solver fact -> emit. Warm
+  cap survives because kernel layout/assemble math settles raw.
+  Honest risks incl. solver completeness (THE bet), generators/
+  destructuring walk coverage, ternary-nullish re-derivation.
   ROUND 2 WALL 2026-07-28 (honest stop, tree restored to 32306df8):
   boundary boxing is CONCEPTUALLY INCOMPLETE as specified -- the
   unbox fallback (runtime tag check on kind-UNPROVEN operands) is
