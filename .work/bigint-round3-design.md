@@ -143,6 +143,55 @@ rows clear as side effect (tag dispatch replaces magnitude heuristic).
    callbacks (.map/.forEach unspecialized closure param) — check explicitly,
    don't assume exempt by category.
 
+## Round-6 execution blueprint (2026-07-29, verified line-by-line against af731cf0)
+
+PREREQS CLOSED: (a) closure-return-kind pre-pass landed af731cf0; (b) ternary-
+nullish single seam = carrierF64 (ir.js 406-408) — ALREADY the choke-point for
+8/9 W-sinks (grep call sites: bridge.js 91, compile/index.js 1815,
+emit-assign.js 35, array.js x9, object.js 47, collection.js 1549-1550/1971,
+function.js 291, emit.js 1175/2415-2416/3454/3752); ternary needs ZERO
+special-case code — bare-name arm boxes at its own decl (refPayload branch
+emit.js 4291-4297 passes arms untouched), inline-expr arm self-boxes via one
+isProvenBoxedBigint clause for '?:'-with-nullish-carry. OWNERSHIP RULE (kills
+round-5 bug #4): decl/assign ASK isProvenBoxedBigint, never box
+unconditionally; (c) O0 parity divergence DOES NOT EXIST at HEAD (round-5
+artifact; re-verify after each emit stage).
+
+EXECUTE IN ORDER (all file:lines verified, not guessed):
+1. layout.js 27-39: PTR.BIGINT=5.
+2. ir.js beside asI64/fromI64 (326-338): boxBigInt (asI64-normalize, $__alloc
+   8 via allocPtr pattern 1565-1578, i64.store, mkPtrIR); unboxBigInt
+   (i64.load at ptrOffsetIR — SAFE: PTR.BIGINT not in FORWARDING_MASK, plain
+   offset return, core.js 279-290); isProvenBoxedBigint (bare name →
+   repOf .bigintBoxed, fail toward FALSE; '?:' BIGINT-nullish-carry → true;
+   MUTATE_OPS node → delegate to node[1]; else false); unboxBigIntIfBoxed;
+   carrierF64 BIGINT branch (box iff not proven boxed).
+3. emit.js: readI64/readI64Var wrappers; swap at emitNeg 277-287, postfix
+   +/- 3905/4039/4043-4044, binary + - * / % 3966/4044/4069/4106/4127, ~ +
+   bitwise 4518/4526, compoundAssign 3540, bitwise compound 3836, cmpOp
+   BIGINT 2450/2455, ++/-- 3886. Write-backs at 3540/3836/3886 use
+   bigintResultCarrier (boxed rep → boxBigInt else fromI64). Decl
+   materialization: emitDecl 1731-1765 new branch before f64 coercion;
+   reassign '=' 3772-3791 same gate. coerceArg 1164-1177: both directions
+   vs param.bigintBoxed (narrow.js 2164-2226 stamps it).
+4. DO NOT TOUCH: return-statement emission (3710-3768) and
+   synthesizeBoundaryWrappers (compile/index.js 1504-1526 already special-
+   cases valResult BIGINT to cross raw). Returns box at DECL sites per the
+   invariant — params-only fixpoint is CORRECT.
+5. R-recovery (highest risk, WAT surgery — do $__eq FIRST, parity after):
+   $__eq core.js 72-122 PTR.BIGINT deref-compare arm parallel to the STRING
+   arm 107-121, features.bigint-gated (5579/6487 call sites — hottest
+   helper); $__is_truthy 145-159 + optimize/index.js peephole twin;
+   __same_value_zero/__map_hash content arms (collection.js); number.js
+   1779-1851 bigint:toString/asIntN/asUintN via readI64; interop.js
+   133/163-182/354-357/465 type===5 arm; TYPEOF.bigint emit.js 433-441 tag
+   check before the magnitude fallback.
+6. Erasure assert + carrier un-curation + full 7-gate battery (incl. watr
+   35/35, warm ≤0.99 AC).
+WHY ROUNDS 5-6 STOPPED: wiring consumption without ALL R-recovery arms
+regresses the EXISTING battery (analyze/narrow already mark real bindings
+today — the fact goes live the moment emit consumes it). Land all-or-nothing.
+
 ## Implementation order (de-risked)
 
 1. Build §4.2 erasure-graph walk as a DIAGNOSTIC first (pre-boxing it fires
