@@ -1,4 +1,5 @@
 import { OPTF, getFactStore, DBG_INVARIANTS } from '../ctx.js'
+import { DBG_BIGINT_STATS, noteLocalBoxed } from './bigint-boxed-stats.js'
 /**
  * Pre-analysis passes — type inference, local analysis, capture detection.
  *
@@ -603,11 +604,41 @@ export function analyzeBody(body) {
     for (const a of list) markEscapeValue(Array.isArray(a) && a[0] === '...' ? a[1] : a)
   }
 
+  // === Round-3/4 boxed-bigint intra-body W-sink walk ===
+  // (design .work/bigint-round3-design.md §3.2 — clone of the escapes precedent
+  // above: same single-pass walk, same "mark the binding, don't re-derive later"
+  // shape.) A bare-name value proven VAL.BIGINT that reaches one of these AST
+  // positions must round-trip through a real PTR.BIGINT box (ir.js boxBigInt/
+  // unboxBigInt, Step 2) — inline (non-name) BIGINT expressions at a sink are
+  // boxed at emission time directly from the AST shape, no rep needed. Call-arg/
+  // return to a KNOWN user function are the narrow.js/emit.js inter-function
+  // half (design §3.3) — skipped here to avoid a redundant, weaker verdict.
+  const markBigintSink = (expr) => {
+    if (typeof expr !== 'string' || valTypeOf(expr) !== VAL.BIGINT) return
+    updateRep(expr, { bigintBoxed: true })
+    if (DBG_BIGINT_STATS) noteLocalBoxed(ctx.func.current?.name ?? '(top)', expr)
+  }
+  const markBigintCapture = (arrowNode) => {
+    const bound = collectParamNames(extractParams(arrowNode[1]))
+    const seen = new Set()
+    const walkFree = (n) => {
+      if (typeof n === 'string') {
+        if (!bound.has(n) && !seen.has(n)) { seen.add(n); markBigintSink(n) }
+        return
+      }
+      if (!Array.isArray(n) || n[0] === 'str') return
+      for (let i = 1; i < n.length; i++) walkFree(n[i])
+    }
+    walkFree(arrowNode[2])
+  }
+  const BIGINT_COLLECTION_METHODS = new Set(['push', 'unshift', 'add', 'set'])
+  const DATAVIEW_SETBIG_RE = /^setBig(Int|Uint)64$/
+
   // === Single walk ===
   function walk(node) {
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') return  // don't cross closure boundary
+    if (op === '=>') { markBigintCapture(node); return }  // don't cross closure boundary
 
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
@@ -718,6 +749,48 @@ export function analyzeBody(body) {
         } else if (Array.isArray(c) && c[0] === '...') {
           markEscapeValue(c[1])
         }
+      }
+    }
+
+    // Round-3/4 boxed-bigint W-sinks (design §2, rows 1-3/6/8) — dyn-prop/array-
+    // elem store, Set.add/Map.set/Array.push-family, DataView.setBig64, and the
+    // ternary-nullish BIGINT carry (kind.js VT['?:'] — the one kind with no
+    // runtime tag today; round-4 gives it a real one, so its merged value needs
+    // the same box-on-write treatment as any other kind-erased sink).
+    if (ASSIGN_OPS.has(op) && Array.isArray(node[1]) &&
+        (node[1][0] === '.' || node[1][0] === '[]' || node[1][0] === '?.'))
+      markBigintSink(node[2])
+
+    if (op === '?:') {
+      const [, , a, b] = node
+      if (valTypeOf(node) === VAL.BIGINT) {
+        const nullish = (n) => n === 'undefined' || (Array.isArray(n) && ((n.length === 2 && n[0] == null && n[1] == null) || n.length === 0))
+        if (nullish(b)) markBigintSink(a)
+        else if (nullish(a)) markBigintSink(b)
+      }
+    }
+
+    if (op === '()') {
+      const callee = node[1]
+      const rawArgs = node[2]
+      const argList = Array.isArray(rawArgs) && rawArgs[0] === ',' ? rawArgs.slice(1) : (rawArgs != null ? [rawArgs] : [])
+      const method = Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string' ? callee[2] : null
+      if (method && DATAVIEW_SETBIG_RE.test(method)) {
+        for (const a of argList) markBigintSink(Array.isArray(a) && a[0] === '...' ? a[1] : a)
+      } else if (method && BIGINT_COLLECTION_METHODS.has(method)) {
+        for (const a of argList) markBigintSink(Array.isArray(a) && a[0] === '...' ? a[1] : a)
+      } else if (typeof callee === 'string' && (callee.startsWith('BigInt') || callee.startsWith('Atomics.'))) {
+        // Pure bigint-value transforms (BigInt.asIntN/asUintN) and Atomics ops
+        // (compile-time-proven receiver, design §2 W-sink 8 exemption) — not
+        // kind-erasing; leave the arithmetic-core raw path alone.
+      } else if (typeof callee !== 'string' || !ctx.func.map?.has(callee)) {
+        // Unresolvable target — external import, unclassified builtin, or
+        // computed/closure dispatch through a value — fail-closed per design
+        // §3.1: can't prove the callee's param treats this argument as
+        // BIGINT, so box it before the call. A string callee IN ctx.func.map
+        // (a known user function) is the narrow.js/emit.js call-site half
+        // (design §3.3) instead — not duplicated here.
+        for (const a of argList) markBigintSink(Array.isArray(a) && a[0] === '...' ? a[1] : a)
       }
     }
 

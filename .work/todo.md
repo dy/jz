@@ -420,6 +420,30 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  ROUND 4 STEPS 0-1 LANDED 2026-07-29 (solver fact computed, emit
+  deferred to round 5 with a precise brief): erasure diagnostic
+  rebuilt (src/compile/erasure-diag.js, JZ_DBG_BIGINT_ERASURE) --
+  sibling array-destructure repro NOW FIRES post-b09969bc (corpus
+  198 hits: call-arg 149/return 27/collection 11 [was 0]/ternary 5/
+  dataview 6; kernel graph 76 hits). SOLVER FACT: reps.js
+  bigintBoxed field; analyze.js intra-body W-sink walk (escapes
+  clone, fail-closed on unresolvable call targets); narrow.js param
+  half (destructured params fail-closed; else boxed iff any live
+  call site fails to prove BIGINT, via inferValAtSite); idempotency
+  assert 0 violations. WARM-CAP BET CONFIRMED STRUCTURALLY:
+  ptrBits/packPtrBits settle ZERO boxing (verified standalone);
+  kernel graph boxes only 10 locals + 1 param, sole layout-adjacent
+  hit is i64Hex (hex formatter). Byte-identical WAT (parity 18/18,
+  ratchet +0) because the fact is UNCONSUMED -- zero-risk increment.
+  ROUND-5 BRIEF (the real step-2 surface): once bigintBoxed(name)=
+  true EVERY read must unbox incl. the ~10 arithmetic-core sites
+  (asI64-replacing wrapper in emit.js), not just the 9 W-sinks;
+  param boxing happens at the CALLER's call-site emission (callee
+  never re-proves); + 6 R-recovery tag arms (core/number/collection/
+  interop) + round-1/2 re-applications + carrier un-curation + the
+  §4.2 erasure assert (needs the box calls to check against).
+  ESM trap for diagnostics: destructured import of a reassigned
+  array orphans it -- truncate in place (.length=0), never reassign.
   ROUND-4 PREREQUISITE LANDED 2026-07-29: array-destructure kind loss
   FIXED at root -- prepDecl's object branch had TWO kind-recovery
   mechanisms (flatObjects SRoA + ctx.schema.vars/slotVT) with NO

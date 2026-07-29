@@ -37,6 +37,7 @@ import {
   analyzeBody, unboxablePtrs, inheritPtrAliases, cseSafeLoadBases, boxedCaptures,
   analyzeStructInline, analyzeUnionInline, reanalyzeBody,
 } from './analyze.js'
+import { scanErasureSinks } from './erasure-diag.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep, REP_FIELDS } from '../reps.js'
 import { inferLocals } from './infer.js'
@@ -1281,6 +1282,10 @@ function emitFunc(func, funcFacts, programFacts) {
       // call-site fact here would undo it) so it needs the identical guard.
       const reassigned = isReassigned(body, pname)
       if (r.val && !reassigned && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
+      // bigintBoxed: same unconditional-of-reassigned seeding as analyzeFuncForEmit
+      // (design .work/bigint-round3-design.md §3.3) — usually already present via
+      // the cloneRepMap above, but re-applied here for the same reason r.val is.
+      if (r.bigintBoxed && !ctx.func.localReps?.get(pname)?.bigintBoxed) updateRep(pname, { bigintBoxed: true })
       if (r.typedCtor && !reassigned) {
         if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
         if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, r.typedCtor)
@@ -2087,6 +2092,7 @@ export default function compile(ast, profiler) {
       const facts = analyzeFuncForEmit(func, programFacts)
       funcFacts.set(func, facts)
       captureFuncInspect(func, facts, programFacts)
+      scanErasureSinks(func)
     }
   })
   // Whole-program SRoA: pick the schemas whose `Array<S>` instances use the

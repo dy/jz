@@ -81,11 +81,20 @@ export const VAL = {
  * @property {boolean} [nullable]         binding can hold null/undefined on some path
  *   (init or an assignment was a nullish literal) — suppresses the `=== null` /
  *   `=== undefined` constant-fold even when `val` is a definite non-null kind.
+ * @property {boolean} [bigintBoxed]      VAL.BIGINT binding must materialize as a real
+ *   PTR.BIGINT heap box (round-3/4 boundary boxing, .work/bigint-round3-design.md) —
+ *   false (the default/absent case) means raw i64-as-f64 forever. true iff some
+ *   reachable use is a kind-erasing W-sink: an intra-body sink (analyze.js walk —
+ *   dyn-prop/array-elem store, Set/Map, ternary-nullish merge, closure capture,
+ *   DataView.setBig/getBig64) OR an inter-function one (narrow.js fixpoint — a call
+ *   site/return position not proven uniformly BIGINT, or a destructured param,
+ *   fail-closed). Boxed at the point of write; every later read of the name unboxes
+ *   explicitly before raw i64 ops (ir.js boxBigInt/unboxBigInt).
  */
 export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
-  'typedCtor', 'wasm', 'nullable', 'neverGrown',
+  'typedCtor', 'wasm', 'nullable', 'neverGrown', 'bigintBoxed',
 ])
 
 const DBG_REPS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
