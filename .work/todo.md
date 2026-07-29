@@ -420,6 +420,24 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  BIGINT COMPOUND-ASSIGN FIXED 2026-07-29 (round-5 bug #1 extracted
+  standalone): compoundAssign never consulted kind -- n+=1n rode
+  f64.add on the carrier (silent no-op past 2^53); ++/-- identical.
+  FIX = desugaring unification: proven-BIGINT targets short-circuit
+  to the binary arms' exact IR shape (asI64/i64.op/fromI64,
+  I64_ARITH_OP table, same bigintMixReject contract); postfix value
+  recovery ((++n)-1 desugar) bypasses mix-reject for the synthesized
+  correction constant. Bitwise compounds already i64-correct but
+  MISSING mix-reject (n&=1 gave 0n vs TypeError) -- added. SIBLING
+  MAP (pre-existing, documented NOT fixed): obj.n++/arr[0]++ broken
+  via prepare's number-literal desugar (reproduces for hand-written
+  obj.n=obj.n+1; obj variant also FLAKY across repeated compiles --
+  schema-census reuse, separate serious gap); bare `return ++n`
+  exports raw f64 (narrowValResults valTypeOfWithCalls has no unary
+  BigInt cases -- SECOND independent hit on round-6 prereq (a));
+  >>> has no BigInt arm at all (should throw per spec). Pins x3 in
+  statements.js (2^62 boundaries, host-JS authority). Gates: battery
+  3119/0 (+3), parity 18/18, ratchet +0, kernel 2433/2, dbg green.
   ROUND 5 WALL 2026-07-29 (emit half attempted, tree restored byte-
   exact -- parity 18/18 + ratchet 10/10 verified at HEAD post-
   restore): the write-sound/read-proof-gated architecture HELD

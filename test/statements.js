@@ -1371,6 +1371,65 @@ test('statements: BigInt mixed ops', () => {
   throws(() => run(`export let f = () => Number(2n ** 3n)`), /exponentiation/)
 })
 
+// Compound-assign / inc-dec on a BigInt rode compoundAssign's generic f64
+// arithmetic path, which silently rounds away magnitude >= 2^53 — `n += 1n`
+// on a large accumulator was a no-op (f64.add(n, 1) === n once n exceeds f64's
+// integer precision). Fixed by gating compoundAssign (and the '++'/'--' table
+// entry) on the target's proven BIGINT kind, mirroring the binary '+'/'-'/'*'/
+// '/'/'%' operators' own i64 arms exactly (asI64 both sides, i64.<op>,
+// fromI64) — see src/compile/emit.js compoundAssign. Boundary values (2^62±1)
+// and both signs, authority: host JS BigInt semantics.
+test('statements: compound-assign on BigInt uses i64 arithmetic, not f64', () => {
+  is(run(`export let f = () => { let n = 4611686018427387903n; n += 1n; return n }`).f(), 4611686018427387903n + 1n)
+  is(run(`export let f = () => { let n = -4611686018427387903n; n -= 1n; return n }`).f(), -4611686018427387903n - 1n)
+  is(run(`export let f = () => { let n = -4611686018427387904n; n += -1n; return n }`).f(), -4611686018427387904n + -1n)
+  is(run(`export let f = () => { let n = 3000000000n; n *= 3000000000n; return n }`).f(), 3000000000n * 3000000000n)
+  is(run(`export let f = () => { let n = 9223372036854775800n; n /= 3n; return n }`).f(), 9223372036854775800n / 3n)
+  is(run(`export let f = () => { let n = 9223372036854775800n; n %= 7n; return n }`).f(), 9223372036854775800n % 7n)
+  is(run(`export let f = () => { let n = -17n; n /= 5n; return n }`).f(), -17n / 5n)          // truncates toward 0
+  is(run(`export let f = () => { let n = -17n; n %= 5n; return n }`).f(), -17n % 5n)          // sign follows dividend
+  // Complex-LHS compound-assign (obj.prop, arr[i]) is untouched by this fix — it
+  // already desugars to `name = name + val` at the '+='/etc dispatch, BEFORE ever
+  // reaching compoundAssign, so it hits the binary op's own BIGINT arm directly
+  // (that pre-existing desugar path is separately flaky under object-schema-census
+  // reuse across compiles — a distinct, out-of-scope finding — so it's not pinned here).
+  // Mix-reject: a genuinely mixed BigInt/Number compound-assign is a TypeError in
+  // JS, same as the spelled-out binary form (`statements: BigInt mixed ops` above).
+  throws(() => run(`export let f = () => { let n = 8n; n += 1; return n }`), /Cannot mix BigInt/)
+  throws(() => run(`export let f = () => { let n = 8n; n -= 1; return n }`), /Cannot mix BigInt/)
+})
+
+test('statements: ++/-- on a BigInt uses i64 arithmetic, not f64', () => {
+  // Void-position (statement) form — the common accumulator shape.
+  is(run(`export let f = () => { let n = 4611686018427387903n; n++; return n }`).f(), 4611686018427387903n + 1n)
+  is(run(`export let f = () => { let n = -4611686018427387903n; n--; return n }`).f(), -4611686018427387903n - 1n)
+  // Value-producing form, materialized through a local (the ++/-- table entry's
+  // own fix): prefix returns the NEW value, postfix returns the OLD value.
+  is(run(`export let f = () => { let n = 4611686018427387903n; let r = ++n; return r }`).f(), 4611686018427387903n + 1n)
+  is(run(`export let f = () => { let n = 4611686018427387903n; let r = n++; return r }`).f(), 4611686018427387903n)
+  is(run(`export let f = () => { let n = -4611686018427387903n; let r = n--; return r }`).f(), -4611686018427387903n)
+  // Postfix value-position recovery `(++n)-1`/`(--n)+1`: the compiler-synthesized
+  // literal 1 must never trip the BigInt/Number mix-reject guard — exercised by
+  // the "materialized" postfix cases above (their non-void '(n++)' RHS already
+  // takes this path). A BARE `return n++`/`return ++n` on a bigint local hits a
+  // separate, pre-existing, already-ledgered gap (closure-return-kind valResult
+  // inference doesn't thread local kinds through unary-shaped return tails —
+  // reproduces identically, unmodified by this fix, for plain `return -n`/
+  // `return ~n`) — not pinned here; not this fix's scope.
+})
+
+// The bitwise compound-assign family (&= |= ^= <<= >>=) already routed BigInt
+// through i64 arithmetic (a prior, separate fix) but — unlike the binary '&'/
+// '|'/etc operators — never called bigintMixReject, so a genuinely mixed
+// BigInt/Number compound-assign (`n &= 1` on a BigInt n) silently computed a
+// wrong value instead of throwing like real JS. Added the same mix-reject
+// contract the binary bitwise operators already enforce.
+test('statements: bitwise compound-assign on BigInt rejects a Number mix like the binary operator does', () => {
+  is(run(`export let f = () => { let n = 4611686018427387903n; n &= 15n; return n }`).f(), 4611686018427387903n & 15n)
+  is(run(`export let f = () => { let n = 1n; n <<= 40n; return n }`).f(), 1n << 40n)
+  throws(() => run(`export let f = () => { let n = 8n; n &= 1; return n }`), /Cannot mix BigInt/)
+})
+
 // for-of / spread over null/undefined throws (ES: "x is not iterable") — the
 // silent zero-iteration masked two real self-host miscompiles before it was
 // flipped to a throw (see __iter_arr).

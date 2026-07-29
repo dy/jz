@@ -3515,10 +3515,30 @@ function emitUnknownCalleeCall(callee, argList) {
   return typed(['call', `$${callee}`, ...emittedArgs], 'f64')
 }
 
-/** Compound assignment: read → op → write back (via readVar/writeVar). */
-function compoundAssign(name, val, f64op, i32op) {
+// Compound-assign arithmetic op → i64 op suffix. Mirrors the binary '+'/'-'/'*'/
+// '/'/'%' BIGINT arms' own wasm ops exactly — no shared table exists for these
+// elsewhere; the i64 suffixes differ from the f64/i32 ones only in '/' and '%'
+// needing the signed variant (div_s/rem_s).
+const I64_ARITH_OP = { '+': 'add', '-': 'sub', '*': 'mul', '/': 'div_s', '%': 'rem_s' }
+
+/** Compound assignment: read → op → write back (via readVar/writeVar).
+ *  `arithOp` (one of '+' '-' '*' '/' '%') is the base symbol for BigInt routing;
+ *  omit it for ops that only exist elsewhere for BigInt (this fn is never called
+ *  for '&='/etc — those have their own i64 gate right below in the dispatch table). */
+function compoundAssign(name, val, f64op, i32op, arithOp) {
   if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
   const void_ = ctx.func._expect === 'void'
+  // BigInt target/operand: route through the SAME i64 arithmetic the spelled-out
+  // binary form uses (asI64 both sides, i64.<op>, fromI64) — see e.g. binary '+'
+  // below (asI64(emit(a)), i64.add, fromI64). The f64 path further down silently
+  // rounds away magnitude ≥ 2^53 for a proven-BIGINT accumulator: `n += 1n` on a
+  // large n was a no-op (f64.add(n, 1) == n once n exceeds f64's integer precision).
+  // bigintMixReject keeps the same TypeError-on-provable-mix contract the binary
+  // op enforces (`n += 1` on a BigInt n throws in JS, not silently masks to 0).
+  if (arithOp && (valTypeOf(name) === VAL.BIGINT || valTypeOf(val) === VAL.BIGINT)) {
+    bigintMixReject(`${arithOp}=`, name, val)
+    return writeVar(name, fromI64([`i64.${I64_ARITH_OP[arithOp]}`, asI64(readVar(name)), asI64(emit(val))]), void_)
+  }
   const va = readVar(name), vb = emit(val)
   // Peel f64.convert_i32_s/u when va is i32 — typed-array integer reads wrap their
   // i32.load in convert_i32_* by default, but the i32 arithmetic path can use the
@@ -3783,20 +3803,22 @@ export const emitter = {
     const vtB = valTypeOf(val)
     if (vt === VAL.STRING || vtB === VAL.STRING) return emit(['=', name, ['+', name, val]])
     if ((vt == null || vtB == null) && ctx.core.stdlib['__str_concat']) return emit(['=', name, ['+', name, val]])
-    return compoundAssign(name, val, (a, b) => typed(['f64.add', a, b], 'f64'), (a, b) => typed(['i32.add', a, b], 'i32'))
+    return compoundAssign(name, val, (a, b) => typed(['f64.add', a, b], 'f64'), (a, b) => typed(['i32.add', a, b], 'i32'), '+')
   },
   ...Object.fromEntries([
     ['-=', 'sub'], ['*=', 'mul'], ['/=', 'div'],
   ].map(([op, fn]) => [op, (name, val) => {
-    if (typeof name !== 'string') return emit(['=', name, [op.slice(0, -1), name, val]])
+    const sym = op.slice(0, -1)
+    if (typeof name !== 'string') return emit(['=', name, [sym, name, val]])
     return compoundAssign(name, val,
       (a, b) => typed([`f64.${fn}`, a, b], 'f64'),
-      fn === 'div' ? null : (a, b) => typed([`i32.${fn}`, a, b], 'i32')
+      fn === 'div' ? null : (a, b) => typed([`i32.${fn}`, a, b], 'i32'),
+      sym
     )
   }])),
   '%=': (name, val) => {
     if (typeof name !== 'string') return emit(['=', name, ['%', name, val]])
-    return compoundAssign(name, val, f64rem, (a, b) => typed(['i32.rem_s', a, b], 'i32'))
+    return compoundAssign(name, val, f64rem, (a, b) => typed(['i32.rem_s', a, b], 'i32'), '%')
   },
   // `**` is always f64 (and has its own const-exponent lowering) — full desugar.
   '**=': (name, val) => emit(['=', name, ['**', name, val]]),
@@ -3806,8 +3828,10 @@ export const emitter = {
     ['&=', 'and'], ['|=', 'or'], ['^=', 'xor'],
     ['>>=', 'shr_s'], ['<<=', 'shl'], ['>>>=', 'shr_u'],
   ].map(([op, fn]) => [op, (name, val) => {
-    if (typeof name !== 'string') return emit(['=', name, [op.slice(0, -1), name, val]])
+    const sym = op.slice(0, -1)
+    if (typeof name !== 'string') return emit(['=', name, [sym, name, val]])
     if (valTypeOf(name) === VAL.BIGINT || valTypeOf(val) === VAL.BIGINT) {
+      bigintMixReject(sym, name, val)
       const void_ = ctx.func._expect === 'void'
       const result = fromI64([`i64.${fn}`, asI64(readVar(name)), asI64(emit(val))])
       return writeVar(name, result, void_)
@@ -3851,6 +3875,15 @@ export const emitter = {
     if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
     const void_ = ctx.func._expect === 'void'
     const v = readVar(name)
+    // BigInt local: readVar's carrier type is 'f64' (a bigint local's f64.reinterpret_i64
+    // storage — see readVar), NOT i64, so the generic `${v.type}.${fn}` below would emit
+    // f64.add/f64.sub on the raw i64 bit pattern — the same silent-rounding bug as
+    // compoundAssign's f64 path (`n++` on a large-magnitude bigint was a no-op / garbage).
+    // Same shape as the binary '+'/'-' BIGINT arm: asI64, i64.add/sub by the i64 constant
+    // 1, fromI64. `name` is always a bare identifier here (prepare only routes '.'/'[]'
+    // targets through '=' + '+'/'-', never through this table entry).
+    if (valTypeOf(name) === VAL.BIGINT)
+      return writeVar(name, fromI64([`i64.${fn}`, asI64(v), ['i64.const', 1]]), void_)
     const one = v.type === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
     return writeVar(name, typed([`${v.type}.${fn}`, v, one], v.type), void_)
   }])),
@@ -3860,6 +3893,16 @@ export const emitter = {
   // Postfix in void: (++i)-1 / (--i)+1 → just ++i / --i
   '+': (a, b) => {
     if (ctx.func._expect === 'void' && isPostfix(a, '--', b)) return emit(a, 'void')
+    // Postfix `n--` value-position recovery `(--n) + 1`: prepare wraps the '--'
+    // in an outer `+ 1` to hand back the OLD value. The literal `1` here is a
+    // compiler-synthesized correction constant, not a user-facing operand — it
+    // must never trip bigintMixReject's TypeError (that guard exists for genuine
+    // source-level BigInt/Number mixing). When n is proven BIGINT, '--' has
+    // already produced the correctly-typed i64 result (see the '++'/'--' table
+    // entry above); recover the old value with the same i64.add-by-constant
+    // shape instead of falling into the generic BIGINT-mix check below.
+    if (isPostfix(a, '--', b) && valTypeOf(a) === VAL.BIGINT)
+      return fromI64(['i64.add', asI64(emit(a)), ['i64.const', 1]])
     // A self-accumulation `a = a + …` lets the concat bump-EXTEND `a` in place (a is dead-after).
     // Read it for THIS concat, then clear so nested operands (not the accumulation target) stay fresh.
     const selfAccum = typeof a === 'string' && a === ctx.func._selfAccumConcat
@@ -3989,6 +4032,11 @@ export const emitter = {
   },
   '-': (a, b) => {
     if (ctx.func._expect === 'void' && isPostfix(a, '++', b)) return emit(a, 'void')
+    // Postfix `n++` value-position recovery `(++n) - 1` — mirror of the '+'
+    // handler's `(--n) + 1` case just above; see its comment for why this
+    // bypasses bigintMixReject (compiler-synthesized constant, not a source mix).
+    if (isPostfix(a, '++', b) && valTypeOf(a) === VAL.BIGINT)
+      return fromI64(['i64.sub', asI64(emit(a)), ['i64.const', 1]])
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('-', a, b)
       return b === undefined
