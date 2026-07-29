@@ -420,6 +420,24 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  ROUND-4 PREREQUISITE LANDED 2026-07-29: array-destructure kind loss
+  FIXED at root -- prepDecl's object branch had TWO kind-recovery
+  mechanisms (flatObjects SRoA + ctx.schema.vars/slotVT) with NO
+  array sibling (flatObjects' array gate requires constant elements
+  for a REAL closure-table hazard; schema dedupes by prop-name set,
+  arrays have no partition key -> program-wide array schema would
+  self-poison). FIX: per-binding kind-only ctx.schema.arrayVars
+  (destructure-temp name -> prepped element nodes; sound because the
+  temp is synthesized single-write non-escaping) + kind.js VT['[]']
+  consumer via staticIndexKey -> valTypeOf(elems[i]) -- GENERIC, all
+  kinds flow (BIGINT/STRING/BOOL/OBJECT pinned). SYMMETRIC pre-
+  existing gaps documented not fixed (nested patterns, defaults --
+  both forms equally; destructured PARAMS = per-index tuple param
+  inference, a larger feature; the round-4 solver treats unproven
+  param destructure as bigintBoxed=true fail-closed, so this does
+  NOT block round 4). 11 pins in test/types.js (onKernel-guarded
+  inspect sinks). Gates: battery 3116/0 (+11), dbg leg 3116/0,
+  parity 18/18, ratchet 10/10 +0, kernel leg 2430/2 pre-existing.
   ROUND 3 STEPS 1-2 EXECUTED 2026-07-29 (agent, design-mandated stop
   at the gap gate; tree restored): erasure-graph diagnostic built
   (post-emit walk, JZ_DBG_BIGINT_ERASURE) + run: corpus 179 hits

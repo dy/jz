@@ -363,6 +363,16 @@ export function reset(proto, globals, bridge) {
     find: null,
     targetStack: [],
     autoBox: null,
+    arrayVars: new Map(), // synthetic destructure-temp name → prepped array-literal
+                          // element AST nodes (the array sibling of `vars` above).
+                          // NOT content-deduped like the object schema list: arrays
+                          // have no structural identity to safely share a program-wide
+                          // id by (every same-length array literal would collide onto
+                          // one id). Populated only for compiler-synthesized decl-
+                          // destructure temps (prepare/index.js prepDecl), which are
+                          // single-write and non-escaping by construction — read by
+                          // kind.js valTypeOf's VT['[]'] to recover an element's kind
+                          // through `let [a, b] = [1, BigInt(v)]`-shaped destructuring.
     slotTypes: new Map(),  // schemaId → Array<VAL.* | null | undefined>
                            //   undefined: no observation, null: ≥2 distinct kinds, VAL.*: monomorphic
                            // Populated by collectProgramFacts on object literals;

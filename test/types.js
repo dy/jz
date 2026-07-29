@@ -627,6 +627,113 @@ test('slot-types: codegen — polymorphic slot keeps runtime str-key check on +'
 })
 
 // ============================================================================
+// Array-destructure kind preservation — `let [a, b] = [1, BigInt(v)]` used to
+// silently drop `b`'s VAL.BIGINT kind while the structurally identical object
+// form `let { b } = { b: BigInt(v) }` kept it (ctx.schema.arrayVars, the array
+// sibling of ctx.schema.vars, registered in prepare/index.js's decl-destructure
+// lowering; read by kind.js valTypeOf's VT['[]']). Direct kind pins read the
+// inferred local `val` off the public `compile(src, { inspect: true })` sink —
+// same mechanism test/types.js's runAnalyze harness exercises internally.
+// ============================================================================
+
+function inspectLocals(src, fnName = 'f') {
+  return compile(src, { wat: true, inspect: true }).inspect.functions[fnName]?.locals || {}
+}
+// BindingId totality renames locals to `name<T>f<id>_<n>` — resolve a test's
+// source spelling to the actual key (mirrors runAnalyze's resolveLocal).
+function localVal(locals, name) {
+  const keys = Object.keys(locals)
+  const key = keys.find(k => k === name) ?? keys.find(k => k.startsWith(name + T))
+  return locals[key]?.val
+}
+
+test('array-destructure kind: BIGINT element survives `let [a, b] = [1, BigInt(v)]`', () => {
+  if (onKernel()) return   // kernel: jz.compile routes through the kernel, which never returns `inspect` (see _matrix.js onKernel)
+  const locals = inspectLocals('export let f = (v) => { let [a, b] = [1, BigInt(v)]; return b }')
+  is(localVal(locals, 'a'), VAL.NUMBER)
+  is(localVal(locals, 'b'), VAL.BIGINT)
+})
+
+test('array-destructure kind: matches the object form it was asymmetric with', () => {
+  if (onKernel()) return
+  const arrLocals = inspectLocals('export let f = (v) => { let [a, b] = [1, BigInt(v)]; return b }')
+  const objLocals = inspectLocals('export let f = (v) => { let { a, b } = { a: 1, b: BigInt(v) }; return b }')
+  is(localVal(arrLocals, 'b'), localVal(objLocals, 'b'))
+  is(localVal(arrLocals, 'b'), VAL.BIGINT)
+})
+
+test('array-destructure kind: STRING element survives', () => {
+  if (onKernel()) return
+  const locals = inspectLocals(`export let f = () => { let [a, b] = [1, "hi"]; return b }`)
+  is(localVal(locals, 'b'), VAL.STRING)
+})
+
+test('array-destructure kind: BOOL element survives', () => {
+  if (onKernel()) return
+  const locals = inspectLocals('export let f = (v) => { let [a, b] = [1, v > 0]; return b }')
+  is(localVal(locals, 'b'), VAL.BOOL)
+})
+
+test('array-destructure kind: OBJECT element survives (array-of-object literal)', () => {
+  if (onKernel()) return
+  const locals = inspectLocals('export let f = (v) => { let [x] = [{ b: BigInt(v) }]; return x.b }')
+  is(localVal(locals, 'x'), VAL.OBJECT)
+})
+
+test('array-destructure kind: closure element still dispatches correctly (no elimination hazard)', () => {
+  // ctx.schema.arrayVars is kind-only (never drives SRoA elimination), so a
+  // closure-valued literal element must keep working exactly as before.
+  const { f } = run(`
+    let inc = (x) => x + 1
+    let dbl = (x) => x * 2
+    export let f = (n) => { let [g, h] = [inc, dbl]; return g(n) + h(n) }
+  `)
+  is(f(5), 16)
+})
+
+test('array-destructure kind: assignment-form (no `let`) already preserved it — regression pin', () => {
+  if (onKernel()) return
+  // `[a, b] = [1, BigInt(v)]` goes through prepare's scalarArrayDestruct, a
+  // different (already-correct) path — pinned so a future refactor can't
+  // regress it while "fixing" the decl form.
+  const locals = inspectLocals('export let f = (v) => { let a, b; [a, b] = [1, BigInt(v)]; return b }')
+  is(localVal(locals, 'b'), VAL.BIGINT)
+})
+
+test('array-destructure kind: destructured param element keeps whole-array kind (pre-existing; per-index kind is a separate, deeper gap)', () => {
+  if (onKernel()) return
+  // Documents current scope: param destructuring resolves the WHOLE array's
+  // kind from call-site union (arrayElemValType, uniform-only) — there is no
+  // per-index census for params (unlike ctx.schema.arrayVars, which only
+  // covers compiler-synthesized decl-destructure temps). A heterogeneous
+  // tuple param's individual element kinds are NOT expected to resolve here.
+  const src = `
+    let g = ([a, b]) => b
+    export let f = (v) => g([1, BigInt(v)])
+  `
+  const insp = compile(src, { wat: true, inspect: true }).inspect
+  is(insp.functions.g?.params?.[0]?.val, VAL.ARRAY)
+})
+
+test('array-destructure behavior: typeof destructured bigint element is "bigint"', () => {
+  const { f } = run('export let f = (v) => { let [a, b] = [1, BigInt(v)]; return typeof b }')
+  is(f(3), 'bigint')
+})
+
+test('array-destructure behavior: destructured bigint element supports bigint arithmetic', () => {
+  const { f } = run('export let f = (v) => { let [a, b] = [1, BigInt(v)]; return b * 2n }')
+  is(f(3n), 6n)
+})
+
+test('array-destructure behavior: destructured nullable-bigint element keeps kind + nullability', () => {
+  const src = `export let f = (v, c) => { let [a, b] = [1, c ? BigInt(v) : null]; return c ? b * 2n : -1n }`
+  if (!onKernel()) is(localVal(inspectLocals(src), 'b'), VAL.BIGINT)
+  const { f } = run(src)
+  is(f(3n, true), 6n)
+  is(f(3n, false), -1n)
+})
+
+// ============================================================================
 // TYPED narrowing — internal sig narrowing of helpers that always return a
 // typed-array of constant elemType. compile.js narrowSignatures sets
 //   sig.results = ['i32'], sig.ptrKind = VAL.TYPED, sig.ptrAux = elemAux

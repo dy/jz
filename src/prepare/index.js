@@ -1844,6 +1844,19 @@ function prepDecl(op, ...inits) {
         const p = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
         if (p.length) ctx.schema.vars.set(tmp, ctx.schema.register(p))
       }
+      // Array sibling of the schema propagation above: `tmp`'s per-index VAL
+      // kind is exactly this literal's own element expressions' kinds — read
+      // by kind.js valTypeOf (VT['[]']) off ctx.schema.arrayVars so
+      // `let [a, b] = [1, BigInt(v)]` keeps `b`'s BIGINT kind exactly like the
+      // object form keeps it (via ctx.schema.vars/slotVT + flatObjects) instead
+      // of degrading to an untyped index read. Not routed through ctx.schema's
+      // shared registry: arrays have no name-partitioned structural identity —
+      // every same-length array literal in the whole program would collide onto
+      // one shared id (unlike objects, naturally partitioned by property name),
+      // poisoning the fact almost everywhere. Sound with no write-hazard census
+      // because `tmp` is a compiler-synthesized, single-write, non-escaping
+      // carrier that only this destructure's own generated reads ever touch.
+      if (Array.isArray(normed) && normed[0] === '[') ctx.schema.arrayVars.set(tmp, normed.slice(1))
       expandDestruct(name, tmp, rest, null, inlineArrayLen(normed))
       continue
     }

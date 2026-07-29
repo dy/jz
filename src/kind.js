@@ -236,6 +236,24 @@ VT['[]'] = (args) => {
       }
     }
   }
+  // Destructure-temp array-literal slot read: `t[k]` where `t` is a compiler-
+  // synthesized decl-destructure carrier bound directly to an array literal
+  // (prepare/index.js prepDecl registers it — ctx.schema.arrayVars). Unlike the
+  // flatObjects branch above, this covers ANY element expression, not just
+  // compile-time constants (`let [a, b] = [1, BigInt(v)]`'s `BigInt(v)` isn't
+  // SRoA-flattenable, but `t` never escapes and is never reassigned, so its
+  // literal's per-index kind IS the slot's kind — the array sibling of `.`'s
+  // ctx.schema.slotVT fact for the object-destructure temp).
+  if (typeof args[0] === 'string') {
+    const elems = ctx.schema.arrayVars?.get(args[0])
+    if (elems) {
+      const k = staticIndexKey(args[1])
+      if (k != null) {
+        const i = Number(k)
+        if (Number.isInteger(i) && i >= 0 && i < elems.length && elems[i] !== undefined) return valTypeOf(elems[i])
+      }
+    }
+  }
   // Indexed read on a known typed-array receiver yields Number except for
   // BigInt64Array/BigUint64Array, whose i64 carriers must stay BigInt-typed.
   // An UNPROVEN index can read past the end (= undefined per spec), but the undef
