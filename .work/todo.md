@@ -420,6 +420,37 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  ROUND 5 WALL 2026-07-29 (emit half attempted, tree restored byte-
+  exact -- parity 18/18 + ratchet 10/10 verified at HEAD post-
+  restore): the write-sound/read-proof-gated architecture HELD
+  (boxBigInt/unboxBigInt + isProvenBoxedBigint deliberately NOT
+  fail-closed toward boxed [false "boxed" guess = bogus deref] +
+  carrierF64 as the single W-sink choke-point + readI64 arithmetic-
+  core wrapper + coerceArg both directions + R-recovery tag arms,
+  features.bigint-gated per the documented toNumF64 ring/fgather
+  precedent). FIVE REAL BUGS verified-fixed en route (re-apply in
+  round 6): (1) STANDALONE, LIVE AT HEAD: compound-assign on BigInt
+  accumulator rides generic f64 path -- 4611686018427387903n += 1n
+  is a SILENT NO-OP today (extract + fix NOW, independent of
+  boxing); (2) isProvenBoxedBigint must exclude BigInt64/U64Array
+  elements (design row-8 exemption, OOB otherwise); (3) bigint:
+  toString + BigInt.asIntN/asUintN bare asI64 on boxable receiver;
+  (4) ternary-nullish decl/assign double-boxed the '?:' emitter's
+  already-correct mixed output (null corrupted into bogus box); (5)
+  Set/Map need BIGINT content-compare/hash arms (only matters once
+  boxed). THREE ROUND-6 PREREQUISITES (open in this order): (a)
+  closure-return-kind PRE-PASS -- calleeValType can't see direct-
+  dispatched closure valResult (closures compile at module end,
+  after callers); real shape: watr's own uleb/limits `typeof v===
+  'bigint' ? v : BigInt(str)` broke watr self-host; general fix =
+  pre-scan closure return kinds, NOT per-site patches (standalone
+  inference win beyond bigint); (b) audit ternary-nullish
+  consumption as ONE mechanism (decl, param, nested chain via
+  narrow's param lattice -- test/inference.js 'callee null guard
+  stays live' still failed after local fix); (c) bisect the O0
+  kernel-parity divergence (dict O0 native 226404B vs kernel
+  225480B) that appeared late -- self-hosting correctness is the
+  constraint every round failed on; diagnose BEFORE any emit work.
   ROUND 4 STEPS 0-1 LANDED 2026-07-29 (solver fact computed, emit
   deferred to round 5 with a precise brief): erasure diagnostic
   rebuilt (src/compile/erasure-diag.js, JZ_DBG_BIGINT_ERASURE) --
