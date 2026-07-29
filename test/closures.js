@@ -1237,27 +1237,75 @@ export let f = () => { A[0] = 9; return T[0] }`)
 
 test('const fn-table: element-as-value alias and arity variance stay exact', () => {
   // `ops[1]` read as a VALUE flows to a call site the devirt'd dispatch never sees —
-  // the alias route must agree with the table route. (A dispatch-site arg lattice
-  // that trusted table bodies with the sites' numeric rows was built and REVERTED
-  // here: prepare pre-evals `ops[1]` to the closure ref before program facts see
-  // the read, so no gate could prove the tagged sites are the only callers. NOTE
-  // pre-existing, control-verified gap: a STRING arg through this alias skips the
-  // ToNumber parse — pick("3",1) gives 1, not JS's 2 — same family as the untyped
-  // generic-call coercion gaps; not pinned here.)
-  const { f } = run(`const ops = [(x, k) => (x + k) | 0, (x, k) => x ^ k]
+  // the alias route must agree with the table route. (A closure-table call-site
+  // PARAM lattice — narrow.js's direct-call lattice extended to indexed table
+  // dispatch — was built and REVERTED once already at this exact shape: it
+  // trusted the table's OWN safety notion, which only proves funcIdx IDENTITY
+  // (any bare element read is harmless there), not the stronger "no untracked
+  // caller can reach this body" a PARAM-kind proof needs. `let pick = ops[1]`
+  // is exactly that untracked path: pick reaches the identical compiled body
+  // through a call site the table's own sites never see. The current
+  // implementation (dyn-closure-tables.js scanClosureTableLatticeCandidates)
+  // disqualifies `ops`/`t` here on exactly this shape — a bare element read
+  // that isn't itself an immediate call's callee — so neither table gains the
+  // lattice below and both bodies keep their runtime dispatch. This test is
+  // now also the FAIL-OPEN pin for that scan: see the WAT assertions below.
+  // NOTE pre-existing, control-verified gap: a STRING arg through this alias
+  // skips the ToNumber parse — pick("3",1) gives 1, not JS's 2 — same family
+  // as the untyped generic-call coercion gaps; not pinned here.)
+  const src = `const ops = [(x, k) => (x + k) | 0, (x, k) => x ^ k]
 let pick = ops[1]
 export let f = (n) => {
   let h = 0
   for (let i = 0; i < n; i++) h = ops[i & 1](h, i)
   return h * 10 + pick(3, 1)
-}`)
+}`
+  const { f } = run(src)
   // loop: 0 → 0^1=1 → (1+2)|0=3 → 3^3=0; pick(3,1) = 3^1 = 2
   is(f(4), 2)
+  // FAIL-OPEN pin: `pick = ops[1]` disqualifies `ops` from the closure-table
+  // param lattice, so closure0 (the `(x+k)|0` element) keeps its generic,
+  // kind-dispatching '+' — the string-concat runtime stays reachable.
+  const w = wat(src)
+  ok(w.includes('__str_concat'), 'escaping table: closure body keeps the generic dispatch (no false proof)')
+
   // arity variance across sites of one table: an omitted trailing arg is undefined
   const { g } = run(`const t = [(x, k) => (x + k) | 0]
 export let g = () => t[0](5) + t[0](1, 2)`)
   // t[0](5): k omitted → undefined → (5 + undefined)|0 = 0; t[0](1,2) = 3
   is(g(), 3)
+})
+
+test('closure-table call-site param lattice: indexed-only dispatch proves NUMBER params', () => {
+  // The dispatch bench's exact shape (bench/dispatch/dispatch.js): a const
+  // array of capture-free arrows invoked ONLY through one data-indexed call
+  // site. No alias, no export, no non-call read of `ops` anywhere — so
+  // scanClosureTableLatticeCandidates proves the table safe, and every
+  // element's params gain the SAME numeric-args lattice tryDirectClosureCall
+  // already builds for a single directly-bound closure (emit.js
+  // recordClosureTableCallSite/resolveClosureTableParamLattice; consumed by
+  // emitClosureBody, compile/index.js). Value correctness first:
+  const src = `const ops = [(x, k) => (x + k) | 0, (x, k) => x ^ k]
+export let f = (n) => {
+  let h = 0
+  for (let i = 0; i < n; i++) h = ops[i & 1](h, i)
+  return h
+}`
+  const { f } = run(src)
+  is(f(4), 0)   // 0 → (0+0)|0=0 → 0^1=1 → (1+2)|0=3 → 3^3=0
+
+  // PIN: the proof reaches codegen — closure0's `x + k` compiles straight to
+  // a bare f64.add on the two param locals (no __to_num/kind-dispatch wrapper
+  // call in between), and the generic string-concat runtime this class was
+  // pulling in for its own sake never gets included at all. (Matched over the
+  // whole module, not one named function: closure body names are minted with
+  // the compiler's reserved-prefix sentinel (ast.js T = U+E000), not a plain
+  // "closure0" identifier, so fnBody's `$name` lookup doesn't apply here —
+  // only closure0's own arm has this exact `(f64.add $__a0 $__a1)` shape.)
+  const w = wat(src)
+  ok(/\(f64\.add\s*\(local\.get \$__a0\)\s*\(local\.get \$__a1\)\)/.test(w),
+    'closure0 param NUMBER proof: (x+k) compiles to a bare f64.add on the raw params')
+  ok(!w.includes('__str_concat'), 'closure-table dispatch: no unproven `+` pulls in the string runtime')
 })
 
 // f.call/apply/bind on a proven function binding lowers statically (prepare

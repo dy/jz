@@ -1686,18 +1686,23 @@ export function emitDecl(...inits) {
       // Module-const array of capture-free closures: record the candidate set for
       // indexed-call devirt (tryConstFnArrayDispatch). Const-only — a reassignable
       // binding could point at a different array whose elements we never saw.
-      // NOTE: a dispatch-site arg lattice (argc/numeric row merged into the element
-      // bodies' paramTypes/minArgc, killing their boxed-arg guards) was BUILT and
-      // REVERTED here: prepare-time folds erase element reads (`let p = ops[1]`
-      // pre-evals to the closure ref before program facts see the '[]' shape), so
-      // no AST-level gate can prove the tagged sites are the only callers — the
-      // trusted body then truncates raw box bits on a string arg through the alias
-      // (see test/closures.js "element-as-value alias and arity variance stay
-      // exact", which records the pre-existing string-coercion gap). Bodies keep
-      // their guards; the arm-inline + watr trunc∘convert identities still
-      // collapse the provably-int side.
+      // A prior dispatch-site arg lattice (argc/numeric row merged into the element
+      // bodies' paramTypes/minArgc) was built and reverted at this exact spot: it
+      // trusted `constFnArrays`/devirt's safety notion (any bare element READ is
+      // harmless — devirt only needs funcIdx IDENTITY), which is too weak here — a
+      // bare read `let p = ops[1]` reaches the SAME compiled body through an
+      // untracked call path, so a body trusted numeric from the table's call sites
+      // alone would skip that path's coercion. This time the resolution below is
+      // gated on the STRICTER, dedicated closureTableLatticeCandidates scan
+      // (dyn-closure-tables.js), which disqualifies any occurrence of `name` that
+      // isn't itself the immediate callee of `name[idx](...)` — a bare element read
+      // anywhere in the program fails that scan and the array is left out of the
+      // candidate set entirely (test/closures.js's alias/arity pin covers exactly
+      // this shape and must keep passing unnarrowed).
       if (val.fnElements && ctx.scope.consts?.has(name))
         (ctx.scope.constFnArrays ||= new Map()).set(name, val.fnElements)
+      if (val.fnElements && ctx.scope.closureTableLatticeCandidates?.has(name))
+        resolveClosureTableParamLattice(name, val.fnElements)
       // Const binding of a STATIC array literal: record base/len (+ the box bits as
       // identity) for optimize's foldStaticConstArrayReads. Same const-only logic.
       if (val.staticOff != null && ctx.scope.consts?.has(name))
@@ -3477,11 +3482,69 @@ const tagFnArrayDispatch = (ir, arrName) => {
   return ir
 }
 
+/** Closure-TABLE call-site PARAM lattice — evidence side. `arrName` is a
+ *  proven-safe table (ctx.scope.closureTableLatticeCandidates, dyn-closure-
+ *  tables.js): every call `arrName[idx](args)` accumulates into a per-array-
+ *  name row, exactly the reduction tryDirectClosureCall runs per bodyName
+ *  (numeric AND-join, typed-ctor agreement, min arg count) — just keyed by
+ *  the ARRAY name since the literal (and therefore its elements' bodyNames)
+ *  hasn't emitted yet at this call site's own emit time. A dynamic index
+ *  means ANY element could be the one invoked, so every call site's evidence
+ *  is conservatively applied to every element alike when the array literal
+ *  resolves it (isGlobal decl path, below). */
+function recordClosureTableCallSite(arrName, argNodes) {
+  const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
+  const n = Math.min(argNodes.length, W)
+  const evid = (ctx.scope.closureTableArgEvidence ||= new Map())
+  let e = evid.get(arrName)
+  if (!e) evid.set(arrName, e = { numRow: [], tcRow: [], minArgc: undefined })
+  for (let i = 0; i < n; i++) {
+    const arg = argNodes[i]
+    const numeric = valTypeOf(arg) === VAL.NUMBER
+    e.numRow[i] = e.numRow[i] === undefined ? numeric : (e.numRow[i] && numeric)
+    const ctor = typeof arg === 'string' && valTypeOf(arg) === VAL.TYPED ? (ctx.types.typedElem?.get(arg) ?? null) : null
+    e.tcRow[i] = e.tcRow[i] === undefined ? ctor : (e.tcRow[i] !== ctor ? null : e.tcRow[i])
+  }
+  e.minArgc = e.minArgc === undefined ? n : Math.min(e.minArgc, n)
+}
+
+/** Closure-TABLE call-site PARAM lattice — resolution side. Called once, when
+ *  the `const NAME = [...arrows]` decl itself emits (isGlobal path above) —
+ *  `elements` is module/array.js's `fnElements` (`{idx, name: bodyName}` per
+ *  element, in literal order). Merges the evidence recordClosureTableCallSite
+ *  accumulated (keyed by array name, since elements had no bodyName yet at
+ *  each call site's own emit time) into EVERY element's OWN
+ *  ctx.closure.paramTypes/paramTypedCtors/minArgc row — the same lattice
+ *  emitClosureBody (compile/index.js) already reads for a directly-bound
+ *  closure (tryDirectClosureCall). Runs strictly before these bodies compile:
+ *  buildStartFn emits the whole top-level program (this decl included) before
+ *  its own compilePendingClosures() call compiles anything registered here. */
+function resolveClosureTableParamLattice(arrName, elements) {
+  const evid = ctx.scope.closureTableArgEvidence?.get(arrName)
+  if (!evid) return
+  const pt = (ctx.closure.paramTypes ||= new Map())
+  const tc = (ctx.closure.paramTypedCtors ||= new Map())
+  const mn = (ctx.closure.minArgc ||= new Map())
+  for (const { name: bodyName } of elements) {
+    let row = pt.get(bodyName); if (!row) pt.set(bodyName, row = [])
+    let tcRow = tc.get(bodyName); if (!tcRow) tc.set(bodyName, tcRow = [])
+    for (let i = 0; i < evid.numRow.length; i++) {
+      row[i] = row[i] === undefined ? evid.numRow[i] : (row[i] && evid.numRow[i])
+      tcRow[i] = tcRow[i] === undefined ? evid.tcRow[i] : (tcRow[i] !== evid.tcRow[i] ? null : tcRow[i])
+    }
+    const prevMn = mn.get(bodyName)
+    mn.set(bodyName, prevMn === undefined ? evid.minArgc : Math.min(prevMn, evid.minArgc))
+  }
+}
+
 /** Generic closure call: callee is a value holding a NaN-boxed closure pointer.
  *  Uniform convention: fn.call packs all args into an array and trampolines. */
 function emitGenericClosureCall(callee, parsed) {
-  const dvName = (ctx.transform.optFlags & OPTF.devirtClosureTables) && !parsed.hasSpread &&
-    Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string' ? callee[1] : null
+  const arrName = !parsed.hasSpread && Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string'
+    ? callee[1] : null
+  const dvName = (ctx.transform.optFlags & OPTF.devirtClosureTables) && arrName ? arrName : null
+  if (arrName && ctx.scope.closureTableLatticeCandidates?.has(arrName))
+    recordClosureTableCallSite(arrName, parsed.normal)
   if (parsed.hasSpread) {
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
     const arrayIR = buildArrayWithSpreads(combined)

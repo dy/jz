@@ -422,6 +422,17 @@ VT['()'] = (args) => {
     const ta = valTypeOf(callee[2]), tb = valTypeOf(callee[3])
     return ta && ta === tb ? ta : null
   }
+  // Closure-TABLE dispatch `NAME[idx](args)`: the table-dispatch analog of the
+  // named-closure valResult lookup below — dyn-closure-tables.js's
+  // scanClosureTableLatticeCandidates derives this from every element's raw
+  // AST (closureBodyReturnKind) BEFORE the elements are created, so it's
+  // available here even though the elements' own closure.make hasn't run yet
+  // (a table's array literal, and therefore its elements, only emit at module
+  // end — after every caller, including a loop-carried `x = ops[code[i]](x,k)`).
+  if (Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string') {
+    const vt = ctx.scope?.closureTableValResult?.get(callee[1])
+    if (vt) return vt
+  }
   // Constructor results + user function return-type inference
   if (typeof callee === 'string') {
     if (callee === 'JSON.parse') {

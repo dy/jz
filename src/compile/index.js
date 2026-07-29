@@ -50,6 +50,7 @@ import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
 import {
   scanDynClosureTableCandidates, recordParamClosureDefault, recordDirectReturnClosure, resolveDynFnTables,
+  scanClosureTableLatticeCandidates,
 } from './dyn-closure-tables.js'
 
 // Monotonic across all functions so a CSE temp never collides (even after later
@@ -2079,6 +2080,16 @@ export default function compile(ast, profiler) {
   // for names in this set. Post-plan so the scan sees the AST shapes that will
   // actually emit.
   if ((ctx.transform.optFlags & OPTF.devirtClosureTables)) ctx.scope.dynFnTableCandidates = scanDynClosureTableCandidates(ast)
+
+  // Closure-TABLE call-site PARAM lattice (dispatch-through-array-of-closures
+  // class — dyn-closure-tables.js's scanClosureTableLatticeCandidates docs the
+  // exact safety notion, stricter than the devirt scan above): which const
+  // arrays of closures are provably invoked ONLY via `name[idx](args)`. Always
+  // on (fail-open by construction — no gate needed, mirrors the ungated direct-
+  // closure paramTypes lattice in emit.js/tryDirectClosureCall). emit.js
+  // consults this set at every `name[idx](args)` call site to decide whether
+  // to accumulate arg-kind evidence for the table's elements.
+  ctx.scope.closureTableLatticeCandidates = scanClosureTableLatticeCandidates(ast)
 
   // Inspect sink: editor hosts opt in via { inspect: true } to read inferred shapes.
   // Initialized here (post-plan) so paramReps and schema.list are stable, populated

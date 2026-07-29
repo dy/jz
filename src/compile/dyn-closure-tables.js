@@ -46,6 +46,7 @@
 import { ctx } from '../ctx.js'
 import { isReassigned } from '../ast.js'
 import { scanBindingUses, USE } from './analyze-scans.js'
+import { closureBodyReturnKind } from './flow-types.js'
 
 // A candidate table may safely appear as: a `V[idx]` READ (any key — call
 // sites read-then-call, `.length`, comparisons, whatever) or a PLAIN
@@ -102,6 +103,127 @@ export function scanDynClosureTableCandidates(ast) {
       const s = uses.get(name)
       if (s && !s.uses.every(safeTableUse)) candidates.delete(name)
     }
+  }
+  return candidates
+}
+
+const isArrowArrayLit = (rhs) =>
+  Array.isArray(rhs) && rhs[0] === '[' && rhs.length > 1 && rhs.slice(1).every(e => Array.isArray(e) && e[0] === '=>')
+
+// Strict per-name escape walk for the closure-TABLE call-site PARAM lattice
+// (below). Deliberately NOT scanBindingUses/safeTableUse: those classify
+// `V[idx]` uniformly as USE.MEMBER_R whether or not it's a call's own callee,
+// which is exactly right for devirt's funcIdx-IDENTITY proof (any read still
+// dispatches through the same runtime-checked body) but WRONG for a PARAM-KIND
+// proof — `let p = V[1]` is a MEMBER_R that reaches the identical compiled
+// body through an untracked call path (`p(...)`), and a body trusted numeric
+// from V's own call sites alone would skip that path's coercion. (This is the
+// dispatch-site lattice that was built and reverted once already — see
+// test/closures.js's alias/arity pin and the isGlobal decl comment in
+// emit.js.) Safe here means STRUCTURALLY narrower than safeTableUse: the ONLY
+// tolerated occurrence of `name` is as the receiver of `name[idx]` sitting in
+// the callee slot of an IMMEDIATELY enclosing call — everything else (a bare
+// read, `.length`, a member write, an export, a reassignment, a nested
+// closure mentioning it) disqualifies. Runs on the raw AST/body — same timing
+// scanDynClosureTableCandidates uses (post-plan, pre-emit) — so it sees
+// exactly the shapes emit will see.
+function everyUseIsIndexedCall(node, name) {
+  if (!Array.isArray(node)) return true
+  const op = node[0]
+  if (op === 'let' || op === 'const' || op === 'var') {
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (typeof d === 'string') continue                          // uninitialized decl
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+        if (!everyUseIsIndexedCall(d[2], name)) return false        // d[1] is a BINDING, not a use
+      } else if (!everyUseIsIndexedCall(d, name)) return false      // destructuring pattern — generic
+    }
+    return true
+  }
+  if (op === '()') {
+    const callee = node[1]
+    if (Array.isArray(callee) && callee[0] === '[]' && callee.length === 3 && callee[1] === name) {
+      if (!everyUseIsIndexedCall(callee[2], name)) return false     // index expression
+      const a = node[2]
+      if (a === name) return false
+      if (!everyUseIsIndexedCall(a, name)) return false             // call args
+      return true
+    }
+  }
+  for (let i = 1; i < node.length; i++) {
+    const c = node[i]
+    if (c === name) return false
+    if (!everyUseIsIndexedCall(c, name)) return false
+  }
+  return true
+}
+
+// closureBodyReturnKind's capturedKinds seed for a capture-free element — a
+// shared empty Map is safe to reuse across calls (copy-on-write: it's only
+// ever read, or cloned before a guard-derived fact is added — see its own
+// doc in flow-types.js).
+const NO_CAPTURES = new Map()
+
+/** Program-wide safety scan for the closure-TABLE call-site PARAM lattice: a
+ *  candidate is a GLOBAL `const NAME = [...]` whose every element is a plain
+ *  `=>` arrow literal (no holes/spreads/non-closure elements), and whose only
+ *  occurrences program-wide are `NAME[idx](args)` as a call's own callee. When
+ *  a name qualifies, emit.js feeds every observed call site's arg kinds into
+ *  the SAME per-element paramTypes/paramTypedCtors/minArgc lattice
+ *  tryDirectClosureCall already builds for a single directly-bound closure
+ *  (narrow.js's direct-call param lattice, extended across indexed dispatch —
+ *  the return-side analog of the closure-return-kind pre-pass, af731cf0).
+ *  Fail-open by construction: any use this walk can't prove safe leaves the
+ *  name out of the returned set, and emit.js/emitClosureBody's existing
+ *  consumer path is unchanged — an unproven param just stays boxed/dynamic,
+ *  exactly as before this pass existed. Called once, post-plan (mirrors
+ *  scanDynClosureTableCandidates's timing), from compile/index.js.
+ *
+ *  Side effect: for each surviving candidate, also derives the table's own
+ *  CALL-EXPRESSION result kind (ctx.scope.closureTableValResult) when every
+ *  element's return-tail unifies to one VAL.* kind (closureBodyReturnKind —
+ *  AST-only, no compiled form needed, so this runs before any element's
+ *  closure.make/emission — the same derivation module/function.js runs at
+ *  closure-CREATION time for a single directly-bound closure, here forced
+ *  early because a table's elements aren't created until the array LITERAL
+ *  itself emits, which is AFTER every function body — including a caller
+ *  like `x = ops[code[i]](x, k)` — has already emitted). Consumed by
+ *  kind.js's VT['()'] so a loop-carried var fed by table dispatch (dispatch
+ *  bench's `x`) is itself provably NUMBER, letting arg evidence at the NEXT
+ *  iteration's call site prove numeric too. Gated on the SAME safety-filtered
+ *  set as the param lattice — the return-kind claim doesn't strictly need
+ *  alias-safety (any caller reaching the same body gets the same kind), but
+ *  reusing one proven-const, proven-unaliased set avoids a second soundness
+ *  argument (a `let`-reassignable or mutated-elsewhere binding) for zero
+ *  benefit — every real table (dispatch.js's `ops`) already satisfies both. */
+export function scanClosureTableLatticeCandidates(ast) {
+  const topRoots = [ast, ...(ctx.module.moduleInits || [])]
+  const candidates = new Set()
+  const initRhsOf = new Map()
+  for (const root of topRoots)
+    for (const [name, s] of scanBindingUses(root))
+      if (s.decls === 1 && ctx.scope.globals?.has(name) && ctx.scope.consts?.has(name) && isArrowArrayLit(s.initRhs)) {
+        candidates.add(name)
+        initRhsOf.set(name, s.initRhs)
+      }
+  if (!candidates.size) return candidates
+
+  const bodies = [...topRoots]
+  for (const func of ctx.func.list) {
+    if (func.body && !func.raw) bodies.push(func.body)
+    if (func.defaults) for (const dv of Object.values(func.defaults)) bodies.push(dv)
+  }
+  for (const name of candidates)
+    if (!bodies.every(b => everyUseIsIndexedCall(b, name))) candidates.delete(name)
+
+  for (const name of candidates) {
+    let kind = null
+    for (const el of initRhsOf.get(name).slice(1)) {
+      const k = closureBodyReturnKind(el[2], NO_CAPTURES)
+      if (!k || (kind != null && kind !== k)) { kind = null; break }
+      kind = k
+    }
+    if (kind) (ctx.scope.closureTableValResult ||= new Map()).set(name, kind)
   }
   return candidates
 }

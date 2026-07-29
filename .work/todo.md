@@ -420,6 +420,28 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  CLOSURE-TABLE PARAM LATTICE LANDED 2026-07-29 (the dispatch lever;
+  DOUBLE WIN): dispatch size 17090B -> 1770B (10.7x -> 1.10x vs AS,
+  ~parity) AND speed 1.96x-behind-JSC -> 1.32x FASTER than JSC,
+  4.86x faster than V8. MECHANISM: (1) param lattice -- const array-
+  of-arrows whose ONLY program-wide occurrence is name[idx] in the
+  callee slot of an immediately-enclosing call => member params
+  adopt the join of per-site arg kinds (everyUseIsIndexedCall,
+  dyn-closure-tables.js: STRICTLY NARROWER than devirt's safeTableUse
+  -- funcIdx-identity proof tolerates bare element reads, param-kind
+  proof cannot [let p=ops[1] reaches the body via an untracked call];
+  exactly why the FIRST attempt e5867034 was reverted -- history
+  discovered, comment updated); (2) result-kind via
+  closureBodyReturnKind on raw element ASTs (kind.js VT['()'] table-
+  callee branch) so loop-carried x=ops[i](x,k) stays numeric.
+  Fail-open pinned (alias disqualifies whole table, __str_concat
+  returns). SIBLINGS (honest): wordcount 5.6x = DIFFERENT root (no
+  closure tables -- still open); jessie's lookup[c]=fn is an
+  IMPERATIVELY-built table (extension item: apply the same lattice
+  to dyn-closure-tables' imperative machinery); sort-comparator
+  WATCH = builtin-arg closure (different shape, no live bench case).
+  Gates: battery 3124/0 (+1), parity 18/18, ratchet +0, kernel leg
+  2437/2 pre-existing, dbg green, watr 35/35.
   DISPATCH DOUBLE-OUTLIER ROOT NAMED 2026-07-29 (in-thread after the
   dissection agent died to 4x API-500s; diagnosis salvaged+completed):
   the case's ENTIRE ~60% string/Ryu size cluster (__to_str 33%,
