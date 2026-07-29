@@ -1095,6 +1095,34 @@ function _offsetLocalStride(body, name, ind, allowAos, idxTees) {
   return found && ok ? stride : null
 }
 
+/**
+ * Every scalar local in `body` whose sole write shape is `ind << K` (or bare `ind`, K=0) —
+ * a CSE'd lane-offset alias reused across base pointers, exactly the plain (non-AoS) case
+ * `_offsetLocalStride` validates per-name. A pure function of (body, ind): tryMapReduceVectorize
+ * and tryRampMap each re-derived this identically (gather every locally-set/teed name, test each
+ * via `_offsetLocalStride`); hoisted as the LoopPlan companion to bodyFacts so it's computed once
+ * per block and consumed directly as `bl.offsetTees`. tryVectorize/tryReduceVectorize/
+ * tryMemCopyFill build their OWN offsetTees incrementally while scanning load/store addresses
+ * (a CSE'd offset must be provisionally accepted mid-scan, before its full-body soundness can be
+ * checked) and tryVectorize additionally needs AoS pixel-index awareness (idxTees) this plain
+ * derivation doesn't carry — those stay their own private incremental scans.
+ */
+function deriveOffsetTees(body, ind) {
+  const offsetTees = new Map()
+  const names = new Set()
+  const gather = (n) => {
+    if (!isArr(n)) return
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') names.add(n[1])
+    for (let i = 1; i < n.length; i++) gather(n[i])
+  }
+  for (const s of body) gather(s)
+  for (const name of names) {
+    const k = _offsetLocalStride(body, name, ind)
+    if (k != null) offsetTees.set(name, k)
+  }
+  return offsetTees
+}
+
 // True if the tree contains any branch or return — control flow that a flattened value-block
 // lift can't preserve (an early `br`/`return` out of the block changes which value is produced).
 const hasBranchOrReturn = (node) => {
@@ -1256,16 +1284,18 @@ function matchLoopBrEnd(loopNode) {
 // Per-loop-body facts every "classify each referenced local" recognizer re-derived
 // from `body` before doing its own recognizer-specific classification: `writes` (names
 // written anywhere in the body — loop-invariance/lane tests key off this),
-// `referenced` (all names touched, get or set/tee — the classification domain), and
+// `referenced` (all names touched, get or set/tee — the classification domain),
 // `hasGlobalSet` (a global write breaks the "global.get is invariant" splat, checked
-// verbatim by tryVectorize/tryStencil/tryRampMap/tryToneMap). Computed once here per
-// LoopPlan; consumers read bl.writes/bl.referenced/bl.hasGlobalSet instead of re-walking.
-function bodyFacts(body) {
+// verbatim by tryVectorize/tryStencil/tryRampMap/tryToneMap), and `offsetTees` (see
+// deriveOffsetTees — the plain `ind << K` CSE-alias table). Computed once here per
+// LoopPlan; consumers read bl.writes/bl.referenced/bl.hasGlobalSet/bl.offsetTees
+// instead of re-walking.
+function bodyFacts(body, ind) {
   const writes = new Set()
   for (const s of body) collectWrites(s, writes)
   const referenced = new Set()
   for (const s of body) collectReferencedNames(s, referenced)
-  return { writes, referenced, hasGlobalSet: body.some(hasGlobalSet) }
+  return { writes, referenced, hasGlobalSet: body.some(hasGlobalSet), offsetTees: deriveOffsetTees(body, ind) }
 }
 
 function matchBlockLoop(blockNode, opts = {}) {
@@ -1348,7 +1378,7 @@ function matchBlockLoop(blockNode, opts = {}) {
     const bound = exitInfo.bound
     const boundLocal = isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string' ? bound[1] : null
     const body = loopNode.slice(3, bodyEnd + 1)
-    return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incVar, exitInfo, bound, boundLocal, body, preamble, increments, ...bodyFacts(body) }
+    return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incVar, exitInfo, bound, boundLocal, body, preamble, increments, ...bodyFacts(body, incVar) }
   }
 
   const incIdx = endIdx - 1
@@ -1371,7 +1401,7 @@ function matchBlockLoop(blockNode, opts = {}) {
   const bound = exitInfo.bound
   const boundLocal = isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string' ? bound[1] : null
   const body = loopNode.slice(3, incIdx)
-  return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx, incVar, exitInfo, bound, boundLocal, body, preamble, ...bodyFacts(body) }
+  return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx, incVar, exitInfo, bound, boundLocal, body, preamble, ...bodyFacts(body, incVar) }
 }
 
 /**
@@ -2425,7 +2455,7 @@ function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
 // scalar remainder, continuing the accumulators. Returns {wrapper, newLocalDecls} or null.
 function tryMapReduceVectorize(bl, fnLocals, freshIdRef) {
   if (!bl || bl.preamble.length) return null
-  const { incVar, bound, boundLocal, body } = bl
+  const { incVar, bound, boundLocal, body, offsetTees } = bl
   if (!boundLocal && !isI32Const(bound)) return null
   if (body.length < 2) return null
 
@@ -2441,12 +2471,9 @@ function tryMapReduceVectorize(bl, fnLocals, freshIdRef) {
   for (const a of accSet) { if (writeCount.get(a) !== 1 || fnLocals.get(a) !== 'f64') return null }
 
   // Address tees: locals that equal `ind << K`. f64 loads must be stride-8 (K=3) so one
-  // f64x2.load (16 bytes) covers iterations j and j+1 — consecutive elements.
-  const offsetTees = new Map()
-  const allNames = new Set()
-  const gather = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') allNames.add(n[1]); for (let i = 1; i < n.length; i++) gather(n[i]) }
-  for (const s of body) gather(s)
-  for (const name of allNames) { const k = _offsetLocalStride(body, name, incVar); if (k != null) offsetTees.set(name, k) }
+  // f64x2.load (16 bytes) covers iterations j and j+1 — consecutive elements. LoopPlan fact
+  // (bl.offsetTees, see deriveOffsetTees) — computed once at the dispatch, was a private
+  // per-name gather+derive scan here (identical to tryRampMap's, now also plan-fed).
 
   // f64x2 lift: load → f64x2.load (2 consecutive), const/invariant → splat, a lane local
   // → its f64x2 temp, sub/mul/add/div → f64x2.OP, sqrt → f64x2.sqrt. Anything else bails.
@@ -3854,7 +3881,7 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   // increment shares the IV's name" check below is tryRampMap's own residual.
   const bl = matchBlockLoop(blockNode, { multiInc: true })
   if (!bl) return null
-  const { incVar: ivName, bound, boundLocal, body, increments, hasGlobalSet: blHasGlobalSet, writes: blWrites, referenced: blReferenced } = bl
+  const { incVar: ivName, bound, boundLocal, body, increments, hasGlobalSet: blHasGlobalSet, writes: blWrites, referenced: blReferenced, offsetTees } = bl
   if (!boundLocal && !isI32Const(bound)) return null
   if (!body.length) return null
   if (blHasGlobalSet) return null
@@ -3884,12 +3911,9 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   // CSE'd lane offsets: a local written ONLY as `i << K` (or bare `i`) is the
   // shared offset the IV stage threads across base pointers (src[i], dst[i],
   // out[i] all reuse one `(local.tee $p (local.get i))`). Resolve them so the
-  // load/store address matchers accept the `(local.get $p)` reuses.
-  const offsetTees = new Map()
-  const allNames = new Set()
-  const gatherNames = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') allNames.add(n[1]); for (let i = 1; i < n.length; i++) gatherNames(n[i]) }
-  for (const s of body) gatherNames(s)
-  for (const name of allNames) { const k = _offsetLocalStride(body, name, ivName); if (k != null) offsetTees.set(name, k) }
+  // load/store address matchers accept the `(local.get $p)` reuses. LoopPlan fact
+  // (bl.offsetTees, see deriveOffsetTees) — was a private per-name gather+derive
+  // scan here, identical to tryMapReduceVectorize's (now also plan-fed).
 
   // CSE'd FULL lane address: an in-place map `a[i] = f(a[i])` shares one `(local.tee $A
   // (i32.add base i))` between the load and the store, reused as `(local.get $A)`. Without

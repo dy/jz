@@ -392,6 +392,34 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   static/raw. Kills the kernel warm cost structurally (layout.js
   chains never box) AND the accumulator-loop leak for local chains
   -- general engine lever, not input tuning.
+  TARGETPROFILE COMPLETE 2026-07-29 (audit item 6 CLOSED): math.js's
+  3 host checks all gated ONE decision -- Math.random entropy shim
+  (wasi random_get vs env.rngSeed import) = exactly wasiShims'
+  documented rationale; migrated via crypto.js's established spot
+  pattern (const wasi = ctx.transform.targetProfile.wasiShims). Zero
+  live `transform.host === ` checks remain in src/+module/ (grep-
+  verified; survivors are the profile constructor + comments).
+  LATENT HARNESS GAP surfaced+fixed: test/types.js runAnalyze called
+  raw reset() bypassing beginSession -> targetProfile stayed null;
+  now seeds targetProfileFor(host) post-reset (the sanctioned
+  test/wasi.js pattern). Gates: battery 3105/0, wasi leg 3105/0,
+  parity 18/18, ratchet 10/10 +0, kernel leg 2419/2 pre-existing.
+  LOOPPLAN BODY-ANALYSIS SLICE 6 2026-07-29 (audit item 8 advanced):
+  deriveOffsetTees(body, ind) hoisted beside bodyFacts as bl.offset
+  Tees -- the exhaustive CSE'd lane-offset-alias derivation that
+  tryMapReduceVectorize and tryRampMap re-derived byte-identically
+  (-24 duplicated lines). JUSTIFIED-PRIVATE audit recorded in the
+  function doc: tryVectorize/tryReduceVectorize/tryMemCopyFill build
+  offsetTees INCREMENTALLY mid-scan (provisional acceptance is load-
+  bearing) + tryVectorize needs AoS idxTees; tryStencil's ivCoeff
+  algebra richer; localKind classification bespoke per recognizer.
+  Byte-identity: 177/180 bench compiles x O0/O2/O3, 0 WAT diffs (3
+  skips identical pre/post). Gates: battery 3105/0, parity 18/18,
+  ratchet 10/10 +0, optimizer 213/213, kernel leg 2419/2 pre-
+  existing. Remaining item-8 vision: candidate-proposal protocol +
+  shared affine/alias/dependence model (the incremental-scan trio is
+  the natural next unification IF a provisional-acceptance-aware
+  shared walk is designed -- do not force it).
   ROUND 2 WALL 2026-07-28 (honest stop, tree restored to 32306df8):
   boundary boxing is CONCEPTUALLY INCOMPLETE as specified -- the
   unbox fallback (runtime tag check on kind-UNPROVEN operands) is
