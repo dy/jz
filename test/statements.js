@@ -1411,11 +1411,39 @@ test('statements: ++/-- on a BigInt uses i64 arithmetic, not f64', () => {
   // Postfix value-position recovery `(++n)-1`/`(--n)+1`: the compiler-synthesized
   // literal 1 must never trip the BigInt/Number mix-reject guard — exercised by
   // the "materialized" postfix cases above (their non-void '(n++)' RHS already
-  // takes this path). A BARE `return n++`/`return ++n` on a bigint local hits a
-  // separate, pre-existing, already-ledgered gap (closure-return-kind valResult
-  // inference doesn't thread local kinds through unary-shaped return tails —
-  // reproduces identically, unmodified by this fix, for plain `return -n`/
-  // `return ~n`) — not pinned here; not this fix's scope.
+  // takes this path). A BARE `return n++`/`return ++n` on a bigint local used to
+  // hit a separate, then-ledgered gap (closure-return-kind valResult inference
+  // didn't thread local kinds through unary-shaped return tails, for `-n`/`~n`
+  // too) — now fixed, see 'return-kind inference: unary BigInt family' below.
+})
+
+// Round-6 prereq (a) sibling, second independent hit: narrowValResults'
+// valTypeOfWithCalls (src/compile/narrow.js) had BigInt-aware cases for
+// + ?: && || () but none for the unary family (u- ~ ++ --) — a bare `return
+// ++n` on a proven-BIGINT local exported raw f64 (numericUnaryVT's own
+// recursion into a bare identifier always hits the GLOBAL lookupValType,
+// which has nothing to say about a local before narrow.js's per-function reps
+// are live). Fixed at the root in kind.js's new valTypeOfWithLocals, shared by
+// narrowValResults AND the closure return-kind pre-pass (module/function.js).
+// A sibling gap surfaced by the SAME fix, in a DIFFERENT phase: exprType's
+// (src/type.js) bitwise-ops i32-narrowing gate used the identical locals-blind
+// valTypeOf(expr) BigInt check — left uncorrected, a proven-BIGINT local's
+// `~`/`&`/etc. return tail narrowed the function's WASM result to i32 while
+// narrowValResults (this fix) correctly claimed BIGINT for the same tail, a
+// WAT-validation crash (the two phases' facts about one expression must
+// agree). Fixed by threading analyzeBody's valTypes into exprType's optional
+// 3rd param.
+test('statements: return-kind inference: unary BigInt family (u- ~ ++ --) proves through a local', () => {
+  is(run(`export let f = () => { let n = 4611686018427387903n; return ++n }`).f(), 4611686018427387903n + 1n)
+  is(run(`export let f = () => { let n = -4611686018427387903n; return --n }`).f(), -4611686018427387903n - 1n)
+  is(run(`export let f = () => { let n = 4611686018427387903n; return -n }`).f(), -4611686018427387903n)
+  is(run(`export let f = () => { let n = 4611686018427387903n; return ~n }`).f(), ~4611686018427387903n)
+  // The compound-assign report's own repro, unmodified: bare `return ++n`.
+  is(run(`export let f = () => { let n = 8n; return ++n }`).f(), 9n)
+  // Sound: a plain NUMBER local's unary return tail is UNCHANGED (still a
+  // Number, not accidentally promoted to BigInt).
+  is(run(`export let f = () => { let n = 5; return ~n }`).f(), ~5)
+  is(run(`export let f = () => { let n = 5; return -n }`).f(), -5)
 })
 
 // The bitwise compound-assign family (&= |= ^= <<= >>=) already routed BigInt

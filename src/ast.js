@@ -29,6 +29,38 @@ export const TYPEOF = Object.freeze(Object.assign(Object.create(null), {
   number: -1, string: -2, undefined: -3, boolean: -4, object: -5, 'function': -6, bigint: -7,
 }))
 
+/** Match a `typeof name <op> lit` predicate. Returns `{ name, code, eq }` —
+ *  `name` is the typeof's operand binding, `code` is either the raw type
+ *  string ('string'|'number'|'function'|…) or the prepare-normalized typeof
+ *  code (TYPEOF, above), and `eq` is true for `==`/`===` (false for `!=`/
+ *  `!==`). Returns null when the node isn't a typeof predicate.
+ *
+ *  Two consumers — src/compile/infer.js's notStringEvidence (body-walk
+ *  evidence) and src/compile/flow-types.js's extractRefinements/
+ *  closureBodyReturnKind (flow-sensitive refinement) — used to re-implement
+ *  this independently with diverging tolerances for the literal form (raw
+ *  `'string'` vs prepare-normalized typeof-code `-2`). Lives here (not in
+ *  infer.js, its original home) because it's a pure AST-shape predicate with
+ *  no ctx/reps dependency, and module/function.js's closure return-kind
+ *  pre-pass needs it through flow-types.js without pulling in infer.js's own
+ *  autoload.js import — that edge closed a real cycle (module/function.js →
+ *  flow-types.js → infer.js → autoload.js → module/index.js →
+ *  module/function.js). ast.js is the shared cycle-free leaf both sides
+ *  already import. */
+export function typeofPredicate(node) {
+  if (!Array.isArray(node)) return null
+  const op = node[0]
+  if (op !== '==' && op !== '===' && op !== '!=' && op !== '!==') return null
+  const a = node[1], b = node[2]
+  const typeofSide = Array.isArray(a) && a[0] === 'typeof' && typeof a[1] === 'string' ? a
+    : Array.isArray(b) && b[0] === 'typeof' && typeof b[1] === 'string' ? b : null
+  if (!typeofSide) return null
+  const litSide = typeofSide === a ? b : a
+  const code = Array.isArray(litSide) && litSide[0] == null ? litSide[1] : null
+  if (code == null) return null
+  return { name: typeofSide[1], code, eq: op === '==' || op === '===' }
+}
+
 // === Numeric range (shared by analyze + ir) ===
 
 export const I32_MIN = -2147483648

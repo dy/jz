@@ -1613,3 +1613,86 @@ test('convergence caps: 150-deep self-referential schema domino compiles (domain
   ok(!error, `150-deep schema domino must not hit an internal convergence error: ${error?.message}`)
   is(result, 1, 'domino still resolves to the seed value')
 })
+
+// ============================================================================
+// Round-6 prereq (a): closure return-kind pre-pass.
+//
+// Closures compile at module end, after their callers, so calleeValType
+// (kind-traits.js) couldn't see a direct-dispatched closure's return kind —
+// closureBodyReturnKind (src/compile/flow-types.js) closes that gap: a pure
+// AST-in/VAL-out derivation run from module/function.js's ctx.closure.make
+// (the closure literal must be bound to something before it can be called, so
+// this always finishes before any later call site in program order),
+// populating ctx.closure.valResult for calleeValType to read.
+//
+// NOT shipped this round (deliberately, not an oversight): a same-body
+// extension — narrowValResults (Phase E2, "planning" — runs even before any
+// closure exists) resolving `return parse(v)` (watr's own uleb/limits shape,
+// `parse` a local closure declared earlier in the SAME enclosing function)
+// through this exact derivation, so the ENCLOSING function's own valResult
+// sees through the call too. It round-tripped correctly native but diverged
+// self-hosted (JZ_TEST_TARGET=jz.wasm) specifically when a typeof guard was
+// involved — reproduced identically across two independent implementations,
+// so left OUT rather than shipped uncertain (self-hosting correctness is
+// load-bearing here — see narrow.js's narrowValResults doc for the trail).
+// `return parse(v)` as a function's OWN tail therefore still fails open
+// (unproven, same as any not-yet-provable callee) — pinned below.
+// ============================================================================
+
+test('closure return-kind: direct-dispatched closure call skips __to_num at the call site (typeof-guarded)', () => {
+  // watr's own uleb/limits shape: a local closure whose return is guarded by
+  // `typeof x === 'number'` (x's own static kind is unprovable — it's a bare
+  // param) with an unconditional fallthrough of the same kind. Consumed at an
+  // ARITHMETIC call site (not the enclosing function's own return tail — see
+  // the module note above) — the case ctx.closure.valResult actually covers,
+  // verified both native and self-hosted (JZ_TEST_TARGET=jz.wasm) before landing.
+  const src = `
+    export let f = (v) => {
+      let parse = (x) => {
+        if (typeof x === 'number') return x
+        return 0
+      }
+      return parse(v) + parse(v)
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: 0 })
+  ok(!wat.includes('call_indirect'), 'parse(v) is direct-dispatched (call $closureN), not call_indirect')
+  ok(!wat.includes('__to_num'), 'proven-NUMBER closure result skips the __to_num wrapper at the call site')
+  is(run(src).f(3), 6)
+})
+
+test('closure return-kind: BIGINT proven through an if/typeof-guarded closure at a call site', () => {
+  // Same shape, BIGINT kind — the one VAL kind with no runtime NaN-box tag,
+  // so proving it (vs. falling back to the generic dynamic path) is the
+  // difference between i64 arithmetic and a corrupted f64 round-trip.
+  const src = `
+    export let f = (v) => {
+      let parse = (x) => {
+        if (typeof x === 'bigint') return x
+        return BigInt(x)
+      }
+      let a = parse(v)
+      return a + 1n
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: 0 })
+  ok(!wat.includes('call_indirect'), 'parse(v) is direct-dispatched, not call_indirect')
+  const { f } = run(src)
+  is(f(5n), 6n, 'proven-bigint arm proves through the guard')
+  is(f(5), 6n, 'fallthrough BigInt(...) arm proves the same')
+})
+
+test('closure return-kind: fails open when the return depends on an unsettled capture', () => {
+  // `outer` is a plain exported param with no proven VAL kind (captured-kind
+  // seeding only ever sees what lookupValType already settled — a bare param
+  // never has an entry). `inner`'s bare `return outer` must NOT claim any
+  // kind. Proven behaviourally, not just by absence-of-crash: `+` after an
+  // unclaimed closure call must still dispatch per the ACTUAL runtime value
+  // (numeric add vs string concat) — a wrong NUMBER claim here would corrupt
+  // the string case (raw f64 add on a string pointer), and fail-open is
+  // exactly what keeps both cases correct through the ordinary polymorphic path.
+  const { f: fNum } = run(`export let f = (outer) => { let inner = () => outer; return inner() + 1 }`)
+  const { f: fStr } = run(`export let f = (outer) => { let inner = () => outer; return inner() + 'z' }`)
+  is(fNum(5), 6, 'numeric capture still adds correctly with no kind claim')
+  is(fStr('hi'), 'hiz', 'string capture still concatenates correctly with no kind claim — proves no false NUMBER claim was made')
+})

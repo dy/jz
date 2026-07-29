@@ -108,11 +108,20 @@ export function calleeValType(callee, _args, ctx) {
   if (callee.startsWith('math.')) return VAL.NUMBER
   const hostVT = ctx.module.hostImportValTypes?.get(callee)
   if (hostVT) return hostVT
-  // A direct-dispatched local closure proven to return a plain number: its f64 result
-  // is never a NaN-boxed pointer, so `toNumF64` can skip the `__to_num` wrapper at the
-  // call site. (Populated by closure.make as bodies are emitted, in decl order.)
+  // A direct-dispatched local closure whose return-tail kind is statically
+  // provable: round-6 prereq (a), ctx.closure.valResult — populated by
+  // ctx.closure.make's return-kind pre-scan (module/function.js) from the raw
+  // AST at closure-CREATION time, always before any later call site in
+  // program order (closure BODIES only compile at module end, after their
+  // callers — this is why calleeValType couldn't otherwise see it). A NUMBER
+  // claim here lets toNumF64 skip the `__to_num` wrapper at the call site,
+  // same as any other kind unlocks its own call-site fast path (STRING skips
+  // the polymorphic concat dispatch, BIGINT keeps i64 arithmetic unboxed…).
   const closBody = ctx.func.directClosures?.get(callee)
-  if (closBody && ctx.closure?.numericReturn?.has(closBody)) return VAL.NUMBER
+  if (closBody) {
+    const vt = ctx.closure?.valResult?.get(closBody)
+    if (vt) return vt
+  }
   const f = ctx.func.map?.get(callee)
   if (f?.valResult) return f.valResult
   return null

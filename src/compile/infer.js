@@ -44,7 +44,7 @@
  */
 
 import { ctx } from '../ctx.js'
-import { collectParamNames, ASSIGN_OPS } from '../ast.js'
+import { collectParamNames, ASSIGN_OPS, typeofPredicate } from '../ast.js'
 import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
 import { staticObjectProps, staticArrayElems } from '../static.js'
 import { isNullishLit } from '../ir.js'
@@ -57,32 +57,12 @@ import { VAL, updateRep, updateGlobalRep } from '../reps.js'
 // === typeof predicate helper ==============================================
 //
 // `typeof name == lit` / `!= lit` is the canonical narrowing predicate.
-// Two consumers — body-walk evidence (`notStringEvidence` below) and
-// flow-sensitive refinement (`extractRefinements` in src/emit.js) — used to
-// re-implement the recognizer independently with diverging tolerances for
-// the literal form (raw `'string'` vs prepare-normalized typeof-code `-2`).
-// The helper accepts both, so callers stop caring about the normalization
-// boundary.
-
-/** Match a `typeof name <op> lit` predicate. Returns `{ name, code, eq }` —
- *  `name` is the typeof's operand binding, `code` is either the raw type
- *  string ('string'|'number'|'function'|…) or the prepare-normalized typeof
- *  code (TYPEOF in ast.js), and `eq` is true
- *  for `==`/`===` (false for `!=`/`!==`). Returns null when the node isn't a
- *  typeof predicate. */
-export function typeofPredicate(node) {
-  if (!Array.isArray(node)) return null
-  const op = node[0]
-  if (op !== '==' && op !== '===' && op !== '!=' && op !== '!==') return null
-  const a = node[1], b = node[2]
-  const typeofSide = Array.isArray(a) && a[0] === 'typeof' && typeof a[1] === 'string' ? a
-    : Array.isArray(b) && b[0] === 'typeof' && typeof b[1] === 'string' ? b : null
-  if (!typeofSide) return null
-  const litSide = typeofSide === a ? b : a
-  const code = Array.isArray(litSide) && litSide[0] == null ? litSide[1] : null
-  if (code == null) return null
-  return { name: typeofSide[1], code, eq: op === '==' || op === '===' }
-}
+// typeofPredicate now lives in ast.js (a cycle-free leaf both this file and
+// flow-types.js/module/function.js need — moving it there closed a real
+// cycle: module/function.js → flow-types.js → infer.js → autoload.js →
+// module/index.js → module/function.js) — re-exported (via the import above)
+// so existing importers of infer.js keep working unchanged.
+export { typeofPredicate }
 
 // === paramReps lattice =====================================================
 //

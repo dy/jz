@@ -19,7 +19,7 @@ import { scanBoundedLoops, exprType, typedElemCtor, typedStaticLen, intLevelMap 
 import { typedElemAux, ctorFromElemAux } from '../../layout.js'
 import { observeProgramSlots } from './program-facts.js'
 import { noteParamVerdict } from './bigint-boxed-stats.js'
-import { valTypeOf } from '../kind.js'
+import { valTypeOf, valTypeOfWithLocals } from '../kind.js'
 import { typedCtorElemValType } from '../kind-traits.js'
 import { VAL, updateRep } from '../reps.js'
 import {
@@ -506,7 +506,15 @@ function narrowI32Results(funcs) {
   const evalTails = (func, body, exprs) => {
     const savedCurrent = ctx.func.current
     ctx.func.current = func.sig
-    const locals = isBlockBody(body) ? analyzeBody(body).locals : new Map()
+    // valTypes: analyzeBody's VAL-kind facts, threaded into exprType's bitwise-ops
+    // BigInt gate (src/type.js) — see that gate's comment. Without it a proven-
+    // BIGINT local's `~n`/`n & mask` return tail silently narrowed the WASM
+    // result to i32 here while E2 (narrowValResults, below) correctly claimed
+    // BIGINT for the same tail — a WAT-validation crash (the two phases'
+    // per-tail facts about the same expression must agree).
+    const bodyFacts = isBlockBody(body) ? analyzeBody(body) : null
+    const locals = bodyFacts ? bodyFacts.locals : new Map()
+    const valTypes = bodyFacts?.valTypes
     for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
     // Seed the typedElem overlay with this func's TYPED-pointer params so a return tail
     // reading a typed-array element — `return vals[h]`, vals an Int32Array param (dict's
@@ -523,8 +531,8 @@ function narrowI32Results(funcs) {
       }
     }
     if (te) ctx.types.typedElem = te
-    const allV128 = exprs.every(e => exprType(e, locals) === 'v128')
-    const allI32 = !allV128 && exprs.every(e => exprType(e, locals) === 'i32')
+    const allV128 = exprs.every(e => exprType(e, locals, valTypes) === 'v128')
+    const allI32 = !allV128 && exprs.every(e => exprType(e, locals, valTypes) === 'i32')
     if (te) ctx.types.typedElem = savedTE
     const r = { allV128, allI32, anyUnsigned: exprs.some(isUnsignedTail), allUnsigned: exprs.every(isUnsignedTail) }
     ctx.func.current = savedCurrent
@@ -587,37 +595,39 @@ function narrowI32Results(funcs) {
  * as numeric narrowing.
  */
 function narrowValResults(funcs) {
-  const valTypeOfWithCalls = (expr, localValTypes) => {
-    if (expr == null) return null
-    if (typeof expr === 'string') return localValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
-    if (!Array.isArray(expr)) return valTypeOf(expr)
-    const [op, ...args] = expr
-    if (op === '()' && typeof args[0] === 'string') {
-      const f = ctx.func.map.get(args[0])
-      if (f?.valResult) return f.valResult
-    }
-    if (op === '?:') {
-      const a = valTypeOfWithCalls(args[1], localValTypes), b = valTypeOfWithCalls(args[2], localValTypes)
-      return a && a === b ? a : null
-    }
-    if (op === '&&' || op === '||') {
-      const a = valTypeOfWithCalls(args[0], localValTypes), b = valTypeOfWithCalls(args[1], localValTypes)
-      return a && a === b ? a : null
-    }
-    // SOUND `+` at the result-stamping boundary: VT['+'] is optimistic
-    // (unknown side → NUMBER — load-bearing for local inference), but a
-    // func.valResult claim crosses into call-site compare dispatch, where a
-    // misproved NUMBER on a string-building helper (watr's `hex + hex` _sb)
-    // made `'7fff…' < '8000…'` compare raw NaN-boxed pointers (always false),
-    // folding watr-in-kernel's i64.lt_s(-1,0) to 0. Unknown side → no claim.
-    if (op === '+') {
-      const a = valTypeOfWithCalls(args[0], localValTypes), b = valTypeOfWithCalls(args[1], localValTypes)
-      if (a === VAL.STRING || b === VAL.STRING) return VAL.STRING
-      if (a == null || b == null) return null
-      return valTypeOf(expr)
-    }
-    return valTypeOf(expr)
-  }
+  // Delegates to kind.js's shared local-aware resolver (valTypeOfWithLocals) —
+  // round-6 prereq (a): a plain valTypeOf(['++','n']) can't see a LOCAL's kind
+  // (numericUnaryVT's own recursion always hits the GLOBAL lookupValType, never
+  // this function's localValTypes/globalValTypes), which left `return ++n` on a
+  // proven-BIGINT local exporting raw f64. The '+'/'?:'/'&&'/'||' cases (and the
+  // SOUND-`+` rule below) used to be duplicated here; they now live once in
+  // valTypeOfWithLocals. SOUND `+` at the result-stamping boundary: VT['+'] is
+  // optimistic (unknown side → NUMBER — load-bearing for local inference), but
+  // a func.valResult claim crosses into call-site compare dispatch, where a
+  // misproved NUMBER on a string-building helper (watr's `hex + hex` _sb) made
+  // `'7fff…' < '8000…'` compare raw NaN-boxed pointers (always false), folding
+  // watr-in-kernel's i64.lt_s(-1,0) to 0. Unknown side → no claim. Named-
+  // function call results (`f?.valResult`) route through valTypeOf(expr)'s own
+  // VT['()'] → calleeValType, same as before this delegation.
+  //
+  // NOT wired here (deliberately, after diagnosis): a same-body local-closure
+  // extension — resolving `return parse(v)` (watr's uleb/limits shape) through
+  // closureBodyReturnKind (flow-types.js) the moment a typeof-guard is
+  // involved — round-tripped correctly NATIVE but diverged self-hosted
+  // (JZ_TEST_TARGET=jz.wasm): narrowing to "typeof-refined closure return-kind
+  // feeding an ENCLOSING function's own valResult" reproduced across two
+  // independent closureBodyReturnKind implementations (extractRefinements-
+  // driven and a hand-rolled typeofPredicate walk; shared-mutable-state and
+  // pure-functional site collection) — same divergence both times, so it isn't
+  // this function's own algorithm. Left OUT rather than shipped uncertain:
+  // ctx.closure.valResult (module/function.js + kind-traits.js calleeValType)
+  // is the part verified value-correct self-hosted (a call-site __to_num skip
+  // through the identical typeof-guarded closure round-trips right under
+  // kernel) and is what actually ships. A same-body `let parse = …; return
+  // parse(v)` tail simply stays unproven here, same as any other call whose
+  // callee valResult isn't yet knowable at planning time — fails open.
+  const valTypeOfWithCalls = (expr, localValTypes) =>
+    valTypeOfWithLocals(expr, name => localValTypes?.get(name) || ctx.scope.globalValTypes?.get(name) || null)
   let changed = true
   while (changed) {
     changed = false

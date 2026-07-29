@@ -464,8 +464,16 @@ export function reset(proto, globals, bridge) {
     bodies: null,
     make: null,
     call: null,
-    numericReturn: null,  // Set<closureBodyName> proven to return a plain number — lets
-                          // callers skip the __to_num result coercion (function.js seeds it).
+    // Map<closureBodyName, VAL.*> — round-6 prereq (a): the closure return-kind
+    // pre-pass (module/function.js, ctx.closure.make) derives each closure's
+    // unified return-tail VAL kind from its raw AST at CREATION time (always
+    // before any later call site in program order — closure bodies themselves
+    // only compile at module end, after their callers, so calleeValType
+    // couldn't otherwise see this). Subsumes the old numericReturn Set (VAL.
+    // NUMBER was the only kind it tracked) — calleeValType (kind-traits.js)
+    // reads this generically, letting a direct-dispatched call to ANY kind of
+    // closure (not just numeric ones) skip its own re-derivation.
+    valResult: null,
     paramTypes: null,     // Map<closureBodyName, bool[]> — per-param "every direct call site
                           // passed a number" lattice; emitClosureBody marks such params
                           // VAL.NUMBER so their body uses skip __to_num (tryDirectClosureCall seeds).

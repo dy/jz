@@ -15,37 +15,18 @@ import { typed, asF64, asI32, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_N
 import { emit } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze.js'
+// Round-6 prereq (a), closure return-kind pre-pass: closureBodyReturnKind is
+// the shared AST-only derivation (src/compile/flow-types.js — see its doc).
+// This module is its EMISSION-time caller: ctx.closure.make runs when the
+// closure literal itself is created, always before any later direct call
+// site in program order, so the fact is ready exactly when calleeValType
+// (kind-traits.js) needs it. narrow.js's narrowValResults is the OTHER
+// caller — the PLANNING-time one, for a function that directly returns a
+// call to its OWN freshly-declared local closure (watr's uleb/limits shape).
+import { closureBodyReturnKind } from '../src/compile/flow-types.js'
 import { T } from '../src/ast.js'
 import { lookupValType, repOf, VAL } from '../src/reps.js'
-import { valTypeOf } from '../src/kind.js'
 import { PTR, LAYOUT, inc, err, declGlobal } from '../src/ctx.js'
-
-// A closure whose every return value is provably a plain number lets each caller
-// skip the `__to_num` result coercion — the dominant per-sample cost in closure-heavy
-// numeric kernels (floatbeats etc.). The check is structural at make time: arithmetic /
-// bitwise / `|0` / math.* returns resolve via `valTypeOf`, as do chained numeric-closure
-// calls (`g(x)=>…; f()=>g(…)` — `g`'s entry is already set when the outer `f` is made,
-// since decls emit in order). An unprovable shape (polymorphic `a[i]`, a value-returning
-// fall-through, a bare local that could collide with a parent binding) stays boxed.
-const closureReturnExprs = (body) => {
-  if (!Array.isArray(body) || body[0] !== '{}') return [body]   // expression-bodied arrow
-  const stmts = Array.isArray(body[1]) && body[1][0] === ';' ? body[1].slice(1) : [body[1]]
-  const last = stmts[stmts.length - 1]
-  if (!Array.isArray(last) || last[0] !== 'return') return null  // may fall off the end with undefined
-  const rets = []
-  let ok = true
-  const walk = n => {
-    if (!ok || !Array.isArray(n) || n[0] === '=>') return        // don't descend into nested closures
-    if (n[0] === 'return') { if (n.length < 2) ok = false; else rets.push(n[1]); return }
-    for (let i = 1; i < n.length; i++) walk(n[i])
-  }
-  for (const s of stmts) walk(s)
-  return ok ? rets : null
-}
-const returnsPlainNumber = (body) => {
-  const rets = closureReturnExprs(body)
-  return !!rets && rets.length > 0 && rets.every(e => valTypeOf(e) === VAL.NUMBER)
-}
 
 const intConstExpr = (node) => {
   if (typeof node === 'number' && Number.isInteger(node)) return node
@@ -187,7 +168,8 @@ export default (ctx) => {
       ...(captureTypedElems.size && { typedElems: captureTypedElems }),
       ...(captureDirectClosures.size && { directClosures: captureDirectClosures }) }
     ctx.closure.bodies.push(bodyFn)
-    if (returnsPlainNumber(body)) (ctx.closure.numericReturn ||= new Set()).add(fnName)
+    const returnKind = closureBodyReturnKind(body, captureValTypes)
+    if (returnKind) (ctx.closure.valResult ||= new Map()).set(fnName, returnKind)
 
     const tableIdx = addToTable(fnName)
 

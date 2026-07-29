@@ -477,6 +477,64 @@ export function valTypeOf(expr) {
   return VT[op]?.(args) ?? null
 }
 
+/**
+ * Kind-generic, LOCAL-aware sibling of valTypeOf — round-6 prereq (a)/(sibling
+ * of the compound-assign fix). A bare identifier inside valTypeOf's own VT[op]
+ * recursion (numericBinaryVT/numericUnaryVT calling plain `valTypeOf(args[0])`)
+ * always resolves through the GLOBAL lookupValType, which has nothing to say
+ * about a name whose kind is only known LOCALLY at the call site — a plain
+ * function-body local before narrow.js's per-function reps are live
+ * (narrowValResults' analyzeBody(body).valTypes), or a closure param/capture
+ * refined by an enclosing `typeof` guard (module/function.js's return-kind
+ * pre-scan). `return ++n` on a proven-BIGINT local fell through exactly this
+ * gap: valTypeOf(['++','n']) → numericUnaryVT → valTypeOf('n') →
+ * lookupValType('n') → null, even though the caller already knows n is BIGINT.
+ *
+ * `resolveLocal(name)` handles bare identifiers; everything else re-derives
+ * the same handful of ops valTypeOf's callers already special-case locally
+ * (ternary/logical-both-arms-agree, '+'’s STRING-vs-arith fork, and — NEW —
+ * the unary BigInt-preserving family u- ~ ++ --, mirroring numericUnaryVT/
+ * numericBinaryVT's own "bigint operand → bigint result" rule). Every other
+ * op falls through to plain valTypeOf(expr), which is locals-blind but was
+ * already the accepted fallback everywhere this is used — unchanged behavior.
+ * Not resolving a name (resolveLocal returns null/undefined) simply propagates
+ * null upward: the fail-open boundary for a kind that isn't LOCALLY settled.
+ */
+export function valTypeOfWithLocals(expr, resolveLocal) {
+  if (expr == null) return null
+  if (typeof expr === 'string') return resolveLocal(expr) ?? null
+  if (!Array.isArray(expr)) return valTypeOf(expr)
+  const [op, ...args] = expr
+  const rec = (e) => valTypeOfWithLocals(e, resolveLocal)
+  if (op === '?:') {
+    const a = rec(args[1]), b = rec(args[2])
+    return a && a === b ? a : null
+  }
+  if (op === '&&' || op === '||') {
+    const a = rec(args[0]), b = rec(args[1])
+    return a && a === b ? a : null
+  }
+  // SOUND `+` — see narrowValResults' identical comment (src/compile/narrow.js):
+  // unknown side → no claim (VT['+']'s own optimistic NUMBER guess is fine for
+  // local numeric inference but unsound to hand back as a firm kind claim).
+  if (op === '+') {
+    const a = rec(args[0]), b = rec(args[1])
+    if (a === VAL.STRING || b === VAL.STRING) return VAL.STRING
+    if (a == null || b == null) return null
+    return valTypeOf(expr)
+  }
+  // Unary BigInt-preserving family (u- ~ ++ --): kind follows the single
+  // operand exactly like numericUnaryVT's own rule, just sourced from
+  // resolveLocal instead of the global lookupValType. `!` and the other
+  // BOOL_OPS are UNAFFECTED on purpose — VT.bool ignores its operand's kind
+  // entirely (always VAL.BOOL), so the locals-blind valTypeOf(expr) fallback
+  // is already exact for them; no case needed here.
+  if (op === 'u-' || op === '~' || op === '++' || op === '--') {
+    return rec(args[0]) === VAL.BIGINT ? VAL.BIGINT : valTypeOf(expr)
+  }
+  return valTypeOf(expr)
+}
+
 export function jsonConstString(expr) {
   if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
   if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'string') return expr[1]

@@ -14,7 +14,7 @@ import { isI32, isReassigned, cloneNode, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS } f
 import { ctx } from './ctx.js'
 import { FITS_I32_MAX } from './widen.js'
 import { VAL, lookupValType } from './reps.js'
-import { valTypeOf } from './kind.js'
+import { valTypeOf, valTypeOfWithLocals } from './kind.js'
 import { propValType, CMP_OPS } from './kind-traits.js'
 import { NO_VALUE, staticValue, intLiteralValue, intExprRange } from './static.js'
 import { typedElemAux } from '../layout.js'
@@ -2157,8 +2157,23 @@ const isUnsignedI32Expr = (e, locals) => Array.isArray(e) && (
  * Infer expression result type from AST (without emitting).
  * Used to determine local variable types before compilation.
  * Looks up `locals` first, then current-function params (for i32-specialized params).
+ *
+ * `valTypes` (optional): Map<name, VAL.*> — VAL-KIND facts for the CURRENT
+ * body's locals (analyzeBody(body).valTypes), consulted ONLY by the bitwise-
+ * ops BigInt gate below. Round-6 prereq (a) sibling: that gate's own BigInt
+ * check used a bare valTypeOf(expr), whose recursion into a bare identifier
+ * (numericUnaryVT → valTypeOf(name) → the GLOBAL lookupValType) can't see a
+ * local's kind before narrow.js's per-function reps are live — the exact gap
+ * valTypeOfWithLocals (kind.js) exists to close. Phase E (narrowI32Results)
+ * runs this early, so without `valTypes` a proven-BigInt local's `~`/`&`/etc.
+ * return tail silently narrowed the function's WASM result to i32 (a NUMBER),
+ * contradicting Phase E2's (narrowValResults, same body, same local) now-
+ * correct BIGINT valResult claim — a WAT-validation crash, not a silent one,
+ * since the two phases' facts about the SAME expression must agree. Omitted
+ * by every other caller (defaults to undefined): they run late enough that
+ * lookupValType alone is already sound, or don't call through this gate.
  */
-export function exprType(expr, locals) {
+export function exprType(expr, locals, valTypes) {
   if (expr == null) return 'f64'
   if (typeof expr === 'number')
     return isI32(expr) ? 'i32' : 'f64'
@@ -2183,7 +2198,7 @@ export function exprType(expr, locals) {
   if (!Array.isArray(expr)) return 'f64'
 
   const [op, ...args] = expr
-  if (op == null) return exprType(args[0], locals) // literal [, value]
+  if (op == null) return exprType(args[0], locals, valTypes) // literal [, value]
 
   // Statically evaluable to -0 (e.g. -1 * 0) — i32 would lose the sign.
   const sv = staticValue(expr)
@@ -2241,12 +2256,17 @@ export function exprType(expr, locals) {
   if (CMP_OPS.has(op) || op === '>>>') return 'i32'
   // Bitwise & signed-shift: i32 on numbers, but f64 when operands are BigInt — the
   // result is a bigint carried in the i64-bits-as-f64 ABI, not a 32-bit int.
+  // valTypeOfWithLocals (not a bare valTypeOf(expr)): `valTypes` — when the
+  // caller has it (narrowI32Results, this phase's only BigInt-sensitive
+  // caller) — resolves a bare identifier's kind from analyzeBody's per-body
+  // facts BEFORE narrow.js's global per-function reps are live; see the
+  // module doc above exprType.
   if (['&', '|', '^', '~', '<<', '>>'].includes(op))
-    return valTypeOf(expr) === VAL.BIGINT ? 'f64' : 'i32'
+    return valTypeOfWithLocals(expr, name => valTypes?.get(name) ?? lookupValType(name)) === VAL.BIGINT ? 'f64' : 'i32'
   // Preserve i32 if both operands i32
   if (op === '+' || op === '-') {
-    const ta = exprType(args[0], locals)
-    const tb = args[1] != null ? exprType(args[1], locals) : ta // unary: inherit
+    const ta = exprType(args[0], locals, valTypes)
+    const tb = args[1] != null ? exprType(args[1], locals, valTypes) : ta // unary: inherit
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // A uint32 operand ([0, 2^32)) makes the result exceed signed i32 range, so
     // emit widens to f64 (see emit.js `+`/`-`). exprType must agree — else
@@ -2259,7 +2279,7 @@ export function exprType(expr, locals) {
   // yields NaN via f64rem (f64), so result-narrowing must NOT see i32 here — else a
   // NaN remainder gets i32.trunc_sat'd to 0. Mirrors the emit.js `%` guard exactly.
   if (op === '%') {
-    const ta = exprType(args[0], locals), tb = exprType(args[1], locals)
+    const ta = exprType(args[0], locals, valTypes), tb = exprType(args[1], locals, valTypes)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     if (isUnsignedI32Expr(args[0], locals) || isUnsignedI32Expr(args[1], locals)) return 'f64'
     const dv = staticValue(args[1])
@@ -2271,7 +2291,7 @@ export function exprType(expr, locals) {
   // directly, otherwise a literal operand small enough that |literal|·2^31 ≤
   // 2^53 (mirrors emit.js `mulFitsI32` — keeps `i*4` i32, widens `h*16777619`).
   if (op === '*') {
-    const ta = exprType(args[0], locals), tb = exprType(args[1], locals)
+    const ta = exprType(args[0], locals, valTypes), tb = exprType(args[1], locals, valTypes)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // uint32 operand: product can exceed i32; emit widens to f64 (see emit.js `*`).
     if (isUnsignedI32Expr(args[0], locals) || isUnsignedI32Expr(args[1], locals)) return 'f64'
@@ -2291,11 +2311,11 @@ export function exprType(expr, locals) {
     return small(args[0]) || small(args[1]) ? 'i32' : 'f64'
   }
   // Unary preserves type
-  if (op === 'u-' || op === 'u+') return exprType(args[0], locals)
+  if (op === 'u-' || op === 'u+') return exprType(args[0], locals, valTypes)
   // Ternary / logical: conciliate
   if (op === '?:' || op === '&&' || op === '||') {
     const branches = op === '?:' ? [args[1], args[2]] : [args[0], args[1]]
-    const ta = exprType(branches[0], locals), tb = exprType(branches[1], locals)
+    const ta = exprType(branches[0], locals, valTypes), tb = exprType(branches[1], locals, valTypes)
     return ta === 'i32' && tb === 'i32' ? 'i32' : 'f64'
   }
   if (op === '[') return 'f64'

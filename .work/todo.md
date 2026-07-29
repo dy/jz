@@ -420,6 +420,29 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  CLOSURE-RETURN-KIND PRE-PASS LANDED 2026-07-29 (round-6 prereq (a)
+  DONE): (1) unary return kinds -- shared kind-generic
+  valTypeOfWithLocals (kind.js) re-derives + ?: && || AND the unary
+  BigInt family through a caller-supplied local resolver;
+  narrowValResults delegates (-25 dup lines). SIBLING CRASH FIXED:
+  type.js exprType had the same locals-blind bigint check -- Phase E
+  narrowed ~n to i32 while E2 claimed BIGINT = WAT validation crash;
+  exprType gains optional valTypes param. (2) closureBodyReturnKind
+  pre-pass (flow-types.js): pure AST->VAL derivation with branch-
+  local typeof narrowing (TYPEOF_CODE_TO_VAL gained the bigint
+  entry), wired at ctx.closure.make (always before call sites) into
+  kind-generic ctx.closure.valResult SUBSUMING the NUMBER-only
+  numericReturn Set; calleeValType reads any kind. Fail-open on
+  unsettled captures, pinned both sides. IMPORT CYCLE broken
+  (typeofPredicate -> ast.js). NEW KERNEL-CLASS BUG MAPPED, not
+  shipped: same-body `return parse(v)` tail via a TYPEOF-REFINED
+  closure proof diverges self-hosted -- wrong @custom jz:i64exp `r`
+  flag corrupts the boundary; reproduced across two independent
+  implementations; plain (non-typeof) closure proofs clean; deferred
+  with pins holding pre-fix behavior (documented at
+  closureBodyReturnKind + narrowValResults). Gates: battery 3123/0
+  (+4), parity 18/18, ratchet +0, kernel leg 2437/2 pre-existing,
+  watr self-host 35/35, dbg green.
   BIGINT COMPOUND-ASSIGN FIXED 2026-07-29 (round-5 bug #1 extracted
   standalone): compoundAssign never consulted kind -- n+=1n rode
   f64.add on the carrier (silent no-op past 2^53); ++/-- identical.
