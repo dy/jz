@@ -448,6 +448,31 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  SIZE BAND DIAGNOSED: HONEST FLOOR 2026-07-30 (the 1.2-1.3x-vs-AS
+  band is dominantly the JS-SEMANTICS TAX, proven by control
+  experiment): the AS bench ports wrap EVERY array access in
+  unchecked() -- compiling them WITH assertions (-Oz minus
+  --noAssert) produces BYTE-IDENTICAL output, i.e. AS's small
+  baseline assumes zero bounds checking unconditionally; jz pays
+  real guards because JS OOB reads return undefined / writes drop
+  silently (ir.js:915-922 rationale). wasm-opt -Oz barely moves the
+  ratios (1.18-1.31) = structural, not peephole. Per-case index
+  shapes verified genuinely unprovable (fft bit-reversal, tokenizer
+  caller len, resample float-trunc gather, slices schedule offsets,
+  sdf data-dependent k--). TWO NARROW REAL GAPS blueprinted, not
+  landed (right call -- one case each, subtle machinery): (B)
+  checksumF64 buffer-reinterpret non-specialization -- .buffer/
+  .byteOffset always take the view-unknown fallback (typedarray.js
+  685) unreached by the param-kind lattice; ~300B on resample only;
+  (C) read-then-later-write double bounds check -- RMW fusion
+  (typedarray.js 1878) is single-statement only, cse-load never
+  reuses a read's in-bounds proof for a later store; ~20B on fft.
+  DECISION NEEDED (user): the "beat AS by size" goal vs this floor
+  -- current truth is geomean 1.016 with 27/49 cases SMALLER while
+  keeping JS semantics vs AS's unchecked-everywhere ports; honest
+  claim = par-or-smaller WITH semantics (the strict-claim-scoping
+  precedent); beating outright requires either an unchecked tier
+  (against the JS-exact philosophy) or watr-side compression.
   REFRESH ATTEMPT POLLUTED 2026-07-30 (discarded, not committed):
   full refresh at 2047ce75 read implausible jumps (slices 2.89x,
   trace 2.17x, synth 1.34x) alongside real wins; TARGETED PAIRED
