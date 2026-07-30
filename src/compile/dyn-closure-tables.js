@@ -228,6 +228,220 @@ export function scanClosureTableLatticeCandidates(ast) {
   return candidates
 }
 
+// True when `name` is a top-level `export` binding (`export let name = …` /
+// `export {name}` / re-export). Mirrors plan/scope.js's isHostWritableGlobal
+// shape check (same `ctx.func.exports` map: exportName -> bound name, or
+// `true` for a same-name shorthand export). An exported imperative table can
+// be *reassigned wholesale* by the host between calls (`instance.exports.
+// name.value = …`) — no AST scan sees that, so it disqualifies here exactly
+// as isHostWritableGlobal disqualifies a mutable exported global elsewhere.
+const isExportedName = (name) => {
+  for (const [exportName, val] of Object.entries(ctx.func.exports || {}))
+    if (val === name || (val === true && exportName === name)) return true
+  return false
+}
+
+// Existence check only — no occurrence classification. Used to test whether
+// a candidate is touched by code that actually RUNS at module-init time, as
+// opposed to being confined entirely to ordinary function/closure bodies
+// (which only run later, on some explicit call — irrelevant to whether the
+// TOP-LEVEL walk itself reaches the name). A `function`/`=>` subtree is
+// therefore never descended into: its body doesn't execute just because it's
+// textually nested inside a topRoot (same skip flow-types.js's
+// constPropAliases uses for the same reason). See
+// scanImperativeClosureTableLatticeCandidates's "early-mergeable" doc for why
+// that distinction is the imperative table's version of the literal array's
+// module-init-order guarantee.
+function mentionsName(node, name) {
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  if (op === '=>' || op === 'function') return false
+  if (op === 'let' || op === 'const' || op === 'var') {
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (typeof d === 'string') continue                        // uninitialized decl — binding, not a use
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+        if (mentionsName(d[2], name)) return true                 // d[1] is the BINDING, not a use
+      } else if (mentionsName(d, name)) return true
+    }
+    return false
+  }
+  for (let i = 1; i < node.length; i++) {
+    const c = node[i]
+    if (c === name || mentionsName(c, name)) return true
+  }
+  return false
+}
+
+// Extended occurrence walk for the closure-TABLE call-site PARAM lattice,
+// IMPERATIVE-CONSTRUCTION class: everyUseIsIndexedCall's exact strictness
+// (the sole tolerated READ is the indexed callee slot of an immediately
+// enclosing call) PLUS one new tolerated occurrence — a PLAIN (non-compound)
+// `name[key] = <arrow-literal>` WRITE. The RHS must be the closure literal
+// itself, not a call to a factory function: dyn-closure-tables' identity-
+// devirt (classifyWriteRhs/proveClosureFactory, above) tolerates that
+// indirection because it only needs FUNCIDX identity; a param-KIND proof
+// needs the arrow's own body AST, which a factory call doesn't expose here
+// without redoing proveClosureFactory's whole proof AST-only (out of scope —
+// see the module doc). Anything else (a bare read, a compound/non-computed
+// write, a non-literal RHS, an alias, a nested-closure mention) disqualifies,
+// same as the read-only walk.
+//
+// A write reached through a for/while/do loop poisons the WHOLE candidate
+// (returns false immediately) rather than trusting per-iteration closure
+// identity — jz's closure-in-loop capture handling is a documented kernel-
+// bug-adjacent class (ledger: closure-in-loop capture class); this lattice
+// doesn't build another proof on top of unsettled ground. `sink.arrows`
+// collects every tolerated write's RHS arrow node (closureBodyReturnKind
+// material) as a side effect of the same walk.
+function everyUseIsIndexedCallOrLiteralWrite(node, name, sink, inLoop) {
+  if (!Array.isArray(node)) return true
+  const op = node[0]
+  if (op === 'for' || op === 'while' || op === 'do') inLoop = true
+  if (op === 'let' || op === 'const' || op === 'var') {
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (typeof d === 'string') continue                          // uninitialized decl
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+        if (!everyUseIsIndexedCallOrLiteralWrite(d[2], name, sink, inLoop)) return false
+      } else if (!everyUseIsIndexedCallOrLiteralWrite(d, name, sink, inLoop)) return false
+    }
+    return true
+  }
+  if (op === '()') {
+    const callee = node[1]
+    if (Array.isArray(callee) && callee[0] === '[]' && callee.length === 3 && callee[1] === name) {
+      if (!everyUseIsIndexedCallOrLiteralWrite(callee[2], name, sink, inLoop)) return false
+      const a = node[2]
+      if (a === name) return false
+      if (!everyUseIsIndexedCallOrLiteralWrite(a, name, sink, inLoop)) return false
+      return true
+    }
+  }
+  if (op === '=') {
+    const lhs = node[1]
+    if (Array.isArray(lhs) && lhs[0] === '[]' && lhs.length === 3 && lhs[1] === name) {
+      const rhs = node[2]
+      if (!(Array.isArray(rhs) && rhs[0] === '=>')) return false    // only a literal arrow RHS is tolerated
+      if (!everyUseIsIndexedCallOrLiteralWrite(lhs[2], name, sink, inLoop)) return false   // index expression
+      if (!everyUseIsIndexedCallOrLiteralWrite(rhs, name, sink, inLoop)) return false       // arrow body — catches nested self-mentions too
+      if (inLoop) return false                                     // closure-in-loop class — fail open, whole candidate
+      sink.arrows.push(rhs)
+      return true
+    }
+  }
+  for (let i = 1; i < node.length; i++) {
+    const c = node[i]
+    if (c === name) return false
+    if (!everyUseIsIndexedCallOrLiteralWrite(c, name, sink, inLoop)) return false
+  }
+  return true
+}
+
+/** Program-wide safety scan for the closure-TABLE call-site PARAM lattice,
+ *  IMPERATIVE-CONSTRUCTION class — the named follow-on to
+ *  scanClosureTableLatticeCandidates above (CLOSURE-TABLE PARAM LATTICE
+ *  LANDED): dispatch tables built via scattered `NAME[key] = fn` assignments
+ *  rather than one `const NAME = [...]` literal (jessie's subscript `lookup`
+ *  shape). A candidate is a GLOBAL `let`/`const NAME = []` (empty array —
+ *  the SAME universe scanDynClosureTableCandidates draws from, not the
+ *  const-literal-array universe above), never exported, whose every
+ *  occurrence program-wide is safe per everyUseIsIndexedCallOrLiteralWrite:
+ *  read-then-call, or a plain `NAME[key] = <arrow-literal>` write, and
+ *  nothing else — no escapes, no aliases (dyn-closure-tables.js's own header
+ *  comment documents subscript's `(fn = table[idx]) && fn(args)` guarded
+ *  idiom as safe for IDENTITY devirt; that idiom is a bare-read ALIAS by this
+ *  scan's stricter definition and disqualifies here, honestly, same as any
+ *  other untracked read).
+ *
+ *  Two facts land per surviving candidate:
+ *   1. RESULT kind (ctx.scope.closureTableValResult — the SAME map the
+ *      const-literal scan above populates; kind.js's VT['()'] doesn't care
+ *      which scan proved it) — every collected write's RHS arrow AST run
+ *      through closureBodyReturnKind (AST-only, pre-emit, same timing the
+ *      const-literal scan uses) with NO_CAPTURES; every write must agree.
+ *   2. PARAM-lattice early-mergeability (ctx.scope.
+ *      imperativeClosureTableEarlyMergeable) — compile/index.js's per-body
+ *      bodyName only exists once THAT function has emitted, and closure
+ *      bodies queued during function emission COMPILE as soon as every
+ *      function in ctx.func.list has emitted (compilePendingClosures' first
+ *      flush) — before module-init code (`ast`/moduleInits) has emitted at
+ *      all. A candidate confined ENTIRELY to function bodies (jessie's shape:
+ *      writes inside `register`, reads inside `next`, both ordinary named
+ *      functions) has every occurrence's evidence in hand by that first
+ *      flush — merging right there is sound AND complete. A candidate that
+ *      also touches module-init code directly can't make that guarantee (a
+ *      module-scope call site's evidence wouldn't be gathered until
+ *      buildStartFn, well after the first flush already compiled the body) —
+ *      FAIL OPEN for the param lattice specifically in that case (module-
+ *      init-order reasoning); it keeps its result-kind fact regardless, since
+ *      that fact is pipeline-order-independent (pure whole-program AST
+ *      enumeration, not tied to when anything compiles).
+ *
+ *  Called once, post-plan (mirrors scanClosureTableLatticeCandidates's own
+ *  timing), from compile/index.js. Consumed by emit.js (call-site evidence
+ *  gate), emit-assign.js (write-site member recorder), and compile/index.js
+ *  (the early merge step, right before the first compilePendingClosures). */
+export function scanImperativeClosureTableLatticeCandidates(ast) {
+  const topRoots = [ast, ...(ctx.module.moduleInits || [])]
+  const candidates = new Set()
+  for (const root of topRoots)
+    for (const [name, s] of scanBindingUses(root))
+      if (s.decls === 1 && ctx.scope.globals?.has(name) && isEmptyArrayLit(s.initRhs) && !isExportedName(name))
+        candidates.add(name)
+  if (!candidates.size) return candidates
+
+  const bodies = [...topRoots]
+  for (const func of ctx.func.list) {
+    if (func.body && !func.raw) bodies.push(func.body)
+    if (func.defaults) for (const dv of Object.values(func.defaults)) bodies.push(dv)
+  }
+
+  const arrowsByName = new Map()
+  for (const name of candidates) {
+    const sink = { arrows: [] }
+    const ok = bodies.every(b => everyUseIsIndexedCallOrLiteralWrite(b, name, sink, false))
+    if (!ok) { candidates.delete(name); continue }
+    arrowsByName.set(name, sink.arrows)
+  }
+  if (!candidates.size) return candidates
+
+  for (const name of candidates) {
+    const arrows = arrowsByName.get(name)
+    if (!arrows.length) continue
+    let kind = null
+    for (const arrow of arrows) {
+      const k = closureBodyReturnKind(arrow[2], NO_CAPTURES)
+      if (!k || (kind != null && kind !== k)) { kind = null; break }
+      kind = k
+    }
+    if (kind) (ctx.scope.closureTableValResult ||= new Map()).set(name, kind)
+  }
+
+  const earlyMergeable = new Set()
+  for (const name of candidates)
+    if (!topRoots.some(r => mentionsName(r, name))) earlyMergeable.add(name)
+  ctx.scope.imperativeClosureTableEarlyMergeable = earlyMergeable
+
+  return candidates
+}
+
+/** Record fact: emitting `name[idx] = <arrow-literal>` — a write
+ *  scanImperativeClosureTableLatticeCandidates already proved tolerated —
+ *  produced a closure body. Its emitted bodyName is an "element"
+ *  resolveClosureTableParamLattice (emit.js) merges call-site evidence into,
+ *  exactly like a literal array's own fnElements list. Called from
+ *  emit-assign.js's emitElementAssign, gated on `name` being a proven-safe
+ *  imperative candidate. No-op if the RHS somehow didn't emit as a closure
+ *  (shouldn't happen — the scan already required a literal `=>` RHS —
+ *  defensive only). */
+export function recordImperativeClosureTableWrite(name, emittedVal) {
+  if (emittedVal?.closureBodyName == null) return
+  const members = (ctx.scope.imperativeClosureTableMembers ||= new Map())
+  let list = members.get(name); if (!list) members.set(name, list = [])
+  list.push({ name: emittedVal.closureBodyName })
+}
+
 // Comma-sequence tail: `(a, b, c)` evaluates to `c`. Unwraps to the value an
 // expression-bodied arrow (or a `return` statement) actually produces —
 // subscript's `dispatch` returns `(fn.ops = ops, fn.tail = tail, fn)`.

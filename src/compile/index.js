@@ -50,7 +50,7 @@ import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
 import {
   scanDynClosureTableCandidates, recordParamClosureDefault, recordDirectReturnClosure, resolveDynFnTables,
-  scanClosureTableLatticeCandidates,
+  scanClosureTableLatticeCandidates, scanImperativeClosureTableLatticeCandidates,
 } from './dyn-closure-tables.js'
 
 // Monotonic across all functions so a CSE temp never collides (even after later
@@ -58,7 +58,7 @@ import {
 // freshLoopId pattern): a module-level counter made warm-process WAT text
 // history-dependent (`cse0/1` then `cse2/3` for the same program).
 const freshCseName = () => `${T}cse${ctx.transform.cseId++}`
-import { emit, emitter, emitVoid, emitBlockBody } from './emit.js'
+import { emit, emitter, emitVoid, emitBlockBody, resolveClosureTableParamLattice } from './emit.js'
 import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from '../abi/string.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, toI32, asI64, fromI64, ptrTypeEq,
@@ -2091,6 +2091,14 @@ export default function compile(ast, profiler) {
   // to accumulate arg-kind evidence for the table's elements.
   ctx.scope.closureTableLatticeCandidates = scanClosureTableLatticeCandidates(ast)
 
+  // Same lattice, IMPERATIVE-construction class (dispatch tables built via
+  // scattered `name[key] = arrowLiteral` writes rather than one array
+  // literal — jessie's subscript `lookup` shape; the named follow-on to the
+  // const-literal scan above). Also always on, fail-open by construction —
+  // see dyn-closure-tables.js's own doc for the safety notion and the
+  // module-init-order reasoning behind its "early-mergeable" subset.
+  ctx.scope.imperativeClosureTableLatticeCandidates = scanImperativeClosureTableLatticeCandidates(ast)
+
   // Inspect sink: editor hosts opt in via { inspect: true } to read inferred shapes.
   // Initialized here (post-plan) so paramReps and schema.list are stable, populated
   // per-function below as funcFacts settle. Bytes themselves are unchanged.
@@ -2142,6 +2150,25 @@ export default function compile(ast, profiler) {
     }
     compiledBodyCount = bodies.length
   })
+
+  // Imperative closure-TABLE PARAM lattice — early merge (dyn-closure-
+  // tables.js scanImperativeClosureTableLatticeCandidates). Every named
+  // function has now emitted (the map() just above), so every write
+  // (register()-style `lookup[c] = fn`) and every read (`lookup[cc](...)`)
+  // this candidate class permits has already recorded its evidence — but
+  // NONE of the closure bodies those writes created have COMPILED yet
+  // (compilePendingClosures' first flush is the very next line). This is the
+  // one window where merging is both sound (every occurrence the safety scan
+  // allows is confined to functions that already emitted) and useful (still
+  // before the bodies it targets compile). Module-scope-touching candidates
+  // are excluded from imperativeClosureTableEarlyMergeable up front — see
+  // that scan's own doc.
+  if (ctx.scope.imperativeClosureTableEarlyMergeable?.size)
+    for (const name of ctx.scope.imperativeClosureTableEarlyMergeable) {
+      const members = ctx.scope.imperativeClosureTableMembers?.get(name)
+      if (members?.length) resolveClosureTableParamLattice(name, members)
+    }
+
   compilePendingClosures()
 
   // `wasm:js-string` imports — drained from `ctx.core.jsstring`, one

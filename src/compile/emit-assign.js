@@ -16,7 +16,7 @@ import { T } from '../ast.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey } from '../static.js'
 import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi } from '../../layout.js'
-import { recordDynFnTableWrite } from './dyn-closure-tables.js'
+import { recordDynFnTableWrite, recordImperativeClosureTableWrite } from './dyn-closure-tables.js'
 import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
@@ -555,6 +555,12 @@ export function emitElementAssign(arr, idx, val) {
   // the program-wide same-body devirt proof. A no-op for every other array.
   if (typeof arr === 'string' && ctx.scope.dynFnTableCandidates?.has(arr))
     recordDynFnTableWrite(arr, val, valueExpr)
+  // Closure-TABLE call-site PARAM lattice, IMPERATIVE-CONSTRUCTION class
+  // (dyn-closure-tables.js scanImperativeClosureTableLatticeCandidates):
+  // this write's emitted value IS the member resolveClosureTableParamLattice
+  // merges call-site evidence into.
+  if (typeof arr === 'string' && ctx.scope.imperativeClosureTableLatticeCandidates?.has(arr))
+    recordImperativeClosureTableWrite(arr, valueExpr)
   // Literal string key, or schema-known object receiver with a static key expression.
   const litKey = isLiteralStr(idx) ? idx[1]
     : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)

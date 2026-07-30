@@ -3491,7 +3491,10 @@ const tagFnArrayDispatch = (ir, arrName) => {
  *  hasn't emitted yet at this call site's own emit time. A dynamic index
  *  means ANY element could be the one invoked, so every call site's evidence
  *  is conservatively applied to every element alike when the array literal
- *  resolves it (isGlobal decl path, below). */
+ *  resolves it (isGlobal decl path, below). Also fires for the IMPERATIVE-
+ *  construction class (ctx.scope.imperativeClosureTableLatticeCandidates,
+ *  dyn-closure-tables.js) — same accumulator, resolved by compile/index.js's
+ *  early-merge step instead of the const-literal decl's own emit time. */
 function recordClosureTableCallSite(arrName, argNodes) {
   const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
   const n = Math.min(argNodes.length, W)
@@ -3519,7 +3522,7 @@ function recordClosureTableCallSite(arrName, argNodes) {
  *  closure (tryDirectClosureCall). Runs strictly before these bodies compile:
  *  buildStartFn emits the whole top-level program (this decl included) before
  *  its own compilePendingClosures() call compiles anything registered here. */
-function resolveClosureTableParamLattice(arrName, elements) {
+export function resolveClosureTableParamLattice(arrName, elements) {
   const evid = ctx.scope.closureTableArgEvidence?.get(arrName)
   if (!evid) return
   const pt = (ctx.closure.paramTypes ||= new Map())
@@ -3543,7 +3546,8 @@ function emitGenericClosureCall(callee, parsed) {
   const arrName = !parsed.hasSpread && Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string'
     ? callee[1] : null
   const dvName = (ctx.transform.optFlags & OPTF.devirtClosureTables) && arrName ? arrName : null
-  if (arrName && ctx.scope.closureTableLatticeCandidates?.has(arrName))
+  if (arrName && (ctx.scope.closureTableLatticeCandidates?.has(arrName) ||
+      ctx.scope.imperativeClosureTableLatticeCandidates?.has(arrName)))
     recordClosureTableCallSite(arrName, parsed.normal)
   if (parsed.hasSpread) {
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)

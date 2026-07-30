@@ -1308,6 +1308,79 @@ export let f = (n) => {
   ok(!w.includes('__str_concat'), 'closure-table dispatch: no unproven `+` pulls in the string runtime')
 })
 
+test('closure-table call-site param lattice, IMPERATIVE-CONSTRUCTION class: proves NUMBER when confined to function bodies', () => {
+  // The named follow-on to the const-literal test above (dyn-closure-tables.js
+  // scanImperativeClosureTableLatticeCandidates): jessie's subscript `lookup`
+  // shape is a `let NAME = []` populated via scattered `NAME[key] = arrow`
+  // writes rather than one array literal. Here every write (inside `writer`)
+  // and every read (inside `f`, indexed-call only) is confined to ordinary
+  // named functions — no module-scope touch — so the param lattice's
+  // "early-mergeable" window applies and the proof reaches codegen exactly
+  // like the const-literal table above.
+  const src = `let tbl = []
+function writer() {
+  tbl[0] = (x, k) => (x + k) | 0
+  tbl[1] = (x, k) => x ^ k
+}
+export let f = (n) => {
+  writer()
+  let h = 0
+  for (let i = 0; i < n; i++) h = tbl[i & 1](h, i)
+  return h
+}`
+  const { f } = run(src)
+  is(f(4), 0)   // same recurrence as the const-literal pin above
+
+  const w = wat(src)
+  ok(/\(f64\.add\s*\(local\.get \$__a0\)\s*\(local\.get \$__a1\)\)/.test(w),
+    'imperative table, confined to functions: (x+k) compiles to a bare f64.add on the raw params')
+  ok(!w.includes('__str_concat'), 'imperative table dispatch: no unproven `+` pulls in the string runtime')
+})
+
+test('closure-table call-site param lattice, IMPERATIVE-CONSTRUCTION class: FAIL-OPEN pins', () => {
+  // Three independent shapes that must each disqualify the imperative param
+  // lattice (result stays correct — no false proof — just generic codegen):
+  //
+  // 1. Module-scope touch (interleaved/conditional construction): a call site
+  //    reachable from module-init code can't guarantee its evidence is
+  //    gathered before the write's closure body compiles (compile/index.js's
+  //    early-merge window only covers occurrences confined to function
+  //    bodies) — see scanImperativeClosureTableLatticeCandidates's own doc
+  //    for the module-init-order reasoning. This is the honest
+  //    "interleaved-construction" fail-open case.
+  const moduleTouch = `let tbl = []
+function writer() { tbl[0] = (x, k) => (x + k) | 0; tbl[1] = (x, k) => x ^ k }
+writer()
+let seed = tbl[0](1, 2)
+export let f = (n) => { let h = seed; for (let i = 0; i < n; i++) h = tbl[i & 1](h, i); return h }`
+  is(run(moduleTouch).f(4), 7)
+  ok(wat(moduleTouch).includes('__str_concat'),
+    'module-scope touch: fail-open, no false proof (generic dispatch kept)')
+
+  // 2. Loop-built table (`for (...) tbl[c] = (...) => ...`): jz's closure-in-
+  //    loop capture handling is a documented kernel-bug-adjacent class
+  //    (ledger) — this lattice doesn't build another proof on unsettled
+  //    ground, so ANY write reachable through a for/while/do loop poisons the
+  //    whole candidate. Correctness (not the proof) is what's pinned here.
+  const loopBuilt = `let tbl = []
+function writer() { for (let c = 0; c < 2; c++) { let cc = c; tbl[cc] = (x, k) => (x + k + cc) | 0 } }
+export let f = (n) => { writer(); let h = 0; for (let i = 0; i < n; i++) h = tbl[i & 1](h, i); return h }`
+  is(run(loopBuilt).f(4), 8)
+  ok(wat(loopBuilt).includes('__str_concat'), 'loop-built table: fail-open, no false proof')
+
+  // 3. Alias (subscript's own guarded idiom, `(fn = table[idx]) && fn(args)`):
+  //    dyn-closure-tables.js's header comment documents this idiom as SAFE
+  //    for IDENTITY devirt — it is NOT safe for a param-KIND proof (the alias
+  //    reaches the body through an untracked path), so it disqualifies here,
+  //    same reasoning as the const-literal table's own alias pin above.
+  const alias = `let tbl = []
+function writer() { tbl[0] = (x, k) => (x + k) | 0; tbl[1] = (x, k) => x ^ k }
+let pick = null
+export let f = (n) => { writer(); pick = tbl[0]; let h = 0; for (let i = 0; i < n; i++) h = tbl[i & 1](h, i); return h + pick(1, 1) }`
+  is(run(alias).f(4), 2)
+  ok(wat(alias).includes('__str_concat'), 'alias (guarded-idiom shape): fail-open, no false proof')
+})
+
 // f.call/apply/bind on a proven function binding lowers statically (prepare
 // foldFnCallApplyBind, 2026-07-10): thisArg is dead for jz functions (no
 // `this`), kept only for side effects. Previously .call/.apply silently
