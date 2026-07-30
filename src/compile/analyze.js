@@ -345,6 +345,19 @@ export function analyzeBody(body) {
     return c && !c.includes('ArrayBuffer') && !c.includes('DataView') ? c : null
   }
 
+  // A literal negative index or a non-numeric STRING-literal key addresses a
+  // PROPERTY, not an element (mirrors kind.js VT['[]']'s own guard — keep the
+  // two in sync, they classify the same AST shape for the same reason: typing
+  // a property read by the receiver's element kind would fold a `'@@iterator'
+  // in arr`-style guard on a false premise).
+  const isElemAccessKey = (key) => {
+    const li = intLiteralValue(key)
+    if (li != null) return li >= 0
+    const lit = Array.isArray(key) && key.length === 2 && key[0] == null ? key[1]
+      : Array.isArray(key) && key[0] === 'str' ? key[1] : undefined
+    return !(typeof lit === 'string' && !/^(0|[1-9][0-9]*)$/.test(lit))
+  }
+
   const exprElemSourceVal = (expr) => {
     if (typeof expr === 'string') {
       // Prefer this body walk's settled local slice. localReps is intentionally
@@ -355,6 +368,27 @@ export function analyzeBody(body) {
       const repVt = ctx.func.localReps?.get(expr)?.val
       if (repVt) return repVt
       return ctx.scope.globalValTypes?.get(expr) || null
+    }
+    // One-hop element read `recv[i]` whose RECEIVER is a name this SAME body
+    // walk already has an element-kind fact for (elemValOf: rep ∪ this walk's
+    // in-progress arrElemValTypes — the identical fallback `elemValOf` already
+    // uses for the alias case below). Lets `probes.push(words[i])` observe
+    // probes' element kind as STRING when `words` is itself a body-local array
+    // built earlier in program order (a call-return array, e.g. `buildWords()`)
+    // — kind.js's generic valTypeOf can't see this walk's in-progress facts, only
+    // settled localReps, so a receiver that's a LOCAL (not a param) with no rep
+    // yet fell through to null here and poisoned the pushed-to array (the class
+    // reverted before: see .work/todo.md "WORDCOUNT TRUE ROOT"). Deterministic
+    // and safe to read mid-walk: the receiver's own decl is processed earlier in
+    // this same forward, program-order pass (`arrElemValTypes` is a fresh Map per
+    // analyzeBody call, so re-walks after a caller-side fact settles converge to
+    // the same answer — no cross-invocation staleness). Try this FIRST (more
+    // precise than valTypeOf can be here); fall through unchanged otherwise —
+    // never overrides or bypasses the elemOrigin-gated observation this reads.
+    if (Array.isArray(expr) && expr[0] === '[]' && expr.length === 3 && typeof expr[1] === 'string'
+        && isElemAccessKey(expr[2])) {
+      const v = elemValOf(expr[1])
+      if (v) return v
     }
     return valTypeOf(expr)
   }

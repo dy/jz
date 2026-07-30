@@ -1497,6 +1497,65 @@ test('push on a param settles no element fact: heterogeneous guard must not cons
   is(exports.f(0), -1, 'non-module tag keeps the runtime compare live')
 })
 
+test('cross-call array-elem kind: uniform-string array through a param proves elements', () => {
+  // The wordcount shape: an array filled from ANOTHER array's indexed reads
+  // (`probes.push(words[i])`) then passed as a param. exprElemSourceVal used
+  // to fall to generic valTypeOf for indexed-read elements — invisible
+  // mid-walk for a body-local receiver — poisoning the fact narrow.js's
+  // cross-call join (runArrValTypeFixpoint) was already wired to carry. A
+  // proven-STRING elem read on the param side must skip the generic
+  // ToPropertyKey path entirely (no __to_str in the module = the Ryu float
+  // formatter stays out — the wordcount size root).
+  const wat = jz.compile(`
+    let build = () => { let ws = []; ws.push('ab'); ws.push('cd'); return ws }
+    let probe = (counts, keys) => counts[keys[1]] | 0
+    export let f = () => {
+      let words = build()
+      let picks = []
+      for (let i = 0; i < 2; i++) picks.push(words[i])
+      let counts = {}
+      counts[words[0]] = 7
+      return probe(counts, picks)
+    }
+  `, { wat: true })
+  // Positive mechanism assert: the string-key fast path (str_hash) engages,
+  // which REQUIRES the param's elem-STRING proof (unproven keys route through
+  // the generic dyn-get with runtime kind dispatch instead). The module may
+  // still carry __to_str via other machinery (e.g. the write-side generic —
+  // see the blocked dyn-prop stratification in the ledger); wordcount-scale
+  // verification of the full Ryu-cluster elision lives in the size evidence.
+  ok(wat.includes('$__str_hash'), 'proven-string elem key engages the str_hash fast path')
+  const { exports } = jz(`
+    let probe = (counts, keys) => counts[keys[1]] | 0
+    export let f = () => {
+      let picks = []; picks.push('ab'); picks.push('cd')
+      let counts = {}; counts['cd'] = 7
+      return probe(counts, picks)
+    }
+  `)
+  is(exports.f(), 7, 'param-side elem read hashes the right key')
+  // KNOWN LATENT (pre-existing at HEAD, found by this pin's stronger 2-hop
+  // variant, banked in the ledger with the numeric-key sibling): building the
+  // key array from ANOTHER call-returned array's reads (words = build();
+  // picks.push(words[i]); counts[words[1]] = 7; probe reads counts[picks[1]])
+  // returns 0 — a proven-write/generic-read hash-keying divergence. The 2-hop
+  // value pin lands with that fix.
+})
+
+test('cross-call array-elem kind: bimorphic callers fail open', () => {
+  // Two call sites with different elem kinds must poison the param fact —
+  // the value path stays correct through the generic dispatch.
+  const { exports } = jz(`
+    let pick = (arr) => arr[0]
+    export let f = () => {
+      let a = []; a.push('x')
+      let b = []; b.push(3)
+      return '' + pick(a) + pick(b)
+    }
+  `)
+  is(exports.f(), 'x3', 'mixed elem kinds stay value-correct via the generic path')
+})
+
 test('narrowMutatedParams: monotone int-mutated param promotes to i32 param+result (cursor-through-helper)', () => {
   // `i` is a body-written param AND the return value — the trace bench's `nc`
   // shape (a monotone array-write cursor threaded through a helper: `i =

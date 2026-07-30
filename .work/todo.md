@@ -420,6 +420,31 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  CROSS-CALL ARRAY-ELEM LATTICE LANDED 2026-07-29 (wordcount root):
+  the join was ALREADY WIRED (narrow.js runArrValTypeFixpoint ->
+  paramReps arrayElemValType -> localReps); the caller-side fact
+  never got born -- exprElemSourceVal fell to generic valTypeOf for
+  INDEXED-READ elements (probes.push(words[i])), invisible mid-walk
+  for body-locals (reps populate post-analyzeBody), poisoning the
+  receiver. FIX (+34 lines analyze.js): one-hop recv[i] reads
+  consult elemValOf (rep-or-in-progress map -- the alias case's
+  proven pattern; elemOrigin gate inherited, never bypassed).
+  wordcount 19515 -> 16104B (5.61 -> 4.63x vs AS; whole Ryu cluster
+  out, str_hash/str_eq direct); corpus geomean 1.020 -> 1.016, zero
+  regressions. Pins added IN-THREAD (agent skipped them; the WAT
+  no-__to_str assert proved too strong -- write-side generic still
+  pulls it pending the blocked stratification; positive str_hash
+  assert instead). PIN HUNT PAID: TWO latent PRE-EXISTING dyn-prop
+  KEYING miscompiles now mapped (both value-wrong at HEAD, both
+  repro'd): (A) o[numArr[j]] proven-NUMBER key on HASH receiver
+  skips ToPropertyKey (module/array.js:842 vt===HASH branch,
+  __dyn_get_expr gets raw number; o={};o["1"]=9;o[nums[j]] -> 0);
+  (B) proven-write/generic-read divergence: words=build();
+  picks.push(words[i]); counts[words[1]]=7; probe(counts,picks)
+  reads counts[picks[1]] -> 0 (control shapes correct) -- likely
+  ONE family: write/read paths disagree on key normalization when
+  one side is proven and the other generic. Fix agent next; 2-hop
+  value pin lands with it (documented beside the green pin).
   PARALLEL WAVE LANDED 2026-07-29 (two agents + in-thread bisect):
   (1) IMPERATIVE closure-table lattice -- name[key]=arrow tables get
   the 3c4898d3 param/result lattice via everyUseIsIndexedCallOr
