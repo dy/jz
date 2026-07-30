@@ -448,6 +448,21 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  REFRESH ATTEMPT POLLUTED 2026-07-30 (discarded, not committed):
+  full refresh at 2047ce75 read implausible jumps (slices 2.89x,
+  trace 2.17x, synth 1.34x) alongside real wins; TARGETED PAIRED
+  VERIFICATION (quiet, ABBA) refuted every jump: trace 1.462x
+  (matches committed 1.445), slices 1.035x band, synth 0.975x JZ
+  LEADS. Verdict: lane pollution mid-run despite apparent quiet --
+  the ledger rule stands (reference refresh = truly idle machine,
+  overnight-class). VERIFIED REAL from the attempt + pairs: dispatch
+  strict JIT win in-evidence-shape (1843us vs jsc 2355 = 1.28x
+  ahead, 4.8x vs v8; bytes 1770 committed-consistent), lz improved
+  to 1.036 BAND (the inference wave closed its red without a
+  dedicated lever), jessie 1.935 -> ~1.73, wordcount bytes 16104.
+  results.json/bench.svg restored to committed f1e877b8 evidence
+  (stale-but-honest beats fresh-but-polluted). RE-RUN at next idle
+  window; claims gates re-check then.
   CAPTURE-AFTER-NESTED-EMIT CLASS SWEPT 2026-07-30 (the named follow-
   up; class now AUDITED, not just patched): 4 REAL sites fixed, all
   typedarray.js -- subview branch of the SAME 401-loop closure the
