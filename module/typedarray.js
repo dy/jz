@@ -416,10 +416,21 @@ export default (ctx) => {
         const parentOff = tempI32('tvp')
         const byteLen = tempI32('tvb')
         const dst = tempI32('tvd')
+        // Eager IR pieces from this closure's OWN captures (stride, name) — built
+        // BEFORE the nested emit(lenExpr2)/emit(offsetExpr) calls below, which can
+        // recurse into a SIBLING `new.${name2}` closure instance (composing typed-
+        // array/subview constructors, e.g. `new Int32Array(buf, 0, new
+        // Float64Array(3).length)`): self-host closure-capture-after-nested-emit
+        // class (.work/todo.md 2026-07-23 TYPED-INDEX / 2026-07-30 KERNEL LEG ZERO
+        // FAILS) — a captured `stride`/`name` re-read after a nested emit can
+        // observe the OTHER iteration's values once this file is kernel-compiled.
+        // Eager construction pins this closure's own kind (byte-neutral natively).
+        const strideConst = ['i32.const', stride]
+        const tagIR = mkPtrIR(PTR.TYPED, typedAux(name, true), ['local.get', `$${dst}`])
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${src}`, asF64(emit(lenExpr))],
           ['local.set', `$${parentOff}`, ptrOffsetIR(['local.get', `$${src}`], srcType)],
-          ['local.set', `$${byteLen}`, ['i32.mul', asI32(emit(lenExpr2)), ['i32.const', stride]]],
+          ['local.set', `$${byteLen}`, ['i32.mul', asI32(emit(lenExpr2)), strideConst]],
           ['local.set', `$${dst}`, ['call', '$__alloc', ['i32.const', 16]]],
           ['i32.store', ['local.get', `$${dst}`], ['local.get', `$${byteLen}`]],
           ['i32.store',
@@ -428,7 +439,7 @@ export default (ctx) => {
           ['i32.store',
             ['i32.add', ['local.get', `$${dst}`], ['i32.const', 8]],
             ['local.get', `$${parentOff}`]],
-          mkPtrIR(PTR.TYPED, typedAux(name, true), ['local.get', `$${dst}`])], 'f64')
+          tagIR], 'f64')
       }
       // TypedArray(typedArray) COPIES into fresh storage with element conversion —
       // spec: only (buffer[, off, len]) constructs a view. Element reads go through
@@ -896,17 +907,27 @@ export default (ctx) => {
   }
   for (const [method, [storeOp, valType, size]] of Object.entries(DV_SET)) {
     ctx.core.emit[`.${method}`] = (dv, off, val, leNode) => {
+      // Snapshot this closure's OWN captures into locals BEFORE any nested emit
+      // call below (emit(off)/emit(val)/emit(leNode)) can recurse into a SIBLING
+      // DataView closure from the SAME Object.entries(DV_SET) loop (e.g.
+      // `dv.setFloat64(0, dv.setInt32(4, 1))`) — self-host closure-capture-after-
+      // nested-emit class (.work/todo.md 2026-07-23 TYPED-INDEX / 2026-07-30
+      // KERNEL LEG ZERO FAILS): a captured storeOp/valType/size re-read after a
+      // nested emit() can observe the OTHER iteration's values once this file is
+      // kernel-compiled. The rest of this closure reads the locals, never the
+      // free variables, so it is immune regardless of what off/val/leNode nest.
+      const op = storeOp, vt = valType, sz = size
       // Resolve the receiver's descriptor once; the store reads dataOff/byteLen from it.
       const desc = tempI32('dvD')
       const fin = (body) => ['block', ['local.set', `$${desc}`, dvDescriptor(dv)], body]
-      const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(off, size, dvViewSize(desc))]
+      const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(off, sz, dvViewSize(desc))]
       // Coerce value into the wasm value type the store op consumes. Non-BigInt
       // stores ToNumber the value first (per SetViewValue) so a Symbol value
       // raises a TypeError and a string value parses instead of truncating to 0.
       let v
-      if (valType === 'i64') v = typed(['i64.reinterpret_f64', asF64(emit(val))], 'i64')
-      else if (valType === 'f64') v = asF64(toNumF64(val, emit(val)))
-      else if (valType === 'f32') v = typed(['f32.demote_f64', asF64(toNumF64(val, emit(val)))], 'f32')
+      if (vt === 'i64') v = typed(['i64.reinterpret_f64', asF64(emit(val))], 'i64')
+      else if (vt === 'f64') v = asF64(toNumF64(val, emit(val)))
+      else if (vt === 'f32') v = typed(['f32.demote_f64', asF64(toNumF64(val, emit(val)))], 'f32')
       else {
         // ES ToIntN (SetViewValue) for the integer stores: asI32's saturating
         // trunc stored INT32_MAX for dv.setInt32(0, 4e9) — spec wraps mod 2^32.
@@ -916,30 +937,30 @@ export default (ctx) => {
           wrapIntIR(['local.get', `$${vf}`])], 'i32')
       }
 
-      if (size === 1) return fin([storeOp, addr, v])
+      if (sz === 1) return fin([op, addr, v])
 
       // For BE we byte-swap the integer payload; floats route through bitcast i↔f.
-      const swap = (iVal) => size === 2 ? bswap16I32(iVal) : size === 4 ? bswap32I32(iVal) : bswap64I64(iVal)
+      const swap = (iVal) => sz === 2 ? bswap16I32(iVal) : sz === 4 ? bswap32I32(iVal) : bswap64I64(iVal)
       const beStore = () => {
-        if (valType === 'f32') {
+        if (vt === 'f32') {
           const swapped = typed(['f32.reinterpret_i32', swap(typed(['i32.reinterpret_f32', v], 'i32'))], 'f32')
-          return [storeOp, addr, swapped]
+          return [op, addr, swapped]
         }
-        if (valType === 'f64') {
+        if (vt === 'f64') {
           const swapped = typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.reinterpret_f64', v], 'i64'))], 'f64')
-          return [storeOp, addr, swapped]
+          return [op, addr, swapped]
         }
-        return [storeOp, addr, swap(v)]
+        return [op, addr, swap(v)]
       }
 
       const le = staticLE(leNode)
-      if (le === true) return fin([storeOp, addr, v])
+      if (le === true) return fin([op, addr, v])
       if (le === false) return fin(beStore())
       // Dynamic: hoist value + addr into temps so each branch can re-use.
       const aT = tempI32('dvsa')
-      const vLoc = valType === 'i64' ? tempI64('dvsv') : valType === 'i32' ? tempI32('dvsv') : temp('dvsv')
+      const vLoc = vt === 'i64' ? tempI64('dvsv') : vt === 'i32' ? tempI32('dvsv') : temp('dvsv')
       // Re-declare with correct type for f32 (temp() defaults to f64).
-      if (valType === 'f32') ctx.func.locals.set(vLoc, 'f32')
+      if (vt === 'f32') ctx.func.locals.set(vLoc, 'f32')
       const leT = tempI32('dvsle')
       return fin(['block',
         ['local.set', `$${aT}`, addr],
@@ -947,12 +968,12 @@ export default (ctx) => {
         ['local.set', `$${leT}`, truthyIR(emit(leNode))],
         ['if',
           ['local.get', `$${leT}`],
-          ['then', [storeOp, ['local.get', `$${aT}`], typed(['local.get', `$${vLoc}`], valType)]],
+          ['then', [op, ['local.get', `$${aT}`], typed(['local.get', `$${vLoc}`], vt)]],
           ['else', (() => {
-            const refV = typed(['local.get', `$${vLoc}`], valType)
-            if (valType === 'f32') return [storeOp, ['local.get', `$${aT}`], typed(['f32.reinterpret_i32', swap(typed(['i32.reinterpret_f32', refV], 'i32'))], 'f32')]
-            if (valType === 'f64') return [storeOp, ['local.get', `$${aT}`], typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.reinterpret_f64', refV], 'i64'))], 'f64')]
-            return [storeOp, ['local.get', `$${aT}`], swap(refV)]
+            const refV = typed(['local.get', `$${vLoc}`], vt)
+            if (vt === 'f32') return [op, ['local.get', `$${aT}`], typed(['f32.reinterpret_i32', swap(typed(['i32.reinterpret_f32', refV], 'i32'))], 'f32')]
+            if (vt === 'f64') return [op, ['local.get', `$${aT}`], typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.reinterpret_f64', refV], 'i64'))], 'f64')]
+            return [op, ['local.get', `$${aT}`], swap(refV)]
           })()]]])
     }
   }
@@ -968,22 +989,33 @@ export default (ctx) => {
   }
   for (const [method, [loadOp, resultType, size, signed]] of Object.entries(DV_GET)) {
     ctx.core.emit[`.${method}`] = (dv, off, leNode) => {
+      // Snapshot this closure's OWN captures into locals BEFORE any nested emit
+      // call below (emit(off)/emit(leNode)) can recurse into a SIBLING DataView
+      // closure from the SAME Object.entries(DV_GET) loop (e.g.
+      // `dv.getFloat64(dv.getInt32(0), dv.getUint8(4))`) — self-host closure-
+      // capture-after-nested-emit class (.work/todo.md 2026-07-23 TYPED-INDEX /
+      // 2026-07-30 KERNEL LEG ZERO FAILS): a captured loadOp/resultType/size/
+      // signed re-read after a nested emit() can observe the OTHER iteration's
+      // values once this file is kernel-compiled. toF64/beLoad below close over
+      // these locals, never the free variables, so they are immune regardless of
+      // what off/leNode nest.
+      const op = loadOp, rt = resultType, sz = size, sg = signed
       // Resolve the receiver's descriptor once; the load reads dataOff/byteLen from it.
       const desc = tempI32('dvD')
       const fin = (body) => typed(['block', ['result', 'f64'],
         ['local.set', `$${desc}`, dvDescriptor(dv)], asF64(body)], 'f64')
-      const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(off, size, dvViewSize(desc))]
+      const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(off, sz, dvViewSize(desc))]
 
       // Convert a wasm-typed raw value back into the f64 ABI return. Float reads
       // canonicalize NaN (see __canon_nan) so downstream `v !== v` works.
       const toF64 = (raw) => {
-        if (resultType === 'f64') return canonNaN(raw)
-        if (resultType === 'f32') return canonNaN(typed(['f64.promote_f32', raw], 'f64'))
-        if (resultType === 'i64') return typed(['f64.reinterpret_i64', raw], 'f64')
-        return typed(signed ? ['f64.convert_i32_s', raw] : ['f64.convert_i32_u', raw], 'f64')
+        if (rt === 'f64') return canonNaN(raw)
+        if (rt === 'f32') return canonNaN(typed(['f64.promote_f32', raw], 'f64'))
+        if (rt === 'i64') return typed(['f64.reinterpret_i64', raw], 'f64')
+        return typed(sg ? ['f64.convert_i32_s', raw] : ['f64.convert_i32_u', raw], 'f64')
       }
 
-      if (size === 1) return fin(toF64(typed([loadOp, addr], resultType)))
+      if (sz === 1) return fin(toF64(typed([op, addr], rt)))
 
       // LE path: native wasm load is already little-endian.
       // BE path: load as raw int (always little-endian on wasm), byte-swap, then
@@ -991,25 +1023,25 @@ export default (ctx) => {
       // For unsigned 16-bit, bswap16 only spans the low half — no extra masking needed.
       // For signed 16-bit BE, swap then sign-extend via `i32.extend16_s`.
       const beLoad = () => {
-        if (size === 2) {
+        if (sz === 2) {
           const rawU = bswap16I32(typed(['i32.load16_u', addr], 'i32'))
-          return toF64(typed(signed ? ['i32.extend16_s', rawU] : rawU, 'i32'))
+          return toF64(typed(sg ? ['i32.extend16_s', rawU] : rawU, 'i32'))
         }
-        if (size === 4) {
-          if (resultType === 'f32') {
+        if (sz === 4) {
+          if (rt === 'f32') {
             return toF64(typed(['f32.reinterpret_i32', bswap32I32(typed(['i32.load', addr], 'i32'))], 'f32'))
           }
           return toF64(typed(bswap32I32(typed(['i32.load', addr], 'i32')), 'i32'))
         }
         // size === 8 (f64 or i64).
-        if (resultType === 'f64') {
+        if (rt === 'f64') {
           return toF64(typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.load', addr], 'i64'))], 'f64'))
         }
         return typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.load', addr], 'i64'))], 'f64')
       }
 
       const le = staticLE(leNode)
-      if (le === true) return fin(toF64(typed([loadOp, addr], resultType)))
+      if (le === true) return fin(toF64(typed([op, addr], rt)))
       if (le === false) return fin(beLoad())
       // Dynamic LE: hoist addr, branch on leNode at runtime.
       const aT = tempI32('dvga')
@@ -1019,21 +1051,21 @@ export default (ctx) => {
         ['local.set', `$${leT}`, truthyIR(emit(leNode))],
         ['if', ['result', 'f64'],
           ['local.get', `$${leT}`],
-          ['then', asF64(toF64(typed([loadOp, ['local.get', `$${aT}`]], resultType)))],
+          ['then', asF64(toF64(typed([op, ['local.get', `$${aT}`]], rt)))],
           ['else', asF64((() => {
             // Replicate beLoad but using hoisted addr.
             const a = ['local.get', `$${aT}`]
-            if (size === 2) {
+            if (sz === 2) {
               const rawU = bswap16I32(typed(['i32.load16_u', a], 'i32'))
-              return toF64(typed(signed ? ['i32.extend16_s', rawU] : rawU, 'i32'))
+              return toF64(typed(sg ? ['i32.extend16_s', rawU] : rawU, 'i32'))
             }
-            if (size === 4) {
-              if (resultType === 'f32') {
+            if (sz === 4) {
+              if (rt === 'f32') {
                 return toF64(typed(['f32.reinterpret_i32', bswap32I32(typed(['i32.load', a], 'i32'))], 'f32'))
               }
               return toF64(typed(bswap32I32(typed(['i32.load', a], 'i32')), 'i32'))
             }
-            if (resultType === 'f64') {
+            if (rt === 'f64') {
               return toF64(typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.load', a], 'i64'))], 'f64'))
             }
             return typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.load', a], 'i64'))], 'f64')
@@ -1113,25 +1145,35 @@ export default (ctx) => {
         const elems = src.slice(1)
         const out = allocPtr({ type: PTR.TYPED, aux, len: ['i32.const', elems.length * stride], stride: 1, tag: 'tf' })
         const body = [out.init]
+        // Snapshot this closure's OWN captures into locals BEFORE the loop below:
+        // each `emit(elems[k])` can recurse into a SIBLING `${name2}.from`/
+        // `new.${name2}` closure instance from the SAME Object.entries
+        // (TYPED_ELEM_CODE) loop (e.g. `Float64Array.from([Int32Array.from([1])[0]])`),
+        // and re-reading `stride`/`store`/`elemType` for a LATER element after that
+        // nested emit would risk observing the OTHER iteration's values once this
+        // file is kernel-compiled — self-host closure-capture-after-nested-emit
+        // class (.work/todo.md 2026-07-23 TYPED-INDEX / 2026-07-30 KERNEL LEG ZERO
+        // FAILS). The loop below reads these locals, never the free variables.
+        const strideS = stride, storeS = store, elemTypeS = elemType
         for (let k = 0; k < elems.length; k++) {
           const addr = k === 0 ? ['local.get', `$${out.local}`]
-            : ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * stride]]
+            : ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * strideS]]
           if (fl.isF16 || fl.isClamped) { body.push(elemStoreIR(fl, addr, asF64(emit(elems[k])))); continue }
-          if (elemType <= 5) {
+          if (elemTypeS <= 5) {
             // ES ToIntN, not saturation: a constant wraps exactly at compile time
             // (JS `| 0` IS ToInt32 for any magnitude; store8/16 keeps the low
             // bits = the narrower modulo). A runtime element takes a temp and
             // the wrapIntIR i64 route — asI32's saturating trunc clamps wrong.
             const e = emit(elems[k])
-            if (isLit(e)) { body.push([store, addr, ['i32.const', litVal(e) | 0]]); continue }
+            if (isLit(e)) { body.push([storeS, addr, ['i32.const', litVal(e) | 0]]); continue }
             const tv = temp('tfe')
             body.push(['local.set', `$${tv}`, asF64(e)],
-              [store, addr, wrapIntIR(['local.get', `$${tv}`])])
+              [storeS, addr, wrapIntIR(['local.get', `$${tv}`])])
             continue
           }
-          const v = elemType === 6 ? ['f32.demote_f64', asF64(emit(elems[k]))]
+          const v = elemTypeS === 6 ? ['f32.demote_f64', asF64(emit(elems[k]))]
             : asF64(emit(elems[k]))
-          body.push([store, addr, v])
+          body.push([storeS, addr, v])
         }
         body.push(out.ptr)
         return typed(['block', ['result', 'f64'], ...body], 'f64')

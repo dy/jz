@@ -65,6 +65,28 @@ export let f = (s) => g(s) === false`,
   // call — same final IR tree, reordered so the vulnerable closure reads
   // happen before the recursive compile, not after.
   nestedtyped: `export let f = (x) => new Int32Array(new Float64Array([x]))[0]`,
+  // Class-wide sweep (2026-07-30, ledger-directed): three more capture-after-
+  // nested-emit sites found and fixed alongside nestedtyped, all in
+  // module/typedarray.js's per-iteration `for (const [...] of Object.entries(...))`
+  // emitter closures — same root as nestedtyped, different tables/branches.
+  // Fixed by snapshotting the closure's OWN captures into locals before the
+  // first nested emit() call, so later reads see the local (immune) instead of
+  // re-reading the free variable (which a nested sibling-closure invocation can
+  // clobber once this file is kernel-compiled).
+  // (1) new.${name}'s SUBVIEW branch (`new T(buffer, off, len)`): `stride`/
+  // `name` read after emit(lenExpr2)/emit(offsetExpr) — untouched by the
+  // nestedtyped fix, which only covered the srcType===TYPED and srcType==null
+  // branches of the same closure.
+  subviewtyped: `export let f = (buf) => new Int32Array(buf, 0, new Float64Array(4).length)`,
+  // (2)+(3) the DataView get/set closures (DV_GET/DV_SET loops): loadOp/
+  // resultType/size/signed (get) and storeOp/valType/size (set) read after
+  // emit(off)/emit(val)/emit(leNode) — reachable via a DataView receiver
+  // nesting another DataView call in an offset/value position.
+  dvnested: `export let f = (dv) => dv.setFloat64(dv.getInt32(0), dv.getFloat64(8))`,
+  // (4) TypedArray.from's array-literal fast path: stride/store/elemType
+  // re-read for element k+1 after element k's emit() — reachable when one
+  // literal element is itself a nested same-family typed-array construction.
+  fromnested: `export let f = () => Int32Array.from([Float64Array.from([5])[0], 2])`,
 }
 
 // Residual known divergences: NONE — every corpus row is byte-identical at

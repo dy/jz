@@ -448,6 +448,23 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  CAPTURE-AFTER-NESTED-EMIT CLASS SWEPT 2026-07-30 (the named follow-
+  up; class now AUDITED, not just patched): 4 REAL sites fixed, all
+  typedarray.js -- subview branch of the SAME 401-loop closure the
+  07-30 fix partially covered (stride/name read after emit(lenExpr2/
+  offsetExpr)), DV_SET 908 + DV_GET 990 (op/vt/sz read after
+  emit(off/val/le)), from-literal 1128 (stride/store/elemType re-
+  read between element emits). Established snapshot-before-nested-
+  emit shape, site comments cite the class. CLEAN inventory recorded
+  per-site: atomics RMW, 9 simd loops, web.js fetch (single-entry
+  ARITY -- note: a 2nd entry needs revisit), from-general branch,
+  regex; 10 modules ruled out by shape. HONESTY: the 4 new sites
+  could NOT be live-reproduced with small repros (unfixed-kernel
+  test) -- defensive immunization by strict class criteria, plainly
+  not overclaimed. Byte-identity per fix via HEAD-swap WAT diff at
+  O0/O2/O3. Pins: subviewtyped/dvnested/fromnested join the parity
+  corpus (33/33). Gates: battery 3130/0, kernel leg 2446/0 HELD,
+  ratchet +0, dbg green, watr 35/35.
   KERNEL LEG ZERO FAILS 2026-07-30 (audit-#4 blocker #1 CLOSED; first
   full-coverage zero-fail kernel run ever: 2446/0/6). TWO roots, both
   self-host miscompiles in typedarray.js (native runs interpret the
