@@ -448,6 +448,30 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  DYN-PROP KEYING FIXED 2026-07-30 (both value-wrong repros; TWO
+  DISTINCT ROOTS -- the one-family hypothesis tested and REFUTED):
+  ROOT A (classification): array.js's unknown-receiver arr[i]
+  fallback routed numeric keys straight to __typed_idx, whose non-
+  ARRAY/TYPED arm bounds-checks vs __len (=0 for OBJECT) -> silent
+  undefined; fixed in the runtime-is_str_key arm ONLY (the provably-
+  NUMBER-key fallback is a deliberate documented perf tradeoff,
+  named perf pin protects a[loopCounter] hot loops); IDENTICAL gap
+  in the `in` operator (collection.js) fixed. Suspected line 842
+  EXONERATED (dyn_get_expr normalizes internally -- finder's red
+  herring corrected). ROOT B (representation contract): dictWalkI32
+  "lean" raw-i32 dict proof was honored by tryHashRmwFusion but NOT
+  plain o[k]=v (generic __dyn_set boxes f64; lean read's bare wrap
+  saw the box's low word=0); fixed at dynSetCall, the single choke
+  point. Map SameValueZero verified + conflation pin. ATTEMPTED AND
+  HONESTLY REVERTED: global dict-mode classification (recordGlobal
+  Rep can't see plan-time dynWriteVars) -- full fix built but broke
+  watr self-host 30/35 via analyzeBody staleness + emitDecl overlay
+  shadowing + unboxablePtrs schema-id loss chain; banked as a
+  documented gap with pin, not silently absent. Pins: repro A +
+  write/delete/in/Map siblings (dyn-keys.js, data.js), repro B +
+  the promised 2-hop variant (inference.js). Gates: battery 3130/0,
+  parity 18/18 fresh dist, ratchet 10/10 +0, kernel leg 2 pre-
+  existing only, dbg green, watr 35/35.
   CROSS-CALL ARRAY-ELEM LATTICE LANDED 2026-07-29 (wordcount root):
   the join was ALREADY WIRED (narrow.js runArrValTypeFixpoint ->
   paramReps arrayElemValType -> localReps); the caller-side fact

@@ -3169,6 +3169,18 @@ export default (ctx) => {
               ['i32.eq', typeVal, ['i32.const', PTR.MAP]]],
             ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]]]]]]
 
+    // OBJECT/CLOSURE dyn-props are ToPropertyKey-addressed like every other dyn-get
+    // entry (module/array.js's read fast paths, __dyn_get_t/_h) — a non-string key
+    // (`1 in o` where `o['1']` was set) must stringify before the dyn-props probe.
+    // The isStringKey/hasDynProps arm above only fires when the key is ALREADY a
+    // string; ARRAY/TYPED are excluded here (their numeric-key membership is fully
+    // decided by the in-range block above — element writes never leave a NUMERIC
+    // sidecar entry, only non-canonical string keys do) and HASH is excluded (its
+    // own arm below already stringifies). Sibling of the array.js dyn-prop read fix.
+    const isObjectLike = ['i32.or',
+      ['i32.eq', typeVal, ['i32.const', PTR.OBJECT]],
+      ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]]]
+
     inc('__ptr_type', '__len', '__str_byteLen', '__hash_has', '__is_str_key', '__to_str', '__dyn_get', '__is_nullish')
     if (ctx.features.external) inc('__ext_has')
 
@@ -3195,6 +3207,11 @@ export default (ctx) => {
           ['if', hasDynProps,
             ['then', ['local.set', `$${outTmp}`,
               ['i32.eqz', ['call', '$__is_nullish', ['call', '$__dyn_get', ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]]]]]]]],
+
+      ['if', ['i32.and', ['i32.eqz', isStringKey], isObjectLike],
+        ['then', ['local.set', `$${outTmp}`,
+          ['i32.eqz', ['call', '$__is_nullish', ['call', '$__dyn_get', ['i64.reinterpret_f64', objVal],
+            ['call', '$__to_str', ['i64.reinterpret_f64', keyVal]]]]]]]],
 
       ['if', ['i32.eq', typeVal, ['i32.const', PTR.HASH]],
         ['then', ['local.set', `$${outTmp}`,

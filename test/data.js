@@ -1332,3 +1332,41 @@ test('dict-use idioms: lean-hash, i32-histogram, domain-keyed all JS-exact', () 
   is(m.hist(50), host.hist(50))
   is(m.domain(3), host.domain(3))
 })
+
+// dyn-prop KEYING: a PLAIN (non-self-referencing) write to an i32-lean HASH
+// local — ledger 2026-07-29, repro B's root. dictWalkI32 (analyze.js) proves
+// a dict-mode HASH local "lean" (values stored as raw i32 in the low 32 bits,
+// not NaN-boxed f64) whenever every WRITE is a discarded statement and every
+// READ is immediately bitwise-coerced — `counts[k] = 7` (a literal RHS, no
+// self-read) satisfies that exactly as much as `counts[k] = (counts[k]|0)+1`
+// does, but only the RMW-fusion emitter (`o[k]=f(o[k])`, emit-assign.js
+// tryHashRmwFusion) honored the lean contract on write; a plain write (RMW
+// fusion declines — no self-reference to fuse) fell through to the generic
+// __dyn_set path, which always stores a full NaN-boxed f64. The lean READ's
+// bare `i32.wrap_i64` then saw the f64 box's low word (0 for any small
+// integer value) instead of the raw i32 — `counts[k]=7; return counts[k]|0`
+// silently read 0. Fixed in dynSetCall (emit-assign.js), the single choke
+// point every generic HASH write (proven-string-key and unproven-key alike)
+// routes through: it now stores `i64.extend_i32_u(asI32(value))` instead of
+// the f64 box whenever the receiver is i32HashLocals-proven lean.
+test('dyn-keys: plain (non-RMW) write to an i32-lean HASH local is readable', () => {
+  is(run(`export let f = () => {
+    let k = 'cd'
+    let counts = {}
+    counts[k] = 7
+    return counts['cd'] | 0
+  }`).f(), 7)
+  // 2-hop cross-call variant (repro B): the write is a plain assignment in the
+  // OUTER function; the read is inlined from a DIFFERENT function (probe) —
+  // same lean contract, must still agree.
+  is(run(`let build = () => { let ws = []; ws.push('ab'); ws.push('cd'); return ws }
+    let probe = (counts, keys) => counts[keys[1]] | 0
+    export let f = () => {
+      let words = build()
+      let picks = []
+      for (let i = 0; i < 2; i++) picks.push(words[i])
+      let counts = {}
+      counts[words[1]] = 7
+      return probe(counts, picks)
+    }`).f(), 7)
+})

@@ -1037,13 +1037,30 @@ export default (ctx) => {
     if (useRuntimeKeyDispatch && keyType !== VAL.NUMBER)
       return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
         const keyI32 = asI32(typed(keyExpr, 'f64'))
+        // Receiver AND key kind are both statically unproven here (the runtime
+        // is_str_key dispatch above already ruled out string/atom — this arm is
+        // the "real number, unknown receiver" case). ARRAY/TYPED keep the lean
+        // ctor-aware element read (__typed_idx); an OBJECT/HASH/CLOSURE receiver
+        // with a numeric-looking key (`o={}; o['1']=9; o[numArr[j]]`) instead
+        // ToPropertyKey-probes dyn-props via __dyn_get_expr — the SAME contract
+        // module/array.js's proven-OBJECT/HASH branches above already use, closing
+        // the gap where this fallback silently read undefined through __typed_idx's
+        // unrelated __len-bounds-check arm. Scoped to ONLY this runtime-dispatched
+        // arm (not the sibling provably-NUMBER-key fallback below, which a NAMED
+        // perf pin keeps __dyn_get-free for the dominant `a[loopCounter]` shape —
+        // ledger 2026-07-29 dyn-prop keying sweep).
+        inc('__dyn_get_expr')
+        const typedOrDyn = ['if', ['result', 'f64'],
+          ['i32.or', ptrTypeEq(ptrExpr, PTR.ARRAY), ptrTypeEq(ptrExpr, PTR.TYPED)],
+          ['then', ['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32]],
+          ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], ['i64.reinterpret_f64', keyExpr]]]]]
         if (ctx.module.modules['string'] && !notString) {
           return ['if', ['result', 'f64'],
             ptrTypeEq(ptrExpr, PTR.STRING),
             ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])],
-            ['else', (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])]]
+            ['else', typedOrDyn]]
         }
-        return (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])
+        return typedOrDyn
       })
     // Unknown → runtime dispatch (string module loaded → check ptr_type)
     if (ctx.module.modules['string'] && !notString)

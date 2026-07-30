@@ -88,10 +88,30 @@ function ensureDynSetAllowed(arr) {
   err(`strict mode: dynamic property assignment \`${arrLabel}[<expr>] = ...\` falls back to __dyn_set. Use a literal key or known array/typed-array numeric index, or pass { strict: false }.`)
 }
 
-/** Last-resort dynamic property write through `__dyn_set`. */
+/** Last-resort dynamic property write through `__dyn_set`. Receiver-value contract:
+ *  a HASH local dictWalkI32 proved i32-lean (ctx.func.i32HashLocals — every read
+ *  bitwise-coerced, every write discarded; see analyze.js) stores its VALUES as raw
+ *  i32 bits in the slot's low 32 bits, not NaN-boxed f64 — the read fast path
+ *  (module/array.js's i32HashLocals arm) does a bare `i32.wrap_i64` with no
+ *  unboxing. tryHashRmwFusion (emit-assign.js) honors this for `o[k]=f(o[k])`
+ *  writes; a PLAIN write `o[k]=v` (no self-read, so RMW fusion declines) used to
+ *  fall through here and box `v` as f64 regardless — write/read format mismatch,
+ *  silently truncating every stored value to its low 32 bits reinterpreted as
+ *  raw int (`o[k]=7` unreadable: __hash_get_local_h under `i32.wrap_i64` sees the
+ *  f64 box's low word, 0). Every write path for an i32-lean receiver must agree
+ *  with the read's raw-i32 contract, so this is the single choke point (dynSetCall
+ *  is also step 7b's HASH fallback) that applies it uniformly. */
 function dynSetCall(arr, keyExpr, valueExpr) {
   ensureDynSetAllowed(arr)
   inc('__dyn_set')
+  if (typeof arr === 'string' && ctx.func.i32HashLocals?.has(arr)) {
+    const valTmp = temp()
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${valTmp}`, valueExpr],
+      ['drop', ['call', '$__dyn_set', asI64(emit(arr)), asI64(keyExpr),
+        ['i64.extend_i32_u', asI32(typed(['local.get', `$${valTmp}`], 'f64'))]]],
+      ['local.get', `$${valTmp}`]], 'f64')
+  }
   return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), asI64(keyExpr), asI64(valueExpr)]], 'f64')
 }
 

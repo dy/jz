@@ -1534,12 +1534,40 @@ test('cross-call array-elem kind: uniform-string array through a param proves el
     }
   `)
   is(exports.f(), 7, 'param-side elem read hashes the right key')
-  // KNOWN LATENT (pre-existing at HEAD, found by this pin's stronger 2-hop
-  // variant, banked in the ledger with the numeric-key sibling): building the
-  // key array from ANOTHER call-returned array's reads (words = build();
-  // picks.push(words[i]); counts[words[1]] = 7; probe reads counts[picks[1]])
-  // returns 0 — a proven-write/generic-read hash-keying divergence. The 2-hop
-  // value pin lands with that fix.
+  // FIXED (was: KNOWN LATENT, pre-existing at HEAD 26435f2f, found by this
+  // pin's stronger 2-hop variant, banked in the ledger with the numeric-key
+  // sibling — dyn-prop keying sweep, 2026-07-29). Building the key array from
+  // ANOTHER call-returned array's reads (words = build(); picks.push(words[i]);
+  // counts[words[1]] = 7; probe reads counts[picks[1]]) used to return 0 — a
+  // proven-write/generic-read hash-keying divergence. Root cause: a dict-mode
+  // HASH local dictWalkI32-proven "lean" (i32-only values — every write
+  // discarded, every read bitwise-coerced, see analyze.js's leanDictUse/
+  // i32HashLocals) was only honored by the RMW-fusion write emitter
+  // (`o[k]=f(o[k])`, emit-assign.js tryHashRmwFusion); a PLAIN write
+  // `o[k]=v` (no self-read, so RMW fusion declines even though it ALSO
+  // satisfies dictWalkI32's "discarded write" contract) fell through to the
+  // generic __dyn_set path, which always stores a full NaN-boxed f64 — the
+  // lean READ's bare `i32.wrap_i64` then saw the f64 box's low word (0) instead
+  // of the raw i32 value. Fix: dynSetCall (emit-assign.js, the single choke
+  // point for every generic HASH write — step 4's proven-string-key arm AND
+  // step 7b's HASH fallback both route through it) now checks
+  // ctx.func.i32HashLocals and stores `i64.extend_i32_u(asI32(value))` instead
+  // of the f64 box when the receiver is lean, matching the read's contract
+  // while still returning the untruncated f64 value for JS assignment-
+  // expression semantics.
+  const twoHop = jz(`
+    let build = () => { let ws = []; ws.push('ab'); ws.push('cd'); return ws }
+    let probe = (counts, keys) => counts[keys[1]] | 0
+    export let f = () => {
+      let words = build()
+      let picks = []
+      for (let i = 0; i < 2; i++) picks.push(words[i])
+      let counts = {}
+      counts[words[1]] = 7
+      return probe(counts, picks)
+    }
+  `)
+  is(twoHop.exports.f(), 7, '2-hop cross-call key (call-returned array -> pushed alias -> proven-write/generic-read) hashes the right key')
 })
 
 test('cross-call array-elem kind: bimorphic callers fail open', () => {
