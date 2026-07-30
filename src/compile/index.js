@@ -2088,7 +2088,11 @@ export default function compile(ast, profiler) {
   // on (fail-open by construction — no gate needed, mirrors the ungated direct-
   // closure paramTypes lattice in emit.js/tryDirectClosureCall). emit.js
   // consults this set at every `name[idx](args)` call site to decide whether
-  // to accumulate arg-kind evidence for the table's elements.
+  // to accumulate arg-kind evidence for the table's elements. NOTE: "always
+  // on" describes the FACT computation; whether emit consumes the proof is
+  // tier-dependent (O0 keeps the generic call path — values identical, no
+  // proof-shaped codegen; the structural pins in test/closures.js are
+  // belowOpt(2)-guarded accordingly).
   ctx.scope.closureTableLatticeCandidates = scanClosureTableLatticeCandidates(ast)
 
   // Same lattice, IMPERATIVE-construction class (dispatch tables built via

@@ -4,7 +4,35 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
-## Status (2026-07-28, current truth — re-audit #3 reconciled)
+## Status (2026-07-30, current truth — re-audit #4 reconciled)
+
+CLOSED since #3: typed-array WIP LANDED (b1176b4a — clean-HEAD simd
+158/158); bench producer integration COMPLETE (watr meta, porf-native
+42 rows, 70% coverage floor, JIT claim gated, strict/band split);
+TargetProfile CLOSED for JS/WASI (zero raw host checks; legalization
+real); solver-owned invalidation LANDED (2 justified bespoke calls
+remain); warm cap ATTAINED (audit-confirmed 0.969-0.990 clean); w2c
+bands GREEN (geomean 1.283, worst 3.395 vs 1.35/3.5 caps); boxed-
+bigint PARKED by user decision (revisit map banked); GOALS WAVE:
+closure-table lattices (dispatch 10.7x->1.10x size AND 1.32x AHEAD
+of JSC), template-Ryu fix, cross-call elem lattice (wordcount
+5.61->4.63x), O0 pins tier-guarded. OPEN (audit #4 order): 1 kernel
+ToIntN value bugs (2 rows: cross-kind copy + .map integer stores —
+kernel-compiled programs WRONG, hunt next), 2 [DONE in-thread: O0
+lattice pins belowOpt-guarded + comment fixed], 3 evidence refresh
+at settled HEAD + tinygo (CLT user-gated), 4 [DONE: WASM_TODO
+sdf/trace/lz entries added, this header], 5 self-host carrier
+limitation -> precise public docs (README note pending), 6 fold
+closure-table facts into the common solver (medium-term; dyn-
+closure-tables.js 613 lines = a parallel lattice), 7 canonical
+LoopPlan + isolated CompileSession (long-term vision). IN FLIGHT:
+dyn-prop keying miscompile family (2 value-wrong-at-HEAD repros).
+Perf truth (f1e877b8): wasm 31 strict / 15 band / 4 red (sdf 1.280,
+trace 1.445, lz 1.107, shapes 1.120); JIT 13 unled / 10 red (jessie
+1.935 worst real; dispatch FIXED post-evidence); porf-native trails
+16.36x geomean.
+
+## Status (2026-07-28, superseded — re-audit #3 reconciled)
 
 CLOSED: kernel byte-parity (PARITY_TODO empty, O0/O2/O3 identical); front
 half unified (src/front.js); claims gate landed + hardened (fresh incl.

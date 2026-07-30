@@ -541,6 +541,8 @@ Yes — fully. JZ compiles its own entire source to `dist/jz.wasm`: the whole pi
 
 `npm run test:self` is the CI gate — it builds `dist/jz.wasm`, then round-trips real programs through the in-wasm compiler and runs their output, proving the wasm-hosted compiler produces working modules.
 
+One known divergence class: inside `dist/jz.wasm`, BigInt values are raw i64 bits in an f64 slot, and small-magnitude bit patterns collide with subnormal Numbers (`1n` and `5e-324` are the same 64 bits). The wasm-hosted compiler therefore misreads two rare literal shapes the native compiler gets right: negative subnormal literals (`-5e-324`) and BigInt literals above 2⁵² crossing dynamic boundaries. Both are pinned as expected divergences in the kernel test leg (`test/data.js`); a tagged-pointer BigInt representation that removes the ambiguity is designed (`.work/bigint-round3-design.md`) but deliberately not adopted — it taxes the compiler's own hot path for shapes real programs almost never hit.
+
 </details>
 
 

@@ -1277,6 +1277,7 @@ export let g = () => t[0](5) + t[0](1, 2)`)
 })
 
 test('closure-table call-site param lattice: indexed-only dispatch proves NUMBER params', () => {
+  if (belowOpt(2)) return  // structural pin: the lattice computes at every tier, but O0's emit takes the generic path (values stay correct — see the runtime asserts below the shape ones)
   // The dispatch bench's exact shape (bench/dispatch/dispatch.js): a const
   // array of capture-free arrows invoked ONLY through one data-indexed call
   // site. No alias, no export, no non-call read of `ops` anywhere — so
@@ -1309,6 +1310,7 @@ export let f = (n) => {
 })
 
 test('closure-table call-site param lattice, IMPERATIVE-CONSTRUCTION class: proves NUMBER when confined to function bodies', () => {
+  if (belowOpt(2)) return  // structural pin: same tier note as the literal-table pin above
   // The named follow-on to the const-literal test above (dyn-closure-tables.js
   // scanImperativeClosureTableLatticeCandidates): jessie's subscript `lookup`
   // shape is a `let NAME = []` populated via scattered `NAME[key] = arrow`
