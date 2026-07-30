@@ -420,6 +420,41 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  PARALLEL WAVE LANDED 2026-07-29 (two agents + in-thread bisect):
+  (1) IMPERATIVE closure-table lattice -- name[key]=arrow tables get
+  the 3c4898d3 param/result lattice via everyUseIsIndexedCallOr
+  LiteralWrite (loop-written tables poison fail-open: closure-in-
+  loop class) + early-merge window (post-named-fns, pre-
+  compilePendingClosures -- the timing the literal case never
+  needed); HONEST NULLS: jessie's subscript lookup fails open BY
+  DESIGN ((fn=lookup[cc])&&fn(a,p) guarded-alias = bare read under
+  the stricter param-kind safety; plus loop-built digit writes) --
+  jessie 1.94 needs a DIFFERENT lever; vm has NO closure table
+  (if/else dispatch). Byte-identical where not engaged; pins x2.
+  (2) TEMPLATE-LITERAL Ryu pull FIXED (ir.js toStrI64 +7: proven-
+  STRING part is ToString-identity) -- `x${s}y` module 17 fns -> 2.
+  (3) STRATIFICATION CORRECTIONS: __str_concat was ALREADY
+  stratified (concat_raw, pre-existing) -- my monolithic-helper
+  diagnosis wrong in the specific; the REAL monolith is __dyn_set/
+  __dyn_get_t (ToPropertyKey pulls __to_str) BUT the split cores
+  are BLOCKED: wiring them triggers a LATENT WATR INLINER BUG
+  (smaller fns inline where originals didn't; __dyn_get_t_h single-
+  entry memo cache + multi-site inlining corrupts results --
+  standalone repros: a.name=7;a.shift() -> NaN; JSON.parse+o[k] ->
+  NaN) AND even unreachable cores shift condref +371 via changed
+  inline choices (bisected in-thread to collection.js) -- cores NOT
+  landed; watr-side inliner bug = USER-repo item, repro in agent
+  transcript. (4) WORDCOUNT TRUE ROOT (my in-thread diagnosis
+  corrected): probes array passed as PARAM -- element STRING kind
+  dies at the call boundary (param elem inference is body-evidence-
+  only, no cross-call arg propagation; intra-function attempt
+  didn't survive re-analysis) = the cross-call ARRAY-ELEM lattice
+  gap, sibling of the param lattice family. PROCESS: stratification
+  agent used git stash once (immediately popped, no damage --
+  flagged honestly; briefs already forbid it). Gates on final tree:
+  battery 3126 total green after dist rebuild (stale-dist parity
+  red bisected+cleared), parity 18/18, ratchet 10/10 +0, watr
+  35/35, kernel leg 2440/2 pre-existing.
   WORDCOUNT ROOT NAMED 2026-07-29 (in-thread, same method): source
   never stringifies a number yet Ryu is in the module -- __str_concat
   is a MONOLITHIC generic helper whose unproven-operand arm calls

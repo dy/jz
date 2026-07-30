@@ -1071,6 +1071,13 @@ export function toNumF64(node, v) {
  *  an abrupt completion through the closure call. */
 export function toStrI64(node, v) {
   const vt = valTypeOf(node)
+  // ToString(string) is the identity — no coercion needed, no __to_str call.
+  // Without this, a proven-string operand (a template-literal interpolation
+  // `${s}`, module/string.js strcat's partStrI64) still paid for the fully
+  // generic __to_str dispatch, dragging its NUMBER arm's Ryu float formatter
+  // (__ftoa/__ftoa_shortest/__ryu_*) into any module with a dynamic template
+  // literal — even one that never stringifies a number.
+  if (vt === VAL.STRING) return asI64(v)
   if (vt === VAL.OBJECT && ctx.closure.call && ctx.schema.slotOf) {
     const prim = toPrimitiveChain(node, v, ['toString', 'valueOf'])
     if (prim) {
