@@ -58,11 +58,23 @@ const VEC_WIDTH = [16, 16, 8, 8, 4, 4, 4, 2] // 128 bits / element bits
 
 // === SIMD pattern detection ===
 
-/** Check if AST node is a constant number */
+/** Check if AST node is a constant number. `null` means "not a constant" — NEVER
+ *  `false`: this function's other returns are plain JS numbers (`typeof
+ *  node === 'number'`), and a function whose return tails mix `number` and a
+ *  bare `false`/`true` literal is unsound to compile — the boolean literal's
+ *  "cheap i32 0/1" representation (by design: branch/arithmetic position, see
+ *  ir.js boolBoxIR) only gets boxed into a real f64 atom at a handful of
+ *  explicit escape sites (closures, a provably-uniform-BOOL return); a
+ *  NUMBER-mixed return isn't one of them, so a `false` tail here would
+ *  silently cross as the plain float 0 — indistinguishable from a genuine
+ *  constant `0` at every `!== false` call site below (`0 !== false` is true,
+ *  so "not constant" would misreport as "found constant undefined"). `null`
+ *  carries no such i32-vs-f64 ambiguity (it's always a proper NaN-box, never
+ *  a raw truthy int), so every caller here tests `!= null` instead. */
 const isConst = node => {
   if (typeof node === 'number') return node
   if (Array.isArray(node) && node[0] == null && typeof node[1] === 'number') return node[1]
-  return false
+  return null
 }
 
 /**
@@ -78,18 +90,18 @@ function analyzeSimd(body, param) {
     const [a, b] = args
     const isA = a === param, isB = b === param
     const cA = !isA && isConst(a), cB = !isB && isConst(b)
-    if (op === '*' && ((isA && cB !== false) || (isB && cA !== false)))
+    if (op === '*' && ((isA && cB != null) || (isB && cA != null)))
       return { op: 'mul', val: isA ? cB : cA }
-    if (op === '+' && ((isA && cB !== false) || (isB && cA !== false)))
+    if (op === '+' && ((isA && cB != null) || (isB && cA != null)))
       return { op: 'add', val: isA ? cB : cA }
-    if (op === '-' && isA && cB !== false) return { op: 'sub', val: cB }
-    if (op === '/' && isA && cB !== false) return { op: 'div', val: cB }
+    if (op === '-' && isA && cB != null) return { op: 'sub', val: cB }
+    if (op === '/' && isA && cB != null) return { op: 'div', val: cB }
   }
 
   // Bitwise: x&c, x|c, x^c, x<<c, x>>c, x>>>c
   if (['&', '|', '^', '<<', '>>', '>>>'].includes(op) && args.length === 2) {
     const [a, b] = args
-    if (a === param && isConst(b) !== false) {
+    if (a === param && isConst(b) != null) {
       const ops = { '&': 'and', '|': 'or', '^': 'xor', '<<': 'shl', '>>': 'shr', '>>>': 'shru' }
       return { op: ops[op], val: isConst(b) }
     }
@@ -454,9 +466,21 @@ export default (ctx) => {
         return ctx.core.emit[`${name}.from`](lenExpr)
       if (srcType === VAL.TYPED) {
         const src = temp('ts')
+        // Build copyFromTyped's IR BEFORE emit(lenExpr) recurses into a sibling
+        // new.${name} closure instance (composing typed-array ctors, e.g.
+        // `new Int32Array(new Float64Array(...))`) — self-host closure-capture-
+        // after-nested-emit class (.work/todo.md 2026-07-23, TYPED-INDEX KERNEL
+        // MISCOMPILE): a free variable this closure captures (elemType/aux/
+        // stride/name, from the `for (const [name, elemType] of ...)` loop
+        // above) read AFTER a nested emit() call can observe the OTHER
+        // iteration's values once this file is compiled by the kernel — native
+        // (interpreted) execution never exposes it. copyFromTyped(src) only
+        // needs src's temp NAME (already allocated), not its emitted value, so
+        // building it first is behavior-identical — same IR tree, reassembled.
+        const copyIR = copyFromTyped(src)
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${src}`, asF64(emit(lenExpr))],
-          copyFromTyped(src)], 'f64')
+          copyIR], 'f64')
       }
       // Reinterpret on a buffer: zero-copy view. TYPED retagged at the same offset —
       // the byteLen header is shared with the parent. __len(view) = byteLen >> shift
@@ -474,6 +498,17 @@ export default (ctx) => {
         const shift = SHIFT[elemType]
         const numBytes = ['i32.shl', ['local.get', `$${len}`], ['i32.const', shift]]
         const numAlloc = allocPtr({ type: PTR.TYPED, aux, len: numBytes, stride: 1, tag: 'ta' })
+        // Build the elemType-closing branches BEFORE emit(lenExpr) — same
+        // self-host closure-capture-after-nested-emit hazard as the srcType===
+        // VAL.TYPED branch above (a nested `new.${name}` instance inside
+        // lenExpr can corrupt this closure's own captured elemType/aux/name
+        // once compiled by the kernel); both calls already ran unconditionally
+        // at this point in source order (JS builds the whole if/else IR tree
+        // regardless of which runtime branch fires), so hoisting them earlier
+        // changes nothing about which compile-time calls happen — only their
+        // order relative to emit(lenExpr).
+        const fromArrIR = ctx.core.emit[`${name}.from`](src)
+        const copyTypedIR = copyFromTyped(src)
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${src}`, asF64(emit(lenExpr))],
           ['if', ['result', 'f64'],
@@ -486,10 +521,10 @@ export default (ctx) => {
             // Pointer: array → boxed-slot copy; typed → converted element copy; buffer → zero-copy view
             ['else', ['if', ['result', 'f64'],
               ptrTypeEq(['local.get', `$${src}`], PTR.ARRAY),
-              ['then', ctx.core.emit[`${name}.from`](src)],
+              ['then', fromArrIR],
               ['else', ['if', ['result', 'f64'],
                 ptrTypeEq(['local.get', `$${src}`], PTR.TYPED),
-                ['then', copyFromTyped(src)],
+                ['then', copyTypedIR],
                 ['else', mkPtrIR(PTR.TYPED, aux,
                   ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]])]]]]]]], 'f64')
       }

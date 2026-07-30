@@ -448,6 +448,35 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  KERNEL LEG ZERO FAILS 2026-07-30 (audit-#4 blocker #1 CLOSED; first
+  full-coverage zero-fail kernel run ever: 2446/0/6). TWO roots, both
+  self-host miscompiles in typedarray.js (native runs interpret the
+  file; only the kernel build COMPILES it -- the class's signature):
+  (1) BOOLEAN/NUMBER RETURN COLLISION: isConst returned number-or-
+  false; a NUMBER-mixed generic-f64 return is NOT an atom-boxing
+  escape site, so `false` crossed as float 0 == a genuine 0 constant
+  (native repro: `(n)=>{if(typeof n==='number')return n; return
+  false}` -- g(-1)===false is false under jz). NARROW FIX: null
+  sentinel (proper NaN-box, unambiguous), callers != null. BROADER
+  root fix attempted (box atoms at every unnarrowed f64 return) and
+  REVERTED: 190+ kernel-target fails via second-order self-compile
+  effects -- the mixed-BOOL-return boxing gap is now a NAMED OPEN
+  LANGUAGE CLASS (false-as-0 across NUMBER-mixed returns; revisit
+  with a design, not a drive-by). (2) THIRD INSTANCE of capture-
+  after-nested-emit (typed-index precedent .work:1907): new.<name>'s
+  per-iteration closure called emit(lenExpr) -- recursing into a
+  SIBLING instance of the same closure template -- before building
+  copyFromTyped/from IR; the post-call elemType/aux reads observed
+  the INNER iteration (WAT smoking gun: stride-3 f64.store + aux 7
+  where native emits stride-4 i32.store + wrapIntIR). Fix: build
+  branch IR before the nested emit (identical tree). FOLLOW-UP
+  NAMED: class-wide sweep for remaining capture-after-nested-emit
+  sites in module emitters (3 instances now; the elemStoreIR store-
+  path exposure note from the first instance still stands). Pins:
+  boolconst + nestedtyped in the PARITY CORPUS (byte-identical
+  proofs at O0/O2/O3). Gates: battery 3130/0, parity 24/24 (+6),
+  kernel leg 2446/0 ZERO FAILS, ratchet 10/10, dbg green, watr
+  35/35.
   DYN-PROP KEYING FIXED 2026-07-30 (both value-wrong repros; TWO
   DISTINCT ROOTS -- the one-family hypothesis tested and REFUTED):
   ROOT A (classification): array.js's unknown-receiver arr[i]

@@ -24,6 +24,47 @@ const CORPUS = {
   // fold ordering (0.1+0.2-0.3 bit pattern) and pure-Math folding at O0.
   fold: `export let f = () => 0.1 + 0.2 - 0.3`,
   mfold: `export let g = () => Math.sqrt(9) + Math.abs(-2)`,
+  // Self-host miscompile #4 (audit re-hunt, 2026-07-30): a helper whose return
+  // tails mix a NUMBER with a bare `false` literal, tested via `=== false` /
+  // `!== false` at the call site — module/typedarray.js's `isConst` is this
+  // shape (SIMD-pattern-detection: `typeof node === 'number' ? node : …
+  // return false`), and its call sites in analyzeSimd gate on `!== false`.
+  // Compiling THIS SOURCE (not running it) is what exposed the bug: native
+  // jz never runs typedarray.js's own JS through jz's compiler, only the
+  // kernel build does (dist/jz.wasm = jz compiling its own source) — so a
+  // codegen defect in this exact shape stayed invisible until self-hosted.
+  // Root cause: the boolean literal's cheap i32 0/1 representation (by
+  // design — branch/arithmetic position) only gets boxed into a real f64
+  // TRUE/FALSE atom at a handful of explicit escape sites; a NUMBER-mixed
+  // generic-f64 return isn't one of them, so `return false` here silently
+  // crossed as the plain float 0 — indistinguishable from a genuine `0`
+  // constant at `!== false`, so the guard was always true. Fixed at the
+  // narrowest sound root (module/typedarray.js): `isConst` now returns
+  // `null` for "not found" instead of overloading `false` — `null`'s
+  // compiled representation is always a proper NaN-box (no i32-vs-f64
+  // ambiguity), so the collision can't recur regardless of this class of
+  // return-boxing gap elsewhere in the compiler.
+  boolconst: `const g = (n) => { if (typeof n === 'number') return n; return false }
+export let f = (s) => g(s) === false`,
+  // Self-host miscompile #5 (audit re-hunt, 2026-07-30): composing two
+  // typed-array constructors — `new Int32Array(new Float64Array([x]))` —
+  // nests two instances of the SAME `new.${name}` closure template (module/
+  // typedarray.js's `for (const [name, elemType] of Object.entries(...))`
+  // loop). The outer (Int32Array) instance's copy path called `emit(lenExpr)`
+  // (recursing into the inner Float64Array instance) BEFORE calling
+  // `copyFromTyped(src)`, which itself closes over `elemType`/`aux`/`stride`/
+  // `name` from the SAME loop — a nested emit() call between a closure's
+  // capture and its later re-read is the ledger's "closure-capture-after-
+  // nested-emit" self-host class (.work/todo.md 2026-07-23, TYPED-INDEX
+  // KERNEL MISCOMPILE): once compiled by the kernel, the outer closure's
+  // read of elemType AFTER the nested call observed the INNER (Float64Array,
+  // elemType=7) iteration's value instead of its own (Int32Array, elemType=4)
+  // — the copy loop wrote f64.store at stride 8 instead of the ToInt32-
+  // wrapped i32.store at stride 4. Fixed by building copyFromTyped's (and the
+  // sibling runtime-dispatch branch's) IR BEFORE the nested emit(lenExpr)
+  // call — same final IR tree, reordered so the vulnerable closure reads
+  // happen before the recursive compile, not after.
+  nestedtyped: `export let f = (x) => new Int32Array(new Float64Array([x]))[0]`,
 }
 
 // Residual known divergences: NONE — every corpus row is byte-identical at
