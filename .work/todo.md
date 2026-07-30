@@ -448,6 +448,23 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
   shared affine/alias/dependence model (the incremental-scan trio is
   the natural next unification IF a provisional-acceptance-aware
   shared walk is designed -- do not force it).
+  GOAL-MEMORY: ALREADY MET AT HEAD 2026-07-30 (premise falsified by
+  fresh measurement -- the ~10MB-vs-MoonBit delta was STALE evidence,
+  13 commits old): jz-wasmtime beats-or-matches moonrun peak RSS on
+  40/43 comparable cases (median delta -864KB, jz LEANER); the
+  hypothesized fixed-large default DOES NOT EXIST -- modules declare
+  1 initial page (64KB, assemble.js floors at max(pages||1,
+  dataPages)), growth is demand-driven geometric (__memgrow doubles
+  on overflow only); engine floors wasmtime 13.7MB vs moonrun 12.2MB.
+  THREE residual losses (strbuild +7.8MB, json +1.3, immutable +1.1)
+  = the no-GC arena accumulating garbage across the harness's 26
+  in-process iterations with __clear NEVER CALLED -- an architectural
+  GC-vs-arena tradeoff, NOT a defaults bug. DECISION NEEDED (user):
+  (a) harness fairness -- call __clear between iterations (changes
+  what memKb measures; deliberate methodology call), (b) GC/reclaim
+  design (major), or (c) accept+document the 3 cases as the arena
+  model's honest signature. Raw 43-case data: scratchpad/memcheck/
+  full/results.csv. No code change was warranted; tree untouched.
   SIZE BAND DIAGNOSED: HONEST FLOOR 2026-07-30 (the 1.2-1.3x-vs-AS
   band is dominantly the JS-SEMANTICS TAX, proven by control
   experiment): the AS bench ports wrap EVERY array access in
