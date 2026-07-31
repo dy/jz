@@ -812,6 +812,9 @@ export function observeProgramSlots(ast, opts) {
         for (const [sid, idx, vt, ctor, ci] of hit.obs) {
           observeSlot(sid, idx, vt); observeCtor(sid, idx, ctor); observeConstInt(sid, idx, ci)
         }
+        for (const [name, vt] of hit.dictObs) {
+          if (vt) observeDictValue(name, vt); else poisonDictValue(name)
+        }
         continue
       }
       const obs = []
@@ -820,6 +823,11 @@ export function observeProgramSlots(ast, opts) {
         observeSlot(sid, idx, vt)
         observeCtor(sid, idx, ctor)
         observeConstInt(sid, idx, ci)
+      }
+      const dictObs = []
+      const recordDict = (name, vt) => {
+        dictObs.push([name, vt])
+        if (vt) observeDictValue(name, vt); else poisonDictValue(name)
       }
       const visitInit = (node, intRefs = null) => {
         if (!Array.isArray(node)) return
@@ -841,12 +849,24 @@ export function observeProgramSlots(ast, opts) {
                 intLiteral(value) ?? (typeof value === 'string' ? intRefs?.get(value) : null))
             }
           }
+        } else if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
+          // Dict-value-type census, moduleInit half (Fix B) — mirrors visit()'s
+          // branch above. Module inits carry no params, so wctx is root-only.
+          const [, wobj, widx] = node[1]
+          if (!isLiteralStr(widx)) {
+            let root = wobj
+            while (Array.isArray(root) && root[0] === '[]') root = root[1]
+            if (typeof root === 'string') {
+              const vt = writeVT(effectiveWriteValue(op, node[1], node[2]), { root })
+              recordDict(root, vt)
+            }
+          }
         }
         for (let i = 1; i < node.length; i++) visitInit(node[i], intRefs)
       }
       teOverlay = null
       visitInit(mi)
-      if (mi != null && typeof mi === 'object') pf.moduleInitSlot.set(mi, { gen: pf.gen, obs })
+      if (mi != null && typeof mi === 'object') pf.moduleInitSlot.set(mi, { gen: pf.gen, obs, dictObs })
     }
   }
   ctx.func.localValTypesOverlay = prevOverlay

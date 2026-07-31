@@ -2000,3 +2000,104 @@ test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[
   ok(/\(f64\.gt\b/.test(body), 'consumer fires too: raw f64.gt at the compare site')
   ok(!/\$__gt\b/.test(body), 'no generic runtime-typed compare helper')
 })
+
+// ─────────────────────────── dict-value census: moduleInit gap fix (Fix A/B)
+// .work/dict-census-moduleinit-fix.md: bundled sub-module top-level init code
+// (ctx.module.moduleInits, OUTSIDE `ast`) is exactly watr's real shape
+// (`export const OPCODE = {}` then `OPCODE[nm] = code++` in a bare top-level
+// C-STYLE `for` loop, const.js:161) — the census's own fixtures above never
+// covered this domain, which is how the gap survived them. Two independent
+// bugs, both fixed here: (A) initFacts.dynWriteVars was never merged into
+// the program-wide set consumers gate on; (B) observeProgramSlots' visitInit
+// walker had no dict-write branch at all, so even with (A) fixed the fact
+// was never populated. Fix B also extends the moduleInitSlot memo cache from
+// flat {gen,obs} schema-slot tuples to {gen,obs,dictObs} — a normal compile
+// already calls observeProgramSlots 3× on the same AST/gen (collectProgramFacts's
+// early pass, narrow.js's post-E2 pass, plan/index.js's late {fresh:true}
+// rebuild), so passes 2 and 3 replay dictObs from cache — these fixtures
+// exercise that path for free, and the last one makes it explicit.
+//
+// C-style `for` (not `for...of`) is DELIBERATE, matching watr's real shape
+// exactly (const.js:161's `for (let i = 0, code = 0; i < TABLE.length; i++)`)
+// — not merely a style choice. Investigation while writing these fixtures
+// found `for...of` over a top-level computed-key dict write is a PRE-EXISTING
+// latent miscompile (memory access out of bounds at optimize>=1, watr's
+// __hash_reuse_eph dictionary-mode alloc — module/object.js:86 — racing the
+// for-of loop's own codegen), reproducible on the UNMODIFIED baseline
+// (confirmed on a pre-Fix-A worktree, single-file AND bundled, independent of
+// this task's changes). Fix A does make it newly reachable for the
+// BUNDLED-moduleInit-only case specifically (previously shielded only by the
+// dynWriteVars gap this fix closes — an accidental, not a real, guard) — but
+// never for C-style for, which is what every real target (watr) actually
+// uses. Banked as a separate pre-existing defect in .work/todo.md; out of
+// this task's scope to fix.
+
+test('dict-value census: bundled moduleInit dict-write (watr\'s OPCODE shape, C-style for) populates globalReps', () => {
+  const dep = `
+    const TABLE = ['add', 'sub', 'mul']
+    export const OPCODE = {}
+    for (let i = 0, code = 0; i < TABLE.length; i++) OPCODE[TABLE[i]] = code++
+  `
+  const { exports } = jz(
+    'import { OPCODE } from "./dep.js"; export let lookup = (nm) => OPCODE[nm] || 0',
+    { modules: { './dep.js': dep } }
+  )
+  const mangled = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$OPCODE'))
+  ok(mangled, 'a mangled global rep exists for the bundled OPCODE dict')
+  is(ctx.scope.globalReps.get(mangled)?.dictValueValType, 'number',
+    'the bare top-level `OPCODE[TABLE[i]] = code++` loop (visitInit, not visit) resolves VAL.NUMBER')
+  is(exports.lookup('sub'), 1, 'functional result unaffected — census is purely additive')
+})
+
+test('dict-value census: bundled moduleInit mixed-kind dict-write poisons the fact', () => {
+  const dep = `
+    const KEYS = ['a', 'b']
+    export const bag = {}
+    for (let i = 0; i < KEYS.length; i++) bag[KEYS[i]] = i === 0 ? 1 : 'oops'
+  `
+  jz(
+    'import { bag } from "./dep.js"; export let lookup = (k) => bag[k]',
+    { modules: { './dep.js': dep } }
+  )
+  const mangled = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
+  ok(mangled, 'a mangled global rep exists for the bundled bag dict')
+  is(ctx.scope.globalReps.get(mangled)?.dictValueValType, null,
+    'a NUMBER write and a STRING write inside the moduleInit clash — must poison, not settle')
+})
+
+test('dict-value census: moduleInitSlot memo-cache replay is order-independent (cold vs cache-hit agree)', () => {
+  // observeProgramSlots runs 3× per compile on the same moduleInit nodes/gen
+  // (collectProgramFacts, narrow.js post-E2, plan/index.js late {fresh:true}) —
+  // passes 2 and 3 hit pf.moduleInitSlot's cache and replay dictObs instead of
+  // re-walking. Compiling the SAME source twice (fresh session each time, gen
+  // reset by beginSession) forces two independent cold-then-cached sequences;
+  // if the {gen,obs,dictObs} replay ever dropped a poison (replayed as a skip
+  // instead of poisonDictValue) or mis-threaded a name, the two compiles'
+  // published dictValueValType would disagree, or the first-vs-later-pass
+  // fact within one compile would silently diverge from the cold walk.
+  const dep = `
+    const TABLE = ['add', 'sub'], KEYS = ['a', 'b']
+    export const OPCODE = {}, bag = {}
+    for (let i = 0, code = 0; i < TABLE.length; i++) OPCODE[TABLE[i]] = code++
+    for (let i = 0; i < KEYS.length; i++) bag[KEYS[i]] = i === 0 ? 1 : 'oops'
+  `
+  const src = 'import { OPCODE, bag } from "./dep.js"; export let go = (nm, k) => (OPCODE[nm] || 0) + (bag[k] ? 1 : 0)'
+  const modules = { './dep.js': dep }
+
+  jz(src, { modules })
+  const opcodeKey1 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$OPCODE'))
+  const bagKey1 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
+  const opcode1 = ctx.scope.globalReps.get(opcodeKey1)?.dictValueValType
+  const bag1 = ctx.scope.globalReps.get(bagKey1)?.dictValueValType
+
+  jz(src, { modules })
+  const opcodeKey2 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$OPCODE'))
+  const bagKey2 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
+  const opcode2 = ctx.scope.globalReps.get(opcodeKey2)?.dictValueValType
+  const bag2 = ctx.scope.globalReps.get(bagKey2)?.dictValueValType
+
+  is(opcode1, 'number', 'first compile: OPCODE resolves NUMBER (cold walk agrees with cached replay within the compile)')
+  is(bag1, null, 'first compile: bag poisons (poison survives cached replay within the compile)')
+  is(opcode2, opcode1, 'second independent compile (fresh gen, cold walk again) agrees with the first')
+  is(bag2, bag1, 'second independent compile agrees on the poison too')
+})
