@@ -6,6 +6,23 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+LOOPPLAN UNIFICATION TERMINAL 2026-07-31 (the designed do-not-force
+verdict, full catalog banked): the incremental trio's shared-walk
+design was attempted and correctly REFUSED -- tryVectorize (full
+recursive stmt walk + lane inference + AoS idxTees + mirror stores
++ standalone-tee admission), tryReduceVectorize (single-expression
+walk, stores forbidden, ALL tees rejected -- opposite policy, own
+widenF32 rule), tryMemCopyFill (no walk: two static laneAddr calls,
+REJECTS viaLocal, requires bare-i32 base, never registers teeName)
+differ on EVERY axis; a shared scanAddresses needs 8-10 knobs to
+save <20 thin lines because matchLaneAddr/_offsetLocalStride/
+offsetTees ALREADY did the real unification (slices 1-6). The 3-line
+post-scan gate stays per-recognizer (its argument differences ARE
+the differing soundness conditions). LoopPlan's honest terminal
+state: scaffolds unified (15/16 on the dispatch plan), fact classes
+hoisted, remainder justified-private WITH catalog. The from-scratch
+affine/alias/dependence vision remains a REDESIGN project, not an
+incremental path -- recorded as such, not as debt.
 MODULE-SCOPE PER-ITERATION CLOSURES FIXED 2026-07-31 (audit-#5 #3;
 unification, not a parallel copy): module top-level compiles via
 buildStartFn, and depth-0 loop-body lets were GLOBALIZED (depth
