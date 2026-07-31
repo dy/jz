@@ -1908,3 +1908,95 @@ test('dict-value census: soundness carve-out — an unregistered key still ident
   is(has('add'), true, 'registered key: exists')
   is(has('missing'), false, 'unregistered key: does NOT exist — must not const-fold to true')
 })
+
+// ─────────────────────────── writeVT strengthening: value-set &&/||/??, self-read
+// neutrality, parameter-kind channel (2026-07-31, subscript's real `prec[op] =
+// !lookup[c] && prec[op] || p` target — .work/dict-value-census-design.md's
+// primary target didn't fire until these three pieces landed; see the writeVT
+// docstring in src/compile/program-facts.js for the resolver rules).
+
+test('dict-value census: self-read neutrality — a self-increment (`d[k]++`) is NOT poisoned by its own read', () => {
+  // effectiveWriteValue turns `d[k]++` into `d[k] = d[k] + 1` — the RHS's `d[k]`
+  // reads the SAME dict this write targets. Without self-read neutrality this
+  // poisons (writeVT's old `.`/`[]`-read-in-'+' branch had no way to say
+  // "ignore this operand"); with it, the self-read is the join identity and
+  // the literal `1` alone proves NUMBER — the watr/subscript monotone-counter
+  // idiom (`OPCODE[nm] = code++` already covers the OTHER dict's counter;
+  // this covers incrementing the SAME dict directly).
+  const src = `
+    export let OPCODE = {}
+    let bump = (nm) => { OPCODE[nm]++ }
+    export let read = (nm) => OPCODE[nm]
+    bump('a')
+    bump('b')
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalReps?.get('OPCODE')?.dictValueValType, 'number',
+    'self-read `d[k]++` resolves NUMBER via the literal `1` operand alone')
+})
+
+test('dict-value census: value-set &&/||/?? — a genuine kind mismatch reached THROUGH a logical chain still poisons', () => {
+  // Distinct from the pre-existing "mixed-kind writes poison" test (two
+  // SEPARATE write call sites) — this exercises the vs()/reduceVS
+  // composition itself: `(1 > 0) && 'x' || (code++)` unions a STRING and a
+  // NUMBER element through one `&&`/`||` chain (the BOOL guard falls away
+  // via falsy/truthy filtering same as the target shape, but the two real
+  // arms disagree) — must still poison, not silently pick one.
+  const src = `
+    export let bag = {}, code = 0
+    let put = (k) => { bag[k] = (1 > 0) && 'x' || (code++) }
+    put('a')
+    put('b')
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalReps?.get('bag')?.dictValueValType, null,
+    'STRING vs NUMBER through &&/|| composition must poison, not guess')
+})
+
+test('dict-value census: ?? atom-arm — a null/undefined literal in the ?? arm is excluded, not poisoning', () => {
+  // vs(A ?? B) = nonNullish(vs(A)) ∪ vs(B): a provably-nullish literal arm
+  // contributes nothing (excluded entirely), so the write resolves to B's
+  // kind alone instead of the atom (no VAL.* for undefined/null) poisoning
+  // the whole expression.
+  const src = `
+    export let a = {}, b = {}, code = 0
+    let regA = (k) => { a[k] = null ?? (code++) }
+    let regB = (k) => { b[k] = undefined ?? (code++) }
+    regA('x'); regA('y')
+    regB('x'); regB('y')
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalReps?.get('a')?.dictValueValType, 'number', 'null ?? p excludes the atom arm')
+  is(ctx.scope.globalReps?.get('b')?.dictValueValType, 'number', 'undefined ?? p — same exclusion')
+})
+
+test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[c] && prec[op] || p` resolves NUMBER end-to-end', () => {
+  // The exact shape from subscript/parse.js:86 (token()'s `p: prec[op] =
+  // !lookup[c] && prec[op] || p`), reduced to its load-bearing parts: a BOOL
+  // guard (`!lookup[c]`), a self-read of the dict being written (`prec[op]`),
+  // and a parameter (`p`) whose kind is provable only through call-site
+  // consensus (narrowSignatures' paramReps — `register` is NOT exported, so
+  // it's eligible for signature narrowing; an exported function's params are
+  // never narrowed from internal call evidence, which is why the pre-existing
+  // "raw bare-param VALUE fails open" fixture above still poisons — that
+  // probe's function IS exported).
+  //
+  // Derivation (value-set rules): vs(!lookup[c] && prec[op]) =
+  // falsy(vs(!lookup[c])) ∪ vs(prec[op]) = {BOOL:false} ∪ [] (self-read
+  // identity) = {BOOL:false}. Then vs(… || p) = truthy({BOOL:false}) ∪
+  // vs(p) = ∅ ∪ {NUMBER} = {NUMBER} — the BOOL guard is eliminated entirely,
+  // leaving only `p`'s kind.
+  const src = `
+    export let prec = {}, lookup = {}
+    let register = (op, c, p) => { prec[op] = !lookup[c] && prec[op] || p }
+    export let bigOp = (op) => prec[op] > 1000
+    register('+', 1, 10)
+    register('*', 2, 20)
+  `
+  const wat = jz.compile(src, { wat: true })
+  is(ctx.scope.globalReps?.get('prec')?.dictValueValType, 'number',
+    'the subscript shape resolves NUMBER: self-read neutrality + BOOL elimination + param channel')
+  const body = wat.slice(wat.indexOf('$bigOp'))
+  ok(/\(f64\.gt\b/.test(body), 'consumer fires too: raw f64.gt at the compare site')
+  ok(!/\$__gt\b/.test(body), 'no generic runtime-typed compare helper')
+})

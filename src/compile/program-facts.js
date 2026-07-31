@@ -5,7 +5,7 @@
 import { commaList, isFuncRef, isLiteralStr, ASSIGN_OPS, MUTATE_OPS } from '../ast.js'
 import { ctx, err, getFactStore } from '../ctx.js'
 import { VAL, lookupValType, repOf, updateGlobalRep } from '../reps.js'
-import { valTypeOf } from '../kind.js'
+import { valTypeOf, nullishArm } from '../kind.js'
 import { extractParams, classifyParam } from '../ast.js'
 import { staticObjectProps } from '../static.js'
 import { intLevelChecker, typedElemCtor } from '../type.js'
@@ -395,6 +395,153 @@ export function collectProgramFacts(ast) {
   }
 }
 
+// ─────────────────────── writeVT: dict-write RHS kind resolver ───────────────────────
+// Strict write-kind resolver for the schema-slot (`.prop=`) and dict-value
+// (`name[key]=`) censuses: valTypeOf EXCEPT (a) `.prop` reads answer null —
+// consulting the live slotTypes state mid-census would make observations
+// order-dependent (a source slot poisoned LATER would leave a stale kind
+// standing), and (b) `+`/`+=` never guess — VT['+']'s NUMBER-for-unknowns
+// optimism is fine for expression typing (the emitter still dispatches at
+// runtime) but would durably misclassify a slot a string flows into.
+// Non-plus arithmetic stays trustworthy through plain valTypeOf: ToNumber
+// semantics make `* - / % << >> & | ^` NUMBER whatever the operands.
+//
+// `wctx` (optional) = { root, paramVts }:
+//   - root: the dict name a `name[key]=RHS` write targets (dict-value census
+//     only — omitted for the `.prop=` schema-slot census). Enables self-read
+//     neutrality below.
+//   - paramVts: Map<paramName, VAL.*> of the enclosing function's PARAMETER
+//     kinds (narrowSignatures' call-site census, paramReps — threaded in only
+//     by the late {fresh:true} refineSlotKindCensus call, plan/index.js;
+//     absent on the early pass, same fail-open as everything else here).
+//     lookupValType's overlay tier already resolves function-body LOCALS
+//     (analyzeBody.valTypes, installed as ctx.func.localValTypesOverlay below)
+//     — this is the missing PARAM-kind tier writeVT never had.
+//
+// Self-read neutrality (.work/dict-value-census-design.md): a read
+// `d[...]`/`d.prop`/`d?.prop` (any nesting through further `[]`) whose root
+// is `wctx.root` contributes the JOIN IDENTITY, not a poison — subscript's
+// `prec[op] = !lookup[c] && prec[op] || p` shape's `prec[op]` self-read is
+// exactly this. Soundness: by fixed-point over the whole-program census,
+// every value ever read back from d was placed there by SOME write to d —
+// either a DIFFERENT `d[k2]=...` site, whose own writeVT call independently
+// observes into (or poisons) the SAME first-wins-then-clash dictValueTypes
+// entry, so any kind that write contributes is already counted there with or
+// without THIS write re-deriving it through a self-read — or the NaN-boxed
+// undefined of a key nobody has written yet (the carve-out dictValueKindOf's
+// consumers already guard, mirroring kind.js's typedReadMaybeOob precedent).
+// Folding the self-read's own kind into THIS write's contribution therefore
+// adds no information the census doesn't already have an independent chance
+// to see, so treating it as the identity element can't hide a real
+// mixed-kind write.
+const SELF_READ = Symbol('writeVT self-read')
+
+const isSelfDictRead = (n, root) => {
+  if (root == null || !Array.isArray(n)) return false
+  const op = n[0]
+  if (op !== '[]' && op !== '.' && op !== '?.') return false
+  let r = n[1]
+  while (Array.isArray(r) && r[0] === '[]') r = r[1]
+  return r === root
+}
+
+// ── truthy/falsy/nonNullish value-set semantics for &&/||/?? (and only
+// there — see .work/dict-value-census-design.md) ──────────────────────────
+// A value-set is an array of `{ kind, bool }` elements: `kind` is a VAL.*
+// string or the pseudo-kind 'atom' (a provably undefined/null literal —
+// always falsy, never a real VAL); `bool` narrows a VAL.BOOL element's
+// truthiness ('true'/'false'/'both'). BOOL is the one kind whose 2-element
+// domain lets a truthy/falsy filter fully RESOLVE a value (not just "still
+// possibly this kind") — that's what lets a `!x` BOOL get ELIMINATED by a
+// later filter instead of merely persisting (`!x && Y || Z`: `!x`'s BOOL can
+// only escape the `&&` as `false`, which `||`'s truthy filter then drops
+// entirely). Every other kind is opaque to the filters — conservative, we
+// don't track e.g. `0`/`''` falsy literals. `[]` (empty array) is the union
+// identity — self-reads and provably-eliminated branches both reduce to it.
+// `null` (from vsOf or the top-level reduce) means unclassifiable → poisons
+// the whole enclosing expression, same fail-open discipline as the rest of
+// writeVT.
+const ATOM = 'atom'
+const truthyVS = vs => vs.flatMap(e =>
+  e.kind === ATOM ? [] :
+  e.kind === VAL.BOOL ? (e.bool === 'false' ? [] : [{ kind: VAL.BOOL, bool: 'true' }]) :
+  [e])
+const falsyVS = vs => vs.flatMap(e =>
+  e.kind === ATOM ? [e] :
+  e.kind === VAL.BOOL ? (e.bool === 'true' ? [] : [{ kind: VAL.BOOL, bool: 'false' }]) :
+  [e])
+const nonNullishVS = vs => vs.filter(e => e.kind !== ATOM)
+// Reduce a value-set to writeVT's single-kind-or-null contract: every real
+// (non-atom) element must agree on one kind, else poison; an all-atom (or
+// empty) set has nothing provable → null, same as any other unresolved leaf.
+const reduceVS = vs => {
+  let kind = null
+  for (const e of vs) {
+    if (e.kind === ATOM) continue
+    if (kind === null) kind = e.kind
+    else if (kind !== e.kind) return null
+  }
+  return kind
+}
+
+// Compositional value-set of an expression, for &&/||/??'s RHS operand.
+// Recurses through nested &&/||/??/?: (a small evaluator — no shape-specific
+// casing); anything else resolves through writeVT and lifts to a singleton
+// (or `[]` for a self-read, `null` to poison).
+const vsOf = (n, wctx) => {
+  if (isSelfDictRead(n, wctx?.root)) return []
+  if (nullishArm(n)) return [{ kind: ATOM }]
+  if (Array.isArray(n)) {
+    const op = n[0]
+    if (op === '&&' || op === '||' || op === '??') {
+      const a = vsOf(n[1], wctx)
+      if (a == null) return null
+      const b = vsOf(n[2], wctx)
+      if (b == null) return null
+      const filtered = op === '&&' ? falsyVS(a) : op === '||' ? truthyVS(a) : nonNullishVS(a)
+      return [...filtered, ...b]
+    }
+    if (op === '?:') {
+      const a = vsOf(n[2], wctx), b = vsOf(n[3], wctx)
+      return a == null || b == null ? null : [...a, ...b]
+    }
+  }
+  const vt = writeVT(n, wctx)
+  if (vt === SELF_READ) return []
+  return vt == null ? null : [{ kind: vt, bool: vt === VAL.BOOL ? 'both' : undefined }]
+}
+
+const writeVT = (n, wctx) => {
+  if (isSelfDictRead(n, wctx?.root)) return SELF_READ
+  if (Array.isArray(n)) {
+    const op = n[0]
+    if (op === '.' || op === '?.') return null
+    if (op === '+' || op === '+=') {
+      let ta = writeVT(n[1], wctx), tb = writeVT(n[2], wctx)
+      if (ta === SELF_READ && tb === SELF_READ) return null
+      if (ta === SELF_READ) ta = tb
+      else if (tb === SELF_READ) tb = ta
+      if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
+      if (ta == null || tb == null) return null
+      if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
+      return VAL.NUMBER
+    }
+    if (op === '?:') {
+      const a = writeVT(n[2], wctx), b = writeVT(n[3], wctx)
+      if (a === SELF_READ && b === SELF_READ) return null
+      if (a === SELF_READ) return b
+      if (b === SELF_READ) return a
+      return a === b ? a : null
+    }
+    if (op === '&&' || op === '||' || op === '??') {
+      const vs = vsOf(n, wctx)
+      return vs == null ? null : reduceVS(vs)
+    }
+  }
+  if (typeof n === 'string') return valTypeOf(n) ?? (wctx?.paramVts?.get(n) ?? null)
+  return valTypeOf(n)
+}
+
 /** Walk `ast` + every user function body + module inits, observing slot types
  *  on each `{}` literal. Per-function bodies have their analyzeBody.valTypes
  *  installed as overlay so shorthand `{x}` resolves through local consts.
@@ -450,30 +597,7 @@ export function observeProgramSlots(ast, opts) {
     else if (cur !== vt) dictValueTypes.set(name, null)
   }
   const poisonDictValue = (name) => dictValueTypes.set(name, null)
-  // Strict write-kind resolver: valTypeOf EXCEPT (a) `.prop` reads answer null —
-  // consulting the live slotTypes state mid-census would make observations
-  // order-dependent (a source slot poisoned LATER would leave a stale kind
-  // standing), and (b) `+`/`+=` never guess — VT['+']'s NUMBER-for-unknowns
-  // optimism is fine for expression typing (the emitter still dispatches at
-  // runtime) but would durably misclassify a slot a string flows into.
-  // Non-plus arithmetic stays trustworthy through plain valTypeOf: ToNumber
-  // semantics make `* - / % << >> & | ^` NUMBER whatever the operands.
-  const writeVT = (n) => {
-    if (Array.isArray(n)) {
-      const op = n[0]
-      if (op === '.' || op === '?.') return null
-      if (op === '+' || op === '+=') {
-        const ta = writeVT(n[1]), tb = writeVT(n[2])
-        if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
-        if (ta == null || tb == null) return null
-        if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
-        return VAL.NUMBER
-      }
-      if (op === '?:') { const a = writeVT(n[2]), b = writeVT(n[3]); return a === b ? a : null }
-      if (op === '&&' || op === '||' || op === '??') { const a = writeVT(n[1]), b = writeVT(n[2]); return a === b ? a : null }
-    }
-    return valTypeOf(n)
-  }
+  const paramReps = opts?.paramReps ?? null
   // Poison every hazarded slot's kind AND elem-ctor up front (unresolvable
   // receivers, computed-key writes, extern constructors — see
   // collectSlotWriteHazards). Sticky: observeSlot never upgrades null.
@@ -604,7 +728,7 @@ export function observeProgramSlots(ast, opts) {
     }
     return null
   }
-  const visit = (node, intRefs = null) => {
+  const visit = (node, intRefs = null, paramVts = null) => {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') return
@@ -613,9 +737,9 @@ export function observeProgramSlots(ast, opts) {
     // excluded values; with a known mask range the trailing else resolves to
     // the one remaining value (see elseIntRefs).
     if (op === 'if' || op === '?:') {
-      visit(node[1], intRefs)
-      visit(node[2], thenIntRefs(node[1], intRefs))
-      if (node[3] != null) visit(node[3], elseIntRefs(node[1], intRefs))
+      visit(node[1], intRefs, paramVts)
+      visit(node[2], thenIntRefs(node[1], intRefs), paramVts)
+      if (node[3] != null) visit(node[3], elseIntRefs(node[1], intRefs), paramVts)
       return
     }
     if (op === '{}') {
@@ -640,7 +764,7 @@ export function observeProgramSlots(ast, opts) {
       const sid = repOf(node[1][1])?.schemaId ?? ctx.schema.vars.get(node[1][1])
       const idx = sid != null ? (ctx.schema.list[sid]?.indexOf(node[1][2]) ?? -1) : -1
       if (idx >= 0) {
-        const vt = writeVT(effectiveWriteValue(op, node[1], node[2]))
+        const vt = writeVT(effectiveWriteValue(op, node[1], node[2]), { paramVts })
         if (vt) observeSlot(sid, idx, vt)
         else poisonSlot(sid, idx)
       }
@@ -654,12 +778,12 @@ export function observeProgramSlots(ast, opts) {
         let root = wobj
         while (Array.isArray(root) && root[0] === '[]') root = root[1]
         if (typeof root === 'string') {
-          const vt = writeVT(effectiveWriteValue(op, node[1], node[2]))
+          const vt = writeVT(effectiveWriteValue(op, node[1], node[2]), { root, paramVts })
           if (vt) observeDictValue(root, vt); else poisonDictValue(root)
         }
       }
     }
-    for (let i = 1; i < node.length; i++) visit(node[i], intRefs)
+    for (let i = 1; i < node.length; i++) visit(node[i], intRefs, paramVts)
   }
   const prevOverlay = ctx.func.localValTypesOverlay
   if (ast) { ctx.func.localValTypesOverlay = null; teOverlay = null; maskMax = collectMaskMax(ast); visit(ast) }
@@ -669,7 +793,14 @@ export function observeProgramSlots(ast, opts) {
     ctx.func.localValTypesOverlay = facts.valTypes
     teOverlay = facts.typedElems
     maskMax = collectMaskMax(func.body)
-    visit(func.body)
+    // Parameter-kind channel (design §"Parameter-kind channel"): only proven
+    // post-narrowing (opts.paramReps, the late {fresh:true} call) — mirrors
+    // collectSlotWriteHazards' identical curParamVts construction above.
+    const reps = paramReps?.get(func.name)
+    const paramVts = reps
+      ? new Map((func.sig?.params || []).map((p, k) => [p.name, reps.get(k)?.val]).filter(([, v]) => v != null))
+      : null
+    visit(func.body, null, paramVts)
   }
   teOverlay = null
   if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) {

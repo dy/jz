@@ -181,7 +181,7 @@ VT['?:'] = (args) => {
 // AST nullish literal — mirrors ir.js isNullishLit ([null,null] = null literal,
 // [] = undefined) plus the bare `undefined` name form recordGlobalRep accepts;
 // local copy because ir.js already imports valTypeOf from here (cycle).
-const nullishArm = (n) => n === 'undefined' ||
+export const nullishArm = (n) => n === 'undefined' ||
   (Array.isArray(n) && ((n.length === 2 && n[0] == null && n[1] == null) || n.length === 0))
 
 // Value-preserving logical: `&&`/`||` return one of their operands.
