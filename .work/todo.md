@@ -6,6 +6,50 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+DICT-VALUE CENSUS IMPLEMENTED 2026-07-31 (commits a1345879 local
+half, ea9ae8dc global census, 2b62b91b consumer wiring — all three
+gates green: full battery 3145/0/6, JZ_DEBUG_INVARIANTS leg,
+kernel-parity 33/33, kernel-oracle, watr self-host 35/35,
+dyn-keys.js+data.js, each step run on the clean commit). Mechanism
+built exactly per design, wall avoided structurally (verified: no
+val/schemaId/globalValTypes mutation anywhere in the three diffs).
+Soundness carve-out required touching emit.js's `nullableOperand`
+too (not just kind.js — the design said "reuse that mechanism",
+which lives there): without it `OPCODE[nm] === undefined` on a
+proven-NUMBER dict const-folds to always-false for an unregistered
+key, a real miscompile — proven by reverting the arm and watching
+the new inference.js test fail. HONEST RESULT, empirically measured
+(not predicted): NEITHER named real target actually fires.
+(1) watr's OPCODE/IMM write (`OPCODE[nm] = code++`, const.js:161-
+168) is a BARE TOP-LEVEL statement in a bundled sub-module —
+exactly the pre-flagged blind spot (design §1c/§6: bundled
+sub-module inits live in ctx.module.moduleInits, outside `ast`;
+collectProgramFacts merges initFacts.dynVars but NEVER
+initFacts.dynWriteVars, program-facts.js:313-366 — confirmed by
+direct ctx inspection: `__const_js$OPCODE` has no globalRep at all,
+dynWriteVars doesn't contain it). (2) subscript's real prec write
+(`prec[op] = !lookup[c] && prec[op] || p`, parse.js:86) DOES reach
+dynWriteVars (writes live inside the `token`/`keyword` functions,
+not bare top-level) but the VALUE expression poisons: writeVT can't
+resolve the bare param `p` (no ambient param-kind info flows into
+analyzeBody's context-pure overlay), and `&&`/`||` require BOTH
+arms to agree to survive — confirmed via direct ctx inspection:
+`m4_parse$prec` gets `{dictValueValType: null}`. RESULT: watr and
+jessie WAT are BYTE-IDENTICAL pre- vs post-change at O0/O2/O3 (git
+worktree diff, both full self-hosted compiles). Paired jessie bench
+(ABBA, 2 rounds each via bench/bench.mjs jessie --targets=jz):
+1.87ms/1.87ms post vs 1.89ms/1.92ms pre — within noise, wasm size
+identical (76.8 kB) both sides, consistent with byte-identical WAT.
+The 31% jessie figure and the watr "real candidate" framing (design
+§0.3) do NOT transfer to a measurable win under this design as
+built — both require the SEPARATE receiver-HASH half (design §4's
+noted future work) or a param-kind-aware writeVT extension to
+resolve a bare parameter's value, neither of which this design
+scoped. Mechanism stays landed (additive, zero regression risk,
+sound carve-out, real fixtures proving it fires for the
+independently-resolvable shape — a literal counter or constant) but
+delivers no measured win on either named target as of this pass.
+
 DICT-VALUE CENSUS DESIGNED 2026-07-31 (.work/dict-value-census-
 design.md — read it before implementing; implementation order+gates
 inside): value-kind fact (`dictValueValType`) as a wholly ADDITIVE
