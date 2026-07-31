@@ -6,6 +6,42 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+WRITEVT STRENGTHENED + JESSIE COMPARE-SITE HYPOTHESIS REFUTED
+2026-07-31 (6c721fba; battery 3149/0/6, parity 33/33 after dist
+rebuild, oracle 9/9, dbg leg, selfhost 21/21): compositional
+truthy/falsy/nonNullish VALUE-SET semantics for &&/||/?? in writeVT
+({kind,bool} elements; BOOL's 2-element domain lets a filter fully
+eliminate a `!x` guard through an enclosing ||), self-read
+neutrality (SELF_READ join identity, fixed-point soundness comment
+banked), param-kind channel (paramVts from paramReps, late
+{fresh:true} call only). prec NOW FIRES (m4_parse$prec →
+dictValueValType NUMBER); isStmt (asi.js:24-25) and loop-head
+(loop.js:26) emit raw f64.le/f64.lt — yet paired ABBA jessie is
+1.006 median (NO WIN, checksum identical). THE LOAD DOMINATES:
+generic __dyn_get hash+probe per read swamps the post-load compare
+saving. CONSEQUENCE: receiver-HASH classification of the LOAD is
+now the empirically-proven necessary lever for jessie (and watr's
+same-shape reads) — the value-kind half alone is architecture-
+complete but perf-inert here. Remaining named site asi.js:74
+p>=lvl blocked by two PRE-EXISTING general gaps (VT['[]'] literal-
+string-key early-null gate fires before the dict branch for
+prec[';']; VT['??'] general table still naive ta===tb join) — out
+of census scope, candidates only if receiver-HASH design needs
+them. MODULEINIT GAP DIAGNOSED (.work/dict-census-moduleinit-fix.md
+— read before implementing): the dynWriteVars exclusion is an
+OVERSIGHT not a guard (git archaeology: ffda6f86 touched 3 of 4
+merge sites; c37111ee extended the block and missed it again), AND
+a second independent gap — observeProgramSlots' visitInit walker
+has no dict-write branch at all. Fix A (unconditional initFacts.
+dynWriteVars merge — NOT gated on anyDyn, `OPCODE[nm]++` sets one
+without the other) + Fix B (visitInit branch + moduleInitSlot cache
+extended to {gen,obs,dictObs}). Ordering proven sound (single
+atomic publication at plan/index.js:118, all consumers downstream —
+structurally NOT the reverted-attempt class). Honest estimate:
+OPCODE compare sites get f64.gt, IMM (STRING values) gets nothing,
+load still dominates — closes the census coverage hole, won't close
+watr 1.2-1.4x alone.
+
 DICT-VALUE CENSUS IMPLEMENTED 2026-07-31 (commits a1345879 local
 half, ea9ae8dc global census, 2b62b91b consumer wiring — all three
 gates green: full battery 3145/0/6, JZ_DEBUG_INVARIANTS leg,
