@@ -4,7 +4,34 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
-## Status (2026-07-30, current truth — re-audit #4 reconciled)
+## Status (2026-07-31, current truth — re-audit #5 reconciled)
+
+CLOSED since #4: kernel ToIntN rows FIXED -> KERNEL LEG ZERO FAILS
+(6d293644, first ever; capture class swept 2047ce75, parity corpus
+33/33); dyn-prop keying both roots (87511c69); README self-host
+limitation note LANDED (cf668352); O0 lattice pins tier-guarded then
+RE-guarded per audit #5 (value asserts now run at EVERY tier, guard
+only skips WAT-shape asserts); GOALS: memory MET at HEAD (jz leaner
+than MoonBit 40/43, .work/memcheck-results.csv), size band = honest
+JS-semantics floor (AS ports unchecked() everywhere, proven),
+dispatch double win + wordcount Ryu elision in tree. OPEN (audit #5
+order): 1 numeric-key-on-unknown-receiver UNSOUND fast path (agent:
+receiver pointer-kind guard, flip the wrong-result pin to JS truth),
+2 mixed BOOL|NUMBER return representation (needs DESIGN -- prior
+broad fix broke 190+ kernel rows; represented join or escape-boxing,
+not sentinels), 3 module-scope per-iteration closure capture (agent:
+unify with the function-scope mechanism; audit repro 22-should-be-
+12), 4 value-oracle rows for parity corpus (byte-identity of
+identically-wrong output proved nothing -- boolconst taught that;
+add JS-oracle + kernel-output EXECUTION rows), 5 evidence refresh
+AFTER semantics settle (+ tinygo CLT), 6 solver consolidation /
+LoopPlan / CompileSession vision. IN FLIGHT: examples jz-vs-JS
+speed gate (user prod report; deploy staleness ruled out -- pages
+current at HEAD, speed-tier builds confirmed). Perf truth: committed
+evidence stale by design until item 5; verified pairs: dispatch
+strict JIT win, lz band 1.036, synth 0.975 leads, trace 1.462.
+
+## Status (2026-07-30, superseded — re-audit #4 reconciled)
 
 CLOSED since #3: typed-array WIP LANDED (b1176b4a — clean-HEAD simd
 158/158); bench producer integration COMPLETE (watr meta, porf-native

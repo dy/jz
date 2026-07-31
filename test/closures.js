@@ -1277,7 +1277,6 @@ export let g = () => t[0](5) + t[0](1, 2)`)
 })
 
 test('closure-table call-site param lattice: indexed-only dispatch proves NUMBER params', () => {
-  if (belowOpt(2)) return  // structural pin: the lattice computes at every tier, but O0's emit takes the generic path (values stay correct — see the runtime asserts below the shape ones)
   // The dispatch bench's exact shape (bench/dispatch/dispatch.js): a const
   // array of capture-free arrows invoked ONLY through one data-indexed call
   // site. No alias, no export, no non-call read of `ops` anywhere — so
@@ -1295,6 +1294,11 @@ export let f = (n) => {
   const { f } = run(src)
   is(f(4), 0)   // 0 → (0+0)|0=0 → 0^1=1 → (1+2)|0=3 → 3^3=0
 
+  // Structural half only below this line: O0's emit takes the generic path
+  // (values above hold at EVERY tier); the proof-shaped codegen exists at
+  // optimize >= 2. (Audit #5: the tier guard sits here, after the value
+  // asserts, so O0 still exercises the runtime semantics.)
+  if (belowOpt(2)) return
   // PIN: the proof reaches codegen — closure0's `x + k` compiles straight to
   // a bare f64.add on the two param locals (no __to_num/kind-dispatch wrapper
   // call in between), and the generic string-concat runtime this class was
@@ -1310,7 +1314,6 @@ export let f = (n) => {
 })
 
 test('closure-table call-site param lattice, IMPERATIVE-CONSTRUCTION class: proves NUMBER when confined to function bodies', () => {
-  if (belowOpt(2)) return  // structural pin: same tier note as the literal-table pin above
   // The named follow-on to the const-literal test above (dyn-closure-tables.js
   // scanImperativeClosureTableLatticeCandidates): jessie's subscript `lookup`
   // shape is a `let NAME = []` populated via scattered `NAME[key] = arrow`
@@ -1333,6 +1336,8 @@ export let f = (n) => {
   const { f } = run(src)
   is(f(4), 0)   // same recurrence as the const-literal pin above
 
+  // Structural half only (tier guard after the value asserts — audit #5):
+  if (belowOpt(2)) return
   const w = wat(src)
   ok(/\(f64\.add\s*\(local\.get \$__a0\)\s*\(local\.get \$__a1\)\)/.test(w),
     'imperative table, confined to functions: (x+k) compiles to a bare f64.add on the raw params')
