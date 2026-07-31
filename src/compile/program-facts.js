@@ -350,6 +350,7 @@ export function collectProgramFacts(ast) {
       f.anyDyn = true
       for (const v of initFacts.dynVars) f.dynVars.add(v)
     }
+    if (initFacts.dynWriteVars) for (const v of initFacts.dynWriteVars) f.dynWriteVars.add(v)
     if (initFacts.writtenProps) for (const p of initFacts.writtenProps) f.writtenProps.add(p)
     if (initFacts.arrResized) for (const v of initFacts.arrResized) f.arrResized.add(v)
     if (initFacts.nameEscapes) for (const v of initFacts.nameEscapes) f.nameEscapes.add(v)
