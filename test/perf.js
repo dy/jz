@@ -1140,6 +1140,83 @@ test('codegen: unknown-receiver index with NUMBER key guards receiver kind once,
     'reads with the raw i32 index')
 })
 
+test('codegen: receiver proven ARRAY-or-TYPED across disagreeing call sites drops the guard entirely', () => {
+  // Named follow-up to the numeric-key unknown-receiver soundness fix (9f46d517,
+  // re-audit #5 finding #1): a helper called once with a plain Array and once
+  // with a Float64Array can't get an exact-kind `val` consensus (the two sites
+  // disagree) — but BOTH kinds take the SAME __typed_idx fast arm, so the
+  // guard's ptrTypeEq test is provably dead weight. reps.js recvArrTyped /
+  // narrow.js hardParamRecvArrTyped fold this CLASS (not exact-kind) consensus;
+  // module/array.js's numeric-key guard sites collapse straight to the bare
+  // __typed_idx call when it holds. `recv` is looped (3 statements) so watr's
+  // small-function inliner can't dissolve the call sites and hide the effect.
+  const wat = compile(`
+    function recv(x, i) { let s = 0; for (let k = 0; k < 3; k = k + 1) s = s + x[i] + k; return s + x[i] }
+    export let f = (n, kind) => {
+      let acc = 0
+      if (kind === 1) {
+        let a = []
+        for (let i = 0; i < n; i = i + 1) a.push(i * 2.5)
+        for (let i = 0; i < n; i = i + 1) acc = acc + recv(a, i)
+      } else {
+        let b = new Float64Array(n)
+        for (let i = 0; i < n; i = i + 1) b[i] = i * 1.5
+        for (let i = 0; i < n; i = i + 1) acc = acc + recv(b, i)
+      }
+      return acc
+    }
+  `, { wat: true, optimize: 2 })
+  is((wat.match(/\$__dyn_get_expr/g) || []).length, 0,
+    'ARRAY-or-TYPED receiver class proof drops the __dyn_get_expr cold arm entirely')
+  ok((wat.match(/\$__typed_idx/g) || []).length >= 1,
+    'still takes the lean typed-index read')
+})
+
+test('codegen: genuinely unproven receiver (ARRAY vs OBJECT) keeps the numeric-key guard', () => {
+  // Soundness converse of the pin above: when call sites disagree with a kind
+  // OUTSIDE {ARRAY, TYPED} (here OBJECT), recvArrTyped must NOT fire — the
+  // guard (and its __dyn_get_expr ToPropertyKey fallback) has to stay, or an
+  // object-receiver numeric-key read would silently misread through
+  // __typed_idx's unrelated __len bounds check (the exact class 9f46d517 fixed).
+  const src = `
+    function recv(x, i) { let s = 0; for (let k = 0; k < 3; k = k + 1) s = s + x[i] + k; return s + x[i] }
+    export let f = (n, kind) => {
+      let acc = 0
+      if (kind === 1) {
+        let a = []
+        for (let i = 0; i < n; i = i + 1) a.push(i * 2.5)
+        for (let i = 0; i < n; i = i + 1) acc = acc + recv(a, i)
+      } else {
+        let o = {}
+        for (let i = 0; i < n; i = i + 1) o[i] = i * 10
+        for (let i = 0; i < n; i = i + 1) acc = acc + recv(o, i)
+      }
+      return acc
+    }
+  `
+  const wat = compile(src, { wat: true, optimize: 2 })
+  ok((wat.match(/\$__dyn_get_expr/g) || []).length >= 1,
+    'ARRAY-vs-OBJECT disagreement keeps the ToPropertyKey dyn-props fallback')
+  // Value-correctness: o[i] for i in [0,n) is a genuine dyn-props hit, not undefined.
+  const inst = jz(src)
+  const jsRecv = (x, i) => { let s = 0; for (let k = 0; k < 3; k = k + 1) s = s + x[i] + k; return s + x[i] }
+  const jsF = (n, kind) => {
+    let acc = 0
+    if (kind === 1) {
+      let a = []
+      for (let i = 0; i < n; i++) a.push(i * 2.5)
+      for (let i = 0; i < n; i++) acc = acc + jsRecv(a, i)
+    } else {
+      let o = {}
+      for (let i = 0; i < n; i++) o[i] = i * 10
+      for (let i = 0; i < n; i++) acc = acc + jsRecv(o, i)
+    }
+    return acc
+  }
+  is(inst.exports.f(5, 1), jsF(5, 1), 'ARRAY branch value-correct')
+  is(inst.exports.f(5, 2), jsF(5, 2), 'OBJECT branch value-correct')
+})
+
 test('codegen: pure scalar function — minimal binary', () => {
   const wasm = compile('export let add = (a, b) => a + b')
   // Pure scalar: no arrays, strings, objects. Should be tiny.

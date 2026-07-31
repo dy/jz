@@ -1521,6 +1521,26 @@ export default function narrowSignatures(programFacts, ast) {
     }
     return consensus ?? null
   }
+  // Class-level sibling of hardParamVal: true iff every live call site proves
+  // ARRAY OR TYPED at this position — mixing the two (unlike hardParamVal's
+  // exact-equality fold) does NOT disqualify, since module/array.js's numeric-
+  // key unproven-receiver guard only needs to rule out OBJECT/HASH/STRING/etc
+  // (reps.js recvArrTyped doc). Same fail-closed discipline as hardParamVal:
+  // one untyped/missing/other-kind site and the whole param declines (returns
+  // false) — always safe, since false only means the runtime guard stays.
+  const hardParamRecvArrTyped = (funcName, k) => {
+    let any = false
+    for (let s = 0; s < callSites.length; s++) {
+      if (callSites[s].callee !== funcName) continue
+      const state = siteState(callSites[s])
+      if (!state) continue
+      if (k >= state.argList.length) return false
+      const v = inferValAtSite(state.argList[k], state)
+      if (v !== VAL.ARRAY && v !== VAL.TYPED) return false
+      any = true
+    }
+    return any
+  }
   // `soft` makes apply treat a null inference as BOTTOM (skip — "this site can't
   // tell yet") instead of TOP (poison): the monotone meet. A soft field never
   // needs clearStickyNull; its consumers either re-validate hard (hardParamVal)
@@ -2071,6 +2091,16 @@ export default function narrowSignatures(programFacts, ast) {
   // r.val is sound for emit + the late/post-return consumers (applyI32ParamSpecial-
   // ization's skipTyped guard, specializeBimorphicTyped) — which read it directly.
   runCallsiteLattice([mergeRule('val', (arg, _k, state) => inferValAtSite(arg, state))])
+  // recvArrTyped: same final-sweep timing as the val hard-settle just above (every
+  // producer — results, typedCtor, enrichment — has run). A param whose exact `val`
+  // just poisoned to null because two sites disagree (ARRAY vs TYPED) may still
+  // qualify here — that's the whole point (reps.js recvArrTyped doc). Computed for
+  // every param position regardless of exported/valueUsed status: an exported
+  // function has no in-program call sites, so hardParamRecvArrTyped's fold sees
+  // none and returns false — declines safely, no separate gating needed.
+  for (const [fname, reps] of paramReps)
+    for (const [k, r] of reps)
+      if (hardParamRecvArrTyped(fname, k)) r.recvArrTyped = true
   // BIGINT params: re-derive nullability the val claim just erased. VT['?:']
   // carries BIGINT through a nullish-literal arm (the kind is untaggable at
   // runtime — kind.js), so a site arg like `c ? BigInt(x) : null` PROVES

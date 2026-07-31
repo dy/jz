@@ -6,6 +6,24 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+RECEIVER-INFERENCE STRENGTHENED 2026-07-31 (the 9f46d517 follow-up;
+inventory-first, honest scope): GUARD LANDSCAPE PROVEN NEAR-OPTIMAL
+-- ratchet corpora are single EXPORTED fns with zero call sites =
+unreachable by ANY receiver-proof lattice by construction (their
+simple buf[i] shapes already guard-free via unswitchTypedParamLoop;
+compound-index residual = loop-unswitch generality, declined per
+the LoopPlan-terminal precedent); real bench: 12 guard sites in 57
+cases, ALL the purpose-built Map-provenance class (test/provenance-
+inference.js fences memo/map edges as deliberately open). REAL GAP
+FIXED: ARRAY+TYPED caller mix spuriously poisoned under val's
+exact-equality meet though __typed_idx dispatches both internally
+-- new class-level recvArrTyped rep fact (reps/narrow/index thread,
+mirrors hardParamVal timing), array.js guard sites short-circuit to
+bare __typed_idx when it holds; both directions pinned. NAMED NEW
+LATTICE DIMENSION (not forced): Map-value-kind census (Map.get/set
+provenance) -- would close fftplan/provenance's 12 sites. Gates:
+battery 3139/0 (+2), parity 33/33, oracle 9/9, kernel leg 2447/0,
+ratchet +0, dbg green, watr 35/35.
 EVIDENCE REFRESHED AT SETTLED HEAD 2026-07-31 (attempt 3, committed
 WITH paired-verification protocol -- load 4.2 during run, dataset is
 CONSERVATIVELY pessimistic, bias runs against our claims so it beats

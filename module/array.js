@@ -1029,6 +1029,17 @@ export default (ctx) => {
     // Discharge analysis lives in src/infer.js (notStringEvidence source); flow-sensitive
     // notString refinements (from `if (typeof x === 'string') return ...`) overlay via lookup.
     const notString = typeof arr === 'string' && lookupNotString(arr)
+    // Cross-call-site CLASS proof (reps.js recvArrTyped, narrow.js
+    // hardParamRecvArrTyped — the named follow-up to the numeric-key unknown-
+    // receiver soundness fix, 2026-07-31): every live call site passes ARRAY
+    // OR TYPED at this position — never necessarily the SAME one (that's `vt`,
+    // already handled above), but always one of the two `$__typed_idx` already
+    // dispatches on internally. OBJECT/HASH/STRING/etc are EXCLUDED by the
+    // proof, so both runtime tag tests below (the ARRAY||TYPED ptrTypeEq guard
+    // AND the STRING ptrTypeEq check) are dead — the receiver can never take
+    // either's other arm. Collapses straight to the bare `__typed_idx` call,
+    // same shape a single-kind-proven `vt` receiver gets.
+    const recvArrTyped = typeof arr === 'string' && ctx.func.localReps?.get(arr)?.recvArrTyped === true
     // A provably-NUMBER key can never be a string key, so the `__is_str_key`
     // dispatch is statically dead — its numeric arm is what runs. Fall through
     // to the direct ptr_type==STRING ? __str_idx : __typed_idx form below, which
@@ -1037,6 +1048,10 @@ export default (ctx) => {
     if (useRuntimeKeyDispatch && keyType !== VAL.NUMBER)
       return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
         const keyI32 = asI32(typed(keyExpr, 'f64'))
+        // recvArrTyped: the receiver-CLASS proof above rules out OBJECT/HASH/
+        // STRING at every call site, so neither runtime tag test below can ever
+        // take its other arm — collapse straight to the bare __typed_idx call.
+        if (recvArrTyped) return ['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32]
         // Receiver AND key kind are both statically unproven here (the runtime
         // is_str_key dispatch above already ruled out string/atom — this arm is
         // the "real number, unknown receiver" case). ARRAY/TYPED keep the lean
@@ -1079,6 +1094,12 @@ export default (ctx) => {
     // of `idx`, matching the single-eval discipline `emitDynamicKeyDispatch`
     // uses above.
     if (keyType === VAL.NUMBER) {
+      // recvArrTyped: the receiver-CLASS proof (declared above, reps.js doc)
+      // rules out OBJECT/HASH/STRING at every call site — neither the
+      // ARRAY||TYPED tag test nor the STRING tag test below can ever take
+      // its other arm. Collapse straight to the bare __typed_idx call,
+      // reusing the same `arrayLoad` shape the fully-known-`vt` branches use.
+      if (recvArrTyped) return typed(arrayLoad, 'f64')
       // `vi` — the SAME i32-narrowed index emitIndex() already produced above
       // (line 768, shared by arrayLoad/stringLoad below) — feeds the fast
       // ARRAY/TYPED arm exactly as `arrayLoad` did before this guard existed:

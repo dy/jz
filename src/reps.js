@@ -90,11 +90,30 @@ export const VAL = {
  *   site/return position not proven uniformly BIGINT, or a destructured param,
  *   fail-closed). Boxed at the point of write; every later read of the name unboxes
  *   explicitly before raw i64 ops (ir.js boxBigInt/unboxBigInt).
+ * @property {boolean} [recvArrTyped]     receiver-kind CLASS proof (2026-07-31,
+ *   named follow-up to the numeric-key unknown-receiver soundness fix, 9f46d517):
+ *   true iff every live call site's argument at this position proves VAL.ARRAY OR
+ *   VAL.TYPED — never both the SAME site (that's ordinary `val` consensus, exact-
+ *   kind), but POSSIBLY a different one of the two at different sites (`f(anArray)`
+ *   at one call, `f(aFloat64Array)` at another) — a mix `val`'s exact-equality meet
+ *   would poison to TOP even though both kinds are STATICALLY interchangeable for
+ *   any consumer that only needs "heap-indexable, never OBJECT/HASH/STRING/etc":
+ *   `$__typed_idx` (module/core.js) already dispatches ARRAY vs TYPED itself at
+ *   runtime, so a receiver proven to be always one-or-the-other can skip the
+ *   ptrTypeEq tag TEST module/array.js's numeric-key unproven-receiver guard
+ *   emits, straight to the bare `__typed_idx` call — sound because OBJECT/HASH
+ *   (the case the guard exists to catch) is EXCLUDED by the proof, not because
+ *   the exact kind is known. A narrower, class-level sibling of `val` — same
+ *   monotone-meet discipline (src/compile/narrow.js hardParamRecvArrTyped mirrors
+ *   hardParamVal's site fold), stored alongside it rather than replacing it so
+ *   every OTHER `val`-exact consumer (`.push`, method dispatch, dot-property…)
+ *   is untouched. Purely an optimization fact: false/absent is always safe (the
+ *   guard just stays); never gates soundness.
  */
 export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
-  'typedCtor', 'wasm', 'nullable', 'neverGrown', 'bigintBoxed',
+  'typedCtor', 'wasm', 'nullable', 'neverGrown', 'bigintBoxed', 'recvArrTyped',
 ])
 
 const DBG_REPS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'

@@ -521,6 +521,10 @@ function analyzeFuncForEmit(func, programFacts) {
         }
       }
       if (r.val && !reassigned && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
+      // recvArrTyped: same reassignment hazard as r.val (an entry-time class proof
+      // doesn't survive a body write) — module/array.js's unproven-receiver numeric-
+      // key guard reads this to skip its runtime ptrTypeEq test (reps.js doc).
+      if (r.recvArrTyped && !reassigned) updateRep(pname, { recvArrTyped: true })
       if (r.arrayElemSchema != null) updateRep(pname, { arrayElemSchema: r.arrayElemSchema })
       // Closed-union param facts ride the lattice as canonical 'a,b,…' keys.
       if (typeof r.arrayElemSchemaSet === 'string')
@@ -1327,6 +1331,8 @@ function emitFunc(func, funcFacts, programFacts) {
       // call-site fact here would undo it) so it needs the identical guard.
       const reassigned = isReassigned(body, pname)
       if (r.val && !reassigned && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
+      // recvArrTyped: mirrors the analyzeFuncForEmit seeding above (see its comment).
+      if (r.recvArrTyped && !reassigned) updateRep(pname, { recvArrTyped: true })
       // bigintBoxed: same unconditional-of-reassigned seeding as analyzeFuncForEmit
       // (design .work/bigint-round3-design.md §3.3) — usually already present via
       // the cloneRepMap above, but re-applied here for the same reason r.val is.
