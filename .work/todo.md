@@ -6,6 +6,27 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+MODULE-SCOPE PER-ITERATION CLOSURES FIXED 2026-07-31 (audit-#5 #3;
+unification, not a parallel copy): module top-level compiles via
+buildStartFn, and depth-0 loop-body lets were GLOBALIZED (depth
+tracks only fn nesting) -- closures emitted global.get = last
+iteration's value. FIX: collectLoopDeclNames+bodyCapturesName mark
+captured loop-body names (for/while, post-desugar funnel); marked
+names skip declareGlobal and mint as REAL locals via the standard
+mintLocal path -- the EXISTING emitLoopFreshBoxed/emitDecl per-
+iteration machinery then engages untouched; buildStartFn boxes only
+the mutated-after-capture subset (scoped findMutations, not blanket
+-- false-positive boxing would silently skip a global.set, verified
+concretely). Pay-per-capture: uncaptured loop vars stay globals
+(pinned). SWEEP: for-of/for-let/mutated/nested x2/for-in/while ALL
+JS-truth green; the banked P0-2 closure-in-loop class CURED module-
+scope (1005 exact); test262 rows orthogonal (wrapped depth!=0, fix
+gated depth===0). Byte-identity: 8 non-capturing programs identical
+vs clean-HEAD worktree; kernel self-host surface ZERO (95-file graph
+grepped: no module-scope loop captures). Gates run TWICE (isolated
+worktree + settled shared tree): battery 3131/0, parity 33/33,
+kernel leg 2447/0, ratchet +0, dbg green, watr 35/35.
+
 CLOSED since #4: kernel ToIntN rows FIXED -> KERNEL LEG ZERO FAILS
 (6d293644, first ever; capture class swept 2047ce75, parity corpus
 33/33); dyn-prop keying both roots (87511c69); README self-host

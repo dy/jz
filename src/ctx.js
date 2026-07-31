@@ -307,6 +307,15 @@ export function reset(proto, globals, bridge) {
     constStrs: null,      // Map<name, string> — module const folded to a string literal
     shapeStrs: null,      // Map<expr, string> / shapeStrArrays: Map<name, string[]> — schema-shape string folds
     shapeStrArrays: null,
+    // ES §14.7.4.7 per-iteration bindings at MODULE scope: names prepare
+    // routed through the local (not global) path because a nested closure
+    // inside their declaring loop captures them (see prepare/index.js's
+    // loopLocalNames — same names, accumulated across the whole compile
+    // instead of scoped to one loop). Consulted once, at assemble.js's
+    // buildStartFn, to box the (rare) subset ALSO mutated after capture —
+    // scoped narrowly to just these names so an ordinary module-global
+    // capture is never mistakenly cell-boxed.
+    moduleLoopCaptured: new Set(),
   }
 
   ctx.func = {

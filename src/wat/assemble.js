@@ -39,7 +39,7 @@ const parseTemplate = (str) => {
 // compile in a warm-instance loop (see scripts/self.js setupSelf).
 export const clearStdlibParseCache = () => { stdlibParseCache = new Map() }
 import { T } from '../ast.js'
-import { analyzeValTypes, analyzeBody } from '../compile/analyze.js'
+import { analyzeValTypes, analyzeBody, findMutations } from '../compile/analyze.js'
 import { VAL } from '../reps.js'
 import {
   optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, collectReachableMemoryWrites,
@@ -177,6 +177,28 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // data segment (no per-call freshness to violate). Function bodies — compiled
   // separately, and the late closures below — leave this unset and alloc fresh.
   ctx.func.atModuleScope = true
+  // ES §14.7.4.7 per-iteration bindings: prepare already routed every
+  // closure-captured loop-body let/const into ctx.scope.moduleLoopCaptured
+  // (see prepare/index.js's loopLocalNames) instead of the single-instance
+  // global path, so — like a function-scope loop-let — it's a genuine
+  // __start local by the time seedGeneratedLocals below sweeps it in (its
+  // mintLocal spelling always contains T). The (rare) subset ALSO mutated
+  // after capture — `for (let i=0;…){fs.push(()=>i); i+=1}` — needs the
+  // SAME heap-cell (boxed) capture a function body gets via boxedCaptures,
+  // or the closure would see a value snapshotted at creation time instead
+  // of the post-mutation value JS's aliased per-iteration binding exposes.
+  // Deliberately narrower than calling boxedCaptures(ast) outright: that
+  // scans EVERY let/const in the program, and almost all module-scope names
+  // stay legitimate single-instance globals — wrongly cell-boxing one would
+  // make emitDecl skip its global.set entirely (ctx.func.boxed is checked
+  // before isGlobal). Scoping to exactly the names prepare already proved
+  // captured-and-local-worthy makes that misclassification impossible.
+  if (ctx.scope.moduleLoopCaptured.size) {
+    const mutated = new Set()
+    findMutations(ast, ctx.scope.moduleLoopCaptured, mutated)
+    if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) findMutations(mi, ctx.scope.moduleLoopCaptured, mutated)
+    for (const name of mutated) if (!ctx.func.boxed.has(name)) ctx.func.boxed.set(name, `${T}cell_${name}`)
+  }
   const moduleInits = []
   if (ctx.module.moduleInits) {
     for (const mi of ctx.module.moduleInits) {

@@ -101,6 +101,28 @@ let ownerStack     // arrow-nesting ids: [0] = module scope; '=>' pushes a fresh
                    // renamed by prep, so reachable-same-name ⇒ same binding).
 let ownerUniq
 let renameSerial   // per-arrow mint counters for BindingId names (parallel to ownerStack)
+// ES §14.7.4.7 per-iteration bindings at MODULE scope (depth 0): names of
+// let/const declared directly in a loop BODY (for/for-of/for-in's desugared
+// bind, or the for-head captured-let copy-in) that a nested closure inside
+// THAT loop captures. `depth` alone can't gate this — it only tracks
+// function/arrow nesting, not loop nesting, so a module-top-level loop is
+// still "depth 0" and its body-lets would otherwise take the single-instance
+// global fast path (declareGlobal) that every OTHER depth-0 binding correctly
+// wants (module init runs once). A loop body doesn't: each iteration is its
+// own lexical environment, so a captured loop-local needs the SAME per-
+// binding-instance treatment a function-scope loop already gets for free
+// (its body-lets are always wasm locals, never globals). Pushed/popped
+// around a loop's body in the 'for' handler; consulted by declareGlobal,
+// prescanBlockDecls, and prepDecl's depth-0 promotion checks so a marked
+// name mints a fresh local (mintLocal) instead of a shared global — routing
+// it through the EXACT mechanism a function-scope loop-let already uses
+// (mintLocal's per-arrow ownerStack id defaults to 0 = module scope, so it
+// mints safely with no function context). Once local, the existing emit-time
+// per-iteration-cell machinery (emitLoopFreshBoxed/emitDecl, gated on
+// ctx.func.boxed) takes over exactly as it does inside a function — value-
+// capture-at-closure-creation already gives correct per-iteration semantics
+// for the common (unmutated) case with zero extra machinery.
+let loopLocalNames
 
 const resetPrepState = () => {
   depth = 0
@@ -116,6 +138,7 @@ const resetPrepState = () => {
   ownerStack = [0]
   ownerUniq = 0
   renameSerial = [0]
+  loopLocalNames = new Set()
 }
 
 /** BindingId totality: every function-local binding renames to the
@@ -821,7 +844,11 @@ function prescanBlockDecls(node) {
       const d = s[i], t = Array.isArray(d) && d[0] === '=' ? d[1] : d
       for (const name of bindingNames(t)) {
         if (typeof name !== 'string' || top.has(name) || name.includes(T)) continue
-        top.set(name, depth !== 0 ? mintLocal(name)
+        // loopLocalNames: a depth-0 loop-body binding a nested closure captures
+        // (see its declaration) — mint it exactly like a depth!==0 local instead
+        // of letting it fall through to the single-instance global spelling.
+        const isLL = loopLocalNames.has(name)
+        top.set(name, (depth !== 0 || isLL) ? mintForScope(name, isLL)
           : (isDeclared(name) || fnNames?.has(name)) ? `${name}${T}${ctx.func.uniq++}` : name)
       }
     }
@@ -1260,7 +1287,7 @@ function scalarArrayDestruct(pattern, rhs) {
 }
 
 function declareGlobal(name, user = true) {
-  if (depth !== 0 || typeof name !== 'string') return name
+  if (depth !== 0 || typeof name !== 'string' || loopLocalNames.has(name)) return name
   if (ctx.scope.globals.has(name)) err(`'${name}' conflicts with a compiler internal — choose a different name`)
   declGlobal(name, 'f64')
   if (user) ctx.scope.userGlobals.add(name)
@@ -1287,6 +1314,72 @@ function bodyCapturesName(node, name) {
   if (node[0] === '=>') return refsName(node[2], name, { skipArrow: false })
   for (let i = 1; i < node.length; i++) if (bodyCapturesName(node[i], name)) return true
   return false
+}
+
+/** Names bound by a `let`/`const` anywhere inside `node`, stopping at nested
+ *  arrow boundaries (their own decls are that arrow's locals, irrelevant
+ *  here). Feeds the module-scope per-iteration-binding scan in the `for`
+ *  handler: every loop-body-declared name (the for-of/for-in desugared bind,
+ *  the for-head captured-let copy-in, or an ordinary body-scoped `let`) is a
+ *  candidate for loopLocalNames — checked against bodyCapturesName before
+ *  actually being marked, so an uncaptured loop var still takes the cheaper
+ *  single-instance global path. */
+function collectLoopDeclNames(node, out = new Set()) {
+  if (!Array.isArray(node)) return out
+  const op = node[0]
+  if (op === '=>') return out
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      bindingNames(Array.isArray(d) && d[0] === '=' ? d[1] : d, out)
+    }
+  }
+  for (let i = 1; i < node.length; i++) collectLoopDeclNames(node[i], out)
+  return out
+}
+
+/** Mark `nm` loop-local for the CURRENT loop (loopLocalNames — scoped,
+ *  popped when that loop's body finishes prepping) AND record it in the
+ *  compile-persistent ctx.scope.moduleLoopCaptured, which assemble.js's
+ *  buildStartFn consults once, after prepare is done, to box the (rare)
+ *  subset of these names ALSO mutated after capture. See loopLocalNames'
+ *  own declaration. */
+function markLoopLocal(nm) {
+  loopLocalNames.add(nm)
+}
+
+/** Mint `name`'s local spelling and, if minting is because of loopLocalNames
+ *  (a module-scope per-iteration capture — see its own declaration), record
+ *  the FINAL minted spelling in the compile-persistent
+ *  ctx.scope.moduleLoopCaptured (assemble.js's buildStartFn matches against
+ *  the post-rename ast, so the pre-rename source name it was marked under is
+ *  useless there). depth!==0 (an ordinary function-scope mint unrelated to
+ *  this mechanism) leaves moduleLoopCaptured untouched. */
+function mintForScope(name, isLoopLocal) {
+  const m = mintLocal(name)
+  if (isLoopLocal) ctx.scope.moduleLoopCaptured.add(m)
+  return m
+}
+
+/** Module-scope (depth 0) per-iteration binding scan for a loop body: mark
+ *  every body-declared let/const a nested closure captures in loopLocalNames
+ *  (pay-per-capture — an uncaptured loop var keeps the cheaper single-
+ *  instance global) for the duration of `run()`, then restore. Shared by
+ *  'for' (for-of/for-in/for-head-capture all funnel through the classic ';'
+ *  branch after desugaring) and 'while' (do-while lowers to while). See
+ *  loopLocalNames' own declaration for the full rationale. */
+function withLoopLocalNames(body, run) {
+  let added = null
+  if (depth === 0) {
+    for (const nm of collectLoopDeclNames(body)) {
+      if (!loopLocalNames.has(nm) && bodyCapturesName(body, nm)) {
+        (added ||= []).push(nm)
+        markLoopLocal(nm)
+      }
+    }
+  }
+  try { return run() }
+  finally { if (added) for (const nm of added) loopLocalNames.delete(nm) }
 }
 
 /** Rename bare identifiers per `map` — literal nodes and non-computed property
@@ -1680,7 +1773,7 @@ function prepDecl(op, ...inits) {
 
     if (!Array.isArray(i) || i[0] !== '=') {
       let declName = i
-      if (depth === 0 && typeof declName === 'string') {
+      if (depth === 0 && typeof declName === 'string' && !loopLocalNames.has(declName)) {
         if (ctx.module.currentPrefix) {
           declName = `${ctx.module.currentPrefix}$${declName}`
           ctx.scope.chain[i] = declName
@@ -1698,8 +1791,8 @@ function prepDecl(op, ...inits) {
         if (scopes.length > 0) {
           const top = scopes[scopes.length - 1]
           if (top.has(declName)) declName = top.get(declName)
-          else if (depth !== 0 && !declName.includes(T)) {
-            const m = mintLocal(declName)
+          else if ((depth !== 0 || loopLocalNames.has(declName)) && !declName.includes(T)) {
+            const m = mintForScope(declName, loopLocalNames.has(declName))
             top.set(declName, m)
             declName = m
           } else top.set(declName, declName)
@@ -1805,11 +1898,15 @@ function prepDecl(op, ...inits) {
       const patRenames = new Map()
       for (const n of bindingNames(name)) {
         let declName = n
-        if (depth !== 0 && typeof n === 'string' && scopes.length > 0) {
+        // loopLocalNames: see its declaration — a depth-0 destructured loop
+        // target a nested closure captures mints like any depth!==0 local
+        // instead of taking the single-instance global path below.
+        const isLoopLocal = typeof n === 'string' && loopLocalNames.has(n)
+        if ((depth !== 0 || isLoopLocal) && typeof n === 'string' && scopes.length > 0) {
           const top = scopes[scopes.length - 1]
           if (top.has(n)) declName = top.get(n)
           else if (!n.includes(T)) {
-            declName = mintLocal(n)
+            declName = mintForScope(n, isLoopLocal)
             top.set(n, declName)
           } else if (isDeclared(n) || fnNames?.has(n)) {
             declName = `${n}${T}${ctx.func.uniq++}`
@@ -1817,13 +1914,13 @@ function prepDecl(op, ...inits) {
           } else top.set(n, n)
           if (declName !== n) patRenames.set(n, declName)
         }
-        declareGlobal(declName)
+        if (!isLoopLocal) declareGlobal(declName)
         // Destructure targets hold source-prop values of unknown shape — census
         // as non-literal binding sites (raw + module-prefixed key for depth-0
         // globals; whichever spelling later consumers resolve through is barred).
         censusUnknownInitDecl(declName)
-        if (depth === 0 && ctx.module.currentPrefix && typeof n === 'string') censusUnknownInitDecl(`${ctx.module.currentPrefix}$${n}`)
-        if (depth !== 0 && typeof declName === 'string' && fnNames) fnNames.add(declName)
+        if (depth === 0 && !isLoopLocal && ctx.module.currentPrefix && typeof n === 'string') censusUnknownInitDecl(`${ctx.module.currentPrefix}$${n}`)
+        if ((depth !== 0 || isLoopLocal) && typeof declName === 'string' && fnNames) fnNames.add(declName)
       }
       if (patRenames.size) name = substPattern(name, patRenames)
       name = prepPatternKeys(name)
@@ -1863,6 +1960,11 @@ function prepDecl(op, ...inits) {
 
     if (!defFunc(name, normed)) {
       let declName = name
+      // loopLocalNames: see its declaration — a depth-0 loop-body let/const a
+      // nested closure captures takes the local (mintLocal) path below instead
+      // of the single-instance global path further down. Read from `name`
+      // (pre-rename) since loopLocalNames holds source spellings.
+      const isLoopLocal = typeof name === 'string' && loopLocalNames.has(name)
       // Block scope: the block's own decls are pre-registered (with their
       // rename decision) by prescanBlockDecls at scope entry — consume that
       // mapping. Synthetic decls minted mid-prep (do-flags, loop temps) miss
@@ -1873,8 +1975,8 @@ function prepDecl(op, ...inits) {
       if (typeof name === 'string' && scopes.length > 0) {
         const top = scopes[scopes.length - 1]
         if (top.has(name)) declName = top.get(name)
-        else if (depth !== 0 && !name.includes(T)) {
-          declName = mintLocal(name)
+        else if ((depth !== 0 || isLoopLocal) && !name.includes(T)) {
+          declName = mintForScope(name, isLoopLocal)
           top.set(name, declName)
         } else if (isDeclared(name) || fnNames?.has(name)) {
           declName = `${name}${T}${ctx.func.uniq++}`
@@ -1899,7 +2001,7 @@ function prepDecl(op, ...inits) {
       if (op === 'const' && typeof declName === 'string' && scopes.length)
         staticConstScopes[staticConstScopes.length - 1]?.consts?.add(declName)
       // Track const for reassignment checks — only module-scope consts (depth 0)
-      if (typeof declName === 'string' && depth === 0) {
+      if (typeof declName === 'string' && depth === 0 && !isLoopLocal) {
         if (ctx.module.currentPrefix) {
           declName = `${ctx.module.currentPrefix}$${declName}`
           ctx.scope.chain[name] = declName
@@ -1947,8 +2049,10 @@ function prepDecl(op, ...inits) {
         if (allKnown && props.length && ctx.schema.register) bindDeclSchema(declName, ctx.schema.register(props))
         else censusUnknownInitDecl(declName)
       } else censusUnknownInitDecl(declName)
-      // Module-scope variable → WASM global (mark as user-declared)
-      if (depth === 0 && typeof declName === 'string') {
+      // Module-scope variable → WASM global (mark as user-declared). Skipped
+      // for a captured loop-local (isLoopLocal): it already minted a fresh
+      // local above and must stay one — see loopLocalNames' declaration.
+      if (depth === 0 && !isLoopLocal && typeof declName === 'string') {
         if (ctx.scope.globals.has(declName)) err(`'${declName}' conflicts with a compiler internal — choose a different name`)
         declGlobal(declName, 'f64')
         ctx.scope.userGlobals.add(declName)
@@ -2599,7 +2703,12 @@ const handlers = {
   },
   'while': (cond, body) => {
     const c = prep(stripBoolNot(cond))
-    pushScope(); prescanBlockDecls(body); const b = dropDeadPostfix(prep(body)); popScope()
+    pushScope()
+    // See loopLocalNames' declaration — a module-scope while body's own
+    // captured let/const needs the same per-iteration (not global) treatment
+    // a for-loop's body gets above.
+    const b = withLoopLocalNames(body, () => { prescanBlockDecls(body); return dropDeadPostfix(prep(body)) })
+    popScope()
     return ['while', c, b]
   },
   // do { body } while (cond) → flag-guarded while: `flag=true; while (flag||cond) { flag=false; body }`.
@@ -3118,6 +3227,24 @@ const handlers = {
     }
     let r
     if (Array.isArray(head) && head[0] === ';') {
+      // ES §14.7.4.7 module-scope per-iteration bindings: a depth-0 loop's OWN
+      // body-declared let/const (the for-of/for-in desugared bind landed in
+      // `body` by the branches below, or the for-head captured-let copy-in
+      // above, or an ordinary body-scoped `let`) that a nested closure
+      // captures must NOT take declareGlobal's single-instance global path —
+      // see loopLocalNames' declaration for the full rationale. Detected and
+      // marked BEFORE prescanBlockDecls (which consults the set to decide
+      // mint-vs-identity), pay-per-capture like the for-head sibling above:
+      // an uncaptured loop var keeps the cheaper global.
+      let addedLoopLocals = null
+      if (depth === 0) {
+        for (const nm of collectLoopDeclNames(body)) {
+          if (!loopLocalNames.has(nm) && bodyCapturesName(body, nm)) {
+            (addedLoopLocals ||= []).push(nm)
+            markLoopLocal(nm)
+          }
+        }
+      }
       prescanBlockDecls(body)
       let [, init, cond, step] = head
       cond = stripBoolNot(cond)
@@ -3157,6 +3284,7 @@ const handlers = {
         }
       }
       r = ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? dropDeadPostfix(prep(step)) : null, dropDeadPostfix(prep(body))]
+      if (addedLoopLocals) for (const nm of addedLoopLocals) loopLocalNames.delete(nm)
     } else if (Array.isArray(head) && head[0] === 'of') {
       // for (let x of arr) → hoist arr (if non-trivial) and arr.length once, iterate by index.
       // Divergence from JS: mutating arr during iteration won't extend/shorten the loop.

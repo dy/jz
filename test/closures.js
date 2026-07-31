@@ -1417,6 +1417,52 @@ test('closures: for-head let captures per-iteration binding', () => {
   is(run(`export let f = () => { let fs = []; for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) fs.push(() => i * 10 + j); return fs[0]() + fs[3]() }`).f(), 11)
 })
 
+// re-audit #5 critical #3: the per-iteration mechanism above lived ENTIRELY
+// on the function-scope emit path (emitLoopFreshBoxed, gated on ctx.func.boxed
+// — populated by boxedCaptures, called from analyzeFuncForEmit/emitClosureBody,
+// NEITHER of which runs for the module top-level). A module-scope loop's
+// body-let instead took declareGlobal's single-instance path (`depth === 0`
+// alone gates it — depth tracks only function nesting, not loop nesting), so
+// every iteration's closure aliased the SAME wasm global: reads at call time
+// saw whatever the loop left behind, not a per-iteration snapshot. Fixed by
+// routing a captured module-scope loop-body binding through the SAME local
+// (mintLocal) + boxed-cell machinery a function-scope loop already uses
+// (prepare/index.js's loopLocalNames + ctx.scope.moduleLoopCaptured) instead
+// of a parallel copy. Every assertion below is JS ground truth (value-oracle
+// style) — run the same source under Node to reproduce the expected column.
+test('closures: module-scope for-of/for-let captures per-iteration binding', () => {
+  // The audit's exact repro: module-scope for-of push. Was 22 (both closures
+  // read the LAST binding via the shared global); JS truth is 12.
+  is(run(`let fs = []; for (let x of [1, 2]) fs.push(() => x); export let f = () => fs[0]() * 10 + fs[1]()`).f(), 12)
+  // for-let (classic for-head) sibling, module scope.
+  is(run(`let fs = []; for (let i = 0; i < 3; i++) fs.push(() => i); export let f = () => fs[0]() * 100 + fs[1]() * 10 + fs[2]()`).f(), 12)
+  // in-body mutation visible to that iteration's closure (boxed-cell class,
+  // not just the value-snapshot class) — JS truth 135, same as the
+  // function-scope sibling above.
+  is(run(`let fs = []; for (let i = 0; i < 6; i += 1) { fs.push(() => i); i += 1 } export let f = () => fs[0]() * 100 + fs[1]() * 10 + fs[2]()`).f(), 135)
+  // Nested module-scope loops — each level's binding is independently fresh.
+  is(run(`let fs = []; for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) fs.push(() => i * 10 + j); export let f = () => fs[0]() + fs[3]()`).f(), 11)
+  is(run(`let fs = []; for (let x of [1, 2]) for (let y of [10, 20]) fs.push(() => x * 100 + y); export let f = () => fs[0]() + fs[3]()`).f(), 330)
+  // for-in head: string keys, still one fresh binding per key.
+  is(run(`let fs = []; let o = { a: 1, b: 2 }; for (let k in o) fs.push(() => k); export let f = () => fs[0]() + fs[1]()`).f(), 'ab')
+  // Pay-per-capture: an UNCAPTURED module-scope loop var stays the cheaper
+  // single-instance global (no per-iteration cell/local machinery paid for).
+  is(run(`let sum = 0; for (let x of [1, 2, 3]) sum += x; export let f = () => sum`).f(), 6)
+  // The ledgered P0-2 banked class (closure-in-loop rebinding a dispatch-table
+  // slot), module-scope variant: `orig` is captured by the replacement arrow
+  // and must resolve to the pre-overwrite value at CALL time, not a stale/
+  // shared read. JS truth: lookup.f(2,3) = (2+3) + 1000 = 1005.
+  is(run(`
+    let lookup = {}
+    lookup.f = (a, b) => a + b
+    for (const c of [1]) {
+      const orig = lookup.f
+      lookup.f = (a, b) => orig(a, b) + 1000
+    }
+    export let f = () => lookup.f(2, 3)
+  `).f(), 1005)
+})
+
 // Reassigned function bindings: a depth-0 `let g = (…) => …` lifts into a
 // FIXED named function (defFunc) — sound only while the binding is immutable.
 // JS allows reassigning a let/var function binding (even from inside a
