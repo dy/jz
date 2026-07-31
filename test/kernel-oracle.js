@@ -106,6 +106,19 @@ const AGREE = [
   { name: 'closure',
     src: `export let make = (n) => { let total = 0; const add = (x) => { total += x; return total }; for (let i = 0; i < n; i++) add(i); return total }`,
     calls: [{ fn: 'make', args: [5] }, { fn: 'make', args: [0] }] },
+  // FLIPPED from PENDING-FIX (audit #5 item 2, ledger "KERNEL LEG ZERO FAILS"
+  // boolconst row — THE LESSON's own named example): a helper mixing a NUMBER
+  // return with a bare `false` return, checked via `=== false` at the call
+  // site. Fixed at the return-STATEMENT boxing root (src/compile/emit.js
+  // 'return', gated by src/compile/index.js emitFunc's ctx.func.mixedAtomReturn —
+  // a func with >= 2 syntactic return statements that isn't proven uniformly
+  // BOOL now boxes any individually-BOOL return tail to its TRUE_NAN/FALSE_NAN
+  // atom, matching the "unknown operand carries booleans boxed" invariant the
+  // rest of the compiler already assumed). Both native AND kernel now agree
+  // with the JS oracle — the AGREE tier is the correct home now, not a
+  // PENDING-FIX not()-tripwire.
+  { name: 'boolconst', src: CORPUS.boolconst,
+    calls: [{ fn: 'f', args: [5] }, { fn: 'f', args: ['hi'] }, { fn: 'f', args: [true] }] },
 ]
 
 for (const opt of [0, 2, 3]) {
@@ -182,54 +195,48 @@ test('kernel oracle: subnormal literal — documented divergence (kernel-only, R
 })
 
 // ── PENDING-FIX tier: a REAL finding, not a documented tradeoff ───────────
-
-// boolconst (kernel-parity.js CORPUS, the exact row THE LESSON names): a
-// helper mixing a NUMBER return with a bare `false` return, checked via
-// `=== false` at the call site. kernel-parity.js's comment describes this as
-// FIXED at "the narrowest sound root" (module/typedarray.js's isConst, which
-// now returns `null` instead of overloading `false`) and says explicitly that
-// "this class of return-boxing gap [may remain] elsewhere in the compiler."
-// Running THIS generic shape through the oracle proves that remark true: it
-// is NOT fixed in general, and — this is the finding the byte-identity tier
-// structurally cannot see — it is wrong on NATIVE ALONE, with no kernel/self-
-// host involvement at all. Verified directly (not just via this file):
-//   node -e "import('./index.js').then(({default:jz}) => {
-//     const src = \`const g=(n)=>{if(typeof n==='number')return n;return false}
-//     export let f=(s)=>g(s)===false\`
-//     for (const opt of [0,1,2,3])
-//       console.log(opt, jz(src,{optimize:opt}).exports.f('hi'))  // false at every opt — should be true
-//   })"
-// Root cause (matches the ledger's own description of the class): the boolean
-// literal's cheap i32 0/1 representation only gets boxed into a real f64
-// TRUE/FALSE atom at a handful of explicit escape sites; a NUMBER-mixed
-// generic-f64 `return` isn't one of them, so `return false` here silently
-// crosses as the plain float 0 — indistinguishable from a genuine `0` at
-// `=== false`. Asserting the CURRENT (wrong) value with a `not()` tripwire
-// against the JS oracle: the moment this class is fixed generically, the
-// tripwire fails and names exactly which line to flip to the AGREE tier.
-test('kernel oracle: boolconst — PENDING FIX, native (not kernel-specific) return-boxing gap', async () => {
+//
+// (boolconst LANDED — moved to the AGREE array above. It lived here as a
+// PENDING-FIX not()-tripwire from re-audit #5 item 4 until the mixed
+// BOOL|NUMBER return-representation class it named was fixed generically —
+// audit #5 item 2, see AGREE's boolconst comment for the fix location.)
+//
+// A sibling, DIFFERENT-mechanism gap the same audit item's sweep surfaced and
+// deliberately did NOT fix: a ternary `cond ? 1 : false` used AS a return
+// value. The return-statement fix above only boxes a return whose own static
+// valType is BOOL; `s ? 1 : false`'s valType is (by src/compile/emit.js '?:'
+// design) NUMBER — the ternary handler intentionally keeps a BOOL∪NUMBER arm
+// pair raw so `x + (cond ? 1 : false)` stays correct arithmetic (its `?:` has
+// no notion of its own consumer — return position vs arithmetic position).
+// Forcing the box unconditionally at every such ternary would reopen the
+// REVERTED broad fix's exact failure mode: an arithmetic consumer statically
+// proven "numeric arm" (emit.js isNumArm) would read a NaN atom's raw bits as
+// if they were the number, corrupting `+`. Same root (an atom crosses
+// unboxed at a boxed-value observation site), different, riskier mechanism
+// (needs consumer-position-aware context threading through emit(), not a
+// return-statement gate) — documented and pinned, not fixed, per the audit's
+// own "map it, fix if same-root, pin regardless" instruction.
+test('kernel oracle: ternary BOOL|NUMBER return — PENDING FIX (documented, different mechanism than boolconst)', async () => {
   if (onWasi()) return
-  const src = CORPUS.boolconst
+  const src = `const g = (s) => s ? 1 : false
+export let f = (s) => g(s) === false`
   const mod = await oracle(src)
   const cases = [
-    { args: [5], want: false },     // typeof 5 === 'number' → g returns 5 → 5 === false → false (this one is correct)
-    { args: ['hi'], want: true },   // g returns false → false === false → true (jz currently returns false — WRONG)
-    { args: [true], want: true },   // same shape as above
+    { args: [true], want: false },  // g(true)=1 (number); 1 === false → false (already correct)
+    { args: [false], want: true },  // g(false)=false (atom); false === false → true (jz: WRONG — crosses raw)
   ]
-  for (const { args, want } of cases) is(mod.f(...args), want, `boolconst: JS oracle baseline f(${args.map(String)})`)
+  for (const { args, want } of cases) is(mod.f(...args), want, `ternary: JS oracle baseline f(${args.map(String)})`)
   for (const opt of [0, 2, 3]) {
     const nat = runNative(src, opt).f
     const ker = runKernel(src, opt).f
     for (const { args, want } of cases) {
       const gotNat = nat(...args), gotKer = ker(...args)
-      is(gotKer, gotNat, `boolconst O${opt}: kernel matches native (same wrong mechanism on both legs, THE LESSON's own point)`)
+      is(gotKer, gotNat, `ternary O${opt}: kernel matches native (same mechanism on both legs)`)
       if (want === false) {
-        is(gotNat, want, `boolconst O${opt}: f(${args.map(String)}) already correct`)
+        is(gotNat, want, `ternary O${opt}: f(${args.map(String)}) already correct`)
       } else {
-        // TODO(flip): once the generic return-boxing gap is fixed, gotNat === want (true) —
-        // change this to `is(gotNat, want, ...)` and delete the `not()` tripwire above it.
-        is(gotNat, false, `boolconst O${opt}: f(${args.map(String)}) CURRENT wrong value (should be ${want}) — TODO-flip once fixed`)
-        not(gotNat, want, `boolconst O${opt}: f(${args.map(String)}) known miscompile vanished — flip this case to the AGREE tier (is(gotNat, want, …))`)
+        is(gotNat, false, `ternary O${opt}: f(${args.map(String)}) CURRENT wrong value (should be ${want}) — open, different-mechanism gap, not fixed by the boolconst return-statement rule`)
+        not(gotNat, want, `ternary O${opt}: f(${args.map(String)}) known gap vanished — flip this case to the AGREE tier (is(gotNat, want, …))`)
       }
     }
   }

@@ -3814,9 +3814,23 @@ export const emitter = {
     // Closure-convention bodies return into a boxed-value position (the ftN f64
     // slot): a BOOL value must cross as its true/false atom — the result-side
     // mirror of closure.call's carrierF64 args. Raw funcs keep the plain 0/1
-    // (their direct callers read valResult; boundary/trampoline rebox).
+    // ONLY when the function's return kind is proven uniformly BOOL, OR when
+    // there's just one return statement at all (see ctx.func.mixedAtomReturn,
+    // set in index.js emitFunc — its comment has the full "why >=2 returns"
+    // rationale, including the Set/Map single-return regression a coarser
+    // `valResult !== VAL.BOOL` gate caused). A genuinely mixed func (>= 2
+    // return statements, not provably uniform BOOL) must box a statically-BOOL
+    // return tail here: an unproven-kind call result is exactly the
+    // "dynamic/unknown" operand the rest of the compiler already assumes
+    // carries booleans as their atom (emitStrictEq's BOOL-vs-unknown branch,
+    // '+'​'s atom-aware numSide, __to_num) — leaving it raw silently crossed
+    // `return false` as the plain float 0, indistinguishable from a real 0 at
+    // the call site (audit #5 item 2, ledger "KERNEL LEG ZERO FAILS" —
+    // boolconst). carrierF64 is a no-op (byte-identical to asParamType/asF64)
+    // whenever this return's own static valType isn't BOOL, so uniform-NUMBER
+    // (or any non-bool-mixed) funcs are untouched.
     const ir = pk != null ? asPtrOffset(emitted, pk)
-      : (ctx.func.boxedResult && rt === 'f64') ? carrierF64(expr, emitted)
+      : (rt === 'f64' && (ctx.func.boxedResult || ctx.func.mixedAtomReturn)) ? carrierF64(expr, emitted)
       : asParamType(emitted, rt)
     const ty = pk != null ? 'i32' : rt
     const tcoed = tcoTailRewrite(ir, ty)

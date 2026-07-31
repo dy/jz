@@ -410,6 +410,8 @@ function enterFunc(sig, body, { uniq = 0, directClosures = null } = {}) {
   ctx.func.current = sig
   ctx.func.body = body
   ctx.func.boxedResult = false        // closure-convention bodies set true after enterFunc (ftN boxed result)
+  ctx.func.valResult = null           // regular (non-closure) bodies set func.valResult after enterFunc — see emit.js 'return'
+  ctx.func.mixedAtomReturn = false    // emitFunc sets true for a >=2-return-statement, non-uniform-BOOL func — see emit.js 'return'
   ctx.func.directClosures = directClosures
   ctx.func.localProps = null
   ctx.func.charDecomp = null
@@ -1250,6 +1252,48 @@ function emitFunc(func, funcFacts, programFacts) {
   const _reps = paramReps.get(name)
 
   enterFunc(sig, body)
+  // Escape-boxing gate for return-position BOOL literals/expressions (emit.js
+  // 'return'): a func with >= 2 syntactic return statements whose overall
+  // valResult ISN'T proven uniformly BOOL may still have individual return
+  // tails that ARE statically BOOL (a mixed BOOL|NUMBER — or BOOL|anything —
+  // return join, audit #5 item 2 / ledger "KERNEL LEG ZERO FAILS" boolconst
+  // row). Those callers see this func's result as "dynamic/unknown", and the
+  // rest of the compiler already assumes an unknown f64 value carries a
+  // boolean as its TRUE_NAN/FALSE_NAN atom (emitStrictEq's BOOL-vs-unknown
+  // identity compare, '+'​'s numSide atom ladder, __to_num's atom arms) — so
+  // the atom-typed return tail must box to honor that invariant.
+  //
+  // The >=2-return-statement guard is load-bearing, not cosmetic: a SINGLE
+  // return statement whose valType narrowValResults couldn't prove early is
+  // NOT evidence of mixing — it's just an early-unprovable UNIFORM result
+  // (e.g. Set.has/Map.get's VAL.BOOL kind resolves only once ctx.schema.vars
+  // is populated, later than narrowValResults' own pass). An earlier version
+  // of this fix gated only on `valResult !== VAL.BOOL` and boxed these too —
+  // it broke every single-return Set/Map/array-element boolean read in the
+  // test suite: those funcs have no boundary-wrapper code path to UN-box
+  // (isBoundaryWrapped's resultDynamic arm just reinterprets bits), so a lone
+  // boxed return either surfaced as a decoded JS `true`/`false` where a raw
+  // `1`/`0` was the established, separately-pinned contract (test/data.js
+  // Set/Map alias tests, test/booleans.js's documented "bare boolean read
+  // from a container" gap), or handed NaN straight to an un-wrapped caller.
+  // Requiring a SECOND return statement restricts boxing to genuine syntactic
+  // joins (≥2 `return` sites in one body) — exactly the boolconst repro's
+  // shape — and leaves every real single-return function, provable or not,
+  // untouched (this is also why a single-expression arrow body, e.g. `s =>
+  // cond ? 1 : false`, is out of scope for this gate — returnExprs on a
+  // non-block body is always length 1; that ternary-arm class is a documented,
+  // separate, NOT-fixed-here finding — see test/kernel-oracle.js).
+  //
+  // A proven-uniform-BOOL func (valResult === VAL.BOOL) also needs no
+  // per-return boxing: its own escape sites (the boundary wrapper's
+  // resultBool arm / the closure trampoline's boolResult arm) box the WHOLE
+  // result once from valResult. carrierF64 itself is a no-op (byte-identical
+  // to the prior asParamType/asF64) for any return whose OWN static valType
+  // isn't BOOL, so a genuinely mixed func's NUMBER (or other) arms — and
+  // every non-bool-mixed function, period — are untouched either way.
+  ctx.func.valResult = func.valResult
+  ctx.func.mixedAtomReturn = func.valResult !== VAL.BOOL &&
+    (isBlockBody(body) ? returnExprs(body) : [body]).length > 1
   // Only this path drains charDecomp prologues (collectParamInits below) —
   // the shape-1b global-receiver decomposition may mint only here.
   ctx.func.charDecompGlobals = true

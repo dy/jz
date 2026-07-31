@@ -756,6 +756,23 @@ export const wrap = (memSrc, inst, state) => {
   const i64Arg = (ie, ext, box) => (x, i) => {
     const w = wrapArgAt(ext, i, x, box)
     if (ie && ie.p.has(i)) {
+      // i64-carrier slot: a raw JS boolean must cross as its TRUE_NAN/FALSE_NAN
+      // atom, matching how the SAME slot already boxes null/undefined (via
+      // coerce/mem.wrapVal, both already BigInt by the time `w` is built here).
+      // Neither `coerce` nor `mem.wrapVal` special-case booleans — `box(x)`
+      // leaves a boolean as a plain JS boolean (scalar module) or Number-
+      // converts it (heap module) — so falling through to `bits(w)` below
+      // would reinterpret ToNumber(x)'s float bits (1.0/0.0), indistinguishable
+      // from a genuine number at typeof/===. This is the argument-side mirror
+      // of the return-boxing gap (audit #5 item 2, ledger "KERNEL LEG ZERO
+      // FAILS" boolconst row): same collision, opposite direction of the JS↔
+      // wasm boundary. Checked on the ORIGINAL arg `x` (not `w`) — deliberately
+      // independent of whatever coerce/wrapVal did to it. A plain (non-i64)
+      // f64 numeric slot is untouched: the WebAssembly JS-API's own ToNumber
+      // on a raw boolean argument already gives the correct 1/0 there (see the
+      // `typeof w === 'bigint' ? i64ToF64(w) : w` fallback below), so a proven-
+      // numeric export's `f(true)` keeps working via that native coercion.
+      if (typeof x === 'boolean') return x ? TRUE_NAN : FALSE_NAN
       // i64-carrier slot: a string that coerce() left raw (scalar/memoryless module)
       // must be NaN-box encoded. SSO handles ≤6 ASCII chars without heap memory; longer
       // or non-ASCII strings need a heap that this module lacks — throw clearly.

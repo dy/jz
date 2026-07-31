@@ -6,6 +6,28 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+MIXED BOOL|NUMBER RETURNS FIXED 2026-07-31 (audit-#5 #2, the LAST
+semantic item -- ALL THREE MISCOMPILES NOW CLOSED): return-site
+boxing via carrierF64 gated on ctx.func.mixedAtomReturn = valResult
+!== VAL.BOOL AND >=2 syntactic returns. The >=2 guard is the load-
+bearing refinement over the reverted 190-failure broad fix AND over
+the first draft (9 regressions measured: single-return BOOL helpers
+whose kind resolves LATER than narrowValResults -- Set.has/Map.get
+schema-dependent -- have no unbox wrapper; requiring a genuine
+syntactic join restricts boxing to exactly the boolconst shape;
+refined gate = 0 regressions, ratchet all +0 = uniform-NUMBER
+functions byte-identical). SYMMETRIC boundary fix: interop i64Arg
+boxes raw JS booleans into i64-carrier slots (f(true) lost identity
+via f64ToI64(Number(true)) before jz ran). GENERALITY PROVEN:
+typedarray isConst REVERTED to its natural number-or-false shape --
+the compiler self-compiles correctly through the exact class; dist
+rebuilt twice, both green. Oracle boolconst -> AGREE tier (209
+assertions); ternary s?1:false arm pinned PENDING-FIX (different
+mechanism: '?:' keeps BOOL∪NUMBER arms raw for arithmetic
+correctness; needs consumer-context threading -- documented, not
+forced). null/undefined-mixed already correct (atoms have no raw
+form). Gates: battery 3137/0, dbg 3137/0, kernel leg 2447/0,
+parity 33/33, oracle 9/9, ratchet 10/10 +0.
 NUMERIC-KEY UNKNOWN-RECEIVER SOUND 2026-07-31 (audit-#5 #1 CLOSED):
 receiver-kind guard replaces the unsound array-only fast path --
 one tag test (ptrTypeEq ARRAY||TYPED, ~2 i32 ops after hoistPtrType

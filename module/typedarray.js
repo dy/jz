@@ -58,23 +58,28 @@ const VEC_WIDTH = [16, 16, 8, 8, 4, 4, 4, 2] // 128 bits / element bits
 
 // === SIMD pattern detection ===
 
-/** Check if AST node is a constant number. `null` means "not a constant" — NEVER
- *  `false`: this function's other returns are plain JS numbers (`typeof
- *  node === 'number'`), and a function whose return tails mix `number` and a
- *  bare `false`/`true` literal is unsound to compile — the boolean literal's
- *  "cheap i32 0/1" representation (by design: branch/arithmetic position, see
- *  ir.js boolBoxIR) only gets boxed into a real f64 atom at a handful of
- *  explicit escape sites (closures, a provably-uniform-BOOL return); a
- *  NUMBER-mixed return isn't one of them, so a `false` tail here would
- *  silently cross as the plain float 0 — indistinguishable from a genuine
- *  constant `0` at every `!== false` call site below (`0 !== false` is true,
- *  so "not constant" would misreport as "found constant undefined"). `null`
- *  carries no such i32-vs-f64 ambiguity (it's always a proper NaN-box, never
- *  a raw truthy int), so every caller here tests `!= null` instead. */
+/** Check if AST node is a constant number; `false` means "not a constant".
+ *  This function's other returns are plain JS numbers (`typeof node ===
+ *  'number'`) — a mixed NUMBER|BOOL return join, checked via `!== false` at
+ *  the call sites below. This used to be unsound to compile (the boolean
+ *  literal's cheap i32 0/1 representation only got boxed into a real f64 atom
+ *  at a handful of explicit escape sites — closures, a provably-uniform-BOOL
+ *  return — and a NUMBER-mixed return wasn't one of them, so `false` here
+ *  silently crossed as the plain float 0, indistinguishable from a genuine
+ *  constant `0` at `!== false`); worked around with a `null` sentinel instead
+ *  (audit #5 item 4, ledger "KERNEL LEG ZERO FAILS" boolconst row). Reverted
+ *  back to `false` once the general fix landed (audit #5 item 2:
+ *  src/compile/emit.js 'return' + src/compile/index.js emitFunc's
+ *  ctx.func.mixedAtomReturn box a statically-BOOL return tail in any
+ *  >=2-return, non-uniform-BOOL function) — this is the fix's own generality
+ *  test: the compiler's self-hosted build now compiles ITS OWN `return
+ *  false` mixed with `return node`/`return node[1]` soundly, so the `null`-
+ *  sentinel workaround is no longer load-bearing. Verified: dist/jz.wasm
+ *  self-host rebuild + full battery/kernel-leg/watr green with this reverted. */
 const isConst = node => {
   if (typeof node === 'number') return node
   if (Array.isArray(node) && node[0] == null && typeof node[1] === 'number') return node[1]
-  return null
+  return false
 }
 
 /**
@@ -90,18 +95,18 @@ function analyzeSimd(body, param) {
     const [a, b] = args
     const isA = a === param, isB = b === param
     const cA = !isA && isConst(a), cB = !isB && isConst(b)
-    if (op === '*' && ((isA && cB != null) || (isB && cA != null)))
+    if (op === '*' && ((isA && cB !== false) || (isB && cA !== false)))
       return { op: 'mul', val: isA ? cB : cA }
-    if (op === '+' && ((isA && cB != null) || (isB && cA != null)))
+    if (op === '+' && ((isA && cB !== false) || (isB && cA !== false)))
       return { op: 'add', val: isA ? cB : cA }
-    if (op === '-' && isA && cB != null) return { op: 'sub', val: cB }
-    if (op === '/' && isA && cB != null) return { op: 'div', val: cB }
+    if (op === '-' && isA && cB !== false) return { op: 'sub', val: cB }
+    if (op === '/' && isA && cB !== false) return { op: 'div', val: cB }
   }
 
   // Bitwise: x&c, x|c, x^c, x<<c, x>>c, x>>>c
   if (['&', '|', '^', '<<', '>>', '>>>'].includes(op) && args.length === 2) {
     const [a, b] = args
-    if (a === param && isConst(b) != null) {
+    if (a === param && isConst(b) !== false) {
       const ops = { '&': 'and', '|': 'or', '^': 'xor', '<<': 'shl', '>>': 'shr', '>>>': 'shru' }
       return { op: ops[op], val: isConst(b) }
     }

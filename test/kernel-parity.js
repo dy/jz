@@ -42,12 +42,19 @@ export const CORPUS = {
   // TRUE/FALSE atom at a handful of explicit escape sites; a NUMBER-mixed
   // generic-f64 return isn't one of them, so `return false` here silently
   // crossed as the plain float 0 — indistinguishable from a genuine `0`
-  // constant at `!== false`, so the guard was always true. Fixed at the
-  // narrowest sound root (module/typedarray.js): `isConst` now returns
-  // `null` for "not found" instead of overloading `false` — `null`'s
-  // compiled representation is always a proper NaN-box (no i32-vs-f64
-  // ambiguity), so the collision can't recur regardless of this class of
-  // return-boxing gap elsewhere in the compiler.
+  // constant at `!== false`, so the guard was always true. Originally worked
+  // around at module/typedarray.js's `isConst` (a `null` sentinel instead of
+  // overloading `false` — `null`'s compiled representation is always a
+  // proper NaN-box, no i32-vs-f64 ambiguity) pending a real fix for "this
+  // class of return-boxing gap elsewhere in the compiler" (audit #5 item 4).
+  // That fix landed (audit #5 item 2, this exact CORPUS row — see
+  // src/compile/emit.js 'return' + src/compile/index.js emitFunc's
+  // ctx.func.mixedAtomReturn: a function with >= 2 syntactic return
+  // statements that isn't proven uniformly BOOL now boxes any individually-
+  // BOOL return tail to its TRUE_NAN/FALSE_NAN atom) — `isConst` was reverted
+  // back to overloading `false` as ITS OWN generality test: the self-hosted
+  // kernel now compiles this exact mixed-return shape, in the compiler's own
+  // source, soundly.
   boolconst: `const g = (n) => { if (typeof n === 'number') return n; return false }
 export let f = (s) => g(s) === false`,
   // Self-host miscompile #5 (audit re-hunt, 2026-07-30): composing two
