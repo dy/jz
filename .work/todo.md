@@ -6,6 +6,60 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+MODULEINIT DICT-CENSUS GAP FIXED 2026-07-31 (.work/dict-census-moduleinit-fix.md
+implemented; Fix A 1f4fe762, Fix B a003ecd9; battery 3152/0/6 incl.
+JZ_DEBUG_INVARIANTS leg, kernel-parity 33/33, kernel-oracle 9/9, watr
+self-host 35/35, each gate re-run at both commits): Fix A unconditionally
+merges initFacts.dynWriteVars in collectProgramFacts (program-facts.js,
+one line); Fix B adds visitInit's missing MUTATE_OPS/`[]` dict-write branch
+(mirrors visit()) and extends the moduleInitSlot memo cache from flat
+{gen,obs} to {gen,obs,dictObs}, poison-preserving on cache-hit replay.
+CONSUMER IMPACT AUDIT (full dynWriteVars consumer sweep, kind.js/analyze.js/
+type.js/emit.js): Fix A's merge is not merely additive — it REPAIRS two
+independently-reproduced, previously-live miscompiles for any global that is
+BOTH statically-typed (array-elem-kind or object-schema) AND additionally
+dynamically written ONLY from a bundled sub-module's moduleInit (`kind.js`'s
+global arrayElemValType trust reading a stale elem-kind; `emit.js`'s
+unrollForIn silently dropping a dynamically-added key) — neither shape was
+covered by the existing suite, both confirmed by direct repro against the
+pre-fix tree. REAL TARGET FIRES: compiling watr itself now gives
+`__const_js$OPCODE` dictValueValType NUMBER (`__const_js$IMM` stays honestly
+poisoned — its value is a computed `.slice()`, unproven by writeVT). jessie's
+WAT is byte-identical at O0/O2/O3 pre/post both fixes (prec's dynWriteVars
+membership comes from a function-body walk, untouched by either fix) —
+confirms field isolation. PAIRED BENCH (bench/bench.mjs watr --targets=jz,
+ABBA, git worktree at pre-fix f0d9879e vs current, --paired=4 both sides,
+checksums identical both runs): watr self-host compile median 948µs post vs
+1091µs pre — a real ~13% win, BEATS the design's own honest "small-or-nil,
+load dominates" estimate (the compare-site coercion/dispatch removed around
+already-emitted f64.gt turned out non-trivial at this scale). jessie paired
+re-check: 2019µs vs 2021µs, noise-level, confirms no interaction.
+PRE-EXISTING BUG FOUND AND BANKED, NOT FIXED (out of this task's scope): a
+top-level `for...of` loop performing a computed-key dict write (`for (const
+k of arr) D[k] = v`), compiled at optimize>=1, traps "memory access out of
+bounds" at module instantiation — module/object.js:86's dictionary-mode
+`__hash_reuse_eph` alloc (correctly falls through to fresh-alloc for a
+non-HASH `old` pointer per its own guard) interacting unsoundly with the
+for-of loop's own codegen under the optimizer. REPRODUCED ON THE UNMODIFIED
+PRE-FIX-A BASELINE (f0d9879e), single-file AND bundled — fully independent
+of this task's changes. CONFIRMED NOT the equivalent C-style `for` loop
+(watr's actual const.js:161 shape, and every real target) — safe on both
+trees, paired bench and all gates above used it. Fix A does newly make the
+bug reachable for the bundled-moduleInit-only shape specifically (previously
+accidentally shielded by the very dynWriteVars gap this task closes — not a
+real guard). New test/inference.js fixtures (bundled moduleInit NUMBER
+resolution, mixed-kind poison, cache-hit-replay-agrees-with-cold-walk) use
+C-style for accordingly and document the finding inline. Candidate for a
+future standalone bug hunt: bisect module/object.js's dict-mode branch vs.
+for-of loop lowering under optimize>=1 to find the actual unsound
+transformation (likely in watr's own generic WAT optimizer, which jz uses as
+its backend for optimize>=1 — optimize:0/false is unaffected).
+Also found: an untracked `.work/dict-receiver-hash-design.md` (receiver-HASH
+classification follow-on design) appeared in the tree during this session,
+authored by a spawned research subagent exceeding its research-only brief —
+not part of this task, left untouched (untracked, not committed) for the
+user to keep or discard.
+
 WRITEVT STRENGTHENED + JESSIE COMPARE-SITE HYPOTHESIS REFUTED
 2026-07-31 (6c721fba; battery 3149/0/6, parity 33/33 after dist
 rebuild, oracle 9/9, dbg leg, selfhost 21/21): compositional
