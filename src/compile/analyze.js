@@ -1302,6 +1302,65 @@ function dictDomainOf(body, name) {
  * Writes the per-name `val` field of `ctx.func.localReps` for method dispatch
  * and schema resolution.
  */
+// Strict write-kind resolver for the dict-value-type census (local half,
+// design .work/dict-value-census-design.md §1a) — a local mirror of
+// program-facts.js's writeVT/effectiveWriteValue. Not imported: program-facts.js
+// already imports analyzeBody from this module, so importing back would cycle.
+// Kept in exact lockstep with the program-facts.js pair — any resolver change
+// there belongs here too.
+function dictWriteVT(n) {
+  if (Array.isArray(n)) {
+    const op = n[0]
+    if (op === '.' || op === '?.') return null
+    if (op === '+' || op === '+=') {
+      const ta = dictWriteVT(n[1]), tb = dictWriteVT(n[2])
+      if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
+      if (ta == null || tb == null) return null
+      if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
+      return VAL.NUMBER
+    }
+    if (op === '?:') { const a = dictWriteVT(n[2]), b = dictWriteVT(n[3]); return a === b ? a : null }
+    if (op === '&&' || op === '||' || op === '??') { const a = dictWriteVT(n[1]), b = dictWriteVT(n[2]); return a === b ? a : null }
+  }
+  return valTypeOf(n)
+}
+function dictEffectiveWriteValue(op, lhs, rhs) {
+  if (op === '=') return rhs
+  if (op === '++' || op === '--') return [op === '++' ? '+' : '-', lhs, [null, 1]]
+  if (op === '&&=' || op === '||=' || op === '??=') return ['?:', lhs, lhs, rhs]
+  return [op.slice(0, -1), lhs, rhs]
+}
+// Same-body scan for every `name[key] = rhs` (any MUTATE_OP, any key —
+// dict-mode receivers have no literal-key fast path) rooted at `name` through
+// nested `[]` chains. First-wins-then-clash, poisons to null on any
+// unresolved write — identical lattice to observeProgramSlots' global-half
+// dictValueTypes census. Skips `=>`: nested closures are outside this body's
+// own analysis (dictWalkLean/dictWalkI32 make the same cut).
+function dictValueTypeOf(body, name) {
+  let vt, poisoned = false
+  const walk = (node) => {
+    if (poisoned || !Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') return
+    if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
+      const [, wobj, widx] = node[1]
+      if (!isLiteralStr(widx)) {
+        let root = wobj
+        while (Array.isArray(root) && root[0] === '[]') root = root[1]
+        if (root === name) {
+          const wvt = dictWriteVT(dictEffectiveWriteValue(op, node[1], node[2]))
+          if (!wvt) { poisoned = true; return }
+          if (vt === undefined) vt = wvt
+          else if (vt !== wvt) { poisoned = true; return }
+        }
+      }
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
+  return poisoned ? null : (vt ?? null)
+}
+
 export function analyzeValTypes(body) {
   // localReps slice: store reads/writes the rep's `val` field (updateRep clears it
   // when set to undefined, matching the old explicit delete).
@@ -1478,6 +1537,13 @@ export function analyzeValTypes(body) {
         const dict = Array.isArray(a[2]) && a[2][0] === '{}' && a[2].length === 1 &&
           ctx.types.dynWriteVars?.has(a[1]) && !merged?.length
         const vt = dict ? VAL.HASH : valTypeOf(a[2])
+        // Dict-value-type census, local half (design §1a): every value ever
+        // written through `a[1][key] = rhs` in this body, additive alongside
+        // the HASH receiver stamp above — never a substitute for `val`.
+        if (dict) {
+          const dvt = dictValueTypeOf(body, a[1])
+          if (dvt) updateRep(a[1], { dictValueValType: dvt })
+        }
         const leanDict = dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(a[1])
         if (leanDict) {
           (ctx.func.leanHashLocals ??= new Set()).add(a[1])
@@ -1569,6 +1635,12 @@ export function analyzeValTypes(body) {
       const dict = Array.isArray(args[1]) && args[1][0] === '{}' && args[1].length === 1 &&
         ctx.types.dynWriteVars?.has(args[0]) && !merged?.length
       const vt = dict ? VAL.HASH : valTypeOf(args[1])
+      // Dict-value-type census, local half (design §1a) — reassignment site
+      // sibling of the decl-site stamp above.
+      if (dict) {
+        const dvt = dictValueTypeOf(body, args[0])
+        if (dvt) updateRep(args[0], { dictValueValType: dvt })
+      }
       if (dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(args[0])) {
         (ctx.func.leanHashLocals ??= new Set()).add(args[0])
         if (i32DictUse(args[0])) (ctx.func.i32HashLocals ??= new Set()).add(args[0])

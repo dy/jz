@@ -90,6 +90,19 @@ export const VAL = {
  *   site/return position not proven uniformly BIGINT, or a destructured param,
  *   fail-closed). Boxed at the point of write; every later read of the name unboxes
  *   explicitly before raw i64 ops (ir.js boxBigInt/unboxBigInt).
+ * @property {string}  [dictValueValType] VAL.* kind of every value ever written
+ *   through `name[key] = v` (any key, HASH dict-mode local or global) —
+ *   first-wins-then-clash lattice, absent/null = unproven or mixed. Additive-
+ *   only fact (dict-value-census design, .work/dict-value-census-design.md):
+ *   NEVER a substitute for `val`, never mutated alongside it. Two producers —
+ *   analyze.js's same-body scan (local half, updateRep) and
+ *   observeProgramSlots' dictValueTypes census (global half, updateGlobalRep)
+ *   — both consumed only by kind.js's VT['[]']/VT['.'] dictValueKindOf helper,
+ *   itself gated on `ctx.types.dynWriteVars` for the global side. Soundness
+ *   carve-out: an unwritten key reads back NaN-boxed undefined, so only
+ *   NUMBER arithmetic/relational consumers may trust this fact (mirrors
+ *   typedReadMaybeOob, kind.js:257-263) — identity/typeof/nullish checks must
+ *   not.
  * @property {boolean} [recvArrTyped]     receiver-kind CLASS proof (2026-07-31,
  *   named follow-up to the numeric-key unknown-receiver soundness fix, 9f46d517):
  *   true iff every live call site's argument at this position proves VAL.ARRAY OR
@@ -113,7 +126,7 @@ export const VAL = {
 export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
-  'typedCtor', 'wasm', 'nullable', 'neverGrown', 'bigintBoxed', 'recvArrTyped',
+  'typedCtor', 'wasm', 'nullable', 'neverGrown', 'bigintBoxed', 'recvArrTyped', 'dictValueValType',
 ])
 
 const DBG_REPS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
