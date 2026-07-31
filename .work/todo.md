@@ -6,6 +6,27 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+JESSIE DISSECTED 2026-07-31 (1.85x geomean confirmed, no drift; two
+blueprint-tier levers, honestly not forced): (1) DOMINANT ~31%
+(causally measured, archive:3479): subscript's `prec = {}` string->
+number dict never resolves value-type NUMBER -- ASI's p>=lvl,
+isStmt, loop-head compares all emit generic-value machinery (CLI's
+own deopt-generic warning fires; 61.5% of module lines touch
+generic helpers). SAME CLASS as the reverted global dict-mode
+classification (recordGlobalRep can't see plan-time dynWriteVars;
+broke watr self-host 30/35) -- needs the PIPELINE-ORDERING rework,
+not scope-narrowing; likely also underlies watr/vm/dict JIT rows
+(all dict-read-heavy). (2) closure-table lattice on lookup: FOUR
+coupled blockers live-traced (digit-loop poison [capture-free
+carve-out would be sound], ternary-of-CALLS write shape [needs
+proveClosureFactory AST reuse], .ops/.tail chain-read idiom, and
+the guarded alias). DESIGN GEM BANKED: `(fn=tbl[i]) && fn(args)`
+alias-confinement is PROVABLY SOUND to admit (fresh local, single
+use as immediate callee, no escape by construction) -- structurally
+distinct from the rejected general bare-read. Identity-devirt
+verified CORRECT to bail (lookup genuinely polymorphic). Token/
+bounds levers ruled out (prior counter-verification). Minor: the
+1.85x stays red pending the dict-mode rework.
 RECEIVER-INFERENCE STRENGTHENED 2026-07-31 (the 9f46d517 follow-up;
 inventory-first, honest scope): GUARD LANDSCAPE PROVEN NEAR-OPTIMAL
 -- ratchet corpora are single EXPORTED fns with zero call sites =
