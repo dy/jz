@@ -12,7 +12,11 @@ import { compile } from '../index.js'
 import { compileViaKernel } from './kernel-target.js'
 import { onWasi } from './_matrix.js'
 
-const CORPUS = {
+// Exported for test/kernel-oracle.js — the ORACLE tier reuses these same source
+// strings (byte identity alone certifies identically-wrong output just as easily
+// as identically-right output; the oracle tier is the correctness check this
+// file's byte-diff cannot provide — see that file's header).
+export const CORPUS = {
   sum: `export let sum = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i; return s }`,
   math: `export let f = (x) => Math.sqrt(x * x + 1) + Math.abs(x)`,
   dict: `export let count = (s) => { let d = {}; for (let i = 0; i < s.length; i++) { let c = s[i]; d[c] = (d[c] || 0) + 1 } return d['a'] || 0 }`,
