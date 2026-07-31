@@ -6,6 +6,22 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+EVIDENCE REFRESHED AT SETTLED HEAD 2026-07-31 (attempt 3, committed
+WITH paired-verification protocol -- load 4.2 during run, dataset is
+CONSERVATIVELY pessimistic, bias runs against our claims so it beats
+both stale and discarded): headline JZ 1.00x, C 1.92x Rust 2.02x AS
+2.11x Zig 2.17x V8 2.22x MoonBit 4.20x behind, native C 1.01x.
+CAPTURED: dispatch strict JIT win (gone from all red lists), trace
+1.462 EXACT match to paired truth (calibration signal), wordcount/
+size wave. PAIRED-TRUTH ANNOTATIONS for the pessimistic rows (the
+gate reads committed evidence; these reds are load-inflated and
+self-correct next refresh): lz committed 1.130 / paired 1.033 BAND;
+bezfit 1.062 / paired 1.004 ~LED; slices 1.058 / paired 1.041-1.043
+BAND; watr-vs-v8 1.426 / paired 1.195 (real red, milder); glyfparse
+1.214 = the ledgered JITTERY lane (per-round spread 0.90-1.32,
+mechanism in WASM_TODO). Honest red list after annotation: sdf,
+trace, shapes, glyfparse-jitter + watr/jessie/dict/crc32/colorpq/
+resample/vm JIT rows. tinygo still 0/60 (CLT user-gated).
 MIXED BOOL|NUMBER RETURNS FIXED 2026-07-31 (audit-#5 #2, the LAST
 semantic item -- ALL THREE MISCOMPILES NOW CLOSED): return-site
 boxing via carrierF64 gated on ctx.func.mixedAtomReturn = valResult
