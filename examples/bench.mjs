@@ -113,6 +113,46 @@ const EXAMPLES = [
 
   // jukebox: per-beat modules (floatbeats.js), gated in test/bench.js — the
   // floatbeat geomean ≤ 0.85× + per-beat backstop cover the whole corpus.
+
+  // ── Landing-page / gallery-front examples the live-site report named + a representative
+  // spread (fractal, IFS, flocking, physics, domain-coloring) that the kernel-shape corpus
+  // above didn't cover. Per-frame args mirror each example's own index.html runDemo() call.
+  { name: 'raytrace', frame: 'frame(eye) (ray+shadow+glass)',
+    make: (e) => { e.resize(640, 360); e.init(); let az = 0
+      return () => { az += 0.004; e.frame(Math.sin(az) * Math.cos(0.3) * 2.9, Math.sin(0.3) * 2.9, Math.cos(az) * Math.cos(0.3) * 2.9) } } },
+
+  { name: 'marble', frame: 'frame(t) (fluid ink advect)',
+    make: (e) => { e.resize(640, 480); e.clear()
+      for (let i = 0; i < 9; i++) e.drop((0.15 + i * 0.09) * 640, (0.4 + (i % 2) * 0.2) * 480, 640 * 0.04)
+      let t = 0; return () => { t += 1; e.frame(t * 0.05) } } },
+
+  // Site percolation: union-find with path halving. The index chase (`parent[cur]`,
+  // `parent[parent[cur]]`) is data-dependent — jz can't prove it in-bounds statically, so
+  // every array read through `find`/`union` takes the safe-read path (runtime length check +
+  // f64 round-trip so an out-of-range read can carry NaN per JS semantics) instead of a bare
+  // i32.load; V8's JIT elides the check via speculation on the same pointer-chasing loop. No
+  // SIMD opportunity either way (serial dependency chain). Structural, not CI-load noise —
+  // `opt` (compiler-opt target: a bounds-provable index-chase pass, not yet built) with an
+  // explicit backstop so a further regression (e.g. losing path compression) still trips CI.
+  { name: 'percolation', frame: 'frame(t,p) (union-find 4-neigh)', opt: true, floor: 0.75,
+    make: (e) => { e.resize(480, 320); let t = 0
+      return () => { t += 1 / 60; e.frame(t, 0.5 + 0.18 * Math.sin(t * 0.15)); e.clusterCount() } } },
+
+  { name: 'fern', frame: 'frame(t) (chaos-game IFS)',
+    make: (e) => { e.resize(640, 480); e.init(); let t = 0
+      return () => { t += 1 / 60; e.frame(t, 0.03 * Math.sin(t * 0.49), 0, 0, 1, 1) } } },
+
+  { name: 'boids', frame: 'frame(t) (Reynolds flocking)',
+    make: (e) => { e.resize(800, 600); e.init(); let t = 0
+      return () => { t += 1 / 60; e.frame(t, -1, -1, 0) } } },
+
+  { name: 'cloth', frame: 'frame(t) (Verlet spring-mass)',
+    make: (e) => { e.resize(640, 480); let t = 0
+      return () => { t += 1 / 60; e.frame(t) } } },
+
+  { name: 'domain-color', frame: 'frame(t) (atan2/hypot field)',
+    make: (e) => { e.resize(640, 400); let t = 0
+      return () => { t += 1 / 60; e.frame(t, Math.cos(t * 0.23) * 0.4, Math.sin(t * 0.17) * 0.4, 0, 0, 2.5) } } },
 ]
 
 // Auto-calibrated median µs/op: warm, size a batch to ~30ms, take the best-of-9
@@ -133,12 +173,17 @@ const timeUs = (fn) => {
 
 // Pass criteria: jz must be faster overall (geomean > 1) AND every *winner* (a
 // throughput kernel, not flagged `opt`) must stay ≥ FLOOR — that's the regression
-// guard. `opt`-flagged kernels are reported + kept in the geomean but not held to the
-// floor, because their jz/V8 ratio is structurally host-dependent rather than a codegen
-// signal: `waves` is memory-bandwidth-bound (no compute headroom) and `attractors` is a
-// serial transcendental recurrence (jz's scalar sin/cos vs V8's native Math.sin — wins on
-// fast hardware, trails on slow CI runners). mandelbrot/raymarcher/lenia were once here too;
-// the escape-time / SIMD-4 / ring-hoist vectorizers made them genuine winners, so they're gated.
+// guard. `opt`-flagged kernels are reported + kept in the geomean but, by default, not
+// held to the floor, because their jz/V8 ratio is structurally host-dependent rather than
+// a codegen signal: `waves` is memory-bandwidth-bound (no compute headroom) and
+// `attractors` is a serial transcendental recurrence (jz's scalar sin/cos vs V8's native
+// Math.sin — wins on fast hardware, trails on slow CI runners). mandelbrot/raymarcher/lenia
+// were once here too; the escape-time / SIMD-4 / ring-hoist vectorizers made them genuine
+// winners, so they're gated. An `opt` entry MAY still set an explicit `floor` — a real but
+// wider backstop for a structural (not load-noise) loss, e.g. `percolation`'s union-find
+// (no SIMD, no floor-checked win possible, but a further regression — losing path
+// compression — must still trip CI). The site's implicit promise is "jz beats the JS
+// toggle"; an unbounded `opt` escape hatch would let that promise silently rot.
 const FLOOR = 0.9
 
 console.log('Examples — same source, jz-wasm vs V8 (ESM). per-frame hot path.')
@@ -165,7 +210,11 @@ for (const { name, frame, make, opt, jzSrc, floor: kFloor } of EXAMPLES) {
   const sp = jsT / jzT
   geo *= sp; n++
   if (sp > 1) wins++
-  if (!opt && sp < (kFloor ?? FLOOR)) regressed.push(`${name} ${sp.toFixed(2)}×`)   // gate winners only (per-kernel floor override for load-sensitive ones)
+  // gate: winners always (default FLOOR, or a per-kernel override); `opt` entries only
+  // when they carry an EXPLICIT floor (a real backstop for a structural loss) — an `opt`
+  // with no floor stays purely informational (host-dependent, e.g. waves/attractors).
+  const gateFloor = kFloor ?? (opt ? null : FLOOR)
+  if (gateFloor != null && sp < gateFloor) regressed.push(`${name} ${sp.toFixed(2)}×`)
   if (sp <= 1) notStrict.push(`${name}${opt ? '◇' : ''} ${sp.toFixed(2)}×`)   // V1 strict-wins letter covers EVERY example, opt (◇) included (reported; test/bench.js asserts off-CI)
   const tag = opt ? '◇' : '★'
   console.log(`${tag} ${name.padEnd(18)} ${frame.padEnd(20)} ${jsT.toFixed(1).padStart(8)} ${jzT.toFixed(1).padStart(11)}    ${sp.toFixed(2)}×`)
