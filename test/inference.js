@@ -29,6 +29,7 @@ import { belowOpt, onKernel, onWasi } from './_matrix.js'
 import jz from '../index.js'
 import { run } from './util.js'
 import { parse as watTree, callsOutside } from '../scripts/wat-probe.mjs'
+import { ctx } from '../src/ctx.js'
 
 const count = (wat, re) => (wat.match(re) || []).length
 
@@ -1792,4 +1793,82 @@ test('closure return-kind: fails open when the return depends on an unsettled ca
   const { f: fStr } = run(`export let f = (outer) => { let inner = () => outer; return inner() + 'z' }`)
   is(fNum(5), 6, 'numeric capture still adds correctly with no kind claim')
   is(fStr('hi'), 'hiz', 'string capture still concatenates correctly with no kind claim — proves no false NUMBER claim was made')
+})
+
+// ───────────────────────────────────────────── dict-value-type census (global half)
+// .work/dict-value-census-design.md §1b/§5 step 2: observeProgramSlots' whole-
+// program census of `name[key] = rhs` value kinds, published onto
+// ctx.scope.globalReps as dictValueValType. No consumer is wired yet (that's
+// step 3, pinned in dyn-keys.js/data.js) — these tests inspect the fact
+// directly, module-global HASH dict, comma-chained export let, filled through
+// a param-aliased (dynamic-key) write in one function, read in another.
+
+test('dict-value census: module-global dict-mode value kind populates globalReps', () => {
+  // Mirrors the design's verified real target (§0.3): watr's
+  // `export const OPCODE = {}, IMM = {}` filled `OPCODE[nm] = code++` in a
+  // loop (watr/src/const.js:161,168) — a monotone counter value, independently
+  // provable by writeVT's '++' → valTypeOf arm without needing any per-call
+  // param-kind resolution.
+  const src = `
+    export let OPCODE = {}, code = 0
+    export let register = (nm) => { OPCODE[nm] = code++ }
+    export let lookup = (nm) => OPCODE[nm] || 0
+    register('add')
+    register('sub')
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalReps?.get('OPCODE')?.dictValueValType, 'number',
+    'OPCODE[nm] = code++ census resolves to VAL.NUMBER')
+})
+
+test('dict-value census: a raw bare-param VALUE fails open (poisons), same as the pre-existing .prop= census', () => {
+  // Ground truth, verified empirically before writing this test: valTypeOf on
+  // a bare, never-locally-reassigned PARAM name resolves through
+  // lookupValType's four tiers (refinements / localValTypesOverlay /
+  // localReps / globalValTypes) — none of which observeProgramSlots' function
+  // loop seeds with param-kind info (analyzeBody's valTypes overlay is
+  // context-pure, built only from the body's own decls/reassignments,
+  // deliberately WeakMap-cached independent of paramReps). The PRE-EXISTING
+  // `.prop=` schema-slot census has the identical gap (confirmed against this
+  // unmodified mechanism: `o.x = p` for a monomorphic-NUMBER param `p` also
+  // poisons ctx.schema.slotTypes to null). subscript's actual `prec[op] = p`
+  // shape (parse.js:82,86) hits exactly this arm — its value-kind fact is
+  // NOT expected to populate under this design; poisoning here is the
+  // correct, sound fail-open behavior, not a defect.
+  const src = `
+    export let prec = {}, seen = 0
+    export let register = (op, p) => { prec[op] = p }
+    export let lookup = (op) => prec[op] || 0
+    register('+', 10)
+    register('*', 20)
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalReps?.get('prec')?.dictValueValType, null,
+    'bare-param write value is unproven by writeVT — poisons, does not guess')
+})
+
+test('dict-value census: mixed-kind writes poison the fact to null', () => {
+  const src = `
+    export let bag = {}
+    export let put = (k, v) => { bag[k] = v }
+    put('a', 1)
+    put('b', 'oops')
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalReps?.get('bag')?.dictValueValType, null,
+    'a NUMBER write and a STRING write clash — fact must poison, not settle')
+})
+
+test('dict-value census: an unresolvable write poisons the fact', () => {
+  // writeVT deliberately answers null for any `.`/`?.` read (program-facts.js
+  // writeVT, ~452) — consulting live slot/dict state mid-census would make
+  // the census order-dependent. `cache[k] = src.val` hits that arm.
+  const src = `
+    export let cache = {}
+    export let store = (k, src) => { cache[k] = src.val }
+    store('x', {val: 1})
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalReps?.get('cache')?.dictValueValType, null,
+    '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
 })

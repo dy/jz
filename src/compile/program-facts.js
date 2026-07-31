@@ -4,7 +4,7 @@
  */
 import { commaList, isFuncRef, isLiteralStr, ASSIGN_OPS, MUTATE_OPS } from '../ast.js'
 import { ctx, err, getFactStore } from '../ctx.js'
-import { VAL, lookupValType, repOf } from '../reps.js'
+import { VAL, lookupValType, repOf, updateGlobalRep } from '../reps.js'
 import { valTypeOf } from '../kind.js'
 import { extractParams, classifyParam } from '../ast.js'
 import { staticObjectProps } from '../static.js'
@@ -411,6 +411,7 @@ export function observeProgramSlots(ast, opts) {
   const slotTypes = ctx.schema.slotTypes
   const slotCtors = ctx.schema.slotTypedCtors
   const slotConstInts = ctx.schema.slotConstInts
+  const dictValueTypes = ctx.schema.dictValueTypes
   // Unlike type facts, discriminant constants are rebuilt from the complete
   // program on every facts pass. This avoids emitter/function-order coupling:
   // codegen only consumes a settled whole-program census.
@@ -438,6 +439,17 @@ export function observeProgramSlots(ast, opts) {
     while (arr.length <= idx) arr.push(undefined)
     arr[idx] = null
   }
+  // Dict-value-type census (global half, design §1b): observeSlot/poisonSlot's
+  // first-wins-then-clash lattice, keyed by bare name instead of (sid, idx) —
+  // same whole-program name-keyed convention as dynWriteVars/nameEscapes above.
+  const observeDictValue = (name, vt) => {
+    if (!vt) return
+    const cur = dictValueTypes.get(name)
+    if (cur === null) return
+    if (cur === undefined) dictValueTypes.set(name, vt)
+    else if (cur !== vt) dictValueTypes.set(name, null)
+  }
+  const poisonDictValue = (name) => dictValueTypes.set(name, null)
   // Strict write-kind resolver: valTypeOf EXCEPT (a) `.prop` reads answer null —
   // consulting the live slotTypes state mid-census would make observations
   // order-dependent (a source slot poisoned LATER would leave a stale kind
@@ -472,7 +484,7 @@ export function observeProgramSlots(ast, opts) {
   // hazard recompute resolves receivers the early pass poisoned wholesale
   // (fftplan's `re[j] = tr` on a then-unnarrowed param poisoned the world).
   // Sound to rebuild: every kind consumer left reads at emit, after this.
-  if (opts?.fresh) { slotTypes.clear(); slotCtors.clear() }
+  if (opts?.fresh) { slotTypes.clear(); slotCtors.clear(); dictValueTypes.clear() }
   const hazards = collectSlotWriteHazards(ast, opts?.fresh ? { paramReps: opts.paramReps } : undefined)
   applySlotWriteHazards(hazards,
     (sid, idx) => { poisonSlot(sid, idx); poisonCtor(sid, idx) },
@@ -632,6 +644,20 @@ export function observeProgramSlots(ast, opts) {
         if (vt) observeSlot(sid, idx, vt)
         else poisonSlot(sid, idx)
       }
+    } else if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
+      // Dict-value-type census (global half, design §1b): `name[key] = rhs` for
+      // any non-literal key, rooted through nested `[]` chains at a bare name.
+      // NOT gated on dynWriteVars here (the early call runs before it exists) —
+      // unconditional census, gate lives at CONSUME time (kind.js).
+      const [, wobj, widx] = node[1]
+      if (!isLiteralStr(widx)) {
+        let root = wobj
+        while (Array.isArray(root) && root[0] === '[]') root = root[1]
+        if (typeof root === 'string') {
+          const vt = writeVT(effectiveWriteValue(op, node[1], node[2]))
+          if (vt) observeDictValue(root, vt); else poisonDictValue(root)
+        }
+      }
     }
     for (let i = 1; i < node.length; i++) visit(node[i], intRefs)
   }
@@ -692,6 +718,13 @@ export function observeProgramSlots(ast, opts) {
     }
   }
   ctx.func.localValTypesOverlay = prevOverlay
+  // Publish the dict-value-type census onto globalReps (design §1b/§2's
+  // "no consumer wired yet" — this write is the plumbing, kind.js's
+  // dictValueKindOf reads it starting in the consumer-wiring step). Runs every
+  // observeProgramSlots call (both the early hasSchemaLiterals-gated pass and
+  // the late {fresh:true} rebuild), so a poisoned-then-cleared entry on rebuild
+  // correctly overwrites the earlier value via updateGlobalRep's merge.
+  for (const [name, vt] of dictValueTypes) updateGlobalRep(name, { dictValueValType: vt })
 }
 
 // ————————————————————————————— slot-write hazards —————————————————————————————
