@@ -6,6 +6,30 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+RECEIVER-HASH FILL LANDED + MEASURED 2026-07-31 (a6312d3d; full
+gates: battery 3156/0/6 incl. dbg leg, kernel-parity 33/33 on fresh
+dist, kernel-oracle 9/9, selfhost 21/21, watr 35/35): the design's
+fill-never-correct principle held — classifyHashDictGlobals
+(plan/scope.js) fills globalValTypes VAL.HASH via the allocator's
+exact predicate, .has()-guarded, PLUS a race the design missed and
+the implementation caught: materializeAutoBoxSchemas retroactively
+binds schemas onto dot-written names — excluded via propMap consult
+at fill time. WAT evidence: jessie __dyn_get 22→14 with 6 new
+direct __hash_get_local sites; OPCODE classifies HASH; non-
+qualifying benches byte-identical; P4 tripwire silent. PAIRED ABBA
+(3 rounds jessie, 2 watr, quiet machine, checksums identical):
+jessie 0.989 (HEAD ~2002µs vs prefill ~2024µs — real ~1% win, wasm
+−300B); watr ~0.95 but noisy spread (honest: no regression, likely
+small win, −400B). CONSEQUENCE (the load-dominates hypothesis now
+also largely spent): even with prec loads LEAN, jessie's red barely
+moves — the remaining 14 __dyn_get calls (lookup[c] closure table —
+genuinely polymorphic, correctly not dict-mode) and/or other
+machinery carry the hot cost. The dict-mode campaign is
+ARCHITECTURE-COMPLETE (census + value-set resolver + moduleInit
+coverage + receiver classification, all landed+gated); jessie 1.85x
+needs a FRESH PROFILE-DRIVEN dissection next (no more hypothesis
+inheritance — measure where time actually goes at current HEAD).
+
 MODULEINIT DICT-CENSUS GAP FIXED 2026-07-31 (.work/dict-census-moduleinit-fix.md
 implemented; Fix A 1f4fe762, Fix B a003ecd9; battery 3152/0/6 incl.
 JZ_DEBUG_INVARIANTS leg, kernel-parity 33/33, kernel-oracle 9/9, watr
