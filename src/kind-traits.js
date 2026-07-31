@@ -4,6 +4,7 @@
  */
 
 import { VAL } from './reps.js'
+import { TYPED_ELEM_CODE } from '../layout.js'
 
 // Comparison / logical-not ops — result is a 0|1 boolean carried as i32. The one
 // source of truth for "this operator yields a boolean": valTypeOf reads it as
@@ -105,6 +106,14 @@ export function calleeValType(callee, _args, ctx) {
     return ctor === 'new.BigInt64Array' || ctor === 'new.BigInt64Array.view' ? VAL.BIGINT : VAL.NUMBER
   }
   if (callee.startsWith('new.')) return VAL.TYPED
+  // `Int32Array.from(...)`/`Float64Array.from(...)` etc (module/typedarray.js
+  // registers one `${name}.from` emitter per TYPED_ELEM_CODE ctor, ALWAYS
+  // returning a fresh typed array of that ctor — allocPtr({type:PTR.TYPED,...})).
+  // Unresolved before this, `Float64Array.from([5])[0]` fell through as an
+  // UNKNOWN receiver at the call site, routing the immediate `[0]` index read
+  // through the unproven-receiver runtime pointer-kind guard for no reason —
+  // the ctor is a static fact, no different from `new Float64Array(...)`.
+  if (callee.endsWith('.from') && callee.slice(0, -5) in TYPED_ELEM_CODE) return VAL.TYPED
   if (callee.startsWith('math.')) return VAL.NUMBER
   const hostVT = ctx.module.hostImportValTypes?.get(callee)
   if (hostVT) return hostVT

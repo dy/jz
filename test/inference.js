@@ -866,7 +866,17 @@ test('plain-array index with a literal term stays pure i32 (sibling of marble)',
   const at = wat.indexOf('(func $f')
   const fn = wat.slice(at, wat.indexOf('(func', at + 6))
   is(count(fn, /i32\.trunc_sat_f64_s/g), 0, 'plain-array index stays i32 — no f64 truncation')
-  is(count(fn, /f64\.convert_i32_s/g), 0, 'plain-array index terms stay i32')
+  // Re-audit #5 finding #1 (2026-07-30): `arr` here is an unknown receiver, so
+  // each read now guards the receiver's pointer kind (ARRAY/TYPED keeps this
+  // i32 arithmetic verbatim; OBJECT/HASH takes a ToPropertyKey dyn-props read
+  // instead of silently returning undefined). The dyn-props cold arm needs a
+  // genuine boxed f64 number for the key, so exactly one f64.convert_i32_s
+  // appears per read site, 1:1 with its __dyn_get_expr call — the index
+  // ARITHMETIC itself (j*W+x) never round-trips through f64; only the
+  // unproven-receiver guard's cold key does.
+  const dynGetCalls = count(fn, /call \$__dyn_get_expr\b/g)
+  is(count(fn, /f64\.convert_i32_s/g), dynGetCalls,
+    'plain-array index terms stay i32 (f64.convert_i32_s appears only 1:1 with the unproven-receiver dyn-props guard)')
 })
 
 // A `& m`-masked operand is provably ≤ m, so `t * (… & 63)` can't exceed 2^53 and

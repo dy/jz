@@ -60,17 +60,19 @@ test('dyn-keys: ToPropertyKey for atom keys (the prec[undefined] class)', () => 
 // empty-schema OBJECT with a literal-string-key write (`o={}; o['1']=9` — a
 // LITERAL key, invisible to dynWriteVars, so `o` never qualifies as dict-mode
 // HASH) silently read undefined instead of the stored value for ANY numeric
-// key reached at runtime. Fixed ONLY on the runtime-is_str_key-dispatched arm
-// (key kind ALSO unproven, not just the receiver) — a sibling NAMED perf pin
-// (test/perf.js "codegen: unknown-receiver index with NUMBER key skips
-// __is_str_key dispatch") locks the PROVEN-NUMBER-key fallback __dyn_get-free
-// for the dominant `a[loopCounter]` hot-loop shape, so that arm is
-// deliberately left as the pre-existing, accepted gap (last case below).
+// key reached at runtime. First fixed ONLY on the runtime-is_str_key-dispatched
+// arm (key kind ALSO unproven, not just the receiver); the sibling
+// PROVEN-NUMBER-key fallback (last case below) was left unsound to protect a
+// NAMED perf pin (test/perf.js "codegen: unknown-receiver index with NUMBER
+// key skips __is_str_key dispatch") for the dominant `a[loopCounter]` hot-loop
+// shape. Re-audit #5 finding #1 (2026-07-30) closed that gap too: selection
+// between the typed-indexed read and the dyn-props read now depends on the
+// RECEIVER pointer-kind (one tag test), not the key kind — the perf pin was
+// rewritten to assert the guard shape instead of zero dispatch.
 // `j` is a PARAMETER and `o`/`nums` are MODULE-LEVEL globals throughout (not
 // jzify'd/wrapped locals) — load-bearing: a local `nums` can let `nums[j]`'s
-// element kind get proven NUMBER (a DIFFERENT, still-open shape covered by
-// the accepted-gap case), which would silently skip the fixed code path and
-// turn these into false negatives.
+// element kind get proven NUMBER, which exercises the SAME now-fixed
+// receiver-kind guard rather than a different code path.
 test('dyn-keys: numeric key on an unknown-type OBJECT receiver resolves through dyn-props', () => {
   // repro A: numeric key sourced from an array read (key kind unproven at the
   // outer `o[...]` site — is_str_key dispatch survives), receiver `o` has no
@@ -102,11 +104,17 @@ test('dyn-keys: numeric key on an unknown-type OBJECT receiver resolves through 
   is(jz(`const m = new Map()
     let nums = []; nums.push(1)
     export let f = (j) => { m.set(nums[j], 'x'); return m.has('1') ? 1 : 0 }`).exports.f(0), 0)
-  // PRE-EXISTING, ACCEPTED GAP (not this sweep's fix — see the NAMED perf pin
-  // above): a numeric key PROVEN VAL.NUMBER at compile time on an unknown
-  // receiver skips the runtime is_str_key dispatch entirely by design (kept
-  // __dyn_get-free for the `a[loopCounter]` hot-loop shape) — `o[n]` for a
-  // proven-number local `n` still reads undefined even when `o['1']` is set.
+  // Re-audit #5 finding #1 (2026-07-30): a numeric key PROVEN VAL.NUMBER at
+  // compile time on an unknown receiver used to skip dispatch entirely and
+  // route array-only (__typed_idx), silently reading undefined for an
+  // OBJECT/HASH receiver. Fixed by a receiver-kind guard (module/array.js
+  // "Proven-NUMBER key, receiver kind still unproven" arm): ARRAY/TYPED still
+  // take the lean typed-array read (no runtime dispatch beyond one pointer-
+  // kind tag test — no __is_str_key/__to_str call, since the key is already
+  // proven non-string); OBJECT/HASH takes the SAME ToPropertyKey dyn-props
+  // probe the runtime-dispatched sibling arm already used. `o[n]` for a
+  // proven-number local `n` now reads the value stored under the literal
+  // string key `o['1']`, matching JS.
   is(jz(`const o = {}; o['1'] = 9
-    export let f = () => { let n = 1; return o[n] | 0 }`).exports.f(), 0)
+    export let f = () => { let n = 1; return o[n] | 0 }`).exports.f(), 9)
 })

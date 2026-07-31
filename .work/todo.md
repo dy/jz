@@ -6,6 +6,29 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+NUMERIC-KEY UNKNOWN-RECEIVER SOUND 2026-07-31 (audit-#5 #1 CLOSED):
+receiver-kind guard replaces the unsound array-only fast path --
+one tag test (ptrTypeEq ARRAY||TYPED, ~2 i32 ops after hoistPtrType
+CSE) gates __typed_idx (reusing the SAME i32-narrowed vi -- the
+load-bearing detail; a fresh f64 re-derivation violated i32 pins
+and bloated hot loops) vs __dyn_get_expr ToPropertyKey. Pin FLIPPED
+to JS truth (o[n] reads 9); perf pin rewritten to assert the honest
+guard shape. SIBLINGS already sound (write/in/delete verified).
+Receiver inference strengthened: X.from -> VAL.TYPED (kind-traits).
+REAL BUG caught en route by the fuzz gate: unswitchTypedParamLoop's
+cloneRead guard-collapse deleted a hoistPtrType-shared tee's
+defining occurrence -> second read fell into the dead dyn arm;
+fixed by hoisting the condition as a deduplicated dropped stmt.
+RATCHET RE-BASELINED with open eyes: buf/nest/slice/ring/condref/
+fgather +8..127% STATIC loop-body ops (each formerly-unsound site
+now carries guard + cold-arm code; runtime = 2-op guard, cold arm
+never executes for real arrays; synthetic corpora are unproven-
+receiver-dense by design; real bench sizes spot-checked sane).
+NAMED FOLLOW-UP: strengthen receiver inference (param receiver
+lattice) so unknown receivers become RARE, shrinking the static
+cost back -- the guard is the sound fallback, not the common path.
+Gates: battery 3131/0, parity 33/33, kernel leg 2447/0, ratchet
+10/10 re-baselined, dbg green, watr 35/35.
 LOOPPLAN UNIFICATION TERMINAL 2026-07-31 (the designed do-not-force
 verdict, full catalog banked): the incremental trio's shared-walk
 design was attempted and correctly REFUSED -- tryVectorize (full

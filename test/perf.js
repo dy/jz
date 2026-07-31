@@ -1105,22 +1105,36 @@ test('codegen: named i32 index feeder (let idx = y*W + x) computes in native i32
   ok(n(/i32\.mul/g) >= 1, 'py*w computed with i32.mul')
 })
 
-test('codegen: unknown-receiver index with NUMBER key skips __is_str_key dispatch', () => {
+test('codegen: unknown-receiver index with NUMBER key guards receiver kind once, not per-key is_str_key', () => {
   // `a[i]` on an untyped param `a` with a known-NUMBER index (loop counter) can
-  // never be a string key — the runtime `__is_str_key` dispatch is statically
-  // dead. Without the guard it forced an f64 round-trip of `i` + a call per read
-  // (and pulled in the whole `__dyn_get` subtree via its dead string-key arm).
-  // The element read should reach __typed_idx with the raw i32 index directly.
+  // never be a string key — the CALL SITE's runtime `__is_str_key` dispatch over
+  // the KEY is statically dead and never emitted. But the RECEIVER's kind is
+  // still unproven: an OBJECT/HASH receiver with a numeric-looking key must
+  // ToPropertyKey-probe dyn-props, not silently read undefined through
+  // __typed_idx's unrelated __len bounds check (re-audit #5 finding #1,
+  // 2026-07-30 — `o={}; o['1']=9; o[n]` for a proven-NUMBER local `n` used to
+  // read undefined). Selection is now by a single RECEIVER pointer-kind tag
+  // test (ARRAY/TYPED → the lean __typed_idx read; else → __dyn_get_expr's
+  // ToPropertyKey read) — not a per-key __is_str_key dispatch.
+  const unopt = compile(`
+    export let f = (a) => { let s = 0; for (let i = 0; i < 100; i++) s = s + (a[i] | 0); return s }
+  `, { wat: true, optimize: false })
+  const fUnopt = unopt.match(/\(func \$f[\s\S]*?\n  \)/)?.[0] || ''
+  const nu = (re) => (fUnopt.match(re) || []).length
+  is(nu(/__is_str_key/g), 0, 'NUMBER key never needs the call-site string-key dispatch')
+  ok(nu(/call \$__ptr_type\b/g) >= 1, 'receiver pointer-kind is tag-tested')
+  is(nu(/call \$__typed_idx\b/g), 1, 'ARRAY/TYPED receiver still takes the lean typed-index read')
+  is(nu(/call \$__dyn_get_expr\b/g), 1, 'OBJECT/HASH receiver takes the ToPropertyKey dyn-props read')
+
+  // Optimized shape: watr's inliner may dissolve __typed_idx (and, in this
+  // isolated single-call-site snippet, __dyn_get_expr too) entirely into $f —
+  // the pin's intent is that the ARRAY hot arm stays a raw i32 index, no f64
+  // round-trip of $i: either the helper call with the raw index, or a fully
+  // inlined load with no boxing of $i.
   const wat = compile(`
     export let f = (a) => { let s = 0; for (let i = 0; i < 100; i++) s = s + (a[i] | 0); return s }
   `, { wat: true })
   const fMatch = wat.match(/\(func \$f[\s\S]*?\n  \)/)?.[0] || ''
-  const n = (re) => (fMatch.match(re) || []).length
-  is(n(/__is_str_key/g), 0, 'NUMBER key never needs the string-key dispatch')
-  is(n(/__dyn_get/g), 0, 'no dynamic-property fallback for a numeric index')
-  // watr's inliner may dissolve __typed_idx entirely — the pin's intent is "raw i32
-  // index, no f64 round-trip": either the helper call with the raw index, or a fully
-  // inlined load with no boxing of $i.
   ok(/\$__typed_idx[\s\S]*?\(local\.get \$i\)/.test(fMatch)
     || (/(f64|i32)\.load/.test(fMatch) && !/f64\.convert_i32_s \(local\.get \$i\)/.test(fMatch)),
     'reads with the raw i32 index')

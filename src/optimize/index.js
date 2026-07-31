@@ -3417,16 +3417,72 @@ export function unswitchTypedParamLoop(fn) {
   const reintParam = (n, p) => Array.isArray(n) && n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1]) && n[1][0] === 'local.get' && n[1][1] === p
   const typedIdx = (n, p) => Array.isArray(n) && n[0] === 'call' && n[1] === '$__typed_idx' && n.length >= 4 && reintParam(n[2], p)
 
+  // A receiver-pointer-kind guard on the SAME param `p` — module/array.js's
+  // unknown-receiver, proven-NUMBER-key read fallback (re-audit #5 finding
+  // #1, 2026-07-30): `ptrTypeEq(p,ARRAY) || ptrTypeEq(p,TYPED) ?
+  // __typed_idx(p,i) : __dyn_get_expr(...)`, optionally wrapped by its own
+  // STRING pointer-kind check. This clone already runs where the OUTER
+  // __utb gate has proven `p` IS the target typed-array ctor (PTR.TYPED,
+  // matching aux), so ANY further runtime tag test on the SAME `p` here is
+  // dead — collapse straight to whichever arm resolves to a typedIdx(p)
+  // read; the sibling dyn-props/string arm is unreachable in this
+  // specialization.
+  //
+  // hoistPtrType (runs before this pass) CSEs a repeated `__ptr_type(p)`
+  // call — INCLUDING the two calls this guard's own `ARRAY || TYPED` OR
+  // makes — into one shared `local.tee $__ptN (...) ` / `local.get $__ptN`
+  // pair. When TWO reads of `p` share the same guard shape (`buf[i]*buf[i]`,
+  // `buf[i]=f(buf[i])`), only the FIRST occurrence's condition carries the
+  // `local.tee` that DEFINES `$__ptN`; the second just reads it. A first cut
+  // of this pass deleted the whole condition on collapse — sound for a
+  // single occurrence, but for the second (reader) occurrence it deleted the
+  // ONLY definition of `$__ptN`, leaving it to read the wasm-default 0 and
+  // silently take the dead dyn-props arm on a genuine typed array (a
+  // seed-2/4/5/13/14 NaN divergence caught by the Float64Array element-ops
+  // fuzz gate). Fix: never delete a matched condition — hoist it, evaluated
+  // for its `local.tee` side effect only, to a SINGLE dropped statement once
+  // before the loop (paramName is proven not reassigned in this fast body,
+  // so the condition is loop-invariant — same footing as `baseSnap`/`gate`
+  // below, and keeping it out of the per-iteration body is also what lets
+  // the fast read collapse to a bare f64.load the SIMD lane vectorizer still
+  // recognizes; a `block`-wrapped drop+load inline broke that pattern match
+  // and silently cost the vectorization this whole pass exists to unlock).
+  // `drops` accumulates every condition traversed on the path to the
+  // matched call (the STRING-wrapper case nests a second guard); the caller
+  // dedupes across every read site by structural equality before hoisting.
+  function receiverGuardedRead(n, p, drops = []) {
+    if (!Array.isArray(n)) return null
+    if (typedIdx(n, p)) return { drops, call: n }
+    if (n[0] !== 'if' || n.length < 4) return null
+    if (!Array.isArray(n[1]) || n[1][0] !== 'result' || n[1][1] !== 'f64') return null
+    if (!has(n[2], (x) => reintParam(x, p))) return null
+    for (let k = 3; k < n.length; k++) {
+      const a = n[k]
+      if (!Array.isArray(a) || (a[0] !== 'then' && a[0] !== 'else') || a.length !== 2) continue
+      const found = receiverGuardedRead(a[1], p, [...drops, n[2]])
+      if (found) return found
+    }
+    return null
+  }
+
   // Clone, collapsing the typed-array read to a direct f64.load(base + IND<<3):
   //   __to_num(reinterpret(__typed_idx(reinterpret P, IND)))  — and the bare form too.
-  function cloneRead(n, p, base) {
+  // `hoisted` (Map keyed by structural JSON, shared across the whole body scan)
+  // collects any receiver-guard conditions found — see receiverGuardedRead's
+  // doc comment — for the caller to hoist above the loop, deduplicated.
+  function cloneRead(n, p, base, hoisted) {
     if (!Array.isArray(n)) return n
     if (n[0] === 'call' && n[1] === '$__to_num' && n.length === 3
         && Array.isArray(n[2]) && n[2][0] === 'i64.reinterpret_f64' && typedIdx(n[2][1], p))
       return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', clone(n[2][1][3]), ['i32.const', 3]]]]
     if (typedIdx(n, p))
       return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', clone(n[3]), ['i32.const', 3]]]]
-    return n.map((c, i) => i === 0 ? c : cloneRead(c, p, base))
+    const guarded = n[0] === 'if' ? receiverGuardedRead(n, p) : null
+    if (guarded) {
+      for (const d of guarded.drops) { const key = JSON.stringify(d); if (!hoisted.has(key)) hoisted.set(key, clone(d)) }
+      return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', clone(guarded.call[3]), ['i32.const', 3]]]]
+    }
+    return n.map((c, i) => i === 0 ? c : cloneRead(c, p, base, hoisted))
   }
 
   function processBlock(blockNode, parent, idx) {
@@ -3540,15 +3596,21 @@ export function unswitchTypedParamLoop(fn) {
     const fastStore = ['f64.store', ['i32.add', ['local.get', base], ['i32.shl', ['local.get', incVar], ['i32.const', 3]]], ['local.get', valName]]
     // Fast body: keep every statement except the store-if (→ fastStore) and its trailing
     // drop (the fast store pushes nothing), with the typed-array read collapsed to f64.load.
+    const hoistedGuards = new Map()
     const fastStmts = []
     for (let i = 0; i < body.length; i++) {
       if (i === storeIdx) { fastStmts.push(fastStore); continue }
       if (hasDrop && i === storeIdx + 1) continue
-      fastStmts.push(cloneRead(body[i], paramName, base))
+      fastStmts.push(cloneRead(body[i], paramName, base, hoistedGuards))
     }
+    // Any receiver-guard conditions cloneRead found (see its doc comment) are
+    // loop-invariant here — paramName is proven not reassigned in this fast
+    // body — so they run ONCE, before the loop, deduplicated, alongside
+    // baseSnap; the loop body then keeps the bare f64.load shape intact.
+    const hoistedDrops = [...hoistedGuards.values()].map((d) => ['drop', d])
     const fastLoop = ['block', blockLabel, ...preamble.map(clone),
       ['loop', loopLabel, clone(loopNode[2]), ...fastStmts, clone(incNode), clone(loopNode[endIdx])]]
-    parent[idx] = ['if', gate, ['then', baseSnap, fastLoop], ['else', blockNode]]
+    parent[idx] = ['if', gate, ['then', baseSnap, ...hoistedDrops, fastLoop], ['else', blockNode]]
   }
 
   function walk(node, parent, idx) {

@@ -1045,10 +1045,8 @@ export default (ctx) => {
         // ToPropertyKey-probes dyn-props via __dyn_get_expr — the SAME contract
         // module/array.js's proven-OBJECT/HASH branches above already use, closing
         // the gap where this fallback silently read undefined through __typed_idx's
-        // unrelated __len-bounds-check arm. Scoped to ONLY this runtime-dispatched
-        // arm (not the sibling provably-NUMBER-key fallback below, which a NAMED
-        // perf pin keeps __dyn_get-free for the dominant `a[loopCounter]` shape —
-        // ledger 2026-07-29 dyn-prop keying sweep).
+        // unrelated __len-bounds-check arm. Mirrored below for the sibling
+        // proven-NUMBER-key case (receiver kind, not key kind, decides the fork).
         inc('__dyn_get_expr')
         const typedOrDyn = ['if', ['result', 'f64'],
           ['i32.or', ptrTypeEq(ptrExpr, PTR.ARRAY), ptrTypeEq(ptrExpr, PTR.TYPED)],
@@ -1062,6 +1060,56 @@ export default (ctx) => {
         }
         return typedOrDyn
       })
+    // Proven-NUMBER key, receiver kind still unproven (not statically ARRAY/
+    // TYPED/STRING/HASH/OBJECT/boxed — every arm above that could prove a
+    // receiver kind already returned). Selection between the typed-indexed
+    // read and a dyn-props read must depend on the RECEIVER, not the key: an
+    // OBJECT/HASH receiver with a numeric-looking key (`o={}; o['1']=9;
+    // o[n]` for a proven-NUMBER local `n`) must ToPropertyKey-probe dyn-props
+    // exactly like the runtime-dispatched arm above, or the read silently
+    // returns undefined for a value that IS present under the stringified key
+    // (audit #5 finding: routing every proven-number key straight to
+    // __typed_idx read raw __len bounds — 0 for a non-array box — instead of
+    // the dyn-props sidecar). ARRAY/TYPED still take the lean typed-array
+    // read with NO runtime dispatch beyond this one pointer-kind tag test —
+    // no __is_str_key/__to_str call, since the key is already proven
+    // non-string. `keyTmp` holds the key's f64 form ONCE so both the
+    // __typed_idx (i32-truncated) and __dyn_get_expr (boxed f64→key) arms —
+    // and the optional STRING pointer-kind check — read the same evaluation
+    // of `idx`, matching the single-eval discipline `emitDynamicKeyDispatch`
+    // uses above.
+    if (keyType === VAL.NUMBER) {
+      // `vi` — the SAME i32-narrowed index emitIndex() already produced above
+      // (line 768, shared by arrayLoad/stringLoad below) — feeds the fast
+      // ARRAY/TYPED arm exactly as `arrayLoad` did before this guard existed:
+      // a compound i32 index tree (`j*W+x`) stays pure i32 arithmetic, no f64
+      // round-trip, and the shape (ptrTypeEq + vi) is what the i32-narrowing/
+      // unswitch/vectorize passes downstream already pattern-match — widening
+      // `vi` back to f64 here (an earlier version of this fix did, to feed
+      // BOTH arms from one value) still left an `f64.convert_i32_s` in the
+      // compiled text and tripped the "index terms stay i32" pin even though
+      // it's only ever reached on the cold path.
+      // The __dyn_get_expr cold arm (OBJECT/HASH receiver) instead gets its
+      // OWN independent f64 evaluation of `idx`, confined entirely to this
+      // arm — safe (no double side-effect) because at most ONE of the two
+      // branches runs per call: the hot arm consumes `vi`'s single line-768
+      // evaluation, the cold arm consumes this one, and only one is ever
+      // reached at runtime. Exact ToPropertyKey semantics (no truncation) at
+      // the cost of a second (unreachable-together) codegen of `idx`, same
+      // discipline `emitDynamicKeyDispatch`'s sibling arm above already uses
+      // for its own single `emit(idx)`.
+      inc('__dyn_get_expr')
+      const guarded = ['if', ['result', 'f64'],
+        ['i32.or', ptrTypeEq(ptrExpr, PTR.ARRAY), ptrTypeEq(ptrExpr, PTR.TYPED)],
+        ['then', ['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], vi]],
+        ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], ['i64.reinterpret_f64', asF64(emit(idx))]]]]]
+      if (ctx.module.modules['string'] && !notString)
+        return typed(['if', ['result', 'f64'],
+          ptrTypeEq(ptrExpr, PTR.STRING),
+          ['then', stringLoad()],
+          ['else', guarded]], 'f64')
+      return typed(guarded, 'f64')
+    }
     // Unknown → runtime dispatch (string module loaded → check ptr_type)
     if (ctx.module.modules['string'] && !notString)
       return typed(
