@@ -6,6 +6,31 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+DICT-VALUE CENSUS DESIGNED 2026-07-31 (.work/dict-value-census-
+design.md — read it before implementing; implementation order+gates
+inside): value-kind fact (`dictValueValType`) as a wholly ADDITIVE
+ValueRep field, censused inside observeProgramSlots' existing
+two-call schedule (same lattice as observeSlot, same writeVT/
+effectiveWriteValue resolvers), consumed ONLY at kind.js VT['[]']/
+VT['.'] gated on dynWriteVars at READ time (never census time —
+that ordering was the reverted fix's trap). Wall avoided
+STRUCTURALLY, per link: no val/schemaId mutation → analyzeBody
+caches untouched; consulted outside lookupValType → overlay can't
+shadow; HASH not in UNBOXABLE_KINDS → schema-id channel unreachable.
+GROUNDING CORRECTIONS from the design pass: (a) prec is missing TWO
+facts (receiver HASH + value NUMBER) — this delivers value-kind
+only, receiver-HASH is a separate future design under the same
+field-isolation discipline; (b) bench/vm and bench/dict DO NOT
+exercise this lever (both pure Int32Array kernels — the earlier
+"likely underlies watr/vm/dict" was wrong for vm/dict, their reds
+have another cause); (c) watr OPCODE/IMM IS a genuine match
+(const.js:161,168, integer counters read hot in optimize.js);
+(d) the archived 31% jessie figure measured a DIFFERENT mechanism
+(durable-receiver probe doubling) — re-measure after landing, don't
+carry it forward. Order: local half → global census → consumer
+wiring (dyn-keys/data pin suites are the risk gate) → watr 35/35
+in isolation BEFORE jessie → paired-truth re-measurement.
+
 JESSIE DISSECTED 2026-07-31 (1.85x geomean confirmed, no drift; two
 blueprint-tier levers, honestly not forced): (1) DOMINANT ~31%
 (causally measured, archive:3479): subscript's `prec = {}` string->
