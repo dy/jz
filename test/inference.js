@@ -1872,3 +1872,39 @@ test('dict-value census: an unresolvable write poisons the fact', () => {
   is(ctx.scope.globalReps?.get('cache')?.dictValueValType, null,
     '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
 })
+
+test('dict-value census: consumer wiring — proven-NUMBER dict read skips coercion at a compare site', () => {
+  // Design §2's named mechanism: cmpOp's NUMBER arm emits a raw f64 compare
+  // directly over the __dyn_get result instead of routing through the
+  // generic runtime-typed comparison helper. Mirrors watr's actual
+  // `OPCODE[n[0]] > 0xffff` site (optimize.js:3973).
+  const src = `
+    export let OPCODE = {}, code = 0
+    export let register = (nm) => { OPCODE[nm] = code++ }
+    export let bigOp = (nm) => OPCODE[nm] > 0xffff
+    register('add')
+  `
+  const wat = jz.compile(src, { wat: true })
+  const body = wat.slice(wat.indexOf('$bigOp'))
+  ok(/\(f64\.gt\b/.test(body), 'expected a raw f64.gt at the compare site')
+  ok(!/\$__gt\b/.test(body), 'expected no generic runtime-typed compare helper')
+  is(run(src).bigOp('add'), false, 'functional result unchanged (0 > 0xffff is false)')
+})
+
+test('dict-value census: soundness carve-out — an unregistered key still identity-compares as undefined', () => {
+  // The exact miscompile class the design's carve-out (§2, kind.js
+  // dictValueKindOf docstring, emit.js nullableOperand) exists to prevent:
+  // without it, `OPCODE[nm] === undefined` on a proven-NUMBER dict would
+  // const-fold to always-false via emitStrictEq's strictSentinel — but an
+  // unregistered key's real runtime value IS undefined, so the idiomatic
+  // "does this key exist" probe must still observe true.
+  const src = `
+    export let OPCODE = {}, code = 0
+    export let register = (nm) => { OPCODE[nm] = code++ }
+    export let has = (nm) => OPCODE[nm] !== undefined
+    register('add')
+  `
+  const { has } = run(src)
+  is(has('add'), true, 'registered key: exists')
+  is(has('missing'), false, 'unregistered key: does NOT exist — must not const-fold to true')
+})

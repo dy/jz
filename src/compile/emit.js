@@ -42,7 +42,7 @@ import {
   exprType, constIntExpr, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
   inBoundsArrIdx, typedIdxProven, versionableTypedNest, idxKey,
 } from '../type.js'
-import { valTypeOf, shapeOf } from '../kind.js'
+import { valTypeOf, shapeOf, dictValueKindOf } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
@@ -2170,6 +2170,13 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 // (the checked .typed:[] form), while its VT stays NUMBER for numeric dispatch — the
 // undef box IS a NaN through arithmetic; only these identity folds must stay live.
 // `ta[i] === undefined` is the idiomatic bounds probe, so folding it kills real code.
+// A dict-mode `[]`/`.` read whose VT comes SOLELY from dictValueKindOf (design
+// .work/dict-value-census-design.md §2's soundness carve-out) joins the set for
+// the identical reason: an unwritten key reads back the same undefined —
+// `prec[op] === undefined` (does this key exist?) is that dict's own bounds
+// probe. Unconditional on dictValueKindOf(name) being truthy (not re-deriving
+// VT['[]']'s branch order) — the rare case where a name ALSO carries an
+// independently-safe fact just loses a fold, never unsound.
 const nullableOperand = (n) => {
   if (typeof n === 'string') return !!(repOf(n)?.nullable || repOfGlobal(n)?.nullable)
   if (Array.isArray(n) && n[0] === '[]' && n.length === 3
@@ -2181,6 +2188,8 @@ const nullableOperand = (n) => {
         lookupValType(n[2][1]) === VAL.TYPED && !typedIdxProven(n[2][1], n[2][2])) return true
     return !typedIdxProven(n[1], n[2])
   }
+  if (Array.isArray(n) && (n[0] === '[]' || n[0] === '.') && n.length === 3
+      && typeof n[1] === 'string' && dictValueKindOf(n[1])) return true
   return false
 }
 

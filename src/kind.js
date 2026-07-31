@@ -201,6 +201,31 @@ VT['&&'] = VT['||'] = VT['??'] = (args) => {
   return null
 }
 
+// Dict-value-type census consumer (.work/dict-value-census-design.md §2):
+// `name[key]`/`name.prop` on a HASH dict-mode receiver — the VAL.* kind of
+// every value ever WRITTEN through `name[anyKey] = v`, local first (analyze.js
+// same-body scan, design §1a) then global gated on dynWriteVars
+// (observeProgramSlots' whole-program census, design §1b; the census fires
+// for every root regardless of scope — §1c — so this gate is what keeps a
+// param/local that merely SHARES a global dict's name from picking up the
+// global fact: `!ctx.func.localReps?.has(name)` mirrors the arrayElemValType
+// local/global split below).
+//
+// SOUNDNESS: an unwritten key reads back NaN-boxed undefined at runtime, so
+// this fact is trustworthy ONLY where NUMBER arithmetic/relational semantics
+// coincide with ToNumber(undefined) — the same precedent as the unproven
+// TYPED-index read (kind.js:257-263 above). Identity (`===`/`==` against
+// null/undefined) and typeof MUST NOT const-fold on it: that carve-out lives
+// in emit.js's `nullableOperand`, extended alongside this consumer to flag a
+// dict-mode `[]`/`.` read exactly as it already flags an unproven typed read.
+export function dictValueKindOf(name) {
+  const local = ctx.func.localReps?.get(name)?.dictValueValType
+  if (local) return local
+  if (!ctx.func.localReps?.has(name) && ctx.types?.dynWriteVars?.has(name))
+    return ctx.scope.globalReps?.get(name)?.dictValueValType || null
+  return null
+}
+
 // `[]` op covers both array literals (1 arg) and index access (2 args).
 // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].
 // Index access:  `arr[i]` → ['[]', arr, i].
@@ -280,6 +305,13 @@ VT['[]'] = (args) => {
       if (gElem && !ctx.types?.dynWriteVars?.has(args[0])) return gElem
     }
   }
+  // Dict-mode receiver (`prec[op]`, `OPCODE[nm]`): every value ever written
+  // through `args[0][anyKey] = v` has one proven kind. See dictValueKindOf
+  // above for the soundness carve-out — arithmetic/relational consumers only.
+  if (typeof args[0] === 'string') {
+    const dvt = dictValueKindOf(args[0])
+    if (dvt) return dvt
+  }
   // Direct double-index on a module-level nested numeric table — `C[i][j]` where
   // `C = [[…number…], …]`. The receiver is itself a single-index read of a global
   // array whose nested element kind was recorded at decl time. Same dynWriteVars
@@ -349,6 +381,13 @@ VT['.'] = (args) => {
         (hz.numeric && /^(0|[1-9][0-9]*)$/.test(args[1])))) return null
       return child.val
     }
+  }
+  // Dict-mode receiver via computed-literal rewrite (`prec['in']` → `['.','prec','in']`
+  // at emit, module/array.js:762-763): the fact is per-receiver, not per-key, so
+  // `prec.in` benefits identically to `prec[k]` above. Same soundness carve-out.
+  if (typeof args[0] === 'string') {
+    const dvt = dictValueKindOf(args[0])
+    if (dvt) return dvt
   }
   // Built-in property on a known sized kind — `.length` on STRING/ARRAY/TYPED,
   // `.size` on SET/MAP, `.byteLength`/`.byteOffset` on TYPED/BUFFER. These are
