@@ -38,7 +38,7 @@ import { adviseProgram } from './advise.js'
 import { scanInplaceStores } from '../inplace-store.js'
 import {
   inferModuleLetTypes, inferModuleGlobalValTypes, unboxConstTypedGlobals, inferModuleIntGlobals, refineFieldProvenance,
-  flattenFuncNamespaces, devirtGlobalCalls,
+  flattenFuncNamespaces, devirtGlobalCalls, classifyHashDictGlobals,
   materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
 } from './scope.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
@@ -82,6 +82,16 @@ export default function plan(ast, profiler) {
   t('inferModuleIntGlobals', () => inferModuleIntGlobals(ast))
 
   facts()
+  // Receiver-HASH global classification (.work/dict-receiver-hash-design.md):
+  // fill `ctx.scope.globalValTypes` with VAL.HASH for module-level `{}`-decl
+  // dict globals module/object.js's allocator already tags HASH at the
+  // pointer level (identical predicate — target's merged schema empty +
+  // dynWriteVars membership) — a pure FILL (`.has()`-guarded, see
+  // classifyHashDictGlobals doc), so it can run this early: before
+  // flattenFuncNamespaces/devirtGlobalCalls, using the just-collected
+  // programFacts.dynWriteVars directly (`ctx.types.dynWriteVars` isn't
+  // published until this function's later `programFacts` fan-out below).
+  t('classifyHashDictGlobals', () => classifyHashDictGlobals(ast, facts()))
   // Function-namespace SROA — dissolve reassigned `f.prop` slots into module
   // globals before inlining/narrowing, so all downstream passes see plain
   // globals instead of the dynamic property machinery.

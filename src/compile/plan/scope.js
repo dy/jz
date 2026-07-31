@@ -229,6 +229,76 @@ export const refineFieldProvenance = (ast) => {
   }
 }
 
+// Receiver-HASH global classification (.work/dict-receiver-hash-design.md).
+//
+// module/object.js's `{}`-literal emitter already allocates a module-level
+// dict global (`let X = {}` whose binding takes ONLY computed-key writes —
+// no static prop ever, merged schema empty) as a real HASH pointer today:
+// `target && !merged?.length && ctx.types.dynWriteVars?.has(target)`
+// (module/object.js:86, target sourced from the decl-site literal-target
+// stack emit.js pushes only around a `let`/`const` initializer — a bare
+// reassignment `X = {}` never pushes it and so never qualifies, matching
+// this pass exactly). Every READ/WRITE site elsewhere, though, is blind to
+// that allocation: they consult `ctx.scope.globalValTypes` (via
+// `lookupValType`/`valTypeOf`), which recordGlobalRep never sets for these
+// names — `VT['{}']` returns null for the empty-literal case by
+// construction (no evidence either way), so the fact simply never gets
+// published. This pass is the FILL: same predicate, computed once here over
+// module-init code, published into the one table every consumer already
+// gates on. `.has()` guards every write — a qualifying name's verdict is
+// null by construction (recordGlobalRep never touches it), so there is
+// nothing to ever correct or overwrite; `ctx.schema.register` is never
+// called (VT['{}']'s empty-literal branch never mints a schema id either).
+//
+// `programFacts` MUST be the plan-time program-facts result passed in by the
+// caller, not `ctx.types.dynWriteVars` — this pass runs at the FIRST
+// `collectProgramFacts` call, before `ctx.types.dynWriteVars` is published
+// (plan/index.js, later in the same pipeline).
+//
+// Race guarded explicitly: `materializeAutoBoxSchemas` (plan/index.js, later
+// than this pass) retroactively binds a real schema onto any name with a
+// whole-program dot-write (`programFacts.propMap`) — `ctx.schema.resolve`
+// looking empty HERE does not mean it stays empty by the time module/
+// object.js's emitter reads it. Consulting `propMap` (already computed by
+// the SAME collectProgramFacts call) rather than moving this pass later
+// keeps the design's early placement while staying exactly consistent with
+// the allocation site's FINAL merged-schema state — a name ever dot-written
+// anywhere is excluded here even though its schema isn't bound yet.
+//
+// Traversal mirrors analyze.js's `analyzeValTypes` walk (the same walk that,
+// run again at __start assembly over `ast` + each `ctx.module.moduleInits`
+// entry — wat/assemble.js — is what actually feeds the DBG_INVARIANTS
+// consistency tripwire at the allocation site): full recursive descent,
+// stopping only at `=>` (a nested closure's own decls are a different scope
+// entirely, analyzed on its own terms), over BOTH `ast` and every bundled
+// sub-module's `ctx.module.moduleInits` entry — watr's `OPCODE`/`IMM` live
+// only in the latter (mangled as `__const_js$OPCODE` post-bundle).
+export const classifyHashDictGlobals = (ast, programFacts) => {
+  const dynWriteVars = programFacts?.dynWriteVars
+  if (!dynWriteVars?.size || !ctx.scope.userGlobals?.size) return
+  const propMap = programFacts.propMap
+  const mark = (name, init) => {
+    if (typeof name !== 'string' || !ctx.scope.userGlobals.has(name)) return
+    if (ctx.scope.globalValTypes?.has(name)) return                 // fill only — never overwrite
+    if (!Array.isArray(init) || init[0] !== '{}' || init.length !== 1) return
+    if (!dynWriteVars.has(name)) return
+    if (propMap?.get(name)?.size) return                            // dot-write elsewhere → materializeAutoBoxSchemas binds a real schema later
+    if (ctx.schema.resolve?.(name)?.length) return                  // non-empty merged schema — not dict-mode
+    ;(ctx.scope.globalValTypes ||= new Map()).set(name, VAL.HASH)
+  }
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === 'let' || op === 'const') {
+      for (const a of args) if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') mark(a[1], a[2])
+    }
+    for (const a of args) walk(a)
+  }
+  walk(ast)
+  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walk(mi)
+}
+
 // A module global whose every write anywhere in the program (any function body,
 // any nesting/closure depth) agrees on one VAL.* kind — not just its depth-0
 // initializer (recordGlobalRep's territory). The subscript/jessie shape this

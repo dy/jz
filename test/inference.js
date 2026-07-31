@@ -30,6 +30,7 @@ import jz from '../index.js'
 import { run } from './util.js'
 import { parse as watTree, callsOutside } from '../scripts/wat-probe.mjs'
 import { ctx } from '../src/ctx.js'
+import { VAL } from '../src/reps.js'
 
 const count = (wat, re) => (wat.match(re) || []).length
 
@@ -2100,4 +2101,70 @@ test('dict-value census: moduleInitSlot memo-cache replay is order-independent (
   is(bag1, null, 'first compile: bag poisons (poison survives cached replay within the compile)')
   is(opcode2, opcode1, 'second independent compile (fresh gen, cold walk again) agrees with the first')
   is(bag2, bag1, 'second independent compile agrees on the poison too')
+})
+
+// ─────────────────────────── receiver-HASH global classification
+// .work/dict-receiver-hash-design.md: module/object.js's `{}`-literal emitter
+// already allocates a module-level dict global (computed-key writes only, no
+// static prop, empty merged schema) as a real HASH pointer — but every OTHER
+// function's read/write site was blind to it (recordGlobalRep leaves the
+// name's globalValTypes verdict null by construction: VT['{}'] answers null
+// for the empty-literal case). plan/index.js's classifyHashDictGlobals fills
+// `ctx.scope.globalValTypes` with the IDENTICAL predicate the allocator uses,
+// so `lookupValType`'s tier-4 fallback (ctx.scope.globalValTypes) now resolves
+// the receiver's kind at every OTHER call site too.
+
+test('receiver-HASH: module-global dict receiver (subscript\'s prec shape) gets VAL.HASH on globalValTypes', () => {
+  const src = `
+    export let prec = {}
+    export let register = (op, p) => { prec[op] = p }
+    export let bigOp = (op) => prec[op] > 1000
+    register('+', 10)
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalValTypes?.get('prec'), VAL.HASH,
+    'the {} decl + computed-key write + empty merged schema qualifies exactly like the allocator')
+})
+
+test('receiver-HASH: consumer wiring — the classified receiver reads through the lean hash-get shape, not the generic dyn-get chain', () => {
+  const src = `
+    export let OPCODE = {}, code = 0
+    export let register = (nm) => { OPCODE[nm] = code++ }
+    export let lookup = (nm) => OPCODE[nm] || 0
+    register('add')
+  `
+  const wat = jz.compile(src, { wat: true, optimize: false })
+  ok(/__hash_get_local/.test(wat), 'expected the lean hash-probe shape once the receiver is classified HASH')
+  ok(!/\$__dyn_get\b/.test(wat), 'expected no generic __dyn_get/__dyn_get_t chain — the receiver kind is already proven')
+})
+
+test('receiver-HASH: does NOT fire when a schema-slot write exists (dot-write literal creates a merged schema)', () => {
+  // `rec.x = 5` is a dot-write to the SAME global elsewhere in the program —
+  // materializeAutoBoxSchemas (plan/index.js, later than this pass) binds a
+  // real schema onto `rec` from that fact (programFacts.propMap), so the
+  // allocator's OWN merged-schema check is non-empty by emission time even
+  // though it read empty at this pass's (earlier) point — the propMap guard
+  // must exclude `rec` here to stay consistent with that later state.
+  const src = `
+    export let rec = {}
+    export let put = (k, v) => { rec[k] = v }
+    export let touch = () => { rec.x = 5 }
+    put('a', 1)
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalValTypes?.get('rec'), undefined,
+    'a dot-write anywhere disqualifies — the allocator will bind a real schema, not HASH')
+})
+
+test('receiver-HASH: does NOT fire when the name is absent from dynWriteVars (no computed-key write anywhere)', () => {
+  // `bag` is only ever dot-written (`bag.x = 5`) — never through a computed
+  // key — so it never enters dynWriteVars at all; the allocator's own
+  // predicate requires dynWriteVars membership, and this pass must agree.
+  const src = `
+    export let bag = {}
+    export let touch = () => { bag.x = 5 }
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalValTypes?.get('bag'), undefined,
+    'no computed-key write anywhere — dynWriteVars never gains the name, so no HASH claim')
 })
