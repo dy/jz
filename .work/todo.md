@@ -6,6 +6,56 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-08-01, current truth)
 
+MAP-VALUE CENSUS TIER 1: LANDED (108604fc census, 1db8e55e consumer;
+.work/map-value-census-design.md). Scalar mapValueValType only — Tier 2
+(schema-id fact, the actual fftplan/provenance OBJECT-edge fix) stays a
+separate later design; both provenance KNOWN-OPEN pins (memo, map) verified
+STILL PINNED (test/provenance-inference.js green) — Tier 1 doesn't touch
+OBJECT-valued edges, confirmed not just assumed. Mechanism: program-facts.js
+`.set()` census branch (visit + moduleInit visitInit + moduleInitSlot cache
+replay) mirrors observeDictValue's first-wins-then-clash lattice verbatim;
+analyze.js local half (mapValueTypeOf) gated on decl vt===VAL.MAP; consumer
+is kind.js's mapValueKindOf, consulted directly in VT['()'] ahead of
+methodValType (kept out of kind-traits.js's methodValType to avoid a
+kind.js↔kind-traits.js import cycle — the design's own offered alternative);
+emit.js nullableOperand carries the matching `.get(k)`-call-shape carve-out.
+hasMapSet gate added (program-facts.js observeNodeFacts + narrow.js) beside
+hasSchemaLiterals — a Map-only moduleInit/program has no `{}` to trip the
+existing gate, verified this was a REAL gap via a reduced repro before
+landing (not merely theoretical).
+Full gates green: 4-group chunked battery (0 fail, matches ~3194/0/6
+baseline +10 for the new fixtures), dyn-keys/data/provenance-inference
+green, JZ_DEBUG_INVARIANTS=1 leg clean (data/watr/provenance-inference/
+dyn-keys), fresh dist rebuild + kernel-parity + kernel-oracle + watr
+self-host all green.
+Real-corpus verification (direct ctx inspection on an actual watr.js
+self-host compile, jz(watrJs, {jzify:true, modules:ENTRY_MODULES})):
+F64_MEMO (encode.js:183) resolves mapValueValType=ARRAY — a genuine, sound
+Tier-1 win (byte array literal value, independently provable). I32_MEMO
+(encode.js:75) resolves NULL (poisoned) — root-caused via isolated repro:
+its value is `v = i32.parse(n)`, a CROSS-FUNCTION-CALL-DERIVED value, and
+writeVT (program-facts.js) deliberately never resolves through `.`/call
+reads mid-census (the SAME limitation the ALREADY-LANDED dict census has —
+verified by reproducing the identical poison on a same-shaped `bag[k]=p(n)`
+dict fixture). Sound, not a defect; the design's "NUMBER indices" framing
+for I32_MEMO was optimistic, not verified — corrected here.
+Param-alias `.set()` gap audit (design's Fail-open item, "verify zero
+occurrences or bank"): NOT zero — found genuine occurrences in BOTH watr
+(optimize.js: `bump`/`reset`/`ensure`/canon-map helpers taking a Map
+parameter and calling `.set()` on it) and jz's own self-hosted src/module.
+Verified via a targeted repro (`bump(m,k){m.set(...)}` called with a
+module-global Map arg) that the gap is SOUND: fails open (fact stays
+`undefined`, never a false positive), no crash, functional correctness
+unaffected — banked as a known limitation, not fixed (matches dict's own
+inherited gap; fixing needs a paramReps-aware receiver gate, a Tier-1.5
+follow-up if the win ever proves worth chasing).
+Bench measurement: SKIPPED — machine not quiet at landing time (load avg
+2.77–3.57, 3 active user sessions) and the design's own prediction
+("small-or-nil, memo hits are compile-time-rare") plus the empirical finding
+above (only 1 of 2 real watr memo sites actually resolves) make a paired
+ABBA run unlikely to produce a trustworthy signal on a loaded machine; not
+run rather than reported noisy.
+
 ERROR MODEL: PIECES 1+2 LANDED, PIECE 3 BANKED WITH A PRECISE WALL 2026-08-01
 (bfee0e7f distinct codes, 48a361d0 host-side decode; battery 3193/0/6 — +11
 pass vs the 3182 ledger baseline, same skip=6, zero unexplained fails,
