@@ -118,6 +118,67 @@ AGREE. Agent stalled repeatedly on the silent-battery watchdog;
 landing finished in-thread (probes, gates, pin rewrites, hook
 sweep, invariant).
 
+CORRECTION 2026-08-01 (re-audit #6, carrier-invariant-design.md
+session): the entry above OVERSTATED "the live miscompile family" —
+it closed the family at six RETURN/IDENTITY-COMPARISON escape sites
+only (return tails, typeof, strict-eq). Re-audit #6 found 51 MORE
+verified BOOL∪NUMBER mismatches across array/object/Map/Set storage,
+keys, JSON, String/template, closure args, computed keys — a SEPARATE
+mechanism (container/call-arg PRODUCTION sites hand-reimplementing
+only the unsound half of the same guard, 16 raw sites + 3 more found
+live) plus an independent detector blind spot (VT['()'] treating a
+parenthesized non-call grouping as opaque). THIS SESSION is the
+actual closure of the container/call-arg half: storedValue promoted
+to src/bridge.js as the one producer chokepoint (was local to
+emit-assign.js), all 16+3 raw sites replaced, VT['()']/
+hasAmbiguousBoolMerge's grouping blind spot fixed, plus two root-
+cause type-inference gaps in narrow.js/type.js that were silently
+narrowing an ambiguous-merge function/param to i32 and losing the
+atom at the rebox. Oracle rows 1-6+10-11+13 flip PENDING-FIX→AGREE
+(commits f6ec5129/c979528f/845128ed). NOT closed by this session,
+explicitly banked:
+  - the GENERIC SCALAR let/const declaration init site (module-level,
+    not flat/SRoA) — every implementation shape tried (shared helper,
+    inline ternary, inline if/else materializing the branch first —
+    the established self-host-miscompile-avoidance discipline) broke
+    the SELF-HOSTED kernel's own compiled emitDecl at that exact call
+    site, verified live with a fresh dist rebuild reproducing with a
+    plain non-ambiguous `let v = x + 1` local. Native compiled every
+    variant correctly; only the kernel's compilation of its OWN
+    emitDecl broke, and only there. Root cause not localized further.
+    test/kernel-oracle.js's 'captured-then-read' row stays PENDING-FIX.
+  - the ARITHMETIC-CONSUMER sweep (design's own COST section, 7 sites:
+    emitLooseEq numA/numB, a relational-comparison pair, isNumArm/
+    numSide's atom-safety skip, the emit() valKind stamp) — attempted
+    and REVERTED: every fix shape that correctly boxes an ambiguous
+    merge for arithmetic consumption also adds real f64 ops (an atom-
+    safety self-compare ladder) to a mixed number/boolean ternary
+    even when it's a fresh, provably-raw computation — directly
+    tripping test/wat-invariants.js's PROTECTED hard-zero ratchet
+    ("typed-int emits NO f64 op in any loop body", the exact
+    regression class its own header already documents fixing once).
+    This is a genuine, verified conflict between the arithmetic sweep
+    and an existing performance invariant, not a mistaken diagnosis —
+    banked rather than force-landed.
+  - the FORMATTER sub-sweep (String()/template-literal ToNumber-vs-
+    ToString runtime dispatch, computed-key ToPropertyKey) — needs a
+    genuine RUNTIME bit-pattern dispatch (compile time cannot know
+    which of the two representations an ambiguous merge holds), not
+    attempted this session given the time already spent bisecting the
+    two self-host/ratchet walls above. Oracle rows 7/8/12 stay
+    PENDING-FIX.
+  - the QUARANTINED identical-subtree anomaly (design §1a — two
+    branches returning literally-identical AST M=((x>0)&&1) both
+    return 0 for both arguments, a wrong VALUE not just identity,
+    suspected CSE/dedup-on-identical-subtree class) remains STILL
+    OPEN — explicitly out of scope per the mission's own binding
+    rules, not chased, not touched.
+Also found and fixed live during this session, structurally identical
+class but NOT in the design's original enumeration: bridge.js's own
+`coerce` 'I'-sig helper (every call()/method() stdlib registration,
+incl. Set.add), emit.js's generic coerceArg/emitCallArgs direct-call
+argument boxing, and emit.js's flat/SRoA object-literal field init.
+
 DECISIONS EXECUTED 2026-08-01 (user: "make most meaningful
 decisions and go"): (1) JSC tight-int-loop class → claim SCOPED to
 V8-family engines for strict JIT leadership; JSC = documented
