@@ -32,6 +32,35 @@ false). Even perfect consumer enumeration cannot close this. Fix:
 valTypeOf/VT['()'] unwraps single-arg non-call grouping nodes (pure
 structural). PREREQUISITE for any invariant.
 
+DECL-INIT WALL RE-CHARACTERIZED 2026-08-01 (dedicated hunt, worktree,
+3 full builds patched/control/patched): the wall is NOT the banked
+"narrow captured-then-read gap" — the one-line storedValue(init) patch
+at emit.js ~1712, SELF-COMPILED, produces TOTAL EXPORT LOSS: every
+exported function in every program vanishes from the export section
+(even `export let f = (x) => x`), all O-levels; function bodies present
+and plausible — the miscompile is in export bookkeeping, not the changed
+line's codegen. SECOND symptom, independently decodable: capture-free
+closure locals desync (kernel emits bare local.get i32 → local.set f64,
+instantiation fails) — the SAME program is correct natively at every
+level INCLUDING under JZ_DEBUG_INVARIANTS (the P1 drift assert never
+fires natively). RULED OUT: bridge indirection (storedValue is local to
+emit.js), capture-after-nested-emit (single emit() call, no mutable
+captures), code shape (the IDENTICAL ternary is self-host-green at 20+
+sites including one 90 lines earlier in the SAME emitDecl function).
+SURVIVOR: the enclosing-scale self-host miscompile class (outline-hunt
+arrayElemValType + dict-rows recursive-count precedents) — now with the
+class's sharpest-ever repro (one line, total blast radius, 3-build
+verified). Prior "narrow gap" note likely a stale-dist probe artifact
+(missing export misread as wrong value — the ledger's own dirty-tree
+risk). NEXT (bounded, concrete): build ONE kernel tier with
+JZ_DEBUG_INVARIANTS forced true at self-compile (small scripts/self.js
+shim — the flag folds false under the wasm target today) so the P1
+assert fires IN-KERNEL and localizes; fallback = the watr-diff harness
+on emitDecl's module slice with the call stubbed. Medium confidence on
+mechanism, high confidence on blast radius. Confidence this is the SAME
+root as shaped-parser/dict-rows kernel-scale family: plausible, would
+unify three banked hunts into one.
+
 QUARANTINE CLOSED 2026-08-01 (dedicated hunt at HEAD a1cad96f): the
 identical-subtree return anomaly does NOT reproduce — it was MECHANISM B
 all along (both branches independently computed the same wrong value
