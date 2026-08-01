@@ -233,16 +233,16 @@ VT['&&'] = VT['||'] = VT['??'] = (args) => {
 // under-report the merge as unambiguous. Passing that same resolver through
 // closes it.
 export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
+  // Direct indexing throughout — NO rest-destructure. This predicate runs at
+  // 50+ emission sites on every stored/compared/returned node; the previous
+  // `const [op, ...args] = node` allocated a fresh array per call, which the
+  // self-hosted kernel pays as a real __alloc in its hottest loops while V8
+  // escape-analyzes it away (the OPTF-bitmask asymmetry class — warm-margin
+  // hunt 2026-08-01: alloc +33%, the gate's dominant regression).
   if (!Array.isArray(node)) return false
-  const [op, ...args] = node
-  // Parenthesized grouping `(expr)` (args.length === 1 — see VT['()'] above
-  // for the call-vs-grouping shape invariant): the merge, if any, lives one
-  // level down (`((x>0)&&1)` is `['()', ['&&', ['()', ['>',...]], 1]]` — the
-  // OUTER '()' wraps the '&&' node this function must reach to fire its own
-  // '&&' branch below). Recurse through; a grouping is never itself a merge.
-  if (op === '()' && args.length === 1) return hasAmbiguousBoolMerge(args[0], vt)
+  const op = node[0]
   if (op === '?:') {
-    const [cond, a, b] = args
+    const cond = node[1], a = node[2], b = node[3]
     const truthy = literalTruthiness(cond)
     if (truthy != null) return hasAmbiguousBoolMerge(truthy ? a : b, vt)
     const ta = vt(a), tb = vt(b)
@@ -252,13 +252,17 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
     return false
   }
   if (op === '&&' || op === '||' || op === '??') {
-    const [a, b] = args
+    const a = node[1], b = node[2]
     const ta = vt(a), tb = vt(b)
     if (ta === VAL.BOOL && tb === VAL.NUMBER) return true
     if (tb === VAL.BOOL && ta === VAL.NUMBER) return true
     if (ta && ta === tb) return hasAmbiguousBoolMerge(a, vt) || hasAmbiguousBoolMerge(b, vt)
     return false
   }
+  // Parenthesized grouping `(expr)` (node.length === 2 non-call — see
+  // VT['()'] above for the call-vs-grouping shape invariant): the merge, if
+  // any, lives one level down. Checked AFTER the merge ops (rarer shape).
+  if (op === '()' && node.length === 2) return hasAmbiguousBoolMerge(node[1], vt)
   return false
 }
 
