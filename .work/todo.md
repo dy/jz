@@ -6,6 +6,32 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+WRAPPER-INLINING DECLINED WITH EVIDENCE + JESSIE CHARACTERIZATION
+COMPLETE 2026-07-31 (read-only investigation, instrumented scratch
+reproduction of the jessie compile): subscript's space$9→space$4→
+space chain survives THREE independently-correct gates — (1)
+program-facts callSites records only bare-identifier callees
+(isFuncRef); property-valued closures (parse.space = fn, captured
+via const space = parse.space) never enter sitesByCallee at all;
+(2) even if admitted, inline.js:580's loopDepth>=2 cap excludes
+space$4 AFTER the base while-loop legitimately fused in — the
+correctly-motivated no-nested-loop-compounding guard; (3) watr's
+inlineOnce blocked by 3 call refs (2 defensive trampolines),
+multi-caller inline capped at 90 nodes vs ~150, inlineWrappers'
+shape (pure-conversion spine) doesn't match real ASI logic. HONEST
+PAYOFF: only the call/return hop is overhead — the bucket's 13.4%
+is mostly real relocatable work; recoverable = low-single-digit %
+of parse time, negligible on 1.393x. VERDICT: not worth building
+at jz level (callSites blast radius for a single-consumer idiom +
+the loop-depth wall); bounded watr-side option banked (generalize
+inlineWrappers to single-loop/one-callee/bounded-pre-post, fits
+WRAPPER_INLINE_MAX 360) — buildable later, not active. JESSIE IS
+NOW FULLY CHARACTERIZED: 1.393x, every engine-side lever exhausted
+(dict campaign, value-set resolver, receiver-HASH, array-literal
+admission, wrapper inlining) or declined with evidence; residual =
+V8-IC/call_indirect hard tail (dispatch-rewrite-class project or
+claim scoping — user decision).
+
 VM + DICT DISSECTED: HARD TAILS, ~0% CLOSABLE 2026-07-31 (fresh
 paired ABBA both directions, quiet machine; WAT surgery checksum-
 held 750010871): both reds are JSC-ONLY — jz beats every V8-based
