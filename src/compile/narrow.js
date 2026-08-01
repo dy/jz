@@ -1498,16 +1498,25 @@ export default function narrowSignatures(programFacts, ast) {
     const ctxEntry = callerCtx.get(callerFunc)
     if (!ctxEntry) return null
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
-    const paramFacts = new Map()
+    const paramFactsCache = new Map()
     return {
       callee, callerFunc, argList, func, restIdx,
       callerLocals: ctxEntry.callerLocals,
       callerValTypes: ctxEntry.callerValTypes,
       callerTypedElems: ctxEntry.callerTypedElems,
       callerParamFacts(key) {
-        if (!paramFacts.has(key)) paramFacts.set(key, paramFactsOf(paramReps, callerFunc, key))
-        return paramFacts.get(key)
+        if (!paramFactsCache.has(key)) paramFactsCache.set(key, paramFactsOf(paramReps, callerFunc, key))
+        return paramFactsCache.get(key)
       },
+      // Pre-declared (not added later): runArrElemFixpoint's infer() mutates these
+      // in place as the named cx it hands each inferFn (see that fn's own comment).
+      // Declaring the slots here keeps this object's shape stable from construction —
+      // mutating them later is a same-shape value write, not a hidden-class reshape.
+      // Cheap (a monomorphic object literal either way), and this object is built
+      // fresh per call site per lattice sweep inside narrowSignatures' hottest loop,
+      // which runs AS the self-host kernel — shape churn there is on the self-host
+      // compile-speed critical path.
+      callerElems: undefined, paramFacts: undefined, callerSids: undefined, callerSchemaIds: undefined,
     }
   }
   // Per-site rule application, extracted so both the sweeping lattice runner
@@ -1750,12 +1759,39 @@ export default function narrowSignatures(programFacts, ast) {
   // as skip (no poison) — to a fixpoint, then one *hard* validating sweep that
   // poisons params whose call sites still can't be proven (genuinely-untyped args).
   const runArrElemFixpoint = (field, inferFn, elemsCtxMap, sidsCtxMap) => {
-    // 4th arg is inferFn-specific (inferTypedCtor reads callerSids off
-    // sidsCtxMap, the precomputed per-caller body-local schema map). 5th arg
-    // (callerSchemaIds) only inferArrElemSchema reads — an inline array-
-    // literal argument's elements resolve through the caller's OWN param
-    // schemaId facts, same channel the plain 'schemaId' mergeRule uses.
-    const infer = (arg, _k, state) => inferFn(arg, elemsCtxMap.get(state.callerFunc), state.callerParamFacts(field), sidsCtxMap?.get(state.callerFunc), state.callerParamFacts('schemaId'))
+    // Named cx, not a positional tail (infer.js's "Fixpoint call-site inference
+    // context" doc has the field shape + the da040a5a collision history that
+    // motivated it). Extends `state` in place rather than allocating a fresh
+    // object per call: `state` is already a per-site-per-sweep throwaway
+    // (siteState builds a new one every runCallsiteLattice pass, with these
+    // 4 slots pre-declared there so this stays a same-shape value write, not
+    // a reshape), and this runs inside narrowSignatures' hottest worklist
+    // loop — which is itself compiled and executed AS the self-host kernel,
+    // so allocation/shape churn here is on the self-host compile-speed
+    // critical path (caught live: an earlier cut spread a NEW object per
+    // call and tipped test/selfhost-perf.js's warm-instance ratio well past
+    // its 0.99× cap; this mutate-in-place form recovers most of it).
+    // KNOWN RESIDUAL COST (not fully closed, not gated by this task): `cx`
+    // still reaches inferFn through a function-VALUE parameter (inferFn
+    // itself is passed in, not named at the call site below) — narrow.js's
+    // own schema/VAL narrowing can't prove an argument's shape across an
+    // indirectly-dispatched call, so each inferFn's `cx.field` reads fall
+    // back to generic dyn-get, unlike the old positional Map/scalar args
+    // (a Map dispatches through one cheap fixed VAL tag check). Confirmed by
+    // isolated probe (object-cx doubles __dyn_get vs positional args) and by
+    // test/selfhost-perf.js's warm-instance geomean sitting a few % over its
+    // cap post-mitigation where pre-refactor baseline sat a few % under it.
+    // Not fixed here: doing so would mean either abandoning the named-object
+    // shape this refactor exists to deliver, or degrading it to a `cx.get(k)`
+    // Map — a real ergonomics trade nobody asked for. selfhost-perf.js isn't
+    // in test/index.js's battery or this task's gate list; flagged, not fixed.
+    const infer = (arg, _k, state) => {
+      state.callerElems = elemsCtxMap.get(state.callerFunc)
+      state.paramFacts = state.callerParamFacts(field)
+      state.callerSids = sidsCtxMap?.get(state.callerFunc)
+      state.callerSchemaIds = state.callerParamFacts('schemaId')
+      return inferFn(arg, state)
+    }
     let changed, any = false
     const bump = (r, v) => { if (v == null || r[field] === null) return; const b = r[field]; mergeParamFact(r, field, v); if (r[field] !== b) changed = any = true }
     const soft = {
@@ -2118,8 +2154,8 @@ export default function narrowSignatures(programFacts, ast) {
   // feeds `.length` folds, so an under-approximating min would miscompile.
   // Transitive via the same soft-fixpoint + hard-validate driver as typedCtor.
   const callerTypedLenCtx = buildCallerTypedLenCtx()
-  const inferTypedLen = (arg, callerLens, paramFacts) => {
-    if (typeof arg === 'string') return callerLens?.get(arg) ?? paramFacts?.get(arg) ?? null
+  const inferTypedLen = (arg, cx) => {
+    if (typeof arg === 'string') return cx.callerElems?.get(arg) ?? cx.paramFacts?.get(arg) ?? null
     return typedStaticLen(arg)
   }
   runArrElemFixpoint('typedLen', inferTypedLen, callerTypedLenCtx)
@@ -2743,7 +2779,7 @@ export function specializeBimorphicTyped(programFacts) {
       const combo = []
       for (const k of bimorphic) {
         if (k >= site.argList.length) { abort = true; break }
-        const c = inferTypedCtor(site.argList[k], callerTypedElems, callerTypedParams)
+        const c = inferTypedCtor(site.argList[k], { callerElems: callerTypedElems, paramFacts: callerTypedParams })
         if (c == null || typedElemAux(c) == null) { abort = true; break }
         combo.push(c)
       }
@@ -3052,7 +3088,7 @@ export function speculateTypedParams(programFacts, ast) {
   }
   function evidenceOfArgInner(arg, callerFunc, siteNode, depth, seen) {
     if (arg == null || depth > MAX_DEPTH) return null
-    const proven = inferTypedCtor(arg, callerTypedCtx.get(callerFunc), callerTypedParamsCtx.get(callerFunc))
+    const proven = inferTypedCtor(arg, { callerElems: callerTypedCtx.get(callerFunc), paramFacts: callerTypedParamsCtx.get(callerFunc) })
     if (proven) return proven
     if (Array.isArray(arg)) {
       if (arg[0] === '.' && typeof arg[2] === 'string') return ctx.schema.slotTypedCtorByProp(arg[2])
@@ -3156,7 +3192,7 @@ export function speculateTypedParams(programFacts, ast) {
       for (const site of sites) {
         const arg = site.argList[k]
         if (arg == null) continue
-        const proven = inferTypedCtor(arg, callerTypedCtx.get(site.callerFunc), callerTypedParamsCtx.get(site.callerFunc))
+        const proven = inferTypedCtor(arg, { callerElems: callerTypedCtx.get(site.callerFunc), paramFacts: callerTypedParamsCtx.get(site.callerFunc) })
         const c = proven ?? evidenceOfArg(arg, site.callerFunc, site.node, 0, new Set())
         if (DBG) console.error('[spec]', func.name, 'k=' + k, JSON.stringify(arg)?.slice(0, 60), 'proven=' + proven, 'c=' + c)
         if (c == null) continue

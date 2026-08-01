@@ -429,6 +429,30 @@ export function inferValType(expr, callerValTypes) {
  *  return sites (narrow.js phase G's `narrowReturnArrayElems` and the per-fn
  *  return-schema narrowing). At early D-iterations the call-result branch
  *  is a no-op (valResult not yet seeded by phase F); strictly accretive. */
+// === Fixpoint call-site inference context ==================================
+//
+// Every `infer*(expr, cx)` below that participates in narrow.js's
+// runArrElemFixpoint (inferArrElemSchema/Set/ValType, inferTypedCtor, and
+// narrow.js's own local inferTypedLen) takes ONE named context object rather
+// than a positional tail. History: that tail used to be positional
+// (`inferFn(arg, elems, paramFacts, callerSids, callerSchemaIds)`), and
+// overloading position 4 for inferArrElemSchema's new schemaId channel
+// silently broke inferTypedCtor's own position-4 `callerSids` wiring —
+// regressing test/provenance-inference.js's paramViaField (commit da040a5a).
+// A shared positional dispatch signature has per-consumer contracts that look
+// interchangeable but aren't; named fields make each consumer's dependency
+// explicit and immune to a neighbor's field getting added.
+//
+// cx fields (each inferFn reads only the ones it needs):
+//   - callerElems:     this field's caller body-local map (per-caller census —
+//                       narrow.js's phase.callerElems(sliceKey) / callerTypedCtx).
+//   - paramFacts:       this field's own caller PARAM facts (transitive —
+//                       paramFactsOf(paramReps, callerFunc, field)).
+//   - callerSids:       typedCtor-only — caller's per-body schema-id map for
+//                       field-provenance reads (`plan.twRe`).
+//   - callerSchemaIds:  arrElemSchema-only — caller's own `schemaId` param
+//                       facts, for resolving an inline array-literal arg's
+//                       elements (state.callerParamFacts('schemaId')).
 export function inferSchemaId(expr, lookupMap) {
   if (typeof expr === 'string') {
     if (lookupMap?.has(expr)) return lookupMap.get(expr)
@@ -462,27 +486,23 @@ export function inferSchemaId(expr, lookupMap) {
 /** Infer arg arr-elem-schema. Sources: caller's body-local arr-elem map, caller's
  *  per-param arr-elem (transitive), a call to an arr-narrowed user fn, or an
  *  inline array-literal argument (`f([a, b, c])`) whose elements all resolve to
- *  the same schemaId via `callerSchemaIds` (the caller's own param schemaId
- *  facts, `state.callerParamFacts('schemaId')`) — mirrors analyze.js's
- *  processDecl literal-init observation (`exprSchemaId` over `staticArrayElems`)
- *  one hop further out, across the call boundary, for a record array built and
- *  passed in one expression rather than bound to a local first (subscript's
- *  `register(d)` → `dispatch([d, ...fn.ops], …)` shape). A spread element
- *  poisons (returns null) — same fail-closed rule as the `arr.push(...x)`
- *  observation above: an unprovable source kills the fact rather than being
- *  traced further.
- *  4th param is unused here — narrow.js's shared runArrElemFixpoint passes
- *  every inferFn the same positional args; inferTypedCtor reads position 4
- *  (its own `callerSids`), so this fn's schemaId channel rides position 5
- *  rather than collide with it. */
-export function inferArrElemSchema(expr, callerArrElems, callerArrParams, _callerSids, callerSchemaIds) {
+ *  the same schemaId via `cx.callerSchemaIds` (the caller's own param schemaId
+ *  facts) — mirrors analyze.js's processDecl literal-init observation
+ *  (`exprSchemaId` over `staticArrayElems`) one hop further out, across the
+ *  call boundary, for a record array built and passed in one expression rather
+ *  than bound to a local first (subscript's `register(d)` →
+ *  `dispatch([d, ...fn.ops], …)` shape). A spread element poisons (returns
+ *  null) — same fail-closed rule as the `arr.push(...x)` observation above:
+ *  an unprovable source kills the fact rather than being traced further.
+ *  See the fixpoint call-site context doc above for cx's field shape. */
+export function inferArrElemSchema(expr, cx) {
   if (typeof expr === 'string') {
-    if (callerArrElems?.has(expr)) {
-      const v = callerArrElems.get(expr)
+    if (cx.callerElems?.has(expr)) {
+      const v = cx.callerElems.get(expr)
       if (v != null) return v
     }
-    if (callerArrParams?.has(expr)) {
-      const v = callerArrParams.get(expr)
+    if (cx.paramFacts?.has(expr)) {
+      const v = cx.paramFacts.get(expr)
       if (v != null) return v
     }
     return null
@@ -497,7 +517,7 @@ export function inferArrElemSchema(expr, callerArrElems, callerArrParams, _calle
     let common
     for (const e of elems) {
       if (e == null || (Array.isArray(e) && e[0] === '...')) return null
-      const sid = inferSchemaId(e, callerSchemaIds)
+      const sid = inferSchemaId(e, cx.callerSchemaIds)
       if (sid == null) return null
       if (common === undefined) common = sid
       else if (common !== sid) return null
@@ -510,14 +530,14 @@ export function inferArrElemSchema(expr, callerArrElems, callerArrParams, _calle
 /** Infer arg closed elem-schema UNION as its canonical 'a,b,…' key. Mirrors
  *  inferArrElemSchema; sources: caller's body set census (Set values), caller's
  *  param fact (already canonical), or a set-narrowed user fn return. */
-export function inferArrElemSchemaSet(expr, callerSets, callerSetParams) {
+export function inferArrElemSchemaSet(expr, cx) {
   const canon = (v) => v instanceof Set
     ? (v.size >= 2 ? [...v].sort((a, b) => a - b).join(',') : null)
     : typeof v === 'string' ? v : null
   if (typeof expr === 'string') {
-    const v = canon(callerSets?.get(expr))
+    const v = canon(cx.callerElems?.get(expr))
     if (v != null) return v
-    const p = canon(callerSetParams?.get(expr))
+    const p = canon(cx.paramFacts?.get(expr))
     if (p != null) return p
     return null
   }
@@ -529,14 +549,14 @@ export function inferArrElemSchemaSet(expr, callerSets, callerSetParams) {
 }
 
 /** Infer arg arr-elem-VAL. Mirrors inferArrElemSchema but tracks VAL.* element kind. */
-export function inferArrElemValType(expr, callerArrElemVals, callerArrValParams) {
+export function inferArrElemValType(expr, cx) {
   if (typeof expr === 'string') {
-    if (callerArrElemVals?.has(expr)) {
-      const v = callerArrElemVals.get(expr)
+    if (cx.callerElems?.has(expr)) {
+      const v = cx.callerElems.get(expr)
       if (v != null) return v
     }
-    if (callerArrValParams?.has(expr)) {
-      const v = callerArrValParams.get(expr)
+    if (cx.paramFacts?.has(expr)) {
+      const v = cx.paramFacts.get(expr)
       if (v != null) return v
     }
     return null
@@ -551,10 +571,10 @@ export function inferArrElemValType(expr, callerArrElemVals, callerArrValParams)
 /** Infer typed-array ctor (`new.Float64Array` etc.) of an arg expression at a call site.
  *  Sources: caller's body-local typedElems, caller's typed params, literal `new TypedArray(...)`,
  *  calls to typed-narrowed user funcs. Returns null when the ctor can't be determined. */
-export function inferTypedCtor(expr, callerTypedElems, callerTypedParams, callerSids) {
+export function inferTypedCtor(expr, cx) {
   if (typeof expr === 'string') {
-    if (callerTypedElems?.has(expr)) return callerTypedElems.get(expr)
-    if (callerTypedParams?.has(expr)) return callerTypedParams.get(expr)
+    if (cx.callerElems?.has(expr)) return cx.callerElems.get(expr)
+    if (cx.paramFacts?.has(expr)) return cx.paramFacts.get(expr)
     return null
   }
   const ctor = typedElemCtor(expr)
@@ -570,7 +590,7 @@ export function inferTypedCtor(expr, callerTypedElems, callerTypedParams, caller
   // arg lattice — live reps aren't trustworthy there), else the idOf chain.
   if (Array.isArray(expr) && (expr[0] === '.' || expr[0] === '?.') &&
       typeof expr[1] === 'string' && typeof expr[2] === 'string' && ctx.schema?.slotTypedCtorAt) {
-    const sid = callerSids?.get(expr[1])
+    const sid = cx.callerSids?.get(expr[1])
     if (sid != null) return ctx.schema.slotTypedCtorBySid(sid, expr[2])
     return ctx.schema.slotTypedCtorAt(expr[1], expr[2])
   }
