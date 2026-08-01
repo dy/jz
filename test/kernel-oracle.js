@@ -270,3 +270,96 @@ export let f = (s) => g(s) === false`
     }
   }
 })
+
+// ── PENDING-FIX tier: carrier-invariant-design.md's 51-mismatch sweep ─────
+//
+// MECHANISM A (the design's own framing): emit-assign.js's storedValue
+// (hasAmbiguousBoolMerge ? emitIdentitySafe : carrierF64(emit)) is the ONE
+// correct shape for a boxed-bool-aware container store — but every OTHER
+// site that stores a value into an array/object/Map/Set/closure-arg
+// currently hand-reimplements only the unsound half, `carrierF64(node,
+// emit(node))`, unguarded. An ambiguous BOOL∪NUMBER merge value (`cond && 1`,
+// `cond ? 1 : false`) stored through any of these 16 raw sites silently
+// collapses to its NUMBER 0/1 image before storedValue's own guard could
+// ever see it — the same class the return-tail fix (ternary-bool-merge-*
+// rows above) closed for FUNCTION RESULTS, still wide open for CONTAINERS.
+// Each row below is independently verified live (see mission session
+// probe): the wrong value is asserted explicitly (both native and kernel —
+// the design's storedValue promotion has not landed yet, so both legs share
+// the bug identically) plus a not() tripwire against the true JS value, so
+// the moment step 3 (storedValue chokepoint promotion) lands, these fail
+// LOUDLY and say exactly what to flip to AGREE.
+const PENDING_FIX = [
+  { name: 'array literal',
+    src: `export let f = (x) => { let a = [x > 0 && 1]; return a[0] }`,
+    wrong: 0 },
+  { name: 'object literal',
+    src: `export let f = (x) => { let o = {a: x > 0 && 1}; return o.a }`,
+    wrong: 0 },
+  { name: 'Map value',
+    src: `export let f = (x) => { let m = new Map(); m.set('k', x > 0 && 1); return m.get('k') }`,
+    wrong: 0 },
+  // Map KEY identity: JS `false` and `0` are distinct Map keys (SameValueZero),
+  // so setting both must leave size 2. A collapsed carrier aliases them into
+  // the SAME bucket — size 1.
+  { name: 'Map key',
+    src: `export let f = (x) => { let m = new Map(); m.set(x > 0 && 1, 'A'); m.set(0, 'B'); return m.size }`,
+    wrong: 1 },
+  // Same aliasing question for Set membership.
+  { name: 'Set membership',
+    src: `export let f = (x) => { let s = new Set(); s.add(x > 0 && 1); s.add(0); return s.size }`,
+    wrong: 1 },
+  { name: 'push',
+    src: `export let f = (x) => { let a = []; a.push(x > 0 && 1); return a[0] }`,
+    wrong: 0 },
+  { name: 'String()',
+    src: `export let f = (x) => String(x > 0 && 1)`,
+    wrong: '0' },
+  { name: 'template literal',
+    src: `export let f = (x) => \`\${x > 0 && 1}\``,
+    wrong: '0' },
+  { name: 'JSON.stringify',
+    src: `export let f = (x) => JSON.stringify([x > 0 && 1])`,
+    wrong: '[0]' },
+  // module/function.js:291's closure-arg boxing site — only reachable at O0:
+  // O2+ devirtualizes this direct (non-table, non-value-used) call to a
+  // plain wasm call, sidestepping the closure-convention arg box entirely
+  // (a DIFFERENT, already-sound code path — copy propagation, not this bug).
+  { name: 'direct closure arg',
+    src: `const g = (p) => p === false
+export let f = (x) => g(x > 0 && 1)`,
+    wrong: false, opts: [0] },
+  { name: 'captured-then-read',
+    src: `export let f = (x) => { let v = x > 0 && 1; const g = () => v; return g() }`,
+    wrong: 0 },
+  // Computed OBJECT key: JS ToPropertyKey(false) → 'false', ToPropertyKey(0)
+  // → '0' — different slots entirely, so `o['0']` must stay undefined. A
+  // collapsed carrier computes the key as if it were 0, landing the write in
+  // the '0' slot instead.
+  { name: 'computed member key',
+    src: `export let f = (x) => { let o = {}; o[x > 0 && 1] = 'v'; return o['0'] }`,
+    wrong: 'v' },
+  // Parenthesized-&& value stored into a container (step 1's MECHANISM B
+  // shape, exercised through MECHANISM A's chokepoint instead of a return
+  // tail) — same wrongness, different site.
+  { name: 'parenthesized-&&',
+    src: `export let f = (x) => { let a = [(x > 0) && 1]; return a[0] }`,
+    wrong: 0 },
+]
+
+test('kernel oracle: PENDING-FIX — container-store BOOL∪NUMBER carrier collapse (carrier-invariant-design.md MECHANISM A, not yet fixed)', async () => {
+  if (onWasi()) return
+  for (const { name, src, wrong, opts = [0, 2, 3] } of PENDING_FIX) {
+    const mod = await oracle(src)
+    const want = mod.f(-1)
+    not(wrong, want, `${name}: TODO-flip guard — wrong !== want (else this row is stale, delete it)`)
+    for (const opt of opts) {
+      const nat = runNative(src, opt).f(-1)
+      const ker = runKernel(src, opt).f(-1)
+      is(nat, wrong, `${name} O${opt}: native currently WRONG (${JSON.stringify(wrong)}) — TODO flip to AGREE once storedValue's chokepoint promotion lands`)
+      is(ker, wrong, `${name} O${opt}: kernel currently WRONG (${JSON.stringify(wrong)}) — same bug, same leg`)
+      not(nat, want, `${name} O${opt}: tripwire — native must start disagreeing with JS oracle the moment this is fixed`)
+      not(ker, want, `${name} O${opt}: tripwire — kernel must start disagreeing with JS oracle the moment this is fixed`)
+    }
+  }
+})
