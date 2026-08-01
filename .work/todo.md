@@ -6,6 +6,68 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+ARRAY-ELEM-SCHEMA LEVER TRACED TO ROOT, TARGET NOT CLOSABLE BY ONE ADMISSION
+2026-07-31 (infer.js+narrow.js, test/inference.js +3 pins; battery 3163/0/6,
+JZ_DEBUG_INVARIANTS leg on inference/objects/dyn-keys clean, kernel-parity
+33/33 on fresh dist, kernel-oracle 9/9, selfhost 21/21, watr 35/35): traced
+the "JESSIE RE-DISSECTED" entry's named lever (subscript's dispatch-loop
+descriptor records never unify into one arrayElemSchema) to its exact broken
+link via direct ctx inspection on the compiled jessie bundle (paramReps dump
+at narrowSignatures' arr/schema fixpoint). subscript's `register(d) =>
+lookup[c] = fn?.ops ? dispatch([d, ...fn.ops], fn.tail) : dispatch([d], fn)`
+(parse.js:164-165) builds the ops array via an array-LITERAL constructed and
+passed directly as a dispatch() call ARGUMENT (never bound to a local first)
+— `inferArrElemSchema` (src/compile/infer.js) only recognized bare names and
+call-results as call-site args, never inline array literals, so `dispatch`'s
+`ops` param never got an arrayElemSchema fact at all (confirmed: field absent
+from paramReps, not even poisoned — BOTTOM forever). FIX LANDED (general,
+real, minimal): inferArrElemSchema now resolves an inline array-literal
+argument's common element schemaId via `state.callerParamFacts('schemaId')`
+(same channel the plain `schemaId` mergeRule already uses), mirroring
+analyze.js's own literal-init observation one hop further out across the
+call boundary; spread elements poison (fail-closed), matching the existing
+`arr.push(...x)` precedent exactly. IMPLEMENTATION HAZARD CAUGHT BY THE
+BATTERY: narrow.js's `runArrElemFixpoint` is a SHARED generic runner across
+5 fixpoints (arrayElemSchema/Set/ValType/typedCtor/typedLen); naively
+overloading its existing 4th positional arg for the new schemaId channel
+silently broke `inferTypedCtor`'s own 4th-arg `callerSids` wiring — caught
+by test/provenance-inference.js's `paramViaField` pin (a Float64Array-through-
+an-object-field case, unrelated to arrays on its face) regressing to dynamic
+dispatch. Fixed by threading the new fact through a dedicated 5th positional
+arg instead of colliding with the 4th. Lesson: a "shared inferFn dispatch
+signature" lattice has per-consumer positional contracts that look
+interchangeable but aren't — verify against the FULL battery, not just the
+target suite, before trusting a "safe, ignored extra arg" argument. HONEST
+RESULT: the admission fires for the achievable case (array literal whose
+element is a caller PARAM already schema-known — new positive pin, WAT shows
+0 __dyn_get) and correctly stays generic for heterogeneous/spread shapes (2
+new negative pins) — but subscript's REAL dispatch() call sites are BOTH the
+achievable no-spread form (`dispatch([d], fn)`, first registration per char)
+AND the spread form (`dispatch([d, ...fn.ops], fn.tail)`, every subsequent
+registration sharing that char) — narrow.js's paramReps lattice merges
+ACROSS ALL STATIC call sites of a function (2 here, not once per dynamic
+registration), and the hard validating sweep poisons on ANY unresolved site,
+so `ops`'s arrayElemSchema is null regardless. The spread's source (`fn.ops`)
+is a property read on a closure RETURNED by a prior call to `dispatch`
+itself, recovered through the dynamically-indexed global `lookup[c]` — proving
+it sound requires whole-program alias tracking over that global (a function's
+return value carries an own-property equal to one of its params, tracked
+through arbitrary later reads of a global array), a materially larger, new
+mechanism that would in practice only ever fire for this one idiom — building
+it now would be exactly the forbidden "optimize the input, not the tool"
+move. CONFIRMED EMPIRICALLY: compiled jessie bundle WAT is BYTE-IDENTICAL
+before/after (85 `__dyn_get` call sites both ways; closure8 — the dispatch
+loop, parse.js:144 — keeps all 18 of its own generic dyn-get sites reading
+d.op/d.l/d.p/d.map/d.word/d.kw). Paired jessie bench not run — WAT identity
+already proves 1.00 ratio, checksum unaffected (compile output unchanged
+byte-for-byte for this program). RECOMMENDATION: do not chase the deeper
+own-property/global-alias mechanism for this target; the landed admission is
+sound, tested, and independently useful (any function receiving a literal
+array-of-records call argument now classifies) but jessie's 1.393x gap stays
+open — closing dispatch() specifically would need a dispatch-rewrite-class
+project (per the prior dissection's own "hard tails" list), not an inference
+admission.
+
 JESSIE RE-DISSECTED FRESH 2026-07-31 (profile-driven, no hypothesis
 inheritance; V8 --prof sampled ticks symbolized per wasm function +
 checksum-held counter surgery, checksum 2418067300 exact):

@@ -1658,7 +1658,12 @@ export default function narrowSignatures(programFacts, ast) {
   // as skip (no poison) — to a fixpoint, then one *hard* validating sweep that
   // poisons params whose call sites still can't be proven (genuinely-untyped args).
   const runArrElemFixpoint = (field, inferFn, elemsCtxMap, sidsCtxMap) => {
-    const infer = (arg, _k, state) => inferFn(arg, elemsCtxMap.get(state.callerFunc), state.callerParamFacts(field), sidsCtxMap?.get(state.callerFunc))
+    // 4th arg is inferFn-specific (inferTypedCtor reads callerSids off
+    // sidsCtxMap, the precomputed per-caller body-local schema map). 5th arg
+    // (callerSchemaIds) only inferArrElemSchema reads — an inline array-
+    // literal argument's elements resolve through the caller's OWN param
+    // schemaId facts, same channel the plain 'schemaId' mergeRule uses.
+    const infer = (arg, _k, state) => inferFn(arg, elemsCtxMap.get(state.callerFunc), state.callerParamFacts(field), sidsCtxMap?.get(state.callerFunc), state.callerParamFacts('schemaId'))
     let changed, any = false
     const bump = (r, v) => { if (v == null || r[field] === null) return; const b = r[field]; mergeParamFact(r, field, v); if (r[field] !== b) changed = any = true }
     const soft = {

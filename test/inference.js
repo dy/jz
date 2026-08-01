@@ -324,6 +324,72 @@ test('inferArrElemSchema: consistent caller schemas → direct slot load', () =>
   ok(/(f64|i32)\.load offset=\d+/.test(wat), 'expected direct schema-slot load')
 })
 
+test('inferArrElemSchema: inline array-literal call argument classifies', () => {
+  if (belowOpt(1)) return
+  // subscript's register(d) → dispatch([d, ...]) shape, minus the spread: an
+  // array literal built AND passed in one expression (never bound to a local
+  // first) whose sole element is a caller PARAM. `d`'s own schemaId comes from
+  // build's callers (both {x,y} object literals); inferArrElemSchema's new
+  // array-literal branch resolves `[d]`'s element through
+  // state.callerParamFacts('schemaId') the same way the plain `schemaId`
+  // mergeRule does — so dispatch's `ops` param gets arrayElemSchema and
+  // `ops[i].y` becomes a direct slot load.
+  const wat = jz.compile(`
+    const dispatch = (ops) => {
+      let s = 0
+      for (let i = 0; i < ops.length; i++) s = s + ops[i].y
+      return s
+    }
+    const build = (d) => dispatch([d])
+    export const main = () => (build({x: 1, y: 2}) + build({x: 3, y: 4})) | 0
+  `, { wat: true })
+  is(count(wat, /\$__dyn_get_/g), 0, 'schema-aware → no __dyn_get fallback')
+})
+
+test('inferArrElemSchema: heterogeneous literal elements stay generic', () => {
+  if (belowOpt(1)) return
+  // Negative: build's two call sites pass DIFFERENT shapes ({x,y} vs {z,y}) →
+  // d's own schemaId poisons → the array-literal branch can't resolve a
+  // common element schema → dispatch keeps the generic dyn-get path. Proves
+  // the positive case above isn't a vacuous always-fires fold.
+  const wat = jz.compile(`
+    const dispatch = (ops) => {
+      let s = 0
+      for (let i = 0; i < ops.length; i++) s = s + ops[i].y
+      return s
+    }
+    const build = (d) => dispatch([d])
+    export const main = () => (build({x: 1, y: 2}) + build({z: 3, y: 4})) | 0
+  `, { wat: true })
+  ok(count(wat, /\$__dyn_get_/g) > 0, 'heterogeneous element shapes must stay generic')
+})
+
+test('inferArrElemSchema: spread element stays generic (subscript register/dispatch gap)', () => {
+  if (belowOpt(1)) return
+  // Negative, and the ACTUAL diagnosed gap behind subscript's parse.js
+  // dispatch loop (register(d) → lookup[c] = dispatch([d, ...fn.ops], …)):
+  // the array is rebuilt via `[d, ...prior]` rather than a plain literal.
+  // inferArrElemSchema fails closed on a spread element (mirrors analyze.js's
+  // own `arr.push(...x)` poison, static.js/analyze.js) rather than tracing the
+  // spread source — a spread of a value recovered through a returned
+  // closure's own property, read back through a dynamically-indexed global,
+  // would need whole-program alias tracking over that global, a materially
+  // larger mechanism this fix does not attempt. Documents that dispatch's
+  // `ops` param stays UNCLASSIFIED for this shape — the real reason jessie's
+  // descriptor-record reads (`d.op`/`d.l`/`d.p`/`d.map`/`d.word`/`d.kw`)
+  // don't fold even after the plain-literal admission above.
+  const wat = jz.compile(`
+    const dispatch = (ops) => {
+      let s = 0
+      for (let i = 0; i < ops.length; i++) s = s + ops[i].y
+      return s
+    }
+    const register = (d, prior) => dispatch(prior ? [d, ...prior] : [d])
+    export const main = () => (register({x: 1, y: 2}, null) + register({x: 3, y: 4}, [{x: 9, y: 9}])) | 0
+  `, { wat: true })
+  ok(count(wat, /\$__dyn_get_/g) > 0, 'spread element must stay generic (fail-closed)')
+})
+
 test('inferTypedCtor: Float64Array arg unlocks SIMD vectorization', () => {
   if (belowOpt(2)) return  // asserts SIMD emission — requires the vectorizer (optimize >= 2)
   // Caller passes new Float64Array(...) → inferTypedCtor resolves the elem

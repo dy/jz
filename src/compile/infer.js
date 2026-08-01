@@ -460,8 +460,22 @@ export function inferSchemaId(expr, lookupMap) {
 }
 
 /** Infer arg arr-elem-schema. Sources: caller's body-local arr-elem map, caller's
- *  per-param arr-elem (transitive), or a call to an arr-narrowed user fn. */
-export function inferArrElemSchema(expr, callerArrElems, callerArrParams) {
+ *  per-param arr-elem (transitive), a call to an arr-narrowed user fn, or an
+ *  inline array-literal argument (`f([a, b, c])`) whose elements all resolve to
+ *  the same schemaId via `callerSchemaIds` (the caller's own param schemaId
+ *  facts, `state.callerParamFacts('schemaId')`) — mirrors analyze.js's
+ *  processDecl literal-init observation (`exprSchemaId` over `staticArrayElems`)
+ *  one hop further out, across the call boundary, for a record array built and
+ *  passed in one expression rather than bound to a local first (subscript's
+ *  `register(d)` → `dispatch([d, ...fn.ops], …)` shape). A spread element
+ *  poisons (returns null) — same fail-closed rule as the `arr.push(...x)`
+ *  observation above: an unprovable source kills the fact rather than being
+ *  traced further.
+ *  4th param is unused here — narrow.js's shared runArrElemFixpoint passes
+ *  every inferFn the same positional args; inferTypedCtor reads position 4
+ *  (its own `callerSids`), so this fn's schemaId channel rides position 5
+ *  rather than collide with it. */
+export function inferArrElemSchema(expr, callerArrElems, callerArrParams, _callerSids, callerSchemaIds) {
   if (typeof expr === 'string') {
     if (callerArrElems?.has(expr)) {
       const v = callerArrElems.get(expr)
@@ -476,6 +490,19 @@ export function inferArrElemSchema(expr, callerArrElems, callerArrParams) {
   if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
     const f = ctx.func.map?.get(expr[1])
     if (f?.arrayElemSchema != null) return f.arrayElemSchema
+  }
+  if (Array.isArray(expr) && expr[0] === '[') {
+    const elems = staticArrayElems(expr)
+    if (!elems?.length) return null
+    let common
+    for (const e of elems) {
+      if (e == null || (Array.isArray(e) && e[0] === '...')) return null
+      const sid = inferSchemaId(e, callerSchemaIds)
+      if (sid == null) return null
+      if (common === undefined) common = sid
+      else if (common !== sid) return null
+    }
+    return common
   }
   return null
 }
