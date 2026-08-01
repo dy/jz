@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore, boolBoxIR, carrierF64 } from '../src/ir.js'
+import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore, boolBoxIR, carrierF64 } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -94,7 +94,18 @@ export default (ctx) => {
         // already HASH here. Assert-only tripwire (slice-4 P4 flip).
         if (DBG_INVARIANTS && repOf(target)?.val !== VAL.HASH)
           throw new Error(`P4 dict-mode drift: ${target} reaches the HASH branch with plan val=${repOf(target)?.val}`)
-        const want = domain ? asI32(emit(['*', ['.', domain, 'length'], 4])) : ['i32.const', 8]
+        // Preallocation sizing must be a COMPILE-TIME fact only (repOf
+        // arrayLen — the same fact emit-assign.js's RMW capHint uses): the
+        // domain hint name may be a LOCAL whose def executes after this
+        // alloc (a for-of/for-in iterator temp is declared in the loop's
+        // own init, always textually after `const T = {}`), so emitting a
+        // runtime `domain.length` read here dereferenced an uninitialized
+        // local (0.0) and trapped OOB (.work/for-of-dict-alloc-fix.md).
+        // The hint is speed-only by contract (analyze.js dictDomainOf: an
+        // over/underestimate cannot affect semantics) — unproven length
+        // degrades to the default cap, never a runtime read.
+        const domainLen = domain ? repOf(domain)?.arrayLen : null
+        const want = ['i32.const', domainLen > 0 ? domainLen * 4 : 8]
         return typed(['call', '$__hash_reuse_eph', old, want], 'f64')
       }
       // Register the empty schema so schemaId always indexes a real schema.list

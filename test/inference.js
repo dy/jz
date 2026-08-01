@@ -2018,20 +2018,14 @@ test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[
 // rebuild), so passes 2 and 3 replay dictObs from cache — these fixtures
 // exercise that path for free, and the last one makes it explicit.
 //
-// C-style `for` (not `for...of`) is DELIBERATE, matching watr's real shape
-// exactly (const.js:161's `for (let i = 0, code = 0; i < TABLE.length; i++)`)
-// — not merely a style choice. Investigation while writing these fixtures
-// found `for...of` over a top-level computed-key dict write is a PRE-EXISTING
-// latent miscompile (memory access out of bounds at optimize>=1, watr's
-// __hash_reuse_eph dictionary-mode alloc — module/object.js:86 — racing the
-// for-of loop's own codegen), reproducible on the UNMODIFIED baseline
-// (confirmed on a pre-Fix-A worktree, single-file AND bundled, independent of
-// this task's changes). Fix A does make it newly reachable for the
-// BUNDLED-moduleInit-only case specifically (previously shielded only by the
-// dynWriteVars gap this fix closes — an accidental, not a real, guard) — but
-// never for C-style for, which is what every real target (watr) actually
-// uses. Banked as a separate pre-existing defect in .work/todo.md; out of
-// this task's scope to fix.
+// C-style `for` here matches watr's real shape exactly (const.js:161's
+// `for (let i = 0, code = 0; i < TABLE.length; i++)`). The for-of variant
+// was a latent OOB miscompile (dict-mode alloc emitted a RUNTIME read of
+// the leanHashDomains hint array's length at the `{}` literal's emission
+// point — a def-before-use when the domain is a local declared after the
+// dict, which a for-of iterator temp always is; .work/for-of-dict-alloc-
+// fix.md) — FIXED by static-only sizing (repOf arrayLen, mirroring
+// emit-assign.js's RMW capHint) and pinned in the for-of tests below.
 
 test('dict-value census: bundled moduleInit dict-write (watr\'s OPCODE shape, C-style for) populates globalReps', () => {
   const dep = `
@@ -2101,6 +2095,65 @@ test('dict-value census: moduleInitSlot memo-cache replay is order-independent (
   is(bag1, null, 'first compile: bag poisons (poison survives cached replay within the compile)')
   is(opcode2, opcode1, 'second independent compile (fresh gen, cold walk again) agrees with the first')
   is(bag2, bag1, 'second independent compile agrees on the poison too')
+})
+
+// for-of/for-in dict population — the def-before-use OOB class
+// (.work/for-of-dict-alloc-fix.md): the dict-mode `{}` alloc used to emit a
+// RUNTIME `domain.length` read for the leanHashDomains preallocation hint;
+// a for-of/for-in iterator temp (or any local domain array) is declared in
+// the loop's own init — AFTER the dict decl — so the read hit an
+// uninitialized local (0.0), underflowed the header address math, and
+// trapped at instantiation for optimize>=1. Fixed: sizing consults only the
+// compile-time repOf(domain)?.arrayLen fact (emit-assign.js's RMW capHint
+// twin), degrading to the default cap when unproven (the hint is speed-only
+// by contract). VALUES asserted, not just no-trap.
+test('dict-mode alloc: for-of population of a module-level dict is sound at every tier', () => {
+  const src = `export const T = {}
+    const arr = ['a', 'b', 'c']
+    let n = 0
+    for (const k of arr) T[k] = n++
+    export let f = () => (T['a'] * 100) + (T['b'] * 10) + (T['c'] | 0) + (T['zz'] === undefined ? 1000 : 2000)`
+  for (const optimize of [0, 1, 2, 3])
+    is(jz(src, { optimize }).exports.f(), 1012, `O${optimize} for-of dict values correct`)
+})
+
+test('dict-mode alloc: local-scope for-of RMW counter (word-frequency idiom) is sound', () => {
+  const src = `export let g = () => { const T = {}; const ks = ['a','b','a']; let out = 0
+    for (const k of ks) T[k] = (T[k] | 0) + 1
+    for (const k of ks) out = out * 10 + (T[k] | 0)
+    return out }`
+  for (const optimize of [0, 1, 3])
+    is(jz(src, { optimize }).exports.g(), 212, `O${optimize} local RMW counter correct`)
+})
+
+test('dict-mode alloc: for-in population + bundled-entry variant stay sound', () => {
+  const forin = `const src = { a: 1, b: 2 }
+    export const T = {}
+    for (const k in src) T[k] = src[k] * 10
+    export let f = () => T['a'] + T['b']`
+  is(jz(forin, { optimize: 2 }).exports.f(), 30, 'for-in dict population correct at O2')
+  const dep = `export const T = {}
+    const arr = ['x', 'y']
+    let n = 5
+    for (const k of arr) T[k] = n++`
+  is(jz('import { T } from "./dep.js"; export let f = () => T["x"] * 10 + T["y"]',
+    { modules: { './dep.js': dep }, optimize: 2 }).exports.f(), 56, 'bundled moduleInit for-of correct at O2')
+})
+
+test('dict-mode alloc: statically-provable domain still sizes the preallocation (no silent always-8 regression)', () => {
+  // Module-level literal array + C-style loop — arrayLen is proven, so the
+  // sized cap must fire: assert the WAT carries the sized i32.const (12
+  // elements * 4), not only the default 8.
+  const KS = Array.from({ length: 12 }, (_, i) => `'k${i}'`).join(',')
+  const src = `const KS = [${KS}]
+    export const D = {}
+    for (let i = 0; i < KS.length; i++) D[KS[i]] = i + 1
+    export let h = () => D['k0'] + D['k11'] * 10`
+  const { exports } = jz(src, { optimize: 2 })
+  is(exports.h(), 121, 'provable-domain dict values correct')
+  const wat = jz.compile(src, { optimize: 2, wat: true })
+  ok(/\(call \$__hash_reuse_eph[^)]*\(i32\.const 48\)/.test(wat) || wat.includes('i32.const 48'),
+    'sized preallocation cap (12*4=48) present in WAT — the arrayLen fast path still fires')
 })
 
 // ─────────────────────────── receiver-HASH global classification
