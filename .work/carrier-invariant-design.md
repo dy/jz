@@ -32,7 +32,33 @@ false). Even perfect consumer enumeration cannot close this. Fix:
 valTypeOf/VT['()'] unwraps single-arg non-call grouping nodes (pure
 structural). PREREQUISITE for any invariant.
 
-DECL-INIT WALL RE-CHARACTERIZED 2026-08-01 (dedicated hunt, worktree,
+DECL-INIT WALL ROOT-CAUSED 2026-08-01 (the kernel-scale mystery
+DISSOLVED — deterministic NATIVE repro, no wasm build needed):
+carrierF64→asF64→boxPtrIR rebuilds ptrKind-tagged IR through typed()
+(ir.js:38), which sets ONLY .type — .ptrKind/.ptrAux/.closureFuncIdx are
+ERASED. Bits correct (NaN-boxed pointer), metadata gone. The P1
+plan/emit-parity predictor (inheritPtrAliases, analyze.js:1916; assert
+emit.js:1819) then drifts — fires deterministically during a plain
+`node scripts/build-dist.mjs` with DBG_INVARIANTS forced true ("P1
+predictor drift: (top)/d4654 predicted object, emit sees undefined";
+the earlier 'self-host-only mystery' existed because the invariants
+fold out under the wasm target AND were never armed during the build
+step). CLOSURE aliases lose closureAux minting (emit.js:1830 gate never
+fires) → the i32/f64 desync and, compiling self.js itself, total export
+loss. CAUSAL PROOF: identical forced-invariants build without the
+storedValue patch = ZERO violations across the full 14.8MB O3 self
+compile; failure is level-independent (optimize:false through O3).
+FIX (conceptual, named): make boxPtrIR/asF64 TAG-PRESERVING (copy
+.ptrKind/.ptrAux/.closureFuncIdx onto the boxed result) — repairs every
+asF64 caller on tagged IR, then the decl-init site can take storedValue
+and oracle row 11 graduates. Residual lead: the triggering alias shape
+lives in self.js's desugared source (synthetic param arg0f5715, schema
+aux 0x2A8) — trivial synthetic probes don't hit it; the shaped-parser/
+dict-rows unification hypothesis is NOT confirmed by this bug (this one
+is a plain deterministic metadata-erasure, not context-dependent) but
+the 0x2A8/__schema_tbl lead is noted for those hunts.
+
+DECL-INIT WALL RE-CHARACTERIZED 2026-08-01 (superseded by the above) (dedicated hunt, worktree,
 3 full builds patched/control/patched): the wall is NOT the banked
 "narrow captured-then-read gap" — the one-line storedValue(init) patch
 at emit.js ~1712, SELF-COMPILED, produces TOTAL EXPORT LOSS: every
