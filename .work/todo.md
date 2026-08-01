@@ -4,7 +4,41 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
-## Status (2026-07-31, current truth — re-audit #5 reconciled)
+## Status (2026-08-01, current truth)
+
+BOOL-MERGE IDENTITY LANDED 2026-08-01 (8a0bad4f; battery 3182/0/6,
+parity 33/33 byte-identical, oracle 9/9 ALL-AGREE 254 assertions
+both legs, selfhost 21/21, dbg leg): the live miscompile family
+(inline (s?1:false)===false, typeof merge, &&-merge ===, plus the
+pinned ternary-return row) closed via hasAmbiguousBoolMerge (pure
+structural predicate) + emitIdentitySafe at six enumerated escape
+sites, per the banked design. SELF-HOST NEAR-MISS caught by the
+design's kernel gates: scripts/self.js's hooks lacked the new
+bridge binding — in-kernel empty-IR crash, native fine; fixed at
+ALL SEVEN session entries + made STRUCTURAL (reset() asserts the
+full hook set under dbg — the missing-hook class now fails loudly
+at session start forever). Two pins graduated as their tripwires
+prescribed: booleans &&/|| atom-carry (5&&true → true, JS-exact —
+a DOCUMENTED GAP CLOSED) and the oracle ternary row PENDING-FIX→
+AGREE. Agent stalled repeatedly on the silent-battery watchdog;
+landing finished in-thread (probes, gates, pin rewrites, hook
+sweep, invariant).
+
+DECISIONS EXECUTED 2026-08-01 (user: "make most meaningful
+decisions and go"): (1) JSC tight-int-loop class → claim SCOPED to
+V8-family engines for strict JIT leadership; JSC = documented
+exception with the dissection as evidence (M4-scoping precedent);
+(2) size claim → reframed "par-or-smaller than AS WITH full JS
+semantics" (unchecked tier rejected — against JS-exact philosophy);
+(3) memory 3 arena cases → accept+document (goal met 40/43);
+(4) Error model → BUILD: minimal Error objects (.message/.name/
+instanceof, ~60-100B when constructed) + distinct per-site codes +
+host-side code→message table — INCREASES JS fidelity; (5) jessie →
+documented red pending refresh (IC hard tail; dispatch-rewrite
+banked as research); (6) watr inliner fix → prepare in user's repo
+uncommitted, user releases. Push + tinygo CLT remain user-gated.
+
+## Status (2026-07-31, prior truth — re-audit #5 reconciled)
 
 MEMBER BIGINT COMPOUND-ASSIGN FIXED 2026-07-31 (the sibling map
 banked in the 2026-07-29 entry below, all three items closed):
