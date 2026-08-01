@@ -19,9 +19,9 @@ import { scanBoundedLoops, exprType, typedElemCtor, typedStaticLen, intLevelMap 
 import { typedElemAux, ctorFromElemAux } from '../../layout.js'
 import { observeProgramSlots } from './program-facts.js'
 import { noteParamVerdict } from './bigint-boxed-stats.js'
-import { valTypeOf, valTypeOfWithLocals } from '../kind.js'
+import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge } from '../kind.js'
 import { typedCtorElemValType } from '../kind-traits.js'
-import { VAL, updateRep } from '../reps.js'
+import { VAL, updateRep, lookupValType } from '../reps.js'
 import {
   paramFactsOf, ensureParamRep, mergeParamFact, latticeMeet,
 } from '../param-reps.js'
@@ -532,7 +532,24 @@ function narrowI32Results(funcs) {
     }
     if (te) ctx.types.typedElem = te
     const allV128 = exprs.every(e => exprType(e, locals, valTypes) === 'v128')
-    const allI32 = !allV128 && exprs.every(e => exprType(e, locals, valTypes) === 'i32')
+    // carrier-invariant-design.md: exprType's own '&&'/'||'/'?:' conciliation
+    // (src/type.js) only asks "is each branch i32-representable", the same
+    // question CMP_OPS-vs-NUMBER-literal both answer 'i32' to — it has no
+    // notion of hasAmbiguousBoolMerge's BOOL∪NUMBER identity concern, so
+    // `return (x>0)&&1` narrowed this func's WASM result to i32 even though
+    // the false-branch value is a genuine JS `false`, not the NUMBER 0: the
+    // i32→f64 export rebox (`f64.convert_i32_s`) can only ever produce a raw
+    // number, permanently losing the FALSE atom no downstream fix could
+    // recover (verified live: `f(-1)` returned 0, JS oracle `false`). A
+    // locals-aware hasAmbiguousBoolMerge (this phase runs before
+    // ctx.func.localReps is populated for the func under analysis — mirrors
+    // the BigInt gate two lines below) vetoes i32-narrowing for any such
+    // tail, leaving the function at f64 so the return-tail boxing this
+    // design's step 1 covers (emit.js 'return', ctx.func.mixedAtomReturn)
+    // still gets a chance to run.
+    const resolveLocal = name => valTypes?.get(name) ?? lookupValType(name)
+    const anyAmbiguous = exprs.some(e => hasAmbiguousBoolMerge(e, ex => valTypeOfWithLocals(ex, resolveLocal)))
+    const allI32 = !allV128 && !anyAmbiguous && exprs.every(e => exprType(e, locals, valTypes) === 'i32')
     if (te) ctx.types.typedElem = savedTE
     const r = { allV128, allI32, anyUnsigned: exprs.some(isUnsignedTail), allUnsigned: exprs.every(isUnsignedTail) }
     ctx.func.current = savedCurrent

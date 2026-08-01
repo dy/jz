@@ -222,25 +222,41 @@ VT['&&'] = VT['||'] = VT['??'] = (args) => {
 // bool's bits. A statically-resolved `?:` condition (VT['?:'] line 143-144)
 // only ever evaluates its own live arm, so this mirrors that: recurse into the
 // live arm instead of returning early.
-export function hasAmbiguousBoolMerge(node) {
+// `vt` (optional): the valType resolver to consult — defaults to the plain
+// GLOBAL valTypeOf, same locals-blind/locals-aware split as valTypeOf vs
+// valTypeOfWithLocals above (round-6 prereq (a)'s precedent). narrow.js's
+// Phase E (narrowI32Results) runs BEFORE ctx.func.localReps is populated for
+// the function under analysis — it carries its own per-body `locals`/
+// `valTypes` overlay instead (mirrors exprType's own BigInt gate, line ~2265:
+// `valTypeOfWithLocals(expr, name => valTypes?.get(name) ?? lookupValType(name))`)
+// — so a bare `valTypeOf('x')` there would miss a LOCAL fact and silently
+// under-report the merge as unambiguous. Passing that same resolver through
+// closes it.
+export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
   if (!Array.isArray(node)) return false
   const [op, ...args] = node
+  // Parenthesized grouping `(expr)` (args.length === 1 — see VT['()'] above
+  // for the call-vs-grouping shape invariant): the merge, if any, lives one
+  // level down (`((x>0)&&1)` is `['()', ['&&', ['()', ['>',...]], 1]]` — the
+  // OUTER '()' wraps the '&&' node this function must reach to fire its own
+  // '&&' branch below). Recurse through; a grouping is never itself a merge.
+  if (op === '()' && args.length === 1) return hasAmbiguousBoolMerge(args[0], vt)
   if (op === '?:') {
     const [cond, a, b] = args
     const truthy = literalTruthiness(cond)
-    if (truthy != null) return hasAmbiguousBoolMerge(truthy ? a : b)
-    const ta = valTypeOf(a), tb = valTypeOf(b)
+    if (truthy != null) return hasAmbiguousBoolMerge(truthy ? a : b, vt)
+    const ta = vt(a), tb = vt(b)
     if (ta === VAL.BOOL && tb === VAL.NUMBER) return true
     if (tb === VAL.BOOL && ta === VAL.NUMBER) return true
-    if (ta && ta === tb) return hasAmbiguousBoolMerge(a) || hasAmbiguousBoolMerge(b)
+    if (ta && ta === tb) return hasAmbiguousBoolMerge(a, vt) || hasAmbiguousBoolMerge(b, vt)
     return false
   }
   if (op === '&&' || op === '||' || op === '??') {
     const [a, b] = args
-    const ta = valTypeOf(a), tb = valTypeOf(b)
+    const ta = vt(a), tb = vt(b)
     if (ta === VAL.BOOL && tb === VAL.NUMBER) return true
     if (tb === VAL.BOOL && ta === VAL.NUMBER) return true
-    if (ta && ta === tb) return hasAmbiguousBoolMerge(a) || hasAmbiguousBoolMerge(b)
+    if (ta && ta === tb) return hasAmbiguousBoolMerge(a, vt) || hasAmbiguousBoolMerge(b, vt)
     return false
   }
   return false
@@ -553,6 +569,18 @@ VT['()'] = (args) => {
     const vt = methodValType(method, obj, valTypeOf(obj), ctx)
     if (vt != null) return vt
   }
+  // Parenthesized NON-call grouping `(expr)` — a real call's tail is always
+  // [callee, rawArgsNode] (length 2, even for a zero-arg call: prep's '()'
+  // handler always keeps the args slot, ast.js callArgs/setCallArgs's
+  // canonical shape), so args.length === 1 here can ONLY be a grouping node
+  // `['()', expr]`, never a call. Falls through to here when `expr`'s own
+  // head didn't match one of the callee-shaped special cases above (ternary/
+  // '[]'/'.'/string dispatch) — a plain comparison/logical/literal grouping
+  // like `(x>0)`. carrier-invariant-design.md MECHANISM B: this fallthrough
+  // used to return null (the detector blind spot — `((x>0)&&1)` collapsed to
+  // an unrecognized NUMBER/null merge instead of the true BOOL∪NUMBER kind).
+  // Pure structural unwrap: the grouping's type IS its inner expression's type.
+  if (args.length === 1) return valTypeOf(callee)
   return null
 }
 
