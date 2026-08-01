@@ -6,6 +6,83 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-08-01, current truth)
 
+ERROR MODEL: PIECES 1+2 LANDED, PIECE 3 BANKED WITH A PRECISE WALL 2026-08-01
+(bfee0e7f distinct codes, 48a361d0 host-side decode; battery 3193/0/6 — +11
+pass vs the 3182 ledger baseline, same skip=6, zero unexplained fails,
+verified file-by-file across all 88 test files since one monolithic `npm
+test` run now exceeds the 600s single-call ceiling on this machine; kernel-
+parity 33/33 + kernel-oracle 9/9 on a fresh dist rebuild, selfhost.js 21/21,
+JZ_DEBUG_INVARIANTS=1 leg on errors/types/data clean, size spot-check
+byte-identical pre/post on 3 error-free bench cases):
+PIECE 1 — err-codes.js (new leaf registry, project root — see below) gives
+each of the 48 `$__jz_err` runtime throw sites (module/*.js + src/ir.js's
+toPrimitiveChain; fs.js's real-errno throws untouched by design) its own
+small integer, grouped 1xx TypeError (16)/2xx RangeError (13)/3xx
+SyntaxError·URIError (19). Near-zero cost, confirmed byte-identical WAT for
+error-free programs.
+PIECE 2 — interop.js's decodeThrown resolves a thrown NUMBER matching the
+registry to `new Error(name + ': ' + message)`; `wrapped.thrown` keeps the
+raw code. PREREQUISITE BUG FOUND AND FIXED (not anticipated by the
+investigation, which assumed decodeThrown "already wraps any escaping
+throw" correctly): decodeThrown reads its payload from the
+`__jz_last_err_bits` global, but only the user-level `throw`/`finally` emit
+handlers ever wrote it — none of the 48 stdlib sites (nor fs.js's 5 errno
+throws) did, so any of them escaping to the host silently decoded as
+stale/zero. Fixed by setting the global immediately before every throw
+site, and extending `pruneUnusedThrowRuntime` (src/compile/index.js) to
+strip the now-orphaned `global.set` when it lowers an uncatchable throw to
+`unreachable` (else a no-try/catch program would reference a deleted
+global). Also makes fs.js's real-errno forwarding reach the host correctly
+for the FIRST time — a live, previously-undetected gap in a path the
+investigation had called already-working.
+LOCATION CORRECTION: the investigation's suggested `src/err-codes.js`
+location was wrong — interop.js's own pinned leaf-module contract
+(test/interop.js "subpath stays compiler-free") allow-lists only
+`./wasi.js`/`./layout.js` and separately forbids any `./src/` import
+outright. Registry lives at project root (`err-codes.js`, sibling to
+layout.js — same dual-consumer role: module/*.js AND interop.js both
+import it), and the pin's allowlist was extended by one entry. This is the
+literal, load-bearing reason "a new small src/err-codes.js" as suggested
+needed correcting, not just following the letter of the suggestion.
+PIECE 3 BANKED — WALL FOUND, PRECISE: requirement (c) "instanceof Error
+works via the OBJECT ptr tag + schema/class marker (mirror how Date is
+handled)" rests on a premise that doesn't hold. `instanceof` is not a
+scoped-down or strict-only feature to extend — op-policy.js's REJECT_OPS
+rejects it UNCONDITIONALLY, in every mode (`instanceof: 'instanceof not
+supported: use typeof'`; the "strict rejects: instanceof" test name in
+test/errors.js is misleading — the same reject fires without `strict`
+too). There is no existing runtime "is-a" dispatch to mirror: Date's
+`ctx.schema.dateSid` (module/date.js "Minimal Date value object") is a
+STATIC, compile-time class marker — it lets the compiler pick the right
+method-dispatch table at COMPILE time when a binding is proven Date-typed
+(VAL.DATE), the same role `Array.isArray` fills via a runtime ptr_type
+check for a different question entirely (proven a runtime ptr_type check
+answers "is this ARRAY" generically, but nothing today answers "does this
+OBJECT's schema/aux match class X" at runtime, catch-block-dynamic-value
+style). Implementing `e instanceof Error` for real — even scoped to just
+the Error family inside a catch block, where `e`'s static type is
+generically unknown — requires: (1) a prepare-stage policy carve-out
+(remove/special-case instanceof, currently a hard reject); (2) a NEW
+emit.js binary-op handler doing a runtime schema/aux comparison against a
+reserved Error-class id (or family of ids, one per subclass, with
+TypeError/RangeError/etc. all also instanceof Error — real prototype-chain
+semantics, not one flat check); (3) wiring it into whatever dynamic-value
+dispatch a caught `e` goes through. This is a new language operator, not a
+"wire an existing mechanism" job — genuinely deeper than this session's
+scope, exactly the fallback case the mission's own binding rules
+anticipated ("if piece 3 hits a wall... bank precisely, report honestly").
+The rest of piece 3 (minimal fixed-shape Error OBJECT via the existing
+object/schema construction path, .message/.name slots, no-arg fast path,
+String(e) convention, the ==/=== sweep of test/errors.js incl. the ~685-693
+tripwire) was NOT attempted stand-alone once (c) proved to need a new
+operator first — building the object shape without real instanceof would
+ship a materially incomplete, misleading version of "Errors become
+objects" (instanceof is explicitly one of the model's own requirements,
+and the test/errors.js sweep the mission demands is keyed to the FULL
+model, not a partial one). NEXT SESSION: scope instanceof as its own
+project first (prepare policy + one new emit.js op, Error-family only to
+start), THEN piece 3's object-shape work becomes a normal follow-on.
+
 WATR INLINER BUG: GENUINE NON-REPRO, CLAIM DOWNGRADED 2026-08-01
 (five escalating attempts, both repos left clean): minimal WAT memo
 shapes, an 8-combination control-flow fuzz targeting inlNeedsReset,
