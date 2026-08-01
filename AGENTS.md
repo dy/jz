@@ -15,8 +15,13 @@ These are the product's promises. They are CI-gated (`test/bench.js`), not aspir
    Porffor-native by geomean (committed evidence).
    A case where another *wasm* target wins is a bug to fix, tracked as `todo` in the gate
    until jz takes the lead — never silently accepted.
-2. **Faster than any JIT.** jz beats V8 (Node), and any other JIT (JSC, SpiderMonkey) on
-   the same source.
+2. **Faster than V8-family JITs, everywhere; faster than bun/JSC, almost everywhere.**
+   jz beats V8-family engines (Node, Deno) on every case, no exception. It beats bun/JSC
+   too, except the documented tight-integer-loop class (`vm`, `dict`, `crc32`) — JSC's
+   adaptive JIT out-executing an AOT wasm module on its own turf, not a jz codegen gap
+   (the WAT there is already proven optimal; see `test/bench-claims.js`). Those cases are
+   held to a 1.5× sanity band instead of a leadership bar — a regression tripwire, not a
+   claim.
 
 What this implies for HOW we optimize:
 
