@@ -1503,17 +1503,20 @@ test('statements: bitwise compound-assign on BigInt rejects a Number mix like th
 // correct. Fixed for FLAT objects/arrays (analyzeBody(body).flatObjects,
 // temporarily installed for the duration of that function's own valType
 // resolution in both passes — the fact is body-pure, safe to install/restore
-// per function). NOT fixed for the array-elem-kind census specifically
-// (rep.arrayElemValType, populated via updateRep — a whole-program store,
-// not a simple per-function context field like ctx.func.flatObjects; safely
-// installing/restoring it at narrow-time needs more care than this pass
-// warrants). Confirmed pre-existing and unrelated to compound-assign: a bare
-// `return arr[i]` on a BigInt array element was ALREADY wrong with no write
-// at all (`let a = [1n]; return a[0]` also mis-decodes) — banked in
-// .work/todo.md rather than pinned as fixed. The arithmetic itself (verified
-// below by embedding the read in `+ 0n`, which resolves through the
-// separately-correct emit-time path) is unaffected. Boundary values 2^62±1,
-// host-JS-authority — same convention as the sibling tests above.
+// per function) AND for the array-elem-kind census (re-audit #6 finding 2):
+// rep.arrayElemValType is populated via updateRep, a whole-program store,
+// not a simple per-function context field like ctx.func.flatObjects — but
+// analyzeBody(body).arrElemValTypes IS exactly that per-function context
+// field's own source data (the same slice updateRep later folds into the
+// whole-program store at emit time), so narrow.js's installArrElemReps
+// installs it onto ctx.func.localReps for the duration of kind resolution,
+// mirroring the flatObjects install precisely. Confirmed pre-existing and
+// unrelated to compound-assign, and NOW FIXED: a bare `return arr[i]` on a
+// BigInt array element was wrong with no write at all (`let a = [1n]; return
+// a[0]` mis-decoded as a raw-bit-reinterpreted Number) — was banked in
+// .work/todo.md, now pinned as fixed directly below (no `+ 0n` sidestep
+// needed). Boundary values 2^62±1, host-JS-authority — same convention as
+// the sibling tests above.
 test('statements: member (obj.prop / arr[i]) BigInt ++/--/compound-assign uses i64 arithmetic', () => {
   const HI = 4611686018427387903n // 2^62 - 1
   // obj.prop — fully fixed, incl. the bare-return boundary kind.
@@ -1527,13 +1530,26 @@ test('statements: member (obj.prop / arr[i]) BigInt ++/--/compound-assign uses i
   is(run(`export let f = () => { let o = {n: ${HI}n}; o.n = o.n + 1n; return o.n }`).f(), HI + 1n) // hand-written, no += token
   is(run(`export let f = () => { let o = {n: ${HI}n}; o.n = o.n - 1n; return o.n }`).f(), HI - 1n)
   // arr[i] — arithmetic fixed (mix-reject false-positive gone, i64 exact);
-  // `+ 0n` sidesteps the separately-tracked bare-return boundary-kind gap above.
+  // `+ 0n` sidesteps re-emit through the arithmetic path, kept as an
+  // independent cross-check alongside the direct bare-return pins below.
   is(run(`export let f = () => { let a = [${HI}n]; a[0]++; return a[0] + 0n }`).f(), HI + 1n)
   is(run(`export let f = () => { let a = [${HI}n]; ++a[0]; return a[0] + 0n }`).f(), HI + 1n)
   is(run(`export let f = () => { let a = [${HI}n]; a[0]--; return a[0] + 0n }`).f(), HI - 1n)
   is(run(`export let f = () => { let a = [${HI}n]; return a[0]++ + 0n }`).f(), HI)
   is(run(`export let f = () => { let a = [${HI}n]; a[0] += 1n; return a[0] + 0n }`).f(), HI + 1n)
   is(run(`export let f = () => { let a = [${HI}n]; a[0] = a[0] + 1n; return a[0] + 0n }`).f(), HI + 1n)
+  // arr[i] — bare (unembedded) return of the boundary-kind pre-pass, no `+ 0n`
+  // arithmetic-path sidestep: re-audit #6 finding 2's own fix, direct pins.
+  is(run(`export let f = () => { let a = [${HI}n]; a[0]++; return a[0] }`).f(), HI + 1n)
+  is(run(`export let f = () => { let a = [${HI}n]; ++a[0]; return a[0] }`).f(), HI + 1n)
+  is(run(`export let f = () => { let a = [${HI}n]; a[0]--; return a[0] }`).f(), HI - 1n)
+  is(run(`export let f = () => { let a = [${HI}n]; return a[0]++ }`).f(), HI)
+  is(run(`export let f = () => { let a = [${HI}n]; a[0] += 1n; return a[0] }`).f(), HI + 1n)
+  is(run(`export let f = () => { let a = [${HI}n]; a[0] = a[0] + 1n; return a[0] }`).f(), HI + 1n)
+  // No writes at all — the ORIGINAL repro (re-audit #6 finding 2): a bare
+  // `let a = [1n]; return a[0]` misdecoded as an unrelated Number (the i64
+  // bit pattern reinterpreted as f64) with zero mutation involved.
+  is(run(`export let f = () => { let a = [${HI}n]; return a[0] }`).f(), HI)
   // Genuine BigInt/Number mix through a member still TypeErrors (not masked by
   // the synthesized-1 exemption, which only matches prepare's own ±1 shape).
   throws(() => run(`export let f = () => { let o = {n: 8n}; o.n = o.n + 2; return o.n }`), /Cannot mix BigInt/)

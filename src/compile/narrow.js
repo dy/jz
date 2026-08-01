@@ -611,6 +611,44 @@ function narrowI32Results(funcs) {
  * through helper chains. Exports are safe — same boundary-wrapper guarantee
  * as numeric narrowing.
  */
+// Install THIS function's own arr-elem VAL-kind facts (a body's analyzeBody(...)
+// .arrElemValTypes slice) onto ctx.func.localReps for the duration of a
+// return-kind resolution — the ARRAY sibling of the ctx.func.flatObjects
+// install both narrowValResults and narrowBoolResults already do (same call
+// site, same reasoning): kind.js VT['[]']'s `ctx.func.localReps?.get(name)?.
+// arrayElemValType` rule is what a bare `return arr[i]` on a proven-element-
+// kind array resolves through, and both return-kind pre-passes otherwise run
+// "ABOVE" the per-function localReps state that fact normally rides on
+// (populated at emit time — compile/index.js's analyzeFuncForEmit-equivalent
+// `updateRep` loop over the identical `facts.arrElemValTypes` slice). Without
+// this, `let a = [1n]; return a[0]` read as an unproven (Number) boundary
+// kind even though the i64 VALUE was already correct (re-audit #6 finding 2;
+// .work/todo.md "NOT FIXED, BANKED" entry — BigInt array literals never
+// qualify for flat SRoA, so this whole-program fact is the only path to the
+// correct kind).
+//
+// Only NON-NULL facts are installed. Fail-open is load-bearing here, not
+// incidental: analyzeBody's observeArrValType poisons an entry to null the
+// moment any element disagrees or an unknown-origin mutation touches the
+// array (see analyze.js's `elemOrigin` comment — a fact only ever SETTLES
+// non-null for a name whose contents trace to a construction origin: an
+// array-literal init with every element statically visible, a fresh-ctor
+// call, or a chained alias/call-return/`.map` of another already-proven
+// source). "non-null in this Map" already IS the elemOrigin-gated proof this
+// needs — asserting a kind (especially BIGINT, whose wrong-boxing is the
+// documented historical hazard) off an unproven or poisoned entry would be
+// the unsound direction; this only ever narrows, never widens, a claim.
+function installArrElemReps(arrElemValTypes, prevReps) {
+  if (!arrElemValTypes?.size) return prevReps
+  let reps = null
+  for (const [name, vt] of arrElemValTypes) {
+    if (vt == null) continue
+    if (!reps) reps = new Map(prevReps)
+    reps.set(name, { ...reps.get(name), arrayElemValType: vt })
+  }
+  return reps || prevReps
+}
+
 function narrowValResults(funcs) {
   // Delegates to kind.js's shared local-aware resolver (valTypeOfWithLocals) —
   // round-6 prereq (a): a plain valTypeOf(['++','n']) can't see a LOCAL's kind
@@ -668,13 +706,18 @@ function narrowValResults(funcs) {
       // is body-local and pure — safe to install for the duration of this
       // func's own valTypeOfWithCalls calls, then restore.
       const prevFlat = ctx.func.flatObjects
-      if (bodyFacts) ctx.func.flatObjects = bodyFacts.flatObjects
+      const prevReps = ctx.func.localReps
+      if (bodyFacts) {
+        ctx.func.flatObjects = bodyFacts.flatObjects
+        ctx.func.localReps = installArrElemReps(bodyFacts.arrElemValTypes, prevReps)
+      }
       let vt0, allSame
       try {
         vt0 = valTypeOfWithCalls(exprs[0], localValTypes)
         allSame = vt0 && exprs.every(e => valTypeOfWithCalls(e, localValTypes) === vt0)
       } finally {
         ctx.func.flatObjects = prevFlat
+        ctx.func.localReps = prevReps
       }
       if (!vt0) continue
       if (allSame) { func.valResult = vt0; changed = true }
@@ -2357,15 +2400,22 @@ export function narrowBoolResults() {
     // Same ctx.func.flatObjects gap as narrowValResults above — a `return
     // obj.p` tail on a proven-BIGINT flat field needs it to resolve BIGINT
     // here (this is the leaf-module skip path's own valResult pass, so there
-    // is no later chance to correct an unproven result).
+    // is no later chance to correct an unproven result). Same for a `return
+    // arr[i]` tail on a proven-BIGINT array element — installArrElemReps'
+    // array sibling of the same install (see its own doc comment above).
     const prevFlat = ctx.func.flatObjects
-    if (bodyFacts) ctx.func.flatObjects = bodyFacts.flatObjects
+    const prevReps = ctx.func.localReps
+    if (bodyFacts) {
+      ctx.func.flatObjects = bodyFacts.flatObjects
+      ctx.func.localReps = installArrElemReps(bodyFacts.arrElemValTypes, prevReps)
+    }
     let isBool, isBigint
     try {
       isBool = exprs.every(e => vt(e) === VAL.BOOL)
       isBigint = !isBool && exprs.every(e => vt(e) === VAL.BIGINT)
     } finally {
       ctx.func.flatObjects = prevFlat
+      ctx.func.localReps = prevReps
     }
     if (isBool) func.valResult = VAL.BOOL
     else if (isBigint) func.valResult = VAL.BIGINT

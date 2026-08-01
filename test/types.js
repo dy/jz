@@ -735,6 +735,30 @@ test('array-destructure behavior: destructured nullable-bigint element keeps kin
 })
 
 // ============================================================================
+// Bare BigInt array-element return (re-audit #6 finding 2): `let a = [1n];
+// return a[0]` used to decode as a raw-bit-reinterpreted NUMBER, not the
+// BigInt value — the array's own element-kind census (rep.arrayElemValType,
+// stamped correctly at emit time by the updateRep loop over
+// analyzeBody(body).arrElemValTypes, compile/index.js) was always right; the
+// function's RETURN-KIND pre-pass (narrow.js's narrowValResults /
+// narrowBoolResults) ran before that whole-program store existed for the
+// function under examination, unlike ctx.func.flatObjects (the object-field
+// sibling fix). Fixed by installArrElemReps (src/compile/narrow.js), which
+// installs the SAME per-function arrElemValTypes slice onto
+// ctx.func.localReps for the duration of each pass's own kind resolution —
+// direct pin below confirms the underlying census itself (unaffected by the
+// narrow-time gap) at the 2^62 boundary, host-JS-authority.
+// ============================================================================
+
+test('array-elem kind census: BigInt array literal element carries arrayElemValType BIGINT at the 2^62 boundary', () => {
+  if (onKernel()) return   // kernel: inspect never reaches through jz.compile (see array-destructure note above)
+  const HI = 4611686018427387903n // 2^62 - 1, host-JS-authority
+  const locals = inspectLocals(`export let f = () => { let a = [${HI}n]; return a[0] }`)
+  const rep = Object.entries(locals).find(([k]) => k === 'a' || k.startsWith('a' + T))?.[1]
+  is(rep?.arrayElemValType, VAL.BIGINT)
+})
+
+// ============================================================================
 // TYPED narrowing — internal sig narrowing of helpers that always return a
 // typed-array of constant elemType. compile.js narrowSignatures sets
 //   sig.results = ['i32'], sig.ptrKind = VAL.TYPED, sig.ptrAux = elemAux

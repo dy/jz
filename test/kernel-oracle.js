@@ -419,50 +419,41 @@ test('kernel oracle: PENDING-FIX — formatter/ToPropertyKey/generic-scalar-decl
   }
 })
 
-// ── PENDING-FIX tier: bare BigInt array-element return (re-audit #6 item 2) ─
+// ── AGREE tier: bare BigInt array-element return (re-audit #6 finding 2) ──
 //
-// `let a = [1n]; return a[0]` — a bare, unembedded return of a BigInt array
-// element decodes as a raw-bit-reinterpreted NUMBER, not the BigInt value.
-// NOT the boxed-BigInt-carrier limitation (the subnormal-literal row above
-// is a DIFFERENT, documented divergence): the i64 VALUE itself is correct
-// and arithmetic on it already works (`a[0] + 0n` resolves through the
-// separately-correct emit-time path, which embeds the element in a proven-
-// BigInt expression) — only the JS-BOUNDARY RESULT KIND mis-resolves for a
-// bare tail. Root (.work/todo.md "NOT FIXED, BANKED" entry, member-desugar
-// landing session): BigInt array literals never qualify for flat SRoA
-// (static.js's staticValue has no 'bigint' case), so the return-kind
-// pre-pass (narrow.js's narrowValResults) resolves the kind through
-// rep.arrayElemValType — a whole-program fact store narrowValResults
-// doesn't install for the function under examination the way it already
-// installs ctx.func.flatObjects (the object-field sibling fix — see the
-// AGREE tier's "sibling" mechanism note elsewhere in this suite / the
-// member-desugar ledger entry). Both a small (1n) and a near-2^62 magnitude
-// are pinned — the wrong decode reinterprets the i64 bit pattern as an
-// unrelated f64, so the wrong VALUE differs by magnitude (host-JS-authority:
-// Number(1n's i64 bits reinterpreted as f64) === 5e-324; the 2^62+1 case
-// reinterprets to 2.0000000000000004 — both verified live against V8).
-const ARRAY_ELEM_BIGINT_PENDING_FIX = [
-  { name: 'array-elem bigint (small)',
-    src: `export let f = () => { let a = [1n]; return a[0] }`,
-    wrong: 5e-324 },
-  { name: 'array-elem bigint (2^62 boundary)',
-    src: `export let f = () => { let a = [4611686018427387905n]; return a[0] }`,
-    wrong: 2.0000000000000004 },
-]
-
-test('kernel oracle: PENDING-FIX — bare BigInt array-element return misdecodes as NUMBER (re-audit #6 item 2 — not yet fixed)', async () => {
+// FLIPPED from PENDING-FIX: `let a = [1n]; return a[0]` used to decode as a
+// raw-bit-reinterpreted NUMBER, not the BigInt value. NOT the boxed-BigInt-
+// carrier limitation (the subnormal-literal row above is a DIFFERENT,
+// documented divergence) — the i64 VALUE itself was always correct
+// (`a[0] + 0n` already resolved right, through the separately-correct
+// emit-time path that embeds the element in a proven-BigInt expression);
+// only the JS-BOUNDARY RESULT KIND mis-resolved for a bare, unembedded tail.
+// Root (.work/todo.md "NOT FIXED, BANKED" entry, member-desugar landing
+// session): BigInt array literals never qualify for flat SRoA (static.js's
+// staticValue has no 'bigint' case), so the kind had to resolve through
+// rep.arrayElemValType — a whole-program fact store the return-kind
+// pre-passes (narrow.js's narrowValResults / narrowBoolResults) didn't
+// install for the function under examination, unlike ctx.func.flatObjects
+// (the object-field sibling fix that landed earlier). Closed by
+// installArrElemReps (src/compile/narrow.js): both passes now install the
+// function's own proven (elemOrigin-gated — analyze.js only ever settles a
+// non-null arrElemValTypes entry from a construction origin, so "non-null"
+// already IS the soundness gate) arr-elem VAL-kind facts onto
+// ctx.func.localReps for the duration of their own kind resolution,
+// mirroring the flatObjects install exactly. Both a small (1n) and a
+// near-2^62 magnitude are pinned.
+test('kernel oracle: bare BigInt array-element return — AGREE (re-audit #6 finding 2, closed by installArrElemReps)', async () => {
   if (onWasi()) return
-  for (const { name, src, wrong } of ARRAY_ELEM_BIGINT_PENDING_FIX) {
+  const cases = [
+    { name: 'array-elem bigint (small)', src: `export let f = () => { let a = [1n]; return a[0] }` },
+    { name: 'array-elem bigint (2^62 boundary)', src: `export let f = () => { let a = [4611686018427387905n]; return a[0] }` },
+  ]
+  for (const { name, src } of cases) {
     const mod = await oracle(src)
     const want = mod.f()
-    not(wrong, want, `${name}: TODO-flip guard — wrong !== want (else this row is stale, delete it)`)
     for (const opt of [0, 1, 2, 3]) {
-      const nat = runNative(src, opt).f()
-      const ker = runKernel(src, opt).f()
-      is(nat, wrong, `${name} O${opt}: native currently WRONG (${JSON.stringify(wrong)}) — TODO flip to AGREE once fixed`)
-      is(ker, wrong, `${name} O${opt}: kernel currently WRONG (${JSON.stringify(wrong)}) — same bug, same leg`)
-      not(nat, want, `${name} O${opt}: tripwire — native must start disagreeing with JS oracle the moment this is fixed`)
-      not(ker, want, `${name} O${opt}: tripwire — kernel must start disagreeing with JS oracle the moment this is fixed`)
+      is(runNative(src, opt).f(), want, `${name} O${opt}: native agrees with JS oracle`)
+      is(runKernel(src, opt).f(), want, `${name} O${opt}: kernel agrees with JS oracle`)
     }
   }
 })
