@@ -607,6 +607,7 @@ function resolveImportMeta(spec) {
 function recordModuleInitFacts(root) {
   const facts = ctx.module.initFacts ||= {
     dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
+    hasMapSet: false,
     hasFuncValue: false, timerNames: new Set(),
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     writtenProps: new Set(), literalWriteKeys: new Map(),

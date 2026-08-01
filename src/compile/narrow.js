@@ -1453,7 +1453,7 @@ function inferTypedValueRanges(paramReps) {
 }
 
 export default function narrowSignatures(programFacts, ast) {
-  const { callSites, valueUsed, paramReps, hasSchemaLiterals } = programFacts
+  const { callSites, valueUsed, paramReps, hasSchemaLiterals, hasMapSet } = programFacts
 
   // Reachability filter: dead callerFuncs (e.g. unused stdlib helpers from bundled
   // modules) shouldn't poison narrowing of live functions. Without this, a never-
@@ -1968,7 +1968,12 @@ export default function narrowSignatures(programFacts, ast) {
   // as null. observeSlot's first-wins-then-clash rule lets a later precise
   // observation upgrade `undefined` → NUMBER without poisoning earlier
   // monomorphic observations.
-  if (hasSchemaLiterals) observeProgramSlots(ast)
+  // hasMapSet joins hasSchemaLiterals (design .work/map-value-census-design.md
+  // §1) — same reasoning as program-facts.js's own gate widening: a Map-only
+  // program has no `{}` to trip hasSchemaLiterals, but still needs this re-
+  // observation pass for its own census (methodValType 'get' consumer wants
+  // the freshest facts too, not just schema slots).
+  if (hasSchemaLiterals || hasMapSet) observeProgramSlots(ast)
   // Re-run with refreshed callerValTypes + the new program-slot observations. (No
   // clearStickyNull needed: valResult was known before the first pass — see E2 hoist
   // above — so val/schemaId never got the can't-tell-yet poison this used to undo.)

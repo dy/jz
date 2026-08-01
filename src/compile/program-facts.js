@@ -145,6 +145,15 @@ export function observeNodeFacts(node, f) {
     const cargs = commaList(args[1])
     if (cargs.some(x => Array.isArray(x) && x[0] === '...')) f.hasSpread = true
     if (cargs.length > f.maxCall) f.maxCall = cargs.length
+    // Map-value census pre-scan gate (design .work/map-value-census-design.md
+    // §1): cheap SYNTACTIC over-approximation — any 2-arg `.set(k,v)` call
+    // shape, no VAL.MAP proof (that's the census's own job at OBSERVE time,
+    // visit()/visitInit() below) — mirrors hasSchemaLiterals' own `{}`-on-
+    // sight trigger just above. Purely a "is it worth entering
+    // observeProgramSlots at all" gate for a Map-only program/moduleInit
+    // that carries no `{}` literal to trip hasSchemaLiterals on its own.
+    if (Array.isArray(args[0]) && args[0][0] === '.' && args[0][2] === 'set' && cargs.length === 2)
+      f.hasMapSet = true
   }
 }
 
@@ -178,6 +187,7 @@ export function invalidateProgramFactsCache(...roots) {
 function emptyWalkFacts() {
   return {
     dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
+    hasMapSet: false,
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     propMap: new Map(), valueUsed: new Set(), callSites: [],
     writtenProps: new Set(), literalWriteKeys: new Map(),
@@ -190,6 +200,7 @@ function mergeWalkFacts(into, from) {
   for (const v of from.dynVars) into.dynVars.add(v)
   for (const v of from.dynWriteVars) into.dynWriteVars.add(v)
   if (from.hasSchemaLiterals) into.hasSchemaLiterals = true
+  if (from.hasMapSet) into.hasMapSet = true
   if (from.maxDef > into.maxDef) into.maxDef = from.maxDef
   if (from.maxCall > into.maxCall) into.maxCall = from.maxCall
   if (from.hasRest) into.hasRest = true
@@ -365,6 +376,7 @@ export function collectProgramFacts(ast) {
       if (initFacts.hasSpread) f.hasSpread = true
     }
     if (doSchema && initFacts.hasSchemaLiterals) f.hasSchemaLiterals = true
+    if (doSchema && initFacts.hasMapSet) f.hasMapSet = true
   }
 
   // Slot-type observation pass: walk every `{}` literal with the right scope's
@@ -373,7 +385,15 @@ export function collectProgramFacts(ast) {
   // through valTypeOf → lookupValType. Skips into closures — they're observed via
   // their own func.list entry. The overlay is the per-function analyzeBody.valTypes
   // map (already populated with the same overlay-aware walk).
-  if (doSchema && f.hasSchemaLiterals) {
+  //
+  // Also entered on hasMapSet ALONE (no `{}` anywhere): the map-value census
+  // (design .work/map-value-census-design.md §1) rides the SAME
+  // observeProgramSlots walk (visit()'s `.set(...)` branch) — a Map-only
+  // program/moduleInit has no `{}` to trip hasSchemaLiterals on its own.
+  // analyzeSchemaSlotIntCertain stays gated on hasSchemaLiterals strictly —
+  // it is `{}`-slot-only work, wasted (though harmless) on a hasMapSet-only
+  // program.
+  if (doSchema && (f.hasSchemaLiterals || f.hasMapSet)) {
     observeProgramSlots(ast)
     // Per-slot intCertain mirror of the per-binding lattice. Runs after slot
     // type observation (which it does not depend on) — same trigger gate so
@@ -381,7 +401,7 @@ export function collectProgramFacts(ast) {
     // collectProgramFacts invocations (E2 phase) overwrite the same map; the
     // analysis is monotone-down so re-running can only widen poisoning, never
     // un-poison — safe.
-    analyzeSchemaSlotIntCertain(ast)
+    if (f.hasSchemaLiterals) analyzeSchemaSlotIntCertain(ast)
   }
 
   // Emit-time consumers (the static object-literal fast path) read this off
@@ -390,7 +410,7 @@ export function collectProgramFacts(ast) {
   return {
     dynVars: f.dynVars, dynWriteVars: f.dynWriteVars, anyDyn: f.anyDyn, propMap, valueUsed, callSites,
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
-    paramReps, hasSchemaLiterals: f.hasSchemaLiterals, writtenProps: f.writtenProps,
+    paramReps, hasSchemaLiterals: f.hasSchemaLiterals, hasMapSet: f.hasMapSet, writtenProps: f.writtenProps,
     literalWriteKeys: f.literalWriteKeys,
     arrResized: f.arrResized, nameEscapes: f.nameEscapes,
   }
@@ -585,6 +605,7 @@ export function observeProgramSlots(ast, opts) {
   const slotCtors = ctx.schema.slotTypedCtors
   const slotConstInts = ctx.schema.slotConstInts
   const dictValueTypes = ctx.schema.dictValueTypes
+  const mapValueTypes = ctx.schema.mapValueTypes
   // Unlike type facts, discriminant constants are rebuilt from the complete
   // program on every facts pass. This avoids emitter/function-order coupling:
   // codegen only consumes a settled whole-program census.
@@ -623,6 +644,18 @@ export function observeProgramSlots(ast, opts) {
     else if (cur !== vt) dictValueTypes.set(name, null)
   }
   const poisonDictValue = (name) => dictValueTypes.set(name, null)
+  // Map-value-type census (Tier 1, design .work/map-value-census-design.md
+  // §1): observeDictValue's own first-wins-then-clash lattice, applied to
+  // `recv.set(k, v)` RHS values instead of `[]=` writes — Map has no
+  // bracket-write form. Same whole-program name-keyed convention.
+  const observeMapValue = (name, vt) => {
+    if (!vt) return
+    const cur = mapValueTypes.get(name)
+    if (cur === null) return
+    if (cur === undefined) mapValueTypes.set(name, vt)
+    else if (cur !== vt) mapValueTypes.set(name, null)
+  }
+  const poisonMapValue = (name) => mapValueTypes.set(name, null)
   const paramReps = opts?.paramReps ?? null
   // Poison every hazarded slot's kind AND elem-ctor up front (unresolvable
   // receivers, computed-key writes, extern constructors — see
@@ -634,7 +667,7 @@ export function observeProgramSlots(ast, opts) {
   // hazard recompute resolves receivers the early pass poisoned wholesale
   // (fftplan's `re[j] = tr` on a then-unnarrowed param poisoned the world).
   // Sound to rebuild: every kind consumer left reads at emit, after this.
-  if (opts?.fresh) { slotTypes.clear(); slotCtors.clear(); dictValueTypes.clear() }
+  if (opts?.fresh) { slotTypes.clear(); slotCtors.clear(); dictValueTypes.clear(); mapValueTypes.clear() }
   const hazards = collectSlotWriteHazards(ast, opts?.fresh ? { paramReps: opts.paramReps } : undefined)
   applySlotWriteHazards(hazards,
     (sid, idx) => { poisonSlot(sid, idx); poisonCtor(sid, idx) },
@@ -814,6 +847,24 @@ export function observeProgramSlots(ast, opts) {
           if (vt) observeDictValue(root, vt); else poisonDictValue(root)
         }
       }
+    } else if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
+        typeof node[1][1] === 'string' && node[1][2] === 'set') {
+      // Map-value-type census (Tier 1, global half, design .work/map-value-
+      // census-design.md §1): `recv.set(k, v)` — Map's only write form (no
+      // `[]=` shape exists), so this branch is a CALL-shape sibling of the
+      // dict `[]=` branch above, not a MUTATE_OPS variant. Receiver gate is a
+      // HARD classification (new Map() → CALLEE_VAL + recordGlobalRep) —
+      // checked HERE at observe time (unlike the dict branch's fail-open
+      // unconditional census whose HASH-ness is settled at CONSUME time),
+      // since valTypeOf is already a cheap proven fact for a Map receiver.
+      const recvName = node[1][1]
+      if (valTypeOf(recvName) === VAL.MAP) {
+        const cargs = commaList(node[2])
+        if (cargs.length === 2) {
+          const vt = writeVT(cargs[1], { paramVts })
+          if (vt) observeMapValue(recvName, vt); else poisonMapValue(recvName)
+        }
+      }
     }
     for (let i = 1; i < node.length; i++) visit(node[i], intRefs, paramVts)
   }
@@ -835,7 +886,12 @@ export function observeProgramSlots(ast, opts) {
     visit(func.body, null, paramVts)
   }
   teOverlay = null
-  if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) {
+  // hasMapSet joins hasSchemaLiterals as the moduleInit-walk trigger (design
+  // .work/map-value-census-design.md §1): a bundled sub-module whose init
+  // code is PURELY `const M = new Map(); M.set(...)` has no `{}` anywhere to
+  // trip hasSchemaLiterals on its own — see hasMapSet's own doc comment
+  // (observeNodeFacts, above) for the matching pre-scan.
+  if ((ctx.module.initFacts?.hasSchemaLiterals || ctx.module.initFacts?.hasMapSet) && ctx.module.moduleInits) {
     ctx.func.localValTypesOverlay = null
     for (const mi of ctx.module.moduleInits) {
       const hit = pf.moduleInitSlot.get(mi)
@@ -845,6 +901,9 @@ export function observeProgramSlots(ast, opts) {
         }
         for (const [name, vt] of hit.dictObs) {
           if (vt) observeDictValue(name, vt); else poisonDictValue(name)
+        }
+        for (const [name, vt] of hit.mapObs) {
+          if (vt) observeMapValue(name, vt); else poisonMapValue(name)
         }
         continue
       }
@@ -859,6 +918,11 @@ export function observeProgramSlots(ast, opts) {
       const recordDict = (name, vt) => {
         dictObs.push([name, vt])
         if (vt) observeDictValue(name, vt); else poisonDictValue(name)
+      }
+      const mapObs = []
+      const recordMap = (name, vt) => {
+        mapObs.push([name, vt])
+        if (vt) observeMapValue(name, vt); else poisonMapValue(name)
       }
       const visitInit = (node, intRefs = null) => {
         if (!Array.isArray(node)) return
@@ -892,12 +956,22 @@ export function observeProgramSlots(ast, opts) {
               recordDict(root, vt)
             }
           }
+        } else if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
+            typeof node[1][1] === 'string' && node[1][2] === 'set') {
+          // Map-value-type census, moduleInit half — mirrors visit()'s branch
+          // above. Module inits carry no params, so wctx is root-only (no
+          // paramVts, same as the dict branch just above).
+          const recvName = node[1][1]
+          if (valTypeOf(recvName) === VAL.MAP) {
+            const cargs = commaList(node[2])
+            if (cargs.length === 2) recordMap(recvName, writeVT(cargs[1], {}))
+          }
         }
         for (let i = 1; i < node.length; i++) visitInit(node[i], intRefs)
       }
       teOverlay = null
       visitInit(mi)
-      if (mi != null && typeof mi === 'object') pf.moduleInitSlot.set(mi, { gen: pf.gen, obs, dictObs })
+      if (mi != null && typeof mi === 'object') pf.moduleInitSlot.set(mi, { gen: pf.gen, obs, dictObs, mapObs })
     }
   }
   ctx.func.localValTypesOverlay = prevOverlay
@@ -908,6 +982,11 @@ export function observeProgramSlots(ast, opts) {
   // the late {fresh:true} rebuild), so a poisoned-then-cleared entry on rebuild
   // correctly overwrites the earlier value via updateGlobalRep's merge.
   for (const [name, vt] of dictValueTypes) updateGlobalRep(name, { dictValueValType: vt })
+  // Map-value-type census (Tier 1, design .work/map-value-census-design.md
+  // §1) — same publish discipline as the dict-value census just above, no
+  // consumer wired yet at this call site (kind.js's mapValueKindOf reads it
+  // starting in the consumer-wiring step).
+  for (const [name, vt] of mapValueTypes) updateGlobalRep(name, { mapValueValType: vt })
 }
 
 // ————————————————————————————— slot-write hazards —————————————————————————————

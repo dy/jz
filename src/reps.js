@@ -103,6 +103,22 @@ export const VAL = {
  *   NUMBER arithmetic/relational consumers may trust this fact (mirrors
  *   typedReadMaybeOob, kind.js:257-263) — identity/typeof/nullish checks must
  *   not.
+ * @property {string}  [mapValueValType] VAL.* kind of every value ever written
+ *   through a proven-VAL.MAP receiver's `recv.set(k, v)` (any key) —
+ *   dictValueValType's Map-census Tier 1 sibling (.work/map-value-census-
+ *   design.md), same first-wins-then-clash lattice, additive-only, NEVER a
+ *   substitute for `val`. Two producers — analyze.js's same-body scan (local
+ *   half, updateRep) and observeProgramSlots' mapValueTypes census (global
+ *   half, updateGlobalRep) — both consumed only by kind.js's mapValueKindOf
+ *   helper (VT['()']'s `.get` short-circuit, ahead of methodValType — kept in
+ *   kind.js rather than threaded into kind-traits.js's methodValType, which
+ *   cannot import back from kind.js without a cycle), also reused by
+ *   emit.js's nullableOperand. Receiver gate is a HARD classification
+ *   (new Map() → CALLEE_VAL + recordGlobalRep) — no dynWriteVars-analog proxy
+ *   needed, unlike dict's HASH gate. Same soundness carve-out as
+ *   dictValueValType: an unwritten key reads back NaN-boxed undefined, so
+ *   only NUMBER arithmetic/relational consumers may trust this fact —
+ *   identity/typeof/nullish checks must not (see emit.js nullableOperand).
  * @property {boolean} [recvArrTyped]     receiver-kind CLASS proof (2026-07-31,
  *   named follow-up to the numeric-key unknown-receiver soundness fix, 9f46d517):
  *   true iff every live call site's argument at this position proves VAL.ARRAY OR
@@ -127,6 +143,7 @@ export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
   'typedCtor', 'wasm', 'nullable', 'neverGrown', 'bigintBoxed', 'recvArrTyped', 'dictValueValType',
+  'mapValueValType',
 ])
 
 const DBG_REPS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'

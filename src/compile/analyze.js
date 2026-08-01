@@ -1361,6 +1361,35 @@ function dictValueTypeOf(body, name) {
   return poisoned ? null : (vt ?? null)
 }
 
+// Map-value-type census, local half (design .work/map-value-census-design.md
+// §1) — mirrors dictValueTypeOf above but matches `recv.set(k, v)` CALL nodes
+// instead of `[]=` writes (Map has no bracket-write form). No self-read/
+// paramVts handling here, same as dictValueTypeOf's own local half (those are
+// the late whole-program {fresh:true} pass's concerns, program-facts.js).
+// Caller gates on decl vt === VAL.MAP (receiver already proven), so `name`
+// need not be re-checked here.
+function mapValueTypeOf(body, name) {
+  let vt, poisoned = false
+  const walk = (node) => {
+    if (poisoned || !Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') return
+    if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
+        node[1][1] === name && node[1][2] === 'set') {
+      const cargs = commaList(node[2])
+      if (cargs.length === 2) {
+        const wvt = dictWriteVT(cargs[1])
+        if (!wvt) { poisoned = true; return }
+        if (vt === undefined) vt = wvt
+        else if (vt !== wvt) { poisoned = true; return }
+      }
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
+  return poisoned ? null : (vt ?? null)
+}
+
 export function analyzeValTypes(body) {
   // localReps slice: store reads/writes the rep's `val` field (updateRep clears it
   // when set to undefined, matching the old explicit delete).
@@ -1544,6 +1573,15 @@ export function analyzeValTypes(body) {
           const dvt = dictValueTypeOf(body, a[1])
           if (dvt) updateRep(a[1], { dictValueValType: dvt })
         }
+        // Map-value-type census, local half (design .work/map-value-census-
+        // design.md §1) — sibling of the dict census above, gated on decl
+        // vt === VAL.MAP instead of the HASH-literal `dict` shape check
+        // (new Map() is a hard classification, valTypeOf(a[2]) already
+        // resolves it via CALLEE_VAL — no structural re-derivation needed).
+        if (vt === VAL.MAP) {
+          const mvt = mapValueTypeOf(body, a[1])
+          if (mvt) updateRep(a[1], { mapValueValType: mvt })
+        }
         const leanDict = dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(a[1])
         if (leanDict) {
           (ctx.func.leanHashLocals ??= new Set()).add(a[1])
@@ -1640,6 +1678,12 @@ export function analyzeValTypes(body) {
       if (dict) {
         const dvt = dictValueTypeOf(body, args[0])
         if (dvt) updateRep(args[0], { dictValueValType: dvt })
+      }
+      // Map-value-type census, local half — reassignment site sibling of the
+      // decl-site stamp above.
+      if (vt === VAL.MAP) {
+        const mvt = mapValueTypeOf(body, args[0])
+        if (mvt) updateRep(args[0], { mapValueValType: mvt })
       }
       if (dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(args[0])) {
         (ctx.func.leanHashLocals ??= new Set()).add(args[0])

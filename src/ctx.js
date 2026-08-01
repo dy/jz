@@ -447,6 +447,19 @@ export function reset(proto, globals, bridge) {
                                 //   ctx.scope.globalReps as dictValueValType by
                                 //   observeProgramSlots itself; not consumed
                                 //   directly anywhere else.
+    mapValueTypes: new Map(),  // name → VAL.* | null — Map-value-census Tier 1
+                                //   global half (.work/map-value-census-design.md
+                                //   §1): every VAL.* kind ever written through a
+                                //   proven-VAL.MAP receiver's `recv.set(k, v)`
+                                //   (any key) across the whole program — same
+                                //   first-wins-then-clash lattice and whole-
+                                //   program name-keyed convention as
+                                //   dictValueTypes just above (Map has no `[]=`
+                                //   write form, so the census matches the CALL
+                                //   shape instead). Populated/cleared by
+                                //   observeProgramSlots alongside dictValueTypes;
+                                //   written into ctx.scope.globalReps as
+                                //   mapValueValType.
     externSlotSids: new Set(),  // schemaId set — sids whose slot VALUES can be
                                 //   written by machinery the write censuses never
                                 //   see: the JSON const emitter / shaped runtime
