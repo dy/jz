@@ -6,6 +6,31 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+JESSIE RE-DISSECTED FRESH 2026-07-31 (profile-driven, no hypothesis
+inheritance; V8 --prof sampled ticks symbolized per wasm function +
+checksum-held counter surgery, checksum 2418067300 exact):
+HEADLINE — the gap is 1.393x MEDIAN (paired ABBA 4 rounds, jz
+~2872µs vs v8 ~2068µs), NOT 1.85x; the stale figure is dead (the
+dict campaign closed more than its per-slice pairs showed).
+RANKED COSTS (share of parse ticks): dispatch closure (closure8,
+parse.js:144, fires on 80% of 12,925 Pratt iterations) 29.7%;
+space wrappers $4/$9 (comment-skip + block-vs-object disambig +
+ASI newline, 3-hop composition over a zero-self-time base loop)
+14.3%; step composition 13%; generic __dyn_get*/__hash_get* 5.7%;
+__str_* 4.1%; char-scan/expr core ~8.6% (algorithmic parity with
+V8). THE CONCRETE GENERAL LEVER: inside dispatch, descriptor
+records ({op,l,p,map,word,kw} — monomorphic BY CONSTRUCTION at
+every token()/keyword() site) are read via __dyn_get_expr 6,784x/
+parse — the ops-array ELEMENT record shape is never unified into a
+closed record type. Same inference class as the landed prec fix,
+one more receiver shape: monomorphic array-of-records element
+classification (arrayElemSchema unification for push-built module-
+init record arrays). Honest estimate 5-10% of runtime closable →
+~1.25-1.32x. HARD TAILS named: V8 IC on record reads + inlined
+monomorphic closures vs call_indirect (structural short of a
+dispatch-rewrite project); wrapper-flattening = smaller secondary
+lever (2 call boundaries per token). Artifacts: scratchpad/prof/.
+
 RECEIVER-HASH FILL LANDED + MEASURED 2026-07-31 (a6312d3d; full
 gates: battery 3156/0/6 incl. dbg leg, kernel-parity 33/33 on fresh
 dist, kernel-oracle 9/9, selfhost 21/21, watr 35/35): the design's
