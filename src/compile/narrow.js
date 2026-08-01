@@ -638,10 +638,28 @@ function narrowValResults(funcs) {
       if (isBlock && hasBareReturn(body)) continue
       const exprs = returnExprs(body)
       if (!exprs.length) continue
-      const localValTypes = isBlock ? analyzeBody(body).valTypes : new Map()
-      const vt0 = valTypeOfWithCalls(exprs[0], localValTypes)
+      const bodyFacts = isBlock ? analyzeBody(body) : null
+      const localValTypes = bodyFacts ? bodyFacts.valTypes : new Map()
+      // A `.`/`[]` return tail (`return obj.p`) resolves its kind through
+      // kind.js VT['.'], which consults ctx.func.flatObjects for the SRoA
+      // flat-object fast path — normally populated per-function at emit time
+      // (compile/index.js), well AFTER this pass runs. Without it, a proven-
+      // BIGINT flat field's return tail reads as unproven here (this pass ran
+      // "ABOVE" per-function state, same class of gap as the schema.vars note
+      // below) and the exported function keeps the wrong (Number) boundary
+      // decode even though the value itself is correct. bodyFacts.flatObjects
+      // is body-local and pure — safe to install for the duration of this
+      // func's own valTypeOfWithCalls calls, then restore.
+      const prevFlat = ctx.func.flatObjects
+      if (bodyFacts) ctx.func.flatObjects = bodyFacts.flatObjects
+      let vt0, allSame
+      try {
+        vt0 = valTypeOfWithCalls(exprs[0], localValTypes)
+        allSame = vt0 && exprs.every(e => valTypeOfWithCalls(e, localValTypes) === vt0)
+      } finally {
+        ctx.func.flatObjects = prevFlat
+      }
       if (!vt0) continue
-      const allSame = exprs.every(e => valTypeOfWithCalls(e, localValTypes) === vt0)
       if (allSame) { func.valResult = vt0; changed = true }
     }
   }
@@ -2300,12 +2318,26 @@ export function narrowBoolResults() {
     if (isBlock && hasBareReturn(body)) continue
     const exprs = returnExprs(body)
     if (!exprs.length) continue
-    const localValTypes = isBlock ? analyzeBody(body).valTypes : null
+    const bodyFacts = isBlock ? analyzeBody(body) : null
+    const localValTypes = bodyFacts ? bodyFacts.valTypes : null
     const vt = e => typeof e === 'string'
       ? (localValTypes?.get(e) || ctx.scope.globalValTypes?.get(e) || null)
       : valTypeOf(e)
-    if (exprs.every(e => vt(e) === VAL.BOOL)) func.valResult = VAL.BOOL
-    else if (exprs.every(e => vt(e) === VAL.BIGINT)) func.valResult = VAL.BIGINT
+    // Same ctx.func.flatObjects gap as narrowValResults above — a `return
+    // obj.p` tail on a proven-BIGINT flat field needs it to resolve BIGINT
+    // here (this is the leaf-module skip path's own valResult pass, so there
+    // is no later chance to correct an unproven result).
+    const prevFlat = ctx.func.flatObjects
+    if (bodyFacts) ctx.func.flatObjects = bodyFacts.flatObjects
+    let isBool, isBigint
+    try {
+      isBool = exprs.every(e => vt(e) === VAL.BOOL)
+      isBigint = !isBool && exprs.every(e => vt(e) === VAL.BIGINT)
+    } finally {
+      ctx.func.flatObjects = prevFlat
+    }
+    if (isBool) func.valResult = VAL.BOOL
+    else if (isBigint) func.valResult = VAL.BIGINT
   }
 }
 

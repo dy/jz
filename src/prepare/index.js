@@ -2962,16 +2962,29 @@ const handlers = {
   // ++/-- prefix vs postfix: parser sends trailing null for postfix
   // Postfix i++ = (++i) - 1: increment happens, arithmetic recovers old value.
   // Property obj.prop++ has no dedicated ++ node (the ++ emitter is name-based),
-  // so it lowers to `obj.prop = obj.prop + 1` (returns the NEW value) — and the
-  // same -1/+1 recovery wraps it for postfix to yield the OLD value.
+  // so it lowers to `obj.prop = <'+1'|'-1'> obj.prop` — a DEDICATED unary op
+  // (not the spelled-out `obj.prop + 1`) meaning exactly "the operand,
+  // incremented/decremented by one, in whatever kind it already is" (kind-
+  // preserving, see kind.js VT['+1']/VT['-1'] — the member sibling of the
+  // '++'/'--' unary rule already used for bare names). Deliberately NOT the
+  // binary `['+', n, [,1]]` shape a genuine `obj.p += 1` ALSO desugars to (at
+  // emit time) — that shape is structurally ambiguous (bigintMixReject can't
+  // tell "prepare's own correction constant" apart from "user wrote += 1",
+  // and only one of them may bypass the BigInt/Number mix check), whereas
+  // `'+1'`/`'-1'` is an op no parser or other pass ever produces, so it is
+  // unambiguously ours. The outer ∓1 postfix-recovery wrapper keeps the plain
+  // literal shape (`['-', inc, [,1]]`) — same permissive-by-construction
+  // bypass the bare-name postfix recovery already uses just below in emit.js
+  // (isPostfix), since only prepare's OWN transform can nest an assignment
+  // there.
   '++'(a, _post) {
     const n = prep(a)
-    const inc = Array.isArray(n) && (n[0] === '.' || n[0] === '[]') ? ['=', n, ['+', n, [, 1]]] : ['++', n]
+    const inc = Array.isArray(n) && (n[0] === '.' || n[0] === '[]') ? ['=', n, ['+1', n]] : ['++', n]
     return _post !== undefined ? ['-', inc, [, 1]] : inc
   },
   '--'(a, _post) {
     const n = prep(a)
-    const dec = Array.isArray(n) && (n[0] === '.' || n[0] === '[]') ? ['=', n, ['-', n, [, 1]]] : ['--', n]
+    const dec = Array.isArray(n) && (n[0] === '.' || n[0] === '[]') ? ['=', n, ['-1', n]] : ['--', n]
     return _post !== undefined ? ['+', dec, [, 1]] : dec
   },
 

@@ -3659,6 +3659,23 @@ function bigintMixReject(op, a, b) {
     err(`Cannot mix BigInt and other types in \`${op}\` (TypeError in JS) — convert explicitly with BigInt() or Number()`)
 }
 
+// Member `.`/`[]` increment/decrement's postfix OLD-value recovery. Prepare
+// (index.js '++'/'--') has no dedicated increment NODE for a member target
+// the way bare names do (the '++'/'--' table entries below are name-based,
+// via readVar/writeVar) — the write itself is the DEDICATED '+1'/'-1' unary
+// op handled by its own table entry further down (unambiguous: no parser or
+// other pass ever produces that op, so it needs no mix-check bypass at all).
+// Postfix wraps that write with the SAME plain-literal ∓1 recovery the
+// bare-name path uses (`['-', ['=', n, ['+1', n]], [,1]]` etc.) — matched here
+// exactly like the bare-name isPostfix bypass just above: only prepare's own
+// transform nests an assignment in this exact position, so treating it as the
+// compiler's own correction constant (not a user-facing mix) is sound by the
+// same permissive-by-construction argument as the bare-name case.
+function bigintMemberAssignTarget(a) {
+  return Array.isArray(a) && a[0] === '=' && Array.isArray(a[1]) &&
+    (a[1][0] === '.' || a[1][0] === '[]') && valTypeOf(a[1]) === VAL.BIGINT ? a : null
+}
+
 // === Core emitter dispatch table ===
 // ctx.core.emit is seeded with a flat copy of this object on reset;
 // language modules add or override ops on ctx.core.emit directly.
@@ -3921,6 +3938,10 @@ export const emitter = {
     const sym = op.slice(0, -1)
     if (typeof name !== 'string') return emit(['=', name, [sym, name, val]])
     if (valTypeOf(name) === VAL.BIGINT || valTypeOf(val) === VAL.BIGINT) {
+      // `>>>=` has no BigInt arm at all (see the binary '>>>' handler above) —
+      // unlike the other bitwise compounds, which fall to i64.<op>, this one
+      // must throw unconditionally rather than take fn='shr_u' on i64 bits.
+      if (fn === 'shr_u') err('BigInt has no unsigned right shift (>>>) — TypeError in JS')
       bigintMixReject(sym, name, val)
       const void_ = ctx.func._expect === 'void'
       const result = fromI64([`i64.${fn}`, asI64(readVar(name)), asI64(emit(val))])
@@ -3978,6 +3999,22 @@ export const emitter = {
     return writeVar(name, typed([`${v.type}.${fn}`, v, one], v.type), void_)
   }])),
 
+  // Member `.`/`[]` increment/decrement's WRITE half — prepare's dedicated
+  // unary op (index.js '++'/'--'): "n, incremented/decremented by one, in
+  // whatever kind it already is" (`n` is always a `.`/`[]` node here — bare
+  // names use the readVar/writeVar table entry just above). A proven-BIGINT
+  // member takes the exact i64.const-1 arithmetic that entry uses. Anything
+  // else reconstructs and re-emits the spelled-out `n + 1`/`n - 1` shape —
+  // byte-identical to what this op replaced (ToNumber coercion, string-
+  // dispatch fallback, etc. all still live in the binary '+'/'-' handlers,
+  // just reached one level of indirection later): this op only ever changes
+  // codegen on the BIGINT-gated path.
+  ...Object.fromEntries([['+1', '+', 'add'], ['-1', '-', 'sub']].map(([op, sym, fn]) => [op, n =>
+    valTypeOf(n) === VAL.BIGINT
+      ? fromI64([`i64.${fn}`, asI64(emit(n)), ['i64.const', 1]])
+      : emit([sym, n, [, 1]])
+  ])),
+
   // === Arithmetic (type-preserving) ===
 
   // Postfix in void: (++i)-1 / (--i)+1 → just ++i / --i
@@ -3992,6 +4029,10 @@ export const emitter = {
     // entry above); recover the old value with the same i64.add-by-constant
     // shape instead of falling into the generic BIGINT-mix check below.
     if (isPostfix(a, '--', b) && valTypeOf(a) === VAL.BIGINT)
+      return fromI64(['i64.add', asI64(emit(a)), ['i64.const', 1]])
+    // Member BIGINT `obj.p++`'s postfix OLD-value recovery — see
+    // bigintMemberAssignTarget above.
+    if (isLit1(b) && bigintMemberAssignTarget(a))
       return fromI64(['i64.add', asI64(emit(a)), ['i64.const', 1]])
     // A self-accumulation `a = a + …` lets the concat bump-EXTEND `a` in place (a is dead-after).
     // Read it for THIS concat, then clear so nested operands (not the accumulation target) stay fresh.
@@ -4126,6 +4167,10 @@ export const emitter = {
     // handler's `(--n) + 1` case just above; see its comment for why this
     // bypasses bigintMixReject (compiler-synthesized constant, not a source mix).
     if (isPostfix(a, '++', b) && valTypeOf(a) === VAL.BIGINT)
+      return fromI64(['i64.sub', asI64(emit(a)), ['i64.const', 1]])
+    // Member BIGINT `obj.p--`'s postfix OLD-value recovery — see
+    // bigintMemberAssignTarget above ('+').
+    if (isLit1(b) && bigintMemberAssignTarget(a))
       return fromI64(['i64.sub', asI64(emit(a)), ['i64.const', 1]])
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('-', a, b)
@@ -4631,6 +4676,14 @@ export const emitter = {
     return typed([`i32.${fn}`, toI32(ca), toI32(cb)], 'i32')
   }])),
   '>>>': (a, b) => {
+    // BigInt has no unsigned right shift — ES2020 §6.1.6.2.11 defines no
+    // BigInt::unsignedRightShift; `>>>`'s abstract operation for a BigInt
+    // operand throws TypeError unconditionally (unlike the signed bitwise
+    // ops above, which fall to i64.shr_s/etc — `>>>` has no i64 arm at all
+    // to fall to). Checked before either side emits, so no side effect runs
+    // ahead of the throw.
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+      err('BigInt has no unsigned right shift (>>>) — TypeError in JS')
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb)) {
       const r = litVal(va) >>> litVal(vb) // JS uint32 result ∈ [0, 2^32)

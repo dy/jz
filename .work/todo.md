@@ -6,6 +6,157 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+MEMBER BIGINT COMPOUND-ASSIGN FIXED 2026-07-31 (the sibling map
+banked in the 2026-07-29 entry below, all three items closed):
+REPRO ENVELOPE (before fix): `obj.n++`/`arr[0]++`/`++`/`--` on a
+proven-BIGINT member silently computed garbage via the generic
+float/string-dispatch path (arithmetic on the i64-reinterpreted f64
+CARRIER bits as if they were an ordinary Number) whenever the member's
+kind could NOT be re-proven post-write; `arr[0]++` specifically threw
+a FALSE "Cannot mix BigInt" TypeError instead (its census — unlike
+objects' — already proved BIGINT, so prepare's hardcoded NUMBER-
+literal `1` tripped bigintMixReject for real). Plain-Number members
+were unaffected throughout (confirms the break was BIGINT-specific,
+not the desugar mechanism itself). FLAKINESS: NOT reproduced — 40x
+identical-source recompiles in one process, 200x interleaved-shape
+recompiles (varying object schemas + a plain-Number sibling shape
+every other iteration): zero divergence. ctx.js's reset() rebuilds
+ctx.schema fresh every beginSession call and resetFactStore() rebuilds
+the program-facts store fresh too; both are already complete. Most
+likely explanation: the original "flaky" read was this SAME
+deterministic bug (root cause 1 below), whose trigger depends on
+write SHAPE/ORDER subtleties (self-referential vs not, `+=` token vs
+plain `=`) easy to misperceive as nondeterminism across ad hoc runs —
+pinned a dedicated repeated-compile regression test anyway (the exact
+ledger-named shape, 40x + 20x interleaved) as a standing guard, in
+case the reset-soundness ever regresses.
+THREE INDEPENDENT ROOTS, each general (not per-shape patches):
+(1) program-facts.js's schema `.prop=` kind census (writeVT) had NO
+self-read neutrality — only the dict-value census did (isSelfDictRead/
+SELF_READ). ANY self-referential compound member write (`o.n = o.n +
+1n`, `o.n += 1n`, prepare's `o.n++`/`--` desugar) hard-poisoned the
+slot's censused kind via the generic "`.prop` read → null" rule,
+permanently destroying the literal's BIGINT fact. FIX: abstain (skip
+both observe AND poison) when the write is structurally self-
+preserving — isSelfPreservingPropWrite, a small LOCAL duplicate of
+analyze-scans.js's flat-object twin (kept separate deliberately: the
+two call sites have different target shapes, and duplication beats a
+forced shared abstraction here). FIRST ATTEMPT WRONG, CAUGHT BY THE
+BATTERY: tried extending writeVT's OWN SELF_READ-collapses-to-sibling
+join (the dict-value design) to schema props too — regressed a real
+mix-reject (`o.n += 1` on a real BigInt slot stopped throwing,
+test/statements.js "should throw" pin caught it) because collapsing a
+self-read to the SIBLING operand's kind launders a genuine BigInt vs
+Number mismatch into a false NUMBER observation. The dict design's own
+rationale ("self-read contributes no NEW info") doesn't transfer: a
+dict key has no per-key established kind to preserve, a schema PROP
+does (the literal). Abstain, not collapse-to-sibling, is the correct
+schema-side operation.
+(2) kind.js's flat-object (SRoA) fast path (VT['.']/VT['[]']) answered
+"unproven" for ANY written slot unconditionally ("its value may differ
+from the literal") — sound in general, wrong for the common self-
+preserving case. FIX: analyze-scans.js selfPreservingWrittenKeys
+computes, per written key, whether every write is provably self-
+preserving (arithmetic op, one operand the self-read, the other a
+non-conflicting literal/self-preserving sub-expression); kind.js
+consults `flat.selfPreserving` alongside `flat.written`.
+(3) prepare's `.`/`[]` ++/-- desugar (index.js) hardcoded a spelled-
+out `obj.p = obj.p + 1` with a plain NUMBER-literal `1` — STRUCTURALLY
+IDENTICAL to whatever a genuine `obj.p += 1`/`obj.p = obj.p + 1` ALSO
+produces (the '+=' handler desugars to the exact same shape at emit
+time). bigintMixReject cannot tell "prepare's own correction constant"
+apart from "a real Number operand" from shape alone — after fixing
+(1)/(2) so the member's kind is provable, a shape-only bypass would
+have SILENTLY ACCEPTED genuine `obj.p += 1` BigInt/Number mixes
+instead of correctly TypeError-ing (verified: a battery pin literally
+caught this exact false-negative before landing). TRIED AND DIED:
+tagging the synthesized literal (`Object.assign([, 1], {synthOne:
+true})`) — survives at optimize:0, LOST at optimize:1+ (isSynthOneLit
+saw `tag=undefined` past the inline/scalarize passes) because
+ast.js's cloneNode rebuilds every node via `.map()`, which drops non-
+index properties on every clone (inlining clones call-site bodies).
+ROOT FIX: two DEDICATED unary AST ops, `'+1'`/`'-1'` ("the operand,
+incremented/decremented by one, same kind" — mirrors the bare-name
+'++'/'--' unary VT rule already in kind.js), replacing the ambiguous
+binary shape for MEMBER targets only. An op string is an indexed
+array element, so it survives `.map(cloneNode)` trivially — no tagging
+needed, no ambiguity possible (no parser or other pass ever emits
+this op). emit.js's new `'+1'`/`'-1'` table entries: BIGINT-proven →
+the same i64.const-1 arithmetic the bare-name entries use; anything
+else → `emit(['+'|'-', n, [, 1]])`, literally re-invoking the OLD
+binary-handler shape, so plain-Number member ++/-- emits BYTE-
+IDENTICAL WASM to before this op existed (kernel-parity 33/33 byte-
+identical confirms). Ordering matters: `'+1'`/`'-1'` reach the schema/
+dict-value census as a NEW shape too (`effectiveWriteValue` doesn't
+know them) — extended isSelfPreservingPropWrite/selfPreservingWrittenKeys
+(unary case, trivially self-preserving) AND writeVT's dict-value path
+(implicit NUMBER-literal-1 operand, mirrors the OLD '+' collapse
+exactly — dict values, unlike schema props, WANT the collapse-to-
+sibling behavior) — a pre-existing dict-census test
+(test/inference.js "self-read neutrality — d[k]++") caught the miss.
+SIBLING GAP SURFACED + FIXED: narrowValResults/narrowBoolResults
+(src/compile/narrow.js, the function-return-kind pre-pass) run BEFORE
+ctx.func.flatObjects is populated for the function under examination —
+a bare `return obj.n`/`return o.n++` after a write kept exporting the
+wrong (Number) boundary kind even once the VALUE was already correct
+(same "phase ran ABOVE per-function state" class as the pre-existing
+"ctx.schema.vars populated later than narrowValResults" note,
+compile/index.js:1274, but for a DIFFERENT ctx field). FIX: install
+that function's own `analyzeBody(body).flatObjects` for the duration
+of ITS OWN kind resolution in both passes (safe — body-pure fact, a
+simple per-function context-field swap restored via try/finally, not
+a whole-program store). Side effect: this ALSO closed a PRE-EXISTING
+documented gap for BOOL array elements (test/booleans.js "bare
+boolean read from a container" — was pinned as broken, now correct;
+updated to assert the real value).
+NOT FIXED, BANKED (same architecture class, confirmed pre-existing and
+UNRELATED to compound-assign): a bare `return arr[i]` on a BigInt
+ARRAY element still exports the wrong boundary kind — `let a=[1n];
+return a[0]` was ALREADY wrong with zero writes involved, before any
+of this session's changes. Root: BigInt arrays never qualify for flat
+SRoA at all (static.js's staticValue has no `'bigint'` case, so
+`elems.every(e => staticValue(e) !== NO_VALUE)` disqualifies ANY
+bigint-element array literal from scanFlatObjects — a separate, real
+gap in its own right, unexplored here) — kind instead resolves via
+`rep.arrayElemValType`, populated through `updateRep`/`repOf`, a
+WHOLE-PROGRAM fact store, not a simple per-function context field like
+`ctx.func.flatObjects`. The same "install the function's own facts
+before narrow-time kind resolution" fix would need snapshotting
+whatever `updateRep` touches per touched name and restoring precisely
+— more care than this session's remaining budget allowed to get right
+without risking stale-fact leakage into real emission. The ARITHMETIC
+itself is correct (verified via `a[0] + 0n` embedding, which resolves
+through the separately-correct emit-time path) — only the JS-boundary
+DECODE of a bare, unembedded return is affected. Two ledger items:
+(a) give BigInt array literals a flat-SRoA path (static.js staticValue
+bigint case + scanFlatObjects follow-through), or (b) extend the
+narrowValResults/narrowBoolResults per-function-facts-installation fix
+to rep.arrayElemValType with a proper snapshot/restore.
+`>>>` HAD NO BIGINT ARM (separate, smaller item, same ledger request):
+ES2020 defines no BigInt::unsignedRightShift — `>>>` on ANY BigInt
+operand is unconditionally a TypeError, unlike the other bitwise ops
+(which correctly fall to i64.<op>). Was completely ungated: the binary
+'>>>' handler had no BigInt check at all (fell into the i32 path,
+garbage); the bare-name `'>>>='` compound-assign table entry had its
+OWN dedicated i64.shr_u branch (shared with the other bitwise
+compounds) that also never checked for this — silently computed
+i64.shr_u instead of throwing. Both fixed with an explicit `err(...)`
+before either side emits (no side effect ahead of the throw). Member
+`'>>>='` needed no separate fix — it desugars to the (now-fixed)
+binary '>>>' handler.
+PINS: test/statements.js — member BigInt ++/--/postfix-recovery/`+=`/
+hand-written `=`+`+` compound-assign at the 2^62±1 boundary (obj AND
+arr, host-JS-authority), a plain-Number member ratchet-regression test
+(exact values, same shapes), `>>>` BigInt TypeError (binary + member +
+bare compound-assign), a repeated-compile stability guard (40x + 20x
+interleaved) for the ledger-named flaky shape. test/booleans.js — the
+newly-closed bare-boolean-array-read gap, updated from "documented
+gap" to asserting the correct value.
+GATES: battery 3173/0/6 (+10 vs 3163/0/6 baseline), kernel-parity
+33/33 byte-identical (O0/O2/O3 — plain-Number '+1'/'-1' fallback path
+confirmed zero-delta), kernel-oracle 9/9 (209 assertions), JZ_DEBUG_
+INVARIANTS=1 leg on statements+types+data 911/0, watr 57/57.
+
 ERROR-MESSAGE EVAPORATION INVESTIGATED — PREMISE OVERTURNED
 2026-07-31 (read-only, empirical envelope + byte-cost measurement):
 "Errors are just their message" is DOCUMENTED DELIBERATE design

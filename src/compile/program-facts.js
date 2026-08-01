@@ -446,6 +446,18 @@ const isSelfDictRead = (n, root) => {
   return r === root
 }
 
+// Schema-slot self-referential compound writes (`o.n = o.n + 1n`, `o.n += 1n`,
+// prepare's `o.n++`/`--` desugar) are handled by ABSTAINING at the call site
+// (observeProgramSlots' `.prop=` branch below), not here — see
+// isSelfPreservingPropWrite (below) and its call site for why:
+// writeVT's own SELF_READ join (used by the dict-value census, where a
+// self-read truly contributes no NEW information) is the wrong shape for a
+// schema slot, whose self-read has an ALREADY-KNOWN kind from the literal —
+// collapsing it into the sibling operand's kind (as '+' does below) can
+// silently launder a genuine BigInt/Number mix into a false NUMBER
+// observation that then POISONS the slot instead of leaving it for
+// bigintMixReject to catch downstream.
+
 // ── truthy/falsy/nonNullish value-set semantics for &&/||/?? (and only
 // there — see .work/dict-value-census-design.md) ──────────────────────────
 // A value-set is an array of `{ kind, bool }` elements: `kind` is a VAL.*
@@ -526,6 +538,19 @@ const writeVT = (n, wctx) => {
       if (ta == null || tb == null) return null
       if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
       return VAL.NUMBER
+    }
+    // prepare's dedicated member ++/-- unary (index.js '++'/'--', member
+    // targets only) — `d[k]++`/`d[k]--` reach the dict-value census as
+    // `['+1', d[k]]`/`['-1', d[k]]` (effectiveWriteValue) rather than the
+    // spelled-out `d[k] + 1`. Same shape as the '+'/'+=' case just above with
+    // an IMPLICIT NUMBER-literal second operand (the "1" baked into the op) —
+    // a self-read collapses to NUMBER exactly like `d[k] = d[k] + 1` already
+    // did.
+    if (op === '+1' || op === '-1') {
+      const ta = writeVT(n[1], wctx)
+      if (ta === SELF_READ) return VAL.NUMBER
+      if (ta == null) return null
+      return ta === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
     }
     if (op === '?:') {
       const a = writeVT(n[2], wctx), b = writeVT(n[3], wctx)
@@ -765,9 +790,15 @@ export function observeProgramSlots(ast, opts) {
       const sid = repOf(node[1][1])?.schemaId ?? ctx.schema.vars.get(node[1][1])
       const idx = sid != null ? (ctx.schema.list[sid]?.indexOf(node[1][2]) ?? -1) : -1
       if (idx >= 0) {
-        const vt = writeVT(effectiveWriteValue(op, node[1], node[2]), { paramVts })
-        if (vt) observeSlot(sid, idx, vt)
-        else poisonSlot(sid, idx)
+        const effVal = effectiveWriteValue(op, node[1], node[2])
+        // Self-preserving compound write (`o.n = o.n + 1n`, `o.n += 1n`,
+        // `o.n++`/`--`) — abstain (see isSelfPreservingPropWrite above), not
+        // observe/poison.
+        if (!isSelfPreservingPropWrite(node[1][1], node[1][2], effVal)) {
+          const vt = writeVT(effVal, { paramVts })
+          if (vt) observeSlot(sid, idx, vt)
+          else poisonSlot(sid, idx)
+        }
       }
     } else if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
       // Dict-value-type census (global half, design §1b): `name[key] = rhs` for
@@ -940,6 +971,44 @@ export function effectiveWriteValue(op, lhs, rhs) {
   if (op === '++' || op === '--') return [op === '++' ? '+' : '-', lhs, [null, 1]]
   if (op === '&&=' || op === '||=' || op === '??=') return ['?:', lhs, lhs, rhs]
   return [op.slice(0, -1), lhs, rhs]
+}
+
+// Self-referential compound `.prop=` writes (`o.n = o.n + 1n`, `o.n += 1n`,
+// prepare's `o.n++`/`--` desugar) can only ever PRESERVE the slot's existing
+// censused kind, never establish a new one — writeVT can't determine one
+// either way without circularly re-deriving the slot's own kind, and its
+// generic `.`-read-answers-null rule would otherwise hard-POISON the slot on
+// every such write (a live regression: `o.n += 1n` on a `{n: 8n}` literal lost
+// the BIGINT observation entirely). The correct census contribution is to
+// ABSTAIN — skip both observe and poison, leaving whatever the literal (or an
+// earlier write) already established. A genuine mismatch (`o.n += 1` on a
+// real BigInt slot) still surfaces: valTypeOf(o.n) resolves BIGINT from the
+// untouched census, and bigintMixReject (emit.js) throws on it at emit time —
+// this check only decides what the CENSUS records, not whether the write is
+// legal. Structural, not kind-aware (mirrors analyze-scans.js's flat-object
+// sibling, selfPreservingWrittenKeys/preserves — same problem, same shape,
+// different storage; kept as a small local duplicate rather than a shared
+// export to avoid coupling two call sites with different target shapes).
+const SELF_PRESERVING_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
+function isSelfPreservingPropWrite(obj, prop, rhs) {
+  const isSelf = (n) => Array.isArray(n) && (n[0] === '.' || n[0] === '?.') && n[1] === obj && n[2] === prop
+  const preserves = (n) => {
+    if (isSelf(n)) return true
+    if (!Array.isArray(n)) return false
+    const [op, a, b] = n
+    // prepare's dedicated member ++/-- unary (index.js): "a, ±1, same kind" —
+    // trivially self-preserving, no second operand to check.
+    if (b === undefined && (op === '+1' || op === '-1')) return isSelf(a)
+    if (b === undefined || !SELF_PRESERVING_OPS.has(op)) return false
+    const aSelf = isSelf(a), bSelf = isSelf(b)
+    if (!aSelf && !bSelf) return false
+    const other = aSelf ? b : a
+    if (isSelf(other)) return true
+    if (Array.isArray(other) && other[0] == null && typeof other[1] === 'number') return true  // number literal
+    if (Array.isArray(other) && other[0] === 'bigint') return true                             // bigint literal
+    return preserves(other)
+  }
+  return preserves(rhs)
 }
 
 const KEYED_EXEMPT_VALS = new Set([VAL.ARRAY, VAL.TYPED, VAL.HASH, VAL.MAP, VAL.SET, VAL.STRING])

@@ -134,9 +134,16 @@ test('bool: value-preserving &&/|| keep the numeric carrier (documented gap)', (
   is(run('export let f = () => 0 || true')(), 1)
 })
 
-test('bool: bare boolean read from a container crosses as 1/0 (documented gap)', () => {
-  // A boolean stored in an array is the 0/1 carrier; a bare return doesn't prove
-  // BOOL at the boundary, so it surfaces as 1. typeof still observes "boolean".
-  is(run('export let f = () => { let a = [true, false]; return a[0] }')(), 1)
+test('bool: bare boolean read from a container decodes as a real boolean', () => {
+  // Was a documented gap (bare return crossed as the raw 1/0 carrier instead of
+  // proving BOOL at the boundary) — closed as a side effect of the member-
+  // compound-assign BigInt fix (2^62 boundary ledger entry): narrowValResults/
+  // narrowBoolResults (src/compile/narrow.js), the function-return-kind
+  // pre-pass, now installs the function's own analyzeBody(body).flatObjects
+  // before resolving a `.`/`[]` return tail's kind — previously it ran before
+  // ctx.func.flatObjects was populated for the function under examination, so
+  // a proven-BOOL (or BIGINT — see statements.js) flat array/object element's
+  // return tail read as unproven and kept the raw Number carrier.
+  is(run('export let f = () => { let a = [true, false]; return a[0] }')(), true)
   is(run('export let f = () => { let a = [true, false]; return typeof a[0] }')(), 'boolean')
 })

@@ -382,6 +382,78 @@ export function scanBindingUses(body, trackNames) {
 // constant data segment is cheaper than N locals (+ the per-slot init prologue).
 const FLAT_ARRAY_MAX = 8
 
+// A WRITTEN flat slot is normally unanswerable by kind (VT['.'] in kind.js —
+// "its runtime value may differ from the literal"). It stays answerable when
+// EVERY write to that key is a self-referential compound update (`o.k =
+// o.k <op> x`, `o.k <op>= x`, `o.k++`/`o.k--`) whose non-self operand can't
+// independently prove a conflicting kind: such a write can only ever PRESERVE
+// the slot's existing kind (BigInt stays BigInt, Number stays Number), never
+// change it. Mirrors the schema-slot census's self-preserving-write abstain
+// (program-facts.js isSelfPreservingPropWrite) for the flat (schema-less)
+// SRoA representation — same problem (a self-referential write hard-
+// poisoning a provable kind), same fix shape, different storage.
+const SELF_PRESERVING_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
+// Local twin of program-facts.js's effectiveWriteValue (program-facts.js
+// imports FROM this module — importing back would cycle). Small and pure;
+// not worth threading through a shared module for one caller each side.
+const _effectiveWriteValue = (op, lhs, rhs) => {
+  if (op === '=') return rhs
+  if (op === '++' || op === '--') return [op === '++' ? '+' : '-', lhs, [null, 1]]
+  if (op === '&&=' || op === '||=' || op === '??=') return ['?:', lhs, lhs, rhs]
+  return [op.slice(0, -1), lhs, rhs]
+}
+
+/** Which of `written`'s keys on binding `name` are safely still described by
+ *  the literal initializer's kind — see SELF_PRESERVING_OPS above. */
+function selfPreservingWrittenKeys(body, name, written) {
+  const litKey = (k) => (Array.isArray(k) && k[0] === 'str' && typeof k[1] === 'string') ? k[1] : staticIndexKey(k)
+  const keyOf = (t) => {
+    if (!Array.isArray(t) || t[1] !== name) return null
+    if (t[0] === '.' || t[0] === '?.') return typeof t[2] === 'string' ? t[2] : null
+    if (t[0] === '[]') return litKey(t[2])
+    return null
+  }
+  const isSelf = (n, key) => keyOf(n) === key
+  const preserves = (rhs, key) => {
+    if (isSelf(rhs, key)) return true
+    if (!Array.isArray(rhs)) return false
+    const [op, a, b] = rhs
+    // prepare's dedicated member ++/-- unary (index.js): "a, ±1, same kind" —
+    // trivially self-preserving, no second operand to check.
+    if (b === undefined && (op === '+1' || op === '-1')) return isSelf(a, key)
+    if (b === undefined || !SELF_PRESERVING_OPS.has(op)) return false
+    const aSelf = isSelf(a, key), bSelf = isSelf(b, key)
+    if (!aSelf && !bSelf) return false
+    const other = aSelf ? b : a
+    if (isSelf(other, key)) return true                              // `o.k = o.k + o.k`
+    if (Array.isArray(other) && other[0] == null && typeof other[1] === 'number') return true  // number literal
+    if (Array.isArray(other) && other[0] === 'bigint') return true    // bigint literal
+    return preserves(other, key)
+  }
+  const safe = new Map()  // key → observed-safe-so-far (absent = unobserved)
+  const observe = (key, ok) => { if (safe.get(key) !== false) safe.set(key, ok) }
+  const walk = (n) => {
+    if (!Array.isArray(n)) return
+    const op = n[0]
+    if (op === '=' && Array.isArray(n[1])) {
+      const key = keyOf(n[1])
+      if (key != null && written.has(key)) observe(key, preserves(n[2], key))
+    } else if (MUTATE_OPS.has(op) && op !== '=' && Array.isArray(n[1])) {
+      // Covers '+=' et al AND '++'/'--' (MUTATE_OPS = ASSIGN_OPS ∪ {++,--}) —
+      // though a member '++'/'--' never reaches here today (prepare/index.js
+      // desugars it to a plain '=' before analyze runs), effectiveWriteValue
+      // handles that shape too if that ever changes.
+      const key = keyOf(n[1])
+      if (key != null && written.has(key)) observe(key, preserves(_effectiveWriteValue(op, n[1], n[2]), key))
+    }
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  walk(body)
+  const out = new Set()
+  for (const k of written) if (safe.get(k) === true) out.add(k)
+  return out
+}
+
 export function scanFlatObjects(body) {
   const cand = new Map()                 // name → {names, values}
 
@@ -446,7 +518,8 @@ export function scanFlatObjects(body) {
     const names = props.names.slice(), values = props.values.slice()
     for (const k of schema)
       if (!names.includes(k)) { names.push(k); values.push(undefined) }
-    cand.set(name, { names, values, written })
+    const selfPreserving = written.size ? selfPreservingWrittenKeys(body, name, written) : null
+    cand.set(name, { names, values, written, selfPreserving })
   }
   return cand
 }

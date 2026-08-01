@@ -251,11 +251,13 @@ VT['[]'] = (args) => {
   // scalar `a#i` locals (scanFlatObjects). A write-once slot's value-type is its
   // element literal's — same numeric-binding as the `VT['.']` object case, so
   // `a[0] * 2` stays a plain f64 op instead of the polymorphic ToNumber battery.
+  // A written slot stays answerable too when every write is self-preserving
+  // (`a[k]++`/`a[k] += x` etc.) — see VT['.']'s identical comment above.
   if (typeof args[0] === 'string') {
     const flat = ctx.func.flatObjects?.get(args[0])
     if (flat) {
       const k = staticIndexKey(args[1])
-      if (k != null && !flat.written?.has(k)) {
+      if (k != null && (!flat.written?.has(k) || flat.selfPreserving?.has(k))) {
         const i = flat.names.indexOf(k)
         if (i >= 0 && flat.values[i] !== undefined) return valTypeOf(flat.values[i])
       }
@@ -342,10 +344,14 @@ VT['.'] = (args) => {
   // ToNumber + string-format battery, though it can only be numeric. Computed
   // on-demand (not cached at analyze time) because param val-types — `{x:n}`'s
   // `n` is numeric-by-divergence — are only seeded at emit. A reassigned slot
-  // (`p.x = …`) stays untyped: its runtime value may differ from the literal.
+  // (`p.x = …`) stays untyped UNLESS every write is provably self-preserving
+  // (`p.x = p.x + 1`, `p.x += 1`, prepare's `p.x++`/`--` desugar — see
+  // analyze-scans.js selfPreservingWrittenKeys, the flat-SRoA sibling of the
+  // schema-slot census's self-read neutrality): such a write can only ever
+  // keep the literal's own kind, never change it.
   if (typeof args[0] === 'string') {
     const flat = ctx.func.flatObjects?.get(args[0])
-    if (flat && !flat.written?.has(args[1])) {
+    if (flat && (!flat.written?.has(args[1]) || flat.selfPreserving?.has(args[1]))) {
       const i = flat.names.indexOf(args[1])
       if (i >= 0 && flat.values[i] !== undefined) return valTypeOf(flat.values[i])
     }
@@ -404,6 +410,11 @@ VT['.'] = (args) => {
 const numericBinaryVT = (args) =>
   valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
 for (const op of NUMERIC_BINARY_OPS) VT[op] = numericBinaryVT
+// `'+1'`/`'-1'` — prepare's dedicated member ++/-- unary (index.js '++'/'--'):
+// "the operand, incremented/decremented by one" — kind-preserving, exactly
+// like the bare-name '++'/'--' unary rule below, just spelled as its own op
+// so it's unambiguous at emit time (see prepare/index.js's comment on why).
+VT['+1'] = VT['-1'] = (args) => valTypeOf(args[0])
 // `~`, `++`, `--`, `**` preserve/propagate BigInt…
 const numericUnaryVT = (args) =>
   valTypeOf(args[0]) === VAL.BIGINT || (args[1] != null && valTypeOf(args[1]) === VAL.BIGINT) ? VAL.BIGINT : VAL.NUMBER
