@@ -1164,13 +1164,40 @@ function tryIntDivTrunc(aNode, bNode) {
       ['else', ['i32.div_s', A(), B()]]]]], 'i32')
 }
 
+/** Emit a call argument ONCE, choosing emit vs emitIdentitySafe up front — the
+ *  same single-emission discipline as bridge.js's storedValue chokepoint
+ *  (carrier-invariant-design.md), inlined here because emit.js IS emit/
+ *  emitIdentitySafe's home module (no bridge indirection needed, but no
+ *  after-the-fact carrierF64 rescue is possible either: calling coerceArg
+ *  with a plain `emit(node)` result and branching on hasAmbiguousBoolMerge
+ *  AFTER the fact would emit `node` a SECOND time via emitIdentitySafe for
+ *  the ambiguous case — a real side-effecting double-eval for an arg like
+ *  `f() > 0 && 1`). Callers pass this instead of a bare `emit(a)`. */
+const argIR = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node)
+
+// THE represented-carrier chokepoint (carrier-invariant-design.md), same
+// definition as bridge.js's exported storedValue — duplicated here (not
+// imported) because emit.js already owns `emit`/`emitIdentitySafe` directly;
+// going through bridge.js would round-trip via ctx.bridge for no reason.
+// Boxed-value slots emit.js constructs directly (SRoA flat-object/array field
+// locals below) need the FULL carrierF64 treatment `argIR` deliberately
+// skips (coerceArg applies its own valTypeOf===BOOL carrierF64 wrap on top
+// of argIR's result — layering carrierF64 here too would be a second,
+// redundant application; harmless since carrierF64 is idempotent on an
+// already-boxed atom, but this file keeps the two helpers distinct so each
+// call site's contract stays legible).
+const storedValue = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64(node, emit(node))
+
 /** Coerce an emitted arg IR to match a callee param. Param may carry ptrKind (pointer-ABI
  *  i32 offset), else falls back to numeric WASM type coercion.
  *  `node` (the arg's AST, when the caller has it): a statically-BOOL arg headed
  *  into an UNTYPED f64 param crosses as its TRUE/FALSE atom box — the callee
  *  treats that slot as an opaque value, so identity (typeof/String/strict-eq)
  *  must survive. A val-known param (narrow stamped `p.val`) keeps the raw 0/1
- *  ABI its body assumes; i32/pointer params are numeric positions. */
+ *  ABI its body assumes; i32/pointer params are numeric positions. `ir` must
+ *  already be argIR(node)'s result (or ptrKind-appropriate) — this function
+ *  itself never emits, only coerces, so it cannot re-decide emit vs
+ *  emitIdentitySafe after the fact (see argIR's comment). */
 function coerceArg(ir, param, node) {
   if (param?.ptrKind != null) {
     // PTR.OBJECT never forwards (FORWARDING_MASK — only ARRAY/HASH/SET/MAP
@@ -1198,7 +1225,7 @@ function padArgs(args, params) {
 /** Emit a node list as call arguments for the given param list: per-param
  *  coercion then arity padding. Used at every direct-call site. */
 function emitCallArgs(argNodes, params) {
-  return padArgs(argNodes.map((a, k) => coerceArg(emit(a), params[k], a)), params)
+  return padArgs(argNodes.map((a, k) => coerceArg(argIR(a), params[k], a)), params)
 }
 
 /** Fuse `a + b` when it tops a string-concat chain of ≥3 leaves: evaluate
@@ -1420,7 +1447,7 @@ function emitSpeculativeCall(callee, spec, argNodes, func) {
   const seq = [], slots = []
   for (let k = 0; k < params.length; k++) {
     if (k < argNodes.length) {
-      const ir = coerceArg(emit(argNodes[k]), params[k], argNodes[k])
+      const ir = coerceArg(argIR(argNodes[k]), params[k], argNodes[k])
       // Temp width follows the PARAM's ABI (coerceArg's contract), not the IR
       // tag — pointer-ABI coercions (`__ptr_offset`) come back untagged i32.
       const pt = params[k].ptrKind != null || params[k].type === 'i32' ? 'i32' : 'f64'
@@ -1580,9 +1607,17 @@ export function emitDecl(...inits) {
     // they init to undefined so a read before the write matches JS.
     const flatDecl = ctx.func.flatObjects?.get(name)
     if (flatDecl && Array.isArray(init) && (init[0] === '{}' || init[0] === '[' || init[0] === '[]')) {
-      for (let j = 0; j < flatDecl.names.length; j++)
-        result.push(['local.set', `$${name}#${j}`,
-          flatDecl.values[j] === undefined ? undefExpr() : asF64(emit(flatDecl.values[j]))])
+      for (let j = 0; j < flatDecl.names.length; j++) {
+        const v = flatDecl.values[j]
+        // carrier-invariant-design.md: a flat/SRoA field local is the same
+        // untyped boxed-value slot a heap object's schema store is (module/
+        // object.js's storedValue, now bridge.js's chokepoint) — the previous
+        // bare `asF64(emit(v))` never boxed a proven-BOOL value at all (asF64
+        // is pure WASM-type coercion, weaker than carrierF64), and never
+        // re-emitted an ambiguous BOOL∪NUMBER merge through emitIdentitySafe
+        // either — a distinct, previously-undiscovered site of the same gap.
+        result.push(['local.set', `$${name}#${j}`, v === undefined ? undefExpr() : storedValue(v)])
+      }
       continue
     }
 
@@ -1646,6 +1681,34 @@ export function emitDecl(...inits) {
 
     const isObjLit = Array.isArray(init) && init[0] === '{}'
     if (isObjLit) ctx.schema.targetStack.push({ name, active: true })
+    // NOT storedValue/argIR here (WALL, banked — carrier-invariant-design.md
+    // session): a scalar `let`/`const` init is in principle the same untyped
+    // boxed-value slot a container store or call arg is, so it SHOULD take
+    // the same hasAmbiguousBoolMerge-aware treatment. Every implementation
+    // shape tried — the shared `argIR`/`storedValue` helpers, an inline
+    // ternary, an inline if/else materializing the branch first (the
+    // established "avoid a same-shaped ternary calling different emit
+    // variants per arm" discipline this file's 'return' handler and
+    // compile/index.js's sibling site already document for a RELATED self-
+    // host miscompile class) — miscompiled the SELF-HOSTED kernel's own
+    // compiled `emitDecl` at this exact call site: verified live with a
+    // fresh dist rebuild, reproducing with a plain `let v = x + 1` local (zero
+    // ambiguous-merge shapes anywhere in the program), while native compiled
+    // every variant correctly. This is a self-host-only bug in how the
+    // kernel compiles ITS OWN emitDecl source at THIS position, not a logic
+    // error in the fix; merely calling hasAmbiguousBoolMerge here and
+    // DISCARDING its result (never branching on it) compiles fine, isolating
+    // the trigger to conditional emit-vs-emitIdentitySafe selection at this
+    // specific spot. Root cause not localized further given the session's
+    // budget — banked, not chased, per the mission's binding rules. Net
+    // effect: a scalar decl init (`let v = cond && 1`) does NOT get boxed at
+    // declaration time; downstream storedValue call sites (return tails,
+    // container stores, call args) still correctly box it at every point
+    // where it's LATER passed on — the gap is narrow (a bare `return v`/
+    // container-store immediately after such a decl is fine; only a
+    // multi-step local read-then-later-use chain could still observe the
+    // raw carrier). test/kernel-oracle.js's 'captured-then-read' row is
+    // PENDING-FIX for this exact reason.
     const val = viewInit || emit(init)
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
@@ -3516,7 +3579,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
   // legitimate 0-arity callee isn't bypassed.
   const params = func?.sig.params ?? []
   const args = func ? emitCallArgs(parsed.normal, params)
-                    : parsed.normal.map(a => coerceArg(emit(a), undefined, a))
+                    : parsed.normal.map(a => coerceArg(argIR(a), undefined, a))
   if (func && args.length > params.length) args.length = params.length
   // Multi-value return: materialize as heap array (caller expects single pointer).
   // Reuse the canonical comma-wrapped arg slot — materializeMulti re-reads args

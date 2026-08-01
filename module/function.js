@@ -11,8 +11,8 @@ import { OPTF } from '../src/ctx.js'
  * @module fn
  */
 
-import { typed, asF64, asI32, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, appendStaticSlots, carrierF64 } from '../src/ir.js'
-import { emit } from '../src/bridge.js'
+import { typed, asF64, asI32, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, appendStaticSlots } from '../src/ir.js'
+import { emit, storedValue } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze.js'
 // Round-6 prereq (a), closure return-kind pre-pass: closureBodyReturnKind is
@@ -288,7 +288,7 @@ export default (ctx) => {
     if (n > MAX_CLOSURE_ARITY) err(`Closure call with ${n} args exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
     const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
     const slots = []
-    for (let i = 0; i < n; i++) slots.push(args[i]?.type ? asF64(args[i]) : carrierF64(args[i], emit(args[i])))
+    for (let i = 0; i < n; i++) slots.push(args[i]?.type ? asF64(args[i]) : storedValue(args[i]))
     for (let i = n; i < W; i++) slots.push(UNDEF_LIT())
 
     return typed(['block', ['result', 'f64'],

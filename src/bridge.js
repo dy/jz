@@ -10,6 +10,7 @@
 
 import { ctx, emitter } from './ctx.js'
 import { typed, asF64, asI32, asI64, carrierF64 } from './ir.js'
+import { hasAmbiguousBoolMerge } from './kind.js'
 
 export { emitter } from './ctx.js'
 
@@ -21,6 +22,24 @@ export const emit = (...a) => ctx.bridge.emit(...a)
 // same way `emit` is (module/*.js and emit-assign.js can't import emit.js
 // directly — the acyclic bridge indirection) — bound alongside it at reset().
 export const emitIdentitySafe = (...a) => ctx.bridge.emitIdentitySafe(...a)
+
+// THE represented-carrier chokepoint (carrier-invariant-design.md, "Decision:
+// box-at-production via ONE producer chokepoint") — the single sound producer
+// for any BOXED-VALUE storage position (array/object/Map/Set element, closure
+// arg, stdlib 'I' slot): emit ONCE, before branching on hasAmbiguousBoolMerge.
+// A raw `carrierF64(node, emit(node))` is post-hoc powerless for an ambiguous
+// BOOL∪NUMBER merge (`cond && 1`, `cond ? 1 : false`) — the merge's own
+// valTypeOf already collapsed to NUMBER, so carrierF64 never recognizes it as
+// BOOL-carrying; by the time a plain `emit(node)` result exists, the coerced
+// false and a genuine 0 are the same bits. emitIdentitySafe re-emits the
+// merge with its own BOOL arm boxed to its atom BEFORE that collapse.
+// Previously hand-reimplemented (the unsound half only) at 16 raw call sites
+// across module/array.js, module/collection.js, module/object.js (a local,
+// unguarded clone), module/function.js — this promotion is the fix (MECHANISM
+// A). Formerly local to src/compile/emit-assign.js:42 (the same pattern
+// module/*.js already bridges emit/emitIdentitySafe through).
+export const storedValue = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64(node, emit(node))
+
 export const flat = (...a) => ctx.bridge.flat(...a)
 export const body = (...a) => ctx.bridge.body(...a)
 export const bool = (...a) => ctx.bridge.bool(...a)
@@ -93,9 +112,15 @@ const cast = { I: asI64, F: asF64, i: asI32 }
 // 'I' is the boxed-value slot (receivers, collection keys/values) — a boolean
 // crosses it as its TRUE/FALSE atom so identity survives the container round-trip
 // (typeof / String / strict-eq); 'F'/'i' are numeric positions and stay raw.
+// storedValue (not a raw carrierF64(emit)): a 17th site of the same MECHANISM
+// A gap the design's 16-site enumeration didn't name (it lives in this file,
+// not module/array|collection|object|function.js) — found while promoting
+// the chokepoint here. An ambiguous BOOL∪NUMBER merge (`cond && 1`) passed as
+// an 'I'-sig stdlib arg (any `call()`/`method()` registration) collapsed the
+// same way the 16 named sites did.
 const coerce = (sig, nodes) =>
   sig.split('').map((c, i) => c === 'I'
-    ? asI64(carrierF64(nodes[i], emit(nodes[i])))
+    ? asI64(storedValue(nodes[i]))
     : cast[c](emit(nodes[i])))
 
 const wrap = (fmt, call) => {

@@ -1502,6 +1502,20 @@ export default function narrowSignatures(programFacts, ast) {
   // recursive `buffer` arg to VAL.ARRAY (via callerParamFacts on iter 2,
   // or via the caller's own default expression on iter 1).
   const inferValAtSite = (arg, state) => {
+    // carrier-invariant-design.md: an ambiguous BOOL∪NUMBER merge argument
+    // (`cond && 1`) legitimately answers NUMBER here (inferValType →
+    // valTypeOf's arithmetic-safe benign coercion — the SAME kind.js rule
+    // hasAmbiguousBoolMerge exists to flag as unsound elsewhere) — but a
+    // param's hardened `val` fact also feeds IDENTITY-observing static folds
+    // in the CALLEE's body (emitStrictEq's differing-primitive-class fold:
+    // `p === false` compile-time-folds to `false` when p.val is confidently
+    // NUMBER, even though this call site's actual runtime value could be the
+    // boxed FALSE atom). Decline the claim — same "unknown side → no claim"
+    // principle valTypeOfWithLocals's SOUND `+` rule already applies (kind.js).
+    // A rare-shape cost only: this design's own COST section's census found
+    // zero ambiguous-merge shapes in the bench corpus, so ordinary programs
+    // keep the full val-lattice fast path unchanged.
+    if (Array.isArray(arg) && hasAmbiguousBoolMerge(arg)) return null
     const v = inferValType(arg, state.callerValTypes)
     if (v != null) return v
     if (typeof arg !== 'string') {

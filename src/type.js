@@ -14,7 +14,7 @@ import { isI32, isReassigned, cloneNode, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS } f
 import { ctx } from './ctx.js'
 import { FITS_I32_MAX } from './widen.js'
 import { VAL, lookupValType } from './reps.js'
-import { valTypeOf, valTypeOfWithLocals } from './kind.js'
+import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge } from './kind.js'
 import { propValType, CMP_OPS } from './kind-traits.js'
 import { NO_VALUE, staticValue, intLiteralValue, intExprRange } from './static.js'
 import { typedElemAux } from '../layout.js'
@@ -2316,7 +2316,22 @@ export function exprType(expr, locals, valTypes) {
   if (op === '?:' || op === '&&' || op === '||') {
     const branches = op === '?:' ? [args[1], args[2]] : [args[0], args[1]]
     const ta = exprType(branches[0], locals, valTypes), tb = exprType(branches[1], locals, valTypes)
-    return ta === 'i32' && tb === 'i32' ? 'i32' : 'f64'
+    if (ta !== 'i32' || tb !== 'i32') return 'f64'
+    // carrier-invariant-design.md: both branches are i32-REPRESENTABLE (a
+    // comparison's 0/1 and a NUMBER literal both answer 'i32' here — this
+    // function only asks "does the WASM storage type fit", not "do the two
+    // branches carry the same represented VALUE"), but a BOOL∪NUMBER merge
+    // (`cond && 1`, `cond ? 1 : false`) needs its BOOL arm to keep its
+    // TRUE/FALSE atom identity — an i32-classification is exactly what lets
+    // a caller narrow this expression's storage to i32 and permanently lose
+    // that atom (narrowI32Results' return-tail narrowing, the param lattice's
+    // argWasmType — both consult exprType, both would otherwise commit to a
+    // narrowing no downstream boxing fix could recover from). hasAmbiguousBoolMerge
+    // is the same locals-aware resolver Phase E's BigInt gate two branches up
+    // already needed (this phase runs before ctx.func.localReps is populated).
+    if (hasAmbiguousBoolMerge(expr, e => valTypeOfWithLocals(e, name => valTypes?.get(name) ?? lookupValType(name))))
+      return 'f64'
+    return 'i32'
   }
   if (op === '[') return 'f64'
   // Builtin calls with known i32 result. Math.imul / Math.clz32 always produce

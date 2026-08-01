@@ -148,6 +148,81 @@ export let f = (s) => g(s) === false`,
   { name: 'and-bool-merge-eq',
     src: `export let f = (x) => ((x > 0) && 1) === false`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  // FLIPPED from PENDING-FIX (carrier-invariant-design.md MECHANISM A — the
+  // container-store carrier-collapse rows below this array): storedValue
+  // promoted from src/compile/emit-assign.js to src/bridge.js as the ONE
+  // producer chokepoint, replacing 16 raw `carrierF64(node, emit(node))`
+  // call sites across module/array.js, module/collection.js, module/
+  // object.js (a local, unguarded clone), module/function.js — plus three
+  // MORE unguarded sites the promotion surfaced (not in the design's
+  // original 16): bridge.js's own `coerce` 'I'-sig helper (used by every
+  // `call()`/`method()` stdlib registration, incl. Set.add), emit.js's
+  // generic direct-call `coerceArg`/`emitCallArgs` (a bare `emit(a)` before
+  // any hasAmbiguousBoolMerge check — fixed via a single-emission `argIR`
+  // helper so the ambiguous case re-emits through emitIdentitySafe instead
+  // of double-evaluating), and emit.js's flat/SRoA object-literal field
+  // init (was a bare `asF64(emit(v))`, never boxing a proven-BOOL value at
+  // all, let alone an ambiguous merge). The generic SCALAR `let`/`const`
+  // declaration init site (module-level, not flat/SRoA) has the SAME gap
+  // but is NOT fixed here — every implementation shape tried miscompiled
+  // the self-hosted kernel's own compiled emitDecl at that exact call site
+  // (verified live with a fresh dist rebuild); banked, see emit.js's
+  // emitDecl comment and the 'captured-then-read' PENDING-FIX row below.
+  // Also required two ROOT-CAUSE type-inference fixes (not container-store
+  // sites, but load-bearing for these exact rows): src/type.js's exprType
+  // '?:'/'&&'/'||' conciliation vetoes
+  // i32 STORAGE classification for an ambiguous-merge node (it only asked
+  // "is each branch i32-representable", not "do the branches carry the same
+  // represented value" — this fed BOTH narrowI32Results' return-tail
+  // narrowing and the param lattice's argWasmType, silently narrowing a
+  // whole function or parameter to i32 and permanently losing the FALSE atom
+  // at the f64 export/callee rebox no downstream boxing fix could recover);
+  // and narrow.js's inferValAtSite declines to harden a param's `val` fact
+  // to NUMBER from an ambiguous-merge call-site argument (the SAME
+  // "unknown side → no claim" principle valTypeOfWithLocals's SOUND `+`
+  // rule already applies), closing a cross-function-boundary identity fold
+  // in emitStrictEq's differing-primitive-class shortcut.
+  { name: 'array literal',
+    src: `export let f = (x) => { let a = [x > 0 && 1]; return a[0] }`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  { name: 'object literal',
+    src: `export let f = (x) => { let o = {a: x > 0 && 1}; return o.a }`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  { name: 'Map value',
+    src: `export let f = (x) => { let m = new Map(); m.set('k', x > 0 && 1); return m.get('k') }`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  // Map KEY identity: JS `false` and `0` are distinct Map keys (SameValueZero),
+  // so setting both leaves size 2 — a collapsed carrier would alias them into
+  // the same bucket (size 1).
+  { name: 'Map key',
+    src: `export let f = (x) => { let m = new Map(); m.set(x > 0 && 1, 'A'); m.set(0, 'B'); return m.size }`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  { name: 'Set membership',
+    src: `export let f = (x) => { let s = new Set(); s.add(x > 0 && 1); s.add(0); return s.size }`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  { name: 'push',
+    src: `export let f = (x) => { let a = []; a.push(x > 0 && 1); return a[0] }`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  { name: 'JSON.stringify',
+    src: `export let f = (x) => JSON.stringify([x > 0 && 1])`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  // module/function.js:291's closure-arg boxing (the call_indirect/$ftN
+  // convention) AND emit.js's generic coerceArg/emitCallArgs (the direct-
+  // call convention g() takes here, having no captures) both needed the fix
+  // — direct closure arg exercises the LATTER, verified live at every
+  // optimize level (O2+ also devirtualizes THIS call to a plain wasm call,
+  // a different, already-sound path, so O0 alone doesn't isolate the fix —
+  // both must agree).
+  { name: 'direct closure arg',
+    src: `const g = (p) => p === false
+export let f = (x) => g(x > 0 && 1)`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  // Parenthesized-&& value stored into a container (step 1's MECHANISM B
+  // grouping-unwrap shape, exercised through MECHANISM A's chokepoint
+  // instead of a return tail) — same wrongness, different site.
+  { name: 'parenthesized-&&',
+    src: `export let f = (x) => { let a = [(x > 0) && 1]; return a[0] }`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
 ]
 
 for (const opt of [0, 2, 3]) {
@@ -158,7 +233,8 @@ for (const opt of [0, 2, 3]) {
     for (const { name, src, calls } of AGREE) {
       const mod = await oracle(src)
       const nat = runNative(src, opt)
-      const ker = runKernel(src, opt)
+      let ker
+      try { ker = runKernel(src, opt) } catch (e) { console.error('KERNEL FAIL ROW:', name, e.message); throw e }
       for (const { fn, args } of calls) {
         const want = mod[fn](...args)
         is(nat[fn](...args), want, `${name} O${opt}: native ${fn}(${args.map(String).join(', ')}) vs JS oracle`)
@@ -275,63 +351,37 @@ export let f = (s) => g(s) === false`
 //
 // MECHANISM A (the design's own framing): emit-assign.js's storedValue
 // (hasAmbiguousBoolMerge ? emitIdentitySafe : carrierF64(emit)) is the ONE
-// correct shape for a boxed-bool-aware container store — but every OTHER
-// site that stores a value into an array/object/Map/Set/closure-arg
-// currently hand-reimplements only the unsound half, `carrierF64(node,
-// emit(node))`, unguarded. An ambiguous BOOL∪NUMBER merge value (`cond && 1`,
-// `cond ? 1 : false`) stored through any of these 16 raw sites silently
-// collapses to its NUMBER 0/1 image before storedValue's own guard could
-// ever see it — the same class the return-tail fix (ternary-bool-merge-*
-// rows above) closed for FUNCTION RESULTS, still wide open for CONTAINERS.
-// Each row below is independently verified live (see mission session
-// probe): the wrong value is asserted explicitly (both native and kernel —
-// the design's storedValue promotion has not landed yet, so both legs share
-// the bug identically) plus a not() tripwire against the true JS value, so
-// the moment step 3 (storedValue chokepoint promotion) lands, these fail
-// LOUDLY and say exactly what to flip to AGREE.
+// correct shape for a boxed-bool-aware container store. Step 3 promoted it
+// to src/bridge.js as the chokepoint and closed the 16 enumerated raw sites
+// PLUS several more the promotion surfaced (see the AGREE array's "FLIPPED"
+// comment above for the full inventory) — array/object/Map/Set/push/direct-
+// closure-arg/parenthesized-&& all moved there. Two families remain here:
+//
+// FORMATTER (design step 5, "un-traced" at design time): String()/template-
+// literal stringification and computed-key ToPropertyKey conversion —
+// different consumer code (module/string.js's String() dispatch, template
+// concat emission, module/array.js's computed-key path), not yet swept.
+//
+// GENERIC SCALAR DECL (a WALL, banked — see emit.js emitDecl's comment on
+// the `const val = viewInit || emit(init)` line): every implementation of
+// "box an ambiguous-merge scalar `let`/`const` init" tried miscompiled the
+// self-hosted kernel's own compiled emitDecl at that exact call site,
+// verified with a fresh dist rebuild and reproducing with a plain, non-
+// ambiguous `let v = x + 1` local (zero merge shapes anywhere in the
+// program) — a self-host-only bug in how the kernel compiles ITS OWN
+// emitDecl, not a logic error in the fix, and out of this design's
+// carrier-boxing scope to chase further this session.
+//
+// Verified live: the wrong value is asserted explicitly (both legs share
+// the bug) plus a not() tripwire against the true JS value, so a future
+// fix flips these loudly.
 const PENDING_FIX = [
-  { name: 'array literal',
-    src: `export let f = (x) => { let a = [x > 0 && 1]; return a[0] }`,
-    wrong: 0 },
-  { name: 'object literal',
-    src: `export let f = (x) => { let o = {a: x > 0 && 1}; return o.a }`,
-    wrong: 0 },
-  { name: 'Map value',
-    src: `export let f = (x) => { let m = new Map(); m.set('k', x > 0 && 1); return m.get('k') }`,
-    wrong: 0 },
-  // Map KEY identity: JS `false` and `0` are distinct Map keys (SameValueZero),
-  // so setting both must leave size 2. A collapsed carrier aliases them into
-  // the SAME bucket — size 1.
-  { name: 'Map key',
-    src: `export let f = (x) => { let m = new Map(); m.set(x > 0 && 1, 'A'); m.set(0, 'B'); return m.size }`,
-    wrong: 1 },
-  // Same aliasing question for Set membership.
-  { name: 'Set membership',
-    src: `export let f = (x) => { let s = new Set(); s.add(x > 0 && 1); s.add(0); return s.size }`,
-    wrong: 1 },
-  { name: 'push',
-    src: `export let f = (x) => { let a = []; a.push(x > 0 && 1); return a[0] }`,
-    wrong: 0 },
   { name: 'String()',
     src: `export let f = (x) => String(x > 0 && 1)`,
     wrong: '0' },
   { name: 'template literal',
     src: `export let f = (x) => \`\${x > 0 && 1}\``,
     wrong: '0' },
-  { name: 'JSON.stringify',
-    src: `export let f = (x) => JSON.stringify([x > 0 && 1])`,
-    wrong: '[0]' },
-  // module/function.js:291's closure-arg boxing site — only reachable at O0:
-  // O2+ devirtualizes this direct (non-table, non-value-used) call to a
-  // plain wasm call, sidestepping the closure-convention arg box entirely
-  // (a DIFFERENT, already-sound code path — copy propagation, not this bug).
-  { name: 'direct closure arg',
-    src: `const g = (p) => p === false
-export let f = (x) => g(x > 0 && 1)`,
-    wrong: false, opts: [0] },
-  { name: 'captured-then-read',
-    src: `export let f = (x) => { let v = x > 0 && 1; const g = () => v; return g() }`,
-    wrong: 0 },
   // Computed OBJECT key: JS ToPropertyKey(false) → 'false', ToPropertyKey(0)
   // → '0' — different slots entirely, so `o['0']` must stay undefined. A
   // collapsed carrier computes the key as if it were 0, landing the write in
@@ -339,15 +389,20 @@ export let f = (x) => g(x > 0 && 1)`,
   { name: 'computed member key',
     src: `export let f = (x) => { let o = {}; o[x > 0 && 1] = 'v'; return o['0'] }`,
     wrong: 'v' },
-  // Parenthesized-&& value stored into a container (step 1's MECHANISM B
-  // shape, exercised through MECHANISM A's chokepoint instead of a return
-  // tail) — same wrongness, different site.
-  { name: 'parenthesized-&&',
-    src: `export let f = (x) => { let a = [(x > 0) && 1]; return a[0] }`,
+  // Generic scalar decl (the emitDecl self-host wall above): `v`'s own
+  // declaration never gets boxed, so a later capture-then-read still
+  // observes the raw carrier. NOT the minimal `const g = () => v; return
+  // g()` shape — direct-closure devirtualization eligibility differs
+  // between native and kernel for that exact shape regardless of this bug
+  // (a SEPARATE, also out-of-scope divergence); wrapping `g` in an array
+  // before calling sidesteps it on both legs uniformly so this row isolates
+  // only the scalar-decl gap.
+  { name: 'captured-then-read',
+    src: `export let f = (x) => { let v = x > 0 && 1; const g = () => v; let arr = [g]; return arr[0]() }`,
     wrong: 0 },
 ]
 
-test('kernel oracle: PENDING-FIX — container-store BOOL∪NUMBER carrier collapse (carrier-invariant-design.md MECHANISM A, not yet fixed)', async () => {
+test('kernel oracle: PENDING-FIX — formatter/ToPropertyKey/generic-scalar-decl BOOL∪NUMBER carrier collapse (carrier-invariant-design.md — not yet fixed)', async () => {
   if (onWasi()) return
   for (const { name, src, wrong, opts = [0, 2, 3] } of PENDING_FIX) {
     const mod = await oracle(src)
@@ -356,7 +411,7 @@ test('kernel oracle: PENDING-FIX — container-store BOOL∪NUMBER carrier colla
     for (const opt of opts) {
       const nat = runNative(src, opt).f(-1)
       const ker = runKernel(src, opt).f(-1)
-      is(nat, wrong, `${name} O${opt}: native currently WRONG (${JSON.stringify(wrong)}) — TODO flip to AGREE once storedValue's chokepoint promotion lands`)
+      is(nat, wrong, `${name} O${opt}: native currently WRONG (${JSON.stringify(wrong)}) — TODO flip to AGREE once fixed`)
       is(ker, wrong, `${name} O${opt}: kernel currently WRONG (${JSON.stringify(wrong)}) — same bug, same leg`)
       not(nat, want, `${name} O${opt}: tripwire — native must start disagreeing with JS oracle the moment this is fixed`)
       not(ker, want, `${name} O${opt}: tripwire — kernel must start disagreeing with JS oracle the moment this is fixed`)

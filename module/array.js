@@ -8,9 +8,9 @@
  * @module array
  */
 
-import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, carrierF64, isPureIR } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
-import { emit, spread, deps, idx as emitIndex } from '../src/bridge.js'
+import { emit, spread, deps, idx as emitIndex, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
@@ -633,9 +633,9 @@ export default (ctx) => {
       // so `const x = [1, 2, 3]` is a data segment, not an alloc.
       if (ctx.func.atModuleScope && len >= 1 && !ctx.memory.shared) {
         // asF64 folds i32.const → f64.const literally, so int-literal arrays also qualify.
-        // carrierF64: a bool literal folds to its TRUE/FALSE atom const — still
+        // storedValue: a bool literal folds to its TRUE/FALSE atom const — still
         // static-extractable, and the element keeps boolean identity in the segment.
-        const vals = elems.map(e => carrierF64(e, emit(e)))
+        const vals = elems.map(e => storedValue(e))
         const slots = vals.map(v => extractF64Bits(v))
         if (slots.every(b => b !== null)) {
           const ptr = staticArrayPtr(slots)
@@ -654,7 +654,7 @@ export default (ctx) => {
       const a = allocArray(len, Math.max(len, minCap))
       const body = [...a.setup]
       for (let i = 0; i < len; i++)
-        body.push(['f64.store', slotAddr(a.local, i), carrierF64(elems[i], emit(elems[i]))])
+        body.push(['f64.store', slotAddr(a.local, i), storedValue(elems[i])])
       body.push(a.ptr)
       return typed(['block', ['result', 'f64'], ...body], 'f64')
     }
@@ -1206,7 +1206,7 @@ export default (ctx) => {
       const isGlobal = !box && ctx.scope.globals.has(arr) && !ctx.func.locals?.has(arr)
       const readVar = box ? ['f64.load', ['local.get', `$${box}`]] : isGlobal ? ['global.get', `$${arr}`] : ['local.get', `$${arr}`]
       const writeVar = v => box ? ['f64.store', ['local.get', `$${box}`], v] : isGlobal ? ['global.set', `$${arr}`, v] : ['local.set', `$${arr}`, v]
-      const vv = carrierF64(vals[0], emit(vals[0]))
+      const vv = storedValue(vals[0])
       const pushed = ['call', '$__arr_push1', ['i64.reinterpret_f64', readVar], vv]
       if (void_) return typed(['block', writeVar(pushed)], 'void')
       return typed(['block', ['result', 'f64'],
@@ -1294,7 +1294,7 @@ export default (ctx) => {
     } else {
       // Store each value and increment len
       for (const val of vals) {
-        const vv = carrierF64(val, emit(val))
+        const vv = storedValue(val)
         body.push(
           ['f64.store',
             ['i32.add', ['local.get', `$${pushBase}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]],
@@ -1404,7 +1404,7 @@ export default (ctx) => {
     inc('__arr_fill')
     return typed(['call', '$__arr_fill',
       asI64(emit(arr)),
-      val == null ? undefExpr() : carrierF64(val, emit(val)),
+      val == null ? undefExpr() : storedValue(val),
       start == null ? ['i32.const', 0] : asI32(emit(start)),
       end == null ? ['i32.const', 0x7FFFFFFF] : asI32(emit(end))], 'f64')
   }
@@ -1506,13 +1506,13 @@ export default (ctx) => {
       ? rawVals[0].slice(1) : rawVals
     if (vals.length <= 1) {
       const val = vals[0]
-      return typed(['call', '$__arr_unshift', asI64(emit(arr)), val === undefined ? undefExpr() : carrierF64(val, emit(val))], 'f64')
+      return typed(['call', '$__arr_unshift', asI64(emit(arr)), val === undefined ? undefExpr() : storedValue(val)], 'f64')
     }
     const recv = temp('usr')
     const temps = vals.map(() => temp('us'))
     const body = [
       ['local.set', `$${recv}`, asF64(emit(arr))],
-      ...vals.map((v, i) => ['local.set', `$${temps[i]}`, carrierF64(v, emit(v))]),
+      ...vals.map((v, i) => ['local.set', `$${temps[i]}`, storedValue(v)]),
     ]
     for (let i = vals.length - 1; i >= 1; i--)
       body.push(['drop', ['call', '$__arr_unshift', ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['local.get', `$${temps[i]}`]]])
@@ -2100,7 +2100,7 @@ export default (ctx) => {
         ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.ARRAY_WITH_INDEX]]], ['throw', '$__jz_err', ['f64.const', ERR.ARRAY_WITH_INDEX]]]],
       ['f64.store',
         ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${idx}`], ['i32.const', 3]]],
-        carrierF64(value, emit(value))],
+        storedValue(value)],
       ['local.get', `$${c}`]], 'f64')
   }
 
@@ -2152,7 +2152,7 @@ export default (ctx) => {
 
   ctx.core.emit['.indexOf'] = (arr, val) => {
     const recv = hoistArrayValue(arr)
-    const vv = carrierF64(val, emit(val))
+    const vv = storedValue(val)
     const eq = arrEqIR(val)
     const result = tempI32('ix')
     const exit = `$exit${ctx.func.uniq++}`
@@ -2169,7 +2169,7 @@ export default (ctx) => {
 
   ctx.core.emit['.includes'] = (arr, val) => {
     const recv = hoistArrayValue(arr)
-    const vv = carrierF64(val, emit(val))
+    const vv = storedValue(val)
     const eq = arrEqIR(val)
     const result = tempI32('ic')
     const exit = `$exit${ctx.func.uniq++}`
@@ -2190,7 +2190,7 @@ export default (ctx) => {
   // (which returned -1 for every array). fromIndex is unsupported, matching .indexOf's array path.
   ctx.core.emit['.lastIndexOf'] = (arr, val) => {
     const recv = hoistArrayValue(arr)
-    const vv = carrierF64(val, emit(val))
+    const vv = storedValue(val)
     const eq = arrEqIR(val)
     const result = tempI32('lx')
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
