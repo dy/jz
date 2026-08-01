@@ -6,6 +6,33 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+ERROR-MESSAGE EVAPORATION INVESTIGATED — PREMISE OVERTURNED
+2026-07-31 (read-only, empirical envelope + byte-cost measurement):
+"Errors are just their message" is DOCUMENTED DELIBERATE design
+(README:230,251; test/errors.js:685-693 pins it as a tripwire "so a
+future error-object model surfaces here deliberately") — NOT a bug.
+new Error(msg) compiles to msg itself (passthroughError, module/
+core.js:1750-1769); there is NO storage and NO slot to unwire — a
+.message fix requires upgrading the value to a tagged carrier
+(minimal OBJECT shape is the sane route). SIZE PREMISE REFUTED by
+measurement: object machinery ~60-100B (same as any object
+literal); the 5KB cost people associate with errors is the
+orthogonal String()/Ryu pull. REAL GAP FOUND: all 37 $__jz_err
+runtime sites throw the SAME sentinel 0 (TypeError/RangeError/
+bounds/JSON all indistinguishable; only fs.js forwards real errno)
+— the README's "numeric codes" plural OVERCLAIMS; there is no code
+table. Host boundary already normalizes any escaping throw into a
+real Error (interop.js:709-744 decodeThrown, wrapped.thrown
+carries the original). SPLIT: (1) DISTINCT per-site integer codes
+= near-zero cost (i32.const N), aligns behavior WITH docs, no
+semantics change — LANDABLE, queued for writer lane; (2)
+Error-as-minimal-OBJECT (.message/.name/instanceof, ~60-100B when
+constructed, no-arg fast path preserved, === semantics change
+needs a sweep) = changes DOCUMENTED PINNED semantics — USER
+DECISION; (3) runtime-code→message resolution (host-side table in
+decodeThrown = zero wasm cost, or opt-in verbose flag) = product
+decision, USER-GATED.
+
 WRAPPER-INLINING DECLINED WITH EVIDENCE + JESSIE CHARACTERIZATION
 COMPLETE 2026-07-31 (read-only investigation, instrumented scratch
 reproduction of the jessie compile): subscript's space$9→space$4→
