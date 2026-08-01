@@ -201,6 +201,51 @@ VT['&&'] = VT['||'] = VT['??'] = (args) => {
   return null
 }
 
+// .work/bool-merge-identity-design.md — pure structural predicate: true exactly
+// where a `?:`/`&&`/`||`/`??` node's own VT rule above takes the BOOL-vs-NUMBER
+// benign coercion branch (142-179's `?:` "the raw 0/1 bool carrier IS its
+// ToNumber image" lie, mirrored by `&&`/`||`/`??` above) — sound for arithmetic,
+// unsound at an identity-observing consumer (===, typeof), which sees the
+// collapsed NUMBER kind and cannot tell a genuine 0/1 from a coerced false/true.
+// NO timing dependency — every input is a literal AST shape or an already-
+// established valTypeOf, categorically unlike the reverted "kind not yet proven
+// non-BOOL" trigger that boxed uniform-NUMBER self-host helpers on a fixpoint
+// race (see design doc "Why the reverted broad fix broke 190+ kernel rows").
+// BIGINT+nullish-literal (162-177) is a DIFFERENT VT branch — a BIGINT arm never
+// satisfies `ta === VAL.BOOL`/`tb === VAL.BOOL` here, so it's excluded for free,
+// not by special-casing.
+//
+// Recursive through nested merges: when this node's own arms collapse via the
+// ordinary same-kind branch (`ta === tb`, e.g. both resolve NUMBER) rather than
+// the coercion branch itself, the join is STILL ambiguous if either arm is
+// itself an ambiguous merge — the outer NUMBER kind may carry a nested coerced
+// bool's bits. A statically-resolved `?:` condition (VT['?:'] line 143-144)
+// only ever evaluates its own live arm, so this mirrors that: recurse into the
+// live arm instead of returning early.
+export function hasAmbiguousBoolMerge(node) {
+  if (!Array.isArray(node)) return false
+  const [op, ...args] = node
+  if (op === '?:') {
+    const [cond, a, b] = args
+    const truthy = literalTruthiness(cond)
+    if (truthy != null) return hasAmbiguousBoolMerge(truthy ? a : b)
+    const ta = valTypeOf(a), tb = valTypeOf(b)
+    if (ta === VAL.BOOL && tb === VAL.NUMBER) return true
+    if (tb === VAL.BOOL && ta === VAL.NUMBER) return true
+    if (ta && ta === tb) return hasAmbiguousBoolMerge(a) || hasAmbiguousBoolMerge(b)
+    return false
+  }
+  if (op === '&&' || op === '||' || op === '??') {
+    const [a, b] = args
+    const ta = valTypeOf(a), tb = valTypeOf(b)
+    if (ta === VAL.BOOL && tb === VAL.NUMBER) return true
+    if (tb === VAL.BOOL && ta === VAL.NUMBER) return true
+    if (ta && ta === tb) return hasAmbiguousBoolMerge(a) || hasAmbiguousBoolMerge(b)
+    return false
+  }
+  return false
+}
+
 // Dict-value-type census consumer (.work/dict-value-census-design.md §2):
 // `name[key]`/`name.prop` on a HASH dict-mode receiver — the VAL.* kind of
 // every value ever WRITTEN through `name[anyKey] = v`, local first (analyze.js

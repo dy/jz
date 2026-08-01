@@ -9,10 +9,11 @@ import { UNDEF_NAN, NULL_NAN } from '../interop.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { ctx, reset } from '../src/ctx.js'
 import { targetProfileFor } from '../src/session.js'
-import { emit, emitter, emitVoid as flat, emitBlockBody, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from '../src/compile/emit.js'
+import { emit, emitter, emitVoid as flat, emitBlockBody, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
 import { analyzeValTypes, analyzeIntCertain, analyzeBody } from '../src/compile/analyze.js'
 import { repOf, updateRep, VAL } from '../src/reps.js'
 import { T } from '../src/ast.js'
+import { hasAmbiguousBoolMerge } from '../src/kind.js'
 
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 
@@ -967,7 +968,7 @@ test('typed-narrow: .map on Int32Array preserves distinct elem aux', () => {
 // rep entry"). `paramVals` mirrors what narrowSignatures pre-seeds in the real
 // pipeline — needed only for tests that exercise `.length` / receiver-typed.
 function runAnalyze(code, paramVals) {
-  reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread })
+  reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
   // reset() alone (unlike beginSession) leaves targetProfile at its null default —
   // modules the analyzer pulls in (e.g. module/math.js) read it unconditionally.
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
@@ -1140,4 +1141,89 @@ test('untyped receiver: own-property toFixed closure shadows the builtin', () =>
       return o.toFixed(1)
     }`)
   is(f(), 'custom')
+})
+
+// ============================================================================
+// hasAmbiguousBoolMerge — pure structural predicate (.work/bool-merge-identity-
+// design.md), mirroring kind.js VT['?:']/VT['&&']/['||']/['??']'s own truth
+// table branch-for-branch. No ctx/reset() needed: every case below is a
+// literal AST shape or a bare-name cond whose literalTruthiness is unresolved
+// (`valTypeOf`/`lookupValType` degrade to null without a live ctx.func, which
+// is exactly the "no claim" case both VT and the predicate already handle).
+// ============================================================================
+
+// AST node shorthands mirroring parser output: bigint/string literals are
+// self-describing op-tagged nodes (kind.js VT.bigint / VT.strcat); a bare
+// numeric/boolean primitive is its own AST leaf (kind.js valTypeOf's op==null
+// fast path); 's'/'t' are unresolved bare names (no literalTruthiness, no
+// lookupValType fact — the "condition/operand unknown" case).
+const bigint5 = ['bigint', '5']
+const str_ = ['str', 'x']
+const undef = []
+
+test('hasAmbiguousBoolMerge ?: — BOOL-then/NUMBER-else fires (the s?1:false shape, arms swapped)', () => {
+  ok(hasAmbiguousBoolMerge(['?:', 's', false, 1]))
+})
+
+test('hasAmbiguousBoolMerge ?: — NUMBER-then/BOOL-else fires (s?1:false itself)', () => {
+  ok(hasAmbiguousBoolMerge(['?:', 's', 1, false]))
+})
+
+test('hasAmbiguousBoolMerge ?: — both-BOOL arms: sound, does not fire', () => {
+  ok(!hasAmbiguousBoolMerge(['?:', 's', true, false]))
+})
+
+test('hasAmbiguousBoolMerge ?: — both-NUMBER arms: sound, does not fire', () => {
+  ok(!hasAmbiguousBoolMerge(['?:', 's', 1, 2]))
+})
+
+test('hasAmbiguousBoolMerge ?: — BOOL vs STRING (opaque, not NUMBER): already boxed elsewhere, not this predicate\'s trigger', () => {
+  ok(!hasAmbiguousBoolMerge(['?:', 's', str_, false]))
+})
+
+test('hasAmbiguousBoolMerge ?: — BIGINT + nullish-literal carve-out stays excluded', () => {
+  ok(!hasAmbiguousBoolMerge(['?:', 's', bigint5, undef]))
+})
+
+test('hasAmbiguousBoolMerge ?: — literally-resolved (truthy) condition recurses into the live arm only', () => {
+  // cond=true → VT['?:'] resolves valTypeOf(thenArm) alone (line 143-144); the
+  // else arm (never live) must not spuriously trigger the predicate.
+  ok(!hasAmbiguousBoolMerge(['?:', true, false, 1]))
+  ok(hasAmbiguousBoolMerge(['?:', true, ['?:', 't', false, 1], 2]))
+})
+
+test('hasAmbiguousBoolMerge ?: — literally-resolved (falsy) condition recurses into the live (else) arm', () => {
+  ok(hasAmbiguousBoolMerge(['?:', false, 2, ['?:', 't', false, 1]]))
+})
+
+test('hasAmbiguousBoolMerge ?: — recursive through nested merges: a same-kind (NUMBER) collapse inherits a nested arm\'s ambiguity', () => {
+  ok(hasAmbiguousBoolMerge(['?:', 's', ['?:', 't', false, 1], 2]))
+})
+
+test('hasAmbiguousBoolMerge ?: — same-kind collapse of two NON-ambiguous merges stays sound', () => {
+  ok(!hasAmbiguousBoolMerge(['?:', 's', ['?:', 't', 1, 2], 3]))
+})
+
+test('hasAmbiguousBoolMerge && — BOOL guard beside a NUMBER value fires (the (x>0)&&1 live-bug shape)', () => {
+  ok(hasAmbiguousBoolMerge(['&&', ['>', 'x', 0], 1]))
+})
+
+test('hasAmbiguousBoolMerge && — BOOL guard beside a STRING value: opaque, not this predicate\'s trigger', () => {
+  ok(!hasAmbiguousBoolMerge(['&&', ['>', 'x', 0], str_]))
+})
+
+test('hasAmbiguousBoolMerge || — NUMBER-then-BOOL fires symmetrically', () => {
+  ok(hasAmbiguousBoolMerge(['||', 1, false]))
+})
+
+test('hasAmbiguousBoolMerge ?? — both-NUMBER: sound, does not fire', () => {
+  ok(!hasAmbiguousBoolMerge(['??', 1, 2]))
+})
+
+test('hasAmbiguousBoolMerge — non-merge nodes and non-array leaves never fire', () => {
+  ok(!hasAmbiguousBoolMerge(['+', 1, 2]))
+  ok(!hasAmbiguousBoolMerge('s'))
+  ok(!hasAmbiguousBoolMerge(1))
+  ok(!hasAmbiguousBoolMerge(false))
+  ok(!hasAmbiguousBoolMerge(null))
 })

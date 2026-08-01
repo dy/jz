@@ -17,14 +17,14 @@ import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, s
 import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi } from '../../layout.js'
 import { recordDynFnTableWrite, recordImperativeClosureTableWrite } from './dyn-closure-tables.js'
-import { valTypeOf, shapeOf } from '../kind.js'
+import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../kind.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
   ptrOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
   usesDynProps, needsDynShadow, boolBoxIR, carrierF64, mkPtrIR, isNumericIR, undefExpr,
 } from '../ir.js'
-import { emit } from '../bridge.js'
+import { emit, emitIdentitySafe } from '../bridge.js'
 
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom.
@@ -32,7 +32,14 @@ import { emit } from '../bridge.js'
 // 'return' handler (src/compile/emit.js): emit(node) called separately inline per
 // ternary arm, wrapped by a DIFFERENT coercion (boolBoxIR vs asF64) per arm, is
 // behaviorally identical in JS but self-host-fragile. See .work/todo.md (groundtruth archive).
-const storedValue = (node) => carrierF64(node, emit(node))
+// An ambiguous BOOL-merge node (.work/bool-merge-identity-design.md) needs
+// emitIdentitySafe in place of emit+carrierF64: carrierF64 is post-hoc
+// powerless for it (the merge's own valTypeOf already collapsed to NUMBER, so
+// carrierF64 never recognizes it as BOOL-carrying — by the time a plain
+// `emit(node)` result exists, the coerced false and a genuine 0 are the same
+// bits). A container-store slot is an untyped boxed-value position exactly
+// like a return tail, so it needs the same identity guarantee.
+const storedValue = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64(node, emit(node))
 
 // Integer array-index key: '3' → 3; rejects non-canonical and 2³²−1.
 function arrayIndexKey(key) {

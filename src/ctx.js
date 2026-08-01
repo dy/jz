@@ -251,6 +251,13 @@ export function resetFactStore() { _factStore = createFactStore() }
 
 /** Reset all compilation state. Called once per jz() invocation. */
 export function reset(proto, globals, bridge) {
+  // Every session entry (index.js setupCtx, scripts/self.js kernel entries,
+  // raw-reset test harnesses) must bind the FULL bridge hook set — a missing
+  // hook surfaces as an empty-IR internal error deep inside a compile (the
+  // emitIdentitySafe/self.js incident: native fine, kernel leg crashed).
+  // Fail loudly at session start instead, under the invariants leg.
+  if (DBG_INVARIANTS) for (const h of ['emit', 'flat', 'body', 'bool', 'idx', 'spread', 'emitIdentitySafe'])
+    if (typeof bridge?.[h] !== 'function') throw new Error(`reset: bridge hook '${h}' missing — every beginSession/reset caller must bind the full hook set (see bridge.js)`)
   ctx.bridge = bridge
   ctx.core = {
     emit: derive(proto),

@@ -30,7 +30,7 @@ import parseWat from 'watr/parse'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal } from '../ctx.js'
 import { i64Hex } from '../../layout.js'
 import { T, isBlockBody, isReassigned, refsName, REFS_IN_EXPR, returnExprs, MUTATE_OPS } from '../ast.js'
-import { valTypeOf } from '../kind.js'
+import { valTypeOf, hasAmbiguousBoolMerge } from '../kind.js'
 import { intLiteralValue } from '../static.js'
 import { intCertainMap, typedStaticLen } from '../type.js'
 import {
@@ -58,7 +58,7 @@ import {
 // freshLoopId pattern): a module-level counter made warm-process WAT text
 // history-dependent (`cse0/1` then `cse2/3` for the same program).
 const freshCseName = () => `${T}cse${ctx.transform.cseId++}`
-import { emit, emitter, emitVoid, emitBlockBody, resolveClosureTableParamLattice } from './emit.js'
+import { emit, emitter, emitVoid, emitBlockBody, emitIdentitySafe, resolveClosureTableParamLattice } from './emit.js'
 import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from '../abi/string.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, toI32, asI64, fromI64, ptrTypeEq,
@@ -1283,10 +1283,14 @@ function emitFunc(func, funcFacts, programFacts) {
   // Requiring a SECOND return statement restricts boxing to genuine syntactic
   // joins (≥2 `return` sites in one body) — exactly the boolconst repro's
   // shape — and leaves every real single-return function, provable or not,
-  // untouched (this is also why a single-expression arrow body, e.g. `s =>
-  // cond ? 1 : false`, is out of scope for this gate — returnExprs on a
-  // non-block body is always length 1; that ternary-arm class is a documented,
-  // separate, NOT-fixed-here finding — see test/kernel-oracle.js).
+  // untouched. ADDITIVE single-return admission (.work/bool-merge-identity-
+  // design.md): a single-expression arrow body whose lone return IS itself an
+  // ambiguous BOOL-merge (`s => cond ? 1 : false`) is STRUCTURAL evidence of
+  // genuine mixing, not "unproven" — categorically unlike the ≥2-return gate's
+  // own concern (an early-unprovable UNIFORM result), so it's safe to admit
+  // without reopening the reverted broad fix's timing hazard. This was
+  // previously out of scope here (returnExprs on a non-block body is always
+  // length 1) — see test/kernel-oracle.js's now-flipped s?1:false row.
   //
   // A proven-uniform-BOOL func (valResult === VAL.BOOL) also needs no
   // per-return boxing: its own escape sites (the boundary wrapper's
@@ -1296,8 +1300,11 @@ function emitFunc(func, funcFacts, programFacts) {
   // isn't BOOL, so a genuinely mixed func's NUMBER (or other) arms — and
   // every non-bool-mixed function, period — are untouched either way.
   ctx.func.valResult = func.valResult
-  ctx.func.mixedAtomReturn = func.valResult !== VAL.BOOL &&
-    (isBlockBody(body) ? returnExprs(body) : [body]).length > 1
+  {
+    const returns = isBlockBody(body) ? returnExprs(body) : [body]
+    ctx.func.mixedAtomReturn = func.valResult !== VAL.BOOL &&
+      (returns.length > 1 || (returns.length === 1 && hasAmbiguousBoolMerge(returns[0])))
+  }
   // Only this path drains charDecomp prologues (collectParamInits below) —
   // the shape-1b global-receiver decomposition may mint only here.
   ctx.func.charDecompGlobals = true
@@ -1510,7 +1517,20 @@ function emitFunc(func, funcFacts, programFacts) {
     for (const [l, t] of ctx.func.locals) fn.push(['local', dollar(l), t])
     fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...values)
   } else {
-    const ir = emit(body)
+    // Top-level twin of emitFunc's 'return'-statement mixedAtomReturn admission
+    // and emitClosureBody's expression-body site: a non-block arrow body
+    // (`g = (s) => s ? 1 : false`) is this function's ENTIRE result, emitted
+    // here directly rather than through the 'return' handler. An ambiguous
+    // BOOL-merge body needs emitIdentitySafe in place of plain `emit` for the
+    // same reason as those two sites — the merge's own valTypeOf already
+    // collapsed to NUMBER, so a post-hoc box (there is none on this path
+    // today) would be powerless; the box has to happen while the merge's own
+    // arms are still separately known (.work/bool-merge-identity-design.md).
+    // Guarded on sig.results[0] === 'f64': a proven-uniform-BOOL (or numeric)
+    // result already narrows to i32 and needs no boxing here (the boundary
+    // wrapper's own resultBool arm handles that crossing).
+    const ambiguous = sig.ptrKind == null && sig.results[0] === 'f64' && hasAmbiguousBoolMerge(body)
+    const ir = ambiguous ? emitIdentitySafe(body) : emit(body)
     // dyn-closure-tables.js: an expression-bodied function whose return value
     // is unconditionally a closure literal (e.g. `mk = (n) => (x) => x + n`) —
     // a direct-return closure factory, no defaulted-param indirection needed.
@@ -1863,7 +1883,14 @@ function emitClosureBody(cb) {
   } else {
     populateBoxedSets()
     ctx.func.repsFrozen = true   // FunctionPlan freeze: expression-body emission
-    bodyIR = [carrierF64(cb.body, emit(cb.body))]
+    // Closure-body twin of emitFunc's mixedAtomReturn tail: a single-expression
+    // arrow body (`s => cond ? 1 : false`) crosses this carrierF64 ingress into
+    // the closure's boxed-value result slot. carrierF64 is post-hoc powerless
+    // for an ambiguous BOOL-merge (its own valTypeOf collapses to NUMBER before
+    // carrierF64 ever sees it — the bits are already lost) — route through
+    // emitIdentitySafe instead, which boxes the merge's own BOOL arm to its
+    // atom before the raw-bit collapse (.work/bool-merge-identity-design.md).
+    bodyIR = [hasAmbiguousBoolMerge(cb.body) ? emitIdentitySafe(cb.body) : carrierF64(cb.body, emit(cb.body))]
   }
 
   // Pre-allocate cache locals for env unpacking

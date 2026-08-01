@@ -55,7 +55,7 @@ import prepare, { GLOBALS } from './src/prepare/index.js'
 import { frontHalf } from './src/front.js'
 import { beginSession } from './src/session.js'
 import compile from './src/compile/index.js'
-import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from './src/compile/emit.js'
+import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from './src/compile/emit.js'
 import { resolveOptimize } from './src/optimize/index.js'
 import { resolveWatrOpts, watrTail } from './src/optimize/watr-tail.js'
 export { resolveWatrOpts }
@@ -432,7 +432,7 @@ const setupCtx = (code, opts) => {
     err(`Invalid host '${opts.host}'. Expected 'js' (default) or 'wasi'.`)
   }
   beginSession({
-    emitter, globals: GLOBALS, hooks: { emit, flat, body, bool, idx, spread },
+    emitter, globals: GLOBALS, hooks: { emit, flat, body, bool, idx, spread, emitIdentitySafe },
     source: code, optimize: opts.optimize, warnings: opts.warnings, strict: opts.strict, host: opts.host,
   })
   if (typeof opts.memory === 'number') ctx.memory.pages = opts.memory

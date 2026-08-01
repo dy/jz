@@ -14,6 +14,13 @@ import { typed, asF64, asI32, asI64, carrierF64 } from './ir.js'
 export { emitter } from './ctx.js'
 
 export const emit = (...a) => ctx.bridge.emit(...a)
+// Identity-safe re-emission of an ambiguous BOOL-merge node (kind.js
+// hasAmbiguousBoolMerge, .work/bool-merge-identity-design.md) — the
+// escape-site twin of `emit` for consumers (container/closure-arg boxing)
+// that need a merge's own BOOL arm to keep its atom identity. Bridged the
+// same way `emit` is (module/*.js and emit-assign.js can't import emit.js
+// directly — the acyclic bridge indirection) — bound alongside it at reset().
+export const emitIdentitySafe = (...a) => ctx.bridge.emitIdentitySafe(...a)
 export const flat = (...a) => ctx.bridge.flat(...a)
 export const body = (...a) => ctx.bridge.body(...a)
 export const bool = (...a) => ctx.bridge.bool(...a)

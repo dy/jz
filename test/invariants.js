@@ -14,7 +14,7 @@ import { join, relative } from 'path'
 import { compile } from '../index.js'
 import { ctx, reset, DBG_INVARIANTS } from '../src/ctx.js'
 import { analyzeBody, reanalyzeBody, setFuncBody } from '../src/compile/analyze.js'
-import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread } from '../src/compile/emit.js'
+import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
 import { GLOBALS } from '../src/prepare/index.js'
 import { run } from './util.js'
 import { onKernel } from './_matrix.js'
@@ -28,13 +28,13 @@ const wat = (code, opts = {}) => compile(code, { ...opts, wat: true })
 
 test('invariant: module-scope const name tracked in ctx.scope.consts', () => {
   if (onKernel()) return  // kernel: compile runs inside the wasm; the host's ctx.scope is never populated, so this white-box internal-state probe can't apply on the self-host leg
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread })
+  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
   compile('const X = 10; export let f = () => X')
   ok(ctx.scope.consts?.has('X'), 'const X should be tracked in ctx.scope.consts')
 })
 
 test('invariant: let does not appear in ctx.scope.consts', () => {
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread })
+  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
   compile('let x = 10; export let f = () => x')
   ok(!ctx.scope.consts?.has('x'), 'let x should NOT be in ctx.scope.consts')
 })
@@ -138,7 +138,7 @@ test('invariant: division always produces f64 result', () => {
 test('invariant: analyzeBody cache-hit throws under JZ_DEBUG_INVARIANTS after an uninvalidated signature retype', () => {
   if (onKernel()) return  // white-box probe of analyze.js internals — no in-kernel host ctx to inspect
   if (!DBG_INVARIANTS) return  // the assert is a no-op outside the battery's dbg leg (JZ_DEBUG_INVARIANTS=1) — nothing to observe without it
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread })
+  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
   compile('export let f = (a) => a + 1')
   const func = ctx.func.map.get('f')
   ctx.func.current = func.sig
@@ -156,7 +156,7 @@ test('invariant: analyzeBody cache-hit throws under JZ_DEBUG_INVARIANTS after an
 test('invariant: the reanalyzeBody/setFuncBody seam never reproduces the stale-signature throw', () => {
   if (onKernel()) return
   if (!DBG_INVARIANTS) return
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread })
+  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
   compile('export let f = (a) => a + 1')
   const func = ctx.func.map.get('f')
   ctx.func.current = func.sig

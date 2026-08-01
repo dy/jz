@@ -11,9 +11,9 @@ import { OPTF } from '../src/ctx.js'
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride, undefExpr, cloneIR } from '../src/ir.js'
-import { emit, spread, deps, wat } from '../src/bridge.js'
+import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
-import { valTypeOf, shapeOf } from '../src/kind.js'
+import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
@@ -1696,7 +1696,15 @@ export default (ctx) => {
     inc('__typeof')
     // Receiver type unknown; enable branches that wouldn't otherwise be reachable.
     ctx.features.closure = true
-    return typed(['call', '$__typeof', asI64(emit(a))], 'f64')
+    // Ambiguous BOOL-merge operand (.work/bool-merge-identity-design.md):
+    // valTypeOf(a) reads NUMBER here (the merge's benign coercion), so the
+    // VAL.BOOL fold above correctly stays silent — but plain `emit(a)` still
+    // collapses the merge's own BOOL arm to a raw 0/1 bit (the '?:'/'&&' handlers'
+    // deliberate BOOL∪NUMBER-stays-raw rule), which $__typeof's dynamic dispatch
+    // then reads as "number" even on the branch that's really `false`/`true`.
+    // emitIdentitySafe re-emits the merge with that arm boxed to its atom first.
+    const av = hasAmbiguousBoolMerge(a) ? emitIdentitySafe(a) : emit(a)
+    return typed(['call', '$__typeof', asI64(av)], 'f64')
   }
 
   ctx.core.stdlib['__typeof'] = () => {

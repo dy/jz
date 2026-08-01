@@ -42,7 +42,7 @@ import {
   exprType, constIntExpr, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
   inBoundsArrIdx, typedIdxProven, versionableTypedNest, idxKey,
 } from '../type.js'
-import { valTypeOf, shapeOf, dictValueKindOf } from '../kind.js'
+import { valTypeOf, shapeOf, dictValueKindOf, hasAmbiguousBoolMerge } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
@@ -369,7 +369,14 @@ export function emitTypeofCmp(a, b, cmpOp) {
   if (typeof code !== 'number') return null
 
   const t = temp()
-  const va = asF64(emit(typeofExpr))
+  // Ambiguous BOOL-merge operand (.work/bool-merge-identity-design.md): the
+  // collapsed NUMBER kind is unsound for typeof, which must tell a genuine
+  // number apart from a coerced-to-0/1 boolean — emitIdentitySafe re-emits
+  // the merge with its own BOOL arm boxed to its atom, so the dynamic bit
+  // checks below (and the general typeof dispatch, module/core.js $__typeof)
+  // read the correct per-branch representation instead of a raw collapsed bit.
+  const ambiguous = hasAmbiguousBoolMerge(typeofExpr)
+  const va = asF64(ambiguous ? emitIdentitySafe(typeofExpr) : emit(typeofExpr))
   const eq = cmpOp === 'eq'
   // Trailing eqz-wrapper for atomic checks: `check` if eq, `!check` if ne.
   const wrap = check => typed(eq ? check : ['i32.eqz', check], 'i32')
@@ -384,7 +391,10 @@ export function emitTypeofCmp(a, b, cmpOp) {
     return both(isPtr, isKind)
   }
   // Static fold for known-VAL operands of "boolean"/"bigint" — saves a runtime branch.
+  // Never trusted for an ambiguous merge: its collapsed NUMBER kind is exactly
+  // the unsound fact this whole design routes around.
   const staticFold = (target) => {
+    if (ambiguous) return null
     const vt = resolveValType(typeofExpr, valTypeOf, lookupValType)
     if (vt) return typed(['i32.const', (vt === target) === eq ? 1 : 0], 'i32')
     return null
@@ -2193,6 +2203,83 @@ const nullableOperand = (n) => {
   return false
 }
 
+// .work/bool-merge-identity-design.md — identity-safe re-emission of an
+// ambiguous BOOL-merge node (hasAmbiguousBoolMerge, src/kind.js). Generalizes
+// the '?:'/'&&'/'||'/'??' handlers' own per-arm box-then-select shape below
+// (the "materialize it per-arm here, BEFORE the raw-bit collapses below erase
+// it" comment on '?:') with their NUMBER exclusion LIFTED: those handlers
+// deliberately keep a BOOL∪NUMBER arm pair RAW (the benign arithmetic-context
+// coercion this whole design works around), so a BOOL arm's atom identity is
+// lost the moment `emit(node)` runs. This function is the escape hatch, used
+// ONLY at identity-observing consumer sites (guarded by hasAmbiguousBoolMerge)
+// — everywhere else keeps calling plain `emit(node)`, so non-ambiguous nodes
+// (the overwhelming majority — kernel-parity's byte-identity gate depends on
+// it) never pay for this at all.
+//
+// Recurses into arm positions via emitIdentitySafe (not emit): a nested
+// ambiguous merge inside an arm that itself resolves via the ordinary
+// same-kind branch (hasAmbiguousBoolMerge's own "recursive through nested
+// merges" case) gets its OWN box decision applied at its own level, exactly
+// mirroring how the predicate itself recurses. Any node that isn't itself an
+// ambiguous merge — including every non-merge leaf recursion bottoms out on —
+// degrades to plain `emit(node)`, byte-identical to the general path.
+//
+// NO unboxing anywhere: nothing at the guarded consumer sites currently
+// expects a raw atom, only a correctly-identity-carrying f64 value.
+export function emitIdentitySafe(node) {
+  if (!Array.isArray(node) || !hasAmbiguousBoolMerge(node)) return emit(node)
+  const [op] = node
+  if (op === '?:') {
+    const [, a, b, c] = node
+    const ca = emit(a)
+    if (isLit(ca)) { const v = litVal(ca); return (v !== 0 && v === v) ? emitIdentitySafe(b) : emitIdentitySafe(c) }
+    const cond = toBoolFromEmitted(ca)
+    const thenRefs = extractRefinements(a, new Map(), true)
+    const elseRefs = extractRefinements(a, new Map(), false)
+    const vb = withRefinements(thenRefs, b, () => emitIdentitySafe(b))
+    const vc = withRefinements(elseRefs, c, () => emitIdentitySafe(c))
+    const vtbM = resolveValType(b, valTypeOf, lookupValType)
+    const vtcM = resolveValType(c, valTypeOf, lookupValType)
+    const fb = vtbM === VAL.BOOL ? boolBoxIR(vb) : asF64(vb)
+    const fc = vtcM === VAL.BOOL ? boolBoxIR(vc) : asF64(vc)
+    const ib = ['i64.reinterpret_f64', fb], ic = ['i64.reinterpret_f64', fc]
+    const bits = eagerSelectOK(fb, fc) && selectCondOK(cond)
+      ? ['select', ib, ic, cond]
+      : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
+    return typed(['f64.reinterpret_i64', bits], 'f64')
+  }
+  if (op === '&&' || op === '||') {
+    const [, a, b] = node
+    const va = emitIdentitySafe(a)
+    const refs = extractRefinements(a, new Map(), op === '&&')
+    const vtA = resolveValType(a, valTypeOf, lookupValType)
+    const vtB = resolveValType(b, valTypeOf, lookupValType)
+    const t = temp()
+    const fa = vtA === VAL.BOOL ? boolBoxIR(va) : asF64(va)
+    const fb0 = withRefinements(refs, b, () => emitIdentitySafe(b))
+    const fb = vtB === VAL.BOOL ? boolBoxIR(fb0) : asF64(fb0)
+    const teedCond = toBoolFromEmitted(typed(['local.tee', `$${t}`, fa], 'f64'))
+    return op === '&&'
+      ? typed(['if', ['result', 'f64'], teedCond, ['then', fb], ['else', ['local.get', `$${t}`]]], 'f64')
+      : typed(['if', ['result', 'f64'], teedCond, ['then', ['local.get', `$${t}`]], ['else', fb]], 'f64')
+  }
+  if (op === '??') {
+    const [, a, b] = node
+    const va = emitIdentitySafe(a)
+    const vtA = resolveValType(a, valTypeOf, lookupValType)
+    const vtB = resolveValType(b, valTypeOf, lookupValType)
+    const t = temp()
+    const fa = vtA === VAL.BOOL ? boolBoxIR(va) : asF64(va)
+    const fb0 = emitIdentitySafe(b)
+    const fb = vtB === VAL.BOOL ? boolBoxIR(fb0) : asF64(fb0)
+    return typed(['if', ['result', 'f64'],
+      ['i32.eqz', isNullish(['local.tee', `$${t}`, fa])],
+      ['then', ['local.get', `$${t}`]],
+      ['else', fb]], 'f64')
+  }
+  return emit(node)
+}
+
 // An emitted value whose bit pattern is an i32, paired with how it widens to f64: a
 // `f64.convert_i32_s/u(x)` peels to its i32 source `x`; a bare i32 widens signed. Used to compare
 // two integer-backed operands directly in i32 instead of widening both to f64.
@@ -2408,6 +2495,25 @@ function emitStrictEq(a, b, negate) {
   const sa = sentinelOf(a), sb = sentinelOf(b)
   if (sb) return strictSentinel(a, sb === 'undef')
   if (sa) return strictSentinel(b, sa === 'undef')
+  // Ambiguous BOOL-merge operand(s) (.work/bool-merge-identity-design.md):
+  // kind.js's collapsed static kind for a `?:`/`&&`/`||`/`??` merge with one
+  // BOOL arm and one NUMBER arm is NUMBER (the deliberate benign arithmetic-
+  // context coercion) — trusting it here, either for the differing-class fold
+  // below (`x===false` folding to compile-time FALSE) or the BOOL-vs-unknown
+  // box decision, is exactly the live miscompile this predicate guards: the
+  // collapsed kind can't tell a genuine 0/1 from a coerced false/true. Route
+  // through emitIdentitySafe (which re-emits the merge with its OWN BOOL arm
+  // boxed to its atom, before the raw-bit collapse erases it) and bit-compare
+  // directly — sound for EVERY other-side shape (a proven differing STRING/
+  // OBJECT/etc. other side can still never equal either of the merge's two
+  // possible runtime kinds, so this never loses a real fold, only skips one
+  // that was unsound to take).
+  if (hasAmbiguousBoolMerge(a) || hasAmbiguousBoolMerge(b)) {
+    const va = hasAmbiguousBoolMerge(a) ? emitIdentitySafe(a) : carrierF64(a, emit(a))
+    const vb = hasAmbiguousBoolMerge(b) ? emitIdentitySafe(b) : carrierF64(b, emit(b))
+    const cmp = typed(['i64.eq', ['i64.reinterpret_f64', va], ['i64.reinterpret_f64', vb]], 'i32')
+    return negate ? typed(['i32.eqz', cmp], 'i32') : cmp
+  }
   // Known, differing primitive classes can never be strictly equal.
   const strictA = resolveValType(a, valTypeOf, lookupValType)
   const strictB = resolveValType(b, valTypeOf, lookupValType)
@@ -3464,8 +3570,10 @@ function tryDirectClosureCall(callee, parsed) {
   // We pass the closure NaN-box itself as env (body extracts captures via __ptr_offset(__env)).
   // Slots are untyped boxed-value positions: a BOOL arg crosses as its atom box
   // (the paramTypes numeric lattice above already poisons on non-NUMBER args, so
-  // the body never assumes raw numerics for these slots).
-  const slots = parsed.normal.map(a => carrierF64(a, emit(a)))
+  // the body never assumes raw numerics for these slots). An ambiguous BOOL-merge
+  // arg (.work/bool-merge-identity-design.md) needs emitIdentitySafe in place of
+  // carrierF64 — same post-hoc-powerless reasoning as the return tail/store sites.
+  const slots = parsed.normal.map(a => hasAmbiguousBoolMerge(a) ? emitIdentitySafe(a) : carrierF64(a, emit(a)))
   while (slots.length < W) slots.push(undefExpr())
   return typed(['call', `$${bodyName}`,
     asF64(emit(callee)),
@@ -3836,7 +3944,6 @@ export const emitter = {
     // repeated textually across both arms of a ternary differently from one materialized
     // to a local first" — pinned in test/parser-bugs.js rather than chased further into
     // the kernel's own call/branch codegen. See .work/todo.md (groundtruth archive).
-    const emitted = emit(expr)
     // Closure-convention bodies return into a boxed-value position (the ftN f64
     // slot): a BOOL value must cross as its true/false atom — the result-side
     // mirror of closure.call's carrierF64 args. Raw funcs keep the plain 0/1
@@ -3844,8 +3951,10 @@ export const emitter = {
     // there's just one return statement at all (see ctx.func.mixedAtomReturn,
     // set in index.js emitFunc — its comment has the full "why >=2 returns"
     // rationale, including the Set/Map single-return regression a coarser
-    // `valResult !== VAL.BOOL` gate caused). A genuinely mixed func (>= 2
-    // return statements, not provably uniform BOOL) must box a statically-BOOL
+    // `valResult !== VAL.BOOL` gate caused; also documents the ADDITIVE
+    // single-return admission when the lone return is an ambiguous BOOL-merge).
+    // A genuinely mixed func (>= 2 return statements, not provably uniform
+    // BOOL, or a single ambiguous-merge return) must box a statically-BOOL
     // return tail here: an unproven-kind call result is exactly the
     // "dynamic/unknown" operand the rest of the compiler already assumes
     // carries booleans as their atom (emitStrictEq's BOOL-vs-unknown branch,
@@ -3855,8 +3964,21 @@ export const emitter = {
     // boolconst). carrierF64 is a no-op (byte-identical to asParamType/asF64)
     // whenever this return's own static valType isn't BOOL, so uniform-NUMBER
     // (or any non-bool-mixed) funcs are untouched.
+    //
+    // An ambiguous BOOL-merge return (`s => cond ? 1 : false`,
+    // .work/bool-merge-identity-design.md) needs the SAME box but carrierF64
+    // is post-hoc powerless for it: `expr`'s own valTypeOf collapses to NUMBER
+    // (the merge's benign coercion), so carrierF64 never recognizes it as
+    // BOOL-carrying — by the time `emitted` exists, the coerced false and a
+    // genuine 0 are already the same bits. emitIdentitySafe re-emits the merge
+    // with its own BOOL arm boxed to its atom BEFORE that collapse, so it must
+    // replace `emit(expr)` itself here (not wrap its result) — single emission
+    // preserved (still exactly one of emit/emitIdentitySafe runs).
+    const boxes = pk == null && rt === 'f64' && (ctx.func.boxedResult || ctx.func.mixedAtomReturn)
+    const ambiguous = boxes && hasAmbiguousBoolMerge(expr)
+    const emitted = ambiguous ? emitIdentitySafe(expr) : emit(expr)
     const ir = pk != null ? asPtrOffset(emitted, pk)
-      : (rt === 'f64' && (ctx.func.boxedResult || ctx.func.mixedAtomReturn)) ? carrierF64(expr, emitted)
+      : boxes ? (ambiguous ? emitted : carrierF64(expr, emitted))
       : asParamType(emitted, rt)
     const ty = pk != null ? 'i32' : rt
     const tcoed = tcoTailRewrite(ir, ty)

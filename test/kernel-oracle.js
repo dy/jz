@@ -119,6 +119,35 @@ const AGREE = [
   // PENDING-FIX not()-tripwire.
   { name: 'boolconst', src: CORPUS.boolconst,
     calls: [{ fn: 'f', args: [5] }, { fn: 'f', args: ['hi'] }, { fn: 'f', args: [true] }] },
+  // FLIPPED from PENDING-FIX (.work/bool-merge-identity-design.md — the
+  // ambiguous BOOL-merge identity fix): `cond ? 1 : false` used as a return
+  // value, observed via `=== false` at a DIFFERENT function's call site (the
+  // function-boundary mechanism, distinct from boolconst's own — this one
+  // routes through kind.js's hasAmbiguousBoolMerge + emit.js emitIdentitySafe,
+  // wired at the return-tail (src/compile/index.js emitFunc's mixedAtomReturn
+  // additive single-return admission + the top-level expression-body site) and
+  // at emitStrictEq's differing-class fold/box decision. Was previously
+  // documented as an open, different-mechanism gap from boolconst (its own
+  // comment lived here); now fixed at the same conceptual root (an atom must
+  // cross unboxed at NO identity-observing site), generalized rather than
+  // patched per-shape.
+  { name: 'ternary-bool-merge-return', src: `const g = (s) => s ? 1 : false
+export let f = (s) => g(s) === false`,
+    calls: [{ fn: 'f', args: [true] }, { fn: 'f', args: [false] }] },
+  // New AGREE rows for the WIDER live envelope the same design doc found
+  // (7b/7c/10a) — all four fire through emitStrictEq's differing-primitive-
+  // class static fold / emitTypeofCmp's static fold trusting the ambiguous
+  // BOOL-vs-NUMBER merge coercion (kind.js VT['?:']/VT['&&']), no function
+  // boundary needed for any of these three (inline within one function).
+  { name: 'ternary-bool-merge-inline-eq',
+    src: `export let f = (s) => (s ? 1 : false) === false`,
+    calls: [{ fn: 'f', args: [true] }, { fn: 'f', args: [false] }] },
+  { name: 'ternary-bool-merge-typeof',
+    src: `export let f = (s) => typeof (s ? 1 : false)`,
+    calls: [{ fn: 'f', args: [true] }, { fn: 'f', args: [false] }] },
+  { name: 'and-bool-merge-eq',
+    src: `export let f = (x) => ((x > 0) && 1) === false`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
 ]
 
 for (const opt of [0, 2, 3]) {
@@ -216,28 +245,28 @@ test('kernel oracle: subnormal literal — documented divergence (kernel-only, R
 // (needs consumer-position-aware context threading through emit(), not a
 // return-statement gate) — documented and pinned, not fixed, per the audit's
 // own "map it, fix if same-root, pin regardless" instruction.
-test('kernel oracle: ternary BOOL|NUMBER return — PENDING FIX (documented, different mechanism than boolconst)', async () => {
+test('kernel oracle: ternary BOOL|NUMBER return — AGREE (closed by the ambiguous-BOOL-merge identity work)', async () => {
+  // Was PENDING FIX: g(false) returned the `false` atom collapsed to raw 0.0,
+  // so `g(s) === false` read false for both arguments. Closed by
+  // .work/bool-merge-identity-design.md — hasAmbiguousBoolMerge admits the
+  // single-return ternary at the return tail, and emitStrictEq's differing-
+  // class fold defers to the identity-safe path for ambiguous operands. The
+  // former not() tripwire fired as designed; this is its designed rewrite.
   if (onWasi()) return
   const src = `const g = (s) => s ? 1 : false
 export let f = (s) => g(s) === false`
   const mod = await oracle(src)
   const cases = [
-    { args: [true], want: false },  // g(true)=1 (number); 1 === false → false (already correct)
-    { args: [false], want: true },  // g(false)=false (atom); false === false → true (jz: WRONG — crosses raw)
+    { args: [true], want: false },  // g(true)=1 (number); 1 === false → false
+    { args: [false], want: true },  // g(false)=false (atom); false === false → true
   ]
   for (const { args, want } of cases) is(mod.f(...args), want, `ternary: JS oracle baseline f(${args.map(String)})`)
   for (const opt of [0, 2, 3]) {
     const nat = runNative(src, opt).f
     const ker = runKernel(src, opt).f
     for (const { args, want } of cases) {
-      const gotNat = nat(...args), gotKer = ker(...args)
-      is(gotKer, gotNat, `ternary O${opt}: kernel matches native (same mechanism on both legs)`)
-      if (want === false) {
-        is(gotNat, want, `ternary O${opt}: f(${args.map(String)}) already correct`)
-      } else {
-        is(gotNat, false, `ternary O${opt}: f(${args.map(String)}) CURRENT wrong value (should be ${want}) — open, different-mechanism gap, not fixed by the boolconst return-statement rule`)
-        not(gotNat, want, `ternary O${opt}: f(${args.map(String)}) known gap vanished — flip this case to the AGREE tier (is(gotNat, want, …))`)
-      }
+      is(nat(...args), want, `ternary O${opt}: native f(${args.map(String)}) agrees with JS`)
+      is(ker(...args), want, `ternary O${opt}: kernel f(${args.map(String)}) agrees with JS`)
     }
   }
 })

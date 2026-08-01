@@ -22,7 +22,7 @@ import { resetProgramFactsCache } from '../src/compile/program-facts.js'
 import { clearDollar } from '../src/ir.js'
 import { clearStdlibParseCache } from '../src/wat/assemble.js'
 import {
-  emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads,
+  emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads, emitIdentitySafe,
 } from '../src/compile/emit.js'
 import { resolveOptimize } from '../src/optimize/index.js'
 import { watrTail } from '../src/optimize/watr-tail.js'
@@ -68,7 +68,7 @@ function setupSelf(strict, optJSON, modulesJSON, host) {
   // injections remain here.
   beginSession({
     emitter, globals: GLOBALS,
-    hooks: { emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads },
+    hooks: { emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads, emitIdentitySafe },
     optimize: optJSON ? JSON.parse(optJSON) : false,
     strict: !!strict, host: host || undefined,
   })

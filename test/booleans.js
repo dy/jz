@@ -127,11 +127,17 @@ test('bool: host boolean coerces to 0/1 in arithmetic', () => {
 // Pinned so the README's stated boundaries can't drift silently.
 // ============================================
 
-test('bool: value-preserving &&/|| keep the numeric carrier (documented gap)', () => {
-  // `5 && true` evaluates to its right operand; the operator is value-preserving
-  // and the result type isn't statically narrowed to BOOL, so it crosses as 1.
-  is(run('export let f = () => 5 && true')(), 1)
-  is(run('export let f = () => 0 || true')(), 1)
+test('bool: value-preserving &&/|| carry the boolean atom across the boundary (gap CLOSED)', () => {
+  // Was a documented gap: `5 && true` crossed as raw 1 (the value-preserving
+  // merge collapsed the BOOL arm to its numeric carrier). Closed by the
+  // ambiguous-BOOL-merge identity work (.work/bool-merge-identity-design.md):
+  // a merge with a statically-BOOL arm and a NUMBER sibling boxes the BOOL
+  // arm at identity/boundary escapes, so the atom survives to JS exactly.
+  // Pure-NUMBER merges stay raw (byte-identical fast path) — pinned below.
+  is(run('export let f = () => 5 && true')(), true)
+  is(run('export let f = () => 0 || true')(), true)
+  is(run('export let f = () => 5 && 3')(), 3)
+  is(run('export let f = () => true && 5')(), 5)
 })
 
 test('bool: bare boolean read from a container decodes as a real boolean', () => {
