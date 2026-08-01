@@ -170,7 +170,7 @@ export const lookupValType = name => {
   const r = ctx.func.refinements
   if (r?.size) { const v = r.get(name)?.val; if (v) return v }
   const ov = ctx.func.localValTypesOverlay
-  if (ov) { const v = ov.get(name); if (v) return v }
+  if (ov?.size) { const v = ov.get(name); if (v) return v }
   return ctx.func.localReps?.get(name)?.val || ctx.scope.globalValTypes?.get(name) || null
 }
 
