@@ -496,13 +496,19 @@ export function inferSchemaId(expr, lookupMap) {
  *  an unprovable source kills the fact rather than being traced further.
  *  See the fixpoint call-site context doc above for cx's field shape. */
 export function inferArrElemSchema(expr, cx) {
+  // Hoist cx fields once per call: cx arrives through the fixpoint runner's
+  // INDIRECT dispatch (inferFn is a parameter), so the self-hosted kernel
+  // can't schema-prove it — every cx.field read is a generic dyn-get in the
+  // hottest narrowSignatures loop. One read per field per call keeps the
+  // named-context API without paying per-use (warm-cap regression da39feec).
+  const callerElems = cx.callerElems, paramFacts = cx.paramFacts
   if (typeof expr === 'string') {
-    if (cx.callerElems?.has(expr)) {
-      const v = cx.callerElems.get(expr)
+    if (callerElems?.has(expr)) {
+      const v = callerElems.get(expr)
       if (v != null) return v
     }
-    if (cx.paramFacts?.has(expr)) {
-      const v = cx.paramFacts.get(expr)
+    if (paramFacts?.has(expr)) {
+      const v = paramFacts.get(expr)
       if (v != null) return v
     }
     return null
@@ -531,13 +537,14 @@ export function inferArrElemSchema(expr, cx) {
  *  inferArrElemSchema; sources: caller's body set census (Set values), caller's
  *  param fact (already canonical), or a set-narrowed user fn return. */
 export function inferArrElemSchemaSet(expr, cx) {
+  const callerElems = cx.callerElems, paramFacts = cx.paramFacts  // hoist: see inferArrElemSchema
   const canon = (v) => v instanceof Set
     ? (v.size >= 2 ? [...v].sort((a, b) => a - b).join(',') : null)
     : typeof v === 'string' ? v : null
   if (typeof expr === 'string') {
-    const v = canon(cx.callerElems?.get(expr))
+    const v = canon(callerElems?.get(expr))
     if (v != null) return v
-    const p = canon(cx.paramFacts?.get(expr))
+    const p = canon(paramFacts?.get(expr))
     if (p != null) return p
     return null
   }
@@ -550,13 +557,14 @@ export function inferArrElemSchemaSet(expr, cx) {
 
 /** Infer arg arr-elem-VAL. Mirrors inferArrElemSchema but tracks VAL.* element kind. */
 export function inferArrElemValType(expr, cx) {
+  const callerElems = cx.callerElems, paramFacts = cx.paramFacts  // hoist: see inferArrElemSchema
   if (typeof expr === 'string') {
-    if (cx.callerElems?.has(expr)) {
-      const v = cx.callerElems.get(expr)
+    if (callerElems?.has(expr)) {
+      const v = callerElems.get(expr)
       if (v != null) return v
     }
-    if (cx.paramFacts?.has(expr)) {
-      const v = cx.paramFacts.get(expr)
+    if (paramFacts?.has(expr)) {
+      const v = paramFacts.get(expr)
       if (v != null) return v
     }
     return null
@@ -572,9 +580,10 @@ export function inferArrElemValType(expr, cx) {
  *  Sources: caller's body-local typedElems, caller's typed params, literal `new TypedArray(...)`,
  *  calls to typed-narrowed user funcs. Returns null when the ctor can't be determined. */
 export function inferTypedCtor(expr, cx) {
+  const callerElems = cx.callerElems, paramFacts = cx.paramFacts  // hoist: see inferArrElemSchema
   if (typeof expr === 'string') {
-    if (cx.callerElems?.has(expr)) return cx.callerElems.get(expr)
-    if (cx.paramFacts?.has(expr)) return cx.paramFacts.get(expr)
+    if (callerElems?.has(expr)) return callerElems.get(expr)
+    if (paramFacts?.has(expr)) return paramFacts.get(expr)
     return null
   }
   const ctor = typedElemCtor(expr)
