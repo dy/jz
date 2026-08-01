@@ -19,6 +19,7 @@ import { hasOwnContinue, isBlockBody, isLiteralStr } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js'
 import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex } from '../layout.js'
 import { ssoEncode } from './string.js'
+import { ERR } from '../err-codes.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
 // NaN-box bits of the SSO string 'length' — computed once; see the STRING
@@ -1759,7 +1760,7 @@ export default (ctx) => {
       // spec GroupBy step 2: IsCallable(callbackfn) — throw before iterating,
       // not an indirect-call trap mid-loop
       ['if', ['i32.eqz', ptrTypeEq(typed(['local.get', `$${cb}`], 'f64'), PTR.CLOSURE)],
-        ['then', ['throw', '$__jz_err', ['f64.const', 0]]]],
+        ['then', ['throw', '$__jz_err', ['f64.const', ERR.GROUP_BY_CALLBACK]]]],
       ['local.set', `$${result}`, initResult],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
@@ -1846,7 +1847,7 @@ export default (ctx) => {
       (then (return (local.get $v))))
     ;; functions / host handles: DataCloneError
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE})) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL})))
-      (then (throw $__jz_err (f64.const 0))))
+      (then (throw $__jz_err (f64.const ${ERR.CLONE_UNCLONEABLE}))))
     ;; already cloned? (cycle / diamond sharing) — __map_get yields raw i64 bits
     (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
     (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
@@ -3255,7 +3256,7 @@ export default (ctx) => {
     const ptrType = () => ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
     return typed(['block', ['result', 'f64'], bind,
       ['if', ['call', '$__is_nullish', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
-        ['then', ['throw', '$__jz_err', ['f64.const', 0]]]],
+        ['then', ['throw', '$__jz_err', ['f64.const', ERR.ITERATE_NULLISH]]]],
       ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.SET]],
         ['then', collKeysFromTemp(t, SET_ENTRY)],
         ['else', ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.MAP]],

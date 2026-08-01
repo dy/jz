@@ -16,6 +16,7 @@ import { isReassigned } from '../src/ast.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
+import { ERR } from '../err-codes.js'
 
 // ─── Shared decimal-number parsing fragments ────────────────────────────────
 // `__to_num` (Number coercion) and `__parseFloat` both scan a StrDecimalLiteral
@@ -563,7 +564,7 @@ export default (ctx) => {
     (local $buf i32) (local $pos i32) (local $neg i32) (local $iv i64) (local $r i64) (local $rf f64)
     (local $int f64) (local $frac f64) (local $dg i32) (local $i i32) (local $j i32) (local $tmp i32) (local $fn i32) (local $rv f64)
     (if (i32.or (i32.lt_s (local.get $radix) (i32.const 2)) (i32.gt_s (local.get $radix) (i32.const 36)))
-      (then (throw $__jz_err (f64.const 0))))
+      (then (throw $__jz_err (f64.const ${ERR.NUMBER_RADIX}))))
     (if (i32.or (f64.ne (local.get $val) (local.get $val)) (f64.eq (f64.abs (local.get $val)) (f64.const inf)))
       (then (return (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))
     (local.set $buf (call $__alloc (i32.const 180)))
@@ -1497,7 +1498,7 @@ export default (ctx) => {
     ;; aux 0, so type==0 && aux>=16 uniquely identifies a Symbol.
     (if (i32.and (i32.eqz (local.get $t))
                  (i32.ge_u (call $__ptr_aux (local.get $v)) (i32.const 16)))
-      (then (throw $__jz_err (f64.const 0))))
+      (then (throw $__jz_err (f64.const ${ERR.SYMBOL_TO_NUMBER}))))
     ;; Non-string values go through ToString per JS spec, then re-check the
     ;; type in case ToString itself returned a non-string sentinel.
     (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
@@ -1600,7 +1601,7 @@ export default (ctx) => {
     (if (i32.eqz (i32.and
           (f64.eq (local.get $n) (f64.trunc (local.get $n)))
           (f64.lt (f64.abs (local.get $n)) (f64.const inf))))
-      (then (throw $__jz_err (f64.const 0))))
+      (then (throw $__jz_err (f64.const ${ERR.NUMBER_TO_BIGINT_RANGE}))))
     (f64.reinterpret_i64 (i64.trunc_sat_f64_s (local.get $n))))`
 
   // StringToBigInt: strict — the whole trimmed string must be a single integer
@@ -1668,7 +1669,7 @@ export default (ctx) => {
       (if (i32.and (i32.ge_s (local.get $c) (i32.const 65)) (i32.le_s (local.get $c) (i32.const 90)))
         (then (local.set $digit (i32.sub (local.get $c) (i32.const 55)))))
       (if (i32.or (i32.lt_s (local.get $digit) (i32.const 0)) (i32.ge_s (local.get $digit) (local.get $radix)))
-        (then (throw $__jz_err (f64.const 0))))
+        (then (throw $__jz_err (f64.const ${ERR.BIGINT_PARSE_DIGIT}))))
       (local.set $seen (i32.const 1))
       (local.set $result
         (i64.add
@@ -1677,7 +1678,7 @@ export default (ctx) => {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $lp)))
     ;; A sign or radix prefix with no digits ("-", "0x", "0b") is a SyntaxError.
-    (if (i32.eqz (local.get $seen)) (then (throw $__jz_err (f64.const 0))))
+    (if (i32.eqz (local.get $seen)) (then (throw $__jz_err (f64.const ${ERR.BIGINT_PARSE_EMPTY}))))
     (f64.reinterpret_i64
       (if (result i64) (local.get $neg)
         (then (i64.sub (i64.const 0) (local.get $result)))

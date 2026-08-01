@@ -14,6 +14,7 @@ import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/ctx.js'
 import { isReassigned } from '../src/ast.js'
+import { ERR } from '../err-codes.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
 // return for primitive/built-in types; canonicalized from
@@ -281,7 +282,7 @@ export default (ctx) => {
   const requireCoercible = (node) => {
     if (!isNullishLiteral(node)) return null
     ctx.runtime.throws = true
-    return typed(['block', ['result', 'f64'], ['throw', '$__jz_err', ['f64.const', 0]]], 'f64')
+    return typed(['block', ['result', 'f64'], ['throw', '$__jz_err', ['f64.const', ERR.OBJECT_NULLISH]]], 'f64')
   }
 
   // Arrays and (coerced) strings expose their indices as own enumerable

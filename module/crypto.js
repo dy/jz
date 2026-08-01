@@ -18,6 +18,7 @@
 import { typed, asI64 } from '../src/ir.js'
 import { emit, wat, hostImport, bind } from '../src/bridge.js'
 import { inc, declGlobal, PTR } from '../src/ctx.js'
+import { ERR } from '../err-codes.js'
 
 export default (ctx) => {
   const seeded = typeof ctx.transform.randomSeed === 'number'
@@ -59,16 +60,16 @@ export default (ctx) => {
   wat('__get_random_values', `(func $__get_random_values (param $p i64) (result f64)
     (local $aux i32) (local $et i32) (local $bl i32)
     (if (i32.ne (call $__ptr_type (local.get $p)) (i32.const ${PTR.TYPED}))
-      (then (throw $__jz_err (f64.const 0))))
+      (then (throw $__jz_err (f64.const ${ERR.CRYPTO_NOT_TYPED}))))
     (local.set $aux (call $__ptr_aux (local.get $p)))
     (local.set $et (i32.and (local.get $aux) (i32.const 7)))
     (if (i32.and
           (i32.gt_u (local.get $et) (i32.const 5))
           (i32.eqz (i32.and (local.get $aux) (i32.const 16))))
-      (then (throw $__jz_err (f64.const 0))))
+      (then (throw $__jz_err (f64.const ${ERR.CRYPTO_FLOAT_TYPE}))))
     (local.set $bl (i32.shl (call $__len (local.get $p)) (call $__typed_shift (local.get $et))))
     (if (i32.gt_u (local.get $bl) (i32.const 65536))
-      (then (throw $__jz_err (f64.const 0))))
+      (then (throw $__jz_err (f64.const ${ERR.CRYPTO_QUOTA}))))
     (call $__crypto_fill (call $__typed_data (local.get $p)) (local.get $bl))
     (f64.reinterpret_i64 (local.get $p)))`,
     ['__crypto_fill', '__ptr_type', '__ptr_aux', '__len', '__typed_shift', '__typed_data'])

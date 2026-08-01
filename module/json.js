@@ -16,6 +16,7 @@ import { VAL } from '../src/reps.js'
 import { err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 import { i64Hex } from '../layout.js'
 import { strHashLiteral, heapResetWat } from './collection.js'
+import { ERR } from '../err-codes.js'
 
 function jsonConstString(ctx, expr) {
   if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
@@ -369,11 +370,11 @@ export default (ctx) => {
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (global.get $__jsp)))
       (if (i64.eq (i64.load (i32.add (local.get $st) (i32.shl (local.get $i) (i32.const 3)))) (local.get $val))
-        (then (throw $__jz_err (f64.const 0))))
+        (then (throw $__jz_err (f64.const ${ERR.JSON_CIRCULAR}))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
     ;; A structure deeper than the buffer is treated as non-serializable.
-    (if (i32.ge_s (global.get $__jsp) (i32.const 256)) (then (throw $__jz_err (f64.const 0))))
+    (if (i32.ge_s (global.get $__jsp) (i32.const 256)) (then (throw $__jz_err (f64.const ${ERR.JSON_TOO_DEEP}))))
     (i64.store (i32.add (local.get $st) (i32.shl (global.get $__jsp) (i32.const 3))) (local.get $val))
     (global.set $__jsp (i32.add (global.get $__jsp) (i32.const 1))))`
 
@@ -1417,7 +1418,7 @@ ${localDecls}
     ;; Any non-whitespace byte after the top-level value is a syntax error.
     ${WS()}
     (if (i32.ne ${PEEK} (i32.const -1)) (then (global.set $__jp_err (i32.const 1))))
-    (if (global.get $__jp_err) (then (throw $__jz_err (f64.const 0))))
+    (if (global.get $__jp_err) (then (throw $__jz_err (f64.const ${ERR.JSON_PARSE_SYNTAX}))))
     (local.get $r))`
 
   // === Emitters ===
@@ -1444,7 +1445,7 @@ ${localDecls}
       const lv = literalValue(x)
       if (valTypeOf(x) === VAL.BIGINT || (lv !== NOT_LIT && literalHasBigInt(lv))) {
         ctx.runtime.throws = true
-        return typed(['block', ['result', 'f64'], ['throw', '$__jz_err', ['f64.const', 0]]], 'f64')
+        return typed(['block', ['result', 'f64'], ['throw', '$__jz_err', ['f64.const', ERR.JSON_BIGINT]]], 'f64')
       }
     }
     const folded = foldStringify(x, replacer, space)

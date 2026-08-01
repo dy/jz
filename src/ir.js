@@ -1,4 +1,5 @@
 import { OPTF } from './ctx.js'
+import { ERR } from '../err-codes.js'
 /**
  * Pure IR construction helpers for WAT-as-array output.
  *
@@ -861,7 +862,7 @@ function toPrimitiveChain(node, v, order) {
         ['i32.eqz', ['call', '$__is_object', ['local.get', `$${prim}`]]]])
   }
   // Every method returned a non-primitive — `Cannot convert object to primitive`.
-  body.push(['throw', '$__jz_err', ['f64.const', 0]])
+  body.push(['throw', '$__jz_err', ['f64.const', ERR.TO_PRIMITIVE]])
   return typed(['block', blk, ...body], 'i64')
 }
 
