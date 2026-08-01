@@ -2163,6 +2163,168 @@ test('dict-value census: moduleInitSlot memo-cache replay is order-independent (
   is(bag2, bag1, 'second independent compile agrees on the poison too')
 })
 
+// ───────────────────────────────────────────── Map-value-type census (Tier 1)
+// .work/map-value-census-design.md: dict-value census's Map sibling — scalar
+// mapValueValType only (Tier 2 schema-id fact for the fftplan/provenance
+// OBJECT-valued edges is a separate, later design). Same first-wins-then-
+// clash lattice, published onto ctx.scope.globalReps as mapValueValType.
+// Consumer wired in the same landing (kind.js mapValueKindOf, VT['()']'s
+// 'get' short-circuit ahead of methodValType — see its doc for why it lives
+// in kind.js rather than kind-traits.js's methodValType).
+
+test('map-value census: module-global Map.set value kind populates globalReps', () => {
+  const src = `
+    export let MEMO = new Map(), n = 0
+    export let put = (k) => { MEMO.set(k, n++) }
+    export let get = (k) => MEMO.get(k)
+    put('a')
+    put('b')
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalReps?.get('MEMO')?.mapValueValType, 'number',
+    'MEMO.set(k, n++) census resolves to VAL.NUMBER')
+})
+
+test('map-value census: function-local Map populates the local half (analyze.js mapValueTypeOf)', () => {
+  const src = `
+    export let sumTwice = (a, b) => {
+      const cache = new Map()
+      cache.set('a', a * 2)
+      cache.set('b', b * 2)
+      return cache.get('a') + cache.get('b')
+    }
+  `
+  is(run(src).sumTwice(3, 4), 14, 'local Map get/set round-trips correctly')
+})
+
+test('map-value census: mixed-kind writes poison the fact to null', () => {
+  const src = `
+    export let bag = new Map()
+    export let put = (k, v) => { bag.set(k, v) }
+    put('a', 1)
+    put('b', 'oops')
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalReps?.get('bag')?.mapValueValType, null,
+    'a NUMBER write and a STRING write clash — fact must poison, not settle')
+})
+
+test('map-value census: an unresolvable write poisons the fact', () => {
+  const src = `
+    export let cache = new Map()
+    export let store = (k, src) => { cache.set(k, src.val) }
+    store('x', {val: 1})
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalReps?.get('cache')?.mapValueValType, null,
+    '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
+})
+
+test('map-value census: consumer wiring — proven-NUMBER Map.get read skips coercion at a compare site', () => {
+  // Mirrors the dict census's identical consumer-wiring test (design §2's
+  // named mechanism): cmpOp's NUMBER arm emits a raw f64 compare directly
+  // over the .get() result instead of routing through the generic runtime-
+  // typed comparison helper.
+  const src = `
+    export let MEMO = new Map(), n = 0
+    export let put = (k) => { MEMO.set(k, n++) }
+    export let bigOp = (k) => MEMO.get(k) > 0xffff
+    put('a')
+  `
+  const wat = jz.compile(src, { wat: true })
+  const body = wat.slice(wat.indexOf('$bigOp'))
+  ok(/\(f64\.gt\b/.test(body), 'expected a raw f64.gt at the compare site')
+  ok(!/\$__gt\b/.test(body), 'expected no generic runtime-typed compare helper')
+  is(run(src).bigOp('a'), false, 'functional result unchanged (0 > 0xffff is false)')
+})
+
+test('map-value census: soundness carve-out — an unregistered key still identity-compares as undefined', () => {
+  // The exact miscompile class the design's carve-out (§2, kind.js
+  // mapValueKindOf docstring, emit.js nullableOperand) exists to prevent:
+  // without it, `MEMO.get(k) === undefined` on a proven-NUMBER map would
+  // const-fold to always-false via emitStrictEq's strictSentinel — but an
+  // unregistered key's real runtime value IS undefined, so the idiomatic
+  // "does this key exist" probe must still observe true.
+  const src = `
+    export let MEMO = new Map(), n = 0
+    export let put = (k) => { MEMO.set(k, n++) }
+    export let has = (k) => MEMO.get(k) === undefined
+    put('a')
+  `
+  const { has } = run(src)
+  is(has('a'), false, 'registered key is not undefined')
+  is(has('zz'), true, 'unregistered key still observes undefined at runtime — the fold must not fire')
+})
+
+test('map-value census: new Map(seed) literal stays uncovered — census ignores it silently, no crash', () => {
+  // Ground truth (design): seed literals are a real shape difference,
+  // deliberately DEFERRED (YAGNI — zero corpus occurrences). The census only
+  // matches `.set(...)` CALL nodes, so a seeded Map with no explicit .set()
+  // call anywhere simply never populates — no special-case code, no crash.
+  const src = `
+    export let seeded = new Map([['a', 1], ['b', 2]])
+    export let get = (k) => seeded.get(k)
+  `
+  jz.compile(src, { wat: true })
+  is(ctx.scope.globalReps?.get('seeded')?.mapValueValType, undefined,
+    'seed-literal shape is out of Tier-1 scope by design — must not crash or falsely populate')
+  is(run(src).get('a'), 1, 'seeded Map still functions correctly (generic .get path)')
+})
+
+test('map-value census: bundled moduleInit Map.set (watr\'s memo shape, C-style for) populates globalReps', () => {
+  // Cross-module coverage: bundled sub-module top-level init code
+  // (ctx.module.moduleInits, OUTSIDE `ast`) — mirrors the dict census's own
+  // moduleInit fixture (dict-census-moduleinit-fix.md), but `new Map()` has
+  // no `{}` literal to trip hasSchemaLiterals on its own, so this also
+  // exercises the hasMapSet gate widening (program-facts.js observeNodeFacts
+  // + narrow.js's own hasSchemaLiterals-gated re-observation pass).
+  const dep = `
+    export const MEMO = new Map()
+    for (let i = 0, v = 0; i < 3; i++) MEMO.set(i, v += 10)
+  `
+  const { exports } = jz(
+    'import { MEMO } from "./dep.js"; export let lookup = (k) => MEMO.get(k) || -1',
+    { modules: { './dep.js': dep } }
+  )
+  const mangled = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$MEMO'))
+  ok(mangled, 'a mangled global rep exists for the bundled MEMO map')
+  is(ctx.scope.globalReps.get(mangled)?.mapValueValType, 'number',
+    'the bare top-level `MEMO.set(i, v += 10)` loop (visitInit, not visit) resolves VAL.NUMBER')
+  is(exports.lookup(1), 20, 'functional result correct')
+})
+
+test('map-value census: moduleInitSlot memo-cache replay is order-independent (cold vs cache-hit agree)', () => {
+  // observeProgramSlots runs 3× per compile on the same moduleInit nodes/gen
+  // (collectProgramFacts, narrow.js post-E2, plan/index.js late {fresh:true}) —
+  // passes 2 and 3 hit pf.moduleInitSlot's cache and replay mapObs instead of
+  // re-walking. Compiling the SAME source twice forces two independent
+  // cold-then-cached sequences — mirrors the dict census's identical test.
+  const dep = `
+    export const MEMO = new Map(), bag = new Map()
+    for (let i = 0, v = 0; i < 2; i++) MEMO.set(i, v += 10)
+    for (let i = 0; i < 2; i++) bag.set(i, i === 0 ? 1 : 'oops')
+  `
+  const src = 'import { MEMO, bag } from "./dep.js"; export let go = (k) => (MEMO.get(k) || 0) + (bag.get(k) ? 1 : 0)'
+  const modules = { './dep.js': dep }
+
+  jz(src, { modules })
+  const memoKey1 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$MEMO'))
+  const bagKey1 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
+  const memo1 = ctx.scope.globalReps.get(memoKey1)?.mapValueValType
+  const bag1 = ctx.scope.globalReps.get(bagKey1)?.mapValueValType
+
+  jz(src, { modules })
+  const memoKey2 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$MEMO'))
+  const bagKey2 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
+  const memo2 = ctx.scope.globalReps.get(memoKey2)?.mapValueValType
+  const bag2 = ctx.scope.globalReps.get(bagKey2)?.mapValueValType
+
+  is(memo1, 'number', 'first compile: MEMO resolves NUMBER (cold walk agrees with cached replay within the compile)')
+  is(bag1, null, 'first compile: bag poisons (poison survives cached replay within the compile)')
+  is(memo2, memo1, 'second independent compile (fresh gen, cold walk again) agrees with the first')
+  is(bag2, bag1, 'second independent compile agrees on the poison too')
+})
+
 // for-of/for-in dict population — the def-before-use OOB class
 // (.work/for-of-dict-alloc-fix.md): the dict-mode `{}` alloc used to emit a
 // RUNTIME `domain.length` read for the leanHashDomains preallocation hint;

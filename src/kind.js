@@ -291,6 +291,27 @@ export function dictValueKindOf(name) {
   return null
 }
 
+// Map-value-type census Tier 1 consumer (.work/map-value-census-design.md
+// §2): `recv.get(k)` on a proven-VAL.MAP receiver — the VAL.* kind of every
+// value ever written through `recv.set(anyKey, v)`, local-first then global,
+// mirroring dictValueKindOf above. Receiver gate is a HARD classification
+// (new Map() → CALLEE_VAL + recordGlobalRep, kind-traits.js) — unlike dict's
+// HASH gate, valTypeOf(name) === VAL.MAP alone proves the receiver, so no
+// dynWriteVars-analog proxy is needed on the global side.
+//
+// Lives here (not kind-traits.js's methodValType, despite `.get` dispatching
+// through it) and is consulted directly by VT['()'] below, BEFORE calling
+// methodValType: kind.js already imports methodValType FROM kind-traits.js,
+// so kind-traits.js importing this back would cycle. Also reused by
+// emit.js's nullableOperand (same name-only shape as dictValueKindOf).
+export function mapValueKindOf(name) {
+  if (typeof name !== 'string' || valTypeOf(name) !== VAL.MAP) return null
+  const local = ctx.func.localReps?.get(name)?.mapValueValType
+  if (local) return local
+  if (!ctx.func.localReps?.has(name)) return ctx.scope.globalReps?.get(name)?.mapValueValType || null
+  return null
+}
+
 // `[]` op covers both array literals (1 arg) and index access (2 args).
 // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].
 // Index access:  `arr[i]` → ['[]', arr, i].
@@ -570,6 +591,14 @@ VT['()'] = (args) => {
   }
   if (Array.isArray(callee) && callee[0] === '.') {
     const [, obj, method] = callee
+    // Map-value census Tier 1 consumer: `.get` short-circuit BEFORE
+    // methodValType, which has no 'get' branch (see mapValueKindOf's doc for
+    // why it lives here instead of kind-traits.js). Falls through to the
+    // generic methodValType dispatch when unproven, unchanged from before.
+    if (method === 'get') {
+      const mvt = mapValueKindOf(obj)
+      if (mvt) return mvt
+    }
     const vt = methodValType(method, obj, valTypeOf(obj), ctx)
     if (vt != null) return vt
   }
