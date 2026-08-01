@@ -164,8 +164,11 @@ JZ's target domains, jz emits the fastest wasm in the field** — per case, agai
 every rival compiled to the same substrate (C/Rust/Go/Zig → wasm32-wasi,
 AssemblyScript, Porffor, all run in V8), enforced by `test/bench.js` (the
 fastest-wasm gate over the full corpus, required-rival availability, per-rival
-coverage floors). Size is the second axis, gated the same way on the `-Os` build.
-Native C stays a labeled ceiling, never a beat-claim.
+coverage floors). Size is the second axis, on the `-Os` build — but not a
+strict-smaller claim: jz holds a par-or-smaller geomean band (≤1.05× vs
+AssemblyScript) because AS's bench ports assume unchecked array access
+(`unchecked()` throughout) while jz pays real guards for JS's out-of-bounds
+read/write semantics. Native C stays a labeled ceiling, never a beat-claim.
 
 Per case the gate distinguishes three verdicts, printed with every run:
 **strict** (ratio < 1.00 — jz genuinely fastest), **band** (≤ 1.05 — inside
@@ -266,6 +269,21 @@ actually pays: node-hosted rows carry the engine baseline (so same-host rows
 differ by their heap alone), native rows just the binary, `porf` compiles
 in-process each run (its deployment shape). Under `--paired` the recorded
 value is the cross-round median.
+
+**Where jz lands vs MoonBit** (`moonbit`/`moonrun` — a wasm-first-language
+rival with a real GC, the fairest no-engine-baseline memory comparison since
+both run as standalone wasm binaries rather than hosted in node/V8):
+jz-wasmtime beats-or-matches moonrun's peak RSS on 40/43 comparable cases
+(median delta −864 KB, jz leaner) — the bump allocator's small fixed engine
+floor (13.7 MB vs moonrun's 12.2 MB) plus demand-driven geometric growth
+undercuts a GC'd runtime's baseline on most kernels. Three residual losses —
+`strbuild` (+7.8 MB), `json` (+1.3 MB), `immutable` (+1.1 MB) — are the
+no-GC arena's own signature, not a defaults bug: this harness runs each
+case's 26 iterations in one process without calling `__clear`/
+`memory.reset()` between them, so a case that allocates per-iteration
+accumulates garbage a GC would have reclaimed. Production callers hit the
+same tradeoff if they skip `memory.reset()` between independent batches (see
+the root README's "How does memory work?").
 
 Runtime command overrides:
 
@@ -576,15 +594,18 @@ Aggregate geomean (JZ / target):
 | target | speed | size |
 | --- | ---: | ---: |
 | V8 (node) | **0.46×** | — |
-| AssemblyScript | **0.48×** | **1.11×** |
+| AssemblyScript | **0.48×** | **1.02×** |
 
 JZ wins or ties V8 on every dense kernel case; the open V8 losses are the
 self-host lab rows (`watr`, `jessie`) and the deliberate deopt probes above
 (`dispatch`, `shapes`, `wordcount`, `immutable`, `strbuild` — the dynamic-JS
 work list). AS is beaten on speed across the shared cases except the tracked
 gather/probe gaps (`dict`, `noise`, `levenshtein`) and the deopt probes
-(`shapes`, `immutable`, `strbuild`; `wordcount` is a tie). On size JZ matches
-AS (geomean ~1.0×) — JZ wins on speed and holds size parity.
+(`shapes`, `immutable`, `strbuild`; `wordcount` is a tie). On size JZ is
+par-or-smaller than AS by geomean (1.02×, 27/49 cases smaller) — not a
+strict-smaller claim: AS's bench ports wrap every array access in
+`unchecked()` (its baseline assumes zero bounds checking), while jz pays
+real guards for JS's out-of-bounds read/write semantics.
 
 Against the systems languages compiled to the same target — **WebAssembly, run in
 V8** — JZ is **1.6× faster than C, 1.7× than Rust, and 3.4× than Go** (geomean,

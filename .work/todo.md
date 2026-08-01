@@ -778,25 +778,45 @@ LoopPlan (vectorize 6845 lines, 16-recognizer chain; no shared affine/
 alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
 4 red (glyfparse 1.151, sdf 1.256, trace 1.452, shapes 1.166).
 
-## Goals (2026-07-28 user directive — post-architecture perf/size/memory push)
+## Goals (2026-07-28 user directive — post-architecture perf/size/memory push;
+## SCOPED TO THE DECIDED, HONEST FORMS 2026-08-01 — see "DECISIONS EXECUTED
+## 2026-08-01" above and its cited evidence)
 
-* [ ] SPEED, all lanes: EVERY bench case faster than v8, JSC (all JIT
-      runtimes) AND every wasm rival. Gates already encode it
-      (bench-claims strict-leadership wasm + JIT); current distance:
-      16 wasm strict losses (worst trace 1.449x), 13 JIT strict losses
-      (worst dispatch 2.073x jsc). Order: AFTER architecture complete.
-      (w2c lane already inside caps post-refresh: tokenizer 2.100x/3.5,
-      geomean 1.147x/1.35 -- the 3.851x figure was pre-refresh noise.)
-* [ ] SIZE: produced bundles must BEAT AssemblyScript by size (current
-      claim: "on par by geomean"). Producer: scripts/bench-size.mjs.
-      Needs: size-vs-AS per-case inventory, then codegen levers (dead
-      stdlib elision, header/allocator trim), then a strict size gate.
-* [ ] MEMORY: natives consume ~10x less peak RSS than the wasm lanes.
-      memKb axis now measured per-invocation (bench.mjs /usr/bin/time
-      wrapper, c703f63a). Investigate WHERE the footprint lives (linear
-      memory sizing/allocator growth policy vs engine overhead vs
-      instantiation copies), compare MoonBit-wasm's profile, target
-      MoonBit-level or better.
+* [ ] SPEED, all lanes: strict leadership over V8-family engines (v8/node,
+      deno) AND every wasm rival on every case, PLUS strict leadership over
+      bun/jsc EXCEPT the documented tight-integer-loop exception (vm, dict,
+      crc32 — JSC's adaptive JIT on tight int loops is a rival execution-
+      model advantage, WAT proven optimal, ~0% closable; those cases hold
+      only a 1.5x sanity band, not leadership — "VM + DICT DISSECTED" 2026-
+      07-31). Gates already encode this split (test/bench-claims.js: the
+      V8-family strict test, the bun/jsc strict test with the exception
+      carved out, and the exception's own sanity-band test). Current
+      distance: 16 wasm strict losses (worst trace 1.449x), 4 V8-family
+      strict losses (worst jessie 1.534x), 6 bun/jsc strict losses outside
+      the exception (worst jessie 1.895x) — evidence is stale (predates the
+      2026-08-01 landings), re-run at HEAD before re-auditing. Order: AFTER
+      architecture complete. (w2c lane already inside caps post-refresh:
+      tokenizer 2.100x/3.5, geomean 1.147x/1.35 -- the 3.851x figure was
+      pre-refresh noise.)
+* [ ] SIZE: par-or-smaller than AssemblyScript BY GEOMEAN, with full JS
+      semantics — not strict-smaller. Current truth (SIZE BAND DIAGNOSED
+      2026-07-30): geomean 1.016, 27/49 cases smaller; AS's bench ports use
+      `unchecked()` throughout (assertions build is byte-identical, i.e.
+      AS's baseline assumes zero bounds checking) while jz pays real guards
+      because JS OOB semantics are load-bearing. Gate: geomean <= 1.05
+      vs AS (test/bench-claims.js size test, test/bench.js SIZE_GEOMEAN_MAX)
+      — an unchecked tier would close the residual but is against the
+      JS-exact philosophy; rejected.
+* [x] MEMORY: goal ALREADY MET at HEAD (GOAL-MEMORY: ALREADY MET AT HEAD
+      2026-07-30 — the ~10x-natives premise was stale evidence, 13 commits
+      old). jz-wasmtime beats-or-matches moonrun (MoonBit-wasm) peak RSS on
+      40/43 comparable cases (median delta -864KB, jz leaner); engine
+      floors wasmtime 13.7MB vs moonrun 12.2MB, growth is demand-driven
+      geometric. Three residual losses (strbuild +7.8MB, json +1.3,
+      immutable +1.1) are the no-GC arena's signature under the bench
+      harness's 26 in-process iterations without __clear/memory.reset() —
+      an architectural GC-vs-arena tradeoff, accepted and documented
+      (bench/README.md), not a defaults bug to chase.
 
 ## Open
 

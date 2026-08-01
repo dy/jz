@@ -37,12 +37,48 @@ const CLAIM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'tinygo', 'zig-wasm', 'a
 // lane in the reference dataset counts; absence of a lane is a coverage hole,
 // not a pass (same COVERAGE_FLOOR as the wasm rivals).
 const JIT_RIVALS = ['v8', 'deno', 'bun', 'jsc']
+// V8-family engines (node's V8, Deno's V8) get the full strict-leadership claim on
+// every case, no exception. Bun and JSC (both JavaScriptCore) carry the scoped
+// exception below — split out so a lane's engine family, not its runtime name,
+// decides which claim it's held to.
+const V8_FAMILY_RIVALS = ['v8', 'deno']
+const JSC_FAMILY_RIVALS = ['bun', 'jsc']
+// DECIDED CLAIM SCOPING 2026-08-01 (.work/todo.md "DECISIONS EXECUTED 2026-08-01" +
+// evidence "VM + DICT DISSECTED: HARD TAILS, ~0% CLOSABLE" 2026-07-31): the
+// tight-integer-loop class (register-VM dispatch, hash-probe chains, checksum
+// accumulation) is where JSC's adaptive JIT specializes hot integer loops beyond
+// what an AOT-compiled wasm module can match at this size. Dissected exhaustively —
+// WAT already optimal (vm's opcode chain is O(1) br_table, fully inlined, pure i32;
+// dict's probe chain carries zero bounds checks, AND-mask proven; Liftoff/tier-up
+// tiering confound ruled out) — and on every one of these cases jz still leads
+// EVERY V8-family engine and EVERY AOT wasm rival (c/rust/go/zig/AS/MoonBit). This
+// is JSC's rival EXECUTION MODEL winning on its own turf (adaptive JIT on JS source
+// vs AOT wasm in V8), not a jz codegen deficiency — no emission lever exists at the
+// WAT level. Precedent: the same honest-boundary discipline the M4-reference-
+// machine scoping above already applies to the whole suite (name the scope a claim
+// holds over instead of quietly excluding what falls outside it). These (case,
+// rival) pairs are exempt from strict leadership below but still gated by a sanity
+// band (JSC_EXCEPTION_BAND_TOL) — a regression tripwire, not a claim.
+const TIGHT_INT_LOOP_CASES = ['vm', 'dict', 'crc32']
+// Not a leadership bar. If a bun/jsc lead on these cases ever widens past 1.5×
+// that's a real jz regression, not just the standing rival-execution-model gap.
+const JSC_EXCEPTION_BAND_TOL = 1.5
 // Minimum per-rival coverage as a FRACTION of the corpus (audit 2026-07-28:
 // the old ">=5 rows" floor let 5 successes from a 60-case corpus count as
 // "contested"). 0.7 is set from real corpus portability, not convenience: the
 // least-portable maintained lanes (go/zig families) genuinely port 43/60 =
 // 0.72 of cases; a healthy lane clears 0.7, a token lane cannot.
 const COVERAGE_FLOOR = 0.7
+// DECIDED CLAIM SCOPING 2026-08-01 (.work/todo.md "DECISIONS EXECUTED 2026-08-01" +
+// evidence "SIZE BAND DIAGNOSED: HONEST FLOOR" 2026-07-30): the size claim is
+// par-or-smaller than AssemblyScript BY GEOMEAN, not strict-smaller — a control
+// experiment proved the 1.02-1.05x band is dominantly the JS-SEMANTICS TAX: AS's
+// bench ports wrap every array access in `unchecked()` (compiling them WITH
+// assertions is byte-identical output, i.e. AS's baseline assumes zero bounds
+// checking unconditionally), while jz pays real guards because JS out-of-bounds
+// semantics are load-bearing (an OOB read yields `undefined`, a write drops
+// silently — ir.js's rationale). Mirrors test/bench.js's SIZE_GEOMEAN_MAX.
+const SIZE_GEOMEAN_MAX = 1.05
 // Compiler-source scope for freshness: a commit touching only tests/docs/site
 // doesn't invalidate perf evidence; one touching these does.
 // EVERY codegen input (audit 2026-07-27: the old allowlist missed package.json/
@@ -93,10 +129,13 @@ test('claims: every named rival is contested (coverage ≥ floor of the corpus)'
   }
 })
 
-// Per-case jz-vs-best-rival ratios for a rival set: [id, ratio, who].
-const caseRatios = rivals => {
+// Per-case jz-vs-best-rival ratios for a rival set: [id, ratio, who]. `ids`
+// (optional Set) restricts which cases are considered — used to carve the
+// JSC tight-integer-loop exception out of the general bun/jsc claim.
+const caseRatios = (rivals, ids = null) => {
   const out = []
   for (const [id, c] of Object.entries(cases)) {
+    if (ids && !ids.has(id)) continue
     const jz = c.targets?.jz
     if (!jz || !(jz.medianUs > 0)) continue
     let best = null, who = null
@@ -112,18 +151,19 @@ const caseRatios = rivals => {
 
 // STRICT LEADERSHIP — the actual claim: jz strictly faster than the best rival
 // on every case. Separate from the band test below (audit: a ≤1.05 band row
-// proves tolerance, not leadership). Both gate the release, for BOTH promises
-// (fastest-wasm vs CLAIM_RIVALS; outruns-the-JIT vs JIT_RIVALS).
-const strictTest = (label, rivals) => test(`claims: strict leadership — jz beats the best ${label} on every case`, () => {
-  const notLed = caseRatios(rivals).filter(([, r]) => r >= 1.0)
+// proves tolerance, not leadership). Both gate the release, for every promise
+// this file enforces (fastest-wasm vs CLAIM_RIVALS; outruns-the-JIT vs the
+// V8-family / bun-jsc splits below).
+const strictTest = (label, rivals, ids = null) => test(`claims: strict leadership — jz beats the best ${label} on every case`, () => {
+  const notLed = caseRatios(rivals, ids).filter(([, r]) => r >= 1.0)
     .map(([id, r, who]) => `${id} ${r.toFixed(3)}× (${who})`)
   ok(notLed.length === 0, `strict ${label} leadership unproven on ${notLed.length} case(s): ${notLed.join(', ')}`)
 })
 
-const bandTest = (label, rivals) => test(`claims: no red cases — jz within the band of the best ${label} everywhere`, () => {
+const bandTest = (label, rivals, ids = null, tol = WASM_BAND_TOL) => test(`claims: no red cases — jz within the band of the best ${label} everywhere`, () => {
   const red = [], band = []
-  for (const [id, r, who] of caseRatios(rivals)) {
-    if (r > WASM_BAND_TOL) red.push(`${id} ${r.toFixed(3)}× (${who})`)
+  for (const [id, r, who] of caseRatios(rivals, ids)) {
+    if (r > tol) red.push(`${id} ${r.toFixed(3)}× (${who})`)
     else if (r >= 1.0) band.push(`${id} ${r.toFixed(3)}× (${who})`)
   }
   if (band.length) console.log(`  band (ties, not leads): ${band.join(', ')}`)
@@ -132,5 +172,37 @@ const bandTest = (label, rivals) => test(`claims: no red cases — jz within the
 
 strictTest('wasm rival', CLAIM_RIVALS)
 bandTest('wasm rival', CLAIM_RIVALS)
-strictTest('JIT', JIT_RIVALS)
-bandTest('JIT', JIT_RIVALS)
+
+// JIT claim, split by engine family (DECIDED CLAIM SCOPING 2026-08-01, see
+// TIGHT_INT_LOOP_CASES above): V8-family gets the unscoped claim over the full
+// corpus; bun/jsc get it everywhere EXCEPT the documented tight-integer-loop
+// exception, which instead gets its own sanity-band tripwire below.
+const nonExceptionIds = new Set(Object.keys(cases).filter(id => !TIGHT_INT_LOOP_CASES.includes(id)))
+strictTest('V8-family JIT (v8/node, deno)', V8_FAMILY_RIVALS)
+bandTest('V8-family JIT (v8/node, deno)', V8_FAMILY_RIVALS)
+strictTest('bun/jsc JIT (outside the tight-integer-loop exception)', JSC_FAMILY_RIVALS, nonExceptionIds)
+bandTest('bun/jsc JIT (outside the tight-integer-loop exception)', JSC_FAMILY_RIVALS, nonExceptionIds)
+
+test('claims: documented exception — tight-integer-loop cases (vm/dict/crc32) stay within the 1.5× sanity band of bun/jsc', () => {
+  const exceptionIds = new Set(TIGHT_INT_LOOP_CASES)
+  const red = caseRatios(JSC_FAMILY_RIVALS, exceptionIds).filter(([, r]) => r > JSC_EXCEPTION_BAND_TOL)
+    .map(([id, r, who]) => `${id} ${r.toFixed(3)}× (${who})`)
+  ok(red.length === 0, `tight-integer-loop exception exceeded its ${JSC_EXCEPTION_BAND_TOL}× sanity band on ${red.length} case(s): ${red.join(', ')} — a real regression, not the documented rival-execution-model gap`)
+})
+
+// SIZE — par-or-smaller by geomean vs AssemblyScript, not strict-smaller (see
+// SIZE_GEOMEAN_MAX above). Scoped to the `optimize:'size'` byte counts every
+// case with a parity-valid `as` row carries.
+test(`claims: size — jz geomean bytes vs AssemblyScript stays within the ${SIZE_GEOMEAN_MAX}× par band`, () => {
+  const ratios = []
+  for (const c of Object.values(cases)) {
+    const jz = c.targets?.jz, as = c.targets?.as
+    if (!jz || !as || !(jz.bytes > 0) || !(as.bytes > 0) || as.parity !== 'ok') continue
+    ratios.push(jz.bytes / as.bytes)
+  }
+  ok(ratios.length > 0, 'no jz/as size-comparable cases found')
+  const smaller = ratios.filter(r => r < 1).length
+  const geomean = Math.exp(ratios.reduce((a, r) => a + Math.log(r), 0) / ratios.length)
+  console.log(`  size geomean jz/as: ${geomean.toFixed(3)}× (${smaller}/${ratios.length} cases smaller)`)
+  ok(geomean <= SIZE_GEOMEAN_MAX, `size geomean jz/as ${geomean.toFixed(3)}× exceeds the ${SIZE_GEOMEAN_MAX}× par band`)
+})

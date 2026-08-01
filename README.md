@@ -428,7 +428,7 @@ Each compiled module exposes two call surfaces:
 <details>
 <summary><strong>How big is the output?</strong></summary>
 
-No runtime, no GC — a module is your code plus a small bump allocator. The geomean across the bench corpus is on par with AssemblyScript; most modules are single-digit kB — the [ZzFX synth](examples/zzfx) is ~10 kB, [mandelbrot](examples/mandelbrot) ~7 kB. Shrink it further:
+No runtime, no GC — a module is your code plus a small bump allocator. The geomean across the bench corpus is on par with AssemblyScript (1.02×, not a strict-smaller claim: AS's bench ports use `unchecked()` array access throughout, jz pays real guards for JS's out-of-bounds semantics); most modules are single-digit kB — the [ZzFX synth](examples/zzfx) is ~10 kB, [mandelbrot](examples/mandelbrot) ~7 kB. Shrink it further:
 
 - **`optimize: 'size'`** — keeps every size pass, drops loop unrolling and SIMD.
 - **`alloc: false`** — omit the allocator for pure-numeric modules that never marshal heap values.
