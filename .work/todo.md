@@ -6,6 +6,29 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-07-31, current truth — re-audit #5 reconciled)
 
+VM + DICT DISSECTED: HARD TAILS, ~0% CLOSABLE 2026-07-31 (fresh
+paired ABBA both directions, quiet machine; WAT surgery checksum-
+held 750010871): both reds are JSC-ONLY — jz beats every V8-based
+engine (node 1.3-1.5x ahead) AND every AOT wasm rival (c/rust/go/
+zig/AS/MoonBit; dict beats c-wasm and rust-wasm 1.8x on the
+identical probe shape). Current gaps: vm ~1.17-1.18x, dict
+~1.25-1.27x vs bun/JSC (dict drifted DOWN from the 1.34 snapshot —
+general levers since). WAT already optimal: vm's if/else opcode
+chain compiles to O(1) br_table, fully inlined, pure i32; dict's
+probe chain carries ZERO bounds checks (AND-mask proven), clear
+loop auto-SIMD'd. vm's only strippable guard (reg[a] store, a<u4)
+surgically measured ~2% noisy AND is semantically load-bearing for
+arbitrary bytecode (the 00eabd0f interpreter class; cursor-
+versioning can't reach a random-access register index). Liftoff/
+tier-up confound ruled out. VERDICT: the JSC tight-integer-loop
+class (vm, dict, crc32 per the archived JSC sweep) is a RIVAL
+EXECUTION MODEL advantage (adaptive JIT on JS source vs AOT wasm
+in V8), not a jz codegen deficiency — no emission lever exists at
+the WAT level. USER DECISION SHAPING: "every case faster than ALL
+JITs" hits this structural class; options = claim scoping (the M4
+machine-scoping precedent) or accepting standing reds on this
+class.
+
 ARRAY-ELEM-SCHEMA LEVER TRACED TO ROOT, TARGET NOT CLOSABLE BY ONE ADMISSION
 2026-07-31 (infer.js+narrow.js, test/inference.js +3 pins; battery 3163/0/6,
 JZ_DEBUG_INVARIANTS leg on inference/objects/dyn-keys clean, kernel-parity
