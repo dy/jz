@@ -192,6 +192,16 @@ host-side code→message table — INCREASES JS fidelity; (5) jessie →
 documented red pending refresh (IC hard tail; dispatch-rewrite
 banked as research); (6) watr inliner fix → prepare in user's repo
 uncommitted, user releases. Push + tinygo CLT remain user-gated.
+DECISION (1)'S PROSE CATCHES UP 2026-08-01 (re-audit #6 finding 3):
+test/bench-claims.js already encoded the JSC tight-int-loop scoping
+(16734349), but AGENTS.md's promise line still read "jz beats V8
+(Node), and any other JIT (JSC, SpiderMonkey)" — unscoped. Reworded
+to the decided form (V8-family unconditional, bun/JSC scoped with
+the documented `vm`/`dict`/`crc32` exception at a 1.5x sanity band).
+Audited README.md/bench/README.md for the same unscoped pattern —
+none found; every JIT mention there is either a specific, still-valid
+V8 claim (V8-family carries no exception) or corpus description, not
+a universal promise.
 
 ## Status (2026-07-31, prior truth — re-audit #5 reconciled)
 
@@ -298,29 +308,41 @@ a whole-program store). Side effect: this ALSO closed a PRE-EXISTING
 documented gap for BOOL array elements (test/booleans.js "bare
 boolean read from a container" — was pinned as broken, now correct;
 updated to assert the real value).
-NOT FIXED, BANKED (same architecture class, confirmed pre-existing and
-UNRELATED to compound-assign): a bare `return arr[i]` on a BigInt
-ARRAY element still exports the wrong boundary kind — `let a=[1n];
-return a[0]` was ALREADY wrong with zero writes involved, before any
-of this session's changes. Root: BigInt arrays never qualify for flat
-SRoA at all (static.js's staticValue has no `'bigint'` case, so
+FIXED 2026-08-01 (re-audit #6 finding 2 — was banked here as (a)/(b) below):
+a bare `return arr[i]` on a BigInt ARRAY element used to export the wrong
+boundary kind — `let a=[1n]; return a[0]` mis-decoded as a raw-bit-
+reinterpreted Number with zero writes involved. Took path (b): narrow.js's
+new `installArrElemReps` installs the function's own `analyzeBody(body)
+.arrElemValTypes` slice onto `ctx.func.localReps` for the duration of
+narrowValResults'/narrowBoolResults' own kind resolution, restored via the
+same try/finally the ctx.func.flatObjects swap already uses — no whole-
+program `updateRep`/`repOf` snapshotting needed after all: the per-function
+slice IS the same data updateRep later folds into the whole-program store at
+emit time, so installing it transiently is exactly as safe as the
+flatObjects precedent it mirrors. Only non-null (elemOrigin-gated,
+construction-proven) facts are installed — fail-open, an unproven element
+kind never claims BIGINT. Path (a) (flat-SRoA admission for BigInt array
+literals) was NOT taken — the general fix per (b) closed the whole class
+without needing static.js's staticValue to grow a 'bigint' case. Pinned:
+test/kernel-oracle.js (PENDING-FIX flipped to AGREE, both legs, all optimize
+levels, small + 2^62-boundary magnitudes), test/statements.js (direct bare-
+return pins at 2^62±1, arr[i] no longer needs the `+ 0n` sidestep),
+test/types.js (arrayElemValType census pin). Battery 3193/0/6 (chunked,
+fresh dist rebuild, kernel-parity 3/3, kernel-oracle 11/11, selfhost.js
+21/21, JZ_DEBUG_INVARIANTS=1 on statements/types/data clean).
+NOT FIXED, BANKED, for context (same architecture class, confirmed pre-
+existing and UNRELATED to compound-assign — this is the ORIGINAL diagnosis,
+kept for history): Root was BigInt arrays never qualifying for flat SRoA at
+all (static.js's staticValue has no `'bigint'` case, so
 `elems.every(e => staticValue(e) !== NO_VALUE)` disqualifies ANY
 bigint-element array literal from scanFlatObjects — a separate, real
-gap in its own right, unexplored here) — kind instead resolves via
-`rep.arrayElemValType`, populated through `updateRep`/`repOf`, a
-WHOLE-PROGRAM fact store, not a simple per-function context field like
-`ctx.func.flatObjects`. The same "install the function's own facts
-before narrow-time kind resolution" fix would need snapshotting
-whatever `updateRep` touches per touched name and restoring precisely
-— more care than this session's remaining budget allowed to get right
-without risking stale-fact leakage into real emission. The ARITHMETIC
-itself is correct (verified via `a[0] + 0n` embedding, which resolves
-through the separately-correct emit-time path) — only the JS-boundary
-DECODE of a bare, unembedded return is affected. Two ledger items:
-(a) give BigInt array literals a flat-SRoA path (static.js staticValue
-bigint case + scanFlatObjects follow-through), or (b) extend the
-narrowValResults/narrowBoolResults per-function-facts-installation fix
-to rep.arrayElemValType with a proper snapshot/restore.
+gap in its own right, still unexplored/unfixed on its own terms) — kind
+instead resolves via `rep.arrayElemValType`, populated through
+`updateRep`/`repOf`, a WHOLE-PROGRAM fact store, not a simple per-function
+context field like `ctx.func.flatObjects`. The ARITHMETIC itself was always
+correct (verified via `a[0] + 0n` embedding, which resolves through the
+separately-correct emit-time path) — only the JS-boundary DECODE of a bare,
+unembedded return was affected.
 `>>>` HAD NO BIGINT ARM (separate, smaller item, same ledger request):
 ES2020 defines no BigInt::unsignedRightShift — `>>>` on ANY BigInt
 operand is unconditionally a TypeError, unlike the other bitwise ops
