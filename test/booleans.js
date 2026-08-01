@@ -140,6 +140,25 @@ test('bool: value-preserving &&/|| carry the boolean atom across the boundary (g
   is(run('export let f = () => true && 5')(), 5)
 })
 
+test('bool: identical ambiguous merge duplicated across return branches (quarantine CLOSED)', () => {
+  // The carrier-invariant design's quarantined anomaly: { if(s){return M}
+  // return M } with M = ((x>0)&&1) duplicated in both branches once returned
+  // 0 for BOTH arguments. Diagnosed 2026-08-01: duplication was never causal
+  // — both branches independently computed the same wrong value through the
+  // VT['()'] grouping blind spot (mechanism B); the parser never shares node
+  // references between occurrences and no cross-occurrence cache exists, so
+  // a CSE/dedup class is structurally impossible. Pinned at every tier now
+  // that the boundary is proven correct.
+  const src = 'export let f = (s, x) => { if (s) { return ((x>0)&&1) } return ((x>0)&&1) }'
+  for (const optimize of [0, 2, 3]) {
+    const f = jz(src, { optimize }).exports.f
+    is(f(true, 5), 1, `O${optimize} taken branch, truthy merge`)
+    is(f(true, -5), false, `O${optimize} taken branch, false atom survives`)
+    is(f(false, 5), 1, `O${optimize} fallthrough branch, truthy merge`)
+    is(f(false, -5), false, `O${optimize} fallthrough branch, false atom survives`)
+  }
+})
+
 test('bool: bare boolean read from a container decodes as a real boolean', () => {
   // Was a documented gap (bare return crossed as the raw 1/0 carrier instead of
   // proving BOOL at the boundary) — closed as a side effect of the member-

@@ -32,10 +32,18 @@ false). Even perfect consumer enumeration cannot close this. Fix:
 valTypeOf/VT['()'] unwraps single-arg non-call grouping nodes (pure
 structural). PREREQUISITE for any invariant.
 
-QUARANTINED ANOMALY (do not conflate): `{ if(s){return M} return M }`
-with IDENTICAL AST M=((x>0)&&1) in both branches returns 0 for BOTH
-arguments — wrong VALUE not just identity; suspected CSE/dedup-on-
-identical-subtree class. Separate hunt required.
+QUARANTINE CLOSED 2026-08-01 (dedicated hunt at HEAD a1cad96f): the
+identical-subtree return anomaly does NOT reproduce — it was MECHANISM B
+all along (both branches independently computed the same wrong value
+through the VT['()'] blind spot; duplication was incidental, never
+causal). CSE/dedup class structurally impossible: the parser allocates
+fresh nodes per occurrence (M1 !== M2 verified), all identity-keyed
+caches are WeakMaps, the return handler runs per-node with no cross-
+occurrence memoization. Closed by 8a0bad4f + f6ec5129 as a side effect;
+pinned at all tiers in test/booleans.js. The only live remnant in the
+family is the KNOWN scalar decl-init gap (emit.js ~1712 plain emit(init)
+— deliberately unfixed pending the self-host emitDecl wall, tracked by
+the captured-then-read oracle row).
 
 ## Decision: (a) box-at-production via ONE producer chokepoint
 
