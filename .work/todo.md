@@ -6,6 +6,23 @@ anything; every kernel bug class and perf frontier has a banked dissection.
 
 ## Status (2026-08-01, current truth)
 
+WATR INLINER BUG: GENUINE NON-REPRO, CLAIM DOWNGRADED 2026-08-01
+(five escalating attempts, both repos left clean): minimal WAT memo
+shapes, an 8-combination control-flow fuzz targeting inlNeedsReset,
+jz's real resolveWatrOpts speed profile with dual-block-label
+convergence shapes, caps forced open 90→9000 with the exact
+bug-report sources, AND the decisive one — at STOCK speed tier
+today __dyn_get_t_h's memo cache IS duplicated at 5 sites (the
+named mechanism, live) and 40-iteration interleaved hit/miss/
+cross-site sequences match native JS exactly. The 2026-07-29
+observation was tied to the stratification agent's exact split-core
+diff (git-stash-popped, unrecoverable). NO WATR RELEASE (nothing
+verified to fix — the user-authorized release stands ready if a
+real repro ever lands). CONSEQUENCE: the __dyn_set/__dyn_get_t
+STRATIFICATION lever (wordcount write-side Ryu pull, blocked by
+this alleged bug + condref shifts) is now a RETRY CANDIDATE — the
+named blocker does not reproduce.
+
 BOOL-MERGE IDENTITY LANDED 2026-08-01 (8a0bad4f; battery 3182/0/6,
 parity 33/33 byte-identical, oracle 9/9 ALL-AGREE 254 assertions
 both legs, selfhost 21/21, dbg leg): the live miscompile family
