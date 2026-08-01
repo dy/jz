@@ -33,9 +33,9 @@ export default (ctx) => {
     (if (i32.or
           (i32.ne (call $__ptr_type (local.get $arr)) (i32.const ${PTR.TYPED}))
           (i32.ne (i32.and (call $__ptr_aux (local.get $arr)) (i32.const 7)) (i32.const 4)))
-      (then (throw $__jz_err (f64.const ${ERR.ATOMICS_RECEIVER32}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.ATOMICS_RECEIVER32}))) (throw $__jz_err (f64.const ${ERR.ATOMICS_RECEIVER32}))))
     (if (i32.ge_u (local.get $i) (call $__len (local.get $arr)))
-      (then (throw $__jz_err (f64.const ${ERR.ATOMICS_INDEX32}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.ATOMICS_INDEX32}))) (throw $__jz_err (f64.const ${ERR.ATOMICS_INDEX32}))))
     (i32.add (call $__typed_data (local.get $arr)) (i32.shl (local.get $i) (i32.const 2))))`
 
   // BigInt64Array twin: elem code 7 + the BIGINT aux flag (16), stride 8.
@@ -45,9 +45,9 @@ export default (ctx) => {
           (i32.or
             (i32.ne (i32.and (call $__ptr_aux (local.get $arr)) (i32.const 7)) (i32.const 7))
             (i32.eqz (i32.and (call $__ptr_aux (local.get $arr)) (i32.const 16)))))
-      (then (throw $__jz_err (f64.const ${ERR.ATOMICS_RECEIVER64}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.ATOMICS_RECEIVER64}))) (throw $__jz_err (f64.const ${ERR.ATOMICS_RECEIVER64}))))
     (if (i32.ge_u (local.get $i) (call $__len (local.get $arr)))
-      (then (throw $__jz_err (f64.const ${ERR.ATOMICS_INDEX64}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.ATOMICS_INDEX64}))) (throw $__jz_err (f64.const ${ERR.ATOMICS_INDEX64}))))
     (i32.add (call $__typed_data (local.get $arr)) (i32.shl (local.get $i) (i32.const 3))))`
 
   // v1 receiver gate: a name whose element ctor is PROVEN Int32Array, or a

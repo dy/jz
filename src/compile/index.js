@@ -264,10 +264,16 @@ const pruneUnusedThrowRuntime = (sec) => {
     for (const f of arr) if (hasCatch(f)) return
   // Rewrite every surviving `(throw $__jz_err …)` to `(unreachable)` (same polymorphic
   // stack type — a drop-in in any position). The thrown operand is side-effect-free
-  // (a local read / const), so dropping it loses nothing.
+  // (a local read / const), so dropping it loses nothing. Every internal throw site
+  // also precedes its throw with `(global.set $__jz_last_err_bits …)` (so an escaping
+  // throw decodes correctly at the host boundary — decodeThrown, err-codes.js); that
+  // global is deleted below along with the tag, so its own `global.set` must be
+  // stripped too (→ `drop`, keeping the value's — side-effect-free — evaluation
+  // shape) or it would reference a global that no longer exists.
   const lowerThrows = (n) => {
     if (!Array.isArray(n)) return n
     if (n[0] === 'throw') return ['unreachable']
+    if (n[0] === 'global.set' && n[1] === '$__jz_last_err_bits') return ['drop', lowerThrows(n[2])]
     for (let i = 1; i < n.length; i++) n[i] = lowerThrows(n[i])
     return n
   }

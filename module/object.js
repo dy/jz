@@ -282,7 +282,7 @@ export default (ctx) => {
   const requireCoercible = (node) => {
     if (!isNullishLiteral(node)) return null
     ctx.runtime.throws = true
-    return typed(['block', ['result', 'f64'], ['throw', '$__jz_err', ['f64.const', ERR.OBJECT_NULLISH]]], 'f64')
+    return typed(['block', ['result', 'f64'], ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.OBJECT_NULLISH]]], ['throw', '$__jz_err', ['f64.const', ERR.OBJECT_NULLISH]]], 'f64')
   }
 
   // Arrays and (coerced) strings expose their indices as own enumerable

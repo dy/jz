@@ -1706,7 +1706,7 @@ export default (ctx) => {
   const regexpSearchGuard = (search) => {
     if (valTypeOf(search) !== VAL.REGEX) return null
     ctx.runtime.throws = true
-    return typed(['block', ['result', 'f64'], ['throw', '$__jz_err', ['f64.const', ERR.STRING_SEARCH_REGEX]]], 'f64')
+    return typed(['block', ['result', 'f64'], ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.STRING_SEARCH_REGEX]]], ['throw', '$__jz_err', ['f64.const', ERR.STRING_SEARCH_REGEX]]], 'f64')
   }
 
   bind('.string:includes', (str, search, from) => {
@@ -2117,7 +2117,7 @@ export default (ctx) => {
             (f64.ne (f64.trunc (local.get $cpf)) (local.get $cpf))
             (f64.lt (local.get $cpf) (f64.const 0)))
           (f64.gt (local.get $cpf) (f64.const 0x10FFFF)))
-      (then (throw $__jz_err (f64.const ${ERR.FROM_CODE_POINT_RANGE}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.FROM_CODE_POINT_RANGE}))) (throw $__jz_err (f64.const ${ERR.FROM_CODE_POINT_RANGE}))))
     (local.set $cp (i32.trunc_sat_f64_s (local.get $cpf)))
     ;; ASCII: 1 byte SSO
     (if (i32.lt_u (local.get $cp) (i32.const 128))
@@ -2278,11 +2278,11 @@ export default (ctx) => {
       (if (i32.eq (local.get $c) (i32.const 37))
         (then
           (if (i32.ge_s (i32.add (local.get $i) (i32.const 2)) (local.get $len))
-            (then (throw $__jz_err (f64.const ${ERR.URI_TRUNC_ESCAPE}))))
+            (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_TRUNC_ESCAPE}))) (throw $__jz_err (f64.const ${ERR.URI_TRUNC_ESCAPE}))))
           (local.set $hi (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 1)))))
           (local.set $lo (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 2)))))
           (if (i32.or (i32.lt_s (local.get $hi) (i32.const 0)) (i32.lt_s (local.get $lo) (i32.const 0)))
-            (then (throw $__jz_err (f64.const ${ERR.URI_BAD_HEX}))))
+            (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_HEX}))) (throw $__jz_err (f64.const ${ERR.URI_BAD_HEX}))))
           (local.set $c (i32.or (i32.shl (local.get $hi) (i32.const 4)) (local.get $lo)))
           ${keepReserved ? uriKeepReserved : ''}
           (local.set $i (i32.add (local.get $i) (i32.const 3)))
@@ -2303,23 +2303,23 @@ export default (ctx) => {
                       (local.set $n (i32.const 4))
                       (local.set $cp (i32.and (local.get $c) (i32.const 0x07)))
                       (local.set $min (i32.const 0x10000)))
-                    (else (throw $__jz_err (f64.const ${ERR.URI_BAD_LEAD_BYTE}))))))))
+                    (else (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_LEAD_BYTE}))) (throw $__jz_err (f64.const ${ERR.URI_BAD_LEAD_BYTE}))))))))
               (i32.store8 (i32.add (local.get $dst) (local.get $outLen)) (local.get $c))
               (local.set $outLen (i32.add (local.get $outLen) (i32.const 1)))
               (local.set $j (i32.const 1))
               (block $seqDone (loop $seq
                 (br_if $seqDone (i32.ge_s (local.get $j) (local.get $n)))
                 (if (i32.ge_s (i32.add (local.get $i) (i32.const 2)) (local.get $len))
-                  (then (throw $__jz_err (f64.const ${ERR.URI_TRUNC_CONT_ESCAPE}))))
+                  (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_TRUNC_CONT_ESCAPE}))) (throw $__jz_err (f64.const ${ERR.URI_TRUNC_CONT_ESCAPE}))))
                 (if (i32.ne (call $__char_at (local.get $s) (local.get $i)) (i32.const 37))
-                  (then (throw $__jz_err (f64.const ${ERR.URI_MISSING_CONT_PERCENT}))))
+                  (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_MISSING_CONT_PERCENT}))) (throw $__jz_err (f64.const ${ERR.URI_MISSING_CONT_PERCENT}))))
                 (local.set $hi (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 1)))))
                 (local.set $lo (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 2)))))
                 (if (i32.or (i32.lt_s (local.get $hi) (i32.const 0)) (i32.lt_s (local.get $lo) (i32.const 0)))
-                  (then (throw $__jz_err (f64.const ${ERR.URI_BAD_CONT_HEX}))))
+                  (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_CONT_HEX}))) (throw $__jz_err (f64.const ${ERR.URI_BAD_CONT_HEX}))))
                 (local.set $b (i32.or (i32.shl (local.get $hi) (i32.const 4)) (local.get $lo)))
                 (if (i32.or (i32.lt_u (local.get $b) (i32.const 0x80)) (i32.gt_u (local.get $b) (i32.const 0xBF)))
-                  (then (throw $__jz_err (f64.const ${ERR.URI_BAD_CONT_BYTE}))))
+                  (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_CONT_BYTE}))) (throw $__jz_err (f64.const ${ERR.URI_BAD_CONT_BYTE}))))
                 (local.set $cp (i32.or (i32.shl (local.get $cp) (i32.const 6)) (i32.and (local.get $b) (i32.const 0x3F))))
                 (i32.store8 (i32.add (local.get $dst) (local.get $outLen)) (local.get $b))
                 (local.set $outLen (i32.add (local.get $outLen) (i32.const 1)))
@@ -2329,7 +2329,7 @@ export default (ctx) => {
               (if (i32.or
                     (i32.or (i32.lt_u (local.get $cp) (local.get $min)) (i32.gt_u (local.get $cp) (i32.const 0x10FFFF)))
                     (i32.and (i32.ge_u (local.get $cp) (i32.const 0xD800)) (i32.le_u (local.get $cp) (i32.const 0xDFFF))))
-                (then (throw $__jz_err (f64.const ${ERR.URI_BAD_CODEPOINT}))))
+                (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_CODEPOINT}))) (throw $__jz_err (f64.const ${ERR.URI_BAD_CODEPOINT}))))
               (local.set $stored (i32.const 1)))))
         (else
           (local.set $i (i32.add (local.get $i) (i32.const 1)))))
@@ -2483,7 +2483,7 @@ export default (ctx) => {
     (if (i32.or
           (i32.ne (call $__ptr_type (local.get $dst)) (i32.const ${PTR.TYPED}))
           (i32.ne (i32.and (call $__ptr_aux (local.get $dst)) (i32.const 7)) (i32.const 1)))
-      (then (throw $__jz_err (f64.const ${ERR.ENCODE_INTO_RECEIVER}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.ENCODE_INTO_RECEIVER}))) (throw $__jz_err (f64.const ${ERR.ENCODE_INTO_RECEIVER}))))
     (local.set $slen (call $__str_byteLen (local.get $s)))
     (local.set $n (call $__len (local.get $dst)))
     (if (i32.ge_s (local.get $n) (local.get $slen))
@@ -2607,10 +2607,10 @@ export default (ctx) => {
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $loop)))
       ;; after complete padding only whitespace may follow
-      (if (local.get $done) (then (throw $__jz_err (f64.const ${ERR.BASE64_TRAILING_CHAR}))))
+      (if (local.get $done) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BASE64_TRAILING_CHAR}))) (throw $__jz_err (f64.const ${ERR.BASE64_TRAILING_CHAR}))))
       (if (i32.eq (local.get $c) (i32.const 61)) ;; '='
         (then
-          (if (i32.lt_s (local.get $cnt) (i32.const 2)) (then (throw $__jz_err (f64.const ${ERR.BASE64_EARLY_PAD}))))
+          (if (i32.lt_s (local.get $cnt) (i32.const 2)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BASE64_EARLY_PAD}))) (throw $__jz_err (f64.const ${ERR.BASE64_EARLY_PAD}))))
           (local.set $pads (i32.add (local.get $pads) (i32.const 1)))
           (if (i32.eq (i32.add (local.get $cnt) (local.get $pads)) (i32.const 4))
             (then ;; flush the padded partial chunk: 2 chars → 1 byte, 3 → 2
@@ -2630,7 +2630,7 @@ export default (ctx) => {
               (local.set $done (i32.const 1)))))
         (else
           ;; a value char while padding is open ("AB=C") is malformed
-          (if (local.get $pads) (then (throw $__jz_err (f64.const ${ERR.BASE64_CHAR_AFTER_PAD}))))
+          (if (local.get $pads) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BASE64_CHAR_AFTER_PAD}))) (throw $__jz_err (f64.const ${ERR.BASE64_CHAR_AFTER_PAD}))))
           (local.set $v (i32.const -1))
           (if (i32.and (i32.ge_u (local.get $c) (i32.const 65)) (i32.le_u (local.get $c) (i32.const 90)))
             (then (local.set $v (i32.sub (local.get $c) (i32.const 65)))))
@@ -2645,7 +2645,7 @@ export default (ctx) => {
             (else
               (if (i32.eq (local.get $c) (i32.const 43)) (then (local.set $v (i32.const 62))))
               (if (i32.eq (local.get $c) (i32.const 47)) (then (local.set $v (i32.const 63))))))
-          (if (i32.lt_s (local.get $v) (i32.const 0)) (then (throw $__jz_err (f64.const ${ERR.BASE64_INVALID_CHAR}))))
+          (if (i32.lt_s (local.get $v) (i32.const 0)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BASE64_INVALID_CHAR}))) (throw $__jz_err (f64.const ${ERR.BASE64_INVALID_CHAR}))))
           (local.set $acc (i32.or (i32.shl (local.get $acc) (i32.const 6)) (local.get $v)))
           (local.set $cnt (i32.add (local.get $cnt) (i32.const 1)))
           (if (i32.eq (local.get $cnt) (i32.const 4))
@@ -2670,8 +2670,8 @@ export default (ctx) => {
     (if (i32.eqz (local.get $stopped))
       (then
         (if (i32.and (i32.ne (local.get $pads) (i32.const 0)) (i32.eqz (local.get $done)))
-          (then (throw $__jz_err (f64.const ${ERR.BASE64_UNTERMINATED_PAD}))))
-        (if (i32.eq (local.get $cnt) (i32.const 1)) (then (throw $__jz_err (f64.const ${ERR.BASE64_LEFTOVER_CHAR}))))
+          (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BASE64_UNTERMINATED_PAD}))) (throw $__jz_err (f64.const ${ERR.BASE64_UNTERMINATED_PAD}))))
+        (if (i32.eq (local.get $cnt) (i32.const 1)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BASE64_LEFTOVER_CHAR}))) (throw $__jz_err (f64.const ${ERR.BASE64_LEFTOVER_CHAR}))))
         (if (i32.gt_s (local.get $cnt) (i32.const 1))
           (then
             (local.set $n (i32.sub (local.get $cnt) (i32.const 1)))
@@ -2695,7 +2695,7 @@ export default (ctx) => {
     (if (i32.or
           (i32.ne (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
           (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 7)) (i32.const 1)))
-      (then (throw $__jz_err (f64.const ${ERR.U8_RECEIVER}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.U8_RECEIVER}))) (throw $__jz_err (f64.const ${ERR.U8_RECEIVER}))))
     (call $__typed_data (local.get $ptr)))`)
 
   wat('__btoa', `(func $__btoa (param $v i64) (result f64)
@@ -2755,14 +2755,14 @@ export default (ctx) => {
   wat('__hex_dec_raw', `(func $__hex_dec_raw (param $s i64) (param $dst i32) (param $cap i32) (result i64)
     (local $slen i32) (local $i i32) (local $hi i32) (local $lo i32) (local $written i32)
     (local.set $slen (call $__str_byteLen (local.get $s)))
-    (if (i32.and (local.get $slen) (i32.const 1)) (then (throw $__jz_err (f64.const ${ERR.HEX_ODD_LENGTH}))))
+    (if (i32.and (local.get $slen) (i32.const 1)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.HEX_ODD_LENGTH}))) (throw $__jz_err (f64.const ${ERR.HEX_ODD_LENGTH}))))
     (block $stop (loop $l
       (br_if $stop (i32.ge_s (local.get $i) (local.get $slen)))
       (br_if $stop (i32.ge_s (local.get $written) (local.get $cap)))
       (local.set $hi (call $__uri_hex (call $__char_at (local.get $s) (local.get $i))))
       (local.set $lo (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 1)))))
       (if (i32.or (i32.lt_s (local.get $hi) (i32.const 0)) (i32.lt_s (local.get $lo) (i32.const 0)))
-        (then (throw $__jz_err (f64.const ${ERR.HEX_INVALID_DIGIT}))))
+        (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.HEX_INVALID_DIGIT}))) (throw $__jz_err (f64.const ${ERR.HEX_INVALID_DIGIT}))))
       (i32.store8 (i32.add (local.get $dst) (local.get $written))
         (i32.or (i32.shl (local.get $hi) (i32.const 4)) (local.get $lo)))
       (local.set $written (i32.add (local.get $written) (i32.const 1)))

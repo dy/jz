@@ -572,7 +572,7 @@ export default (ctx) => {
     (if (i32.or
           (f64.lt (local.get $n) (f64.const 0))
           (f64.ge (local.get $n) (f64.const 2147483640)))
-      (then (throw $__jz_err (f64.const ${ERR.ARRAY_BUFFER_LENGTH}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.ARRAY_BUFFER_LENGTH}))) (throw $__jz_err (f64.const ${ERR.ARRAY_BUFFER_LENGTH}))))
     (i32.trunc_f64_s (local.get $n)))`
 
   // new ArrayBuffer(n) → allocate n bytes, return as BUFFER pointer.
@@ -850,7 +850,7 @@ export default (ctx) => {
     (if (i32.or
           (f64.lt (local.get $idx) (f64.const 0))
           (f64.gt (local.get $idx) (f64.const 9007199254740991)))
-      (then (throw $__jz_err (f64.const ${ERR.DATAVIEW_INDEX_RANGE}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.DATAVIEW_INDEX_RANGE}))) (throw $__jz_err (f64.const ${ERR.DATAVIEW_INDEX_RANGE}))))
     (i32.trunc_sat_f64_s (local.get $idx)))`
 
   // ToIndex the DV byte offset, throwing RangeError on a negative/oversized value.
@@ -891,14 +891,14 @@ export default (ctx) => {
         ['if', ['i32.or',
             ['i32.lt_s', ['local.get', `$${idxT}`], ['i32.const', 0]],
             ['i32.gt_s', ['local.get', `$${idxT}`], ['i32.sub', viewSize, ['i32.const', size]]]],
-          ['then', ['throw', '$__jz_err', ['f64.const', ERR.DATAVIEW_OFFSET_OOB_FAST]]]],
+          ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.DATAVIEW_OFFSET_OOB_FAST]]], ['throw', '$__jz_err', ['f64.const', ERR.DATAVIEW_OFFSET_OOB_FAST]]]],
         ['local.get', `$${idxT}`]], 'i32')
     }
     inc('__dv_index')
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${idxT}`, typed(['call', '$__dv_index', toNumF64(offNode, offIR)], 'i32')],
       ['if', ['i32.gt_s', ['local.get', `$${idxT}`], ['i32.sub', viewSize, ['i32.const', size]]],
-        ['then', ['throw', '$__jz_err', ['f64.const', ERR.DATAVIEW_OFFSET_OOB]]]],
+        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.DATAVIEW_OFFSET_OOB]]], ['throw', '$__jz_err', ['f64.const', ERR.DATAVIEW_OFFSET_OOB]]]],
       ['local.get', `$${idxT}`]], 'i32')
   }
 
@@ -2616,7 +2616,7 @@ export default (ctx) => {
       ['if', ['i32.or',
           ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
           ['i32.ge_s', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
-        ['then', ['throw', '$__jz_err', ['f64.const', ERR.TYPED_WITH_INDEX]]]],
+        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.TYPED_WITH_INDEX]]], ['throw', '$__jz_err', ['f64.const', ERR.TYPED_WITH_INDEX]]]],
       ['drop', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${c}`]],
         ['local.get', `$${idx}`], asF64(emit(value))]],
       ['local.get', `$${c}`]], 'f64')

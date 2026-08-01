@@ -26,6 +26,7 @@
 
 import { wasi, attachTimers } from './wasi.js'
 import { HEAP, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT } from './layout.js'
+import { ERR_INFO } from './err-codes.js'
 
 // Stateless + reusable — one instance avoids a per-call allocation on the hot
 // string read/write paths (mem.String / mem.read STRING).
@@ -737,7 +738,15 @@ export const wrap = (memSrc, inst, state) => {
     // from bits. (A heap Error/string can only exist when the module has memory.)
     const value = mem ? mem.read(errBits) : decode(errBits)
     if (value instanceof Error) throw value
-    const wrapped = new Error(typeof value === 'string' ? value : String(value))
+    // A plain NUMBER matching the $__jz_err code registry (src/err-codes.js) is a
+    // jz-internal runtime throw (bounds/coercion/parse — piece 1's per-site codes,
+    // fs.js's real errno is NOT in the registry and falls to the generic branch
+    // below); resolve it to the real ECMAScript error class + message it models.
+    // `wrapped.thrown` always keeps the ORIGINAL code — an in-wasm catch (or a
+    // caller inspecting `.thrown`) still sees the raw number, undecoded.
+    const info = typeof value === 'number' ? ERR_INFO[value] : undefined
+    const wrapped = info ? new Error(`${info.name}: ${info.message}`)
+      : new Error(typeof value === 'string' ? value : String(value))
     wrapped.cause = error
     wrapped.thrown = value
     throw wrapped

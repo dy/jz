@@ -425,7 +425,7 @@ export default (ctx) => {
     if (isUndefinedNode(mapFn)) mapFn = undefined
     else if (isNonCallableMapFn(mapFn)) {
       ctx.runtime.throws = true
-      return typed(['block', ['result', 'f64'], ['throw', '$__jz_err', ['f64.const', ERR.ARRAY_FROM_MAPFN]]], 'f64')
+      return typed(['block', ['result', 'f64'], ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.ARRAY_FROM_MAPFN]]], ['throw', '$__jz_err', ['f64.const', ERR.ARRAY_FROM_MAPFN]]], 'f64')
     }
     // Array.from(string) → array of single-char strings. The generic __arr_from
     // path memory.copies len*8 bytes from the string's byte storage (1 byte/char),
@@ -2097,7 +2097,7 @@ export default (ctx) => {
       ['if', ['i32.or',
         ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
         ['i32.ge_s', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
-        ['then', ['throw', '$__jz_err', ['f64.const', ERR.ARRAY_WITH_INDEX]]]],
+        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.ARRAY_WITH_INDEX]]], ['throw', '$__jz_err', ['f64.const', ERR.ARRAY_WITH_INDEX]]]],
       ['f64.store',
         ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${idx}`], ['i32.const', 3]]],
         carrierF64(value, emit(value))],
