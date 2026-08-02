@@ -983,9 +983,10 @@ export function observeProgramSlots(ast, opts) {
   // correctly overwrites the earlier value via updateGlobalRep's merge.
   for (const [name, vt] of dictValueTypes) updateGlobalRep(name, { dictValueValType: vt })
   // Map-value-type census (Tier 1, design .work/map-value-census-design.md
-  // §1) — same publish discipline as the dict-value census just above, no
-  // consumer wired yet at this call site (kind.js's mapValueKindOf reads it
-  // starting in the consumer-wiring step).
+  // §1) — same publish discipline as the dict-value census just above. The
+  // consumer (kind.js's former mapValueKindOf) was reverted for unsoundness
+  // (audit P0, .work/todo.md "audit-#7 P0 closed") — this fact is DORMANT,
+  // published but unread; see reps.js's mapValueValType doc for why.
   for (const [name, vt] of mapValueTypes) updateGlobalRep(name, { mapValueValType: vt })
 }
 

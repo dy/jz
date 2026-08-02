@@ -118,3 +118,40 @@ test('dyn-keys: numeric key on an unknown-type OBJECT receiver resolves through 
   is(jz(`const o = {}; o['1'] = 9
     export let f = () => { let n = 1; return o[n] | 0 }`).exports.f(), 9)
 })
+
+// audit P0 (1db8e55e revert, external bisection): the Map value-census .get()
+// consumer promoted EVERY read on a proven-Map receiver to the exact VAL.*
+// kind of every observed .set() write. Unsound two ways: (1) an ABSENT key
+// reads real JS `undefined` at runtime — not a value of the observed kind;
+// (2) the census scan keys observations by SYNTACTIC receiver name, so a
+// write through an alias is invisible to a census keyed on the original
+// name, leaving a stale kind in place after the alias write changes it.
+// Both promote past what the actual runtime value is. Consumer reverted
+// (kind.js mapValueKindOf, emit.js nullableOperand carve-out); these pin
+// the bisected repros.
+test('Map: .get() on an absent key behaves as real undefined, not the census kind (audit P0)', () => {
+  is(run(`const m = new Map(); m.set('a', 1); return m.get('b') + 1`), NaN)  // undefined + 1 === NaN
+  is(run(`const m = new Map(); m.set('a', 1); return String(m.get('b'))`), 'undefined')  // NOT "NaN"
+})
+
+test('Map: a write through an alias is not lost to a stale census kind (audit P0)', () => {
+  // m.set('k', 1) alone would (wrongly) settle the census at NUMBER; the
+  // syntactic-name scan never observes the alias.set() STRING write below,
+  // so a sound consumer must not trust a stale NUMBER kind for m.get('k').
+  is(run(`const m = new Map(); m.set('k', 1)
+    const alias = m; alias.set('k', 'oops1')
+    return m.get('k') - 0`), NaN)  // 'oops1' - 0 === NaN, same as plain JS
+})
+
+// KNOWN-FAIL, dict sibling — NOT reverted here (audit P0's dict-census
+// briefing, .work/todo.md "audit-#7 P0 closed"): dictValueKindOf (kind.js,
+// consumed by VT['[]']/VT['.']) has the SAME absent-key exact-promotion
+// unsoundness as the reverted mapValueKindOf, but it is the PRE-EXISTING
+// dict-value-census consumer (predates 1db8e55e, not this audit's bisected
+// commit) — reverting it is out of scope for this P0 and would need its own
+// bisection/bench-impact pass. Pinned as the CURRENT (wrong) behavior so a
+// future fix flips these two asserts, not silently regresses further.
+test('dict: .get()-equivalent read on an absent key is WRONG today (known-fail, dict-census sibling of audit P0)', () => {
+  is(run(`const d = {}; const wk = 'a'; d[wk] = 1; const rk = 'zz'; return d[rk] + 1`), undefined)  // JS: NaN
+  is(run(`const d = {}; const wk = 'a'; d[wk] = 1; const rk = 'zz'; return String(d[rk])`), 'NaN')  // JS: "undefined"
+})

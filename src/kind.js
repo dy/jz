@@ -291,26 +291,25 @@ export function dictValueKindOf(name) {
   return null
 }
 
-// Map-value-type census Tier 1 consumer (.work/map-value-census-design.md
-// §2): `recv.get(k)` on a proven-VAL.MAP receiver — the VAL.* kind of every
-// value ever written through `recv.set(anyKey, v)`, local-first then global,
-// mirroring dictValueKindOf above. Receiver gate is a HARD classification
-// (new Map() → CALLEE_VAL + recordGlobalRep, kind-traits.js) — unlike dict's
-// HASH gate, valTypeOf(name) === VAL.MAP alone proves the receiver, so no
-// dynWriteVars-analog proxy is needed on the global side.
+// Map-value-type census Tier 1 consumer — REVERTED (audit P0, external
+// bisection confirmed 1db8e55e^ correct, 1db8e55e wrong; .work/todo.md
+// "audit-#7 P0 closed"). `mapValueValType` (analyze.js's same-body scan +
+// program-facts.js's observeMapValue/mapValueTypes census, reps.js field)
+// is unsound to promote to an EXACT VAL.* kind at a `.get()` read site two
+// ways: (1) an ABSENT key reads real JS `undefined` at runtime, not a value
+// of the observed kind — arithmetic/String() on the read silently diverge
+// from JS; (2) the census keys observations by SYNTACTIC receiver name, so
+// a write through an alias (`const alias = m; alias.set(k, v)`) is invisible
+// to a census keyed on `m`, leaving a stale kind live after the alias write
+// changes it. dictValueKindOf below has the identical receiver-name-keying
+// gap and was NOT re-audited here (see .work/todo.md for the open item).
 //
-// Lives here (not kind-traits.js's methodValType, despite `.get` dispatching
-// through it) and is consulted directly by VT['()'] below, BEFORE calling
-// methodValType: kind.js already imports methodValType FROM kind-traits.js,
-// so kind-traits.js importing this back would cycle. Also reused by
-// emit.js's nullableOperand (same name-only shape as dictValueKindOf).
-export function mapValueKindOf(name) {
-  if (typeof name !== 'string' || valTypeOf(name) !== VAL.MAP) return null
-  const local = ctx.func.localReps?.get(name)?.mapValueValType
-  if (local) return local
-  if (!ctx.func.localReps?.has(name)) return ctx.scope.globalReps?.get(name)?.mapValueValType || null
-  return null
-}
+// The census stays a DORMANT fact (mirrors the bigintBoxed precedent,
+// .work/todo.md 2026-07-29 "solver fact LANDED and dormant"): producers keep
+// writing `mapValueValType`, nothing reads it. Do not resurrect a `.get()`
+// consumer without first landing the represented maybeUndefined join +
+// BindingId-based alias/escape ownership this needs to be sound (same open
+// design item).
 
 // `[]` op covers both array literals (1 arg) and index access (2 args).
 // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].
@@ -591,14 +590,9 @@ VT['()'] = (args) => {
   }
   if (Array.isArray(callee) && callee[0] === '.') {
     const [, obj, method] = callee
-    // Map-value census Tier 1 consumer: `.get` short-circuit BEFORE
-    // methodValType, which has no 'get' branch (see mapValueKindOf's doc for
-    // why it lives here instead of kind-traits.js). Falls through to the
-    // generic methodValType dispatch when unproven, unchanged from before.
-    if (method === 'get') {
-      const mvt = mapValueKindOf(obj)
-      if (mvt) return mvt
-    }
+    // NO `.get` short-circuit here (reverted audit P0, 1db8e55e): see the
+    // mapValueValType doc comment in reps.js for why the census this would
+    // consume is dormant.
     const vt = methodValType(method, obj, valTypeOf(obj), ctx)
     if (vt != null) return vt
   }

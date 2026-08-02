@@ -2168,9 +2168,16 @@ test('dict-value census: moduleInitSlot memo-cache replay is order-independent (
 // mapValueValType only (Tier 2 schema-id fact for the fftplan/provenance
 // OBJECT-valued edges is a separate, later design). Same first-wins-then-
 // clash lattice, published onto ctx.scope.globalReps as mapValueValType.
-// Consumer wired in the same landing (kind.js mapValueKindOf, VT['()']'s
-// 'get' short-circuit ahead of methodValType — see its doc for why it lives
-// in kind.js rather than kind-traits.js's methodValType).
+//
+// The `.get()` read-side consumer this landing wired (kind.js mapValueKindOf,
+// VT['()']'s 'get' short-circuit) was REVERTED (audit P0, external
+// bisection, .work/todo.md "audit-#7 P0 closed"): promoting the census to an
+// EXACT VAL.* kind at a read site is unsound — an ABSENT key reads real JS
+// `undefined` regardless of the observed write kind, and the scan keys
+// observations by SYNTACTIC receiver name so a write through an alias is
+// invisible to it. The census itself stays a DORMANT fact below (producers
+// only, no consumer) — see reps.js's mapValueValType doc. The pinned repros
+// for the miscompile itself live in test/dyn-keys.js ("audit P0").
 
 test('map-value census: module-global Map.set value kind populates globalReps', () => {
   const src = `
@@ -2220,31 +2227,13 @@ test('map-value census: an unresolvable write poisons the fact', () => {
     '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
 })
 
-test('map-value census: consumer wiring — proven-NUMBER Map.get read skips coercion at a compare site', () => {
-  // Mirrors the dict census's identical consumer-wiring test (design §2's
-  // named mechanism): cmpOp's NUMBER arm emits a raw f64 compare directly
-  // over the .get() result instead of routing through the generic runtime-
-  // typed comparison helper.
-  const src = `
-    export let MEMO = new Map(), n = 0
-    export let put = (k) => { MEMO.set(k, n++) }
-    export let bigOp = (k) => MEMO.get(k) > 0xffff
-    put('a')
-  `
-  const wat = jz.compile(src, { wat: true })
-  const body = wat.slice(wat.indexOf('$bigOp'))
-  ok(/\(f64\.gt\b/.test(body), 'expected a raw f64.gt at the compare site')
-  ok(!/\$__gt\b/.test(body), 'expected no generic runtime-typed compare helper')
-  is(run(src).bigOp('a'), false, 'functional result unchanged (0 > 0xffff is false)')
-})
-
-test('map-value census: soundness carve-out — an unregistered key still identity-compares as undefined', () => {
-  // The exact miscompile class the design's carve-out (§2, kind.js
-  // mapValueKindOf docstring, emit.js nullableOperand) exists to prevent:
-  // without it, `MEMO.get(k) === undefined` on a proven-NUMBER map would
-  // const-fold to always-false via emitStrictEq's strictSentinel — but an
-  // unregistered key's real runtime value IS undefined, so the idiomatic
-  // "does this key exist" probe must still observe true.
+test('map-value census: no consumer — an unregistered key still identity-compares as undefined', () => {
+  // Baseline correctness post-revert (was the design's carve-out test, §2,
+  // for the now-removed kind.js mapValueKindOf / emit.js nullableOperand
+  // carve-out): with no read-side consumer, `MEMO.get(k) === undefined`
+  // never had a reason to const-fold in the first place — an unregistered
+  // key's real runtime value IS undefined, so the idiomatic "does this key
+  // exist" probe must observe true. Kept as a plain regression pin.
   const src = `
     export let MEMO = new Map(), n = 0
     export let put = (k) => { MEMO.set(k, n++) }

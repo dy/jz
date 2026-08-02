@@ -42,7 +42,7 @@ import {
   exprType, constIntExpr, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
   inBoundsArrIdx, typedIdxProven, versionableTypedNest, idxKey,
 } from '../type.js'
-import { valTypeOf, shapeOf, dictValueKindOf, mapValueKindOf, hasAmbiguousBoolMerge } from '../kind.js'
+import { valTypeOf, shapeOf, dictValueKindOf, hasAmbiguousBoolMerge } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
@@ -2285,11 +2285,11 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 // VT['[]']'s branch order) — the rare case where a name ALSO carries an
 // independently-safe fact just loses a fold, never unsound.
 //
-// A `.get(k)` CALL whose VT comes SOLELY from mapValueKindOf (Map-value
-// census Tier 1 consumer, .work/map-value-census-design.md §2) joins the set
-// for the identical reason — an unwritten Map key reads back the same
-// undefined. Different NODE SHAPE than the dict carve-out above (a '()' call,
-// not '[]'/'.') since Map has no bracket-read form.
+// NO `.get(k)` carve-out here (reverted audit P0, 1db8e55e): kind.js no
+// longer promotes mapValueValType to an exact VT at a `.get()` site, so
+// there is nothing for this carve-out to protect — see kind.js's
+// mapValueValType-consumer doc comment (where mapValueKindOf used to be)
+// for the full soundness writeup.
 const nullableOperand = (n) => {
   if (typeof n === 'string') return !!(repOf(n)?.nullable || repOfGlobal(n)?.nullable)
   if (Array.isArray(n) && n[0] === '[]' && n.length === 3
@@ -2303,9 +2303,6 @@ const nullableOperand = (n) => {
   }
   if (Array.isArray(n) && (n[0] === '[]' || n[0] === '.') && n.length === 3
       && typeof n[1] === 'string' && dictValueKindOf(n[1])) return true
-  if (Array.isArray(n) && n[0] === '()' && n.length === 3
-      && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'get'
-      && typeof n[1][1] === 'string' && mapValueKindOf(n[1][1])) return true
   return false
 }
 

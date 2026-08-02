@@ -4,6 +4,93 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-02, audit-#7 P0 closed)
+
+MAP VALUE-CENSUS .get() CONSUMER REVERTED (external audit, bisection-
+confirmed 1db8e55e^ correct, 1db8e55e wrong): the Tier 1 consumer landed
+2026-08-01 (previous Status entry below) promoted mapValueValType — "every
+value ever WRITTEN through recv.set(k, v)" — to an EXACT VAL.* kind at a
+`.get()` READ site. Unsound two independent ways: (1) ABSENT KEY — a Map
+`.get(missingKey)` reads real JS `undefined` at runtime regardless of the
+observed write kind; a proven-NUMBER census made `m.get(missing) + 1` read
+back `undefined` instead of `NaN`, and `String(m.get(missing))` read back
+`"NaN"` instead of `"undefined"`. (2) ALIAS WRITES — the census (analyze.js
+mapValueTypeOf, program-facts.js's `.set()` observe branch) keys
+observations by SYNTACTIC receiver name (`recvName = node[1][1]`), so
+`alias.set(k, v)` after `const alias = m` is invisible to a census keyed on
+`m`; a direct NUMBER write establishes the fact, the alias's STRING write is
+silently missed, and the stale NUMBER kind survives to miscompile the next
+read (`m.get('k') - 0` returned the literal string instead of NaN).
+REVERTED: kind.js's `mapValueKindOf` (the `.get` short-circuit in VT['()']
+ahead of methodValType) deleted outright, along with its call site; emit.js's
+matching nullableOperand `.get(k)`-call-shape carve-out deleted (nothing left
+for it to protect once the consumer is gone) and its now-unused
+`mapValueKindOf` import dropped. The CENSUS ITSELF (analyze.js's same-body
+scan, program-facts.js's observeMapValue/mapValueTypes, the reps.js
+`mapValueValType` field) was left in place as a DORMANT fact — mirrors the
+bigintBoxed precedent (2026-07-29 entry below, "solver fact LANDED and
+dormant") — producers still write it, nothing reads it; reps.js's doc
+comment on `mapValueValType` and program-facts.js's publish-site comment
+both spell out why, so a future agent doesn't rewire a consumer without
+first reading the soundness writeup.
+PINS: test/dyn-keys.js gained "Map: .get() on an absent key behaves as real
+undefined…" and "Map: a write through an alias is not lost to a stale
+census kind…" (both "audit P0"), red before the revert (confirmed manually:
+`undefined` instead of `NaN`, and a raw string instead of `NaN`), green
+after. test/inference.js's Map-census section (the 1db8e55e consumer-wiring
++ soundness-carve-out tests) rewritten: the consumer-wiring test deleted
+(it asserted a WAT shape claimed to come from the reverted mechanism, but
+that shape turns out to come from an unrelated pre-existing codegen path —
+keeping it would have kept a false claim in the suite even though the
+assertion itself still passed); the soundness test kept as a plain
+baseline-correctness regression pin, header comment updated to state the
+revert. Producer-side census tests (module-global/local/poison/seed-literal/
+moduleInit/cache-replay) untouched — still true, still pin the dormant fact.
+DICT SIBLING CHECKED (read-only, per audit instruction, NOT expanded): 
+dictValueKindOf (kind.js, consumed by VT['[]']/VT['.']) has the IDENTICAL
+absent-key exact-promotion unsoundness — `d[missingKey] + 1` reads
+`undefined` instead of `NaN`, `String(d[missingKey])` reads `"NaN"` instead
+of `"undefined"` (confirmed with a computed-key write to engage the
+dynWriteVars gate: `const d={}; const wk='a'; d[wk]=1; const rk='zz';
+d[rk]`). NOT reverted — it is the PRE-EXISTING dict-value-census consumer
+that 1db8e55e's Map design explicitly mirrored, predates this audit's
+bisected commit, and reverting it is a materially larger, differently-
+scoped change (dict-value-census predates the Map census by design, has its
+own consumers wired through two AST shapes, and its own bench-impact
+history) that needs its own bisection pass, not a same-day tag-along.
+Pinned as a documented KNOWN-FAIL in test/dyn-keys.js ("dict:
+.get()-equivalent read on an absent key is WRONG today") asserting the
+CURRENT wrong values (`undefined`, `"NaN"`) so a future fix flips the
+asserts instead of silently regressing further un-noticed.
+OPEN DESIGN ITEM (both Map and dict census consumers, and the broader
+missing-value-read class): a sound `.get()`/`[]`-read consumer needs (1) a
+represented maybeUndefined JOIN — the read's static kind must be the join
+of "every observed write kind" WITH "possibly-undefined" whenever any key
+could be absent, not the write-kind alone, so arithmetic/String()/typeof
+consumers coerce `undefined` correctly instead of assuming a definite kind;
+(2) BindingId-based alias/escape ownership — census observation needs to key
+by the underlying binding (SSA-like identity), not syntactic receiver name,
+so `alias.set(...)` after `const alias = m` is attributed to the same fact
+as `m.set(...)`. Until both land, no container value-census may promote to
+an exact VAL kind at a read site. This item's scope also covers the
+broader, PRE-EXISTING missing-value read leak the audit flagged in passing
+(unrelated to either census): `Number.isNaN([1][2])` is `false` in JS
+(reads `undefined`, `NaN` only after arithmetic) but `true` in jz (an OOB
+array read is apparently mis-typed as exact NUMBER somewhere upstream of
+the census work entirely); dyn-dict missing reads are the same class. Not
+reproduced/bisected in this session — flagged for whoever picks up the
+maybeUndefined-join design.
+GATES (post-revert, fresh dist rebuild): full 88-file battery (test/index.js
+TESTS list) run in ~15 chunks of 6 files each — 0 fail (a handful of
+pre-existing `# skip` entries, unrelated to this change). kernel-parity
+33/33. kernel-oracle 430/430 assertions. fuzz.js 2000 programs/opt{0,1,2,3},
+0 divergence. perf-ratchet 10/10 (no regression). optimizer 213/213.
+selfhost.js 21/21 (40 compile-yourself rounds). selfhost-perf.js 5/5, BOTH
+warm (0.981×, cap 1.03×) and fresh (0.795×, cap 0.99×) geomeans comfortably
+under cap despite a foreign browser-automation session's ~160% CPU load
+noted at task start (no flake observed, no cap touched, nothing
+re-baselined). New audit-P0 pins green.
+
 ## Status (2026-08-02, current truth)
 
 REFERENCE EVIDENCE REFRESH ATTEMPT: BLOCKED BY MACHINE POLLUTION, MEMORY GOAL

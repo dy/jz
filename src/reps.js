@@ -107,18 +107,21 @@ export const VAL = {
  *   through a proven-VAL.MAP receiver's `recv.set(k, v)` (any key) —
  *   dictValueValType's Map-census Tier 1 sibling (.work/map-value-census-
  *   design.md), same first-wins-then-clash lattice, additive-only, NEVER a
- *   substitute for `val`. Two producers — analyze.js's same-body scan (local
- *   half, updateRep) and observeProgramSlots' mapValueTypes census (global
- *   half, updateGlobalRep) — both consumed only by kind.js's mapValueKindOf
- *   helper (VT['()']'s `.get` short-circuit, ahead of methodValType — kept in
- *   kind.js rather than threaded into kind-traits.js's methodValType, which
- *   cannot import back from kind.js without a cycle), also reused by
- *   emit.js's nullableOperand. Receiver gate is a HARD classification
- *   (new Map() → CALLEE_VAL + recordGlobalRep) — no dynWriteVars-analog proxy
- *   needed, unlike dict's HASH gate. Same soundness carve-out as
- *   dictValueValType: an unwritten key reads back NaN-boxed undefined, so
- *   only NUMBER arithmetic/relational consumers may trust this fact —
- *   identity/typeof/nullish checks must not (see emit.js nullableOperand).
+ *   substitute for `val`. Two producers remain live — analyze.js's same-body
+ *   scan (local half, updateRep) and observeProgramSlots' mapValueTypes
+ *   census (global half, updateGlobalRep) — but the fact is DORMANT (mirrors
+ *   the bigintBoxed precedent, .work/todo.md 2026-07-29 "solver fact LANDED
+ *   and dormant"): its former sole consumer, kind.js's mapValueKindOf
+ *   (VT['()']'s `.get` short-circuit) and emit.js's matching nullableOperand
+ *   carve-out, were REVERTED (audit P0, external bisection, .work/todo.md
+ *   "audit-#7 P0 closed") — promoting this census to an EXACT VAL.* kind at a
+ *   `.get()` read site is unsound: an ABSENT key reads real JS `undefined` at
+ *   runtime regardless of the observed kind (arithmetic/String() on the read
+ *   silently diverged from JS), and the census keys observations by
+ *   SYNTACTIC receiver name so a write through an alias is invisible to it,
+ *   leaving a stale kind live after the alias write changes it. Do not wire
+ *   a new consumer without first landing the represented maybeUndefined join
+ *   + BindingId-based alias/escape ownership this needs to be sound.
  * @property {boolean} [recvArrTyped]     receiver-kind CLASS proof (2026-07-31,
  *   named follow-up to the numeric-key unknown-receiver soundness fix, 9f46d517):
  *   true iff every live call site's argument at this position proves VAL.ARRAY OR
