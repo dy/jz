@@ -58,6 +58,68 @@ dict-rows unification hypothesis is NOT confirmed by this bug (this one
 is a plain deterministic metadata-erasure, not context-dependent) but
 the 0x2A8/__schema_tbl lead is noted for those hunts.
 
+TAG-PRESERVING REBOX LANDED, DECL-INIT WALL STAYS CLOSED 2026-08-01
+(implementation session against the FIX above): the P1-tag-erasure
+diagnosis was CONFIRMED correct and its fix LANDED — but the "then the
+decl-init site can take storedValue" conclusion was WRONG. Two findings:
+(1) the literal fix as specified ("copy .ptrKind/.ptrAux/.closureFuncIdx
+onto the boxed result") is UNSOUND, not just conceptually incomplete —
+tried verbatim, it CRASHES. `.ptrKind`/`.ptrAux` are not inert metadata;
+they're a live dispatch convention ("`.ptrKind != null` ⇒ this node's OWN
+storage is an unboxed i32 offset") read by asF64 itself plus truthyIR,
+writeVar, and the matchF64Bits/isNullish family — none of which re-check
+`.type` first. Stamping them onto boxPtrIR's f64-typed result makes a
+LATER asF64 pass over an already-boxed value re-enter boxPtrIR and emit
+`i64.extend_i32_u` on an f64 operand — confirmed live (control build:
+reverted the rename, kept the decl patch, got exactly this wasm
+validation failure). Landed fix instead carries the source's kind/aux
+under NEW, non-colliding names (`.srcPtrKind`/`.srcPtrAux`, ir.js
+boxPtrIR) that nothing pre-existing reads — additive by construction,
+verified byte-identical on the full kernel-parity corpus (33/33) with the
+rename alone. `.closureFuncIdx` had no such collision (copied under its
+own name; in practice always a no-op — every current minter already
+builds an f64-typed node directly, so it never reaches boxPtrIR as
+`i32node`). PROVEN with the prescribed forced-invariants recipe: a
+fresh native `build-dist.mjs` under `JZ_DEBUG_INVARIANTS=1` throws ZERO
+P1 predictor errors, confirmed BOTH with and without the decl patch
+applied (four full builds: control-broken/decl-patch reproduces the
+exact "P1 predictor drift: (top)/d4654 predicted object, emit sees
+undefined" from the entry above; corrected-fix/decl-patch is clean;
+corrected-fix alone and clean-baseline-alone are both clean). This part
+of the design's diagnosis and fix is SOUND and LANDED (src/ir.js
+boxPtrIR, src/compile/emit.js's P1 assert reading `val.ptrKind ??
+val.srcPtrKind`).
+(2) Taking emitDecl's init through storedValue REGARDLESS is a SEPARATE
+bug the tag fix does not touch, re-confirming the superseded
+"RE-CHARACTERIZED" entry below rather than unifying with this one: a
+fresh dist built with `val = viewInit || storedValue(init)` PLUS the tag
+fix compiles cleanly natively (zero P1 fires — mechanism (1) really is
+fixed) but the resulting dist/jz.wasm then loses every export for EVERY
+compiled program, including `export let f = (x) => x + 1` — a program
+with a closure-literal init that storedValue boxes to the IDENTICAL node
+as plain `emit(init)` (mkPtrIR's result is already f64-typed with no
+`.ptrKind`, so asF64's early `n.type === 'f64'` return hands it back
+unchanged either way — provably the same value, not just probably). That
+rules out a semantics/value bug in the patch: the miscompile is in how
+the native compiler compiles THIS CALL SHAPE inside its own emitDecl
+source at THIS position, independent of what the call computes or
+whether any ambiguous-merge/pointer-alias shape is even in the compiled
+program. WALL STAYS CLOSED: emit.js ~1712 keeps `val = viewInit ||
+emit(init)`; kernel-oracle's 'captured-then-read' row (row 11) stays
+PENDING-FIX. Verified no regression either way: kernel-parity 33/33
+byte-identical, kernel-oracle 430/430 assertions (all PENDING-FIX rows,
+including row 11, still correctly WRONG — no accidental flip), full
+battery 3203/0/6 (unchanged from baseline), selfhost.js 21/21, warm gate
+0.985× / fresh 0.820× (both under cap — the tag-copy is a genuine no-op
+for every existing call site, confirmed by the byte-identical parity
+corpus, not just "trivial cost"). NEXT: the total-export-loss shape is
+now isolated to an extremely tight, fully mechanical repro (one call
+site, one line, value-identical either way) — a stronger candidate for
+the shaped-parser/dict-rows kernel-scale family than anything found so
+far; a future hunt should start from "native miscompiles ITS OWN
+compilation of `x ? A(y) : B(y)`-shaped storedValue at this exact
+position in emitDecl" rather than re-deriving the P1 mechanism.
+
 DECL-INIT WALL RE-CHARACTERIZED 2026-08-01 (superseded by the above) (dedicated hunt, worktree,
 3 full builds patched/control/patched): the wall is NOT the banked
 "narrow captured-then-read gap" — the one-line storedValue(init) patch

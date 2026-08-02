@@ -1681,34 +1681,58 @@ export function emitDecl(...inits) {
 
     const isObjLit = Array.isArray(init) && init[0] === '{}'
     if (isObjLit) ctx.schema.targetStack.push({ name, active: true })
-    // NOT storedValue/argIR here (WALL, banked — carrier-invariant-design.md
-    // session): a scalar `let`/`const` init is in principle the same untyped
-    // boxed-value slot a container store or call arg is, so it SHOULD take
-    // the same hasAmbiguousBoolMerge-aware treatment. Every implementation
-    // shape tried — the shared `argIR`/`storedValue` helpers, an inline
-    // ternary, an inline if/else materializing the branch first (the
-    // established "avoid a same-shaped ternary calling different emit
-    // variants per arm" discipline this file's 'return' handler and
-    // compile/index.js's sibling site already document for a RELATED self-
-    // host miscompile class) — miscompiled the SELF-HOSTED kernel's own
-    // compiled `emitDecl` at this exact call site: verified live with a
-    // fresh dist rebuild, reproducing with a plain `let v = x + 1` local (zero
-    // ambiguous-merge shapes anywhere in the program), while native compiled
-    // every variant correctly. This is a self-host-only bug in how the
-    // kernel compiles ITS OWN emitDecl source at THIS position, not a logic
-    // error in the fix; merely calling hasAmbiguousBoolMerge here and
-    // DISCARDING its result (never branching on it) compiles fine, isolating
-    // the trigger to conditional emit-vs-emitIdentitySafe selection at this
-    // specific spot. Root cause not localized further given the session's
-    // budget — banked, not chased, per the mission's binding rules. Net
-    // effect: a scalar decl init (`let v = cond && 1`) does NOT get boxed at
-    // declaration time; downstream storedValue call sites (return tails,
-    // container stores, call args) still correctly box it at every point
-    // where it's LATER passed on — the gap is narrow (a bare `return v`/
-    // container-store immediately after such a decl is fine; only a
-    // multi-step local read-then-later-use chain could still observe the
-    // raw carrier). test/kernel-oracle.js's 'captured-then-read' row is
-    // PENDING-FIX for this exact reason.
+    // STILL NOT storedValue/argIR here (WALL, banked — carrier-invariant-
+    // design.md; re-banked 2026-08-01 after a dedicated hunt partially
+    // dissolved, then RE-CLOSED this exact wall). One real bug found and
+    // FIXED this session, one found and left standing:
+    //
+    // FIXED (ir.js boxPtrIR/asF64): the "ROOT-CAUSED" ledger entry's own
+    // diagnosis was real — a ptrKind-tagged i32 pointer reboxing via
+    // carrierF64→asF64→boxPtrIR rebuilt its result through `typed()`,
+    // which sets ONLY `.type`; the source's `.ptrKind`/`.ptrAux` never
+    // propagated to the boxed node. Bits stayed correct, but emitDecl's
+    // own P1 plan/emit-parity assert below (inheritPtrAliases,
+    // analyze.js) reads those tags off `val` and found them gone: "P1
+    // predictor drift: predicted object, emit sees undefined" —
+    // deterministic, reproduced in a plain NATIVE build with
+    // JZ_DEBUG_INVARIANTS=1 (no wasm target needed; the assert had simply
+    // never been armed during a real build before this hunt). That part
+    // is fixed: boxPtrIR now carries the source's ptrKind/ptrAux forward
+    // under NEW names (`.srcPtrKind`/`.srcPtrAux`, not `.ptrKind`/
+    // `.ptrAux` themselves — the ledger's proposed "copy the tags
+    // forward" was tried verbatim first and CRASHES: `.ptrKind`/
+    // `.ptrAux` are a live DISPATCH convention read by asF64 itself plus
+    // truthyIR/writeVar/the matchF64Bits family, all of which treat
+    // `.ptrKind != null` as "this node's OWN storage is an unboxed i32
+    // offset" with no `.type` re-check — stamping it onto boxPtrIR's
+    // f64-typed result made a later asF64 pass over an already-boxed
+    // value re-enter boxPtrIR and emit `i64.extend_i32_u` on an f64
+    // operand, failing wasm validation). Verified with a fresh forced-
+    // invariants native build: zero P1 fires, with or without the decl
+    // patch below applied.
+    //
+    // STILL OPEN: applying storedValue HERE regardless — the actual wall
+    // this comment is about — still miscompiles the SELF-HOSTED kernel's
+    // own compiled `emitDecl`, and the P1 fix above does NOT touch it: a
+    // fresh dist rebuilt with `val = viewInit || storedValue(init)` (tag
+    // fix included) compiles cleanly natively (proof above) but the
+    // resulting dist/jz.wasm then loses every export for EVERY compiled
+    // program — even `export let f = (x) => x + 1`, a closure-literal
+    // init that storedValue boxes byte-for-byte identically to plain
+    // `emit(init)` (mkPtrIR's result is already f64-typed with no
+    // `.ptrKind`, so asF64 returns it unchanged either way — the VALUE
+    // this line produces for that program is provably the same node
+    // whichever way it's written). That rules out a semantics/value bug
+    // in the patch itself: the miscompile is in how the native compiler
+    // compiles THIS CALL SHAPE inside its own emitDecl source, not in
+    // what the call computes — the same conclusion the superseded
+    // "RE-CHARACTERIZED" ledger entry reached before the P1 mechanism
+    // was found, and NOT unified with it by this session's fix (the
+    // "ROOT-CAUSED" entry's claim that fixing tag-preservation lets this
+    // line take storedValue does not hold — verified live, not assumed).
+    // Root cause not localized further given the session's budget —
+    // banked, not chased. test/kernel-oracle.js's 'captured-then-read'
+    // row stays PENDING-FIX for this exact reason.
     const val = viewInit || emit(init)
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
@@ -1813,11 +1837,21 @@ export function emitDecl(...inits) {
     // Miss (val carries a ptrKind the plan didn't predict) means the predictor
     // lost an init form; drift (plan predicted, emit's val disagrees) means a
     // rep changed between plan and emit. Both are predictor bugs — fail loud.
+    // `val`'s own pointer kind: a plain unboxed pass-through carries `.ptrKind`
+    // directly (i32-typed); a value that took the storedValue chokepoint may
+    // have been boxed to f64 along the way (carrierF64→asF64→boxPtrIR),
+    // whose result carries the ORIGIN kind under `.srcPtrKind` instead — a
+    // DELIBERATELY different name from `.ptrKind` (ir.js boxPtrIR) so this
+    // read-only parity check can't be confused with the i32-storage dispatch
+    // tag `.ptrKind` itself means everywhere else. The two are mutually
+    // exclusive (one lives on i32 nodes, the other only on boxPtrIR's f64
+    // output), so `??` is an unambiguous merge, not a priority guess.
+    const valPtrKind = val.ptrKind ?? val.srcPtrKind
     if (DBG_INVARIANTS) {
-      if (ptrKind == null && val.ptrKind != null && localType === 'i32' && !ctx.func.boxed?.has(name))
-        throw new Error(`P1 predictor miss: ${ctx.func.name || '(top)'}/${name} init carries ptrKind=${val.ptrKind} unpredicted`)
-      if (ptrKind != null && ctx.func.p1Predicted?.has(name) && val.ptrKind !== ptrKind)
-        throw new Error(`P1 predictor drift: ${ctx.func.name || '(top)'}/${name} predicted ${ptrKind}, emit sees ${val.ptrKind}`)
+      if (ptrKind == null && valPtrKind != null && localType === 'i32' && !ctx.func.boxed?.has(name))
+        throw new Error(`P1 predictor miss: ${ctx.func.name || '(top)'}/${name} init carries ptrKind=${valPtrKind} unpredicted`)
+      if (ptrKind != null && ctx.func.p1Predicted?.has(name) && valPtrKind !== ptrKind)
+        throw new Error(`P1 predictor drift: ${ctx.func.name || '(top)'}/${name} predicted ${ptrKind}, emit sees ${valPtrKind}`)
     }
     let coerced
     if (ptrKind != null) {

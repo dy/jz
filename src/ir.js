@@ -46,10 +46,45 @@ function ptrBoxPrefix(ptrType, aux = 0) {
  *  `aux` is the 15-bit secondary tag (schema ID for OBJECT, element type for TYPED, etc.). */
 function boxPtrIR(i32node, ptrType, aux = 0) {
   const prefix = ptrBoxPrefix(ptrType, aux)
-  return typed(['f64.reinterpret_i64',
+  const result = typed(['f64.reinterpret_i64',
     ['i64.or',
       ['i64.const', '0x' + prefix.toString(16).toUpperCase()],
       ['i64.extend_i32_u', i32node]]], 'f64')
+  // TAG-PRESERVING REBOX (carrier-invariant-design.md, "DECL-INIT WALL
+  // ROOT-CAUSED"): typed() above sets only .type on the fresh wrapper node —
+  // the source i32node's .ptrKind/.ptrAux (set by readVar-style construction)
+  // do NOT propagate onto it. The bits are right (the NaN-box correctly
+  // encodes ptrType/aux in the prefix), but the METADATA a downstream
+  // consumer reads off the RESULT node (emitDecl's P1 predictor parity
+  // assert) is gone, so any caller that boxes a tagged pointer (storedValue
+  // → carrierF64 → asF64 → here) silently drops tags the caller never asked
+  // to lose.
+  //
+  // NOT copied onto `.ptrKind`/`.ptrAux` themselves (tried first, reverted —
+  // see the forced-invariants proof run that caught it): those two names are
+  // a load-bearing DISPATCH convention read throughout ir.js — "`.ptrKind !=
+  // null` means this node's OWN representation is an unboxed i32 pointer
+  // offset" (asF64 here, truthyIR, writeVar, the matchF64Bits/isNullish
+  // family all branch on it without re-checking `.type`). `result` here is
+  // f64-typed (already boxed); stamping `.ptrKind` on it makes every one of
+  // those sites mistake an already-boxed f64 for a raw i32 offset needing
+  // (re-)boxing — verified as a REAL crash, not theoretical: a second asF64
+  // pass over an emitDecl coercion's already-boxed `val` re-entered boxPtrIR
+  // and emitted `i64.extend_i32_u` on an f64 operand, failing wasm
+  // validation ("expected type i32, found f64.reinterpret_i64"). Carried
+  // instead under NEW, non-colliding names nothing else reads — additive by
+  // construction, zero risk to the existing i32-only convention.
+  if (i32node.ptrKind != null) result.srcPtrKind = i32node.ptrKind
+  if (i32node.ptrAux != null) result.srcPtrAux = i32node.ptrAux
+  // .closureFuncIdx has no such collision (every existing reader treats it as
+  // plain informational metadata, never as a type-implying dispatch tag), so
+  // it copies forward under its own name unchanged. In practice this is a
+  // no-op today: every current minter (mkPtrIR call sites) already builds an
+  // f64-typed node directly, so a closureFuncIdx-carrying node never reaches
+  // boxPtrIR as `i32node` — kept for the hypothetical i32-typed unboxed-
+  // CLOSURE-local carrier, harmless either way.
+  if (i32node.closureFuncIdx != null) result.closureFuncIdx = i32node.closureFuncIdx
+  return result
 }
 
 /** Coerce node to f64. Pointer-kinded i32 offsets rebox via NaN-tag fusion, not numeric convert.
