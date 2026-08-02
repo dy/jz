@@ -240,20 +240,31 @@ const ensureThrowRuntime = (sec) => {
     sec.tags.push(['export', '"__jz_last_err_bits"', ['global', '$__jz_last_err_bits']])
 }
 
-// Drop the $__jz_err tag + __jz_last_err_bits globals when no throw can be CAUGHT.
+// Drop the $__jz_err TAG (not the last-err global) when no throw can be CAUGHT.
 // ensureThrowRuntime runs before optimizeModule so dead-throw analysis sees the
-// tag/global as live; once opt has finished, an unused tag still forces consumers
+// tag as live; once opt has finished, an unused tag still forces consumers
 // (wasmtime, wasm2c, wabt) to enable the exceptions proposal just to PARSE the module.
 //
 // When `!userThrows`, every `throw` is compiler-internal (bounds / coercion / type
-// errors) and — with no user try/catch — uncatchable: nothing inspects the thrown
-// value, so it is semantically a trap. The exceptions proposal is needed only to
-// DECLARE the tag a `throw` references; lowering each surviving uncatchable throw to
-// `unreachable` keeps the module in the wasm MVP, so every runtime can parse it
-// (V8 alone enables exceptions by default, which masked this). A pure-recursion or
-// typed-array kernel (nqueens, anything pulling __to_num) thus stops emitting a Tag
-// section it can never use. User-written throw/try/catch/finally is an ABI contract
-// (JS-side may inspect __jz_last_err_bits), so `userThrows` keeps the runtime intact.
+// errors) and — with no user try/catch — uncatchable IN WASM: nothing inside the
+// module inspects the thrown value, so it is semantically a trap there. The
+// exceptions proposal is needed only to DECLARE the tag a `throw` references;
+// lowering each surviving uncatchable throw to `unreachable` keeps the module in
+// the wasm MVP, so every runtime can parse it (V8 alone enables exceptions by
+// default, which masked this). A pure-recursion or typed-array kernel (nqueens,
+// anything pulling __to_num) thus stops emitting a Tag section it can never use.
+// User-written throw/try/catch/finally is an ABI contract (JS-side may inspect
+// __jz_last_err_bits), so `userThrows` keeps the tag + exceptions runtime intact.
+//
+// `__jz_last_err_bits` itself is KEPT (global + export + every `global.set`) even
+// on this trap path: it is plain mutable-i64 wasm MVP (no exceptions proposal
+// needed to declare or write it), and it is the ONLY signal that survives an
+// `unreachable` trap to the host boundary. Every internal throw site writes it
+// immediately before its (now-trap) throw, so interop.js's decodeThrown can read
+// it out of the trapped instance and resolve the code via err-codes.js — turning
+// an otherwise-opaque `RuntimeError: unreachable` into the real ECMAScript error
+// class the site models. Stripping this global (the old behavior) made host
+// decode of ordinary runtime errors unreachable by construction (audit #7 P1).
 const pruneUnusedThrowRuntime = (sec) => {
   if (!ctx.runtime.throws || ctx.runtime.userThrows) return
   // A catch handler (try_table) appears only under userThrows; defensively bail if one
@@ -264,27 +275,18 @@ const pruneUnusedThrowRuntime = (sec) => {
     for (const f of arr) if (hasCatch(f)) return
   // Rewrite every surviving `(throw $__jz_err …)` to `(unreachable)` (same polymorphic
   // stack type — a drop-in in any position). The thrown operand is side-effect-free
-  // (a local read / const), so dropping it loses nothing. Every internal throw site
-  // also precedes its throw with `(global.set $__jz_last_err_bits …)` (so an escaping
-  // throw decodes correctly at the host boundary — decodeThrown, err-codes.js); that
-  // global is deleted below along with the tag, so its own `global.set` must be
-  // stripped too (→ `drop`, keeping the value's — side-effect-free — evaluation
-  // shape) or it would reference a global that no longer exists.
+  // (a local read / const), so dropping it loses nothing. The preceding
+  // `(global.set $__jz_last_err_bits …)` at each site is left untouched — see above.
   const lowerThrows = (n) => {
     if (!Array.isArray(n)) return n
     if (n[0] === 'throw') return ['unreachable']
-    if (n[0] === 'global.set' && n[1] === '$__jz_last_err_bits') return ['drop', lowerThrows(n[2])]
     for (let i = 1; i < n.length; i++) n[i] = lowerThrows(n[i])
     return n
   }
   for (const arr of [sec.funcs, sec.stdlib, sec.start])
     for (let i = 0; i < arr.length; i++) arr[i] = lowerThrows(arr[i])
   sec.tags = sec.tags.filter(t => !(Array.isArray(t) &&
-    ((t[0] === 'tag' && t[1] === '$__jz_err') ||
-     (t[0] === 'export' && t[1] === '"__jz_last_err_bits"'))))
-  sec.globals = sec.globals.filter(g => !(Array.isArray(g) &&
-    g[0] === 'global' && g[1] === '$__jz_last_err_bits'))
-  ctx.scope.globals.delete('__jz_last_err_bits')
+    (t[0] === 'tag' && t[1] === '$__jz_err')))
 }
 
 // === Module compilation ===

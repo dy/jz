@@ -732,8 +732,24 @@ export const wrap = (memSrc, inst, state) => {
   const finishRet = (raw, read) => asyncMod ? adopt(raw, read) : read(raw)
   const lastErrBits = realInst.exports.__jz_last_err_bits
   const decodeThrown = error => {
-    if (!(error instanceof WebAssembly.Exception) || !lastErrBits) throw error
+    const isException = error instanceof WebAssembly.Exception
+    // A no-user-EH module lowers every internal `throw` to `unreachable` (kept in
+    // the wasm MVP — see pruneUnusedThrowRuntime) but still writes
+    // __jz_last_err_bits immediately before it traps. A RuntimeError with a
+    // nonzero marker is that same trap, decodable exactly like the Exception
+    // path below; a RuntimeError with a ZERO marker is a genuine foreign trap
+    // (OOB, stack overflow, …) that no throw site marked — rethrow undecoded.
+    const isMarkedTrap = !isException && error instanceof WebAssembly.RuntimeError &&
+      lastErrBits && lastErrBits.value !== 0n
+    if (!isException && !isMarkedTrap) throw error
+    if (!lastErrBits) throw error
     const errBits = lastErrBits.value  // i64 bits (BigInt)
+    // Consume the marker on EVERY decode (Exception path included), not just the
+    // trap path: an Exception leaves it nonzero too, and a later genuine foreign
+    // trap on the SAME instance would otherwise read that stale value and
+    // misdecode as the earlier, already-handled error. Nothing else reads this
+    // global (host- or wasm-side) between throws, so the reset is safe.
+    lastErrBits.value = 0n
     // Memoryless module: the thrown value is a number/atom/SSO string — decode it
     // from bits. (A heap Error/string can only exist when the module has memory.)
     const value = mem ? mem.read(errBits) : decode(errBits)
@@ -741,11 +757,14 @@ export const wrap = (memSrc, inst, state) => {
     // A plain NUMBER matching the $__jz_err code registry (src/err-codes.js) is a
     // jz-internal runtime throw (bounds/coercion/parse — piece 1's per-site codes,
     // fs.js's real errno is NOT in the registry and falls to the generic branch
-    // below); resolve it to the real ECMAScript error class + message it models.
-    // `wrapped.thrown` always keeps the ORIGINAL code — an in-wasm catch (or a
-    // caller inspecting `.thrown`) still sees the raw number, undecoded.
+    // below); resolve it to the real ECMAScript error class it models — a genuine
+    // `instanceof SyntaxError`/`TypeError`/etc., not a generic Error with a
+    // prefixed message. `wrapped.thrown` always keeps the ORIGINAL code — an
+    // in-wasm catch (or a caller inspecting `.thrown`) still sees the raw number,
+    // undecoded.
     const info = typeof value === 'number' ? ERR_INFO[value] : undefined
-    const wrapped = info ? new Error(`${info.name}: ${info.message}`)
+    const Ctor = info ? (globalThis[info.name] ?? Error) : Error
+    const wrapped = info ? new Ctor(info.message)
       : new Error(typeof value === 'string' ? value : String(value))
     wrapped.cause = error
     wrapped.thrown = value

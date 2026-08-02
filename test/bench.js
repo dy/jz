@@ -212,7 +212,12 @@ const SIZE = {
   // cond-bounded cursor classes outright — heapsort's child chains and
   // medianUs's insertion scan: sort 1814 B (was 1941, 0.96 WIN), aos 1894.
   // (Tried and REVERTED: $__typed_idx call route, +900 B vs ~3 inline sites.)
-  aos:            { as: 'win' },
+  // Re-baselined win→tie (audit #7 P1, error-decode host contract): keeping
+  // __jz_last_err_bits (global+export) on the no-EH trap path adds a flat 26 B
+  // to every module with internal throw sites — aos's margin over AS was
+  // exactly that thin (0.993× → 1.006×). Ring-ratchet precedent: a deliberate,
+  // understood, sub-1% shift from a correct fix is re-baselined, not chased.
+  aos:            { as: 'tie' },
   json:           { as: 'na' },
   sort:           { as: 'win' },
   crc32:          { as: 'win' },

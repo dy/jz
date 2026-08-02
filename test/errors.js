@@ -580,11 +580,19 @@ test('throw declares + exports __jz_last_err_bits even when carrier is dead', ()
 
 // ============================================================================
 // Uncatchable internal throw → a trap, NOT the exceptions proposal. A throw with
-// no `try`/`catch` anywhere is uncatchable (semantically a trap); declaring the
-// $__jz_err Tag just to carry it forces consumers that don't enable the exceptions
-// proposal (wasmtime, wabt, wasm2c) to reject the module on the Tag section — V8
-// alone enables exceptions by default, which masked this. Keep such modules in the
-// wasm MVP. (User throw/try/catch is an ABI contract and keeps the runtime — above.)
+// no `try`/`catch` anywhere is uncatchable IN WASM (semantically a trap there);
+// declaring the $__jz_err Tag just to carry it forces consumers that don't enable
+// the exceptions proposal (wasmtime, wabt, wasm2c) to reject the module on the Tag
+// section — V8 alone enables exceptions by default, which masked this. Keep such
+// modules in the wasm MVP. (User throw/try/catch is an ABI contract and keeps the
+// tag + exceptions runtime — above.)
+//
+// The trap is NOT uncatchable at the HOST boundary, though: __jz_last_err_bits
+// (plain mutable-i64 MVP global, no exceptions proposal needed) survives the trap
+// and lets interop.js's decodeThrown resolve it back to the real ECMAScript error
+// class + `.thrown` code (audit #7 P1 — this used to be stripped along with the
+// tag, making host decode unreachable and forcing a bare `RuntimeError:
+// unreachable` on every ordinary runtime error).
 // ============================================================================
 
 test('uncatchable internal throw is a trap, not the exceptions tag (MVP-portable)', () => {
@@ -597,6 +605,10 @@ test('uncatchable internal throw is a trap, not the exceptions tag (MVP-portable
   const wat = compile('export let f = (v) => Number(v) + 1', { wat: true })
   ok(!wat.includes('(tag $__jz_err'), 'no exceptions tag for an uncatchable internal throw')
   ok(!/\(throw /.test(wat), 'the uncatchable throw is lowered to a trap')
+  // The last-err carrier survives the trap-lowering — it's the host-decode contract.
+  ok(wat.includes('(global $__jz_last_err_bits'), 'last-err global survives trap-lowering')
+  ok(wat.includes('(export "__jz_last_err_bits"'), 'last-err global stays exported')
+  ok(wat.includes('global.set $__jz_last_err_bits'), 'the marker write before the trap survives')
 })
 
 test('catchable throw keeps the exceptions runtime (try/catch needs the tag)', () => {
@@ -604,6 +616,64 @@ test('catchable throw keeps the exceptions runtime (try/catch needs the tag)', (
   const wat = compile('export let f = (v) => { try { throw v } catch (e) { return e } }', { wat: true })
   ok(wat.includes('(tag $__jz_err'), 'caught throw keeps the exceptions tag')
   ok(wat.includes('(try_table'), 'try/catch lowers to try_table')
+})
+
+// ============================================================================
+// Host decode of a trap-lowered internal throw (audit #7 P1) — the trap above is
+// decoded at the host boundary into the real ECMAScript error class the throw
+// site models, with `.thrown` carrying the raw $__jz_err code (src/err-codes.js).
+// ============================================================================
+
+test('host decode: trap-lowered JSON.parse throw resolves to a real SyntaxError', () => {
+  let error
+  try { jz(`export let f=()=>JSON.parse('x')`).exports.f() }
+  catch (e) { error = e }
+  ok(error instanceof SyntaxError, `expected SyntaxError, got ${error?.constructor?.name}`)
+  is(error.thrown, 300, 'thrown code is JSON_PARSE_SYNTAX (src/err-codes.js)')
+})
+
+test('host decode: trap-lowered radix throw resolves to a real RangeError', () => {
+  let error
+  try { jz(`export let f=()=>(3).toString(37)`).exports.f() }
+  catch (e) { error = e }
+  ok(error instanceof RangeError, `expected RangeError, got ${error?.constructor?.name}`)
+  is(error.thrown, 205, 'thrown code is NUMBER_RADIX (src/err-codes.js)')
+})
+
+test('host decode: a genuine unmarked trap still surfaces as RuntimeError', () => {
+  // A tiny `maxMemory` ceiling turns __memgrow's OOM path (module/core.js) into a
+  // real, deterministic, unmarked `unreachable` — no throw site precedes it, so
+  // __jz_last_err_bits stays 0 and decodeThrown must rethrow it undecoded. The
+  // function branches through Number(v) first so the module still carries the
+  // last-err marker (pulled by __to_num) — this pins the "marker present but
+  // zero" branch, not just the "no marker at all" one.
+  const src = `export let f=(v)=>{
+    if (typeof v === 'number') { let s = 'a'; for (let i = 0; i < 30; i++) s = s + s; return s.length }
+    return Number(v)
+  }`
+  let error
+  try { jz(src, { maxMemory: 1 }).exports.f(1) }
+  catch (e) { error = e }
+  ok(error instanceof WebAssembly.RuntimeError, `expected an undecoded RuntimeError, got ${error?.constructor?.name}`)
+})
+
+test('host decode: a decoded escape does not leave a stale marker for the next trap', () => {
+  // A real userThrows escape (WebAssembly.Exception path) writes the SAME marker
+  // global a trap-lowered throw does — decodeThrown must consume it there too, or
+  // a later genuine trap on the SAME instance reads the stale nonzero value and
+  // misdecodes as the earlier, already-handled error.
+  const src = `export let f = (mode) => {
+    if (mode === 1) throw 300
+    let s = 'a'; for (let i = 0; i < 30; i++) s = s + s; return s.length
+  }`
+  const inst = jz(src, { maxMemory: 1 })
+  let first
+  try { inst.exports.f(1) } catch (e) { first = e }
+  ok(first instanceof SyntaxError, `expected the escape to decode to SyntaxError, got ${first?.constructor?.name}`)
+  let second
+  try { inst.exports.f(0) } catch (e) { second = e }
+  ok(second instanceof WebAssembly.RuntimeError, `expected the later trap undecoded, got ${second?.constructor?.name}`)
+  ok(!(second instanceof SyntaxError), 'the stale marker from the first decode must not leak into the second')
 })
 
 // ============================================================================

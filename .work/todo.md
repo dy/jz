@@ -4,6 +4,98 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-02, audit-#7 P1 closed)
+
+ERROR-MODEL HOST DECODE FIXED (audit-#7 P1): a no-user-EH module's internal
+throws (bounds/coercion/JSON/URI/base64/hex — src/err-codes.js) lower to
+`unreachable` traps for wasm-MVP portability (pruneUnusedThrowRuntime,
+src/compile/index.js), but the OLD code also stripped the
+`__jz_last_err_bits` i64 global + its export along with the `$__jz_err`
+Tag — the global is plain mutable-i64 wasm MVP, nothing to do with the
+exceptions proposal, so stripping it was never required for MVP
+compatibility. Net effect: `jz(\`export let f=()=>JSON.parse('x')\`)
+.exports.f()` threw a bare `RuntimeError: unreachable` instead of a
+decoded error, and even when decode DID run (a userThrows escape via
+WebAssembly.Exception) it built `new Error("SyntaxError: ...")` — a
+generic Error with a prefixed message, never a real `instanceof
+SyntaxError`. FIX (two independent pieces): (1) pruneUnusedThrowRuntime
+now only strips the `$__jz_err` Tag and lowers `throw`->`unreachable`;
+the global, its export, and every `global.set` before a throw site are
+left alone — comment block rewritten to state the new rationale. (2)
+interop.js's decodeThrown extended to also handle
+`error instanceof WebAssembly.RuntimeError` when `__jz_last_err_bits` is
+exported and nonzero, decoding it exactly like the Exception path
+(err-codes.js's ERR_INFO table); a zero-marker RuntimeError (genuine
+foreign trap — OOB, stack overflow, OOM — nothing jz's own throw sites
+raised) rethrows undecoded. Registry-code decode now instantiates the
+REAL class (`new (globalThis[info.name] ?? Error)(info.message)`) instead
+of a generic Error with a prefixed name; `.thrown` keeps the raw code,
+`.cause` keeps the original wasm error, unchanged. MID-REVIEW CATCH
+(external pass on the in-flight diff): the marker was only reset on the
+trap path (`if (isMarkedTrap) lastErrBits.value = 0n`) — a userThrows
+escape (Exception path) decodes fine but leaves the marker NONZERO, so a
+later genuine foreign trap on the SAME instance would misdecode by
+reading that stale value. FIXED: the reset now runs unconditionally after
+every decode (nothing else reads the global between throws, so it's
+safe); pinned (`host decode: a decoded escape does not leave a stale
+marker for the next trap`, test/errors.js) — first call escapes+decodes
+to a real SyntaxError, second call on the SAME instance hits an unrelated
+OOM trap and must surface as a bare RuntimeError, not a repeat
+SyntaxError.
+PINS: test/errors.js gained 4 host-decode tests (JSON.parse->SyntaxError
+with `.thrown===300`, radix->RangeError with `.thrown===205`, a genuine
+unmarked trap via a `maxMemory:1` OOM ceiling stays undecoded, the stale-
+marker two-call pin above); the existing trap-lowering pin ("uncatchable
+internal throw is a trap...") gained three assertions confirming the
+last-err global/export/global.set now SURVIVE trap-lowering (previously
+only asserted the tag+throw were gone). README.md's error-model bullet
+(~line 251) rewritten to state the true contract: escaping throws decode
+to real ECMAScript class instances with `.message`/`.thrown` set, no user
+`try`/`catch` required; a no-EH module stays wasm-MVP via the small
+mutable-i64 marker global; a genuine foreign trap still surfaces as a
+bare RuntimeError.
+SIZE (hard gate, checked BEFORE commit): keeping the marker global+export
+adds a flat +26 B to every no-EH module that carries internal throw
+sites (confirmed across scripts/bench-size.mjs's full corpus — every
+delta was exactly +26 B, two multi-throw-site outliers +38 B, watr
+untouched at +0 since it already carries userThrows). SIZE_GEOMEAN_MAX
+(test/bench.js, win/tie-scoped) moved 0.851x -> 0.868x jz/AS — comfortably
+under the 1.05x ceiling. One golden pin re-baselined: `aos` win->tie
+(test/bench.js SIZE table) — its margin over AS was exactly the +26 B
+thin (0.993x -> 1.006x), a deliberate, understood, sub-1% shift from a
+correct fix, not a regression; ring-ratchet precedent (see below).
+PERF-RATCHET RE-BASELINED (same root cause, same precedent as the
+buf/nest/slice/ring/condref wave referenced below): `ring`'s corpus
+programs carry internal-throw-triggering stdlib calls inside hot loop
+bodies, so the preserved `global.set` per site adds real ops to the
+machine-independent loop-body-op-count proxy — 117680 -> 117800 (+120
+ops, node test/perf-ratchet.js --update). Every other category (int,
+float, mixed, cond, buf, nest, slice, condref, fgather) unaffected (+0) —
+their corpus shapes don't carry internal-throw call sites inside loop
+bodies.
+ARCHITECTURE NOTE (per audit, acknowledged not re-opened): the c28f218c
+srcPtrKind/srcPtrAux tag-preserving rebox (carrier-invariant-design.md)
+is a narrow diagnostic repair — it silences the P1 predictor's false-
+positive assert (one reader) and has zero other production consumers
+(zero readers) — NOT completion of represented-value ownership. The
+carrier-invariant design doc's box-at-production chokepoint decision
+(storedValue promoted to src/bridge.js, 16 raw sites replaced) stays
+UNIMPLEMENTED; the decl-init wall (emit.js ~1712 plain `emit(init)`,
+captured-then-read oracle row 11) stays PENDING-FIX. This P1 fix does not
+touch that item.
+GATES (fresh dist rebuild): full 88-file battery (test/index.js TESTS
+list) run file-by-file, 0 fail (pre-existing skip counts in array-methods/
+spread/objects/unsigned untouched, unrelated to this change). kernel-
+parity 33/33 assertions. kernel-oracle 430/430 assertions. fuzz.js 2000
+programs x opt{0,1,2,3}, 0 divergence (30173 compared, 9827 skipped i32-
+contract, 0 non-numeric). perf-ratchet 10/10 post-rebaseline. optimizer
+213/213 (3947 assertions). selfhost.js 21/21 (40 compile-yourself
+rounds). selfhost-perf.js 5/5 — warm 0.985x (cap 1.03x), fresh 0.809x
+(cap 0.99x), both comfortably under cap despite a foreign Chrome/
+Playwright automation session's sustained ~150% CPU load noted during
+this session's battery run (no flake observed, no cap touched, nothing
+re-baselined). New host-decode pins green.
+
 ## Status (2026-08-02, audit-#7 P0 closed)
 
 MAP VALUE-CENSUS .get() CONSUMER REVERTED (external audit, bisection-
