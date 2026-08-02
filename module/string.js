@@ -23,7 +23,7 @@
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { emit, emitIdentitySafe, argIR, bool, method, deps, wat, bind } from '../src/bridge.js'
-import { valTypeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
+import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
 import { ssoBitI64Hex, sliceBitI64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
@@ -2043,6 +2043,16 @@ export default (ctx) => {
     // skip it — needs the explicit early exit, boxed via emitIdentitySafe.
     if (hasAmbiguousBoolMerge(value))
       return typed(['f64.reinterpret_i64', toStrI64(value, emitIdentitySafe(value))], 'f64')
+    // maybeUndefined join (.work/maybe-undefined-design.md §1b): a dict-census
+    // NUMBER claim on a `[]`/`.` read is "every value ever WRITTEN", not "this
+    // key exists" — an absent key is real `undefined` at runtime, and
+    // String(undefined) === "undefined" (22.1.3.6 String(value)), not the
+    // __ftoa formatting of the raw NaN-boxed bits below. Same early-exit shape
+    // as the hasAmbiguousBoolMerge carve-out above; falls through to the LAST
+    // branch (toStrI64/__to_str), already correct — it special-cases
+    // UNDEF_NAN/NULL_NAN before generic dispatch.
+    if (censusMaybeUndefined(value))
+      return typed(['f64.reinterpret_i64', toStrI64(value, emit(value))], 'f64')
     if (valTypeOf(value) === VAL.STRING) return emit(value)
     if (valTypeOf(value) === VAL.BOOL) return bool(value)
     if (valTypeOf(value) === VAL.NUMBER) {

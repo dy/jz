@@ -26,7 +26,7 @@ import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
 import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex } from '../layout.js'
 import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf } from './ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from './reps.js'
-import { valTypeOf } from './kind.js'
+import { valTypeOf, censusMaybeUndefined } from './kind.js'
 import { T } from './ast.js'
 import { objLiteralSchemaId } from './static.js'
 
@@ -974,7 +974,21 @@ export function toNumF64(node, v) {
   if (typeof node === 'string' && ctx.func.maybeNullish?.has(node)) return coerceNullishToNum(asF64(v))
   const vt = valTypeOf(node)
   if (vt === VAL.BOOL) return typed(['f64.convert_i32_s', truthyIR(v)], 'f64')
-  if (vt === VAL.NUMBER || vt === VAL.BIGINT) return asF64(v)
+  if (vt === VAL.NUMBER || vt === VAL.BIGINT) {
+    // maybeUndefined join (.work/maybe-undefined-design.md §1a): a dict-census
+    // NUMBER claim is a "every value ever WRITTEN" fact, not a "this key
+    // exists" proof — an absent key reads real `undefined` at runtime. Gated
+    // on VAL.NUMBER only (never BIGINT: real JS THROWS mixing BigInt and
+    // undefined in arithmetic, coerceNullishToNum's undefined→NaN answer
+    // would be wrong there — left exactly as unsound as today, not newly
+    // broken, not closed by this fix). censusMaybeUndefined short-circuits on
+    // node[0] before touching ctx.func.localReps, so every proven-NUMBER
+    // site that isn't a dict-mode `[]`/`.` read (loop counters, schema slots,
+    // the overwhelming hot-path case) pays zero new cost — same node object,
+    // same asF64(v) call, no new branch taken.
+    if (vt === VAL.NUMBER && censusMaybeUndefined(node)) return coerceNullishToNum(asF64(v))
+    return asF64(v)
+  }
   if (vt === VAL.DATE) {
     const ptr = v.ptrKind === VAL.DATE
       ? v

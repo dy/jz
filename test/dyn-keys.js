@@ -143,15 +143,18 @@ test('Map: a write through an alias is not lost to a stale census kind (audit P0
     return m.get('k') - 0`), NaN)  // 'oops1' - 0 === NaN, same as plain JS
 })
 
-// KNOWN-FAIL, dict sibling — NOT reverted here (audit P0's dict-census
-// briefing, .work/todo.md "audit-#7 P0 closed"): dictValueKindOf (kind.js,
-// consumed by VT['[]']/VT['.']) has the SAME absent-key exact-promotion
-// unsoundness as the reverted mapValueKindOf, but it is the PRE-EXISTING
-// dict-value-census consumer (predates 1db8e55e, not this audit's bisected
-// commit) — reverting it is out of scope for this P0 and would need its own
-// bisection/bench-impact pass. Pinned as the CURRENT (wrong) behavior so a
-// future fix flips these two asserts, not silently regresses further.
-test('dict: .get()-equivalent read on an absent key is WRONG today (known-fail, dict-census sibling of audit P0)', () => {
-  is(run(`const d = {}; const wk = 'a'; d[wk] = 1; const rk = 'zz'; return d[rk] + 1`), undefined)  // JS: NaN
-  is(run(`const d = {}; const wk = 'a'; d[wk] = 1; const rk = 'zz'; return String(d[rk])`), 'NaN')  // JS: "undefined"
+// FIXED (.work/maybe-undefined-design.md Slice 1, value-join): dictValueKindOf
+// (kind.js, consumed by VT['[]']/VT['.']) had the SAME absent-key
+// exact-promotion unsoundness as the reverted mapValueKindOf — the census is
+// "every value ever WRITTEN", not "this key exists". Closed by
+// `censusMaybeUndefined` (kind.js, promoted from emit.js's `nullableOperand`
+// carve-out), wired into ir.js's toNumF64 (coerces through
+// coerceNullishToNum: undefined→NaN) and module/string.js's `bind('String', …)`
+// (falls through to the already-correct toStrI64/__to_str general arm). The
+// dict-value-census consumer itself is UNCHANGED — still live, still returns
+// the exact kind — only these two arithmetic/ToString chokepoints now ask
+// "could this exact-kind claim be falsified by an absent key" first.
+test('dict: .get()-equivalent read on an absent key behaves as real undefined (Slice 1, dict-census sibling of audit P0)', () => {
+  is(run(`const d = {}; const wk = 'a'; d[wk] = 1; const rk = 'zz'; return d[rk] + 1`), NaN)  // undefined + 1 === NaN
+  is(run(`const d = {}; const wk = 'a'; d[wk] = 1; const rk = 'zz'; return String(d[rk])`), 'undefined')
 })

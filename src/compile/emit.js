@@ -42,7 +42,7 @@ import {
   exprType, constIntExpr, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
   inBoundsArrIdx, typedIdxProven, versionableTypedNest, idxKey,
 } from '../type.js'
-import { valTypeOf, shapeOf, dictValueKindOf, hasAmbiguousBoolMerge } from '../kind.js'
+import { valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
@@ -2283,7 +2283,11 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 // `prec[op] === undefined` (does this key exist?) is that dict's own bounds
 // probe. Unconditional on dictValueKindOf(name) being truthy (not re-deriving
 // VT['[]']'s branch order) — the rare case where a name ALSO carries an
-// independently-safe fact just loses a fold, never unsound.
+// independently-safe fact just loses a fold, never unsound. The predicate
+// itself is `censusMaybeUndefined` (kind.js, .work/maybe-undefined-design.md
+// §1) — promoted out of this function so ir.js's toNumF64 and
+// module/string.js's String() can ask the same question at their own
+// arithmetic/ToString coercion chokepoints.
 //
 // NO `.get(k)` carve-out here (reverted audit P0, 1db8e55e): kind.js no
 // longer promotes mapValueValType to an exact VT at a `.get()` site, so
@@ -2301,8 +2305,7 @@ const nullableOperand = (n) => {
         lookupValType(n[2][1]) === VAL.TYPED && !typedIdxProven(n[2][1], n[2][2])) return true
     return !typedIdxProven(n[1], n[2])
   }
-  if (Array.isArray(n) && (n[0] === '[]' || n[0] === '.') && n.length === 3
-      && typeof n[1] === 'string' && dictValueKindOf(n[1])) return true
+  if (censusMaybeUndefined(n)) return true
   return false
 }
 

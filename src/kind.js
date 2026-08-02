@@ -291,6 +291,53 @@ export function dictValueKindOf(name) {
   return null
 }
 
+// maybeUndefined value-join (.work/maybe-undefined-design.md §1): true for a
+// `name[key]`/`name.prop` READ node whose VT comes SOLELY from
+// dictValueKindOf's soundness carve-out — an unwritten key reads back real
+// JS `undefined` at runtime regardless of the census's claimed exact kind
+// (dictValueKindOf's own doc comment above states the exact argument this
+// predicate encodes). Promoted from the inline predicate emit.js's
+// `nullableOperand` already computed for its own identity-fold carve-out
+// (same AST shape, same soundness reason) so arithmetic/String() consumers
+// (ir.js toNumF64, module/string.js bind('String')) can ask the identical
+// question before trusting the exact kind. No Map arm yet — mapValueKindOf
+// is currently fully reverted/dormant (audit-#7 P0); re-enabling it adds a
+// second arm here recognizing `['()', ['.', recv, 'get'], k]` gated on
+// mapValueKindOf(recv), landed in the SAME commit as the .get() short-circuit
+// per the design's re-enablement criteria (§3) — not written yet, no live
+// producer to protect today.
+//
+// RECEIVER-KIND GUARD (found landing this slice, test/simd.js regression):
+// the dict census's GLOBAL half (program-facts.js ~line 839, "NOT gated on
+// dynWriteVars here... gate lives at CONSUME time") records a dictValueValType
+// fact for ANY `name[dynKey] = v`, receiver-kind-BLIND — a Float64Array named
+// `a` written via `a[i] = …` gets one too. In VT['[]']/VT['.']'s real dispatch
+// this is harmless: the TYPED/STRING/tracked-Array<VAL> branches (kind.js
+// ~396-413) resolve the receiver FIRST and dictValueKindOf's fallback
+// (~419/~480) is never reached. Calling dictValueKindOf directly, as this
+// predicate does, bypasses that elimination order — without the guard below
+// it fired true for `a[j-1]`/`a[j]`/`a[j+1]` (Float64Array), forcing every
+// such read through coerceNullishToNum's runtime `if` and silently defeating
+// the SIMD vectorizer's pattern match (test/simd.js: 6 failures, stencil/
+// tonemap/mirror-store — confirmed by reverting to isolate, then bisecting
+// to this file). A TYPED/STRING/Array<VAL> receiver is already protected by
+// its OWN sound mechanism (checkedNumRead's compile-time fold, ir.js
+// toNumF64 lines 951-970) and must not ALSO pay this predicate's runtime
+// check — replicate the same three name-keyed, key-independent receiver-kind
+// facts kind.js's real elimination order checks before ever reaching
+// dictValueKindOf.
+const dictCensusReceiverIsLive = (name) => {
+  if (lookupValType(name) === VAL.TYPED || lookupValType(name) === VAL.STRING) return false
+  if (ctx.func.localReps?.get(name)?.arrayElemValType) return false
+  if (!ctx.func.localReps?.has(name) && ctx.scope.globalReps?.get(name)?.arrayElemValType
+      && !ctx.types?.dynWriteVars?.has(name)) return false
+  return true
+}
+export function censusMaybeUndefined(node) {
+  return Array.isArray(node) && (node[0] === '[]' || node[0] === '.') && node.length === 3
+    && typeof node[1] === 'string' && dictCensusReceiverIsLive(node[1]) && !!dictValueKindOf(node[1])
+}
+
 // Map-value-type census Tier 1 consumer — REVERTED (audit P0, external
 // bisection confirmed 1db8e55e^ correct, 1db8e55e wrong; .work/todo.md
 // "audit-#7 P0 closed"). `mapValueValType` (analyze.js's same-body scan +

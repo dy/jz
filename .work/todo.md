@@ -4,6 +4,92 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-02, maybeUndefined Slice 1 landed — dict absent-key value join)
+
+DICT ABSENT-KEY VALUE JOIN LANDED (.work/maybe-undefined-design.md Slice 1):
+closes the dict-census KNOWN-FAIL the audit-#7 P0 revert left pinned
+(test/dyn-keys.js, "dict: .get()-equivalent read on an absent key is WRONG
+today") — `dictValueKindOf`'s exact-kind claim ("every value ever WRITTEN
+through name[anyKey]=v") was being trusted uncoerced at two hand-rolled
+fast-arm chokepoints, so an ABSENT key's real runtime `undefined` rode
+arithmetic/String() as if it were the census's claimed kind. FIX:
+`censusMaybeUndefined` (src/kind.js, promoted from the inline predicate
+emit.js's `nullableOperand` already computed for its own identity-fold
+carve-out) wired into ir.js `toNumF64` (coerces the NUMBER arm through the
+pre-existing `coerceNullishToNum`: undefined→NaN, matches ToNumber(undefined)
+per ECMA-262 7.1.4) and module/string.js `bind('String', …)` (falls through
+to the already-correct `toStrI64`/`__to_str` general arm: undefined→"undefined"
+per 22.1.3.6). Verified live (not assumed) that `toStrI64`/`__to_str`/template
+literals needed NO fix — `__to_str` already special-cases UNDEF_NAN/NULL_NAN
+before generic dispatch, and `strcat`'s per-part fast arm is an IR-SHAPE check
+(`v.type==='i32'`) that's structurally false for every NaN-boxed dict read —
+confirmed with direct probes, both dict and Map, pre- and post-fix.
+REGRESSION FOUND AND FIXED DURING LANDING (test/simd.js, 6 failures —
+stencil/tonemap/mirror-store): the design's promoted predicate called
+`dictValueKindOf(name)` directly, bypassing the RECEIVER-KIND elimination
+order that makes it safe inside VT['[]']/VT['.'] (TYPED/STRING/tracked-
+Array<VAL> branches resolve first there, kind.js ~396-413, so the fallback
+is never reached for those receivers in real dispatch). The dict census's
+GLOBAL half (program-facts.js ~839) is receiver-kind-BLIND by design ("gate
+lives at CONSUME time") — a Float64Array named `a` written via `a[i]=…`
+picks up a `dictValueValType` fact too. Calling `dictValueKindOf` directly
+(as the promoted predicate does) surfaced that latent cross-kind pollution:
+`censusMaybeUndefined` fired true for `a[j-1]`/`a[j]`/`a[j+1]` in the SIMD
+stencil kernel, forcing a runtime `coerceNullishToNum` `if` onto values
+already protected by the SOUND, cheaper `checkedNumRead` compile-time fold
+— never unsound (coerceNullishToNum on a real number is a no-op), but it
+silently defeated the vectorizer's WAT-shape pattern match. Bisected by
+reverting each of the 4 edited files individually against test/simd.js;
+root-caused with a debug print on the predicate firing on `a` (Float64Array).
+FIXED: `dictCensusReceiverIsLive` guard added to `censusMaybeUndefined`
+(src/kind.js) — excludes TYPED/STRING receivers and arrayElemValType-tracked
+Array<VAL> receivers (local + global-with-!dynWriteVars), replicating the
+same three name-keyed, key-independent facts kind.js's real elimination
+order checks before ever reaching `dictValueKindOf`. test/simd.js back to
+158/158 after the guard; perf-ratchet 10/10 at +0 delta confirms proven-
+NUMBER hot loops pay zero new cost, matching the design's §5 cost claim
+(which undercounted this one path — recorded here so it isn't silently lost).
+KNOWN-FAIL PINS FLIPPED (test/dyn-keys.js): both dict-absent-key asserts
+now pin the CORRECT values (`NaN`, `'undefined'`; were `undefined`, `'NaN'`),
+known-fail comment removed, header rewritten to state the fix + the
+dictCensusReceiverIsLive guard's own reasoning.
+CENSUS CONSUMER STATUS: `dictValueKindOf` itself is UNCHANGED — still live,
+still returns the exact kind for genuine dict-mode receivers; only the two
+named chokepoints now ask censusMaybeUndefined first. `mapValueKindOf`
+(the Map .get() consumer) STAYS FULLY DORMANT — this slice is value-join
+only, per the task's strict scope; re-enabling it needs the nameEscapes
+alias-gate (design §2) and the ~120-site structural census (design §3 item
+4), neither attempted here. The `nameEscapes` gate on `dictValueKindOf`
+itself (design's Slice 3, the regression-risk slice) is ALSO not landed —
+this slice is Slice 1 only.
+GATES: repros (dict static-key, dict computed-key, array OOB, Map absent —
+arithmetic + String(), 8 cases) red→green pre/post, both legs (native +
+kernel wasm share the same src, both exercised). Full battery: all 90
+test/index.js TESTS files + interop/abi/external/watr/optimizer/passes (not
+in TESTS but exist) + selfhost.js + selfhost-perf.js — zero fails. Two
+FRESH consecutive `npm run build` rebuilds of the final source, dist/jz.wasm
+and dist/jz.js byte-identical between them (self-host fixed point confirmed,
+DECL-INIT WALL tripwire clean). kernel-parity 33/33 byte-identical (rerun
+against the twice-rebuilt dist). kernel-oracle 11/11. perf-ratchet 10/10,
+every baseline +0. Size spot-check mat4/fft/crc32/biquad @ optimize:'speed'
+(-O3), pre-edit (HEAD) vs post-edit source: byte-for-byte `cmp`-identical —
+zero maybeUndefined-census values reachable in these numeric kernels, exactly
+as the design's cost section predicted (once the receiver-kind guard closed
+the gap it had undercounted).
+REMAINING SLICES (design §5, all still open): Slice 2 (`emitIsNaN` sentinel
+exclusion, scoped to censusMaybeUndefined + checkedNumRead — separate from
+the already-landed Number.isNaN carrier fix above, which was receiver-type-
+blind rather than sentinel-scoped); Slice 3 (`nameEscapes` alias-gate on
+`dictValueKindOf`, the regression-risk slice, needs its own perf-ratchet/
+bench-size before/after per design §5's cost note); Slice 4 (Map
+re-enablement — `mapValueKindOf` + VT['()'] `.get` short-circuit +
+`nullableOperand`'s carve-out, landing all three in one commit per design
+§3); Slice 5 (~120-site structural census, can run in parallel, blocks only
+the final re-enablement declaration). Also still open, unscoped: the
+`JZ_DEBUG_INVARIANTS` tripwire design sketched (§1 closing paragraph) and the
+broader Number.isNaN("hi")/isNaN({}) leak's general is-this-a-Number fix
+(design §4) — both explicitly flagged, neither required for this slice.
+
 ## Status (2026-08-02, Number.isNaN carrier miscompile fixed)
 
 NUMBER.ISNAN/ISFINITE/ISINTEGER/ISSAFEINTEGER CARRIER MISCOMPILE FIXED
