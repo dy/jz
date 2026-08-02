@@ -223,6 +223,68 @@ export let f = (x) => g(x > 0 && 1)`,
   { name: 'parenthesized-&&',
     src: `export let f = (x) => { let a = [(x > 0) && 1]; return a[0] }`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  // FLIPPED from PENDING-FIX (formatter-dispatch-design.md — formatter/
+  // ToPropertyKey carrier-dispatch fix): the same MECHANISM A/argIR
+  // producer-side collapse, un-swept at three consumer chokepoints.
+  // String()'s VAL.NUMBER __ftoa fast path is a STATIC-VALTYPE check (not an
+  // IR-shape check) — needs an explicit hasAmbiguousBoolMerge early exit
+  // (module/string.js bind('String', …)), boxing via emitIdentitySafe before
+  // toStrI64/__to_str (which already special-cases TRUE_NAN/FALSE_NAN
+  // correctly — the defect was entirely upstream of it, never in the runtime
+  // dispatcher itself).
+  { name: 'String()',
+    src: `export let f = (x) => String(x > 0 && 1)`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  // Template literal: strcat's per-part i32-PROVEN fast path (module/
+  // string.js, the `v.type === 'i32'` check) IS an IR-shape check — argIR
+  // (promoted to src/bridge.js from emit.js's own private copy) fixes it for
+  // free: emitIdentitySafe's output is always f64-typed, so the i32 check
+  // structurally can't fire on an ambiguous merge, falling through to
+  // partStrI64 → toStrI64 → the same correct __to_str arm. partStrI64's own
+  // 0-arg fallback gets the same argIR fix for the 1-part strcat shortcut.
+  { name: 'template literal',
+    src: `export let f = (x) => \`\${x > 0 && 1}\``,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  // Computed member key (WRITE): src/compile/emit-assign.js's universal
+  // dynamic-key emit site (`keyExpr`, feeding $__dyn_set) was a bare
+  // `asF64(emit(idx))` — the 18th unswept MECHANISM A site. storedValue
+  // already returns f64-typed IR in every branch (no asF64 wrap needed) and
+  // is byte-identical to the old line for the non-ambiguous, non-pure-BOOL
+  // case. o['0'] must stay undefined — ToPropertyKey(false) → 'false', a
+  // different slot than ToPropertyKey(0) → '0'.
+  { name: 'computed member key',
+    src: `export let f = (x) => { let o = {}; o[x > 0 && 1] = 'v'; return o['0'] }`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  // READ-side sibling family (formatter-dispatch-design.md Finding #2, same
+  // landing session, not a documented-then-flipped PENDING-FIX gap — a
+  // proactive fix): module/array.js's dyn-get key sites had the identical
+  // bare `emit(idx)`/`asI64(emit(idx))`/`asF64(emit(idx))` producer bypass
+  // for a bare `o[k]` read (no prior write). Swept the sites reachable by an
+  // INLINE ambiguous-merge key node (i32HashLocal fallback, HASH-receiver
+  // useRuntimeKeyDispatch block and __dyn_get_expr fallthrough, OBJECT-
+  // receiver __dyn_get_expr fallthrough, unknown-receiver-kind proven-
+  // NUMBER-key cold arm) to storedValue(idx)/asI64(storedValue(idx)). Sites
+  // structurally guarded to STRING-only keys (an ambiguous merge always
+  // resolves NUMBER, never STRING — VT['&&']/VT['?:'] only mix BOOL/NUMBER)
+  // are a genuinely different, unreachable-for-this-bug class and were left
+  // untouched: module/array.js's i32HashLocal literal-string-key arm, the
+  // boxed-object/HASH/known-array `keyType === VAL.STRING` guarded reads.
+  // emitDynamicKeyDispatch call sites gated `!keyIsNum`/`keyType !==
+  // VAL.NUMBER` are likewise unreachable (an ambiguous merge always resolves
+  // NUMBER) — also left untouched.
+  // NOT closed by this sweep: a NAMED LOCAL holding an ambiguous merge
+  // (`let k = x > 0 && 1; o[k]`, read OR write) — storedValue(idx) is a
+  // no-op there (hasAmbiguousBoolMerge only recognizes the `?:`/`&&`/`||`/
+  // `??`/`()` AST shape directly, not an identifier referencing one), and
+  // the merge already collapsed at k's OWN declaration — the DECL-INIT WALL
+  // (carrier-invariant-design.md), the same root as the 'captured-then-read'
+  // PENDING-FIX row below, banked and out of scope here.
+  { name: 'computed member key read (inline, literal-key object)',
+    src: `export let f = (x) => { let o = { '0': 'zero', 'false': 'FALSE' }; return o[x > 0 && 1] }`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  { name: 'computed member key read (inline, dynamic hash)',
+    src: `export let f = (x) => { let o = {}; o['0'] = 'zero'; o['false'] = 'FALSE'; return o[x > 0 && 1] }`,
+    calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
 ]
 
 for (const opt of [0, 2, 3]) {
@@ -360,7 +422,11 @@ export let f = (s) => g(s) === false`
 // FORMATTER (design step 5, "un-traced" at design time): String()/template-
 // literal stringification and computed-key ToPropertyKey conversion —
 // different consumer code (module/string.js's String() dispatch, template
-// concat emission, module/array.js's computed-key path), not yet swept.
+// concat emission, module/array.js's computed-key path). CLOSED by
+// formatter-dispatch-design.md — the three rows below moved to the AGREE
+// array's "FLIPPED from PENDING-FIX" formatter-dispatch entry, plus a
+// read-side sibling sweep (module/array.js dyn-get key sites, same design
+// doc's Finding #2). Only the generic-scalar-decl family remains here.
 //
 // GENERIC SCALAR DECL (a WALL, banked — see emit.js emitDecl's comment on
 // the `const val = viewInit || emit(init)` line): every implementation of
@@ -376,19 +442,6 @@ export let f = (s) => g(s) === false`
 // the bug) plus a not() tripwire against the true JS value, so a future
 // fix flips these loudly.
 const PENDING_FIX = [
-  { name: 'String()',
-    src: `export let f = (x) => String(x > 0 && 1)`,
-    wrong: '0' },
-  { name: 'template literal',
-    src: `export let f = (x) => \`\${x > 0 && 1}\``,
-    wrong: '0' },
-  // Computed OBJECT key: JS ToPropertyKey(false) → 'false', ToPropertyKey(0)
-  // → '0' — different slots entirely, so `o['0']` must stay undefined. A
-  // collapsed carrier computes the key as if it were 0, landing the write in
-  // the '0' slot instead.
-  { name: 'computed member key',
-    src: `export let f = (x) => { let o = {}; o[x > 0 && 1] = 'v'; return o['0'] }`,
-    wrong: 'v' },
   // Generic scalar decl (the emitDecl self-host wall above): `v`'s own
   // declaration never gets boxed, so a later capture-then-read still
   // observes the raw carrier. NOT the minimal `const g = () => v; return
@@ -402,7 +455,7 @@ const PENDING_FIX = [
     wrong: 0 },
 ]
 
-test('kernel oracle: PENDING-FIX — formatter/ToPropertyKey/generic-scalar-decl BOOL∪NUMBER carrier collapse (carrier-invariant-design.md — not yet fixed)', async () => {
+test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier collapse (carrier-invariant-design.md — not yet fixed; formatter/ToPropertyKey rows CLOSED, see formatter-dispatch-design.md)', async () => {
   if (onWasi()) return
   for (const { name, src, wrong, opts = [0, 2, 3] } of PENDING_FIX) {
     const mod = await oracle(src)

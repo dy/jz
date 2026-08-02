@@ -559,7 +559,12 @@ export function emitElementAssign(arr, idx, val) {
     (repOf(idx)?.intCertain === true || repOf(idx)?.val === VAL.NUMBER)
   const useRuntimeKeyDispatch = !idxNumericName &&
     (keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING))
-  const keyExpr = asF64(emit(idx))
+  // storedValue (not asF64(emit(idx))): the universal computed-key emit site
+  // feeding $__dyn_set — an 18th unswept MECHANISM A site (formatter-
+  // dispatch-design.md). storedValue already returns f64-typed IR in every
+  // branch, so no asF64 wrap is needed; the non-ambiguous fallback
+  // (carrierF64) is byte-identical to the asF64(emit(idx)) call it replaces.
+  const keyExpr = storedValue(idx)
   // Boxed-bool-aware: `o[k] = false` through every receiver path (slot, SRoA,
   // array payload, __dyn_set) keeps boolean identity. The one representation-
   // sensitive consumer is the typed-array route — __typed_set_idx ToNumbers

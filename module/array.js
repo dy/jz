@@ -710,8 +710,13 @@ export default (ctx) => {
         return typed(['i32.wrap_i64', ['call', '$__hash_get_local', obj, asI64(emit(idx))]], 'i32')
       inc('__is_str_key', '__to_str')
       const kt = temp()
+      // storedValue (not asF64(emit(idx))): READ-side sibling of MECHANISM A
+      // (formatter-dispatch-design.md Finding #2) — an ambiguous BOOL∪NUMBER
+      // merge key must reach __to_str/__hash_get_local boxed, or ToPropertyKey
+      // normalizes the wrong (collapsed-number) bits. storedValue already
+      // returns f64-typed IR, so no asF64 wrap is needed.
       return typed(['block', ['result', 'i32'],
-        ['local.set', `$${kt}`, asF64(emit(idx))],
+        ['local.set', `$${kt}`, storedValue(idx)],
         ['if', ['i32.eqz', ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${kt}`]]]],
           ['then', ['local.set', `$${kt}`, ['f64.reinterpret_i64', ['call', '$__to_str', ['i64.reinterpret_f64', ['local.get', `$${kt}`]]]]]]],
         ['i32.wrap_i64', ['call', '$__hash_get_local', obj, ['i64.reinterpret_f64', ['local.get', `$${kt}`]]]]], 'i32')
@@ -785,8 +790,11 @@ export default (ctx) => {
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()
       inc('__is_str_key', '__to_str')
+      // storedValue (not asF64(emit(idx))): READ-side sibling of MECHANISM A
+      // (formatter-dispatch-design.md Finding #2) — same ambiguous-merge-key
+      // producer bypass as the HASH/OBJECT dyn-get sites below.
       return typed(['block', ['result', 'f64'],
-        ['local.set', `$${keyTmp}`, asF64(emit(idx))],
+        ['local.set', `$${keyTmp}`, storedValue(idx)],
         ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
           ['then', dynLoad(objExpr, ['local.get', `$${keyTmp}`])],
           // Non-string key: an ATOM box (null/undefined/false/true — hi-word
@@ -834,21 +842,28 @@ export default (ctx) => {
       if (useRuntimeKeyDispatch) {
         inc('__hash_get_local', '__is_str_key', '__dyn_get_expr')
         const keyTmp = temp()
+        // storedValue: READ-side sibling of MECHANISM A (formatter-dispatch-
+        // design.md Finding #2).
         return typed(['block', ['result', 'f64'],
-          ['local.set', `$${keyTmp}`, asF64(emit(idx))],
+          ['local.set', `$${keyTmp}`, storedValue(idx)],
           ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
             ['then', ['f64.reinterpret_i64', ['call', '$__hash_get_local', ['i64.reinterpret_f64', ptrExpr], ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]]]],
             ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]]]]]], 'f64')
       }
       inc('__dyn_get_expr')
-      return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], asI64(emit(idx))]], 'f64')
+      // storedValue (not asI64(emit(idx))): same MECHANISM A read-side sibling —
+      // the HASH-receiver __dyn_get_expr fallthrough (formatter-dispatch-design.md
+      // Finding #2). storedValue returns f64-typed IR; asI64 wraps it for the i64 arg.
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], asI64(storedValue(idx))]], 'f64')
     }
     // OBJECT receiver with a non-string key: never an array element — route to the
     // ToPropertyKey-normalizing dyn read (the WRITE side already goes to __dyn_set;
     // see the numeric-index design note below, which stays scoped to UNKNOWN receivers).
     if (vt === VAL.OBJECT && keyType !== VAL.STRING) {
       inc('__dyn_get_expr')
-      return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], asI64(emit(idx))]], 'f64')
+      // storedValue: same MECHANISM A read-side sibling (formatter-dispatch-
+      // design.md Finding #2) — the OBJECT-receiver __dyn_get_expr fallthrough.
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], asI64(storedValue(idx))]], 'f64')
     }
     // Known array → direct f64 element load, skip string check
     if (keyType === VAL.STRING)
@@ -1121,10 +1136,15 @@ export default (ctx) => {
       // discipline `emitDynamicKeyDispatch`'s sibling arm above already uses
       // for its own single `emit(idx)`.
       inc('__dyn_get_expr')
+      // storedValue (not asF64(emit(idx))): READ-side sibling of MECHANISM A
+      // (formatter-dispatch-design.md Finding #2) — this arm fires exactly
+      // when keyType === VAL.NUMBER, which is what an ambiguous BOOL∪NUMBER
+      // merge key statically collapses to; the __dyn_get_expr cold arm must
+      // see the boxed atom, not the raw collapsed bits.
       const guarded = ['if', ['result', 'f64'],
         ['i32.or', ptrTypeEq(ptrExpr, PTR.ARRAY), ptrTypeEq(ptrExpr, PTR.TYPED)],
         ['then', ['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], vi]],
-        ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], ['i64.reinterpret_f64', asF64(emit(idx))]]]]]
+        ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], ['i64.reinterpret_f64', storedValue(idx)]]]]]
       if (ctx.module.modules['string'] && !notString)
         return typed(['if', ['result', 'f64'],
           ptrTypeEq(ptrExpr, PTR.STRING),

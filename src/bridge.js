@@ -40,6 +40,16 @@ export const emitIdentitySafe = (...a) => ctx.bridge.emitIdentitySafe(...a)
 // module/*.js already bridges emit/emitIdentitySafe through).
 export const storedValue = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64(node, emit(node))
 
+// Non-boxing twin of storedValue: for positions guarded by a static-kind-
+// driven fast path downstream (an i32-PROVEN emit shortcut, a typeof-operand
+// switch) that must keep firing unmodified for the overwhelmingly common
+// non-ambiguous case — the non-ambiguous branch is byte-identical to a plain
+// `emit(node)`. Reinvented inline at src/compile/emit.js:1176 (that file owns
+// emit/emitIdentitySafe directly, no bridge round-trip needed there) and at
+// module/core.js's typeof operand — this is the bridged copy for module/*.js
+// consumers (formatter-dispatch-design.md).
+export const argIR = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node)
+
 export const flat = (...a) => ctx.bridge.flat(...a)
 export const body = (...a) => ctx.bridge.body(...a)
 export const bool = (...a) => ctx.bridge.bool(...a)

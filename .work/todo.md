@@ -4,6 +4,86 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-02, formatter carrier-dispatch fix landed)
+
+FORMATTER/TOPROPERTYKEY CARRIER-DISPATCH FIXED (.work/formatter-dispatch-
+design.md): closed the 3 remaining kernel-oracle.js PENDING-FIX rows
+(String(), template literal, computed member key) — the same MECHANISM A/
+argIR producer-side collapse un-swept at three consumer chokepoints, NOT
+three new bugs and NOT a runtime-dispatch gap (`__to_str`'s TRUE_NAN/
+FALSE_NAN atom special-case was already correct; the bug was 100%
+upstream of it). Sites:
+- module/string.js `bind('String', …)` (~2032): the VAL.NUMBER branch is a
+  STATIC-VALTYPE check (not IR-shape), so argIR alone can't skip it —
+  added an explicit `hasAmbiguousBoolMerge(value)` early exit boxing via
+  `emitIdentitySafe` before `toStrI64`.
+- module/string.js `strcat`'s per-part loop (~1913) and `partStrI64`'s
+  0-arg fallback (~1885): `emit(parts[i])` → `argIR(parts[i])` — an
+  IR-shape check (`v.type === 'i32'`), so argIR's f64-typed
+  emitIdentitySafe output structurally stops the i32-PROVEN fast path
+  from firing on an ambiguous merge, no extra guard needed.
+- src/compile/emit-assign.js:562 `keyExpr = asF64(emit(idx))` →
+  `storedValue(idx)` — the 18th unswept MECHANISM A site, the universal
+  computed-key emit site feeding `$__dyn_set`.
+`argIR` promoted from emit.js's private copy (and core.js's independent
+reinvention, left as optional cleanup, NOT done — zero behavior change,
+skipped to keep the diff scoped to the fix) to src/bridge.js, mirroring
+storedValue's existing chokepoint pattern.
+READ-SIDE SIBLING SWEEP (design Finding #2, same session): module/array.js's
+dyn-get key sites had the identical bare-emit bypass for `o[k]` reads (no
+prior write). Two representative read shapes pinned red→green first
+(inline literal-key object, inline dynamic hash), then swept every site
+REACHABLE by an INLINE ambiguous-merge key node: i32HashLocal fallback
+(~714), emitDynamicKeyDispatch's own keyTmp setup (~793 — reachable via
+the boxed-object arm for a NAMED-LOCAL merge key on a boxed receiver),
+HASH-receiver useRuntimeKeyDispatch block (~843) and __dyn_get_expr
+fallthrough (~849), OBJECT-receiver __dyn_get_expr fallthrough (~856),
+and the unknown-receiver-kind proven-NUMBER-key cold arm (~1139) — all
+`emit(idx)`/`asI64(emit(idx))`/`asF64(emit(idx))` → `storedValue(idx)` /
+`asI64(storedValue(idx))`. VERDICT PER SITE, not blindly swept: four
+sites in the design's original 10-line list are a genuinely DIFFERENT,
+unreachable-for-this-bug class and were left untouched, with an inline
+comment class-check, not a blind conversion — i32HashLocal's literal-
+string-key arm and the boxed-object/HASH/known-array `keyType ===
+VAL.STRING`-guarded reads (an ambiguous BOOL∪NUMBER merge's VT rule only
+ever collapses to NUMBER, never STRING, so these guards structurally
+exclude it); and the three `emitDynamicKeyDispatch` call sites gated
+`!keyIsNum`/`keyType !== VAL.NUMBER` (same reason, inverted — merges are
+always NUMBER, never anything else, so `!== VAL.NUMBER` guards always
+exclude them too), including the "1070"-class body the design flagged
+that turned out to be reachable only through a call site requiring
+`keyType !== VAL.NUMBER` — dead for this bug in every shape tried.
+SURPRISE FOUND MID-SWEEP: a NAMED LOCAL holding an ambiguous merge
+(`let k = x > 0 && 1; o[k]`, read OR write, any receiver shape) is NOT
+closed by this sweep — `storedValue(idx)` is a no-op when `idx` is a bare
+identifier string (`hasAmbiguousBoolMerge` only recognizes the literal
+`?:`/`&&`/`||`/`??`/`()` AST shape, never an identifier referencing one),
+and `k`'s own declaration never boxes the merge in the first place. This
+is the SAME root as the already-known, already-out-of-scope DECL-INIT
+WALL (carrier-invariant-design.md) / kernel-oracle.js's 'captured-then-
+read' PENDING-FIX row — confirmed symmetric on both read AND write
+(`o[k] = 'v'` also stays wrong for a named-local `k`), so it is a
+pre-existing gap this session did not introduce and does not attempt to
+close; left banked, matching the existing row's own scope boundary.
+GATES: repro-first native+kernel confirmed wrong before, right after,
+for all 3 oracle rows + 4 read-side repro shapes (2 required, did 4).
+Two dist rebuilds (one after the string.js/emit-assign.js/bridge.js fix,
+one after the array.js sweep) plus a THIRD rebuild confirmed byte-
+identical to the second — self-hosted fixed point, no export loss, no
+DECL-INIT-WALL-class surprise at any of the 4 new call sites. kernel-
+oracle.js: 11/11 tests, 451 assertions, 3 rows flipped PENDING_FIX→AGREE,
+2 new read-side AGREE rows added, 0 regressions. Full battery (88 files,
+test/index.js TESTS, 15 chunks of ≤6): 0 fails. kernel-parity 33/33,
+perf-ratchet 10/10 (every category +0 loop-body ops — formatter dispatch
+did not move any hot-loop shape, confirming the design's own "zero
+ambiguous merges in the bench corpus" census), optimizer 213/213,
+selfhost.js 21/21 functional, selfhost-perf.js 5/5 (warm 0.991x/cap
+1.03x, fresh 0.787x/cap 0.99x, no re-baseline), bool-identity.js +
+booleans.js + dyn-keys.js explicit reruns all clean. Size spot-check
+(mat4/fft/crc32/biquad at O3, compiled against a clean HEAD worktree vs
+the fixed working tree): all 4 byte-identical before/after — matches the
+design's prediction, nothing to explain.
+
 ## Status (2026-08-02, audit-#7 P1 closed)
 
 ERROR-MODEL HOST DECODE FIXED (audit-#7 P1): a no-user-EH module's internal

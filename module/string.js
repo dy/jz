@@ -22,8 +22,8 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
-import { emit, bool, method, deps, wat, bind } from '../src/bridge.js'
-import { valTypeOf } from '../src/kind.js'
+import { emit, emitIdentitySafe, argIR, bool, method, deps, wat, bind } from '../src/bridge.js'
+import { valTypeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
 import { ssoBitI64Hex, sliceBitI64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
@@ -1882,7 +1882,7 @@ export default (ctx) => {
   // bool selects the interned "true"/"false" literal (constant-folded
   // when the operand is known); every other part goes through __to_str.
   // `v` is the part's pre-emitted value when the caller already emitted it.
-  const partStrI64 = (p, v) => valTypeOf(p) === VAL.BOOL ? asI64(bool(p)) : toStrI64(p, v ?? emit(p))
+  const partStrI64 = (p, v) => valTypeOf(p) === VAL.BOOL ? asI64(bool(p)) : toStrI64(p, v ?? argIR(p))
 
   bind('strcat', (...parts) => {
     if (!parts.length) return mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
@@ -1913,7 +1913,11 @@ export default (ctx) => {
     for (let i = 0; i < parts.length; i++) {
       if (lits[i] != null) { litTotal += lits[i].length; continue }
       const vt = valTypeOf(parts[i])
-      const v = vt === VAL.BOOL ? null : emit(parts[i])
+      // argIR (not emit): an ambiguous BOOL∪NUMBER merge (formatter-dispatch-
+      // design.md) must come back f64-typed (emitIdentitySafe) so the i32-
+      // PROVEN fast-path check below structurally can't fire on it — that
+      // check is an IR-shape test, so this alone fixes it, no extra guard.
+      const v = vt === VAL.BOOL ? null : argIR(parts[i])
       // i32-PROVEN part (exactly toStrI64's __i32_to_str class): keep the raw value,
       // not a temp string — __ilen joins the total and __itoa_s renders the digits
       // directly at dst. Drops the per-number __i32_to_str (alloc+itoa+mkstr),
@@ -2031,6 +2035,14 @@ export default (ctx) => {
   // String.fromCharCode(code) → 1-char SSO string
   bind('String', (value) => {
     if (value === undefined) return emit(['str', ''])
+    // Ambiguous BOOL∪NUMBER merge (formatter-dispatch-design.md, MECHANISM A
+    // family): valTypeOf already collapsed it to NUMBER, so the VAL.NUMBER
+    // branch below would __ftoa the raw collapsed bits directly, never
+    // reaching toStrI64/__to_str's already-correct atom formatting. This is
+    // a static-valType check, not an IR-shape check, so argIR alone can't
+    // skip it — needs the explicit early exit, boxed via emitIdentitySafe.
+    if (hasAmbiguousBoolMerge(value))
+      return typed(['f64.reinterpret_i64', toStrI64(value, emitIdentitySafe(value))], 'f64')
     if (valTypeOf(value) === VAL.STRING) return emit(value)
     if (valTypeOf(value) === VAL.BOOL) return bool(value)
     if (valTypeOf(value) === VAL.NUMBER) {
