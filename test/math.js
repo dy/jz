@@ -479,6 +479,16 @@ test('isNaN (global)', async () => {
   is(await evaluate('isNaN(-Infinity)'), false)
 })
 
+// Global isNaN (ECMA-262 19.2.3) ToNumber-COERCES its argument, unlike Number.isNaN
+// (21.1.2.4) below, which does not. Contrast pins: same carrier, opposite verdict.
+test('isNaN (global) coerces — contrast with non-coercing Number.isNaN', async () => {
+  is(await evaluate('isNaN("hi")'), true)    // Number("hi") is NaN
+  is(await evaluate('isNaN("42")'), false)   // Number("42") is 42
+  is(await evaluate('isNaN(undefined)'), true)  // Number(undefined) is NaN
+  is(await evaluate('isNaN(null)'), false)      // Number(null) is 0
+  is(await evaluate('isNaN(true)'), false)      // Number(true) is 1
+})
+
 test('isFinite (global)', async () => {
   is(await evaluate('isFinite(0)'), true)
   is(await evaluate('isFinite(1)'), true)
@@ -488,22 +498,80 @@ test('isFinite (global)', async () => {
   is(await evaluate('isFinite(NaN)'), false)
 })
 
+// Number.isNaN (ECMA-262 21.1.2.4): "If Type(number) is not Number, return false" —
+// NO ToNumber coercion. jz NaN-boxes strings/objects/arrays/undefined/null/booleans
+// as NaN-shaped f64 carriers; a bare hardware self-compare (`x !== x`) can't tell a
+// genuine number-NaN from one of those, so every non-Number carrier here used to read
+// as `true` (jz) instead of `false` (JS) — the carrier-miscompile this pins against.
 test('Number.isNaN', async () => {
   is(await evaluate('Number.isNaN(NaN)'), true)
   is(await evaluate('Number.isNaN(0)'), false)
   is(await evaluate('Number.isNaN(1)'), false)
+  is(await evaluate('Number.isNaN("hi")'), false)          // NaN-boxed string carrier, not coerced
+  is(await evaluate('Number.isNaN("NaN")'), false)
+  is(await evaluate('Number.isNaN({})'), false)             // NaN-boxed object carrier
+  is(await evaluate('Number.isNaN([1][2])'), false)         // OOB → represented-undefined is a NaN carrier
+  is(await evaluate('Number.isNaN(undefined)'), false)      // NaN-boxed atom
+  is(await evaluate('Number.isNaN(null)'), false)           // NaN-boxed atom
+  is(await evaluate('Number.isNaN(true)'), false)           // NaN-boxed bool atom
+  is(await evaluate('Number.isNaN(false)'), false)
+  is(await evaluate('Number.isNaN(5n)'), false)              // BigInt is never a Number
+  is(await evaluate('Number.isNaN(-5n)'), false)             // raw i64 carrier bits alias NaN-shaped f64
 })
 
+test('Number.isNaN: dynamic/polymorphic argument (not statically NUMBER)', () => {
+  // A ternary-merged NUMBER∪other argument stays a genuinely runtime-typed f64 —
+  // the compiler can't fold it to a literal, so this exercises the kind-unknown
+  // runtime discrimination path, not just the static-literal short-circuit above.
+  const src = `
+    function isNaNOf(x) { return Number.isNaN(x) }
+    export let f = (tag) => isNaNOf(
+      tag === 0 ? 5 : tag === 1 ? "hi" : tag === 2 ? (0/0) : tag === 3 ? true : undefined)`
+  const { f } = jz(src).exports
+  is(f(0), false, 'number 5')
+  is(f(1), false, 'string "hi"')
+  is(f(2), true, 'real NaN')
+  is(f(3), false, 'boolean true')
+  is(f(4), false, 'undefined')
+})
+
+// Number.isFinite (21.1.2.2) / Number.isInteger (21.1.2.3) / Number.isSafeInteger
+// (21.1.2.5) share the same "not a Number → false, no coercion" contract. Their raw
+// arithmetic (`x === x && …`) already excludes every NaN-boxed pointer/atom carrier
+// (self-compare fails on all of them) — the gap was specifically the RAW, non-NaN-
+// boxed carriers: a static boolean (unboxed i32 0/1) and any BigInt (raw i64 sharing
+// f64's bit-space with no tag at all) both convert/reinterpret to an ordinary finite
+// float and used to read as true.
 test('Number.isFinite', async () => {
   is(await evaluate('Number.isFinite(0)'), true)
   is(await evaluate('Number.isFinite(Infinity)'), false)
   is(await evaluate('Number.isFinite(NaN)'), false)
+  is(await evaluate('Number.isFinite("42")'), false)
+  is(await evaluate('Number.isFinite(true)'), false)
+  is(await evaluate('Number.isFinite(false)'), false)
+  is(await evaluate('Number.isFinite(null)'), false)
+  is(await evaluate('Number.isFinite(undefined)'), false)
+  is(await evaluate('Number.isFinite(0n)'), false)   // raw carrier bits ARE 0.0 — the sharpest repro
+  is(await evaluate('Number.isFinite(5n)'), false)
 })
 
 test('Number.isInteger', async () => {
   is(await evaluate('Number.isInteger(1)'), true)
   is(await evaluate('Number.isInteger(1.5)'), false)
   is(await evaluate('Number.isInteger(0)'), true)
+  is(await evaluate('Number.isInteger(true)'), false)
+  is(await evaluate('Number.isInteger(false)'), false)
+  is(await evaluate('Number.isInteger("1")'), false)
+  is(await evaluate('Number.isInteger(0n)'), false)
+})
+
+test('Number.isSafeInteger', async () => {
+  is(await evaluate('Number.isSafeInteger(1)'), true)
+  is(await evaluate('Number.isSafeInteger(1.5)'), false)
+  is(await evaluate('Number.isSafeInteger(2 ** 53)'), false)
+  is(await evaluate('Number.isSafeInteger(true)'), false)
+  is(await evaluate('Number.isSafeInteger(0n)'), false)
+  is(await evaluate('Number.isSafeInteger("1")'), false)
 })
 
 test('Number.isFinite / Object.is: exact boolean chain — typeof guard && (!isFinite || Object.is(-0))', () => {

@@ -4,6 +4,70 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-02, Number.isNaN carrier miscompile fixed)
+
+NUMBER.ISNAN/ISFINITE/ISINTEGER/ISSAFEINTEGER CARRIER MISCOMPILE FIXED
+(module/number.js): `emitIsNaN` implemented Number.isNaN(x) as a bare
+hardware self-compare (`x !== x`) with NO type discrimination. jz NaN-boxes
+every non-number value (string/object/array/undefined/null/boolean/closure)
+as a NaN-shaped f64 carrier, so ALL of them satisfied the self-compare —
+`Number.isNaN("hi")`/`({})`/`([1][2]` OOB)/`(undefined)`/`(null)` all read
+jz `true` vs JS `false`. Per ECMA-262 21.1.2.4, Number.isNaN returns true
+only if the argument's Type is Number AND it is NaN — no ToNumber coercion
+(unlike the global, coercing `isNaN`, 19.2.3, confirmed already correct via
+`toNumF64`, and left untouched). SIBLING AUDIT found the SAME root class,
+different manifestation, in Number.isFinite/isInteger/isSafeInteger
+(21.1.2.2/.3/.5, same non-coercing contract): their raw `x===x && …`
+formula already excludes every NaN-BOXED carrier (self-compare fails on
+all of them, so no fix needed there) — but NOT a raw, un-boxed BOOL literal
+(`true`/`false` compile to a bare i32 0/1; `asF64` converts it straight to
+a real 0.0/1.0 float, no NaN involved) or ANY BigInt (jz's raw i64 BigInt
+carrier shares f64's bit-space outright with no distinguishing tag —
+`0n`'s bits literally ARE `0.0`). Confirmed real, not hypothetical:
+`Number.isFinite(true)`, `Number.isInteger(0n)`, `Number.isSafeInteger(0n)`
+all read jz `true` pre-fix.
+FIX (gated on `valTypeOf`, zero cost on proven-NUMBER hot paths): a
+STATICALLY provable non-Number argument (BOOL/STRING/OBJECT/ARRAY/BIGINT/
+UNDEFINED/NULL/…) is unconditionally false per spec regardless of runtime
+bits — `nonNumberFalse` evaluates x for side effects and returns a literal
+0, shared by all four methods. A provably-NUMBER argument keeps the
+original bare arithmetic verbatim (isFinite/isInteger/isSafeInteger
+unchanged; isNaN's raw self-compare unchanged). Number.isNaN ALSO needs a
+kind-UNKNOWN (dynamic/polymorphic) runtime path — a boxed carrier can still
+reach it at runtime — mirroring `$__typeof`'s own number-vs-pointer NaN
+split (module/core.js): a genuine number-NaN is either the canonical
+NAN_BITS (tag=0/aux=0 — no live atom uses aux=0) or any NEGATIVE-signed NaN
+bit pattern (the box prefix is always sign=0); no new tag machinery
+invented. isFinite/isInteger/isSafeInteger need no such dynamic path — the
+BOOL/BigInt gap was static-carrier-only, confirmed by repro (a genuinely
+dynamic/non-inlined boolean argument already read correctly pre-fix,
+since it's a proper NaN-boxed TRUE_NAN/FALSE_NAN atom at that point).
+KNOWN OUT-OF-SCOPE RESIDUAL: a dynamically NUMBER∪BIGINT-merged value (e.g.
+`b ? 5n : 5` fed to a polymorphic param) has NO runtime tag distinguishing
+the two at all in jz's representation — confirmed `typeof` already
+misreports "number" for exactly this shape today. Number.isNaN's
+kind-unknown path inherits the identical limitation (not a regression,
+not introduced by this fix — no BigInt tag exists anywhere in the compiler
+to consult).
+REPRO-FIRST: 40 native value-level cases (string/object/array-OOB/
+undefined/null/bool/bigint × all 4 methods, global isNaN/isFinite coercion
+contrast, dynamic/polymorphic non-inlined argument via ternary) red before,
+green after; pinned in test/math.js (isNaN, isNaN-coercion-contrast,
+isNaN-dynamic, isFinite, isInteger, isSafeInteger test blocks).
+GATES: dist rebuilt twice (bracketing the size spot-check), full battery
+88/88 files zero fails (3 pre-existing skips, unrelated: array-methods,
+spread, objects, unsigned — untouched by this change), kernel-parity 33/33
+byte-identical, kernel-oracle 11/11 (451 assertions), perf-ratchet 10/10
+all +0 (no hot-loop shape touched, as expected — no bench source calls
+these builtins), optimizer 213/213, selfhost.js 21/21, selfhost-perf.js
+5/5 well under cap (warm 0.975×/cap 1.03×, fresh 0.809×/cap 0.99×, no
+re-baseline). Size spot-check (mat4/fft/crc32/biquad at O3, via
+scripts/bench-size.mjs, working-tree module/number.js swapped to HEAD and
+back via `git show HEAD:path`, no repo-wide git command): all 4
+byte-identical pre/post (none of the bench sources call Number.isNaN/
+isFinite/isInteger/isSafeInteger, so the new code paths are cold — exactly
+as predicted).
+
 ## Status (2026-08-02, formatter carrier-dispatch fix landed)
 
 FORMATTER/TOPROPERTYKEY CARRIER-DISPATCH FIXED (.work/formatter-dispatch-

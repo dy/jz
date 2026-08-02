@@ -10,7 +10,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR } from '../src/ir.js'
-import { ssoBitI64Hex, ptrNanHex } from '../layout.js'
+import { ssoBitI64Hex, ptrNanHex, nanPrefixHex } from '../layout.js'
 import { emit, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { valTypeOf } from '../src/kind.js'
@@ -39,6 +39,9 @@ import { ERR } from '../err-codes.js'
 // confirmed string, and only pass indices proven `< $len` (`__char_at` would
 // otherwise return its OOB 0; the inline load has no such guard).
 const SSO_BIT_I64 = ssoBitI64Hex()
+// Canonical NaN-box bit pattern (sign=0, tag=ATOM(0), aux=0) — same constant module/core.js's
+// $__typeof uses to recognize a genuine number-NaN vs a NaN-boxed pointer/atom.
+const NAN_BITS = nanPrefixHex()
 const SBASE_INIT = '(local.set $sbase (i32.wrap_i64 (i64.and (local.get $v) (i64.const 4294967295))))'
 
 /** In-place byte reversal of buf[i..j] (WAT fragment). __itoa/__radix_str emit the
@@ -1264,14 +1267,57 @@ export default (ctx) => {
   ctx.core.emit['Number.NaN'] = () => typed(['f64.const', 'nan'], 'f64')
 
   // === Number static methods ===
+  //
+  // Number.isNaN (21.1.2.4) / Number.isFinite (21.1.2.2) / Number.isInteger (21.1.2.3) /
+  // Number.isSafeInteger (21.1.2.5) each start "If Type(number) is not Number, return
+  // false" and perform NO ToNumber coercion (unlike the global isNaN/isFinite below,
+  // which DO coerce — 19.2.3/19.2.4). jz erases kind at runtime for two carrier classes
+  // that can reach these methods' argument: (a) a NaN-boxed pointer/atom (string/object/
+  // array/undefined/null/boolean/closure/…) is bit-identical to a hardware NaN, so raw
+  // `x !== x` alone can't tell a genuine number-NaN from a boxed string; (b) the raw i64
+  // BigInt carrier shares f64's bit-space outright with no distinguishing tag at all — a
+  // small bigint's bits can decode as an ordinary finite float (e.g. 0n's bits ARE 0.0).
+  // `nonNumberFalse` covers both: any STATICALLY provable non-Number kind is
+  // unconditionally false by spec, independent of its runtime bits — x is still
+  // evaluated for side effects. A provably-NUMBER argument can carry neither carrier
+  // class, so the plain arithmetic below it is exact and pays nothing extra.
+  const nonNumberFalse = (x) => typed(['block', ['result', 'i32'], ['drop', asF64(emit(x))], ['i32.const', 0]], 'i32')
+
+  // Kind-unknown fallback for Number.isNaN only: the boxed-carrier ambiguity in (a)
+  // above still applies dynamically (a polymorphic value could be a boxed string/atom
+  // at runtime), so `x !== x` alone is necessary but not sufficient. Discriminate a
+  // genuine number-NaN from a boxed carrier the same way $__typeof does (module/
+  // core.js's $__typeof number branch — keep both in sync): the NaN-box prefix is
+  // always sign=0 with tag/aux bits set, so a real number's NaN is either the canonical
+  // NAN_BITS (tag=0/aux=0 — no live atom ever uses aux=0) or any NEGATIVE-signed NaN
+  // bit pattern (an uncanonicalized fresh float NaN can leave the sign bit set; a
+  // NaN-boxed pointer/atom never does — its prefix bits are fixed at sign=0). The (b)
+  // BigInt-vs-Number ambiguity (no tag distinguishes them at all when dynamically
+  // merged) is a pre-existing representation limitation shared with typeof's own
+  // dynamic path (confirmed: typeof of a runtime-merged number∪bigint value already
+  // misreports "number") — out of scope here, not introduced by this fix.
+  const isNumNaNBits = (bitsLocal) => ['i32.or',
+    ['i64.eq', ['local.get', bitsLocal], ['i64.const', NAN_BITS]],
+    ['i64.eq', ['i64.and', ['local.get', bitsLocal], ['i64.const', '0xFFF0000000000000']], ['i64.const', '0xFFF0000000000000']]]
 
   const emitIsNaN = (x) => {
+    const vt = valTypeOf(x)
+    if (vt != null && vt !== VAL.NUMBER) return nonNumberFalse(x)
     const v = asF64(emit(x))
     const t = temp('t')
-    return typed(['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]], 'i32')
+    const raw = typed(['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]], 'i32')
+    if (vt === VAL.NUMBER) return raw
+    const bits = tempI64('b')
+    return typed(['if', ['result', 'i32'], raw,
+      ['then', ['block', ['result', 'i32'],
+        ['local.set', `$${bits}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
+        isNumNaNBits(`$${bits}`)]],
+      ['else', ['i32.const', 0]]], 'i32')
   }
 
   const emitIsFinite = (x) => {
+    const vt = valTypeOf(x)
+    if (vt != null && vt !== VAL.NUMBER) return nonNumberFalse(x)
     const v = asF64(emit(x))
     const t = temp('t')
     return typed(['i32.and',
@@ -1299,6 +1345,8 @@ export default (ctx) => {
   }
 
   ctx.core.emit['Number.isInteger'] = (x) => {
+    const vt = valTypeOf(x)
+    if (vt != null && vt !== VAL.NUMBER) return nonNumberFalse(x)
     const v = asF64(emit(x))
     const t = temp('t')
     return typed(['i32.and',
@@ -1310,6 +1358,8 @@ export default (ctx) => {
 
   // Number.isSafeInteger(x): integer AND |x| ≤ 2^53 − 1.
   ctx.core.emit['Number.isSafeInteger'] = (x) => {
+    const vt = valTypeOf(x)
+    if (vt != null && vt !== VAL.NUMBER) return nonNumberFalse(x)
     const v = asF64(emit(x))
     const t = temp('t')
     return typed(['i32.and',
