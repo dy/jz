@@ -4,7 +4,63 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
-## Status (2026-08-01, current truth)
+## Status (2026-08-02, current truth)
+
+REFERENCE EVIDENCE REFRESH ATTEMPT: BLOCKED BY MACHINE POLLUTION, MEMORY GOAL
+RE-VERIFIED (session finale). Full 60-case chunked refresh attempted (11
+foreground calls, `--cases=<~6>,--json=<tmp>` merged externally, jz self-host
+case isolated alone — its compile alone exceeds 180s/target). Anomaly diff
+vs committed bench/results.json@2aaeaa19 found from case ~#28 (mat4) onward:
+EVERY target (native C, Rust, Go, Zig, every JS engine, every wasm rival, jz
+itself) uniformly ~1.35-1.6x SLOWER than committed evidence -- 633 (case,
+target) pairs moved >1.3x, ALL in one direction, hitting native C equally --
+the exact cross-language uniform-shift signature of machine pollution, not a
+real regression. ROOT-CAUSED, two sources: (1) an ORPHANED jz-bench artifact
+(`/var/folders/.../jz-bench-c-*/strbuild`, PID 1205) had been pegging one
+core at 96% CPU for 13.5+ hours predating this session -- invisible to the
+preflight's `ps aux | grep "node (test|scripts|bench)"` pattern because it's
+a compiled native binary, not a node process; killed mid-session (too late,
+after chunk 4). (2) a SEPARATE, foreign, currently-active Claude Code session
+(project /Users/div/projects/color-space, PID 33601, 2+ days uptime) plus
+its Playwright-driven Chrome automation (2 processes, ~74% CPU EACH, 2+ days
+sustained) -- genuinely outside this session's control, present for the
+ENTIRE refresh window, not a mid-run event. The "otherwise idle machine"
+precondition this task assumed never held. VERDICT (polluted-refresh
+precedent, "REFRESH ATTEMPT POLLUTED 2026-07-30" below): stale-but-honest
+beats fresh-but-polluted -- bench/results.json and bench/bench.svg LEFT
+UNTOUCHED at their existing (already 24-commit-stale) committed state;
+test:claims' FRESH gate correctly still fails, honestly reported, not
+papered over.
+TINYGO LANE FIXED (pre-flight, landed for the next clean refresh): installed
+tinygo 0.34.0 requires go1.19-1.23, system `go` is 1.26.0 ("could not
+autodetect root directory" / "requires go version 1.19 through 1.23, got
+go1.26"). Fix: `TINYGOROOT=~/.local/tinygo GOTOOLCHAIN=go1.23.6` (auto-
+fetches and caches the pinned toolchain once, ~3s per build after that);
+verified working across every chunk, 43/60 cases carry `.go` sources.
+MEMORY GOAL RE-VERIFIED AT HEAD -- the one axis genuinely regenerable
+despite the pollution: peak RSS is a footprint metric, not a timing metric,
+and cross-checking memKb old-vs-new on the worst-polluted cases (mat4, poly,
+crc32, wordcount) showed all values within ~1% of committed evidence except
+ONE single-sample fluke (wordcount's jz-wasmtime memKb read 1.68x high
+once; median-of-3 targeted re-run confirmed ~15.1MB, matching prior
+evidence -- a CPU-contention timing artifact on ONE sample, not a real
+memory-shape change; memKb has no built-in multi-sample median the way
+medianUs does). `.work/memcheck-results.csv` regenerated at commit c28f218c
+with a metadata header (commit/date/machine/command) -- GOAL-MEMORY
+RECONFIRMED: jz-wasmtime beats-or-matches moonrun peak RSS on 40/43
+comparable cases, median delta -1200KB (jz leaner; slightly wider than the
+2026-07-30 reading's -864KB). `test/bench-claims.js` gained a memory-
+freshness gate mirroring the FRESH axis (parses the CSV's `# commit:`
+header, same SOURCE_SCOPE git-log check) -- passes clean (0 stale commits
+past c28f218c).
+NEXT: re-run the full SPEED/SIZE refresh once the color-space session's
+Playwright/Chrome automation is confirmed stopped (not this session's call
+to force) -- the chunking recipe above is proven and ready to rerun as-is;
+extend the preflight check beyond the `node (test|scripts|bench)` pattern to
+a full `ps aux`/`uptime` load-average read before the next attempt, since
+that narrow grep is what let both pollution sources through undetected.
+
+## Status (2026-08-01, prior truth -- reference refresh session reconciled)
 
 MAP-VALUE CENSUS TIER 1: LANDED (108604fc census, 1db8e55e consumer;
 .work/map-value-census-design.md). Scalar mapValueValType only — Tier 2
@@ -1007,7 +1063,13 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
       2026-08-01 landings), re-run at HEAD before re-auditing. Order: AFTER
       architecture complete. (w2c lane already inside caps post-refresh:
       tokenizer 2.100x/3.5, geomean 1.147x/1.35 -- the 3.851x figure was
-      pre-refresh noise.)
+      pre-refresh noise.) REFRESH ATTEMPTED 2026-08-02, BLOCKED: full
+      60-case chunked re-run hit machine pollution from case ~28 onward
+      (orphaned jz-bench process + a foreign concurrent session's browser
+      automation, both outside this session's control -- see Status above);
+      discarded per the polluted-refresh precedent, committed evidence
+      unchanged. tinygo lane now wired (TINYGOROOT+GOTOOLCHAIN=go1.23.6
+      pin) and ready to contribute rows on the next clean attempt.
 * [ ] SIZE: par-or-smaller than AssemblyScript BY GEOMEAN, with full JS
       semantics — not strict-smaller. Current truth (SIZE BAND DIAGNOSED
       2026-07-30): geomean 1.016, 27/49 cases smaller; AS's bench ports use
@@ -1017,13 +1079,15 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
       vs AS (test/bench-claims.js size test, test/bench.js SIZE_GEOMEAN_MAX)
       — an unchecked tier would close the residual but is against the
       JS-exact philosophy; rejected.
-* [x] MEMORY: goal ALREADY MET at HEAD (GOAL-MEMORY: ALREADY MET AT HEAD
-      2026-07-30 — the ~10x-natives premise was stale evidence, 13 commits
-      old). jz-wasmtime beats-or-matches moonrun (MoonBit-wasm) peak RSS on
-      40/43 comparable cases (median delta -864KB, jz leaner); engine
-      floors wasmtime 13.7MB vs moonrun 12.2MB, growth is demand-driven
-      geometric. Three residual losses (strbuild +7.8MB, json +1.3,
-      immutable +1.1) are the no-GC arena's signature under the bench
+* [x] MEMORY: goal ALREADY MET at HEAD, RECONFIRMED 2026-08-02 at c28f218c
+      (.work/memcheck-results.csv regenerated with commit/date/machine/
+      command metadata; test/bench-claims.js gained a matching freshness
+      gate). jz-wasmtime beats-or-matches moonrun (MoonBit-wasm) peak RSS on
+      40/43 comparable cases (median delta -1200KB, jz leaner — wider than
+      the 2026-07-30 reading's -864KB); engine floors wasmtime 13.7MB vs
+      moonrun 12.2MB, growth is demand-driven geometric. Three residual
+      losses (strbuild +7.8MB, json +1.3, immutable +1.1) are the no-GC
+      arena's signature under the bench
       harness's 26 in-process iterations without __clear/memory.reset() —
       an architectural GC-vs-arena tradeoff, accepted and documented
       (bench/README.md), not a defaults bug to chase.
