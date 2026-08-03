@@ -26,6 +26,23 @@
  * eye in the ledger, not machine-checked.
  */
 
+/** The 7 built-in Error classes jz models, index = the `__errcls__` small-int
+ *  schema slot (error-object-design.md §1/§2) — jz has no prototype chain, so
+ *  this array (not a class pointer) is what `instanceof`/toString read to tell
+ *  classes apart. Order is a stability contract for that slot's encoding
+ *  (unlike ERR's own codes, which the file docstring above says may renumber
+ *  freely) — do not reorder or insert without checking every already-compiled
+ *  __errcls__ consumer. */
+export const ERR_CLASS_NAMES = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'URIError', 'EvalError']
+
+/** Shared schema every jz Error-class instance is allocated with (module/
+ *  core.js's buildErrorObject, registered via ctx.schema.register — dedupes by
+ *  content, so every class shares one schema id). Slot 2 is a compiler-internal
+ *  f64-encoded small int (index into ERR_CLASS_NAMES above), never exposed
+ *  through dot-syntax — same reservation convention as the boxed-schema
+ *  '__inner__' slot 0. */
+export const ERR_SCHEMA_PROPS = ['message', 'name', '__errcls__']
+
 export const ERR = {
   // ── 1xx TypeError-class ──────────────────────────────────────────────────
   TO_PRIMITIVE: 100,           // OrdinaryToPrimitive: every valueOf/toString returned non-primitive

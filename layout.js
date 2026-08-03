@@ -139,6 +139,15 @@ export const encodePtrHi = (type, aux) =>
 export const decodePtrType = hi => (hi >>> (LAYOUT.TAG_SHIFT - 32)) & LAYOUT.TAG_MASK
 export const decodePtrAux = hi => hi & LAYOUT.AUX_MASK
 
+/** Top-32-bits i64 mask for a NaN-boxed OBJECT+schema guard: `(bits &
+ *  OBJECT_SCHEMA_HI_MASK) == objectSchemaGuardHex(sid)` proves "is an OBJECT"
+ *  AND "is exactly schema `sid`" in one i64 compare (low word — the instance's
+ *  heap offset — is irrelevant and stays unmasked). Shared by every schema-
+ *  devirtualization guard (module/core.js's property dispatch, src/ir.js's
+ *  Error-schema toStrI64 arm) so the encoding lives in one place. */
+export const OBJECT_SCHEMA_HI_MASK = '0xFFFFFFFF00000000'
+export const objectSchemaGuardHex = sid => i64Hex(BigInt(encodePtrHi(PTR.OBJECT, sid)) << 32n)
+
 /** i64 NaN-prefix OR-mask for WAT `(i64.const …)` templates. */
 export const nanPrefixHex = () => i64Hex(LAYOUT.NAN_PREFIX_BITS)
 

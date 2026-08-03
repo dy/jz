@@ -636,6 +636,14 @@ export function reset(proto, globals, bridge) {
                       // exporting subnormals as bigint carriers (-5e-324 → -1, data.js pins).
     timers: false,          // Set by prepare.js when timer module is included
     blockingTimers: false,   // wasmtime CLI: include __timer_loop in _start
+    error: false,     // A jz Error/TypeError/…/EvalError value ever gets constructed
+                      // (`new X(...)` or bare `X(...)`, any of the 7 built-in classes)
+                      // anywhere in the program — prep()'s universal per-node scan sets
+                      // it, same order-independence reason as `bigint` above (a template
+                      // literal stringifying a caught Error can textually precede the
+                      // `new Error(...)` site that proves an Error schema exists at all).
+                      // Gates src/ir.js toStrI64's Error-schema arm: false everywhere in
+                      // an Error-free program, so it costs nothing there.
   }
 }
 

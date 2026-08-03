@@ -443,3 +443,42 @@ test('minimal [known-gap]: new Date still drags in the allocator', () => {
   if (!over) ok(true, 'new Date no longer pulls the allocator — promote this to a positive assertion')
   else ok(true, 'KNOWN: new Date(0) pulls the full allocator/memgrow for a single pointer')
 })
+
+// === error-object-design.md Slice A: zero size cost for Error-free modules ===
+// buildErrorObject/toStrI64's Error-schema arm are gated on the Error-class
+// emit handlers and ctx.features.error (prepare's whole-program scan) firing —
+// a program that never constructs an Error must be byte-identical to what it
+// compiled before this slice: no memory, no allocator, no schema/__errcls__
+// machinery pulled in by merely having the Error CLASSES available.
+test('minimal: heap-free numeric fn stays heap-free (Error machinery is reachability-gated)', () => {
+  if (skip) return
+  const src = 'export let f = (a, b) => a + b'
+  for (const O of [0, 2]) {
+    ok(!hasMemory(src, O), `@O${O}: an Error-free program must not declare memory`)
+    ok(!hasAllocator(src, O), `@O${O}: an Error-free program must not pull the allocator`)
+    ok(!has(src, '__errcls__', O), `@O${O}: no Error schema leaks into a program that never constructs one`)
+  }
+})
+
+// Per-instance RUNTIME HEAP cost of a constructed Error, against the design's
+// own ~60-100B/instance ledger estimate (§1: one 3-slot object = 24B payload +
+// 16B header = 40B, plus — for every class but 'Error' itself, whose 5-char
+// name fits SSO inline — a shared static `.name` string amortized across every
+// instance, not multiplied per-instance). This is a claim about the `__heap`
+// bump-allocator's growth per allocation, NOT compiled .wasm byte size (a
+// single construction call SITE costs the same code bytes whether it runs
+// once or in a hot loop) — measured directly via `exports.__heap` before/
+// after a steady-state batch (after `_clear()` resets any one-time init/data-
+// segment cost so only the repeated per-call growth is counted).
+if (!skip) {
+  test('minimal: constructed Error heap footprint vs the design ledger estimate (~60-100B/instance)', () => {
+    const inst = jz(`export let f = (n) => { let t = 0; for (let i = 0; i < n; i++) { let e = new Error('boom'); t = t + e.message.length } return t }`)
+    inst.exports.f(1)                    // pay one-time init (allocator/data segment) before measuring
+    const before = inst.exports.__heap.value
+    inst.exports._clear()
+    const REPS = 2000
+    inst.exports.f(REPS)
+    const perInstance = (inst.exports.__heap.value - before) / REPS
+    ok(perInstance <= 120, `${perInstance}B/instance steady-state heap growth (design ledger: ~60-100B; SSO message + SSO 'Error' name means no extra data-segment string, so this should land at or under the ledger's low end — a 3-slot object's 24B payload + 16B header = 40B)`)
+  })
+}

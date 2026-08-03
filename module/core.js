@@ -10,7 +10,7 @@ import { OPTF } from '../src/ctx.js'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride, undefExpr, cloneIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, mkPtrIR, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride, undefExpr, cloneIR, toStrI64 } from '../src/ir.js'
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
@@ -20,9 +20,10 @@ import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal } from '../src/ctx.js'
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
-import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, encodePtrHi, i64Hex } from '../layout.js'
+import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, LENGTH_SSO_I64 } from './collection.js'
+import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 const NAN_BITS = nanPrefixHex()
 
@@ -1071,8 +1072,8 @@ export default (ctx) => {
   // masking the whole high word and comparing to encodePtrHi(OBJECT, sid) proves
   // "is an OBJECT" AND "is exactly this schema" in one i64 compare; the low
   // word (this instance's heap offset) is irrelevant and stays unmasked.
-  const OBJECT_SCHEMA_HI_MASK = '0xFFFFFFFF00000000'
-  const objectSchemaGuardHex = (sid) => i64Hex(BigInt(encodePtrHi(PTR.OBJECT, sid)) << 32n)
+  // (OBJECT_SCHEMA_HI_MASK / objectSchemaGuardHex now live in layout.js — shared
+  // with src/ir.js's Error-schema toStrI64 guard, same encoding, one definition.)
 
   /** Monomorphic schema-slot devirtualization for a receiver whose static type
    *  is fully unknown (emitPropAccess's `vt == null` case, the __dyn_get_any_t_h
@@ -1755,24 +1756,38 @@ export default (ctx) => {
   ctx.core.emit['__ptr_aux'] = (p) => (inc('__ptr_aux'), typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asI64(emit(p))]], 'f64'))
   ctx.core.emit['__ptr_offset'] = (p) => (inc('__ptr_offset'), typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asI64(emit(p))]], 'f64'))
 
-  // Error(msg) — passthrough (throw handles any value). Subclasses share the
-  // same shape: jz doesn't model typed-error dispatch, so SyntaxError/TypeError/
-  // RangeError/ReferenceError/URIError/EvalError all lower to the message
-  // expression. `instanceof SyntaxError` returning correct results would need
-  // proper class machinery; until then, code that throws specific subclasses
-  // compiles and the user-visible message is preserved.
-  // jz models an error as its message value (passthrough — `throw` accepts any
-  // value). A no-arg `new Error()` has no message, so it lowers to `undefined`
-  // rather than crashing on a missing argument. Emitting `['str','']` here would
-  // drag the whole string module into programs that only `throw new Error()`.
-  const passthroughError = (msg) => msg == null
-    ? typed(['f64.const', `nan:${UNDEF_NAN}`], 'f64')
-    : asF64(emit(msg))
-  ctx.core.emit['Error'] = passthroughError
-  ctx.core.emit['SyntaxError'] = passthroughError
-  ctx.core.emit['TypeError'] = passthroughError
-  ctx.core.emit['RangeError'] = passthroughError
-  ctx.core.emit['ReferenceError'] = passthroughError
-  ctx.core.emit['URIError'] = passthroughError
-  ctx.core.emit['EvalError'] = passthroughError
+  // Error(msg)/new Error(msg) — a real PTR.OBJECT, schema
+  // ['message','name','__errcls__'] (error-object-design.md §1). All 7 built-in
+  // classes share ONE schema (ctx.schema.register dedupes by prop-list content),
+  // distinguished only by the `name` string stored and the `__errcls__` small-int
+  // slot (index into ERR_CLASS_NAMES) — jz has no prototype chain, so `instanceof`
+  // (Slice B) reads __errcls__/name instead of a class pointer. Construction reuses
+  // the exact runtime object-literal path (module/object.js: $__alloc_hdr + one
+  // store per slot + mkPtrIR) — no new allocation primitive, no new heap pointer
+  // tag. Reachability-gated like every stdlib emitter: registering the schema and
+  // emitting this block only happens when a program actually calls one of these 7
+  // ctors, so an Error-free module pays nothing.
+  const buildErrorObject = (className, msg) => {
+    inc('__alloc_hdr')
+    const sid = ctx.schema.register(ERR_SCHEMA_PROPS)
+    const t = tempI32('errp')
+    const nameIR = asF64(emit(['str', className]))
+    // ToString(msg): omitted message → '' (spec default for `new Error()`).
+    // toStrI64's own STRING fast path makes the common `new Error("literal")`
+    // case pay nothing beyond today's plain asF64(emit(msg)).
+    const msgIR = msg == null ? asF64(emit(['str', '']))
+      : typed(['f64.reinterpret_i64', toStrI64(msg, emit(msg))], 'f64')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(3)]]],
+      ctx.abi.object.ops.store(['local.get', `$${t}`], 0, msgIR),
+      ctx.abi.object.ops.store(['local.get', `$${t}`], 1, nameIR),
+      ctx.abi.object.ops.store(['local.get', `$${t}`], 2, ['f64.convert_i32_s', ['i32.const', ERR_CLASS_NAMES.indexOf(className)]]),
+      mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${t}`])], 'f64')
+  }
+  // `new Error(x)`/`Error(x)` (with or without `new`) both route here: Error is
+  // absent from includeForRuntimeCtor (src/autoload.js), so prepare's `new`
+  // handler falls to the generic "unknown ctor → plain call" path — the same
+  // ctx.core.emit['Error'] key a bare call resolves to. Correct per spec:
+  // `Error(x)` without `new` also constructs a fresh Error.
+  for (const cls of ERR_CLASS_NAMES) ctx.core.emit[cls] = (msg) => buildErrorObject(cls, msg)
 }

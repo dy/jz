@@ -51,9 +51,13 @@ import {
   includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor,
   includeForRuntimeKeyIteration, includeForStringOnly, includeForStringValue, includeForTimerRuntime,
 } from '../autoload.js'
+import { ERR_CLASS_NAMES } from '../../err-codes.js'
 
 // SIMD intrinsic namespaces — pure namespaces backed by the `simd` module.
 const SIMD_NS = new Set(['f32x4', 'i32x4', 'f64x2', 'v128'])
+// prep()'s ctx.features.error scan below — O(1) membership over the 7 built-in
+// error classes (error-object-design.md §2).
+const ERR_CLASS_SET = new Set(ERR_CLASS_NAMES)
 
 // Module-level prepare state. Six independent stacks/scalars that together form
 // the prepare-pass working set. Lifecycle: reinitialized via `resetPrepState()`
@@ -1129,6 +1133,20 @@ function prep(node) {
   // NaN-only check (see .work/todo.md, ring/fgather perf-ratchet regression).
   if (Array.isArray(node) && (node[0] === 'bigint' || (node[0] === '()' && node[1] === 'BigInt')))
     ctx.features.bigint = true
+  // Whole-program "does a jz Error object ever get constructed" flag — mirrors the
+  // bigint flag immediately above (order-independence for the same reason: a
+  // template literal stringifying a caught Error, ir.js's toStrI64 Error-schema
+  // arm, can textually precede the `new Error(...)`/`Error(...)` call site that
+  // proves the schema exists at all). Catches BOTH the `new X(...)` raw shape
+  // (before the 'new' handler rewrites it) and the bare-call `X(...)` shape — one
+  // of the 7 built-in classes (error-object-design.md §2: `Error(x)` without `new`
+  // also constructs a fresh Error, same as `new Error(x)`). A shadowed `Error`
+  // identifier (`function Error(x){…}`) can false-positive this flag — harmless:
+  // ir.js's guard is a runtime tag+schema compare that simply never fires for a
+  // program that never actually calls the real ctx.core.emit['Error'].
+  if (Array.isArray(node) && (node[0] === 'new' || node[0] === '()') &&
+      typeof node[1] === 'string' && ERR_CLASS_SET.has(node[1]))
+    ctx.features.error = true
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return [, 0] // null/undefined → 0 literal
   // Keep boolean identity (was folded to 1/0). The working representation is

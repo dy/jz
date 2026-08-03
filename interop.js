@@ -26,7 +26,7 @@
 
 import { wasi, attachTimers } from './wasi.js'
 import { HEAP, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT } from './layout.js'
-import { ERR_INFO } from './err-codes.js'
+import { ERR_INFO, ERR_CLASS_NAMES } from './err-codes.js'
 
 // Stateless + reusable — one instance avoids a per-call allocation on the hot
 // string read/write paths (mem.String / mem.read STRING).
@@ -754,6 +754,24 @@ export const wrap = (memSrc, inst, state) => {
     // from bits. (A heap Error/string can only exist when the module has memory.)
     const value = mem ? mem.read(errBits) : decode(errBits)
     if (value instanceof Error) throw value
+    // A real jz Error object (error-object-design.md §1: PTR.OBJECT, schema
+    // ['message','name','__errcls__']) decodes via mem.read's generic OBJECT
+    // case (line ~508) to a plain JS object {message, name, __errcls__} — never
+    // `instanceof Error` on this side, since it's a schema-shaped dict, not a
+    // host Error. __errcls__ is the correctness gate for upgrading it to a real
+    // host Ctor: trusting `value.name` alone would let a plain user-thrown
+    // object coincidentally shaped `{name:'Array', message:'x'}` wrongly upgrade
+    // — __errcls__ only exists on jz's own Error constructors, and must agree
+    // with `name` (ERR_CLASS_NAMES[__errcls__] === name) for a value that
+    // genuinely round-tripped through buildErrorObject unmutated.
+    if (value != null && typeof value === 'object' && typeof value.__errcls__ === 'number' &&
+        ERR_CLASS_NAMES[value.__errcls__] === value.name) {
+      const Ctor = globalThis[value.name] ?? Error
+      const wrapped = new Ctor(value.message)
+      wrapped.cause = error
+      wrapped.thrown = value
+      throw wrapped
+    }
     // A plain NUMBER matching the $__jz_err code registry (src/err-codes.js) is a
     // jz-internal runtime throw (bounds/coercion/parse — piece 1's per-site codes,
     // fs.js's real errno is NOT in the registry and falls to the generic branch

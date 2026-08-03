@@ -4,6 +4,125 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, Error-object model Slice A LANDED — real in-wasm Error
+## objects + host-decode upgrade; instanceof (Slice B) and internal-code
+## .message (optional Slice C) remain, per .work/error-object-design.md)
+
+Implemented exactly the design's Slice A scope: `.work/error-object-design.md`
+(read-only deliverable landed alongside this commit as the design record).
+
+**What landed:**
+- err-codes.js: `ERR_CLASS_NAMES` (the 7 built-in classes, index = `__errcls__`)
+  and `ERR_SCHEMA_PROPS` (`['message','name','__errcls__']`) — new exports,
+  zero behavior change to the existing 48-site `ERR`/`ERR_INFO` registry.
+- module/core.js:1758ff — `buildErrorObject` replaces `passthroughError`: a
+  real `PTR.OBJECT` + shared schema (all 7 classes dedupe to one
+  `ctx.schema.register` id), built via the exact object-literal runtime path
+  (`$__alloc_hdr` + one store per slot + `mkPtrIR`) — no new heap pointer tag,
+  no new allocation primitive. `new Error(x)`/`Error(x)` (with/without `new`)
+  both route here unchanged (Error isn't in `includeForRuntimeCtor`).
+- src/ir.js `toStrI64` — new Error-schema arm (right after the STRING fast
+  path, before the OBJECT `toPrimitiveChain` branch): a runtime tag+schema
+  guard (masked i64 compare, same shape as `emitSchemaSlotGuarded`) that
+  formats a proven Error object per spec's `Error.prototype.toString`
+  (20.5.3.4: name/message/"name: message"/"Error"), falling through to
+  EXACTLY the pre-slice logic (factored into `coerceRest`) on a guard miss.
+  This is also the REQUIRED fix for the design's own found bug: `${obj}` on
+  ANY dynamic object returned `""` (raw pointer bits reinterpreted as a
+  string) — fixed here for Error objects specifically, still open for other
+  object kinds (out of scope, flagged, not regressed).
+- Gating: `ctx.features.error`, a new prepare-time universal per-node scan
+  flag (src/prepare/index.js, mirrors the existing `ctx.features.bigint`
+  prescan for the same order-independence reason) — order-independent
+  because `toStrI64` runs interleaved with ordinary emission, unlike
+  `__typeof`'s closure-arm (a stdlib template factory that runs post-emit).
+  False everywhere in an Error-free program: `toStrI64` costs nothing extra.
+- layout.js: `OBJECT_SCHEMA_HI_MASK`/`objectSchemaGuardHex` promoted from a
+  local closure inside module/core.js to a shared export — src/ir.js's new
+  guard reuses the identical encoding instead of a second definition (DRY;
+  module/core.js's own guard site is unchanged behavior, just re-sourced).
+- interop.js `decodeThrown` — new `__errcls__`-gated branch (ahead of the
+  `typeof value === 'number'` branch): a real Error object decodes via
+  `mem.read`'s existing generic OBJECT case to `{message,name,__errcls__}`;
+  when `__errcls__` is present AND agrees with `name` (the correctness gate —
+  trusting `name` alone would wrongly upgrade a coincidentally-shaped
+  user-thrown plain object), builds the real host `Ctor` and re-throws it
+  with `.cause`/`.thrown` set, matching the existing generic-wrap contract.
+- test/errors.js:755-764 REWRITTEN (not deleted) — the old "Error IS its
+  message string (documented divergence)" pin flips to a correctness pin
+  (`.message`, `.name`, `String(e)`, `` `${e}` ``, no-arg `new Error()`, bare
+  `Error(x)`); added two new blocks pinning §3(c) (non-Error throws
+  unchanged: `throw 42`/`throw 'str'` still legal, `e` is the raw value) and
+  §3(b) (an internal coded throw — `JSON.parse('x')` — still binds
+  `catch(e)` to the raw f64 code; `.message` on it still reads `undefined`,
+  Slice C not built). Every OTHER errors.js pin (host-decode, trap-lowering,
+  dead-throw carrier, the per-class uncaught-escape tests at line ~540)
+  verified untouched AND still green — those already asserted only
+  `instanceof Error`/`.message`, which a real `TypeError` instance also
+  satisfies.
+- test/minimal-output.js — two new pins: an Error-free numeric fn stays
+  heap-free with no `__errcls__` leak (structural, both O0/O2), and a
+  constructed Error's STEADY-STATE RUNTIME HEAP footprint (measured via
+  `exports.__heap` before/after a 2000-rep batch, not compiled-.wasm byte
+  size — those are different metrics; a naive byte-length diff against a
+  const-folded object-literal baseline was tried first and rejected, see
+  below) — measured 39.98B/instance, matching the design's own ledger
+  arithmetic exactly (24B payload + 16B header = 40B; 'Error' is 5 ASCII
+  chars so even its own class name fits SSO inline, no shared data-segment
+  string needed for that one class) and comfortably inside the ~60-100B
+  estimate.
+
+**Acceptance table** (native + kernel, both green):
+| case | JS semantics | before | after |
+|---|---|---|---|
+| `throw new Error("boom")` → `.message` | `"boom"` | `undefined` (no object) | `"boom"` ✓ |
+| `throw new TypeError("t")` → `.name` | `"TypeError"` | `undefined` | `"TypeError"` ✓ |
+| `String(caught)`/`` `${caught}` `` | `"Name: msg"` (20.5.3.4) | raw message string (today) / `""` (any OTHER dynamic object — the found bug) | `"Name: msg"` ✓ |
+| `throw 42` → `catch(e){return e}` | `42` | `42` | `42` ✓ (unchanged) |
+| internal coded throw → `catch(e){return e}` | n/a (jz-internal) | raw code (e.g. `300`) | raw code, UNCHANGED (Slice C not built) ✓ |
+| host boundary: uncaught `new TypeError("t")` | real `TypeError`, `.message==="t"` | generic `Error`, message JSON-ish-wrong | real `TypeError` (`instanceof TypeError`), `.message==="t"` ✓ |
+
+**Size verdict:** error-free programs byte-identical — proven three ways:
+(1) minimal-output.js's heap-free/no-`__errcls__` pins (79/79 green), (2) a
+`git worktree` diff of HEAD vs this branch compiling mat4/biquad/crc32/fft
+(the numeric bench kernels, zero Error usage) at the project's own
+size-optimized recipe — 1543/1861/1107/2368 bytes, BYTE-IDENTICAL every case,
+(3) kernel-parity's 33/33 corpus (none use Error) stays byte-identical.
+Error-using cost: 39.98B/instance steady-state heap growth for `new
+Error("boom")`, matching the design ledger (~60-100B) at its low end because
+'Error' itself and a ≤6-ASCII literal message both fit SSO with zero heap
+bytes; `new TypeError("boom")` (9-char name, needs the shared data-segment
+string) measured the same 39.98B/instance marginal cost — the name string is
+a ONE-TIME amortized cost, not multiplied per instance, exactly as designed.
+
+**What remains:**
+- Slice B (`instanceof`) — NOT built this session. `op-policy.js`'s
+  `REJECT_OPS.instanceof` still hard-rejects; `x instanceof Array` etc. still
+  errors in both modes exactly as before (no behavior change here).
+- Slice C (optional) — internal-coded throws' `.message`/`.name` still read
+  `undefined` (a NUMBER receiver has no schema — same class as the existing
+  pinned "number.length is undefined" gap). Deliberately deferred per the
+  design's own scope cut; needs a genuine code→message table (not the
+  "compare ranges" trick Slice B's instanceof gets to use for the class),
+  the highest-novelty piece of the whole design.
+- Slice D (optional, pure perf) — compile-time constant-fold of
+  `instanceof`/toStrI64 guards beyond what's needed for correctness. No
+  correctness value; not attempted.
+
+**Gates, all green:**
+full battery (~90 files run in chunks of 5-6, `node test/<f>.js` each,
+foreground) · errors.js 117/117 (184 assertions) · minimal-output.js 79/79
+(274 assertions) · kernel-parity 33/33 byte-identical · kernel-oracle 11/11 ·
+perf-ratchet 10/10 (+0, fgather unchanged) · optimizer 214/214 · fuzz.js
+2000 programs × opt{0,1,2,3}, 0 divergence · selfhost.js 21/21 (206
+assertions) against a FRESH `npm run build` · selfhost-perf.js 5/5 (warm
+0.994×/cap 1.03×, fresh 0.788×/cap 0.99×, no regression) · two fresh `npm run
+build` rebuilds byte-identical to each other (16,054,839 B jz.wasm both
+times — the self-host fixed point; NOT compared to the old committed
+dist/jz.wasm, which predates this change and legitimately differs since the
+compiler's own ~14 internal `throw new Error(...)`/`new TypeError(...)`
+sites, part of its self-hosted source, now also build real Error objects).
+
 ## Status (2026-08-03, item #6 re-audited and CLOSED — the "chained float-literal fold" fuzz finding was the FUZZ HARNESS's bug, not the compiler's)
 
 Assigned as "fix the compiler fold to match per-op JS rounding." Investigation

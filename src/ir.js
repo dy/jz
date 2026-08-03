@@ -23,7 +23,8 @@ import { ERR } from '../err-codes.js'
  */
 
 import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
-import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex } from '../layout.js'
+import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
+import { ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf } from './ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from './reps.js'
 import { valTypeOf, censusMaybeUndefined } from './kind.js'
@@ -1167,6 +1168,52 @@ export function toStrI64(node, v) {
   // during the Slice 5 site survey. Fixed at THIS chokepoint (not the
   // caller) so every caller (String(), strcat's per-part loop) inherits it.
   if (vt === VAL.STRING && !censusMaybeUndefined(node)) return asI64(v)
+  // Error-schema special case (.work/error-object-design.md §Consequence): `${e}`/
+  // String(e) on a real Error object must format via spec's Error.prototype.toString
+  // (name if message empty / message if name empty / name+': '+message otherwise /
+  // 'Error' if both empty — ECMA-262 20.5.3.4), not the generic OBJECT
+  // toPrimitiveChain below (which knows nothing about Error, and Error exposes no
+  // toString/valueOf slot for it to find) nor __to_str's fallback (raw pointer bits
+  // reinterpreted as a string — a pre-existing bug for every OBJECT kind __to_str
+  // doesn't special-case, confirmed live: `${anyDynamicObject}` → "").
+  // Gated on ctx.features.error (prepare's whole-program "is an Error class ever
+  // constructed" scan, order-independent for the same reason ctx.features.bigint
+  // is a prescan, not a during-emit flag — see toNumF64 above): a program that never
+  // constructs an Error takes NONE of this, zero added bytes. Narrowed further to
+  // vt == null (unknown/dynamic) || vt === VAL.OBJECT: a provably-non-OBJECT operand
+  // (NUMBER/ARRAY/MAP/…) can never be our Error schema, so even an Error-using
+  // program's non-Error toStrI64 call sites pay nothing extra.
+  if (ctx.features.error && (vt == null || vt === VAL.OBJECT)) {
+    const errSid = ctx.schema.register(ERR_SCHEMA_PROPS)
+    const t = temp('everr')
+    const get = () => typed(['local.get', `$${t}`], 'f64')
+    // Same masked-i64-compare shape as module/core.js's emitSchemaSlotGuarded /
+    // objectSchemaGuardHex (now shared via layout.js): proves "is an OBJECT" AND
+    // "is exactly the Error schema" in one compare. Any other value (a number, a
+    // different object shape) fails it — ordered by IEEE754 rules, a NaN-boxed
+    // pointer reinterpreted as f64 is never involved here since this is a raw i64
+    // bit compare, not an ordered f64 compare.
+    const guard = ['i64.eq',
+      ['i64.and', asI64(get()), ['i64.const', OBJECT_SCHEMA_HI_MASK]],
+      ['i64.const', objectSchemaGuardHex(errSid)]]
+    const off = ['i32.wrap_i64', ['i64.and', asI64(get()), ['i64.const', LAYOUT.OFFSET_MASK]]]
+    return typed(['block', ['result', 'i64'],
+      ['local.set', `$${t}`, asF64(v?.type ? v : typed(v, 'f64'))],
+      ['if', ['result', 'i64'],
+        guard,
+        ['then', errToStringIR(off)],
+        ['else', coerceRest(node, get(), vt)]]], 'i64')
+  }
+  return coerceRest(node, v, vt)
+}
+
+/** Everything toStrI64 did before the Error-schema special case existed — split
+ *  out so that arm's runtime-guard "else" branch (a non-Error OBJECT, or any
+ *  other kind, once the guard has already proven it isn't our Error schema)
+ *  falls to EXACTLY this, unchanged. When ctx.features.error is false (no Error
+ *  ever constructed) toStrI64 calls this directly with no wrapping at all — the
+ *  zero-cost path for every Error-free program. */
+function coerceRest(node, v, vt) {
   if (vt === VAL.OBJECT && ctx.closure.call && ctx.schema.slotOf) {
     const prim = toPrimitiveChain(node, v, ['toString', 'valueOf'])
     if (prim) {
@@ -1184,6 +1231,60 @@ export function toStrI64(node, v) {
   }
   inc('__to_str')
   return typed(['call', '$__to_str', asI64(v)], 'i64')
+}
+
+/** Spec's Error.prototype.toString (20.5.3.4) for a proven Error-schema object,
+ *  given `off` — an i32 IR expr for its payload byte offset (cloned per use: the
+ *  emitted tree references it three times, and IR-aliasing corrupts a later
+ *  local-lifetime pass — see cloneIR's doc). Loads message (slot 0) / name (slot
+ *  1) once each, then: both empty → "Error"; message empty → name; name empty →
+ *  message; else → name + ": " + message, via the same $__str_concat_fresh the
+ *  ordinary `+` string-concat operator itself calls (not a new primitive). Every
+ *  built-in class's `name` is a non-empty static literal (module/core.js's
+ *  buildErrorObject) — the nameEmpty arm only fires if a caught Error's `.name`
+ *  was reassigned to `''` after construction. */
+function errToStringIR(off) {
+  inc('__str_byteLen', '__str_concat_fresh')
+  const tm = tempI64('emsg'), tn = tempI64('ename')
+  const ml = tempI32('emlen'), nl = tempI32('enlen')
+  return typed(['block', ['result', 'i64'],
+    ['local.set', `$${tm}`, ctx.abi.object.ops.loadBits(cloneIR(off), 0)],
+    ['local.set', `$${tn}`, ctx.abi.object.ops.loadBits(cloneIR(off), 1)],
+    ['local.set', `$${ml}`, ['call', '$__str_byteLen', ['local.get', `$${tm}`]]],
+    ['local.set', `$${nl}`, ['call', '$__str_byteLen', ['local.get', `$${tn}`]]],
+    ['if', ['result', 'i64'],
+      ['i32.eqz', ['local.get', `$${ml}`]],
+      ['then', ['if', ['result', 'i64'],
+        ['i32.eqz', ['local.get', `$${nl}`]],
+        ['then', ssoStrI64('Error')],
+        ['else', ['local.get', `$${tn}`]]]],
+      ['else', ['if', ['result', 'i64'],
+        ['i32.eqz', ['local.get', `$${nl}`]],
+        ['then', ['local.get', `$${tm}`]],
+        ['else', ['i64.reinterpret_f64', ['call', '$__str_concat_fresh',
+          ['i64.reinterpret_f64', ['call', '$__str_concat_fresh', ['local.get', `$${tn}`], ssoStrI64(': ')]],
+          ['local.get', `$${tm}`]]]]]]]], 'i64')
+}
+
+/** Pack a ≤6-char ALL-ASCII compile-time-known literal directly into an SSO
+ *  NaN-boxed string i64 constant — no heap, no runtime call. This file has a
+ *  NO-EMIT contract (see module header): module/string.js's `emit(['str', …])`
+ *  path isn't reachable here (module/string.js imports FROM this file — the
+ *  reverse import would cycle), so this duplicates the packing arithmetic of
+ *  module/string.js's `ssoEncode` (the single runtime source of truth for
+ *  user string literals) for the two FIXED literals errToStringIR needs
+ *  ("Error", ": ") rather than import it. Both fit MAX_SSO=6 with room to
+ *  spare; not a general-purpose literal builder. */
+function ssoStrI64(str) {
+  let offset = 0, auxChars = 0
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i), bit = i * 7
+    if (bit <= 24) offset |= c << bit
+    else if (bit < 32) { offset |= (c & 0xF) << 28; auxChars |= c >> 4 }
+    else auxChars |= c << (bit - 32)
+  }
+  const aux = LAYOUT.SSO_BIT | (str.length << 10) | auxChars
+  return typed(['i64.const', i64Hex(ptrBits(PTR.STRING, aux, offset >>> 0))], 'i64')
 }
 
 /** Convert already-emitted WASM node to i32 boolean. NaN is falsy (like JS).

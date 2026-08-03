@@ -752,13 +752,40 @@ test('try: discarded method result before return compiles and runs', () => {
   is(j(`export let f = () => { let a = [1]; try { a.toSorted(); return 1 } catch (e) { return 2 } }`), 1) // default comparator pulls string module
 })
 
-// DOCUMENTED DIVERGENCE (README "Errors are their message strings"): the
-// Error family lowers to the message string itself — no error object.
-// throw/catch/String(e) carry the message; .message/.name read undefined.
-// Pinned so a future error-object model surfaces here deliberately.
-test('errors: Error IS its message string (documented divergence)', () => {
+// error-object-design.md Slice A: `new Error(msg)`/the 7 built-in subclasses
+// now construct a real in-wasm object (PTR.OBJECT, schema
+// ['message','name','__errcls__'], module/core.js buildErrorObject) instead of
+// lowering to the bare message value — supersedes the old "Error IS its
+// message string" documented divergence this block used to pin. `.message`/
+// `.name` read correctly, and String()/template-literal interpolation format
+// per spec's Error.prototype.toString (ECMA-262 20.5.3.4: name if message
+// empty / message if name empty / name+": "+message otherwise / "Error" if
+// both empty) via src/ir.js's toStrI64 Error-schema arm — the fix for the
+// pre-existing `${anyDynamicObject}` → "" bug, at least for Error objects.
+test('errors: real Error objects (error-object-design.md Slice A)', () => {
   const j = (code) => jz(code).exports.f()
-  is(j(`export let f = () => { try { throw new Error('boom') } catch (e) { return String(e) } }`), 'boom')
-  is(j(`export let f = () => { try { throw new TypeError('t') } catch (e) { return e } }`), 't')
-  is(j(`export let f = () => { try { throw new Error('x') } catch (e) { return e.message === undefined ? 1 : 0 } }`), 1)
+  is(j(`export let f = () => { try { throw new Error('boom') } catch (e) { return e.message } }`), 'boom', '.message reads the constructor argument')
+  is(j(`export let f = () => { try { throw new TypeError('t') } catch (e) { return e.name } }`), 'TypeError', '.name reads the built-in class name')
+  is(j(`export let f = () => { try { throw new TypeError('t') } catch (e) { return String(e) } }`), 'TypeError: t', 'String(e) is "name: message" (20.5.3.4)')
+  is(j(`export let f = () => { try { throw new Error('x') } catch (e) { return \`\${e}\` } }`), 'Error: x', 'template-literal interpolation matches String(e)')
+  is(j(`export let f = () => { try { throw new Error() } catch (e) { return \`\${e}\` } }`), 'Error', 'no-arg new Error(): empty message → bare name (20.5.3.4)')
+  // Error(x)/without `new` constructs a fresh Error too (spec) — same object model.
+  is(j(`export let f = () => { try { throw Error('bare') } catch (e) { return e.message } }`), 'bare')
+})
+
+// §3(c): a non-Error throw is completely unaffected by the object model —
+// `e` is whatever was thrown, verbatim, same as before this slice.
+test('errors: non-Error throws are unchanged (number/string still legal)', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => { try { throw 42 } catch (e) { return e } }`), 42)
+  is(j(`export let f = () => { try { throw 'str' } catch (e) { return e } }`), 'str')
+})
+
+// §3(b): an INTERNAL coded throw (e.g. JSON.parse's SyntaxError) still binds
+// catch(e) to the raw f64 code, exactly as before this slice — Slice A/B do
+// not build the code→message table (deferred to optional Slice C, §5).
+test('errors: internal coded throw still binds catch(e) to the raw code (Slice C not built)', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`export let f = () => { try { JSON.parse('x'); return 0 } catch (e) { return e } }`), 300, 'e is the raw $__jz_err code (JSON_PARSE_SYNTAX)')
+  is(j(`export let f = () => { try { JSON.parse('x'); return 0 } catch (e) { return e.message === undefined ? 1 : 0 } }`), 1, '.message on a number receiver reads undefined, same as today\'s "number.length" gap — no crash')
 })
