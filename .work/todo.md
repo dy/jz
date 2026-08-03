@@ -4,6 +4,231 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, audit-#8 P0-3 + P1-1 CLOSED — BigInt absent-key join;
+## stale host-decode marker after in-wasm catch/finally)
+
+Two independent error-semantics defects, both verified live at HEAD
+(e79b0647), both fixed and gated on native + kernel legs.
+
+### P0-3 — BigInt absent-key join reads garbage instead of throwing
+
+Repro (every optimize level, Map AND dict, native and kernel):
+`const m = new Map(); m.set('x',1n); export let f = () => m.get('missing')
++ 1n`.
+
+| case | before | after | JS (13.15.3 step 6) |
+|---|---|---|---|
+| `m.get('missing') + 1n` | `9221120245631025153n` | `throws TypeError` | `throws TypeError` |
+| `D['missing'] + 1n` (dict, dynamic-key literal-provable write) | `9221120245631025153n` | `throws TypeError` | `throws TypeError` |
+| `n -= m.get('missing')` (compound assign) | garbage bigint | `throws TypeError` | `throws TypeError` |
+| `m.get('missing') & 3n` (bitwise) | garbage bigint | `throws TypeError` | `throws TypeError` |
+| `m.get('x') + 1n` (present key — structural pin) | `2n` | `2n` (unchanged) | `2n` |
+| `-m.get('missing')` (unary minus — single operand, OUT OF SCOPE) | garbage bigint | garbage bigint (unchanged, see below) | `NaN` |
+| `D['missing']++` (increment — single operand, OUT OF SCOPE) | `1` (unaffected — dedicated non-bigintMixReject path) | `1` | `NaN` |
+
+Spec: ES2024 13.15.3 ApplyStringOrNumericBinaryOperator. `undefined`'s
+ToNumeric is the Number NaN (step: ToPrimitive(undefined)=undefined, not
+BigInt → ToNumber(undefined)=NaN); step 6, "If Type(lnum) is not
+Type(rnum), throw a TypeError" — a Number NaN against a genuine BigInt
+mismatches → throw. This is the SAME contract bigintMixReject already
+proves at compile time for a literal-provable mix; the fix is its runtime
+twin for a maybeUndefined operand, whose type only resolves at runtime.
+Unary ops (negation, `~`, `++`/`--`) ToNumeric a SINGLE operand with no
+second-operand type to mismatch against — real JS decays to NaN there, not
+a throw — so they're deliberately untouched (own doc comment on
+`bigIntOperand`, src/compile/emit.js); `D['missing']++` already had its OWN
+dedicated non-bigintMixReject codepath (the '+1'/'-1' member op, added
+2026-07-31 specifically to STOP routing increment through the binary '+'
+mix-check) so it was never in scope either.
+
+Mechanism: `censusMaybeUndefined` (src/kind.js) already routed the NUMBER
+arm of `toNumF64` (ir.js) through a maybeUndefined-safe coerce, but its own
+doc comment there admitted the gap: "never BIGINT: real JS THROWS mixing
+BigInt and undefined in arithmetic... left exactly as unsound as today, not
+newly broken, not closed by this fix" — this session closes it. Chokepoint:
+a new `bigIntOperand(node)` (src/compile/emit.js, right after
+`bigintMixReject`) replaces the raw `asI64(emit(node))` read at every
+bigintMixReject call site (binary `+ - * / % & | ^ << >>`, their
+compound-assign forms) — ONE decision, substituted mechanically at each
+site, same altitude as toNumF64's Slice-1 join. When
+`censusMaybeUndefinedKind(node) === VAL.BIGINT`, it emits a runtime guard:
+read the raw f64 carrier into a temp, check it against UNDEF_NAN
+(`isUndef`), and only THEN reinterpret to i64 — throwing
+`ERR.BIGINT_UNDEF_MIX` (new TypeError-class code, err-codes.js, message
+"Cannot mix BigInt and other types, use explicit conversions" — V8's own
+wording) via the standard `global.set $__jz_last_err_bits` +
+`throw $__jz_err` runtime-throw idiom (module/collection.js's
+ITERATE_NULLISH is the precedent pattern) when it IS the sentinel. A
+non-maybeUndefined node (the overwhelming common case — present-key/local
+BIGINT) degrades to a bare `asI64(v)`, byte-identical to before —
+confirmed by the mat4/fft/crc32/biquad byte-identical spot-check below
+(zero-cost structural pin).
+
+FOUND MID-FIX, FIXED IN THE SAME COMMIT: the FIRST version of this fix
+gated on `valTypeOf(node) === VAL.BIGINT`, which is FALSE for a
+`dict['stringLiteralKey']` bracket read — VT['[]'] (kind.js ~443-448)
+resolves a non-canonical-numeric string-literal key to `null` (its own
+sound array-vs-property-read disambiguation) BEFORE ever reaching the
+dict-value-census fallback, so `valTypeOf` is not a reliable "is this
+dict/Map read's census kind bigint" proxy the way it is for a plain local.
+`censusMaybeUndefined` itself already bypassed that gate correctly (calling
+`dictValueKindOf`/`mapValueKindOf` directly, per its own "RECEIVER-KIND
+GUARD" doc comment precedent) but only returned a boolean, discarding the
+resolved kind. Refactored `censusMaybeUndefined` (kind.js) into
+`censusMaybeUndefinedKind(node)` — returns the resolved VAL kind or null —
+with `censusMaybeUndefined = (node) => !!censusMaybeUndefinedKind(node)` as
+a pure boolean wrapper (behavior-identical for every existing NUMBER/STRING
+consumer: ir.js toNumF64/toStrI64, emitLooseEq, module/console.js
+writePart). `bigIntOperand` checks the KIND directly instead of
+`valTypeOf`, closing the dict-bracket-string-key blind spot the first
+attempt missed — caught by the SAME differential repro used for the Map
+case, extended to dict before landing.
+
+KNOWN NARROWER GAP (documented in `bigIntOperand`'s own comment, not
+closed): true ES semantics only throws when the two operands' RUNTIME
+types actually DIFFER — `m.get('a') + m.get('b')` with BOTH keys
+genuinely absent at once is Number NaN + Number NaN = NaN, no throw. This
+fix independently guards each operand, so the double-absent case throws
+instead of yielding NaN — strictly better than the prior silent-garbage-
+bigint answer (an unsound VALUE became a sound-but-slightly-wider THROW,
+never a wrong number) and matches the fix's own brief ("the runtime
+semantics for the absent case must be the thrown TypeError"). Fully
+correcting it would require the census to let an expression's runtime
+TYPE flip between BigInt-shaped and Number mid-expression — a materially
+bigger architectural change, out of proportion to this P0 point-fix.
+
+### P1-1 — stale $__jz_last_err_bits after an in-wasm-handled error misdecodes a later genuine trap
+
+Repro (audit's exact two-phase shape, both same-call and later-call-on-
+same-instance variants, pinned in test/errors.js, both legs):
+```
+export let catchIt = () => { try { JSON.parse('{bad json') } catch (e) {} ; return 1 }
+export let boom = (n) => { let a = new Float64Array(n); return a.length }
+```
+`catchIt()` then `boom(2**34)`.
+
+| call sequence | before | after | JS-authority expectation |
+|---|---|---|---|
+| catch JSON error in-wasm, then OOM trap, SAME call | `SyntaxError` (stale) | `RuntimeError` | genuine trap, undecoded |
+| catch JSON error in-wasm, then OOM trap, LATER call | `SyntaxError` (stale) | `RuntimeError` | genuine trap, undecoded |
+| escaping (uncaught) throw — sanity, must stay decoded | `SyntaxError` | `SyntaxError` (unchanged) | `SyntaxError` |
+| `try { throw } finally { return }` (finally swallows) then later trap | `SyntaxError` (stale) | `RuntimeError` | genuine trap, undecoded |
+
+Mechanism: `interop.js`'s `decodeThrown` already resets
+`$__jz_last_err_bits` on every decode it PERFORMS (audit-#7 P1, 2a973082)
+— but an error CAUGHT fully in-wasm (a `try`/`catch` the module handles
+without rethrowing) never reaches `decodeThrown` at all: execution just
+continues past the catch, no exception crosses the host boundary, so that
+reset path never runs. The 'throw' emitter (src/compile/emit.js) writes
+the marker immediately before every throw; nothing ever consumed it for
+the in-wasm-handled case, so it stayed pointing at the handled error
+indefinitely. A LATER genuine WASM trap (OOB, stack overflow, allocation
+failure — none of which touch `$__jz_err` at all) reaches
+`interop.js`'s `isMarkedTrap` check, sees the stale nonzero marker, and
+misdecodes the trap as the old, already-handled error.
+
+Fix, two sites in src/compile/emit.js's 'catch'/'finally' emitters, both
+zeroing the marker as soon as the thrown value is BOUND (before the
+handler/cleanup body runs, mirroring decodeThrown's own "consume on every
+decode" idiom):
+- `'catch'`: `['global.set', '$__jz_last_err_bits', ['i64.const', 0]]`
+  right after `['local.set', $errName]`, before the handler IR. A `throw`
+  inside the handler (rethrow or a new error) re-arms the marker via the
+  'throw' emitter, so escaping-throw decode is unaffected.
+- `'finally'`: same zero right after `['local.set', $errLocal]`, before
+  `throwCleanup`. Two outcomes, both correct: cleanup falls through
+  normally → the EXISTING rethrow re-sets the marker to the real bits
+  right before `throw` (unchanged code, already there); cleanup itself
+  terminates early (`return`/`break` in the `finally` block — JS spec:
+  this SWALLOWS the pending exception) → the rethrow is dead code, marker
+  stays zeroed instead of dangling at the now-suppressed error.
+
+Belt-and-braces (interop.js): every export wrapper (scalar-module,
+rest-params, and plain paths) now zeroes the marker at CALL ENTRY too —
+defense-in-depth against raw-instance reuse or any as-yet-unmissed
+in-wasm consume gap, cheap (one write per call).
+
+FOUND MID-FIX, FIXED IN THE SAME COMMIT: the belt-and-braces reset (and
+decodeThrown's own PRE-EXISTING unconditional reset) can throw — WATR's
+OWN generic optimizer (`watr/optimize`, external package, run after jz's
+whole pipeline — src/optimize/watr-tail.js) independently downgrades
+`$__jz_last_err_bits` from `(mut i64)` to a plain immutable global
+whenever EVERY throw site referencing it folds away for a given compiled
+module (e.g. `typeof BigInt("1") === "bigint"` — no dynamic input can ever
+reach a throw, so literally no `global.set` survives anywhere in that
+specific module). Writing `.value` on an immutable `WebAssembly.Global`
+throws `TypeError: Can't set the value of an immutable global`
+unconditionally per the JS API spec — caught by
+`test('bigint: typeof recognizes BigInt values')` in the FIRST native
+battery chunk. Fixed by probing writability ONCE per instance
+(`lastErrBitsWritable`, interop.js: set the global to its own current
+value inside try/catch — an immutable global rejects that identically to
+any other write) and gating every reset (decodeThrown's pre-existing one
+included — same latent gap, same fix) on that flag.
+
+### Gates (all green before commit)
+
+- Native full battery: 90/90 test files, chunks of 4-7, foreground. All
+  pass except 1 pre-existing unrelated skip (data.js Date-arg edge, not
+  touched) — same as pre-fix baseline.
+- Kernel leg (`JZ_TEST_TARGET=jz.wasm`): 65/65 kernel-includable files
+  (KERNEL_EXCLUDE minus the forced-explicit ones), chunks of 4-7,
+  foreground. 18 failures in test/inference.js's dict-value-census
+  white-box tests (`ctx.scope.globalReps` introspection — the host `ctx`
+  singleton is structurally never populated when compilation delegates
+  into the self-hosted wasm, same documented class as test/invariants.js's
+  own onKernel() guard) — CONFIRMED PRE-EXISTING via a worktree build of
+  unmodified HEAD (e79b0647): byte-identical 18/18 failures, same names,
+  same count, before any of this session's changes. Not a regression;
+  out of this fix's scope (unrelated compiler-internals test, not error
+  semantics).
+- errors.js: 126/126 native, 126/126 kernel (two pre-existing P1 pins from
+  2a973082 gated `if (onKernel()) return` — `maxMemory` is a host-side
+  compile option kernel-target.js's own docstring already disclaims as
+  non-marshaled across the wasm compile ABI, confirmed by direct repro:
+  the OOM ceiling silently doesn't apply in-kernel, unrelated to marker
+  logic). Two NEW cross-leg pins added for the audit's exact two-phase
+  repro (same-call and later-call variants) — these don't need
+  `maxMemory` (use an oversized `Float64Array` allocation for the genuine
+  trap instead), so they run and pass on BOTH legs.
+- data.js, dyn-keys.js, optimizer.js, minimal-output.js: run standalone,
+  100% green (125/125, 17/17, 214/214, 79/79).
+- kernel-parity: 33/33 byte-identical (11 corpus × 3 opt levels).
+- kernel-oracle: 11/11.
+- perf-ratchet: 10/10, every row +0 (int/float/mixed/cond/buf/nest/slice/
+  ring/condref/fgather all unchanged — the catch/finally marker-zero only
+  adds bytes to EH-using modules, the bigint gate only to census-bigint
+  shapes; none of the ratchet's numeric kernels touch either).
+- selfhost.js: 21/21.
+- selfhost-perf: 5/5 (informational; warm 1.014× / fresh 0.792× vs V8,
+  both under their caps).
+- fuzz: 2000 programs × opt {0,1,2,3} (seeds 1..2000, 20 inputs each,
+  30173 compared) — 0 divergence.
+- Size spot-check (mat4/fft/crc32/biquad, native compile, `-O2`
+  benchlib-hosted): 1713B / 3650B / 1196B / 2383B — byte-identical against
+  a worktree build of unmodified HEAD (e79b0647). Zero bytes added to
+  every pure-numeric kernel, confirming the structural pin.
+- `npm run build` × 2, foreground: `dist/jz.wasm` and `dist/jz.js`
+  byte-identical (SHA-256 matched) across both fresh builds.
+
+### What remains of the maybeUndefined program
+
+- The narrower "both operands independently maybeUndefined-BIGINT and both
+  genuinely absent" case throws instead of the spec's NaN (documented
+  above, in `bigIntOperand`'s own comment) — would need the census to
+  allow a runtime type flip mid-expression; not attempted.
+- Unary negation / `~` / `++`/`--` on a maybeUndefined-BIGINT operand still
+  ride the raw i64 path (garbage bigint instead of the spec's NaN) — real,
+  narrower, DIFFERENT-semantics gap (single-operand ToNumeric decay, never
+  a throw), explicitly out of this fix's scope per its own brief
+  (bigintMixReject call sites only). Next candidate if this class of bug
+  gets re-audited.
+- test/inference.js's dict-value-census white-box tests have no
+  `onKernel()` guard despite being structurally kernel-incompatible
+  (confirmed pre-existing, unrelated to this session) — a hygiene gap,
+  not touched here (out of scope; flagging for whoever next touches that
+  file).
+
 ## Status (2026-08-03, audit-#8 P0-2 CLOSED — Map/dict value-census blind to
 ## writes captured in a nested closure)
 

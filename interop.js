@@ -731,6 +731,26 @@ export const wrap = (memSrc, inst, state) => {
   }
   const finishRet = (raw, read) => asyncMod ? adopt(raw, read) : read(raw)
   const lastErrBits = realInst.exports.__jz_last_err_bits
+  // audit-#8 P1-1: `__jz_last_err_bits` is declared `(mut i64)` at the jz source
+  // level (src/compile/index.js ensureThrowRuntime), but watr's OWN generic
+  // optimizer (the external `watr/optimize`, run after jz's pipeline — see
+  // src/optimize/watr-tail.js) independently downgrades an unwritten global to
+  // immutable as a size win: when every throw site referencing it folds away for
+  // a GIVEN compiled module (e.g. an all-literal `typeof BigInt("1")` — no
+  // dynamic input can ever reach a throw), no `global.set` survives anywhere in
+  // that module, and watr emits a plain (const) global instead of `(mut i64)`.
+  // Setting `.value` on a const `WebAssembly.Global` throws TypeError
+  // unconditionally per the JS API spec, regardless of the value written — so
+  // BOTH decodeThrown's existing per-decode reset (below) and the wrapper-entry
+  // belt-and-braces reset (each export wrapper, further down) must check this
+  // FIRST. Probed once per instance (mutability can't change afterward): set the
+  // global to its own current value inside try/catch — a const global rejects
+  // that identically to any other write, so a caught TypeError there means
+  // read-only. (Reaching decodeThrown here at all with an immutable global means
+  // the RuntimeError/Exception came from something OTHER than jz's own $__jz_err
+  // machinery — genuinely nothing to decode from this marker.)
+  let lastErrBitsWritable = false
+  if (lastErrBits) { try { lastErrBits.value = lastErrBits.value; lastErrBitsWritable = true } catch { /* const global — leave false */ } }
   const decodeThrown = error => {
     const isException = error instanceof WebAssembly.Exception
     // A no-user-EH module lowers every internal `throw` to `unreachable` (kept in
@@ -748,8 +768,11 @@ export const wrap = (memSrc, inst, state) => {
     // trap path: an Exception leaves it nonzero too, and a later genuine foreign
     // trap on the SAME instance would otherwise read that stale value and
     // misdecode as the earlier, already-handled error. Nothing else reads this
-    // global (host- or wasm-side) between throws, so the reset is safe.
-    lastErrBits.value = 0n
+    // global (host- or wasm-side) between throws, so the reset is safe. Skipped
+    // when watr proved the global const (see lastErrBitsWritable above) — an
+    // immutable marker can't be stale (it was never written), and writing to it
+    // would throw.
+    if (lastErrBitsWritable) lastErrBits.value = 0n
     // Memoryless module: the thrown value is a number/atom/SSO string — decode it
     // from bits. (A heap Error/string can only exist when the module has memory.)
     const value = mem ? mem.read(errBits) : decode(errBits)
@@ -844,6 +867,12 @@ export const wrap = (memSrc, inst, state) => {
       const len = fn.length
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
+        // audit-#8 P1-1 belt-and-braces: decodeThrown already consumes the marker
+        // on every decode, and every in-wasm catch/finally now consumes it too
+        // (src/compile/emit.js) — this is defense-in-depth against a raw-instance
+        // reuse or any as-yet-unknown in-wasm path that misses that consume, so a
+        // fresh call never starts with a stale marker from a PRIOR call.
+        if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
           const ret = fn(...args.map(i64Arg(ie, ext, coerce)))
           // A bigint-value result returns raw; a boxed i64 result or an f64/number result decodes.
@@ -864,6 +893,8 @@ export const wrap = (memSrc, inst, state) => {
         while (a.length < fixed) { const i = a.length; a.push(ie && ie.p.has(i) ? UNDEF_NAN : i64ToF64(UNDEF_NAN)) }
         const restArr = mem.Array(args.slice(fixed))   // BigInt box (i64 carrier)
         a.push(ie && ie.p.has(fixed) ? restArr : i64ToF64(restArr))
+        // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
+        if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
           const ret = fn.apply(null, a)
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
@@ -878,6 +909,8 @@ export const wrap = (memSrc, inst, state) => {
       const len = fn.length
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
+        // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
+        if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
           const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal)))
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret

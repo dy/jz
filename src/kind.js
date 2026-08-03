@@ -407,23 +407,36 @@ export function mapValueKindOf(name) {
   return null
 }
 
-// maybeUndefined value-join (.work/maybe-undefined-design.md §1): true for a
-// `name[key]`/`name.prop` dict-census READ node (arm 1) or a `recv.get(key)`
-// Map-census CALL node (arm 2, Slice 4) whose VT comes SOLELY from the
-// respective census's soundness carve-out — an unwritten key reads back
-// real JS `undefined` at runtime regardless of the census's claimed exact
-// kind. Consulted at every arithmetic/ToString/equality/console chokepoint
-// (ir.js toNumF64/toStrI64, emit.js emitLooseEq via nullableOperand,
-// module/console.js writePart) so none of them trust an exact-kind claim
-// uncoerced.
-export function censusMaybeUndefined(node) {
+// maybeUndefined value-join (.work/maybe-undefined-design.md §1): the resolved
+// census VAL kind for a `name[key]`/`name.prop` dict-census READ node (arm 1) or
+// a `recv.get(key)` Map-census CALL node (arm 2, Slice 4) whose VT comes SOLELY
+// from the respective census's soundness carve-out — an unwritten key reads back
+// real JS `undefined` at runtime regardless of the census's claimed exact kind.
+// Returns the claimed kind (VAL.NUMBER/STRING/BIGINT/…) or null when the node
+// isn't a maybeUndefined census read at all. `censusMaybeUndefined` below is the
+// boolean form most consumers want; audit-#8 P0-3's BIGINT arithmetic chokepoint
+// (emit.js bigIntOperand) needs the KIND itself — `node[1]` here is the AST's
+// bracket-INDEX arg, which VT['[]']'s OWN dispatch (kind.js ~443-448) resolves to
+// `null` for a non-canonical-numeric string-literal key BEFORE ever reaching the
+// dict fallback (an array-vs-property-read disambiguation, sound for VT['[]']'s
+// own purpose) — so `valTypeOf(node) === VAL.BIGINT` is NOT a reliable proxy for
+// "this dict/Map read's census kind is bigint" the way it is for a plain local;
+// this function (like censusMaybeUndefined's own two arms) queries the census
+// DIRECTLY, bypassing that array-oriented gate on purpose, exactly as the
+// existing "RECEIVER-KIND GUARD" comment above dictValueKindOf documents.
+export function censusMaybeUndefinedKind(node) {
   if (Array.isArray(node) && (node[0] === '[]' || node[0] === '.') && node.length === 3
-    && typeof node[1] === 'string' && dictCensusReceiverIsLive(node[1]) && !!dictValueKindOf(node[1])) return true
+    && typeof node[1] === 'string' && dictCensusReceiverIsLive(node[1])) return dictValueKindOf(node[1])
   if (Array.isArray(node) && node[0] === '()' && node.length === 3
     && Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'get'
-    && typeof node[1][1] === 'string' && !!mapValueKindOf(node[1][1])) return true
-  return false
+    && typeof node[1][1] === 'string') return mapValueKindOf(node[1][1])
+  return null
 }
+
+// Consulted at every arithmetic/ToString/equality/console chokepoint (ir.js
+// toNumF64/toStrI64, emit.js emitLooseEq via nullableOperand, module/console.js
+// writePart) so none of them trust an exact-kind claim uncoerced.
+export const censusMaybeUndefined = (node) => !!censusMaybeUndefinedKind(node)
 
 // `[]` op covers both array literals (1 arg) and index access (2 args).
 // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].

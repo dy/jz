@@ -32,7 +32,7 @@ import {
   i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR,
   OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_NAMES, encodeTypedElemAux, TYPED_ELEM_VIEW_FLAG,
 } from '../../layout.js'
-import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../../err-codes.js'
+import { ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../../err-codes.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
 import { nonNegIntLiteral, intLiteralValue, intExprRange, staticPropertyKey } from '../static.js'
@@ -45,7 +45,7 @@ import {
   exprType, constIntExpr, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
   inBoundsArrIdx, typedIdxProven, versionableTypedNest, idxKey,
 } from '../type.js'
-import { valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../kind.js'
+import { valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, censusMaybeUndefinedKind } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
@@ -3924,7 +3924,11 @@ function compoundAssign(name, val, f64op, i32op, arithOp) {
   // op enforces (`n += 1` on a BigInt n throws in JS, not silently masks to 0).
   if (arithOp && (valTypeOf(name) === VAL.BIGINT || valTypeOf(val) === VAL.BIGINT)) {
     bigintMixReject(`${arithOp}=`, name, val)
-    return writeVar(name, fromI64([`i64.${I64_ARITH_OP[arithOp]}`, asI64(readVar(name)), asI64(emit(val))]), void_)
+    // `name` is always a bare identifier here — censusMaybeUndefined never fires
+    // true for it (that predicate only matches `.`/`[]`/`.get()` AST shapes), so
+    // readVar(name) stays the plain raw path; only `val` (the RHS, which CAN be a
+    // dict/Map maybeUndefined read) needs bigIntOperand's runtime guard.
+    return writeVar(name, fromI64([`i64.${I64_ARITH_OP[arithOp]}`, asI64(readVar(name)), bigIntOperand(val)]), void_)
   }
   const va = readVar(name), vb = emit(val)
   // Peel f64.convert_i32_s/u when va is i32 — typed-array integer reads wrap their
@@ -3987,6 +3991,52 @@ function bigintMixReject(op, a, b) {
   if (aBig === bBig) return
   if (numLiteralNode(aBig ? b : a))
     err(`Cannot mix BigInt and other types in \`${op}\` (TypeError in JS) — convert explicitly with BigInt() or Number()`)
+}
+
+// audit-#8 P0-3: the runtime twin of bigintMixReject's compile-time literal proof.
+// A BIGINT-census `node` whose exact kind comes SOLELY from censusMaybeUndefined's
+// soundness carve-out (a dict/Map absent-key read, e.g. `m.get('missing')`) may hold
+// the UNDEF_NAN sentinel at runtime, not a real bigint payload — plain `asI64(v)`
+// reinterprets those bits as an i64 and fabricates a garbage bigint (`m.get('missing')
+// + 1n` returned 9221120245631025153n instead of throwing). Real JS (ES2024 13.15.3
+// ApplyStringOrNumericBinaryOperator): ToNumeric(undefined) is the NUMBER NaN, not a
+// BigInt, so step 6 ("Type(lnum) is not Type(rnum)") throws whenever the OTHER
+// genuinely-two-operand side is a real BigInt — the exact TypeError bigintMixReject's
+// own literal check proves at compile time for a LITERAL operand; this is the runtime
+// check for a maybeUndefined operand, whose type only resolves at runtime. Called for
+// EVERY operand at a bigintMixReject call site (the "one decision" chokepoint, same
+// altitude as toNumF64's Slice-1 join) — a non-maybeUndefined node degrades to a bare
+// `asI64(v)`, byte-identical to before (present-key/local BIGINT structural pin).
+// KNOWN NARROWER GAP (documented, not closed here): true ES semantics only throws when
+// the two operands' RUNTIME types actually differ — two maybeUndefined BIGINT operands
+// that are BOTH genuinely absent at once (`m.get('a') + m.get('b')`, both keys missing)
+// are Number NaN + Number NaN = NaN, no throw. This independently guards each operand,
+// so that double-absent case throws instead of yielding NaN — strictly better than the
+// prior silent-garbage-bigint answer (moves an unsound VALUE to a sound-but-wider
+// THROW, never a wrong number), and matches this fix's explicit brief ("the runtime
+// semantics for the absent case must be the thrown TypeError"). Not applied to unary
+// negation/'~'/postfix increment('+1'/'-1'): those single-operand ops ToNumeric their
+// one value and never compare against a second operand's type, so an absent key there
+// really does decay to NaN (no throw) — a different, narrower semantics, out of scope.
+function bigIntOperand(node) {
+  const v = emit(node)
+  // censusMaybeUndefinedKind, not valTypeOf(node) === VAL.BIGINT: for a bracket
+  // read with a non-canonical-numeric string-literal key (`d['missing']`),
+  // VT['[]'] itself resolves to `null` (its own array-vs-property disambiguation,
+  // kind.js ~443-448) before ever reaching the dict-value census fallback — so
+  // valTypeOf(node) is NOT a reliable "is this dict/Map read's census kind
+  // bigint" proxy the way it is for a plain local. censusMaybeUndefinedKind
+  // queries the census directly (see its own doc comment in kind.js).
+  if (censusMaybeUndefinedKind(node) !== VAL.BIGINT) return asI64(v)
+  ctx.runtime.throws = true
+  const t = temp('bigU')
+  return typed(['block', ['result', 'i64'],
+    ['local.set', `$${t}`, asF64(v)],
+    ['if', isUndef(['local.get', `$${t}`]),
+      ['then',
+        ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.BIGINT_UNDEF_MIX]]],
+        ['throw', '$__jz_err', ['f64.const', ERR.BIGINT_UNDEF_MIX]]]],
+    ['i64.reinterpret_f64', ['local.get', `$${t}`]]], 'i64')
 }
 
 // Member `.`/`[]` increment/decrement's postfix OLD-value recovery. Prepare
@@ -4236,6 +4286,18 @@ export const emitter = {
         ['f64.const', 0],
         ['br', `$outer${id}`]],
       ['local.set', `$${errName}`],
+      // audit-#8 P1-1: this catch fully HANDLES the error — nothing downstream
+      // rethrows it — so $__jz_last_err_bits must not keep pointing at it. Left
+      // set, a LATER genuine trap (OOB, stack overflow, …) unrelated to this
+      // catch would read this stale marker at the host boundary and misdecode
+      // as the already-handled error instead of a RuntimeError (interop.js's
+      // decodeThrown only resets the marker on a decode that reaches the host —
+      // an error fully handled in-wasm never does). Zeroed here, BEFORE the
+      // handler runs, mirroring decodeThrown's own "consume on every decode"
+      // reset — a `throw` inside the handler (rethrow or a new error) sets the
+      // marker again via the 'throw' emitter above, so escaping-throw decode is
+      // unaffected.
+      ['global.set', '$__jz_last_err_bits', ['i64.const', 0]],
       ...handlerIR,
       ['f64.const', 0]], 'f64')
   },
@@ -4271,6 +4333,17 @@ export const emitter = {
         ...normalCleanup,
         ['br', `$fin_done${id}`]],
       ['local.set', `$${errLocal}`],
+      // audit-#8 P1-1 (mirrors 'catch' above): zero BEFORE throwCleanup runs, not
+      // after. Two outcomes, both correct: (1) throwCleanup falls through
+      // normally → the rethrow below unconditionally re-sets the marker to
+      // errLocal's real bits before throwing, so escaping-throw decode is
+      // unaffected. (2) throwCleanup itself terminates early (a `return`/`break`
+      // in the `finally` block, which per spec SWALLOWS the pending exception —
+      // the rethrow below is then dead code, never reached) → the marker stays
+      // zeroed instead of dangling at the now-suppressed error's stale value,
+      // so a later genuine trap in this instance decodes as RuntimeError, not
+      // the swallowed error.
+      ['global.set', '$__jz_last_err_bits', ['i64.const', 0]],
       ...throwCleanup,
       ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['local.get', `$${errLocal}`]]],
       ['throw', '$__jz_err', ['local.get', `$${errLocal}`]]]
@@ -4434,7 +4507,9 @@ export const emitter = {
       if (fn === 'shr_u') err('BigInt has no unsigned right shift (>>>) — TypeError in JS')
       bigintMixReject(sym, name, val)
       const void_ = ctx.func._expect === 'void'
-      const result = fromI64([`i64.${fn}`, asI64(readVar(name)), asI64(emit(val))])
+      // See compoundAssign's identical comment: `name` is always a bare identifier,
+      // so only `val` can be a maybeUndefined dict/Map read.
+      const result = fromI64([`i64.${fn}`, asI64(readVar(name)), bigIntOperand(val)])
       return writeVar(name, result, void_)
     }
     return compoundAssign(name, val,
@@ -4584,7 +4659,7 @@ export const emitter = {
     }
     if (vtA === VAL.BIGINT || vtB === VAL.BIGINT) {
       bigintMixReject('+', a, b)
-      return fromI64(['i64.add', asI64(emit(a)), asI64(emit(b))])
+      return fromI64(['i64.add', bigIntOperand(a), bigIntOperand(b)])
     }
     // Runtime string dispatch when at least one side could be a string. When one side has
     // a known non-STRING vtype, skip its `__is_str_key` (statically false). Common in
@@ -4665,9 +4740,13 @@ export const emitter = {
       return fromI64(['i64.sub', asI64(emit(a)), ['i64.const', 1]])
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('-', a, b)
+      // b===undefined here is UNARY minus (0n - a) reached through this same table
+      // entry — a single-operand op, so a maybeUndefined `a` decays to NaN in real
+      // JS, never a TypeError (see bigIntOperand's doc comment). Leave its asI64
+      // untouched; only the genuinely two-operand form below gets the runtime guard.
       return b === undefined
         ? fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
-        : fromI64(['i64.sub', asI64(emit(a)), asI64(emit(b))])
+        : fromI64(['i64.sub', bigIntOperand(a), bigIntOperand(b)])
     }
     if (b === undefined) return emitNeg(a)
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a - b)
@@ -4693,7 +4772,7 @@ export const emitter = {
   '*': (a, b) => {
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('*', a, b)
-      return fromI64(['i64.mul', asI64(emit(a)), asI64(emit(b))])
+      return fromI64(['i64.mul', bigIntOperand(a), bigIntOperand(b)])
     }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a * b)
     if (_f) return _f
@@ -4730,7 +4809,7 @@ export const emitter = {
   '/': (a, b) => {
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('/', a, b)
-      return fromI64(['i64.div_s', asI64(emit(a)), asI64(emit(b))])
+      return fromI64(['i64.div_s', bigIntOperand(a), bigIntOperand(b)])
     }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a / b, b => b !== 0)
     if (_f) return _f
@@ -4751,7 +4830,7 @@ export const emitter = {
   '%': (a, b) => {
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('%', a, b)
-      return fromI64(['i64.rem_s', asI64(emit(a)), asI64(emit(b))])
+      return fromI64(['i64.rem_s', bigIntOperand(a), bigIntOperand(b)])
     }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a % b, b => b !== 0)
     if (_f) return _f
@@ -5151,7 +5230,7 @@ export const emitter = {
   ].map(([op, fn]) => [op, (a, b) => {
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject(op, a, b)
-      return fromI64([`i64.${fn}`, asI64(emit(a)), asI64(emit(b))])
+      return fromI64([`i64.${fn}`, bigIntOperand(a), bigIntOperand(b)])
     }
     if (op === '|') {  // `(x / y) | 0` integer-division idiom → i32.div_s
       const divN = intLiteralValue(b) === 0 ? a : intLiteralValue(a) === 0 ? b : null

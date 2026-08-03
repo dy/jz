@@ -651,6 +651,15 @@ test('host decode: a genuine unmarked trap still surfaces as RuntimeError', () =
   // function branches through Number(v) first so the module still carries the
   // last-err marker (pulled by __to_num) — this pins the "marker present but
   // zero" branch, not just the "no marker at all" one.
+  // kernel leg: `maxMemory` is a host-side compile OPTION (ctx.memory.max, baked
+  // into the module's memory limits at compile time) — kernel-target.js's own
+  // docstring lists this class of opt ("host-side opts that shape compilation")
+  // as not marshaled across the wasm compile-ABI (audit-#8 P1-1 differential:
+  // confirmed the growth silently SUCCEEDS in-kernel instead of trapping — the
+  // ceiling never reached the self-hosted compile at all). Orthogonal to the
+  // marker-consume fix this test pins; native (the leg that actually respects
+  // maxMemory) stays the witness.
+  if (onKernel()) return
   const src = `export let f=(v)=>{
     if (typeof v === 'number') { let s = 'a'; for (let i = 0; i < 30; i++) s = s + s; return s.length }
     return Number(v)
@@ -666,6 +675,11 @@ test('host decode: a decoded escape does not leave a stale marker for the next t
   // global a trap-lowered throw does — decodeThrown must consume it there too, or
   // a later genuine trap on the SAME instance reads the stale nonzero value and
   // misdecodes as the earlier, already-handled error.
+  // kernel leg: same `maxMemory` non-marshaling gap as the pin above — see its
+  // comment. The in-wasm-catch/finally marker-consume mechanism this session
+  // added (src/compile/emit.js 'catch'/'finally') is exercised directly by the
+  // audit-#8 P1-1 repro in this file's own catch/finally section instead.
+  if (onKernel()) return
   const src = `export let f = (mode) => {
     if (mode === 1) throw 300
     let s = 'a'; for (let i = 0; i < 30; i++) s = s + s; return s.length
@@ -678,6 +692,42 @@ test('host decode: a decoded escape does not leave a stale marker for the next t
   try { inst.exports.f(0) } catch (e) { second = e }
   ok(second instanceof WebAssembly.RuntimeError, `expected the later trap undecoded, got ${second?.constructor?.name}`)
   ok(!(second instanceof SyntaxError), 'the stale marker from the first decode must not leak into the second')
+})
+
+// audit-#8 P1-1 (2026-08-03): a JSON error CAUGHT INSIDE wasm (a `try`/`catch`
+// the module fully handles — never rethrows, never escapes to the host) used
+// to leave $__jz_last_err_bits pointing at the handled error's code. A LATER
+// genuine trap (unrelated to $__jz_err — here, an oversized Float64Array
+// allocation) then misdecoded at the host boundary as the STALE handled error
+// instead of a plain RuntimeError. Fix: src/compile/emit.js's 'catch' and
+// 'finally' emitters zero the marker as soon as the thrown value is bound
+// (before the handler/cleanup runs) — the in-wasm handling is what consumes
+// it, mirroring interop.js's decodeThrown reset for the escaping-throw case.
+// No `maxMemory` option needed (unlike the pins above) — this repro runs on
+// BOTH legs, native and kernel.
+test('host decode (audit-#8 P1-1): a JSON error caught IN-WASM does not stale-poison a later genuine trap — same call', () => {
+  const src = `export let f = (n) => {
+    try { JSON.parse('{bad json') } catch (e) {}
+    let a = new Float64Array(n)
+    return a.length
+  }`
+  let error
+  try { jz(src).exports.f(2 ** 34) } catch (e) { error = e }
+  ok(error instanceof WebAssembly.RuntimeError, `expected RuntimeError, got ${error?.constructor?.name}`)
+  ok(!(error instanceof SyntaxError), 'the in-wasm-caught SyntaxError must not leak into the later trap')
+})
+
+test('host decode (audit-#8 P1-1): a JSON error caught IN-WASM does not stale-poison a later genuine trap — later call, same instance', () => {
+  const src = `
+    export let catchIt = () => { try { JSON.parse('{bad json') } catch (e) {} ; return 1 }
+    export let boom = (n) => { let a = new Float64Array(n); return a.length }
+  `
+  const { exports } = jz(src)
+  is(exports.catchIt(), 1, 'first call: the in-wasm catch runs and returns normally (nothing escapes)')
+  let error
+  try { exports.boom(2 ** 34) } catch (e) { error = e }
+  ok(error instanceof WebAssembly.RuntimeError, `expected RuntimeError, got ${error?.constructor?.name}`)
+  ok(!(error instanceof SyntaxError), 'the earlier in-wasm-caught SyntaxError must not leak into this later trap')
 })
 
 // ============================================================================

@@ -79,6 +79,10 @@ export const ERR = {
   U8_RECEIVER: 113,            // Uint8Array-only method called on a non-Uint8Array
   ATOMICS_RECEIVER32: 114,     // Atomics.* — receiver not an Int32Array
   ATOMICS_RECEIVER64: 115,     // Atomics.* — receiver not a BigInt64Array
+  BIGINT_UNDEF_MIX: 116,       // BigInt arithmetic (+-*/%,&|^,<<,>>) — the other
+                                // operand is a dict/Map absent-key read: ToNumeric
+                                // reads real JS `undefined` as Number NaN, mismatching
+                                // the BigInt operand's type (ES2024 13.15.3 step 6)
 
   // ── 2xx RangeError-class ─────────────────────────────────────────────────
   ARRAY_WITH_INDEX: 200,       // Array.prototype.with — index out of range
@@ -136,6 +140,7 @@ export const ERR_INFO = {
   [ERR.U8_RECEIVER]: { name: 'TypeError', message: 'receiver must be a Uint8Array' },
   [ERR.ATOMICS_RECEIVER32]: { name: 'TypeError', message: 'Atomics: receiver must be an Int32Array' },
   [ERR.ATOMICS_RECEIVER64]: { name: 'TypeError', message: 'Atomics: receiver must be a BigInt64Array' },
+  [ERR.BIGINT_UNDEF_MIX]: { name: 'TypeError', message: 'Cannot mix BigInt and other types, use explicit conversions' },
 
   [ERR.ARRAY_WITH_INDEX]: { name: 'RangeError', message: 'Invalid index' },
   [ERR.ATOMICS_INDEX32]: { name: 'RangeError', message: 'index out of range' },
