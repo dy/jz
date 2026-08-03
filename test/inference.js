@@ -1032,6 +1032,189 @@ test('mulFitsI32 keeps the i32.mul fast path when the product is genuinely range
   is(f(0x7fff, 0x7fff), (0x7fff * 0x7fff) | 0)
 })
 
+// P0-2 SIBLING #1 (banked bug class #1's own follow-up, closed 2026-08-02):
+// the bare `+`/`-` fast path (emit.js: `isI32Num(va)&&isI32Num(vb)` → native
+// `i32.add`/`i32.sub`) admitted the op UNCONDITIONALLY — no magnitude check
+// at all, worse than the OLD (already-unsound) mulFitsI32, which needed at
+// least ONE bound. JS `+`/`-` are f64 ops; `i32.add`/`i32.sub` truncate mod
+// 2^32 regardless of f64-exactness, so a bare (unwrapped) result needs a
+// proof the exact SUM fits signed i32. Live at HEAD before the fix:
+// `(a|0)+(b|0)` for a=b=2147483647 returned -2; JS gives 4294967294 (exact,
+// f64-representable). FIX, three coordinated layers (all needed — verified
+// by isolating each and re-measuring the perf-ratchet corpus, see .work/
+// todo.md for the full bisection):
+//   1. emit.js primary fast path: `addFitsI32 = opBound(a)+opBound(b) <=
+//      0x7fffffff` (opBound machinery mulFitsI32 already uses; triangle
+//      inequality |a±b|<=|a|+|b| covers both + and - with one predicate).
+//   2. type.js exprType('+'/'-'): a NEW `strict` parameter (default
+//      omitted/false — the overwhelming majority of exprType's callers are
+//      LOCAL/PARAM storage-type decisions, where magnitude-blind "both
+//      operands i32" typing is SAFE — every read of that storage re-applies
+//      the same ToInt32 the write did) — `strict=true` additionally requires
+//      addFitsI32's AST-level twin. Threading `strict` unconditionally into
+//      the general exprType (matching `*`'s always-strict rule exactly)
+//      demoted 8/10 perf-ratchet benchmarks' hottest accumulator/index
+//      shapes from i32 to f64 (measured, reverted) — `s=s+f(...)` and
+//      `arr[i]+1`-as-call-argument are THE hottest shapes this compiler
+//      exists to make fast, unlike `*`'s equivalent (rare enough its own
+//      bound-tightening never hit the ratchet suite).
+//   3. `strict=true` wired into exactly the two callers with a genuine
+//      "value may escape BARE" concern: narrowI32Results' return-tail
+//      classification (narrow.js — a return IS the canonical bare-escape
+//      position) and tryI32Arith's own admission (emit.js — the SAME
+//      "result used bare, right here" footing as the primary fast path,
+//      for the "peeled" typed-array-read operand shape).
+//   4. ir.js writeVar: the i32-local-write coercion switched from `asI32`
+//      to `toI32` (a strict superset — same `|0` wrap contract, PLUS tries
+//      narrowI32's ring-arithmetic recovery first). Needed because
+//      tryI32Arith going strict also gates the ubiquitous `i = i + 1`
+//      loop-counter-increment idiom (a plain, non-compound assignment into
+//      an i32 local — genuinely safe regardless of magnitude, since `i`
+//      never escapes bare) — `toI32` recovers that shape's `i32.add` via
+//      narrowI32 (2^53 ring-safety, unconditionally satisfied for any two
+//      i32-magnitude operands, since their sum is always <= 2^32) instead
+//      of falling to the slow guarded f64 round-trip tryI32Arith's stricter
+//      gate would otherwise force.
+test('addFitsI32 sum-range soundness (P0-2 sibling): two full-range i32 operands can overflow signed i32', () => {
+  const fAdd = run(`export let f = (a, b) => { let x = a | 0, y = b | 0; return x + y }`).f
+  is(fAdd(2147483647, 2147483647), 4294967294, 'I32_MAX + I32_MAX, returned bare, matches JS exactly (was -2)')
+  is(fAdd(1000, 2000), 3000, 'small operands still correct')
+
+  const fSub = run(`export let f = (a, b) => { let x = a | 0, y = b | 0; return x - y }`).f
+  is(fSub(-2147483648, 2147483647), -4294967295, 'I32_MIN - I32_MAX, returned bare, matches JS exactly (was 1)')
+})
+
+test('addFitsI32 keeps the i32.add/i32.sub fast path when the sum is genuinely range-proven or ToInt32-rooted', () => {
+  // Both operands mask-bounded to ≤2^15: the SUM (≤2^16) provably fits signed
+  // i32 — must stay on i32.add, not blanket-demote to f64.add.
+  const wat = jz.compile(
+    'export let f = (x, y) => { let a = x | 0, b = y | 0; return ((a & 0x7fff) + (b & 0x7fff)) | 0 }',
+    { wat: true })
+  const at = wat.indexOf('(func $f')
+  const fn = wat.slice(at, wat.indexOf('(func', at + 6))
+  is(count(fn, /f64\.add/g), 0, 'both-mask-bounded sum uses i32.add, not f64.add')
+  ok(count(fn, /i32\.add\b/g) >= 1, 'the range-proven sum is an i32.add')
+
+  // `(a+b)|0`: ToInt32 wraps regardless, so a genuinely UNBOUNDED bare sum
+  // recovers the i32 fast path via narrowI32 (ir.js toI32) — the SAME
+  // ring-arithmetic recovery `3b50d504` relies on for `*`, unchanged by this
+  // ticket. Structural pin: still ONE i32.add, no f64 round-trip.
+  const watWrap = jz.compile(
+    'export let f = (a, b) => { let x = a | 0, y = b | 0; return (x + y) | 0 }',
+    { wat: true })
+  const atW = watWrap.indexOf('(func $f')
+  const fnW = watWrap.slice(atW, watWrap.indexOf('(func', atW + 6))
+  is(count(fnW, /f64\.add/g), 0, '(a+b)|0 stays i32.add — ToInt32 root recovers the fast path via narrowI32')
+  ok(count(fnW, /i32\.add\b/g) >= 1)
+  const fWrap = run('export let f = (a, b) => { let x = a | 0, y = b | 0; return (x + y) | 0 }').f
+  is(fWrap(2147483647, 2147483647), ((2147483647 | 0) + (2147483647 | 0)) | 0, 'wrapped value matches JS ToInt32 semantics')
+
+  // The classic `i = i + 1` loop-counter idiom (plain assignment into an
+  // i32-typed local, NOT a bare escape) must ALSO stay a single i32.add —
+  // the ratchet-critical case that drove writeVar's asI32→toI32 switch.
+  const watLoop = jz.compile(
+    'export let f = (n) => { let i = 0, s = 0; while (i < n) { s = s + i; i = i + 1 } return s | 0 }',
+    { wat: true, optimize: 2 })
+  const atL = watLoop.indexOf('(func $f')
+  const fnL = watLoop.slice(atL, watLoop.indexOf('(func', atL + 6))
+  is(count(fnL, /f64\.add/g), 0, 'loop-counter increment and accumulator stay i32.add, no f64 round-trip')
+})
+
+// P0-2 SIBLING #2, SAME LEDGER ENTRY: compoundAssign's `*=`/`+=`/`-=` fast
+// path (emit.js ~L3848) had ZERO gating whatsoever — not even one bound.
+// Fixed to route through the SAME corrected predicates the binary
+// `+`/`-`/`*` operators use (mulFitsI32/addFitsI32 + their typed-magnitude/
+// AST-range twins) — desugaring-unification precedent (compare the BigInt
+// compound-assign fix). Matters when the compound-assign's OWN result
+// crosses to a consumer OTHER than `name`'s own storage (e.g. a bare
+// `return (a *= b)`) — an unfaithfully-wrapped i32 result would be trusted
+// at THAT boundary exactly the way a bare binary `+`/`-` result was.
+//
+// NOTE ON SCOPE (verified, not assumed — see the KNOWN GAP test below): this
+// gate is PROVABLY INERT for the narrower "compound-assign target's OWN
+// local storage is i32, and THAT storage is later read bare elsewhere"
+// shape — ir.js writeVar's `toI32` coercion (this same ticket) recovers the
+// IDENTICAL wrapped value via narrowI32 regardless of which arm
+// (compoundAssign's i32 fast path or its f64 fallback) computed it, because
+// two i32-magnitude operands' sum/difference is unconditionally <2^53 (and a
+// common-magnitude product often is too — narrowI32's ring-safety ceiling).
+// That shape's real fix lives one level up, in the LOCAL-STORAGE-TYPE
+// decision itself (analyze-scans.js `collectI32SafeIndexVars` — see the
+// KNOWN GAP test) — a separate, precisely-diagnosed root cause, NOT
+// resolved by this ticket.
+test('compoundAssign requires the same bound proof as the binary operators when its OWN result escapes bare', () => {
+  const f = run(`export let f = (x) => { let a = x | 0; return (a *= 100000) }`).f
+  is(f(50000), 5000000000, '(a*=100000) returned directly from a compound-assign expression matches JS exactly')
+  is(f(2), 200000, 'small operand still correct')
+})
+
+// KNOWN GAP (NOT closed by this fix — separate root cause, flagged for its
+// own repro-first/gate cycle): a compound-assign (`*=` OR `+=`/`-=` — BOTH
+// arms confirmed, not just one) on a local that's been back-propagated into
+// i32 storage via an array-index feeder (`i0 += id`, the FFT-butterfly
+// shape test/perf.js already pins) still wraps when later read bare — but
+// NOT because of compoundAssign's own admission (which this fix correctly
+// gates — confirmed via direct WAT A/B: the compound op now emits
+// `f64.mul`/`f64.add`, never a raw ungated `i32.mul`/`i32.add`). The wrong
+// value survives because `id`'s WASM LOCAL STORAGE itself is still 'i32':
+// `collectI32SafeIndexVars`'s promotion/back-propagation
+// (src/compile/analyze-scans.js ~L877-892) marks ANY var that's an operand
+// of an assignment feeding an already-proven-safe array-index var as
+// "i32-safe" — permanently, for the WHOLE function, regardless of that
+// var's OWN later magnitude growth or whether it ALSO escapes bare
+// elsewhere (`return id`) — the soundness argument justifying this
+// ("a valid array access requires the byte offset to fit i32, so the local
+// is i32-bounded for every non-trapping run") is TRUE for the INDEX var
+// itself at its point of use, but does NOT transfer to an unrelated later
+// bare read of a FEEDER var. Once `id`'s storage is i32, ir.js writeVar's
+// own `toI32` coercion (this ticket) wraps EVERY write into it via
+// ToInt32 regardless of which arm computed the value (see the note on the
+// test above) — the SAME class of bug (magnitude-blind admission) as the
+// just-fixed mulFitsI32/addFitsI32, but living in a DIFFERENT function (a
+// LOCAL-STORAGE-TYPE decision, not a single-expression emitter) — genuinely
+// distinct from, and NOT resolved by, this ticket's emit.js/type.js/ir.js
+// changes. Pinned at its CURRENT (wrong) value per the codebase's
+// documented-KNOWN-FAIL convention (test/dyn-keys.js) so a future fix to
+// analyze-scans.js flips these asserts.
+test('KNOWN GAP: compound-assign on an index-back-propagated local still wraps (collectI32SafeIndexVars, not this ticket)', () => {
+  const srcMul = `
+    let N = 0; let x;
+    export let init = (k) => { N = k; x = new Float64Array(k); return x; };
+    export let go = () => {
+      let ix = 0, id = 4;
+      while (ix < N) {
+        let i0 = ix;
+        while (i0 < N) { x[i0] = x[i0] * 2.0; i0 += id; }
+        ix = 2 * (id - 1);
+        id *= 100000;
+      }
+      return id;
+    };
+  `
+  const mMul = run(srcMul)
+  mMul.init(8)
+  const jsMul = () => { let ix = 0, id = 4; while (ix < 8) { let i0 = ix; while (i0 < 8) i0 += id; ix = 2 * (id - 1); id *= 100000 }; return id }
+  is(jsMul(), 40000000000, 'JS authority for the *= shape')
+  is(mMul.go(), 1345294336, 'KNOWN-FAIL (*=): jz still wraps (40000000000 mod 2^32) — see comment above')
+
+  const srcAdd = `
+    let N = 0; let x;
+    export let init = (k) => { N = k; x = new Float64Array(k); return x; };
+    export let go = (d) => {
+      let id = 4;
+      let i0 = 0;
+      while (i0 < N) { x[i0] = x[i0] * 2.0; i0 += id; }
+      id += (d | 0);
+      return id;
+    };
+  `
+  const mAdd = run(srcAdd)
+  mAdd.init(8)
+  const jsAdd = (d) => { let id = 4; id += (d | 0); return id }
+  is(jsAdd(2147483647), 2147483651, 'JS authority for the += shape')
+  is(mAdd.go(2147483647), -2147483645, 'KNOWN-FAIL (+=): jz still wraps (2147483651 mod 2^32, signed) — see comment above')
+})
+
 test('inferArrElemSchema: caller disagreement keeps polymorphic dispatch', () => {
   // initA pushes `{x,y}`, initB pushes `{a,b}` — disagreeing schemas at the
   // lattice → paramReps[runKernel][0].arrayElemSchema sticky-nulls → callee

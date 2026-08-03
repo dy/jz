@@ -2172,7 +2172,7 @@ const isUnsignedI32Expr = (e, locals) => Array.isArray(e) && (
  * by every other caller (defaults to undefined): they run late enough that
  * lookupValType alone is already sound, or don't call through this gate.
  */
-export function exprType(expr, locals, valTypes) {
+export function exprType(expr, locals, valTypes, strict) {
   if (expr == null) return 'f64'
   if (typeof expr === 'number')
     return isI32(expr) ? 'i32' : 'f64'
@@ -2197,7 +2197,7 @@ export function exprType(expr, locals, valTypes) {
   if (!Array.isArray(expr)) return 'f64'
 
   const [op, ...args] = expr
-  if (op == null) return exprType(args[0], locals, valTypes) // literal [, value]
+  if (op == null) return exprType(args[0], locals, valTypes, strict) // literal [, value]
 
   // Statically evaluable to -0 (e.g. -1 * 0) — i32 would lose the sign.
   const sv = staticValue(expr)
@@ -2262,23 +2262,38 @@ export function exprType(expr, locals, valTypes) {
   // module doc above exprType.
   if (['&', '|', '^', '~', '<<', '>>'].includes(op))
     return valTypeOfWithLocals(expr, name => valTypes?.get(name) ?? lookupValType(name)) === VAL.BIGINT ? 'f64' : 'i32'
-  // Preserve i32 if both operands i32
+  // Preserve i32 if both operands i32. `strict` additionally requires a
+  // magnitude-bound proof the sum/difference fits signed i32 (P0-2 sibling,
+  // 2026-08-02) — needed ONLY by callers deciding whether a value may escape
+  // BARE with no further ToInt32 sink (tryI32Arith, emit.js). Every other
+  // caller (local/param storage-type decisions — the overwhelming majority)
+  // omits it: a value merely STORED i32 is safe regardless of magnitude,
+  // since every read of that storage re-applies the identical ToInt32
+  // conversion the write did — a magnitude-strict default here (measured,
+  // reverted) demoted 8/10 perf-ratchet benchmarks' hottest accumulator/
+  // index shapes from i32 to f64.
   if (op === '+' || op === '-') {
-    const ta = exprType(args[0], locals, valTypes)
-    const tb = args[1] != null ? exprType(args[1], locals, valTypes) : ta // unary: inherit
+    const ta = exprType(args[0], locals, valTypes, strict)
+    const tb = args[1] != null ? exprType(args[1], locals, valTypes, strict) : ta // unary: inherit
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // A uint32 operand ([0, 2^32)) makes the result exceed signed i32 range, so
     // emit widens to f64 (see emit.js `+`/`-`). exprType must agree — else
     // narrowing the result back to i32 would trunc_sat-saturate the f64 to INT32_MAX.
     if (isUnsignedI32Expr(args[0], locals) || (args[1] != null && isUnsignedI32Expr(args[1], locals))) return 'f64'
-    return 'i32'
+    if (!strict || args[1] == null) return 'i32'  // unary: no combination magnitude to bound
+    if (sv !== NO_VALUE && typeof sv === 'number') return isI32(sv) ? 'i32' : 'f64'
+    const bound = e => {
+      const r = intExprRange(e)
+      return r != null ? Math.max(Math.abs(r[0]), Math.abs(r[1])) : 0x80000000
+    }
+    return bound(args[0]) + bound(args[1]) <= 0x7fffffff ? 'i32' : 'f64'
   }
   // `%` is i32 only when emit takes the i32.rem_s path: both operands i32, neither
   // unsigned, AND the divisor is a nonzero integer constant. A 0 or runtime divisor
   // yields NaN via f64rem (f64), so result-narrowing must NOT see i32 here — else a
   // NaN remainder gets i32.trunc_sat'd to 0. Mirrors the emit.js `%` guard exactly.
   if (op === '%') {
-    const ta = exprType(args[0], locals, valTypes), tb = exprType(args[1], locals, valTypes)
+    const ta = exprType(args[0], locals, valTypes, strict), tb = exprType(args[1], locals, valTypes, strict)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     if (isUnsignedI32Expr(args[0], locals) || isUnsignedI32Expr(args[1], locals)) return 'f64'
     const dv = staticValue(args[1])
@@ -2298,7 +2313,7 @@ export function exprType(expr, locals, valTypes) {
   // might widen to f64): an unproven operand costs the full i32 magnitude in
   // the product check, same sentinel emit's `maskBound` defaults to.
   if (op === '*') {
-    const ta = exprType(args[0], locals, valTypes), tb = exprType(args[1], locals, valTypes)
+    const ta = exprType(args[0], locals, valTypes, strict), tb = exprType(args[1], locals, valTypes, strict)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // uint32 operand: product can exceed i32; emit widens to f64 (see emit.js `*`).
     if (isUnsignedI32Expr(args[0], locals) || isUnsignedI32Expr(args[1], locals)) return 'f64'
@@ -2310,11 +2325,11 @@ export function exprType(expr, locals, valTypes) {
     return bound(args[0]) * bound(args[1]) <= 0x7fffffff ? 'i32' : 'f64'
   }
   // Unary preserves type
-  if (op === 'u-' || op === 'u+') return exprType(args[0], locals, valTypes)
+  if (op === 'u-' || op === 'u+') return exprType(args[0], locals, valTypes, strict)
   // Ternary / logical: conciliate
   if (op === '?:' || op === '&&' || op === '||') {
     const branches = op === '?:' ? [args[1], args[2]] : [args[0], args[1]]
-    const ta = exprType(branches[0], locals, valTypes), tb = exprType(branches[1], locals, valTypes)
+    const ta = exprType(branches[0], locals, valTypes, strict), tb = exprType(branches[1], locals, valTypes, strict)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // carrier-invariant-design.md: both branches are i32-REPRESENTABLE (a
     // comparison's 0/1 and a NUMBER literal both answer 'i32' here — this

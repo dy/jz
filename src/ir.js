@@ -151,7 +151,18 @@ export const asPtrOffset = (n, ptrKind) => {
 }
 
 /** Coerce emitted IR to a target WASM param type ('i32' | 'i64' | 'f64'). */
-export const asParamType = (n, t) => t === 'i32' ? asI32(n) : t === 'i64' ? asI64(n) : t === 'v128' ? n : asF64(n)
+// i32 target: toI32 (not asI32) — same reasoning as writeVar's i32-local
+// coercion (P0-2 sibling, 2026-08-02): a strict superset of the `|0` wrap
+// contract that ALSO tries narrowI32's ring recovery first. Covers BOTH of
+// asParamType's consumers safely: call-ARGUMENT coercion (target is the
+// callee's own i32-typed param cell — a consistent-wrap "storage" write,
+// exactly like a local assignment) and RETURN coercion (target is the
+// caller-observed function result — but `t==='i32'` there is only ever
+// reached once narrowI32Results has ALREADY strictly proven the return
+// tail's own magnitude fits, via the identical exprType(strict) proof
+// tryI32Arith consults — so the value toI32 recovers here is faithful by
+// construction, never an unproven wrap escaping bare).
+export const asParamType = (n, t) => t === 'i32' ? toI32(n) : t === 'i64' ? asI64(n) : t === 'v128' ? n : asF64(n)
 
 // Sound upper bound on the value of a masking expr (`&` / `>>>`), so a product
 // against it can be proven < 2^53 and narrow to i32.mul instead of the guarded f64
@@ -1486,7 +1497,18 @@ export function writeVar(name, valIR, void_) {
       ? valIR
       : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(valIR)]], 'i32')
   } else {
-    coerced = t === 'v128' ? valIR : t === 'f64' ? asF64(valIR) : asI32(valIR)
+    // i32 target: toI32 (not asI32) — a strict superset (same `|0`/ToInt32
+    // wrap contract, ir.js docstrings) that ALSO tries narrowI32's ring-
+    // arithmetic recovery first. Needed since P0-2 sibling (2026-08-02):
+    // tryI32Arith (emit.js) now requires a magnitude proof before admitting
+    // `i32.add`/`i32.sub` (a value that might escape BARE, e.g. via `return`,
+    // can no longer trust an unproven wrap) — but an assignment INTO an
+    // i32-typed local like the loop-counter idiom `i = i + 1` has no such
+    // escape (every read of `i` re-applies this SAME wrap), so it doesn't
+    // need tryI32Arith's admission at all: narrowI32's own (looser, ring-safe
+    // under 2^53) recovery already re-narrows the resulting f64.add here,
+    // right at the one assignment site that's provably safe to wrap.
+    coerced = t === 'v128' ? valIR : t === 'f64' ? asF64(valIR) : toI32(valIR)
   }
   if (void_) return typed(['local.set', dollar(name), coerced], 'void')
   const teeNode = typed(['local.tee', dollar(name), coerced], t)

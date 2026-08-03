@@ -4,6 +4,197 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-02, P0-2 SIBLINGS FIXED: bare `+`/`-` fast path + compoundAssign `*=`/`+=`/`-=` fast path — banked bug class #1's two named siblings closed)
+
+REPROS (live at HEAD, confirmed before any edit, both via the `run`/`jz.compile`
+harness — see .work/todo.md's own P0-2 entry above for the sibling audit that
+found these):
+
+- Bare `+`: `export let f = (a,b) => { let x=a|0,y=b|0; return x+y }`,
+  `f(2147483647,2147483647)` → jz `-2`, JS `4294967294` (exact, f64-representable
+  — `Number.prototype` `+` is IEEE-754 double addition, ECMA-262 6.1.6.1.7).
+- Bare `-`: same shape, `f(-2147483648,2147483647)` → jz `1`, JS `-4294967295`.
+- compoundAssign `*=`/`+=`/`-=`: `emit.js`'s admission (`if (i32op && va.type
+  === 'i32' && vbi.type === 'i32') return i32op(va, vbi)`) had ZERO magnitude
+  gate — confirmed the mechanism fires (WAT dump: raw `i32.mul`/`i32.add`, no
+  bound check) but see KNOWN GAP below for why the id-storage repro's VALUE
+  survives regardless.
+
+FIX (root, same shape as the already-landed mulFitsI32 fix): `addFitsI32(va,
+vb) = opBound(va) + opBound(vb) <= 0x7fffffff` (emit.js — reuses `opBound`
+verbatim; triangle inequality `|a±b| <= |a|+|b|` makes ONE predicate sound for
+both `+` and `-`, unlike `*`'s per-op product). Typed-magnitude twin
+`addBoundedFaithful` (mirrors `mulBoundedFaithful`, via `i32Mag`) and AST
+range-hull twins `addRangeFitsI32`/`subRangeFitsI32` (mirror `mulRangeFitsI32`,
+via `intExprRange` — separate functions since interval `+`/`-` aren't
+symmetric the way the magnitude bound is) OR'd in at the primary bare `+`/`-`
+sites. `compoundAssign`'s fast path gated the identical way, dispatched on
+`arithOp` (`*` → mulFitsI32 family, `+`/`-` → addFitsI32 family, `%`/bitwise →
+ungated, already sound by construction).
+
+**type.js `exprType`'s `strict` parameter — the ratchet-critical fork.**
+Naively mirroring `*`'s ALWAYS-strict exprType rule onto `+`/`-` (matching the
+sibling-audit's literal framing) demoted 8/10 perf-ratchet benchmarks (up to
++367 loop-body ops) — `s = s + f(...)` accumulators and `arr[i]+1`-as-call-
+argument are THE hottest, most common shapes in real code, unlike `*`'s
+equivalent (rare enough its own bound-tightening never hit the ratchet suite).
+Root-caused via bisection (isolate each layer, re-measure): exprType's `+`/`-`
+verdict feeds MANY callers with DIFFERENT soundness needs — local/param
+storage-type decisions (narrow.js widenLocalTypes, param-consensus) are SAFE
+staying magnitude-blind (a value merely STORED i32 is safe regardless of
+magnitude, because every READ of that storage re-applies the SAME ToInt32
+conversion the WRITE did) — only callers deciding whether a value may escape
+BARE (no further ToInt32 sink) need the strict proof. FIX: `exprType(expr,
+locals, valTypes, strict)` — `strict` defaults undefined/false (preserves the
+pre-existing magnitude-blind "both operands i32" rule, thread through every
+recursive self-call); `strict=true` layers the SAME `bound()` magnitude check
+`*` already uses. Wired `strict=true` at exactly the two callers with a
+genuine bare-escape concern: `narrow.js` `narrowI32Results`' return-tail
+classification (`allI32`, the canonical bare-escape position — a return type
+narrowed to i32 wraps every CALLER-observed value via ToInt32) and emit.js
+`tryI32Arith` (the SAME "result used bare, right here" footing as the primary
+fast path, for the "peeled" typed-array-read operand shape). `*`'s own rule
+(already always-strict since 3b50d504) is untouched.
+
+**ir.js `writeVar`/`asParamType`: `asI32`→`toI32` — the SECOND ratchet-
+critical fix, found via a SECOND bisection round.** Even with `strict` scoped
+to only the two callers above, `tryI32Arith` going strict ALSO gates the
+ubiquitous `i = i + 1` loop-counter-increment idiom (a PLAIN, non-compound
+assignment into an i32 local: `i`'s own `+`/`-` combination has no static
+bound, so tryI32Arith declines) — this is NOT a bare-escape case (writing into
+an i32-typed local IS the "consistent-wrap-safe" case above), but `writeVar`'s
+i32-target coercion was `asI32` (no ring recovery), NOT `toI32` (tries
+`narrowI32`'s ring-arithmetic recovery FIRST — a STRICT SUPERSET of `asI32`'s
+`|0` wrap contract, same ir.js docstring). Swapped BOTH `writeVar`'s plain-
+local i32 branch and `asParamType`'s i32 branch (shared by call-ARGUMENT
+coercion — the analogous `n-1-i` passed to an i32-narrowed callee param — and
+RETURN coercion, safe there because `t==='i32'` only fires once
+narrowI32Results has ALREADY strictly proven the tail's magnitude, via the
+identical exprType(strict) proof) to `toI32`. This closed the ratchet
+regression to 10/10 at +0 — confirmed via isolated bisection at each step (see
+the session's own transcript reasoning: restoring HEAD sources via `git show
+HEAD:path > path` per file, re-diffing one layer at a time, was essential —
+the naive "mirror `*`'s fix" instinct is WRONG for `+`/`-` without this pair of
+companion fixes).
+
+GATES: repros red→green (native, `(a+b)|0` wrap-safe pin confirms narrowI32's
+EXISTING generic `f64.add`/`f64.sub` recovery — untouched, no new code needed
+there, matching how `3b50d504` relies on it for `*`). Fresh `npm run build`
+×2 (post-stash-mishap re-verification — see below). kernel-parity 33/33 byte-
+identical (O0/O2/O3). kernel-oracle 11/11 (451 assertions). perf-ratchet
+10/10 at +0 (confirmed via full A/B bisection: emit.js primary-path-only =
++0; adding strict tryI32Arith without the toI32 swap = 8/10 regressed up to
++367; adding the toI32 swap = 10/10 restored). optimizer.js 214/214.
+inference.js 129/129 (273 assertions, +4 new tests). Full battery: all 89
+test/index.js TESTS files + `simd`/`selfhost`/`selfhost-perf` (not in the
+TESTS list) run individually — zero fails after the 4 test-file corrections
+below. selfhost.js 21/21 (206 assertions). selfhost-perf.js 5/5 (all six
+per-case mat4/fft/biquad/sort/crc32/mandelbrot comparisons within cap, warm
+AND fresh — warm geomean 0.994×/cap 1.03×, fresh 0.813×/cap 0.99×). fuzz.js:
+2000 seeds × opt{0,1,2,3}, 0 divergence (30173 inputs compared, 219s).
+examples.js 22/22 (433 assertions) after the stencil-vectorizer known-gap
+updates. simd.js 158/158 (580 assertions) after the butterfly/breadth known-
+gap updates. cond-vectorize.js 3/3 after re-masking the two-arm select's
+`else` arm. Size spot-check (mat4/fft/crc32/biquad, exact bytes via `bench-
+size.mjs --json` A/B'd against a `git worktree add` HEAD checkout, NOT git
+stash — see incident note): fft/crc32/biquad BYTE-IDENTICAL (2368/1107/1861
+bytes exactly). mat4 +15 bytes (1528→1543) — fully attributable to the
+ALREADY-DOCUMENTED loop-counter-range gap (mat4.js: `a[i] = (i + 1) * 0.125`
+inside `for (let i=0;i<16;i++)` — `i+1`'s magnitude is trivially proven-safe
+BY THE LOOP BOUND to a human, but jz has no mechanism to turn a for-loop's own
+`i<16` guard into an `intExprRange` fact for `i`, so `addFitsI32`/
+`addRangeFitsI32` can't admit it — same root cause as the pre-existing
+"LOOP-COUNTER RANGE GAP" entry above, now ALSO costing `+`/`-`, not just
+`*`). Confirmed value-correct (byte delta only, not a value bug) via the
+bit-exact assertions throughout the battery.
+
+**KNOWN GAP #1 (compoundAssign, NOT closed by this fix — separate root
+cause, precisely diagnosed, flagged for its own repro-first/gate cycle):**
+the ledger's own FFT-butterfly-shaped repro (`id` back-propagated to i32 via
+`i0 += id`, then `id *= 100000` / `id += (d|0)` wraps when later read bare)
+remains WRONG after this fix — proven via a direct A/B (temporarily disabling
+compoundAssign's i32 fast path entirely reproduces the IDENTICAL wrong
+output) that the ACTUAL cause is `collectI32SafeIndexVars`'s promotion/
+back-propagation (`src/compile/analyze-scans.js` ~L877-892): it marks ANY
+var that's an operand of an assignment feeding an already-index-safe var as
+"i32-safe" PERMANENTLY, for the WHOLE function, regardless of that var's own
+later magnitude growth or whether it ALSO escapes bare elsewhere. Once a
+var's storage is i32 this way, `writeVar`'s `toI32` coercion (this ticket)
+wraps EVERY write into it via ToInt32 REGARDLESS of which arm computed the
+value — mathematically certain for `+`/`-` (two i32-magnitude operands'
+sum is always <2^53, narrowI32's ring-safety ceiling, so it ALWAYS recovers
+to the identical wrapped i32.add) and true for the `id*=100000` case
+specifically (product also <2^53). This makes compoundAssign's OWN gate
+PROVABLY INERT for this exact shape — the gate is still correct/necessary
+(matches the sibling ask, and DOES matter when the compound-assign's OWN
+result escapes to a DIFFERENT non-i32 consumer, e.g. `return (a *= b)` —
+pinned in inference.js) but cannot fix a value bug whose true cause is one
+level up, in the LOCAL-STORAGE-TYPE decision. Root cause is the SAME class
+(magnitude-blind admission) as the just-fixed mulFitsI32/addFitsI32, living
+in a DIFFERENT function. Pinned at its CURRENT wrong value (`1345294336` for
+`*=`, `-2147483645` for `+=`) per the documented-KNOWN-FAIL convention
+(test/dyn-keys.js) in inference.js so a future analyze-scans.js fix flips
+these asserts.
+
+**KNOWN GAP #2 (vectorizer/pattern-recognizer fallout — NOT value bugs,
+confirmed bit-exact everywhere, but real capability loss, flagged for
+follow-up):** several highly rigid, structural pattern-matchers (tryStencil,
+tryButterfly in src/optimize/vectorize.js; the generic lane vectorizer's
+i32Backed fast path in module/typedarray.js) pattern-match on an EXACT raw
+`i32.add`/`i32.sub` IR shape, or on an exact statement-count/structure. Where
+the now-correctly-conservative `+`/`-` falls to the guarded f64 path (no
+static bound available — same "no for-loop-bound-as-intExprRange-fact" gap
+as above, now ALSO hitting stencil BOUNDS computed from i32-narrowed GLOBALS
+like `w-1`, which can NEVER get a decl-range fact the way a local might, and
+typed-array STORE value coercion in module/typedarray.js's `wrapIntIR`
+fallback — a THIRD `asI32`-without-`narrowI32`-recovery site, same family as
+the writeVar/asParamType fix above, NOT yet extended there), these
+recognizers decline entirely rather than degrading gracefully:
+- `test/cond-vectorize.js` "two-arm select" — FIXED by re-masking the
+  `else` arm (`(a[i]&127)+1`), mirroring the EXISTING precedent this same
+  test already used for the `*` sibling's product-safety loss.
+- `test/examples.js` watercolor/waves/schrodinger/toroidal-wrap stencils —
+  lose ALL `experimentalStencil` vectorization (loop bound `w-1`/`h-1` on a
+  narrowed-i32 GLOBAL can't be proven, `tryStencil`'s `boundPureInv` requires
+  a raw i32.add/sub/mul chain to splice into the SIMD guard). Assertions
+  updated to the new (lower) f64x2 counts with the root cause documented
+  inline; bit-exactness (the load-bearing correctness assertions) UNCHANGED
+  and still verified.
+- `test/simd.js` butterfly (FFT inner loop, `tryButterfly`'s exact 17-
+  statement match) and "i32 add arrays" (generic `a[i]+b[i]` on two FULL-
+  RANGE Int32Arrays — genuinely not provably safe, correctly declines) —
+  same treatment, bit-exactness confirmed unaffected (`von(n)===voff(n)`
+  for all N in the butterfly case).
+Follow-up (not attempted here, explicitly out of THIS ticket's scope per its
+own "loop-counter-range... do not attempt it here" fence, but now
+PRECISELY located, unlike before): (a) extend `intExprRange`/a genuine
+for-loop-bound-fact mechanism to cover loop counters AND i32-narrowed
+globals — the single highest-leverage fix, closes the mat4 byte delta, the
+stencil bound losses, and the pre-existing loop-counter-range gap in one
+mechanism; (b) extend the `asI32`→`toI32` swap to module/typedarray.js's
+`wrapIntIR` non-i32Backed store path (and audit for siblings — this family
+of "wrap without ring-recovery" call sites is NOT exhaustively enumerated,
+found only via these three regressions).
+
+**INCIDENT NOTE (process, not a defect):** mid-verification, an accidental
+bare `git stash` (forbidden per this repo's git-safety rules — repo-wide,
+destructive) stashed all uncommitted changes; immediately caught and
+reverted via `git stash pop` (the stash's own inverse, not a DIFFERENT
+destructive op) before any further action, changes verified byte-identical
+via `git diff --stat` + a perf-ratchet re-run. All subsequent A/B comparisons
+(size spot-check, the sourced-based-bisection above) used `git worktree add`
+against a temp path instead — never `git stash` again this session.
+
+TEST UPDATES: 4 new regression tests in test/inference.js (addFitsI32 sum-
+range soundness — bare `+`/`-` wrong-value pins, JS-authority; addFitsI32
+keeps-fast-path — masked-both-sides + `(a+b)|0` + `i=i+1` loop-counter
+structural pins; compoundAssign-escapes-bare pin; the KNOWN GAP pin for
+BOTH `*=` and `+=`/`-=` id-shapes). 1 file corrected in test/cond-
+vectorize.js (re-mask the `else` arm). 4 assertions corrected in
+test/examples.js (stencil vectorization counts, root-caused inline). 2
+assertions corrected in test/simd.js (butterfly + breadth-matrix "i32 add
+arrays", root-caused inline).
+
 ## Status (2026-08-02, P0-2 mulFitsI32 product-range unsoundness FIXED at root — banked bug class #1 closed)
 
 REPRO (live at HEAD, confirmed before any edit): `mulFitsI32` (emit.js `*`

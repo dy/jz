@@ -103,7 +103,7 @@ const peelI32 = (v) =>
 const tryI32Arith = (wasmOp, astOp, a, b, va, vb) => {
   const pa = peelI32(va); if (pa == null) return null
   const pb = peelI32(vb); if (pb == null) return null
-  if (exprType([astOp, a, b], ctx.func.locals) !== 'i32') return null
+  if (exprType([astOp, a, b], ctx.func.locals, undefined, true) !== 'i32') return null
   return typed([wasmOp, pa, pb], 'i32')
 }
 
@@ -363,6 +363,16 @@ const mulRangeFitsI32 = (aAst, bAst) => {
   if (!ra || !rb) return false
   const p = [ra[0] * rb[0], ra[0] * rb[1], ra[1] * rb[0], ra[1] * rb[1]]
   return Math.min(...p) >= -0x80000000 && Math.max(...p) <= 0x7fffffff
+}
+const addFitsI32 = (va, vb) => opBound(va) + opBound(vb) <= 0x7fffffff
+const addBoundedFaithful = (va, vb) => i32Mag(va) + i32Mag(vb) <= 0x7fffffff
+const addRangeFitsI32 = (aAst, bAst) => {
+  const ra = intExprRange(aAst), rb = intExprRange(bAst)
+  return !!ra && !!rb && ra[0] + rb[0] >= -0x80000000 && ra[1] + rb[1] <= 0x7fffffff
+}
+const subRangeFitsI32 = (aAst, bAst) => {
+  const ra = intExprRange(aAst), rb = intExprRange(bAst)
+  return !!ra && !!rb && ra[0] - rb[1] >= -0x80000000 && ra[1] - rb[0] <= 0x7fffffff
 }
 
 /** Emit typeof comparison: typeof x == typeCode → type-aware check. */
@@ -3845,7 +3855,26 @@ function compoundAssign(name, val, f64op, i32op, arithOp) {
     const inner = vb[1]
     vbi = Array.isArray(inner) ? typed(inner, 'i32') : inner
   }
-  if (i32op && va.type === 'i32' && vbi.type === 'i32')
+  // P0-2 sibling (2026-08-02): this admission had NO magnitude gate at all —
+  // worse than the old (already-unsound) mulFitsI32, which needed at least one
+  // bound. `name op= val` desugars to the exact binary-op arithmetic below, so
+  // it must pass the SAME bilateral-bound proof the binary `+`/`-`/`*` operators
+  // now require (addFitsI32/mulFitsI32 + their typed-magnitude/AST-range twins,
+  // reused verbatim — no second bound tracker). Matters when this compound-
+  // assign's OWN result crosses to a DIFFERENT (non-i32) consumer as a VALUE
+  // (`y = (x *= huge)` with y f64-typed) — an unfaithfully-wrapped i32 result
+  // would be trusted at THAT boundary the same way a bare `return` trusts one
+  // (fixed alongside this at narrowI32Results, narrow.js). Value-neutral for
+  // the common "write straight back into x's own i32 storage" case either way
+  // (ir.js `writeVar` now coerces via `toI32`, which recovers the identical
+  // wrapped result through narrowI32 when this gate falls to the f64 arm).
+  // `%`/bitwise compounds reach here with no arithOp or an inherently-sound
+  // op, so they stay ungated.
+  const compoundFitsI32 = arithOp === '*' ? (mulFitsI32(va, vbi) || mulBoundedFaithful(va, vbi) || mulRangeFitsI32(name, val))
+    : arithOp === '+' ? (addFitsI32(va, vbi) || addBoundedFaithful(va, vbi) || addRangeFitsI32(name, val))
+    : arithOp === '-' ? (addFitsI32(va, vbi) || addBoundedFaithful(va, vbi) || subRangeFitsI32(name, val))
+    : true
+  if (i32op && va.type === 'i32' && vbi.type === 'i32' && compoundFitsI32)
     return writeVar(name, i32op(va, vbi), void_)
   // Both operands coerce like '+' operands: toNumF64 folds a checked read's
   // UNDEF miss arm to canonical NaN and ToNumber-coerces non-numeric carriers,
@@ -4390,7 +4419,8 @@ export const emitter = {
     // An `.unsigned` operand is a uint32 (range [0, 2^32)); JS `+` is a float
     // op whose result can exceed i32, so `i32.add` would wrap (4294967295+1→0).
     // Widen to f64 — never wrap — matching spec. Only `>>>0`/`|0`/imul wrap.
-    if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb)) return typed(['i32.add', va, vb], 'i32')
+    if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb)
+        && (addFitsI32(va, vb) || addBoundedFaithful(va, vb) || addRangeFitsI32(a, b))) return typed(['i32.add', va, vb], 'i32')
     const i32add = tryI32Arith('i32.add', '+', a, b, va, vb); if (i32add) return i32add
     return typed(['f64.add', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
@@ -4417,7 +4447,8 @@ export const emitter = {
     if (isLit(vb) && litVal(vb) === 0) return toNumF64(a, va)
     // Unsigned uint32 operand: JS `-` is float (can go negative / exceed i32),
     // so avoid the wrapping i32.sub fast-path. See `+` above.
-    if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb)) return typed(['i32.sub', va, vb], 'i32')
+    if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb)
+        && (addFitsI32(va, vb) || addBoundedFaithful(va, vb) || subRangeFitsI32(a, b))) return typed(['i32.sub', va, vb], 'i32')
     const i32sub = tryI32Arith('i32.sub', '-', a, b, va, vb); if (i32sub) return i32sub
     return typed(['f64.sub', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },

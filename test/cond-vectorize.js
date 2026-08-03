@@ -47,9 +47,15 @@ test('cond-vectorize: two-arm select → i32x4 bitselect', () => {
   // (`(a[i]&127)*2 ≤ 254`, genuinely i32-safe) so this test again exercises
   // its OWN subject — the two-arm-select-to-bitselect lift — decoupled from
   // the (separate, now-fixed) product-safety question.
+  //
+  // P0-2 SIBLING (2026-08-02): same story for the `else` arm, which was bare
+  // `a[i] + 1` — also not provably i32-safe (a[i] could be within 1 of
+  // INT32_MAX), so the now-corrected `addFitsI32` can't admit it as a bare
+  // i32.add either, and the vectorizer follows suit. Re-mask it too
+  // (`(a[i]&127)+1 ≤ 128`, genuinely i32-safe) for the same reason.
   pin('two-arm', `export let run = () => {
     let a = new Int32Array(64); for (let i = 0; i < 64; i++) a[i] = (i * 5) & 127
-    for (let i = 0; i < 64; i++) a[i] = (a[i] > 50) ? ((a[i] & 127) * 2) : (a[i] + 1)
+    for (let i = 0; i < 64; i++) a[i] = (a[i] > 50) ? ((a[i] & 127) * 2) : ((a[i] & 127) + 1)
     let s = 0; for (let i = 0; i < 64; i++) s = (s + a[i]) | 0; return s }`, { bitselect: true })
 })
 
