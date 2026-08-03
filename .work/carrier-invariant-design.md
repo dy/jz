@@ -297,3 +297,69 @@ audit VT['()'] fallthrough after landing); the formatter sub-sweep may
 hide its own duplication; the quarantined identical-subtree anomaly is
 NOT closed by this design; self-host census is a regex proxy — re-verify
 with the real predicate.
+
+## Wall's final status (2026-08-03, audit-#8 P0-4 Part 2 — read this LAST,
+## it supersedes every "chase the dict-O2/O3 divergence" note above)
+
+STILL BANKED, STILL CLOSED. The dict-O2/O3 divergence entries above (the
+"WALL RE-CHARACTERIZED" / "TAG-PRESERVING REBOX" / "EXPORT-LOSS MECHANISM"
+sequence) all predate this entry and describe REAL, LANDED work — the
+export-loss MECHANISM C fix (2026-08-03, earlier in this file) IS in
+production and IS a structural no-op today, confirmed again this session.
+What follows is this session's OWN attempt and its own, DIFFERENT finding.
+
+The dict-O2/O3 divergence itself WAS finally named: SELF-HOST GENERATIONAL
+DRIFT (see .work/todo.md's Part 2 entry, dated 2026-08-03, for the full
+worktree WAT-diff evidence) — `storedValue(init)`'s non-ambiguous branch
+boxes every VAL.BOOL-typed decl, not just ambiguous BOOL∪NUMBER merges,
+reboxing thousands of unrelated locals throughout self.js's own compiled
+body and shifting watr's inliner decisions for unrelated target programs.
+Benign in itself (WAT-diff showed only inliner boilerplate, never a
+changed value), and fully AVOIDABLE by narrowing the gate to exactly what
+the wall's repro needs: emit.js's own `argIR` (`hasAmbiguousBoolMerge(node)
+? emitIdentitySafe(node) : emit(node)`) instead of the wider `storedValue`.
+`val = viewInit || argIR(init)` proved byte-identical on kernel-parity's
+FULL byte-identity corpus (33/33, dict included) — the generational-drift
+chain genuinely never fires with this narrower substitution.
+
+BUT a SECOND, unrelated self-host miscompile surfaced that the parity
+corpus doesn't exercise: test/kernel-oracle.js's 'closure' AGREE row (a
+captured-and-MUTATED outer `let`, jz's `ctx.func.boxed` heap-cell path)
+compiled via the resulting self-hosted kernel throws
+`WebAssembly.Module(): ... local.set[0] expected type f64, found local.get
+of type i32` — genuinely INVALID WASM, not a shape difference. A clean
+3-way worktree A/B isolated the cause precisely to THIS substitution (not
+"any emit.js edit" — this session's other two parts also edit compiler
+source and self-host cleanly). First-localization: native WAT-diff of
+`scripts/self.js` compiled with vs without ONLY the argIR substitution
+(no self-hosting needed to see the shift) shows `src/prepare/index.js`'s
+`resolveCallee` — an unrelated PREPARE-phase function — has its compiled
+locals shift by exactly one synthetic temp name, with everything
+downstream renumbering. Working hypothesis, NOT yet proven: the argIR
+call-site TEXT change in emitDecl.js shifts the GLOBAL `temp()` counter
+while the compiler compiles ITS OWN source, which is normally harmless but
+collides with a latent watr inliner/local-coalescing bug somewhere between
+`resolveCallee` and the closure-boxing codegen it doesn't itself touch —
+the SAME outline-hunt self-host-miscompile CLASS as the export-loss entry
+above, a NEW, not-yet-root-caused instance of it.
+
+REVERTED before landing (`src/compile/emit.js`'s decl-init line stays
+`viewInit || emit(init)`) — the closure-decl miscompile is strictly worse
+than the wall itself (a real WASM-validation failure vs. a known,
+documented, narrowly-scoped value gap), so shipping it would trade a
+smaller bug for a bigger one. kernel-oracle's 'captured-then-read' row
+(and the 'computed member key read (named local, ...)' shape the same fix
+would have closed as a side effect) both stay exactly as they were before
+this session — PENDING-FIX / undocumented, not flipped.
+
+NEXT (bounded, concrete): start from the `resolveCallee` compiled-local
+shift — it reproduces with a cheap NATIVE WAT diff (no self-host build
+required, ~5 min saved per probe cycle vs. this session's earlier
+per-experiment full builds) — and trace which of `resolveCallee`'s callees
+(`isDeclared`/`resolveScope`/`hasFunc`/`includeForCallableValue`) actually
+get inlined into it, and why the one-local shift produces a genuine type
+mismatch rather than pure renaming. A fresh pair of eyes on whether the
+`temp()` counter is TRULY global (vs. per-function, in which case the
+"shifts everything downstream" framing above is itself wrong and the real
+mechanism is something else) is the fastest way to falsify or confirm the
+working hypothesis.

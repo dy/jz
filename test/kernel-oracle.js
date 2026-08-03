@@ -278,7 +278,14 @@ export let f = (x) => g(x > 0 && 1)`,
   // `??`/`()` AST shape directly, not an identifier referencing one), and
   // the merge already collapsed at k's OWN declaration — the DECL-INIT WALL
   // (carrier-invariant-design.md), the same root as the 'captured-then-read'
-  // PENDING-FIX row below, banked and out of scope here.
+  // PENDING-FIX row below, banked and out of scope here. Re-attempted
+  // audit-#8 P0-4 Part 2 (2026-08-03): a NARROWER, hasAmbiguousBoolMerge-
+  // gated fix (emit.js emitDecl's `argIR(init)`) proved byte-identical on
+  // the kernel-parity corpus but surfaced a DIFFERENT, genuine self-host
+  // miscompile (invalid WASM for a captured-and-mutated closure decl,
+  // unrelated to this row's own shape) — reverted; see emit.js's emitDecl
+  // comment for the full finding. This row and 'captured-then-read' below
+  // both stay PENDING-FIX.
   { name: 'computed member key read (inline, literal-key object)',
     src: `export let f = (x) => { let o = { '0': 'zero', 'false': 'FALSE' }; return o[x > 0 && 1] }`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
@@ -436,7 +443,15 @@ export let f = (s) => g(s) === false`
 // ambiguous `let v = x + 1` local (zero merge shapes anywhere in the
 // program) — a self-host-only bug in how the kernel compiles ITS OWN
 // emitDecl, not a logic error in the fix, and out of this design's
-// carrier-boxing scope to chase further this session.
+// carrier-boxing scope to chase further this session. RE-ATTEMPTED audit-#8
+// P0-4 Part 2 (2026-08-03) with a NARROWER, hasAmbiguousBoolMerge-gated fix
+// (`argIR(init)`, byte-identical to today for every non-ambiguous decl,
+// confirmed via kernel-parity's full byte-identity corpus) — still hits a
+// DIFFERENT self-host miscompile (invalid WASM for a captured-and-mutated
+// closure decl, 'closure' AGREE row above, isolated via a clean A/B against
+// this session's other two parts, which self-host cleanly). See emit.js's
+// emitDecl comment for the full finding and the next concrete lead
+// (resolveCallee's compiled-local shift). Still banked.
 //
 // Verified live: the wrong value is asserted explicitly (both legs share
 // the bug) plus a not() tripwire against the true JS value, so a future

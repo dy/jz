@@ -499,6 +499,29 @@ test('JSON.stringify: false still serialises as "false"', () => {
   is(run(`export let f = () => JSON.stringify(false)`).f(), 'false')
 })
 
+// audit-#8 P0-4 (2026-08-03): a BOOL∪NUMBER ambiguous merge (valTypeOf
+// collapses to NUMBER) reaching JSON.stringify/JSON.parse's scalar-argument
+// ingress raw — carrier-invariant-design.md MECHANISM A, same class as the
+// String()/template-literal formatter wave (756ae10f), landed here via
+// storedValue at the stringify/space/parse argument chokepoints.
+test('JSON.stringify: ambiguous BOOL∪NUMBER merge argument boxes correctly', () => {
+  is(run(`export let f = (s) => JSON.stringify(s ? 1 : false)`).f(1), '1')
+  is(run(`export let f = (s) => JSON.stringify(s ? 1 : false)`).f(0), 'false')
+  is(run(`export let f = (s) => JSON.stringify(s ? true : 1)`).f(1), 'true')
+  is(run(`export let f = (s) => JSON.stringify(s ? true : 1)`).f(0), '1')
+})
+
+test('JSON.stringify: ambiguous BOOL∪NUMBER merge as space argument', () => {
+  is(run(`export let f = (s) => JSON.stringify([1,2], null, s ? 2 : true)`).f(1), '[\n  1,\n  2\n]')
+  is(run(`export let f = (s) => JSON.stringify([1,2], null, s ? 2 : true)`).f(0), '[1,2]')
+})
+
+test('JSON.parse: ambiguous BOOL∪NUMBER merge argument boxes correctly', () => {
+  is(run(`export let f = (s) => JSON.parse(s ? true : 1)`).f(1), true)
+  is(run(`export let f = (s) => JSON.parse(s ? true : 1)`).f(0), 1)
+  is(run(`export let f = (s) => typeof JSON.parse(s ? true : 1)`).f(1), 'boolean')
+})
+
 // JSON.parse reviver (2026-07-10): was silently DROPPED — now lowers to an
 // inline bottom-up walk (ES InternalizeJSONProperty). One documented edge:
 // a reviver returning undefined assigns undefined instead of deleting.

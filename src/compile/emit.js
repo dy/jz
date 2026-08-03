@@ -287,7 +287,7 @@ const emitNeg = (a) => {
   // literals; the runtime magnitude heuristic (emit.js TYPEOF.bigint) remains
   // for genuinely dynamic/unknown-kind values, a separate, real carrier limit.
   if (valTypeOf(a) === VAL.BIGINT)
-    return fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
+    return bigIntUnary(a, i64v => ['i64.sub', ['i64.const', 0], i64v], ['f64.const', 'nan'])
   const v = emit(a)
   if (isLit(v)) return emitNum(-litVal(v))
   if (isI32Num(v)) return typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32')
@@ -1786,9 +1786,63 @@ export function emitDecl(...inits) {
     // oracle rows the design doc already gates production changes behind)
     // getting exercised for the first time with storedValue live at every
     // decl. NOT chased further this session (separate root, separate hunt).
-    // test/kernel-oracle.js's 'captured-then-read' row stays PENDING-FIX:
-    // the export-loss blocker is gone, but the wall stays closed until the
-    // dict-O2/O3 divergence is independently named.
+    //
+    // ATTEMPTED AGAIN, STILL BANKED 2026-08-03 (audit-#8 P0-4 Part 2 —
+    // dedicated worktree hunt). The dict-O2/O3 divergence ABOVE was in fact
+    // named and DISSOLVED: it is `storedValue`'s carrier WIDTH, not the
+    // decl-init site itself — `storedValue(init)` boxes EVERY VAL.BOOL-typed
+    // init (its non-ambiguous branch is `carrierF64`, which boxes any BOOL,
+    // not just an ambiguous BOOL∪NUMBER merge — src/ir.js carrierF64:
+    // `valTypeOf(node) === VAL.BOOL ? boolBoxIR(emitted) : asF64(emitted)`),
+    // so EVERY plain `let ok = a > b` in self.js's own source got reboxed,
+    // reshaping the self-hosted kernel binary pervasively enough to shift
+    // watr's inliner decisions for unrelated programs (confirmed via WAT
+    // diff: kernel `count$exp` for the dict corpus carried extra inliner
+    // boilerplate locals, no changed VALUE computation — a real but
+    // avoidable "different compiler, same semantics" artifact). This file's
+    // own `argIR` (line ~1195) is EXACTLY the narrower half needed —
+    // `hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node)`,
+    // whose non-ambiguous branch is the bare `emit(node)` this line already
+    // calls — so swapping to `val = viewInit || argIR(init)` should have
+    // been byte-identical for every non-ambiguous decl. It WAS: kernel-
+    // parity's byte-identity corpus (33/33, dict included) stayed perfectly
+    // byte-identical with this substitution live.
+    // BUT a SECOND, DIFFERENT self-host miscompile surfaced that the parity
+    // corpus's 11 programs don't exercise: test/kernel-oracle.js's 'closure'
+    // AGREE row (`let total = 0; const add = (x) => { total += x; … }`, a
+    // captured-and-MUTATED outer binding — jz's `ctx.func.boxed` heap-cell
+    // path) — the resulting self-hosted kernel throws
+    // `WebAssembly.Module(): ... local.set[0] expected type f64, found
+    // local.get of type i32` compiling THIS target program, i.e. produces
+    // genuinely INVALID WASM, not just a size/shape difference. Isolated
+    // with a 3-way worktree A/B (native diff of scripts/self.js compiled
+    // with vs without ONLY this substitution, `wat:true`, no self-hosting
+    // needed to reproduce the divergence): the compiled locals inside
+    // `src/prepare/index.js`'s `resolveCallee` (an unrelated PREPARE-phase
+    // function, calls no boxed-closure logic itself) shift by exactly one
+    // synthetic temp name and everything downstream renumbers — consistent
+    // with `argIR`'s call-site TEXT change in emitDecl.js shifting the
+    // GLOBAL `temp()` counter while compiling THE COMPILER'S OWN source
+    // (self.js), which is otherwise harmless UNLESS it happens to collide
+    // with a latent watr inliner/local-coalescing sensitivity — exactly the
+    // outline-hunt self-host-miscompile CLASS this ledger has hit and
+    // resolved before (export-loss MECHANISM C, above), but a NEW, not yet
+    // root-caused instance, confirmed genuinely caused by this substitution
+    // via a clean A/B (Parts 1+3 of the same session, which also edit
+    // compiler source, build and self-host CLEANLY — isolates the cause to
+    // this exact line, not "any edit to emit.js is unsafe"). Root-causing
+    // this precisely (which exact resolveCallee-adjacent decl reacts, and
+    // why the renumbering trips watr's optimizer) is a multi-session-class
+    // hunt on its own precedent (see the export-loss entry above, itself a
+    // dedicated hunt) — NOT closed this session. REVERTED: this line stays
+    // `emit(init)`; test/kernel-oracle.js's 'captured-then-read' row stays
+    // PENDING-FIX. NEXT: start from `resolveCallee`'s compiled-WAT local
+    // shift (native `compile(selfSrc, {wat:true, optimize:false})`, diffed
+    // with vs without ONLY the argIR substitution — no self-host build
+    // needed to see the shift) and trace which of its callees'
+    // (`isDeclared`/`resolveScope`/`hasFunc`/`includeForCallableValue`)
+    // compiled locals actually get inlined into it and why the shift isn't
+    // pure renaming.
     const val = viewInit || emit(init)
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
@@ -4015,9 +4069,17 @@ function bigintMixReject(op, a, b) {
 // prior silent-garbage-bigint answer (moves an unsound VALUE to a sound-but-wider
 // THROW, never a wrong number), and matches this fix's explicit brief ("the runtime
 // semantics for the absent case must be the thrown TypeError"). Not applied to unary
-// negation/'~'/postfix increment('+1'/'-1'): those single-operand ops ToNumeric their
-// one value and never compare against a second operand's type, so an absent key there
-// really does decay to NaN (no throw) — a different, narrower semantics, out of scope.
+// negation/'~': those single-operand ops ToNumeric their one value and never
+// compare against a second operand's type, so an absent key there really does decay
+// to NaN (no throw) — a different, narrower semantics, closed separately below by
+// bigIntUnary (audit-#8 P0-4 Part 3). Postfix/prefix increment/decrement need no
+// analogous fix: `n++`/`n--` on a member target lowers to the '+1'/'-1' op below,
+// gated on `valTypeOf(a[1]) === VAL.BIGINT` — for the bracket-string-literal-key
+// shape (`d['missing']++`) that's the SAME VT['[]'] null-return disambiguation
+// bigIntOperand's own comment above documents, so it never takes the raw-i64
+// member-op path at all (falls to the generic `n + 1`/`n - 1` spelled-out form,
+// already sound); for a dynamic-key member (`d[k]++`) — verified live, not
+// assumed — the same is true, confirmed byte-for-byte against the JS oracle.
 function bigIntOperand(node) {
   const v = emit(node)
   // censusMaybeUndefinedKind, not valTypeOf(node) === VAL.BIGINT: for a bracket
@@ -4037,6 +4099,40 @@ function bigIntOperand(node) {
         ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.BIGINT_UNDEF_MIX]]],
         ['throw', '$__jz_err', ['f64.const', ERR.BIGINT_UNDEF_MIX]]]],
     ['i64.reinterpret_f64', ['local.get', `$${t}`]]], 'i64')
+}
+
+// audit-#8 P0-4 Part 3: unary twin of bigIntOperand above — same runtime
+// censusMaybeUndefinedKind + UNDEF_NAN guard on a maybeUndefined-BIGINT
+// operand, but RESOLVES TO A VALUE instead of throwing. ES2024 13.5.6
+// UnaryMinus / 13.5.9 BitwiseNOT: both ToNumeric a SINGLE operand — undefined's
+// ToNumeric is the Number NaN (step: ToPrimitive(undefined)=undefined, not
+// BigInt → ToNumber(undefined)=NaN) — with no second operand to type-mismatch
+// against, so there is no step 6 "Type(lnum) is not Type(rnum)" comparison to
+// throw on; the real value is just NaN (unary '-') or ToInt32(NaN)'s bitwise
+// complement, -1 (unary '~') — a genuine NUMBER, never a BigInt. Both call
+// sites (emitNeg, '~') already carry every emitted BIGINT value in an f64-
+// typed carrier via `fromI64` (BigInt has no NaN-boxed self-description of
+// its own — see fromI64/asI64 — so the caller's static VAL.BIGINT belief is
+// what selects this whole branch to begin with), so substituting a genuine
+// f64 NUMBER NaN/-1.0 bit pattern into that SAME f64 slot is representation-
+// compatible with every existing consumer — no dual-type ABI problem, unlike
+// a hypothetical fix at the bigintMixReject binary sites (that KNOWN NARROWER
+// GAP stays out of scope, this is a different, simpler case). `mkI64` builds
+// the genuine-BIGINT i64 IR from the operand's already-read bits (an IR
+// array, not a full node — reused verbatim in both branches so the two paths
+// can only ever differ in the runtime i32 select, never in what i64 op they
+// compute); `undefF64` is the literal f64 IR substituted when the operand IS
+// the sentinel. Non-maybeUndefined operand (present-key/local BIGINT, the
+// overwhelming common case) takes `mkI64` directly through the untouched
+// `fromI64` path — byte-identical to before (same structural pin as
+// bigIntOperand's own non-maybeUndefined fast path).
+function bigIntUnary(node, mkI64, undefF64) {
+  if (censusMaybeUndefinedKind(node) !== VAL.BIGINT) return fromI64(mkI64(asI64(emit(node))))
+  const t = temp('unaryBigU')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, asF64(emit(node))],
+    ['select', undefF64, ['f64.reinterpret_i64', mkI64(['i64.reinterpret_f64', ['local.get', `$${t}`]])],
+      isUndef(['local.get', `$${t}`])]], 'f64')
 }
 
 // Member `.`/`[]` increment/decrement's postfix OLD-value recovery. Prepare
@@ -5222,7 +5318,10 @@ export const emitter = {
       return isLit(iv) ? emitNum(~~litVal(iv)) : typed(toI32(isI32Num(iv) ? iv : toNumF64(inner, iv)), 'i32')
     }
     // BigInt complement is the i64 `x ^ -1` (all bits flipped), like emitNeg's i64.sub.
-    if (valTypeOf(a) === VAL.BIGINT) return fromI64(['i64.xor', asI64(emit(a)), ['i64.const', -1]])
+    // bigIntUnary (audit-#8 P0-4 Part 3): a maybeUndefined-BIGINT operand's real
+    // JS value is ToInt32(NaN)'s complement, NUMBER -1 — not `x ^ -1` on the raw
+    // UNDEF_NAN sentinel bits (see emitNeg's identical substitution above).
+    if (valTypeOf(a) === VAL.BIGINT) return bigIntUnary(a, i64v => ['i64.xor', i64v, ['i64.const', -1]], ['f64.const', -1])
     const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', toI32(isI32Num(v) ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32')
   },
   ...Object.fromEntries([

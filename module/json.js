@@ -9,7 +9,7 @@
  */
 
 import { typed, asF64, asI64, toStrI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT, UNDEF_NAN, UNDEF_WAT, FALSE_NAN, TRUE_NAN, FALSE_IR, TRUE_IR } from '../src/ir.js'
-import { emit, bool, deps } from '../src/bridge.js'
+import { emit, bool, deps, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { VAL } from '../src/reps.js'
@@ -1470,8 +1470,26 @@ ${localDecls}
     // rewrite the top-level value, in which case fall to runtime.
     if (noReplacer && valTypeOf(x) === VAL.BOOL) return bool(x)
     inc('__stringify')
-    const spaceIR = asI64(space == null ? undefExpr() : emit(space))
-    return typed(['call', '$__stringify', asI64(emit(x)), spaceIR], 'f64')
+    // storedValue (not raw emit): MECHANISM A (carrier-invariant-design.md) —
+    // `__json_val`'s runtime dispatcher already discriminates a genuine number
+    // from a boxed TRUE_NAN/FALSE_NAN atom (it checks "not NaN" before any
+    // pointer-type test), so an ALREADY-boxed bool renders correctly. A BOOL∪
+    // NUMBER ambiguous merge (`cond ? 1 : false`) is the gap: valTypeOf
+    // collapses it to NUMBER, so the static VAL.BOOL fast path above misses it,
+    // and a raw `emit(x)` hands `__json_val` the collapsed 0.0/1.0 float — a
+    // real (non-NaN) number, so it takes the Number arm and renders "0"/"1"
+    // instead of "false"/"true". storedValue boxes the merge's BOOL arm to its
+    // atom BEFORE emission, same chokepoint the array/object/Map ingresses
+    // already use, so the runtime dispatcher sees what it expects. Same
+    // reasoning for `space` (JSON.stringify's 3rd arg): an ambiguous merge
+    // there must reach `__json_setgap` as its real atom too, since a boolean
+    // gap value is spec-required to mean "no indentation" (Type(space) is
+    // neither Number nor String), which `__json_setgap` only recognizes when
+    // the value arrives as a genuine NaN-boxed atom (its own "not NaN" number
+    // check runs first) — a raw collapsed 1.0 would wrongly enter its Number
+    // arm and produce a single-space indent.
+    const spaceIR = asI64(space == null ? undefExpr() : storedValue(space))
+    return typed(['call', '$__stringify', asI64(storedValue(x)), spaceIR], 'f64')
   }
 
   // Returns folded IR, or `undefined` when any argument is non-constant.
@@ -1607,8 +1625,17 @@ ${localDecls}
       : valTypeOf(x) === VAL.STRING
         ? ['i64.reinterpret_f64', ['local.get', `$${value}`]]
         : toStrI64(null, typed(['local.get', `$${value}`], 'f64'))
+    // storedValue (not raw emit): same MECHANISM A gap as JSON.stringify above,
+    // sibling ingress. The generic `toStrI64(null, …)` branch defers to
+    // `__to_str`, whose runtime dispatch already renders TRUE_NAN/FALSE_NAN
+    // atoms as "true"/"false" (matching ToString(true)) — but only when the
+    // value it receives IS one of those atoms. A BOOL∪NUMBER ambiguous merge
+    // (`cond ? true : 1`) falls into this exact generic branch (its static
+    // VAL.BOOL fast path above misses it, same as stringify's), and a raw
+    // `emit(x)` would hand `__to_str` the collapsed 0.0/1.0 float — a genuine
+    // number, formatted numerically instead of as "true"/"false".
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${value}`, asF64(emit(x))],
+      ['local.set', `$${value}`, asF64(storedValue(x))],
       ['call', '$__jp', input]], 'f64')
   }
 }

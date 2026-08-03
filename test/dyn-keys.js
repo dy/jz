@@ -323,3 +323,49 @@ test('Map: a read-only capture does not disqualify the census (control)', () => 
     let s = 0; [0].forEach(() => { s += m.get('x') })
     return s + 1`), 6)
 })
+
+// audit-#8 P0-4 Part 3 (2026-08-03): unary '-'/'~' on a maybeUndefined-BIGINT
+// receiver (Map.get() or a dict DYNAMIC-key read whose census claims BIGINT)
+// used to i64-negate/complement the UNDEF_NAN sentinel's raw bits, producing a
+// garbage bigint-shaped float. Real JS: unary ops ToNumeric a single operand —
+// undefined's ToNumeric is the Number NaN, no TypeError (contrast the binary
+// '+'/'-'/etc. case above, which DOES throw — a second operand's type to
+// mismatch against). Fixed by emit.js's bigIntUnary (sibling of bigIntOperand):
+// the maybeUndefined operand's runtime UNDEF_NAN check now selects the
+// canonical NUMBER result (NaN for '-', -1 for '~') instead of doing raw i64
+// math on the sentinel. A dict BRACKET-LITERAL-key read (`d['missing']`) was
+// never affected by this bug in the first place — VT['[]']'s own array-vs-
+// property disambiguation resolves a non-numeric string-literal key to `null`
+// before ever reaching the dict census, so it already took the sound generic
+// toNumF64 path; the dynamic-key case below is the one that actually exercised
+// the raw-i64 branch.
+// Present-key structural pin: the real-bigint arm (`mkI64` in bigIntUnary) is
+// asserted via an INTERNAL strict-eq comparison, not a returned bigint value —
+// `-m.get(presentKey)` as a bare export return hits a SEPARATE, PRE-EXISTING
+// bug (confirmed live at HEAD a919446a too, unrelated to this fix): the
+// export-boundary wrapper decision (src/compile/index.js isBoundaryWrapped,
+// `func._resultNumeric`) misclassifies a maybeUndefined-flavored BIGINT return
+// as a proven plain NUMBER, so the exported function never gets the i64-
+// reinterpret wrapper a genuine BigInt-typed export needs — the boundary
+// decodes the correct i64 bits as a raw (and often NaN-shaped, since a small-
+// magnitude negative i64's top bits are all 1s — exponent 0x7FF) float instead
+// of a BigInt. Comparing INSIDE the function (never crossing the boundary as a
+// bare bigint) isolates this fix's own arithmetic from that separate gap.
+test('Map: unary "-"/"~" on a .get() absent key decays to NUMBER NaN/-1, not a garbage bigint (audit-#8 P0-4 Part 3)', () => {
+  is(run(`const m = new Map(); m.set('x', 1n); return -m.get('missing')`), NaN)
+  is(run(`const m = new Map(); m.set('x', 1n); return ~m.get('missing')`), -1)
+  is(typeof run(`const m = new Map(); m.set('x', 1n); return -m.get('missing')`), 'number')
+  // present-key structural pin: real bigint arithmetic is untouched (internal compare — see note above)
+  is(run(`const m = new Map(); m.set('x', 5n); return -m.get('x') === -5n`), true)
+  is(run(`const m = new Map(); m.set('x', 5n); return ~m.get('x') === ~5n`), true)
+})
+test('dict: unary "-"/"~" on a DYNAMIC-key absent read decays to NUMBER NaN/-1 (audit-#8 P0-4 Part 3, dict sibling)', () => {
+  is(jz(`export let f = (k1, k2) => { const d = {}; d[k1] = 1n; return -d[k2] }`).exports.f('x', 'missing'), NaN)
+  is(jz(`export let f = (k1, k2) => { const d = {}; d[k1] = 1n; return ~d[k2] }`).exports.f('x', 'missing'), -1)
+  // present-key structural pin (internal compare — see note above)
+  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return -d[k1] === -5n }`).exports.f('x'), true)
+  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return ~d[k1] === ~5n }`).exports.f('x'), true)
+})
+test('dict: unary "-" on a LITERAL-key absent read (already sound — not this bug, structural control)', () => {
+  is(run(`const d = {}; d['x'] = 1n; return -d['missing']`), NaN)
+})
