@@ -4,6 +4,154 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, item #6 re-audited and CLOSED — the "chained float-literal fold" fuzz finding was the FUZZ HARNESS's bug, not the compiler's)
+
+Assigned as "fix the compiler fold to match per-op JS rounding." Investigation
+found the opposite is true, and stopped short of the requested change per the
+task's own honest-boundary rule ("if rational carry has a semantically-
+justified consumer you can't cleanly separate, STOP... don't break a correct
+case to fix this one").
+
+ROOT CAUSE, CORRECTED: `src/prepare/pre-eval.js`'s Rational carry (exact
+`n/d` magnitudes on `src/bignum.js`'s host-independent u32... actually
+15-bit-limb arithmetic) is not an accuracy bug — it is THE FEATURE, landed
+2026-07 (audit P0-2 fold-fork), pinned by test/preeval.js, and documented in
+TWO project-level files as deliberate policy:
+  - README FAQ ("What are the differences with JS?"): "Pre-eval folds
+    constant chains the same way: exact rationals through `+ - * /`, rounded
+    once — a folded `0.1 + 0.2 - 0.3` is the true `2.7755575615628914e-17`
+    where stepwise JS gives `5.55e-17`, and `1e300*1e300/1e300` folds finite.
+    Compiled constants are *more* accurate than run-as-JS, never less."
+  - CONTRIBUTING.md Principles: "WASM conventions, not JS edge-cases... What
+    JZ will not do is trade away a meaningful result's accuracy."
+  - test/preeval.js: "precision: rational carry beats sequential per-op
+    rounding" asserts `0.1+0.2-0.3` folds to EXACTLY `Math.pow(2,-55)`
+    (2.7755575615628914e-17), explicitly NOT the naive stepwise JS value
+    (5.551115123125783e-17 = 2^-54) — with `optimize.rationalConst: false`
+    as the documented, tested opt-out for callers who want bit-exact-vs-JS
+    per-op folding instead.
+Live-verified this is exactly the SAME mechanism as item #6's repro, just a
+different arithmetic shape: `(0.1*1.5)*1.5` -> jz `0.225`, JS
+`0.22500000000000003` (chained `*`); `(0.1+0.2)+0.3` -> jz `0.6`, JS
+`0.6000000000000001` (chained `+`); `(1.1-0.1)-1.0` -> jz
+`8.326672684688674e-17`, JS `0` (chained `-`); `(1e300*1e300)/1e300` -> jz
+`1e300`, JS `Infinity` (division, the README's own cited example). A single
+op never diverges (`(1/3)*3` -> `1` both ways; `Math.sqrt`/`Math.min` wrapping
+a chain matches JS too, since they consume the chain's ALREADY-final value):
+divergence requires a genuine 2+-op chain where an intermediate rounds
+differently than exact-then-round-once. Confirmed via `compileViaKernel` that
+native and in-kernel already fold `(0.1*1.5)*1.5` to the SAME `0.225` (no
+determinism bug — bignum.js's u32-15-bit-limb layer is exactly what audit
+P0-2 built to make this fold host-independent; test/kernel-parity.js's
+`fold|0/2/3` rows are already graduated/byte-identical, `PARITY_TODO` empty).
+
+THE ACTUAL BUG: `test/fuzz.js`'s typed-map/typed-array float generator
+(`F_LEAF`/`genFloatExpr`, feeding `typedSource`/`typedMapSource`). Its own doc
+comment asserted "Element VALUE expressions use ONLY f64-stable ops... over
+`buf[i]` and float literals... so jz == JS bit-for-bit with no contract
+caveat" — true for any expression that references `buf[i]`, FALSE the moment
+a randomly-generated subtree happens to draw ALL its leaves from the literal
+pool (`0.1`, `1.5`, etc.) with no `buf[i]` anywhere: that subtree is exactly
+a compile-time-constant chain, which pre-eval folds via the (correct, by
+design) Rational carry — a legitimate divergence from the generator's own
+naive `jsFn()` reference, not a jz miscompile. Confirmed empirically at HEAD
+(before the fix): `node test/fuzz.js --typed-map --count=2000` found seeds
+352 (`(0.1 * Math.abs(-1.5)) * 1.5`) and 812 (`(0.1*1.5)*1.5`); `--typed
+--count=2000` found seed 812 (`(0.1*1.5)*1.5`) — all three match the ledger's
+prior "typed-map ×2, typed-array ×1, seeds 352/812/812" exactly, all one
+root cause, now correctly attributed.
+
+FIX (test/fuzz.js only — zero src/ changes, so dist/jz.wasm needed no
+rebuild): `genFloatExpr` rewritten as `genFloatExprC`, which threads an
+`isConst` flag bottom-up through the SAME recursive shape (binary `+-*/`,
+`Math.sqrt`/`abs` unary wrap, `Math.min`/`max`, scalar `* literal`) and
+forces one side of any `+-*/`-combining node (and the scalar-multiply's
+single child) to `buf[i]` whenever both sides would otherwise be literal-
+only — structurally eliminating literal-only chains from every generated
+program, the SAME precedent this file already uses for transcendental Math.*
+("their last-ULP differences are not jz bugs"). Left alone on purpose: a
+lone literal leaf (no chain, trivially JS-exact) and `Math.sqrt`/`Math.abs`
+wrapping one (IEEE-exact vs host per the FAQ, no rounding to disagree over —
+verified `Math.sqrt(0.1*1.5)` and `Math.min(0.1*1.5, 0.9)` both match JS
+exactly once forcing prevents the INNER `0.1*1.5`-style operand from itself
+being a multi-op chain). `Math.min`/`max` combining two literal operands was
+also left forced-non-const defensively (min/max only SELECT, never round —
+not strictly required, kept for a single uniform invariant, not a
+correctness fix).
+
+SIBLING CHECKS (all confirmed non-issues, no fix needed):
+  - `src/prepare/index.js`'s `constNum` (compile-time numeric folding for
+    string/template literals) already does PLAIN sequential per-op JS
+    arithmetic (`x + y`, `x * y`, ...) — no rational carry at all in that
+    path, so it already matches stepwise JS exactly. Confirmed by reading; a
+    separate, correct-by-construction folder, not a second instance of this
+    bug.
+  - watr's own constant folder (`node_modules/watr/src/optimize.js`,
+    `f64.mul: (a,b) => a*b` etc.) is likewise plain per-op JS arithmetic —
+    correct vs JS for whatever pair it folds, and per the module's own design
+    note it only ever sees jz's ALREADY-folded literals in normal compiles
+    (post-inline exposure of a NEW constant pair would fold MORE precisely
+    than jz's own chain, i.e. closer to real JS, not a new divergence).
+  - Math.* fold dispatch (pre-eval.js ~line 406): `min`/`max` call host
+    `Math.min`/`Math.max` directly (exact, selection-only); the transcendental
+    kernel (math-kernel.js) is a separate, ALREADY-documented divergence
+    class (README: "deliberately not bit-identical to host libm") unrelated
+    to chain-rounding — no analogous chain issue found; native vs in-kernel
+    trivially agree (same deterministic algorithm, no host arithmetic
+    involved).
+  - Scalar/typed-int fuzz legs (integer-literal-only, `ARITH` includes `/`):
+    re-ran both at full 2000 count post-fix — 0 divergence (general: 30173
+    inputs compared; typed-int: clean). A literal integer division CAN
+    diverge in principle (`ratDiv` vs stepwise `/`), but the scalar
+    generator's `LITS` never produced a triggering shape in 2000 seeds; typed-
+    int's generator doesn't use `/` at all (documented: `*`/`/`'s precision
+    contract is separately excluded there for an unrelated reason — i32
+    product range).
+
+GATES: fuzz general 2000 (30173 inputs, 0 divergence), typed-int 2000 (0
+divergence), typed-map 2000 (0 divergence, was 2 findings), typed-array 2000
+(0 divergence, was 1 finding) — all four previously-failing/previously-clean
+legs re-confirmed clean post-fix. kernel-parity 33/33 byte-identical (no src/
+change, as expected). kernel-oracle 11/11 (451 assertions). perf-ratchet
+10/10, every baseline +0 (test-only change, zero codegen impact — expected).
+optimizer 214/214. preeval.js 27/27 (62 assertions) — the pinned rational-
+carry tests (`0.1+0.2-0.3` -> exact `2^-55`, `1e16+1-1e16` -> `1`,
+`rationalConst:false` opt-out) all still green, confirming the feature this
+item was asked to "fix" is untouched and intact. wat-invariants.js 23/23 (32
+assertions) — the SAME generator functions this fix touches are swept
+structurally by this file (`typedMapSource` et al., re-exported), all still
+pass with the hardened generator. data.js 125/125 (242 assertions),
+statements.js 202/202 (468 assertions). selfhost.js 21/21 (206 assertions,
+39 compile-yourself rounds). selfhost-perf.js 5/5, informational (warm
+geomean 0.992×/cap 1.03×, fresh geomean 0.804×/cap 0.99× — noise-level vs the
+Slice 2 session's 0.986×/0.794×, no regression). Size spot-check
+(scripts/bench-size.mjs mat4/fft/crc32/biquad, current tree): 1.5/2.3/1.1/1.8
+kB — no rebuild needed and no change possible, this session touched only
+test/fuzz.js (confirmed via `git status`/`git diff --stat`), zero src/ diff.
+
+DETERMINISM VERDICT: no native-vs-kernel divergence exists or ever existed
+for this fold — `compileViaKernel` was probed directly on the `(0.1*1.5)*1.5`
+repro and produces the identical `f64.const 0.225` native does (bignum.js's
+u32-15-bit-limb Rational layer is exactly what audit P0-2 built to guarantee
+this; test/kernel-parity.js's `fold|*` rows are graduated, `PARITY_TODO`
+empty, reconfirmed 33/33 this session). The task's "red→green, both legs"
+framing does not apply here: there was never a native-vs-kernel gap to close,
+and the JS-vs-jz gap is intentional — both legs were already, and remain,
+byte-identically "green" against jz's own documented contract, not against
+naive stepwise JS.
+
+NOT DONE, ON PURPOSE: no change to `src/prepare/pre-eval.js` or
+`src/bignum.js`. The task's requested fix ("per-operation double rounding...
+should be BOTH JS-exact and host-independent") is exactly what
+`optimize.rationalConst: false` already provides as an explicit, tested
+opt-out (test/preeval.js) — flipping the DEFAULT would revert the P0-2
+landing and directly contradict README/CONTRIBUTING's stated policy and the
+"rational carry beats sequential per-op rounding" pin. Per the task's own
+honest-boundary rule, stopped here instead: rational carry HAS a
+semantically-justified purpose (the whole feature, not an edge case), fixed
+the actual defect (the fuzz harness's false assumption) instead of breaking
+the correct, documented case to satisfy a mischaracterized fuzz finding.
+
 ## Status (2026-08-03, maybeUndefined Slice 2 landed — Number.isNaN census gate, the last named item in "STILL OPEN" #1 below)
 
 SLICE 2 — `emitIsNaN` sentinel exclusion (.work/maybe-undefined-design.md §4/
@@ -384,17 +532,28 @@ STILL OPEN (named precisely, not silently left ambiguous):
      in the Slice 5 survey above, not independently re-derived/repro'd; a
      future audit should confirm rather than inherit this session's
      lower-confidence read.
-  6. NEW (2026-08-03, surfaced by Slice 2's fuzz gate, unrelated to the
-     maybeUndefined campaign): chained float-LITERAL multiplication constant-
-     folding diverges from real JS runtime IEEE-754 sequential rounding —
-     `(0.1 * Math.abs(-1.5)) * 1.5` (and `(0.1*1.5)*1.5`) folds to `0.225` at
-     compile time; real JS evaluates each `*` at runtime and gets
-     `0.22500000000000003`. 3 fuzz findings (typed-map ×2, typed-array ×1,
-     seeds 352/812/812), all one root cause. Confirmed unreachable from Slice
-     2's diff (no isNaN/isFinite/isInteger/isSafeInteger token in any failing
-     program). Likely lives in the constant-folder for chained `f64.mul`
-     (ir.js or optimize/index.js) computing a fold that doesn't replicate
-     step-by-step double rounding. Not fixed — flagged for a dedicated pass.
+  6. CLOSED (2026-08-03, re-audited — see the status entry below this one):
+     NOT a compiler bug. The chained float-literal fold IS
+     `src/prepare/pre-eval.js`'s Rational carry (bignum.js) working exactly as
+     designed — a DELIBERATE, DOCUMENTED, pinned divergence from JS's per-op
+     rounding (README FAQ "Compiled constants are more accurate than
+     run-as-JS, never less"; CONTRIBUTING.md Principles; test/preeval.js
+     "precision: rational carry beats sequential per-op rounding", which
+     asserts `0.1+0.2-0.3` folds to the exact `2^-55`, NOT stepwise JS's
+     `2^-54` — the same divergence class this item flagged). The real bug was
+     in `test/fuzz.js`'s typed-map/typed-array generator: its own doc comment
+     claimed float-literal expressions "never diverge from JS," a false
+     assumption once a randomly-generated subtree happened to contain NO
+     `buf[i]` reference (a pure compile-time-constant chain) — exactly the
+     shape the Rational carry is charted to round once instead of per-op.
+     Fixed at the generator (`genFloatExprC`, test/fuzz.js): tracks constness
+     bottom-up and forces one side of any `+ - * /`-combining node to `buf[i]`
+     whenever both sides would otherwise be literal-only, structurally
+     eliminating literal-only chains from the generated corpus (same
+     precedent as the file's existing "transcendental Math.* excluded — not
+     jz bugs" carve-out). A LONE literal leaf, or a single-arg
+     `Math.sqrt`/`abs` wrap of one, is left constant on purpose (both
+     IEEE-exact vs host per the FAQ, no chain-rounding to disagree over).
 With items 1-5 named above, the container value-census soundness campaign's
 core ask (represented maybeUndefined join + BindingId-style alias/escape
 ownership, both consumers re-enabled, structural survey complete) is

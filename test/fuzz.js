@@ -469,22 +469,62 @@ const report = (f, opts) => {
 // diffs jz (memory-backed array) against JS (plain Float64Array) element-by-element
 // AND on the returned reduction. Element VALUE expressions use ONLY f64-stable ops
 // (+ - * / Math.sqrt/abs/min/max) over `buf[i]` and float literals: a Float64 load is
-// exact and these never i32-narrow, so jz == JS bit-for-bit with no contract caveat.
+// exact and these never i32-narrow, so jz == JS bit-for-bit with no contract caveat —
+// PROVIDED the generated expression isn't itself a compile-time constant (see below).
 // The loop counter `i` is i32 and is used only as the subscript — never inside a value
 // expression, where e.g. `i * -1.0` would mint a -0 that jz's i32 path can't hold (the
 // documented integer contract the scalar oracle skips; phase-2 with the contract model
 // can add index-dependent values).
+//
+// LITERAL-CHAIN CAVEAT (.work/todo.md item #6): a subtree built ENTIRELY from F_LEAF
+// literals (no `buf[i]` anywhere in it) is exactly the shape `src/prepare/pre-eval.js`
+// constant-folds at compile time via its Rational carry — by design, rounded ONCE for
+// the whole chain instead of per-operation (README FAQ "Compiled constants are more
+// accurate than run-as-JS, never less"; pinned by test/preeval.js's "rational carry
+// beats sequential per-op rounding"). Real stepwise JS rounds `+ - * /` per operation
+// (ES Number::multiply etc.), so a folded literal chain like `(0.1*1.5)*1.5` legitimately
+// disagrees with naive `jsFn()` evaluation of the SAME source text — not a jz miscompile,
+// the same accepted-divergence class as "transcendental Math.* excluded" above. A lone
+// literal leaf, or a single-arg Math.sqrt/abs wrap of one, stays a compile-time constant
+// on purpose: sqrt/abs are IEEE-exact vs host (README FAQ), so no chain-rounding to
+// disagree over. genFloatExprC tracks constness bottom-up and breaks any node that would
+// otherwise combine two constant operands by forcing one side to `buf[i]` — the ONLY
+// case that yields a divergence-free generator without narrowing coverage elsewhere.
 const F_LEAF = ['buf[i]', '0.5', '1.5', '2.0', '3.0', '-1.5', '10.0', '0.1', '-0.25']
 const F_MATH1 = ['Math.sqrt', 'Math.abs']
-const genFloatExpr = (g, d) => {
-  if (d <= 0 || g.chance(0.4)) return g.chance(0.55) ? 'buf[i]' : g.pick(F_LEAF)
+/** [text, isConst]. isConst means the WHOLE subtree is compile-time-literal (no `buf[i]`). */
+const genFloatExprC = (g, d) => {
+  if (d <= 0 || g.chance(0.4)) {
+    const leaf = g.chance(0.55) ? 'buf[i]' : g.pick(F_LEAF)
+    return [leaf, leaf !== 'buf[i]']
+  }
   switch (g.int(4)) {
-    case 0: return `(${genFloatExpr(g, d - 1)} ${g.pick(['+', '-', '*', '/'])} ${genFloatExpr(g, d - 1)})`
-    case 1: return `${g.pick(F_MATH1)}(${genFloatExpr(g, d - 1)})`
-    case 2: return `Math.${g.pick(['min', 'max'])}(${genFloatExpr(g, d - 1)}, ${genFloatExpr(g, d - 1)})`
-    default: return `(${genFloatExpr(g, d - 1)} * ${g.pick(['0.5', '2.0', '1.5', '-1.0'])})`
+    case 0: {
+      const op = g.pick(['+', '-', '*', '/'])
+      const [lt, lc] = genFloatExprC(g, d - 1)
+      let [rt, rc] = genFloatExprC(g, d - 1)
+      if (lc && rc) { rt = 'buf[i]'; rc = false }   // break the literal-only chain — see header comment
+      return [`(${lt} ${op} ${rt})`, lc && rc]
+    }
+    case 1: {
+      const [t, c] = genFloatExprC(g, d - 1)
+      return [`${g.pick(F_MATH1)}(${t})`, c]   // sqrt/abs are IEEE-exact vs host: safe to stay constant
+    }
+    case 2: {
+      const fn = g.pick(['min', 'max'])
+      const [lt, lc] = genFloatExprC(g, d - 1)
+      const [rt, rc] = genFloatExprC(g, d - 1)
+      return [`Math.${fn}(${lt}, ${rt})`, lc && rc]   // min/max just SELECT an operand: never rounds
+    }
+    default: {
+      const k = g.pick(['0.5', '2.0', '1.5', '-1.0'])
+      let [t, c] = genFloatExprC(g, d - 1)
+      if (c) { t = 'buf[i]'; c = false }   // break the literal-only chain — see header comment
+      return [`(${t} * ${k})`, c]
+    }
   }
 }
+const genFloatExpr = (g, d) => genFloatExprC(g, d)[0]
 const typedSource = (seed) => {
   const g = mkRng(seed)
   const writes = Array.from({ length: 1 + g.int(2) }, () => `buf[i] = ${genFloatExpr(g, 4)};`).join(' ')
