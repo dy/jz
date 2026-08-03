@@ -4,7 +4,129 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
-## Status (2026-08-03, __dyn_set/__dyn_get_t STRATIFICATION lever RETRIED —
+## Status (2026-08-03, audit-#8 P0-1/2/3 CLOSED — three independent
+## instanceof/Error-object soundness failures, all verified live at HEAD;
+## P2 README fix folded in)
+
+Three roots, found live minutes after Slice A/B (commits 38c7dde5/
+2a973082) shipped the sound instanceof/Error-object model:
+
+1. **Default-mode bypass (P0-1).** jzify/transform.js has ALWAYS had its
+   OWN, separate `'instanceof'` handler (predates Slice A/B), and
+   src/front.js only runs the sound prepare/emit machinery AFTER jzify —
+   which runs in default mode, not strict. Slice B's truth table was only
+   ever exercised in strict mode; default mode kept answering the Error
+   family via jzify's old `typeof===object` guess. Repro: `let e = new
+   TypeError("x"); e instanceof RangeError` → `true` default mode (JS:
+   `false`). FIX: jzify's handler now passes Array/Map/Set/TypedArray/
+   ArrayBuffer/the-7-Error-classes straight through as a real
+   `['instanceof', val, rhs]` node (`CORE_INSTANCEOF_ALLOW`, jzify/
+   transform.js, built from the same two arrays prepare's own
+   `INSTANCEOF_ALLOW` uses) instead of guessing — same op, same answer,
+   both modes now. Sideline fix required: src/compile/flow-types.js's
+   `extractRefinements` only recognized the OLD `__is_map`/`__is_set`/
+   `__is_typed` call shape for `instanceof Map`/`Set`/TypedArray
+   flow-narrowing (`.has()` devirtualization to `__map_has`/`__set_has`) —
+   added a matching `op === 'instanceof'` arm (`instanceofRefinement`) so
+   default mode keeps the same devirtualization strict mode already had
+   (caught by test/inference.js's extractRefinements pins going red).
+2. **Numeric provenance leak (P0-2) — a DESIGN ERROR in §4 itself, not an
+   implementation slip.** The internal-code range arm
+   (`emitErrorInstanceof`, src/compile/emit.js) tested an internally-thrown
+   NUMBER against err-codes.js's derived `ERR_CODE_RANGES` and called a
+   match `instanceof <class> === true`. Unsound by construction: a
+   jz-internal code and a user's own `throw <number>` are the SAME
+   representation (a raw NaN-boxed NUMBER) — nothing distinguishes them.
+   Repro: `export let f = x => x instanceof SyntaxError; f(300)` → `true`
+   for an ARBITRARY CALLER INT that happened to land in SyntaxError's
+   derived range (300-302/311-318) — nothing to do with JSON.parse. FIX:
+   deleted the range arm outright. Internal-code catches are now honestly
+   `instanceof`-false for every Error class (same treatment as any other
+   non-Error thrown value); a provably-NUMBER LHS now folds to a
+   compile-time `false` too (strictly sounder AND cheaper than before —
+   `vt !== VAL.OBJECT` alone, the `&& vt !== VAL.NUMBER` carve-out is gone).
+   `err-codes.js`'s `ERR_CODE_RANGES` export stays, unused by `instanceof`
+   now, banked as the exact data a future catch-site materialization
+   (design doc §7 Slice C) would key off of — that recovery path was
+   judged too large/novel to land safely inside this P0 task (a genuinely
+   new gated-inclusion mechanism, not reuse) and was deliberately NOT
+   attempted; the honest minimum (deletion + both-modes pin + design-doc +
+   README correction) shipped instead. test/errors.js's internal-code pins
+   (JSON.parse SyntaxError, Array#with OOB RangeError) flipped true→false,
+   both modes, with the mechanism recorded inline.
+3. **__errcls__ public/mutable/enumerable (P0-3).** The class-identity
+   schema slot (design doc §1) was documented "never spellable in source"
+   but nothing enforced it: `e.__errcls__ = 2` compiled and silently
+   flipped `instanceof`; the slot showed up in Object.keys/JSON.stringify/
+   for-in. Investigated the preferred fix (a distinct schema id per class,
+   deleting the slot outright — identity would live in the pointer's aux
+   bits for free): `ctx.schema.register` (module/schema.js) dedupes PURELY
+   by prop-list content with no per-caller "force a distinct id" — 7
+   classes needing 7 ids would mean 7 different prop lists (breaking the
+   shared `.message`/`.name` slot layout) or register-signature surgery
+   across every caller (object literals, prepare's schema tracking, JSON.
+   parse's runtime schema cache). Ruled structurally out of reach for a P0
+   fix — same "genuinely unbounded, no way to enumerate every site with
+   confidence" standard the design doc's own PTR.ERROR rejection (§1) used.
+   Landed the documented fallback instead, and went further than its own
+   stated floor: `ERR_CLS_SLOT` (now exported, err-codes.js) is rejected at
+   prepare time in both dot-read and dot-write position AND as an
+   object-literal key (src/prepare/index.js); excluded from every
+   enumeration emitter (Object.keys/values/entries/for-in in module/
+   object.js, JSON.stringify's runtime walk in module/json.js); AND
+   excluded from the dyn GET/SET/DELETE dispatch itself (module/
+   collection.js's `schemaKeyEqPublic` + the del-arm's matching guard) —
+   which closes the COMPUTED-key vector too (`e['__errcls__'] = 1` can no
+   longer flip `instanceof`; `e['__errcls__']` reads `undefined`, not the
+   real classIdx), better than the "documented residual" floor the task
+   allowed. All gates on `ctx.features.error` (zero cost for programs that
+   never construct an Error) — jz string literals are content-deduped
+   (module/string.js `dataDedup`/`strPoolDedup`), so the runtime key
+   comparison is exact pointer equality, not a text scan. Remaining,
+   unaudited residual: object-SPREAD construction (`{...e, x:1}`) — lower
+   risk (needs an existing Error to spread from) and out of this session's
+   scope.
+README (audit-#8 P2, folded in): README.md's "differences with JS" (~230)
+and "will never support" (~251) bullets still described the PRE-Slice-A
+model (errors are message strings, no `.message`/`.name`/`instanceof`) —
+stale since 38c7dde5/2a973082 landed, independent of the three P0s above.
+Rewritten to state the current split: constructed errors are real objects
+throughout (in-wasm and at the host boundary); internal runtime-raised
+errors stay raw numeric codes, `.message`/`.name` undefined, `instanceof`
+honestly `false` (consistent with the P0-2 correction).
+
+GATES (all before commit, all green): repro table (3 repros × both modes,
+before→after, JS-authority values) — see .work/error-object-design.md's
+"As-landed corrections" section for the exact table. test/errors.js:
+124/124 (276 assertions) native, both-mode instanceof truth table (isBoth
+helper, extends the harness per the task brief) plus new __errcls__ pins.
+Full battery: 88 test/index.js files run in 13 foreground chunks of 4-7
+(never monolithic) — 2 real regressions found and fixed along the way
+(test/inference.js's extractRefinements Map/Set devirtualization pins;
+test/warnings.js's now-obsolete 'untagged-instanceof' pin, rewritten to
+assert NO warning). kernel-parity 33/33 assertions byte-identical.
+kernel-oracle 451/451 assertions. Kernel leg (JZ_TEST_TARGET=jz.wasm)
+errors.js: 122/124 — the 2 failures (host-decode maxMemory/OOM-trap-timing
+tests) confirmed PRE-EXISTING via differential stash test (git stash the 8
+touched src files, rebuild dist/jz.wasm, same 2 failures at unmodified
+HEAD; git stash pop, rebuild, confirmed restored) — unrelated to this
+session, banked as existing kernel-leg debt, not blocking. fuzz.js
+--count=2000: 2000 seeds × opt{0,1,2,3}, 30173 inputs compared, 0
+divergence. selfhost.js 21/21 (206 assertions). selfhost-perf.js 5/5
+assertions, both caps comfortably met (warm 1.017×/cap 1.03×, fresh
+0.772×/cap 0.99×) — machine has foreign load per the task's own caveat,
+informational only regardless. Fresh `npm run build` × 2 (actually × 3,
+once more after the stash/pop differential test) byte-identical: dist/
+jz.js 1968.6 kB, dist/jz.wasm 15732.5 kB, identical sha256 every time —
+self-host fixed point confirmed unperturbed by the `toStrI64`-adjacent
+edits. Size spot-check (scripts/bench-size.mjs): mat4/fft/crc32/biquad
+byte-identical before/after (differential stash test, same technique).
+One error-using module's delta (try/throw new RangeError/catch/instanceof,
+optimize:watr): 616B → 630B, +14 bytes — the cost of a SOUND instanceof
+check replacing a wrong permissive one, plus the __errcls__ dyn-dispatch
+guards, on a program that actually exercises the changed paths.
+
+Commit: pushed to origin/main.
 ## built, verified correct, NOT landed: zero corpus benefit + a real watr
 ## regression; one independently-sound precision fix kept)
 

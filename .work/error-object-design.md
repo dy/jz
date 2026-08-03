@@ -407,3 +407,119 @@ is genuinely a product call rather than an engineering one: whether Slice C
 (internal-code `.message`) is worth building at all before real usage shows
 demand — flagged, not decided, matching this ledger's own convention for
 priority-only questions.
+
+## As-landed corrections (audit-#8 P0-1/2/3, 2026-08-03)
+
+Three independent soundness failures were found live at HEAD minutes after
+Slice A/B shipped — none caught by the gates above, because all three were
+either default-mode-only (the gates above ran strict-mode source) or a
+design error in §4 itself, not an implementation slip. Recorded here because
+§4's own text still describes the pre-fix (unsound) shape in two places.
+
+**P0-1 — default mode never reached this design at all.** §4's whole truth
+table, and the `'instanceof'` handler/emitter it describes, is reached from
+`src/prepare/index.js`/`src/compile/emit.js` — but `src/front.js` only runs
+`prepare()` after jzify, and jzify (jzify/transform.js) has ALWAYS had its
+own, older, separate `'instanceof'` handler that answers every RHS itself
+(Array→`Array.isArray`, Map/Set/TypedArray→`__is_map`/`__is_set`/
+`__is_typed`, everything else — including all 7 Error classes — to a bare
+`typeof x === 'object'` guess). Slice B's sound machinery only runs in
+STRICT mode, which skips jzify entirely (`src/front.js`: `if (!strict &&
+jzify) parsed = jzify(parsed)`) — default mode (the common case) never
+reached it. Live repro: `let e = new TypeError("x"); e instanceof
+RangeError` answered `true` in default mode (JS: `false`) — jzify's
+`typeof===object` fallback can't discriminate ANY object shape, let alone
+sibling Error classes. Fixed by making jzify's handler PASS THROUGH every
+RHS this design's core already supports (`CORE_INSTANCEOF_ALLOW` in
+jzify/transform.js, built from the same two arrays — `TYPED_ELEM_NAMES`,
+`ERR_CLASS_NAMES` — as prepare's `INSTANCEOF_ALLOW`) as a real
+`['instanceof', val, rhs]` node, instead of answering it itself. jzify keeps
+its OWN Promise/Iterator shape-probes (RHS names the core rejects — jz-level
+semantics, not this design's). `src/compile/flow-types.js`'s
+`extractRefinements` needed a matching update: it narrowed `x`'s VAL kind
+from the OLD `__is_map`/`__is_set`/`__is_typed` call shape only: a new
+`op === 'instanceof'` arm (`instanceofRefinement`) reads the same fact off
+the real `instanceof` node so `if (x instanceof Map) x.has(k)` still
+devirtualizes to `__map_has` in default mode, not just strict.
+
+**P0-2 — the internal-code range arm (§4, "internal-code arm — derived, not
+hand-maintained ranges") was a DESIGN ERROR, not an implementation bug.**
+The arm tested whether an internally-thrown NUMBER fell inside
+`ERR_CODE_RANGES[class]` and treated a match as `instanceof class ===
+true`. This is unsound by construction: jz's internal error codes and a
+user's own `throw <number>` are the SAME representation (a raw f64 NUMBER,
+error-object-design.md §3(b) already says this) — there is no tag bit that
+distinguishes "the compiler threw 300" from "the user threw 300". Live
+repro: `export let f = x => x instanceof SyntaxError; f(300)` answered
+`true` for an ARBITRARY CALLER-SUPPLIED NUMBER that happened to land in
+SyntaxError's derived range (300-302, 311-318) — nothing to do with
+JSON.parse. The arm is deleted (`emitErrorInstanceof`, src/compile/emit.js);
+internal-code catches are now honestly `instanceof`-false for every Error
+class, same treatment as any other non-Error thrown value (§3(c)) — this
+also means a provably-NUMBER LHS now folds to a compile-time `false`
+(`vt !== VAL.OBJECT` alone, not `vt !== VAL.OBJECT && vt !== VAL.NUMBER`),
+which is BOTH sounder and cheaper than before. `err-codes.js`'s
+`ERR_CODE_RANGES` export is kept (unused by `instanceof` now) as the exact
+data a future catch-site materialization would key off of — see Slice C
+below, unchanged in shape, still the only sound way to recover this.
+test/errors.js's internal-code-arm pins (`JSON.parse` SyntaxError,
+`Array#with` OOB RangeError) are FLIPPED from `true` to `false`, both modes,
+with the mechanism recorded inline.
+
+**P0-3 — `__errcls__` (§1's schema slot 2) was documented as "never exposed
+through dot-syntax" but nothing enforced it.** `e.__errcls__ = 2` compiled
+and silently flipped `instanceof` (repro: an object that should be
+`TypeError` read back `instanceof RangeError === true` after the write);
+`Object.keys`/`JSON.stringify`/`for-in` all showed the slot. Investigated
+the preferred fix (give each of the 7 classes its own schema id, so identity
+lives in the pointer's aux bits and `__errcls__` can be deleted outright):
+`ctx.schema.register` (module/schema.js) dedupes PURELY by prop-list content
+(`props.length + '\x01' + props.join('\x01')`) with no per-caller "force a
+distinct id" parameter — giving 7 classes 7 different ids would need either
+7 different prop lists (which breaks the shared `.message`/`.name` slot
+layout every consumer relies on) or register-signature surgery touching
+every one of its callers (module/object.js literals, prepare's schema
+tracking, JSON.parse's runtime schema cache). Ruled structurally out of
+reach for a P0 fix, same standard §1's own PTR.ERROR rejection used
+("genuinely unbounded, no way to enumerate every site with confidence").
+Landed the documented fallback instead — the slot stays, but:
+  - `src/prepare/index.js`'s `'.'` handler rejects `.__errcls__` in both
+    read and write position (`ERR_CLS_SLOT`, now exported from
+    err-codes.js) — loud compile error, not silent.
+  - Its `'{}'` handler rejects `__errcls__` as an object-literal key
+    (shorthand and `key: value` forms both) — a literal `{message, name,
+    __errcls__: N}` would otherwise register under the SAME schema id as a
+    real Error object and forge `instanceof`.
+  - Every enumeration emitter excludes it by name: `module/object.js`'s
+    `emitKeysGeneric`/`__keys_ro` (compile-time-known schema) and
+    `emitEnumerateObject`'s runtime schema-walk loop AND its for-in
+    raw-array fast path (both gated on `ctx.features.error`); `module/
+    json.js`'s `__json_obj` runtime stringify walk.
+  - Went further than the documented-residual floor: the dyn GET/SET/DELETE
+    dispatch (`module/collection.js`'s `buildObjectSchemaArm`/
+    `buildObjectSchemaSetArm`/`buildObjectSchemaDelArm`) also excludes
+    `ERR_CLS_SLOT` by comparing the interned key string at runtime
+    (`schemaKeyEqPublic`), so a COMPUTED access (`e['__errcls__']`/`e['__err'
+    + 'cls__']`) can no longer read the real classIdx or corrupt it either —
+    a computed write lands in the ordinary dyn sidecar as ANY other unknown
+    key would, and a computed read sees `undefined`. The one true residual
+    left: object-SPREAD construction (`{...e, x: 1}`) was not audited for
+    this session — flagged, not fixed, lowest-risk of the vectors since it
+    requires an existing Error object to spread FROM in the first place.
+  All of these gate on `ctx.features.error` (mirrors `emitErrorInstanceof`'s
+  own gate) — a program that never constructs an Error pays nothing extra
+  in Object.keys/JSON.stringify/dyn-dispatch codegen. Confirmed empirically:
+  `extractF64Bits`/content-deduped static string literals
+  (`module/string.js`'s `dataDedup`/`strPoolDedup`) make the runtime string
+  comparison exact pointer equality, not a text scan.
+
+**README correction (audit-#8 P2):** README.md's "What are the differences
+with JS?" (~230) and "What will JZ never support" (~251) bullets still
+described the PRE-Slice-A model (errors are message strings, no `.message`/
+`.name`/`instanceof`) even though Slice A/B had already shipped before this
+session — a documentation gap independent of the three P0s above. Rewritten
+to state the CURRENT split honestly: constructed errors are real objects
+throughout (in-wasm and at the host boundary); internal runtime-raised
+errors stay raw numeric codes with `.message`/`.name` undefined and
+`instanceof` `false` (not a guess), consistent with the P0-2 correction
+above.

@@ -51,7 +51,7 @@ import {
   includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor,
   includeForRuntimeKeyIteration, includeForStringOnly, includeForStringValue, includeForTimerRuntime,
 } from '../autoload.js'
-import { ERR_CLASS_NAMES } from '../../err-codes.js'
+import { ERR_CLASS_NAMES, ERR_CLS_SLOT } from '../../err-codes.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
 
 // SIMD intrinsic namespaces — pure namespaces backed by the `simd` module.
@@ -3205,10 +3205,19 @@ const handlers = {
 
     // Process properties: shorthand 'x' → [':', 'x', 'x'], or [':', key, val] → prep val only
     const prop = p => {
-      if (typeof p === 'string') return [':', p, prep(p)]
+      if (typeof p === 'string') {
+        if (p === ERR_CLS_SLOT) err(`'${ERR_CLS_SLOT}' is a compiler-internal Error-class marker — not a valid object-literal key`)
+        return [':', p, prep(p)]
+      }
       if (Array.isArray(p) && p[0] === ':') {
         const key = typeof p[1] === 'string' ? p[1] : staticPropertyKey(p[1])
         if (key == null) err('computed property name not supported for fixed-shape object: use a compile-time string/number key')
+        // Same reservation as the '.' handler above — a literal shaped
+        // {message, name, __errcls__: N} would register under the IDENTICAL
+        // schema id as a real Error object (ctx.schema.register dedupes by
+        // content) and satisfy `instanceof` for whatever class N names.
+        if (key === ERR_CLS_SLOT)
+          err(`'${ERR_CLS_SLOT}' is a compiler-internal Error-class marker — not a valid object-literal key`)
         return [':', key, prep(p[2])]
       }
       // Accessors (`{ get x() {…} }` / `{ set x(v) {…} }`) parse to ['get'|'set', …].
@@ -3464,6 +3473,13 @@ const handlers = {
   // Property access - resolve namespaces or object/array properties
   '.'(obj, prop) {
     prop = typeof prop === 'string' ? prop : staticPropertyKey(prop)
+    // Compiler-internal Error-class marker (error-object-design.md §1, err-codes.js
+    // ERR_CLS_SLOT) — never spellable in source, read OR write (audit-#8 P0-3:
+    // `e.__errcls__ = 2` used to compile and silently flip `instanceof`). Catches
+    // every STATIC dot-syntax spelling; a genuinely computed key (`e[k]`) is a
+    // separate, documented residual (err-codes.js's ERR_SCHEMA_PROPS comment).
+    if (prop === ERR_CLS_SLOT)
+      err(`'.${ERR_CLS_SLOT}' is a compiler-internal Error-class marker — not accessible from source`)
     // `.caller`/`.callee` on a function value (or `arguments`) are deprecated
     // stack introspection — prohibited as bad practice. On a plain data object
     // they are ordinary field names (e.g. an ESTree call node's `.callee`), so
@@ -3560,12 +3576,17 @@ const handlers = {
   },
 
   // instanceof (error-object-design.md §4) — jz has no prototype chain, so RHS support
-  // is a closed allowlist (INSTANCEOF_ALLOW above), not general reflection. This handler
-  // ONLY reaches raw `instanceof` AST nodes — jzify (default mode) lowers every
-  // `instanceof` shape itself (Array→Array.isArray, Map/Set/TypedArray→__is_map/__is_set/
-  // __is_typed predicates, everything else to a looser fallback) BEFORE prepare ever sees
-  // it, so a raw node here only occurs in strict mode (`.jz` source bypasses jzify — this
-  // file's own module doc) — exactly like the REJECT_OPS entry this handler replaces.
+  // is a closed allowlist (INSTANCEOF_ALLOW above), not general reflection. Strict-mode
+  // source (which skips jzify) reaches this handler directly on every raw `instanceof`
+  // node. Default-mode source reaches it too, for every RHS this file's INSTANCEOF_ALLOW
+  // supports: jzify/transform.js's own 'instanceof' handler passes those through as
+  // `['instanceof', val, name]` instead of answering them itself (audit-#8 P0-1,
+  // 2026-08-03 — jzify used to guess via a broad shape probe BEFORE this sound handler
+  // ever saw the node, so default mode answered `new TypeError(x) instanceof RangeError`
+  // wrongly). jzify keeps its OWN Promise/Iterator shape-probes (this file rejects both
+  // RHS names — jz-level semantics, not core ones) and its permissive `typeof===object`
+  // fallback for every RHS outside INSTANCEOF_ALLOW (Object/RegExp/user-class names —
+  // default mode stays permissive there, unlike strict's loud reject below).
   // RHS may arrive as a bare name ('Array') or, if parenthesized (`x instanceof (Array)`),
   // as a length-2 grouping call node (['()', 'Array']) — same shape 'new' unwraps above.
   'instanceof'(lhs, rhs) {

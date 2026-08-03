@@ -14,7 +14,7 @@ import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/ctx.js'
 import { isReassigned } from '../src/ast.js'
-import { ERR } from '../err-codes.js'
+import { ERR, ERR_CLS_SLOT, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
 // return for primitive/built-in types; canonicalized from
@@ -325,7 +325,12 @@ export default (ctx) => {
     // computed writes (`o[k]=v`) also carries props in its per-object dyn HASH
     // that the schema omits. Enumerate those live (schema ∪ dyn props) — the gap
     // that blocked metacircularity (the compiler grows dicts then enumerates).
-    if (schema && !mayHaveDynProps(obj) && !hasOutOfSchemaWrites(obj, schema)) return emitStringArray(schema)
+    // ERR_CLS_SLOT (error-object-design.md §1) is a real schema slot but never an
+    // enumerable one (audit-#8 P0-3) — filtered here, not at resolveSchema, so
+    // every OTHER schema-length-driven consumer (hasOutOfSchemaWrites above,
+    // slot dispatch elsewhere) keeps seeing the object's real, full shape.
+    if (schema && !mayHaveDynProps(obj) && !hasOutOfSchemaWrites(obj, schema))
+      return emitStringArray(schema.filter(p => p !== ERR_CLS_SLOT))
     // Unknown receiver, or schema with possible dyn props: dispatch on ptr-type
     // at runtime (HASH probe table / OBJECT schema+dyn merge / else []).
     return emitRuntimeKeys(obj, ro)
@@ -353,7 +358,8 @@ export default (ctx) => {
     if (typeof obj === 'string' && !ctx.types.dynWriteVars?.has(obj) && !isHashTyped(obj) && !arrayValType(obj) && !stringValType(obj)) {
       const schema = resolveSchema(obj)
       if (schema && !hasOutOfSchemaWrites(obj, schema)) {
-        const slots = schema.map(name => extractF64Bits(asF64(emit(['str', name]))))
+        // ERR_CLS_SLOT: same enumeration exclusion as emitKeysGeneric above.
+        const slots = schema.filter(p => p !== ERR_CLS_SLOT).map(name => extractF64Bits(asF64(emit(['str', name]))))
         if (slots.every(b => b !== null)) return staticArrayPtr(slots)
       }
     }
@@ -1428,10 +1434,19 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
     // for-in with no dyn sources at all: the enumeration IS the schema key
     // array, and __schema_tbl[sid] already holds it as a static jz array —
     // return it boxed directly. Read-only by for-in's contract, static by
-    // construction: no alloc, no cache, no invalidation.
+    // construction: no alloc, no cache, no invalidation. EXCEPT the Error
+    // schema (error-object-design.md §1, audit-#8 P0-3): __schema_tbl[errSid]
+    // holds ERR_CLS_SLOT unfiltered (it's a real slot, just never enumerable),
+    // so this raw-array shortcut must not fire for it — fall through to the
+    // copy-and-skip loop below instead. Gated on ctx.features.error (no Error
+    // schema exists at all otherwise, so no receiver could ever carry it).
     ...(ro ? [['if', ['i32.and',
         ['i32.and', ['i32.eqz', ['local.get', `$${dnG}`]], ['i32.eqz', ['local.get', `$${dnS}`]]],
-        ['i32.ne', ['local.get', `$${src}`], ['i32.const', 0]]],
+        ['i32.and',
+          ['i32.ne', ['local.get', `$${src}`], ['i32.const', 0]],
+          ctx.features.error
+            ? ['i32.ne', ['local.get', `$${sid}`], ['i32.const', ctx.schema.register(ERR_SCHEMA_PROPS)]]
+            : ['i32.const', 1]]],
       ['then', ['br', `$oed${id}`, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${src}`])]]]] : []),
     // Over-allocate sn+dnG+dnS; patch length to actual `o` post-dedup so
     // removed shadow-mirror/cross-source-duplicate slots never expose
@@ -1439,12 +1454,23 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
     ['local.set', `$${total}`, ['i32.add', ['local.get', `$${sn}`], ['i32.add', ['local.get', `$${dnG}`], ['local.get', `$${dnS}`]]]],
     ['local.set', `$${out}`, ['call', '$__alloc_hdr', ['local.get', `$${total}`], ['local.get', `$${total}`]]],
     ['local.set', `$${o}`, ['i32.const', 0]],
-    // Static schema slots — no skip, schema keys are unique by construction.
+    // Static schema slots. Every key is unique by construction EXCEPT
+    // ERR_CLS_SLOT (error-object-design.md §1), a real slot that is never
+    // enumerable (audit-#8 P0-3) — skipped by comparing the loaded key against
+    // the interned '__errcls__' constant (jz string literals are content-deduped
+    // — module/string.js's dataDedup/strPoolDedup — so this is exact pointer
+    // equality, not a text compare). Gated on ctx.features.error so a program
+    // that never constructs an Error pays nothing here (same convention as
+    // emitErrorInstanceof's ctx.features.error gate, src/compile/emit.js).
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$sbrk${id}`, ['loop', `$sloop${id}`,
       ['br_if', `$sbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${sn}`]]],
-      ...emitStaticStore(env),
-      ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]],
+      ...(ctx.features.error
+        ? [['if', ['i64.ne',
+              ['i64.load', ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]],
+              asI64(emit(['str', ERR_CLS_SLOT]))],
+            ['then', ...emitStaticStore(env), ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]]]
+        : [...emitStaticStore(env), ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]),
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$sloop${id}`]]],
     // Dyn-prop slots in insertion order (__coll_order sorts the live 24-byte

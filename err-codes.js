@@ -40,8 +40,26 @@ export const ERR_CLASS_NAMES = ['Error', 'TypeError', 'RangeError', 'SyntaxError
  *  content, so every class shares one schema id). Slot 2 is a compiler-internal
  *  f64-encoded small int (index into ERR_CLASS_NAMES above), never exposed
  *  through dot-syntax — same reservation convention as the boxed-schema
- *  '__inner__' slot 0. */
+ *  '__inner__' slot 0.
+ *
+ *  ctx.schema.register has no per-caller "force a distinct id" mechanism (it
+ *  dedupes purely by prop-list content — module/schema.js), so a genuinely
+ *  separate per-class schema (making __errcls__ unnecessary — the schema id
+ *  itself would be the discriminator) is structurally out of reach without
+ *  register-level surgery (audit-#8 P0-3, 2026-08-03). Slot 2 stays, but is
+ *  ENFORCED unreachable from source, not just documented as such: prepare's
+ *  '.' handler rejects `.${ERR_CLS_SLOT}` in both read and write position, its
+ *  '{}' handler rejects it as an object-literal key, and every enumeration
+ *  emitter (Object.keys/values/entries, for-in, JSON.stringify) skips it by
+ *  name. Residual: a genuinely computed key (`e[k]` with a runtime-only `k`,
+ *  or `e['__err' + 'cls__']`) is not statically foldable to the reserved name
+ *  and is NOT blocked — same class of gap prepare's own dynamic-key paths
+ *  already accept elsewhere (jz's `.` handler only sees *static* property
+ *  names by construction). */
 export const ERR_SCHEMA_PROPS = ['message', 'name', '__errcls__']
+/** The reserved slot-2 property name, spelled once — every enforcement site
+ *  above imports this instead of the string literal. */
+export const ERR_CLS_SLOT = ERR_SCHEMA_PROPS[2]
 
 export const ERR = {
   // ── 1xx TypeError-class ──────────────────────────────────────────────────
@@ -154,14 +172,20 @@ export const ERR_INFO = {
   [ERR.HEX_INVALID_DIGIT]: { name: 'SyntaxError', message: 'Invalid hex character' },
 }
 
-/** class name → contiguous [lo,hi] code runs (error-object-design.md §4 "internal-code
- *  arm"), derived from ERR_INFO's sorted keys — not hand-picked "1xx/2xx/3xx" boundaries,
- *  so future ERR insertions/renumbering (licensed above: "Renumbering is safe") stay
- *  correct with no edit here. Read by `instanceof`'s runtime check (src/compile/emit.js)
- *  to test whether an internally-thrown NUMBER code belongs to a given Error class —
- *  ReferenceError/EvalError get an empty array (jz never throws either internally), so
- *  `e instanceof ReferenceError` on a coded throw is correctly always false via zero
- *  range compares. */
+/** class name → contiguous [lo,hi] code runs, derived from ERR_INFO's sorted keys — not
+ *  hand-picked "1xx/2xx/3xx" boundaries, so future ERR insertions/renumbering (licensed
+ *  above: "Renumbering is safe") stay correct with no edit here.
+ *
+ *  NOT currently consumed by `instanceof` (audit-#8 P0-2, 2026-08-03, design-error
+ *  correction): src/compile/emit.js's emitErrorInstanceof used to test an internally-
+ *  thrown NUMBER code against these ranges and call a match "instanceof <Class>" —
+ *  unsound, because a jz-internal code and a user's own `throw <sameNumber>` are
+ *  bit-identical numbers with no tag to distinguish them (`export let f = x => x
+ *  instanceof SyntaxError; f(300)` answered `true` for an arbitrary caller int). The
+ *  range arm was deleted; internal-code catches are honestly `instanceof`-false now.
+ *  Kept here, unused, as the exact data a future catch-site materialization (error-
+ *  object-design.md §7 Slice C — build a real Error OBJECT for a caught internal code,
+ *  instead of testing the raw number) would key off of to pick the right class/name. */
 export const ERR_CODE_RANGES = (() => {
   const out = {}, sorted = Object.keys(ERR_INFO).map(Number).sort((a, b) => a - b)
   let run = null

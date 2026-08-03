@@ -141,10 +141,15 @@ test('warnings: jz() surfaces advisories on the runtime result', () => {
   is(surfaced[0].code, 'heap-return')
 })
 
-test('warnings: untagged instanceof on Error types (jzify)', () => {
+// Pre-audit-#8 (2026-08-03), jzify's default-mode 'instanceof' lowering answered
+// the 7 Error classes via a broad `typeof===object` guess and warned that the
+// answer couldn't discriminate classes ('untagged-instanceof'). P0-1 replaced
+// the guess with a pass-through to the sound core machinery (error-object-
+// design.md §4) — the answer is now real, so there is nothing to warn about;
+// the 'untagged-instanceof' warning code is retired.
+test('warnings: instanceof on Error types is sound, no warning (jzify, audit-#8 P0-1)', () => {
   const ws = warningsFor('export let f = (e) => e instanceof TypeError', { jzify: true })
-  is(ws.length, 1)
-  is(ws[0].code, 'untagged-instanceof')
+  is(ws.length, 0)
 })
 
 test('warnings: set-map-order on JSON.stringify(map)', () => {

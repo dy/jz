@@ -22,6 +22,7 @@ import { VAL } from '../reps.js'
 import { isReassigned, isBlockBody, alwaysReturns, TYPEOF, typeofPredicate } from '../ast.js'
 import { constIntExpr } from '../static.js'
 import { valTypeOfWithLocals } from '../kind.js'
+import { TYPED_ELEM_NAMES } from '../../layout.js'
 
 // Exported: the closure return-kind pre-pass (module/function.js, round-6
 // prereq (a)) reuses this SAME table for its own typeof-guard walk instead of
@@ -82,12 +83,25 @@ export function extractRefinements(cond, out, sense = true) {
   }
   // Type-predicate calls under positive sense — refine by the asserted VAL.
   // Callee may be the flattened string 'Array.isArray' or the raw ['.', 'Array',
-  // 'isArray'] pair; __is_map / __is_set / __is_typed come from jzify's
-  // instanceof lowering as a bare string callee.
+  // 'isArray'] pair; __is_map / __is_set / __is_typed were jzify's OWN pre-audit-#8
+  // instanceof lowering as a bare string callee — jzify now passes Array/Map/Set/
+  // TypedArray/ArrayBuffer/Error-family `instanceof` straight through as a real
+  // `['instanceof', name, rhs]` node instead (see the case just below), but this
+  // arm stays for any other caller still shaped as a direct predicate call.
   if (op === '()' && sense && typeof cond[2] === 'string') {
     const callee = cond[1]
     const val = predicateRefinement(callee)
     if (val != null) { mergeRefinement(out, cond[2], { val }); return out }
+  }
+  // `x instanceof Array/Map/Set/<TypedCtor>/ArrayBuffer` under positive sense
+  // (error-object-design.md §4's sound instanceof op — src/prepare/index.js's
+  // handler, reached in BOTH strict source and default-mode source since
+  // audit-#8 P0-1 made jzify pass these through instead of answering them
+  // itself). Same refinement as the predicate-call arm above, keyed off the
+  // RHS class name instead of a callee string.
+  if (op === 'instanceof' && sense && typeof cond[1] === 'string' && typeof cond[2] === 'string') {
+    const val = instanceofRefinement(cond[2])
+    if (val != null) { mergeRefinement(out, cond[1], { val }); return out }
   }
   return out
 }
@@ -228,6 +242,24 @@ export function predicateRefinement(callee) {
   if (callee === '__is_map') return VAL.MAP
   if (callee === '__is_set') return VAL.SET
   if (callee === '__is_typed') return VAL.TYPED
+  return null
+}
+
+/** Map an `instanceof` RHS class name to the VAL kind it asserts under positive
+ *  sense, or null. Mirrors predicateRefinement above for the real `instanceof`
+ *  op (error-object-design.md §4) — every TYPED_ELEM_NAMES ctor narrows to the
+ *  same generic VAL.TYPED tier __is_typed used to (element-type precision isn't
+ *  a refinement fact this pass tracks). Error-family RHS names are deliberately
+ *  NOT mapped: their LHS can be a real Error OBJECT or an internal NUMBER code
+ *  (error-object-design.md §3(b)) — a positive `instanceof` here proves OBJECT,
+ *  but that's not new information a generic OBJECT-kind receiver didn't already
+ *  have, so there's no refinement value in adding it. */
+export function instanceofRefinement(rhs) {
+  if (rhs === 'Array') return VAL.ARRAY
+  if (rhs === 'Map') return VAL.MAP
+  if (rhs === 'Set') return VAL.SET
+  if (rhs === 'ArrayBuffer') return VAL.BUFFER
+  if (TYPED_ELEM_NAMES.includes(rhs)) return VAL.TYPED
   return null
 }
 

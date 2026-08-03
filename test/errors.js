@@ -795,65 +795,131 @@ test('errors: internal coded throw still binds catch(e) to the raw code (Slice C
 })
 
 // ============================================================================
-// instanceof (error-object-design.md Slice B)
+// instanceof (error-object-design.md Slice B; audit-#8 P0-1, 2026-08-03)
 // ============================================================================
-// `instanceof` is a real op now — op-policy.js's blanket REJECT_OPS entry is
-// gone; src/prepare/index.js's new handler validates the RHS against a closed
-// allowlist (jz has no prototype chain) and src/compile/emit.js's new emitter
-// folds a statically-proven LHS kind to a constant or emits a tag/aux/schema
-// compare. STRICT MODE ONLY below (jz(code, {strict:true})) — in default mode
-// jzify's own (pre-existing, separate) instanceof lowering rewrites every
-// `instanceof` shape before prepare ever sees a raw node (Array→Array.isArray,
-// Map/Set/TypedArray→__is_map/__is_set/__is_typed, everything else to a
-// looser `typeof x === 'object'` fallback with a warning for the 7 Error
-// classes) — this compiler-authored handler+emitter is simply never reached
-// there, so testing it means bypassing jzify.
-test('instanceof: Array/Map/Set/ArrayBuffer/TypedArray — truth table', () => {
-  const j = (code) => jz(code, { strict: true }).exports.f()
-  is(j(`export let f = () => [] instanceof Array`), true, '[] instanceof Array')
-  is(j(`export let f = () => new Map() instanceof Map`), true, 'new Map() instanceof Map')
-  is(j(`export let f = () => new Map() instanceof Set`), false, 'new Map() instanceof Set — siblings never satisfy each other')
-  is(j(`export let f = () => new Set() instanceof Map`), false, 'new Set() instanceof Map')
-  is(j(`export let f = () => new Float64Array(1) instanceof Float64Array`), true, 'new Float64Array(1) instanceof Float64Array')
-  is(j(`export let f = () => new Float64Array(1) instanceof Uint8Array`), false, 'element-type mismatch — different TYPED aux')
-  is(j(`export let f = () => new Float64Array(1).buffer instanceof ArrayBuffer`), true, '.buffer is a real BUFFER pointer')
-  is(j(`export let f = () => new ArrayBuffer(8) instanceof ArrayBuffer`), true, 'new ArrayBuffer(8) instanceof ArrayBuffer')
-  is(j(`export let f = () => new ArrayBuffer(8) instanceof Float64Array`), false, 'ArrayBuffer is not a TypedArray')
+// `instanceof` is a real op — op-policy.js's blanket REJECT_OPS entry is gone;
+// src/prepare/index.js's handler validates the RHS against a closed allowlist
+// (jz has no prototype chain) and src/compile/emit.js's emitter folds a
+// statically-proven LHS kind to a constant or emits a tag/aux/schema compare.
+// Strict-mode source reaches this directly on every raw `instanceof` node.
+// Default-mode source reaches the SAME sound machinery for every RHS this
+// file's INSTANCEOF_ALLOW supports (Array/Map/Set/TypedArray/ArrayBuffer/the
+// 7 Error classes): jzify/transform.js's 'instanceof' handler passes those
+// through as `['instanceof', val, name]` instead of answering them itself.
+// Before audit-#8 P0-1, jzify answered the Error-family rows with its own
+// broad `typeof===object` guess BEFORE this sound handler ever saw the node —
+// `new TypeError(x) instanceof RangeError` answered `true` in default mode
+// (JS: false). isBoth below runs every row in BOTH modes so that regression
+// cannot come back unnoticed in either one. jzify keeps its own Promise/
+// Iterator shape-probes (this file's handler rejects both RHS names) and its
+// permissive `typeof===object` fallback for RHS names outside
+// INSTANCEOF_ALLOW (Object/RegExp/user-class names — default mode stays
+// permissive there; strict mode's loud-reject table below is unaffected).
+const jBoth = (code) => [jz(code, {}).exports.f(), jz(code, { strict: true }).exports.f()]
+const isBoth = (code, expected, msg) => {
+  const [d, s] = jBoth(code)
+  is(d, expected, `${msg} (default)`)
+  is(s, expected, `${msg} (strict)`)
+}
+
+test('instanceof: Array/Map/Set/ArrayBuffer/TypedArray — truth table (both modes)', () => {
+  isBoth(`export let f = () => [] instanceof Array`, true, '[] instanceof Array')
+  isBoth(`export let f = () => new Map() instanceof Map`, true, 'new Map() instanceof Map')
+  isBoth(`export let f = () => new Map() instanceof Set`, false, 'new Map() instanceof Set — siblings never satisfy each other')
+  isBoth(`export let f = () => new Set() instanceof Map`, false, 'new Set() instanceof Map')
+  isBoth(`export let f = () => new Float64Array(1) instanceof Float64Array`, true, 'new Float64Array(1) instanceof Float64Array')
+  isBoth(`export let f = () => new Float64Array(1) instanceof Uint8Array`, false, 'element-type mismatch — different TYPED aux')
+  isBoth(`export let f = () => new Float64Array(1).buffer instanceof ArrayBuffer`, true, '.buffer is a real BUFFER pointer')
+  isBoth(`export let f = () => new ArrayBuffer(8) instanceof ArrayBuffer`, true, 'new ArrayBuffer(8) instanceof ArrayBuffer')
+  isBoth(`export let f = () => new ArrayBuffer(8) instanceof Float64Array`, false, 'ArrayBuffer is not a TypedArray')
   // View vs owned storage of the SAME element type are BOTH instanceof that ctor
   // (real JS: `new Int32Array(buf) instanceof Int32Array` is true regardless of
   // whether the array owns or views its storage) — the runtime aux-compare masks
   // off TYPED_ELEM_VIEW_FLAG before comparing so this doesn't regress to false.
-  is(j(`export let f = () => { let b = new ArrayBuffer(16); return new Int32Array(b) instanceof Int32Array }`), true, 'a VIEW Int32Array is still instanceof Int32Array')
+  isBoth(`export let f = () => { let b = new ArrayBuffer(16); return new Int32Array(b) instanceof Int32Array }`, true, 'a VIEW Int32Array is still instanceof Int32Array')
   // primitives / nullish: instanceof is false, never a throw, when RHS is a real ctor (ES 13.10.2)
-  is(j(`export let f = () => 42 instanceof Array`), false, '42 instanceof Array')
-  is(j(`export let f = () => null instanceof Map`), false, 'null instanceof Map')
-  is(j(`export let f = () => { let u; return u instanceof Set }`), false, 'undefined instanceof Set')
-  is(j(`export let f = () => "s" instanceof Array`), false, 'string primitive instanceof Array')
-  is(j(`export let f = () => true instanceof Map`), false, 'boolean primitive instanceof Map')
+  isBoth(`export let f = () => 42 instanceof Array`, false, '42 instanceof Array')
+  isBoth(`export let f = () => null instanceof Map`, false, 'null instanceof Map')
+  isBoth(`export let f = () => { let u; return u instanceof Set }`, false, 'undefined instanceof Set')
+  isBoth(`export let f = () => "s" instanceof Array`, false, 'string primitive instanceof Array')
+  isBoth(`export let f = () => true instanceof Map`, false, 'boolean primitive instanceof Map')
 })
 
-test('instanceof: Error family — tag+schema compare, class hierarchy, internal-code range compare', () => {
-  const j = (code) => jz(code, { strict: true }).exports.f()
+test('instanceof: Error family — tag+schema compare, class hierarchy (both modes)', () => {
+  // audit-#8 repro 1, exact form: a plain let-bound Error (not caught) checked
+  // against a SIBLING class. This is the repro that was `true` in default mode
+  // before the fix (JS: false).
+  isBoth(`export let f = () => { let e = new TypeError("x"); return e instanceof RangeError }`, false, 'audit-#8 repro 1: new TypeError(x) instanceof RangeError')
   // constructed Error objects: exact class true, sibling false, base Error true (hierarchy)
-  is(j(`export let f = () => { try { throw new TypeError('t') } catch (e) { return e instanceof TypeError } }`), true, 'e instanceof TypeError (exact class)')
-  is(j(`export let f = () => { try { throw new TypeError('t') } catch (e) { return e instanceof RangeError } }`), false, 'e instanceof RangeError (sibling — never confused)')
-  is(j(`export let f = () => { try { throw new TypeError('t') } catch (e) { return e instanceof Error } }`), true, 'e instanceof Error (every built-in class extends Error)')
-  is(j(`export let f = () => { try { throw new Error('x') } catch (e) { return e instanceof TypeError } }`), false, 'a base Error instance is not instanceof a subclass')
-  is(j(`export let f = () => { try { throw new RangeError('r') } catch (e) { return e instanceof RangeError } }`), true, 'RangeError exact class')
-  is(j(`export let f = () => { try { throw new SyntaxError('s') } catch (e) { return e instanceof SyntaxError } }`), true, 'SyntaxError exact class')
-  is(j(`export let f = () => { try { throw new ReferenceError('r') } catch (e) { return e instanceof ReferenceError } }`), true, 'ReferenceError exact class (zero internal-code sites — still constructible/instanceof-able)')
-  is(j(`export let f = () => { try { throw new URIError('u') } catch (e) { return e instanceof URIError } }`), true, 'URIError exact class')
-  is(j(`export let f = () => { try { throw new EvalError('v') } catch (e) { return e instanceof EvalError } }`), true, 'EvalError exact class (zero internal-code sites)')
-  // internal coded throw (a NUMBER, not an object — §3(b)) — the range-compare arm,
-  // derived from err-codes.js's ERR_CODE_RANGES (100-115 TypeError, 200-212 RangeError,
-  // 300-302+311-318 SyntaxError, 303-310 URIError).
-  is(j(`export let f = () => { try { JSON.parse('x') } catch (e) { return e instanceof SyntaxError } return false }`), true, 'JSON.parse SyntaxError code lands in the SyntaxError range')
-  is(j(`export let f = () => { try { JSON.parse('x') } catch (e) { return e instanceof Error } return false }`), true, 'internal SyntaxError code instanceof Error (base — union of every range)')
-  is(j(`export let f = () => { try { JSON.parse('x') } catch (e) { return e instanceof TypeError } return false }`), false, 'internal SyntaxError code instanceof TypeError — wrong range')
-  is(j(`export let f = () => { try { let a = [1]; a.with(5, 2) } catch (e) { return e instanceof RangeError } return false }`), true, 'TYPED_WITH_INDEX-shaped internal RangeError code (Array#with OOB)')
+  isBoth(`export let f = () => { try { throw new TypeError('t') } catch (e) { return e instanceof TypeError } }`, true, 'e instanceof TypeError (exact class)')
+  isBoth(`export let f = () => { try { throw new TypeError('t') } catch (e) { return e instanceof RangeError } }`, false, 'e instanceof RangeError (sibling — never confused)')
+  isBoth(`export let f = () => { try { throw new TypeError('t') } catch (e) { return e instanceof Error } }`, true, 'e instanceof Error (every built-in class extends Error)')
+  isBoth(`export let f = () => { try { throw new Error('x') } catch (e) { return e instanceof TypeError } }`, false, 'a base Error instance is not instanceof a subclass')
+  isBoth(`export let f = () => { try { throw new RangeError('r') } catch (e) { return e instanceof RangeError } }`, true, 'RangeError exact class')
+  isBoth(`export let f = () => { try { throw new SyntaxError('s') } catch (e) { return e instanceof SyntaxError } }`, true, 'SyntaxError exact class')
+  isBoth(`export let f = () => { try { throw new ReferenceError('r') } catch (e) { return e instanceof ReferenceError } }`, true, 'ReferenceError exact class (zero internal-code sites — still constructible/instanceof-able)')
+  isBoth(`export let f = () => { try { throw new URIError('u') } catch (e) { return e instanceof URIError } }`, true, 'URIError exact class')
+  isBoth(`export let f = () => { try { throw new EvalError('v') } catch (e) { return e instanceof EvalError } }`, true, 'EvalError exact class (zero internal-code sites)')
   // non-Error throws (§3(c)): instanceof on the raw thrown value is false, never a crash
-  is(j(`export let f = () => { try { throw 42 } catch (e) { return e instanceof TypeError } }`), false, 'thrown number instanceof TypeError — false, not a crash')
-  is(j(`export let f = () => { try { throw 'oops' } catch (e) { return e instanceof Error } }`), false, 'thrown string instanceof Error — false')
+  isBoth(`export let f = () => { try { throw 42 } catch (e) { return e instanceof TypeError } }`, false, 'thrown number instanceof TypeError — false, not a crash')
+  isBoth(`export let f = () => { try { throw 'oops' } catch (e) { return e instanceof Error } }`, false, 'thrown string instanceof Error — false')
+})
+
+// audit-#8 P0-2 (2026-08-03, design-error correction): src/compile/emit.js's
+// emitErrorInstanceof used to test an internally-thrown NUMBER code against
+// err-codes.js's ERR_CODE_RANGES and call a match "instanceof <Class>" — e.g.
+// JSON.parse's internal SyntaxError code (300-302/311-318) landed in that
+// arm. That range arm was UNSOUND: a jz-internal code and a user's own
+// `throw <sameNumber>` are bit-identical numbers with no tag to distinguish
+// them — `export let f = x => x instanceof SyntaxError; f(300)` answered
+// `true` for an arbitrary caller int that happened to land in range (repro 2).
+// The range arm is deleted; internal-code catches are honestly
+// `instanceof`-false for every Error class now — pinned below, both modes.
+// Recovering `instanceof` for a caught internal code needs a materialized
+// Error object at the catch site (error-object-design.md §7 Slice C,
+// deliberately deferred, not landed here).
+test('instanceof: internal coded throws are NOT instanceof any Error class (audit-#8 P0-2, both modes)', () => {
+  // repro 2, exact form: an arbitrary caller-supplied number that happens to
+  // land in SyntaxError's internal range must NOT be instanceof SyntaxError.
+  isBoth(`export let f = (x) => x instanceof SyntaxError`, false, 'audit-#8 repro 2: f(300) — see call below')
+  is(jz(`export let f = (x) => x instanceof SyntaxError`, {}).exports.f(300), false, 'audit-#8 repro 2 default: f(300) instanceof SyntaxError')
+  is(jz(`export let f = (x) => x instanceof SyntaxError`, { strict: true }).exports.f(300), false, 'audit-#8 repro 2 strict: f(300) instanceof SyntaxError')
+  // the user-thrown-number collision, pinned directly on a `throw`
+  isBoth(`export let f = () => { try { throw 300 } catch (e) { return e instanceof SyntaxError } }`, false, 'throw 300 caught — NOT instanceof SyntaxError (user number, not the compiler)')
+  isBoth(`export let f = () => { try { JSON.parse('x') } catch (e) { return e instanceof SyntaxError } return false }`, false, 'JSON.parse internal SyntaxError code — instanceof SyntaxError is false (range arm deleted, Slice C not built)')
+  isBoth(`export let f = () => { try { JSON.parse('x') } catch (e) { return e instanceof Error } return false }`, false, 'JSON.parse internal SyntaxError code — instanceof Error is false too (same reason)')
+  isBoth(`export let f = () => { try { let a = [1]; a.with(5, 2) } catch (e) { return e instanceof RangeError } return false }`, false, 'Array#with OOB internal RangeError code — instanceof RangeError is false')
+})
+
+// audit-#8 P0-3 (2026-08-03): __errcls__ (error-object-design.md §1's schema
+// slot 2, the class-identity marker) must be neither readable, writable, nor
+// enumerable from source — "never spellable in source" was previously only a
+// comment, not enforced: `e.__errcls__ = 2` compiled and silently flipped
+// `instanceof`, and the slot showed up in Object.keys/JSON.stringify/for-in.
+test('errors: __errcls__ is hidden — not accessible, not enumerable (audit-#8 P0-3)', () => {
+  throws(`export let f = () => { let e = new TypeError("x"); e.__errcls__ = 2; return e.__errcls__ }`,
+    'errcls', 'dot-write to .__errcls__ should be a loud compile error')
+  throws(`export let f = () => { let e = new TypeError("x"); return e.__errcls__ }`,
+    'errcls', 'dot-read of .__errcls__ should be a loud compile error')
+  throws(`export let f = () => { let o = { message: "x", name: "TypeError", __errcls__: 1 }; return o }`,
+    'errcls', 'an object literal spelling __errcls__ as a key should be a loud compile error')
+  is(jz(`export let f = () => { let e = new TypeError("x"); return Object.keys(e).length }`).exports.f(), 2,
+    'Object.keys(caught error) excludes __errcls__ (message, name only)')
+  is(jz(`export let f = () => { let e = new TypeError("x"); return JSON.stringify(e) }`).exports.f(), '{"message":"x","name":"TypeError"}',
+    'JSON.stringify(caught error) excludes __errcls__')
+  is(jz(`export let f = () => { let e = new TypeError("x"); let n = 0; for (let k in e) n++; return n }`).exports.f(), 2,
+    'for-in over a caught error excludes __errcls__ (2 keys, not 3)')
+  // Computed-key access (`e[k]`) is NOT statically foldable to the reserved
+  // name, so it can't be rejected at prepare time the way `.` access is — but
+  // the dyn GET/SET/DELETE dispatch (module/collection.js) still excludes the
+  // slot by content-comparing the key at runtime, so it behaves as absent
+  // rather than as a live alias for the real slot: a computed write can't
+  // corrupt instanceof, and a computed read sees `undefined`, not the real
+  // internal classIdx.
+  is(jz(`export let f = () => { let e = new TypeError("x"); let k = "__errcls__"; e[k] = 1; return e instanceof RangeError }`).exports.f(), false,
+    'computed write to __errcls__ cannot flip instanceof')
+  is(jz(`export let f = () => { let e = new TypeError("x"); let k = "__errcls__"; return e[k] }`).exports.f(), undefined,
+    'computed read of __errcls__ sees undefined, not the real classIdx')
 })
 
 test('instanceof: compile-time fold — proven-kind LHS emits no runtime tag/aux/schema dispatch', () => {

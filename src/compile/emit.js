@@ -32,7 +32,7 @@ import {
   i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR,
   OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_NAMES, encodeTypedElemAux, TYPED_ELEM_VIEW_FLAG,
 } from '../../layout.js'
-import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS, ERR_CODE_RANGES } from '../../err-codes.js'
+import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../../err-codes.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
 import { nonNegIntLiteral, intLiteralValue, intExprRange, staticPropertyKey } from '../static.js'
@@ -4109,41 +4109,38 @@ function emitErrorInstanceof(a, rhs) {
       // else: proven "some Error", not which one — falls through to the runtime check.
     }
   }
-  // A provably non-OBJECT LHS (NUMBER, ARRAY, STRING, …) can never be our Error
-  // schema — an internally-thrown coded value IS a NUMBER (error-object-design.md
-  // §3(b)), so this fold must NOT fire for VAL.NUMBER (that's exactly the internal-
-  // code arm's job below) — only for kinds that are neither OBJECT nor NUMBER.
+  // A provably non-OBJECT LHS can never be our Error schema. This INCLUDES NUMBER:
+  // audit-#8 P0-2 (2026-08-03) deleted the numeric-range arm that used to live
+  // below — an internally-thrown coded value (JSON.parse failure, OOB Array#with,
+  // …) is caught as a raw NUMBER (error-object-design.md §3(b)), bit-identical to
+  // a user's own `throw <sameNumber>`. Comparing that NUMBER against err-codes.js's
+  // ERR_CODE_RANGES and calling a match "instanceof SyntaxError" meant ANY
+  // caller-supplied number landing in a class's internal range answered `true`
+  // (`export let f = x => x instanceof SyntaxError; f(300)` → `true`, since 300
+  // sits in the derived range — a real repro, not a hypothetical). No numeric
+  // range can distinguish "the compiler threw this code" from "the user threw
+  // this number"; recovering `instanceof` for a caught internal code needs a
+  // materialized Error object at the catch site instead (error-object-design.md
+  // §7 Slice C, deliberately deferred — not landed here). Until then, internal-
+  // code catches are honestly `instanceof`-false for every Error class, same as
+  // any other non-Error value (§3(c)).
   const vt = valTypeOf(a)
-  if (vt != null && vt !== VAL.OBJECT && vt !== VAL.NUMBER) return foldInstanceof(emit(a), false)
+  if (vt != null && vt !== VAL.OBJECT) return foldInstanceof(emit(a), false)
 
-  // Runtime: (a) real Error object — tag+schema[+errcls] compare, OR (b) internal
-  // coded throw — contiguous range compare(s) against err-codes.js's derived
-  // ERR_CODE_RANGES. Ordered f64 compares on a NaN-boxed pointer's bits are always
-  // false (IEEE754), so arm (b) needs no prior "is this a real number" guard.
-  const ranges = rhs === 'Error' ? Object.values(ERR_CODE_RANGES).flat() : ERR_CODE_RANGES[rhs]
+  // Runtime: real Error object only — tag+schema[+errcls] compare. The schema arm
+  // only exists in programs that can ever construct a real Error object at all
+  // (mirrors ir.js toStrI64's ctx.features.error gate) — dead otherwise, so fold
+  // to a constant false rather than emit an always-false compare.
+  if (!ctx.features.error) return foldInstanceof(emit(a), false)
+  const errSid = ctx.schema.register(ERR_SCHEMA_PROPS)
   const t = temp('einst')
-  const get = () => typed(['local.get', `$${t}`], 'f64')
-  let rangeArm = null
-  for (const { lo, hi } of ranges) {
-    const chk = typed(['i32.and', ['f64.ge', get(), ['f64.const', lo]], ['f64.le', get(), ['f64.const', hi]]], 'i32')
-    rangeArm = rangeArm ? typed(['i32.or', rangeArm, chk], 'i32') : chk
-  }
-  // The schema arm only exists in programs that can ever construct a real Error
-  // object at all (mirrors ir.js toStrI64's ctx.features.error gate) — dead
-  // otherwise, so skip it entirely rather than emit an always-false compare.
-  let schemaArm = null
-  if (ctx.features.error) {
-    const errSid = ctx.schema.register(ERR_SCHEMA_PROPS)
-    const bits = () => ['i64.reinterpret_f64', get()]
-    const tagOk = typed(['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(errSid)]], 'i32')
-    schemaArm = rhs === 'Error' ? tagOk
-      : typed(['i32.and', tagOk,
-          ['f64.eq',
-            typed(ctx.abi.object.ops.load(['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]], 2), 'f64'),
-            ['f64.const', classIdx]]], 'i32')
-  }
-  const body = schemaArm && rangeArm ? typed(['i32.or', schemaArm, rangeArm], 'i32')
-    : schemaArm || rangeArm || typed(['i32.const', 0], 'i32')
+  const bits = () => ['i64.reinterpret_f64', typed(['local.get', `$${t}`], 'f64')]
+  const tagOk = typed(['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(errSid)]], 'i32')
+  const body = rhs === 'Error' ? tagOk
+    : typed(['i32.and', tagOk,
+        ['f64.eq',
+          typed(ctx.abi.object.ops.load(['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]], 2), 'f64'),
+          ['f64.const', classIdx]]], 'i32')
   return typed(['block', ['result', 'i32'],
     ['local.set', `$${t}`, asF64(emit(a))],
     body], 'i32')

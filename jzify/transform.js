@@ -3,23 +3,36 @@
  * @module jzify/transform
  */
 
-import { warn } from '../src/ctx.js'
 import { JZ_BLOCK_OPS, LABEL_BODY_OPS, STMT_ONLY_OPS, paramList } from '../src/ast.js'
 import { usesArguments } from './arguments.js'
 import { isDestructurePat } from './hoist-vars.js'
-
-const ERROR_INSTANCEOF = new Set(['Error', 'TypeError', 'SyntaxError', 'RangeError', 'ReferenceError', 'URIError', 'EvalError'])
+import { ERR_CLASS_NAMES } from '../err-codes.js'
+import { TYPED_ELEM_NAMES } from '../layout.js'
 
 const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Float16Array','Int32Array','Uint32Array',
   'Int16Array','Uint16Array','Int8Array','Uint8Array','Uint8ClampedArray',
   'ArrayBuffer','BigInt64Array','BigUint64Array','DataView'])
+
+// RHS names the SOUND core machinery (prepare's 'instanceof' handler + emit.js's
+// emitInstanceof, error-object-design.md §4) already supports — mirrors prepare/
+// index.js:83's INSTANCEOF_ALLOW verbatim (same two upstream arrays, same four
+// tag names) so default and strict mode can never drift on which RHS is sound.
+// audit-#8 P0-1: this file's own 'instanceof' handler used to answer every one of
+// these itself via a broad shape guess (staticInstanceofFold + a permissive
+// `typeof===object` fallback) BEFORE prepare's sound handler ever saw the node —
+// default mode never reached the tag/schema/range machinery strict mode used,
+// so `new TypeError(x) instanceof RangeError` wrongly answered `true` there.
+const CORE_INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', ...TYPED_ELEM_NAMES, ...ERR_CLASS_NAMES])
 
 const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'prototype'
 
 function staticInstanceofFold(val, ctor) {
   if (typeof ctor !== 'string' || !Array.isArray(val)) return null
   if (val[0] === '()' && val.length === 2) return staticInstanceofFold(val[1], ctor)
-  if (val[0] === '[]' && val.length <= 2) return ctor === 'Array' || ctor === 'Object'
+  // ctor === 'Array' never reaches here — CORE_INSTANCEOF_ALLOW routes it to the
+  // core (which folds `[] instanceof Array` itself, via valTypeOf) before the
+  // 'instanceof' handler below ever calls this function.
+  if (val[0] === '[]' && val.length <= 2) return ctor === 'Object'
   if (val[0] === '{}') return ctor === 'Object'
   if (val[0] === '//') return ctor === 'RegExp' || ctor === 'Object'
   if (val[0] === 'new') {
@@ -496,18 +509,12 @@ export function createTransform(opts) {
       const t = transform(val)
       let name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
       if (name === 'SharedArrayBuffer') name = 'ArrayBuffer'   // same canonicalization as `new`
+      // Array/Map/Set/TypedArray/ArrayBuffer/Error-family: hand off to the sound
+      // core machinery instead of guessing here (see CORE_INSTANCEOF_ALLOW above)
+      // — same op, same RHS, same answer as strict mode.
+      if (typeof name === 'string' && CORE_INSTANCEOF_ALLOW.has(name)) return ['instanceof', t, name]
       const fold = staticInstanceofFold(val, name)
       if (fold != null) return [null, fold]
-      if (typeof name === 'string' && ERROR_INSTANCEOF.has(name)) {
-        warn('untagged-instanceof',
-          `\`instanceof ${name}\` does not discriminate thrown values in jz — errors are untagged; inspect the message or value instead`,
-          {}, Array.isArray(val) ? val.loc : null)
-      }
-      if (name === 'Array') return ['()', ['.', 'Array', 'isArray'], t]
-      if (name === 'Map') return ['()', '__is_map', t]
-      if (name === 'Set') return ['()', '__is_set', t]
-      if (typeof name === 'string' && TYPED_ARRAYS.has(name) && name !== 'ArrayBuffer' && name !== 'DataView')
-        return ['()', '__is_typed', t]
       return ['===', ['typeof', t], [null, 'object']]
     },
 
