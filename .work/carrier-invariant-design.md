@@ -58,6 +58,91 @@ dict-rows unification hypothesis is NOT confirmed by this bug (this one
 is a plain deterministic metadata-erasure, not context-dependent) but
 the 0x2A8/__schema_tbl lead is noted for those hunts.
 
+EXPORT-LOSS MECHANISM ROOT-CAUSED AND FIXED 2026-08-03 (dedicated hunt,
+following the ROUND 8-9 outline-hunt method: dump native WAT of the victim
+function, diff good vs patched, locate the wrong instruction sequence). The
+2-sided control reproduced exactly as banked: `val = viewInit ||
+storedValue(init)` at emit.js ~1712 compiles natively clean, but the
+resulting dist/jz.wasm loses every export for every compiled program;
+restoring `emit(init)` restores exports. WHAT the bad kernel does wrong,
+localized first (compileViaKernel wat:true across optimize levels on
+`export let f = (x) => x + 1`): the function BODY is correct at every level;
+`(export "f")` is simply ABSENT at O0/O1 (function present, unreferenced);
+at O2/O3 watr's own DCE — correctly, given no export/no caller keeps it
+alive — removes the function entirely, `(module)` with zero content. So the
+"total export loss" symptom is not optimizer-level-dependent corruption; the
+export FLAG itself never gets set, and DCE just does its honest job on an
+(wrongly) unreferenced function afterward.
+WHERE, localized second (native `compile(self.js source, {wat:true})`,
+patched vs unpatched, full kernel WAT dump ~350MB each, `$m65_index$defFunc`
+extracted and diffed after normalizing synthetic temp-name suffixes):
+`prepare/index.js`'s `defFunc` — `const exported = !!ctx.func.exports[name]
+&& ctx.module.moduleStack.length === 0` (a plain BOOL const, later read back
+into the `funcInfo` object literal `defFunc` pushes onto `ctx.func.list`).
+Good build compiles this as a plain i32 `f64.gt`/`i32.eqz` comparison chain
+(the local `exported` stays i32, matching a BOOL-kind local's native WASM
+storage). Patched build wraps the SAME comparison in `__mkptr_0_d_`
+(carrierF64→boolBoxIR boxing, exactly what storedValue is FOR) then
+IMMEDIATELY `select(i32.wrap_i64(i64.trunc_sat_f64_s(<the just-boxed
+atom>)), i32.const 0, f64.ne(atom, inf))` — this is `toI32` (ir.js:335,
+ECMAScript ToInt32) applied to the boxed atom.
+MECHANISM (the wrong instruction sequence, and why): emit.js's decl-init
+local-storage coercion ladder (now ~1932, was line 1895) —
+`localType==='v128' ? val : localType==='f64' ? asF64(val) : val.type===
+'i32' ? val : toI32(val)` — assumed any `val` that isn't already i32-typed
+must be a genuine f64 NUMBER needing real ToInt32 narrowing into an i32-typed
+local. That held for every existing call site because plain `emit(init)`
+NEVER returns an f64-typed result for a BOOL-typed init (it always emits the
+natural i32 0/1, taking the `val.type==='i32'` arm — never reaching
+`toI32`). `storedValue(init)` breaks the invariant: for a BOOL-typed init it
+deliberately boxes to an f64 NaN carrier ATOM (TRUE_NAN/FALSE_NAN — meant for
+heap/object escape, typeof/String/strict-eq-safe, NOT a numeric quantity).
+Landing on this ladder against an i32-typed local (chosen by the compiler
+independently, for a BOOL local it believed never escapes as a boxed value),
+the ladder's `else` arm ran `toI32` on the atom. ToInt32(NaN) = 0 by spec;
+TRUE_NAN and FALSE_NAN are BOTH NaN bit patterns, so toI32 collapsed EVERY
+boxed boolean — true or false — to i32 0. `exported` therefore reads 0
+(false) for every function `defFunc` ever promotes, in every program the
+resulting kernel compiles: universal, deterministic, program-independent
+export loss. NAMED FAMILY: MECHANISM C (new, added to the two at the top of
+this doc) — narrow-local coercion blind to carrier-atom representation: a
+value's WASM type tag (i32 vs f64) was used as a proxy for "is this a raw
+number/boolean vs a boxed carrier atom," which held everywhere until
+storedValue was introduced at a site whose target local had been narrowed to
+a type storedValue's own boxed output no longer matches. Not one of the four
+prior class precedents (element-fact misproof, capture-after-nested-emit,
+boolean-return collision, closure-capture staleness) — a genuinely new one,
+sibling to MECHANISM A/B's representation gaps but at the LOCAL-NARROWING
+layer instead of the field-storage layer.
+FIX (landed, src/compile/emit.js): the ladder now checks `valTypeOf(init)
+=== VAL.BOOL` before falling to `toI32` and takes `unboxBoolIR` (ir.js:469 —
+existed, unused anywhere, apparently minted for exactly this) — bit-
+extraction (shift+mask off the NaN payload) instead of numeric truncation.
+NO-OP at HEAD: kernel-parity 33/33 byte-identical, kernel-oracle 451/451,
+full battery 3232/0/6 (18832 assertions) — `emit(init)` never produces an
+f64-typed BOOL today, so the new branch is dead code until a decl-init call
+site actually feeds one in. PROVEN live (not assumed): `val = viewInit ||
+storedValue(init)` PLUS this ladder fix → fresh dist/jz.wasm compiles
+`export let f = (x) => x + 1` with `(export "f")` present at EVERY optimize
+level (0/1/2/3), matching the good kernel byte-for-byte on that probe.
+WALL STAYS CLOSED ANYWAY — a SECOND, independent divergence: with
+storedValue live at every decl (fix included), test/kernel-parity.js's
+'dict' corpus entry (`d[c] = (d[c] || 0) + 1`) diverges from native at O2/O3
+only (kernel WAT ~3% larger; O0 byte-identical; native vs kernel wasm bytes
+10859 vs 11199 @ O2, 11250 vs 11552 @ O3). No BOOL-atom coercion involved —
+a separate MECHANISM A site (one of the 16 hand-reimplemented
+`carrierF64(node, emit(node))` sites this doc already catalogs, or one of
+the 13 PENDING-FIX oracle rows the "Order + gates" section already gates
+production changes behind) getting exercised for the first time now that
+storedValue is live at every decl, not chased further this session (separate
+root, separate hunt — start from `test/kernel-parity.js`'s 'dict' CORPUS
+entry directly, native-vs-kernel WAT diff at O2, same method as above).
+`captured-then-read` oracle row stays PENDING-FIX: the export-loss blocker
+that made turning storedValue on here catastrophic is gone, but the wall
+stays closed until the dict-O2/O3 divergence is independently named — DO NOT
+flip the decl site to storedValue without first closing that gap (kernel-
+parity would go red on 'dict' at O2/O3, caught live this session).
+
 TAG-PRESERVING REBOX LANDED, DECL-INIT WALL STAYS CLOSED 2026-08-01
 (implementation session against the FIX above): the P1-tag-erasure
 diagnosis was CONFIRMED correct and its fix LANDED — but the "then the

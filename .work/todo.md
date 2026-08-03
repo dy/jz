@@ -4,6 +4,43 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, DECL-INIT WALL export-loss mechanism ROOT-CAUSED AND
+## FIXED — src/compile/emit.js's decl-init local-storage coercion ladder;
+## full details .work/carrier-invariant-design.md "EXPORT-LOSS MECHANISM
+## ROOT-CAUSED AND FIXED" entry)
+
+The kernel-scale "total export loss for every program" miscompile banked
+across three prior hunts (RE-CHARACTERIZED, ROOT-CAUSED, TAG-PRESERVING
+REBOX — all in carrier-invariant-design.md) is now actually named: NOT an
+unlocalized native self-compile miscompile, but a real bug in emitDecl's own
+local-storage coercion ladder (`localType==='i32' ... : toI32(val)`) —
+`toI32` (ECMAScript ToInt32, NaN→0) applied to a storedValue-boxed BOOL
+carrier atom (TRUE_NAN/FALSE_NAN — both NaN bit patterns) collapses every
+boxed boolean to i32 0. Landing storedValue at the decl site made
+`prepare/index.js`'s `defFunc`'s `const exported = ...` decl feed exactly
+this path, permanently zeroing `funcInfo.exported` for every function the
+resulting kernel ever compiled. FIXED: the ladder now takes ir.js's
+(previously unused) `unboxBoolIR` for a BOOL-typed init instead of `toI32`.
+NO-OP at HEAD (kernel-parity 33/33, kernel-oracle 451/451, battery
+3232/0/6); PROVEN live with the storedValue substitution (fresh dist/jz.wasm
+exports correct at every optimize level) then REVERTED per the wall's own
+convention — decl site stays `emit(init)`. Gates run with the fix alone (no
+substitution): kernel-parity 33/33, kernel-oracle 451/451, battery 3232/0/6
+(18832 assertions), opt0 3232/0/6, opt3 3232/0/6, wasi 3231/0/6, wasm-target
+2517/20/6 (the 20 failures confirmed PRE-EXISTING — identical count/names
+against the unpatched baseline kernel, unrelated census/host-decode feature
+gaps), optimizer 214/214, fuzz 2000×4 zero divergence, perf-ratchet 10/10
++0, selfhost.js 21/21, selfhost-perf.js warm 1.007× (cap 1.03×) / fresh
+0.795× (cap 0.99×), size spot-check matches the historical baseline exactly
+(mat4 1.5kB, fft 2.3kB, crc32 1.1kB, biquad 1.8kB). WALL STAYS CLOSED: a
+SEPARATE, unrelated divergence (test/kernel-parity.js 'dict' corpus entry,
+O2/O3 only, ~3% kernel WAT size difference, no BOOL-atom coercion involved)
+surfaces the moment storedValue goes live at every decl — a different
+MECHANISM A site or one of the 13 PENDING-FIX oracle rows the design doc's
+"Order + gates" section already gates production changes behind. NEXT (for
+whoever reopens the wall): native-vs-kernel WAT diff on 'dict' at O2, same
+method as this hunt (extract+diff the compiled function, don't guess).
+
 ## Status (2026-08-03, Error-object model Slice B LANDED — `instanceof` subset;
 ## internal-code `.message` (optional Slice C) is the only thing left, per
 ## .work/error-object-design.md — its own §Open-questions verdict: a pure

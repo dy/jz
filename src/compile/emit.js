@@ -58,7 +58,7 @@ import {
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom,
-  boolBoxIR, carrierF64,
+  boolBoxIR, carrierF64, unboxBoolIR,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -1730,28 +1730,65 @@ export function emitDecl(...inits) {
     // invariants native build: zero P1 fires, with or without the decl
     // patch below applied.
     //
-    // STILL OPEN: applying storedValue HERE regardless — the actual wall
-    // this comment is about — still miscompiles the SELF-HOSTED kernel's
-    // own compiled `emitDecl`, and the P1 fix above does NOT touch it: a
-    // fresh dist rebuilt with `val = viewInit || storedValue(init)` (tag
-    // fix included) compiles cleanly natively (proof above) but the
-    // resulting dist/jz.wasm then loses every export for EVERY compiled
-    // program — even `export let f = (x) => x + 1`, a closure-literal
-    // init that storedValue boxes byte-for-byte identically to plain
-    // `emit(init)` (mkPtrIR's result is already f64-typed with no
-    // `.ptrKind`, so asF64 returns it unchanged either way — the VALUE
-    // this line produces for that program is provably the same node
-    // whichever way it's written). That rules out a semantics/value bug
-    // in the patch itself: the miscompile is in how the native compiler
-    // compiles THIS CALL SHAPE inside its own emitDecl source, not in
-    // what the call computes — the same conclusion the superseded
-    // "RE-CHARACTERIZED" ledger entry reached before the P1 mechanism
-    // was found, and NOT unified with it by this session's fix (the
-    // "ROOT-CAUSED" entry's claim that fixing tag-preservation lets this
-    // line take storedValue does not hold — verified live, not assumed).
-    // Root cause not localized further given the session's budget —
-    // banked, not chased. test/kernel-oracle.js's 'captured-then-read'
-    // row stays PENDING-FIX for this exact reason.
+    // EXPORT-LOSS MECHANISM ROOT-CAUSED AND FIXED 2026-08-03 (dedicated hunt,
+    // carrier-invariant-design.md "DECL-INIT WALL" entries): the "total
+    // export loss for EVERY compiled program" symptom above is NOT an
+    // unlocalized native self-compile miscompile — it is this file's OWN
+    // local-storage coercion ladder a few lines down (`localType === 'v128'
+    // ? val : localType === 'f64' ? asF64(val) : val.type === 'i32' ? val :
+    // toI32(val)`, now fixed, see the unboxBoolIR branch inserted there).
+    // MECHANISM: for a BOOL-typed init, plain `emit(init)` ALWAYS returns an
+    // i32 0/1 (never f64) — the ladder's `val.type === 'i32'` arm always
+    // caught it, `toI32` never ran on a BOOL. `storedValue(init)` instead
+    // routes a BOOL-typed init through carrierF64→boolBoxIR, producing an
+    // F64-TYPED NaN-boxed TRUE/FALSE carrier ATOM (an escape-safe box, not a
+    // number). Landing on the SAME ladder with `localType==='i32'` (the
+    // local's native WASM storage, chosen independently for a provably-
+    // non-escaping BOOL local), `val.type` is now 'f64', so the ladder fell
+    // to `toI32(val)` — ECMAScript ToInt32, where NaN → 0. TRUE_NAN and
+    // FALSE_NAN are BOTH NaN bit patterns, so toI32 collapsed EVERY boxed
+    // boolean to i32 0 — a category error (numeric truncation applied to an
+    // opaque bit-pattern atom that needed unboxBoolIR's shift+mask instead).
+    // PROOF: native-WAT-diffed self.js compiled with the storedValue patch
+    // vs without (scripts/self.js's own `prepare/index.js` defFunc — `const
+    // exported = !!ctx.func.exports[name] && ctx.module.moduleStack.length
+    // === 0`, a BOOL const later read back into the `funcInfo` object
+    // literal) showed EXACTLY this: the good build compiles `exported` as a
+    // plain `f64.gt`/`i32.eqz` i32 result; the patched build wraps the same
+    // comparison in `__mkptr_0_d_` (carrierF64 boxing) then immediately
+    // `select(i32.wrap_i64(i64.trunc_sat_f64_s(...)), 0, ...)` — toI32 on the
+    // just-built atom. Every function `defFunc` promotes gets `exported`
+    // silently pinned to 0 (false) this way, so NO function the resulting
+    // kernel ever compiles gets a wasm export clause — confirmed by kernel
+    // WAT dumps of a trivial `export let f = (x) => x + 1`: body correct at
+    // every optimize level, `(export "f")` missing at O0/O1, and at O2/O3
+    // the (correctly, from the optimizer's own perspective) unreferenced
+    // unexported function gets DCE'd entirely, `(module)` with zero exports
+    // and zero funcs. FIX (landed, this file): the ladder now checks
+    // `valTypeOf(init) === VAL.BOOL` before falling to `toI32` and takes
+    // ir.js's existing (previously unused) `unboxBoolIR` — bit-extraction,
+    // not numeric truncation. NO-OP at HEAD (kernel-parity 33/33 byte-
+    // identical, kernel-oracle 451/451): `emit(init)` never produces an f64-
+    // typed BOOL, so the new branch is dead code today — it only activates
+    // the moment a decl-init call site starts passing a boxed BOOL atom in.
+    // PROVEN with the substitution itself: `val = viewInit ||
+    // storedValue(init)` PLUS this ladder fix compiles a fresh dist/jz.wasm
+    // whose exports are correct at every optimize level (verified live,
+    // trivial-program + WAT diff, not assumed).
+    //
+    // WALL STAYS CLOSED ANYWAY: turning storedValue on here also, separately,
+    // surfaces a DIFFERENT divergence unrelated to this mechanism —
+    // test/kernel-parity.js's 'dict' corpus entry (`d[c] = (d[c] || 0) + 1`)
+    // diverges from native at O2/O3 only (kernel ~3% larger WAT; O0
+    // byte-identical) — no BOOL-atom coercion involved, a separate
+    // MECHANISM A site (carrier-invariant-design.md's 16 hand-reimplemented
+    // `carrierF64(node, emit(node))` sites, or one of the 13 PENDING-FIX
+    // oracle rows the design doc already gates production changes behind)
+    // getting exercised for the first time with storedValue live at every
+    // decl. NOT chased further this session (separate root, separate hunt).
+    // test/kernel-oracle.js's 'captured-then-read' row stays PENDING-FIX:
+    // the export-loss blocker is gone, but the wall stays closed until the
+    // dict-O2/O3 divergence is independently named.
     const val = viewInit || emit(init)
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
@@ -1892,7 +1929,22 @@ export function emitDecl(...inits) {
       // i32.mul is hoistable when loop-invariant. Falls back to toI32 defensively.
       coerced = tryI32Index(init) ?? toI32(val)
     } else {
-      coerced = localType === 'v128' ? val : localType === 'f64' ? asF64(val) : val.type === 'i32' ? val : toI32(val)
+      // val.type !== 'i32' here means val is f64-typed. That's either a genuine
+      // NUMBER (emit(init) on an arithmetic/mixed expr — real ToInt32 applies) or,
+      // when init is statically BOOL-typed, a storedValue/carrierF64-boxed TRUE/FALSE
+      // NaN atom (boolBoxIR) — the ONLY way a BOOL-typed init ever emits as f64 (plain
+      // emit() of a BOOL always yields i32 0/1, taking the val.type==='i32' branch
+      // above). toI32 is ECMAScript ToInt32: NaN → 0. Both TRUE_NAN and FALSE_NAN are
+      // NaN bit patterns, so toI32(val) collapses BOTH atoms to i32 0, permanently
+      // erasing the boolean — a category error (bit-pattern unboxing needs unboxBoolIR's
+      // shift+mask, not numeric truncation). This was latent (never exercised) as long
+      // as no decl-init call site fed a BOOL local through storedValue; named + fixed
+      // here so the decl-init WALL's storedValue substitution stops corrupting BOOL
+      // locals narrowed to i32 storage (carrier-invariant-design.md, MECHANISM C).
+      coerced = localType === 'v128' ? val : localType === 'f64' ? asF64(val)
+        : val.type === 'i32' ? val
+        : valTypeOf(init) === VAL.BOOL ? unboxBoolIR(val)
+        : toI32(val)
     }
     // `let x = 0` at function scope is normally elided — WASM zero-inits locals. But loop
     // unrolling flattens iteration bodies into one scope, so the 2nd+ `let x = 0` are
