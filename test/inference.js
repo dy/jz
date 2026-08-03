@@ -938,21 +938,35 @@ test('plain-array index with a literal term stays pure i32 (sibling of marble)',
   // each read now guards the receiver's pointer kind (ARRAY/TYPED keeps this
   // i32 arithmetic verbatim; OBJECT/HASH takes a ToPropertyKey dyn-props read
   // instead of silently returning undefined). The dyn-props cold arm needs a
-  // genuine boxed f64 number for the key, so exactly one f64.convert_i32_s
-  // appears per read site, 1:1 with its __dyn_get_expr call — the index
-  // ARITHMETIC itself (j*W+x) never round-trips through f64; only the
+  // genuine boxed f64 number for the key — `j` is an unbounded param (`jj|0`),
+  // so `j*W` is no longer a provable-safe i32 product (P0-2 ledger: `mulFitsI32`
+  // used to admit "one operand ≤2^22" alone, which could wrap `i32.mul` past
+  // i32 range and corrupt exactly this kind of bare numeric key; fixed to
+  // require a magnitude bound on BOTH operands). The cold key is now built as a
+  // genuine `f64.mul`/`f64.add` over each leaf's OWN convert — two
+  // f64.convert_i32_s per read (`j` and `x`, or `j+1` and `x`), not one — the
+  // index ARITHMETIC itself (j*W+x) never round-trips through f64; only the
   // unproven-receiver guard's cold key does.
   const dynGetCalls = count(fn, /call \$__dyn_get_expr\b/g)
-  is(count(fn, /f64\.convert_i32_s/g), dynGetCalls,
-    'plain-array index terms stay i32 (f64.convert_i32_s appears only 1:1 with the unproven-receiver dyn-props guard)')
+  is(count(fn, /f64\.convert_i32_s/g), dynGetCalls * 2,
+    'plain-array index terms stay i32 (f64.convert_i32_s appears 2:1 — one per key leaf — with the unproven-receiver dyn-props guard)')
 })
 
-// A `& m`-masked operand is provably ≤ m, so `t * (… & 63)` can't exceed 2^53 and
-// must use i32.mul — not the guarded f64.mul + Infinity-canon `select` that ToInt32
-// emits for an unbounded f64 product. That round-trip made the bytebeat kernel lose
-// ~1.4× to V8/AS on x86 (it wins on ARM either way, so only this pin or an x86 bench
-// catches the regression). mulFitsI32 now accepts a mask-bounded operand, not just a
-// small literal.
+// A `& m`-masked operand is provably ≤ m, but `t` itself is an unbounded loop
+// counter — so `t * (…&63)` is NOT a standalone-safe i32 product (P0-2 ledger:
+// `mulFitsI32` bounding only ONE side used to admit this at the `*` operator
+// itself, which is unsound the instant the product escapes as a plain f64
+// number). It's safe here ONLY because the whole expression is masked with
+// `&255` right after — a proven ToInt32 root where wraparound is harmless
+// (ToInt32(ToInt32(x)&255) === ToInt32(x)&255 regardless of overflow). That
+// recovery now happens downstream, in `toI32`'s ring-arithmetic narrowing
+// (ir.js `narrowI32`, gated on a real ToInt32-consuming caller — `&` here —
+// never on a bare `*`), which was widened to consult `maskBound` per leaf so
+// the masked operand's real ≤63 bound (not the blanket i32 ceiling) keeps the
+// combined ring under the f64-exactness threshold. Loses the guarded
+// f64.mul + Infinity-canon `select` round-trip that cost the bytebeat kernel
+// ~1.4× vs V8/AS on x86 (it wins on ARM either way, so only this pin or an x86
+// bench catches the regression).
 test('masked multiply narrows to i32 — bytebeat t*(m&63) deopt', () => {
   const wat = jz.compile(
     'export let fill = (out, n) => { for (let t = 0; t < n; t++) out[t] = (t * (((t>>12)|(t>>8)) & (63 & (t>>4)))) & 255 }',
@@ -962,6 +976,60 @@ test('masked multiply narrows to i32 — bytebeat t*(m&63) deopt', () => {
   is(count(fn, /f64\.mul/g), 0, 'masked scale uses i32.mul, not f64.mul')
   is(count(fn, /f64\.const Infinity/g), 0, 'no Infinity-canon guard in the i32 kernel')
   ok(count(fn, /i32\.mul\b/g) >= 1, 'the t*(mask) product is an i32.mul')
+})
+
+// P0-2 ledger (banked bug class #1, closed 2026-08-02): `mulFitsI32` (emit.js)
+// used to admit `i32.mul` whenever EITHER operand was provably ≤2^22, with NO
+// check on the other side — so a small literal times a genuinely unbounded i32
+// operand could overflow signed i32 while staying f64-representable, and
+// `i32.mul` silently wraps mod 2^32 regardless. Live at HEAD before the fix:
+// `4194304 * (x|0)` for x=1000 compiled to `i32.shl(x,22)` → wrapped to
+// -100663296 instead of the true 4194304000. Host JS (`4194304 * 1000`,
+// ECMA-262 Number::multiply — plain IEEE-754 double multiplication, no ToInt32)
+// is the authority for every value asserted below; none of these expressions
+// have a `|0`/bitwise sink to absorb a wrap, so jz's result must match the
+// EXACT (unwrapped) product.
+test('mulFitsI32 product-range soundness (P0-2): one bounded operand does not bound the PRODUCT', () => {
+  // Historical repro (bignum.js's 15-bit-limb workaround, ledger P0-2): a
+  // ≤2^22 literal times an unbounded i32 operand. 4194304 (2^22) * 1000 =
+  // 4194304000, which exceeds signed i32 (2^31-1 ≈ 2.147e9) but is exact in
+  // f64 — exactly the case the OLD "one side f64-exact" heuristic miscompiled.
+  const f1 = run(`export let f = (x) => { let y = x | 0; return 4194304 * y }`).f
+  is(f1(1000), 4194304 * 1000, 'small-literal × unbounded i32, returned bare, matches JS exactly')
+  is(f1(512), 4194304 * 512, 'still correct right at the old 2^31 wrap boundary (product == 2^31)')
+
+  // Mask-bounded operand (the OTHER old admission arm): `y & 63` is provably
+  // ≤63, but `x` is unbounded — same unsoundness, different arm of the old rule.
+  const f2 = run(`export let f = (x, y) => { let xx = x | 0, yy = y | 0; return xx * (yy & 63) }`).f
+  is(f2(100000000, 63), 100000000 * 63, 'unbounded × mask-bounded operand, returned bare, matches JS exactly')
+
+  // Literal × literal was never routed through mulFitsI32 (foldConst intercepts
+  // first, computing the product with plain JS arithmetic) — pinned here so a
+  // future refactor can't reopen that path through this heuristic. `32768 *
+  // 65536` is the ORIGINAL live repro (verified in-kernel at the time): the
+  // unwrapped product is 2147483648 exactly (f64-exact, exceeds signed i32);
+  // note `(32768*65536)|0` legitimately IS -2147483648 in JS too (ToInt32
+  // wraps) — this pin is deliberately the UNWRAPPED value, where jz's old
+  // output actually diverged from JS.
+  is(run(`export let f = () => 32768 * 65536`).f(), 2147483648)
+})
+
+test('mulFitsI32 keeps the i32.mul fast path when the product is genuinely range-proven', () => {
+  // Both operands mask-bounded to ≤2^15: the PRODUCT (≤2^30) provably fits
+  // signed i32, so this must stay on i32.mul — the fix must not blanket-demote
+  // a proven-safe multiply to f64.mul (that would show up as a ratchet/size
+  // regression, not just lost precision-safety).
+  const wat = jz.compile(
+    'export let f = (x, y) => { let a = x | 0, b = y | 0; return ((a & 0x7fff) * (b & 0x7fff)) | 0 }',
+    { wat: true })
+  const at = wat.indexOf('(func $f')
+  const fn = wat.slice(at, wat.indexOf('(func', at + 6))
+  is(count(fn, /f64\.mul/g), 0, 'both-≤2^15-bounded product uses i32.mul, not f64.mul')
+  ok(count(fn, /i32\.mul\b/g) >= 1, 'the range-proven product is an i32.mul')
+  // Functional check: the masked values are always non-negative and their
+  // product always fits i32, so the final `|0` is a no-op — jz must match JS.
+  const f = run('export let f = (x, y) => { let a = x | 0, b = y | 0; return ((a & 0x7fff) * (b & 0x7fff)) | 0 }').f
+  is(f(0x7fff, 0x7fff), (0x7fff * 0x7fff) | 0)
 })
 
 test('inferArrElemSchema: caller disagreement keeps polymorphic dispatch', () => {

@@ -1704,11 +1704,26 @@ test('param-distinctness LICM: SOUND — same array passed for two params is NOT
   is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'aliasing result correct at speed tier (load NOT wrongly hoisted)')
 })
 
-test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop', () => {
-  // `let c = s.charCodeAt(i)` should leave $c as i32 and the digit accumulator
-  // (`number * 10 + (c - 48)`) should be pure i32 — no __to_num, no
-  // i64.trunc_sat_f64_s, no f64.convert_i32_u of the char code.
-  // Inspect jz's type decisions before watr `coalesceLocals` renames `$c`.
+test('charCodeAt: returns i32 — no f64 widen/truncate of the char code itself', () => {
+  // `let c = s.charCodeAt(i)` should leave $c as i32 — no __to_num, no
+  // f64.convert_i32_u of the char code. Inspect jz's type decisions before
+  // watr `coalesceLocals` renames `$c`.
+  //
+  // P0-2 ledger (2026-08-02): the digit accumulator `n = n*10 + (c-48)` is a
+  // loop-carried, unbounded local (reassigned every iteration — never a
+  // never-reassigned decl, so it never gets a range-rep fact either) — `n*10`
+  // no longer qualifies for `i32.mul` under the corrected, bilateral-bound
+  // `mulFitsI32` (10 alone bounding the product used to be enough; now `n`'s
+  // side needs a bound too, and a general loop accumulator has none). `n`
+  // itself is genuinely value-correct either way (verified below, incl. an
+  // input long enough to overflow i32 — `n` stays exact up to the f64 safe-
+  // integer range, matching JS; the OLD i32-wraps-throughout codegen was only
+  // accidentally correct here because EVERY use of `n` before the final `|0`
+  // stays inside the +/× ring — proving that in general needs a "closed loop-
+  // carried ring under a terminal ToInt32" analysis nothing in jz does today,
+  // so it's not reproduced here). The trade is one `i64.trunc_sat_f64_s` at
+  // the final `n|0` (was 0) instead of a same-signed local the whole way —
+  // `c` itself, this test's actual subject, is unaffected.
   const wat = jz.compile(`
     export const main = (s) => {
       let n = 0
@@ -1721,7 +1736,7 @@ test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop'
   `, { wat: true, optimize: { watr: false } })
   ok(/\(local \$c i32\)/.test(wat), 'expected $c declared as i32')
   is((wat.match(/\(call \$__to_num/g) || []).length, 0)
-  is((wat.match(/i64\.trunc_sat_f64_s/g) || []).length, 0)
+  is((wat.match(/i64\.trunc_sat_f64_s/g) || []).length, 1, 'one trunc at the final n|0 (the accumulator itself, not the char code)')
 })
 
 test('charCodeAt: runtime correctness — digit parse', () => {
@@ -1737,6 +1752,29 @@ test('charCodeAt: runtime correctness — digit parse', () => {
   `)
   is(main('abc12345xyz'), 12345)
   is(main('  9  '), 9)
+})
+
+// P0-2 ledger: without the final `|0`, the accumulator's exact value must
+// escape as a genuine JS number — this is where the OLD i32.mul admission
+// (bounding only the literal `10` side, not `n`) would have wrapped mod 2^32
+// once the digit string grew past i32 range. Host JS is the authority (plain
+// `n=n*10+digit` repeated — exact IEEE-754 double arithmetic, no ToInt32
+// anywhere without the `|0`); '99999999999' (11 nines) accumulates well past
+// 2^31-1 (~2.147e9) but stays exact in f64 (well under 2^53).
+test('charCodeAt: digit parse stays exact past i32 range without a truncating sink', () => {
+  const { main } = run(`
+    export const main = (s) => {
+      let n = 0
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i)
+        if (c >= 48 && c <= 57) n = n * 10 + (c - 48)
+      }
+      return n
+    }
+  `)
+  const jsRef = (s) => { let n = 0; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c >= 48 && c <= 57) n = n * 10 + (c - 48) } return n }
+  is(main('99999999999'), jsRef('99999999999'))
+  is(main('99999999999'), 99999999999)
 })
 
 test('single-char string index equality skips materialized char string', () => {
@@ -4201,8 +4239,23 @@ test('scalar range facts: q16 chain stays i32 end-to-end (delayline class)', () 
   // Module-const names (DSPAN) failed the product-i32 rule's literal check, so
   // the whole q16 chain fell to f64 (f64.div + trunc per sample). intExprRange
   // chains const names + ranged decl reps (mask → ternary hull → bounded
-  // product); the divide strength-reduces to one logical shift and the f64
-  // fraction split multiplies by the exact reciprocal.
+  // product); the divide strength-reduces to a shift (or, since the P0-2 fix
+  // below, an exact-reciprocal f64 multiply) and the f64 fraction split
+  // multiplies by the exact reciprocal.
+  //
+  // P0-2 ledger (2026-08-02): `t*DSPAN`'s admission now requires a magnitude
+  // BOUND on BOTH operands (not `DSPAN`'s literal bound alone — the old rule's
+  // unsoundness). `t`'s own bound (intExprRange chains its mask→ternary decl
+  // chain) is real and plenty tight — but at the point `d`'s LOCAL STORAGE
+  // TYPE gets decided (an early per-function fixpoint), `t`'s decl-range rep
+  // hasn't been stamped yet (that's a separate, LATER analyze.js walk over the
+  // same body) — a pre-existing pass-ordering gap the old, single-sided rule
+  // never had to exercise (DSPAN's bound alone was always enough). `d` is
+  // still computed in native i32 (`i32.add`/`i32.mul`, confirmed below) and
+  // every value below is exact — this is a lost shift-strength-reduction, not
+  // a correctness gap. Flagged for a follow-up (see .work/todo.md ledger);
+  // not fixed here (would mean reordering or duplicating an existing
+  // whole-function analysis pass, out of scope for the mulFitsI32 fix).
   const src = `
 const DMIN = 96, DSPAN = 2000
 export let f = (p) => {
@@ -4222,7 +4275,7 @@ export let f = (p) => {
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
   const fn = wat.split('(func ').find(c => c.startsWith('$f')) || ''
   ok(!/f64\.div|i32\.div/.test(fn), 'no divides anywhere in the chain')
-  ok(/i32\.shr_u/.test(fn), 'integer split is a logical shift')
+  ok(/i32\.add\b/.test(fn) && /i32\.mul\b/.test(fn), 'd itself (DMIN*65536 + t*DSPAN) still computes in native i32')
 })
 
 test('sign-bit mask yields no non-negative hull (x & 0x80000000 can be negative)', () => {

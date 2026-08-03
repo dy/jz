@@ -189,7 +189,17 @@ export const maskBound = (x) => {
  */
 const narrowI32 = (x, isRoot) => {
   if (!Array.isArray(x)) return null
-  if (x.type === 'i32') return { node: x, maxAbs: 2 ** 31, faithful: true }
+  // `maskBound` (magnitude bound from `&`/`>>>` structure, defaulting to the full
+  // i32 magnitude when it can't prove tighter) gives this leaf's REAL worst-case
+  // value instead of the blanket i32 ceiling — so a masked leaf (bytebeat's
+  // `t*(m&63)` under its `&255` sink) keeps the ring below 2^53 and narrows to
+  // `i32.mul` here, same as it would if the `*` operator's OWN admission
+  // (emit.js `mulFitsI32`) had proven it — but this narrowing only ever fires
+  // under a proven ToInt32 root (toI32's callers: `&`/`|`/`^`/`<<`/`>>>`/an i32-
+  // typed local destination), where wraparound is provably harmless (P0-2
+  // ledger) — unlike `mulFitsI32`, which guards a value that may escape as a
+  // plain f64 number with no further truncation to absorb the wrap.
+  if (x.type === 'i32') return { node: x, maxAbs: maskBound(x), faithful: true }
   const op = x[0]
   if (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u')
     // Peel — same as toI32's peephole. _u values ∈ [0, 2^32): the re-tag IS the
@@ -197,7 +207,7 @@ const narrowI32 = (x, isRoot) => {
     // 2^31, so _u is not faithful.
     return {
       node: Array.isArray(x[1]) ? typed(x[1], 'i32') : x[1],
-      maxAbs: op === 'f64.convert_i32_s' ? 2 ** 31 : 2 ** 32,
+      maxAbs: op === 'f64.convert_i32_s' ? maskBound(x[1]) : 2 ** 32,
       faithful: op === 'f64.convert_i32_s',
     }
   if (op === 'f64.const' && typeof x[1] === 'number' && Number.isInteger(x[1]) && Math.abs(x[1]) < 2 ** 52)

@@ -692,6 +692,16 @@ test('codegen: nested-loop index seeded from an outer counter narrows transitive
   // by an i32 stride. i32-safety back-propagates through the affine assignment/step
   // edges (i0 ← ix, i0 += id) so the whole nest stays i32 — the pattern that drove
   // the manual hoist in the rfft example.
+  //
+  // P0-2 ledger (2026-08-02): `ix = 2*(id-1)`'s `2*(id-1)` used to admit `i32.mul`
+  // by bounding only the literal `2` side (the old, unsound `mulFitsI32` rule) —
+  // `id` itself is an unbounded compound-multiplied accumulator (`id *= 4` — see
+  // .work/todo.md for the SEPARATE, still-open finding that `compoundAssign`'s own
+  // `*=`/`+=`/`-=` fast path has NO magnitude gate at all). The corrected,
+  // bilateral-bound `mulFitsI32` can't prove `2*(id-1)` fits i32 from `id`'s
+  // (nonexistent) range fact, so that ONE outer-loop-only assignment now round-
+  // trips through f64 (still exact — `id` and `ix` both stay declared i32 locals,
+  // confirmed below; this is a once-per-OUTER-iteration cost, not per element).
   const wat = compile(`
     let N = 0; let x;
     export let init = (k) => { N = k; x = new Float64Array(k); return x; };
@@ -708,7 +718,8 @@ test('codegen: nested-loop index seeded from an outer counter narrows transitive
   const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
   ok(/\(local \$ix i32\)/.test(run) && /\(local \$i0 i32\)/.test(run) && /\(local \$id i32\)/.test(run),
     'ix, i0, id all stay i32 through transitive back-propagation')
-  is((run.match(/trunc_sat_f64_s|trunc_f64_s/g) || []).length, 0, 'no per-access trunc_sat in the nest')
+  const inner = run.match(/loop \$loop1[\s\S]*?\n\s*\)\n\s*\)/)?.[0] || ''
+  is((inner.match(/trunc_sat_f64_s|trunc_f64_s/g) || []).length, 0, 'no per-access trunc_sat in the HOT inner loop')
 })
 
 test('codegen: float→int |0 of a finite, in-range value drops the +∞-guard select', () => {

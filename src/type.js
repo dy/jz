@@ -12,7 +12,6 @@
  */
 import { isI32, isReassigned, cloneNode, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS } from './ast.js'
 import { ctx } from './ctx.js'
-import { FITS_I32_MAX } from './widen.js'
 import { VAL, lookupValType } from './reps.js'
 import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge } from './kind.js'
 import { propValType, CMP_OPS } from './kind-traits.js'
@@ -2286,29 +2285,29 @@ export function exprType(expr, locals, valTypes) {
     return (dv !== NO_VALUE && typeof dv === 'number' && dv !== 0 && Number.isInteger(dv)) ? 'i32' : 'f64'
   }
   // `*` — a JS multiply is an f64 operation; `i32.mul` reproduces it faithfully
-  // only while the exact product is f64-exact. Stay i32 when both operands are
-  // i32 *and* the product provably fits: a fully-static product checked
-  // directly, otherwise a literal operand small enough that |literal|·2^31 ≤
-  // 2^53 (mirrors emit.js `mulFitsI32` — keeps `i*4` i32, widens `h*16777619`).
+  // only when the exact product provably fits signed i32 (±(2^31−1)) — NOT
+  // merely f64-exact (P0-2 ledger: the old "one literal operand ≤2^22, other
+  // side unbounded" rule let `i32.mul` wrap past i32 range while staying
+  // f64-representable, corrupting any consumer that widens the result straight
+  // to f64). Stay i32 when both operands are i32 *and* the product provably
+  // fits: a fully-static product checked directly, otherwise a magnitude BOUND
+  // on EACH operand (intExprRange's hull — resolves module const-ints, ranged
+  // decl reps, masks/ternaries) whose PRODUCT (not either bound alone) clears
+  // the i32 ceiling. Mirrors emit.js `mulFitsI32`/`mulRangeFitsI32` exactly —
+  // this must stay a SUBSET of emit's verdict (never claim i32 where emit
+  // might widen to f64): an unproven operand costs the full i32 magnitude in
+  // the product check, same sentinel emit's `maskBound` defaults to.
   if (op === '*') {
     const ta = exprType(args[0], locals, valTypes), tb = exprType(args[1], locals, valTypes)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // uint32 operand: product can exceed i32; emit widens to f64 (see emit.js `*`).
     if (isUnsignedI32Expr(args[0], locals) || isUnsignedI32Expr(args[1], locals)) return 'f64'
     if (sv !== NO_VALUE && typeof sv === 'number') return isI32(sv) ? 'i32' : 'f64'
-    // Shared FITS_I32_MAX threshold (widen.js) keeps this in lock-step with emit's
-    // `mulFitsI32`. exprType only proves the static-literal case — a strict SUBSET of
-    // emit's i32 verdict (emit also admits masked-bound operands), which is the safe
-    // direction: never claim i32 where emit might widen to f64.
-    // Range-resolved smallness (intExprRange chains module const-ints and
-    // ranged decl reps — masks/ternaries/bounded products): a named DSPAN or a
-    // masked-derived operand proves exactly like a literal. Lock-step with
-    // emit's `*` (which gets the same AST-level range check).
-    const small = e => {
+    const bound = e => {
       const r = intExprRange(e)
-      return r != null && Math.max(Math.abs(r[0]), Math.abs(r[1])) <= FITS_I32_MAX
+      return r != null ? Math.max(Math.abs(r[0]), Math.abs(r[1])) : 0x80000000
     }
-    return small(args[0]) || small(args[1]) ? 'i32' : 'f64'
+    return bound(args[0]) * bound(args[1]) <= 0x7fffffff ? 'i32' : 'f64'
   }
   // Unary preserves type
   if (op === 'u-' || op === 'u+') return exprType(args[0], locals, valTypes)

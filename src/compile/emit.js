@@ -31,7 +31,6 @@ import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS } f
 import { i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR } from '../../layout.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
-import { FITS_I32_MAX } from '../widen.js'
 import { nonNegIntLiteral, intLiteralValue, intExprRange, staticPropertyKey } from '../static.js'
 import { findFreeVars } from './analyze.js'
 import { scanBindingUses, USE } from './analyze-scans.js'
@@ -317,17 +316,23 @@ const foldConst = (va, vb, fn, guard) =>
     ? emitNum(fn(litVal(va), litVal(vb))) : null
 
 // JS `*` is an f64 multiply; `i32.mul` yields only the exact product mod 2^32.
-// Those agree under a ToInt32/ToUint32 sink (and as plain numbers) while the
-// exact product stays f64-exact. A literal qualifies directly; so does a masked
-// operand (`x & 63`, `x >>> k`) whose value is provably bounded. Keeps index
-// arithmetic (`i*4`) and bitwise-masked scales (bytebeat's `t*(m&63)`) on
-// `i32.mul` while routing hash-mix-scale products to `f64.mul`. The FITS_I32_MAX
-// threshold (and the soundness contract with type.js exprType) lives in widen.js.
-const mulFitsI32 = (va, vb) =>
-  (isLit(va) && Math.abs(litVal(va)) <= FITS_I32_MAX) ||
-  (isLit(vb) && Math.abs(litVal(vb)) <= FITS_I32_MAX) ||
-  (!isLit(va) && maskBound(va) <= FITS_I32_MAX) ||
-  (!isLit(vb) && maskBound(vb) <= FITS_I32_MAX)
+// Those agree under a ToInt32/ToUint32 sink — but as a PLAIN NUMBER (no further
+// truncating consumer), `i32.mul` is faithful only when the exact product itself
+// providably fits signed i32 (±(2^31−1)); a wrapped-but-f64-exact product (the OLD
+// rule this replaced: one operand ≤ 2^22, the OTHER left fully unbounded) is
+// NOT the same thing — `i32.mul` truncates mod 2^32 regardless of how small the
+// exact product would stay in f64, so an unguarded operand can carry the true
+// product past ±2^31 and the wrap corrupts any consumer that widens the i32
+// result straight to f64 (P0-2 ledger: `4194304 * (x|0)` returned bare, or
+// `(x|0) * (y&63)` returned bare — both wrap to a wrong NUMBER at HEAD).
+// BOTH operands need a real magnitude bound — a literal's own |value|, or a
+// masked/narrowed expression's `maskBound` (ir.js; already used for the masked-
+// scale case) — and it's the PRODUCT of those bounds, not either alone, that
+// must clear the i32 ceiling. `maskBound` defaults to the full i32 magnitude
+// (2**31) for anything it can't prove tighter, so an unguarded operand costs
+// the full range in the product check, exactly as it should.
+const opBound = (v) => isLit(v) ? Math.abs(litVal(v)) : maskBound(v)
+const mulFitsI32 = (va, vb) => opBound(va) * opBound(vb) <= 0x7fffffff
 
 // Max |value| of an i32-typed operand from a narrowing typed-array load width — the
 // element-read twin of maskBound's `x & 0xff` case (load8_u and `x & 0xff` carry the

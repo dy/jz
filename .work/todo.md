@@ -4,6 +4,161 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-02, P0-2 mulFitsI32 product-range unsoundness FIXED at root — banked bug class #1 closed)
+
+REPRO (live at HEAD, confirmed before any edit): `mulFitsI32` (emit.js `*`
+operator) admitted `i32.mul` whenever EITHER operand was provably `<= 2^22`
+(FITS_I32_MAX, widen.js), with NO check on the other operand or on the
+product itself. `export let f = (x) => { let y = x|0; return 4194304 * y }`
+compiled `4194304*y` to `i32.shl(y,22)`; `f(1000)` returned -100663296
+instead of the true 4194304000 (JS: `4194304*1000`). Second live arm (the
+mask-bounded side, not just the literal side): `xx*(yy&63)` for xx=1e8,
+yy=63 returned 2005032704 instead of 6300000000. Root cause, precisely: the
+threshold's OWN justification (widen.js docstring) reasoned about keeping
+the product within F64-EXACT range (2^53) against one FULL-i32-range (2^31)
+operand — but `i32.mul` truncates mod 2^32 regardless of f64-exactness, so
+that 2^53 bound was simply the wrong ceiling for what `i32.mul` actually
+computes; only ±(2^31−1) is safe once the result may be widened straight to
+f64 with no further ToInt32 sink to absorb the wrap. (Literal×literal, e.g.
+the historical `32768*65536` repro, was never actually exposed — `foldConst`
+intercepts both-literal products with real JS arithmetic before mulFitsI32
+is reached; that path stayed correct throughout.)
+
+FIX (root, not symptomatic): `i32.mul` now admitted only when the exact
+product is PROVEN to fit signed i32 from a magnitude BOUND on BOTH operands,
+not either alone — `opBound(v) = isLit(v) ? |litVal(v)| : maskBound(v)` (IR-
+level; `maskBound`, ir.js, already existed for the masked-scale case, and
+defaults to the full i32 magnitude 2^31 for anything it can't prove
+tighter), `mulFitsI32 = opBound(a)*opBound(b) <= 0x7fffffff`. type.js's
+`exprType` mirror (the SOUNDNESS INVARIANT: type's i32 verdict must be a
+subset of emit's) rewritten the same way, AST-level, via `intExprRange`'s
+hull instead of `maskBound`. `mulBoundedFaithful` (typed-array-element
+magnitude products) and `mulRangeFitsI32` (AST range-hull products) were
+ALREADY sound — both always required a bound on BOTH sides — left
+unchanged, still OR'd into the admission at the `*` call site.
+SUPPORTING FIX: `narrowI32` (ir.js, the ring-arithmetic `f64→i32` narrowing
+`toI32` uses under a PROVEN ToInt32 root — `&`/`|`/`^`/`<<`/`>>>`/an i32-
+typed local destination) had its leaf `maxAbs` widened from a blanket i32
+ceiling to `maskBound`, so a masked-but-otherwise-unbounded operand (e.g.
+bytebeat's `t*(m&63)` under a trailing `&255`) still narrows to `i32.mul`
+there — sound BECAUSE narrowI32 only ever fires under a confirmed ToInt32
+consumer (wraparound is provably harmless there), unlike the bare `*`
+operator this ticket fixes (no such guarantee — the result may escape as a
+plain f64 NUMBER with nothing to re-truncate it).
+
+SIBLING HEURISTIC AUDIT (task step 3 — ruled explicitly):
+- `mulBoundedFaithful`, `mulRangeFitsI32`: SOUND, unchanged (both already
+  bilateral).
+- `%` (i32.rem_s): SOUND — a remainder is bounded by its own divisor by
+  construction; no combination-overflow is possible.
+- `<<`/`>>`/`>>>`/`&`/`|`/`^`: SOUND by construction — pure 32-bit-domain
+  ops, no magnitude-combination overflow exists for them to begin with.
+- `+`/`-` bare fast path (emit.js: `isI32Num(va)&&isI32Num(vb)` → native
+  `i32.add`/`i32.sub`, UNCONDITIONALLY, no magnitude check at all — worse
+  than the old mulFitsI32, which needed at least ONE bound) and its
+  type.js exprType mirror: RULED **UNSOUND**, confirmed live —
+  `(a|0)+(b|0)` for a=b=2147483647 returns -2, JS gives 4294967294. NOT
+  fixed here (separate mechanism, separate blast radius, needs its own
+  repro-first/gate cycle) — flagged as the most direct follow-up.
+- `compoundAssign`'s `*=`/`+=`/`-=` fast path (emit.js ~L3848:
+  `if (i32op && va.type==='i32' && vbi.type==='i32') return i32op(va,vbi)`):
+  RULED **UNSOUND**, confirmed live and WORSE than either of the above —
+  zero gating whatsoever (not even one bound). `let n=x|0; n*=100000;
+  return n` is accidentally correct today ONLY because `n`'s own exprType
+  decision (my fixed rule) independently lands 'f64' when nothing else pins
+  it i32 — but the FFT-butterfly perf.js pin (`id*=4` inside a loop
+  where `id` is ALSO used as an i32 index stride) pins `id` to i32 via
+  OTHER uses, and `id*=100000` in that same shape returns a genuinely wrong
+  wrapped value when `id` is later read as a bare number (confirmed via a
+  constructed repro: 4-iteration id growth, direct `return id` diverges from
+  JS). NOT fixed here — same reasoning as `+`/`-` above. **This is the
+  single most urgent follow-up** — compound assignment is a far more common
+  idiom than the bare `*` this ticket closes, and it currently has no
+  product-safety gate at all, not even the (former) unsound one.
+- LOOP-COUNTER RANGE GAP (found via fallout, not itself a soundness bug):
+  `intExprRange`'s string case only ever answers from a STAMPED decl-range
+  rep (analyze.js, never-reassigned `let`/`const` only) — a bare loop
+  counter (`for(;i<N;i++)`, reassigned every iteration) has NO range fact
+  by construction, literal `N` or not. The OLD mulFitsI32 never needed one
+  (a bounded literal alone was enough); the corrected rule does, so `i*K`
+  fill-loop idioms (`a[i] = (i*K+C)&M` — a very common array-fill/PRNG/hash
+  shape) lose their `i32.mul` fast path even when `i`'s loop bound is a
+  compile-time literal well within safety (test/wat-invariants.js sweep:
+  200/200 seeds hit it for the two affected fuzz-generator families).
+  Confirmed value-correct throughout (fuzz.js: 2000 seeds × 4 opt levels, 0
+  divergence) — purely a lost optimization. Recovering it needs a genuine
+  "loop counter ranged by its own for-head bound" fact, which does not
+  exist yet in any form I could find (`smallConstForTripCount` is unroll-
+  budget-scoped and unrelated; the interval-proof machinery in type.js
+  around `IP_LIM`/`scanIntervalIdx` computes per-name intervals for a
+  DIFFERENT purpose — typed-index bounds-check elision — and isn't exposed
+  for reuse). NOT attempted here (a real, separate feature, not a
+  mulFitsI32 patch) — flagged as the highest-VALUE follow-up (broadest
+  reach of any gap found in this audit), separate from the two unsound-
+  sibling findings above.
+  Also SEPARATELY confirmed live-broken by the SAME class before this fix:
+  `a[0]=2000000000; a[0]*2` on a full-range Int32Array element (no
+  narrowing load width, unlike Uint8/16Array) wrapped to -294967296 instead
+  of 4000000000 at HEAD — now correct (routes to f64.mul; cond-vectorize.js
+  test adjusted to re-mask before multiplying so it tests its own subject,
+  the two-arm-select-to-bitselect lift, decoupled from this).
+
+BIGNUM 15-BIT-LIMB NOTE (task step 5, report-only, NOT changed): the limb
+base was narrowed from the natural 16-bit split specifically to dodge this
+exact bug (bignum.js docstring, self-host bootstrap era). With the fix
+landed, 16-bit limbs would no longer silently MISCOMPILE if re-adopted —
+the corrected `mulFitsI32` can't prove an arbitrary (unmasked) limb-array
+read `a[i]` bounded either, so a 16-bit limb product would now correctly
+fall to `f64.mul` (safe: two <2^16 values' exact product is always f64-
+exact) rather than wrapping through `i32.mul`. That trades away the "one
+i32.mul, no split" property 15-bit limbs get for free (32767² < 2^31−1,
+provable via `mulBoundedFaithful`'s typed-magnitude path once the source
+masks the limb, otherwise via nothing at all today — same loop-counter-
+style gap as above for a plain array read). Not touched — kernel-sensitive,
+its own change with its own gate cycle, per the task's explicit scope
+fence.
+
+TEST UPDATES: 2 new regression tests in test/inference.js (wrong-product
+value pins — bare `4194304*(x|0)`, bare `(x|0)*(y&63)`, both against host
+JS as authority since neither has a truncating sink to absorb a wrap; a
+both-≤2^15-masked-operand WAT-shape pin proving the fast path survives for
+a genuinely range-proven product) + 2 new pins in test/optimizer.js (digit-
+accumulator value-correctness past the old i32 wrap boundary). 5 EXISTING
+tests updated to match the corrected (and in 3 cases, independently-more-
+correct) codegen shape, each with the P0-2 reasoning inlined at the site:
+test/inference.js (bytebeat masked-multiply comment refreshed to explain
+the narrowI32 recovery path; plain-array-index dyn-props-arm convert count
+2:1 not 1:1 — the cold arm now builds an exact f64 key instead of an
+unsound wrap-then-convert), test/optimizer.js (q16 delayline chain: `d`
+itself still native i32/i32.add/i32.mul, confirmed — only the div-to-shift
+strength reduction is lost, root-caused to a SEPARATE, pre-existing pass-
+ordering gap: `d`'s local-storage-type fixpoint runs before analyze.js's
+decl-range-stamping walk over the SAME body, so `t`'s real, provable range
+isn't visible yet when `t*DSPAN`'s admission is decided — charCodeAt digit
+accumulator: trunc_sat count 0→1 at the final bare `n|0`, `c` itself
+unaffected, is-safe-under-final-|0 vs is-safe-as-a-standalone-value is
+exactly the P0-2 distinction), test/perf.js (FFT nested-loop pin: `ix`'s
+`2*(id-1)` — id is compound-multiplied, unbounded — round-trips through f64
+once per OUTER iteration only, inner hot loop unaffected, assertion scoped
+to the inner loop), test/wat-invariants.js (Int32Array min/max + IV-SR
+sweeps: 0→200/200 seeds — converted from a hard-zero gate to a documented
+ratchet, matching the file's own established convention for "one generator
+with a documented narrowing gap" — root cause is the loop-counter-range gap
+above, not a correctness issue: fuzz.js's 2000-seed differential sweep
+confirms zero value divergence).
+
+GATES: repros red→green (native). Fresh `npm run build`; kernel-parity
+33/33 byte-identical; kernel-oracle 11/11; perf-ratchet 10/10 at +0 (no
+ratcheted benchmark hits the loop-counter-range or compoundAssign gaps).
+Full battery: all 88 test/index.js TESTS files run individually, zero
+fails (after the 5 test-file corrections above). optimizer.js 214/214
+(213 + 1 new). selfhost.js 21/21. selfhost-perf.js 5/5, all six per-case
+comparisons (mat4/fft/biquad/sort/crc32/mandelbrot) within cap both warm
+and fresh. fuzz.js: 2000 seeds × opt{0,1,2,3}, 0 divergence. Size spot-
+check mat4/fft/crc32/biquad @ optimize:'speed', pre-fix vs post-fix:
+byte-identical (their multiplies are all range-proven, untouched by this
+fix) — matches the perf-ratchet +0 result.
+
 ## Status (2026-08-02, maybeUndefined Slice 1 landed — dict absent-key value join)
 
 DICT ABSENT-KEY VALUE JOIN LANDED (.work/maybe-undefined-design.md Slice 1):

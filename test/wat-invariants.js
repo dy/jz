@@ -176,12 +176,35 @@ const countLoopHelper = (gen) => {
 // CLEAN sublanguages — every program is integer-disciplined (all `|0`), so a
 // fully-narrowed lowering has ZERO f64 in any loop. Hard gate over all seeds.
 for (const [name, gen] of [
-  ['Int32Array min/max', typedIntMinMaxSource],
-  ['Int32Array break/continue (IV-SR)', typedIVSRSource],
   ['Uint8Array byte scan', typedByteScanSource],
 ]) {
   test(`sweep: ${name} emits NO f64 op in any loop body (seeds 1..${SWEEP}) — proven waste-free`, () => {
     is(countLoopF64(gen), 0)
+  })
+}
+
+// RATCHETED (documented narrowing gap, P0-2 ledger 2026-08-02): both generators'
+// array-fill preamble is `a[i] = ((i*K + C) % 4001 - 2000) | 0` — the loop counter
+// `i` (unbounded: jz has no loop-counter-range fact for a bare `for(;i<N;i++)`,
+// only for never-reassigned `let`/`const` decls) times a small literal `K`. The
+// OLD `mulFitsI32` admitted `i32.mul` here by bounding only `K` — unsound in
+// general (P0-2's whole point), and here it happened to never actually overflow
+// (N ≤ 263, K ≤ 98) — so this WAS "waste-free" by accident, not by proof. The
+// corrected, bilateral-bound rule can't prove `i*K` fits i32 without a range
+// fact for `i`, so the fill loop's multiply now goes through f64.mul (still
+// value-correct — every seed differentially matches JS, see test/fuzz.js). This
+// is a real, broad lost optimization (every seed hits it: 200/200) — recovering
+// it needs a genuine "loop counter ranged by its own literal bound" fact, which
+// doesn't exist yet (see .work/todo.md P0-2 ledger follow-up). Ratchet, not a
+// hard zero, so a fix can tighten this without a test edit — but it must never
+// regress past today's baseline.
+const MINMAX_IVSR_F64_BASELINE = SWEEP  // every seed hits it today — see comment above
+for (const [name, gen] of [
+  ['Int32Array min/max', typedIntMinMaxSource],
+  ['Int32Array break/continue (IV-SR)', typedIVSRSource],
+]) {
+  test(`sweep: ${name} f64-in-loop count stays at/below the documented baseline (seeds 1..${SWEEP})`, () => {
+    ok(countLoopF64(gen) <= MINMAX_IVSR_F64_BASELINE, `must not exceed ${MINMAX_IVSR_F64_BASELINE} (baseline, scaled with SWEEP)`)
   })
 }
 
