@@ -6,7 +6,7 @@ import { commaList, isFuncRef, isLiteralStr, ASSIGN_OPS, MUTATE_OPS } from '../a
 import { ctx, err, getFactStore } from '../ctx.js'
 import { VAL, lookupValType, repOf, updateGlobalRep } from '../reps.js'
 import { valTypeOf, nullishArm } from '../kind.js'
-import { extractParams, classifyParam } from '../ast.js'
+import { extractParams, classifyParam, collectAllBoundNames } from '../ast.js'
 import { staticObjectProps } from '../static.js'
 import { intLevelChecker, typedElemCtor } from '../type.js'
 import { ctorFromElemAux } from '../../layout.js'
@@ -807,10 +807,50 @@ export function observeProgramSlots(ast, opts) {
     }
     return null
   }
+  // Census continues INTO a nested closure for the dict-`[]=` / Map-`.set()`
+  // write shapes ONLY (audit-#8 P0-2: `[0].forEach(() => m.set('y','oops'))`
+  // was invisible to both census halves — this is the global-half twin of
+  // analyze.js's dictValueTypeOf/mapValueTypeOf local-half fix; see that
+  // file's doc comment for the full soundness argument). Schema-slot
+  // (`{}`/`.prop=`) census reach is UNCHANGED — out of scope for this bug,
+  // `visit` below still stops at `=>` for those. `collectAllBoundNames`
+  // (ast.js) is position-insensitive: ANY name it returns for this arrow's
+  // whole subtree is treated as shadowed everywhere in it, which only ever
+  // forfeits a fact, never misattributes a local write to an outer receiver.
+  const observeNestedDictMapWrites = (arrowNode, paramVts) => {
+    const bound = collectAllBoundNames(arrowNode, new Set())
+    const walk = (node) => {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
+        const [, wobj, widx] = node[1]
+        if (!isLiteralStr(widx)) {
+          let root = wobj
+          while (Array.isArray(root) && root[0] === '[]') root = root[1]
+          if (typeof root === 'string' && !bound.has(root)) {
+            const vt = writeVT(effectiveWriteValue(op, node[1], node[2]), { root, paramVts })
+            if (vt) observeDictValue(root, vt); else poisonDictValue(root)
+          }
+        }
+      } else if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
+          typeof node[1][1] === 'string' && node[1][2] === 'set') {
+        const recvName = node[1][1]
+        if (!bound.has(recvName) && valTypeOf(recvName) === VAL.MAP) {
+          const cargs = commaList(node[2])
+          if (cargs.length === 2) {
+            const vt = writeVT(cargs[1], { paramVts })
+            if (vt) observeMapValue(recvName, vt); else poisonMapValue(recvName)
+          }
+        }
+      }
+      for (let i = 1; i < node.length; i++) walk(node[i])
+    }
+    walk(arrowNode[2])
+  }
   const visit = (node, intRefs = null, paramVts = null) => {
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') return
+    if (op === '=>') { observeNestedDictMapWrites(node, paramVts); return }
     // Preserve exact branch-local constants while censusing literals such as
     // `if (kind === 3) rows.push({kind, ...})`. Else arms accumulate the
     // excluded values; with a known mask range the trailing else resolves to

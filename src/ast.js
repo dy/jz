@@ -429,6 +429,31 @@ export function collectParamNames(raw, out = new Set()) {
   return out
 }
 
+/** Every name bound ANYWHERE inside `node` — an arrow PARAM or a nested
+ *  `let`/`const`/`var` declaration TARGET — recursing through further-nested
+ *  arrows too. Position-insensitive on purpose (a mid-body shadow counts for
+ *  the WHOLE subtree): a shadow-detection helper for census walks that observe
+ *  INTO a captured closure (compile/analyze.js's dictValueTypeOf/
+ *  mapValueTypeOf, compile/program-facts.js's observeProgramSlots) — once a
+ *  name comes back in this set, a write to that name anywhere in `node` might
+ *  be through the LOCAL binding rather than the outer captured one, so the
+ *  caller must not attribute it to the outer receiver. Over-bailing only
+ *  forfeits a census fact, never unsound — same precedent as analyze.js's
+ *  scanBindingUses CAPTURE rule (that file's doc comment, ~line 65). */
+export function collectAllBoundNames(node, out = new Set()) {
+  if (!Array.isArray(node)) return out
+  const op = node[0]
+  if (op === '=>') collectParamNames(extractParams(node[1]), out)
+  else if (op === 'let' || op === 'const' || op === 'var') {
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      collectParamNames([Array.isArray(d) && d[0] === '=' ? d[1] : d], out)
+    }
+  }
+  for (let i = 1; i < node.length; i++) collectAllBoundNames(node[i], out)
+  return out
+}
+
 // === Return-path queries (narrowing) ===
 
 const collectReturnExprs = (node, out) => {

@@ -273,3 +273,53 @@ test('dict: String() and template literals on a STRING-census absent key (Slice 
     const rk = 'missing'
     return \`v=\${d[rk]}\``), 'v=undefined')
 })
+
+// audit-#8 P0-2: the Map/dict value census's same-body scan (analyze.js
+// dictValueTypeOf/mapValueTypeOf) AND the whole-program {fresh:true} half
+// (program-facts.js observeProgramSlots) both stopped dead at any nested `=>`
+// — a write CAPTURED in a callback (`[0].forEach(() => m.set('y', 'oops'))`)
+// was invisible to the census on either side, so a receiver written ONLY
+// NUMBER at every syntactically-visible top-level site still read back a
+// stale NUMBER census kind after a captured write actually stored a STRING —
+// `m.get('y') + 1` compiled straight to f64.add and silently dropped the
+// string, returning `'oops'` instead of JS's `'oops1'`. Fixed by observing
+// THROUGH nested closures (more observations only ever tighten/poison the
+// join, never loosen it), gated on collectAllBoundNames' shadow-bail so a
+// nested closure that re-declares the receiver name doesn't misattribute ITS
+// writes to the outer binding.
+test('Map: a write captured in a nested callback is not lost to a stale census kind (audit-#8 P0-2)', () => {
+  is(jz(`const m = new Map(); m.set('x', 1)
+    export let f = () => { [0].forEach(() => m.set('y', 'oops')); return m.get('y') + 1 }`).exports.f(), 'oops1')
+})
+test('dict: a write captured in a nested callback is not lost to a stale census kind (audit-#8 P0-2, dict sibling)', () => {
+  is(jz(`const d = {}; const wk = 'x'; d[wk] = 1
+    export let f = () => { [0].forEach(() => { const wk2 = 'y'; d[wk2] = 'oops' }); const rk = 'y'; return d[rk] + 1 }`).exports.f(), 'oops1')
+})
+// Numeric captured-write control — the dominant real-world shape
+// (`arr.forEach(v => m.set(k, v))`) must both stay correct AND keep the
+// census win (no fallback to the polymorphic-add/maybeUndefined runtime
+// path): manually confirmed via a pre-fix/post-fix wasm byte-size diff on
+// this exact source (worktree at 8182e465 vs this fix) — the fixed build is
+// SMALLER (a whole block of dtoa/Ryu locals the polymorphic `+` fallback
+// needs disappears from `$f`), proving the fix recovers the fast numeric
+// path rather than only widening the poison.
+test('Map: a numeric-only write captured in a nested callback keeps working (control)', () => {
+  is(run(`const m = new Map(); [1, 2, 3].forEach(v => m.set('k', v * 2)); return m.get('k') + 1`), 7)
+})
+// Shadow control: a nested function's OWN param/local reusing the receiver's
+// name must NOT poison (or misattribute writes into) the outer census — the
+// shadowed `m` inside `g` is a different binding entirely.
+test('Map: a same-named local in a nested closure does not poison the outer census (shadow control)', () => {
+  is(run(`const m = new Map(); m.set('k', 1)
+    const g = (m) => { m.set('k', 'str') }
+    g(new Map())
+    m.set('k', 2)
+    return m.get('k') + 1`), 3)
+})
+// Read-only capture control: a captured READ (no write) must not disqualify
+// the census — only writes matter.
+test('Map: a read-only capture does not disqualify the census (control)', () => {
+  is(run(`const m = new Map(); m.set('x', 5)
+    let s = 0; [0].forEach(() => { s += m.get('x') })
+    return s + 1`), 6)
+})

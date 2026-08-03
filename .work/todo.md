@@ -4,6 +4,114 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, audit-#8 P0-2 CLOSED — Map/dict value-census blind to
+## writes captured in a nested closure)
+
+Repro (verified live at HEAD 8182e465, all optimize levels, native and
+self-host): `const m = new Map(); m.set('x',1); export let f = () => {
+[0].forEach(() => m.set('y','oops')); return m.get('y') + 1 }` → jz `"oops"`
+before this fix, JS-authority `"oops1"`. Dynamic-dict sibling (`d[k]=v`
+inside the same shape) reproduced identically.
+
+| case | before | after | JS |
+|---|---|---|---|
+| Map, forEach-captured `.set` | `"oops"` | `"oops1"` | `"oops1"` |
+| dict, forEach-captured `[]=` | `"oops"` | `"oops1"` | `"oops1"` |
+
+Two mechanisms, both verified by reading before landing:
+1. The census walks stopped dead at any nested `=>` — `mapValueTypeOf`/
+   `dictValueTypeOf` (src/compile/analyze.js, same-body local half) AND
+   `observeProgramSlots`'s `visit` (src/compile/program-facts.js, the
+   whole-program `{fresh:true}` half) each had a blanket `if (op === '=>')
+   return`. A `.set()`/`[]=` write inside a callback was invisible to
+   either half, so a receiver's census kind could go stale after a real
+   mutation.
+2. `nameEscapes` (program-facts.js) does not treat a receiver-position
+   captured use (`m.set(...)` inside a nested `=>`) as an escape — but this
+   turned out to be correct and unrelated to capture depth: ESCAPE_SKIP
+   exempts `.`/`?.` receiver slots UNCONDITIONALLY, capture or not, because
+   a receiver read never aliases the name to a second binding. The prior
+   doc comment (kind.js ~286) listed "captured" alongside the real
+   aliasing uses (assigned/passed/stored/returned), implying nameEscapes
+   was the capture-safety net — false; it never was, and was never meant to
+   be. Corrected in place (kind.js) rather than left misleading.
+
+CHOSEN DIRECTION: (a) — census observes THROUGH nested closures, gated on a
+shadow-bail, rather than (b) blanket capture-disqualification. Rationale:
+more observations only ever tighten or poison the existing first-wins-then-
+clash join, never loosen it (append-only lattice) — so seeing into a
+closure is sound by the same argument the census's own poison-on-clash
+already rests on. (b) would have thrown away the dominant real-world shape
+(`arr.forEach(v => m.set(k, v*2))`) for zero soundness gain. New shared
+helper `collectAllBoundNames` (src/ast.js) computes, for an arrow subtree,
+every name ever bound there (as a param or a nested let/const/var target,
+recursing through further nesting) — position-insensitive on purpose (a
+mid-body shadow disqualifies the WHOLE subtree, not just the tail after it)
+per the audit's own "track scope or bail on shadow" instruction, same
+precedent as analyze.js's scanBindingUses CAPTURE rule (over-bailing only
+forfeits a fact, never unsound). Wired at three points, kept consistent as
+instructed: analyze.js's `dictValueTypeOf`/`mapValueTypeOf` (local half) and
+a new `observeNestedDictMapWrites` inside program-facts.js's
+`observeProgramSlots` (global half) — the latter deliberately scoped to
+ONLY the dict-`[]=`/Map-`.set()` write shapes (not the schema-slot/`.prop=`
+census sharing the same `visit` walker), keeping this fix's reach exactly
+at the audit's P0-2 boundary.
+
+SHADOW / CONTROL RESULTS (all pinned in test/dyn-keys.js, both native and
+kernel legs):
+- Numeric captured-write control (`arr.forEach(v => m.set('k', v*2))` then
+  `m.get('k')+1`): correct AND keeps the census win — proven via a
+  pre-fix/post-fix wasm byte-size diff on the exact source (worktree at
+  8182e465 vs this fix, `-O2`): 21592 → 21531 bytes, a whole block of
+  dtoa/Ryu-algorithm locals the polymorphic `+` fallback needs disappears
+  from `$f` — this shape was ALSO silently pessimized before (not just the
+  string shape was wrong; the numeric shape lost its fast path too, same
+  root cause), so the fix recovers an optimization, not only a value.
+- Shadow control (nested fn with its OWN `m` param writing strings): does
+  NOT poison or misattribute into the outer census — `const g = (m) => {
+  m.set('k','str') }; g(new Map()); m.set('k',2); return m.get('k')+1`
+  correctly returns `3` (matches JS), same both legs.
+- Read-only capture control (`forEach(() => m.get('x'))`): does not
+  disqualify — census stays live, `6` both legs.
+- Additional adversarial pins run ad hoc (not committed, satisfied):
+  double-nested capture (`forEach(()=>forEach(()=>m.set(...)))`), dict
+  `+=` inside a capture, and a genuinely-polymorphic captured write (still
+  correctly poisons to the runtime path) — all matched JS.
+
+GATES (all before commit, all green): fresh `npm run build` × 2 (once
+foreground after being auto-backgrounded past the 120 s default, once
+explicit foreground with a blocking wait on the PID) — dist/jz.wasm,
+dist/jz.js, dist/interop.js sha256-identical both times. test/dyn-keys.js
+pins: 17/17 (38 assertions) native AND kernel leg (JZ_TEST_TARGET=jz.wasm).
+Full battery: all 88 test/index.js files run in 15 foreground chunks of
+4-7 (dyn-keys and data run explicitly as their own gate items) — 0
+failures, 0 unexpected skips. kernel-parity: 3/3 (33 assertions)
+byte-identical. kernel-oracle green (same run). perf-ratchet: 10/10, every
+category at `+0` delta (int/float/mixed/cond/buf/nest/slice/ring/condref/
+fgather) — census-reach change produced NO dyn-path shift on the ratchet's
+own corpus, no re-baseline needed. optimizer green (4192 assertions).
+selfhost.js: 21/21 (206 assertions). selfhost-perf.js: informational,
+both caps comfortably met (warm 1.022×/cap 1.03×, fresh 0.771×/cap 0.99×).
+fuzz.js --count=2000: 2000 seeds × opt{0,1,2,3}, 30173 inputs compared, 0
+divergence. Size spot-check: dict/fftplan/mat4/crc32/biquad/sort/
+provenance/mandelbrot/fft compiled `-O2` byte-identical before/after
+(worktree differential at 8182e465) — the fix's blast radius is exactly
+the Map/dict-in-closure shape, nothing else moved.
+
+BindingId ownership (the audit's named long-term item) still buys, later:
+a real per-binding identity instead of the syntactic-name keying every
+census here shares (dict/map value, dynWriteVars, nameEscapes, arrResized
+all key by bare string name) would let a shadowed nested binding be
+censused on its OWN account instead of being blanket-excluded via
+collectAllBoundNames' conservative bail — recovering the (currently
+forfeited) fact for the shadowing closure's OWN receiver, and closing the
+same aliasing gap `dictValueKindOf`'s nameEscapes gate patches structurally
+(a real alias-of-`d` binding vs `d` itself would be distinguishable, not
+just detected-and-bailed). Not attempted here — out of a P0 task's scope,
+same standard the P0-3 __errcls__ per-class-schema-id path used.
+
+Commit: pushed to origin/main.
+
 ## Status (2026-08-03, audit-#8 P0-1/2/3 CLOSED — three independent
 ## instanceof/Error-object soundness failures, all verified live at HEAD;
 ## P2 README fix folded in)

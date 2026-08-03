@@ -290,13 +290,27 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
 // a census keyed on `d`, leaving a stale kind live after the alias write
 // changes it. `ctx.types.nameEscapes` (program-facts.js:37-76, installed
 // plan/index.js:133) is a whole-program, name-keyed set of every binding read
-// in a value position (assigned to another name, passed as a call arg,
-// stored in a field, returned, captured) — exactly the set of names that
-// COULD have been aliased. `d` in `const a = d` is a bare-name value-position
-// read (declEq only exempts the LHS binding slot), so `d` lands in
-// nameEscapes unconditionally the moment that line is walked, independent of
-// what happens to `a` afterward. Mirrors optimize/index.js:5014-5029's
-// identical escapes.has(name) bail for the analogous static-array-base fold.
+// in a VALUE position (assigned to another name, passed as a call arg,
+// stored in a field, returned) — exactly the set of names that COULD have
+// been aliased. `d` in `const a = d` is a bare-name value-position read
+// (declEq only exempts the LHS binding slot), so `d` lands in nameEscapes
+// unconditionally the moment that line is walked, independent of what
+// happens to `a` afterward. Mirrors optimize/index.js:5014-5029's identical
+// escapes.has(name) bail for the analogous static-array-base fold.
+//
+// CORRECTION (audit-#8 P0-2): a prior revision of this comment listed
+// "captured" alongside the value-position uses above, implying a name merely
+// being read inside a nested closure was enough to mark it escaped. False: a
+// RECEIVER-position captured use (`[0].forEach(() => m.set('y', v))`) is
+// NEVER marked here — program-facts.js's ESCAPE_SKIP exempts '.'/'?.'
+// receiver slots unconditionally, capture or no capture, same as a top-level
+// `m.set(...)`. That is correct and intentional for THIS gate (a receiver
+// read doesn't alias `m` to a second name), but it means nameEscapes gives
+// captured-receiver writes no protection at all — the census itself must see
+// them directly. It didn't (dictValueTypeOf/mapValueTypeOf both stopped at
+// `=>`), which was the actual P0-2 bug — fixed at the census walks
+// themselves (both here-consumed halves now observe through nested closures,
+// gated on collectAllBoundNames' shadow-bail), not at this gate.
 // Fail open: an absent fact set (not-yet-walked) is treated the SAME as a
 // present-and-escaped name (`?.` optional chain below) — same precedent.
 // This is the SOLE consumer of dictValueValType (grepped: analyze.js/

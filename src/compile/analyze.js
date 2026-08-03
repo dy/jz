@@ -20,7 +20,7 @@ import { DBG_BIGINT_STATS, noteLocalBoxed } from './bigint-boxed-stats.js'
  * @module analyze
  */
 
-import { commaList, ASSIGN_OPS, MUTATE_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR } from '../ast.js'
+import { commaList, ASSIGN_OPS, MUTATE_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, collectAllBoundNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR } from '../ast.js'
 import { ctx, err } from '../ctx.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from '../kind.js'
@@ -1377,14 +1377,29 @@ function dictEffectiveWriteValue(op, lhs, rhs) {
 // dict-mode receivers have no literal-key fast path) rooted at `name` through
 // nested `[]` chains. First-wins-then-clash, poisons to null on any
 // unresolved write — identical lattice to observeProgramSlots' global-half
-// dictValueTypes census. Skips `=>`: nested closures are outside this body's
-// own analysis (dictWalkLean/dictWalkI32 make the same cut).
+// dictValueTypes census.
+//
+// Observes THROUGH nested `=>` bodies (audit-#8 P0-2): a write captured in a
+// callback — `[0].forEach(() => m.set('y', 'oops'))` — is a write to the SAME
+// lexical `name` binding as any top-level write, so leaving it unobserved
+// (the old blanket `if (op === '=>') return`) let a stale census kind survive
+// past a mutation that actually happened, miscompiling `m.get('y') + 1` to a
+// bare NUMBER add. Sound direction: MORE observations only ever tightens or
+// poisons the join, never loosens it. The one exception is a SHADOW — an
+// arrow whose own param or nested let/const/var re-declares `name` binds a
+// DIFFERENT variable for its whole body, so `collectAllBoundNames` (ast.js;
+// position-insensitive, scans the whole arrow subtree including further
+// nesting) gates entry per arrow: shadowed → skip the subtree entirely (same
+// "over-bail is sound, never unsound" precedent as scanBindingUses' CAPTURE
+// rule, this file's doc comment ~line 65). dictWalkLean/dictWalkI32 keep their
+// own `=>`-stopping cut — this census only feeds the maybeUndefined-joined
+// consumer path (kind.js dictValueKindOf), not those leaner direct-index ones.
 function dictValueTypeOf(body, name) {
   let vt, poisoned = false
   const walk = (node) => {
     if (poisoned || !Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') return
+    if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return
     if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
       const [, wobj, widx] = node[1]
       if (!isLiteralStr(widx)) {
@@ -1410,13 +1425,15 @@ function dictValueTypeOf(body, name) {
 // paramVts handling here, same as dictValueTypeOf's own local half (those are
 // the late whole-program {fresh:true} pass's concerns, program-facts.js).
 // Caller gates on decl vt === VAL.MAP (receiver already proven), so `name`
-// need not be re-checked here.
+// need not be re-checked here. Observes THROUGH nested `=>` bodies with the
+// SAME shadow-bail as dictValueTypeOf above (audit-#8 P0-2) — see that
+// function's doc comment for the soundness argument.
 function mapValueTypeOf(body, name) {
   let vt, poisoned = false
   const walk = (node) => {
     if (poisoned || !Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') return
+    if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return
     if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
         node[1][1] === name && node[1][2] === 'set') {
       const cargs = commaList(node[2])
