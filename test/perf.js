@@ -868,6 +868,17 @@ test('codegen: integer-global inference narrows numeric globals, demoting only o
   // assignment *proves* it fractional. `N`, `half` (a `>>>`), `width`, `offset`
   // (a product of i32 globals) → i32; `bSi` (`2.0 / n`) and `scale` (refs the
   // fractional `bSi`) → f64. No annotations, all inferred from the assignments.
+  //
+  // The four integer candidates are each read as a LOOP BOUND below (comparison-
+  // governed) — the real-world consumption shape this inference exists for (this
+  // file's own payoff a few lines down: `i < N` pure-i32, `mem[y*w]` a fully-i32
+  // index), not a bare, uncompared sum. A bare, ungoverned read of an unbounded
+  // param-derived global (the ORIGINAL `N + half + bSi + width + offset + scale`
+  // accessor here) is exactly the module-global bare-escape shape .work/todo.md's
+  // 2026-08-03 fix demotes to f64 (the module-global twin of KNOWN GAP #1,
+  // src/compile/plan/scope.js `inferModuleIntGlobals`) — this test asserted on
+  // that now-corrected-unsound behavior, so the accessor is rewritten to the
+  // sound, representative shape rather than the fix being relaxed.
   const decl = (wat, g) => {
     const lines = wat.split('\n')
     const i = lines.findIndex(l => new RegExp(`global \\$${g}\\b`).test(l))
@@ -875,11 +886,20 @@ test('codegen: integer-global inference narrows numeric globals, demoting only o
   }
   const wat = compile(`
     let N = 0, half = 0, bSi = 0, width = 0, offset = 0, scale = 0;
+    let mem;
     export let init = (n, w, h) => {
       N = n; half = n >>> 1; bSi = 2.0 / n;
       width = w; offset = width * h; scale = bSi * 2;
+      mem = new Float64Array(4096);
     };
-    export let sum = () => N + half + bSi + width + offset + scale;
+    export let sum = () => {
+      let s = 0.0;
+      for (let i = 0; i < N; i++) s += mem[i];
+      for (let i = 0; i < half; i++) s += mem[i];
+      for (let i = 0; i < width; i++) s += mem[i];
+      for (let i = 0; i < offset; i++) s += mem[i];
+      return s + bSi + scale;
+    };
   `, { wat: true })  // reader export keeps the globals live under watr's export-rooted liveness
   is(decl(wat, 'N'), '(mut i32)', 'N (param assign) → i32')
   is(decl(wat, 'half'), '(mut i32)', 'half (>>> shift) → i32')

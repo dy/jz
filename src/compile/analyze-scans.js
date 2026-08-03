@@ -861,12 +861,21 @@ const mathFnName = (callee) =>
   typeof callee === 'string' && callee.startsWith('math.') ? callee.slice(5)
     : Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math' ? callee[2] : null
 
-function collectComparedNames(body) {
+// `crossClosure`: descend into nested `=>` bodies instead of stopping at the
+// boundary. A LOCAL's relevant scope is exactly its one function body (nested
+// arrows are a separate scope for a same-named local, boxed-capture handles
+// the mutated-and-shared case), so the default (false) stops there. A MODULE
+// GLOBAL's relevant scope is the WHOLE PROGRAM — an inline arrow passed as a
+// callback (`.forEach(x => { g = x })`) is not lifted to its own ctx.func.list
+// entry at prepare time (only named function/arrow bindings are), so it stays
+// an inline `=>` node in the enclosing body and would be invisible to a scan
+// that stops there. See collectBareEscapes' own crossClosure doc.
+function collectComparedNames(body, crossClosure) {
   const names = new Set()
   const walk = (node) => {
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') return
+    if (op === '=>') { if (crossClosure) walk(node[2]); return }
     if (CMP_OPS_SET.has(op)) {
       if (typeof node[1] === 'string') names.add(node[1])
       if (typeof node[2] === 'string') names.add(node[2])
@@ -902,15 +911,31 @@ function collectComparedNames(body) {
  *            fixpoint below already trusts — the feeder inherits the TARGET's
  *            own contract, not a fresh one.
  * Anything else needs a static `intExprRange` proof (rule a) or it's blamed.
+ *
+ * `crossClosure` (default false, LOCAL mode — unchanged behavior: a nested
+ * `=>` is a separate scope/body, not scanned): pass `true` for a MODULE
+ * GLOBAL's whole-program scan (plan/scope.js `inferModuleIntGlobals`) — a
+ * global's storage is ONE cell for the entire program, so an escape hiding
+ * inside an inline closure (never lifted to its own ctx.func.list entry,
+ * e.g. `.forEach(x => { g = x })`) is exactly as disqualifying as one at
+ * top level. Callers pass a synthetic whole-program body (module-init AST +
+ * every function body concatenated) so the SAME comparison-governed
+ * tolerance this function already grants a local — "compared ANYWHERE in
+ * the relevant scope" — is evaluated over the global's true relevant scope
+ * (the whole program) rather than one function at a time. No shadow
+ * tracking: a same-named local elsewhere only makes the scan MORE
+ * conservative (a spurious blame just keeps a global at f64, never the
+ * reverse), matching the flat by-name matching inferModuleIntGlobals's own
+ * evidence walk already uses program-wide.
  */
-export function collectBareEscapes(body, locals) {
+export function collectBareEscapes(body, locals, crossClosure) {
   const escaped = new Set()
-  const compared = collectComparedNames(body)
+  const compared = collectComparedNames(body, crossClosure)
   const walk = (node, mode) => {   // mode: 'idx' | 'edge' | 'value'
     if (typeof node === 'string') { if (mode === 'value' && !compared.has(node)) escaped.add(node); return }
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') return                                            // nested closure: separate scope/body
+    if (op === '=>') { if (crossClosure) walk(node[2], 'value'); return }  // local mode: separate scope/body; global mode: descend (see doc)
     if ((op === '++' || op === '--') && typeof node[1] === 'string') return  // pure self-step, no value consumed
     if (op === '[]' && !isLiteralStr(node[2])) { walk(node[1], 'value'); walk(node[2], 'idx'); return }
     if (ESCAPE_SAFE_ROOT_OPS.has(op)) { for (let i = 1; i < node.length; i++) walk(node[i], 'idx'); return }

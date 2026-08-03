@@ -1265,6 +1265,102 @@ test('safe control: index-use counters with no unresolved bare escape keep i32 s
   ok(fnAcc.includes('$s i32)') || fnAcc.includes('_s i32)'), 'ToInt32-rooted accumulator `s` stays i32 storage despite a bare, uncompared return')
 })
 
+// MODULE-GLOBAL SIBLING (fixed 2026-08-03, .work/todo.md's own follow-up
+// flag on the KNOWN GAP #1 ledger entry above): `plan/scope.js`'s
+// `inferModuleIntGlobals` — the module-global f64→i32 narrowing fixpoint —
+// shared the EXACT same one-way-storage-commitment flaw as the two local
+// mechanisms fixed above, in a THIRD file/mechanism (a different AST-walk
+// shape, so not reachable via the local collectBareEscapes call sites
+// without duplicating the scanner). `producesFraction` only proves a
+// candidate global INTEGRAL (never a magnitude bound — the module-global
+// twin of intLevelMap's level-1 "integral-closed, range-open"), so a
+// global grown past i32 range via a bare compound-assign (`counter *=
+// 100000`) and then read bare — inherently EVERY module-global read is a
+// "bare escape" candidate, since a global has no local-scope containment —
+// silently wrapped. Live at HEAD before the fix: `let counter=4; export let
+// bump=()=>{counter*=100000; return counter}` called repeatedly returned
+// `400000, 1345294336, -1827012608`; JS gives `400000, 40000000000,
+// 4000000000000000` (diverges the 2nd call).
+//
+// FIX, same root mechanism, reused (not duplicated): `collectBareEscapes`
+// (analyze-scans.js) gained a `crossClosure` parameter (default false,
+// LOCAL behavior unchanged — a nested `=>` stays a separate scope/body) —
+// `true` descends into nested arrow bodies too, since an inline callback
+// closure (`.forEach(x => { g = x })`) is never lifted to its own
+// ctx.func.list entry at prepare time and would otherwise be invisible to
+// a scan that stops at `=>`. `inferModuleIntGlobals` calls it ONCE over a
+// synthetic whole-program body (module-init AST + every function body
+// concatenated) — a global's relevant scope for the "does every read
+// re-apply the same ToInt32 the writes did" proof is the WHOLE PROGRAM,
+// not one function, since its storage outlives any one function. Two-tier,
+// mirroring intLevelMap's own lattice (Pass D's local exemption,
+// generalized to program scope via `intLevelMap` over the SAME synthetic
+// body): a candidate whose every write is level-2 STRICT (int32-range
+// literal, bitwise/comparison result, Math.imul/clz32 — provably fits i32
+// regardless of where it's read) skips the escape check entirely; a level-1
+// (integral, unbounded) candidate needs collectBareEscapes' full proof —
+// index-positioned, ToInt32-rooted, statically in-range, or governed by
+// SOME comparison anywhere in the whole-program scan (SAME loop-counter
+// tolerance the local fix already accepts, generalized program-wide).
+test('module-global i32-narrowing no longer wraps a bare-escaped compound-assign counter (inferModuleIntGlobals sibling, 2026-08-03)', () => {
+  const srcMul = `let counter = 4; export let bump = () => { counter *= 100000; return counter }`
+  const mMul = run(srcMul)
+  const jsMul = (() => { let counter = 4; return () => { counter *= 100000; return counter } })()
+  is(mMul.bump(), jsMul(), 'call 1: still in i32 range, both agree')
+  is(mMul.bump(), jsMul(), 'FIXED (*=): call 2 (40000000000) matches JS exactly — was 1345294336 at HEAD')
+  is(mMul.bump(), jsMul(), 'call 3 (4e15) matches JS exactly — was -1827012608 at HEAD')
+
+  const srcAdd = `let h = 4; export let grow = (d) => { h += (d | 0) }; export let read = () => h`
+  const mAdd = run(srcAdd)
+  mAdd.grow(2147483647)
+  is(mAdd.read(), 4 + 2147483647, 'FIXED (+=): cross-call bare read of a grown global matches JS exactly (was a wrapped i32)')
+
+  // Cross-FUNCTION variant: one function grows the global unboundedly, a
+  // DIFFERENT function reads it bare — the global's storage is ONE cell
+  // program-wide, so this must be caught exactly like the same-function
+  // case (the whole-program scan, not a per-function one, is what closes
+  // this arm — a per-body-only scan would miss it).
+  const srcCross = `let g = 4; export let grow2 = () => { g *= 100000 }; export let read2 = () => g`
+  const mCross = run(srcCross)
+  mCross.grow2(); mCross.grow2()
+  is(mCross.read2(), 4 * 100000 * 100000, 'FIXED: cross-function growth then bare read matches JS exactly')
+})
+
+// SAFE-CONTROL structural pin (companion to the fix above, module-global
+// twin of the local safe-control pin): a canonical module-global counter
+// used soundly — either comparison-governed (the loop-counter shape) or
+// every write ToInt32-rooted — must KEEP i32 storage. Over-disqualifying
+// these would regress the exact perf-critical shape (module-level counters/
+// accumulators, sizes, strides) `inferModuleIntGlobals`'s own doc names as
+// its reason to exist.
+test('safe control: module-global counters with no unresolved bare escape keep i32 storage', () => {
+  const watIdx = jz.compile(`
+    let idx = 0
+    export let advance = (n) => { for (idx = 0; idx < n; idx++) {} ; return idx }
+  `, { wat: true })
+  const gIdx = watIdx.slice(watIdx.indexOf('(global $idx'), watIdx.indexOf('(global $idx') + 60)
+  ok(/\(mut i32\)/.test(gIdx), 'comparison-governed module-global counter `idx` stays i32 storage')
+  const eIdx = run(`
+    let idx = 0
+    export let advance = (n) => { for (idx = 0; idx < n; idx++) {} ; return idx }
+  `)
+  is(eIdx.advance(1000), 1000)
+  is(eIdx.advance(5), 5)
+
+  const watAcc = jz.compile(`
+    let m = 0
+    export let bump5 = (d) => { m = (m + (d | 0)) | 0; return m }
+  `, { wat: true })
+  const gAcc = watAcc.slice(watAcc.indexOf('(global $m'), watAcc.indexOf('(global $m') + 60)
+  ok(/\(mut i32\)/.test(gAcc), 'ToInt32-rooted module-global accumulator `m` stays i32 storage despite a bare, uncompared return')
+  const eAcc = run(`
+    let m = 0
+    export let bump5 = (d) => { m = (m + (d | 0)) | 0; return m }
+  `)
+  is(eAcc.bump5(2000000000), (0 + (2000000000 | 0)) | 0)
+  is(eAcc.bump5(2000000000), ((2000000000 | 0) + (2000000000 | 0)) | 0)
+})
+
 test('inferArrElemSchema: caller disagreement keeps polymorphic dispatch', () => {
   // initA pushes `{x,y}`, initB pushes `{a,b}` — disagreeing schemas at the
   // lattice → paramReps[runKernel][0].arrayElemSchema sticky-nulls → callee

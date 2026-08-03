@@ -4,6 +4,143 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, MODULE-GLOBAL SIBLING CLOSED: inferModuleIntGlobals stopped trusting i32 storage past a bare escape — the module-global twin of KNOWN GAP #1)
+
+REPRO (confirmed live at HEAD before this fix, flagged by the KNOWN GAP #1
+ledger's own sibling audit below): `let counter = 4; export let bump = () =>
+{ counter *= 100000; return counter }`, called 3×:
+
+| call | jz (HEAD, wrong)      | jz (fixed)         | JS (authority)      |
+|------|------------------------|---------------------|----------------------|
+| 1    | 400000                  | 400000              | 400000               |
+| 2    | 1345294336 (wrapped)    | 40000000000         | 40000000000          |
+| 3    | -1827012608 (wrapped)   | 4000000000000000    | 4000000000000000     |
+
+Plus 3 variants, all red→green: (1) split grow/read across two exported
+functions (`grow()`/`read()`) — same divergence; (2) `+=` arm (`h += (d|0)`
+once, `d=2147483647`) — HEAD `-2147483645`, JS/fixed `2147483651`; (3)
+cross-function growth (`grow2()` mutates, `read2()` reads, called twice) —
+HEAD `1345294336`, JS/fixed `1600000000000000` (`4*100000*100000`). Safe
+controls (must KEEP i32, verified via WAT `(mut i32)` decl, not just
+correctness): a comparison-governed module counter (`for(idx=0;idx<n;idx++)`)
+and a ToInt32-rooted accumulator (`m=(m+(d|0))|0`) both stay i32 storage,
+values exact vs JS.
+
+ROOT CAUSE: `src/compile/plan/scope.js`'s `inferModuleIntGlobals` — the
+module-global f64→i32 narrowing fixpoint — is the SAME one-way-storage-
+commitment flaw as KNOWN GAP #1's two local mechanisms, in a THIRD file/
+mechanism (a different AST-walk shape, so not reachable via the local
+`collectBareEscapes` call sites without duplicating the scanner — exactly
+as the prior ledger entry's sibling-audit flagged). `producesFraction`
+proves a candidate global only INTEGRAL (the module-global analog of
+intLevelMap's level-1 "integral-closed, range-open" — `+`/`-`/`*` never
+prove a magnitude bound), never that its magnitude stays in i32 range — and
+since a module global has no local-scope containment, EVERY read anywhere
+in the program is a "bare escape" candidate. `EXCEEDS_I32_CALLS`
+(Date.now-style) already disqualifies known-oversized producers, but had no
+general mechanism for "grows past i32 via ordinary arithmetic, then read
+bare."
+
+FIX (same root mechanism as KNOWN GAP #1, reused not duplicated):
+`collectBareEscapes` (src/compile/analyze-scans.js) gained a `crossClosure`
+parameter (3rd arg, default `false` — LOCAL behavior byte-for-byte
+unchanged: a nested `=>` stays a separate scope/body, not scanned).
+`crossClosure=true` descends into nested arrow bodies instead of stopping —
+an inline callback closure (`.forEach(x => { g = x })`) is never lifted to
+its own `ctx.func.list` entry at prepare time (only named function/arrow
+BINDINGS are — verified via src/prepare/index.js's `'=>'` handler), so it
+stays an inline node in the enclosing body and would be invisible to a scan
+that stops at `=>`. `collectComparedNames` (same file) got the identical
+parameter, threaded through.
+
+`inferModuleIntGlobals` calls `collectBareEscapes` ONCE, after its existing
+`producesFraction` fixpoint, over a SYNTHETIC WHOLE-PROGRAM body
+(`[';', ast, ...moduleInits, ...every ctx.func.list body]`) — a global's
+relevant scope for the "every read re-applies the same ToInt32 the writes
+did" soundness premise is the WHOLE PROGRAM, not one function, since its
+storage outlives any single function (the direct generalization of KNOWN
+GAP #1's "the var's WASM storage is ONE slot for the whole function"
+argument, one level up). Two-tier, mirroring intLevelMap's own lattice
+exactly (Pass D's local "level 2 needs no check" exemption, generalized to
+program scope via `intLevelMap(programBody)`, called over the SAME
+synthetic body): a candidate whose every write is level-2 STRICT
+(int32-range literal, bitwise/comparison result, Math.imul/clz32 — proven
+i32-safe by construction regardless of where it's read) skips the escape
+check entirely; a level-1 (integral, unbounded) candidate needs
+`collectBareEscapes`' full proof — index-positioned, ToInt32-rooted,
+statically in-range (`intExprRange`), or governed by SOME comparison
+anywhere in the whole-program scan (same loop-counter tolerance
+`widenLocalTypes`' CMP_OPS pass already accepts, generalized program-wide).
+A namesake local elsewhere sharing a candidate's name can only pull a
+shared `intLevelMap` bucket's level DOWN via its min-fixpoint (never falsely
+UP) and can only ADD a spurious blame via the flat by-name escape scan
+(never remove a real one) — both directions are conservative-only, matching
+this file's own "over-inclusive only makes it MORE conservative" convention
+(inferModuleGlobalValTypes' `bound`-set doc, same file) and the local fix's
+own "no shadow tracking needed, over-flagging is safe" precedent.
+
+TEST CORRECTIONS (2, both justified — the SAME "test asserted on the
+pre-fix unsound behavior" situation the P0-2 ledger's float/mixed
+re-baseline names, not a regression):
+  - `test/snapshot.js` — `seq = seq + 1; return seq` (bare, uncompared
+    accumulator) is EXACTLY the shape this fix demotes; changed to
+    `seq = (seq + 1) | 0` (ToInt32-rooted, level-2 STRICT by construction,
+    numerically identical at this test's magnitude) so the test's actual
+    target — "an i32 global bakes as an i32 literal initializer under
+    `snapshotInit`" — is demonstrated on a sound shape instead.
+  - `test/perf.js` `codegen: integer-global inference narrows numeric
+    globals, demoting only on proof` — its accessor summed all six globals
+    bare (`N + half + bSi + width + offset + scale`, no comparisons, no
+    index use anywhere) — none of the four integer candidates had ANY
+    exempt occurrence. Rewritten to read each as a loop bound
+    (`for (i=0;i<N;i++) s+=mem[i]`, …) — the file's OWN documented payoff a
+    few lines below this test (`i < N` pure-i32, `mem[y*w]` fully-i32
+    index) and the realistic consumption shape real purpose-focused code
+    uses (verified directly: the doc's own `mem[y*width+x]`+`i<N`+`x<width`
+    shape narrows N/width to i32 with ZERO changes needed — confirms the
+    fix does not regress the REPRESENTATIVE case, only the synthetic
+    all-bare-sum probe). Assertions (N/half/width/offset → i32, bSi/scale →
+    f64) unchanged.
+
+CLASS-CLOSURE STATEMENT: the one-way-storage-commitment class (a value
+provably STORED i32 magnitude-blind, later read where the storage's own
+ToInt32-wrap premise doesn't hold) is now CLOSED across every inventoried
+i32-narrowing mechanism:
+  - LOCALS (`collectI32SafeIndexVars` back-prop, `widenLocalTypes`
+    intCertain/Pass D) — closed 2026-08-02, KNOWN GAP #1 entry below.
+  - MODULE GLOBALS (`inferModuleIntGlobals`) — closed HERE.
+  - `ctx.schema.slotI32Certain`/`slotI32CertainAt` — RULED SOUND BY DESIGN
+    (prior ledger): the strict level-2-equivalent projection by
+    construction, no bare-escape exposure possible.
+  - `ctx.schema.slotIntCertain` — RULED OUT OF CLASS (prior ledger):
+    per-use-site elision, never a storage-narrowing commitment.
+  - `ctx.types.typedElem` — RULED OUT OF CLASS (prior ledger): resolves the
+    var's REAL bound TypedArray ctor, mirrors true JS coercion exactly, not
+    an approximation that can drift.
+No further sibling identified — every ctx.js-registered numeric-narrowing
+fixpoint (locals + globals) now consults a bare-escape proof scoped to its
+OWN storage's true lifetime (one function body for a local, the whole
+program for a global) before committing to permanent i32 storage.
+
+GATES: repros red→green — native (`node test/inference.js`, both new tests)
+AND kernel leg (`JZ_TEST_TARGET=jz.wasm node test/inference.js`, 132/132,
+278 assertions — WAT-shape-only pins skip under `onKernel()`, expected) —
+both against a fresh `npm run build`. Full battery: all 88 test/index.js
+TESTS files run individually, zero uncurated fails (2 justified test
+corrections above). kernel-parity 33/33 byte-identical (O0/O2/O3).
+kernel-oracle 11/11 (451 assertions). perf-ratchet 10/10, EVERY category
+byte-identical to the KNOWN GAP #1 baseline (+0 across
+int/float/mixed/cond/buf/nest/slice/ring/condref/fgather) — no re-baseline
+needed, no honest tension. optimizer.js 214/214 (3949 assertions).
+selfhost.js 21/21 (206 assertions). selfhost-perf.js 5/5 (warm geomean
+0.988×/cap 1.03×, fresh 0.788×/cap 0.99× — both comfortably under cap,
+consistent with the KNOWN GAP #1 baseline). fuzz.js: 2000 seeds ×
+opt{0,1,2,3}, 30173 inputs compared, 9827 skipped i32-contract-exceeded, 0
+divergence (matches the KNOWN GAP #1 baseline numbers exactly). examples.js
+22/22 (433 assertions, unchanged). Size spot-check: mat4 1543B (the KNOWN
+GAP #1 +15B baseline, unchanged), fft 2368B, crc32 1107B, biquad 1861B —
+all byte-identical to the KNOWN GAP #1 baseline.
+
 ## Status (2026-08-02, KNOWN GAP #1 CLOSED: collectI32SafeIndexVars back-propagation + widenLocalTypes intCertain sibling both stopped trusting i32 storage past a bare escape)
 
 REPRO (both arms, live at HEAD before this fix, both via the `run`/`jz.compile` harness — the FFT-butterfly shape pinned KNOWN-FAIL in test/inference.js since the P0-2 ledger above):

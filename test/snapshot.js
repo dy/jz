@@ -9,6 +9,13 @@ import jz, { compile } from '../index.js'
 const SNAP = { level: 2, snapshotInit: true }
 
 test('snapshot: init-built tables become pure data, __start is deleted', () => {
+  // `seq`'s increment is `| 0`-rooted (not bare `seq + 1`) so the module-global
+  // i32-narrowing fixpoint's bare-escape veto (inferModuleIntGlobals, 2026-08-03)
+  // proves it strict-i32-range-safe by construction — an unguarded `seq = seq +
+  // 1; return seq` is EXACTLY the unbounded-accumulator-returned-bare shape that
+  // fixpoint now correctly demotes to f64 (same class as .work/todo.md's
+  // module-global sibling fix), which would make this test's own i32-initializer
+  // assertion below false by DESIGN, not by regression.
   const src = `
     const TABLE = new Float64Array(64)
     for (let i = 0; i < 64; i++) TABLE[i] = Math.sin(i * 0.1)
@@ -16,7 +23,7 @@ test('snapshot: init-built tables become pure data, __start is deleted', () => {
     let seq = 100
     export let probe = (i) => TABLE[i]
     export let name = () => NAMES.beta
-    export let next = () => { seq = seq + 1; return seq }`
+    export let next = () => { seq = (seq + 1) | 0; return seq }`
   const w = compile(src, { wat: true, optimize: SNAP })
   ok(!/\(start /.test(w), 'no start section')
   ok(!/func \$__start/.test(w), 'no __start function')

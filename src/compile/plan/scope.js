@@ -23,12 +23,13 @@
 import { ctx, warn, declGlobal } from '../../ctx.js'
 import { ASSIGN_OPS, T, refsAny, extractParams, classifyParam, collectParamNames } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
-import { typedElemCtor, ternaryCtorOfRhs, MIXED_CTORS } from '../../type.js'
+import { typedElemCtor, ternaryCtorOfRhs, MIXED_CTORS, intLevelMap } from '../../type.js'
 import { inferSchemaId } from '../infer.js'
 import { valTypeOf } from '../../kind.js'
 import { typedElemAux } from '../../../layout.js'
 import { MAX_CLOSURE_ARITY, UNDEF_NAN } from '../../ir.js'
 import { analyzeFuncNamespaces, analyzeBody } from '../analyze.js'
+import { collectBareEscapes } from '../analyze-scans.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 
 // `scanGlobalValueFacts` was deleted — prepare's depth-0 catch (calling
@@ -687,8 +688,52 @@ export const inferModuleIntGlobals = (ast) => {
     }
   }
 
+  // Bare-escape veto (module-global twin of widenLocalTypes Pass D,
+  // .work/todo.md's KNOWN GAP #1 sibling): `producesFraction` above only
+  // proves each candidate INTEGRAL — the same "level 1: integral-closed,
+  // range-open" verdict intLevelMap gives a local's `+`/`-`/`*` chain, never
+  // a magnitude bound. i32 storage is sound for a value ONLY as long as
+  // every read re-applies the same ToInt32 the writes did (declGlobal's own
+  // load-bearing tradeoff, identical to widen.js's local one) — broken the
+  // instant an integral-but-unbounded global (`counter *= 100000`) is ALSO
+  // read bare with no governing comparison ANYWHERE. A local's relevant
+  // scope for that proof is its one function body; a global's is the WHOLE
+  // PROGRAM, since its storage outlives any one function — so both checks
+  // below run over module-init code + every function body concatenated.
+  //
+  // Two-tier, mirroring intLevelMap's own lattice exactly (Pass D's own
+  // "level 2 needs no check" exemption, generalized to program scope):
+  //   - level 2 (STRICT i32-range-safe by construction — every write is an
+  //     int32-range literal, a bitwise/comparison result, or Math.imul/
+  //     clz32) needs no escape check: every value it can ever hold already
+  //     fits i32, regardless of where it's read. `intLevelMap` over the
+  //     SAME whole-program body computes this per name via its own
+  //     min-fixpoint over every def's RHS (a namesake local elsewhere can
+  //     only pull a shared bucket's level DOWN via that min, never falsely
+  //     UP — safe direction only, matches this file's own "over-inclusive
+  //     only makes it MORE conservative" convention).
+  //   - level < 2 (level 1 "integral, range-open", or 0): needs
+  //     collectBareEscapes' full proof — index-positioned, ToInt32-rooted,
+  //     statically in-range (intExprRange), or governed by SOME comparison
+  //     anywhere in the whole-program scan (the loop-counter tolerance
+  //     widenLocalTypes' CMP_OPS pass already accepts, generalized to
+  //     program-wide governance the same way the escape scope itself is) —
+  //     via collectBareEscapes' crossClosure mode, so an escape hiding
+  //     inside an inline arrow (never lifted to its own ctx.func.list
+  //     entry) is still caught.
+  let strictLevel = null, bareEscaped = null
+  if (candidates.size) {
+    const funcBodies = []
+    for (const f of ctx.func.list) if (f.body && !f.raw) funcBodies.push(f.body)
+    const programBody = [';', ast, ...(ctx.module.moduleInits || []), ...funcBodies]
+    strictLevel = intLevelMap(programBody)
+    if ([...candidates].some(n => strictLevel.get(n) !== 2))
+      bareEscaped = collectBareEscapes(programBody, null, true)
+  }
+
   for (const name of candidates) {
     if (fractional.has(name)) continue
+    if (strictLevel.get(name) !== 2 && bareEscaped.has(name)) continue
     declGlobal(name, 'i32')
     // Advisory only (off unless opts.warnings): the value flows in from a parameter,
     // which may be a fractional Number that the i32 carrier truncates.
