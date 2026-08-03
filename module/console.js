@@ -25,7 +25,7 @@
 
 import { typed, asF64, asI64, mkPtrIR, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN } from '../src/ir.js'
 import { emit, deps, reg, hostImport } from '../src/bridge.js'
-import { valTypeOf } from '../src/kind.js'
+import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { exprType } from '../src/type.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
@@ -163,10 +163,21 @@ const setupWasi = (ctx) => {
       const writePart = (part) => {
         if (Array.isArray(part) && part[0] === 'str' && part[1] === '') return
         const vt = valTypeOf(part)
-        if (vt === VAL.STRING) {
+        // maybeUndefined join (.work/maybe-undefined-design.md §1/Slice 5):
+        // a dict-census STRING/NUMBER claim is "every value ever WRITTEN",
+        // not "this key exists" — an absent key is real `undefined` at
+        // runtime. __write_str/__write_num/__write_int assume their arg IS
+        // the claimed kind's bits with no runtime tag check (unlike
+        // __write_val below, which already dispatches on the ACTUAL atom —
+        // it's the maybeUndefined-safe general path other census consumers
+        // fall through to). Found live under host:'wasi' during the Slice 5
+        // site survey: `console.log(d[rk])` on an absent, STRING-census key
+        // printed an empty line instead of "undefined" (the raw UNDEF_NAN
+        // bits fed straight to __write_str's SSO/heap-string decode).
+        if (vt === VAL.STRING && !censusMaybeUndefined(part)) {
           inc('__write_str')
           ir.push(['call', '$__write_str', ['i32.const', fd], asI64(emit(part))])
-        } else if (vt === VAL.NUMBER) {
+        } else if (vt === VAL.NUMBER && !censusMaybeUndefined(part)) {
           if (exprType(part, ctx.func.locals) === 'i32') {
             inc('__write_int')
             ir.push(['call', '$__write_int', ['i32.const', fd], asF64(emit(part))])

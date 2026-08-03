@@ -109,19 +109,21 @@ export const VAL = {
  *   design.md), same first-wins-then-clash lattice, additive-only, NEVER a
  *   substitute for `val`. Two producers remain live — analyze.js's same-body
  *   scan (local half, updateRep) and observeProgramSlots' mapValueTypes
- *   census (global half, updateGlobalRep) — but the fact is DORMANT (mirrors
- *   the bigintBoxed precedent, .work/todo.md 2026-07-29 "solver fact LANDED
- *   and dormant"): its former sole consumer, kind.js's mapValueKindOf
- *   (VT['()']'s `.get` short-circuit) and emit.js's matching nullableOperand
- *   carve-out, were REVERTED (audit P0, external bisection, .work/todo.md
- *   "audit-#7 P0 closed") — promoting this census to an EXACT VAL.* kind at a
- *   `.get()` read site is unsound: an ABSENT key reads real JS `undefined` at
- *   runtime regardless of the observed kind (arithmetic/String() on the read
- *   silently diverged from JS), and the census keys observations by
- *   SYNTACTIC receiver name so a write through an alias is invisible to it,
- *   leaving a stale kind live after the alias write changes it. Do not wire
- *   a new consumer without first landing the represented maybeUndefined join
- *   + BindingId-based alias/escape ownership this needs to be sound.
+ *   census (global half, updateGlobalRep). RE-ENABLED consumer (.work/
+ *   maybe-undefined-design.md §3, Slice 4): kind.js's mapValueKindOf
+ *   (VT['()']'s `.get` short-circuit) was reverted (audit P0, external
+ *   bisection, .work/todo.md "audit-#7 P0 closed") because promoting this
+ *   census to an EXACT VAL.* kind at a `.get()` read site was unsound two
+ *   ways — an ABSENT key reads real JS `undefined` at runtime regardless of
+ *   the observed kind, and the census keys observations by SYNTACTIC
+ *   receiver name so a write through an alias is invisible to it. Both are
+ *   now closed at CONSUME time, not by changing the census itself: (1) the
+ *   absent-key case is closed by `censusMaybeUndefined`'s Map arm (kind.js),
+ *   which routes every `.get()` read through the maybeUndefined join at
+ *   every arithmetic/ToString/equality/console chokepoint; (2) the alias
+ *   case is closed by `mapValueKindOf` carrying the SAME `ctx.types.
+ *   nameEscapes` gate `dictValueKindOf` does (Slice 3), from its first line.
+ *   See .work/todo.md's Slice 4 status entry for the acceptance pins.
  * @property {boolean} [recvArrTyped]     receiver-kind CLASS proof (2026-07-31,
  *   named follow-up to the numeric-key unknown-receiver soundness fix, 9f46d517):
  *   true iff every live call site's argument at this position proves VAL.ARRAY OR

@@ -284,6 +284,26 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
       if (op === 'let' || op === 'const') {
         for (const decl of args) {
           if (Array.isArray(decl) && decl[0] === '=' && decl.length >= 3) {
+            // nameEscapes: this branch hand-walks the decl's parts (valueUsed +
+            // targeted RHS recursion below) instead of recursing into `decl` as
+            // a whole node via walkFacts — so `decl` itself never reaches
+            // observeNodeFacts's generic per-arg escape-marking loop the way a
+            // plain (non-decl) '=' node does (that one IS observeNodeFacts'd
+            // directly, since walkFacts calls it unconditionally at entry
+            // before any op-specific branch). For a BARE-NAME initializer
+            // (`const alias = d`) this silently dropped the RHS name from
+            // nameEscapes entirely: decl[2]='d' is a plain string, so the
+            // `walkFacts(decl[2], …)` call below returns immediately (the
+            // `!Array.isArray(node)` guard) without ever visiting the '='
+            // node that would have marked it. Confirmed live: `let alias;
+            // alias = d` (non-decl form) marked 'd' in nameEscapes; `const
+            // alias = d` (this form) did not — same RHS shape, only the decl
+            // wrapper differed. Fix: explicitly run the marking pass `decl`
+            // itself would have gotten from a real walkFacts visit — declEq
+            // (pre-registered above, op==='let'/'const' branch) still exempts
+            // the LHS binding slot, so this only ever ADDS the RHS-when-bare-
+            // name case, never re-marks the LHS.
+            observeNodeFacts(decl, acc)
             const name = decl[1]
             if (typeof name === 'string' && ctx.func.names.has(name)) {
               const isFuncLit = Array.isArray(decl[2]) && decl[2][0] === '=>'

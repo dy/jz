@@ -4,6 +4,287 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, maybeUndefined Slices 3-5 landed — nameEscapes gate, site survey, Map re-enable)
+
+CONTAINER VALUE-CENSUS SOUNDNESS CAMPAIGN CLOSED (.work/maybe-undefined-
+design.md, Slices 3-5; audit-#7 P0 revert f8f61591 and Slice 1 061e2c6e are
+the prerequisites this closes out). All three remaining slices landed
+together (one combined effort, staged as described below); `mapValueKindOf`
+is RE-ENABLED and live.
+
+SLICE 3 — nameEscapes alias gate on dictValueKindOf:
+`dictValueKindOf` (kind.js) gained a first-line
+`if (ctx.types?.nameEscapes?.has(name)) return null` gate, matching
+optimize/index.js:5014-5029's identical `escapes.has(name)` bail for the
+analogous static-array-base fold. REPRO (mirrors the Map audit-P0 alias
+test, dict sibling): `const d={}; d[wk]=1; const alias=d; alias[wk2]='oops1';
+return d[wk2]-0` — HEAD (pre-fix): `'oops1'` (a raw NaN-boxed string pointer
+surviving `-0` bit-for-bit, decoded back to the string by the host bridge);
+JS/fixed: `NaN`. Confirmed red both with NO gate and with ONLY the kind.js
+gate landed (see next paragraph for why) — green only once BOTH fixes below
+are present. Pins: test/dyn-keys.js "dict: a write through an alias is not
+lost to a stale census kind (audit P0 sibling, Slice 3)".
+SECOND FINDING, LOAD-BEARING (program-facts.js, pre-existing, discovered
+landing this slice): `ctx.types.nameEscapes` — the exact fact the design's
+§2 worked example (`const alias = m`) claimed marks unconditionally — did
+NOT mark a bare-name DECL initializer's RHS at all. walkFacts' `'let'`/
+`'const'` special case (program-facts.js ~284) hand-walks each declarator
+(valueUsed bookkeeping + a targeted RHS recursion) instead of visiting the
+whole `'='` node through the normal recursive `walkFacts` call — so the '='
+node never reached `observeNodeFacts`'s generic per-arg escape-marking loop,
+and a bare-name RHS (`const alias = d`, decl[2]='d', a plain string with
+nothing further to recurse into) was silently invisible to nameEscapes.
+Confirmed via live instrumentation: `let alias; alias = d` (non-decl
+reassignment) DID mark 'd'; `const alias = d` (decl form — the design's OWN
+worked example, and the shape BOTH audit-P0 Map alias tests use) did NOT.
+This is exactly why the kind.js gate alone left the repro red. FIXED:
+walkFacts' decl branch now calls `observeNodeFacts(decl, acc)` on each
+`'='`-shaped declarator explicitly (one line) — the pre-registered declEq
+exemption (already computed for the outer node) still protects the LHS
+binding slot; only the previously-invisible bare-name-RHS case is newly
+marked. This is a REAL FIX to nameEscapes' own construction, not a
+workaround — it's what makes Slice 3's (and Slice 4's) alias gate actually
+sound for the design's own canonical alias-creation idiom, and it also
+retroactively strengthens `foldStaticConstArrayReads` (optimize/index.js),
+which consumes the SAME fact for the analogous static-array-base fold and
+had the identical blind spot for decl-form array aliases (not separately
+re-audited/re-gated here — same fact, same fix, no separate consumer change
+needed there).
+Control (non-aliased dict keeps its fast path): the pre-existing
+"consumer wiring — proven-NUMBER dict read skips coercion at a compare
+site" test (test/inference.js) stays green unchanged — OPCODE never
+escapes there.
+
+SLICE 5 — structural site survey (~224 `VAL.NUMBER`/`VAL.STRING` comparison
+sites across 31 files in src/+module/, grepped and classified; ~120 of the
+design's original estimate undercounted producer-side VT-table entries).
+Method: grepped every `===VAL.NUMBER`/`===VAL.STRING`-shaped site outside
+kind.js/kind-traits.js (the classification engine itself, not a consumer),
+grouped into families, and for each family determined whether a census-
+derived kind reaching it is safe under the maybeUndefined join. Full
+classified inventory:
+  - Arithmetic (ir.js toNumF64, 1 chokepoint) — SAFE, already gated (Slice 1).
+  - ToString (ir.js toStrI64 / module/string.js String(), 2 sites) — LEAK B,
+    found and fixed (below).
+  - Equality (emit.js emitLooseEq/emitStrictEq, ~3 branches; module/array.js
+    arrEqIR feeding .indexOf/.includes/.lastIndexOf, same shape) — LEAK A,
+    found and fixed (below).
+  - Relational compare (emit.js cmpOp, `<`/`>`/`<=`/`>=`) — SAFE BY
+    CONSTRUCTION, no fix needed: verified live that a NaN-boxed operand
+    (real or census-masquerading) ALWAYS compares false under a raw
+    f64.lt/gt/le/ge, which coincides exactly with JS's own
+    ToNumber(non-number)=NaN → "compared to NaN is always false" semantics.
+    Confirmed by direct repro (`d[rk] > 5` on an absent numeric-census key:
+    correct `false` both before and after every other fix in this campaign).
+  - console.log/warn/error formatting (module/console.js writePart, only
+    reachable under `host:'wasi'` — under `host:'js'` console.log decodes
+    host-side off raw bits, independent of compiler beliefs) — LEAK C,
+    found and fixed (below).
+  - Receiver/key dispatch (write & read routing: dict vs array vs typed vs
+    string; module/array.js, emit-assign.js, ~40 sites) — UNREACHABLE: these
+    test the RECEIVER's or KEY's kind to choose a codegen path, never trust
+    a VALUE read's exact kind as a presence proof.
+  - Merge/box representation (`?:`/`&&`/`||`/`??` arm boxing, emit.js,
+    ~30 sites) — UNREACHABLE for the coercion-correctness question: these
+    decide NaN-canon/box-vs-raw REPRESENTATION, not ToNumber/ToString/
+    equality; already fully audited by the unrelated carrier-invariant-
+    design.md / formatter-dispatch-design.md campaigns.
+  - Producer/classification (kind.js/kind-traits.js VT table itself,
+    propValType, methodValType, typedCtorElemValType) — excluded, not a
+    consumer (this is what PRODUCES the kind judgment).
+  - Analysis-only / compile-time fact production (narrow.js, compile/
+    index.js, program-facts.js, analyze.js, ~50 sites) — UNREACHABLE: whole-
+    program/inter-procedural fact production feeding LATER analyses, not a
+    runtime value trusted at an emit site.
+  - Number.isNaN/isFinite/isInteger/isSafeInteger (module/number.js) —
+    isFinite/isInteger/isSafeInteger SAFE (their `x===x` self-compare already
+    excludes every NaN-boxed carrier); Number.isNaN's CENSUS/OOB-specific
+    gate (design §4 Slice 2: excluding `censusMaybeUndefined`/
+    `checkedNumRead`-tagged sentinels specifically) remains OPEN — Slice 2
+    was never assigned to this campaign (task scope was Slices 3-5 only) and
+    is NOT landed; `Number.isNaN(d['missing'])` on a NUMBER-census dict still
+    reads jz `true` vs JS `false`. Flagged, not closed — see "still open"
+    below. (The BROADER Number.isNaN(string/object) leak, unrelated to
+    census, WAS already fixed pre-this-session, commit 90e10c3d.)
+  - JSON.stringify (module/json.js, 4 sites) — low-confidence SAFE
+    (undefined-omission appears spec-handled upstream of these branches by a
+    dedicated check) — NOT independently re-derived/repro'd this session;
+    flagged as lower-confidence than the other verdicts, not re-opened.
+LEAK A (equality, emit.js emitLooseEq/emitStrictEq): the raw `f64.eq`/
+`f64.ne` fast branch fired whenever EITHER side's static kind was
+VAL.NUMBER, with NO runtime tag check — never called toNumF64/toStrI64 or
+consulted `censusMaybeUndefined` at all (nullableOperand's existing
+consultation only covered the LITERAL `null`/`undefined`-token comparison
+shape, not two dynamic maybe-undefined operands compared to each other).
+IEEE-754 f64.eq is FALSE for ANY NaN operand, always — including two BIT-
+IDENTICAL NaN-boxed `undefined` sentinels — so `x === y` where BOTH are
+genuinely `undefined` at runtime (one via a NUMBER-census absent-key claim)
+wrongly read false; JS reads true. Repro (all confirmed red at HEAD, green
+after): `d[rk] === u` (u a real undefined local), `d[rk] === d[rk2]` (two
+independent absent reads), `d[rk] == other[ork]` (loose eq, one side
+NUMBER-census, other side an unrelated unproven boxed read) — all wrongly
+`0`, correctly `1` after the fix. FIXED (reusing the SAME two-chokepoint
+predicate, not a new mechanism): `emitLooseEq`'s NUMBER-trust now requires
+`vt===VAL.NUMBER && !nullableOperand(operand)` (`aSafe`/`bSafe`) instead of
+bare `vt===VAL.NUMBER` — `nullableOperand` already unifies the census carve-
+out with the unproven-typed-index-OOB carve-out, so this ALSO retroactively
+fixes the equivalent leak for array/typed-array OOB reads (confirmed live:
+`a[10] === u` on a dynamically-out-of-range array index was ALSO wrongly
+`0`before this fix — a pre-existing, broader-than-census leak, same
+Number.isNaN-precedent framing: found and closed as a side effect of the
+correct general fix, not separately scoped). Literal `undefined`/`null`
+sentinel comparisons (the pre-existing carve-out) and the relational family
+stay unaffected (kept as passing controls). Pins: test/dyn-keys.js "dict:
+strict/loose equality between two independently-maybe-undefined reads
+(Slice 5 LEAK A)".
+LEAK B (ToString, ir.js toStrI64): `toStrI64` — the SAME function
+module/string.js's `bind('String', …)` already delegates to for the
+maybeUndefined-flagged case, on the (Slice 1) belief it "falls through to
+the LAST branch... already correct" — had its OWN unguarded
+`vt === VAL.STRING` early return ABOVE that last branch. A dict census whose
+observed writes were all STRING (not NUMBER, the only kind Slice 1's own
+repro exercised) hit THIS branch instead: `asI64(v)` reinterpreted the
+absent key's raw UNDEF_NAN bits as a string i64 — which decodes host-side as
+the bare `undefined` VALUE, not the string `"undefined"` (a WORSE failure
+than a wrong string: wrong TYPE entirely). Reaches template-literal
+interpolation too (toStrI64 is strcat's per-part fallback), CONTRADICTING
+Slice 1's own "template literals need no fix" claim — that claim was
+verified only against a NUMBER-kind census; the STRING-kind case was
+untested. Repro (red at HEAD, green after): `String(d[rk])` on a STRING-
+census absent key → `undefined` (the value) instead of `"undefined"` (the
+string); `` `v=${d[rk]}` `` → `"v="` instead of `"v=undefined"`. FIXED at
+`toStrI64` itself (the shared chokepoint, not the caller): gated the
+`vt===VAL.STRING` return on `!censusMaybeUndefined(node)`. Pins:
+test/dyn-keys.js "dict: String() and template literals on a STRING-census
+absent key (Slice 5 LEAK B)".
+LEAK C (console.log, module/console.js writePart): independent dispatch,
+not routed through toStrI64/String() at all — only reachable under
+`host:'wasi'` (module/console.js's own WASI-syscall writers; under
+`host:'js'` console.log decodes host-side off raw bits, masking the bug).
+`vt===STRING`/`vt===NUMBER` fed raw bits straight to `$__write_str`/
+`$__write_num`, which assume their arg IS that kind (no tag check — unlike
+`$__write_val`, the pre-existing generic fallback, which already dispatches
+correctly on the ACTUAL runtime atom). Repro (WASI host, captured via the
+polyfill's custom `write`): `console.log(d[rk])` on a STRING-census absent
+key printed an empty line instead of `"undefined\n"`. FIXED: gated
+writePart's STRING/NUMBER fast branches on `!censusMaybeUndefined(part)`,
+falling through to the existing, already-correct `$__write_val` general
+path. Pins: test/wasi.js "WASI console.log: dict-census absent key prints as
+undefined, not empty/garbage (Slice 5 LEAK C)".
+No fourth chokepoint was needed beyond toNumF64/toStrI64/emitLooseEq/
+writePart — every leak closed by reusing `censusMaybeUndefined`/
+`nullableOperand` at the ACTUAL unguarded site, per the "same two-chokepoint
+pattern, implement once" mandate; none required a per-site carve-out.
+
+SLICE 4 — Map census re-enable. `mapValueKindOf` (kind.js) reconstructed
+from `git show 1db8e55e` as the reference shape, WITH the `nameEscapes` gate
+written in from the first line (not deferred) and the HARD
+`valTypeOf(name)===VAL.MAP` receiver-classification guard kept verbatim (no
+dynWriteVars-analog proxy needed — Map's receiver kind is never cross-kind-
+polluted the way dict's is, so no `dictCensusReceiverIsLive`-equivalent
+guard was needed either). `censusMaybeUndefined` gained a second arm
+recognizing `['()', ['.', recv, 'get'], k]` gated on `mapValueKindOf(recv)`,
+landed in the SAME change as the `.get()` short-circuit in `VT['()']`
+(kind.js) — per the design's re-enablement criteria (§3), all satisfied
+together: (1) dictValueKindOf's nameEscapes gate (Slice 3) landed first;
+(2) censusMaybeUndefined's Map arm + the VT['()'] short-circuit land
+together; (3) mapValueKindOf carries the SAME nameEscapes gate from its
+first line; (4) the site survey (Slice 5) ran and found/closed 3 leaks
+before this slice landed, per the design's explicit ordering. No separate
+`nullableOperand` carve-out was added (unlike 1db8e55e's original diff) —
+Slice 1 already replaced that inline logic with `censusMaybeUndefined`, so
+the Map arm on `censusMaybeUndefined` alone is consulted everywhere
+`nullableOperand` is, automatically (identity folds) AND everywhere the
+Slice 5 fixes added a `censusMaybeUndefined`/`nullableOperand` consult
+(equality, ToString, console) — one arm, every chokepoint, no duplication.
+ACCEPTANCE: both audit-P0 Map pins (test/dyn-keys.js, absent-key + alias-
+write) stay green with the consumer LIVE — confirmed they pass via the
+SOUND mechanism now (mapValueKindOf genuinely fires and is genuinely gated),
+not merely "no consumer exists" as before. Positive/negative control pair
+added (test/inference.js "map-value census: consumer wiring — a non-
+escaping Map proves its value kind; an escaping one does not (Slice 4)"):
+asserts `ctx.types.nameEscapes`/`mapValueKindOf`'s actual gating outcome
+directly, NOT a WAT structural pattern — investigated and confirmed the
+`OPCODE.get(nm) > 0xffff` structural shape the ORIGINAL 1db8e55e test (and
+its dict-census sibling) used does NOT actually distinguish "consumer
+present" from "consumer absent" for Map specifically: cmpOp's relational
+family is unconditionally safe for a `.get()` LHS against a proven-NUMBER-
+literal RHS regardless of any exact-kind proof (verified by compiling the
+identical shape against a HEAD checkout with ZERO Map consumer at all —
+`f64.gt` was ALREADY present, no `$__gt` helper exists ANYWHERE in this
+codebase for any shape), and Map's heavily-inlined hash-probe codegen
+defeats a reliable arithmetic-side WAT pattern match (`isNumericIR`'s
+structural fast path treats the probe's own IR shape as provably numeric
+independent of the static VAL claim). This is a genuine, previously-
+unnoticed test-quality gap in the ORIGINAL 1db8e55e commit (its own
+structural assertion proved nothing about its own consumer) — noted here so
+it isn't silently rediscovered as a mystery later. The fact-level assertion
+used instead is the precise, non-fragile signal.
+
+GATES (full battery, this combined landing): all 88 test/index.js TESTS
+files run individually (foreground, chunked 4-7 at a time as directed) — 0
+fail (pre-existing `# skip` entries in spread/unsigned/array-methods/objects
+unrelated). fuzz.js: 2000 programs × opt{0,1,2,3}, 30173 inputs compared,
+0 divergence. Two fresh consecutive `npm run build` rebuilds — dist/jz.js
+and dist/jz.wasm byte-identical between them (self-host fixed point
+confirmed). kernel-parity 33/33 byte-identical (rerun post-rebuild).
+kernel-oracle 11/11 (451 assertions). perf-ratchet 10/10, every baseline
++0 delta (no census gating change touched a hot loop in the bench corpus).
+optimizer 214/214. selfhost.js 21/21 (40 compile-yourself rounds).
+selfhost-perf.js 5/5 — warm 1.004× (cap 1.03×), fresh 0.784× (cap 0.99×),
+comfortably under cap, no flake. Size spot-check: mat4/fft/crc32/biquad
+compiled at `optimize:'speed'`, current source vs a HEAD (d9b020f7)
+checkout of only the touched files (kind.js, emit.js, program-facts.js,
+ir.js, console.js, reps.js) — byte-for-byte `cmp`-identical for all 4, as
+predicted (zero dict/Map-census-reachable reads in these numeric kernels).
+dbg-invariants leg: NOT run — the design's `JZ_DEBUG_INVARIANTS` tripwire
+(§1 closing paragraph) was never built (see "still open" below), so there
+is no dedicated leg to run; explicitly not attempted, not silently skipped.
+
+STILL OPEN (named precisely, not silently left ambiguous):
+  1. Slice 2 (`emitIsNaN` sentinel exclusion, design §4/§5) — never assigned
+     to this campaign (task scope was Slices 3-5 only). `Number.isNaN` on a
+     NUMBER-census absent-key dict/Map read still reads jz `true` vs JS
+     `false`. Next agent picking this up should scope it exactly as design
+     §5 Slice 2 describes: gate `emitIsNaN` on `censusMaybeUndefined`/
+     `checkedNumRead` ONLY, leaving the separately-flagged, already-fixed
+     broader string/object leak (90e10c3d) untouched.
+  2. The `JZ_DEBUG_INVARIANTS` tripwire sketched in design §1's closing
+     paragraph — a `DBG_REPS`-style runtime assert that a
+     censusMaybeUndefined-flagged node's raw bits are never read outside
+     `coerceNullishToNum`/`toStrI64`'s call frame — was not built. Not
+     required for soundness (every leak found this session was closed by
+     enumeration + the two/three chokepoints, not by hoping a tripwire would
+     catch it), but still the closest this codebase's tooling gets to
+     compiler-enforced exhaustiveness; left as a pure idea, per the design's
+     own framing of it as optional.
+  3. Destructuring a maybeUndefined-joined value (`const {a} = m.get(k)` on
+     a genuinely-absent key) and method dispatch on a maybe-undefined census
+     read (`d[k].toFixed(2)`) — design §6's own named, NOT audited this
+     session (out of the ~224-site grep survey's scope: neither is a bare
+     `===VAL.NUMBER`/`===VAL.STRING` comparison site, they're a different
+     consumer class — RequireObjectCoercible / property-lookup-on-undefined
+     — spec-wise). Real JS throws `TypeError` in both cases; jz's behavior
+     here is UNCONFIRMED, not verified safe. Flagged exactly as the design
+     left it, not newly investigated.
+  4. BigInt-typed census values in arithmetic (design §6) — unchanged,
+     exactly as unsound as before this campaign, not newly broken. Real JS
+     throws mixing BigInt and undefined in arithmetic; `coerceNullishToNum`
+     always answers undefined→NaN, which is the wrong answer for a
+     `dictValueValType===VAL.BIGINT`/`mapValueValType===VAL.BIGINT` claim.
+     `toNumF64`'s Slice-1 gate is deliberately NUMBER-only for exactly this
+     reason (unchanged this session).
+  5. JSON.stringify's 4 sites (module/json.js) — flagged low-confidence-SAFE
+     in the Slice 5 survey above, not independently re-derived/repro'd; a
+     future audit should confirm rather than inherit this session's
+     lower-confidence read.
+With items 1-5 named above, the container value-census soundness campaign's
+core ask (represented maybeUndefined join + BindingId-style alias/escape
+ownership, both consumers re-enabled, structural survey complete) is
+CLOSED — dictValueKindOf and mapValueKindOf are both live, both gated, and
+every reachable consumer family in the ~224-site survey is either proven
+safe, proven unreachable, or was found unsound and fixed at its chokepoint.
+
 ## Status (2026-08-03, MODULE-GLOBAL SIBLING CLOSED: inferModuleIntGlobals stopped trusting i32 storage past a bare escape — the module-global twin of KNOWN GAP #1)
 
 REPRO (confirmed live at HEAD before this fix, flagged by the KNOWN GAP #1

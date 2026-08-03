@@ -2511,9 +2511,35 @@ function emitLooseEq(a, b, negate, strict) {
   const vtb = numericVal(rawB)
   const numA = () => rawA === VAL.BOOL ? toNumF64(a, va) : asF64(va)
   const numB = () => rawB === VAL.BOOL ? toNumF64(b, vb) : asF64(vb)
-  if (vta === VAL.NUMBER && needsToNumberCoercion(b, vtb)) return looseNumberEq(numA(), b, vb, negate)
-  if (vtb === VAL.NUMBER && needsToNumberCoercion(a, vta)) return looseNumberEq(numB(), a, va, negate)
-  if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed([`f64.${eqOp}`, numA(), numB()], 'i32')
+  // maybeUndefined join (.work/maybe-undefined-design.md §1/Slice 5): "either
+  // side known-pure NUMBER" above is only TRUE when that side's exact-kind
+  // claim can't be falsified at runtime. `nullableOperand` (this file, above)
+  // already unifies the two ways a NUMBER claim can lie — an unproven typed-
+  // index OOB read and a dict-census exact-kind claim (censusMaybeUndefined)
+  // — both yield a real `undefined` at runtime, a NaN-boxed sentinel that
+  // f64.eq/ne can NEVER correctly equate to another NaN-boxed `undefined`
+  // (IEEE-754 f64.eq is false for any NaN operand, by construction, even
+  // against a bit-identical NaN) — unlike the relational family (cmpOp,
+  // `<`/`>`/`<=`/`>=`), which stays correct unguarded: JS ToNumber(undefined)
+  // = NaN and "compared to NaN" is always false, exactly what a raw f64
+  // relational op already returns for ANY NaN-boxed operand, real or
+  // masquerading — no fix needed there, confirmed by direct repro. Equality
+  // has no such coincidence: `undefined === undefined` is TRUE in JS. A
+  // genuinely CERTAIN real number on the OTHER side still makes f64.eq safe
+  // regardless of nullability here (a real number can never equal a nullish/
+  // pointer value, and f64.eq(realFloat, anyNaN) is unconditionally false,
+  // matching) — so only a claim that is BOTH "===VAL.NUMBER" AND non-nullable
+  // counts as "safe" below; a nullable claim degrades exactly as if that side
+  // had no VAL.NUMBER proof at all, falling through to the fully-dynamic
+  // `__eq`/`__eq_strict` fallback (below) or the coercion helper as
+  // appropriate. Found live via `d[rk] === u` (u a genuinely-undefined local)
+  // and `d[rk] == otherDict[missingKey]` (both operands independently
+  // nullable) both wrongly reading false — JS true — pre-fix.
+  const aSafe = vta === VAL.NUMBER && !nullableOperand(a)
+  const bSafe = vtb === VAL.NUMBER && !nullableOperand(b)
+  if (aSafe && needsToNumberCoercion(b, vtb)) return looseNumberEq(numA(), b, vb, negate)
+  if (bSafe && needsToNumberCoercion(a, vta)) return looseNumberEq(numB(), a, va, negate)
+  if (aSafe || bSafe) return typed([`f64.${eqOp}`, numA(), numB()], 'i32')
   // Reference-equal pointer kinds (same kind, non-STRING, non-BIGINT): i64 bit equality.
   // JS `==` on objects/arrays/sets/maps/etc. is pure reference equality — no content path.
   // STRING needs __eq (heap strings can be equal by content but different pointers).

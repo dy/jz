@@ -200,6 +200,38 @@ test('WASI console.log: boolean read from a container prints as boolean', () => 
   is(captured.join(''), 'false\n')
 })
 
+// FIXED (.work/maybe-undefined-design.md Slice 5 site survey — LEAK C):
+// module/console.js's writePart dispatched on a bare `valTypeOf(part)`
+// STRING/NUMBER check with no runtime tag verification — a dict-census
+// STRING/NUMBER claim ("every value ever written") on an ABSENT key fed
+// raw UNDEF_NAN bits straight to `$__write_str`/`$__write_num`, which
+// assume their argument really IS that kind (no nullish check of their
+// own — unlike `$__write_val`, the generic fallback, which already
+// dispatches on the actual runtime atom). Under `host:'js'` this is masked
+// (console.log there decodes host-side off the raw i64, independent of
+// what the compiler believed) — only reachable under `host:'wasi'`, where
+// module/console.js's own WASI-syscall writers run. Gated writePart's
+// STRING/NUMBER fast branches on `!censusMaybeUndefined(part)`, falling
+// through to the existing, already-correct `$__write_val` general path.
+test('WASI console.log: dict-census absent key prints as undefined, not empty/garbage (Slice 5 LEAK C)', () => {
+  const captured = []
+  const imports = wasi({ write: (fd, text) => captured.push(text) })
+  const wasm = compile(`export let f = () => {
+    const d = {}; const wk = 'a'; d[wk] = 'x'; const wk2 = 'b'; d[wk2] = 'y'; const rk = 'missing'
+    console.log(d[rk])
+    const n = {}; const nk = 'p'; n[nk] = 1; const nk2 = 'q'; n[nk2] = 2; const nrk = 'zzz'
+    console.log(n[nrk] + 1)
+    return 1
+  }`, { host: 'wasi' })
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod, imports)
+  const exps = adaptI64(mod, inst.exports)
+  imports._setMemory(exps.memory)
+
+  is(exps.f(), 1)
+  is(captured.join(''), 'undefined\nNaN\n')
+})
+
 function runWithCapturedFallback(processValue, source) {
   const originalProcess = globalThis.process
   const originalLog = console.log

@@ -2566,15 +2566,19 @@ test('dict-value census: moduleInitSlot memo-cache replay is order-independent (
 // OBJECT-valued edges is a separate, later design). Same first-wins-then-
 // clash lattice, published onto ctx.scope.globalReps as mapValueValType.
 //
-// The `.get()` read-side consumer this landing wired (kind.js mapValueKindOf,
-// VT['()']'s 'get' short-circuit) was REVERTED (audit P0, external
-// bisection, .work/todo.md "audit-#7 P0 closed"): promoting the census to an
-// EXACT VAL.* kind at a read site is unsound — an ABSENT key reads real JS
-// `undefined` regardless of the observed write kind, and the scan keys
-// observations by SYNTACTIC receiver name so a write through an alias is
-// invisible to it. The census itself stays a DORMANT fact below (producers
-// only, no consumer) — see reps.js's mapValueValType doc. The pinned repros
-// for the miscompile itself live in test/dyn-keys.js ("audit P0").
+// The `.get()` read-side consumer (kind.js mapValueKindOf, VT['()']'s 'get'
+// short-circuit) was REVERTED (audit P0, external bisection, .work/todo.md
+// "audit-#7 P0 closed") for being unsound two ways — an ABSENT key reads
+// real JS `undefined` regardless of the observed write kind, and the scan
+// keys observations by SYNTACTIC receiver name so a write through an alias
+// is invisible to it — then RE-ENABLED (.work/maybe-undefined-design.md §3,
+// Slice 4) once both were closed at CONSUME time: the absent-key case by
+// `censusMaybeUndefined`'s Map arm (kind.js) routing every `.get()` read
+// through the maybeUndefined join at the arithmetic/ToString/equality/
+// console chokepoints; the alias case by `mapValueKindOf` carrying the same
+// `ctx.types.nameEscapes` gate `dictValueKindOf` does (Slice 3), from its
+// first line. The miscompile repros (still pinned, now green via the sound
+// mechanism, not "no consumer") live in test/dyn-keys.js ("audit P0").
 
 test('map-value census: module-global Map.set value kind populates globalReps', () => {
   const src = `
@@ -2624,13 +2628,14 @@ test('map-value census: an unresolvable write poisons the fact', () => {
     '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
 })
 
-test('map-value census: no consumer — an unregistered key still identity-compares as undefined', () => {
-  // Baseline correctness post-revert (was the design's carve-out test, §2,
-  // for the now-removed kind.js mapValueKindOf / emit.js nullableOperand
-  // carve-out): with no read-side consumer, `MEMO.get(k) === undefined`
-  // never had a reason to const-fold in the first place — an unregistered
-  // key's real runtime value IS undefined, so the idiomatic "does this key
-  // exist" probe must observe true. Kept as a plain regression pin.
+test('map-value census: soundness carve-out — an unregistered key still identity-compares as undefined', () => {
+  // Was the design's carve-out test (§2) for the now-RE-ENABLED (Slice 4)
+  // kind.js mapValueKindOf / censusMaybeUndefined Map arm: `MEMO.get(k) ===
+  // undefined` must not const-fold to false just because the census proves
+  // MEMO's value kind is NUMBER — an unregistered key's real runtime value
+  // IS undefined, so the idiomatic "does this key exist" probe must observe
+  // true. With the consumer live again, this is the exact carve-out
+  // (nullableOperand → censusMaybeUndefined) that keeps it sound.
   const src = `
     export let MEMO = new Map(), n = 0
     export let put = (k) => { MEMO.set(k, n++) }
@@ -2640,6 +2645,42 @@ test('map-value census: no consumer — an unregistered key still identity-compa
   const { has } = run(src)
   is(has('a'), false, 'registered key is not undefined')
   is(has('zz'), true, 'unregistered key still observes undefined at runtime — the fold must not fire')
+})
+
+test('map-value census: consumer wiring — a non-escaping Map proves its value kind; an escaping one does not (Slice 4)', () => {
+  // Positive/negative control pair for the nameEscapes gate specifically
+  // (the dict census's `> 0xffff` structural WAT pin doesn't transfer to
+  // Map: cmpOp's relational family is ALREADY sound unconditionally for a
+  // `.get()` LHS against a proven-NUMBER-literal RHS — verified this holds
+  // even against a HEAD checkout with zero Map consumer at all, so f64.gt's
+  // presence there would prove nothing about THIS gate; Map's inlined
+  // hash-probe codegen also defeats a reliable arithmetic-side WAT pattern
+  // match, `isNumericIR`'s structural fast path treats the probe's result
+  // as provably numeric independent of the static VAL claim). Asserting the
+  // MECHANISM directly instead — same style as this file's `mapValueValType`
+  // fact-level pins above — is the precise, non-fragile signal: does
+  // `mapValueKindOf` actually deliver a kind at the exact site the
+  // `nameEscapes` gate is supposed to guard.
+  const nonEscaping = `
+    export let OPCODE = new Map(), code = 0
+    export let register = (nm) => { OPCODE.set(nm, code++) }
+    export let bigOp = (nm) => OPCODE.get(nm) + 1
+    register('add')
+  `
+  jz.compile(nonEscaping, { wat: true })
+  is(ctx.types.nameEscapes.has('OPCODE'), false, 'OPCODE is never read in a value position — does not escape')
+
+  const escaping = `
+    export let OPCODE = new Map(), code = 0
+    export let register = (nm) => { OPCODE.set(nm, code++) }
+    export let leak = (m) => m.size
+    export let bigOp = (nm) => OPCODE.get(nm) + 1
+    register('add')
+    leak(OPCODE)
+  `
+  jz.compile(escaping, { wat: true })
+  ok(ctx.types.nameEscapes.has('OPCODE'), 'OPCODE is passed to leak() — a value-position read — so it escapes')
+  is(run(escaping).bigOp('add'), 1, 'functional result still correct via the generic (gated-off) path')
 })
 
 test('map-value census: new Map(seed) literal stays uncovered — census ignores it silently, no crash', () => {

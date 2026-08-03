@@ -1148,7 +1148,25 @@ export function toStrI64(node, v) {
   // generic __to_str dispatch, dragging its NUMBER arm's Ryu float formatter
   // (__ftoa/__ftoa_shortest/__ryu_*) into any module with a dynamic template
   // literal — even one that never stringifies a number.
-  if (vt === VAL.STRING) return asI64(v)
+  // maybeUndefined join (.work/maybe-undefined-design.md §1/Slice 5): a
+  // dict-census STRING claim (every value ever WRITTEN through `name[k]=v`
+  // was a string) is, same as the NUMBER claim toNumF64 already guards,
+  // "every value ever written" — NOT "this key exists". An absent key reads
+  // real `undefined` at runtime regardless of the census's claimed kind, so
+  // `vt === VAL.STRING` here can be TRUE while `v`'s actual bits are
+  // UNDEF_NAN. Module/string.js's `bind('String', …)` calls THIS function
+  // believing it already routes maybeUndefined-flagged reads through the
+  // general __to_str path (its own comment: "falls through to the LAST
+  // branch... already correct") — true for a NUMBER-kind census (that
+  // belief is what motivated skipping the __ftoa arm), but this STRING-kind
+  // identity fast-return was an UNGUARDED early return ABOVE that same LAST
+  // branch, so a STRING-census absent key hit IT first: `asI64(v)` reinterprets
+  // the raw UNDEF_NAN bits as if they were a valid string i64, which decodes
+  // back out as the bare `undefined` VALUE, not the string `"undefined"` —
+  // confirmed live (String() AND template-literal interpolation both), found
+  // during the Slice 5 site survey. Fixed at THIS chokepoint (not the
+  // caller) so every caller (String(), strcat's per-part loop) inherits it.
+  if (vt === VAL.STRING && !censusMaybeUndefined(node)) return asI64(v)
   if (vt === VAL.OBJECT && ctx.closure.call && ctx.schema.slotOf) {
     const prim = toPrimitiveChain(node, v, ['toString', 'valueOf'])
     if (prim) {
