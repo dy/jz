@@ -754,9 +754,9 @@
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 10824,
-     "bytes": 1198,
-     "memKb": 51648,
+     "medianUs": 907,
+     "bytes": 1104,
+     "memKb": 51760,
      "parity": "ok"
     },
     "as": {
@@ -5745,9 +5745,9 @@
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 60282,
-     "bytes": 1131,
-     "memKb": 52896,
+     "medianUs": 4627,
+     "bytes": 1076,
+     "memKb": 52624,
      "parity": "ok"
     },
     "as": {

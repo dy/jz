@@ -1265,6 +1265,78 @@ test('safe control: index-use counters with no unresolved bare escape keep i32 s
   ok(fnAcc.includes('$s i32)') || fnAcc.includes('_s i32)'), 'ToInt32-rooted accumulator `s` stays i32 storage despite a bare, uncompared return')
 })
 
+// FALSE-POSITIVE PRECISION FIX (2026-08-03, the reference-refresh top-priority
+// regression at 2f0720a5, root-caused to 28b2530b): collectBareEscapes'
+// idx/edge-mode recognition was syntactically incomplete for two ToInt32-
+// rooted shapes its OWN doc already claims to exempt, over-blaming (and
+// f64-widening/de-vectorizing) index-feeder locals that should have stayed
+// i32:
+//   1. Compound BITWISE-assignment sugar (`x ^= y` ≡ `x = x ^ y`, JS
+//      ToInt32-coerces identically either way) wasn't in ESCAPE_EDGE_OPS —
+//      only `=,+=,-=,*=` were — so `x ^= x << 7` fell to the generic
+//      value-mode walker, which walks BOTH the target (a bare string) and
+//      the RHS in 'value' mode, misreading the compound-assign's implicit
+//      self-read of the target as a bare escape. bitwise.js's PRNG-style
+//      kernel (`x ^= x<<7; x ^= x>>>9; x = Math.imul(x,…)+…; state[i] =
+//      x^(x>>>16)`) is exactly this shape — `x` never compared anywhere —
+//      so it lost i32 storage AND all SIMD lift (0 v128 ops, was live
+//      before 28b2530b). Fixed via ESCAPE_ROOT_EDGE_OPS (analyze-scans.js).
+//   2. Math.imul/clz32's multi-arg call is a `,`-headed args-list node
+//      (`Math.imul(i,i)` → `['()','math.imul',[',',i,i]]`); the
+//      INT_MATH_FNS_I32 branch walks it in 'idx' mode, but `,` wasn't in
+//      the idx/edge pass-through (only AFFINE_INDEX_OPS was), so each bare
+//      argument name fell to the generic value-mode walker too. sieve.js's
+//      `for(i=2;i*i<LIMIT;i++)` guard gets rewritten by loop-square.js
+//      (narrowBoundedSquare, predates 28b2530b) to `Math.imul(i,i)<LIMIT` —
+//      `i` is then no longer a direct comparison operand, so it was blamed
+//      and widened to f64 (a `trunc_sat`/`wrap` pair reintroduced per
+//      iteration). Fixed by adding `,` to the idx/edge pass-through set.
+// Both repros below are WAT-byte-identical to the pre-regression compiler
+// (16f2d7c8, 28b2530b^) after the fix — verified via disposable worktree
+// diff, not just these pins. Kept as permanent structural pins so this
+// exact false-positive class can't silently return.
+test('bare-escape scan: bitwise compound-assign target stays i32/vectorizable (ESCAPE_ROOT_EDGE_OPS, 2026-08-03)', () => {
+  const src = `
+    const runKernel = (state) => {
+      for (let r = 0; r < 128; r++) {
+        for (let i = 0; i < state.length; i++) {
+          let x = state[i] | 0
+          x ^= x << 7
+          x ^= x >>> 9
+          x = Math.imul(x, 1103515245) + 12345
+          state[i] = x ^ (x >>> 16)
+        }
+      }
+    }
+    export let f = (n) => { const state = new Int32Array(n); runKernel(state); return state[0] }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const v128ops = wat.match(/\b(?:v128|i32x4|f64x2)\.[a-z_0-9.]+\b/g) || []
+  ok(v128ops.length > 0, `PRNG-style bitwise kernel (x ^= x<<7 …) must vectorize — x is a textbook ESCAPE_SAFE_ROOT_OPS var, not a bare escape (found ${v128ops.length} v128 ops)`)
+})
+
+test('bare-escape scan: Math.imul multi-arg list passes idx-mode through its comma args-list (loop-square i*i rewrite, 2026-08-03)', () => {
+  const src = `
+    const LIMIT = 1 << 16
+    const sieve = (comp) => {
+      for (let i = 0; i < LIMIT; i++) comp[i] = 0
+      for (let i = 2; i * i < LIMIT; i++) {
+        if (comp[i] === 0) { for (let j = i * i; j < LIMIT; j += i) comp[j] = 1 }
+      }
+    }
+    export let f = (n) => { const comp = new Uint8Array(n); sieve(comp); return comp[0] }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const truncCount = (wat.match(/trunc_sat|i32\.wrap/g) || []).length
+  // Absolute ratchet (perf-ratchet.js's own style): 21 trunc/wrap ops measured
+  // at the fix (WAT-byte-identical to the pre-28b2530b compiler); 34 at the
+  // regression (loop-square's `i` blamed post-rewrite, widened to f64,
+  // reintroducing a trunc_sat/wrap pair per inner-loop iteration). Margin to
+  // 25 tolerates unrelated future codegen drift without masking a return of
+  // this exact class.
+  ok(truncCount <= 25, `sieve kernel's i*i-guarded index chain must stay i32 (got ${truncCount} trunc_sat/i32.wrap ops, expected <=25 — the fixed compiler measures 21, the false-positive regression measures 34)`)
+})
+
 // MODULE-GLOBAL SIBLING (fixed 2026-08-03, .work/todo.md's own follow-up
 // flag on the KNOWN GAP #1 ledger entry above): `plan/scope.js`'s
 // `inferModuleIntGlobals` — the module-global f64→i32 narrowing fixpoint —

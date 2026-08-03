@@ -832,6 +832,28 @@ const ESCAPE_SAFE_ROOT_OPS = new Set(['&', '|', '^', '~', '<<', '>>', '>>>', '<'
 // backprop fixpoint below already trusts for these same four ops).
 const ESCAPE_EDGE_OPS = new Set(['=', '+=', '-=', '*='])
 
+// Compound-assignment sugar for a ToInt32-rooted binary op — `x ^= y` is
+// exactly `x = x ^ y` (JS ToInt32-coerces both operands identically either
+// way), the SAME root-op exemption ESCAPE_SAFE_ROOT_OPS already grants the
+// expanded binary form (`x ^ y` walks both operands in 'idx' mode, never
+// blaming either). Before this fix these ops fell through to the generic
+// value-mode walker (they're not affine, not `[]`, not a math-fn call, not
+// in ESCAPE_EDGE_OPS), which walks BOTH node[1] (the target, a bare string)
+// AND node[2] in 'value' mode — misreading the compound-assign's implicit
+// self-read of the target as a bare escape and blaming it (`x ^= x << 7` in
+// a sieve/PRNG-style bitwise kernel: `x` never compared, so blamed on every
+// such statement, disqualifying an otherwise textbook ESCAPE_SAFE_ROOT_OPS
+// var from i32 storage — the reference-refresh top-priority regression at
+// 2f0720a5, root-caused to 28b2530b, bench/bitwise.js: 0 v128 ops, was 12+
+// before). Target skipped here
+// for the identical reason ESCAPE_EDGE_OPS skips its target: a compound
+// assign's self-read never independently reveals unsoundness (any true
+// divergence needs a DIFFERENT, unguarded bare read elsewhere in the body,
+// which the whole-body scan already catches). RHS gets 'idx' tolerance
+// (behaviorally identical to 'edge' in this walk — see the mode checks
+// below — chosen for the closer semantic match to the binary form).
+const ESCAPE_ROOT_EDGE_OPS = new Set(['^=', '|=', '&=', '<<=', '>>=', '>>>='])
+
 const escapeInRangeI32 = (node) => {
   const r = intExprRange(node)
   return r != null && r[0] >= -2147483648 && r[1] <= 2147483647
@@ -902,10 +924,14 @@ function collectComparedNames(body, crossClosure) {
  * Occurrences exempt from the proof requirement (mirrors the three-source
  * contract in collectI32SafeIndexVars' doc):
  *   'idx'  — an affine component of a `[]` index, a direct operand of a
- *            ToInt32-rooted op / comparison (ESCAPE_SAFE_ROOT_OPS), or an
+ *            ToInt32-rooted op / comparison (ESCAPE_SAFE_ROOT_OPS), the
+ *            target OR rhs of a ToInt32-rooted COMPOUND assign (`x ^= y` ≡
+ *            `x = x ^ y`, ESCAPE_ROOT_EDGE_OPS — same root-op exemption as
+ *            the binary form, just spelled as assignment sugar), or an
  *            argument to Math.imul/Math.clz32 (INT_MATH_FNS_I32 — spec-
- *            defined ToInt32 on every argument): the wasm32 trap bound, or
- *            JS's own truncation, already proves it (rules b,c).
+ *            defined ToInt32 on every argument, including through the `,`
+ *            multi-arg-list wrapper node): the wasm32 trap bound, or JS's
+ *            own truncation, already proves it (rules b,c).
  *   'edge' — the affine-reachable RHS of a tracked assignment edge into
  *            ANOTHER local (ESCAPE_EDGE_OPS): identical to what the backprop
  *            fixpoint below already trusts — the feeder inherits the TARGET's
@@ -940,6 +966,16 @@ export function collectBareEscapes(body, locals, crossClosure) {
     if (op === '[]' && !isLiteralStr(node[2])) { walk(node[1], 'value'); walk(node[2], 'idx'); return }
     if (ESCAPE_SAFE_ROOT_OPS.has(op)) { for (let i = 1; i < node.length; i++) walk(node[i], 'idx'); return }
     if (op === '()' && INT_MATH_FNS_I32.has(mathFnName(node[1]))) { walk(node[2], 'idx'); return }
+    // A multi-arg call's argument list is a `,`-headed node (`Math.imul(i, i)`
+    // → `['()', 'math.imul', [',', i, i]]`) — reached above via `walk(node[2],
+    // 'idx')`. Without this, `,` isn't in AFFINE_INDEX_OPS so the idx/edge
+    // pass-through below never fires, the args node falls to the generic
+    // value-mode walker, and each argument gets scanned in 'value' mode —
+    // exactly the shape loop-square.js produces rewriting a sieve's `i*i`
+    // guard to `Math.imul(i,i)`: `i` is no longer a direct comparison operand
+    // post-rewrite, so it's uncompared AND now blamed as a bare escape,
+    // despite sitting inside the very call this function's own doc names as
+    // exempt (INT_MATH_FNS_I32 — spec-defined ToInt32 on every argument).
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
@@ -949,7 +985,8 @@ export function collectBareEscapes(body, locals, crossClosure) {
       return
     }
     if (ESCAPE_EDGE_OPS.has(op) && typeof node[1] === 'string') { walk(node[2], 'edge'); return }
-    if ((mode === 'idx' || mode === 'edge') && AFFINE_INDEX_OPS.has(op)) {
+    if (ESCAPE_ROOT_EDGE_OPS.has(op) && typeof node[1] === 'string') { walk(node[2], 'idx'); return }
+    if ((mode === 'idx' || mode === 'edge') && (op === ',' || AFFINE_INDEX_OPS.has(op))) {
       for (let i = 1; i < node.length; i++) walk(node[i], mode)
       return
     }

@@ -4,6 +4,166 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, collectBareEscapes FALSE-POSITIVE FIXED — the
+## reference-refresh top-priority regression (bitwise/sieve, 28b2530b)
+## root-caused AND closed; audit-P1-2 kernels + FFT-butterfly + i32-array-add
+## investigated and found NOT from this root — a different, already-tracked
+## commit (16f2d7c8); soundness pins (28b2530b/d9b020f7) stay green)
+
+**Named false-positive class**: `collectBareEscapes` (src/compile/
+analyze-scans.js) recognizes ToInt32-rooted operators via two mechanisms —
+`ESCAPE_SAFE_ROOT_OPS` for the binary form (`x ^ y`) and a dedicated check
+for `Math.imul`/`clz32` calls — but the recognition was syntactically
+incomplete for two SUGAR/WRAPPER shapes of those exact same semantics:
+  1. **Compound bitwise-assignment sugar** (`x ^= y` ≡ `x = x ^ y`) wasn't in
+     `ESCAPE_EDGE_OPS` (only `=,+=,-=,*=` were) — so `x ^= x << 7` fell to
+     the generic value-mode walker, which walks BOTH the assignment target
+     (a bare string) and the RHS in `'value'` mode, misreading the compound
+     assign's implicit self-read of the target as a bare escape. This is
+     bitwise.js's entire PRNG kernel shape (`x ^= x<<7; x ^= x>>>9; x =
+     Math.imul(x,…)+…; state[i] = x^(x>>>16)`) — `x` is never compared
+     anywhere, so every occurrence blamed it, disqualifying a textbook
+     ESCAPE_SAFE_ROOT_OPS var from i32 storage and killing all SIMD lift.
+  2. **Math.imul/clz32's multi-arg call is a `,`-headed args-list node**
+     (`Math.imul(i,i)` → `['()','math.imul',[',',i,i]]`). The
+     `INT_MATH_FNS_I32` branch correctly walks the args list in `'idx'`
+     mode, but `,` wasn't in the idx/edge pass-through set (only
+     `AFFINE_INDEX_OPS` was), so the pass-through never fired and each bare
+     argument name fell to the generic value-mode walker too. sieve.js's
+     `for(i=2;i*i<LIMIT;i++)` guard gets rewritten by loop-square.js
+     (narrowBoundedSquare, predates 28b2530b) to `Math.imul(i,i)<LIMIT` — `i`
+     is then no longer a direct comparison operand, so it was blamed and
+     widened to f64, reintroducing a `trunc_sat`/`i32.wrap` pair per
+     inner-loop iteration.
+Both are "misclassifying a use shape as a bare escape" exactly within the
+scan's OWN stated exemption rules (ToInt32-rooted, index-positioned via
+Math.imul/clz32) — not a new exemption, a precision fix for how the existing
+rules recognize compound-assignment sugar and the call-args wrapper node.
+
+**Fix** (src/compile/analyze-scans.js): added `ESCAPE_ROOT_EDGE_OPS =
+new Set(['^=','|=','&=','<<=','>>=','>>>='])`, checked right after
+`ESCAPE_EDGE_OPS` — skips the target (same self-referential-write reasoning
+`ESCAPE_EDGE_OPS` already relies on) and walks the RHS in `'idx'` mode.
+Added `op === ','` alongside `AFFINE_INDEX_OPS.has(op)` in the idx/edge
+pass-through condition — lets a multi-arg call's comma-list unwrap under
+the SAME mode its caller (the Math.imul/clz32 branch) already established.
+Both are narrow, additive predicate extensions — no existing branch's
+behavior changed, so 28b2530b/d9b020f7's soundness fixes are untouched
+(confirmed: full `test/inference.js` 135/135, all FFT-butterfly/module-
+global/compoundAssign value-wrong repros green).
+
+**Recovery table** (WAT-byte-identical to the pre-regression compiler,
+16f2d7c8 = 28b2530b^, confirmed via disposable `git worktree` diff on both
+full bench sources — not just approximate counts):
+
+| kernel  | metric                        | 28b2530b^ (pre-regression) | HEAD (regressed) | HEAD+fix |
+|---------|--------------------------------|-----------------------------|-------------------|----------|
+| bitwise | real SIMD instrs (v128\*/i32x4\*/f64x2\*) | 12 | 0 | 12 |
+| bitwise | WAT byte-diff vs 28b2530b^     | — | non-empty | **empty (identical)** |
+| sieve   | trunc_sat+i32.wrap op count    | 32 | 45 | 32 |
+| sieve   | WAT byte-diff vs 28b2530b^     | — | non-empty | **empty (identical)** |
+| radixsort (bonus, ledger's "likely same class") | WAT byte-diff vs 28b2530b^ | — | non-empty | **empty (identical)** |
+
+(The task brief's "24 v128 ops" / "0 v128 ops" figures were bisected
+against `2aaeaa19`, 75 commits stale — a dirty diff carrying ~15 unrelated
+commits' worth of other codegen changes. `28b2530b^` = `16f2d7c8` is the
+CLEAN one-commit-back baseline; byte-identical WAT recovery against it is
+strictly stronger evidence than any instruction count.)
+
+**audit-P1-2 kernels investigated, found NOT from this root** (verified,
+not assumed — honest correction of the task brief's framing): watercolor,
+waves, schrodinger, diffusion, slime f64x2 counts measured identical at
+28b2530b^ and at HEAD+fix (1/1, 3/3, 0/0, 4/4, 1/1 base→sten pairs) — this
+fix changes NONE of them. `test/examples.js`'s own comments already
+document their stencil decline as a SEPARATE, pre-existing "P0-2 sibling"
+gap (GLOBALS lack an `intExprRange` decl-range fact, so `w-1`/`h-1` bounds
+aren't provably i32 — `boundPureInv` in src/optimize/vectorize.js declines)
+— attributed to 16f2d7c8, one commit BEFORE 28b2530b, not this one. Same
+verdict, same evidence method, for FFT-butterfly (test/simd.js: still
+declines post-fix, `__bf\d+_` absent) and i32-array-addition (test/simd.js
+KNOWN_GAP: still 0 v128 post-fix) — both already attributed by their own
+comments to 16f2d7c8's `addFitsI32`/`wrapIntIR` change. Left their existing
+`ok(true, …)`/KNOWN_GAP passthroughs untouched — un-silencing them would be
+dishonest (they still correctly decline; the task brief's premise that this
+fix would recover them didn't hold up).
+
+**Ratchet**: `test/perf-ratchet.js`'s `float`/`mixed` categories (560→565,
+790→971 at 28b2530b) measure UNCHANGED (565, 971, +0) with this fix —
+`scripts/perf-corpus.mjs`'s `genFloat`/`genMixed`/`genInt` generators don't
+happen to produce either false-positive shape (no compound bitwise-assign
+sugar; `Math.imul` args there are always compound sub-expressions, and the
+category's final `return acc` is a genuine, CORRECT bare escape 28b2530b
+was right to catch). Nothing recovered here → perf-ratchet.json NOT
+touched (re-tightening would be fabricating a result the compiler doesn't
+actually produce).
+
+**Size**: `node scripts/bench-size.mjs` geomean jz/AS: **1.060 → 1.057**
+(bitwise 1.1kB, sieve 1.1kB, both now smaller than their AS -Oz reference —
+i32 storage recovery drops the f64 fallback + trunc_sat/wrap machinery).
+Small movement (2 of 49 sized cases), most of the 1.05 gap is unrelated —
+not chased here, per scope.
+
+**Timing spot-check** (quiet machine, load avg 2.5-3.1/14 cores, no jz
+processes running before each measurement; `--paired` ABBA, 4 rounds, one
+rival — v8/node — each): bitwise jz 0.91ms vs v8 3.73ms (**4.11× win**, was
+a 2.3-3.7x LOSS at the regression per the bisection); sieve jz 4.63ms vs v8
+7.08ms (**1.53× win**, was an 8-14x LOSS). Both checksums (`ref`) match
+their committed values exactly (3216842766, 3811242000) — correctness
+unaffected, this was purely the codegen-quality regression.
+
+**bench/results.json**: re-measured ONLY the `jz` target row for `bitwise`
+and `sieve` (the recovered cases), surgically, via `--json=<scratch>` +
+manual patch — NOT a full `--json` regen (that flag rebuilds the WHOLE
+file from `--targets`/case selection and would have silently dropped all
+58 other cases; caught this via `git diff --stat` showing 7171 deletions,
+reverted with `git checkout -- bench/results.json` before it could be
+committed). New jz rows: bitwise medianUs 10824→907, bytes 1198→1104,
+memKb 51648→51760 (noise); sieve medianUs 60282→4627, bytes 1131→1076,
+memKb 52896→52624 (noise). `meta.commit` intentionally LEFT at `f704a077`
+(NOT bumped) — this is a 2-row partial re-measure, not a full-corpus
+refresh, and bumping commit would falsely claim the other 58 rows are
+fresh against this session's source commit. Consequence, noted honestly:
+`npm run test:claims`'s FRESH check will now correctly report the
+evidence stale (this session's src/ commit postdates meta.commit) until a
+future full re-measure — expected, not a regression introduced here.
+jz-wasmtime/jz-w2c rows for these two cases were NOT re-measured (task
+scope says "jz lane", singular; those legs need wasmtime/wasm2c toolchains
+and are a separate, larger re-measure).
+
+**Gates, all green**: kernel-parity 33/33 byte-identical (O0-O3); kernel-
+oracle 451/451 assertions; perf-ratchet 10/10 (unchanged baselines, see
+above); optimizer 214 tests/3949 assertions; simd.js 158 tests/580
+assertions (butterfly + i32-add-arrays KNOWN_GAPs still correctly
+triggering, unaffected — see above); cond-vectorize.js 3/3; examples.js 22
+tests/433 assertions (watercolor/waves/schrodinger/diffusion/slime KNOWN
+GAP assertions still correctly triggering); selfhost.js 21/21 (206
+assertions); selfhost-perf.js informational, 5/5 (warm 1.011x, fresh
+0.774x, both under cap); test/inference.js 135/135 (291 assertions,
+includes the two new structural pins below + all pre-existing
+28b2530b/d9b020f7/compoundAssign value-wrong repros, confirmed green);
+fuzz 2000×4 (seeds 1-8000, opt {0,1,2,3}, 20 inputs/program) — zero
+divergence across all 4 independent rounds; fresh `npm run build` ×2 —
+dist/jz.js and dist/jz.wasm byte-identical both times.
+
+**New structural pins** (test/inference.js, right after the "safe control"
+test): (1) the bitwise PRNG shape (`x ^= x<<7` etc.) must emit ≥1 real
+v128/i32x4/f64x2 op under `optimize:'speed'` — 0 before the fix, 12 after;
+(2) the sieve `i*i<LIMIT` shape's trunc_sat+i32.wrap op count must stay
+≤25 (measures 21 at the fix, 34 at the regression) — an absolute ratchet,
+not a self-comparison, so it actually traps a re-regression rather than
+just comparing two optimize levels of the same (already-fixed) binary
+(caught and corrected this exact mistake in a first draft of the pin).
+
+**Residuals** (out of scope, correctly not touched): watercolor/waves/
+schrodinger/diffusion/slime's stencil decline, FFT-butterfly's shape-match
+loss, i32-array-addition's vectorize loss — all pre-date 28b2530b
+(attributed to 16f2d7c8's `addFitsI32`/`wrapIntIR` change by the tests'
+own comments, confirmed unchanged by this fix); the size geomean's
+remaining 1.057-1.05 gap (47 of 49 sized cases untouched by this fix);
+jz-wasmtime/jz-w2c bitwise/sieve rows in bench/results.json (stale,
+pending a fuller re-measure); the other 58 cases in bench/results.json
+(unaffected by this fix, correctly left alone).
+
 ## Status (2026-08-03, THE REFERENCE REFRESH — COMPLETE, CLEAN, AT HEAD
 ## f704a077; TWO REAL REGRESSIONS FOUND (root-caused, not fixed this
 ## session); SIZE GOAL FLIPPED RED; SPEED GOAL STAYS RED, wider than
