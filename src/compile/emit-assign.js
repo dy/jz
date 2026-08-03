@@ -258,7 +258,26 @@ function tryHashRmwFusion(arr, idx, val) {
   if (fixed) { capHint = 2; while (capHint < domainLen * 4) capHint *= 2 }
   const slotCall = (obj, key) => ['call', slotFn, obj, key,
     ...(fixed ? [['i32.const', capHint]] : [])]
-  inc(fixed ? '__hash_slot_eph_fixed' : lean ? '__hash_slot_eph' : '__hash_slot', '__dyn_set')
+  // __dyn_set is only reachable below via the non-HASH fallback arm (line ~328);
+  // a PROVEN-HASH receiver (`at === VAL.HASH`) takes the early-return probe/load/
+  // store branch exclusively and never emits a `call $__dyn_set` — including it
+  // anyway pulled __dyn_set's ToPropertyKey (→ __to_str → the whole Ryu formatter)
+  // into every module with a proven-HASH counting idiom (`counts[w] = (counts[w]|0)+1`
+  // on a dictionary-mode `{}`), even in a module that otherwise never stringifies a
+  // number. STRATIFICATION lever retry (.work/todo.md): a genuine __dyn_set/
+  // __dyn_get_t core-split was built, verified correct (two real dep-graph gate
+  // bugs found+fixed: assemble.js's tblConsumed/__clear-reset enumerations and
+  // array.js's needsArrayDynMove hardcode function names by exact string, so new
+  // stratified names must be added to all three or reads/writes silently corrupt —
+  // reproduced live via the JSON.parse+o[k] pin, root-caused, fixed) — but the
+  // corpus-wide size sweep showed ZERO benefit anywhere (wordcount's Ryu-free state
+  // predates this work, from the unrelated cross-call array-elem lattice fix) and a
+  // real regression on the self-hosted watr case (+767B) from paying for the near-
+  // duplicate core with no module ever shedding __to_str because of it. NOT landed;
+  // this one line survives because it's independently sound on its own (zero new
+  // functions, zero duplication cost, strictly more precise reachability — it can
+  // only ever shrink a module, never grow one).
+  inc(fixed ? '__hash_slot_eph_fixed' : lean ? '__hash_slot_eph' : '__hash_slot', ...(at === VAL.HASH ? [] : ['__dyn_set']))
   const resIR = asF64(emit(subst(val)))
   // Statically-numeric result (isNumericIR — the counting idiom's
   // `(o[k]|0)+1`): a plain number is never an ephemeral pointer, so

@@ -4,6 +4,106 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, __dyn_set/__dyn_get_t STRATIFICATION lever RETRIED —
+## built, verified correct, NOT landed: zero corpus benefit + a real watr
+## regression; one independently-sound precision fix kept)
+
+STRATIFICATION RETRY 2026-08-03 (the 2026-07-29 "PARALLEL WAVE" item 3
+blocker — watr inliner — was PROVEN NON-REPRO 2026-08-01; this session
+retried the lever per that unblock): built the full proven-STRING-key
+core split — module/collection.js dynSetBody(coerceIR) template (shared
+by __dyn_set and a new __dyn_set_sk, mirroring the pre-existing
+__str_concat/__str_concat_raw precedent) plus __dyn_get_sk_t/__dyn_get_sk
+(the hash-then-delegate tail __dyn_get_t already had, pulled out so a
+proven-string call site can reach __dyn_get_t_h without the ToPropertyKey
+hop) — wired at the two proven-key chokepoints (emit-assign.js dynSetCall's
+step-4 `keyType === VAL.STRING` fork; array.js dynLoad's opaque-receiver
+`keyType === VAL.STRING` fork).
+DECISIVE BUG FOUND AND FIXED (this is what the 5 non-repro inliner attempts
+never had — a REAL repro, just not the inliner): first build broke pin B
+live (`JSON.parse+o[k]` → NaN at every opt level, native, no self-host or
+inlining involved) — NOT the watr-inliner ghost. Root cause: THREE separate
+call sites hardcode the exact function-name strings `'__dyn_get'`/
+`'__dyn_set'` to decide whether schema-table population / memo-cache resets
+/ array dyn-move machinery are needed (src/wat/assemble.js's `tblConsumed`
+schema-table-population gate AND its `__clear`-reset gate for
+`$__dyn_get_cache_off`/`$__dyn_props`/`$__dyn_props_filter`; module/core.js
+`lengthNeedsDynArm`; module/array.js `needsArrayDynMove`) — introducing new
+function NAMES that reach the identical schema/cache logic through a
+different call path silently defeats all three (schema table never
+populated → schema-arm reads return UNDEF_NAN; this is exactly item 5's
+named memo-cache suspect, generalized: not a cache SOUNDNESS bug, a cache/
+table POPULATION bug from name-string gating). Fixed by adding the new
+names to all three gates; both pins verified green after
+(`a.name=7;a.shift()` = 1; `JSON.parse+o[k]` = 6) at O0/O2/O3, NATIVE AND
+KERNEL (12/12).
+SIZE VERDICT: zero benefit. wordcount unchanged at 16131B (jz) / 16013B
+(+wasmopt) either side of this work — its Ryu-free state predates this
+session entirely, already achieved by the UNRELATED 2026-07-29 cross-call
+array-elem lattice fix (the `words[toks[i]]` / `probes[j]` STRING-kind
+propagation that made wordcount's dyn-get sites hit array.js's PRE-EXISTING
+`vt===VAL.HASH && keyType===VAL.STRING` → `__hash_get_local` direct-call
+fast path, which already bypassed __dyn_get_t/ToPropertyKey/Ryu entirely —
+confirmed by WAT dump: zero __dyn_set/__dyn_get*/__to_str/__ftoa symbols in
+compiled wordcount at HEAD). Full 68-case bench:size corpus (--json, exact
+bytes) BYTE-IDENTICAL before/after across every case except one: watr (the
+self-hosted-compiler size case) REGRESSED 257301→258068B (+767B jz,
+267570→268259B +689B wasmopt) — paying for the near-duplicate
+__dyn_set_sk core body with no module ever shedding __to_str because of it
+(watr's own source has plenty of unproven dyn-keys, so the coercing
+__dyn_set stays included regardless; the proven-key sites just get a
+second, mostly-redundant function to call instead of shrinking anything).
+geomean jz/AS unchanged 1.060× (identical per-case). condref (the +371B
+inline-shift case from the original blocked attempt) shows +0 in
+perf-ratchet's op-count ratchet (10/10 baselines unchanged) — the
+inline-choice shift does NOT recur with this implementation.
+VERDICT: NOT LANDED. Honest boundary per the retry brief: a size-neutral-
+or-negative result lands only if dep-graph cleanliness alone justifies it;
+here it's a NET REGRESSION on the one case that engages it, with zero
+benefit anywhere else in the corpus, plus a nontrivial audit surface (three
+hardcoded name-gates now needing upkeep for names nothing currently
+produces). Reverted the __dyn_set_sk/__dyn_get_sk_t/__dyn_get_sk cores and
+their emit-site wiring in full (module/collection.js, module/array.js,
+module/core.js, src/wat/assemble.js all back to HEAD).
+KEPT: one line in emit-assign.js's tryHashRmwFusion — its `inc(...,
+'__dyn_set')` was UNCONDITIONAL even though `__dyn_set` is only reachable
+from the function's non-HASH fallback arm; a PROVEN-HASH receiver
+(`at === VAL.HASH`, the `counts[w] = (counts[w]|0)+1` dictionary-counting
+idiom) takes an early-return probe/load/store branch that never calls
+`__dyn_set` at all. Narrowed to `at === VAL.HASH ? [] : ['__dyn_set']`.
+Kept despite zero corpus benefit (same reason — nothing in the 68-case
+corpus has ONLY this arm as its sole would-be __dyn_set reacher) because
+it's independently sound: no new function, no duplication cost, strictly
+more precise reachability, can only ever shrink a module, never grow one —
+a legitimate dep-graph correctness fix found en route, not a speculative
+lever.
+MEMO-CACHE VERDICT: the item-5 concern ("__dyn_get_t_h's single-entry memo
+cache as the corruption suspect") — the cache itself ($__dyn_get_cache_off/
+$__dyn_get_cache_props) is a MODULE-LEVEL GLOBAL, not a per-function local;
+inlining a caller can never duplicate it, so it was never the soundness
+hazard the 2026-07-29 diagnosis suspected (consistent with the 2026-08-01
+non-repro verdict). The REAL interaction risk, found live this session,
+was the __clear-reset gate (src/wat/assemble.js ~line 889) keying off the
+exact string `'__dyn_set'` to decide whether to reset the cache/tables on
+`__clear()` — a proven-key-only module reaching the cache through a
+differently-named writer would silently carry stale (off→propsPtr) state
+across a round boundary. Real, would have been the corruption class the
+original attempt's "watr inliner" theory was reaching for (just via a
+different mechanism); reverted along with the rest of the split since the
+writer name (`__dyn_set_sk`) doesn't exist in the shipped tree.
+GATES RUN (final kept state — the one-line emit-assign.js change): full
+correctness battery in foreground chunks of 4-7 (timeout 600000 each) —
+88/88 test/index.js files green (a few pre-existing `# skip` rows,
+unchanged); kernel-parity 33/33 byte-identical (fresh dist rebuild);
+kernel-oracle green; perf-ratchet 10/10 all deltas +0 (incl. condref, see
+above); optimizer green; dyn-keys/data/json/perf explicitly green;
+selfhost.js 21/21; selfhost-perf informational 5/5 (geomean bands
+unchanged); fuzz 2000×4 (seeds 1-2000, 2001-4000, 4001-6000, 6001-8000) —
+zero divergence all four rounds; full bench:size sweep byte-identical to
+pre-session baseline on every case; watr corpus (test/index.js watr, 304/
+304 in its chunk) green. Fresh `npm run build` ×2, foreground: dist/jz.js,
+dist/jz.wasm, dist/interop.js byte-identical both builds.
+
 ## Status (2026-08-03, DECL-INIT WALL export-loss mechanism ROOT-CAUSED AND
 ## FIXED — src/compile/emit.js's decl-init local-storage coercion ladder;
 ## full details .work/carrier-invariant-design.md "EXPORT-LOSS MECHANISM
