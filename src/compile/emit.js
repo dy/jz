@@ -28,7 +28,11 @@ import {
   ASSIGN_OPS, MUTATE_OPS, firstRefKind, isLeaf,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS } from '../ctx.js'
-import { i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR } from '../../layout.js'
+import {
+  i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR,
+  OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_NAMES, encodeTypedElemAux, TYPED_ELEM_VIEW_FLAG,
+} from '../../layout.js'
+import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS, ERR_CODE_RANGES } from '../../err-codes.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
 import { nonNegIntLiteral, intLiteralValue, intExprRange, staticPropertyKey } from '../static.js'
@@ -3950,6 +3954,155 @@ function bigintMemberAssignTarget(a) {
     (a[1][0] === '.' || a[1][0] === '[]') && valTypeOf(a[1]) === VAL.BIGINT ? a : null
 }
 
+// === instanceof (error-object-design.md §4) ===
+// Reached only from raw `instanceof` AST nodes surviving to emit — i.e. strict-mode
+// source (prepare's 'instanceof' handler is the sole producer; jzify's default-mode
+// lowering rewrites every `instanceof` shape to something else before compile ever
+// runs, so this dispatch never fires there — see that handler's own comment).
+// RHS is always a validated member of prepare's INSTANCEOF_ALLOW by this point.
+
+/** Fold `a instanceof X` to a compile-time-known boolean while still evaluating `a`
+ *  for any side effects (dropping a *value* the language spec still requires to be
+ *  computed is unsound — `[sideEffect()] instanceof Array` must run sideEffect()).
+ *  Same idiom as tryIntDivTrunc's constant-divisor-zero fold above: '(drop va)' then
+ *  the constant, wrapped in a result-block; skipped entirely when `va` is already
+ *  proven pure (a bare literal array/collection/typed-array construction has no
+ *  effect to preserve, so the fold costs zero extra bytes — the acceptance bar this
+ *  slice's "no runtime dispatch emitted" pin checks). */
+const foldInstanceof = (va, bool) =>
+  isPureIR(va) ? emitNum(bool ? 1 : 0)
+    : typed(['block', ['result', 'i32'], ['drop', va], ['i32.const', bool ? 1 : 0]], 'i32')
+
+// Array/Map/Set/ArrayBuffer: single-tag predicates. valTypeOf already resolves every
+// literal/constructor shape that proves these kinds (VT['[']=ARRAY, CALLEE_VAL['new.Set']
+// =SET, etc, kind.js/kind-traits.js) — reusing it here is "matching every OTHER
+// valTypeOf-driven instanceof fold", not a new inference.
+const INSTANCEOF_TAG = { Array: [VAL.ARRAY, PTR.ARRAY], Map: [VAL.MAP, PTR.MAP], Set: [VAL.SET, PTR.SET], ArrayBuffer: [VAL.BUFFER, PTR.BUFFER] }
+
+function emitTagInstanceof(a, rhs) {
+  const [wantVal, wantPtr] = INSTANCEOF_TAG[rhs]
+  const vt = valTypeOf(a)
+  if (vt != null) return foldInstanceof(emit(a), vt === wantVal)
+  return ptrTypeEq(asF64(emit(a)), wantPtr)
+}
+
+/** TypedArray ctors (the 8 TYPED_ELEM_NAMES — see prepare's INSTANCEOF_ALLOW comment
+ *  for why BigInt64Array/BigUint64Array/Float16Array/Uint8ClampedArray/DataView are
+ *  excluded from RHS entirely, not just this arm). Static ctor name comes from either
+ *  a literal `new X(...)` call node (prepare's runtime-ctor path always emits
+ *  `['()', 'new.X', args]`) or a bound name's narrowed `typedCtor` rep field — both
+ *  carry the SAME 'new.X' / 'new.X.view' string shape (layout.js's typedElemAux
+ *  convention), so one extractor covers both. */
+function typedCtorNameOf(a) {
+  const ctor = Array.isArray(a) && a[0] === '()' && typeof a[1] === 'string' && a[1].startsWith('new.') ? a[1]
+    : typeof a === 'string' ? (repOf(a)?.typedCtor ?? null) : null
+  if (ctor == null) return null
+  return ctor.endsWith('.view') ? ctor.slice(4, -5) : ctor.slice(4)
+}
+
+function emitTypedInstanceof(a, rhs) {
+  const provenName = typedCtorNameOf(a)
+  if (provenName != null) return foldInstanceof(emit(a), provenName === rhs)
+  const vt = valTypeOf(a)
+  if (vt != null && vt !== VAL.TYPED) return foldInstanceof(emit(a), false)
+  // Runtime: PTR.TYPED tag AND element-code match. Mask off TYPED_ELEM_VIEW_FLAG before
+  // comparing — a VIEW typed array (`new Int32Array(buffer)`) and an OWNED one
+  // (`new Int32Array(4)`) are both really `instanceof Int32Array` in JS; only the
+  // element-type bits (which the 8-name allowlist keeps collision-free — see prepare's
+  // comment) are load-bearing for identity.
+  inc('__ptr_type', '__ptr_aux')
+  const elemCode = encodeTypedElemAux(rhs, false)
+  // Compute `a` exactly ONCE into a local — the bits are read twice below (tag,
+  // then aux), and re-embedding the same emitted subtree twice would both
+  // duplicate any side effects AND re-run the underlying WAT computation at
+  // runtime (not just alias IR node identity — see emitSchemaSlotGuarded's
+  // cloneIR comment for the identity half of this caution).
+  const tv = temp('einstv'), tt = tempI32('einstt')
+  const bits = () => ['i64.reinterpret_f64', ['local.get', `$${tv}`]]
+  return typed(['block', ['result', 'i32'],
+    ['local.set', `$${tv}`, asF64(emit(a))],
+    ['local.set', `$${tt}`, ['call', '$__ptr_type', bits()]],
+    ['if', ['result', 'i32'],
+      ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.TYPED]],
+      ['then', ['i32.eq',
+        ['i32.and', ['call', '$__ptr_aux', bits()], ['i32.const', ~TYPED_ELEM_VIEW_FLAG]],
+        ['i32.const', elemCode]]],
+      ['else', ['i32.const', 0]]]], 'i32')
+}
+
+/** Error family (7 classes, error-object-design.md §4's error-family arm). `Error`
+ *  itself is the base every one of the 7 extends (jz's flat one-level hierarchy — no
+ *  deeper chain to walk), so it matches ANY Error-schema object regardless of which
+ *  concrete class built it; a specific subclass (TypeError, …) must match exactly
+ *  (siblings never satisfy each other's instanceof — ES 13.10.2 OrdinaryHasInstance
+ *  over jz's non-overlapping prototype set). */
+function emitErrorInstanceof(a, rhs) {
+  const classIdx = ERR_CLASS_NAMES.indexOf(rhs)
+  // Fold, tier 1: LHS is a literal `new X(...)`/`X(...)` call node — prepare's generic
+  // "unknown ctor → plain call" path (error-object-design.md §2) keeps the literal
+  // class name as the callee string, so no schema/rep lookup is even needed.
+  const litClass = Array.isArray(a) && a[0] === '()' && typeof a[1] === 'string' && ERR_CLASS_NAMES.includes(a[1]) ? a[1] : null
+  if (litClass) return foldInstanceof(emit(a), rhs === 'Error' || litClass === rhs)
+  // Fold, tier 2: a bound name whose ValueRep already proves "this holds some
+  // Error-schema object" (repOf(name).schemaId === ERR_SID) — sufficient ONLY to
+  // fold the `rhs === 'Error'` base-class case true (schemaId is shared by all 7
+  // classes, so it can't by itself say WHICH one — error-object-design.md §4).
+  // A settled-but-non-Error schemaId proves the opposite: definitely not any Error.
+  if (typeof a === 'string') {
+    const sid = repOf(a)?.schemaId
+    if (sid != null) {
+      const errSid = ctx.schema.register(ERR_SCHEMA_PROPS)
+      if (sid !== errSid) return foldInstanceof(emit(a), false)
+      if (rhs === 'Error') return foldInstanceof(emit(a), true)
+      // else: proven "some Error", not which one — falls through to the runtime check.
+    }
+  }
+  // A provably non-OBJECT LHS (NUMBER, ARRAY, STRING, …) can never be our Error
+  // schema — an internally-thrown coded value IS a NUMBER (error-object-design.md
+  // §3(b)), so this fold must NOT fire for VAL.NUMBER (that's exactly the internal-
+  // code arm's job below) — only for kinds that are neither OBJECT nor NUMBER.
+  const vt = valTypeOf(a)
+  if (vt != null && vt !== VAL.OBJECT && vt !== VAL.NUMBER) return foldInstanceof(emit(a), false)
+
+  // Runtime: (a) real Error object — tag+schema[+errcls] compare, OR (b) internal
+  // coded throw — contiguous range compare(s) against err-codes.js's derived
+  // ERR_CODE_RANGES. Ordered f64 compares on a NaN-boxed pointer's bits are always
+  // false (IEEE754), so arm (b) needs no prior "is this a real number" guard.
+  const ranges = rhs === 'Error' ? Object.values(ERR_CODE_RANGES).flat() : ERR_CODE_RANGES[rhs]
+  const t = temp('einst')
+  const get = () => typed(['local.get', `$${t}`], 'f64')
+  let rangeArm = null
+  for (const { lo, hi } of ranges) {
+    const chk = typed(['i32.and', ['f64.ge', get(), ['f64.const', lo]], ['f64.le', get(), ['f64.const', hi]]], 'i32')
+    rangeArm = rangeArm ? typed(['i32.or', rangeArm, chk], 'i32') : chk
+  }
+  // The schema arm only exists in programs that can ever construct a real Error
+  // object at all (mirrors ir.js toStrI64's ctx.features.error gate) — dead
+  // otherwise, so skip it entirely rather than emit an always-false compare.
+  let schemaArm = null
+  if (ctx.features.error) {
+    const errSid = ctx.schema.register(ERR_SCHEMA_PROPS)
+    const bits = () => ['i64.reinterpret_f64', get()]
+    const tagOk = typed(['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(errSid)]], 'i32')
+    schemaArm = rhs === 'Error' ? tagOk
+      : typed(['i32.and', tagOk,
+          ['f64.eq',
+            typed(ctx.abi.object.ops.load(['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]], 2), 'f64'),
+            ['f64.const', classIdx]]], 'i32')
+  }
+  const body = schemaArm && rangeArm ? typed(['i32.or', schemaArm, rangeArm], 'i32')
+    : schemaArm || rangeArm || typed(['i32.const', 0], 'i32')
+  return typed(['block', ['result', 'i32'],
+    ['local.set', `$${t}`, asF64(emit(a))],
+    body], 'i32')
+}
+
+function emitInstanceof(a, rhs) {
+  if (rhs in INSTANCEOF_TAG) return emitTagInstanceof(a, rhs)
+  if (TYPED_ELEM_NAMES.includes(rhs)) return emitTypedInstanceof(a, rhs)
+  return emitErrorInstanceof(a, rhs)
+}
+
 // === Core emitter dispatch table ===
 // ctx.core.emit is seeded with a flat copy of this object on reset;
 // language modules add or override ops on ctx.core.emit directly.
@@ -4585,6 +4738,7 @@ export const emitter = {
 
   '==': (a, b) => emitLooseEq(a, b, false),
   '!=': (a, b) => emitLooseEq(a, b, true),
+  'instanceof': (a, rhs) => emitInstanceof(a, rhs),
   '===': (a, b) => emitStrictEq(a, b, false),
   '!==': (a, b) => emitStrictEq(a, b, true),
   '<':  cmpOp('lt_s', 'lt', (a, b) => a < b),

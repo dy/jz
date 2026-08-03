@@ -153,3 +153,24 @@ export const ERR_INFO = {
   [ERR.HEX_ODD_LENGTH]: { name: 'SyntaxError', message: 'Hex string must have an even length' },
   [ERR.HEX_INVALID_DIGIT]: { name: 'SyntaxError', message: 'Invalid hex character' },
 }
+
+/** class name → contiguous [lo,hi] code runs (error-object-design.md §4 "internal-code
+ *  arm"), derived from ERR_INFO's sorted keys — not hand-picked "1xx/2xx/3xx" boundaries,
+ *  so future ERR insertions/renumbering (licensed above: "Renumbering is safe") stay
+ *  correct with no edit here. Read by `instanceof`'s runtime check (src/compile/emit.js)
+ *  to test whether an internally-thrown NUMBER code belongs to a given Error class —
+ *  ReferenceError/EvalError get an empty array (jz never throws either internally), so
+ *  `e instanceof ReferenceError` on a coded throw is correctly always false via zero
+ *  range compares. */
+export const ERR_CODE_RANGES = (() => {
+  const out = {}, sorted = Object.keys(ERR_INFO).map(Number).sort((a, b) => a - b)
+  let run = null
+  for (const code of sorted) {
+    const name = ERR_INFO[code].name
+    if (run && run.name === name && code === run.hi + 1) { run.hi = code; continue }
+    run = { name, lo: code, hi: code }
+    ;(out[name] ??= []).push(run)
+  }
+  for (const name of ERR_CLASS_NAMES) out[name] ??= []
+  return out
+})()

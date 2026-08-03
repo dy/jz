@@ -17,7 +17,6 @@ export const REJECT_OPS = {
   'yield*': 'yield* not supported yet: loop over the inner iterator and yield each value',
   'new.target': '`new.target` not supported: no constructor reflection',
   using: '`using` declarations need the jzify lowering (try/finally + [Symbol.dispose]) — not in the strict canonical subset',
-  instanceof: 'instanceof not supported: use typeof',
   with: '`with` not supported: deprecated',
   ':': 'labeled statements not supported',
   var: '`var` not supported: use let/const',

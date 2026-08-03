@@ -4,6 +4,148 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, Error-object model Slice B LANDED — `instanceof` subset;
+## internal-code `.message` (optional Slice C) is the only thing left, per
+## .work/error-object-design.md — its own §Open-questions verdict: a pure
+## priority call, not an engineering one)
+
+Implemented the design's Slice B scope: `.work/error-object-design.md` §4/§7.
+`instanceof` is a real op now — `src/op-policy.js`'s blanket `REJECT_OPS`
+entry is gone; `src/prepare/index.js` validates the RHS against a closed
+allowlist (`INSTANCEOF_ALLOW`) and `src/compile/emit.js` folds a
+statically-proven LHS to a constant or emits a tag/aux/schema compare.
+**STRICT MODE ONLY reaches this code** — jzify's own (pre-existing, separate)
+`instanceof` transform (jzify/transform.js:483) rewrites every `instanceof`
+shape in default mode BEFORE prepare ever sees a raw node (Array→
+`Array.isArray`, Map/Set/TypedArray→`__is_map`/`__is_set`/`__is_typed`,
+7 Error classes→a compiler warning + a `typeof x==='object'` fallback,
+everything else→the same silent fallback, no rejection at all) — this
+handler+emitter is simply unreachable there. Confirmed empirically (not
+assumed): `x instanceof Object` and `x instanceof SomeUserClass` both compile
+successfully in DEFAULT mode today, before AND after this slice, via jzify's
+coarser fallback — untouched, out of this design's stated file list, flagged
+here as a real but pre-existing scope boundary, not a regression.
+
+**Truth table as landed** (LHS kind × RHS → result; JS-authority column cites
+ES2024 13.10.1/OrdinaryHasInstance for the classes below; instanceof on a
+primitive/null/undefined is `false`, never a throw, for any real constructor
+RHS — no divergence there):
+
+| RHS | LHS | JS truth | jz (strict mode) | mechanism |
+|---|---|---|---|---|
+| `Array` | `[]`/`new Array()` | true | true | fold (`valTypeOf`=ARRAY) |
+| `Array` | `new Map()` | false | false | fold |
+| `Array` | `42`/`null`/`undefined` | false | false | fold or `PTR.ARRAY` tag compare |
+| `Map` | `new Map()` | true | true | fold |
+| `Map` | `new Set()` | false | false | fold |
+| `Set` | `new Set()` | true | true | fold |
+| `ArrayBuffer` | `new ArrayBuffer(8)` / typed `.buffer` | true | true | fold or `PTR.BUFFER` tag |
+| `ArrayBuffer` | `new Float64Array(1)` | false | false | tag compare |
+| `Int8Array`…`Float64Array` (8 ctors, `TYPED_ELEM_NAMES`) | matching ctor, OWNED or VIEW storage | true | true | fold (literal/`typedCtor` rep) or `PTR.TYPED`+aux compare, `TYPED_ELEM_VIEW_FLAG` masked off so a view and an owned array of the same element type both match |
+| typed ctor | different element type | false | false | fold or aux mismatch |
+| `Error` | `new TypeError(x)`/any of the 7 | true | true | every built-in extends `Error` — schema-tag-only check (no errcls slot read), or literal-shape fold `rhs==='Error' \|\| always` |
+| `TypeError`/…/`EvalError` (specific subclass) | matching class | true | true | tag+schema+`__errcls__`-slot compare, or literal-shape fold `ctorClassName===rhs` |
+| specific subclass | a DIFFERENT one of the 7 (sibling, or base `Error`) | false | false | siblings/base never satisfy a subclass — same compare, naturally false |
+| any of the 7 | internal coded throw (a NUMBER, e.g. `JSON.parse` SyntaxError) in that class's `ERR_CODE_RANGES` | true (models the class the code represents) | true | contiguous-range `f64.ge`/`f64.le` compare(s), ORed with the schema arm; base `Error` unions every class's ranges |
+| any of the 7 | internal coded throw in a DIFFERENT class's range, or a non-error throw (`42`, `"s"`) | false | false | range/schema both miss — NaN-boxed pointers fail ordered f64 compares "for free" (IEEE754), no extra guard needed |
+| `Object`/`Function`/`RegExp`/`Promise`/user binding/computed expr | — | (real JS: usually true/false via prototype chain) | **compile-time reject** | jz has no prototype chain — see divergences |
+
+**Documented divergences** (all cite `.work/error-object-design.md`):
+1. **`BigInt64Array`/`BigUint64Array` excluded from RHS entirely** — a wall the
+   design doc's own table didn't flag. `layout.js`'s `encodeTypedElemAux`
+   collapses BOTH to the *identical* aux (base code 7 | `TYPED_ELEM_BIGINT_FLAG`
+   16 = 23 for both — no bit distinguishes them once static ctor knowledge is
+   lost). Extended the design's own §4 "WeakMap/WeakSet are tag-indistinguishable
+   from Map/Set → reject, don't guess" precedent to this case, since the design
+   didn't anticipate it. This is *why* the task scoped Slice B to "the 8
+   TypedArray ctors" (`TYPED_ELEM_NAMES`, layout.js) rather than the design
+   prose's literal `TYPED_CTORS` (autoload.js, 14 names) reference.
+2. **`DataView` excluded** — not new (the design's own RHS table never listed
+   it), but confirmed as a second real collision while implementing: a
+   `DataView` descriptor's aux is `TYPED_ELEM_VIEW_FLAG` alone (base code 0,
+   no element type) — bit-identical to a VIEW `Int8Array` (`new
+   Int8Array(buffer)`, aux = `TYPED_ELEM_CODE.Int8Array`(0)|`VIEW_FLAG`). Same
+   tag-indistinguishable reasoning.
+3. **`Float16Array`/`Uint8ClampedArray` excluded** — NOT a collision (their
+   extra flag bit is unique, so they're actually runtime-distinguishable) —
+   simply out of shipped scope, omitted for symmetry with #1 rather than
+   partially widening the 8-name allowlist.
+4. **`WeakMap`/`WeakSet` explicitly excluded from `INSTANCEOF_ALLOW`** — per
+   design §4 (fold to Map/Set at parse, "no GC → weakness unobservable",
+   tag-indistinguishable from a real Map/Set at the point instanceof would
+   run). Verified this fires from BOTH angles: the pre-existing ctor-level
+   strict-mode reject (`new WeakMap()` itself errors) AND my own
+   `INSTANCEOF_ALLOW` check independently rejecting `x instanceof WeakMap` on
+   an already-valid `x` that never touched a WeakMap constructor.
+5. **Everything else** (`Object`, `Function`, `RegExp`, `Promise`, a user
+   function/class binding, a computed RHS expression) — loud compile-time
+   reject, exactly as designed: `instanceof: unsupported right-hand side...
+   jz has no prototype chain`.
+
+**Rejection inventory** (all pinned in test/errors.js): `Object`, `Function`,
+`RegExp`, `Promise`, `DataView`, `BigInt64Array`, `BigUint64Array`, `WeakMap`,
+`WeakSet`, a user function binding as RHS. Every case fires from
+`src/prepare/index.js`'s new `'instanceof'` handler (`INSTANCEOF_ALLOW`
+membership + `shadowsBuiltin` guard), replacing `op-policy.js`'s old blanket
+`REJECT_OPS.instanceof` entry (deleted).
+
+**Pre-existing Slice A bug found and fixed** (not new Slice B scope — a real
+latent gap Slice B's own strict-mode testing surfaced): `ctx.features.error`'s
+whole-program scan (`src/prepare/index.js`, added in Slice A) only recognized
+`node[1]` as a bare class-name STRING. `new X(args)` — the overwhelmingly
+common shape, WITH or WITHOUT args, as long as parens are present — parses as
+`['new', ['()', X, args]]`: the class name sits one level DEEPER than the scan
+looked, so it was silently missed. Only a parenless bare `new X` (`['new',
+X]`, no parens at all — unusual, never constructs with an argument) or a
+no-`new` bare call `X(args)` (`['()', X, args]`, already flat) were ever
+caught. This ONLY manifested in STRICT mode: default mode's jzify pass
+happens to flatten `new X(args)` to `['()', X, args]` (module/core.js's Error
+emitters work identically with/without `new`) BEFORE prepare ever runs,
+sidestepping the nesting entirely — which is why Slice A's own `String(e)`/
+`` `${e}` `` tests (default mode, no `{strict:true}`) passed cleanly despite
+this gap. Confirmed live: `jz('...new TypeError("t")...` `${e}`...', {strict:
+true})` returned `""` (empty) before the fix, `"TypeError: t"` after — and the
+identical shape made EVERY strict-mode `instanceof <ErrorClass>` on a bound
+name silently return `false` for a genuinely matching object (the schema arm
+never got emitted; only the internal-code range arm, which correctly
+evaluates false against a NaN-boxed pointer per IEEE754 — so the compound bug
+was "quietly wrong," not a crash). Fixed by extending the scan condition to
+unwrap the nested `['()', X, args]` shape — mirrors the `'new'` handler's own
+unwrap a few lines below, one function in the same file. Verified: every
+Slice A default-mode test still green; every new Slice B strict-mode
+Error-instanceof test (exact class / sibling / base-`Error` hierarchy /
+internal-code range) now correct.
+
+**Gates, all green:**
+full battery (88 files, chunks of 6, foreground) · errors.js 122/122 (232
+assertions, up from 117/184 — replaced the stale `strict rejects: instanceof`
+pin with an RHS-rejection pin + 5 new instanceof test blocks) ·
+minimal-output.js unaffected (instanceof-free/Error-free modules: additive
+dispatch-table entries never reached) · kernel-parity 33/33 byte-identical ·
+kernel-oracle 11/11 · perf-ratchet 10/10 (+0, every baseline unchanged) ·
+optimizer 293/293 · fuzz.js 2000 programs × opt{0,1,2,3}, 30,173 inputs
+compared, 0 divergence · selfhost.js 21/21 (206 assertions) against a FRESH
+`npm run build` · two fresh `npm run build` rebuilds byte-identical to each
+other (SHA-256 `e6df55ff…` both times, `dist/jz.wasm`/`dist/jz.js` — the
+self-host fixed point) · size spot-check (mat4/fft/crc32/biquad at the
+project's `optimize:'size'` bench recipe, compared against a `git worktree`
+at HEAD 735e7f90): byte-identical, 1543/2368/1107/1861 bytes respectively —
+matches Slice A's own ledger numbers exactly, confirming zero footprint for
+instanceof-free/Error-free programs.
+
+**What remains:**
+- Slice C (optional) — internal-coded throws' `.message`/`.name` still read
+  `undefined`. Deliberately deferred per the design's own scope cut (§5); the
+  design's own §Open-questions verdict already names this as "genuinely a
+  product call rather than an engineering one... flagged, not decided" — not
+  re-litigated here.
+- Slice D (optional, pure perf, no correctness value) — compile-time fold of
+  `instanceof` beyond the literal-shape/schemaId cases already landed (e.g.
+  flow-narrowed catch bodies where every reachable throw is provably one
+  class). Not attempted; the two folds shipped (literal-call-shape,
+  bound-name schemaId for the base `Error` case) already satisfy the
+  "no runtime dispatch for a provably-known LHS" acceptance bar.
+
 ## Status (2026-08-03, Error-object model Slice A LANDED — real in-wasm Error
 ## objects + host-decode upgrade; instanceof (Slice B) and internal-code
 ## .message (optional Slice C) remain, per .work/error-object-design.md)

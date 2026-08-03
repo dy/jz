@@ -52,12 +52,35 @@ import {
   includeForRuntimeKeyIteration, includeForStringOnly, includeForStringValue, includeForTimerRuntime,
 } from '../autoload.js'
 import { ERR_CLASS_NAMES } from '../../err-codes.js'
+import { TYPED_ELEM_NAMES } from '../../layout.js'
 
 // SIMD intrinsic namespaces — pure namespaces backed by the `simd` module.
 const SIMD_NS = new Set(['f32x4', 'i32x4', 'f64x2', 'v128'])
 // prep()'s ctx.features.error scan below — O(1) membership over the 7 built-in
 // error classes (error-object-design.md §2).
 const ERR_CLASS_SET = new Set(ERR_CLASS_NAMES)
+
+// `instanceof` RHS allowlist (error-object-design.md §4). jz has no prototype chain, so
+// RHS support is closed: Array/Map/Set fold or tag-compare (PTR.ARRAY/MAP/SET); the 8
+// TYPED_ELEM_NAMES ctors + ArrayBuffer tag/aux-compare (PTR.TYPED+aux / PTR.BUFFER); the
+// 7 Error classes tag+schema+errcls-compare (module/core.js's ERR_SID) OR internal-code
+// range-compare (err-codes.js's ERR_CODE_RANGES). Deliberately NARROWER than
+// layout.js's full TYPED_CTORS (14 names): excluded here —
+//   - BigInt64Array / BigUint64Array: layout.js's encodeTypedElemAux collapses BOTH to
+//     the identical aux (base code 7 | TYPED_ELEM_BIGINT_FLAG) — no bit distinguishes
+//     them once the static ctor is unknown, so a runtime aux-compare can't tell them
+//     apart. Same "tag-indistinguishable → reject" call this file already makes for
+//     WeakMap/WeakSet below, extended here to a collision the design doc's own RHS
+//     table didn't flag.
+//   - Float16Array / Uint8ClampedArray: not a collision (their extra flag bit IS unique),
+//     simply out of the shipped scope — omitted for symmetry with the two ctors above
+//     rather than partially widening TYPED_ELEM_NAMES.
+//   - DataView: layout.js encodes a DataView descriptor as PTR.TYPED with aux=
+//     TYPED_ELEM_VIEW_FLAG alone (base code 0) — bit-identical to a VIEW Int8Array
+//     (`new Int8Array(buffer)`, aux = TYPED_ELEM_CODE.Int8Array(0) | VIEW_FLAG). Same
+//     tag-indistinguishable reasoning; the design doc's table never listed DataView as
+//     supported RHS in the first place, so this is a confirmation, not a new cut.
+const INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', ...TYPED_ELEM_NAMES, ...ERR_CLASS_NAMES])
 
 // Module-level prepare state. Six independent stacks/scalars that together form
 // the prepare-pass working set. Lifecycle: reinitialized via `resetPrepState()`
@@ -1144,8 +1167,21 @@ function prep(node) {
   // identifier (`function Error(x){…}`) can false-positive this flag — harmless:
   // ir.js's guard is a runtime tag+schema compare that simply never fires for a
   // program that never actually calls the real ctx.core.emit['Error'].
-  if (Array.isArray(node) && (node[0] === 'new' || node[0] === '()') &&
-      typeof node[1] === 'string' && ERR_CLASS_SET.has(node[1]))
+  //
+  // `new X(args)` with any args (the common shape) parses as `['new', ['()', X,
+  // args]]` — the class name sits one level DEEPER than this check originally
+  // looked (`node[1]` was the inner '()' array, never a bare string), so the
+  // scan silently missed it. jzify's default-mode transform happens to flatten
+  // `new X(args)` to a bare `['()', X, args]` call BEFORE prepare ever runs
+  // (module/core.js's Error emitters work identically with or without `new`),
+  // which is why this only ever manifested in STRICT mode (jzify skipped, raw
+  // parser shape survives to prepare) — found via error-object-design.md Slice
+  // B's own strict-mode instanceof/toStrI64 acceptance testing, not a Slice B
+  // regression. `ctorCallee` unwraps the same nested shape the 'new' handler
+  // below already unwraps for the identical reason.
+  const ctorCallee = Array.isArray(node) && node[0] === 'new' && Array.isArray(node[1]) && node[1][0] === '()' ? node[1][1]
+    : Array.isArray(node) && (node[0] === 'new' || node[0] === '()') ? node[1] : null
+  if (typeof ctorCallee === 'string' && ERR_CLASS_SET.has(ctorCallee))
     ctx.features.error = true
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return [, 0] // null/undefined → 0 literal
@@ -3521,6 +3557,27 @@ const handlers = {
     // Unknown constructor: treat as function call (jzify already strips new for known safe ones)
     if (typeof name === 'string') return ['()', name, ...ctorArgs.map(prep)]
     return ['new', prep(ctor), ...args.map(prep)]
+  },
+
+  // instanceof (error-object-design.md §4) — jz has no prototype chain, so RHS support
+  // is a closed allowlist (INSTANCEOF_ALLOW above), not general reflection. This handler
+  // ONLY reaches raw `instanceof` AST nodes — jzify (default mode) lowers every
+  // `instanceof` shape itself (Array→Array.isArray, Map/Set/TypedArray→__is_map/__is_set/
+  // __is_typed predicates, everything else to a looser fallback) BEFORE prepare ever sees
+  // it, so a raw node here only occurs in strict mode (`.jz` source bypasses jzify — this
+  // file's own module doc) — exactly like the REJECT_OPS entry this handler replaces.
+  // RHS may arrive as a bare name ('Array') or, if parenthesized (`x instanceof (Array)`),
+  // as a length-2 grouping call node (['()', 'Array']) — same shape 'new' unwraps above.
+  'instanceof'(lhs, rhs) {
+    const name = typeof rhs === 'string' ? rhs
+      : (Array.isArray(rhs) && rhs[0] === '()' && rhs.length === 2 && typeof rhs[1] === 'string') ? rhs[1]
+      : null
+    if (name == null || shadowsBuiltin(name) || !INSTANCEOF_ALLOW.has(name))
+      err(`instanceof: unsupported right-hand side (got ${JSON.stringify(name ?? rhs)}) — ` +
+          `jz has no prototype chain; instanceof works only for Array, Map, Set, ` +
+          `the TypedArray (${TYPED_ELEM_NAMES.join('/')}) and ArrayBuffer constructors, and ` +
+          `Error/${ERR_CLASS_NAMES.slice(1).join('/')}`)
+    return ['instanceof', prep(lhs), name]
   }
 }
 
