@@ -4852,33 +4852,78 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
       trace 1.86x, vm 1.90x, lz 1.20x) -- close by general levers, they
       also pay off on M4.
 * [ ] Kernel long-tail (each characterized in the archive):
-  * shaped-parser: LOCALIZED (BC14 + host-side pass bisect): the throw is
-    a jz-RUNTIME error code (raw 0) firing inside WATR-IN-KERNEL during
-    watOptimize, and needs stripmut+globals BOTH enabled (disabling either
-    rescues; all-off ok) — a jz miscompile of the stripmut→globals const-
-    fold interaction executing in-kernel. NARROWED FURTHER: native watr on
-    the KERNEL'S OWN pre-watr tree is fine (pure execution miscompile);
-    only the shape module trips pair-only (sum/math/str/constg clean);
-    the trigger global is __schema_tbl (the module's ONLY never-written
-    global — stripmut immutabilizes it, globals' pricing then clones its
-    read anchors and runs watr fold() on them IN-KERNEL; suspect fold's
-    i64/BigInt arithmetic hitting the kernel bigint carrier gap — would
-    UNIFY this with the bigint-kernel family). NEXT: extract __schema_tbl
-    read anchors: i64.load/store over __schema_tbl addr math (2 sites).
-    HARNESS REFUTATION (2026-07-23): a jz-compiled watr micro-kernel
-    (.work/watr-harness-entry.js graph, compiled at BOTH level:2 AND the
-    kernel's exact speed profile) runs pair-only on the SAME 84KB WAT
-    CLEAN — the miscompile does not reproduce outside the full kernel.
-    Conclusion: context-dependent (arena state/layout at 12MB bundle
-    scale, or warm-instance memory pressure when watOptimize runs after
-    compileAst in the same instance) — NOT input shape, NOT pass logic,
-    NOT tier alone. Costliest hunt class; deprioritized behind concrete
-    wins. Probes: scratchpad/{wbisect3,wpair,wnative,wglob2,wanchor,
-    watr-harness.mjs,wrun}.mjs + .work/watr-harness-entry.js.
-    RELATED NATIVE FINDINGS: Error.message unwired (String(e) works,
-    e.message undefined even unthrown); jz runtime errors throw raw numeric
-    codes (JSON.parse('nope') throws number) — the message-evaporation
-    mechanism.
+  * shaped-parser: CONFIRMED DEAD 2026-08-03 (this entry was stale — the
+    class was already root-fixed 2026-07-25, two waves after the last edit
+    below; re-tested fresh at HEAD 0dc8145e post kernel rebuild). Root fix:
+    a93d26e0 "shaped-parser root fixed: push/index-write element
+    observations gated on known-origin arrays" — watr's own outline pass
+    doing `ast.push(['func',…])` on the kernel's in-memory IR tree settled
+    arrayElemValType from the mutation and silently const-folded the
+    `ast[0]!=='module'` guard; elemOrigin (fully-static literal decl / fresh
+    Array(n)) now gates all three slices (val/schema/typedCtor). The
+    bigint-carrier fold-guard wave (2026-07-24, statements/data/preeval)
+    independently closed the UNIFIED sibling (-1n<0n at O2, watr-in-kernel
+    dynamic-compare-on-carrier) — same watr-in-kernel dynamic-typed-fold
+    family the __schema_tbl/stripmut+globals mechanism above pointed at.
+    RE-TEST EVIDENCE (HEAD 0dc8145e, fresh `npm run build`):
+      - json.js under JZ_TEST_TARGET=jz.wasm: 64/64 (101 assertions, 0
+        fail) — BOTH structural shaped-parser asserts ($__dyn_get absence)
+        green, standalone and inside a 7-file chunk.
+      - statements.js under kernel target: 202/202 (466 assertions) — the
+        -1n<0n row (previously onKernel-curated, un-curated 2026-07-25)
+        green.
+      - perf.js 'codegen: JSON.parse(let SRC) walk uses slot loads' (the
+        ONE remaining in-suite-only knife-edge fail noted 2026-07-25,
+        ledger line ~4754) — green in a 7-file chunk (inference,
+        provenance-inference, speculate, unsigned, perf, invariants,
+        pow-ulp), all 5 of its assertions pass.
+      - Full kernel-target suite re-run chunked (4-7 files/chunk, all 66
+        kernel-eligible TESTS rows): 2525 pass / 20 fail / 6 skip, 2551
+        total. ALL 20 fails are in two classes UNRELATED to shaped-parser
+        (see NEW FINDINGS below) — zero shaped-parser-shaped fails anywhere
+        in the suite.
+      - Standalone watr-diff (jz-compiled-watr vs native watr, stripmut+
+        globals only, on a freshly regenerated real pre-watr shape module,
+        144167B) — NEITHER engine throws (the harness never reproduced the
+        crash even historically — 2026-07-23 HARNESS REFUTATION stands,
+        unchanged). Residual divergence shrank from the 2026-07-25
+        BREAKTHROUGH's 13092B (node bigger, node outlines more) to 712B
+        (native 146488 vs jz 145776, jz now SMALLER) — consistent with,
+        not proof of, the fix wave above; not chased further since the
+        real symptom (kernel suite) is clean.
+      - Native battery: 3232/3238 (18832 assertions), 0 fail, 6 skip — no
+        regression from anything touched this session (nothing touched;
+        this is a re-test-only entry, no source changed).
+    NO CODE CHANGE LANDED — nothing to graduate: json/statements were
+    already un-excluded/un-curated in the current tree (prior sessions did
+    the graduation; only this ledger bullet was stale). Probes referenced
+    below (scratchpad/{wbisect3,wpair,wnative,wglob2,wanchor,
+    watr-harness.mjs,wrun}.mjs) are gone (expected — session scratchpads);
+    not needed again, the class is closed.
+    NEW FINDINGS 2026-08-03 (banked, NOT shaped-parser, NOT chased —
+    surfaced only by the full kernel-target re-run above; unguarded specs
+    added since their files were last kernel-cleared):
+      (a) errors.js x2 kernel-target fails, native clean: 'host decode: a
+          genuine unmarked trap still surfaces as RuntimeError' and 'a
+          decoded escape does not leave a stale marker for the next trap'
+          (both use `jz(src, { maxMemory: 1 })` to force a real OOM trap).
+          Likely maxMemory not plumbed through compileViaKernel/
+          kernel-target.js, or the kernel's OOM path differs — post-dates
+          the Error-object model (38c7dde5/735e7f90), not yet kernel-
+          hardened. NEXT: check kernel-target.js's opts marshal for
+          maxMemory.
+      (b) inference.js x18 kernel-target fails, native clean: every one
+          directly asserts on `ctx.scope.globalReps` / `ctx.schema.
+          slotTypes` (`import { ctx } from '../src/ctx.js'`, inference.js:32)
+          — pure host-introspection of the NATIVE compiler's internal
+          state, which stays empty when compilation happens inside the
+          wasm sandbox. Same leg-mismatch class as the already-documented
+          'warnings' KERNEL_EXCLUDE entry (metadata channel, not value
+          behavior) — these are just missing onKernel() guards on tests
+          added to inference.js after it was kernel-cleared 2026-07-28
+          (dict-value-census + receiver-HASH sections). NOT a miscompile.
+          NEXT: gate with onKernel() return, or add 'inference' back to
+          KERNEL_EXCLUDE if the file becomes majority-introspection.
   * bigint family + preeval CLEARED 2026-07-24 (statements/data/preeval
     un-excluded; kernel suite 1911/1918 [only shaped-parser assert],
     battery 3075/0). Roots, all one family -- the parser CONFLATES small
