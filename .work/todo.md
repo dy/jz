@@ -4,6 +4,113 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, maybeUndefined Slice 2 landed — Number.isNaN census gate, the last named item in "STILL OPEN" #1 below)
+
+SLICE 2 — `emitIsNaN` sentinel exclusion (.work/maybe-undefined-design.md §4/
+§5), the item Slices 3-5 explicitly named as never-assigned-to-that-campaign.
+Live repro confirmed red at session start (native, no dist rebuild):
+`const m = new Map(); m.set("a",1); export let f = () => Number.isNaN(m.get("zz"))`
+→ jz `true`, JS `false` (ECMA-262 21.1.2.4: "If Type(number) is not Number,
+return false" — undefined is not a Number, no ToNumber coercion).
+
+MECHANISM: `emitIsNaN` (module/number.js) took a bare hardware self-compare
+fast path (`f64.ne(v,v)`) whenever `valTypeOf(x) === VAL.NUMBER`, with no
+further check — sound for a GENUINELY proven number (can never be a boxed
+carrier, self-compare-NaN ⟺ real NaN, exact), unsound for a census-derived
+NUMBER claim (`dictValueKindOf`/`mapValueKindOf`, live since 5c437df5): an
+absent key reads back `UNDEF_NAN` at runtime, which IS a NaN bit pattern, so
+the bare self-compare wrongly read `true`. FIX (one condition, per method,
+per the design's own prediction): `if (vt === VAL.NUMBER) return raw` →
+`if (vt === VAL.NUMBER && !censusMaybeUndefined(x)) return raw`. A
+census-flagged argument now falls through to the SAME kind-unknown
+tag-discriminating dynamic path 90e10c3d already built (checks the NaN
+payload against `NAN_BITS`/negative-sign mask via `isNumNaNBits`) — that path
+was already correct for `UNDEF_NAN` (excludes it), just previously
+unreachable for a statically-NUMBER-claimed argument. No new coercion logic;
+`censusMaybeUndefined` (kind.js) already covers BOTH dict and Map arms
+(landed 5c437df5), so one gate closes both receiver kinds at once.
+
+DICT-PATH MECHANISM (task asked to explain why a naive dict-absent probe
+already read `false` before this fix — confirmed ACCIDENTAL, not structural,
+and gated it too since the accident doesn't hold generally): a probe using a
+STATIC named write (`d.a = 1`) or a non-canonical-numeric STRING-LITERAL key
+(`d["zz"]`) never reaches `dictValueKindOf` at all — VT['[]'] (kind.js ~433)
+returns `null` for any non-canonical-numeric string-literal key BEFORE the
+dict-census branch (~499) is consulted (classified as a property read, not
+an element read), and a dict populated only via named writes never sets
+`dictValueValType`/`dynWriteVars` in the first place (the census is keyed off
+`name[dynKey] = v` writes specifically). Both leave `valTypeOf(x)` `null`,
+so `emitIsNaN` already took the (always-correct) kind-unknown dynamic path —
+accidentally correct, for reasons unrelated to this fix. Confirmed live that
+the SAME bug reproduces on dict once the census is actually exercised (a
+DYNAMIC key write, `d[wk] = 1`, read via a variable key `d[k]`):
+`Number.isNaN(d[k])` on an absent key was `true` (bug) before this fix,
+`false` (correct) after — same root cause and same fix as Map, both arms
+closed by the single `censusMaybeUndefined(x)` gate. Pinned both the
+accidental-correctness case (so a future VT['[]'] refactor doesn't
+reintroduce the bug under the false belief "dict literal keys already
+worked") and the genuine dynamic-write case, in test/math.js.
+
+FAMILY SWEEP — isFinite/isInteger/isSafeInteger need NO equivalent gate,
+verified structural not accidental: every formula in this trio OPENS with
+`f64.eq(v,v)` (self-equality), which is `false` for ANY NaN bit pattern
+INCLUDING `UNDEF_NAN`. Unlike isNaN (which must answer `true` for one NaN-
+bit-pattern class — genuine number-NaN — and `false` for another — boxed/
+`UNDEF_NAN` — the exact distinction the census claim was defeating), these
+three want `false` for BOTH classes alike, so the leading self-equality term
+already excludes a census-sourced absent-key read with zero extra
+instructions. Probed all three on Map-absent and dict(dynwrite)-absent: both
+`false`, matching JS, unchanged before/after this fix. Pinned in test/math.js
+alongside a WAT-structural pin (`isNumNaNBits`'s distinctive
+`0xFFF0000000000000` sign-mask constant, present ONLY on the dynamic path)
+proving a NON-census proven-NUMBER argument (`Number.isNaN(x * 2)`) keeps the
+bare self-compare fast path — no dynamic-dispatch cost added to hot numeric
+paths, confirmed by direct WAT inspection, not just behavioral pass/fail.
+
+GATES: repro red→green confirmed both native and kernel leg
+(`JZ_TEST_TARGET=jz.wasm`) — 75/75 tests pass on both (474 native / 471
+kernel assertions; kernel's lower count is a pre-existing onKernel()-guarded
+skip in an unrelated structural-WAT pin, not caused by this fix). Full
+battery: 88 test/index.js files run individually, foreground, chunked 4-7 at
+a time — 0 unexpected failures (pre-existing `# skip` entries in
+array-methods/objects/spread/unsigned unrelated, same as prior sessions).
+kernel-parity 33/33 byte-identical. kernel-oracle 11/11 (451 assertions).
+perf-ratchet 10/10, every baseline +0 (no census gating touched a hot loop —
+expected, numeric kernels carry zero census reads). optimizer 214/214.
+selfhost.js 21/21 (40 compile-yourself rounds, fixed point confirmed).
+selfhost-perf.js 5/5, informational (warm 0.986×/cap 1.03×, fresh
+0.794×/cap 0.99×). fuzz: general 2000 (30173 inputs, 0 divergence),
+typed-int 2000 (0 divergence), typed-map 2000, typed-array 2000. Size
+spot-check: mat4/fft/crc32/biquad compiled via scripts/bench-size.mjs,
+current tree vs a non-destructive swap of module/number.js back to HEAD's
+committed content (the only file this fix touches that's reachable from
+compiled output) — byte-identical sizes both ways (1543/2368/1107/1861), as
+predicted (none of the four kernels reference Number.isNaN/isFinite/
+isInteger/isSafeInteger at all).
+
+PRE-EXISTING, UNRELATED FINDING surfaced by the typed-map/typed-array fuzz
+legs (3 findings total, same root cause, NOT this fix — flagged per the
+"honest stop with evidence" discipline, not silently dropped): a chained
+float-LITERAL multiplication constant-fold (e.g. `(0.1 * Math.abs(-1.5)) *
+1.5`, or `(0.1 * 1.5) * 1.5`) computed at COMPILE TIME diverges from real JS
+runtime IEEE-754 sequential rounding — jz folds to `0.225` exactly, real JS
+`(0.1*1.5)*1.5` is `0.22500000000000003` (verified in plain node). Confirmed
+UNREACHABLE from this fix: the failing programs contain zero
+`isNaN`/`isFinite`/`isInteger`/`isSafeInteger` tokens, and this fix's entire
+diff is 24 lines inside `emitIsNaN`'s dispatch-table entry (module/
+number.js) plus a comment on `emitIsFinite` — neither reachable without
+those literal method names in source. Repro isolated:
+`export let f = () => { const buf = new Float64Array(62); for (...) buf[i] =
+(i-30)*0.5; for (...) buf[i] = ((0.1 * Math.abs(-1.5)) * 1.5); return buf }`
+→ `buf[0]` jz `0.225`, JS `0.22500000000000003`. Not fixed here — out of
+Slice 2's scope, a constant-folder precision bug unrelated to the
+maybeUndefined campaign; flagged as a fresh open item below (#6) so it isn't
+silently lost, not gold-plated into this narrow fix's blast radius.
+
+With this slice landed, "STILL OPEN" item 1 below (from the Slices 3-5
+entry) is CLOSED. Items 2-5 there remain exactly as left (never touched by
+this slice); item 6 is new, added by this slice's fuzz gate.
+
 ## Status (2026-08-03, maybeUndefined Slices 3-5 landed — nameEscapes gate, site survey, Map re-enable)
 
 CONTAINER VALUE-CENSUS SOUNDNESS CAMPAIGN CLOSED (.work/maybe-undefined-
@@ -242,13 +349,12 @@ dbg-invariants leg: NOT run — the design's `JZ_DEBUG_INVARIANTS` tripwire
 is no dedicated leg to run; explicitly not attempted, not silently skipped.
 
 STILL OPEN (named precisely, not silently left ambiguous):
-  1. Slice 2 (`emitIsNaN` sentinel exclusion, design §4/§5) — never assigned
-     to this campaign (task scope was Slices 3-5 only). `Number.isNaN` on a
-     NUMBER-census absent-key dict/Map read still reads jz `true` vs JS
-     `false`. Next agent picking this up should scope it exactly as design
-     §5 Slice 2 describes: gate `emitIsNaN` on `censusMaybeUndefined`/
-     `checkedNumRead` ONLY, leaving the separately-flagged, already-fixed
-     broader string/object leak (90e10c3d) untouched.
+  1. CLOSED (2026-08-03, see the Slice 2 entry above this one): Slice 2
+     (`emitIsNaN` sentinel exclusion, design §4/§5) landed — `emitIsNaN`'s
+     static-NUMBER fast path is now gated on `!censusMaybeUndefined(x)`.
+     isFinite/isInteger/isSafeInteger confirmed structurally safe, no gate
+     needed. The broader string/object leak stayed out of scope, as
+     originally intended (already fixed pre-session, 90e10c3d).
   2. The `JZ_DEBUG_INVARIANTS` tripwire sketched in design §1's closing
      paragraph — a `DBG_REPS`-style runtime assert that a
      censusMaybeUndefined-flagged node's raw bits are never read outside
@@ -278,6 +384,17 @@ STILL OPEN (named precisely, not silently left ambiguous):
      in the Slice 5 survey above, not independently re-derived/repro'd; a
      future audit should confirm rather than inherit this session's
      lower-confidence read.
+  6. NEW (2026-08-03, surfaced by Slice 2's fuzz gate, unrelated to the
+     maybeUndefined campaign): chained float-LITERAL multiplication constant-
+     folding diverges from real JS runtime IEEE-754 sequential rounding —
+     `(0.1 * Math.abs(-1.5)) * 1.5` (and `(0.1*1.5)*1.5`) folds to `0.225` at
+     compile time; real JS evaluates each `*` at runtime and gets
+     `0.22500000000000003`. 3 fuzz findings (typed-map ×2, typed-array ×1,
+     seeds 352/812/812), all one root cause. Confirmed unreachable from Slice
+     2's diff (no isNaN/isFinite/isInteger/isSafeInteger token in any failing
+     program). Likely lives in the constant-folder for chained `f64.mul`
+     (ir.js or optimize/index.js) computing a fold that doesn't replicate
+     step-by-step double rounding. Not fixed — flagged for a dedicated pass.
 With items 1-5 named above, the container value-census soundness campaign's
 core ask (represented maybeUndefined join + BindingId-style alias/escape
 ownership, both consumers re-enabled, structural survey complete) is

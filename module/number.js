@@ -13,7 +13,7 @@ import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE
 import { ssoBitI64Hex, ptrNanHex, nanPrefixHex } from '../layout.js'
 import { emit, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
-import { valTypeOf } from '../src/kind.js'
+import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 import { ERR } from '../err-codes.js'
@@ -1300,13 +1300,22 @@ export default (ctx) => {
     ['i64.eq', ['local.get', bitsLocal], ['i64.const', NAN_BITS]],
     ['i64.eq', ['i64.and', ['local.get', bitsLocal], ['i64.const', '0xFFF0000000000000']], ['i64.const', '0xFFF0000000000000']]]
 
+  // maybeUndefined gate (.work/maybe-undefined-design.md §1/§4): a NUMBER claim
+  // sourced from a dict/map value census (censusMaybeUndefined) is really
+  // NUMBER|undefined — an absent key reads back UNDEF_NAN at runtime, a bit
+  // pattern that (unlike a genuine number-NaN) must NOT satisfy Number.isNaN.
+  // A non-census proven-NUMBER arg (loop counters, arithmetic results, schema
+  // slots) can never carry ANY boxed pointer/atom, so its bare self-compare
+  // stays exact and pays nothing extra — only census reads fall through to the
+  // tag-discriminating dynamic path below (already sound for kind-unknown args
+  // since 90e10c3d; reused as-is, no new coercion logic needed here).
   const emitIsNaN = (x) => {
     const vt = valTypeOf(x)
     if (vt != null && vt !== VAL.NUMBER) return nonNumberFalse(x)
     const v = asF64(emit(x))
     const t = temp('t')
     const raw = typed(['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]], 'i32')
-    if (vt === VAL.NUMBER) return raw
+    if (vt === VAL.NUMBER && !censusMaybeUndefined(x)) return raw
     const bits = tempI64('b')
     return typed(['if', ['result', 'i32'], raw,
       ['then', ['block', ['result', 'i32'],
@@ -1315,6 +1324,17 @@ export default (ctx) => {
       ['else', ['i32.const', 0]]], 'i32')
   }
 
+  // No censusMaybeUndefined gate needed here (unlike emitIsNaN above): every
+  // formula in this family's remaining three methods (isFinite/isInteger/
+  // isSafeInteger) OPENS with `f64.eq(v,v)` — self-equality, false for ANY
+  // NaN bit pattern, including UNDEF_NAN. isNaN's whole problem is that it
+  // wants `true` for one NaN-bit-pattern class (genuine number-NaN) and
+  // `false` for another (boxed pointers/UNDEF_NAN) — a distinction these
+  // three methods never need to make, because their spec answer for BOTH
+  // classes is the same `false`. A census-sourced UNDEF_NAN therefore already
+  // fails the leading `f64.eq` term structurally, with no extra check —
+  // confirmed live (test/math.js): Map/dict-absent reads are `false` for all
+  // three pre- and post- this slice's fix, unchanged.
   const emitIsFinite = (x) => {
     const vt = valTypeOf(x)
     if (vt != null && vt !== VAL.NUMBER) return nonNumberFalse(x)

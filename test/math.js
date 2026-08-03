@@ -535,6 +535,96 @@ test('Number.isNaN: dynamic/polymorphic argument (not statically NUMBER)', () =>
   is(f(4), false, 'undefined')
 })
 
+// maybeUndefined gate (.work/maybe-undefined-design.md Slice 2): a dict/map
+// value-census NUMBER claim (kind.js dictValueKindOf/mapValueKindOf, live
+// since 5c437df5) is really NUMBER|undefined — a `.get()`/`[k]` read on a
+// key that was never WRITTEN reads back real JS `undefined` (UNDEF_NAN)
+// regardless of what kind every OBSERVED write claims. emitIsNaN's static
+// `vt === VAL.NUMBER` short-circuit (module/number.js) used to trust that
+// claim uncoerced, taking the bare self-compare fast path — WRONG, because
+// UNDEF_NAN IS a NaN bit pattern, so the raw self-compare read `true`
+// (ECMA-262 21.1.2.4 says `false`: undefined is not a Number, no coercion).
+// Fixed by gating the fast path on `!censusMaybeUndefined(x)` — a
+// census-sourced argument now falls through to the SAME tag-discriminating
+// dynamic path already built (90e10c3d) for kind-unknown arguments, which
+// correctly excludes UNDEF_NAN from the "is a genuine number-NaN" answer.
+test('Number.isNaN: dict/map value-census absent-key argument (maybeUndefined gate, Slice 2)', () => {
+  const mapAbsent = `const m = new Map(); m.set("a", 1); export let f = () => Number.isNaN(m.get("zz"))`
+  const mapPresentReal = `const m = new Map(); m.set("a", 1); export let f = () => Number.isNaN(m.get("a"))`
+  const mapPresentNaN = `const m = new Map(); m.set("a", NaN); export let f = () => Number.isNaN(m.get("a"))`
+  // Dict census only populates via a DYNAMIC-key write (`d[wk] = v`) — a
+  // static named write (`d.a = 1`) never reaches dictValueKindOf at all, so
+  // this shape is required to actually exercise the census, not merely a
+  // literal `d['zz']` (whose non-numeric string-literal key already returns
+  // an unrelated "property read" null from VT['[]'] before dictValueKindOf
+  // is ever consulted — see the accidental-correctness note below).
+  const dictAbsent = `const d = {}; const wk = "a"; d[wk] = 1
+    export let f = (k) => Number.isNaN(d[k])`
+  const dictPresentReal = dictAbsent
+  const dictPresentNaN = `const d = {}; const wk = "a"; d[wk] = NaN
+    export let f = (k) => Number.isNaN(d[k])`
+  is(jz(mapAbsent).exports.f(), false, 'Map absent key: undefined is not a Number')
+  is(jz(mapPresentReal).exports.f(), false, 'Map present real number: control')
+  is(jz(mapPresentNaN).exports.f(), true, 'Map present genuine NaN: control')
+  is(jz(dictAbsent).exports.f('zz'), false, 'dict (dynamic-write) absent key: undefined is not a Number')
+  is(jz(dictPresentReal).exports.f('a'), false, 'dict present real number: control')
+  is(jz(dictPresentNaN).exports.f('a'), true, 'dict present genuine NaN: control')
+})
+
+// ACCIDENTAL, not structural: a dict read with a non-numeric STRING-LITERAL
+// key (`d['zz']`, as opposed to a dynamic/variable key) already read `false`
+// even before this slice's fix — but not because dictValueKindOf was ever
+// consulted and found sound. VT['[]'] (kind.js ~line 433) returns null for
+// ANY non-canonical-numeric string-literal key BEFORE it ever reaches the
+// dict-census branch (~line 499) — a literal-key bracket read is classified
+// as a property read, not an element read, so valTypeOf(x) is null and
+// emitIsNaN takes the (always-correct) kind-unknown dynamic path regardless
+// of this slice's gate. Pinned here so a future refactor of that early
+// classification doesn't silently reintroduce the bug under the false
+// impression that "literal dict keys already worked". The `censusMaybeUndefined`
+// gate above is still required for the DYNAMIC-key case, which does reach
+// dictValueKindOf directly (dict/map tests above).
+test('Number.isNaN: dict literal-key absent read — correct via a DIFFERENT, unrelated mechanism (VT null before census)', () => {
+  is(jz(`const d = {}; d.a = 1; export let f = () => Number.isNaN(d["zz"])`).exports.f(), false)
+})
+
+// Structural pin: emitIsNaN's fast path (bare `f64.ne` self-compare, no
+// dynamic tag discrimination) must stay in force for a NON-census
+// proven-NUMBER argument — the whole point of the static short-circuit is
+// to pay nothing extra on hot numeric paths (loop counters, arithmetic
+// results, schema slots). `isNumNaNBits`'s AND-mask constant
+// `0xFFF0000000000000` (module/number.js) appears ONLY on the dynamic
+// (kind-unknown / census) path — its absence from the compiled WAT proves
+// the fast path was taken; its presence (census case) proves the dynamic
+// path was taken instead.
+test('Number.isNaN: non-census proven-NUMBER argument keeps the bare self-compare fast path (no dynamic dispatch cost)', () => {
+  const dynMarker = /0xFFF0000000000000/
+  const plainWat = compile(`export let f = (x) => Number.isNaN(x * 2)`, { wat: true })
+  is(dynMarker.test(plainWat), false, 'plain arithmetic NUMBER: no dynamic tag-discrimination code emitted')
+  const censusWat = compile(
+    `const m = new Map(); m.set("a", 1); export let f = () => Number.isNaN(m.get("a"))`, { wat: true })
+  is(dynMarker.test(censusWat), true, 'census-sourced NUMBER: dynamic tag-discrimination code IS emitted (the fix)')
+})
+
+// Sibling sweep (.work/maybe-undefined-design.md Slice 2): isFinite/isInteger/
+// isSafeInteger need NO equivalent gate — verified structural, not
+// accidental, per the comment at emitIsFinite (module/number.js): every
+// formula in this trio OPENS with `f64.eq(v,v)` (self-equality), which is
+// false for ANY NaN bit pattern, including UNDEF_NAN. Unlike isNaN (which
+// must tell a genuine number-NaN TRUE from a boxed/UNDEF_NAN carrier FALSE —
+// the exact distinction the census claim was defeating), these three want
+// `false` for BOTH classes alike, so the leading self-equality term already
+// excludes a census-sourced absent-key read with no extra check.
+test('Number.isFinite/.isInteger/.isSafeInteger: dict/map value-census absent-key argument (structural, no gate needed)', () => {
+  const mapAbsent = (method) => `const m = new Map(); m.set("a", 1); export let f = () => Number.${method}(m.get("zz"))`
+  const dictAbsent = (method) => `const d = {}; const wk = "a"; d[wk] = 1
+    export let f = (k) => Number.${method}(d[k])`
+  for (const method of ['isFinite', 'isInteger', 'isSafeInteger']) {
+    is(jz(mapAbsent(method)).exports.f(), false, `Map absent, ${method}`)
+    is(jz(dictAbsent(method)).exports.f('zz'), false, `dict (dynamic-write) absent, ${method}`)
+  }
+})
+
 // Number.isFinite (21.1.2.2) / Number.isInteger (21.1.2.3) / Number.isSafeInteger
 // (21.1.2.5) share the same "not a Number → false, no coercion" contract. Their raw
 // arithmetic (`x === x && …`) already excludes every NaN-boxed pointer/atom carrier
