@@ -1,51 +1,51 @@
 # jz-wasmtime vs moonrun (MoonBit) memory comparison — GOAL-MEMORY evidence
-# commit: c28f218c
-# date: 2026-08-02 (UTC, regenerated at HEAD)
+# commit: f704a077
+# date: 2026-08-03 (UTC, regenerated at HEAD — the reference-refresh session)
 # machine: Apple M4 Max, darwin/arm64 (M4-reference machine)
-# command: node bench/bench.mjs --cases=<case> --targets=jz-wasmtime,moonbit --json=... (chunked; see .work/todo.md GOAL-MEMORY refresh entry)
+# command: node bench/bench.mjs --cases=<case> --targets=jz-wasmtime,moonbit --json=... (chunked, narrow-target isolation — see .work/todo.md THE REFERENCE REFRESH entry; a first attempt reused the full bulk-corpus run's memKb column and found a spurious ~+10MB uniform floor shift versus committed evidence on every case measured in a long 21-target-per-process chunk, refuted by this narrow 2-target rerun matching committed evidence's ~13.7MB engine floor — the bulk run's memKb was session/harness noise, not a jz regression; kept to this dedicated narrow-target methodology per the historical c28f218c precedent)
 # columns: case, jz_bytes (wasm size), jz_kb (peak RSS via /usr/bin/time -l), mbt_bytes (wasm size), mbt_kb (peak RSS)
-# note: wordcount jz_kb/mbt_kb are median-of-3 targeted re-verification (single-sample run read a 1.68x memKb fluke — CPU-contention window, see ledger; wasm bytes are deterministic and unaffected)
+# note: bitwise and sieve jz_kb are genuine — reflect a confirmed live jz codegen regression (commit 28b2530b, loop-index vars mis-widened to f64) also affecting their SPEED evidence, see ledger; verified NOT a memory-measurement artifact (memKb on these two rows matches the normal ~13-15MB engine floor, only the SPEED number is elevated)
 case,jz_bytes,jz_kb,mbt_bytes,mbt_kb
-alpha,8095,16912,12707,26752
-aos,9113,15328,13108,15392
-base64,3901,13824,14554,15904
-biquad,7419,21344,13902,22736
-bitwise,7980,14112,12604,14720
-blur,12403,17072,13862,27104
-bytebeat,7678,15888,12434,22752
-callback,3434,13888,12288,14576
-conv2d,7175,13824,13485,15024
-crc32,3572,13840,12592,14384
-dict,3413,13920,13045,15808
-dispatch,3723,13936,13161,14816
-dotprod,3208,13888,12482,14512
-fft,5891,15856,14524,17872
-hash,3090,13792,12731,14448
-hashjoin,3699,14176,13226,16256
-heat,3652,14768,12887,15936
-immutable,4064,17200,12896,16016
-json,12188,19104,17807,17792
-levenshtein,3833,13856,13109,14624
-lorenz,3574,14272,13147,15072
-lz,5716,13824,14095,15072
-mandelbrot,8399,14160,12622,14688
-mat4,4822,13792,13225,15008
-matmul,3614,15264,12646,16352
-nbody,10835,14048,14645,15424
-noise,6366,14304,13920,15120
-nqueens,3324,13840,12708,14384
-particle,8673,15984,13438,16976
-poly,3308,13872,12670,14560
-qoi,5716,14736,17474,20208
-radixsort,9244,14080,13439,15360
-raytrace,7332,17264,14918,18624
-shapes,6474,14624,13171,16160
-sieve,7890,14880,12602,18672
-sort,3751,13968,13834,15216
-spmv,4511,14624,13480,16160
-strbuild,3275,23824,13256,18176
-synth,3751,17888,13297,19216
-tokenizer,4371,13936,14495,15248
-vm,3526,13808,13327,14752
-wav,3809,15152,13837,17328
-wordcount,18337,15376,16424,16272
+alpha,8121,16896,12707,26768
+aos,9146,15296,13108,15328
+base64,4093,13824,14554,15312
+biquad,7445,21376,13902,22304
+bitwise,8026,14160,12604,14576
+blur,12282,17040,13862,26944
+bytebeat,7730,15888,12434,22560
+callback,3469,13792,12288,14544
+conv2d,7264,13840,13485,14976
+crc32,3598,13840,12592,14320
+dict,3439,13952,13045,15328
+dispatch,3749,13968,13161,14672
+dotprod,3282,13872,12482,14432
+fft,5699,15888,14524,17376
+hash,3143,13792,12731,14304
+hashjoin,3725,14192,13226,15616
+heat,3678,14832,12887,15568
+immutable,4090,17136,12896,15872
+json,12226,19136,17807,18032
+levenshtein,4387,13808,13109,14576
+lorenz,3600,14288,13147,15008
+lz,7064,13824,14095,15008
+mandelbrot,8425,14064,12622,14768
+mat4,4848,13760,13225,14864
+matmul,3688,15328,12646,16112
+nbody,10861,14016,14645,15312
+noise,6389,14272,13920,15088
+nqueens,3350,13744,12708,14304
+particle,8699,15952,13438,16592
+poly,3334,13888,12670,14496
+qoi,5742,14656,17474,19264
+radixsort,9624,14128,13439,15136
+raytrace,7358,17280,14918,18560
+shapes,6500,14656,13171,16240
+sieve,8084,14864,12602,18528
+sort,3809,13872,13834,15232
+spmv,4582,14624,13480,15536
+strbuild,3301,23840,13256,15920
+synth,3788,17968,13297,18928
+tokenizer,9243,14096,14495,15088
+vm,3552,13792,13327,14688
+wav,3835,15040,13837,16688
+wordcount,18218,15424,16424,16096

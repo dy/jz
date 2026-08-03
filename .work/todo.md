@@ -4,6 +4,177 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, THE REFERENCE REFRESH — COMPLETE, CLEAN, AT HEAD
+## f704a077; TWO REAL REGRESSIONS FOUND (root-caused, not fixed this
+## session); SIZE GOAL FLIPPED RED; SPEED GOAL STAYS RED, wider than
+## the stale evidence showed)
+
+Full 60-case corpus regenerated at HEAD f704a077 (was 2aaeaa19, 75
+compiler commits stale) on a genuinely quiet machine (one ~90s Brave
+foreground-tab spike mid-session, no timing chunk running during it,
+confirmed via `ps`/`uptime` before every chunk; no polluted data
+banked). Committed: bench/results.json, bench/bench.svg,
+.work/memcheck-results.csv, dist/ rebuilt fresh before the perf gate.
+
+### Recipe followed (11 chunks: 10 x ~6 cases + `jz` case isolated alone,
+### `--json` per chunk, merged externally)
+
+`jz` case's OWN self-referential `jz` target (compiling the self-hosted
+compiler's OWN corpus through jz.wasm) was excluded from its chunk —
+confirmed empirically it costs ~5 minutes for a SINGLE measurement
+(timed one attempt to completion) and contributes to no claims gate
+(the `jz` case is LAB-set, self-referential, never a rival-comparison
+row) — matches the committed evidence's own existing shape (no `jz`
+target row for the `jz` case, historically). tinygo lane: verified
+working first (`TINYGOROOT=~/.local/tinygo GOTOOLCHAIN=go1.23.6`), landed
+43/60 parity-ok rows with ZERO build failures — exactly clears the 42-row
+70%-of-60 floor.
+
+### Methodology bug caught and fixed mid-session: GOTOOLCHAIN leaked into
+### the plain `go`/`go-wasm` rival lanes
+
+Exporting `GOTOOLCHAIN=go1.23.6` for the whole session (needed for
+tinygo, which requires go1.19-1.23) silently forced the SAME pin onto
+`go build`/`GOOS=wasip1 go build` too — the system default is go1.26.0,
+almost certainly what produced the committed baseline. Caught via the
+anomaly scan (many DIFFERENT non-jz rivals — immutable/wordcount/
+shapes/matmul/lz's `go`/`go-wasm` rows — all moved together, a rival-side
+signature, not jz's). Fix: re-measured `go`+`go-wasm` across all 43
+.go-file cases WITHOUT the pin (4 chunks, system go1.26.0) and merged
+the corrected rows in. Lesson for next refresh: scope `GOTOOLCHAIN` to
+the tinygo invocation only, never export it session-wide.
+
+### ANOMALY VERIFICATION (ABBA rule) — every jz-lane case that moved
+### >25% vs committed evidence got a paired (`--paired`, order-alternated)
+### re-run, several got 2
+
+REFUTED as single-sample noise (paired re-run matches committed within a
+few %, sometimes 2 independent paired rounds): poly, json (jz-w2c leg),
+dotprod, shapes (jz-w2c leg), trace (jz-w2c leg), strbuild (jz-w2c leg),
+lz (jz-wasmtime leg — settled to 1.09x, inside the normal band). `alpha`
+jz-wasmtime's committed value (60us) is itself almost certainly the
+fluke, not this refresh — my reading (305-395us across 2 samples) is
+internally consistent with alpha's own jz (318-340us) and jz-w2c
+(490-611us) siblings on the SAME case; a 60us wasmtime invoke (process
+spawn + module instantiate) undercutting a 318us in-process V8-wasm run
+on identical logic was never plausible.
+
+CONFIRMED REAL, root-caused (not fixed — out of this session's scope):
+
+- **sieve** and **bitwise**, jz/jz-wasmtime/jz-w2c all 4-14x slower than
+  committed (sieve worst: jz-w2c 67142us vs committed 4889us, 13.7x).
+  Bisected on a disposable `git worktree` (node_modules symlinked, no
+  npm install) across the 75 intervening commits by WAT-shape signature
+  (SIMD-instruction count for bitwise, f64-op count for sieve) — both
+  land on the SAME single commit, **28b2530b** ("fix
+  collectI32SafeIndexVars back-propagation past a bare escape (KNOWN GAP
+  #1)"), a genuine i32/f64 SOUNDNESS fix whose `collectBareEscapes`
+  scan (analyze-scans.js) is evidently blaming (and f64-widening) a
+  loop-index-feeder local in both kernels that should stay i32-exempt
+  under its own stated rule ("ToInt32-rooted: bitwise ops, comparisons,
+  Math.imul/clz32" — bitwise.js's `x` is pure `^= << >>> Math.imul`;
+  sieve.js's `i`/`j` are pure comparison/increment) — the commit's own
+  message re-baselined 2 of 10 perf-ratchet categories (float/mixed) but
+  had NO ratchet shape matching either kernel's exact pattern, so this
+  slipped through un-ratcheted. WAT evidence: bitwise HEAD has 0
+  v128/SIMD instructions (ref 2aaeaa19 has 24 — vectorization lost
+  outright); sieve HEAD's `$sieve` function stores its outer loop index
+  in an `f64` local, doing `i64.trunc_sat_f64_s`/`i32.wrap_i64` every
+  iteration to recover an int (ref: 5 f64 ops total in the whole
+  function; HEAD: 27). NOT fixed this session (out of scope — evidence
+  refresh + verdict, not a fix task); flagged as the top-priority next
+  hunt — `collectBareEscapes`'s exemption predicate needs a false-
+  positive fix, likely a narrow miss in how it walks the specific
+  shift/xor/imul chain or the `i*i`-into-comparison shape.
+- **radixsort**, jz/jz-wasmtime/jz-w2c all ~1.4x slower than committed —
+  reproduced 4 independent times (2 plain, 2 paired-ABBA), same
+  direction and magnitude every time, all three jz-hosted lanes moving
+  together (matches the bitwise/sieve SIGNATURE — likely the same
+  28b2530b class at smaller relative cost since radixsort's histogram/
+  prefix-sum passes are less loop-index-dominated) — not bisected this
+  session (time-boxed), flagged as the same-class follow-up.
+- **glyfparse**, jz+jz-wasmtime ~1.3-1.45x slower — reproduced 2
+  independent times (plain + paired-ABBA), jz-w2c clean both times
+  (~1.05x) — smaller, not bisected.
+- **sort** (heapsort), the `jz` (V8-node-hosted) lane specifically ~1.5-
+  1.6x slower, reproduced 3 times — but `jz-wasmtime` and `jz-w2c`
+  (SAME compiled wasm, different host) both match committed evidence
+  within a few % every time. This proves the emitted CODE is not the
+  regression — isolated to the V8/node execution environment on this
+  run (plausibly JIT tier-up sensitivity interacting with this
+  session's own CPU baseline from several resident sibling Claude Code
+  processes). Recorded honestly since it's what `c.targets.jz` (the
+  field the claims gate reads) shows today; a future quiet, sibling-
+  free rerun of `sort --targets=jz` alone would settle whether it's
+  environment noise or real.
+- **bytebeat** and **provenance**, `jz-wasmtime` leg only, ~1.3x,
+  reproduced 2 times each — jz/jz-w2c clean both times. Smaller,
+  wasmtime-host-specific, not bisected.
+
+### Memory-measurement lesson: the bulk 21-target-per-process chunk run's
+### `memKb` column is NOT trustworthy — regenerated narrow-target instead
+
+First attempt reused the bulk run's `jz-wasmtime`/`moonbit` memKb
+columns for `.work/memcheck-results.csv` (assuming, per this task's own
+framing, that memory is pollution-immune) — got 8/43 beats-or-matches,
+median delta +7568KB (jz LARGER), a complete reversal of the historical
+40/43 / -1200KB claim, with a suspicious near-constant ~+10MB floor
+shift on EVERY case measured in a long (21-target) chunk and ZERO shift
+on every case I'd already re-measured narrowly (3-target paired runs).
+Root cause not fully chased (plausibly page-cache/VM growth over a
+single node process spawning 20+ heterogeneous child toolchains
+sequentially over tens of minutes — NOT a jz defect: bitwise/sieve's
+`memKb` under the narrow rerun sits at the normal ~14-15MB floor, so the
+codegen regression there is genuinely a SPEED-only bug, memory
+unaffected). Fix: redid `jz-wasmtime`+`moonbit` in 4 dedicated narrow
+(2-target) chunks across all 43 comparable cases, matching the
+historical c28f218c precedent's own methodology exactly — result: 40/43
+beats-or-matches, median delta -912KB (jz leaner), matching the
+committed claim closely. Lesson for next refresh: NEVER derive memcheck
+from a bulk multi-target run's memKb column, even though sizes/bytes
+from the same run stay trustworthy — always the dedicated narrow-target
+pass.
+
+### Self-host perf gate — quiet-machine datum (the publication-quality
+### number this refresh set out to get)
+
+`node test/selfhost-perf.js` after a fresh `npm run build` (dist/jz.wasm
+byte-reflects HEAD f704a077), machine confirmed quiet immediately
+before: **warm geomean 1.024x** (cap 1.03x, PASS — first round, no
+retry needed) — mat4 1.02 fft 1.03 biquad 1.02 sort 1.03 crc32 1.04
+mandelbrot 1.01; **fresh geomean 0.772x** (cap 0.99x, PASS) — mat4 0.72
+fft 0.79 biquad 0.77 sort 0.78 crc32 0.80 mandelbrot 0.76. Comfortably
+under both caps on the first try — audit-#8's "warm margin exhausted
+under load (1.041-1.078 then 1.020)" finding was, as that entry itself
+suspected, a load artifact: this quiet reading is the honest number.
+NOT re-baselined (per this task's explicit instruction) regardless of
+outcome — it passed clean, nothing to re-baseline.
+
+### `npm run test:claims` full verdict at HEAD f704a077 (11 test groups,
+### 25 assertions, 4 pass / 7 fail) — SEE "Goals" section below for the
+### per-axis scorecard this updates
+
+FRESH: PASS (both axes — results.json meta.commit and
+memcheck-results.csv's `# commit:` header both read f704a077, 0 stale
+commits; watr 5.7.12 installed == 5.7.12 in evidence). COMPLETE: PASS,
+all 11 named rivals clear the 42/60 floor (c-wasm 50, rust-wasm 50,
+go-wasm 43, **tinygo 43 — first time ever contested, was 0/60**,
+zig-wasm 43, as 49, v8 57, deno 57, bun 57, jsc 57, porf-native 42
+exactly-at-floor). WINNING: FAIL on all three leadership axes (wasm
+rival, V8-family, bun/jsc) — full red lists below. Tight-int-loop
+exception (vm/dict/crc32 vs bun/jsc, 1.5x band): PASS, 0 exceeded. SIZE:
+**FAIL, newly red** — geomean jz/as 1.060x vs the 1.05x par cap (was
+1.016x at the stale snapshot), 25/49 cases smaller (was 27/49) — a
+real, unchased regression, plausibly the cumulative byte cost of the
+several soundness-guard additions since 2aaeaa19 (bigIntOperand's
+runtime undef-check, dict/Map absent-key throw paths, catch/finally
+marker resets, JSON scalar-ingress boxing, receiver-HASH/map-value-
+census machinery) — not bisected this session.
+
+Full detail, credited/discredited rivals, and the goal-by-goal scorecard
+is in the "Goals" section below (kept as the single source of truth for
+gate status rather than duplicated here).
+
 ## Status (2026-08-03, audit-#8 P0-4 — Part 1 (JSON scalar ingress) and
 ## Part 3 (unary BigInt maybeUndefined residual) CLOSED; Part 2 (decl-init
 ## wall) RE-ATTEMPTED, NEW self-host miscompile found, REVERTED and banked)
@@ -3787,41 +3958,59 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
       only a 1.5x sanity band, not leadership — "VM + DICT DISSECTED" 2026-
       07-31). Gates already encode this split (test/bench-claims.js: the
       V8-family strict test, the bun/jsc strict test with the exception
-      carved out, and the exception's own sanity-band test). Current
-      distance: 16 wasm strict losses (worst trace 1.449x), 4 V8-family
-      strict losses (worst jessie 1.534x), 6 bun/jsc strict losses outside
-      the exception (worst jessie 1.895x) — evidence is stale (predates the
-      2026-08-01 landings), re-run at HEAD before re-auditing. Order: AFTER
-      architecture complete. (w2c lane already inside caps post-refresh:
-      tokenizer 2.100x/3.5, geomean 1.147x/1.35 -- the 3.851x figure was
-      pre-refresh noise.) REFRESH ATTEMPTED 2026-08-02, BLOCKED: full
-      60-case chunked re-run hit machine pollution from case ~28 onward
-      (orphaned jz-bench process + a foreign concurrent session's browser
-      automation, both outside this session's control -- see Status above);
-      discarded per the polluted-refresh precedent, committed evidence
-      unchanged. tinygo lane now wired (TINYGOROOT+GOTOOLCHAIN=go1.23.6
-      pin) and ready to contribute rows on the next clean attempt.
+      carved out, and the exception's own sanity-band test).
+      REFRESHED AT HEAD 2026-08-03 (f704a077, THE REFERENCE REFRESH — see
+      Status above for the full recipe/anomaly-verification writeup):
+      COMPLETE (tinygo now contested, 43/60, first time ever — was 0/60)
+      but WINNING got WORSE, not better, than the stale 2026-07-31
+      snapshot suggested — because two live regressions (bitwise, sieve;
+      root-caused to commit 28b2530b, NOT fixed this session) and three
+      smaller reproduced-but-unbisected ones (radixsort, glyfparse, sort's
+      V8-hosted lane) landed in the intervening 75 commits, invisible
+      until this refresh actually re-measured. wasm-rival strict: 19
+      unproven (11 true red beyond the 1.05x band: base64 1.085x, bitwise
+      1.926x, delayline 1.264x, fft 1.098x, glyfparse 1.478x, radixsort
+      1.478x, sdf 1.276x, shapes 1.310x, **sieve 12.064x**, sort 1.347x,
+      trace 1.457x — 8 more inside the band, ties not losses). V8-family
+      strict: 9 unproven, 8 red (bitwise 3.234x, colorpq 1.201x, delayline
+      1.155x, hashjoin 1.096x, jessie 1.530x, radixsort 1.328x, **sieve
+      8.326x**, watr 1.444x). bun/jsc strict (outside the tight-int-loop
+      exception): 14 unproven, 12 red (bitwise 3.741x, glyfparse 1.157x,
+      jessie 1.973x, json 1.100x, provenance 1.081x, radixsort 1.093x,
+      resample 1.077x, sdf 1.153x, **sieve 9.748x**, sort 1.177x, synth
+      1.173x, watr 1.312x). Tight-int-loop exception (vm/dict/crc32 vs
+      bun/jsc, 1.5x band): PASS, 0 exceeded — that class stays sound.
+      sieve/bitwise are the priority next hunt (WAT-level root cause
+      already known — see Status above, `collectBareEscapes` false-
+      positive in analyze-scans.js); trace/sdf/shapes/jessie are long-
+      documented pre-existing hard tails, not new.
 * [ ] SIZE: par-or-smaller than AssemblyScript BY GEOMEAN, with full JS
-      semantics — not strict-smaller. Current truth (SIZE BAND DIAGNOSED
-      2026-07-30): geomean 1.016, 27/49 cases smaller; AS's bench ports use
-      `unchecked()` throughout (assertions build is byte-identical, i.e.
-      AS's baseline assumes zero bounds checking) while jz pays real guards
-      because JS OOB semantics are load-bearing. Gate: geomean <= 1.05
-      vs AS (test/bench-claims.js size test, test/bench.js SIZE_GEOMEAN_MAX)
-      — an unchecked tier would close the residual but is against the
-      JS-exact philosophy; rejected.
-* [x] MEMORY: goal ALREADY MET at HEAD, RECONFIRMED 2026-08-02 at c28f218c
-      (.work/memcheck-results.csv regenerated with commit/date/machine/
-      command metadata; test/bench-claims.js gained a matching freshness
-      gate). jz-wasmtime beats-or-matches moonrun (MoonBit-wasm) peak RSS on
-      40/43 comparable cases (median delta -1200KB, jz leaner — wider than
-      the 2026-07-30 reading's -864KB); engine floors wasmtime 13.7MB vs
-      moonrun 12.2MB, growth is demand-driven geometric. Three residual
-      losses (strbuild +7.8MB, json +1.3, immutable +1.1) are the no-GC
-      arena's signature under the bench
-      harness's 26 in-process iterations without __clear/memory.reset() —
-      an architectural GC-vs-arena tradeoff, accepted and documented
-      (bench/README.md), not a defaults bug to chase.
+      semantics — not strict-smaller. FLIPPED RED 2026-08-03 (was GREEN
+      at the stale snapshot): geomean jz/as now **1.060x** (was 1.016x),
+      25/49 cases smaller (was 27/49) — exceeds the 1.05x par cap for the
+      first time. Not bisected this session; plausible cause is the
+      cumulative byte cost of several soundness-guard additions landed
+      since the 2aaeaa19 snapshot (bigIntOperand's runtime undef-check,
+      dict/Map absent-key throw paths, catch/finally $__jz_last_err_bits
+      resets, JSON scalar-ingress boxing, receiver-HASH/map-value-census
+      machinery) — each individually justified as a correctness fix, but
+      nobody had re-measured the cumulative size tax until this refresh.
+      AS's bench ports still use `unchecked()` throughout (assertions
+      build byte-identical) while jz pays real guards for JS OOB
+      semantics — that structural gap is unchanged; this is a NEW,
+      measured widening on top of it. Gate: geomean <= 1.05 vs AS
+      (test/bench-claims.js size test, test/bench.js SIZE_GEOMEAN_MAX).
+* [x] MEMORY: goal STAYS MET, RECONFIRMED 2026-08-03 at f704a077
+      (.work/memcheck-results.csv regenerated — dedicated narrow-target
+      2-target-per-chunk methodology, NOT the bulk run's memKb column,
+      see Status above for why). jz-wasmtime beats-or-matches moonrun
+      (MoonBit-wasm) peak RSS on 40/43 comparable cases (median delta
+      -912KB, jz leaner — same shape as the 2026-08-02 reading's
+      -1200KB, within normal run-to-run noise); engine floors wasmtime
+      ~13.7MB vs moonrun ~12.2MB unchanged. Confirmed the sieve/bitwise
+      SPEED regression does NOT carry a memory cost — both sit at the
+      normal ~14-15MB floor, isolating that bug to codegen/execution
+      time only.
 
 ## Open
 
