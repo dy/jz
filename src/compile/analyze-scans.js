@@ -5,7 +5,7 @@
 
 import { ASSIGN_OPS, MUTATE_OPS, collectParamNames, extractParams, REFS_IN_EXPR, refsName, T, isLiteralStr } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
-import { staticObjectProps, staticArrayElems, staticIndexKey, staticValue, NO_VALUE } from '../static.js'
+import { staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE } from '../static.js'
 import { exprType } from '../type.js'
 
 export function findFreeVars(node, bound, free, scope) {
@@ -800,11 +800,141 @@ const AFFINE_INDEX_OPS = new Set(['+', '-', '*', '<<', 'u-'])
  * Fractional locals are unaffected: this set only suppresses *comparison*-driven
  * widening; the assignment fixpoint that follows still widens any local with an
  * f64-typed RHS (`i = i / 3`), overriding membership here.
+ *
+ * THIRD requirement, layered on top of both sources above (fixed 2026-08-02,
+ * .work/todo.md KNOWN GAP #1): membership alone is NOT sufficient — a var is
+ * excluded from the returned set if `collectBareEscapes` finds it in an
+ * unresolved bare-escape position anywhere in `body`. Both sources' proofs
+ * are true only AT THE POINT of the index/edge use; the var's WASM storage is
+ * ONE slot for the whole function, so a later unguarded bare read (`return
+ * id` after `id *= 100000`) would silently read back a wrapped value. See
+ * collectBareEscapes' own doc for the exemption rules (index position,
+ * ToInt32-rooted, provable range, or a governing comparison).
  */
 // An integer literal that fits signed i32 — the only constant a promoted i32
 // local may hold. A larger integer (`0xFFFFFFFF`, a NaN-box mask) is emitted as
 // an f64.const, so treating it as an i32 leaf would store f64 into an i32 local.
 const isI32Lit = (v) => typeof v === 'number' && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647
+
+// ToInt32-rooted operators (`&|^~<<>>>>>`) AND comparisons: JS applies the
+// identical truncation — or collapses to a fresh i32 boolean — to the TRUE
+// value before these run, so a wrapped-i32 read here reproduces exactly what
+// JS would compute from the untruncated double. Comparisons additionally
+// carry their own SEPARATE, pre-existing, deliberately-scoped soundness
+// contract ("sound for n ≤ 2³¹", widenLocalTypes' CMP_OPS pass) — folding
+// them into a fresh proof obligation here would just double-count that
+// already-accepted tolerance, not add real safety.
+const ESCAPE_SAFE_ROOT_OPS = new Set(['&', '|', '^', '~', '<<', '>>', '>>>', '<', '>', '<=', '>=', '==', '!=', '===', '!=='])
+
+// Assignment forms whose RHS merely feeds the TARGET's OWN storage — no
+// magnitude proof needed for the feeder, because the write's wrap-consistency
+// is the TARGET var's own qualification to prove (this is exactly what the
+// backprop fixpoint below already trusts for these same four ops).
+const ESCAPE_EDGE_OPS = new Set(['=', '+=', '-=', '*='])
+
+const escapeInRangeI32 = (node) => {
+  const r = intExprRange(node)
+  return r != null && r[0] >= -2147483648 && r[1] <= 2147483647
+}
+
+const CMP_OPS_SET = new Set(['<', '>', '<=', '>=', '==', '!=', '===', '!=='])
+
+// Names appearing as a DIRECT operand of a comparison anywhere in `body` —
+// the canonical loop-counter shape (`i < n`). These already carry their OWN
+// separate, deliberately-scoped soundness tolerance ("sound for n ≤ 2³¹",
+// widenLocalTypes' CMP_OPS pass, untouched by this fix) — a var governed by
+// SOME comparison is exactly a loop-counter-shaped var, and its OTHER
+// arithmetic (`a[i] = (i+1)*0.125`, the mat4 perf-guard shape) inherits that
+// SAME accepted tolerance rather than a fresh, stricter one: keeping it i32
+// storage is no riskier than the comparison itself already accepts. A var
+// with NO governing comparison anywhere (an unbounded accumulator like `id`
+// in `id *= 100000` / `id += d`) gets no such pass, so it stays subject to
+// the full bare-escape proof below.
+// Math.imul/Math.clz32: JS ToInt32-coerces every argument before computing
+// (spec-defined, unconditionally — same "wrap IS the semantics" contract as
+// the bitwise operators; mirrors type.js intLevelMap's INT_MATH_FNS_I32,
+// the level-2/STRICT math-fn subset). Math.floor/ceil/round/trunc are
+// deliberately EXCLUDED — those need the argument's ACTUAL magnitude
+// (floor(NaN) is NaN, not 0), so a wrapped-i32 read there is NOT safe.
+const INT_MATH_FNS_I32 = new Set(['imul', 'clz32'])
+const mathFnName = (callee) =>
+  typeof callee === 'string' && callee.startsWith('math.') ? callee.slice(5)
+    : Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math' ? callee[2] : null
+
+function collectComparedNames(body) {
+  const names = new Set()
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') return
+    if (CMP_OPS_SET.has(op)) {
+      if (typeof node[1] === 'string') names.add(node[1])
+      if (typeof node[2] === 'string') names.add(node[2])
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
+  return names
+}
+
+/**
+ * Names with at least one "bare escape" anywhere in `body` — a value-position
+ * read whose exact double value could diverge from a wrapped-i32
+ * approximation, with no static proof it stays in range. A var with ANY such
+ * escape must never be promoted to permanent i32 storage: once a local's WASM
+ * storage is i32, `writeVar`'s `toI32` coercion (ir.js) wraps EVERY write mod
+ * 2^32 unconditionally — sound for a value ONLY ever consumed by another
+ * ToInt32 sink (an index, a bitwise op, another i32-storage local), unsound
+ * the instant it's read bare (`return id` after `id *= 100000`) even though
+ * some OTHER, earlier use of the same var (feeding an array index) was
+ * perfectly sound at that point of use. See collectI32SafeIndexVars' own doc
+ * and .work/todo.md's KNOWN GAP #1 entry (2026-08-02) for the full diagnosis.
+ *
+ * Occurrences exempt from the proof requirement (mirrors the three-source
+ * contract in collectI32SafeIndexVars' doc):
+ *   'idx'  — an affine component of a `[]` index, a direct operand of a
+ *            ToInt32-rooted op / comparison (ESCAPE_SAFE_ROOT_OPS), or an
+ *            argument to Math.imul/Math.clz32 (INT_MATH_FNS_I32 — spec-
+ *            defined ToInt32 on every argument): the wasm32 trap bound, or
+ *            JS's own truncation, already proves it (rules b,c).
+ *   'edge' — the affine-reachable RHS of a tracked assignment edge into
+ *            ANOTHER local (ESCAPE_EDGE_OPS): identical to what the backprop
+ *            fixpoint below already trusts — the feeder inherits the TARGET's
+ *            own contract, not a fresh one.
+ * Anything else needs a static `intExprRange` proof (rule a) or it's blamed.
+ */
+export function collectBareEscapes(body, locals) {
+  const escaped = new Set()
+  const compared = collectComparedNames(body)
+  const walk = (node, mode) => {   // mode: 'idx' | 'edge' | 'value'
+    if (typeof node === 'string') { if (mode === 'value' && !compared.has(node)) escaped.add(node); return }
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') return                                            // nested closure: separate scope/body
+    if ((op === '++' || op === '--') && typeof node[1] === 'string') return  // pure self-step, no value consumed
+    if (op === '[]' && !isLiteralStr(node[2])) { walk(node[1], 'value'); walk(node[2], 'idx'); return }
+    if (ESCAPE_SAFE_ROOT_OPS.has(op)) { for (let i = 1; i < node.length; i++) walk(node[i], 'idx'); return }
+    if (op === '()' && INT_MATH_FNS_I32.has(mathFnName(node[1]))) { walk(node[2], 'idx'); return }
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') walk(d[2], 'edge')
+        else walk(d, mode)
+      }
+      return
+    }
+    if (ESCAPE_EDGE_OPS.has(op) && typeof node[1] === 'string') { walk(node[2], 'edge'); return }
+    if ((mode === 'idx' || mode === 'edge') && AFFINE_INDEX_OPS.has(op)) {
+      for (let i = 1; i < node.length; i++) walk(node[i], mode)
+      return
+    }
+    mode = 'value'   // fell out of an idx/edge-affine chain (or already were in 'value' mode)
+    if (escapeInRangeI32(node)) return
+    for (let i = 1; i < node.length; i++) walk(node[i], mode)
+  }
+  walk(body, 'value')
+  return escaped
+}
 
 export function collectI32SafeIndexVars(body, locals) {
   const safe = new Set()
@@ -885,6 +1015,19 @@ export function collectI32SafeIndexVars(body, locals) {
       for (const s of src) if (!safe.has(s)) { safe.add(s); changed = true }
     }
   }
+  // A var promoted to PERMANENT i32 storage must have NO unproven bare escape
+  // ANYWHERE in the body — the storage is a single WASM local slot, so ANY
+  // later unguarded bare read (`return id` after `id *= 100000`, the
+  // FFT-butterfly KNOWN-FAIL this closes — see collectBareEscapes' doc)
+  // corrupts the value regardless of where in the function the escape sits
+  // relative to the sound index-feeding use. Filtering AFTER the fixpoint
+  // (rather than gating each backprop step) is sound without a re-fixpoint:
+  // removing a var here never needs to cascade to vars that reached `safe`
+  // THROUGH it — each var's own storage-safety rests on ITS OWN index/edge
+  // role, not on some other excluded var's escape status (a plain local
+  // copy `e = id` already routes through the SAME edge-exemption regardless
+  // of id's verdict, so e's own qualification — if any — is unaffected).
+  for (const n of collectBareEscapes(body, locals)) safe.delete(n)
   // Promote integer-shaped index feeders the type pass left at f64 (a hoisted
   // `o = y*w`). The byte offset must fit i32-addressable memory, so the i32-wrap
   // residue reproduces the true in-bounds value — same contract as inline `a[y*w+x]`.

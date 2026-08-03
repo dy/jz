@@ -4,7 +4,176 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
-## Status (2026-08-02, P0-2 SIBLINGS FIXED: bare `+`/`-` fast path + compoundAssign `*=`/`+=`/`-=` fast path — banked bug class #1's two named siblings closed)
+## Status (2026-08-02, KNOWN GAP #1 CLOSED: collectI32SafeIndexVars back-propagation + widenLocalTypes intCertain sibling both stopped trusting i32 storage past a bare escape)
+
+REPRO (both arms, live at HEAD before this fix, both via the `run`/`jz.compile` harness — the FFT-butterfly shape pinned KNOWN-FAIL in test/inference.js since the P0-2 ledger above):
+- `*=`: `id` back-propagated to i32 via `i0 += id` (an array-index feeder), then
+  `id *= 100000` inside the same outer loop, returned bare after the loop —
+  jz `1345294336` (wrong: `40000000000 mod 2^32`), JS `40000000000`.
+- `+=`: same `i0 += id` back-prop shape, then `id += (d|0)` once, returned
+  bare — jz `-2147483645` (wrong wrap), JS `2147483651`.
+- Isolated control (NO array/index involvement at all — proves the bug is
+  NOT specific to collectI32SafeIndexVars): `let id=4; id+=(d|0); return id`
+  — jz ALSO wrapped (`-2147483645` vs JS `2147483651`) at HEAD, because
+  `id` is typed i32 from its own `let id=4` literal by the ordinary
+  declaration pass and nothing else ever widens it (see root cause #2).
+
+ROOT CAUSE — TWO independent one-way i32-storage commitments, both
+magnitude-blind by design (the SAME documented P0-2 tradeoff: "a value
+merely STORED i32 is safe regardless of magnitude, because every READ
+re-applies the same ToInt32 the WRITE did" — widen.js), both missing the
+"is that premise actually upheld for THIS var" check:
+  1. `collectI32SafeIndexVars` (src/compile/analyze-scans.js) — the
+     PINNED bug. Its back-propagation fixpoint marks ANY var that affinely
+     feeds an already-proven-safe array index as i32-safe PERMANENTLY, for
+     the whole function, regardless of the var's own later magnitude growth
+     or a bare escape elsewhere. True for `*=` above: `id` started 'f64'
+     (the ordinary type pass's own verdict) and this promotion loop (the
+     `for (const n of safe) if (locals.get(n)==='f64' ...) locals.set(n,
+     'i32')` line) was what forced it to i32.
+  2. `widenLocalTypes`'s SEPARATE `intCertainMap`-based `keepI32` exemption
+     (src/compile/analyze.js) — found via repro-first differential testing
+     when fixing #1 alone left the `+=` arm still wrong. `id` here was
+     NEVER touched by collectI32SafeIndexVars at all (never an index
+     feeder's target of the promotion loop) — it started 'i32' from its
+     OWN `let id = 4` literal (the ordinary per-decl type pass) and NOTHING
+     ever widened it, because intCertainMap collapses intLevelMap's lattice
+     to a single boolean (`level >= 1`), erasing the level 1
+     ("integral-closed, range-open" — `+`/`-`/`*` NEVER return level 2
+     regardless of operand levels) vs level 2 (STRICT i32-range-safe:
+     literals, bitwise ops, comparisons, Math.imul/clz32) distinction that
+     actually matters for soundness.
+
+FIX (root, one shared mechanism, two call sites): `collectBareEscapes`
+(src/compile/analyze-scans.js, new) — a whole-body scan that finds every
+name with an unresolved "bare escape": a value-position read that is not
+(a) statically proven in-range (`intExprRange`, the AST-level opBound
+twin), (b) ToInt32-rooted (direct operand of `&|^~<<>>>>>`/comparisons, or
+an argument to Math.imul/Math.clz32 — JS ToInt32s these unconditionally,
+spec-defined), (c) an index position (`[]`'s index arg, affine-reachable),
+or governed by SOME comparison anywhere in the body (the loop-counter
+"sound for n≤2^31" tolerance widenLocalTypes' CMP_OPS pass already accepts
+— untouched, this reuses that SAME scope rather than adding a stricter
+one). Both root causes now consult it:
+  1. `collectI32SafeIndexVars` deletes every blamed name from its `safe`
+     set AFTER the existing seed+backprop fixpoint completes (no
+     re-fixpoint needed — a var's OWN storage-safety rests on its OWN
+     index/edge role, never cascades from an excluded var: verified by
+     inspection and by the safe-control test below, which pins that a
+     plain local copy `e = id` is unaffected by `id`'s own verdict).
+  2. `widenLocalTypes` gained Pass D: a level-1 (intLevelMap) local that's
+     STILL i32-typed after Passes A-C AND has a bare escape widens to f64;
+     level-2 locals need no check (every value they can hold already fits
+     i32, by construction).
+
+PERF GUARD verified, not assumed: `for(i=0;i<n;i++) a[i]` stays i32
+(comparison-governed, exempt regardless of other arithmetic) — perf-ratchet
+`int`/`cond`/`buf`/`nest`/`slice`/`ring`/`condref`/`fgather` all confirmed
++0 (8/10 categories, byte-identical op counts, zero over-disqualification).
+
+**HONEST TENSION, not silently absorbed (2 of 10 ratchet categories,
+`float`/`mixed`, RE-BASELINED with proof, not "fixed"):** perf-ratchet's
+own randomly-generated corpus (scripts/perf-corpus.mjs) happens to sample
+EXACTLY the bug's shape by construction — `float`/`mixed`'s own category
+definition is `let acc = 0; for(...) acc = acc + (expr); return acc` with
+NO `|0` and NO comparison on `acc` (deliberately, unlike the `int` category
+which wraps every step) — a plain, unguarded accumulator returned bare.
+Differential-tested against real JS (not assumed): `let acc=0; for(i<n)
+acc=acc+i; return acc` at n=100000 — OLD `704982704` (wrong), NEW
+`4999950000` (JS-exact); the ratchet's own seed=27 `mixed` program at
+n=50000 — OLD `25777188`, NEW/JS `-128823241692`. EVERY op-count delta in
+these two categories (float +5, mixed +181 — verified seed-by-seed via a
+`git worktree add HEAD` A/B, not assumed uniform) traces to this exact
+bug, not a missing admission — added the Math.imul/clz32 admission anyway
+(a real, narrower missing-admission fix, confirmed it does NOT change
+either category's op count: the outer `acc + (...)` accumulation is the
+governing escape regardless of what's admitted inside it). There is no
+sound way to keep these programs' accumulator on the i32 fast path without
+the SAME deferred "for-loop-bound-as-intExprRange-fact" mechanism the P0-2
+ledger already named as future work — re-baselined via `node
+test/perf-ratchet.js --update` (float 560→565, mixed 790→971;
+`int`/`cond`/`buf`/`nest`/`slice`/`ring`/`condref`/`fgather` byte-identical,
+confirming the re-baseline is scoped to exactly the two categories the bug
+touches). perf-ratchet 10/10 green on the new, justified baseline.
+
+VECTORIZER RECOVERY CHECK (requested by this ticket — verdict: NOT
+recovered, unrelated root cause): mat4/fft/crc32/biquad size spot-check
+re-run post-fix — mat4 still 1543 bytes (the P0-2 ledger's +15B baseline,
+unchanged), fft/crc32/biquad still byte-identical (2368/1107/1861). The
+mat4 delta and the tryStencil/tryButterfly declines are rooted in the
+SEPARATE, already-identified "no for-loop-bound-as-intExprRange-fact"
+gap (emit-time arithmetic admission for `i+1`-shaped bounds), not in
+collectI32SafeIndexVars/widenLocalTypes' storage classification — this fix
+doesn't touch that gap, so no recovery expected or observed. Confirmed,
+not assumed.
+
+SIBLING LEDGER (grepped analyze-scans.js/narrow.js + the named classes —
+typed-elem narrowing, slotI32Certain, global-narrow — per this ticket's
+own ask; each ruled in/out with reasoning, not just grepped):
+  - RULED OUT — `ctx.types.typedElem` (typed-array ctor binding): not a
+    magnitude-blind promotion at all — it resolves a var's bound TypedArray
+    CONSTRUCTOR from its actual `new XxxArray()` call site, so reads/writes
+    through it use that ARRAY'S real element format, mirroring true JS
+    TypedArray coercion exactly (not an optimizer approximation that could
+    drift from the source's actual semantics).
+  - RULED OUT — `ctx.schema.slotIntCertain` / `slotIntCertainAt` (schema
+    slot integer census, src/compile/analyze.js `analyzeIntCertain`): its
+    consumers (Math.floor elision, ToNumber-skip via ir.js `asF64`,
+    `intIndexIR`'s index fast path) are all per-USE-SITE VALUE-CONTEXT
+    elisions (skip a redundant coercion GIVEN the value is already known
+    integer/number-kind), never a commitment that narrows the SLOT'S OWN
+    memory representation to i32 — schema slots stay NaN-boxed f64 in
+    memory regardless; there is no "later bare read of corrupted storage"
+    exposure because there's no narrowed storage to corrupt.
+  - RULED IN, SOUND — `ctx.schema.slotI32Certain` / `slotI32CertainAt`:
+    this IS the strict, level-2-equivalent projection by construction
+    (ctx.js's own comment: "the strict (=2) projection: every write is
+    exactly-int32 and never -0") — exactly the level-2 case Pass D already
+    exempts, for the same reason (every value it can hold already fits
+    i32). No fix needed; confirmed by design, not just by absence of a
+    failing repro.
+  - RULED IN, LIVE BUG, OUT OF THIS TICKET'S FILE SCOPE (analyze-scans.js/
+    narrow.js) — `src/compile/plan/scope.js`'s module-global i32-narrowing
+    (the `declGlobal(name, 'i32')` fixpoint, candidates gated by
+    `producesFraction`): the SAME bug class, confirmed LIVE via a fresh
+    repro (`let counter=4; export let bump=()=>{counter*=100000; return
+    counter}`, called repeatedly — jz: 400000, 1345294336, -1827012608;
+    JS: 400000, 40000000000, 4000000000000000 — diverges the 2nd call).
+    `producesFraction`'s compound-assign handling (INT_COMPOUND vs the
+    `record()`+`producesFraction` path) checks only whether the RHS
+    OPERAND is integer-valued, never whether the accumulated PRODUCT/SUM
+    stays in i32 range, and a module global's every read is inherently a
+    "bare escape" (no local-scope containment) — same root shape as this
+    ticket's #1/#2, living in a THIRD file/mechanism. NOT fixed here
+    (genuinely separate fixpoint, own repro-first/gate cycle, not
+    reachable via this ticket's collectBareEscapes without duplicating it
+    across plan/scope.js's different AST-walk shape) — flagged as the
+    highest-priority follow-up in this bug family.
+
+TEST UPDATES: test/inference.js — the KNOWN-FAIL test flipped to its
+corrected name/values (`compound-assign on an index-back-propagated local
+no longer wraps on a later bare read`, both `*=`/`+=` arms now assert the
+JS-exact values); added a new safe-control structural pin (`safe control:
+index-use counters with no unresolved bare escape keep i32 storage` — two
+arms: a plain comparison-governed index counter, and a ToInt32-rooted
+accumulator with a bare uncompared return) confirming the perf-guard shape
+survives. test/perf-ratchet.json — float/mixed re-baselined per the
+tension note above (see the commit for the exact numbers).
+
+GATES: repros red→green (native AND kernel leg — fresh `npm run build`,
+~5min, both `id`-shape arms and the isolated no-array control). Full
+battery: all 88 test/index.js TESTS files run individually, zero
+uncurated fails. kernel-parity 33/33 byte-identical (O0/O2/O3, post-
+rebuild). kernel-oracle 11/11 (451 assertions). perf-ratchet 10/10 on the
+justified re-baseline (see tension note). optimizer.js 214/214 (3949
+assertions). selfhost.js 21/21 (206 assertions). selfhost-perf.js 5/5
+(warm geomean 0.996×/cap 1.03×, fresh 0.793×/cap 0.99× — both comfortably
+under cap, no regression vs the P0-2 ledger's 0.994×/0.813×). fuzz.js:
+2000 seeds × opt{0,1,2,3}, 0 divergence (30173 inputs compared, 9827
+skipped i32-contract-exceeded, ~225s). examples.js 22/22 (433 assertions,
+unchanged from the P0-2 ledger — no new stencil/vectorizer fallout). Size
+spot-check: mat4 1543B (+15B baseline, unrecovered — see vectorizer
+verdict above), fft/crc32/biquad byte-identical (2368/1107/1861).
 
 REPROS (live at HEAD, confirmed before any edit, both via the `run`/`jz.compile`
 harness — see .work/todo.md's own P0-2 entry above for the sibling audit that

@@ -60,9 +60,19 @@
  * on `arithOp`. See the two-tier exprType exception above for why the type.js
  * mirror needed a `strict` parameter instead of `*`'s unconditional rule, and
  * ir.js's `asI32`→`toI32` note for the companion fix that made it ratchet-
- * neutral. KNOWN GAP (not closed by this fix, separate root cause): a compound
- * assign on a local back-propagated to i32 storage via an array-index feeder
- * (`collectI32SafeIndexVars`, src/compile/analyze-scans.js) still wraps when
- * read bare elsewhere — that storage-type decision, not this predicate, is
- * the actual cause; see .work/todo.md's KNOWN GAP #1.
+ * neutral. FORMER KNOWN GAP, CLOSED 2026-08-02 (separate root cause, one
+ * ticket later): a compound assign on a local back-propagated to i32 storage
+ * via an array-index feeder still wrapped when read bare elsewhere — the
+ * STORAGE-TYPE decision, not this predicate, was the actual cause, split
+ * across TWO one-way commitments (both magnitude-blind by the SAME design
+ * this docstring documents above, both missing a later-escape check):
+ * `collectI32SafeIndexVars`'s own back-propagation, and widenLocalTypes'
+ * separate `intCertainMap`-based `keepI32` exemption (a plain `let id = 4`
+ * declaration typed i32 from its literal, never reconsidered). Root fix:
+ * `collectBareEscapes` (src/compile/analyze-scans.js) — a var keeps i32
+ * storage only if every later value-position read is index-positioned,
+ * ToInt32-rooted, a tracked edge's own affine RHS, statically in-range, or
+ * governed by SOME comparison anywhere (the SAME "sound for n≤2^31"
+ * tolerance loop counters already had) — both commitments now consult it.
+ * See .work/todo.md's KNOWN GAP #1 entry for the full repro/fix trace.
  */

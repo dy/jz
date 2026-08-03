@@ -25,7 +25,7 @@ import { ctx, err } from '../ctx.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from '../kind.js'
 import { intLiteralValue, nonNegIntLiteral, constIntExpr, intExprRange, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
-import { typedElemCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, scanBoundedArrIdx, inBoundsCharCodeAt, exprType, intCertainMap, isTerminator } from '../type.js'
+import { typedElemCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, scanBoundedArrIdx, inBoundsCharCodeAt, exprType, intCertainMap, intLevelMap, isTerminator } from '../type.js'
 import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux } from '../../layout.js'
 
 // ValueRep field docs + ParamReps lattice helpers — storage lives in src/reps.js.
@@ -77,7 +77,7 @@ import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTy
 /** Find free variables in AST: referenced in node, not in `bound`, present in `scope`. */
 import {
   findFreeVars, findMutations, boxedCaptures,
-  collectI32SafeIndexVars, collectF64StridedIndexVars, narrowUint32, scanBindingUses,
+  collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32, scanBindingUses,
   scanFlatObjects, scanSliceViews, scanNeverGrown, scanNumericFill, isFreshArrayCtor, USE,
 } from './analyze-scans.js'
 
@@ -966,6 +966,19 @@ function assertBodyFactsFresh(hit) {
  * operand types, missing widens through loop back-edges. keepI32 vars are
  * exempt: a hoisted product `o = y*w` types f64 but is proven integer.
  * Monotonic (i32 → f64 only), bounded by locals count.
+ *
+ * Pass D (fixed 2026-08-02, .work/todo.md KNOWN GAP #1 sibling): Pass A/B's
+ * `keepI32`/exprType checks are magnitude-blind BY DESIGN (a value merely
+ * STORED i32 is safe regardless of magnitude ONLY WHEN every read re-applies
+ * the same ToInt32 the write did — widen.js's own load-bearing perf
+ * tradeoff) — so an intCertain-but-UNBOUNDED (intLevelMap level 1: `+`/`-`/
+ * `*` are "integral-closed, range-open") local that grows past i32 range via
+ * a compound-assign NEVER widens through them. That premise breaks the
+ * instant such a local is ALSO read bare with no governing comparison
+ * anywhere (collectBareEscapes) — `id` after `id *= 100000` / `id += d`
+ * (the FFT-butterfly KNOWN-FAIL, test/inference.js). Level 2 (STRICT
+ * i32-range-safe by construction: literals, bitwise ops, comparisons,
+ * Math.imul/clz32) needs no check — every value it can hold already fits i32.
  */
 function widenLocalTypes(body, locals) {
   const i32SafeIdx = collectI32SafeIndexVars(body, locals)
@@ -983,7 +996,15 @@ function widenLocalTypes(body, locals) {
   // case (no nested reassignment anywhere) keeps the original, cheaper walk.
   const nestedNames = new Set()
   findMutations(body, new Set(locals.keys()), nestedNames)
-  const intCounters = intCertainMap(body, nestedNames)
+  // Raw levels (not the collapsed intCertainMap boolean): level 2 (STRICT
+  // i32-range-safe by construction — literals, bitwise ops, comparisons,
+  // Math.imul/clz32) needs no further check below, but level 1 (integral,
+  // UNBOUNDED magnitude — `id *= 100000`, `id += d`) rests on the SAME
+  // magnitude-blind "every read re-applies ToInt32" premise
+  // collectI32SafeIndexVars' back-propagation does, and Pass D below closes
+  // the identical gap for it (see .work/todo.md KNOWN GAP #1 sibling note).
+  const intLevels = intLevelMap(body, nestedNames)
+  const intCounters = new Map(); for (const [n, l] of intLevels) intCounters.set(n, l >= 1)
   const f64IdxVars = collectF64StridedIndexVars(body, locals)  // counters that trunc anyway — don't keep i32
   const keepI32 = (name) => i32SafeIdx.has(name) || (intCounters.get(name) === true && !f64IdxVars.has(name))
   const CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
@@ -1038,6 +1059,28 @@ function widenLocalTypes(body, locals) {
       for (let i = 1; i < node.length; i++) recheck(node[i])
     }
     recheck(body)
+  }
+
+  // Pass D: close the level-1 sibling of collectI32SafeIndexVars' own bare-
+  // escape gap. Passes A-C above all keep i32 storage via MAGNITUDE-BLIND
+  // exprType checks (a value merely STORED i32 is safe regardless of
+  // magnitude ONLY WHEN every read re-applies the same ToInt32 conversion
+  // the write did — the P0-2 ledger's own load-bearing perf tradeoff, kept
+  // exactly as-is here) — so an intCertain-but-unbounded (level 1) local
+  // that grows past i32 range via a compound-assign/assign NEVER widens
+  // through them, by design. That premise breaks the instant such a local
+  // is ALSO read bare with no governing comparison anywhere (the loop-
+  // counter "sound for n<=2^31" tolerance is scoped to compared names only,
+  // untouched — collectBareEscapes' own compared-name exemption) — `id`
+  // after `id *= 100000` / `id += d` (test/inference.js's FFT-butterfly
+  // KNOWN-FAIL). Level 2 (STRICT i32-range-safe by construction) needs no
+  // check: every value it can ever hold already fits i32.
+  let level1I32 = false
+  for (const [name, level] of intLevels) if (level === 1 && locals.get(name) === 'i32') { level1I32 = true; break }
+  if (level1I32) {
+    const bareEscapes = collectBareEscapes(body, locals)
+    for (const [name, level] of intLevels)
+      if (level === 1 && locals.get(name) === 'i32' && bareEscapes.has(name)) locals.set(name, 'f64')
   }
 }
 

@@ -1148,35 +1148,50 @@ test('compoundAssign requires the same bound proof as the binary operators when 
   is(f(2), 200000, 'small operand still correct')
 })
 
-// KNOWN GAP (NOT closed by this fix — separate root cause, flagged for its
-// own repro-first/gate cycle): a compound-assign (`*=` OR `+=`/`-=` — BOTH
-// arms confirmed, not just one) on a local that's been back-propagated into
-// i32 storage via an array-index feeder (`i0 += id`, the FFT-butterfly
-// shape test/perf.js already pins) still wraps when later read bare — but
-// NOT because of compoundAssign's own admission (which this fix correctly
-// gates — confirmed via direct WAT A/B: the compound op now emits
-// `f64.mul`/`f64.add`, never a raw ungated `i32.mul`/`i32.add`). The wrong
-// value survives because `id`'s WASM LOCAL STORAGE itself is still 'i32':
-// `collectI32SafeIndexVars`'s promotion/back-propagation
-// (src/compile/analyze-scans.js ~L877-892) marks ANY var that's an operand
-// of an assignment feeding an already-proven-safe array-index var as
-// "i32-safe" — permanently, for the WHOLE function, regardless of that
-// var's OWN later magnitude growth or whether it ALSO escapes bare
-// elsewhere (`return id`) — the soundness argument justifying this
-// ("a valid array access requires the byte offset to fit i32, so the local
-// is i32-bounded for every non-trapping run") is TRUE for the INDEX var
-// itself at its point of use, but does NOT transfer to an unrelated later
-// bare read of a FEEDER var. Once `id`'s storage is i32, ir.js writeVar's
-// own `toI32` coercion (this ticket) wraps EVERY write into it via
-// ToInt32 regardless of which arm computed the value (see the note on the
-// test above) — the SAME class of bug (magnitude-blind admission) as the
-// just-fixed mulFitsI32/addFitsI32, but living in a DIFFERENT function (a
-// LOCAL-STORAGE-TYPE decision, not a single-expression emitter) — genuinely
-// distinct from, and NOT resolved by, this ticket's emit.js/type.js/ir.js
-// changes. Pinned at its CURRENT (wrong) value per the codebase's
-// documented-KNOWN-FAIL convention (test/dyn-keys.js) so a future fix to
-// analyze-scans.js flips these asserts.
-test('KNOWN GAP: compound-assign on an index-back-propagated local still wraps (collectI32SafeIndexVars, not this ticket)', () => {
+// FIXED 2026-08-02 (KNOWN GAP closed at root): a compound-assign (`*=` OR
+// `+=`/`-=` — both arms) on a local that's been back-propagated into i32
+// storage via an array-index feeder (`i0 += id`, the FFT-butterfly shape
+// test/perf.js also pins) used to wrap when later read bare — NOT because of
+// compoundAssign's own admission (already sound per this ticket's fix —
+// confirmed via WAT A/B: the compound op emits `f64.mul`/`f64.add`, never a
+// raw ungated `i32.mul`/`i32.add`), but because the FEEDER var's WASM LOCAL
+// STORAGE ITSELF stayed 'i32' permanently once back-propagated, regardless of
+// later magnitude growth or a bare escape (`return id`) elsewhere.
+//
+// TWO independent one-way storage commitments shared this exact flaw, found
+// via this repro's own two arms (`*=` vs `+=` took different paths through
+// the type pipeline — see .work/todo.md's Status entry for the full trace):
+//   1. collectI32SafeIndexVars' own back-propagation (src/compile/
+//      analyze-scans.js) — promotes an f64-typed feeder to i32 once it
+//      affinely reaches an array index, with no later-escape check. Root fix:
+//      collectBareEscapes (same file) scans the WHOLE body for value-position
+//      reads that aren't index-positioned, ToInt32-rooted, or a tracked
+//      edge's own affine-reachable RHS, blaming any name with an unresolved
+//      one; collectI32SafeIndexVars now deletes every blamed name from its
+//      `safe` set AFTER the backprop fixpoint (no re-fixpoint needed — a
+//      var's own storage-safety rests on its OWN index/edge role, never on
+//      an excluded var's escape status).
+//   2. widenLocalTypes' intCertainMap-based `keepI32` exemption (src/compile/
+//      analyze.js) — treated "integral but UNBOUNDED magnitude" (intLevelMap
+//      level 1: `+`/`-`/`*` are "integral-closed, range-open") as sufficient
+//      to skip ALL widening, magnitude-blind by design (same P0-2 perf
+//      tradeoff exprType's non-strict default relies on) — this is what
+//      actually kept the `+=` arm's `id` i32 (it was NEVER promoted via
+//      collectI32SafeIndexVars at all; it started i32 from its own `let id =
+//      4` literal declaration and NOTHING else ever widened it). Root fix:
+//      Pass D in widenLocalTypes — a level-1 local with an unresolved bare
+//      escape (collectBareEscapes) widens to f64; level 2 (STRICT
+//      i32-range-safe by construction: literals, bitwise ops, comparisons)
+//      needs no check, since every value it can hold already fits i32.
+// Both fixes share ONE exemption, matching the pre-existing, deliberately-
+// scoped "sound for n<=2^31" loop-counter tolerance (widenLocalTypes' CMP_OPS
+// pass, untouched): a name appearing as a direct operand of ANY comparison
+// ANYWHERE in the body is never blamed — this is exactly what keeps the
+// canonical `for(i=0;i<n;i++) a[i]` hot-loop shape (perf-ratchet's hottest
+// class) on the i32 fast path even when its OWN arithmetic (`a[i]=(i+1)*k`)
+// isn't statically range-provable — i itself is comparison-governed, id
+// (this repro) is not.
+test('compound-assign on an index-back-propagated local no longer wraps on a later bare read (collectI32SafeIndexVars + widenLocalTypes intCertain sibling, 2026-08-02)', () => {
   const srcMul = `
     let N = 0; let x;
     export let init = (k) => { N = k; x = new Float64Array(k); return x; };
@@ -1195,7 +1210,7 @@ test('KNOWN GAP: compound-assign on an index-back-propagated local still wraps (
   mMul.init(8)
   const jsMul = () => { let ix = 0, id = 4; while (ix < 8) { let i0 = ix; while (i0 < 8) i0 += id; ix = 2 * (id - 1); id *= 100000 }; return id }
   is(jsMul(), 40000000000, 'JS authority for the *= shape')
-  is(mMul.go(), 1345294336, 'KNOWN-FAIL (*=): jz still wraps (40000000000 mod 2^32) — see comment above')
+  is(mMul.go(), 40000000000, 'FIXED (*=): jz matches JS exactly (id widens to f64, no i32 wrap on the bare return)')
 
   const srcAdd = `
     let N = 0; let x;
@@ -1212,7 +1227,42 @@ test('KNOWN GAP: compound-assign on an index-back-propagated local still wraps (
   mAdd.init(8)
   const jsAdd = (d) => { let id = 4; id += (d | 0); return id }
   is(jsAdd(2147483647), 2147483651, 'JS authority for the += shape')
-  is(mAdd.go(2147483647), -2147483645, 'KNOWN-FAIL (+=): jz still wraps (2147483651 mod 2^32, signed) — see comment above')
+  is(mAdd.go(2147483647), 2147483651, 'FIXED (+=): jz matches JS exactly (id widens to f64, no i32 wrap on the bare return)')
+})
+
+// SAFE-CONTROL structural pin (companion to the fix above): a canonical
+// index-use loop whose counter has NO unresolved bare escape (every use is
+// either the array index itself, the comparison that governs it, or a
+// ToInt32-rooted op) must KEEP i32 local storage — collectBareEscapes must
+// not over-disqualify the hot `for(i=0;i<n;i++) a[i]` shape (perf-ratchet's
+// hottest class) chasing this fix. Two arms: (1) a plain index-feeder with
+// no escape at all (mirrors test/perf.js's transitively-narrowed nest); (2)
+// an accumulator whose OWN per-iteration op is ToInt32-rooted (`|0`), so
+// wrap is the correct semantics even though it's returned bare and never
+// compared.
+test('safe control: index-use counters with no unresolved bare escape keep i32 storage', () => {
+  const watIdx = jz.compile(`
+    export let f = (n) => {
+      let s = 0
+      let a = new Float64Array(64)
+      for (let i = 0; i < n; i++) { a[i] = i; s = s + a[i] }
+      return s
+    }
+  `, { wat: true, optimize: 2 })
+  const fnIdx = watIdx.slice(watIdx.indexOf('(func $f'), watIdx.indexOf('(func', watIdx.indexOf('(func $f') + 6))
+  ok(/\(local \$i i32\)/.test(fnIdx), 'loop counter `i` stays i32 storage (comparison-governed, index-positioned)')
+
+  const watAcc = jz.compile(`
+    export let f = (n, a) => {
+      let s = 0
+      for (let i = 0; i < n; i++) s = (s + a[i]) | 0
+      return s
+    }
+  `, { wat: true, optimize: { level: 'speed', sourceInline: false } })
+  const fnAcc = watAcc.slice(watAcc.indexOf('(func $f'), watAcc.indexOf('(func', watAcc.indexOf('(func $f') + 6))
+  // `f` is export-wrapper-inlined ($__inlNN_s), same mangling as the other
+  // inlined-name tests in this file — match either the plain or mangled form.
+  ok(fnAcc.includes('$s i32)') || fnAcc.includes('_s i32)'), 'ToInt32-rooted accumulator `s` stays i32 storage despite a bare, uncompared return')
 })
 
 test('inferArrElemSchema: caller disagreement keeps polymorphic dispatch', () => {
