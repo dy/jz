@@ -1284,3 +1284,166 @@ param/return/closure `presentVal` propagation remain unstarted. §14 point 4
 (joint binary-operand runtime-domain dispatch, closing the
 `bigintMixReject`/audit-#10 KNOWN-FAIL) remains its own separate, larger,
 untouched design.
+
+## 16 — Slice 7, as landed ("widen the consumer chokepoints — repro-first,
+## most of the named acceptance criteria were already green")
+
+Repro-first, per the task's own brief: before writing any code, every
+acceptance-criteria row named by the task (decl-hop STRING `+`, decl-hop
+BigInt unary through hops, composed/container-storage rows) was directly
+repro'd against real JS. Every one of them was **already correct at HEAD**
+(56daaf22) — the generic dynamic path Slices 1-6 kept finding "already
+JS-correct, just not WAT-optimized" turned out to cover ALL of these value
+shapes too, including ones never explicitly pinned before (`Math.abs`,
+`x>5`, `typeof x`, template literals, ternary/&&/comma/array/object
+composition one hop past a decl, `Number.isNaN`). This is the same finding
+every prior slice's own disable/re-enable cycle already made, extended one
+more level: `toNumF64`'s generic `__to_num` fallback and `toStrI64`'s
+generic `__to_str` fallback both ALREADY special-case the UNDEF_NAN sentinel
+internally (module/string.js's own `censusMaybeUndefined` comment on
+`String()` — "falls through to the LAST branch... already correct" — is
+literally true, verified by direct trace, not just trusted). So §15's own
+"honest boundary" framing was right that these chokepoints don't yet emit
+the CHEAP inline sentinel-dispatch for a hopped claim, but wrong to imply
+this was a live VALUE-correctness gap for the named rows — it is a codegen/
+WAT-shape gap only, for NUMBER; STRING's would need a NEW "undefined"
+string-constant mechanism (MAX_SSO=6 can't hold "undefined", and ir.js's
+own NO-EMIT contract blocks reusing module/string.js's literal-string
+emitter from inside `toStrI64`) — scoped OUT of this slice as a genuinely
+separate, comparable-sized undertaking, not attempted.
+
+**What WAS found live and fixed, by continuing the repro sweep past the
+task's own named rows** (methodology: same "verify empirically, don't
+assume" discipline every prior slice in this design used) — a genuine,
+previously-unpinned value-correctness bug:
+
+1. **`toNumF64` NUMBER-census widening** (ir.js): the `vt === VAL.NUMBER`
+   gate around `coerceNullishToNum` now also fires when `vt` is null but
+   `censusMaybeUndefinedKind(node) === VAL.NUMBER` — the exact "runtime
+   presence dispatch" widening §15 named, applied to the one chokepoint
+   where it's small, safe, and reuses the EXISTING `coerceNullishToNum`
+   verbatim (no new mechanism). Value-neutral (the generic fallback was
+   already correct — confirmed via direct diff, not assumed) but a real
+   codegen improvement: a hopped NUMBER-census read skips the generic
+   `__to_num` dynamic dispatch call for the cheap 2-branch sentinel check.
+2. **Binary `+` on two present-key BigInt census operands, NEITHER side
+   separately provable** (`let x = m.get(a); let y = m.get(b); return x +
+   y`) — genuinely WRONG at HEAD, confirmed by direct repro (not assumed):
+   returned a garbage NUMBER (`4e-323`), not `8n`. Two independent, stacked
+   causes, both fixed:
+   - **The WASM computation itself** was wrong: `emit.js`'s binary `+`
+     handler's entry gate (`valTypeOf(a)===BIGINT||valTypeOf(b)===BIGINT`)
+     never sees a hopped census claim (`vt` stays null for this shape, §14
+     point 3), so it fell to the generic dynamic-NUMBER path, which does
+     `f64.add` on the raw i64-reinterpreted-as-f64 BigInt carrier bits —
+     nonsense float arithmetic. Fixed: a new `bothBigIntOperands(a, b)`
+     predicate (emit.js) — **AND, never OR** — routes to the existing
+     `bigIntOperand`/`bigintMixReject` i64 machinery when BOTH operands are
+     bigint-or-census-bigint. The AND is load-bearing, not incidental: an OR
+     (a single census-BigInt operand paired with a proven-or-unproven
+     NUMBER other side) would silently corrupt exactly the mixed-kind shape
+     §14 point 4 already names as its own out-of-scope, "operand-local
+     guards are architecturally insufficient" design — verified this stays
+     unreachable (the existing audit-#10 KNOWN-FAIL pin, `present-key
+     census-BIGINT + NUMBER`, is byte-for-byte unaffected).
+   - **The export-boundary decode** was ALSO wrong, independently, even
+     once the WASM computation was fixed: `VT['+']`'s own "unknown operand →
+     optimistic NUMBER" default (kind.js) still claimed NUMBER for this
+     shape, and `compile/index.js`'s `_resultNumeric`/`_resultBigintSentinel`
+     boundary-wrap decision trusts that claim — so a genuinely-correct i64
+     sum still crossed the JS boundary misread as a subnormal float. Fixed
+     two ways, in lockstep: `VT['+']` gets a both-census-BIGINT upgrade
+     (mirroring `censusBigintUnaryVT`'s existing pattern for `u-`/`~`,
+     §14's own prior fix); `censusBigintSentinelKind` (kind.js) gets a new
+     **kind 4** for a binary `+` node whose both operands independently
+     claim BIGINT — simpler than kinds 1-3: `bigIntOperand`'s own runtime
+     UNDEF_NAN guard already throws `BIGINT_UNDEF_MIX` before a genuinely-
+     absent operand could ever reach a return here, so there is no
+     absent-case bit pattern to special-case, and interop.js needs no new
+     decode-table entry (`BIGINT_SENTINEL_BITS[4]` is simply absent, so
+     `decodeBigintSentinel`'s `ret === undefined` check is always false for
+     a real BigInt and the raw value passes through unchanged for free).
+
+**Scoped OUT, found live while landing the `+` fix, NOT this slice's
+scope** — `bothBigIntOperands` was initially written op-generic (also
+wiring `-`/`*`/`/`/`%`/`&`/`|`/`^`/`<<`/`>>`), and the WASM computation for
+ALL of them came out correct. But the export-boundary decode for every one
+of those siblings stayed broken: `valTypeOfWithLocals` (kind.js, shared by
+`narrow.js narrowValResults`) has a "SOUND `+`" no-optimistic-claim rule for
+`+` ONLY (its own doc comment) — every sibling operator falls through to
+the plain optimistic-NUMBER default, which locks in a WRONG
+`func.valResult = NUMBER` claim at PLAN time, before this slice's own
+per-function-emit-time widening ever gets a chance to run. Verified this is
+**pre-existing and entirely general**, not a census/presentVal artifact at
+all — a plain exported function taking two REAL (non-census) BigInt
+PARAMS through `-` already misdecodes at HEAD, before any change this
+session (`export let f = (a, b) => a - b; f(6n, 3n)` → `1.5e-323`, not
+`3n`, byte-identical via `git stash`). Landing the op-generic version would
+have been representationally complete but not live — the exact half-fix
+this design's own history (§12's "two new gaps", audit #10's "five more")
+warns against shipping silently. Reverted `bothBigIntOperands`'s USE at
+those 9 call sites back to the original per-op gate (the helper itself,
+and the `+`-only VT/`censusBigintSentinelKind` companions, stay); pinned
+the current (byte-identical, unregressed) behavior as a dedicated
+KNOWN-FAIL in test/dyn-keys.js, with the general non-census repro included
+so a future fix's scope is unambiguous — it is a `valTypeOfWithLocals`
+fix (broader blast radius: every function using these 9 operators, not a
+census-chokepoint widening), not part of this design's own charter.
+
+**Also found live, also scoped OUT** — a param-hop sibling gap, not a
+chokepoint gap: `presentVal` has no producer for PARAMS (§15's own explicit
+scope line — "Params/returns/closures do NOT get a presentVal producer in
+this slice"). `const g = (v) => -v; g(m.get('a'))` (present-key BigInt
+census, passed as a call-site argument) still corrupts — `emitNeg`'s own
+OR-arm correctly ASKS `censusMaybeUndefinedKind(v)`, but gets `null` back
+because nothing ever set `v`'s `presentVal`. This is exactly the
+param/return/closure `presentVal` propagation slice §15 already named as
+its own, separate, comparable-sized future work — confirmed live (not
+just theorized) and pinned as a KNOWN-FAIL, not attempted here.
+
+**`nullableOperand`/`bigIntOperand`/`bigIntUnary` needed NO widening** —
+found, not assumed, before writing any code: all three already call
+`censusMaybeUndefined`/`censusMaybeUndefinedKind` UNCONDITIONALLY, never
+gated on `valTypeOf` first (only `toNumF64`'s NUMBER arm and `toStrI64`'s
+STRING identity-bypass arm actually had the `vt`-first gate §15's own
+honest-boundary text described for "the chokepoints" collectively — the
+other three were already opt-in-clean). This matches the design's own
+repeated finding that manually enumerating "the known chokepoints" needs
+individual, not collective, verification — re-confirmed at a smaller scale
+here, the same lesson §12 and audit #10 already taught.
+
+**Files touched**: ir.js (`toNumF64`'s NUMBER-census widening, +import);
+emit.js (`bothBigIntOperands` helper, wired at `+` only; the other 9
+binary BigInt table entries get a comment, not a behavior change);
+kind.js (`VT['+']`'s both-census-BIGINT upgrade; `censusBigintSentinelKind`
+kind-4 arm, scoped to `+`); test/dyn-keys.js (5 new tests: the `+` flip,
+its negative controls, and three KNOWN-FAILs — the general
+`valTypeOfWithLocals` gap, its census-shaped sibling, and the param-hop
+`presentVal` gap).
+
+**Gates**: full 88-file battery in foreground chunks of 7 — every chunk
+green (types 656/657 pass+1 pre-existing skip through kernel-parity
+37/37 894 assertions — no failures anywhere); dyn-keys.js 44/44 (130
+assertions) BOTH legs (native + `JZ_TEST_TARGET=jz.wasm`), byte-for-byte
+same pass count; perf-ratchet 10/10 at +0 every category (int/float/mixed/
+cond/buf/nest/slice/ring/condref/fgather — expected, per the task's own
+framing: a hopped-census-claim shape reaching a WAT-optimized fast path is
+rare in this corpus); kernel-parity 33/33 byte-identical (O0/O2/O3);
+kernel-oracle 11/11; selfhost.js 21/21 (206 assertions); fuzz 2000×4
+(seeds 1-8000, four separate foreground runs) zero divergence across
+~120K compared inputs; size sweep geomean 1.055× unchanged
+(`scripts/bench-size.mjs`, byte-for-byte per-case table diffed against the
+pre-slice run); fresh build ×2 byte-identical (`dist/jz.js`/`dist/jz.wasm`/
+`dist/interop.js`, sha256-verified: `2ec1e1f9…`/`54d56c3a…`/`396500b4…`
+both times).
+
+The next slice, per §15's own naming, is still open: the remaining
+`toStrI64` STRING-census widening (needs a new "undefined" string-constant
+mechanism — out of scope here, precisely because it's new machinery, not a
+gate widening), the param/return/closure `presentVal` propagation (found
+live-blocking a real case this session, not just theorized), the general
+`valTypeOfWithLocals` "SOUND" rule gap for `-`/`*`/`/`/`%`/bitwise (found
+live this session, pre-existing, general — its own separate fix), and §14
+point 4's joint binary-operand runtime-domain dispatch (the
+`bigintMixReject`/audit-#10 KNOWN-FAIL, unchanged, still its own separate,
+larger design).

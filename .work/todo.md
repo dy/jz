@@ -4,6 +4,72 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, represented-maybe-undefined Slice 7 landed — "widen
+## the consumer chokepoints", .work/represented-maybe-undefined-design.md §16
+## — most named acceptance rows were already green; one real BigInt-binary
+## export-boundary bug found and fixed, three related gaps found and scoped
+## out with precise repros)
+
+Repro-first (per the task's own brief): every acceptance-criteria row named
+up front (decl-hop STRING `+`, decl-hop BigInt unary through hops, composed/
+container-storage rows) was **already JS-correct at HEAD** (56daaf22) —
+`toNumF64`/`toStrI64`'s generic fallbacks already special-case the UNDEF_NAN
+sentinel internally, the same "generic path already correct, just not
+WAT-optimized" finding every prior slice made, extended further than
+previously verified (Math.abs, comparisons, typeof, template literals,
+composed-expression-one-hop-past-a-decl — all confirmed via direct repro,
+not assumed).
+
+**Landed**: (1) `toNumF64`'s NUMBER-census gate (ir.js) now also fires when
+`valTypeOf` is null but `censusMaybeUndefinedKind` proves NUMBER — reuses
+`coerceNullishToNum` verbatim, value-neutral, real codegen win (skips the
+generic `__to_num` call for this shape). (2) Binary `+` on two present-key
+BigInt census operands, NEITHER side separately provable (`let x=m.get(a);
+let y=m.get(b); return x+y`) — genuinely wrong at HEAD (`4e-323`, not `8n`),
+two stacked causes both fixed: emit.js's new `bothBigIntOperands(a,b)` (AND,
+never OR — an OR would silently corrupt the mixed-kind KNOWN-FAIL class §14
+point 4 already names) routes the WASM computation through the real i64
+`bigIntOperand` machinery; kind.js's `VT['+']` both-census upgrade +
+`censusBigintSentinelKind`'s new kind-4 arm teach the SAME fact to the
+export-boundary decode (compile/index.js `_resultNumeric`/
+`_resultBigintSentinel`), which needed it independently — the i64 math being
+correct wasn't enough on its own, confirmed by direct repro before assuming
+the fix was complete.
+
+**Found live, explicitly scoped OUT (not this design's charter), each
+pinned as a dedicated KNOWN-FAIL with a precise repro**: (a) `-`/`*`/`/`/`%`/
+bitwise siblings of the `+` fix — the WASM computation came out correct too,
+but the export-boundary decode stays broken because `valTypeOfWithLocals`
+(kind.js) has a "SOUND +" no-optimistic-claim rule for `+` ONLY, not its
+siblings — verified PRE-EXISTING and GENERAL (a plain `(a,b)=>a-b` with two
+real non-census BigInt params already misdecodes at HEAD, unrelated to
+census/presentVal entirely) — reverted `bothBigIntOperands`'s use at those 9
+sites back to the original gate (byte-identical, unregressed) rather than
+ship a representationally-complete-but-not-live half-fix. (b) A param-hop
+sibling: `presentVal` has no producer for PARAMS (§15's own explicit scope
+line) — `const g=(v)=>-v; g(m.get('a'))` (present-key BigInt) still
+corrupts, confirmed live, owned by the param/return/closure `presentVal`
+propagation slice §15 already named as separate future work. (c) The
+`toStrI64` STRING-census widening needs a NEW "undefined" string-constant
+mechanism (MAX_SSO=6 can't hold it; ir.js's NO-EMIT contract blocks reusing
+module/string.js's literal emitter) — a genuinely separate undertaking, not
+a gate widening, not attempted.
+
+`nullableOperand`/`bigIntOperand`/`bigIntUnary` needed NO widening — found,
+not assumed: all three already call the census predicate unconditionally,
+never gated on `valTypeOf` first (only `toNumF64`'s NUMBER arm and
+`toStrI64`'s STRING-identity-bypass arm actually had the `vt`-first gate).
+
+**Gates**: full 88-file battery, foreground chunks of 7, every chunk green
+(no failures anywhere — pre-existing skips unchanged); dyn-keys.js 44/44
+(130 assertions) both legs (native + `JZ_TEST_TARGET=jz.wasm`), byte-for-
+byte identical; perf-ratchet 10/10 at +0 every category; kernel-parity
+33/33 byte-identical; kernel-oracle 11/11; selfhost.js 21/21; fuzz 2000×4
+(seeds 1-8000, four foreground runs) zero divergence; size sweep geomean
+1.055× unchanged; fresh build ×2 byte-identical (sha256-verified).
+
+Full detail: .work/represented-maybe-undefined-design.md §16.
+
 ## Status (2026-08-04, represented-maybe-undefined Slice 6 landed — "begin
 ## the presentVal opt-in model", .work/represented-maybe-undefined-design.md
 ## §14/§15, audit-#10's re-enablement path)

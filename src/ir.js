@@ -27,7 +27,7 @@ import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex, OBJECT_S
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf } from './ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from './reps.js'
-import { valTypeOf, censusMaybeUndefined, censusShapedNode } from './kind.js'
+import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, censusShapedNode } from './kind.js'
 import { T } from './ast.js'
 import { objLiteralSchemaId } from './static.js'
 
@@ -996,7 +996,20 @@ export function toNumF64(node, v) {
   if (typeof node === 'string' && ctx.func.maybeNullish?.has(node)) return coerceNullishToNum(asF64(v))
   const vt = valTypeOf(node)
   if (vt === VAL.BOOL) return typed(['f64.convert_i32_s', truthyIR(v)], 'f64')
-  if (vt === VAL.NUMBER || vt === VAL.BIGINT) {
+  // Slice 7 widening (.work/represented-maybe-undefined-design.md §14/§15's own
+  // honest-boundary gap): `vt` stays permanently null for a decl/param/capture-
+  // hopped census-NUMBER claim (§14 point 3 — `val` never carries a census
+  // claim, by construction) even though `presentVal` (Slice 6, kind.js
+  // `censusMaybeUndefinedKind`) already proves the exact same "every value
+  // ever WRITTEN was NUMBER" fact the branch below already trusts once
+  // `valTypeOf` itself happens to prove it (currently only the param case,
+  // where `val` IS `vt`'s own source — see that function's own doc comment).
+  // Consult it directly instead of waiting on `vt`, strictly for NUMBER —
+  // never BIGINT, for the exact reason the comment just below stays unchanged
+  // (ToNumber(bigint) throws in real JS; this whole family stays as
+  // permissively unsound for BIGINT as it always was, not newly closed here).
+  const censusNum = vt == null && censusMaybeUndefinedKind(node) === VAL.NUMBER
+  if (vt === VAL.NUMBER || vt === VAL.BIGINT || censusNum) {
     // maybeUndefined join (.work/maybe-undefined-design.md §1a): a dict-census
     // NUMBER claim is a "every value ever WRITTEN" fact, not a "this key
     // exists" proof — an absent key reads real `undefined` at runtime. Gated
@@ -1008,7 +1021,7 @@ export function toNumF64(node, v) {
     // site that isn't a dict-mode `[]`/`.` read (loop counters, schema slots,
     // the overwhelming hot-path case) pays zero new cost — same node object,
     // same asF64(v) call, no new branch taken.
-    if (vt === VAL.NUMBER && censusMaybeUndefined(node)) {
+    if ((vt === VAL.NUMBER || censusNum) && censusMaybeUndefined(node)) {
       // coerceNullishToNum's OWN contract (its doc comment above): `valIR`
       // "must be side-effect-free... it is duplicated". True for the dict/
       // Map direct-read shape (censusShapedNode) and a bare name (a local

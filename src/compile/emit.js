@@ -4136,6 +4136,57 @@ function bigintMixReject(op, a, b) {
     err(`Cannot mix BigInt and other types in \`${op}\` (TypeError in JS) — convert explicitly with BigInt() or Number()`)
 }
 
+// Slice 7 widening (.work/represented-maybe-undefined-design.md §14/§15's own
+// honest-boundary gap, §16 as landed): the binary `+` table entry below gates
+// its i64/bigIntOperand dispatch on `valTypeOf(a) === VAL.BIGINT ||
+// valTypeOf(b) === VAL.BIGINT` — `vt` stays permanently null for a decl/
+// param/capture-hopped census-BIGINT operand (§14 point 3), so `let x =
+// m.get(k); let y = m.get(j); x + y` (both present-key BIGINT census reads)
+// fell all the way through to the generic dynamic NUMBER path — which treats
+// a present BigInt's raw i64-reinterpreted-as-f64 bits as an ordinary float
+// and does f64 arithmetic on the bit pattern (silently garbage), not i64
+// arithmetic. Live, confirmed via direct repro (not assumed): `x + y`
+// returned `4e-323` instead of `8n`. Written op-generic (usable at any
+// binary BigInt table entry) but WIRED ONLY at `+` below — `-`/`*`/`/`/`%`/
+// the bitwise family compute the SAME correct i64 result through this same
+// predicate but still misdecode at the export boundary for a SEPARATE,
+// pre-existing, general reason (see each of those table entries' own
+// comment) — wiring this there too would be representationally complete but
+// not live, so it deliberately isn't, verified via direct repro before
+// landing, not assumed safe.
+//
+// Widen with an AND, never a plain OR: a bare `censusMaybeUndefinedKind(x) ===
+// VAL.BIGINT` OR-ed onto the existing gate would ALSO route a census-BIGINT
+// operand paired with a PROVEN-non-BigInt other side (e.g. a literal NUMBER)
+// into this same i64 path — bigIntOperand's own runtime guard only checks
+// ITS operand's sentinel, never the other side's actual kind, so that shape
+// would silently reinterpret the proven-NUMBER operand's bits as i64 instead
+// of throwing the TypeError real JS gives for a BigInt⊕Number mix. That
+// mixed-kind class is EXACTLY §14 point 4's own named, out-of-scope,
+// separate design ("operand-local guards are architecturally insufficient" —
+// bigintMixReject's own citation) — the audit-#10 KNOWN-FAIL pin
+// (`present-key census-BIGINT + NUMBER silently corrupts`) stays pinned
+// UNCHANGED by this widening for exactly that reason. Requiring BOTH sides
+// bigint-or-census-bigint keeps every other shape (proven+dynamic,
+// proven+literal-NUMBER, census+proven-NUMBER) on its EXISTING, unaffected
+// path — this only ever adds reachability for the shape where NEITHER side
+// was separately provable but BOTH sides' census independently claims
+// BIGINT, which is exactly as sound as the OLD single-proven-side gate
+// already was (bigintMixReject's own aBig/bBig computation is unaffected —
+// a census-sourced operand's `valTypeOf` is null either way, so it was
+// already "unproven" there, never triggering a false compile-time reject).
+// The remaining accepted narrower gap (bigintMixReject's own documented
+// "both independently maybeUndefined and both absent → should be NaN, not a
+// throw" case) is unchanged by this widening — it was already the accepted
+// behavior for a call site that reaches bigIntOperand at all; this just
+// extends REACHABILITY of that same, already-accepted mechanism to a
+// previously-unreachable (both-census, neither-proven) shape.
+const bigIntSide = (vt, n) => vt === VAL.BIGINT || censusMaybeUndefinedKind(n) === VAL.BIGINT
+const bothBigIntOperands = (a, b) => {
+  const vtA = valTypeOf(a), vtB = valTypeOf(b)
+  return vtA === VAL.BIGINT || vtB === VAL.BIGINT || (bigIntSide(vtA, a) && bigIntSide(vtB, b))
+}
+
 // audit-#8 P0-3: the runtime twin of bigintMixReject's compile-time literal proof.
 // A BIGINT-census `node` whose exact kind comes SOLELY from censusMaybeUndefined's
 // soundness carve-out (a dict/Map absent-key read, e.g. `m.get('missing')`) may hold
@@ -4864,7 +4915,7 @@ export const emitter = {
       if (cfB) return typed(ctx.abi.string.ops.concatRaw(strI64(a), strOperand(vtB, b), ctx, selfAccum), 'f64')
       return typed(ctx.abi.string.ops.cat(strOperand(vtA, a), strOperand(vtB, b), ctx, selfAccum), 'f64')
     }
-    if (vtA === VAL.BIGINT || vtB === VAL.BIGINT) {
+    if (bothBigIntOperands(a, b)) {
       bigintMixReject('+', a, b)
       return fromI64(['i64.add', bigIntOperand(a), bigIntOperand(b)])
     }
@@ -4945,6 +4996,26 @@ export const emitter = {
     // bigintMemberAssignTarget above ('+').
     if (isLit1(b) && bigintMemberAssignTarget(a))
       return fromI64(['i64.sub', asI64(emit(a)), ['i64.const', 1]])
+    // Slice 7 (.work/represented-maybe-undefined-design.md §14/§15): NOT
+    // widened to `bothBigIntOperands` like '+' below — found, while landing
+    // that widening, that a BOTH-census-BigInt `-` (and `*`/`/`/`%`/the
+    // bitwise family) has a SEPARATE, PRE-EXISTING, general export-boundary
+    // gap unrelated to census/presentVal: `valTypeOfWithLocals` (this file's
+    // own narrow.js-shared resolver) has a "SOUND +" no-optimistic-claim rule
+    // for `+` ONLY (see its own doc comment) — every other arithmetic/bitwise
+    // op falls through to the plain `valTypeOf` default, which locks in an
+    // optimistic NUMBER `func.valResult` at PLAN time (narrowValResults, before
+    // any per-function census/live-value info exists), before this slice's own
+    // per-function-emit-time widening ever gets a chance to run. Confirmed via
+    // direct repro, PRE-DATES this slice entirely (reproduces identically at
+    // HEAD before any of this session's changes): `export let f = (a, b) => a
+    // - b` called with two REAL, non-census BigInt params from the JS host
+    // already misdecodes (`1.5e-323` instead of `2n`) — same for `*`/`/`/`%`.
+    // Closing that gap is a general, separate fix to `valTypeOfWithLocals`
+    // (broader blast radius than a census-chokepoint widening — every function
+    // using these operators, not just a hopped census claim) — named here as a
+    // future finding, not attempted in this slice. The `+` fix below is
+    // unaffected: `+` already had its own SOUND rule before this session.
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('-', a, b)
       // b===undefined here is UNARY minus (0n - a) reached through this same table
@@ -4977,6 +5048,8 @@ export const emitter = {
   },
   'u-': a => emitNeg(a),
   '*': (a, b) => {
+    // Slice 7: not widened — see '-'s identical comment above (the same
+    // pre-existing, general, out-of-scope valTypeOfWithLocals gap).
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('*', a, b)
       return fromI64(['i64.mul', bigIntOperand(a), bigIntOperand(b)])
@@ -5014,6 +5087,7 @@ export const emitter = {
     return typed(['f64.mul', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '/': (a, b) => {
+    // Slice 7: not widened — see '-'s identical comment above.
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('/', a, b)
       return fromI64(['i64.div_s', bigIntOperand(a), bigIntOperand(b)])
@@ -5035,6 +5109,7 @@ export const emitter = {
     return typed(['f64.div', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '%': (a, b) => {
+    // Slice 7: not widened — see '-'s identical comment above.
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('%', a, b)
       return fromI64(['i64.rem_s', bigIntOperand(a), bigIntOperand(b)])
@@ -5441,6 +5516,8 @@ export const emitter = {
   ...Object.fromEntries([
     ['&', 'and'], ['|', 'or'], ['^', 'xor'], ['<<', 'shl'], ['>>', 'shr_s'],
   ].map(([op, fn]) => [op, (a, b) => {
+    // Slice 7: not widened — see '-'s identical comment above ('+' above is
+    // the only op whose export-boundary lane this slice closes end-to-end).
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject(op, a, b)
       return fromI64([`i64.${fn}`, bigIntOperand(a), bigIntOperand(b)])

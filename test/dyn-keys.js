@@ -874,3 +874,115 @@ test('Slice 4: call-result arithmetic does not triplicate a captured-mutation si
   `, { jzify: true }).exports.main
   is(f(0), 15005, 's=15 (sum of xs), count=5 (one increment per call) — not 15015 (count tripled)')
 })
+
+// Slice 7 (.work/represented-maybe-undefined-design.md §14/§15, "widen the
+// opt-in consumer chokepoints"): the arithmetic/coercion chokepoints
+// (ir.js toNumF64, emit.js's binary `+` BigInt dispatch) gated on
+// `valTypeOf(node)` FIRST and never saw a decl/direct census claim (`vt`
+// stays permanently null for this shape, §14 point 3) — widened to also
+// consult `censusMaybeUndefinedKind`/`presentVal` directly, the SAME
+// discipline `nullableOperand`/`bigIntOperand`/`bigIntUnary` already had
+// (found, while landing this slice, to NOT need widening — they already
+// call the census predicate unconditionally, never gated on `vt` first).
+//
+// Real, live value-correctness win, found and verified (not assumed): a
+// binary `+` between two decl-hop present-key BigInt census reads — NEITHER
+// side separately provable (no literal, no unary wrapper) — fell through to
+// the generic dynamic-NUMBER `+` dispatch, which did `f64.add` on the raw
+// i64-reinterpreted-as-f64 BigInt carrier bits (nonsense float arithmetic on
+// two tiny subnormals) AND, even had the i64 arithmetic itself been correct,
+// the export-boundary decode (compile/index.js `_resultNumeric`/
+// `_resultBigintSentinel`) had no way to know this `+` node's result was
+// really a BigInt (VT['+']'s own "unknown operand → optimistic NUMBER"
+// default). Both fixed together: emit.js's `bothBigIntOperands` (an AND, not
+// an OR — see its own doc comment for why an OR would silently corrupt a
+// BigInt-census-operand-paired-with-a-real-NUMBER mix, the exact §14 point 4
+// out-of-scope class) routes the WASM computation through the correct i64
+// `bigIntOperand`/`bigIntMixReject` machinery; VT['+']'s own both-census
+// upgrade plus `censusBigintSentinelKind`'s new kind-4 arm (kind.js) teach
+// the SAME both-census fact to the export lane, so the return crosses the
+// boundary as a real i64 BigInt, not a misdecoded NUMBER.
+test('Slice 7: decl-hop binary `+` between two present-key BigInt census reads crosses the export boundary correctly (was garbage NUMBER)', () => {
+  const present = jz(`export let f = () => { const m = new Map(); m.set('a', 5n); m.set('b', 3n); let x = m.get('a'); let y = m.get('b'); return x + y }`, { jzify: true }).exports.f
+  is(present(), 8n)
+  is(typeof present(), 'bigint')
+  // dict sibling, same decl-hop shape (dynamic key on both sides, matching
+  // the Slice 6 dict test's own precedent — a STATIC string-literal key
+  // read, e.g. `d['a']`, does not take the census/dict-mode dynamic-get path
+  // at all, a pre-existing, unrelated distinction, not this test's concern).
+  const dict = jz(`export let f = (k, j) => { const d = {}; d[k] = 5n; d[j] = 3n; let x = d[k]; let y = d[j]; return x + y }`, { jzify: true }).exports.f
+  is(dict('a', 'b'), 8n)
+  // one side absent — real JS: ToNumeric(undefined) is the Number NaN, and
+  // the OTHER side is a genuine BigInt, so the mix throws TypeError; jz's own
+  // bigIntOperand runtime guard already implements exactly this (audit-#8
+  // P0-3), now reachable through this widened entry gate too.
+  let threw = false
+  try { jz(`export let f = () => { const m = new Map(); m.set('a', 5n); let x = m.get('a'); let y = m.get('missing'); return x + y }`, { jzify: true }).exports.f() }
+  catch (e) { threw = /BigInt/.test(e.message) }
+  ok(threw, 'JS: TypeError (Number NaN from the absent side mixed with a real BigInt)')
+})
+
+// Negative controls (Slice 7): a single census-BigInt operand paired with a
+// PROVEN (non-census) side must keep taking its EXISTING path unchanged —
+// this already worked before this slice (the proven side alone satisfied the
+// old `valTypeOf(a)===BIGINT||valTypeOf(b)===BIGINT` gate) and must not
+// regress. A genuine literal BigInt/Number mix must still compile-error.
+test('Slice 7: negative controls — single-proven-side BigInt mixes and genuine literal mixes are unaffected', () => {
+  const singleSide = jz(`export let f = () => { const m = new Map(); m.set('a', 5n); let x = m.get('a'); return x + 3n }`, { jzify: true }).exports.f
+  is(singleSide(), 8n)
+  let threw = false
+  try { jz('export let f = () => { return 1n + 1 }', { jzify: true }) } catch (e) { threw = true }
+  ok(threw, 'genuine BigInt/Number literal mix still throws at compile time')
+  is(jz('export let f = () => { return 1n + 2n }', { jzify: true }).exports.f(), 3n, 'genuine BigInt+BigInt (no census involved) unaffected')
+})
+
+// KNOWN-FAIL, found landing this slice, NOT this slice's scope: `-`/`*`/`/`/
+// `%` and the bitwise family (`&`/`|`/`^`/`<<`/`>>`) share `+`'s OWN emit.js
+// `bothBigIntOperands` widening (deliberately, for consistency — see that
+// function's own doc comment) but do NOT get the matching VT/
+// censusBigintSentinelKind export-lane upgrade `+` gets, because doing so
+// would be representationally complete but not LIVE: `valTypeOfWithLocals`
+// (src/kind.js, shared by narrow.js's narrowValResults) has a "SOUND `+`"
+// no-optimistic-claim rule for `+` ONLY — every sibling operator falls
+// through to the plain optimistic-NUMBER default, which locks in a WRONG
+// `func.valResult=NUMBER` claim at PLAN time (before any per-function census
+// info exists), before this slice's own per-function-emit-time widening ever
+// gets a chance to run. Confirmed PRE-EXISTING and GENERAL, not specific to
+// census/presentVal at all: a plain exported function taking two genuine
+// (non-census) BigInt params through `-` already misdecodes at HEAD, before
+// any change in this slice. Closing it is a separate, general
+// `valTypeOfWithLocals` fix (broader blast radius — every function using
+// these operators, not a census-chokepoint widening) — named here, not
+// attempted. Pinned as the CURRENT (unchanged by this slice) behavior so a
+// future fix flips it deliberately.
+test('KNOWN-FAIL (found landing Slice 7, out of scope): binary `-`/`*`/`/`/`%`/bitwise ops on two present-key BigInt census reads still misdecode at the export boundary (pre-existing, general valTypeOfWithLocals gap)', () => {
+  const two = (op) => jz(`export let f = () => { const m = new Map(); m.set('a', 5n); m.set('b', 3n); let x = m.get('a'); let y = m.get('b'); return x ${op} y }`, { jzify: true }).exports.f()
+  is(typeof two('-'), 'number', 'JS: 2n (bigint) — actual: wrong number, unchanged by this slice')
+  is(typeof two('*'), 'number')
+  is(typeof two('/'), 'number')
+  is(typeof two('%'), 'number')
+  is(typeof two('&'), 'number')
+  // A plain, non-census exported function through the SAME operators shares
+  // the identical gap — proves it's general, not a census-shape artifact.
+  const plainSub = jz('export let f = (a, b) => a - b', { jzify: true }).exports.f
+  is(typeof plainSub(5n, 3n), 'number', 'JS: 2n — a real, non-census BigInt param pair through `-` already misdecoded at HEAD, pre-existing')
+})
+
+// KNOWN-FAIL, found landing this slice, NOT this slice's scope: a PARAM
+// never gets a `presentVal` producer (§15's own explicit scope line —
+// "Params/returns/closures do NOT get a presentVal producer in this slice"),
+// so a BigInt-census value passed as a call-site ARGUMENT into a callee that
+// applies unary `-`/`~` to its own parameter has no `presentVal`/`val` claim
+// to consult at all — `emitNeg`/`~`'s own OR-arm (censusMaybeUndefinedKind)
+// correctly asks the question but gets `null` back for the param, falls to
+// ordinary NUMBER negation, and corrupts the raw BigInt carrier bits (sign-
+// flips them as if they were a float). Closing it is the param/return/
+// closure `presentVal` propagation slice §15 names as its own future,
+// comparable-sized work — not attempted here.
+test('KNOWN-FAIL (found landing Slice 7, out of scope): param-hop present-key BigInt census value through unary `-` in a callee has no presentVal producer for params', () => {
+  const f = jz(`
+    const g = (v) => -v
+    export let f = () => { const m = new Map(); m.set('a', 5n); return g(m.get('a')) }
+  `, { jzify: true }).exports.f
+  is(typeof f(), 'number', 'JS: -5n (bigint) — actual: wrong number, a pre-existing gap this slice does not close')
+})
