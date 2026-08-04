@@ -4,6 +4,197 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, audit-P1-2 RECOVERY CAMPAIGN CLOSED — Residual A
+## (diffusion/slime f64-domain wrap-canon, named at 4b20e4c6) and Residual B
+## (i32-array-add wrapIntIR teach-the-matcher, named at c8700daa) BOTH
+## RECOVERED; FFT butterfly investigated and found to need a THIRD, separate
+## mechanism — named honestly, not attempted)
+
+**Residual A — diffusion/slime toroidal wrap-select, f64-domain**: 4b20e4c6's
+own residual said `xw = x>0?x-1:w-1` (diffusion: `x===0?w-1:x-1`) compiles to
+an F64-DOMAIN select (both branches unify at f64 since `w-1` isn't provably
+i32-small) wrapped in jz's ordinary overflow-canon, and `tryStencil`'s
+`ivCoeff`/`isWrapSelect` (src/optimize/vectorize.js) only recognized the
+I32-domain step (`isStep` checked literally `'i32.sub'`/`'i32.add'`). Direct
+WAT inspection (temporary trace, not guesswork) found the outer overflow-canon
+guard is **Infinity-guarded, not NaN-guarded** as the residual's sketch
+hypothesized — ivCoeff's EXISTING `/inf/i.test` check (line ~1862, unchanged)
+already matches it; only the wrap-select's OWN two branches needed teaching:
+
+- `isStep` now also accepts the f64-domain step `f64.{add,sub}
+  (f64.convert_i32_s(local.get $iv), f64.const 1)` (unwrapping a possible CSE
+  tee around the convert), alongside the original bare i32 form.
+- `ivCoeff` now treats a bare `f64.const` (any value) as loop-invariant
+  (coefficient 0) — the same unconditional-any-value reasoning its existing
+  `isI32Const` branch already uses; needed because the wrap-select's
+  invariant branch (`0`/`w-1`) is now f64-typed too.
+- A new `ivCompare(g, iop, fop)` matches the RIGHT-direction guard in either
+  domain: native `i32.{lt_s,eq}(x, B)`, or `f64.{lt,eq}
+  (f64.convert_i32_s(x), B)` with B then f64-typed (a cached `w-1`). `B`
+  converts to the identical i32 value via `i32.wrap_i64(i64.trunc_sat_f64_s
+  (B))` — the EXACT idiom jz's own overflow-canon already uses to extract
+  these selects' own result — value-exact for any finite integer-valued f64,
+  not an approximation, no new mechanism invented.
+
+**Per-kernel recovery table** (f64x2 count, `jz.compile(src, {optimize:
+{level:'speed'}, wat:true})` — matches examples/build.mjs's OPT):
+
+| kernel | metric | before | after | acceptance target | verdict |
+|---|---|---|---|---|---|
+| diffusion | f64x2 ops | 4 | **60** | 60 | **recovered — exact** |
+| slime | f64x2 ops | 1 | **13** | 13 | **recovered — exact** |
+
+Verified bit-exact: test/examples.js's toroidal-wrap-stencils test (min-
+threshold assertions UN-SILENCED to exact `is(sten, 60|13, …)` pins) runs
+the full SIMD-vs-scalar differential (`noSimd:true`) — 3072 px, 8/20 frames
+— 0 diffs for both. Independently re-verified via a standalone driver
+(resize 256×192, 40 frames, rolling-hash checksum): diffusion SIMD
+checksum 3726284068 == scalar 3726284068.
+
+**Residual B — i32-array addition, wrapIntIR**: c8700daa's finding said
+`module/typedarray.js`'s `wrapIntIR` (the ES ToIntN int-store wrap emission)
+produces a shape the lane vectorizer declines for `a[i]+b[i]` on two
+FULL-RANGE Int32Array elements (unprovable as native i32.add, so jz computes
+the sum in f64 — exact, since both ±2³¹ operands and their sum always fit
+the 53-bit mantissa — then ToInt32-wraps it back). Root-caused via direct
+WAT/stack-trace inspection (not guesswork): jz's codegen sinks the f64.add
+into its OWN lane-local first (wrapIntIR's own doc: its argument must be a
+pre-temped, re-evaluable node — `local.set $t (f64.add …); store addr
+(wrapIntIR-canon of $t)` as TWO separate body statements), hiding the add
+from BOTH the vectorizer's arithmetic-recovery path (which only ever saw a
+bare 4×-repeated `local.get $t`, never the add) and its scan phase. This is
+a DIFFERENT root shape than the ledger's own precedent (peelNarrowConv's
+existing "CSE'd ToInt32 narrowing conversion" inlining, which only fires for
+a narrowING store, sty≠laneType, ONE read) — ours is a SAME-type store
+(sty===laneType) with the local read up to 4 times.
+
+**Fix** (src/optimize/vectorize.js):
+1. `tryVectorize`'s `body2` preprocessing gained a new pass, structurally
+   parallel to the existing CSE'd-narrowing-conversion inliner just above
+   it: when a lane-local `$t`'s ONLY def is `f64.add/sub(convert,convert)`
+   and EVERY read of `$t` in the whole body sits inside ONE same-type store,
+   splice the def back in at every occurrence and drop the separate
+   `local.set` (dead once inlined).
+2. New `liftAddSubOfConverts(v, ctx)`: recognizes `f64.add/sub
+   (f64.convert_i32_{s,u}(A), f64.convert_i32_{s,u}(B))` — bare, or still
+   wrapped in wrapIntIR/toI32's canon (peeled via the EXISTING
+   `peelNarrowConv`, unchanged) — and lifts straight to `i32x4.add`/
+   `i32x4.sub` on the raw i32 operands, skipping the f64 round-trip. i32.mul
+   is deliberately NOT extended: its exact 62-bit product can exceed the f64
+   mantissa, so a rounded `f64.mul` then ToInt32 is not always i32.mul's
+   value — this stays scoped to add/sub, where the f64 op is provably exact.
+
+A speculative first attempt (defensively matching a `local.tee`/`local.get`
+mismatch inside `peelNarrowConv` itself, on the theory that a copy-prop pass
+folds the CSE'd local's `local.set` into an inline tee at first use) was
+INSTRUMENTED and found to fire ZERO times across simd.js/examples.js/
+cond-vectorize.js — dead code from misreading the WAT TEXT PRINTER's
+cosmetic tee-folding as the real pre-watr IR (which uses plain `local.get`
+throughout, per wrapIntIR's own "re-evaluable pure node" contract). Removed
+before landing; the real blocker was the separate-statement CSE, above.
+
+**Per-kernel recovery table**:
+
+| target | metric | before | after | verdict |
+|---|---|---|---|---|
+| i32-array add (`a[i]+b[i]`, test/simd.js breadth matrix) | hasV128 | false | **true** (i32x4.add) | **recovered** |
+| FFT butterfly strip (test/simd.js) | `__bf\d+_` present | false | false | **unchanged — different residual, see below** |
+
+Verified bit-exact beyond the differential test's own zero/unpopulated
+arrays: a standalone driver seeding `a`/`b` with an xorshift PRNG across
+{1,2,3,4,5,7,8,9,16,17,100,1000} elements AND an explicit overflow-edge case
+(INT32_MAX+1, INT32_MIN−1, ±2e9 sums, 0+INT32_MIN, −1+1) — SIMD and scalar
+(`noSimd:true`) checksums identical in every case, including every wrap
+boundary. i32x4.sub verified the same way (both add and sub compile and
+match).
+
+**Named next residual (FFT butterfly — NOT wrapIntIR, a different, larger
+gap)**: investigated to the root via direct WAT inspection of the actual
+compiled loop body (not the test's own prior "likely reachable through the
+SAME…family" guess). `tryButterfly` (vectorize.js) pattern-matches an EXACT
+17-statement canonical body with `body[0]`/`body[1]` required to be the
+`wre[k]`/`wim[k]` twiddle loads as their OWN leading `local.set` statements.
+The CURRENT compiled body is no longer 17 statements: the twiddle loads are
+now sunk INLINE as `local.tee`s inside the `tr`/`ti` `f64.mul` operands — a
+statement-fusion/scheduling difference, confirmed UNRELATED to wrapIntIR
+(`a=i+j`/`b=a+half`/`k+=step` all already lower as native i32.add in the
+current WAT; `re`/`im`/`wre`/`wim` are Float64Array, wrapIntIR is never
+invoked). Teaching `tryButterfly`'s positional unifier to accept this (or
+any) statement-fusion ordering is a real, separate, larger rewrite of its
+exact-shape matcher — out of this session's scope, named for a future
+session in test/simd.js's own updated comment.
+
+**Ratchet**: `test/perf-ratchet.js` float/mixed/int/cond/buf/nest/slice/ring/
+condref/fgather — all **+0** (10/10 pass, float 565 / mixed 971 unchanged).
+`scripts/perf-corpus.mjs`'s generators don't produce either recovered shape
+(a toroidal wrap-select or a same-type i32-array add) — same honest-floor
+precedent as every prior session's lane-vectorizer-only fix: nothing
+recovered in the SCALAR loop-body-op-count corpus this measures → nothing
+re-tightened; still NOT moved toward the pre-16f2d7c8 560/790 floor
+(unsurprising — both fixes are vectorizer-only, they change SIMD lift
+eligibility, not the scalar op counts perf-ratchet counts).
+
+**Size**: `node scripts/bench-size.mjs` geomean jz/AS: **1.055 → 1.055**
+(unchanged, 49 sized cases). diffusion/slime live in `examples/`, and the
+i32-add-arrays case is a synthetic test/simd.js snippet — neither is a
+`bench/` CASE, so the sweep genuinely doesn't move (same precedent as the
+Residual-A-adjacent stencil session).
+
+**Timing** (quiet machine: load avg 4.36-4.83/14 cores throughout, no other
+jz/test/build processes running; `--paired` ABBA, 8 rounds, SIMD vs
+`noSimd:true` scalar, same compiled module reused across rounds):
+diffusion 28.28ms (simd) vs 52.93ms (scalar) — **1.872× win**; i32-array-add
+(20000 elements × 400 repeats) 1.222ms (simd) vs 6.908ms (scalar) —
+**5.656× win**. Both pairs' checksums identical simd vs scalar (diffusion
+3726284068/3726284068; i32-add −2092986215/−2092986215) — the speedup isn't
+from a value change.
+
+**Negative controls / soundness floor**:
+  - `liftAddSubOfConverts` is scoped to `f64.add`/`f64.sub` only —
+    `f64.mul` is NOT matched (documented above: its exact product can
+    exceed the f64 mantissa, so ToInt32-of-rounded-product ≠ i32.mul in
+    general). Confirmed by construction (the recognizer's own op-check),
+    not by a failing test.
+  - The `body2` CSE-inlining pass requires EVERY read of the candidate
+    local to sit inside the ONE store being rewritten (`inStore !==
+    getCount3.get(nm)` bails) — a value ALSO used elsewhere (e.g. a genuine
+    multi-use accumulator) is correctly left alone.
+  - FFT butterfly (the shape this session's fix does NOT reach) stays
+    scalar — confirmed unchanged, no false admission.
+  - fuzz 2000×4 (seeds 1-2000, opt {0,1,2,3}, 20 inputs/program): **0
+    divergence** (30173 inputs compared, 9827 skipped i32-contract-exceeded,
+    0 non-numeric — identical counts to every prior session's run,
+    confirming determinism).
+
+**Gates, all green**: kernel-parity 33/33 byte-identical; kernel-oracle 451
+assertions/11 suites; optimizer 214 tests/3949 assertions (unchanged);
+simd.js 158 tests/580 assertions (i32-add-arrays KNOWN_GAP UN-SILENCED to a
+real assertion; butterfly KNOWN_GAP comment corrected to name the real,
+different residual, threshold unchanged); simd-intrinsics (full battery);
+cond-vectorize.js 3/3 (8 assertions); examples.js 22 tests/434 assertions
+(diffusion/slime KNOWN-GAP min-thresholds UN-SILENCED to exact `is(sten,
+60|13, …)` pins); selfhost.js 21/21 (206 assertions); selfhost-perf.js
+informational 5/5 (warm 1.013× < 1.03× cap, fresh 0.772× < 0.99× cap);
+perf-ratchet 10/10 (+0, see above); fuzz 2000×4 zero divergence; full
+`test/index.js` 88-file battery, 13 foreground chunks (12×7 files + 1×4,
+never monolithic/background) — every chunk green modulo 6 pre-existing
+intentional skips (unrelated to this change); fresh `npm run build` ×2 —
+dist/jz.js and dist/jz.wasm byte-identical both times (verified via SHA-256,
+re-run clean after an earlier interrupted background attempt produced a
+spurious mismatch — see process note below); full size sweep (`scripts/
+bench-size.mjs`) — see Size above.
+
+**Process note**: an earlier `npm run build` in this session was started as
+a background task and then killed mid-run while investigating a stale
+notification; the resulting `dist/jz.wasm` differed from a subsequent clean
+run's hash (dist/jz.js was unaffected). Re-ran BOTH builds in the
+foreground back-to-back from a clean process state — byte-identical
+(SHA-256 matched exactly for both jz.js and jz.wasm) — confirming the
+mismatch was the interrupted process racing the write, not a compiler
+determinism regression. No lesson for the compiler; a lesson for this
+session's own process hygiene (foreground, not background, for anything
+whose output gets diffed).
+
 ## Status (2026-08-03, STENCIL RECOVERY via Root-F bound-magnitude lever —
 ## audit-#8 P1-2's own named next step (c8700daa's "REAL lever for a future
 ## ticket"): watercolor/waves/schrodinger back to their FULL pre-regression

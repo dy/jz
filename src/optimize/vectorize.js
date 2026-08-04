@@ -1646,6 +1646,59 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
     if (dropped.size) body2 = inlined.filter(s => !dropped.has(s))
   }
 
+  // The SAME CSE hides an i32 add/sub's own operand from the arithmetic-recovery lift
+  // (liftAddSubOfConverts, below): `a[i]+b[i]` into a same-type Int32Array store can't prove
+  // i32.add's native fast path, so jz computes it in f64 and ToIntN-wraps it back via wrapIntIR
+  // — but sinks the f64.add/sub into its own lane-local first (wrapIntIR's own doc: its argument
+  // must be a pre-temped, re-evaluable node), so the store's canon reads a bare `$t` at each of
+  // its 4 probe sites instead of carrying the add/sub inline. Unlike the narrowing case above
+  // (sty≠laneType, one read), this is a SAME-type store (sty===laneType) reading `$t` up to 4
+  // times — generalize: when `$t`'s only def is `f64.add/sub(convert,convert)` and EVERY read of
+  // `$t` in the whole body is inside this one store, splice the def back in at every occurrence
+  // and drop the separate local.set (dead once inlined).
+  if (laneType === 'i32') {
+    const setDefs = new Map()
+    for (const s of body2) {
+      if (isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3)
+        setDefs.set(s[1], setDefs.has(s[1]) ? null : s)   // a second def disqualifies (not single-assign)
+    }
+    const getCount3 = new Map()
+    const countGets3 = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') getCount3.set(n[1], (getCount3.get(n[1]) || 0) + 1); for (let i = 1; i < n.length; i++) countGets3(n[i]) }
+    for (const s of body2) countGets3(s)
+    const isAddSubOfConverts = (v) => {
+      if (!isArr(v) || (v[0] !== 'f64.add' && v[0] !== 'f64.sub') || v.length !== 3) return false
+      const isConv = (n) => isArr(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u') && n.length === 2
+      return isConv(v[1]) && isConv(v[2])
+    }
+    const substAll = (n, nm, val) => {
+      if (!isArr(n)) return n
+      if (n[0] === 'local.get' && n[1] === nm) return cloneNode(val)
+      return n.map(x => substAll(x, nm, val))
+    }
+    const dropped3 = new Set()
+    body2 = body2.map(s => {
+      if (!(isArr(s) && STORE_OPS[s[0]] && STORE_OPS[s[0]] === laneType && s.length === 3)) return s
+      const names = new Set()
+      const collect = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') names.add(n[1]); for (let i = 1; i < n.length; i++) collect(n[i]) }
+      collect(s[2])
+      let val = s[2], changed = false
+      for (const nm of names) {
+        if (localKind.get(nm) !== 'lane') continue
+        const def = setDefs.get(nm)
+        if (!def || !isAddSubOfConverts(def[2])) continue
+        let inStore = 0
+        const w = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && n[1] === nm) inStore++; for (let i = 1; i < n.length; i++) w(n[i]) }
+        w(val)
+        if (inStore !== getCount3.get(nm)) continue   // read outside this store too — not safe to drop
+        val = substAll(val, nm, def[2])
+        dropped3.add(def)
+        changed = true
+      }
+      return changed ? [s[0], s[1], val] : s
+    })
+    if (dropped3.size) body2 = body2.filter(s => !dropped3.has(s))
+  }
+
   // A signum ternary (`a<0?-1:1`) is commonly CSE'd into its own lane-local just before its
   // sole use (`set $s (select (i32.const -1)(i32.const 1) COND); … f64.convert_i32_s($s) …`),
   // hiding it from liftExprV's `f64.convert_i32_s(select …)` fusion (below), which only matches
@@ -1808,8 +1861,31 @@ function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
   let needsPeel = false
   const rightBs = []
   const unTee = (b) => (isArr(b) && b[0] === 'local.tee' && b.length === 3) ? b[2] : b   // CSE folds x±1 into a tee
-  const isStep = (b, op) => { b = unTee(b); return isArr(b) && b[0] === op && b.length === 3 && isLocalGet(b[1], incVar) && isI32Const(b[2]) && constNum(b[2]) === 1 }
+  // `x±1`: native i32 (`i32.op(x,1)`), OR — when the ternary's OTHER branch is an unprovable-i32
+  // invariant (`w-1` from a runtime-set global) forcing the WHOLE select to unify at f64 — the SAME
+  // step in f64 domain, `f64.op(f64.convert_i32_s(x), 1.0)`. Same semantics, different wasm type.
+  const isStep = (b, op) => {
+    b = unTee(b)
+    if (isArr(b) && b[0] === op && b.length === 3 && isLocalGet(b[1], incVar) && isI32Const(b[2]) && constNum(b[2]) === 1) return true
+    const f64op = op === 'i32.sub' ? 'f64.sub' : 'f64.add'
+    if (!isArr(b) || b[0] !== f64op || b.length !== 3) return false
+    const l = unTee(b[1])
+    return isArr(l) && l[0] === 'f64.convert_i32_s' && l.length === 2 && isLocalGet(l[1], incVar) && isArr(b[2]) && b[2][0] === 'f64.const' && Number(b[2][1]) === 1
+  }
   const isZeroGuard = (g) => isArr(g) && ((g[0] === 'i32.eqz' && isLocalGet(g[1], incVar)) || (g[0] === 'i32.eq' && isLocalGet(g[1], incVar) && isI32Const(g[2]) && constNum(g[2]) === 0))
+  // RIGHT-dir guard `x op B`: native i32 (`i32.op(x,B)`), or — the SAME f64-unification isStep's f64
+  // variant comes from — `f64.op(f64.convert_i32_s(x), B)` with B then f64-typed too (e.g. a cached
+  // `w-1`). Returns { B, f64 } | null.
+  const ivCompare = (g, iop, fop) => {
+    if (!isArr(g) || g.length !== 3) return null
+    if (g[0] === iop && isLocalGet(g[1], incVar)) return { B: g[2], f64: false }
+    if (g[0] === fop && isArr(g[1]) && g[1][0] === 'f64.convert_i32_s' && g[1].length === 2 && isLocalGet(g[1][1], incVar)) return { B: g[2], f64: true }
+    return null
+  }
+  // An f64-domain B (a cached `w-1` local) converts to the identical i32 value via the exact
+  // trunc_sat+wrap idiom jz's own overflow-canon already uses to extract these selects' OWN result —
+  // value-exact for any finite integer-valued f64 (what `w-1` always is here), no approximation.
+  const toI32B = ({ B, f64 }) => f64 ? ['i32.wrap_i64', ['i64.trunc_sat_f64_s', B]] : B
   // Toroidal wrap-select: `xw = x>0?x-1:w-1` / `xe = x<w-1?x+1:0`. Fires its wrap value only at a
   // boundary column the peel covers — LEFT (interior x-1) at x=0, RIGHT (interior x+1) at x=B.
   // Returns null | {dir:'L'} | {dir:'R',B}. Sound for ANY B: simdBound caps at min(bound,…B)-(lanes-1)
@@ -1819,8 +1895,8 @@ function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
     const g = e[3]
     if (isStep(e[1], 'i32.sub') && ivCoeff(e[2]) === 0 && isArr(g) && g[0] === 'i32.gt_s' && isLocalGet(g[1], incVar) && isI32Const(g[2]) && constNum(g[2]) === 0) return { dir: 'L' }
     if (isStep(e[2], 'i32.sub') && ivCoeff(e[1]) === 0 && isZeroGuard(g)) return { dir: 'L' }
-    if (isStep(e[1], 'i32.add') && ivCoeff(e[2]) === 0 && isArr(g) && g[0] === 'i32.lt_s' && isLocalGet(g[1], incVar)) return { dir: 'R', B: g[2] }
-    if (isStep(e[2], 'i32.add') && ivCoeff(e[1]) === 0 && isArr(g) && g[0] === 'i32.eq' && isLocalGet(g[1], incVar)) return { dir: 'R', B: g[2] }
+    if (isStep(e[1], 'i32.add') && ivCoeff(e[2]) === 0) { const c = ivCompare(g, 'i32.lt_s', 'f64.lt'); if (c) return { dir: 'R', B: toI32B(c) } }
+    if (isStep(e[2], 'i32.add') && ivCoeff(e[1]) === 0) { const c = ivCompare(g, 'i32.eq', 'f64.eq'); if (c) return { dir: 'R', B: toI32B(c) } }
     return null
   }
   const ivCoeff = (n) => {
@@ -1830,6 +1906,10 @@ function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
       return writes.has(nm) ? null : 0          // unwritten ⇒ loop-invariant
     }
     if (isI32Const(n)) return 0
+    // A bare f64 constant (e.g. the `0` literal branch of an f64-unified wrap-select, coerced to f64
+    // by the ternary's OTHER branch needing it) is loop-invariant regardless of its value — same
+    // unconditional-any-value reasoning as the isI32Const branch just above.
+    if (isArr(n) && n[0] === 'f64.const') return 0
     if (isArr(n) && n[0] === 'global.get') return 0
     if (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub') && n.length === 3) {
       const a = ivCoeff(n[1]), b = ivCoeff(n[2])
@@ -3101,6 +3181,22 @@ function liftStmt(stmt, ctx) {
   return liftFail(ctx, `standalone ${op} statement`)
 }
 
+// `f64.add(f64.convert_i32_{s,u}(A), f64.convert_i32_{s,u}(B))` — ES semantics for two i32-domain
+// operands computed via jz's f64 fallback (opBound couldn't prove the native i32.add/sub path
+// statically). The f64 op is always exact for this shape (both ±2³¹ operands and their sum/diff
+// fit the 53-bit mantissa), so it lifts straight to i32x4.add/sub on the raw i32 operands — no
+// i32.mul equivalent exists (its exact product can exceed the mantissa). Returns the lifted v128
+// node or null (does NOT set ctx.fail — a non-matching shape is a normal decline, not an error).
+function liftAddSubOfConverts(v, ctx) {
+  if (!isArr(v) || (v[0] !== 'f64.add' && v[0] !== 'f64.sub') || v.length !== 3) return null
+  const unconv = (n) => isArr(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u') && n.length === 2 ? n[1] : null
+  const a = unconv(v[1]), b = unconv(v[2])
+  if (!a || !b) return null
+  const av = liftExprV(a, ctx); if (ctx.fail) return null
+  const bv = liftExprV(b, ctx); if (ctx.fail) return null
+  return [v[0] === 'f64.add' ? 'i32x4.add' : 'i32x4.sub', av, bv]
+}
+
 /** Lift a value expression into v128 context. */
 function liftExprV(expr, ctx) {
   if (!isArr(expr)) return liftFail(ctx, 'non-expression operand')
@@ -3258,6 +3354,27 @@ function liftExprV(expr, ctx) {
           ['local.set', mtmp, [cmpS, ca, cb]],
           ['v128.bitselect', ['f64x2.splat', ['f64.const', inner[1][1]]], ['f64x2.splat', ['f64.const', inner[2][1]]], ['local.get', mtmp]]]
       }
+    }
+  }
+
+  // i32 lane, ToIntN-store value expression: `a[i]+b[i]`/`a[i]-b[i]` on two FULL-RANGE i32
+  // array elements can't prove i32.add/sub's fast path statically (opBound's magnitude-blind
+  // default), so jz computes the op in f64 — exact, since both ±2³¹ operands and their sum/
+  // diff always fit the 53-bit mantissa — and ToInt32-wraps the result back via wrapIntIR/
+  // toI32's canon select. That wrap is mod-2³², EXACTLY i32.add/i32.sub's own wraparound
+  // semantics (deliberately NOT extended to i32.mul: its exact 62-bit product can exceed the
+  // f64 mantissa, so a rounded f64.mul then ToInt32 is NOT always the same value as i32.mul).
+  // liftAddSubOfConverts recognizes the bare shape directly (the CSE'd-lane-local case is
+  // pre-inlined into it by tryVectorize's body2 rewrite, above); the `select` case additionally
+  // peels wrapIntIR/toI32's canon (peelNarrowConv, shared with the narrowing-store path below)
+  // when the add/sub is still wrapped in it. Either way, skip the f64 round-trip entirely.
+  if (ctx.laneType === 'i32') {
+    const av = liftAddSubOfConverts(expr, ctx)
+    if (av) return av
+    if (op === 'select') {
+      const peeled = peelNarrowConv(expr, 'i32')
+      const pv = peeled && liftAddSubOfConverts(peeled, ctx)
+      if (pv) return pv
     }
   }
 

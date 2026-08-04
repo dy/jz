@@ -135,21 +135,18 @@ test('SIMD butterfly - radix-2 FFT inner loop strips 2-wide, bit-exact', () => {
     is(von(n), voff(n), `butterfly N=${n} bit-exact`)
   }
   const w = wat(src, SIMD_OPT)
-  // P0-2 sibling fallout (2026-08-02, KNOWN GAP — not a value bug, confirmed
-  // bit-exact above for every N): tryButterfly (src/optimize/vectorize.js)
-  // pattern-matches an EXACT 17-statement canonical loop-body shape. The
-  // now-corrected bare `+`/`-` (emit.js addFitsI32, this ticket) changes the
-  // IR a scalar `k += step` / index computation takes when the operands
-  // aren't provably i32-range-bounded, which — even though ir.js writeVar's
-  // `toI32` recovers the SAME i32.add for direct local writes — can still
-  // shift downstream node shapes the recognizer matches structurally (not
-  // semantically). Root cause not fully localized beyond "some site in this
-  // 17-statement body no longer matches tryButterfly's shape-exact
-  // unification, likely reachable through the SAME asI32-without-narrowI32-
-  // recovery family found in module/typedarray.js's non-i32Backed typed
-  // store path (a NEW, precisely-named follow-up, flagged in .work/todo.md,
-  // NOT this ticket's scope)" — a real, honest, structural-pattern-match
-  // loss, not a correctness regression.
+  // KNOWN GAP, ROOT-CAUSED to a DIFFERENT mechanism than wrapIntIR (audit-P1-2 residual B
+  // follow-up, 2026-08-03 — not a value bug, confirmed bit-exact above for every N):
+  // tryButterfly (src/optimize/vectorize.js) pattern-matches an EXACT 17-statement canonical
+  // loop-body shape, `body[0]`/`body[1]` required to be the wre[k]/wim[k] twiddle loads as their
+  // OWN leading `local.set` statements. Direct WAT inspection (not guesswork) shows the CURRENT
+  // compiled body is no longer 17 statements at all: the twiddle loads are now sunk INLINE as
+  // `local.tee`s inside the tr/ti `f64.mul` operands (a statement-fusion/scheduling difference,
+  // unrelated to the i32-add-arrays case just recovered above — `a=i+j`/`b=a+half`/`k+=step`
+  // all already lower as native i32.add here, confirmed in the WAT; wrapIntIR is never involved,
+  // since re/im/wre/wim are Float64Array, not typed-int). Teaching tryButterfly's positional
+  // unifier to accept this fused ordering (or any other CSE placement) is a real, separate,
+  // larger rewrite of its exact-shape matcher — not attempted here; named for a future session.
   if (/__bf\d+_/.test(w)) {
     ok(/f64x2\.mul/.test(w) && /v128\.load/.test(w) && /v128\.store/.test(w), 'rotation lanes + paired loads/stores')
   } else {
@@ -295,26 +292,19 @@ test('SIMD breadth - generic f32/int DSP patterns stay vectorized', () => {
     'f32→i8 narrow':       `export let f=(n)=>{let a=new Float32Array(n);let o=new Int8Array(n);for(let i=0;i<n;i++)o[i]=a[i]*127;return o}`,
     'f64 still vectorizes':`export let f=(n,k)=>{let a=new Float64Array(n);let o=new Float64Array(n);for(let i=0;i<n;i++)o[i]=a[i]*k;return o}`,
   }
-  // P0-2 sibling fallout (2026-08-02, KNOWN GAP — not a value bug): `a[i]+b[i]`
-  // on two FULL-RANGE Int32Array elements is genuinely not provably i32-safe
-  // (both elements could be near INT32_MAX) — the now-corrected bare `+`
-  // (emit.js addFitsI32, this ticket) correctly declines the raw-wrap fast
-  // path there. The store into `o` (also Int32Array) falls to
-  // module/typedarray.js's non-i32Backed path (`wrapIntIR`), which — unlike
-  // ir.js writeVar/asParamType (fixed this ticket) — doesn't attempt
-  // narrowI32's ring recovery, so the scalar reference shape the lane
-  // vectorizer pattern-matches against loses its clean i32.add and the whole
-  // loop declines to vectorize. Real, honest, flagged in .work/todo.md as a
-  // precisely-named follow-up (extend the SAME toI32 swap to
-  // module/typedarray.js's typed-store value coercion) — not this ticket's
-  // scope (a different file/mechanism, found only via this regression).
-  const KNOWN_GAP = new Set(['i32 add arrays'])
+  // RECOVERED (audit-P1-2 residual B, 2026-08-03): `a[i]+b[i]` on two FULL-RANGE Int32Array
+  // elements is genuinely not provably i32-safe (both elements could be near INT32_MAX), so jz
+  // computes the sum in f64 (exact — both ±2³¹ operands and their sum always fit the 53-bit
+  // mantissa) and ToInt32-wraps it back via module/typedarray.js's `wrapIntIR` — mod-2³²,
+  // EXACTLY i32.add's own wraparound. tryVectorize's body2 preprocessing now inlines the
+  // CSE'd-out-of-line f64.add back into the store's wrapIntIR canon (mirroring the existing
+  // "CSE'd ToInt32 narrowing conversion" inlining just above it), and liftExprV's new
+  // `liftAddSubOfConverts` recognizes `wrapIntIR(f64.add(convert(A),convert(B)))` (and f64.sub)
+  // as native i32x4.add/sub on the raw i32 operands — skip the f64 round-trip entirely. i32.mul
+  // is NOT extended (its exact 62-bit product can exceed the f64 mantissa; ToInt32 of a rounded
+  // f64.mul is not always i32.mul's value). See vectorize.js's liftAddSubOfConverts.
   for (const [name, src] of Object.entries(cases)) {
     const w = wat(src, SPEED)
-    if (KNOWN_GAP.has(name)) {
-      ok(true, `${name}: KNOWN GAP (module/typedarray.js wrapIntIR, not this ticket) — vectorizes=${hasV128(w)}`)
-      continue
-    }
     // Fail WITH the emitted body — the f32→i16 row failed on CI-linux only
     // (2026-07-26; local green on every leg/platform/node): the next red run
     // must carry its own WAT evidence instead of a bare boolean.

@@ -268,31 +268,30 @@ test('example: schrodinger float-index + f32-widening stencil vectorizes and sta
 // matching (its body holds the inner x-loop). BIT-EXACT (lane-parallel stencil, no reassoc). NOTE:
 // slime seeds agents from Math.random, so a fixed randomSeed is required to compare SIMD vs scalar.
 test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-exact', () => {
-    // KNOWN GAP, residual (2026-08-03, audit-#8 P1-2 follow-up): the loop-bound
-    // magnitude gap the watercolor/waves/schrodinger tests above name is FIXED
-    // (Root-F per-name guard conjunct, emit.js) — `x < w` itself now lowers
-    // native i32 here too. What's LEFT is a DIFFERENT, narrower gap: diffusion/
-    // slime compute their wrap value (`xw = x>0?x-1:w-1`) into a NAMED local
-    // rather than inlining the select at the index site. Because `w-1` used to
-    // force the whole ternary to unify at f64 (both branches share ONE wasm
-    // type), the compiled shape is an F64-domain select wrapped in jz's
-    // NaN-based overflow-canon (`select(wrap(trunc_sat(inner-select)),0,
-    // f64.ne(t,NaN))`) — vectorize.js's `ivCoeff`/`isWrapSelect` only recognize
-    // the i32-domain select shape and the Infinity-based overflow-canon guard,
-    // so this variant still doesn't match. A real, separate, structurally-
-    // adjacent lever (extend isWrapSelect to an f64.sub/f64.add step variant,
-    // extend the overflow-canon check to a NaN guard too) — not this ticket's
-    // scope (a different recognizer in a different function, not bound
-    // admission). min lowered to match the PRE-existing baseline, NOT to 0 — a
-    // future regression that drops these further should still be caught.
+    // RECOVERED (audit-#8 P1-2 residual A, 2026-08-03): the loop-bound magnitude gap the
+    // watercolor/waves/schrodinger tests above name was already fixed (Root-F per-name guard
+    // conjunct, emit.js) — `x < w` itself lowers native i32 here too. The residual THIS fix
+    // closes is different: diffusion/slime compute their wrap value (`xw = x>0?x-1:w-1`) into a
+    // NAMED local rather than inlining the select at the index site — since `w-1` can't be proven
+    // i32-small statically, both ternary branches unify at f64 (`x-1` becomes
+    // `f64.sub(f64.convert_i32_s(x),1)`, the invariant `w-1`/`0` stays a bare f64 value), wrapped
+    // in jz's ordinary Infinity-guarded overflow-canon (NOT NaN-guarded as first hypothesized —
+    // direct WAT inspection showed the EXISTING `/inf/i.test` canon check already matches; only
+    // the wrap-select's OWN two branches needed teaching). `isStep` (vectorize.js) now also
+    // recognizes the f64-domain step `f64.{add,sub}(f64.convert_i32_s(x), f64.const 1)`; `ivCoeff`
+    // treats a bare `f64.const` as loop-invariant (coefficient 0), matching its existing
+    // `i32.const` case; the RIGHT-direction guard (`ivCompare`) accepts `f64.{lt,eq}` comparing
+    // `f64.convert_i32_s(x)` against an f64 invariant B, converting B to i32 via the exact SAME
+    // `i32.wrap_i64(i64.trunc_sat_f64_s(B))` idiom jz's own overflow-canon already uses elsewhere
+    // — value-exact for any finite integer-valued f64, not an approximation.
     const cases = [
-        { name: 'diffusion', min: 2, drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },
-        { name: 'slime', min: 1, drive: (e) => { const p = e.resize(64, 48); e.seed(); for (let f = 0; f < 20; f++) e.frame(f); return [...p]; } },
+        { name: 'diffusion', want: 60, drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },
+        { name: 'slime', want: 13, drive: (e) => { const p = e.resize(64, 48); e.seed(); for (let f = 0; f < 20; f++) e.frame(f); return [...p]; } },
     ];
-    for (const { name, min, drive } of cases) {
+    for (const { name, want, drive } of cases) {
         const src = fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8');
         const sten = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
-        ok(sten >= min, `${name} wrap-stencil vectorizes (${sten} f64x2) — KNOWN GAP baseline, see comment above`);
+        is(sten, want, `${name} wrap-stencil recovers under the f64-domain wrap-select lever (${sten} f64x2)`);
         const run = (opts) => drive(jz(src, { ...opts, randomSeed: 42 }).exports);
         const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
         is(simd.length, scal.length);
