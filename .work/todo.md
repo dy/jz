@@ -4,6 +4,68 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, represented-maybe-undefined Slice 3 landed —
+## chokepoint sweep completion, .work/represented-maybe-undefined-design.md §11)
+
+Landed Slice 3: `bigintMixReject` and the `+` STRING-concat fast path
+(emit.js, both the raw-concat branch and its `coercionFree` sibling) now
+consult `censusMaybeUndefined` alongside their existing `valTypeOf` checks —
+the two gaps §4 named as NEVER covered by the original chokepoint list. A
+mayBeUndefined-flagged BIGINT/STRING claim now falls through to the
+permissive/coercing default instead of wrongly rejecting a sound mix or
+skipping ToString on a value that could be real `undefined`.
+
+REPRO-FIRST FOUND THE TASK BRIEF'S OWN PREMISE WRONG, VERIFIED BEFORE
+WRITING CODE: the brief expected decl/param/capture-hop repros to flip
+wrong→correct via this slice, without VT re-enablement. Direct trace showed
+decl-hop and capture-hop are ALREADY correct at HEAD (census fully dormant
+→ every hop takes the generic dynamic path, nothing to falsify) and
+`bigintMixReject`/`+`-concat's own targets (`valTypeOf(a) === VAL.BIGINT`/
+`VAL.STRING` for a census-shaped node) are structurally unreachable while
+VT['[]']/['.']/['()'] stay dormant — same "inert until Slice 4" finding as
+Slices 1-2, now confirmed to extend to Slice 3's own two fixes too.
+
+FOUND A REAL, LIVE, OUT-OF-SCOPE BUG WHILE VERIFYING: `const g = (v) => v +
+1; g(m.get(missing))` through a genuinely separate (non-inlined) callee
+returns `undefined` instead of `NaN`. Root-caused via `optimize:false` vs
+default trace: emit.js's `+` handler ALREADY emits the safe runtime-dispatch
+form (the `__is_str_key` guard + NaN self-compare atom ladder) — present
+byte-for-byte pre-optimize — but the POST-optimize module has that guard
+entirely eliminated, collapsed to a bare `f64.add`. This is a miscompile in
+the shared WASM-level optimizer (watr's `optimizeFunc` or `src/optimize/
+*.js`, not bisected further), NOT a missing REP consultation — independent
+of every field this design adds (`optimize:false` alone already fixes it,
+zero source changes). Does not reproduce for `-`/other non-`+` operators or
+for decl/capture-hop. Out of this slice's mandate (different blast radius —
+a shared backend pass, not a chokepoint); pinned as a NEW KNOWN-FAIL in
+test/dyn-keys.js (mirrors the file's existing BigInt-unary present-key
+KNOWN-FAIL convention) so a future fix flips it instead of silently
+regressing. Candidate for a dedicated future audit — this codebase already
+tracks the general class ("watr's own optimizer reacts unsoundly" —
+outline-pass/localReuse hunts elsewhere in this file); this is a new
+instance, not previously pinned at this exact shape.
+
+A drafted toNumF64 fix (mirroring `ctx.func.maybeNullish`'s vt-independent
+gate) was NOT landed — proved to be dead code on direct trace: toNumF64's
+own bottom-of-function `__to_num` inline fallback already coerces an
+unproven value soundly, and `__to_num` capability is structurally always
+requested whenever a program can produce a census-shaped value at all.
+Verified by reverting the draft and re-running every hop shape — identical
+results with or without it.
+
+GATES (fresh dist rebuild): full 88-file battery in 13 foreground chunks of
+≤7 — 0 failures; kernel-parity 33/33 byte-identical; kernel-oracle 11/11;
+perf-ratchet 10/10 at +0 delta every category; optimizer 214/214; dyn-keys.js/
+data.js/types.js/math.js/json.js run explicitly (460/460); selfhost.js 21/21;
+fresh build ×2 byte-identical (jz.js/jz.wasm/interop.js); size sweep geomean
+1.055× (unchanged from the 1.0550 baseline — the new censusMaybeUndefined
+calls only redirect compile-time branch choice, never actually taking the
+flagged branch today); fuzz 2000×4 zero divergence.
+
+Slice 4 (VT re-enablement) remains unstarted, gated on design §5's full
+criteria — every fact Slices 1-3 built is now representationally complete
+AND consumption-wired; Slice 4 is what makes all of it load-bearing at once.
+
 ## Status (2026-08-04, represented-maybe-undefined Slice 2 landed —
 ## whole-program propagation, .work/represented-maybe-undefined-design.md §10)
 

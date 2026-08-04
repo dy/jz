@@ -4104,7 +4104,21 @@ const numLiteralNode = (n) =>
   (Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && n[1] !== 0)
 function bigintMixReject(op, a, b) {
   if (b === undefined) return
-  const aBig = valTypeOf(a) === VAL.BIGINT, bBig = valTypeOf(b) === VAL.BIGINT
+  // mayBeUndefined join (Slice 3, .work/represented-maybe-undefined-design.md
+  // §4 — the "NEWLY added to that list" gap): a BIGINT claim whose only proof
+  // is a maybeUndefined-flagged dict/Map census read (arm 1/2, censusMaybeUndefined's
+  // direct node shapes) or a bare name that copies one through (arm 3, the REP
+  // fallback) is NOT a provable BIGINT for THIS compile-time TypeError check —
+  // the operand could be real `undefined` at runtime, and ToNumeric(undefined)
+  // is the Number NaN, not a BigInt, so real JS does NOT throw when the other
+  // side is a genuine number (only bigIntOperand's runtime UNDEF_NAN guard,
+  // audit-#8 P0-3, needs to actually decide the throw at the point the real
+  // type resolves). Treating this operand as unproven here — same direction
+  // as every other censusMaybeUndefined consumer in this file — falls through
+  // to the permissive default instead of wrongly rejecting a mix that's sound
+  // in real JS whenever the operand turns out to be undefined.
+  const aBig = valTypeOf(a) === VAL.BIGINT && !censusMaybeUndefined(a)
+  const bBig = valTypeOf(b) === VAL.BIGINT && !censusMaybeUndefined(b)
   if (aBig === bBig) return
   if (numLiteralNode(aBig ? b : a))
     err(`Cannot mix BigInt and other types in \`${op}\` (TypeError in JS) — convert explicitly with BigInt() or Number()`)
@@ -4781,7 +4795,22 @@ export const emitter = {
     // String concatenation: pure string operands skip generic ToString coercion.
     const vtA = valTypeOf(a)
     const vtB = valTypeOf(b)
-    if (vtA === VAL.STRING && vtB === VAL.STRING) {
+    // mayBeUndefined join (Slice 3, .work/represented-maybe-undefined-design.md
+    // §4 — the "NEWLY added" `+` STRING-concat gap): a STRING claim whose only
+    // proof is a maybeUndefined-flagged dict/Map census read (or a bare name
+    // that copies one through) is "every value ever WRITTEN was a string", not
+    // "this key exists" — the actual runtime value can be real `undefined`,
+    // whose ToString is `"undefined"`, not raw string bits. concatRaw below
+    // reinterprets its operands' bits AS string pointers with zero coercion —
+    // sound only when both sides are GENUINELY strings. Gated out of both the
+    // raw-concat fast path (no censusMaybeUndefined guard at all before this
+    // fix) and coercionFree's STRING arm just below (which otherwise treated
+    // the same unproven claim as "already a string, skip ToString") so a
+    // flagged operand always falls through to the explicit `strI64`/toStrI64
+    // coercion — that function's OWN existing censusMaybeUndefined guard
+    // already stringifies the sentinel correctly ("undefined", not garbage).
+    const stringSafe = (vt, n) => vt === VAL.STRING && !censusMaybeUndefined(n)
+    if (stringSafe(vtA, a) && stringSafe(vtB, b)) {
       // Fused append-byte: `buf += s[i]` skips 1-char SSO construction + generic concat dispatch
       // when rhs is a string-index. The byte flows straight from __char_at into memory and bump-
       // EXTENDS the heap-top lhs — so only when proven self-accumulating (else it mutates a live s).
@@ -4811,8 +4840,12 @@ export const emitter = {
       //   - both coercion-free  → concatRaw(ea, eb)
       //   - one unknown         → concatRaw(known, __to_str(unknown))
       //   - both unknown        → cat (unchanged; its runtime __to_str covers both)
-      const coercionFree = (vt) => vt === VAL.STRING || vt === VAL.OBJECT || vt === VAL.BOOL
-      const cfA = coercionFree(vtA), cfB = coercionFree(vtB)
+      // STRING arm reuses stringSafe (defined above) — a mayBeUndefined-flagged
+      // STRING claim is NOT coercion-free (see that comment); OBJECT/BOOL are
+      // unaffected (strOperand already applies real coercion for those, never
+      // a raw-bits passthrough, so no census claim to falsify there).
+      const coercionFree = (vt, n) => stringSafe(vt, n) || vt === VAL.OBJECT || vt === VAL.BOOL
+      const cfA = coercionFree(vtA, a), cfB = coercionFree(vtB, b)
       const strI64 = (n) => typed(['f64.reinterpret_i64', toStrI64(n, emit(n))], 'f64')
       if (cfA && cfB) return typed(ctx.abi.string.ops.concatRaw(strOperand(vtA, a), strOperand(vtB, b), ctx, selfAccum), 'f64')
       if (cfA) return typed(ctx.abi.string.ops.concatRaw(strOperand(vtA, a), strI64(b), ctx, selfAccum), 'f64')

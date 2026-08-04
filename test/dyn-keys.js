@@ -385,3 +385,96 @@ test('dict: unary "-"/"~" on a DYNAMIC-key absent read decays to NUMBER NaN/-1 (
 test('dict: unary "-" on a LITERAL-key absent read (already sound — not this bug, structural control)', () => {
   is(run(`const d = {}; d['x'] = 1n; return -d['missing']`), NaN)
 })
+
+// Slice 3 (.work/represented-maybe-undefined-design.md §4/§8 point 3): the
+// chokepoint-sweep completion — bigintMixReject (emit.js, the compile-time
+// BigInt/Number literal-mix TypeError check) and the `+` STRING-concat raw
+// fast path now also consult censusMaybeUndefined (the SAME predicate every
+// other chokepoint in this file already asks), the two gaps the design names
+// as NEVER covered by the original chokepoint list. HONEST BOUNDARY (mirrors
+// Slices 1/2's own §9/§10 finding, verified this session by direct trace):
+// neither gap is reachable by ANY live compile today. `bigintMixReject`
+// needs `valTypeOf(a) === VAL.BIGINT` to even ask the census question, but
+// VT['()']'s own `.get()` dispatch (kind.js, ~line 730 "NO `.get` short-
+// circuit here") never promotes a Map/dict read to an exact kind — so
+// `valTypeOf` on a census-shaped node (direct or via a mayBeUndefined-
+// flagged bare name, whose `val` Slice 1/2 confirmed never settles either)
+// stays null, and `aBig`/`bBig` are false regardless of this fix. Same root
+// cause blocks the `+` STRING-concat gate. Both fixes are representationally
+// correct and become load-bearing the moment Slice 4 (VT re-enablement, §5)
+// lands — pinned here as negative controls (genuine BigInt-mix / genuine
+// STRING-concat behavior unchanged) so a regression in EITHER surfaces now,
+// not silently at Slice 4.
+test('Slice 3: bigintMixReject / `+` STRING-concat — negative controls (fix is representationally live, behaviorally inert pre-Slice-4)', () => {
+  // genuine BigInt/Number literal mix still throws (bigintMixReject unaffected
+  // for a PROVEN, non-census BIGINT operand — the new guard only excuses a
+  // maybeUndefined-flagged claim, never a real one).
+  let threw = false
+  try { run(`return 1n + 1`) } catch (e) { threw = true }
+  is(threw, true)
+  // genuine BigInt + BigInt still adds normally (no false-positive reject).
+  is(run(`return 1n + 2n`), 3n)
+  // genuine proven-STRING + STRING concat still takes the raw fast path (no
+  // spurious __to_str detour for an ordinary, non-census string operand).
+  is(run(`const s = 'a'; const t = 'b'; return s + t`), 'ab')
+  is(run(`let s = 'x'; s += 'y'; return s`), 'xy')
+})
+
+// Slice 3 acceptance repro table (task's audit-#9-table hop shapes) for a
+// NON-'+' arithmetic operator: decl-hop / param-hop / capture-hop all
+// ALREADY return JS-correct values at HEAD, independent of Slice 3's own
+// two fixes above (neither touches '-') — the census being fully dormant
+// (audit-#9 P0-1) means every hop already takes the generic dynamic path,
+// which correctly ToNumber-coerces `undefined` to NaN with no static kind
+// claim to falsify. Pinned here as a REGRESSION GUARD at this exact hop
+// shape (decl/param/capture), not a red→green flip — verified red→green
+// only means something once VT re-enables (Slice 4) and an exact kind
+// claim starts riding these same hops.
+test('Slice 3: decl/param/capture-hop arithmetic already JS-correct (regression pin, not a Slice-3 flip)', () => {
+  const declMinus = jz(`export let f = (k) => { const m = new Map(); m.set('a', 1); let x = m.get(k); return x - 1 }`, { jzify: true }).exports.f
+  is(declMinus('missing'), NaN)
+  is(declMinus('a'), 0)
+  const paramMinus = jz(`
+    const g = (v) => v - 1
+    export let f = (k) => { const m = new Map(); m.set('a', 1); return g(m.get(k)) }
+  `, { jzify: true }).exports.f
+  is(paramMinus('missing'), NaN)
+  is(paramMinus('a'), 0)
+  const captureMinus = jz(`export let f = (k) => { const m = new Map(); m.set('a', 1); let x = m.get(k); const h = () => x - 1; return h() }`, { jzify: true }).exports.f
+  is(captureMinus('missing'), NaN)
+  is(captureMinus('a'), 0)
+})
+
+// KNOWN-FAIL, DISCOVERED THIS SESSION, OUT OF SCOPE for this design (a
+// watr-optimizer soundness bug, not a missing REP consultation — banked here
+// per this file's own "pin the current wrong value" convention, e.g. the
+// BigInt-unary present-key pin above). `const g = (v) => v + 1` called with
+// a Map absent-key argument through a SEPARATE (non-inlined) function returns
+// `undefined` instead of `NaN`. Root-caused via direct trace (`optimize:false`
+// vs default): emit.js's `+` handler correctly emits the SAFE runtime-
+// dispatch form (`__is_str_key` guard + the NaN self-compare atom ladder,
+// same pattern module/number.js's isNaN fix and this file's audit-#8 P0-3
+// already rely on) — confirmed byte-for-byte present in the PRE-optimize
+// WAT. The POST-optimize (default) module has that guard entirely gone,
+// collapsed to a bare unguarded `f64.add` — the watr/jz optimizer (src/
+// optimize/*.js or the watr package's own optimizeFunc, not yet bisected)
+// eliminates the NaN self-compare + string-key guard for this single-call-
+// site trivial-function shape, wrongly treating the param as provably
+// non-string/non-NaN. Does NOT reproduce for '-'/'*'/other non-'+' operators
+// (no alternate string-concat fast path to eliminate) nor for the decl-hop/
+// capture-hop shapes above (same '+' operator, different function shape —
+// not yet isolated further). Independent of every REP field this design
+// adds or consults — `optimize:false` already returns the correct value
+// with ZERO source changes. Candidate for a dedicated future audit
+// (bisect watr's optimizeFunc single-callee specialization / dead-branch
+// elimination against this exact repro); NOT attempted here — fixing a
+// shared WASM-level optimizer pass is a different blast radius than a
+// REP-consultation chokepoint fix and was never this slice's mandate.
+test('KNOWN-FAIL: single-call-site "+" param-hop miscompile is a watr-optimizer bug, not a mayBeUndefined gap', () => {
+  const paramPlus = jz(`
+    const g = (v) => v + 1
+    export let f = (k) => { const m = new Map(); m.set('a', 1); return g(m.get(k)) }
+  `, { jzify: true }).exports.f
+  is(paramPlus('missing'), undefined)   // JS: NaN — see comment above
+  is(paramPlus('a'), 2)                 // present-key stays correct
+})

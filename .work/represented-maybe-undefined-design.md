@@ -514,3 +514,112 @@ separate runs) zero divergence.
 Slice 3 (§8's chokepoint-sweep gaps, `bigintMixReject`/`+`-concat) and Slice 4
 (VT re-enablement) remain unstarted — both still gated on §5's full criteria,
 untouched by this slice.
+
+## 11. Slice 3 — as landed, honest boundary correction
+
+Landed: §8 point 3's two named gaps — `bigintMixReject` (emit.js) and the `+`
+STRING-concat fast path (both the raw-concat branch and its `coercionFree`
+sibling) now consult `censusMaybeUndefined` alongside their existing
+`valTypeOf` checks, exactly as §4 prescribes: a BIGINT/STRING claim whose
+only proof is a maybeUndefined-flagged census read (direct node or a bare
+name that copies one through) is treated as unproven — `bigintMixReject`
+falls through to its permissive default instead of wrongly rejecting a mix
+that's sound whenever the operand turns out to be `undefined`; the STRING
+fast paths fall through to the explicit `toStrI64`/`strI64` coercion (which
+already stringifies the sentinel as `"undefined"`, not raw bits) instead of
+treating the claim as coercion-free.
+
+**Correction to the task brief that opened this slice**: the brief's own
+framing — "the decl-hop/param-hop/capture-hop repros should flip from wrong
+to correct via Slice 3, without VT re-enablement" — does not hold, verified
+by direct repro before writing a single line: at HEAD (Slices 1-2 landed),
+`let x = m.get(missing); return x + 1` and its param/capture-hop siblings
+ALREADY return the JS-correct `NaN`, unrelated to Slice 3 — because the
+census is fully dormant (audit-#9 P0-1), `x`'s `val` never settles non-null
+at any hop (Slice 2's own §10 finding), so every hop already takes the
+generic dynamic path, which needs no static claim to falsify. The SAME is
+true for `bigintMixReject`/`+`-concat's own targets: `valTypeOf(a) ===
+VAL.BIGINT`/`=== VAL.STRING` never becomes true for a census-shaped node
+(direct or via a mayBeUndefined-flagged bare name) while VT['[]']/['.']/['()']
+stay dormant — confirmed by tracing `bigintMixReject`'s `aBig`/`bBig` and the
+`+` handler's `vtA`/`vtB` computation directly. So — like Slices 1 and 2
+before it — Slice 3 is representationally complete but **behaviorally
+INERT** today; it becomes load-bearing the same moment Slice 4 does. This is
+not a downgrade of the "repro-first" discipline: it IS the repro (running it
+and finding it already green, or structurally unreachable, is itself the
+finding) — fabricating a red→green transition that doesn't exist would be
+the actual violation.
+
+**A real, live, DIFFERENT bug found during repro verification (out of this
+design's scope, not fixed here)**: the ONE hop shape that IS currently
+wrong — `const g = (v) => v + 1; g(m.get(missing))` through a genuinely
+SEPARATE (non-inlined) callee — returns JS `undefined` instead of `NaN`.
+Root-caused via direct `optimize:false` vs default trace, not left as a
+guess: emit.js's `+` handler already emits the fully SAFE, correct runtime-
+dispatch form for this shape (the `__is_str_key` guard plus the NaN self-
+compare atom ladder — the same idiom module/number.js's isNaN fix and
+audit-#8 P0-3's `bigIntOperand` both already rely on), confirmed present
+byte-for-byte in the PRE-optimize WAT. The POST-optimize (default) module
+has that entire guard eliminated, collapsed to a bare unguarded `f64.add` —
+a miscompile in the shared WASM-level optimizer (watr's own `optimizeFunc`
+or this repo's `src/optimize/*.js` wrapper, not yet bisected further), which
+wrongly treats this single-call-site trivial-function param as provably
+non-string/non-NaN. Independent of every REP field this design adds or
+consults (`optimize:false` already returns the correct value with ZERO
+source changes) — a soundness bug in a shared backend pass, not a missing
+chokepoint consultation, and a different blast radius than this slice's
+mandate (bisecting a generic optimizer pass against kernel-parity/perf-
+ratchet risk is its own undertaking). Does NOT reproduce for `-`/`*`/other
+non-`+` operators (no alternate string-concat fast path to eliminate) nor
+for the decl-hop/capture-hop shapes (same `+` operator, different function
+shape — not yet isolated further). Pinned as a KNOWN-FAIL in
+test/dyn-keys.js per that file's own established convention (mirrors the
+BigInt-unary present-key KNOWN-FAIL pin already there) so a future fix
+flips it instead of silently regressing further. Candidate for a dedicated
+future audit; this codebase already independently tracks the general class
+("watr's own generic WAT optimizer" reacting unsoundly to certain shapes —
+.work/todo.md's outline-pass/localReuse hunts) — this is a new instance of
+the same class, not previously pinned at this exact shape.
+
+**No toNumF64 change landed** — a chokepoint-consultation fix was drafted
+there (mirroring `ctx.func.maybeNullish`'s existing vt-independent gate) but
+proved, on direct trace, to be dead code: toNumF64's own bottom-of-function
+default (the `ctx.core.stdlib['__to_num']` inline self-compare-then-call
+fallback) already coerces an unproven value soundly, and `__to_num`
+capability is structurally always requested whenever a program can produce
+a census-shaped (Map/dict) value at all — so the "no `__to_num` loaded,
+blind passthrough" branch this design's §4 worried about for toNumF64 never
+actually fires for a mayBeUndefined-flagged binding. Verified by direct
+instrumentation (per-call trace of `toNumF64`'s `node`/`rep` arguments) and
+by temporarily reverting the drafted fix and re-running every hop shape —
+identical results with or without it. Not landed, per this project's own
+standing instruction against unreachable "fixes" that don't change behavior.
+
+**Test coverage** (test/dyn-keys.js, continuing Slices 1-2's honest-boundary
+precedent of pinning what's actually observable): negative controls for
+`bigintMixReject`/`+`-concat (genuine BigInt-mix still throws, genuine
+BigInt+BigInt still adds, genuine STRING+STRING still takes the raw fast
+path) — the INERT gap itself has no black-box repro today, matching Slice
+1's own "could not live as a value assertion" finding; a regression pin for
+the decl/param/capture-hop arithmetic table using a non-`+` operator (`-`),
+confirmed already-correct at HEAD, framed explicitly as a regression guard
+rather than a Slice-3 flip; the KNOWN-FAIL `+` param-hop optimizer-bug pin
+described above.
+
+**Gates run** (post-slice, fresh dist rebuild): full 88-file battery in 13
+foreground chunks of ≤7 — 0 failures (pre-existing `test.todo` skips
+unaffected); kernel-parity 33/33 byte-identical (O0/O2/O3); kernel-oracle
+11/11; perf-ratchet 10/10 at +0 delta every category (int/float/mixed/cond/
+buf/nest/slice/ring/condref/fgather); optimizer 214/214; dyn-keys.js/data.js/
+types.js/math.js/json.js run explicitly (all green, 460/460); selfhost.js
+21/21; fresh build ×2 byte-identical (jz.js/jz.wasm/interop.js); size sweep
+geomean 1.055× (`scripts/bench-size.mjs`, unchanged from the 1.0550
+baseline — expected: the new `censusMaybeUndefined` calls only change WHICH
+compile-time branch is taken, and never take the "flagged" branch today, so
+zero bytes move); fuzz 2000×4 (`node test/fuzz.js --count=2000`, four
+separate runs) zero divergence.
+
+Slice 4 (VT re-enablement, §5) remains unstarted — every fact this design
+has built (Slices 1-3) is now representationally complete and consumption-
+wired; Slice 4 is what makes all of it load-bearing at once, per §5's full
+criteria (none of which Slice 3 attempted).
