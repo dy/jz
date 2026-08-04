@@ -5559,9 +5559,30 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
       already known — see Status above, `collectBareEscapes` false-
       positive in analyze-scans.js); trace/sdf/shapes/jessie are long-
       documented pre-existing hard tails, not new.
+      RECOVERY WAVE LANDED 2026-08-03/04 (local commits, evidence
+      re-measure pending push + quiet window): af08bead fixed the
+      collectBareEscapes false positive — bitwise/sieve/radixsort compile
+      byte-identical to the pre-regression compiler, paired quiet timing
+      flipped bitwise to a 4.11x WIN and sieve to a 1.53x WIN vs v8;
+      cc78bf56 revived tryButterfly (3 general inference fixes) — fft
+      1.10x red → 1.009x near-parity vs rust, ABBA-verified; the audit
+      P1-2 SIMD table fully recovered (watercolor 49 / waves 46 /
+      schrodinger 27 / diffusion 60 / slime 13 f64x2 exact, i32-add
+      vectorizes 5.66x win) via 4b20e4c6 + 976433c1. Committed
+      results.json still records the pre-fix numbers for bitwise/sieve/
+      radixsort (fft/mat4 rows surgically re-measured); NEXT: push the
+      local stack, re-measure the recovered rows quiet, re-run claims.
+      Remaining true red after recovery: glyfparse 1.48, sort 1.35,
+      delayline 1.26, base64 1.09, jessie/watr/colorpq/hashjoin (V8/JIT
+      lanes), plus the documented hard tails (trace/sdf/shapes).
 * [ ] SIZE: par-or-smaller than AssemblyScript BY GEOMEAN, with full JS
       semantics — not strict-smaller. FLIPPED RED 2026-08-03 (was GREEN
-      at the stale snapshot): geomean jz/as now **1.060x** (was 1.016x),
+      at the stale snapshot); RECOVERING: 1.060x → 1.057x (af08bead escape
+      precision) → **1.055x** (c8700daa range proofs), held at 1.055x
+      through the audit-#9 campaign (every slice size-gated). Residual
+      ~0.5% to the 1.05 cap = the un-bisected remainder of the
+      soundness-guard tax below. Original flip analysis: geomean jz/as
+      was **1.060x** (from 1.016x),
       25/49 cases smaller (was 27/49) — exceeds the 1.05x par cap for the
       first time. Not bisected this session; plausible cause is the
       cumulative byte cost of several soundness-guard additions landed
@@ -7330,7 +7351,14 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
       both). OPEN FRONTIER (banked): EPYC rows trailing c-wasm (fft 1.33x,
       trace 1.86x, vm 1.90x, lz 1.20x) -- close by general levers, they
       also pay off on M4.
-* [ ] Kernel long-tail (each characterized in the archive):
+* [x] Kernel long-tail COMPLETE 2026-08-04: every sub-item closed — shaped-parser
+      CONFIRMED DEAD (7df37ae8 re-test), bigint family + preeval cleared
+      (2026-07-24), speculate/pow-fold/fifthroot/async/generators cleared,
+      kernel-parity rows resolved (PARITY_TODO empty since 2026-07-27), warm
+      perf regression recovered. Residual kernel-target leg gaps (maxMemory
+      plumbing, 18 missing onKernel guards in inference.js) are tracked as a
+      separate small item in the Status entries — leg-harness gaps, not
+      miscompiles.
   * shaped-parser: CONFIRMED DEAD 2026-08-03 (this entry was stale — the
     class was already root-fixed 2026-07-25, two waves after the last edit
     below; re-tested fresh at HEAD 0dc8145e post kernel rebuild). Root fix:
