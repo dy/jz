@@ -4,6 +4,166 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, SIZE goal recovered below the 1.05 cap — bisected the
+## un-bisected soundness-guard tax named in the "SIZE: par-or-smaller" entry
+## below, landed one proof-driven elision lever, geomean 1.055x -> 1.0418x)
+
+**Method**: disposable `git worktree add /tmp/jz-wt-2aaeaa19 2aaeaa19` (node_modules
+symlinked, package.json deps unchanged across the range — confirmed via `git
+diff 2aaeaa19 HEAD -- package.json`, empty). Ran `scripts/bench-size.mjs --json`
+at both revisions over the full 49-case corpus that has both a jz and an `as`
+row (the scope `.work/todo.md`'s own tracked "1.0550" figure and
+`test/bench-claims.js`'s size test use — WIDER than `test/bench.js`'s formal
+`SIZE_GEOMEAN_MAX` assertion, which only gates the 13 `win`/`tie`-pinned
+cases and was never actually red, 0.879x throughout; the 1.055x/1.05 cap
+tension is real but lives one level up, in the informal-but-tracked 49-case
+number both the ledger and bench-claims.js treat as the health metric).
+Confirmed the endpoints exactly: 2aaeaa19 geomean **1.0163x** (matches "1.016x"
+prose), HEAD (917feacc) geomean **1.0550x** (matches "1.055x" prose) — the
+25/49-smaller count also matched (25/49). Ranked all 49 cases by
+`ln(newRatio/oldRatio)` — each case's exact contribution to the geomean's
+log-shift, not raw bytes (a fair per-case attribution for a geometric mean).
+
+**Attribution table** (top contributors to the 1.0163->1.0550 shift; `dLog`
+sums to 1.8345 over 49 cases = the measured shift):
+
+| case | 2aaeaa19 jz (B) | HEAD jz (B), pre-fix | delta (B) | dLog | share of total shift |
+|---|---|---|---|---|---|
+| lz | 1899 | 3023 | +1124 | 0.4649 | 25.3% |
+| glyfparse | 2873 | 4012 | +1139 | 0.3339 | 18.2% |
+| base64 | 1634 | 1776 | +142 | 0.0833 | 4.5% |
+| radixsort | 1388 | 1496 | +108 | 0.0749 | 4.1% |
+| levenshtein | 1266 | 1341 | +75 | 0.0576 | 3.1% |
+| bytebeat | 932 | 981 | +49 | 0.0512 | 2.8% |
+| conv2d | 1456 | 1522 | +66 | 0.0443 | 2.4% |
+| dotprod | 1019 | 1059 | +40 | 0.0385 | 2.1% |
+| hash | 1094 | 1134 | +40 | 0.0359 | 2.0% |
+| matmul, sort, delayline, tokenizer, ... | — | — | +40..50 each | ~0.02-0.03 each | ~1-1.5% each |
+| ~40 other cases (mandelbrot, poly, crc32, dict, vm, wav, trace, sieve, spmv, particle, resample, shapes, qoi, nqueens, mat4, nbody, lorenz, immutable, heat, hashjoin, fft, dispatch, biquad, bitwise, colorpq, aos, bezfit, callback, synth, sdf, raytrace, slices, wordcount, alpha, strbuild, noise, ...) | — | — | flat **+26 B each** (blur -6, noise +16 — the two non-conforming rows) | ~0.01-0.02 each | remainder |
+
+**lz/glyfparse are 43.5% of the total shift from 2 of 49 cases** — the clear
+priority. WAT-diffed both (`compile(code, {optimize:'size', wat:true})` at
+each revision): HEAD's compiled output for BOTH pulls in stdlib helpers
+absent at 2aaeaa19 — `$__eq`, `$__eq_strict`, `$__is_nullish`, `$__char_at`,
+`$__str_byteLen`, `$__out0`..`$__out5` — despite **neither bench source using
+a single string** (lz.js/glyfparse.js are pure Uint8Array codecs). Bisected
+(binary search over the 75-commit 2aaeaa19..f704a077 range, disposable
+worktree, probe = "does lz's compiled WAT declare `$__eq`") to **5c437df5**
+("maybeUndefined Slices 3-5"), whose own message names the exact mechanism:
+*"emitLooseEq/emitStrictEq's raw f64.eq fast path (equality between two
+independently-maybe-undefined operands read false instead of true — also
+closes the same leak for array/typed-array OOB reads, not just census)"* —
+a genuine, necessary correctness fix (`src[j+len] === src[ip+len]` on two
+checked-OOB Uint8Array reads used to silently read `false` for
+`undefined === undefined`, JS-wrong). The fix routes that shape through the
+**fully generic** `$__eq`/`$__eq_strict` (string-content + pointer-kind
+dispatch: `__str_eq`/`__is_str_key`/`__char_at`/`__str_byteLen`), even though
+a NUMBER-typed nullable slot's only two possible runtime shapes are "a real
+number" or a nullish sentinel — never a string/object/bigint.
+
+**Guard-class attribution**:
+- **lz/glyfparse's +1124/+1139 B**: `emitLooseEq`/`emitStrictEq`'s
+  both-nullable-`VAL.NUMBER` fallback (checked typed-array OOB-read
+  equality) — over-generalized to the full dynamic dispatch. RECOVERED this
+  session, lever (b) below.
+- **~40 cases' flat +26 B each**: `__jz_last_err_bits` (global + export),
+  `ensureThrowRuntime`/`pruneUnusedThrowRuntime` in `src/compile/index.js`.
+  INVESTIGATED, NOT recoverable: already gated on `ctx.runtime.throws`
+  (fires for any module with an internal throw site, which
+  checked-by-default typed indexing makes nearly universal) — the code's own
+  comment names why stripping it is wrong: *"it is the ONLY signal that
+  survives an `unreachable` trap to the host boundary... Stripping this
+  global (the old behavior) made host decode of ordinary runtime errors
+  unreachable by construction (audit #7 P1)"*. Removing or narrowing this
+  would reopen audit #7 P1. Declined — matches this task's own "NEVER:
+  removing a guard where the semantics require it" instruction.
+- **base64/radixsort/levenshtein/bytebeat/conv2d/dotprod/hash/matmul/sort/
+  delayline/tokenizer's +40-140 B each**: NOT bisected — WAT-diffed (func
+  inventory identical at both revisions, no new stdlib helper pulled in
+  unlike lz/glyfparse), so the growth is inline per-site widening within
+  EXISTING functions, not a new dispatch class. Consistent with the
+  i32-storage-widening / fits-gate-demotion candidate classes named in this
+  task's brief. Left unattributed — the two landed cases already clear the
+  1.05 cap with margin; chasing single-digit-byte residuals further would be
+  gold-plating past the stated target.
+
+**Lever landed — (b) Proof-driven elision** (`src/compile/emit.js`,
+`emitLooseEq`, ~35 lines): when both operands are proven `VAL.NUMBER` but
+neither is individually "safe" (both nullable — exactly the maybeUndefined
+gap 5c437df5 closed generically), the only two runtime shapes are "a real
+number" or a nullish sentinel. Added a narrower branch ahead of the
+`REF_EQ_KINDS`/`STRING` dispatch: `f64.eq(a,b) OR (both-nullish, matched to
+loose/strict semantics)`. Uses `isUndef`/`isNull`/`isNullish` (ir.js) — the
+EXACT reserved-sentinel-bit checks, reused verbatim, not reinvented.
+
+**A real bug caught before landing, not assumed away**: the first draft used
+blind i64 bit-equality (`bits(a) === bits(b)`) as the "both nullish" check
+instead of the exact sentinel test. Differential-probed against a real
+`Float64Array` holding a literal `NaN` (`arr[1] = NaN`) crossed with every
+other slot, all four of `===`/`==`/`!==`/`!=`, all index combinations
+(-1..5 x -1..5): **1 mismatch** — `x === y` with both reading the stored
+`NaN` returned `true` (bit-identical NaN payloads), JS says `false`
+(`NaN === NaN` is JS-false; only the specific UNDEF_NAN/NULL_NAN sentinel
+bit patterns are "equal to themselves" under this representation). Fixed by
+switching to `isUndef`/`isNull`/`isNullish`, which test the EXACT reserved
+sentinel, not "any matching NaN payload" — re-probed, 0/49 mismatches.
+Loose vs strict handled correctly: loose folds any null/undefined
+combination together (`null == undefined` is JS-true, `isNullish(a) &&
+isNullish(b)`); strict needs the SAME exact atom on both sides (`null ===
+undefined` is JS-false, `(isUndef(a)&&isUndef(b)) || (isNull(a)&&isNull(b))`).
+Verified against dict/Map `.get()` absent-key shapes too (the census
+producer of this exact class) — present-vs-absent and absent-vs-absent both
+match JS.
+
+**Per-lever geomean trajectory**: 1.0550x (HEAD, pre-fix) -> **1.0418x**
+(post-fix) — under the 1.05 cap with ~0.8% margin. Byte-identical everywhere
+except the two bisected cases: lz 3023->2109 B (-914), glyfparse
+4012->3098 B (-914); confirmed via a full before/after diff of all 58
+`bench-size.mjs` rows — zero other cases moved by even 1 byte. win/tie(13)
+formal `test/bench.js` scope: 0.8791x unchanged (was already comfortably
+green, untouched by this fix — neither win/tie case exercises the fixed
+shape).
+
+**Gates, all green** (fresh full run, this session, on `917feacc` + the
+uncommitted `emit.js` change): full 88-file battery, 13 foreground chunks of
+4-7 (`node test/index.js <files>`) — **3330 total / 0 fail** (skips
+unchanged shape from baseline); kernel-parity **33/33 byte-identical**
+(O0/O2/O3, part of the kernel-parity+kernel-oracle+headline+examples chunk);
+kernel-oracle 11/11 groups; perf-ratchet **10/10 at +0** every category
+(int/float/mixed/cond/buf/nest/slice/ring/condref/fgather — the fixed shape
+doesn't appear in `scripts/perf-corpus.mjs`'s generators); optimizer green
+(part of the objects/dyn-keys/interop/abi/external/watr/optimizer chunk,
+460 tests/4538 assertions, includes the pre-existing "dict: strict/loose
+equality between two independently-maybe-undefined reads (Slice 5 LEAK A)"
+pin — still green, confirms the new branch doesn't regress 5c437df5's own
+fix); dyn-keys/data/errors run explicitly at `JZ_TEST_OPTIMIZE=0` and `=3`
+(306 tests each, 0 fail) in addition to the default-level battery pass;
+selfhost.js **21/21 (206 assertions)**; selfhost-perf.js 5/5 informational
+(warm geomean 0.990x vs 1.03x cap, fresh geomean 0.784x vs 0.99x cap); fuzz
+**2000x4** (seeds 1-8000, four independent foreground runs) — **zero
+divergence** (30173/30672/30572/30466 inputs compared per run, identical
+counts to the last certified run — deterministic seeded corpus); fresh
+`npm run build` x2 — dist/jz.js, dist/jz.wasm, dist/interop.js sha256
+byte-identical both times (`d04fc28b…`/`981a33a3…`/`396500b4…`); full size
+sweep (`scripts/bench-size.mjs`) re-confirmed post-gates: 49-case geomean
+**1.0418x**, win/tie(13) **0.8791x**.
+
+**Residual, not chased (target already cleared with margin)**: the ~40-case
+flat +26 B `__jz_last_err_bits` tax (investigated, confirmed unrecoverable —
+see above); the base64/radixsort/levenshtein/bytebeat/conv2d/dotprod/hash/
+matmul/sort/delayline/tokenizer inline per-site growth (~+40-140 B each, not
+bisected — no new stdlib helper pulled in, so the growth is dispersed across
+many small individually-justified sites rather than one lever-shaped root).
+If the 1.05 cap needs more headroom later, these are the next dig, in that
+order (base64/radixsort/levenshtein are the largest of the unbisected set).
+
+**Files touched**: `src/compile/emit.js` (`emitLooseEq`, one new branch,
+~35 lines, comment-heavy per this codebase's convention); `.work/todo.md`
+(this entry). No test file changes — the existing `test/index.js` "dict:
+strict/loose equality between two independently-maybe-undefined reads
+(Slice 5 LEAK A)" pins already cover the fixed shape's value correctness
+and stayed green throughout.
+
 ## Status (2026-08-04, CLEAN-WORKTREE CERTIFICATION f1c1256b — stack
 ## 976433c1..f1c1256b, 15 local commits, push-readiness review)
 
@@ -6089,27 +6249,30 @@ alias/dependence model). Perf snapshot (M4, stale): 31 strict / 15 band /
       Remaining true red after recovery: glyfparse 1.48, sort 1.35,
       delayline 1.26, base64 1.09, jessie/watr/colorpq/hashjoin (V8/JIT
       lanes), plus the documented hard tails (trace/sdf/shapes).
-* [ ] SIZE: par-or-smaller than AssemblyScript BY GEOMEAN, with full JS
-      semantics — not strict-smaller. FLIPPED RED 2026-08-03 (was GREEN
-      at the stale snapshot); RECOVERING: 1.060x → 1.057x (af08bead escape
-      precision) → **1.055x** (c8700daa range proofs), held at 1.055x
-      through the audit-#9 campaign (every slice size-gated). Residual
-      ~0.5% to the 1.05 cap = the un-bisected remainder of the
-      soundness-guard tax below. Original flip analysis: geomean jz/as
-      was **1.060x** (from 1.016x),
-      25/49 cases smaller (was 27/49) — exceeds the 1.05x par cap for the
-      first time. Not bisected this session; plausible cause is the
-      cumulative byte cost of several soundness-guard additions landed
-      since the 2aaeaa19 snapshot (bigIntOperand's runtime undef-check,
-      dict/Map absent-key throw paths, catch/finally $__jz_last_err_bits
-      resets, JSON scalar-ingress boxing, receiver-HASH/map-value-census
-      machinery) — each individually justified as a correctness fix, but
-      nobody had re-measured the cumulative size tax until this refresh.
-      AS's bench ports still use `unchecked()` throughout (assertions
-      build byte-identical) while jz pays real guards for JS OOB
-      semantics — that structural gap is unchanged; this is a NEW,
-      measured widening on top of it. Gate: geomean <= 1.05 vs AS
-      (test/bench-claims.js size test, test/bench.js SIZE_GEOMEAN_MAX).
+* [x] SIZE: par-or-smaller than AssemblyScript BY GEOMEAN, with full JS
+      semantics — not strict-smaller. RECOVERED 2026-08-04, BELOW THE 1.05
+      CAP: 1.060x → 1.057x (af08bead escape precision) → 1.055x (c8700daa
+      range proofs) → **1.0418x** (this session — bisected the previously
+      un-bisected residual to 5c437df5's emitLooseEq/emitStrictEq
+      both-nullable-NUMBER fallback over-generalizing to the full
+      string/pointer-kind `$__eq` dispatch on a pure-numeric checked-OOB
+      equality shape; narrowed with a proof-driven elision in
+      `src/compile/emit.js` — see Status above for the full attribution
+      table, the lever, and the gate re-run). Of the soundness-guard
+      candidates named in the original flip analysis, only ONE
+      (maybeUndefined's equality fallback, via lz/glyfparse) was the real
+      driver — 43.5% of the total shift from 2 of 49 cases; the
+      `__jz_last_err_bits` global+export tax (~40 cases x flat +26 B) was
+      investigated and confirmed NOT recoverable (already maximally
+      reachability-gated on `ctx.runtime.throws`; stripping it reopens
+      audit #7 P1's host-decode regression). AS's bench ports still use
+      `unchecked()` throughout (assertions build byte-identical) while jz
+      pays real guards for JS OOB semantics — that structural gap is
+      unchanged and is the honest floor under the recovered number, not
+      chased further. Gate: geomean <= 1.05 vs AS (test/bench-claims.js
+      size test tracks the committed-snapshot version of this; test/
+      bench.js SIZE_GEOMEAN_MAX formally gates only the win/tie(13)
+      subset, 0.879x, never actually red).
 * [x] MEMORY: goal STAYS MET, RECONFIRMED 2026-08-03 at f704a077
       (.work/memcheck-results.csv regenerated — dedicated narrow-target
       2-target-per-chunk methodology, NOT the bulk run's memKb column,

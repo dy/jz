@@ -2725,6 +2725,41 @@ function emitLooseEq(a, b, negate, strict) {
   if (aSafe && needsToNumberCoercion(b, vtb)) return looseNumberEq(numA(), b, vb, negate)
   if (bSafe && needsToNumberCoercion(a, vta)) return looseNumberEq(numB(), a, va, negate)
   if (aSafe || bSafe) return typed([`f64.${eqOp}`, numA(), numB()], 'i32')
+  // Both sides proven VAL.NUMBER but NEITHER individually "safe" above (both
+  // nullable — the maybeUndefined gap this function's own Slice-5 fix closed
+  // generically by falling all the way to the fully-dynamic __eq below). A
+  // NUMBER-typed slot's only two possible runtime shapes are "a real number"
+  // or a nullish sentinel (UNDEF_NAN from an unproven OOB/absent-key read,
+  // rarely NULL_NAN from a nullish-literal producer) — never a string/
+  // object/bigint — so it needs none of __eq's string-content/pointer-kind
+  // dispatch (what pulls __str_eq/__is_str_key/__char_at/__str_byteLen into
+  // a module with no string at all, e.g. a pure Uint8Array match loop:
+  // `src[j+len] === src[ip+len]` — bisected live to this exact gap,
+  // .work/todo.md "lz/glyfparse __eq bloat"). f64.eq alone is unsound only
+  // when BOTH sides are nullish (IEEE-754: f64.eq is false for any NaN
+  // operand, even a bit-identical one) — NOT a blind i64 bit-eq (a genuine
+  // NaN payload, e.g. a literal `NaN` stored through the same slot, can
+  // collide bit-for-bit with itself and would wrongly read equal — caught
+  // live by a differential probe against real Float64Array NaN storage
+  // before landing). isUndef/isNull/isNullish (ir.js) test the EXACT
+  // reserved sentinel bit patterns, not "any matching NaN" — loose folds
+  // null/undefined together (`null == undefined` is JS-true); strict needs
+  // the same exact atom on both sides (`null === undefined` is JS-false).
+  if (vta === VAL.NUMBER && vtb === VAL.NUMBER) {
+    const fa = temp('numeq'), fb = temp('numeq')
+    const faG = ['local.get', `$${fa}`], fbG = ['local.get', `$${fb}`]
+    const numEq = typed(['f64.eq', faG, fbG], 'i32')
+    const sentinelEq = strict
+      ? typed(['i32.or',
+          typed(['i32.and', isUndef(faG), isUndef(fbG)], 'i32'),
+          typed(['i32.and', isNull(faG), isNull(fbG)], 'i32')], 'i32')
+      : typed(['i32.and', isNullish(faG), isNullish(fbG)], 'i32')
+    const eqExpr = typed(['i32.or', numEq, sentinelEq], 'i32')
+    return typed(['block', ['result', 'i32'],
+      ['local.set', `$${fa}`, asF64(va)],
+      ['local.set', `$${fb}`, asF64(vb)],
+      negate ? typed(['i32.eqz', eqExpr], 'i32') : eqExpr], 'i32')
+  }
   // Reference-equal pointer kinds (same kind, non-STRING, non-BIGINT): i64 bit equality.
   // JS `==` on objects/arrays/sets/maps/etc. is pure reference equality — no content path.
   // STRING needs __eq (heap strings can be equal by content but different pointers).
