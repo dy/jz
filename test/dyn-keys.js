@@ -936,36 +936,155 @@ test('Slice 7: negative controls — single-proven-side BigInt mixes and genuine
   is(jz('export let f = () => { return 1n + 2n }', { jzify: true }).exports.f(), 3n, 'genuine BigInt+BigInt (no census involved) unaffected')
 })
 
-// KNOWN-FAIL, found landing this slice, NOT this slice's scope: `-`/`*`/`/`/
-// `%` and the bitwise family (`&`/`|`/`^`/`<<`/`>>`) share `+`'s OWN emit.js
-// `bothBigIntOperands` widening (deliberately, for consistency — see that
-// function's own doc comment) but do NOT get the matching VT/
-// censusBigintSentinelKind export-lane upgrade `+` gets, because doing so
-// would be representationally complete but not LIVE: `valTypeOfWithLocals`
-// (src/kind.js, shared by narrow.js's narrowValResults) has a "SOUND `+`"
-// no-optimistic-claim rule for `+` ONLY — every sibling operator falls
-// through to the plain optimistic-NUMBER default, which locks in a WRONG
-// `func.valResult=NUMBER` claim at PLAN time (before any per-function census
-// info exists), before this slice's own per-function-emit-time widening ever
-// gets a chance to run. Confirmed PRE-EXISTING and GENERAL, not specific to
-// census/presentVal at all: a plain exported function taking two genuine
-// (non-census) BigInt params through `-` already misdecodes at HEAD, before
-// any change in this slice. Closing it is a separate, general
-// `valTypeOfWithLocals` fix (broader blast radius — every function using
-// these operators, not a census-chokepoint widening) — named here, not
-// attempted. Pinned as the CURRENT (unchanged by this slice) behavior so a
-// future fix flips it deliberately.
-test('KNOWN-FAIL (found landing Slice 7, out of scope): binary `-`/`*`/`/`/`%`/bitwise ops on two present-key BigInt census reads still misdecode at the export boundary (pre-existing, general valTypeOfWithLocals gap)', () => {
+// GENERAL valTypeOfWithLocals gap CLOSED (round-7, follow-up to Slice 7/
+// 38dd0dca): that entry pinned two DISTINCT sub-shapes together under one
+// "pre-existing, general valTypeOfWithLocals gap" umbrella. Splitting them
+// here, now that the root cause is actually understood:
+//
+//   (a) a LOCALLY-provable BigInt (`let x = BigInt(v)`, or any other decl
+//       `analyzeBody` can settle a `valTypes` fact for) flowing through `-`/
+//       `*`/`/`/`%`/the bitwise family — genuinely the `valTypeOfWithLocals`
+//       gap the old comment named: its SOUND `+` arm computed `a`/`b` via
+//       `rec` (the local resolver) but then DISCARDED them, falling through
+//       to a blind `valTypeOf(expr)` re-derivation that can only see MODULE-
+//       global facts, never a plain local — so a local proven BIGINT through
+//       `rec` still locked in a WRONG `func.valResult`/`_resultNumeric`
+//       NUMBER claim. Confirmed live even for `+` itself (contradicting the
+//       old comment's premise that `+` was already immune — it wasn't; `rec`
+//       and the final derivation just happened to agree whenever the operand
+//       ALSO existed as a global). Fixed: every arm computes its result
+//       DIRECTLY from `rec`'s own `a`/`b`, never re-derives blindly. See the
+//       "FIXED" test below.
+//   (b) a CENSUS-provable BigInt (`m.get(k)`, no `presentVal`/`valTypes` fact
+//       — that machinery is a totally separate fact system `resolveLocal`
+//       never consults) and a fully-opaque, zero-evidence PARAM (a plain
+//       `export let f = (a, b) => a - b` called directly from the JS host,
+//       no in-source call site or decl to prove anything). NEITHER is a
+//       `valTypeOfWithLocals` gap — (a)'s fix doesn't and can't touch them:
+//       (b-census) still needs its OWN `bothBigIntOperands`/VT-census-upgrade
+//       widening per op (Slice 7's own deliberately-scoped-out "next slice",
+//       unattempted here — a census fact and a locally-resolved fact are
+//       different inputs to the SAME function, not the same gap); (b-param)
+//       is architecturally out of reach of ANY static-proof mechanism — an
+//       unboxed dynamic export param crossing the JS↔wasm boundary has no
+//       runtime tag distinguishing "raw BigInt carrier" from "a genuinely
+//       tiny subnormal float the program computed" (interop.js's own `bits`/
+//       `i64ToF64` doc comments), so disambiguating it needs NEW boxing
+//       infrastructure at the boundary (§6's presentKindUnboxed/bigintBoxed
+//       producer gap), not a kind.js derivation fix. Both remain pinned,
+//       unchanged, below — for their own, now-precise reasons.
+test('KNOWN-FAIL (unchanged by the round-7 general fix, for two SEPARATE, still out-of-scope reasons): census-BigInt reads and zero-evidence dynamic params still misdecode', () => {
   const two = (op) => jz(`export let f = () => { const m = new Map(); m.set('a', 5n); m.set('b', 3n); let x = m.get('a'); let y = m.get('b'); return x ${op} y }`, { jzify: true }).exports.f()
-  is(typeof two('-'), 'number', 'JS: 2n (bigint) — actual: wrong number, unchanged by this slice')
+  is(typeof two('-'), 'number', 'JS: 2n (bigint) — census-BigInt sub-case, its own separate Slice-7-scoped-out widening, not this fix')
   is(typeof two('*'), 'number')
   is(typeof two('/'), 'number')
   is(typeof two('%'), 'number')
   is(typeof two('&'), 'number')
-  // A plain, non-census exported function through the SAME operators shares
-  // the identical gap — proves it's general, not a census-shape artifact.
+  // A plain, zero-evidence exported param pair — architecturally out of reach
+  // of any static proof (see the block comment above); confirms this is a
+  // DIFFERENT gap from (a), not just an unfixed leftover of it.
   const plainSub = jz('export let f = (a, b) => a - b', { jzify: true }).exports.f
-  is(typeof plainSub(5n, 3n), 'number', 'JS: 2n — a real, non-census BigInt param pair through `-` already misdecoded at HEAD, pre-existing')
+  is(typeof plainSub(5n, 3n), 'number', 'JS: 2n — a real, zero-evidence dynamic-param BigInt pair through `-`, architecturally unprovable, not a valTypeOfWithLocals gap')
+})
+
+// FIXED (round-7): `valTypeOfWithLocals`'s binary arms (kind.js) now settle
+// BIGINT-vs-NUMBER directly from `rec`'s own locally-resolved operand kinds
+// — for `+` (previously silently wrong for this exact shape despite the
+// "SOUND +" framing, see above) and its `-`/`*`/`/`/`%`/`&`/`|`/`^`/`<<`/`>>`
+// siblings (previously had no local-aware handling AT ALL, falling straight
+// to the file-ending `valTypeOf(expr)` catch-all). `BigInt(v)` is a
+// compile-time-KNOWN-BIGINT-returning callee (kind-traits.js CALLEE_VAL) —
+// analyzeBody's decl-time `valTypes` tracker already recorded `x`/`y` as
+// BIGINT; only the WITHOUT-locals re-derivation the export-lane decision
+// depended on was blind to it.
+// Native BigInt operator functions (no `eval` — this repo's own errors.js
+// pins `eval` as a prohibited construct in COMPILED source; using it here to
+// compute an expected value in the TEST HARNESS is a different concern, but
+// explicit functions keep the oracle unambiguous either way).
+const BIGINT_OP = {
+  '+': (a, b) => a + b, '-': (a, b) => a - b, '*': (a, b) => a * b,
+  '/': (a, b) => a / b, '%': (a, b) => a % b,
+  '&': (a, b) => a & b, '|': (a, b) => a | b, '^': (a, b) => a ^ b,
+  '<<': (a, b) => a << b, '>>': (a, b) => a >> b,
+}
+
+test('round-7: local BigInt() decls through every binary arithmetic/bitwise op cross the export boundary correctly', () => {
+  const ops = ['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>']
+  const two = (op, v, w) => jz(`export let f = (v, w) => { let x = BigInt(v); let y = BigInt(w); return x ${op} y }`,
+    { jzify: true }).exports.f(v, w)
+  for (const op of ops) {
+    const got = two(op, 6, 3)
+    const want = BIGINT_OP[op](6n, 3n)
+    is(got, want, `${op}: 6n ${op} 3n`)
+    is(typeof got, 'bigint', `${op}: result is a real bigint`)
+  }
+  // Negative operands (sign-sensitive: division truncation, arithmetic right
+  // shift, two's-complement bitwise) — the class the plain small-positive
+  // pins above can't distinguish from a lucky subnormal-arithmetic coincidence.
+  for (const op of ops) is(two(op, -7, 2), BIGINT_OP[op](-7n, 2n), `${op}: negative operand`)
+  // `/` truncates TOWARD ZERO per BigInt division (ES2024 6.1.6.2.4), not
+  // floor — the class that would silently disagree with Math.floor semantics.
+  is(two('/', -7, 2), -3n, 'BigInt / truncates toward zero: -7n/2n === -3n, not -4n (floor)')
+  is(two('/', 7, -2), -3n, 'BigInt / truncates toward zero: 7n/-2n === -3n, not -4n')
+})
+
+// round-7: `<<`/`>>` NEGATIVE shift amount — ES2024 13.2.9/13.2.10
+// BigInt::leftShift/rightShift flip DIRECTION on a negative shift count
+// (`x << -3n` === `x >> 3n`, exactly), unlike Number `<<`/`>>` (ToInt32 & 31,
+// no direction flip) or WASM's native i64.shl/i64.shr_s (shift count mod 64,
+// also no sign awareness — a naive port silently wraps `-3` to a 61-bit
+// wrong-direction shift). Found live sweeping this fix's own acceptance
+// criteria, fixed via bigIntShiftIR (emit.js) alongside the arms above.
+test('round-7: BigInt `<<`/`>>` flips direction on a negative shift amount (JS spec 13.2.9/13.2.10)', () => {
+  const shift = (op, v, w) => jz(`export let f = (v, w) => { let x = BigInt(v); let y = BigInt(w); return x ${op} y }`,
+    { jzify: true }).exports.f(v, w)
+  is(shift('<<', 6, -3), 6n << -3n); is(shift('<<', 6, -3), 0n)
+  is(shift('>>', 6, -3), 6n >> -3n); is(shift('>>', 6, -3), 48n)
+  is(shift('<<', -6, -3), -6n << -3n); is(shift('<<', -6, -3), -1n)
+  is(shift('>>', -6, -3), -6n >> -3n); is(shift('>>', -6, -3), -48n)
+  // `<<=`/`>>=` compound-assign shares the identical binary-op fix (emit.js).
+  const compound = (op, v, w) => jz(`export let f = (v, w) => { let x = BigInt(v); x ${op} BigInt(w); return x }`,
+    { jzify: true }).exports.f(v, w)
+  is(compound('<<=', 6, -3), 0n); is(compound('>>=', 6, -3), 48n)
+})
+
+// round-7: comparisons (`<` `>` `<=` `>=`) over locally-proven-BigInt operands
+// — verified, not assumed, per this fix's own sweep discipline. Already
+// correct at HEAD (VT.bool/CMP_OPS ignore operand kind entirely — always
+// VAL.BOOL — so there was never a static-claim gap here); pinned so a future
+// change can't regress it silently.
+test('round-7: comparisons over local BigInt() decls are (and stay) JS-correct', () => {
+  const cmp = (op, v, w) => jz(`export let f = (v, w) => { let x = BigInt(v); let y = BigInt(w); return x ${op} y }`,
+    { jzify: true }).exports.f(v, w)
+  const CMP_OP = { '<': (a, b) => a < b, '>': (a, b) => a > b, '<=': (a, b) => a <= b, '>=': (a, b) => a >= b }
+  for (const [op, v, w] of [['<', 5, 2], ['<', 2, 5], ['<', 5, 5], ['>', -5, 2], ['<=', 5, 5], ['>=', -5, -2]])
+    is(cmp(op, v, w), CMP_OP[op](BigInt(v), BigInt(w)), `${op} ${v} ${w}`)
+})
+
+// round-7 KNOWN-FAIL, found live while sweeping this fix's own acceptance
+// criteria, NOT this fix's scope: real JS throws TypeError mixing BigInt and
+// Number in arithmetic (ES2024 6.1.6.2.20 step 6, "Type(lnum) is not
+// Type(rnum)") — `bigintMixReject` (emit.js) already implements this
+// correctly at COMPILE TIME for a provable mix (one side a genuine BigInt,
+// the other a numeric LITERAL — see the negative-controls test above), but
+// has no RUNTIME check at all for a proven-BigInt side paired with a
+// genuinely dynamic (zero-evidence) other operand — exactly audit-#10's own
+// named, out-of-scope "operand-local guards are architecturally
+// insufficient" class (§14 point 4), now ALSO reachable through a plain
+// local BigInt() decl mixed with an ordinary dynamic param, not only through
+// a census read. `bigIntOperand`'s runtime guard only checks a
+// maybeUndefined-flagged operand's OWN sentinel — a genuinely-Number
+// dynamic operand has none, so its raw f64 bits get silently reinterpreted
+// as i64 instead of throwing. `valTypeOfWithLocals`'s own arithmetic/bitwise
+// arm (kind.js, the general fix above) now correctly claims BIGINT for this
+// shape (one side statically proven BigInt is enough — matches
+// numericBinaryVT's own "BigInt if EITHER operand is BigInt" formula, and IS
+// the textbook-correct static answer for the non-throwing case), which
+// flips the export lane from a wrong NUMBER to a wrong BIGINT — still wrong,
+// still this same unfixed runtime-dispatch gap, just a different wrong shape.
+test('KNOWN-FAIL (found landing round-7, out of scope, audit-#10 §14 point 4 class): a proven-local BigInt mixed with a zero-evidence dynamic param silently corrupts instead of throwing TypeError', () => {
+  const f = jz('export let f = (v, w) => { let x = BigInt(v); return x - w }', { jzify: true }).exports.f
+  is(typeof f(5, 2), 'bigint', 'JS: TypeError (Number 2 mixed with BigInt 5n) — actual: silently wrong bigint, unchanged runtime gap')
 })
 
 // KNOWN-FAIL, found landing this slice, NOT this slice's scope: a PARAM

@@ -1011,11 +1011,62 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   // SOUND `+` — see narrowValResults' identical comment (src/compile/narrow.js):
   // unknown side → no claim (VT['+']'s own optimistic NUMBER guess is fine for
   // local numeric inference but unsound to hand back as a firm kind claim).
+  // Settled directly from `a`/`b` (NOT `valTypeOf(expr)`, round-7 fix — see the
+  // SOUND-arithmetic/bitwise family just below for why): `rec` already proved
+  // both operands' kind through resolveLocal, which sees LOCALLY-scoped facts
+  // (analyzeBody's per-function valTypes map, e.g. `let x = BigInt(v)`) that the
+  // GLOBAL-only plain `valTypeOf` re-derivation below cannot see at all — a bare
+  // name is invisible to `lookupValType` unless it's also a MODULE-level global.
+  // Falling through to `valTypeOf(expr)` after `rec` already proved BOTH sides
+  // BIGINT silently discarded that proof and re-resolved through the blind,
+  // globally-optimistic default, landing back on VAL.NUMBER — exactly the
+  // general miscompile this whole function exists to prevent (confirmed via
+  // direct repro: `(v,w) => { let x = BigInt(v); let y = BigInt(w); return x +
+  // y }` misdecoded at the export boundary before this fix, the identical class
+  // as the sibling arithmetic ops below, not something `+` was actually immune
+  // to despite this function's own prior "SOUND +" framing).
   if (op === '+') {
     const a = rec(args[0]), b = rec(args[1])
     if (a === VAL.STRING || b === VAL.STRING) return VAL.STRING
     if (a == null || b == null) return null
-    return valTypeOf(expr)
+    return a === VAL.BIGINT || b === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
+  }
+  // Arithmetic/bitwise siblings (- * / % & | ^ << >>, the binary half of
+  // NUMERIC_BINARY_OPS minus its unary member `u-`, handled by the unary
+  // family just below): the general `valTypeOfWithLocals` gap named at
+  // 38dd0dca — every one of these fell all the way through to the file-
+  // ending `return valTypeOf(expr)`, which re-derives via numericBinaryVT's
+  // OWN global-only `valTypeOf(args[0])`/`valTypeOf(args[1])`, blind to
+  // whatever `rec` (this function's own local resolver) just proved. A
+  // genuinely BigInt-valued local (`let x = BigInt(v)`) flowing through `x -
+  // y` therefore claimed `func.valResult`/`_resultNumeric` = NUMBER — wrong,
+  // sending a real i64 BigInt result down the plain-f64 (or generic-dynamic)
+  // export lane instead of the i64exp BigInt lane.
+  //
+  // UNLIKE `+` just above: no "unknown side → no claim" veto here. `+` needs
+  // that veto because an unproven operand could ALSO be a STRING (silently
+  // wrong to claim NUMBER when the true kind might be STRING — the narrowed-
+  // result compare-corruption class that rule was written to prevent). None
+  // of these nine ops have a STRING arm at all — `-`/`*`/etc. ALWAYS ToNumeric
+  // both operands, so the only question is NUMBER-vs-BIGINT, and
+  // numericBinaryVT's own "unknown → NUMBER" optimistic default for that
+  // question is the LONG-established, deliberately accepted imprecision this
+  // whole file already relies on everywhere else (its own doc comment: "load-
+  // bearing for local numeric inference"). Mirroring that formula exactly —
+  // just sourced from `rec` instead of the blind global `valTypeOf` — ADDS
+  // the missing local-BigInt proof without changing behavior for the "rec
+  // can't resolve either side" case at all (proven live: a `null`-propagating
+  // veto here breaks the closure-table call-site param lattice's own
+  // bootstrapping — dyn-closure-tables.js's `closureBodyReturnKind` unifies
+  // over `(x,k)=>(x+k)|0`-shaped elements BEFORE `x`/`k` have any local
+  // evidence at all, relying on exactly this "unknown → NUMBER" default to
+  // settle the table's call-expression result kind; vetoing it to null broke
+  // that fixpoint and regressed the `f64.add`-with-no-`__str_concat` codegen
+  // pin in test/closures.js — found and reverted before landing).
+  if (op === '-' || op === '*' || op === '/' || op === '%' ||
+      op === '&' || op === '|' || op === '^' || op === '<<' || op === '>>') {
+    const a = rec(args[0]), b = rec(args[1])
+    return a === VAL.BIGINT || b === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
   }
   // Unary BigInt-preserving family (u- ~ ++ --): kind follows the single
   // operand exactly like numericUnaryVT's own rule, just sourced from

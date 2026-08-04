@@ -4275,6 +4275,31 @@ function bigIntUnary(node, mkI64, undefF64) {
       isUndef(['local.get', `$${t}`])]], 'f64')
 }
 
+// BigInt `<<`/`>>` — ES2024 13.2.9/13.2.10 BigInt::leftShift/rightShift: a
+// NEGATIVE shift amount flips DIRECTION (`x << -3n` === `x >> 3n`, exactly —
+// not "shift by a huge wrapped count"). Found live sweeping the general
+// valTypeOfWithLocals fix (38dd0dca follow-up): WASM's `i64.shl`/`i64.shr_s`
+// both take the shift count mod 64 unconditionally (two's-complement -3 → 61),
+// with no such sign awareness — `av << -3n` computed a 61-bit wrong-direction
+// shift instead of `av >> 3n`. Pre-existing (the same raw `i64.${fn}` dispatch
+// this fixes was already there before this session), just unreachable through
+// any correctly-DECODED export until the general fix above made `<<`/`>>` on
+// proven-BigInt locals/params cross the boundary as a real BigInt at all —
+// confirmed via direct JS-oracle diff, not assumed. `bv` is captured into a
+// temp FIRST (not inlined twice) — it may be `bigIntOperand`'s own maybeUndefined
+// block form, which must evaluate exactly once. `av` is embedded once, same
+// single-evaluation discipline every other binary BigInt op here already has.
+function bigIntShiftIR(op, av, bv) {
+  const t = tempI64('bshiftN')
+  const sameOp = op === '<<' ? 'shl' : 'shr_s'
+  const flipOp = op === '<<' ? 'shr_s' : 'shl'
+  return ['block', ['result', 'i64'],
+    ['local.set', `$${t}`, bv],
+    ['if', ['result', 'i64'], ['i64.lt_s', ['local.get', `$${t}`], ['i64.const', 0]],
+      ['then', [`i64.${flipOp}`, av, ['i64.sub', ['i64.const', 0], ['local.get', `$${t}`]]]],
+      ['else', [`i64.${sameOp}`, av, ['local.get', `$${t}`]]]]]
+}
+
 // Member `.`/`[]` increment/decrement's postfix OLD-value recovery. Prepare
 // (index.js '++'/'--') has no dedicated increment NODE for a member target
 // the way bare names do (the '++'/'--' table entries below are name-based,
@@ -4747,8 +4772,11 @@ export const emitter = {
       bigintMixReject(sym, name, val)
       const void_ = ctx.func._expect === 'void'
       // See compoundAssign's identical comment: `name` is always a bare identifier,
-      // so only `val` can be a maybeUndefined dict/Map read.
-      const result = fromI64([`i64.${fn}`, asI64(readVar(name)), bigIntOperand(val)])
+      // so only `val` can be a maybeUndefined dict/Map read. `<<=`/`>>=` share the
+      // binary `<<`/`>>` handler's sign-aware direction flip — see bigIntShiftIR.
+      const result = fromI64((sym === '<<' || sym === '>>')
+        ? bigIntShiftIR(sym, asI64(readVar(name)), bigIntOperand(val))
+        : [`i64.${fn}`, asI64(readVar(name)), bigIntOperand(val)])
       return writeVar(name, result, void_)
     }
     return compoundAssign(name, val,
@@ -5520,6 +5548,10 @@ export const emitter = {
     // the only op whose export-boundary lane this slice closes end-to-end).
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject(op, a, b)
+      // `<<`/`>>` need the sign-aware direction flip (bigIntShiftIR) — see its
+      // own doc comment. `&`/`|`/`^` have no such hazard (bitwise ops are
+      // direction-symmetric; only a shift COUNT's sign is meaningful).
+      if (op === '<<' || op === '>>') return fromI64(bigIntShiftIR(op, bigIntOperand(a), bigIntOperand(b)))
       return fromI64([`i64.${fn}`, bigIntOperand(a), bigIntOperand(b)])
     }
     if (op === '|') {  // `(x / y) | 0` integer-division idiom → i32.div_s

@@ -8102,3 +8102,159 @@ comma-RefErr; instanceof-ctor-value; switch-decl-strict x2;
 line-terminators x2 [upstream subscript grammar edge]; var-none hoist
 corner; S13 arguments-typeof reflection). GATE GREEN: 3014 pass / 0
 uncurated. Workflow expected green.
+
+## round-7 (38dd0dca follow-up): general BigInt binary-arithmetic misdecode
+## via valTypeOfWithLocals — the GENERAL side of the Slice-7 KNOWN-FAIL
+
+Task: close the `valTypeOfWithLocals` gap 38dd0dca pinned and scoped out —
+`-`/`*`/`/`/`%`/the bitwise family (`&`/`|`/`^`/`<<`/`>>`) had no local-aware
+BigInt derivation at all, unlike `+`'s "SOUND" arm, so a locally-provable
+BigInt (e.g. `let x = BigInt(v)`) flowing through any of these ops locked in
+a wrong `func.valResult`/`_resultNumeric` NUMBER claim, sending the real i64
+result down the wrong export lane.
+
+**Repro-first finding, corrects the 38dd0dca framing**: `+`'s own "SOUND"
+arm was ALSO live-broken for this exact shape — its final branch, once both
+operands resolved via the local resolver `rec`, discarded that proof and
+re-derived through a blind global-only `valTypeOf(expr)` call, which cannot
+see a plain local's kind. `(v,w) => { let x = BigInt(v); let y = BigInt(w);
+return x + y }` misdecoded at HEAD before this fix, identically to `-`. `+`
+was never actually immune — only its CENSUS sub-case (Slice 7) was fixed.
+
+**Op-by-op repro table** (`let x = BigInt(v); let y = BigInt(w); return x OP
+y`, called with real Numbers from the host, JS oracle vs jz):
+
+| op | before | after | JS (6,3) | spec |
+|----|--------|-------|----------|------|
+| `+` | wrong `number` (`4.4e-323`) | `9n` | `9n` | 6.1.6.2.1 |
+| `-` | wrong `number` (`1.5e-323`) | `3n` | `3n` | 6.1.6.2.5 |
+| `*` | wrong `number` (`0`) | `18n` | `18n` | 6.1.6.2.6 |
+| `/` | wrong `number` (`2`) | `2n` | `2n` (truncates toward 0) | 6.1.6.2.4 |
+| `%` | wrong `number` (`0`) | `0n` | `0n` | 6.1.6.2.7 |
+| `&` | wrong `number` (`0`) | `2n` | `2n` | 6.1.6.2.16 |
+| `\|` | wrong `number` | `7n` | `7n` | 6.1.6.2.17 |
+| `^` | wrong `number` | `5n` | `5n` | 6.1.6.2.18 |
+| `<<` | wrong `number` | `48n` | `48n` | 13.2.9 |
+| `>>` | wrong `number` | `0n` | `0n` | 13.2.10 |
+| `**` | compile-time reject (pre-existing, unchanged, N/A) | same | `-` | not supported by design |
+| `<` `>` `<=` `>=` | already correct (VT.bool ignores operand kind) | unchanged | correct | 6.1.6.2.13/14 |
+
+Negative operands, `/` truncation-toward-zero (`-7n/2n===-3n`, not floor
+`-4n`), and `<<`/`>>` NEGATIVE shift amounts (direction FLIP — `6n<<-3n ===
+6n>>3n === 0n`, not a mod-64-wrapped 61-bit shift) all separately verified —
+see test/dyn-keys.js "round-7" tests.
+
+**Fix mechanism — computation + boundary duality (as anticipated)**:
+1. **Computation**: none needed for `+`/`-`/`*`/`/`/`%`/`&`/`|`/`^` — emit.js's
+   entry gate (`valTypeOf(a)===BIGINT||valTypeOf(b)===BIGINT`) already routes
+   through the correct i64 machinery once `x`/`y`'s LOCAL `val` fact is live
+   at actual emit time (`ctx.func.localReps`, populated by analyze.js's decl
+   tracker independently of this fix). **`<<`/`>>` DID need a computation
+   fix**, found live sweeping this task's own acceptance table, unrelated to
+   the boundary-decode bug: WASM's `i64.shl`/`i64.shr_s` take the shift count
+   mod 64 unconditionally, with no JS-spec sign-flip for a negative shift
+   amount (13.2.9/13.2.10) — `bigIntShiftIR` (emit.js) adds a runtime sign
+   check that swaps op+negates the amount when negative. Wired at both the
+   binary `<<`/`>>` table entry and the `<<=`/`>>=` compound-assign entry
+   (mirrors the `I64_ARITH_OP` compound-assign precedent).
+2. **Boundary decode**: `valTypeOfWithLocals` (kind.js) gets a new arm for
+   the 9 binary siblings, mirroring `numericBinaryVT`'s own "BigInt if
+   EITHER operand is BigInt, else NUMBER" formula — but sourced from `rec`
+   (the local resolver) instead of blind global `valTypeOf`. `+`'s existing
+   arm is fixed the same way: use `rec`'s own `a`/`b` directly instead of
+   re-deriving through `valTypeOf(expr)`.
+
+**A deliberate asymmetry, found by a genuine regression, not by inspection**:
+the new sibling arm does NOT copy `+`'s "unknown side → no claim" veto.
+First attempt did copy it (matching `+`'s and the pre-existing unary
+family's own SOUND discipline) and it regressed test/closures.js's
+closure-table call-site param lattice pins (`(x,k)=>(x+k)|0` compiled to the
+generic `__str_concat`-pulling dynamic-dispatch path instead of a bare
+`f64.add`) — root cause: `dyn-closure-tables.js`'s `closureBodyReturnKind`
+unifies a table's elements' return kinds BEFORE any local evidence exists
+for their bare params, and RELIES on the historical "unknown → NUMBER"
+optimistic default to bootstrap that fixpoint. `+`'s veto is justified by a
+REAL ambiguity `-`/`*`/`/`/`%`/the bitwise family don't share: `+` could
+ALSO be STRING concatenation, so "unknown" genuinely can't rule out a wrong
+NUMBER claim. The other 9 ops ToNumeric unconditionally — their only
+ambiguity is NUMBER-vs-BIGINT, and "unknown → NUMBER" is the SAME,
+long-established, pervasively-relied-upon optimism `numericBinaryVT` itself
+already has (its own doc comment: "load-bearing for local numeric
+inference"). Reverted to the unconditional formula (no null veto) —
+verified this reintroduces no soundness gap: the local-BigInt-decl case
+still resolves correctly (rec proves BIGINT directly, doesn't need the veto
+to avoid a WRONG claim), and the closure-table regression is gone.
+
+**Comparison sweep verdict**: `<` `>` `<=` `>=` over locally-proven-BigInt
+operands were ALREADY JS-correct at HEAD — `CMP_OPS`/`VT.bool` ignore
+operand kind entirely (always `VAL.BOOL`), so there was never a static-claim
+gap for them. Verified, not assumed (kind.js's own `valTypeOfWithLocals`
+never special-cases comparisons — the locals-blind `valTypeOf(expr)`
+fallback is already exact, since BOOL doesn't depend on operand kind at
+all). Pinned in test/dyn-keys.js so a future change can't regress it
+silently.
+
+**Flipped KNOWN-FAIL pins (test/dyn-keys.js)**: the 38dd0dca sibling pin
+("binary `-`/`*`/`/`/`%`/bitwise ops on two present-key BigInt census reads
+still misdecode... pre-existing, general valTypeOfWithLocals gap") bundled
+TWO separate sub-shapes under one umbrella — split, both re-pinned for their
+OWN, now-precise, still-separate reasons (neither touched by this fix):
+  - the CENSUS sub-case (`m.get()` reads, no `presentVal`/`valTypes` fact —
+    a totally different fact system `resolveLocal` never consults) — needs
+    its own `bothBigIntOperands`/VT-census-upgrade widening per op, Slice
+    7's own deliberately-scoped-out "next slice," unattempted here.
+  - the zero-evidence PARAM sub-case (`export let f=(a,b)=>a-b` called
+    directly from the JS host, no in-source call site or decl at all) —
+    architecturally out of reach of ANY static-proof mechanism: an unboxed
+    dynamic export param has no runtime tag distinguishing "raw BigInt
+    carrier" from "a genuinely tiny subnormal float the program computed"
+    (interop.js's own `bits`/`i64ToF64`), so disambiguating it needs NEW
+    boxing infrastructure at the JS↔wasm boundary (§6's presentKindUnboxed/
+    bigintBoxed producer gap), not a kind.js derivation fix.
+  A NEW pin (`test/dyn-keys.js` "round-7") replaces the FIXED sub-shape: the
+  LOCALLY-provable BigInt()-decl shape, now green for the full op sweep,
+  negative operands, `/` truncation, and `<<`/`>>` negative-shift direction.
+  A second NEW KNOWN-FAIL pin was ALSO found and added, live, while sweeping
+  this fix's own acceptance criteria — mixing a proven-local BigInt with a
+  zero-evidence dynamic param (`let x=BigInt(v); return x - w`) still
+  silently corrupts instead of throwing TypeError (audit-#10's own named,
+  out-of-scope "operand-local guards are architecturally insufficient" class,
+  §14 point 4 — `bigintMixReject` has no RUNTIME check for this shape, only a
+  compile-time check for a LITERAL non-bigint operand). Its WRONG VALUE'S
+  TYPE flipped from `number` to `bigint` as a side effect of this fix's own
+  correct BIGINT claim (still wrong — should throw — just differently wrong;
+  pin updated to match).
+
+**Files touched**: kind.js (`valTypeOfWithLocals`'s `+` arm fixed, new
+9-op sibling arm added); emit.js (`bigIntShiftIR` helper, wired at the
+binary `<<`/`>>` table entry and the `<<=`/`>>=` compound-assign entry);
+test/dyn-keys.js (KNOWN-FAIL split/re-pin, 4 new tests: full op sweep +
+negative operands + `/` truncation, negative-shift direction, comparisons,
+the newly-found mixed-operand KNOWN-FAIL).
+
+**Gates**: full 90-file battery in foreground chunks of 4-7 — every chunk
+green (closures 109/109 after the regression fix, dyn-keys 48/48, full
+suite ~9000+ assertions, no failures attributable to this change); kernel
+leg (`JZ_TEST_TARGET=jz.wasm`) run across the full kernel-eligible set in
+the same chunking — all green except two PRE-EXISTING, verified-unrelated
+gaps (regex `\p{}`/`\k<name>` throw-message mismatches, inference.js's
+dict-value-census/receiver-HASH row — both independently reproduced
+identically at clean HEAD 38dd0dca via a stash+rebuild+test+restore cycle,
+confirmed NOT caused by this change); kernel-parity 33/33 byte-identical
+(O0/O2/O3); kernel-oracle 11/11; perf-ratchet 10/10 at +0 delta every
+category (int/float/mixed/cond/buf/nest/slice/ring/condref/fgather —
+expected, BigInt shapes absent from that corpus); optimizer green; dyn-keys/
+statements/data run explicitly both legs, all optimize levels (O0/O2/O3);
+selfhost.js 21/21 (206 assertions); fuzz 2000×4 (seeds 1-8000, four separate
+foreground runs) zero divergence; size sweep geomean 1.055× unchanged
+(`scripts/bench-size.mjs`); fresh build ×2 byte-identical (`dist/jz.js`
+sha256 `4255947c…`, `dist/jz.wasm` sha256 `91ffd414…`, `dist/interop.js`
+sha256 `396500b4…`, both builds).
+
+Residual, deliberately out of scope (named above, each its own separate,
+comparable-sized future work): the census-BigInt widening for `-`/`*`/`/`/
+`%`/bitwise (Slice 7's own "next slice"); the mixed-operand runtime-dispatch
+gap (audit-#10 §14 point 4, now also reachable via a plain local BigInt
+mixed with a dynamic param); the zero-evidence dynamic-param representation
+gap (§6's presentKindUnboxed/bigintBoxed producer wiring); `**` on BigInt
+(pre-existing compile-time rejection, by design, untouched).
