@@ -361,31 +361,50 @@ export function mapValueKindOf(name) {
 // from before the audit-#9 revert: a `name[key]`/`name.prop` dict-census
 // READ node (arm 1) or a `recv.get(key)` Map-census CALL node (arm 2) whose
 // claimed kind comes SOLELY from dictValueKindOf/mapValueKindOf's soundness
-// carve-out. PLUS a NEW third arm (§2/§3 decl inference, §4 "REP fallback for
+// carve-out. PLUS a third arm (§2/§3 decl inference, §4 "REP fallback for
 // a bare name"): a bare NAME whose rep carries BOTH `mayBeUndefined` and a
-// `val` answers identically — this is what lets a maybeUndefined read
+// `presentVal` answers identically — this is what lets a maybeUndefined read
 // survive being bound to a local (`let x = m.get(missing); x + 1`) instead
 // of evaporating at the decl boundary the way the audit-#9 AST-shape-only
 // join did. Consulted directly (not via valTypeOf) at every existing
 // censusMaybeUndefined chokepoint — ir.js toNumF64/toStrI64, emit.js
-// nullableOperand/bigIntOperand/bigIntUnary, module/string.js, module/
-// number.js, module/console.js.
+// nullableOperand/bigIntOperand/bigIntUnary/bigintMixReject/`+`-concat.
 //
-// LANDED STATE (Slice 4's VT wiring REVERTED, audit #10 — see
-// dictValueKindOf's own doc comment above): arms 1/2 are reachable again,
-// but every one of the ~8 chokepoints below gates ITS OWN call to this
-// function behind `valTypeOf(node) === VAL.SOMETHING` first
-// (ir.js:997-1011, emit.js's strictSentinel/aSafe/bSafe callers of
-// nullableOperand) — and `valTypeOf` for a dict/Map read stays null for as
-// long as VT['[]']/VT['.']/VT['()'] (dictValueKindOf/mapValueKindOf's OWN
-// VT-side promotion) stay dormant. So today this function is REACHABLE and
-// CORRECT but not LOAD-BEARING for any of those ~8 chokepoints — §14's
-// opt-in presentVal model is the re-enablement path, not a repeat of Slice
-// 4's global VT promotion. The decl producer (analyze.js analyzeValTypes)
-// still sets `mayBeUndefined` on arm-3's bare names regardless, ahead of
-// that, so the fact doesn't have to be invented retroactively once §14
-// lands. (Arm 4, callResultMayBeUndefinedKind below, is likewise reachable
-// but inert for the identical reason — see its own doc comment.)
+// LANDED STATE (§14 Slice 6, "begin the presentVal opt-in model"): arm 3
+// originally read ONLY `val` here (Slice 1/2, before the Slice-4-VT-
+// promotion revert). For a DECL/REASSIGN local this really was dead — §14
+// makes "val never carries a census claim" an invariant for that shape, and
+// always has been in practice since the census never fed `val`. But it was
+// NOT uniformly dead: a PARAM can carry `mayBeUndefined = true` (Slice 2's
+// own deliberate over-approximation — `censusShapedNode` flags ANY `[]`/`.`
+// 2-arg read, not just a dict/Map one, so a plain array/typed-array
+// OOB-possible index read on a call-site argument flags the receiving
+// param too) alongside a `val` set by narrow.js's ENTIRELY SEPARATE
+// call-site-argument fixpoint (`hardParamVal`/`inferValAtSite`, no census
+// involvement at all) — found LIVE, not assumed, when an initial rewrite to
+// `presentVal`-only regressed test/dyn-keys.js's "sibling carrier-domain
+// producers: out-of-bounds array read" pin from `NaN` back to `undefined`
+// (caught by the gate, not by inspection). Fixed: `presentVal` (reps.js) is
+// consulted FIRST — a SEPARATE, poison-disciplined kind claim, propagated
+// at decl/reassign time (analyze.js analyzeValTypes' `setPresentVal`
+// tracker, mirroring `setVal`'s poison-on-disagreement discipline exactly,
+// NOT `mayBeUndefined`'s spread-merge boolean OR) — with `val` KEPT as a
+// fallback for exactly the param case above, where it remains sound and
+// load-bearing. Arms 1/2/4 were already reachable pre-Slice-6; arm 3 is the
+// one this slice extends (decl-hop locals) without removing what already
+// worked (params). Whether a GIVEN chokepoint above ever actually SEES a
+// non-null claim from any arm still depends on that chokepoint's OWN outer
+// gate: several (ir.js toNumF64/toStrI64, emit.js nullableOperand/
+// bigIntOperand/bigIntUnary) compute `vt = valTypeOf(node)` FIRST and only
+// consult this function when `vt` already proves a matching kind — true for
+// the param case above (`val` IS `vt`'s own source there) but never true for
+// a census-shaped node itself, by §14's own point 3 ("no optimistic
+// default"). Widening
+// those chokepoints' own outer gates to fall back to this function when
+// `valTypeOf` is null is explicitly NOT part of this slice (§14 names it as
+// the actual "runtime presence dispatch" work, a separate, larger surface —
+// see .work/represented-maybe-undefined-design.md §15 for exactly which
+// consumers this slice made live vs left gated out, verified not assumed).
 //
 // censusShapedNode (Slice 2, .work/represented-maybe-undefined-design.md §3)
 // factors OUT arms 1/2's pure AST-SHAPE test — no ctx lookup — so a whole-
@@ -451,7 +470,29 @@ export function censusMaybeUndefinedKind(node) {
   }
   if (typeof node === 'string') {
     const r = repOf(node)
-    if (r?.mayBeUndefined && r.val) return r.val
+    if (r?.mayBeUndefined) {
+      // presentVal FIRST (§14 Slice 6): the precise, poison-disciplined census
+      // kind, live for a decl-hop local (never available via `val` — §14's
+      // permanent invariant, `val` never carries a census claim for that
+      // shape). Fall back to `val` (the ORIGINAL Slice 1 arm, KEPT — found
+      // load-bearing, not dead, while landing this slice): a PARAM's `val` is
+      // set by narrow.js's ORDINARY call-site-argument fixpoint, entirely
+      // independent of census provenance, while its `mayBeUndefined` can
+      // ALSO be true via Slice 2's own deliberate over-approximation
+      // (censusShapedNode flags ANY `[]`/`.` 2-arg read, including a plain
+      // array/typed-array OOB-possible index — not just dict/Map — sound
+      // because every mayBeUndefined consumer only ever asks a boolean
+      // question with it, reps.js's own doc comment). When both land on the
+      // SAME param, `val`'s NUMBER claim really can be undefined at runtime
+      // (an OOB read), and this arm answering it is what keeps toNumF64's
+      // coerceNullishToNum safety net reachable for a single-call-site
+      // `(v) => v + 1` over an out-of-bounds array read — removing this
+      // fallback regressed test/dyn-keys.js's "sibling carrier-domain
+      // producers" pin from NaN back to `undefined`, caught by the gate
+      // before landing, not assumed safe.
+      if (r.presentVal) return r.presentVal
+      if (r.val) return r.val
+    }
   }
   return callResultMayBeUndefinedKind(node)
 }

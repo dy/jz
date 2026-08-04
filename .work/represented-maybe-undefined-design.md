@@ -1130,3 +1130,157 @@ finding — no NEW cost either, since nothing this revert touches changes
 codegen for any non-census-shaped program); selfhost.js 21/21; fuzz 2000×4
 zero divergence; size sweep geomean 1.055× unchanged; fresh build ×2
 byte-identical.
+
+## 15 — Slice 6, as landed ("begin the presentVal opt-in model")
+
+§14's first slice: a new, SEPARATE `presentVal` REP field (reps.js) — the
+census's claimed KIND, riding the same decl/reassign producer sites
+`mayBeUndefined` already uses, propagated no further than that (no param/
+return/closure hop — the next slice, if `mayBeUndefined`'s own Slice 2 is
+the size precedent, is its own significant surface, not attempted here).
+`val` is untouched — still exact-only, never census-derived, verified by
+construction (see "mutual exclusivity" finding below) not just by absence
+of a new write site.
+
+**Producer** (analyze.js `analyzeValTypes`): a dedicated `setPresentVal`
+tracker, a SECOND `makeValTracker` instance (own poison `Set`, freshly
+created per `analyzeValTypes` call exactly like `setVal`'s own — NOT a
+module-level singleton, which would leak poison state across functions and
+compiles; caught and fixed before any test ran, not shipped). Called
+UNCONDITIONALLY at both existing `let`/`const`/`=` sites, fed
+`censusMaybeUndefinedKind(rhs)` directly — no separate helper needed, since
+that one predicate already composes a direct census-shaped RHS, a one-hop
+bare-name copy-through (reading this SAME field via the forward body walk),
+and a call-result. This differs from `mayBeUndefinedRhs`'s boolean
+spread-merge on purpose: `presentVal` is an exact KIND claim, so a later
+write that disagrees (a different kind, or an ordinary non-census value)
+must POISON it — mirroring `val`'s own makeValTracker discipline, not
+`mayBeUndefined`'s "stays true forever, worst case an unneeded defensive
+check" monotonicity. Pinned (test/types.js, 8 new tests): direct
+Map/dict-census decls, one-hop bare-name copy-through, an ordinary decl
+never setting it, disagreement-poisons on a later DIFFERENT census kind, a
+later ordinary write poisoning a census-shaped decl (flow-insensitive, same
+accepted cost `val` already pays), and the reverse order (ordinary decl
+later reassigned to a census read stays poisoned — no un-poisoning, matching
+`val`'s own rule).
+
+**Consumer — the bare-name REP-fallback arm** (kind.js
+`censusMaybeUndefinedKind`, arm 3): rewritten to consult `presentVal` FIRST.
+
+**A real regression found and fixed before landing, not assumed safe**: the
+first draft rewrote arm 3 to consult `presentVal` INSTEAD OF `val` (reasoning
+that `val` could never legitimately co-occur with `mayBeUndefined` for the
+same binding — true for a decl/reassign LOCAL, since `censusMaybeUndefinedKind`
+never feeds `val`'s own tracker and vice versa, but FALSE for a PARAM: a
+param's `val` is set by narrow.js's entirely separate call-site-argument
+fixpoint (`hardParamVal`/`inferValAtSite`), with no census involvement at
+all, while its `mayBeUndefined` can independently be true via Slice 2's own
+DELIBERATE over-approximation — `censusShapedNode` flags ANY `[]`/`.` 2-arg
+read, including a plain array/typed-array OOB-possible index, not just a
+dict/Map one, because every `mayBeUndefined` consumer only ever asks it a
+boolean question). The `presentVal`-only rewrite regressed test/dyn-keys.js's
+"single-call-site `+` param-hop: sibling carrier-domain producers" pin — the
+out-of-bounds-array-read case, `g(a[k])` through a single-call-site
+`(v) => v + 1`, flipped from `NaN` (correct) back to `undefined` (wrong).
+Caught by the gate run, bisected to exactly this line (not guessed): with
+BOTH analyze.js producer call sites disabled the regression persisted,
+proving the fault was in the CONSUMER rewrite itself, not the new producer.
+Root cause: the old `r.val` check was NOT dead code (as §9-§14's own
+"decl-hop only, val never settles" reasoning correctly established for
+LOCALS but never separately checked for PARAMS) — it was the mechanism
+keeping `toNumF64`'s `coerceNullishToNum` safety net reachable for exactly
+this param shape. Fixed: `presentVal` checked first (the new, more precise
+case), `val` kept as a fallback (the pre-existing, still load-bearing param
+case) — both live for their own distinct binding shapes. Pinned (test/
+types.js): `val` alone still answers (fallback), `presentVal` wins when both
+are set (priority order). This is the kind of gap the design's own §14
+verdict exists to catch — a change verified sound by construction for the
+shape it was designed for, wrong for a shape sharing the same REP field
+that the construction argument didn't consider — caught here by the
+mandated gate, not by a wider audit ahead of time (the same honest lesson
+§12's own "two new gaps" and audit #10's "five more" already taught, at a
+much smaller scale this time).
+
+**Live, not just representationally complete — a genuine value-correctness
+win found and pinned, not assumed**: `censusBigintSentinelKind`/Slice 5's
+export-lane sentinel machinery (§13) already calls `censusMaybeUndefinedKind`
+directly — no refactor needed, it was ALREADY built on the right predicate.
+Fixing arm 3 therefore makes it reachable one hop further than Slice 5's own
+repro 5 (`m.get(k)` returned directly): `let x = m.get(k); return x` for a
+present-key BIGINT census read now ALSO crosses the export boundary
+correctly. Verified via a direct stash diff, not assumed: at HEAD before
+this slice, `const m = new Map(); m.set('a', 5n); let x = m.get('a'); return x`
+returned the host `2.5e-323` (repro 5's exact wrong bit-pattern, one decl-hop
+out) — after this slice, `5n`. The unary siblings (`-x`/absent-key `-x`)
+flip identically (`-5n`/`NaN`), and the dict receiver shares the fix (same
+`censusMaybeUndefinedKind` predicate). The mixed-kind-Map carve-out (Slice
+5's own documented, unfixed gap — census returns null for a mixed receiver)
+correctly stays unfixed through the decl-hop too — pinned as a negative
+control, not silently left to drift. Six new test/dyn-keys.js assertions
+(two tests, "Slice 6" heading) pin this — the first slice in this design
+since Slice 5 to flip real JS-observable output, not just extend an
+analysis-level fact.
+
+**Honest boundary — everything else stays inert, verified not assumed**: the
+`toNumF64`/`toStrI64`/`nullableOperand`/`bigIntOperand`/`bigIntUnary`
+chokepoints in ir.js/emit.js all compute `vt = valTypeOf(node)` FIRST and
+only consult `censusMaybeUndefinedKind` when `vt` already proves a matching
+kind — sound and load-bearing for the param case above (`val` there IS
+`vt`'s own source), but never true for a decl-hop LOCAL, whose `valTypeOf`
+stays null by §14's own point 3 ("no optimistic default", permanent, not a
+temporary gap). So arithmetic/coercion/identity dispatch on a decl-hop
+census-traced local still takes the generic dynamic path — unaffected by
+this slice, matching every prior slice's own finding that the generic path
+was already JS-correct for value shapes, just not WAT-optimized. Widening
+those chokepoints' own outer gates to fall back to `censusMaybeUndefinedKind`
+when `valTypeOf` is null — the actual "runtime presence dispatch: sentinel
+check → undefined arm / present-kind arm" machinery — is explicitly NOT this
+slice: it is a comparable-sized surface to `mayBeUndefined`'s own Slice 2
+(touches ~5-8 call sites individually, each needing its own soundness
+verification), not a small extension of this slice's decl-producer-only
+scope. Named here as the next slice, not attempted early per this session's
+own brief ("if §14 slices this later, respect the slicing; do not improvise
+it early"). Binary/joint-operand runtime-domain dispatch (§14 point 4, the
+`bigintMixReject`/`m.get(x) + 1` KNOWN-FAIL) remains entirely untouched, as
+instructed — no code in this slice reads either operand of a binary op
+jointly.
+
+**Params/returns/closures do NOT get a `presentVal` producer in this
+slice** — only the decl/reassign sites (mirroring `mayBeUndefined`'s own
+Slice 1 scope exactly). A param's `presentVal` stays permanently absent
+until a future slice adds that propagation (the `val`-fallback fix above
+means this costs nothing today — the param shape that needs a kind claim
+already has one, via `val`).
+
+**Files touched**: reps.js (`presentVal` REP_FIELDS entry + doc comment,
+including the corrected `mayBeUndefined` doc comment's stale "Slice 4 makes
+it load-bearing" claim — now points at this slice instead); analyze.js
+(`setPresentVal` tracker + two producer call sites); kind.js
+(`censusMaybeUndefinedKind` arm 3 rewrite + doc comment); test/types.js (1
+existing test updated, 9 new — 178/178, was 170); test/dyn-keys.js (2 new
+tests, 6 new assertions — 40/40, was 38).
+
+**Gates**: full battery (`npm test`, single foreground run, completed inside
+the 600s budget — no manual chunking needed) 3308/3314 pass, 6 pre-existing
+skips, 0 failures (was 3306/3312 pre-slice, +2 from the new dyn-keys.js
+tests); dyn-keys.js 40/40 (125 assertions) BOTH legs — native and
+`JZ_TEST_TARGET=jz.wasm` (genuinely routed through `compileViaKernel`) —
+byte-for-byte same pass count; inference.js 136/136; types.js 178/178;
+data.js 125/125; math.js 75/75; statements.js 202/202; json.js 67/67;
+optimizer.js 214/214; kernel-parity 33/33 byte-identical (O0/O2/O3, fresh
+dist); kernel-oracle 11/11; perf-ratchet 10/10 at +0 every category
+(int/float/mixed/cond/buf/nest/slice/ring/condref/fgather — expected: this
+slice's one live win is an export-boundary DECODE fix, not a hot-loop
+codegen change); selfhost.js 21/21 (pre- and post-rebuild); fuzz 2000×4
+(seeds 1-8000, four separate runs) zero divergence; size sweep geomean
+1.055× unchanged (`scripts/bench-size.mjs`); fresh build ×2 byte-identical
+(jz.js/jz.wasm/interop.js, sha256-verified, both before and after the final
+test-file addition).
+
+Slice 7 (widening the arithmetic/coercion/identity chokepoints' own outer
+gates to fall back to `censusMaybeUndefinedKind` when `valTypeOf` is null —
+the actual runtime-presence-dispatch machinery §14 names) and the
+param/return/closure `presentVal` propagation remain unstarted. §14 point 4
+(joint binary-operand runtime-domain dispatch, closing the
+`bigintMixReject`/audit-#10 KNOWN-FAIL) remains its own separate, larger,
+untouched design.

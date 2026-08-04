@@ -1212,17 +1212,124 @@ test('mayBeUndefined: a Map with no observed .set() write claims nothing to prop
   is(r.x, false)
 })
 
-test('censusMaybeUndefinedKind: bare-name REP fallback answers only when BOTH mayBeUndefined and val are set', () => {
+test('censusMaybeUndefinedKind: bare-name REP fallback answers only when BOTH mayBeUndefined and presentVal are set', () => {
   reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   prepare(parse('let f = () => 0'))
-  updateRep('probeBoth', { val: VAL.NUMBER, mayBeUndefined: true })
+  updateRep('probeBoth', { presentVal: VAL.NUMBER, mayBeUndefined: true })
   is(censusMaybeUndefinedKind('probeBoth'), VAL.NUMBER)
   is(censusMaybeUndefined('probeBoth'), true)
-  updateRep('probeValOnly', { val: VAL.NUMBER })
-  is(censusMaybeUndefinedKind('probeValOnly'), null, 'val without the flag must not be treated as maybeUndefined')
+  updateRep('probePresentValOnly', { presentVal: VAL.NUMBER })
+  is(censusMaybeUndefinedKind('probePresentValOnly'), null, 'presentVal without the flag must not be treated as maybeUndefined')
   updateRep('probeFlagOnly', { mayBeUndefined: true })
-  is(censusMaybeUndefinedKind('probeFlagOnly'), null, 'the flag alone (no val) has nothing to claim')
+  is(censusMaybeUndefinedKind('probeFlagOnly'), null, 'the flag alone (no presentVal/val) has nothing to claim')
+  // `val` is a DELIBERATE, KEPT fallback (§15) for exactly the param shape —
+  // a param's `val` comes from narrow.js's own call-site-argument fixpoint,
+  // entirely independent of census provenance, so it can be legitimately
+  // non-null alongside `mayBeUndefined` with no `presentVal` ever set
+  // (params get no presentVal producer in this slice). See kind.js's own
+  // doc comment ("found LIVE... a param-hop regression pin flipped").
+  updateRep('probeValFallback', { val: VAL.STRING, mayBeUndefined: true })
+  is(censusMaybeUndefinedKind('probeValFallback'), VAL.STRING, '`val` is consulted as a fallback when presentVal is absent')
+  // presentVal takes PRIORITY over val when both happen to be set.
+  updateRep('probeBothPresentAndVal', { val: VAL.STRING, presentVal: VAL.BIGINT, mayBeUndefined: true })
+  is(censusMaybeUndefinedKind('probeBothPresentAndVal'), VAL.BIGINT, 'presentVal wins over val when both are set')
+})
+
+// ============================================================================
+// presentVal REP field — §14 Slice 6 ("begin the presentVal opt-in model"),
+// audit-#10's re-enablement gate superseding §5's global-VT-promotion path.
+// Pure analysis, mirroring mayBeUndefined's own Slice-1 precedent above:
+// pins that the FACT computes/propagates/poisons correctly as its own
+// isolated unit. `presentVal` differs from `mayBeUndefined` in one load-
+// bearing way this section exists to pin — it is an exact KIND claim, not a
+// monotonic boolean, so it must POISON (not merely stay true) the moment any
+// write to the same binding disagrees, exactly like `val` itself already
+// does (reps.js `presentVal` doc comment, analyze.js `setPresentVal`).
+// ============================================================================
+function runAnalyzePresentVal(code, dynWriteVarNames) {
+  reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
+  ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
+  prepare(parse(code))
+  const fn = ctx.func.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
+    || ctx.func.list[0]
+  const body = fn.body
+  ctx.func.locals = analyzeBody(body).locals
+  const keys = () => [...(ctx.func.locals?.keys() ?? []), ...(fn.sig?.params?.map(p => p.name) ?? []), ...(ctx.func.localReps?.keys() ?? [])]
+  const resolveLocal = (name) => keys().find(k => k === name) ?? keys().find(k => k.startsWith(name + T)) ?? name
+  if (dynWriteVarNames) ctx.types.dynWriteVars = new Set(dynWriteVarNames.map(resolveLocal))
+  analyzeValTypes(body)
+  return new Proxy({}, { get: (_, name) => repOf(resolveLocal(name))?.presentVal ?? null })
+}
+
+test('presentVal: decl RHS is a direct Map .get() census read claims the census kind', () => {
+  const r = runAnalyzePresentVal(`let f = () => {
+    const m = new Map(); m.set('a', 5n)
+    let x = m.get('missing')
+  }`)
+  is(r.x, VAL.BIGINT)
+})
+
+test('presentVal: decl RHS is a direct dict [] census read claims the census kind', () => {
+  const r = runAnalyzePresentVal(`let f = () => {
+    const d = {}; const wk = 'a'; d[wk] = 'str'
+    let x = d['zz']
+  }`, ['d'])
+  is(r.x, VAL.STRING)
+})
+
+test('presentVal: copies through a bare-name alias (one hop), matching mayBeUndefined\'s own copy-through arm', () => {
+  const r = runAnalyzePresentVal(`let f = () => {
+    const m = new Map(); m.set('a', 5n)
+    let x = m.get('missing')
+    let y = x
+  }`)
+  is(r.x, VAL.BIGINT); is(r.y, VAL.BIGINT)
+})
+
+test('presentVal: ordinary decl (no census-shaped RHS) never sets it', () => {
+  const r = runAnalyzePresentVal(`let f = () => {
+    let x = 5
+    let y = x + 1
+  }`)
+  is(r.x, null); is(r.y, null)
+})
+
+test('presentVal: a later reassignment to a DIFFERENT census kind poisons (disagreement, like val itself)', () => {
+  const r = runAnalyzePresentVal(`let f = () => {
+    const m = new Map(); m.set('a', 5n); m.set('b', 'str')
+    let x = m.get('a')
+    x = m.get('b')
+  }`)
+  is(r.x, null, 'mapValueValType itself already poisons on mixed writes (dictValueKindOf/mapValueKindOf soundness carve-out) — presentVal must not resurrect a stale single kind')
+})
+
+test('presentVal: a later reassignment to an ORDINARY (non-census) value poisons — flow-insensitive, matching val\'s own documented cost', () => {
+  const r = runAnalyzePresentVal(`let f = () => {
+    const m = new Map(); m.set('a', 5n)
+    let x = m.get('missing')
+    x = 5
+  }`)
+  is(r.x, null, 'x is unconditionally overwritten by a plain literal here, but presentVal has no CFG/dominance info either, same accepted cost as val')
+})
+
+test('presentVal: an ordinary decl later reassigned to a census read stays unset — the SAME flow-insensitive cost in the other direction', () => {
+  const r = runAnalyzePresentVal(`let f = () => {
+    const m = new Map(); m.set('a', 5n)
+    let x = 5
+    x = m.get('missing')
+  }`)
+  is(r.x, null, 'the ordinary decl write already poisoned x — a later census-shaped write cannot un-poison it, mirroring val\'s own "no un-poisoning" rule')
+})
+
+test('presentVal and val are mutually exclusive by construction — never both non-null for the same binding', () => {
+  const r1 = runAnalyzePresentVal(`let f = () => { let x = 5 }`)
+  is(r1.x, null)
+  const r2 = runAnalyzePresentVal(`let f = () => {
+    const m = new Map(); m.set('a', 5n)
+    let x = m.get('missing')
+  }`)
+  is(r2.x, VAL.BIGINT)
 })
 
 // ============================================================================

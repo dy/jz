@@ -4,6 +4,62 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, represented-maybe-undefined Slice 6 landed — "begin
+## the presentVal opt-in model", .work/represented-maybe-undefined-design.md
+## §14/§15, audit-#10's re-enablement path)
+
+§14's first slice: a new `presentVal` REP field (reps.js) — the census's
+claimed KIND, separate from `val` (which stays exact-only, permanently, per
+§14's own core invariant) — with a decl/reassign-only producer
+(analyze.js, mirroring `mayBeUndefined`'s own Slice 1 scope) and its own
+poison-disciplined tracker (a SECOND `makeValTracker` instance, NOT a
+boolean spread-merge — a kind claim must poison on write disagreement the
+way `val` itself does, unlike `mayBeUndefined`'s safe-to-stay-true
+monotonicity).
+
+**A real regression found and fixed before landing** (full detail: design
+doc §15): the first draft made kind.js `censusMaybeUndefinedKind`'s
+bare-name arm consult ONLY `presentVal`, reasoning `val` could never
+co-occur with `mayBeUndefined` for the same binding — true for a decl/
+reassign LOCAL, false for a PARAM (whose `val` comes from narrow.js's
+entirely separate call-site fixpoint, independent of census provenance).
+Regressed test/dyn-keys.js's out-of-bounds-array-read param-hop pin
+(`NaN` → wrong `undefined`), caught by the gate, bisected to the exact
+line. Fixed: `presentVal` checked first, `val` kept as a fallback — both
+now live for their own distinct binding shapes.
+
+**A genuine, live value-correctness win, not just a representationally-
+complete inert slice** (unlike Slices 1-4): Slice 5's export-lane sentinel
+machinery (`censusBigintSentinelKind`) already calls
+`censusMaybeUndefinedKind` directly, so fixing the bare-name arm makes it
+reachable one hop past Slice 5's own repro 5. `let x = m.get(k); return x`
+for a present-key BIGINT census read — previously `2.5e-323` (repro 5's
+exact wrong bit pattern, one decl-hop out), confirmed via a direct stash
+diff — now correctly returns `5n`. Unary siblings and the dict receiver
+share the fix; the mixed-kind-Map carve-out (Slice 5's own documented gap)
+correctly stays unfixed through the decl-hop too (negative control pinned).
+
+**Honest boundary**: the ~5-8 arithmetic/coercion/identity chokepoints
+(ir.js toNumF64/toStrI64, emit.js nullableOperand/bigIntOperand/
+bigIntUnary) still gate on `valTypeOf(node)` FIRST and never see a
+decl-hop local's census claim (permanently null by §14 point 3) — widening
+those gates is the next slice (comparable surface to `mayBeUndefined`'s own
+Slice 2), not attempted here, per the task's own "respect the slicing, do
+not improvise it early" instruction. §14 point 4 (joint binary-operand
+runtime-domain dispatch, closing the `bigintMixReject` KNOWN-FAIL) remains
+untouched, its own separate design.
+
+**Gates**: full battery (`npm test`, single foreground run) 3308/3314 pass,
+6 pre-existing skips, 0 fail; dyn-keys.js 40/40 both legs (native +
+`JZ_TEST_TARGET=jz.wasm`); inference.js 136/136; types.js 178/178 (was 170,
++8); data.js/math.js/statements.js/json.js/optimizer.js all green at their
+documented counts; kernel-parity 33/33 byte-identical; kernel-oracle 11/11;
+perf-ratchet 10/10 at +0 every category; selfhost.js 21/21; fuzz 2000×4
+(seeds 1-8000) zero divergence; size sweep geomean 1.055× unchanged; fresh
+build ×2 byte-identical (sha256-verified).
+
+Full detail: .work/represented-maybe-undefined-design.md §15.
+
 ## Status (2026-08-04, audit-#10 Error bundle — four findings closed,
 ## error-object-design.md's "Brand redesign" section gains a new
 ## "Finding 1-4 (audit-#10)" entry — see below)

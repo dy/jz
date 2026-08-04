@@ -480,6 +480,43 @@ test('Slice 5: negative controls — mixed-kind Map falls back to documented (un
   is(jz(`export let f = () => -5n`).exports.f(), -5n)
 })
 
+// Slice 6 (.work/represented-maybe-undefined-design.md §14/§15, "begin the
+// presentVal opt-in model"): a NEW `presentVal` REP field (reps.js) rides
+// analyze.js's decl/reassign producer, poison-disciplined like `val` itself
+// (NOT a spread-merge boolean like `mayBeUndefined`) — the KIND-carrying
+// generalization one hop past a direct census read. First opt-in consumer
+// found genuinely LIVE (not just representationally complete): kind.js
+// `censusMaybeUndefinedKind`'s bare-name REP-fallback arm, which
+// `censusBigintSentinelKind`/Slice 5's export-lane machinery already builds
+// on directly — so a DECL-HOP present-key BigInt census read (`let x =
+// m.get(k); return x`, one hop past Slice 5's own bare-read repro 5) now
+// ALSO crosses the export boundary correctly, without any change to Slice
+// 5's own lane/decode mechanism. Was silently wrong (`2.5e-323`, the exact
+// repro-5 bit-pattern misread) at HEAD before this slice; confirmed via a
+// direct stash diff, not assumed.
+test('Slice 6: decl-hop present-key BigInt census read materializes the true BigInt across the export boundary (one hop past repro 5)', () => {
+  const bare = jz(`export let f = () => { const m = new Map(); m.set('a', 5n); let x = m.get('a'); return x }`, { jzify: true })
+  is(bare.exports.f(), 5n)
+  is(typeof bare.exports.f(), 'bigint')
+  const absent = jz(`export let f = () => { const m = new Map(); m.set('a', 5n); let x = m.get('missing'); return x }`, { jzify: true })
+  is(absent.exports.f(), undefined)   // bare passthrough, no unary — JS: m.get(missing) itself is undefined
+  const unaryMinus = jz(`export let f = () => { const m = new Map(); m.set('a', 5n); let x = m.get('a'); return -x }`, { jzify: true })
+  is(unaryMinus.exports.f(), -5n)
+  const unaryMinusAbsent = jz(`export let f = () => { const m = new Map(); m.set('a', 5n); let x = m.get('missing'); return -x }`, { jzify: true })
+  is(unaryMinusAbsent.exports.f(), NaN)   // ES2024 13.5.6 ToNumeric(undefined) — sentinel kind 2
+  // dict sibling, same decl-hop shape.
+  const dict = jz(`export let f = (k) => { const d = {}; d[k] = 5n; let x = d[k]; return x }`, { jzify: true })
+  is(dict.exports.f('k'), 5n)
+})
+
+// Negative control (Slice 6): the mixed-kind-Map carve-out (Slice 5's own
+// documented, unfixed gap) must stay unfixed through the decl-hop too — the
+// census returns null for a mixed receiver regardless of which hop asks.
+test('Slice 6: negative control — decl-hop through a mixed-kind Map stays the documented (unfixed) Slice 5 gap', () => {
+  const mixed = jz(`export let f = () => { const m = new Map(); m.set('a', 5n); m.set('b', 6); let x = m.get('a'); return x }`, { jzify: true })
+  is(mixed.exports.f(), 2.5e-323)
+})
+
 // KNOWN-FAIL, PRE-EXISTING, OUT OF SCOPE for Slice 5 (external audit #10,
 // 2026-08-04): a present-key census-BIGINT value used in BINARY `+` with a
 // NUMBER doesn't throw the TypeError real JS gives for BigInt⊕Number mixing —

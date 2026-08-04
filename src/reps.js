@@ -110,23 +110,72 @@ export const VAL = {
  *   "unwritten → fail closed", matching this fact's own provenance-only
  *   scope. Consumer (both slices): censusMaybeUndefinedKind's REP-fallback
  *   arm (kind.js) — a bare name whose rep carries BOTH `mayBeUndefined` and a
- *   `val` answers exactly like the read node itself would at every existing
- *   censusMaybeUndefined chokepoint (ir.js toNumF64/toStrI64, emit.js
- *   nullableOperand/bigIntOperand/bigIntUnary, module/string.js/number.js/
- *   console.js). NOTE: still behaviorally INERT after Slice 2, for the same
- *   underlying reason as Slice 1 (not a slice-specific gap) — `val` never
- *   settles non-null for a name/argument/return that traces to a census-
- *   shaped read, at ANY hop, as long as VT['[]']/VT['.']/VT['()']
- *   (dictValueKindOf/mapValueKindOf) stay dormant (§5's re-enablement gate):
- *   a census-shaped call-site ARGUMENT contributes null to hardParamVal's own
- *   fold (poisoning specialization, never claiming a kind), so the param
- *   `val` this fact would ride alongside stays unproven right along with it.
- *   Slice 4 (re-enabling those VT folds) is what makes both slices' work
- *   load-bearing at once. func.valResultMayBeUndefined / ctx.closure.
+ *   `presentVal` answers exactly like the read node itself would at every
+ *   existing censusMaybeUndefined chokepoint (ir.js toNumF64/toStrI64,
+ *   emit.js nullableOperand/bigIntOperand/bigIntUnary/bigintMixReject/`+`-
+ *   concat). CORRECTION (§14, audit #10): the arm originally read `val`
+ *   here, not `presentVal` — dead on arrival, since `val` (by §14's own
+ *   permanent invariant) never settles non-null for a census-shaped RHS at
+ *   ANY hop; a census-shaped call-site ARGUMENT still contributes null to
+ *   hardParamVal's own fold (poisoning specialization, never claiming a
+ *   kind), so `val` itself stays unproven right along with it forever, not
+ *   just until some future re-enable. `presentVal` (this file, its own entry
+ *   below) is the field the arm now reads — a SEPARATE, poison-disciplined
+ *   kind claim that never touches `val`, landed to make the arm live for the
+ *   first time (§14's Slice 6, "begin the presentVal opt-in model"). Whether
+ *   any given chokepoint above ALSO needs its own outer `valTypeOf(node) ===
+ *   VAL.SOMETHING` gate widened to consult `presentVal` as a fallback (not
+ *   just this REP-fallback arm reaching a non-null claim) is unresolved by
+ *   that slice — see its own ledger entry (§15) for exactly what's live vs
+ *   still gated out. func.valResultMayBeUndefined / ctx.closure.
  *   valResultMayBeUndefined (Map<closureBodyName, true>) carry the return-
  *   kind join's result alongside func.valResult / ctx.closure.valResult —
  *   parallel facts, not merged into those (their return shapes have live
  *   consumers, kind-traits.js calleeValType, this design must not disturb).
+ * @property {string}  [presentVal]       VAL.* kind the census claims for a
+ *   binding's value WHEN PRESENT — the opt-in KIND-carrying sibling of
+ *   `mayBeUndefined` (.work/represented-maybe-undefined-design.md §14,
+ *   audit-#10's opt-in re-enablement gate, superseding §5's global-VT-
+ *   promotion path Slice 4 landed and audit #10 reverted). NEVER a substitute
+ *   for `val` and NEVER consulted by `valTypeOf`/`lookupValType` — `val` stays
+ *   exact-only permanently, this is a SEPARATE fact only an explicit opt-in
+ *   consumer may ask for (kind.js `censusMaybeUndefinedKind`'s bare-name arm,
+ *   below). Producer: analyze.js `analyzeValTypes`' decl/reassign call sites
+ *   (the same two `setVal` sites), via a dedicated `makeValTracker` instance
+ *   (own poison set, NOT a spread-merge like `mayBeUndefined`'s boolean OR) —
+ *   fed `censusMaybeUndefinedKind(rhs)` unconditionally on every write. This
+ *   is deliberate and required, not incidental: unlike `mayBeUndefined`
+ *   (a monotonic-safe boolean — staying true after a later non-census write
+ *   only costs an unneeded defensive check), `presentVal` is an exact KIND
+ *   claim — a later write that DISAGREES (a different kind, or no census
+ *   claim at all) must POISON it exactly the way `val` itself poisons on
+ *   disagreement (makeValTracker's existing discipline, reused verbatim),
+ *   else a chokepoint could trust a stale kind for a runtime value the
+ *   census claim no longer describes. Because every non-census write
+ *   contributes `null` to this tracker (poisoning), and every census-shaped
+ *   write contributes `null` to `val`'s own tracker (censusMaybeUndefinedKind
+ *   never feeds `val`), `val` and `presentVal` are mutually exclusive by
+ *   construction for a DECL/REASSIGN local — never both non-null for the
+ *   same such binding. NOT true for a PARAM: `val` there is set by narrow.js's
+ *   entirely separate call-site-argument fixpoint (`hardParamVal`), which
+ *   proves a kind from the argument's OWN valTypeOf, independent of whether
+ *   the argument expression happens to be census-shaped — so a param CAN
+ *   carry both a real `val` AND `mayBeUndefined = true` (Slice 2's
+ *   `censusShapedNode` deliberately over-approximates to any `[]`/`.`
+ *   2-arg read, including a plain array/typed-array OOB-possible index, not
+ *   just dict/Map) with no `presentVal` ever set (this field's producer
+ *   below is decl/reassign-only, no param propagation yet). Found LIVE, not
+ *   assumed, when kind.js's REP-fallback arm was rewritten to read ONLY
+ *   `presentVal` and a param-hop regression pin flipped from JS-correct back
+ *   to wrong (test/dyn-keys.js) — the arm now checks `presentVal` first,
+ *   `val` second, keeping both live for their own distinct binding shapes.
+ *   Same flow-INsensitive whole-body-unification scope as `val`'s own documented
+ *   cost ("a later write that unconditionally overwrites the initializer
+ *   still poisons" — accepted, not fixed, matching `val`'s own precedent).
+ *   `censusMaybeUndefinedKind(rhs)` already composes direct census-shaped
+ *   nodes, one-hop bare-name copy-through (this field), and call-results in
+ *   one function, so the producer call needs no separate helper — DRY, one
+ *   predicate, matching §4's "not one [check] per site" discipline.
  * @property {string}  [dictValueValType] VAL.* kind of every value ever written
  *   through `name[key] = v` (any key, HASH dict-mode local or global) —
  *   first-wins-then-clash lattice, absent/null = unproven or mixed. Additive-
@@ -187,7 +236,7 @@ export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
   'typedCtor', 'wasm', 'nullable', 'neverGrown', 'bigintBoxed', 'recvArrTyped', 'dictValueValType',
-  'mapValueValType', 'mayBeUndefined',
+  'mapValueValType', 'mayBeUndefined', 'presentVal',
 ])
 
 const DBG_REPS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'

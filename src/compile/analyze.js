@@ -1476,6 +1476,21 @@ export function analyzeValTypes(body) {
     (n) => updateRep(n, { val: undefined }),
   )
   const getVal = name => ctx.func.localReps?.get(name)?.val
+  // presentVal slice: decl-time producer (.work/represented-maybe-undefined-
+  // design.md §14 Slice 6, reps.js `presentVal` doc comment). Own
+  // makeValTracker instance — a SEPARATE poison set from `setVal`'s (this
+  // function is called fresh per analyzeValTypes invocation, exactly like
+  // setVal above, so poison state never leaks across functions/compiles).
+  // Fed `censusMaybeUndefinedKind(rhs)` directly at both write sites below:
+  // that one predicate already composes direct census-shaped RHS, one-hop
+  // bare-name copy-through (reading this SAME field on an earlier-processed
+  // name in the same forward walk), and call-results — no separate helper
+  // needed (kind.js's own "one predicate function" discipline, §4).
+  const setPresentVal = makeValTracker(
+    (n) => ctx.func.localReps?.get(n)?.presentVal,
+    (n, vt) => updateRep(n, { presentVal: vt }),
+    (n) => updateRep(n, { presentVal: undefined }),
+  )
   // Names declared in THIS body. A reassignment to any other name (parameter /
   // captured outer binding) merges with an entry value of unknown kind, so a
   // POINTER-kind RHS must POISON the val slice, not settle it — else a branch
@@ -1669,6 +1684,7 @@ export function analyzeValTypes(body) {
         setVal(a[1], vt)
         if (mayBeNullish(a[2])) updateRep(a[1], { nullable: true })
         if (mayBeUndefinedRhs(a[2])) updateRep(a[1], { mayBeUndefined: true })
+        setPresentVal(a[1], censusMaybeUndefinedKind(a[2]))
         // Closed integer hull for never-reassigned decls whose init the range
         // evaluator can bound (masks, ternary hulls, bounded products) — chains
         // through earlier ranged decls via intExprRange's repOf hook. Feeds the
@@ -1772,6 +1788,7 @@ export function analyzeValTypes(body) {
       setVal(args[0], poisonUndeclared(args[0], vt))
       if (mayBeNullish(args[1])) updateRep(args[0], { nullable: true })
       if (mayBeUndefinedRhs(args[1])) updateRep(args[0], { mayBeUndefined: true })
+      setPresentVal(args[0], censusMaybeUndefinedKind(args[1]))
       if (vt === VAL.REGEX) trackRegex(args[0], args[1])
       if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(args[1])) trackTyped(args[0], args[1])
       propagateTyped(args[0], args[1])
