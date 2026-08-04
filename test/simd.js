@@ -135,23 +135,37 @@ test('SIMD butterfly - radix-2 FFT inner loop strips 2-wide, bit-exact', () => {
     is(von(n), voff(n), `butterfly N=${n} bit-exact`)
   }
   const w = wat(src, SIMD_OPT)
-  // KNOWN GAP, ROOT-CAUSED to a DIFFERENT mechanism than wrapIntIR (audit-P1-2 residual B
-  // follow-up, 2026-08-03 — not a value bug, confirmed bit-exact above for every N):
-  // tryButterfly (src/optimize/vectorize.js) pattern-matches an EXACT 17-statement canonical
-  // loop-body shape, `body[0]`/`body[1]` required to be the wre[k]/wim[k] twiddle loads as their
-  // OWN leading `local.set` statements. Direct WAT inspection (not guesswork) shows the CURRENT
-  // compiled body is no longer 17 statements at all: the twiddle loads are now sunk INLINE as
-  // `local.tee`s inside the tr/ti `f64.mul` operands (a statement-fusion/scheduling difference,
-  // unrelated to the i32-add-arrays case just recovered above — `a=i+j`/`b=a+half`/`k+=step`
-  // all already lower as native i32.add here, confirmed in the WAT; wrapIntIR is never involved,
-  // since re/im/wre/wim are Float64Array, not typed-int). Teaching tryButterfly's positional
-  // unifier to accept this fused ordering (or any other CSE placement) is a real, separate,
-  // larger rewrite of its exact-shape matcher — not attempted here; named for a future session.
-  if (/__bf\d+_/.test(w)) {
-    ok(/f64x2\.mul/.test(w) && /v128\.load/.test(w) && /v128\.store/.test(w), 'rotation lanes + paired loads/stores')
-  } else {
-    ok(true, 'butterfly strip currently declines (KNOWN GAP, see comment above) — bit-exactness above is the load-bearing assertion')
-  }
+  // RECOVERED 2026-08-03 (audit-P1-2 residual B follow-up, root-caused via direct WAT/IR
+  // instrumentation, not guesswork). tryButterfly's exact 17-statement scaffold was declining
+  // not because of a CSE/scheduling shape change (an earlier session's WAT-TEXT-PRINTER
+  // misread — the pretty-printed .wat cosmetically folds a dead computed-and-dropped value,
+  // same trap as wrapIntIR's own false lead) but because the loop counter `j`'s comma-step
+  // dual-IV header (`for (let j=0,k=0; j<half; j++,k+=step)`) lost c8700daa's loop-counter
+  // RANGE-PROOF lever two ways: (1) forCounterRange (emit.js) required a single-declarator
+  // init, bailing on the two-declarator `let j=0,k=0`; (2) this loop ALSO triggers Root-F's
+  // typed-bounds guard (it indexes re/im/wre/wim), whose fast/checked arms both re-emit the
+  // loop via `emitter['for'](null, cond, step, body)` — init nulled since the real init
+  // already ran once before the guard branch — so forCounterRange(null, …) proved nothing in
+  // EITHER arm even once (1) was fixed. Without j's own range, the comma-step's DROPPED
+  // postfix-value expression (`(++j) - 1`, unused but still typed) fell to the f64
+  // round-trip, breaking tryButterfly's literal `i32.sub` match on the increment block.
+  // Fixed at the root, three general (non-butterfly-specific) static.js/emit.js levers:
+  //   - forCounterRange finds `name`'s own declarator among several, and unwraps a
+  //     comma-step to find `name`'s own mutation among several step expressions;
+  //   - Root-F's guard computes the counter's [lo,hi] hull ONCE from the real init still in
+  //     scope, and threads it via withRefinements into BOTH re-emitted arms — sound
+  //     unconditionally (unlike the bound-name magnitude lever, which needs the guard to
+  //     have passed);
+  //   - intExprRange (static.js) gained cases for the signed `>>` operator (only its
+  //     unsigned `>>>` sibling existed — needed for `half = len >> 1`'s bound) and for
+  //     `++`/`--` as an expression VALUE (operand's range ± 1 — needed to resolve the
+  //     comma-step's own dropped post-increment expression).
+  ok(/__bf\d+_/.test(w), 'butterfly strip fires (tryButterfly matched the 17-statement scaffold)')
+  const v128Ops = w.match(/f64x2\.\w+|v128\.\w+/g) || []
+  is(v128Ops.length, 22,
+    'butterfly strip: exact v128/f64x2 op count (2 twiddle replace_lane + 2 splat, 4 v128.load, ' +
+    '4 v128.store, 4 f64x2.mul, 3 f64x2.sub, 3 f64x2.add — ONE wrapper, no duplicate match)')
+  ok(/f64x2\.mul/.test(w) && /v128\.load/.test(w) && /v128\.store/.test(w), 'rotation lanes + paired loads/stores')
 })
 
 // === AoS (array-of-structs) de-interleave — interleaved-channel loops `base[P*i + c]` ===

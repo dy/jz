@@ -4,6 +4,124 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, FFT BUTTERFLY RECOVERED — the audit-P1-2 campaign's
+## named-but-not-attempted THIRD residual (976433c1's own ledger entry),
+## closed via direct WAT/IR instrumentation, NOT the shape 976433c1 predicted)
+
+**976433c1's own prediction was WRONG, caught by instrumentation, not trusted from
+the printed .wat**: that entry said tryButterfly declines because the twiddle loads
+(`body[0]`/`body[1]`) are sunk inline as `local.tee`s inside the `tr`/`ti` `f64.mul`
+operands. Direct instrumentation of `tryButterfly` itself (temporary trace, removed
+before landing) showed the OPPOSITE: `body[0]`/`body[1]` are still the twiddle
+loads, exactly as the matcher wants, and `body.length` is exactly 17. The recognizer
+was bailing ONE check earlier, on `jInc` — the loop-increment block's j-side, which
+the matcher requires as literal `i32.sub(local.tee(J, i32.add(J,1)), i32.const(1))`
+(the postfix-`j++`-as-a-comma-expression's dropped old-value) but which actually
+compiled as `f64.sub(f64.convert_i32_s(local.tee(J,…)), f64.const(1))` — the SAME
+"unprovable i32 range → f64 overflow-canon detour" class as every other residual
+this campaign closed, just one level deeper (the counter's OWN in-body arithmetic,
+not a load address).
+
+**Root, traced through THREE compounding gaps** (each confirmed independently by
+instrumenting `forCounterRange`/`intExprRange`/Root-F's own trigger site before
+touching any code — never guessed):
+1. `for (let j = 0, k = 0; j < half; j++, k += step)` is a comma-initialized,
+   comma-stepped dual-IV header. `forCounterRange` (emit.js, c8700daa's own
+   loop-counter RANGE-PROOF lever) required a SINGLE-declarator init
+   (`init.length === 2`) and a bare `++`/`+=` step — both fail on this shape's
+   two declarators and comma-sequenced step, so `j` never got a range at all.
+2. Even with (1) fixed, this loop ALSO triggers Root-F's typed-bounds VERSIONING
+   (it indexes `re`/`im`/`wre`/`wim`) — and Root-F's fast/checked arms both
+   re-emit the loop via `emitter['for'](null, cond, step, body)`: `init` nulled
+   because the real init already ran once, before the guard branch. So
+   `forCounterRange(null, …)` proved nothing in EITHER re-emitted arm even once
+   (1) was fixed — the SAME "guard's own re-emission drops the fact its OWN
+   setup already has" shape 4b20e4c6's bound-magnitude lever fixed for `w-1`,
+   just for the counter itself rather than the loop bound.
+3. `intExprRange` (static.js) had no case for `half`'s own definition
+   (`len >> 1`) — the SIGNED `>>` operator was entirely unhandled (only its
+   unsigned `>>>` sibling had a rule) — nor for `++`/`--` as an expression VALUE
+   (needed to resolve the comma-step's dropped `(++j) - 1` old-value form).
+   Both are GENERAL gaps: `>>` is ToInt32-then-shift, sound as a conservative
+   `[I32_MIN>>s, I32_MAX>>s]` hull from the shift amount ALONE (same "derive
+   from the op, not the operand" reasoning the existing `&`/`>>>` cases already
+   use) — `n` (the FFT's own runtime, unbounded size param) never needs its own
+   magnitude proven for `half`'s hull to exist.
+
+**Fix, three general (non-butterfly-specific) levers, no scaffold-matcher changes**:
+- `forCounterRange` (emit.js): finds `name`'s own declarator among several in a
+  multi-declarator `let`; unwraps a comma-step to find `name`'s own mutation
+  among several step expressions, and unwraps the postfix-value sugar
+  (`(++x) - 1`) to see the underlying `++x` write.
+- Root-F's guard (emit.js, `emitter['for']`'s typed-bounds-versioning block):
+  computes the counter's `[lo,hi]` hull ONCE from the real (still in-scope,
+  not-yet-nulled) init, and threads it via the existing `withRefinements`
+  machinery into BOTH re-emitted arms — unconditionally (unlike the bound-name
+  magnitude lever just below it, the counter's own range doesn't depend on the
+  guard having passed: same init/cond/step either way, only the body's access
+  forms differ).
+- `intExprRange` (static.js): new `>>` case (signed-shift hull, operand-range-
+  tightened when known, full-domain fallback otherwise) and new `++`/`--` case
+  (operand's range ± 1, prefix semantics — postfix's old-value form already
+  unwraps to this at the AST layer, ast.js's own convention).
+
+tryButterfly itself is **completely unchanged** — confirmed by `git diff --stat`
+showing zero lines touched in vectorize.js. This was deliberately checked before
+landing: an earlier pass touched the recognizer with instrumentation, and the
+instrumentation was fully reverted once the WAT/IR trace located the real gap
+three layers upstream in emit.js/static.js.
+
+**Acceptance**: tryButterfly fires — `__bf0_` locals present, 22 v128/f64x2 ops
+(2 `f64x2.replace_lane` + 2 `f64x2.splat` twiddle loads, 4 `v128.load`,
+4 `v128.store`, 4 `f64x2.mul`, 3 `f64x2.sub`, 3 `f64x2.add` — ONE wrapper, no
+duplicate match) for test/simd.js's exact specimen; bit-exact vs the scalar
+oracle for every N in {2,4,8,64} (unchanged — this was never a value bug).
+test/simd.js's butterfly row is now a real, unconditional assertion (no more
+`if (/__bf\d+_/.test(w)) … else ok(true, 'KNOWN GAP')` branch) — 582 assertions
+(+2), 158/158 pass. Confirmed the SAME source (bench/fft/fft.js, byte-for-byte —
+the FIXED SPECIMEN rule was never touched) also fires: 30 `__bf` matches, 30
+v128/f64x2 ops (a different op mix than the isolated test specimen — extra
+lifts elsewhere in the file, e.g. the twiddle-table builder — not investigated
+further, out of scope).
+
+**Timing** (quiet machine: load avg 3.65-4.52/14 cores throughout; `--paired`
+ABBA, 4 rounds, jz vs rust→wasm, both V8-hosted — the honest wasm-vs-wasm axis):
+fft **jz 1011µs vs rust-wasm 1003µs — 1.009× (median), was 1.10× red** (the
+un-paired baseline row: jz 1105µs vs rust-wasm 1006µs). Checksum
+4234940375 == the case's own reference checksum (bit-exact at bench scale, not
+just the differential test). `bench/results.json`'s `fft.jz` row hand-patched
+(medianUs 1105→1011, memKb 54432→54688, `paired.jz/rust-wasm` added) —
+surgical, scratch-JSON-then-hand-patch per convention, `bytes` (2368)
+deliberately UNCHANGED: the recorded `bytes` column is the **size**-tier build
+(`optimize:'size'`), which has `vectorizeLaneLocal:false` AND
+`versionTypedBounds:false` BOTH off by design (confirmed via a disposable
+976433c1 worktree compiling the same source: bf-match count 0 there too) — this
+fix lives entirely inside vectorization/Root-F, so the size tier is untouched
+by construction, matching every prior vectorizer-only session's precedent. The
+**speed**-tier build (the one that actually vectorizes) grew 5189→5407 B
+(+4.2%) at HEAD-vs-fixed — the expected, disclosed size/speed trade for a new
+SIMD wrapper + 10 v128/i32 locals, not a bench/`bytes`-column regression.
+`scripts/bench-size.mjs` geomean **1.055× → 1.055×** (unchanged, matches: the
+sweep uses the size tier, untouched by this fix — same precedent as every
+other vectorizer-recovery session banked above).
+
+**Gates, all green**: kernel-parity 3/3 (33/33 byte-identical); kernel-oracle
+11/11 (451 assertions); optimizer 214/214 (3949 assertions, unchanged);
+simd.js 158/158 (582 assertions, +2 — butterfly row now a real assertion);
+cond-vectorize.js 3/3 (8 assertions); examples.js 22/22 (434 assertions);
+selfhost.js 21/21 (206 assertions); selfhost-perf.js informational 5/5 (warm
+0.991× < 1.03× cap [was 1.013×], fresh 0.780× < 0.99× cap [was 0.772×]);
+perf-ratchet 10/10 (+0 across int/float/mixed/cond/buf/nest/slice/ring/
+condref/fgather — this fix's corpus reach is the vectorizer + Root-F path,
+which perf-ratchet's SCALAR loop-body-op-count corpus doesn't exercise, same
+as every prior vectorizer-only session); fuzz 2000×4 (seeds 1-2000, opt
+{0,1,2,3}, 20 inputs/program) — 30173 compared, 9827 skipped (i32-contract
+exceeded), 0 non-numeric, **0 divergence** — identical counts to every prior
+session's run; full `test/index.js` 88-file battery, 13 foreground chunks (12×7
++ 1×4, never monolithic/background) — every chunk green; fresh `npm run build`
+×2 — dist/jz.js and dist/jz.wasm byte-identical both times (SHA-256 verified);
+full size sweep — see above.
+
 ## Status (2026-08-03, audit-P1-2 RECOVERY CAMPAIGN CLOSED — Residual A
 ## (diffusion/slime f64-domain wrap-canon, named at 4b20e4c6) and Residual B
 ## (i32-array-add wrapIntIR teach-the-matcher, named at c8700daa) BOTH

@@ -90,9 +90,32 @@ export function intExprRange(n) {
     const sh = constIntExpr(n[2])
     if (sh != null && (sh & 31) !== 0) return [0, 0xFFFFFFFF >>> (sh & 31)]
   }
+  // `>>` is ToInt32 then a SIGNED shift: the result is always a genuine i32,
+  // shifted — sound for ANY operand (even one with no known range of its own,
+  // e.g. an unbounded param) purely from the operator's own semantics, same
+  // "derive from the op, not the operand" reasoning as `&`/`>>>` just above.
+  // Tightened against the operand's own hull when one is known.
+  if (op === '>>' && n.length === 3) {
+    const sh = constIntExpr(n[2])
+    if (sh != null) {
+      const s = sh & 31
+      const a = intExprRange(n[1])
+      return a ? [a[0] >> s, a[1] >> s] : [I32_MIN >> s, I32_MAX >> s]
+    }
+  }
   if ((op === 'u-' || op === '-') && n.length === 2) {
     const a = intExprRange(n[1])
     return a ? [-a[1], -a[0]] : null
+  }
+  // `++x`/`--x` as an expression VALUE is always the NEW (post-mutation) value at
+  // this AST layer — postfix `x++`'s old-value form is `(++x) - 1` (ast.js), so a
+  // bare `++`/`--` node is uniformly prefix semantics: operand's range, shifted by
+  // ±1. Lets a loop counter's own forCounterRange hull (emit.js) reach the counter's
+  // OWN in-body step-expression arithmetic (e.g. a comma-step dual-IV header's
+  // dropped post-increment value), not just bare reads of the name elsewhere.
+  if ((op === '++' || op === '--') && n.length === 2 && typeof n[1] === 'string') {
+    const a = intExprRange(n[1])
+    return a ? (op === '++' ? [a[0] + 1, a[1] + 1] : [a[0] - 1, a[1] - 1]) : null
   }
   if ((op === '+' || op === '-' || op === '*') && n.length === 3) {
     const a = intExprRange(n[1]), b = intExprRange(n[2])

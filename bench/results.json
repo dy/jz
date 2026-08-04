@@ -2396,9 +2396,9 @@
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 1105,
+     "medianUs": 1011,
      "bytes": 2368,
-     "memKb": 54432,
+     "memKb": 54688,
      "parity": "ok"
     },
     "as": {
@@ -2462,7 +2462,18 @@
      "parity": "ok"
     }
    },
-   "compileMs": 93.8
+   "compileMs": 93.8,
+   "paired": {
+    "jz/rust-wasm": {
+     "ratios": [
+      1.006,
+      1.008,
+      1.0089,
+      1.0213
+     ],
+     "median": 1.0089
+    }
+   }
   },
   "fftplan": {
    "name": "fftplan",

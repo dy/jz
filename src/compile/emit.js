@@ -411,19 +411,33 @@ const subRangeFitsI32 = (aAst, bAst) => {
 // for any name isReassigned finds written in that exact body.
 function forCounterRange(init, cond, step, name) {
   if (!Array.isArray(cond) || (cond[0] !== '<' && cond[0] !== '<=') || cond[1] !== name) return null
+  // Multi-declarator init (`let j = 0, k = 0`) — a dual-IV header (the FFT
+  // butterfly's `j`/`k` twiddle-walk being the motivating shape): find the ONE
+  // declarator that binds `name`, ignoring sibling declarators entirely (they
+  // prove nothing about `name` and disprove nothing either).
   const initExpr =
-    Array.isArray(init) && (init[0] === 'let' || init[0] === 'const') && init.length === 2 &&
-      Array.isArray(init[1]) && init[1][0] === '=' && init[1][1] === name ? init[1][2]
+    Array.isArray(init) && (init[0] === 'let' || init[0] === 'const')
+      ? (init.slice(1).find(d => Array.isArray(d) && d[0] === '=' && d[1] === name) ?? null)?.[2] ?? null
     : Array.isArray(init) && init[0] === '=' && init[1] === name ? init[2]
     : null
   if (initExpr == null) return null
   const posConst = (e) => { const k = constIntExpr(e); return k != null && k > 0 }
-  const stepOK =
-    (Array.isArray(step) && step[0] === '++' && step[1] === name) ||
-    (Array.isArray(step) && step[0] === '+=' && step[1] === name && posConst(step[2])) ||
-    (Array.isArray(step) && step[0] === '=' && step[1] === name &&
-      Array.isArray(step[2]) && step[2][0] === '+' && step[2].length === 3 &&
-      ((step[2][1] === name && posConst(step[2][2])) || (step[2][2] === name && posConst(step[2][1]))))
+  // A comma-sequenced step (`j++, k += step`) — postfix `j++`'s VALUE is
+  // `(++j) - 1` at this AST layer (the old value), but the WRITE that matters
+  // for the range proof is the inner `++j`; unwrap that value-sugar before
+  // testing the mutation shape.
+  const unwrapPostfixVal = (e) =>
+    Array.isArray(e) && e[0] === '-' && e.length === 3 && Array.isArray(e[1]) && e[1][0] === '++' && constIntExpr(e[2]) === 1
+      ? e[1] : e
+  const isStepFor = (s) => {
+    s = unwrapPostfixVal(s)
+    return (Array.isArray(s) && s[0] === '++' && s[1] === name) ||
+      (Array.isArray(s) && s[0] === '+=' && s[1] === name && posConst(s[2])) ||
+      (Array.isArray(s) && s[0] === '=' && s[1] === name &&
+        Array.isArray(s[2]) && s[2][0] === '+' && s[2].length === 3 &&
+        ((s[2][1] === name && posConst(s[2][2])) || (s[2][2] === name && posConst(s[2][1]))))
+  }
+  const stepOK = Array.isArray(step) && step[0] === ',' ? step.slice(1).some(isStepFor) : isStepFor(step)
   if (!stepOK) return null
   const initRange = intExprRange(initExpr), boundRange = intExprRange(cond[2])
   if (!initRange || !boundRange) return null
@@ -5570,6 +5584,21 @@ export const emitter = {
         // every LIFTED level is proven by THIS guard — brake their own intercepts
         // (re-versioning per level compounds 2^depth checked twins)
         for (const vs of levels) if (vs.bodyNode && !vs.partial) vs.bodyNode._tbVersioned = ctx.func
+        // Loop-counter RANGE-PROOF lever (c8700daa), rescued from this guard's OWN
+        // re-emission: both arms below re-emit the loop via `emitter['for'](null,
+        // cond, step, body)` — init nulled because the REAL init already ran once,
+        // just above — and forCounterRange(null, …) can prove nothing from a null
+        // init, so the counter's own body-internal arithmetic (e.g. a comma-step
+        // dual-IV header's dropped post-increment value) falls to the f64
+        // round-trip in BOTH arms. The fact is provable exactly once, from the
+        // REAL init still in scope here — unlike the bound-name magnitude lever
+        // below (sound only conditional on the guard passing), the counter's own
+        // [lo, hi] hull holds unconditionally for either arm: same init/cond/step,
+        // only the body's access forms differ.
+        const topCounterRange = Array.isArray(cond) && typeof cond[1] === 'string'
+          ? forCounterRange(init, cond, step, cond[1]) : null
+        const topCounterRefs = topCounterRange
+          ? new Map([[cond[1], { rlo: topCounterRange[0], rhi: topCounterRange[1] }]]) : null
         const result = []
         if (init != null) result.push(...emitVoid(init))
         const i64c = (n) => ['i64.const', n]
@@ -5923,12 +5952,15 @@ export const emitter = {
         // per-name integral+magnitude ones) DIDN'T all hold, so it must stay
         // unrefined. withRefinements (flow-types.js) itself re-checks isReassigned
         // against `body` as a second, independent safety net.
-        const fast = freeRefs.size
-          ? withRefinements(freeRefs, body, () => emitter['for'](null, cond, step, body))
-          : emitter['for'](null, cond, step, body)
+        const emitArm = () => emitter['for'](null, cond, step, body)
+        // topCounterRefs (the counter's own [lo, hi], unconditional) wraps BOTH
+        // arms; freeRefs (bound-name magnitude, sound only once the guard has
+        // passed) wraps the fast arm alone — see comments above each.
+        const fast = withRefinements(topCounterRefs, body,
+          () => freeRefs.size ? withRefinements(freeRefs, body, emitArm) : emitArm())
         ctx.types.assumedBounds = saved
         ctx.types.assumedConstHull = savedHull
-        const checked = emitter['for'](null, cond, step, body)
+        const checked = withRefinements(topCounterRefs, body, emitArm)
         const stmts = (r) => Array.isArray(r[0]) ? r : [r]
         result.push(['if', typed(guard, 'i32'),
           ['then', ...stmts(fast)],
