@@ -2473,17 +2473,18 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 // the identical reason: an unwritten key reads back the same undefined —
 // `prec[op] === undefined` (does this key exist?) is that dict's own bounds
 // probe. The predicate is `censusMaybeUndefined` (kind.js,
-// .work/represented-maybe-undefined-design.md Slice 1) — RE-ENABLED as of
-// this slice for the direct-node shape and a bare-name REP fallback
-// (repOf(name)?.mayBeUndefined), though it stays behaviorally inert here
-// until VT['[]']/VT['.']/VT['()'] resume claiming the exact kind
-// (design §8 Slice 4, gated on §5) — `valTypeOf(other)` at every caller of
-// this function (below) is null for a dict/Map read for as long as that VT
-// promotion stays dormant, so the `!nullableOperand(other)` refinement is
-// never reached for this shape yet. Kept live (not stubbed) so Slice 4 does
-// not have to re-wire this call site again.
+// .work/represented-maybe-undefined-design.md) — LOAD-BEARING as of Slice 4
+// (VT['[]']/VT['.']/VT['()'] now claim the exact kind, §8/§5) for both the
+// direct-node shape and a bare-name REP fallback (repOf(name)?.mayBeUndefined,
+// consulted via censusMaybeUndefinedKind's arm 3 at the bottom `if
+// (censusMaybeUndefined(n))` below). A bare name must fall through to that
+// check — NOT early-return on `.nullable` alone (a materially DIFFERENT REP
+// field, seeded by nullish-literal producers, that says nothing about a
+// census-copied `mayBeUndefined` binding) — so a decl-hop identity compare
+// (`let x = m.get(missing); x === undefined`) stays sound once Slice 4 makes
+// `x`'s `val` a non-null claim.
 const nullableOperand = (n) => {
-  if (typeof n === 'string') return !!(repOf(n)?.nullable || repOfGlobal(n)?.nullable)
+  if (typeof n === 'string' && (repOf(n)?.nullable || repOfGlobal(n)?.nullable)) return true
   if (Array.isArray(n) && n[0] === '[]' && n.length === 3
       && typeof n[1] === 'string' && lookupValType(n[1]) === VAL.TYPED) {
     // A statically in-range OUTER access can still miss when its direct index

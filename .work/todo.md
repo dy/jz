@@ -4,6 +4,165 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, represented-maybe-undefined Slice 4 LANDED — VT
+## re-enablement, .work/represented-maybe-undefined-design.md §8 point 4, §5
+## criteria all met)
+
+Landed Slice 4: kind.js's `dictValueKindOf`/`mapValueKindOf` — restored as
+internal helpers by Slice 1 (79082fb2), never wired back into VT — are now
+wired directly into VT['[]']/VT['.']/VT['()']'s `.get` short-circuit. A
+dict/Map read's static kind is once again the census's exact claim, protected
+by the `mayBeUndefined` join Slices 1-3 built for exactly this moment.
+
+**§5 RE-ENABLEMENT CRITERIA — per-criterion verdicts:**
+1. Representation propagates (decl/reassign/param/return/closure) — MET,
+   verified live pre-existing (Slices 1-2, 79082fb2/15c789ac).
+2. Every chokepoint consults the REP field (ir.js toNumF64/toStrI64, emit.js
+   nullableOperand/bigIntOperand/bigIntUnary/bigintMixReject/`+`-concat,
+   module/string.js/number.js/console.js) — MET, pre-existing (Slice 3,
+   756ae10f-era) PLUS two NEW gaps found and closed THIS session (below).
+3. dyn-keys.js's audit-P0 + audit-#9 pins assert JS-correct values with the
+   census LIVE — MET: full matrix re-verified below, all green or
+   documented KNOWN-FAIL with an updated, re-traced root cause.
+4. Full battery + kernel-parity/oracle + perf-ratchet + fuzz all green, cost
+   justified if nonzero — MET: perf-ratchet 10/10 at +0 every category, size
+   sweep geomean UNCHANGED at 1.055× (the `dict` sized case itself:
+   jz=1313B/jz_wasmopt=1249B, byte-identical to the pre-disable figure cited
+   in the audit-#9 ledger entry) — zero cost, matching Slice 1-3's own
+   "dormant costs nothing, re-enabling costs nothing measured" finding.
+
+**TWO NEW GAPS FOUND LIVE while walking §5 criterion 3's own instruction**
+("confirm each site's guard composes correctly with a LIVE census kind +
+mayBeUndefined=true") — repro-first, neither assumed from the design doc:
+
+1. **`nullableOperand`'s bare-name branch (emit.js) never consulted
+   `mayBeUndefined`.** `if (typeof n === 'string') return
+   !!(repOf(n)?.nullable || repOfGlobal(n)?.nullable)` early-returned BEFORE
+   the function's own bottom `censusMaybeUndefined(n)` check — so a decl-hop
+   identity compare (`let x = m.get(missing); x === undefined`) would have
+   const-folded wrongly the moment VT made `x`'s `val` non-null. EMPIRICALLY
+   this never fired in practice for a plain decl/param-hop (the PRE-EXISTING,
+   much broader `mayBeNullish` fail-closed heuristic — "calls/member reads:
+   missable" — already marks the SAME binding `.nullable = true`
+   independently, for a totally unrelated reason, coincidentally covering
+   this exact shape) — but it is the wrong mechanism to rely on (a different
+   field, could stop covering this shape under an unrelated future change)
+   and the design's own criterion 3 explicitly asks for correct composition,
+   not accidental coverage. Fixed: fall through to `censusMaybeUndefined(n)`
+   for a bare name instead of early-returning.
+
+2. **A call to a non-inlined user function whose return traces to a census
+   read had NO consumer for `func.valResultMayBeUndefined`/
+   `ctx.closure.valResultMayBeUndefined`** — Slice 2 (15c789ac) SET these
+   fields but `ctx.inspect` was their only reader (compile/index.js :347,
+   reps.js's own doc comment already named this gap). Repro'd live:
+   `const g = (k) => { ...; return m.get(k) }; g(k) === undefined`
+   const-folded to the SAME wrong boolean for present AND absent keys
+   (kind-traits.js `calleeValType` trusts `f.valResult` unconditionally, no
+   mayBeUndefined companion ever asked) — and the arithmetic sibling,
+   `g(k) + 1`, silently returned JS `undefined` instead of `NaN`. `g` must be
+   non-trivial (a loop, 2+ statements) — a single-expression arrow inlines
+   away before either check runs, which is why the multi-hop test below
+   didn't catch this on its own. Fixed: kind.js gains
+   `callResultMayBeUndefinedKind(node)` (mirrors `calleeValType`'s own two
+   lookup paths — `ctx.func.directClosures`+`ctx.closure.valResult(MayBe
+   Undefined)` for a direct closure, `ctx.func.map` for a plain named
+   function), wired into `censusMaybeUndefinedKind`'s dispatch as a 4th arm.
+
+**A SOUNDNESS REGRESSION found and fixed while landing gap #2, before it
+ever reached a commit**: `ir.js`'s `coerceNullishToNum` — consulted by
+`toNumF64` whenever `censusMaybeUndefined(node)` is true — is documented as
+requiring its input be side-effect-free ("it is duplicated, so each
+occurrence gets a fresh clone"), true for the ORIGINAL two arms (a dict/Map
+read, a bare-name local read — both pure) but NOT true for the new
+call-result arm: an arbitrary function call can have real side effects.
+Caught by a REAL optimizer.js regression (`promoteIntArrayLiterals:
+closure-capture disqualifies` — `main(0)` returned 30 instead of 20) during
+the routine full-battery run, traced to a captured-mutation counter
+(`count = count + 1` inside a callee whose return flowed through `+`) firing
+THREE TIMES instead of once — `coerceNullishToNum`'s `cloneIR` triplicating
+the call itself. Fixed at the `ir.js` call site (not `coerceNullishToNum`
+globally, to keep the fix's blast radius to the new arm only, byte-identical
+for the two original arms): hoist into a temp local FIRST whenever the node
+is a call that isn't the direct dict/Map `censusShapedNode` shape, so
+`cloneIR` only triplicates a cheap `local.get`. Every OTHER chokepoint that
+consults `censusMaybeUndefined`/`censusMaybeUndefinedKind` was individually
+verified NOT to have this risk (bigIntOperand/bigIntUnary already hoist into
+a temp before their own duplication; module/string.js String(), module/
+number.js isNaN, module/console.js writePart, emit.js bigintMixReject/`+`-
+concat all evaluate the node's emission exactly once regardless of which
+arm matched) — confirmed by a live side-effect-counting repro for each,
+not by inspection alone.
+
+**FULL AUDIT MATRIX (native leg; kernel leg identical per kernel-parity/
+kernel-oracle below) — case × verdict:**
+- audit-#7 P0 pair (absent-key arith/String `m.get('b')+1`→NaN,
+  `String(m.get('b'))`→'undefined'; alias-write `const alias=m;
+  alias.set('k','oops1')`→NaN via `-0`) — GREEN, live via the census.
+- audit-#8 P0-2 captured-mutation (Map/dict write captured in a nested
+  `.forEach` callback) — GREEN.
+- audit-#9 table: decl-hop (`let x=m.get(k); x-1`) GREEN; STRING-census
+  concat (`+` on a STRING-census absent key → "undefined" not the raw NaN
+  value) GREEN; BigInt absent `+1` (NaN not compile error) GREEN;
+  double-absent BigInt (`m.get(a)+m.get(b)`, both missing → throws, the
+  documented narrower-but-safe divergence from JS's `NaN`, unchanged by this
+  slice) GREEN (regression-pinned, not flipped); param-hop (the cfd06d85
+  fix) GREEN; capture-hop GREEN.
+- isNaN family over live census (2ea95034 pins) — GREEN, side-effect-safety
+  re-verified live (§ above).
+- POSITIVE WINS: non-escaping numeric dict/Map read in arithmetic drops the
+  `+` STRING-concat fallback arm entirely (reconstructed structural pin,
+  test/inference.js — the ORIGINAL 1db8e55e/2b62b91b "consumer wiring" pins
+  turned out to never have exercised the consumer at all, see their own
+  updated comments); an ESCAPING receiver (nameEscapes gate) correctly keeps
+  the fallback arm — negative control in the same pin. Captured-numeric-write
+  win (e79b0647's class) verified still correct, no fast-path regression.
+- Present-key BigInt through the census (7288b69b KNOWN-FAILs): unary `-`/`~`
+  RE-VERIFIED LIVE, value changed (was `-5`/`-6` via the old generic-NUMBER
+  misdecode, now `NaN`/`0` via a NEW mechanism — bigIntUnary's runtime
+  select/isUndef branch correctly computes the true negated/complemented i64
+  internally, confirmed by direct sub-expression isolation, but the result
+  crosses the export boundary through the SAME `resultDynamic` f64-reinterpret
+  lane repro 5 already named — a negated/complemented small BigInt's raw i64
+  bits frequently fall in the NaN-shaped exponent range, and the boundary's
+  NaN-canonicalization collapses the true payload). STAYS KNOWN-FAIL, values
+  updated, root cause re-traced to §6's presentKindUnboxed family (not fixed
+  — Slice 5, un-landed). The STRICT-EQUALITY siblings (`-m.get('x')===-5n`)
+  FLIP TO CORRECT (`false`→`true`): both sides statically prove BIGINT, so
+  emitStrictEq takes the REF_EQ_KINDS raw i64-bit-compare path, never
+  touching the broken export lane — genuinely fixed, not a coincidence.
+  Export misdecode (repro 5 itself, `m.get('x')` alone) — unchanged,
+  confirmed still `2.5e-323` not `5n`, out of scope (§6, needs
+  presentKindUnboxed or the bigintBoxed producer-wiring fix, neither landed).
+- bigintMixReject's own KNOWN NARROWER GAP (documented pre-existing, its own
+  comment cites it): `g(k) + 5` where `g`'s result is genuinely `undefined`
+  and BIGINT-census-claimed now THROWS instead of JS's `NaN`, reachable for
+  the first time through the call-result arm (previously only reachable via
+  a direct dict/Map read, same throw, same gap — see probe in this session's
+  working notes). NOT a new bug, NOT fixed here — the runtime
+  `bigIntOperand` throw only checks "is THIS operand a maybeUndefined-BIGINT
+  claim", not "did the OTHER operand's runtime type actually mismatch",
+  exactly as its own doc comment already names ("moves an unsound VALUE to
+  a sound-but-wider THROW, never a wrong number" — an accepted tradeoff).
+
+**GATES (fresh dist rebuild, foreground throughout):** full 88-file battery
+run in 15 foreground chunks of ≤6 files — 0 failures (one transient found
+DURING this session — optimizer.js's closure-capture regression above — was
+root-caused and fixed before the final battery run, not carried forward);
+dyn-keys.js 27/27 (78 assertions, incl. 2 new hop-shape pins + 2 new
+call-result pins + 1 soundness-regression pin, present-key BigInt pins
+re-verified with updated values); inference.js 136/136 (299 assertions,
+incl. 2 reconstructed positive-win pins with escape-gate negative controls);
+types.js 170/170; optimizer.js 214/214; kernel-parity 33/33 byte-identical
+(O0/O2/O3, post-rebuild); kernel-oracle green; perf-ratchet 10/10 at +0
+delta every category; selfhost.js 21/21 (206 assertions); fuzz 2000×4 (seeds
+1..2000, opt {0,1,2,3}, 30173 inputs compared each run) — zero divergence
+across all 4 runs; size sweep geomean jz/AS = 1.055× (unchanged from 1.0550
+baseline); fresh `npm run build` ×2 — dist/jz.js, dist/jz.wasm,
+dist/interop.js SHA-256 byte-identical both rounds.
+
+Commit: local only (not pushed).
+
 ## Status (2026-08-04, optimizer guard-elimination soundness bug FIXED — the
 ## "param-hop `+` miscompile" pinned at 05729912, root-caused past bisect,
 ## sibling class swept)

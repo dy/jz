@@ -266,22 +266,21 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
   return false
 }
 
-// Dict-value-type census consumer — RESTORED AS AN INTERNAL HELPER ONLY
-// (.work/represented-maybe-undefined-design.md Slice 1, audit #9 follow-up).
+// Dict-value-type census consumer — RE-ENABLED, WIRED INTO VT['[]']/VT['.']
+// (.work/represented-maybe-undefined-design.md §8 Slice 4, §5 criteria met —
+// see .work/todo.md's Slice 4 ledger entry for the per-criterion verdicts).
 // `name[key]`/`name.prop` on a HASH dict-mode receiver: the VAL.* kind of
 // every value ever WRITTEN through `name[anyKey] = v`
 // (.work/dict-value-census-design.md §2, nameEscapes alias gate per
 // .work/maybe-undefined-design.md §2 Slice 3 — unchanged logic, restored
-// verbatim from before the audit-#9 revert). NOT wired back into VT['[]']/
-// VT['.']'s own dict-mode fold (that promotion — "this read's static VT IS
-// the census kind" — stays dormant; re-enabling it is represented-maybe-
-// undefined-design.md §8 Slice 4, gated on §5's full criteria). Called ONLY
-// from censusMaybeUndefinedKind below, which asks a narrower question ("is
-// THIS node maybeUndefined-shaped, and what kind does the census claim for
-// it") that bypasses VT/valTypeOf entirely — restoring this helper for that
-// caller alone reopens no soundness hole: nothing outside
-// censusMaybeUndefinedKind's own mayBeUndefined-gated chokepoints ever sees
-// this claim.
+// verbatim from before the audit-#9 revert). Consulted from TWO call sites
+// now: VT['[]']/VT['.'] themselves (this read's static VT IS the census
+// kind — the exact-kind promotion Slice 1-3 deliberately kept dormant) and
+// censusMaybeUndefinedKind below (the narrower "is THIS node
+// maybeUndefined-shaped" question, bypassing VT/valTypeOf entirely). Both
+// callers see the identical soundness carve-out below — the VT promotion is
+// safe precisely BECAUSE every chokepoint that consumes the resulting exact
+// kind also asks censusMaybeUndefined about the SAME node/name.
 //
 // SOUNDNESS: an unwritten key reads back NaN-boxed undefined at runtime, so
 // this fact is trustworthy ONLY where NUMBER arithmetic/relational semantics
@@ -324,10 +323,10 @@ const dictCensusReceiverIsLive = (name) => {
   return true
 }
 
-// Map-value-type census Tier 1 consumer — RESTORED AS AN INTERNAL HELPER
-// ONLY, same status as dictValueKindOf above (Slice 1, not Slice 4): NOT
-// wired back into VT['()']'s `.get` short-circuit (that promotion stays
-// dormant, §5-gated); called ONLY from censusMaybeUndefinedKind below.
+// Map-value-type census Tier 1 consumer — RE-ENABLED, WIRED INTO VT['()']'s
+// `.get` short-circuit, same Slice 4 landing as dictValueKindOf above (§8,
+// §5 criteria met). Also called from censusMaybeUndefinedKind below, same
+// dual-caller shape as dictValueKindOf.
 // `mapValueValType` is "every value ever WRITTEN through recv.set(anyKey,
 // v)", unsound to promote to an EXACT VAL.* kind at a `.get()` read site the
 // same two ways dictValueKindOf is: an ABSENT key reads real JS `undefined`
@@ -362,19 +361,19 @@ export function mapValueKindOf(name) {
 // nullableOperand/bigIntOperand/bigIntUnary, module/string.js, module/
 // number.js, module/console.js.
 //
-// LANDED STATE (Slice 1 honest boundary — see .work/represented-maybe-
-// undefined-design.md's as-landed note): arms 1/2 are reachable again, but
-// every one of the ~8 chokepoints above gates ITS OWN call to this function
-// behind `valTypeOf(node) === VAL.SOMETHING` first (ir.js:997-1011,
-// emit.js's strictSentinel/aSafe/bSafe callers of nullableOperand) — and
-// `valTypeOf` for a dict/Map read stays null for as long as VT['[]']/
-// VT['.']/VT['()'] (dictValueKindOf/mapValueKindOf's OWN VT-side promotion)
-// stay dormant. So today this function is REACHABLE and CORRECT but not yet
-// LOAD-BEARING for any chokepoint — Slice 4 (VT re-enablement, §5-gated) is
-// what makes a non-null answer here actually change codegen. The decl
-// producer (analyze.js analyzeValTypes) sets `mayBeUndefined` on arm-3's
-// bare names regardless, ahead of that, so the fact doesn't have to be
-// invented retroactively once Slice 4 lands.
+// LANDED STATE (Slice 4 — VT['[]']/VT['.']/VT['()'] now consult
+// dictValueKindOf/mapValueKindOf directly, see their own doc comments
+// above): every one of the ~8 chokepoints below that gates ITS OWN call to
+// this function behind `valTypeOf(node) === VAL.SOMETHING` first
+// (ir.js:997-1011, emit.js's strictSentinel/aSafe/bSafe callers of
+// nullableOperand) is now LOAD-BEARING — `valTypeOf` for a dict/Map read is
+// non-null exactly when the SAME node also satisfies censusShapedNode, so
+// the two conditions co-occur by construction, not by coincidence. The decl
+// producer (analyze.js analyzeValTypes) copies `mayBeUndefined` onto arm-3's
+// bare names alongside whatever `val` the ordinary RHS-kind derivation now
+// resolves (previously null for this RHS shape, Slice 1/2's own finding —
+// now non-null via this same VT wiring), so both fields settle together at
+// every hop.
 //
 // censusShapedNode (Slice 2, .work/represented-maybe-undefined-design.md §3)
 // factors OUT arms 1/2's pure AST-SHAPE test — no ctx lookup — so a whole-
@@ -395,6 +394,34 @@ export const censusShapedNode = (node) =>
   (Array.isArray(node) && node[0] === '()' && node.length === 3 &&
     Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'get' && typeof node[1][1] === 'string')
 
+// Call-RESULT mayBeUndefined arm — closes a Slice 4 gap found LIVE (not
+// assumed) while walking §5 criterion 3's chokepoint-composition check: a
+// call to a user function/direct closure whose whole-program return-kind
+// fixpoint (narrow.js narrowValResults :732-733, flow-types.js
+// closureBodyReturnMayBeUndefined — both Slice 2, §3 "Return kinds") settled
+// BOTH a definite `valResult` kind AND `valResultMayBeUndefined` is itself a
+// census fact one call-hop removed: `const g = (k) => { ...; return
+// m.get(k) }; g(k) === undefined` must not const-fold identically to a
+// direct `m.get(k) === undefined` — but nothing consulted
+// `valResultMayBeUndefined` anywhere before this (reps.js's own doc comment
+// already NAMED the field; ctx.inspect was its only reader, per
+// compile/index.js :347). Repro'd live: a two-statement (non-inlined)
+// callee's `g(k) === undefined` constant-folded to the SAME wrong boolean
+// for both a present and an absent key, because kind-traits.js
+// `calleeValType` returns `f.valResult` unconditionally with no accompanying
+// signal. Mirrors calleeValType's own two lookup paths (direct closure via
+// `ctx.func.directClosures` + `ctx.closure.valResult`, plain named function
+// via `ctx.func.map`) so a call-result claim and its mayBeUndefined
+// companion always travel together.
+function callResultMayBeUndefinedKind(node) {
+  if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string') return null
+  const callee = node[1]
+  const closBody = ctx.func.directClosures?.get(callee)
+  if (closBody) return ctx.closure?.valResultMayBeUndefined?.get(closBody) ? (ctx.closure?.valResult?.get(closBody) ?? null) : null
+  const f = ctx.func.map?.get(callee)
+  return f?.valResultMayBeUndefined ? (f.valResult ?? null) : null
+}
+
 export function censusMaybeUndefinedKind(node) {
   if (censusShapedNode(node)) {
     if (node[0] === '[]' || node[0] === '.') return dictCensusReceiverIsLive(node[1]) ? dictValueKindOf(node[1]) : null
@@ -404,7 +431,7 @@ export function censusMaybeUndefinedKind(node) {
     const r = repOf(node)
     if (r?.mayBeUndefined && r.val) return r.val
   }
-  return null
+  return callResultMayBeUndefinedKind(node)
 }
 
 // mayBeUndefined structural TRACE (Slice 2, §3 "Param lattice"/"Return
@@ -539,11 +566,19 @@ VT['[]'] = (args) => {
       if (gElem && !ctx.types?.dynWriteVars?.has(args[0])) return gElem
     }
   }
-  // NO dict-mode receiver fold here: dictValueKindOf (restored above, Slice 1)
-  // is an internal helper for censusMaybeUndefinedKind only — VT['[]'] does
-  // NOT promote dictValueValType to an exact VT at a `[]` read site.
-  // Re-enabling THAT is represented-maybe-undefined-design.md §8 Slice 4,
-  // gated on §5 — see dictValueKindOf's own doc comment above.
+  // Dict-mode receiver (`prec[op]`, `OPCODE[nm]`): every value ever written
+  // through `args[0][anyKey] = v` has one proven kind — RE-ENABLED
+  // (represented-maybe-undefined-design.md §8 Slice 4, §5 criteria met, see
+  // dictValueKindOf's own doc comment above for the full soundness writeup
+  // and the criteria checklist in .work/todo.md). No receiver-kind guard
+  // needed here (unlike censusMaybeUndefinedKind's direct dictCensusReceiverIsLive
+  // call): the TYPED/STRING/arrayElemValType branches above already resolve
+  // the receiver FIRST in this same elimination order, so this fallback is
+  // only ever reached once those have all declined.
+  if (typeof args[0] === 'string') {
+    const dvt = dictValueKindOf(args[0])
+    if (dvt) return dvt
+  }
   // Direct double-index on a module-level nested numeric table — `C[i][j]` where
   // `C = [[…number…], …]`. The receiver is itself a single-index read of a global
   // array whose nested element kind was recorded at decl time. Same dynWriteVars
@@ -618,11 +653,14 @@ VT['.'] = (args) => {
       return child.val
     }
   }
-  // NO dict-mode receiver fold here, same as VT['[]'] above (dictValueKindOf
-  // is a censusMaybeUndefinedKind-only helper, Slice 1 — not wired into VT):
-  // `prec['in']` → `['.','prec','in']` rewrite (module/array.js:762-763)
-  // used to benefit identically to `prec[k]` — see dictValueKindOf's own doc
-  // comment above for the full soundness writeup.
+  // Dict-mode receiver via computed-literal rewrite (`prec['in']` →
+  // ['.','prec','in']` at emit, module/array.js:762-763): the fact is
+  // per-receiver, not per-key, so `prec.in` benefits identically to
+  // `prec[k]` above — RE-ENABLED, same Slice 4 landing as VT['[]'].
+  if (typeof args[0] === 'string') {
+    const dvt = dictValueKindOf(args[0])
+    if (dvt) return dvt
+  }
   // Built-in property on a known sized kind — `.length` on STRING/ARRAY/TYPED,
   // `.size` on SET/MAP, `.byteLength`/`.byteOffset` on TYPED/BUFFER. These are
   // language invariants (the property is always a number on that kind), so typing
@@ -733,10 +771,17 @@ VT['()'] = (args) => {
   }
   if (Array.isArray(callee) && callee[0] === '.') {
     const [, obj, method] = callee
-    // NO `.get` short-circuit here: mapValueKindOf (restored above, Slice 1)
-    // is a censusMaybeUndefinedKind-only helper — VT['()'] does not promote
-    // a `.get()` read to an exact VT. See mapValueKindOf's own doc comment
-    // above for the re-enablement gate (§5 Slice 4).
+    // Map-value census Tier 1 consumer: `.get` short-circuit BEFORE
+    // methodValType, which has no 'get' branch (see mapValueKindOf's own doc
+    // comment above for why it lives here instead of kind-traits.js) —
+    // RE-ENABLED (represented-maybe-undefined-design.md §8 Slice 4, §5
+    // criteria met). Falls through to the generic methodValType dispatch
+    // when unproven (non-Map receiver, escaped, or poisoned census),
+    // unchanged from before.
+    if (method === 'get') {
+      const mvt = mapValueKindOf(obj)
+      if (mvt) return mvt
+    }
     const vt = methodValType(method, obj, valTypeOf(obj), ctx)
     if (vt != null) return vt
   }

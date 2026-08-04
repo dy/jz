@@ -623,3 +623,108 @@ Slice 4 (VT re-enablement, §5) remains unstarted — every fact this design
 has built (Slices 1-3) is now representationally complete and consumption-
 wired; Slice 4 is what makes all of it load-bearing at once, per §5's full
 criteria (none of which Slice 3 attempted).
+
+## 12 — Slice 4, as landed (VT re-enablement, §5 criteria met)
+
+Landed: `dictValueKindOf`/`mapValueKindOf` (kind.js, restored as internal
+helpers by Slice 1) wired directly into VT['[]']/VT['.']/VT['()']'s `.get`
+short-circuit — the exact-kind promotion Slices 1-3 deliberately kept
+dormant. A dict/Map read's static VT is once again the census's claimed
+kind, everywhere protected by the `mayBeUndefined` machinery Slices 1-3
+built.
+
+**§5 criteria — per-criterion verdict** (full detail: .work/todo.md's Slice
+4 ledger entry):
+1. Propagation (decl/param/return/closure) — MET, pre-existing (Slices 1-2).
+2. Chokepoint consultation — MET, pre-existing (Slice 3) PLUS two NEW gaps
+   found and closed this slice (below) — §4's own "grep for
+   valTypeOf(.*)===VAL\.` is the audit surface" instruction found real,
+   live hits this time, because VT re-enablement is what made them reachable
+   for the first time.
+3. dyn-keys.js pins assert JS-correct values LIVE — MET, full matrix
+   re-verified (.work/todo.md).
+4. Full gate list green, cost justified — MET, zero cost (perf-ratchet +0
+   every category, size sweep unchanged at 1.055×) — matches Slices 1-3's
+   own "dormant costs nothing" finding extended to "re-enabling costs
+   nothing measured" on this corpus.
+
+**Criterion 2's own "next gap" instruction paid off twice**, found by
+literally walking every `censusMaybeUndefined`/`Kind` consumer and asking
+whether its OWN precondition (a claim that's now genuinely live) still
+composes soundly — not assumed, not deduced from the design text alone:
+
+1. `nullableOperand` (emit.js) had an early return for a bare-name operand
+   that consulted ONLY `.nullable` (a materially different, broader,
+   pre-existing REP field — "can this RHS produce null/undefined" via
+   `mayBeNullish`'s own unrelated fail-closed heuristic), never reaching the
+   function's own bottom `censusMaybeUndefined(n)` check that would consult
+   `.mayBeUndefined`. Empirically inert in every test tried (the broader
+   `.nullable` field happens to already cover every census-shaped decl-hop
+   RHS, for its own unrelated reason) but WRONG composition per this
+   design's own §4 mandate — fixed to fall through instead of early-return.
+2. A call to a non-inlined function whose return traces to a census read had
+   NO consumer for `func.valResultMayBeUndefined`/
+   `ctx.closure.valResultMayBeUndefined` (Slice 2's own §10 "independently,
+   directly provable" finding — these fields were SET and independently
+   observable via `ctx.inspect`, but literally nothing else ever read them).
+   `g(k) === undefined` and `g(k) + 1` both miscompiled for a non-inlined
+   `g`. Closed by a new `callResultMayBeUndefinedKind` arm in kind.js,
+   mirroring `calleeValType`'s own two-path lookup (direct closure /
+   `ctx.func.map`) so a call-result claim and its mayBeUndefined companion
+   travel together through the SAME predicate every other arm already uses.
+
+**A soundness regression caught before it ever reached a commit** (full
+trace: .work/todo.md): the NEW call-result arm broke `coerceNullishToNum`'s
+(ir.js) own documented precondition — "valIR must be side-effect-free... it
+is duplicated" — true for the two ORIGINAL arms (a pure dict/Map read, a
+local-read bare name) but false for an arbitrary function call. A live
+optimizer.js regression (a captured-mutation counter incremented 3× instead
+of once) caught it during the routine gate run; fixed by hoisting into a
+temp local at the ir.js call site specifically for the call-result shape
+(byte-identical for the two original arms, which skip the new branch
+entirely). Every OTHER `censusMaybeUndefined`/`Kind` consumer was
+individually re-verified (not just inspected) to already be safe against
+duplication — this was the one gap.
+
+**Present-key BigInt through the census** (7288b69b's KNOWN-FAILs, §6's own
+"present-key BigInt-unary regression" naming): re-verified LIVE, not
+mechanically flipped. Value-materialization (`-m.get('x')` where `x`→`5n`)
+STAYS KNOWN-FAIL — the wrong value changed (`-5`→`NaN`) because bigIntUnary's
+runtime select/isUndef branch now correctly computes the true i64 negate
+internally (confirmed by isolating each sub-expression) but the result still
+crosses the SAME broken `resultDynamic` export lane §6 names for repro 5 —
+this is that same presentKindUnboxed gap, not a new one, now reachable
+through one more shape (unary ops, not just a bare read). The STRICT-EQUALITY
+siblings (`-m.get('x') === -5n`) DO flip to correct (`false`→`true`) — both
+sides prove BIGINT statically, so the comparison takes the REF_EQ_KINDS raw
+i64-bit-compare path and never touches the broken export lane at all. Repro
+5 itself (`m.get('x')` alone) is unchanged, confirmed still `2.5e-323`.
+`presentKindUnboxed` (§2) remains un-landed — Slice 5, separable, still the
+right fix for the export-boundary class; nothing in Slice 4 substitutes for
+it.
+
+**Positive wins reconstructed**: the ORIGINAL 1db8e55e/2b62b91b "consumer
+wiring" pins (dict/Map read vs a NUMBER LITERAL compare) turned out, on
+inspection, to never have exercised the consumer at all (cmpOp's relational
+family takes the same raw-f64-compare shape whenever the OTHER operand is a
+proven NUMBER LITERAL, census or not) — their comments were already updated
+to say so at the audit-#9 revert. This slice's real positive-win pin
+(test/inference.js) uses an ARITHMETIC consumption instead: a proven-NUMBER
+dict/Map read via the census drops `+`'s STRING-coercion fallback arm
+entirely (confirmed via `$__str_concat` absence/presence), with an escaping-
+receiver negative control (nameEscapes gate) confirming the fallback stays
+when the census can't fire.
+
+Gates: full 88-file battery (15 foreground chunks ≤6), dyn-keys.js 27/27,
+inference.js 136/136, types.js 170/170, optimizer.js 214/214, kernel-parity
+33/33 byte-identical, kernel-oracle green, perf-ratchet 10/10 at +0,
+selfhost.js 21/21, fuzz 2000×4 zero divergence, size sweep 1.055× unchanged,
+fresh build ×2 byte-identical. Full detail and the exact audit-matrix table:
+.work/todo.md's Slice 4 ledger entry.
+
+This design's core deliverable is now fully landed: `mayBeUndefined` is a
+represented, propagated REP fact consulted at every chokepoint, and
+dictValueKindOf/mapValueKindOf are load-bearing again under its protection.
+`presentKindUnboxed` (§2, §6) is the one remaining named item — a separate,
+independent axis (present-key BigInt representation, not absent-key
+undefined-tracking), left for a future slice per §8's own ordering.

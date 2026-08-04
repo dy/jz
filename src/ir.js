@@ -27,7 +27,7 @@ import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex, OBJECT_S
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf } from './ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from './reps.js'
-import { valTypeOf, censusMaybeUndefined } from './kind.js'
+import { valTypeOf, censusMaybeUndefined, censusShapedNode } from './kind.js'
 import { T } from './ast.js'
 import { objLiteralSchemaId } from './static.js'
 
@@ -1008,7 +1008,28 @@ export function toNumF64(node, v) {
     // site that isn't a dict-mode `[]`/`.` read (loop counters, schema slots,
     // the overwhelming hot-path case) pays zero new cost — same node object,
     // same asF64(v) call, no new branch taken.
-    if (vt === VAL.NUMBER && censusMaybeUndefined(node)) return coerceNullishToNum(asF64(v))
+    if (vt === VAL.NUMBER && censusMaybeUndefined(node)) {
+      // coerceNullishToNum's OWN contract (its doc comment above): `valIR`
+      // "must be side-effect-free... it is duplicated". True for the dict/
+      // Map direct-read shape (censusShapedNode) and a bare name (a local
+      // read) — both pure. NOT true for kind.js's call-result arm
+      // (censusMaybeUndefinedKind's `callResultMayBeUndefinedKind` fallback,
+      // represented-maybe-undefined-design.md §5 criterion 3): an arbitrary
+      // function call can have real side effects, and cloneIR's triplication
+      // would fire them 3x. Found LIVE (not assumed): a captured-mutation
+      // counter incremented 3x instead of once when its value flowed through
+      // a non-inlined callee's return before reaching `+`. Hoist into a temp
+      // FIRST so cloneIR only triplicates a cheap `local.get` — one
+      // evaluation, sound for every node shape, byte-identical to before for
+      // the two ORIGINAL (pure) arms since this branch is skipped for them.
+      if (typeof node !== 'string' && !censusShapedNode(node)) {
+        const t = temp('cnn')
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${t}`, asF64(v)],
+          coerceNullishToNum(typed(['local.get', `$${t}`], 'f64'))], 'f64')
+      }
+      return coerceNullishToNum(asF64(v))
+    }
     return asF64(v)
   }
   if (vt === VAL.DATE) {

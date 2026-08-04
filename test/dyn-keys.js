@@ -340,47 +340,61 @@ test('Map: a read-only capture does not disqualify the census (control)', () => 
 // before ever reaching the dict census, so it already took the sound generic
 // toNumF64 path; the dynamic-key case below is the one that actually exercised
 // the raw-i64 branch.
-// Present-key case — KNOWN-FAIL, adapted post audit-#9 P0-1 (.work/todo.md
-// "audit-#9 P0-1 closed"): the absent-key assertions above are unaffected
-// (they never depended on an exact-kind claim to begin with — the generic
-// dynamic path always handled undefined correctly). The two present-key
-// "structural pin" assertions below USED TO pass via bigIntUnary's raw-i64
-// `mkI64` arm, entered only when `valTypeOf(m.get(x))`/`valTypeOf(d[k1])`
-// was statically proven VAL.BIGINT by the now-reverted mapValueKindOf/
-// dictValueKindOf. With that proof gone, `-`/`~` on a present-key BigInt
-// read now dispatches as plain NUMBER unary (numericUnaryVT sees no BIGINT
-// operand) and ToNumber-decodes the container's raw, UNBOXED i64-as-f64
-// bit pattern as if it were already a self-describing dynamic value —
-// `-m.get('x')` (5n stored) now reads back `-5` (a Number), not `-5n` (a
-// BigInt). This is NOT a mayBeUndefined-tracking bug (the key IS present);
-// it is the sibling presentKind representation gap
-// .work/represented-maybe-undefined-design.md names alongside repro 5 (the
-// export-boundary case cited above, confirmed pre-existing at HEAD even
-// with the census ON) — Map/dict BigInt storage is fundamentally unboxed,
-// sound only when a STATIC "this slot is BIGINT" fact reaches the read,
-// which is exactly the representation the design doc's replacement carries.
-// Pinned as the CURRENT (wrong) values so a future fix (the represented
-// join, or an unboxed-BigInt-storage fix) flips these, not silently
-// regresses further.
+// Present-key case — KNOWN-FAIL, RE-VERIFIED post Slice 4 (represented-
+// maybe-undefined-design.md §8 Slice 4, VT re-enablement) with DIFFERENT
+// wrong values than the audit-#9-era pin, root-caused live via direct WAT/
+// select instrumentation before updating: the absent-key assertions above
+// are unaffected (never depended on an exact-kind claim). Present-key now
+// TAKES bigIntUnary's runtime select/isUndef branch for the first time ever
+// (censusMaybeUndefinedKind(node) is BIGINT for ANY `.get()`/`[]` read on a
+// BIGINT-census receiver, present or absent — the AST shape can't tell them
+// apart, so Slice 4 makes this branch reachable for a present key too) — and
+// that branch computes the CORRECT i64 negate/complement internally
+// (confirmed by isolating each sub-expression: the isUndef condition
+// evaluates false, correctly selecting the negate arm; `-5n`'s raw i64 bits
+// are computed exactly). The corruption happens ONE step later, at the
+// GENERIC dynamic-value EXPORT lane (resultDynamic, compile/index.js
+// synthesizeBoundaryWrappers ~1595-1601): bigIntUnary carries its result in
+// an f64 slot BY DESIGN (P0-4's own comment — a unary op can yield EITHER a
+// real Number NaN or a real BigInt depending on runtime undef-ness, so
+// downstream consumers need one uniform carrier type), and whenever the
+// negated/complemented i64's raw bits happen to fall in the NaN-shaped
+// exponent range (any i64 that LOOKS negative once reinterpreted as f64 —
+// `-5n`'s bits are exactly this shape), the boundary's NaN-canonicalization
+// collapses the true payload to a bare `NaN`/`0`. This is NOT a new,
+// distinct bug — it is the SAME presentKindUnboxed representation gap
+// .work/represented-maybe-undefined-design.md §6 already names for repro 5
+// (`m.get('x')` alone, 5n stored, reads back `2.5e-323` not `5n`), now also
+// reachable through unary '-'/'~' rather than only a bare read. Fixed only
+// by presentKindUnboxed (§2, un-landed — Slice 5, separable) or the
+// bigintBoxed producer-wiring fix §6 names as the alternate closure.
+// THE STRICT-EQUALITY assertions, by contrast, FLIP TO CORRECT here (not
+// KNOWN-FAIL): `-m.get('x') === -5n` statically proves BOTH sides BIGINT
+// (numericUnaryVT + the BIGINT literal), so emitStrictEq takes the
+// REF_EQ_KINDS raw i64-bit-compare path — comparing the negate's true i64
+// result against the literal's i64 DIRECTLY, never touching the broken f64
+// export/decode step. That comparison is sound (both sides genuinely -5 as
+// i64), matching JS's `true`.
 test('Map: unary "-"/"~" on a .get() absent key decays to NUMBER NaN/-1, not a garbage bigint (audit-#8 P0-4 Part 3)', () => {
   is(run(`const m = new Map(); m.set('x', 1n); return -m.get('missing')`), NaN)
   is(run(`const m = new Map(); m.set('x', 1n); return ~m.get('missing')`), -1)
   is(typeof run(`const m = new Map(); m.set('x', 1n); return -m.get('missing')`), 'number')
-  // present-key KNOWN-FAIL (audit #9 P0-1 adaptation, see comment above): JS gives -5n/~5n===~5n
-  // true; jz now gives a misdecoded Number -5/-6, so the strict-eq reads false.
-  is(run(`const m = new Map(); m.set('x', 5n); return -m.get('x')`), -5)
-  is(run(`const m = new Map(); m.set('x', 5n); return -m.get('x') === -5n`), false)
-  is(run(`const m = new Map(); m.set('x', 5n); return ~m.get('x')`), -6)
-  is(run(`const m = new Map(); m.set('x', 5n); return ~m.get('x') === ~5n`), false)
+  // present-key: value-materialization is KNOWN-FAIL (Slice 4 re-verified —
+  // NaN/0, not -5/-6, see comment above); the strict-eq comparisons are a
+  // NEW regression pin (Slice 4 flip: false → true, matching JS).
+  is(run(`const m = new Map(); m.set('x', 5n); return -m.get('x')`), NaN)
+  is(run(`const m = new Map(); m.set('x', 5n); return -m.get('x') === -5n`), true)
+  is(run(`const m = new Map(); m.set('x', 5n); return ~m.get('x')`), 0)
+  is(run(`const m = new Map(); m.set('x', 5n); return ~m.get('x') === ~5n`), true)
 })
 test('dict: unary "-"/"~" on a DYNAMIC-key absent read decays to NUMBER NaN/-1 (audit-#8 P0-4 Part 3, dict sibling)', () => {
   is(jz(`export let f = (k1, k2) => { const d = {}; d[k1] = 1n; return -d[k2] }`).exports.f('x', 'missing'), NaN)
   is(jz(`export let f = (k1, k2) => { const d = {}; d[k1] = 1n; return ~d[k2] }`).exports.f('x', 'missing'), -1)
-  // present-key KNOWN-FAIL (audit #9 P0-1 adaptation, see comment on the Map test above)
-  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return -d[k1] }`).exports.f('x'), -5)
-  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return -d[k1] === -5n }`).exports.f('x'), false)
-  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return ~d[k1] }`).exports.f('x'), -6)
-  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return ~d[k1] === ~5n }`).exports.f('x'), false)
+  // present-key: same Slice 4 re-verification as the Map test above.
+  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return -d[k1] }`).exports.f('x'), NaN)
+  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return -d[k1] === -5n }`).exports.f('x'), true)
+  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return ~d[k1] }`).exports.f('x'), 0)
+  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return ~d[k1] === ~5n }`).exports.f('x'), true)
 })
 test('dict: unary "-" on a LITERAL-key absent read (already sound — not this bug, structural control)', () => {
   is(run(`const d = {}; d['x'] = 1n; return -d['missing']`), NaN)
@@ -509,4 +523,109 @@ test('single-call-site "+" param-hop: sibling carrier-domain producers (regressi
     const g = (v) => v + 1
     export let f = (k) => { const a = [1, 2, 3]; return g(a[k]) }
   `, { jzify: true }).exports.f(10), NaN)
+})
+
+// Slice 4 (represented-maybe-undefined-design.md §8, VT re-enablement) —
+// dictValueKindOf/mapValueKindOf wired back into VT['[]']/VT['.']/VT['()'].
+// §5 criterion 1's own acceptance shape: a census claim reaching a
+// NON-chokepoint consumer through 2+ hops (decl → arg → return → use), not
+// just the single-hop repros earlier slices pinned.
+test('Slice 4: multi-hop (decl -> call-arg -> return -> use) arithmetic stays JS-correct', () => {
+  const f = jz(`
+    const inner = (v) => v
+    const relay = (v) => inner(v)
+    export let f = (k) => {
+      const m = new Map(); m.set('a', 1)
+      let x = m.get(k)
+      let y = relay(x)
+      return y + 1
+    }
+  `, { jzify: true }).exports.f
+  is(f('missing'), NaN)
+  is(f('a'), 2)
+})
+
+// Slice 4 IDENTITY-fold acceptance, live for the first time (Slices 1-3 were
+// representationally complete but inert here per their own honest-boundary
+// notes — `val` never settled non-null at any hop while VT stayed dormant).
+// Decl/param/capture-hop `=== undefined` on a bare name that traces to a
+// census read.
+test('Slice 4: decl/param/capture-hop identity compare (`=== undefined`) on a census-traced bare name', () => {
+  const decl = jz(`export let f = (k) => { const m = new Map(); m.set('a', 1); let x = m.get(k); return x === undefined ? 1 : 0 }`, { jzify: true }).exports.f
+  is(decl('missing'), 1)
+  is(decl('a'), 0)
+  const param = jz(`
+    const g = (v) => v === undefined ? 1 : 0
+    export let f = (k) => { const m = new Map(); m.set('a', 1); return g(m.get(k)) }
+  `, { jzify: true }).exports.f
+  is(param('missing'), 1)
+  is(param('a'), 0)
+  const capture = jz(`export let f = (k) => { const m = new Map(); m.set('a', 1); let x = m.get(k); const h = () => x === undefined ? 1 : 0; return h() }`, { jzify: true }).exports.f
+  is(capture('missing'), 1)
+  is(capture('a'), 0)
+})
+
+// Slice 4 gap found LIVE while walking §5 criterion 3's chokepoint-composition
+// check (kind.js `callResultMayBeUndefinedKind`, new): a call to a
+// non-inlined user function whose whole-program return-kind fixpoint
+// (narrow.js narrowValResults, Slice 2) settled BOTH a definite `valResult`
+// kind AND `valResultMayBeUndefined` is a census fact one call-hop removed.
+// Before this fix, `g(k) === undefined` constant-folded to the SAME wrong
+// boolean for a present AND an absent key (kind-traits.js calleeValType
+// returns `f.valResult` with no accompanying mayBeUndefined signal, and
+// nothing consulted `valResultMayBeUndefined` — it existed only for
+// ctx.inspect, per reps.js's own doc comment). `g` must NOT be a
+// single-expression arrow here — those inline before this check ever runs,
+// which is exactly why this class survived the multi-hop test above
+// unnoticed (relay/inner there both got inlined into a direct `.get()` node).
+test('Slice 4: call-result identity compare (`g(k) === undefined`) through a non-inlined callee (regression pin, found live)', () => {
+  const f = jz(`
+    const m = new Map(); m.set('a', 1)
+    const g = (k) => { let s = 0; for (let i = 0; i < 1; i++) s = s + i; return m.get(k) }
+    export let f = (k) => g(k) === undefined ? 1 : 0
+  `, { jzify: true }).exports.f
+  is(f('missing'), 1)
+  is(f('a'), 0)
+})
+
+// Slice 4 gap #2, found live continuing the SAME investigation: the
+// ARITHMETIC sibling of the identity-fold gap above. `g(k) + 1` through a
+// non-inlined callee whose result may be undefined silently returned JS
+// `undefined` instead of `NaN` (ir.js toNumF64's `vt === VAL.NUMBER &&
+// censusMaybeUndefined(node)` gate, :999-1012 — calleeValType already
+// trusted `f.valResult` unconditionally; the fix above made
+// censusMaybeUndefined see the call-result claim, but toNumF64's own
+// `coerceNullishToNum` wrapper wasn't reachable through it yet either).
+test('Slice 4: call-result arithmetic (`g(k) + 1`) through a non-inlined callee is JS-correct (regression pin, found live)', () => {
+  const f = jz(`
+    const m = new Map(); m.set('a', 1)
+    const g = (k) => { let s = 0; for (let i = 0; i < 1; i++) s = s + i; return m.get(k) }
+    export let f = (k) => g(k) + 1
+  `, { jzify: true }).exports.f
+  is(f('missing'), NaN)
+  is(f('a'), 2)
+})
+
+// Slice 4 SOUNDNESS regression found and fixed while landing the two pins
+// above: `coerceNullishToNum` (ir.js) is documented as requiring its input
+// be side-effect-free — true for the ORIGINAL dict/Map-read and bare-name
+// census arms (a pure read), but the NEW call-result arm can carry a
+// genuinely side-effecting call (a captured-mutation counter, here). Before
+// the fix (hoist into a temp before coerceNullishToNum's triplicating
+// cloneIR, ir.js toNumF64), `g(k) + 1` where `g` mutates a captured local as
+// a side effect ran `g` THREE TIMES instead of once — count/total-calls came
+// out at 3x the correct value. This is the exact `audit-#8 P0-2`/e79b0647
+// captured-mutation class, one call-hop further out.
+test('Slice 4: call-result arithmetic does not triplicate a captured-mutation side effect (soundness regression pin)', () => {
+  const f = jz(`
+    export const main = (k) => {
+      let count = 0
+      const xs = [1, 2, 3, 4, 5]
+      const at = (i) => { count = count + 1; return xs[i] }
+      let s = 0
+      for (let i = 0; i < xs.length; i++) s += at(i)
+      return s * 1000 + count
+    }
+  `, { jzify: true }).exports.main
+  is(f(0), 15005, 's=15 (sum of xs), count=5 (one increment per call) — not 15015 (count tripled)')
 })
