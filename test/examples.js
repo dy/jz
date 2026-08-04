@@ -300,20 +300,23 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
 });
 
 // Pure-function inline into the per-pixel-color lift: plasma's per-pixel value is fbm(...) ×3 (a
-// 5-octave sine helper). foldStrDispatchF64 first removes the dead string-dispatch from $fbm's `+`
-// (its params are raw-f64, so the is-string branch can never fire), making $fbm pure; then liftPPC
-// inlines the call — substituting lifted lane args for params and lifting the body — so the sines
-// become $math.sin2. BIT-EXACT (extract-repack mirror + lane-parallel arithmetic).
+// 5-octave sine helper). foldStrDispatchF64 removes the dead string-dispatch from a PRIVATE CLONE of
+// $fbm's `+` (its params are raw-f64 there, so the is-string branch can never fire), making the
+// clone pure and registering it in pureFuncMap; liftPPC then inlines from that clone — substituting
+// lifted lane args for params and lifting the body — so the sines become $math.sin2. BIT-EXACT
+// (extract-repack mirror + lane-parallel arithmetic).
+//
+// The REAL, standalone `$fbm` emitted into the module is left UNTOUCHED by the fold (audit fix,
+// 2026-08 — folding it in place used to strip its live runtime string/atom dispatch too, unsound:
+// under jz's NaN-boxing ABI a bare `(param f64)` can carry a string/undefined/atom exactly like a
+// real number, so "declared f64" alone never proves the guard dead for $fbm's own ordinary callers).
+// It may legitimately still contain `__is_str_key` — that's not tested here; what matters is the
+// lift itself (asserted above) and bit-exactness against the scalar path (below).
 test('example: plasma fbm inlines into the per-pixel-color lift (sin → sin2)', () => {
     const src = fs.readFileSync(new URL('../examples/plasma/plasma.js', import.meta.url), 'utf8');
     const wat = jz.compile(src, { ...OPT, wat: true });
     ok((wat.match(/f64x2\./g) || []).length > 80, `plasma vectorizes (${(wat.match(/f64x2\./g) || []).length} f64x2)`);
     ok((wat.match(/\$math\.sin2/g) || []).length >= 6, 'fbm sines lift to $math.sin2');
-    // foldStrDispatchF64 removed $fbm's dead `+` string-dispatch (a string-dispatch $fbm would be
-    // impure ⇒ never inlined ⇒ no sin2). Other functions may keep legit polymorphic dispatch.
-    const fbmStart = wat.indexOf('(func $fbm');
-    const fbmRegion = wat.slice(fbmStart, wat.indexOf('(func ', fbmStart + 10));
-    ok(!/__is_str_key/.test(fbmRegion), '$fbm is string-dispatch-free (foldStrDispatchF64)');
     const run = (opts) => { const { exports } = jz(src, opts); const px = exports.resize(48, 32); for (let f = 0; f < 4; f++) exports.frame(f * 0.1); return [...px]; };
     const simd = run({ ...OPT }), scal = run({ ...OPT, noSimd: true });
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'plasma fbm-inline bit-exact vs scalar (1536 px)');

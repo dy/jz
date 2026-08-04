@@ -445,36 +445,68 @@ test('Slice 3: decl/param/capture-hop arithmetic already JS-correct (regression 
   is(captureMinus('a'), 0)
 })
 
-// KNOWN-FAIL, DISCOVERED THIS SESSION, OUT OF SCOPE for this design (a
-// watr-optimizer soundness bug, not a missing REP consultation — banked here
-// per this file's own "pin the current wrong value" convention, e.g. the
-// BigInt-unary present-key pin above). `const g = (v) => v + 1` called with
-// a Map absent-key argument through a SEPARATE (non-inlined) function returns
-// `undefined` instead of `NaN`. Root-caused via direct trace (`optimize:false`
-// vs default): emit.js's `+` handler correctly emits the SAFE runtime-
-// dispatch form (`__is_str_key` guard + the NaN self-compare atom ladder,
-// same pattern module/number.js's isNaN fix and this file's audit-#8 P0-3
-// already rely on) — confirmed byte-for-byte present in the PRE-optimize
-// WAT. The POST-optimize (default) module has that guard entirely gone,
-// collapsed to a bare unguarded `f64.add` — the watr/jz optimizer (src/
-// optimize/*.js or the watr package's own optimizeFunc, not yet bisected)
-// eliminates the NaN self-compare + string-key guard for this single-call-
-// site trivial-function shape, wrongly treating the param as provably
-// non-string/non-NaN. Does NOT reproduce for '-'/'*'/other non-'+' operators
-// (no alternate string-concat fast path to eliminate) nor for the decl-hop/
-// capture-hop shapes above (same '+' operator, different function shape —
-// not yet isolated further). Independent of every REP field this design
-// adds or consults — `optimize:false` already returns the correct value
-// with ZERO source changes. Candidate for a dedicated future audit
-// (bisect watr's optimizeFunc single-callee specialization / dead-branch
-// elimination against this exact repro); NOT attempted here — fixing a
-// shared WASM-level optimizer pass is a different blast radius than a
-// REP-consultation chokepoint fix and was never this slice's mandate.
-test('KNOWN-FAIL: single-call-site "+" param-hop miscompile is a watr-optimizer bug, not a mayBeUndefined gap', () => {
+// FIXED (audit, 2026-08): was KNOWN-FAIL — `const g = (v) => v + 1` called with a
+// Map absent-key argument through a SEPARATE (non-inlined) function returned
+// `undefined` instead of `NaN`. Root-caused past the earlier trace (`optimize:false`
+// vs default byte-for-byte diff showed emit.js's `+` handler correctly emitting the
+// SAFE runtime-dispatch form — `__is_str_key` guard + the NaN self-compare atom
+// ladder — and the POST-optimize module having it collapsed to a bare `f64.add`):
+// the eliminating pass is `foldStrDispatchF64` (src/optimize/index.js), gated on
+// `vectorizeLaneLocal` (default-on at level 2+, so it fired even with `watr:false`
+// — confirmed NOT a watr-package bug via per-pass bisection over every PASS_NAMES
+// entry against `{level:2, watr:false}`). Its "proof" that a `(param $v f64)` can
+// never carry a string/atom NaN-box is FALSE under jz's NaN-boxing ABI — every
+// dynamically-typed value (string, undefined, null, a bool atom, a boxed object)
+// is carried in an f64-typed local exactly like a genuine number, so a bare
+// declared-f64 param proves nothing about its runtime domain. The fold's actual
+// intended and ONLY sound use is `pureFuncMap`-driven inline substitution into a
+// per-pixel-color SIMD lane loop (tryPerPixelColor, src/optimize/vectorize.js),
+// where the substituted argument IS independently proven numeric (a per-lane
+// typed-array read) — but it ran on (and mutated in place) the real, standalone,
+// module-emitted function body too, both via `buildPureFuncMap` (src/wat/
+// assemble.js) building `pureFuncMap` by folding `funcs` entries directly, and via
+// a second, redundant direct call inside `optimizeFunc` before `vectorizeLaneLocal`.
+// FIX: `buildPureFuncMap` now folds a deep CLONE per candidate (the clone alone
+// populates `pureFuncMap`, used only by the lane-proven inline path); the second
+// direct call inside `optimizeFunc` is removed outright (no lane-proven substitution
+// context exists there — it was folding the callee's own declaration, the same
+// unsound premise). Sibling shapes verified same-fix (see next test): dict absent-
+// key param-hop, double param-hop, an in-loop param-hop, and an out-of-bounds array
+// read all through the identical `(v) => v + 1`-shaped single-call-site guard.
+test('single-call-site "+" param-hop: absent Map key through a separate callee is JS-correct (regression pin, was KNOWN-FAIL)', () => {
   const paramPlus = jz(`
     const g = (v) => v + 1
     export let f = (k) => { const m = new Map(); m.set('a', 1); return g(m.get(k)) }
   `, { jzify: true }).exports.f
-  is(paramPlus('missing'), undefined)   // JS: NaN — see comment above
-  is(paramPlus('a'), 2)                 // present-key stays correct
+  is(paramPlus('missing'), NaN)   // JS: undefined + 1 === NaN
+  is(paramPlus('a'), 2)           // present-key stays correct
+})
+
+// Sibling sweep for the SAME foldStrDispatchF64/pureFuncMap fix (audit, 2026-08):
+// every carrier-domain producer feeding the identical single-call-site "+"
+// param-hop guard shape, not just Map.get. All were unsound before the fix
+// (foldStrDispatchF64 mutated the real function regardless of producer) and are
+// JS-correct after it (regression pins).
+test('single-call-site "+" param-hop: sibling carrier-domain producers (regression pins)', () => {
+  // dict (not Map) absent key
+  is(jz(`
+    const g = (v) => v + 1
+    export let f = (k) => { const d = {}; d['a'] = 1; return g(d[k]) }
+  `, { jzify: true }).exports.f('missing'), NaN)
+  // two-hop param chain (g -> h, both single-call-site)
+  is(jz(`
+    const h = (v) => v + 1
+    const g = (v) => h(v)
+    export let f = (k) => { const m = new Map(); m.set('a', 1); return g(m.get(k)) }
+  `, { jzify: true }).exports.f('missing'), NaN)
+  // param used inside the callee's OWN loop, not just a leaf expression
+  is(jz(`
+    const g = (v) => { let s = 0; for (let i = 0; i < 3; i++) { s = s + v }; return s }
+    export let f = (k) => { const m = new Map(); m.set('a', 1); return g(m.get(k)) }
+  `, { jzify: true }).exports.f('missing'), NaN)
+  // out-of-bounds array read
+  is(jz(`
+    const g = (v) => v + 1
+    export let f = (k) => { const a = [1, 2, 3]; return g(a[k]) }
+  `, { jzify: true }).exports.f(10), NaN)
 })

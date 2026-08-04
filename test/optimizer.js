@@ -4368,10 +4368,20 @@ test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-co
       return (child + 1 < n && a[child] < a[child + 1]) ? child + 1 : child
     }`
   const jsPick = (n, child) => (child + 1 < n && heap[child] < heap[child + 1]) ? child + 1 : child
+  // `child` is an EXPORTED param — a JS caller can pass it any value (a string, undefined,
+  // …), so `child + 1`/`child < n` genuinely runtime-dispatch on its NaN-boxed carrier
+  // (audit fix, 2026-08: foldStrDispatchF64 used to unsoundly strip that live dispatch off
+  // the real emitted function, which is what let this pin assert "zero `select` ANYWHERE in
+  // the function" — the atom-decode ladder that dispatch legitimately lowers to now
+  // resurfaces as nested `select`s of its own, unrelated to the select-gate veto under test
+  // here). Scope the check to the function's own top-level return expression — that's the
+  // one node the select-gate veto actually governs (outer ternary → if/else, not select).
+  const topExpr = (fn) => { const last = fn[fn.length - 1]; return Array.isArray(last) && last[0] === 'return' ? last[1] : last }
   for (const optimize of [2, 3, 'speed']) {
     const tree = parse(pickChild, optimize)
     const fn = findFunc(tree, '$f') || findFunc(tree, '$f$exp')
-    is(count(fn, n => n[0] === 'select'), 0, `O${JSON.stringify(optimize)}: nested-if load-bearing flag never selects`)
+    const top = topExpr(fn)
+    is(Array.isArray(top) && top[0], 'if', `O${JSON.stringify(optimize)}: nested-if load-bearing flag never selects`)
     ok(count(fn, n => n[0] === 'if') >= 1, `O${JSON.stringify(optimize)}: compiles as if/else`)
   }
   for (const optimize of [false, 2, 3, 'speed']) {

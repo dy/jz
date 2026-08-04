@@ -3212,6 +3212,15 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
  * Called in the 'post' phase of optimizeFunc, before vectorizeLaneLocal, so the
  * cleaned IR is what the vectorizer pattern-matches.
  */
+// Deep-clone an IR node (nested arrays of strings/numbers) — used to give
+// foldStrDispatchF64 (below) a private copy to mutate, so its guard-stripping
+// never leaks into the real, standalone-callable function it was copied from
+// (see foldStrDispatchF64's own soundness note: the fold is sound ONLY for a
+// call site whose argument is independently proven numeric by its OWN context
+// — e.g. a per-lane value read straight off a typed array inside a proven f64
+// SIMD context — never for the callee's bare declared param type).
+const cloneIR = (n) => Array.isArray(n) ? n.map(cloneIR) : n
+
 // Build the "pure for SIMD lane-inline" map consumed by tryPerPixelColor's Phase-2
 // user-function inline (cfg._pureFuncMap). A user function qualifies when its body has
 // no side effects: no global.set, no memory store, and no call except $math.* / $__to_num
@@ -3219,6 +3228,18 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
 // (idempotent) so the purity check sees the folded body — dead __is_str_key dispatch on a
 // proven-f64 param would otherwise read as impure. Built in the emit phase (optimizeModule),
 // BEFORE the per-function lane vectorizer runs, so callee bodies are still clean scalar.
+//
+// SOUNDNESS (audit fix, 2026-08): folds a CLONE, never `fn` itself. `fn` is the real,
+// shared function object also emitted verbatim for its own ordinary (non-inlined) call
+// sites — under jz's NaN-boxing ABI EVERY dynamically-typed value (string, undefined,
+// null, a boolean atom, a boxed object) is carried in an `f64`-typed local exactly like
+// a genuine number; a bare `(param $x f64)` proves nothing about $x's runtime domain.
+// foldStrDispatchF64's "proven rawF64" claim is sound only for the SUBSTITUTED argument
+// at a `pureFuncMap`-driven inline site (gated to a proven-numeric f64 SIMD lane
+// context elsewhere in the vectorizer) — never for the callee's own declaration. Folding
+// `fn` in place used to strip the runtime string/atom dispatch from `fn`'s real,
+// standalone body too, so an ordinary call passing e.g. a Map's absent-key `undefined`
+// sentinel silently got treated as a plain float (`param-hop "+" miscompile`, dyn-keys.js).
 export function buildPureFuncMap(funcs) {
   const pureFuncMap = new Map()
   const hasSideEffect = (node) => {
@@ -3234,12 +3255,13 @@ export function buildPureFuncMap(funcs) {
     if (!Array.isArray(fn) || fn[0] !== 'func') continue
     const name = fn[1]
     if (typeof name !== 'string' || name.startsWith('$math.') || name.startsWith('$__')) continue
-    foldStrDispatchF64(fn)
-    const bodyStart = findBodyStart(fn)
+    const clone = cloneIR(fn)
+    foldStrDispatchF64(clone)
+    const bodyStart = findBodyStart(clone)
     if (bodyStart < 0) continue
     let pure = true
-    for (let i = bodyStart; i < fn.length; i++) if (hasSideEffect(fn[i])) { pure = false; break }
-    if (pure) pureFuncMap.set(name, fn)
+    for (let i = bodyStart; i < clone.length; i++) if (hasSideEffect(clone[i])) { pure = false; break }
+    if (pure) pureFuncMap.set(name, clone)
   }
   return pureFuncMap
 }
@@ -3759,11 +3781,19 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
     // Vectorization is jz LOWERING — it always runs pre-watr (never in a post-watr
     // re-optimize). watr is the sole optimizer that runs after, and it preserves the
     // v128 the lift produces. `phase === 'post'` is now vestigial (no post caller).
-    // Phase 1: fold dead string-dispatch blocks on proven-f64 locals BEFORE
-    // the vectorizer pattern-matches — dead __is_str_key calls in $fbm-style
-    // functions (param f64 + op f64) block liftPPC from recognizing them as pure.
+    // foldStrDispatchF64(fn) USED to run here too ("Phase 1: fold dead string-dispatch
+    // blocks on proven-f64 locals before the vectorizer pattern-matches") — removed
+    // (audit fix, 2026-08): `fn` here is the real, standalone-callable function, and
+    // foldStrDispatchF64's "proven rawF64 param" claim is unsound for a bare declared
+    // param (see buildPureFuncMap's note above — under NaN-boxing an f64 param can
+    // carry a string/undefined/atom just as validly as a real number). Folding `fn`
+    // directly stripped its own live runtime string/atom dispatch, not just a copy
+    // used for proven-numeric inline substitution — the `g(m.get(missingKey))`
+    // "+"-miscompile class. The pureFuncMap-driven inline path (buildPureFuncMap,
+    // above in assemble.js) still folds a private CLONE for the one context where the
+    // substituted argument is independently proven numeric (a per-lane typed-array
+    // read) — that's the only place this fold is sound.
     if (!cfg || cfg.unswitchTypedParamLoop !== false) unswitchTypedParamLoop(fn)
-    foldStrDispatchF64(fn)
     if (vectorizeLaneLocal(fn, {
       multiAcc: cfg.reduceUnroll === true,
       relaxedFma: cfg.relaxedSimd === true,

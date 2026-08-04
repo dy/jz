@@ -4,6 +4,113 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, optimizer guard-elimination soundness bug FIXED — the
+## "param-hop `+` miscompile" pinned at 05729912, root-caused past bisect,
+## sibling class swept)
+
+Fixed the KNOWN-FAIL banked at 05729912 (test/dyn-keys.js): `const g = (v) =>
+v + 1; export let f = (k) => g(m.get(k))` on an absent Map key returned
+`undefined` instead of JS's `NaN`.
+
+BISECT: reproduced both sides (optimize:false correct — emit.js's `+`
+handler emits the safe runtime-dispatch form, `__is_str_key` guard + NaN
+self-compare atom ladder, byte-for-byte verified; default wrong — the
+guard is gone, collapsed to a bare `f64.add`). Per-pass sweep of every
+PASS_NAMES entry against `{level:2, watr:false}` (isolating jz's own
+passes from watr's tail) still reproduced the bug with EVERY individual
+pass turned off except one: `vectorizeLaneLocal`. NOT a watr-package bug.
+
+ROOT CAUSE: `foldStrDispatchF64` (src/optimize/index.js, run whenever
+`cfg.vectorizeLaneLocal` is on — default from level 2) treats any
+`(param $x f64)` as "provably never a string/atom NaN-box" and, on that
+claim, deletes BOTH the `__is_str_key` string-dispatch guard AND (via its
+`unwrapGuard` helper) the NaN self-compare atom-decode ladder that
+correctly ToNumber-coerces `undefined`/`null`/`true`/`false` carriers. The
+premise is false under jz's NaN-boxing ABI: every dynamically-typed value
+(string, undefined, null, a bool atom, a boxed object) is carried in an
+f64-typed local exactly like a genuine number — "declared f64" proves
+NOTHING about a param's runtime domain; it's the ABI's universal carrier
+type, not a numeric-only type. The mere presence of this guard shape in
+emitted WAT is itself proof jz's own front-end kind system already could
+NOT establish NUMBER for that value (emit.js only takes this path when
+`vtA == null || vtB == null`) — a later, strictly-less-informed WAT pass
+re-deriving "must be numeric" from the bare WASM type is unsound on its
+face.
+
+SCOPE LEAK (the actual bug, not just the false premise): the fold's real,
+sound use is `pureFuncMap`-driven inline SUBSTITUTION into a per-pixel-
+color SIMD lane loop (tryPerPixelColor/liftPPC, src/optimize/vectorize.js)
+— there, the substituted argument at the inline site genuinely IS numeric
+(a per-lane typed-array read), independent of the callee's own param
+declaration. But the fold ran on the REAL, shared, standalone-callable
+function object in TWO places: `buildPureFuncMap` (src/wat/assemble.js)
+mutated every candidate `fn` in `allFuncs` in place while building the
+map, and `optimizeFunc` (src/optimize/index.js) called it AGAIN directly
+on `fn` before `vectorizeLaneLocal(fn,…)`, unconditionally, regardless of
+whether that function even had a loop to vectorize. Both corrupted the
+function's own ordinary (non-inlined) call sites too.
+
+FIX (src/optimize/index.js):
+  - `buildPureFuncMap` now deep-clones each candidate (`cloneIR`, a plain
+    recursive array clone) BEFORE calling `foldStrDispatchF64`, and stores
+    the folded CLONE in `pureFuncMap` — the real `fn` in `allFuncs` (and
+    thus the real emitted module) is never mutated.
+  - Removed the second, redundant direct `foldStrDispatchF64(fn)` call
+    inside `optimizeFunc` (no lane-proven substitution context exists
+    there at all — it was folding the callee's bare declaration, the
+    identical unsound premise).
+
+CLASS SWEEP (test/dyn-keys.js, same fix covers all — one shared fold/one
+shared call-site pair): dict absent-key through the identical param-hop
+shape, a two-hop param chain (g→h), the param used inside the callee's
+OWN loop (not just a leaf expression), and an out-of-bounds array read —
+all wrong before the fix (silently treated as numeric), all JS-correct
+(`NaN`) after. Flipped the KNOWN-FAIL to a regression pin; added the
+sibling sweep as a second pin.
+
+COLLATERAL (expected, not a regression): test/examples.js's plasma-fbm
+test asserted the REAL, standalone `$fbm` function's emitted WAT was
+string-dispatch-free — that assertion was pinning the OLD unsound
+over-mutation as a feature. Updated: the SIMD lift (397 f64x2, ≥6
+`$math.sin2` calls) and bit-exactness vs the scalar path still hold
+(the fold still fires on the CLONE `pureFuncMap` uses for inlining); the
+real `$fbm` legitimately keeps its guard now, untested (correct, not
+checked, since a caller could reach it directly with a non-numeric
+value). test/optimizer.js's "select-gate FLAG veto" pin asserted ZERO
+`select` anywhere in a function whose EXPORTED `child` param — reachable
+by any JS caller with any value — genuinely needs the same live runtime
+dispatch; the old fold's over-mutation of the real function was silently
+masking that live dispatch, which is exactly this bug's class hiding
+inside an unrelated pin. Rescoped the assertion to the function's actual
+top-level return node (what the select-gate veto under test governs),
+which still holds cleanly; the resurfaced (correct, load-bearing) atom-
+ladder selects deeper in the tree are no longer conflated with it.
+
+FUZZ GENERATOR GAP (noted per the task's own prompt): test/fuzz.js's
+generators are exclusively Float64Array/Int32Array/Uint8Array-typed —
+every generated value is a genuine number by construction. None of the
+seven fuzz categories ever route a Map/dict/array-hole `undefined` (or
+any other carrier-domain value) through a user-defined helper function
+parameter — exactly the "carrier-through-call" shape this bug lived in.
+2000×4 found zero divergences, unsurprising: the generator structurally
+cannot reach this class. Worth a follow-up generator extension (a
+`Map.get`/hole producer feeding a small helper function call) if this
+family is to be fuzz-caught rather than hand-found again.
+
+GATES: full 88-file battery, 15 foreground chunks of ≤6 — 0 failures
+(one pre-existing WAT-shape pin needed rescoping, see above, not a new
+failure); dyn-keys.js 24/24 (68 assertions, incl. the flipped pin + sibling
+sweep); examples.js 22/22; optimizer.js 214/214; kernel-parity 33/33
+byte-identical; kernel-oracle 11/11 (451 assertions); perf-ratchet 10/10,
+every category +0 delta (this fold never fired in the ratchet/size-sweep
+kernels — no cost to justify); selfhost.js 21/21; fuzz 2000×4 (seeds
+1..2000, opt {0,1,2,3}, 30173 inputs compared) — zero divergence; size
+sweep geomean jz/AS = 1.055× (unchanged from the 1.0550 baseline); fresh
+`npm run build` ×2 — dist/jz.js, dist/jz.wasm, dist/interop.js byte-
+identical (sha256) both rounds, native AND the self-host kernel leg.
+
+Commit: local only (not pushed).
+
 ## Status (2026-08-04, represented-maybe-undefined Slice 3 landed —
 ## chokepoint sweep completion, .work/represented-maybe-undefined-design.md §11)
 
