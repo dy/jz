@@ -2409,23 +2409,19 @@ test('dict-value census: an unresolvable write poisons the fact', () => {
     '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
 })
 
-// POSITIVE WIN, reconstructed (represented-maybe-undefined-design.md §8
-// Slice 4 — the census consumer wiring this whole file's "RENAMED" comments
-// below were waiting on). The ORIGINAL 1db8e55e/2b62b91b-era "consumer
-// wiring" pins (dict read vs NUMBER literal, Map .get() vs NUMBER literal)
-// turned out NOT to distinguish the consumer at all (see the very next test's
-// own comment — cmpOp's relational family takes the raw f64 compare whenever
-// the OTHER side is a proven NUMBER LITERAL, census or no census). THIS shape
-// does distinguish it: `+`'s generic dynamic dispatch (emit.js) must keep a
-// `$__str_concat` fallback arm for any UNPROVEN operand (it could dynamically
-// be a string at runtime); once dictValueKindOf claims the exact NUMBER kind
-// (Slice 4), STRING is ruled out statically and the whole arm disappears —
-// confirmed empirically (not `$__to_num`, which turns out to be absent from
-// BOTH the proven and generic shapes here — the generic dynamic-value ladder
-// inlines its own atom checks rather than calling the stdlib helper; a
-// negative control below on an ESCAPING (nameEscapes-gated-off) receiver
-// pins that the fallback arm reappears exactly when the census must decline).
-test('dict-value census: consumer wiring — proven-NUMBER dict read drops the `+` STRING-coercion arm (Slice 4 positive win + escape-gate negative control)', () => {
+// RE-REVERTED (represented-maybe-undefined-design.md §14, audit #10 — Slice
+// 4's VT['[]']/['.']/['()'] wiring this "positive win" pin proved is dormant
+// again). Was: dictValueKindOf claiming the exact NUMBER kind at `OPCODE[nm]`
+// dropped `+`'s `$__str_concat` STRING-coercion fallback arm entirely for a
+// non-escaping receiver, kept for an escaping one (nameEscapes gate). With
+// the census dormant, `OPCODE[nm]`'s static kind is unproven regardless of
+// escape status, so the fallback arm is present in BOTH shapes now —
+// verified empirically, not assumed. Kept as a plain regression pin on the
+// generic dynamic `+` dispatch's own (independently sound) codegen shape,
+// same "RENAMED, no longer distinguishes the consumer" treatment the
+// audit-#9 revert already applied to this file's dict-read-vs-literal
+// sibling below.
+test('dict-value census: unproven dict read keeps the `+` STRING-coercion arm regardless of escape status (regression pin, was Slice 4 positive win)', () => {
   const src = `
     export let OPCODE = {}, code = 0
     export let register = (nm) => { OPCODE[nm] = code++ }
@@ -2434,7 +2430,7 @@ test('dict-value census: consumer wiring — proven-NUMBER dict read drops the `
   `
   const wat = jz.compile(src, { wat: true })
   const body = wat.slice(wat.indexOf('$bigOp'))
-  ok(!body.includes('__str_concat'), 'non-escaping: dictValueKindOf claims NUMBER — the STRING-coercion arm is unreachable, dropped entirely')
+  ok(body.includes('__str_concat'), 'non-escaping: census dormant — dictValueKindOf is never consulted by VT, the STRING-coercion arm stays live')
   is(run(src).bigOp('add'), 1, 'functional result unchanged (0 + 1)')
 
   const escapingSrc = `
@@ -2448,8 +2444,8 @@ test('dict-value census: consumer wiring — proven-NUMBER dict read drops the `
   const watEsc = jz.compile(escapingSrc, { wat: true })
   ok(ctx.types.nameEscapes.has('OPCODE'), 'OPCODE is passed to leak() — escapes')
   const bodyEsc = watEsc.slice(watEsc.indexOf('$bigOp'))
-  ok(bodyEsc.includes('__str_concat'), 'escaping: dictValueKindOf must decline (nameEscapes gate) — the generic dynamic `+` still needs the STRING-coercion arm')
-  is(run(escapingSrc).bigOp('add'), 1, 'functional result still correct via the generic (gated-off) path')
+  ok(bodyEsc.includes('__str_concat'), 'escaping: same shape as non-escaping now — the generic dynamic `+` needs the STRING-coercion arm either way')
+  is(run(escapingSrc).bigOp('add'), 1, 'functional result still correct via the generic path')
 })
 
 // RENAMED from "consumer wiring" (audit #9 P0-1, .work/todo.md "audit-#9
@@ -2775,15 +2771,15 @@ test('map-value census: soundness carve-out — an unregistered key still identi
   is(has('zz'), true, 'unregistered key still observes undefined at runtime — the fold must not fire')
 })
 
-// RE-RENAMED back to a real consumer-wiring pin (represented-maybe-undefined-
-// design.md §8 Slice 4 — mapValueKindOf wired into VT['()'] again, this time
-// under the mayBeUndefined + nameEscapes protections §5 required). nameEscapes
-// itself is unconditionally checked (both cases), plus — NEW — the actual
-// codegen-shape consequence: the non-escaping receiver now gets the same
-// __to_num-skipping arithmetic win the dict census pin above demonstrates;
-// the escaping receiver does NOT (criterion 4 — the escape gate must hold for
-// the RE-ENABLED consumer, not just leave the fact computed-but-unused).
-test('map-value census: nameEscapes distinguishes a non-escaping Map from an escaping one (Slice 4 positive win + escape-gate negative control)', () => {
+// RE-RE-REVERTED (represented-maybe-undefined-design.md §14, audit #10 —
+// mapValueKindOf's own VT['()'] wiring, Slice 4, is dormant again). nameEscapes
+// itself is still unconditionally checked (both cases — the fact is computed
+// regardless), but the codegen-shape consequence is GONE: with the census
+// dormant, neither the non-escaping nor the escaping receiver gets the
+// `+`-arm-elimination win — both keep the generic dynamic dispatch's own
+// STRING-coercion fallback. Same "RENAMED, no longer distinguishes" treatment
+// as this file's dict-value-census sibling above.
+test('map-value census: nameEscapes is still computed but no longer changes `+` codegen for either receiver (regression pin, was Slice 4 positive win)', () => {
   const nonEscaping = `
     export let OPCODE = new Map(), code = 0
     export let register = (nm) => { OPCODE.set(nm, code++) }
@@ -2793,7 +2789,7 @@ test('map-value census: nameEscapes distinguishes a non-escaping Map from an esc
   const watNon = jz.compile(nonEscaping, { wat: true })
   is(ctx.types.nameEscapes.has('OPCODE'), false, 'OPCODE is never read in a value position — does not escape')
   const bodyNon = watNon.slice(watNon.indexOf('$bigOp'))
-  ok(!bodyNon.includes('__str_concat'), 'non-escaping: mapValueKindOf claims NUMBER — the `+` STRING-coercion arm is unreachable, dropped entirely')
+  ok(bodyNon.includes('__str_concat'), 'non-escaping: census dormant — mapValueKindOf is never consulted by VT, the STRING-coercion arm stays live')
   is(run(nonEscaping).bigOp('add'), 1, 'functional result unchanged')
 
   const escaping = `

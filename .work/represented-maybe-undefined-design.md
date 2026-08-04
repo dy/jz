@@ -909,3 +909,224 @@ producer/consumer wiring gap (§6's "alternate closure", still un-landed —
 would let a properly-boxed dynamic BigInt be self-describing everywhere,
 collapsing this whole sentinel-lane mechanism into "just works", but is a
 strictly larger undertaking than this slice's lane-only fix).
+
+## 14 — Audit #10 verdict: Slice 4's VT re-enablement REVERTED, opt-in
+## `presentVal` is the new re-enablement gate (revises §5)
+
+Slice 4 (§12, 3782a692) wired `dictValueKindOf`/`mapValueKindOf` into
+VT['[]']/VT['.']/VT['()'] — a dict/Map read's static `valTypeOf` became the
+census's claimed kind, globally, at every VT call site simultaneously. §5's
+own criteria (propagation, chokepoint consultation, live pins, gate cost)
+were all individually verified at landing time. What §5 did NOT ask, and
+what audit #10 found live: **is every consumer of `valTypeOf` — not just the
+chokepoints this design's own audit walked — safe to receive an exact kind
+claim for a value that can genuinely be `undefined` at runtime?** The answer
+is no, structurally: `valTypeOf` is consulted by dozens of call sites across
+emit.js/ir.js/kind.js/type.js/module/*.js that were never audited for
+`censusMaybeUndefined` composition because they predate this design entirely
+— they were written when a dict/Map read's `valTypeOf` was ALWAYS null, so
+"trust `valTypeOf`'s claim outright" was always sound for this shape until
+Slice 4 made it non-null. Slice 4's model was **opt-out**: every existing and
+future `valTypeOf` consumer silently inherits exposure to a maybeUndefined
+value the moment the census can prove a kind, unless it separately remembers
+to ask `censusMaybeUndefined` too. Two consumers proved this wrong on
+contact even during Slice 4's OWN landing session (§12's "two new gaps"),
+found by manually walking the ~8 known chokepoints — not by an exhaustive
+audit of every `valTypeOf` call site, which the codebase has no mechanism to
+enumerate completely. Audit #10 found five more, unaudited, live at HEAD
+(3344fc11): composed expressions (ternary/`&&`/`\|\|`/comma around a census
+read — analyze.js's `mayBeUndefinedRhs` deliberately doesn't recurse these,
+Slice 1's own "smaller surface" scoping, §9), container storage
+(array-literal/object-literal wrapping a census read — the SAME decl-hop
+propagation gap, one syntactic layer further out), kind-specific dispatch
+(`Array.isArray`, `.length`, closure-call, string/number methods — each
+trusts a `valTypeOf`/`calleeValType` claim with no `censusMaybeUndefined`
+check at all, because each was written for a world where that claim didn't
+exist), String `+` (the STATIC-concat fast path takes priority over the
+STRING-coercion-of-undefined path whenever `vta === VAL.STRING`, without
+checking whether that STRING claim carries `mayBeUndefined`), and BigInt
+joint dispatch (`bigintMixReject`'s own narrower literal-proof policy,
+pre-existing per §12/§13's own citation, confirmed unaffected either way).
+
+**The revert** (this session): VT['[]']/VT['.']/VT['()']'s consultation of
+`dictValueKindOf`/`mapValueKindOf` goes dormant again — kind.js reverts to
+its exact Slice-1-era shape for those three sites (dictValueKindOf/
+mapValueKindOf restored as `censusMaybeUndefinedKind`-only internal helpers,
+never reaching VT's own exact-kind fold). `censusMaybeUndefinedKind` itself,
+`censusShapedNode`, and Slice 2's whole-program propagation (params/returns/
+closures) all STAY — they are REACHABLE-BUT-INERT again, the exact
+Slice-1/2 "honest boundary" property (§9/§10) restored, not a regression:
+every `censusMaybeUndefined`/`Kind` chokepoint (ir.js toNumF64/toStrI64,
+emit.js nullableOperand/bigIntOperand/bigIntUnary/bigintMixReject/`+`-concat,
+module/string.js/number.js/console.js) is correct and ready, just never
+fed a non-null `valTypeOf` claim to react to, because nothing promotes one
+anymore. Slice 4's own two found-live gap fixes (`nullableOperand`'s
+fall-through instead of early-return; `callResultMayBeUndefinedKind`, the
+call-result arm) are KEPT, not reverted: both were independently verified
+sound-but-inert with VT dormant (their own preconditions — a non-null `val`/
+`valResult` for a census-shaped node/return — themselves require the
+reverted VT promotion to ever become true), so keeping them costs nothing
+and saves re-deriving the wiring when §14's opt-in model lands. Slice 5's
+entire export-lane mechanism (3344fc11 — `censusBigintSentinelKind`, the
+`_resultBigintSentinel` producer, the `jz:i64exp` `s` marker, interop.js's
+`decodeBigintSentinel`, emitNeg/`~`'s `censusMaybeUndefinedKind` OR-arm)
+STAYS, per its own explicit, verified VT-independence design (§13's own
+"VT-Slice-4-revert independence — explicitly designed for it" section) —
+re-verified this session, not just trusted: dyn-keys.js's Slice 5 pins
+(32/38 tests, since renumbered — see below) all stay green post-revert.
+
+**A gap in Slice 5's OWN VT-independence claim, found closing this revert**
+(not previously known, not named in §13): `_resultNumeric`'s boundary-wrap
+decision (compile/index.js, computed while per-function reps are live) and
+the base `VT['u-']`/`VT['~']` table entries (kind.js's `numericBinaryVT`/
+`numericUnaryVT`, the SAME "operand kind unproven → optimistic NUMBER
+default" class the SOUND-`+`/SOUND-unary fixes close elsewhere, §13 point 1)
+had ONLY ever resolved a present-key census-BIGINT unary correctly — even at
+HEAD, even with Slice 5 landed — because Slice 4's VT wiring made
+`valTypeOf(m.get(k))` itself prove BIGINT directly, satisfying
+`numericUnaryVT`'s condition without ever exercising its optimistic-default
+fallback. Reverting Slice 4 exposed this: `-m.get('x')` (present key)
+regressed from `-5n` back to `NaN` (`_resultNumeric` wrongly true, skipping
+the i64 boundary wrap that carries the real BigInt bits), and
+`-m.get('x') === -5n` regressed from `true` to `false` (emitStrictEq's
+REF_EQ_KINDS raw-i64-compare path never reached, since `valTypeOf` of the
+unary node no longer proved BIGINT on either side). Both fixed the SAME way
+as emitNeg/`~`'s own OR-arm (the established, sanctioned pattern for this
+exact situation): `_resultNumeric`'s return-expression check now also
+requires `censusBigintSentinelKind(e) === 0`; `VT['u-']`/`VT['~']` (kind.js)
+now consult `censusMaybeUndefinedKind(args[0])` directly via a
+`censusBigintUnaryVT` wrapper, scoped to EXACTLY the single-operand `u-`/`~`
+shape (`args[1] == null`) so the general binary `-`/`*`/etc. and the
+`++`/`--`/`**`/`>>>`/`u+` siblings (no export-lane sentinel exists for those,
+Slice 5 never covered them) are untouched. Both fixes are VT-independent by
+the same construction as everything else in this family — `censusMaybeUndefinedKind`/
+`censusBigintSentinelKind` call `dictValueKindOf`/`mapValueKindOf` directly,
+never through VT. Verified this is NOT a new soundness hole (a firm BIGINT
+claim on the unary node is per-CONTAINER, not per-key, the same carve-out
+`dictValueKindOf`/`mapValueKindOf`'s own doc comments establish): an
+absent-key strict-equality against a BigInt literal stays correctly `false`
+post-fix (REF_EQ_KINDS' raw i64 bit-compare naturally differs — verified,
+not assumed), and the full audit-#10 battery (below) is unaffected by this
+narrow, BIGINT-only OR-arm (it never fires for a NUMBER/STRING/other-kind
+census claim). This is exactly the kind of gap §5/§12's own chokepoint-walk
+methodology was built to catch and didn't — a second confirmation that
+manually enumerating "the known chokepoints" cannot be trusted to be
+exhaustive against a global VT promotion, the core of this section's verdict
+below.
+
+**Full audit-#10 battery, re-verified with the census dormant** (every
+container PRIMED with a same-kind write before the absent-key read — an
+empty census has no claim to promote regardless of VT wiring, so an
+un-primed repro exercises nothing):
+
+| case | jz (census dormant) | JS | verdict |
+|---|---|---|---|
+| `(true?m.get(missing):999)+1` | NaN | NaN | correct |
+| `(true&&m.get(missing))+1` | NaN | NaN | correct |
+| `(false\|\|m.get(missing))+1` | NaN | NaN | correct |
+| `((y=1),m.get(missing))+1` | NaN | NaN | correct |
+| `[m.get(missing),1][0]+1` | NaN | NaN | correct |
+| `({x:m.get(missing)}).x+1` | NaN | NaN | correct |
+| `String([m.get(missing),1][0])` | "undefined" | "undefined" | correct |
+| `String(({x:m.get(missing)}).x)` | "undefined" | "undefined" | correct |
+| `Array.isArray(m.get(missing))` | false | false | correct (was TRUE, Slice-4-live) |
+| `m.get(missing).length` (ARRAY census) | undefined | throws TypeError | KNOWN-FAIL, future work |
+| `m.get(missing)()` (CLOSURE census) | throws RuntimeError (wasm table trap) | throws TypeError | KNOWN-FAIL, future work |
+| `m.get(missing).length` (STRING census) | undefined | throws TypeError | KNOWN-FAIL, future work |
+| `m.get(missing).slice()` (STRING census) | throws RuntimeError (wasm mem trap) | throws TypeError | KNOWN-FAIL, future work |
+| `m.get(missing).toFixed(2)` (NUMBER census) | throws Error (jz host-dispatch) | throws TypeError | KNOWN-FAIL, future work |
+| `m.get(present)+1` (STRING census) | "x1" | "x1" | correct, unaffected |
+| `m.get(missing)+1` (STRING census) | NaN | NaN | correct (was "undefined1", Slice-4-live) |
+| `m.get(present)+1` (BIGINT census) | 1 (garbage NUMBER) | throws TypeError | KNOWN-FAIL, pre-existing (§12/§13's own citation), unflipped |
+| `Object.assign(new TypeError(x), {message:y})` | compile crash (module/object.js:535) | no crash | KNOWN-FAIL, out of scope (Error-bundle agent) |
+
+The five kind-specific KNOWN-FAILs are a DIFFERENT, PRE-EXISTING bug class
+from anything Slice 4 introduced or this revert touches — the generic
+dynamic path has never distinguished "genuinely absent/undefined" from
+"OOB/unresolved" at a member-access site closely enough to throw the real
+JS TypeError instead of trapping or reading a default; census on or off is
+irrelevant to this class. Named here (not fixed) because audit #10's own
+framing ("isArray/length-trap→TypeError is future work") explicitly scopes
+it out. The BigInt-joint and Object.assign rows are likewise pre-existing,
+independently pinned KNOWN-FAIL, unaffected by this revert either direction
+— re-confirmed, not re-derived.
+
+**Pins updated** (test/dyn-keys.js, test/inference.js): the "Slice 4 positive
+win" WAT-codegen-shape pins (dict-value/map-value census "consumer wiring" —
+the `+` STRING-coercion-arm elimination) are reverted to their audit-#9-era
+"RENAMED, no longer distinguishes the consumer" shape (both escaping AND
+non-escaping receivers now keep the fallback arm — verified empirically, not
+assumed). Every JS-VALUE correctness pin under the "Slice 4" heading in
+dyn-keys.js (multi-hop arithmetic, identity-fold, call-result identity/
+arithmetic/soundness) stays GREEN UNCHANGED — the generic dynamic path was
+always sufficient for VALUE correctness, only the WAT-shape optimization was
+ever VT-dependent, matching every prior slice-disable's own finding restated
+once more. Nine new pins added for the audit-#10 battery above (composed
+expressions, container storage, isArray, the five kind-specific KNOWN-FAILs,
+String `+`, Object.assign) plus the two present-key-unary regression pins
+this session's own §14 gap fix required.
+
+**The revised re-enablement gate — supersedes §5 entirely.** §5's criteria
+(propagation, "every chokepoint consults it", live pins, gate cost) are
+NECESSARY but this audit proves them NOT SUFFICIENT: they describe auditing
+a fixed, enumerable list of chokepoints, but a global VT promotion's real
+consumer set is `valTypeOf`'s entire call graph — open-ended, added to by
+every future feature, impossible to fully enumerate by inspection (proven
+twice now: Slice 4's own landing session found 2 gaps this way, audit #10
+found 5 more the SAME methodology missed). The structural fix is not a
+better audit — it's removing the opt-out obligation entirely:
+
+1. **`val` (the REP field `valTypeOf` reads) stays what it has always meant
+   for every OTHER producer**: an exact, unconditional kind claim, safe for
+   any consumer to trust without a companion check. A dict/Map census read
+   must NEVER set `val` directly — this is the one invariant every prior
+   slice (1-3) already upheld and Slice 4 broke.
+2. **A new, SEPARATE fact — `presentVal`** (name deliberately distinct from
+   `mayBeUndefined`, which only says "might be missing," not "is, when
+   present, this kind"): the census's claim, stored where `mayBeUndefined`
+   already lives, read ONLY by a consumer that explicitly asks for it. No
+   existing or future `valTypeOf`/`VT[op]` call site gains new behavior by
+   default — the opt-in list is exactly as long as the set of consumers that
+   have been individually verified, the same discipline `censusMaybeUndefined`/
+   `censusMaybeUndefinedKind` already model correctly for the chokepoints
+   that use them today.
+3. **`valTypeOf` itself returns unknown (null) for a census-shaped node
+   unless presence is separately proven** — no optimistic default, matching
+   the SOUND-`+`/SOUND-unary/`censusBigintSentinelKind` family's own
+   discipline, generalized from "the two or three places that needed it" to
+   "the rule for this shape everywhere." This is what makes opt-in actually
+   safe: a consumer that does NOT ask for `presentVal` sees exactly what it
+   saw before Slice 4 ever landed (null), not a silently-wrong exact kind.
+4. **Binary/joint operators dispatch on the RUNTIME domain, not a static
+   kind claim, whenever either operand is `presentVal`-sourced** — the
+   BigInt-joint KNOWN-FAIL (`m.get(x) + 1` not throwing TypeError) is the
+   proof this is load-bearing, not decorative: `bigintMixReject`'s own
+   "operand-local guards are architecturally insufficient" finding (§13's
+   citation) means even a perfect opt-in `presentVal` model doesn't close
+   this row without ALSO teaching `+`/relational/etc. to branch on the
+   ACTUAL runtime kind when a `presentVal` operand meets an unresolved or
+   differently-kinded one — a genuinely separate, larger design (unchanged
+   from §13's own framing), named here as the dependency this gate has on
+   that future work, not claimed solved by opt-in alone.
+
+A future re-enablement lands `presentVal` + the opt-in consumer list +
+runtime-domain joint dispatch, gated on: every current `censusMaybeUndefined`/
+`Kind` chokepoint ported to ask for `presentVal` explicitly (not `val`), a
+NEW audit pass over `valTypeOf`'s full call graph for any site that would
+newly observe a non-null claim (this is the enumeration §5 never required
+and this audit proves necessary), and the full audit-#10 battery re-run
+GREEN under the NEW mechanism specifically (not just "was already green
+before" — the battery's whole point is to catch exactly this class again if
+the next attempt repeats Slice 4's opt-out shape by accident).
+
+**Gates this session**: full 88-file battery in foreground chunks of ≤7;
+dyn-keys.js 38/38 (109 assertions, native leg — kernel leg identical per
+kernel-parity); inference.js 136/136 (299 assertions, the two reverted
+"Slice 4 positive win" pins re-verified); types.js 170/170; data.js 125/125;
+statements.js 202/202; math.js 75/75; json.js 67/67; optimizer.js 214/214;
+kernel-parity 33/33 byte-identical; kernel-oracle; perf-ratchet 10/10
+(the census wins vanish again, matching every prior disable's own +0
+finding — no NEW cost either, since nothing this revert touches changes
+codegen for any non-census-shaped program); selfhost.js 21/21; fuzz 2000×4
+zero divergence; size sweep geomean 1.055× unchanged; fresh build ×2
+byte-identical.

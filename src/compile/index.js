@@ -797,7 +797,26 @@ function analyzeFuncForEmit(func, programFacts) {
           // Void body (falls off → undefined, which callers ignore) keeps the f64 carrier:
           // undefined isn't a reference, so no i64 is needed and wrapping every void export
           // is pure overhead. A non-empty set must be all-NUMBER to stay f64.
-          return rex.length === 0 || rex.every(e => valTypeOf(e) === VAL.NUMBER)
+          // `&& censusBigintSentinelKind(e) === 0` (audit #10 fallout, found while
+          // reverting Slice 4's VT wiring — .work/represented-maybe-undefined-
+          // design.md §14): `valTypeOf(e)` for a bare census-BIGINT node or a
+          // `-`/`~` unary wrapping one is numericUnaryVT's OWN "unproven → optimistic
+          // NUMBER default" (kind.js, the identical gap the SOUND-`+`/SOUND-unary
+          // fixes close elsewhere) whenever the operand's exact kind isn't proven —
+          // which, with VT['[]']/['.']/['()']'s dict/Map exact-kind promotion
+          // dormant (Slice 4 reverted), is now ALWAYS for this shape, not just an
+          // edge case. Trusting that optimistic NUMBER claim here would set
+          // `_resultNumeric = true`, which short-circuits `isBoundaryWrapped`
+          // (:169 `if (!func._resultNumeric) return true`) BEFORE it ever reaches
+          // `_resultBigintSentinel` below — skipping the i64 boundary wrap entirely
+          // for a value that can genuinely be a present-key BigInt at runtime (the
+          // Slice 5 repro-5 class regressing). `censusBigintSentinelKind` sources
+          // its answer from the census helpers DIRECTLY (dictValueKindOf/
+          // mapValueKindOf via censusMaybeUndefinedKind), never through VT/
+          // valTypeOf — same VT-independence discipline as emitNeg/`~`'s own
+          // hardening (§13) — so this check stays correct whether or not Slice 4's
+          // VT wiring is live.
+          return rex.length === 0 || rex.every(e => valTypeOf(e) === VAL.NUMBER && censusBigintSentinelKind(e) === 0)
         })())
 
   // Present-key BigInt through the census, export sentinel lane (.work/

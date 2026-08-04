@@ -1022,6 +1022,12 @@ export function toNumF64(node, v) {
       // FIRST so cloneIR only triplicates a cheap `local.get` — one
       // evaluation, sound for every node shape, byte-identical to before for
       // the two ORIGINAL (pure) arms since this branch is skipped for them.
+      // KEPT through the Slice-4 VT-wiring revert (audit #10, §14 is the
+      // re-enablement path): `vt === VAL.NUMBER` for a call node requires
+      // `func.valResult` to have already settled NUMBER for a census-shaped
+      // return tail, which itself requires the reverted VT promotion — so
+      // this whole branch is unreachable with VT dormant, sound-but-inert,
+      // same status as kind.js's callResultMayBeUndefinedKind it protects.
       if (typeof node !== 'string' && !censusShapedNode(node)) {
         const t = temp('cnn')
         return typed(['block', ['result', 'f64'],

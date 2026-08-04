@@ -2481,16 +2481,19 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 // the identical reason: an unwritten key reads back the same undefined —
 // `prec[op] === undefined` (does this key exist?) is that dict's own bounds
 // probe. The predicate is `censusMaybeUndefined` (kind.js,
-// .work/represented-maybe-undefined-design.md) — LOAD-BEARING as of Slice 4
-// (VT['[]']/VT['.']/VT['()'] now claim the exact kind, §8/§5) for both the
-// direct-node shape and a bare-name REP fallback (repOf(name)?.mayBeUndefined,
-// consulted via censusMaybeUndefinedKind's arm 3 at the bottom `if
-// (censusMaybeUndefined(n))` below). A bare name must fall through to that
-// check — NOT early-return on `.nullable` alone (a materially DIFFERENT REP
-// field, seeded by nullish-literal producers, that says nothing about a
-// census-copied `mayBeUndefined` binding) — so a decl-hop identity compare
-// (`let x = m.get(missing); x === undefined`) stays sound once Slice 4 makes
-// `x`'s `val` a non-null claim.
+// .work/represented-maybe-undefined-design.md) — REACHABLE but not yet
+// LOAD-BEARING here: Slice 4's VT['[]']/VT['.']/VT['()'] exact-kind wiring
+// was reverted (audit #10, §14 is the re-enablement path), so `valTypeOf`
+// for a dict/Map read stays null and this function's callers never reach a
+// state where the difference matters — YET. Kept correct anyway (not
+// reverted to the old early-return) because the composition bug it fixes is
+// real independent of VT: a bare name must fall through to the bottom `if
+// (censusMaybeUndefined(n))` check — NOT early-return on `.nullable` alone
+// (a materially DIFFERENT REP field, seeded by nullish-literal producers,
+// that says nothing about a census-copied `mayBeUndefined` binding) — so a
+// decl-hop identity compare (`let x = m.get(missing); x === undefined`)
+// stays sound the moment §14's opt-in presentVal model makes `x`'s claim
+// live again, with no re-audit of this call site required.
 const nullableOperand = (n) => {
   if (typeof n === 'string' && (repOf(n)?.nullable || repOfGlobal(n)?.nullable)) return true
   if (Array.isArray(n) && n[0] === '[]' && n.length === 3

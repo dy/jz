@@ -4,7 +4,7 @@
 // unless reads disqualify it) read with a missing key must be undefined,
 // never a trap and never a garbage hit.
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
@@ -386,6 +386,26 @@ test('Map: a read-only capture does not disqualify the census (control)', () => 
 // finding, unchanged): `-m.get('x') === -5n` statically proves BOTH sides
 // BIGINT (numericUnaryVT + the BIGINT literal), so emitStrictEq takes the
 // REF_EQ_KINDS raw i64-bit-compare path, never touching the export lane.
+//
+// TWO MORE GAPS FOUND, both closed, while reverting Slice 4's VT wiring
+// (audit #10, §14): "numericUnaryVT/numericBinaryVT's own optimistic-NUMBER
+// default" (named above for `valTypeOfWithLocals`'s narrower copy) turns out
+// to ALSO live in the base VT['u-']/VT['~'] entries (kind.js) that this
+// present-key test depends on — and those had ONLY ever resolved BIGINT
+// correctly for a census operand because Slice 4's VT['[]']/['.']/['()']
+// wiring made `valTypeOf(m.get(k))` itself prove BIGINT directly. Reverting
+// that wiring regressed BOTH: (1) `-m.get('x')` (assertion 4 below) via
+// compile/index.js's `_resultNumeric` boundary-wrap gate wrongly trusting
+// the optimistic default and skipping the i64 wrap entirely, and (2)
+// `-m.get('x') === -5n` (assertion 5) via emitStrictEq's REF_EQ_KINDS path
+// no longer being reached at all. Both fixed the SAME way as emitNeg/`~`'s
+// own OR-arm (§13's proactive hardening): `_resultNumeric` now also checks
+// `censusBigintSentinelKind(e) === 0`, and VT['u-']/VT['~'] (kind.js) gained
+// a `censusMaybeUndefinedKind`-direct OR-arm scoped to exactly the
+// single-operand `u-`/`~` shape — VT-independent, so both stay correct with
+// Slice 4 dormant. (`_resultNumeric`'s companion `_resultBigintSentinel`
+// was already VT-independent per §13 — only `_resultNumeric` itself and
+// emitStrictEq's dispatch had the gap.)
 test('Map: unary "-"/"~" on a .get() absent key decays to NUMBER NaN/-1, not a garbage bigint (audit-#8 P0-4 Part 3)', () => {
   is(run(`const m = new Map(); m.set('x', 1n); return -m.get('missing')`), NaN)
   is(run(`const m = new Map(); m.set('x', 1n); return ~m.get('missing')`), -1)
@@ -478,6 +498,94 @@ test('KNOWN-FAIL (audit #10, out of scope): present-key census-BIGINT + NUMBER s
   const r = jz(`export let f = () => { const m = new Map(); m.set('x', 5n); return m.get('x') + 1 }`, { jzify: true }).exports.f()
   // JS: throws TypeError. Actual (wrong): silent NUMBER garbage.
   is(typeof r, 'number')
+})
+
+// AUDIT #10 BATTERY (represented-maybe-undefined-design.md §14): the full
+// repro set the audit named as live consequences of Slice 4's global VT
+// promotion — composed expressions, container storage, kind-specific
+// dispatch, String `+` inversion, BigInt joint dispatch. Re-verified
+// differentially against real JS with the census dormant (this revert):
+// every row the audit named as broken by VT promotion is JS-correct again
+// via the generic dynamic path — no new mechanism, the same "disable costs
+// nothing, the generic path already handles it" finding every prior slice
+// disable also confirmed. Every container is PRIMED with a same-kind write
+// before the absent-key read (an empty census has no claim to promote in
+// the first place, VT wired or not — priming is what actually exercises the
+// bug class).
+test('audit #10: composed expressions (ternary/&&/||/comma) around an absent census-NUMBER read are JS-correct with the census dormant', () => {
+  const ternary = jz(`export let f = () => { const m = new Map(); m.set('present', 1); return (true ? m.get('missing') : 999) + 1 }`, { jzify: true }).exports.f
+  is(ternary(), NaN, 'JS: (true ? undefined : 999) + 1 = NaN')
+  const and = jz(`export let f = () => { const m = new Map(); m.set('present', 1); return (true && m.get('missing')) + 1 }`, { jzify: true }).exports.f
+  is(and(), NaN, 'JS: (true && undefined) + 1 = NaN')
+  const or = jz(`export let f = () => { const m = new Map(); m.set('present', 1); return (false || m.get('missing')) + 1 }`, { jzify: true }).exports.f
+  is(or(), NaN, 'JS: (false || undefined) + 1 = NaN')
+  const comma = jz(`export let f = () => { const m = new Map(); m.set('present', 1); let y = 0; return ((y = 1), m.get('missing')) + 1 }`, { jzify: true }).exports.f
+  is(comma(), NaN, 'JS: (y=1, undefined) + 1 = NaN')
+})
+test('audit #10: container storage (array-literal index, object-literal prop) around an absent census read is JS-correct with the census dormant', () => {
+  const arrIdx = jz(`export let f = () => { const m = new Map(); m.set('present', 1); return [m.get('missing'), 1][0] + 1 }`, { jzify: true }).exports.f
+  is(arrIdx(), NaN, 'JS: [undefined, 1][0] + 1 = NaN')
+  const objProp = jz(`export let f = () => { const m = new Map(); m.set('present', 1); return ({ x: m.get('missing') }).x + 1 }`, { jzify: true }).exports.f
+  is(objProp(), NaN, 'JS: ({x: undefined}).x + 1 = NaN')
+  const arrIdxStr = jz(`export let f = () => { const m = new Map(); m.set('present', 's'); return String([m.get('missing'), 1][0]) }`, { jzify: true }).exports.f
+  is(arrIdxStr(), 'undefined')
+  const objPropStr = jz(`export let f = () => { const m = new Map(); m.set('present', 's'); return String(({ x: m.get('missing') }).x) }`, { jzify: true }).exports.f
+  is(objPropStr(), 'undefined')
+})
+test('audit #10: Array.isArray on an absent ARRAY-census read is JS-correct with the census dormant (was: TRUE)', () => {
+  const f = jz(`export let f = () => { const m = new Map(); m.set('present', [1, 2]); return Array.isArray(m.get('missing')) }`, { jzify: true }).exports.f
+  is(f(), false, 'JS: Array.isArray(undefined) = false — the audit-#10-live TRUE misfire is gone with the census dormant')
+})
+// KNOWN-FAIL, PRE-EXISTING, NOT this task's scope (audit #10 names it, future
+// work — "isArray/length-trap→TypeError" per the task's own framing): a
+// kind-specific member access on a genuinely-undefined value (real JS throws
+// TypeError) instead traps (wasm bounds/table trap) or, for a HOST-dispatched
+// method (String.prototype.slice/Number.prototype.toFixed), throws jz's own
+// internal dispatch Error — never the real TypeError. Independent of census
+// on/off (the generic dynamic path has never distinguished "genuinely
+// undefined" from "OOB/absent" at the member-access site either) — pinned as
+// the CURRENT actual behavior with the census dormant, not "fixed", so a
+// future TypeError-conformance fix flips these deliberately.
+test('KNOWN-FAIL (audit #10, future work): kind-specific member access on a genuinely-undefined census read traps/dispatch-errors instead of throwing TypeError', () => {
+  // Wasm traps (a table-index or memory-access trap) are HOST-level
+  // exceptions — jz's own in-source try/catch cannot intercept them (they
+  // never reach jz's JS-error machinery at all), so those two cases must be
+  // caught OUTSIDE exports.f(), matching how they'd actually surface to a
+  // real host caller today.
+  const arrLen = jz(`export let f = () => { const m = new Map(); m.set('present', [1, 2]); try { return m.get('missing').length } catch (e) { return 'THROW:' + e.constructor.name } }`, { jzify: true }).exports.f
+  is(arrLen(), undefined, 'JS: TypeError. Actual: reads OOB as undefined, no trap')
+  const call = jz(`export let f = () => { const m = new Map(); m.set('present', () => 1); return m.get('missing')() }`, { jzify: true }).exports.f
+  let callErr = null; try { call() } catch (e) { callErr = e }
+  ok(callErr && /table index/.test(callErr.message), 'JS: TypeError. Actual: wasm table-index trap, uncatchable in-source')
+  const strLen = jz(`export let f = () => { const m = new Map(); m.set('present', 'hi'); try { return m.get('missing').length } catch (e) { return 'THROW:' + e.constructor.name } }`, { jzify: true }).exports.f
+  is(strLen(), undefined, 'JS: TypeError. Actual: reads OOB as undefined, no trap')
+  const strSlice = jz(`export let f = () => { const m = new Map(); m.set('present', 'hi'); return m.get('missing').slice() }`, { jzify: true }).exports.f
+  let sliceErr = null; try { strSlice() } catch (e) { sliceErr = e }
+  ok(sliceErr && /memory access/.test(sliceErr.message), 'JS: TypeError. Actual: wasm memory-access trap, uncatchable in-source')
+  const numFixed = jz(`export let f = () => { const m = new Map(); m.set('present', 1); return m.get('missing').toFixed(2) }`, { jzify: true }).exports.f
+  let fixedErr = null; try { numFixed() } catch (e) { fixedErr = e }
+  ok(fixedErr instanceof Error && /dispatched this/.test(fixedErr.message),
+    "JS: TypeError. Actual: jz's own host-dispatch Error thrown from the JS-side interop shim, uncatchable in-source (not a wasm exception at all)")
+})
+test('audit #10: String `+` inversion — a STRING-census absent read through `+` is JS-correct with the census dormant (was: static concat "undefined1")', () => {
+  const present = jz(`export let f = () => { const m = new Map(); m.set('a', 'x'); return m.get('a') + 1 }`, { jzify: true }).exports.f
+  is(present(), 'x1', 'present-key STRING `+` NUMBER still concatenates (unaffected — a real STRING value, not a maybeUndefined coercion)')
+  const absent = jz(`export let f = () => { const m = new Map(); m.set('a', 'x'); return m.get('missing') + 1 }`, { jzify: true }).exports.f
+  is(absent(), NaN, 'JS: undefined + 1 = NaN, not "undefined1" — the audit-#10-live STATIC-concat-branch misfire is gone with the census dormant')
+})
+// KNOWN-FAIL, PRE-EXISTING, module/object.js:535's ctx.core.emit['Object.assign']
+// — compile CRASH (not a wrong value), found live by audit #10, unrelated to
+// the census/VT axis entirely (Object.assign onto an Error-branded target,
+// 5f8ff012's schema-id branding — the Error-bundle agent's own scope, not
+// this task's). Pinned so it isn't silently reintroduced or rediscovered from
+// scratch; not fixed here.
+test('KNOWN-FAIL (audit #10, out of scope — Error-bundle agent): Object.assign onto a branded Error instance crashes at compile time', () => {
+  let threw = null
+  try {
+    jz(`export let main = () => { const e = Object.assign(new TypeError('x'), {message: 'y'}); return e instanceof TypeError }`, { jzify: true })
+  } catch (e) { threw = e }
+  ok(threw, 'JS: true (no crash). Actual: compile-time internal error (module/object.js:535 lead)')
+  ok(/__arr_set_idx_ptr/.test(threw?.message || ''), 'the specific internal-stdlib-pull crash this audit found')
 })
 
 // Slice 3 (.work/represented-maybe-undefined-design.md §4/§8 point 3): the
@@ -610,6 +718,16 @@ test('single-call-site "+" param-hop: sibling carrier-domain producers (regressi
 // §5 criterion 1's own acceptance shape: a census claim reaching a
 // NON-chokepoint consumer through 2+ hops (decl → arg → return → use), not
 // just the single-hop repros earlier slices pinned.
+//
+// REVERTED (audit #10, §14 — the four "Slice 4" pins below): VT['[]']/
+// ['.']/['()']'s exact-kind promotion is dormant again, same reason as this
+// file's audit-#9-era "RENAMED"/"RE-RENAMED" pins above. Kept exactly as
+// written and STILL GREEN — every assertion here is a JS-VALUE correctness
+// pin, not a WAT-codegen-shape pin, and the generic dynamic dispatch path
+// (the only path live once the census stops claiming an exact kind) already
+// produces the correct value for all four shapes — the audit's own finding,
+// re-confirmed: "the generic dynamic paths handle it, that's been true at
+// every prior disable."
 test('Slice 4: multi-hop (decl -> call-arg -> return -> use) arithmetic stays JS-correct', () => {
   const f = jz(`
     const inner = (v) => v

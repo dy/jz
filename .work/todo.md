@@ -4,6 +4,95 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, audit #10 — Slice 4's VT re-enablement REVERTED,
+## .work/represented-maybe-undefined-design.md §14, opt-in `presentVal` is
+## the new re-enablement gate — supersedes §5)
+
+Audit #10's prescribed immediate safe move: Slice 4 (3782a692) wired
+`dictValueKindOf`/`mapValueKindOf` into VT['[]']/VT['.']/VT['()'] — a
+dict/Map read's static `valTypeOf` became the census's claimed kind
+GLOBALLY, at every VT call site simultaneously, opt-OUT instead of opt-in.
+Live consequences confirmed by the auditor at 3782a692, re-verified live at
+HEAD (3344fc11) this session before reverting: composed expressions
+(ternary/`&&`/`\|\|`/comma around a census read), container storage
+(array-literal/object-literal wrapping one), kind-specific dispatch
+(`Array.isArray` wrongly TRUE on an absent key), String `+` inversion
+("undefined1" instead of NaN), BigInt joint dispatch (unaffected either way,
+already a separate pre-existing KNOWN-FAIL). Reverted this session; full
+detail and the revised re-enablement gate: design doc §14.
+
+**Reverted**: VT['[]']/VT['.']/VT['()']'s consultation of `dictValueKindOf`/
+`mapValueKindOf` (kind.js) — back to Slice-1-era shape, those two helpers
+`censusMaybeUndefinedKind`-only again. **Kept** (verified sound-but-inert
+with VT dormant, not VT-dependent-only): `nullableOperand`'s bare-name
+fall-through fix (emit.js), `callResultMayBeUndefinedKind` (kind.js) +
+its `coerceNullishToNum` duplication-safety hoist (ir.js) — both provably
+unreachable-to-wrong since their own preconditions require the reverted VT
+promotion to ever fire. **Kept unconditionally** (3344fc11's Slice 5 export-
+lane mechanism, explicitly designed VT-independent): `censusBigintSentinelKind`,
+`_resultBigintSentinel`, the `jz:i64exp` `s` marker, interop.js's
+`decodeBigintSentinel`, emitNeg/`~`'s census OR-arm.
+
+**A gap in Slice 5's OWN VT-independence claim, found closing this revert**
+(new, not previously known): `_resultNumeric`'s boundary-wrap decision
+(compile/index.js) and the base `VT['u-']`/`VT['~']` table entries (kind.js)
+had only ever resolved a present-key census-BIGINT unary correctly because
+Slice 4's VT wiring made `valTypeOf(m.get(k))` itself prove BIGINT — reverting
+Slice 4 regressed `-m.get('x')` (present key) from `-5n` back to `NaN`, and
+`-m.get('x') === -5n` from `true` back to `false`. Fixed the same way as
+emitNeg/`~`'s own OR-arm: `_resultNumeric` now also requires
+`censusBigintSentinelKind(e) === 0`; `VT['u-']`/`VT['~']` gained a
+`censusMaybeUndefinedKind`-direct OR-arm (`censusBigintUnaryVT`, kind.js),
+scoped to exactly the single-operand `u-`/`~` shape so the general binary
+`-`/`*`/etc. and `++`/`--`/`**`/`>>>`/`u+` (no sentinel lane covers those)
+are untouched. Both VT-independent by the same construction as everything
+else in this family. dyn-keys.js's Slice 5 pins (38/38, 109 assertions,
+native + kernel leg) re-verified green with this fix in place.
+
+**Full audit-#10 battery, re-verified with the census dormant** (every case
+primed with a same-kind write before the absent-key read — full table in
+design doc §14): composed expressions, container storage, `Array.isArray`,
+and String `+` all flip to JS-correct via the generic dynamic path — no new
+mechanism, "the generic path already handles it" confirmed once more.
+KNOWN-FAIL, unaffected either direction, pinned precisely: five kind-specific
+member-access cases (`.length`/call/`.slice()`/`.toFixed()` on a genuinely-
+undefined census value trap or dispatch-error instead of throwing TypeError —
+pre-existing, independent of census on/off, named "future work" by the
+audit itself), the BigInt-joint `+` mix (pre-existing, §12/§13's own
+citation), and a NEW find — `Object.assign(new TypeError(x), {message:y})`
+crashes at compile time (module/object.js:535, `ctx.core.emit['Object.assign']`,
+internal `__arr_set_idx_ptr` stdlib-pull error) — unrelated to census/VT
+entirely, Error-bundle agent's scope, not fixed here.
+
+**Pins updated**: test/inference.js's two "Slice 4 positive win" WAT-codegen
+pins reverted to their audit-#9-era "RENAMED, no longer distinguishes the
+consumer" shape (both dict and Map siblings). Every JS-VALUE "Slice 4"
+correctness pin in dyn-keys.js stays green unchanged (generic path always
+sufficient for value correctness — only the WAT-shape optimization was
+VT-dependent). Nine new pins added for the audit-#10 battery + Object.assign
+KNOWN-FAIL + the two present-key-unary regression pins this session's own
+gap fix required.
+
+**Gates** (fresh dist rebuild, ×2 byte-identical — sha256-verified,
+dist/jz.js + dist/jz.wasm + dist/interop.js): full 88-file battery, 12
+foreground chunks of 7 (no failures, a handful of pre-existing `# skip`
+rows unrelated to this change); kernel-parity 33/33 byte-identical;
+kernel-oracle 11/11 (451 assertions); perf-ratchet 10/10 at +0 EVERY
+category (the census-driven codegen wins are gone, matching every prior
+disable's own finding — no new cost either); optimizer.js 214/214 (3949
+assertions); dyn-keys.js 38/38 (109 assertions, native AND kernel leg);
+data.js/types.js/math.js/json.js run explicitly (native + kernel leg where
+kernel-includable) and inference.js explicitly (native, 136/136 — kernel
+leg's `inference` exclusion is the SAME pre-existing module-resolver-class
+debt test/index.js already documents, ctx-introspection tests the kernel
+target's host boundary can't run through, unrelated to this session);
+selfhost.js 21/21 (206 assertions); fuzz 2000×4 (seeds 1-8000, all 4 rounds)
+zero divergence; size sweep geomean 1.055× unchanged (`dict`'s own sized
+case back to 1.3 kB, the pre-Slice-4 figure, confirming the win vanished
+cleanly with no residue).
+
+Full detail: .work/represented-maybe-undefined-design.md §14.
+
 ## Status (2026-08-04, represented-maybe-undefined Slice 5 LANDED — BigInt
 ## export-lane class closed, .work/represented-maybe-undefined-design.md §13,
 ## the LAST named value-wrong family from the audit campaign)
