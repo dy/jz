@@ -379,6 +379,58 @@ const subRangeFitsI32 = (aAst, bAst) => {
   return !!ra && !!rb && ra[0] - rb[1] >= -0x80000000 && ra[1] - rb[0] <= 0x7fffffff
 }
 
+// Loop-counter RANGE-PROOF lever (audit-#8 P1-2 follow-up to 3b50d504/16f2d7c8):
+// a bare counted loop `for (let i = C; i < B; i++)` proves nothing about `i` to
+// opBound/intExprRange today — `i` is written by the step, so it never qualifies
+// for the decl-range stamp analyze.js gives a never-reassigned local (its own
+// "closed integer hull for never-reassigned decls" comment, src/compile/
+// analyze.js). Without a range, `i*K`/`i+j`/`B-i` shapes fall through
+// addFitsI32/mulFitsI32's magnitude-blind default (opBound's unproven ceiling,
+// 2^31 — ONE more than 0x7fffffff, so it fails by construction) all the way to
+// the f64 round-trip, which cascades into the vectorizer pattern-matchers
+// (they match the raw i32.add/i32.mul shapes) declining.
+//
+// Returns a real, closed [lo, hi] hull for `name` — sound for the ENTIRE body
+// of exactly this loop, nothing more — or null. Two independent proof
+// obligations, both required:
+//   1. `init` is a decl/assign of `name` to an expression intExprRange can hull
+//      (a literal is itself; a name chains through its own already-proven
+//      decl-range/refinement — same resolver every other intExprRange consumer
+//      shares, so composition is free).
+//   2. `cond` is `name < B` / `name <= B` and intExprRange(B) hulls too — a
+//      const bound is itself; a typed-array `.length`/module-const bound
+//      chains the same way; an unbounded dynamic bound (a raw param, an
+//      unproven global) returns null here and admits NOTHING — no heuristic
+//      fallback, matching the "the range proof must be REAL" floor.
+// `step` must be a KNOWN, POSITIVE integer constant (`i++`, `i += K`, `i = i +
+// K`) — monotone increase is what makes the guard's tightened hi a true
+// ceiling and the init's lo a true floor; a negative/unknown/non-self step
+// proves nothing (and is rejected). Reassignment elsewhere in the body (a
+// closure capture, a mid-body write) is NOT checked here — withRefinements
+// (flow-types.js), the sole caller, already refuses to install a refinement
+// for any name isReassigned finds written in that exact body.
+function forCounterRange(init, cond, step, name) {
+  if (!Array.isArray(cond) || (cond[0] !== '<' && cond[0] !== '<=') || cond[1] !== name) return null
+  const initExpr =
+    Array.isArray(init) && (init[0] === 'let' || init[0] === 'const') && init.length === 2 &&
+      Array.isArray(init[1]) && init[1][0] === '=' && init[1][1] === name ? init[1][2]
+    : Array.isArray(init) && init[0] === '=' && init[1] === name ? init[2]
+    : null
+  if (initExpr == null) return null
+  const posConst = (e) => { const k = constIntExpr(e); return k != null && k > 0 }
+  const stepOK =
+    (Array.isArray(step) && step[0] === '++' && step[1] === name) ||
+    (Array.isArray(step) && step[0] === '+=' && step[1] === name && posConst(step[2])) ||
+    (Array.isArray(step) && step[0] === '=' && step[1] === name &&
+      Array.isArray(step[2]) && step[2][0] === '+' && step[2].length === 3 &&
+      ((step[2][1] === name && posConst(step[2][2])) || (step[2][2] === name && posConst(step[2][1]))))
+  if (!stepOK) return null
+  const initRange = intExprRange(initExpr), boundRange = intExprRange(cond[2])
+  if (!initRange || !boundRange) return null
+  const lo = initRange[0], hi = cond[0] === '<' ? boundRange[1] - 1 : boundRange[1]
+  return Number.isFinite(lo) && Number.isFinite(hi) && lo <= hi ? [lo, hi] : null
+}
+
 /** Emit typeof comparison: typeof x == typeCode → type-aware check. */
 export function emitTypeofCmp(a, b, cmpOp) {
   let typeofExpr, code
@@ -5849,11 +5901,20 @@ export const emitter = {
         condForLoop = cond.slice(); condForLoop[side] = lt
       }
     }
+    // Loop-counter RANGE-PROOF lever: `for (let i = C; i < B; i++)` proves a real
+    // [lo, hi] hull for `i` — see forCounterRange's own doc. Scoped to exactly
+    // this body via withRefinements (flow-types.js), same machinery an `if
+    // (x >= 0 && x < W)` branch guard already uses for its own int-range
+    // refinement — so intExprRange(i) (and every addFitsI32/mulFitsI32 caller
+    // that routes through it) sees the fact for the duration of this emit only.
+    const counterRange = Array.isArray(cond) && typeof cond[1] === 'string' ? forCounterRange(init, cond, step, cond[1]) : null
+    const counterRefs = counterRange ? new Map([[cond[1], { rlo: counterRange[0], rhi: counterRange[1] }]]) : null
+    const emitLoopBody = () => withRefinements(counterRefs, body, () => emitVoid(body))
     const loopBody = []
     if (condForLoop) loopBody.push(['br_if', brk, ['i32.eqz', toBool(condForLoop)]])
     loopBody.push(...freshBoxed)
-    if (needsCont) loopBody.push(['block', cont, ...emitVoid(body)])
-    else loopBody.push(...emitVoid(body))
+    if (needsCont) loopBody.push(['block', cont, ...emitLoopBody()])
+    else loopBody.push(...emitLoopBody())
     if (step) loopBody.push(...emitVoid(step))
     loopBody.push(['br', loop])
     result.push(['block', brk, ['loop', loop, ...loopBody]])

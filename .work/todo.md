@@ -4,6 +4,216 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, loop-counter RANGE-PROOF lever landed — audit-#8
+## P1-2's "highest-value perf follow-up" — real, narrow, sound recovery on
+## the FOR-shaped target (mat4); the 5 stencil kernels + i32-array-add +
+## FFT-butterfly investigated and found to need DIFFERENT mechanisms —
+## named below, not this ticket's honest scope)
+
+**Mechanism**: `for (let i = C; i < B; i++)` (or `<=`, or `i += K`/`i = i +
+K` for a positive const `K`) now proves a real, closed `[lo, hi]` hull for
+`i` — `src/compile/emit.js`'s new `forCounterRange(init, cond, step, name)`,
+consulted once per `'for'` emission and installed via `withRefinements`
+(flow-types.js) — the SAME per-body int-range-refinement machinery an `if
+(x >= 0 && x < W)` branch guard already uses, just fed from the loop's own
+init/cond/step instead of a branch condition. `intExprRange(i)` — and every
+`addFitsI32`/`mulFitsI32`/`addRangeFitsI32`/`subRangeFitsI32`/
+`mulRangeFitsI32` caller that routes through it, plus `exprType`'s own
+`strict` magnitude check (type.js) — sees the fact for exactly the duration
+of that loop's body emission, nothing more.
+
+Before this: a loop counter is WRITTEN by its own step, so it never
+qualified for the pre-existing "closed integer hull for never-reassigned
+decls" stamp (`analyze.js`, `writeCount(body,name,0)===0`) — `intExprRange(i)`
+was always null, so `opBound`'s magnitude-blind default (2^31 — ONE more
+than `0x7fffffff`, so it fails by construction for ANY nonzero second
+operand) blocked `i*K`/`i+j`/`B-i` from the native i32 path, cascading into
+the vectorizer pattern-matchers (which match the raw `i32.add`/`i32.mul`
+shapes) declining. Two independent, REAL proof obligations, both required
+(no heuristic fallback for either):
+  1. `init` decl/assigns `i` to an expression `intExprRange` can hull (a
+     literal is itself; a name chains through its own already-proven
+     decl-range/refinement — free composition, same resolver every other
+     `intExprRange` consumer shares).
+  2. `cond`'s bound `B` also hulls via `intExprRange` — a const bound is
+     itself, a chained decl-range bound composes the same way; an
+     UNBOUNDED DYNAMIC bound (a raw param, an unproven global) returns
+     null and admits NOTHING.
+`step` must be a KNOWN POSITIVE integer constant — monotone increase is
+what makes the guard's tightened `hi` a true ceiling and the init's `lo` a
+true floor. Reassignment elsewhere in the body (closure capture, mid-body
+write) is refused by `withRefinements`'s own `isReassigned` gate — not
+re-implemented here.
+
+**Scope note (found, not assumed)**: only the literal `for(let i=C;...)`
+shape is wired — `init`/`cond`/`step` are read directly off the emitter's
+own AST args. A `while`-desugared counted loop (`let i=0; while(i<n){…
+i++}`, the shape EVERY stencil kernel in examples/ actually uses) needs a
+whole-function prepass to connect the counter's init (a sibling statement,
+possibly one clause of a multi-name `let`) to the loop, since `'while'` →
+`emitter['for'](null,cond,null,body)` carries no `init`/`step` at the call
+site. Not attempted this session — see residual 1 below for why it
+wouldn't have recovered the named stencil kernels anyway.
+
+**Recovery (verified, deterministic — not a timing measurement)**: mat4's
+`init()` (`for (let i=0;i<16;i++) { a[i]=(i+1)*0.125; b[i]=(16-i)*0.0625 }`
+— literally collectBareEscapes' own cited comparison-governed-tolerance
+example) is the canonical target. Under the SIZE optimize tier
+(`smallConstForUnroll:false`, both `test/bench.js`'s `sizeCompile` and
+`bench/bench.mjs`'s `compileJzAt(c,{level:'size'})` disable unrolling, so
+this loop stays a real loop instead of constant-folding away): `i+1` and
+`16-i` now emit native `i32.add`/`i32.sub` (WAT-confirmed) instead of the
+`f64.convert_i32_s`/`f64.add`/`f64.sub` round-trip. Bytes: **1543 → 1528
+(-15 B)** — matches the committed `bench/results.json` jz row exactly (see
+below) and the task's own "+15 B" framing (this recovers the loop-counter
+half of the 16f2d7c8 regression's size cost).
+
+**Per-kernel recovery table** (measured before/after this fix, not
+predicted):
+
+| kernel/case | metric | before | after | verdict |
+|---|---|---|---|---|
+| mat4 | size-tier compile bytes (bench.mjs-exact config) | 1543 | 1528 | **recovered (-15 B)** |
+| watercolor | f64x2 (base→sten) | 1→1 | 1→1 | unchanged — residual 1 |
+| waves | f64x2 (base→sten) | 3→3 | 3→3 | unchanged — residual 1 |
+| schrodinger | f64x2 (base→sten) | 0→0 | 0→0 | unchanged — residual 1 |
+| diffusion | f64x2 (base→sten) | 4→4 | 4→4 | unchanged — residual 1 |
+| slime | f64x2 (base→sten) | 1→1 | 1→1 | unchanged — residual 1 |
+| i32 add arrays (test/simd.js KNOWN-GAP) | hasV128 | false | false | unchanged — residual 2 |
+| FFT butterfly (test/cond-vectorize.js/examples.js) | `__bf\d+_` present | false | false | unchanged — residual 2 |
+| size sweep | geomean jz/AS | 1.057× | 1.055× | **recovered (mat4's -15 B alone)** |
+| perf-ratchet float/mixed | loop-body ops | 565/971 | 565/971 (+0) | unchanged — see below |
+
+**Named residual 1 (watercolor/waves/schrodinger/diffusion/slime stencil
+decline)**: investigated to the root, NOT a loop-counter-range gap.
+`tryStencil`'s `boundPureInv` (src/optimize/vectorize.js) needs the loop
+bound (`w-1`/`h-1`) to already be a raw `i32.sub` IR chain. `w`/`h` in
+every one of these kernels trace back to MODULE GLOBALS (`W`,`H` /
+`WV`,`HV`) assigned directly from a harness-supplied runtime parameter
+(`export let resize = (w,h) => { W=w; H=h; … }`, watercolor.js) with NO
+compile-time-provable magnitude bound anywhere in source — genuinely
+unbounded, not merely unproven. Confirmed by direct WAT inspection
+(`w-1` still lowers as `f64.sub(f64.convert_i32_s($w), f64.const 1)`) and
+by measurement: this fix changes NONE of the five kernels' f64x2 counts
+(all pairs identical to the pre-fix baseline, matching af08bead's own
+prior investigation of the same question).
+CONSIDERED AND REJECTED: reusing the pre-existing "comparison-governed,
+sound for n≤2^31" STORAGE-TYPING tolerance (`collectBareEscapes`,
+`widenLocalTypes`) to also seed an `intExprRange` fact for these globals.
+That tolerance is a NAMED, deliberately-scoped, asm.js-style compromise —
+"the storage cell re-truncates every read, so wraparound cannot compound"
+— NOT a value-exact proof. `intExprRange` is trusted elsewhere (e.g.
+`mulRangeFitsI32`'s own doc: "the EXACT product interval must fit signed
+i32 — then i32.mul is faithful in every consumer context") as a REAL
+magnitude proof. Feeding it a policy-level heuristic would reintroduce
+exactly the class of bug 3b50d504/16f2d7c8 closed, just one level higher
+— rejected under this ticket's own "the range proof must be REAL" floor.
+REAL lever for a future ticket: `tryStencil`'s dispatch already sits next
+to the Root F "typed-bounds loop VERSIONING" scaffold (emit.js, `emitter
+['for']`), which handles this EXACT situation (an unprovable extent) via a
+runtime i64-arithmetic guard + a fast/checked arm split — no static
+magnitude proof needed. Teaching `boundPureInv` to accept a
+versioned-guard fast arm's bound (instead of demanding a raw i32.sub
+chain) is a real, unexplored, structurally-adjacent lever — not attempted
+here (a second, larger mechanism, out of this session's scope).
+
+**Named residual 2 (i32-array-addition, FFT-butterfly)**: also investigated,
+also NOT a loop-counter-range gap — confirmed by the test files' OWN
+pre-existing comments (test/simd.js's KNOWN_GAP, test/cond-vectorize.js's
+butterfly comment), independently corroborated here by direct measurement
+(both unchanged before/after this fix). `a[i]+b[i]` on two FULL-RANGE
+Int32Array elements is genuinely not provably i32-safe (element VALUES,
+not the index `i`, are the unbounded quantity — no loop-counter fact
+touches this). The real fix lives in `module/typedarray.js`'s
+`wrapIntIR` (typed-store value coercion), which — unlike `ir.js`
+`writeVar`/`asParamType` — doesn't attempt `narrowI32`'s ring recovery;
+FFT-butterfly's `tryButterfly` shape-match loss is attributed to the SAME
+family. A different file, a different mechanism, correctly out of scope
+here.
+
+**Ratchet**: `test/perf-ratchet.js`'s float/mixed categories measure
+UNCHANGED (565, 971, +0) — `scripts/perf-corpus.mjs`'s generators don't
+happen to produce a bare counted `for`-loop whose body needs the new
+range fact to reach the i32 path. Nothing recovered here →
+`perf-ratchet.json` NOT touched (re-tightening would fabricate a result
+the compiler doesn't actually produce — same discipline the prior
+collectBareEscapes-fix session applied to the identical situation).
+
+**Size**: `node scripts/bench-size.mjs` geomean jz/AS: **1.057 → 1.055**
+(mat4 alone; 1 of ~49 sized cases moved). The ≤1.05 goal needs residual 1
+and/or 2 above (or further, unrelated size work) — not reachable from this
+mechanism alone, reported honestly rather than rounded down.
+
+**Timing spot-check: explicitly NOT performed.** The one genuinely
+recovered kernel (mat4) only changed under the SIZE optimize tier
+(unrolling off); mat4's TIMED benchmark path (`multiplyMany`, the SPEED
+tier) is untouched by this fix — `init()` runs outside the
+`performance.now()` window in `bench/mat4/mat4.js`'s own `main()`, and
+`multiplyMany`'s outer loop bound (`n < iters`, `iters` a raw function
+parameter) is correctly an UNBOUNDED dynamic bound under this same
+mechanism's own soundness floor (verified: no spurious i32.mul emitted,
+negative control below). There is no runtime-speed-relevant recovered
+kernel this session to spot-check — manufacturing a paired timing run
+against unchanged codegen would measure noise and report it as evidence,
+which is worse than not measuring. Noted honestly instead.
+
+**Negative controls (soundness floor, verified via differential + WAT)**:
+  - `for (let i=0;i<x;i++) { s = s + i*1000000000 }` with `x` a raw f64
+    param (unbounded dynamic bound): WAT confirms NO `i32.mul` emitted
+    (correctly declines); value-correct vs the JS oracle for x ∈
+    {0,1,5,50000} (the x=50000 case pushes the product to 1.25e19,
+    exercising exactly the magnitude an unsound admission would corrupt).
+  - `for (let i=0;i<n;i++) { if (i===3) i=1000000; s=s+i }` (counter
+    reassigned mid-body): value-correct vs the JS oracle for n ∈
+    {0,1,3,5,10} — `withRefinements`'s `isReassigned` gate refuses the
+    fact, exactly as designed.
+  - Positive control: mat4's own shape, `for(let i=0;i<16;i++){s=s+(i+1)*3}`
+    — value-correct.
+  - fuzz 2000×4 (seeds 1-2000, opt {0,1,2,3}, 20 inputs/program): **0
+    divergence** (30173 inputs compared, 9827 skipped i32-contract-exceeded,
+    0 non-numeric) — every pinned repro from 3b50d504/16f2d7c8/28b2530b/
+    d9b020f7/af08bead stays green (full test/inference.js 135/135, incl.
+    every structural pin from those sessions).
+
+**bench/results.json**: surgically patched ONLY `cases.mat4.targets.jz
+.bytes`: 1543 → 1528 — verified against `bench/bench.mjs`'s EXACT
+`compileJzAt(c,{level:'size'})` config (not test/bench.js's `sizeCompile`,
+which additionally sets `scalarTypedArrayLen:8`; confirmed both give the
+same 1528 for this case). This is a DETERMINISTIC byte count, not a
+timing measurement — no quiet-machine gate needed, no ABBA. `medianUs`/
+`memKb`/`parity` LEFT UNTOUCHED: `bench.mjs` builds the timed row at
+`level:'speed'` (a SEPARATE compile from the size-tier build `bytes`
+reads — confirmed in `bench.mjs`'s own comments), and mat4's timed path
+is unaffected (see timing spot-check note above) — re-measuring an
+unchanged number would just add machine noise to a correct value.
+`meta.commit` intentionally LEFT at `f704a077` (partial re-measure, one
+field in one row — matches the prior session's precedent for the same
+situation). jz-w2c/jz-wasmtime rows NOT touched (different toolchains,
+task scope says "jz lane").
+
+**test/bench.js wall-clock suite**: 16 failures present both before and
+after this fix (delayline/fft/glyfparse trailing rust-wasm/c-wasm by
+1.05-1.3×, several already labeled "[known gap]" in the test file's own
+comments; examples-corpus geomean). None touch a kernel this fix's
+mechanism reaches (mat4's hot path is unaffected — see above). Wall-clock
+rival comparisons against external toolchains (rust/c/zig) on a shared,
+not-provably-quiet machine — treated as pre-existing/machine-noise, not a
+regression, consistent with their unchanged "known gap" framing.
+
+**Gates, all green**: kernel-parity 33/33 byte-identical (O0/O2/O3);
+kernel-oracle 451 assertions/11 suites; optimizer 214 tests/3949
+assertions; simd.js 158 tests/580 assertions (i32-array-add KNOWN_GAP
+confirmed still correctly triggering — see residual 2); cond-vectorize.js
+3/3; examples.js 22 tests/433 assertions (stencil KNOWN GAP assertions
+confirmed still correctly triggering — see residual 1); selfhost.js
+21/21 (206 assertions); selfhost-perf.js informational 5/5 (warm 1.015×
+< 1.03× cap, fresh 0.773× < 0.99× cap); test/inference.js 135/135 (291
+assertions); fuzz 2000×4 zero divergence (see above); full `test/index.js`
+88-file battery run in ~13 foreground chunks of 6-7 files each (never
+monolithic) — every chunk green modulo pre-existing intentional skips;
+fresh `npm run build` ×2 — dist/jz.js and dist/jz.wasm byte-identical
+both times; full size sweep (`scripts/bench-size.mjs`) — see Size above.
+
 ## Status (2026-08-03, collectBareEscapes FALSE-POSITIVE FIXED — the
 ## reference-refresh top-priority regression (bitwise/sieve, 28b2530b)
 ## root-caused AND closed; audit-P1-2 kernels + FFT-butterfly + i32-array-add
