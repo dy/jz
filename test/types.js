@@ -13,7 +13,8 @@ import { emit, emitter, emitVoid as flat, emitBlockBody, emitBoolStr as bool, em
 import { analyzeValTypes, analyzeIntCertain, analyzeBody } from '../src/compile/analyze.js'
 import { repOf, updateRep, VAL } from '../src/reps.js'
 import { T } from '../src/ast.js'
-import { hasAmbiguousBoolMerge, censusMaybeUndefinedKind, censusMaybeUndefined } from '../src/kind.js'
+import { hasAmbiguousBoolMerge, censusMaybeUndefinedKind, censusMaybeUndefined, censusShapedNode, nameMayBeUndefinedInBody, exprMayBeUndefinedIn } from '../src/kind.js'
+import { closureBodyReturnKind, closureBodyReturnMayBeUndefined } from '../src/compile/flow-types.js'
 
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 
@@ -1222,6 +1223,228 @@ test('censusMaybeUndefinedKind: bare-name REP fallback answers only when BOTH ma
   is(censusMaybeUndefinedKind('probeValOnly'), null, 'val without the flag must not be treated as maybeUndefined')
   updateRep('probeFlagOnly', { mayBeUndefined: true })
   is(censusMaybeUndefinedKind('probeFlagOnly'), null, 'the flag alone (no val) has nothing to claim')
+})
+
+// ============================================================================
+// mayBeUndefined Slice 2 — whole-program propagation (param/return/closure)
+// (.work/represented-maybe-undefined-design.md §3 remaining, §8 Slice 2).
+// Same honest-boundary framing as Slice 1 above: every consumer still gates
+// behind `valTypeOf(node) === VAL.SOMETHING` first, and `valTypeOf` for a
+// name/argument/return that traces to a census-shaped read stays null at
+// EVERY hop (decl, param, return) as long as VT['[]']/VT['.']/VT['()'] stay
+// dormant — a program-wide invariant, not slice-specific, so this section
+// pins the MECHANISM the same pure-analysis way Slice 1 did.
+// ============================================================================
+
+// --- shared structural predicates (kind.js) ---
+
+test('censusShapedNode: recognizes dict [] / . reads and Map .get() calls; rejects everything else', () => {
+  is(censusShapedNode(['[]', 'd', 'k']), true)
+  is(censusShapedNode(['.', 'd', 'prop']), true)
+  is(censusShapedNode(['()', ['.', 'm', 'get'], 'k']), true)
+  is(censusShapedNode(['()', ['.', 'm', 'set'], 'k']), false, '.set() is not a read')
+  is(censusShapedNode(['+', 1, 2]), false)
+  is(censusShapedNode('bareName'), false)
+  is(censusShapedNode(5), false)
+  is(censusShapedNode(null), false)
+})
+
+test('nameMayBeUndefinedInBody: traces a decl RHS through censusShapedNode', () => {
+  const body = ['{}', [';',
+    ['let', ['=', 'x', ['()', ['.', 'm', 'get'], ['str', 'missing']]]],
+    ['let', ['=', 'y', ['+', 'x', 1]]],
+  ]]
+  is(nameMayBeUndefinedInBody(body, 'x'), true)
+  is(nameMayBeUndefinedInBody(body, 'y'), false, 'y is never itself census-shaped nor a bare-name copy')
+})
+
+test('nameMayBeUndefinedInBody: copy-through a bare-name alias', () => {
+  const body = ['{}', [';',
+    ['let', ['=', 'x', ['[]', 'd', ['str', 'k']]]],
+    ['let', ['=', 'y', 'x']],
+  ]]
+  is(nameMayBeUndefinedInBody(body, 'y'), true)
+})
+
+test('nameMayBeUndefinedInBody: unwritten name resolves false (narrower than nullable\'s blanket fail-closed)', () => {
+  const body = ['{}', [';', ['let', ['=', 'y', ['+', 'z', 1]]]]]
+  is(nameMayBeUndefinedInBody(body, 'z'), false, 'z is never written in this body — no evidence, not "assume worst"')
+})
+
+test('nameMayBeUndefinedInBody: cyclic self-reference does not stack-overflow', () => {
+  // `x = x` structurally (a degenerate alias cycle) — the `seen` guard must
+  // stop recursion, not just avoid infinite loops in production shapes.
+  const body = ['{}', [';', ['let', ['=', 'x', 'x']]]]
+  is(nameMayBeUndefinedInBody(body, 'x'), false)
+})
+
+test('nameMayBeUndefinedInBody: a non-array bodyRoot (expression-bodied arrow) resolves false, not a crash', () => {
+  // WeakMap requires an object key — `() => x` lowers to a bare-name body in
+  // some arrow shapes (regression: this threw "Invalid value used as weak
+  // map key" before the Array.isArray guard).
+  is(nameMayBeUndefinedInBody('x', 'x'), false)
+  is(exprMayBeUndefinedIn('x', 'x'), false)
+})
+
+test('exprMayBeUndefinedIn: direct census shape OR bare-name trace, nothing else', () => {
+  const body = ['{}', [';', ['let', ['=', 'x', ['[]', 'd', ['str', 'k']]]]]]
+  is(exprMayBeUndefinedIn(['[]', 'd', ['str', 'k']], body), true, 'direct shape needs no body trace')
+  is(exprMayBeUndefinedIn('x', body), true, 'bare name traces through the body')
+  is(exprMayBeUndefinedIn(['+', 1, 2], body), false)
+})
+
+// --- param propagation (narrow.js narrowSignatures, whole-program fixpoint) ---
+
+test('mayBeUndefined param: a call-site arg tracing to a census read flags the callee param', () => {
+  if (onKernel()) return   // kernel: jz.compile routes through the kernel, which never returns `inspect`
+  // sourceInline:false — useIt's trivial pass-through body is an inlining
+  // candidate; inlined away, there is no separate function left to narrow.
+  const insp = compile(`
+    const useIt = (x) => x
+    export let f = () => {
+      const m = new Map(); m.set('a', 1)
+      let y = m.get('missing')
+      return useIt(y)
+    }
+  `, { wat: true, inspect: true, optimize: { sourceInline: false } }).inspect
+  is(insp.functions.useIt.params[0].mayBeUndefined, true)
+  // programFacts.paramReps' own verdict — visible even ahead of the compile/
+  // index.js seed into ctx.func.localReps (reps.js callerReps channel).
+  is(insp.functions.useIt.callerReps[0].mayBeUndefined, true)
+})
+
+test('mayBeUndefined param: an ordinary (non-census) forwarded arg never sets the flag', () => {
+  if (onKernel()) return
+  const insp = compile(`
+    const useIt = (x) => x
+    export let f = (n) => useIt(n + 1)
+  `, { wat: true, inspect: true, optimize: { sourceInline: false } }).inspect
+  is(insp.functions.useIt.params[0].mayBeUndefined, undefined)
+})
+
+test('mayBeUndefined param: a directly census-shaped call-site arg (no intermediate local) also flags it', () => {
+  if (onKernel()) return
+  const insp = compile(`
+    const useIt = (x) => x
+    export let f = () => {
+      const m = new Map(); m.set('a', 1)
+      return useIt(m.get('missing'))
+    }
+  `, { wat: true, inspect: true, optimize: { sourceInline: false } }).inspect
+  is(insp.functions.useIt.params[0].mayBeUndefined, true)
+})
+
+// --- return-kind propagation (flow-types.js closureBodyReturnKind sibling) ---
+
+// Direct unit harness: closureBodyReturnKind/closureBodyReturnMayBeUndefined
+// are pure `(body, capturedKinds)` functions (module/function.js's ctx.closure.
+// make calls them at closure-CREATION time) — testable without a full compile,
+// mirroring runAnalyzeMayBeUndefined's prepare(parse(code)) precedent above.
+function getFirstBody(code) {
+  reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
+  ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
+  prepare(parse(code))
+  const fn = ctx.func.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body)) || ctx.func.list[0]
+  return fn.body
+}
+
+test('closureBodyReturnMayBeUndefined: a return whose local decl traces to a census read', () => {
+  const body = getFirstBody(`let f = () => {
+    const m = new Map(); m.set('a', 1)
+    let x = m.get('missing')
+    return x
+  }`)
+  is(closureBodyReturnMayBeUndefined(body, new Map()), true)
+})
+
+test('closureBodyReturnMayBeUndefined: ordinary body never flags it (negative control)', () => {
+  const body = getFirstBody(`let f = () => {
+    let x = 5
+    return x
+  }`)
+  is(closureBodyReturnMayBeUndefined(body, new Map()), false)
+})
+
+test('closureBodyReturnMayBeUndefined: independent of closureBodyReturnKind\'s own kind resolution', () => {
+  // The two facts are DELIBERATELY separate functions (closureBodyReturnKind's
+  // return shape has a live consumer, kind-traits.js calleeValType, this
+  // design must not disturb) — prove they can disagree: capturedKinds lets
+  // valTypeOfWithLocals resolve `x` to a definite kind from OUTSIDE the body
+  // (as a real capture would), while the body's OWN local decl still traces
+  // to a census read, independently of that external kind proof.
+  const body = getFirstBody(`let f = () => {
+    const m = new Map(); m.set('a', 1)
+    let x = m.get('missing')
+    return x
+  }`)
+  // BindingId totality renames locals (mirrors resolveLocal above) — walk the
+  // body's own strings for the resolved spelling instead of assuming `x`.
+  const names = new Set()
+  const collect = (n) => { if (typeof n === 'string') names.add(n); else if (Array.isArray(n)) n.forEach(collect) }
+  collect(body)
+  const xName = [...names].find(n => n === 'x') ?? [...names].find(n => n.startsWith('x' + T))
+  is(closureBodyReturnKind(body, new Map([[xName, VAL.NUMBER]])), VAL.NUMBER)
+  is(closureBodyReturnMayBeUndefined(body, new Map([[xName, VAL.NUMBER]])), true)
+})
+
+// --- closure captures (module/function.js ctx.closure.make) ---
+
+test('mayBeUndefined closure capture: a flagged outer binding seeds the closure body record', () => {
+  if (onKernel()) return   // kernel: this process's ctx never sees the kernel's own compile
+  compile(`
+    export let f = (v) => {
+      const m = new Map(); m.set('a', 1)
+      let x = m.get('missing')
+      let g = () => x
+      return g()
+    }
+  `, { wat: true, optimize: { sourceInline: false } })
+  const cb = ctx.closure.bodies.find(b => b.captures?.some(c => c.startsWith('x')))
+  ok(cb, 'expected a closure body capturing x')
+  const xName = cb.captures.find(c => c.startsWith('x'))
+  ok(cb.mayBeUndefineds?.has(xName), 'captured x should carry mayBeUndefined into the closure body')
+})
+
+test('mayBeUndefined closure capture: an ordinary captured binding is not flagged (negative control)', () => {
+  if (onKernel()) return
+  // `x = v + 5` (not a bare literal) so it survives as a real capture instead
+  // of const-folding away before ctx.closure.make ever sees it.
+  compile(`
+    export let f = (v) => {
+      let x = v + 5
+      let g = () => x
+      return g()
+    }
+  `, { wat: true, optimize: { sourceInline: false } })
+  const cb = ctx.closure.bodies.find(b => b.captures?.some(c => c.startsWith('x')))
+  ok(cb, 'expected a closure body capturing x')
+  is(cb.mayBeUndefineds, undefined)
+})
+
+// --- narrowValResults' own OR-join: honest boundary ---
+// Unlike closureBodyReturnMayBeUndefined (independently resolvable via an
+// externally-injected capturedKinds map, proven live just above),
+// narrowValResults' `vt0`/`allSame` fold and the mayBeUndefined trace both
+// read the SAME body evidence for a bare-name return (bodyFacts.valTypes vs.
+// exprMayBeUndefinedIn's own raw-AST walk) — empirically, whenever a return
+// site traces to a census-shaped write, bodyFacts.valTypes ALSO fails to
+// settle a kind for that same name (the identical "unresolved write poisons"
+// behavior Slice 1's own decl producer already documented), so `vt0`/
+// `allSame` never holds at the same time a live mayBeUndefined trace would
+// apply — no black-box positive repro exists for this ONE join site the way
+// it does for the param and closure-capture joins above. The mechanism
+// itself (the `exprs.some(e => exprMayBeUndefinedIn(e, body))` OR-fold) is
+// still landed and correct — pinned here as a negative control so a future
+// change to bodyFacts.valTypes' settling rule that DOES make this live
+// doesn't silently ship unpinned.
+test('mayBeUndefined valResult: an ordinary settled return never sets valResultMayBeUndefined', () => {
+  if (onKernel()) return
+  const insp = compile(`
+    const useIt = (x) => x.length
+    export let f = () => useIt([1, 2, 3])
+  `, { wat: true, inspect: true, optimize: { sourceInline: false } }).inspect
+  ok(insp.functions.useIt, 'expected useIt to survive as a separate function')
+  is(insp.functions.useIt.valResultMayBeUndefined, undefined)
 })
 
 // === untyped-receiver number methods (the kernel-L2 data-corruption root) ===

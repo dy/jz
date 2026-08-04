@@ -93,28 +93,40 @@ export const VAL = {
  * @property {boolean} [mayBeUndefined]   binding's value can be real JS `undefined`
  *   at runtime despite a definite `val` kind claim — the container-read
  *   generalization of `nullable` (.work/represented-maybe-undefined-design.md
- *   §2). Slice 1 (decl-time producer only, analyze.js analyzeValTypes'
- *   `let`/`const`/`=` sites): true when the RHS is itself a dict/Map
- *   maybeUndefined-shaped read (censusMaybeUndefinedKind(rhs) != null) or a
- *   bare name that already carries the flag (copy-through). Consumer:
- *   censusMaybeUndefinedKind's REP-fallback arm (kind.js) — a bare name whose
- *   rep carries BOTH `mayBeUndefined` and a `val` answers exactly like the
- *   read node itself would at every existing censusMaybeUndefined chokepoint
- *   (ir.js toNumF64/toStrI64, emit.js nullableOperand/bigIntOperand/
- *   bigIntUnary, module/string.js/number.js/console.js). NOTE: as landed in
- *   Slice 1, this fact is representationally complete but behaviorally INERT
- *   — the decl producer only ever sets `mayBeUndefined` alongside whatever
- *   `val` the ordinary `valTypeOf`/`setVal` path already derives, and that
- *   path stays null for a dict/Map read for as long as VT['[]']/VT['.']/
- *   VT['()'] (dictValueKindOf/mapValueKindOf) stay dormant (§5's own
- *   re-enablement gate) — so `mayBeUndefined` never currently rides alongside
- *   a non-null `val` for this shape. Slice 4 (re-enabling those VT folds,
- *   once §5's full criteria are met) is what makes this fact load-bearing;
- *   Slice 1 lands the propagation machinery ahead of that so decl/param/
- *   return/closure binding doesn't re-open the audit-#9 hole the moment it
- *   does. Param/return/closure propagation (§3 remaining) is Slice 2, not
- *   landed yet — do not assume this survives an argument pass, a `return`,
- *   or a closure capture until that slice lands.
+ *   §2). Slice 1 (decl-time producer, analyze.js analyzeValTypes' `let`/
+ *   `const`/`=` sites): true when the RHS is itself a dict/Map maybeUndefined-
+ *   shaped read (censusMaybeUndefinedKind(rhs) != null) or a bare name that
+ *   already carries the flag (copy-through). Slice 2 (§3 remaining — narrow.js
+ *   param/return join, flow-types.js closure return-kind join, module/
+ *   function.js closure-capture seed): the SAME whole-program call-site
+ *   fixpoint/return-tail unification `nullable`/`bigintBoxed` already run
+ *   through, joined via kind.js's ctx-independent `censusShapedNode`/
+ *   `exprMayBeUndefinedIn` (real, ctx-aware census lookups would misread at
+ *   plan time — same caveat narrow.js's BIGINT-nullable block documents for
+ *   mayBeNullish). Fail-closed on a destructured param body (no per-call-site
+ *   proof mechanism for what a destructured element holds); OR-joined across
+ *   every live call site otherwise; an unwritten/untraced bare-name arg
+ *   contributes no evidence (false) — narrower than nullable's blanket
+ *   "unwritten → fail closed", matching this fact's own provenance-only
+ *   scope. Consumer (both slices): censusMaybeUndefinedKind's REP-fallback
+ *   arm (kind.js) — a bare name whose rep carries BOTH `mayBeUndefined` and a
+ *   `val` answers exactly like the read node itself would at every existing
+ *   censusMaybeUndefined chokepoint (ir.js toNumF64/toStrI64, emit.js
+ *   nullableOperand/bigIntOperand/bigIntUnary, module/string.js/number.js/
+ *   console.js). NOTE: still behaviorally INERT after Slice 2, for the same
+ *   underlying reason as Slice 1 (not a slice-specific gap) — `val` never
+ *   settles non-null for a name/argument/return that traces to a census-
+ *   shaped read, at ANY hop, as long as VT['[]']/VT['.']/VT['()']
+ *   (dictValueKindOf/mapValueKindOf) stay dormant (§5's re-enablement gate):
+ *   a census-shaped call-site ARGUMENT contributes null to hardParamVal's own
+ *   fold (poisoning specialization, never claiming a kind), so the param
+ *   `val` this fact would ride alongside stays unproven right along with it.
+ *   Slice 4 (re-enabling those VT folds) is what makes both slices' work
+ *   load-bearing at once. func.valResultMayBeUndefined / ctx.closure.
+ *   valResultMayBeUndefined (Map<closureBodyName, true>) carry the return-
+ *   kind join's result alongside func.valResult / ctx.closure.valResult —
+ *   parallel facts, not merged into those (their return shapes have live
+ *   consumers, kind-traits.js calleeValType, this design must not disturb).
  * @property {string}  [dictValueValType] VAL.* kind of every value ever written
  *   through `name[key] = v` (any key, HASH dict-mode local or global) —
  *   first-wins-then-clash lattice, absent/null = unproven or mixed. Additive-

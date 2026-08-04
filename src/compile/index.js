@@ -337,6 +337,14 @@ function captureFuncInspect(func, facts, programFacts) {
     results: sig.results.slice(),
     ...(sig.ptrKind != null ? { resultPtrKind: sig.ptrKind } : {}),
     ...(sig.ptrAux != null ? { resultPtrAux: sig.ptrAux } : {}),
+    // valResult/valResultMayBeUndefined (Slice 2, .work/represented-maybe-
+    // undefined-design.md §3 "Return kinds") — narrowValResults' joined VAL
+    // kind across every return site, and the mayBeUndefined OR-join riding
+    // alongside it. Exposed for the same reason params/locals are: the pure-
+    // analysis test harness precedent (test/types.js) this design's Slice 1
+    // established, since neither fact changes emitted WAT yet.
+    ...(func.valResult != null ? { valResult: func.valResult } : {}),
+    ...(func.valResultMayBeUndefined ? { valResultMayBeUndefined: true } : {}),
     locals,
     ...(Object.keys(callerReps).length ? { callerReps } : {}),
   }
@@ -553,6 +561,18 @@ function analyzeFuncForEmit(func, programFacts) {
       // Cross-function never-relocation proof (analyzeParamNeverGrown) — the
       // raw-base array read (module/array.js arrBase) keys off this rep.
       if (r.neverGrown) updateRep(pname, { neverGrown: true })
+      // mayBeUndefined (Slice 2, .work/represented-maybe-undefined-design.md
+      // §3) — narrow.js's inter-procedural join already proved this param's
+      // ENTRY value can be a census-shaped read at some live call site.
+      // Unconditional (no `!reassigned` guard, unlike r.val/r.recvArrTyped
+      // just above): this is a safe-direction, monotonic fact like `nullable`
+      // (the caller-side nullability block right below seeds THAT one the
+      // same unconditional way) — never an exact-kind claim a stale seed
+      // could make wrong, only ever an extra soundness carve-out a stale seed
+      // makes unnecessary. A body write the fixpoint couldn't see keeps the
+      // flag one step more conservative than strictly needed; per the
+      // design's own fail-closed direction that's the safe side to be wrong on.
+      if (r.mayBeUndefined) updateRep(pname, { mayBeUndefined: true })
     }
   }
   // Caller-side nullability: a NO-DEFAULT param observes the UNDEF pad whenever a
@@ -1726,6 +1746,13 @@ function emitClosureBody(cb) {
   if (cb.intConsts) for (const [name, v] of cb.intConsts) updateRep(name, { intConst: v })
   if (cb.intCertain) for (const name of cb.intCertain) updateRep(name, { intCertain: true })
   if (cb.nullables) for (const name of cb.nullables) updateRep(name, { nullable: true })
+  // mayBeUndefined closure captures (Slice 2, .work/represented-maybe-
+  // undefined-design.md §3 "Closure captures") — same seeding as cb.nullables
+  // just above: the parent's mayBeUndefined mark on a captured binding must
+  // survive into the closure's OWN body, or its own write facts (a settled
+  // `val`) would let this fact evaporate exactly the way an un-seeded
+  // `nullable` would.
+  if (cb.mayBeUndefineds) for (const name of cb.mayBeUndefineds) updateRep(name, { mayBeUndefined: true })
   if (cb.valTypes) for (const [name, vt] of cb.valTypes) updateRep(name, { val: vt })
   if (cb.schemaVars) {
     ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])

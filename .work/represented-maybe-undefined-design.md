@@ -365,3 +365,152 @@ make a param/return/closure-propagated fact load-bearing yet) — landing it
 in the same pass would not have bought a second observable repro either,
 only a second unit of unverifiable-by-black-box plumbing. Honest boundary:
 stopped after Slice 1.
+
+## 10. Slice 2 — as landed, honest boundary correction
+
+Landed: whole-program propagation for `mayBeUndefined` through params,
+returns, and closure captures — the §3 machinery §9 deferred.
+
+**The shared predicate** (kind.js, DRY per §4's own "one predicate function"
+instruction): `censusShapedNode(node)` factors OUT `censusMaybeUndefinedKind`'s
+arms 1/2 AST-shape test (dict `[]`/`.` read, Map `.get()` call) with NO ctx
+lookup — `censusMaybeUndefinedKind` itself now calls it internally
+(behavior-preserving refactor, verified by the existing Slice 1 test suite
+staying green unchanged). `nameMayBeUndefinedInBody(bodyRoot, name)` walks a
+raw AST body's own `let`/`const`/`=` writes for `name`, cycle-guarded,
+answering true iff some write is `censusShapedNode`-shaped or copies through
+a bare name that already traces to one — WeakMap-cached per `bodyRoot`.
+`exprMayBeUndefinedIn(expr, bodyRoot)` composes both: direct shape or
+bare-name trace. All three are ctx-INDEPENDENT by construction — required
+because every Slice 2 join site runs at a point where the queried function's
+own `ctx.func.localReps`/`ctx.types.nameEscapes` aren't installed (narrow.js's
+whole-program fixpoint runs before per-function emission; a closure's
+`ctx.closure.make` runs at the closure literal's creation site, before that
+closure body itself has compiled) — the same caveat narrow.js's own
+`bodyNameNullable` documents for why it re-derives `mayBeNullish` structurally
+instead of trusting a rep lookup. `censusShapedNode` is a conservative
+OVER-approximation of the real (ctx-aware) census — sound because every
+consumer below only ever asks it to decide `mayBeUndefined = true`, never to
+claim an exact kind.
+
+**Params** (narrow.js `narrowSignatures`, alongside the existing BIGINT-boxed
+call-site fold): fail-closed on a destructured param body
+(`isDestructuredParamBody`, reused verbatim from `bigintBoxedVerdict` — no
+per-call-site proof mechanism exists for what a destructured element holds);
+otherwise OR-joined across every live call site via `exprMayBeUndefinedIn`.
+Deliberately NOT built on `mayBeNullish`/`bodyNameNullable` (the BIGINT-
+nullable block's own machinery) — `mayBeNullish` already fails closed for ANY
+call/property read, which would flag `mayBeUndefined` on nearly every param
+in the program; wrong breadth for a fact whose whole point is staying tied to
+dict/Map absent-key provenance. An unwritten bare-name arg (a caller
+param/global/capture forwarded straight through) resolves false — narrower
+than `nullable`'s blanket "unwritten → fail closed", matching the decl
+producer's (Slice 1) own honest default for an ordinary RHS. Seeded onto the
+callee's real `ctx.func.localReps` at `compile/index.js`'s per-function param
+loop (`analyzeFuncForEmit`), unconditionally (no `!reassigned` guard, unlike
+`val`/`recvArrTyped` — this is a monotonic safe-direction fact like
+`nullable`, never an exact-kind claim a stale seed could make wrong).
+
+**Returns**: `narrowValResults` (narrow.js) ORs `exprMayBeUndefinedIn` across
+the same return-tail exprs its `allSame` fold already unifies, setting
+`func.valResultMayBeUndefined` alongside `func.valResult`.
+`closureBodyReturnMayBeUndefined` (flow-types.js) is `closureBodyReturnKind`'s
+sibling — same return-tail sites (factored into a shared `closureReturnSites`
+helper), OR-folded instead of unified — stored in its own
+`ctx.closure.valResultMayBeUndefined` Map (module/function.js), parallel to
+`ctx.closure.valResult`, NOT merged into that Map's value shape: `valResult`/
+`closureBodyReturnKind` return a bare `VAL.*` string with a live consumer
+(kind-traits.js `calleeValType`) this slice must not disturb.
+
+**Closure captures** (module/function.js `ctx.closure.make`): `repOf(name)
+?.mayBeUndefined` joins the SAME `envCaptures` loop that already builds
+`captureNullables` — a direct sibling, not a new walk. Seeded into the
+closure body's own reps at `compile/index.js emitClosureBody`
+(`cb.mayBeUndefineds`), mirroring `cb.nullables` exactly.
+
+**A real bug found and fixed during this slice**: `nameMayBeUndefinedInBody`'s
+WeakMap cache threw `TypeError: Invalid value used as weak map key` the first
+time `closureBodyReturnMayBeUndefined` ran against a real expression-bodied
+arrow (`() => x` lowers to a bare-STRING body in some arrow shapes, not an
+array) — WeakMap keys must be objects. Fixed with an `Array.isArray(bodyRoot)`
+guard (a non-array body can't contain a `let`/`=` write to walk anyway, so
+"no trace" is the correct answer, not a crash). Caught by exercising the
+mechanism through a real `compile()` call during test-writing, not by the
+unit tests alone — the unit tests were extended with a regression pin for
+exactly this shape.
+
+**Honest boundary — still inert, program-wide, not slice-specific**: like
+Slice 1, nothing in Slice 2 changes a compiled byte or a JS-observable value.
+Unlike Slice 1 (where the reason was purely "no VT consumer yet"), Slice 2's
+inertness is a program-wide INVARIANT that holds at every hop: a census-
+shaped read's `val` never settles non-null — not at the read itself
+(dormant VT), not at a decl that copies it (Slice 1's own finding), not as a
+call-site ARGUMENT (a census-shaped arg contributes null to `hardParamVal`'s
+fold, poisoning specialization rather than claiming a kind), and — newly
+verified this slice — not as a RETURN value either (`bodyFacts.valTypes`,
+`narrowValResults`' own kind resolver, poisons a bare-name return the
+identical way once any of its writes is unresolvable). So a param/return
+`val` this design's `mayBeUndefined` would ride alongside stays unproven
+right along with it, at every hop, until Slice 4.
+
+Two of Slice 2's three join sites are nonetheless independently, DIRECTLY
+provable live — proven by not depending on that same `val` chain at all:
+
+- **Param propagation** IS observably live: `paramReps[fname][k].mayBeUndefined`
+  sets unconditionally (no `val` gate), reaches `ctx.func.localReps` via the
+  compile/index.js seed, and surfaces through the existing `ctx.inspect`
+  sink (`compile(src, {inspect:true}).inspect.functions[name].params[k]
+  .mayBeUndefined` / `.callerReps[k].mayBeUndefined`) — verified with a real
+  `useIt(y)` call site where `y`'s decl traces to a census read.
+- **Closure captures** ARE observably live: `ctx.closure.bodies` entries
+  carry `mayBeUndefineds` whenever a captured outer binding was flagged —
+  verified directly against real compiled closures.
+- **`closureBodyReturnMayBeUndefined` is independently live** too, and
+  provably ORTHOGONAL to `closureBodyReturnKind`'s own resolution: unlike
+  `narrowValResults`, `closureBodyReturnKind`/`closureBodyReturnMayBeUndefined`
+  resolve a bare-name return through the EXTERNALLY-SUPPLIED `capturedKinds`
+  map (the real caller's proven capture kinds), not through the body's own
+  internal value tracker — so a closure whose captured name's kind is proven
+  from OUTSIDE while its OWN local (re)declaration still traces to a census
+  read demonstrates both facts firing simultaneously, independently. Pinned
+  directly (test/types.js), calling the exported `(body, capturedKinds)`
+  functions with a hand-resolved local name — no black-box repro needed
+  because there's a live, testable divergence to pin.
+- **`narrowValResults`' own OR-join is the one join site that stays
+  unreachable in practice** (not by construction — empirically, every shape
+  tried): the SAME body evidence a return's bare name would need to both (a)
+  settle a definite `vt0`/`allSame` kind AND (b) trace to a census read is
+  read by two different mechanisms (`bodyFacts.valTypes` vs.
+  `exprMayBeUndefinedIn`'s raw-AST walk) that happen to poison identically —
+  whenever (b) would be true for a return site, (a) already failed for the
+  same site, so the two conditions never co-occur. The OR-fold itself is
+  landed and correct (mirrors the `exprs.every(...)` fold it rides beside
+  line-for-line); pinned as a negative control (an ordinary settled return
+  never sets `valResultMayBeUndefined`) so a future change to
+  `bodyFacts.valTypes`' settling rule that DOES make this co-occur doesn't
+  silently ship unpinned.
+
+**Test harness** (test/types.js, continuing Slice 1's pure-analysis
+precedent): unit tests for `censusShapedNode`/`nameMayBeUndefinedInBody`/
+`exprMayBeUndefinedIn` against hand-built AST fragments (including the
+WeakMap-crash regression); `compile(src, {inspect:true})` positive/negative
+pairs for param propagation; direct `closureBodyReturnKind`/
+`closureBodyReturnMayBeUndefined` calls (parse+prepare harness, no full
+compile needed — both are pure `(body, capturedKinds)` functions) for the
+return-kind join, including the orthogonality pin; `ctx.closure.bodies`
+inspection positive/negative pairs for closure captures; a negative-control
+pin for `narrowValResults`' own join.
+
+Gates run (post-slice, fresh dist rebuild): full 88-file battery in 13
+foreground chunks of ≤7, kernel-parity 33/33 byte-identical, kernel-oracle
+11/11, perf-ratchet 10/10 at +0 delta every category, optimizer 214/214,
+dyn-keys.js/inference.js/never-grown.js/simd.js run explicitly (all green),
+selfhost.js 21/21 (pre- and post-rebuild), fresh build ×2 byte-identical
+(jz.js/jz.wasm/interop.js), size sweep geomean 1.0550 (unchanged from the
+1.055 baseline — `scripts/bench-size.mjs --json`, 49 cases with both a jz and
+an AS byte count), fuzz 2000×4 (`node test/fuzz.js --count=2000`, four
+separate runs) zero divergence.
+
+Slice 3 (§8's chokepoint-sweep gaps, `bigintMixReject`/`+`-concat) and Slice 4
+(VT re-enablement) remain unstarted — both still gated on §5's full criteria,
+untouched by this slice.

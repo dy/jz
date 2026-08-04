@@ -375,18 +375,87 @@ export function mapValueKindOf(name) {
 // producer (analyze.js analyzeValTypes) sets `mayBeUndefined` on arm-3's
 // bare names regardless, ahead of that, so the fact doesn't have to be
 // invented retroactively once Slice 4 lands.
+//
+// censusShapedNode (Slice 2, .work/represented-maybe-undefined-design.md §3)
+// factors OUT arms 1/2's pure AST-SHAPE test — no ctx lookup — so a whole-
+// program plan-time consumer can recognize the same two node shapes without
+// touching ctx.func.localReps/ctx.types.nameEscapes: narrow.js's param/
+// return-kind fixpoint and flow-types.js's closure return-kind pre-pass all
+// run BEFORE the queried function's own ctx state is installed (identical
+// caveat narrow.js's bodyNameNullable already documents for mayBeNullish —
+// "at plan time no caller ctx.func is installed, so rep lookups would
+// misread"). A pure shape test is a conservative OVER-approximation of the
+// real census (skips dictCensusReceiverIsLive/nameEscapes/dynWriteVars) —
+// sound because every caller below only ever uses it to decide
+// `mayBeUndefined = true`, never to claim an exact kind (the design's own
+// fail-closed direction: absence of proof of presence keeps this fact TRUE,
+// never removes it).
+export const censusShapedNode = (node) =>
+  (Array.isArray(node) && (node[0] === '[]' || node[0] === '.') && node.length === 3 && typeof node[1] === 'string') ||
+  (Array.isArray(node) && node[0] === '()' && node.length === 3 &&
+    Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'get' && typeof node[1][1] === 'string')
+
 export function censusMaybeUndefinedKind(node) {
-  if (Array.isArray(node) && (node[0] === '[]' || node[0] === '.') && node.length === 3
-    && typeof node[1] === 'string' && dictCensusReceiverIsLive(node[1])) return dictValueKindOf(node[1])
-  if (Array.isArray(node) && node[0] === '()' && node.length === 3
-    && Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'get'
-    && typeof node[1][1] === 'string') return mapValueKindOf(node[1][1])
+  if (censusShapedNode(node)) {
+    if (node[0] === '[]' || node[0] === '.') return dictCensusReceiverIsLive(node[1]) ? dictValueKindOf(node[1]) : null
+    return mapValueKindOf(node[1][1])
+  }
   if (typeof node === 'string') {
     const r = repOf(node)
     if (r?.mayBeUndefined && r.val) return r.val
   }
   return null
 }
+
+// mayBeUndefined structural TRACE (Slice 2, §3 "Param lattice"/"Return
+// kinds"): does `name`, written somewhere in `bodyRoot` via a plain
+// `let`/`const`/`=`, resolve — transitively, cycle-guarded — to a
+// censusShapedNode RHS? Ctx-independent by construction (censusShapedNode
+// above), so it's safe to run against a CALLER's or CALLEE's raw body at
+// plan/pre-compile time, before that function's own reps exist. Shared by
+// every whole-program-fixpoint consumer that needs this fact early:
+// narrow.js's inter-procedural param join and return-kind join, flow-types.js's
+// closureBodyReturnKind sibling. WeakMap-cached per bodyRoot (an AST array is
+// a stable reference for the lifetime of one compile; a fresh parse gets a
+// fresh cache entry, so nothing leaks across separate compiles/tests).
+const mayBeUndefinedTraceCache = new WeakMap()
+export function nameMayBeUndefinedInBody(bodyRoot, name, seen = new Set()) {
+  // Expression-bodied arrow whose body IS a bare name/literal (`() => x`) —
+  // a WeakMap key must be an object, and a non-array bodyRoot can't contain
+  // a `let`/`const`/`=` write to walk anyway, so there's nothing to trace.
+  if (!Array.isArray(bodyRoot)) return false
+  let m = mayBeUndefinedTraceCache.get(bodyRoot)
+  if (!m) { m = new Map(); mayBeUndefinedTraceCache.set(bodyRoot, m) }
+  if (m.has(name)) return m.get(name)
+  if (seen.has(name)) return false
+  seen.add(name)
+  let flagged = false
+  const walk = (node) => {
+    if (flagged || !Array.isArray(node)) return
+    const op = node[0]
+    if ((op === 'let' || op === 'const') && node.length >= 2) {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && d[1] === name &&
+          (censusShapedNode(d[2]) || (typeof d[2] === 'string' && nameMayBeUndefinedInBody(bodyRoot, d[2], seen))))
+          flagged = true
+      }
+    } else if (op === '=' && node[1] === name &&
+      (censusShapedNode(node[2]) || (typeof node[2] === 'string' && nameMayBeUndefinedInBody(bodyRoot, node[2], seen))))
+      flagged = true
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(bodyRoot)
+  m.set(name, flagged)
+  return flagged
+}
+
+/** censusShapedNode(expr) OR a bare-name expr that traces to one through
+ *  bodyRoot's own writes (nameMayBeUndefinedInBody) — the one-call shape
+ *  every Slice 2 join site consults. */
+export const exprMayBeUndefinedIn = (expr, bodyRoot) =>
+  censusShapedNode(expr) || (typeof expr === 'string' && nameMayBeUndefinedInBody(bodyRoot, expr))
+
 export const censusMaybeUndefined = (node) => !!censusMaybeUndefinedKind(node)
 
 // `[]` op covers both array literals (1 arg) and index access (2 args).

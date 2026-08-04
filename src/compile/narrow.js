@@ -19,7 +19,7 @@ import { scanBoundedLoops, exprType, typedElemCtor, typedStaticLen, intLevelMap 
 import { typedElemAux, ctorFromElemAux } from '../../layout.js'
 import { observeProgramSlots } from './program-facts.js'
 import { noteParamVerdict } from './bigint-boxed-stats.js'
-import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge } from '../kind.js'
+import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, exprMayBeUndefinedIn } from '../kind.js'
 import { typedCtorElemValType } from '../kind-traits.js'
 import { VAL, updateRep, lookupValType } from '../reps.js'
 import {
@@ -720,7 +720,19 @@ function narrowValResults(funcs) {
         ctx.func.localReps = prevReps
       }
       if (!vt0) continue
-      if (allSame) { func.valResult = vt0; changed = true }
+      if (allSame) {
+        func.valResult = vt0
+        // mayBeUndefined return-kind join (Slice 2, .work/represented-maybe-
+        // undefined-design.md §3 "Return kinds"): OR across every return-tail
+        // expr this SAME allSame fold already unified — a `return d[missing]`
+        // arm's census shape, or a `return x` whose `x` traces to one through
+        // this func's own writes (exprMayBeUndefinedIn — ctx-independent, see
+        // kind.js), makes the whole result maybeUndefined. Additive-only, like
+        // valResult itself: never re-checked once true.
+        if (!func.valResultMayBeUndefined && exprs.some(e => exprMayBeUndefinedIn(e, body)))
+          func.valResultMayBeUndefined = true
+        changed = true
+      }
     }
   }
 }
@@ -2360,6 +2372,49 @@ export default function narrowSignatures(programFacts, ast) {
       for (const [k, r] of reps)
         if (!!r.bigintBoxed !== bigintBoxedVerdict(fname, k, r))
           throw new Error(`bigintBoxed fixpoint-completeness: ${fname} param ${k} verdict changed on re-derivation (${!!r.bigintBoxed} -> ${bigintBoxedVerdict(fname, k, r)})`)
+
+  // mayBeUndefined param propagation (Slice 2, .work/represented-maybe-
+  // undefined-design.md §3 "Param lattice") — the inter-procedural half of
+  // the same fact Slice 1 (analyze.js analyzeValTypes) already seeds at decl
+  // time. Modeled on bigintBoxedVerdict just above: same fail-closed
+  // destructured-param default (isDestructuredParamBody, reused verbatim —
+  // no per-call-site proof mechanism exists for what a destructured element
+  // ends up holding, so assume the worst), same call-site OR-fold shape.
+  //
+  // Deliberately NOT built on mayBeNullish/bodyNameNullable (the BIGINT-
+  // nullable block's own machinery, above): mayBeNullish already fails
+  // closed for ANY call/property read (kind.js's "missable" bucket), which
+  // would make mayBeUndefined fire for nearly every param in the program —
+  // the wrong breadth for a fact whose whole point (reps.js doc,
+  // censusMaybeUndefinedKind arm 3) is staying tied to a dict/Map absent-key
+  // provenance, not "any unproven expression". analyze.js's mayBeUndefinedRhs
+  // already established this as a deliberately separate, narrower mechanism
+  // from mayBeNullish (Slice 1's own comment); this block continues that
+  // precedent into the whole-program half via exprMayBeUndefinedIn (kind.js —
+  // censusShapedNode's ctx-independent shape test, needed here for the exact
+  // reason bodyNameNullable's own comment gives: at this plan-time fixpoint,
+  // no CALLER's ctx.func.localReps is installed, so the real (ctx-aware)
+  // census would misread).
+  //
+  // An UNWRITTEN bare-name arg (a caller param/global/capture forwarded
+  // straight through) contributes NO evidence and resolves false — unlike
+  // nullable's blanket "unwritten → fail closed" (mayBeNullish's own
+  // universal-nullability contract), mayBeUndefined's provenance is narrow
+  // enough that "no trace to a census read" is the same honest default the
+  // decl producer (Slice 1) already applies to every ordinary RHS.
+  for (const [fname, reps] of paramReps) {
+    for (const [k, r] of reps) {
+      if (r.mayBeUndefined) continue
+      const func = ctx.func.map?.get(fname)
+      if (!func?.sig?.params || k >= func.sig.params.length) continue
+      const pname = func.sig.params[k].name
+      if (isDestructuredParamBody(func, pname)) { r.mayBeUndefined = true; continue }
+      for (const cs of callSites) {
+        if (cs.callee !== fname || k >= cs.argList.length) continue
+        if (exprMayBeUndefinedIn(cs.argList[k], cs.callerFunc?.body)) { r.mayBeUndefined = true; break }
+      }
+    }
+  }
 
   // Don't steal typed-array params from specializeBimorphicTyped: F phase parks
   // bimorphic typed params at type='f64' with sticky-null typedCtor (two distinct

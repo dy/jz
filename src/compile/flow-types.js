@@ -21,7 +21,7 @@ import { ctx } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { isReassigned, isBlockBody, alwaysReturns, TYPEOF, typeofPredicate } from '../ast.js'
 import { constIntExpr } from '../static.js'
-import { valTypeOfWithLocals } from '../kind.js'
+import { valTypeOfWithLocals, exprMayBeUndefinedIn } from '../kind.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
 
 // Exported: the closure return-kind pre-pass (module/function.js, round-6
@@ -482,13 +482,45 @@ function crkWalkSites(n, refined) {
   return out
 }
 
-export function closureBodyReturnKind(body, capturedKinds) {
+// Shared site-collection: both closureBodyReturnKind and its mayBeUndefined
+// sibling below unify/OR-fold over the SAME return-tail sites (design's own
+// "extend the join" instruction — a different site set would be a different,
+// unjustified fact). Returns null iff there's no closed set of sites to fold
+// (bare return / unreachable end), matching closureBodyReturnKind's own
+// pre-extraction null contract.
+function closureReturnSites(body, capturedKinds) {
   if (isBlockBody(body) && !alwaysReturns(body)) return null
   const sites = isBlockBody(body) ? crkWalkSites(body, capturedKinds) : crkLeafSites(body, capturedKinds)
-  if (sites === null || !sites.length) return null
+  return sites === null || !sites.length ? null : sites
+}
+
+export function closureBodyReturnKind(body, capturedKinds) {
+  const sites = closureReturnSites(body, capturedKinds)
+  if (!sites) return null
   const kindOf = (site) => valTypeOfWithLocals(site.expr, name => site.refined.get(name))
   const kind0 = kindOf(sites[0])
   if (!kind0) return null
   for (let i = 1; i < sites.length; i++) if (kindOf(sites[i]) !== kind0) return null
   return kind0
+}
+
+/**
+ * mayBeUndefined return-kind join (Slice 2, .work/represented-maybe-
+ * undefined-design.md §3 "Return kinds") — the closureBodyReturnKind sibling:
+ * same return-tail sites (closureReturnSites), OR-folded instead of unified —
+ * any site whose expr is itself census-shaped, or a bare name tracing
+ * (through the body's own writes) to one, makes the WHOLE closure's result
+ * maybeUndefined. `exprMayBeUndefinedIn` (kind.js) is ctx-independent by
+ * construction — sound to call here, at closure-CREATION time, before this
+ * closure body has compiled and installed its own ctx.func.localReps (the
+ * same reasoning narrow.js's param/return joins document for why they can't
+ * trust the real, ctx-aware census either at their own plan-time fixpoint).
+ * A separate function (not folded into closureBodyReturnKind's own return)
+ * because that function's return shape — a bare VAL.* string — has a live
+ * consumer (kind-traits.js calleeValType) this slice must not disturb.
+ */
+export function closureBodyReturnMayBeUndefined(body, capturedKinds) {
+  const sites = closureReturnSites(body, capturedKinds)
+  if (!sites) return false
+  return sites.some(site => exprMayBeUndefinedIn(site.expr, body))
 }

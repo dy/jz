@@ -4,6 +4,63 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, represented-maybe-undefined Slice 2 landed —
+## whole-program propagation, .work/represented-maybe-undefined-design.md §10)
+
+Landed Slice 2: `mayBeUndefined` now propagates through params, returns, and
+closure captures — the same whole-program machinery `nullable`/`bigintBoxed`
+already run through (narrow.js's call-site fixpoint, `narrowValResults`,
+module/function.js's `ctx.closure.make`). New shared, ctx-independent
+predicate in kind.js (`censusShapedNode`/`nameMayBeUndefinedInBody`/
+`exprMayBeUndefinedIn`) — needed because every Slice 2 join site runs before
+the queried function's own `ctx.func.localReps` is installed, the identical
+caveat narrow.js's `bodyNameNullable` already documents for `mayBeNullish`.
+Params: fail-closed on a destructured param body (reuses `bigintBoxedVerdict`'s
+`isDestructuredParamBody` verbatim), OR-joined across live call sites
+otherwise — deliberately NOT built on `mayBeNullish` (too broad; would flag
+nearly every param). Returns: `func.valResultMayBeUndefined`
+(narrowValResults) + `ctx.closure.valResultMayBeUndefined`
+(closureBodyReturnMayBeUndefined, flow-types.js) — parallel Maps, not merged
+into `valResult`/`closureBodyReturnKind`'s own return shape (those have a live
+consumer, kind-traits.js `calleeValType`, this slice must not disturb).
+Captures: `repOf(name)?.mayBeUndefined` joins the existing `envCaptures`/
+`captureNullables` loop.
+
+Found and fixed one real bug while landing this: `nameMayBeUndefinedInBody`'s
+WeakMap cache threw on a non-array `bodyRoot` (an expression-bodied arrow
+`() => x` lowers to a bare-string body in some shapes) — guarded with
+`Array.isArray(bodyRoot)`.
+
+HONEST BOUNDARY: still inert (no compiled byte/value changes) for the SAME
+program-wide reason as Slice 1 — a census-shaped read's `val` never settles
+non-null at ANY hop (decl, call-site arg, return) while VT['[]']/['.']/['()']
+stay dormant, verified this slice for the param/return hops too (a census-
+shaped call-site arg poisons `hardParamVal`'s fold rather than claiming a
+kind; a census-traced bare-name return poisons `bodyFacts.valTypes` the same
+way). But TWO of the three join sites don't depend on that `val` chain at all
+and ARE directly, observably live: param propagation (`ctx.inspect` sink —
+`compile(src,{inspect:true}).inspect.functions[name].params[k]
+.mayBeUndefined`) and closure captures (`ctx.closure.bodies[i].mayBeUndefineds`)
+both verified against real compiled programs. `closureBodyReturnMayBeUndefined`
+is also independently live and provably ORTHOGONAL to `closureBodyReturnKind`
+(they resolve bare names through an externally-supplied `capturedKinds` map,
+not the body's own value tracker) — pinned directly. `narrowValResults`' own
+OR-join is the one site that stays empirically unreachable (the same body
+evidence that would prove both conditions is read by two mechanisms that
+poison identically) — landed correctly, pinned as a negative control.
+
+GATES (fresh dist rebuild): full 88-file battery in 13 foreground chunks of
+≤7, kernel-parity 33/33 byte-identical (re-run post-rebuild), kernel-oracle
+11/11, perf-ratchet 10/10 at +0 delta every category, optimizer 214/214,
+dyn-keys.js/inference.js/never-grown.js/simd.js run explicitly, selfhost.js
+21/21 (pre- and post-rebuild), fresh build ×2 byte-identical (jz.js/jz.wasm/
+interop.js), size sweep geomean 1.0550 (unchanged — 49-case `scripts/
+bench-size.mjs --json` jz/AS geomean), fuzz 2000×4 (`node test/fuzz.js
+--count=2000`, four separate runs) zero divergence.
+
+Slice 3 (chokepoint-sweep gaps) and Slice 4 (VT re-enablement) remain
+unstarted, both gated on design §5's full criteria.
+
 ## Status (2026-08-04, represented-maybe-undefined Slice 1 landed — REP_FIELDS
 ## + decl-time producer, .work/represented-maybe-undefined-design.md §8)
 

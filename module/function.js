@@ -23,7 +23,7 @@ import { findFreeVars } from '../src/compile/analyze.js'
 // (kind-traits.js) needs it. narrow.js's narrowValResults is the OTHER
 // caller — the PLANNING-time one, for a function that directly returns a
 // call to its OWN freshly-declared local closure (watr's uleb/limits shape).
-import { closureBodyReturnKind } from '../src/compile/flow-types.js'
+import { closureBodyReturnKind, closureBodyReturnMayBeUndefined } from '../src/compile/flow-types.js'
 import { T } from '../src/ast.js'
 import { lookupValType, repOf, VAL } from '../src/reps.js'
 import { PTR, LAYOUT, inc, err, declGlobal } from '../src/ctx.js'
@@ -124,6 +124,13 @@ export default (ctx) => {
     // that fact inside the body, or the body's own write facts (val = NUMBER)
     // would let `x == null` fold to a constant false and skip the guard.
     const captureNullables = new Set()
+    // Propagate the parent's `mayBeUndefined` mark (Slice 2, .work/represented-
+    // maybe-undefined-design.md §3 "Closure captures") — the container-read
+    // sibling of captureNullables just above, same reasoning: a capture whose
+    // parent binding can be real JS `undefined` despite a definite `val` claim
+    // must keep that fact inside the body, or the body's own write facts
+    // would let it evaporate at the capture boundary.
+    const captureMayBeUndefineds = new Set()
     for (const name of envCaptures) {
       const vt = lookupValType(name)
       if (vt != null) captureValTypes.set(name, vt)
@@ -135,6 +142,7 @@ export default (ctx) => {
       if (bodyName && !isReassigned(body, name)) captureDirectClosures.set(name, bodyName)
       if (repOf(name)?.intCertain === true) captureIntCertain.add(name)
       if (repOf(name)?.nullable) captureNullables.add(name)
+      if (repOf(name)?.mayBeUndefined) captureMayBeUndefineds.add(name)
     }
 
     const schemaNames = ctx.schema.vars?.size ? new Set(ctx.schema.vars.keys()) : null
@@ -163,6 +171,7 @@ export default (ctx) => {
       ...(captureIntConsts.size && { intConsts: captureIntConsts }),
       ...(captureIntCertain.size && { intCertain: captureIntCertain }),
       ...(captureNullables.size && { nullables: captureNullables }),
+      ...(captureMayBeUndefineds.size && { mayBeUndefineds: captureMayBeUndefineds }),
       ...(captureValTypes.size && { valTypes: captureValTypes }),
       ...(captureSchemaVars.size && { schemaVars: captureSchemaVars }),
       ...(captureTypedElems.size && { typedElems: captureTypedElems }),
@@ -170,6 +179,13 @@ export default (ctx) => {
     ctx.closure.bodies.push(bodyFn)
     const returnKind = closureBodyReturnKind(body, captureValTypes)
     if (returnKind) (ctx.closure.valResult ||= new Map()).set(fnName, returnKind)
+    // mayBeUndefined return-kind join (Slice 2, §3 "Return kinds") — the
+    // closureBodyReturnKind sibling, same return-tail sites, OR-folded instead
+    // of unified. Stored alongside ctx.closure.valResult in its own Map:
+    // closureBodyReturnKind's return shape (a bare VAL.* string) has a live
+    // consumer (kind-traits.js calleeValType) this slice must not disturb.
+    if (closureBodyReturnMayBeUndefined(body, captureValTypes))
+      (ctx.closure.valResultMayBeUndefined ||= new Map()).set(fnName, true)
 
     const tableIdx = addToTable(fnName)
 
