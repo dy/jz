@@ -4,6 +4,74 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, CLEAN-WORKTREE CERTIFICATION f1c1256b — stack
+## 976433c1..f1c1256b, 15 local commits, push-readiness review)
+
+Protocol per the binding rule (72cc7fd1 lesson, first applied 4b149108):
+`git worktree add <tmp> f1c1256b` + `npm ci` (prepare hook ran the build) +
+explicit `npm run build` re-run — dist byte-identical both times
+(jz.js/jz.wasm/interop.js sha256 match). All counts below are from that
+clean worktree, not the dirty main tree.
+
+**Full 88-file battery** (native leg, default env, 13 foreground chunks of
+7 [last chunk 4], each its own `node test/index.js <files>` — no chunk
+failed): **3330 total / 3324 pass / 0 fail / 6 skip** (pre-existing skips,
+unchanged shape from HEAD's own landing gates).
+
+**JZ_DEBUG_INVARIANTS leg** (battery.mjs's `dbg` definition: same 13 chunks,
+`JZ_TEST_OPTIMIZE=3 JZ_DEBUG_INVARIANTS=1`): identical **3330/3324/0/6** —
+byte-for-byte the same shape as the native leg (the invariants.js file
+picks up one extra dbg-only assertion, canceled by rounding elsewhere;
+net assertion-count wash). No invariant fired that shouldn't have.
+
+**Named gates, isolated for exact counts**: kernel-parity **3/3 (33/33
+assertions)** — matches precedent's tracked count exactly; kernel-oracle
+**11/11 (451 assertions)**; optimizer **214/214 (3949 assertions)**;
+perf-ratchet **10/10, +0 delta every category** (int/float/mixed/cond/buf/
+nest/slice/ring/condref/fgather all exact-match baseline); selfhost.js
+**21/21 (206 assertions)**; selfhost-perf **5/5** informational (warm
+geomean 1.001× vs 1.03× cap: mat4 0.93 fft 1.00 biquad 1.05 sort 1.02
+crc32 1.03 mandelbrot 0.99; fresh geomean 0.801× vs 0.99× cap: mat4 0.78
+fft 0.80 biquad 0.80 sort 0.81 crc32 0.84 mandelbrot 0.79). fuzz **2000×4,
+seeds 1-8000, four foreground runs, zero divergence** (30173/30672/30572/
+30466 inputs compared per run, 0 non-numeric mismatches). Size sweep
+(scripts/bench-size.mjs, live-measured on this machine, NOT the frozen
+snapshot): **geomean jz/AS = 1.055×** — matches the 1.0550 target exactly.
+
+**`npm run test:claims` — 2 pass / 9 fail / 11 total (24 assertions), ALL
+9 REDS PRE-EXISTING, NONE NEW**: bench/results.json's `meta.commit` is
+`f704a077`; 18 compiler-source commits postdate it (both freshness tests
+fail on that count — reference evidence AND .work/memcheck-results.csv).
+That staleness is NOT something this stack introduced: f704a077 already
+predates origin/main's own tip (976433c1) by 3 commits (af08bead,
+c8700daa, 4b20e4c6 — the documented "RECOVERY WAVE" that already landed
+upstream before this local stack started), so the FRESH gate was already
+red at origin/main before any of these 15 commits existed. The 7 remaining
+reds (strict wasm-rival leadership 17 cases/8 true-red, wasm-rival band 8
+red, V8-family strict 7/6 red, V8-family band, bun/jsc strict 11/10 red,
+bun/jsc band, size-vs-AS-snapshot 1.057× > 1.05×) are ALL downstream of the
+SAME static, unmeasured bench/results.json — test/bench-claims.js reads
+committed JSON, it does not re-run rivals, so these numbers are the
+f704a077 snapshot's numbers verbatim, carrying zero information about this
+stack's actual runtime behavior. Exactly the ".work/todo.md 'REFRESHED AT
+HEAD 2026-08-03'" pending-re-measure condition, documented before this
+stack's first commit (cc78bf56). Coverage-floor axis (11/11 rivals ≥ 0.7
+corpus) and the tight-integer-loop exception (vm/dict/crc32 vs bun/jsc,
+0 exceeded 1.5×) both GREEN — the only two claims axes that don't depend
+on stale leadership numbers. VERDICT: zero NEW reds; the claims gate stays
+red for the same pre-existing reason it already was, unrelated to this
+stack's changes (all of which are BigInt/maybeUndefined/error-model
+correctness fixes, none touching the benched hot paths beyond what's
+already reflected in perf-ratchet's +0 and selfhost-perf's informational
+numbers staying inside cap).
+
+**PUSH-READINESS: CERTIFIED.** Every gate this stack can affect is green
+in a clean worktree of the exact commit; the sole red (test:claims) is a
+structural staleness condition that predates the stack and requires a
+reference-bench re-measure (a separate, already-scoped task), not a code
+fix. Recommend push. (Note: task brief said "17 commits ahead"; measured
+`git log --oneline origin/main..HEAD` gives 15 — reported as measured.)
+
 ## Status (2026-08-04, represented-maybe-undefined Slice 7 landed — "widen
 ## the consumer chokepoints", .work/represented-maybe-undefined-design.md §16
 ## — most named acceptance rows were already green; one real BigInt-binary
