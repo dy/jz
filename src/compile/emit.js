@@ -2468,16 +2468,20 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 // (the checked .typed:[] form), while its VT stays NUMBER for numeric dispatch — the
 // undef box IS a NaN through arithmetic; only these identity folds must stay live.
 // `ta[i] === undefined` is the idiomatic bounds probe, so folding it kills real code.
-// NO dict-mode `[]`/`.` OR `.get(k)` carve-out here (both reverted, audit #9
-// — .work/todo.md "audit-#9 P0-1 closed"; the Map arm's own prior revert was
-// audit P0, 1db8e55e): kind.js no longer promotes dictValueValType/
-// mapValueValType to an exact VT at a dict-mode read or `.get()` site, so
-// there is nothing left for a carve-out here to protect — see kind.js's
-// dictValueValType/mapValueValType-consumer doc comments (where
-// dictValueKindOf/mapValueKindOf used to be) for the full soundness
-// writeup. `censusMaybeUndefined` below (kind.js) is now a permanent no-op
-// for the identical reason — kept wired rather than removed from every call
-// site, per its own doc comment.
+// A dict-mode `[]`/`.` read or `recv.get(k)` Map read whose VT comes SOLELY
+// from dictValueKindOf/mapValueKindOf's soundness carve-out joins the set for
+// the identical reason: an unwritten key reads back the same undefined —
+// `prec[op] === undefined` (does this key exist?) is that dict's own bounds
+// probe. The predicate is `censusMaybeUndefined` (kind.js,
+// .work/represented-maybe-undefined-design.md Slice 1) — RE-ENABLED as of
+// this slice for the direct-node shape and a bare-name REP fallback
+// (repOf(name)?.mayBeUndefined), though it stays behaviorally inert here
+// until VT['[]']/VT['.']/VT['()'] resume claiming the exact kind
+// (design §8 Slice 4, gated on §5) — `valTypeOf(other)` at every caller of
+// this function (below) is null for a dict/Map read for as long as that VT
+// promotion stays dormant, so the `!nullableOperand(other)` refinement is
+// never reached for this shape yet. Kept live (not stubbed) so Slice 4 does
+// not have to re-wire this call site again.
 const nullableOperand = (n) => {
   if (typeof n === 'string') return !!(repOf(n)?.nullable || repOfGlobal(n)?.nullable)
   if (Array.isArray(n) && n[0] === '[]' && n.length === 3

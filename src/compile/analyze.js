@@ -23,7 +23,7 @@ import { DBG_BIGINT_STATS, noteLocalBoxed } from './bigint-boxed-stats.js'
 import { commaList, ASSIGN_OPS, MUTATE_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, collectAllBoundNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR } from '../ast.js'
 import { ctx, err } from '../ctx.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from '../reps.js'
-import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst } from '../kind.js'
+import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst, censusMaybeUndefinedKind } from '../kind.js'
 import { intLiteralValue, nonNegIntLiteral, constIntExpr, intExprRange, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
 import { typedElemCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, scanBoundedArrIdx, inBoundsCharCodeAt, exprType, intCertainMap, intLevelMap, isTerminator } from '../type.js'
 import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux } from '../../layout.js'
@@ -1208,6 +1208,23 @@ export function mayBeNullish(n, nameNullable = (name) => !!repOf(name)?.nullable
   return true
 }
 
+// Decl-time producer for the `mayBeUndefined` REP field
+// (.work/represented-maybe-undefined-design.md §2/§3 Slice 1) — the
+// container-read sibling of `mayBeNullish` above, deliberately NOT folded
+// into it: `mayBeNullish` answers "could this expression itself be a nullish
+// LITERAL/merge", or with a Map/dict a `.get()`/`[]` call already fails
+// closed (returns true) whether or not the census can name an exact
+// non-nullish kind for it — `mayBeUndefined` answers the NARROWER question
+// this design needs, "does the census's SPECIFIC exact-kind claim for this
+// RHS need the mayBeUndefined carve-out", which only a direct
+// censusMaybeUndefinedKind-recognized node or an already-flagged bare-name
+// copy can answer. Two arms, no recursion through ternary/&&/||/`,` (unlike
+// mayBeNullish's full walk) — deliberately narrow, matching Slice 1's scope
+// per the design's own "smaller surface" instruction; a composed RHS
+// (`cond ? m.get(k) : 0`) is out of scope until a later slice extends this.
+const mayBeUndefinedRhs = (rhs) =>
+  censusMaybeUndefinedKind(rhs) != null || (typeof rhs === 'string' && !!repOf(rhs)?.mayBeUndefined)
+
 /** True iff `name` appears in `body` ONLY as the receiver of an indexed read
  *  `name[k]` (the lean-dict idiom) — a bare reference, a `.`-target, or any
  *  other position disqualifies. ITERATIVE (explicit worklist) by necessity:
@@ -1651,6 +1668,7 @@ export function analyzeValTypes(body) {
         }
         setVal(a[1], vt)
         if (mayBeNullish(a[2])) updateRep(a[1], { nullable: true })
+        if (mayBeUndefinedRhs(a[2])) updateRep(a[1], { mayBeUndefined: true })
         // Closed integer hull for never-reassigned decls whose init the range
         // evaluator can bound (masks, ternary hulls, bounded products) — chains
         // through earlier ranged decls via intExprRange's repOf hook. Feeds the
@@ -1753,6 +1771,7 @@ export function analyzeValTypes(body) {
       }
       setVal(args[0], poisonUndeclared(args[0], vt))
       if (mayBeNullish(args[1])) updateRep(args[0], { nullable: true })
+      if (mayBeUndefinedRhs(args[1])) updateRep(args[0], { mayBeUndefined: true })
       if (vt === VAL.REGEX) trackRegex(args[0], args[1])
       if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(args[1])) trackTyped(args[0], args[1])
       propagateTyped(args[0], args[1])

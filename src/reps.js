@@ -90,6 +90,31 @@ export const VAL = {
  *   site/return position not proven uniformly BIGINT, or a destructured param,
  *   fail-closed). Boxed at the point of write; every later read of the name unboxes
  *   explicitly before raw i64 ops (ir.js boxBigInt/unboxBigInt).
+ * @property {boolean} [mayBeUndefined]   binding's value can be real JS `undefined`
+ *   at runtime despite a definite `val` kind claim — the container-read
+ *   generalization of `nullable` (.work/represented-maybe-undefined-design.md
+ *   §2). Slice 1 (decl-time producer only, analyze.js analyzeValTypes'
+ *   `let`/`const`/`=` sites): true when the RHS is itself a dict/Map
+ *   maybeUndefined-shaped read (censusMaybeUndefinedKind(rhs) != null) or a
+ *   bare name that already carries the flag (copy-through). Consumer:
+ *   censusMaybeUndefinedKind's REP-fallback arm (kind.js) — a bare name whose
+ *   rep carries BOTH `mayBeUndefined` and a `val` answers exactly like the
+ *   read node itself would at every existing censusMaybeUndefined chokepoint
+ *   (ir.js toNumF64/toStrI64, emit.js nullableOperand/bigIntOperand/
+ *   bigIntUnary, module/string.js/number.js/console.js). NOTE: as landed in
+ *   Slice 1, this fact is representationally complete but behaviorally INERT
+ *   — the decl producer only ever sets `mayBeUndefined` alongside whatever
+ *   `val` the ordinary `valTypeOf`/`setVal` path already derives, and that
+ *   path stays null for a dict/Map read for as long as VT['[]']/VT['.']/
+ *   VT['()'] (dictValueKindOf/mapValueKindOf) stay dormant (§5's own
+ *   re-enablement gate) — so `mayBeUndefined` never currently rides alongside
+ *   a non-null `val` for this shape. Slice 4 (re-enabling those VT folds,
+ *   once §5's full criteria are met) is what makes this fact load-bearing;
+ *   Slice 1 lands the propagation machinery ahead of that so decl/param/
+ *   return/closure binding doesn't re-open the audit-#9 hole the moment it
+ *   does. Param/return/closure propagation (§3 remaining) is Slice 2, not
+ *   landed yet — do not assume this survives an argument pass, a `return`,
+ *   or a closure capture until that slice lands.
  * @property {string}  [dictValueValType] VAL.* kind of every value ever written
  *   through `name[key] = v` (any key, HASH dict-mode local or global) —
  *   first-wins-then-clash lattice, absent/null = unproven or mixed. Additive-
@@ -97,34 +122,35 @@ export const VAL = {
  *   NEVER a substitute for `val`, never mutated alongside it. Two producers
  *   remain live — analyze.js's same-body scan (local half, updateRep) and
  *   observeProgramSlots' dictValueTypes census (global half, updateGlobalRep)
- *   — but the fact is DORMANT (audit #9, .work/todo.md "audit-#9 P0-1
- *   closed"): its consumer, kind.js's former dictValueKindOf (VT['[]']/
- *   VT['.']'s dict-mode fold) and censusMaybeUndefinedKind's dict arm, were
- *   REVERTED. Slice 1-3 (.work/maybe-undefined-design.md) closed the alias
- *   gate and wired a maybeUndefined join at a curated chokepoint list for the
- *   absent-key soundness hole, but audit #9 found that join recognizes only
- *   the read's OWN AST shape — it evaporates the moment the read is bound to
- *   a local, passed as an argument, returned, or captured, and several
- *   arithmetic sites never consulted it at all. See
- *   .work/represented-maybe-undefined-design.md for the represented
- *   `{presentKind, mayBeUndefined}` fact this needs and its re-enablement
- *   criteria. Do not wire a new consumer without first landing it.
+ *   — the fact itself stays additive-only, never a `val` substitute. Two
+ *   consumers, two different re-enablement states (represented-maybe-
+ *   undefined-design.md, Slice 1 of §8): `dictValueKindOf` (kind.js) — the
+ *   helper VT['[]']/VT['.']'s dict-mode fold used to call to promote a dict
+ *   read to an EXACT `val` — stays DORMANT, called from nowhere; re-enabling
+ *   THAT is Slice 4, gated on §5's full criteria. `censusMaybeUndefinedKind`'s
+ *   dict arm (kind.js) — a DIFFERENT consumer, asking "is this specific node
+ *   maybeUndefined-shaped", never "what val should VT[...] claim" — calls the
+ *   SAME `dictValueKindOf` helper directly (bypassing VT/valTypeOf entirely)
+ *   and is RE-ENABLED (Slice 1), now also answering a bare NAME whose rep
+ *   carries `mayBeUndefined` (reps.js, this file). See
+ *   .work/represented-maybe-undefined-design.md for the `mayBeUndefined` REP
+ *   field this needs and full re-enablement criteria for the VT-side
+ *   consumer. Do not wire dictValueKindOf back into VT['[]']/VT['.'] without
+ *   first meeting §5.
  * @property {string}  [mapValueValType] VAL.* kind of every value ever written
  *   through a proven-VAL.MAP receiver's `recv.set(k, v)` (any key) —
  *   dictValueValType's Map-census Tier 1 sibling (.work/map-value-census-
  *   design.md), same first-wins-then-clash lattice, additive-only, NEVER a
  *   substitute for `val`. Two producers remain live — analyze.js's same-body
  *   scan (local half, updateRep) and observeProgramSlots' mapValueTypes
- *   census (global half, updateGlobalRep). The fact is DORMANT again (audit
- *   #9, .work/todo.md "audit-#9 P0-1 closed"): kind.js's mapValueKindOf
- *   (VT['()']'s `.get` short-circuit), RE-ENABLED at .work/maybe-undefined-
- *   design.md §3 Slice 4 after the original audit-#7 P0 revert (f8f61591),
- *   was reverted again — same root cause as dictValueValType above (the
- *   maybeUndefined join is AST-shape-only, not a fact carried by the value
- *   through decls/params/returns/closures/exports). See
- *   .work/represented-maybe-undefined-design.md for the replacement design
- *   and its re-enablement criteria. Do not wire a new consumer without first
- *   landing it.
+ *   census (global half, updateGlobalRep). Same two-consumer split as
+ *   dictValueValType above: `mapValueKindOf` (kind.js) — VT['()']'s `.get`
+ *   short-circuit — stays DORMANT (re-enabling it is Slice 4, .work/
+ *   represented-maybe-undefined-design.md §5); `censusMaybeUndefinedKind`'s
+ *   Map arm (kind.js), calling the SAME helper directly, is RE-ENABLED
+ *   (Slice 1) alongside a bare-name REP fallback consulting the new
+ *   `mayBeUndefined` field (this file). Do not wire mapValueKindOf back into
+ *   VT['()'] without first meeting §5.
  * @property {boolean} [recvArrTyped]     receiver-kind CLASS proof (2026-07-31,
  *   named follow-up to the numeric-key unknown-receiver soundness fix, 9f46d517):
  *   true iff every live call site's argument at this position proves VAL.ARRAY OR
@@ -149,7 +175,7 @@ export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
   'typedCtor', 'wasm', 'nullable', 'neverGrown', 'bigintBoxed', 'recvArrTyped', 'dictValueValType',
-  'mapValueValType',
+  'mapValueValType', 'mayBeUndefined',
 ])
 
 const DBG_REPS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'

@@ -13,7 +13,7 @@ import { emit, emitter, emitVoid as flat, emitBlockBody, emitBoolStr as bool, em
 import { analyzeValTypes, analyzeIntCertain, analyzeBody } from '../src/compile/analyze.js'
 import { repOf, updateRep, VAL } from '../src/reps.js'
 import { T } from '../src/ast.js'
-import { hasAmbiguousBoolMerge } from '../src/kind.js'
+import { hasAmbiguousBoolMerge, censusMaybeUndefinedKind, censusMaybeUndefined } from '../src/kind.js'
 
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 
@@ -1111,6 +1111,117 @@ test('intCertain: transitive — j = i + 1 follows i', () => {
   is(r1.i, true); is(r1.j, true); is(r1.k, true)
   const r2 = runAnalyze('let f = () => { let i = 5.5; let j = i + 1 }')
   is(r2.i, false); is(r2.j, false)
+})
+
+// ============================================================================
+// mayBeUndefined REP field — pure analysis, no codegen impact YET
+// (.work/represented-maybe-undefined-design.md Slice 1). Honest boundary,
+// stated up front so a future reader doesn't mistake this for a black-box
+// regression suite: VT['[]']/VT['.']/VT['()'] (dictValueKindOf/mapValueKindOf's
+// OWN exact-kind fold) stay DORMANT until design §8 Slice 4 — every existing
+// censusMaybeUndefined chokepoint (ir.js toNumF64/toStrI64, emit.js
+// nullableOperand/bigIntOperand/bigIntUnary, module/string.js/number.js/
+// console.js) gates ITS OWN call to censusMaybeUndefined behind
+// `valTypeOf(node) === VAL.SOMETHING` first, and `valTypeOf` for a dict/Map
+// read stays null while that VT fold is dormant — so this slice cannot yet
+// change a single compiled byte or a single JS-observable return value
+// (verified: test/dyn-keys.js's audit-#9 repro table asserts identical
+// values before and after this slice). What DOES change, and what this
+// section pins: `analyzeValTypes` (analyze.js) now derives `mayBeUndefined`
+// on a decl'd/reassigned local exactly the way it already derives `nullable`
+// (same call site, `mayBeNullish` sibling), and `censusMaybeUndefinedKind`
+// (kind.js) now answers a bare NAME carrying that flag, not just the
+// original read node — the exact machinery Slice 4 needs already in place,
+// so re-enabling the VT fold then doesn't have to reinvent decl propagation
+// under time pressure the way audit #9 found it missing. Mirrors this file's
+// own intCertain-lattice precedent above ("pure analysis, no codegen impact.
+// Pins the forward-propagation rule against AST inputs").
+// ============================================================================
+// `dynWriteVarNames` mirrors `runAnalyze`'s `paramVals` pre-seed: the real
+// pipeline populates `ctx.types.dynWriteVars` whole-program (plan/index.js,
+// program-facts.js), which this per-function-only harness never runs — a
+// bare `const d = {}; d[k] = v` decl needs it to even classify `d` as
+// HASH dict-mode (analyze.js's own `dict` check) before dictValueKindOf has
+// anything to read. Seeded AFTER `ctx.func.locals` resolves binding names
+// (BindingId totality) so plain source spellings translate correctly.
+function runAnalyzeMayBeUndefined(code, dynWriteVarNames) {
+  reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
+  ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
+  prepare(parse(code))
+  const fn = ctx.func.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
+    || ctx.func.list[0]
+  const body = fn.body
+  ctx.func.locals = analyzeBody(body).locals
+  const keys = () => [...(ctx.func.locals?.keys() ?? []), ...(fn.sig?.params?.map(p => p.name) ?? []), ...(ctx.func.localReps?.keys() ?? [])]
+  const resolveLocal = (name) => keys().find(k => k === name) ?? keys().find(k => k.startsWith(name + T)) ?? name
+  if (dynWriteVarNames) ctx.types.dynWriteVars = new Set(dynWriteVarNames.map(resolveLocal))
+  analyzeValTypes(body)
+  return new Proxy({}, { get: (_, name) => repOf(resolveLocal(name))?.mayBeUndefined === true })
+}
+
+test('mayBeUndefined: decl RHS is a direct Map .get() census read (inline-read arm)', () => {
+  const r = runAnalyzeMayBeUndefined(`let f = () => {
+    const m = new Map(); m.set('a', 1)
+    let x = m.get('missing')
+  }`)
+  is(r.x, true)
+})
+
+test('mayBeUndefined: decl RHS is a direct dict [] census read (inline-read arm)', () => {
+  const r = runAnalyzeMayBeUndefined(`let f = () => {
+    const d = {}; const wk = 'a'; d[wk] = 1
+    let x = d['zz']
+  }`, ['d'])
+  is(r.x, true)
+})
+
+test('mayBeUndefined: reassignment (not just decl) carries the same inline-read arm', () => {
+  const r = runAnalyzeMayBeUndefined(`let f = () => {
+    const m = new Map(); m.set('a', 1)
+    let x
+    x = m.get('missing')
+  }`)
+  is(r.x, true)
+})
+
+test('mayBeUndefined: copies through a bare-name alias (REP fallback arm, one hop away)', () => {
+  const r = runAnalyzeMayBeUndefined(`let f = () => {
+    const m = new Map(); m.set('a', 1)
+    let x = m.get('missing')
+    let y = x
+  }`)
+  is(r.x, true); is(r.y, true)
+})
+
+test('mayBeUndefined: ordinary decl (no census-shaped RHS) never sets the flag', () => {
+  const r = runAnalyzeMayBeUndefined(`let f = () => {
+    let x = 5
+    let y = x + 1
+  }`)
+  is(r.x, false); is(r.y, false)
+})
+
+test('mayBeUndefined: a Map with no observed .set() write claims nothing to propagate', () => {
+  // No census fact recorded for `m` at all (never written) — mapValueKindOf's
+  // own `local` lookup returns undefined, so the inline-read arm can't fire.
+  const r = runAnalyzeMayBeUndefined(`let f = () => {
+    const m = new Map()
+    let x = m.get('missing')
+  }`)
+  is(r.x, false)
+})
+
+test('censusMaybeUndefinedKind: bare-name REP fallback answers only when BOTH mayBeUndefined and val are set', () => {
+  reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
+  ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
+  prepare(parse('let f = () => 0'))
+  updateRep('probeBoth', { val: VAL.NUMBER, mayBeUndefined: true })
+  is(censusMaybeUndefinedKind('probeBoth'), VAL.NUMBER)
+  is(censusMaybeUndefined('probeBoth'), true)
+  updateRep('probeValOnly', { val: VAL.NUMBER })
+  is(censusMaybeUndefinedKind('probeValOnly'), null, 'val without the flag must not be treated as maybeUndefined')
+  updateRep('probeFlagOnly', { mayBeUndefined: true })
+  is(censusMaybeUndefinedKind('probeFlagOnly'), null, 'the flag alone (no val) has nothing to claim')
 })
 
 // === untyped-receiver number methods (the kernel-L2 data-corruption root) ===

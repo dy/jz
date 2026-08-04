@@ -287,3 +287,81 @@ parity 33/33, kernel-oracle, perf-ratchet (per-category delta justified or
 zero), fuzz 2000×4, selfhost.js 21/21, fresh build ×2 byte-identical, size
 sweep vs 1.055 baseline — same gate list this disable ran, per slice, not
 batched at the end.
+
+## 9. Slice 1 — as landed, honest boundary correction
+
+Landed: `mayBeUndefined` REP_FIELD (reps.js), decl+reassign producer
+(analyze.js `analyzeValTypes`, the same `let`/`const`/`=` call sites that
+already seed `nullable` — a new `mayBeUndefinedRhs` helper, deliberately NOT
+folded into `mayBeNullish`'s full ternary/&&/||/`,` walk per this slice's own
+"smaller surface" instruction), and `censusMaybeUndefinedKind`'s two ORIGINAL
+direct-node arms (dict `[]`/`.` read, Map `.get()` call — `dictValueKindOf`/
+`mapValueKindOf`/`dictCensusReceiverIsLive` restored verbatim from before the
+audit-#9 revert) PLUS the new third arm, a bare NAME whose rep carries both
+`mayBeUndefined` and `val`. `dictValueKindOf`/`mapValueKindOf` are restored as
+**censusMaybeUndefinedKind-only helpers** — NOT re-wired into VT['[]']/
+VT['.']/VT['()']'s own exact-kind fold, which stays dormant exactly as §5
+requires (re-enabling that is still Slice 4, gated on §5's full criteria,
+none of which this slice attempts to satisfy alone).
+
+**Correction to this doc's own Slice 1 description** (§8, "pin exactly that
+shape" / "Gate: dyn-keys.js decl-propagation pin (new)"): landing this
+confirmed a fact the original write-up didn't call out — Slice 1 is
+representationally complete but **behaviorally INERT** at both the JS-value
+level and the WAT-codegen-shape level. Every existing censusMaybeUndefined
+consumer (ir.js toNumF64 :997-1011, toStrI64 :1170; emit.js's
+strictSentinel/aSafe/bSafe callers of nullableOperand; bigIntOperand/
+bigIntUnary; module/string.js/number.js/console.js) gates its OWN call to
+`censusMaybeUndefined`/`Kind` behind `valTypeOf(node) === VAL.SOMETHING`
+(or `vtX === VAL.NUMBER`) FIRST — and `valTypeOf` for a dict/Map read stays
+null for as long as VT['[]']/VT['.']/VT['()'] stay dormant (Slice 4, not this
+slice). So the direct-node arms are reachable-and-correct but never actually
+consulted by any real compile yet; the REP-fallback arm's precondition
+(`repOf(name)?.val` truthy) is likewise never met today, because the decl
+producer only copies `mayBeUndefined` ALONGSIDE whatever `val` the ordinary
+`setVal`/`valTypeOf` path derives (§3's own wording — "extend the SAME call")
+and that path stays null for this RHS shape too, for the identical reason.
+Empirically verified: the audit-#9 5-repro table (.work/todo.md "audit-#9
+P0-1 closed") returns byte-for-byte the same values before and after this
+slice — repros 1-4 pass (unchanged, still via the generic dynamic path, NOT
+via any new mechanism this slice added), repro 5 and the present-key
+BigInt-unary KNOWN-FAIL pins (test/dyn-keys.js) are unaffected (presentKind
+axis, §6, out of scope for mayBeUndefined entirely).
+
+Consequently the acceptance pin could not live in test/dyn-keys.js as a
+black-box `run()`/`jz()` value assertion — there is nothing observable there
+yet. It landed instead in test/types.js as a pure-analysis harness
+(`runAnalyzeMayBeUndefined`, importing `analyzeValTypes`/`repOf` directly),
+mirroring that file's own established precedent for exactly this situation
+("intCertain lattice — pure analysis, no codegen impact. Pins the
+forward-propagation rule against AST inputs", test/types.js ~line 984) —
+proving the FACT now computes and propagates correctly (decl inline-read,
+reassignment, one-hop bare-name copy-through, and the REP-fallback arm's
+both-fields-required guard, as its own isolated unit) ahead of the slice that
+makes it load-bearing. This is not a downgrade of the gate — repro-first
+still holds, "repro" just had to mean "the mechanism produces the fact"
+rather than "the fact changes a return value", because for THIS slice those
+are honestly the same claim once VT['[]'] et al. are confirmed still dormant.
+
+Gates run (post-slice, fresh dist rebuild): full 88-file battery in 13
+foreground chunks of ≤7, kernel-parity 33/33 byte-identical (O0/O2/O3, both
+pre- and post-rebuild), kernel-oracle 11/11, perf-ratchet 10/10 at +0 delta
+every category (int/float/mixed/cond/buf/nest/slice/ring/condref/fgather —
+expected: the fields are dormant, see above), optimizer 214/214, dyn-keys.js/
+data.js/inference.js run explicitly (all green, repro table unchanged),
+selfhost.js 21/21 (pre- and post-rebuild), fresh build ×2 byte-identical
+(jz.js/jz.wasm/interop.js), size sweep geomean 1.0550 (unchanged from the
+1.055 baseline), fuzz 2000×4 (`node test/fuzz.js --count=2000`) zero
+divergence.
+
+**Slice 2 deliberately not taken in the same pass**: per this doc's own §8,
+Slice 2 is its own significant surface (narrow.js's whole-program call-site
+fixpoint — `mayBeNullish`'s inter-procedural half, `hardParamVal`,
+`narrowValResults`, `closureBodyReturnKind` — the same machinery
+BIGINT-nullable's own inter-function half required, :2242-2362), not a small
+extension of Slice 1's decl-only surface, and it inherits the identical
+"inert until Slice 4" property for the identical reason (no VT consumer to
+make a param/return/closure-propagated fact load-bearing yet) — landing it
+in the same pass would not have bought a second observable repro either,
+only a second unit of unverifiable-by-black-box plumbing. Honest boundary:
+stopped after Slice 1.

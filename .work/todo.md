@@ -4,6 +4,49 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, represented-maybe-undefined Slice 1 landed — REP_FIELDS
+## + decl-time producer, .work/represented-maybe-undefined-design.md §8)
+
+Landed Slice 1 of the represented-maybe-undefined build (design banked at
+7288b69b): a `mayBeUndefined` REP_FIELDS entry (reps.js), a decl+reassignment
+producer (analyze.js `analyzeValTypes` — new `mayBeUndefinedRhs` helper
+alongside the existing `nullable`/`mayBeNullish` call sites), and
+`censusMaybeUndefinedKind`'s restoration (kind.js): its two ORIGINAL
+direct-node arms (dict `[]`/`.` read, Map `.get()` — `dictValueKindOf`/
+`mapValueKindOf`/`dictCensusReceiverIsLive` restored verbatim from before the
+audit-#9 revert, 7288b69b) plus a NEW third arm answering a bare name whose
+rep carries both `mayBeUndefined` and `val`. `dictValueKindOf`/
+`mapValueKindOf` are restored as **censusMaybeUndefinedKind-only helpers** —
+NOT re-wired into VT['[]']/VT['.']/VT['()']'s own exact-kind fold, which
+stays dormant (re-enabling that is design §8 Slice 4, gated on §5's full
+criteria — untouched by this slice).
+
+HONEST BOUNDARY (design doc §9 has the full writeup): Slice 1 is
+representationally complete but behaviorally INERT — every existing
+censusMaybeUndefined consumer (ir.js toNumF64/toStrI64, emit.js
+nullableOperand/bigIntOperand/bigIntUnary, module/string.js/number.js/
+console.js) gates its own call behind `valTypeOf(node) === VAL.SOMETHING`
+FIRST, and `valTypeOf` stays null for a dict/Map read while VT['[]']/['.']/
+['()'] stay dormant — so nothing this slice added changes a single compiled
+byte or JS-observable value yet (verified: the audit-#9 5-repro table returns
+identical values before/after). The acceptance pin moved to test/types.js (a
+pure-analysis harness, `runAnalyzeMayBeUndefined`, mirroring that file's own
+intCertain-lattice precedent) rather than test/dyn-keys.js's black-box style,
+since dyn-keys.js has nothing new to observe yet. Slice 2 (param/return/
+closure propagation) deliberately NOT taken in the same pass — it's its own
+significant surface (narrow.js's whole-program fixpoint) per the design's own
+scoping, not a small extension, and inherits the identical "inert until
+Slice 4" property.
+
+GATES (fresh dist rebuild): full 88-file battery in 13 foreground chunks of
+≤7, kernel-parity 33/33 byte-identical (O0/O2/O3, re-run post-rebuild),
+kernel-oracle 11/11, perf-ratchet 10/10 at +0 delta every category, optimizer
+214/214, dyn-keys.js/data.js/inference.js run explicitly (all green, repro
+table unchanged), selfhost.js 21/21 (re-run post-rebuild), fresh build ×2
+byte-identical (jz.js/jz.wasm/interop.js), size sweep geomean 1.0550
+(unchanged from the 1.055 baseline), fuzz 2000×4 (`node test/fuzz.js
+--count=2000`) zero divergence.
+
 ## Status (2026-08-04, audit-#9 P0-2 closed — Error class branding moved from a
 ## source-visible schema slot to the schema id itself; two compiler crashes and
 ## a stolen user property name fixed; audit P1 message-coercion bug folded in)
