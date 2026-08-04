@@ -1772,6 +1772,33 @@ export default (ctx) => {
     return true
   }
 
+  // Same "closed OrdinaryToPrimitive chain" fact as above, generalized from
+  // "AST is literally a `{}` node" to "a bound name whose OWN declaration
+  // schema is closed" (error-object-design.md finding-2: `let o = {}; new
+  // Error(o).message` fell through the literal-only check to toStrI64's
+  // generic OBJECT path, which — unlike the Error-schema arm right above it
+  // — has no case for a plain user OBJECT and mis-renders it, a pre-existing,
+  // documented, out-of-scope bug (§Consequence: `${anyDynamicObject}` → "").
+  // Fixed the SAME way Finding 1 fixed Object.assign's target-provenance gap:
+  // extend the literal-AST fact to the schema-BINDING fact a `let`/`const`
+  // already carries, instead of touching the shared toStrI64 primitive.
+  // Closed-world requires the schema to be the COMPLETE key set — a HASH-kind
+  // binding (valTypeOf ≠ VAL.OBJECT) or one with a computed write
+  // (`ctx.types.dynKeyVars`) or an out-of-schema literal write
+  // (`ctx.types.literalWriteKeys`) could carry a 'toString'/'valueOf' key the
+  // static schema doesn't list — those fall through to the generic (still
+  // broken, still out-of-scope) toStrI64 OBJECT path unchanged.
+  const isClosedObjNoStringMethod = (node) => {
+    if (isClosedObjLiteralNoStringMethod(node)) return true
+    if (typeof node !== 'string' || valTypeOf(node) !== VAL.OBJECT) return false
+    const schema = ctx.schema.resolve?.(node)
+    if (!schema || schema.includes('toString') || schema.includes('valueOf')) return false
+    if (ctx.types.dynKeyVars?.has(node)) return false
+    const w = ctx.types.literalWriteKeys?.get(node)
+    if (w) for (const k of w) if (!schema.includes(k)) return false
+    return true
+  }
+
   // Error constructor message coercion — ES 20.5.1.1: argument absent OR its
   // VALUE is `undefined` → '' ; otherwise ToString(message). Routes through
   // toStrI64 (the same chokepoint String()/template literals use) for every
@@ -1801,7 +1828,7 @@ export default (ctx) => {
     const vt = valTypeOf(msg)
     if (vt === VAL.BOOL)
       return typed(['select', asF64(emit(['str', 'true'])), asF64(emit(['str', 'false'])), truthyIR(emit(msg))], 'f64')
-    if (isClosedObjLiteralNoStringMethod(msg)) return asF64(emit(['str', '[object Object]']))
+    if (isClosedObjNoStringMethod(msg)) return asF64(emit(['str', '[object Object]']))
     const boxed = asF64(emit(msg))
     // isUndef folds to a compile-time constant for any statically-provable
     // operand (a literal, or anything else valTypeOf/matchF64Bits can already

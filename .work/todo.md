@@ -4,6 +4,148 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, audit-#10 Error bundle — four findings closed,
+## error-object-design.md's "Brand redesign" section gains a new
+## "Finding 1-4 (audit-#10)" entry — see below)
+
+Four findings from audit-#10 (three P1, one P0), all closed this session.
+
+**Finding 1 (P0) — Object.assign call-result provenance crash.**
+`Object.assign(new TypeError('x'), {message:'y'})` crashed at compile time
+(`internal: stdlib '__arr_set_idx_ptr' was requested but never registered`,
+module/object.js:535/791 `emitObjectAssignDynamic`). Root cause: `resolveSchema`
+(module/object.js) never recognized the literal `new X(...)`/`X(...)`
+Error-constructor-call AST shape at the Object.assign TARGET position — only
+`isErrorSchemaSource` recognized it at SOURCE position. A BOUND Error name
+already worked (`ctx.schema.resolve` sees its declaration-schema binding);
+only the un-bound literal-target shape fell through to the broken dynamic
+path. Fixed by teaching `resolveSchema` itself the literal shape (returns
+the physical `ERR_SCHEMA_PROPS`, `['message','name']` — content-identical
+across all 7 classes) — Object.assign now takes its ordinary fixed-schema
+fast path, mutating the target's own slots in place and returning the SAME
+pointer (real JS semantics: Object.assign returns its target), which also
+preserves the schema id / class identity the crash was masking. Mirrored the
+identical literal-shape check into `src/kind.js`'s `spreadSchema` (its own
+comment already requires it stay in sync with `resolveSchema` for the
+OBJECT-vs-HASH decision — found genuinely OUT of sync for this shape before
+this fix, a second latent bug the same root cause closes for free).
+**Provenance sibling-sweep**: `Object.defineProperty` always compile-errors
+(no partial impl, no silent bug). Array receiver-returning methods
+(`sort`/`reverse`/`fill`/`copyWithin`) and `Map`/`Set.prototype.set`/`.add`
+return the SAME pointer via a tag compare (PTR.ARRAY/MAP/SET), never schema-
+dependent — no provenance-loss vector exists for them by construction (only
+PTR.OBJECT+schema identity can be lost through re-boxing, and Object.assign
+was the only builtin that re-boxes). Verdict: Object.assign was the only
+sibling with this root cause.
+
+**Finding 2 (P1) — general ToString(message).** `let o = {}; new
+Error(o).message` returned the object itself, not `'[object Object]'` — the
+5f8ff012 fix special-cased only the literal `{}` AST shape
+(`isClosedObjLiteralNoStringMethod`). Investigated the general path first:
+`errorMessageIR` ALREADY routes any non-special-cased message through
+`toStrI64` (the same chokepoint `String()`/template literals use) — the
+"general invariant is absent" framing undersold what was actually missing.
+The REAL gap: `toStrI64`'s generic OBJECT fallback (`__to_str`'s wasm body)
+has a genuine, general, PRE-EXISTING bug for any non-Array object — verified
+live, `String(o)` for a bound plain object returns `typeof "object"`, not
+even a string at all (the raw pointer bits pass through unconverted); this
+is error-object-design.md's own already-documented "Consequence" gap,
+explicitly out of scope for the Error design. Root-fixed the IN-SCOPE part:
+generalized `isClosedObjLiteralNoStringMethod` → `isClosedObjNoStringMethod`
+(module/core.js) to ALSO recognize a BOUND name whose OWN declaration schema
+is closed (no toString/valueOf, no dyn/out-of-schema writes) — the same
+"literal fact → binding fact" generalization Finding 1 applied to
+Object.assign. Closes the common case (`let o = {x:1}; new Error(o)` now
+correctly `'[object Object]'`). **Residual, KNOWN-FAIL, pre-existing,
+Error-unrelated**: a genuinely EMPTY `let o = {}` declaration never gets a
+schema id bound at all (src/prepare/index.js's decl-schema binding guards on
+`props.length`, excluding the 0-prop case) — fixing that is a general
+prepare.js change with self-host-wide blast radius (every `let x = {}` in
+every program), well outside this bundle's scope. Pinned, not fixed.
+
+**Finding 3 (P1) — enumerability contradiction, DECIDED.** Object.keys(err)/
+JSON.stringify(err) saw the physical `['message','name']` schema (enumerable)
+while spread/Object.assign FROM an Error (audit-#9 P0-2's `isErrorSchemaSource`
+override) saw `[]` (non-enumerable) — same object, contradictory answers
+depending only on which builtin asked. DECIDED (b) documented divergence over
+(a) full JS fidelity: Error is an ordinary object on EVERY enumeration
+surface — keys/JSON/spread/assign/for-in all see the physical schema,
+consistently. Diverges from real JS (whose Error props are non-enumerable
+everywhere) but costs ZERO new machinery, and (a)'s alternative — a per-
+property enumerability flag threaded through every enumeration site — is
+EXACTLY the "enumerated invariant" shape the audit-#9 Brand redesign (this
+same file) already spent a session proving costs more than it's worth
+("closed not by a more complete enumeration, but by removing the thing that
+needs filtering"). Implemented by DELETING `isErrorSchemaSource`/its override
+— `sourceSchema` is now a plain alias for `resolveSchema`. Bonus: this also
+closed a SECOND latent analyze/emit mismatch (kind.js's `spreadSchema` never
+knew about the override at all, so a BOUND Error spread source already
+disagreed between analysis and emit before this session — moot now, both
+sides agree by construction). test/errors.js's four audit-#9 P0-2
+"copies nothing" pins flipped to "copies message,name" (spread — content-
+checked) / a matching-schema-target assign (content-checked, since
+Object.assign onto an EMPTY `{}` target hits a SEPARATE, pre-existing,
+general, Error-unrelated bug — Object.assign never GROWS a target's schema
+with new source keys, confirmed with a non-Error repro `Object.assign({},
+{a:1})` → `[]` in jz vs `['a']` in JS; pinned KNOWN-FAIL, flagged not fixed).
+README's `.work/error-object-design.md` gains this session's own section
+recording the call; README.md unaffected (never described the old
+enumerability split in the first place).
+
+**Finding 4 (P1) — returned Errors at the host boundary.** A RETURNED (not
+thrown) `new TypeError('x')` decoded via `mem.read`'s generic OBJECT case to
+a plain `{message,name}` object — never `instanceof Error` — because the
+Error-class-sid upgrade (`mem.errorSidToClass`, the 'jz:errcls' custom
+section) only ever ran inside `decodeThrown`, reached exclusively by an
+ESCAPING THROW. Fixed by extracting the identical sid→class lookup into a
+shared `errorSidClassOf` (interop.js), consumed by BOTH `decodeThrown`
+(unchanged behavior, refactored to call the shared helper) and a new
+`readRet`, wired into both heap-module export wrappers' `finishRet` call and
+the async promise-settle path (`readSettled`) — a returned OR resolved Error
+now upgrades to the real host class, minus `.cause`/`.thrown` (no exception
+to attach a cause to on a plain return). Pinned: literal, bound, and base-
+class returns; async REJECT (unaffected, already worked, traps through the
+exceptions tag not `__p_value`) confirmed still green. **Residual, KNOWN-
+FAIL, pre-existing, general, NOT Error-specific** (found live extending
+Finding 4's own async coverage): an async function that RESOLVES (not
+throws) with ANY heap value — an Error, or an ordinary plain object — never
+correctly reaches host decode at all, independent of this fix: a concise-
+arrow body silently resolves `undefined` (value lost, no error), a block
+body traps inside the wasm promise-value machinery itself ("memory access
+out of bounds" / "table index is out of bounds" depending on shape) BEFORE
+JS-side decode is ever reached. Confirmed general with a non-Error repro.
+The async/generator promise runtime was apparently never exercised with a
+heap return value, only numbers/strings/booleans — out of scope for the
+Error host-decode bundle (the bug is in async's own runtime, not
+interop.js's decode). README.md's "Internal errors stay numeric codes..."
+bullet updated: made the thrown-vs-returned distinction explicit ("thrown
+*or* simply `return`ed... both decode to the real host class") and added the
+async-resolve caveat inline.
+
+**Files touched**: module/object.js (`resolveSchema` literal-shape branch,
+`sourceSchema`/`isErrorSchemaSource` deletion), src/kind.js (`spreadSchema`
+mirror), module/core.js (`isClosedObjNoStringMethod` generalization),
+interop.js (`errorSidClassOf`/`readRet` extraction + wiring, `decodeThrown`
+refactored onto the shared helper), test/errors.js (new/flipped pins +
+4 new KNOWN-FAIL pins for the residuals above), test/dyn-keys.js (Finding 1's
+KNOWN-FAIL flipped green), README.md (host-boundary claim), error-object-
+design.md (this section).
+
+**Gates, all green**: repros red→green natively confirmed before each fix;
+full 88-file battery in 15 chunks of ≤6 foreground, zero failures beyond
+pre-existing skips; kernel-parity 33/33 byte-identical; kernel-oracle 11/11
+(451 assertions); perf-ratchet 10/10 at +0 every category; optimizer 319
+assertions clean; errors.js BOTH modes (native 133/133, kernel-leg 133/133
+— required a fresh `npm run build`, the two new-session pins initially
+kernel-mismatched only because dist/ was stale, not a real bug); dyn-keys.js
+38/38 both legs; minimal-output.js clean (error-free module unaffected,
+confirmed via the pre-existing pinned probe); selfhost.js 21/21 (206
+assertions); fuzz 2000×4 (seeds 1-8000, all 4 rounds) zero divergence; fresh
+`build-dist.mjs` ×2 byte-identical (jz.js/jz.wasm/interop.js, sha-equal);
+size sweep (error-free module unaffected per minimal-output; error-using
+module ~22.3KB at O2, includes the Error/instanceof/toStrI64 machinery,
+gated — never paid by a program that doesn't construct one).
+
 ## Status (2026-08-04, audit #10 — Slice 4's VT re-enablement REVERTED,
 ## .work/represented-maybe-undefined-design.md §14, opt-in `presentVal` is
 ## the new re-enablement gate — supersedes §5)

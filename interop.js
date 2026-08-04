@@ -740,7 +740,7 @@ export const wrap = (memSrc, inst, state) => {
   }
   const readSettled = (raw) => {
     const v = pcall(pValue, '__p_value', raw)
-    return mem ? mem.read(v) : decode(v)
+    return mem ? readRet(v) : decode(v)
   }
   const sweep = () => {
     mtDrain()
@@ -775,6 +775,44 @@ export const wrap = (memSrc, inst, state) => {
     }
   }
   const finishRet = (raw, read) => asyncMod ? adopt(raw, read) : read(raw)
+  // `raw` may arrive as either a genuine i64 BigInt (heap-module exports with
+  // an i64-carrier result) or a NaN-boxed f64 number (the legacy carrier) —
+  // same two shapes `mem.read` itself normalizes at its own entry (line
+  // ~500). Only a NaN bit pattern can ever be a pointer; a real number can't,
+  // so a non-NaN f64 short-circuits to null with no BigInt conversion.
+  const rawBoxBits = (raw) =>
+    typeof raw === 'bigint' ? raw : (typeof raw === 'number' && raw !== raw ? f64ToI64(raw) : null)
+  // Error-class sid lookup shared by the escaping-throw path (decodeThrown,
+  // below) and the ordinary RETURN-value path (readRet, below) — audit-#10
+  // finding-4: a RETURNED (not thrown) Error previously decoded as a plain
+  // {message,name} object via mem.read's generic OBJECT case with no upgrade
+  // at all, because only decodeThrown ever consulted `mem.errorSidToClass`
+  // (error-object-design.md §"Interop consequence" / audit-#9 P0-2's
+  // 'jz:errcls' custom section, read into this map at instantiation, above).
+  // Gated the same way on both ends: `raw` must be a genuine NaN-boxed OBJECT
+  // pointer (`isBox` + `type === 6`) before its aux bits are trusted as a sid
+  // — a coincidental aux value on some OTHER pointer type can never spoof a
+  // class this way.
+  const errorSidClassOf = (raw) => {
+    const b = rawBoxBits(raw)
+    return b != null && isBox(b) && type(b) === 6 ? (mem.errorSidToClass?.get(aux(b)) ?? null) : null
+  }
+  // The RETURN side of finding-4's fix: `finishRet(ret, readRet)` replaces
+  // `finishRet(ret, r => mem.read(r))` at both heap-module export wrappers
+  // below. A returned Error upgrades the SAME way a thrown one does
+  // (errorSidClassOf + `new Ctor(message)`), minus `.cause`/`.thrown` — there
+  // is no host-side exception to attach a cause to on a plain return. Only
+  // the top-level result (and each element of a top-level multi-value tuple,
+  // mirroring mem.read's own `Array.isArray(p)` recursion at its entry) is
+  // checked — an Error nested inside a returned array/object/Map property
+  // still decodes as a plain {message,name} object, same as it did before
+  // this fix (not the named repro, not chased here).
+  const readRet = (r) => {
+    if (Array.isArray(r)) return r.map(readRet)
+    const decoded = mem.read(r)
+    const errClassName = errorSidClassOf(r)
+    return errClassName != null ? new (globalThis[errClassName] ?? Error)(decoded.message) : decoded
+  }
   const lastErrBits = realInst.exports.__jz_last_err_bits
   // audit-#8 P1-1: `__jz_last_err_bits` is declared `(mut i64)` at the jz source
   // level (src/compile/index.js ensureThrowRuntime), but watr's OWN generic
@@ -836,8 +874,8 @@ export const wrap = (memSrc, inst, state) => {
     // upgrade (its sid, whatever it is, was never minted by errorSid — trust
     // requires the type tag to be OBJECT too, not just any aux value that
     // happens to numerically coincide with a minted error sid).
-    if (mem && isBox(errBits) && type(errBits) === 6) {
-      const errClassName = mem.errorSidToClass?.get(aux(errBits))
+    if (mem) {
+      const errClassName = errorSidClassOf(errBits)
       if (errClassName != null) {
         const Ctor = globalThis[errClassName] ?? Error
         const wrapped = new Ctor(value.message)
@@ -958,7 +996,7 @@ export const wrap = (memSrc, inst, state) => {
             if (ie && ie.s) return decodeBigintSentinel(ret, ie.s)
             if (!(ie && ie.r)) return ret
           }
-          return finishRet(ret, r => mem.read(r))
+          return finishRet(ret, readRet)
         } catch (error) {
           decodeThrown(error)
         }
@@ -977,7 +1015,7 @@ export const wrap = (memSrc, inst, state) => {
             if (ie && ie.s) return decodeBigintSentinel(ret, ie.s)
             if (!(ie && ie.r)) return ret
           }
-          return finishRet(ret, r => mem.read(r))
+          return finishRet(ret, readRet)
         } catch (error) {
           decodeThrown(error)
         }

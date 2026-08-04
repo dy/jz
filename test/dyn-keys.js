@@ -573,19 +573,29 @@ test('audit #10: String `+` inversion — a STRING-census absent read through `+
   const absent = jz(`export let f = () => { const m = new Map(); m.set('a', 'x'); return m.get('missing') + 1 }`, { jzify: true }).exports.f
   is(absent(), NaN, 'JS: undefined + 1 = NaN, not "undefined1" — the audit-#10-live STATIC-concat-branch misfire is gone with the census dormant')
 })
-// KNOWN-FAIL, PRE-EXISTING, module/object.js:535's ctx.core.emit['Object.assign']
-// — compile CRASH (not a wrong value), found live by audit #10, unrelated to
-// the census/VT axis entirely (Object.assign onto an Error-branded target,
-// 5f8ff012's schema-id branding — the Error-bundle agent's own scope, not
-// this task's). Pinned so it isn't silently reintroduced or rediscovered from
-// scratch; not fixed here.
-test('KNOWN-FAIL (audit #10, out of scope — Error-bundle agent): Object.assign onto a branded Error instance crashes at compile time', () => {
-  let threw = null
-  try {
-    jz(`export let main = () => { const e = Object.assign(new TypeError('x'), {message: 'y'}); return e instanceof TypeError }`, { jzify: true })
-  } catch (e) { threw = e }
-  ok(threw, 'JS: true (no crash). Actual: compile-time internal error (module/object.js:535 lead)')
-  ok(/__arr_set_idx_ptr/.test(threw?.message || ''), 'the specific internal-stdlib-pull crash this audit found')
+// FIXED (audit-#10 Error-bundle finding-1, 2026-08-04): was a compile-time
+// CRASH (module/object.js:535's Object.assign, `internal: stdlib
+// '__arr_set_idx_ptr' was requested but never registered`) — a literal `new
+// TypeError('x')` used directly as Object.assign's TARGET (never bound to a
+// name first) fell through `resolveSchema` unrecognized, routing into
+// `emitObjectAssignDynamic`'s dynamic path, which never pulls the `array`
+// module its own `__dyn_set` dependency needs. Root-fixed by teaching
+// `resolveSchema` (module/object.js) the same literal `new X(...)`/`X(...)`
+// Error-constructor-call shape `isErrorSchemaSource` already recognized for
+// SOURCE position, now for TARGET position too (and mirrored into
+// src/kind.js's `spreadSchema`, kept in sync per its own "must agree with
+// resolveSchema" contract) — the schema becomes KNOWN, so Object.assign takes
+// its ordinary fixed-schema fast path (mutates the target's own slots in
+// place, returns the SAME pointer — Object.assign's real JS semantics: return
+// the target, not a new object), never reaching the broken dynamic path at
+// all. Object.assign returning the identical pointer it was given also
+// preserves the Error's schema id (class identity), closing the provenance
+// loss the crash was masking.
+test('Object.assign onto a literal (unbound) Error instance mutates it in place, preserving instanceof (was KNOWN-FAIL, audit #10)', () => {
+  const f = jz(`export let main = () => { const e = Object.assign(new TypeError('x'), {message: 'y'}); return e instanceof TypeError }`, { jzify: true }).exports.main
+  is(f(), true, 'JS: true — Object.assign returns its target unchanged in class/identity')
+  const g = jz(`export let main = () => Object.assign(new TypeError('x'), {message: 'y'}).message`, { jzify: true }).exports.main
+  is(g(), 'y', 'the message slot was actually overwritten')
 })
 
 // Slice 3 (.work/represented-maybe-undefined-design.md §4/§8 point 3): the

@@ -13,6 +13,7 @@ import {
   BOOL_OPS, NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS, COMPOUND_NUMERIC_OPS,
   calleeValType, methodValType, propValType, typedCtorElemValType,
 } from './kind-traits.js'
+import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 export { typedCtorElemValType } from './kind-traits.js'
 
@@ -1094,6 +1095,16 @@ function spreadSchema(obj) {
     if (ctx.func.current?.params?.some(p => p.name === obj)) return null
     return ctx.schema?.resolve?.(obj)
   }
+  // Literal `new X(...)`/`X(...)` Error-constructor call — mirrors module/
+  // object.js `resolveSchema`'s identical branch (error-object-design.md
+  // finding-1/3: closes a pre-existing analyze/emit disagreement this session
+  // found — a BOUND Error name already agreed via ctx.schema.resolve above,
+  // but this literal shape fell through to `shapeOf` below, which doesn't
+  // know Error calls, so it resolved null/HASH here while emit's own
+  // resolveSchema resolved the physical schema. Same physical layout for
+  // every one of the 7 classes, so no class-name branching needed).
+  if (Array.isArray(obj) && obj[0] === '()' && typeof obj[1] === 'string' && ERR_CLASS_NAMES.includes(obj[1]))
+    return ERR_SCHEMA_PROPS
   if (Array.isArray(obj) && obj[0] === '{}')
     return obj.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
   const sh = shapeOf(obj)

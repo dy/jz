@@ -827,7 +827,64 @@ test('errors: real Error objects (error-object-design.md Slice A)', () => {
   is(j(`export let f = () => { try { throw Error('bare') } catch (e) { return e.message } }`), 'bare')
 })
 
-// audit-#9 P1 (same ctor-path machinery as P0-2 above): Error message
+// audit-#10 finding-4: a RETURNED (not thrown) Error object previously decoded
+// at the host boundary as a plain {message,name} object — never `instanceof
+// Error` — because interop.js's Error-class upgrade (mem.errorSidToClass,
+// the 'jz:errcls' custom section audit-#9 P0-2's Brand redesign added) only
+// ever ran inside decodeThrown, reached exclusively by an ESCAPING THROW. A
+// function that returns its Error normally (`return e`, or constructs and
+// returns one directly) never touches decodeThrown at all. Fixed by
+// extracting the identical sid→class lookup into `errorSidClassOf` (shared
+// by decodeThrown AND the new `readRet`, wired into both heap-module export
+// wrappers' `finishRet` call and the async promise-settle path
+// `readSettled`) — a returned/resolved Error now upgrades the same way a
+// thrown one does, minus `.cause`/`.thrown` (no host exception to attach a
+// cause to on a plain return).
+test('errors: a RETURNED (not thrown) Error decodes as a real host Error at the boundary (audit-#10 finding-4)', () => {
+  const j = (code) => jz(code, { jzify: true }).exports.f()
+  const literal = j(`export let f = () => new TypeError('x')`)
+  ok(literal instanceof TypeError, 'returned new TypeError(x) is instanceof host TypeError')
+  ok(literal instanceof Error, 'and instanceof host Error (every built-in class extends Error)')
+  is(literal.message, 'x', '.message survives the host decode')
+  is(literal.name, 'TypeError', '.name survives the host decode')
+  const bound = j(`export let f = () => { let e = new TypeError('y'); return e }`)
+  ok(bound instanceof TypeError, 'a BOUND Error variable, returned, decodes the same way')
+  is(bound.message, 'y')
+  const base = j(`export let f = () => new Error('base')`)
+  ok(base instanceof Error, 'base Error class decodes too')
+  ok(!(base instanceof TypeError), 'but is not instanceof a sibling subclass')
+})
+
+// KNOWN-FAIL, PRE-EXISTING, GENERAL, not Error-specific (found live testing
+// finding-4's async coverage): an async function that RESOLVES (not throws)
+// with ANY heap-carrying value — an Error, or an entirely ordinary plain
+// object — never correctly reaches host-side decode, in (at least) two
+// distinct pre-existing failure modes depending on AST shape:
+//   - concise arrow body (`async () => new TypeError(x)`, implicit return):
+//     resolves silently to `undefined` — the heap value is lost entirely,
+//     no trap, no error.
+//   - block body (`async () => { return new TypeError(x) }`, explicit
+//     return) OR an equally plain non-Error object (`async () => { return
+//     {x:1} }`) in EITHER shape: traps inside the wasm promise-value
+//     machinery itself (`__p_value`/`adopt`, "memory access out of bounds" /
+//     "table index is out of bounds" depending on shape) — BEFORE host-side
+//     decode is ever reached.
+// Confirmed general (not Error-specific) with a plain-object, non-Error
+// repro. The async/generator promise runtime (jzify's plain-jz state
+// machine) was apparently never exercised with a HEAP return value, only
+// numbers/strings/booleans. Interop.js's `readSettled`/`readRet` fix
+// (finding-4) is sound but CURRENTLY UNREACHABLE for the resolve side by
+// this pre-existing bug — the REJECT side (an async function that THROWS an
+// Error) is unaffected and pinned green above, since a throw traps through
+// the wasm exceptions tag, never touching `__p_value` at all. Out of scope
+// for the Error host-decode bundle — the bug is in async's own runtime, not
+// in interop.js's decode.
+test('KNOWN-FAIL (pre-existing, general, not Error-specific): an async function resolving with a heap value (object, Error, …) loses or traps on it', async () => {
+  if (onWasi() || onKernel()) return
+  const r = jz(`export let f = async () => new TypeError('resolved-not-thrown')`, { jzify: true }).exports.f()
+  const v = await r
+  is(v, undefined, 'JS: resolves to a real TypeError. jz (concise-arrow shape): silently resolves undefined — the value is lost, not decoded wrong')
+})
 // coercion per ES 20.5.1.1 — "If message is not undefined, let msg be
 // ? ToString(message)" (argument absent OR its value is undefined → no
 // message, i.e. ''). Node-verified authority: `new Error(false).message` ===
@@ -849,6 +906,58 @@ test('errors: Error ctor message coercion (ES 20.5.1.1, audit-#9 P1)', () => {
   // just the compile-time fold every literal above takes.
   is(jz(`export let f = (x) => new Error(x).message`, { optimize: 0 }).exports.f(false), 'false', 'dynamic false argument')
   is(jz(`export let f = (x) => new Error(x).message`, { optimize: 0 }).exports.f(undefined), '', 'dynamic undefined argument')
+})
+
+// audit-#10 finding-2: `new Error({}).message` above is the literal AST-shape
+// case 5f8ff012 special-cased (`isClosedObjLiteralNoStringMethod`). The
+// GENERAL ES 20.5.1.1 invariant — ToString(message) for ANY non-undefined
+// message, not just a literal — was already routing through toStrI64 (the
+// same chokepoint String()/template literals use) for the non-special-cased
+// case; the gap was narrower than "absent": a BOUND name pointing at a
+// closed-schema object (no toString/valueOf, no dyn/out-of-schema writes)
+// didn't get the literal's short-circuit, so it fell into toStrI64's generic
+// OBJECT path — which has a real, pre-existing, general, Error-unrelated bug
+// for non-Array objects (confirmed live: `String(o)` for a bound plain object
+// returns typeof "object", not a string at all — error-object-design.md's
+// own "Consequence" section already flags `${anyDynamicObject}` as broken,
+// out of scope for this design). Generalized `isClosedObjLiteralNoStringMethod`
+// (module/core.js) to `isClosedObjNoStringMethod`, extending the closed-world
+// fact from "AST is literally a `{}` node" to "a bound name whose OWN
+// declaration schema is closed" — the SAME generalization finding-1 applied
+// to Object.assign's target (literal fact → binding fact), same root cause
+// pattern, not a new mechanism.
+test('errors: Error ctor message coercion — bound closed-schema object (audit-#10 finding-2)', () => {
+  const j = (code) => jz(code, { jzify: true }).exports.f()
+  is(j(`export let f = () => { let o = {x: 1}; return new Error(o).message }`), '[object Object]', 'bound non-empty closed-schema object now gets the same short-circuit as the literal')
+  is(j(`export let f = () => { let o = {x: 1, y: 2}; return new Error(o).message }`), '[object Object]', 'multi-prop bound object, still closed')
+  is(j(`export let f = () => { let o = {toString: () => 'custom'}; return new Error(o).message }`), 'custom', 'a real toString method is NOT short-circuited — the real method runs')
+  // An out-of-schema write (`o.y = 2` where `y` isn't in o's declared schema)
+  // makes the object NOT provably closed at compile time — a dynamically
+  // added key COULD be 'toString'/'valueOf'. Falls to the pre-existing
+  // generic toStrI64 OBJECT path, unaffected by this fix either direction —
+  // asserting only that it does NOT wrongly claim '[object Object]'.
+  is(j(`export let f = () => { let o = {x: 1}; o.y = 2; return new Error(o).message === '[object Object]' }`), false,
+    'an out-of-schema write is conservatively NOT short-circuited (unproven closed-world)')
+})
+
+// KNOWN-FAIL, PRE-EXISTING, GENERAL, Error-unrelated (audit-#10 finding-2's
+// own investigation): a genuinely EMPTY `let o = {}` declaration never gets a
+// schema id bound at all (src/prepare/index.js's own decl-schema-binding
+// guards on `props.length` — a 0-prop object literal is treated as "unknown
+// init", the same "censusUnknownInitDecl" bucket as any other unproven
+// shape) — so `isClosedObjNoStringMethod` (module/core.js) can't prove it
+// closed, and `new Error(o).message` for a bound EMPTY object falls into the
+// pre-existing generic toStrI64 OBJECT path's bug (returns typeof "object",
+// not a string — the SAME bug `String(o)` has for the identical binding,
+// confirmed independent of Error). Fixing empty-object declaration schema
+// binding is a general src/prepare/index.js change with self-host-wide blast
+// radius (touches every `let cache = {}`-shaped declaration in every
+// program), well outside this task's four named findings — flagged, not
+// fixed. The literal (unbound) `new Error({})` case is unaffected (still
+// correctly '[object Object]', pinned above).
+test('KNOWN-FAIL (pre-existing, Error-unrelated, audit-#10 finding-2): new Error(o).message for a bound TRULY EMPTY object is not a string at all', () => {
+  const r = jz(`export let f = () => { let o = {}; return new Error(o).message }`, { jzify: true }).exports.f()
+  is(typeof r, 'object', 'JS: typeof "string" ("[object Object]"). jz: typeof "object" — empty-object declarations get no static schema, generic toStrI64 OBJECT path mis-renders it')
 })
 
 // §3(c): a non-Error throw is completely unaffected by the object model —
@@ -1002,21 +1111,55 @@ test('errors: __errcls__ is an ordinary, un-stolen property name (audit-#9 P0-2)
 // to crash the compiler outright (`__arr_set_idx_ptr` never registered /
 // `Unknown section func,$__obj_clone` — neither had been taught the old
 // __errcls__ slot existed, so resolveSchema saw an "unknown schema" source and
-// routed into machinery with its own unrelated pre-existing bugs). Real JS:
-// Error's own `message`/`name` are OWN but NON-enumerable
-// (`Object.keys(new TypeError('x'))` → `[]`, `Object.getOwnPropertyDescriptor
-// (new Error('x'), 'message').enumerable` → `false`, node-verified), so
-// `Object.assign`/spread FROM an Error copies nothing — the result is an
-// empty plain object, not a crash.
-test('errors: Object.assign/spread over an Error — no crash, yields {} (audit-#9 P0-2)', () => {
+// routed into machinery with its own unrelated pre-existing bugs). audit-#9
+// P0-2 fixed the crash by making Error's spread/assign SOURCE schema `[]`
+// (real JS: `message`/`name` are own but NON-enumerable, so a real Error's
+// spread/assign copies nothing there) — but that made spread/assign disagree
+// with `Object.keys`/`JSON.stringify`/for-in (immediately above), which see
+// the physical 2-slot layout on the SAME object. audit-#10 finding-3
+// (error-object-design.md, "enumerability contradiction") named this an
+// internally-impossible state and asked for a DECIDED, CONSISTENT choice
+// between (a) full JS fidelity (non-enumerable on all four surfaces — needs
+// a new per-property enumerability flag threaded through every enumeration
+// site: keys/JSON/spread/for-in) or (b) documented divergence (enumerable on
+// all four surfaces, matching jz's own established preference — see
+// module/object.js's `sourceSchema` comment — against re-growing the exact
+// "enumerated invariant" shape the Brand redesign above spent a session
+// removing). DECIDED (b): Error is an ordinary object on every enumeration
+// surface. Diverges from real JS (whose Error properties are non-enumerable
+// everywhere) but keeps jz's own four surfaces mutually consistent at zero
+// added machinery — `isErrorSchemaSource`'s override is deleted, `sourceSchema`
+// is now a plain alias for `resolveSchema`.
+test('errors: Object.assign/spread over an Error copies message/name — no crash, consistent with Object.keys (audit-#9 P0-2 crash fix, audit-#10 finding-3 enumerability decision)', () => {
   const j = (code) => jz(code, { optimize: 0 }).exports.f()
-  is(j(`export let f = () => Object.keys(Object.assign({}, new TypeError("x"))).length`), 0, 'Object.assign({}, new TypeError(x)) copies nothing')
-  is(j(`export let f = () => Object.keys({...new TypeError("x")}).length`), 0, '{...new TypeError(x)} copies nothing')
-  is(j(`export let f = () => { let e = new TypeError("y"); return Object.keys(Object.assign({}, e)).length }`), 0, 'Object.assign from a BOUND Error variable copies nothing')
-  is(j(`export let f = () => { let e = new TypeError("y"); return Object.keys({...e}).length }`), 0, 'spread from a BOUND Error variable copies nothing')
+  is(j(`export let f = () => Object.keys({...new TypeError("x")}).sort().join(',')`), 'message,name', '{...new TypeError(x)} copies message+name (spread always builds a fresh merged-schema object, unaffected by any target-growth limit)')
+  is(j(`export let f = () => { let e = new TypeError("y"); return Object.keys({...e}).sort().join(',') }`), 'message,name', 'spread from a BOUND Error variable copies message+name')
+  is(j(`export let f = () => JSON.stringify({...new TypeError("x")})`), '{"message":"x","name":"TypeError"}', 'spread content matches Object.keys(err)/JSON.stringify(err) above — one consistent story')
+  // Object.assign onto a target whose OWN schema already has message/name slots
+  // (Object.assign never GROWS a target's schema for new keys — a separate,
+  // general, pre-existing jz limitation unrelated to Error: `Object.assign({},
+  // {a:1})` also yields `[]` today, see .work/todo.md's audit-#10 entry — so a
+  // matching-schema target is what actually exercises the SOURCE-schema fix).
+  is(j(`export let f = () => { let t = {message: '', name: ''}; return Object.keys(Object.assign(t, new TypeError("x"))).sort().join(',') }`), 'message,name', 'Object.assign copies message+name onto a target with matching slots')
+  is(j(`export let f = () => { let t = {message: '', name: ''}; let e = new TypeError("y"); return JSON.stringify(Object.assign(t, e)) }`), '{"message":"y","name":"TypeError"}', 'Object.assign from a BOUND Error variable copies the real values')
   // optimize:2/3 must not crash either (kernel-parity-adjacent smoke check)
-  is(jz(`export let f = () => Object.keys(Object.assign({}, new TypeError("x"))).length`, { optimize: 2 }).exports.f(), 0, 'O2 does not crash')
-  is(jz(`export let f = () => Object.keys({...new TypeError("x")}).length`, { optimize: 2 }).exports.f(), 0, 'O2 does not crash (spread)')
+  is(jz(`export let f = () => Object.keys({...new TypeError("x")}).length`, { optimize: 2 }).exports.f(), 2, 'O2 does not crash (spread)')
+  is(jz(`export let f = () => { let t = {message: '', name: ''}; return Object.keys(Object.assign(t, new TypeError("x"))).length }`, { optimize: 2 }).exports.f(), 2, 'O2 does not crash (assign)')
+})
+
+// KNOWN-FAIL, PRE-EXISTING, GENERAL, Error-unrelated (found live while pinning
+// the enumerability decision above): Object.assign never GROWS its target's
+// static schema with new keys from a source — it only overwrites slots the
+// target's OWN declared schema already has. `Object.assign({}, {a:1})` (no
+// Error involved at all) already exhibits this: real JS gives `['a']`, jz
+// gives `[]`. Confirmed independent of Error/finding-3's enumerability call
+// (a target with pre-existing matching slots DOES receive the copy, tested
+// above) — this is Object.assign's own target-schema-growth story, out of
+// scope for the Error bundle. Pinned so it isn't mistaken for an
+// enumerability regression later.
+test('KNOWN-FAIL (pre-existing, Error-unrelated): Object.assign onto an empty-schema target does not grow the target — {} target yields no new keys, Error or not', () => {
+  is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).length`).exports.f(), 0, 'JS: 1 (["a"]). jz: 0 — Object.assign never grows a target schema, non-Error case')
+  is(jz(`export let f = () => Object.keys(Object.assign({}, new TypeError("x"))).length`).exports.f(), 0, 'JS: 0 (Error props non-enumerable anyway). jz: 0 too, but for the unrelated schema-growth reason above, not enumerability')
 })
 
 test('instanceof: compile-time fold — proven-kind LHS emits no runtime tag/aux/schema dispatch', () => {

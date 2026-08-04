@@ -14,7 +14,7 @@ import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/ctx.js'
 import { isReassigned } from '../src/ast.js'
-import { ERR, ERR_CLASS_NAMES } from '../err-codes.js'
+import { ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
 // return for primitive/built-in types; canonicalized from
@@ -846,32 +846,54 @@ const hasOutOfSchemaWrites = (obj, schema) => {
   return false
 }
 
-// True iff `obj` is an Error-class value at a spread/Object.assign SOURCE
-// position — either a literal `new X(...)`/`X(...)` constructor call (the
-// exact AST shape emitErrorInstanceof's own tier-1 fold already recognizes),
-// or a bound variable whose schema id is one of the minted Error-class sids
-// (module/schema.js's errorSid). A real Error's `message`/`name` are non-
-// enumerable in real JS (`Object.keys(new TypeError('x'))` → `[]`, confirmed
-// against node — the property is own+writable but NOT enumerable), so their
-// spread/assign SOURCE-position schema is `[]`, not the physical 2-slot
-// layout `.property` dot-access/instanceof/toStrI64 still need — this is a
-// SOURCE-position override, not a resolveSchema change (audit-#9 P0-2: fixes
-// `Object.assign({}, new TypeError('x'))`/`{...new TypeError('x')}`, which
-// previously crashed — resolveSchema returned null for the un-recognized
-// constructor-call node, routing into the dynamic-runtime-keys machinery,
-// which had its own unrelated pre-existing bug on a single-spread source).
-const isErrorSchemaSource = (obj) => {
-  if (Array.isArray(obj) && obj[0] === '()' && typeof obj[1] === 'string' && ERR_CLASS_NAMES.includes(obj[1])) return true
-  if (typeof obj === 'string') {
-    const sid = ctx.schema.idOf(obj)
-    if (sid != null && ctx.schema.isErrorSid(sid)) return true
-  }
-  return false
-}
-const sourceSchema = (obj) => isErrorSchemaSource(obj) ? [] : resolveSchema(obj)
+// `sourceSchema` is the spread/Object.assign SOURCE-position schema resolver.
+// audit-#9 P0-2 gave Error a SOURCE-position override (`[]`, matching real
+// JS's non-enumerable `message`/`name`) that this session's finding-3 audit
+// (error-object-design.md's "enumerability contradiction") found made
+// `Object.keys`/`JSON.stringify` (physical 2-slot schema, enumerable) and
+// `spread`/`Object.assign` (`[]`, non-enumerable) internally contradictory —
+// the SAME object answering "does this property enumerate" differently
+// depending only on which builtin asked. DECISION (documented divergence,
+// error-object-design.md finding-3): Error is an ordinary object on every
+// enumeration surface — keys/JSON/spread/assign/for-in all see the physical
+// `['message','name']` layout, consistently. This diverges from real JS
+// (whose Error properties are non-enumerable on all four surfaces) but keeps
+// jz's OWN four surfaces mutually consistent, at zero machinery cost: the
+// alternative (full JS fidelity) needs a per-property enumerability flag
+// threaded through every enumeration site — the exact "enumerated invariant"
+// shape audit-#9's own Brand redesign (this file, `errorSid`) already spent
+// a session removing for the schema-id axis. `sourceSchema` is now a plain
+// alias for `resolveSchema` — kept as a distinct name because call sites
+// below document SOURCE-position intent, not because it still special-cases
+// anything.
+const sourceSchema = (obj) => resolveSchema(obj)
+
+// Recognizes a literal `new X(...)`/`X(...)` Error-constructor-call node
+// (the same AST shape emitErrorInstanceof's tier-1 fold and `isErrorSchemaSource`
+// used to check) as carrying the physical Error schema `['message','name']`
+// — every one of the 7 classes shares this exact layout (module/schema.js's
+// `errorSid`, salted-but-content-identical registration). A BOUND Error name
+// already resolves through `ctx.schema.resolve` below (its declaration-schema
+// binding, src/prepare/index.js's `bindDeclSchema`) with no help needed here;
+// this closes the one shape that binding doesn't cover — an Error constructed
+// and used inline, never given a name (`Object.assign(new TypeError('x'), …)`,
+// `Object.keys(new TypeError('x'))`) — which previously left `resolveSchema`
+// returning null for the un-recognized call node, routing callers into
+// dynamic-runtime-keys machinery. For most callers that dynamic path just
+// works (if slowly); `Object.assign`'s dynamic arm (`emitObjectAssignDynamic`)
+// has an unrelated pre-existing bug (never pulls the `array` module its own
+// `__dyn_set` dependency needs, "internal: stdlib '__arr_set_idx_ptr' was
+// requested but never registered") that this closes the same way audit-#9
+// closed the sibling spread-source crash: by making the schema KNOWN, not by
+// fixing the dynamic path itself.
+const errorLiteralSchema = (obj) =>
+  Array.isArray(obj) && obj[0] === '()' && typeof obj[1] === 'string' && ERR_CLASS_NAMES.includes(obj[1])
+    ? ERR_SCHEMA_PROPS : null
 
 function resolveSchema(obj) {
   if (typeof obj === 'string') return ctx.schema.resolve(obj)
+  const errSchema = errorLiteralSchema(obj)
+  if (errSchema) return errSchema
   if (Array.isArray(obj) && obj[0] === '{}') {
     // Comma-grouped children arrive as ['{}', [',', p1, p2, …]] — same unwrap
     // as the '{}' emitter's, or a grouped literal resolves to zero keys.

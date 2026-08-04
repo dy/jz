@@ -654,3 +654,83 @@ row +0), fuzz (2000×4), fresh `build-dist.mjs` ×2 byte-identical (wasm AND
 js), a throwaway `git worktree` size spot-check (Error module 76B SMALLER at
 O2; Error-free module byte-identical), per-instance heap footprint ~32B (was
 ~40B). Full account: `.work/todo.md`'s 2026-08-04 audit-#9 P0-2 entry.
+
+## Findings 1-4 (audit-#10, 2026-08-04) — Object.assign provenance, general
+## ToString(message), enumerability DECIDED, host-boundary return decode
+
+Four independent gaps found live by audit-#10, none caught by any gate above
+— three were reached only through AST shapes/call directions the Brand
+redesign's own gates never exercised (a literal Object.assign target, a
+BOUND non-literal message object, a RETURNED-not-thrown Error); the fourth
+(enumerability) was a design-level inconsistency between two already-shipped
+fixes (Object.keys/JSON.stringify vs. spread/assign), not an implementation
+bug in either. Full technical account in `.work/todo.md`'s 2026-08-04 entry;
+summarized here because they touch this design's own machinery directly.
+
+**1 (P0) — Object.assign target provenance.** `resolveSchema` (module/
+object.js) recognized the literal Error-constructor-call shape at SOURCE
+position (`isErrorSchemaSource`, the "As-landed corrections"/"Brand redesign"
+sections above) but never at Object.assign's TARGET position — a literal,
+un-bound `Object.assign(new TypeError('x'), {...})` fell through to the
+broken dynamic-assign path and crashed (`__arr_set_idx_ptr` never
+registered). Fixed by moving the literal-shape recognition INTO
+`resolveSchema` itself (so every consumer — Object.assign target, Object.keys/
+values/entries on an unbound literal — gets it uniformly, not just the one
+call site that crashed), and mirroring the identical branch into `src/kind.js`'s
+`spreadSchema` (its own comment already requires agreement with
+`resolveSchema` for the OBJECT-vs-HASH decision — was silently out of sync
+for this exact shape until this fix).
+
+**2 (P1) — message ToString, the bound-object gap.** `errorMessageIR`
+(module/core.js) already routed any non-special-cased message through
+`toStrI64`, the same chokepoint `String()` uses — the "general invariant" was
+never actually absent. The real gap was narrower: `isClosedObjLiteralNoStringMethod`
+only recognized the literal `{}` AST shape, not a BOUND name with an
+equally-closed schema, so `let o = {x:1}; new Error(o)` fell into
+`toStrI64`'s generic OBJECT fallback — which has its OWN pre-existing,
+general (not Error-specific) bug this design's own "Consequence" section
+already named and left out of scope (`__to_str` has no real object-rendering
+case; a plain object round-trips as itself, not a string, confirmed live via
+`typeof String(o) === 'object'`). Generalized the closed-world check
+(`isClosedObjNoStringMethod`) from "AST is a `{}` literal" to "a bound name
+whose declaration schema is closed" — same fix shape as #1. A truly EMPTY
+`let o = {}` stays a residual (prepare.js never binds it a schema at all,
+`props.length` guard) — general, pre-existing, out of this bundle's scope.
+
+**3 (P1) — enumerability, DECIDED.** The "Spread/Object.assign FROM an
+Error" section above gave Error's SOURCE-position schema `[]` (matching real
+JS's non-enumerable message/name) while `Object.keys`/`JSON.stringify` (same
+section, same session) kept the physical 2-slot schema (enumerable) — the
+SAME object answering "does this enumerate" differently by which builtin
+asked, an internally-impossible state. DECIDED here: documented divergence,
+not full fidelity. Error is an ordinary, uniformly enumerable object on
+every surface (keys/JSON/spread/assign/for-in) — diverges from real JS
+(non-enumerable everywhere) but costs nothing, and the alternative (a per-
+property enumerability flag reaching every enumeration site) is exactly the
+enumerated-invariant shape this file's own "Brand redesign" section already
+demonstrated is worse than removing the special case. `isErrorSchemaSource`
+is deleted; `sourceSchema` is now `resolveSchema` verbatim.
+
+**4 (P1) — host-boundary return decode.** interop.js's Error-class upgrade
+(`mem.errorSidToClass`, "Interop consequence" section above) ran only inside
+`decodeThrown`, reached exclusively by an escaping THROW — a function that
+plainly `return`s a constructed Error decoded as a bare `{message,name}`
+object at the host boundary, never `instanceof Error`. Fixed by extracting
+the sid→class lookup into a shared `errorSidClassOf`, consumed by both
+`decodeThrown` (unchanged behavior) and a new `readRet` wired into the
+export-wrapper return path AND the async promise-settle path. A pre-
+existing, general, Error-unrelated bug was found alongside this (an async
+function that RESOLVES — not throws — with any heap value silently loses it
+or traps, before host decode is ever reached) — flagged, not fixed, out of
+this bundle's scope.
+
+**Gates, all green** — repros red→green natively before each fix; full
+88-file battery (15 chunks of ≤6); kernel-parity 33/33 byte-identical;
+kernel-oracle 11/11; perf-ratchet 10/10 at +0; optimizer 214/214 (3949
+assertions); errors.js BOTH modes (native + kernel-leg, 133/133 each — the
+kernel-leg run needed a fresh `npm run build` first, since the kernel target
+compiles against the committed `dist/jz.wasm` artifact, not live source);
+dyn-keys.js 38/38 both legs; minimal-output.js unaffected (error-free module
+byte-identical per its own pinned probe); selfhost.js 21/21; fuzz 2000×4
+(seeds 1-8000) zero divergence; fresh `build-dist.mjs` ×2 byte-identical.
+Full account: `.work/todo.md`'s 2026-08-04 audit-#10 Error-bundle entry.
