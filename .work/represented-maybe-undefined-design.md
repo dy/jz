@@ -728,3 +728,184 @@ dictValueKindOf/mapValueKindOf are load-bearing again under its protection.
 `presentKindUnboxed` (§2, §6) is the one remaining named item — a separate,
 independent axis (present-key BigInt representation, not absent-key
 undefined-tracking), left for a future slice per §8's own ordering.
+
+## 13 — Slice 5, as landed (the BigInt export-lane class, §6's presentKindUnboxed)
+
+Closes §6's one remaining named item: repro 5 (`m.get('x')` alone, 5n stored,
+read back `2.5e-323`) and the present-key BigInt-unary KNOWN-FAIL 7288b69b
+left pinned in test/dyn-keys.js. This is the last named value-wrong family
+from the whole audit campaign.
+
+**Mechanism — LANE/KIND-INFORMATION, not a representation change**, per this
+design's own permanent carrier doctrine (raw i64 BigInt bits reinterpreted as
+f64, magnitude-ambiguous at the boundary by construction): `synthesizeBoundaryWrappers`
+(compile/index.js) already computes the CORRECT i64 bits for a census-BIGINT
+dict/Map result — `resultBigint`'s and `resultDynamic`'s wasm bodies were
+already byte-identical (`toI64(callIR)`) before this slice. The only broken
+piece was HOST-SIDE DECODE: a census-BIGINT-maybe-undefined result took the
+generic `resultDynamic` lane, whose interop.js decode reinterprets
+unrecognized i64 bits as an f64 NaN-box-or-number — misreading a small
+BigInt's raw bits as a subnormal float.
+
+Fixed with a new `jz:i64exp` result marker, `s` (sentinel kind), sibling to
+the existing `r`/`m` markers, sourced from a new `censusBigintSentinelKind`
+(kind.js, built directly on `censusMaybeUndefinedKind` — no VT dependency,
+see below): kind 1 (bare dict/Map read or call-result — sentinel bits =
+UNDEF_NAN, decodes to `undefined`), kind 2 (unary `-` of one — sentinel =
+canonical NaN's bits, decodes to `NaN`, ES2024 13.5.6 ToNumeric(undefined)),
+kind 3 (unary `~` of one — sentinel = `-1`'s bits, decodes to `-1`, ES2024
+13.5.9). Computed once per export in `analyzeFuncForEmit` (while per-function
+census reps are live — `_resultBigintSentinel`, mirrors `_resultNumeric`'s
+own live-vs-torn-down split) and consulted in `synthesizeBoundaryWrappers`
+with PRIORITY over `resultBool`/`resultBigint` (see "gap found" below — not
+just an `else` arm). interop.js's `decodeBigintSentinel` compares the raw
+i64 result against exactly the sentinel kind's fixed bit pattern (normalized
+to the SIGNED range a wasm i64 result actually crosses as — `-1`'s bits have
+the sign bit set, `BigInt.asIntN(64, …)` needed, unlike UNDEF_NAN/NaN whose
+NaN-box-tagged high bits never do) — a match decodes to the sentinel's real
+JS value, anything else returns as a raw BigInt. No new WASM instruction
+anywhere in this slice; every byte the inner `$name`/wrapper `$name$exp`
+functions emit is unchanged — confirmed by the fresh-build byte-identity gate.
+
+**Two deeper, pre-existing bugs found and fixed en route** (both real
+miscompiles, not export-lane issues — found because the census-BIGINT return
+tail needed a genuinely correct WASM signature/codegen before any export
+marker could matter):
+
+1. `valTypeOfWithLocals`'s unary BigInt-preserving family (`u- ~ ++ --`,
+   kind.js) fell through to `numericUnaryVT`'s unconditionally-resolving
+   optimistic-NUMBER default whenever the operand's kind was genuinely
+   UNRESOLVED at narrowValResults' early whole-program pass — the identical
+   "unknown side → no claim" gap the pre-existing SOUND-`+` fix already
+   closed for `+` (§4), never extended to the unary family. Left unfixed,
+   `export let f = () => -m.get('x')` claimed `func.valResult = VAL.NUMBER`
+   and skipped i64 boundary wrapping ENTIRELY (crossed as a bare f64,
+   corrupting the BigInt on the present-key branch) — a live miscompile.
+   Fixed: unresolved operand now propagates null instead of falling to the
+   optimistic default.
+2. type.js's `exprType` (Phase E i32-result narrowing, `narrowI32Results`)
+   had the identical class of gap for the bitwise family (`~ & | ^ << >>`):
+   an unresolved (not proven-BIGINT) operand still defaulted to `'i32'`,
+   narrowing an export's WASM signature away from f64 even when the operand
+   could genuinely be a census-BIGINT — `~m.get('x')` compiled the wrapper
+   with an `i32` result type, discarding the true i64 bits outright (host
+   received `0`, not even boundary-decode-wrong — structurally wrong).
+   Fixed with a `censusShapedNode` guard that keeps the safe `'f64'` default
+   specifically for that ambiguous case; ordinary, non-census bitwise ops
+   are unaffected (verified: `~a`, `a << 2`, `~~a` truncation fold all
+   byte-identical before/after).
+
+**A third gap found while wiring the dict sibling** (dict's census resolves
+EARLIER than Map's — `dictValueKindOf` has a whole-program pre-scan half in
+program-facts.js, `mapValueKindOf` is per-function-only): `func.valResult`
+can independently settle to a plain `VAL.BIGINT` for a dict-sourced census
+read at narrowValResults' own early pass — WITHOUT its
+`valResultMayBeUndefined` companion, because `exprMayBeUndefinedIn` (that
+OR-join's own predicate) doesn't peel through a `-`/`~` unary wrapper the
+way `censusBigintSentinelKind` does. Trusting `func.valResult === VAL.BIGINT`
+at face value (the ORIGINAL plan: gate `_resultBigintSentinel` on
+`func.valResult == null`) would have taken the plain `resultBigint` lane
+(unmarked passthrough) and stayed wrong for `dict: unary "-"` on an ABSENT
+key. Fixed by computing `_resultBigintSentinel` UNCONDITIONALLY (not gated
+on `valResult == null`) and giving it priority over `resultBool`/
+`resultBigint` in `synthesizeBoundaryWrappers`. Same fix closed a
+previously-unpinned, genuinely pre-existing bug: a BARE (non-unary) dict
+absent-key read (`d[k1]=1n; return d[k2]`) had the identical
+`func.valResult`-without-`valResultMayBeUndefined` gap — confirmed broken at
+HEAD via a stash diff before this slice touched anything, now fixed as a
+side effect and pinned (test/dyn-keys.js, "Slice 5: bare Map/dict... repro
+5").
+
+**VT-Slice-4-revert independence — explicitly designed for it**, per this
+session's own coordination: `censusBigintSentinelKind` and
+`censusMaybeUndefinedKind` (its base) call `dictValueKindOf`/`mapValueKindOf`
+DIRECTLY (kind.js), never through `valTypeOf`/VT — those helpers have been
+independent of VT['[]']/['.']/['()']'s own exact-kind promotion since Slice 1
+(79082fb2)'s "censusMaybeUndefinedKind-only helpers" restoration, and Slice
+4 only ADDED a second caller (VT itself), never made the helpers depend on
+VT. So the export-lane mechanism (`_resultBigintSentinel`,
+`synthesizeBoundaryWrappers`'s `s` marker, interop.js's decode) is fully
+VT-independent — repro 5 (bare read, sentinel kind 1) and the dict-early-
+resolution fix survive a Slice 4 revert unchanged. The ONE VT-dependent
+piece is PRE-EXISTING and not this slice's own code: emitNeg/`~`'s own
+activation gate (audit-#8 P0-4, predates this task) originally read only
+`valTypeOf(a) === VAL.BIGINT` to decide whether to route through
+`bigIntUnary` at all — if Slice 4's VT wiring goes away, a dynamic
+census-shaped operand's `valTypeOf` reverts to null and `bigIntUnary` never
+fires, silently reverting the present-key unary case (sentinel kinds 2/3)
+to its pre-Slice-4 KNOWN-FAIL state (unreachable, not wrong — the export
+marker logic stays correct, just dead code). Hardened against this
+proactively: emitNeg and the `~` table entry (emit.js) now gate on
+`valTypeOf(a) === VAL.BIGINT || censusMaybeUndefinedKind(a) === VAL.BIGINT` —
+the OR-arm reads the census helper directly, so `bigIntUnary` keeps firing
+for a dynamic dict/Map-read operand independent of VT's own promotion.
+Verified: identical present/absent unary values with this OR-arm in place.
+
+**Negative controls** (test/dyn-keys.js, "Slice 5: negative controls"):
+- Mixed-kind Map (`m.set('a',5n); m.set('b',6)`): `dictValueKindOf`/
+  `mapValueKindOf`'s own census returns null for a mixed receiver (no single
+  exact kind to claim) — `censusBigintSentinelKind` never fires, falls back
+  to the OLD `resultDynamic` lane. Honestly pinned as the DOCUMENTED, UNFIXED
+  behavior (`m.get('a')` still reads back `2.5e-323`, not `5n`) — this slice
+  narrows the class to "exact single-kind census claim only," matching every
+  other census consumer's own soundness carve-out, not "every BigInt export."
+- A statically-proven BigInt export (`() => 5n`, `() => -5n`, no census
+  involved at all): `resultBigintSentinel` computes 0 for these (the return
+  tail isn't census-shaped), so they keep taking the ORIGINAL unmarked
+  `resultBigint` lane, byte-for-byte unaffected — structural pin against the
+  new lane over-firing on an already-sound case.
+
+**Carrier doctrine boundary this slice does NOT touch** (named per this
+session's own scope discipline, ">2^52 boundary cases per the permanent
+documented divergences"): the sentinel-bit-pattern comparison itself has a
+single-point collision risk shared with every other atom-vs-raw-bigint
+interaction this codebase already accepts (UNDEF_NAN/NULL_NAN/etc. atoms) —
+a BigInt whose value is EXACTLY the reserved sentinel's bit pattern
+(`ATOM_HI[UNDEF]<<32n` for kind 1; the canonical NaN/`-1` bit patterns for
+kinds 2/3) decodes to the sentinel's JS value instead of that exact BigInt.
+Astronomically unlikely (one point in 2^64), same class the raw-i64-carrier
+doctrine already tolerates everywhere else, not newly introduced by this
+slice. Not fixed (would require abandoning the raw carrier for a tagged
+one — full `bigintBoxed` producer/consumer wiring, §6's own "alternate
+closure", out of scope here as it was for every prior slice).
+
+**Out-of-scope bug found, NOT fixed, honestly pinned** (external audit #10,
+found live while testing this slice's own repros, confirmed via a HEAD
+stash diff to be byte-for-byte unaffected by this slice): a present-key
+census-BIGINT value used in binary `+` with a NUMBER (`m.get('x') + 1`)
+silently produces garbage NUMBER instead of JS's TypeError — entirely
+IN-WASM (`bigintMixReject`, emit.js: "the mix is PROVABLE... one side
+proven BIGINT, the other a NUMERIC LITERAL" — a dynamic dict/Map read
+doesn't satisfy that proof at its own call site), not an export-boundary
+issue, so no lane this slice adds could fix it. Needs joint runtime-domain
+dispatch at the binary-op site (operand-local guards are architecturally
+insufficient) — a separate, larger design. Pinned as a new KNOWN-FAIL
+(test/dyn-keys.js) so a future fix flips it deliberately.
+
+**Files touched**: kind.js (`censusBigintSentinelKind`, new; the SOUND-unary
+fix in `valTypeOfWithLocals`), type.js (`exprType`'s bitwise-family
+`censusShapedNode` guard), compile/index.js (`_resultBigintSentinel`
+producer in `analyzeFuncForEmit`; `resultBigintSentinel` lane + `s` marker
+in `synthesizeBoundaryWrappers`; the `jz:i64exp` JSON-building literal-shape
+branch), emit.js (emitNeg/`~`'s VT-independence OR-arm), interop.js
+(`decodeBigintSentinel`, the sentinel-bits table, the three call-site
+decode branches), test/dyn-keys.js (flipped KNOWN-FAILs, new repro-5 pin,
+negative controls, the new out-of-scope KNOWN-FAIL).
+
+**Gates**: full 88-file battery (15 foreground chunks ≤6) — 0 failures;
+dyn-keys.js 32/32 (91 assertions) native AND kernel leg (`JZ_TEST_TARGET=
+jz.wasm`, genuinely routed through `compileViaKernel`, not just the env var);
+kernel-parity 33/33 byte-identical (fresh dist/jz.wasm); kernel-oracle
+11/11; perf-ratchet 10/10 at +0 every category; optimizer.js 214/214 (in the
+541/541-assertion data+statements+optimizer chunk); selfhost.js 21/21;
+fuzz 2000×4 (seeds 1-8000) zero divergence; size sweep geomean 1.055×
+unchanged (`scripts/bench-size.mjs`); fresh build ×2 byte-identical
+(jz.js/jz.wasm/interop.js, sha256-verified).
+
+`presentKindUnboxed` (§2, §6) is now closed for the class this design named
+it for. The remaining, explicitly out-of-scope items: the binary-mix
+dispatch bug above (audit #10), and the general `bigintBoxed`
+producer/consumer wiring gap (§6's "alternate closure", still un-landed —
+would let a properly-boxed dynamic BigInt be self-describing everywhere,
+collapsing this whole sentinel-lane mechanism into "just works", but is a
+strictly larger undertaking than this slice's lane-only fix).

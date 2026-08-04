@@ -144,6 +144,28 @@ export const TRUE_NAN = BigInt(ATOM_HI[ATOM.TRUE]) << 32n
 // Coerce JS null/undefined → boxed atom (BigInt); everything else passes through.
 export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v
 
+// jz:i64exp `s`-lane decode (present-key BigInt through the census, represented-
+// maybe-undefined-design.md §6/§12 Slice 5, the `presentKindUnboxed` family): the
+// i64 result is either a genuine raw BigInt, or — when the dict/Map key the census
+// traced was absent at runtime — a FIXED sentinel bit pattern whose real JS value
+// depends on which operator produced it (a bare read/call-result decays to
+// `undefined`; unary `-`/`~` ToNumeric undefined per ES2024 13.5.6/13.5.9, a real
+// NUMBER, never `undefined` itself). Neither takes the generic NaN-box `decode`/
+// `mem.read` path, which misdecodes a small BigInt's raw i64 bits as a subnormal
+// float (the original repro, `5n` reading back `2.5e-323`). Sentinel kinds mirror
+// kind.js censusBigintSentinelKind exactly: 1 = UNDEF_NAN → `undefined`, 2 = NaN's
+// bits → `NaN`, 3 = `-1`'s bits → `-1`.
+// `f64ToI64` builds an UNSIGNED bit pattern; a wasm i64 result crosses to JS as a
+// SIGNED BigInt64 (two's-complement, e.g. -1's bits read back negative) — every
+// sentinel here must be normalized to that same signed range or the comparison
+// below silently never matches for any sentinel with bit 63 set (as `-1`'s does;
+// UNDEF_NAN/NaN's NaN-box-tagged high bits never set it, so they were already
+// signed/unsigned-agnostic, but asIntN keeps the table uniformly correct).
+const BIGINT_SENTINEL_BITS = { 1: UNDEF_NAN, 2: f64ToI64(NaN), 3: f64ToI64(-1) }
+for (const k in BIGINT_SENTINEL_BITS) BIGINT_SENTINEL_BITS[k] = BigInt.asIntN(64, BIGINT_SENTINEL_BITS[k])
+const BIGINT_SENTINEL_VALUES = { 1: undefined, 2: NaN, 3: -1 }
+const decodeBigintSentinel = (ret, s) => ret === BIGINT_SENTINEL_BITS[s] ? BIGINT_SENTINEL_VALUES[s] : ret
+
 // SSO-encode a string ≤6 ASCII chars to a NaN-box BigInt (no heap needed).
 // Mirrors mem.String's SSO branch. Used when marshaling a string into an i64-carrier
 // param of a memoryless module (no linear memory, so only self-contained bit encodings
@@ -681,11 +703,15 @@ export const wrap = (memSrc, inst, state) => {
   // i64-carrier map: per export, which param positions ride i64 (BigInt) and whether the
   // result does. The boxed (NaN-box) carrier crosses as i64 so JSC can't canonicalize the
   // payload; we reinterpret BigInt↔f64 by bits at exactly those positions. A bigint result
-  // has no entry — its BigInt already IS the value. (Mirror of the test/data.js adapter.)
+  // has no entry — its BigInt already IS the value. `s` (represented-maybe-undefined-
+  // design.md §6/§12 Slice 5): a census-BIGINT sentinel result — same raw i64 bits as a
+  // plain bigint result UNLESS the underlying dict/Map key was absent at runtime, in which
+  // case the bits equal the sentinel kind's fixed pattern (decodeBigintSentinel above).
+  // (Mirror of the test/data.js adapter.)
   const i64Exp = new Map()
   const i64Bytes = customSection(mod, 'jz:i64exp')
   if (i64Bytes) {
-    try { for (const e of JSON.parse(td.decode(i64Bytes))) i64Exp.set(e.name, { p: new Set(e.p || []), r: !!e.r }) }
+    try { for (const e of JSON.parse(td.decode(i64Bytes))) i64Exp.set(e.name, { p: new Set(e.p || []), r: !!e.r, s: e.s || 0 }) }
     catch { /* ignore */ }
   }
   const mem = memory(memSrc)
@@ -900,8 +926,14 @@ export const wrap = (memSrc, inst, state) => {
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
           const ret = fn(...args.map(i64Arg(ie, ext, coerce)))
-          // A bigint-value result returns raw; a boxed i64 result or an f64/number result decodes.
-          return typeof ret === 'bigint' && !(ie && ie.r) ? ret : decode(ret)
+          // A bigint-value result returns raw; the `s` lane (census-BIGINT sentinel) decodes
+          // only its own fixed sentinel bit pattern; everything else (a boxed i64 result or an
+          // f64/number result) takes the generic decode.
+          if (typeof ret === 'bigint') {
+            if (ie && ie.s) return decodeBigintSentinel(ret, ie.s)
+            if (!(ie && ie.r)) return ret
+          }
+          return decode(ret)
         } catch (e) { decodeThrown(e) }
       }
     }
@@ -922,7 +954,10 @@ export const wrap = (memSrc, inst, state) => {
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
           const ret = fn.apply(null, a)
-          if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
+          if (typeof ret === 'bigint') {
+            if (ie && ie.s) return decodeBigintSentinel(ret, ie.s)
+            if (!(ie && ie.r)) return ret
+          }
           return finishRet(ret, r => mem.read(r))
         } catch (error) {
           decodeThrown(error)
@@ -938,7 +973,10 @@ export const wrap = (memSrc, inst, state) => {
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
           const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal)))
-          if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
+          if (typeof ret === 'bigint') {
+            if (ie && ie.s) return decodeBigintSentinel(ret, ie.s)
+            if (!(ie && ie.r)) return ret
+          }
           return finishRet(ret, r => mem.read(r))
         } catch (error) {
           decodeThrown(error)

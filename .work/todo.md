@@ -4,6 +4,99 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, represented-maybe-undefined Slice 5 LANDED — BigInt
+## export-lane class closed, .work/represented-maybe-undefined-design.md §13,
+## the LAST named value-wrong family from the audit campaign)
+
+Landed Slice 5: `presentKindUnboxed` (§2/§6) closed with a LANE/KIND-
+INFORMATION fix, not a representation change — the raw-i64-BigInt-carrier
+doctrine stays as-is. New `jz:i64exp` result marker `s` (sentinel kind: 1 =
+bare dict/Map read or call-result, sentinel=UNDEF_NAN→`undefined`; 2 = unary
+`-`, sentinel=NaN's bits→`NaN`; 3 = unary `~`, sentinel=`-1`'s bits→`-1`),
+sourced from new `censusBigintSentinelKind` (kind.js, built on
+`censusMaybeUndefinedKind` directly — no VT dependency). interop.js's new
+`decodeBigintSentinel` recognizes the sentinel's exact bit pattern instead of
+taking the generic NaN-box/number decode, which used to misread a small
+BigInt's raw bits as a subnormal float (`2.5e-323`, repro 5).
+
+**Two deeper pre-existing miscompiles found and fixed en route** (both
+independent of the export lane — the census-BIGINT return tail needed
+correct WASM signature/codegen before any export marker mattered):
+1. `valTypeOfWithLocals`'s unary family (`u- ~ ++ --`, kind.js) fell through
+   to `numericUnaryVT`'s optimistic-NUMBER default on an UNRESOLVED operand —
+   same gap the pre-existing SOUND-`+` fix closed for `+`, never extended to
+   unary. `export let f = () => -m.get('x')` claimed `func.valResult =
+   VAL.NUMBER` and skipped i64 wrapping entirely. Fixed: unresolved → null,
+   not the optimistic default.
+2. type.js `exprType`'s Phase-E i32-result narrowing had the identical gap
+   for the bitwise family (`~ & | ^ << >>`) — an unresolved operand still
+   defaulted to `'i32'`, corrupting `~m.get('x')`'s export signature
+   outright (host got `0`). Fixed with a `censusShapedNode` guard keeping
+   the safe `'f64'` default for that ambiguous case only.
+3. A third gap (dict's census resolves EARLIER than Map's — a whole-program
+   pre-scan half in program-facts.js vs Map's per-function-only): a
+   dict-sourced census read could settle `func.valResult = VAL.BIGINT`
+   WITHOUT its `valResultMayBeUndefined` companion (`exprMayBeUndefinedIn`
+   doesn't peel through unary wrapping). Fixed by computing
+   `_resultBigintSentinel` UNCONDITIONALLY and giving it priority over
+   `resultBool`/`resultBigint` in `synthesizeBoundaryWrappers` — this also
+   fixed a previously-UNPINNED, genuinely pre-existing bug (bare dict
+   absent-key read, confirmed broken at HEAD via a stash diff), now pinned.
+
+**VT-Slice-4-revert independence** (explicit design goal this session):
+`censusBigintSentinelKind`/`censusMaybeUndefinedKind` call
+`dictValueKindOf`/`mapValueKindOf` directly, never through VT/`valTypeOf` —
+independent of VT['[]']/['.']/['()']'s Slice-4 exact-kind promotion since
+those helpers' Slice-1 (79082fb2) restoration. Repro 5 (bare read) and the
+dict-early-resolution fix survive a Slice-4 revert unchanged. The one
+VT-dependent link is PRE-EXISTING, non-Slice-5 code: emitNeg/`~`'s own
+activation gate (audit-#8 P0-4, predates this task) originally read only
+`valTypeOf(a) === VAL.BIGINT`. Hardened proactively: both now gate on
+`valTypeOf(a) === VAL.BIGINT || censusMaybeUndefinedKind(a) === VAL.BIGINT`
+(emit.js) so the unary present-key fix also survives the coming revert.
+
+**Flipped-pin table** (test/dyn-keys.js, before → after, JS-correct target):
+- repro 5 (`m.get('x')`, x→5n): `2.5e-323` → `5n` ✓ (host, native+kernel)
+- `-m.get('x')` (present): `NaN` → `-5n` ✓
+- `~m.get('x')` (present): `0` → `-6n` ✓
+- dict sibling (`-d[k1]`/`~d[k1]`, present): `NaN`/`0` → `-5n`/`-6n` ✓
+- dict bare absent (`d[k2]`, unpinned pre-existing bug): garbage bigint →
+  `undefined` ✓ (found+fixed as a side effect, newly pinned)
+- absent-key cases (`-m.get('missing')`→NaN, `~m.get('missing')`→-1,
+  strict-eq comparisons): unchanged, already correct pre-Slice-5.
+
+**Negative controls**: mixed-kind Map (`5n`+`6`) — census returns null, no
+exact lane, `m.get('a')` STAYS `2.5e-323` (honestly pinned, unfixed,
+documented); statically-proven BigInt export (`()=>5n`, `()=>-5n`) —
+byte-identical, untouched, structural pin against over-firing.
+
+**Out-of-scope, found live, NOT fixed** (external audit #10): present-key
+census-BIGINT `+` NUMBER (`m.get('x') + 1`) silently produces garbage
+NUMBER instead of JS's TypeError — confirmed via HEAD stash diff to be
+byte-for-byte PRE-EXISTING, unaffected by this slice (entirely in-wasm,
+`bigintMixReject`'s own documented narrower-proof policy, not an
+export-boundary issue). Needs joint runtime-domain dispatch at the binary-op
+site — separate, larger design. Pinned as a new KNOWN-FAIL.
+
+**Carrier-doctrine boundary excluded, by design** (matches every prior
+slice's own scope): the sentinel-bit comparison has the same single-point
+collision risk every atom-vs-raw-bigint interaction already tolerates in
+this codebase (a BigInt whose value is EXACTLY the reserved sentinel's bit
+pattern misdecodes) — astronomically unlikely, not newly introduced, not
+fixed (would need the full `bigintBoxed` producer/consumer wiring, §6's
+"alternate closure", out of scope here as for every prior slice).
+
+**Gates** (fresh dist rebuild): full 88-file battery in 15 foreground chunks
+≤6 — 0 failures; dyn-keys.js 32/32 (91 assertions) BOTH native and kernel
+leg (`JZ_TEST_TARGET=jz.wasm`, genuinely routed via `compileViaKernel`);
+kernel-parity 33/33 byte-identical; kernel-oracle 11/11; perf-ratchet 10/10
+at +0 every category; optimizer.js 214/214; data.js/statements.js run
+explicitly (541/541 assertions in that chunk); selfhost.js 21/21; fuzz
+2000×4 (seeds 1-8000) zero divergence; size sweep geomean 1.055× unchanged;
+fresh build ×2 byte-identical (jz.js/jz.wasm/interop.js, sha256-verified).
+
+Full detail: .work/represented-maybe-undefined-design.md §13.
+
 ## Status (2026-08-04, represented-maybe-undefined Slice 4 LANDED — VT
 ## re-enablement, .work/represented-maybe-undefined-design.md §8 point 4, §5
 ## criteria all met)

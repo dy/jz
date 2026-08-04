@@ -434,6 +434,28 @@ export function censusMaybeUndefinedKind(node) {
   return callResultMayBeUndefinedKind(node)
 }
 
+// Present-key BigInt through the census — export-boundary sentinel kind
+// (represented-maybe-undefined-design.md §6/§12 Slice 5, the `presentKindUnboxed`
+// family). A bare census-BIGINT node (dict/Map read, mayBeUndefined bare name, or
+// call-result — censusMaybeUndefinedKind's own three arms) crosses the JS boundary
+// as either its raw i64 bits (present key) or the UNDEF_NAN atom (absent key,
+// decodes to `undefined`) — sentinel kind 1. `-`/`~` unary-wrapping such a node
+// (emit.js emitNeg / the '~' table entry, both via bigIntUnary) computes a
+// DIFFERENT absent-case value internally — ToNumeric(undefined) applied to the
+// specific operator, a genuine NUMBER, never `undefined` itself (ES2024 13.5.6/
+// 13.5.9): NaN for unary '-' (sentinel kind 2), NUMBER -1 for unary '~' (sentinel
+// kind 3). Both still cross as the SAME raw i64-reinterpret-f64 carrier as the
+// bare case (bigIntUnary's own doc comment) — only the absent-case BIT PATTERN
+// interop must recognize differs per operator, hence the distinct kind. Returns 0
+// when `node` isn't any of these shapes (not this export lane at all).
+export function censusBigintSentinelKind(node) {
+  if (censusMaybeUndefinedKind(node) === VAL.BIGINT) return 1
+  if (Array.isArray(node) && node.length === 2 && (node[0] === 'u-' || node[0] === '~')
+      && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT)
+    return node[0] === 'u-' ? 2 : 3
+  return 0
+}
+
 // mayBeUndefined structural TRACE (Slice 2, §3 "Param lattice"/"Return
 // kinds"): does `name`, written somewhere in `bodyRoot` via a plain
 // `let`/`const`/`=`, resolve — transitively, cycle-guarded — to a
@@ -879,8 +901,24 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   // BOOL_OPS are UNAFFECTED on purpose — VT.bool ignores its operand's kind
   // entirely (always VAL.BOOL), so the locals-blind valTypeOf(expr) fallback
   // is already exact for them; no case needed here.
+  // SOUND unary (§6/§12 Slice 5, present-key BigInt export lane): same "unknown
+  // side → no claim" discipline as SOUND `+` just above — an operand whose kind
+  // the LOCAL resolver can't settle (`rec` returns null — e.g. a dict/Map
+  // `.get()` read whose census kind isn't available yet at this whole-program
+  // pass, narrow.js narrowValResults' own ordering gap) must NOT fall through
+  // to numericUnaryVT's global, unconditionally-resolving optimistic-NUMBER
+  // default: that default is what made `export let f = () => -m.get('x')`
+  // claim `func.valResult = VAL.NUMBER` even though the operand can genuinely
+  // be BIGINT, skipping the i64 boundary wrap entirely (a real, live
+  // miscompile fixed here, not just a missed optimization — `_resultNumeric`,
+  // computed later while per-function reps ARE live, correctly re-derives an
+  // ordinary numeric unary's NUMBER result independently, so this costs no
+  // real specialization for the common case).
   if (op === 'u-' || op === '~' || op === '++' || op === '--') {
-    return rec(args[0]) === VAL.BIGINT ? VAL.BIGINT : valTypeOf(expr)
+    const a = rec(args[0])
+    if (a === VAL.BIGINT) return VAL.BIGINT
+    if (a == null) return null
+    return valTypeOf(expr)
   }
   return valTypeOf(expr)
 }

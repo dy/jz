@@ -340,64 +340,144 @@ test('Map: a read-only capture does not disqualify the census (control)', () => 
 // before ever reaching the dict census, so it already took the sound generic
 // toNumF64 path; the dynamic-key case below is the one that actually exercised
 // the raw-i64 branch.
-// Present-key case — KNOWN-FAIL, RE-VERIFIED post Slice 4 (represented-
-// maybe-undefined-design.md §8 Slice 4, VT re-enablement) with DIFFERENT
-// wrong values than the audit-#9-era pin, root-caused live via direct WAT/
-// select instrumentation before updating: the absent-key assertions above
-// are unaffected (never depended on an exact-kind claim). Present-key now
-// TAKES bigIntUnary's runtime select/isUndef branch for the first time ever
-// (censusMaybeUndefinedKind(node) is BIGINT for ANY `.get()`/`[]` read on a
-// BIGINT-census receiver, present or absent — the AST shape can't tell them
-// apart, so Slice 4 makes this branch reachable for a present key too) — and
-// that branch computes the CORRECT i64 negate/complement internally
-// (confirmed by isolating each sub-expression: the isUndef condition
-// evaluates false, correctly selecting the negate arm; `-5n`'s raw i64 bits
-// are computed exactly). The corruption happens ONE step later, at the
-// GENERIC dynamic-value EXPORT lane (resultDynamic, compile/index.js
-// synthesizeBoundaryWrappers ~1595-1601): bigIntUnary carries its result in
-// an f64 slot BY DESIGN (P0-4's own comment — a unary op can yield EITHER a
-// real Number NaN or a real BigInt depending on runtime undef-ness, so
-// downstream consumers need one uniform carrier type), and whenever the
-// negated/complemented i64's raw bits happen to fall in the NaN-shaped
-// exponent range (any i64 that LOOKS negative once reinterpreted as f64 —
-// `-5n`'s bits are exactly this shape), the boundary's NaN-canonicalization
-// collapses the true payload to a bare `NaN`/`0`. This is NOT a new,
-// distinct bug — it is the SAME presentKindUnboxed representation gap
-// .work/represented-maybe-undefined-design.md §6 already names for repro 5
-// (`m.get('x')` alone, 5n stored, reads back `2.5e-323` not `5n`), now also
-// reachable through unary '-'/'~' rather than only a bare read. Fixed only
-// by presentKindUnboxed (§2, un-landed — Slice 5, separable) or the
-// bigintBoxed producer-wiring fix §6 names as the alternate closure.
-// THE STRICT-EQUALITY assertions, by contrast, FLIP TO CORRECT here (not
-// KNOWN-FAIL): `-m.get('x') === -5n` statically proves BOTH sides BIGINT
-// (numericUnaryVT + the BIGINT literal), so emitStrictEq takes the
-// REF_EQ_KINDS raw i64-bit-compare path — comparing the negate's true i64
-// result against the literal's i64 DIRECTLY, never touching the broken f64
-// export/decode step. That comparison is sound (both sides genuinely -5 as
-// i64), matching JS's `true`.
+// Present-key case — FIXED (Slice 5, .work/represented-maybe-undefined-
+// design.md §6/§12, the `presentKindUnboxed` family — the last named
+// value-wrong family from the audit campaign). Root (re-confirmed live,
+// unchanged from the Slice 4 finding below): bigIntUnary's runtime
+// select/isUndef branch already computes the CORRECT i64 negate/complement
+// internally (present key: isUndef false, selects the negate arm; `-5n`'s
+// raw i64 bits are exact) — the corruption used to happen ONE step later, at
+// the export boundary (compile/index.js synthesizeBoundaryWrappers): a
+// dict/Map-census BIGINT result (bare read OR unary `-`/`~` of one) has no
+// STATIC `func.valResult === VAL.BIGINT` proof (the value can genuinely be
+// `undefined`/NaN/-1 at runtime), so it fell into the generic resultDynamic
+// lane, whose host-side decode (interop.js) reinterprets unrecognized i64
+// bits as a NaN-box-or-number — misreading a small BigInt's raw bits as a
+// subnormal float (`2.5e-323`) instead of recognizing them as a BigInt.
+// FIXED with a LANE/KIND-INFORMATION fix, not a representation change (the
+// raw-i64 BigInt carrier doctrine stays as-is): `censusBigintSentinelKind`
+// (kind.js) recognizes a census-BIGINT return tail — bare dict/Map read,
+// call-result, or `-`/`~` wrapping one — and `synthesizeBoundaryWrappers`
+// emits a NEW `jz:i64exp` result marker (`s`: 1 = bare read/call-result,
+// sentinel bits = UNDEF_NAN → `undefined`; 2 = unary `-`, sentinel = NaN's
+// bits → `NaN`; 3 = unary `~`, sentinel = `-1`'s bits → `-1`) instead of the
+// generic `r` marker. interop.js's new `decodeBigintSentinel` checks the
+// raw i64 result against exactly that sentinel's fixed bit pattern: a match
+// decodes to the sentinel's real JS value, anything else is returned as a
+// raw BigInt — no generic NaN-box/number decode, so a small BigInt's bits
+// never get misread. TWO deeper bugs found and fixed en route (both
+// independent of the export lane itself, both re-verified via full gates):
+// (1) `valTypeOfWithLocals`'s unary BigInt-preserving family (kind.js) fell
+// through to `numericUnaryVT`'s unconditionally-resolving optimistic-NUMBER
+// default whenever the operand's kind was genuinely UNRESOLVED (not
+// genuinely NUMBER) at narrowValResults' early whole-program pass — the SAME
+// "unknown side → no claim" gap the pre-existing SOUND-`+` fix already
+// closed for `+`, just never extended to `u- ~ ++ --`. Left unfixed,
+// `export let f = () => -m.get('x')` claimed `func.valResult = VAL.NUMBER`
+// and skipped i64 boundary wrapping ENTIRELY — a live miscompile, not just a
+// missed optimization. (2) type.js's `exprType` (Phase E i32-result
+// narrowing) had the identical class of gap for the bitwise family
+// (`~ & | ^ << >>`): an unresolved (not proven-BIGINT) operand still
+// defaulted to `'i32'`, narrowing an export's WASM signature away from f64
+// even when the operand could genuinely be a census-BIGINT — fixed with a
+// `censusShapedNode` guard that keeps the safe `'f64'` default specifically
+// for that ambiguous case (ordinary, non-census operands are unaffected).
+// THE STRICT-EQUALITY assertions were already correct pre-Slice-5 (Slice 4
+// finding, unchanged): `-m.get('x') === -5n` statically proves BOTH sides
+// BIGINT (numericUnaryVT + the BIGINT literal), so emitStrictEq takes the
+// REF_EQ_KINDS raw i64-bit-compare path, never touching the export lane.
 test('Map: unary "-"/"~" on a .get() absent key decays to NUMBER NaN/-1, not a garbage bigint (audit-#8 P0-4 Part 3)', () => {
   is(run(`const m = new Map(); m.set('x', 1n); return -m.get('missing')`), NaN)
   is(run(`const m = new Map(); m.set('x', 1n); return ~m.get('missing')`), -1)
   is(typeof run(`const m = new Map(); m.set('x', 1n); return -m.get('missing')`), 'number')
-  // present-key: value-materialization is KNOWN-FAIL (Slice 4 re-verified —
-  // NaN/0, not -5/-6, see comment above); the strict-eq comparisons are a
-  // NEW regression pin (Slice 4 flip: false → true, matching JS).
-  is(run(`const m = new Map(); m.set('x', 5n); return -m.get('x')`), NaN)
+  // present-key: value-materialization FIXED (Slice 5 — was KNOWN-FAIL
+  // NaN/0, now the true -5n/-6n); the strict-eq comparisons stay correct
+  // (Slice 4 flip: false → true, unaffected by Slice 5).
+  is(run(`const m = new Map(); m.set('x', 5n); return -m.get('x')`), -5n)
   is(run(`const m = new Map(); m.set('x', 5n); return -m.get('x') === -5n`), true)
-  is(run(`const m = new Map(); m.set('x', 5n); return ~m.get('x')`), 0)
+  is(run(`const m = new Map(); m.set('x', 5n); return ~m.get('x')`), -6n)
   is(run(`const m = new Map(); m.set('x', 5n); return ~m.get('x') === ~5n`), true)
 })
 test('dict: unary "-"/"~" on a DYNAMIC-key absent read decays to NUMBER NaN/-1 (audit-#8 P0-4 Part 3, dict sibling)', () => {
   is(jz(`export let f = (k1, k2) => { const d = {}; d[k1] = 1n; return -d[k2] }`).exports.f('x', 'missing'), NaN)
   is(jz(`export let f = (k1, k2) => { const d = {}; d[k1] = 1n; return ~d[k2] }`).exports.f('x', 'missing'), -1)
-  // present-key: same Slice 4 re-verification as the Map test above.
-  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return -d[k1] }`).exports.f('x'), NaN)
+  // present-key: same Slice 5 fix as the Map test above.
+  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return -d[k1] }`).exports.f('x'), -5n)
   is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return -d[k1] === -5n }`).exports.f('x'), true)
-  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return ~d[k1] }`).exports.f('x'), 0)
+  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return ~d[k1] }`).exports.f('x'), -6n)
   is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return ~d[k1] === ~5n }`).exports.f('x'), true)
 })
 test('dict: unary "-" on a LITERAL-key absent read (already sound — not this bug, structural control)', () => {
   is(run(`const d = {}; d['x'] = 1n; return -d['missing']`), NaN)
+})
+
+// Slice 5 (.work/represented-maybe-undefined-design.md §6/§12, presentKindUnboxed)
+// repro 5 itself — the bare `m.get()`/`d[k]` read, no unary — closing the class
+// this design named the whole audit campaign's last value-wrong family. Was
+// KNOWN-FAIL: `m.set('x', 5n); export let f = () => m.get('x')` returned the host
+// `2.5e-323` (5n's raw i64 bits misread as an f64 subnormal), not `5n`. Fixed by
+// the same `s`-lane export marker the unary tests above exercise (sentinel kind 1:
+// UNDEF_NAN → `undefined`, anything else a raw BigInt) — no in-wasm change, the
+// bug was purely in which lane/decode the export took.
+test('Slice 5: bare Map/dict .get()/[] read materializes the true BigInt across the export boundary (repro 5, was KNOWN-FAIL)', () => {
+  const mapMod = jz(`export let f = () => { const m = new Map(); m.set('x', 5n); return m.get('x') }`, { jzify: true })
+  is(mapMod.exports.f(), 5n)
+  is(typeof mapMod.exports.f(), 'bigint')
+  const mapAbsent = jz(`export let f = () => { const m = new Map(); m.set('x', 1n); return m.get('missing') }`, { jzify: true })
+  is(mapAbsent.exports.f(), undefined)
+  const dictMod = jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return d[k1] }`, { jzify: true })
+  is(dictMod.exports.f('x'), 5n)
+  // dict bare-absent: a SEPARATE pre-existing bug closed as a side effect of this
+  // slice (found live, not previously pinned anywhere) — `func.valResult` settled
+  // to a plain VAL.BIGINT for a dict-sourced census read (dictValueKindOf resolves
+  // EARLIER than mapValueKindOf: a whole-program pre-scan half in program-facts.js,
+  // vs Map's per-function-only census) WITHOUT its valResultMayBeUndefined
+  // companion ever being consulted by the export lane, so it took the plain
+  // resultBigint passthrough (raw, unmarked) instead of a sentinel-aware one —
+  // wrong for the absent case regardless of any unary wrapping. The Slice 5 fix
+  // (computing `_resultBigintSentinel` unconditionally and letting it override a
+  // stale `func.valResult` claim, compile/index.js) closes this too.
+  const dictAbsent = jz(`export let f = (k1, k2) => { const d = {}; d[k1] = 1n; return d[k2] }`, { jzify: true })
+  is(dictAbsent.exports.f('x', 'missing'), undefined)
+})
+
+// Negative controls (Slice 5): the sentinel lane must not fire where it shouldn't.
+test('Slice 5: negative controls — mixed-kind Map falls back to documented (unfixed) behavior; a statically-proven BigInt export is untouched', () => {
+  // A Map whose values are a MIX of BIGINT and NUMBER writes: dictValueKindOf/
+  // mapValueKindOf's own census returns null for a mixed receiver (no single exact
+  // kind to claim), so censusBigintSentinelKind never fires either — this falls
+  // back to the OLD generic resultDynamic lane, whose decode still misreads the
+  // BigInt member's raw i64 bits as a subnormal float. Honestly pinned as the
+  // documented, unfixed behavior (not silently left to drift) — the NUMBER member
+  // is unaffected (it was never carrying a BigInt-shaped bit pattern to begin with).
+  const mixed = jz(`export let f = (k) => { const m = new Map(); m.set('a', 5n); m.set('b', 6); return m.get(k) }`, { jzify: true })
+  is(mixed.exports.f('a'), 2.5e-323)
+  is(mixed.exports.f('b'), 6)
+  // A statically-proven BigInt export (no census, no maybe-undefined) keeps taking
+  // the ORIGINAL unmarked resultBigint lane, byte-for-byte unaffected by Slice 5 —
+  // structural pin against the sentinel lane over-firing on an already-sound case.
+  is(jz(`export let f = () => 5n`).exports.f(), 5n)
+  is(jz(`export let f = () => -5n`).exports.f(), -5n)
+})
+
+// KNOWN-FAIL, PRE-EXISTING, OUT OF SCOPE for Slice 5 (external audit #10,
+// 2026-08-04): a present-key census-BIGINT value used in BINARY `+` with a
+// NUMBER doesn't throw the TypeError real JS gives for BigInt⊕Number mixing —
+// it silently does ordinary f64 addition on the raw i64-as-f64 carrier bits,
+// producing a garbage NUMBER. Confirmed unaffected by this slice (byte-for-byte
+// identical before/after, verified via a HEAD stash diff) — the bug is entirely
+// IN-WASM (bigintMixReject, emit.js: "Enforce it exactly where the mix is
+// PROVABLE from source" — a dynamic dict/Map read doesn't count as that kind of
+// proof at its own call site), not an export-boundary decode issue, so no lane
+// this slice adds or touches could fix it. Audit #10's finding: fixing this
+// needs JOINT runtime domain dispatch at the binary-op site (operand-local
+// guards like bigintMixReject's are architecturally insufficient), a separate,
+// larger design — explicitly not this task's scope. Pinned here (not
+// previously pinned anywhere) so a future fix flips it deliberately.
+test('KNOWN-FAIL (audit #10, out of scope): present-key census-BIGINT + NUMBER silently corrupts instead of throwing TypeError', () => {
+  const r = jz(`export let f = () => { const m = new Map(); m.set('x', 5n); return m.get('x') + 1 }`, { jzify: true }).exports.f()
+  // JS: throws TypeError. Actual (wrong): silent NUMBER garbage.
+  is(typeof r, 'number')
 })
 
 // Slice 3 (.work/represented-maybe-undefined-design.md §4/§8 point 3): the

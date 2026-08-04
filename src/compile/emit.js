@@ -286,7 +286,15 @@ const emitNeg = (a) => {
   // NUMBER literal here — see parse.js). No magnitude heuristic needed for
   // literals; the runtime magnitude heuristic (emit.js TYPEOF.bigint) remains
   // for genuinely dynamic/unknown-kind values, a separate, real carrier limit.
-  if (valTypeOf(a) === VAL.BIGINT)
+  // `|| censusMaybeUndefinedKind(a) === VAL.BIGINT` (represented-maybe-undefined-
+  // design.md §6/§12 Slice 5): a census-shaped operand's exact-kind claim reaches
+  // `valTypeOf` here only via VT['[]']/['.']/['()']'s own Slice-4 exact-kind
+  // promotion (kind.js) — a SEPARATE mechanism from the census helpers
+  // (dictValueKindOf/mapValueKindOf) themselves, which this OR-arm consults
+  // DIRECTLY (censusMaybeUndefinedKind, unchanged since Slice 1/79082fb2). Keeps
+  // this activation gate reachable for a dynamic dict/Map-read operand
+  // independent of whether that promotion stays wired.
+  if (valTypeOf(a) === VAL.BIGINT || censusMaybeUndefinedKind(a) === VAL.BIGINT)
     return bigIntUnary(a, i64v => ['i64.sub', ['i64.const', 0], i64v], ['f64.const', 'nan'])
   const v = emit(a)
   if (isLit(v)) return emitNum(-litVal(v))
@@ -5421,7 +5429,10 @@ export const emitter = {
     // bigIntUnary (audit-#8 P0-4 Part 3): a maybeUndefined-BIGINT operand's real
     // JS value is ToInt32(NaN)'s complement, NUMBER -1 — not `x ^ -1` on the raw
     // UNDEF_NAN sentinel bits (see emitNeg's identical substitution above).
-    if (valTypeOf(a) === VAL.BIGINT) return bigIntUnary(a, i64v => ['i64.xor', i64v, ['i64.const', -1]], ['f64.const', -1])
+    // `|| censusMaybeUndefinedKind(a) === VAL.BIGINT` — see emitNeg's identical
+    // OR-arm comment (§6/§12 Slice 5): keeps this gate VT-Slice-4-independent.
+    if (valTypeOf(a) === VAL.BIGINT || censusMaybeUndefinedKind(a) === VAL.BIGINT)
+      return bigIntUnary(a, i64v => ['i64.xor', i64v, ['i64.const', -1]], ['f64.const', -1])
     const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', toI32(isI32Num(v) ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32')
   },
   ...Object.fromEntries([

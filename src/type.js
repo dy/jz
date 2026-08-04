@@ -13,7 +13,7 @@
 import { isI32, isReassigned, cloneNode, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS } from './ast.js'
 import { ctx } from './ctx.js'
 import { VAL, lookupValType } from './reps.js'
-import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge } from './kind.js'
+import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, censusShapedNode } from './kind.js'
 import { propValType, CMP_OPS } from './kind-traits.js'
 import { NO_VALUE, staticValue, intLiteralValue, intExprRange } from './static.js'
 import { typedElemAux } from '../layout.js'
@@ -2260,8 +2260,22 @@ export function exprType(expr, locals, valTypes, strict) {
   // caller) — resolves a bare identifier's kind from analyzeBody's per-body
   // facts BEFORE narrow.js's global per-function reps are live; see the
   // module doc above exprType.
-  if (['&', '|', '^', '~', '<<', '>>'].includes(op))
-    return valTypeOfWithLocals(expr, name => valTypes?.get(name) ?? lookupValType(name)) === VAL.BIGINT ? 'f64' : 'i32'
+  if (['&', '|', '^', '~', '<<', '>>'].includes(op)) {
+    const vt = valTypeOfWithLocals(expr, name => valTypes?.get(name) ?? lookupValType(name))
+    if (vt === VAL.BIGINT) return 'f64'
+    // SOUND bitwise-i32 narrowing (§6/§12 Slice 5, present-key BigInt export lane): a
+    // census-shaped operand (dict/Map read) whose kind isn't resolvable YET at this
+    // whole-program pass (narrowI32Results runs before per-function census reps are
+    // live — the SAME ordering gap valTypeOfWithLocals's own unary-family rule
+    // documents, so `vt` above lands null instead of a definite kind) must not
+    // optimistically narrow the export's WASM result to i32: the operand CAN be a
+    // maybeUndefined-BIGINT at runtime, whose real codegen (bigIntUnary, emit.js)
+    // produces an f64-typed IR, not i32 — narrowing here would desync the boundary
+    // wrapper's signature from what the body actually emits. Structurally-provable
+    // non-bigint operands (the overwhelming majority) are unaffected.
+    if (vt == null && (censusShapedNode(args[0]) || (args.length > 1 && censusShapedNode(args[1])))) return 'f64'
+    return 'i32'
+  }
   // Preserve i32 if both operands i32. `strict` additionally requires a
   // magnitude-bound proof the sum/difference fits signed i32 (P0-2 sibling,
   // 2026-08-02) — needed ONLY by callers deciding whether a value may escape
