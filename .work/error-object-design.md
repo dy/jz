@@ -523,3 +523,134 @@ throughout (in-wasm and at the host boundary); internal runtime-raised
 errors stay raw numeric codes with `.message`/`.name` undefined and
 `instanceof` `false` (not a guess), consistent with the P0-2 correction
 above.
+
+## Brand redesign (audit-#9 P0-2, 2026-08-04) — SUPERSEDES §1's `__errcls__`
+## slot and the "As-landed corrections" P0-3 entry above
+
+**Finding: the P0-3 patch was the enumerated-invariant disease it was trying
+to cure, wearing a disguise.** §1 chose a shared schema (one sid for all 7
+classes) with class identity in a hidden slot 2, because "`ctx.schema.register`
+has no per-caller 'force a distinct id' mechanism… giving 7 classes 7
+different ids would need… register-level surgery" (§1, and repeated verbatim
+as the P0-3 investigation's own stated blocker). Both statements were true of
+`ctx.schema.register`'s SIGNATURE, and both undersold how small the actual fix
+was: `register(props, salt)` — one optional parameter, folded into the
+existing content-based dedupe key (`props.length + '\x01' + props.join('\x01')
++ (salt ? '\x02' + salt : '')`), a no-op for the ~15 other call sites that
+never pass it. The P0-3 patch instead spent its effort making the hidden slot
+UN-REACHABLE (prepare-time rejection at 2 sites, runtime exclusion at 5 more)
+rather than making it NOT EXIST — precisely the shape the task brief's own
+directive named: "a hidden schema/header brand… not a source-visible
+property," and precisely the shape that bit twice (P0-2 groups 1/2: two
+compiler crashes from consumers that had never been taught the slot existed;
+group 3: a stolen property name from a rejection this session deleted). The
+audit's diagnosis stands as the general lesson: an enumerated invariant
+("every consumer must remember to filter X") is not closed by a more complete
+enumeration — it's closed by removing X from the set of things that need
+filtering.
+
+**The fix.** `ctx.schema.errorSid(className)` (module/schema.js) mints one
+DISTINCT schema id per class, salted by the class name, all sharing the
+IDENTICAL physical layout `['message','name']` — no reserved slot, nothing
+unspellable, nothing to filter anywhere. instanceof reads the sid (masked
+tag+aux compare, same `OBJECT_SCHEMA_HI_MASK`/`objectSchemaGuardHex` shape §4
+already used, now one compare per relevant class instead of one compare +
+one slot load). `.name`/`.message` are ordinary slots 1/0. A NEW prepare-time
+fact, `ctx.features.errorClasses` (Set<className>, populated alongside the
+existing `ctx.features.error` boolean), lets both instanceof's base-'Error'
+OR-chain and toStrI64's Error-schema recognition arm iterate exactly the
+classes the program can ever actually construct — a genuinely NEVER-
+constructed specific class (`x instanceof RangeError` in a program that only
+ever builds `TypeError`) now folds to compile-time `false`, a precision the
+old shared-sid design's blanket boolean gate couldn't express.
+
+**Consequence: the physical schema being genuinely, uniformly public makes
+every P0-3 filter dead code, not just unreachable code.** `emitKeysGeneric`,
+`__keys_ro`, `emitEnumerateObject`'s raw-array shortcut and its per-slot skip
+loop, `module/collection.js`'s dyn GET/SET/DELETE dispatch, `module/json.js`'s
+stringify walk — all had an `ERR_CLS_SLOT`-shaped carve-out; all deleted,
+restoring each to the plain, schema-agnostic form it would have had if Error
+had never existed. This is the "subtract, don't accrete" gate from first
+principles: the P0-3 patch's ~120 lines of filtering across 5 files collapse
+to zero, replaced by ~15 lines in one file (the `salt` param + 5 accessor
+methods) that every consumer above gets for free by construction.
+
+**Interop consequence — a new small custom section, not a design compromise.**
+Moving identity into the sid instead of a decodable slot value means
+`interop.js`'s `decodeThrown` (host-boundary Error reconstruction, §Slice A)
+can no longer read class identity out of the decoded `{message, name}` object
+— the sid is compiler-internal state that doesn't survive into the compiled
+artifact on its own. Fix: `src/compile/index.js` emits a tiny `'jz:errcls'`
+custom section (sid → className pairs, present only when the program
+constructs at least one Error class) mirroring the existing `'jz:schema'`
+section's own custom-section convention; `interop.js` reads it into
+`mem.errorSidToClass` at instantiation, and `decodeThrown` looks up
+`aux(errBits)` in it, gated on `type(errBits) === PTR.OBJECT` first (the
+gate that prevents a numerically-coincidental aux value on some OTHER pointer
+type from spoofing a class — the direct descendant of the old design's
+`ERR_CLASS_NAMES[value.__errcls__] === value.name` cross-check, but sound for
+a stronger reason: the sid is read off the pointer's own tag bits, which no
+source-level write can reach, rather than a decoded property value that
+COULD, in the old design, in principle be tampered with by anything that
+found a way around the P0-3 rejections).
+
+**Spread/Object.assign FROM an Error — fixes P0-2 groups 1/2, closes §1's own
+flagged residual.** §1's P0-3 entry explicitly flagged spread as un-audited
+("object-SPREAD construction… was not audited for this session"). Real JS:
+`message`/`name` are OWN but NON-enumerable on a real Error
+(`Object.getOwnPropertyDescriptor(new Error('x'), 'message').enumerable ===
+false`, node-verified), so `Object.assign`/spread FROM an Error copies
+NOTHING — the result is an empty plain object. `module/object.js` gained a
+SOURCE-position-only override (`sourceSchema`, wrapping `resolveSchema`) that
+answers `[]` for an Error-schema source — both the literal-call-shaped case
+(`{...new TypeError(x)}`) and a bound variable's case (`let e = new
+TypeError(x); {...e}`, which additionally needed a new prepare-time
+declaration-schema binding for Error-constructor-initialized `let`s,
+mirroring the existing object-literal case — without it, `repOf(name)
+.schemaId` was never populated for this declaration shape at all, meaning
+`instanceof`'s own "tier 2: bound name" fold documented in §4 was DEAD CODE
+for exactly this shape before this session, never exercised by any live
+program). This override is intentionally NOT a `resolveSchema` change: dot-
+access, `instanceof`, `toStrI64`, JSON.stringify, and Object.keys/values/
+entries/for-in are UNCHANGED (still see the real 2-slot layout — `Object.keys
+(new TypeError('x'))` in jz is `['message','name']`, a PRE-EXISTING divergence
+from real JS's `[]` that predates this session, out of scope, unaffected
+either direction by this fix). The crash itself (group 1/2) was a SEPARATE,
+general `__obj_clone` bug (any unknown-schema single-spread source hits it,
+confirmed with a non-Error repro, `({...param})`) that Error incidentally
+triggered because its schema was unrecognized, not because of anything
+Error-specific — the fix above sidesteps it for Error by making the schema
+KNOWN (empty), never by touching `__obj_clone` itself.
+
+**Message coercion (audit-#9 P1, folded into this session since it shares the
+ctor-path code this fix already touches).** ES 20.5.1.1: message argument
+absent OR its VALUE is `undefined` → no message (`''`); otherwise
+`ToString(message)`. Two independent, narrowly-scoped fixes in
+`buildErrorObject`'s new `errorMessageIR`, neither touching `toStrI64` itself
+(matching the established per-call-site convention other direct `toStrI64`
+callers already follow — module/string.js's per-leaf template formatter,
+`src/compile/emit.js`'s `+`-concat `strOperand` — rather than inventing a
+`toStrI64`-internal special case, which would touch the compiler's own
+self-hosted string-formatting hot path for a fix two call sites already show
+the right shape for): (1) a statically-proven BOOL operand is boxed through
+the same true/false `select` those other callers use BEFORE reaching
+`toStrI64` — the raw unboxed 0/1 arithmetic carrier jz keeps booleans in was
+hitting `coerceRest`'s i32-provable-NUMBER fast path un-guarded
+(`new Error(false).message` read `"0"`); (2) a closed object-literal argument
+(no spread, no `toString`/`valueOf` key — a STATICALLY PROVABLE empty
+method chain, not merely an unproven one) resolves directly to the static
+`'[object Object]'` tag, closing the one case of `toStrI64`'s generic-OBJECT
+gap (error-object-design.md's own "Consequence" section, still open for any
+OTHER dynamic object) that Error's own constructor can prove sound. The
+undefined-vs-absent distinction routes through `isUndef` (the same helper
+default-parameter substitution already uses), which folds to a compile-time
+constant for any literal argument — the common `new Error("literal")` case
+pays zero runtime cost, matching this design's own recurring performance
+discipline.
+
+**Gates, all green** — full 88-file battery (13 chunks), selfhost.js 21/21,
+kernel-parity 33/33 byte-identical, kernel-oracle, perf-ratchet 10/10 (every
+row +0), fuzz (2000×4), fresh `build-dist.mjs` ×2 byte-identical (wasm AND
+js), a throwaway `git worktree` size spot-check (Error module 76B SMALLER at
+O2; Error-free module byte-identical), per-instance heap footprint ~32B (was
+~40B). Full account: `.work/todo.md`'s 2026-08-04 audit-#9 P0-2 entry.

@@ -4,6 +4,177 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, audit-#9 P0-2 closed — Error class branding moved from a
+## source-visible schema slot to the schema id itself; two compiler crashes and
+## a stolen user property name fixed; audit P1 message-coercion bug folded in)
+
+AUDIT-#9 FINDING: the 8182e465 P0-3 patch (error-object-design.md, "As-landed
+corrections") hid Error class identity behind a reserved schema slot
+(`__errcls__`) enforced by prepare-time rejection at every dot/literal-key site
+plus a matching runtime exclusion in every enumeration/dyn-dispatch consumer —
+exactly the "enumerated invariant" failure mode the design doc's own P0-3 entry
+warned about ("every object consumer must remember to filter"). It bit twice:
+Object.assign/spread over a real Error object crashed the compiler outright
+(neither had been taught the slot existed, so resolveSchema saw an "unknown
+schema" source and routed into machinery — `__obj_clone`'s single-spread-source
+shortcut, the generic dynamic-assign runtime-key loop — that had its OWN
+unrelated pre-existing bugs), and `{ __errcls__: 1 }`, a legal plain user
+object, was rejected outright. 4 failure groups verified live at HEAD (7288b69b):
+1. `Object.assign({}, new TypeError('x'))` → `internal: stdlib
+   '__arr_set_idx_ptr' was requested but never registered` (O0/O2/O3).
+2. `({...new TypeError('x')})` → `Unknown section func,$__obj_clone,...`
+   (watr assembly failure — confirmed this specific crash is NOT Error-
+   specific: ANY unknown-schema single-spread source, e.g. `({...param})`,
+   hits the same pre-existing `__obj_clone` bug; Error just couldn't reach the
+   KNOWN-schema path that avoids it, because resolveSchema didn't recognize
+   the constructor-call shape at all).
+3. `({ __errcls__: 1 })` — a plain object with that key — rejected at compile
+   time ("not a valid object-literal key"), stealing a legal property name.
+4. (Audit P1, same ctor-path machinery, folded in here) ES 20.5.1.1 message
+   coercion bugs: `new Error(false).message` → `"0"` (JS `"false"` — a raw
+   unboxed-bool-carrier miscompile, `coerceRest`'s i32-fast-path treating
+   the carrier as a plain integer); `new Error(undefined).message` →
+   `"undefined"` (JS `""` — Error's OWN spec clause treats an explicit
+   `undefined` argument as "no message", distinct from ordinary
+   `ToString(undefined)`); `new Error({}).message` → the raw object value
+   (JS `"[object Object]"` — toStrI64's generic OBJECT arm has no
+   Object.prototype.toString default-tag fallback, a known pre-existing gap
+   for ANY dynamic object per error-object-design.md's own "Consequence"
+   section, closed HERE only for the provably-no-method literal-object-
+   argument case).
+
+REDESIGN (error-object-design.md updated in place — see its new
+"Brand redesign" section superseding §1's `__errcls__` slot and the P0-3
+patch): class identity now lives in the pointer's SCHEMA ID, not a slot.
+`module/schema.js`'s `ctx.schema.register` gained an optional `salt` param
+(default-omitted for every existing caller, so their content-only dedupe key
+is byte-identical to before) that forces a distinct id for identical prop
+content; `ctx.schema.errorSid(className)` mints/reuses one sid per Error class,
+salted by the class name, all 7 sharing the IDENTICAL physical 2-slot layout
+`['message','name']` — two perfectly ordinary, fully public/enumerable
+properties, nothing reserved. `instanceof` reads the sid (an OR-chain of
+masked tag+sid compares over `ctx.features.errorClasses` — a NEW prepare-time
+per-class companion to the existing `ctx.features.error` boolean — for the
+base 'Error' case; a single compare for a specific class; a specific class
+NEVER constructed anywhere folds to compile-time `false`, one level more
+precise than the old design's blanket boolean gate); `.name` is just slot 1,
+read like any other property — nothing to "derive from the sid" was needed
+beyond `ctx.schema.errorClassOf(sid)` for the FEW compile-time-fold call
+sites (emitErrorInstanceof's tier-2, interop's decodeThrown).
+
+REJECTED (both already rejected once, by P0-3 itself, same standard re-
+applied): a dedicated `PTR.ERROR` heap tag (genuinely unbounded blast radius —
+every PTR-tag switch in the codebase); keeping the shared sid + hidden slot but
+un-spelling the name harder (doesn't fix the enumerated-invariant disease, just
+picks a different bandage — the audit's own directive named this "the fix
+must make forgetting impossible", which only a representation-level brand
+does). `ctx.schema.register`'s "no per-caller distinct-id mechanism" (P0-3's
+own stated blocker) turned out to be ONE optional parameter, not a structural
+wall — module/schema.js's own dedupe-by-content-string implementation made
+this trivial once actually attempted (the P0-3 investigation apparently didn't
+get past reading the docstring).
+
+CONSEQUENCES — dead filtering code DELETED (the enumerated invariant, closed
+by construction, not by more enumeration):
+- `src/prepare/index.js`: the `.` handler's ERR_CLS_SLOT read/write rejection,
+  the `{}` handler's ERR_CLS_SLOT literal-key rejection — GONE. `__errcls__`
+  is un-stolen: an ordinary property name, usable anywhere.
+- `module/collection.js`: `schemaKeyEqPublic` (the ERR_CLS_SLOT-excluding
+  wrapper around `schemaKeyEq`, both dyn GET/SET dispatch loops) and the
+  matching IIFE in the dyn DELETE arm — deleted, calls point at plain
+  `schemaKeyEq`/`$__str_eq` again.
+- `module/json.js`: `__json_obj`'s ERR_CLS_SLOT-excluding stringify-walk
+  condition — deleted, back to the plain `$__json_omit` check.
+- `module/object.js`: `emitKeysGeneric`/`__keys_ro`'s `.filter(p => p !==
+  ERR_CLS_SLOT)` — deleted (plain `schema`/`schema.map` now). `emitEnumerateObject`'s
+  raw-array-shortcut veto (`ctx.features.error`-gated sid-inequality guard) and
+  its matching per-slot skip-loop (`ctx.features.error`-gated key-inequality
+  check inside the static-slot copy loop) — deleted; the Error schema now
+  takes the SAME fast/plain paths as any other schema, unconditionally.
+- `err-codes.js`: `ERR_CLS_SLOT` export gone; `ERR_SCHEMA_PROPS` is now
+  `['message','name']` (was `['message','name','__errcls__']`).
+
+NEW, additive (the brand itself + what reads it):
+- `module/schema.js`: `register(props, salt)`, `errorSid`/`isErrorSid`/
+  `errorClassOf`/`errorSidEntries`/`errorClassesUsed`.
+- `src/ctx.js`: `ctx.features.errorClasses` (Set<className>, prepare-time,
+  companion to `ctx.features.error`).
+- `src/prepare/index.js`: the `ctx.features.error` scan also populates
+  `errorClasses`; a NEW declaration-schema binding (mirroring the existing
+  object-literal `bindDeclSchema` case) for `let e = new X(...)`/`X(...)` (one
+  of the 7 classes) — without this, a BOUND Error variable's schema was
+  invisible to every consumer that resolves a NAME's schema instead of
+  re-inspecting its init expression (instanceof's tier-2 fold was dead code
+  for this exact shape before this session, never actually verified live;
+  module/object.js's new spread/Object.assign source-schema check needed it
+  to cover the realistic `let e = new TypeError(x); {...e}` case, not just an
+  inline literal argument).
+- `module/object.js`: `isErrorSchemaSource`/`sourceSchema` — a SOURCE-position
+  override (spread/Object.assign SOURCE resolution only, not `resolveSchema`
+  itself) answering `[]` for an Error-schema source: real JS's `message`/
+  `name` are OWN but NON-enumerable (`Object.keys(new TypeError('x'))` → `[]`,
+  node-verified), so spread/assign FROM an Error copies nothing — matches JS,
+  and as a side effect completely bypasses the `__obj_clone` single-spread-
+  source bug for this case (the source resolves as a KNOWN empty schema, never
+  reaching the "unknown schema" fallback that bug lives in). Plumbed through
+  `spreadSourceSchema`, `Object.assign`'s source-schema array, both
+  `emitDynamicAssign`'s and `emitObjectAssignDynamic`'s source resolution, and
+  the boxed-target Object.assign path — 6 call sites total, target-side
+  resolution left untouched (assigning INTO an Error stays governed by its
+  real physical schema, pre-existing behavior, not in scope).
+- `module/core.js` `buildErrorObject`: 2-slot object (`message`,`name` only);
+  message coercion rewritten per ES 20.5.1.1 — `errorMessageIR` special-cases
+  (a) BOOL via the same true/false-select every other direct-toStrI64 caller
+  already uses (module/string.js's per-leaf template formatter, emit.js's
+  `+`-concat `strOperand`) — NOT a toStrI64-internal fix, matching that
+  established per-call-site convention exactly; (b) a closed (no spread, no
+  toString/valueOf key) object LITERAL argument → static `'[object Object]'`;
+  (c) `isUndef` (existing default-param helper, folds to a compile-time
+  constant for any literal, zero runtime cost for the common case) gating
+  ToString per Error's own "message present but undefined → no message"
+  clause, distinct from `msg == null`'s "argument absent" check.
+- `src/compile/index.js` / `interop.js`: a new `'jz:errcls'` custom section
+  (sid → className pairs, emitted only when `ctx.schema.errorSidEntries()` is
+  non-empty) — interop's `decodeThrown` runs on ALREADY-COMPILED bytes with no
+  access to this compile's `ctx.schema` state, so recovering "which class did
+  this sid come from" needs SOME shipped table; reads the sid straight off the
+  raw NaN-box bits (`aux(errBits)`), gated on `type(errBits) === PTR.OBJECT`
+  first (an aux value can coincide with a minted error sid by pure numeric
+  chance on a DIFFERENT pointer type — the tag check is the correctness gate,
+  mirroring the old design's `ERR_CLASS_NAMES[value.__errcls__] === value.name`
+  cross-check but stronger: the sid is read from the pointer's own immutable
+  tag bits, not a decoded property value no source write can ever reach or
+  forge in the first place).
+
+GATES (all green): full battery run in 13 chunks of ≤7 files (`node
+test/index.js <names...>`, all 88 files in TESTS) — 0 failures after one
+initial test-authoring miss (see below); `node test/selfhost.js` 21/21;
+kernel-parity 33/33 byte-identical (11 fixtures × O0/O2/Ospeed); kernel-oracle
+green; perf-ratchet 10/10, every row +0; fuzz (2000×4, via the `fuzz` test
+file's default run) green; fresh `node scripts/build-dist.mjs` ×2 →
+byte-identical dist/jz.wasm AND dist/jz.js (sha256-verified); size spot-check
+via a throwaway `git worktree add` at HEAD: an Error-using module went
+8871→8795 bytes at O2 (76B SMALLER — 3-slot→2-slot object, dead filter code
+gone), a plain Error-free module stayed BYTE-IDENTICAL (39 bytes both sides);
+per-instance heap footprint ~32B (16B payload + 16B header, was ~40B/3-slot) —
+comfortably under the design's own ~60-100B ledger estimate. ONE test-
+authoring bug caught and fixed during this session, not a compiler bug: the
+first version of the new "Object.assign/spread from a BOUND Error variable"
+pin failed (2 vs expected 0) — root cause was the missing declaration-schema
+binding for Error-constructor-initialized `let`s described above (a real,
+narrow gap, fixed at prepare-time rather than weakening the test).
+
+test/errors.js: the P0-3 test block REWRITTEN (not deleted — the un-
+enforceability pin flips to a correctness pin, same convention as every prior
+audit closure in this file) into "errors: __errcls__ is an ordinary, un-stolen
+property name" plus a new "Object.assign/spread over an Error" block (4
+groups) and a new "Error ctor message coercion" block (P1, 11 assertions
+incl. 2 dynamic-operand cases exercising the runtime `isUndef` branch, not
+just the compile-time fold every literal takes). test/minimal-output.js: both
+Error-related pins' comments updated for the 2-slot/32B math and the
+no-longer-`__errcls__`-shaped reachability story; assertions unchanged (still
+correct, for a cleaner reason).
+
 ## Status (2026-08-04, audit-#9 P0-1 closed — Map/dict value-census consumers
 ## reverted to dormant AGAIN; represented-join design banked)
 

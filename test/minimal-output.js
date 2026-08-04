@@ -448,8 +448,10 @@ test('minimal [known-gap]: new Date still drags in the allocator', () => {
 // buildErrorObject/toStrI64's Error-schema arm are gated on the Error-class
 // emit handlers and ctx.features.error (prepare's whole-program scan) firing —
 // a program that never constructs an Error must be byte-identical to what it
-// compiled before this slice: no memory, no allocator, no schema/__errcls__
-// machinery pulled in by merely having the Error CLASSES available.
+// compiled before this slice: no memory, no allocator, no schema machinery
+// pulled in by merely having the Error CLASSES available. `__errcls__` (audit-
+// #9 P0-2: un-stolen, ordinary property name, no longer a schema concept at
+// all) can't leak either way — kept as a belt-and-braces string-absence check.
 test('minimal: heap-free numeric fn stays heap-free (Error machinery is reachability-gated)', () => {
   if (skip) return
   const src = 'export let f = (a, b) => a + b'
@@ -460,18 +462,18 @@ test('minimal: heap-free numeric fn stays heap-free (Error machinery is reachabi
   }
 })
 
-// Per-instance RUNTIME HEAP cost of a constructed Error, against the design's
-// own ~60-100B/instance ledger estimate (§1: one 3-slot object = 24B payload +
-// 16B header = 40B, plus — for every class but 'Error' itself, whose 5-char
-// name fits SSO inline — a shared static `.name` string amortized across every
-// instance, not multiplied per-instance). This is a claim about the `__heap`
-// bump-allocator's growth per allocation, NOT compiled .wasm byte size (a
-// single construction call SITE costs the same code bytes whether it runs
-// once or in a hot loop) — measured directly via `exports.__heap` before/
-// after a steady-state batch (after `_clear()` resets any one-time init/data-
-// segment cost so only the repeated per-call growth is counted).
+// Per-instance RUNTIME HEAP cost of a constructed Error. audit-#9 P0-2 shrank
+// the object from 3 slots (['message','name','__errcls__']) to 2
+// (['message','name']) — class identity moved to the schema id, so this is
+// now a 16B payload + 16B header = 32B/instance, under the original design's
+// own ~60-100B ledger estimate. This is a claim about the `__heap` bump-
+// allocator's growth per allocation, NOT compiled .wasm byte size (a single
+// construction call SITE costs the same code bytes whether it runs once or in
+// a hot loop) — measured directly via `exports.__heap` before/after a steady-
+// state batch (after `_clear()` resets any one-time init/data-segment cost so
+// only the repeated per-call growth is counted).
 if (!skip) {
-  test('minimal: constructed Error heap footprint vs the design ledger estimate (~60-100B/instance)', () => {
+  test('minimal: constructed Error heap footprint (audit-#9 P0-2: 2-slot object, ~32B/instance)', () => {
     const inst = jz(`export let f = (n) => { let t = 0; for (let i = 0; i < n; i++) { let e = new Error('boom'); t = t + e.message.length } return t }`)
     inst.exports.f(1)                    // pay one-time init (allocator/data segment) before measuring
     const before = inst.exports.__heap.value
@@ -479,6 +481,6 @@ if (!skip) {
     const REPS = 2000
     inst.exports.f(REPS)
     const perInstance = (inst.exports.__heap.value - before) / REPS
-    ok(perInstance <= 120, `${perInstance}B/instance steady-state heap growth (design ledger: ~60-100B; SSO message + SSO 'Error' name means no extra data-segment string, so this should land at or under the ledger's low end — a 3-slot object's 24B payload + 16B header = 40B)`)
+    ok(perInstance <= 120, `${perInstance}B/instance steady-state heap growth (2-slot object: 16B payload + 16B header = 32B — well under the original 3-slot ~60-100B ledger estimate)`)
   })
 }

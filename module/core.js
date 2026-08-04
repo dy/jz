@@ -10,7 +10,7 @@ import { OPTF } from '../src/ctx.js'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, mkPtrIR, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride, undefExpr, cloneIR, toStrI64 } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, mkPtrIR, usesDynProps, ptrOffsetIR, isNullish, isUndef, truthyIR, valKindToPtr, sidecarOverride, undefExpr, cloneIR, toStrI64 } from '../src/ir.js'
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
@@ -23,7 +23,7 @@ import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, LENGTH_SSO_I64 } from './collection.js'
-import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
+import { ERR_CLASS_NAMES } from '../err-codes.js'
 
 const NAN_BITS = nanPrefixHex()
 
@@ -1756,32 +1756,93 @@ export default (ctx) => {
   ctx.core.emit['__ptr_aux'] = (p) => (inc('__ptr_aux'), typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asI64(emit(p))]], 'f64'))
   ctx.core.emit['__ptr_offset'] = (p) => (inc('__ptr_offset'), typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asI64(emit(p))]], 'f64'))
 
-  // Error(msg)/new Error(msg) — a real PTR.OBJECT, schema
-  // ['message','name','__errcls__'] (error-object-design.md §1). All 7 built-in
-  // classes share ONE schema (ctx.schema.register dedupes by prop-list content),
-  // distinguished only by the `name` string stored and the `__errcls__` small-int
-  // slot (index into ERR_CLASS_NAMES) — jz has no prototype chain, so `instanceof`
-  // (Slice B) reads __errcls__/name instead of a class pointer. Construction reuses
-  // the exact runtime object-literal path (module/object.js: $__alloc_hdr + one
-  // store per slot + mkPtrIR) — no new allocation primitive, no new heap pointer
-  // tag. Reachability-gated like every stdlib emitter: registering the schema and
-  // emitting this block only happens when a program actually calls one of these 7
-  // ctors, so an Error-free module pays nothing.
+  // Object-literal AST shape with NO 'toString'/'valueOf' key: a DEFINITIVE
+  // (not merely unproven) empty OrdinaryToPrimitive method chain — a spread
+  // makes the key set open (an unknown source might carry either at runtime),
+  // so a spread-bearing literal is conservatively NOT closed.
+  const isClosedObjLiteralNoStringMethod = (node) => {
+    if (!Array.isArray(node) || node[0] !== '{}') return false
+    const items = node.length === 2 && Array.isArray(node[1]) && node[1][0] === ','
+      ? node[1].slice(1) : node.slice(1)
+    for (const p of items) {
+      if (Array.isArray(p) && p[0] === '...') return false
+      const key = Array.isArray(p) && p[0] === ':' ? p[1] : (typeof p === 'string' ? p : null)
+      if (key === 'toString' || key === 'valueOf') return false
+    }
+    return true
+  }
+
+  // Error constructor message coercion — ES 20.5.1.1: argument absent OR its
+  // VALUE is `undefined` → '' ; otherwise ToString(message). Routes through
+  // toStrI64 (the same chokepoint String()/template literals use) for every
+  // kind it already proves correctly (STRING identity, NUMBER, our own
+  // Error-schema arm, the generic __to_str dispatch for atoms it special-
+  // cases — NULL_NAN/UNDEF_NAN/TRUE_NAN/FALSE_NAN all format correctly
+  // PROVIDED the operand reaches it already boxed). Two gaps toStrI64 does
+  // NOT close by itself, both fixed here at the call site — matching every
+  // other direct toStrI64 caller's own established convention (module/
+  // string.js's per-leaf template formatter, src/compile/emit.js's `+`-concat
+  // strOperand at ~4796-4797), not a toStrI64-internal change:
+  //   (1) BOOL: jz keeps a statically-proven boolean in the cheap unboxed 0/1
+  //       carrier for arithmetic. Handing that raw i32 straight to toStrI64
+  //       hits its i32-provable-NUMBER fast path and stringifies the CARRIER
+  //       ("0"/"1"), not the boolean (audit-#9 P1: `new Error(false).message`
+  //       read "0"). Box through the same true/false select every other BOOL-
+  //       aware caller already uses instead.
+  //   (2) A message that's PROVABLY a plain object literal with no toString/
+  //       valueOf (e.g. `new Error({})`) has a closed, empty method chain —
+  //       toStrI64's generic OBJECT arm can't make that closed-world claim
+  //       for an arbitrary (possibly dynamic) receiver, so it falls through
+  //       to __to_str's raw-pointer-bits fallback (error-object-design.md's
+  //       "Consequence" section, a PRE-EXISTING gap for any dynamic object,
+  //       left as-is). The literal shape alone is enough to prove it here.
+  const errorMessageIR = (msg) => {
+    if (msg == null) return asF64(emit(['str', '']))
+    const vt = valTypeOf(msg)
+    if (vt === VAL.BOOL)
+      return typed(['select', asF64(emit(['str', 'true'])), asF64(emit(['str', 'false'])), truthyIR(emit(msg))], 'f64')
+    if (isClosedObjLiteralNoStringMethod(msg)) return asF64(emit(['str', '[object Object]']))
+    const boxed = asF64(emit(msg))
+    // isUndef folds to a compile-time constant for any statically-provable
+    // operand (a literal, or anything else valTypeOf/matchF64Bits can already
+    // fold) — the common `new Error("literal")`/`new Error(x)` (x provably a
+    // string/number) case pays no runtime branch. Only a genuinely dynamic
+    // operand that MIGHT be undefined at runtime gets the block+local+if.
+    const probe = isUndef(boxed)
+    if (Array.isArray(probe) && probe[0] === 'i32.const')
+      return probe[1] ? asF64(emit(['str', ''])) : typed(['f64.reinterpret_i64', toStrI64(msg, boxed)], 'f64')
+    const mt = temp('emsgv')
+    const mtGet = () => typed(['local.get', `$${mt}`], 'f64')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${mt}`, boxed],
+      ['if', ['result', 'f64'], isUndef(mtGet()),
+        ['then', asF64(emit(['str', '']))],
+        ['else', ['f64.reinterpret_i64', toStrI64(msg, mtGet())]]]], 'f64')
+  }
+
+  // Error(msg)/new Error(msg) — a real PTR.OBJECT, schema ['message','name']
+  // (audit-#9 P0-2 brand redesign, error-object-design.md §1). Class identity
+  // lives in the SCHEMA ID (module/schema.js's ctx.schema.errorSid — one
+  // DISTINCT id per class, minted with the class name as an internal dedupe
+  // salt that never becomes a property), not in any slot: no hidden marker to
+  // filter out of enumeration/dyn-dispatch/JSON, nothing to un-spell — the two
+  // slots this object carries are the two ordinary, fully public properties a
+  // real Error has. Construction reuses the exact runtime object-literal path
+  // (module/object.js: $__alloc_hdr + one store per slot + mkPtrIR) — no new
+  // allocation primitive, no new heap pointer tag. Reachability-gated like
+  // every stdlib emitter: minting the schema and emitting this block only
+  // happens when a program actually calls one of these 7 ctors, so an
+  // Error-free module pays nothing.
   const buildErrorObject = (className, msg) => {
     inc('__alloc_hdr')
-    const sid = ctx.schema.register(ERR_SCHEMA_PROPS)
+    const sid = ctx.schema.errorSid(className)
     const t = tempI32('errp')
     const nameIR = asF64(emit(['str', className]))
-    // ToString(msg): omitted message → '' (spec default for `new Error()`).
-    // toStrI64's own STRING fast path makes the common `new Error("literal")`
-    // case pay nothing beyond today's plain asF64(emit(msg)).
-    const msgIR = msg == null ? asF64(emit(['str', '']))
-      : typed(['f64.reinterpret_i64', toStrI64(msg, emit(msg))], 'f64')
+    const msgIR = errorMessageIR(msg)
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(3)]]],
+      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(2)]]],
       ctx.abi.object.ops.store(['local.get', `$${t}`], 0, msgIR),
       ctx.abi.object.ops.store(['local.get', `$${t}`], 1, nameIR),
-      ctx.abi.object.ops.store(['local.get', `$${t}`], 2, ['f64.convert_i32_s', ['i32.const', ERR_CLASS_NAMES.indexOf(className)]]),
       mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${t}`])], 'f64')
   }
   // `new Error(x)`/`Error(x)` (with or without `new`) both route here: Error is

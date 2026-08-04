@@ -51,7 +51,7 @@ import {
   includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor,
   includeForRuntimeKeyIteration, includeForStringOnly, includeForStringValue, includeForTimerRuntime,
 } from '../autoload.js'
-import { ERR_CLASS_NAMES, ERR_CLS_SLOT } from '../../err-codes.js'
+import { ERR_CLASS_NAMES } from '../../err-codes.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
 
 // SIMD intrinsic namespaces — pure namespaces backed by the `simd` module.
@@ -63,8 +63,8 @@ const ERR_CLASS_SET = new Set(ERR_CLASS_NAMES)
 // `instanceof` RHS allowlist (error-object-design.md §4). jz has no prototype chain, so
 // RHS support is closed: Array/Map/Set fold or tag-compare (PTR.ARRAY/MAP/SET); the 8
 // TYPED_ELEM_NAMES ctors + ArrayBuffer tag/aux-compare (PTR.TYPED+aux / PTR.BUFFER); the
-// 7 Error classes tag+schema+errcls-compare (module/core.js's ERR_SID) OR internal-code
-// range-compare (err-codes.js's ERR_CODE_RANGES). Deliberately NARROWER than
+// 7 Error classes tag+sid-compare (module/schema.js's ctx.schema.errorSid — one
+// distinct sid per class, audit-#9 P0-2 brand redesign). Deliberately NARROWER than
 // layout.js's full TYPED_CTORS (14 names): excluded here —
 //   - BigInt64Array / BigUint64Array: layout.js's encodeTypedElemAux collapses BOTH to
 //     the identical aux (base code 7 | TYPED_ELEM_BIGINT_FLAG) — no bit distinguishes
@@ -1181,8 +1181,10 @@ function prep(node) {
   // below already unwraps for the identical reason.
   const ctorCallee = Array.isArray(node) && node[0] === 'new' && Array.isArray(node[1]) && node[1][0] === '()' ? node[1][1]
     : Array.isArray(node) && (node[0] === 'new' || node[0] === '()') ? node[1] : null
-  if (typeof ctorCallee === 'string' && ERR_CLASS_SET.has(ctorCallee))
+  if (typeof ctorCallee === 'string' && ERR_CLASS_SET.has(ctorCallee)) {
     ctx.features.error = true
+    ;(ctx.features.errorClasses ??= new Set()).add(ctorCallee)
+  }
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return [, 0] // null/undefined → 0 literal
   // Keep boolean identity (was folded to 1/0). The working representation is
@@ -2103,6 +2105,17 @@ function prepDecl(op, ...inits) {
         // to a fixed slot load that misreads the hash, so leave reads dynamic.
         if (allKnown && props.length && ctx.schema.register) bindDeclSchema(declName, ctx.schema.register(props))
         else censusUnknownInitDecl(declName)
+      } else if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '()' &&
+                 typeof normed[1] === 'string' && ERR_CLASS_SET.has(normed[1]) && ctx.schema.errorSid) {
+        // `let e = new X(...)`/`X(...)` (one of the 7 built-in Error classes) —
+        // bind e's schemaId to that class's minted sid the same way an object
+        // LITERAL declaration binds one above. Without this, a bound Error
+        // variable's schema was invisible to every consumer that resolves a
+        // NAME's schema rather than re-inspecting its init expression —
+        // instanceof's tier-2 fold and module/object.js's spread/Object.assign
+        // source-schema check both only ever saw the literal-call-shaped case
+        // (audit-#9 P0-2).
+        bindDeclSchema(declName, ctx.schema.errorSid(normed[1]))
       } else censusUnknownInitDecl(declName)
       // Module-scope variable → WASM global (mark as user-declared). Skipped
       // for a captured loop-local (isLoopLocal): it already minted a fresh
@@ -3205,19 +3218,10 @@ const handlers = {
 
     // Process properties: shorthand 'x' → [':', 'x', 'x'], or [':', key, val] → prep val only
     const prop = p => {
-      if (typeof p === 'string') {
-        if (p === ERR_CLS_SLOT) err(`'${ERR_CLS_SLOT}' is a compiler-internal Error-class marker — not a valid object-literal key`)
-        return [':', p, prep(p)]
-      }
+      if (typeof p === 'string') return [':', p, prep(p)]
       if (Array.isArray(p) && p[0] === ':') {
         const key = typeof p[1] === 'string' ? p[1] : staticPropertyKey(p[1])
         if (key == null) err('computed property name not supported for fixed-shape object: use a compile-time string/number key')
-        // Same reservation as the '.' handler above — a literal shaped
-        // {message, name, __errcls__: N} would register under the IDENTICAL
-        // schema id as a real Error object (ctx.schema.register dedupes by
-        // content) and satisfy `instanceof` for whatever class N names.
-        if (key === ERR_CLS_SLOT)
-          err(`'${ERR_CLS_SLOT}' is a compiler-internal Error-class marker — not a valid object-literal key`)
         return [':', key, prep(p[2])]
       }
       // Accessors (`{ get x() {…} }` / `{ set x(v) {…} }`) parse to ['get'|'set', …].
@@ -3473,13 +3477,6 @@ const handlers = {
   // Property access - resolve namespaces or object/array properties
   '.'(obj, prop) {
     prop = typeof prop === 'string' ? prop : staticPropertyKey(prop)
-    // Compiler-internal Error-class marker (error-object-design.md §1, err-codes.js
-    // ERR_CLS_SLOT) — never spellable in source, read OR write (audit-#8 P0-3:
-    // `e.__errcls__ = 2` used to compile and silently flip `instanceof`). Catches
-    // every STATIC dot-syntax spelling; a genuinely computed key (`e[k]`) is a
-    // separate, documented residual (err-codes.js's ERR_SCHEMA_PROPS comment).
-    if (prop === ERR_CLS_SLOT)
-      err(`'.${ERR_CLS_SLOT}' is a compiler-internal Error-class marker — not accessible from source`)
     // `.caller`/`.callee` on a function value (or `arguments`) are deprecated
     // stack introspection — prohibited as bad practice. On a plain data object
     // they are ordinary field names (e.g. an ESTree call node's `.callee`), so

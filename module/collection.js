@@ -19,7 +19,7 @@ import { hasOwnContinue, isBlockBody, isLiteralStr } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js'
 import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex } from '../layout.js'
 import { ssoEncode } from './string.js'
-import { ERR, ERR_CLS_SLOT } from '../err-codes.js'
+import { ERR } from '../err-codes.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
 // NaN-box bits of the SSO string 'length' — computed once; see the STRING
@@ -2275,19 +2275,6 @@ export default (ctx) => {
             (else (call $__str_eq ${storedKey} ${userKey})))`
           : `(call $__str_eq ${storedKey} ${userKey})`}))`
     : `(i64.eq ${storedKey} ${userKey})`
-  // Wraps schemaKeyEq with one extra exclusion for the two dyn dispatch loops
-  // below: ERR_CLS_SLOT (error-object-design.md §1) is a real schema slot, but
-  // a COMPUTED access (`e['__errcls__']` / `e['__errcls__']=v`) must never
-  // match it either — prepare's '.' handler (audit-#8 P0-3) only rejects the
-  // STATIC dot-syntax spelling; bracket access reaches this runtime dispatch,
-  // which otherwise matches schema entries by name with no exclusions. Gated
-  // on ctx.features.error so a program with no Error schema pays nothing extra.
-  const schemaKeyEqPublic = (storedKey, userKey) => {
-    const eq = schemaKeyEq(storedKey, userKey)
-    if (!ctx.features.error) return eq
-    const errClsHex = extractF64Bits(asF64(emit(['str', ERR_CLS_SLOT])))
-    return `(i32.and ${eq} (i64.ne ${storedKey} (i64.const ${errClsHex})))`
-  }
   const buildObjectSchemaArm = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then
@@ -2302,7 +2289,7 @@ export default (ctx) => {
             (local.set $idx (i32.const 0))
             (block $kdone (loop $kloop
               (br_if $kdone (i32.ge_s (local.get $idx) (local.get $nkeys)))
-              (if ${schemaKeyEqPublic(`(i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))`, `(local.get $key)`)}
+              (if ${schemaKeyEq(`(i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))`, `(local.get $key)`)}
                 (then (return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))))
               (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
               (br $kloop)))))))` : ''
@@ -2331,7 +2318,7 @@ export default (ctx) => {
         (local.set $idx (i32.const 0))
         (block $schemaSetDone (loop $schemaSetLoop
           (br_if $schemaSetDone (i32.ge_s (local.get $idx) (local.get $nkeys)))
-          (if ${schemaKeyEqPublic(`(i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))`, `(local.get $key)`)}
+          (if ${schemaKeyEq(`(i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))`, `(local.get $key)`)}
             (then
               (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (local.get $val))
               (br $schemaSetDone)))
@@ -2977,15 +2964,7 @@ export default (ctx) => {
         (local.set $idx (i32.const 0))
         (block $schemaDelDone (loop $schemaDelLoop
           (br_if $schemaDelDone (i32.ge_s (local.get $idx) (local.get $nkeys)))
-          (if ${(() => {
-              // Same ERR_CLS_SLOT exclusion as schemaKeyEqPublic above (`delete
-              // e['__errcls__']` must not be able to corrupt the real slot either).
-              const storedKey = `(i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))`
-              const eq = `(call $__str_eq ${storedKey} (local.get $key))`
-              if (!ctx.features.error) return eq
-              const errClsHex = extractF64Bits(asF64(emit(['str', ERR_CLS_SLOT])))
-              return `(i32.and ${eq} (i64.ne ${storedKey} (i64.const ${errClsHex})))`
-            })()}
+          (if (call $__str_eq (i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3)))) (local.get $key))
             (then
               (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (i64.const ${UNDEF_NAN}))
               (local.set $hit (i32.const 1))

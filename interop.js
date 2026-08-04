@@ -26,7 +26,7 @@
 
 import { wasi, attachTimers } from './wasi.js'
 import { HEAP, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT } from './layout.js'
-import { ERR_INFO, ERR_CLASS_NAMES } from './err-codes.js'
+import { ERR_INFO } from './err-codes.js'
 
 // Stateless + reusable — one instance avoids a per-call allocation on the hot
 // string read/write paths (mem.String / mem.read STRING).
@@ -298,9 +298,27 @@ export const memory = (src) => {
     }
   }
 
+  // Read the Error-class sid→name map (audit-#9 P0-2 brand redesign — class
+  // identity lives in the schema id, not a decodable slot, so decodeThrown
+  // below needs this table to recover which ECMAScript class a decoded Error
+  // object's sid came from). Same merge discipline as `schemas` above: a sid
+  // already known (from a prior enhance of this memory) wins — first module's
+  // numbering is authoritative.
+  const errorSidToClass = mem.errorSidToClass || new Map()
+  const errClsBytes = mod && customSection(mod, 'jz:errcls')
+  if (errClsBytes) {
+    const r = sectionReader(errClsBytes)
+    const n = r.varint()
+    for (let j = 0; j < n; j++) {
+      const sid = r.varint(), name = r.str(r.varint())
+      if (!errorSidToClass.has(sid)) errorSidToClass.set(sid, name)
+    }
+  }
+
   // If already enhanced, just update bindings (new module compiled into same memory)
   if (_enhanced.has(mem)) {
     mem.schemas = schemas
+    mem.errorSidToClass = errorSidToClass
     if (wasmAlloc) { alloc = wasmAlloc; mem.alloc = alloc }
     mem.reset = jsReset   // post-init rewind — see the note at the first-enhance path
     if (extMap) mem._extMap = extMap
@@ -309,6 +327,7 @@ export const memory = (src) => {
 
   // Patch methods onto the Memory instance
   mem.schemas = schemas
+  mem.errorSidToClass = errorSidToClass
   mem._extMap = extMap
 
   mem.Array = (data) => {
@@ -777,23 +796,29 @@ export const wrap = (memSrc, inst, state) => {
     // from bits. (A heap Error/string can only exist when the module has memory.)
     const value = mem ? mem.read(errBits) : decode(errBits)
     if (value instanceof Error) throw value
-    // A real jz Error object (error-object-design.md §1: PTR.OBJECT, schema
-    // ['message','name','__errcls__']) decodes via mem.read's generic OBJECT
-    // case (line ~508) to a plain JS object {message, name, __errcls__} — never
-    // `instanceof Error` on this side, since it's a schema-shaped dict, not a
-    // host Error. __errcls__ is the correctness gate for upgrading it to a real
-    // host Ctor: trusting `value.name` alone would let a plain user-thrown
-    // object coincidentally shaped `{name:'Array', message:'x'}` wrongly upgrade
-    // — __errcls__ only exists on jz's own Error constructors, and must agree
-    // with `name` (ERR_CLASS_NAMES[__errcls__] === name) for a value that
-    // genuinely round-tripped through buildErrorObject unmutated.
-    if (value != null && typeof value === 'object' && typeof value.__errcls__ === 'number' &&
-        ERR_CLASS_NAMES[value.__errcls__] === value.name) {
-      const Ctor = globalThis[value.name] ?? Error
-      const wrapped = new Ctor(value.message)
-      wrapped.cause = error
-      wrapped.thrown = value
-      throw wrapped
+    // A real jz Error object (audit-#9 P0-2 brand redesign, error-object-
+    // design.md §1: PTR.OBJECT, schema ['message','name']) decodes via
+    // mem.read's generic OBJECT case (line ~508) to a plain JS object
+    // {message, name} — never `instanceof Error` on this side, since it's a
+    // schema-shaped dict, not a host Error. Class identity is NOT decodable
+    // from the object's own fields (unlike the old __errcls__-slot design):
+    // it lives in the pointer's schema id (aux bits), a REAL hidden brand no
+    // source-level write can reach or forge — read it straight off the raw
+    // bits BEFORE any property decode, gated on the module's 'jz:errcls' sid
+    // map (mem.errorSidToClass, populated above) so a plain user-thrown
+    // object coincidentally shaped `{name:'Array', message:'x'}` can never
+    // upgrade (its sid, whatever it is, was never minted by errorSid — trust
+    // requires the type tag to be OBJECT too, not just any aux value that
+    // happens to numerically coincide with a minted error sid).
+    if (mem && isBox(errBits) && type(errBits) === 6) {
+      const errClassName = mem.errorSidToClass?.get(aux(errBits))
+      if (errClassName != null) {
+        const Ctor = globalThis[errClassName] ?? Error
+        const wrapped = new Ctor(value.message)
+        wrapped.cause = error
+        wrapped.thrown = value
+        throw wrapped
+      }
     }
     // A plain NUMBER matching the $__jz_err code registry (src/err-codes.js) is a
     // jz-internal runtime throw (bounds/coercion/parse — piece 1's per-site codes,

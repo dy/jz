@@ -2441,6 +2441,30 @@ export default function compile(ast, profiler) {
     sec.customs.push(['@custom', '"jz:schema"', bytes])
   }
 
+  // Custom section: Error-class sid → class-name map (audit-#9 P0-2 brand
+  // redesign). Class identity now lives entirely in the schema id (module/
+  // schema.js's ctx.schema.errorSid — one distinct id per class, minted with
+  // the class name as an internal dedupe salt that never becomes a property),
+  // not in any decodable slot — so interop.js's decodeThrown, which runs on
+  // already-compiled bytes with no access to this compile's ctx.schema state,
+  // has no other way to recover "which ECMAScript class did this sid come
+  // from" than a small table shipped alongside the module. Compact format:
+  // varint(nEntries); per entry: varint(sid), varint(len), utf8 bytes(name).
+  if (ctx.schema.errorSidEntries?.().size) {
+    const bytes = []
+    const utf8 = new TextEncoder()
+    const varint = (n) => { while (n >= 0x80) { bytes.push((n & 0x7F) | 0x80); n >>>= 7 } bytes.push(n) }
+    const entries = ctx.schema.errorSidEntries()
+    varint(entries.size)
+    for (const [sid, name] of entries) {
+      varint(sid)
+      const b = utf8.encode(name)
+      varint(b.length)
+      for (const x of b) bytes.push(x)
+    }
+    sec.customs.push(['@custom', '"jz:errcls"', bytes])
+  }
+
   // Custom section: rest params for exported functions (JS-side wrapping).
   // Entry per JS-visible export name (not per internal func name) — host's
   // interop.js wrap() keys by export name. Aliased re-export

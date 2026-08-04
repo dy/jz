@@ -16,7 +16,7 @@ import { VAL } from '../src/reps.js'
 import { err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 import { i64Hex } from '../layout.js'
 import { strHashLiteral, heapResetWat } from './collection.js'
-import { ERR, ERR_CLS_SLOT } from '../err-codes.js'
+import { ERR } from '../err-codes.js'
 
 function jsonConstString(ctx, expr) {
   if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
@@ -540,17 +540,7 @@ export default (ctx) => {
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $nkeys)))
       (local.set $pv (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
-      (if ${ctx.features.error
-        // ERR_CLS_SLOT (error-object-design.md §1) is a real schema slot but never
-        // enumerable (audit-#8 P0-3) — excluded here by comparing the loaded key
-        // against the interned '__errcls__' constant (content-deduped by module/
-        // string.js's dataDedup/strPoolDedup, so this is exact pointer equality).
-        // Gated on ctx.features.error so a program with no Error schema pays
-        // nothing here (same convention as emitErrorInstanceof's gate).
-        ? `(i32.and (i32.eqz (call $__json_omit (local.get $pv)))
-             (i64.ne (i64.load (i32.add (local.get $koff) (i32.shl (local.get $i) (i32.const 3))))
-                     (i64.const ${extractF64Bits(asF64(emit(['str', ERR_CLS_SLOT])))})))`
-        : `(i32.eqz (call $__json_omit (local.get $pv)))`}
+      (if (i32.eqz (call $__json_omit (local.get $pv)))
         (then
           (if (i32.eqz (local.get $first)) (then (call $__jput (i32.const 44))))
           (local.set $first (i32.const 0))

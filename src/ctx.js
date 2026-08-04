@@ -644,6 +644,14 @@ export function reset(proto, globals, bridge) {
                       // `new Error(...)` site that proves an Error schema exists at all).
                       // Gates src/ir.js toStrI64's Error-schema arm: false everywhere in
                       // an Error-free program, so it costs nothing there.
+    errorClasses: null, // Set<className> — WHICH of the 7 built-in classes are actually
+                      // constructed somewhere in the program (same prep() scan as `error`
+                      // above, populated alongside it). Lets `instanceof`'s base-'Error'
+                      // OR-chain (src/compile/emit.js) and toStrI64's Error-schema arm
+                      // (src/ir.js) iterate only classes that can ever exist at runtime —
+                      // a never-constructed class's `instanceof` folds to compile-time
+                      // `false` and never mints/bakes a schema id for it (audit-#9 P0-2
+                      // per-class-sid brand redesign).
   }
 }
 

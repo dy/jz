@@ -24,7 +24,7 @@ import { ERR } from '../err-codes.js'
 
 import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
 import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
-import { ERR_SCHEMA_PROPS } from '../err-codes.js'
+import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf } from './ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from './reps.js'
 import { valTypeOf, censusMaybeUndefined } from './kind.js'
@@ -1184,18 +1184,23 @@ export function toStrI64(node, v) {
   // (NUMBER/ARRAY/MAP/…) can never be our Error schema, so even an Error-using
   // program's non-Error toStrI64 call sites pay nothing extra.
   if (ctx.features.error && (vt == null || vt === VAL.OBJECT)) {
-    const errSid = ctx.schema.register(ERR_SCHEMA_PROPS)
+    const used = ctx.features.errorClasses
     const t = temp('everr')
     const get = () => typed(['local.get', `$${t}`], 'f64')
-    // Same masked-i64-compare shape as module/core.js's emitSchemaSlotGuarded /
-    // objectSchemaGuardHex (now shared via layout.js): proves "is an OBJECT" AND
-    // "is exactly the Error schema" in one compare. Any other value (a number, a
-    // different object shape) fails it — ordered by IEEE754 rules, a NaN-boxed
-    // pointer reinterpreted as f64 is never involved here since this is a raw i64
-    // bit compare, not an ordered f64 compare.
-    const guard = ['i64.eq',
-      ['i64.and', asI64(get()), ['i64.const', OBJECT_SCHEMA_HI_MASK]],
-      ['i64.const', objectSchemaGuardHex(errSid)]]
+    // audit-#9 P0-2 brand redesign: each Error class carries its OWN sid, so
+    // recognizing "this is SOME Error object" (any of the 7) needs one masked-
+    // i64 guard per class the program actually constructs, OR'd together —
+    // ERR_CLASS_NAMES' fixed order (not Set insertion order) so the emitted
+    // chain depends only on WHICH classes exist, never incidental AST-walk
+    // order. Same masked-i64-compare shape as module/core.js's
+    // emitSchemaSlotGuarded / objectSchemaGuardHex (shared via layout.js) per
+    // arm: proves "is an OBJECT" AND "is exactly this class's schema" in one
+    // compare each.
+    const guard = ERR_CLASS_NAMES.filter(c => used.has(c))
+      .map(c => ['i64.eq',
+        ['i64.and', asI64(get()), ['i64.const', OBJECT_SCHEMA_HI_MASK]],
+        ['i64.const', objectSchemaGuardHex(ctx.schema.errorSid(c))]])
+      .reduce((x, y) => ['i32.or', x, y])
     const off = ['i32.wrap_i64', ['i64.and', asI64(get()), ['i64.const', LAYOUT.OFFSET_MASK]]]
     return typed(['block', ['result', 'i64'],
       ['local.set', `$${t}`, asF64(v?.type ? v : typed(v, 'f64'))],

@@ -807,10 +807,10 @@ test('try: discarded method result before return compiles and runs', () => {
 })
 
 // error-object-design.md Slice A: `new Error(msg)`/the 7 built-in subclasses
-// now construct a real in-wasm object (PTR.OBJECT, schema
-// ['message','name','__errcls__'], module/core.js buildErrorObject) instead of
-// lowering to the bare message value — supersedes the old "Error IS its
-// message string" documented divergence this block used to pin. `.message`/
+// now construct a real in-wasm object (PTR.OBJECT, schema ['message','name'],
+// module/core.js buildErrorObject) instead of lowering to the bare message
+// value — supersedes the old "Error IS its message string" documented
+// divergence this block used to pin. `.message`/
 // `.name` read correctly, and String()/template-literal interpolation format
 // per spec's Error.prototype.toString (ECMA-262 20.5.3.4: name if message
 // empty / message if name empty / name+": "+message otherwise / "Error" if
@@ -825,6 +825,30 @@ test('errors: real Error objects (error-object-design.md Slice A)', () => {
   is(j(`export let f = () => { try { throw new Error() } catch (e) { return \`\${e}\` } }`), 'Error', 'no-arg new Error(): empty message → bare name (20.5.3.4)')
   // Error(x)/without `new` constructs a fresh Error too (spec) — same object model.
   is(j(`export let f = () => { try { throw Error('bare') } catch (e) { return e.message } }`), 'bare')
+})
+
+// audit-#9 P1 (same ctor-path machinery as P0-2 above): Error message
+// coercion per ES 20.5.1.1 — "If message is not undefined, let msg be
+// ? ToString(message)" (argument absent OR its value is undefined → no
+// message, i.e. ''). Node-verified authority: `new Error(false).message` ===
+// 'false' (ToString, not ToNumber); `new Error(undefined).message` === '' and
+// `new Error().message` === '' (both empty, two different spec clauses, same
+// outcome); `new Error({}).message` === '[object Object]'; `new
+// Error(null).message` === 'null'; `new Error(0).message` === '0'.
+test('errors: Error ctor message coercion (ES 20.5.1.1, audit-#9 P1)', () => {
+  const j = (code) => jz(code, { optimize: 0 }).exports.f()
+  is(j(`export let f = () => new Error(false).message`), 'false', 'new Error(false) → ToString(false), not the 0/1 carrier')
+  is(j(`export let f = () => new Error(true).message`), 'true', 'new Error(true) → "true"')
+  is(j(`export let f = () => new Error(undefined).message`), '', 'new Error(undefined) → "" — argument present but undefined means no message')
+  is(j(`export let f = () => new Error().message`), '', 'new Error() → "" — argument absent')
+  is(j(`export let f = () => new Error(null).message`), 'null', 'new Error(null) → ToString(null) — null is NOT undefined')
+  is(j(`export let f = () => new Error({}).message`), '[object Object]', 'new Error({}) → Object.prototype.toString default tag')
+  is(j(`export let f = () => new Error(0).message`), '0', 'new Error(0) → "0" (unaffected — proven-NUMBER fast path)')
+  is(j(`export let f = () => new Error("s").message`), 's', 'new Error("s") → "s" (STRING identity fast path)')
+  // Dynamic (non-literal) operand — exercises the runtime isUndef branch, not
+  // just the compile-time fold every literal above takes.
+  is(jz(`export let f = (x) => new Error(x).message`, { optimize: 0 }).exports.f(false), 'false', 'dynamic false argument')
+  is(jz(`export let f = (x) => new Error(x).message`, { optimize: 0 }).exports.f(undefined), '', 'dynamic undefined argument')
 })
 
 // §3(c): a non-Error throw is completely unaffected by the object model —
@@ -941,35 +965,58 @@ test('instanceof: internal coded throws are NOT instanceof any Error class (audi
   isBoth(`export let f = () => { try { let a = [1]; a.with(5, 2) } catch (e) { return e instanceof RangeError } return false }`, false, 'Array#with OOB internal RangeError code — instanceof RangeError is false')
 })
 
-// audit-#8 P0-3 (2026-08-03): __errcls__ (error-object-design.md §1's schema
-// slot 2, the class-identity marker) must be neither readable, writable, nor
-// enumerable from source — "never spellable in source" was previously only a
-// comment, not enforced: `e.__errcls__ = 2` compiled and silently flipped
-// `instanceof`, and the slot showed up in Object.keys/JSON.stringify/for-in.
-test('errors: __errcls__ is hidden — not accessible, not enumerable (audit-#8 P0-3)', () => {
-  throws(`export let f = () => { let e = new TypeError("x"); e.__errcls__ = 2; return e.__errcls__ }`,
-    'errcls', 'dot-write to .__errcls__ should be a loud compile error')
-  throws(`export let f = () => { let e = new TypeError("x"); return e.__errcls__ }`,
-    'errcls', 'dot-read of .__errcls__ should be a loud compile error')
-  throws(`export let f = () => { let o = { message: "x", name: "TypeError", __errcls__: 1 }; return o }`,
-    'errcls', 'an object literal spelling __errcls__ as a key should be a loud compile error')
-  is(jz(`export let f = () => { let e = new TypeError("x"); return Object.keys(e).length }`).exports.f(), 2,
-    'Object.keys(caught error) excludes __errcls__ (message, name only)')
-  is(jz(`export let f = () => { let e = new TypeError("x"); return JSON.stringify(e) }`).exports.f(), '{"message":"x","name":"TypeError"}',
-    'JSON.stringify(caught error) excludes __errcls__')
-  is(jz(`export let f = () => { let e = new TypeError("x"); let n = 0; for (let k in e) n++; return n }`).exports.f(), 2,
-    'for-in over a caught error excludes __errcls__ (2 keys, not 3)')
-  // Computed-key access (`e[k]`) is NOT statically foldable to the reserved
-  // name, so it can't be rejected at prepare time the way `.` access is — but
-  // the dyn GET/SET/DELETE dispatch (module/collection.js) still excludes the
-  // slot by content-comparing the key at runtime, so it behaves as absent
-  // rather than as a live alias for the real slot: a computed write can't
-  // corrupt instanceof, and a computed read sees `undefined`, not the real
-  // internal classIdx.
+// audit-#9 P0-2 (2026-08-04): the P0-3 patch (above, superseded) hid class
+// identity behind a reserved, unspellable schema slot ('__errcls__') enforced
+// by prepare-time rejection at every dot/literal-key site plus a matching
+// runtime exclusion in every enumeration/dyn-dispatch consumer — an
+// enumerated-invariant that bit twice (Object.assign/spread over an Error
+// crashed outright, since NEITHER had been taught the slot existed) and stole
+// a legal property name from every jz program. Redesigned: class identity now
+// lives in the pointer's SCHEMA ID (module/schema.js's ctx.schema.errorSid —
+// one id per class), a real hidden brand no source-level write can reach —
+// `instanceof` reads the sid, `.name`/`.message` are two perfectly ordinary,
+// fully public/enumerable properties, and there is no reserved slot left to
+// filter anywhere. `__errcls__` is un-stolen: an ordinary user property name,
+// usable on ANY object, Error or not.
+test('errors: __errcls__ is an ordinary, un-stolen property name (audit-#9 P0-2)', () => {
+  is(jz(`export let f = () => { let o = { message: "x", name: "TypeError", __errcls__: 1 }; return o.__errcls__ }`).exports.f(), 1,
+    'a plain object literal spelling __errcls__ as a key compiles and reads back')
+  is(jz(`export let f = () => { let e = new TypeError("x"); e.__errcls__ = 2; return e.__errcls__ }`).exports.f(), 2,
+    'dot-write/-read of .__errcls__ on a caught Error is an ordinary dyn property, not a compile error')
+  // Real Error identity lives in the pointer's schema id (immutable, no source
+  // syntax reaches it) — writing a same-named ordinary property alongside it
+  // cannot forge or corrupt class identity, unlike the old memory-slot design.
+  is(jz(`export let f = () => { let e = new TypeError("x"); e.__errcls__ = 2; return e instanceof TypeError }`).exports.f(), true,
+    'writing .__errcls__ on a real Error cannot flip instanceof — identity is the sid, not a slot')
   is(jz(`export let f = () => { let e = new TypeError("x"); let k = "__errcls__"; e[k] = 1; return e instanceof RangeError }`).exports.f(), false,
-    'computed write to __errcls__ cannot flip instanceof')
-  is(jz(`export let f = () => { let e = new TypeError("x"); let k = "__errcls__"; return e[k] }`).exports.f(), undefined,
-    'computed read of __errcls__ sees undefined, not the real classIdx')
+    'computed write to __errcls__ cannot flip instanceof either')
+  is(jz(`export let f = () => { let e = new TypeError("x"); return Object.keys(e).length }`).exports.f(), 2,
+    'Object.keys(caught error) sees exactly message, name — the object\'s real, only slots')
+  is(jz(`export let f = () => { let e = new TypeError("x"); return JSON.stringify(e) }`).exports.f(), '{"message":"x","name":"TypeError"}',
+    'JSON.stringify(caught error)')
+  is(jz(`export let f = () => { let e = new TypeError("x"); let n = 0; for (let k in e) n++; return n }`).exports.f(), 2,
+    'for-in over a caught error sees 2 keys')
+})
+
+// audit-#9 P0-2 groups 1/2: Object.assign/spread over a real Error object used
+// to crash the compiler outright (`__arr_set_idx_ptr` never registered /
+// `Unknown section func,$__obj_clone` — neither had been taught the old
+// __errcls__ slot existed, so resolveSchema saw an "unknown schema" source and
+// routed into machinery with its own unrelated pre-existing bugs). Real JS:
+// Error's own `message`/`name` are OWN but NON-enumerable
+// (`Object.keys(new TypeError('x'))` → `[]`, `Object.getOwnPropertyDescriptor
+// (new Error('x'), 'message').enumerable` → `false`, node-verified), so
+// `Object.assign`/spread FROM an Error copies nothing — the result is an
+// empty plain object, not a crash.
+test('errors: Object.assign/spread over an Error — no crash, yields {} (audit-#9 P0-2)', () => {
+  const j = (code) => jz(code, { optimize: 0 }).exports.f()
+  is(j(`export let f = () => Object.keys(Object.assign({}, new TypeError("x"))).length`), 0, 'Object.assign({}, new TypeError(x)) copies nothing')
+  is(j(`export let f = () => Object.keys({...new TypeError("x")}).length`), 0, '{...new TypeError(x)} copies nothing')
+  is(j(`export let f = () => { let e = new TypeError("y"); return Object.keys(Object.assign({}, e)).length }`), 0, 'Object.assign from a BOUND Error variable copies nothing')
+  is(j(`export let f = () => { let e = new TypeError("y"); return Object.keys({...e}).length }`), 0, 'spread from a BOUND Error variable copies nothing')
+  // optimize:2/3 must not crash either (kernel-parity-adjacent smoke check)
+  is(jz(`export let f = () => Object.keys(Object.assign({}, new TypeError("x"))).length`, { optimize: 2 }).exports.f(), 0, 'O2 does not crash')
+  is(jz(`export let f = () => Object.keys({...new TypeError("x")}).length`, { optimize: 2 }).exports.f(), 0, 'O2 does not crash (spread)')
 })
 
 test('instanceof: compile-time fold — proven-kind LHS emits no runtime tag/aux/schema dispatch', () => {

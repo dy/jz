@@ -32,7 +32,7 @@ import {
   i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR,
   OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_NAMES, encodeTypedElemAux, TYPED_ELEM_VIEW_FLAG,
 } from '../../layout.js'
-import { ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../../err-codes.js'
+import { ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
 import { nonNegIntLiteral, intLiteralValue, intExprRange, staticPropertyKey } from '../static.js'
@@ -4294,24 +4294,21 @@ function emitTypedInstanceof(a, rhs) {
  *  (siblings never satisfy each other's instanceof — ES 13.10.2 OrdinaryHasInstance
  *  over jz's non-overlapping prototype set). */
 function emitErrorInstanceof(a, rhs) {
-  const classIdx = ERR_CLASS_NAMES.indexOf(rhs)
   // Fold, tier 1: LHS is a literal `new X(...)`/`X(...)` call node — prepare's generic
   // "unknown ctor → plain call" path (error-object-design.md §2) keeps the literal
   // class name as the callee string, so no schema/rep lookup is even needed.
   const litClass = Array.isArray(a) && a[0] === '()' && typeof a[1] === 'string' && ERR_CLASS_NAMES.includes(a[1]) ? a[1] : null
   if (litClass) return foldInstanceof(emit(a), rhs === 'Error' || litClass === rhs)
-  // Fold, tier 2: a bound name whose ValueRep already proves "this holds some
-  // Error-schema object" (repOf(name).schemaId === ERR_SID) — sufficient ONLY to
-  // fold the `rhs === 'Error'` base-class case true (schemaId is shared by all 7
-  // classes, so it can't by itself say WHICH one — error-object-design.md §4).
-  // A settled-but-non-Error schemaId proves the opposite: definitely not any Error.
+  // Fold, tier 2: a bound name whose ValueRep already proves its EXACT schema id.
+  // audit-#9 P0-2 brand redesign: each class now has its OWN sid (module/schema.js's
+  // errorSid), so a settled schemaId settles the WHOLE question — which class, not
+  // merely "some Error" (the old shared-sid design could only fold the base
+  // `rhs === 'Error'` case; a specific-subclass check still needed the runtime arm).
   if (typeof a === 'string') {
     const sid = repOf(a)?.schemaId
     if (sid != null) {
-      const errSid = ctx.schema.register(ERR_SCHEMA_PROPS)
-      if (sid !== errSid) return foldInstanceof(emit(a), false)
-      if (rhs === 'Error') return foldInstanceof(emit(a), true)
-      // else: proven "some Error", not which one — falls through to the runtime check.
+      if (!ctx.schema.isErrorSid(sid)) return foldInstanceof(emit(a), false)
+      return foldInstanceof(emit(a), rhs === 'Error' || ctx.schema.errorClassOf(sid) === rhs)
     }
   }
   // A provably non-OBJECT LHS can never be our Error schema. This INCLUDES NUMBER:
@@ -4332,20 +4329,26 @@ function emitErrorInstanceof(a, rhs) {
   const vt = valTypeOf(a)
   if (vt != null && vt !== VAL.OBJECT) return foldInstanceof(emit(a), false)
 
-  // Runtime: real Error object only — tag+schema[+errcls] compare. The schema arm
-  // only exists in programs that can ever construct a real Error object at all
-  // (mirrors ir.js toStrI64's ctx.features.error gate) — dead otherwise, so fold
-  // to a constant false rather than emit an always-false compare.
-  if (!ctx.features.error) return foldInstanceof(emit(a), false)
-  const errSid = ctx.schema.register(ERR_SCHEMA_PROPS)
+  // Runtime: real Error object only — tag+sid compare (rhs === 'Error') or an
+  // OR-chain over every class the program actually constructs (base 'Error'), or
+  // a single tag+sid compare for one specific class. `used` (ctx.features.errorClasses,
+  // src/prepare/index.js's whole-program scan) is null whenever no Error class is
+  // EVER constructed — dead code, fold to false rather than emit an always-false
+  // compare (mirrors ir.js toStrI64's ctx.features.error gate). A SPECIFIC class
+  // that is never constructed anywhere is equally sound to fold false: no runtime
+  // pointer could ever carry a sid that was never minted — one level more precise
+  // than the old shared-sid design's blanket `ctx.features.error` gate.
+  const used = ctx.features.errorClasses
+  if (!used || (rhs !== 'Error' && !used.has(rhs))) return foldInstanceof(emit(a), false)
   const t = temp('einst')
   const bits = () => ['i64.reinterpret_f64', typed(['local.get', `$${t}`], 'f64')]
-  const tagOk = typed(['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(errSid)]], 'i32')
-  const body = rhs === 'Error' ? tagOk
-    : typed(['i32.and', tagOk,
-        ['f64.eq',
-          typed(ctx.abi.object.ops.load(['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]], 2), 'f64'),
-          ['f64.const', classIdx]]], 'i32')
+  const tagEq = (sid) => typed(['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]], 'i32')
+  const body = rhs === 'Error'
+    // ERR_CLASS_NAMES' fixed order (not Set insertion order — see the ctx.features.errorClasses
+    // ctx.js comment): the emitted OR-chain must depend only on WHICH classes the
+    // program constructs, not the incidental order the AST walk first saw them in.
+    ? ERR_CLASS_NAMES.filter(c => used.has(c)).map(c => tagEq(ctx.schema.errorSid(c))).reduce((x, y) => typed(['i32.or', x, y], 'i32'))
+    : tagEq(ctx.schema.errorSid(rhs))
   return typed(['block', ['result', 'i32'],
     ['local.set', `$${t}`, asF64(emit(a))],
     body], 'i32')

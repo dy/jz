@@ -26,40 +26,30 @@
  * eye in the ledger, not machine-checked.
  */
 
-/** The 7 built-in Error classes jz models, index = the `__errcls__` small-int
- *  schema slot (error-object-design.md §1/§2) — jz has no prototype chain, so
- *  this array (not a class pointer) is what `instanceof`/toString read to tell
- *  classes apart. Order is a stability contract for that slot's encoding
- *  (unlike ERR's own codes, which the file docstring above says may renumber
- *  freely) — do not reorder or insert without checking every already-compiled
- *  __errcls__ consumer. */
+/** The 7 built-in Error classes jz models. Class identity is carried by the
+ *  SCHEMA ID (module/schema.js's `ctx.schema.errorSid(className)` — one id per
+ *  class, minted with this array's name as an internal dedupe salt that never
+ *  becomes a property), not by any in-object slot — jz has no prototype chain,
+ *  so this array (not a class pointer) is what `instanceof`/toString/interop's
+ *  decodeThrown read to tell classes apart, keyed by sid rather than by index
+ *  into this array. Order is not a stability contract for any encoding (unlike
+ *  the old __errcls__ small-int slot this array used to index) — kept stable
+ *  anyway since it's also the emit/instanceof-fold iteration order. */
 export const ERR_CLASS_NAMES = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'URIError', 'EvalError']
 
-/** Shared schema every jz Error-class instance is allocated with (module/
- *  core.js's buildErrorObject, registered via ctx.schema.register — dedupes by
- *  content, so every class shares one schema id). Slot 2 is a compiler-internal
- *  f64-encoded small int (index into ERR_CLASS_NAMES above), never exposed
- *  through dot-syntax — same reservation convention as the boxed-schema
- *  '__inner__' slot 0.
- *
- *  ctx.schema.register has no per-caller "force a distinct id" mechanism (it
- *  dedupes purely by prop-list content — module/schema.js), so a genuinely
- *  separate per-class schema (making __errcls__ unnecessary — the schema id
- *  itself would be the discriminator) is structurally out of reach without
- *  register-level surgery (audit-#8 P0-3, 2026-08-03). Slot 2 stays, but is
- *  ENFORCED unreachable from source, not just documented as such: prepare's
- *  '.' handler rejects `.${ERR_CLS_SLOT}` in both read and write position, its
- *  '{}' handler rejects it as an object-literal key, and every enumeration
- *  emitter (Object.keys/values/entries, for-in, JSON.stringify) skips it by
- *  name. Residual: a genuinely computed key (`e[k]` with a runtime-only `k`,
- *  or `e['__err' + 'cls__']`) is not statically foldable to the reserved name
- *  and is NOT blocked — same class of gap prepare's own dynamic-key paths
- *  already accept elsewhere (jz's `.` handler only sees *static* property
- *  names by construction). */
-export const ERR_SCHEMA_PROPS = ['message', 'name', '__errcls__']
-/** The reserved slot-2 property name, spelled once — every enforcement site
- *  above imports this instead of the string literal. */
-export const ERR_CLS_SLOT = ERR_SCHEMA_PROPS[2]
+/** Physical schema every jz Error-class instance is allocated with — two
+ *  perfectly ordinary, perfectly enumerable slots. All 7 classes share this
+ *  IDENTICAL prop list; what makes a TypeError a TypeError is which of the 7
+ *  DISTINCT schema ids (module/schema.js's errorSid, salted per class name)
+ *  its pointer carries, not anything stored in the slots themselves (audit-#9
+ *  P0-2 brand redesign — supersedes the old shared-sid + hidden __errcls__
+ *  slot + prepare-time-enforced-unspellable-name design, which required every
+ *  object consumer — enumeration, dyn dispatch, JSON.stringify, Object.assign,
+ *  spread — to individually remember to filter the slot out, and still left
+ *  `Object.assign`/spread crashing on a real Error operand because neither
+ *  had been taught the slot existed at all). No reservation, no unspellable
+ *  name, no filtering: `{ __errcls__: 1 }` is now an ordinary user object. */
+export const ERR_SCHEMA_PROPS = ['message', 'name']
 
 export const ERR = {
   // ── 1xx TypeError-class ──────────────────────────────────────────────────

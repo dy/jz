@@ -12,6 +12,7 @@ import { emit } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { err, inc } from '../src/ctx.js'
+import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
 export function initSchema(ctx) {
@@ -22,10 +23,19 @@ export function initSchema(ctx) {
   ctx.schema._byKey = byKey
   ctx.schema._byProp = byProp
 
-  ctx.schema.register = (props) => {
+  // `salt` (optional): forces a schema id DISTINCT from every other registration
+  // of the identical prop list, without adding a source-visible property to
+  // that list. Used ONLY by the Error-class brand below — every other caller
+  // omits it, so their dedupe-by-content key is byte-identical to before this
+  // parameter existed. \x02 can't collide with a real prop name landing in the
+  // \x01-joined content prefix: prop names are validated identifiers/string
+  // keys, and even a pathological one contributes to the segment BEFORE any
+  // \x02, never straddling it (the length-prefix discipline above already
+  // established this class of non-collision for \x01).
+  ctx.schema.register = (props, salt) => {
     // Length prefix disambiguates [] from [''] (both join to '') and any
     // shorter prop list from a longer one whose extra entries are empty.
-    const key = props.length + '\x01' + props.join('\x01')
+    const key = props.length + '\x01' + props.join('\x01') + (salt ? '\x02' + salt : '')
     const existing = byKey.get(key)
     if (existing != null) return existing
     const id = ctx.schema.list.push(props) - 1
@@ -38,6 +48,51 @@ export function initSchema(ctx) {
     }
     return id
   }
+
+  // === Error-class brand (audit-#9 P0-2, error-object-design.md redesign) ===
+  //
+  // Class identity lives in the SCHEMA ID itself — the NaN-box aux bits every
+  // OBJECT pointer already carries — not in a source-visible/spellable slot.
+  // Each of the 7 built-in Error classes gets its OWN sid via the `salt`
+  // parameter above (all 7 share the identical PHYSICAL prop list
+  // ['message','name'], so `.message`/`.name` dot-access, JSON.stringify, dyn
+  // GET/SET/DELETE, and enumeration all see two perfectly ordinary schema
+  // slots — no reserved name, nothing to filter, nothing to un-spell). Nothing
+  // in source can forge or corrupt a pointer's own tag/aux bits (unlike a
+  // memory slot, which a computed write can reach) — this is a REAL hidden
+  // brand, not a property convention enforced by prepare-time rejection.
+  // Idempotent per class name (register's own content+salt dedupe), so it
+  // doesn't matter whether the constructor call site or an `instanceof`/
+  // `toStrI64` check site runs first — whichever runs first mints the id, the
+  // other reuses it.
+  const errorSidByClass = new Map()   // className → sid
+  const errorClassBySid = new Map()   // sid → className (reverse index)
+  ctx.schema.errorSid = (className) => {
+    let id = errorSidByClass.get(className)
+    if (id == null) {
+      id = ctx.schema.register(ERR_SCHEMA_PROPS, className)
+      errorSidByClass.set(className, id)
+      errorClassBySid.set(id, className)
+    }
+    return id
+  }
+  /** True iff `id` is one of the (lazily minted) 7 Error-class schema ids. */
+  ctx.schema.isErrorSid = (id) => errorClassBySid.has(id)
+  /** className for an Error-class sid, or null. */
+  ctx.schema.errorClassOf = (id) => errorClassBySid.get(id) ?? null
+  /** Every (sid, className) pair minted so far — src/compile/index.js's
+   *  'jz:errcls' custom-section writer walks this to hand interop.js the
+   *  host-side sid→class map it needs (a compiled module has no other way to
+   *  recover compile-time schema-id semantics — see interop.js decodeThrown). */
+  ctx.schema.errorSidEntries = () => errorClassBySid
+  /** Every registered class name, in ERR_CLASS_NAMES' fixed order, restricted
+   *  to classes actually minted so far — the deterministic iteration order
+   *  `emitErrorInstanceof`'s base-'Error' OR-chain and ir.js's toStrI64 arm
+   *  need (Map insertion order would instead follow first-use source order,
+   *  which can legitimately differ between two semantically-identical
+   *  programs and would make emitted bytes depend on incidental AST-walk
+   *  order rather than program content). */
+  ctx.schema.errorClassesUsed = () => ERR_CLASS_NAMES.filter(c => errorSidByClass.has(c))
 
   /** schemaId for a variable name: ValueRep first, then module-level ctx.schema.vars.
    *  Both paths exist because vars covers names without a per-function ValueRep
