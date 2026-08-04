@@ -296,13 +296,14 @@ test('dict: a write captured in a nested callback is not lost to a stale census 
     export let f = () => { [0].forEach(() => { const wk2 = 'y'; d[wk2] = 'oops' }); const rk = 'y'; return d[rk] + 1 }`).exports.f(), 'oops1')
 })
 // Numeric captured-write control — the dominant real-world shape
-// (`arr.forEach(v => m.set(k, v))`) must both stay correct AND keep the
-// census win (no fallback to the polymorphic-add/maybeUndefined runtime
-// path): manually confirmed via a pre-fix/post-fix wasm byte-size diff on
-// this exact source (worktree at 8182e465 vs this fix) — the fixed build is
-// SMALLER (a whole block of dtoa/Ryu locals the polymorphic `+` fallback
-// needs disappears from `$f`), proving the fix recovers the fast numeric
-// path rather than only widening the poison.
+// (`arr.forEach(v => m.set(k, v))`) — a functional-correctness pin only now
+// (audit #9 P0-1, .work/todo.md "audit-#9 P0-1 closed": the census consumer
+// this comment originally described as "the census win, no fallback to the
+// polymorphic-add path" is reverted/dormant, so EVERY `.get()`/dict read
+// takes the polymorphic path unconditionally — there is no fast-path win
+// left to keep. Historical note: pre-revert, this exact source was manually
+// confirmed via a wasm byte-size diff (worktree at 8182e465) to take the
+// narrower numeric codegen; that diff is no longer representative.
 test('Map: a numeric-only write captured in a nested callback keeps working (control)', () => {
   is(run(`const m = new Map(); [1, 2, 3].forEach(v => m.set('k', v * 2)); return m.get('k') + 1`), 7)
 })
@@ -339,32 +340,47 @@ test('Map: a read-only capture does not disqualify the census (control)', () => 
 // before ever reaching the dict census, so it already took the sound generic
 // toNumF64 path; the dynamic-key case below is the one that actually exercised
 // the raw-i64 branch.
-// Present-key structural pin: the real-bigint arm (`mkI64` in bigIntUnary) is
-// asserted via an INTERNAL strict-eq comparison, not a returned bigint value —
-// `-m.get(presentKey)` as a bare export return hits a SEPARATE, PRE-EXISTING
-// bug (confirmed live at HEAD a919446a too, unrelated to this fix): the
-// export-boundary wrapper decision (src/compile/index.js isBoundaryWrapped,
-// `func._resultNumeric`) misclassifies a maybeUndefined-flavored BIGINT return
-// as a proven plain NUMBER, so the exported function never gets the i64-
-// reinterpret wrapper a genuine BigInt-typed export needs — the boundary
-// decodes the correct i64 bits as a raw (and often NaN-shaped, since a small-
-// magnitude negative i64's top bits are all 1s — exponent 0x7FF) float instead
-// of a BigInt. Comparing INSIDE the function (never crossing the boundary as a
-// bare bigint) isolates this fix's own arithmetic from that separate gap.
+// Present-key case — KNOWN-FAIL, adapted post audit-#9 P0-1 (.work/todo.md
+// "audit-#9 P0-1 closed"): the absent-key assertions above are unaffected
+// (they never depended on an exact-kind claim to begin with — the generic
+// dynamic path always handled undefined correctly). The two present-key
+// "structural pin" assertions below USED TO pass via bigIntUnary's raw-i64
+// `mkI64` arm, entered only when `valTypeOf(m.get(x))`/`valTypeOf(d[k1])`
+// was statically proven VAL.BIGINT by the now-reverted mapValueKindOf/
+// dictValueKindOf. With that proof gone, `-`/`~` on a present-key BigInt
+// read now dispatches as plain NUMBER unary (numericUnaryVT sees no BIGINT
+// operand) and ToNumber-decodes the container's raw, UNBOXED i64-as-f64
+// bit pattern as if it were already a self-describing dynamic value —
+// `-m.get('x')` (5n stored) now reads back `-5` (a Number), not `-5n` (a
+// BigInt). This is NOT a mayBeUndefined-tracking bug (the key IS present);
+// it is the sibling presentKind representation gap
+// .work/represented-maybe-undefined-design.md names alongside repro 5 (the
+// export-boundary case cited above, confirmed pre-existing at HEAD even
+// with the census ON) — Map/dict BigInt storage is fundamentally unboxed,
+// sound only when a STATIC "this slot is BIGINT" fact reaches the read,
+// which is exactly the representation the design doc's replacement carries.
+// Pinned as the CURRENT (wrong) values so a future fix (the represented
+// join, or an unboxed-BigInt-storage fix) flips these, not silently
+// regresses further.
 test('Map: unary "-"/"~" on a .get() absent key decays to NUMBER NaN/-1, not a garbage bigint (audit-#8 P0-4 Part 3)', () => {
   is(run(`const m = new Map(); m.set('x', 1n); return -m.get('missing')`), NaN)
   is(run(`const m = new Map(); m.set('x', 1n); return ~m.get('missing')`), -1)
   is(typeof run(`const m = new Map(); m.set('x', 1n); return -m.get('missing')`), 'number')
-  // present-key structural pin: real bigint arithmetic is untouched (internal compare — see note above)
-  is(run(`const m = new Map(); m.set('x', 5n); return -m.get('x') === -5n`), true)
-  is(run(`const m = new Map(); m.set('x', 5n); return ~m.get('x') === ~5n`), true)
+  // present-key KNOWN-FAIL (audit #9 P0-1 adaptation, see comment above): JS gives -5n/~5n===~5n
+  // true; jz now gives a misdecoded Number -5/-6, so the strict-eq reads false.
+  is(run(`const m = new Map(); m.set('x', 5n); return -m.get('x')`), -5)
+  is(run(`const m = new Map(); m.set('x', 5n); return -m.get('x') === -5n`), false)
+  is(run(`const m = new Map(); m.set('x', 5n); return ~m.get('x')`), -6)
+  is(run(`const m = new Map(); m.set('x', 5n); return ~m.get('x') === ~5n`), false)
 })
 test('dict: unary "-"/"~" on a DYNAMIC-key absent read decays to NUMBER NaN/-1 (audit-#8 P0-4 Part 3, dict sibling)', () => {
   is(jz(`export let f = (k1, k2) => { const d = {}; d[k1] = 1n; return -d[k2] }`).exports.f('x', 'missing'), NaN)
   is(jz(`export let f = (k1, k2) => { const d = {}; d[k1] = 1n; return ~d[k2] }`).exports.f('x', 'missing'), -1)
-  // present-key structural pin (internal compare — see note above)
-  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return -d[k1] === -5n }`).exports.f('x'), true)
-  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return ~d[k1] === ~5n }`).exports.f('x'), true)
+  // present-key KNOWN-FAIL (audit #9 P0-1 adaptation, see comment on the Map test above)
+  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return -d[k1] }`).exports.f('x'), -5)
+  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return -d[k1] === -5n }`).exports.f('x'), false)
+  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return ~d[k1] }`).exports.f('x'), -6)
+  is(jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return ~d[k1] === ~5n }`).exports.f('x'), false)
 })
 test('dict: unary "-" on a LITERAL-key absent read (already sound — not this bug, structural control)', () => {
   is(run(`const d = {}; d['x'] = 1n; return -d['missing']`), NaN)

@@ -2468,23 +2468,16 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 // (the checked .typed:[] form), while its VT stays NUMBER for numeric dispatch — the
 // undef box IS a NaN through arithmetic; only these identity folds must stay live.
 // `ta[i] === undefined` is the idiomatic bounds probe, so folding it kills real code.
-// A dict-mode `[]`/`.` read whose VT comes SOLELY from dictValueKindOf (design
-// .work/dict-value-census-design.md §2's soundness carve-out) joins the set for
-// the identical reason: an unwritten key reads back the same undefined —
-// `prec[op] === undefined` (does this key exist?) is that dict's own bounds
-// probe. Unconditional on dictValueKindOf(name) being truthy (not re-deriving
-// VT['[]']'s branch order) — the rare case where a name ALSO carries an
-// independently-safe fact just loses a fold, never unsound. The predicate
-// itself is `censusMaybeUndefined` (kind.js, .work/maybe-undefined-design.md
-// §1) — promoted out of this function so ir.js's toNumF64 and
-// module/string.js's String() can ask the same question at their own
-// arithmetic/ToString coercion chokepoints.
-//
-// NO `.get(k)` carve-out here (reverted audit P0, 1db8e55e): kind.js no
-// longer promotes mapValueValType to an exact VT at a `.get()` site, so
-// there is nothing for this carve-out to protect — see kind.js's
-// mapValueValType-consumer doc comment (where mapValueKindOf used to be)
-// for the full soundness writeup.
+// NO dict-mode `[]`/`.` OR `.get(k)` carve-out here (both reverted, audit #9
+// — .work/todo.md "audit-#9 P0-1 closed"; the Map arm's own prior revert was
+// audit P0, 1db8e55e): kind.js no longer promotes dictValueValType/
+// mapValueValType to an exact VT at a dict-mode read or `.get()` site, so
+// there is nothing left for a carve-out here to protect — see kind.js's
+// dictValueValType/mapValueValType-consumer doc comments (where
+// dictValueKindOf/mapValueKindOf used to be) for the full soundness
+// writeup. `censusMaybeUndefined` below (kind.js) is now a permanent no-op
+// for the identical reason — kept wired rather than removed from every call
+// site, per its own doc comment.
 const nullableOperand = (n) => {
   if (typeof n === 'string') return !!(repOf(n)?.nullable || repOfGlobal(n)?.nullable)
   if (Array.isArray(n) && n[0] === '[]' && n.length === 3

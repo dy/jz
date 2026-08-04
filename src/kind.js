@@ -266,176 +266,69 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
   return false
 }
 
-// Dict-value-type census consumer (.work/dict-value-census-design.md §2):
-// `name[key]`/`name.prop` on a HASH dict-mode receiver — the VAL.* kind of
-// every value ever WRITTEN through `name[anyKey] = v`, local first (analyze.js
-// same-body scan, design §1a) then global gated on dynWriteVars
-// (observeProgramSlots' whole-program census, design §1b; the census fires
-// for every root regardless of scope — §1c — so this gate is what keeps a
-// param/local that merely SHARES a global dict's name from picking up the
-// global fact: `!ctx.func.localReps?.has(name)` mirrors the arrayElemValType
-// local/global split below).
+// Dict-value-type census consumer — REVERTED (audit #9, .work/todo.md "audit-#9
+// P0-1 closed"): `name[key]`/`name.prop` on a HASH dict-mode receiver used to
+// resolve to the VAL.* kind of every value ever WRITTEN through
+// `name[anyKey] = v` (.work/dict-value-census-design.md §2, nameEscapes alias
+// gate per .work/maybe-undefined-design.md §2 Slice 3). Unsound at its root:
+// the "maybe undefined" fact this promotion needs was tracked only by
+// recognizing the ORIGINAL read's AST shape at each of a curated set of
+// consumer chokepoints (censusMaybeUndefinedKind below, now also dormant) —
+// never as a fact carried BY THE VALUE through a declaration, parameter,
+// return, or closure capture. `let x = d[missingKey]; x + 1` (decl
+// propagation), a bare STRING-census concat (`d[k] + 1` at emit.js's `+`
+// fast path, no censusMaybeUndefined gate at all), and the BigInt mix-reject
+// (emit.js bigintMixReject, compile-time `valTypeOf` only) all bypassed the
+// chokepoint-list entirely and diverged from JS. See
+// .work/represented-maybe-undefined-design.md for the replacement design (a
+// REPRESENTED {presentKind, mayBeUndefined} fact) and its re-enablement
+// criteria.
 //
-// SOUNDNESS: an unwritten key reads back NaN-boxed undefined at runtime, so
-// this fact is trustworthy ONLY where NUMBER arithmetic/relational semantics
-// coincide with ToNumber(undefined) — the same precedent as the unproven
-// TYPED-index read (kind.js:257-263 above). Identity (`===`/`==` against
-// null/undefined) and typeof MUST NOT const-fold on it: that carve-out lives
-// in emit.js's `nullableOperand`, extended alongside this consumer to flag a
-// dict-mode `[]`/`.` read exactly as it already flags an unproven typed read.
-// nameEscapes ALIAS GATE (.work/maybe-undefined-design.md §2, Slice 3): the
-// census keys observations by SYNTACTIC receiver name (analyze.js's
-// dictValueTypeOf same-body scan, program-facts.js's observeDictValue global
-// half) — a write through an ALIAS (`const a = d; a[k] = v`) is invisible to
-// a census keyed on `d`, leaving a stale kind live after the alias write
-// changes it. `ctx.types.nameEscapes` (program-facts.js:37-76, installed
-// plan/index.js:133) is a whole-program, name-keyed set of every binding read
-// in a VALUE position (assigned to another name, passed as a call arg,
-// stored in a field, returned) — exactly the set of names that COULD have
-// been aliased. `d` in `const a = d` is a bare-name value-position read
-// (declEq only exempts the LHS binding slot), so `d` lands in nameEscapes
-// unconditionally the moment that line is walked, independent of what
-// happens to `a` afterward. Mirrors optimize/index.js:5014-5029's identical
-// escapes.has(name) bail for the analogous static-array-base fold.
-//
-// CORRECTION (audit-#8 P0-2): a prior revision of this comment listed
-// "captured" alongside the value-position uses above, implying a name merely
-// being read inside a nested closure was enough to mark it escaped. False: a
-// RECEIVER-position captured use (`[0].forEach(() => m.set('y', v))`) is
-// NEVER marked here — program-facts.js's ESCAPE_SKIP exempts '.'/'?.'
-// receiver slots unconditionally, capture or no capture, same as a top-level
-// `m.set(...)`. That is correct and intentional for THIS gate (a receiver
-// read doesn't alias `m` to a second name), but it means nameEscapes gives
-// captured-receiver writes no protection at all — the census itself must see
-// them directly. It didn't (dictValueTypeOf/mapValueTypeOf both stopped at
-// `=>`), which was the actual P0-2 bug — fixed at the census walks
-// themselves (both here-consumed halves now observe through nested closures,
-// gated on collectAllBoundNames' shadow-bail), not at this gate.
-// Fail open: an absent fact set (not-yet-walked) is treated the SAME as a
-// present-and-escaped name (`?.` optional chain below) — same precedent.
-// This is the SOLE consumer of dictValueValType (grepped: analyze.js/
-// program-facts.js only WRITE the field) — the gate lives here, at CONSUME
-// time, per this function's own original doc comment above, and every
-// caller (censusMaybeUndefined included) inherits it automatically.
-export function dictValueKindOf(name) {
-  if (ctx.types?.nameEscapes?.has(name)) return null
-  const local = ctx.func.localReps?.get(name)?.dictValueValType
-  if (local) return local
-  if (!ctx.func.localReps?.has(name) && ctx.types?.dynWriteVars?.has(name))
-    return ctx.scope.globalReps?.get(name)?.dictValueValType || null
-  return null
-}
+// The census computation stays a DORMANT fact, same precedent as bigintBoxed
+// and the audit-#7 mapValueValType revert below: analyze.js's same-body scan
+// and program-facts.js's observeDictValue global census keep WRITING
+// `dictValueValType` onto reps — nothing reads it. Do not resurrect a reader
+// here without first landing the represented join.
 
-// maybeUndefined value-join (.work/maybe-undefined-design.md §1): true for a
-// `name[key]`/`name.prop` READ node whose VT comes SOLELY from
-// dictValueKindOf's soundness carve-out — an unwritten key reads back real
-// JS `undefined` at runtime regardless of the census's claimed exact kind
-// (dictValueKindOf's own doc comment above states the exact argument this
-// predicate encodes). Promoted from the inline predicate emit.js's
-// `nullableOperand` already computed for its own identity-fold carve-out
-// (same AST shape, same soundness reason) so arithmetic/String() consumers
-// (ir.js toNumF64, module/string.js bind('String')) can ask the identical
-// question before trusting the exact kind. No Map arm yet — mapValueKindOf
-// is currently fully reverted/dormant (audit-#7 P0); re-enabling it adds a
-// second arm here recognizing `['()', ['.', recv, 'get'], k]` gated on
-// mapValueKindOf(recv), landed in the SAME commit as the .get() short-circuit
-// per the design's re-enablement criteria (§3) — not written yet, no live
-// producer to protect today.
+// Map-value-type census Tier 1 consumer — REVERTED (audit #9, .work/todo.md
+// "audit-#9 P0-1 closed"; was RE-ENABLED at .work/maybe-undefined-design.md
+// §3 Slice 4 after the original audit-#7 P0 revert, f8f61591 reverting
+// 1db8e55e). Same root unsoundness as dictValueKindOf above, restated for the
+// Map-specific shape: `mapValueValType` is "every value ever WRITTEN through
+// recv.set(anyKey, v)", promoted to an EXACT VAL.* kind at a `.get()` read
+// site. Slice 3/4 closed the alias gate (nameEscapes) and wired a
+// maybeUndefined join at a curated CHOKEPOINT LIST for the absent-key case —
+// but that join only recognizes the read's own AST shape, so it evaporates
+// the moment the read is bound to a local, passed as an argument, returned,
+// or captured (audit #9's decl-propagation repro: `let x = m.get(missing); x
+// + 1` still gave `undefined` instead of `NaN`), and several arithmetic
+// sites never consulted the chokepoint at all (emit.js's `+` STRING-concat
+// fast path, bigintMixReject's compile-time literal check) — see
+// .work/represented-maybe-undefined-design.md for the fact this needs
+// (`{presentKind, mayBeUndefined}` REPRESENTED through decls/params/returns/
+// closures/exports) and its re-enablement criteria.
 //
-// RECEIVER-KIND GUARD (found landing this slice, test/simd.js regression):
-// the dict census's GLOBAL half (program-facts.js ~line 839, "NOT gated on
-// dynWriteVars here... gate lives at CONSUME time") records a dictValueValType
-// fact for ANY `name[dynKey] = v`, receiver-kind-BLIND — a Float64Array named
-// `a` written via `a[i] = …` gets one too. In VT['[]']/VT['.']'s real dispatch
-// this is harmless: the TYPED/STRING/tracked-Array<VAL> branches (kind.js
-// ~396-413) resolve the receiver FIRST and dictValueKindOf's fallback
-// (~419/~480) is never reached. Calling dictValueKindOf directly, as this
-// predicate does, bypasses that elimination order — without the guard below
-// it fired true for `a[j-1]`/`a[j]`/`a[j+1]` (Float64Array), forcing every
-// such read through coerceNullishToNum's runtime `if` and silently defeating
-// the SIMD vectorizer's pattern match (test/simd.js: 6 failures, stencil/
-// tonemap/mirror-store — confirmed by reverting to isolate, then bisecting
-// to this file). A TYPED/STRING/Array<VAL> receiver is already protected by
-// its OWN sound mechanism (checkedNumRead's compile-time fold, ir.js
-// toNumF64 lines 951-970) and must not ALSO pay this predicate's runtime
-// check — replicate the same three name-keyed, key-independent receiver-kind
-// facts kind.js's real elimination order checks before ever reaching
-// dictValueKindOf.
-const dictCensusReceiverIsLive = (name) => {
-  if (lookupValType(name) === VAL.TYPED || lookupValType(name) === VAL.STRING) return false
-  if (ctx.func.localReps?.get(name)?.arrayElemValType) return false
-  if (!ctx.func.localReps?.has(name) && ctx.scope.globalReps?.get(name)?.arrayElemValType
-      && !ctx.types?.dynWriteVars?.has(name)) return false
-  return true
-}
-// Map-value-type census Tier 1 consumer — RE-ENABLED (.work/maybe-undefined-
-// design.md §3, Slice 4; audit P0 revert was f8f61591, reverting 1db8e55e;
-// .work/todo.md "audit-#7 P0 closed"). `mapValueValType` (analyze.js's
-// same-body scan + program-facts.js's observeMapValue/mapValueTypes census,
-// reps.js field) is "every value ever WRITTEN through recv.set(anyKey, v)",
-// exactly the same shape as dictValueKindOf above and unsound to promote to
-// an EXACT VAL.* kind at a `.get()` read site the SAME two ways: (1) an
-// ABSENT key reads real JS `undefined` at runtime — closed by
-// `censusMaybeUndefined`'s Map arm below, which routes the read through the
-// maybeUndefined join at every chokepoint (toNumF64, toStrI64, emitLooseEq's
-// equality gate, console's writePart) exactly as the dict census's own arm
-// does; (2) a write through an ALIAS is invisible to a census keyed on the
-// original receiver name — closed by the SAME `nameEscapes` gate
-// `dictValueKindOf` carries (Slice 3), written into `mapValueKindOf` from
-// its first line here, not deferred, per the revert's own instruction
-// (reps.js: "Do not wire a new consumer without first landing... this needs
-// to be sound"). Receiver gate is a HARD classification (`new Map()` →
-// CALLEE_VAL + recordGlobalRep, kind-traits.js) — unlike dict's HASH gate,
-// `valTypeOf(name) === VAL.MAP` alone proves the receiver, so no
-// dynWriteVars-analog proxy is needed on the global side (mirrors
-// mapValueKindOf's original, pre-revert shape — git show 1db8e55e).
-//
-// Lives here (not kind-traits.js's methodValType, despite `.get` dispatching
-// through it) and is consulted directly by VT['()'] below, BEFORE calling
-// methodValType: kind.js already imports methodValType FROM kind-traits.js,
-// so kind-traits.js importing this back would cycle. Also reused by
-// censusMaybeUndefined's Map arm (mirroring emit.js's now-removed standalone
-// nullableOperand carve-out — that carve-out is subsumed by
-// censusMaybeUndefined itself post-Slice-1, so the Map arm belongs on
-// censusMaybeUndefined directly, not duplicated onto nullableOperand).
-export function mapValueKindOf(name) {
-  if (typeof name !== 'string' || valTypeOf(name) !== VAL.MAP) return null
-  if (ctx.types?.nameEscapes?.has(name)) return null
-  const local = ctx.func.localReps?.get(name)?.mapValueValType
-  if (local) return local
-  if (!ctx.func.localReps?.has(name)) return ctx.scope.globalReps?.get(name)?.mapValueValType || null
-  return null
-}
+// The census stays a DORMANT fact: analyze.js's same-body scan and
+// program-facts.js's observeMapValue/mapValueTypes census keep WRITING
+// `mapValueValType` onto reps — nothing reads it. Do not resurrect a `.get()`
+// consumer without first landing the represented join.
 
-// maybeUndefined value-join (.work/maybe-undefined-design.md §1): the resolved
-// census VAL kind for a `name[key]`/`name.prop` dict-census READ node (arm 1) or
-// a `recv.get(key)` Map-census CALL node (arm 2, Slice 4) whose VT comes SOLELY
-// from the respective census's soundness carve-out — an unwritten key reads back
-// real JS `undefined` at runtime regardless of the census's claimed exact kind.
-// Returns the claimed kind (VAL.NUMBER/STRING/BIGINT/…) or null when the node
-// isn't a maybeUndefined census read at all. `censusMaybeUndefined` below is the
-// boolean form most consumers want; audit-#8 P0-3's BIGINT arithmetic chokepoint
-// (emit.js bigIntOperand) needs the KIND itself — `node[1]` here is the AST's
-// bracket-INDEX arg, which VT['[]']'s OWN dispatch (kind.js ~443-448) resolves to
-// `null` for a non-canonical-numeric string-literal key BEFORE ever reaching the
-// dict fallback (an array-vs-property-read disambiguation, sound for VT['[]']'s
-// own purpose) — so `valTypeOf(node) === VAL.BIGINT` is NOT a reliable proxy for
-// "this dict/Map read's census kind is bigint" the way it is for a plain local;
-// this function (like censusMaybeUndefined's own two arms) queries the census
-// DIRECTLY, bypassing that array-oriented gate on purpose, exactly as the
-// existing "RECEIVER-KIND GUARD" comment above dictValueKindOf documents.
-export function censusMaybeUndefinedKind(node) {
-  if (Array.isArray(node) && (node[0] === '[]' || node[0] === '.') && node.length === 3
-    && typeof node[1] === 'string' && dictCensusReceiverIsLive(node[1])) return dictValueKindOf(node[1])
-  if (Array.isArray(node) && node[0] === '()' && node.length === 3
-    && Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'get'
-    && typeof node[1][1] === 'string') return mapValueKindOf(node[1][1])
-  return null
-}
-
-// Consulted at every arithmetic/ToString/equality/console chokepoint (ir.js
-// toNumF64/toStrI64, emit.js emitLooseEq via nullableOperand, module/console.js
-// writePart) so none of them trust an exact-kind claim uncoerced.
+// maybeUndefined AST-shape recognizer — REVERTED to always-null (audit #9,
+// same closure as the two producers above): `censusMaybeUndefinedKind`/
+// `censusMaybeUndefined` used to recognize a `name[key]`/`name.prop`
+// dict-census READ node or a `recv.get(key)` Map-census CALL node whose VT
+// came SOLELY from dictValueKindOf/mapValueKindOf's soundness carve-out, and
+// every arithmetic/ToString/equality/console chokepoint (ir.js toNumF64/
+// toStrI64, emit.js nullableOperand/bigIntOperand/bigIntUnary, module/
+// string.js, module/number.js, module/console.js) still calls this pair —
+// left wired, now permanently dormant, rather than edited out at each of the
+// ~8 call sites: with dictValueKindOf/mapValueKindOf gone, there is no exact
+// kind left for any of those chokepoints to protect (dict/Map value reads
+// fall through to the generic/dynamic VT — already sound for `undefined`).
+// Do not re-wire either arm without first landing the represented join
+// (.work/represented-maybe-undefined-design.md) — see that file's
+// re-enablement criteria.
+export function censusMaybeUndefinedKind(node) { return null }
 export const censusMaybeUndefined = (node) => !!censusMaybeUndefinedKind(node)
 
 // `[]` op covers both array literals (1 arg) and index access (2 args).
@@ -519,13 +412,10 @@ VT['[]'] = (args) => {
       if (gElem && !ctx.types?.dynWriteVars?.has(args[0])) return gElem
     }
   }
-  // Dict-mode receiver (`prec[op]`, `OPCODE[nm]`): every value ever written
-  // through `args[0][anyKey] = v` has one proven kind. See dictValueKindOf
-  // above for the soundness carve-out — arithmetic/relational consumers only.
-  if (typeof args[0] === 'string') {
-    const dvt = dictValueKindOf(args[0])
-    if (dvt) return dvt
-  }
+  // NO dict-mode receiver fold here (reverted audit #9): kind.js no longer
+  // promotes dictValueValType to an exact VT at a `[]` read site — see the
+  // dictValueKindOf-consumer doc comment above (where dictValueKindOf used
+  // to be) for the full soundness writeup.
   // Direct double-index on a module-level nested numeric table — `C[i][j]` where
   // `C = [[…number…], …]`. The receiver is itself a single-index read of a global
   // array whose nested element kind was recorded at decl time. Same dynWriteVars
@@ -600,13 +490,11 @@ VT['.'] = (args) => {
       return child.val
     }
   }
-  // Dict-mode receiver via computed-literal rewrite (`prec['in']` → `['.','prec','in']`
-  // at emit, module/array.js:762-763): the fact is per-receiver, not per-key, so
-  // `prec.in` benefits identically to `prec[k]` above. Same soundness carve-out.
-  if (typeof args[0] === 'string') {
-    const dvt = dictValueKindOf(args[0])
-    if (dvt) return dvt
-  }
+  // NO dict-mode receiver fold here (reverted audit #9, same as VT['[]']
+  // above): `prec['in']` → `['.','prec','in']` rewrite (module/array.js:
+  // 762-763) used to benefit identically to `prec[k]` — see the
+  // dictValueKindOf-consumer doc comment above for the full soundness
+  // writeup.
   // Built-in property on a known sized kind — `.length` on STRING/ARRAY/TYPED,
   // `.size` on SET/MAP, `.byteLength`/`.byteOffset` on TYPED/BUFFER. These are
   // language invariants (the property is always a number on that kind), so typing
@@ -717,16 +605,9 @@ VT['()'] = (args) => {
   }
   if (Array.isArray(callee) && callee[0] === '.') {
     const [, obj, method] = callee
-    // Map-value census Tier 1 consumer (re-enabled, Slice 4): `.get`
-    // short-circuit BEFORE methodValType, which has no 'get' branch (see
-    // mapValueKindOf's doc above for why it lives here instead of
-    // kind-traits.js). Falls through to the generic methodValType dispatch
-    // when unproven (non-Map receiver, escaped, or poisoned census), unchanged
-    // from before.
-    if (method === 'get') {
-      const mvt = mapValueKindOf(obj)
-      if (mvt) return mvt
-    }
+    // NO `.get` short-circuit here (reverted audit #9): see the
+    // mapValueValType-consumer doc comment above (where mapValueKindOf used
+    // to be) for why the census this would consume is dormant.
     const vt = methodValType(method, obj, valTypeOf(obj), ctx)
     if (vt != null) return vt
   }

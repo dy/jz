@@ -2409,11 +2409,19 @@ test('dict-value census: an unresolvable write poisons the fact', () => {
     '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
 })
 
-test('dict-value census: consumer wiring — proven-NUMBER dict read skips coercion at a compare site', () => {
-  // Design §2's named mechanism: cmpOp's NUMBER arm emits a raw f64 compare
-  // directly over the __dyn_get result instead of routing through the
-  // generic runtime-typed comparison helper. Mirrors watr's actual
-  // `OPCODE[n[0]] > 0xffff` site (optimize.js:3973).
+// RENAMED from "consumer wiring" (audit #9 P0-1, .work/todo.md "audit-#9
+// P0-1 closed": kind.js's dictValueKindOf, the consumer this test originally
+// meant to prove, is reverted/dormant). Verified this WAT shape is IDENTICAL
+// with the consumer on or off: cmpOp's relational family (emit.js ~2928-2931)
+// emits `f64.${f64op}` whenever the OTHER operand is a proven NUMBER
+// LITERAL, wrapping the unproven side in `toNumF64`'s runtime coercion —
+// the regex below only checks for an `f64.gt` OPCODE and the absence of the
+// separate `$__gt` two-sided-dynamic-dispatch helper, neither of which
+// distinguishes "operand statically proven NUMBER" from "operand runtime-
+// coerced via toNumF64 then compared". This test never actually exercised
+// dictValueKindOf's exact-kind claim — kept as a plain regression pin on
+// cmpOp's own (independently sound) shape for a dict-read-vs-literal compare.
+test('dict-value census: dict read against a NUMBER literal compares via cmpOp\'s coerced f64 path', () => {
   const src = `
     export let OPCODE = {}, code = 0
     export let register = (nm) => { OPCODE[nm] = code++ }
@@ -2422,8 +2430,8 @@ test('dict-value census: consumer wiring — proven-NUMBER dict read skips coerc
   `
   const wat = jz.compile(src, { wat: true })
   const body = wat.slice(wat.indexOf('$bigOp'))
-  ok(/\(f64\.gt\b/.test(body), 'expected a raw f64.gt at the compare site')
-  ok(!/\$__gt\b/.test(body), 'expected no generic runtime-typed compare helper')
+  ok(/\(f64\.gt\b/.test(body), 'expected an f64.gt at the compare site (toNumF64-coerced operand)')
+  ok(!/\$__gt\b/.test(body), 'expected no two-sided-dynamic compare helper (RHS is a proven NUMBER literal)')
   is(run(src).bigOp('add'), false, 'functional result unchanged (0 > 0xffff is false)')
 })
 
@@ -2533,8 +2541,11 @@ test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[
   is(ctx.scope.globalReps?.get('prec')?.dictValueValType, 'number',
     'the subscript shape resolves NUMBER: self-read neutrality + BOOL elimination + param channel')
   const body = wat.slice(wat.indexOf('$bigOp'))
-  ok(/\(f64\.gt\b/.test(body), 'consumer fires too: raw f64.gt at the compare site')
-  ok(!/\$__gt\b/.test(body), 'no generic runtime-typed compare helper')
+  // cmpOp's own (census-independent) coerced-f64 compare shape — see the
+  // "dict read against a NUMBER literal" test above for why this doesn't
+  // exercise dictValueKindOf (reverted/dormant, audit #9 P0-1).
+  ok(/\(f64\.gt\b/.test(body), 'f64.gt at the compare site (toNumF64-coerced operand)')
+  ok(!/\$__gt\b/.test(body), 'no two-sided-dynamic compare helper (RHS is a proven NUMBER literal)')
 })
 
 // ─────────────────────────── dict-value census: moduleInit gap fix (Fix A/B)
@@ -2640,17 +2651,20 @@ test('dict-value census: moduleInitSlot memo-cache replay is order-independent (
 //
 // The `.get()` read-side consumer (kind.js mapValueKindOf, VT['()']'s 'get'
 // short-circuit) was REVERTED (audit P0, external bisection, .work/todo.md
-// "audit-#7 P0 closed") for being unsound two ways — an ABSENT key reads
-// real JS `undefined` regardless of the observed write kind, and the scan
-// keys observations by SYNTACTIC receiver name so a write through an alias
-// is invisible to it — then RE-ENABLED (.work/maybe-undefined-design.md §3,
-// Slice 4) once both were closed at CONSUME time: the absent-key case by
-// `censusMaybeUndefined`'s Map arm (kind.js) routing every `.get()` read
-// through the maybeUndefined join at the arithmetic/ToString/equality/
-// console chokepoints; the alias case by `mapValueKindOf` carrying the same
-// `ctx.types.nameEscapes` gate `dictValueKindOf` does (Slice 3), from its
-// first line. The miscompile repros (still pinned, now green via the sound
-// mechanism, not "no consumer") live in test/dyn-keys.js ("audit P0").
+// "audit-#7 P0 closed"), RE-ENABLED (.work/maybe-undefined-design.md §3,
+// Slice 4) once the absent-key case (censusMaybeUndefined's Map arm) and the
+// alias case (mapValueKindOf's nameEscapes gate) were closed at CONSUME
+// time, then REVERTED AGAIN (audit #9, .work/todo.md "audit-#9 P0-1
+// closed"): both closures keyed off the READ NODE'S OWN AST SHAPE, not a
+// fact carried by the value — `let x = m.get(missing); x + 1` still gave
+// `undefined` instead of `NaN` (decl propagation evaporates the join), and
+// arithmetic sites outside the curated chokepoint list (the `+` STRING-
+// concat fast path, bigintMixReject's compile-time check) never consulted
+// it at all. See .work/represented-maybe-undefined-design.md for the
+// replacement (a REPRESENTED `{presentKind, mayBeUndefined}` fact) and its
+// re-enablement criteria. The miscompile repros this section's tests below
+// still functionally pin (now green via the generic dynamic path, not any
+// exact-kind consumer) live in test/dyn-keys.js ("audit P0").
 
 test('map-value census: module-global Map.set value kind populates globalReps', () => {
   const src = `
@@ -2701,13 +2715,12 @@ test('map-value census: an unresolvable write poisons the fact', () => {
 })
 
 test('map-value census: soundness carve-out — an unregistered key still identity-compares as undefined', () => {
-  // Was the design's carve-out test (§2) for the now-RE-ENABLED (Slice 4)
-  // kind.js mapValueKindOf / censusMaybeUndefined Map arm: `MEMO.get(k) ===
-  // undefined` must not const-fold to false just because the census proves
-  // MEMO's value kind is NUMBER — an unregistered key's real runtime value
-  // IS undefined, so the idiomatic "does this key exist" probe must observe
-  // true. With the consumer live again, this is the exact carve-out
-  // (nullableOperand → censusMaybeUndefined) that keeps it sound.
+  // Was the design's carve-out test (§2) for kind.js mapValueKindOf /
+  // censusMaybeUndefined's Map arm, RE-ENABLED at Slice 4 then REVERTED
+  // AGAIN (audit #9, .work/todo.md "audit-#9 P0-1 closed") — see this
+  // file's Map-value-census section header above. With no consumer at all,
+  // `MEMO.get(k)` never gets a static kind claim to protect against in the
+  // first place; kept as a plain baseline-correctness regression pin.
   const src = `
     export let MEMO = new Map(), n = 0
     export let put = (k) => { MEMO.set(k, n++) }
@@ -2719,20 +2732,11 @@ test('map-value census: soundness carve-out — an unregistered key still identi
   is(has('zz'), true, 'unregistered key still observes undefined at runtime — the fold must not fire')
 })
 
-test('map-value census: consumer wiring — a non-escaping Map proves its value kind; an escaping one does not (Slice 4)', () => {
-  // Positive/negative control pair for the nameEscapes gate specifically
-  // (the dict census's `> 0xffff` structural WAT pin doesn't transfer to
-  // Map: cmpOp's relational family is ALREADY sound unconditionally for a
-  // `.get()` LHS against a proven-NUMBER-literal RHS — verified this holds
-  // even against a HEAD checkout with zero Map consumer at all, so f64.gt's
-  // presence there would prove nothing about THIS gate; Map's inlined
-  // hash-probe codegen also defeats a reliable arithmetic-side WAT pattern
-  // match, `isNumericIR`'s structural fast path treats the probe's result
-  // as provably numeric independent of the static VAL claim). Asserting the
-  // MECHANISM directly instead — same style as this file's `mapValueValType`
-  // fact-level pins above — is the precise, non-fragile signal: does
-  // `mapValueKindOf` actually deliver a kind at the exact site the
-  // `nameEscapes` gate is supposed to guard.
+test('map-value census: nameEscapes distinguishes a non-escaping Map from an escaping one (RENAMED from "consumer wiring" — audit #9 P0-1, mapValueKindOf reverted/dormant again)', () => {
+  // nameEscapes itself (program-facts.js) is a general-purpose fact,
+  // independent of mapValueKindOf's own consumer status — this test now
+  // only pins THAT fact plus the functional runtime result, not "does
+  // mapValueKindOf deliver a kind here" (it no longer exists to ask).
   const nonEscaping = `
     export let OPCODE = new Map(), code = 0
     export let register = (nm) => { OPCODE.set(nm, code++) }

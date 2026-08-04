@@ -94,36 +94,37 @@ export const VAL = {
  *   through `name[key] = v` (any key, HASH dict-mode local or global) —
  *   first-wins-then-clash lattice, absent/null = unproven or mixed. Additive-
  *   only fact (dict-value-census design, .work/dict-value-census-design.md):
- *   NEVER a substitute for `val`, never mutated alongside it. Two producers —
- *   analyze.js's same-body scan (local half, updateRep) and
+ *   NEVER a substitute for `val`, never mutated alongside it. Two producers
+ *   remain live — analyze.js's same-body scan (local half, updateRep) and
  *   observeProgramSlots' dictValueTypes census (global half, updateGlobalRep)
- *   — both consumed only by kind.js's VT['[]']/VT['.'] dictValueKindOf helper,
- *   itself gated on `ctx.types.dynWriteVars` for the global side. Soundness
- *   carve-out: an unwritten key reads back NaN-boxed undefined, so only
- *   NUMBER arithmetic/relational consumers may trust this fact (mirrors
- *   typedReadMaybeOob, kind.js:257-263) — identity/typeof/nullish checks must
- *   not.
+ *   — but the fact is DORMANT (audit #9, .work/todo.md "audit-#9 P0-1
+ *   closed"): its consumer, kind.js's former dictValueKindOf (VT['[]']/
+ *   VT['.']'s dict-mode fold) and censusMaybeUndefinedKind's dict arm, were
+ *   REVERTED. Slice 1-3 (.work/maybe-undefined-design.md) closed the alias
+ *   gate and wired a maybeUndefined join at a curated chokepoint list for the
+ *   absent-key soundness hole, but audit #9 found that join recognizes only
+ *   the read's OWN AST shape — it evaporates the moment the read is bound to
+ *   a local, passed as an argument, returned, or captured, and several
+ *   arithmetic sites never consulted it at all. See
+ *   .work/represented-maybe-undefined-design.md for the represented
+ *   `{presentKind, mayBeUndefined}` fact this needs and its re-enablement
+ *   criteria. Do not wire a new consumer without first landing it.
  * @property {string}  [mapValueValType] VAL.* kind of every value ever written
  *   through a proven-VAL.MAP receiver's `recv.set(k, v)` (any key) —
  *   dictValueValType's Map-census Tier 1 sibling (.work/map-value-census-
  *   design.md), same first-wins-then-clash lattice, additive-only, NEVER a
  *   substitute for `val`. Two producers remain live — analyze.js's same-body
  *   scan (local half, updateRep) and observeProgramSlots' mapValueTypes
- *   census (global half, updateGlobalRep). RE-ENABLED consumer (.work/
- *   maybe-undefined-design.md §3, Slice 4): kind.js's mapValueKindOf
- *   (VT['()']'s `.get` short-circuit) was reverted (audit P0, external
- *   bisection, .work/todo.md "audit-#7 P0 closed") because promoting this
- *   census to an EXACT VAL.* kind at a `.get()` read site was unsound two
- *   ways — an ABSENT key reads real JS `undefined` at runtime regardless of
- *   the observed kind, and the census keys observations by SYNTACTIC
- *   receiver name so a write through an alias is invisible to it. Both are
- *   now closed at CONSUME time, not by changing the census itself: (1) the
- *   absent-key case is closed by `censusMaybeUndefined`'s Map arm (kind.js),
- *   which routes every `.get()` read through the maybeUndefined join at
- *   every arithmetic/ToString/equality/console chokepoint; (2) the alias
- *   case is closed by `mapValueKindOf` carrying the SAME `ctx.types.
- *   nameEscapes` gate `dictValueKindOf` does (Slice 3), from its first line.
- *   See .work/todo.md's Slice 4 status entry for the acceptance pins.
+ *   census (global half, updateGlobalRep). The fact is DORMANT again (audit
+ *   #9, .work/todo.md "audit-#9 P0-1 closed"): kind.js's mapValueKindOf
+ *   (VT['()']'s `.get` short-circuit), RE-ENABLED at .work/maybe-undefined-
+ *   design.md §3 Slice 4 after the original audit-#7 P0 revert (f8f61591),
+ *   was reverted again — same root cause as dictValueValType above (the
+ *   maybeUndefined join is AST-shape-only, not a fact carried by the value
+ *   through decls/params/returns/closures/exports). See
+ *   .work/represented-maybe-undefined-design.md for the replacement design
+ *   and its re-enablement criteria. Do not wire a new consumer without first
+ *   landing it.
  * @property {boolean} [recvArrTyped]     receiver-kind CLASS proof (2026-07-31,
  *   named follow-up to the numeric-key unknown-receiver soundness fix, 9f46d517):
  *   true iff every live call site's argument at this position proves VAL.ARRAY OR

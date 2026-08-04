@@ -4,6 +4,121 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, audit-#9 P0-1 closed — Map/dict value-census consumers
+## reverted to dormant AGAIN; represented-join design banked)
+
+AUDIT-#9 FINDING: `censusMaybeUndefinedKind` (kind.js) — the maybeUndefined
+join Slice 1-4 wired at a curated chokepoint list (toNumF64, String(), JSON,
+isNaN, bigIntOperand) — recognizes ONLY the ORIGINAL read AST shape. Assigning
+the read to a local preserves the census's claimed exact kind but silently
+DROPS the "may be undefined" fact, so every consumer fix landed so far covers
+direct-expression positions only. 5 failures verified live at HEAD (cc78bf56)
+before this fix, repro'd via a standalone script (jz(src,{jzify:true})):
+  1. `let x = m.get('missing'); return x + 1` → jz `undefined` (JS: NaN) —
+     decl-propagation loss.
+  2. STRING census: `m.get('z')` (STRING-valued map) `+ 1` on a MISSING key →
+     jz string `"1"` (JS: NaN) — emit.js's `+` STRING-concat fast path
+     (~line 4741) trusts exact VAL.STRING with no censusMaybeUndefined gate
+     at all — never on the chokepoint list to begin with.
+  3. BIGINT census: absent read `+ 1` (plain number literal) → jz
+     COMPILE-TIME TypeError — emit.js's `bigintMixReject` (~line 4101) is a
+     pure `valTypeOf(a) === VAL.BIGINT` compile-time check, also never on
+     the chokepoint list.
+  4. Two absent BigInt reads combined (`m.get('a') + m.get('b')`, both
+     missing) → runtime TypeError code 116 (ERR.BIGINT_UNDEF_MIX) — JS: NaN.
+  5. Present `m.get('x')` holding `5n`, exported/returned → number
+     `2.5e-323` (JS: `5n`) — DIFFERENT class (present key, not
+     mayBeUndefined at all): compile/index.js's `synthesizeBoundaryWrappers`
+     export-lane split can't route a dynamically-typed-but-actually-BigInt
+     value through the dedicated i64-no-reinterpret BigInt lane without a
+     static proof it never gets. CONFIRMED PRE-EXISTING at HEAD (cc78bf56,
+     census ON) via a temporary worktree — NOT caused by this fix, and
+     test/dyn-keys.js already had a comment (citing a919446a) flagging it as
+     "a SEPARATE, PRE-EXISTING bug" before this session touched anything.
+
+FIX (same shape as the audit-#7 P0 revert f8f61591, applied to BOTH censuses
+this time instead of just Map's): DISABLED kind.js's `dictValueKindOf`/
+`mapValueKindOf` (VT['[]']/VT['.']/VT['()']'s dict/Map exact-kind folds) and
+`censusMaybeUndefinedKind`/`censusMaybeUndefined` (now a permanent `null`/
+`false` stub, left wired at every existing call site — ir.js toNumF64/
+toStrI64, emit.js nullableOperand/bigIntOperand/bigIntUnary, module/string.js
+String(), module/number.js isNaN, module/console.js writePart — rather than
+edited out of each, since with no exact-kind claim left there's nothing for
+any of them to protect). PRODUCERS UNCHANGED: analyze.js's same-body scan and
+program-facts.js's observeProgramSlots keep writing dictValueValType/
+mapValueValType onto reps — dormant facts, same precedent as bigintBoxed and
+the original audit-#7 revert. Doc comments at every touched site (kind.js,
+reps.js, emit.js) cite audit #9 and point to the replacement design.
+
+REPROS 1-4 now PASS at JS-correct values (verified individually — the generic
+dynamic path already handles undefined correctly once nothing falsely claims
+an exact kind). REPRO 5 still fails post-disable (unchanged from pre-disable —
+confirmed the SAME 2.5e-323, not worsened) — the deeper, pre-existing
+export-boundary bug, out of scope for this P0 (see
+.work/represented-maybe-undefined-design.md §6 for the full root-cause
+citation: compile/index.js synthesizeBoundaryWrappers ~1595-1601's
+resultBigint/resultDynamic lane split, plus an apparent gap in the
+bigintBoxed producer wiring not firing for Map/dict writes even for a named
+local that should qualify per analyze.js's own W-sink list).
+
+DISABLE COST — surfaced ONE new regression class the census's presence had
+been masking: PRESENT-key BigInt values read from a Map/dict and passed
+through unary `-`/`~` now decode as a plain NUMBER instead of a BigInt
+(`-m.get(presentKey)` where the value is `5n` now gives `-5`, not `-5n`) —
+same root as repro 5 (presentKind, not mayBeUndefined), NOT one of the 5
+official repros but caught by test/dyn-keys.js's existing "audit-#8 P0-4
+Part 3" present-key structural pins (2 assertions each, Map + dict sibling).
+Adapted both to KNOWN-FAIL pins asserting the current (wrong) values, per the
+f8f61591 dict-sibling precedent, with a comment tracing the connection to
+repro 5 and the design doc. No OTHER dyn-keys.js/inference.js pin needed a
+behavior change — every other audit-P0/Slice pin (absent-key, alias-write,
+captured-mutation) stayed green unmodified, because the underlying VALUES
+were always correct via the generic dynamic path; only pins asserting WAT
+CODEGEN SHAPE (two "consumer wiring" tests, one dict one Map) needed comment
+corrections — investigation showed their `f64.gt`/no-`$__gt` assertions were
+NEVER actually caused by dictValueKindOf/mapValueKindOf in the first place
+(cmpOp's own coerced-f64 path fires whenever the OTHER operand is a proven
+NUMBER LITERAL, census or no census) — renamed/re-commented, not changed
+functionally.
+
+GATES (fresh dist rebuild required — kernel-parity's `dict` CORPUS row
+initially failed byte-identity because dist/jz.wasm was stale from before
+this session's src edits; `npm run build` twice, byte-identical, resolved
+it): full 88-file battery run in 13 chunks of ~7 files each, foreground,
+0 fail (pre-existing skips unrelated: array-methods 1, features 1, unsigned
+1). kernel-parity 33/33 (post-rebuild). kernel-oracle 451/451 assertions
+(post-rebuild; surfaced no NEW pending-fix rows — the existing
+"generic-scalar-decl BOOL∪NUMBER carrier collapse" PENDING-FIX row is the
+SAME decl-init-wall class .work/carrier-invariant-design.md already banked,
+cited in the new design doc §6 as the parallel case, not caused by this
+session). perf-ratchet 10/10, every category (+0) delta from baseline — this
+disable cost ZERO measured codegen-shape regression (none of the 10 ratchet
+corpus benchmarks touch dict/Map value-census typing on a hot loop body).
+optimizer 434/434 (with dyn-keys/data/math). selfhost.js 21/21 (40
+compile-yourself rounds). fuzz.js 2000 programs × opt{0,1,2,3}, 0 divergence.
+Fresh build × 2: dist/jz.wasm + dist/jz.js + dist/interop.js SHA-256
+byte-identical across both builds. Size sweep (`node scripts/bench-size.mjs
+--json`, geomean jz/AssemblyScript over 49 sized cases): **1.0550 → 1.0550**,
+unchanged to 4 decimal places — no size cost from this disable on the
+standard corpus (the `dict` case itself: jz=1313B/wasmopt=1249B, in line
+with its pre-existing size).
+
+DESIGN BANKED: .work/represented-maybe-undefined-design.md — the single
+propagated invariant the audit demands (`mayBeUndefined` + `presentKindUnboxed`
+as REP_FIELDS entries, modeled directly on the existing `nullable`/
+`bigintBoxed` fields' OWN propagation mechanisms — narrow.js already proves a
+REP boolean can flow through the whole-program call-site fixpoint, this is
+not new machinery), propagation through decl/param/return/closure/export,
+the exact chokepoint rewrite list (including the two NEWLY-identified gaps —
+bigintMixReject, the `+` STRING-concat fast path — that were never on the
+chokepoint list even when Slice 1-4 was live), re-enablement criteria for
+dictValueKindOf/mapValueKindOf, and explicit connections to two related,
+independently-tracked issues: the decl-init wall
+(.work/carrier-invariant-design.md — same symptom, different root
+mechanism) and the BigInt export-boundary gap (repro 5's class — same
+symptom family, needs its own bigintBoxed-wiring investigation). 5 ordered
+landing slices, smallest-first.
+
 ## Status (2026-08-03, FFT BUTTERFLY RECOVERED — the audit-P1-2 campaign's
 ## named-but-not-attempted THIRD residual (976433c1's own ledger entry),
 ## closed via direct WAT/IR instrumentation, NOT the shape 976433c1 predicted)
