@@ -4,6 +4,188 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-03, STENCIL RECOVERY via Root-F bound-magnitude lever —
+## audit-#8 P1-2's own named next step (c8700daa's "REAL lever for a future
+## ticket"): watercolor/waves/schrodinger back to their FULL pre-regression
+## f64x2 counts (49/46/27); diffusion/slime investigated to a DIFFERENT,
+## precisely-named residual — not this lever's scope)
+
+**The lever, exactly as named**: c8700daa's own residual said tryStencil's
+`boundPureInv` (src/optimize/vectorize.js) declines `w-1`/`h-1` (module
+globals fed from `resize(w,h)`, genuinely unbounded statically) because the
+bound never lowers as a raw i32.sub chain — and pointed at the EXISTING
+Root-F "typed-bounds loop VERSIONING" scaffold (`emitter['for']`, emit.js;
+`versionableTypedNest`, type.js) as the unexplored, structurally-adjacent
+fix: teach the admission to accept the VERSIONED runtime guard instead of
+demanding static proof. Investigated bottom-up (WAT diff, not guesswork):
+
+1. `boundPureInv` itself was never the blocker — it already accepts any
+   `global.get`/unwritten-local/`+,-,*` chain unconditionally (no magnitude
+   check in that predicate at all). The REAL admission gate is upstream:
+   whether `w-1` **lowers as i32.sub in the first place** — governed by
+   `subRangeFitsI32`/`addRangeFitsI32` (emit.js), which read
+   `intExprRange(name)` (static.js) and get `null` for `w`/`h` (no decl-range
+   stamp — same "genuinely unbounded" fact c8700daa named).
+2. Root-F's guard (emit.js `emitter['for']`) DOES already fire on these
+   stencils (`versionableTypedFor`, type.js, accepts an "invariant pure
+   EXPRESSION bound" — `x < w-1` — via `invariantIdxExpr`, and DOES emit a
+   fast/checked arm pair). But its own conjunct machinery only proves
+   `|bound VALUE| ≤ 2^31` for the WHOLE composed expression (`w-1`), never a
+   fact about the free name `w` ALONE — so when the fast arm calls
+   `emitter['for'](null, cond, step, body)` to re-emit `x < w-1` from
+   scratch, `w-1` hits the SAME unproven-range fits-gate and falls to
+   `f64.sub` again, inside the guard too. Confirmed by WAT: `$__poff0` (w,
+   already i32-STORED via the separate collectBareEscapes/widenLocalTypes
+   tolerance) still round-tripped through `f64.convert_i32_s` for the `-1`.
+
+**Mechanism** (src/compile/emit.js, `emitter['for']`'s Root-F block; +
+`export` on `SLOT_OPS`, src/type.js): for every level's `f64`-kind bound,
+walk its free names (mirroring `invariantIdxExpr`'s OWN grammar — only
+`SLOT_OPS`-shaped binary nodes recurse, a bare string is a name, anything
+else — member access, calls — contributes none, so a `.length` bound's
+`'length'` property-key string is never misread as a variable). For each
+name lacking an `intExprRange` fact already, emit ONE extra runtime
+conjunct pair — `f64.eq(v, f64.floor(v))` (integral) + `f64.le(abs(v),
+2^30)` (magnitude) — same idiom as the pre-existing SLOT integrality
+check just above it — and register a real `{rlo:-2^30, rhi:2^30}` fact.
+That fact is fed through `withRefinements` (flow-types.js) — the SAME
+channel `forCounterRange` (c8700daa) uses — scoped to EXACTLY the fast
+arm's own `emitter['for'](null, cond, step, body)` re-emission; the checked
+arm stays unrefined (runs exactly when the new conjunct failed). Inside
+that scope, `intExprRange('w')` now resolves, `subRangeFitsI32` accepts
+`w-1`, native `i32.sub` emits, and `boundPureInv` — unchanged — accepts the
+now-genuine i32 chain. A bare-name bound (`i < N`) is explicitly skipped
+(`typeof vs.bound !== 'string'` guard): a plain comparison needs no
+magnitude proof at all, and probing it anyway only cost bytes.
+
+**Two bugs found and fixed during verification (not shipped broken)**:
+  - Naive "every string leaf" free-name walk misread `.length`'s property
+    key as a variable (`emit('length')` → "not in scope", crashing the FFT
+    kernel at the speed preset — test/simd.js's own dedupe-lane-locals
+    regression test caught it). Fixed by mirroring `invariantIdxExpr`'s
+    exact SLOT_OPS grammar instead of a blind walk (`SLOT_OPS` exported
+    from type.js for this).
+  - Applying the lever to EVERY level (not just `bKind==='f64'`) was
+    necessary (bKind can independently classify `w-1` as `'i32'` via
+    `exprType`'s own magnitude check while the CODEGEN path for the SAME
+    expression still declines — two different `intExprRange` consumers),
+    but doing it unconditionally for bare-name bounds too (`i < N`, no
+    arithmetic to prove) added a needless guard-setup `f64.convert_i32_s`
+    that broke test/perf.js's "no per-iteration i32→f64 widening" pin.
+    Fixed by the bare-name skip above.
+
+**Per-kernel recovery table** (f64x2 count, `jz.compile(src, {optimize:
+{level:'speed'}, wat:true})` — matches the examples build's OPT):
+
+| kernel | metric | before (HEAD) | after | verdict |
+|---|---|---|---|---|
+| watercolor | f64x2 ops | 1 | **49** | **recovered — exact pre-regression count** |
+| waves | f64x2 ops | 3 | **46** | **recovered — exact pre-regression count** |
+| schrodinger | f64x2 ops | 0 | **27** | **recovered — exact pre-regression count** |
+| diffusion | f64x2 ops | 4 | 4 | unchanged — DIFFERENT residual, see below |
+| slime | f64x2 ops | 1 | 1 | unchanged — DIFFERENT residual, see below |
+
+Verified bit-exact, not just count-matched: test/examples.js's watercolor/
+waves/schrodinger stencil tests (previously asserting the KNOWN-GAP decline,
+now un-silenced to `is(sten, 49|46|27, …)`) run the FULL SIMD-vs-scalar
+differential (`experimentalStencil:false` vs default) end-to-end — 3072/
+12288/1536 px, 30/60/12 frames — `simd.filter((v,i)=>v!==scal[i]).length ===
+0` for all three. Fuzz 2000×4 (below) independently covers the general
+mechanism (per-name magnitude/integrality conjunct + withRefinements scope)
+against every OTHER shape it can reach.
+
+**Named residual (diffusion, slime — precisely root-caused, NOT this
+lever's scope)**: both kernels' loop bound (`x < w`, a bare name) already
+gets NO help needed from this lever (bare-name bounds are fine as-is,
+confirmed: their `x<w`/`y<h` compares are unaffected) — investigated via
+targeted WAT tracing (temporary `JZ_DBG_ST`/`ST-load-nomatch` instrumentation
+in vectorize.js, removed before commit) to find the REAL blocker: both
+kernels compute their toroidal wrap value into a NAMED local (`let xw =
+x>0?x-1:w-1`) rather than inlining the select at the index site (contrast
+watercolor/waves/schrodinger, whose wrap idiom — where present — inlines).
+Because `w-1` used to force the WHOLE ternary to unify at one wasm type
+(f64, since one branch needed it), the compiled shape is
+`select(i32.wrap_i64(trunc_sat_f64_s(select($w_minus_1, f64.sub(x,1),
+guard))), 0, f64.ne(t, NaN))` — an F64-DOMAIN inner select wrapped in jz's
+NaN-based overflow-canon. `tryStencil`'s `ivCoeff`/`isWrapSelect`
+(vectorize.js) only recognize the I32-domain select shape (`isStep` checks
+literally `'i32.sub'`/`'i32.add'`) and the INFINITY-based overflow-canon
+guard (`/inf/i.test(...)` — a NaN comparand's `String(NaN)` doesn't match).
+Even after THIS session's fix makes `w-1` itself i32-safe, the wrap-select's
+OWN two branches (`x-1` and the invariant `w-1`) still round-trip through
+this canon dance in the compiled IR by construction of how the source
+ternary lowers — a genuinely SEPARATE, structurally-adjacent gap in a
+DIFFERENT function's pattern vocabulary (not bound admission): extending
+`isWrapSelect` to an f64.sub/f64.add step variant, and the overflow-canon
+check to a NaN guard too. Real, scoped, not attempted here — named in
+test/examples.js's own updated comment for the next session.
+
+**Ratchet**: `test/perf-ratchet.js` float/mixed/cond/buf/nest/slice/ring/
+condref/fgather — all **+0** (10/10 pass, unchanged from baseline).
+`scripts/perf-corpus.mjs`'s generators don't happen to produce a
+runtime-guarded-versioned stencil shape — same honest-floor precedent as
+c8700daa's own loop-counter lever (nothing recovered here → nothing
+re-tightened; re-tightening would fabricate a result the compiler doesn't
+actually produce on THIS corpus).
+
+**Size**: `node scripts/bench-size.mjs` geomean jz/AS: **1.055 → 1.055**
+(unchanged, 49 cases). The 5 recovered kernels live in `examples/`, not
+`bench/` — no bench-size CASE exercises this exact shape, so the sweep
+genuinely doesn't move. `mat4` (c8700daa's own recovered case) unaffected:
+1528 B, unchanged.
+
+**Timing** (quiet machine: load avg 3.28/3.52/3.95 on 14 cores after the
+`npm run build` background job finished — no other jz/test processes
+running; `--paired` ABBA, 8 rounds, SIMD-recovered vs `experimentalStencil:
+false` scalar, same kernel, same compiled module reused across rounds):
+watercolor 167.2ms (simd) vs 172.5ms (scalar) — **1.032× win**; waves
+180.4ms vs 194.5ms — **1.078× win**. Both checksums (32-bit rolling hash
+of the rendered pixel buffer) identical simd vs scalar — the speedup isn't
+from a value change. Modest, not dramatic: `frame()` spends most of its
+time in OTHER work (Gauss–Seidel pressure solve, advection gathers,
+tone-map) that this lever doesn't touch — the recovered stencils
+(capillary bleed / wave Laplacian) are one pass of several per frame.
+
+**bench/results.json**: NOT touched — watercolor/waves/schrodinger/
+diffusion/slime have no `cases.*` row (they are `examples/` demo kernels,
+never added to the `bench/` harness this file measures). Nothing to
+surgically re-measure.
+
+**Negative controls (soundness floor)**:
+  - A bound the guard's new conjuncts CANNOT cover (bare-name bound `i<N`,
+    no arithmetic needing a magnitude proof) is explicitly skipped —
+    confirmed via test/perf.js's pre-existing "no per-iteration i32→f64
+    widening" pin, which the FIRST (unconditional) version of this fix
+    broke and this session's bare-name guard fixes.
+  - A bound whose free name is a property-key string, not a variable
+    (`arr.length`), never gets misread — confirmed via test/simd.js's FFT
+    dedupe-lane-locals regression, which the FIRST (naive-walk) version of
+    this fix broke and this session's SLOT_OPS-grammar walk fixes.
+  - diffusion/slime (the wrap-select-via-named-local shape this lever does
+    NOT reach) stay scalar for that shape — confirmed unchanged (4/1
+    f64x2, matching the pre-fix baseline exactly) — no false admission.
+  - fuzz 2000×4 (seeds 1-2000, opt {0,1,2,3}, 20 inputs/program): **0
+    divergence** (30173 inputs compared, 9827 skipped i32-contract-exceeded,
+    0 non-numeric — IDENTICAL counts to c8700daa's own run, confirming
+    determinism) — every pinned repro from prior sessions stays green.
+
+**Gates, all green**: kernel-parity 33/33 byte-identical (O2/O3); kernel-
+oracle 451 assertions/11 suites; optimizer 214 tests/3949 assertions;
+simd.js 158 tests/580 assertions (FFT dedupe-lane-locals regression FIXED,
+not just re-passing — see "two bugs found" above); simd-intrinsics 15/71;
+cond-vectorize 3/8; examples.js 22 tests/434 assertions (watercolor/waves/
+schrodinger KNOWN-GAP assertions UN-SILENCED to exact-count pins; diffusion/
+slime's KNOWN-GAP comment corrected to name the real residual, thresholds
+unchanged); selfhost.js 21/21 (206 assertions); selfhost-perf.js
+informational 5/5 (warm 1.006× < 1.03× cap, fresh 0.778× < 0.99× cap);
+test/inference.js 135/135 (291 assertions); test/perf.js 55/55 (186
+assertions — the bare-name-bound regression FIXED, not just re-passing);
+perf-ratchet 10/10 (+0, see above); fuzz 2000×4 zero divergence; full
+`test/index.js` 88-file battery, 12 foreground chunks of 4-8 files each
+(never monolithic/background) — every chunk green modulo pre-existing
+intentional skips (5 total, unrelated to this change); fresh `npm run
+build` ×2 — dist/jz.js and dist/jz.wasm byte-identical both times.
+
 ## Status (2026-08-03, loop-counter RANGE-PROOF lever landed — audit-#8
 ## P1-2's "highest-value perf follow-up" — real, narrow, sound recovery on
 ## the FOR-shaped target (mat4); the 5 stencil kernels + i32-array-add +

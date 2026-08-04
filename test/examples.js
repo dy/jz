@@ -69,19 +69,20 @@ test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', ()
     // turns it explicitly off; the vectorized side is the plain build.
     const base = (jz.compile(src, { ...OPT, experimentalStencil: false, wat: true }).match(/f64x2\./g) || []).length;
     const sten = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
-    // P0-2 sibling fallout (2026-08-02, KNOWN GAP — not a value bug, confirmed
-    // bit-exact below): tryStencil's `boundPureInv` (src/optimize/vectorize.js)
-    // requires the loop bound (`w-1`/`h-1` here — `w`/`h` are i32-narrowed
-    // GLOBALS) to already be a raw i32.add/sub/mul chain, so it can splice it
-    // verbatim into the SIMD guard. The now-corrected bare `-` (emit.js
-    // addFitsI32, this ticket) can't prove `w-1` fits i32 — GLOBALS never carry
-    // an intExprRange decl-range fact (same class as the pre-existing "loop-
-    // counter-range gap", .work/todo.md) — so it falls to f64.sub, and
-    // boundPureInv no longer recognizes the shape: the WHOLE stencil bails to
-    // scalar. Real, honest, and NOT a correctness regression (the bit-exact
-    // assertions below are unaffected) — flagged alongside the loop-counter gap
-    // for a future intExprRange-for-globals extension, not attempted here.
-    ok(sten === base, `watercolor sweeps: stencil pass currently declines on an unprovable i32 bound (${base} → ${sten} f64x2) — KNOWN GAP, see comment`);
+    // RECOVERED (audit-#8 P1-2 follow-up, c8700daa's own named lever): `w`/`h`
+    // trace to a resize(w,h) runtime param — genuinely unbounded statically, so
+    // `w-1`/`h-1` can never get a STATIC intExprRange proof and tryStencil's
+    // `boundPureInv` (src/optimize/vectorize.js) declined. The fix reuses the
+    // EXISTING Root-F typed-bounds loop VERSIONING (emit.js `emitter['for']`):
+    // its runtime guard already re-evaluates each level's bound and proves
+    // `|bound| ≤ 2^31`; a new per-free-name integral+magnitude conjunct (same
+    // idiom, ±2^30) proves a REAL [lo,hi] hull for `w`/`h` THEMSELVES, fed
+    // through withRefinements (flow-types.js — the same channel forCounterRange
+    // uses) for exactly the fast arm's own re-emission. `w-1` then lowers as
+    // native i32.sub inside the guarded fast arm, boundPureInv accepts it, and
+    // the stencil lifts under the proof the guard just checked. Scalar stays
+    // the fallback whenever the guard's magnitude/integrality conjuncts fail.
+    is(sten, 49, `watercolor sweeps: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
         const px = exports.resize(64, 48);
@@ -105,9 +106,8 @@ test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact'
     const src = fs.readFileSync(new URL('../examples/waves/waves.js', import.meta.url), 'utf8');
     const base = (jz.compile(src, { ...OPT, experimentalStencil: false, wat: true }).match(/f64x2\./g) || []).length;
     const sten = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
-    // KNOWN GAP (see the watercolor test above for the full root cause):
-    // unprovable i32 global-derived loop bound (`w-1`) bails the stencil pass.
-    ok(sten === base, `waves frame: stencil pass currently declines on an unprovable i32 bound (${base} → ${sten} f64x2) — KNOWN GAP, see watercolor test comment`);
+    // RECOVERED (see the watercolor test above for the full root cause / fix).
+    is(sten, 46, `waves frame: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
         // the field must outsize the edge sponge (MARGIN 18 a side) or the render crushes to black
@@ -245,10 +245,8 @@ test('example: schrodinger float-index + f32-widening stencil vectorizes and sta
     const base = (jz.compile(src, { ...OPT, experimentalStencil: false, wat: true }).match(/f64x2\./g) || []).length;
     const wat = jz.compile(src, { ...OPT, wat: true });
     const sten = (wat.match(/f64x2\./g) || []).length;
-    // KNOWN GAP (see the watercolor test above for the full root cause):
-    // unprovable i32 global-derived loop bound bails the stencil pass entirely
-    // here (base and sten both 0), so the f32-promote check is skipped too.
-    ok(sten === base, `schrodinger stepR/stepI: stencil pass currently declines on an unprovable i32 bound (${base} → ${sten} f64x2) — KNOWN GAP, see watercolor test comment`);
+    // RECOVERED (see the watercolor test above for the full root cause / fix).
+    is(sten, 27, `schrodinger stepR/stepI: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
     if (sten > base) ok(/promote_low_f32x4/.test(wat), 'the f32 potential V widens via f64x2.promote_low_f32x4');
     const run = (opts) => {
         const { exports } = jz(src, opts);
@@ -270,12 +268,22 @@ test('example: schrodinger float-index + f32-widening stencil vectorizes and sta
 // matching (its body holds the inner x-loop). BIT-EXACT (lane-parallel stencil, no reassoc). NOTE:
 // slime seeds agents from Math.random, so a fixed randomSeed is required to compare SIMD vs scalar.
 test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-exact', () => {
-    // P0-2 sibling fallout (2026-08-02, KNOWN GAP — not a value bug, see the
-    // watercolor test's comment for the full root cause): both wrap-stencils'
-    // loop bound is an unprovable i32 global expression, so tryStencil's
-    // boundPureInv now declines and each bails toward scalar — down from the
-    // pre-fix min (40 / 10) to whatever the OTHER (non-stencil) lane-vectorizer
-    // passes still lift independently. min lowered to match, NOT to 0 — a
+    // KNOWN GAP, residual (2026-08-03, audit-#8 P1-2 follow-up): the loop-bound
+    // magnitude gap the watercolor/waves/schrodinger tests above name is FIXED
+    // (Root-F per-name guard conjunct, emit.js) — `x < w` itself now lowers
+    // native i32 here too. What's LEFT is a DIFFERENT, narrower gap: diffusion/
+    // slime compute their wrap value (`xw = x>0?x-1:w-1`) into a NAMED local
+    // rather than inlining the select at the index site. Because `w-1` used to
+    // force the whole ternary to unify at f64 (both branches share ONE wasm
+    // type), the compiled shape is an F64-domain select wrapped in jz's
+    // NaN-based overflow-canon (`select(wrap(trunc_sat(inner-select)),0,
+    // f64.ne(t,NaN))`) — vectorize.js's `ivCoeff`/`isWrapSelect` only recognize
+    // the i32-domain select shape and the Infinity-based overflow-canon guard,
+    // so this variant still doesn't match. A real, separate, structurally-
+    // adjacent lever (extend isWrapSelect to an f64.sub/f64.add step variant,
+    // extend the overflow-canon check to a NaN guard too) — not this ticket's
+    // scope (a different recognizer in a different function, not bound
+    // admission). min lowered to match the PRE-existing baseline, NOT to 0 — a
     // future regression that drops these further should still be caught.
     const cases = [
         { name: 'diffusion', min: 2, drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },

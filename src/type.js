@@ -240,7 +240,7 @@ export function affineIdxOfIV(idx, iv, body, env) {
  *  no property reads, no assignments, no iv, no body-declared names (they don't
  *  exist at guard time). The slot whitelist matches what the guard can safely
  *  re-evaluate before the loop. */
-const SLOT_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
+export const SLOT_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
 function invariantIdxExpr(e, iv, body, env) {
   if (intLiteralValue(e) != null) return true
   if (typeof e === 'string')
