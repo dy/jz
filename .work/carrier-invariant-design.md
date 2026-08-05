@@ -363,3 +363,85 @@ mismatch rather than pure renaming. A fresh pair of eyes on whether the
 "shifts everything downstream" framing above is itself wrong and the real
 mechanism is something else) is the fastest way to falsify or confirm the
 working hypothesis.
+
+ROUND 2 (2026-08-05, time-boxed ~10-probe re-attempt): the `resolveCallee`
+lead above is FALSIFIED, cleanly — `temp()`/`freshLocal` (src/ir.js:742) key
+off `ctx.func.uniq`, freshly reset PER FUNCTION (`ctx.func.locals.has(name)`
+guards the dedupe loop too), never global. The observed one-local shift in
+`resolveCallee`'s compiled body needs no cross-function theory at all:
+`resolveCallee` ITSELF (src/prepare/index.js:2333) contains `const local =
+scopes.length && isDeclared(callee)` — `scopes.length` is NUMBER,
+`isDeclared(callee)` is BOOL, an ambiguous BOOL∪NUMBER merge by the exact
+shape `hasAmbiguousBoolMerge` targets. The argIR patch changes ITS OWN
+codegen at that exact line (confirmed: native `compile(selfSrc,{wat:true})`
+control-vs-patched diff of `resolveCallee`'s compiled body shows precisely
+one fewer local, `$tb2` gone, everything downstream renumbered by exactly
+one — not a mystery, a direct and correctly-scoped effect of the patch on a
+line inside the compiler's own source that happens to itself be an
+ambiguous-merge decl). Dead end as a causal lead for the closure bug.
+
+The REAL failure was reproduced and localized instead, directly at the
+banked repro shape (kernel-oracle 'closure' row, `export let make = (n) =>
+{ let total = 0; const add = (x) => { total += x; return total }; for (let
+i = 0; i < n; i++) add(i); return total }`), via a self-hosted `dist/jz.wasm`
+rebuilt with ONLY the `val = viewInit || argIR(init)` substitution live:
+`WebAssembly.Module(): ... local.set[0] expected type f64, found local.get
+of type i32` at O0 (function #5), `local.tee[0] ...` at O2/O3 (function #2)
+— genuinely invalid WASM, matching the prior session's report exactly.
+WAT-diffing the resulting kernel's compiled `$make` (native
+`compileWat`/`compileBytesVia` against a saved pre-patch `dist/jz.wasm`,
+same target source, same optimize level) shows the GOOD kernel fully
+INLINES `add`'s body into the loop — no closure allocation, no heap cell,
+no `call_indirect`, `total` stays a plain f64 local (`(local.set $total
+(f64.add (local.get $total) (f64.convert_i32_s (local.get $i))))`
+directly in the loop body). The BAD (argIR-patched) kernel instead takes
+the general boxed-closure path: `$cell_total` (heap-allocated i32 cell),
+`add` boxed via `__mkptr`(PTR.CLOSURE) into a `$env0` slot, invoked through
+`call_indirect (type $ftN) (local.get $clos2) ...` — while STILL declaring
+a now-UNUSED `$total f64` local (dead: the boxed path never reads or writes
+it, a leftover from the plain-local codegen shape) whose local SLOT the
+wasm encoder then mis-targets against a differently-typed value, producing
+the type-mismatched `local.set[0]`/`local.tee[0]`.
+
+Ruled out a semantic cause precisely: `emitIdentitySafe` (emit.js:2535) has
+NO `'=>'`-node branch — for an arrow-literal init it falls through every
+`?:`/`&&`/`||`/`??` check straight to the same final `return emit(node)`
+that `argIR`'s own non-ambiguous arm already takes, so `argIR(init) ===
+emit(init)` byte-for-byte for `add`'s own decl regardless of what
+`hasAmbiguousBoolMerge` returns on it. Verified live, not just read off the
+source: NATIVE `compile(src,{wat:true})` with the patch applied (argIR live
+on disk) produces WAT byte-length-identical to the unpatched native
+compiler AND to the GOOD kernel for this exact program at every optimize
+level (692/659/770 bytes @ O0/O2/O3, fully inlined, zero `call_indirect`
+either way). The direct-dispatch/inlining eligibility gate itself
+(emit.js:1937, `ctx.func.directClosures` registration keyed on
+`val?.closureBodyName` / `!isReassigned(ctx.func.body, name)`) is therefore
+PROVABLY unaffected by the patch at the native level for this program — the
+only remaining channel for the SELF-HOSTED kernel to decide differently is
+its OWN compiled version of that eligibility chain (`isReassigned` and
+friends, or the registration check itself) computing a different answer as
+a side effect of self-hosting the patched compiler — a self-host
+generational-drift / toolchain-level artifact, the same CLASS as the
+export-loss MECHANISM C precedent and the outline-hunt family, NOT a value
+bug in argIR/emitIdentitySafe's logic. Also checked and ruled out: the
+general boxed-closure `call_indirect` codegen path is not simply
+pre-existing-broken on its own — a probe that forces the identical
+call_indirect-through-a-local shape on the UNPATCHED kernel too (reassigning
+`add` mid-function, which independently disqualifies the direct-dispatch
+gate on both legs) compiles byte-identically on both kernels, no failure.
+The bug is specific to whatever makes the KERNEL flip its eligibility
+decision for THIS exact non-reassigned/const-bound/single-capture shape,
+not a general defect in the boxed-closure emitter.
+
+NOT chased further within the ~10-probe time-box: which decl inside the
+self-hosted `isReassigned`/eligibility chain drifts, and why watr's local
+allocator mis-targets the resulting dead `$total` slot, is its own
+multi-session-class hunt (start from a self-hosted, not native, WAT/trace
+of `isReassigned` and the emit.js:1937 registration block specifically,
+comparing good-kernel-compiles-this-logic vs bad-kernel-compiles-this-logic
+— NOT `resolveCallee`, which is a red herring, fully explained above).
+REVERTED before landing: `src/compile/emit.js` stays `val = viewInit ||
+emit(init)`; tree verified byte-identical to HEAD (`git status`/`git diff`
+clean) before banking this entry. kernel-oracle 451/451 (row unflipped),
+kernel-parity 33/33 byte-identical, both re-verified after rebuilding
+`dist/jz.wasm` back to the unpatched baseline. WALL STAYS CLOSED.

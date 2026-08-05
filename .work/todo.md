@@ -4,6 +4,82 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-05, DECL-INIT WALL round 2 — still banked, mechanism now
+## precisely localized; see .work/carrier-invariant-design.md's final entry)
+
+Time-boxed re-attempt at the narrow `argIR(init)` gate (emit.js ~1920,
+`val = viewInit || argIR(init)`) — same substitution the 2026-08-03 session
+banked after hitting an invalid-WASM self-host miscompile on kernel-oracle's
+'closure' AGREE row. This session root-caused TWO things the prior session
+left as open leads, then hit a THIRD wall deep enough to re-bank rather than
+chase further within the time-box.
+
+**Refuted the banked lead**: the prior session's "resolveCallee's compiled-
+local shift, consistent with the GLOBAL temp() counter shifting" hypothesis
+is WRONG on its own terms — `temp()`/`freshLocal` (src/ir.js:742) key
+uniqueness off `ctx.func.uniq`, freshly scoped PER FUNCTION, not global.
+The observed shift is fully explained locally: `resolveCallee` itself
+(src/prepare/index.js:2333) contains `const local = scopes.length &&
+isDeclared(callee)` — a NUMBER∪BOOL merge by construction (`scopes.length`
+NUMBER && `isDeclared(...)` BOOL) — exactly the shape `hasAmbiguousBoolMerge`
+targets. The argIR patch changes ITS OWN compiled codegen at that exact
+line (one fewer temp, confirmed by native WAT diff of `resolveCallee`'s
+compiled body, control vs patched) — a direct, expected, benign effect of
+the patch on the compiler's own source, not a mysterious cross-function
+counter bug.
+
+**Reproduced and localized the real failure** (kernel-oracle 'closure' row,
+`export let make = (n) => { let total = 0; const add = (x) => { total += x;
+return total }; for (let i = 0; i < n; i++) add(i); return total }`):
+`WebAssembly.Module(): ... local.set[0] expected type f64, found local.get
+of type i32` (O0, function #5) / `local.tee[0] ...` (O2/O3, function #2).
+WAT diff of the resulting kernel's compiled `$make`: the GOOD kernel fully
+INLINES `add`'s body into the loop (no closure, no heap cell, no
+call_indirect — `total` stays a plain f64 local). The BAD (argIR-patched)
+kernel instead takes the general boxed-closure path: heap-allocates a
+`$cell_total` i32 cell, boxes `add` via `__mkptr`/PTR.CLOSURE, and calls it
+through `call_indirect` — while STILL declaring a now-dead `$total f64`
+local (a leftover from the plain-local codegen shape) whose slot the wasm
+encoder then mis-targets, producing the type-mismatched `local.set`/
+`local.tee`.
+
+**Proved the divergence is NOT a semantic effect of the patch**:
+`emitIdentitySafe` (emit.js:2535) has no `'=>'`-node branch — for any arrow-
+literal init (`add`'s own decl) it falls straight through every `?:`/`&&`/
+`||`/`??` check to the same final `return emit(node)` that `argIR`'s
+non-ambiguous arm already takes. So `argIR(init) === emit(init)`,
+byte-for-byte, for THIS decl regardless of `hasAmbiguousBoolMerge`'s answer
+— confirmed live: NATIVE `compile(src, {wat:true})` with the patch applied
+produces byte-identical WAT to the unpatched native compiler AND to the
+GOOD kernel (692/659/770 bytes at O0/O2/O3, fully inlined, zero
+`call_indirect`) for this exact program. The eligibility decision that
+governs direct-dispatch/inlining (emit.js:1937's `ctx.func.directClosures`
+registration, gated on `val?.closureBodyName` /`!isReassigned(...)`) is
+therefore UNCHANGED by the patch at the native level — the only remaining
+channel for the kernel to decide differently is the self-hosted KERNEL's
+OWN compiled version of that eligibility logic behaving differently, i.e.
+a self-host generational-drift / toolchain-level artifact (the same CLASS
+as the export-loss MECHANISM C precedent and the outline-hunt family), not
+a value bug in argIR/emitIdentitySafe. Did NOT chase further within the
+10-probe time-box: pinning WHICH decl inside the compiled `isReassigned`/
+eligibility chain drifts, and why watr's own local allocation mis-targets
+the dead `$total` slot in the resulting boxed-path codegen, is its own
+multi-session-class hunt (the boxed-closure-call_indirect path itself is
+NOT provably pre-existing-broken either — a reassigned-`add` probe forcing
+the same call_indirect shape compiled byte-identically on both kernels, so
+the bug is specific to this exact eligibility-flip path, not the general
+boxed-closure emitter).
+
+**Verdict**: BANKED again, not fixed. `src/compile/emit.js`'s decl-init
+line stays `val = viewInit || emit(init)` (reverted, tree byte-identical to
+HEAD — `git status`/`git diff` clean before this commit). kernel-oracle's
+'captured-then-read' row stays PENDING-FIX, unflipped (451/451 assertions,
+same as baseline). kernel-parity re-verified 33/33 byte-identical after
+rebuilding dist/jz.wasm back to the unpatched baseline. See
+.work/carrier-invariant-design.md's final entry for the full WAT evidence
+and the precise next lead (trace `isReassigned`'s OWN self-hosted
+compilation, not `resolveCallee`).
+
 ## Status (2026-08-05, §14 point 4 landed — JOINT runtime-domain dispatch for
 ## binary BigInt⊕Number mixing; full design writeup
 ## .work/represented-maybe-undefined-design.md §19)
