@@ -9542,3 +9542,130 @@ pre-existing baseline (6 fails, same set, before and after). `bench/results.json
 and `bench/bench.svg` untouched in the working tree (confirmed via `git
 status` after the SVG revert above) — this task ships tooling only, no
 evidence file changes.
+
+JSON SHAPED-PARSER 'Bad int 9.067910317e-315' HUNTED — ROOT NAMED, BANKED
+NOT FIXED (evidence-complete, fix would trade one regression for another):
+the two honest-failing test/json.js rows (audit-#11 item 7 sub-4, bce7d1d7)
+are a REAL, PRECISELY LOCATED bug — but NOT a recurrence of the 2026-07-26
+'SSO NAME-BITS LEAK' the ledger believed closed. That fix (49c7a7ee) never
+actually touched SSO/string-name bits at all despite its commit message —
+the landed diff is entirely a `ToNumber(BigInt)` carrier-conversion fix
+(module/number.js `$__to_num` + src/ir.js `toNumF64` inline fast path),
+gated on a new `ctx.features.bigint` whole-program flag (src/prepare/
+index.js `prep()`). DECODED BITS: the thrown value's low 32 bits are
+0x6d657469 = ASCII "item" (verified via DataView), the high 32 bits zero —
+i.e. NOT string-name bits leaking into an int position (the OLD hypothesis)
+but a BigInt CARRIER (raw i64 bits reinterpreted as f64, unconverted) whose
+payload happens to be 4 packed ASCII bytes. NAMED EMITTER: module/json.js
+`emitJsonShapeParser`'s `expectText` helper (~line 1235), the SWAR literal-
+match codegen for shaped-parser property keys — `const le = (arr) =>
+arr.reduce((a,b,k) => a | (BigInt(b) << BigInt(8*k)), 0n)` packs each ≥4-
+byte key chunk into a BigInt, then `Number(le(bytes.slice(i,i+4)))` is
+spliced into the WAT text as an `(i32.const …)` immediate. For key "items"
+(5 bytes) the first 4-byte chunk packs to 0x6d657469 ("item"); `Number()`
+of that BigInt carrier, when it fails to convert, prints its own bit
+pattern's f64 decimal form — landing in the WAT text as `(i32.const
+9.067910317e-315)`, which watr's assembler correctly rejects as "Bad int"
+(not a valid integer literal). Confirmed via `compileViaKernel(src,
+{wat:true})` WAT dump: 7 corrupted `(i32.const N.Ne-315)` sites, each at
+exactly the SWAR 4-byte-chunk compare position for a JSON schema key ≥4
+ASCII bytes (items/meta/scale/bias/kind/value).
+TRIGGER MECHANISM (the actual finding, general — not JSON-specific): a
+module-inclusion-ORDERING hazard in `ctx.features.bigint`. `module/
+number.js`'s `$__to_num` stdlib body bakes a ternary on `ctx.features.
+bigint` into a PLAIN STRING, evaluated ONCE at first-inclusion time
+(`autoload.js` `includeModule`), never re-evaluated. `ctx.features.bigint`
+itself is set by a check folded INSIDE `prep()`'s own per-node dispatch —
+but `prep()` ALSO triggers module inclusion per-node (`includeForOp`,
+line above the flag check). Any node visited BEFORE the program's bigint-
+construction site that transitively needs the 'number' module (any STRING
+op — `string: ['core','number']` in `MOD_DEPS`, autoload.js) bakes `ctx.
+features.bigint=false` into `$__to_num` PERMANENTLY, even though the
+SAME program does construct a BigInt later. `expectText`'s `[...text].
+map(c=>c.charCodeAt(0))` (a string op, line 1) textually precedes its own
+`le`'s `0n`/`BigInt()` (deeper in the same function) — self-hosting makes
+this concrete: module/json.js is itself compiler SOURCE, folded into ONE
+whole-program compile (`scripts/self.js` → `resolveModuleGraph` → `compile
+(g.code, {modules: g.modules, …})`, scripts/build-dist.mjs) that bakes
+dist/jz.wasm's ONE shared `$__to_num`. PROVEN NOT KERNEL-SPECIFIC: a
+minimal standalone repro (reduce+BigInt+Number, string op preceding the
+bigint site, see scratch harness) reproduces byte-identical corruption
+under plain NATIVE `compile()` — this was never a self-host-only fault
+class, just one self-hosting's module-graph shape happens to trigger via
+`prepareModule`'s OWN separate per-module `prep(ast)` call (src/prepare/
+index.js ~3862), invisible to `prep()`'s single per-node check which only
+sees whichever module is CURRENTLY being walked.
+FIX ATTEMPTED AND VERIFIED, THEN REVERTED — here is why. Extracted the
+bigint-detection predicate into a standalone `scanBigintFeature(node)`
+walker, called once over the top-level program (before `includeModule
+('core')`, prepare/index.js ~713) AND once per imported module (before
+`prepareModule`'s own `prep(ast)`, ~3862) — i.e. run the WHOLE-TREE scan
+to completion BEFORE any module's stdlib template can consume the flag,
+instead of interleaved with per-node module-triggering. VERIFIED closing
+the reported bug precisely: native standalone repro's `Number(le(chunk))`
+went from printing the raw carrier (9.067910317e-315) to the CORRECT
+converted value (1835365481 = 0x6d657469, confirmed bit-exact); rebuilt
+kernel (`npm run build`, fresh dist/jz.wasm) flipped BOTH json.js rows
+green (67/67 kernel leg, `JZ_TEST_TARGET=jz.wasm node test/index.js
+--file json`). BUT the SAME fresh-kernel full battery (3333 tests) then
+showed exactly ONE new regression: `test/kernel-oracle.js` "subnormal
+literal — AGREE (closed by audit-#11 P0-1, ctx.features.bigint-gated
+__to_num)" — `export let f = () => -5e-324` now MISCOMPILES under the
+kernel (misread as BigInt carrier `1n`-adjacent, the exact class P0-1
+closed). ROOT OF THE CONFLICT: that oracle test's OWN doc comment asserts
+"[t]he compiler's OWN source is itself bigint-free BY DESIGN … so `ctx.
+features.bigint` is false for the compiler's own self-hosted compilation"
+— citing bignum.js's deliberate BigInt-avoidance rewrite. THIS INVARIANT
+WAS ALREADY FALSE, independent of json.js: `layout.js`'s `i64Hex` (`bits
+=> '0x' + _hx8(Number((bits>>32n)&0xFFFFFFFFn)) + …`) contains 6 real
+BigInt literals (32n/1n/63n/8000000000000n) and is imported by `src/ir.js`
+(`packPtrBits`, used for EVERY NaN-boxed pointer encoding — unconditionally
+part of the self-hosted bundle, unrelated to JSON). Confirmed by direct
+grep, no rebuild needed. So `ctx.features.bigint` was NEVER truly false
+for the compiler's own self-build; the ordering bug merely MASKED both
+layout.js's and json.js's contributions from ever being SEEN, coincidentally
+keeping the flag at its default `false` and — coincidentally — keeping
+`$__to_num` in the subnormal-preserving unguarded arm the oracle test
+pins. Fixing the ordering bug makes the flag CORRECTLY see layout.js's
+existing BigInt usage (this was already true before this session touched
+anything) and flips `$__to_num` kernel-wide to the guarded arm — trading
+the NARROW json.js bug (property keys ≥4 ASCII chars in a shaped-parser
+literal) for a BROADER one (any subnormal Number, literal or computed,
+in ANY kernel-compiled target program). Full battery only caught one
+row (3333 total, 1 new fail) but the conceptual surface is every kernel
+compile touching a subnormal value, not just the pinned literal case.
+VERDICT: BANK, not fix. `src/prepare/index.js` reverted to byte-identical
+HEAD (`git diff` clean) — the ordering-scan fix IS independently correct
+and general (would also fix a plain user program mixing string ops before
+a nested bigint-construction closure, no self-hosting required), but
+landing it AS SCOPED reopens a wider, PRE-EXISTING architectural tension:
+`ctx.features.bigint`'s whole-program-flag design assumes a partition (
+"programs that construct BigInt" vs "programs that provably never do")
+that self-hosting breaks, because the compiler's own low-level plumbing
+(layout.js hex-formatting) uses real BigInt syntax for reasons that have
+nothing to do with the TARGET program ever being compiled, yet taints the
+SAME flag the target's own coercions are gated on. TRUE FIX is one of: (a)
+scrub ALL real-BigInt syntax from the self-hosted-bundle-reachable source
+(layout.js's `i64Hex`/`packPtrBits` family rewritten to pure 32-bit-safe
+Number arithmetic, splitting hi/lo halves without ever forming a BigInt —
+mechanically similar to what would ALSO be needed in module/json.js's
+`expectText`/`le`, since ITS BigInt usage is equally avoidable: the ≤4-byte
+chunks fit safely in a plain Number already, only the genuine 8-byte/64-bit
+chunk needs a real 64-bit value, which itself could be hi/lo-split instead
+of BigInt-packed) — restoring the "compiler source is bigint-free" invariant
+the oracle test's design depends on; or (b) redesign the carrier
+disambiguation off a single whole-program boolean toward something that
+survives the self-hosting identity conflation (the compiler-as-a-program
+and the compiler-as-a-target are the SAME flag today). Both are out of
+this task's bound (large, load-bearing module touched either way).
+GATES (banking, no landed code — confirms clean revert, not a new
+feature): `git diff src/prepare/index.js` empty; fresh `npm run build`
+restores dist/jz.wasm to the exact pre-session byte count (16131.0 kB);
+`JZ_TEST_TARGET=jz.wasm node test/index.js --file json` 65/67 (the 2
+known-red rows, unchanged from bce7d1d7's documentation — not newly
+broken, not newly fixed); `node test/kernel-oracle.js` 11/11 (451
+assertions, subnormal-literal AGREE pin intact); full native battery
+`node test/index.js` 3327 pass / 0 fail / 6 skip (clean, matches
+pre-session shape). NEXT: either large-module hex-formatting refactor
+(layout.js) or a per-site (not whole-program) carrier-disambiguation
+redesign, before re-attempting the ordering-scan fix banked here.
