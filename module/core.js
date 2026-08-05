@@ -1825,15 +1825,35 @@ export default (ctx) => {
   // extend the literal-AST fact to the schema-BINDING fact a `let`/`const`
   // already carries, instead of touching the shared toStrI64 primitive.
   // Closed-world requires the schema to be the COMPLETE key set — a HASH-kind
-  // binding (valTypeOf ≠ VAL.OBJECT) or one with a computed write
-  // (`ctx.types.dynKeyVars`) or an out-of-schema literal write
-  // (`ctx.types.literalWriteKeys`) could carry a 'toString'/'valueOf' key the
-  // static schema doesn't list — those fall through to the generic (still
-  // broken, still out-of-scope) toStrI64 OBJECT path unchanged.
+  // binding, one with a computed write (`ctx.types.dynKeyVars`), or an
+  // out-of-schema literal write (`ctx.types.literalWriteKeys`) could carry a
+  // 'toString'/'valueOf' key the static schema doesn't list — those fall
+  // through to the generic (still broken, still out-of-scope) toStrI64
+  // OBJECT path unchanged.
+  //
+  // Gate on the SCHEMA ID directly (`ctx.schema.idOf`), not `valTypeOf(node)
+  // === VAL.OBJECT` (audit-#11): the two are usually redundant, but a truly
+  // EMPTY `let o = {}` is the one binding shape where they can come apart —
+  // `ctx.schema.vars`/`idOf` (bound by prepare for a non-empty literal;
+  // by src/compile/analyze.js's dict-aware decl scan for an empty `{}` —
+  // see that file for why prepare itself can't safely bind that case) is a
+  // durable, single-writer fact, while `.val` for this exact shape is ALSO
+  // written by a second, independent, non-schema-aware body-fact pass
+  // (compile/index.js's `bodyFacts.valTypes` loop) that can race/disagree and
+  // poison-clear the field — observed live: `.val` read back `null` for a
+  // provably-empty, provably-closed `o` despite the schema resolving fine.
+  // `idOf` alone is exactly the fact this function needs (a real, closed,
+  // non-Error prop list) and carries none of that fragility. Excluding an
+  // Error-class sid is still required: `new Error(new TypeError('x')).message`
+  // must NOT take this shortcut — that value needs Error.prototype.toString's
+  // real "name: message" format (toStrI64's own Error-schema arm), not the
+  // literal string '[object Object]'.
   const isClosedObjNoStringMethod = (node) => {
     if (isClosedObjLiteralNoStringMethod(node)) return true
-    if (typeof node !== 'string' || valTypeOf(node) !== VAL.OBJECT) return false
-    const schema = ctx.schema.resolve?.(node)
+    if (typeof node !== 'string') return false
+    const sid = ctx.schema.idOf?.(node)
+    if (sid == null || ctx.schema.isErrorSid?.(sid)) return false
+    const schema = ctx.schema.list[sid]
     if (!schema || schema.includes('toString') || schema.includes('valueOf')) return false
     if (ctx.types.dynKeyVars?.has(node)) return false
     const w = ctx.types.literalWriteKeys?.get(node)
@@ -1865,12 +1885,27 @@ export default (ctx) => {
   //       to __to_str's raw-pointer-bits fallback (error-object-design.md's
   //       "Consequence" section, a PRE-EXISTING gap for any dynamic object,
   //       left as-is). The literal shape alone is enough to prove it here.
+  //   (3) audit-#11: a genuinely DYNAMIC dict (VAL.HASH — JSON.parse, a
+  //       computed-key-grown object; no fixed schema EVER exists for this
+  //       kind, so isClosedObjNoStringMethod's schema lookup can never prove
+  //       it either way) fell through to the same broken __to_str raw-bits
+  //       fallback as (2) — worse, decoded as garbage at the host boundary
+  //       (observed: a bogus BigInt), not even a wrong-looking object. A HASH
+  //       is schema-less BY CONSTRUCTION: no closed-world proof is possible,
+  //       ever, for whether it carries a runtime 'toString'/'valueOf' key
+  //       (unlike (2), where non-closedness is merely unproven, not
+  //       unprovable). Approximating "unprovable" as "absent" here — same
+  //       discipline isClosedObjNoStringMethod itself already applies to
+  //       every OTHER uncertain case — trades perfect ES fidelity (the rare
+  //       dict that legitimately carries a runtime toString/valueOf) for a
+  //       real string on the overwhelmingly common plain-data-dict case,
+  //       strictly better than today's guaranteed-wrong fallback either way.
   const errorMessageIR = (msg) => {
     if (msg == null) return asF64(emit(['str', '']))
     const vt = valTypeOf(msg)
     if (vt === VAL.BOOL)
       return typed(['select', asF64(emit(['str', 'true'])), asF64(emit(['str', 'false'])), truthyIR(emit(msg))], 'f64')
-    if (isClosedObjNoStringMethod(msg)) return asF64(emit(['str', '[object Object]']))
+    if (isClosedObjNoStringMethod(msg) || vt === VAL.HASH) return asF64(emit(['str', '[object Object]']))
     const boxed = asF64(emit(msg))
     // isUndef folds to a compile-time constant for any statically-provable
     // operand (a literal, or anything else valTypeOf/matchF64Bits can already

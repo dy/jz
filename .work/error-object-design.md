@@ -734,3 +734,138 @@ dyn-keys.js 38/38 both legs; minimal-output.js unaffected (error-free module
 byte-identical per its own pinned probe); selfhost.js 21/21; fuzz 2000×4
 (seeds 1-8000) zero divergence; fresh `build-dist.mjs` ×2 byte-identical.
 Full account: `.work/todo.md`'s 2026-08-04 audit-#10 Error-bundle entry.
+
+## Three remaining gaps (audit-#11, 2026-08-05) — message-coercion residuals,
+## synthetic-throw name/message, README enumerability note
+
+Three items this design's own text had flagged and left open (finding-2's
+"truly EMPTY `let o = {}`" residual; `throwTypeErrorIR`'s own comment leaving
+`.name`/`.message` `undefined`; the enumerability DECISION never reaching
+README) — closed in one bundle since all three touch this design's own
+machinery directly.
+
+**Gap 1 — bound empty/dynamic object message not coerced.** Two independent,
+narrower-than-expected roots, not one general gap:
+
+1. `let o = {}; new Error(o).message` — `module/core.js`'s
+   `isClosedObjNoStringMethod` gated on `valTypeOf(node) === VAL.OBJECT` AND a
+   resolvable `ctx.schema` entry. Neither existed for a TRULY empty `{}`:
+   `src/prepare/index.js`'s decl-schema binding guarded on `normed.length > 1`
+   / `props.length` (a 0-prop object was "nothing to bind"), and even fixing
+   that guard alone left `.val` unreliable — a SEPARATE, non-schema-aware
+   body-fact pass (`src/compile/index.js`'s `bodyFacts.valTypes` loop, fed by
+   `analyzeBody`'s own plain `valTypeOf`) raced it and could poison-clear the
+   field for exactly this one binding shape (confirmed live: `.val` read back
+   `null` for a provably-empty, provably-closed `o`). Root-fixed by gating
+   `isClosedObjNoStringMethod` on `ctx.schema.idOf` directly instead of
+   `valTypeOf` — a durable, single-writer fact immune to that race — with an
+   explicit `ctx.schema.isErrorSid` exclusion (so `new Error(new
+   TypeError('x')).message` still routes through toStrI64's real
+   Error.prototype.toString arm, not this shortcut). The schema itself is
+   bound in `src/compile/analyze.js`'s existing dict-mode-aware decl scan
+   (**not** prepare — see the kernel-parity finding below for why), gated on
+   `!dict`: mint `ctx.schema.register([])` and bind it to the name only when
+   the SAME whole-program `ctx.types.dynWriteVars` fact that decides dict-mode
+   says this `{}` will never take a computed-key write.
+2. A genuinely DYNAMIC dict (`VAL.HASH` — an unknown-source spread merge, a
+   computed-key-grown `{}`) can never have a schema, even in principle — no
+   amount of fixing (1) touches it. `errorMessageIR` (module/core.js) now
+   treats `vt === VAL.HASH` the same as a proven-closed OBJECT (static
+   `'[object Object]'`), on the same "unprovable ⇒ absent" approximation
+   `isClosedObjNoStringMethod` itself already uses for every other uncertain
+   case — sound for the overwhelmingly common plain-data-dict, wrong only for
+   the vanishingly rare dict that legitimately carries a runtime
+   `toString`/`valueOf` (an ES fidelity gap, not a regression: every value
+   reaching this arm today was ALREADY unconditionally wrong, per this
+   design's own §Consequence).
+
+**Found and fixed en route — a real kernel-parity divergence, not a
+false-positive gate.** The straightforward version of (1) — bind the schema
+unconditionally in `prepare/index.js`, mirroring the non-empty-literal case
+right next to it — passed every native-only gate but broke `kernel-parity`'s
+`dict|2`/`dict|3` rows (a genuine byte divergence, confirmed absent at a
+clean-HEAD disposable `git worktree` build, so not a stale-dist artifact).
+Root cause: `test/kernel-parity.js`'s own "dict" corpus entry (`let d = {};
+… d[c] = …`) is dict-mode by construction, and the MERE EXISTENCE of any
+schema-list entry anywhere in the compiled module — even one `d` itself never
+reads, since HASH-mode bypasses schema dispatch entirely — flips a shared
+codegen branch in `module/collection.js`'s `$__dyn_get_t_h` whose OWN watr
+optimizer folds one truthiness check differently native vs. self-hosted (the
+exact class this file's own "dict|2 + dict|3 briefly reopened" note already
+documented as PRE-EXISTING, reopened here by a NEW trigger). Un-binding the
+NAME→sid mapping after the fact (analyze.js, post-hoc) did not fix it — the
+`ctx.schema.register([])` call itself, evaluated eagerly as an argument at
+prepare time, had already grown `ctx.schema.list` regardless of whether
+anything ended up bound to it. The only fix that actually closes the gap:
+never call `register` for a dict-mode name in the first place — which
+requires deferring the whole decision to `analyze.js`, the one place that
+already has the whole-program `dynWriteVars` fact `prepare`'s single forward
+pass cannot see yet. `src/prepare/index.js` is UNTOUCHED by this gap's fix.
+
+**Gap 2 — synthetic nullish-receiver TypeErrors had undefined name/message.**
+`src/ir.js`'s `throwTypeErrorIR` (7c23a06e) built a real branded Error object
+but wrote `UNDEF_NAN` into both the `.message` and `.name` slots — its own
+comment named this the deliberate scope cut, citing a REJECTED earlier draft
+that forced `module/string.js` inclusion to intern `'TypeError'` and hit
+"Unknown op: str" (module/string.js not yet autoloaded when this runs — it's
+reached from a member-access/call check, not a string operation) plus,
+"found live", two separate pre-existing bugs (`__mkptr` literal-offset arg
+folding, `.call`/`.apply`/`.bind` static-lowering thisArg drop) that happened
+to trigger whenever string module loaded alongside them.
+
+Landed anyway this session, but only after RE-VERIFYING the rejection still
+holds — it does not. `ctx.module.include('string')` (the exact API
+`module/array.js` already uses to force a cross-module dependency from
+inside another module, at src/ir.js's own top-level `ctx` access, no new
+import needed) makes `ctx.core.emit['str']` safe to call directly. Neither
+previously-reported bug reproduces on current HEAD: a SIMD-only nullish-check
+repro, and dedicated `.call`/`.apply`/`.bind` repros, both run clean through
+this session's own gates (full battery, selfhost, fuzz) below — both were
+independently fixed by unrelated commits since audit-#10 landed. `.name` is
+the class-name string (mirrors `buildErrorObject`'s own `nameIR`); `.message`
+is one of two static strings selected by a new `kind` parameter
+(`throwTypeErrorIR(kind = 'read')`) matching real JS's own message-family
+split: a property/method READ on a nullish receiver (every call site but one)
+says `'Cannot read properties of undefined'`; calling a nullish value AS a
+function (`emit.js`'s two callee-nullish sites, `throwTypeErrorIR('call')`)
+says `'is not a function'` — the class + a non-empty, on-topic message is the
+contract; the specific property/callee NAME V8 also includes would need one
+distinct interned string per distinct name used anywhere in the program, a
+real size cost for a message-text nicety, left out. Reachability-gated
+exactly like the rest of the Error model: `ctx.module.include('string')`
+only fires when `throwTypeErrorIR` is actually called during emission, so a
+program with no nullish-receiver check site pays nothing (new
+`minimal-output.js` pin, structural: the message strings appear exactly when
+the check site does, absent otherwise).
+
+**Gap 3 — README documentation.** The uniform-enumerable divergence (this
+file's own "Findings 1-4" §3, DECIDED) was tested (`test/errors.js`) but
+never stated in README.md. Added to the Error-model bullet: `.message`/
+`.name` are enumerable on every surface (`Object.keys`/`JSON.stringify`/
+spread/`for-in`), diverging from real JS's non-enumerable pair, deliberately
+— objects carry values only, no per-property metadata, so Error stays an
+ordinary object rather than the one exception. Also added the Gap-2
+consequence to both existing "internal errors" bullets (What's different /
+What will never be supported): the ONE runtime-raised error family that is
+now a real object, not a code — a member access or call on a receiver proven
+possibly nullish.
+
+**Gates, all green** — repros red→green natively before each fix (isolated
+via a throwaway `git worktree` for the kernel-parity root-cause bisection,
+not assumed); full 90-file battery, 15 foreground chunks of ≤6;
+errors.js/dyn-keys.js BOTH js-host and wasi-host (133/133, 57/57 — Gap 2's
+`.name`/`.message` fix verified live under `host:'wasi'` explicitly, not
+inferred from the js-host pass); kernel-parity 37/37 byte-identical (the
+"dict" case's own root-cause account above); kernel-oracle; perf-ratchet
+10/10 at +0 (one -520 unrelated improvement); optimizer 214/214 (3949
+assertions); minimal-output.js (error-free module byte-identical; two new
+pins — the empty-object no-leak probe, and the message-strings
+reachability-gate structural pin); selfhost.js 21/21; fuzz 2000×4 (seeds
+1-2000, opt 0-3, zero divergence); fresh `build-dist.mjs` ×2 byte-identical,
+twice (once mid-session after the first kernel-parity failure surfaced the
+dict-mode schema issue, once final); `bench-size.mjs` geomean jz/AS =
+1.042× — unchanged from the pre-session baseline. Gap 2's own marginal size
+cost: zero across every probed shape (Map/dict-census machinery, the only
+current route to `throwTypeErrorIR`, already pulls in `module/string.js` for
+its own generic key dispatch regardless of the program's own key types).
+Full account: `.work/todo.md`'s 2026-08-05 audit-#11 gap-bundle entry.

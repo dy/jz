@@ -1811,38 +1811,49 @@ export const isNull = (f64expr) => matchF64Bits(f64expr,
  *  (alloc_hdr + one store per ERR_SCHEMA_PROPS slot + mkPtrIR) — rather than
  *  calling `ctx.core.emit['TypeError']` through it: that path interns the
  *  class name via `emit(['str', 'TypeError'])`, which needs module/string.js
- *  loaded. These checks build IR for BOTH branches of the runtime if/else
- *  they guard with (an IR tree has no "only the branch that runs gets built"
- *  — both always emit), so the class-name string would need interning at
- *  COMPILE time for every program reaching one of these checks, even a
- *  string-free numeric/SIMD one — "Unknown op: str" when module/string.js
- *  never autoloaded. Worse, found live (not theorized) while chasing that
- *  crash: forcing module/string.js to autoload for a program that otherwise
- *  never needed it is not merely a size cost — it re-exposed two SEPARATE
- *  PRE-EXISTING, unrelated bugs (`__mkptr(...)`'s literal-offset arg folding
- *  wrong, `.call`/`.apply`/`.bind` static lowering dropping a thisArg side
- *  effect) that reproduce identically on HEAD before this task whenever
- *  module/string.js happens to load alongside them — confirmed via a
- *  disposable worktree, not assumed. Both are out of this task's scope to
- *  fix (nothing to do with member access or calls on a nullish receiver).
- *  `.message`/`.name` are left `undefined` (UNDEF_NAN, a pure NaN-box
- *  literal — no string, no module dependency) — the audit's own pin
- *  contract is class + catchability, not message text (matches the existing
- *  precedent for internal numeric-code throws, error-object-design.md §5:
- *  "no lazy materialization... an honest gap, not a new one"). `instanceof`
- *  needs none of this: class identity lives in the schema id (aux bits), not
- *  in any slot value. */
-export function throwTypeErrorIR() {
+ *  loaded, same as this function now needs directly (below).
+ *
+ *  `.name`/`.message` (audit-#11 P1, closing the residual this function's own
+ *  comment used to document): a caught synthetic TypeError read BOTH as
+ *  `undefined` — `e.name` should be `'TypeError'`, `String(e)` a real
+ *  "TypeError: <msg>". A prior draft of this exact fix was tried and reverted
+ *  (src/prepare/index.js's `censusShapedNode` prescan comment, still visible
+ *  in git blame) after it "re-exposed two SEPARATE PRE-EXISTING, unrelated
+ *  bugs" (`__mkptr` literal-offset arg folding, `.call`/`.apply`/`.bind`
+ *  static-lowering thisArg drop) that happened to trigger whenever
+ *  module/string.js loaded alongside them. Re-verified live for this session
+ *  (SIMD-only nullish-check repro, `.call`/`.apply`/`.bind` repros, full
+ *  battery/selfhost/fuzz gates below) — neither reproduces on current HEAD;
+ *  both were independently fixed by unrelated commits since. `ctx.module.
+ *  include('string')` (module/array.js's own established pattern for forcing
+ *  a cross-module dependency from inside another module) makes
+ *  `ctx.core.emit['str']` safe to call here even when this is the ONLY
+ *  string-shaped thing the whole program does — a program that never reaches
+ *  a nullish-receiver check still pays nothing (the include only fires when
+ *  this function is actually called during emission).
+ *  `kind` selects the message family per real JS's own split: a property/
+ *  method READ on a nullish receiver ('read', the default — every call site
+ *  but the callee-nullish one below) says "Cannot read properties of
+ *  undefined"; calling a nullish value AS a function ('call') says "is not a
+ *  function" — V8's own two-message split, minus the specific property/
+ *  callee name (would need one distinct interned string per distinct name
+ *  used anywhere in the program — real size cost for a message-text nicety,
+ *  out of scope; the class + a non-empty, on-topic message is the contract).
+ *  `instanceof` needs none of this: class identity lives in the schema id
+ *  (aux bits), not in any slot value. */
+export function throwTypeErrorIR(kind = 'read') {
   ctx.runtime.throws = true
   inc('__alloc_hdr')
+  ctx.module.include('string')
   const sid = ctx.schema.errorSid('TypeError')
   const p = tempI32('nrerrp')
   const t = temp('nrerr')
-  const undef = ['f64.const', `nan:${UNDEF_NAN}`]
+  const nameIR = asF64(ctx.core.emit['str']('TypeError'))
+  const msgIR = asF64(ctx.core.emit['str'](kind === 'call' ? 'is not a function' : 'Cannot read properties of undefined'))
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${p}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(2)]]],
-    ctx.abi.object.ops.store(['local.get', `$${p}`], 0, undef),
-    ctx.abi.object.ops.store(['local.get', `$${p}`], 1, undef),
+    ctx.abi.object.ops.store(['local.get', `$${p}`], 0, msgIR),
+    ctx.abi.object.ops.store(['local.get', `$${p}`], 1, nameIR),
     ['local.set', `$${t}`, mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${p}`])],
     ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
     ['throw', '$__jz_err', ['local.get', `$${t}`]]], 'f64')

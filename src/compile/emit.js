@@ -4138,14 +4138,14 @@ function emitGenericClosureCall(callee, parsed) {
     if (!mayBeUndef) return asF64(whenOk(asF64(emit(callee))))
     if (pureCallee) return typed(['if', ['result', 'f64'],
       isNullish(asF64(emit(callee))),
-      ['then', throwTypeErrorIR()],
+      ['then', throwTypeErrorIR('call')],
       ['else', asF64(whenOk(asF64(emit(callee))))]], 'f64')
     const ct = temp('gcallee')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${ct}`, asF64(emit(callee))],
       ['if', ['result', 'f64'],
         isNullish(typed(['local.get', `$${ct}`], 'f64')),
-        ['then', throwTypeErrorIR()],
+        ['then', throwTypeErrorIR('call')],
         ['else', asF64(whenOk(typed(['local.get', `$${ct}`], 'f64')))]]], 'f64')
   }
   if (parsed.hasSpread) {

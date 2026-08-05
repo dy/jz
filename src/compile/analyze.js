@@ -1655,8 +1655,34 @@ export function analyzeValTypes(body) {
         // emission), so every subsequent read/write takes the strict one-table
         // path and hash-RMW fusion needs no speculative runtime-type fallback.
         const merged = ctx.schema.resolve?.(a[1])
-        const dict = Array.isArray(a[2]) && a[2][0] === '{}' && a[2].length === 1 &&
-          ctx.types.dynWriteVars?.has(a[1]) && !merged?.length
+        const emptyLit = Array.isArray(a[2]) && a[2][0] === '{}' && a[2].length === 1
+        const dict = emptyLit && ctx.types.dynWriteVars?.has(a[1]) && !merged?.length
+        // audit-#11 gap-1: bind a real (0-prop) schema for a truly EMPTY `{}`
+        // decl — prepare/index.js's own decl-schema tracking (the props.length
+        // guard right next to the non-empty-literal case this mirrors) only
+        // ever bound a NON-empty literal's schema; module/core.js's
+        // isClosedObjNoStringMethod (`new Error(o).message` for a bound
+        // object) needs a resolvable schema to prove a truly-empty `o`
+        // closed, same as it already can for `{x:1}`. Bound HERE, not in
+        // prepare, and ONLY for the non-dict arm: `dict` (computed above,
+        // WHOLE-PROGRAM `ctx.types.dynWriteVars` context prepare's earlier,
+        // single-pass walk never has) is the one fact that must gate whether
+        // this schema is minted AT ALL — not just whether it's bound to this
+        // name. Minting an unused schema for a dict-mode binding (one that
+        // NEVER reads it — HASH mode bypasses schema dispatch entirely, and
+        // errorMessageIR's own separate VAL.HASH arm covers ITS Error-message
+        // case) still changes `ctx.schema.list`'s size, which is enough to
+        // flip a shared codegen branch in module/collection.js's
+        // $__dyn_get_t_h — reopening the exact PRE-EXISTING, host-dependent
+        // watr-fold divergence test/kernel-parity.js's "dict|2 + dict|3" note
+        // already documents (confirmed live: binding unconditionally, even
+        // via prepare, reproduced it; skipping the dict arm here does not).
+        // `merged == null` (not just "no schema yet"): if prepare's own
+        // assignment-schema tracking already bound (or poisoned) this name
+        // from a LATER reassignment (`o = {x:1}`), that fact was decided with
+        // MORE information than a bare `{}` decl carries — never overwrite it.
+        if (!dict && emptyLit && merged == null && ctx.schema.register && !ctx.schema.poisoned?.has(a[1]))
+          ctx.schema.vars.set(a[1], ctx.schema.register([]))
         const vt = dict ? VAL.HASH : valTypeOf(a[2])
         // Dict-value-type census, local half (design §1a): every value ever
         // written through `a[1][key] = rhs` in this body, additive alongside

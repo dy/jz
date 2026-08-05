@@ -459,6 +459,28 @@ test('minimal: heap-free numeric fn stays heap-free (Error machinery is reachabi
     ok(!hasMemory(src, O), `@O${O}: an Error-free program must not declare memory`)
     ok(!hasAllocator(src, O), `@O${O}: an Error-free program must not pull the allocator`)
     ok(!has(src, '__errcls__', O), `@O${O}: no Error schema leaks into a program that never constructs one`)
+    ok(!has(src, 'Cannot read properties', O), `@O${O}: no nullish-receiver message string leaks into a program with no member-access/call site`)
+  }
+})
+
+// audit-#11 gap-2: throwTypeErrorIR (src/ir.js) now forces module/string.js
+// inclusion + interns 'TypeError' and its two message strings — a real
+// dependency this synthetic TypeError never needed before (both were left
+// `undefined`). Reachability MUST still gate it exactly like every other
+// Error mechanism above: a program with no member-access/call site that
+// could ever throw one pays nothing (the pin right above already covers
+// that — a program with NO nullish-receiver check site at all never even
+// calls throwTypeErrorIR, so `ctx.module.include('string')` never fires).
+// This pin is the positive half: a program that DOES have one (a Map
+// `.get()` absent-key read feeding a property access — the same shape
+// audit-#10's own dyn-keys.js repro uses) must show the real strings.
+test('minimal: nullish-receiver TypeError message strings appear exactly when the check site does (audit-#11 gap-2)', () => {
+  if (skip) return
+  const src = "export let f = () => { const m = new Map(); m.set('present', [1, 2]); return m.get('missing').length }"
+  for (const O of [0, 2]) {
+    const w = wat(src, O)
+    ok(w.includes('TypeError'), `@O${O}: the constructed TypeError's class name string is present`)
+    ok(w.includes('Cannot read properties of undefined'), `@O${O}: the read-family message string is present`)
   }
 })
 

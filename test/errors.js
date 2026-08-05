@@ -940,24 +940,28 @@ test('errors: Error ctor message coercion — bound closed-schema object (audit-
     'an out-of-schema write is conservatively NOT short-circuited (unproven closed-world)')
 })
 
-// KNOWN-FAIL, PRE-EXISTING, GENERAL, Error-unrelated (audit-#10 finding-2's
-// own investigation): a genuinely EMPTY `let o = {}` declaration never gets a
-// schema id bound at all (src/prepare/index.js's own decl-schema-binding
-// guards on `props.length` — a 0-prop object literal is treated as "unknown
-// init", the same "censusUnknownInitDecl" bucket as any other unproven
-// shape) — so `isClosedObjNoStringMethod` (module/core.js) can't prove it
-// closed, and `new Error(o).message` for a bound EMPTY object falls into the
-// pre-existing generic toStrI64 OBJECT path's bug (returns typeof "object",
-// not a string — the SAME bug `String(o)` has for the identical binding,
-// confirmed independent of Error). Fixing empty-object declaration schema
-// binding is a general src/prepare/index.js change with self-host-wide blast
-// radius (touches every `let cache = {}`-shaped declaration in every
-// program), well outside this task's four named findings — flagged, not
-// fixed. The literal (unbound) `new Error({})` case is unaffected (still
-// correctly '[object Object]', pinned above).
-test('KNOWN-FAIL (pre-existing, Error-unrelated, audit-#10 finding-2): new Error(o).message for a bound TRULY EMPTY object is not a string at all', () => {
-  const r = jz(`export let f = () => { let o = {}; return new Error(o).message }`, { jzify: true }).exports.f()
-  is(typeof r, 'object', 'JS: typeof "string" ("[object Object]"). jz: typeof "object" — empty-object declarations get no static schema, generic toStrI64 OBJECT path mis-renders it')
+// FIXED (audit-#11 gap-1): a genuinely EMPTY `let o = {}` declaration used to
+// get NO schema id bound at all (src/prepare/index.js's decl-schema-binding
+// guarded on `props.length`, and even module/core.js's own
+// `isClosedObjNoStringMethod` gated on `valTypeOf(node) === VAL.OBJECT` — a
+// fact that, for THIS one binding shape, a second independent non-schema-
+// aware body-fact pass could race and clear). Root-caused to two guards:
+// prepare/index.js's decl-schema binding now accepts a 0-prop schema for a
+// bare `{}` (module/object.js's own literal emitter already unconditionally
+// mints one — this just binds the SAME sid to the declared name, same as any
+// non-empty literal already did); isClosedObjNoStringMethod now gates on
+// `ctx.schema.idOf` directly (a durable, single-writer fact) instead of the
+// racy `.val`. A genuinely DYNAMIC dict (no schema even in principle — a
+// computed-key-grown object, an unknown-source spread merge) is a separate,
+// still-real gap this task ALSO closed: errorMessageIR now treats a
+// VAL.HASH-kind message the same as a proven-closed OBJECT (no schema is
+// EVER possible for a HASH, so "unprovable" is approximated as "absent",
+// same discipline isClosedObjNoStringMethod itself already applies).
+test('errors: Error ctor message coercion — bound TRULY EMPTY object and dynamic dicts (audit-#11 gap-1)', () => {
+  const j = (code) => jz(code, { jzify: true }).exports.f
+  is(j(`export let f = () => { let o = {}; return new Error(o).message }`)(), '[object Object]', 'bound empty object, no growth')
+  is(j(`export let f = (k) => { let o = {}; o[k] = 1; return new Error(o).message }`)('k'), '[object Object]', 'empty object grown via a computed key — genuine dictionary mode (VAL.HASH), no schema even in principle')
+  is(j(`export let f = (a, b) => { let o = {...a, ...b}; return new Error(o).message }`)({ x: 1 }, { y: 2 }), '[object Object]', 'unknown-source spread merge — VAL.HASH')
 })
 
 // §3(c): a non-Error throw is completely unaffected by the object model —
