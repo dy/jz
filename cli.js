@@ -58,7 +58,10 @@ Options:
                             stable passes), 3 speed. -Os optimizes for size.
   --define, -D <K=V>        Inject a compile-time constant (VALUE parsed as JSON,
                             else string). Repeatable.
-  --host <js|wasi>          Runtime-service lowering (default js)
+  --host <js|wasi|native>   Runtime-service lowering (default js). 'native' targets
+                            the wasm2c/native-lowering lane (scripts/native/) —
+                            same module shape as 'js', tail calls off (wasm2c
+                            return_call + multi-value codegen bug)
   --memory <pages>          Initial memory size in 64 KiB pages
   --max-memory <pages>      Cap memory growth at this many pages (default unbounded)
   --import-memory           Import env.memory instead of exporting own memory

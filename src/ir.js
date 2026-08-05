@@ -2062,7 +2062,13 @@ export function verifyFn(fn) {
  * Returns the input unchanged when no transform applies.
  */
 export const tcoTailRewrite = (ir, resultType) => {
-  if (ctx.transform.noTailCall || ctx.func.inTry) return ir
+  // audit-#11: TargetProfile's own noTailCall (session.js — on for host:'native',
+  // the wasm2c-lowering lane with a known return_call+multi-value codegen bug)
+  // is the NAMED-POLICY source; opts.noTailCall stays a separate, additive
+  // explicit override usable under ANY host (e.g. a plain js/wasi target that
+  // wants ordinary call frames for a reason unrelated to wasm2c — cli.js's
+  // `--no-tail-call` flag doesn't require `--host native`).
+  if (ctx.transform.targetProfile.noTailCall || ctx.transform.noTailCall || ctx.func.inTry) return ir
   if (!Array.isArray(ir)) return ir
   const op = ir[0]
   if (op === 'call' && typeof ir[1] === 'string') {

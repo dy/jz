@@ -427,9 +427,9 @@ const setupCtx = (code, opts) => {
   // Session lifecycle — shared verbatim with the self-host kernel's setupSelf
   // (src/session.js): ctx reset, every cache clear, name-uids, warnings,
   // strict/host/optimize normalization, post-reset invariants.
-  if (opts.host && opts.host !== 'js' && opts.host !== 'wasi') {
-    if (opts.host === 'gc') err(`host:'gc' is reserved for a planned wasm-gc backend, not yet implemented. Use 'js' (default — JS host with externref/js-string interop) or 'wasi' (standalone runtimes — no env imports).`)
-    err(`Invalid host '${opts.host}'. Expected 'js' (default) or 'wasi'.`)
+  if (opts.host && opts.host !== 'js' && opts.host !== 'wasi' && opts.host !== 'native') {
+    if (opts.host === 'gc') err(`host:'gc' is reserved for a planned wasm-gc backend, not yet implemented. Use 'js' (default — JS host with externref/js-string interop), 'wasi' (standalone runtimes — no env imports), or 'native' (wasm2c/native-lowering lane).`)
+    err(`Invalid host '${opts.host}'. Expected 'js' (default), 'wasi', or 'native'.`)
   }
   beginSession({
     emitter, globals: GLOBALS, hooks: { emit, flat, body, bool, idx, spread, emitIdentitySafe },

@@ -17,7 +17,9 @@ fs.mkdirSync(BUILD_DIR, { recursive: true })
 
 const bin = jzCompile(watrSrc('src/compile.js'), {
   jzify: true,
-  noTailCall: true,        // wasm2c has codegen bugs with `return_call` + multi-value
+  host: 'native',      // wasm2c/native-lowering TargetProfile (audit-#11, src/session.js) —
+                        // noTailCall is one of its frozen policy fields: wasm2c has codegen
+                        // bugs with `return_call` + multi-value, verified live on this pipeline
   memory: 4096,       // 256MB — absorb bump-heap accumulation across bench iters
   modules: {
     './encode.js': watrSrc('src/encode.js'),

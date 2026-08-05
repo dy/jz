@@ -64,15 +64,42 @@ export { getFactStore }
  *   the `$ftN` call_indirect type) live even when this compile's own scan finds no
  *   `call_indirect` — a wasi build's embedder may supply table-calling host
  *   functions the in-module scan can't see.
+ * @property {boolean} noTailCall     emit ordinary `call` in tail position instead
+ *   of `return_call` (src/ir.js tcoTailRewrite) — off for js/wasi (every JS engine
+ *   and wasmtime/wasmer/deno already ship the tail-call proposal); on for 'native'
+ *   (audit-#11): wasm2c has codegen bugs lowering `return_call` combined with
+ *   multi-value results (scripts/native/README.md's pipeline — wasm2c → clang —
+ *   is the only consumer that hits this). `opts.noTailCall` (index.js) stays a
+ *   separate, ADDITIVE explicit override on top of this — a caller targeting a
+ *   plain js/wasi host that still wants ordinary call frames (e.g. an engine
+ *   without the tail-call proposal, unrelated to wasm2c) doesn't need to adopt
+ *   the whole 'native' profile just to flip this one field.
  */
 const TARGET_PROFILES = Object.freeze({
   js: Object.freeze({
     envImports: true, jsStringInterop: true, wasiShims: false,
     commandEntry: false, timerModel: 'host', preserveClosureTable: false,
+    noTailCall: false,
   }),
   wasi: Object.freeze({
     envImports: false, jsStringInterop: false, wasiShims: true,
     commandEntry: true, timerModel: 'blocking', preserveClosureTable: true,
+    noTailCall: false,
+  }),
+  // wasm2c/native-lowering lane (scripts/native/): same module shape as 'js'
+  // (env imports present, even if the native host's env-stubs.c services them
+  // as empty no-ops — the compiled wasm doesn't know or care who's behind the
+  // import) — the ONE policy difference from 'js' is noTailCall, forced on
+  // because wasm2c's `return_call` + multi-value lowering is broken (verified
+  // live, not assumed: scripts/native/gen-watr-wasm.mjs's own comment before
+  // this migration). NOT modeled on 'wasi': the native pipeline links no WASI
+  // shims (env-stubs.c stubs only `__ext_*`, no wasi_snapshot_preview1) and
+  // needs no command-mode module legalization (fed straight to wasm2c, never
+  // run under an actual WASI runtime).
+  native: Object.freeze({
+    envImports: true, jsStringInterop: true, wasiShims: false,
+    commandEntry: false, timerModel: 'host', preserveClosureTable: false,
+    noTailCall: true,
   }),
 })
 
@@ -80,7 +107,7 @@ const TARGET_PROFILES = Object.freeze({
  *  hosts fall back to 'js' (beginSession's own default), so a caller can pass the
  *  raw (possibly-undefined) opts.host through without a null-check. */
 export function targetProfileFor(host) {
-  return host === 'wasi' ? TARGET_PROFILES.wasi : TARGET_PROFILES.js
+  return host === 'wasi' ? TARGET_PROFILES.wasi : host === 'native' ? TARGET_PROFILES.native : TARGET_PROFILES.js
 }
 
 /**
@@ -213,7 +240,7 @@ export function targetProfileFor(host) {
  * @param {*}      [p.optimize] raw opts.optimize (level/alias/object/false)
  * @param {object} [p.warnings] advisory sink (opts.warnings) or null
  * @param {boolean}[p.strict]   enforce the pure canonical subset
- * @param {string} [p.host]     output host ('js' | 'wasi'), undefined = js
+ * @param {string} [p.host]     output host ('js' | 'wasi' | 'native'), undefined = js
  */
 export function beginSession({ emitter, globals, hooks, source, optimize, warnings, strict, host }) {
   reset(emitter, globals, hooks)
