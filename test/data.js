@@ -3,7 +3,7 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onWasi, onKernel, adaptI64 } from './_matrix.js'
+import { onWasi, adaptI64 } from './_matrix.js'
 
 function run(code, opts) {
   const { module, instance } = jz(code, opts)
@@ -47,17 +47,16 @@ test('P0-2: subnormal NUMBER literals keep typeof "number" and their exact value
   // The audit's own repro: kernel-compiled `() => 5e-324` used to export `1n` (the literal's
   // OWN AST node misread as bigint via the magnitude heuristic, corrupting its export-boundary
   // kind — see kind.js valTypeOf, emit.js emitNeg). 1e-320 used to export `2024n`.
-  // NEGATIVE subnormal literals are kernel-curated (onKernel skip below): the
-  // unary-minus FOLD of a subnormal literal runs inside the compiler, and
-  // self-hosted the compiler's own `-x` on carrier-band bits takes the boxed
-  // BigInt path (-5e-324 folds to -1; every escape tried — bit-flip via typed
-  // store, source-text numlit deferral to watr encode — hits the same wall:
-  // in-kernel there is NO ToNumber-free value→bits path). True fix = the
-  // boxed-bigint carrier redesign (ledgered); positive subnormals and all
-  // bigint-boundary pins are exact in-kernel.
-  const cases = onKernel()
-    ? [5e-324, 1e-320, MIN_NORMAL, MIN_NORMAL + Number.MIN_VALUE]
-    : [5e-324, -5e-324, 1e-320, MIN_NORMAL, MIN_NORMAL - Number.MIN_VALUE, MIN_NORMAL + Number.MIN_VALUE]
+  // NEGATIVE subnormal literals used to be kernel-curated: the unary-minus FOLD of a subnormal
+  // literal runs inside the compiler, and self-hosted the compiler's own `-x` on carrier-band
+  // bits took the boxed BigInt path (-5e-324 folded to -1) — the compiler's OWN internal
+  // ToNumber coercion (module/number.js `__to_num`) hit the exact same unconditional
+  // subnormal-as-BigInt-carrier heuristic the compiled OUTPUT program did (audit-#11 P0-1).
+  // Closed by gating that heuristic on `ctx.features.bigint`: the compiler's own source is
+  // itself bigint-free (bignum.js's rational limbs are plain numbers, never a real BigInt —
+  // see its own doc comment), so the gate is OFF for the compiler's self-hosted compilation
+  // too, same as any other bigint-free program. No more onKernel() split needed.
+  const cases = [5e-324, -5e-324, 1e-320, MIN_NORMAL, MIN_NORMAL - Number.MIN_VALUE, MIN_NORMAL + Number.MIN_VALUE]
   for (const v of cases) {
     const f = run(`export let f = () => ${v}`).f
     const r = f()
@@ -71,12 +70,12 @@ test('P0-2: bigint literals near the 2^52 mantissa boundary stay bigint, exact',
   // nonzero if it were EVER read as a plain float — both are still comfortably inside the
   // dynamic-typeof heuristic's subnormal range, but the audit pins the LITERAL path
   // specifically: the tag makes this exact regardless of magnitude, not just below 2^52.
-  // 2^52-1 is kernel-curated: its carrier bits are the MAX-SUBNORMAL band, and
-  // in-kernel the compiler's own handling of that literal value ToNumbers the
-  // carrier mid-pipeline (exported 4841369599423283198n = the bits of the f64
-  // it became) — the same no-ToNumber-free-bits-path wall as negative
-  // subnormal folds above; cured by the boxed-bigint carrier redesign only.
-  if (!onKernel()) is(run('export let f = () => 4503599627370495n').f(), 4503599627370495n)   // 2^52 - 1
+  // 2^52-1 used to be kernel-curated (its carrier bits are the MAX-SUBNORMAL band, and
+  // in-kernel the compiler's own handling of that literal value ToNumbered the carrier
+  // mid-pipeline, exporting 4841369599423283198n = the bits of the f64 it became) — same
+  // root and same fix as the negative-subnormal-literal case above (audit-#11 P0-1,
+  // ctx.features.bigint-gated __to_num). No more onKernel() split needed.
+  is(run('export let f = () => 4503599627370495n').f(), 4503599627370495n)   // 2^52 - 1
   is(run('export let f = () => 4503599627370497n').f(), 4503599627370497n)   // 2^52 + 1
 })
 
@@ -89,6 +88,27 @@ test('P0-2: bigint literals at the 64-bit signed/unsigned boundaries', () => {
   // that it equals the unsigned literal magnitude; that reinterpretation is the carrier's own
   // documented signedness, not something this audit item changes.
   is(run('export let f = () => 18446744073709551615n').f(), -1n)
+})
+
+test('audit-#11 P0-1: bigint-using-program carrier divergence — DOCUMENTED, still open by design (not a regression)', () => {
+  // The runtime half of the fix (module/number.js `__to_num`'s subnormal-as-
+  // BigInt-carrier arm) is gated on `ctx.features.bigint` — OFF (closed) for a
+  // program that never constructs a BigInt anywhere (every case above), ON
+  // (unchanged from before this fix) for one that does. This is the documented,
+  // PERMANENT remainder the carrier design accepts: once a program can
+  // construct a BigInt, `__to_num` genuinely cannot distinguish "a real
+  // subnormal Number reaching an unproven-kind coercion" from "a real BigInt's
+  // raw i64-as-f64 carrier reaching that same coercion" — both are the
+  // identical 64 bits, and nothing short of the boxed-bigint carrier redesign
+  // (ledgered, deliberately not adopted — see README "One known divergence
+  // class") removes the ambiguity. Only fires when the value's STATIC kind is
+  // truly unproven (a dict-shaped property / mixed-type array element here —
+  // a plain local or parameter gets proven NUMBER by narrower inference and
+  // never reaches this arm, which is why the bare-parameter shape stays exact
+  // even in a bigint-using program). Native and kernel agree (both wrong the
+  // same documented way) — JS: both `+o.a`/`+a[0]` are `5e-324`.
+  is(run('let big = 1n; export function f() { let o = {}; o.a = 5e-324; o.b = 1; return +o.a }').f(), 1)
+  is(run('let big = 1n; export function f() { const a = []; a.push(5e-324); a.push("s"); return +a[0] }').f(), 1)
 })
 
 test('bigint: internal calls keep the i64 carrier (only the JS boundary surfaces it)', () => {

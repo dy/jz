@@ -170,9 +170,35 @@ function ratSub(a, b) {
 }
 const ratMul = (a, b) => ratMake(a.negative !== b.negative, bn.mul(a.n, b.n), bn.mul(a.d, b.d))
 const ratDiv = (a, b) => bn.isZero(b.n) ? null : ratMake(a.negative !== b.negative, bn.mul(a.n, b.d), bn.mul(a.d, b.n))
-/** Correctly-rounded rational -> f64: exact decimal expansion (generous digit budget,
- *  far beyond the 17 significant digits that suffice to round-trip any double) fed
- *  through the host's spec-mandated (round-to-nearest) string-to-Number parser. */
+// audit-#11 P0-1: ratToF64's digit budget used to be a flat 60 total fractional
+// digits, counted from the decimal point. Two independent ways that undercounts:
+//  (1) A rational whose magnitude is tiny (a compile-time-folded division
+//      landing near/in the subnormal range, e.g. `1/1e300`, `1e-300/1e20`)
+//      spends most of its decimal expansion on LEADING ZEROS before any
+//      significant digit shows up — the smallest positive subnormal
+//      (2^-1074 ≈ 4.94e-324) needs 323 of them. A flat 60-digit cap silently
+//      truncated to an all-zero string there ("0.000…0"), which `Number()`
+//      parses as exactly 0 — not a rounding error, a magnitude-dependent
+//      WRONG ANSWER (confirmed live: `1/1e61` folded to 0 instead of 1e-61,
+//      a perfectly ordinary — not even subnormal — double).
+//  (2) Even at ordinary magnitude, "17 significant digits round-trips any
+//      double" is a claim about reading an ALREADY-ROUNDED double back as
+//      decimal — correctly ROUNDING an exact (possibly irrational-looking)
+//      rational TO the nearest double is a stricter demand: a sum landing
+//      extremely close to the exact halfway point between two representable
+//      doubles (the textbook `0.1 + 0.2`, whose exact rational sum is
+//      0.3000000000000000166533453693773481…, a hair above the true
+//      0.3/0.30000000000000004 midpoint) needs enough trailing digits to see
+//      PAST that near-tie. 60 significant digits (not just 17) is the exact
+//      budget the original flat-60 version used and is proven correct by the
+//      existing rational-carry precision tests — kept unchanged in count,
+//      only moved to start counting from the first significant digit instead
+//      of the decimal point, so it survives an arbitrarily long leading-zero
+//      run too.
+const RAT_SIG_DIGITS_AFTER_FIRST = 60
+const RAT_MAX_FRAC_DIGITS = 384 + RAT_SIG_DIGITS_AFTER_FIRST  // > 323 leading zeros (2^-1074's decimal position) + margin, + the sig-digit budget above
+/** Correctly-rounded rational -> f64: exact decimal expansion fed through the
+ *  host's spec-mandated (round-to-nearest) string-to-Number parser. */
 function ratToF64(r) {
   if (bn.isZero(r.n)) return 0
   const [intPart, rem0] = bn.divMod(r.n, r.d)
@@ -180,10 +206,13 @@ function ratToF64(r) {
   let rem = rem0
   if (!bn.isZero(rem)) {
     s += '.'
-    for (let i = 0; i < 60 && !bn.isZero(rem); i++) {
+    let sigDigits = 0   // count of digits emitted SINCE the first nonzero one (0 while still in the leading-zero run)
+    for (let i = 0; i < RAT_MAX_FRAC_DIGITS && !bn.isZero(rem) && sigDigits < RAT_SIG_DIGITS_AFTER_FIRST; i++) {
       rem = bn.mulSmall(rem, 10)
       const [dig, rem2] = bn.divMod(rem, r.d)   // dig < 10 by construction (rem < d before the *10)
-      s += bn.toDecimalString(dig)
+      const digStr = bn.toDecimalString(dig)
+      s += digStr
+      if (sigDigits > 0 || digStr !== '0') sigDigits++
       rem = rem2
     }
   }
@@ -378,6 +407,25 @@ const MATH_CONST = {
   PI: Math.PI, E: Math.E, LN2: Math.LN2, LN10: Math.LN10,
   LOG2E: Math.LOG2E, LOG10E: Math.LOG10E, SQRT2: Math.SQRT2, SQRT1_2: Math.SQRT1_2,
 }
+// audit-#11 P0-1: `Number.X` mirrors Math.X above — prepare's '.' handler (src/
+// prepare/index.js `'.'(obj, prop)`) resolves it to the bare `'Number.X'` STRING
+// (module/number.js's `ctx.core.emit['Number.MIN_VALUE']` etc. — the niladic-
+// getter table for the whole family), which otherwise reaches emit as an opaque
+// name with no provable VAL.NUMBER kind: unary `+`'s valTypeOf(a)===VAL.NUMBER
+// fast path (emit.js 'u+') misses it and falls through to the runtime `__to_num`
+// call — sound for every OTHER member of this table, but MIN_VALUE is the one
+// subnormal constant, and __to_num's BigInt-carrier heuristic (module/number.js)
+// misdecodes any nonzero finite subnormal as raw carrier bits: `+Number.MIN_VALUE`
+// silently returned 1 instead of 5e-324. Folding to a literal HERE (pre-eval,
+// before emit ever sees it) is the general fix: a `[null, v]` literal node's
+// valTypeOf is unconditionally VAL.NUMBER (kind.js), so every consumer — unary
+// `+`, arithmetic, the export-return boundary — gets the same numeric fast path
+// Math.PI already gets, with zero per-consumer patching.
+const NUMBER_CONST = {
+  MAX_SAFE_INTEGER: Number.MAX_SAFE_INTEGER, MIN_SAFE_INTEGER: Number.MIN_SAFE_INTEGER,
+  EPSILON: Number.EPSILON, MAX_VALUE: Number.MAX_VALUE, MIN_VALUE: Number.MIN_VALUE,
+  POSITIVE_INFINITY: Infinity, NEGATIVE_INFINITY: -Infinity, NaN: NaN,
+}
 // prepare resolves `Math.X` to a bare `'math.X'` STRING (both a niladic-call target
 // `['()','math.sqrt',args]` and, for the no-arg constants, a plain value reference
 // `'math.PI'` with no wrapping `()` at all) whenever it runs through the full host
@@ -456,6 +504,7 @@ function evalConst(node, env, state) {
     const b = env.get(node)
     if (b !== undefined) return b
     if (node.startsWith('math.') && MATH_CONST[node.slice(5)] !== undefined) return numResult(MATH_CONST[node.slice(5)])
+    if (node.startsWith('Number.') && NUMBER_CONST[node.slice(7)] !== undefined) return numResult(NUMBER_CONST[node.slice(7)])
     return null
   }
   if (!Array.isArray(node)) return null
@@ -515,6 +564,7 @@ function evalConst(node, env, state) {
   }
   if (op === '.' || op === '?.') {
     if (node[1] === 'Math' && typeof node[2] === 'string' && MATH_CONST[node[2]] !== undefined) return numResult(MATH_CONST[node[2]])
+    if (node[1] === 'Number' && typeof node[2] === 'string' && NUMBER_CONST[node[2]] !== undefined) return numResult(NUMBER_CONST[node[2]])
     const recv = evalConst(node[1], env, state)
     if (recv && recv.t === 'str' && node[2] === 'length' && isAsciiSafe(recv.v)) return numResult(recv.v.length)
     return null
@@ -600,8 +650,21 @@ function collectParamNamesShallow(paramsNode) {
 
 function foldNode(node, env, state) {
   if (typeof node === 'string') {
-    const b = env.get(node)
-    return b !== undefined ? nodeOf(b) : node
+    // audit-#11 P0-1: a bare-string node is a plain identifier COPY-through in
+    // the common case, but it is ALSO the exact shape prepare's '.' handler
+    // collapses a namespace constant reference to (`'math.PI'`, `'Number.
+    // MIN_VALUE'`, …, see MATH_CONST/NUMBER_CONST above) — a Math/Number
+    // constant used directly as an expression (`() => Number.MIN_VALUE`,
+    // `return Math.PI`) never passes through the op!=null `evalConst(node,…)`
+    // call below (there is no wrapping op node), so without this the whole-
+    // program's ONE fold-to-literal chokepoint silently skipped it, leaving an
+    // opaque unresolvable-kind name to reach the export-return boundary, which
+    // decoded its raw f64 bits as an ambiguous carrier (confirmed live: bare
+    // `Number.MIN_VALUE`/`Math.PI` exports both returned garbage BigInts).
+    // Delegating the whole branch to evalConst (which already does the env
+    // lookup, see below) picks up both tables uniformly, no new special case.
+    const c = evalConst(node, env, state)
+    return c ? nodeOf(c) : node
   }
   if (!Array.isArray(node)) return node
   const op = node[0]

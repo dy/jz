@@ -4,6 +4,123 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-05, audit-#11 P0-1 CLOSED — subnormal-as-BigInt carrier
+## heuristic gated on ctx.features.bigint; two compile-time constant-fold bugs
+## found and fixed in the same hunt)
+
+**Repro**: `export let f = () => +Number.MIN_VALUE` returned `1` (JS: `5e-324`)
+on every optimize tier, native AND kernel. Not caught by the core suite —
+found by test262 (`built-ins/Number/S9.3_A4.2_T1.js`).
+
+**Two independent halves, both landed**:
+
+1. RUNTIME (the carrier class): `module/number.js`'s `__to_num` treated ANY
+   nonzero finite subnormal f64 reaching it as raw BigInt carrier bits
+   (bit-pattern 1 = `5e-324` decoded as bigint `1` → numeric `1`) — sound
+   only for a program that can construct a BigInt (real ambiguity: `1n`'s
+   carrier and `5e-324`'s bits are identical). Gated the arm on
+   `ctx.features.bigint` (prep's whole-program bigint-construction prescan) —
+   two WAT bodies now, selected at stdlib-registration time. A bigint-free
+   program can never produce that carrier, so its `__to_num` unconditionally
+   trusts "not NaN ⇒ real number", subnormal or not. Mirrors the EXISTING gate
+   on `toNumF64`'s own inline fast path (src/ir.js ~1191-1206) — this closes
+   the same gap in the full `__to_num` CALL body (hit at O0, and as the
+   inline path's own fallback call at O2/O3).
+
+2. COMPILE-TIME (the named shape): `Number.MIN_VALUE`/`MAX_VALUE`/`EPSILON`/…
+   resolve to a bare `'Number.X'` STRING (prepare's `.` handler,
+   module/number.js's niladic-getter table) that pre-eval never folded to a
+   literal — unlike `Math.PI` (MATH_CONST), which already did. Added a mirror
+   `NUMBER_CONST` table in src/prepare/pre-eval.js, wired into `evalConst`'s
+   string branch AND the raw `['.', 'Number', X]` shape. ALSO fixed
+   `foldNode`'s bare-string branch (previously ONLY consulted `env`, never
+   `evalConst`) to delegate to `evalConst` — needed for a namespace constant
+   used AS the whole expression (`() => Number.MIN_VALUE`, `return Math.PI`),
+   which never passes through any wrapping op node. Side effect: this ALSO
+   fixed a pre-existing, undiscovered bug where a bare `Math.PI` (or any Math
+   constant) used as a function body/return value exported as a garbage
+   BigInt — same root, same fix, zero extra cost.
+
+**Bonus find — real, unrelated bug, same hunt**: `ratToF64` (pre-eval's
+exact-rational→f64 rounding) had a flat 60-digit fractional budget counted
+from the DECIMAL POINT. Two independent failure modes: (a) a compile-time-
+folded division landing near/in the subnormal range (`1/1e61`, `1e-300/1e20`)
+spends most of its expansion on LEADING ZEROS before any significant digit —
+the smallest subnormal needs 323 of them — so the flat budget silently
+truncated to "0.000…0" → `Number()` → exactly 0 (confirmed as low as
+`1/1e61`, an utterly ordinary double, not even subnormal); (b) even at normal
+magnitude, correctly ROUNDING an exact rational to nearest is stricter than
+round-tripping an already-double value — `0.1 + 0.2`'s exact rational sum
+sits a hair past the true rounding midpoint, and only 60 sig-digits AFTER the
+first nonzero one (not 60 total from the decimal point) reliably resolves
+that near-tie. Fixed by moving the budget to count from the first significant
+digit (`RAT_SIG_DIGITS_AFTER_FIRST = 60`, unchanged count, just relocated)
+with a generous `RAT_MAX_FRAC_DIGITS` leading-zero allowance. Caught IN-
+SESSION by the existing `test/workers.js` "static region relocates" pins
+(`String(0.1+0.2)`) regressing during this session's own gate run — found and
+fixed same-session, never landed broken.
+
+**Documented, NOT closed (by design — carrier doctrine boundary)**: a
+bigint-USING program keeps the old, ambiguous `__to_num` heuristic wherever a
+value's STATIC kind is genuinely unproven (a dict-shaped property / mixed-
+type array element — not a plain local/param, which narrower inference
+already proves NUMBER). Nothing short of the boxed-bigint carrier redesign
+(ledgered, `.work/bigint-round3-design.md`, deliberately not adopted) removes
+this. Pinned: `test/data.js` "audit-#11 P0-1: bigint-using-program carrier
+divergence — DOCUMENTED, still open by design" (`+o.a`/`+a[0]` give `1`
+instead of JS's `5e-324`, native AND kernel, both wrong the same documented
+way). Negative control: real bigint coercion in a bigint-using program is
+UNCHANGED (statements.js 202/202 green, incl. the 2^62 pins).
+
+**Unexpected wins**: two PRIOR "kernel-curated"/banked divergences (README's
+"One known divergence class", this file's own "CARRIER WALL MAPPED
+2026-07-27" entry — declared a permanent wall, "NO ToNumber-free value→bits
+path in the kernel by construction") are CLOSED as a side effect: the self-
+hosted compiler's OWN source is itself bigint-free (bignum.js's rational
+limbs are plain-number arrays, never a real BigInt, precisely to avoid this
+class), so the same `ctx.features.bigint`-gated `__to_num` applies to the
+kernel's own internal coercions too. `test/data.js`'s negative-subnormal-
+literal and 2^52-1-bigint-literal kernel-curated exclusions are gone (both
+legs agree, no more `onKernel()` split); `test/kernel-oracle.js`'s
+"subnormal literal" row moved from DIVERGENT to AGREE. README's "One known
+divergence class" note rewritten to describe only the surviving (bigint-
+using-program) case.
+
+**Sibling probe** ("`+x` with 5e-324 through a call returning `undefined`"):
+extensively probed (dozens of call/param/closure/array/dict shapes, native +
+kernel, O0/O2/O3) post-fix — no residual leak found; every shape now agrees
+with the JS oracle. Concluded same root cause as the main repro, closed by
+the same fix; the exact "returns undefined" symptom was not independently
+reproduced (most likely a paraphrase of "wrong value", or a shape variant
+that happened to collide with the runtime `ctx.features.bigint`-OFF fix
+before its landing). Not treated as a separate open item.
+
+**Also found, NOT fixed (out of scope, reported)**: `Number(x)` (the cast,
+not unary `+`) still misdecodes a subnormal AND additionally marshals the
+whole export boundary as i64/BigInt even for a plain f64 parameter (`export
+function f(x) { return Number(x) }` throws on a plain-number host argument).
+Root cause is `kind.js`'s `calleeValType` never modeling `Number(x)` calls at
+all (unlike `Math.sqrt` etc.) — a different, deeper defect than the named
+audit-#11 shape (`+x`, not `Number(x)`). Left unfixed; worth its own P0 item.
+
+**Gates (all green, foreground)**: repro table native+kernel O0/O2/O3;
+test262 Number builtins 340 tracked/108 pass/0 fail; test262 language/
+literals 0 fail; full curated battery (test/index.js's 90-file list) run in
+11 chunks, all green (one regression — `test/workers.js` "static region
+relocates" ×2 — caught by the ratToF64 bug above, fixed same-session, re-
+verified green); kernel-parity 33/33 byte-identical; kernel-oracle 451/451
+assertions; selfhost.js 21/21; perf-ratchet 10/10 (+0 on 9, -520 ops on
+`ring` — an improvement, not a regression); fuzz 2000×4 (default + --typed-
+int + --typed-map + --typed, 0 divergence each); size sweep geomean jz/AS =
+1.042× (bench-size.mjs, baseline holds exactly). Two full `npm run build`
+runs byte-identical (dist/jz.wasm, dist/jz.js sha256-verified) confirming
+deterministic self-host output.
+
+**Files**: module/number.js (`__to_num`), src/prepare/pre-eval.js
+(`ratToF64`, `NUMBER_CONST`, `evalConst`, `foldNode`), test/data.js (closed
+pins + new documented-divergence pin), test/kernel-oracle.js (AGREE move),
+README.md (divergence note rewritten).
+
 ## Status (2026-08-05, DECL-INIT WALL round 2 — still banked, mechanism now
 ## precisely localized; see .work/carrier-invariant-design.md's final entry)
 

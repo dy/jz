@@ -347,16 +347,28 @@ test('kernel oracle: fold — documented divergence (rational constant-fold vs n
     'fold: rationalConst:false recovers naive-JS parity (proves the divergence above is a chosen tradeoff, not an uncontrolled bug)')
 })
 
-// README's own documented self-host limit (README.md, "One known divergence
-// class"): inside dist/jz.wasm, BigInt values ride raw i64 bits in an f64
-// slot, and small-magnitude bit patterns collide with subnormal Numbers (`1n`
-// and `5e-324` are the same 64 bits) — so the KERNEL misreads a negative
-// subnormal literal. Native has no such collision (P0-2 tagged the literal's
-// AST kind directly). This is the oracle-tier version of that same pin
-// (test/data.js's P0-2 test, `onKernel()`-gated for `JZ_TEST_TARGET=jz.wasm`
-// runs of the WHOLE suite): here BOTH legs run unconditionally in one process,
-// so the divergence is asserted directly instead of behind an env-var branch.
-test('kernel oracle: subnormal literal — documented divergence (kernel-only, README self-host note)', async () => {
+// Was a documented self-host limit (README.md, "One known divergence class"):
+// inside dist/jz.wasm, BigInt values ride raw i64 bits in an f64 slot, and
+// small-magnitude bit patterns collide with subnormal Numbers (`1n` and
+// `5e-324` are the same 64 bits) — module/number.js's `__to_num` treated ANY
+// nonzero finite subnormal reaching it as raw BigInt carrier bits, UNGATED.
+// The compiler's OWN source is itself bigint-free by design (bignum.js's own
+// doc comment: earlier revisions carried rational n/d as native BigInt and
+// hit exactly this native-vs-kernel divergence, so it was rewritten onto
+// plain safe-integer limb arrays specifically to avoid it) — so `ctx.features.
+// bigint` is false for the compiler's own self-hosted compilation, and the
+// kernel's internal coercions of a subnormal literal like this one hit the
+// exact same unconditional-heuristic bug the compiled OUTPUT program did
+// (audit-#11 P0-1: `+Number.MIN_VALUE`/`+5e-324` misdecoded as bigint 1).
+// Closed by gating `__to_num`'s subnormal-as-BigInt arm on `ctx.features.
+// bigint` (module/number.js) — a bigint-free program (the compiler's own
+// source included) can never produce that carrier, so every subnormal it
+// touches, literal or computed, is now read as the real Number it is. This is
+// the oracle-tier version of test/data.js's P0-2 test (`onKernel()`-gated for
+// `JZ_TEST_TARGET=jz.wasm` runs of the whole suite): here BOTH legs run
+// unconditionally in one process, so the (now-closed) divergence's AGREEMENT
+// is asserted directly instead of behind an env-var branch.
+test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.features.bigint-gated __to_num)', async () => {
   if (onWasi()) return
   const src = 'export let f = () => -5e-324'
   const mod = await oracle(src)
@@ -364,7 +376,7 @@ test('kernel oracle: subnormal literal — documented divergence (kernel-only, R
   is(want, -5e-324, 'JS oracle baseline')
   for (const opt of [0, 2, 3]) {
     is(runNative(src, opt).f(), want, `subnormal O${opt}: native matches JS oracle exactly (AST-tagged literal kind, no carrier ambiguity)`)
-    is(runKernel(src, opt).f(), -1, `subnormal O${opt}: kernel misreads the literal as the colliding BigInt bit pattern (documented; README "One known divergence class")`)
+    is(runKernel(src, opt).f(), want, `subnormal O${opt}: kernel matches JS oracle too (no more BigInt-carrier collision on a bigint-free program)`)
   }
 })
 
