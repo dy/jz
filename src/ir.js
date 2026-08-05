@@ -1674,6 +1674,15 @@ export function readVar(name) {
 /** Write variable value. void_ → local.set (no result); otherwise → local.tee.
  *  valIR is raw emit result — coerced to f64 for boxed/global, to local type for locals. */
 export function writeVar(name, valIR, void_) {
+  // Loop-guard hull channel invalidation (emit.js's loopGuardHi/boundedHi,
+  // sort lever): a `while(name < bound)`-derived upper-bound fact for `name`
+  // is only valid until the FIRST write to `name` — writeVar is the single
+  // choke point every bare-name write path (`=`, `+=`, `++`/`--`, a for-loop
+  // step) funnels through, so one delete here covers all of them. Emission
+  // order matches evaluation order up to this point, so any comparison that
+  // already READ the fact (via boundedHi, before this write emitted) stays
+  // sound — only what's emitted AFTER this write loses it.
+  ctx.types.loopGuardHi?.delete(name)
   if (ctx.func.boxed?.has(name)) {
     const addr = boxedAddr(name)
     // i32-narrowed cell: store the raw i32 (mirrors the integer-global write

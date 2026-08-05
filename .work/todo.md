@@ -6,6 +6,135 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-05, LEVER B LANDED — sort's typed-.length magnitude bound +
+## loop-guard-hull channel, the second of the two named speed levers from the
+## THREE-SPEED-REDS dissection below. Landed after Lever A, same session — see
+## its own entry just below for the radixsort half.)
+
+**Lever B — two additive, sound range-fact extensions, exactly as the
+dissection scoped them.**
+
+**(a) Typed-array `.length` magnitude bound** (`intExprRange`, static.js): a
+NEW case for `n[2]==='length'` on a proven typed-array receiver. Bound is
+`floor(2^32 / elementByteWidth)` — wasm32's own hard linear-memory ceiling
+(2^32 bytes, the WebAssembly core spec's memory32 limit) divided by the
+element's byte width — universal and unconditional, no allocator-size-class
+or `--memory`-flag assumption. Only useful (< 0x7fffffff) for element widths ≥
+4 bytes: Int32/Uint32/Float32Array cap at 2^30, Float64/BigInt64/BigUint64Array
+at 2^29; 1-byte and 2-byte element kinds are left unbounded here (their true
+ceiling is ≥ 2^31, not tighter than what a magnitude proof needs — admitting a
+boundary-adjacent hull for them isn't worth the risk for zero practical gain,
+since no bench kernel indexes a >1GB Uint8Array). Receiver ctor resolved via
+the same 3-source chain Lever A's `wrapTruncatingTypedElemName` uses (a small
+`typedCtorRawOf` duplicate in static.js — static.js can't import type.js/
+emit.js without a cycle, so this one small chain is repeated, not shared).
+Once landed, analyze.js's PRE-EXISTING decl-range stamping (`const n =
+a.length` → `intExprRange(a[2])` → `repOf('n').range`, unconditionally
+already there, no change needed) picks this up for free — `n`/`end` in
+heapify now durably carry `[0, cap]`.
+
+**(b) Loop-guard hull channel** (emit.js: `loopGuardHi`/`boundedHi`/
+`boundedLo`/`addLiteralFitsI32`/`subLiteralFitsI32`, wired into `'+'`/`'-'`s
+i32 fast-path OR-chain). NOT a reuse of `forCounterRange`'s whole-body
+induction hull (`withRefinements` + `ctx.func.refinements`) — that channel's
+OWN `isReassigned` safety check refuses any name written anywhere in the
+guarded body, and heapify's `child` genuinely IS written there (`child++`,
+`child = 2*i+1`), so a naive port would have refused exactly the case it
+needs to cover. Instead: a SEPARATE, emit-time map, installed right after a
+`while(name < bound)` / `for(…; name < bound; …)` guard (reusing `bound`'s own
+`intExprRange`, gap (a) is what makes THIS non-null for a `.length`-derived
+bound) and **invalidated at the first WRITE to `name`** — one line in
+`writeVar` (ir.js), the single choke point every bare-name write path (`=`,
+`+=`, `++`/`--`, a for-loop step) already funnels through. Sound because
+emission order matches evaluation order up to that write: heapify's `if
+(child + 1 < n && …) child++` reads the guard fact in its OWN condition
+(evaluated first) before the SAME statement's consequent writes `child`
+(evaluated after, if at all) — a per-position fact, not a whole-body one.
+`boundedHi`/`boundedLo` are deliberately ONE-SIDED (tolerate an unbounded far
+side) — `X + k` (k a known-sign literal) can only overflow i32 at the extreme
+k pushes TOWARD, so `X - 1`'s soundness needs ONLY `X`'s lower bound, `X + 1`
+only its upper — never both, unlike `addRangeFitsI32`'s existing two-sided
+contract. **`forCounterRange` itself gained a second, symmetric shape**
+(decreasing counters — `for(end=n-1; end>0; end--)`, `>`/`>=` guards,
+`--`/`-=`/`x=x-K` steps) — needed because sort's SECOND site sits under
+exactly this shape (heap-extract's `for(let end=n-1;end>0;end--){while(child<
+end)…}`) and the inner while-guard's OWN bound (`end`) only resolves through
+the OUTER loop's `counterRefs`, which required the extension to prove
+anything for a decreasing counter at all. Both halves are ADDITIVE — neither
+touches `addRangeFitsI32`/`subRangeFitsI32`/P0-2's own predicate.
+
+**Verification.** Checksum reproduced bit-exact: sort `1238395589`, matching
+the dissection's surgery-verified value. WAT diff (heapsort's fully-inlined
+`runKernel`, `-O3`) against unpatched HEAD: BOTH named sites (`child+1<n` in
+heap-build, `child+1<end` in heap-extract) recovered `i32.lt_s(i32.add(child,
+1), n/end)` exactly as the dissection's hand-patch described; `trunc_sat`+
+`select` sequences gone at both sites, WAT 149984→~145520 bytes. Paired ABBA
+vs zig-wasm (quiet-check via `uptime` first, load 2.4-3.4 — see below): first
+`--paired=4`/`=8` rounds were noisy (medians swinging 0.996×-1.165× run to
+run — heapsort's data-dependent branch pattern reads as more load-sensitive
+than radixsort's uniform unrolled loop on this machine), so widened to
+`--paired=16`: **median 1.001×** (near parity; dissection predicted ≈0.85× from
+a controlled hand-patch ABBA, not live-compiler noise — the DIRECTION and
+MAGNITUDE of recovery is fully confirmed, 1.42-1.53× → ~1.0×, even where the
+exact point estimate has session-to-session spread). `--verify-anchors`
+(b8fcfeb9 tooling) PASSED 3/3 on every merge this session (`c-wasm×mat4`
+1.015-1.030×, `c-wasm×fft` 1.061-1.078×, `as×synth` 1.027-1.043× — all within
+the 1.10× tolerance), certifying the machine's general calibration despite the
+elevated background load — the noise is case-specific to sort's own branch
+pattern, not a broad drift the anchors would have caught. `bench/results.json`
+sort+radixsort rows merged together (both from this session's runs);
+`jz.medianUs` sort 6620→5021 (paired 16-round measurement), radixsort
+3344→2354 (Lever A's own number, carried through). **Hit the SAME
+`meta.invocations` narrow-target-replacement gap TWICE more** (once per
+`--merge` call, `sort`+`radixsort` together, then `sort` alone at
+`--paired=16`) — restored the full 21-entry dict from HEAD each time (verified
+via python dict-equality between the committed file and the merged one, not
+eyeballing).
+
+**Vectorizer re-admission FOUND AND FIXED** (the exact risk this lever's own
+task briefing flagged: "the range facts feed the vectorizer — watch for
+re-admissions"). `examples/slime` and `examples/diffusion`'s toroidal-wrap
+stencils (`xw = x>0?x-1:w-1`) regressed from 13/60 `f64x2.` ops to 1 each —
+NOT a correctness bug, a RECOGNITION miss: `subLiteralFitsI32`'s (sound!) new
+`x-1`/`y-1` recovery produces a THIRD wasm shape neither of vectorize.js's
+`tryStencil`/`isStep` two existing cases matched — `f64.convert_i32_s(i32.sub
+(x,1))` (native i32 arithmetic wrapped in ONE outer convert so it still
+type-unifies with the select's sibling branch, which stays f64 since `w`/`h`
+remain unprovable there — module-level `let W=0,H=0` set via `resize(w,h)`,
+outside this lever's `.length`-receiver scope). Fixed with an 8-line addition
+to `isStep` (vectorize.js): peel one `f64.convert_i32_s` wrapper and re-check
+the native form underneath — symmetric to the EXISTING two shapes it already
+peels (bare `i32.op`, and the older fully-f64 `f64.op(convert(x),1)`
+fallback from audit-#8 P1-2). Both example kernels' `f64x2.` counts fully
+recovered (13, 60) after the fix; `test/examples.js`'s pinned counts and
+bit-exactness assertions pass unchanged. **Bisected via an isolated
+Lever-B-vs-HEAD emit.js swap** (not guesswork) — confirmed emit.js was the
+sole cause (ir.js's `writeVar` hook and static.js's gap (a) alone were both
+inert for this regression), then narrowed to the `addLiteralFitsI32`/
+`subLiteralFitsI32` wiring specifically via a one-line sed-disable test,
+before finding the exact `boundedLo` hit (`{rlo:1}` from the ALREADY-EXISTING
+`y>0` ternary-branch refinement, `refineIntCompareRange` — pre-existing,
+unrelated to this session — that this lever's one-sided resolver was, for the
+first time, able to actually USE).
+
+**Files touched**: `src/compile/emit.js` (loop-guard-hull channel +
+`forCounterRange`'s decreasing-step extension + the `'+'`/`'-'` handler
+wiring — the hunks NOT committed under Lever A), `src/ir.js` (`writeVar`'s
+one-line invalidation hook), `src/static.js` (gap (a) — the `.length` case +
+`typedCtorRawOf`), `src/optimize/vectorize.js` (`isStep`'s third-shape peel —
+the re-admission fix), `bench/results.json` (sort+radixsort rows, this
+session's final measurements).
+
+**Incident, logged not hidden**: mid-session, a botched `git stash push`
+(wrong flag order, silently created no stash) followed by a reflexive `git
+stash pop` popped a PRE-EXISTING, unrelated stash (`stash@{0}`, "WIP on main:
+92f2865 Create watr.yml" — self-host bench tooling work, not from this
+session) into README.md/scripts/{selfhost-build,bench-selfhost}.mjs, two with
+real conflict markers. Caught immediately via `git status`; restored all
+three files to HEAD byte-for-byte (`git show HEAD:<path>` piped to disk, not
+a second stash op) and re-verified via diff before touching anything else.
+`stash@{0}` itself is untouched and still recoverable — not mine to resolve.
+
 ## Status (2026-08-05, LEVER A LANDED — radixsort self-referential typed-int
 ## increment, the cleaner of the two named speed levers from the
 ## THREE-SPEED-REDS dissection below. Lever B (sort's magnitude-bound +

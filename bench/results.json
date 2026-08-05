@@ -1,7 +1,7 @@
 {
  "meta": {
-  "date": "2026-08-05 21:23 UTC",
-  "commit": "538a02bd",
+  "date": "2026-08-05 23:04 UTC",
+  "commit": "70748f70",
   "host": {
    "platform": "darwin",
    "arch": "arm64",
@@ -48,33 +48,33 @@
      "case": "mat4",
      "target": "c-wasm",
      "storedUs": 2554,
-     "freshUs": 2428,
-     "ratio": 1.0519,
+     "freshUs": 2479,
+     "ratio": 1.0303,
      "pass": true
     },
     {
      "case": "fft",
      "target": "c-wasm",
      "storedUs": 1139,
-     "freshUs": 1004,
-     "ratio": 1.1345,
-     "pass": false
+     "freshUs": 1062,
+     "ratio": 1.0725,
+     "pass": true
     },
     {
      "case": "synth",
      "target": "as",
      "storedUs": 2471,
-     "freshUs": 2314,
-     "ratio": 1.0678,
+     "freshUs": 2370,
+     "ratio": 1.0426,
      "pass": true
     }
    ],
    "ratios": {
-    "c-wasm×mat4": 1.0519,
-    "c-wasm×fft": 1.1345,
-    "as×synth": 1.0678
+    "c-wasm×mat4": 1.0303,
+    "c-wasm×fft": 1.0725,
+    "as×synth": 1.0426
    },
-   "pass": false
+   "pass": true
   },
   "partial": true
  },
@@ -4993,10 +4993,11 @@
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 3275,
+     "medianUs": 3226,
      "bytes": 2639,
-     "memKb": 54672,
-     "parity": "ok"
+     "memKb": 54592,
+     "parity": "ok",
+     "measuredAt": "70748f70"
     },
     "deno": {
      "medianUs": 2604,
@@ -5023,10 +5024,11 @@
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 3344,
-     "bytes": 1496,
-     "memKb": 52384,
-     "parity": "ok"
+     "medianUs": 2351,
+     "bytes": 1414,
+     "memKb": 52320,
+     "parity": "ok",
+     "measuredAt": "70748f70"
     },
     "as": {
      "medianUs": 3244,
@@ -5047,10 +5049,11 @@
      "parity": "ok"
     },
     "zig-wasm": {
-     "medianUs": 2296,
+     "medianUs": 2272,
      "bytes": 981348,
-     "memKb": 54448,
-     "parity": "ok"
+     "memKb": 54224,
+     "parity": "ok",
+     "measuredAt": "70748f70"
     },
     "c-wasm": {
      "medianUs": 5693,
@@ -5089,7 +5092,35 @@
      "parity": "ok"
     }
    },
-   "compileMs": 128.1
+   "compileMs": 123.7,
+   "paired": {
+    "jz/zig-wasm": {
+     "ratios": [
+      1.0295,
+      1.033,
+      1.033,
+      1.0365,
+      1.0398,
+      1.041,
+      1.0428,
+      1.0431
+     ],
+     "median": 1.0398
+    },
+    "jz/v8": {
+     "ratios": [
+      0.7108,
+      0.725,
+      0.7282,
+      0.7292,
+      0.7306,
+      0.7316,
+      0.7368,
+      0.7377
+     ],
+     "median": 0.7306
+    }
+   }
   },
   "raytrace": {
    "name": "sphere ray tracer (closest-hit + Lambert)",
@@ -5801,10 +5832,11 @@
      "parity": "ok"
     },
     "v8": {
-     "medianUs": 8454,
+     "medianUs": 6904,
      "bytes": 1602,
-     "memKb": 54800,
-     "parity": "ok"
+     "memKb": 54736,
+     "parity": "ok",
+     "measuredAt": "70748f70"
     },
     "deno": {
      "medianUs": 7699,
@@ -5831,10 +5863,11 @@
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 6620,
-     "bytes": 1695,
-     "memKb": 51472,
-     "parity": "ok"
+     "medianUs": 5021,
+     "bytes": 1679,
+     "memKb": 51616,
+     "parity": "ok",
+     "measuredAt": "70748f70"
     },
     "as": {
      "medianUs": 7734,
@@ -5855,10 +5888,11 @@
      "parity": "ok"
     },
     "zig-wasm": {
-     "medianUs": 4325,
+     "medianUs": 4873,
      "bytes": 36748,
-     "memKb": 51728,
-     "parity": "ok"
+     "memKb": 51776,
+     "parity": "ok",
+     "measuredAt": "70748f70"
     },
     "c-wasm": {
      "medianUs": 5172,
@@ -5897,7 +5931,51 @@
      "parity": "ok"
     }
    },
-   "compileMs": 73.2
+   "compileMs": 73.8,
+   "paired": {
+    "jz/zig-wasm": {
+     "ratios": [
+      0.7744,
+      0.8607,
+      0.878,
+      0.8868,
+      0.8907,
+      0.9047,
+      0.9705,
+      0.9883,
+      1.0007,
+      1.0168,
+      1.0563,
+      1.136,
+      1.1371,
+      1.1759,
+      1.2885,
+      1.3169
+     ],
+     "median": 1.0007
+    },
+    "jz/v8": {
+     "ratios": [
+      0.5269,
+      0.5737,
+      0.6245,
+      0.631,
+      0.6478,
+      0.6495,
+      0.6717,
+      0.708,
+      0.7159,
+      0.7517,
+      0.7552,
+      0.7832,
+      0.8382,
+      0.8385,
+      0.8703,
+      0.9201
+     ],
+     "median": 0.7159
+    }
+   }
   },
   "spmv": {
    "name": "sparse matrix×vector (CSR)",

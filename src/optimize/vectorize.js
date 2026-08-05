@@ -1867,6 +1867,15 @@ function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
   const isStep = (b, op) => {
     b = unTee(b)
     if (isArr(b) && b[0] === op && b.length === 3 && isLocalGet(b[1], incVar) && isI32Const(b[2]) && constNum(b[2]) === 1) return true
+    // f64-UNIFIED native-i32 step: a sound `x±1` range proof (addLiteralFitsI32/
+    // subLiteralFitsI32, emit.js) now recovers native `i32.op(x,1)` for THIS
+    // branch even when the select's OTHER branch stays an unprovable f64
+    // invariant (`h-1` from a runtime-set global) — the select still needs
+    // both arms in the SAME wasm type, so THIS arm gets wrapped in one outer
+    // f64.convert_i32_s to unify. Same value as the two shapes below (bare
+    // i32.op, and the older fully-f64 f64.op(convert(x),1) fallback), a
+    // third wasm SHAPE for it — peel the convert and re-check underneath.
+    if (isArr(b) && b[0] === 'f64.convert_i32_s' && b.length === 2 && isStep(b[1], op)) return true
     const f64op = op === 'i32.sub' ? 'f64.sub' : 'f64.add'
     if (!isArr(b) || b[0] !== f64op || b.length !== 3) return false
     const l = unTee(b[1])

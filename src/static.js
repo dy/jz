@@ -5,6 +5,19 @@
 import { I32_MIN, I32_MAX } from './ast.js'
 import { ctx } from './ctx.js'
 import { repOf, VAL } from './reps.js'
+import { TYPED_ELEM_CODE } from '../layout.js'
+
+// Byte width per TYPED_ELEM_CODE index (0..7) — parallel to module/typedarray.js's
+// own private SHIFT table (log2 of this), duplicated here (layout.js-adjacent, no
+// compiler-state dependency) since that module isn't importable from this leaf file.
+const TYPED_ELEM_BYTE_WIDTH = [1, 1, 2, 2, 4, 4, 4, 8]
+
+// Bare-name typed-array ctor resolution — the raw 'new.X' / 'new.X.view' string,
+// same multi-source chain resolveElem (module/typedarray.js) and this compiler's
+// own typed-dispatch sites read for a receiver NAME: a per-function narrowing
+// overlay first, then the whole-function map, then the module-global map.
+const typedCtorRawOf = (name) =>
+  ctx.func?.localTypedElemsOverlay?.get(name) ?? ctx.types?.typedElem?.get(name) ?? ctx.scope?.globalTypedElem?.get(name) ?? null
 
 /** Extract integer value from AST literal node. Returns null if not a 32-bit integer. */
 export function intLiteralValue(expr) {
@@ -75,6 +88,29 @@ export function intExprRange(n) {
   }
   if (!Array.isArray(n)) return null
   const op = n[0]
+  // A typed array's `.length` (element count) is bounded by wasm32's own hard
+  // linear-memory ceiling: a SINGLE allocation can span at most the whole
+  // address space, 2^32 BYTES (WebAssembly core spec, memory32 limit — 65536
+  // pages × 64 KiB), and elemCount = byteLength / elementByteWidth exactly (no
+  // rounding — layout.js's SHIFT/stride convention). This is universal and
+  // unconditional (no allocator-size-class assumption, no `--memory` flag
+  // assumption) — it holds even for a receiver that later grows to fill all of
+  // memory. Only useful (≤ i32 range) for element widths ≥ 4 bytes: a 1-byte
+  // element's ceiling is 2^32 itself (not < 2^31), a 2-byte element's is
+  // exactly 2^31 (still not STRICTLY under 0x7fffffff) — both left unbounded
+  // here rather than admitting a boundary-adjacent hull.
+  if (op === '.' && n.length === 3 && n[2] === 'length' && typeof n[1] === 'string') {
+    const raw = typedCtorRawOf(n[1])
+    if (raw != null) {
+      const bare = raw.endsWith('.view') ? raw.slice(4, -5) : raw.slice(4)
+      const code = TYPED_ELEM_CODE[bare]
+      const width = code != null ? TYPED_ELEM_BYTE_WIDTH[code] : null
+      if (width != null) {
+        const cap = Math.floor(0x100000000 / width)
+        if (cap <= 0x7fffffff) return [0, cap]
+      }
+    }
+  }
   if (op === '?:' && n.length === 4) {
     const a = intExprRange(n[2]), b = intExprRange(n[3])
     return a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null
