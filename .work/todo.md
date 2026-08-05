@@ -6,6 +6,137 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-05, THREE SPEED REDS DISSECTED from 3188aebc's claims
+## verdict — sort/radixsort: named+surgery-proven levers, NOT landed (soundness-
+## critical, out of session scope); fft: discrepancy resolved, environment
+## drift not a jz regression — results.json fft row merged via b8fcfeb9's
+## --merge/--verify-anchors, first real use, quiet window, local only)
+
+**Target 1 — sort 1.531× vs zig-wasm, root-caused, NOT a further regression
+since flag-veto.** WAT bisection (`git worktree`, runKernel-only hash compare
+across the 66 src-touching commits between cfbb23dd (SORT FLAG-VETO LANDED,
+0.969× leading) and f704a077): runKernel is **byte-identical from 16f2d7c8
+(2026-08-02) all the way through current HEAD** — confirmed via direct hash
+match against a fresh HEAD compile. So nothing has regressed sort's codegen
+SINCE 16f2d7c8; that commit itself is where the shape changed, one-time, and
+its effect was invisible until this session's fresh full-corpus paired
+evidence (3188aebc) finally re-measured it in a passing claims run. Mechanism
+(diffed cfbb23dd's runKernel against 16f2d7c8's): the heapify sibling-index
+bound check `child + 1 < n` (both loops — heap-build and extract) was
+`i32.lt_s(i32.add(child,1), n)` at flag-veto; it is now
+`f64.lt(f64.add(f64.convert_i32_s(child), 1), f64.convert_i32_s(n))` — a full
+JS-semantic ToInt32 detour replacing 2 i32 ops with an f64 round-trip. Root:
+16f2d7c8 (P0-2 sibling fix, addFitsI32 gating bare +/-) correctly closed a
+real i32-overflow unsoundness bug, but `n`/`end` (typed-array-.length-derived
+loop bounds) carry no magnitude fact `intExprRange` can use, so
+`addRangeFitsI32(child, 1)` can't prove `child+1` fits i32 — same class as
+3b50d504/16f2d7c8's own documented "loop-counter range gap" residual, one
+level removed (a `while` guard, not a `for`-counter). **Surgery** (hand-patch
+the 2 f64-round-trip comparisons back to `i32.lt_s`, watr-assembled,
+checksum-verified identical to unpatched: 1238395589): ABBA 4 rounds,
+unpatched median ≈6485µs / patched median ≈4100µs (~1.58× faster). Retimed
+vs zig-wasm (paired, quiet, Chrome 0%, load ~3.2): unpatched jz/zig **1.424×**
+(matches the ledger's 1.531× within run-to-run noise), zig median 4808µs;
+patched jz (≈4100µs) / zig ⇒ **≈0.85×, jz LEADS zig** — the WAT delta alone
+overshoots the entire regression, fully explaining the wall-clock and
+matching the original flag-veto-era "confirmed LEADING zig" verdict almost
+exactly. **Verdict: NAMED, closable LEVER — not a hard tail — NOT landed.**
+Needs two additive, sound range-fact extensions (no soundness weakened): (a)
+a magnitude bound on typed-array `.length` reads (wasm32 linear memory caps
+element count well under i32 range — a genuinely universal, always-sound
+fact `intExprRange` has no case for today), and (b) generalizing the
+loop-guard→body refinement (currently `forCounterRange`, gated to
+`for(let i=C;i<B;i++)` with a provable step) to plain `while(name < bound)` /
+general-loop guards keyed off (a)'s bound. Both together let
+`addRangeFitsI32` prove `child+1` sound without touching the P0-2 predicate
+itself. Sized like c8700daa's own lever (new range-fact class + emit.js
+plumbing) — banked rather than rushed given the full soundness-gate cost
+(battery/kernel-parity/oracle/perf-ratchet/fuzz) for the time remaining this
+session.
+
+**Target 2 — radixsort 1.456–1.472× vs zig-wasm, confirmed pre-existing (NOT
+a regression, per af08bead's own finding) — same P0-2 mechanism, ONE LEVEL
+CLEANER, and MORE valuable (closes ~96% of the gap).** WAT inspection
+(radixsort's `runKernel` is fully unrolled ×4 passes, zero calls, zero
+`unreachable` — already maximally inlined) found the SAME f64-ToInt32-
+round-trip shape at **8 sites** (2 per unrolled pass — the histogram-bump
+`count[(a[i]>>>shift)&0xff]++` and the scatter-bump `count[d]++`), each
+costing ~9 extra ops (convert, add, 2× trunc_sat, 2 selects, wrap) versus a
+bare `i32.add`+`i32.store`. Mechanism, traced to the exact emit.js site:
+`count[d]++` desugars (prepare/index.js's dedicated `['+1', n]` member-
+increment op, 5513de0e) to `count[d] = count[d] + 1`; the `'+1'` emit
+handler (emit.js:5116) blindly re-routes through the GENERIC `'+'` handler,
+losing the "this result is written straight back to the exact array element
+it was read from" context. The generic `'+'`'s i32 fast path
+(`addFitsI32 || addBoundedFaithful || addRangeFitsI32`) fails all three:
+`intExprRange` has no `[]`-array-read case, and a typed-array `i32.load`'s
+`opBound` defaults to the full unproven i32 ceiling — so it falls to the
+full f64 round-trip. **Surgery** (AST-level rewrite via watr's own
+parse/compile, all 8 sites → raw `i32.add`, fixing a tee-relocation ordering
+bug on first attempt — checksum-verified identical to unpatched: 2475082232):
+ABBA 4 rounds, unpatched median ≈3226µs / patched median ≈2255µs (~1.43×
+faster). Retimed vs zig-wasm (paired, quiet): unpatched jz/zig **1.472×**
+(matches ledger's 1.456×), zig median 2210µs; patched jz (≈2255µs) / zig ⇒
+**≈1.02×, near parity** — closes ~96% of the total gap. **Verdict: NAMED,
+closable LEVER — not a hard tail — NOT landed.** This lever is SIMPLER and
+MORE general than sort's: no new range-fact machinery needed. A typed
+Int32Array/Uint32Array element's own write-time ToInt32/ToUint32 truncation
+(ECMA-262 [[Set]] on integer-indexed exotics) is bit-identical to wasm i32
+wraparound — so ANY arithmetic whose result is the direct RHS of an
+assignment back into the SAME typed-array element (guaranteed by prepare's
+own `['+1'/'-1', n]` desugar contract — `n` is always literally the same
+node on both sides) is sound as raw i32 arithmetic UNCONDITIONALLY, no
+magnitude proof required at all. Lever: teach the `'+1'/'-1'` emit handler
+(emit.js:5116) to recognize a typed-Int32Array/Uint32Array-element operand
+and emit `i32.add`/`i32.sub` directly, bypassing `addFitsI32` entirely for
+this one self-referential shape. Likely generalizes well beyond radixsort
+(any counting-sort/histogram/bucket-fill idiom). Banked, not landed, same
+full-gate-cost reasoning as Target 1.
+
+**Target 3 — fft discrepancy RESOLVED: 1.078× is the true, reproducible
+number; 1.009× does not reproduce; root cause is rival-side environment
+drift, not a jz regression.** Paired ABBA re-run (quiet, Chrome 0%, load
+~3.2-4.2, 8 rounds, `--paired=8 --targets=jz,rust-wasm --cases=fft`):
+per-round ratios 1.054/1.064/1.074/1.074/1.076/1.079/1.082/1.112, **median
+1.076×** — cleanly reproduces the corpus refresh's 1.078-1.079× (3188aebc),
+nowhere near cc78bf56's own 1.009×. Confirmed the butterfly SIMD lift
+(cc78bf56) is still fully live in the current build (41 `v128`/`f64x2` ops
+in fft's WAT — not a codegen regression). `--verify-anchors` (b8fcfeb9,
+first real use) independently confirms genuine, fft-SPECIFIC environment
+drift: `c-wasm×fft` anchor reads 1004µs fresh vs 1139µs stored (**1.134×,
+DRIFT — exceeds the 1.10× tolerance**), while `c-wasm×mat4` (1.052×) and
+`as×synth` (1.068×) both PASS — a broad toolchain/machine shift would have
+moved mat4 too, so this reads as fft-specific (matches cc78bf56's own
+session: rust-wasm's fft time was 1003µs then, 874µs now — a ~13% rust-side
+speedup — while jz's own absolute time stayed flat/improved slightly, 1011µs
+then vs ~940µs now). **Verdict: not noise, not a methodology skew between
+corpus-single-sample and paired — genuine rival-baseline drift** (rustc/
+c-wasm-toolchain or machine-state change since cc78bf56's session). fft
+stays TRUE RED on the wasm-rival axis at ~1.08×, correctly. Merged via
+`node bench/bench.mjs --targets=jz --cases=fft --json=bench/results.json
+--merge --verify-anchors` exactly as specified — fft.jz row: medianUs
+1040→939, memKb 55072→54704, `measuredAt: 538a02bd`. **Tooling gap found in
+b8fcfeb9's --merge, flagged not fixed** (out of this session's scope): the
+design (`.work/fast-refresh-design.md` Piece 1) promises byte-preservation
+for per-case rows only — meta.invocations is NOT covered, and running with a
+narrow `--targets=` silently REPLACES the full 21-entry invocations
+documentation dict with just the selected target(s), which would have
+destroyed the other 20 rivals' documented invocation commands had it been
+committed as-is. Manually restored meta.invocations to the full dict before
+committing (verified: diff is now exactly meta.date/commit/anchors/partial +
+the one fft.jz row, nothing else touched — case-row byte-preservation IS
+correct). Anchors overall: 2/3 PASS, 1/3 (c-wasm×fft) DRIFT — reported
+honestly, `meta.anchors.pass: false`, `meta.partial: true`, both written by
+the tool as designed.
+
+**Files touched this session**: `.work/todo.md` (this entry) and
+`bench/results.json` (fft.jz row + meta, via --merge, hand-fixed
+invocations). No `src/` changes landed — both closable levers (sort,
+radixsort) are named with surgical proof but require new soundness-critical
+range-fact / write-sink machinery; banked for a dedicated session with full
+gate budget rather than rushed. `bench/web/fft.wasm` regenerated
+(gitignored, not committed).
+
 ## Status (2026-08-05, audit-#11 architectural-bank SMALL items 1-5 LANDED +
 ## item 6 ledger archive trim — one commit per item, local only, HEAD af42d159)
 

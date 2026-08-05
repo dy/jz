@@ -1,7 +1,7 @@
 {
  "meta": {
-  "date": "2026-08-05 16:41 UTC",
-  "commit": "bce7d1d7",
+  "date": "2026-08-05 21:23 UTC",
+  "commit": "538a02bd",
   "host": {
    "platform": "darwin",
    "arch": "arm64",
@@ -41,7 +41,42 @@
    "numpy": "python3 <case>.npy.py",
    "wat": "wat2wasm <case>.wat → node run-wat.mjs (V8 wasm)"
   },
-  "memory": "peak RSS per process run (/usr/bin/time -l)"
+  "memory": "peak RSS per process run (/usr/bin/time -l)",
+  "anchors": {
+   "pairs": [
+    {
+     "case": "mat4",
+     "target": "c-wasm",
+     "storedUs": 2554,
+     "freshUs": 2428,
+     "ratio": 1.0519,
+     "pass": true
+    },
+    {
+     "case": "fft",
+     "target": "c-wasm",
+     "storedUs": 1139,
+     "freshUs": 1004,
+     "ratio": 1.1345,
+     "pass": false
+    },
+    {
+     "case": "synth",
+     "target": "as",
+     "storedUs": 2471,
+     "freshUs": 2314,
+     "ratio": 1.0678,
+     "pass": true
+    }
+   ],
+   "ratios": {
+    "c-wasm×mat4": 1.0519,
+    "c-wasm×fft": 1.1345,
+    "as×synth": 1.0678
+   },
+   "pass": false
+  },
+  "partial": true
  },
  "cases": {
   "alpha": {
@@ -2356,10 +2391,11 @@
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 1040,
+     "medianUs": 939,
      "bytes": 2368,
-     "memKb": 55072,
-     "parity": "ok"
+     "memKb": 54704,
+     "parity": "ok",
+     "measuredAt": "538a02bd"
     },
     "as": {
      "medianUs": 1288,
@@ -2422,7 +2458,7 @@
      "parity": "ok"
     }
    },
-   "compileMs": 110
+   "compileMs": 109.1
   },
   "fftplan": {
    "name": "fftplan",
