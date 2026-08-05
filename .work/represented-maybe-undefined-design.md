@@ -1447,3 +1447,160 @@ live this session, pre-existing, general — its own separate fix), and §14
 point 4's joint binary-operand runtime-domain dispatch (the
 `bigintMixReject`/audit-#10 KNOWN-FAIL, unchanged, still its own separate,
 larger design).
+
+## 17 — audit-#10 kind-specific table closed: member access / calls on a
+## nullish receiver get real ES TypeError semantics
+
+Closes the five `KNOWN-FAIL (audit #10, future work)` rows §14's own battery
+table named (line ~1033-1037): `.length`/`.slice()`/`.toFixed()`/`()` on a
+genuinely-`undefined` census read used to trap (wasm bounds/table trap),
+read a garbage/default value, or throw jz's own internal host-dispatch
+`Error` — never a real, catchable `TypeError`. `Array.isArray` on the same
+shape was already correct (§14's own revert).
+
+**Mechanism call: upgrade the existing runtime arms, not a new dispatch
+pass.** Every one of the five rows already had ONE specific, existing
+"unknown/unresolved receiver" emission arm (found by reading before writing,
+per this task's own brief): `module/core.js` `emitLengthAccess`'s
+"Unknown → runtime dispatch" arm (`.length`); `src/compile/emit.js`
+`tryRuntimeStringFork`'s non-STRING fallback (`.slice()`-shaped STRING-vs-
+ARRAY forks); `tryRuntimeNumberMethod`'s no-sidecar-override fallback
+(`.toFixed()`-shaped NUMBER-only methods, closures present); `externalMethodFallback`'s
+terminal `__ext_call` emission (same methods, closures absent); `emitGenericClosureCall`
+(bare `f()` calls on an unresolved callee). Each arm already existed and
+already ran on EVERY unresolved-kind receiver — the fix is one `isNullish`
+(ir.js) branch inserted into each, throwing instead of falling through to
+the old undefined/OOB/host-dispatch behavior. No new dispatch machinery, no
+new strategy, no new pass.
+
+**The throw itself** (`src/ir.js` `throwTypeErrorIR`, new, ~25 lines):
+constructs a REAL TypeError object inline — the identical shape module/
+core.js's `buildErrorObject` uses for a source `new TypeError(...)` (alloc_hdr
++ one store per `ERR_SCHEMA_PROPS` slot + `mkPtrIR`) — and throws it through
+the ordinary `$__jz_err` channel (`global.set $__jz_last_err_bits` +
+`throw`), the same 48-site pattern err-codes.js's registry already
+establishes. A REAL schema-tagged object, not a bare numeric code, is what
+makes `catch (e) { e instanceof TypeError }` true in-wasm: audit-#8 P0-2
+deleted the numeric-code range arm as unsound (a user's own `throw
+<sameNumber>` is bit-identical to an internal code), so only the tag+schema
+arm of the Error model's `instanceof` truth table (error-object-design.md
+§4) answers true — and only a real object carries a tag. The SAME object
+crossing to an uncaught host boundary decodes to a real host `TypeError` via
+interop.js's EXISTING `decodeThrown`/`errorSidClassOf` (audit-#7 P1,
+2a973082) — zero new decode machinery on either lane.
+
+**`.message`/`.name` are left `undefined`** (UNDEF_NAN, a pure NaN-box
+literal) rather than real strings — `instanceof` needs none of it (identity
+lives in the schema id, not any slot), and the task's own pin contract is
+class + catchability, matching error-object-design.md §5's existing
+precedent for internal coded throws ("no lazy materialization... an honest
+gap, not a new one"). Deliberate, not an oversight: building real message
+strings from these sites would need `module/string.js`'s literal-interning
+path, which is CONDITIONALLY autoloaded (not always present, unlike
+module/core.js) — reaching for it directly re-exposed two separate,
+confirmed PRE-EXISTING, unrelated self-host/module-interaction bugs (below).
+
+**Two found-live, out-of-scope landmines, confirmed pre-existing via a
+disposable `git worktree` at clean HEAD before this task, not fixed:**
+1. `__mkptr(...)`'s literal third argument (a raw offset constant) folds to
+   the WRONG compile-time value whenever `module/string.js` happens to be
+   loaded alongside it in the same compile — reproduces identically at HEAD
+   1d083ba9 by forcing `module/string.js` to autoload next to an unrelated
+   `__mkptr` test snippet. A NaN-box pointer-literal folding bug, nothing to
+   do with member access/calls.
+2. `.call`/`.apply`/`.bind` static lowering (`foldFnCallApplyBind`,
+   prepare/index.js) drops a `thisArg` side effect under the same
+   condition — also reproduces at clean HEAD.
+Both are latent, pre-existing self-host-adjacent fragility triggered by
+"does `module/string.js` happen to be loaded"; this task's OWN mechanism
+never triggers module/string.js autoload at all (throwTypeErrorIR builds
+inline, no `emit(['str', ...])`), so neither landmine is reachable through
+this feature — named here only because they were found while chasing an
+early draft's "Unknown op: str" crash (a draft that DID try routing through
+`ctx.core.emit['TypeError']`, hence module/string.js — reverted).
+
+**Gate scope: `censusMaybeUndefined`, not "kind unresolved."** The first
+landed draft gated every one of the five arms on "receiver's static kind
+(`vt`) is unresolved" alone — matching a literal reading of this task's own
+brief ("or the receiver is kind-unknown at a dynamic dispatch site"). The
+mandated gate run caught this as unsound-for-SIZE, not unsound-for-
+correctness: an ordinary POLYMORPHIC-but-never-nullish parameter (e.g.
+bench/poly.js's `sum(arr)`, called with both a `Float64Array` and an
+`Int32Array` — no single `vt` provable, but never undefined at either call
+site) has `vt == null` too, and paid the FULL guard tax at every such site —
+a measured SIZE-geomean regression from 1.0418× to 1.111× across the full
+49-case size-sweep corpus (49/49 cases regressed, ~+100B flat per program).
+Landed fix: gate all five arms on `censusMaybeUndefined` (kind.js) INSTEAD
+of "vt unresolved" — the EXISTING, narrower, load-bearing "genuinely might
+carry real `undefined`" predicate this whole design (§1-§16) already built
+and propagates through param/return/closure hops (`presentVal`/
+`mayBeUndefined` REP fields, censusShapedNode, the call-result arm). A
+dict/Map absent-key read (this task's own named rows) is exactly what
+`censusMaybeUndefined` was built to recognize; an ordinary kind-ambiguous
+array/typed-array parameter is not, and correctly pays nothing. Restored
+the size-sweep geomean to 1.0418× (baseline, unchanged) — 0 of 49 cases
+differ from HEAD 1d083ba9 byte-for-byte.
+
+`instanceof`/`String()`-on-caught-value fold correctness needed one more,
+independent hook (`src/prepare/index.js`, inside `prep()`'s universal per-
+node walk, mirroring the existing bigint/error whole-program flag pattern):
+whenever a `.`/`()` node's receiver/callee is `censusShapedNode`-shaped
+(kind.js's pure AST-shape test, no ctx lookup — the same predicate
+`mayBeUndefined`'s own Slice 2 producer already uses), pre-register
+`ctx.features.errorClasses.add('TypeError')` — order-independent, same
+reasoning as the existing bigint-flag comment, needed because
+`emitErrorInstanceof`/`toStrI64`'s Error arms fold to a compile-time `false`
+whenever `used.has('TypeError')` is false, and a program's OWN throw site
+can textually follow its `catch(e){ e instanceof TypeError }` in source.
+
+**A genuine, PRE-EXISTING self-host non-determinism found and then
+UN-exposed, not fixed:** the FIRST (vt-unresolved-gated) draft made
+`kernel-parity`'s `dict` corpus row (a pure dynamic-hash program, `d[c] =
+(d[c]||0)+1`) reachable through `s.length`'s guard, which minted `dict`'s
+FIRST-EVER Error schema as a side effect — activating a previously-dead
+schema-checking arm in the shared stdlib helper `$__dyn_get_t_h`
+(module/collection.js), whose own pre-existing WAT folds one truthiness
+check differently native vs self-hosted (confirmed pre-existing at clean
+HEAD 1d083ba9 via a disposable worktree, forcing an unrelated dead-code
+Error schema into the same `dict` source — byte-for-byte the same 46-byte
+divergence class). The `censusMaybeUndefined` narrowing above independently
+removed `dict`'s reachability into the guard (`s` is a plain string
+parameter, never census-tainted) — re-verified after landing, not assumed:
+`dict` is genuinely byte-identical native-vs-kernel again at every tier, so
+`test/kernel-parity.js`'s `PARITY_TODO` stays the empty set it already was.
+
+**Files touched**: `src/ir.js` (`throwTypeErrorIR`, new); `module/core.js`
+(`emitLengthAccess`'s guarded arm, gated on a new `mayBeUndef` parameter);
+`src/compile/emit.js` (`tryRuntimeStringFork`/`tryRuntimeNumberMethod`/
+`externalMethodFallback`/`emitGenericClosureCall`, each gated on
+`censusMaybeUndefined`); `src/prepare/index.js` (`censusShapedNode`-scoped
+`errorClasses` pre-registration hook); `test/dyn-keys.js` (audit-#10 KNOWN-
+FAIL block replaced with three green tests — host-boundary uncaught,
+in-wasm caught+instanceof, proven-receiver-unaffected — 50/50, 188
+assertions); `test/closures.js` (one devirt test's WAT-shape assertion
+updated — a ternary-bound closure-local call site no longer devirtualizes,
+since the nullish guard now interposes on watr's own devirt pattern match;
+functional correctness re-pinned, not dropped); `test/kernel-parity.js`
+(comment-only: documents the found-then-closed self-host divergence,
+`PARITY_TODO` unchanged at empty).
+
+**Gates**: full ~90-file battery in foreground chunks of 4-7, every chunk
+green; dyn-keys.js 50/50 (188 assertions) native leg; kernel-parity 33/33
+byte-identical (O0/O2/O3, including `dict`); kernel-oracle 11/11;
+perf-ratchet 10/10 at +0 every category (proven receivers genuinely
+untouched); optimizer green; minimal-output green (heap-free numeric
+programs stay heap-free, Error schema fully reachability-gated);
+selfhost.js 21/21 (206 assertions); fuzz 2000×4 (seeds 1-8000, four separate
+foreground runs, re-run after the `censusMaybeUndefined` narrowing) zero
+divergence; size sweep geomean 1.0418× (baseline 1d083ba9, unchanged, 0/49
+cases differ — the 1.05 cap holds with margin); fresh build ×2
+byte-identical (`dist/jz.js` sha256 `8a8fb7be…`, `dist/jz.wasm` sha256
+`58848b4f…`, `dist/interop.js` sha256 `396500b4…`, both builds).
+
+Residual, out of scope (named above): the `__mkptr`/`.call`-`.apply`-`.bind`
+module/string.js-autoload-adjacent landmines (pre-existing, unrelated,
+never reachable through this feature); real `.message`/`.name` text for
+these internal throws (needs the same STRING-census widening §16 already
+named as its own future slice); the general "method not found on a proven
+non-nullish OBJECT/HASH receiver" case (still reads `undefined`, unchanged —
+a different, pre-existing gap this task's own scope never covered).

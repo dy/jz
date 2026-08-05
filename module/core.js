@@ -10,10 +10,10 @@ import { OPTF } from '../src/ctx.js'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, mkPtrIR, usesDynProps, ptrOffsetIR, isNullish, isUndef, truthyIR, valKindToPtr, sidecarOverride, undefExpr, cloneIR, toStrI64 } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, mkPtrIR, usesDynProps, ptrOffsetIR, isNullish, isUndef, truthyIR, valKindToPtr, sidecarOverride, undefExpr, cloneIR, toStrI64, throwTypeErrorIR } from '../src/ir.js'
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
-import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
+import { valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
@@ -1000,7 +1000,7 @@ export default (ctx) => {
    *  of __length. __len returns 0 on tags it doesn't recognize, matching JS's
    *  `undefined` semantics on non-pointer .length (the binding writes through xs[i]
    *  / xs.length, so reaching .length with a non-pointer is unreachable in practice). */
-  function emitLengthAccess(va, vt, notString = false) {
+  function emitLengthAccess(va, vt, notString = false, mayBeUndef = false) {
     // jsstring carrier: receiver is an externref slot (boundary param tagged
     // `jsstring` by narrow.js phase J). Route to the `wasm:js-string` length
     // builtin directly — no SSO unbox, zero copy.
@@ -1036,6 +1036,43 @@ export default (ctx) => {
     // feature flags at the construction site); otherwise dispatch falls through
     // to ARRAY/STRING/TYPED. typedarray stays on because typed arrays are
     // commonly passed from JS via jz.memory.* without an in-program constructor.
+    //
+    // mayBeUndefined receiver ONLY (audit-#10 kind-specific table): `va` may
+    // genuinely BE the nullish sentinel here — a census-shaped dict/Map
+    // absent-key read (or a propagated-mayBeUndefined param/return/closure
+    // hop, `censusMaybeUndefined`'s own reach) has no proven vt (§14's
+    // opt-in model — a census read never sets `val`), so it lands in exactly
+    // this arm, unlike a proven ARRAY/STRING/TYPED receiver which returns
+    // above and pays nothing extra. Real JS throws TypeError for `.length`
+    // off null/undefined — distinct from an ordinary object simply lacking
+    // an own `.length` property, which still correctly reads `undefined`
+    // via `__length`'s property-fallback arm below, unaffected by this
+    // check. Gated on `mayBeUndef` — NOT merely "vt is unknown" — found
+    // live, not assumed: `vt == null` alone is FAR broader than "might be
+    // undefined" (a plain polymorphic-kind parameter passed a Float64Array
+    // at one call site and an Int32Array at another has no single proven
+    // `vt` either, but is never actually nullish — e.g. bench/poly.js's
+    // `sum(arr)`), and gating on vt-null alone taxed EVERY such site with a
+    // guard that could never fire, a real +0.069 SIZE-geomean regression
+    // across the size-sweep corpus (49/49 cases, all vt-null-but-never-null
+    // `.length` receivers) caught by the mandated gate before landing, not
+    // shipped. `censusMaybeUndefined` (kind.js) is the EXISTING, narrower,
+    // load-bearing "genuinely might be undefined" predicate this whole
+    // design (§9-§16) already built and propagates through param/return/
+    // closure hops — reused verbatim, not reinvented. `va` is captured once
+    // (it may be a side-effecting expression, e.g. a `m.get(k)` call) so the
+    // nullish test and the dispatch both read the SAME evaluation.
+    if (mayBeUndef) {
+      inc('__length')
+      ctx.features.typedarray = true
+      const lt = temp('lnva')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${lt}`, va],
+        ['if', ['result', 'f64'],
+          isNullish(typed(['local.get', `$${lt}`], 'f64')),
+          ['then', throwTypeErrorIR()],
+          ['else', typed(['call', '$__length', ['i64.reinterpret_f64', ['local.get', `$${lt}`]]], 'f64')]]], 'f64')
+    }
     inc('__length')
     ctx.features.typedarray = true
     return typed(['call', '$__length', ['i64.reinterpret_f64', va]], 'f64')
@@ -1477,11 +1514,16 @@ export default (ctx) => {
       // instead of paying __length's runtime dispatch.
       if (vt === VAL.OBJECT || vt === VAL.HASH) return emitPropAccess(emit(obj), obj, 'length')
       const notString = vt == null && typeof obj === 'string' && lookupNotString(obj)
+      // audit-#10: only a genuinely mayBeUndefined receiver pays for the
+      // nullish-receiver guard (see emitLengthAccess's own comment) — a
+      // plain kind-unresolved-but-never-null receiver (e.g. a polymorphic
+      // ARRAY/TYPED parameter) is unaffected.
+      const mayBeUndef = vt == null && censusMaybeUndefined(obj)
       // jsstring carrier: keep the externref-typed IR so emitLengthAccess can
       // dispatch to `wasm:js-string.length` instead of forcing through f64.
       const recv = emit(obj)
-      if (recv?.type === 'externref') return emitLengthAccess(recv, vt, notString)
-      return emitLengthAccess(asF64(recv), vt, notString)
+      if (recv?.type === 'externref') return emitLengthAccess(recv, vt, notString, mayBeUndef)
+      return emitLengthAccess(asF64(recv), vt, notString, mayBeUndef)
     }
 
     // Type-specific property emitter (`.regex:source`, …) — the property-read

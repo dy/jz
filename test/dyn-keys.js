@@ -573,36 +573,64 @@ test('audit #10: Array.isArray on an absent ARRAY-census read is JS-correct with
   const f = jz(`export let f = () => { const m = new Map(); m.set('present', [1, 2]); return Array.isArray(m.get('missing')) }`, { jzify: true }).exports.f
   is(f(), false, 'JS: Array.isArray(undefined) = false — the audit-#10-live TRUE misfire is gone with the census dormant')
 })
-// KNOWN-FAIL, PRE-EXISTING, NOT this task's scope (audit #10 names it, future
-// work — "isArray/length-trap→TypeError" per the task's own framing): a
-// kind-specific member access on a genuinely-undefined value (real JS throws
-// TypeError) instead traps (wasm bounds/table trap) or, for a HOST-dispatched
-// method (String.prototype.slice/Number.prototype.toFixed), throws jz's own
-// internal dispatch Error — never the real TypeError. Independent of census
-// on/off (the generic dynamic path has never distinguished "genuinely
-// undefined" from "OOB/absent" at the member-access site either) — pinned as
-// the CURRENT actual behavior with the census dormant, not "fixed", so a
-// future TypeError-conformance fix flips these deliberately.
-test('KNOWN-FAIL (audit #10, future work): kind-specific member access on a genuinely-undefined census read traps/dispatch-errors instead of throwing TypeError', () => {
-  // Wasm traps (a table-index or memory-access trap) are HOST-level
-  // exceptions — jz's own in-source try/catch cannot intercept them (they
-  // never reach jz's JS-error machinery at all), so those two cases must be
-  // caught OUTSIDE exports.f(), matching how they'd actually surface to a
-  // real host caller today.
-  const arrLen = jz(`export let f = () => { const m = new Map(); m.set('present', [1, 2]); try { return m.get('missing').length } catch (e) { return 'THROW:' + e.constructor.name } }`, { jzify: true }).exports.f
-  is(arrLen(), undefined, 'JS: TypeError. Actual: reads OOB as undefined, no trap')
+// FIXED (audit #10, this task): kind-specific member access / calls on a
+// genuinely-undefined census read now get real ES TypeError semantics
+// instead of a trap/garbage read/host-side dispatch Error. Mechanism: the
+// SAME runtime arms that already existed for an unproven ("kind-unknown")
+// receiver — module/core.js emitLengthAccess's `$__length` dispatch,
+// emit.js's tryRuntimeStringFork/tryRuntimeNumberMethod/
+// externalMethodFallback/emitGenericClosureCall — now check `isNullish`
+// (ir.js, the reserved-sentinel-bit test) before falling to their old
+// unguarded default, and throw a REAL TypeError object (ir.js
+// throwTypeErrorIR, built via the exact `new TypeError(...)` construction
+// path — module/core.js buildErrorObject, exposed as
+// ctx.core.emit['TypeError']) through the ordinary `$__jz_err` channel — no
+// new dispatch pass, no new emission machinery, no cost for a proven (non-
+// census, statically-typed) receiver, which returns from one of the arms
+// ABOVE these checks and never reaches them. A real Error object (not a bare
+// numeric code) is what makes `instanceof TypeError` true in an in-source
+// catch (the tag+schema arm of the Error model, audit-#8 P0-2 removed the
+// numeric-code range arm as unsound) and what lets interop.js's decodeThrown
+// resolve an uncaught throw to a real host TypeError — both paths already
+// existed for a user's own `new TypeError()`, reused verbatim.
+test('audit #10: kind-specific member access on a genuinely-undefined census read throws a real host-boundary TypeError', () => {
+  const arrLen = jz(`export let f = () => { const m = new Map(); m.set('present', [1, 2]); return m.get('missing').length }`, { jzify: true }).exports.f
+  let e1 = null; try { arrLen() } catch (e) { e1 = e }
+  ok(e1 instanceof TypeError, "JS: TypeError reading 'length' off undefined (ARRAY census)")
   const call = jz(`export let f = () => { const m = new Map(); m.set('present', () => 1); return m.get('missing')() }`, { jzify: true }).exports.f
-  let callErr = null; try { call() } catch (e) { callErr = e }
-  ok(callErr && /table index/.test(callErr.message), 'JS: TypeError. Actual: wasm table-index trap, uncatchable in-source')
-  const strLen = jz(`export let f = () => { const m = new Map(); m.set('present', 'hi'); try { return m.get('missing').length } catch (e) { return 'THROW:' + e.constructor.name } }`, { jzify: true }).exports.f
-  is(strLen(), undefined, 'JS: TypeError. Actual: reads OOB as undefined, no trap')
+  let e2 = null; try { call() } catch (e) { e2 = e }
+  ok(e2 instanceof TypeError, 'JS: TypeError — undefined is not a function (CLOSURE census)')
+  const strLen = jz(`export let f = () => { const m = new Map(); m.set('present', 'hi'); return m.get('missing').length }`, { jzify: true }).exports.f
+  let e3 = null; try { strLen() } catch (e) { e3 = e }
+  ok(e3 instanceof TypeError, "JS: TypeError reading 'length' off undefined (STRING census)")
   const strSlice = jz(`export let f = () => { const m = new Map(); m.set('present', 'hi'); return m.get('missing').slice() }`, { jzify: true }).exports.f
-  let sliceErr = null; try { strSlice() } catch (e) { sliceErr = e }
-  ok(sliceErr && /memory access/.test(sliceErr.message), 'JS: TypeError. Actual: wasm memory-access trap, uncatchable in-source')
+  let e4 = null; try { strSlice() } catch (e) { e4 = e }
+  ok(e4 instanceof TypeError, "JS: TypeError reading 'slice' off undefined (STRING census)")
   const numFixed = jz(`export let f = () => { const m = new Map(); m.set('present', 1); return m.get('missing').toFixed(2) }`, { jzify: true }).exports.f
-  let fixedErr = null; try { numFixed() } catch (e) { fixedErr = e }
-  ok(fixedErr instanceof Error && /dispatched this/.test(fixedErr.message),
-    "JS: TypeError. Actual: jz's own host-dispatch Error thrown from the JS-side interop shim, uncatchable in-source (not a wasm exception at all)")
+  let e5 = null; try { numFixed() } catch (e) { e5 = e }
+  ok(e5 instanceof TypeError, "JS: TypeError reading 'toFixed' off undefined (NUMBER census)")
+})
+test('audit #10: the same nullish-receiver checks are catchable IN-WASM, e instanceof TypeError', () => {
+  const arrLen = jz(`export let f = () => { const m = new Map(); m.set('present', [1, 2]); try { m.get('missing').length; return false } catch (e) { return e instanceof TypeError } }`, { jzify: true }).exports.f
+  is(arrLen(), true, 'catch(e){ e instanceof TypeError } — ARRAY census .length')
+  const call = jz(`export let f = () => { const m = new Map(); m.set('present', () => 1); try { m.get('missing')(); return false } catch (e) { return e instanceof TypeError } }`, { jzify: true }).exports.f
+  is(call(), true, 'catch(e){ e instanceof TypeError } — CLOSURE census call')
+  const strLen = jz(`export let f = () => { const m = new Map(); m.set('present', 'hi'); try { m.get('missing').length; return false } catch (e) { return e instanceof TypeError } }`, { jzify: true }).exports.f
+  is(strLen(), true, 'catch(e){ e instanceof TypeError } — STRING census .length')
+  const strSlice = jz(`export let f = () => { const m = new Map(); m.set('present', 'hi'); try { m.get('missing').slice(); return false } catch (e) { return e instanceof TypeError } }`, { jzify: true }).exports.f
+  is(strSlice(), true, 'catch(e){ e instanceof TypeError } — STRING census .slice()')
+  const numFixed = jz(`export let f = () => { const m = new Map(); m.set('present', 1); try { m.get('missing').toFixed(2); return false } catch (e) { return e instanceof TypeError } }`, { jzify: true }).exports.f
+  is(numFixed(), true, 'catch(e){ e instanceof TypeError } — NUMBER census .toFixed()')
+})
+test('audit #10: proven (non-census, statically-typed) receivers are unaffected — no trap, no throw, ordinary JS result', () => {
+  const arr = jz(`export let f = () => { const a = [1, 2, 3]; return a.length }`, { jzify: true }).exports.f
+  is(arr(), 3, 'a proven ARRAY receiver still reads .length directly, no guard')
+  const clo = jz(`export let f = () => { const c = () => 42; return c() }`, { jzify: true }).exports.f
+  is(clo(), 42, 'a proven, directly-bound closure call is unaffected')
+  const str = jz(`export let f = () => { const s = 'hello'; return s.slice(1) }`, { jzify: true }).exports.f
+  is(str(), 'ello', 'a proven STRING receiver still dispatches .slice() directly')
+  const num = jz(`export let f = () => { const n = 3.14159; return n.toFixed(2) }`, { jzify: true }).exports.f
+  is(num(), '3.14', 'a proven NUMBER receiver still dispatches .toFixed() directly')
 })
 test('audit #10: String `+` inversion — a STRING-census absent read through `+` is JS-correct with the census dormant (was: static concat "undefined1")', () => {
   const present = jz(`export let f = () => { const m = new Map(); m.set('a', 'x'); return m.get('a') + 1 }`, { jzify: true }).exports.f

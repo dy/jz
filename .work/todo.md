@@ -4,6 +4,58 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-04, audit-#10 kind-specific table closed — member access
+## and calls on a genuinely-undefined receiver now throw a real, catchable
+## TypeError instead of trapping/reading garbage/host-dispatch-erroring; full
+## design writeup in .work/represented-maybe-undefined-design.md §17)
+
+Closed the five `KNOWN-FAIL (audit #10, future work)` rows §14 of the
+maybeUndefined design named: `m.get('missing').length` (ARRAY/STRING
+census), `m.get('missing')()` (CLOSURE census), `m.get('missing').slice()`
+(STRING census), `m.get('missing').toFixed(2)` (NUMBER census) — was a wasm
+bounds/table trap, a garbage default value, or jz's own internal host-
+dispatch `Error`; now a real ES `TypeError`, catchable in-wasm
+(`instanceof TypeError` true via the Error model's tag+schema arm) and
+decodable at an uncaught host boundary to a real host `TypeError`
+(interop.js's existing `decodeThrown`, zero new decode machinery).
+
+**Mechanism**: upgraded FIVE existing "unresolved-receiver" runtime arms
+(module/core.js `emitLengthAccess`; emit.js `tryRuntimeStringFork`/
+`tryRuntimeNumberMethod`/`externalMethodFallback`/`emitGenericClosureCall`)
+with one `isNullish` branch each, throwing a REAL constructed TypeError
+object (`src/ir.js` `throwTypeErrorIR`, new — built inline, same shape as
+`new TypeError(...)`'s own construction path, no module/string.js
+dependency) instead of falling through to the old trap/garbage/host-dispatch
+behavior. No new dispatch pass — every arm already ran on every unresolved-
+kind receiver.
+
+**The one real fight**: an early draft gated all five arms on "receiver's
+static kind is unresolved" (a literal reading of the task's own brief).
+Gate run caught it: ordinary POLYMORPHIC-but-never-nullish parameters
+(bench/poly.js's `sum(arr)`, called with both a Float64Array and an
+Int32Array — no single provable kind, never actually undefined) paid the
+full guard tax too, regressing the 49-case size-sweep geomean from 1.0418×
+to 1.111× (49/49 cases, ~+100B flat each). Fixed by gating on
+`censusMaybeUndefined` (kind.js, EXISTING, narrower "genuinely might carry
+real undefined" predicate this whole design already built) instead of "kind
+unresolved" — restored the geomean to 1.0418×, 0/49 cases differ from HEAD.
+Also found, in the process, two SEPARATE pre-existing self-host/module-
+autoload landmines (`__mkptr(...)`'s literal-offset folding,
+`.call`/`.apply`/`.bind` static lowering's thisArg side effect — both
+confirmed at clean HEAD 1d083ba9 via a disposable worktree) and a third,
+genuinely pre-existing kernel-parity divergence in `$__dyn_get_t_h`'s schema
+arm that the vt-unresolved draft transiently exposed and the
+`censusMaybeUndefined` narrowing independently un-exposed (dict returns to
+byte-identical, `PARITY_TODO` stays empty) — none fixed, all out of scope,
+all documented (§17).
+
+**Gates**: full ~90-file battery, every chunk green; dyn-keys.js 50/50 (188
+assertions); kernel-parity 33/33 byte-identical; kernel-oracle 11/11;
+perf-ratchet 10/10 at +0; minimal-output green; selfhost.js 21/21; fuzz
+2000×4 (seeds 1-8000) zero divergence; size sweep 1.0418× (baseline,
+unchanged); fresh build ×2 byte-identical (`dist/jz.js` sha256 `8a8fb7be…`,
+`dist/jz.wasm` sha256 `58848b4f…`, `dist/interop.js` sha256 `396500b4…`).
+
 ## Status (2026-08-04, SIZE goal recovered below the 1.05 cap — bisected the
 ## un-bisected soundness-guard tax named in the "SIZE: par-or-smaller" entry
 ## below, landed one proof-driven elision lever, geomean 1.055x -> 1.0418x)

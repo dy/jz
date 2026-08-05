@@ -126,6 +126,26 @@ export let f = (s) => g(s) === false`,
 // 2026-07-25 the same day: that divergence was measured against a STALE
 // dist whose build had crashed — pre-eval.js used computed Math members,
 // outside the self-host subset; explicit dispatch tables fixed the build).
+//
+// dict|2 + dict|3 briefly reopened, then re-closed, while landing audit-#10
+// (2026-08-04, kind-specific nullish-receiver TypeError checks). An early
+// draft gated the new checks on "receiver kind unresolved" alone, which
+// fired for dict's s.length and, as a side effect, minted dict's first-ever
+// Error schema -- which activated a previously-dead schema-checking arm in
+// the shared stdlib helper $__dyn_get_t_h (module/collection.js), whose own
+// WAT folds one truthiness check differently native vs self-hosted
+// (confirmed PRE-EXISTING, not introduced by this task: reproduced
+// identically at clean HEAD 1d083ba9 via a disposable worktree, forcing an
+// unrelated dead-code Error schema into the same dict source). Landed fix:
+// gate the checks on the narrower, pre-existing `censusMaybeUndefined`
+// predicate (kind.js) instead -- "kind unresolved" alone is not "might be
+// undefined" (a plain polymorphic-kind parameter, e.g. bench/poly.js's
+// sum(arr) called with both a Float64Array and an Int32Array, is never
+// nullish) -- which also fixed a real SIZE-geomean regression the broader
+// gate caused across the size-sweep corpus. dict's s is a plain string
+// parameter, never census-tainted, so it no longer reaches the guard, no
+// schema gets minted, and dict is back to genuine byte-identity --
+// reverified after the narrowing landed, not assumed.
 const PARITY_TODO = new Set()
 
 for (const opt of [0, 2, 3]) {

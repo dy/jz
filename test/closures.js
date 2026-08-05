@@ -998,8 +998,23 @@ test('devirtGlobalCalls: raw arrow literal lifted through a bare ??=; value-use 
 // `let f = c ? a : b; f(x)` — the candidate set is two closure constants, so
 // each call site becomes a guarded direct-call chain with the original
 // call_indirect kept as the fallback arm (zero-init/unknown flows unchanged).
-
-test('devirt: two-candidate closure local → guarded direct calls + fallback', () => {
+//
+// UPDATED (audit #10, this task): `f(i)`'s callee kind is unproven at jz's
+// own emission level (a ternary-bound closure local, not tracked as a
+// closure PROOF by valTypeOf) — it now gets the SAME nullish-receiver
+// TypeError guard as every other unresolved closure call (real JS: calling
+// undefined throws). That guard interposes an `if(isNullish)…else
+// call_indirect(…)` between reading `f`'s value and dispatching through it,
+// which breaks watr/optimize's own `devirt` pass's pattern match (a DIRECT
+// "closure-const select feeds a call_indirect" AST shape, node_modules/watr
+// src/optimize.js's `devirt` collector) — found live, not assumed: this
+// exact repro was checked with `git worktree` at pre-task HEAD, where the
+// pattern DOES match and devirt fires. A correctness fix and a speculative
+// devirt optimization on a specific unproven-callee shape are in genuine
+// tension here; correctness wins — devirt no longer fires for this shape,
+// call_indirect (now guarded for nullish) stays the only dispatch, and the
+// pin below shifts from "shape assertion" to "still runtime-correct".
+test('devirt: two-candidate closure local — no longer devirtualized (nullish-receiver guard interposes on the call_indirect operand), still runtime-correct', () => {
   const src = `
     let dbl = (x) => x * 2
     let sqr = (x) => x * x
@@ -1010,10 +1025,7 @@ test('devirt: two-candidate closure local → guarded direct calls + fallback', 
       return s
     }`
   const w = jz.compile(src, { wat: true, optimize: 3 })
-  // tramp names carry jz's invisible name-mangling char after `$` — match loosely
-  ok(/\(call \$\S*tramp_dbl/.test(w) && /\(call \$\S*tramp_sqr/.test(w),
-    'both candidates direct-called under guards')
-  ok(/call_indirect/.test(w), 'original call_indirect kept as the fallback arm')
+  ok(/call_indirect/.test(w), 'call_indirect (now nullish-guarded) is the dispatch')
   const { main } = run(src, { optimize: 3 })
   is(main(100, 1), 9900)   // 2*Σ0..99
   is(main(100, -1), 328350) // Σi²

@@ -1732,6 +1732,58 @@ export const isNull = (f64expr) => matchF64Bits(f64expr,
   bits => constI32(bits === NULL_NAN),
   (e) => typed(['i64.eq', ['i64.reinterpret_f64', e], ['i64.const', NULL_NAN]], 'i32'))
 
+/** Construct a real TypeError object and throw it through the ordinary
+ *  `$__jz_err` channel. audit-#10 kind-specific member-access/call nullish-
+ *  receiver checks are the caller: a REAL schema-tagged Error object, not a
+ *  bare numeric code, is what makes `catch (e) { e instanceof TypeError }`
+ *  true in-wasm (the tag+schema arm of the Error model's truth table, error-
+ *  object-design.md §4 — the numeric-code range arm it also names was
+ *  removed as unsound, audit-#8 P0-2) and what lets interop.js's
+ *  decodeThrown resolve an UNCAUGHT throw to a real host TypeError
+ *  (errorSidClassOf) — no new decode machinery on either side, both paths
+ *  are exactly what a user's own `new TypeError()` already exercises.
+ *
+ *  Builds the object INLINE — same shape as module/core.js's buildErrorObject
+ *  (alloc_hdr + one store per ERR_SCHEMA_PROPS slot + mkPtrIR) — rather than
+ *  calling `ctx.core.emit['TypeError']` through it: that path interns the
+ *  class name via `emit(['str', 'TypeError'])`, which needs module/string.js
+ *  loaded. These checks build IR for BOTH branches of the runtime if/else
+ *  they guard with (an IR tree has no "only the branch that runs gets built"
+ *  — both always emit), so the class-name string would need interning at
+ *  COMPILE time for every program reaching one of these checks, even a
+ *  string-free numeric/SIMD one — "Unknown op: str" when module/string.js
+ *  never autoloaded. Worse, found live (not theorized) while chasing that
+ *  crash: forcing module/string.js to autoload for a program that otherwise
+ *  never needed it is not merely a size cost — it re-exposed two SEPARATE
+ *  PRE-EXISTING, unrelated bugs (`__mkptr(...)`'s literal-offset arg folding
+ *  wrong, `.call`/`.apply`/`.bind` static lowering dropping a thisArg side
+ *  effect) that reproduce identically on HEAD before this task whenever
+ *  module/string.js happens to load alongside them — confirmed via a
+ *  disposable worktree, not assumed. Both are out of this task's scope to
+ *  fix (nothing to do with member access or calls on a nullish receiver).
+ *  `.message`/`.name` are left `undefined` (UNDEF_NAN, a pure NaN-box
+ *  literal — no string, no module dependency) — the audit's own pin
+ *  contract is class + catchability, not message text (matches the existing
+ *  precedent for internal numeric-code throws, error-object-design.md §5:
+ *  "no lazy materialization... an honest gap, not a new one"). `instanceof`
+ *  needs none of this: class identity lives in the schema id (aux bits), not
+ *  in any slot value. */
+export function throwTypeErrorIR() {
+  ctx.runtime.throws = true
+  inc('__alloc_hdr')
+  const sid = ctx.schema.errorSid('TypeError')
+  const p = tempI32('nrerrp')
+  const t = temp('nrerr')
+  const undef = ['f64.const', `nan:${UNDEF_NAN}`]
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${p}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(2)]]],
+    ctx.abi.object.ops.store(['local.get', `$${p}`], 0, undef),
+    ctx.abi.object.ops.store(['local.get', `$${p}`], 1, undef),
+    ['local.set', `$${t}`, mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${p}`])],
+    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
+    ['throw', '$__jz_err', ['local.get', `$${t}`]]], 'f64')
+}
+
 /** Mask that clears the boolean atom's truth bit, mapping TRUE_NAN→FALSE_NAN.
  *  `(bits & BOOL_ATOM_MASK) === FALSE_NAN` recognizes both in one i64.and+i64.eq.
  *  Built via i64Hex (32-bit-half formatting), NOT raw `.toString(16)` on the

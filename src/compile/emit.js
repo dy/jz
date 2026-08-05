@@ -57,7 +57,7 @@ import {
   isGlobal, isConst, usesDynProps, needsDynShadow,
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
-  boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom,
+  boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom, throwTypeErrorIR,
   boolBoxIR, carrierF64, unboxBoolIR,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
@@ -3543,6 +3543,14 @@ function tryRuntimeStringFork({ obj, method, vt, callMethod }) {
     // is undefined) instead of feeding number bits to `__ptr_type` → OOB.
     // Every NaN-boxed receiver still reaches the string-vs-generic fork unchanged.
     const numEmitter = ctx.core.emit[`.number:${method}`]
+    // audit-#10: only a genuinely mayBeUndefined receiver pays for the
+    // nullish-receiver guard below — `censusMaybeUndefined` (kind.js), the
+    // SAME narrow, load-bearing predicate module/core.js's emitLengthAccess
+    // uses (see its own comment for why "vt is unknown" alone is far too
+    // broad — a real, measured SIZE-geomean regression across the size-
+    // sweep corpus, caught before landing). A plain kind-unresolved-but-
+    // never-null receiver takes the unchanged, unguarded generic arm.
+    const mayBeUndef = censusMaybeUndefined(obj)
     return block64(
       ['local.set', `$${t}`, asF64(emit(obj))],
       ['if', ['result', 'f64'],
@@ -3553,7 +3561,19 @@ function tryRuntimeStringFork({ obj, method, vt, callMethod }) {
           ['if', ['result', 'f64'],
             ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
             ['then', callMethod(t, strEmitter)],
-            ['else', callMethod(t, genEmitter)]])]])
+            // Not STRING either: a real (non-nullish) pointer falls to the generic
+            // (array-shaped) emitter, unchanged. A genuinely nullish receiver here
+            // (audit-#10: e.g. `m.get('missing').slice()`, a STRING-census absent
+            // read — no proven vt, so it reached this fork at all) used to feed the
+            // nullish sentinel's bit pattern to the ARRAY-shaped emitter as if it
+            // were a real pointer — an OOB heap read (`RuntimeError: memory access
+            // out of bounds`). Real JS throws TypeError for a method call on
+            // null/undefined; the check is cheap and lands only on this already-
+            // dynamic fork, and only when the receiver is provably mayBeUndefined.
+            ['else', mayBeUndef ? typed(['if', ['result', 'f64'],
+              isNullish(typed(['local.get', `$${t}`], 'f64')),
+              ['then', throwTypeErrorIR()],
+              ['else', callMethod(t, genEmitter)]], 'f64') : callMethod(t, genEmitter)]])]])
   }
 }
 
@@ -3567,14 +3587,28 @@ function tryRuntimeNumberMethod({ obj, method, parsed, vt, callMethod }) {
   if (vt || !numEmitter || parsed.hasSpread || !ctx.closure.call) return
   const t = `${T}rn${ctx.func.uniq++}`
   ctx.func.locals.set(t, 'f64')
+  // audit-#10: only a genuinely mayBeUndefined receiver pays for the nullish
+  // guard — same `censusMaybeUndefined` predicate as every other check in
+  // this design (see tryRuntimeStringFork's comment for the measured SIZE
+  // cost of gating on "vt unknown" alone instead).
+  const mayBeUndef = censusMaybeUndefined(obj)
   return block64(
     ['local.set', `$${t}`, asF64(emit(obj))],
     ['if', ['result', 'f64'],
       ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
       ['then', asF64(callMethod(t, numEmitter))],
+      // audit-#10: a genuinely nullish receiver here (e.g. `m.get('missing').toFixed(2)`,
+      // a NUMBER-census absent read — no proven vt, so this fork engaged at all) has no
+      // sidecar override to find; real JS throws TypeError on the PROPERTY READ itself
+      // (`x.toFixed` on null/undefined), before any call happens. A real (non-nullish)
+      // pointer without an override still reads `undefined` (own-property-not-found is
+      // out of this fix's scope — the pre-existing, unchanged behavior).
       ['else', sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
         (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal),
-        () => undefExpr())]])
+        (o) => mayBeUndef ? typed(['if', ['result', 'f64'],
+          isNullish(typed(['local.get', `$${o}`], 'f64')),
+          ['then', throwTypeErrorIR()],
+          ['else', undefExpr()]], 'f64') : undefExpr())]])
 }
 
 // 9. Schema property closure call: `x.prop(args)` where prop is a closure slot in
@@ -3728,12 +3762,40 @@ function externalMethodFallback({ obj, method, parsed }) {
   warnDeopt('deopt-method', `method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(…)\` on a value whose type couldn't be resolved dispatches through the JS host (\`__ext_call\`) — a wasm→JS round-trip per call, orders of magnitude slower than a direct call. Restructure so the receiver's type is provable, or keep it off the hot path.`)
   inc('__ext_call')
   ctx.features.external = true
+  // audit-#10: a genuinely nullish receiver reaching this TOTAL fallback (e.g.
+  // `m.get('missing').toFixed(2)` in a program with no closures anywhere, so
+  // strategy 8b never engaged) used to marshal the nullish sentinel's bits to
+  // the host as if it were an external handle — interop.js's __ext_call finds
+  // no matching extMap entry and throws its own generic, host-side, uncatchable-
+  // in-wasm Error. Real JS throws TypeError on the property read itself, before
+  // any call/host round-trip. Check once, in-wasm, ONLY when the receiver is
+  // genuinely mayBeUndefined (censusMaybeUndefined — see tryRuntimeStringFork's
+  // comment for why "vt unknown" alone is too broad); a genuinely external
+  // (non-nullish, and not census-tainted) receiver is unaffected — still
+  // dispatches to __ext_call exactly as before. When guarded, the receiver is
+  // evaluated once and reused for both the guard and the call; the method-
+  // name/args are only evaluated on the non-throw arm (matches real JS:
+  // GetV(obj,'method') on a nullish base throws before Arguments is ever
+  // evaluated).
+  const mayBeUndef = censusMaybeUndefined(obj)
+  const rt = temp('mrecv')
+  const recvIR = asF64(emit(obj))
   const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
   const arrayIR = buildArrayWithSpreads(combined)
-  return typed(['f64.reinterpret_i64', ['call', '$__ext_call',
-    ['i64.reinterpret_f64', asF64(emit(obj))],
-    ['i64.reinterpret_f64', asF64(emit(['str', method]))],
+  const methodIR = asF64(emit(['str', method]))
+  if (!mayBeUndef) return typed(['f64.reinterpret_i64', ['call', '$__ext_call',
+    ['i64.reinterpret_f64', recvIR],
+    ['i64.reinterpret_f64', methodIR],
     ['i64.reinterpret_f64', arrayIR]]], 'f64')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${rt}`, recvIR],
+    ['if', ['result', 'f64'],
+      isNullish(typed(['local.get', `$${rt}`], 'f64')),
+      ['then', throwTypeErrorIR()],
+      ['else', typed(['f64.reinterpret_i64', ['call', '$__ext_call',
+        ['i64.reinterpret_f64', ['local.get', `$${rt}`]],
+        ['i64.reinterpret_f64', methodIR],
+        ['i64.reinterpret_f64', arrayIR]]], 'f64')]]], 'f64')
 }
 
 const TYPED_STRATEGIES = [
@@ -4033,13 +4095,63 @@ function emitGenericClosureCall(callee, parsed) {
   if (arrName && (ctx.scope.closureTableLatticeCandidates?.has(arrName) ||
       ctx.scope.imperativeClosureTableLatticeCandidates?.has(arrName)))
     recordClosureTableCallSite(arrName, parsed.normal)
+  // audit-#10: `callee` is a genuinely dynamic expression here — every
+  // statically-resolved shape (known top-level function, direct non-escaping
+  // closure, method call) was already sifted off by the '()' dispatcher above
+  // this function, so its kind is unproven and it may be nullish at runtime
+  // (e.g. `m.get('missing')()`, a census-shaped dict/Map absent-key read).
+  // ctx.closure.call's call_indirect reads the nullish sentinel's aux bits as
+  // a function-table index unconditionally — an out-of-bounds wasm trap,
+  // uncatchable in-source ("table index out of bounds"). Real JS throws
+  // TypeError.
+  //
+  // A BARE-NAME callee (`typeof callee === 'string'`, e.g. `f(x)`) is emitted
+  // TWICE instead of hoisted through a shared temp — found live, not assumed
+  // safe: an intermediate `local.set $ct = (select const1 const2 cond); ...
+  // call_indirect(local.get $ct, ...)` hides the "closure value is a select
+  // of ≤2 known constants" shape from watr's own post-optimizer devirt pass
+  // (perf(wat) "devirt — call_indirect with known closure constants → guarded
+  // direct calls", commit 4c49c2ec) — that pass pattern-matches the select
+  // directly feeding the call_indirect operand's `local.set`, one level of
+  // indirection it does not trace through. `readVar` (ir.js) is pure for a
+  // bare name (`local.get`/`global.get`, no side effect, no shared node
+  // object between the two emissions — each `emit(callee)` call returns a
+  // fresh IR node), so evaluating it twice is exactly as safe as the
+  // single-eval case and costs nothing extra once optimized (V8/watr CSE the
+  // repeated load). A COMPOUND callee (`m.get(k)()`, `arr[i]()`) may carry a
+  // real side effect (the `.get` call itself) — hoisted through a temp,
+  // exactly as before; this shape was never the ternary-select-of-constants
+  // pattern the devirt pass targets, so hoisting it costs nothing there.
+  // audit-#10: only a genuinely mayBeUndefined callee pays for the guard —
+  // same `censusMaybeUndefined` predicate as every other check in this
+  // design (tryRuntimeStringFork's comment has the measured SIZE cost of
+  // gating on "unresolved kind" alone instead). A callee that is unresolved
+  // only because it's a PLAIN closure-holding parameter/local (never
+  // touched by census/dict machinery — e.g. `const pass = (g, x) => g(x)`)
+  // is unaffected, byte-for-byte, from before this task.
+  const mayBeUndef = censusMaybeUndefined(callee)
+  const pureCallee = typeof callee === 'string'
+  const guarded = (whenOk) => {
+    if (!mayBeUndef) return asF64(whenOk(asF64(emit(callee))))
+    if (pureCallee) return typed(['if', ['result', 'f64'],
+      isNullish(asF64(emit(callee))),
+      ['then', throwTypeErrorIR()],
+      ['else', asF64(whenOk(asF64(emit(callee))))]], 'f64')
+    const ct = temp('gcallee')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${ct}`, asF64(emit(callee))],
+      ['if', ['result', 'f64'],
+        isNullish(typed(['local.get', `$${ct}`], 'f64')),
+        ['then', throwTypeErrorIR()],
+        ['else', asF64(whenOk(typed(['local.get', `$${ct}`], 'f64')))]]], 'f64')
+  }
   if (parsed.hasSpread) {
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
     const arrayIR = buildArrayWithSpreads(combined)
     // Pass pre-built array as single already-emitted arg
-    return ctx.closure.call(emit(callee), [arrayIR], true)
+    return guarded(recv => ctx.closure.call(recv, [arrayIR], true))
   }
-  const ir = ctx.closure.call(emit(callee), parsed.normal)
+  const ir = guarded(recv => ctx.closure.call(recv, parsed.normal))
   return dvName ? tagFnArrayDispatch(ir, dvName) : ir
 }
 

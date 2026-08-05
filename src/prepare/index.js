@@ -43,6 +43,7 @@ import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from '../op-policy.js'
 import { recordGlobalRep } from '../compile/infer.js'
 import { FIRST_CLASS_BUILTIN_NAMES } from '../compile/emit.js'
 import { isFuncRef } from '../ir.js'
+import { censusShapedNode } from '../kind.js'
 import {
   CTORS, COLLECTION_CTORS, TIMER_NAMES,
   hasModule, includeModule, includeMods,
@@ -1184,6 +1185,36 @@ function prep(node) {
   if (typeof ctorCallee === 'string' && ERR_CLASS_SET.has(ctorCallee)) {
     ctx.features.error = true
     ;(ctx.features.errorClasses ??= new Set()).add(ctorCallee)
+  }
+  // Whole-program "will a nullish-receiver check ever construct a TypeError"
+  // flag (audit-#10 kind-specific table: member access / calls on a genuinely
+  // undefined-or-null receiver — src/ir.js throwTypeErrorIR, called from
+  // module/core.js emitLengthAccess and src/compile/emit.js's dynamic
+  // method-call/closure-call strategies). Those emit sites construct a REAL
+  // TypeError object with no `new TypeError(...)` anywhere in the user's own
+  // source, so the errorClasses scan above never sees them —
+  // `emitErrorInstanceof`/`toStrI64` (ir.js) still need `used.has('TypeError')`
+  // true BEFORE any function emits, or an in-source `catch (e) { e instanceof
+  // TypeError }` compiled ahead of the throw site (order-independent, same
+  // reasoning as the bigint/error flags above) folds to `false` at compile
+  // time even though the caught pointer is bit-for-bit a real TypeError at
+  // runtime. (throwTypeErrorIR builds the object INLINE, not via
+  // `ctx.core.emit['TypeError']` — no module/string.js dependency, so unlike
+  // an earlier draft of this hook, there is no matching module-autoload
+  // half to this fix; see throwTypeErrorIR's own comment for the two
+  // PRE-EXISTING, unrelated bugs that draft re-exposed.) `censusShapedNode`
+  // (kind.js) is a pure AST-shape test — no ctx lookup needed at prepare
+  // time — recognizing exactly the two receiver/callee shapes (`X[k]` /
+  // `X.k` / `X.get(k)`) these checks can ever fire on: a member access or
+  // call whose base is one of those shapes MAY reach the vt-unknown dynamic-
+  // dispatch arm that throws. A sound OVER-approximation (same "absence of
+  // proof of presence" direction censusShapedNode's own callers already use
+  // for mayBeUndefined) — it can cost an un-folded (but still runtime-
+  // correct) instanceof/toString check when the flagged site turns out not
+  // to be nullish at runtime, never a missed flag.
+  if (Array.isArray(node) && (node[0] === '.' || node[0] === '()') && censusShapedNode(node[1])) {
+    ctx.features.error = true
+    ;(ctx.features.errorClasses ??= new Set()).add('TypeError')
   }
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return [, 0] // null/undefined → 0 literal
