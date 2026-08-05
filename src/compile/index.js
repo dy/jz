@@ -27,7 +27,7 @@ import { OPTF } from '../ctx.js'
  */
 
 import parseWat from 'watr/parse'
-import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal } from '../ctx.js'
+import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants } from '../ctx.js'
 import { i64Hex } from '../../layout.js'
 import { T, isBlockBody, isReassigned, refsName, REFS_IN_EXPR, returnExprs, MUTATE_OPS } from '../ast.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusBigintSentinelKind } from '../kind.js'
@@ -1593,6 +1593,7 @@ function emitFunc(func, funcFacts, programFacts) {
   }
 
   ctx.func.repsFrozen = true   // FunctionPlan freeze: body emission begins — durable reps read-only
+  assertCtxInvariants('pre-emit')
   if (block) {
     const stmts = emitBlockBody(body)
     // Hoist loop-invariant `__to_num(param)` coercions to a single entry rebind.
@@ -2014,10 +2015,12 @@ function emitClosureBody(cb) {
     // function declarations compile through the correctly-ordered top level).
     populateBoxedSets()
     ctx.func.repsFrozen = true   // FunctionPlan freeze: closure body emission begins
+    assertCtxInvariants('pre-emit')
     bodyIR = emitBlockBody(cb.body)
   } else {
     populateBoxedSets()
     ctx.func.repsFrozen = true   // FunctionPlan freeze: expression-body emission
+    assertCtxInvariants('pre-emit')
     // Closure-body twin of emitFunc's mixedAtomReturn tail: a single-expression
     // arrow body (`s => cond ? 1 : false`) crosses this carrierF64 ingress into
     // the closure's boxed-value result slot. carrierF64 is post-hoc powerless

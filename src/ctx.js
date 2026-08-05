@@ -665,7 +665,15 @@ export function reset(proto, globals, bridge) {
  *  Phases checked:
  *   - `post-reset`     : every sub-context exists; Maps/Sets initialized.
  *   - `post-prepare`   : module + scope populated; func.list possibly empty.
- *   - `pre-emit`       : func.current set; locals Map present; rep maps live.
+ *   - `pre-emit`       : func.current set; locals Map present — the per-
+ *                        function-frame boundary right where `repsFrozen`
+ *                        flips true (audit-#11: documented since 4b149108,
+ *                        wired at every body-emission entry that sets it —
+ *                        compile/index.js emitFunc's block/multi/expression
+ *                        paths and emitClosureBody's block/expression paths,
+ *                        wat/assemble.js buildStartFn's per-moduleInit and
+ *                        main __start body). Unordered w.r.t. PHASE_ORDER —
+ *                        fires once per function frame, not once per compile.
  *   - `post-compile`   : no transient temps leaked (func.uniq stable across calls). */
 
 // Hot per-node pass flags flattened to ONE i32 bitmask (ctx.transform.optFlags,

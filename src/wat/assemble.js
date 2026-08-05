@@ -13,7 +13,7 @@
  */
 
 import parseWat from 'watr/parse'
-import { ctx, inc, resolveIncludes, err, PTR, LAYOUT, HEAP, declGlobal } from '../ctx.js'
+import { ctx, inc, resolveIncludes, err, PTR, LAYOUT, HEAP, declGlobal, assertCtxInvariants } from '../ctx.js'
 
 // Stdlib WAT templates are fixed text (or feature-keyed text from a factory) —
 // `parseWat` of the same string always yields the same tree. Parsing is the
@@ -206,6 +206,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
       analyzeValTypes(mi)
       seedGeneratedLocals(mi)
       ctx.func.repsFrozen = true
+      assertCtxInvariants('pre-emit')
       moduleInits.push(...normalizeIR(emit(mi)))
     }
   }
@@ -217,6 +218,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // bare expression — emitting that in value context leaves a value on the stack
   // and the start function fails validation. emitVoid handles both shapes.
   ctx.func.repsFrozen = true   // FunctionPlan freeze: __start body emission (analyzeValTypes(ast) ran above)
+  assertCtxInvariants('pre-emit')
   const init = emitVoid(ast)
   ctx.func.repsFrozen = false  // post-emission synthesis below (boxInit/snapshot) is not user-AST emission
   ctx.func.atModuleScope = false
