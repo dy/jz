@@ -4,6 +4,159 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-05, REFERENCE-EVIDENCE REFRESH at HEAD bce7d1d7 — FRESH/
+## MEMORY-FRESH/SIZE all flip green; bitwise+sieve recovery CONFIRMED in the
+## full claims run for the first time; radixsort/fft do NOT recover despite
+## the prior session's byte-identical-WAT claim — corrected here with paired
+## ABBA evidence)
+
+Full 60-case corpus + tinygo (43/60) + narrow memcheck (43/43) + bench.svg
+regenerated at HEAD bce7d1d7 (was f704a077, 25 compiler-source commits
+stale — the committed evidence predated the whole bitwise/sieve/radixsort
+codegen-recovery wave and the SIZE-geomean recovery). Recipe: the proven
+2f0720a5 protocol — 10 chunks of ~6 cases + the `jz` self-host case in its
+own chunk, `--json` per chunk to scratch, merged externally (never the
+bare `--json` flag, which rewrites the whole file); tinygo isolated to its
+own env (`TINYGOROOT=~/.local/tinygo GOTOOLCHAIN=go1.23.6`), never let
+into the plain go/go-wasm chunks (2f0720a5's leak lesson, re-verified not
+repeated: go/go-wasm rows came from the system go1.26.0, tinygo rows from
+the pinned go1.23.6, in fully separate processes).
+
+**Pollution note, honestly recorded**: a stray orphaned `strbuild` process
+(PID 97642, `/var/folders/.../jz-bench-c-vPwnJk/strbuild`, launched 5:50AM
+by an unrelated earlier session) sat pinned at ~99% CPU on one core for
+the entire session (confirmed present before the first chunk — missed by
+a `ps | grep chrome`-only check, since it isn't Chrome). `kill`/`renice`
+on it were both denied by the permission layer (no override attempted,
+per policy). Chrome itself measured 0% throughout — the actual named
+tripwire stayed clean. Treated as a bounded, undentable confound (one
+core of many on the M4 Max, present continuously rather than spiking) and
+proceeded; the real strbuild BENCH case's own numbers (measured in its
+own temp dir, different PID) came back within normal noise of the
+committed baseline (nat 1442 vs 1395µs, jz 377 vs 369µs), so no
+contamination is evident in the actual data. Flagged for the user to
+clear manually — this agent cannot.
+
+**bitwise/sieve recovery — CONFIRMED, paired ABBA, first time visible in
+a full claims run**: the 2f0720a5-era `collectBareEscapes` false-positive
+fix (af08bead, landed after the stale evidence's f704a077 snapshot) was
+previously only spot-verified on 2 surgically-patched `jz` rows never
+folded into a full-corpus claims run (the stale snapshot's FRESH check
+was already red, so the fix's effect on the WINNING axis was invisible
+until now). This refresh's full run + paired re-verification:
+- **bitwise**: jz 936µs vs v8 3822µs → **4.08× WIN** (4 ABBA rounds,
+  0.242–0.248× per-round, essentially zero variance) — matches the
+  banked ~4.1× target precisely.
+- **sieve**: jz 5072µs vs v8 7766µs → **1.53× WIN** (4 ABBA rounds,
+  0.628–0.673×) — matches the banked ~1.5× target precisely.
+Both cases now drop out of EVERY red list (wasm-rival, V8-family,
+bun/jsc) — previously bitwise alone was red on all three (1.926×/
+3.234×/3.741×) and sieve catastrophically so (12.064×/8.326×/9.748×) in
+the stale snapshot.
+
+**radixsort and fft — CORRECTION: did NOT recover, contra the prior
+session's framing**. The 2026-08-03 ledger entry documented radixsort's
+WAT as "byte-identical to the pre-regression compiler" after af08bead and
+grouped it with the bitwise/sieve win — but never re-measured its timing
+ratio. This refresh did, twice (single-sample + a dedicated 4-round ABBA
+`--paired --targets=jz,zig-wasm,v8 --cases=radixsort`): **1.451–1.454×
+per round, median 1.453×** vs zig-wasm — statistically indistinguishable
+from the stale evidence's own 1.478×. The byte-identical-WAT fix evidently
+touched a part of radixsort's codegen that isn't on its hot path; the
+real ~1.45× gap vs zig-wasm is apparently pre-existing and unrelated to
+28b2530b, not a "same-class, smaller-magnitude" instance of it as
+speculated. Similarly fft, which the 2026-08-03 entry claimed cc78bf56
+(tryButterfly revival) took "1.10× red → 1.009× near-parity, ABBA-
+verified": this refresh's own 4-round ABBA (`--paired --targets=jz,
+rust-wasm --cases=fft`) reads **1.072–1.089×, median 1.079×** vs
+rust-wasm — a real, reproducible gap, not near-parity. Both corrections
+are evidence-based, not assumed; the claimed prior verification may have
+compared against a different measurement basis (e.g. a pre-regression
+baseline rather than the current committed reference) that this entry did
+not have visibility into. Both remain on the "true red" wasm-rival list
+below; flagged as the next hunt, not fixed here (out of this session's
+scope — evidence refresh + honest verdict, not a fix task).
+
+**`npm run test:claims` full verdict at HEAD bce7d1d7** (11 groups, 25
+assertions, 5 pass / 6 fail — was 4 pass / 7 fail at the stale snapshot):
+
+- FRESH: **PASS** (both axes — 0 stale compiler-source commits past
+  bce7d1d7; watr 5.7.12 installed == 5.7.12 in evidence). Was FAIL (25
+  stale commits) at the stale snapshot.
+- COMPLETE: **PASS** — all 11 named rivals clear the 42/60 floor:
+  c-wasm 50, rust-wasm 50, go-wasm 43, tinygo 43, zig-wasm 43, as 49,
+  v8 57, deno 57, bun 57, jsc 57, porf-native 42 (exactly at floor).
+- WINNING, wasm-rival strict: **FAIL**, 16 unproven (6 in-band ties:
+  biquad 1.007×, crc32 1.024×, lorenz 1.017×, raytrace 1.038×, slices
+  1.038×, synth 1.022×; 10 TRUE RED: base64 1.078× (tinygo), delayline
+  1.264× (rust-wasm), **fft 1.078× (rust-wasm)**, glyfparse 1.219×
+  (c-wasm), lz 1.126× (zig-wasm), **radixsort 1.456× (zig-wasm)**, sdf
+  1.199× (c-wasm), shapes 1.180× (as), sort 1.531× (zig-wasm), trace
+  1.492× (c-wasm)). bitwise/sieve both CLEARED (were red).
+- WINNING, V8-family strict (v8/node, deno): **FAIL**, 8 unproven (2
+  in-band: hash 1.009×, watr 1.008×; 6 TRUE RED: colorlog 1.184×
+  (deno), colorpq 1.212× (deno), delayline 1.148× (deno), jessie 1.523×
+  (v8), radixsort 1.284× (deno), resample 1.065× (v8)). bitwise/sieve
+  both CLEARED.
+- WINNING, bun/jsc strict (outside the tight-int-loop exception):
+  **FAIL**, 7 unproven, all TRUE RED: colorlog 1.748× (jsc), jessie
+  2.031× (bun), radixsort 1.077× (jsc), resample 1.079× (jsc), sdf
+  1.062× (jsc), sort 1.115× (jsc), synth 1.141× (bun). bitwise/sieve
+  both CLEARED.
+- Tight-int-loop exception (vm/dict/crc32 vs bun/jsc, 1.5× band):
+  **PASS**, 0 exceeded.
+- SIZE: **PASS**, geomean jz/as **1.042×** (25/49 smaller) — under the
+  1.05× cap. Was FAIL (1.057×) at the stale snapshot; matches the
+  1d083ba9 local-commit claim (1.0418×) closely.
+- MEMORY freshness: **PASS** (0 stale commits vs the regenerated
+  memcheck-results.csv). Was FAIL at the stale snapshot.
+
+**Memory** (narrow 2-target `jz-wasmtime,moonbit` chunks, 4 chunks × the
+same 43-case go-corpus split used for tinygo, never the bulk 21-target
+run — 2f0720a5's proven methodology): **40/43 beats-or-matches, median
+delta −896KB** (jz leaner) — matches the committed claim (40/43, −912KB)
+closely, confirms no bulk-run memKb pollution this time either (never
+attempted the bulk shortcut).
+
+**Self-host perf gate** (`node test/selfhost-perf.js`, after a fresh
+`npm run build` — dist/jz.wasm byte-reflects HEAD bce7d1d7 — machine at
+the same bounded-confound state as above, no Chrome, no jz processes):
+passed **on the first round, no retry needed** — **warm geomean 1.005×**
+(cap 1.03×) — mat4 0.97 fft 1.01 biquad 1.02 sort 1.02 crc32 1.01
+mandelbrot 1.00; **fresh geomean 0.785×** (cap 0.99×) — mat4 0.73 fft
+0.77 biquad 0.81 sort 0.81 crc32 0.82 mandelbrot 0.77. This is the
+publication-quality datum this refresh set out to get; NOT re-baselined
+(passed clean).
+
+**bench.svg**: full corpus was measured in chunks, so bench.mjs's own
+inline auto-regen (which requires one single-process full run covering
+every non-LAB case) never fired. Reproduced its exact logic (same
+SVG_TARGETS list, same LAB exclusion set, same geomean-of-ratio math)
+offline against the freshly merged results.json (52 geomean-eligible
+cases, LAB={watr,jessie,jz,colorconv,colorlch,colorlog,colorpq,deltae}
+excluded) and called `renderBenchSvg` directly — same code path bench.mjs
+itself uses, same output shape. New geomeans: JZ 1.00× (baseline), native
+C 0.999× (was 0.88× — jz's bitwise/sieve/size recovery moved it into
+GEOMEAN PARITY with native C, up from previously edging ahead of it),
+C→wasm 1.88×, Rust→wasm 1.97×, Go→wasm 4.35×, Zig→wasm 2.12×, MoonBit
+4.12×, AssemblyScript 2.05×, Porffor 15.33×, V8 2.17×.
+
+**`jz` self-host case anomaly, noted not fixed**: attempting the `jz`
+target on the `jz` case itself (compiling the self-hosted-compiler corpus
+through jz.wasm — a target historically EXCLUDED from measurement, never
+attempted) now traps with `RuntimeError: memory access out of bounds` in
+V8 wasm. Out of scope to chase (LAB-set, self-referential, feeds no
+claims gate — same historical exclusion this session also applied when
+merging: the `jz` case's committed row keeps only v8/deno/bun/jsc/javy,
+same shape as always). Flagged as a real, reproducible finding for a
+future session: self-hosting through jz.wasm's own compiled output may
+be hitting a linear-memory limit the JS-hosted self-host path doesn't.
+
+**Committed**: bench/results.json, bench/bench.svg,
+.work/memcheck-results.csv (this entry). dist/ was rebuilt fresh for the
+selfhost-perf gate but not committed (build artifact, not tracked
+evidence, matches repo convention).
+
 ## Status (2026-08-05, audit-#11 item 7 CLOSED — test262/test:wasm harness
 ## contracts repaired and pinned; two real bugs found and reported, not fixed)
 
