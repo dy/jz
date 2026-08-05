@@ -549,7 +549,11 @@ function narrowI32Results(funcs) {
     // still gets a chance to run.
     const resolveLocal = name => valTypes?.get(name) ?? lookupValType(name)
     const anyAmbiguous = exprs.some(e => hasAmbiguousBoolMerge(e, ex => valTypeOfWithLocals(ex, resolveLocal)))
-    const allI32 = !allV128 && !anyAmbiguous && exprs.every(e => exprType(e, locals, valTypes, true) === 'i32')
+    // `body` as `exprType`'s optional `bodyRoot` (§14 point 4 fallout, src/type.js's
+    // own doc comment on the parameter): this whole-program pre-pass runs before
+    // ctx.func.localReps is live, so the bitwise-ops BigInt guard's bare-name arm
+    // needs the ctx-independent structural trace (exprPresentValIn) instead.
+    const allI32 = !allV128 && !anyAmbiguous && exprs.every(e => exprType(e, locals, valTypes, true, body) === 'i32')
     if (te) ctx.types.typedElem = savedTE
     const r = { allV128, allI32, anyUnsigned: exprs.some(isUnsignedTail), allUnsigned: exprs.every(isUnsignedTail) }
     ctx.func.current = savedCurrent

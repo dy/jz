@@ -13,7 +13,7 @@
 import { isI32, isReassigned, cloneNode, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS } from './ast.js'
 import { ctx } from './ctx.js'
 import { VAL, lookupValType } from './reps.js'
-import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, censusShapedNode } from './kind.js'
+import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, censusShapedNode, censusMaybeUndefinedKind, exprPresentValIn, exprMapGetShapedIn } from './kind.js'
 import { propValType, CMP_OPS } from './kind-traits.js'
 import { NO_VALUE, staticValue, intLiteralValue, intExprRange } from './static.js'
 import { typedElemAux } from '../layout.js'
@@ -2172,7 +2172,17 @@ const isUnsignedI32Expr = (e, locals) => Array.isArray(e) && (
  * by every other caller (defaults to undefined): they run late enough that
  * lookupValType alone is already sound, or don't call through this gate.
  */
-export function exprType(expr, locals, valTypes, strict) {
+// `bodyRoot` (optional, §14 point 4 fallout): the ctx-INDEPENDENT structural
+// presentVal trace (kind.js exprPresentValIn/namePresentValInBody) for the
+// bitwise-ops BigInt guard below, needed specifically by narrow.js's
+// `narrowI32Results` — a whole-program pre-pass that runs BEFORE per-function
+// `ctx.func.localReps` is live, so `censusMaybeUndefinedKind`'s bare-name arm
+// (which DOES need ctx) can't see a presentVal-carrying local there. Every
+// OTHER caller of exprType runs at emit time (`ctx.func.locals`, reps live)
+// where `censusMaybeUndefinedKind` alone already resolves a bare name — they
+// pass no `bodyRoot` and are unaffected (parameter is optional, threaded
+// through recursive calls purely for the callers that do supply it).
+export function exprType(expr, locals, valTypes, strict, bodyRoot) {
   if (expr == null) return 'f64'
   if (typeof expr === 'number')
     return isI32(expr) ? 'i32' : 'f64'
@@ -2197,7 +2207,7 @@ export function exprType(expr, locals, valTypes, strict) {
   if (!Array.isArray(expr)) return 'f64'
 
   const [op, ...args] = expr
-  if (op == null) return exprType(args[0], locals, valTypes, strict) // literal [, value]
+  if (op == null) return exprType(args[0], locals, valTypes, strict, bodyRoot) // literal [, value]
 
   // Statically evaluable to -0 (e.g. -1 * 0) — i32 would lose the sign.
   const sv = staticValue(expr)
@@ -2261,18 +2271,36 @@ export function exprType(expr, locals, valTypes, strict) {
   // facts BEFORE narrow.js's global per-function reps are live; see the
   // module doc above exprType.
   if (['&', '|', '^', '~', '<<', '>>'].includes(op)) {
+    // PRECISE census checks (§14 point 4 fallout) — an ACTUAL BIGINT-kind
+    // resolution (censusMaybeUndefinedKind's own dictValueKindOf/mapValueKindOf
+    // receiver-kind check filters out a plain array/typed-array receiver
+    // already — never fires for `arr[i]`), plus the ctx-independent
+    // `exprPresentValIn`/`exprMapGetShapedIn` structural twins for a
+    // whole-program pre-pass where `ctx.func.localReps` isn't live yet.
+    // Checked UNCONDITIONALLY, before `valTypeOfWithLocals` — NOT gated on
+    // `vt == null` (a real regression this design's own §14 point 4 landing
+    // found: the arithmetic/bitwise family's OWN deliberate "unknown operand
+    // → NUMBER" optimistic default, kind.js, resolves `vt` to a DEFINITE
+    // VAL.NUMBER for exactly this shape — bare census-sourced names, unresolved
+    // by `resolveLocal` — so gating this behind `vt == null` skipped it
+    // entirely, the WASM validator's own type-mismatch catching what would
+    // otherwise have been a desynced boundary wrapper).
+    const preciseBigCensus = (e) => censusMaybeUndefinedKind(e) === VAL.BIGINT ||
+      (bodyRoot && (exprPresentValIn(e, bodyRoot) === VAL.BIGINT || exprMapGetShapedIn(e, bodyRoot)))
+    if (preciseBigCensus(args[0]) || (args.length > 1 && preciseBigCensus(args[1]))) return 'f64'
     const vt = valTypeOfWithLocals(expr, name => valTypes?.get(name) ?? lookupValType(name))
     if (vt === VAL.BIGINT) return 'f64'
-    // SOUND bitwise-i32 narrowing (§6/§12 Slice 5, present-key BigInt export lane): a
-    // census-shaped operand (dict/Map read) whose kind isn't resolvable YET at this
-    // whole-program pass (narrowI32Results runs before per-function census reps are
-    // live — the SAME ordering gap valTypeOfWithLocals's own unary-family rule
-    // documents, so `vt` above lands null instead of a definite kind) must not
-    // optimistically narrow the export's WASM result to i32: the operand CAN be a
-    // maybeUndefined-BIGINT at runtime, whose real codegen (bigIntUnary, emit.js)
-    // produces an f64-typed IR, not i32 — narrowing here would desync the boundary
-    // wrapper's signature from what the body actually emits. Structurally-provable
-    // non-bigint operands (the overwhelming majority) are unaffected.
+    // IMPRECISE, purely-structural fallback (censusShapedNode's own broad
+    // `[]`/`.` arm ALSO matches an ordinary array/typed-array 2-arg index —
+    // `arr[i] & mask` is common in hot bitwise code) — kept GATED on
+    // `vt == null`, the EXACT original (pre-§14-point-4) condition, never
+    // widened: unconditionally applying this broad check regressed
+    // vectorization for exactly that ordinary-array shape (measured, caught
+    // by the gate run — `test/inference.js`'s PRNG bitwise-kernel pin lost
+    // its v128 codegen entirely), confirmed the array/typed-array case
+    // reaches here with `vt` ALREADY non-null (definitively resolved), so
+    // this arm is unreached for it either way — restored to its narrowest,
+    // originally-verified-safe form.
     if (vt == null && (censusShapedNode(args[0]) || (args.length > 1 && censusShapedNode(args[1])))) return 'f64'
     return 'i32'
   }

@@ -512,32 +512,34 @@ export function censusMaybeUndefinedKind(node) {
 // bare case (bigIntUnary's own doc comment) — only the absent-case BIT PATTERN
 // interop must recognize differs per operator, hence the distinct kind. Returns 0
 // when `node` isn't any of these shapes (not this export lane at all).
-// Slice 7 binary sibling (.work/represented-maybe-undefined-design.md §14/§15):
-// emit.js's own `bothBigIntOperands` widening lets a binary `+` node
-// (`node.length===3` — excludes the length-2 unary `-`/`~` shapes arm 2 above
-// already owns) reach its `bigIntOperand` runtime dispatch when BOTH operands'
-// census independently claim BIGINT (the SAME AND, never OR — see that
-// function's own comment for why an OR would be unsound). Unlike kinds 1-3,
-// this shape has NO absent-case bit pattern to special-case: `bigIntOperand`'s
-// own runtime UNDEF_NAN guard throws BIGINT_UNDEF_MIX before a genuinely-
-// absent operand could ever reach a return here, so every value this export
-// lane ever sees IS a genuine i64 arithmetic result — kind 4. Scoped to `+`
-// ONLY (not its `-`/`*`/`/`/`%`/bitwise siblings, despite emit.js's own
-// `bothBigIntOperands` gate being op-generic): those siblings hit a SEPARATE,
-// pre-existing, general `valTypeOfWithLocals` gap (see emit.js's identical
-// comment at each of those table entries) that keeps their export-boundary
-// decode broken regardless of this kind — widening THIS function for them
-// too would be representationally complete but not live, verified via direct
-// repro before landing (not assumed). interop.js needs no new table entry
-// for kind 4: `decodeBigintSentinel`'s `BIGINT_SENTINEL_BITS[4]` is simply
-// absent, so its `ret === undefined` comparison is always false for a real
-// BigInt `ret` and the raw value passes through unchanged — already correct.
+// Slice 7 binary sibling (.work/represented-maybe-undefined-design.md §14/§15),
+// generalized by §14 point 4 (audit #10): emit.js's `bigIntJointDispatch`
+// (superseding Slice 7's `+`-only `bothBigIntOperands`) reaches its i64
+// arithmetic — for ANY of the 9 binary arithmetic/bitwise ops now, not just
+// `+` — when BOTH operands' census independently claim BIGINT (the SAME AND,
+// never OR — see `bigIntDomainsCanMix`'s own comment for why an OR would be
+// unsound). Unlike kinds 1-3, this shape has NO absent-case bit pattern to
+// special-case: `bigIntJointDispatch`'s own runtime domain check throws
+// BIGINT_UNDEF_MIX before a genuinely-mismatched operand pair could ever
+// reach a return here, so every value this export lane ever sees IS a
+// genuine i64 arithmetic result — kind 4, for every op in
+// BIGINT_JOINT_BINARY_OPS. Widened from `+`-only (Slice 7's own scoping) now
+// that emit.js's WASM computation is correct for the other 8 ops too —
+// verified via direct repro before landing, not assumed (the SEPARATE,
+// pre-existing `valTypeOfWithLocals` gap Slice 7 cited for withholding this
+// was closed independently by f1c1256b's own general fix; §14 point 4's own
+// `bigIntJointDispatch` closes the remaining WASM-computation half). interop.js
+// needs no new table entry for kind 4: `decodeBigintSentinel`'s
+// `BIGINT_SENTINEL_BITS[4]` is simply absent, so its `ret === undefined`
+// comparison is always false for a real BigInt `ret` and the raw value passes
+// through unchanged — already correct.
+const BIGINT_JOINT_BINARY_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>'])
 export function censusBigintSentinelKind(node) {
   if (censusMaybeUndefinedKind(node) === VAL.BIGINT) return 1
   if (Array.isArray(node) && node.length === 2 && (node[0] === 'u-' || node[0] === '~')
       && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT)
     return node[0] === 'u-' ? 2 : 3
-  if (Array.isArray(node) && node.length === 3 && node[0] === '+'
+  if (Array.isArray(node) && node.length === 3 && BIGINT_JOINT_BINARY_OPS.has(node[0])
       && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT)
     return 4
   // Kind 5 (§16→§18 "presentVal param producers"): a call whose CALLEE is a
@@ -630,6 +632,61 @@ export function nameMayBeUndefinedInBody(bodyRoot, name, seen = new Set()) {
  *  every Slice 2 join site consults. */
 export const exprMayBeUndefinedIn = (expr, bodyRoot) =>
   censusShapedNode(expr) || (typeof expr === 'string' && nameMayBeUndefinedInBody(bodyRoot, expr))
+
+// Narrower sibling of censusShapedNode's OWN arm 2 only (a `.get()` call —
+// unambiguously Map, never an array/typed-array index the way arm 1's bare
+// `[]`/`.` shape is) — §14 point 4 fallout, type.js's bitwise-ops i32-
+// narrowing guard. Needed because a LOCAL Map receiver (`const m = new
+// Map()` inside the SAME function body) is invisible to `mapValueKindOf`
+// at narrow.js's whole-program `narrowI32Results` pre-pass (that function's
+// own first check, `valTypeOf(name) === VAL.MAP`, can't resolve a purely
+// LOCAL receiver without `ctx.func.localReps`, uninstalled there — the SAME
+// "local-receiver visibility at a plan-time fixpoint" gap test/dyn-keys.js's
+// own KNOWN-FAIL already names) — so `exprPresentValIn`'s KIND-precise trace
+// resolves null for this shape, silently permitting an i32 narrowing that
+// desyncs from emit.js's own later, correctly-census-aware
+// `bigIntJointDispatch` (a genuine WASM validation crash, not just a wrong
+// value — confirmed live). Deliberately NOT the full `censusShapedNode`
+// (which also matches a plain array/typed-array 2-arg index — `arr[i] &
+// mask` is common in hot bitwise code and must keep narrowing; broadening to
+// that shape regressed exactly that class, measured via a direct compile
+// before landing this narrower predicate instead) — a boolean-only "might be
+// a Map .get() read" signal is enough here: this consumer only ever asks
+// "may I narrow to i32", never "what kind", so it doesn't need presence
+// resolved either, unlike exprPresentValIn.
+const mapGetShapedNode = (node) =>
+  Array.isArray(node) && node[0] === '()' && node.length === 3 &&
+  Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'get' && typeof node[1][1] === 'string'
+const mapGetShapedTraceCache = new WeakMap()
+function nameMapGetShapedInBody(bodyRoot, name, seen = new Set()) {
+  if (!Array.isArray(bodyRoot)) return false
+  let m = mapGetShapedTraceCache.get(bodyRoot)
+  if (!m) { m = new Map(); mapGetShapedTraceCache.set(bodyRoot, m) }
+  if (m.has(name)) return m.get(name)
+  if (seen.has(name)) return false
+  seen.add(name)
+  let flagged = false
+  const walk = (node) => {
+    if (flagged || !Array.isArray(node)) return
+    const op = node[0]
+    if ((op === 'let' || op === 'const') && node.length >= 2) {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && d[1] === name &&
+          (mapGetShapedNode(d[2]) || (typeof d[2] === 'string' && nameMapGetShapedInBody(bodyRoot, d[2], seen))))
+          flagged = true
+      }
+    } else if (op === '=' && node[1] === name &&
+      (mapGetShapedNode(node[2]) || (typeof node[2] === 'string' && nameMapGetShapedInBody(bodyRoot, node[2], seen))))
+      flagged = true
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(bodyRoot)
+  m.set(name, flagged)
+  return flagged
+}
+export const exprMapGetShapedIn = (expr, bodyRoot) =>
+  mapGetShapedNode(expr) || (typeof expr === 'string' && nameMapGetShapedInBody(bodyRoot, expr))
 
 export const censusMaybeUndefined = (node) => !!censusMaybeUndefinedKind(node)
 
@@ -878,14 +935,25 @@ VT['.'] = (args) => {
 const numericBinaryVT = (args) =>
   valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
 for (const op of NUMERIC_BINARY_OPS) VT[op] = numericBinaryVT
-// Slice 7 (.work/represented-maybe-undefined-design.md §14/§15): NOT given
-// the same both-census-BIGINT upgrade `+` gets below, for `-`/`*`/`/`/`%`/the
-// bitwise family — see emit.js's identical comment at each of those table
-// entries (a separate, pre-existing, general `valTypeOfWithLocals` gap blocks
-// the export-boundary decode for those ops regardless of any VT change here;
-// widening VT alone without that companion fix would be representationally
-// complete but not live, the exact half-fix this design's own history warns
-// against landing silently).
+// §14 point 4 (audit #10, .work/represented-maybe-undefined-design.md §14):
+// the binary sibling of censusBigintUnaryVT below — generalizes VT['+']'s own
+// original both-census-BIGINT branch (kept there, unchanged) to the other 8
+// arithmetic/bitwise ops now that emit.js's `bigIntJointDispatch` (replacing
+// the old per-op OR/AND gates — see its own doc comment) makes their WASM
+// computation correct for this shape too (previously blocked here: Slice 7
+// deliberately withheld this upgrade because the OLD computation was still
+// wrong for it — landing the static claim alone would have been
+// representationally complete but not live). Same AND (never OR)
+// requirement as VT['+']/`bigIntDomainsCanMix`: a single census-BigInt
+// operand paired with an unproven/proven-NUMBER other side must NOT
+// upgrade — that combination resolves via `bigIntJointDispatch`'s own
+// runtime branch (may genuinely throw or yield a real Number), never a
+// static BIGINT claim. Excludes `u-` (unary — censusBigintUnaryVT below
+// already covers it).
+const censusBigintBinaryVT = (base) => (args) =>
+  censusMaybeUndefinedKind(args[0]) === VAL.BIGINT && censusMaybeUndefinedKind(args[1]) === VAL.BIGINT
+    ? VAL.BIGINT : base(args)
+for (const op of NUMERIC_BINARY_OPS) if (op !== 'u-') VT[op] = censusBigintBinaryVT(numericBinaryVT)
 // `'+1'`/`'-1'` — prepare's dedicated member ++/-- unary (index.js '++'/'--'):
 // "the operand, incremented/decremented by one" — kind-preserving, exactly
 // like the bare-name '++'/'--' unary rule below, just spelled as its own op
@@ -933,10 +1001,11 @@ VT['+'] = (args) => {
   // Slice 7 (.work/represented-maybe-undefined-design.md §14/§15 honest
   // boundary): BOTH operands' census independently claiming BIGINT upgrades
   // this static claim too — the binary sibling of censusBigintUnaryVT above,
-  // same AND (never OR) requirement as emit.js's bothBigIntOperands (a single
-  // census-BigInt operand paired with an unproven/proven-NUMBER other side
-  // must NOT upgrade: that's the out-of-scope joint-dispatch KNOWN-FAIL, §14
-  // point 4). Load-bearing, not decorative: without this, `let x = m.get(a);
+  // same AND (never OR) requirement as emit.js's bigIntDomainsCanMix (a
+  // single census-BigInt operand paired with an unproven/proven-NUMBER other
+  // side must NOT upgrade: that combination resolves via `bigIntJointDispatch`'s
+  // own runtime branch, §14 point 4, not a static claim here). Load-bearing,
+  // not decorative: without this, `let x = m.get(a);
   // let y = m.get(b); return x + y` (both present-key BIGINT census, emit.js's
   // own widened gate now computes the CORRECT i64 sum) still decoded wrong at
   // the export boundary — compile/index.js's `_resultNumeric`/

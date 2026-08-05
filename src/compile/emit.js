@@ -4283,55 +4283,177 @@ function bigintMixReject(op, a, b) {
     err(`Cannot mix BigInt and other types in \`${op}\` (TypeError in JS) — convert explicitly with BigInt() or Number()`)
 }
 
-// Slice 7 widening (.work/represented-maybe-undefined-design.md §14/§15's own
-// honest-boundary gap, §16 as landed): the binary `+` table entry below gates
-// its i64/bigIntOperand dispatch on `valTypeOf(a) === VAL.BIGINT ||
-// valTypeOf(b) === VAL.BIGINT` — `vt` stays permanently null for a decl/
-// param/capture-hopped census-BIGINT operand (§14 point 3), so `let x =
-// m.get(k); let y = m.get(j); x + y` (both present-key BIGINT census reads)
-// fell all the way through to the generic dynamic NUMBER path — which treats
-// a present BigInt's raw i64-reinterpreted-as-f64 bits as an ordinary float
-// and does f64 arithmetic on the bit pattern (silently garbage), not i64
-// arithmetic. Live, confirmed via direct repro (not assumed): `x + y`
-// returned `4e-323` instead of `8n`. Written op-generic (usable at any
-// binary BigInt table entry) but WIRED ONLY at `+` below — `-`/`*`/`/`/`%`/
-// the bitwise family compute the SAME correct i64 result through this same
-// predicate but still misdecode at the export boundary for a SEPARATE,
-// pre-existing, general reason (see each of those table entries' own
-// comment) — wiring this there too would be representationally complete but
-// not live, so it deliberately isn't, verified via direct repro before
-// landing, not assumed safe.
+// §14 point 4 (audit #10, .work/represented-maybe-undefined-design.md §14):
+// JOINT runtime-domain dispatch for binary arithmetic/bitwise ops, superseding
+// the old per-op OR-gate (`valTypeOf(a)===BIGINT||valTypeOf(b)===BIGINT`, live
+// at every op below through 38dd0dca/f1c1256b) and Slice 7's `+`-only AND-gate
+// (`bothBigIntOperands`, removed here). Both were OPERAND-LOCAL guards — each
+// decided ONE operand's fate from a static claim alone, so neither could
+// distinguish "both operands genuinely absent" (JS: NaN, no throw —
+// ToNumeric(undefined) is a Number on both sides) from "one operand absent,
+// the other a real BigInt" (JS: TypeError) from "a proven BigInt paired with
+// a real, non-BigInt dynamic value" (JS: TypeError, f1c1256b's own pinned
+// KNOWN-FAIL) — three DIFFERENT runtime outcomes that collapse to the
+// identical static shape (bigintMixReject's own "operand-local guards are
+// architecturally insufficient" citation). Fixed: evaluate each operand
+// EXACTLY ONCE (ES2024 13.15.3 steps 1-4 — GetValue happens before
+// ToNumeric), classify EACH operand's REAL runtime domain, then dispatch on
+// the JOINT result: both Number → the plain numeric op; both BigInt → the
+// existing i64 op; mixed → TypeError (13.15.3 step 6 / 13.2.* "Type(lnum) is
+// not Type(rnum)").
 //
-// Widen with an AND, never a plain OR: a bare `censusMaybeUndefinedKind(x) ===
-// VAL.BIGINT` OR-ed onto the existing gate would ALSO route a census-BIGINT
-// operand paired with a PROVEN-non-BigInt other side (e.g. a literal NUMBER)
-// into this same i64 path — bigIntOperand's own runtime guard only checks
-// ITS operand's sentinel, never the other side's actual kind, so that shape
-// would silently reinterpret the proven-NUMBER operand's bits as i64 instead
-// of throwing the TypeError real JS gives for a BigInt⊕Number mix. That
-// mixed-kind class is EXACTLY §14 point 4's own named, out-of-scope,
-// separate design ("operand-local guards are architecturally insufficient" —
-// bigintMixReject's own citation) — the audit-#10 KNOWN-FAIL pin
-// (`present-key census-BIGINT + NUMBER silently corrupts`) stays pinned
-// UNCHANGED by this widening for exactly that reason. Requiring BOTH sides
-// bigint-or-census-bigint keeps every other shape (proven+dynamic,
-// proven+literal-NUMBER, census+proven-NUMBER) on its EXISTING, unaffected
-// path — this only ever adds reachability for the shape where NEITHER side
-// was separately provable but BOTH sides' census independently claims
-// BIGINT, which is exactly as sound as the OLD single-proven-side gate
-// already was (bigintMixReject's own aBig/bBig computation is unaffected —
-// a census-sourced operand's `valTypeOf` is null either way, so it was
-// already "unproven" there, never triggering a false compile-time reject).
-// The remaining accepted narrower gap (bigintMixReject's own documented
-// "both independently maybeUndefined and both absent → should be NaN, not a
-// throw" case) is unchanged by this widening — it was already the accepted
-// behavior for a call site that reaches bigIntOperand at all; this just
-// extends REACHABILITY of that same, already-accepted mechanism to a
-// previously-unreachable (both-census, neither-proven) shape.
-const bigIntSide = (vt, n) => vt === VAL.BIGINT || censusMaybeUndefinedKind(n) === VAL.BIGINT
-const bothBigIntOperands = (a, b) => {
-  const vtA = valTypeOf(a), vtB = valTypeOf(b)
-  return vtA === VAL.BIGINT || vtB === VAL.BIGINT || (bigIntSide(vtA, a) && bigIntSide(vtB, b))
+// bigIntDomain(node) — the STATIC evidence available for one operand:
+//   'bigint' — valTypeOf(node) === VAL.BIGINT: a PROVEN claim, never
+//              maybeUndefined (censusMaybeUndefinedKind never feeds `val` —
+//              the permanent invariant §14's Slice-4 revert restored).
+//              Always a real BigInt at runtime — no runtime check needed.
+//   'number' — a plain numeric LITERAL (bigintMixReject's own numLiteralNode)
+//              ONLY — always a real Number, no runtime check needed.
+//              Deliberately NOT `valTypeOf(node) === VAL.NUMBER` in general:
+//              that claim can be a kind-DEFAULT, not a proof (bigintMixReject's
+//              own doc comment — "kernel carriers read NUMBER as a kind-
+//              DEFAULT" — the SAME reason it only ever rejects a LITERAL
+//              mismatch, never a general NUMBER-claimed expression). Confirmed
+//              live, not assumed: layout.js's `i64Hex` (part of the self-host
+//              graph) and a self-hosted-build-only inlined-local shape both
+//              mix a `valTypeOf===NUMBER`-optimistic-default operand with a
+//              real BigInt LITERAL/expression on purpose — treating that
+//              NUMBER claim as throw-worthy broke the self-hosted kernel
+//              build outright (caught by the gate, not assumed safe).
+//   'census' — censusMaybeUndefinedKind(node) === VAL.BIGINT: the container
+//              proves its value is BIGINT whenever present, but PRESENCE
+//              itself is runtime-only — needs isUndef: present → BigInt,
+//              absent → Number (ToNumeric(undefined) is the Number NaN,
+//              never a BigInt — ES2024 13.5.6/7.1.3).
+//   null     — no static evidence either way, but ELIGIBLE for the runtime
+//              magnitude heuristic (below) — a NEVER-REASSIGNED parameter of
+//              the CURRENT function, AND that function is itself a WASM
+//              EXPORT — crossing the JS↔wasm boundary directly from the host
+//              caller (f1c1256b's own named shape, `export let f = (v, w) =>
+//              { let x = BigInt(v); return x - w }`).
+//   'skip'   — no static evidence AND not safe to runtime-probe — every other
+//              unresolved shape (a reassigned local, a non-param expression,
+//              or a param of a NON-exported internal function). See the
+//              heuristic's own scoping note below for why both restrictions
+//              (never-reassigned AND exported-function-only) are required.
+function bigIntDomain(node) {
+  const vt = valTypeOf(node)
+  if (vt === VAL.BIGINT) return 'bigint'
+  if (numLiteralNode(node)) return 'number'
+  if (censusMaybeUndefinedKind(node) === VAL.BIGINT) return 'census'
+  // The runtime magnitude heuristic (`typeof x === 'bigint'`'s own subnormal-
+  // abs check, reused as isBigIntCarrierBits below) is ONLY reliable for a
+  // SMALL-magnitude value — a genuinely LARGE or negative BigInt's raw bits
+  // do NOT read as subnormal, so applying it to an arbitrary internally-
+  // computed value produces FALSE positives (a real large bigint misread as
+  // "not bigint", wrongly throwing a TypeError on otherwise-correct code).
+  // Confirmed live, not assumed — TWO separate self-host regressions, both
+  // caught by the gate, neither a hypothetical:
+  //  (1) watr's own self-hosted i64 LEB128 encoder (node_modules/watr/src/
+  //      encode.js `i64()` — `n` REASSIGNED across a conditional diamond via
+  //      `BigInt(n)`/`i64.parse(n)`, later `n & 0x7Fn`, where `n` can
+  //      genuinely be any 64-bit magnitude) — closed by the never-reassigned
+  //      restriction below.
+  //  (2) layout.js's `i64Hex` (`bits => ... (bits >> 32n) & 0xFFFFFFFFn ...`)
+  //      — `bits` is a NEVER-reassigned param, but `i64Hex` is an ordinary,
+  //      NON-EXPORTED internal helper: its argument is computed entirely
+  //      WITHIN the compiled program (arbitrary magnitude, no host-boundary
+  //      assurance at all) — unlike a genuine WASM EXPORT's own param, whose
+  //      representation interop.js's marshalling actually constrains. Closed
+  //      by requiring the CURRENT function itself be a WASM export.
+  // Every other unresolved shape stays 'skip' — `bigIntDomainsCanMix` treats
+  // it as NO evidence at all, falling through to whatever the PRE-EXISTING
+  // (pre-§14-point-4) code path already did — unaffected.
+  if (ctx.func.exported && typeof node === 'string' && ctx.func.current?.params?.some(p => p.name === node) &&
+      !(ctx.func.body && isReassigned(ctx.func.body, node))) return null
+  return 'skip'
+}
+
+// Runtime "is this f64 bit pattern a BigInt carrier" heuristic — mirrors
+// TYPEOF.bigint's own arm verbatim (finite, nonzero, subnormal magnitude),
+// the SAME documented, permanent divergence that arm already accepts (a
+// genuinely tiny subnormal-magnitude real Number misclassifies as bigint) —
+// not a new heuristic, reused at a second call site (not factored into a
+// shared helper: TYPEOF.bigint's own local.tee shape is a live, pinned WAT
+// structural site — duplicating these 3 lines carries zero regression risk
+// there; sharing would). `get` must already be a side-effect-free
+// `local.get` — the caller has already materialized the operand into a temp.
+const isBigIntCarrierBits = (get) => ['i32.and',
+  ['f64.eq', get, get],
+  ['i32.and',
+    ['f64.ne', get, ['f64.const', 0]],
+    ['f64.lt', ['f64.abs', get], ['f64.const', 2.2250738585072014e-308]]]]
+
+// Does this binary node need the joint runtime dispatch, or can it keep its
+// existing fast path / stay on the fully generic numeric path untouched
+// (both required structural pins — proven-single-domain sites, byte-
+// identical)? `allowUnresolved` is false for `+`: a fully unresolved operand
+// there could ALSO be a runtime STRING, which `+` must keep routing through
+// its own STRING-coercion dispatch (above this check in the '+' table entry)
+// — not this BigInt-only one. Every other op ToNumeric()s unconditionally
+// (no STRING branch exists for them), so a `null` domain is a safe
+// runtime-heuristic target.
+function bigIntDomainsCanMix(a, b, allowUnresolved) {
+  const domA = bigIntDomain(a), domB = bigIntDomain(b)
+  // 'skip' (bigIntDomain's own doc comment): never eligible for the runtime
+  // heuristic — falls through to whatever the pre-existing code path already
+  // did for this operand, unaffected by this whole mechanism.
+  if (domA === 'skip' || domB === 'skip') return false
+  if (!allowUnresolved && (domA == null || domB == null)) return false
+  if (domA !== 'bigint' && domA !== 'census' && domB !== 'bigint' && domB !== 'census') return false
+  return !(domA === 'bigint' && domB === 'bigint')   // both proven-same → existing fast path, byte-identical
+}
+
+// The joint dispatch itself. `i64Compute(i64A, i64B)` builds the untyped i64
+// IR for the BigInt-domain result (mirrors each op's existing bigIntOperand-
+// fed expression); `numCompute(f64A, f64B)` builds the f64-typed IR for the
+// Number-domain result (mirrors each op's existing generic-numeric
+// expression). Both receive the operand ALREADY evaluated into a temp local
+// (`local.get`) — `emit(a)`/`emit(b)` run exactly once each, here.
+function bigIntJointDispatch(a, b, i64Compute, numCompute) {
+  const domA = bigIntDomain(a), domB = bigIntDomain(b)
+  const ta = temp('bigJ'), tb = temp('bigJ')
+  const getA = ['local.get', `$${ta}`], getB = ['local.get', `$${tb}`]
+  const flagIR = (dom, get) => dom === 'bigint' ? ['i32.const', 1]
+    : dom === 'number' ? ['i32.const', 0]
+    : dom === 'census' ? ['i32.eqz', isUndef(get)]
+    : isBigIntCarrierBits(get)
+  const needFlag = (dom) => dom !== 'bigint' && dom !== 'number'
+  const fta = needFlag(domA) ? tempI32('bigJf') : null
+  const ftb = needFlag(domB) ? tempI32('bigJf') : null
+  const flagA = fta ? ['local.get', `$${fta}`] : flagIR(domA, getA)
+  const flagB = ftb ? ['local.get', `$${ftb}`] : flagIR(domB, getB)
+  ctx.runtime.throws = true
+  const throwIR = typed(['block', ['result', 'f64'],
+    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.BIGINT_UNDEF_MIX]]],
+    ['throw', '$__jz_err', ['f64.const', ERR.BIGINT_UNDEF_MIX]]], 'f64')
+  const bigResult = fromI64(i64Compute(asI64(typed(getA, 'f64')), asI64(typed(getB, 'f64'))))
+  // Number-domain operand normalization: a `census` operand only ever reaches
+  // numCompute when its OWN flag proved it undef (the flagA===flagB join
+  // above), so its TRUE ToNumeric value is the Number NaN (ES2024 13.5.6/
+  // 7.1.3) — never its raw UNDEF_NAN carrier bits passed through unexamined.
+  // WASM does NOT guarantee arithmetic ops canonicalize a NaN operand's
+  // payload (confirmed live: `f64.add` of two identical UNDEF_NAN bit
+  // patterns returned that SAME tagged payload verbatim, not a generic NaN —
+  // decoding wrong downstream, since the tagged bits collide with the actual
+  // UNDEF_NAN sentinel other consumers compare against). Explicit select
+  // substitutes literal NaN before the op runs, matching `coerceNullishToNum`'s
+  // own ES semantics (reused conceptually, not the function itself — this
+  // already has the value in a temp and the undef flag computed, no second
+  // node-level census re-check needed).
+  const numOperand = (dom, get) => dom === 'census' ? typed(['select', ['f64.const', 'nan'], get, isUndef(get)], 'f64') : typed(get, 'f64')
+  const numResult = numCompute(numOperand(domA, getA), numOperand(domB, getB))
+  // A DEFINITE side (no runtime flag) needn't be re-checked once flagA===flagB
+  // holds — the equal flag already tells us which domain BOTH sides share.
+  const definite = domA === 'bigint' || domA === 'number' ? domA : domB === 'bigint' || domB === 'number' ? domB : null
+  const bothBranch = definite ? (definite === 'bigint' ? bigResult : numResult)
+    : typed(['if', ['result', 'f64'], flagA, ['then', bigResult], ['else', numResult]], 'f64')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${ta}`, asF64(emit(a))],
+    ['local.set', `$${tb}`, asF64(emit(b))],
+    ...(fta ? [['local.set', `$${fta}`, flagIR(domA, getA)]] : []),
+    ...(ftb ? [['local.set', `$${ftb}`, flagIR(domB, getB)]] : []),
+    typed(['if', ['result', 'f64'], ['i32.eq', flagA, flagB], ['then', bothBranch], ['else', throwIR]], 'f64')], 'f64')
 }
 
 // audit-#8 P0-3: the runtime twin of bigintMixReject's compile-time literal proof.
@@ -5090,7 +5212,17 @@ export const emitter = {
       if (cfB) return typed(ctx.abi.string.ops.concatRaw(strI64(a), strOperand(vtB, b), ctx, selfAccum), 'f64')
       return typed(ctx.abi.string.ops.cat(strOperand(vtA, a), strOperand(vtB, b), ctx, selfAccum), 'f64')
     }
-    if (bothBigIntOperands(a, b)) {
+    // §14 point 4: joint runtime-domain dispatch (see its own doc comment
+    // above bigIntDomain) — `allowUnresolved=false`: a fully unresolved
+    // operand here could ALSO be a runtime STRING, which must still reach
+    // the STRING-coercion dispatch below, not this BigInt-only check.
+    if (bigIntDomainsCanMix(a, b, false)) {
+      bigintMixReject('+', a, b)
+      return bigIntJointDispatch(a, b,
+        (ia, ib) => ['i64.add', ia, ib],
+        (fa, fb) => typed(['f64.add', fa, fb], 'f64'))
+    }
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('+', a, b)
       return fromI64(['i64.add', bigIntOperand(a), bigIntOperand(b)])
     }
@@ -5171,26 +5303,24 @@ export const emitter = {
     // bigintMemberAssignTarget above ('+').
     if (isLit1(b) && bigintMemberAssignTarget(a))
       return fromI64(['i64.sub', asI64(emit(a)), ['i64.const', 1]])
-    // Slice 7 (.work/represented-maybe-undefined-design.md §14/§15): NOT
-    // widened to `bothBigIntOperands` like '+' below — found, while landing
-    // that widening, that a BOTH-census-BigInt `-` (and `*`/`/`/`%`/the
-    // bitwise family) has a SEPARATE, PRE-EXISTING, general export-boundary
-    // gap unrelated to census/presentVal: `valTypeOfWithLocals` (this file's
-    // own narrow.js-shared resolver) has a "SOUND +" no-optimistic-claim rule
-    // for `+` ONLY (see its own doc comment) — every other arithmetic/bitwise
-    // op falls through to the plain `valTypeOf` default, which locks in an
-    // optimistic NUMBER `func.valResult` at PLAN time (narrowValResults, before
-    // any per-function census/live-value info exists), before this slice's own
-    // per-function-emit-time widening ever gets a chance to run. Confirmed via
-    // direct repro, PRE-DATES this slice entirely (reproduces identically at
-    // HEAD before any of this session's changes): `export let f = (a, b) => a
-    // - b` called with two REAL, non-census BigInt params from the JS host
-    // already misdecodes (`1.5e-323` instead of `2n`) — same for `*`/`/`/`%`.
-    // Closing that gap is a general, separate fix to `valTypeOfWithLocals`
-    // (broader blast radius than a census-chokepoint widening — every function
-    // using these operators, not just a hopped census claim) — named here as a
-    // future finding, not attempted in this slice. The `+` fix below is
-    // unaffected: `+` already had its own SOUND rule before this session.
+    // §14 point 4: joint runtime-domain dispatch (see bigIntDomain's own doc
+    // comment) — binary form only; `b === undefined` here is unary minus
+    // (reached through this same table entry, see the plain OR-gate below),
+    // a single-operand op with no second domain to mix against.
+    // `f1c1256b`'s own pinned KNOWN-FAIL (`let x = BigInt(v); return x - w`,
+    // `w` a zero-evidence dynamic param) closes here: `valTypeOfWithLocals`
+    // (kind.js) already proves `x` BIGINT for the export-lane decode, but the
+    // WASM computation below still took `x`'s proof as license to treat `w`'s
+    // raw bits as an i64 carrier unconditionally, with no runtime check that
+    // `w` genuinely IS one — `bigIntDomainsCanMix`/`bigIntJointDispatch`
+    // (allowUnresolved=true — no STRING ambiguity for `-`, unlike `+`) close
+    // that gap the same way as the census-vs-census/census-vs-proven shapes.
+    if (b !== undefined && bigIntDomainsCanMix(a, b, true)) {
+      bigintMixReject('-', a, b)
+      return bigIntJointDispatch(a, b,
+        (ia, ib) => ['i64.sub', ia, ib],
+        (fa, fb) => typed(['f64.sub', fa, fb], 'f64'))
+    }
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('-', a, b)
       // b===undefined here is UNARY minus (0n - a) reached through this same table
@@ -5223,8 +5353,13 @@ export const emitter = {
   },
   'u-': a => emitNeg(a),
   '*': (a, b) => {
-    // Slice 7: not widened — see '-'s identical comment above (the same
-    // pre-existing, general, out-of-scope valTypeOfWithLocals gap).
+    // §14 point 4: joint runtime-domain dispatch — see '-'s identical comment above.
+    if (bigIntDomainsCanMix(a, b, true)) {
+      bigintMixReject('*', a, b)
+      return bigIntJointDispatch(a, b,
+        (ia, ib) => ['i64.mul', ia, ib],
+        (fa, fb) => typed(['f64.mul', fa, fb], 'f64'))
+    }
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('*', a, b)
       return fromI64(['i64.mul', bigIntOperand(a), bigIntOperand(b)])
@@ -5262,7 +5397,13 @@ export const emitter = {
     return typed(['f64.mul', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '/': (a, b) => {
-    // Slice 7: not widened — see '-'s identical comment above.
+    // §14 point 4: joint runtime-domain dispatch — see '-'s identical comment above.
+    if (bigIntDomainsCanMix(a, b, true)) {
+      bigintMixReject('/', a, b)
+      return bigIntJointDispatch(a, b,
+        (ia, ib) => ['i64.div_s', ia, ib],
+        (fa, fb) => typed(['f64.div', fa, fb], 'f64'))
+    }
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('/', a, b)
       return fromI64(['i64.div_s', bigIntOperand(a), bigIntOperand(b)])
@@ -5284,7 +5425,15 @@ export const emitter = {
     return typed(['f64.div', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '%': (a, b) => {
-    // Slice 7: not widened — see '-'s identical comment above.
+    // §14 point 4: joint runtime-domain dispatch — see '-'s identical comment
+    // above. Number-domain branch reuses `f64rem` (the SAME `$__rem` call the
+    // fully generic '%' path below already uses — exact NaN/±Inf/0 edges).
+    if (bigIntDomainsCanMix(a, b, true)) {
+      bigintMixReject('%', a, b)
+      return bigIntJointDispatch(a, b,
+        (ia, ib) => ['i64.rem_s', ia, ib],
+        (fa, fb) => f64rem(fa, fb))
+    }
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('%', a, b)
       return fromI64(['i64.rem_s', bigIntOperand(a), bigIntOperand(b)])
@@ -5691,8 +5840,15 @@ export const emitter = {
   ...Object.fromEntries([
     ['&', 'and'], ['|', 'or'], ['^', 'xor'], ['<<', 'shl'], ['>>', 'shr_s'],
   ].map(([op, fn]) => [op, (a, b) => {
-    // Slice 7: not widened — see '-'s identical comment above ('+' above is
-    // the only op whose export-boundary lane this slice closes end-to-end).
+    // §14 point 4: joint runtime-domain dispatch — see '-'s identical comment
+    // above. Number-domain branch mirrors the generic i32 fast path below
+    // (`toI32`/`i32.${fn}`) exactly, widened back to f64 via `asF64`.
+    if (bigIntDomainsCanMix(a, b, true)) {
+      bigintMixReject(op, a, b)
+      return bigIntJointDispatch(a, b,
+        op === '<<' || op === '>>' ? (ia, ib) => bigIntShiftIR(op, ia, ib) : (ia, ib) => [`i64.${fn}`, ia, ib],
+        (fa, fb) => asF64(typed([`i32.${fn}`, toI32(fa), toI32(fb)], 'i32')))
+    }
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject(op, a, b)
       // `<<`/`>>` need the sign-aware direction flip (bigIntShiftIR) — see its

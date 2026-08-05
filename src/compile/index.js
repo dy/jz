@@ -410,8 +410,16 @@ function scanAndTagNonEscapingClosures(body) {
 // `emitFunc`, `analyzeFuncForEmit`, and `emitClosureBody` all route through
 // here. Top-level funcs start `uniq` at 0; closures pass a higher base so
 // their synthetic labels can't collide with the parent frame's.
-function enterFunc(sig, body, { uniq = 0, directClosures = null } = {}) {
+function enterFunc(sig, body, { uniq = 0, directClosures = null, exported = false } = {}) {
   ctx.func.stack = []
+  // §14 point 4 (audit #10): whole-function-emission flag exposing whether
+  // THIS function is itself a WASM export — emit.js's `bigIntDomain` needs
+  // it to restrict the runtime BigInt-magnitude heuristic to a genuine
+  // export's own param (whose representation crosses the JS boundary through
+  // interop.js's marshalling) vs an arbitrary internal helper's param (whose
+  // value is computed entirely within the compiled program, unbounded
+  // magnitude — closing a real self-host regression, layout.js's `i64Hex`).
+  ctx.func.exported = !!exported
   ctx.func.repsFrozen = false   // plan phase opens — reps writable until body emission starts
   // Overlay (tier #2) present for the WHOLE emission of every function —
   // emitBlockBody layers per-block copies on top. Guarantees emission-minted
@@ -484,7 +492,7 @@ function analyzeFuncForEmit(func, programFacts) {
   if (_o && _o.clampPeel !== false && isBlockBody(func.body)) func.body = peelClampedStencil(func.body)
 
   const { name, body, sig } = func
-  enterFunc(sig, body)
+  enterFunc(sig, body, { exported: func.exported })
 
   const block = isBlockBody(body)
   ctx.func.boxed = new Map()
@@ -800,35 +808,37 @@ function analyzeFuncForEmit(func, programFacts) {
   // narrowValResults; value-bound arrows (`export let f = (a,b) => a*b`) don't, so prove via
   // the return expression(s) with params now trusted numeric. A proven-number f64 result
   // never carries a NaN-box → crosses as plain f64; anything else rides i64 (Safari-safe).
-  if (isExported(func))
-    func._resultNumeric = func.valResult === VAL.NUMBER ||
-      (func.valResult == null && sig.results[0] === 'f64' &&
-        (() => {
-          const rex = returnExprs(body)
-          // Void body (falls off → undefined, which callers ignore) keeps the f64 carrier:
-          // undefined isn't a reference, so no i64 is needed and wrapping every void export
-          // is pure overhead. A non-empty set must be all-NUMBER to stay f64.
-          // `&& censusBigintSentinelKind(e) === 0` (audit #10 fallout, found while
-          // reverting Slice 4's VT wiring — .work/represented-maybe-undefined-
-          // design.md §14): `valTypeOf(e)` for a bare census-BIGINT node or a
-          // `-`/`~` unary wrapping one is numericUnaryVT's OWN "unproven → optimistic
-          // NUMBER default" (kind.js, the identical gap the SOUND-`+`/SOUND-unary
-          // fixes close elsewhere) whenever the operand's exact kind isn't proven —
-          // which, with VT['[]']/['.']/['()']'s dict/Map exact-kind promotion
-          // dormant (Slice 4 reverted), is now ALWAYS for this shape, not just an
-          // edge case. Trusting that optimistic NUMBER claim here would set
-          // `_resultNumeric = true`, which short-circuits `isBoundaryWrapped`
-          // (:169 `if (!func._resultNumeric) return true`) BEFORE it ever reaches
-          // `_resultBigintSentinel` below — skipping the i64 boundary wrap entirely
-          // for a value that can genuinely be a present-key BigInt at runtime (the
-          // Slice 5 repro-5 class regressing). `censusBigintSentinelKind` sources
-          // its answer from the census helpers DIRECTLY (dictValueKindOf/
-          // mapValueKindOf via censusMaybeUndefinedKind), never through VT/
-          // valTypeOf — same VT-independence discipline as emitNeg/`~`'s own
-          // hardening (§13) — so this check stays correct whether or not Slice 4's
-          // VT wiring is live.
-          return rex.length === 0 || rex.every(e => valTypeOf(e) === VAL.NUMBER && censusBigintSentinelKind(e) === 0)
-        })())
+  if (isExported(func)) {
+    const rex = returnExprs(body)
+    // Void body (falls off → undefined, which callers ignore) keeps the f64 carrier:
+    // undefined isn't a reference, so no i64 is needed and wrapping every void export
+    // is pure overhead. A non-empty set must be all-NUMBER to stay f64.
+    // `censusSafe` (audit #10 fallout, found while reverting Slice 4's VT wiring —
+    // .work/represented-maybe-undefined-design.md §14, extended by §14 point 4):
+    // `valTypeOf(e)`/`func.valResult` for a bare census-BIGINT node, a `-`/`~` unary
+    // wrapping one, OR (§14 point 4's own find) a BINARY arithmetic/bitwise node
+    // whose operands `valTypeOfWithLocals` can't locally resolve is each op's OWN
+    // "unproven → optimistic NUMBER default" (kind.js — numericUnaryVT's for the
+    // unary family, the arithmetic/bitwise family's OWN deliberate "unknown →
+    // NUMBER" default for `-`/`*`/`/`/`%`/bitwise, load-bearing elsewhere for the
+    // closure-table call-site bootstrap, not removable) whenever the operand's
+    // exact kind isn't proven. Critically, THIS optimistic default can settle
+    // `func.valResult` to a DEFINITE `VAL.NUMBER` (not `null`) for exactly this
+    // shape — confirmed live: `let x = m.get(a); let y = m.get(b); return x - y`
+    // (both present-key BIGINT census) set `func.valResult === VAL.NUMBER`
+    // outright, which used to short-circuit `_resultNumeric = true` on the FIRST
+    // disjunct below, never reaching `censusBigintSentinelKind` at all — skipping
+    // the i64 boundary wrap entirely for a value that's genuinely a present-key
+    // BigInt at runtime (returned the raw i64 sum's bits misread as a subnormal
+    // float, `1e-323` instead of `2n`). `censusSafe` now gates BOTH disjuncts (not
+    // just the `valResult == null` one) — `censusBigintSentinelKind` sources its
+    // answer from the census helpers DIRECTLY (dictValueKindOf/mapValueKindOf via
+    // censusMaybeUndefinedKind), never through VT/valTypeOf/valResult, so this
+    // check stays correct regardless of which optimistic default fired.
+    const censusSafe = rex.length === 0 || rex.every(e => censusBigintSentinelKind(e) === 0)
+    func._resultNumeric = censusSafe && (func.valResult === VAL.NUMBER ||
+      (func.valResult == null && sig.results[0] === 'f64' && rex.every(e => valTypeOf(e) === VAL.NUMBER)))
+  }
 
   // Present-key BigInt through the census, export sentinel lane (.work/
   // represented-maybe-undefined-design.md §6/§12 Slice 5 — the
@@ -1342,7 +1352,7 @@ function emitFunc(func, funcFacts, programFacts) {
   const multi = sig.results.length > 1
   const _reps = paramReps.get(name)
 
-  enterFunc(sig, body)
+  enterFunc(sig, body, { exported })
   // Escape-boxing gate for return-position BOOL literals/expressions (emit.js
   // 'return'): a func with >= 2 syntactic return statements whose overall
   // valResult ISN'T proven uniformly BOOL may still have individual return

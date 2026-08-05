@@ -1783,3 +1783,175 @@ call-site iteration); §14 point 4's joint binary-operand runtime-domain
 dispatch (the `bigintMixReject`/audit-#10 KNOWN-FAIL, unchanged); real
 `.message`/`.name` text for §17's internal TypeError throws (could now reuse
 this session's `coerceNullishToStr`-adjacent infrastructure, not attempted).
+
+## 19 — §14 point 4 landed: JOINT runtime-domain dispatch for binary
+## arithmetic/bitwise BigInt⊕Number mixing (audit #10's own core finding)
+
+Closes the LAST named item from audit #10's own text (§13/§14's citation,
+`bigintMixReject`'s own doc comment): "operand-local guards are
+architecturally insufficient" — `bigintMixReject`/the old per-op OR-gate/
+Slice 7's `+`-only `bothBigIntOperands` AND-gate each decided ONE operand's
+BigInt-vs-Number fate from a static claim alone, unable to jointly
+distinguish the three DIFFERENT runtime outcomes ES2024 13.15.3 actually
+requires for the identical static shape: both operands genuinely absent →
+Number NaN, no throw; one absent + one a real BigInt → TypeError; a proven
+BigInt paired with a real, non-BigInt dynamic value → TypeError.
+
+**Mechanism** (`src/compile/emit.js`, new): `bigIntDomain(node)` classifies
+ONE operand's static evidence — `'bigint'` (valTypeOf proven, never
+maybeUndefined per the permanent §14 invariant), `'number'` (a LITERAL only
+— see the self-host fix below for why NOT `valTypeOf===NUMBER` in general),
+`'census'` (censusMaybeUndefinedKind===BIGINT — presence is runtime-only),
+`null` (a never-reassigned param of a WASM-EXPORTED function — eligible for
+the runtime magnitude heuristic), or `'skip'` (everything else — no static
+evidence and not safe to probe). `bigIntDomainsCanMix(a, b, allowUnresolved)`
+decides whether a binary node needs the joint mechanism at all — skips
+entirely when neither side has bigint/census evidence, or when both sides
+are the SAME definite domain (the existing fast path stays byte-identical).
+`bigIntJointDispatch(a, b, i64Compute, numCompute)` evaluates both operands
+into temps EXACTLY ONCE, computes each ambiguous operand's runtime flag
+(`isUndef` for a census operand, the SAME subnormal-magnitude heuristic
+`typeof x === 'bigint'` already uses — `isBigIntCarrierBits` — for a null-
+domain operand), then a single `flagA === flagB` join: equal → both-BigInt
+(i64 arithmetic) or both-Number (the plain op, with a `census` operand's
+undef state explicitly normalized to canonical NaN first — WASM does NOT
+guarantee arithmetic-NaN-propagation reproduces a specific input payload,
+confirmed live); unequal → throw (reusing `ERR.BIGINT_UNDEF_MIX`, already
+a generic "Cannot mix BigInt and other types" TypeError, no new error code
+needed).
+
+**Wired at all 9 ops**: `+ - * / % & | ^ << >>`. `+` uses
+`allowUnresolved=false` (a fully unresolved operand there could ALSO be a
+runtime STRING — must keep routing through `+`'s own STRING-coercion
+dispatch, untouched); every other op has no STRING arm, so `allowUnresolved=
+true` is sound. `kind.js`'s `censusBigintBinaryVT` generalizes VT['+']'s own
+original both-census-BIGINT branch to the other 8 ops (AND, never OR — same
+soundness requirement as `bigIntDomainsCanMix`); `censusBigintSentinelKind`'s
+kind-4 arm generalizes from `+`-only to `BIGINT_JOINT_BINARY_OPS` (all 9) —
+no new sentinel kind needed, kind 4's own "no absent-case bit pattern" logic
+extends unchanged. `compile/index.js`'s `_resultNumeric` computation was
+ALSO gapped: `func.valResult` can independently settle to a definite
+`VAL.NUMBER` for a census-BigInt-sourced binary node (the arithmetic/bitwise
+family's own "unknown → NUMBER" optimistic default, load-bearing elsewhere
+for the closure-table bootstrap, not removable) — the ORIGINAL `censusBigintSentinelKind`
+guard only ran in the `valResult == null` branch; hoisted `censusSafe` to gate
+BOTH disjuncts, closing an export-lane bypass found live (`x - y`, both
+present-key BigInt census, decoded `1e-323` instead of `2n`).
+
+**Presence×domain matrix** (test/dyn-keys.js, differential against real JS,
+all 9 ops — before this session / after / JS):
+
+| operand shape | before | after | JS |
+|---|---|---|---|
+| census-BIGINT present + present (any op) | garbage NUMBER (9-op case) / correct for `+` only | real BigInt, matches JS | real BigInt |
+| census-BIGINT both absent (arithmetic `+-*/%`) | THREW (bigIntOperand's own per-operand over-throw) | NUMBER `NaN` | `NaN` |
+| census-BIGINT both absent (bitwise `&\|^<<>>`) | THREW | **documented gap**: `0n` (bigint), not JS `0` (number) — carrier-bits collision, permanent, same class as the existing `0n`-literal exemption | `0` (number) |
+| census-BIGINT present + absent (either order) | garbage NUMBER / inconsistent | TypeError | TypeError |
+| census-BIGINT present + NUMBER literal | garbage NUMBER (audit-#10's own named repro) | TypeError | TypeError |
+| proven-BigInt local + zero-evidence dynamic param (export's own, never reassigned) | silently wrong BigInt | TypeError (small param) / correctly computes (param genuinely BigInt-shaped) | TypeError / real BigInt |
+| proven-BigInt local + zero-evidence dynamic param of a NON-exported internal helper | n/a (not proven-BigInt shape) | **unaffected by design** (`'skip'`) — same as before | n/a |
+| two fully zero-evidence dynamic params (no bigint evidence anywhere) | silently wrong (architecturally out of reach) | **unchanged, out of scope** — needs boundary-boxing infra (§6), not this design | real BigInt if both are |
+
+**Flipped KNOWN-FAILs** (test/dyn-keys.js): "present-key census-BIGINT +
+NUMBER silently corrupts" (audit #10's own core repro) → green, full 9-op×
+presence matrix (60 assertions) + a dedicated documented-gap test for the
+bitwise both-absent carrier collision (10 assertions); "census-BigInt reads
+... still misdecode" (38dd0dca's 9-op sub-case) → split into a green FIXED
+test (5 ops × value+type, `-*&/%`) and a narrower, still-genuinely-out-of-
+scope KNOWN-FAIL (the fully zero-evidence dynamic-param PAIR, unchanged, own
+new title naming exactly why); "a proven-local BigInt mixed with a zero-
+evidence dynamic param" (f1c1256b's pinned row) → green.
+
+**Fast-path byte-identity** (structural pin, required by this task):
+`bigIntDomainsCanMix` returns `false` — meaning the ORIGINAL, untouched code
+path runs, byte-for-byte — whenever both operands are the same definite
+domain (both proven BigInt, the "round-7: local BigInt() decls through every
+binary op" test's own 32-assertion table) or neither side has any bigint/
+census evidence at all (the ordinary numeric/string fast paths). Verified
+three ways: (1) perf-ratchet 10/10 at +0 delta every category — a hot-loop
+benchmark corpus with zero census/BigInt shapes takes the untouched path by
+construction; (2) size sweep geomean 1.042× unchanged from baseline — the
+new dispatch never emits for a plain numeric program; (3) direct WAT diff on
+the two-proven-bigint-operand shape before/after this session, identical.
+
+**Two self-host regressions found and fixed, not shipped blind** (this
+task's own instruction — "verify against node for each cell... pin the whole
+matrix" extended to "verify against the self-hosted kernel," which caught
+what native-only testing did not):
+1. **watr's own i64 LEB128 encoder** (`node_modules/watr/src/encode.js`
+   `i64()`, part of the self-host graph): `n`, REASSIGNED across a
+   conditional diamond (`n = i64.parse(n)` / `n = BigInt(n)`), later
+   `n & 0x7Fn` — `n` can genuinely be ANY 64-bit magnitude, but the
+   subnormal-magnitude heuristic is only reliable for SMALL values (the SAME
+   documented, permanent divergence `typeof x === 'bigint'` already
+   accepts) — a large/negative bigint misread as "not bigint" wrongly
+   threw. Closed by restricting the null-domain (heuristic-eligible)
+   classification to a NEVER-REASSIGNED name (`isReassigned`, ast.js) —
+   `n` fails this and correctly falls to `'skip'` (no dispatch, pre-existing
+   behavior, unaffected).
+2. **layout.js's `i64Hex`** (`bits => ... (bits >> 32n) & 0xFFFFFFFFn ...`,
+   also self-host-graph): `bits` is never reassigned, but `i64Hex` is an
+   ordinary, NON-EXPORTED internal helper — its argument is computed
+   entirely within the compiled program (unbounded magnitude, no
+   host-boundary assurance), unlike a genuine WASM EXPORT's own param
+   (interop.js's marshalling actually constrains that representation).
+   Closed by additionally requiring the CURRENT function be a WASM export
+   (`ctx.func.exported`, new — threaded through `enterFunc`'s existing
+   per-function frame-entry, `compile/index.js`) — `bits` now correctly
+   falls to `'skip'` too. f1c1256b's own named repro (`export let f = (v, w)
+   => { let x = BigInt(v); return x - w }`) still flips green: `f` IS
+   exported, `w` IS never-reassigned — both restrictions still admit it.
+   A separate, smaller bug found closing #1: `type.js`'s bitwise-ops i32-
+   narrowing guard had the identical "over-broad `censusShapedNode` fires
+   unconditionally, killing an ordinary typed-array vectorized kernel"
+   regression (test/inference.js's PRNG bitwise-kernel pin, 12→0 v128 ops) —
+   fixed by keeping the broad structural fallback GATED on `vt == null`
+   (its exact original, pre-§14-point-4 condition) while making only the
+   PRECISE census checks (`censusMaybeUndefinedKind`/`exprPresentValIn`/
+   `exprMapGetShapedIn`, the ones that can't ever fire for a plain array
+   read) unconditional.
+   Both were caught by actually rebuilding `dist/jz.wasm` and running
+   `test/selfhost.js` — NOT assumed safe from native-only test passes; the
+   design's own recurring lesson ("verify empirically") held again, this
+   time against the self-host leg specifically, not just the native one.
+
+**Gates**: full ~92-file battery in foreground chunks of 6, every chunk
+green; dyn-keys.js 55/55 (270 assertions) BOTH legs (native +
+`JZ_TEST_TARGET=jz.wasm`, genuinely routed through `compileViaKernel`);
+watr.js 35/35 (107 assertions, the two self-host-build-repro regressions
+re-verified green); inference.js's PRNG-vectorization pin re-verified (12
+v128 ops, unchanged); kernel-parity 33/33 byte-identical (O0/O2/O3);
+kernel-oracle 11/11 (2^62-boundary pins green); perf-ratchet 10/10 at +0
+every category; optimizer.js green (in the 336-assertion chunk); selfhost.js
+21/21 (206 assertions, fresh `scripts/selfhost-build.mjs` rebuild);
+minimal-output.js green; fuzz 2000×4 (seeds 1-8000, four separate foreground
+runs) zero divergence across ~120K compared inputs; size sweep geomean
+1.042× (`scripts/bench-size.mjs`, baseline unchanged); fresh build ×2
+byte-identical (`dist/jz.js` sha256 `412df510…`, `dist/jz.wasm` sha256
+`fc6d006d…`, `dist/interop.js` sha256 `fcda069b…`, both builds).
+
+**Files touched**: `src/compile/emit.js` (`bigIntDomain`/`isBigIntCarrierBits`/
+`bigIntDomainsCanMix`/`bigIntJointDispatch`, new; all 9 binary op table
+entries updated; `bothBigIntOperands`/`bigIntSide` removed, superseded);
+`src/kind.js` (`censusBigintBinaryVT`, new; `censusBigintSentinelKind` kind-4
+generalized to `BIGINT_JOINT_BINARY_OPS`; `mapGetShapedNode`/
+`nameMapGetShapedInBody`/`exprMapGetShapedIn`, new — the Map-`.get()`-only
+structural fallback for a LOCAL Map receiver invisible to a whole-program
+pre-pass); `src/type.js` (`exprType`'s bitwise-ops guard: precise census
+checks unconditional, the broad structural fallback re-gated on `vt==null`,
+its exact original condition; new optional `bodyRoot` parameter); `src/compile/narrow.js`
+(threads `body` as `bodyRoot` into `narrowI32Results`' own `exprType` call);
+`src/compile/index.js` (`_resultNumeric`'s `censusSafe` hoist; `enterFunc`'s
+new `exported` option → `ctx.func.exported`); `interop.js`
+(`BIGINT_SENTINEL_BITS`/`VALUES` kind-4 entry, NaN — same bits as kind 2, a
+different table key for numbering symmetry); `test/dyn-keys.js` (flipped
+KNOWN-FAILs, the full presence×domain matrix, the documented bitwise-gap
+test, the narrowed remaining KNOWN-FAIL).
+
+Every named item from the audit-#10 campaign (§13's own closing line) is now
+closed. Two intentionally-accepted residuals remain, both explicitly out of
+this design's charter: the bitwise both-absent carrier-bits collision
+(0n-vs-0, the same permanent class as the existing zero-literal exemption)
+and the fully zero-evidence dynamic-param-pair case (needs new boundary-
+boxing infrastructure, §6's `presentKindUnboxed`/`bigintBoxed` producer gap
+— an independent, larger undertaking, unchanged by this session).

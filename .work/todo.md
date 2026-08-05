@@ -4,6 +4,71 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-05, §14 point 4 landed — JOINT runtime-domain dispatch for
+## binary BigInt⊕Number mixing; full design writeup
+## .work/represented-maybe-undefined-design.md §19)
+
+Closed audit #10's own last named item: `bigintMixReject`/the old per-op
+gates are OPERAND-LOCAL, unable to jointly tell "both absent" (Number NaN,
+no throw) from "one absent + one real BigInt" (throw) from "a proven BigInt
+paired with a real dynamic Number" (throw) — three different ES2024
+13.15.3 outcomes for the identical static shape. `m.get('x') + 1` (5n
+present, `+1` literal) silently gave garbage NUMBER instead of TypeError;
+`let x = BigInt(v); return x - w` (w a plain dynamic param) silently gave a
+wrong bigint instead of TypeError; the 9-op census-BigInt sub-case
+(`-*/%&|^<<>>` on two present-key BigInt census reads) stayed NUMBER instead
+of the real BigInt result.
+
+**Mechanism**: `emit.js`'s new `bigIntDomain`/`bigIntDomainsCanMix`/
+`bigIntJointDispatch` — evaluate both operands ONCE, classify each side's
+REAL runtime domain (present-vs-absent for a census claim via `isUndef`; the
+same subnormal-magnitude heuristic `typeof x==='bigint'` already uses for a
+genuinely unresolved operand), joint-dispatch: both Number → the plain op;
+both BigInt → i64 arithmetic; mismatch → TypeError. Wired at all 9 binary
+arithmetic/bitwise ops. `kind.js`'s VT/`censusBigintSentinelKind` and
+`compile/index.js`'s `_resultNumeric` generalized in lockstep so the export
+lane agrees with the WASM computation.
+
+**Two self-host regressions found and fixed** (native tests alone did NOT
+catch these — only rebuilding `dist/jz.wasm` and running `test/selfhost.js`
+did): the runtime magnitude heuristic is only reliable for SMALL values, so
+applying it unscoped to (1) a REASSIGNED local that can legitimately hold
+ANY 64-bit magnitude (watr's own self-hosted i64 LEB128 encoder,
+`node_modules/watr/src/encode.js`) and (2) a never-reassigned param of a
+NON-exported internal helper (layout.js's `i64Hex`, whose argument has no
+host-boundary size assurance) both produced false-positive throws that broke
+the self-hosted kernel build outright. Fixed by restricting the heuristic-
+eligible ('null'-domain) classification to a never-reassigned parameter of a
+function that is ITSELF a WASM export (`ctx.func.exported`, new, threaded
+through `enterFunc`) — f1c1256b's own named repro (`export let f = (v, w) =>
+{ let x = BigInt(v); return x - w }`) still qualifies (exported, `w` never
+reassigned). A related `type.js` bitwise-narrowing regression (an
+over-broadened structural census check killed a PRNG kernel's vectorization,
+12→0 v128 ops) was found and fixed alongside it — re-gated the broad,
+imprecise fallback behind its exact original `vt==null` condition, kept only
+the PRECISE census checks unconditional.
+
+**Documented, permanent, accepted residual** (not a bug, same class the
+codebase already tolerates for a `0n`-literal mix elsewhere): the bitwise
+family's (`&|^<<>>`) "both operands census-BigInt and both absent" cell
+decodes as `0n` (bigint) instead of JS's real `0` (number) — ToInt32(NaN)=0
+on both sides, and 0's raw carrier bits are IDENTICAL for a genuine BigInt
+0n and a genuine Number 0, an inherent, unfixable-without-boxing collision.
+Pinned explicitly as a documented gap, not silently wrong.
+
+**Gates**: full ~92-file battery (foreground chunks of 6) green; dyn-keys.js
+55/55 (270 assertions) both legs; watr.js 35/35; kernel-parity 33/33
+byte-identical; kernel-oracle 11/11 (2^62-boundary pins green); perf-ratchet
+10/10 at +0 (proven-domain fast paths byte-identical — verified via WAT diff,
+not just ratchet counts); selfhost.js 21/21 (fresh kernel rebuild); fuzz
+2000×4 (seeds 1-8000) zero divergence; size sweep 1.042× unchanged; fresh
+build ×2 byte-identical (`dist/jz.js` sha256 `412df510…`, `dist/jz.wasm`
+sha256 `fc6d006d…`, `dist/interop.js` sha256 `fcda069b…`).
+
+Files: src/compile/emit.js, src/kind.js, src/type.js, src/compile/narrow.js,
+src/compile/index.js, interop.js, test/dyn-keys.js. Full detail:
+.work/represented-maybe-undefined-design.md §19.
+
 ## Status (2026-08-04, audit-#10 kind-specific table closed — member access
 ## and calls on a genuinely-undefined receiver now throw a real, catchable
 ## TypeError instead of trapping/reading garbage/host-dispatch-erroring; full
