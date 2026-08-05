@@ -4,9 +4,105 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
-## Status (2026-08-05, audit-#11 P0-1 CLOSED — subnormal-as-BigInt carrier
-## heuristic gated on ctx.features.bigint; two compile-time constant-fold bugs
-## found and fixed in the same hunt)
+## Status (2026-08-05, audit-#11 P0-3 CLOSED — target-capability branch was
+## nested AROUND the audit-#10 nullish-receiver check in the method-call
+## TOTAL fallback, making TypeError evaporate under host:'wasi' alone)
+
+**Repro**: `export let f = () => { const m = new Map(); m.set('present', 1);
+return m.get('missing').toFixed(2) }` compiled with `host:'wasi'` returned
+`undefined` instead of throwing `TypeError`; the identical source compiled
+with `host:'js'` threw correctly. An in-wasm `catch (e) { e instanceof
+TypeError }` around the same call under wasi saw `false`. Two committed
+`test:wasi` rows failed (`test/dyn-keys.js`: "audit #10: kind-specific member
+access…" assertion 5, "…catchable IN-WASM…" assertion 5 — both the NUMBER-
+census `.toFixed()` case).
+
+**Root cause**: `externalMethodFallback` (src/compile/emit.js, strategy 12 —
+the TOTAL, always-returns last resort in `TYPED_STRATEGIES` for `obj.method()`
+on an unresolved receiver) had, in program order:
+```
+if (!ctx.transform.targetProfile.envImports) return undefExpr()   // wasi: always true → returns HERE
+...
+const mayBeUndef = censusMaybeUndefined(obj)                       // audit-#10's check — dead under wasi
+```
+`envImports` is the target-capability flag (false for wasi — no host
+`__ext_call`). Under wasi it is ALWAYS false, so the early return fired on
+EVERY call reaching this fallback, before the nullish check a few lines below
+it ever ran — the audit-#10 guard was live code on js-host and silently dead
+code on wasi-host for this one family. `tryRuntimeNumberMethod` (strategy 8b)
+bails earlier still (`!ctx.closure.call`, true for any program with no
+closures anywhere — independent of host) and defers correctly to later
+strategies; since none of strategies 9–11 apply to `.toFixed`, control always
+reached the TOTAL fallback, making it the one guaranteed backstop for this
+shape — and the one place the ordering bug actually lived.
+
+**Fix** (single site, src/compile/emit.js `externalMethodFallback`): hoisted
+`censusMaybeUndefined`/`isNullish` to run BEFORE the `envImports` branch — the
+receiver is evaluated once into a temp, tested for nullish, and ONLY the
+non-null arm picks host-`__ext_call`-dispatch vs. the wasi no-op stub.
+Matches ES 13.3: RequireObjectCoercible is a member-access semantic that
+precedes any dispatch-strategy decision, not a detail nested inside one
+strategy's capability gate. A receiver that is provably never nullish
+(`!mayBeUndef`) takes the exact original code path, byte for byte — zero cost
+for the unflagged population.
+
+**Five-site audit** (7c23a06e's arms — each checked for the same
+capability-nested-check hazard class):
+
+| # | Site | Capability gate present? | Hazard? | Verdict |
+|---|------|---------------------------|---------|---------|
+| 1 | `emitLengthAccess` (module/core.js) | none — `mayBeUndef` check is unconditional | no | clean, unchanged |
+| 2 | `tryRuntimeStringFork` (emit.js) | none — no `ctx.closure.call`/envImports dependency anywhere in the function | no | clean, unchanged |
+| 3 | `tryRuntimeNumberMethod` (emit.js) | `!ctx.closure.call` early-exits the WHOLE strategy before its own check runs | benign — bailing here just defers to later strategies, which for `.toFixed` always terminate at site 4 | unchanged (fixed transitively by site 4) |
+| 4 | `externalMethodFallback` (emit.js) | `!ctx.transform.targetProfile.envImports` early-returns BEFORE the nullish check | **yes — the real bug** | **fixed** (reordered) |
+| 5 | `emitGenericClosureCall` (emit.js) | caller-gated on `ctx.closure.call` (line ~6613); falls to `emitUnknownCalleeCall` (no check) if unavailable | verified NOT reachable in practice — any program with an unresolved `()` call site is exactly the condition that installs closure infra in the first place (confirmed empirically: a zero-closure-literal program with `m.get('missing')()` still threw correctly under wasi, both before and after this fix) | clean, unchanged |
+
+**js/wasi parity** (before → after, all five families, receiver genuinely
+nullish):
+
+| family | js-host (before) | wasi-host (before) | wasi-host (after) |
+|---|---|---|---|
+| `.length` (ARRAY census) | throws TypeError | throws TypeError | throws TypeError |
+| `.length` (STRING census) | throws TypeError | throws TypeError | throws TypeError |
+| `.slice()` (STRING census, tryRuntimeStringFork) | throws TypeError | throws TypeError | throws TypeError |
+| `.toFixed()` (NUMBER census, tryRuntimeNumberMethod→externalMethodFallback) | throws TypeError | **returned `undefined`** | throws TypeError |
+| `()` call (CLOSURE census, emitGenericClosureCall) | throws TypeError | throws TypeError | throws TypeError |
+| in-wasm `catch(e){ e instanceof TypeError }` — all five | true | **false for `.toFixed()`** | true for all five |
+
+Only `.toFixed()` (and its in-wasm catch) diverged pre-fix; every other
+family was already host-neutral, confirming the bug was scoped to the one
+ordering defect in `externalMethodFallback`, not a systemic pattern.
+
+**Pins added** (test/dyn-keys.js, both new, explicit dual-host — not relying
+on `JZ_TEST_HOST` env indirection): "audit #11 P0-3: js/wasi host parity —
+the five nullish-receiver TypeError checks hold under host:wasi too" (10
+assertions, js+wasi × 5 families) and "audit #11 P0-3: in-wasm catch parity
+under host:wasi" (4 assertions). The two pre-existing audit-#10 KNOWN-committed
+`test:wasi` failures (dyn-keys.js assertion 5 in both "kind-specific member
+access…" and "…catchable IN-WASM…") now pass under `test:wasi` without
+modification — they were the env-indirect symptom of the same bug.
+
+**Gates (all green, foreground)**: `test/dyn-keys.js` 57/57 both hosts (was
+55/55 — the +2 new pins); `test:wasi` full leg 3325 pass / 6 skip / 0 fail
+(3331 total, 17980 assertions) — the two committed failures gone, no new
+ones; `npm test` (js-host) 3326 pass / 6 skip / 0 fail (3332 total, 19243
+assertions); `test/closures.js` 109/109; `test/errors.js` 133/133 both hosts;
+kernel-parity 33/33 byte-identical (one transient dvnested O0/O2/O3
+divergence traced to a stale pre-fix `dist/jz.wasm`, not a real regression —
+confirmed clean at HEAD via a disposable `git worktree` before rebuilding);
+kernel-oracle 11/11 (451 assertions); perf-ratchet 10/10 at +0 (one -520 op
+improvement on `ring`, unrelated); optimizer.js 214/214; minimal-output.js
+79/79; selfhost.js 21/21; fuzz 2000×4 (default + `--typed` + `--typed-map` +
+`--typed-int`, seeds 1–2000 each, zero divergence, all four run foreground);
+size sweep geomean jz/AS = 1.042× (bench-size.mjs, baseline unchanged — the
+fix touches only the already-narrow `censusMaybeUndefined`-gated population).
+Two full `npm run build` runs byte-identical (`dist/jz.js` sha256
+`b90d24e0…`, `dist/jz.wasm` sha256 `57c3ff9f…`, `dist/interop.js` sha256
+`fcda069b…`).
+
+**Files**: src/compile/emit.js (`externalMethodFallback` — hoisted the
+nullish check above the envImports branch, no other site touched);
+test/dyn-keys.js (two new parity pins, dual-host explicit).
 
 **Repro**: `export let f = () => +Number.MIN_VALUE` returned `1` (JS: `5e-324`)
 on every optimize tier, native AND kernel. Not caught by the core suite —

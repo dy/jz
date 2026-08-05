@@ -3754,48 +3754,51 @@ function externalMethodFallback({ obj, method, parsed }) {
     err(`\`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` — '${method}' is not implemented for a ${vt} receiver, and jz-native values have no host fallthrough (the call could only yield undefined). Check the method name; if it's a real JS API, it's a missing jz builtin.`)
   if (ctx.transform.strict)
     err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
-  // Under wasi there is no host `__ext_call` — the call lowers to a
-  // no-op returning `undefined`. This is by-design so polymorphic code
-  // can target js and wasi from one source; users who want fail-fast
-  // pass `strict: true` (handled above).
-  if (!ctx.transform.targetProfile.envImports) return undefExpr()
-  warnDeopt('deopt-method', `method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(…)\` on a value whose type couldn't be resolved dispatches through the JS host (\`__ext_call\`) — a wasm→JS round-trip per call, orders of magnitude slower than a direct call. Restructure so the receiver's type is provable, or keep it off the hot path.`)
-  inc('__ext_call')
-  ctx.features.external = true
-  // audit-#10: a genuinely nullish receiver reaching this TOTAL fallback (e.g.
-  // `m.get('missing').toFixed(2)` in a program with no closures anywhere, so
-  // strategy 8b never engaged) used to marshal the nullish sentinel's bits to
-  // the host as if it were an external handle — interop.js's __ext_call finds
-  // no matching extMap entry and throws its own generic, host-side, uncatchable-
-  // in-wasm Error. Real JS throws TypeError on the property read itself, before
-  // any call/host round-trip. Check once, in-wasm, ONLY when the receiver is
-  // genuinely mayBeUndefined (censusMaybeUndefined — see tryRuntimeStringFork's
-  // comment for why "vt unknown" alone is too broad); a genuinely external
-  // (non-nullish, and not census-tainted) receiver is unaffected — still
-  // dispatches to __ext_call exactly as before. When guarded, the receiver is
-  // evaluated once and reused for both the guard and the call; the method-
-  // name/args are only evaluated on the non-throw arm (matches real JS:
-  // GetV(obj,'method') on a nullish base throws before Arguments is ever
-  // evaluated).
+  // audit-#11 P0-3: RequireObjectCoercible (ES 13.3 — the nullish-receiver
+  // check) must run BEFORE the target-capability branch below chooses
+  // host `__ext_call` dispatch vs the wasi no-op stub — a member-access
+  // semantic, not a dispatch-strategy detail. The audit-#10 nullish check
+  // originally lived AFTER the `!envImports` early return a few lines down:
+  // under host:'wasi' (envImports always false) that return fired first on
+  // EVERY call reaching this TOTAL fallback, so the check below it was dead
+  // code — a genuinely nullish receiver (e.g. `m.get('missing').toFixed(2)`
+  // with no closures anywhere else in the program, so strategy 8b never
+  // engaged) silently read `undefined` instead of throwing, while the
+  // identical js-host build (envImports=true) reached the same check and
+  // threw correctly. `censusMaybeUndefined` is the same narrow, load-bearing
+  // gate every other site in this design uses (see tryRuntimeStringFork's
+  // comment for the measured SIZE cost of gating on "vt unknown" alone
+  // instead) — a receiver that is provably never nullish takes the ORIGINAL,
+  // byte-identical path below, unaffected by this fix.
   const mayBeUndef = censusMaybeUndefined(obj)
+  const dispatch = (recv) => {
+    // Under wasi there is no host `__ext_call` — the call lowers to a
+    // no-op returning `undefined`. This is by-design so polymorphic code
+    // can target js and wasi from one source; users who want fail-fast
+    // pass `strict: true` (handled above).
+    if (!ctx.transform.targetProfile.envImports) return undefExpr()
+    warnDeopt('deopt-method', `method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(…)\` on a value whose type couldn't be resolved dispatches through the JS host (\`__ext_call\`) — a wasm→JS round-trip per call, orders of magnitude slower than a direct call. Restructure so the receiver's type is provable, or keep it off the hot path.`)
+    inc('__ext_call')
+    ctx.features.external = true
+    const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+    const arrayIR = buildArrayWithSpreads(combined)
+    return typed(['f64.reinterpret_i64', ['call', '$__ext_call',
+      ['i64.reinterpret_f64', recv],
+      ['i64.reinterpret_f64', asF64(emit(['str', method]))],
+      ['i64.reinterpret_f64', arrayIR]]], 'f64')
+  }
+  if (!mayBeUndef) return dispatch(asF64(emit(obj)))
+  // Evaluate the receiver once, guard first, THEN pick the host/no-op
+  // dispatch strategy for the non-null arm — the method name/args are only
+  // evaluated on that arm (matches real JS: GetV(obj,'method') on a
+  // nullish base throws before Arguments is ever evaluated).
   const rt = temp('mrecv')
-  const recvIR = asF64(emit(obj))
-  const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-  const arrayIR = buildArrayWithSpreads(combined)
-  const methodIR = asF64(emit(['str', method]))
-  if (!mayBeUndef) return typed(['f64.reinterpret_i64', ['call', '$__ext_call',
-    ['i64.reinterpret_f64', recvIR],
-    ['i64.reinterpret_f64', methodIR],
-    ['i64.reinterpret_f64', arrayIR]]], 'f64')
   return typed(['block', ['result', 'f64'],
-    ['local.set', `$${rt}`, recvIR],
+    ['local.set', `$${rt}`, asF64(emit(obj))],
     ['if', ['result', 'f64'],
       isNullish(typed(['local.get', `$${rt}`], 'f64')),
       ['then', throwTypeErrorIR()],
-      ['else', typed(['f64.reinterpret_i64', ['call', '$__ext_call',
-        ['i64.reinterpret_f64', ['local.get', `$${rt}`]],
-        ['i64.reinterpret_f64', methodIR],
-        ['i64.reinterpret_f64', arrayIR]]], 'f64')]]], 'f64')
+      ['else', dispatch(typed(['local.get', `$${rt}`], 'f64'))]]], 'f64')
 }
 
 const TYPED_STRATEGIES = [

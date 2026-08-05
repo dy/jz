@@ -696,6 +696,51 @@ test('audit #10: proven (non-census, statically-typed) receivers are unaffected 
   const num = jz(`export let f = () => { const n = 3.14159; return n.toFixed(2) }`, { jzify: true }).exports.f
   is(num(), '3.14', 'a proven NUMBER receiver still dispatches .toFixed() directly')
 })
+// audit-#11 P0-3: the five nullish-receiver checks above were themselves
+// gated on host:'wasi' being run via env-only (`test:wasi`'s JZ_TEST_HOST
+// default), a real but indirect pin — explicit host:'wasi' compiles here so
+// the parity holds regardless of how the suite is invoked. Root cause:
+// externalMethodFallback (src/compile/emit.js, TOTAL last-resort strategy
+// for method calls) had its own `!ctx.transform.targetProfile.envImports`
+// early return (the wasi-no-`__ext_call` no-op) BEFORE the audit-#10
+// isNullish check a few lines below it — under host:'wasi' (envImports
+// always false) that return fired on EVERY call reaching this fallback, so
+// the check was dead code for that host alone; `m.get('missing').toFixed(2)`
+// read `undefined` under wasi while the identical js-host build correctly
+// threw. Fixed by hoisting censusMaybeUndefined/isNullish to run BEFORE the
+// envImports branch (RequireObjectCoercible precedes any dispatch-strategy
+// choice, ES 13.3) — the other four families (emitLengthAccess,
+// tryRuntimeStringFork, emitGenericClosureCall, and tryRuntimeNumberMethod's
+// own internal check) never had a capability-nested check to begin with, so
+// they were already host-neutral; audited here to confirm, not just assumed.
+test('audit #11 P0-3: js/wasi host parity — the five nullish-receiver TypeError checks hold under host:wasi too', () => {
+  const src = {
+    length: `export let f = () => { const m = new Map(); m.set('present', [1, 2]); return m.get('missing').length }`,
+    stringLength: `export let f = () => { const m = new Map(); m.set('present', 'hi'); return m.get('missing').length }`,
+    slice: `export let f = () => { const m = new Map(); m.set('present', 'hi'); return m.get('missing').slice() }`,
+    toFixed: `export let f = () => { const m = new Map(); m.set('present', 1); return m.get('missing').toFixed(2) }`,
+    call: `export let f = () => { const m = new Map(); m.set('present', () => 1); return m.get('missing')() }`,
+  }
+  for (const [name, code] of Object.entries(src)) {
+    for (const host of ['js', 'wasi']) {
+      const f = jz(code, { jzify: true, host }).exports.f
+      let e = null; try { f() } catch (err) { e = err }
+      ok(e instanceof TypeError, `${name} (host:${host}) throws real TypeError`)
+    }
+  }
+})
+test('audit #11 P0-3: in-wasm catch parity under host:wasi — e instanceof TypeError for all five families', () => {
+  const src = {
+    length: `export let f = () => { const m = new Map(); m.set('present', [1, 2]); try { m.get('missing').length; return false } catch (e) { return e instanceof TypeError } }`,
+    slice: `export let f = () => { const m = new Map(); m.set('present', 'hi'); try { m.get('missing').slice(); return false } catch (e) { return e instanceof TypeError } }`,
+    toFixed: `export let f = () => { const m = new Map(); m.set('present', 1); try { m.get('missing').toFixed(2); return false } catch (e) { return e instanceof TypeError } }`,
+    call: `export let f = () => { const m = new Map(); m.set('present', () => 1); try { m.get('missing')(); return false } catch (e) { return e instanceof TypeError } }`,
+  }
+  for (const [name, code] of Object.entries(src)) {
+    const f = jz(code, { jzify: true, host: 'wasi' }).exports.f
+    is(f(), true, `${name} (host:wasi) in-wasm catch sees instanceof TypeError`)
+  }
+})
 test('audit #10: String `+` inversion — a STRING-census absent read through `+` is JS-correct with the census dormant (was: static concat "undefined1")', () => {
   const present = jz(`export let f = () => { const m = new Map(); m.set('a', 'x'); return m.get('a') + 1 }`, { jzify: true }).exports.f
   is(present(), 'x1', 'present-key STRING `+` NUMBER still concatenates (unaffected — a real STRING value, not a maybeUndefined coercion)')
