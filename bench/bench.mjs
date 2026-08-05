@@ -852,6 +852,17 @@ let EMIT_WEB = false
 // rows still get each target's median-of-round values. Use focused:
 // `bench.mjs --paired --targets=jz,as shapes --json`.
 let PAIRED = 0
+// --merge (composes with --json[=path], .work/fast-refresh-design.md Piece 1):
+// a fast jz-only refresh writes just the selected (case,target) rows into the
+// existing file at JSON_PATH — every other row is byte-preserved — instead of
+// --json's plain whole-file rewrite. No-op without an existing file at
+// JSON_PATH (nothing to merge into; behaves like a normal full write).
+let MERGE = false
+// --verify-anchors[=N] (design Piece 2): after the selected measurement,
+// re-measure N fixed rival rows and compare fresh vs the stored evidence —
+// the honest check that machine state hasn't drifted since that evidence was
+// recorded. Default 3 (the whole seed set below).
+let VERIFY_ANCHORS = 0
 for (const arg of process.argv.slice(2)) {
   if (arg.startsWith('--targets=')) selectedTargets = arg.slice(10).split(',').filter(Boolean)
   else if (arg === '--paired') PAIRED = 4
@@ -861,6 +872,9 @@ for (const arg of process.argv.slice(2)) {
   else if (arg === '--json') JSON_PATH = join(BENCH_DIR, 'results.json')
   else if (arg.startsWith('--json=')) JSON_PATH = resolve(arg.slice(7))
   else if (arg === '--emit-web') EMIT_WEB = true
+  else if (arg === '--merge') MERGE = true
+  else if (arg === '--verify-anchors') VERIFY_ANCHORS = 3
+  else if (arg.startsWith('--verify-anchors=')) VERIFY_ANCHORS = Math.max(1, +arg.slice(17) || 3)
   // Bare args are CASES first (the documented `bench.mjs mat4` form): `jz` is
   // both a case (the self-host compiler workload) and a target — the case
   // wins; select the target via --targets=jz.
@@ -873,6 +887,24 @@ if (process.exitCode) process.exit(process.exitCode)
 
 for (const id of selectedTargets) if (!targets[id]) { console.error(`unknown target: ${id}`); process.exit(2) }
 for (const id of selectedCases) if (!caseById[id]) { console.error(`unknown case: ${id}`); process.exit(2) }
+
+// Stored evidence, loaded once up front (cheap — one small JSON read):
+//   PREV   — the file already at JSON_PATH, if any. --merge's own scope: it
+//            only activates "when results.json already exists at the target
+//            path" (design Piece 1). Also the parity TRUTH for merge's
+//            refCs override below — a partial re-measure of one target must
+//            score against the established reference checksum, not a
+//            majority vote over the few rows this run happens to touch.
+//   ANCHOR_BASE — PREV if present, else the canonical committed
+//            bench/results.json — --verify-anchors' drift baseline (design
+//            Piece 2: "the fresh results.json at HEAD is the anchor
+//            baseline"). Falls back to canonical so `--verify-anchors` works
+//            standalone (no --json) and so a first --merge into a fresh
+//            scratch path still has something to compare against.
+const loadJson = p => { try { return JSON.parse(readFileSync(p, 'utf8')) } catch { return null } }
+const CANONICAL_RESULTS = join(BENCH_DIR, 'results.json')
+const PREV = JSON_PATH && existsSync(JSON_PATH) ? loadJson(JSON_PATH) : null
+const ANCHOR_BASE = PREV || (existsSync(CANONICAL_RESULTS) ? loadJson(CANONICAL_RESULTS) : null)
 
 // --emit-web: compile just the page's playable cases to bench/web/*.wasm and
 // stop — no measurement, no native/JS-engine toolchains. The cheap step
@@ -1015,7 +1047,13 @@ for (const cid of selectedCases) {
     if (r.checksum === fmaCs) continue
     csCounts[r.checksum] = (csCounts[r.checksum] || 0) + 1
   }
-  const refCs = +(Object.entries(csCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? results[0].checksum)
+  // --merge: score parity against the ESTABLISHED reference checksum (PREV,
+  // the file's existing evidence for this case) rather than a majority vote
+  // over the few rows this partial run happens to touch — a lone re-measured
+  // target would otherwise always vote for itself and mask a real DIFF.
+  const storedRef = MERGE ? PREV?.cases?.[cid]?.ref : null
+  const refCs = storedRef != null ? storedRef
+    : +(Object.entries(csCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? results[0].checksum)
   // Record correct-result medians for the geomean SVG (a DIFF result is excluded).
   grid[cid] = {}
   for (const r of results) if (r.checksum === refCs || r.checksum === fmaCs) grid[cid][r.id] = r.medianUs
@@ -1058,6 +1096,79 @@ for (const cid of selectedCases) {
       : r.checksum === fmaCs ? 'fma'
       : 'DIFF'
     console.log(`  ${targets[r.id].name.padEnd(28)}  ${ms.padStart(10)}  ${ratio.padStart(8)}  ${throughput.padStart(10)}  ${size.padStart(10)}  ${fmtMem(r.memKb).padStart(9)}  ${parity.padStart(8)}`)
+  }
+}
+
+// --verify-anchors[=N] (design Piece 2, .work/fast-refresh-design.md): a fast
+// jz-only refresh trusts the STORED rival rows unchanged — the honest
+// question is whether this machine still produces the same numbers for them.
+// Seed set kept as a hand-picked const, not computed: the (case,target) pairs
+// with the lowest historical run-to-run variance among rival lanes that are
+// each the best-rival for at least one claims case (test/bench-claims.js
+// CLAIM_RIVALS) — c-wasm's toolchain (zig cc → wasm32-wasi, no libc, static
+// memory layout, no GC) and AS's asc -O3 output are both structurally
+// low-variance builds, and mat4/fft/synth are themselves tight, allocation-
+// free numeric kernels — low noise on both the toolchain and workload side,
+// so a drift here is machine-state drift, not run-to-run jitter.
+const ANCHORS = [
+  { case: 'mat4', target: 'c-wasm' },
+  { case: 'fft', target: 'c-wasm' },
+  { case: 'synth', target: 'as' },
+]
+// Within 10%: same machine state, stored rival evidence still trustworthy.
+// Wider than the WASM_BAND_TOL (1.05) claims use for jz-vs-rival comparisons —
+// this tolerance is for the SAME toolchain's output against itself run-to-run,
+// which should be tighter than a cross-toolchain claim band, but the anchors
+// intentionally run cold (no warm round, unlike --paired) so a little more
+// slack is honest here.
+const ANCHOR_TOL = 1.10
+let anchorsResult = null
+if (VERIFY_ANCHORS) {
+  const chosen = ANCHORS.slice(0, VERIFY_ANCHORS)
+  const pairs = []
+  const driftLines = []
+  console.log(`\n# --verify-anchors (${chosen.length} rival row${chosen.length === 1 ? '' : 's'} vs stored evidence)`)
+  for (const { case: cid, target: tid } of chosen) {
+    const key = `${tid}×${cid}`
+    const c = caseById[cid]
+    const t = targets[tid]
+    const storedRow = ANCHOR_BASE?.cases?.[cid]?.targets?.[tid]
+    if (!c || !t) {
+      driftLines.push(`${key}: unknown case/target`)
+      pairs.push({ case: cid, target: tid, storedUs: null, freshUs: null, ratio: null, pass: false })
+      continue
+    }
+    if (!storedRow || !(storedRow.medianUs > 0)) {
+      driftLines.push(`${key}: no stored baseline to compare against (run a full --json refresh first)`)
+      pairs.push({ case: cid, target: tid, storedUs: null, freshUs: null, ratio: null, pass: false })
+      continue
+    }
+    if (!t.available(c)) {
+      driftLines.push(`${key}: target unavailable on this machine`)
+      pairs.push({ case: cid, target: tid, storedUs: storedRow.medianUs, freshUs: null, ratio: null, pass: false })
+      continue
+    }
+    process.stdout.write(`[anchor] ${key.padEnd(targetIdWidth + 12)} … `)
+    const r = t.run(c)
+    if (r.error) {
+      console.log(`FAIL — ${r.error}`)
+      driftLines.push(`${key}: re-measure failed — ${r.error}`)
+      pairs.push({ case: cid, target: tid, storedUs: storedRow.medianUs, freshUs: null, ratio: null, pass: false })
+      continue
+    }
+    const ratio = Math.max(r.medianUs, storedRow.medianUs) / Math.min(r.medianUs, storedRow.medianUs)
+    const pass = ratio <= ANCHOR_TOL
+    console.log(`${r.medianUs} µs (stored ${storedRow.medianUs} µs) → ${ratio.toFixed(3)}× ${pass ? 'PASS' : 'DRIFT'}`)
+    if (!pass) driftLines.push(`${key}: fresh ${r.medianUs}µs vs stored ${storedRow.medianUs}µs = ${ratio.toFixed(3)}× (tol ${ANCHOR_TOL}×)`)
+    pairs.push({ case: cid, target: tid, storedUs: storedRow.medianUs, freshUs: r.medianUs, ratio: +ratio.toFixed(4), pass })
+  }
+  const pass = pairs.length > 0 && pairs.every(p => p.pass)
+  anchorsResult = { pairs, ratios: Object.fromEntries(pairs.map(p => [`${p.target}×${p.case}`, p.ratio])), pass }
+  if (pass) {
+    console.log(`[anchors] PASS — stored rival evidence certified still-valid at today's machine state (${pairs.length}/${pairs.length} within ${ANCHOR_TOL}×)`)
+  } else {
+    console.error(`[anchors] DRIFT DETECTED — stored evidence no longer matches this machine:\n  ${driftLines.join('\n  ')}\n[anchors] a full recontest is due (engine/OS/machine changed since the stored evidence was recorded)`)
+    process.exitCode = 1
   }
 }
 
@@ -1156,6 +1267,11 @@ if (JSON_PATH) {
     // memKb methodology: peak RSS of the whole per-case process (engine + module),
     // read from the child's rusage via the time(1) wrapper around every measured run.
     ...(TIME_BIN && { memory: `peak RSS per process run (${TIME_BIN} ${TIME_ARGS[0]})` }),
+    // --verify-anchors verdict (design Piece 2) — independent of --merge:
+    // compares against ANCHOR_BASE, the file's content from BEFORE this run
+    // (or the canonical committed evidence), so it's a real machine-state
+    // check regardless of whether this run also merges.
+    ...(anchorsResult && { anchors: anchorsResult }),
   }
 
   // Per-case wasm for the in-page runner (playable cases only — the self-host
@@ -1163,6 +1279,39 @@ if (JSON_PATH) {
   // compileMs lands back on each case as the page's live compile-time reference.
   const { built, compileMs } = emitWebWasm(selectedCases.filter(cid => !NO_WEB.has(cid)))
   for (const [cid, ms] of Object.entries(compileMs)) if (jsonOut.cases[cid]) jsonOut.cases[cid].compileMs = ms
-  writeFileSync(JSON_PATH, JSON.stringify(jsonOut, null, 1))
-  console.log(`\nwrote ${JSON_PATH} + bench/web/{${built.join(',')}}.wasm`)
+
+  // --merge (design Piece 1): fold only the measured (case,target) rows into
+  // PREV — the file's content before this run — instead of the plain
+  // whole-file rewrite below. Unmeasured rows are spread from PREV untouched
+  // (byte-preserved); every row this run actually touched (success OR
+  // recorded failure — both are "measured") gains measuredAt provenance.
+  // No-op (falls through to the plain write) when PREV is null — nothing to
+  // merge into, e.g. the first run at a fresh JSON_PATH.
+  let finalOut = jsonOut
+  if (MERGE && PREV) {
+    const shortSha = jsonOut.meta.commit
+    const stampRows = targetsObj => Object.fromEntries(
+      Object.entries(targetsObj).map(([tid, row]) => [tid, { ...row, measuredAt: shortSha }]))
+    const mergedCases = { ...PREV.cases }
+    for (const [cid, fresh] of Object.entries(jsonOut.cases)) {
+      const prevCase = mergedCases[cid]
+      mergedCases[cid] = prevCase
+        // case already in PREV: overlay only the freshly measured target
+        // rows onto its existing targets — everything else (other targets,
+        // and any case-level field `fresh` doesn't carry, e.g. `paired`)
+        // passes through from prevCase untouched.
+        ? { ...prevCase, ...fresh, targets: { ...prevCase.targets, ...stampRows(fresh.targets) } }
+        // brand-new case (not in PREV at all): take it whole, stamp every row.
+        : { ...fresh, targets: stampRows(fresh.targets) }
+    }
+    // partial: true the moment any surviving row's measuredAt isn't THIS run's
+    // commit — includes rows with no measuredAt at all (pre-dating --merge
+    // entirely), which is exactly the common case the first time --merge runs.
+    const mixedVintage = Object.values(mergedCases)
+      .some(c => Object.values(c.targets).some(t => t.measuredAt !== shortSha))
+    finalOut = { meta: { ...jsonOut.meta, ...(mixedVintage && { partial: true }) }, cases: mergedCases }
+  }
+
+  writeFileSync(JSON_PATH, JSON.stringify(finalOut, null, 1))
+  console.log(`\nwrote ${JSON_PATH}${MERGE && PREV ? ' (merged)' : ''} + bench/web/{${built.join(',')}}.wasm`)
 }

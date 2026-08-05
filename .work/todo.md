@@ -9433,3 +9433,112 @@ call-site iteration); §14 point 4's joint binary-operand runtime-domain
 dispatch (unchanged); real `.message`/`.name` text for §17's internal
 TypeError throws (could reuse this session's `coerceNullishToStr`-adjacent
 infrastructure, not attempted).
+
+## fast-refresh bench tooling: --merge + --verify-anchors (Pieces 1-2)
+
+Implements .work/fast-refresh-design.md Pieces 1-2 (Piece 3, adaptive
+sampling, explicitly out of scope). Problem the design names: a full
+reference refresh re-measures ~60 cases × ~20 lanes (hours) even when only
+jz changed; the prior workaround was hand-patching bench/results.json
+per-case (todo.md history: "surgical, scratch-JSON-then-hand-patch"), which
+is exactly the whole-file-rewrite hazard `--json` already carried ("bit two
+agents", design doc).
+
+**`--merge`** (bench/bench.mjs): composes with `--json[=path]`. When a file
+already exists at the target path, only the measured `(case,target)` rows
+are updated — every other row is spread from the pre-run file byte-for-byte.
+Each touched row (success or a recorded failure — both are "measured") gains
+`measuredAt: <HEAD short-sha>`. `refCs` (the parity reference checksum) is
+overridden to the STORED case's `ref` under `--merge` — a lone re-measured
+target must score against the established truth, not a majority vote over
+the one row this run touched (a single-row "vote" always agrees with
+itself, which would silently mask a real DIFF). `meta.partial: true` is set
+the moment any surviving row's `measuredAt` differs from the fresh
+`meta.commit` — including rows with no `measuredAt` at all (every row
+predates this feature the first time `--merge` runs on an existing file).
+No-op (falls through to a plain full write) when nothing exists yet at the
+target path.
+
+**`--verify-anchors[=N]`** (default 3): re-measures a fixed, hand-picked seed
+set — NOT computed, kept as a `const ANCHORS` in bench.mjs with its
+rationale — `{mat4,c-wasm}`, `{fft,c-wasm}`, `{synth,as}`: rival lanes with
+structurally low run-to-run variance (zig cc → wasm32-wasi, no libc, no GC;
+asc -O3) on tight, allocation-free numeric kernels. Compares fresh vs the
+stored `medianUs` (the file at `--json`'s path pre-run, falling back to the
+committed `bench/results.json` so it also works standalone). Within
+`ANCHOR_TOL` (1.10, looser than claims' 1.05 WASM_BAND_TOL — same-toolchain
+self-comparison should be tighter than a cross-toolchain claim band, but
+anchors run cold with no warm round, so a little slack is honest) → PASS,
+`meta.anchors = {pairs, ratios, pass: true}`. Any miss → drift report to
+stderr + `process.exitCode = 1` (the write still completes — the drift
+report is itself evidence worth keeping, not a reason to lose the
+already-measured rows).
+
+**test/bench-claims.js tightening**: new assertion — `meta.partial` (mixed
+vintages, from `--merge`) now requires `meta.anchors.pass === true`.
+Trivially passes on the current committed dataset (`meta.partial` is unset
+there). Placed with the other freshness/integrity tests, same `test`/`ok`
+(tst) convention as the rest of the file.
+
+**bench/README.md**: new "Refreshing `results.json`" subsection under `##
+Run` — documents `--merge`/`--verify-anchors` as the replacement for
+hand-patching, with the real fast-refresh invocation
+(`--targets=jz,jz-w2c --json --merge --verify-anchors`).
+
+**Verified, not merely asserted**:
+- schema probe: swapped bench.mjs back to the committed HEAD version via
+  `git show HEAD:bench/bench.mjs`, ran the identical
+  `--cases=mat4 --targets=jz --json=<scratch>` probe on both old and new
+  code, diffed key sets recursively — zero schema drift without the new
+  flags (no `measuredAt`/`partial`/`anchors` anywhere). Restored the edited
+  file from a local backup copy afterward (no git-tracked file touched).
+- an off-by-one in `--verify-anchors=N` parsing (`arg.slice(18)` instead of
+  17 — `'--verify-anchors='.length === 17`) was caught by
+  `test/bench-merge.js`'s own `--verify-anchors=1` pin before landing, not
+  found by inspection.
+- fail path exercised for real: a scratch copy of bench/results.json with
+  `cases.mat4.targets['c-wasm'].medianUs` set to `1` (forces a ~2500×
+  "drift") produces the correct single-pair failure, nonzero exit, and
+  leaves the OTHER two anchor pairs passing and all 60 cases merged — the
+  drift report doesn't take down the rest of the run.
+- accidentally discovered while baseline-testing (see below): `node
+  test/bench.js` spawns bench.mjs over the FULL corpus with no `--cases`
+  filter and no `--json`, which still hits the (pre-existing,
+  JSON_PATH-independent) `bench/bench.svg` regen path — rewrote the
+  committed SVG with this run's live timings as an unintended side effect.
+  Reverted via a scoped `git checkout -- bench/bench.svg` (single named
+  file, not the destructive repo-wide forms). Not something this task's
+  code touches; worth knowing before anyone runs `test/bench.js` casually
+  again.
+
+**Pre-existing, confirmed unrelated**: both `test/bench.js` (15 failures)
+and `test/bench-claims.js` (6 failures, unchanged count before/after this
+task's new assertion — 5→6 pass, same fail set) are ALREADY red at HEAD
+3188aebc, before any change in this session — confirmed by running
+`test/bench-claims.js` against the committed, untouched `bench/results.json`
+(this task never re-measures the corpus) and `test/bench.js` reads live
+machine timing, not this task's code paths (the new flags are inert without
+being passed). Fixing either is a full-corpus re-measurement task, out of
+scope here ("do NOT run a full corpus re-measure" — explicit task
+constraint) and superseding: the whole reason `--merge`/`--verify-anchors`
+exist is to make that re-measurement cheap enough to actually run again.
+
+**Files touched**: bench/bench.mjs (`--merge`, `--verify-anchors[=N]`,
+`ANCHORS`/`ANCHOR_TOL` consts, `PREV`/`ANCHOR_BASE` stored-evidence loading,
+merge-write + anchors-verdict blocks); test/bench-merge.js (new — 9
+tests/46 assertions, both `--merge` and `--verify-anchors` pass/fail paths);
+test/bench-claims.js (new partial⇒anchors assertion); bench/README.md
+(new subsection).
+
+**Gates**: `node --check bench/bench.mjs` clean; schema-identity probe
+(above) zero drift; `test/bench-merge.js` 9/9 (46 assertions); smoke run
+(`--targets=jz --cases=mat4,fft,crc32 --json=<scratch> --merge
+--verify-anchors`, on a scratch copy of the full 60-case reference)
+confirmed merge preserved all 57 untouched cases + the untouched targets
+within the 3 touched cases, `measuredAt` stamped on exactly the touched
+rows, `meta.partial: true`, `meta.anchors.pass: true` (3/3 rival rows within
+1.10×); `test/bench-claims.js` new assertion passes, no new failures vs the
+pre-existing baseline (6 fails, same set, before and after). `bench/results.json`
+and `bench/bench.svg` untouched in the working tree (confirmed via `git
+status` after the SVG revert above) — this task ships tooling only, no
+evidence file changes.

@@ -35,6 +35,32 @@ node bench/bench.mjs biquad
 node bench/bench.mjs mat4 --targets=nat,v8,jz
 ```
 
+### Refreshing `results.json`
+
+`--json[=path]` (default `bench/results.json`) rewrites the WHOLE file — fine
+for a full corpus run, a hazard for a targeted one: a `--cases=`/`--targets=`
+run against an existing file silently drops every row it didn't just measure.
+
+For a jz-only refresh (compiler changed, rivals didn't — no rival toolchain
+rebuilds happen anyway, see the prep cache below), use `--merge`: only the
+selected `(case,target)` rows are updated in place, every other row is
+byte-preserved, and each touched row gains `measuredAt: <short-sha>`
+provenance. Mixing vintages this way sets `meta.partial: true`.
+
+A partial refresh trusts the untouched rival rows without re-measuring them —
+`--verify-anchors[=N]` (default 3) is the check that trust is still earned: it
+re-measures a small fixed set of rival rows and compares fresh vs stored
+`medianUs`. Within 10% → `meta.anchors.pass: true`, the stored evidence is
+still machine-state-valid. Past that → nonzero exit and a drift report: time
+for a full recontest, not a partial one. `test/bench-claims.js` requires
+`meta.anchors.pass` whenever `meta.partial` is set — a partial dataset
+without a passing anchor check doesn't ship.
+
+```sh
+# fast refresh: jz + jz-w2c only, full corpus, ~10-15 min instead of hours
+node bench/bench.mjs --targets=jz,jz-w2c --json --merge --verify-anchors
+```
+
 ## Cases
 
 | id | purpose |

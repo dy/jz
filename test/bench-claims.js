@@ -111,6 +111,19 @@ test('claims: reference evidence is fresh (no compiler commits past meta.commit)
   ok(snapWatr === nowWatr, `reference dataset compiled with watr ${snapWatr}, installed is ${nowWatr} — re-run the reference bench`)
 })
 
+// PARTIAL evidence must be anchor-verified (fast-refresh tightening,
+// .work/fast-refresh-design.md): `bench/bench.mjs --merge` can leave the
+// dataset mixing vintages — freshly re-measured jz rows alongside untouched
+// rival rows from an earlier commit. That's only honest evidence if a
+// `--verify-anchors` run in the same session certified the untouched rival
+// rows still hold at today's machine state (meta.anchors.pass). A partial
+// dataset with no passing anchor check is unverified drift risk, not proof.
+test('claims: partial (mixed-vintage) evidence requires a passing anchors check (meta.partial ⇒ meta.anchors.pass)', () => {
+  if (!res.meta?.partial) { ok(true, 'not a partial refresh (meta.partial unset) — anchors not required'); return }
+  ok(res.meta?.anchors?.pass === true,
+    `meta.partial is true but meta.anchors.pass is not true (${JSON.stringify(res.meta?.anchors)}) — re-run with --verify-anchors before shipping a partial refresh`)
+})
+
 // MEMORY freshness — same discipline as the FRESH test above, applied to the
 // separate GOAL-MEMORY evidence file (.work/memcheck-results.csv, the jz-wasmtime
 // vs moonrun peak-RSS comparison). It isn't part of results.json — regenerated on
