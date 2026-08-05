@@ -35,7 +35,7 @@ import {
 } from '../../type.js'
 import { VAL } from '../../reps.js'
 import { includeModule } from '../../autoload.js'
-import { analyzeBody, invalidateLocalsCache, setFuncBody } from '../analyze.js'
+import { analyzeBody, setFuncBody } from '../analyze.js'
 import {
   isSimpleArg, fixedScalarTypedArray, fixedTypedArraysInBody, maxScalarTypedArrayLen, freshTypedArrayLocals,
   collectBindings,
@@ -538,7 +538,15 @@ export const scalarizeFunctionTypedArrays = (programFacts) => {
     if (p.changed) { setFuncBody(func, p.body); changed = true }
     const l = scalarizeTypedArrayLiterals(func.body)
     if (l.changed) { setFuncBody(func, l.node); changed = true }
-    if (changed) invalidateLocalsCache(func.body)
+    // (audit-#11: the raw invalidateLocalsCache(func.body) that used to sit
+    // here was vestigial — predates setFuncBody (32e4aa1d, pre-4b149108) and
+    // was never converted when the seam landed. Every actual body mutation
+    // above already goes through setFuncBody, which invalidates the node it
+    // assigns; this extra call re-invalidated an already-invalidated entry
+    // when THIS func changed, and — worse, since `changed` is the whole-loop
+    // accumulator, not per-iteration — dropped a perfectly VALID cache entry
+    // for any LATER func in the same loop that itself made no change, once
+    // any earlier func had. Pure waste, no correctness role; removed.)
   }
   return changed
 }
@@ -1348,8 +1356,16 @@ export const scalarizeFunctionObjectLiterals = () => {
     if (!func.body || func.raw) continue
     let guard = 0
     while (guard++ < 4) {
+      // (audit-#11: this used to invalidateLocalsCache(func.body) right here,
+      // between the read and the rewrite — a pre-setFuncBody holdover from
+      // when a plain `func.body = r.node` assignment had no invalidation of
+      // its own. scalarizeObjectLiterals never mutates its input in place
+      // (always returns a fresh node when r.changed) and never reads
+      // analyzeBody itself, so nothing between this read and setFuncBody
+      // below could observe or need a dropped entry; setFuncBody already
+      // invalidates the node it assigns. Removed — see compile/analyze.js's
+      // analyzeBody doc for the full seam-ownership note.)
       const escapes = new Map(analyzeBody(func.body).escapes)
-      invalidateLocalsCache(func.body)
       const r = scalarizeObjectLiterals(func.body, escapes)
       if (!r.changed) break
       setFuncBody(func, r.node)

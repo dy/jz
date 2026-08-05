@@ -233,13 +233,22 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
  * divergence), so it can't tell a real missing-invalidation from a harmless
  * one. See .work/todo.md.
  *
- * Ownership (audit P1 next-slice): callers no longer call invalidateLocalsCache
- * directly (it stays exported for the rare bespoke case — see plan/literals.js's
- * scalarizeFunctionObjectLiterals) — they go through reanalyzeBody / setFuncBody /
- * invalidateBodies / invalidateAllBodyFacts (defined below, past invalidateLocalsCache),
- * which fuse the mutation with its invalidation so there's no second call left
- * to forget. A narrower, targeted safety net catches what fusion can't: a
- * signature retype (param .type/.ptrKind/.ptrAux, sig.results/.ptrKind/
+ * Ownership (audit P1 next-slice, closed out audit-#11): callers no longer
+ * call invalidateLocalsCache directly — it stays exported only because the
+ * seam primitives below (reanalyzeBody / setFuncBody / invalidateBodies /
+ * invalidateAllBodyFacts) are themselves implemented on top of it. The two
+ * bespoke plan/literals.js call sites this comment used to name (scalarize-
+ * FunctionTypedArrays' post-loop flush, scalarizeFunctionObjectLiterals' pre-
+ * rewrite drop) both predated setFuncBody (32e4aa1d, before this seam
+ * existed) and were never re-examined once it landed here; audit-#11 found
+ * both now fully subsumed by setFuncBody's own invalidation of the node it
+ * assigns — read-tested clean (full suite + JZ_DEBUG_INVARIANTS leg +
+ * selfhost.js + kernel-parity, all green) — so they were deleted rather than
+ * kept as ceremony. Every mutation of a function's AST now goes through
+ * reanalyzeBody / setFuncBody / invalidateBodies / invalidateAllBodyFacts,
+ * which fuse the mutation with its invalidation so there's no second call
+ * left to forget. A narrower, targeted safety net catches what fusion can't:
+ * a signature retype (param .type/.ptrKind/.ptrAux, sig.results/.ptrKind/
  * .ptrAux/.unsignedResult) surviving under a stale cache HIT throws under
  * JZ_DEBUG_INVARIANTS=1 (assertBodyFactsFresh, below analyzeBody) — see that
  * function's doc for why it's scoped to signatures and not the full ambient
