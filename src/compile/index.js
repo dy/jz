@@ -1809,9 +1809,10 @@ function synthesizeBoundaryWrappers() {
     // (no i64 params, f64 result) records nothing — zero footprint off the box path.
     // `s` (own literal shape, not folded into `r` — jz:extparam/i64exp's own "each
     // shape a direct literal" discipline, self-host schema inference needs it) marks
-    // the census-BIGINT sentinel lane (§6/§12 Slice 5): 1 = UNDEF_NAN→undefined
-    // (bare read/call-result), 2 = NaN sentinel (unary `-`), 3 = -1 sentinel
-    // (unary `~`) — see censusBigintSentinelKind's doc (kind.js).
+    // the census-BIGINT sentinel lane (§6/§12 Slice 5) with a layout.js
+    // BIGINT_SENTINEL_KIND value — see censusBigintSentinelKind's doc (kind.js) for
+    // which AST shape produces which kind, and layout.js for the kind→bits→value
+    // decode table interop.js reads on the other side of this custom section.
     if (i64Params.length || resultReinterpret || resultBigintSentinel)
       func._exportI64 = resultBigintSentinel
         ? { p: i64Params, s: resultBigintSentinel }
@@ -2646,17 +2647,20 @@ export default function compile(ast, profiler) {
     sec.customs.push(['@custom', '"jz:extparam"', `"${JSON.stringify(extExports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
   // jz:i64exp — per-export i64 carrier map (NaN-canonicalization dodging). Each entry
-  // `{name, p:[i64 param indices], r:1? | s:1|2|3? | m:N?}`: `p` lists params interop must pass
-  // as BigInt (f64ToI64); `r` marks a single result to reinterpret (i64ToF64) before mem.read;
-  // `s` marks a census-BIGINT sentinel result (§6/§12 Slice 5, presentKindUnboxed) — interop
-  // decodes the sentinel's fixed bit pattern to its real JS value (1: UNDEF_NAN→`undefined`,
-  // 2: NaN→`NaN`, 3: -1's bits→`-1`) and anything else as a raw BigInt, WITHOUT `r`'s generic
-  // NaN-box/number decode (which would misread a small BigInt's raw bits as a subnormal float);
-  // `m` marks an N-lane multi-value result whose lanes interop/the adapter decode element-wise.
-  // Pure-numeric single-result exports emit no entry. A plain bigint result is i64 but unmarked
-  // (the BigInt is the value). Written under every JS-visible alias, like jz:extparam. Each shape
-  // is built as a direct literal (no spread) — the self-host kernel's fixed schemas don't
-  // enumerate post-hoc keys.
+  // `{name, p:[i64 param indices], r:1? | s:BIGINT_SENTINEL_KIND value? | m:N?}`: `p` lists
+  // params interop must pass as BigInt (f64ToI64); `r` marks a single result to reinterpret
+  // (i64ToF64) before mem.read; `s` marks a census-BIGINT sentinel result (§6/§12 Slice 5,
+  // presentKindUnboxed) — one of layout.js's BIGINT_SENTINEL_KIND values (audit-#11 ABI
+  // formalization: named there, not a bare magic int here, since this field's value crosses
+  // the wasm custom section into interop.js's decodeBigintSentinel, a SEPARATE package/
+  // process reading the SAME table). interop decodes the sentinel's fixed bit pattern
+  // (BIGINT_SENTINEL_BITS[s]) to its real JS value (BIGINT_SENTINEL_VALUE[s]) and anything
+  // else as a raw BigInt, WITHOUT `r`'s generic NaN-box/number decode (which would misread a
+  // small BigInt's raw bits as a subnormal float); `m` marks an N-lane multi-value result
+  // whose lanes interop/the adapter decode element-wise. Pure-numeric single-result exports
+  // emit no entry. A plain bigint result is i64 but unmarked (the BigInt is the value).
+  // Written under every JS-visible alias, like jz:extparam. Each shape is built as a direct
+  // literal (no spread) — the self-host kernel's fixed schemas don't enumerate post-hoc keys.
   const i64Exports = []
   for (const f of ctx.func.list) {
     if (!isExported(f) || !isBoundaryWrapped(f) || !f._exportI64) continue

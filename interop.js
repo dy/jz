@@ -25,7 +25,7 @@
  */
 
 import { wasi, attachTimers } from './wasi.js'
-import { HEAP, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT } from './layout.js'
+import { HEAP, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, BIGINT_SENTINEL_BITS, BIGINT_SENTINEL_VALUE } from './layout.js'
 import { ERR_INFO } from './err-codes.js'
 
 // Stateless + reusable — one instance avoids a per-call allocation on the hot
@@ -152,33 +152,27 @@ export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN :
 // `undefined`; unary `-`/`~` ToNumeric undefined per ES2024 13.5.6/13.5.9, a real
 // NUMBER, never `undefined` itself). Neither takes the generic NaN-box `decode`/
 // `mem.read` path, which misdecodes a small BigInt's raw i64 bits as a subnormal
-// float (the original repro, `5n` reading back `2.5e-323`). Sentinel kinds mirror
-// kind.js censusBigintSentinelKind exactly: 1 = UNDEF_NAN → `undefined`, 2 = NaN's
-// bits → `NaN`, 3 = `-1`'s bits → `-1`, 4 = NaN's bits → `NaN` (§14 point 4, audit
-// #10's joint runtime-domain dispatch: a binary arithmetic node whose BOTH
-// operands independently claim census-BIGINT can still resolve Number-domain at
-// runtime when an operand is genuinely absent — emit.js's `bigIntJointDispatch`
-// explicitly substitutes canonical NaN for an absent operand before computing,
-// rather than trusting WASM's arithmetic-NaN-propagation to reproduce that exact
-// bit pattern on its own — confirmed NOT guaranteed: `f64.add` of two identical
-// UNDEF_NAN payloads returned that SAME tagged bit pattern verbatim on this
-// engine, not a canonical NaN, so this table entry only ever matches AFTER that
-// explicit substitution. Same bits as kind 2 on purpose — both mean "the whole
-// expression resolved to Number NaN". Bitwise ops (&,|,^,<<,>>) sharing kind 4
-// have NO working sentinel for their OWN "both absent" case — ToInt32(NaN)=0,
-// and 0's bit pattern collides with a genuine BigInt 0n, the same permanent,
-// accepted single-point-collision class the raw-i64-carrier doctrine already
-// tolerates elsewhere — left as a documented narrow gap, not fixed here).
-// `f64ToI64` builds an UNSIGNED bit pattern; a wasm i64 result crosses to JS as a
-// SIGNED BigInt64 (two's-complement, e.g. -1's bits read back negative) — every
-// sentinel here must be normalized to that same signed range or the comparison
-// below silently never matches for any sentinel with bit 63 set (as `-1`'s does;
-// UNDEF_NAN/NaN's NaN-box-tagged high bits never set it, so they were already
-// signed/unsigned-agnostic, but asIntN keeps the table uniformly correct).
-const BIGINT_SENTINEL_BITS = { 1: UNDEF_NAN, 2: f64ToI64(NaN), 3: f64ToI64(-1), 4: f64ToI64(NaN) }
-for (const k in BIGINT_SENTINEL_BITS) BIGINT_SENTINEL_BITS[k] = BigInt.asIntN(64, BIGINT_SENTINEL_BITS[k])
-const BIGINT_SENTINEL_VALUES = { 1: undefined, 2: NaN, 3: -1, 4: NaN }
-const decodeBigintSentinel = (ret, s) => ret === BIGINT_SENTINEL_BITS[s] ? BIGINT_SENTINEL_VALUES[s] : ret
+// float (the original repro, `5n` reading back `2.5e-323`). Sentinel kinds/bits/
+// values are BIGINT_SENTINEL_KIND/BITS/VALUE (layout.js — audit-#11 ABI
+// formalization: the ONE table kind.js's censusBigintSentinelKind, this decode,
+// and the `jz:i64exp` custom-section `s` field all read, instead of three
+// independent copies of the same 4 magic numbers). JOINT_BINARY shares
+// UNARY_NEG's bits/value on purpose — both mean "the whole expression resolved
+// to Number NaN" (§14 point 4, audit #10's joint runtime-domain dispatch: a
+// binary arithmetic node whose BOTH operands independently claim census-BIGINT
+// can still resolve Number-domain at runtime when an operand is genuinely
+// absent — emit.js's `bigIntJointDispatch` explicitly substitutes canonical NaN
+// for an absent operand before computing, rather than trusting WASM's
+// arithmetic-NaN-propagation to reproduce that exact bit pattern on its own —
+// confirmed NOT guaranteed: `f64.add` of two identical UNDEF_NAN payloads
+// returned that SAME tagged bit pattern verbatim on this engine, not a
+// canonical NaN, so this table entry only ever matches AFTER that explicit
+// substitution). Bitwise ops (&,|,^,<<,>>) sharing JOINT_BINARY have NO working
+// sentinel for their OWN "both absent" case — ToInt32(NaN)=0, and 0's bit
+// pattern collides with a genuine BigInt 0n, the same permanent, accepted
+// single-point-collision class the raw-i64-carrier doctrine already tolerates
+// elsewhere — left as a documented narrow gap, not fixed here.
+const decodeBigintSentinel = (ret, s) => ret === BIGINT_SENTINEL_BITS[s] ? BIGINT_SENTINEL_VALUE[s] : ret
 
 // SSO-encode a string ≤6 ASCII chars to a NaN-box BigInt (no heap needed).
 // Mirrors mem.String's SSO branch. Used when marshaling a string into an i64-carrier

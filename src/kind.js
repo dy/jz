@@ -14,6 +14,7 @@ import {
   calleeValType, methodValType, propValType, typedCtorElemValType,
 } from './kind-traits.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
+import { BIGINT_SENTINEL_KIND } from '../layout.js'
 import { isBlockBody, returnExprs, alwaysReturns } from './ast.js'
 
 export { typedCtorElemValType } from './kind-traits.js'
@@ -535,13 +536,13 @@ export function censusMaybeUndefinedKind(node) {
 // through unchanged — already correct.
 const BIGINT_JOINT_BINARY_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>'])
 export function censusBigintSentinelKind(node) {
-  if (censusMaybeUndefinedKind(node) === VAL.BIGINT) return 1
+  if (censusMaybeUndefinedKind(node) === VAL.BIGINT) return BIGINT_SENTINEL_KIND.BARE
   if (Array.isArray(node) && node.length === 2 && (node[0] === 'u-' || node[0] === '~')
       && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT)
-    return node[0] === 'u-' ? 2 : 3
+    return node[0] === 'u-' ? BIGINT_SENTINEL_KIND.UNARY_NEG : BIGINT_SENTINEL_KIND.UNARY_NOT
   if (Array.isArray(node) && node.length === 3 && BIGINT_JOINT_BINARY_OPS.has(node[0])
       && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT)
-    return 4
+    return BIGINT_SENTINEL_KIND.JOINT_BINARY
   // Kind 5 (§16→§18 "presentVal param producers"): a call whose CALLEE is a
   // plain single-param function/const-arrow (ctx.func.map) entirely made of
   // `-`/`~` applied to its OWN param (`const g = (v) => -v`, or an equivalent
@@ -575,7 +576,7 @@ export function censusBigintSentinelKind(node) {
       const pname = params[0].name
       const sites = returnExprs(callee.body)
       const kindOf = (e) => Array.isArray(e) && e.length === 2 && (e[0] === 'u-' || e[0] === '~') && e[1] === pname
-        ? (e[0] === 'u-' ? 2 : 3) : 0
+        ? (e[0] === 'u-' ? BIGINT_SENTINEL_KIND.UNARY_NEG : BIGINT_SENTINEL_KIND.UNARY_NOT) : 0
       const k0 = sites.length ? kindOf(sites[0]) : 0
       if (k0 > 0 && sites.every(e => kindOf(e) === k0) && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT)
         return k0

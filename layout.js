@@ -205,6 +205,57 @@ export const ATOM_HI = {
   [ATOM.TRUE]: encodePtrHi(PTR.ATOM, ATOM.TRUE),
 }
 
+/**
+ * jz:i64exp `s`-lane sentinel kinds (audit-#11 ABI formalization —
+ * represented-maybe-undefined-design.md §6/§12 Slice 5, "present-key BigInt
+ * through the export-boundary census"). Named here instead of as a bare
+ * 1-4 integer independently re-derived at each of the compiler's producer
+ * (kind.js censusBigintSentinelKind, compile/index.js's `func._exportI64`
+ * write / `jz:i64exp` custom-section `s` field) and the host boundary's
+ * consumer (interop.js decodeBigintSentinel) — the value crosses a real
+ * ABI (a wasm custom section read by a SEPARATE process/package, `jz/
+ * interop`), not an internal detail either side is free to rename alone.
+ * See kind.js's censusBigintSentinelKind for the exact AST shapes each kind
+ * recognizes; this is the compiler-free decode half (err-codes.js pattern —
+ * one leaf module, no imports, pulled by both sides).
+ */
+export const BIGINT_SENTINEL_KIND = {
+  BARE: 1,         // dict/Map .get()/[] read, mayBeUndefined bare name, or call-result — absent key crosses as real `undefined`
+  UNARY_NEG: 2,     // unary `-` wrapping a BARE-shaped operand — ES2024 13.5.6 ToNumeric(undefined) ⇒ NaN
+  UNARY_NOT: 3,     // unary `~` wrapping a BARE-shaped operand — ES2024 13.5.9 ToNumeric(undefined) ⇒ NUMBER -1
+  JOINT_BINARY: 4,  // both operands independently census-BIGINT; emit.js's bigIntJointDispatch substitutes canonical NaN for an absent operand before computing
+}
+
+/** Per-kind i64 bit pattern the ABSENT case produces — a signed 64-bit
+ *  BigInt, matching how a wasm i64 result crosses the JS boundary
+ *  (BigInt64, two's-complement). All derived from EXISTING layout constants
+ *  (ATOM_HI, LAYOUT.NAN_PREFIX_BITS) rather than a runtime f64→i64
+ *  reinterpret, so this table needs no Float64Array/DataView trick and
+ *  stays plain-BigInt self-host-safe like the rest of this module.
+ *  UNARY_NOT's literal is f64 -1.0's bit pattern (0xBFF0000000000000,
+ *  verified via a direct Float64Array reinterpret — not hand-derived)
+ *  reduced mod 2^64 into BigInt's signed range. JOINT_BINARY shares
+ *  UNARY_NEG's bits/value on purpose — both mean "resolved to Number NaN".
+ *  Bitwise joint ops (&,|,^,<<,>>) have no working sentinel for their own
+ *  all-absent case (ToInt32(NaN)=0 collides with genuine BigInt 0n) — a
+ *  documented, accepted gap (kind.js censusBigintSentinelKind), not encoded
+ *  here. */
+export const BIGINT_SENTINEL_BITS = {
+  [BIGINT_SENTINEL_KIND.BARE]: BigInt(ATOM_HI[ATOM.UNDEF]) << 32n,
+  [BIGINT_SENTINEL_KIND.UNARY_NEG]: LAYOUT.NAN_PREFIX_BITS,
+  [BIGINT_SENTINEL_KIND.UNARY_NOT]: -4616189618054758400n,
+  [BIGINT_SENTINEL_KIND.JOINT_BINARY]: LAYOUT.NAN_PREFIX_BITS,
+}
+
+/** Per-kind JS value interop.js's decodeBigintSentinel returns instead of a
+ *  raw BigInt when the i64 result bit-matches BIGINT_SENTINEL_BITS[kind]. */
+export const BIGINT_SENTINEL_VALUE = {
+  [BIGINT_SENTINEL_KIND.BARE]: undefined,
+  [BIGINT_SENTINEL_KIND.UNARY_NEG]: NaN,
+  [BIGINT_SENTINEL_KIND.UNARY_NOT]: -1,
+  [BIGINT_SENTINEL_KIND.JOINT_BINARY]: NaN,
+}
+
 /** OOB / canonical quiet-NaN f64 literal for WAT and IR (`nan:0x7FF8…`). */
 export const oobNanLiteral = () => `nan:${nanPrefixHex()}`
 export const oobNanIR = () => ['f64.const', oobNanLiteral()]
