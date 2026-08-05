@@ -4635,6 +4635,36 @@ function typedCtorNameOf(a) {
   return ctor.endsWith('.view') ? ctor.slice(4, -5) : ctor.slice(4)
 }
 
+// Element ctors whose spec [[Set]] numeric conversion is a MODULAR reduction
+// (ECMA-262 IntegerIndexedElementSet's element-type conversion table: ToInt8/
+// ToUint8/ToInt16/ToUint16/ToInt32/ToUint32 — every one is `mod 2^n`, matching
+// wasm's iN.store8/16/32 truncation bit-for-bit). Uint8ClampedArray is
+// deliberately excluded: ToUint8Clamp SATURATES (300 → 255), it does not wrap
+// (300 mod 256 = 44) — the truncation-equals-wraparound argument this set
+// exists for does not hold for it. Float32Array/Float64Array store ToNumber
+// verbatim (no integer conversion at all) and BigInt64Array/BigUint64Array
+// route through the i64 arm above this set's only call site — neither belongs
+// here either.
+const WRAP_TRUNCATING_TYPED_CTORS = new Set([
+  'Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+])
+
+// Bare-name typed-array ctor resolution — the SAME multi-source chain
+// resolveElem (module/typedarray.js) and this file's own '.length'/typed-
+// dispatch sites (e.g. line ~3992) already read for a receiver NAME: a
+// per-function narrowing overlay first, then the whole-function map, then
+// the module-global map (a param/alias only ever resolves through the
+// latter two — `repOf(name)?.typedCtor`, used by the `instanceof` fold
+// above, is a narrower fact that misses params/aliases entirely). Returns
+// true iff the receiver is PROVEN a wrap-truncating (non-float, non-
+// clamped, non-BigInt) typed-array element kind.
+function wrapTruncatingTypedElemName(name) {
+  const raw = ctx.func.localTypedElemsOverlay?.get(name) ?? ctx.types.typedElem?.get(name) ?? ctx.scope.globalTypedElem?.get(name) ?? null
+  if (raw == null) return false
+  const stripped = raw.endsWith('.view') ? raw.slice(4, -5) : raw.slice(4)
+  return WRAP_TRUNCATING_TYPED_CTORS.has(stripped)
+}
+
 function emitTypedInstanceof(a, rhs) {
   const provenName = typedCtorNameOf(a)
   if (provenName != null) return foldInstanceof(emit(a), provenName === rhs)
@@ -5113,11 +5143,31 @@ export const emitter = {
   // dispatch fallback, etc. all still live in the binary '+'/'-' handlers,
   // just reached one level of indirection later): this op only ever changes
   // codegen on the BIGINT-gated path.
-  ...Object.fromEntries([['+1', '+', 'add'], ['-1', '-', 'sub']].map(([op, sym, fn]) => [op, n =>
-    valTypeOf(n) === VAL.BIGINT
-      ? fromI64([`i64.${fn}`, asI64(emit(n)), ['i64.const', 1]])
-      : emit([sym, n, [, 1]])
-  ])),
+  ...Object.fromEntries([['+1', '+', 'add'], ['-1', '-', 'sub']].map(([op, sym, fn]) => [op, n => {
+    if (valTypeOf(n) === VAL.BIGINT)
+      return fromI64([`i64.${fn}`, asI64(emit(n)), ['i64.const', 1]])
+    // Self-referential typed-int-element increment (`count[d]++` — the
+    // histogram/bucket-fill idiom): `n` is ALWAYS the exact same '[]' member
+    // node this op's result is written straight back into (prepare's own
+    // `['=', n, ['+1'/'-1', n]]` desugar contract, see the doc comment above
+    // this table) — so unlike the general `n + 1` shape below (whose result
+    // may escape as an unbounded f64 and therefore needs addFitsI32/
+    // addRangeFitsI32's magnitude proof), THIS result's only consumer is a
+    // write back into the same wrap-truncating typed-array slot it came from.
+    // A proven-in-bounds Int8/Uint8/Int16/Uint16/Int32/Uint32Array element's
+    // own store-time conversion (ECMA-262 IntegerIndexedElementSet — ToInt8/
+    // ToUint8/ToInt16/ToUint16/ToInt32/ToUint32, all `mod 2^n`) is bit-
+    // identical to wasm's iN.store8/16/32 truncation, so raw i32 arithmetic
+    // is unconditionally sound here — no overflow proof needed at all.
+    // `typedIdxProven` keeps this to statically in-bounds reads (the read
+    // side of a NOT-provably-in-bounds member emits a guarded/select form
+    // instead of a bare `i32.load`, so an unproven index just falls through
+    // to the general path below, unchanged).
+    if (Array.isArray(n) && n[0] === '[]' && typeof n[1] === 'string' &&
+        wrapTruncatingTypedElemName(n[1]) && typedIdxProven(n[1], n[2]))
+      return typed([`i32.${fn}`, asI32(emit(n)), ['i32.const', 1]], 'i32')
+    return emit([sym, n, [, 1]])
+  }])),
 
   // === Arithmetic (type-preserving) ===
 

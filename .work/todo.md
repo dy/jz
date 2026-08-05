@@ -6,6 +6,72 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-05, LEVER A LANDED — radixsort self-referential typed-int
+## increment, the cleaner of the two named speed levers from the
+## THREE-SPEED-REDS dissection below. Lever B (sort's magnitude-bound +
+## loop-guard-hull pair) landed separately, same session — see its own entry.)
+
+**Lever A — typed-int self-referential member increment (`count[d]++`) skips
+addFitsI32 entirely.** Landed exactly where the dissection named it: emit.js's
+`'+1'/'-1'` op table entry (prepare's dedicated member-increment desugar,
+`['=', n, ['+1'/'-1', n]]`), which previously always re-routed through the
+generic `'+'`/`'-'` handler — losing the "this result is written straight back
+into the EXACT typed-array element it was read from" context, so
+`addFitsI32`/`addBoundedFaithful`/`addRangeFitsI32` all failed (no magnitude
+proof for an unbounded typed-element read) and the op fell to the full
+f64-round-trip (convert, add, 2× trunc_sat, 2 selects, wrap). Mechanism: a
+proven-in-bounds (`typedIdxProven`) element of a **wrap-truncating** typed-array
+kind — Int8/Uint8/Int16/Uint16/Int32/Uint32Array (`WRAP_TRUNCATING_TYPED_CTORS`,
+emit.js) — needs NO magnitude proof at all, because ECMA-262
+IntegerIndexedElementSet's own numeric conversion for those 6 kinds (ToInt8/
+ToUint8/ToInt16/ToUint16/ToInt32/ToUint32) is unconditionally `mod 2^n` —
+bit-identical to wasm's `iN.store8/16/32` truncation — so raw `i32.add`/`i32.sub`
+on the loaded element is sound REGARDLESS of the addend's magnitude.
+Deliberately EXCLUDES Uint8ClampedArray (ToUint8Clamp *saturates* — 300 → 255,
+not 300 mod 256 = 44 — the truncation argument doesn't hold) and
+Float32Array/Float64Array (ToNumber, no integer conversion at all — already
+routed elsewhere). `wrapTruncatingTypedElemName` (emit.js) resolves a bare
+receiver name's ctor via the SAME 3-source chain (`localTypedElemsOverlay` →
+`ctx.types.typedElem` → `ctx.scope.globalTypedElem`) module/typedarray.js's own
+`resolveElem` and this file's other typed-dispatch sites already use — NOT
+`repOf(name)?.typedCtor` (the `instanceof`-fold's source), which is a narrower
+fact that misses params/aliases (confirmed by a first attempt: gating on
+`typedCtorNameOf` alone silently no-opped on radixsort's own `count` parameter).
+
+**Verification.** Checksum reproduced bit-exact: radixsort `2475082232`,
+matching the dissection's surgery-verified value exactly, both via direct
+`node bench/bench.mjs --targets=jz --cases=radixsort` and inside the full
+paired/merge run below. WAT diff against unpatched HEAD (radixsort's fully-
+unrolled `runKernel`, `-O3`): all 8 named sites (histogram-bump `count[(a[i]
+>>>shift)&0xff]++` ×4 passes, scatter-bump `count[d]++` ×4 passes) recovered
+`i32.add`/`i32.store` — `trunc_sat` count 17→1 (16 = 2 per site × 8 sites),
+`f64.convert_i32` count 15→7 (−8, exactly the 8 sites), WAT size 149262→144856
+chars. Paired ABBA (`--paired=8`, quiet-check via `uptime` first, load ~2.4-3.4
+— elevated for a laptop but `--verify-anchors` certified it valid, see Lever
+B's entry for the full anchor readout shared by both merges) vs zig-wasm:
+median ratio 1.040× (dissection predicted ≈1.02×, same ballpark — closes ~96%
+of the original 1.456-1.472× gap). `bench/results.json` radixsort row merged
+via `--merge --verify-anchors` (b8fcfeb9 tooling): `jz.medianUs` 3344→2354,
+`jz.bytes` 1496→1414 (typed-int i32 recovery shrinks bytes too), `paired`
+sub-object added. **`meta.invocations` narrow-target-replacement gap (flagged,
+not fixed, by the prior session's fft merge) hit again** — `--targets=jz,
+zig-wasm,v8` silently collapsed the full 21-entry dict to 3; manually restored
+the full dict from HEAD before committing (verified via python dict-equality,
+not just eyeball diff) — same tooling gap, same manual workaround, still
+un-landed (out of this session's scope; a `--merge` fix belongs in
+fast-refresh-design.md's own lineage, not bundled into a speed-lever session).
+**perf-ratchet's `ring` baseline tightened** (117800→117280, `--update`,
+verified this is Lever A's OWN effect — reproduced on an ISOLATED Lever-A-only
+tree, no Lever B code present, before Lever B was even applied — `ring`
+evidently exercises a typed-int counting/bucket idiom this lever also reaches).
+
+**Files touched**: `src/compile/emit.js` (the two hunks above only — the
+`WRAP_TRUNCATING_TYPED_CTORS`/`wrapTruncatingTypedElemName` pair beside
+`typedCtorNameOf`, and the `'+1'/'-1'` table entry), `test/perf-ratchet.json`
+(`ring` re-tighten). `bench/results.json`'s radixsort row and Lever B's sort
+row landed together in Lever B's commit (both merges ran in the same session,
+`meta` reflects the later one) — see that entry for the full readout.
+
 ## Status (2026-08-05, THREE SPEED REDS DISSECTED from 3188aebc's claims
 ## verdict — sort/radixsort: named+surgery-proven levers, NOT landed (soundness-
 ## critical, out of session scope); fft: discrepancy resolved, environment
