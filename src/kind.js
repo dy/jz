@@ -6,7 +6,7 @@
  * @module kind
  */
 
-import { ctx } from './ctx.js'
+import { ctx, getFactStore } from './ctx.js'
 import { VAL, lookupValType, repOf } from './reps.js'
 import { intLiteralValue, staticIndexKey } from './static.js'
 import {
@@ -592,15 +592,39 @@ export function censusBigintSentinelKind(node) {
 // plan/pre-compile time, before that function's own reps exist. Shared by
 // every whole-program-fixpoint consumer that needs this fact early:
 // narrow.js's inter-procedural param join and return-kind join, flow-types.js's
-// closureBodyReturnKind sibling. WeakMap-cached per bodyRoot (an AST array is
-// a stable reference for the lifetime of one compile; a fresh parse gets a
-// fresh cache entry, so nothing leaks across separate compiles/tests).
-const mayBeUndefinedTraceCache = new WeakMap()
+// closureBodyReturnKind sibling.
+//
+// Ownership (audit-#11, session factStore slice — see the DEPS table in
+// session.js, and the bindingUses precedent this mirrors): stored at
+// getFactStore().mayBeUndefinedTrace, NOT a private module-level WeakMap.
+// Cache-correctness is body-identity-keyed and needs NO surgical
+// invalidation — same argument as bindingUses (analyze-scans.js): every pass
+// that restructures a function's AST does so through compile/analyze.js's
+// setFuncBody, which always assigns a NEW func.body reference, so a caller
+// tracing a REWRITTEN body is, by construction, keying off a node this cache
+// has never seen; a fresh top-level parse is likewise a fresh array
+// identity. So within one compile, and across compiles that never share a
+// bodyRoot object, a hit can never be stale.
+//
+// Session ownership still matters despite that: jz has no GC in its OWN
+// compiled output, so `new WeakMap()` in code jz self-hosts folds to a
+// plain (strong-referencing) `Map` (src/prepare/index.js's `new` handler —
+// "no GC → weakness is unobservable"). kind.js IS part of the self-hosted
+// compiler surface (compile/index.js → kind.js, bundled into dist/jz.wasm),
+// so a bare module-global here would, under the kernel, accumulate one
+// entry per distinct bodyRoot for the LIFETIME OF THE WASM INSTANCE —
+// unbounded growth across every compile a warm kernel instance services
+// (exactly the class of resource issue the factStore session-reset
+// discipline exists to prevent). Moving it into factStore means
+// resetFactStore() (called every beginSession) swaps in a fresh Map/WeakMap
+// each compile, same as bindingUses — the fold's memory-growth exposure is
+// bounded to one compile's worth of bodies, not the whole kernel session.
 export function nameMayBeUndefinedInBody(bodyRoot, name, seen = new Set()) {
   // Expression-bodied arrow whose body IS a bare name/literal (`() => x`) —
   // a WeakMap key must be an object, and a non-array bodyRoot can't contain
   // a `let`/`const`/`=` write to walk anyway, so there's nothing to trace.
   if (!Array.isArray(bodyRoot)) return false
+  const mayBeUndefinedTraceCache = getFactStore().mayBeUndefinedTrace
   let m = mayBeUndefinedTraceCache.get(bodyRoot)
   if (!m) { m = new Map(); mayBeUndefinedTraceCache.set(bodyRoot, m) }
   if (m.has(name)) return m.get(name)

@@ -239,6 +239,7 @@ function createFactStore() {
     programFacts: { gen: 0, walkCache: new WeakMap(), moduleInitSlot: new WeakMap(), bodyIntCertain: new WeakMap(), hazard: null },
     bodyFacts: new Map(),
     bindingUses: new WeakMap(),
+    mayBeUndefinedTrace: new WeakMap(),
   }
 }
 let _factStore = createFactStore()

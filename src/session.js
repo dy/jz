@@ -132,9 +132,17 @@ export function targetProfileFor(host) {
  *                                invalidateAllBodyFacts() name the
  *                                phase-boundary bulk flush. The raw
  *                                invalidateLocalsCache(body) primitive still
- *                                exists (2 bespoke call sites remain in
- *                                plan/literals.js) but is no longer the
- *                                pass-author-facing API — a NEW pass reaches
+ *                                exists (the four seam functions are built on
+ *                                it) but has NO direct pass-author call site
+ *                                left as of audit-#11 — the 2 bespoke
+ *                                plan/literals.js survivors this note used to
+ *                                cite both predated setFuncBody and turned
+ *                                out fully subsumed by it once re-examined
+ *                                (setFuncBody already invalidates the node it
+ *                                assigns on every path either function takes);
+ *                                deleted, not converted, after a clean full-
+ *                                suite + JZ_DEBUG_INVARIANTS + selfhost.js run.
+ *                                A NEW pass reaches
  *                                for one of the four seam functions instead
  *                                of re-deriving its own invalidate-then-read
  *                                pairing, so the "forgot the second half"
@@ -164,6 +172,21 @@ export function targetProfileFor(host) {
  *                                structurally reading a fresh WeakMap key, never
  *                                a stale hit for the old shape (see the doc at
  *                                resetBindingUsesCache, analyze-scans.js).
+ *   mayBeUndefinedTrace          kind.js's nameMayBeUndefinedInBody structural
+ *                                trace (Slice 2 §3). Same no-surgical-
+ *                                invalidation argument as bindingUses — body-
+ *                                identity-keyed, setFuncBody guarantees a
+ *                                rewrite is a fresh key. Wholesale reset
+ *                                still matters despite that: `new WeakMap()`
+ *                                folds to a strong `Map` in code jz self-
+ *                                hosts (no GC → weakness unobservable, src/
+ *                                prepare/index.js's `new` handler), and
+ *                                kind.js is on the self-hosted compiler
+ *                                surface — without the reset, a warm kernel
+ *                                instance would accumulate one entry per
+ *                                bodyRoot for its whole lifetime, not just
+ *                                one compile's worth (see the doc at
+ *                                nameMayBeUndefinedInBody, kind.js).
  *
  * ASSERT (a slice reset clears its dependents): programFacts's three
  * sub-caches share ONE `gen` counter and are always recreated together —
