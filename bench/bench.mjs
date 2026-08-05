@@ -1309,7 +1309,13 @@ if (JSON_PATH) {
     // entirely), which is exactly the common case the first time --merge runs.
     const mixedVintage = Object.values(mergedCases)
       .some(c => Object.values(c.targets).some(t => t.measuredAt !== shortSha))
-    finalOut = { meta: { ...jsonOut.meta, ...(mixedVintage && { partial: true }) }, cases: mergedCases }
+    // meta.invocations is per-target, same shape as a case's `targets` dict —
+    // merge it the same way rows merge: overlay this run's targets onto
+    // PREV's full dict instead of letting jsonOut.meta's narrow set (built
+    // from usedTargets, i.e. only the cases/targets this run touched)
+    // silently drop every other target's invocation string.
+    const mergedInvocations = { ...PREV.meta?.invocations, ...jsonOut.meta.invocations }
+    finalOut = { meta: { ...jsonOut.meta, invocations: mergedInvocations, ...(mixedVintage && { partial: true }) }, cases: mergedCases }
   }
 
   writeFileSync(JSON_PATH, JSON.stringify(finalOut, null, 1))

@@ -49,6 +49,11 @@ deliberate re-anchoring (the 2026-08-05 full refresh is the anchor baseline).
 ## Gates for the implementing agent
 - --merge: byte-preservation pin (unmeasured rows identical pre/post), meta
   provenance pin; the previous hand-patch flows replaced by --merge in docs.
+- --merge + meta.invocations: meta's per-target sub-structures merge the same
+  way case rows merge (overlay this run's targets onto PREV's full dict) — a
+  narrow --targets= must not collapse the invocations dict down to just the
+  measured targets. Found 2026-08-05 (flagged twice before the fix landed);
+  pinned in test/bench-merge.js.
 - --verify-anchors: pass and fail paths both exercised (fail path via an
   artificially perturbed stored value in a scratch copy).
 - No behavior change to full runs without the new flags (byte-identical

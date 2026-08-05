@@ -67,6 +67,19 @@ test('bench --merge: measured row gains fresh data and measuredAt provenance', (
   ok(jzRow.parity === 'ok', `mat4.jz.parity = ${jzRow.parity}, expected 'ok' (checksum unchanged)`)
 })
 
+test('bench --merge: meta.invocations preserves entries for targets not touched this run', () => {
+  const scratch = freshCopy()
+  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
+  const merged = JSON.parse(readFileSync(scratch, 'utf8'))
+  ok(Object.keys(merged.meta.invocations).length === Object.keys(reference.meta.invocations).length,
+    `--merge with a narrow --targets= collapsed meta.invocations: ${Object.keys(merged.meta.invocations).length} entries vs ${Object.keys(reference.meta.invocations).length} stored`)
+  for (const [tid, cmd] of Object.entries(reference.meta.invocations)) {
+    if (tid === 'jz') continue
+    ok(merged.meta.invocations[tid] === cmd, `meta.invocations.${tid} lost/changed by an unrelated --merge run: ${merged.meta.invocations[tid]} vs ${cmd}`)
+  }
+  ok(merged.meta.invocations.jz === reference.meta.invocations.jz, 'meta.invocations.jz should reflect the freshly measured target (unchanged command, but must not be dropped)')
+})
+
 test('bench --merge: mixed-vintage rows set meta.partial; meta.commit is HEAD', () => {
   const scratch = freshCopy()
   run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
