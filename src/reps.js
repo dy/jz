@@ -163,19 +163,37 @@ export const VAL = {
  *   carry both a real `val` AND `mayBeUndefined = true` (Slice 2's
  *   `censusShapedNode` deliberately over-approximates to any `[]`/`.`
  *   2-arg read, including a plain array/typed-array OOB-possible index, not
- *   just dict/Map) with no `presentVal` ever set (this field's producer
- *   below is decl/reassign-only, no param propagation yet). Found LIVE, not
- *   assumed, when kind.js's REP-fallback arm was rewritten to read ONLY
- *   `presentVal` and a param-hop regression pin flipped from JS-correct back
- *   to wrong (test/dyn-keys.js) — the arm now checks `presentVal` first,
- *   `val` second, keeping both live for their own distinct binding shapes.
- *   Same flow-INsensitive whole-body-unification scope as `val`'s own documented
- *   cost ("a later write that unconditionally overwrites the initializer
- *   still poisons" — accepted, not fixed, matching `val`'s own precedent).
- *   `censusMaybeUndefinedKind(rhs)` already composes direct census-shaped
- *   nodes, one-hop bare-name copy-through (this field), and call-results in
- *   one function, so the producer call needs no separate helper — DRY, one
- *   predicate, matching §4's "not one [check] per site" discipline.
+ *   just dict/Map). Found LIVE, not assumed, when kind.js's REP-fallback arm
+ *   was rewritten to read ONLY `presentVal` and a param-hop regression pin
+ *   flipped from JS-correct back to wrong (test/dyn-keys.js) — the arm now
+ *   checks `presentVal` first, `val` second, keeping both live for their own
+ *   distinct binding shapes. Same flow-INsensitive whole-body-unification
+ *   scope as `val`'s own documented cost ("a later write that unconditionally
+ *   overwrites the initializer still poisons" — accepted, not fixed, matching
+ *   `val`'s own precedent). `censusMaybeUndefinedKind(rhs)` already composes
+ *   direct census-shaped nodes, one-hop bare-name copy-through (this field),
+ *   and call-results in one function, so the producer call needs no separate
+ *   helper — DRY, one predicate, matching §4's "not one [check] per site"
+ *   discipline.
+ *
+ *   PARAM propagation (§16→§18 "presentVal param producers", extending
+ *   Slice 6's decl/reassign-only scope — the same size-of-surface precedent
+ *   `mayBeUndefined`'s own Slice 1 → Slice 2 split set): narrow.js's
+ *   `hardParamPresentVal`, modeled on `hardParamVal` (the SAME poison-on-
+ *   disagreement fold this field's decl producer already uses, NOT
+ *   `mayBeUndefined`'s monotonic OR) — every live call site's argument must
+ *   independently resolve the SAME presentVal kind (kind.js
+ *   `exprPresentValIn`/`namePresentValInBody`, the ctx-independent-at-plan-
+ *   time KIND analogue of `exprMayBeUndefinedIn`/`nameMayBeUndefinedInBody`),
+ *   or the param declines (no claim, never a wrong one). Seeded onto the
+ *   param's entry-time rep in compile/index.js exactly where `r.val` is,
+ *   with the SAME `!reassigned` guard (this field shares `val`'s exact-claim
+ *   discipline, not `mayBeUndefined`'s unconditional-safe one). This is what
+ *   flips the param-hop BigInt-unary KNOWN-FAIL from 38dd0dca/§16 (`const f
+ *   = (v) => -v; f(m.get('x'))`): the consumer side (emitNeg's OR-arm, other
+ *   `censusMaybeUndefinedKind`-consulting chokepoints) already asks
+ *   unconditionally — §16's own "needed NO widening" finding — so seeding
+ *   this fact onto the param is the entire fix.
  * @property {string}  [dictValueValType] VAL.* kind of every value ever written
  *   through `name[key] = v` (any key, HASH dict-mode local or global) —
  *   first-wins-then-clash lattice, absent/null = unproven or mixed. Additive-

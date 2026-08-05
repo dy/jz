@@ -1115,21 +1115,82 @@ test('KNOWN-FAIL (found landing round-7, out of scope, audit-#10 §14 point 4 cl
   is(typeof f(5, 2), 'bigint', 'JS: TypeError (Number 2 mixed with BigInt 5n) — actual: silently wrong bigint, unchanged runtime gap')
 })
 
-// KNOWN-FAIL, found landing this slice, NOT this slice's scope: a PARAM
-// never gets a `presentVal` producer (§15's own explicit scope line —
-// "Params/returns/closures do NOT get a presentVal producer in this slice"),
-// so a BigInt-census value passed as a call-site ARGUMENT into a callee that
-// applies unary `-`/`~` to its own parameter has no `presentVal`/`val` claim
-// to consult at all — `emitNeg`/`~`'s own OR-arm (censusMaybeUndefinedKind)
-// correctly asks the question but gets `null` back for the param, falls to
-// ordinary NUMBER negation, and corrupts the raw BigInt carrier bits (sign-
-// flips them as if they were a float). Closing it is the param/return/
-// closure `presentVal` propagation slice §15 names as its own future,
-// comparable-sized work — not attempted here.
-test('KNOWN-FAIL (found landing Slice 7, out of scope): param-hop present-key BigInt census value through unary `-` in a callee has no presentVal producer for params', () => {
+// FLIPPED, for a MODULE-level (global) census receiver (§16→§18 "presentVal
+// param producers", narrow.js's hardParamPresentVal): a PARAM now gets a
+// `presentVal` producer — the inter-procedural, poison-on-disagreement
+// call-site fold §15's own decl/reassign-only scope named as future work.
+// A BigInt-census value passed as a call-site ARGUMENT into a callee that
+// applies unary `-`/`~` to its own parameter now correctly seeds that
+// param's `presentVal`, so `emitNeg`/`~`'s own OR-arm
+// (censusMaybeUndefinedKind, already asking unconditionally — §16's own
+// "needed NO widening" finding) sees VAL.BIGINT instead of null. The
+// export-boundary decode ALSO needed its own fix, found live while flipping
+// this: `censusBigintSentinelKind`'s new kind-5 arm (kind.js) recognizes a
+// call whose callee is exactly this `(v) => -v`/`(v) => ~v` shape — the WASM
+// computation was already correct once presentVal seeded the param, but
+// narrowValResults' own return-kind join can't observe a param-hop fact for
+// this same ordering reason (its own fixpoint runs before narrow.js's
+// presentVal param propagation ever populates paramReps — the identical gap
+// 15c789ac's own commit documented for mayBeUndefined's return-kind join),
+// so the export decode needed a separate, self-contained structural check
+// rather than reusing that join.
+//
+// GLOBAL receiver only — see the KNOWN-FAIL immediately below for the
+// narrower, still-open LOCAL-receiver sibling this session does NOT close.
+test('single-call-site unary `-` param-hop: present-key BigInt census value (module-level Map) through a callee is JS-correct (regression pin, was KNOWN-FAIL)', () => {
+  const f = jz(`
+    const m = new Map(); m.set('a', 5n)
+    const g = (v) => -v
+    export let f = () => g(m.get('a'))
+  `, { jzify: true }).exports.f
+  is(f(), -5n)
+  is(typeof f(), 'bigint')
+})
+// Negative control: the absent-key sibling stays JS-correct too (ToNumeric(undefined)
+// unary `-` is NaN, per ES2024 13.5.6 — never `undefined` itself, never a corrupted bigint).
+test('single-call-site unary `-` param-hop: absent Map key (module-level Map) through a callee is JS-correct', () => {
+  const f = jz(`
+    const m = new Map(); m.set('a', 5n)
+    const g = (v) => -v
+    export let f = () => g(m.get('missing'))
+  `, { jzify: true }).exports.f
+  is(Number.isNaN(f()), true)
+})
+
+// KNOWN-FAIL, narrower than the one this session flips above: hardParamPresentVal
+// (narrow.js) resolves the call-site argument's census kind via
+// `censusMaybeUndefinedKind` directly, at narrow.js's own plan-time fixpoint —
+// where ctx.func.localReps is UNINSTALLED for every function (by design, the
+// same caveat exprMayBeUndefinedIn's own doc comment documents for
+// mayBeUndefined's identical plan-time fold). `dictValueKindOf`/
+// `mapValueKindOf` fall back to `ctx.scope.globalReps` (the whole-program
+// census half) only when `valTypeOf(name)` already proves the receiver's
+// kind — sound for a MODULE-level Map/dict (valTypeOf resolves through
+// ctx.scope.globalValTypes, itself whole-program), but a Map declared LOCAL
+// to the CALLER's own body has no such fallback (valTypeOf('m') can't prove
+// MAP without that caller's OWN ctx.func.localReps, unavailable at plan
+// time) — so `presentVal` stays unset for this narrower shape, `emitNeg`'s
+// OR-arm still sees null, and the raw BigInt carrier still gets corrupted by
+// plain NUMBER negation. Confirmed the boundary is precisely the receiver's
+// scope, not the shape: identical source with `m` promoted to module level
+// (the regression pin above) is fully correct. Closing this needs threading
+// a CALLER's own local census through narrow.js's call-site iteration — a
+// separate, comparable-sized undertaking (the same class of gap
+// nameMayBeUndefinedInBody's own local-vs-global receiver split already
+// accepts elsewhere in this design), not attempted here.
+test('KNOWN-FAIL (found landing §16→§18, out of scope): param-hop present-key BigInt census value through unary `-` in a callee, receiver LOCAL to the caller, still has no presentVal claim', () => {
   const f = jz(`
     const g = (v) => -v
     export let f = () => { const m = new Map(); m.set('a', 5n); return g(m.get('a')) }
   `, { jzify: true }).exports.f
-  is(typeof f(), 'number', 'JS: -5n (bigint) — actual: wrong number, a pre-existing gap this slice does not close')
+  const r = f()
+  // typeof is 'bigint' (this session's kind-5 export-decode arm correctly
+  // recognizes the SHAPE from f's own, later, EMIT-time analysis — where f's
+  // own ctx.func.localReps IS installed for its local `m`), but the VALUE is
+  // wrong: g's own body never got `v`'s presentVal (narrow.js's plan-time
+  // fixpoint can't see a local receiver — see this test's own doc comment),
+  // so the WASM computation still corrupts the raw carrier via plain NUMBER
+  // negation before the correctly-tagged decode ever sees it.
+  is(typeof r, 'bigint', 'JS: -5n (bigint) — actual type now matches, value does not (narrower pre-existing gap this session does not close)')
+  ok(r !== -5n, 'value is still wrong, not just the type')
 })

@@ -19,7 +19,7 @@ import { scanBoundedLoops, exprType, typedElemCtor, typedStaticLen, intLevelMap 
 import { typedElemAux, ctorFromElemAux } from '../../layout.js'
 import { observeProgramSlots } from './program-facts.js'
 import { noteParamVerdict } from './bigint-boxed-stats.js'
-import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, exprMayBeUndefinedIn } from '../kind.js'
+import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, exprMayBeUndefinedIn, exprPresentValIn } from '../kind.js'
 import { typedCtorElemValType } from '../kind-traits.js'
 import { VAL, updateRep, lookupValType } from '../reps.js'
 import {
@@ -2413,6 +2413,58 @@ export default function narrowSignatures(programFacts, ast) {
         if (cs.callee !== fname || k >= cs.argList.length) continue
         if (exprMayBeUndefinedIn(cs.argList[k], cs.callerFunc?.body)) { r.mayBeUndefined = true; break }
       }
+    }
+  }
+
+  // presentVal param propagation (§16→§18 "presentVal param producers") — the
+  // inter-procedural half of the SAME fact analyze.js's `setPresentVal`
+  // already seeds at decl/reassign time (§14 Slice 6). Unlike mayBeUndefined's
+  // boolean OR-fold just above, presentVal is an EXACT KIND claim (reps.js's
+  // own doc: mutually exclusive with `val`, poison-on-disagreement, same
+  // discipline as `val` itself) — so this fold is modeled on `hardParamVal`
+  // above, NOT on the mayBeUndefined loop's OR/no-evidence-is-false shape:
+  // every live call site's argument must independently resolve the SAME
+  // presentVal kind (exprPresentValIn, kind.js — censusShapedNode's direct
+  // arms plus a poison-disciplined bare-name trace through the CALLER's own
+  // body, mirroring analyze.js's makeValTracker), or the whole param declines
+  // (no claim — never a wrong one). A destructured param body is skipped
+  // (not force-poisoned to a fake kind, unlike mayBeUndefined's fail-closed
+  // `true`): "no per-call-site proof mechanism" means no EVIDENCE for an
+  // exact-kind fact, and absence of a presentVal claim is always safe — every
+  // consumer (censusMaybeUndefinedKind's arm 3) only ever gets asked "what
+  // kind does the census claim", never "is this definitely a container
+  // value", so under-claiming just forwards to the plain dynamic path (§16),
+  // never wrong.
+  //
+  // This is what flips the param-hop BigInt unary KNOWN-FAIL from 38dd0dca/
+  // §16 (`const f = (v) => -v; f(m.get('x'))`, present-key BIGINT): emitNeg's
+  // OR-arm (emit.js bigIntUnary) already asks `censusMaybeUndefinedKind(v)`
+  // unconditionally — §16 found nullableOperand/bigIntOperand/bigIntUnary
+  // "needed NO widening" for exactly this reason — so seeding `v`'s
+  // `presentVal` here is the ENTIRE fix; no consumer-side change needed.
+  const hardParamPresentVal = (funcName, k) => {
+    let consensus
+    for (let s = 0; s < callSites.length; s++) {
+      if (callSites[s].callee !== funcName) continue
+      const state = siteState(callSites[s])
+      if (!state) continue
+      if (k >= state.argList.length) return null   // missing → undefined at runtime, no claim
+      const v = exprPresentValIn(state.argList[k], state.callerFunc?.body)
+      if (v == null) return null                    // an untraced site ⇒ no claim (fail-closed to "absent", never wrong)
+      if (consensus === undefined) consensus = v
+      else if (consensus !== v) return null          // disagreement ⇒ no claim
+    }
+    return consensus ?? null
+  }
+  for (const [fname, reps] of paramReps) {
+    for (const [k, r] of reps) {
+      if (r.presentVal) continue
+      const func = ctx.func.map?.get(fname)
+      if (!func?.sig?.params || k >= func.sig.params.length) continue
+      const pname = func.sig.params[k].name
+      if (isDestructuredParamBody(func, pname)) continue
+      const v = hardParamPresentVal(fname, k)
+      if (v != null) r.presentVal = v
     }
   }
 

@@ -14,6 +14,7 @@ import {
   calleeValType, methodValType, propValType, typedCtorElemValType,
 } from './kind-traits.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
+import { isBlockBody, returnExprs, alwaysReturns } from './ast.js'
 
 export { typedCtorElemValType } from './kind-traits.js'
 
@@ -539,6 +540,45 @@ export function censusBigintSentinelKind(node) {
   if (Array.isArray(node) && node.length === 3 && node[0] === '+'
       && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT)
     return 4
+  // Kind 5 (§16→§18 "presentVal param producers"): a call whose CALLEE is a
+  // plain single-param function/const-arrow (ctx.func.map) entirely made of
+  // `-`/`~` applied to its OWN param (`const g = (v) => -v`, or an equivalent
+  // single-return block `{ return -v }`) — the call-boundary sibling of kinds
+  // 2/3 above, closing the exact param-hop shape 38dd0dca/§16 pinned as a
+  // KNOWN-FAIL (`const f = (v) => -v; return f(m.get('x'))`, present-key
+  // BIGINT). Deliberately NOT built on `func.valResult`/
+  // `valResultMayBeUndefined` (narrowValResults' own return-kind join,
+  // .work/represented-maybe-undefined-design.md §3 "Return kinds"): that
+  // fixpoint runs BEFORE narrow.js's presentVal param propagation
+  // (hardParamPresentVal) ever populates paramReps, so it can never observe
+  // a param-sourced BIGINT claim through a unary wrapper — the identical
+  // ordering gap 15c789ac's own commit already found and documented
+  // ("narrowValResults' own join stays empirically unreachable") for
+  // mayBeUndefined's return-kind join. Reading the callee's raw AST directly
+  // (ctx.func.map, populated by prepare — before any narrowing runs) and the
+  // ARGUMENT's own presentVal-fed census claim (censusMaybeUndefinedKind,
+  // computed HERE, at whatever time THIS caller is itself analyzed — after
+  // narrowing has settled) sidesteps that ordering entirely, at the cost of
+  // only recognizing this ONE explicit shape (not any callee whose return
+  // proves the sentinel kind through a longer, indirect chain — a narrower,
+  // honest boundary, not a general fix for every possible callee shape).
+  // `alwaysReturns` (ast.js) guards a block body: a callee that can fall off
+  // the end without an explicit return can genuinely yield `undefined` on
+  // some path even when every EXPLICIT return matches the sentinel shape, so
+  // that case must NOT claim kind 5.
+  if (Array.isArray(node) && node[0] === '()' && typeof node[1] === 'string' && node.length === 3) {
+    const callee = ctx.func.map?.get(node[1])
+    const params = callee?.sig?.params
+    if (params?.length === 1 && (!isBlockBody(callee.body) || alwaysReturns(callee.body))) {
+      const pname = params[0].name
+      const sites = returnExprs(callee.body)
+      const kindOf = (e) => Array.isArray(e) && e.length === 2 && (e[0] === 'u-' || e[0] === '~') && e[1] === pname
+        ? (e[0] === 'u-' ? 2 : 3) : 0
+      const k0 = sites.length ? kindOf(sites[0]) : 0
+      if (k0 > 0 && sites.every(e => kindOf(e) === k0) && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT)
+        return k0
+    }
+  }
   return 0
 }
 
@@ -592,6 +632,70 @@ export const exprMayBeUndefinedIn = (expr, bodyRoot) =>
   censusShapedNode(expr) || (typeof expr === 'string' && nameMayBeUndefinedInBody(bodyRoot, expr))
 
 export const censusMaybeUndefined = (node) => !!censusMaybeUndefinedKind(node)
+
+// presentVal structural TRACE (§16→§18 "presentVal param producers" — the
+// KIND-precise sibling of nameMayBeUndefinedInBody just above, needed for
+// narrow.js's inter-procedural presentVal join). Unlike that function's
+// monotonic boolean OR (any matching write flips it true, forever), this one
+// mirrors analyze.js's OWN `setPresentVal` poison discipline (makeValTracker:
+// an unresolvable observation poisons exactly like a conflicting definite one
+// — reps.js `presentVal` doc, §15 Slice 6): every write to `name` in
+// `bodyRoot` must independently resolve to the SAME censusShapedNode kind, or
+// the trace poisons to null. A name with NO writes at all (an unwritten
+// forwarded param/capture) resolves null too — "no evidence" and "poisoned"
+// collapse to the same null result here (unlike the boolean trace, there's no
+// third "false" state to fall back to for an exact-kind fact). Direct
+// censusShapedNode reads (arms 1/2, dictValueKindOf/mapValueKindOf) are
+// resolved via censusMaybeUndefinedKind itself — safe to call from a
+// STRUCTURAL trace like this because those two arms never touch
+// ctx.func.localReps (only the RECEIVER's dict/Map census, which lives on
+// ctx.scope.globalReps / is nameEscapes-gated, both whole-program facts, not
+// per-function state — see dictValueKindOf/mapValueKindOf's own doc
+// comments); only arm 3 (bare-name REP fallback) is ctx.func-dependent, and
+// this trace never reaches it (a bare name inside the walk recurses back into
+// THIS function, never into censusMaybeUndefinedKind's own repOf lookup).
+// WeakMap-cached per bodyRoot, mirroring nameMayBeUndefinedInBody exactly.
+const presentValTraceCache = new WeakMap()
+export function namePresentValInBody(bodyRoot, name, seen = new Set()) {
+  if (!Array.isArray(bodyRoot)) return null
+  let m = presentValTraceCache.get(bodyRoot)
+  if (!m) { m = new Map(); presentValTraceCache.set(bodyRoot, m) }
+  if (m.has(name)) return m.get(name)
+  if (seen.has(name)) return null
+  seen.add(name)
+  let claim, poisoned = false
+  const observe = (vt) => {
+    if (poisoned) return
+    if (!vt) { poisoned = true; return }
+    if (claim === undefined) claim = vt
+    else if (claim !== vt) poisoned = true
+  }
+  const rhsKind = (rhs) => censusShapedNode(rhs) ? censusMaybeUndefinedKind(rhs)
+    : typeof rhs === 'string' ? namePresentValInBody(bodyRoot, rhs, seen) : null
+  const walk = (node) => {
+    if (poisoned || !Array.isArray(node)) return
+    const op = node[0]
+    if ((op === 'let' || op === 'const') && node.length >= 2) {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && d[1] === name) observe(rhsKind(d[2]))
+      }
+    } else if (op === '=' && node[1] === name) observe(rhsKind(node[2]))
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(bodyRoot)
+  const result = poisoned ? null : (claim ?? null)
+  m.set(name, result)
+  return result
+}
+
+/** censusMaybeUndefinedKind(expr) when it's directly census-shaped, else a
+ *  bare-name expr's poison-disciplined trace through bodyRoot's own writes
+ *  (namePresentValInBody) — the presentVal analogue of exprMayBeUndefinedIn,
+ *  for narrow.js's inter-procedural call-site fold. */
+export const exprPresentValIn = (expr, bodyRoot) =>
+  censusShapedNode(expr) ? censusMaybeUndefinedKind(expr)
+    : typeof expr === 'string' ? namePresentValInBody(bodyRoot, expr) : null
 
 // `[]` op covers both array literals (1 arg) and index access (2 args).
 // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].

@@ -950,6 +950,39 @@ export const coerceNullishToNum = (valIR) => typed(
       ['else', cloneIR(valIR)]]]],
   'f64')
 
+/** ToString for an i64 string carrier that may hold the UNDEF_NAN sentinel:
+ *  undefined→"undefined", anything else → itself. The STRING-domain mirror of
+ *  coerceNullishToNum just above — same "`valIR` must be side-effect-free, it
+ *  is duplicated" contract — but only ONE sentinel arm (never NULL_NAN: this
+ *  design's whole census/maybeUndefined machinery is specifically about a
+ *  dict/Map absent-key read, which is real JS `undefined`, never `null` —
+ *  matching toNumF64's own NUMBER-census widening, which is likewise gated
+ *  to NUMBER only, never both nullish kinds). "undefined" reuses the fixed
+ *  static-string table module/number.js already builds for every OTHER
+ *  nullish/NaN-to-string site in the codebase (`__static_str(6)` — see its
+ *  own doc comment for the full index table) rather than a new string-
+ *  constant mechanism: MAX_SSO=6 can't hold 9-char "undefined" inline
+ *  (ssoStrI64 below is not an option), and this file's NO-EMIT contract
+ *  (module/string.js imports FROM here, so the reverse import would cycle —
+ *  see ssoStrI64's own doc) blocks reaching `emit(['str', …])` for a fresh
+ *  data-segment literal. `inc('__static_str')` is the established, ALREADY-
+ *  used-from-outside-its-owning-module precedent (module/atomics.js's
+ *  `Atomics.wait`, which pulls the SAME helper the same way for its
+ *  'ok'/'not-equal'/'timed-out' results) — safe here because every call site
+ *  of toStrI64's widening below is itself a STRING-coercion context
+ *  (String()/template-literal/`+`-concat), which autoload.js's own MOD_DEPS
+ *  already makes depend on 'number' before 'string' loads, so `__static_str`
+ *  is always registered by the time this runs. */
+export const coerceNullishToStr = (valIR) => {
+  inc('__static_str')
+  return typed(
+    ['if', ['result', 'i64'],
+      ['i64.eq', cloneIR(valIR), ['i64.const', UNDEF_NAN]],
+      ['then', typed(['i64.reinterpret_f64', ['call', '$__static_str', ['i32.const', 6]]], 'i64')],
+      ['else', cloneIR(valIR)]],
+    'i64')
+}
+
 /** Coerce an emitted IR value to a plain f64 Number per JS `ToNumber`.
  *  Skips coercion when static type proves the value is already numeric
  *  (i32 node, compile-time literal, known VAL.NUMBER/VAL.BIGINT). When the full
@@ -1183,6 +1216,37 @@ export function toNumF64(node, v) {
  *  an abrupt completion through the closure call. */
 export function toStrI64(node, v) {
   const vt = valTypeOf(node)
+  // §16→§18 STRING-census widening (.work/represented-maybe-undefined-
+  // design.md): mirrors toNumF64's NUMBER-census widening (38dd0dca) for the
+  // STRING case. Two shapes both currently fall all the way through to the
+  // fully generic `__to_str` dynamic dispatch at the bottom of this function
+  // whenever `censusMaybeUndefined(node)` is true: a decl/param-hopped
+  // STRING-census claim (`vt` stays permanently null — §14 point 3, `val`
+  // never carries a census claim for that shape; `censusMaybeUndefinedKind`
+  // proves it instead, via `presentVal`/`val` fallback) and a param whose
+  // ordinary `val` fold happens to land STRING (the one shape where `vt`
+  // itself already proves it, mirroring toNumF64's own "the param case,
+  // where `val` IS `vt`'s own source"). §16 found this ALREADY CORRECT (the
+  // generic `__to_str` stdlib helper's own UNDEF_NAN branch already renders
+  // "undefined") — this is a pure codegen improvement, value-neutral, same
+  // class as 38dd0dca: route both through a cheap 2-branch sentinel dispatch
+  // (coerceNullishToStr, above) instead of the full dynamic dispatch call.
+  const censusStr = vt == null && censusMaybeUndefinedKind(node) === VAL.STRING
+  if ((vt === VAL.STRING || censusStr) && censusMaybeUndefined(node)) {
+    // Same triplication-safety concern toNumF64's own widening documents: a
+    // direct census-shaped read or a bare-name copy-through is pure
+    // (cloneIR-safe to duplicate inside coerceNullishToStr's if/else), but
+    // the call-result arm (censusMaybeUndefinedKind's `callResultMayBeUndefinedKind`
+    // fallback) can carry real side effects — hoist into a temp first so
+    // only a cheap `local.get` gets duplicated.
+    if (typeof node !== 'string' && !censusShapedNode(node)) {
+      const t = tempI64('cns')
+      return typed(['block', ['result', 'i64'],
+        ['local.set', `$${t}`, asI64(v)],
+        coerceNullishToStr(typed(['local.get', `$${t}`], 'i64'))], 'i64')
+    }
+    return coerceNullishToStr(asI64(v))
+  }
   // ToString(string) is the identity — no coercion needed, no __to_str call.
   // Without this, a proven-string operand (a template-literal interpolation
   // `${s}`, module/string.js strcat's partStrI64) still paid for the fully

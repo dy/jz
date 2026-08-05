@@ -1604,3 +1604,182 @@ these internal throws (needs the same STRING-census widening §16 already
 named as its own future slice); the general "method not found on a proven
 non-nullish OBJECT/HASH receiver" case (still reads `undefined`, unchanged —
 a different, pre-existing gap this task's own scope never covered).
+
+## 18 — §16's two named-but-scoped-out pieces, landed: toStrI64 STRING-census
+## widening + presentVal param producers
+
+Closes both pieces §16 explicitly deferred as their own, separate,
+comparable-sized surfaces: the `toStrI64` STRING-census widening (needed a
+new "undefined" string-constant mechanism, MAX_SSO=6 can't hold 9 chars) and
+the param/return/closure `presentVal` propagation (§15's own explicit scope
+line — decl/reassign-only).
+
+**Piece A — toStrI64 STRING-census widening.** The honest options §16 named
+were (1) intern "undefined" as a reachability-gated static data string, or
+(2) whatever cleaner mechanism the design docs suggest. Neither was needed:
+reading `__to_str`'s own existing UNDEF_NAN arm (module/string.js) found it
+already calls `$__static_str(6)` — module/number.js's PRE-EXISTING static-
+string table (`'NaNInfinity-Infinitytruefalsenullundefined[Array][Object]
+oknot-equaltimed-out'`, index 6 = "undefined"), the SAME mechanism every
+other nullish-to-string site in the codebase already reuses (module/
+console.js's `console.log(undefined)`, module/number.js's own NaN/Infinity
+arms). No new string-constant infrastructure — `coerceNullishToStr` (src/
+ir.js, new, mirrors `coerceNullishToNum`'s exact shape) calls `inc(
+'__static_str')` and builds `['call', '$__static_str', ['i32.const', 6]]`
+directly, wrapped `i64.reinterpret_f64` for the i64 domain — the SAME
+"declare the stdlib dependency from outside its owning module file" pattern
+module/atomics.js's `Atomics.wait` already establishes for the identical
+helper (`Atomics.wait`'s 'ok'/'not-equal'/'timed-out' results). Reachability-
+gated for free: `__static_str`'s own factory (`ctx.core.stdlib['__static_str']`)
+only runs when something `inc()`s it, and `autoload.js`'s `MOD_DEPS.string =
+['core', 'number']` guarantees 'number' (the module owning `__static_str`)
+is already loaded whenever a STRING-coercion context (`String()`/template
+literal/`+`) is reachable at all — the only contexts that ever call
+`toStrI64` in the first place.
+
+`toStrI64`'s widening (ir.js) mirrors `toNumF64`'s NUMBER-census widening
+(38dd0dca) exactly: `censusStr = vt == null && censusMaybeUndefinedKind(node)
+=== VAL.STRING`; `(vt === VAL.STRING || censusStr) && censusMaybeUndefined(
+node)` routes through `coerceNullishToStr` instead of the fully generic
+`__to_str` dynamic dispatch — value-neutral (§16 already proved the generic
+path correct), a pure codegen improvement. The SAME triplication-safety
+hoist-into-temp toNumF64's own widening uses (`typeof node !== 'string' &&
+!censusShapedNode(node)`) is reused verbatim, for the identical reason
+(`callResultMayBeUndefinedKind`'s call-result arm can carry side effects).
+The PRE-EXISTING identity fast path (`vt === VAL.STRING && !censusMaybeUndefined
+(node) → asI64(v)`) is untouched — zero lines moved, the exact "structural
+pin" the task named.
+
+A debugging note worth recording, not just the result: the first read of
+this fix's own repro (`console.log(label, r)` with `r` a JS string
+`"undefined"`) looked identically wrong to the genuine value `undefined` —
+`console.log('x:', "undefined")` and `console.log('x:', undefined)` print
+byte-identical text. Chased as a real bug for a full debugging pass (WAT
+inspection, raw `WebAssembly.Instance` bypass of jz's own interop wrapper,
+manual memory dump confirming correct bytes/pointer tag at the correct heap
+offset, a temporary `console.error` patch inside interop.js's `mem.read`)
+before finding the actual fault was in the test harness's own `console.log`
+call, not the compiler — `typeof r` / `JSON.stringify(r)` resolved it in one
+line. Named here because it is the same "verify empirically, don't assume"
+discipline this whole design's history repeatedly earns the hard way — this
+time the wrong assumption was in the OBSERVATION tool, not the fix.
+
+**Piece B — presentVal param producers.** `hardParamPresentVal` (narrow.js)
+extends Slice 2's (15c789ac) mayBeUndefined call-site fixpoint with a KIND-
+precise sibling, modeled on `hardParamVal`'s poison-on-disagreement fold
+(NOT mayBeUndefined's monotonic boolean OR — presentVal is an exact-kind
+claim, same discipline `val` itself and the Slice 6 decl producer already
+use): every live call site's argument must independently resolve the SAME
+presentVal kind or the param declines (no claim, never a wrong one). The
+kind-resolution itself (`kind.js` `exprPresentValIn`/`namePresentValInBody`)
+mirrors `exprMayBeUndefinedIn`/`nameMayBeUndefinedInBody`'s structure but
+carries the actual VAL.* kind through a poison-disciplined trace, reusing
+`censusMaybeUndefinedKind` directly for `censusShapedNode`-shaped args
+(sound at narrow.js's plan-time fixpoint ONLY for a MODULE-level dict/Map
+receiver — see the found-live gap below) and recursing through the CALLER's
+own body for a bare-name copy-through. Seeded onto the param's entry-time
+rep in compile/index.js at both sites `r.val` already is (analyzeFuncForEmit
+and emitFunc's duplicate re-seed), with the identical `!reassigned` guard —
+presentVal shares `val`'s exact-claim discipline, not mayBeUndefined's
+unconditional-safe one.
+
+**Live, not just representationally complete**: `emitNeg`/`~`'s own OR-arm
+(`bigIntUnary`, emit.js) already asks `censusMaybeUndefinedKind` unconditionally
+— §16's own "needed NO widening" finding — so seeding a param's `presentVal`
+is the WHOLE fix for the param-hop unary-BigInt shape; no consumer-side
+change was needed for the WASM computation itself.
+
+**A second, independent gap found and fixed while flipping the acceptance
+repro, not assumed closed by Piece B alone**: `const g=(v)=>-v; export let f
+=()=>{const m=new Map(); m.set('a',5n); return g(m.get('a'))}` still
+misdecoded at the EXPORT boundary even after `g`'s own WASM computation went
+correct — `f`'s `_resultBigintSentinel` (compile/index.js) is computed via
+`censusBigintSentinelKind(rex[0])` where `rex[0]` is the CALL node
+`g(m.get('a'))`, and that function had no arm recognizing a call-result at
+all (only direct census reads, direct unary, direct binary `+`). Built on
+`func.valResult`/`valResultMayBeUndefined` (narrowValResults' own return-kind
+join) was considered and rejected: that fixpoint runs BEFORE narrow.js's
+presentVal param propagation ever populates paramReps (both live in
+`narrowSignatures`, but `narrowValResults` at line ~1860, my new loop past
+line ~2400) — the IDENTICAL ordering gap 15c789ac's own commit already
+documented for mayBeUndefined's return-kind join ("stays empirically
+unreachable, pinned as a negative control"). Fixed instead with a new,
+self-contained kind-5 arm in `censusBigintSentinelKind` (kind.js): reads the
+callee's raw AST directly from `ctx.func.map` (populated by prepare, stable
+regardless of narrowing order) — a plain single-param function whose entire
+body (bare expression, or a block that always returns) is `-`/`~` applied to
+its OWN param, `alwaysReturns`-guarded for the block case. `interop.js` needs
+no new decode-table entry (kind 4's own precedent: `BIGINT_SENTINEL_BITS[5]`
+is absent, so a real BigInt passes through unchanged).
+
+**A narrower, still-open KNOWN-FAIL found precisely, not glossed over**:
+identical source with `m` declared LOCAL to `f` (`() => { const m = new
+Map(); ...; return g(m.get('a')) }`, the ORIGINAL 38dd0dca pin's exact
+shape) still misdecodes — confirmed via `ctx.inspect`, not assumed: `g`'s
+param never gets a `presentVal` at all for this shape (vs. correctly
+`"bigint"` for the module-level-Map version). Root cause pinned precisely:
+`hardParamPresentVal` calls `censusMaybeUndefinedKind` at narrow.js's plan-
+time fixpoint, where `ctx.func.localReps` is uninstalled for EVERY function
+(by design — the same caveat `exprMayBeUndefinedIn`'s own doc comment
+documents). `dictValueKindOf`/`mapValueKindOf` fall back to `ctx.scope.
+globalReps` (whole-program) only once `valTypeOf(name)` already proves the
+receiver's kind — sound for a module-level Map (`valTypeOf` resolves through
+`ctx.scope.globalValTypes`, itself whole-program) but never for a Map local
+to the CALLER (no fallback exists for `valTypeOf` itself at plan time).
+Verified the boundary is precisely the receiver's SCOPE, not the callee
+shape: byte-identical source with only `m`'s declaration moved to module
+level is fully correct (the regression pin). Closing this needs threading a
+CALLER's own local census through narrow.js's call-site iteration — a
+separate, comparable-sized undertaking (the design's own recurring class of
+gap: local-receiver visibility at a plan-time fixpoint), not attempted here.
+Kept as an UPDATED KNOWN-FAIL (test/dyn-keys.js) — its assertion changed
+from "wrong type" to "right type, wrong value" (the kind-5 arm above now
+correctly recognizes the SHAPE from `f`'s own later, EMIT-time analysis,
+where `f`'s local `m` IS visible — only the WASM computation inside `g`
+stays wrong, since `g`'s own presentVal seeding is what's blocked).
+
+**Files touched**: src/ir.js (`coerceNullishToStr`, `toStrI64` widening);
+src/kind.js (`namePresentValInBody`/`exprPresentValIn`, `censusBigintSentinelKind`
+kind-5 arm, +ast.js import for `isBlockBody`/`returnExprs`/`alwaysReturns`);
+src/compile/narrow.js (`hardParamPresentVal` + param-fold loop, +kind.js
+import); src/compile/index.js (presentVal param-rep seeding at both existing
+`r.val` sites); src/reps.js (`presentVal` doc comment — param propagation +
+its local-receiver boundary); test/dyn-keys.js (KNOWN-FAIL flipped to a
+regression pin for the module-level-Map shape + its absent-key negative
+control; the local-Map sibling kept as an updated, narrower KNOWN-FAIL).
+
+**Gates**: acceptance repros (`String(x)`/`x+''`/`` `${x}` `` on a decl-hop
+STRING-census absent key → `"undefined"`; direct-read sibling; present-key
+structural pin unchanged; module-level-Map param-hop BigInt unary present/
+absent-key) red→green, native AND kernel leg (`JZ_TEST_TARGET=jz.wasm`,
+fresh `dist/jz.wasm`), verified via `typeof`/exact-value checks after an
+early false alarm from `console.log`'s own string/undefined print collision
+(see Piece A). Full ~102-file battery run file-by-file in foreground (bench*
+.js/perf.js/ecosystem-perf.js excluded as performance-comparison suites, not
+correctness gates — confirmed unrelated); every correctness file green
+except two PRE-EXISTING, verified-unrelated failures (`test262.js`'s 109
+`instanceof ReferenceError`-unsupported in-scope failures, `test262-
+builtins.js`'s Promise-iterator `instanceof TypeError` failures, `bench-
+claims.js`'s size/leadership par-band misses) — each independently
+reproduced byte-for-byte identical at clean HEAD 7c23a06e via a disposable
+`git worktree`, none touched by this session. dyn-keys.js 52/52 (192
+assertions) both legs; types.js/data.js/strings.js re-run explicitly both
+legs; kernel-parity 33/33 byte-identical (O0/O2/O3); kernel-oracle 11/11;
+perf-ratchet 10/10 at +0 every category; optimizer.js 214/214; minimal-
+output.js 79/79 (the "undefined" static-string blob does NOT appear in a
+plain numeric program's compiled bytes — verified directly, not just via
+the STRINGY reachability list); selfhost.js 21/21 (206 assertions);
+selfhost-includes.js 1/1; fuzz 2000×4 (seeds 1-8000, four separate
+foreground runs) zero divergence across ~120K compared inputs; size sweep
+geomean 1.042× (`scripts/bench-size.mjs`, baseline 1.0418× — effectively
+unchanged, within rounding); fresh build ×2 byte-identical (`dist/jz.js`
+sha256 `8c34a5a8…`, `dist/jz.wasm` sha256 `656a3512…`, `dist/interop.js`
+sha256 `396500b4…`, both builds).
+
+Residual, out of scope (named above, each its own separate future work): the
+local-receiver `presentVal` param gap (narrower than what this session
+closes — needs threading a caller's own local census through narrow.js's
+call-site iteration); §14 point 4's joint binary-operand runtime-domain
+dispatch (the `bigintMixReject`/audit-#10 KNOWN-FAIL, unchanged); real
+`.message`/`.name` text for §17's internal TypeError throws (could now reuse
+this session's `coerceNullishToStr`-adjacent infrastructure, not attempted).

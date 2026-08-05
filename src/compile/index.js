@@ -537,6 +537,17 @@ function analyzeFuncForEmit(func, programFacts) {
         }
       }
       if (r.val && !reassigned && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
+      // presentVal (§16→§18 "presentVal param producers") — narrow.js's
+      // inter-procedural hardParamPresentVal fold (mirroring hardParamVal's
+      // own poison-on-disagreement discipline, NOT mayBeUndefined's monotonic
+      // boolean OR further below). An EXACT KIND claim, same "mutually
+      // exclusive with val, same discipline as val" contract reps.js's own
+      // presentVal doc establishes — so it gets the SAME `!reassigned` guard
+      // as `r.val` directly above, for the identical reason (a body write
+      // past entry invalidates the entry-time claim; analyzeValTypes' own
+      // `setPresentVal` tracker settles the post-write truth independently,
+      // starting fresh).
+      if (r.presentVal && !reassigned && !ctx.func.localReps?.get(pname)?.presentVal) updateRep(pname, { presentVal: r.presentVal })
       // recvArrTyped: same reassignment hazard as r.val (an entry-time class proof
       // doesn't survive a body write) — module/array.js's unproven-receiver numeric-
       // key guard reads this to skip its runtime ptrTypeEq test (reps.js doc).
@@ -1414,6 +1425,9 @@ function emitFunc(func, funcFacts, programFacts) {
       // call-site fact here would undo it) so it needs the identical guard.
       const reassigned = isReassigned(body, pname)
       if (r.val && !reassigned && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
+      // presentVal: mirrors the analyzeFuncForEmit seeding above (see its comment) —
+      // same guard, same duplication reason.
+      if (r.presentVal && !reassigned && !ctx.func.localReps?.get(pname)?.presentVal) updateRep(pname, { presentVal: r.presentVal })
       // recvArrTyped: mirrors the analyzeFuncForEmit seeding above (see its comment).
       if (r.recvArrTyped && !reassigned) updateRep(pname, { recvArrTyped: true })
       // bigintBoxed: same unconditional-of-reassigned seeding as analyzeFuncForEmit

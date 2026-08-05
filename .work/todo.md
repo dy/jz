@@ -8541,3 +8541,90 @@ gap (audit-#10 §14 point 4, now also reachable via a plain local BigInt
 mixed with a dynamic param); the zero-evidence dynamic-param representation
 gap (§6's presentKindUnboxed/bigintBoxed producer wiring); `**` on BigInt
 (pre-existing compile-time rejection, by design, untouched).
+
+## §16→§18: toStrI64 STRING-census widening + presentVal param producers
+
+Lands both pieces §16 named as its own future slices. Full ledger: .work/
+represented-maybe-undefined-design.md §18.
+
+**Piece A**: `toStrI64`'s STRING-census widening needed no new string-
+constant mechanism — found `__to_str`'s own UNDEF_NAN arm already calls
+`$__static_str(6)` ("undefined", module/number.js's pre-existing static-
+string table). `coerceNullishToStr` (src/ir.js, mirrors `coerceNullishToNum`)
+reuses it via `inc('__static_str')` — the same cross-module `inc()` reachability
+pattern module/atomics.js's `Atomics.wait` already establishes for the
+identical helper. Reachability-gated for free (autoload.js's `MOD_DEPS.string
+= ['core','number']` guarantees it's already loaded wherever `toStrI64` is
+ever called). Value-neutral, pure codegen win — §16 already proved the
+generic dynamic path correct.
+
+**Piece B**: `hardParamPresentVal` (narrow.js) extends the mayBeUndefined
+Slice-2 call-site fixpoint (15c789ac) with a KIND-precise sibling — poison-
+on-disagreement (mirrors `hardParamVal`, NOT mayBeUndefined's boolean OR).
+Flips the param-hop BigInt-unary KNOWN-FAIL from 38dd0dca FOR A MODULE-LEVEL
+Map receiver — `emitNeg`/`~`'s own OR-arm already asks unconditionally, so
+seeding the param is the whole WASM-side fix. A SECOND, independent gap was
+found and fixed while flipping the acceptance repro: the EXPORT-boundary
+decode (`_resultBigintSentinel`) had no arm for a call-result at all — new
+kind-5 arm in `censusBigintSentinelKind` (kind.js), self-contained (reads the
+callee's raw AST from `ctx.func.map` directly, NOT `func.valResult`/
+narrowValResults' own return-kind join — that fixpoint runs too early to see
+a param-hop presentVal fact, the identical ordering gap 15c789ac's own commit
+already documented for mayBeUndefined's return-kind join).
+
+**A narrower, still-open KNOWN-FAIL found precisely**: the ORIGINAL 38dd0dca
+pin's exact shape (Map LOCAL to the caller, not module-level) still
+misdecodes — `hardParamPresentVal` calls `censusMaybeUndefinedKind` at
+narrow.js's plan-time fixpoint, where NO function's `ctx.func.localReps` is
+installed; `dictValueKindOf`/`mapValueKindOf`'s global fallback only fires
+once `valTypeOf(name)` already proves the receiver's kind, which itself has
+no local-receiver fallback at plan time. Confirmed via `ctx.inspect` (not
+assumed) that the boundary is precisely the receiver's SCOPE — byte-identical
+source with `m` promoted to module level is fully correct. Kept as an
+UPDATED (not new) KNOWN-FAIL pin — closing it needs threading a caller's own
+local census through narrow.js's call-site iteration, a separate,
+comparable-sized undertaking.
+
+**A debugging detour worth recording**: the first read of Piece A's own
+repro looked like a real bug — `console.log('x:', r)` prints byte-identical
+text for `r = "undefined"` (the fix working) and `r = undefined` (the fix
+not working). A full debugging pass (WAT inspection, raw
+`WebAssembly.Instance` bypass of jz's interop wrapper, manual memory dump,
+a temporary interop.js `console.error` patch) traced it to the TEST
+HARNESS's own `console.log` call, not the compiler — `typeof r` resolved it
+in one line. The fix was correct the entire time.
+
+**Files touched**: src/ir.js (`coerceNullishToStr`, `toStrI64` widening);
+src/kind.js (`namePresentValInBody`/`exprPresentValIn`, `censusBigintSentinelKind`
+kind-5 arm, +ast.js import); src/compile/narrow.js (`hardParamPresentVal` +
+param-fold loop); src/compile/index.js (presentVal param-rep seeding, both
+existing `r.val` sites); src/reps.js (doc comment update); test/dyn-keys.js
+(KNOWN-FAIL flipped to a regression pin + absent-key negative control for the
+module-level-Map shape; local-Map sibling kept as an updated, narrower
+KNOWN-FAIL) — 52/52 (192 assertions), both legs.
+
+**Gates**: acceptance repros red→green native AND kernel leg (fresh
+`dist/jz.wasm`, verified via `typeof`, not `console.log` — see the debugging
+note); full ~102-file battery, file-by-file foreground (bench*.js/perf.js/
+ecosystem-perf.js excluded as performance-comparison suites); every
+correctness file green except three PRE-EXISTING, verified-unrelated
+failures (test262.js's 109 in-scope `instanceof ReferenceError` failures,
+test262-builtins.js's Promise-iterator `instanceof TypeError` failures,
+bench-claims.js's size/leadership par-band misses) — each reproduced
+byte-for-byte identical at clean HEAD 7c23a06e via a disposable `git
+worktree`; kernel-parity 33/33 byte-identical; kernel-oracle 11/11;
+perf-ratchet 10/10 at +0; optimizer.js 214/214; minimal-output.js 79/79
+(the "undefined" static-string blob verified absent from a plain numeric
+program's compiled bytes, not just via the STRINGY reachability list);
+selfhost.js 21/21; selfhost-includes.js 1/1; fuzz 2000×4 (seeds 1-8000, four
+separate foreground runs) zero divergence; size sweep geomean 1.042×
+(baseline 1.0418×, effectively unchanged); fresh build ×2 byte-identical
+(`dist/jz.js` sha256 `8c34a5a8…`, `dist/jz.wasm` sha256 `656a3512…`,
+`dist/interop.js` sha256 `396500b4…`, both builds).
+
+Residual, out of scope: the local-receiver `presentVal` param gap (narrower
+KNOWN-FAIL, needs threading a caller's own local census through narrow.js's
+call-site iteration); §14 point 4's joint binary-operand runtime-domain
+dispatch (unchanged); real `.message`/`.name` text for §17's internal
+TypeError throws (could reuse this session's `coerceNullishToStr`-adjacent
+infrastructure, not attempted).
