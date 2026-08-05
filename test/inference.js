@@ -2338,8 +2338,20 @@ test('closure return-kind: fails open when the return depends on an unsettled ca
 // step 3, pinned in dyn-keys.js/data.js) — these tests inspect the fact
 // directly, module-global HASH dict, comma-chained export let, filled through
 // a param-aliased (dynamic-key) write in one function, read in another.
+//
+// audit-#11 item 7 sub-4 (test:wasm classification, 2026-08-05): every test in
+// this section (through the receiver-HASH section below) reads a host-side
+// `ctx.*` fact directly (`ctx.scope.globalReps`, `ctx.types.nameEscapes`,
+// `ctx.scope.globalValTypes`) — pure white-box introspection of the NATIVE
+// compiler's internal state. Under JZ_TEST_TARGET=jz.wasm, compilation
+// delegates into the self-hosted wasm kernel; the host `ctx` singleton is
+// structurally never populated (same documented class as test/invariants.js's
+// own onKernel() guard, and the 2026-08-03 "NEW FINDINGS" ledger entry that
+// first named these 18-ish files as leg-harness debt, not miscompiles — this
+// session finally lands the guards). `if (onKernel()) return` on each.
 
 test('dict-value census: module-global dict-mode value kind populates globalReps', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps is host-only (see section note above)
   // Mirrors the design's verified real target (§0.3): watr's
   // `export const OPCODE = {}, IMM = {}` filled `OPCODE[nm] = code++` in a
   // loop (watr/src/const.js:161,168) — a monotone counter value, independently
@@ -2358,6 +2370,7 @@ test('dict-value census: module-global dict-mode value kind populates globalReps
 })
 
 test('dict-value census: a raw bare-param VALUE fails open (poisons), same as the pre-existing .prop= census', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   // Ground truth, verified empirically before writing this test: valTypeOf on
   // a bare, never-locally-reassigned PARAM name resolves through
   // lookupValType's four tiers (refinements / localValTypesOverlay /
@@ -2384,6 +2397,7 @@ test('dict-value census: a raw bare-param VALUE fails open (poisons), same as th
 })
 
 test('dict-value census: mixed-kind writes poison the fact to null', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   const src = `
     export let bag = {}
     export let put = (k, v) => { bag[k] = v }
@@ -2396,6 +2410,7 @@ test('dict-value census: mixed-kind writes poison the fact to null', () => {
 })
 
 test('dict-value census: an unresolvable write poisons the fact', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   // writeVT deliberately answers null for any `.`/`?.` read (program-facts.js
   // writeVT, ~452) — consulting live slot/dict state mid-census would make
   // the census order-dependent. `cache[k] = src.val` hits that arm.
@@ -2422,6 +2437,7 @@ test('dict-value census: an unresolvable write poisons the fact', () => {
 // audit-#9 revert already applied to this file's dict-read-vs-literal
 // sibling below.
 test('dict-value census: unproven dict read keeps the `+` STRING-coercion arm regardless of escape status (regression pin, was Slice 4 positive win)', () => {
+  if (onKernel()) return  // white-box: ctx.types.nameEscapes (see section note above)
   const src = `
     export let OPCODE = {}, code = 0
     export let register = (nm) => { OPCODE[nm] = code++ }
@@ -2499,6 +2515,7 @@ test('dict-value census: soundness carve-out — an unregistered key still ident
 // docstring in src/compile/program-facts.js for the resolver rules).
 
 test('dict-value census: self-read neutrality — a self-increment (`d[k]++`) is NOT poisoned by its own read', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   // effectiveWriteValue turns `d[k]++` into `d[k] = d[k] + 1` — the RHS's `d[k]`
   // reads the SAME dict this write targets. Without self-read neutrality this
   // poisons (writeVT's old `.`/`[]`-read-in-'+' branch had no way to say
@@ -2519,6 +2536,7 @@ test('dict-value census: self-read neutrality — a self-increment (`d[k]++`) is
 })
 
 test('dict-value census: value-set &&/||/?? — a genuine kind mismatch reached THROUGH a logical chain still poisons', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   // Distinct from the pre-existing "mixed-kind writes poison" test (two
   // SEPARATE write call sites) — this exercises the vs()/reduceVS
   // composition itself: `(1 > 0) && 'x' || (code++)` unions a STRING and a
@@ -2537,6 +2555,7 @@ test('dict-value census: value-set &&/||/?? — a genuine kind mismatch reached 
 })
 
 test('dict-value census: ?? atom-arm — a null/undefined literal in the ?? arm is excluded, not poisoning', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   // vs(A ?? B) = nonNullish(vs(A)) ∪ vs(B): a provably-nullish literal arm
   // contributes nothing (excluded entirely), so the write resolves to B's
   // kind alone instead of the atom (no VAL.* for undefined/null) poisoning
@@ -2554,6 +2573,7 @@ test('dict-value census: ?? atom-arm — a null/undefined literal in the ?? arm 
 })
 
 test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[c] && prec[op] || p` resolves NUMBER end-to-end', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   // The exact shape from subscript/parse.js:86 (token()'s `p: prec[op] =
   // !lookup[c] && prec[op] || p`), reduced to its load-bearing parts: a BOOL
   // guard (`!lookup[c]`), a self-read of the dict being written (`prec[op]`),
@@ -2613,6 +2633,7 @@ test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[
 // emit-assign.js's RMW capHint) and pinned in the for-of tests below.
 
 test('dict-value census: bundled moduleInit dict-write (watr\'s OPCODE shape, C-style for) populates globalReps', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   const dep = `
     const TABLE = ['add', 'sub', 'mul']
     export const OPCODE = {}
@@ -2630,6 +2651,7 @@ test('dict-value census: bundled moduleInit dict-write (watr\'s OPCODE shape, C-
 })
 
 test('dict-value census: bundled moduleInit mixed-kind dict-write poisons the fact', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   const dep = `
     const KEYS = ['a', 'b']
     export const bag = {}
@@ -2646,6 +2668,7 @@ test('dict-value census: bundled moduleInit mixed-kind dict-write poisons the fa
 })
 
 test('dict-value census: moduleInitSlot memo-cache replay is order-independent (cold vs cache-hit agree)', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   // observeProgramSlots runs 3× per compile on the same moduleInit nodes/gen
   // (collectProgramFacts, narrow.js post-E2, plan/index.js late {fresh:true}) —
   // passes 2 and 3 hit pf.moduleInitSlot's cache and replay dictObs instead of
@@ -2706,6 +2729,7 @@ test('dict-value census: moduleInitSlot memo-cache replay is order-independent (
 // exact-kind consumer) live in test/dyn-keys.js ("audit P0").
 
 test('map-value census: module-global Map.set value kind populates globalReps', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   const src = `
     export let MEMO = new Map(), n = 0
     export let put = (k) => { MEMO.set(k, n++) }
@@ -2731,6 +2755,7 @@ test('map-value census: function-local Map populates the local half (analyze.js 
 })
 
 test('map-value census: mixed-kind writes poison the fact to null', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   const src = `
     export let bag = new Map()
     export let put = (k, v) => { bag.set(k, v) }
@@ -2743,6 +2768,7 @@ test('map-value census: mixed-kind writes poison the fact to null', () => {
 })
 
 test('map-value census: an unresolvable write poisons the fact', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   const src = `
     export let cache = new Map()
     export let store = (k, src) => { cache.set(k, src.val) }
@@ -2780,6 +2806,7 @@ test('map-value census: soundness carve-out — an unregistered key still identi
 // STRING-coercion fallback. Same "RENAMED, no longer distinguishes" treatment
 // as this file's dict-value-census sibling above.
 test('map-value census: nameEscapes is still computed but no longer changes `+` codegen for either receiver (regression pin, was Slice 4 positive win)', () => {
+  if (onKernel()) return  // white-box: ctx.types.nameEscapes (see section note above)
   const nonEscaping = `
     export let OPCODE = new Map(), code = 0
     export let register = (nm) => { OPCODE.set(nm, code++) }
@@ -2823,6 +2850,7 @@ test('map-value census: new Map(seed) literal stays uncovered — census ignores
 })
 
 test('map-value census: bundled moduleInit Map.set (watr\'s memo shape, C-style for) populates globalReps', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   // Cross-module coverage: bundled sub-module top-level init code
   // (ctx.module.moduleInits, OUTSIDE `ast`) — mirrors the dict census's own
   // moduleInit fixture (dict-census-moduleinit-fix.md), but `new Map()` has
@@ -2845,6 +2873,7 @@ test('map-value census: bundled moduleInit Map.set (watr\'s memo shape, C-style 
 })
 
 test('map-value census: moduleInitSlot memo-cache replay is order-independent (cold vs cache-hit agree)', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   // observeProgramSlots runs 3× per compile on the same moduleInit nodes/gen
   // (collectProgramFacts, narrow.js post-E2, plan/index.js late {fresh:true}) —
   // passes 2 and 3 hit pf.moduleInitSlot's cache and replay mapObs instead of
@@ -2947,6 +2976,7 @@ test('dict-mode alloc: statically-provable domain still sizes the preallocation 
 // the receiver's kind at every OTHER call site too.
 
 test('receiver-HASH: module-global dict receiver (subscript\'s prec shape) gets VAL.HASH on globalValTypes', () => {
+  if (onKernel()) return  // white-box: ctx.scope.globalValTypes (see section note above)
   const src = `
     export let prec = {}
     export let register = (op, p) => { prec[op] = p }

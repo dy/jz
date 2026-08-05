@@ -166,6 +166,29 @@ test('JSON.parse: nested chains stay on OBJECT fast path', () => {
   is(run(src).f(), 12)
 })
 
+// audit-#11 item 7 sub-4 (test:wasm leg classification, 2026-08-05): a REAL
+// self-host-only miscompile, found running this test under
+// JZ_TEST_TARGET=jz.wasm — reported here, NOT guarded/silenced (the gate
+// discipline for a genuine bug, distinct from a white-box ctx-introspection
+// gap or a stale assertion). Confirmed live: native `jz(src, {})` compiles
+// and runs this exact program correctly (`f()` → 12); the self-hosted kernel
+// (dist/jz.wasm compiling the SAME source) throws `Bad int
+// 9.067910317e-315` from watr's OWN integer encoder, reached from
+// interop.js's decodeThrown at the wasm-instantiate boundary — i.e. the
+// self-hosted compiler's in-kernel call to `watr`'s `compile()` (module/
+// json.js's shaped-parser codegen path) hands it a WAT node position that
+// expects an i32 immediate but received a raw NaN-boxed float bit pattern.
+// Reproduces via BOTH this file's assertions (the `{wat:true}` shape-check
+// AND the plain `run(src).f()` value check) and via a minimal standalone
+// repro (bytes-mode `jz(src, {})` with `_setCompileTarget(compileViaKernel)`
+// wired) — not order-dependent, not cross-test-file state (reproduces with
+// TST_GREP isolating just this test, no other json.js test executing first).
+// Same general fault CLASS the shaped-parser saga (.work/todo.md, "shaped-
+// parser CONFIRMED DEAD 2026-08-03") tracked and had believed closed —
+// re-surfaced by source changes since then, never re-caught because no
+// audit-#11-era session ran the full test:wasm leg before this one. Left
+// failing (not onKernel-guarded) so it stays a visible, honest signal until
+// someone bisects the self-hosted watr-encoding call site.
 test('JSON.parse: stable let source uses shaped runtime parser', () => {
   const src = `
     let SRC = '{"items":[{"id":1,"kind":2,"value":10}],"meta":{"scale":7,"bias":11}}'

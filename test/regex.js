@@ -3,7 +3,7 @@ import { is, throws } from 'tst/assert.js'
 import { parseRegex, compileRegex } from '../module/regex.js'
 import { evaluate } from './util.js'
 import jz, { compile } from '../index.js'
-import { adaptI64 } from './_matrix.js'
+import { adaptI64, onKernel } from './_matrix.js'
 
 /** Compile + run, read result via jz.memory (for string-returning expressions) */
 function evalStr(code) {
@@ -791,8 +791,16 @@ test('regex: sticky /y anchors at lastIndex, no forward scan', () => {
 })
 
 test('regex: \p property escapes reject (both contexts)', () => {
-  throws(() => jz(`export let f = () => /\\p{L}/.test("a") ? 1 : 0`), /property escape/)
-  throws(() => jz(`export let f = () => /[\\p{L}]/.test("a") ? 1 : 0`), /property escape/)
+  // audit-#11 item 7 sub-4 (test:wasm classification): a compile-time error's
+  // MESSAGE TEXT does not survive the self-hosted kernel's wasm-ABI round
+  // trip — only the error CLASS does (same "internal errors are still codes"
+  // boundary the Error-object model documents elsewhere for RUNTIME errors;
+  // this is the compile-time-error analog, since the kernel's own compile()
+  // call runs the throw INSIDE wasm too). The kernel leg checks SyntaxError
+  // fires; native additionally pins the exact wording.
+  const expected = onKernel() ? new SyntaxError() : /property escape/
+  throws(() => jz(`export let f = () => /\\p{L}/.test("a") ? 1 : 0`), expected)
+  throws(() => jz(`export let f = () => /[\\p{L}]/.test("a") ? 1 : 0`), expected)
 })
 
 test('regex: matchAll requires /g at compile time', () => {
@@ -808,7 +816,9 @@ test('regex: \\k<name> named backreferences', () => {
   is(jz(`export let f = () => /(?<a>x)\\k<a>/.test("xy") ? 1 : 0`).exports.f(), 0)
   is(jz(`export let f = () => /(?<q>['"]).*?\\k<q>/.test("say 'hi' ok") ? 1 : 0`).exports.f(), 1)  // quote-matching idiom
   is(jz(`export let f = () => /\\k<a>(?<a>x)/.test("x") ? 1 : 0`).exports.f(), 1)  // forward ref
-  throws(() => jz(`export let f = () => /\\k<nope>x/.test("x")`), /undefined group/)
+  // audit-#11 item 7 sub-4: see the property-escapes test above — compile-time
+  // error message text doesn't survive the kernel's wasm-ABI round trip.
+  throws(() => jz(`export let f = () => /\\k<nope>x/.test("x")`), onKernel() ? new SyntaxError() : /undefined group/)
 })
 
 // RegExp.escape (ES2025): spec escape sets over UTF-8 bytes — first-char alnum

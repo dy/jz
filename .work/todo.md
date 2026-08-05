@@ -4,6 +4,181 @@ Full working history (hunts, refutations, landing paths, process lessons)
 archived in .work/archive-todo-2026-07.md — grep it before re-deriving
 anything; every kernel bug class and perf frontier has a banked dissection.
 
+## Status (2026-08-05, audit-#11 item 7 CLOSED — test262/test:wasm harness
+## contracts repaired and pinned; two real bugs found and reported, not fixed)
+
+Four test-infrastructure sub-items, all closed. No src/ changes — harness
+(test/*.js, .github/workflows/test262.yml) only; dist/ untouched, confirmed
+by `git status`.
+
+**Sub-1 — test262 runner classification (108 of 109 language fails).**
+Root cause: `ASSERT_HARNESS` (test/test262.js AND test/test262-builtins.js)
+shadowed jz's own real, sound Error/EvalError/RangeError/ReferenceError/
+SyntaxError/TypeError/URIError classes with dummy string-returning functions
+(`function TypeError(message) { return message || 'TypeError' }`, ×7). jz has
+had real classes for all seven since the audit-#8 sound-instanceof model
+(38c7dde5) — verified live: `new TypeError('x') instanceof TypeError` and
+`.message`/`.name` all work natively, called with or without `new`. The
+shadow meant any test file needing the harness AND checking `instanceof
+<one of the seven>` against a REAL jz-thrown error hit jz's sound-instanceof
+LOUD REJECTION ("instanceof: unsupported right-hand side (got \"TypeError\")"
+— the RHS resolves to the shadowed user function, not the recognized
+built-in) instead of a true/false answer — a hard compile fail, not a skip,
+since the message didn't match any skip-pattern. Fix: stopped shadowing the
+seven real classes (kept only `Test262Error`, which has no jz-native
+equivalent); added `instanceof: unsupported right-hand side` to both
+runners' skip-message allowlist (same "structurally out of scope, not a
+miscompile" bucket the file already uses for every other unsupported
+compile-time rejection — matches the PRE-EXISTING "instanceof across Error
+subclass hierarchy" LEGACY_LANG_LIMITATIONS entries for the same underlying
+model boundary).
+
+Surfaced two GENUINE, narrow compiler defects once the classification noise
+cleared (reported, NOT fixed — out of this harness-repair task's scope):
+- **Compile-time constant-fold multi-op rounding** (src/prepare/pre-eval.js
+  foldNode/ratToF64): a compile-time-constant multi-operator numeric subtree
+  is folded as ONE exact rational, rounded to f64 only at the very end —
+  not after EACH binary op, as the spec's per-operation IEEE-754 rounding
+  requires. `(Number.MAX_VALUE*1.1)*0.9` should overflow to Infinity at the
+  intermediate step (real JS); jz's fold instead reassociates to the same
+  finite answer as `Number.MAX_VALUE*(1.1*0.9)`. Verified: RUNTIME
+  (non-constant) multiplication overflows correctly — this is fold-only.
+  Exactly two files in the whole tracked corpus exercise it (both operators'
+  own "is not always associative" MAX_VALUE probes — multiplication
+  S11.5.1_A4_T8.js, addition S11.6.1_A4_T9.js; subtraction/division have no
+  equivalent named test). Pinned as documented xfail with the mechanism
+  inline (test/test262.js EXPECTED_FAIL_FILES); needs its own P0 to round
+  foldNode's rational result at every binary-op node, not just leaves.
+- **test262-builtins.js, pre-existing, unrelated to the fix above** (present
+  in the ORIGINAL pre-fix fail list too — confirmed via the before/after
+  diff, not newly introduced): `"x".slice(function(){}())` (an IIFE-as-
+  argument) crashes jz's OWN COMPILER internally ("Cannot read properties of
+  null (reading 'v')") instead of compiling; `new String(x).slice(NaN,
+  Infinity)` on a boxed String wrapper returns the wrong slice (index-
+  clamping bug scoped to the wrapper path); `str.includes(needle, Infinity)`
+  doesn't clamp position to length. All three pinned as documented xfail
+  (test262-builtins.js EXPECTED_FAIL_FILES) with the exact mechanism.
+
+**Sub-2 — pinned corpus.** `PINNED_COMMIT = 'b363f29d3c43c626dc852744ad64a0
+b48a003693'` (tc39/test262 main, 2026-07-31) added to both runners, replacing
+the bare `git clone --depth 1` (whatever upstream HEAD happened to be that
+day). `ensureTest262()`: fresh clone does `git init` + `git fetch --depth 1
+origin <sha>` + `checkout FETCH_HEAD` (GitHub serves any reachable commit
+SHA directly, not just refs — stays a genuine shallow/single-commit
+checkout); an existing checkout at the wrong commit re-pins the same way.
+Bump procedure documented inline in test262.js's own header comment. CI
+workflow (.github/workflows/test262.yml): dropped the now-redundant explicit
+`git clone` step (the npm scripts self-pin), bumped the cache key to
+`test262-pinned-v1`. Local checkout re-pinned live from 05bb0329 (2026-06-04)
+→ b363f29d (2026-07-31) — this is what surfaced 4 new-to-us test262 files
+(Iterator.prototype.chunks/windows/includes/join — recent upstream additions
+jz's Iterator pool doesn't implement at all; added as EXPECTED_FAIL_PREFIXES
+entries, same "not implemented" class as the pre-existing take/drop/map/
+filter/flatMap corner entries) alongside the instanceof-classification fixes.
+
+**Sub-3 — builtins exit-code gate.** `test/test262-builtins.js` used to gate
+(fail>0 OR pass<baseline ⇒ exit 1) ONLY when `JZ_TEST262_BASELINE` was set —
+a bare local run exited 0 regardless of in-scope failures. New committed
+`test/test262-baseline.json` (`{ "builtins": 847 }`) is the default source of
+truth for BOTH local and CI; `JZ_TEST262_BASELINE` still overrides it for a
+one-off diagnostic run. Gating (fail>0, stale xpass, pass<baseline) now runs
+unconditionally. CI's hardcoded `JZ_TEST262_BASELINE: 984` env var dropped
+(the file is now the single source of truth — 984 was stale relative to the
+current corpus/EXPECTED_FAIL state regardless). Refreshed the baseline to
+truth: pruned exactly 19 stale EXPECTED_FAIL_FILES entries (confirmed via a
+pre-fix baseline run's own `xpass` report — 14 Set-algebra "GetSetRecord
+operand" entries + 5 others, ALL independent of the instanceof fix, i.e.
+already-stale before this session touched anything) — 14 of the Set entries
+turn out to be a genuine, undocumented capability win from some earlier
+session (Set methods now DO accept object set-likes); not investigated
+further here, out of scope, but real value passing tests hidden by a stale
+xfail is exactly the harness-honesty bug this sub-item targets.
+
+**Sub-4 — test:wasm leg, 21 stale rows.** Ran the full leg
+(`JZ_TEST_TARGET=jz.wasm node test/index.js`, all 65 kernel-includable
+files, chunked 5/chunk foreground + one full combined confirmation run).
+Classification:
+- **19 inference.js white-box rows → onKernel()-guarded** (dict-value-
+  census, map-value-census, receiver-HASH sections): every one reads a
+  host-side `ctx.*` fact directly (`ctx.scope.globalReps`, `ctx.types.
+  nameEscapes`, `ctx.scope.globalValTypes`) — the native compiler's internal
+  state, structurally never populated when compilation delegates into the
+  self-hosted wasm kernel (same class as test/invariants.js's own onKernel()
+  guard, and the 2026-08-03 ledger entry that first named ~18 of these as
+  leg-harness debt, not miscompiles — never actually landed until now).
+  `if (onKernel()) return` added to each, one section-level comment
+  explaining the whole class. Native: unaffected (136/136, same as before).
+- **2 regex.js rows → onKernel()-aware assertion, not a blanket guard**: two
+  `throws(fn, /message-regex/)` compile-time-rejection checks (`\p{...}`
+  property escapes, `\k<undefined-name>` backreferences) — jz DOES correctly
+  reject both under the kernel (a real SyntaxError fires), but the error's
+  MESSAGE TEXT doesn't survive the kernel's wasm-ABI round trip (only the
+  error CLASS does — the compile-time-error analog of the "internal errors
+  are still codes" host-boundary limitation the Error-object model already
+  documents for RUNTIME errors, since the kernel's own compile() call runs
+  the throw INSIDE wasm too). Fixed by checking `new SyntaxError()` (class
+  only) under `onKernel()`, the exact message regex natively — both legs
+  now assert something real, neither is blanked out.
+- **2 json.js rows → REAL bug, REPORTED, left failing (not guarded).** A
+  genuine self-host-only miscompile: `let SRC='{"items":[...],"meta":{...}}';
+  JSON.parse(SRC)` (module/json.js's shaped-parser path) compiles and runs
+  correctly NATIVE (`f()` → 12) but the SAME source, compiled via the self-
+  hosted kernel (dist/jz.wasm), throws `Bad int 9.067910317e-315` — watr's
+  own integer encoder, inside the wasm, handed a WAT node position expecting
+  an i32 immediate that instead holds a raw NaN-boxed float bit pattern.
+  Reproduces both via `compile(src,{wat:true})` structural check AND the
+  plain `run(src).f()` value path (isolated with a minimal standalone repro,
+  and with `TST_GREP` proving it's not order/prior-test-dependent). Almost
+  certainly a recurrence of the "shaped-parser" fault class the 2026-08-03
+  ledger entry believed CONFIRMED DEAD — re-surfaced by source changes since
+  then, never re-caught because no audit-#11-era session ran the full
+  test:wasm leg before this one. Documented in-line at both test/json.js
+  call sites (full mechanism, native-vs-kernel repro, why it's not
+  guarded) — NEXT: bisect the self-hosted watr-encoding call site in
+  module/json.js's shaped-parser codegen.
+- **maxMemory kernel-target.js plumbing gap — RE-CHECKED, already correctly
+  handled, nothing to fix.** The two errors.js pins this gap affects
+  (`maxMemory:1` OOM-trap tests) are ALREADY `onKernel()`-guarded with the
+  mechanism documented inline (kernel-target.js's opts marshal genuinely
+  doesn't pass `maxMemory` through the wasm ABI — a host-side compile OPTION
+  the self-hosted kernel structurally can't receive, same class as
+  optimize-level/imports/inspect per the file's own header comment) — this
+  was closed by a prior session; the 2026-08-03 ledger note calling it open
+  was itself stale. errors.js: 133/133 both legs, confirmed.
+
+Zero unclassified rows: every one of the leg's rows is green, onKernel/
+onWasm-guarded, or documented-and-reported. Full leg: 2638 total (12701
+assertions), 2630 pass, 2 fail (the two documented json.js rows), 6 skip —
+the 2 fails are the ONLY red in the entire 65-file kernel-includable corpus.
+
+### Gates (all green, foreground)
+
+test262 language: 2998 pass / 0 fail / 56 xfail / 16561 skip / 2156 neg-
+reject (`npm run test:262` exits 0). test262 builtins: 847 pass / 0 fail /
+92 xfail / 8615 skip (`npm run test:262:builtins` exits 0, baseline file
+verified — ran WITHOUT `JZ_TEST262_BASELINE` set, confirming the local
+default is now honest). test:wasm full leg: 2630/2638 (2 documented real-bug
+rows, see above). Full native battery: 88-file TESTS list, 15 foreground
+chunks of 6, zero failures anywhere (confirms the test/*.js edits — json.js/
+regex.js/inference.js comment+guard additions, test262*.js harness rewrites —
+are behavior-neutral on the native leg). kernel-parity: 3/3 (33 assertions)
+byte-identical. kernel-oracle: 11/11 (451 assertions). selfhost.js: 21/21
+(206 assertions). selfhost-perf.js: 5/5, both caps met (warm 1.000×/cap
+1.03×, fresh 0.790×/cap 0.99×). `git status dist/` clean — no src/ touched,
+so no rebuild needed or performed; every gate ran against the SAME dist/
+jz.wasm HEAD already had.
+
+**Files**: test/test262.js (PINNED_COMMIT/ensureTest262, ASSERT_HARNESS
+un-shadow, skip-message allowlist, 2 new xfail entries); test/
+test262-builtins.js (same three, minus PINNED_COMMIT's own copy of the bump-
+procedure comment; 19 stale xfail entries pruned; 4 new Iterator-prefix +
+4 new String/slice+includes xfail entries; always-on gate; baseline file
+read); test/test262-baseline.json (new, committed baseline); .github/
+workflows/test262.yml (dropped redundant clone step + CI-only baseline env,
+bumped cache key); test/inference.js (19 onKernel guards, one section
+comment); test/regex.js (2 onKernel-aware assertions, onKernel import);
+test/json.js (2 real-bug rows documented in-line, not fixed).
+
 ## Status (2026-08-05, audit-#11 three-gap Error bundle CLOSED — bound-empty/
 ## dynamic-dict message coercion, synthetic-TypeError name/message, README
 ## enumerability note)

@@ -27,11 +27,43 @@ import { availableParallelism } from 'os'
 const ROOT = join(import.meta.dirname, '..')
 const TEST262 = join(import.meta.dirname, 'test262')
 
-// Ensure test262 repo exists (main thread only — workers inherit the checkout).
-if (isMainThread && !existsSync(TEST262)) {
-  console.log('Cloning test262 (this may take a minute)...')
-  execSync('git clone --depth 1 https://github.com/tc39/test262.git ' + TEST262, { stdio: 'inherit' })
+// Pinned upstream commit — audit-#11 item 7 sub-2: an unpinned `--depth 1`
+// clone made the gate depend on whichever tc39/test262 snapshot happened to
+// fill the cache that day (pass/fail/xfail counts drift under jz unchanged).
+// Bump procedure: pick the new upstream SHA (usually tc39/test262's current
+// `main` tip), update PINNED_COMMIT below, delete test/test262/ (or let
+// ensureTest262 re-pin an existing checkout), run `npm run test:262 &&
+// npm run test:262:builtins`, and reconcile: prune any EXPECTED_FAIL_FILES/
+// LEGACY_LANG_LIMITATIONS entries reported as xpass, add any genuinely new
+// out-of-scope fails as xfail with a reason, and update the JZ_TEST262_BASELINE
+// values here and in .github/workflows/test262.yml together with this commit.
+const PINNED_COMMIT = 'b363f29d3c43c626dc852744ad64a0b48a003693' // 2026-07-31, tc39/test262 main
+
+// Ensure test262 is checked out AT the pinned commit (main thread only —
+// workers inherit the checkout). `git fetch --depth 1 origin <sha>` works
+// directly against GitHub for any reachable commit, not just a ref, so this
+// stays a shallow (single-commit) checkout — just a deterministic one instead
+// of "whatever main tipped to when the clone ran".
+function ensureTest262() {
+  if (!existsSync(TEST262)) {
+    console.log(`Cloning test262 @ ${PINNED_COMMIT.slice(0, 8)} (this may take a minute)...`)
+    execSync(`git init -q ${TEST262}`, { stdio: 'inherit' })
+    execSync(`git -C ${TEST262} remote add origin https://github.com/tc39/test262.git`, { stdio: 'inherit' })
+    execSync(`git -C ${TEST262} fetch --depth 1 origin ${PINNED_COMMIT}`, { stdio: 'inherit' })
+    execSync(`git -C ${TEST262} checkout -q FETCH_HEAD`, { stdio: 'inherit' })
+    return
+  }
+  const head = execSync(`git -C ${TEST262} rev-parse HEAD`, { encoding: 'utf8' }).trim()
+  if (head === PINNED_COMMIT) return
+  console.log(`test262 checkout at ${head.slice(0, 8)}, pinning to ${PINNED_COMMIT.slice(0, 8)}...`)
+  try {
+    execSync(`git -C ${TEST262} checkout -q ${PINNED_COMMIT}`, { stdio: 'inherit' })
+  } catch {
+    execSync(`git -C ${TEST262} fetch --depth 1 origin ${PINNED_COMMIT}`, { stdio: 'inherit' })
+    execSync(`git -C ${TEST262} checkout -q FETCH_HEAD`, { stdio: 'inherit' })
+  }
 }
+if (isMainThread) ensureTest262()
 
 // Language directories currently tracked as coverage work. This list is not a
 // metric denominator; add meaningful jz areas here as support grows.
@@ -108,15 +140,26 @@ function isArgumentsObjectTest(rel) {
   return rel.includes('language/arguments-object/') && ARGUMENTS_OBJECT_TESTS.has(baseName(rel))
 }
 
+// audit-#11 item 7 sub-1: this used to ALSO redefine Error/EvalError/
+// RangeError/ReferenceError/SyntaxError/TypeError/URIError as dummy
+// string-returning functions. jz has real, sound classes for all seven
+// (construction, .message/.name, and instanceof all work natively — verified
+// live) — the redefinitions only SHADOWED them with a plain user function.
+// Since jz's sound `instanceof` (38c7dde5) only recognizes its own catalog of
+// classes on the right-hand side, `e instanceof TypeError` against the
+// shadowed local loud-rejected at compile time ("instanceof: unsupported
+// right-hand side") for every test file that (a) needed this harness AND
+// (b) checked `instanceof <one of the seven>` anywhere in its own content —
+// 108 of the language suite's fails, and the matching bulk of the built-ins
+// suite's. Not shadowing them lets jz's real classes answer those checks
+// soundly. `Test262Error` has no jz-native equivalent (it's a harness-only
+// sentinel) and stays a plain function — `instanceof Test262Error` still
+// loud-rejects the same way (no prototype chain jz can model for an
+// arbitrary user constructor), which is now classified as a skip (see
+// runTest's catch below), matching the existing "structurally out of scope"
+// treatment the file already gives instanceof-across-a-custom-hierarchy.
 const ASSERT_HARNESS = `
 function Test262Error(message) { return message || 'Test262Error' }
-function Error(message) { return message || 'Error' }
-function EvalError(message) { return message || 'EvalError' }
-function RangeError(message) { return message || 'RangeError' }
-function ReferenceError(message) { return message || 'ReferenceError' }
-function SyntaxError(message) { return message || 'SyntaxError' }
-function TypeError(message) { return message || 'TypeError' }
-function URIError(message) { return message || 'URIError' }
 let __sameValue = (a, b) => {
   if (a === b) return a !== 0 || 1 / a === 1 / b
   return a !== a && b !== b
@@ -873,7 +916,13 @@ function runTest(src, options = {}) {
         msg.includes('outside the v1 async-generator surface') ||
         msg.includes('yield outside a generator body') ||
         msg.includes('Imports argument must be present') ||
-        msg.includes('function import requires a callable')) {
+        msg.includes('function import requires a callable') ||
+        // instanceof against an arbitrary constructor jz doesn't recognize
+        // (Test262Error, or any other test-defined class) — jz has no
+        // prototype chain, so this is a structural subset limit (same class
+        // as the file's own pre-existing "instanceof across Error subclass
+        // hierarchy" LEGACY_LANG_LIMITATIONS entries), not a miscompile.
+        msg.includes('instanceof: unsupported right-hand side')) {
       return { status: 'skip', error: msg.slice(0, 80) }
     }
     return { status: 'fail', error: msg.slice(0, 120) }
@@ -1066,6 +1115,28 @@ const EXPECTED_FAIL_FILES = new Map([
     'test/language/statements/variable/dstr/ary-ptrn-rest-id-direct.js',
     'test/language/statements/variable/dstr/ary-ptrn-rest-id-exhausted.js',
   ].map(f => [f, 'Array.isArray of promotion-derived rest array — recorded optimizer gap (derived-name isArray disqualifier)']),
+  // NEW FINDING (audit-#11 item 7, surfaced once the instanceof-classification
+  // noise above was fixed): pre-eval folds a compile-time-constant multi-operator
+  // numeric subtree (src/prepare/pre-eval.js foldNode/ratToF64) as ONE exact
+  // rational, rounding to f64 only at the very end — not after EACH binary op, as
+  // the spec's per-operation IEEE-754 rounding requires. Verified live: runtime
+  // (non-constant) `(a*b)*c` correctly overflows to Infinity at the intermediate
+  // step; the compile-time-folded literal form `(Number.MAX_VALUE*1.1)*0.9` does
+  // not — it silently reassociates to the same finite answer as
+  // `Number.MAX_VALUE*(1.1*0.9)` instead. A real, narrow compiler defect —
+  // distinct from and broader than the audit-#11 P0-1 MIN_VALUE bug (that one was
+  // the leaf rational→f64 conversion; this is per-node intermediate rounding
+  // through a multi-op fold) — reported, not fixed, here (out of this harness-
+  // repair task's scope; needs its own P0 investigation into rounding foldNode's
+  // rational result at every binary-op node, not just the subtree's leaves).
+  // Exactly two files in the whole tracked corpus exercise this (searched
+  // `grep -rl "is not always associative"` across language/expressions/) — the
+  // multiplication and addition "not always associative" MAX_VALUE probes;
+  // subtraction/division have no equivalent named test.
+  ['test/language/expressions/multiplication/S11.5.1_A4_T8.js',
+    'compile-time constant-fold of a multi-op numeric expression rounds once at the end instead of after each op — overflow-to-Infinity lost mid-expression (real compiler defect, reported not fixed — see comment above)'],
+  ['test/language/expressions/addition/S11.6.1_A4_T9.js',
+    'compile-time constant-fold of a multi-op numeric expression rounds once at the end instead of after each op — overflow-to-Infinity lost mid-expression (real compiler defect, reported not fixed — see comment above)'],
 ])
 function expectedFailReason(rel) {
   if (EXPECTED_FAIL_FILES.has(rel)) return EXPECTED_FAIL_FILES.get(rel)

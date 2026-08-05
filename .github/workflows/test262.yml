@@ -26,15 +26,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # test262.js's own PINNED_COMMIT const clones (or re-pins an existing
+      # checkout to) the exact tc39/test262 SHA the baselines below were
+      # measured against — no separate clone step needed. The cache just saves
+      # the network round-trip; bump the key's version suffix whenever
+      # PINNED_COMMIT moves so a stale cached checkout can't shadow the pin.
       - name: Cache test262 corpus
         id: cache-test262
         uses: actions/cache@v4
         with:
           path: test/test262
-          key: test262-shallow-v4
-      - name: Clone test262 (shallow)
-        if: steps.cache-test262.outputs.cache-hit != 'true'
-        run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
+          key: test262-pinned-v1
       - name: Run test262 language suite
         env:
           # Baseline (2026-05-29): 1437 passes / 0 in-scope fails / 3 xfail / 21940 skips.
@@ -70,26 +72,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: test/test262
-          key: test262-shallow-v4
-      - name: Clone test262 (shallow)
-        if: steps.cache-test262.outputs.cache-hit != 'true'
-        run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
+          key: test262-pinned-v1
+      # Baseline lives in test/test262-baseline.json (audit-#11 item 7 sub-3) —
+      # both this job and a local `npm run test:262:builtins` read it, so
+      # there's one number to bump instead of two. JZ_TEST262_BASELINE can
+      # still override it for a one-off CI diagnostic run.
       - name: Run test262 built-ins suite
-        env:
-          # Baseline (2026-05-29): 723 passes / 0 in-scope fails / 61 xfail
-          # (out-of-scope: BigInt, Symbol, RegExp exec, …).
-          # The runner gates on pass < baseline AND any in-scope fail > 0; an
-          # out-of-scope fail must be added to EXPECTED_FAIL_* in the runner.
-          # 2026-05-29: +2 — fixed the dyn-shadow desync (Object.assign mirror +
-          # needsDynShadow honoring anyDynKey) and the static-array 16-byte-header
-          # OOB; unskips Object/assign/ObjectOverride-sameproperty and
-          # Object/keys/15.2.3.14-6-2. Also pruned 2 stale EXPECTED_FAIL entries.
-          # Lift this baseline when fixes land.
-          # 2026-05-30: 723 → 722. The 723 was tied to the now-stale `-v1` corpus
-          # snapshot; on current test262 the count is 722 at EVERY commit, including
-          # the last-green 8165d9a (verified by a green↔HEAD pass-set diff — identical,
-          # so no jz regression; upstream simply changed/removed one test). Bumped the
-          # cache key to `-v2` so both jobs re-clone current test262, where this run
-          # measures 722 pass / 0 in-scope fail.
-          JZ_TEST262_BASELINE: 984
         run: npm run test:262:builtins
