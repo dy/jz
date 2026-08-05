@@ -9669,3 +9669,85 @@ assertions, subnormal-literal AGREE pin intact); full native battery
 pre-session shape). NEXT: either large-module hex-formatting refactor
 (layout.js) or a per-site (not whole-program) carrier-disambiguation
 redesign, before re-attempting the ordering-scan fix banked here.
+
+FOLLOW-UP TO THE ABOVE: layout.js's "6 real BigInt literals" was the
+grep this session's hunt actually ran (layout.js alone) — NOT a survey
+of the self-hosted bundle. Tasked with landing "Step 1: make layout.js
+genuinely BigInt-free" then re-applying the banked ordering-scan fix
+(Step 2), this session first surveyed the true blast radius before
+touching code, since Step 2's whole point is only sound if Step 1
+actually empties the bundle's BigInt surface. It doesn't. A repo-wide
+grep for real BigInt syntax (`BigInt(`, `\d+n`, `0x…n` — excluding
+comments/strings) across everything scripts/self.js transitively
+reaches (src/*.js, module/*.js autoloaded on demand, layout.js) hit 21
+files; 4 are false positives (src/bignum.js and src/compile/index.js's
+hits are inside doc-comment prose; src/prepare/index.js's is the
+detector's own comment; src/snapshot.js is native-only — only index.js
+imports it, never scripts/self.js) — leaving 17 files with GENUINE
+executable BigInt syntax reachable from the self-hosted bundle: layout.js,
+src/ir.js, src/ctx.js, src/parse.js, src/kind.js, src/wat/assemble.js,
+src/compile/emit.js, src/compile/emit-assign.js, src/compile/narrow.js,
+src/compile/flow-types.js, src/compile/erasure-diag.js,
+src/compile/program-facts.js, src/optimize/index.js, src/abi/number.js,
+src/prepare/math-kernel.js, module/number.js, module/collection.js,
+module/json.js, module/array.js, module/atomics.js, module/math.js.
+CONFIRMED AT RUNTIME, not just statically: instrumented prep()'s
+existing bigint-node check (prepare/index.js ~1158, temporarily, reverted
+after) to record every distinct AST node shape that trips it, then ran
+`compile(g.code, {modules: g.modules, …})` on the REAL
+`resolveModuleGraph('scripts/self.js')` bundle (the exact call
+build-dist.mjs makes) — 84 DISTINCT bigint-triggering node shapes fired,
+not the ~15 attributable to layout.js's own LAYOUT.*/PTR.* constants.
+Sampled shapes trace to unrelated files by content: IEEE754 double-bit
+constants (`2251799813685248`=2^51, `4503599627370495`=2^52-1 mantissa
+mask, `4607182418800017408`=0x3FF0000000000000 i.e. 1.0's bit pattern,
+`2047`=11-bit exponent max, `52`/`47` shift amounts) match
+src/prepare/math-kernel.js's exp/log constant-folding kernel exactly;
+`["()","BigInt","tok"]` matches src/optimize/index.js's STR_INTERN_BIT
+carrier check (`v = BigInt(tok)`); `["()","BigInt",["()",[".","input",
+"replaceAll"],…]]`-shaped nodes (stripping literal-text formatting before
+numeric parse) match module/number.js's BigInt()-global/toString
+implementations; `["()","BigInt",["-","off","prefix"]]` matches
+src/wat/assemble.js's static-prefix-strip pass (NaN-box offset rewrite on
+`nan:0x…` WAT tokens, BigInt-based mirror of what i64Hex/ptrBits do on
+the construction side). CONCLUSION: fixing layout.js's i64Hex/ptrBits
+family (this session sketched but did NOT land the rewrite — 32-bit
+hi/lo Number pairs per the bignum.js precedent, i64Hex(hi,lo) instead of
+i64Hex(BigInt), ptrBits/ptrBoxPrefixBigInt returning {hi,lo} instead of
+a BigInt, and updating i64Hex's ~9 external call sites across ir.js/
+emit.js/compile-index.js/emit-assign.js/optimize-index.js/snapshot.js/
+json.js/collection.js that currently synthesize their own BigInt
+argument to hand it) closes at most ~15-20 of the 84 trigger shapes.
+The remaining 60+ are IEEE754 mantissa/exponent bit tricks
+(math-kernel.js — genuinely hard to do without BigInt for exact-bit
+IEEE754 folding, needs authoritative-reference-grade care per
+correctness discipline, not a same-session rewrite), BigInt-typed-array
+support (module/array.js TYPED_ELEM_BIGINT_FLAG paths, module/atomics.js),
+and native BigInt() global/formatting semantics (module/number.js) — an
+entirely different, much larger undertaking than "layout.js's hex
+helpers." Landing Step 2 (the ordering-scan fix) after ONLY fixing
+layout.js would still flip `ctx.features.bigint` true for the
+self-hosted build from these other 60+ sources, still breaking the
+subnormal-literal AGREE pin — the SAME trade this ledger's prior entry
+already hit, just from a larger, mostly-unrelated remainder. VERDICT:
+did not touch functional code this session (the trace instrumentation
+was added and fully reverted — `git status`/`git diff` clean, verified).
+Landing layout.js's own cleanup in isolation was considered and rejected:
+it touches the hottest pointer-NaN-boxing path in the runtime (every
+pointer encode/decode, kernel-parity 33/33 byte-identical, fuzz 2000×4
+blast radius) for zero test-visible benefit, since Step 2 — the only
+thing that flips json.js's rows — still can't land after it. TRUE FIX
+is still one of the previous entry's two options, now correctly scoped:
+(a) is a 17-file, ~150-occurrence BigInt scrub including delicate
+IEEE754 kernels (math-kernel.js) and BigInt-typed-array/global-BigInt
+semantics (module/number.js, module/array.js, module/atomics.js) —
+plausibly a multi-session effort, each numeric kernel needing
+differential verification against an authoritative f64-bit-pattern
+reference, not hand-picked values; (b) redesign the carrier
+disambiguation off the single whole-program `ctx.features.bigint`
+boolean (the self-hosting compiler-as-program/compiler-as-target
+conflation) — still the architecturally cleaner fix, still out of one
+session's bound. NEXT: whoever picks this up should treat the 21-file
+list above (17 real + 4 false-positive, so future greps don't re-waste
+time on bignum.js/snapshot.js/compile-index.js/prepare-index.js) as the
+starting survey, not layout.js alone.
