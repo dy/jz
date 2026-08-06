@@ -6,6 +6,104 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Design (2026-08-06, INDUCTION-VARIABLE FACT project — the co-induction
+## accumulator range, DESIGN written before implementation per this session's
+## own discipline; three prior dissections converged on it: f95b56bc's base64
+## `op` ["no existing slot in any current channel"], efe34b1c's "third
+## recurrence" framing, d6460bce's loop-guard-hull precedent, c8700daa's
+## forCounterRange)
+
+**The fact.** A local declared BEFORE a loop, mutated ONLY inside the loop's
+body by a compile-time-constant step (`+=K`/`-=K`/`++`/`--`, K a literal or
+module const), executes at most the loop's own trip count — so its range is
+`[init, init + step × maxTrips]`, sign-aware, whenever the loop's OWN trip
+count is provable (forCounterRange's counter hull). base64's `encode`/`decode`
+`op` (`let op = 0` before `for(let i=0;i+3<=n;i+=3)`, stepped `op += 4` once
+per iteration, read as `out[op..op+3]`) is the motivating, and currently only
+tested, instance.
+
+**Where it computes.** NOT a new pass. Extended directly into the SAME site
+`emit.js`'s `'for'` emitter already builds `counterRange`/`counterRefs` from
+`forCounterRange` (c8700daa's own hull) — the loop-analysis this project's
+own prior sessions named as the right home. Two prerequisite widenings to
+`forCounterRange` itself, both additive (accept a strict superset of what it
+already proved, so existing provable shapes are unaffected):
+  1. **Shifted guard.** `cond[1] !== name` (bare-name-only) generalized to
+     `nameShift(cond[1], name)` — accepts `name`, `name + K`, `K + name`,
+     `name - K` (K a compile-time int), rejecting `K - name` (a sign-flipped,
+     genuinely different relationship). base64's guard `i + 3 <= n` needed
+     exactly this (named as gap (i) in f95b56bc's own base64 investigation).
+     The proof shifts `boundRange` by `-shift` and reuses the EXISTING lo/hi
+     formula verbatim — no new proof rule, just a wider match.
+  2. **Step magnitude exposed.** `forCounterRange` already parses the step's
+     shape to verify it's a known positive constant; that magnitude is now
+     attached as `.step` on the returned `[lo,hi]` array (backward compatible
+     — existing 2 call sites destructure `[0]`/`[1]` only) so trip count
+     (`floor((hi-lo)/step)+1`) is derivable without re-parsing the step.
+
+**Multi-step composition.** Per-iteration deltas from EVERY constant step to
+the SAME accumulator inside the body sum together — but tracked as a
+`{P, N, D}` triple (P = total positive motion, N = total negative motion,
+D = P−N the net) rather than just the net, so a `+K; …; −M` pair inside one
+iteration is bounded by its true transient reach (`start+P` / `start−N`), not
+just its net displacement, which the net-only reading of "sum of deltas"
+would silently under-bound. A step inside `if`/`?:` is accepted only when
+BOTH arms yield the identical `{P,N,D}` (a deterministic per-iteration
+motion regardless of which arm runs); differing-but-individually-provable
+arms (e.g. `+1` vs `+2`) are NOT unioned into an interval-valued per-iteration
+step — bailing there is a conscious, named scope boundary (would need
+`{P,N,Dlo,Dhi}` propagated through every combinator; no tested case needs
+it). A write inside a nested loop/switch/try/closure bails unconditionally
+(that construct's own iteration count is unknown at this analysis point). A
+nested `let`/`const` that REBINDS the accumulator's name bails (shadow — a
+different variable past that point, this compiler's flat per-function local
+model makes same-name shadowing rare but not statically impossible).
+
+**Invalidation.** Two static conditions, both required, checked once per
+candidate name (found by scanning the loop body for ANY bare-name
+mutate-op target): (a) the composed step is a real constant (`collectConstStep`
+returns non-null — any other write shape, e.g. a plain `=` reset or a
+non-constant `+=`, poisons the whole fact) and (b) NO write to that name
+exists anywhere else in the enclosing function (`writesOutsideLoop`, scanning
+`ctx.func.body` while skipping the loop's own body subtree by REFERENCE
+identity — the same `bodyNode0` identity trick this file's typed-bounds-
+versioning code already relies on for an unrelated purpose). This is a
+STATIC, one-time check (not writeVar-based like the loop-guard-hull channel)
+because the fact must hold for the entire body's duration across every
+iteration, not just "until the next write" — the guard-hull channel's
+snapshot-until-first-write model is the WRONG shape for a value that changes
+every iteration by design.
+
+**Consumption — the one real wrinkle.** The plan was "lands in the same
+`ctx.func.refinements` channel counterRefs already feeds `withRefinements`,
+zero new consumer surface" — true for READING (intExprRange/opBound/
+addLiteralFitsI32 all already resolve a bare name through that channel,
+no new code needed there), but `withRefinements` (flow-types.js) has its
+OWN soundness guard that DROPS any refinement for a name `isReassigned`
+finds written inside the body being refined — correct for an ordinary
+point-in-time fact (e.g. a branch-guard's `x∈[0,W)`, stale the instant `x`
+is overwritten), but WRONG for this fact: the accumulator IS written inside
+the body (that's the whole premise), yet the hull was constructed to already
+account for every one of those writes. Fixed with a one-line, explicitly-
+named escape hatch: entries this project installs carry `wholeLoopHull:
+true`; `withRefinements`'s drop condition becomes `isReassigned(body, name)
+&& !val.wholeLoopHull`. Still the same channel, same install/teardown,
+same `{rlo,rhi}` shape every other consumer already reads — just one flag
+recognized at exactly the point that would otherwise discard a fact
+engineered to survive its own reassignment.
+
+**Scope boundary, stated up front.** Only the primary `'for'` emitter site
+gets this treatment — NOT the typed-bounds-VERSIONING call site (`emit.js`
+~6201, `topCounterRange`/`topCounterRefs`) that re-emits a loop body twice
+(fast/checked arms) for a different optimization. Extending there is
+plausible (same `forCounterRange` call, same shape) but untested by this
+project's one acceptance target (base64 is a plain, unversioned loop) and
+carries real regression surface (watercolor/waves/schrodinger/diffusion/
+slime's pinned vectorizer counts all route through that exact code path) —
+left untouched, named here rather than silently expanded.
+
+---
+
 ## Status (2026-08-06, CLEAN-WORKTREE CERTIFICATION f95b56bc — stack
 ## origin/main (1d083ba9)..HEAD, 29 local commits, push-readiness review,
 ## largest stack of the session)
@@ -5123,3 +5221,5 @@ session's bound. NEXT: whoever picks this up should treat the 21-file
 list above (17 real + 4 false-positive, so future greps don't re-waste
 time on bignum.js/snapshot.js/compile-index.js/prepare-index.js) as the
 starting survey, not layout.js alone.
+
+UNIVERSAL CARRIER DESIGN (audit #12, read-only): `.work/carrier-representation-design.md` — re-measures the round-3 parking decision against today's kernel (erasure-diag probe: 57 flow sites, 11 actual box sites, 10 one-time init constants) and specs the FeaturePlan (P0-4) follow-on; decision left to the user, not landed.
