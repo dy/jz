@@ -5461,3 +5461,71 @@ time on bignum.js/snapshot.js/compile-index.js/prepare-index.js) as the
 starting survey, not layout.js alone.
 
 UNIVERSAL CARRIER DESIGN (audit #12, read-only): `.work/carrier-representation-design.md` — re-measures the round-3 parking decision against today's kernel (erasure-diag probe: 57 flow sites, 11 actual box sites, 10 one-time init constants) and specs the FeaturePlan (P0-4) follow-on; decision left to the user, not landed.
+
+KERNEL MEMORY-AMPLIFICATION DISCRIMINATOR (2026-08-06): tasked with the
+coordinator's open question on the jz×jz bench-row OOB (kernel-compiling
+the ~5.6MB `bench/jz/jz.js` self-host graph OOBs even at full-4GiB initial
+memory) — is it (A) genuine bump-arena exhaustion, or (B) an i32
+address-signedness bug firing before real exhaustion? VERDICT: (A),
+confirmed directly. Real, unmodified graphs (`resolveModuleGraph`, no
+synthetic padding — an early attempt truncating self.js's 149-module
+closure by prefix produced non-representative "just bare side-effect
+imports" programs and was abandoned) through `dist/jz.wasm`'s actual ABI:
+jessie (60KB) succeeds at a 1.07GB watermark; watr (104KB) succeeds but
+needs the ENTIRE 4GiB address space to do it (`memory.buffer.byteLength`
+== 65536 pages exactly); jzify-entry (406KB, only 4× bigger) already
+needs MORE than 4GiB and fails; the full jz-graph (5.58MB) fails the same
+way. Full curve + method: `.work/kernel-memory-curve.md`. Every failure —
+at dist/jz.wasm's standard 512MB-baked build AND at an exploratory
+full-4GiB-initial rebuild — resolves through `__memgrow`'s EXISTING,
+deliberate ceiling guard (`i64.gt_u need 65536 → unreachable` in
+`module/core.js`), not a raw uncontrolled OOB trap: the safety net designed
+for genuine exhaustion is firing correctly. No fix unlocks the jz×jz row;
+it needs the already-named phase/region arena discipline (out of this
+task's bound) — the curve is banked as that redesign's sizing evidence,
+and it sharpens the baseline ("~20× native RSS for ~2KB sources") by
+showing the amplification factor itself GROWS with input size (60KB→1GB,
+104KB→~4.3GB, a ~4× byte step costing much more than 4× memory) — the
+bump arena's "retain every intra-compile temporary, free nothing" design
+compounds on complexity, not just byte count.
+
+REAL (B)-CLASS BUG FOUND + FIXED EN ROUTE (not the jz×jz unlock, a
+genuine soundness gap): building a kernel with a FULL `memory:65536`-page
+initial (an exploratory rebuild to rule out "insufficient initial
+headroom" as a confound — the coordinator's own probe technique) turned
+the SAME jz-full-graph failure from the clean `unreachable` above into a
+raw "memory access out of bounds" trap. Root cause: once `memory.size()`
+reaches the wasm32 ceiling (65536 pages) — whether via a max-initial
+build OR organically (watr's own SUCCESSFUL compile above already lands
+exactly there, so this window is live in ordinary large compiles, not
+just the exploratory build) — `__memgrow`'s ceiling check can never fire
+again (`$need` can never exceed an already-maxed `memory.size()`),
+leaving `__alloc`'s pointer-bump arithmetic (`(ptr+bytes+7)&~7`, plain
+unwidened i32 add) as the ONLY guard. Once `$ptr` sits near 4GiB, that add
+silently wraps (unsigned overflow), corrupting the bump pointer backward
+while handing the caller a `$ptr` it then writes past — the observed raw
+OOB. FIX (`module/core.js`, all three `__alloc` variants — shared+atomic
+CAS loop, shared non-atomic, own-memory): one extra `(if (i32.lt_u next
+ptr) (then (unreachable)))` right after computing `$next` — the classic
+`sum < addend ⇒ wrapped` unsigned-overflow idiom (bytes/ptr are always
+valid non-negative i32 offsets, so this cannot false-positive), cheaper
+than widening to i64 (which `__memgrow` already does two lines below, but
+on the much colder growth-event path, not every single allocation).
+Verified: rebuilt an exploratory full-4GiB-initial kernel with the fix —
+the raw OOB on jz-full is now the SAME clean `unreachable` the standard
+build already produces, restoring the intended safety net; does not add
+capacity, only correctness (jz×jz still needs the region allocator).
+GATES (chunked, memory-lane-scoped per the coordinator's no-overlap
+instruction — other agents were running their own legs concurrently):
+`dist/jz.wasm` rebuilt (`node scripts/selfhost-build.mjs`) so kernel and
+native agree on the fix; `node test/index.js kernel-parity kernel-oracle`
+11/11 (451 assertions, byte-identical WAT restored — pre-fix run showed 3
+diverging rows from native/kernel disagreeing while only native had the
+fix, expected and resolved by the rebuild); `node test/index.js mem
+never-grown invariants wat-invariants inplace-store abrupt-oob
+determinism pointers buffer closures json objects strings` 144+518
+passing (0 fail); `node test/selfhost.js` 21/21 (206 assertions, "no
+allocator trap" across every round); `node test/fuzz.js` (2000 programs
+× seeds 1..2000 × opt {0,1,2,3}, 20 inputs each) — 0 divergence. Did not
+run the full native battery (coordination — other agents' own legs were
+in flight; the above is the explicitly-scoped chunk).

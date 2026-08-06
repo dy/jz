@@ -402,11 +402,22 @@ export default (ctx) => {
     // TRULY-shared memory (opts.sharedMemory → ctx.memory.atomic): the bump is a
     // CAS retry loop — a plain load/store pair would hand two racing threads the
     // same block. Plain imported memory keeps the cheap non-atomic bump.
+    // $next's `(ptr+bytes+7)&~7` is plain i32 math — once memory.size() has grown to
+    // the wasm32 ceiling (65536 pages), __memgrow's own `$need > 65536 → unreachable`
+    // guard (above) can never fire again (memory.size() IS 65536, so no $need exceeds
+    // it), leaving THIS addition as the only thing standing between a ptr near 4 GiB
+    // and silent unsigned wraparound (next < ptr) — which would corrupt the bump
+    // pointer backward and hand out a ptr the caller then writes past. The classic
+    // unsigned-overflow idiom (`sum < addend` ⇒ wrapped) catches it for one cheap
+    // extra compare on the hot path — cheaper than __memgrow's i64 widening, and
+    // this is the ONLY overflow-prone add in __alloc (bytes/ptr are both already
+    // valid non-negative i32 offsets, so `next < ptr` cannot false-positive).
     ctx.core.stdlib['__alloc'] = ctx.memory.atomic ? `(func $__alloc (param $bytes i32) (result i32)
       (local $ptr i32) (local $next i32)
       (block $done (loop $retry
         (local.set $ptr (i32.atomic.load (i32.const ${HEAP.PTR_ADDR})))
         (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
+        (if (i32.lt_u (local.get $next) (local.get $ptr)) (then (unreachable)))
         (if (i32.gt_u (local.get $next) (global.get $__heap_end))
           (then (call $__memgrow (local.get $next))))
         (br_if $done (i32.eq
@@ -417,6 +428,7 @@ export default (ctx) => {
       (local $ptr i32) (local $next i32)
       (local.set $ptr (i32.load (i32.const ${HEAP.PTR_ADDR})))
       (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
+      (if (i32.lt_u (local.get $next) (local.get $ptr)) (then (unreachable)))
       (if (i32.gt_u (local.get $next) (global.get $__heap_end))
         (then (call $__memgrow (local.get $next))))
       (i32.store (i32.const ${HEAP.PTR_ADDR}) (local.get $next))
@@ -444,10 +456,16 @@ export default (ctx) => {
     // compiler's init state. (Distinct from `__heap_start`, the propsPtr watermark,
     // which must stay at the data end or init-time heap objects misread as static.)
     declGlobal('__heap_reset', 'i32', HEAP.START)
+    // See the shared-memory __alloc above for why the unsigned-wraparound guard
+    // (`next < ptr`) is needed here too: once memory.size() organically reaches the
+    // wasm32 ceiling (65536 pages — real compiles can get there, e.g. the self-host
+    // kernel on a large graph), __memgrow's own ceiling check goes permanently dead
+    // and this addition becomes the last line of defense.
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
       (local $ptr i32) (local $next i32)
       (local.set $ptr (global.get $__heap))
       (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
+      (if (i32.lt_u (local.get $next) (local.get $ptr)) (then (unreachable)))
       (if (i32.gt_u (local.get $next) (global.get $__heap_end))
         (then (call $__memgrow (local.get $next))))
       (global.set $__heap (local.get $next))
