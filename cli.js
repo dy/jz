@@ -71,6 +71,8 @@ Options:
   --experimental-stencil    Enable neighbour-load stencil vectorization (a[i±1]; opt-in)
   --experimental-outer-strip  Strip-mine pixel loops over an inner reduction to f64x2 (opt-in)
   --no-tail-call            Use ordinary call frames instead of return_call
+  --no-eh-abort             Lower internal throws to unreachable even with a bare throw
+                            in source (no wasm-exceptions tag), when no try/catch is reachable
   --names                   Emit wasm name section for profilers/debuggers
   --stats                   Print compile-phase timings to stderr
   --strict                  Pure canonical subset: reject full-JS syntax + dynamic fallbacks
@@ -185,7 +187,7 @@ function printStats(profile) {
 
 async function handleCompile(args) {
   let inputFile = null, outputFile = null, wat = false, strict = false, resolveNode = false, importsFile = null
-  let optimize, host, alloc = true, names = false, stats = false, noSimd = false, noTailCall = false
+  let optimize, host, alloc = true, names = false, stats = false, noSimd = false, noTailCall = false, noEhAbort = false
   let memory, maxMemory, importMemory = false, define, whyNotSimd = false, experimentalStencil = false, experimentalOuterStrip = false
 
   for (let i = 0; i < args.length; i++) {
@@ -209,6 +211,7 @@ async function handleCompile(args) {
     else if (a === '--experimental-stencil') experimentalStencil = true
     else if (a === '--experimental-outer-strip') experimentalOuterStrip = true
     else if (a === '--no-tail-call') noTailCall = true
+    else if (a === '--no-eh-abort') noEhAbort = true
     else if (a === '--names') names = true
     else if (a === '--stats') stats = true
     else if (!inputFile) inputFile = a
@@ -244,6 +247,7 @@ async function handleCompile(args) {
     ...(experimentalStencil && { experimentalStencil: true }),
     ...(experimentalOuterStrip && { experimentalOuterStrip: true }),
     ...(noTailCall && { noTailCall: true }),
+    ...(noEhAbort && { noEhAbort: true }),
     ...(define && { define }),
     ...(names && { names: true }),
     ...(profile && { profile }),

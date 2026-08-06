@@ -5712,3 +5712,142 @@ bench-merge.js` 14/14. `npm run build` × 2 consecutive, `dist/jz.wasm`
 byte-identical between runs (16223.4 kB). Did not run the full battery
 (concurrent agents' own legs in flight on module/array.js, emit.js,
 optimizer.js, ir.js/module/core.js — out of this bundle's surface).
+
+## Status (2026-08-06, LAB-CASE bench rows: scriptc-class native coverage +
+## no-EH build variant + jz×jz plumbing — three-part bench task, bench/ +
+## `--no-eh-abort` build-flag surface only)
+
+Interpreted "scriptc row" as the JS→native-compiler class already stubbed in
+bench.mjs (`shermesBinPath`, `porf-native`) — flagging that reading here so
+it can be corrected if a different tool was meant.
+
+**Part 1 — scriptc-class rows on the lab cases (`jz`/`watr`/`jessie`).**
+`shermes` is not installed on the reference machine (no local hermes
+checkout; building Static Hermes needs the LLVM toolchain from source — out
+of scope for one row) — its `available: () => has(SHERMES_BIN)` gate
+already skips it cleanly, unchanged. `porf-native` (Porffor's 2026 rewrite,
+git main) IS live and was run against all three, live-measured, not
+guessed:
+- `jz` — Porffor's OWN codegen (`compiler/codegen.js`'s `generate`)
+  overflows the JS call stack (`RangeError: Maximum call stack size
+  exceeded`) walking the self-hosted compiler's source graph. Fails to
+  compile. Porffor-side limit.
+- `watr` — compiles (`cc -flto -O3`, ~330s, ~1GB peak RSS — slow, not
+  hung) but the binary throws `Uncaught Error: Unknown type $bin` at
+  runtime from watr's own type-index resolution
+  (`node_modules/watr/src/compile.js`) on a source every other engine
+  (V8/Deno/Bun/JSC/jz-wasm) compiles correctly — a Porffor codegen
+  correctness bug on this input shape.
+- `jessie` — compiles (~5s) but the binary segfaults (SIGSEGV, exit 139)
+  running the parser workload. Another Porffor-side crash.
+
+All three recorded as honest `{ status: 'fail', reason }` rows in
+`results.json` (the Go/Zig 43/60 discipline), not hidden skips.
+
+**Part 2 — no-EH build variant (`--no-eh-abort`) for native lab rows.**
+`jz-w2c`/`jz-w2c2` can't translate the lab cases' wasm (tag section for
+wasm-exceptions: `try`/`catch`/bare `throw` — `NEEDS_EH`). Verified
+per-case whether the variant (lower every throw to `unreachable`, drop the
+tag, even when `userThrows` is only true because of a bare uncaught
+`throw`) is semantically safe, via BOTH a static reachability check of the
+whole jz-w2c-compiled graph AND a live V8-Inspector exception-pause probe
+counting throws actually taken on each case's real bench workload (0/9 for
+`jz`'s 3 test programs × 3 iters, 0 for `watr`, 0 for `jessie` — corpus-
+empirical, not the deciding signal on its own, since "never taken on this
+corpus" and "structurally cannot be taken" differ, as `jessie` shows below):
+- `watr` — SAFE. Zero `try`/`catch`/`finally` anywhere in its jz-w2c-
+  reachable graph (`watr-compile.js` → `node_modules/watr/src/
+  {compile,encode,const,parse,util}.js`, grep-verified). WIRED: `src/
+  compile/index.js`'s `pruneUnusedThrowRuntime` gained the `noEhAbort`
+  flag (opts.noEhAbort → `--no-eh-abort`, threaded through index.js/cli.js
+  exactly like `--no-tail-call`) — it widens the EXISTING trap-lowering's
+  gate from "no user throws at all" to "no reachable catch at all",
+  keeping the SAME `hasCatch()` IR scan as the sole safety net (still
+  unconditionally refuses the instant a real `try_table`/`catch`/
+  `catch_all` is reachable ANYWHERE — including a bare `try{}finally{}`
+  with zero catch clauses, since jz's own finally-cleanup codegen still
+  needs an internal catch-and-rethrow). `compileJzW2c` in bench.mjs passes
+  `--no-eh-abort` only for `EH_ABORT_VARIANT = new Set(['watr'])`.
+  Checksum-verified: `jz-w2c` on `watr` now runs — 498µs, checksum
+  3419154861, matches the established reference, parity `ok`.
+- `jessie` — NOT SAFE, stays gated. subscript's switch-statement PARSE
+  feature (`node_modules/subscript/feature/switch.js`) wraps its body in a
+  bare `try { … } finally { inSwitch-- }` — zero `catch` clauses (invisible
+  to a source grep for "catch"), but jz's `finally` codegen still needs an
+  internal try_table/catch(-rethrow) for the cleanup path, so `hasCatch()`
+  correctly refuses to prune it (confirmed live via a temporary debug probe
+  during development, since removed). DESIGN NOTE, not implemented: a real
+  fix needs an EH-to-branch lowering (Emscripten-style setjmp/longjmp, or a
+  result-code ABI threaded through every call inside a `try`) — scoped in
+  bench/README, not attempted (bigger than "a build flag").
+- `jz` — NOT SAFE, stays gated, two independent reasons: (1) the self-
+  hosted compiler's OWN source has genuine `try`/`catch` used as live
+  fallback logic in hot compiler internals (`src/kind.js`'s `try {
+  JSON.parse(src) } catch { return null }`, plus `src/compile/
+  {narrow,emit,flow-types,analyze}.js`, `src/prepare/pre-eval.js`) — real,
+  input-shape-dependent code, not just corpus-empirical zero, so the
+  0-throws probe result is NOT trusted as a green light here; (2)
+  independently, `jz-w2c`'s plain-CLI shell-out can't even reach codegen
+  for this case today (needs `--resolve` for `self.js`'s bare `watr`/
+  `watr/print` imports, and even then hits an unrelated `--host wasi`
+  incompatibility — a `WebAssembly.*` reference inside the self-host graph
+  needs the `js`-host's env import). Same design-note scope as `jessie`;
+  same underlying gap Part 3 documents for the `jz`×`jz` row.
+
+**Part 3 — jz×jz self-host row plumbing.** The row itself stays blocked on
+the region-arena allocator (concurrent work) — today's bump-and-never-free
+allocator has no bound on this workload (jz compiling itself, then running
+the result, which compiles 3 more programs 45× — bench/jz/jz.js's own
+memory note already flags the ~0.5GB host watermark). Made the PLUMBING
+ready so the row lights up the moment that lands, without needing a
+bench.mjs change at that time: the `jz`×`jz` cell's PREP (the compile,
+previously run IN bench.mjs's own process like every other cell — fine for
+a small kernel, not for compiling the whole compiler) now runs in its own
+child process (new `bench/_lib/compile-jz-self.mjs`, mirrors
+`compileJzAt`'s exact options for this case — `jzify:true`,
+`resolveNode:true`, the benchlib `env.logResult` patch — but sets `memory:
+65536`, the wasm32 ceiling, instead of the small fixed floor other cases
+use) under `--max-old-space-size=8192` and a 10-minute wall-clock cap
+(`compileJzSelfIsolated`/`JZ_SELF_HOST_TIMEOUT_MS` in bench.mjs) — any
+blowup there is now a subprocess dying, caught by `tryRun`'s existing
+try/catch, not the whole bench run going down. VERIFIED LIVE, TODAY (both
+the isolated script standalone and the full `bench.mjs --targets=jz
+--cases=jz` pipeline): the isolated compile SUCCEEDS (~4-6 min, ~3.3GB peak
+RSS) but the resulting module traps at RUN time (already its own subprocess
+via `run-jz-host.mjs`, unchanged) with a clean, catchable V8 `RangeError:
+Maximum call stack size exceeded` — reported as one honest `{ status:
+'fail', reason }` row, bench.mjs's own process exiting 0. Recorded that row
+into `results.json`.
+
+GATES: `node test/bench-merge.js` 14/14 (140 assertions) both after the
+Part 1/2 evidence merge and after the Part 3 row addition. All new/changed
+`results.json` rows checksum-verified against the established per-case
+reference (`watr`'s fresh `v8`/`jz-w2c` remeasure: parity `ok`, matches
+3419154861 — re-measured rather than hand-typed, since bytes/memKb needed
+the real pipeline anyway). Caught and REVERTED one self-inflicted mistake
+before it landed: an early `--targets=v8,shermes,porf-native --cases=jz`
+run to get a `results.length>0` anchor for the `porf-native` fail row
+picked up a checksum drift on the `jz` case's `v8` row (2127455718 →
+1008523657) — not a real regression, but the `jz` case's `v8` target
+directly times jz's own compiler compiling 3 programs, and a concurrent
+commit (module/core.js Array.from fix, de7cf4e6) landed mid-session,
+shifting that case's own compiled-wasm-checksum surface. Reverted the three
+touched `v8` timing rows (`jz`/`watr`/`jessie`) to their pre-session stored
+values before merging anything else, so the only new content in
+`results.json` is the porf-native fail evidence, the watr jz-w2c/v8 pair
+(genuinely new rows, not overwrites), and the jz×jz fail row — no stale-vs-
+fresh mixed-vintage timing claims, honoring the task's "no timing claims
+(concurrent agent)" gate. `node test/index.js`: 3345/3353 pass (2 pre-
+existing failures in `test/optimizer.js`, both bounds-check-count
+assertions on `module/core.js`/`src/optimize/watr-tail.js` — both files
+uncommitted-modified by the concurrent agent for the whole session,
+unrelated to this bundle's `src/compile/index.js pruneUnusedThrowRuntime`
+change; not touched, not investigated further — out of surface). Did not
+run the full native/CI battery (bench-only surface; concurrent agents own
+module/core.js + src/optimize for the session).
+
+Files: `bench/bench.mjs`, `bench/README.md`, `bench/results.json`,
+`bench/_lib/compile-jz-self.mjs` (new), `cli.js`, `index.js`,
+`src/compile/index.js` (the one src/ change — a build-flag-shaped addition
+per the task's own "beyond a build flag, stop" boundary; nothing in
+module/core.js or src/optimize touched).

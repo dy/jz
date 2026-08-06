@@ -265,10 +265,33 @@ const ensureThrowRuntime = (sec) => {
 // an otherwise-opaque `RuntimeError: unreachable` into the real ECMAScript error
 // class the site models. Stripping this global (the old behavior) made host
 // decode of ordinary runtime errors unreachable by construction (audit #7 P1).
+// `noEhAbort` (opts.noEhAbort → --no-eh-abort, index.js): opt-in generalization
+// of the trap-lowering above for consumers with NO wasm-exceptions support at
+// all (wasm2c, w2c2 — see bench/README's native-lane / lab-row notes). Without
+// it, `userThrows` is a coarse proxy: it goes true the moment source has ANY
+// `throw` statement, even one with no reachable `try`/`catch` anywhere (e.g. a
+// parser's `throw SyntaxError(...)` on malformed input, never caught by
+// design) — so a case can carry a live-but-unreachable exceptions tag purely
+// because of a bare throw. With the flag, that coarse gate is replaced by the
+// SAME hasCatch() scan already below: it still unconditionally bails (no-ops,
+// zero behavior change) the instant a real `try_table`/`catch`/`catch_all`
+// exists anywhere in the module — so this can never silently turn a genuinely
+// CAUGHT throw into a trap. It only unlocks the prune for modules that have
+// throws but structurally zero catches, regardless of why userThrows got set.
 const pruneUnusedThrowRuntime = (sec) => {
-  if (!ctx.runtime.throws || ctx.runtime.userThrows) return
-  // A catch handler (try_table) appears only under userThrows; defensively bail if one
-  // is present so a caught throw is never silently turned into a trap.
+  if (!ctx.runtime.throws) return
+  if (ctx.runtime.userThrows && !ctx.transform.noEhAbort) return
+  // A catch handler (try_table) means SOME throw is caught; bail unconditionally
+  // (with or without noEhAbort) so a caught throw is never silently turned into
+  // a trap — this scan is the sole safety net once userThrows no longer gates.
+  // Note this also fires for a bare `try { … } finally { … }` with NO catch
+  // clause at all: jz's own `finally` codegen still needs an internal
+  // try_table/catch(-rethrow) to run the cleanup on the exceptional path, so
+  // it is exactly as unsafe to trap-lower as a real user catch (confirmed
+  // live: subscript's switch-parsing feature — reachable from the `jessie`
+  // bench case even though it has zero `catch` clauses anywhere — uses
+  // try/finally for its `inSwitch` depth counter, and this scan correctly
+  // refuses to prune it).
   const hasCatch = (n) => Array.isArray(n) &&
     (n[0] === 'try_table' || n[0] === 'catch' || n[0] === 'catch_all' || n.some(hasCatch))
   for (const arr of [sec.funcs, sec.stdlib, sec.start])

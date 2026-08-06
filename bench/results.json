@@ -1,7 +1,7 @@
 {
  "meta": {
-  "date": "2026-08-06 14:00 UTC",
-  "commit": "4ca94ca2",
+  "date": "2026-08-06 17:05 UTC",
+  "commit": "de7cf4e6",
   "host": {
    "platform": "darwin",
    "arch": "arm64",
@@ -3313,7 +3313,8 @@
     },
     "porf-native": {
      "status": "fail",
-     "reason": "exit null: time: command terminated abnormally\n        0.17 real         0.00 user         0.00 sys\n             4800512  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n     "
+     "reason": "exit null: time: command terminated abnormally\n        0.01 real         0.00 user         0.00 sys\n             4800512  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n     ",
+     "measuredAt": "de7cf4e6"
     }
    },
    "paired": {
@@ -6999,10 +7000,11 @@
    "ref": 3419154861,
    "targets": {
     "v8": {
-     "medianUs": 882,
+     "medianUs": 865,
      "bytes": 2645,
-     "memKb": 69712,
-     "parity": "ok"
+     "memKb": 71936,
+     "parity": "ok",
+     "measuredAt": "de7cf4e6"
     },
     "deno": {
      "medianUs": 938,
@@ -7036,7 +7038,15 @@
     },
     "porf-native": {
      "status": "fail",
-     "reason": "exit 1: Uncaught Error: Unknown type $bin\n        0.31 real         0.00 user         0.00 sys\n             2998272  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n       "
+     "reason": "exit 1: Uncaught Error: Unknown type $bin\n        0.00 real         0.00 user         0.00 sys\n             2998272  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n       ",
+     "measuredAt": "de7cf4e6"
+    },
+    "jz-w2c": {
+     "medianUs": 498,
+     "bytes": 977544,
+     "memKb": 35952,
+     "parity": "ok",
+     "measuredAt": "de7cf4e6"
     }
    }
   },
@@ -7344,6 +7354,16 @@
      "bytes": 39723560,
      "memKb": 312192,
      "parity": "ok"
+    },
+    "porf-native": {
+     "status": "fail",
+     "reason": "Command failed: /Users/div/projects/porffor/porf native /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/jz/jz-flat.js /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/jz/jz-porfnat\nfile:///Users/div/projects/porffor/compiler/codegen.js:469\nconst generate = (scope, decl, name = undefined, valueUnused = false) => {\n                 ^\n\nRangeError: Maximum call stack size exceeded\n    at generate (file:///Users/div/projects/porffor/compiler/codegen.js:469:18)\n    at makeClosureRecord (file:///Users/div/projects/porffor/compiler/codegen.js:407:35)\n    at makeFunctionValue (file:///Users/div/projects/porffor/compiler/codegen.js:442:40)\n    at materializeFunctionValue (file:///Users/div/projects/porffor/compiler/codegen.js:457:67)\n    at lookup (file:///Users/div/projects/porffor/compiler/codegen.js:790:33)\n    at generateIdent (file:///Users/div/projects/porffor/compiler/codegen.js:826:10)\n    at generate (file:///Users/div/projects/porffor/compiler/codegen.js:480:14)\n    at generateObject (file:///Users/div/projects/porffor/compiler/codegen.js:3936:7)\n    at generate (file:///Users/div/projects/porffor/compiler/codegen.js:579:14)\n    at makeClosureRecord (file:///Users/div/projects/porffor/compiler/codegen.js:407:35)\n\nNode.js v25.9.0\n",
+     "measuredAt": "de7cf4e6"
+    },
+    "jz": {
+     "status": "fail",
+     "reason": "exit 1: wasm://wasm/03ab197a:1\n\n\nRangeError: Maximum call stack size exceeded\n    at wasm://wasm/03ab197a:wasm-function[2949]:0x787e3d\n    at wasm://wasm/03ab197a:wasm-function[3252]:0x898e80\n    at wasm://wasm/03ab197a:wasm-function[5071]:0xc6e16d\n",
+     "measuredAt": "de7cf4e6"
     }
    }
   }

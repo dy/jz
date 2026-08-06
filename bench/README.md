@@ -623,6 +623,88 @@ JZ is 1.07× slower than V8 raw JS on this large compiler bundle. The size
 (144 kB) is the full jz-compiled watr parser + encoder + optimizer; V8's JIT
 has the advantage of profile-guided tiering on a long-running compiler.
 
+### Lab-case native coverage: JS→native compilers and the no-EH build variant
+
+The lab cases (`jz`/`watr`/`jessie` — compiler-class workloads: real,
+multi-file, big-by-corpus-standards programs) get their own native-lane
+coverage attempt, distinct from the small-kernel corpus's `nat`/`jz-w2c`
+lanes. Two things were asked and are recorded here as-interpreted, so a
+different intent can correct them:
+
+**"scriptc" row (JS→native-compiler scale).** Read as: wire whichever
+JS-to-native-binary compilers can actually swallow these programs —
+`shermes` (Static Hermes, AOT via LLVM) first, `porf-native` (Porffor's 2026
+rewrite, AOT via its own C backend) second — as rows on the three lab cases,
+to show the scale of what a full JS→native toolchain does with real
+programs rather than microbenchmarks. `shermes` is not installed on the
+reference machine (no local hermes checkout; building it needs the LLVM
+toolchain from source — out of scope for a one-off row) and the target
+already gates cleanly off when the binary is absent (`available: () =>
+has(SHERMES_BIN)`), so it is a documented skip, not a measured row, here.
+`porf-native` IS live and was run against all three:
+
+| case | porf-native verdict |
+| --- | --- |
+| `jz` | **fails to compile** — Porffor's own codegen (`compiler/codegen.js`'s `generate`) overflows the JS call stack (`RangeError: Maximum call stack size exceeded`) walking the self-hosted compiler's full source graph. A Porffor-side limit, not a jz defect. |
+| `watr` | **compiles, wrong output at runtime** — `cc -flto -O3` succeeds (~330 s, ~1 GB peak RSS — legitimately slow, not hung) but the resulting binary throws `Uncaught Error: Unknown type $bin` from watr's own type-index resolution (`node_modules/watr/src/compile.js`'s `err(\`Unknown type ${idx}\`)`) on a source every other engine (V8/Deno/Bun/JSC/jz-wasm) compiles correctly. A Porffor codegen correctness bug on this input shape, not a jz/watr defect. |
+| `jessie` | **compiles, crashes at runtime** — builds in ~5 s but the binary segfaults (`SIGSEGV`, exit 139) running the parser workload. Another Porffor-side crash, not a jz/jessie defect. |
+
+All three verdicts are recorded as `{ status: 'fail', reason }` rows in
+`results.json` (honest coverage, not a hidden skip) — the same discipline
+the small-kernel corpus's Go/Zig 43/60 rows use.
+
+**No-EH build variant for the native lab rows (`jz-w2c`).** The lab cases'
+compiled wasm carries a wasm-exceptions tag section (jz lowers `try`/`catch`/
+bare `throw` through it), which neither `wasm2c` nor `w2c2` translates
+("invalid section code: 13") — the same `NEEDS_EH` gate documented in the
+Native-lane note above, extended to `jessie`/`jz`/`watr`. `pruneUnusedThrowRuntime`
+(`src/compile/index.js`) already lowers every throw to `unreachable` and
+drops the tag when NO catch is reachable anywhere — but it only fires when
+`userThrows` is false, and `userThrows` goes true the moment source has ANY
+bare `throw` statement, even one with zero reachable `try`/`catch` (a
+parser's `throw SyntaxError(...)` on malformed input, never caught by
+design). An opt-in flag, `--no-eh-abort` (`opts.noEhAbort`), generalizes the
+SAME lowering to fire whenever `userThrows` is the only reason it was
+gated — it is not a new mechanism, just a wider gate on the existing one,
+and it keeps the existing safety net (a real `try_table`/`catch`/`catch_all`
+anywhere in the compiled IR — INCLUDING a bare `try { } finally { }` with no
+catch clause at all, since jz's own `finally` codegen still needs an
+internal catch-and-rethrow to run cleanup — unconditionally blocks it, flag
+or not).
+
+Verified empirically per case (both a static reachability check and a live
+V8-Inspector exception-pause probe counting throws actually taken on each
+case's real bench workload — 0/9 for `jz`, 0 for `watr`, 0 for `jessie`; the
+static check is what actually decides validity, since "never taken on this
+corpus" and "structurally cannot be taken" are different guarantees):
+
+| case | verdict |
+| --- | --- |
+| `watr` | **wired.** Its jz-w2c-reachable graph (`watr-compile.js` → `node_modules/watr/src/{compile,encode,const,parse,util}.js`) has zero `try`/`catch`/`finally` anywhere. `--no-eh-abort` drops the tag cleanly; `jz-w2c` now runs it — `766 µs`, checksum `3419154861`, matches the reference (parity `ok`). |
+| `jessie` | **not valid — stays gated.** subscript's switch-statement PARSE feature (`node_modules/subscript/feature/switch.js`, reachable from `parse`) wraps its body in a bare `try { … } finally { inSwitch-- }` — zero `catch` clauses, invisible to a source grep for `catch`, but jz's `finally` codegen still needs an internal try_table/catch(-rethrow) for the cleanup path, so the safety net correctly refuses to prune it. A genuine fix needs an EH-to-branch lowering (Emscripten-style setjmp/longjmp, or a result-code ABI threaded through every call inside a `try`) — a real compilation strategy, scoped here as a design note, not implemented. |
+| `jz` | **not valid — stays gated**, for two independent reasons: (1) the self-hosted compiler's own source has genuine `try`/`catch` used as live fallback logic in hot compiler internals (`src/kind.js`'s `try { JSON.parse(src) } catch { return null }`, plus `src/compile/{narrow,emit,flow-types,analyze}.js`, `src/prepare/pre-eval.js`) — real, input-shape-dependent code, not just corpus-empirical zero; (2) independently, `jz-w2c`'s plain-CLI shell-out can't even reach codegen for this case today (needs `--resolve` for `self.js`'s bare `watr`/`watr/print` imports, and even then hits an unrelated `--host wasi` incompatibility — a `WebAssembly.*` reference inside the self-host graph needs the `js`-host's env import). Same design-note scope as `jessie`. |
+
+### jz×jz — the self-host-squared row (blocked on the region-arena build)
+
+The `jz` CASE under the `jz` TARGET is the last uncovered cell in the lab
+grid: jz compiling itself (`bench/jz/jz.js` → `scripts/self.js`, the whole
+compiler) into a wasm module that, once run, itself compiles 3 more
+programs 45 times over. It is gated on the region-arena allocator
+(concurrent work, `.work/region-arena-design.md`) — today's bump-and-
+never-free allocator has no bound on this workload's working set. The bench
+plumbing is ready for the moment it lands: this cell's PREP (the compile)
+runs in its own isolated child process (`bench/_lib/compile-jz-self.mjs`,
+`--max-old-space-size=8192`, `memory: 65536` pages = the full wasm32 4 GiB
+address space) under a 10-minute wall-clock cap
+(`compileJzSelfIsolated`/`JZ_SELF_HOST_TIMEOUT_MS` in `bench.mjs`), so a bad
+day here — OOM, a genuine hang — surfaces as one `{ status: 'fail', reason }`
+row instead of taking the whole bench run down. Verified live, today: the
+isolated compile succeeds (~4 minutes, ~3.3 GB peak RSS) but the resulting
+module traps at RUN time with a clean, catchable V8 `RangeError: Maximum
+call stack size exceeded` — an honest failure, not a crash. No bench.mjs
+change should be needed when the region build lands; the cell should just
+start succeeding.
+
 ### Where the gaps live
 
 Aggregate geomean (JZ / target):

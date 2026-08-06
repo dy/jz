@@ -342,6 +342,13 @@ jz.pool = async function pool(source, opts = {}) {
  *   in-process from this map instead of reading from disk.
  * @param {boolean} [opts.noTailCall] - Disable proper-tail-call emission (self/mutual
  *   recursion uses ordinary call frames). For engines/tools without the tail-call proposal.
+ * @param {boolean} [opts.noEhAbort] - Opt-in MVP shape for consumers with no wasm-exceptions
+ *   support at all (wasm2c, w2c2): lower every surviving internal `throw` to `unreachable`
+ *   even when source has a bare `throw` with no reachable `try`/`catch` (the common
+ *   `userThrows` case that otherwise keeps the tag section alive for nothing). A module
+ *   that has ANY real `try`/`catch` anywhere is left untouched regardless of this flag —
+ *   it is not a general exceptions-to-branches lowering, only a no-op-safe generalization
+ *   of the always-on trap lowering for genuinely catch-free modules.
  * @param {boolean} [opts.nativeTimers] - Emit a blocking `__timer_loop` in `_start` so
  *   setTimeout/setInterval fire under a standalone runtime (e.g. the wasmtime CLI) that
  *   has no host event loop. Default: timers defer to the JS host.
@@ -465,6 +472,7 @@ const setupCtx = (code, opts) => {
   // and the pure canonical subset is enforced. subscript handles ASI natively.
   if (!opts.strict) ctx.transform.jzify = jzify
   if (opts.noTailCall) ctx.transform.noTailCall = true
+  if (opts.noEhAbort) ctx.transform.noEhAbort = true
   if (opts.alloc === false) ctx.transform.alloc = false
   if (opts.inspect) ctx.transform.inspect = true
   if (opts.helperCounters) ctx.transform.helperCounters = true

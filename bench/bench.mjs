@@ -130,11 +130,11 @@ const graphSources = (c) => {
   const g = resolveModuleGraph(c.js, { resolveNode: c.id === 'jz' })
   return { code: g.code, modules: g.modules }
 }
-// The jz case embeds the whole compiler: its static data segment alone is
-// ~450 kB, so the module needs more than the 1-page default to instantiate.
-// 64 pages (4 MB) initial; the allocator's geometric memory.grow covers the
-// compile arena from there at no measurable cost (browser-friendly floor).
-const caseMemory = (c) => c.id === 'jz' ? { memory: 64 } : {}
+// Non-jz cases get the 1-page wasm default — plenty for a bench kernel's own
+// data. The `jz` CASE (self-host: jz compiling itself) is its own path
+// entirely — see compileJzSelfIsolated / bench/_lib/compile-jz-self.mjs below,
+// which sets its own (much larger) memory and never calls this.
+const caseMemory = () => ({})
 // Cases whose source uses try/catch — jz lowers it to standardized wasm EH
 // (try_table + a tag section). V8/JSC run it; wasmtime 25's loader rejects the
 // tag section and wabt's wasm2c parses it but has no try_table codegen
@@ -150,6 +150,59 @@ const wasmtimeHasEH = (() => {
   let v
   return () => v ??= /\bexceptions\b/.test(spawnSync('wasmtime', ['run', '-W', 'help'], { encoding: 'utf8' }).stdout || '')
 })()
+// --no-eh-abort (src/compile/index.js pruneUnusedThrowRuntime, cli.js): an
+// opt-in build variant for jz-w2c/jz-w2c2 that lowers every surviving internal
+// `throw` to `unreachable` even when source has a bare `throw` with no
+// reachable `try`/`catch` — the common shape that otherwise keeps NEEDS_EH's
+// cases pinned to a live-but-unreachable exceptions tag. It is a strict
+// generalization of the ALWAYS-ON no-user-throws trap lowering, gated by the
+// SAME hasCatch() IR scan (src/compile/index.js): it unconditionally refuses
+// to fire the instant a real `try_table`/`catch`/`catch_all` is reachable
+// ANYWHERE (including a bare `try { } finally { }` with no catch clause at
+// all — jz's own finally-cleanup codegen still needs one internally), so it
+// can never silently turn a genuinely-caught throw into a trap; worst case it
+// simply no-ops, same as today.
+//
+// Verified per NEEDS_EH case (bench task, live measurement — not derived from
+// source alone, since a case can be catch-clause-free in JS yet still need
+// the tag via a try/finally, as jessie does):
+//   watr   — SAFE, wired below. Its jz-w2c-reachable graph (watr-compile.js →
+//            node_modules/watr/src/{compile,encode,const,parse,util}.js) has
+//            zero `try`/`catch`/`finally` anywhere (grep-verified); the flag
+//            drops the tag section and wasm2c/w2c2 translate clean.
+//   jessie — UNSAFE, stays gated. subscript's switch-statement PARSE feature
+//            (feature/switch.js, reachable from `parse`) wraps its body in a
+//            bare `try { … } finally { inSwitch-- }` (zero `catch` clauses —
+//            invisible to a source grep for "catch") to keep the `inSwitch`
+//            depth counter consistent across a parse-error unwind. jz's own
+//            `finally` codegen needs an internal try_table/catch(-rethrow) to
+//            run that cleanup on the exceptional path, so hasCatch() correctly
+//            refuses to prune it — confirmed live (JZ_DEBUG_EH probe on
+//            src/compile/index.js during development). A genuine EH-to-branch
+//            lowering (Emscripten-style setjmp/longjmp, or a result-code ABI
+//            threaded through every call in a try) would be needed to cover
+//            this case; that is a real compilation strategy, scoped here as a
+//            design note, NOT implemented (bench/README documents the scope).
+//   jz     — UNSAFE, stays gated, for two independent reasons: (1) the
+//            self-hosted compiler's OWN source has genuine try/catch used as
+//            live fallback logic in its hot path (src/kind.js's
+//            `try { JSON.parse(src) } catch { return null }`, plus
+//            src/compile/{narrow,emit,flow-types,analyze}.js and
+//            src/prepare/pre-eval.js) — hasCatch() correctly refuses to touch
+//            it, and unlike jessie's dead-on-this-corpus try/finally, these
+//            are exercised by ordinary (non-error) compiler control flow on
+//            *some* inputs, just not the 3 fixed bench programs (V8 Inspector
+//            exception-pause probe: 0 throws across all 3 on the real bench
+//            path — but that is corpus-specific, not a structural guarantee,
+//            so it is not trusted as a green light here); (2) independently,
+//            jz-w2c's plain-CLI shell-out (compileJzW2c, below) cannot even
+//            reach codegen for this case today — it needs `--resolve` for
+//            self.js's bare `watr`/`watr/print` imports, and even then hits an
+//            unrelated `--host wasi` incompatibility (a `WebAssembly.*`
+//            reference inside the self-host graph needs an env import `js`
+//            host provides). That gap is the same one Part 3 of this task
+//            documents for the `jz`×`jz` row; revisit both together.
+const EH_ABORT_VARIANT = new Set(['watr'])
 
 const has = cmd => cmd.includes('/') ? existsSync(cmd) : spawnSync('which', [cmd], { stdio: 'ignore' }).status === 0
 const versionText = cmd => {
@@ -352,7 +405,8 @@ const compileJz = c => {
 const w2cWasmPath = c => join(caseBuild(c), `${c.id}nt.wasm`)
 const noTailIdent = c => cIdent(c.id) + 'nt'
 const compileJzW2c = c => {
-  execFileSync('node', [join(ROOT, 'cli.js'), c.js, '--host', 'wasi', '-O3', '--no-tail-call', '-o', w2cWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+  execFileSync('node', [join(ROOT, 'cli.js'), c.js, '--host', 'wasi', '-O3', '--no-tail-call',
+    ...(EH_ABORT_VARIANT.has(c.id) ? ['--no-eh-abort'] : []), '-o', w2cWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
 }
 
 const benchlibHostSource = () => {
@@ -422,6 +476,44 @@ const compileJzHost = c => {
 // host imports, same memory; only the optimize tier differs.
 const compileJzSize = c => {
   writeFileSync(jzSizeWasmPath(c), compileJzAt(c, { level: 'size' }))
+}
+
+// Part 3 (jz×jz self-host row): the `jz` CASE under the `jz` TARGET is the one
+// self-referential cell — jz compiling bench/jz/jz.js, which pulls in the
+// WHOLE compiler (scripts/self.js) as source, then RUNS the result, which
+// itself compiles 3 more programs 45 times over (bench/jz/jz.js's own memory
+// note: the host build already watermarks ~0.5 GB with no intermediate free).
+// Every other (case,target) pair's prep runs IN bench.mjs's own process
+// (compileJzHost/compileJzSize above, or the other targets' execFileSync
+// calls) because it's cheap; this one is NOT — the actual unlock is the
+// region-arena allocator (concurrent work, .work/region-arena-design.md),
+// which today's bump-and-never-free allocator doesn't have. Until it lands,
+// this compile can legitimately take minutes and/or the resulting module can
+// legitimately trap (verified live: a full compile+run took ~4-6 minutes and
+// the run ended in a real V8 `RangeError: Maximum call stack size exceeded`
+// — a clean, catchable failure, not a crash).
+//
+// Running that IN-PROCESS (like every other cell) would mean a bad day here
+// (OOM, a true hang) takes the WHOLE bench run down with it. So this one
+// cell's PREP is its own child process (bench/_lib/compile-jz-self.mjs,
+// --max-old-space-size caps its heap explicitly) under a generous but finite
+// wall-clock timeout — any failure mode (OOM kill, timeout, a thrown
+// compile-time error) becomes one honest `{ status: 'fail', reason }` row via
+// tryRun's own try/catch, exactly like any other case's compile failure. The
+// RUN step (run-jz-host.mjs) was already its own subprocess via runProc, so
+// the V8 RangeError above already surfaces cleanly with zero extra work.
+//
+// The moment the region build lands, nothing here needs to change — this
+// cell should just start succeeding (and, once it's reliably fast, folding
+// back into compileJzHost's normal in-process path is the natural follow-up).
+const JZ_SELF_HOST_TIMEOUT_MS = 10 * 60 * 1000
+const compileJzSelfIsolated = c => {
+  const r = spawnSync('node', ['--max-old-space-size=8192', join(LIB, 'compile-jz-self.mjs'), jzHostWasmPath(c), jzSizeWasmPath(c)],
+    { cwd: BENCH_DIR, encoding: 'utf8', timeout: JZ_SELF_HOST_TIMEOUT_MS })
+  if (r.error?.code === 'ETIMEDOUT' || (r.signal && !r.status))
+    throw new Error(`jz×jz self-host compile did not finish within ${JZ_SELF_HOST_TIMEOUT_MS / 1000}s (killed via ${r.signal || 'timeout'}) — expected until the region-arena allocator lands (today's bump allocator never frees; this compile's working set grows unbounded). See bench/README's self-host lab-row note.`)
+  if (r.status !== 0)
+    throw new Error(`jz×jz self-host compile failed: ${(r.stderr || r.stdout || '').trim().slice(0, 500)}`)
 }
 
 const writeFlat = c => {
@@ -766,7 +858,12 @@ const targets = {
     available: () => has('node'),
     // Size column = the -Os build (jz's smallest); timing = the speed build.
     bin: jzSizeWasmPath,
-    run: c => tryRun('jz', c, () => { compileJzHost(c); compileJzSize(c) }, ['node', join(LIB, 'run-jz-host.mjs'), jzHostWasmPath(c)]),
+    // jz×jz (the self-host cell) preps via its own isolated child process —
+    // see compileJzSelfIsolated above. Every other case's build is cheap
+    // enough to run in bench.mjs's own process, same as always.
+    run: c => tryRun('jz', c,
+      c.id === 'jz' ? () => compileJzSelfIsolated(c) : () => { compileJzHost(c); compileJzSize(c) },
+      ['node', join(LIB, 'run-jz-host.mjs'), jzHostWasmPath(c)]),
   },
   as: {
     name: 'AssemblyScript (asc -O3)',
@@ -832,7 +929,10 @@ const targets = {
   },
   'jz-w2c': {
     name: 'jz → wasm2c → clang -O3',
-    available: c => !NEEDS_EH.has(c.id) && has('wasm2c') && has('clang') && existsSync(join(WABT_W2C_DIR, 'wasm-rt-impl.c')),
+    // NEEDS_EH cases stay blocked UNLESS the EH_ABORT_VARIANT verified-safe
+    // list covers them — compileJzW2c passes --no-eh-abort for those, so the
+    // wasm this target's wasm2c step receives already has no tag section.
+    available: c => (!NEEDS_EH.has(c.id) || EH_ABORT_VARIANT.has(c.id)) && has('wasm2c') && has('clang') && existsSync(join(WABT_W2C_DIR, 'wasm-rt-impl.c')),
     bin: w2cBinPath,
     run: c => tryRun('jz-w2c', c, () => {
       compileJzW2c(c)
@@ -854,7 +954,8 @@ const targets = {
   // bench/README's native-lane section for the enumerated reason.
   'jz-w2c2': {
     name: 'jz → w2c2 → clang -O3',
-    available: c => !NEEDS_EH.has(c.id) && has(W2C2_BIN) && has('clang') && existsSync(join(W2C2_DIR, 'w2c2_base.h')),
+    // Same EH_ABORT_VARIANT carve-out as jz-w2c above — same --no-eh-abort wasm input.
+    available: c => (!NEEDS_EH.has(c.id) || EH_ABORT_VARIANT.has(c.id)) && has(W2C2_BIN) && has('clang') && existsSync(join(W2C2_DIR, 'w2c2_base.h')),
     bin: w2c2BinPath,
     run: c => tryRun('jz-w2c2', c, () => {
       compileJzW2c(c)
