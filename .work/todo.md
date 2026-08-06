@@ -6,6 +6,78 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, REGION-ARENA SLICE-1 PRE-WIRING MEASUREMENT — GO, with
+## a sharper arithmetic than the design's acceptance line implied — see
+## .work/region-slice1-liveness.md)
+
+Measured per-round LIVENESS vs CHURN in watOptimize's fixpoint
+(`node_modules/watr/src/optimize.js`'s `runRounds`) BEFORE any region
+wiring, per `region-arena-design.md` Risk §1's mandate. Method: a temp
+same-module probe (`__RP` log + `opts.__maxRounds` round cap, reverted —
+`node_modules/watr` restored via `rm -rf` + `npm install watr@5.7.12
+--no-save`, sha256-verified byte-identical) driving (a) native runs for
+per-round live-tree size and (b) a standalone jz-compiled watr-optimizer
+micro-kernel (built from `.work/watr-diff-entry.mjs`, NOT the full
+`dist/jz.wasm` — cheaper to iterate, same `module/core.js` bump-arena
+mechanism) for round-capped bump-pointer deltas (`__heap` is already
+host-exported; re-running with `__maxRounds=0..6` on fresh instances and
+diffing gave exact per-round churn with zero mid-execution instrumentation).
+
+**Result**: churn/live ratio is 574×–2495× across every round of both
+sized corpora (crc32 38KB WAT; watr-graph 104KB source / 7.8MB pre-watr
+WAT — the design's own 4.3GB-peak case), including the "confirm" round
+that changes nothing — decisively clears the design's ≥3×-sustained GO
+bar. jzify-entry (406KB / 14.6MB pre-watr WAT) exceeds the wasm32 4GiB
+ceiling before even ROUND 0's setup completes — sharpens (not just
+confirms) `kernel-memory-curve.md`: failure isn't many-rounds compounding,
+one pre-round pass over that size already can't fit.
+
+**But**: per-round mark/exit only removes CROSS-round accumulation, not a
+round's own transient peak or anything before round 1. For watr-graph,
+round 1 is always the single biggest round (unfiltered — no `dirty` set
+yet); Slice 1 caps the round-loop's contribution at round 1's own churn
+(749.70MB) instead of the day's sum (1776.02MB) — a real 979MB/25.8% cut
+on the round-loop segment, but the pre-round baseline (2.197GB — front/
+prepare/compile emission + watOptimize's own pre-round setup) is BIGGER
+than the whole round loop and untouched by Slice 1. Reaching the design's
+stated "under ~1GB" needs Slice 1 + Slice 2 (front boundary) together, or a
+finer cut inside round 1 itself (candidate Slice 1b, unfiltered first round
+— not scoped here). Recommend revising the design doc's Slice 1 acceptance
+line to name this pairing explicitly.
+
+**Pointer-bit hazard inventory** (Risk §2, per-site, not fixed — inventory
+only): (1) `src/compile/emit.js` `emitLooseEq`/`emitStrictEq`'s
+`REF_EQ_KINDS` path — `==`/`===` on ARRAY/OBJECT/SET/MAP/BUFFER/TYPED/
+CLOSURE/REGEX/DATE compiles to raw `i64.eq` on NaN-boxed pointer bits, no
+forwarding chase; broadest site, includes closure identity. (2)
+`module/collection.js` `$__map_set`/`$__hash_set`/`$__set_add` — an
+object/array Map/Set KEY crosses as raw i64, hashed AND slot-compared by
+bits; the design's own "hash table keyed on pointer bits" example, by name.
+(3) watr's OWN round-loop bookkeeping — `snapshots` Map and `dirty`/`next`
+Sets keyed by func-node object identity, `ast.indexOf(f)` — the driver
+loop the region would wrap; has a narrow manual re-key path for one case
+(a pass rebuilding a func root) but none for an external region_exit
+relocating between rounds; degrades to "everything looks dirty next round"
+(safe, slower) rather than silent corruption, PROVIDED region_exit only
+ever runs at a clean round boundary. (4) non-hazard for contrast:
+`hashNode` already keys on structural content, not identity — the right
+shape to imitate.
+
+Side finding, not fixed (flag for later): a probe referencing `typeof
+process !== 'undefined' ? process.memoryUsage().heapUsed : 0` inside
+self-hosted source produced an invalid wasm module (`i64.reinterpret_f64[0]
+expected type f64, found global.get of type i64`) — a genuine self-host
+miscompile class (`typeof` on an unresolved host global), not investigated
+further here (out of scope; the probe doesn't need that field for the
+in-kernel path — removed instead).
+
+Full tables, arithmetic, and restore verification: `.work/region-slice1-
+liveness.md`. `dist/jz.wasm` untouched throughout (sha256 unchanged); all
+scratch (micro-kernel wasm, corpus WAT, sweep scripts) lived outside the
+repo. `git status` clean except this doc + the ledger line + the concurrent
+agent's own pre-existing changes to `module/array.js`/`test/array-
+methods.js`/`bench/trace/trace.wat` (untouched by this task).
+
 ## Status (2026-08-06, RANGE-CHECK FUSION recurses across left-deep `&&`/`||`
 ## chains — rival-wat-analysis.md TRANSFERABLE item 1, LANDED)
 
