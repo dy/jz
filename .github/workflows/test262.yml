@@ -37,25 +37,15 @@ jobs:
         with:
           path: test/test262
           key: test262-pinned-v1
+      # Baseline lives in test/test262-baseline.json (audit-#12 item 3 — one
+      # committed lock for both the language and built-ins runners, same as
+      # the built-ins job below). The runner gates on FOUR guards: in-scope
+      # fail===0 (any fail is a miscompile), xpass===0 (prune stale
+      # EXPECTED_FAIL entries), the `language` pass-count ratchet, and the
+      # `negAcceptCeiling` ratchet (downward-only). JZ_TEST262_BASELINE can
+      # still override the file's `language` floor for a one-off CI
+      # diagnostic run.
       - name: Run test262 language suite
-        env:
-          # Baseline (2026-05-29): 1437 passes / 0 in-scope fails / 3 xfail / 21940 skips.
-          # The runner gates on THREE guards: in-scope fail===0 (any fail is a
-          # miscompile), xpass===0 (prune stale EXPECTED_FAIL entries), and this
-          # pass-count ratchet. Out-of-scope gaps bucket as xfail (see EXPECTED_FAIL
-          # in test/test262.js), not fail. 2026-05-29: +9 — subscript 10.4.17 fixed
-          # the `1.e3` digit-dot-exponent lexer (8 numeric + 1 computed-key literal).
-          # 2026-07-10: 1453 → 2205 — the unblanketing leg: stale blankets removed
-          # (for-of dir, destructuring content, this/class/super/WeakMap/new.target
-          # patterns), four real compiler fixes surfaced+landed (destructuring
-          # defaults fired on null; numeric object-pattern keys crashed; `var`
-          # pattern declarators dropped; for-of head cover-grammar `{x=1}`
-          # mis-destructured), residues precisely skip-classified or xfail-tracked
-          # (bool-carrier family flips to xpass when that work lands — prune then).
-          # 2026-07-14: 2972 → 2975 — undeclared for-in binder declared at the
-          # prepare lowering (structural write-only mint; a general emit-side
-          # write-legalization regressed 50 ReferenceError pins and was removed).
-          JZ_TEST262_BASELINE: 2975
         run: npm run test:262
 
   test262-builtins:

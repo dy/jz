@@ -35,8 +35,9 @@ const TEST262 = join(import.meta.dirname, 'test262')
 // ensureTest262 re-pin an existing checkout), run `npm run test:262 &&
 // npm run test:262:builtins`, and reconcile: prune any EXPECTED_FAIL_FILES/
 // LEGACY_LANG_LIMITATIONS entries reported as xpass, add any genuinely new
-// out-of-scope fails as xfail with a reason, and update the JZ_TEST262_BASELINE
-// values here and in .github/workflows/test262.yml together with this commit.
+// out-of-scope fails as xfail with a reason, and update test262-baseline.json
+// (corpus SHA + language/builtins floors + negAcceptCeiling, audit-#12 item 3
+// — the one committed lock both runners read) together with this commit.
 const PINNED_COMMIT = 'b363f29d3c43c626dc852744ad64a0b48a003693' // 2026-07-31, tc39/test262 main
 
 // Ensure test262 is checked out AT the pinned commit (main thread only —
@@ -1281,7 +1282,7 @@ if (!isMainThread) {
     xpasses.sort().forEach(f => console.log(`  ✓ ${f}`))
   }
 
-  // CI gating, three guards (skipped in --quick mode, which runs only a subset
+  // CI gating, four guards (skipped in --quick mode, which runs only a subset
   // so its counts aren't comparable):
   //   1. fail===0 — the language suite's in-scope baseline is zero failures, so
   //      ANY fail is a regression. Out-of-scope/upstream gaps are bucketed as
@@ -1290,7 +1291,17 @@ if (!isMainThread) {
   //      pass↔fail swap that leaves the count unchanged (invisible to guard 3).
   //   2. xpass===0 — a file listed in EXPECTED_FAIL_FILES that now passes means
   //      the entry is stale; prune it (keeps the expected-fail list honest).
-  //   3. pass-count ratchet — pass must not drop below JZ_TEST262_BASELINE.
+  //   3. pass-count ratchet — pass must not drop below the committed lock's
+  //      `language` floor (test/test262-baseline.json, audit-#12 item 3).
+  //      Always enforced (previously only when JZ_TEST262_BASELINE was set —
+  //      the CI-vs-local split this closes: CI carried its own stale
+  //      JZ_TEST262_BASELINE env value, 2975, while local runs were
+  //      floorless). JZ_TEST262_BASELINE, if set, still overrides the file —
+  //      a one-off diagnostic escape hatch, not the source of truth.
+  //   4. negAccept ceiling — invalid-JS-jz-wrongly-compiles must not GROW past
+  //      the lock's `negAcceptCeiling` (ratcheted downward-only: a real early-
+  //      error fix lowers the count and the lock should be refreshed to match;
+  //      raising the ceiling to paper over a regression defeats the point).
   if (!QUICK && results.fail > 0) {
     console.error(`\nFAIL: ${results.fail} in-scope language failure(s) — a miscompile. ` +
       `Pass-count gating alone would miss this. See the in-scope failures above.`)
@@ -1300,9 +1311,24 @@ if (!isMainThread) {
     console.error(`\nFAIL: ${xpasses.length} test(s) in EXPECTED_FAIL now pass — prune them (listed above).`)
     process.exit(1)
   }
-  const baseline = Number(process.env.JZ_TEST262_BASELINE)
-  if (!QUICK && Number.isFinite(baseline) && baseline > 0 && results.pass < baseline) {
-    console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
-    process.exit(1)
+  if (!QUICK) {
+    const lock = JSON.parse(readFileSync(join(import.meta.dirname, 'test262-baseline.json'), 'utf8'))
+    // The lock's corpus SHA must match what this run just measured against —
+    // a stale lock (PINNED_COMMIT bumped here without refreshing
+    // test262-baseline.json, or vice versa) would silently compare today's
+    // counts against numbers measured on a different corpus.
+    if (lock.corpus !== PINNED_COMMIT) {
+      console.error(`\nFAIL: test262-baseline.json's corpus (${lock.corpus}) != this runner's PINNED_COMMIT (${PINNED_COMMIT}) — refresh the lock alongside a corpus pin bump.`)
+      process.exit(1)
+    }
+    const baseline = Number(process.env.JZ_TEST262_BASELINE) || lock.language
+    if (results.pass < baseline) {
+      console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
+      process.exit(1)
+    }
+    if (results.negaccept > lock.negAcceptCeiling) {
+      console.error(`\nFAIL: negAccept count ${results.negaccept} exceeds ceiling ${lock.negAcceptCeiling} (test/test262-baseline.json) — a subset compiler now wrongly accepts MORE invalid JS than before.`)
+      process.exit(1)
+    }
   }
 }

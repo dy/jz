@@ -1211,8 +1211,16 @@ if (!isMainThread) {
   // refreshed alongside a corpus pin bump or a real fix) is a hard failure.
   // JZ_TEST262_BASELINE, if set, overrides the file — an escape hatch, not
   // the source of truth.
-  const fileBaseline = JSON.parse(readFileSync(join(import.meta.dirname, 'test262-baseline.json'), 'utf8')).builtins
-  const baseline = Number(process.env.JZ_TEST262_BASELINE) || fileBaseline
+  const lock = JSON.parse(readFileSync(join(import.meta.dirname, 'test262-baseline.json'), 'utf8'))
+  // audit-#12 item 3: the lock's corpus SHA must match the checkout this run
+  // just measured against — a stale lock (PINNED_COMMIT bumped here without
+  // refreshing test262-baseline.json, or vice versa) would silently compare
+  // today's counts against numbers measured on a different corpus.
+  if (lock.corpus !== PINNED_COMMIT) {
+    console.error(`\nFAIL: test262-baseline.json's corpus (${lock.corpus}) != this runner's PINNED_COMMIT (${PINNED_COMMIT}) — refresh the lock alongside a corpus pin bump.`)
+    process.exit(1)
+  }
+  const baseline = Number(process.env.JZ_TEST262_BASELINE) || lock.builtins
   if (xpasses.length) {
     console.error(`\nFAIL: ${xpasses.length} test(s) in EXPECTED_FAIL_FILES now pass — prune them (listed above).`)
     process.exit(1)
