@@ -164,6 +164,144 @@ export function intExprRange(n) {
   return null
 }
 
+// Loop-counter RANGE-PROOF lever (audit-#8 P1-2 follow-up to 3b50d504/16f2d7c8):
+// a bare counted loop `for (let i = C; i < B; i++)` proves nothing about `i` to
+// opBound/intExprRange today — `i` is written by the step, so it never qualifies
+// for the decl-range stamp analyze.js gives a never-reassigned local (its own
+// "closed integer hull for never-reassigned decls" comment, src/compile/
+// analyze.js). Without a range, `i*K`/`i+j`/`B-i` shapes fall through
+// addFitsI32/mulFitsI32's magnitude-blind default (opBound's unproven ceiling,
+// 2^31 — ONE more than 0x7fffffff, so it fails by construction) all the way to
+// the f64 round-trip, which cascades into the vectorizer pattern-matchers
+// (they match the raw i32.add/i32.mul shapes) declining.
+//
+// Lives here (not emit.js) since forCounterRange has exactly ONE dependency —
+// intExprRange/constIntExpr, both already leaf-level in this file — and BOTH
+// an emit-time consumer (emit.js's ctx.func.refinements channel) and an
+// ANALYZE-TIME consumer (analyze-scans.js's stampCoInductionRanges, INDUCTION-
+// VARIABLE FACT project) need the identical proof: the whole point of "the
+// canonical range evaluator... shared" (intExprRange's own doc, above).
+//
+// Returns a real, closed [lo, hi] hull for `name` — sound for the ENTIRE body
+// of exactly this loop, nothing more — or null. Two independent proof
+// obligations, both required:
+//   1. `init` is a decl/assign of `name` to an expression intExprRange can hull
+//      (a literal is itself; a name chains through its own already-proven
+//      decl-range/refinement — same resolver every other intExprRange consumer
+//      shares, so composition is free).
+//   2. `cond` is `name < B` / `name <= B` and intExprRange(B) hulls too — a
+//      const bound is itself; a typed-array `.length`/module-const bound
+//      chains the same way; an unbounded dynamic bound (a raw param, an
+//      unproven global) returns null here and admits NOTHING — no heuristic
+//      fallback, matching the "the range proof must be REAL" floor.
+// `step` must be a KNOWN, monotone integer constant in the SAME direction as
+// the guard: increasing (`i++`, `i += K`, `i = i + K`, guard `i < B`/`i <=
+// B`) OR, symmetrically, decreasing (`i--`, `i -= K`, `i = i - K`, guard `i >
+// B`/`i >= B` — sort's heap-extract `for (end = n-1; end > 0; end--)`):
+// monotone motion is what makes the guard's tightened bound a true ceiling
+// (increasing) or floor (decreasing) and the init a true floor/ceiling on the
+// OTHER side; an unknown/non-self/direction-mismatched step proves nothing
+// (and is rejected). Reassignment elsewhere in the body (a closure capture, a
+// mid-body write) is NOT checked here — withRefinements (flow-types.js), the
+// sole caller, already refuses to install a refinement for any name
+// isReassigned finds written in that exact body.
+//
+// `expr ≡ name + K` for a compile-time integer K (K may be negative) — the
+// constant SHIFT a guard comparand can carry without changing which name the
+// comparison is really about. `name` itself is K=0. `K - name` is EXCLUDED:
+// that's `-name + K`, a sign-flipped (decreasing-into-K) relationship, never
+// a same-direction rewrite of `name`'s own motion — same exclusion
+// forCounterRange's own step-matcher already applies below. Lets a SHIFTED
+// guard (`i + 3 <= n`, base64's `encode`/`decode` shape — INDUCTION-VARIABLE
+// FACT project, see .work/todo.md) reuse the identical lo/hi arithmetic as a
+// bare-name guard, just against a bound pre-shifted by `-K`.
+export function nameShift(expr, name) {
+  if (expr === name) return 0
+  if (!Array.isArray(expr) || expr.length !== 3) return null
+  if (expr[0] === '+') {
+    if (expr[1] === name) { const k = constIntExpr(expr[2]); return Number.isInteger(k) ? k : null }
+    if (expr[2] === name) { const k = constIntExpr(expr[1]); return Number.isInteger(k) ? k : null }
+    return null
+  }
+  if (expr[0] === '-' && expr[1] === name) { const k = constIntExpr(expr[2]); return Number.isInteger(k) ? -k : null }
+  return null
+}
+// Which name does a relational guard's LHS actually compare — bare, or
+// shifted by a compile-time constant (nameShift's own shapes)? Both
+// forCounterRange callers need this BEFORE they can even name which
+// counter to ask forCounterRange to prove a hull for — `cond[1]` alone
+// (the old, pre-shift assumption both call sites made) is only ever a bare
+// name for an UNSHIFTED guard; a shifted one (`i + 3 <= n`) has an
+// expression there instead.
+export function guardCounterName(cond) {
+  if (!Array.isArray(cond) || !['<', '<=', '>', '>='].includes(cond[0])) return null
+  const lhs = cond[1]
+  if (typeof lhs === 'string') return lhs
+  if (Array.isArray(lhs) && lhs.length === 3 && lhs[0] === '+') {
+    if (typeof lhs[1] === 'string' && constIntExpr(lhs[2]) != null) return lhs[1]
+    if (typeof lhs[2] === 'string' && constIntExpr(lhs[1]) != null) return lhs[2]
+  }
+  if (Array.isArray(lhs) && lhs.length === 3 && lhs[0] === '-' && typeof lhs[1] === 'string' && constIntExpr(lhs[2]) != null) return lhs[1]
+  return null
+}
+export function forCounterRange(init, cond, step, name) {
+  if (!Array.isArray(cond) || !['<', '<=', '>', '>='].includes(cond[0])) return null
+  const shift = nameShift(cond[1], name)
+  if (shift == null) return null
+  const increasing = cond[0] === '<' || cond[0] === '<='
+  // Multi-declarator init (`let j = 0, k = 0`) — a dual-IV header (the FFT
+  // butterfly's `j`/`k` twiddle-walk being the motivating shape): find the ONE
+  // declarator that binds `name`, ignoring sibling declarators entirely (they
+  // prove nothing about `name` and disprove nothing either).
+  const initExpr =
+    Array.isArray(init) && (init[0] === 'let' || init[0] === 'const')
+      ? (init.slice(1).find(d => Array.isArray(d) && d[0] === '=' && d[1] === name) ?? null)?.[2] ?? null
+    : Array.isArray(init) && init[0] === '=' && init[1] === name ? init[2]
+    : null
+  if (initExpr == null) return null
+  const posConst = (e) => { const k = constIntExpr(e); return k != null && k > 0 }
+  // A comma-sequenced step (`j++, k += step`) — postfix `j++`'s VALUE is
+  // `(++j) - 1` at this AST layer (the old value), but the WRITE that matters
+  // for the range proof is the inner `++j`; unwrap that value-sugar before
+  // testing the mutation shape. `--x`'s postfix twin is `(--x) + 1`.
+  const unwrapPostfixVal = (e) =>
+    Array.isArray(e) && e[0] === '-' && e.length === 3 && Array.isArray(e[1]) && e[1][0] === '++' && constIntExpr(e[2]) === 1 ? e[1]
+    : Array.isArray(e) && e[0] === '+' && e.length === 3 && Array.isArray(e[1]) && e[1][0] === '--' && constIntExpr(e[2]) === 1 ? e[1]
+    : e
+  // mutOp: the '++'/'--' unary that moves `name` one unit in the guard's own
+  // direction. arithOp: the binary '+'/'-' a spelled-out `name = name ± K`
+  // step uses in that SAME direction — only that direction's operand-order
+  // swap (`K + name`) is a valid alternate spelling; `K - name` is a
+  // DIFFERENT (decreasing-into-K) quantity, never a same-direction rewrite of
+  // `name - K`, so it's deliberately excluded (the `arithOp === '+'` guard).
+  // Returns the step's own POSITIVE magnitude (not just a boolean) — the
+  // INDUCTION-VARIABLE FACT project's trip-count derivation needs it;
+  // existing callers only ever consumed the boolean truthiness, so this is
+  // additive.
+  const stepMag = (s, mutOp, arithOp) => {
+    s = unwrapPostfixVal(s)
+    if (Array.isArray(s) && s[0] === mutOp && s[1] === name) return 1
+    if (Array.isArray(s) && s[0] === (mutOp === '++' ? '+=' : '-=') && s[1] === name && posConst(s[2])) return constIntExpr(s[2])
+    if (Array.isArray(s) && s[0] === '=' && s[1] === name &&
+        Array.isArray(s[2]) && s[2][0] === arithOp && s[2].length === 3 &&
+        ((s[2][1] === name && posConst(s[2][2])) || (arithOp === '+' && s[2][2] === name && posConst(s[2][1]))))
+      return constIntExpr(s[2][1] === name ? s[2][2] : s[2][1])
+    return null
+  }
+  const stepMatches = (s) => increasing ? stepMag(s, '++', '+') : stepMag(s, '--', '-')
+  const stepOK = Array.isArray(step) && step[0] === ',' ? (step.slice(1).map(stepMatches).find(v => v != null) ?? null) : stepMatches(step)
+  if (stepOK == null) return null
+  const initRange = intExprRange(initExpr), boundRange0 = intExprRange(cond[2])
+  if (!initRange || !boundRange0) return null
+  const boundRange = [boundRange0[0] - shift, boundRange0[1] - shift]
+  const lo = increasing ? initRange[0] : boundRange[0] + (cond[0] === '>' ? 1 : 0)
+  const hi = increasing ? boundRange[1] - (cond[0] === '<' ? 1 : 0) : initRange[1]
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo > hi) return null
+  const result = [lo, hi]
+  result.step = stepOK
+  return result
+}
+
 export const NO_VALUE = Symbol('no-static-property-key')
 
 export function staticPropertyKey(node) {

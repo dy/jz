@@ -35,7 +35,7 @@ import {
 import { ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
-import { nonNegIntLiteral, intLiteralValue, intExprRange, staticPropertyKey } from '../static.js'
+import { nonNegIntLiteral, intLiteralValue, intExprRange, staticPropertyKey, guardCounterName, forCounterRange } from '../static.js'
 import { findFreeVars } from './analyze.js'
 import { scanBindingUses, USE } from './analyze-scans.js'
 import {
@@ -451,86 +451,6 @@ const subLiteralFitsI32 = (aAst, bAst) => {
   if (k == null || !Number.isInteger(k)) return false
   if (k >= 0) { const lo = boundedLo(aAst); return lo != null && lo - k >= -0x80000000 }
   const hi = boundedHi(aAst); return hi != null && hi - k <= 0x7fffffff
-}
-
-// Loop-counter RANGE-PROOF lever (audit-#8 P1-2 follow-up to 3b50d504/16f2d7c8):
-// a bare counted loop `for (let i = C; i < B; i++)` proves nothing about `i` to
-// opBound/intExprRange today — `i` is written by the step, so it never qualifies
-// for the decl-range stamp analyze.js gives a never-reassigned local (its own
-// "closed integer hull for never-reassigned decls" comment, src/compile/
-// analyze.js). Without a range, `i*K`/`i+j`/`B-i` shapes fall through
-// addFitsI32/mulFitsI32's magnitude-blind default (opBound's unproven ceiling,
-// 2^31 — ONE more than 0x7fffffff, so it fails by construction) all the way to
-// the f64 round-trip, which cascades into the vectorizer pattern-matchers
-// (they match the raw i32.add/i32.mul shapes) declining.
-//
-// Returns a real, closed [lo, hi] hull for `name` — sound for the ENTIRE body
-// of exactly this loop, nothing more — or null. Two independent proof
-// obligations, both required:
-//   1. `init` is a decl/assign of `name` to an expression intExprRange can hull
-//      (a literal is itself; a name chains through its own already-proven
-//      decl-range/refinement — same resolver every other intExprRange consumer
-//      shares, so composition is free).
-//   2. `cond` is `name < B` / `name <= B` and intExprRange(B) hulls too — a
-//      const bound is itself; a typed-array `.length`/module-const bound
-//      chains the same way; an unbounded dynamic bound (a raw param, an
-//      unproven global) returns null here and admits NOTHING — no heuristic
-//      fallback, matching the "the range proof must be REAL" floor.
-// `step` must be a KNOWN, monotone integer constant in the SAME direction as
-// the guard: increasing (`i++`, `i += K`, `i = i + K`, guard `i < B`/`i <=
-// B`) OR, symmetrically, decreasing (`i--`, `i -= K`, `i = i - K`, guard `i >
-// B`/`i >= B` — sort's heap-extract `for (end = n-1; end > 0; end--)`):
-// monotone motion is what makes the guard's tightened bound a true ceiling
-// (increasing) or floor (decreasing) and the init a true floor/ceiling on the
-// OTHER side; an unknown/non-self/direction-mismatched step proves nothing
-// (and is rejected). Reassignment elsewhere in the body (a closure capture, a
-// mid-body write) is NOT checked here — withRefinements (flow-types.js), the
-// sole caller, already refuses to install a refinement for any name
-// isReassigned finds written in that exact body.
-function forCounterRange(init, cond, step, name) {
-  if (!Array.isArray(cond) || !['<', '<=', '>', '>='].includes(cond[0]) || cond[1] !== name) return null
-  const increasing = cond[0] === '<' || cond[0] === '<='
-  // Multi-declarator init (`let j = 0, k = 0`) — a dual-IV header (the FFT
-  // butterfly's `j`/`k` twiddle-walk being the motivating shape): find the ONE
-  // declarator that binds `name`, ignoring sibling declarators entirely (they
-  // prove nothing about `name` and disprove nothing either).
-  const initExpr =
-    Array.isArray(init) && (init[0] === 'let' || init[0] === 'const')
-      ? (init.slice(1).find(d => Array.isArray(d) && d[0] === '=' && d[1] === name) ?? null)?.[2] ?? null
-    : Array.isArray(init) && init[0] === '=' && init[1] === name ? init[2]
-    : null
-  if (initExpr == null) return null
-  const posConst = (e) => { const k = constIntExpr(e); return k != null && k > 0 }
-  // A comma-sequenced step (`j++, k += step`) — postfix `j++`'s VALUE is
-  // `(++j) - 1` at this AST layer (the old value), but the WRITE that matters
-  // for the range proof is the inner `++j`; unwrap that value-sugar before
-  // testing the mutation shape. `--x`'s postfix twin is `(--x) + 1`.
-  const unwrapPostfixVal = (e) =>
-    Array.isArray(e) && e[0] === '-' && e.length === 3 && Array.isArray(e[1]) && e[1][0] === '++' && constIntExpr(e[2]) === 1 ? e[1]
-    : Array.isArray(e) && e[0] === '+' && e.length === 3 && Array.isArray(e[1]) && e[1][0] === '--' && constIntExpr(e[2]) === 1 ? e[1]
-    : e
-  // mutOp: the '++'/'--' unary that moves `name` one unit in the guard's own
-  // direction. arithOp: the binary '+'/'-' a spelled-out `name = name ± K`
-  // step uses in that SAME direction — only that direction's operand-order
-  // swap (`K + name`) is a valid alternate spelling; `K - name` is a
-  // DIFFERENT (decreasing-into-K) quantity, never a same-direction rewrite of
-  // `name - K`, so it's deliberately excluded (the `arithOp === '+'` guard).
-  const isStepFor = (s, mutOp, arithOp) => {
-    s = unwrapPostfixVal(s)
-    return (Array.isArray(s) && s[0] === mutOp && s[1] === name) ||
-      (Array.isArray(s) && s[0] === (mutOp === '++' ? '+=' : '-=') && s[1] === name && posConst(s[2])) ||
-      (Array.isArray(s) && s[0] === '=' && s[1] === name &&
-        Array.isArray(s[2]) && s[2][0] === arithOp && s[2].length === 3 &&
-        ((s[2][1] === name && posConst(s[2][2])) || (arithOp === '+' && s[2][2] === name && posConst(s[2][1]))))
-  }
-  const stepMatches = (s) => increasing ? isStepFor(s, '++', '+') : isStepFor(s, '--', '-')
-  const stepOK = Array.isArray(step) && step[0] === ',' ? step.slice(1).some(stepMatches) : stepMatches(step)
-  if (!stepOK) return null
-  const initRange = intExprRange(initExpr), boundRange = intExprRange(cond[2])
-  if (!initRange || !boundRange) return null
-  const lo = increasing ? initRange[0] : boundRange[0] + (cond[0] === '>' ? 1 : 0)
-  const hi = increasing ? boundRange[1] - (cond[0] === '<' ? 1 : 0) : initRange[1]
-  return Number.isFinite(lo) && Number.isFinite(hi) && lo <= hi ? [lo, hi] : null
 }
 
 /** Emit typeof comparison: typeof x == typeCode → type-aware check. */
@@ -6198,10 +6118,10 @@ export const emitter = {
         // below (sound only conditional on the guard passing), the counter's own
         // [lo, hi] hull holds unconditionally for either arm: same init/cond/step,
         // only the body's access forms differ.
-        const topCounterRange = Array.isArray(cond) && typeof cond[1] === 'string'
-          ? forCounterRange(init, cond, step, cond[1]) : null
+        const topCounterName = guardCounterName(cond)
+        const topCounterRange = topCounterName ? forCounterRange(init, cond, step, topCounterName) : null
         const topCounterRefs = topCounterRange
-          ? new Map([[cond[1], { rlo: topCounterRange[0], rhi: topCounterRange[1] }]]) : null
+          ? new Map([[topCounterName, { rlo: topCounterRange[0], rhi: topCounterRange[1] }]]) : null
         const result = []
         if (init != null) result.push(...emitVoid(init))
         const i64c = (n) => ['i64.const', n]
@@ -6617,8 +6537,9 @@ export const emitter = {
     // (x >= 0 && x < W)` branch guard already uses for its own int-range
     // refinement — so intExprRange(i) (and every addFitsI32/mulFitsI32 caller
     // that routes through it) sees the fact for the duration of this emit only.
-    const counterRange = Array.isArray(cond) && typeof cond[1] === 'string' ? forCounterRange(init, cond, step, cond[1]) : null
-    const counterRefs = counterRange ? new Map([[cond[1], { rlo: counterRange[0], rhi: counterRange[1] }]]) : null
+    const counterName = guardCounterName(cond)
+    const counterRange = counterName ? forCounterRange(init, cond, step, counterName) : null
+    const counterRefs = counterRange ? new Map([[counterName, { rlo: counterRange[0], rhi: counterRange[1] }]]) : null
     // Loop-guard hull channel (addLiteralFitsI32's doc, above near
     // addRangeFitsI32): `while(name < bound)` / `for(…; name < bound; …)`
     // proves an upper bound for `name` — sound WITHOUT forCounterRange's

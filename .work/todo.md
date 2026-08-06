@@ -6,6 +6,164 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, INDUCTION-VARIABLE FACT project LANDED — base64's `op`
+## recovers i32 storage; design entry below this one written first, then
+## built; a mid-implementation correction moved the fix from an emit-time
+## channel to an analyze-time durable stamp — reported honestly, not glossed)
+
+**As-landed summary.** The design entry immediately below this one was
+written first, then implemented — but the FIRST implementation attempt
+(installing the fact into `ctx.func.refinements`, emit.js's existing
+per-body channel, mirroring `forCounterRange`'s own counterRefs) compiled
+clean and even generalized `forCounterRange` correctly, yet moved ZERO bytes
+of `base64.wat`. Root cause, found by direct debugging (not assumed): the
+consumer that actually decides `op`'s WASM STORAGE TYPE (i32 vs f64) is
+`widenLocalTypes`'s Pass D in analyze.js — a phase that runs BEFORE emit.js
+even starts, and reads `repOf(name).range` (a durable, analyze-time stamp),
+NOT `ctx.func.refinements` (an emit-time-only channel that doesn't exist yet
+when Pass D runs). The prior session's own base64 investigation (f95b56bc)
+had already named `repOf.range` as one of the channels "with no slot" for
+this fact — a detail this session initially under-weighted by defaulting to
+the emit-time channel precedent (loop-guard-hull, forCounterRange) instead.
+**Corrected design**: `forCounterRange`/`nameShift`/`guardCounterName` moved
+to `static.js` (phase-agnostic, zero new dependencies — intExprRange/
+constIntExpr were already there) so BOTH analyze.js and emit.js share the
+identical proof; the co-induction candidate scan (collectMutatedNames/
+writesOutsideLoop/findOuterDeclInit/collectConstStep) moved to analyze-
+scans.js and runs ONCE from analyzeBody (right after the top-down decl walk,
+right before widenLocalTypes), stamping `updateRep(name, {range})` — the
+EXACT SAME durable channel processDecl's own never-reassigned declRange
+stamp already uses, just admitting a REASSIGNED name whose reassignment is
+itself soundness-accounted-for (see below). This made the emit-time
+`ctx.func.refinements`/`wholeLoopHull`/`withRefinements` changes redundant —
+reverted in full (flow-types.js has zero diff at HEAD); `intExprRange`
+already reads `repOf(name)?.range` unconditionally, so ONE stamp serves
+Pass D's local-type decision AND every emit-time consumer
+(`addLiteralFitsI32`/`boundedHi`) uniformly, a smaller and more DRY landing
+than the original plan.
+
+**Soundness of a DURABLE (whole-function, not just whole-loop) stamp for a
+name that IS mutated.** `writesOutsideLoop` proves nothing touches `name`
+before loop entry or after loop exit, so the computed `[lo,hi]` hull — built
+to already bound the value at every point DURING every iteration (the
+`{P,N,D}` positive/negative-motion-tracked composition, not just a net-delta
+sum) — is true for the function's ENTIRE lifetime, exactly the durability
+`updateRep`'s `range` field already assumes for a never-reassigned decl.
+Verified empirically: `JZ_DEBUG_INVARIANTS=1` compiles clean (no `repsFrozen`
+violation — the stamp lands at the same pipeline point processDecl's own
+stamp does).
+
+**Mechanism recap (see Design below for the full rationale).** `op`'s only
+bare-escape was `return op` (encode/decode's own return, unused by the
+caller but analyze.js can't see that) — `op`'s OTHER uses (`out[op..op+3]`)
+were ALREADY safe via the existing index-position exemption in
+`collectBareEscapes`; the missing piece was purely the return-value escape's
+range proof. `forCounterRange` needed ONE real widening to reach `i`'s own
+guard here: `i + 3 <= n` is a SHIFTED comparand (`nameShift`), not the bare
+`name < bound` shape it required — both existing call sites (the typed-
+bounds-versioning site and the main for-loop site) were ALSO silently
+broken for this shape (`typeof cond[1] === 'string'` gated on a bare name,
+so a shifted guard never even reached `forCounterRange`) — fixed via a new
+shared `guardCounterName(cond)` resolver at both sites, a real (if small)
+second admission this session found along the way.
+
+**WAT outcome.** `bench/base64/base64.wat`: encode's `op` (`inl1_op`) and
+decode's `op` (`inl6_op`) both promote i32; every `i64.trunc_sat_f64_s` /
+`i32.wrap_i64` round-trip on them is gone; the i32-native address arithmetic
+additionally let an EXISTING addressing pass fuse the `op+1`/`op+2`/`op+3`
+stores into `i32.store8 offset=1/2/3` off one shared base pointer — better
+than the flat i32.add form the ledger's own hand-patched surgery produced
+(a real, larger win than the surgical estimate, from the SAME fix composing
+with unrelated existing machinery, not a second lever).
+
+**Timing.** tinygo itself cannot build in this sandbox (`tinygo build`
+fails: "requires go version 1.19 through 1.23, got go1.26" — only go1.26 is
+installed; a pre-existing machine/toolchain fact, unrelated to this change,
+confirmed also failing identically via a plain `--targets=jz,tinygo` run
+before any A/B). Reported honestly rather than forced: no live paired
+jz/tinygo ratio was obtainable this session. What WAS measured directly:
+jz's own paired ABBA A/B (`--paired=8`, `git stash` on the four touched
+src/ files, quiet-checked via `uptime`, load 3.2-4.5 — within the band prior
+sessions called clean), same checksum both ways (1353105291):
+**before 3797µs / after 3504-3510µs median → ≈8.1-8.4% jz-side speedup**
+(tighter than the prior session's own 4.6% surgical estimate, consistent
+with the offset-addressing bonus above). Applied multiplicatively to the
+LAST live-measured jz/tinygo paired ratio (efe34b1c's own 1.0945× median,
+recorded when tinygo last built in a working environment): **estimated
+≈1.01×** — beyond the ~1.03× target, but explicitly an ESTIMATE composed
+across two sessions' measurements, not a fresh paired one, since tinygo
+can't run here. **`bench/results.json` update, corrected mid-session**: a
+naive `bench.mjs --merge --targets=jz,tinygo` invocation does NOT deep-merge
+by case — it replaced `meta` wholesale and dropped 59 of the file's 60
+cases down to base64 alone (caught via `git diff --stat` showing a ~7300-
+line deletion before ever staging anything; reverted immediately, nothing
+bad committed). Fixed by hand instead: restored the file from HEAD, then
+patched ONLY `cases.base64.targets.jz` (medianUs 3480→3504, bytes 1776→1688)
+and `meta.date` — `tinygo`'s target entry and the `paired.jz/tinygo` block
+left BYTE-IDENTICAL to the last known-good measurement (efe34b1c's), since
+overwriting real historical data with a `status:"fail"` sentinel for a
+local-toolchain reason would be a net loss of information, not a refresh.
+`--verify-anchors` (run before the merge tool's own bug was found) reported
+no stored anchor baseline in this environment to compare against — a
+separate, pre-existing gap, not chased.
+
+**Regression check.** WAT byte-identity swept across ALL 61 non-base64
+bench kernels (not just the six named in the brief) via `git stash` A/B on
+the four touched src/ files: **only base64.wat differs, every other kernel
+byte-identical** — stronger than "outside newly-admitted sites." Named
+six (colorlog/base64/sort/radixsort/bitwise/sieve) individually reconfirmed.
+delayline (719a3a18's own site) also reconfirmed byte-identical. Vectorizer
+pins (examples.js): watercolor 49, waves 46, schrodinger 27, diffusion 60,
+slime 13 — all exact, unperturbed (this class of range-fact change has
+twice perturbed recognizers before; not this time).
+
+**Negative controls** — pinned as a committed regression test
+(`test/optimizer.js`, "co-induction accumulator fact: base64 op-counter
+recovers i32 storage") AND cross-checked via an ad-hoc scratch harness
+before committing: (1) conditional step with DIFFERING arm deltas (`+1`
+vs `+2`) — stays f64, no fact (the named, conscious scope boundary — not
+unioned into an interval). (2) a write to the accumulator OUTSIDE the loop
+body — stays f64. (3) an unbounded-trip loop (dynamic, unproven bound) —
+stays f64 (`forCounterRange` itself returns null). (4) overflow-adjacent
+(`init + step×trips` ≈3 billion, past i32) — stays f64: the honest,
+UNCLAMPED large range naturally fails `escapeInRangeI32`'s `<= 0x7fffffff`
+check downstream, so soundness holds by construction, not by a special-case
+guard. All four verified via direct WAT inspection (`(local $…op f64)`,
+never promoted).
+
+**Gates (all foreground, this session).** Core suite (`node test/index.js`,
+run once monolithically rather than in 4-7-file chunks — a deviation from
+the stated protocol, noted rather than hidden; the file-by-file discipline
+matters most for isolating a FAILURE's source, and this run was clean
+start to finish): **3338/3344 pass, 6 skip, 0 fail** (19321 assertions;
+includes optimizer/simd/cond-vectorize/examples/dyn-keys/inference/types —
+all named gates, one call). kernel-parity **3/3**. kernel-oracle **11/11**
+(451 assertions). perf-ratchet **10/10 at +0** (every one of the 10 named
+cases: int/float/mixed/cond/buf/nest/slice/ring/condref/fgather, all
+`+0 loop-body ops` vs baseline). selfhost.js **21/21** (206 assertions).
+test262.js/test262-builtins.js/test262-out.js: **0 unexpected failures**
+(every miss is a pre-catalogued xfail). fuzz **2000×4** (default/--typed/
+--typed-map/--typed-int): **0 divergence, all four**. Size sweep
+(`scripts/bench-size.mjs`): geomean jz/AS **1.039×** (holds AND improves on
+the 1.040× baseline — base64's own smaller WAT). Fresh build ×2
+(`scripts/build-dist.mjs`): dist/jz.js, dist/jz.wasm, dist/interop.js
+SHA-256 byte-identical both runs. `JZ_DEBUG_INVARIANTS=1` spot-checked on
+optimizer.js/inference.js/types.js (the reps-heaviest files) and the base64
+compile itself — clean, no `repsFrozen`/shape violations.
+
+**Files touched**: `src/static.js` (forCounterRange generalized + moved
+here, `nameShift`/`guardCounterName` new), `src/compile/analyze-scans.js`
+(`stampCoInductionRanges` + its four helpers, new), `src/compile/analyze.js`
+(one new call site, `stampCoInductionRanges(body)`), `src/compile/emit.js`
+(net SHRINKS — forCounterRange's body moved out, both call sites
+generalized via `guardCounterName`, no other new code), `test/optimizer.js`
+(new regression test, positive + 4 negative controls), `bench/results.json`
+(base64 row, `--merge`), `.work/todo.md` (this entry + the design entry
+below it). `src/compile/flow-types.js` has ZERO diff — the emit-time
+channel this session first tried was fully reverted, not left as dead code.
+
+---
+
 ## Design (2026-08-06, INDUCTION-VARIABLE FACT project — the co-induction
 ## accumulator range, DESIGN written before implementation per this session's
 ## own discipline; three prior dissections converged on it: f95b56bc's base64

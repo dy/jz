@@ -1,6 +1,6 @@
 {
  "meta": {
-  "date": "2026-08-06 07:39 UTC",
+  "date": "2026-08-06 12:29 UTC",
   "commit": "2eb3af0b",
   "host": {
    "platform": "darwin",
@@ -413,11 +413,11 @@
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 3480,
-     "bytes": 1776,
+     "medianUs": 3504,
+     "bytes": 1688,
      "memKb": 51552,
      "parity": "ok",
-     "measuredAt": "2eb3af0b"
+     "measuredAt": "355a91c7"
     },
     "as": {
      "medianUs": 4092,

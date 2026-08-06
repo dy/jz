@@ -3193,6 +3193,120 @@ test('Pass-D range-proof exemption: bare-literal-only bounded chain stays i32 (d
   for (const n of [0, 1, 5, 12]) is(g(n), refG(n), `unbounded g n=${n}`)
 })
 
+test('co-induction accumulator fact: base64 op-counter recovers i32 storage (INDUCTION-VARIABLE FACT project)', () => {
+  // `op` is declared BEFORE the loop, stepped only by a body literal (`op += 4`),
+  // guarded by a SHIFTED loop bound (`i + 3 <= N`) — the exact base64 encode/decode
+  // shape f95b56bc/efe34b1c/d6460bce/c8700daa all named as "no existing slot in any
+  // current channel". analyze-scans.js's stampCoInductionRanges proves op's whole-
+  // function range from the loop's own trip count (static.js's forCounterRange,
+  // generalized to a shifted guard) and durably stamps it via updateRep — so Pass D's
+  // bare-escape check (the `return op` at the end) sees a real hull instead of
+  // demoting op to f64.
+  const N = 3072
+  const src = `
+    const N = ${N}
+    const encode = (src, out) => {
+      let op = 0
+      for (let i = 0; i + 3 <= N; i += 3) {
+        out[op] = src[i]
+        out[op + 1] = src[i + 1]
+        out[op + 2] = src[i + 2]
+        op += 4
+      }
+      return op
+    }
+    export let f = () => {
+      const src = new Uint8Array(N)
+      const out = new Uint8Array((N / 3) * 4)
+      for (let i = 0; i < N; i++) src[i] = (i * 7 + 3) & 0xff
+      const op = encode(src, out)
+      let cs = op
+      for (let i = 0; i < out.length; i++) cs = (cs * 31 + out[i]) | 0
+      return cs
+    }
+  `
+  const w = jz.compile(src, { wat: true, optimize: 'speed' })
+  ok(/\(local \$\S*op i32\)/.test(w), 'op local promoted to i32 storage')
+  // No f64 round-trip on any `local.get $…op` use specifically (module-wide
+  // trunc_sat_f64_s isn't itself a signal — an unrelated stdlib helper can carry
+  // one for a totally different reason; scope the check to op's own local).
+  ok(!/i32\.trunc_sat_f64_s\s*\n\s*\(local\.get \$\S*op\)/.test(w), 'no f64 round-trip survives for op-indexed stores')
+  const { f } = run(src, { optimize: 'speed' })
+  const got = f()
+  const ref = (() => {
+    const src2 = new Uint8Array(N)
+    const out2 = new Uint8Array((N / 3) * 4)
+    for (let i = 0; i < N; i++) src2[i] = (i * 7 + 3) & 0xff
+    let op = 0
+    for (let i = 0; i + 3 <= N; i += 3) {
+      out2[op] = src2[i]; out2[op + 1] = src2[i + 1]; out2[op + 2] = src2[i + 2]
+      op += 4
+    }
+    let cs = op
+    for (let i = 0; i < out2.length; i++) cs = (cs * 31 + out2[i]) | 0
+    return cs
+  })()
+  is(got, ref, 'encode checksum matches reference bit-for-bit')
+
+  // Negative control 1: conditional step whose two arms carry DIFFERENT deltas —
+  // no fact (bails, does not union into an interval — a named scope boundary).
+  const condStep = `
+    const N = ${N}
+    const encode = (src, out) => {
+      let op = 0
+      for (let i = 0; i < N; i++) {
+        if (src[i] > 0) op += 1
+        else op += 2
+      }
+      return op
+    }
+    export let f = (src, out) => encode(src, out)
+  `
+  const wCond = jz.compile(condStep, { wat: true, optimize: 'speed' })
+  ok(/\(local \$\S*op f64\)/.test(wCond), 'conditional differing-delta accumulator stays f64 (no fact)')
+
+  // Negative control 2: a write to `op` OUTSIDE the loop body — no fact.
+  const outsideWrite = `
+    const N = ${N}
+    const encode = (src, out) => {
+      let op = 0
+      for (let i = 0; i < N; i++) { out[op] = src[i]; op += 1 }
+      op += 1
+      return op
+    }
+    export let f = (src, out) => encode(src, out)
+  `
+  const wOutside = jz.compile(outsideWrite, { wat: true, optimize: 'speed' })
+  ok(/\(local \$\S*op f64\)/.test(wOutside), 'accumulator written outside the loop stays f64 (no fact)')
+
+  // Negative control 3: unbounded trip count (a dynamic, unproven loop bound) —
+  // no fact; forCounterRange itself returns null so nothing downstream fires.
+  const unboundedTrip = `
+    const encode = (src, out, m) => {
+      let op = 0
+      for (let i = 0; i < m; i++) { out[op] = src[i]; op += 1 }
+      return op
+    }
+    export let f = (src, out, m) => encode(src, out, m)
+  `
+  const wUnbounded = jz.compile(unboundedTrip, { wat: true, optimize: 'speed' })
+  ok(/\(local \$\S*op f64\)/.test(wUnbounded), 'unbounded-trip loop accumulator stays f64 (no fact)')
+
+  // Negative control 4: overflow-adjacent — init + step*trips exceeds i32 range.
+  // The soundness floor: a huge but FINITE hull must still fail escapeInRangeI32's
+  // i32-fit check, not get silently clamped into a false admission.
+  const overflowAdjacent = `
+    const encode = (src, out) => {
+      let op = 0
+      for (let i = 0; i < 1000000; i++) { out[0] = src[i]; op += 3000 }
+      return op
+    }
+    export let f = (src, out) => encode(src, out)
+  `
+  const wOverflow = jz.compile(overflowAdjacent, { wat: true, optimize: 'speed' })
+  ok(/\(local \$\S*op f64\)/.test(wOverflow), 'overflow-adjacent accumulator stays f64 (no unsound admission)')
+})
+
 test('clamp-peel: stencil edge-peel fires + bit-exact + soundness guards bail', () => {
   // A real box-blur stencil (clamp xi=x+k to [0,w-1]) must split into clamp-free
   // interior + edges, bit-exact vs disabled, while dangerous variants (mutated iv /

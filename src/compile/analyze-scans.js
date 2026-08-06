@@ -5,8 +5,12 @@
 
 import { ASSIGN_OPS, MUTATE_OPS, collectParamNames, extractParams, REFS_IN_EXPR, refsName, T, isLiteralStr } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
-import { staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE } from '../static.js'
+import {
+  staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
+  constIntExpr, guardCounterName, forCounterRange,
+} from '../static.js'
 import { exprType } from '../type.js'
+import { repOf, updateRep } from '../reps.js'
 
 export function findFreeVars(node, bound, free, scope) {
   if (node == null) return
@@ -1011,6 +1015,207 @@ export function collectBareEscapes(body, locals, crossClosure) {
   }
   walk(body, 'value')
   return escaped
+}
+
+// === Co-induction accumulator fact (INDUCTION-VARIABLE FACT project) ===
+// A local declared BEFORE a loop, mutated ONLY inside its body by a compile-
+// time-constant step, executes at most the loop's own trip count — so its
+// range is `[init, init + step × maxTrips]`, sign-aware, whenever the loop's
+// own trip count is provable (static.js's forCounterRange). base64's
+// `encode`/`decode` `op` (`let op = 0` before `for(let i=0;i+3<=n;i+=3)`,
+// stepped `op += 4` once per iteration, its final value bare-`return`ed) is
+// the motivating shape — see .work/todo.md's design entry for the full
+// rationale.
+//
+// STAMPED HERE (analyze time, via `updateRep`, the SAME durable channel
+// processDecl's own never-reassigned declRange stamp uses just above in
+// analyze.js) rather than installed as an emit-time `ctx.func.refinements`
+// entry: the consumer that actually decides `op`'s WASM STORAGE TYPE is
+// `widenLocalTypes`'s Pass D (this file's own `collectBareEscapes`/
+// `escapeInRangeI32`, called from analyze.js — a phase that completes
+// BEFORE emit.js ever runs), not an emit-time expression-level proof. A
+// durable `repOf(name).range` stamp is picked up by `intExprRange` (static.js)
+// unconditionally — no `ctx.func.refinements` needed — so ONE stamp here
+// serves Pass D's local-type decision AND every later emit-time consumer
+// (`addLiteralFitsI32`/`boundedHi` etc.) uniformly. Sound as a WHOLE-FUNCTION
+// fact, not just "sound inside the loop": `writesOutsideLoop` (below) already
+// proves nothing touches `name` before loop entry or after loop exit, so its
+// value stays within this same hull for the function's entire lifetime —
+// the exact durability `updateRep`'s `range` field already assumes.
+
+/** Every bare-name MUTATE_OPS write target inside `root` (any depth, any
+ *  shape) — candidates for the co-induction scan below. Over-inclusive by
+ *  design (a name from a nested/conditional/shadowed write is filtered out
+ *  downstream by collectConstStep/writesOutsideLoop, not here). Mirrors
+ *  isReassigned's own 'let'/'const' special-case: a declarator's `=` binds
+ *  the name, it doesn't write it. */
+function collectMutatedNames(root, out = new Set()) {
+  if (!Array.isArray(root)) return out
+  const op = root[0]
+  if (MUTATE_OPS.has(op) && typeof root[1] === 'string') out.add(root[1])
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < root.length; i++) {
+      const d = root[i]
+      if (Array.isArray(d) && d[0] === '=' && d[2] != null) collectMutatedNames(d[2], out)
+    }
+    return out
+  }
+  for (let i = 1; i < root.length; i++) collectMutatedNames(root[i], out)
+  return out
+}
+
+/** Does `name` get WRITTEN anywhere in `root` OUTSIDE `exclude`'s subtree
+ *  (reference identity, not structural equality — `exclude` is the loop's
+ *  own body node, still embedded in `root` at this point in the pipeline)?
+ *  Mirrors isReassigned's own tree walk verbatim, plus the exclude-subtree
+ *  skip. A write here anywhere else in the enclosing function invalidates
+ *  the whole fact — the hull's `init` value assumes NOTHING touches `name`
+ *  between its declaration and loop entry, or after the loop exits. */
+function writesOutsideLoop(root, exclude, name) {
+  if (!Array.isArray(root) || root === exclude) return false
+  const op = root[0]
+  if (MUTATE_OPS.has(op) && root[1] === name) return true
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < root.length; i++) {
+      const d = root[i]
+      if (Array.isArray(d) && d[0] === '=' && d[2] != null && writesOutsideLoop(d[2], exclude, name)) return true
+    }
+    return false
+  }
+  for (let i = 1; i < root.length; i++) if (writesOutsideLoop(root[i], exclude, name)) return true
+  return false
+}
+
+/** The unique `let`/`const NAME = initExpr` declarator's initializer,
+ *  searched anywhere in `root` OUTSIDE `exclude`'s subtree — the
+ *  co-induction candidate's OWN declaration (temporal-dead-zone scoping in
+ *  valid JS guarantees it textually precedes any use, so no separate
+ *  position check is needed). Returns null for zero OR more-than-one match
+ *  (ambiguous — possibly a real shadow in a disjoint block; this compiler's
+ *  flat per-function local model makes that rare, but bail rather than
+ *  guess) and for an uninitialized `let NAME` (nothing to prove a range
+ *  from). */
+function findOuterDeclInit(root, exclude, name) {
+  let found, count = 0
+  ;(function walk(n) {
+    if (!Array.isArray(n) || n === exclude) return
+    if (n[0] === 'let' || n[0] === 'const') {
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (Array.isArray(d) && d[0] === '=' && d[1] === name) { found = d[2]; count++ }
+      }
+    }
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  })(root)
+  return count === 1 ? found : null
+}
+
+/** Per-iteration constant-step delta for `name` inside `node` (this loop's
+ *  body) — `{P, N, D}`: P/N are the total POSITIVE/NEGATIVE step magnitudes
+ *  straight-line execution accumulates in one pass (P, N ≥ 0), D = P − N the
+ *  net. Tracking P/N separately (not just D) is what makes a `+K; …; −M`
+ *  pair inside one iteration sound: the true value can transiently reach
+ *  `start + P` or dip to `start − N` mid-iteration even though the NET
+ *  motion is smaller — the whole-loop hull built from this (stampCoInduction-
+ *  Ranges, below) folds BOTH bounds in, not just the net.
+ *  Returns null (poison — no fact) for: any write to `name` that isn't
+ *  `++`/`--`/`+=K`/`-=K` (K a compile-time int — a plain `=` reset or a
+ *  non-constant compound assign changes the whole shape of the value, not
+ *  just its magnitude); a step inside an `if`/`?:` whose two arms don't
+ *  yield the IDENTICAL `{P,N,D}` (non-deterministic per-iteration motion —
+ *  differing-but-individually-provable arms, e.g. `+1` vs `+2`, are a named,
+ *  conscious scope boundary — see the design doc — not unioned into an
+ *  interval-valued step); any reference to `name` inside a nested loop/
+ *  switch/try/closure (its own iteration count is unknown here); a nested
+ *  decl that REBINDS `name` (a shadow — genuinely a different variable past
+ *  that point). */
+function collectConstStep(node, name) {
+  if (!Array.isArray(node)) return { P: 0, N: 0, D: 0 }
+  const op = node[0]
+  if (MUTATE_OPS.has(op) && node[1] === name) {
+    if (op === '++') return { P: 1, N: 0, D: 1 }
+    if (op === '--') return { P: 0, N: 1, D: -1 }
+    if (op === '+=') { const k = constIntExpr(node[2]); return Number.isInteger(k) ? (k >= 0 ? { P: k, N: 0, D: k } : { P: 0, N: -k, D: k }) : null }
+    if (op === '-=') { const k = constIntExpr(node[2]); return Number.isInteger(k) ? (k >= 0 ? { P: 0, N: k, D: -k } : { P: -k, N: 0, D: -k }) : null }
+    return null   // '=' or another compound op — not a provable constant step
+  }
+  if (op === 'let' || op === 'const') {
+    let P = 0, N = 0, D = 0
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (d === name) return null                                     // bare uninitialized shadow decl
+      if (Array.isArray(d) && d[1] === name) return null               // shadow — a fresh `name` rebinds here
+      if (Array.isArray(d) && d[0] === '=') {
+        const s = collectConstStep(d[2], name)
+        if (s == null) return null
+        P += s.P; N += s.N; D += s.D
+      }
+    }
+    return { P, N, D }
+  }
+  if (op === 'if' || op === '?:') {
+    const c = collectConstStep(node[1], name)
+    if (c == null || c.P || c.N) return null   // a write to `name` inside the CONDITION itself — reject, too exotic
+    const t = collectConstStep(node[2], name)
+    const e = node.length > 3 && node[3] !== undefined ? collectConstStep(node[3], name) : { P: 0, N: 0, D: 0 }
+    if (t == null || e == null) return null
+    if (t.D !== e.D || t.P !== e.P || t.N !== e.N) return null   // arms disagree — non-deterministic per-iteration motion
+    return t
+  }
+  if (op === 'for' || op === 'for-in' || op === 'for-of' || op === 'while' || op === 'do'
+      || op === 'switch' || op === 'try' || op === '=>')
+    return refsName(node, name, REFS_IN_EXPR) ? null : { P: 0, N: 0, D: 0 }
+  let P = 0, N = 0, D = 0
+  for (let i = 1; i < node.length; i++) {
+    const s = collectConstStep(node[i], name)
+    if (s == null) return null
+    P += s.P; N += s.N; D += s.D
+  }
+  return { P, N, D }
+}
+
+/** Scan `body` (a whole function body, analyze-time — see this section's own
+ *  header doc for why here and not emit.js) for co-induction accumulators
+ *  and durably stamp each proven one via `updateRep(name, {range})`. Called
+ *  once from analyzeBody, AFTER the top-down decl walk (so module consts and
+ *  earlier never-reassigned decls are already resolvable through
+ *  intExprRange) and BEFORE `widenLocalTypes` (so Pass D's bare-escape check
+ *  sees the stamp). Never overwrites an existing rep range (defensive — a
+ *  never-reassigned decl's own declRange stamp, if one somehow existed here,
+ *  takes precedence; in practice the two are mutually exclusive since
+ *  processDecl only stamps non-reassigned names and this only considers
+ *  MUTATE_OPS-written ones). */
+export function stampCoInductionRanges(body) {
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === 'for' && node.length === 5) {
+      const [, init, cond, step, loopBody] = node
+      const counterName = guardCounterName(cond)
+      const counterRange = counterName ? forCounterRange(init, cond, step, counterName) : null
+      if (counterRange && counterRange.step > 0) {
+        const trips = Math.floor((counterRange[1] - counterRange[0]) / counterRange.step) + 1
+        if (trips > 0) {
+          for (const name of collectMutatedNames(loopBody)) {
+            if (name === counterName || repOf(name)?.range) continue
+            const initExpr = findOuterDeclInit(body, loopBody, name)
+            if (initExpr == null) continue
+            const initRange = intExprRange(initExpr)
+            if (!initRange) continue
+            if (writesOutsideLoop(body, loopBody, name)) continue
+            const delta = collectConstStep(loopBody, name)
+            if (delta == null || (delta.P === 0 && delta.N === 0 && delta.D === 0)) continue
+            const { P, N, D } = delta
+            const lastStart = D * (trips - 1)
+            const lo = Math.min(initRange[0], initRange[0] + lastStart) - N
+            const hi = Math.max(initRange[1], initRange[1] + lastStart) + P
+            if (Number.isFinite(lo) && Number.isFinite(hi)) updateRep(name, { range: [lo, hi] })
+          }
+        }
+      }
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
 }
 
 export function collectI32SafeIndexVars(body, locals) {

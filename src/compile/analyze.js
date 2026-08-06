@@ -79,6 +79,7 @@ import {
   findFreeVars, findMutations, boxedCaptures,
   collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32, scanBindingUses,
   scanFlatObjects, scanSliceViews, scanNeverGrown, scanNumericFill, isFreshArrayCtor, USE,
+  stampCoInductionRanges,
 } from './analyze-scans.js'
 
 export { findFreeVars, findMutations, boxedCaptures } from './analyze-scans.js'
@@ -874,6 +875,12 @@ export function analyzeBody(body) {
   let unsignedLocals, numericFill
   try {
     walk(body)
+    // Co-induction accumulator fact (INDUCTION-VARIABLE FACT project,
+    // analyze-scans.js's own header doc): durably stamps a body-local
+    // accumulator's proven range BEFORE widenLocalTypes' Pass D runs, so its
+    // bare-escape check (e.g. `return op` after the loop) sees a real hull
+    // instead of blaming an unranged reassigned local into f64 storage.
+    stampCoInductionRanges(body)
     widenLocalTypes(body, locals)
     // Narrow proven uint32 accumulator locals to unsigned i32. Runs post-widen so
     // a local already demoted to f64 above (e.g. compared against an f64) is
