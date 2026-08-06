@@ -39,10 +39,13 @@ import jzify from '../jzify/index.js'
 // native JS (npm run build feeds it to jz's OWN compiler as source text, to
 // become dist/jz.wasm), so these literal `__region_mark()`/`__region_exit()`
 // calls only ever exist as compiled wasm calls (module/core.js's intrinsics),
-// never as bare identifiers evaluated by a native JS engine. Kernel/self-host
-// compiles get per-round reclaim unconditionally (the design's "ON for kernel/
-// self-host compiles" — the warm checkpoint is the gate on whether it SHIPS,
-// not on whether it's wired here).
+// never as bare identifiers evaluated by a native JS engine.
+// DORMANT (2026-08-06): a kernel-oracle regression surfaced with regions live
+// (kernel traps compiling the dvnested source at O2/O3 — the silent-corruption
+// class the design's hazard inventory tripwired for; .work/region-slice1-build.md).
+// Per the stop-on-fail tripwire the hooks are OFF until that root is named —
+// the bigintBoxed dormant-fact precedent: machinery landed, unconsumed. Re-wire
+// by restoring the regionHooks line below; the warm checkpoint then gates SHIP.
 function optimizeTail(module, cfg) {
   return watrTail(module, cfg, {
     funcCount: ctx.func.list.length,
@@ -50,7 +53,7 @@ function optimizeTail(module, cfg) {
       ? [...cfg._vectorizedFnNames].filter(name => ctx.func.map.get(name.slice(1))?.exported)
       : [],
     targetProfile: ctx.transform.targetProfile,
-    regionHooks: { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) },
+    // regionHooks: { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) },
   })
 }
 
