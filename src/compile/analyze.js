@@ -1751,9 +1751,29 @@ export function analyzeValTypes(body) {
         // through earlier ranged decls via intExprRange's repOf hook. Feeds the
         // i32-provability of products and div-by-2^k strength reduction (the
         // delayline q16 chain: raw = lfo & 0x1ffff → tri → dq stays i32).
+        //
+        // This is the SAME predicate analyzeBody's own processDecl stamps
+        // EARLY, during its (possibly cache-skipped) body walk — audit-#12
+        // item 2. DBG_INVARIANTS asserts the redundancy claim that justifies
+        // leaving that early stamp as-is rather than threading ranges through
+        // an explicit BodyFacts slice: whenever processDecl already stamped a
+        // range for this name (cache miss ran it, ctx.func.localReps wasn't
+        // reset since), THIS unconditional re-derivation must land the exact
+        // same bound — same rhs, same walk order, same repOf-chained bounds
+        // for earlier decls (ctx.func.localReps is never touched between the
+        // two stamps within one function's own compile turn). See session.js's
+        // DEPS table / analyzeBody's cache doc for why a genuine STALE hit
+        // (skipping the early stamp) is harmless: this line still fires
+        // unconditionally and fills the gap.
         const declRange = intExprRange(a[2])
-        if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && writeCount(body, a[1], 0) === 0)
+        if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && writeCount(body, a[1], 0) === 0) {
+          if (DBG_INVARIANTS) {
+            const prior = repOf(a[1])?.range
+            if (prior && (prior[0] !== declRange[0] || prior[1] !== declRange[1]))
+              throw new Error(`analyzeValTypes: declRange restamp for '${a[1]}' diverges from analyzeBody's early stamp — prior=[${prior}] new=[${declRange}] (audit-#12 item 2 idempotence probe)`)
+          }
           updateRep(a[1], { range: declRange })
+        }
         if (vt === VAL.REGEX) trackRegex(a[1], a[2])
         // VAL gate covers definite-typed RHS; `?:`/`&&`/`||` slip through valTypeOf
         // returning null but may still need ctor unification (or poisoning when
