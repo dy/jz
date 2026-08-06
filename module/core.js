@@ -10,7 +10,7 @@ import { OPTF } from '../src/ctx.js'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, mkPtrIR, usesDynProps, ptrOffsetIR, isNullish, isUndef, truthyIR, valKindToPtr, sidecarOverride, undefExpr, cloneIR, toStrI64, throwTypeErrorIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, mkPtrIR, usesDynProps, ptrOffsetIR, isNullish, isUndef, truthyIR, valKindToPtr, sidecarOverride, undefExpr, cloneIR, toStrI64, throwTypeErrorIR, boxBigInt, unboxBigInt } from '../src/ir.js'
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../src/kind.js'
@@ -2249,6 +2249,17 @@ export default (ctx) => {
   ctx.core.emit['__ptr_type'] = (p) => (inc('__ptr_type'), typed(['f64.convert_i32_s', ['call', '$__ptr_type', asI64(emit(p))]], 'f64'))
   ctx.core.emit['__ptr_aux'] = (p) => (inc('__ptr_aux'), typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asI64(emit(p))]], 'f64'))
   ctx.core.emit['__ptr_offset'] = (p) => (inc('__ptr_offset'), typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asI64(emit(p))]], 'f64'))
+
+  // CARRIER PROGRAM Slice 1 (.work/carrier-representation-design.md §7) unit-
+  // level pins: __box_bigint/__unbox_bigint expose ir.js's boxBigInt/
+  // unboxBigInt the same way __mkptr/__ptr_type/__ptr_offset above expose
+  // their own ir.js primitives — callable ONLY when a test's jz source
+  // literally names them, so ordinary program compiles (including the
+  // self-hosted kernel, which never references these names) never reach this
+  // code and stay byte-identical. `v` is a real jz value (any kind whose raw
+  // f64 bits are the payload to box); `p` is a previously-boxed pointer.
+  ctx.core.emit['__box_bigint'] = (v) => (inc('__alloc', '__mkptr'), boxBigInt(asI64(emit(v))))
+  ctx.core.emit['__unbox_bigint'] = (p) => (inc('__ptr_offset'), typed(['f64.reinterpret_i64', unboxBigInt(asF64(emit(p)))], 'f64'))
 
   // Region-arena Slice 1 intrinsics (see the stdlib definitions above for the
   // full design) — callable ONLY from scripts/self.js (the self-host kernel

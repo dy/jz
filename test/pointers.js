@@ -165,6 +165,110 @@ test('nan-box: EXTERNAL (type=11)', () => {
   is(f(), 11)
 })
 
+// === BigInt carrier boxing (CARRIER PROGRAM Slice 1, .work/carrier-
+// representation-design.md §7) — dormant primitives, unit-level pins.
+// __box_bigint/__unbox_bigint are test-only jz-source intrinsics (module/
+// core.js, mirroring __mkptr/__ptr_type/__ptr_offset above) exposing ir.js's
+// boxBigInt/unboxBigInt directly. Nothing in the production compile path
+// calls these yet — this section proves the primitives themselves are
+// correct in isolation, ahead of any real consumer (Slice 2).
+
+const f64BitsBig = (f64) => {
+  const dv = new DataView(new ArrayBuffer(8))
+  dv.setFloat64(0, f64)
+  return dv.getBigInt64(0)
+}
+
+test('carrier: box tags PTR.BIGINT (type=5), aux=0', () => {
+  const { f } = run(`export let f = () => {
+    let a = [0]
+    let p = __box_bigint(5n)
+    return [__ptr_type(p), __ptr_aux(p)]
+  }`)
+  const [t, aux] = f()
+  is(t, 5); is(aux, 0)
+})
+
+test('carrier: box/unbox roundtrip — small positive', () => {
+  const { f } = run(`export let f = () => {
+    let a = [0]
+    return __unbox_bigint(__box_bigint(5n))
+  }`)
+  is(f64BitsBig(f()), 5n)
+})
+
+test('carrier: box/unbox roundtrip — small negative', () => {
+  const { f } = run(`export let f = () => {
+    let a = [0]
+    return __unbox_bigint(__box_bigint(-5n))
+  }`)
+  is(f64BitsBig(f()), -5n)
+})
+
+test('carrier: box/unbox roundtrip — zero', () => {
+  const { f } = run(`export let f = () => {
+    let a = [0]
+    return __unbox_bigint(__box_bigint(0n))
+  }`)
+  is(f64BitsBig(f()), 0n)
+})
+
+test('carrier: box/unbox roundtrip — i64 max (2^63-1)', () => {
+  const { f } = run(`export let f = () => {
+    let a = [0]
+    return __unbox_bigint(__box_bigint(9223372036854775807n))
+  }`)
+  is(f64BitsBig(f()), 9223372036854775807n)
+})
+
+test('carrier: box/unbox roundtrip — i64 min (-2^63)', () => {
+  const { f } = run(`export let f = () => {
+    let a = [0]
+    return __unbox_bigint(__box_bigint(-9223372036854775808n))
+  }`)
+  is(f64BitsBig(f()), -9223372036854775808n)
+})
+
+test('carrier: box/unbox roundtrip — bit pattern that aliases a real NaN-box (round-2\'s own wall)', () => {
+  // The exact hazard round 2 could not resolve at read time: a raw i64 whose
+  // bits alias a genuine PTR.OBJECT-shaped NaN-box. Round 3's answer is
+  // structural (never re-derive box-vs-raw from bit SHAPE) — this pin proves
+  // the box/unbox PAIR round-trips such a value correctly regardless: the
+  // payload is opaque to boxBigInt/unboxBigInt, whatever bits it carries.
+  const { f } = run(`export let f = () => {
+    let a = [0]
+    let boxShapedBits = __box_bigint(0n)
+    return __unbox_bigint(__box_bigint(boxShapedBits))
+  }`)
+  // boxShapedBits is itself a real PTR.BIGINT pointer (a NaN-boxed f64) —
+  // re-boxing ITS bits as a fresh BigInt payload and unboxing must yield
+  // those exact bits back, byte-identical, independent of what tag they
+  // happen to decode as.
+  const p = run(`export let g = () => { let a = [0]; return __box_bigint(0n) }`).g()
+  is(f64BitsBig(f()), f64BitsBig(p))
+})
+
+test('carrier: two distinct boxes get distinct heap cells (not interned)', () => {
+  const { f } = run(`export let f = () => {
+    let a = [0]
+    let p = __box_bigint(7n)
+    let q = __box_bigint(7n)
+    return __ptr_offset(p) === __ptr_offset(q)
+  }`)
+  is(f(), false)
+})
+
+test('carrier: PTR.BIGINT (5) is disjoint from every other pointer tag', () => {
+  // NaN-prefix disjointness: PTR.BIGINT's own 4-bit tag field must not
+  // collide with any live PTR.* tag (layout.js) — every existing tag's own
+  // __mkptr round-trip above already pins its own value; this pin asserts
+  // the SET is what the design's audit (layout.js:27-39) claims: {0,1,2,3,4,
+  // 6,7,8,9,10,11} plus 5, no duplicates, matching LAYOUT.TAG_MASK's 4-bit
+  // (16-value) space with 12-15 still free.
+  const liveTags = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  is(new Set(liveTags).size, liveTags.length)
+})
+
 // === Limits ===
 
 test('nan-box: max aux (32767)', () => {

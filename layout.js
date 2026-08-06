@@ -30,6 +30,7 @@ export const PTR = {
   BUFFER: 2,
   TYPED: 3,
   STRING: 4,
+  BIGINT: 5,
   OBJECT: 6,
   HASH: 7,
   SET: 8,

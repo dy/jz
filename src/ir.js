@@ -416,6 +416,89 @@ export const fromI64 = n => {
   return typed(['f64.reinterpret_i64', n], 'f64')
 }
 
+// === BigInt carrier boxing (CARRIER PROGRAM Slice 1, .work/carrier-
+// representation-design.md §7) — dormant primitives: no production emission
+// path calls these unconditionally yet (Slice 2 wires the first def-side
+// consumer, behind JZ_CARRIER_BOX/CARRIER_BOX — default OFF, so every
+// existing call site's byte output is unchanged). PTR.BIGINT (layout.js,
+// tag 5) is the heap-boxed representation round-3/4's `bigintBoxed` solver
+// fact (reps.js) names: an 8-byte cell holding the raw i64 payload,
+// NaN-boxed the same way every other heap kind (STRING/OBJECT/…) already is.
+
+/** Materialize a boxed BigInt: alloc an 8-byte cell, store the raw i64
+ *  payload, return the NaN-boxed PTR.BIGINT pointer (f64). `i64IR` must
+ *  already be the raw i64 bits (asI64'd) — this function only allocates +
+ *  stores + tags, the same division of labor as boolBoxIR/allocPtr (callers
+ *  own extracting the payload). */
+export function boxBigInt(i64IR) {
+  inc('__alloc')
+  const p = tempI32('bbig')
+  return blockTyped('f64',
+    ['local.set', `$${p}`, ['call', '$__alloc', ['i32.const', 8]]],
+    ['i64.store', ['local.get', `$${p}`], i64IR],
+    mkPtrIR(PTR.BIGINT, 0, ['local.get', `$${p}`]))
+}
+
+/** Recover the raw i64 payload from a boxed BigInt pointer (f64). Safe to
+ *  route through the generic forwarding-aware ptrOffsetIR — PTR.BIGINT is
+ *  never in FORWARDING_MASK (its cell never grows/relocates), so the chase
+ *  is a no-op single load+compare, the same cost every other non-relocating
+ *  tag (OBJECT/TYPED/…) already pays there. */
+export function unboxBigInt(f64expr) {
+  return typed(['i64.load', ptrOffsetIR(f64expr, VAL.BIGINT)], 'i64')
+}
+
+/** True iff `name`'s solver-settled rep (reps.js `bigintBoxed`, round-3/4
+ *  fixpoint) proves this binding must materialize as a real PTR.BIGINT box
+ *  AT A W-SINK INSIDE THIS FUNCTION — i.e. `name` currently holds RAW i64
+ *  bits that still need boxing at the point of use. Never fail-closed toward
+ *  true on a missing rep — an unproven/absent fact means "no evidence this
+ *  name is ever ambiguous", the same default every other REP_FIELDS
+ *  consumer treats absence as (reps.js's own contract); guessing "boxed"
+ *  here would deref a value that was never actually boxed.
+ *
+ *  Excludes the CURRENT function's own params: narrow.js's bigintBoxedVerdict
+ *  comment is explicit that a param's `bigintBoxed=true` is consulted "by
+ *  the call-site emitter, not by the callee body: once boxed, the callee
+ *  simply carries an opaque pointer through" — coerceArg (emit.js) already
+ *  boxes the ARGUMENT at every call site that needs it, so inside THIS
+ *  function such a param's f64 slot already holds the box (or genuinely
+ *  raw bits, if the actual call passed a non-bigint value — either way,
+ *  opaque here). Re-running boxBigInt on it at a further sink (return,
+ *  another store, …) would box the pointer's OWN bits as if they were a
+ *  fresh bigint payload — a box-of-a-box, found live during this slice's
+ *  own development (a `(x) => x` identity function repro) and fixed here
+ *  at the single shared predicate rather than in each of carrierF64/
+ *  'return'/'?:' separately. */
+export const isProvenBoxedBigint = (name) =>
+  repOf(name)?.bigintBoxed === true && !ctx.func.current?.params?.some(p => p.name === name)
+
+/** Slice-2 def-side predicate: does this AST node, flowing into a W-sink,
+ *  need to cross as a real PTR.BIGINT box? A bare name defers to its
+ *  solver-settled rep (the whole-program fact — may resolve raw-forever);
+ *  any other BIGINT-kinded expression reaching a sink has no binding to
+ *  carry a rep, so analyze.js's own W-sink walk (markBigintSink) never
+ *  tracks it — box unconditionally, matching the design's "inline
+ *  expressions box at emission time directly from the AST shape, no rep
+ *  needed" (round-3/4 §3.2, analyze.js's own comment above markBigintSink).
+ *
+ *  Excludes `'?:'` nodes from that unconditional fallback: a ternary's own
+ *  BIGINT-via-nullish-carry (kind.js VT['?:']) is exactly the shape
+ *  emit.js's dedicated '?:' handler already owns end-to-end (it boxes only
+ *  the non-nullish arm, `if`/`else`-gated, never the merged whole) — asking
+ *  THIS predicate to independently re-decide "does the whole merged node
+ *  need a box" and wrap `emit(node)`'s already-correct result a second time
+ *  is a real box-of-a-box (found live during this slice's own development,
+ *  a `(cond, x) => cond ? x : null`-returning repro whose return-site
+ *  wiring reboxed the ternary handler's own output). Every OTHER compound
+ *  shape (`+`, `&&`, `||`, …) has no dedicated box-wiring of its own, so
+ *  `emit(node)` never boxes internally there — the unconditional fallback
+ *  stays correct for them. */
+export const needsBigintBox = (node) => {
+  if (typeof node === 'string') return isProvenBoxedBigint(node)
+  return Array.isArray(node) && node[0] !== '?:' && valTypeOf(node) === VAL.BIGINT
+}
+
 // === Nullish sentinels ===
 
 /** Reserved atoms (PTR.ATOM tag, offset=0).
