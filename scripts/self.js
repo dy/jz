@@ -51,17 +51,56 @@ import jzify from '../jzify/index.js'
 // [ast,dirty,snapshots] and needs the SAME implicit-root treatment
 // dirty/snapshots already got; the props-hash's own VALUES need recursive
 // relocation, not a verbatim pointer copy). Those three fixes landed and
-// fully close the O2 failure. A FOURTH, unnamed layer remains, O3-only:
-// disabling src/optimize/index.js's `fusedRewrite` pass (optimize cfg
-// `fusedRewrite:false`) avoids the trap; disabling cseScalarLoad,
-// foldStaticArrReads, inlineFns, watrLicm, devirtIndirect individually does
-// NOT — narrows the remaining root to something fusedRewrite does (candidate:
-// `node._eqFast = true`, a dynamic property stamped on a NESTED `call` node
-// deep in a function body, src/optimize/index.js ~4270-4324) but the exact
-// mechanism is not confirmed. Per the stop-on-fail tripwire the hooks stay
-// OFF until that root is named too — the bigintBoxed dormant-fact precedent:
-// machinery landed, unconsumed, narrower than before. Re-wire by restoring
-// the regionHooks line below; the warm checkpoint then gates SHIP.
+// fully closed the O2 failure AS OF that session — see the 2026-08-06
+// follow-up session below, which found O2 is NOT durably closed.
+//
+// 2026-08-06 follow-up session (`_eqFast` candidate confirm-or-refute):
+// REFUTED cleanly — a `optimize.dbgEqFastOff`-shaped ablation (temp, not
+// landed) that disabled JUST node._eqFast's stamp + both its inline arms,
+// leaving the rest of fusedRewrite on, left the O3 trap fully reproducing.
+// Real O3 mechanism (bisected the same way, one fusedRewrite sub-rewrite at
+// a time): fusedRewrite's ptr-helper inline (`$__ptr_type`/`$__ptr_aux`
+// call→expression substitution) is JOINTLY necessary — disabling EITHER
+// one alone (leaving the other on) already clears the O3 trap; `$__is_null`
+// alone does not. Confirmed via a native `--wat` dump that at O3 both
+// `$__ptr_type` and `$__ptr_aux` end up with ZERO remaining func defs AND
+// zero call sites (every site got inlined) — plausible mechanism: full
+// disappearance interacting with watr's OWN per-round `treeshake` pass
+// (MODULE_SCOPE, runs every round with regions live) in a way region_exit
+// doesn't see, since __region_dbg_stage/rounds instrumentation (temp, not
+// landed) confirmed AGAIN this session that __region_exit reaches its own
+// final instruction cleanly (rounds=2, stage=4) every time — the trap is
+// downstream, same finding as the prior session, just re-verified. NOT a
+// dyn-props-sidecar hazard (no property gets stamped by ptr_type/ptr_aux's
+// inline — the class named in the design's own inventory does not fit this
+// specific mechanism). One fix attempt (pruning `watr`'s `snapshots` Map of
+// keys for treeshaken-away funcs, since it never drops a stale key today —
+// a real, separately-confirmed leak, independently worth fixing someday but
+// NOT reverted-and-kept this session) made kernel-parity O2 fail NEWLY (a
+// previously-passing row), so it was reverted — the mental model is
+// incomplete, not ready to ship a fix.
+//
+// SEPARATE, NEWLY DISCOVERED regression this session: kernel-oracle's
+// dvnested-mechanism row now ALSO traps at O2 on a fresh rebuild — the PRIOR
+// session's "O2 fully green, 4 reps, zero flakes" claim no longer holds.
+// Four unrelated "carrier program" commits (00c9abc4/7eeeea36/705a35d9/
+// 286626fa, all flag-gated JZ_CARRIER_BOX/JZ_DEBUG_INVARIANTS default OFF,
+// claimed byte-identical) landed in the ~90 minutes between that session's
+// O2-green verdict and this session's first rebuild. O2's failure is NOT
+// deterministic across otherwise-identical rebuilds — adding 5 debug globals
+// (pure static-layout noise, unrelated code) to module/core.js made an
+// O2 baseline that had JUST failed (identical source, identical debug-flag
+// values) pass again, 3/3 repeat. That points at an address/layout-boundary-
+// sensitive heisenbug, not a clean single-cause mechanism — CONSISTENT with
+// a coverage gap similar to fixes 1-3 above, just not yet caught because it
+// only bites at specific allocation offsets. NOT bisected further; time
+// did not allow it this session.
+//
+// Per the stop-on-fail tripwire the hooks stay OFF: O3's real mechanism is
+// narrowed but not fixed (2 sub-rewrites confirmed jointly necessary, no
+// verified patch), and O2 is a live, unresolved, non-deterministic
+// regression the original task framing didn't know about. Re-wire by
+// restoring the regionHooks line below; the warm checkpoint then gates SHIP.
 function optimizeTail(module, cfg) {
   return watrTail(module, cfg, {
     funcCount: ctx.func.list.length,

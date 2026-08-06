@@ -313,3 +313,142 @@ on kernel-oracle being fully green first, per the protocol, and it isn't.
 - `node_modules/watr/src/optimize.js` + `/Users/div/projects/watr/src/optimize.js`
   (sibling repo, source of truth) — additive `regionMark`/`regionExit`
   opts hooks in `runRounds`, `snapshots` `const`→`let`.
+
+## `_eqFast` candidate: confirm-or-refute session (2026-08-06, later same day)
+
+Protocol: restore `regionHooks`, rebuild, reproduce the O3 trap, then test
+whether `node._eqFast` (fusedRewrite's dyn-prop stamp on a nested `call`
+node — the previous session's narrowed-not-named candidate) is the O3
+mechanism; if refuted, bisect fusedRewrite's other dynamic state the same
+way. Nine rebuilds this session (~5min each — `JZ_SELFHOST_OPT=3 node
+scripts/selfhost-build.mjs`), each adding one layer of temporary,
+non-landed bisection instrumentation (new `optimize` tuning keys gating one
+fusedRewrite sub-rewrite each; `__region_dbg_*` exported globals in
+`__region_copy_rec`/`__region_exit`) — all stripped before the final commit
+(verified: `git diff` shows only `scripts/self.js` touched at session end;
+`node_modules/watr`/sibling-repo `optimize.js` re-diffed against the
+pre-session baseline patch, clean).
+
+**First surprise, before any bisection**: restoring `regionHooks` and
+rebuilding reproduced the O3 trap as filed — but kernel-oracle's
+`dvnested-mechanism` row ALSO trapped at **O2**, which the prior session had
+left FULLY GREEN (11/11, 4 reps, zero flakes). Four unrelated "carrier
+program" commits (`00c9abc4`/`7eeeea36`/`705a35d9`/`286626fa` — PTR.BIGINT
+box/unbox primitives, erasure-diag promotion, W-sink def-side wiring, design
+doc — all flag-gated `JZ_CARRIER_BOX`/`JZ_DEBUG_INVARIANTS` default OFF,
+each individually claimed byte-identical for the default build) landed
+between the prior session's O2-green verdict (`6f98578b`, 15:36) and this
+session's start (17:04-17:05) — a genuinely concurrent agent, exactly the
+class of interference the build report already flagged as a risk. This is
+recorded as a NEW, SEPARATE finding, not assumed away.
+
+**`_eqFast` — REFUTED.** A temporary `optimize.dbgEqFastOff` tuning key
+(registered in `src/passes.js`'s `TUNING_KEYS`, threaded through
+`fusedRewrite`/`walkRewrite`'s `cfg` param) disabled JUST `node._eqFast`'s
+stamp and both its inline arms (the literal-vs-X inline and the cheap/cheap
+inline), leaving the rest of `fusedRewrite` on. The O3 trap on
+`dvnested-mechanism` reproduced IDENTICALLY with this flag set — `_eqFast`
+is not necessary for the trap, cleanly refuting the candidate exactly as the
+protocol asked.
+
+**Bisecting fusedRewrite's other dynamic state** (same method — one
+temporary tuning key per sub-rewrite, `compileViaKernel(src, {optimize:
+{level, <flag>: true}})` against the dvnested-mechanism source directly, no
+rebuild needed once a flag exists in the built kernel):
+
+- `dbgPtrHelperOff` (the WHOLE `$__ptr_type`/`$__ptr_aux`/`$__is_nullish`/
+  `$__is_null`/`$__is_truthy` call→expression inline block) — clears the O3
+  trap. Does NOT clear O2.
+- Narrower flags for the two sub-cases that introduce actual shared/
+  duplicated node references (`$__is_nullish`'s `node[2]` used twice,
+  `$__is_truthy`'s `lget`/`bits` used 3×/5×) and the one duplicated-reference
+  peephole fold outside the ptr-helper block (`f64.mul`-by-2 →
+  `f64.add(b,b)`) — NONE of these, individually or combined, clear O3.
+  Refutes the "shared-reference" hypothesis this session initially favored
+  (by analogy to the design's own "lazy healing" pointer-identity risk).
+- `dbgPtrTypeOff` alone clears O3. `dbgPtrAuxOff` alone ALSO clears O3.
+  `dbgIsNullOff` alone does NOT. So `$__ptr_type` and `$__ptr_aux`'s inlines
+  are JOINTLY necessary — disabling either one (leaving the other active)
+  already breaks the reproduction. Both are SINGLE-USE substitutions (no
+  node-sharing at all), which further refutes the sharing hypothesis.
+- A native `--wat` dump of the SAME source at O3 (no kernel/regions
+  involved) confirms both `$__ptr_type` and `$__ptr_aux` end up with ZERO
+  remaining func defs and ZERO remaining call sites in the final module —
+  every call site got inlined away, so both become fully dead code. This is
+  the most concrete lead for what actually happens: the two helpers'
+  complete disappearance interacts with watr's own per-round `treeshake`
+  pass (a `MODULE_SCOPE` pass, runs every round with regions live) in a way
+  the region machinery doesn't fully account for.
+- Re-added `__region_dbg_rounds`/`__region_dbg_stage`/`__region_dbg_kind`/
+  `__region_dbg_off` (same method as the prior session) and re-confirmed the
+  SAME finding: `__region_exit` reaches its OWN final instruction cleanly
+  every time (`rounds=2, stage=4`) — the trap is downstream of a successful
+  region_exit, not inside it. Consistent with, not a revision of, the prior
+  session's finding.
+- **One fix attempt, tried and REVERTED**: `snapshots` (watr's per-round
+  content-hash Map, keyed on func-node identity, bundled into the region
+  root alongside `dirty`) never drops a key once its func is removed by
+  treeshake — `per()`'s rekey-on-rebuild only touches funcs still in `work`
+  (this round's live set); a func treeshaken away in round N leaves a stale
+  key in `snapshots` for the rest of the WHOLE `watOptimize` call, which
+  region_exit's SET/MAP branch then keeps walking/relocating as if it were
+  still live bookkeeping. This is a REAL, confirmed leak (worth fixing
+  independently of this trap) and fit the design's own named hazard class
+  exactly ("container's own backing store straddling the boundary"). Pruning
+  `snapshots` of any key absent from the round's fresh `nextHash` right
+  before calling `regionExit` (patched into both `node_modules/watr/src/
+  optimize.js` and the sibling source repo) made things WORSE, not
+  better — `kernel-parity`'s O2 `dict` row, previously passing, started
+  trapping too. Reverted immediately (confirmed clean via `git diff` on both
+  files). The mental model is demonstrably incomplete — this is a real
+  structural finding, not a landed fix.
+
+**O2's failure is non-deterministic across otherwise-identical rebuilds** —
+the clearest single new data point this session produced. Adding 5 debug
+globals to `module/core.js` (pure static-layout noise: 5 new `i32` globals,
+zero behavioral change at their default values) between two rebuilds turned
+an O2 baseline that had JUST trapped (3 identical prior rebuilds, same
+source, same flag values, all trapping) into one that PASSED, 3/3 repeat.
+This points at an address/layout-boundary-sensitive heisenbug — some
+structure's capacity or a mark/offset comparison landing on the wrong side
+of a boundary depending on exact allocation layout — rather than a single
+clean causal chain. Consistent in SHAPE with fixes 1-3's own hazard class
+(a coverage gap that only manifests when something lands at a particular
+offset), just not yet caught because THIS instance depends on layout this
+session never pinned down.
+
+**Verdict**: `_eqFast` REFUTED. O3's real mechanism narrowed to "$__ptr_type
+and $__ptr_aux inlining jointly necessary, downstream of a clean
+region_exit, correlated with both helpers becoming fully dead code" — a
+lead, not a fix. O2 is a SEPARATE, newly-discovered, non-deterministic
+regression the original task framing didn't know about, introduced or
+exposed sometime in the ~90 minutes before this session started. Per the
+protocol's own stated fallback, hooks go back to DORMANT (`scripts/self.js`
+recommented, comment rewritten with this session's full account) — the
+mandated ship-gate battery (kernel-oracle ×4, kernel-parity, full battery,
+perf-ratchet, fuzz 2000×4, size sweep, fresh build ×2, warm checkpoint) was
+NOT run: it's gated on kernel-oracle fully green first, same as before, and
+now it's LESS green than the checkpoint this session started from. Rebuilt
+`dist/jz.wasm` one final time with hooks dormant and re-verified clean:
+`kernel-parity` 33/33, `kernel-oracle` 11/11 (451 assertions), full
+`test/index.js` battery 3354/3362 (the 2 pre-existing, unrelated failures
+`705a35d9` already banked — no new failures from this session's source
+churn, which fully reverts to the pre-session tree except for
+`scripts/self.js`'s comment).
+
+**Recommendation for the next session**: (1) pin down O2's layout
+sensitivity FIRST — it's the more actionable lead (reproduces via a known
+"add unrelated static data, trap flips" trigger, unlike O3's cleaner but
+still not-yet-explained joint-necessity finding); a bisection over WHERE in
+`__region_copy_rec`/`__region_exit`'s allocation sequence a boundary is
+being crossed (binary-search on synthetic padding, mirroring the "add 5
+globals" accident that surfaced it) is more likely to converge than further
+config-flag ablation. (2) For O3, chase the treeshake interaction
+concretely: instrument watr's OWN `treeshake` pass (the local patch already
+touches `runRounds` next to it) to log exactly which funcs it removes each
+round when compiling `dvnested-mechanism` at O3, and check whether
+`$__ptr_type`/`$__ptr_aux`'s removal round correlates with `dirty`'s
+membership or `snapshots`' stale-key growth (the confirmed-but-reverted
+leak above) — the two threads (O3's joint-necessity finding, the snapshots
+leak) may turn out to be the same root once traced through an actual
+treeshake-removal event rather than inferred from config ablation alone.

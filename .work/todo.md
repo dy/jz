@@ -6,6 +6,69 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, REGION-ARENA SLICE-1 `_eqFast` CONFIRM-OR-REFUTE SESSION
+## — candidate REFUTED, O3 mechanism narrowed further (ptr_type+ptr_aux joint
+## necessity, downstream of a clean region_exit, not yet fixed); O2 REGRESSED
+## since the prior session's green verdict and is non-deterministic across
+## rebuilds — a NEW, separate, unresolved finding. Hooks STAY DORMANT. Ship
+## gate NOT run (gated on kernel-oracle green, which is now less green than
+## the checkpoint this session started from). See .work/region-slice1-build.md's
+## "`_eqFast` candidate: confirm-or-refute session" section for the full account.
+
+Restored `regionHooks`, rebuilt, reproduced the O3 trap on dvnested-mechanism
+as filed — but ALSO reproduced a trap at O2, which the prior session had left
+fully green (11/11, 4 reps). Four unrelated "carrier program" commits
+(00c9abc4/7eeeea36/705a35d9/286626fa — flag-gated, claimed byte-identical for
+the default build) landed in the ~90 minutes between that session's O2-green
+verdict and this session's start; O2's new failure is NOT deterministic
+across otherwise-identical rebuilds (adding 5 unrelated debug globals flipped
+a failing O2 baseline to passing, 3/3 repeat) — an address/layout-boundary
+heisenbug, not yet pinned down.
+
+Bisected `_eqFast` cleanly via a temporary `optimize.dbgEqFastOff` tuning key
+(disables just the stamp + both inline arms, rest of fusedRewrite on): O3
+trap reproduces IDENTICALLY — REFUTED. Continued bisecting fusedRewrite's
+other dynamic state per the protocol: narrowed to `$__ptr_type` and
+`$__ptr_aux`'s call→expression inline being JOINTLY necessary for O3 (either
+alone, disabled, already clears the trap; `$__is_null` alone does not) — both
+are SINGLE-USE substitutions (no node-sharing), refuting this session's
+initial "shared-reference" hypothesis. A native `--wat` dump confirms both
+helpers end up with ZERO remaining func defs/call sites at O3 (every site
+inlined away) — plausible lead: their disappearance interacts with watr's
+own per-round `treeshake` pass in a way region_exit doesn't fully cover.
+Debug globals re-confirmed `__region_exit` completes cleanly every time
+(rounds=2, stage=4) — trap is downstream, same finding as the prior session.
+
+One fix attempt — pruning watr's `snapshots` Map of stale keys for
+treeshaken-away funcs (a real, separately-confirmed leak: `per()`'s
+rekey-on-rebuild never touches funcs no longer in `work`, so a removed
+func's OLD key sits in `snapshots` — and therefore in the region root —
+for the rest of the whole `watOptimize` call) — was tried and REVERTED: it
+made kernel-parity's O2 `dict` row (previously passing) fail newly. The
+mental model is confirmed incomplete, not landed.
+
+Per the protocol's stop-on-fail tripwire, hooks are back to DORMANT
+(scripts/self.js recommented, comment rewritten with this session's full
+account). All temporary bisection instrumentation (9 rebuilds' worth of
+tuning-key gates in src/passes.js/src/optimize/index.js, `__region_dbg_*`
+globals in module/core.js, a reverted snapshots-prune patch in
+node_modules/watr and the sibling source repo) is fully stripped — `git
+diff` at session end touches only scripts/self.js. Rebuilt dist/jz.wasm one
+final time with hooks dormant and re-verified clean: kernel-parity 33/33,
+kernel-oracle 11/11 (451 assertions), full test/index.js battery 3354/3362
+(the 2 pre-existing failures 705a35d9 already banked, no new ones). The
+mandated ship-gate battery was NOT run — gated on kernel-oracle green, and
+it's now LESS green (O2 regressed) than where this session started.
+
+**Recommendation**: (1) chase O2's layout sensitivity first — it reproduces
+via a known trigger shape ("add unrelated static allocation, trap flips"),
+more tractable than more config-flag ablation. (2) For O3, instrument
+watr's OWN treeshake pass directly (log which funcs it removes each round
+at O3 on dvnested-mechanism) and check whether $__ptr_type/$__ptr_aux's
+removal round correlates with the confirmed-but-reverted snapshots leak —
+the two threads may be the same root once traced through an actual
+removal event instead of inferred from config ablation.
+
 ## Status (2026-08-06, REGION-ARENA SLICE-1 KERNEL-ORACLE ROOT-CAUSE SESSION —
 ## 3 real hazards found+fixed, O2 fully green, O3 narrowed-not-named, hooks
 ## STAY DORMANT — see .work/region-slice1-build.md's "root-cause session"
