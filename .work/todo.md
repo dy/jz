@@ -5529,3 +5529,114 @@ allocator trap" across every round); `node test/fuzz.js` (2000 programs
 × seeds 1..2000 × opt {0,1,2,3}, 20 inputs each) — 0 divergence. Did not
 run the full native battery (coordination — other agents' own legs were
 in flight; the above is the explicitly-scoped chunk).
+
+## Status (2026-08-06, audit-#12 debt bundle CLOSED — four bounded items)
+
+**Item 1 — two more module-level WeakMap trace caches → session ownership.**
+Same class as 5886f6d1's mayBeUndefinedTraceCache fix. Moved kind.js's
+`mapGetShapedTraceCache` (~685) and `presentValTraceCache` (~740) into
+`getFactStore()` (src/ctx.js's `createFactStore()` gained
+`mapGetShapedTrace`/`presentValTrace` WeakMap slices), same
+self-hosted-`new WeakMap()`-folds-to-strong-`Map` ownership argument as the
+first fix (kind.js is on the self-hosted compiler surface — a bare
+module-global leaks one entry per bodyRoot for a warm kernel instance's
+whole lifetime, not one compile's worth). session.js's DEPS table gained
+both slices' entries, plus a DESIGN NOTE recording the audit's deeper ask
+(fold the three near-identical recursive traces — mayBeUndefinedTrace,
+mapGetShapedTrace, presentValTrace — into the BindingId solver proper)
+as a follow-on, not attempted here (three different poison/OR semantics
+to reconcile against one solver shape — a real architectural project).
+
+**Item 2 — analyzeBody cache-miss-only declRange side effect.** Traced the
+mechanism: processDecl's early `updateRep(name, {range})` stamp (analyze.js
+~485) only fires inside analyzeBody's cache-MISS walk; a cache HIT skips it.
+Architecture proves this benign for the shape that matters: (a) every
+function's own compile turn nulls `ctx.func.localReps` at enterFunc
+(compile/index.js:499) then reads body facts via `reanalyzeBody` at line
+655, which EXPLICITLY invalidates before reading — guaranteeing a fresh
+processDecl walk at least once per function turn regardless of any earlier
+whole-program pre-pass's cache state; (b) analyzeValTypes's OWN later,
+unconditional declRange stamp (~1754) uses the identical predicate
+(`intExprRange` + not-reassigned) on the identical body in the identical
+top-down order, so on a hit it silently re-derives the exact same value —
+pure redundancy, not a gap. Cross-function pre-pass calls (narrow.js's
+buildCallerCtx, program-facts.js) that call bare `analyzeBody(otherFunc.body)`
+write into whatever `ctx.func.localReps` is transiently live at pre-pass
+time, but that map is always nulled again before the real per-function
+compile reads it — discarded, not load-bearing. VERDICT: documented as
+idempotent-equivalent, not restructured into an explicit BodyFacts slice.
+Added a permanent, cheap DBG_INVARIANTS-gated probe at analyzeValTypes's
+declRange stamp (throws if it would restamp a name's range to a DIFFERENT
+value than what's already on `repOf(name)`) — empirical evidence, not just
+the architecture argument: `JZ_DEBUG_INVARIANTS=1 node test/selfhost.js`
+21/21 (39 warm-kernel compile rounds over the whole self-hosted compiler's
+own source, including exactly the tri/dq delayline chain the comment at
+analyze.js cites) never fired it, nor did types.js/dyn-keys.js/inference.js/
+provenance-inference.js/test262 (language, 3000 pass) under the same flag.
+CHECKED per the audit's note: `stampCoInductionRanges` (analyze-scans.js,
+called from analyze.js:883, 213c04b0) has the SAME cache-miss-only shape
+(also inside analyzeBody's cache-miss-gated walk) but, unlike processDecl,
+has NO later unconditional re-stamp anywhere (grepped — analyzeValTypes
+never re-derives co-induction accumulator ranges). It survives on the SAME
+reanalyzeBody-forced-fresh guarantee alone (single point of reliance, no
+redundant safety net) — currently sound by the same enterFunc/reanalyzeBody
+argument, but more fragile than processDecl's case: if that forced-fresh
+call is ever refactored away, this one has no fallback and would regress
+silently. Flagged here as a documentation-only risk for whoever next
+touches reanalyzeBody's call sites — not changed this pass (no reproducible
+gap found, and inventing one to "fix" would be un-conceptual busywork).
+
+**Item 3 — test262 language lockfile.** test/test262-baseline.json extended
+with `corpus` (tc39/test262 SHA, cross-checked against both runners' own
+PINNED_COMMIT — a mismatch now hard-fails instead of silently comparing
+counts across corpus versions), `language: 3000`, `builtins: 852` (already
+existed, audit-#11 item 7 sub-3), `negAcceptCeiling: 1889` (ratcheted
+downward-only — a regression is MORE invalid JS wrongly compiled, never
+fewer). test262.js now reads the lock unconditionally in non-quick mode
+(previously only gated when JZ_TEST262_BASELINE was set — the CI-vs-local
+split the audit named: CI carried a stale env value, 2975, while local runs
+were floorless) and gained the negAccept ceiling as a fourth guard, on top
+of the existing fail===0/xpass===0 guards. JZ_TEST262_BASELINE still
+overrides `language` for a one-off diagnostic run — escape hatch, not
+source of truth, matching the builtins runner's existing precedent
+exactly. .github/workflows/test262.yml's language job dropped its
+JZ_TEST262_BASELINE=2975 env (the CI-only stale-floor split this closes).
+Verified both runners green against the new lock: language Pass=3000
+Fail=0 Neg-accept=1889 (exit 0), builtins Pass=852 Fail=0 (exit 0).
+
+**Item 4 — bench --merge shrink-guard.** The corruption mechanism traced:
+the ACTUAL merge (spread `{...PREV.cases}` then overlay this run's
+measured rows) can only add/update keys, never drop one — by construction,
+it cannot shrink. The one real hole was the "no PREV" fallback: when
+`existsSync(JSON_PATH)` is false OR `JSON.parse` throws, `PREV` was `null`
+and `--merge` silently fell through to a PLAIN full-file write of just this
+run's selected cases/targets — exactly the shape that dropped 59/60 cases
+from bench/results.json. Hardened bench/bench.mjs: `--merge` now refuses
+(console.error + exit 1, checked BEFORE any measurement work — fails fast,
+never gets to `writeFileSync`) whenever PREV is missing or unparseable,
+unless the new `--merge-allow-shrink` flag is passed. Added a second,
+defense-in-depth check right before the write comparing the actual merged
+output against PREV case-by-case/target-by-target (currently unreachable
+via the real merge algorithm per the "can only add" argument above, but
+guards against a future change to that shape silently regressing it) — also
+gated by `--merge-allow-shrink`. Pinned in test/bench-merge.js: missing-PREV
+refusal (no write), unparseable-PREV refusal (no write, original file
+untouched), the `--merge-allow-shrink` escape hatch proceeding on a missing
+PREV, and a regression probe that a narrow `--cases=/--targets=` merge
+never shrinks any case's target count relative to the committed reference.
+`node test/bench-merge.js`: 14/14 (140 assertions).
+
+GATES: `node test/types.js` 178/178 (303 assertions), `node test/dyn-keys.js`
+57/57 (284 assertions), `node test/inference.js` 136/136 (299 assertions),
+`node test/provenance-inference.js` 8/8 — all four also clean under
+JZ_DEBUG_INVARIANTS=1. `node test/kernel-parity.js` 3/3 (33 assertions,
+byte-identical WAT) — clean after the fresh rebuild below (a stale
+dist/jz.wasm from before the concurrent memory-hunt fix landed showed 3
+"dict" rows diverging; rebuilding resolved it, unrelated to this bundle).
+`node test/selfhost.js` 21/21 (206 assertions) both plain and under
+JZ_DEBUG_INVARIANTS=1 — doubles as item 1's warm-leak probe (39 rounds,
+one warm kernel instance) and item 2's cache-probe corpus. `node test/
+bench-merge.js` 14/14. `npm run build` × 2 consecutive, `dist/jz.wasm`
+byte-identical between runs (16223.4 kB). Did not run the full battery
+(concurrent agents' own legs in flight on module/array.js, emit.js,
+optimizer.js, ir.js/module/core.js — out of this bundle's surface).
