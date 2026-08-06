@@ -784,6 +784,77 @@ test('.fill: returns the array (chainable) + plain arrays still work', () => {
   is(run(`export let f = () => { let a = [1, 2, 3, 4]; a.fill(9); return a[0] + a[3] }`).f(), 18)
 })
 
+// === TypedArray .at — element-width bug (garbage even for a VALID index) ===
+// No `.typed:at` ever existed, so a typed receiver fell through to the generic
+// (non-ARRAY) `.array:at` path, which unconditionally f64.loads at off+t*8 — correct
+// only for the 8-byte-wide kinds (Float64Array, BigInt64/BigUint64Array; the wrong
+// opcode happened to read the right bytes there). Every narrower kind read the wrong
+// OFFSET at the wrong WIDTH even in range: `new Int32Array([10,20,30]).at(1)` read
+// garbage instead of 20. Now routes through the same resolveElem/elemLoadIR/SHIFT
+// machinery `.typed:[]` (bracket read) already proves correct per width.
+test('.at: every element width reads the correct value (was garbage for all but f64)', () => {
+  is(runHost(`export let f = () => new Int8Array([10, 20, 30]).at(1)`).f(), 20)
+  is(runHost(`export let f = () => new Uint8Array([10, 20, 30]).at(1)`).f(), 20)
+  is(runHost(`export let f = () => new Uint8ClampedArray([10, 20, 30]).at(1)`).f(), 20)
+  is(runHost(`export let f = () => new Int16Array([10, 20, 30]).at(1)`).f(), 20)
+  is(runHost(`export let f = () => new Uint16Array([10, 20, 30]).at(1)`).f(), 20)
+  is(runHost(`export let f = () => new Int32Array([10, 20, 30]).at(1)`).f(), 20)
+  is(runHost(`export let f = () => new Uint32Array([10, 20, 30]).at(1)`).f(), 20)
+  is(runHost(`export let f = () => new Float32Array([10, 20, 30]).at(1)`).f(), 20)
+  is(runHost(`export let f = () => new Float64Array([10, 20, 30]).at(1)`).f(), 20)
+})
+
+test('.at: negative index (relative to length), all widths agree with the f64 baseline', () => {
+  is(runHost(`export let f = () => new Int32Array([10, 20, 30]).at(-1)`).f(), 30)
+  is(runHost(`export let f = () => new Uint8Array([10, 20, 30]).at(-2)`).f(), 20)
+  is(runHost(`export let f = () => new Float64Array([10, 20, 30]).at(-3)`).f(), 10)
+})
+
+test('.at: out-of-range (positive, negative, Infinity, -Infinity, huge) → undefined, not garbage', () => {
+  const oob = (ctor, idx) => runHost(`export let f = () => { let v = new ${ctor}([10, 20, 30]).at(${idx}); return v === undefined ? -999999 : v }`).f()
+  for (const ctor of ['Int8Array', 'Int32Array', 'Float32Array', 'Float64Array']) {
+    is(oob(ctor, 3), -999999, `${ctor}.at(3)`)
+    is(oob(ctor, -4), -999999, `${ctor}.at(-4)`)
+    is(oob(ctor, 10), -999999, `${ctor}.at(10)`)
+    is(oob(ctor, 'Infinity'), -999999, `${ctor}.at(Infinity)`)
+    is(oob(ctor, '-Infinity'), -999999, `${ctor}.at(-Infinity)`)
+    is(oob(ctor, '1e20'), -999999, `${ctor}.at(1e20)`)
+  }
+})
+
+// Compared via BigInt `===`/arithmetic (both correctly recognize .at()'s bigint result),
+// not Number(...) — Number() has its OWN unrelated, pre-existing gap on this shape: kind.js
+// (~line 838) special-cases the BRACKET-index node `a[i]` on a BigInt64/BigUint64Array
+// receiver to statically claim VAL.BIGINT (steering Number()/bigIntDomain off the generic
+// NaN-boxed decode path); no equivalent case exists for a `.at(i)` METHOD-CALL node, method
+// or typed-array agnostic — grepped, zero hits for 'at' in kind.js/type.js/kind-traits.js.
+// So `Number(bigTypedArr.at(i))` decodes the raw i64 bits as if NaN-boxed-tagged (wrong —
+// they're untagged native bits) and returns garbage — confirmed live pre-existing (same
+// under the old un-fixed .at() path, which also returned a bare untagged 'f64' node), out
+// of scope for the width/offset bug this block fixes.
+test('.at: BigInt64Array/BigUint64Array', () => {
+  const f = runHost(`export let f = () => { let a = new BigInt64Array(3); a[0]=1n;a[1]=2n;a[2]=3n; return a.at(-1) === 3n ? 1 : 0 }`).f
+  const u = runHost(`export let f = () => { let a = new BigUint64Array(3); a[0]=1n;a[1]=2n;a[2]=3n; return a.at(1) === 2n ? 1 : 0 }`).f
+  const arith = runHost(`export let f = () => { let a = new BigInt64Array(3); a[0]=1n;a[1]=2n;a[2]=3n; return a.at(-1) + 10n === 13n ? 1 : 0 }`).f
+  is(f(), 1)
+  is(u(), 1)
+  is(arith(), 1)
+})
+
+test('.at: view (subarray) receiver reads through the descriptor, kind-aware', () => {
+  const f = runHost(`export let f = () => new Int16Array([1, 2, 3, 4, 5]).subarray(1, 4).at(-1)`).f
+  is(f(), 4)
+})
+
+test('.at: opaque/polymorphic receiver (element kind not provable at compile time) dispatches dynamically', () => {
+  const f = runHost(`export let f = (which) => {
+    let t = which ? new Int8Array([10, 20, 30]) : new Float32Array([10, 20, 30])
+    return t.at(1)
+  }`).f
+  is(f(1), 20)
+  is(f(0), 20)
+})
+
 // === TypedArray .reverse / .copyWithin / .sort — same silent-no-op bug class ===
 // `.reverse`/`.sort` routed through the PTR.ARRAY-gated plain-array helpers and
 // returned the typed receiver UNCHANGED; `.copyWithin` was unimplemented. Each now

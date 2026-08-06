@@ -1836,6 +1836,56 @@ export default (ctx) => {
     return t
   }
 
+  // .at(i) — 23.2.3.1: relativeIndex = ToIntegerOrInfinity(index); k = relativeIndex>=0
+  // ? relativeIndex : len+relativeIndex; k<0 || k>=len -> undefined. No `.typed:at` ever
+  // existed, so a typed receiver fell through to the GENERIC (non-ARRAY) `.array:at`
+  // branch (module/array.js), which unconditionally `f64.load`s at `off + t*8` — correct
+  // only for Float64Array/BigInt64Array/BigUint64Array (also 8-byte-wide, so the wrong
+  // opcode happens to read the right BYTES). Every narrower kind (int8/16/32, u32, f32,
+  // clamped, f16) read the wrong OFFSET *and* the wrong width even for a perfectly
+  // in-range index: `new Int32Array([10,20,30]).at(1)` read raw bytes at offset 8 (byte
+  // 1*8, should be 1*4) via f64.load — garbage, confirmed live. Fix: reuse the exact
+  // relative-index/bounds resolution `.array:at` already proved (asI32Sat + negative-
+  // index add + OOB→undefined), but do the LOAD through the same resolveElem/elemLoadIR/
+  // SHIFT machinery `.typed:[]` (bracket read) uses — the one unified, width-correct
+  // element-access emission every other typed method already shares (see typedLoop
+  // above). Static path when the element kind is known at compile time (the common
+  // case); runtime-dispatch `__typed_get_idx` — the SAME helper .reverse/.sort/.fill/
+  // .copyWithin/.join already use unconditionally — when it isn't.
+  ctx.core.emit['.typed:at'] = (arr, i) => {
+    const r = resolveElem(arr)
+    const t = tempI32('tai'), len = tempI32('tal')
+    const oob = ['i32.or', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
+      ['i32.ge_s', ['local.get', `$${t}`], ['local.get', `$${len}`]]]
+    const relIdxSetup = [
+      ['local.set', `$${t}`, asI32Sat(emit(i))],
+      ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
+        ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['local.get', `$${len}`]]]]],
+    ]
+    if (r) {
+      const { et, isView } = r
+      const va = emit(arr)
+      const ptr = tempI32('tap')
+      const off = ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${t}`], ['i32.const', SHIFT[et]]]]
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${ptr}`, typedDataAddr(asF64(va), isView)],
+        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', asF64(va)]]],
+        ...relIdxSetup,
+        ['if', ['result', 'f64'], oob, ['then', undefExpr()], ['else', elemLoadIR(r, off)]]], 'f64')
+    }
+    // Element kind not provable statically (opaque flow) — same runtime aux-tag
+    // dispatch as typedLoop's dynamic fallback, correct for any concrete kind
+    // including BigInt.
+    inc('__typed_get_idx', '__len')
+    const av = temp('taa')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${av}`, asF64(emit(arr))],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${av}`]]]],
+      ...relIdxSetup,
+      ['if', ['result', 'f64'], oob, ['then', undefExpr()],
+        ['else', ['call', '$__typed_get_idx', ['i64.reinterpret_f64', ['local.get', `$${av}`]], ['local.get', `$${t}`]]]]], 'f64')
+  }
+
   // A store value that can evaluate INSIDE the bounds guard when the assignment
   // is a statement (void): pure reads/arithmetic — including a checked-read
   // if-form and compiler-owned tees (the ${'$'}+T temp namespace; their writes are
