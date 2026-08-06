@@ -48,7 +48,7 @@ import {
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, censusMaybeUndefinedKind } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
 import {
-  typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
+  typed, asF64, asI32, asI32Sat, asI64, asPtrOffset, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY, TRUE_NAN, FALSE_NAN, NULL_NAN,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
   mkPtrIR, ptrOffsetIR, ptrTypeIR, ptrTypeEq, dispatchByPtrType, sidecarOverride, valKindToPtr,
@@ -892,16 +892,24 @@ function emitSubstringEqCmp(a, b, negate = false) {
   inc(helper)
 
   // Absent end → byteLen: pass i32 max — every clamp arm floors it to the length.
+  // ToIntegerOrInfinity position args — asI32Sat, not asI32 (see asI32Sat's doc, src/
+  // ir.js, and sliceEmitter's matching comment in module/string.js): __str_slice_eq/
+  // __str_substring_eq clamp through __clamp_idx exactly like the materializing
+  // .slice/.substring/.substr emitters this fuses, so this fused `===`/`!==` path needs
+  // the identical fix or it silently disagrees with its own non-fused twin (confirmed
+  // live: this was the actual reason `new String(x).slice(NaN, Infinity) !== "…"`
+  // still mis-evaluated after fixing sliceEmitter alone — a `.slice(...) !== other`
+  // comparison compiles through fusion here, never reaching sliceEmitter at all).
   const TO_END = ['i32.const', 0x7FFFFFFF]
   let startIR, endIR
   if (method === 'substr' && args[1] != null) {
     // substr's 2nd arg is a length: end = start + length, so start reads twice.
     const s = tempI32('subS')
-    startIR = ['local.tee', `$${s}`, args[0] == null ? ['i32.const', 0] : asI32(emit(args[0]))]
-    endIR = ['i32.add', ['local.get', `$${s}`], asI32(emit(args[1]))]
+    startIR = ['local.tee', `$${s}`, args[0] == null ? ['i32.const', 0] : asI32Sat(emit(args[0]))]
+    endIR = ['i32.add', ['local.get', `$${s}`], asI32Sat(emit(args[1]))]
   } else {
-    startIR = args[0] == null ? ['i32.const', 0] : asI32(emit(args[0]))
-    endIR = args[1] == null ? TO_END : asI32(emit(args[1]))
+    startIR = args[0] == null ? ['i32.const', 0] : asI32Sat(emit(args[0]))
+    endIR = args[1] == null ? TO_END : asI32Sat(emit(args[1]))
   }
 
   const finish = expr => negate ? ['i32.eqz', expr] : expr

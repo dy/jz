@@ -140,6 +140,27 @@ export const asI32 = n => {
   return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
 }
 
+/** Coerce node to i32 by SATURATING at INT32_MIN/INT32_MAX (NaN -> 0) — the ES
+ *  ToIntegerOrInfinity contract a position/index/length argument needs (String/Array
+ *  `.slice`/`.indexOf`/`.includes`/… position args), as opposed to asI32's ToInt32-WRAP
+ *  contract (bitwise-op operands, i32-narrowed storage). Using asI32 for a position
+ *  argument is a real, silent-wrong bug whenever the value isn't PROVABLY i32-ranged
+ *  (asI32's fallback then goes through `i64.trunc_sat_f64_s` + `i32.wrap_i64`, and
+ *  wrapping i64::MAX/MIN's low 32 bits gives -1/0 instead of saturating): confirmed live,
+ *  `str.includes(needle, Infinity)` — and any position >= 2^63, e.g. `1e20` — wrapped to
+ *  -1 and was read back downstream as "index from the end" instead of "past the end".
+ *  `i32.trunc_sat_f64_s` alone already implements exactly the wanted mapping (±Infinity
+ *  -> INT32_MAX/MIN, NaN -> 0, in-range -> truncated value) with no i64 detour needed —
+ *  the ONE-op direct form is not just correct here but cheaper than asI32's fallback. */
+export const asI32Sat = n => {
+  if (n.type === 'i32') return n
+  if (Array.isArray(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u')) {
+    const inner = n[1]
+    return Array.isArray(inner) ? typed(inner, 'i32') : inner
+  }
+  return typed(['i32.trunc_sat_f64_s', n], 'i32')
+}
+
 /** Coerce node to i32 offset for a ptr-narrowed return / store. Same-kind unboxed
  *  ptr passes through; otherwise extract low 32 bits from the NaN-boxed f64
  *  (NOT trunc — that would convert numerically). */

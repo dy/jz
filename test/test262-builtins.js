@@ -792,26 +792,34 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/String/prototype/indexOf/S15.5.4.7_A1_T9.js', 'String wrapper-object ToPrimitive coercion — out of scope'],
   ['built-ins/String/prototype/indexOf/position-tointeger.js', 'String indexOf position object ToPrimitive coercion — out of scope'],
   // audit-#11 item 7 sub-3 (gate honesty pass): three PRE-EXISTING real fails,
-  // none related to the instanceof-classification fix above — reported here,
-  // not fixed (out of this harness-repair task's scope), so the gate stays an
-  // honest signal instead of permanently red on unrelated known issues.
-  //   A1_T14: `"x".slice(function(){}())` (an IIFE-as-argument) crashes jz's
-  //   own compiler internally ("Cannot read properties of null (reading
-  //   'v')") instead of compiling — a real, narrow internal-compiler defect.
-  //   A1_T9: `new String(obj).slice(...)` where obj has a custom valueOf/
-  //   toString — same ToPrimitive-coercion-on-a-wrapped-object class as the
-  //   String/indexOf entries just above (out of scope, not new).
-  //   A2_T2: `new String(x).slice(NaN, Infinity)` on a boxed String wrapper
-  //   returns the wrong slice — NaN/Infinity index clamping bug scoped to the
-  //   wrapper-object path (plain-string `.slice(NaN, Infinity)` is untested
-  //   here but not implicated by this failure).
-  ['built-ins/String/prototype/slice/S15.5.4.13_A1_T14.js', 'internal compiler crash on an IIFE used as a .slice() argument — real defect, reported not fixed'],
+  // A1_T9 is the one PRE-EXISTING fail from that trio that's still genuinely out of
+  // scope (not a bug — see the String/indexOf entries above for the same class):
+  //   A1_T9: `new String(obj).slice(...)` where obj has a custom valueOf/toString —
+  //   same ToPrimitive-coercion-on-a-wrapped-object class as the String/indexOf
+  //   entries just above (out of scope, not new).
+  // Its two siblings (A1_T14 `"x".slice(function(){}())`'s internal-compiler crash,
+  // A2_T2 `new String(x).slice(NaN, Infinity)`'s wrong slice) and the sibling
+  // `includes(needle, Infinity)` clamping fail below are FIXED (three-bug bundle,
+  // this commit): A1_T14/A2_T2's root cause was evalStringMethod's `isNumOrAbsent`
+  // (src/prepare/pre-eval.js) treating a present-but-unfoldable argument (evalConst
+  // returning `null` for `NaN`'s dedicated `['nan']` AST node, or for a genuinely
+  // unfoldable IIFE) the same as an omitted one — `args[i].v` then crashed on `null`,
+  // or (charAt) silently substituted 0. `includes(…, Infinity)`'s root cause was
+  // separate: module/string.js's position-argument lowering used `asI32` (ES ToInt32
+  // WRAP semantics — src/ir.js) for what's actually an ES ToIntegerOrInfinity
+  // SATURATING position arg; asI32's not-provably-i32-ranged fallback routes through
+  // `i64.trunc_sat_f64_s` + `i32.wrap_i64`, and wrapping i64::MAX's low 32 bits gives
+  // -1 (read downstream as "one before the end") instead of saturating to
+  // INT32_MAX ("past the end") — also reachable via any position >= 2^63 (e.g.
+  // `1e20`), not only literal Infinity. Fixed by routing every ToIntegerOrInfinity
+  // position/index argument in module/string.js (`.slice`'s start/end,
+  // `.indexOf`/`.includes`'s shared `posIndex`, `.lastIndexOf`'s explicit `from`)
+  // through the new `asI32Sat` (src/ir.js) instead. Array.prototype's parallel
+  // start/end arguments (module/array.js) share the same `asI32` misuse and the
+  // same latent bug (confirmed live: `[1,2,3,4,5].slice(NaN, Infinity)` drops the
+  // last element) — out of this bundle's scope (no test262 baseline row exercises
+  // it), reported here, not fixed.
   ['built-ins/String/prototype/slice/S15.5.4.13_A1_T9.js', 'String wrapper-object ToPrimitive coercion — out of scope'],
-  ['built-ins/String/prototype/slice/S15.5.4.13_A2_T2.js', 'boxed String wrapper .slice(NaN, Infinity) index clamping — real defect, reported not fixed'],
-  // `str.includes(needle, Infinity)` must clamp position to str.length (=>
-  // false for a non-empty needle) — real Infinity-position clamping defect,
-  // reported not fixed (pre-existing, unrelated to the instanceof fix above).
-  ['built-ins/String/prototype/includes/return-false-with-out-of-bounds-position.js', 'String.prototype.includes position=Infinity clamping — real defect, reported not fixed'],
   ['built-ins/String/prototype/indexOf/searchstring-tostring.js', 'String(object) is JSON-ish, not "[object Object]" — documented divergence (boolean/number/null/undefined/array needles all coerce correctly)'],
   // Array
   ['built-ins/Array/from/elements-added-after.js', 'live iterator protocol — out of scope'],

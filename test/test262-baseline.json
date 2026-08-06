@@ -1,4 +1,4 @@
 {
   "_comment": "audit-#11 item 7 sub-3: committed pass-count floor for `npm run test:262:builtins` against the PINNED_COMMIT test262 checkout (test/test262.js / test/test262-builtins.js). Both the local default and CI read this file; JZ_TEST262_BASELINE, if set, overrides it. Refresh together with a corpus pin bump (test262.js's PINNED_COMMIT) or a real jz fix that moves the count.",
-  "builtins": 847
+  "builtins": 850
 }

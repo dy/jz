@@ -21,7 +21,7 @@
  * @module string
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { emit, emitIdentitySafe, argIR, bool, method, deps, wat, bind } from '../src/bridge.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
@@ -1641,8 +1641,12 @@ export default (ctx) => {
   // reachable only through the explicit emitDecl route.
   const sliceEmitter = (fn) => (str, start, end) => {
     inc(fn)
-    const startIR = start == null ? ['i32.const', 0] : asI32(emit(start))
-    if (end != null) return typed(['call', `$${fn}`, asI64(emit(str)), startIR, asI32(emit(end))], 'f64')
+    // ToIntegerOrInfinity position args (22.1.3.21 step 1/3) — asI32Sat, not asI32: a
+    // start/end past i32/i64 range (incl. literal Infinity) must SATURATE to INT32_MAX so
+    // __clamp_idx reads it as "past the end", not asI32's ToInt32-WRAP fallback, which
+    // read Infinity back as -1 ("one before the end") — see asI32Sat's doc (src/ir.js).
+    const startIR = start == null ? ['i32.const', 0] : asI32Sat(emit(start))
+    if (end != null) return typed(['call', `$${fn}`, asI64(emit(str)), startIR, asI32Sat(emit(end))], 'f64')
     const t = temp('t')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
@@ -1659,7 +1663,7 @@ export default (ctx) => {
   // (ToPrimitive), so a throwing method propagates as an abrupt completion.
   const posIndex = (node) => {
     if (node == null) return ['i32.const', 0]
-    return asI32(toNumF64(node, emit(node)))
+    return asI32Sat(toNumF64(node, emit(node)))
   }
 
   // ToString(searchString) per spec step 3. __str_indexof's internal __to_str
@@ -1696,7 +1700,7 @@ export default (ctx) => {
   bind('.string:lastIndexOf', (str, search, from) => {
     inc('__str_lastindexof')
     const hay = asI64(emit(str)), ndl = searchArg(search)
-    const fromIR = from == null ? ['i32.const', 0x7fffffff] : asI32(emit(from))
+    const fromIR = from == null ? ['i32.const', 0x7fffffff] : asI32Sat(emit(from))
     return typed(['f64.convert_i32_s', ['call', '$__str_lastindexof', hay, ndl, fromIR]], 'f64')
   })
 
@@ -1718,35 +1722,46 @@ export default (ctx) => {
   })
 
   // Generic (no collision)
+  // ToIntegerOrInfinity position args (21.1.3.24 step 3/4) — asI32Sat throughout this
+  // method + .substr below, same as sliceEmitter/posIndex above (see asI32Sat's doc,
+  // src/ir.js): __str_substring clamps through __clamp_idx exactly like __str_slice, so
+  // an unsaturated asI32 wrap on an out-of-range start/end (incl. Infinity) reads back as
+  // "near the end" instead of "past the end" — confirmed live, `"…".substring(NaN,
+  // Infinity)` returned "" instead of the whole string.
   bind('.substring', (str, start, end) => {
     inc('__str_substring')
-    if (end != null) return typed(['call', '$__str_substring', asI64(emit(str)), asI32(emit(start)), asI32(emit(end))], 'f64')
+    if (end != null) return typed(['call', '$__str_substring', asI64(emit(str)), asI32Sat(emit(start)), asI32Sat(emit(end))], 'f64')
     const t = temp('t')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
-      ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI32(emit(start)),
+      ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI32Sat(emit(start)),
         ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   })
 
   // .substr(start, length) — Annex B / legacy. Equivalent to substring(start, start+length).
   // __str_substring clamps end to byteLen and start/end to [0, byteLen], so negative
   // values are floored to 0 (matches v8 for length<0 → empty; for start<0 spec wants
-  // max(0, len+start), which we don't implement — rare in practice).
+  // max(0, len+start), which we don't implement — rare in practice). `start`/`length`
+  // saturate (asI32Sat, see .substring above) — the one remaining gap is `start+length`
+  // itself overflowing plain i32 addition when BOTH individually saturate to INT32_MAX
+  // (e.g. `.substr(Infinity, Infinity)`, pre-existing and unchanged by this fix, not
+  // covered by any tracked test — __str_substring's clamp still floors/caps the result,
+  // just not necessarily to the spec-correct endpoint for that one degenerate input).
   bind('.substr', (str, start, length) => {
     inc('__str_substring')
     if (length != null) {
       const s = tempI32('substrS')
       return typed(['block', ['result', 'f64'],
-        ['local.set', `$${s}`, asI32(emit(start))],
+        ['local.set', `$${s}`, asI32Sat(emit(start))],
         ['call', '$__str_substring', asI64(emit(str)),
           ['local.get', `$${s}`],
-          ['i32.add', ['local.get', `$${s}`], asI32(emit(length))]]
+          ['i32.add', ['local.get', `$${s}`], asI32Sat(emit(length))]]
       ], 'f64')
     }
     const t = temp('t')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
-      ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI32(emit(start)),
+      ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI32Sat(emit(start)),
         ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   })
 
