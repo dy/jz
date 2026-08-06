@@ -6,11 +6,214 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
-## Status (2026-08-05, three-bug bundle from the banked queue: const-fold
-## mid-expression overflow, String position-arg saturation + a compiler
-## crash, wasm-opt --enable-simd — bce7d1d7's "compile-time constant-fold
-## rounding bug" + "three pre-existing builtins edge-case bugs", af42d159's
-## banked wasm-opt note)
+## Status (2026-08-06, two-part task: Array/TypedArray/String position-arg
+## saturation sibling sweep [flips 1864c98c's banked Array.slice/String.at
+## pair] + jz×jz self-host OOB investigated and banked [3188aebc])
+
+**Part 1 — position-arg saturation sibling sweep (module/array.js,
+module/typedarray.js, module/string.js).** 1864c98c fixed String's position-
+argument saturation bug (`asI32` — ES ToInt32 WRAP — misused where
+`asI32Sat`'s ToIntegerOrInfinity SATURATION was needed) and reported two live
+siblings out of scope: Array.prototype.slice (`[1,2,3,4,5].slice(NaN,
+Infinity)` drops the last element) and String.prototype.at (`"hello".
+at(Infinity)` returns `"o"` instead of `undefined`). Swept the full
+position-arg family named in the banked queue for the SAME mechanism, plus
+adjacent ops found live while reading the exact functions in scope
+(Array/TypedArray `.with`, `ArrayBuffer.prototype.slice`,
+`TypedArray.prototype.subarray`) — same defect, same one-line fix, not scope
+creep. Every fix verified by DIFFERENTIAL TEST against real Node/V8 (the
+authoritative ECMA-262 implementation) for the exact expression, not
+hand-derived expected values.
+
+| op | spec op | verdict |
+|---|---|---|
+| `Array.prototype.at` | 23.1.3.1 | **FIXED** — asI32Sat + a upper/lower-bound check that was MISSING entirely (not just a saturation bug): `[1,2,3].at(10)` read raw adjacent heap memory instead of returning `undefined`; saturating alone without the bound check would have turned `.at(Infinity)` into a hard OOB *trap* (off + INT32_MAX×8) instead of a wrong value — strictly worse. Both landed together. |
+| `Array.prototype.slice` | 23.1.3.28 | **FIXED** — asI32Sat (ledger-cited sibling) |
+| `Array.prototype.fill` | 23.1.3.7 | **FIXED** — asI32Sat |
+| `Array.prototype.copyWithin` | 23.1.3.4 | **FIXED** — asI32Sat |
+| `Array.prototype.splice` | 23.1.3.30 | **FIXED** — asI32Sat on `start` AND `deleteCount`; `deleteCount`'s own clamp additionally had a LATENT i32-overflow bug once `cnt` can be INT32_MAX (`s + cnt` overflows i32 and wraps negative, silently skipping the clamp-down branch) — fixed by comparing `cnt` against `len - s` instead of `s + cnt` against `len` (same result when no overflow, safe when saturated) |
+| `Array.prototype.with` | 23.1.3.42 | **FIXED** — asI32Sat (found live, not in the named sweep list): `.with(Infinity, v)` silently wrote the last element instead of throwing RangeError |
+| `Array.prototype.indexOf/lastIndexOf/includes` | 23.1.3.16/24/20 | N/A — `fromIndex` isn't implemented at all for plain arrays (2-arg emitter signature); a feature gap, not a saturation bug — not touched |
+| `Array.prototype.includes` (search VALUE, not position) | 23.1.3.15 | pre-existing, unrelated: `[1,2,NaN].includes(NaN)` returns `false` (should be `true` — SameValueZero) — a value-equality bug, not a position arg; found live, out of scope, not touched |
+| `TypedArray.prototype.at` | 23.2.3.1 | **PARTIALLY FIXED** — falls through to the SAME generic (non-ARRAY) `.array:at` path (no dedicated `.typed:at`); the Infinity/OOB-index handling is now correct (shares the Array.at fix). Pre-existing SEPARATE bug confirmed live and left untouched: that generic path assumes 8-byte f64-stride elements unconditionally, so even a valid in-range index reads garbage on any typed array (`new Int32Array([10,20,30]).at(1)` → `1.5e-322`) — out of scope, needs a real stride-aware `.typed:at`, a feature addition not a sibling bugfix |
+| `TypedArray.prototype.slice` | 23.2.3.28 | **FIXED** — asI32Sat (static-elem `clamp()` AND the `__typed_slice_rt` runtime-dispatch fallback) |
+| `TypedArray.prototype.fill` | 23.2.3.8 | **FIXED** — asI32Sat |
+| `TypedArray.prototype.copyWithin` | 23.2.3.4 | **FIXED** — asI32Sat |
+| `TypedArray.prototype.subarray` | 23.2.3.29 | **FIXED** — asI32Sat (found live; static `clamp()` AND `__subarray` rt fallback) |
+| `TypedArray.prototype.with` | 23.2.3.36 | **FIXED** — asI32Sat (same class as Array.with) |
+| `TypedArray.prototype.indexOf/lastIndexOf/includes` (`fromIndex`) | 23.2.3.15/19/20 | **FIXED** — asI32Sat; Infinity fromIndex matched the LAST element instead of correctly finding nothing |
+| `ArrayBuffer.prototype.slice` (+ `SharedArrayBuffer.prototype.slice`, which canonicalizes to the same `.buf:slice`) | 25.1.5.15 | **FIXED** — asI32Sat (found live, not in the named sweep list) |
+| `String.prototype.at` | 22.1.3.1 | **FIXED** — asI32Sat. Ledger cited the `+Infinity` case; found live that `-Infinity` was ALSO broken (asI32(-Infinity) wraps to plain `0`, not negative, so the length-adjustment step never fires — `"hello".at(-Infinity)` returned `"h"` instead of `undefined`). asI32Sat fixes both directions in one change. |
+| `String.prototype.charAt/charCodeAt/codePointAt` | 22.1.3.2/3/4 | audited, confirmed correct-BY-ACCIDENT (re-verified live, matches prior session's finding): each does a plain `i>=0 && i<len` check with NO negative-wraparound step, so asI32's wrap-to-negative and asI32Sat's correct saturation both fail the same `>=0` check — no fix needed |
+
+Out of scope (different `ToXxx` operator entirely, not this bug class):
+`new Array(len)`/`Array.from` length (ToUint32 exactness-check + throw, not
+ToIntegerOrInfinity saturation); `String.prototype.padStart/padEnd` length
+(ToLength, `[0, 2^53-1]`, not ±Infinity saturation — and not meaningfully
+testable: real engines throw `RangeError: Invalid string length` on such
+sizes, a separate allocation-limit gap jz doesn't implement); `Number.
+prototype.toString(radix)`/`toFixed`/`toPrecision`/`toExponential` digit
+args (Number family, throw-on-out-of-range, not Array/TypedArray/String).
+
+Repro-verified red→green (V8/Node as the authoritative ECMA-262 oracle, every
+row differential-tested against the identical expression in plain Node):
+`[1,2,3].at(10)`/`.at(Infinity)`/`.at(-Infinity)` → `undefined` (was `0`/`3`/
+`1`); `[1,2,3,4,5].slice(NaN,Infinity).length` → `5` (was `4`);
+`[1,2,3,4,5].copyWithin(0,Infinity)[0]` → `1` unchanged (was `5`);
+`[1,2,3,4,5].fill(9,Infinity)[4]` → `5` unchanged (was `9`);
+`[1,2,3,4,5].splice(Infinity).length` → `0` (was `1`);
+`[1,2,3,4,5].splice(1,Infinity).length` → `4` (was `0`);
+`[1,2,3,4,5].with(Infinity,9)` → throws `RangeError` (was silent no-throw);
+`"hello".at(Infinity)`/`.at(-Infinity)` → `undefined` (was `"o"`/`"h"`);
+`new Int32Array([1,2,3,1]).indexOf(1,Infinity)` → `-1` (was `3`);
+`new ArrayBuffer(8).slice(Infinity).byteLength` → `0` (was `1`);
+`new Int32Array([1..5]).subarray(Infinity).length` → `0` (was `1`). Huge
+finite values (`1e20`/`-1e20`, past i64 range — same class as literal
+Infinity) verified too, not just the literal keyword.
+
+test262-builtins flips: `test/test262-baseline.json`'s `builtins` floor
+bumped 850→852 (`node test/test262-builtins.js`: 852 pass / 0 fail / 87 xfail
+/ 8615 skip, was 850/0/89/8615 — verified by isolating the change to
+module/typedarray.js's `.buf:slice` fix alone via patch-hunk bisection: the
+`SharedArrayBuffer/prototype/slice` subtree alone moves 13→15 pass / 9→7
+xfail, matching the full-suite delta exactly). No test262 LANGUAGE-suite
+(`test/test262.js`) rows move (3000 pass / 0 fail / 54 xfail, unchanged) —
+this bundle only touches builtins.
+
+### Part 1 gates (all green, foreground)
+
+Repro table above: red on unmodified HEAD (re-verified by temporarily
+restoring the 3 pre-fix files from `git show HEAD:` and re-running), green
+after. Fresh `npm run build` ×2, foreground, byte-identical across THREE
+separate rounds (dist/jz.wasm sha256 `6e9de658…`, dist/jz.js sha256
+`500a97b2…`, all three builds — the third re-run was a deliberate extra
+check after a mid-session file-state scare during the baseline-attribution
+bisection, see below). Full native battery (`node test/index.js`, single
+foreground pass — this sandbox handled the monolithic run fine, chunking
+wasn't needed) 3336 total / 3330 pass / 6 skip / 0 fail (19261 assertions,
+0 new skips), re-confirmed after the file-state scare. Kernel leg
+(`JZ_TEST_TARGET=jz.wasm node test/index.js`) 2638 total / 2630 pass / 2 fail
+/ 6 skip (12701 assertions) — the 2 fails are the PRE-EXISTING, already-
+documented JSON.parse shaped-parser bug a few paragraphs below in this same
+file (unrelated code path; confirmed unrelated by inspection — this bundle
+never touches module/json.js or any watr-encoding code). kernel-parity:
+byte-identical WAT at O0/O2/O3 (33 assertions). kernel-oracle: 11/11 (451
+assertions). perf-ratchet: 10/10 categories, +0 codegen regression in every
+one. optimizer: 215/215 (3956 assertions). strings/array-methods/buffer
+(explicit named run): 326 total / 325 pass / 1 skip (pre-existing) / 0 fail
+(818 assertions). test262 language: 3000 pass / 0 fail / 54 xfail. test262
+builtins: 852 pass / 0 fail / 87 xfail (baseline bumped, see above).
+selfhost.js: 21/21 (206 assertions). fuzz: 2000 programs × opt {0,1,2,3} — 0
+divergence (30173 inputs compared, matches the class of gate 1864c98c ran).
+size sweep: geomean jz/AS = 1.040× (unchanged, holds).
+
+**Process note — a git-checkout bisection scare, caught and fixed before
+landing.** Attributing the exact test262-builtins delta to the RIGHT sibling
+fix (see above) used a temporary, scoped `git checkout HEAD -- module/
+{array,typedarray,string}.js` / restore-from-backup cycle to isolate each
+file's contribution (never a repo-wide checkout). One restore step was
+missed mid-bisection — `module/array.js` and `module/string.js` briefly sat
+at their pre-fix HEAD content while `module/typedarray.js` alone was being
+bisected further. Caught by a routine post-bisection `diff` against the
+pre-bisection backup copies (not by a failing gate — the gates hadn't been
+re-run yet at that point), fixed by re-copying from the scratchpad backup,
+and the ENTIRE gate battery (build ×2 more, full native suite, kernel leg,
+test262 builtins) was re-run afterward against the confirmed-restored tree
+before landing anything. No bad state reached a commit.
+
+**Files**: module/array.js, module/typedarray.js, module/string.js,
+test/test262-baseline.json.
+
+**Part 2 — jz×jz self-host OOB (bench --cases=jz --targets=jz) — investigated,
+BANKED (real defect, not plumbing).** The bench corpus's `jz` case (bench/
+jz/jz.js — the self-host workload: `compileSelf` from scripts/self.js, run
+45 times over three tiny snippets) compiled BY the `jz` target (native jz,
+running under node, compiling bench/jz/jz.js's whole import graph —
+GRAPH_CASES resolves scripts/self.js's full dependency tree, so the output
+wasm embeds a complete copy of the self-hosted compiler: "jz-compiled-jz")
+traps `RuntimeError: memory access out of bounds` when run
+(`node bench/bench.mjs --cases=jz --targets=jz`) — previously excluded,
+never attempted before this session.
+
+Repro (standalone, `WebAssembly.instantiate` + `instance.exports.main()`,
+mirrors bench.mjs's `run-jz-host.mjs` harness exactly):
+```
+RuntimeError: memory access out of bounds
+    at wasm://wasm/03a3faae:wasm-function[11]:0xdee0
+    at wasm://wasm/03a3faae:wasm-function[12]:0xe049
+    at wasm://wasm/03a3faae:wasm-function[92]:0x4763a
+    ... (25 frames total, no name section in this build — dist/jz.wasm ships
+    one; this ad hoc host-build repro doesn't)
+```
+`instance.exports.memory.buffer.byteLength` at the trap = 65536 pages exactly
+= 4 GiB = the ABSOLUTE hard ceiling of wasm32 linear memory addressing (not
+some arbitrary smaller number) — memory grew all the way to the
+architecture's limit before the trap.
+
+Suspects checked, in order (the two named in the task):
+
+1. **Memory ceiling / bench-harness plumbing gap — RULED OUT.**
+   `wasm-objdump -x` on the exact compiled module: `Memory[1]: - memory[0]
+   pages: initial=64` — NO maximum declared. `ctx.memory.max` (src/ctx.js)
+   defaults to `0` ("unbounded — no maximum emitted") and `compileJzAt`
+   (bench/bench.mjs) never sets `opts.maxMemory` for ANY target, so nothing
+   caps growth below the wasm32 hard ceiling. `run-jz-host.mjs` also can't
+   cap it: it calls bare `WebAssembly.instantiate(bytes, imports)` with no
+   memory option, and the module EXPORTS its own memory (doesn't import one)
+   — there is no host-side lever to grip in this path at all.
+2. **7df37ae8's "maxMemory kernel-target.js plumbing gap" — RULED OUT as the
+   same root, explicitly.** That bank is about test/kernel-target.js's opts
+   marshal not passing `maxMemory` through the wasm ABI to the SELF-HOSTED
+   KERNEL host (jz.wasm acting as a compiler-as-a-service via wasm exports)
+   — a structurally different path. bench.mjs's `jz` target never goes
+   through the kernel-as-host ABI at all; it compiles via NATIVE jz
+   (`compile()` in index.js, running directly under node) into a plain
+   standalone wasm blob that is then instantiated and run directly. Not the
+   same mechanism, confirmed by reading both call paths.
+3. **The underlying workload — RULED OUT as inherently expensive.** The
+   IDENTICAL 45-compile loop (`bench/jz/jz.js`'s `main()`), run directly
+   under plain node with NO wasm compilation at all (just `import` and call),
+   completes in 670ms using 188MB total process RSS. The workload itself is
+   cheap; something specific to the JZ-COMPILED-JZ path is not.
+4. **A single self-hosted compile call, isolated.** A minimal variant
+   (`compileSelf` called ONCE, not 45×, same jzify:true/GRAPH_CASES
+   compilation) still consumes ~268MB and 601ms for ONE call inside the
+   double-self-hosted wasm — the case's own source comment estimates ~11MB/
+   compile (`"the instance watermarks at ~0.5 GB over a full run's 45
+   compiles"`, bench/jz/jz.js) — a ~24× deviation from that estimate on a
+   SINGLE call. That comment's number was apparently never actually verified
+   end to end (this pairing was "never attempted" before this session) —
+   the real behavior is far worse than documented.
+
+**Verdict: real defect, banked, not fixed.** This is not a harness/plumbing
+issue (both named suspects explicitly ruled out with direct evidence) and
+not inherent to the benchmark's logical workload (native execution is cheap).
+It IS specific to running the self-hosted compiler from within a wasm module
+that itself embeds a full copy of that same compiler (jz-compiled-jz) —
+compileSelf calls in that configuration consume memory at a rate wildly out
+of proportion to the input size or to the same call's cost under plain
+execution, eventually exhausting the entire 4 GiB wasm32 address space over
+repeated calls with no free (the self-hosted kernel's bump allocator is
+by-design no-free, so this was always going to be lossy across many calls —
+the open question this bundle couldn't close within its time-box is WHY one
+call alone is ~24× more expensive than the documented estimate: candidates
+include the self-hosted pipeline re-materializing something sized by the
+OUTER compiler's own bulk rather than the tiny input, or a genuine leak
+distinct from the bump-allocator's known no-free design). NEXT: bisect
+which self-host pipeline phase (parse/jzify/prepare/compile/watr-encode)
+accounts for the ~268MB/call, ideally with a name-section-bearing build so
+wasm-function indices resolve to real function names.
+
+The `jz`×`jz` bench cell stays excluded (as it already implicitly was —
+"previously excluded, never attempted" — this session changes that to
+"attempted, root-caused-to-suspect-class, still excluded, now DOCUMENTED
+instead of silently absent"). It does not gate any claim in bench/README.md
+or the headline SVG (the LAB set already excludes jz/watr/jessie
+self-referential rows from every aggregate).
+
+**Files**: none (investigation only, no code change — both named plumbing
+suspects were ruled out, not confirmed, so there was nothing to plumb).
+
 
 **Bug 1 — const-fold mid-expression overflow lost (src/prepare/pre-eval.js).**
 `foldNumBinary`/`foldNumAdd` carry the exact Rational through a chain of
