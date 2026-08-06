@@ -48,6 +48,29 @@ export const CALLEE_VAL = {
   BigInt: VAL.BIGINT,
   'BigInt.asIntN': VAL.BIGINT,
   'BigInt.asUintN': VAL.BIGINT,
+  // Number(x) is ToNumber (ES 21.1.1.1) — its result is ALWAYS a Number, for
+  // every input kind including BigInt (Number(5n) is 5, not a throw — only
+  // implicit/arithmetic BigInt↔Number mixing throws, an explicit cast doesn't).
+  // Without this, calleeValType returned null for the bare `Number` callee
+  // (unlike String/Boolean just above), so a `Number(x)` return tail was an
+  // UNPROVEN result kind: narrowValResults never settled func.valResult, and
+  // synthesizeBoundaryWrappers' resultDynamic fallback (compile/index.js) then
+  // forced the whole export result onto the i64/BigInt boundary lane for a
+  // value that's provably plain f64 — real, uncontested cost for every ordinary
+  // caller, not just a missed optimization (found alongside, not part of,
+  // audit-#11 P0-1's __to_num subnormal fix — see .work/todo.md).
+  Number: VAL.NUMBER,
+  // Same ToNumber-shaped, always-Number gap: Number.parseInt/parseFloat (and
+  // their bare global aliases) and Date.UTC/Date.parse (timestamp or NaN,
+  // never a reference) were unmodeled for the identical reason — the callee
+  // just wasn't in this table. Math.* siblings already covered generically
+  // below (`callee.startsWith('math.')`).
+  'Number.parseInt': VAL.NUMBER,
+  'Number.parseFloat': VAL.NUMBER,
+  parseInt: VAL.NUMBER,
+  parseFloat: VAL.NUMBER,
+  'Date.UTC': VAL.NUMBER,
+  'Date.parse': VAL.NUMBER,
   'performance.now': VAL.NUMBER,
   'Date.now': VAL.NUMBER,
   // ES2024 groupBy: a dictionary (HASH) keyed by ToPropertyKey strings, and a

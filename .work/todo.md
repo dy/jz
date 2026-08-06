@@ -6,9 +6,84 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
-## Status (2026-08-05, --merge meta.invocations FIX + THREE-SPEED-REDS DISSECTED
-## #2 — glyfparse/lz/delayline: delayline lever LANDED, lz was stale evidence
-## (not a regression), glyfparse confirmed real hard tail. b5a01609 + follow-up.)
+## Status (2026-08-05, Number(x) cast kind-modeling FIXED — the audit-#11 P0-1
+## "Also found, NOT fixed" remainder closed. src/kind-traits.js.)
+
+`calleeValType` (src/kind-traits.js) never modeled the bare `Number` callee at
+all — unlike `String`/`Boolean` two lines above it in the same `CALLEE_VAL`
+table, `Number(x)` fell through to `null`. Two consequences, both traced to
+that one gap: (a) `narrowValResults`/`_resultNumeric` (compile/narrow.js,
+compile/index.js) could never prove a `Number(x)`-shaped return tail's kind,
+so `func.valResult` stayed unset; (b) `synthesizeBoundaryWrappers`'
+`resultDynamic` fallback (compile/index.js ~1710) then treated the result as
+a possible NaN-box and forced it onto the i64/BigInt `jz:i64exp` export lane
+— real, uncontested cost on every ordinary caller, not just a missed
+optimization. Number(x) is ES 21.1.1.1 ToNumber: its result is ALWAYS a
+Number for every input kind, including BigInt (`Number(5n)` is `5`, not a
+throw — only implicit/arithmetic BigInt↔Number MIXING throws, an explicit
+cast doesn't). Fix: one line, `Number: VAL.NUMBER` in `CALLEE_VAL`.
+
+**Repro (native + kernel, both legs agree byte-for-byte):**
+| shape | pre-fix `jz:i64exp` | post-fix | value |
+|---|---|---|---|
+| `(x) => Number(x)`, x=42/3.5/5e-324 | `{p:[0],r:1}` | `{p:[0]}` (result freed) | exact, unchanged |
+| `() => Number("42")` | `{p:[],r:1}` | `null` (zero footprint) | 42 |
+| `() => Number(true)` | `{p:[],r:1}` | `null` | 1 |
+| `() => Number(undefined)` | `{p:[],r:1}` | `null` | NaN |
+| `() => Number(null)` | `{p:[],r:1}` | `null` | 0 |
+| `() => Number(5n)` | `{p:[],r:1}` | `null` | 5 (no throw — ToNumber, not arithmetic mixing) |
+
+The `p:[0]` param lane on the param-taking case is NOT part of this defect
+and correctly stays i64: `Number(x)` accepts a param of ANY type (string,
+bool, object…), so the param's own static kind is genuinely unproven —
+unrelated to the RESULT-kind gap this fix closes.
+
+**Subnormal-misdecode half, verified NOT a fresh bug**: probed the identical
+audit-#11 P0-1 shape with `Number(x)` in place of unary `+` (dict-shaped
+property, bigint-using program: `let big=1n; ... o.a=5e-324; return
+Number(o.a)`) — misdecodes to `1`, both before AND after this fix, native
+and kernel alike. Root-identical to P0-1's own documented, permanent,
+deliberately-NOT-closed remainder (`+o.a` gives the same wrong `1`, same
+reason: `__to_num`'s `ctx.features.bigint`-gated heuristic genuinely cannot
+tell a real subnormal Number from a raw BigInt-carrier bit pattern once the
+program can construct a BigInt and the value's STATIC kind is unproven).
+Confirmed this fix does not touch it either way — every bigint-FREE shape
+(the ordinary case) was already exact via 7f977aa4's `__to_num` fix, with or
+without this kind-modeling change. Not reopened; README's "One known
+divergence class" note already covers it generically ("Number coercion
+(`__to_num`, incl. unary `+`)") — Number(x) routes through the same
+`__to_num`/`toNumF64` path, no separate doc update needed.
+
+**Sibling sweep** (same always-Number-result shape, same `calleeValType` gap
+— audited every `ctx.core.emit[...]` registration across module/*.js against
+`CALLEE_VAL`): `Number.parseInt`/`Number.parseFloat` + bare `parseInt`/
+`parseFloat` aliases and `Date.UTC`/`Date.parse` (timestamp-or-NaN, never a
+reference) had the identical gap — fixed alongside, same table, verified
+each now shows a clean (no `r`) `jz:i64exp` entry, e.g. `(x)=>parseInt(x)`
+went from forcing the result lane to `{p:[0]}` only. `Math.*` siblings
+already covered generically (`callee.startsWith('math.')`) — confirmed
+`Math.trunc` was already `i64exp: null` (control, unaffected). `Boolean(x)`/
+`String(x)` verified ALREADY modeled (`CALLEE_VAL` two lines above `Number`)
+— correctly KEPT on the `r:1` lane (unlike Number): their results are BOOL/
+STRING, genuine NaN-box-able carriers (an atom box, a pointer), not a
+plain-f64-safe kind — the boundary distinction is sound, not a gap.
+
+**Gates (all green, foreground)**: fresh `npm run build` ×2 — dist/jz.js,
+dist/jz.wasm, dist/interop.js SHA-256 byte-identical across both runs. Full
+curated battery (test/index.js's 88-file list) run in 15 chunks of 4-6,
+ALL GREEN (0 failures across ~5300 tests / ~17600 assertions, only expected
+skips); kernel-parity + kernel-oracle chunk green; explicit data/math/
+statements/interop/optimizer re-run standalone, 636/636 (5214 assertions);
+perf-ratchet 10/10 categories at baseline +0 (buf/nest/slice/ring/condref/
+fgather/... — no codegen regression, this was a kind/ABI-layer change only);
+selfhost.js 21/21 (206 assertions); kernel leg (JZ_TEST_TARGET=jz.wasm) repro
+of the exact Number(x) shapes above matches native byte-for-byte (same
+`jz:i64exp` shrink, same values); fuzz 2000×4 (default + --typed +
+--typed-map + --typed-int, seeds 1-2000, opt {0,1,2,3}) — 0 divergences;
+size sweep (`bench-size.mjs`): geomean jz/AS 1.040× (holds, unchanged — this
+fix touches export-boundary ABI shape, not codegen size).
+
+Commit: src/kind-traits.js only.
 
 **Part 1 — bench --merge's meta.invocations narrow-target collapse, FIXED
 (b5a01609).** Flagged twice this cycle (fft merge, then sort+radixsort's Lever
