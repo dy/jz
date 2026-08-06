@@ -277,6 +277,10 @@ const TARGETS = {
   // "Rust rustc → wasm". The speed-of-light ceiling, never a per-case row.
   nat:   { label: 'C', sub: 'native', band: 'native', hatch: true },
   'jz-w2c': { label: 'JZ', sub: 'wasm2c → native', band: 'native', hatch: true },
+  // w2c2 twin (audit-#12 step 2, CI-smoke cross-check only — not merged into the
+  // published corpus: w2c2 has no SIMD/v128 support at all, so it structurally
+  // can't translate ~40% of the corpus; wasm2c stays the one native-lane row).
+  'jz-w2c2': { label: 'JZ', sub: 'w2c2 → native', band: 'native', hatch: true },
   rust:  { label: 'Rust', sub: 'native', band: 'native', hatch: true },
   zig:   { label: 'Zig', sub: 'native', band: 'native', hatch: true },
   go:    { label: 'Go', sub: 'native', band: 'native', hatch: true },
@@ -307,6 +311,7 @@ const DESC = {
   javy: 'Javy — the QuickJS interpreter shipped inside a wasm module (Bytecode Alliance).',
   nat: 'C compiled to a native binary (clang -O3 -march=native) — the speed-of-light ceiling.',
   'jz-w2c': 'JZ’s wasm lowered to a native binary via wasm2c → clang -O3.',
+  'jz-w2c2': 'JZ’s wasm lowered to a native binary via w2c2 → clang -O3 (second translator, CI cross-check; no SIMD support so it skips vectorized cases).',
   rust: 'Rust native binary (rustc -O, target-cpu=native).',
   zig: 'Zig native binary (ReleaseFast).',
   go: 'Go native binary (gc).',
@@ -325,11 +330,11 @@ const REPOS = {
   moonbit: 'moonbitlang/core', 'go-wasm': 'golang/go', go: 'golang/go', tinygo: 'tinygo-org/tinygo',
   'zig-wasm': 'ziglang/zig', zig: 'ziglang/zig', 'rust-wasm': 'rust-lang/rust', rust: 'rust-lang/rust',
   graaljs: 'oracle/graal', spidermonkey: 'mozilla/gecko-dev', shermes: 'facebook/hermes', jawsm: 'wasmerio/wasmer',
-  jz: 'dy/jz', 'jz-wasmtime': 'dy/jz', 'jz-w2c': 'dy/jz', wat: 'dy/jz', 'c-wasm': 'dy/jz', nat: 'dy/jz',
+  jz: 'dy/jz', 'jz-wasmtime': 'dy/jz', 'jz-w2c': 'dy/jz', 'jz-w2c2': 'dy/jz', wat: 'dy/jz', 'c-wasm': 'dy/jz', nat: 'dy/jz',
 }
 const SRC_EXT = {
   v8: '.js', deno: '.js', bun: '.js', jsc: '.js', spidermonkey: '.js', graaljs: '.js',
-  'porf-native': '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js',
+  'porf-native': '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js', 'jz-w2c2': '.js',
   as: '.as.ts', 'rust-wasm': '.rs', rust: '.rs', 'c-wasm': '.c', nat: '.c',
   'go-wasm': '.go', go: '.go', tinygo: '.go', 'zig-wasm': '.zig', zig: '.zig',
   moonbit: '.mbt', wat: '.wat', numpy: '.npy.py',

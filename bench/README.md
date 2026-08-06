@@ -172,6 +172,15 @@ card is a fair peer:
   native comparison — native-vs-native, not jz-wasm against a native binary — and
   it's the axis for optimizing JZ's compile-to-native path. The lane hides where
   no `jz-w2c` build is available (it needs wabt's wasm2c runtime + SIMDe headers).
+  It builds with `--no-tail-call` (audit-#12): wasm2c hard-fails
+  (`unexpected opcode: 0x12`) translating `return_call` combined with
+  multi-value results, so the lane's wasm input is a separate, ordinary-`call`
+  build from `jz-wasmtime`'s (which keeps tail calls — wasmtime supports the
+  proposal). A second translator, `jz-w2c2` (JZ wasm → `w2c2` → `clang -O3`),
+  exists as a CI-smoke cross-check but is not part of the published corpus:
+  w2c2 implements no SIMD proposal at all, so it structurally can't translate
+  any case whose loops vectorize to v128 (confirmed on ~40% of the corpus) —
+  wasm2c (with the SIMDe polyfill headers) stays the one native-lane row.
 
 ### Parity classes
 
@@ -264,7 +273,8 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `go-wasm` | Go → `wasm32-wasip1` (`GOOS=wasip1 GOARCH=wasm go build`), run in node's V8 |
 | `c-wasm` | C → `wasm32-wasi` via clang/LLVM (`zig cc -target wasm32-wasi -O3` — zig supplies the wasi-libc that plain clang lacks; no emcc/wasi-sdk install), run in node's V8 |
 | `jz-wasmtime` | JZ output on wasmtime |
-| `jz-w2c` | JZ wasm translated by wabt `wasm2c`, then clang `-O3` |
+| `jz-w2c` | JZ wasm translated by wabt `wasm2c`, then clang `-O3` (built with `--no-tail-call` — see the Native-lane note above) |
+| `jz-w2c2` | JZ wasm translated by `w2c2` (turbolent/w2c2), then clang `-O3` — a second translator on the same wasm input, CI-smoke only (no SIMD support, so it self-gates out of any vectorized case); set `W2C2_DIR`/`W2C2_BIN` if not built at `../w2c2` next to this repo |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
 | `porf-native` | Porffor (git-main 2026 rewrite — an AOT engine through its own C backend, no wasm target): `porf native <case>-flat.js <bin>`, then the standalone binary is measured — its shipping artifact, the native-band sibling of `shermes`. The engine-style `porf <file>` run mode measures its in-process compiler alongside the workload and ships nothing, so it has no lane |
 | `jawsm` | jawsm (JS → WasmGC) when installed |

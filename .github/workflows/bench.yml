@@ -119,6 +119,48 @@ jobs:
           "$PORF_BIN" --version || true
           wasm-opt --version || true
       - run: npm run test:bench
+      # ── native-lane smoke gate (audit-#12 step 4) ──────────────────────────
+      # jz-w2c/jz-w2c2 are NOT installed for the main test:bench run above (kept
+      # scoped to this step's own env — the full corpus stays on the reference
+      # machine's toolchain, unchanged runtime/risk for every other CI run).
+      # This proves both native translators still (a) build, (b) run, (c) match
+      # jz's own checksum on a few representative cases — the regression a
+      # translator-side codegen bug (like audit-#12's wasm2c `return_call`
+      # opcode-0x12 defect) would trip. nqueens is that exact repro case, kept
+      # in the smoke set as a permanent regression guard for it.
+      - name: install wasm2c (wabt prebuilt)
+        run: |
+          curl -sL -o "$RUNNER_TEMP/wabt.tar.gz" https://github.com/WebAssembly/wabt/releases/download/1.0.41/wabt-1.0.41-linux-x64.tar.gz
+          tar xzf "$RUNNER_TEMP/wabt.tar.gz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP"/wabt-1.0.41/bin/wasm2c --version
+      - name: install w2c2 (build from source — no prebuilt/package exists)
+        run: |
+          git clone --depth 1 https://github.com/turbolent/w2c2.git "$RUNNER_TEMP/w2c2"
+          cmake -B "$RUNNER_TEMP/w2c2/w2c2/build" "$RUNNER_TEMP/w2c2/w2c2"
+          cmake --build "$RUNNER_TEMP/w2c2/w2c2/build" --target w2c2 -j
+          "$RUNNER_TEMP/w2c2/w2c2/build/w2c2" -h
+      - name: native-lane smoke (jz-w2c + jz-w2c2, checksum-verified)
+        env:
+          WABT_W2C_DIR: ${{ runner.temp }}/wabt-1.0.41/share/wabt/wasm2c
+          W2C2_DIR: ${{ runner.temp }}/w2c2/w2c2
+          W2C2_BIN: ${{ runner.temp }}/w2c2/w2c2/build/w2c2
+        run: |
+          export PATH="$RUNNER_TEMP/wabt-1.0.41/bin:$PATH"
+          node bench/bench.mjs --targets=jz-w2c,jz-w2c2 --cases=nqueens,tokenizer,wordcount --json="$RUNNER_TEMP/native-smoke.json" || exit 1
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP + "/native-smoke.json", "utf8"));
+            let bad = [];
+            for (const [id, c] of Object.entries(r.cases)) {
+              for (const tid of ["jz-w2c", "jz-w2c2"]) {
+                const t = c.targets?.[tid];
+                if (!t) { bad.push(`${id}/${tid}: missing`); continue; }
+                if (t.status === "fail") { bad.push(`${id}/${tid}: FAIL — ${t.reason}`); continue; }
+                if (t.parity !== "ok") bad.push(`${id}/${tid}: parity=${t.parity}`);
+              }
+            }
+            if (bad.length) { console.error("native-lane smoke FAILED:\n" + bad.join("\n")); process.exit(1); }
+            console.log("native-lane smoke OK — jz-w2c + jz-w2c2 both build/run/checksum-match on", Object.keys(r.cases).length, "cases");
+          '
       # Refresh the bench-page dataset (results.json + bench.svg). Push-to-main
       # only; the paths-ignore above keeps the commit from re-triggering this
       # workflow. The page's live in-browser runner loads bench/web/*.wasm, which

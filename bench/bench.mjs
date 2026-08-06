@@ -19,6 +19,21 @@ const WABT_W2C_DIR = process.env.WABT_W2C_DIR || '/Users/div/projects/wabt/wasm2
 // vendored in wabt's third_party. Without it on the include path, every SIMD-emitting
 // jz case fails to compile to native. Derive it from WABT_W2C_DIR; override via SIMDE_DIR.
 const SIMDE_DIR = process.env.SIMDE_DIR || join(WABT_W2C_DIR, '..', 'third_party', 'simde')
+// w2c2 (turbolent/w2c2) — the SECOND wasm→C translator (audit-#12 step 2: a
+// twin lane, same .wasm input, different translator+cc, so a native-lane
+// number is corroborated by two independent codegens instead of resting on
+// wasm2c alone). No package-manager formula exists (checked: no brew formula
+// under this name); built from source into a sibling checkout, same
+// committed-absolute-path convention as WABT_W2C_DIR (`cmake -B build &&
+// cmake --build build` — no sudo, ~15s, single static binary at
+// w2c2/build/w2c2). Structurally NARROWER than wasm2c: w2c2 implements only
+// Core Wasm 1.0 + threads/bulk-memory/sign-ext/nontrapping-float — no SIMD
+// proposal at all (confirmed empirically, not just from its feature list: it
+// hard-fails "unsupported opcode unknown (0xFD)" on every jz case whose loops
+// vectorize to v128). Every corpus case that fails to translate under w2c2
+// does so for exactly this reason — see bench/README's native-lane section.
+const W2C2_DIR = process.env.W2C2_DIR || '/Users/div/projects/w2c2/w2c2'
+const W2C2_BIN = process.env.W2C2_BIN || join(W2C2_DIR, 'build', 'w2c2')
 // Shared zig timing/print helper (the zig sibling of _lib/bench.h). zig 0.16
 // forbids `@import` outside the root file's directory, so the .zig cases reach it
 // as a named module via `--dep bench -Mbench=…` rather than a relative path.
@@ -305,7 +320,39 @@ const compileJz = c => {
   // defaulted to level 2, silently under-compiling the standalone targets — no reduceUnroll /
   // rotateLoops / inlineFns / relaxedSimd. That cost up to 3.5× on Cranelift (dotprod 760→215µs,
   // hashjoin 11.8k→6.5k, lz 27k→15k), so the wasmtime/w2c rows under-represented jz vs every rival.
+  //
+  // This build KEEPS tail calls on — wasmtime/wasmer/deno all ship the proposal
+  // (src/session.js TARGET_PROFILES.wasi: noTailCall false). jz-w2c/jz-w2c2 do
+  // NOT read this wasm — see compileJzW2c below, which they use instead.
   execFileSync('node', [join(ROOT, 'cli.js'), c.js, '--host', 'wasi', '-O3', '-o', wasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+}
+
+// wasm2c/w2c2 both lower `return_call` (opcode 0x12) incorrectly when combined
+// with multi-value results — verified live (audit-#12): wasm2c hard-fails
+// ("unexpected opcode: 0x12") on any case whose self/mutual-recursive calls get
+// jz's tail-call rewrite (tcoTailRewrite, src/ir.js), e.g. nqueens. The
+// TargetProfile 'native' (src/session.js) already names this exact defect and
+// carries noTailCall — scripts/native/gen-watr-wasm.mjs uses '--host native' to
+// get it. That full profile also flips envImports/wasiShims/commandEntry, which
+// would break w2cHost's `wasi_snapshot_preview1.*` import shape below. Instead
+// this reuses the wasi profile's WASI-lowered imports and adds ONLY the
+// noTailCall policy via the documented additive `--no-tail-call` flag (index.js
+// opts.noTailCall) — same shape as compileJz, ordinary `call` in tail position.
+// A DIFFERENT wasm file than compileJz's: jz-wasmtime keeps tail calls (its
+// consumer supports them fine), so the two lanes must not share one build.
+//
+// Filename is alnum-only ('nt' = no-tail-call, no separator): both wasm2c and
+// w2c2 derive their generated C identifier prefix from this basename (sans
+// extension), but by different rules — wasm2c hex-escapes non-alnum bytes
+// into the identifier (a `-w2c` suffix leaked in as literal `0x2D...` and
+// broke the `w2c_<mod>_*` symbol names the host shim below assumes), while
+// w2c2 strips non-alnum outright. Keeping the basename plain alnum makes both
+// translators agree on one identifier — `noTailIdent` below — so w2cHost and
+// w2c2Host can share the same derivation.
+const w2cWasmPath = c => join(caseBuild(c), `${c.id}nt.wasm`)
+const noTailIdent = c => cIdent(c.id) + 'nt'
+const compileJzW2c = c => {
+  execFileSync('node', [join(ROOT, 'cli.js'), c.js, '--host', 'wasi', '-O3', '--no-tail-call', '-o', w2cWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
 }
 
 const benchlibHostSource = () => {
@@ -451,7 +498,7 @@ let _esbuild
 const esbuildSync = () => _esbuild ||= createRequire(import.meta.url)('esbuild')
 
 const w2cHost = (c, hFile) => {
-  const mod = cIdent(c.id)
+  const mod = noTailIdent(c)
   return `#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -503,6 +550,62 @@ int main(void) {
 `
 }
 
+// w2c2 (turbolent/w2c2) twin of the wasm2c host above — same WASI shim shape
+// (fd_write for console.log, clock_time_get for performance.now), different
+// runtime API: no wasm-rt.h module struct — w2c2 links host imports as plain
+// C functions named `<module>__<name>` (double underscore — "wasi_snapshot_
+// preview1" has none to sanitize, so it maps straight across), and every
+// trap (OOB, div-by-zero, unreachable, …) funnels through one required
+// `trap(Trap)` — w2c2's own test harness (futex/test.c) aborts there; this
+// host does the same instead of silently returning.
+const w2c2Host = (c, hFile) => {
+  const mod = noTailIdent(c)
+  return `#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include "w2c2_base.h"
+#include "${hFile}"
+
+U32 wasi_snapshot_preview1__fd_write(void* inst, U32 fd, U32 iovs_ptr, U32 iovs_len, U32 nwritten_ptr) {
+  uint8_t* mem = (uint8_t*)${mod}_memory((${mod}Instance*)inst)->data;
+  U32 total = 0;
+  for (U32 i = 0; i < iovs_len; i++) {
+    U32 buf_ptr, buf_len;
+    memcpy(&buf_ptr, mem + iovs_ptr + i * 8, 4);
+    memcpy(&buf_len, mem + iovs_ptr + i * 8 + 4, 4);
+    if (fd == 1) fwrite(mem + buf_ptr, 1, buf_len, stdout);
+    total += buf_len;
+  }
+  memcpy(mem + nwritten_ptr, &total, 4);
+  return 0;
+}
+
+U32 wasi_snapshot_preview1__clock_time_get(void* inst, U32 clock_id, U64 precision, U32 time_ptr) {
+  (void)clock_id; (void)precision;
+  uint8_t* mem = (uint8_t*)${mod}_memory((${mod}Instance*)inst)->data;
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  uint64_t ns = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+  memcpy(mem + time_ptr, &ns, 8);
+  return 0;
+}
+
+void trap(Trap t) {
+  fprintf(stderr, "w2c2 trap: %s\\n", trapDescription(t));
+  abort();
+}
+
+int main(void) {
+  ${mod}Instance inst;
+  ${mod}Instantiate(&inst, NULL);
+  ${mod}_main(&inst);
+  ${mod}FreeInstance(&inst);
+  return 0;
+}
+`
+}
+
 const watWasmPath = c => join(caseBuild(c), `${c.id}-wat.wasm`)
 const jawsmWasmPath = c => join(caseBuild(c), `${c.id}-jawsm.wasm`)
 const javyWasmPath = c => join(caseBuild(c), `${c.id}.javy.wasm`)
@@ -510,6 +613,7 @@ const tinygoWasmPath = c => join(caseBuild(c), `${c.id}.tinygo.wasm`)
 const moonbitProjDir = c => join(caseBuild(c), 'mbt')
 const moonbitWasmPath = c => join(moonbitProjDir(c), '_b', 'wasm', 'release', 'build', 'src', 'src.wasm')
 const w2cBinPath = c => join(caseBuild(c), `${c.id}-w2c`)
+const w2c2BinPath = c => join(caseBuild(c), `${c.id}-w2c2`)
 const natBinPath = c => join(caseBuild(c), `${c.id}-nat`)
 const natgccBinPath = c => join(caseBuild(c), `${c.id}-natgcc`)
 
@@ -731,14 +835,39 @@ const targets = {
     available: c => !NEEDS_EH.has(c.id) && has('wasm2c') && has('clang') && existsSync(join(WABT_W2C_DIR, 'wasm-rt-impl.c')),
     bin: w2cBinPath,
     run: c => tryRun('jz-w2c', c, () => {
-      compileJz(c)
+      compileJzW2c(c)
       const cFile = join(caseBuild(c), `${c.id}-w2c.c`)
       const hFile = `${c.id}-w2c.h`
       const host = join(caseBuild(c), `${c.id}-w2c-host.c`)
-      execFileSync('wasm2c', [wasmPath(c), '-o', cFile], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('wasm2c', [w2cWasmPath(c), '-o', cFile], { cwd: BENCH_DIR, stdio: 'pipe' })
       writeFileSync(host, w2cHost(c, hFile))
       execFileSync('clang', ['-O3', '-ffp-contract=off', ...macSysrootArgs, `-I${WABT_W2C_DIR}`, ...(existsSync(SIMDE_DIR) ? [`-I${SIMDE_DIR}`] : []), host, cFile, join(WABT_W2C_DIR, 'wasm-rt-impl.c'), join(WABT_W2C_DIR, 'wasm-rt-mem-impl.c'), '-o', w2cBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, [w2cBinPath(c)]),
+  },
+  // w2c2 twin of jz-w2c (audit-#12 step 2): same --no-tail-call wasm input
+  // (w2cWasmPath), a different translator (turbolent/w2c2) through the same
+  // clang -O3 backend. Corroborates the wasm2c native-lane numbers with an
+  // independently-implemented translator instead of resting on one codegen.
+  // available() only gates on toolchain presence — per-case SIMD-in-corpus
+  // failures (w2c2 has no v128 support at all) surface as an honest per-case
+  // `status: 'fail'` through tryRun, same as any other compile failure; see
+  // bench/README's native-lane section for the enumerated reason.
+  'jz-w2c2': {
+    name: 'jz → w2c2 → clang -O3',
+    available: c => !NEEDS_EH.has(c.id) && has(W2C2_BIN) && has('clang') && existsSync(join(W2C2_DIR, 'w2c2_base.h')),
+    bin: w2c2BinPath,
+    run: c => tryRun('jz-w2c2', c, () => {
+      compileJzW2c(c)
+      const ident = noTailIdent(c)
+      const wasm2 = join(caseBuild(c), `${ident}.wasm`)
+      copyFileSync(w2cWasmPath(c), wasm2)
+      const cFile = join(caseBuild(c), `${c.id}-w2c2.c`)
+      const hFile = `${c.id}-w2c2.h`
+      const host = join(caseBuild(c), `${c.id}-w2c2-host.c`)
+      execFileSync(W2C2_BIN, [wasm2, cFile], { cwd: BENCH_DIR, stdio: 'pipe' })
+      writeFileSync(host, w2c2Host(c, hFile))
+      execFileSync('clang', ['-O3', '-ffp-contract=off', ...macSysrootArgs, `-I${W2C2_DIR}`, host, cFile, '-o', w2c2BinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+    }, [w2c2BinPath(c)]),
   },
   jawsm: {
     name: 'jawsm (wasm)',
@@ -820,7 +949,8 @@ const TARGET_CMDS = {
   'zig-wasm': 'zig build-exe -target wasm32-wasi -O ReleaseFast <case>.zig (no libc) → node (V8 wasm)',
   'c-wasm': 'zig cc -target wasm32-wasi -O3 -ffp-contract=off <case>.c → node (V8 wasm)',
   'jz-wasmtime': 'jz --host wasi -O3 <case>.js → wasmtime --invoke main',
-  'jz-w2c': 'jz --host wasi -O3 → wasm2c → clang -O3 -ffp-contract=off',
+  'jz-w2c': 'jz --host wasi -O3 --no-tail-call → wasm2c → clang -O3 -ffp-contract=off',
+  'jz-w2c2': 'jz --host wasi -O3 --no-tail-call → w2c2 → clang -O3 -ffp-contract=off',
   jawsm: 'jawsm <case>.js → node (V8 wasm)',
   javy: 'javy compile <case>-flat.js → node (V8 wasm) · fenced interpreter reference',
   tinygo: 'tinygo build -target=wasip1 -opt=2 <case>.go → node (V8 wasm)',

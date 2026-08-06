@@ -1,7 +1,7 @@
 {
  "meta": {
-  "date": "2026-08-06 12:29 UTC",
-  "commit": "2eb3af0b",
+  "date": "2026-08-06 14:00 UTC",
+  "commit": "4ca94ca2",
   "host": {
    "platform": "darwin",
    "arch": "arm64",
@@ -34,48 +34,15 @@
    "zig-wasm": "zig build-exe -target wasm32-wasi -O ReleaseFast <case>.zig (no libc) → node (V8 wasm)",
    "c-wasm": "zig cc -target wasm32-wasi -O3 -ffp-contract=off <case>.c → node (V8 wasm)",
    "jz-wasmtime": "jz --host wasi -O3 <case>.js → wasmtime --invoke main",
-   "jz-w2c": "jz --host wasi -O3 → wasm2c → clang -O3 -ffp-contract=off",
+   "jz-w2c": "jz --host wasi -O3 --no-tail-call → wasm2c → clang -O3 -ffp-contract=off",
    "javy": "javy compile <case>-flat.js → node (V8 wasm) · fenced interpreter reference",
    "moonbit": "moon build --target wasm --release <case>.mbt → moonrun (V8 wasm)",
    "tinygo": "tinygo build -target=wasip1 -opt=2 <case>.go → node (V8 wasm)",
    "numpy": "python3 <case>.npy.py",
-   "wat": "wat2wasm <case>.wat → node run-wat.mjs (V8 wasm)"
+   "wat": "wat2wasm <case>.wat → node run-wat.mjs (V8 wasm)",
+   "jz-w2c2": "jz --host wasi -O3 --no-tail-call → w2c2 → clang -O3 -ffp-contract=off"
   },
   "memory": "peak RSS per process run (/usr/bin/time -l)",
-  "anchors": {
-   "pairs": [
-    {
-     "case": "mat4",
-     "target": "c-wasm",
-     "storedUs": 2554,
-     "freshUs": 2464,
-     "ratio": 1.0365,
-     "pass": true
-    },
-    {
-     "case": "fft",
-     "target": "c-wasm",
-     "storedUs": 1139,
-     "freshUs": 1024,
-     "ratio": 1.1123,
-     "pass": false
-    },
-    {
-     "case": "synth",
-     "target": "as",
-     "storedUs": 2471,
-     "freshUs": 2359,
-     "ratio": 1.0475,
-     "pass": true
-    }
-   ],
-   "ratios": {
-    "c-wasm×mat4": 1.0365,
-    "c-wasm×fft": 1.1123,
-    "as×synth": 1.0475
-   },
-   "pass": false
-  },
   "partial": true
  },
  "cases": {
@@ -4762,11 +4729,21 @@
      "parity": "ok"
     },
     "jz-w2c": {
-     "status": "fail",
-     "reason": "Command failed: wasm2c /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/nqueens/nqueens.wasm -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/nqueens/nqueens-w2c.c\n000053c: error: unexpected opcode: 0x12\n"
+     "medianUs": 2935,
+     "bytes": 53576,
+     "memKb": 1456,
+     "parity": "ok",
+     "measuredAt": "4ca94ca2"
+    },
+    "jz-w2c2": {
+     "medianUs": 2841,
+     "bytes": 51536,
+     "memKb": 1456,
+     "parity": "ok",
+     "measuredAt": "4ca94ca2"
     }
    },
-   "compileMs": 59.4
+   "compileMs": 75.8
   },
   "particle": {
    "name": "particle",
@@ -6756,10 +6733,11 @@
      "parity": "ok"
     },
     "jz-w2c": {
-     "medianUs": 94,
-     "bytes": 70736,
+     "medianUs": 161,
+     "bytes": 70784,
      "memKb": 1504,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "4ca94ca2"
     },
     "javy": {
      "medianUs": 6000,
@@ -6778,9 +6756,16 @@
      "bytes": 14495,
      "memKb": 15072,
      "parity": "ok"
+    },
+    "jz-w2c2": {
+     "medianUs": 161,
+     "bytes": 68784,
+     "memKb": 1504,
+     "parity": "ok",
+     "measuredAt": "4ca94ca2"
     }
    },
-   "compileMs": 103.6
+   "compileMs": 123.4
   },
   "trace": {
    "name": "trace",
@@ -7289,10 +7274,11 @@
      "parity": "ok"
     },
     "jz-w2c": {
-     "medianUs": 644,
-     "bytes": 88000,
+     "medianUs": 891,
+     "bytes": 88080,
      "memKb": 3008,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "4ca94ca2"
     },
     "javy": {
      "medianUs": 24000,
@@ -7311,9 +7297,16 @@
      "bytes": 16424,
      "memKb": 16096,
      "parity": "ok"
+    },
+    "jz-w2c2": {
+     "medianUs": 1013,
+     "bytes": 69472,
+     "memKb": 3520,
+     "parity": "ok",
+     "measuredAt": "4ca94ca2"
     }
    },
-   "compileMs": 123
+   "compileMs": 118.8
   },
   "jz": {
    "name": "jz JS compiler (self-host)",
