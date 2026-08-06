@@ -8,7 +8,7 @@
 //
 // Standalone runner: `node test/bench-merge.js`.
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdtempSync, copyFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, copyFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -165,4 +165,51 @@ test('bench --verify-anchors: detects drift and exits nonzero on a perturbed sto
   // report doesn't block the (already-measured) data from landing.
   ok(Object.keys(written.cases).length === Object.keys(reference.cases).length,
     'merge should still complete (all cases present) even when anchors fail')
+})
+
+// ── --merge shrink-guard (audit-#12 item 4) ─────────────────────────────────
+// An agent's naive `--merge` once silently fell through to a plain full-file
+// overwrite when PREV failed to load, dropping 59/60 cases from the committed
+// bench/results.json (recovered by hand). These pin the fix: --merge refuses
+// (nonzero exit, NO WRITE) rather than risk narrowing the corpus, and
+// --merge-allow-shrink is the explicit way to still do it on purpose.
+test('bench --merge: refuses (no write) when there is no file at JSON_PATH to merge into', () => {
+  const scratch = join(scratchDir, `missing-${scratchN++}.json`)   // never created — no freshCopy()
+  const { status, out } = runExpectFail(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
+  ok(status !== 0 && status != null, `expected nonzero exit when PREV is missing, got ${status}`)
+  ok(/--merge:.*no existing file/.test(out), `expected a "no existing file" refusal in output:\n${out.slice(-800)}`)
+  ok(!existsSync(scratch), 'refused --merge must not write the file at all')
+})
+
+test('bench --merge: refuses (no write) when the file at JSON_PATH is unparseable', () => {
+  const scratch = join(scratchDir, `corrupt-${scratchN++}.json`)
+  writeFileSync(scratch, '{ this is not valid json')
+  const before = readFileSync(scratch, 'utf8')
+  const { status, out } = runExpectFail(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
+  ok(status !== 0 && status != null, `expected nonzero exit when PREV is unparseable, got ${status}`)
+  ok(/--merge:.*failed to parse/.test(out), `expected a "failed to parse" refusal in output:\n${out.slice(-800)}`)
+  ok(readFileSync(scratch, 'utf8') === before, 'refused --merge must not touch the corrupt file')
+})
+
+test('bench --merge-allow-shrink: escape hatch lets --merge proceed with no PREV to merge into', () => {
+  const scratch = join(scratchDir, `fresh-${scratchN++}.json`)
+  const out = run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--merge-allow-shrink'])
+  ok(existsSync(scratch), '--merge-allow-shrink should still write when PREV is missing')
+  const written = JSON.parse(readFileSync(scratch, 'utf8'))
+  ok(written.cases.mat4?.targets?.jz, `expected a fresh mat4/jz row in the allow-shrink write:\n${out.slice(-500)}`)
+  ok(!written.cases.fft, 'a fresh (non-merged) write should only contain the selected case, confirming no PREV was merged in')
+})
+
+test('bench --merge: a narrow --cases=/--targets= merge never shrinks case or target counts (shrink-guard does not false-positive)', () => {
+  const scratch = freshCopy()
+  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
+  const merged = JSON.parse(readFileSync(scratch, 'utf8'))
+  ok(Object.keys(merged.cases).length >= Object.keys(reference.cases).length,
+    'a narrow --merge must never end up with fewer cases than PREV')
+  for (const [cid, prevCase] of Object.entries(reference.cases)) {
+    const finalTargets = Object.keys(merged.cases[cid]?.targets || {})
+    const prevTargets = Object.keys(prevCase.targets || {})
+    ok(finalTargets.length >= prevTargets.length,
+      `case '${cid}': merged targets (${finalTargets.length}) fewer than PREV's (${prevTargets.length})`)
+  }
 })

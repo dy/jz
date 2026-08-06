@@ -985,9 +985,18 @@ let PAIRED = 0
 // --merge (composes with --json[=path], .work/fast-refresh-design.md Piece 1):
 // a fast jz-only refresh writes just the selected (case,target) rows into the
 // existing file at JSON_PATH — every other row is byte-preserved — instead of
-// --json's plain whole-file rewrite. No-op without an existing file at
-// JSON_PATH (nothing to merge into; behaves like a normal full write).
+// --json's plain whole-file rewrite. REFUSES (nonzero exit, no write —
+// audit-#12 item 4) when there's no PREV to merge into (JSON_PATH missing or
+// unparseable) or when the merge would drop a case/target PREV had, unless
+// --merge-allow-shrink opts in. Was previously a silent no-op-into-full-write
+// on a missing/corrupt PREV — the exact shape that once dropped 59/60 cases
+// from bench/results.json.
 let MERGE = false
+// --merge-allow-shrink (audit-#12 item 4): the explicit escape hatch for a
+// DELIBERATE corpus change — dropping a case/target on purpose, or starting
+// a --merge over a fresh/corrupt file on purpose. Without it, --merge below
+// refuses rather than silently narrowing the corpus.
+let MERGE_ALLOW_SHRINK = false
 // --verify-anchors[=N] (design Piece 2): after the selected measurement,
 // re-measure N fixed rival rows and compare fresh vs the stored evidence —
 // the honest check that machine state hasn't drifted since that evidence was
@@ -1003,6 +1012,7 @@ for (const arg of process.argv.slice(2)) {
   else if (arg.startsWith('--json=')) JSON_PATH = resolve(arg.slice(7))
   else if (arg === '--emit-web') EMIT_WEB = true
   else if (arg === '--merge') MERGE = true
+  else if (arg === '--merge-allow-shrink') MERGE_ALLOW_SHRINK = true
   else if (arg === '--verify-anchors') VERIFY_ANCHORS = 3
   else if (arg.startsWith('--verify-anchors=')) VERIFY_ANCHORS = Math.max(1, +arg.slice(17) || 3)
   // Bare args are CASES first (the documented `bench.mjs mat4` form): `jz` is
@@ -1033,8 +1043,22 @@ for (const id of selectedCases) if (!caseById[id]) { console.error(`unknown case
 //            scratch path still has something to compare against.
 const loadJson = p => { try { return JSON.parse(readFileSync(p, 'utf8')) } catch { return null } }
 const CANONICAL_RESULTS = join(BENCH_DIR, 'results.json')
-const PREV = JSON_PATH && existsSync(JSON_PATH) ? loadJson(JSON_PATH) : null
+const JSON_EXISTS = !!(JSON_PATH && existsSync(JSON_PATH))
+const PREV = JSON_EXISTS ? loadJson(JSON_PATH) : null
 const ANCHOR_BASE = PREV || (existsSync(CANONICAL_RESULTS) ? loadJson(CANONICAL_RESULTS) : null)
+
+// --merge shrink-guard (audit-#12 item 4): an agent's naive `--merge` once
+// silently degraded to a plain full-file overwrite when PREV failed to load
+// (dropped 59/60 cases — recovered by hand). Refuse BEFORE doing any
+// measurement work, not just before the write, so a doomed invocation fails
+// fast: --merge with no PREV to merge into (missing or unparseable file at
+// JSON_PATH) is refused unless --merge-allow-shrink opts into starting over.
+if (MERGE && !PREV && !MERGE_ALLOW_SHRINK) {
+  console.error(JSON_EXISTS
+    ? `--merge: ${JSON_PATH} exists but failed to parse — refusing to risk overwriting possibly-corrupt evidence with a partial run. Use --merge-allow-shrink to force a fresh write.`
+    : `--merge: no existing file at ${JSON_PATH} to merge into — refusing (a bare --merge would silently become a full write of only this run's selected cases/targets, shrinking the corpus). Use --merge-allow-shrink to start fresh, or drop --merge for an ordinary --json write.`)
+  process.exit(1)
+}
 
 // --emit-web: compile just the page's playable cases to bench/web/*.wasm and
 // stop — no measurement, no native/JS-engine toolchains. The cheap step
@@ -1446,6 +1470,29 @@ if (JSON_PATH) {
     // silently drop every other target's invocation string.
     const mergedInvocations = { ...PREV.meta?.invocations, ...jsonOut.meta.invocations }
     finalOut = { meta: { ...jsonOut.meta, invocations: mergedInvocations, ...(mixedVintage && { partial: true }) }, cases: mergedCases }
+
+    // Shrink-guard, defense in depth (audit-#12 item 4): the spread-then-
+    // overlay merge above can only ADD/UPDATE case and target keys, never
+    // remove one — so this should never fire under the current algorithm.
+    // Checked anyway, against PREV precisely (not just aggregate counts), so
+    // a future change to the merge shape that DOES lose a key fails loudly
+    // instead of silently shipping a narrower corpus.
+    if (!MERGE_ALLOW_SHRINK) {
+      for (const [cid, prevCase] of Object.entries(PREV.cases)) {
+        const finalCase = finalOut.cases[cid]
+        if (!finalCase) {
+          console.error(`--merge: case '${cid}' would be dropped (present in PREV, absent from the merged output) — refusing. Use --merge-allow-shrink for a deliberate corpus change.`)
+          process.exit(1)
+        }
+        const prevTargets = Object.keys(prevCase.targets || {})
+        const finalTargets = new Set(Object.keys(finalCase.targets || {}))
+        const droppedTargets = prevTargets.filter(t => !finalTargets.has(t))
+        if (droppedTargets.length) {
+          console.error(`--merge: case '${cid}' would drop target(s) [${droppedTargets.join(', ')}] (present in PREV, absent from the merged output) — refusing. Use --merge-allow-shrink for a deliberate corpus change.`)
+          process.exit(1)
+        }
+      }
+    }
   }
 
   writeFileSync(JSON_PATH, JSON.stringify(finalOut, null, 1))
