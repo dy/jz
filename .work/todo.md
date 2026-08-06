@@ -6,6 +6,196 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, FOUR SPEED REDS DISSECTED — jessie discriminated
+## [methodology gap, not a regression, standing hard tail reconfirmed],
+## colorlog + base64 NAMED LEVERS [surgically proven, NOT landed —
+## soundness-critical range-fact machinery needed], colorpq HARD TAIL
+## [profiled, guard-branch hypothesis refuted] — no src/ changes, local only)
+
+Four targets from the fresh red lists (3188aebc's claims run + this
+session's own corpus refresh). Protocol per target: WAT/profile read →
+hypothesis → surgical WAT patch (watr-assembled, checksum-verified against
+the unpatched build) → paired ABBA share measurement → named mechanism +
+lever-or-tail verdict. Quiet-checked via `uptime` before every timing round
+(load 2.1-4.2 throughout — within the band prior sessions ran clean at);
+no code landed this session (every real finding needs new soundness-
+critical range-fact/bounds-proof machinery, same class as the prior
+session's sort/radixsort Targets 1-2 — named+banked, not rushed).
+
+**Target 1 — jessie 1.523× (v8, corpus) / 2.031× (bun, corpus) — DISCRIMINATED:
+NOT a regression since the 2026-07-31 "FULLY CHARACTERIZED: 1.393x" verdict;
+the worse fresh numbers are 3188aebc's single-sample full-corpus methodology
+colliding with jessie's very short absolute runtime, not compiler drift.**
+Paired ABBA re-measurement (`--paired=8`, quiet, load 2.8-3.9) reproduces
+systematically LOWER ratios than the corpus single-sample figures across
+all three rival engines: v8 1.442-1.458× (corpus: 1.523×), bun 1.831-1.857×
+(corpus: 2.031×), jsc 1.666-1.696× (corpus: ~1.78× derived). The v8 paired
+number sits close to (moderately above) 07-31's own paired 1.393× figure,
+within the session-to-session spread this repo's own paired protocol shows
+elsewhere (sort's own 0.996×-1.165× swing, same ledger). Reference checksum
+UNCHANGED at 2418067300 — bit-identical to 07-31's own checksum, both across
+runs today and against the archived value — confirming zero drift in
+jessie's compiled output. `git log` on infer.js/narrow.js since 07-31 shows
+only census/carrier work (dict-value-census, Map-value-census, BigInt
+sentinel ABI, maybeUndefined Slice 1/2) — none touch jessie's actual
+mechanism (subscript's `lookup[c]=fn` closure-table global-alias problem,
+ruled out 07-31 as needing "whole-program alias tracking over a global", a
+materially larger, unrelated mechanism). Compiled fresh WAT still emits the
+exact same honest-null diagnostic: `warning[deopt-dyn-read]: dynamic
+property read m4_parse$lookup[…] couldn't resolve a static type` — the
+HONEST NULLS mechanism (closure-table dispatch fails open BY DESIGN) is
+unchanged. **Verdict: STANDING HARD TAIL, reconfirmed with fresh paired +
+engine-level (WAT diagnostic, checksum-identity) evidence — not closable at
+the current inference-gain surface (census/range-fact work this session is
+architecturally orthogonal to jessie's global-function-alias problem).**
+`bench/results.json` jessie row refreshed via `--paired=8
+--targets=jz,v8,bun,jsc --json --merge --verify-anchors` (anchors 3/3 PASS,
+1.014-1.074×): jz.medianUs 2145→1874, v8/bun/jsc medianUs refreshed,
+`paired: {jz/v8: 1.458, jz/bun: 1.831, jz/jsc: 1.666}` added.
+
+**Target 2 — colorlog 1.184× (v8, corpus) / 1.748× (jsc, corpus) — NEVER
+DISSECTED. Fresh: NAMED LEVER found — decode()'s parameter pays a
+maybeUndefined-shaped OOB-coercion check that is dead weight for this
+program's actual value domain, surgically proven ~9% of jz's own runtime.**
+WAT read (`decode(v)`, called 3×/pixel with `src[j]`/`src[j+1]`/`src[j+2]`
+— direct Float64Array element reads): the function body opens with a
+NaN-boxed-sentinel check on `v` (`i64.eq bits 0x7FF8000100000000` →
+coerce-to-0, `i64.eq bits 0x7FF8000200000000` → coerce-to-NaN, else pass
+through) — i.e. a full ToNumber(null|undefined) coercion, THOUGH `v` is
+always a real number in this program. Root-caused via kind.js
+`censusMaybeUndefinedKind`'s own documented over-approximation (§14/Slice
+2): `censusShapedNode` flags ANY `[]`/`.` 2-arg read as "may be undefined"
+— not just dict/Map reads but ANY plain/typed-array index read, since a
+runtime-indexed array access COULD be OOB (which returns real JS
+`undefined`, matching ECMA-262 typed-array [[Get]]) — so `decode(src[j])`'s
+argument flags decode's OWN parameter `v` as `mayBeUndefined`, and
+`toNumF64` inserts the defensive coercion unconditionally, because jz has
+no bounds proof connecting the loop guard (`i<n`) through the derived index
+(`j=3*i(+0/1/2)`) to `src.length` — the SAME "loop-counter range gap" class
+Target 1/2 of the 2026-08-05 session named for sort/radixsort's i32
+overflow proofs, here manifesting as a missing ARRAY-BOUNDS proof instead.
+**Surgery** (hand-patch both branches' coercion blocks to bare `local.get
+$v`, watr-assembled, checksum-verified identical: 583146345 both ways — the
+program's real inputs never hit the null/undef paths): 4 ABBA rounds,
+unpatched median ≈16400-16660µs / patched median ≈15000-15165µs → **~9%
+jz-side speedup** (ratio ≈1.094, tight variance). Paired ABBA vs rivals
+(`--paired=8`, quiet): v8 **1.081-1.114×** (corpus 1.184× — again lower via
+paired, matching Target 1's own methodology-gap finding), jsc
+**1.685-1.696×** (corpus 1.748×). Applying the measured 9% share
+multiplicatively would bring v8 to ≈0.99-1.02× (near/at parity) and jsc to
+≈1.54-1.55× — a real, meaningful chunk of the gap, not the whole of it
+(exp2 kernel's own inherent cost is the remainder — see Target 3's profile
+for the same kernel family). **Verdict: NAMED, closable LEVER — not a hard
+tail — NOT landed.** Needs a bounds-safety range-fact extension (prove
+`j+2 < arr.length` from the loop guard + derived-index arithmetic, closing
+the OOB possibility so `censusShapedNode`'s over-approximation can stand
+down for THIS call argument) — soundness-critical, new machinery, same
+banking rationale as Target 1/2's own sort/radixsort levers. `bench/
+results.json` colorlog row refreshed via `--paired=8 --targets=jz,v8,jsc
+--json --merge --verify-anchors` (anchors 3/3 PASS, 1.014-1.051×):
+`paired: {jz/v8: 1.114, jz/jsc: 1.696}` added.
+
+**Target 3 — colorpq 1.212× (v8, corpus, "was 1.20 — stable") — NEVER
+DISSECTED. Fresh: profiled (V8 --prof, symbolized, --names build) — HARD
+TAIL, guard-branch-overhead hypothesis tested and REFUTED.** The bench
+source's own header comment guesses "runtime-exponent pow" as the
+mechanism — WAT read disproves this: `spow`'s exponent parameters (`nv`,
+`p`, both module-level consts) resolve as compile-time literals at every
+inlined call site, so `emitPow` already takes its cheapest available
+non-integer-exponent path (`exp(c·log(x))`, matching $math.pow's own
+non-integer tail bit-for-bit) — NOT the general runtime-exponent
+`$math.pow` ladder. `--why-not-simd` diagnostic reasoning was a red
+herring too (CLI build only; the actual bench 'speed'-level build DOES
+vectorize). V8 `--prof` on the real bench-methodology build (1093 ticks):
+**math.exp2_v 36.9%, math.log_v 28.5%, math.exp_v 6.0% — 71.4% combined in
+the vectorized transcendental kernels**; `main` (surrounding matrix
+arithmetic + loop overhead) 26.1%; scalar math.log/math.exp NEVER appear in
+the profile (confirms the scalar fallback path, present in the WAT for
+odd-trip-count correctness, is dead code at N_PIXELS=1,000,000). Guard-
+branch hypothesis (NaN/domain-check branches in scalar $math.log/$math.exp2
+— 4 and 2 early-return blocks respectively) tested by surgical deletion,
+checksum-verified identical (2290650663 both ways): **<1% speedup measured
+(61033 vs 61182µs)** — REFUTES the hypothesis; the scalar kernels aren't
+hot enough for their guards to matter, and the live vector kernels
+(`exp2_v`/`log_v`) already skip per-lane guards via one lean `all_true`
+dispatch, not per-branch checks. **Verdict: HARD TAIL, same structural
+class as the standing vm/dict (JSC tight-loop) and jessie (V8-IC) findings
+— rival native Math.pow/exp/log intrinsic quality, not jz codegen waste.**
+One bounded, NOT-pursued angle named for the record: `nv` (ST 2084's
+2610/16384) is an EXACT power-of-2-denominator (2^14) rational, qualifying
+in principle for a generalized version of emitPow's existing fifthroot
+algebraic fast path (currently hard-gated to k/5 exponents only) — `p`
+(1.7×2523/32) is NOT purely dyadic (carries a ×5 from the 1.7 literal), so
+this would only cover the nv-exponent calls, not p's; a real but
+materially larger feature, not attempted. Paired ABBA vs v8 (`--paired=8`,
+quiet): **1.176-1.180×** (corpus 1.212× — same methodology-gap direction
+as Targets 1/2, smaller magnitude here). `bench/results.json` colorpq row
+refreshed via `--paired=8 --targets=jz,v8 --json --merge --verify-anchors`
+(anchors 3/3 PASS, 1.017-1.057×): `paired: {jz/v8: 1.176}` added.
+
+**Target 4 — base64 1.078× (tinygo, corpus) — band-edge, CONFIRMED REAL (not
+noise) via paired ABBA; WAT dissection found a THIRD manifestation of the
+"loop-counter range gap" class (sort/radixsort Targets 1-2, colorlog Target
+2 above) — a body-local induction-variable index counter tracked as f64.**
+Paired ABBA (`--paired=8`, quiet, two independent runs): **1.094-1.103×**,
+extremely tight per-round variance (0.019-0.021 spread across 8 rounds
+both times) — the tightest of all four targets' noise bands, confirming a
+real, systematic, reproducible gap rather than measurement noise. WAT read:
+`encode`'s and `decode`'s `op` output-index counters (`let op = 0; …; out[op]
+= …; op += 4` / `+= 3`, incremented by a FOR-LOOP-BODY literal step — not
+the for-loop's own declared counter `i`, and never escaping as a JS-visible
+return value) are both compiled as **f64 locals**, paying `i64.trunc_sat_f64_s`
++ `i32.wrap_i64` on every one of their 4 (encode) / 3 (decode) per-iteration
+array-index uses, plus an `f64.add` for every non-zero offset — 11 extra ops/
+iteration in encode, 8 in decode, ×8192 core iterations ×64 outer passes ≈
+9.96M pure-overhead ops against a workload whose real per-iteration cost is
+comparable in magnitude. Root: same class as Target 1's own named residual
+("generalizing the loop-guard→body refinement... to general-loop guards")
+but a third distinct shape — neither the for-loop's own counter
+(`forCounterRange`'s existing target) nor a while-guard variable (sort's
+shape) nor a self-referential typed-array write (radixsort's shape), but a
+body-local induction variable stepped by a loop-body literal, used purely
+as an array index. **Surgery** (retype both `op` locals i32, strip the
+trunc_sat/wrap_i64 round-trips, watr-assembled, checksum-verified identical:
+1353105291 both ways): 4 ABBA rounds, unpatched avg ≈3460µs / patched avg
+≈3308µs → **~4.6% jz-side speedup**. Applied multiplicatively to the paired
+ratio (1.094-1.103×), this lever alone would close roughly HALF the gap
+(→ ≈1.05×). **Verdict: NAMED, closable LEVER — not a hard tail — NOT
+landed**, same soundness-machinery reasoning as Target 1/2 (proving a
+body-local's magnitude requires the same induction-variable range-fact
+class those levers already flagged as needed) — THIRD recurrence of this
+exact gap strengthens the case for prioritizing it as a dedicated,
+general induction-variable range-fact project rather than three separate
+one-off admissions. `bench/results.json` base64 row refreshed via
+`--paired=8 --targets=jz,tinygo --json --merge --verify-anchors`:
+`paired: {jz/tinygo: 1.094}` added. **Anchor note, reported honestly**:
+this merge's `--verify-anchors` flagged `c-wasm×fft` DRIFT (1.112×, over
+the 1.10× tolerance; `mat4` 1.037× and `synth` 1.047× both PASS) —
+`meta.anchors.pass: false`, `meta.partial: true`, written by the tool as
+designed. This is the SAME anchor pairing 3188aebc's own session flagged
+drifting (1.134× there) — a second independent read confirms it as a
+persistently volatile case-specific pairing (not a broad machine-state
+regression; the other two anchors passed cleanly both times), consistent
+with that session's own conclusion. Not re-run to chase a clean 3/3 — the
+base64/jessie/colorlog/colorpq measurements themselves are unaffected
+(different case entirely) and their own anchor checks (run minutes earlier,
+same session) passed 3/3 clean.
+
+**Common thread across all four**: no code landed. Two hard tails
+reconfirmed/established with fresh engine-level evidence (jessie, colorpq)
+— matching the standing precedent that this class needs machine-code-level
+proof, not inference-level speculation. Two named, surgically-proven,
+unlanded levers (colorlog, base64) both trace to the SAME general gap
+(induction/derived-variable magnitude proof for i32 specialization and
+array-bounds proof) already flagged and banked by the prior session's
+sort/radixsort dissection — this session's colorlog and base64 findings
+are two MORE data points for that same banked project, not new,
+independent asks. **Files touched**: `.work/todo.md` (this entry) and
+`bench/results.json` (jessie/colorlog/colorpq/base64 rows + meta, via
+`--merge`, each anchor-verified per the protocol). No `src/` changes.
+Scratch surgical patches and probe scripts lived under the session
+scratchpad only, not committed.
+
 ## Status (2026-08-06, TypedArray.prototype.at element-width bug FIXED —
 ## 658c816a's own banked row ["PARTIALLY FIXED... a real stride-aware
 ## .typed:at, a feature addition not a sibling bugfix"] closed)

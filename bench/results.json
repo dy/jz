@@ -1,7 +1,7 @@
 {
  "meta": {
-  "date": "2026-08-06 01:11 UTC",
-  "commit": "b5a01609",
+  "date": "2026-08-06 07:39 UTC",
+  "commit": "2eb3af0b",
   "host": {
    "platform": "darwin",
    "arch": "arm64",
@@ -48,33 +48,33 @@
      "case": "mat4",
      "target": "c-wasm",
      "storedUs": 2554,
-     "freshUs": 2547,
-     "ratio": 1.0027,
+     "freshUs": 2464,
+     "ratio": 1.0365,
      "pass": true
     },
     {
      "case": "fft",
      "target": "c-wasm",
      "storedUs": 1139,
-     "freshUs": 1127,
-     "ratio": 1.0106,
-     "pass": true
+     "freshUs": 1024,
+     "ratio": 1.1123,
+     "pass": false
     },
     {
      "case": "synth",
      "target": "as",
      "storedUs": 2471,
-     "freshUs": 2446,
-     "ratio": 1.0102,
+     "freshUs": 2359,
+     "ratio": 1.0475,
      "pass": true
     }
    ],
    "ratios": {
-    "c-wasm×mat4": 1.0027,
-    "c-wasm×fft": 1.0106,
-    "as×synth": 1.0102
+    "c-wasm×mat4": 1.0365,
+    "c-wasm×fft": 1.1123,
+    "as×synth": 1.0475
    },
-   "pass": true
+   "pass": false
   },
   "partial": true
  },
@@ -413,10 +413,11 @@
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 3802,
+     "medianUs": 3480,
      "bytes": 1776,
-     "memKb": 51584,
-     "parity": "ok"
+     "memKb": 51552,
+     "parity": "ok",
+     "measuredAt": "2eb3af0b"
     },
     "as": {
      "medianUs": 4092,
@@ -467,10 +468,11 @@
      "parity": "ok"
     },
     "tinygo": {
-     "medianUs": 3526,
+     "medianUs": 3161,
      "bytes": 224524,
-     "memKb": 53680,
-     "parity": "ok"
+     "memKb": 53392,
+     "parity": "ok",
+     "measuredAt": "2eb3af0b"
     },
     "moonbit": {
      "medianUs": 9283,
@@ -479,7 +481,22 @@
      "parity": "ok"
     }
    },
-   "compileMs": 91.2
+   "compileMs": 106.2,
+   "paired": {
+    "jz/tinygo": {
+     "ratios": [
+      1.0926,
+      1.094,
+      1.094,
+      1.0942,
+      1.0945,
+      1.1012,
+      1.1097,
+      1.1099
+     ],
+     "median": 1.0945
+    }
+   }
   },
   "bezfit": {
    "name": "bezfit",
@@ -1395,10 +1412,11 @@
    "ref": 3137122272,
    "targets": {
     "v8": {
-     "medianUs": 15735,
+     "medianUs": 15188,
      "bytes": 1950,
-     "memKb": 98912,
-     "parity": "ok"
+     "memKb": 99296,
+     "parity": "ok",
+     "measuredAt": "2eb3af0b"
     },
     "deno": {
      "medianUs": 15071,
@@ -1413,10 +1431,11 @@
      "parity": "ok"
     },
     "jsc": {
-     "medianUs": 10210,
+     "medianUs": 9917,
      "bytes": 5264,
-     "memKb": 89728,
-     "parity": "ok"
+     "memKb": 89712,
+     "parity": "ok",
+     "measuredAt": "2eb3af0b"
     },
     "porf-native": {
      "medianUs": 23187,
@@ -1425,10 +1444,11 @@
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 17845,
+     "medianUs": 16829,
      "bytes": 2103,
-     "memKb": 99728,
-     "parity": "DIFF"
+     "memKb": 99760,
+     "parity": "DIFF",
+     "measuredAt": "2eb3af0b"
     },
     "jz-wasmtime": {
      "medianUs": 12373,
@@ -1449,7 +1469,35 @@
      "parity": "DIFF"
     }
    },
-   "compileMs": 78.6
+   "compileMs": 91.1,
+   "paired": {
+    "jz/v8": {
+     "ratios": [
+      1.075,
+      1.0752,
+      1.0857,
+      1.108,
+      1.1135,
+      1.1151,
+      1.1187,
+      1.1259
+     ],
+     "median": 1.1135
+    },
+    "jz/jsc": {
+     "ratios": [
+      1.688,
+      1.6924,
+      1.6931,
+      1.6955,
+      1.6956,
+      1.6988,
+      1.7004,
+      1.7035
+     ],
+     "median": 1.6956
+    }
+   }
   },
   "colorpq": {
    "name": "sRGB → JzAzBz (PQ)",
@@ -1459,10 +1507,11 @@
    "ref": 2275727820,
    "targets": {
     "v8": {
-     "medianUs": 56068,
+     "medianUs": 55023,
      "bytes": 2743,
-     "memKb": 101568,
-     "parity": "ok"
+     "memKb": 101376,
+     "parity": "ok",
+     "measuredAt": "2eb3af0b"
     },
     "deno": {
      "medianUs": 55677,
@@ -1489,10 +1538,11 @@
      "parity": "DIFF"
     },
     "jz": {
-     "medianUs": 67486,
+     "medianUs": 64924,
      "bytes": 5034,
-     "memKb": 101392,
-     "parity": "DIFF"
+     "memKb": 101456,
+     "parity": "DIFF",
+     "measuredAt": "2eb3af0b"
     },
     "jz-wasmtime": {
      "medianUs": 58581,
@@ -1513,7 +1563,22 @@
      "parity": "DIFF"
     }
    },
-   "compileMs": 268.9
+   "compileMs": 295.7,
+   "paired": {
+    "jz/v8": {
+     "ratios": [
+      1.1721,
+      1.1749,
+      1.1755,
+      1.1757,
+      1.1758,
+      1.1777,
+      1.1785,
+      1.1833
+     ],
+     "median": 1.1758
+    }
+   }
   },
   "conv2d": {
    "name": "int8 conv2d layer (NN inference)",
@@ -3240,10 +3305,11 @@
    "ref": 2418067300,
    "targets": {
     "v8": {
-     "medianUs": 1408,
+     "medianUs": 1286,
      "bytes": 2700,
-     "memKb": 96816,
-     "parity": "ok"
+     "memKb": 95920,
+     "parity": "ok",
+     "measuredAt": "2eb3af0b"
     },
     "deno": {
      "medianUs": 1479,
@@ -3252,22 +3318,25 @@
      "parity": "ok"
     },
     "bun": {
-     "medianUs": 1056,
+     "medianUs": 1033,
      "bytes": 2700,
-     "memKb": 103392,
-     "parity": "ok"
+     "memKb": 102528,
+     "parity": "ok",
+     "measuredAt": "2eb3af0b"
     },
     "jsc": {
-     "medianUs": 1203,
+     "medianUs": 1129,
      "bytes": 35144,
-     "memKb": 144720,
-     "parity": "ok"
+     "memKb": 146400,
+     "parity": "ok",
+     "measuredAt": "2eb3af0b"
     },
     "jz": {
-     "medianUs": 2145,
-     "bytes": 79459,
-     "memKb": 173760,
-     "parity": "ok"
+     "medianUs": 1874,
+     "bytes": 79445,
+     "memKb": 173648,
+     "parity": "ok",
+     "measuredAt": "2eb3af0b"
     },
     "javy": {
      "medianUs": 31000,
@@ -3278,6 +3347,47 @@
     "porf-native": {
      "status": "fail",
      "reason": "exit null: time: command terminated abnormally\n        0.17 real         0.00 user         0.00 sys\n             4800512  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n     "
+    }
+   },
+   "paired": {
+    "jz/v8": {
+     "ratios": [
+      1.4245,
+      1.432,
+      1.4432,
+      1.4572,
+      1.4584,
+      1.4625,
+      1.4664,
+      1.4716
+     ],
+     "median": 1.4584
+    },
+    "jz/bun": {
+     "ratios": [
+      1.7831,
+      1.7967,
+      1.8,
+      1.8002,
+      1.8305,
+      1.8431,
+      1.8727,
+      1.8986
+     ],
+     "median": 1.8305
+    },
+    "jz/jsc": {
+     "ratios": [
+      1.6395,
+      1.6457,
+      1.6469,
+      1.6501,
+      1.6658,
+      1.6661,
+      1.6823,
+      1.7145
+     ],
+     "median": 1.6658
     }
    }
   },
