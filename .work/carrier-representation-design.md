@@ -518,3 +518,160 @@ measured (not assumed) box-site count, and the concrete four-row
 wrong-value inventory plus the FeaturePlan blocker now depending on it.
 The number that should move the decision is §1/§8's measured 11 — not
 round 1's 1.012–1.023×, which this design was never going to repeat.
+
+## 9. Slices 0–2 — as landed (2026-08-06)
+
+Landed per the user's explicit bound: Slices 0–2 only. Slice 3 (R-recovery,
+the read side where runtime behavior changes) is untouched — every default
+build stays byte-identical, proven below, not assumed.
+
+**Slice 0 — diagnostic promotion.** `src/compile/erasure-diag.js` promoted
+(doc header) to a maintained tool; re-run against the current 149-module
+kernel graph reproduced §1's exact numbers (57 hits — call-arg 37,
+closure-capture 6, return 5, ternary-nullish 5, dataview 3, collection 1;
+fixpoint verdict 11 real box sites, same named bindings). Committed as
+`.work/carrier-box-baseline.md` (repro command + result table + one finding).
+Added `assertErasureConsistency` (JZ_DEBUG_INVARIANTS-gated, no-op
+off-flag): a real erasure-graph soundness cross-check, but WHOLE-PROGRAM
+("some local settled boxed, but the walk recorded zero hits anywhere ⇒
+solver/diagnostic have gone dark relative to each other"), not per-function
+as this section's own §7 text first suggested — a per-function form was
+tried and immediately, correctly, tripped on a genuine but BENIGN
+attribution split: the 10 module-init-constant locals settle `bigintBoxed`
+via analyze.js's top-level walk (attributed to `'(top)'`), while
+`scanErasureSinks` attributes their corresponding hits to the
+module/function whose body holds the const's own initializer expression —
+two independently-implemented instruments naming the same flow differently,
+not a solver bug. Documented in both the code comment and the baseline file.
+
+**Slice 1 — box/unbox primitives.** `layout.js` `PTR.BIGINT = 5` (confirmed
+still free). `src/ir.js`, beside `asI64`/`fromI64`: `boxBigInt` (alloc 8B via
+`__alloc` + `i64.store` + `mkPtrIR` — NOT `__alloc_hdr`; a bare 8-byte cell
+per this section's own "8-byte i64 heap cell" line, no len/cap header a
+scalar box never needs), `unboxBigInt` (`ptrOffsetIR` + `i64.load`),
+`isProvenBoxedBigint(name)` (reads `repOf(name)?.bigintBoxed`),
+`needsBigintBox(node)` (bare name → the rep; any other BIGINT-kinded
+expression → box unconditionally, matching analyze.js's own "inline
+expressions box at emission time, no rep needed" comment). Zero call sites
+reference these unconditionally — `carrierF64`/`coerceArg`/`'return'`/`'?:'`
+all gate the new branch behind `CARRIER_BOX` (Slice 2). Test-only
+`__box_bigint`/`__unbox_bigint` jz-source intrinsics added to
+`module/core.js` (mirroring the existing `__mkptr`/`__ptr_type`/
+`__ptr_offset` debug-intrinsic family) for unit-level pins in
+`test/pointers.js`: box→unbox roundtrip at 0, small ±values, i64 max
+(2^63−1), i64 min (−2^63), a value whose bits alias a genuine NaN-box shape
+(round-2's own wall, re-run through the new box/unbox pair), non-interning
+(two boxes of the same value get distinct heap cells), and PTR.BIGINT's tag
+disjointness from the other 11 live tags. 8/8 pass.
+
+**Slice 2 — W-sink def-side wiring, flag-gated (the design was ambiguous on
+staging; flag-gated was chosen as the safest reading, per the task's own
+explicit fallback instruction).** `JZ_CARRIER_BOX` / `CARRIER_BOX` added
+beside `DBG_INVARIANTS` in `src/ctx.js`, default OFF. Wired, all
+`CARRIER_BOX`-gated:
+- `carrierF64` (`src/ir.js`) — the design's own single W-sink choke-point
+  for boxed-value storage positions (confirmed from `.work/todo.md`'s
+  "ROUND 5 WALL" entry, which independently named this exact function as
+  the chokepoint an earlier, reverted attempt used). Covers dyn-prop/
+  array-elem/Set/Map store and closure-capture (all route through
+  `bridge.js`'s `storedValue`, which is `carrierF64`'s only caller besides
+  a few in-file duplicates) — the `collection` and `closure-capture` sinks.
+- `coerceArg` (`src/compile/emit.js`) — call-arg into a KNOWN user function
+  whose param settled `bigintBoxed=true` (narrow.js's own call-site half of
+  the invariant, already stamped onto `sig.params`). Covers the `call-arg`
+  sink for resolved callees — the empirically load-bearing case: the
+  measured tree's one real boxed param (`m61_layout$i64Hex` param0) is
+  exactly this shape.
+- `'return'` (`src/compile/emit.js`) — extends the existing (but
+  bool-mixed-only) `carrierF64` call at the return site to also fire for a
+  uniform (non-mixed) return whose value is independently proven
+  `bigintBoxed` by some OTHER sink in the same body. NOT a new fact: grep
+  confirms analyze.js's W-sink walk has no `op==='return'` producer at all,
+  so this only fires when the fact already holds for an unrelated reason —
+  extending the producer itself is out of this task's additive-only bound.
+- `'?:'` (`src/compile/emit.js`) — mirrors kind.js `VT['?:']`'s own
+  BIGINT+nullish-literal rule exactly (same condition, same file's own
+  precedent), always via `if`/`else` control flow (never `select`, which
+  would eagerly allocate the box on the untaken branch — the documented
+  root cause of round 2's own "ternary-beside-nullish wrongly boxed" bug).
+
+**Two real bugs found and fixed during this slice's own development** (the
+mandate's own historical-killer check working as intended — caught by a
+flagged-build probe before landing, not after):
+1. **Param double-box.** A `bigintBoxed=true` PARAM already arrives boxed
+   from the caller (`coerceArg` boxes it AT THE CALL SITE) — narrow.js's own
+   comment says exactly this: "consulted by the call-site emitter, not by
+   the callee body … the callee simply carries an opaque pointer through."
+   The first cut of `isProvenBoxedBigint` didn't encode that: `(x) => x`
+   (an identity function called once with a real BigInt) re-boxed the
+   ALREADY-boxed param on return — a box wrapping a pointer's own bits as if
+   they were a fresh bigint payload. Fixed at the single shared predicate
+   (`isProvenBoxedBigint`, `src/ir.js`): excludes the current function's own
+   params from the "still holds raw bits" claim.
+2. **Ternary double-box.** `needsBigintBox`'s "any non-bare-name BIGINT node
+   boxes unconditionally" fallback (sound for plain arithmetic, e.g.
+   `return y + 1n`) was ALSO applied to `'?:'` nodes by `'return'`/
+   `carrierF64` — but a ternary-nullish merge already has its OWN dedicated,
+   more precise wiring (arm-only, `if`/`else`-gated) that is the sole
+   authority for that AST shape. `(cond, x) => cond ? x : null` reboxed the
+   '?:' handler's own already-correct output. Fixed by excluding `'?:'`
+   nodes from `needsBigintBox`'s unconditional fallback — every OTHER
+   consumer now defers fully to the ternary emitter's own decision.
+
+Both were caught by hand-built repros compiled under `JZ_CARRIER_BOX=1` and
+inspecting the emitted WAT during this session, BEFORE the kernel-scale
+probe below — exactly the "verify, don't assume" discipline §7 asks for.
+Post-fix, the same repros box correctly (single allocation, non-boxed
+params pass through unchanged, ternary handler's decision is authoritative)
+and all default-build gates were re-run clean (kernel-parity 33/33,
+kernel-oracle 451/451, perf-ratchet 10/10, full battery unchanged).
+
+**Explicitly NOT wired, scoping decision for the coordinator's review:**
+`dataview` and `export/interop`. DataView.setBig(U)Int64's value argument is
+a raw-bytes CONSUMER (SetViewValue writes raw i64 bits into buffer memory,
+not a NaN-boxed slot) — if its source name is ever `bigintBoxed=true`, that
+name needs UNBOXING at this read, which is Slice 3's job, not a def-side box
+point; confirmed empirically too (zero of the 11 real box sites are
+dataview-sourced). Export/interop touches the kind 1–5 sentinel-lane ABI
+this design's own §5 kill-list reserves for Slice 5 deletion, and
+`erasure-diag.js` never tracked an `export` sink category to verify against
+— out of bounds for an additive, diagnostic-verifiable slice.
+
+**Gates, DEFAULT build (CARRIER_BOX unset):**
+- kernel-parity: 33/33 byte-identical (O0/O2/O3 × 11 examples).
+- kernel-oracle: 11/11 suites, 451/451 assertions.
+- perf-ratchet: 10/10 at +0 delta.
+- full battery (`node test/index.js`): 3354/3362 pass, 2 pre-existing
+  failures unrelated to this work (test/optimizer.js bounds-check-guard
+  counts — reproduced identically on a clean HEAD worktree before this
+  session's changes), 6 skip — same as baseline.
+- selfhost.js: 21/21.
+- fuzz: 2000 programs × opt {0,1,2,3}, 0 divergence.
+- fresh `npm run build` × 2: `dist/jz.wasm` SHA-256 byte-identical across
+  both builds.
+- `test/pointers.js` (Slice 1 unit pins): 8/8, folded into the full battery
+  count above.
+
+**FLAGGED probe build (JZ_CARRIER_BOX=1):** not run as a full battery per
+the mandate (Slice 3's readers aren't landed — a flagged build is expected
+to allocate correctly at the write sites, not run whole programs correctly
+end-to-end) — but DID run the real kernel-scale probe the mandate names:
+`compile(g.code, {modules: g.modules, optimize: false})` against
+`scripts/self.js`'s full 149-module graph with `JZ_CARRIER_BOX=1`.
+Compiled clean (41.6s, 11.4 MB wasm) and `new WebAssembly.Module(wasm)`
+validated it — no trap, no malformed-module error, no invariant assert
+firing. Textual WAT dump (`{wat:true}`) confirmed the engagement the
+diagnostic predicts: **40 `call $__mkptr (i32.const 5) …` box-construction
+sites** (the def-side wiring firing at every live call site of the one
+measured boxed param, `m61_layout$i64Hex`, plus the module-init constants'
+own downstream call-arg flows — more than 11 because the baseline's "11" is
+DISTINCT BINDINGS, each reached from multiple call sites; every occurrence
+carries the exact `boxBigInt` shape: `call $__alloc (i32.const 8)` →
+`i64.store` → `call $__mkptr (i32.const 5) (i32.const 0) …`). Zero box
+calls appear anywhere in the DEFAULT (unflagged) compile of the same graph
+— confirmed by the same search returning 0 matches before `JZ_CARRIER_BOX`
+is set. Correctness beyond "does it allocate" was NOT the target (Slice 3
+isn't landed) but IS what surfaced the two bugs above — this probe is what
+they were caught against, on hand-built repros first, then confirmed absent
+of NEW invariant/validation failures at kernel scale.
+
