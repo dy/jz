@@ -1,7 +1,7 @@
 {
  "meta": {
-  "date": "2026-08-05 23:04 UTC",
-  "commit": "70748f70",
+  "date": "2026-08-06 01:11 UTC",
+  "commit": "b5a01609",
   "host": {
    "platform": "darwin",
    "arch": "arm64",
@@ -48,31 +48,31 @@
      "case": "mat4",
      "target": "c-wasm",
      "storedUs": 2554,
-     "freshUs": 2479,
-     "ratio": 1.0303,
+     "freshUs": 2547,
+     "ratio": 1.0027,
      "pass": true
     },
     {
      "case": "fft",
      "target": "c-wasm",
      "storedUs": 1139,
-     "freshUs": 1062,
-     "ratio": 1.0725,
+     "freshUs": 1127,
+     "ratio": 1.0106,
      "pass": true
     },
     {
      "case": "synth",
      "target": "as",
      "storedUs": 2471,
-     "freshUs": 2370,
-     "ratio": 1.0426,
+     "freshUs": 2446,
+     "ratio": 1.0102,
      "pass": true
     }
    ],
    "ratios": {
-    "c-wasm×mat4": 1.0303,
-    "c-wasm×fft": 1.0725,
-    "as×synth": 1.0426
+    "c-wasm×mat4": 1.0027,
+    "c-wasm×fft": 1.0106,
+    "as×synth": 1.0102
    },
    "pass": true
   },
@@ -1831,10 +1831,11 @@
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 770,
-     "bytes": 1678,
-     "memKb": 53904,
-     "parity": "ok"
+     "medianUs": 682,
+     "bytes": 1671,
+     "memKb": 53936,
+     "parity": "ok",
+     "measuredAt": "b5a01609"
     },
     "as": {
      "medianUs": 744,
@@ -1843,16 +1844,18 @@
      "parity": "ok"
     },
     "rust-wasm": {
-     "medianUs": 609,
+     "medianUs": 615,
      "bytes": 2029113,
      "memKb": 57776,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "b5a01609"
     },
     "c-wasm": {
-     "medianUs": 1413,
+     "medianUs": 1432,
      "bytes": 948255,
-     "memKb": 56000,
-     "parity": "ok"
+     "memKb": 56064,
+     "parity": "ok",
+     "measuredAt": "b5a01609"
     },
     "jz-wasmtime": {
      "medianUs": 759,
@@ -1873,7 +1876,51 @@
      "parity": "ok"
     }
    },
-   "compileMs": 63.7
+   "compileMs": 85.8,
+   "paired": {
+    "jz/rust-wasm": {
+     "ratios": [
+      1.1024,
+      1.1034,
+      1.1039,
+      1.1044,
+      1.1052,
+      1.1059,
+      1.1062,
+      1.1089,
+      1.1089,
+      1.1106,
+      1.1107,
+      1.112,
+      1.1122,
+      1.1136,
+      1.1144,
+      1.1199
+     ],
+     "median": 1.1089
+    },
+    "jz/c-wasm": {
+     "ratios": [
+      0.4728,
+      0.4728,
+      0.4728,
+      0.4729,
+      0.4746,
+      0.4753,
+      0.4759,
+      0.4759,
+      0.477,
+      0.478,
+      0.4782,
+      0.479,
+      0.4794,
+      0.4806,
+      0.4836,
+      0.4837
+     ],
+     "median": 0.477
+    }
+   }
   },
   "deltae": {
    "name": "deltae",
@@ -2574,10 +2621,11 @@
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 3419,
-     "bytes": 3098,
-     "memKb": 53360,
-     "parity": "ok"
+     "medianUs": 3432,
+     "bytes": 3074,
+     "memKb": 53024,
+     "parity": "ok",
+     "measuredAt": "b5a01609"
     },
     "as": {
      "medianUs": 11015,
@@ -2586,16 +2634,18 @@
      "parity": "ok"
     },
     "rust-wasm": {
-     "medianUs": 4020,
+     "medianUs": 3872,
      "bytes": 2030771,
-     "memKb": 56768,
-     "parity": "ok"
+     "memKb": 56784,
+     "parity": "ok",
+     "measuredAt": "b5a01609"
     },
     "c-wasm": {
-     "medianUs": 2805,
+     "medianUs": 2883,
      "bytes": 950084,
-     "memKb": 54016,
-     "parity": "ok"
+     "memKb": 53936,
+     "parity": "ok",
+     "measuredAt": "b5a01609"
     },
     "jz-wasmtime": {
      "medianUs": 3195,
@@ -2616,7 +2666,51 @@
      "parity": "ok"
     }
    },
-   "compileMs": 140.2
+   "compileMs": 137.5,
+   "paired": {
+    "jz/rust-wasm": {
+     "ratios": [
+      0.7904,
+      0.8363,
+      0.8377,
+      0.8691,
+      0.8691,
+      0.8716,
+      0.8834,
+      0.8918,
+      0.8933,
+      0.8937,
+      0.8974,
+      0.9156,
+      0.9193,
+      0.9304,
+      0.9316,
+      0.9763
+     ],
+     "median": 0.8933
+    },
+    "jz/c-wasm": {
+     "ratios": [
+      1.0715,
+      1.1004,
+      1.1122,
+      1.1336,
+      1.1488,
+      1.1507,
+      1.1797,
+      1.194,
+      1.2224,
+      1.225,
+      1.2605,
+      1.2807,
+      1.3185,
+      1.3365,
+      1.3906,
+      1.4457
+     ],
+     "median": 1.2224
+    }
+   }
   },
   "hash": {
    "name": "MurmurHash3 (x86 32-bit)",
@@ -3639,10 +3733,11 @@
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 12303,
+     "medianUs": 11472,
      "bytes": 2109,
-     "memKb": 53328,
-     "parity": "ok"
+     "memKb": 53584,
+     "parity": "ok",
+     "measuredAt": "b5a01609"
     },
     "as": {
      "medianUs": 14785,
@@ -3651,10 +3746,11 @@
      "parity": "ok"
     },
     "rust-wasm": {
-     "medianUs": 14447,
+     "medianUs": 14524,
      "bytes": 2030070,
-     "memKb": 56208,
-     "parity": "ok"
+     "memKb": 56416,
+     "parity": "ok",
+     "measuredAt": "b5a01609"
     },
     "go-wasm": {
      "medianUs": 65775,
@@ -3663,16 +3759,18 @@
      "parity": "ok"
     },
     "zig-wasm": {
-     "medianUs": 10925,
+     "medianUs": 11002,
      "bytes": 39164,
      "memKb": 52160,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "b5a01609"
     },
     "c-wasm": {
-     "medianUs": 14701,
+     "medianUs": 14758,
      "bytes": 948662,
-     "memKb": 53968,
-     "parity": "ok"
+     "memKb": 54032,
+     "parity": "ok",
+     "measuredAt": "b5a01609"
     },
     "jz-wasmtime": {
      "medianUs": 14741,
@@ -3705,7 +3803,72 @@
      "parity": "ok"
     }
    },
-   "compileMs": 126.7
+   "compileMs": 145.8,
+   "paired": {
+    "jz/rust-wasm": {
+     "ratios": [
+      0.7766,
+      0.7842,
+      0.7852,
+      0.7859,
+      0.7869,
+      0.7875,
+      0.7875,
+      0.7877,
+      0.7879,
+      0.7901,
+      0.7904,
+      0.7904,
+      0.7913,
+      0.7955,
+      0.7956,
+      0.8138
+     ],
+     "median": 0.7879
+    },
+    "jz/zig-wasm": {
+     "ratios": [
+      1.0247,
+      1.0254,
+      1.0293,
+      1.0323,
+      1.0335,
+      1.0388,
+      1.0403,
+      1.0421,
+      1.0431,
+      1.0438,
+      1.0444,
+      1.0445,
+      1.0468,
+      1.0478,
+      1.0504,
+      1.077
+     ],
+     "median": 1.0431
+    },
+    "jz/c-wasm": {
+     "ratios": [
+      0.7663,
+      0.7689,
+      0.77,
+      0.7718,
+      0.7742,
+      0.7751,
+      0.7752,
+      0.7774,
+      0.7785,
+      0.7794,
+      0.7797,
+      0.7798,
+      0.7842,
+      0.7853,
+      0.7886,
+      0.8
+     ],
+     "median": 0.7785
+    }
+   }
   },
   "mandelbrot": {
    "name": "mandelbrot escape",

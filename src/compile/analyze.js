@@ -465,6 +465,25 @@ export function analyzeBody(body) {
     const wt = (shr && !shrFitsI32) ? 'f64' : exprType(rhs, locals)
     if (!locals.has(name)) locals.set(name, wt)
     else if (locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
+    // Stamp the closed integer hull EARLY (mirrors analyzeValTypes's own later
+    // declRange stamping below in this file, same predicate: a never-reassigned
+    // decl whose init the range evaluator can bound). This copy exists because
+    // of a real ordering gap: `exprType`'s `*` case needs a magnitude BOUND on
+    // each operand (intExprRange → repOf(name).range) to prove a product fits
+    // i32, and that bound must be visible from THIS SAME top-down walk — one
+    // decl chaining off the previous (`raw` → `tri` → `dq`, the delayline q16
+    // split) — not just from analyzeValTypes's separate walk, which runs its
+    // own stamping AFTER analyzeBody (and this widenLocalTypes-feeding walk)
+    // already finished, too late for a later sibling decl in the SAME body to
+    // see an earlier one's bound. Without this, `tri`'s range is invisible
+    // when `dq = DMIN*65536 + tri*DSPAN` is typed here, `bound(tri)` falls to
+    // the unproven 2^31 default, `dq*` fails the magnitude check, and `dq`
+    // starts life as f64 storage — permanently, since widenLocalTypes only
+    // ever DEMOTES i32→f64, never promotes the other way. Confirmed via a
+    // minimal repro isolating the exact mechanism (not guessed).
+    const declRange = intExprRange(rhs)
+    if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && !isReassigned(body, name))
+      updateRep(name, { range: declRange })
 
     // val type (valTypes slice)
     trackVal(name, valTypeOf(rhs))

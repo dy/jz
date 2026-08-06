@@ -3076,6 +3076,62 @@ test('local-const fold: a chained const divisor becomes a literal (magic-multipl
   is(run(`export let f = (x0) => { let x = x0|0; const m = 1 << 3; return (x/m)|0 }`, { optimize: 'speed' }).f(100), 12)
 })
 
+test('int-div-lower: a bounded-product chain (mask → ternary → sum-of-products) proves i32.shr_u, not the f64 round-trip', () => {
+  // The delayline q16 split (bench/delayline/delayline.js runPass): raw = lfo & mask
+  // (bitwise, provably [0,mask]) → tri = a ternary of two range-provable arms → dq =
+  // DMIN*65536 + tri*DSPAN (a magnitude-BOUND product against a NAMED module const, not
+  // just exprType's magnitude-blind `+`) → (dq/65536)|0, dq also feeding a second, real
+  // (non-`|0`) division for the fractional part. `*`'s exprType rule always checks
+  // intExprRange(tri) — a real ordering gap (fixed 2026-08-05, analyze.js processDecl)
+  // let `tri`'s range go unstamped until AFTER local storage types were decided, so the
+  // product-bound check fell back to the unproven ±2^31 default and pinned `dq` to f64
+  // storage permanently (widenLocalTypes only ever demotes i32→f64, never promotes
+  // back) — even though `dq`'s true magnitude was always bounded. Mirrors the real
+  // file's shape exactly (module-level named consts, dual dq use, loop-scoped decls) —
+  // a same-looking single-use/literal-only variant reaches a DIFFERENT, still-open
+  // bare-escape gap (intLevelMap/collectBareEscapes, not touched by this fix) and must
+  // not be conflated with what this pin covers.
+  const src = `
+    const DMIN = 96
+    const DSPAN = 2000
+    export let f = (n0) => {
+      let lfo = 0, acc = 0
+      const n = n0 | 0
+      for (let i = 0; i < n; i++) {
+        lfo = (lfo + 977) | 0
+        const raw = lfo & 0x1ffff
+        const tri = raw < 0x10000 ? raw : 0x20000 - raw
+        const dq = DMIN * 65536 + tri * DSPAN
+        const dInt = (dq / 65536) | 0
+        const dFrac = (dq - dInt * 65536) / 65536.0
+        acc = acc + dInt + dFrac
+      }
+      return acc
+    }
+  `
+  const w = jz.compile(src, { wat: true, optimize: 'speed' })
+  ok(/i32\.shr_u/.test(w), 'power-of-two divisor with a proven-nonneg dividend strength-reduces to i32.shr_u')
+  // i64.trunc_sat_f64_s is the ordinary NaN-boxed param-unboxing ABI boundary (n0's
+  // own coercion) — unrelated to the div lever. Only the i32 form is the round-trip
+  // this lever removes (convert_i32_s → f64.mul-by-reciprocal → i32.trunc_sat_f64_s).
+  ok(!/i32\.trunc_sat_f64_s/.test(w), 'no f64 round-trip survives for the div')
+  const { f } = run(src, { optimize: 'speed' })
+  const ref = (n) => {
+    let lfo = 0, acc = 0
+    for (let i = 0; i < n; i++) {
+      lfo = (lfo + 977) | 0
+      const raw = lfo & 0x1ffff
+      const tri = raw < 0x10000 ? raw : 0x20000 - raw
+      const dq = 96 * 65536 + tri * 2000
+      const dInt = (dq / 65536) | 0
+      const dFrac = (dq - dInt * 65536) / 65536.0
+      acc = acc + dInt + dFrac
+    }
+    return acc
+  }
+  for (const n of [0, 1, 5, 37, 200]) is(f(n), ref(n), `n=${n}`)
+})
+
 test('clamp-peel: stencil edge-peel fires + bit-exact + soundness guards bail', () => {
   // A real box-blur stencil (clamp xi=x+k to [0,w-1]) must split into clamp-free
   // interior + edges, bit-exact vs disabled, while dangerous variants (mutated iv /

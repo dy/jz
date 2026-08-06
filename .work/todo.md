@@ -6,6 +6,143 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-05, --merge meta.invocations FIX + THREE-SPEED-REDS DISSECTED
+## #2 — glyfparse/lz/delayline: delayline lever LANDED, lz was stale evidence
+## (not a regression), glyfparse confirmed real hard tail. b5a01609 + follow-up.)
+
+**Part 1 — bench --merge's meta.invocations narrow-target collapse, FIXED
+(b5a01609).** Flagged twice this cycle (fft merge, then sort+radixsort's Lever
+A/B session) and hand-patched around both times, never landed. Root: `--json`'s
+meta build (bench/bench.mjs ~1266) derives `invocations` from `usedTargets` —
+the targets THIS run's `--cases`/`--targets` selection actually touched — and
+`--merge`'s finalOut (~1312) spread `jsonOut.meta` wholesale with no merge
+logic for that sub-structure, so a narrow `--targets=` silently replaced the
+full 22-entry invocations dict with just the measured targets' commands.
+**Fix**: `meta.invocations` now merges the same way case rows merge — overlay
+this run's targets onto PREV's full dict (`{ ...PREV.meta?.invocations,
+...jsonOut.meta.invocations }`) — one line at the `finalOut` assembly.
+Regression pin added to test/bench-merge.js (verified: fails on unpatched HEAD
+— 1 entry survives instead of 22 — passes with the fix). Used for real for the
+first time in Part 2's own results.json merge below (22/22 invocations
+preserved, confirmed via python dict-equality against the pre-merge file, not
+eyeballing).
+
+**Part 2, Target 1 — glyfparse 1.219× (c-wasm): real, not lane jitter; hard
+tail, not a closable lever.** Discriminated first per the brief (glyfparse LED
+1.00× in targeted pairs 2026-07-27, so the 1.219× committed row needed
+verification before any dissection effort): paired ABBA (quiet, `--paired=8`
+then widened to `--paired=16` on noisy per-round spread 0.85×-1.60×) reproduces
+**median 1.266×**, consistently >1 across both widths — REAL, the 2026-07-27
+LED reading was itself the noise (or the code has since drifted; either way
+today's evidence is unambiguous). WAT inspection (runKernel, -O3): **zero**
+`i32.trunc_sat_f64_s` in the 859-line hot loop (0/195 i32 ops) — the P0-2
+f64-round-trip lever class that closed sort/radixsort/delayline (below) does
+NOT apply here; the parse loop's integer arithmetic is already fully native
+i32. Structural branch density (31 br_if/if across 859 lines, ~1 per 27) marks
+the same data-dependent per-byte flag-testing character the source comment
+names ("unpredictable per-byte branches, variable-length records, bit tests")
+— the SAME class as trace's already-ledgered branch-layout hard tail
+(2026-07-26 dissection: "data-dependent if(inside), no conditional store in
+wasm"). **Verdict: hard tail, banked as characterized-not-closable** — no lever
+found, no engine-level branch-hint/PGO machinery in jz to exploit even if one
+were. results.json refreshed (jz.medianUs 3419→3432, essentially flat,
+confirming the row wasn't stale — the ratio move 1.219→1.222 is noise-band).
+
+**Part 2, Target 2 — lz 1.126× (zig-wasm): stale evidence, NOT a regression.**
+History: 2026-07-30's targeted paired verification found lz "improved to 1.036
+BAND (the inference wave closed its red without a dedicated lever)" — but that
+session's full refresh was discarded as polluted (results.json reverted to the
+older, pre-inference-wave f1e877b8 evidence, which is where the currently-
+committed 1.126×/1.107× row actually comes from — confirmed: f1e877b8's own
+commit message lists "lz 1.107" as red, predating a6312d3d and the other
+inference-class landings). The 1.036 finding was real but never committed.
+Live re-measurement today: paired ABBA (`--paired=16`, quiet) gives **median
+1.043×** — squarely inside the 2026-07-30 BAND, nowhere near 1.126×. **Verdict:
+no code change — the row was simply never refreshed after the inference wave
+closed it; re-measurement alone closes it.** results.json updated (jz.medianUs
+12303→11472, zig-wasm 10925→11002 — both fresh, ratio 1.126→1.043).
+
+**Part 2, Target 3 — delayline 1.264× (rust-wasm): root-caused, LEVER LANDED
+(src/compile/analyze.js).** Fresh dissection (no prior entry). WAT read
+(runKernel, -O3) found the exact q16 fixed-point split (`dInt = (dq/65536)|0`)
+compiling to a full f64 round-trip (`f64.convert_i32_s` → `f64.mul` by the
+1/65536 reciprocal → `i32.trunc_sat_f64_s`) instead of `i32.shr_u` — despite
+emit.js's `tryIntDivTrunc` (P0-2-era) ALREADY having exactly this shift-
+strength-reduction case, gated on `intExprRange(dividend)` proving a
+non-negative range. Bisected via minimal repro + targeted debug instrumentation
+(not guessed): `dq = DMIN*65536 + tri*DSPAN`'s `*` sub-expression's exprType
+check needs `intExprRange('tri')` — a magnitude BOUND, not just "is it i32" —
+to prove the product fits i32. That bound comes from `tri`'s own declRange,
+which is stamped by analyzeValTypes's walk (analyze.js ~1728) — but that walk
+runs AFTER `analyzeBody`'s own walk (which decides EVERY local's WASM STORAGE
+type, including `dq`'s, via the SAME per-body top-down order) has already
+finished. So when `dq`'s storage type is decided, `tri`'s range doesn't exist
+yet; `bound(tri)` falls back to the unproven ±2^31 default, the product-fits
+check fails, and `dq` starts life as f64 storage — permanently (the widening
+pass only ever demotes i32→f64, never promotes back). **Fix**: stamp the same
+closed-integer-hull range fact EARLY, inside `analyzeBody`'s own `processDecl`
+(right where each local's storage type is decided, immediately after `wt` is
+computed) — mirrors the existing analyzeValTypes stamping exactly (same
+`intExprRange(rhs)` + `!isReassigned(body, name)` predicate, reusing the
+already-imported `isReassigned` instead of duplicating analyzeValTypes's
+private `writeCount`), so a later sibling decl in the SAME top-down walk
+(`raw` → `tri` → `dq`) sees the previous one's bound in time. Purely additive:
+widens WHEN a magnitude bound is provable, never narrows an existing decision.
+**Verification.** Checksum reproduced bit-exact: delayline `1887209008`,
+matching stored/reference every time (compile, paired runs, merge). WAT diff
+against unpatched HEAD: `dInt`'s computation recovers `i32.shr_u(dq, 16)`
+exactly (the `dFrac` computation two lines later, a genuine non-`|0` float
+division, correctly stays f64 — unaffected, as it must). Paired ABBA vs
+rust-wasm (`--paired=16`, quiet, load ~3.1-3.7): **median 1.109×** (down from
+stored 1.264×) — closes ~59% of the original gap (1.264→1.109 of a 1.264→1.0
+span). regression pin added (test/optimizer.js, `int-div-lower: a bounded-
+product chain…` — verified fails on unpatched HEAD, passes with the fix; a
+same-shaped but single-use/literal-only variant does NOT reach this lever
+(hits a SEPARATE, still-open Pass D bare-escape gap — named below, not fixed).
+results.json updated (jz.medianUs 770→682, rust-wasm 609→615 — both fresh,
+ratio 1.264→1.109).
+
+**Named, NOT fixed (banked, soundness-adjacent, out of this session's
+scope per the brief's Lever-A/B precedent): Pass D's bare-escape demotion
+(analyze.js `widenLocalTypes`, `intLevels`/`collectBareEscapes`) doesn't
+consult a name's OWN proven-finite `repOf(name).range` before demoting a
+level-1-classified, uncompared local to f64 storage.** Found while narrowing
+down the delayline fix's minimal repro: a `const dq = raw + literal` (or
+`raw*literal`, no NAMED module const involved) inside a loop, read once via
+`(dq/2^n)|0` and never compared, still gets demoted to f64 by Pass D even
+though `dq`'s magnitude is provably bounded (confirmed via the SAME
+`intExprRange` proof this session's landed fix now stamps early) — `dq` only
+survives when EITHER a comparison exists anywhere in scope (bypasses Pass D's
+`compared` exemption entirely) OR the shape happens to route through a NAMED
+module const the way the real delayline.js does (a secondary, not fully
+characterized interaction with `intLevelMap`'s own level-1-vs-level-2
+classification of `*` between a name and a bare literal vs a name and a named
+const). Distinct lever from Part 2 Target 3's fix — `intLevels`/
+`collectBareEscapes` is a whole separate, cruder classifier that doesn't share
+the `repOf(name).range` fact at all. Sizeable enough (Pass D touches every
+level-1-classified local in every function, not just one product-chain shape)
+to want its own dedicated dissection + full gate budget rather than folding
+into this session.
+
+**Files touched**: `bench/bench.mjs` (Part 1 fix), `test/bench-merge.js` (Part
+1 pin), `.work/fast-refresh-design.md` (Part 1 gates note), `src/compile/
+analyze.js` (Part 2 Target 3 fix), `test/optimizer.js` (Part 2 Target 3 pin),
+`bench/results.json` (all three case rows + meta, via `--merge
+--verify-anchors`, anchors 3/3 PASS: c-wasm×mat4 1.003×, c-wasm×fft 1.011×,
+as×synth 1.010×), `.work/todo.md` (this entry).
+
+**Gates run this session (all foreground, chunked 4-7 test files per call,
+timeout 600000 each — none monolithic/background)**: full battery 15/15
+chunks green (kernel-parity, kernel-oracle, optimizer, simd, cond-vectorize,
+examples all included, zero fails, a handful of expected skips only);
+selfhost.js 21/21 (206 assertions); fuzz 2000×4 (default + --typed +
+--typed-map + --typed-int, zero divergence across all four); perf-ratchet
+10/10 (+0, no regression, no accidental tightening either — none of the ten
+probe shapes happen to exercise the fixed q16-division pattern); size sweep
+geomean jz/AS 1.040× (holds, unchanged); fresh build ×2 byte-identical
+(dist/jz.js, dist/interop.js, dist/jz.wasm all `cmp -s` clean across two
+independent `build-dist.mjs` runs).
+
 ## Status (2026-08-05, LEVER B LANDED — sort's typed-.length magnitude bound +
 ## loop-guard-hull channel, the second of the two named speed levers from the
 ## THREE-SPEED-REDS dissection below. Landed after Lever A, same session — see
