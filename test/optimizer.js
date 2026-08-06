@@ -3132,6 +3132,67 @@ test('int-div-lower: a bounded-product chain (mask → ternary → sum-of-produc
   for (const n of [0, 1, 5, 37, 200]) is(f(n), ref(n), `n=${n}`)
 })
 
+test('Pass-D range-proof exemption: bare-literal-only bounded chain stays i32 (delayline residual)', () => {
+  // The "same-looking single-use/literal-only variant" the test above's own comment
+  // flags as a DIFFERENT, still-open gap: no NAMED module const, `dq` fed by a bare
+  // literal (`raw + 5000`) instead of a named DSPAN/DMIN, read once via `(dq/65536)|0`
+  // and never compared anywhere. widenLocalTypes' Pass D (analyze.js) demotes any
+  // level-1-classified (`+`/`-`/`*`, magnitude-open) i32 local with a bare escape to
+  // f64 UNCONDITIONALLY — it never consulted `repOf(name)?.range`, even though
+  // processDecl (same file, same top-down walk, runs before widenLocalTypes) already
+  // stamps a real closed hull for any never-reassigned decl `intExprRange` can bound.
+  // `dq` here is exactly that: `raw` is bitwise-bounded ([0,0x1ffff]), `dq = raw+5000`
+  // closes to [5000, 0x1ffff+5000] — well inside i32 — so the bare `(dq/65536)|0` read
+  // can never see a wrapped value. Fix: Pass D now exempts a name whose proven range
+  // fits signed i32 from the demotion.
+  const src = `
+    export let f = (n0) => {
+      let lfo = 0, acc = 0
+      const n = n0 | 0
+      for (let i = 0; i < n; i++) {
+        lfo = (lfo + 977) | 0
+        const raw = lfo & 0x1ffff
+        const dq = raw + 5000
+        const dInt = (dq / 65536) | 0
+        acc = acc + dInt
+      }
+      return acc
+    }
+  `
+  const w = jz.compile(src, { wat: true, optimize: 'speed' })
+  ok(/i32\.shr_u/.test(w), 'power-of-two divisor over a range-proven bare-literal chain strength-reduces to i32.shr_u')
+  ok(!/i32\.trunc_sat_f64_s/.test(w), 'no f64 round-trip survives for the div')
+  const { f } = run(src, { optimize: 'speed' })
+  const ref = (n) => {
+    let lfo = 0, acc = 0
+    for (let i = 0; i < n; i++) {
+      lfo = (lfo + 977) | 0
+      const raw = lfo & 0x1ffff
+      const dq = raw + 5000
+      const dInt = (dq / 65536) | 0
+      acc = acc + dInt
+    }
+    return acc
+  }
+  for (const n of [0, 1, 5, 37, 200]) is(f(n), ref(n), `n=${n}`)
+
+  // Negative control: a REASSIGNED (level-1, no processDecl range stamp — the
+  // `!isReassigned` gate excludes it) accumulator with no governing comparison must
+  // still demote to f64 exactly as before — the FFT-butterfly KNOWN-FAIL shape this
+  // pass exists for is untouched by the exemption.
+  const unbounded = `
+    export let g = (n0) => {
+      let id = 1
+      const n = n0 | 0
+      for (let i = 0; i < n; i++) id = id * 3
+      return id + 0.5
+    }
+  `
+  const { g } = run(unbounded, { optimize: 'speed' })
+  const refG = (n) => { let id = 1; for (let i = 0; i < n; i++) id = id * 3; return id + 0.5 }
+  for (const n of [0, 1, 5, 12]) is(g(n), refG(n), `unbounded g n=${n}`)
+})
+
 test('clamp-peel: stencil edge-peel fires + bit-exact + soundness guards bail', () => {
   // A real box-blur stencil (clamp xi=x+k to [0,w-1]) must split into clamp-free
   // interior + edges, bit-exact vs disabled, while dangerous variants (mutated iv /

@@ -958,7 +958,22 @@ export function collectBareEscapes(body, locals, crossClosure) {
   const escaped = new Set()
   const compared = collectComparedNames(body, crossClosure)
   const walk = (node, mode) => {   // mode: 'idx' | 'edge' | 'value'
-    if (typeof node === 'string') { if (mode === 'value' && !compared.has(node)) escaped.add(node); return }
+    // audit-#12 delayline residual: `escapeInRangeI32` (rule a, doc above) was
+    // already wired for a COMPOUND value-mode node (the generic array-node
+    // fallthrough below) — but a BARE NAME leaf returns HERE, before ever
+    // reaching that check, so a name whose own closed hull IS provable
+    // (`repOf(name)?.range`, stamped by processDecl's early declRange pass for
+    // any never-reassigned decl — see analyze.js) still got blamed whenever
+    // its only escaping use sat under an operator `intExprRange` doesn't model
+    // (division: `(dq/65536)|0` walks `dq` in 'value' mode directly, since
+    // `/` isn't ESCAPE_SAFE_ROOT_OPS/AFFINE_INDEX_OPS and intExprRange has no
+    // '/' case to hull the OUTER node — the ONLY chance to prove `dq` itself
+    // safe is checking the LEAF's own range, which this line now does). Same
+    // proof, same soundness contract as the compound-node check just reached
+    // one level too late — a reassigned accumulator (`id` after `id *=
+    // 100000`) gets no processDecl range stamp either way, so this is a
+    // strict widening, not a new tolerance.
+    if (typeof node === 'string') { if (mode === 'value' && !compared.has(node) && !escapeInRangeI32(node)) escaped.add(node); return }
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') { if (crossClosure) walk(node[2], 'value'); return }  // local mode: separate scope/body; global mode: descend (see doc)

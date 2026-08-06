@@ -6,6 +6,161 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, CONSOLIDATED RANGE-FACT LANDING — the four banked
+## levers (efe34b1c colorlog/base64, 719a3a18 delayline Pass-D residual,
+## d6460bce loop-guard-hull, c8700daa forCounterRange) triaged as ONE
+## admission ([collectBareEscapes leaf-check, ships] + TWO honestly banked
+## [colorlog census, base64 co-induction] — both traced to a real, larger
+## mechanism, not a hookup, evidence below)
+
+**Unified-mechanism framing, briefly.** The four banked entries all point at
+the same proof surface: `intExprRange` (static.js) is the canonical range
+oracle every consumer shares (`opBound`/`addRangeFitsI32`/`mulRangeFitsI32`
+in emit.js, `typedIdxProven` in type.js, `escapeInRangeI32` in
+analyze-scans.js, `censusShapedNode`'s callers in kind.js). It resolves a
+bare NAME through exactly two channels: a STORED `repOf(name).range` (set at
+ANALYZE TIME — processDecl's early stamp, analyzeValTypes' later one) or a
+live `ctx.func.refinements` entry (set at EMIT TIME ONLY — `withRefinements`/
+`forCounterRange`/the loop-guard-hull channel, all scoped to the body
+currently being emitted). Every one of the three gaps this session chased is
+a variant of "a value's true bound exists in ONE of those channels, but the
+CONSUMER asking the question runs at a POINT — a different pass, a different
+node shape, a name one hop removed from the bound name itself — that channel
+doesn't reach." Admission 2 below is exactly this: same channel, wrong node
+(a leaf return skipping the check that was already wired for its parent).
+Admissions 1 and 3 are NOT the same shape — investigated in full below, both
+resolve to "the fact genuinely doesn't exist yet at the point that needs it,
+and manufacturing it is a new prover, not a routing fix" — reported honestly
+rather than forced.
+
+**Admission 2 — LANDED: `collectBareEscapes` (analyze-scans.js) checked a
+bare-name leaf's own range ONE LEVEL TOO LATE, so `escapeInRangeI32` (28b2530b's
+own "rule a" exemption — the hook the brief correctly said EXISTS) never
+fired for a name whose only escaping use sits under an operator
+`intExprRange` doesn't model.** Root cause, found by minimal repro
+(`const dq = raw + 5000` — bitwise-bounded `raw`, no named module const —
+read once via `(dq/65536)|0`, never compared): `collectBareEscapes`'s walk
+handles a bare-string node FIRST (`if (typeof node === 'string') { if
+(mode==='value' && !compared.has(node)) escaped.add(node); return }`) —
+`escapeInRangeI32(node)` is only ever reached for the generic ARRAY-node
+fallthrough further down, so it's checked on the ENCLOSING EXPRESSION
+(`dq / 65536`), never on the leaf name itself. `intExprRange` has no `/`
+case (division isn't range-modeled — by design, per static.js's own
+op-by-op survey: `.length`, `?:`, `&`, `>>>`, `>>`, `u-`/`-`, `++`/`--`,
+`+`/`-`/`*` only), so `escapeInRangeI32(['/', 'dq', 65536])` returns false
+regardless of `dq`'s own provable range, and the walk recurses into `dq` in
+'value' mode where it's blamed — even though `repOf('dq').range` was ALREADY
+stamped (processDecl's early declRange pass, 719a3a18) by the time this scan
+runs (`analyzeBody`'s `walk(body)` — which calls `processDecl` for every
+decl — completes in full BEFORE `widenLocalTypes(body, locals)`, which is
+where `collectBareEscapes` gets called, per analyze.js:876-877). **Fix**: one
+added condition, `!escapeInRangeI32(node)` on the string-leaf branch itself —
+same hook, same soundness contract, checked at the leaf instead of only the
+parent. Fails open exactly as before for the case Pass D actually exists for
+(`id` after `id *= 100000` — REASSIGNED, so `!isReassigned` never lets
+processDecl stamp a range, `repOf('id').range` stays null, still blamed).
+
+**Verification.** WAT: minimal repro recovers `i32.shr_u`, zero
+`i32.trunc_sat_f64_s` survives for the div (confirmed via targeted probe,
+with/without the fix, `git stash` A/B). Negative control (`id *= 100000`
+unbounded accumulator) unaffected — still demotes, values still exact.
+Regression pin added: test/optimizer.js "Pass-D range-proof exemption:
+bare-literal-only bounded chain stays i32 (delayline residual)" (positive
+repro + negative control, both value-exact across n∈{0,1,5,37,200}).
+**Honest scope note — does NOT move delayline's own bench number**: the
+REAL bench/delayline/delayline.js `dq = DMIN*65536 + tri*DSPAN` uses NAMED
+MODULE CONSTS, which intLevelMap classifies level-2 (not level-1) — it never
+reaches Pass D's `bareEscapes` check at all (confirmed: compiled the actual
+bench file with/without this fix, byte-identical WAT sha256
+`e6a38875d68766929ecc01c0622c4fae74def7a6bdf251d46f175c391c13f921` both
+ways) — 719a3a18's own banked note named this AS a distinct, secondary repro
+("a same-looking single-use/literal-only variant... must not be conflated
+with what this pin covers"), and that's exactly what this fix closes: the
+literal-only shape, not delayline's own named-const shape. delayline's
+paired number stays at 719a3a18's already-landed 1.109× — this admission is
+a real, tested, soundness-relevant widening for OTHER/future code with this
+exact shape, not a delayline speedup. Reporting this precisely rather than
+implying a bench move that didn't happen.
+
+**Admission 3 — colorlog, INVESTIGATED, NOT LANDED (genuine new mechanism,
+not a hookup).** Traced the exact gap: `censusMaybeUndefinedKind`
+(kind.js)'s `censusShapedNode` arm flags `decode(src[j])`'s argument
+unconditionally (pure AST-shape test, no bounds reasoning at all); the
+actual `mayBeUndefined=true` write for decode's param `v` happens in
+narrow.js's PLAN-TIME whole-program fixpoint (narrow.js:2418,
+`exprMayBeUndefinedIn(cs.argList[k], cs.callerFunc.body)`) — a pass that
+runs with NO `ctx.func.refinements` installed (that map only exists DURING
+emit.js's compilation of one function body, populated by
+`withRefinements`/`forCounterRange`/the loop-guard-hull channel). Proving
+`src[j]`/`src[j+1]`/`src[j+2]` in-bounds needs THREE facts to chain: (a)
+`n`'s value pinned to N_PIXELS — plausible via the EXISTING `intConst`
+call-site fixpoint (narrow.js:1764, single call site) (b) `src`'s allocation
+length — plausible via the EXISTING `arrayLen` interprocedural fixpoint
+(narrow.js:2019-2043), traced through the `mkInput` helper's own return (c)
+`j = 3*i`'s hull, which requires REPRODUCING forCounterRange's canonical-loop
+proof at narrow.js's earlier pipeline point — forCounterRange itself can't
+be reused (it's an emit.js closure reading `ctx.func.refinements`, which
+doesn't exist yet). (c) is not a routing fix, it's a second, independent,
+refinement-free structural prover needed at a different pipeline phase —
+verified NOT already wired anywhere (grepped for a plan-time loop-shape
+matcher; none exists). Same class this session's own jessie dissection
+(efe34b1c) already named and declined ("whole-program alias tracking...
+materially larger, unrelated mechanism") — banked, not rushed. No src/
+change attempted for this admission.
+
+**Admission 1 — base64, INVESTIGATED, NOT LANDED (genuine new mechanism).**
+Read bench/base64/base64.js directly (not the WAT description alone): `op`
+(the perf lever) is declared BEFORE the loop (`let op = 0`), stepped by a
+body-literal (`op += 4`) unconditionally once per iteration, used only as
+`out[op..op+3]` and (unused-by-any-caller) `return op`. TWO independent gaps
+compound: (i) the loop's own guard is `i + 3 <= n` — NOT the bare `name <op>
+bound` shape `forCounterRange` structurally requires (`cond[1] !== name`
+fails immediately for a shifted guard) — a real, modest, isolated fix, BUT
+(ii) even with (i) fixed, `op` is declared OUTSIDE the for-loop's own
+init/cond/step triple entirely, so `forCounterRange` — which only ever
+proves a fact about the ONE name its own header describes — has no
+representation for `op` at all: `op`'s bound is `op_init + step ×
+iterationCount`, a fact about a SECOND (body-local) variable co-varying with
+the canonical counter, not a fact about the counter itself. This is the
+"co-induction variable" class the session's own base64 dissection (efe34b1c)
+already flagged as possibly warranting "a dedicated, general
+induction-variable range-fact project" rather than a one-off admission —
+confirmed here by design, not assumed: no existing map/channel (loopGuardHi,
+ctx.func.refinements, repOf.range) has a slot for "a name's value as a
+function of ANOTHER name's iteration count." Landing (i) alone would not
+move base64's WAT (the lever is `op`, not `i`), so it was not landed in
+isolation. No src/ change attempted for this admission.
+
+**Regression check (all six named kernels, WAT sha256 before/after this
+session's ONE code change, `git stash` A/B on src/compile/analyze-scans.js):
+colorlog, base64, sort, radixsort, bitwise, sieve all byte-identical** —
+stronger than the "byte-identical outside the newly-admitted sites"
+requirement, since none of the six are the admitted site.
+
+**Vectorizer watch (examples.js, 22/22, 433 assertions): watercolor 49,
+waves 46, schrodinger 27, diffusion/slime pins (60/13) all intact** — no
+re-admission regression from this session's change.
+
+**Gates (all foreground, this session)**: full curated battery run file-by-
+file (not monolithic) — ~85 files, 0 failures across every one, including
+kernel-parity (3/3), kernel-oracle (11/11, 451 assertions), optimizer.js
+(216/216, 3967 assertions, incl. the 2 new pins), simd.js (158/158),
+cond-vectorize.js (3/3), examples.js (22/22), dyn-keys.js (57/57),
+types.js (178/178), inference.js (136/136), perf-ratchet (10/10 at +0),
+selfhost.js (21/21, 206 assertions), test262.js/test262-builtins.js/
+test262-out.js (0 unexpected failures — all misses are pre-existing
+catalogued/recorded gaps, unrelated to this change); fuzz 2000×4 (default,
+--typed, --typed-map, --typed-int) — 0 divergence all four; size sweep
+(scripts/bench-size.mjs): geomean jz/AS **1.040×** (holds, unchanged); fresh
+build ×2 (`scripts/build-dist.mjs`): dist/jz.js, dist/jz.wasm,
+dist/interop.js SHA-256 byte-identical across both runs.
+
+**Files touched**: `src/compile/analyze-scans.js` (`collectBareEscapes`'s
+leaf-check fix), `test/optimizer.js` (regression pin), `.work/todo.md` (this
+entry). No `bench/results.json` change — no bench case's paired number moved
+(delayline explicitly confirmed unchanged above; colorlog/base64 untouched
+since their admissions weren't landed).
+
 ## Status (2026-08-06, FOUR SPEED REDS DISSECTED — jessie discriminated
 ## [methodology gap, not a regression, standing hard tail reconfirmed],
 ## colorlog + base64 NAMED LEVERS [surgically proven, NOT landed —
