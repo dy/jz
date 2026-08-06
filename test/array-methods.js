@@ -3,6 +3,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onWasi, onKernel, adaptI64 } from './_matrix.js'
+import { parse, has } from '../scripts/wat-probe.mjs'
 
 function run(code) {
   const { module, instance } = jz(code)
@@ -732,6 +733,85 @@ test('Array.from: a non-callable mapfn throws (TypeError), not an internal crash
   // a real mapfn and an absent mapfn keep working
   is(run('export let f = () => { let a = Array.from([1, 2, 3], x => x * 10); return a[2] }').f(), 30)
   is(run('export let f = () => Array.from([1, 2, 3]).length').f(), 3)
+})
+
+// === Array.from: typed sources (audit-#12 P0-3) ===
+// __arr_from did a raw `memory.copy(len<<3)` unconditionally — correct only for
+// 8-byte f64-stride ARRAY storage. Any narrower/wider typed source (Int8..Uint32,
+// Float32, view-indirected/BigInt64/BigUint64) got the wrong bytes at the wrong
+// stride. Fixed: dispatch on `__ptr_type(src)` — PTR.ARRAY keeps the exact-same
+// memory.copy (see the WAT-pin test below); any other type routes per-element
+// through `$__typed_idx`, the same polymorphic reader `src[i]` bracket-reads use.
+test('Array.from: every TypedArray element kind reads the correct value (was memory.copy garbage)', () => {
+  is(run(`export let f = () => { let a = new Int8Array([1, 2, -3]); let r = Array.from(a); return r[0] * 100 + r[1] * 10 + r[2] }`).f(), 117)
+  is(run(`export let f = () => { let a = new Uint8Array([1, 2, 3]); let r = Array.from(a); return r[0] * 100 + r[1] * 10 + r[2] }`).f(), 123)
+  is(run(`export let f = () => { let a = new Uint8ClampedArray([1, 2, 3]); let r = Array.from(a); return r[0] * 100 + r[1] * 10 + r[2] }`).f(), 123)
+  is(run(`export let f = () => { let a = new Int16Array([1, 2, -300]); let r = Array.from(a); return r[0] * 10000 + r[1] * 100 + r[2] }`).f(), 1 * 10000 + 2 * 100 - 300)
+  is(run(`export let f = () => { let a = new Uint16Array([1, 2, 300]); let r = Array.from(a); return r[0] * 10000 + r[1] * 100 + r[2] }`).f(), 1 * 10000 + 2 * 100 + 300)
+  is(run(`export let f = () => { let a = new Int32Array([1, 2, -70000]); let r = Array.from(a); return r[0] + r[1] + r[2] }`).f(), 1 + 2 - 70000)
+  is(run(`export let f = () => { let a = new Uint32Array([1, 2, 70000]); let r = Array.from(a); return r[0] + r[1] + r[2] }`).f(), 70003)
+  is(run(`export let f = () => { let a = new Float32Array([1.5, 2.5, 3.5]); let r = Array.from(a); return r[0] + r[1] + r[2] }`).f(), 7.5)
+  is(run(`export let f = () => { let a = new Float64Array([1.5, 2.5, 3.5]); let r = Array.from(a); return r[0] + r[1] + r[2] }`).f(), 7.5)
+})
+
+test('Array.from: typed source + mapfn composes AFTER the correct element read', () => {
+  // The SEPARATE mapfn iteration path (arrayLoop-based) had the identical bug —
+  // f64-stride elemLoad on a non-f64-stride typed source. Now reads via $__typed_idx.
+  is(run(`export let f = () => { let a = new Int32Array([1, 2, 3]); let r = Array.from(a, x => x * 2); return r[0] + r[1] + r[2] }`).f(), 12)
+  is(run(`export let f = () => { let a = new Uint8Array([1, 2, 3]); let r = Array.from(a, x => x * 2); return r[0] + r[1] + r[2] }`).f(), 12)
+  is(run(`export let f = () => { let a = new Float32Array([1.5, 2.5]); let r = Array.from(a, x => x * 2); return r[0] + r[1] }`).f(), 8)
+})
+
+test('Array.from: plain array is unaffected (fast path preserved, value + WAT)', () => {
+  is(run(`export let f = () => { let a = [1, 2, 3]; let r = Array.from(a); return r[0] * 100 + r[1] * 10 + r[2] }`).f(), 123)
+  is(run(`export let f = () => { let a = [1, 2, 3]; let r = Array.from(a, x => x * 2); return r[0] + r[1] + r[2] }`).f(), 12)
+  if (onKernel()) return  // WAT-structure assertion — kernel leg compiles optimize:false, shape doesn't apply
+  // The ARRAY-tagged fast path inside __arr_from must still be a bare memory.copy —
+  // not a per-element loop — for the hot plain-array case.
+  const tree = parse(`export let f = () => { let a = [1, 2, 3]; return Array.from(a) }`, 2)
+  ok(has(tree, (n) => n[0] === 'memory.copy'), 'INVARIANT: __arr_from keeps memory.copy for the ARRAY fast path')
+})
+
+test('Array.from: BigInt64Array/BigUint64Array — bracket-read equivalence (carrier doctrine)', () => {
+  // Whatever `src[i]` yields today is the contract; Array.from must land the SAME
+  // carrier bits in `dst[i]` — not invent a new decode. Verified element-for-element
+  // against the source's own bracket read, not against a hand-picked expected value.
+  is(runHost(`export let f = () => {
+    let a = new BigInt64Array(3); a[0] = 1n; a[1] = -2n; a[2] = 9223372036854775807n
+    let r = Array.from(a)
+    return (r[0] === a[0] && r[1] === a[1] && r[2] === a[2]) ? 1 : 0
+  }`).f(), 1)
+  is(runHost(`export let f = () => {
+    let a = new BigUint64Array(3); a[0] = 1n; a[1] = 2n; a[2] = 18446744073709551615n
+    let r = Array.from(a)
+    return (r[0] === a[0] && r[1] === a[1] && r[2] === a[2]) ? 1 : 0
+  }`).f(), 1)
+})
+
+test('Array.from: static array-like object literal reads real per-index values', () => {
+  // arrayLikeLength already found the literal `length:` property; the per-index
+  // VALUES were never read — every slot silently stored `undefined`. Fixed: a fully
+  // static `{}` literal with a compile-time-int `length` unrolls, reading each
+  // literal-index property directly (spec order: Get(0), Get(1), … ascending).
+  is(run(`export let f = () => { let r = Array.from({0: 'a', length: 1}); return r[0] === 'a' ? 1 : 0 }`).f(), 1)
+  is(run(`export let f = () => { let r = Array.from({0: 'a', 1: 'b', length: 2}); return (r[0] === 'a' && r[1] === 'b') ? 1 : 0 }`).f(), 1)
+  // a literal-index gap (no "1" property) reads undefined, matching a real missing
+  // array-like property — not a compile error, not the previous element's value.
+  is(run(`export let f = () => { let r = Array.from({0: 'a', length: 2}); return r[1] === undefined ? 1 : 0 }`).f(), 1)
+  is(run(`export let f = () => { let r = Array.from({0: 5, length: 1}, x => x * 2); return r[0] }`).f(), 10)
+})
+
+test('Array.from: dynamic array-like length is a documented gap, not a crash', () => {
+  // arrayLikeLength only locates a STATIC `{}` literal's length property; a `length`
+  // that isn't a compile-time int (a genuinely dynamic array-like, e.g. arriving
+  // through a function parameter) has no compile-time route to the indexed
+  // properties. This is the pre-existing gap, pinned here so it stays a documented,
+  // silent-undefined result — not something this fix was asked to close.
+  is(run(`export let f = (n) => { let r = Array.from({0: 'a', length: n}); return r[0] === undefined ? 1 : 0 }`).f(1), 1)
+})
+
+test('Array.from(string): pin current per-char behavior (unaffected by the typed-source fix)', () => {
+  is(runHost(`export let f = () => { let r = Array.from('abc'); return r[0] + r[1] + r[2] }`).f(), 'abc')
 })
 
 // === .length assignment ===

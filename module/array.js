@@ -385,12 +385,31 @@ export default (ctx) => {
   // Full body handles TYPED element types and view indirection since external host can
   // pass typed arrays even when typedarray module isn't loaded. When features.typedarray
   // and features.external are both off, collapses to ARRAY-only f64 indexing.
-  // Array.from(src) — shallow copy of array (memory.copy of f64 elements)
+  // Array.from(src) — shallow copy. ARRAY receivers are already f64-stride, so a
+  // straight memory.copy is correct and byte-identical to the plain-array hot
+  // case (kept untouched — this is the common path, e.g. every internal
+  // .reverse()/.sort()/toSorted()/spread-rest clone routes through here too).
+  // Any other pointer type (TYPED element storage, forwarded/view-indirected
+  // sources, BigInt64/Uint64 lanes, …) has non-f64 element stride/width, so a raw
+  // byte copy is garbage — fall back to the polymorphic per-element reader that
+  // already decodes every TYPED element kind + view indirection + bounds
+  // (`__typed_idx`, the same helper bracket-reads `src[i]` route through — Array.from
+  // and bracket-read agree element-for-element by construction, including the
+  // BigInt64/Uint64 carrier: whatever `src[i]` yields is what lands in `dst[i]`).
   ctx.core.stdlib['__arr_from'] = `(func $__arr_from (param $src i64) (result f64)
-    (local $len i32) (local $dst i32)
+    (local $len i32) (local $dst i32) (local $i i32)
     (local.set $len (call $__len (local.get $src)))
     (local.set $dst (call $__alloc_hdr (local.get $len) (local.get $len)))
-    (memory.copy (local.get $dst) (call $__ptr_offset (local.get $src)) (i32.shl (local.get $len) (i32.const 3)))
+    (if (i32.eq (call $__ptr_type (local.get $src)) (i32.const ${PTR.ARRAY}))
+      (then (memory.copy (local.get $dst) (call $__ptr_offset (local.get $src)) (i32.shl (local.get $len) (i32.const 3))))
+      (else
+        (local.set $i (i32.const 0))
+        (block $brk (loop $loop
+          (br_if $brk (i32.ge_s (local.get $i) (local.get $len)))
+          (f64.store (i32.add (local.get $dst) (i32.shl (local.get $i) (i32.const 3)))
+            (call $__typed_idx (local.get $src) (local.get $i)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $loop)))))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
   function arrayLikeLength(src) {
@@ -403,6 +422,24 @@ export default (ctx) => {
     }
     return null
   }
+
+  // Value node for a literal-index property (key "0","1",…) of the SAME static
+  // array-like object literal `arrayLikeLength` walked. Absent index → undefined
+  // (Array.from's per-index Get on a missing array-like property).
+  function arrayLikeProp(src, key) {
+    for (let i = 1; i < src.length; i++) {
+      const prop = src[i]
+      if (!Array.isArray(prop) || prop[0] !== ':') continue
+      const k = typeof prop[1] === 'string' ? prop[1] : staticPropertyKey(prop[1])
+      if (k === key) return prop[2]
+    }
+    return undefined
+  }
+
+  // Cap on the compile-time unroll below — bounded by desired output size, not by
+  // how many literal-index properties the object actually has, so a legal-but-
+  // absurd `{length: 1e9}` (no matching indices) can't blow the module up.
+  const ARRAY_LIKE_STATIC_CAP = 1 << 16
 
   // Array.from(items, mapfn): spec step 2 — if mapfn is not undefined and
   // IsCallable(mapfn) is false, throw a TypeError before iterating items.
@@ -454,6 +491,32 @@ export default (ctx) => {
     }
     const lengthExpr = arrayLikeLength(src)
     if (lengthExpr) {
+      const staticLen = intLiteralValue(lengthExpr)
+      // Fully-static array-like literal ({0:'a', length:1}): every element is
+      // itself a literal-index property of the SAME object literal, so each
+      // Get(k) resolves at compile time — read the value nodes directly in
+      // ascending index order (the same order the spec loop performs Get(0),
+      // Get(1), … and calls mapfn), no runtime object construction needed.
+      if (staticLen != null && staticLen >= 0 && staticLen <= ARRAY_LIKE_STATIC_CAP) {
+        const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
+        const out = allocPtr({ type: PTR.ARRAY, len: staticLen, tag: 'fr' })
+        const body = [out.init, ...(cb ? [cb.setup] : [])]
+        for (let i = 0; i < staticLen; i++) {
+          const valNode = arrayLikeProp(src, String(i))
+          const raw = valNode === undefined ? undefExpr() : storedValue(valNode)
+          const idxV = cb && (!cb.usedParams || cb.usedParams[1]) ? typed(['f64.const', i], 'f64') : null
+          const item = cb ? cb.call([raw, idxV]) : raw
+          body.push(['f64.store', slotAddr(out.local, i), asF64(item)])
+        }
+        body.push(out.ptr)
+        return typed(['block', ['result', 'f64'], ...body], 'f64')
+      }
+      // Gap (documented, not fixed here): a `length` that isn't a small int
+      // literal — or a genuinely dynamic array-like object (arrayLikeLength
+      // returned null above because `src` isn't a static `{}` literal at all,
+      // e.g. an object passed in through a variable/param) — has no compile-time
+      // route to its indexed properties. This loop only knows the LENGTH; every
+      // slot reads as `undefined` rather than the real (unreachable) src[i].
       const len = tempI32('fl'), i = tempI32('fi')
       const lenIR = ['local.get', `$${len}`]
       const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'fr' })
@@ -479,19 +542,27 @@ export default (ctx) => {
     }
     // mapfn present: iterate the source array element by element, reading each
     // slot fresh inside the loop so a callback that mutates a not-yet-visited
-    // source element sees its update (spec reads source[k] per step).
-    inc('__len')
+    // source element sees its update (spec reads source[k] per step). Reads via
+    // the polymorphic $__typed_idx, not arrayLoop's f64-stride elemLoad — arrayLoop
+    // is ARRAY-only (ir.js: "elemLoad assumes f64-stride data layout"), so a typed
+    // source (Int32Array, Float32Array, …) read raw f64-stride garbage through it.
+    inc('__len', '__typed_idx')
     const cb = makeCallback(mapFn, [null, { val: VAL.NUMBER }])
-    const s = temp('afs'), len = tempI32('afl')
+    const s = temp('afs'), len = tempI32('afl'), i = tempI32('afi'), item = temp('afv')
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'aff' })
-    const loop = arrayLoop(typed(['local.get', `$${s}`], 'f64'),
-      (_p, _l, i, item) => [elemStore(out.local, i, asF64(cb.call([item, idxArg(cb, i)])))], len)
+    const id = ctx.func.uniq++
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(src))],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
       out.init,
       cb.setup,
-      ...loop,
+      ['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', `$brk${id}`, ['loop', `$loop${id}`,
+        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+        ['local.set', `$${item}`, ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
+        elemStore(out.local, i, asF64(cb.call([typed(['local.get', `$${item}`], 'f64'), idxArg(cb, i)]))),
+        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['br', `$loop${id}`]]],
       out.ptr], 'f64')
   }
 
