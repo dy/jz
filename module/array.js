@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, asI32Sat, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
@@ -1425,8 +1425,11 @@ export default (ctx) => {
     return typed(['call', '$__arr_fill',
       asI64(emit(arr)),
       val == null ? undefExpr() : storedValue(val),
-      start == null ? ['i32.const', 0] : asI32(emit(start)),
-      end == null ? ['i32.const', 0x7FFFFFFF] : asI32(emit(end))], 'f64')
+      // ToIntegerOrInfinity position args (23.1.3.7 step 6/8) — asI32Sat, not asI32:
+      // __clamp_idx needs ±Infinity to saturate to INT32_MAX/MIN, not wrap (see asI32Sat's
+      // doc comment in src/ir.js).
+      start == null ? ['i32.const', 0] : asI32Sat(emit(start)),
+      end == null ? ['i32.const', 0x7FFFFFFF] : asI32Sat(emit(end))], 'f64')
   }
 
   ctx.core.stdlib['__arr_fill'] = `(func $__arr_fill (param $arr i64) (param $val f64) (param $start i32) (param $end i32) (result f64)
@@ -1453,7 +1456,10 @@ export default (ctx) => {
   ctx.core.emit['.splice'] = (arr, start, deleteCount) => {
     const recv = hoistArrayValue(arr)
     const va = recv.value
-    const vs = asI32(emit(start))
+    // ToIntegerOrInfinity position arg (23.1.3.30 step 3) — asI32Sat, not asI32 (see
+    // src/ir.js's doc comment): ±Infinity must saturate to INT32_MAX/MIN so the inline
+    // [0,len] clamp below reads it as "past the end", not asI32's wrap-to -1/0.
+    const vs = asI32Sat(emit(start))
     const s = tempI32('sps'), cnt = tempI32('spc'), len = tempI32('spl'), off = tempI32('spo'), j = tempI32('spj')
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${cnt}`], tag: 'sp' })
     const id = ctx.func.uniq++
@@ -1479,12 +1485,18 @@ export default (ctx) => {
       deleteCount === undefined
         ? ['local.set', `$${cnt}`, ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${s}`]]]
         : ['block',
-            ['local.set', `$${cnt}`, asI32(emit(deleteCount))],
+            // asI32Sat (ditto): a huge/Infinity deleteCount must saturate to INT32_MAX, not
+            // wrap negative. Compare against `len - s` (always small, never overflows) rather
+            // than `s + cnt > len` — with cnt at INT32_MAX, `s + cnt` itself overflows i32 and
+            // wraps negative, which would skip the clamp-down branch entirely (real bug: an
+            // uncaught deleteCount:Infinity would fall through with cnt still at INT32_MAX and
+            // OOB the removed-elements memory.copy below).
+            ['local.set', `$${cnt}`, asI32Sat(emit(deleteCount))],
             ['if', ['i32.lt_s', ['local.get', `$${cnt}`], ['i32.const', 0]],
               ['then', ['local.set', `$${cnt}`, ['i32.const', 0]]]],
             ['if', ['i32.gt_s',
-                ['i32.add', ['local.get', `$${s}`], ['local.get', `$${cnt}`]],
-                ['local.get', `$${len}`]],
+                ['local.get', `$${cnt}`],
+                ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${s}`]]],
               ['then', ['local.set', `$${cnt}`,
                 ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${s}`]]]]]],
       // allocate result array of size cnt
@@ -2111,7 +2123,11 @@ export default (ctx) => {
       ['local.set', `$${c}`, typed(['call', '$__arr_from', asI64(emit(arr))], 'f64')],
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${c}`]]]],
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
-      ['local.set', `$${idx}`, asI32(emit(index))],
+      // ToIntegerOrInfinity position arg (23.1.3.42 step 3) — asI32Sat, not asI32: an
+      // Infinity index must saturate to INT32_MAX (so the range check below throws, per
+      // spec) instead of asI32's wrap-to -1 (silently treated as a valid negative index,
+      // resolving to len-1 — no throw, wrong element written).
+      ['local.set', `$${idx}`, asI32Sat(emit(index))],
       ['if', ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
         ['then', ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${len}`]]]]],
       ['if', ['i32.or',
@@ -2129,10 +2145,12 @@ export default (ctx) => {
   // element-kind-aware __typed_copyWithin, plain arrays need no direction loop.
   ctx.core.emit['.copyWithin'] = (arr, target, start, end) => {
     inc('__arr_copyWithin')
+    // ToIntegerOrInfinity position args (23.1.3.4 step 3/5/7) — asI32Sat, not asI32: see
+    // src/ir.js's doc comment; __clamp_idx needs ±Infinity saturated to INT32_MAX/MIN.
     return typed(['call', '$__arr_copyWithin', asI64(emit(arr)),
-      target == null ? ['i32.const', 0] : asI32(emit(target)),
-      start == null ? ['i32.const', 0] : asI32(emit(start)),
-      end == null ? ['i32.const', 0x7FFFFFFF] : asI32(emit(end))], 'f64')
+      target == null ? ['i32.const', 0] : asI32Sat(emit(target)),
+      start == null ? ['i32.const', 0] : asI32Sat(emit(start)),
+      end == null ? ['i32.const', 0x7FFFFFFF] : asI32Sat(emit(end))], 'f64')
   }
   ctx.core.stdlib['__arr_copyWithin'] = `(func $__arr_copyWithin (param $arr i64) (param $target i32) (param $start i32) (param $end i32) (result f64)
     (local $off i32) (local $len i32) (local $count i32)
@@ -2225,30 +2243,48 @@ export default (ctx) => {
   }
 
   // .at(i) → array element with negative index support
+  // 23.1.3.1 step 4/5: relativeIndex = ToIntegerOrInfinity(index); k = relativeIndex>=0
+  // ? relativeIndex : len+relativeIndex; k<0 || k>=len -> undefined. Two saturation bugs
+  // fixed together: (1) asI32Sat, not asI32 — an Infinity/huge index must saturate to
+  // INT32_MAX so it reads as "positive and past the end" below, not asI32's wrap-to -1
+  // (silently treated as a valid negative index, resolving to the LAST element instead
+  // of undefined — confirmed live, `[1,2,3].at(Infinity)` returned 3). (2) the upper-bound
+  // check itself was MISSING entirely (no `t>=len` guard at all) — even a plain in-range
+  // finite OOB index like `.at(10)` on a 3-element array read raw adjacent heap memory
+  // instead of returning undefined; with saturation alone (no bound check) `.at(Infinity)`
+  // would instead OOB-trap the whole module (off + INT32_MAX*8 is nowhere near allocated
+  // memory) — strictly worse. Both must land together.
+  const undefNanIR = () => ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]]
   ctx.core.emit['.array:at'] = (arr, idx) => {
     const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     if (vt === VAL.ARRAY) {
       inc('__ptr_offset')
-      const t = tempI32('ai'), off = tempI32('ao')
+      const t = tempI32('ai'), off = tempI32('ao'), len = tempI32('al')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(arr))]]],
-        ['local.set', `$${t}`, asI32(emit(idx))],
+        ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]],
+        ['local.set', `$${t}`, asI32Sat(emit(idx))],
         ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
-          ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
-            ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]]]]],
-        ['f64.load', ['i32.add', ['local.get', `$${off}`],
-          ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]], 'f64')
+          ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['local.get', `$${len}`]]]]],
+        ['if', ['result', 'f64'],
+          ['i32.or', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]], ['i32.ge_s', ['local.get', `$${t}`], ['local.get', `$${len}`]]],
+          ['then', undefNanIR()],
+          ['else', ['f64.load', ['i32.add', ['local.get', `$${off}`],
+            ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]]]], 'f64')
     }
-    const t = tempI32('ai'), a = temp('aa')
+    const t = tempI32('ai'), a = temp('aa'), len = tempI32('al')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${a}`, asF64(emit(arr))],
-      ['local.set', `$${t}`, asI32(emit(idx))],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${a}`]]]],
+      ['local.set', `$${t}`, asI32Sat(emit(idx))],
       // Negative index: t += length
       ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
-        ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
-          ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${a}`]]]]]]],
-      ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${a}`]]],
-        ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]], 'f64')
+        ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['local.get', `$${len}`]]]]],
+      ['if', ['result', 'f64'],
+        ['i32.or', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]], ['i32.ge_s', ['local.get', `$${t}`], ['local.get', `$${len}`]]],
+        ['then', undefNanIR()],
+        ['else', ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${a}`]]],
+          ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]]]], 'f64')
   }
   ctx.core.emit['.at'] = ctx.core.emit['.array:at']
 
@@ -2260,8 +2296,12 @@ export default (ctx) => {
     }
     const recv = hoistArrayValue(arr)
     const s = tempI32('ss'), e = tempI32('se'), len = tempI32('sl'), outLen = tempI32('sn'), ptr = tempI32('sp')
-    const rawStart = start == null ? ['i32.const', 0] : asI32(emit(start))
-    const rawEnd = end == null ? ['local.get', `$${len}`] : asI32(emit(end))
+    // ToIntegerOrInfinity position args (23.1.3.28 step 3/5) — asI32Sat, not asI32: an
+    // Infinity/NaN/fractional start or end must saturate (INT32_MAX/MIN), not asI32's
+    // ToInt32-WRAP fallback — confirmed live, `[1,2,3,4,5].slice(NaN, Infinity)` dropped
+    // the last element (Infinity wrapped to -1, read downstream as "one before the end").
+    const rawStart = start == null ? ['i32.const', 0] : asI32Sat(emit(start))
+    const rawEnd = end == null ? ['local.get', `$${len}`] : asI32Sat(emit(end))
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${outLen}`], tag: 'so' })
     return typed(['block', ['result', 'f64'],
       recv.setup,

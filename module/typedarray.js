@@ -8,7 +8,7 @@ import { OPTF } from '../src/ctx.js'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -736,8 +736,10 @@ export default (ctx) => {
     const bytes = tempI32('bsn')
     const out = allocPtr({ type: PTR.BUFFER, len: ['local.get', `$${bytes}`], stride: 1, tag: 'bsd' })
     const lenWat = ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]
-    const beginWat = beginExpr == null ? ['i32.const', 0] : asI32(emit(beginExpr))
-    const endWat = endExpr == null ? lenWat : asI32(emit(endExpr))
+    // ToIntegerOrInfinity position args (25.1.5.15 step 5/8) — asI32Sat, not asI32: see
+    // src/ir.js's doc comment; __clamp_idx needs ±Infinity saturated to INT32_MAX/MIN.
+    const beginWat = beginExpr == null ? ['i32.const', 0] : asI32Sat(emit(beginExpr))
+    const endWat = endExpr == null ? lenWat : asI32Sat(emit(endExpr))
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${src}`, asF64(emit(obj))],
       ['local.set', `$${beg}`, ['call', '$__clamp_idx', beginWat, lenWat]],
@@ -1493,11 +1495,13 @@ export default (ctx) => {
 
   ctx.core.emit['.typed:fill'] = (arr, val, start, end) => {
     inc('__typed_fill')
+    // ToIntegerOrInfinity position args (23.2.3.8 step 6/8) — asI32Sat, not asI32:
+    // __clamp_idx needs ±Infinity saturated to INT32_MAX/MIN (see src/ir.js).
     return typed(['call', '$__typed_fill',
       asI64(emit(arr)),
       val == null ? undefExpr() : asF64(emit(val)),
-      start == null ? ['i32.const', 0] : asI32(emit(start)),
-      end == null ? ['i32.const', 0x7FFFFFFF] : asI32(emit(end))], 'f64')
+      start == null ? ['i32.const', 0] : asI32Sat(emit(start)),
+      end == null ? ['i32.const', 0x7FFFFFFF] : asI32Sat(emit(end))], 'f64')
   }
 
   // .reverse() / .copyWithin(...) for typed arrays. The plain-array helpers gate on
@@ -1510,11 +1514,13 @@ export default (ctx) => {
 
   ctx.core.emit['.typed:copyWithin'] = (arr, target, start, end) => {
     inc('__typed_copyWithin')
+    // ToIntegerOrInfinity position args (23.2.3.4 step 3/5/7) — asI32Sat, not asI32:
+    // __clamp_idx needs ±Infinity saturated to INT32_MAX/MIN (see src/ir.js).
     return typed(['call', '$__typed_copyWithin',
       asI64(emit(arr)),
-      target == null ? ['i32.const', 0] : asI32(emit(target)),
-      start == null ? ['i32.const', 0] : asI32(emit(start)),
-      end == null ? ['i32.const', 0x7FFFFFFF] : asI32(emit(end))], 'f64')
+      target == null ? ['i32.const', 0] : asI32Sat(emit(target)),
+      start == null ? ['i32.const', 0] : asI32Sat(emit(start)),
+      end == null ? ['i32.const', 0x7FFFFFFF] : asI32Sat(emit(end))], 'f64')
   }
 
   // .sort(compareFn?) for typed arrays. No argument → the numeric __typed_sort helper
@@ -2301,6 +2307,12 @@ export default (ctx) => {
   // — Array.prototype.indexOf uses strict equality (NaN ≠ NaN).
   // Effective start index for a fromIndex arg: negative counts from the end. The match
   // guard is `i >= start` and i ≥ 0, so a start below 0 needs no clamp (always passes).
+  // fromIndex is emitted via asI32Sat (not asI32) at every call site below — a
+  // ToIntegerOrInfinity position arg (23.2.3.15/.19/.20 step 3ish across indexOf/
+  // lastIndexOf/includes): Infinity must saturate to INT32_MAX so `i >= start` never
+  // matches (correctly "not found" — spec's fromIndex≥len short-circuit), not asI32's
+  // wrap-to -1 (silently treated as `len-1`, matching only the last element — confirmed
+  // live before this fix).
   const fromStart = (fiL, len) => ['if', ['result', 'i32'],
     ['i32.lt_s', ['local.get', `$${fiL}`], ['i32.const', 0]],
     ['then', ['i32.add', ['local.get', `$${fiL}`], ['local.get', `$${len}`]]],
@@ -2319,7 +2331,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${needle}`, asF64(emit(val))],
       ['local.set', `$${found}`, ['i32.const', -1]],
-      ...(fromIndex == null ? [] : [['local.set', `$${fiL}`, asI32(emit(fromIndex))]]),
+      ...(fromIndex == null ? [] : [['local.set', `$${fiL}`, asI32Sat(emit(fromIndex))]]),
       ...loop.setup,
       ['f64.convert_i32_s', ['local.get', `$${found}`]]], 'f64')
   }
@@ -2346,7 +2358,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${needle}`, asF64(emit(val))],
       ['local.set', `$${found}`, ['i32.const', -1]],
-      ...(fromIndex == null ? [] : [['local.set', `$${fiL}`, asI32(emit(fromIndex))]]),
+      ...(fromIndex == null ? [] : [['local.set', `$${fiL}`, asI32Sat(emit(fromIndex))]]),
       ...loop.setup,
       ['f64.convert_i32_s', ['local.get', `$${found}`]]], 'f64')
   }
@@ -2370,7 +2382,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${needle}`, asF64(emit(val))],
       ['local.set', `$${found}`, ['i32.const', 0]],
-      ...(fromIndex == null ? [] : [['local.set', `$${fiL}`, asI32(emit(fromIndex))]]),
+      ...(fromIndex == null ? [] : [['local.set', `$${fiL}`, asI32Sat(emit(fromIndex))]]),
       ...loop.setup,
       ['f64.convert_i32_s', ['local.get', `$${found}`]]], 'f64')
   }
@@ -2525,10 +2537,12 @@ export default (ctx) => {
       // Elem type / view-ness not statically known (owned→view reassigned binding).
       // Dispatch off the runtime aux byte instead of crashing on empty IR.
       inc('__typed_slice_rt')
+      // ToIntegerOrInfinity position args — asI32Sat, not asI32: __clamp_idx (inside
+      // __typed_slice_rt) needs ±Infinity saturated to INT32_MAX/MIN (see src/ir.js).
       return typed(['call', '$__typed_slice_rt',
         ['i64.reinterpret_f64', asF64(emit(arr))],
-        start == null ? ['i32.const', 0] : asI32(emit(start)),
-        end == null ? ['i32.const', 0] : asI32(emit(end)),
+        start == null ? ['i32.const', 0] : asI32Sat(emit(start)),
+        end == null ? ['i32.const', 0] : asI32Sat(emit(end)),
         ['i32.const', end == null ? 0 : 1]], 'f64')
     }
     if (r.isBigInt) return null
@@ -2544,7 +2558,10 @@ export default (ctx) => {
       if (boundExpr == null) return defaultExpr
       const idx = tempI32(fallback)
       return ['block', ['result', 'i32'],
-        ['local.set', `$${idx}`, asI32(emit(boundExpr))],
+        // ToIntegerOrInfinity position arg (23.2.3.28 step 5/7) — asI32Sat, not asI32:
+        // Infinity/NaN/fractional start or end must saturate (INT32_MAX/MIN), matching
+        // Array.prototype.slice's identical fix (see src/ir.js's asI32Sat doc comment).
+        ['local.set', `$${idx}`, asI32Sat(emit(boundExpr))],
         ['select',
           // negative branch: max(0, idx + len)
           ['select',
@@ -2610,7 +2627,10 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${c}`, asF64(copy)],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${c}`]]]],
-      ['local.set', `$${idx}`, asI32(emit(index))],
+      // ToIntegerOrInfinity position arg (23.2.3.36 step 3) — asI32Sat, not asI32: an
+      // Infinity index must saturate to INT32_MAX (so the range check below throws, per
+      // spec) instead of asI32's wrap-to -1 (silently valid, resolving to len-1 — no throw).
+      ['local.set', `$${idx}`, asI32Sat(emit(index))],
       ['if', ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
         ['then', ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${len}`]]]]],
       ['if', ['i32.or',
@@ -2632,10 +2652,12 @@ export default (ctx) => {
       // Elem type / view-ness not statically known (owned→view reassigned binding).
       // Dispatch off the runtime aux byte instead of crashing on empty IR.
       inc('__subarray')
+      // ToIntegerOrInfinity position args — asI32Sat, not asI32: __clamp_idx (inside
+      // __subarray) needs ±Infinity saturated to INT32_MAX/MIN (see src/ir.js).
       return typed(['call', '$__subarray',
         ['i64.reinterpret_f64', asF64(emit(arr))],
-        begin == null ? ['i32.const', 0] : asI32(emit(begin)),
-        end == null ? ['i32.const', 0] : asI32(emit(end)),
+        begin == null ? ['i32.const', 0] : asI32Sat(emit(begin)),
+        end == null ? ['i32.const', 0] : asI32Sat(emit(end)),
         ['i32.const', end == null ? 0 : 1]], 'f64')
     }
     const { et, isView, isBigInt } = r
@@ -2649,7 +2671,10 @@ export default (ctx) => {
       if (boundExpr == null) return dflt
       const v = tempI32(name)
       return ['block', ['result', 'i32'],
-        ['local.set', `$${v}`, asI32(emit(boundExpr))],
+        // ToIntegerOrInfinity position arg (23.2.3.29 step 6/8) — asI32Sat, not asI32:
+        // Infinity/NaN/fractional begin or end must saturate (INT32_MAX/MIN), matching
+        // .typed:slice's identical fix (see src/ir.js's asI32Sat doc comment).
+        ['local.set', `$${v}`, asI32Sat(emit(boundExpr))],
         ['if', ['i32.lt_s', ['local.get', `$${v}`], ['i32.const', 0]],
           ['then', ['local.set', `$${v}`, ['i32.add', ['local.get', `$${v}`], ['local.get', `$${len}`]]]]],
         ['if', ['i32.lt_s', ['local.get', `$${v}`], ['i32.const', 0]],

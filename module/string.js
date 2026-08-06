@@ -2398,7 +2398,16 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${len}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
-      ['local.set', `$${t}`, asI32(emit(idx))],
+      // ToIntegerOrInfinity position arg (22.1.3.1 step 3) — asI32Sat, not asI32: an
+      // Infinity index must saturate to INT32_MAX (charAtOr's `t<len` check then correctly
+      // rejects it) instead of asI32's wrap-to -1 (treated as a valid negative index,
+      // resolving to len-1 — confirmed live, `"hello".at(Infinity)` returned "o" instead
+      // of undefined). -Infinity was ALSO broken the same way: asI32(-Infinity) wraps to
+      // 0 (not negative, so the `t+=len` adjustment below never fires) — `"hello".
+      // at(-Infinity)` returned "h" instead of undefined. asI32Sat(-Infinity)=INT32_MIN
+      // fixes both directions: it IS negative, so `t+=len` fires and leaves it deeply
+      // negative, correctly failing charAtOr's `t>=0` check.
+      ['local.set', `$${t}`, asI32Sat(emit(idx))],
       // Negative index: t += length
       ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
         ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['local.get', `$${len}`]]]]],
