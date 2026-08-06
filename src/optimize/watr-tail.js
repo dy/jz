@@ -311,9 +311,20 @@ export function legalizeForTarget(module, targetProfile) {
  * passes none. `targetProfile` (src/session.js targetProfileFor) is threaded
  * through from both callers so a real legalization can consult it once landed.
  */
-export function watrTail(module, cfg, { funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile } = {}) {
+export function watrTail(module, cfg, { funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile, regionHooks } = {}) {
   const legalized = legalizeForTarget(module, targetProfile)
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
+  // Region-arena Slice 1 (.work/region-arena-design.md): per-round mark/exit around
+  // watOptimize's fixpoint round loop, ON for kernel/self-host compiles only. The
+  // ONLY caller that ever passes `regionHooks` is scripts/self.js's optimizeTail —
+  // that file is NEVER imported/run as native JS (it's fed to jz's compiler purely
+  // as source text, to become dist/jz.wasm), so its literal `__region_mark()`/
+  // `__region_exit()` calls only ever exist as compiled wasm calls, never as bare
+  // native identifiers. index.js's host pipeline (native compiles) never supplies
+  // regionHooks, so `watrOpts.regionMark`/`regionExit` stay unset there — watr's
+  // own `opts.regionMark?.()` hook (additive, opt-in, see node_modules/watr) is
+  // then simply never invoked, zero behavior change for the native path.
+  if (watrOpts && regionHooks) { watrOpts.regionMark = regionHooks.mark; watrOpts.regionExit = regionHooks.exit }
   const optimized = watrOpts ? time('watOptimize', () => watOptimize(legalized, watrOpts)) : legalized
   if (cfg.hoistGlobalPtrOffset !== false) {
     const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')

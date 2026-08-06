@@ -27,9 +27,14 @@ const SSO_BIT_I64 = ssoBitI64Hex()
 // ssoEncode('length') never returns null (6 ASCII).
 export const LENGTH_SSO_I64 = (() => { const e = ssoEncode('length'); return i64Hex((BigInt(encodePtrHi(4, e.aux) >>> 0) << 32n) | BigInt(e.offset)) })()
 
-const SET_ENTRY = 16  // hash + key
-const MAP_ENTRY = 24  // hash + key + value
-const INIT_CAP = 8    // initial capacity (must be power of 2)
+// Exported for module/core.js's __region_exit (region-arena design, Slice 1):
+// the round-loop's own `dirty`/`snapshots` bookkeeping is a Set/Map of func-node
+// (ARRAY) pointers that must be relocated in lockstep with the tree itself — the
+// region copy builds a same-shaped SET/MAP at the compacted target using these
+// exact stride/capacity constants, mirroring __sclone_rec's SET/MAP branch.
+export const SET_ENTRY = 16  // hash + key
+export const MAP_ENTRY = 24  // hash + key + value
+export const INIT_CAP = 8    // initial capacity (must be power of 2)
 
 // __dyn_props global-table membership filter (see __dyn_props_filter's declGlobal
 // comment). offExpr is an i32 WAT expr for the offset key. Mix folds the offset's
@@ -260,7 +265,7 @@ const bitEq = '(i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (loc
 // entry-walk passed them. $ls walks the lane ($lb/$end its bounds); $slot (the
 // entry address) derives only on a hash hit / at the insert slot. Every table
 // alloc pays entrySize+4 per slot; the entry region offsets are unchanged.
-const LANE = 4
+export const LANE = 4
 const probeStart = (entrySize, idxExpr = '(i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1)))') =>
   `(local.set $lb (i32.add (local.get $off) (i32.mul (local.get $cap) (i32.const ${entrySize}))))
     (local.set $end (i32.add (local.get $lb) (i32.shl (local.get $cap) (i32.const 2))))

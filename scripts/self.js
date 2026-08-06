@@ -34,6 +34,15 @@ import jzify from '../jzify/index.js'
 // (missing ifset tiering, inlineWrappers, watr LICM, guard policy, the
 // large-module unroll2 rule, boundary pins, and the pointer repair), so
 // kernel O2/O3 output diverged from native on identical source.
+// Region-arena Slice 1 (.work/region-arena-design.md): this file is the ONLY
+// caller that supplies watrTail's `regionHooks` — it is NEVER imported/run as
+// native JS (npm run build feeds it to jz's OWN compiler as source text, to
+// become dist/jz.wasm), so these literal `__region_mark()`/`__region_exit()`
+// calls only ever exist as compiled wasm calls (module/core.js's intrinsics),
+// never as bare identifiers evaluated by a native JS engine. Kernel/self-host
+// compiles get per-round reclaim unconditionally (the design's "ON for kernel/
+// self-host compiles" — the warm checkpoint is the gate on whether it SHIPS,
+// not on whether it's wired here).
 function optimizeTail(module, cfg) {
   return watrTail(module, cfg, {
     funcCount: ctx.func.list.length,
@@ -41,6 +50,7 @@ function optimizeTail(module, cfg) {
       ? [...cfg._vectorizedFnNames].filter(name => ctx.func.map.get(name.slice(1))?.exported)
       : [],
     targetProfile: ctx.transform.targetProfile,
+    regionHooks: { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) },
   })
 }
 

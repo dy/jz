@@ -22,7 +22,7 @@ import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followFor
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
 import { initSchema } from './schema.js'
-import { strHashLiteral, heapResetWat, LENGTH_SSO_I64 } from './collection.js'
+import { strHashLiteral, heapResetWat, LENGTH_SSO_I64, SET_ENTRY, MAP_ENTRY, INIT_CAP, LANE } from './collection.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 
 const NAN_BITS = nanPrefixHex()
@@ -63,6 +63,13 @@ export default (ctx) => {
     __durable_slot_log: ['__alloc'],
     __durable_slot_heal: [],
     __is_eph_bits: [],
+    // Region-arena Slice 1 (.work/region-arena-design.md) — see the definitions below
+    // for the full rationale. __region_copy_rec's dep list mirrors __sclone_rec's
+    // (module/collection.js) plus __coll_order/__set_add for the SET/MAP branch.
+    __region_mark: [],
+    __region_exit: ['__region_copy_rec', '__mkptr', '__alloc_hdr_n'],
+    __region_copy_rec: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish',
+      '__alloc', '__alloc_hdr', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order'],
   })
 
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v i64) (result i32)
@@ -593,6 +600,205 @@ export default (ctx) => {
         (br $l)))
       (global.set $__durable_slot_n (i32.const 0))
       (global.set $__durable_slot_buf (i32.const 0)))`
+
+    // === Region-arena: fixpoint-round scoped reclaim (Slice 1) ===
+    //
+    // `__region_mark()` / `__region_exit(mark, root)` let a bounded, single-caller
+    // fixpoint (watOptimize's per-round loop — wired from scripts/self.js's
+    // `regionHooks`, see that file and src/optimize/watr-tail.js) reclaim EACH
+    // ROUND's transient churn instead of retaining it for the whole compile: mark
+    // the bump pointer at round start, then at round end Cheney-copy the round's
+    // SURVIVING tree (`root`) down to the mark, compacting away everything else the
+    // round allocated (churn/live measured 574x-2495x on the design's own corpora —
+    // .work/region-slice1-liveness.md; .work/region-arena-design.md is the design).
+    //
+    // Reuses the EXACT forwarding-header convention the durable machinery
+    // (__durable_fwd_log/heal above) and array/hash/set/map growth (module/array.js
+    // arrGrow, module/collection.js genUpsertGrow) already use: a relocated block
+    // leaves `[-8:newOffset][-4:-1 sentinel]` at its OLD site, and __ptr_offset
+    // already chases it on every ARRAY/HASH/SET/MAP deref — so a stale reference
+    // that survives past region_exit (a cache we didn't anticipate) still self-heals
+    // through infrastructure that's already deployed everywhere, for free.
+    //
+    // Scope (the watr WAT-IR tree + the round loop's own dirty/snapshots
+    // bookkeeping — never user data, this is an internal-only pair of intrinsics,
+    // never exposed to jz source): ARRAY (the tree spine), STRING (heap tokens —
+    // SSO strings and durable/pre-round heap strings pass through untouched, never
+    // relocated), ATOM/number (immediate, untouched), SET/MAP (watr's own
+    // `dirty`/`snapshots`, keyed on func-node ARRAY pointers: Map/Set hash+compare
+    // on RAW bits with no forwarding chase — __same_value_zero/__map_hash — so a
+    // relocated key silently un-finds itself unless the Set/Map's OWN entries
+    // relocate too; handled below exactly like __sclone_rec's SET/MAP branch,
+    // rebuilt via __coll_order insertion order so dirty-filtering's performance
+    // survives the boundary intact, not just "safely degrades" to always-dirty).
+    // OBJECT/HASH/CLOSURE/TYPED/BUFFER/EXTERNAL and SLICE-view strings are OUT OF
+    // SCOPE for Slice 1 (watr's own AST + bookkeeping never produce them) —
+    // trapped defensively (`unreachable`) rather than silently mishandled.
+    //
+    // Self-overlap: the compacted copy is NOT written in place at `mark` — source
+    // (the round's live data, scattered through [mark, T)) and a naive in-place
+    // target would occupy the SAME linear range, and nothing proves a traversal
+    // order that never lets the write cursor overtake a not-yet-read survivor.
+    // Instead the copy runs at the CURRENT heap top `T` (always disjoint from
+    // [mark, T) — plain, already-proven $__alloc/$__alloc_hdr* bump allocation,
+    // same as __sclone_rec), with every emitted pointer's offset pre-adjusted by
+    // `delta = T - mark` (its FINAL, post-relocation address) as it's written — so
+    // the one closing `memory.copy(mark, T, size)` (memmove-safe per WAT's
+    // bulk-memory-ops spec, so safe even on the rare corpus where live size
+    // approaches churn and the ranges truly overlap) needs no second fixup pass:
+    // every pointer already points where its target WILL be once the move lands.
+    ctx.core.stdlib['__region_mark'] = `(func $__region_mark (result f64)
+      (f64.convert_i32_u (global.get $__heap)))`
+
+    ctx.core.stdlib['__region_exit'] = `(func $__region_exit (param $markF f64) (param $rootF f64) (result f64)
+      (local $mark i32) (local $T i32) (local $delta i32) (local $memo i64) (local $out f64) (local $size i32)
+      (local.set $mark (i32.trunc_f64_u (local.get $markF)))
+      ;; fresh memo Map (identity: old bits -> new/final bits), same bootstrap __sclone uses
+      (local.set $memo (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
+        (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY + LANE})))))
+      (local.set $T (global.get $__heap))
+      (local.set $delta (i32.sub (local.get $T) (local.get $mark)))
+      (local.set $out (call $__region_copy_rec (local.get $rootF) (local.get $memo) (local.get $mark) (local.get $delta)))
+      (local.set $size (i32.sub (global.get $__heap) (local.get $T)))
+      (memory.copy (local.get $mark) (local.get $T) (local.get $size))
+      (global.set $__heap (i32.add (local.get $mark) (local.get $size)))
+      (local.get $out))`
+
+    ctx.core.stdlib['__region_copy_rec'] = `(func $__region_copy_rec (param $v f64) (param $memo i64) (param $mark i32) (param $delta i32) (result f64)
+      (local $bits i64) (local $t i32) (local $off i32) (local $aux i32) (local $hit i64) (local $out f64)
+      (local $newOff i32) (local $n i32) (local $i i32) (local $slot i32) (local $len i32) (local $cap i32)
+      (local $stride i32) (local $ord i32) (local $outPhys f64)
+      ;; ordinary numbers (incl. +/-Infinity) are immediate
+      (if (f64.eq (local.get $v) (local.get $v)) (then (return (local.get $v))))
+      (local.set $bits (i64.reinterpret_f64 (local.get $v)))
+      ;; negative-NaN bit patterns are numeric NaN, never boxes (__sclone_rec precedent)
+      (if (i64.eq (i64.and (local.get $bits) (i64.const 0xFFF0000000000000)) (i64.const 0xFFF0000000000000))
+        (then (return (local.get $v))))
+      (local.set $t (call $__ptr_type (local.get $bits)))
+      ;; ATOM (null/undefined/bool/canonical-NaN): immediate, passes through
+      (if (i32.eq (local.get $t) (i32.const ${PTR.ATOM})) (then (return (local.get $v))))
+
+      (if (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+        (then
+          (local.set $aux (call $__ptr_aux (local.get $bits)))
+          ;; SSO: immediate, no separate heap block
+          (if (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT})) (then (return (local.get $v))))
+          ;; SLICE view (aliases a parent's bytes, no owned storage of its own): out of scope
+          (if (i32.and (local.get $aux) (i32.const ${LAYOUT.SLICE_BIT})) (then (unreachable)))
+          ;; STRING never forwards (module/string.js invariant) — raw offset is always canonical
+          (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))
+          (if (i32.lt_u (local.get $off) (local.get $mark)) (then (return (local.get $v))))
+          (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+          (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
+          (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 4))))
+          (local.set $newOff (i32.add (call $__alloc (i32.add (i32.const 4) (local.get $len))) (i32.const 4)))
+          (i32.store (i32.sub (local.get $newOff) (i32.const 4)) (local.get $len))
+          (memory.copy (local.get $newOff) (local.get $off) (local.get $len))
+          (local.set $out (call $__mkptr (i32.const ${PTR.STRING}) (local.get $aux) (i32.sub (local.get $newOff) (local.get $delta))))
+          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          (return (local.get $out))))
+
+      (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+        (then
+          (local.set $off (call $__ptr_offset (local.get $bits)))
+          (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+          (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
+          (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
+          (if (i32.lt_u (local.get $off) (local.get $mark))
+            (then
+              ;; Durable container — never relocated (its own block stays put forever) —
+              ;; but a durable array can still hold a slot written THIS round (e.g. a
+              ;; compiler-internal registry array durable arrays only ever get PUSHED
+              ;; into, not rebuilt), referencing non-durable data that would otherwise be
+              ;; silently reclaimed by the closing rewind. Walk in place (no relocation of
+              ;; the container itself — memo it at its OWN address — but recurse into
+              ;; every slot and write back whatever comes out, exactly as durable_slot_log
+              ;; recognizes "durable receiver, ephemeral payload" as the hazard needing a
+              ;; write, except here the payload survives via relocation instead of dying).
+              (local.set $out (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $off)))
+              (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+              (block $dd (loop $dl
+                (br_if $dd (i32.ge_s (local.get $i) (local.get $len)))
+                (local.set $slot (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))
+                (f64.store (local.get $slot)
+                  (call $__region_copy_rec (f64.load (local.get $slot)) (local.get $memo) (local.get $mark) (local.get $delta)))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $dl)))
+              (return (local.get $out))))
+          (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $len)))
+          (local.set $out (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
+          ;; memo BEFORE recursing into elements — cycles / diamond sharing terminate on revisit
+          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          (block $ad (loop $al
+            (br_if $ad (i32.ge_s (local.get $i) (local.get $len)))
+            (local.set $slot (i32.add (local.get $newOff) (i32.shl (local.get $i) (i32.const 3))))
+            (f64.store (local.get $slot)
+              (call $__region_copy_rec (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))
+                (local.get $memo) (local.get $mark) (local.get $delta)))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $al)))
+          ;; forward the OLD site to the FINAL (post-relocation) address — any stale ARRAY
+          ;; reference that survives past region_exit self-heals via the existing
+          ;; __ptr_offset forwarding chase, exactly like a grown array's old header.
+          (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.sub (local.get $newOff) (local.get $delta)))
+          (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+          (return (local.get $out))))
+
+      (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.SET})) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))
+        (then
+          (local.set $off (call $__ptr_offset (local.get $bits)))
+          ;; No durable short-circuit here (unlike ARRAY): a SET/MAP's slot position is
+          ;; a function of its KEY's hash (__map_hash — pointer-bits-based for non-string
+          ;; keys), so patching a relocated key's bits in place would leave the entry in
+          ;; the WRONG bucket for its new hash — an in-place fix would need a full rehash
+          ;; anyway. Simplest correct answer: always rebuild via __coll_order + reinsert
+          ;; (below), which computes fresh hashes for whatever the (possibly just-
+          ;; relocated) keys currently are. dirty/snapshots are small relative to the
+          ;; tree, so paying this every round is cheap next to the ARRAY win.
+          (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+          (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
+          (local.set $stride (select (i32.const ${MAP_ENTRY}) (i32.const ${SET_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.MAP}))))
+          (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+          (local.set $newOff (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.add (local.get $stride) (i32.const ${LANE}))))
+          ;; Two addresses for the SAME new table: $outPhys (physical, T-relative — the
+          ;; only form valid to DEREFERENCE right now, since the memmove down to mark
+          ;; hasn't happened yet) drives __map_set/__set_add's OWN internal __ptr_offset
+          ;; below; $out (logical, delta-adjusted) is the value returned/memoized — never
+          ;; dereferenced until after region_exit's closing memory.copy lands it for real.
+          (local.set $outPhys (call $__mkptr (local.get $t) (i32.const 0) (local.get $newOff)))
+          (local.set $out (call $__mkptr (local.get $t) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
+          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          ;; walk the source in insertion order (__coll_order), like __sclone_rec's SET/MAP
+          ;; branch — inserting into a fresh cap-sized table never grows, so $outPhys stays canonical
+          (local.set $n (i32.load (i32.sub (local.get $off) (i32.const 8))))
+          (local.set $ord (call $__coll_order (local.get $off) (local.get $cap) (local.get $stride)))
+          (block $cd (loop $cl
+            (br_if $cd (i32.ge_s (local.get $i) (local.get $n)))
+            (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
+            (if (i32.eq (local.get $t) (i32.const ${PTR.MAP}))
+              (then (drop (call $__map_set (i64.reinterpret_f64 (local.get $outPhys))
+                (i64.reinterpret_f64 (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $memo) (local.get $mark) (local.get $delta)))
+                (i64.reinterpret_f64 (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 16))) (local.get $memo) (local.get $mark) (local.get $delta))))))
+              (else (drop (call $__set_add (i64.reinterpret_f64 (local.get $outPhys))
+                (i64.reinterpret_f64 (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $memo) (local.get $mark) (local.get $delta)))))))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $cl)))
+          (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.sub (local.get $newOff) (local.get $delta)))
+          (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+          (return (local.get $out))))
+
+      ;; Not handled (scope note, not a trap): the ARRAY branch's relocated copy
+      ;; never carries forward a source array's off-16 dyn-props sidecar (always
+      ;; zeroed by __alloc_hdr, matching a fresh literal array) — correct for
+      ;; watr's own AST/bookkeeping, which never attaches dynamic properties to
+      ;; its internal arrays; a jz USER array with dyn-props reaching this code
+      ;; would silently lose them. Slice 1's root is always watr-internal state,
+      ;; never user data, so this is out of reach today — worth a comment for
+      ;; whoever generalizes region_exit to a user-facing boundary later.
+      ;;
+      ;; OBJECT/HASH/CLOSURE/TYPED/BUFFER/EXTERNAL: out of Slice-1 scope (watr's AST +
+      ;; round-loop bookkeeping never produce them) — trap rather than mishandle.
+      (unreachable))`
   }
 
   // Build an insertion-ordered list of live slot offsets for a Set/Map/HASH
@@ -1815,6 +2021,16 @@ export default (ctx) => {
   ctx.core.emit['__ptr_type'] = (p) => (inc('__ptr_type'), typed(['f64.convert_i32_s', ['call', '$__ptr_type', asI64(emit(p))]], 'f64'))
   ctx.core.emit['__ptr_aux'] = (p) => (inc('__ptr_aux'), typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asI64(emit(p))]], 'f64'))
   ctx.core.emit['__ptr_offset'] = (p) => (inc('__ptr_offset'), typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asI64(emit(p))]], 'f64'))
+
+  // Region-arena Slice 1 intrinsics (see the stdlib definitions above for the
+  // full design) — callable ONLY from scripts/self.js (the self-host kernel
+  // entry, never executed as native JS, only ever compiled), which threads them
+  // into watr's optional per-round hooks via src/optimize/watr-tail.js's
+  // `regionHooks`. `__region_mark` takes no args; `__region_exit` takes
+  // (mark, root) and returns the possibly-relocated root — both raw f64 in,
+  // f64 out, matching watr's own untyped AST-node value shape.
+  ctx.core.emit['__region_mark'] = () => (inc('__region_mark'), typed(['call', '$__region_mark'], 'f64'))
+  ctx.core.emit['__region_exit'] = (mark, root) => (inc('__region_exit'), typed(['call', '$__region_exit', asF64(emit(mark)), asF64(emit(root))], 'f64'))
 
   // Object-literal AST shape with NO 'toString'/'valueOf' key: a DEFINITIVE
   // (not merely unproven) empty OrdinaryToPrimitive method chain — a spread
