@@ -6,6 +6,157 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-05, three-bug bundle from the banked queue: const-fold
+## mid-expression overflow, String position-arg saturation + a compiler
+## crash, wasm-opt --enable-simd — bce7d1d7's "compile-time constant-fold
+## rounding bug" + "three pre-existing builtins edge-case bugs", af42d159's
+## banked wasm-opt note)
+
+**Bug 1 — const-fold mid-expression overflow lost (src/prepare/pre-eval.js).**
+`foldNumBinary`/`foldNumAdd` carry the exact Rational through a chain of
+`+,-,*,/` on compile-time constants, rounding to f64 only when a node's OWN
+op is asked for. The bug: every node ALSO handed its exact (unrounded)
+Rational up to the PARENT op as `.r`, even when THIS node's own correctly-
+rounded f64 result had already overflowed to ±Infinity — so the parent kept
+computing from the pre-overflow exact value instead of the actual (infinite)
+one, silently reassociating `(MAX_VALUE*1.1)*0.9` into
+`MAX_VALUE*(1.1*0.9)` (finite, <MAX_VALUE) instead of matching ECMA-262
+12.6.3/12.8.3's per-operator rounding (`MAX_VALUE*1.1` alone rounds to
+Infinity; `Infinity*0.9` stays Infinity). Fix: after computing the node's own
+correctly-rounded result (`plain`, already computed via `plainNumOp`/`L.v+R.v`
+for the non-rational fallback), bail the rational chain (return `numResult
+(plain)`, which sets `r:null` since `plain` is non-finite) whenever `!Number.
+isFinite(plain)` — the parent then falls into its own `!L.r||!R.r` branch and
+recomputes via plain per-op float arithmetic from the actual overflowed
+value. Fires only at the finite/±Infinity boundary; every sub-finite result
+(the README's "compiled constants are more accurate, never less" feature,
+e.g. `0.1+0.2-0.3` folding to the exact `2.7755575615628914e-17` instead of
+per-op JS's `5.551115123125783e-17`) is untouched — verified still exactly
+pinned (test/preeval.js, unchanged, 27/27).
+
+| expr | JS | jz before | jz after |
+|---|---|---|---|
+| `(Number.MAX_VALUE*1.1)*0.9` | `Infinity` | finite (`Number.MAX_VALUE*0.99`) | `Infinity` |
+| `-Number.MAX_VALUE+(Number.MAX_VALUE+Number.MAX_VALUE)` | `Infinity` | `Number.MAX_VALUE` | `Infinity` |
+| `0.1+0.2-0.3` (unaffected control) | `5.551115123125783e-17` | `2.7755575615628914e-17` | unchanged |
+
+test262: `test/language/expressions/multiplication/S11.5.1_A4_T8.js` and
+`test/language/expressions/addition/S11.6.1_A4_T9.js` (the only two files in
+the tracked corpus exercising this — `grep -rl "is not always associative"`
+across language/expressions/) flip xfail → pass; their EXPECTED_FAIL_FILES
+entries removed from test/test262.js.
+
+**Bug 2 — String position-argument saturation + a compile-time crash
+(src/ir.js, module/string.js, src/compile/emit.js).** bce7d1d7's "three
+pre-existing builtins edge-case bugs" xfail rows, dissected:
+
+*Mechanism A — `asI32` misused for ToIntegerOrInfinity position args.*
+`asI32` (src/ir.js) implements ES ToInt32 WRAP semantics (mod 2^32) for its
+documented consumers (bitwise operands, i32-narrowed storage) — correct
+there. But `module/string.js`'s `.slice`/`.substring`/`.substr`/`posIndex`
+(feeding `.indexOf`/`.includes`) and `.lastIndexOf`, plus `src/compile/
+emit.js`'s `emitSubstringEqCmp` (the `<str>.slice(...) === <other>` fusion),
+all reused `asI32` for a POSITION/INDEX/LENGTH argument — ES
+ToIntegerOrInfinity semantics, which need SATURATION (±Infinity -> INT32_MAX/
+MIN, NaN -> 0), not wrapping. `asI32`'s not-provably-i32-ranged fallback
+routes through `i64.trunc_sat_f64_s` + `i32.wrap_i64`; wrapping i64::MAX's
+low 32 bits gives **-1**, not INT32_MAX — read downstream by `__clamp_idx`
+as "one before the end" instead of "past the end". Reachable via literal
+`Infinity`/`-Infinity` AND any finite value past i64 range (e.g. `1e20`).
+Fix: new `asI32Sat` (src/ir.js) — a single bare `i32.trunc_sat_f64_s`, no i64
+detour (cheaper AND correct) — wired into every `__clamp_idx`-consuming
+position argument in module/string.js and emitSubstringEqCmp's fused twin
+(the fused path was REQUIRED, not optional: `x.slice(...) !== "…"` compiles
+through the fusion, never reaching the materializing `.slice` emitter at
+all — fixing one path alone left its sibling silently disagreeing).
+`charAt`/`charCodeAt`/`codePointAt`/`String.fromCharCode` audited and left
+alone: the first three do a simple `i>=0 && i<len` boundary check (wrap-to
+-1 is accidentally still correct there — verified live), and fromCharCode's
+ToUint16 coercion genuinely wants wrap semantics.
+
+*Mechanism B — `isNumOrAbsent` treated "unfoldable" as "absent"
+(src/prepare/pre-eval.js).* `evalStringMethod`'s compile-time `.slice` fold
+maps each call argument through `evalConst`, which returns `null` for an
+argument that IS present but can't be constant-folded (an IIFE; `NaN`'s own
+`['nan']` AST node, which `evalConst` has no case for). The old
+`isNumOrAbsent = (a) => a == null || a.t === 'num'` let a `null` entry
+through as if the argument were OMITTED, then `args[i].v` dereferenced
+`null` on the two-arg branch (internal compiler crash) and silently
+substituted 0 on `charAt`'s `args[0]?.v ?? 0` (wrong answer, no crash).
+Fixed by separating the two `null`-ish cases: `a === undefined` (a real
+out-of-bounds array read — genuinely absent) is fine; `a === null`
+(present, unfoldable) now fails the guard, so the whole call bails to a
+normal runtime compile instead of trusting a phantom default.
+
+| expr | JS | jz before | jz after |
+|---|---|---|---|
+| `"report".slice(function(){}())` | `"report"` | internal compiler crash | `"report"` |
+| `"hello".slice(NaN)` | `"hello"` | internal compiler crash | `"hello"` |
+| `new String('this is a string object').slice(NaN, Infinity)` | full string | `"...objec"` (1 char short) | full string, `===` too |
+| `"…".substring(NaN, Infinity)` | full string | `""` | full string |
+| `"…".substr(0, Infinity)` | full string | `""` | full string |
+| `"The future is cool!".includes('!', Infinity)` | `false` | `true` | `false` |
+| `"The future is cool!".includes('!', 1e20)` | `false` | `true` | `false` |
+
+test262 builtins baseline: `built-ins/String/prototype/slice/
+S15.5.4.13_A1_T14.js`, `S15.5.4.13_A2_T2.js`, `built-ins/String/prototype/
+includes/return-false-with-out-of-bounds-position.js` flip xfail → pass
+(`S15.5.4.13_A1_T9.js`, a genuine ToPrimitive-on-a-wrapper-object out-of-
+scope divergence, stays xfail — not a bug). test/test262-baseline.json's
+`builtins` floor bumped 847 -> 850.
+
+Found, not fixed (out of this bundle's scope — no test262 baseline row
+exercises either): `Array.prototype.slice` shares mechanism A verbatim
+(`module/array.js`'s slice/fill/copyWithin/etc. all call bare `asI32` on
+start/end too) — confirmed live, `[1,2,3,4,5].slice(NaN, Infinity)` drops
+the last element. `String.prototype.at` shares a sibling of mechanism A
+(its own negative-wraparound clamp, not `__clamp_idx`) — confirmed live,
+`"hello".at(Infinity)` returns `"o"` instead of `undefined`.
+
+**Bug 3 — wasm-opt rejects SIMD-bearing modules in the native lane
+(scripts/native/gen-watr-wasm.mjs).** `FEATS` (the wasm-opt feature-flag
+list gen-watr-wasm.mjs passes when optimizing jz-compiled watr.wasm for the
+wasm2c/native lane) predates jz's auto-vectorizer — missing `--enable-simd`,
+wasm-opt's validator HARD-REJECTS any v128 op with `[wasm-validator error]
+... SIMD operations require SIMD [--enable-simd]` / `Fatal: error validating
+input` (confirmed live, reproduced the exact failure af42d159 banked:
+"reproduced the SAME wasm-opt --enable-simd-missing failure... unrelated
+pre-existing issue, left unfixed/out of scope"). Not a silent strip — a hard
+non-zero exit, so the native lane could never process a SIMD-bearing module
+at all. Fix: added `--enable-simd` to `FEATS`. Verified end to end on the
+actual watr module this script builds: wasm-opt -O3 now succeeds (was: hard
+validator failure); `wasm2c --enable-exceptions` on the result succeeds and
+emits C containing genuine v128 codegen (288 SIMD/`v128` references in the
+generated `watr.c`) — was previously unreachable, wasm-opt never got that
+far. The final native-C-compile stage (clang, scripts/native/build.sh)
+could not be additionally exercised in this sandbox — an unrelated,
+pre-existing macOS Command Line Tools SDK/sysroot misconfiguration blocks
+EVERY C compile here, verified with a trivial `int main(){}` failing
+identically (`ld: library 'System' not found`) regardless of this fix; the
+actual bug (wasm-opt's SIMD rejection) is proven fixed at its own locus.
+
+### Gates
+
+Per-bug repros (tables above) red→green, native lane, before any gate run.
+Fresh `npm run build` ×2, foreground, byte-identical (dist/jz.wasm sha256
+`a03373c8…`, dist/jz.js sha256 `d0b71ac8…`, both rounds). Against that
+build: full battery (`npm test`) 3330 pass / 6 skip / 0 fail (19261
+assertions, 0 new skips — the pre-existing 6); kernel-parity 3/3 (33
+assertions); kernel-oracle 11/11 (451 assertions); perf-ratchet 10/10 +0 (no
+codegen regression in any of the 10 categories); optimizer 215/215 (3956
+assertions); preeval 27/27 (62 assertions, incl. the unchanged `0.1+0.2-0.3`
+precision pin); data 126/126 (244 assertions); strings 153/153 (525
+assertions); selfhost.js 21/21 (206 assertions); fuzz 2000 programs × opt
+{0,1,2,3} — 0 divergence (30173 inputs compared); size sweep geomean jz/AS =
+1.040× (unchanged, holds); test262 language suite (test/test262.js) 0
+in-scope fail, 0 xpass, Xfail 54 (down from 56 — the two flipped rows
+removed); test262 builtins (test/test262-builtins.js) 850 pass / 0 fail / 89
+xfail, baseline bumped to 850.
+
+**Files**: src/prepare/pre-eval.js, test/test262.js (bug 1); src/ir.js,
+module/string.js, src/compile/emit.js, test/test262-builtins.js,
+test/test262-baseline.json (bug 2); scripts/native/gen-watr-wasm.mjs (bug 3).
+
 ## Status (2026-08-05, Number(x) cast kind-modeling FIXED — the audit-#11 P0-1
 ## "Also found, NOT fixed" remainder closed. src/kind-traits.js.)
 
