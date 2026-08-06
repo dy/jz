@@ -6,6 +6,23 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, RIVAL WAT ANALYSIS — radixsort/sdf/sort/trace read-only
+## dissection, see .work/rival-wat-analysis.md)
+
+Comparative WAT read of jz vs best rival (zig-wasm × radixsort/sort, c-wasm ×
+sdf/trace). Headline: radixsort (1.035×) and sort (1.030×) are CLOSED —
+`ca718788`/`d6460bce` already landed the levers `70748f70` diagnosed; the
+task's premise only holds for sdf (1.199×) and trace (1.492×), both
+pre-existing documented hard tails (sdf: sentinel/symbolic-hull, research-
+tier; trace: `if(inside)` branch misprediction, two levers already tried and
+measured neutral). One new, general, cheap lever found: `fuseRangeCheck`/
+`fuseRangeCheckOr` (emit.js 852–900, called from '&&'/'||' at 5687/5773) only
+fuses the FIRST pair of a left-deep `&&`/`||` chain (trace's `y>=0 && y<H`
+never fuses while `x>=0 && x<W` does, same source shape) — small mechanical
+recursive fix, corpus-wide reach, not trace-specific (checks aren't trace's
+bottleneck per the archive). Full tables + a lower-confidence secondary item
+(typed `.length` constant-fold from literal allocation size) in the doc.
+
 ## Status (2026-08-06, INDUCTION-VARIABLE FACT project LANDED — base64's `op`
 ## recovers i32 storage; design entry below this one written first, then
 ## built; a mid-implementation correction moved the fix from an emit-time
