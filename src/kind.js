@@ -682,9 +682,20 @@ export const exprMayBeUndefinedIn = (expr, bodyRoot) =>
 const mapGetShapedNode = (node) =>
   Array.isArray(node) && node[0] === '()' && node.length === 3 &&
   Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'get' && typeof node[1][1] === 'string'
-const mapGetShapedTraceCache = new WeakMap()
+// Ownership (audit-#12 item 1, session factStore slice — same argument as
+// mayBeUndefinedTrace above / see the DEPS table in session.js): stored at
+// getFactStore().mapGetShapedTrace, NOT a private module-level WeakMap.
+// Body-identity-keyed, no surgical invalidation needed (setFuncBody always
+// assigns a fresh func.body reference on rewrite — same no-stale-hit
+// argument as mayBeUndefinedTrace/bindingUses). Session ownership still
+// matters: `new WeakMap()` folds to a strong `Map` when jz self-hosts (no
+// GC → weakness unobservable, src/prepare/index.js's `new` handler), and
+// kind.js is on the self-hosted compiler surface, so a bare module-global
+// would accumulate one entry per bodyRoot for the WHOLE kernel-instance
+// lifetime instead of one compile's worth.
 function nameMapGetShapedInBody(bodyRoot, name, seen = new Set()) {
   if (!Array.isArray(bodyRoot)) return false
+  const mapGetShapedTraceCache = getFactStore().mapGetShapedTrace
   let m = mapGetShapedTraceCache.get(bodyRoot)
   if (!m) { m = new Map(); mapGetShapedTraceCache.set(bodyRoot, m) }
   if (m.has(name)) return m.get(name)
@@ -736,10 +747,16 @@ export const censusMaybeUndefined = (node) => !!censusMaybeUndefinedKind(node)
 // comments); only arm 3 (bare-name REP fallback) is ctx.func-dependent, and
 // this trace never reaches it (a bare name inside the walk recurses back into
 // THIS function, never into censusMaybeUndefinedKind's own repOf lookup).
-// WeakMap-cached per bodyRoot, mirroring nameMayBeUndefinedInBody exactly.
-const presentValTraceCache = new WeakMap()
+// WeakMap-cached per bodyRoot, mirroring nameMayBeUndefinedInBody exactly —
+// including its ownership: audit-#12 item 1 moves this into
+// getFactStore().presentValTrace, NOT a private module-level WeakMap, for
+// the SAME self-hosted-WeakMap-folds-to-strong-Map reason documented on
+// nameMayBeUndefinedInBody above (kind.js is on the self-hosted compiler
+// surface; a bare module-global here would leak one entry per bodyRoot for
+// the lifetime of a warm kernel instance instead of one compile's worth).
 export function namePresentValInBody(bodyRoot, name, seen = new Set()) {
   if (!Array.isArray(bodyRoot)) return null
+  const presentValTraceCache = getFactStore().presentValTrace
   let m = presentValTraceCache.get(bodyRoot)
   if (!m) { m = new Map(); presentValTraceCache.set(bodyRoot, m) }
   if (m.has(name)) return m.get(name)

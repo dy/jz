@@ -240,6 +240,8 @@ function createFactStore() {
     bodyFacts: new Map(),
     bindingUses: new WeakMap(),
     mayBeUndefinedTrace: new WeakMap(),
+    mapGetShapedTrace: new WeakMap(),
+    presentValTrace: new WeakMap(),
   }
 }
 let _factStore = createFactStore()

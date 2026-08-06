@@ -214,6 +214,38 @@ export function targetProfileFor(host) {
  *                                bodyRoot for its whole lifetime, not just
  *                                one compile's worth (see the doc at
  *                                nameMayBeUndefinedInBody, kind.js).
+ *   mapGetShapedTrace            kind.js's nameMapGetShapedInBody structural
+ *                                trace (audit-#12 item 1). Same DEPS as
+ *                                mayBeUndefinedTrace — body-identity-keyed,
+ *                                setFuncBody's fresh-reference guarantee
+ *                                makes wholesale-only invalidation sound;
+ *                                session ownership matters for the same
+ *                                self-hosted-WeakMap-folds-to-strong-Map
+ *                                reason (kind.js on the self-hosted compiler
+ *                                surface — see the doc at
+ *                                nameMapGetShapedInBody, kind.js).
+ *   presentValTrace               kind.js's namePresentValInBody structural
+ *                                trace (audit-#12 item 1). Same DEPS as
+ *                                mayBeUndefinedTrace/mapGetShapedTrace —
+ *                                body-identity-keyed wholesale-only reset,
+ *                                same self-hosted-fold ownership argument
+ *                                (see the doc at namePresentValInBody,
+ *                                kind.js).
+ *
+ * DESIGN NOTE (audit-#12 item 1, deeper ask — NOT attempted this pass):
+ * mayBeUndefinedTrace/mapGetShapedTrace/presentValTrace are three near-
+ * identical hand-rolled recursive body walkers (same let/const/=-write scan,
+ * same seen-set cycle guard, same WeakMap-of-Map memo shape), each solving a
+ * narrower version of "what does this body ever assign to this name." The
+ * audit's suggestion is to fold them into the BindingId solver proper (a
+ * single indexed def-site table keyed by BindingId, with each of the three
+ * predicates reading off it) rather than three parallel tree walks. That is
+ * a real architectural consolidation — three call sites' worth of subtly
+ * different poison/OR semantics (nameMayBeUndefinedInBody's monotonic
+ * boolean-OR vs namePresentValInBody's poison-on-conflict vs
+ * nameMapGetShapedInBody's boolean-OR again) to reconcile against one
+ * solver's output shape — and is left as a follow-on, not this bundle's
+ * scope (session-ownership hygiene only).
  *
  * ASSERT (a slice reset clears its dependents): programFacts's three
  * sub-caches share ONE `gen` counter and are always recreated together —
