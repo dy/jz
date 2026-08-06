@@ -716,6 +716,18 @@ export const optFlagsOf = (cfg) => {
 
 export const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
+// Carrier program (.work/carrier-representation-design.md) Slice 2 def-side
+// gate: OFF by default — every consumer of `bigintBoxed` (ir.js carrierF64,
+// emit.js coerceArg/'return'/'?:') stays on today's raw-carrier path
+// unconditionally, byte-identical to pre-Slice-2 output. ON only for the
+// flagged probe build that proves the def-side box wiring engages at the
+// 11 measured box sites — NOT a correctness switch for real programs: the
+// R-recovery read side (Slice 3, unboxing at consumption) is not landed, so
+// a JZ_CARRIER_BOX=1 build can allocate a box a downstream raw-bits reader
+// then misinterprets as pointer bits. Do not flip this on for anything but
+// a targeted Slice-2 probe.
+export const CARRIER_BOX = typeof process !== 'undefined' && process.env?.JZ_CARRIER_BOX === '1'
+
 // Session wave W1 (stage 4): the lifecycle table above is an executable,
 // ORDERED contract — each named phase must follow its predecessor within one
 // compile session ('pre-emit' is a per-function interleave, unordered).

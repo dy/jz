@@ -22,7 +22,7 @@ import { ERR } from '../err-codes.js'
  * @module ir
  */
 
-import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, CARRIER_BOX } from './ctx.js'
 import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf } from './ast.js'
@@ -566,7 +566,16 @@ export function boolBoxIR(e) {
  *  Callers emit(node) ONCE and pass both (emitting per-arm inside a ternary wrapped
  *  by different coercions is the self-host-fragile shape — see emit.js 'return'). */
 export function carrierF64(node, emitted) {
-  return valTypeOf(node) === VAL.BOOL ? boolBoxIR(emitted) : asF64(emitted)
+  if (valTypeOf(node) === VAL.BOOL) return boolBoxIR(emitted)
+  // Slice 2 (CARRIER PROGRAM, .work/carrier-representation-design.md §7) def-
+  // side wiring — OFF by default (CARRIER_BOX), byte-identical to the prior
+  // asF64-only body. carrierF64 is the design's own single W-sink choke-point
+  // for boxed-value storage positions (bridge.js storedValue's whole reason
+  // to exist — object/dyn-prop store, array-elem store, Set/Map, closure
+  // capture all route their stored value through here): when proven, box
+  // BEFORE the raw asF64 carrier would otherwise cross into that slot.
+  if (CARRIER_BOX && needsBigintBox(node)) return boxBigInt(asI64(emitted))
+  return asF64(emitted)
 }
 
 /** Recover the 0/1 i32 value of a known boxed-boolean f64 expression: `aux & 1`. */

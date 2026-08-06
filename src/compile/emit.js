@@ -27,7 +27,7 @@ import {
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
   ASSIGN_OPS, MUTATE_OPS, firstRefKind, isLeaf,
 } from '../ast.js'
-import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, CARRIER_BOX } from '../ctx.js'
 import {
   i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR,
   OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_NAMES, encodeTypedElemAux, TYPED_ELEM_VIEW_FLAG,
@@ -45,7 +45,7 @@ import {
   exprType, constIntExpr, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
   inBoundsArrIdx, typedIdxProven, versionableTypedNest, idxKey, SLOT_OPS,
 } from '../type.js'
-import { valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, censusMaybeUndefinedKind } from '../kind.js'
+import { valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, censusMaybeUndefinedKind, nullishArm } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
 import {
   typed, asF64, asI32, asI32Sat, asI64, asPtrOffset, asParamType, toI32, fromI64,
@@ -58,7 +58,7 @@ import {
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom, throwTypeErrorIR,
-  boolBoxIR, carrierF64, unboxBoolIR,
+  boolBoxIR, carrierF64, unboxBoolIR, boxBigInt, needsBigintBox,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -1387,6 +1387,18 @@ function coerceArg(ir, param, node) {
     if (param.ptrKind === VAL.OBJECT) return asPtrOffset(ir, param.ptrKind)
     return ptrOffsetIR(ir, param.ptrKind)
   }
+  // Slice 2 (CARRIER PROGRAM, .work/carrier-representation-design.md §7)
+  // call-arg def-side wiring — OFF by default (CARRIER_BOX). `param.bigintBoxed`
+  // (narrow.js bigintBoxedVerdict, stamped onto sig.params) is the CALL-SITE
+  // half of the invariant: this param can't be trusted to receive BIGINT
+  // uniformly across every live call site, so a caller passing an actual
+  // BigInt value here must box it before the call — the callee then carries
+  // an opaque, self-describing pointer through its generic/untyped param path
+  // instead of ambiguous raw bits. Only fires when THIS call's argument is
+  // itself BIGINT-kinded; a non-bigint argument at the same position needs no
+  // change (param.bigintBoxed says nothing about what THIS site passes).
+  if (CARRIER_BOX && param?.bigintBoxed && node !== undefined && valTypeOf(node) === VAL.BIGINT)
+    return boxBigInt(asI64(ir))
   if (node !== undefined && (param == null || (param.type !== 'i32' && param.val == null)) &&
       valTypeOf(node) === VAL.BOOL)
     return carrierF64(node, ir)
@@ -5071,7 +5083,20 @@ export const emitter = {
     const boxes = pk == null && rt === 'f64' && (ctx.func.boxedResult || ctx.func.mixedAtomReturn)
     const ambiguous = boxes && hasAmbiguousBoolMerge(expr)
     const emitted = ambiguous ? emitIdentitySafe(expr) : emit(expr)
-    const ir = pk != null ? asPtrOffset(emitted, pk)
+    // Slice 2 (CARRIER PROGRAM, .work/carrier-representation-design.md §7)
+    // return def-side wiring — OFF by default (CARRIER_BOX). Not a NEW fact:
+    // `boxes`'s own carrierF64 call two lines below already boxes a returned
+    // BIGINT when the function's result is a mixed-BOOL-atom return — this
+    // consults the SAME `bigintBoxed` rep at the one more consumption site a
+    // uniform (non-mixed) return tail would otherwise skip entirely (the
+    // `asParamType` fallback), for a name whose rep was already proven boxed
+    // by some OTHER sink in this same body (a dict store earlier, a closure
+    // capture, …) — analyze.js's W-sink walk has no return-specific producer
+    // of its own (confirmed: no markBigintSink call at op==='return'), so this
+    // only fires when the fact already holds for an independent reason.
+    const needsBox = CARRIER_BOX && pk == null && rt === 'f64' && needsBigintBox(expr)
+    const ir = needsBox ? boxBigInt(asI64(emitted))
+      : pk != null ? asPtrOffset(emitted, pk)
       : boxes ? (ambiguous ? emitted : carrierF64(expr, emitted))
       : asParamType(emitted, rt)
     const ty = pk != null ? 'i32' : rt
@@ -5671,6 +5696,34 @@ export const emitter = {
         const bits = eagerSelectOK(fb, fc) && selectCondOK(cond)
           ? ['select', ib, ic, cond]
           : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
+        return typed(['f64.reinterpret_i64', bits], 'f64')
+      }
+    }
+    // Slice 2 (CARRIER PROGRAM, .work/carrier-representation-design.md §7)
+    // ternary-nullish def-side wiring — OFF by default (CARRIER_BOX). Mirrors
+    // kind.js VT['?:']'s own BIGINT+nullish-literal rule exactly (same ta/tb,
+    // same nullishArm test) and analyze.js's markBigintSink call for the same
+    // op==='?:' shape: BigInt is "the one kind with no runtime tag" — a
+    // `cond ? bigVal : null` merge must box bigVal before crossing into the
+    // merged f64 slot, or a proven-raw BigInt elsewhere becomes bit-
+    // indistinguishable from this merge's own result once null/undefined mix
+    // in. Always the `if`/`else` control-flow form, never `select` — `select`
+    // eagerly evaluates BOTH arms, which would allocate the box on the branch
+    // NOT taken (wasteful, and a real double-eval hazard if the arm has its
+    // own side effects) — round-2's own "ternary-beside-nullish wrongly
+    // boxed" bug (.work/todo.md) is exactly this class of mistake.
+    if (CARRIER_BOX) {
+      const taM = valTypeOf(b), tbM = valTypeOf(c)
+      const bigintArm = (taM === VAL.BIGINT && nullishArm(c)) ? 'b'
+        : (tbM === VAL.BIGINT && nullishArm(b)) ? 'c' : null
+      if (bigintArm != null && needsBigintBox(bigintArm === 'b' ? b : c)) {
+        const armEmitted = bigintArm === 'b' ? vb : vc
+        const otherEmitted = bigintArm === 'b' ? vc : vb
+        const boxedIR = boxBigInt(asI64(armEmitted))
+        const otherIR = asF64(otherEmitted)
+        const ib = ['i64.reinterpret_f64', boxedIR], ic = ['i64.reinterpret_f64', otherIR]
+        const [thenI, elseI] = bigintArm === 'b' ? [ib, ic] : [ic, ib]
+        const bits = ['if', ['result', 'i64'], cond, ['then', thenI], ['else', elseI]]
         return typed(['f64.reinterpret_i64', bits], 'f64')
       }
     }
