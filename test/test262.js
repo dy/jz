@@ -1115,28 +1115,24 @@ const EXPECTED_FAIL_FILES = new Map([
     'test/language/statements/variable/dstr/ary-ptrn-rest-id-direct.js',
     'test/language/statements/variable/dstr/ary-ptrn-rest-id-exhausted.js',
   ].map(f => [f, 'Array.isArray of promotion-derived rest array — recorded optimizer gap (derived-name isArray disqualifier)']),
-  // NEW FINDING (audit-#11 item 7, surfaced once the instanceof-classification
-  // noise above was fixed): pre-eval folds a compile-time-constant multi-operator
-  // numeric subtree (src/prepare/pre-eval.js foldNode/ratToF64) as ONE exact
-  // rational, rounding to f64 only at the very end — not after EACH binary op, as
-  // the spec's per-operation IEEE-754 rounding requires. Verified live: runtime
-  // (non-constant) `(a*b)*c` correctly overflows to Infinity at the intermediate
-  // step; the compile-time-folded literal form `(Number.MAX_VALUE*1.1)*0.9` does
-  // not — it silently reassociates to the same finite answer as
-  // `Number.MAX_VALUE*(1.1*0.9)` instead. A real, narrow compiler defect —
-  // distinct from and broader than the audit-#11 P0-1 MIN_VALUE bug (that one was
-  // the leaf rational→f64 conversion; this is per-node intermediate rounding
-  // through a multi-op fold) — reported, not fixed, here (out of this harness-
-  // repair task's scope; needs its own P0 investigation into rounding foldNode's
-  // rational result at every binary-op node, not just the subtree's leaves).
-  // Exactly two files in the whole tracked corpus exercise this (searched
-  // `grep -rl "is not always associative"` across language/expressions/) — the
-  // multiplication and addition "not always associative" MAX_VALUE probes;
-  // subtraction/division have no equivalent named test.
-  ['test/language/expressions/multiplication/S11.5.1_A4_T8.js',
-    'compile-time constant-fold of a multi-op numeric expression rounds once at the end instead of after each op — overflow-to-Infinity lost mid-expression (real compiler defect, reported not fixed — see comment above)'],
-  ['test/language/expressions/addition/S11.6.1_A4_T9.js',
-    'compile-time constant-fold of a multi-op numeric expression rounds once at the end instead of after each op — overflow-to-Infinity lost mid-expression (real compiler defect, reported not fixed — see comment above)'],
+  // FIXED (three-bug bundle, this commit) — was: pre-eval folded a compile-time-
+  // constant multi-operator numeric subtree (src/prepare/pre-eval.js foldNumBinary/
+  // foldNumAdd) as ONE exact rational, rounding to f64 only at the very end instead
+  // of after EACH binary op, so an overflow-to-Infinity that ES 12.6.3/12.8.3
+  // mandates AT an intermediate op (`Number.MAX_VALUE*1.1` alone rounds to
+  // Infinity) got silently reassociated away by the exact rational carrying a
+  // finite value forward (`Number.MAX_VALUE*(1.1*0.9)`'s exact product, still
+  // < MAX_VALUE) instead of propagating that Infinity to the parent op. Fixed by
+  // checking, at every rational-fold binary-op node, whether THIS node's own
+  // correctly-rounded f64 result overflowed — if so, the node's `.r` (the exact
+  // rational handed to the PARENT op) is dropped, forcing the parent back onto
+  // plain per-op float arithmetic from the actual (overflowed) value, matching
+  // spec. Sub-Infinity precision (the documented "more accurate, never less"
+  // rational-carry feature, e.g. 0.1+0.2-0.3) is untouched — the check only fires
+  // at the finite/±Infinity boundary. Exactly two files in the whole tracked
+  // corpus exercised this (searched `grep -rl "is not always associative"` across
+  // language/expressions/) — the multiplication and addition "not always
+  // associative" MAX_VALUE probes; both now pass.
 ])
 function expectedFailReason(rel) {
   if (EXPECTED_FAIL_FILES.has(rel)) return EXPECTED_FAIL_FILES.get(rel)

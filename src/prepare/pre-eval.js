@@ -335,21 +335,36 @@ const BINARY_OPS = new Set([...NUM_ONLY_OPS, ...CMP_OPS])
  *  rational result recomputes via plain f64 arithmetic instead — signed zero (`x+(-x)`
  *  -> +0, `0*-1` -> -0) has no faithful rational encoding, and plain JS +,-,*,/ already
  *  implement IEEE754 signed-zero correctly, so falling back for that one case is exact,
- *  not approximate. A non-finite rational result (true overflow of the exact formula,
- *  e.g. `1e300*1e300/1e300`) is KEPT — that's the accuracy win rational carry promises,
- *  not a divergence to guard against. */
+ *  not approximate. A non-finite rational result whose OWN op still lands finite when
+ *  each side is already a correctly-rounded double (true precision win, e.g.
+ *  `1e300*1e300/1e300`, chained through a `/` whose parent divides back down before this
+ *  node's own overflow would ever surface) is KEPT — that's the accuracy win rational
+ *  carry promises, not a divergence to guard against. But when THIS node's own
+ *  correctly-rounded f64 result overflows to ±Infinity, ECMA-262 12.6.3/12.8.3 (each
+ *  operator rounds its OWN result — a chain is never reassociated into one exact
+ *  computation) requires that Infinity to propagate as-is: `(MAX_VALUE*1.1)*0.9`'s true
+ *  mathematical product is finite (< MAX_VALUE), but per spec `MAX_VALUE*1.1` alone rounds
+ *  to Infinity, and `Infinity*0.9` stays Infinity — jz must match that, not the
+ *  reassociated finite answer the exact rational would compute if carried through. Bail
+ *  the rational chain here (r:null) so any PARENT op falls back to plain per-op float
+ *  arithmetic from this node's actual (overflowed) value instead of continuing from the
+ *  pre-overflow exact one. Fires only at the finite/±Infinity boundary itself — every
+ *  sub-Infinity result (the documented "more accurate, never less" feature) is untouched. */
 function foldNumBinary(op, L, R, rationalOn) {
   const plain = plainNumOp(op, L.v, R.v)
   if (!rationalOn || !RATIONAL_OPS.has(op) || !L.r || !R.r) return numResult(plain)
   const rr = op === '-' ? ratSub(L.r, R.r) : op === '*' ? ratMul(L.r, R.r) : ratDiv(L.r, R.r)
   if (!rr) return numResult(plain)
   if (bn.isZero(rr.n)) return numResult(plain)
+  if (!Number.isFinite(plain)) return numResult(plain)   // this op's own correctly-rounded result overflowed — bail the chain, see doc above
   return { t: 'num', v: ratToF64(rr), r: rr }
 }
 function foldNumAdd(L, R, rationalOn) {
   if (!rationalOn || !L.r || !R.r) return numResult(L.v + R.v)
   const rr = ratAdd(L.r, R.r)
   if (bn.isZero(rr.n)) return numResult(L.v + R.v)
+  const plain = L.v + R.v
+  if (!Number.isFinite(plain)) return numResult(plain)   // this op's own correctly-rounded result overflowed — see foldNumBinary's doc
   return { t: 'num', v: ratToF64(rr), r: rr }
 }
 function foldNumUnaryNeg(a) {
@@ -461,9 +476,24 @@ function evalMathCall(name, vs) {
   return kfn ? numResult(kfn(...vs)) : null
 }
 
-/** args: EvalResult[] (some entries may be null — the method itself validates types/arity). */
+/** args: EvalResult[] (some entries may be null — the method itself validates types/arity).
+ *  A `null` entry means "this argument IS present in the call but evalConst couldn't fold
+ *  it" (e.g. an IIFE, or a bare `NaN`/`Infinity` identifier evalConst doesn't special-case)
+ *  — distinct from a genuinely absent trailing argument, which reads back as JS `undefined`
+ *  via out-of-bounds array access (collectArgs only ever returns entries for arguments
+ *  actually written at the call site, so `args`'s length already tracks arity exactly). */
 function evalStringMethod(name, s, args) {
-  const isNumOrAbsent = (a) => a == null || a.t === 'num'
+  // `a === undefined`: index past `args.length` — no such argument at the call site, safe
+  // to treat as the method's default. `a == null` (i.e. `a === null`, the OTHER falsy case)
+  // must NOT take that branch — it means the argument IS there but isn't a fold-time
+  // constant, and treating it as "absent" silently substitutes a wrong default (was reached
+  // live via `"str".slice(NaN)` / `.slice(function(){}())`: NaN's dedicated `['nan']` AST
+  // node and an unfoldable call both evalConst to `null`, and the OLD `a == null` clause
+  // let them through as if omitted — `args[i].v` then crashed on the two-arg branch, and
+  // charAt's `args[0]?.v ?? 0` silently folded to 0 without crashing, either way ignoring
+  // the argument's real runtime value. Real, narrow compiler defect — audit-#11 item 7
+  // sub-3's "internal compiler crash on an IIFE used as a .slice() argument" xfail row.
+  const isNumOrAbsent = (a) => a === undefined || (a !== null && a.t === 'num')
   if (name === 'toUpperCase' && args.length === 0) return strResult(s.toUpperCase())
   if (name === 'toLowerCase' && args.length === 0) return strResult(s.toLowerCase())
   if (name === 'trim' && args.length === 0) return strResult(s.trim())
