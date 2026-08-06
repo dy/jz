@@ -871,9 +871,31 @@ function rangeBound(n) {
 // One subtract + one unsigned compare replaces two signed compares, an AND, and the
 // short-circuit branch — the classic range-check trick (valid for any integers via
 // wrapping subtraction). Returns the fused IR, or null to leave `&&` lowering unchanged.
+//
+// `&&` parses left-deep, so a 4-conjunct chain `x>=0 && x<W && y>=0 && y<H` is
+// `((x>=0 && x<W) && y>=0) && y<H` — the y-pair straddles an intervening `&&` node
+// (`y>=0` is that node's right child, `y<H` is `b`), not immediate siblings. When the
+// direct match fails and `a` is itself a left-deep `&&`, `b` can still only ever pair
+// with the conjunct immediately to its left in evaluation order — `a`'s own right
+// child — so retry there. On success, the chain's remaining head (`a[1]`, itself
+// possibly hiding another fusable pair) still needs emitting and ANDing onto the
+// fused result: `combineFusedAnd` does that, mirroring the '&&' emitter's own
+// combine tail below so the eager-AND / short-circuit-if choice stays identical.
+// Sound because every fused operand is a side-effect-free comparison (`rangeBound`
+// requires a bare identifier against a compile-time constant, never an arbitrary
+// expression) and `&&` is associative over pure booleans; `a[1]` still evaluates and
+// gates first, so evaluation order and short-circuiting are unchanged — a non-range
+// conjunct anywhere in `a[1]` (e.g. `foo() && x>=0 && x<W`) is simply emitted and
+// ANDed in, never reordered or dropped.
 function fuseRangeCheck(a, b) {
   const ba = rangeBound(a), bb = rangeBound(b)
-  if (!ba || !bb || ba.x !== bb.x || (ba.lo != null) === (bb.lo != null)) return null
+  if (!ba || !bb || ba.x !== bb.x || (ba.lo != null) === (bb.lo != null)) {
+    if (Array.isArray(a) && a[0] === '&&') {
+      const fusedTail = fuseRangeCheck(a[2], b)
+      if (fusedTail) return combineFusedAnd(a[1], fusedTail)
+    }
+    return null
+  }
   const lo = ba.lo ?? bb.lo, hi = ba.hi ?? bb.hi
   if (lo > hi) return null
   const xv = emit(ba.x)
@@ -884,14 +906,71 @@ function fuseRangeCheck(a, b) {
 // The complement: `x < LO || x > HI` (the two outside half-checks — one upper-bounded,
 // one lower-bounded, with a gap between) → `(x - LO) >u (HI - LO)`, where [LO, HI] is the
 // inside range. Same trick, negated; returns null to leave `||` lowering unchanged.
+// Same left-deep-chain recursion as `fuseRangeCheck` above, across `||` nodes instead
+// of `&&`, combined via `combineFusedOr`.
 function fuseRangeCheckOr(a, b) {
   const ba = rangeBound(a), bb = rangeBound(b)
-  if (!ba || !bb || ba.x !== bb.x || (ba.lo != null) === (bb.lo != null)) return null
+  if (!ba || !bb || ba.x !== bb.x || (ba.lo != null) === (bb.lo != null)) {
+    if (Array.isArray(a) && a[0] === '||') {
+      const fusedTail = fuseRangeCheckOr(a[2], b)
+      if (fusedTail) return combineFusedOr(a[1], fusedTail)
+    }
+    return null
+  }
   const insideLo = (ba.hi ?? bb.hi) + 1, insideHi = (ba.lo ?? bb.lo) - 1
   if (insideLo > insideHi) return null
   const xv = emit(ba.x)
   if (xv.type !== 'i32') return null
   return typed(['i32.gt_u', ['i32.sub', xv, ['i32.const', insideLo]], ['i32.const', insideHi - insideLo]], 'i32')
+}
+
+// Combine a chain-recursion "gate" AST node (the left remainder of a `&&`/`||` chain,
+// `a[1]` above) with an already-emitted fused-range IR (always i32, canonical 0/1,
+// side-effect-free and cheap by construction — see `fuseRangeCheck`/`fuseRangeCheckOr`).
+// Mirrors the combine tail of the `'&&'`/`'||'` emitters (below) exactly, just fed a
+// pre-built right-hand IR instead of deriving one from a raw `b` AST node via
+// `emit(b)`/`isCanonicalBoolExpr(b)` — the fused IR always qualifies as both (i32-typed,
+// canonical, `isI32Num` true), so those checks are inlined as always-true rather than
+// recomputed. Kept in exact structural lockstep with the emitters so a future edit to
+// one is a visible diff away from the other.
+function combineFusedAnd(gateNode, fusedIR) {
+  const vg = emit(gateNode)
+  if (vg.type === 'i32') {
+    if (boolEagerBody() && isCanonicalBoolExpr(gateNode) && eagerSelectOK(fusedIR))
+      return typed(['i32.and', vg, fusedIR], 'i32')
+    const t = tempI32()
+    return typed(['if', ['result', 'i32'],
+      ['local.tee', `$${t}`, vg],
+      ['then', fusedIR],
+      ['else', ['local.get', `$${t}`]]], 'i32')
+  }
+  const t = temp()
+  const numA = isNumArm(vg, gateNode)
+  const teed = typed(['local.tee', `$${t}`, canonArm(asF64(vg), numA, true)], 'f64')
+  if (numA) teed.valKind = VAL.NUMBER
+  return typed(['if', ['result', 'f64'], toBoolFromEmitted(teed),
+    ['then', canonArm(asF64(fusedIR), true, numA)],
+    ['else', ['local.get', `$${t}`]]], 'f64')
+}
+
+function combineFusedOr(gateNode, fusedIR) {
+  const vg = emit(gateNode)
+  if (vg.type === 'i32') {
+    if (boolEagerBody() && isCanonicalBoolExpr(gateNode) && eagerSelectOK(fusedIR))
+      return typed(['i32.or', vg, fusedIR], 'i32')
+    const t = tempI32()
+    return typed(['if', ['result', 'i32'],
+      ['local.tee', `$${t}`, vg],
+      ['then', ['local.get', `$${t}`]],
+      ['else', fusedIR]], 'i32')
+  }
+  const t = temp()
+  const numA = isNumArm(vg, gateNode)
+  const teed = typed(['local.tee', `$${t}`, asF64(vg)], 'f64')
+  if (numA) teed.valKind = VAL.NUMBER
+  return typed(['if', ['result', 'f64'], toBoolFromEmitted(teed),
+    ['then', ['local.get', `$${t}`]],
+    ['else', canonArm(asF64(fusedIR), true, numA)]], 'f64')
 }
 
 // Flow-sensitive type refinement moved to ./flow-types.js (extractRefinements,

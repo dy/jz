@@ -2926,6 +2926,77 @@ test('range-check fusion: fused-path correctness across boundaries (i32 operand)
   }
 })
 
+test('range-check fusion: recurses across a left-deep &&/|| chain — every adjacent pair fuses', () => {
+  // `&&` parses left-deep (subscript's binary() combinator), so a 2-D bounds test
+  // `x>=0 && x<W && y>=0 && y<H` is `((x>=0 && x<W) && y>=0) && y<H` — the y-pair
+  // straddles an intervening `&&` node (y>=0 is that node's right child, y<H is the
+  // outer call's `b`), not immediate AST siblings the way the x-pair is. Before the
+  // chain-recursion fix, only the FIRST (innermost) pair fused; every later pair kept
+  // its two signed compares + i32.and. This is the 2D-bounds-check shape from trace.js
+  // and any scanner/raster code with more than one range test chained (rival-wat-
+  // analysis.md TRANSFERABLE item 1).
+  const wat = jz.compile(
+    `export let f = (x, y) => { let xi = x|0, yi = y|0; let W = 512|0, H = 512|0; return (xi >= 0 && xi < W && yi >= 0 && yi < H) ? 1 : 0 }`,
+    { wat: true, optimize: 'speed' })
+  is((wat.match(/i32\.le_u/g) || []).length, 2, 'both x-pair and y-pair fused to one i32.le_u each')
+  ok(!/i32\.ge_s|i32\.lt_s/.test(wat), 'no leftover signed range compares once both pairs fuse')
+
+  // || twin: x<0 || x>=W || y<0 || y>=H (the outside-range complement).
+  const watOr = jz.compile(
+    `export let f = (x, y) => { let xi = x|0, yi = y|0; let W = 512|0, H = 512|0; return (xi < 0 || xi >= W || yi < 0 || yi >= H) ? 1 : 0 }`,
+    { wat: true, optimize: 'speed' })
+  is((watOr.match(/i32\.gt_u/g) || []).length, 2, 'both x-pair and y-pair fused to one i32.gt_u each (|| twin)')
+  ok(!/i32\.lt_s|i32\.ge_s/.test(watOr), 'no leftover signed range compares once both pairs fuse (|| twin)')
+
+  // 3-conjunct: an x-pair plus one trailing unpaired comparison (yi>=0 alone, no
+  // partner) — the unpaired conjunct must NOT force-fuse with anything and must stay
+  // a plain signed compare, ANDed onto the fused x-pair.
+  const wat3 = jz.compile(
+    `export let f = (x, y) => { let xi = x|0, yi = y|0; let W = 512|0; return (xi >= 0 && xi < W && yi >= 0) ? 1 : 0 }`,
+    { wat: true, optimize: 'speed' })
+  is((wat3.match(/i32\.le_u/g) || []).length, 1, 'only the x-pair fuses')
+  ok(/i32\.ge_s/.test(wat3), 'the unpaired yi>=0 conjunct stays a plain signed compare')
+
+  // Interleaved non-range conjunct BETWEEN the two fusable pairs — evaluation order
+  // and short-circuit semantics are absolute: the non-range conjunct must not be
+  // reordered, and must not block fusion of the pairs that remain adjacent to each
+  // other on either side of it.
+  const srcInterleaved = `export let f = (x, y) => { let xi = x|0, yi = y|0; let W = 512|0, H = 512|0; return (xi >= 0 && xi < W && (yi|0)!==999 && yi >= 0 && yi < H) ? 1 : 0 }`
+  const watI = jz.compile(srcInterleaved, { wat: true, optimize: 'speed' })
+  is((watI.match(/i32\.le_u/g) || []).length, 2, 'both range pairs fuse around the interleaved non-range conjunct')
+  const { f: fI } = run(srcInterleaved, { optimize: 'speed' })
+  const jsI = (x, y) => { const xi = x | 0, yi = y | 0; return (xi >= 0 && xi < 512 && (yi | 0) !== 999 && yi >= 0 && yi < 512) ? 1 : 0 }
+  for (const x of [-1, 0, 511, 512]) for (const y of [-1, 0, 511, 512, 999]) is(fI(x, y), jsI(x, y), `interleaved @ x=${x} y=${y}`)
+
+  // Boundary-value differential vs JS for the 2-pair, 4-pair, 3-conjunct and ||-twin
+  // shapes above — x/y at -1, 0, W-1, W (and a wider sweep) for every shape.
+  const shapes = {
+    '2-pair':     { src: (x, y) => `let xi = x|0; let W = 512|0; return (xi >= 0 && xi < W) ? 1 : 0`, js: (x) => { const xi = x | 0; return (xi >= 0 && xi < 512) ? 1 : 0 } },
+    '4-pair':     { src: () => `let xi = x|0, yi = y|0; let W = 512|0, H = 512|0; return (xi >= 0 && xi < W && yi >= 0 && yi < H) ? 1 : 0`, js: (x, y) => { const xi = x | 0, yi = y | 0; return (xi >= 0 && xi < 512 && yi >= 0 && yi < 512) ? 1 : 0 } },
+    '3-conjunct': { src: () => `let xi = x|0, yi = y|0; let W = 512|0; return (xi >= 0 && xi < W && yi >= 0) ? 1 : 0`, js: (x, y) => { const xi = x | 0, yi = y | 0; return (xi >= 0 && xi < 512 && yi >= 0) ? 1 : 0 } },
+    'or-4-pair':  { src: () => `let xi = x|0, yi = y|0; let W = 512|0, H = 512|0; return (xi < 0 || xi >= W || yi < 0 || yi >= H) ? 1 : 0`, js: (x, y) => { const xi = x | 0, yi = y | 0; return (xi < 0 || xi >= 512 || yi < 0 || yi >= 512) ? 1 : 0 } },
+  }
+  for (const [name, { src, js }] of Object.entries(shapes)) {
+    const { f } = run(`export let f = (x, y) => { ${src()} }`, { optimize: 'speed' })
+    for (const x of [-1, 0, 511, 512]) for (const y of [-1, 0, 511, 512])
+      is(f(x, y), js(x, y), `${name} @ x=${x} y=${y}`)
+  }
+})
+
+test('range-check fusion: untyped f64 chain never fuses, even across a multi-pair chain', () => {
+  // The base fuse restricts to an i32 operand (a fractional f64 would mis-classify —
+  // `(x-LO) <=u (HI-LO)` only holds for integer wraparound). The chain recursion must
+  // preserve that restriction at every level, not just the first pair: an untyped f64
+  // 4-conjunct chain must keep every comparison in its ordered signed/f64 form.
+  const src = `export let f = (x, y) => (x >= 0 && x < 512 && y >= 0 && y < 512) ? 1 : 0`
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  ok(!/i32\.le_u/.test(wat), 'f64 chain never fuses to the unsigned form, at any chain depth')
+  const { f } = run(src, { optimize: 'speed' })
+  const js = (x, y) => (x >= 0 && x < 512 && y >= 0 && y < 512) ? 1 : 0
+  for (const x of [-1, 0, 511, 511.5, 512, NaN, -0]) for (const y of [-1, 0, 511, 511.5, 512, NaN, -0])
+    is(f(x, y), js(x, y), `f64 chain @ x=${x} y=${y}`)
+})
+
 test('LICM: nested-loop invariant arithmetic is hoisted (V8 wasm under-hoists it)', () => {
   // A subexpression invariant w.r.t. an INNER loop (`(a-b)*K` recomputed every `j`)
   // is hoisted out of it — the per-pixel cost in nested rasterizers/convolutions

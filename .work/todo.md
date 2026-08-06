@@ -6,6 +6,69 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, RANGE-CHECK FUSION recurses across left-deep `&&`/`||`
+## chains — rival-wat-analysis.md TRANSFERABLE item 1, LANDED)
+
+`fuseRangeCheck`/`fuseRangeCheckOr` (`src/compile/emit.js`, called from the
+`'&&'`/`'||'` emitters) only ever matched the INNERMOST pair of a left-deep
+chain: `x>=0 && x<W && y>=0 && y<H` parses `((x>=0 && x<W) && y>=0) && y<H`
+(subscript's left-associative `binary()`), so the x-pair (direct children of
+the deepest `&&`) fused to one `i32.le_u`, while the y-pair — `y>=0` is that
+node's right child, `y<H` is the outer call's `b`, an intervening `&&` node
+between them — stayed two signed compares (`i32.ge_s`/`i32.lt_s`) + `i32.and`.
+Same source shape, different emitted code, purely from chain position.
+Verified directly against `bench/trace/trace.js`'s own `x>=0 && x<W && y>=0
+&& y<H` bounds check before landing.
+
+**Fix.** When the direct pair-match fails and `a` is itself a `&&`/`||` node,
+retry `fuseRangeCheck(a[2], b)` — `a`'s right child is the conjunct adjacent
+to `b` in source order. On success, the chain's remaining head `a[1]` (itself
+possibly hiding another fusable pair, resolved by ordinary recursive `emit()`
+dispatch through the `'&&'`/`'||'` handler) is emitted and ANDed/ORed onto the
+fused result by two new helpers, `combineFusedAnd`/`combineFusedOr`, kept in
+exact structural lockstep with the `'&&'`/`'||'` emitters' own combine tails
+(same eager-bitwise-op vs short-circuit-`if` choice, same `isNumArm`/
+`canonArm`/`toBoolFromEmitted` machinery for a non-boolean f64 gate) so a
+future edit to one is a visible diff from the other. Sound because every
+fused operand is a side-effect-free comparison (`rangeBound` requires a bare
+identifier against a compile-time constant, never an arbitrary expression)
+and `&&`/`||` are associative over pure booleans; `a[1]` still evaluates and
+gates first — evaluation order and short-circuiting are unchanged, and a
+non-range conjunct anywhere in the chain (`foo() && x>=0 && x<W`) is emitted
+and combined in place, never reordered or dropped. The base i32-only guard
+(`xv.type !== 'i32'` → no fuse, "f64 would mis-fuse") is untouched and applies
+at every recursion depth — an untyped f64 chain never fuses, confirmed by
+compiling a 4-conjunct f64 chain and finding zero `i32.le_u`.
+
+**Verified.**
+- WAT: 4-conjunct `x>=0&&x<W&&y>=0&&y<H` — BEFORE one `i32.le_u` (x) + `i32.and`/
+  `i32.ge_s`/`i32.lt_s` (y unfused); AFTER two `i32.le_u`, zero leftover signed
+  range compares. Same for the `||` twin (`i32.gt_u` ×2). 3-conjunct (x-pair +
+  one unpaired `y>=0`) fuses only the pair, leaves the unpaired compare signed.
+  Interleaved non-range conjunct between two fusable pairs (`x>=0&&x<W&&
+  (y|0)!==999&&y>=0&&y<H`) — both pairs still fuse, non-range conjunct emitted
+  in place, not reordered.
+- Differential vs JS at x/y ∈ {-1,0,511,512} (plus a wider sweep) for 2-pair,
+  4-pair, 3-conjunct, interleaved, and `||`-twin shapes — all exact. f64
+  (untyped) 4-conjunct chain differential incl. NaN/-0/fractional boundaries —
+  exact, never fuses (fuse is i32-only; this compiler admits no f64 fuse to
+  extend).
+- New pins: `test/optimizer.js` "range-check fusion: recurses across a
+  left-deep &&/|| chain" + "…untyped f64 chain never fuses…", alongside the
+  pre-existing single-pair pins.
+- Gates (focused set per this task's scope): optimizer.js 219/219 (4115
+  assertions), booleans/bool-identity/inference/data/math/dyn-keys all green
+  (637 cases total across the 7 files, 0 fail); statements.js 1 flaky failure
+  (`clearInterval: stops interval`, a timer test, unrelated — passes in
+  isolation, confirmed pre-existing flake not a regression). kernel-parity
+  33/33 byte-identical at O0/O2/O3 (none of that corpus hits the fused shape,
+  so no re-baseline needed). perf-ratchet 10/10, all categories +0 ops (none
+  of the 10 ratchet corpora contain a multi-pair range chain, so nothing to
+  tighten). fuzz 2000×1 (seeds 1..2000, opt {0,1,2,3}) — 0 divergence. Fresh
+  `npm run build` clean, `selfhost.js` 21/21 (206 assertions). Size spot-check
+  mat4/fft/crc32/biquad — byte-identical before/after (3038/4107/1719/5623
+  bytes; none of the 4 kernels contain a multi-pair range-check chain either).
+
 ## Status (2026-08-06, RIVAL WAT ANALYSIS — radixsort/sdf/sort/trace read-only
 ## dissection, see .work/rival-wat-analysis.md)
 
