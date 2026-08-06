@@ -132,7 +132,7 @@ more than one range test chained) currently only gets the fusion on its first
 pair. Free, always-safe, corpus-wide reach; land as a small standalone item,
 not a trace-fix.
 
-### 2. Constant-fold typed-array `.length` when the allocation size is a literal (exploratory, lower confidence)
+### 2. Constant-fold typed-array `.length` when the allocation size is a literal — LANDED 2026-08-06
 
 **Observation**: `sort-host.wat`'s `f2` computes `n = a.length` via a runtime
 header load (`i32.load` at `ptr-8`, `>>>3`), hoisted once per call — never
@@ -156,16 +156,34 @@ pattern at 6175–6198) doesn't consult it. `emit.js`'s existing
 that same non-reassignment proof, plus requiring the allocation-site size
 argument to be a literal (already what `typedLen` records).
 
-**Caveat**: I traced the fact-store and the two plausible emission sites but
-did not locate and read the single definitive `.length`-member-read dispatch
-point the way item 1's site was pinned down — this needs a follow-up read
-before it's implementation-ready. Flagged at lower confidence deliberately
-rather than overclaimed.
+**Follow-up read, resolved**: the single definitive dispatch site is
+`module/core.js`'s `.` prop emitter, `prop === 'length'` arm (line ~1917) —
+NOT `emitLengthAccess`'s VAL.TYPED arm (~1470), which receives only the
+already-emitted IR value, not the receiver's binding name, so it can't
+consult `typedLen` (name-keyed) at all. Fixed at the `.` arm, ahead of the
+existing narrowed-local (`ptrKind===VAL.TYPED && ptrAux!=null`) fast path:
+`ctx.types.typedLen?.get(obj) ?? ctx.scope?.globalTypedLen?.get(obj)` for a
+bare-name receiver → `f64.const <len>`, reusing the exact fact
+`typedIdxProven` already trusts for index-bounds elision (no new proof).
 
-**Expected share**: LOW–MEDIUM. sort/radixsort are already at 1.03× — this
-would shave a header load plus enable further compare-vs-constant strength
-reduction on top of an already-closed case, not open new headroom. Worth a
-cheap follow-up look, not worth a dedicated session.
+**Caveat resolved / landed 2026-08-06**. sort's own `runKernel`/`heapsort`
+site does NOT gain from this fold as originally speculated — `a` reaches
+`n = a.length` there as a PARAM (heapsort inlined into runKernel, but
+runKernel itself stays a real exported-adjacent function, called from
+`main` in a loop; `a`'s literal-ness at `main`'s `new Float64Array(N)` decl
+site never reaches the callee's own per-function `typedLen` map). That's
+the correct, sound outcome per the param-receiver control below, not a gap
+in the fix — sort/radixsort's own hot loops are unaffected, matching the
+original "LOW-MEDIUM, not open new headroom on an already-closed case"
+estimate. The realized win is corpus-wide instead: any literal-size typed
+array whose `.length` is read in the SAME function (or module-global scope)
+it's allocated in — direct locals/globals, not params — folds to a
+compile-time constant, and downstream loop-bound folding re-admits the
+existing SIMD unrolling proof for those loops too (verified: a `for
+(i=0;i<a.length;i++)` loop over a literal-16 `a` gains 4×-unrolled f64x2
+SIMD once the bound is constant). `scripts/bench-size.mjs` geomean jz/AS:
+1.045× (fold disabled, this session) → 1.020× (fold enabled) — see
+`.work/todo.md`'s 2026-08-06 entry for the full gate report.
 
 ### 3. Manual unroll on histogram/prefix-sum/scatter (radixsort) and gather/scatter copies (sdf) — LOW priority
 

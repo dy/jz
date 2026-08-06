@@ -6029,3 +6029,70 @@ Files: `bench/bench.mjs`, `bench/README.md`, `bench/results.json`,
 `src/compile/index.js` (the one src/ change — a build-flag-shaped addition
 per the task's own "beyond a build flag, stop" boundary; nothing in
 module/core.js or src/optimize touched).
+
+## Status (2026-08-06, rival-WAT item 2 LANDED — literal typed-array `.length`
+## constant-fold)
+
+`.work/rival-wat-analysis.md`'s §TRANSFERABLE item 2 (flagged exploratory/
+lower-confidence — plausible locus traced but not read to the definitive
+dispatch site) is now pinned and landed. Site: `module/core.js`'s `.` prop
+emitter, `prop === 'length'` arm — added a check ahead of the existing
+narrowed-local fast path (module/core.js:1917-1938) that consults
+`ctx.types.typedLen?.get(obj) ?? ctx.scope?.globalTypedLen?.get(obj)` for a
+bare-name receiver and returns `f64.const <len>` directly when present. Same
+fact `typedIdxProven` (`src/type.js:118,659`) already trusts for INDEX
+bounds-check elision — a strictly stronger safety bar than reading `.length`
+as a value — so no new proof, only reuse. Both maps are written by
+`typedStaticLen` (`src/type.js:47`), which returns null for the `.view` ctor
+shape (subarray / buffer-offset views) and computed/ternary sizes, so a view
+or non-literal receiver never lands in either map and falls through to the
+existing runtime paths unchanged.
+
+Repro (`const a = new Float64Array(16); export function f(){return
+a.length}`): before, `f` called the polymorphic `$__len` stdlib dispatcher
+(NaN-box + tag-decode + `i32.load`); after, `f` is `i32.const 16 /
+f64.convert_i32_s` — no call, and `$__len` drops out of the module entirely
+when nothing else needs it (repro wasm 917B → 524B). Loop-bound case (`for
+(i=0;i<a.length;i++)` over a literal-size `a`) folds the bound to a
+compile-time constant, which the existing SIMD loop-vectorizer then unrolls
+4× (f64x2 ×4) — confirms the fold reaches the vectorizer's own range proof,
+not just the scalar read site.
+
+Soundness pins (all verified by direct WAT read, not asserted): (1) param
+receiver (`function f(a){return a.length}`) — no entry in either map (the
+fact is per-body/per-def, params carry no ctor), keeps the runtime
+`$__len`/`$__length` call. (2) `.subarray()` view, even off a literal-size
+base — `typedStaticLen` returns null for the view rhs shape, no entry, keeps
+the load. (3) conditional reassignment to a view (`if (flag) a =
+a.subarray(...)`) — `analyze.js`'s `makeTypedTracker` invalidates
+(`delLen`) on any redef whose length doesn't match the prior def, so even
+the literal-size initial def loses its map entry for the whole function;
+verified the WAT still ends in a `call` to the polymorphic dispatcher.
+
+Downstream: `test/perf-ratchet.js` 10/10, all categories +0 (no regression,
+none of the 10 tracked shapes route `.length` through a literal-sized typed
+receiver, so no tightening expected there either — the lever is real but
+outside this ratchet's current corpus). `scripts/bench-size.mjs` (live,
+byte-count only, no timing) geomean jz/AS: 1.045× baseline (this session,
+fold disabled) → **1.020×** with the fold — confirmed by toggling the one
+`if` block off/on and re-running, not inferred. Both numbers beat
+`rival-wat-analysis.md`'s cited 1.039× reference and the checked-in
+`SIZE_GEOMEAN_MAX.as = 1.05` ceiling (`test/bench.js:260`).
+
+Gates: full suite (`node test/index.js`, no filter) 3362 total / 3354 pass /
+2 fail / 6 skip — the 2 failures (`test/optimizer.js`'s "codec bounds
+checks" and "typed RMW…guard" `i32.lt_u`-count assertions) are PRE-EXISTING:
+confirmed by reverting this change's one `if` block to a dead branch (WAT for
+both tests' sources byte-identical with the fold on vs off) and independently
+by `.work/todo.md`'s own prior LAB-CASE entry recording the same two failures
+under a different, unrelated concurrent change. `kernel-parity` 3/3 (33
+assertions, byte-identical WAT at O0/O2/O3). `kernel-oracle` 11/11 (451
+assertions). `cond-vectorize`+`simd`+`examples` 183/183 (1023 assertions).
+`test/selfhost.js` 21/21 (206 assertions). `test/fuzz.js` clean at
+`--count=2000` (default, opt {0,1,2,3}) for the base sweep and for `--typed`,
+`--typed-map`, `--typed-int` (2000×4 each, no divergence, zero i32-contract
+skips affected). Fresh `npm run build` ×2: `dist/` file-list + per-file
+SHA-1 byte-identical across both runs.
+
+Files: `module/core.js` (the one src/ change — the `.length` fold, +21
+lines), `.work/todo.md` (this entry).

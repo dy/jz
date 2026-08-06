@@ -1915,6 +1915,27 @@ export default (ctx) => {
     }
 
     if (prop === 'length') {
+      // Literal-size fold: `new T(<int literal>)` bindings never resize (JS
+      // TypedArrays have no growth op), so a binding whose EVERY def in this
+      // fact's scope agreed on a literal ctor size carries an exact, static
+      // `.length` — no header load needed at all. ctx.types.typedLen (per-
+      // function, analyze.js's makeTypedTracker) / ctx.scope.globalTypedLen
+      // (whole-program, infer.js's recordGlobalRep) is the SAME fact
+      // typedIdxProven (type.js) already trusts for bounds-check elision — a
+      // strictly stronger safety bar than a `.length` VALUE read, so no new
+      // proof is needed here, just reuse. Both maps are written by
+      // typedStaticLen (src/type.js), which returns null for the `.view` ctor
+      // shape (subarray / buffer-offset views) and for computed/ternary
+      // sizes — so a view or non-literal receiver never lands in either map,
+      // and this arm naturally falls through to the runtime paths below for
+      // those. A PARAM receiver (size fixed only at the call site, not
+      // visible in the callee's own facts) also has no entry here — it keeps
+      // the runtime load too, until/unless a cross-function fact propagates
+      // it into one of these two maps.
+      if (typeof obj === 'string') {
+        const litLen = ctx.types.typedLen?.get(obj) ?? ctx.scope?.globalTypedLen?.get(obj)
+        if (litLen != null) return typed(['f64.const', litLen], 'f64')
+      }
       // Fast path: typed-narrowed local (ptrKind=TYPED with known ptrAux) — bypass
       // the f64 NaN-rebox + __len ptr-type/aux re-extraction round-trip.
       // Owned typed (aux & 8 == 0): byteLen at off-8, shifted by element shift.
