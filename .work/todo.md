@@ -6,6 +6,74 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, REGION-ARENA SLICE-1 KERNEL-ORACLE ROOT-CAUSE SESSION —
+## 3 real hazards found+fixed, O2 fully green, O3 narrowed-not-named, hooks
+## STAY DORMANT — see .work/region-slice1-build.md's "root-cause session"
+## section for the full account)
+
+Root-caused the kernel-oracle regression the prior session filed (below).
+Restored `regionHooks` in scripts/self.js, rebuilt, reproduced exactly:
+dvnested-mechanism traps `memory access out of bounds` at O2/O3, clean at O0.
+
+Ruled OUT the Cheney-copy-scope-trap hypothesis (hint b) definitively — the
+trap is "memory access out of bounds", never "unreachable executed"; debug
+instrumentation confirmed `__region_dbg_kind` never once saw an out-of-scope
+kind.
+
+Found and FIXED three real, confirmed hazards, all in module/core.js — every
+one an instance of the design's own named risk, just missed by the original
+inventory: (1) `__region_copy_rec`'s ARRAY branch silently dropped a
+relocated array's off-16 dyn-props sidecar — the original scope comment
+("watr's own AST/bookkeeping never attaches dynamic properties to its
+internal arrays") was WRONG: src/optimize/index.js's cseScalarLoad reads
+`fn.cseLoadBases`, a Set stamped onto the compiled func-node ARRAY by
+src/compile/index.js's emitFunc, and that node IS the region root. (2)
+`$__dyn_props`'s own backing table is a GLOBAL outside `[ast, dirty,
+snapshots]` — the exact "container's own backing store straddling the
+boundary" hazard already fixed for dirty/snapshots, just a different global
+the inventory missed; a mid-round grow of ITS OWN block got silently
+reclaimed. (3) A bare pointer copy of the props-hash left ITS OWN VALUES
+(e.g. cseLoadBases's Set) unrelocated and reclaimed — new
+`__region_relocate_props` walks the props-hash's slots and recurses into
+each value via `__region_copy_rec`.
+
+Fixing all three closes kernel-oracle's O2 failure completely (11/11, 4
+repeated runs, zero flakes) with kernel-parity staying 33/33 byte-identical.
+
+O3 still traps, reproducibly. Debug instrumentation proves `__region_exit`
+completes its OWN work successfully every time (rounds stable at 2, reaches
+its own final instruction) — the region machinery itself isn't where this
+originates; it's downstream. Bisected via optimize-config overrides against
+the already-built kernel: disabling inlineFns/watrLicm/devirtIndirect/
+cseScalarLoad/foldStaticArrReads individually (cseScalarLoad disables BOTH
+sites of fn.cseLoadBases) — trap persists, so fn.cseLoadBases is NOT the O3
+mechanism despite matching the same hazard shape. Disabling `fusedRewrite`
+(src/optimize/index.js) — trap goes away. Candidate: `node._eqFast = true`,
+a dynamic property fusedRewrite's walkRewrite stamps on a NESTED `call` node
+buried inside a function body (not the top-level func node), same hazard
+class one level deeper — plausible, not confirmed; fusedRewrite does several
+other things and time ran out before isolating which one.
+
+**Per the stop-on-fail tripwire**: hooks stay DORMANT (scripts/self.js's
+regionHooks line re-commented). The three fixes are landed and kept (dead
+code while dormant, verified inert — rebuilt with hooks dormant, kernel-
+parity 3/3 and kernel-oracle 11/11 both clean). Mandated gates (warm
+checkpoint, perf-ratchet, fuzz, size sweep, fresh build ×2) NOT run — gated
+on kernel-oracle fully green first, and O3 still isn't.
+
+**Recommendation**: next session, bisect INSIDE fusedRewrite (it collapses
+rebox/unbox round-trips, inlines tiny ptr/is_* helpers, folds memarg
+offsets, AND stamps `_eqFast` — isolate which). If `_eqFast` confirms as the
+mechanism, the fix is almost certainly the SAME shape as this session's
+fixes 1-3, just for a node found via a body-walk rather than the top-level
+func-node list — extend `__region_copy_rec`'s recursion to canonically visit
+EVERY array-shaped node (not just those already reached through `ast`'s
+existing structural fields) BEFORE trusting dyn-props are exhaustively
+migrated, or (cleaner) make the "does this node carry dyn-props" check a
+single reusable helper called from both durable and fresh ARRAY paths
+uniformly (already true after this session) plus from wherever fusedRewrite-
+touched nested nodes get visited.
+
 ## Status (2026-08-06, REGION-ARENA SLICE-1 BUILD — primitives + wiring landed,
 ## NOT SAFE TO SHIP YET: a real kernel-oracle regression is open — see
 ## .work/region-slice1-build.md for the full report)

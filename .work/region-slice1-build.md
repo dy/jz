@@ -182,15 +182,134 @@ one, see hazard site below), `ATOM`/number (immediate, untouched), `SET`/
   `/Users/div/projects/watr` carries the same patch as the source of
   truth, uncommitted there too).
 
+## Kernel-oracle regression: root-cause session (2026-08-06, same day)
+
+Protocol: restore `regionHooks` in `scripts/self.js`, rebuild, reproduce, root-
+cause, fix, re-gate. Reproduced exactly as filed: kernel-oracle's
+`dvnested-mechanism` row traps `memory access out of bounds` at O2/O3, clean
+at O0 (matches the design's own claim that O0 skips watOptimize's round loop
+entirely — `__region_dbg_rounds` stayed 0 there in every probe). The build
+report's SECOND finding (L1/L2 micro-kernel-build miscompile) was NOT
+re-verified this session — time went entirely to the kernel-oracle regression;
+still open, still banked separately below.
+
+**Instrumentation method**: added temporary debug globals (`__region_dbg_*`,
+exported) to `__region_mark`/`__region_exit`/`__region_copy_rec`, recording a
+stage marker before every risky op plus kind/offset/round-count — cheap
+because a wasm trap only unwinds the call stack, so globals written right
+before the fault stay readable via `instance.exports.__region_dbg_*.value`
+after catching the `RuntimeError`. Stripped before the final commit (grep
+`__region_dbg` returns nothing in the shipped state).
+
+**Hint (b) — Cheney copy trapping on an unscoped kind — REFUTED.** The
+observed trap message is "memory access out of bounds", never "unreachable
+executed" (the WAT `(unreachable)` instruction's own distinct trap message);
+`__region_dbg_kind` never once read OBJECT/HASH/CLOSURE/TYPED/BUFFER/EXTERNAL
+across every probe run. The `unreachable` defensive trap for out-of-scope
+kinds is not what's firing.
+
+**Three real, confirmed, FIXED hazards** — all instances of the design's own
+named risk ("Lazy healing correctness... any consumer reading POINTER BITS
+without __ptr_offset... sees stale addresses" / the dirty/snapshots
+"container's own backing store straddling the boundary" precedent already in
+this doc above), just not caught by the original hazard-site inventory:
+
+1. **ARRAY dyn-props sidecar silently dropped on relocation.** The build's
+   original scope note ("watr's own AST/bookkeeping never attaches dynamic
+   properties to its internal arrays... out of reach today") was FALSE:
+   `src/optimize/index.js`'s `cseScalarLoad` (called from `optimizeFunc`,
+   which the file's own docstring confirms runs "exactly once, before watr")
+   reads `fn.cseLoadBases` — a `Set` stamped onto the compiled func-node ARRAY
+   by `src/compile/index.js`'s `emitFunc` during emission. That func node IS
+   part of `ast`, the region root. `__region_copy_rec`'s ARRAY branch
+   allocates the relocated copy via `__alloc_hdr` (a zeroed dyn-props
+   sidecar) and never carried the source's off-16 propsPtr word forward.
+   Fixed: both the fresh-relocation and durable-walk-in-place ARRAY branches
+   now locate the current props-hash pointer (inline at off-16, OR already
+   filed in `$__dyn_props`) and relocate it via the machinery below, mirroring
+   `module/array.js`'s `headerPropsCopyIR`/`headerPropsToGlobalIR`/
+   `maybeDynMoveIR` — the SAME migration `arrGrow`/`arrShift` already perform
+   for their own (non-region) relocation.
+2. **`$__dyn_props`'s own backing table is a global outside the region root.**
+   The fix for (1) re-keys entries INTO `$__dyn_props` via
+   `__ihash_set_local`, but that table's OWN block — global state, not part of
+   `[ast, dirty, snapshots]` — can itself grow (first-ever dyn-props write
+   this round, or a load-factor grow from accumulated re-keys) ABOVE mark,
+   exactly the "container's own backing store straddling the boundary" class
+   already fixed for `dirty`/`snapshots` earlier in this doc, just a different
+   global the original inventory sweep missed. Fixed: `__region_exit` now
+   treats `$__dyn_props` as an implicit 4th root, relocating it (when its
+   current block sits above mark) via `__coll_order` + reinsert — a relocated
+   i32-offset KEY needs a genuine rehash, same reasoning as the SET/MAP
+   branch.
+3. **Props-hash VALUES weren't relocated, only the outer pointer.** Layers 1+2
+   alone still weren't sufficient: `fn.cseLoadBases`'s VALUE is itself a `Set`
+   (a real heap object). Copying the outer props-HASH pointer verbatim
+   (`arrGrow`'s own `headerPropsCopyIR` precedent — safe THERE because a plain
+   grow never reclaims anything) left that Set unreachable from the region
+   root; region_exit's closing rewind silently reclaimed it, and the trap
+   surfaced later whenever that memory got reused and read back as garbage.
+   Fixed: new `__region_relocate_props` (module/core.js) walks a props-hash's
+   OWN slots and relocates each VALUE via `__region_copy_rec` — no rehash
+   needed (prop-name keys are SSO/interned, hash-stable across relocation), so
+   ephemeral containers get a verbatim bulk copy (correctly sized to include
+   `genUpsertGrow`'s trailing per-slot lane array, NOT just the key/value
+   slots) followed by an in-place per-slot value fixup; durable containers get
+   the fixup with no container move at all.
+
+**Result of fixes 1-3**: kernel-oracle O2 is now FULLY GREEN (11/11, repeated
+4× with zero flakes). `test/kernel-parity.js` stays 33/33 byte-identical
+(region relocation, now including dyn-props, remains invisible to output).
+
+**O3 remainder — NOT resolved, root NOT named.** kernel-oracle at O3 still
+traps on `dvnested-mechanism`, reproducibly. `__region_dbg_stage` conclusively
+shows `__region_exit` completes ALL its own work successfully every time
+(reaches its own final instruction, `__region_dbg_rounds` stable at 2) — the
+region machinery itself is not where this trap originates; it's DOWNSTREAM,
+matching hint (a)'s own alternate reading ("something in the fixpoint OR
+DOWNSTREAM"). Bisected via `optimize` config overrides against the ALREADY-
+built kernel (no rebuild needed per config change):
+  - Disabling `inlineFns`, `watrLicm`, `devirtIndirect`, `cseScalarLoad`,
+    `foldStaticArrReads` individually (and several combined) — TRAP PERSISTS.
+    `cseScalarLoad:false` disabling BOTH sites of `fn.cseLoadBases` (set AND
+    read) still traps — the layer-1/2/3 fixes above address a real,
+    CONFIRMED, now-fixed hazard, but `fn.cseLoadBases` is NOT the O3
+    remainder's mechanism.
+  - Disabling `fusedRewrite` (`src/optimize/index.js`) — TRAP GOES AWAY.
+    `fusedRewrite`'s `walkRewrite` stamps `node._eqFast = true` on a NESTED
+    `call` node (a `['call', '$__eq', a, b]`-shaped IR array, buried inside a
+    function body, not the func node itself) at two sites (~4270-4324) — a
+    plausible candidate matching the SAME dyn-props-sidecar hazard class, one
+    level deeper (a node nested arbitrarily far inside a function body, not
+    just the top-level func node) — but NOT confirmed; `fusedRewrite` does
+    several OTHER things (rebox/unbox collapse, tiny-helper inlining, memarg
+    offset folding, local-ref counting) and time ran out before isolating
+    which one specifically. Narrowed, not named.
+
+**Per the stop-on-fail tripwire this session's protocol set**: hooks stay
+DORMANT (`scripts/self.js`'s `regionHooks` line is commented out again).
+Fixes 1-3 are landed and kept (dead code while hooks are dormant — `ctx.core.
+includes` never requests `__region_mark`/`__region_exit` unless `regionHooks`
+is supplied, so these changes are 100% inert for every current build; verified
+by rebuilding with hooks dormant and re-running `kernel-parity` 3/3 and
+`kernel-oracle` 11/11 clean). The mandated-but-skipped gates (warm checkpoint,
+perf-ratchet, fuzz, size sweep, fresh build ×2) were NOT run — they're gated
+on kernel-oracle being fully green first, per the protocol, and it isn't.
+
 ## Files touched
 
 - `module/core.js` — `__region_mark`/`__region_exit`/`__region_copy_rec`
-  (stdlib defs + emit registrations + deps()).
+  (stdlib defs + emit registrations + deps()); this session added
+  `__region_relocate_props` and the dyn-props migration blocks in
+  `__region_exit` ($__dyn_props implicit root) and `__region_copy_rec`'s
+  ARRAY branch (both fresh-relocation and durable-walk-in-place paths).
 - `module/collection.js` — exported `SET_ENTRY`/`MAP_ENTRY`/`INIT_CAP`/
   `LANE` (previously module-private) for `module/core.js` to reuse.
 - `src/prepare/index.js` — `INTRINSIC_CALLEES` additions.
 - `src/optimize/watr-tail.js` — `watrTail`'s optional `regionHooks` param.
-- `scripts/self.js` — `optimizeTail` constructs and passes `regionHooks`.
+- `scripts/self.js` — `optimizeTail` constructs and passes `regionHooks`
+  (commented out again this session — hooks dormant; see the root-cause
+  section above for why).
 - `node_modules/watr/src/optimize.js` + `/Users/div/projects/watr/src/optimize.js`
   (sibling repo, source of truth) — additive `regionMark`/`regionExit`
   opts hooks in `runRounds`, `snapshots` `const`→`let`.

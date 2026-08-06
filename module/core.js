@@ -67,9 +67,23 @@ export default (ctx) => {
     // for the full rationale. __region_copy_rec's dep list mirrors __sclone_rec's
     // (module/collection.js) plus __coll_order/__set_add for the SET/MAP branch.
     __region_mark: [],
-    __region_exit: ['__region_copy_rec', '__mkptr', '__alloc_hdr_n'],
-    __region_copy_rec: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish',
-      '__alloc', '__alloc_hdr', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order'],
+    // Function-valued (not a plain array): the $__dyn_props implicit-root
+    // relocation deps below must be read at PULL time (mirrors __obj_clone/
+    // __typed_idx/__length/__region_copy_rec below, all function-wrapped for
+    // the exact same reason) — module/collection.js's `declGlobal('__dyn_props',
+    // …)` hasn't run yet at THIS deps() call's own eval time (module/index.js
+    // registers core before collection), so a plain array would eagerly bake
+    // in `false` and permanently under-declare.
+    __region_exit: () => ['__region_copy_rec', '__mkptr', '__alloc_hdr_n',
+      ...(ctx.scope.globals.has('__dyn_props') ? ['__ptr_offset', '__coll_order', '__ihash_set_local'] : [])],
+    __region_relocate_props: () => ['__ptr_offset', '__alloc_hdr_n', '__mkptr', '__region_copy_rec'],
+    __region_copy_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish',
+      '__alloc', '__alloc_hdr', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order',
+      // ARRAY dyn-props migration (see the definition below): a relocated ARRAY's
+      // off-16 propsPtr sidecar needs the SAME grow/shift migration arrGrow/arrShift
+      // already perform (module/array.js headerPropsToGlobalIR/__dyn_move), PLUS
+      // relocating the props hash's OWN contents (__region_relocate_props).
+      ...(ctx.scope.globals.has('__dyn_props') ? ['__hash_new', '__ihash_set_local', '__ihash_get_local', '__is_nullish', '__region_relocate_props'] : [])],
   })
 
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v i64) (result i32)
@@ -647,11 +661,16 @@ export default (ctx) => {
     // bulk-memory-ops spec, so safe even on the rare corpus where live size
     // approaches churn and the ranges truly overlap) needs no second fixup pass:
     // every pointer already points where its target WILL be once the move lands.
+
     ctx.core.stdlib['__region_mark'] = `(func $__region_mark (result f64)
       (f64.convert_i32_u (global.get $__heap)))`
 
-    ctx.core.stdlib['__region_exit'] = `(func $__region_exit (param $markF f64) (param $rootF f64) (result f64)
+    // Function form (see __region_copy_rec's comment below for why): the
+    // $__dyn_props implicit-root block needs ctx.scope.globals.has('__dyn_props')
+    // read at PULL time.
+    ctx.core.stdlib['__region_exit'] = () => `(func $__region_exit (param $markF f64) (param $rootF f64) (result f64)
       (local $mark i32) (local $T i32) (local $delta i32) (local $memo i64) (local $out f64) (local $size i32)
+      ${ctx.scope.globals.has('__dyn_props') ? '(local $dpBits i64) (local $dpOff i32) (local $dpCap i32) (local $dpNewOff i32) (local $dpOutPhys f64) (local $dpOrd i32) (local $dpN i32) (local $dpI i32) (local $dpSlot i32)' : ''}
       (local.set $mark (i32.trunc_f64_u (local.get $markF)))
       ;; fresh memo Map (identity: old bits -> new/final bits), same bootstrap __sclone uses
       (local.set $memo (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
@@ -659,15 +678,131 @@ export default (ctx) => {
       (local.set $T (global.get $__heap))
       (local.set $delta (i32.sub (local.get $T) (local.get $mark)))
       (local.set $out (call $__region_copy_rec (local.get $rootF) (local.get $memo) (local.get $mark) (local.get $delta)))
+      ;; $__dyn_props implicit region root (audit finding, kernel-oracle
+      ;; dvnested-mechanism O2/O3 regression, layer 2): the ARRAY dyn-props
+      ;; migration above (__region_copy_rec's ARRAY branch) re-keys entries INTO
+      ;; $__dyn_props's own backing HASH table via __ihash_set_local — but that
+      ;; table itself is a GLOBAL, not part of [ast, dirty, snapshots] (the
+      ;; caller-supplied root), so a mid-round GROW of $__dyn_props's OWN block
+      ;; (first-ever dyn-props write this round, or a load-factor grow from
+      ;; accumulated re-keys) allocates ABOVE mark and would otherwise be
+      ;; silently reclaimed by this function's OWN closing rewind below — the
+      ;; exact "container's own backing store straddling the boundary" hazard
+      ;; already fixed for dirty/snapshots (region-slice1-build.md), just a
+      ;; DIFFERENT global that inventory sweep missed. Relocate it here,
+      ;; unconditionally, the same way: __coll_order + reinsert (a relocated
+      ;; i32-offset KEY needs a rehash — __map_hash-family hashing is bits-
+      ;; based, same reasoning as the SET/MAP branch above). Keys are plain
+      ;; numbers (immediate, never relocate) and values are per-array props
+      ;; HASH pointers (out of Slice-1 scope, never relocated by this
+      ;; mechanism — same as arrGrow's headerPropsCopyIR, which also copies
+      ;; this exact pointer kind verbatim) — copied bit-for-bit, NOT recursed
+      ;; through __region_copy_rec (which would hit its deliberate HASH trap).
+      ${ctx.scope.globals.has('__dyn_props') ? `
+      (local.set $dpBits (i64.reinterpret_f64 (global.get $__dyn_props)))
+      (if (i32.and
+            (f64.ne (global.get $__dyn_props) (f64.const 0))
+            (i32.ge_u (call $__ptr_offset (local.get $dpBits)) (local.get $mark)))
+        (then
+          (local.set $dpOff (call $__ptr_offset (local.get $dpBits)))
+          (local.set $dpCap (i32.load (i32.sub (local.get $dpOff) (i32.const 4))))
+          (local.set $dpN (i32.load (i32.sub (local.get $dpOff) (i32.const 8))))
+          (local.set $dpNewOff (call $__alloc_hdr_n (i32.const 0) (local.get $dpCap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${LANE}))))
+          (local.set $dpOutPhys (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (local.get $dpNewOff)))
+          (local.set $dpOrd (call $__coll_order (local.get $dpOff) (local.get $dpCap) (i32.const ${MAP_ENTRY})))
+          (block $ded (loop $del
+            (br_if $ded (i32.ge_s (local.get $dpI) (local.get $dpN)))
+            (local.set $dpSlot (i32.load (i32.add (local.get $dpOrd) (i32.shl (local.get $dpI) (i32.const 2)))))
+            (drop (call $__ihash_set_local (i64.reinterpret_f64 (local.get $dpOutPhys))
+              (i64.reinterpret_f64 (f64.load (i32.add (local.get $dpSlot) (i32.const 8))))
+              (i64.reinterpret_f64 (f64.load (i32.add (local.get $dpSlot) (i32.const 16))))))
+            (local.set $dpI (i32.add (local.get $dpI) (i32.const 1)))
+            (br $del)))
+          ;; forward the OLD block to its FINAL (post-relocation) address, same
+          ;; convention as every other relocated header — and store the SAME
+          ;; final (delta-adjusted) pointer into the global: $dpOutPhys is only
+          ;; valid to DEREFERENCE right now (T-relative staging), never to keep.
+          (i32.store (i32.sub (local.get $dpOff) (i32.const 8)) (i32.sub (local.get $dpNewOff) (local.get $delta)))
+          (i32.store (i32.sub (local.get $dpOff) (i32.const 4)) (i32.const -1))
+          (global.set $__dyn_props (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (i32.sub (local.get $dpNewOff) (local.get $delta))))))
+      ` : ''}
       (local.set $size (i32.sub (global.get $__heap) (local.get $T)))
       (memory.copy (local.get $mark) (local.get $T) (local.get $size))
       (global.set $__heap (i32.add (local.get $mark) (local.get $size)))
       (local.get $out))`
 
-    ctx.core.stdlib['__region_copy_rec'] = `(func $__region_copy_rec (param $v f64) (param $memo i64) (param $mark i32) (param $delta i32) (result f64)
+    // Relocate a per-array/per-object dyn-props HASH's OWN CONTENTS across a
+    // region boundary (audit finding, kernel-oracle dvnested-mechanism O2/O3
+    // regression, layer 3 — the deepest one): the ARRAY dyn-props migration
+    // in __region_copy_rec below re-keys the OUTER props-hash pointer (into
+    // off-16 or $__dyn_props) but a bare pointer copy leaves the hash's OWN
+    // VALUES unrelocated — e.g. `fn.cseLoadBases = new Set(...)` (src/compile/
+    // index.js emitFunc) makes the props hash's ONE entry's VALUE an ephemeral
+    // SET; copying the outer HASH pointer verbatim (arrGrow's headerPropsCopyIR
+    // precedent — safe THERE because a plain grow never reclaims anything) still
+    // leaves that Set unreachable from the region root, so region_exit's
+    // closing rewind silently reclaims it — the trap manifests later, whenever
+    // that specific memory gets reused and read back as garbage.
+    // KEYS in this table are always prop-name STRINGS: SSO/interned in every
+    // real case here (compiler-internal single-word identifiers), so their
+    // hash bucket position is immutable across relocation — no rehash/
+    // reinsert needed, just a verbatim bulk copy (unlike $__dyn_props's OWN
+    // table below, whose keys are OFFSETS that genuinely change value and do
+    // need __coll_order + reinsert). Slot stride is bare MAP_ENTRY (matching
+    // __coll_order/genUpsertGrow's OWN per-slot indexing — module/collection.js
+    // genUpsertGrow's $entrySize, NOT entrySize+LANE, which is the ALLOCATION
+    // size only: a trailing i32-per-slot lane array sits AFTER all cap slots,
+    // not interleaved — the bulk copy below must include that trailing region
+    // too, so a relocated table's fast-probe lane data isn't left as garbage).
+    ctx.core.stdlib['__region_relocate_props'] = () => `(func $__region_relocate_props (param $propsF f64) (param $memo i64) (param $mark i32) (param $delta i32) (result f64)
+      (local $off i32) (local $cap i32) (local $n i32) (local $newOff i32) (local $i i32) (local $slot i32)
+      (if (f64.eq (local.get $propsF) (f64.const 0)) (then (return (local.get $propsF))))
+      (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $propsF))))
+      (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+      (local.set $n (i32.load (i32.sub (local.get $off) (i32.const 8))))
+      (if (i32.lt_u (local.get $off) (local.get $mark))
+        (then
+          ;; durable container (created a prior compile / never grown this round):
+          ;; values updated in place, container address unchanged — mirrors
+          ;; __region_copy_rec's ARRAY branch's own durable-walk-in-place case.
+          (block $pd (loop $pl
+            (br_if $pd (i32.ge_s (local.get $i) (local.get $cap)))
+            (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const ${MAP_ENTRY}))))
+            (if (i64.ne (i64.load (local.get $slot)) (i64.const 0))
+              (then (f64.store (i32.add (local.get $slot) (i32.const 16))
+                (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 16))) (local.get $memo) (local.get $mark) (local.get $delta)))))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $pl)))
+          (return (local.get $propsF))))
+      ;; ephemeral — relocate the container: fresh same-cap block (verbatim bulk
+      ;; copy preserves bucket positions since keys' hashes are stable), then
+      ;; relocate each occupied slot's VALUE in the NEW location.
+      (local.set $newOff (call $__alloc_hdr_n (local.get $n) (local.get $cap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${LANE}))))
+      (memory.copy (local.get $newOff) (local.get $off) (i32.mul (local.get $cap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${LANE}))))
+      (local.set $i (i32.const 0))
+      (block $qd (loop $ql
+        (br_if $qd (i32.ge_s (local.get $i) (local.get $cap)))
+        (local.set $slot (i32.add (local.get $newOff) (i32.mul (local.get $i) (i32.const ${MAP_ENTRY}))))
+        (if (i64.ne (i64.load (local.get $slot)) (i64.const 0))
+          (then (f64.store (i32.add (local.get $slot) (i32.const 16))
+            (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 16))) (local.get $memo) (local.get $mark) (local.get $delta)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $ql)))
+      (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.sub (local.get $newOff) (local.get $delta)))
+      (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+      (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))`
+
+    // Function form (not a plain template string): the ARRAY dyn-props migration
+    // below is gated on `ctx.scope.globals.has('__dyn_props')`, which must be
+    // read at PULL time (src/wat/assemble.js calls a function-valued stdlib
+    // entry lazily, exactly once, when the name is actually pulled in — see
+    // __obj_clone/__dyn_set above for the same idiom), not at this file's own
+    // module-setup time, when collection.js's global declarations may not have
+    // run yet.
+    ctx.core.stdlib['__region_copy_rec'] = () => `(func $__region_copy_rec (param $v f64) (param $memo i64) (param $mark i32) (param $delta i32) (result f64)
       (local $bits i64) (local $t i32) (local $off i32) (local $aux i32) (local $hit i64) (local $out f64)
       (local $newOff i32) (local $n i32) (local $i i32) (local $slot i32) (local $len i32) (local $cap i32)
-      (local $stride i32) (local $ord i32) (local $outPhys f64)
+      (local $stride i32) (local $ord i32) (local $outPhys f64) (local $oldProps f64) (local $dpRoot f64) (local $newFinal i32) (local $propsF f64)
       ;; ordinary numbers (incl. +/-Infinity) are immediate
       (if (f64.eq (local.get $v) (local.get $v)) (then (return (local.get $v))))
       (local.set $bits (i64.reinterpret_f64 (local.get $v)))
@@ -724,6 +859,45 @@ export default (ctx) => {
                   (call $__region_copy_rec (f64.load (local.get $slot)) (local.get $memo) (local.get $mark) (local.get $delta)))
                 (local.set $i (i32.add (local.get $i) (i32.const 1)))
                 (br $dl)))
+              ;; Same "durable receiver, ephemeral payload" hazard applies to the
+              ;; dyn-props sidecar itself, not just element slots: the CONTAINER's
+              ;; own address never changes (durable), so no re-keying is needed, but
+              ;; whatever it points to (inline at off-16, or already filed in
+              ;; $__dyn_props keyed by this stable $off) can still be ephemeral.
+              ${ctx.scope.globals.has('__dyn_props') ? `
+              (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
+              (local.set $oldProps (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $oldProps)) (i64.const -2))))
+              (local.set $propsF (f64.const 0))
+              (if (i32.eq
+                    (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
+                    (i32.const ${PTR.HASH}))
+                (then (local.set $propsF (local.get $oldProps)))
+                (else
+                  (if (f64.ne (global.get $__dyn_props) (f64.const 0))
+                    (then
+                      (local.set $hit (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props)) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
+                      (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (local.set $propsF (f64.reinterpret_i64 (local.get $hit)))))))))
+              (if (f64.ne (local.get $propsF) (f64.const 0))
+                (then
+                  (local.set $propsF (call $__region_relocate_props (local.get $propsF) (local.get $memo) (local.get $mark) (local.get $delta)))
+                  (if (i32.eq
+                        (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
+                        (i32.const ${PTR.HASH}))
+                    (then
+                      ;; was inline: __region_relocate_props may itself have moved the
+                      ;; props container (if it was ephemeral) — write the (possibly
+                      ;; new) pointer back to this STABLE off-16 slot.
+                      (f64.store (i32.sub (local.get $off) (i32.const 16)) (local.get $propsF)))
+                    (else
+                      ;; was already in $__dyn_props keyed by this stable $off — refile
+                      ;; the (possibly-relocated) value under the SAME key.
+                      (local.set $dpRoot (f64.reinterpret_i64 (call $__ihash_set_local
+                        (i64.reinterpret_f64 (global.get $__dyn_props))
+                        (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))
+                        (i64.reinterpret_f64 (local.get $propsF)))))
+                      (global.set $__dyn_props (local.get $dpRoot))
+                      (global.set $__enumc_off (i32.const 0))))))
+              ` : ''}
               (return (local.get $out))))
           (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $len)))
           (local.set $out (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
@@ -737,6 +911,61 @@ export default (ctx) => {
                 (local.get $memo) (local.get $mark) (local.get $delta)))
             (local.set $i (i32.add (local.get $i) (i32.const 1)))
             (br $al)))
+          ;; ARRAY dyn-props migration (audit finding, kernel-oracle dvnested-mechanism
+          ;; O2/O3 regression root cause): the ORIGINAL comment below this function
+          ;; ("watr's own AST/bookkeeping never attaches dynamic properties to its
+          ;; internal arrays") was WRONG — src/compile/index.js's emitFunc stamps
+          ;; fn.cseLoadBases = new Set(...) directly onto the compiled func-node
+          ;; ARRAY during emission (src/optimize/index.js cseScalarLoad's whitelist),
+          ;; and that node IS part of the region root (ast, bundled into region_exit's
+          ;; root by watr's runRounds patch). An ARRAY's dyn-props sidecar lives EITHER
+          ;; inline at off-16 (a HASH pointer, PTR.HASH-tagged) or, once any prior
+          ;; grow/shift/durable-fallthrough/region-round has migrated it, in the
+          ;; global $__dyn_props table keyed by the array's CURRENT offset
+          ;; (module/array.js headerPropsCopyIR/headerPropsToGlobalIR/maybeDynMoveIR —
+          ;; the exact mechanism arrGrow/arrShift already use to survive their OWN
+          ;; relocation). Whichever form it's currently in, find the props-hash
+          ;; pointer, relocate ITS OWN CONTENTS (__region_relocate_props — a bare
+          ;; pointer copy would leave whatever it points to, e.g. cseLoadBases's
+          ;; Set, unreachable from the region root and silently reclaimed), then
+          ;; ALWAYS re-file it into $__dyn_props keyed by $newFinal (the array's
+          ;; FINAL post-region_exit address: memory.copy hasn't landed the bytes
+          ;; yet, so $newOff itself is a T-relative STAGING address, not a valid
+          ;; $__dyn_props key — the SAME $out/$outPhys distinction the SET/MAP
+          ;; branch above already makes). Gated on $__dyn_props existing at all
+          ;; (ctx.scope.globals.has check in this function's deps() entry above) —
+          ;; a build with no array/object dynamic-property support anywhere skips
+          ;; this block entirely.
+          ${ctx.scope.globals.has('__dyn_props') ? `
+          (local.set $newFinal (i32.sub (local.get $newOff) (local.get $delta)))
+          (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
+          (local.set $oldProps (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $oldProps)) (i64.const -2))))
+          (local.set $propsF (f64.const 0))
+          (if (i32.eq
+                (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
+                (i32.const ${PTR.HASH}))
+            (then (local.set $propsF (local.get $oldProps)))
+            (else
+              ;; not inline — an earlier grow/shift/region-round may already have
+              ;; filed it in $__dyn_props keyed by the array's OLD (still-valid-to-
+              ;; read-right-now) offset.
+              (if (f64.ne (global.get $__dyn_props) (f64.const 0))
+                (then
+                  (local.set $hit (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props)) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
+                  (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (local.set $propsF (f64.reinterpret_i64 (local.get $hit)))))))))
+          (if (f64.ne (local.get $propsF) (f64.const 0))
+            (then
+              (local.set $propsF (call $__region_relocate_props (local.get $propsF) (local.get $memo) (local.get $mark) (local.get $delta)))
+              (local.set $dpRoot (global.get $__dyn_props))
+              (if (f64.eq (local.get $dpRoot) (f64.const 0)) (then (local.set $dpRoot (call $__hash_new))))
+              (local.set $dpRoot (f64.reinterpret_i64 (call $__ihash_set_local
+                (i64.reinterpret_f64 (local.get $dpRoot))
+                (i64.reinterpret_f64 (f64.convert_i32_s (local.get $newFinal)))
+                (i64.reinterpret_f64 (local.get $propsF)))))
+              (global.set $__dyn_props (local.get $dpRoot))
+              (global.set $__enumc_off (i32.const 0))
+              (i64.store (i32.sub (local.get $newOff) (i32.const 16)) (i64.const -1))))
+          ` : ''}
           ;; forward the OLD site to the FINAL (post-relocation) address — any stale ARRAY
           ;; reference that survives past region_exit self-heals via the existing
           ;; __ptr_offset forwarding chase, exactly like a grown array's old header.
@@ -787,14 +1016,13 @@ export default (ctx) => {
           (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
           (return (local.get $out))))
 
-      ;; Not handled (scope note, not a trap): the ARRAY branch's relocated copy
-      ;; never carries forward a source array's off-16 dyn-props sidecar (always
-      ;; zeroed by __alloc_hdr, matching a fresh literal array) — correct for
-      ;; watr's own AST/bookkeeping, which never attaches dynamic properties to
-      ;; its internal arrays; a jz USER array with dyn-props reaching this code
-      ;; would silently lose them. Slice 1's root is always watr-internal state,
-      ;; never user data, so this is out of reach today — worth a comment for
-      ;; whoever generalizes region_exit to a user-facing boundary later.
+      ;; (Kernel-oracle dvnested-mechanism O2/O3 regression, root-caused: the ARRAY
+      ;; branch above USED to silently drop a relocated array's off-16 dyn-props
+      ;; sidecar — wrongly assumed watr's own AST/bookkeeping never attaches
+      ;; dynamic properties to its internal arrays. False: src/compile/index.js's
+      ;; emitFunc stamps fn.cseLoadBases directly onto the compiled func-node
+      ;; ARRAY, which IS part of the region root. Fixed above via the same
+      ;; grow/shift dyn-props migration arrGrow/arrShift already perform.)
       ;;
       ;; OBJECT/HASH/CLOSURE/TYPED/BUFFER/EXTERNAL: out of Slice-1 scope (watr's AST +
       ;; round-loop bookkeeping never produce them) — trap rather than mishandle.

@@ -40,12 +40,28 @@ import jzify from '../jzify/index.js'
 // become dist/jz.wasm), so these literal `__region_mark()`/`__region_exit()`
 // calls only ever exist as compiled wasm calls (module/core.js's intrinsics),
 // never as bare identifiers evaluated by a native JS engine.
-// DORMANT (2026-08-06): a kernel-oracle regression surfaced with regions live
-// (kernel traps compiling the dvnested source at O2/O3 — the silent-corruption
-// class the design's hazard inventory tripwired for; .work/region-slice1-build.md).
-// Per the stop-on-fail tripwire the hooks are OFF until that root is named —
-// the bigintBoxed dormant-fact precedent: machinery landed, unconsumed. Re-wire
-// by restoring the regionHooks line below; the warm checkpoint then gates SHIP.
+// DORMANT (2026-08-06, re-audited same day): a kernel-oracle regression
+// surfaced with regions live (kernel traps compiling the dvnested-mechanism
+// source at O2/O3). Root-caused in THREE confirmed layers, all fixed in
+// module/core.js's __region_copy_rec/__region_exit (a relocated ARRAY's
+// off-16 dyn-props sidecar was silently dropped — src/compile/index.js's
+// `fn.cseLoadBases = new Set(...)` is exactly the "watr internal array gets
+// a dynamic property" case the original scope comment wrongly called
+// unreachable; `$__dyn_props`'s own backing table is a global outside
+// [ast,dirty,snapshots] and needs the SAME implicit-root treatment
+// dirty/snapshots already got; the props-hash's own VALUES need recursive
+// relocation, not a verbatim pointer copy). Those three fixes landed and
+// fully close the O2 failure. A FOURTH, unnamed layer remains, O3-only:
+// disabling src/optimize/index.js's `fusedRewrite` pass (optimize cfg
+// `fusedRewrite:false`) avoids the trap; disabling cseScalarLoad,
+// foldStaticArrReads, inlineFns, watrLicm, devirtIndirect individually does
+// NOT — narrows the remaining root to something fusedRewrite does (candidate:
+// `node._eqFast = true`, a dynamic property stamped on a NESTED `call` node
+// deep in a function body, src/optimize/index.js ~4270-4324) but the exact
+// mechanism is not confirmed. Per the stop-on-fail tripwire the hooks stay
+// OFF until that root is named too — the bigintBoxed dormant-fact precedent:
+// machinery landed, unconsumed, narrower than before. Re-wire by restoring
+// the regionHooks line below; the warm checkpoint then gates SHIP.
 function optimizeTail(module, cfg) {
   return watrTail(module, cfg, {
     funcCount: ctx.func.list.length,
