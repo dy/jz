@@ -6,6 +6,53 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, REGION-ARENA SLICE-1 BUILD — primitives + wiring landed,
+## NOT SAFE TO SHIP YET: a real kernel-oracle regression is open — see
+## .work/region-slice1-build.md for the full report)
+
+Implemented `__region_mark`/`__region_exit`/`__region_copy_rec`
+(module/core.js) — the Cheney-copy-with-forwarding primitive
+region-arena-design.md Slice 1 calls for — and wired them into watOptimize's
+per-round loop (scripts/self.js's regionHooks -> watr-tail.js -> an
+additive, opt-in `opts.regionMark`/`regionExit` hook patched into
+node_modules/watr/src/optimize.js + the sibling source repo, never touching
+native execution). Three hazard sites handled (Map/Set keyed on relocated
+pointer identity — dirty/snapshots bundled as region roots + rebuilt via
+__coll_order rather than patched in place; a durable-container-with-fresh-
+content bug found via a minimal repro and fixed — durable arrays now walk
+elements in place instead of short-circuiting; REF_EQ confirmed compile-
+time-only, not applicable).
+
+GREEN: isolated self-tests (sharing/durable/MAP/SET/multi-round), the
+watr-graph corpus (7.7MB, the design's 4.3GB-peak case) byte-identical
+region-vs-no-region at O3 with a measured 1335MB heap reduction,
+`dist/jz.wasm` rebuilt with regions live — `test/kernel-parity.js` 33/33,
+`test/selfhost.js` 21/21 (40-round warm-cycling, no traps).
+
+RED, UNRESOLVED: `test/kernel-oracle.js` — 2 new failures ("dvnested-
+mechanism" row, O2 and O3): the KERNEL ITSELF TRAPS ("memory access out of
+bounds") while compiling that source, despite kernel-parity showing the
+(different-source) "dvnested" row byte-identical. Not yet root-caused, not
+yet attributed conclusively to this session's changes vs. a pre-existing/
+concurrent-work bug (would need a before/after rebuild — ~5 min each,
+didn't fit). Also found but not chased: a separate jz-optimizer miscompile
+at micro-kernel BUILD levels O1/O2 (not O0/O3) when compiling
+`__region_copy_rec`'s own shape — doesn't block the self-host default
+(-O3) but is real. `dist/jz.wasm` grew to 16.66MB from a stale July 6.6MB
+reference — not isolated from ~a month of unrelated concurrent work.
+
+NOT RUN (time exhausted, not claimed green): warm checkpoint
+(selfhost-perf.js, the mandated killer gate), perf-ratchet 10/10, fuzz
+2000×4, size sweep, fresh build ×2 byte-identical.
+
+**Recommendation**: do NOT flip the region machinery to unconditionally-on
+in any shipped path until the kernel-oracle regression is root-caused —
+this is exactly the class of silent-corruption risk the design's hazard
+inventory warned about, now caught by a real oracle test rather than
+inferred. Next session: bisect dvnested-mechanism's crash (does reverting
+just the regionHooks wiring in scripts/self.js, rebuilding, make it pass?
+— the fastest attribution test not yet run), then decide fix vs. revert.
+
 ## Status (2026-08-06, REGION-ARENA SLICE-1 PRE-WIRING MEASUREMENT — GO, with
 ## a sharper arithmetic than the design's acceptance line implied — see
 ## .work/region-slice1-liveness.md)

@@ -52,6 +52,12 @@ No new pointer convention, no GC — bounded, explicit regions.
    for compiler-side Maps keyed on pointer identity (flush-or-rehash at the
    mark), REF_EQ raw-i64 equality audit; watr's own identity bookkeeping
    degrades safely (dirty-overapproximation).
+
+   **BUILT** (as-landed, see `.work/region-slice1-build.md` for the full
+   report — primitives, hazard handling, measured numbers, and the honestly-
+   scoped open items: L1/L2 kernel-build miscompile isolated away from the
+   -O3 self-host default, `dist/jz.wasm` size delta not yet isolated from
+   concurrent work, warm/fuzz/size-sweep/fresh-build-x2 not yet run).
 2. **Front boundary** (post-prepare): parse/jzify intermediates die; root =
    prepared AST. Acceptance: further watermark drop; the 512MB small-source
    watermark begins to fall.
