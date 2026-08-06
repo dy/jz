@@ -36,7 +36,13 @@ const FEATS = [
   '--enable-bulk-memory', '--enable-bulk-memory-opt',
   '--enable-exception-handling', '--enable-multivalue',
   '--enable-nontrapping-float-to-int', '--enable-mutable-globals',
-  '--enable-sign-ext',
+  '--enable-sign-ext', '--enable-simd',
+  // ^ this FEATS list predates jz's auto-vectorizer (v128 loop codegen) — without
+  // --enable-simd, wasm-opt's validator hard-rejects any v128 op (confirmed live:
+  // "SIMD operations require SIMD [--enable-simd]" on watr's own i8x16.eq/v128.load,
+  // `wasm-validator error`, `Fatal: error validating input`, non-zero exit) instead of
+  // silently stripping it — the native/wasm2c lane could never process a SIMD-bearing
+  // module at all until this flag matched what jzCompile above already emits.
 ].join(' ')
 const optPath = path.join(BUILD_DIR, 'jz-watr-opt.wasm')
 execSync(`${WASM_OPT} -O3 ${FEATS} ${rawPath} -o ${optPath}`, { stdio: 'inherit' })
