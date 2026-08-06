@@ -6,6 +6,149 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, TypedArray.prototype.at element-width bug FIXED —
+## 658c816a's own banked row ["PARTIALLY FIXED... a real stride-aware
+## .typed:at, a feature addition not a sibling bugfix"] closed)
+
+658c816a's sibling-sweep table flagged `TypedArray.prototype.at` as
+PARTIALLY FIXED: the Infinity/OOB-index saturation+bounds-check landed (it
+shares Array.at's generic fallback), but a SEPARATE pre-existing bug was
+confirmed live and left untouched — no `.typed:at` ever existed, so a typed
+receiver fell through to the GENERIC (non-ARRAY) `.array:at` branch in
+module/array.js, which unconditionally `f64.load`s at `off + t*8`. Correct
+ONLY for the three 8-byte-wide element kinds (Float64Array, BigInt64Array,
+BigUint64Array — the wrong WASM opcode happens to read the right BYTES
+there, since f64.load and i64.load are both 8 bytes at the same offset
+math); every narrower kind read the wrong OFFSET at the wrong WIDTH even for
+a perfectly in-range index.
+
+MECHANISM (repro-confirmed before touching code): `new Int32Array([10,20,
+30]).at(1)` read 8 bytes starting at byte offset 8 (`1*8`, treating the
+index as an f64-stride slot) instead of 4 bytes at byte offset 4 (`1*4`,
+the correct i32-stride slot) — landed on raw adjacent-element garbage
+(`1.5e-322`), not `20`. Every element kind narrower than 8 bytes (int8/
+uint8/clamped/int16/uint16/int32/uint32/float32) hit the same class.
+Float64Array/BigInt64Array/BigUint64Array (also 8-byte) happened to read
+the right bytes by coincidence of matching stride, not by correctness.
+
+FIX (module/typedarray.js): added `.typed:at`, which the method-dispatch
+table (src/compile/emit.js:3605, `ctx.core.emit['.${vt}:${method}']`
+checked before the generic `.${method}` fallback) now picks for any
+receiver whose val type is proven VAL.TYPED — unifying `.at` onto the SAME
+resolveElem/elemLoadIR/SHIFT machinery `.typed:[]` (bracket read) already
+proves correct per width (the canonical element-access emission every other
+typed method — `.typed:map/filter/forEach/reduce/indexOf/lastIndexOf/
+includes/find/findIndex/findLast/findLastIndex/some/every`, all via the
+shared `typedLoop` helper — already goes through). Static path (element
+kind known at compile time) computes the relative index + OOB→undefined
+exactly like `.array:at`'s already-proven asI32Sat+bounds logic, then loads
+through `elemLoadIR(r, off)` with `off` scaled by `SHIFT[et]` (0/1/2/3 bits
+= 1/2/4/8-byte stride) instead of a hardcoded ×8. Dynamic fallback (element
+kind NOT provable statically — an opaque/polymorphic receiver) routes
+through `__typed_get_idx`, the SAME runtime aux-tag-dispatch helper
+`.reverse`/`.sort`/`.fill`/`.copyWithin`/`.join` already use unconditionally
+— no bespoke read invented, the existing unified primitives cover both the
+static and dynamic cases.
+
+REPRO MATRIX (differential against real Node/V8 as the ECMA-262 authority,
+23.2.3.1 relative-index + undefined-on-OOB semantics) — BEFORE (buggy) vs
+AFTER (fixed), `new <Kind>([10,20,30]).at(1)`:
+
+| kind | BEFORE | AFTER | JS |
+|---|---|---|---|
+| Int8Array | `0` | `20` | `20` |
+| Uint8Array | `0` | `20` | `20` |
+| Uint8ClampedArray | `0` | `20` | `20` |
+| Int16Array | `0` | `20` | `20` |
+| Uint16Array | `0` | `20` | `20` |
+| Int32Array | `1.5e-322` | `20` | `20` |
+| Uint32Array | `1.5e-322` | `20` | `20` |
+| Float32Array | `5.4656e-315` | `20` | `20` |
+| Float64Array | `20` (already correct — 8-byte coincidence) | `20` | `20` |
+| BigInt64Array | `20n` (already correct — 8-byte coincidence) | `20n` | `20n` |
+| BigUint64Array | `20n` (already correct — 8-byte coincidence) | `20n` | `20n` |
+
+Full matrix swept, not just index 1: all 9 non-BigInt widths × 15 index
+cases (0/1/2/-1/-2/-3/3/-4/10/-10/Infinity/-Infinity/1e20/-1e20/NaN) = 135
+comparisons, 0 mismatches after the fix (135 before the fix, one per
+non-f64-width×index pair). BigInt64Array/BigUint64Array × 12 index cases:
+0 mismatches. Dynamic-dispatch path (receiver's element kind unresolvable
+at compile time — a ternary between two DIFFERENT typed-array ctors bound
+to the same local) verified separately: static-path WAT shows no
+`__typed_get_idx` call for a monomorphic receiver, the polymorphic receiver
+DOES emit the call, and both branches return the correct value. View
+receivers (`.subarray(...)`, indirects through the descriptor) verified
+correct too.
+
+SIBLING AUDIT (find/findIndex/indexOf's compare loads, reduce, join — every
+OTHER TypedArray method with a per-element read, checked against the width
+table): ALL ALREADY SOUND, none touched.
+- `.typed:map/filter/forEach/reduce/indexOf/lastIndexOf/includes/find/
+  findIndex/findLast/findLastIndex/some/every` — all route through the
+  shared `typedLoop`/`findCommon`/`findLastCommon` helpers, whose `loadElem`
+  closure is `elemLoadIR(r, off)` (static) or `__typed_get_idx` (dynamic) —
+  the same unified primitives `.at` now uses. `.at` was the sole outlier;
+  no `.typed:at` had ever been registered.
+- `.join` — no `.typed:join` exists; falls through to the generic `.join`
+  (module/array.js), which calls stdlib `__str_join`. Read `__str_join`'s
+  WAT body (module/string.js ~1491-1541): when the typedarray module is
+  loaded, it runtime-dispatches on the pointer's type tag and routes TYPED
+  reads through `__typed_idx` — a THIRD width-aware runtime-dispatch reader
+  (alongside `__typed_get_idx`/the static `elemLoadIR` path), correct by
+  construction. Confirmed sound, not touched.
+
+FOUND LIVE, OUT OF SCOPE (different bug, different mechanism, banked not
+fixed): `Number(bigTypedArr.at(i))` misdecodes for BigInt64Array/
+BigUint64Array — returns garbage, NOT the BigInt's numeric value. Root:
+kind.js (~line 838) special-cases the BRACKET-index node `a[i]` on a proven
+BigInt64/BigUint64Array receiver to statically classify the result as
+VAL.BIGINT (steering `Number()`/`bigIntDomain` off the generic NaN-boxed-tag
+decode path, onto the correct raw-i64-bits path); no equivalent case exists
+for a `.at(i)` METHOD-CALL node, on ANY receiver kind — grepped, zero hits
+for `'at'` in kind.js/type.js/kind-traits.js. So `Number()` decodes `.at()`'s
+raw untagged i64-as-f64-bits as if they were a NaN-boxed tagged value —
+wrong, garbage. Confirmed PRE-EXISTING (not a regression from this fix): the
+OLD un-fixed `.at()` path also returned a bare untagged `'f64'` IR node with
+no BigInt valType marker, so `Number()` would have misdecoded it identically
+before this change, just via a different (also-wrong) raw value. `===` and
+BigInt arithmetic (`+`) on `.at()`'s BigInt result both work correctly
+already (different, unaffected code paths) — only explicit `Number(...)`
+conversion is broken. Out of scope: a valType-inference gap for a method-
+call node shape, orthogonal to the element-width/offset bug this fix closes.
+Would need `.at()` (and likely other typed methods returning a receiver's
+element type) added to kind.js's static-BigInt-classification cases — a
+comparable-sized undertaking to `.at`'s own history of narrow, deliberate
+fixes, not scope creep to bundle in here.
+
+Tests added: test/array-methods.js, 6 new `test()` blocks after the
+existing `.fill` tests — every element width at an in-range index, negative
+index, the full OOB/Infinity/-Infinity/huge-magnitude matrix (parameterized
+over 4 representative widths), BigInt64/BigUint64Array (via `===`/
+arithmetic, not `Number()` — see the banked gap above), a `.subarray` view
+receiver, and the dynamic/polymorphic-dispatch path.
+
+Gates: repro matrix 135+12 comparisons red→green vs real Node/V8, both
+directly (native leg) and via the self-hosted kernel path (`JZ_TEST_TARGET=
+jz.wasm`, dist/jz.wasm freshly rebuilt from this change, byte-identical
+across two consecutive `npm run build` runs — jz.js/interop.js/jz.wasm all
+identical); full battery all four legs (default/opt0/opt3/wasi) 3336/3342
+pass, 0 fail, 6 skip on every leg (kernel-parity, kernel-oracle, optimizer,
+simd, simd-intrinsics, unswitch-typed-param all included, all green); kernel
+leg (`JZ_TEST_TARGET=jz.wasm`, full test/index.js) 2636/2644 pass, 2 fail —
+BOTH the pre-existing, already-banked "JSON SHAPED-PARSER 'Bad int
+9.067910317e-315'" carrier bug (line ~4218 below, a `Number(BigInt)`
+module-inclusion-ordering hazard in json.js's shaped-parser codegen,
+entirely unrelated to typed arrays, confirmed NOT a regression — identical
+signature/count to the standing banked entry); perf-ratchet 10/10, +0 on
+every named case (no codegen-size regression); test262-builtins baseline
+HOLDS at 852 pass / 0 fail / 87 xfail (unchanged — TypedArray/prototype/at's
+own test262 files are all `testWithTypedArrayConstructors`-harness-skipped
+in this runner, so no row was available to flip); selfhost.js 21/21;
+selfhost-perf.js 5/5 (warm 1.014× under 1.03× cap, fresh 0.788× under 0.99×
+cap); fuzz 2000×4 (opt 0-3) on all four generators — general, `--typed`,
+`--typed-int`, `--typed-map` — 0 divergences on every one; size sweep
+(`scripts/bench-size.mjs`) geomean jz/AS = 1.040×, holds exactly.
+
 ## Status (2026-08-06, two-part task: Array/TypedArray/String position-arg
 ## saturation sibling sweep [flips 1864c98c's banked Array.slice/String.at
 ## pair] + jz×jz self-host OOB investigated and banked [3188aebc])
