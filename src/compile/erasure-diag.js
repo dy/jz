@@ -1,6 +1,12 @@
 /**
- * Boxed-bigint erasure diagnostic (round-3/4, design .work/bigint-round3-design.md
- * §2/§4.2). JZ_DBG_BIGINT_ERASURE=1-gated, zero cost otherwise.
+ * Boxed-bigint erasure diagnostic — CARRIER PROGRAM Slice 0 (.work/carrier-
+ * representation-design.md §7), promoted from round-3/4's original probe
+ * (.work/archive/bigint-round3-design.md §2/§4.2) to a maintained, documented
+ * tool: the program's baseline erasure-inventory instrument, re-run against
+ * the current kernel graph each time the box-site footprint needs re-
+ * verifying (Slice 2's own gate report, future Slice 3/5 work). Still
+ * JZ_DBG_BIGINT_ERASURE=1-gated, still zero cost off-flag — promotion is a
+ * documentation/maintenance-status change, not a default-on change.
  *
  * Empirical, read-only: walks each function's body (during analyzeFuncs, right
  * after analyzeFuncForEmit settles its reps — ctx.func is that function) and
@@ -18,15 +24,32 @@
  *   closure-capture — a bigint-kinded outer name referenced inside a `=>` body
  *                 (analyze.js's hard closure boundary at op === '=>').
  *
+ * Re-verified live 2026-08-06 against the current (post-round-4) 149-module
+ * self-hosted kernel graph: 57 hits (call-arg 37, closure-capture 6, return 5,
+ * ternary-nullish 5, dataview 3, collection 1), fixpoint verdict 11 real box
+ * sites (1 param + 10 module-init-constant locals) — same counts the design
+ * doc's §1 recorded; committed as the program's tracked baseline in
+ * .work/carrier-box-baseline.md (this file's own re-run command is there,
+ * verbatim, so the count is reproducible, not just asserted).
+ *
  * This module is the seed the real solver fact (analyze.js intra-body sink
- * walk, §3.2) and the real erasure-graph assert (§4.2) both grow from — same
- * sink taxonomy, first just observing, later gating box-emission and then
- * proving it happened.
+ * walk, §3.2) grew from — same sink taxonomy. `assertErasureConsistency`
+ * below is the erasure-graph cross-check §4.2 named: NOT a codegen-shape
+ * prover (that needs Slice 2/3's actual box/unbox call sites wired and
+ * verified end-to-end, out of THIS function's reach) but a soundness
+ * invariant this diagnostic CAN check today — every `bigintBoxed=true`
+ * verdict the solver settles (bigint-boxed-stats.js) must be justified by at
+ * least one erasure hit THIS walk recorded for the same function; a boxed
+ * verdict with zero recorded reason would mean the two independently-
+ * computed views of the same phenomenon (solver fixpoint vs. AST walk)
+ * disagree, and disagreement here is the earliest, cheapest place to catch a
+ * solver bug — DBG_INVARIANTS-gated, zero cost by default.
  */
-import { ctx } from '../ctx.js'
+import { ctx, DBG_INVARIANTS } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { valTypeOf } from '../kind.js'
 import { commaList, collectParamNames, extractParams, isBlockBody } from '../ast.js'
+import { bigintBoxedStats, DBG_BIGINT_STATS } from './bigint-boxed-stats.js'
 
 export const DBG_BIGINT_ERASURE = typeof process !== 'undefined' && process.env?.JZ_DBG_BIGINT_ERASURE === '1'
 
@@ -146,4 +169,37 @@ export function scanErasureSinks(func) {
   }
 
   walk(func.body)
+}
+
+/** Erasure-graph soundness cross-check (Slice 0, §7's "real erasure-graph
+ *  ASSERT" — see this module's own header for exactly what it does and does
+ *  not prove). Call once, after both `bigintBoxedStats` (narrowSignatures'
+ *  param fixpoint + analyzeFuncs' per-function local marks) and
+ *  `erasureHits` (this module's own per-function walk, same analyzeFuncs
+ *  pass) have fully settled — i.e. after the `analyzeFuncs` loop in
+ *  compile/index.js, not from inside it. No-op unless JZ_DEBUG_INVARIANTS=1
+ *  (this assert's own gate) — DBG_BIGINT_STATS/DBG_BIGINT_ERASURE being off
+ *  just means both inputs are empty, so the loop below is vacuously a no-op,
+ *  never a false failure.
+ *
+ *  Whole-program, not per-function: "some local settled bigintBoxed=true
+ *  while the whole-program erasure walk recorded ZERO hits anywhere" would
+ *  mean the two independently-implemented mechanisms (analyze.js's live
+ *  markBigintSink vs. this file's own AST walk) have gone fully dark
+ *  relative to each other — the class of bug worth stopping the compile
+ *  for. A per-function attribution was tried and DROPPED live during this
+ *  slice's own re-verification (2026-08-06): module-init/const-folded
+ *  top-level bindings (the 10 measured box sites' own shape — NAN_PREFIX
+ *  etc.) settle bigintBoxed=true via analyze.js's top-level walk
+ *  (ctx.func.current null → '(top)'), attributed to the module/function AST
+ *  actually holding the const's RHS by scanErasureSinks (e.g. `nanPrefixMaskHex`'s
+ *  own `call-arg` hit) — a real, benign attribution split between the two
+ *  walks, not a solver bug. Per-function matching flagged it as a false
+ *  positive; the whole-program form stays true and still catches genuine
+ *  solver/diagnostic divergence. */
+export function assertErasureConsistency() {
+  if (!DBG_INVARIANTS) return
+  if (!DBG_BIGINT_STATS || !DBG_BIGINT_ERASURE) return
+  if (bigintBoxedStats.localsBoxed.size > 0 && erasureHits.length === 0)
+    throw new Error(`erasure-graph assert: ${bigintBoxedStats.localsBoxed.size} local(s) settled bigintBoxed=true but the whole-program erasure walk recorded ZERO hits — solver verdict unjustified by the observed erasure graph`)
 }
