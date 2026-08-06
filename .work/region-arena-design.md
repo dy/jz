@@ -41,10 +41,17 @@ No new pointer convention, no GC — bounded, explicit regions.
 ## historical killer of memory work; ring/fgather ratchets + selfhost-perf
 ## checkpoints mandatory per slice)
 1. **Fixpoint-round region** (watOptimize): per-round mark/exit with the
-   round's surviving tree as root. Biggest single win — optimizeTail is
-   60-80% of compile wall and the dominant churn (helper-profile history).
-   Acceptance: watr-graph kernel compile watermark 4.3GB -> under ~1GB;
-   kernel-parity byte-identical; warm cap holds.
+   round's surviving tree as root. MEASURED (region-slice1-liveness.md,
+   43e04856): churn/live 574-2342x sustained — GO — but the win arithmetic
+   is capped: Slice 1 removes only CROSS-ROUND accumulation (~979MB / 25.8%
+   on watr-graph); the pre-round baseline (2.2GB: front/prepare/emission +
+   watOptimize setup) is untouched by it. Acceptance (corrected): round-loop
+   segment capped at max single-round churn; kernel-parity byte-identical;
+   warm cap holds. The ~1GB watermark target belongs to Slices 1+2 PAIRED.
+   Prerequisite from the hazard inventory (4 sites): per-boundary handling
+   for compiler-side Maps keyed on pointer identity (flush-or-rehash at the
+   mark), REF_EQ raw-i64 equality audit; watr's own identity bookkeeping
+   degrades safely (dirty-overapproximation).
 2. **Front boundary** (post-prepare): parse/jzify intermediates die; root =
    prepared AST. Acceptance: further watermark drop; the 512MB small-source
    watermark begins to fall.
