@@ -717,37 +717,19 @@ export const optFlagsOf = (cfg) => {
 export const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
 // Carrier program (.work/carrier-representation-design.md). Slice 4 (flip
-// this default ON): a first attempt (3daa4410) hit a wall — banked, not
-// landed, §11 of the design doc has the full writeup — and reverted the
-// default back OFF. That wall's root cause (a def-side box-wiring bug,
-// pre-existing since Slice 2, reproduced independently of Slice 3 on a
-// clean pre-Slice-3 worktree with JZ_CARRIER_BOX=1 forced) is found and
-// fixed, §12: `needsBigintBox`'s unconditional inline-BIGINT-expression
-// fallback — sound at carrierF64's genuinely dynamic sinks (a real dyn-prop/
-// Set/Map store, later read through registry-aware $__dyn_get) — was ALSO
-// firing at several sinks with no such reader (a closure/mixed-atom return,
-// an SRoA flat-object/array field, a proven-array-element store, array/
-// object-literal construction, a decl-destructure temp), plus a narrower
-// read-side gap (a ternary-nullish-BIGINT-declared local's own storage IS a
-// box, isCurrentlyBoxedBigint only recognized a boxed PARAM) and its
-// call-boundary mirror in coerceArg. A SECOND flip attempt (this session)
-// verified the flag-forced battery fully green on that fix (3386/3405 — the
-// only remaining rows are §12's own documented pre-existing debt, not this
-// bug class) and re-attempted the default flip — which hit a SECOND, NEW
-// wall: `npm run build`'s fresh self-host rebuild, with the flag defaulting
-// ON, compiles cleanly (WASM-valid) but the resulting KERNEL (dist/jz.wasm)
-// then CRASHES ("memory access out of bounds") or returns WRONG VALUES at
-// optimize levels 2-3 on several of the exact shapes §12 fixed (a proven-
-// bigint array literal, a ternary-nullish-BIGINT local) — confirmed a pure
-// self-host FIDELITY gap, not a logic bug in the fix itself: the SAME
-// programs compile and run correctly at every optimize level through the
-// NATIVE (in-process, non-self-hosted) compiler, verified directly. Banked,
-// not landed, same discipline as the first attempt — this needs its own
-// dedicated self-host-fidelity investigation (bisecting which of §12's new
-// code shapes the self-hosted kernel's OWN optimizer passes mishandle),
-// not a rushed fix layered onto an already-long session. `JZ_CARRIER_BOX=1`
-// stays as the opt-in probe flag — every §12 fix is real and independently
-// verified there, this wall is specific to the DEFAULT-ON self-host build.
+// this default ON): four attempts (§11-§14 of the design doc) found and
+// fixed real bugs — a def-side box-wiring overreach, a ternary-nullish-
+// BIGINT read-side gap, and its root cause (emitDecl's ternary-boxed
+// registration matching a broader kind.js VT['?:'] rule than the '?:'
+// handler's own narrower box condition) — and §14's flip probe hit no wall
+// on the gates it ran. STILL OFF BY DEFAULT: audit #14 found a release-
+// blocking gap those probes did not cover — a carrier-built KERNEL corrupts
+// generated f64 constants for BigInt-FREE target programs (undefined atom,
+// string atom, closure atom all leak compiler-heap box bits into the
+// emitted constant instead of the atom's own value; §15 has the repro and
+// root-cause hunt). `JZ_CARRIER_BOX=1` stays the opt-in probe flag for A/B
+// and native-only use — do not build dist/jz.wasm with it set until §15's
+// finding is closed.
 export const CARRIER_BOX = typeof process !== 'undefined' && process.env?.JZ_CARRIER_BOX === '1'
 
 // Session wave W1 (stage 4): the lifecycle table above is an executable,
