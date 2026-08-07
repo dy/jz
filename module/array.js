@@ -298,7 +298,7 @@ export default (ctx) => {
     __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type'],
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset'],
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr'],
-    __typed_idx: () => ctx.features.typedarray || ctx.features.external
+    __typed_idx: () => ctx.linkDemand.typedarray || ctx.linkDemand.external
       ? ['__len', '__ptr_offset_fwd']
       : ['__len', '__ptr_offset', '__ptr_offset_fwd'],
     __arr_idx_known: ['__ptr_offset_fwd'],
@@ -383,8 +383,8 @@ export default (ctx) => {
 
   // Runtime-dispatch index: element-type aware load with bounds check + view indirection.
   // Full body handles TYPED element types and view indirection since external host can
-  // pass typed arrays even when typedarray module isn't loaded. When features.typedarray
-  // and features.external are both off, collapses to ARRAY-only f64 indexing.
+  // pass typed arrays even when typedarray module isn't loaded. When linkDemand.typedarray
+  // and linkDemand.external are both off, collapses to ARRAY-only f64 indexing.
   // Array.from(src) — shallow copy. ARRAY receivers are already f64-stride, so a
   // straight memory.copy is correct and byte-identical to the plain-array hot
   // case (kept untouched — this is the common path, e.g. every internal

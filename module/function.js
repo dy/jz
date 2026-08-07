@@ -192,7 +192,7 @@ export default (ctx) => {
     // At call site: allocate env, store captured values, return NaN-boxed pointer.
     // Tag IR with .closureBodyName so emitDecl can register the binding for direct dispatch
     // (skip call_indirect on a const-bound, non-escaping closure local). See emit.js '()' handler.
-    ctx.features.closure = true
+    ctx.linkDemand.closure = true
     if (envCaptures.length === 0) {
       // No captures — just a function reference
       const ir = mkPtrIR(PTR.CLOSURE, tableIdx, 0)

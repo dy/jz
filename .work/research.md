@@ -780,6 +780,62 @@ linkDemand extraction (~13 write sites + the module-template readers), 3
 reader-contract grep sweep, 4 post-carrier bigint gate retirement (bigint
 stays a frozen PROGRAM fact gating stdlib arm size).
 
+**Slices 1-2 LANDED** (2026-08-07). Slice 1: seeded `f16`/`clamped`/`typedView`
+on ctx.js's `ctx.features` init; regrouped the dict into the four documented
+strata; extended `assertCtxInvariants` with a snapshot/compare — SESSION+
+PROGRAM snapshotted at 'post-prepare', +ANALYSIS at 'post-analyze' (both new
+phase names, fired from inside compile/index.js's `compile()` itself — so
+they run host- AND self-host-uniformly, unlike 'post-prepare'/'post-compile'
+which only the host wires today), compared + presence-checked at
+'pre-assemble' (new call site, right before pullStdlib's resolveIncludes()).
+FINDING (predicted by the design's own "byte shift is a FINDING" gate, but
+surfaced as a *drift* finding, not a *byte* one — bytes stayed identical):
+`typedView` is NOT actually settled by post-analyze. Besides analyze.js's
+static tracker (only catches the NAMED-BINDING 3-arg `new T(buf,off,len)`
+view form), module/typedarray.js's constructor EMIT handlers also set it —
+1-arg buffer-reinterpret, unknown-arg-type dynamic dispatch, and any
+view-construction not bound to a name are only discovered when emission
+walks those call sites, past post-analyze. Live evidence: test/buffer.js's
+reinterpret/COPIES cases tripped a hard frozen-equal check. Banked, not
+forced: `typedView` is checked MONOTONE (present, never true→false) instead
+of frozen-equal; every other stratum key is still exact-equal. This means
+typedView is mis-stratified in the design above (DEMAND-shaped in practice,
+not ANALYSIS-shaped) — left as ANALYSIS per the brief, carve-out documented
+in ctx.js at the point of use; a future slice could reclassify it formally.
+
+Slice 2: `ctx.linkDemand` created beside `ctx.features` (same seeded-dict
+discipline, all 7 keys default false) and the DEMAND stratum — external,
+typedarray, set, map, closure, f16, clamped — moved out. 31 writer sites
+migrated (src/compile/emit.js ×3, emit-assign.js ×3, index.js ×2,
+module/typedarray.js ×12, module/function.js ×1, module/core.js ×5,
+module/string.js ×2, module/crypto.js ×1, module/collection.js ×2) and every
+reader (module/array.js, module/core.js, module/collection.js — all
+resolveIncludes()+/deps-lambda/template-factory sites, confirming the design's
+"read only at resolveIncludes()+" claim held with ZERO emit-time reads found
+outside module/*.js). Added the emission-time write tripwire: `setFeature()`
+(ctx.js) — every SESSION/PROGRAM/ANALYSIS writer now routes through it;
+throws under JZ_DEBUG_INVARIANTS if any key other than typedView (monotone
+exempt) is written after 'post-analyze', naming the call site instead of
+waiting for the lazy pre-assemble check. Hazard found + fixed en route: the
+tripwire's `_postAnalyze` module-scope flag was cleared only on the optional
+'post-reset' phase call — raw `reset()`-only callers (test/types.js's
+`runAnalyze` and siblings, which never call beginSession/assertCtxInvariants)
+leaked a PRIOR compile's `_postAnalyze=true` into their own unrelated
+prepare-time writes, false-tripping the guard. Fixed by clearing the state
+inside `reset()` itself (the one entry point every caller uses), not only at
+the phase call site.
+GATES (2026-08-07): byte-identity on the bench/ size-sweep (57 cases incl.
+watr 257699B, fftplan/provenance/wordcount/json) — IDENTICAL pre- vs post-
+slices-1+2. kernel-parity 33/33 (11×O0/O2/O3). Full battery green except one
+PRE-EXISTING failure confirmed identical on unmodified HEAD 3bc5fbb7 (typed
+RMW guard-count pin, test/optimizer.js — unrelated, a bounds-check-count
+assertion) — reproduced on a clean `git worktree` baseline before concluding
+it wasn't a regression. test:self (selfhost.js 21/21 + selfhost-perf.js)
+green except the SAME pre-existing warm-instance perf-pin miss, reproduced
+byte-for-byte-close on baseline (1.095/1.123/1.121× vs 1.098/1.126/1.126×) —
+machine noise, not a regression. Fresh `npm run build` ×2: dist/jz.js,
+dist/interop.js, dist/jz.wasm all SHA-256 identical.
+
 ## [ ] Region arena (was region-arena-design.md + slice1-build + slice1-liveness + kernel-memory-curve; DORMANT)
 
 Evidence (kernel-memory-curve, 2026-08-06): the bump arena's

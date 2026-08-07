@@ -6,6 +6,42 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## FeaturePlan freeze — Slices 1-2 landed (2026-08-07)
+Per .work/research.md §FeaturePlan freeze (audit-#14 item 3). Slice 1: seeded
+the 3 previously-absent keys (f16/clamped/typedView) on ctx.js's
+`ctx.features`, regrouped the init into the four documented strata, extended
+`assertCtxInvariants` with a SESSION+PROGRAM(+ANALYSIS) snapshot/compare —
+new 'post-analyze'/'pre-assemble' phases wired directly inside
+compile/index.js's `compile()` so they fire for BOTH host and self-host
+compiles. Slice 2: extracted the DEMAND stratum (external/typedarray/set/
+map/closure/f16/clamped) into a new `ctx.linkDemand` dict — 31 writer sites
++ every reader migrated; added a `setFeature()` write tripwire (throws under
+JZ_DEBUG_INVARIANTS if a SESSION/PROGRAM/ANALYSIS key is written after
+post-analyze, naming the call site).
+TWO FINDINGS, both banked not forced:
+  1. `typedView` (ANALYSIS per the design) is not actually settled by
+     post-analyze — module/typedarray.js's constructor emit handlers
+     (buffer-reinterpret, unknown-arg dispatch, unbound view construction)
+     keep flipping it false→true during emission, past analyze.js's static
+     tracker's coverage. It's DEMAND-shaped in practice; left classified as
+     ANALYSIS per the brief with a monotone (not frozen-equal) carve-out in
+     both the snapshot compare and the write tripwire — documented at both
+     sites in ctx.js. A future slice could formally reclassify it.
+  2. The write-tripwire's `_postAnalyze` flag, if cleared only at the
+     optional 'post-reset' assertCtxInvariants call, leaked a prior compile's
+     true value into raw-`reset()`-only test harnesses (test/types.js's
+     runAnalyze etc., which never call beginSession) — false-tripped on
+     their own legitimate prepare-time writes. Fixed by clearing the state
+     inside `reset()` itself, the one universal entry point.
+GATES: byte-identity on the bench/ 57-case size-sweep (incl. watr 257699B) —
+identical pre/post both slices, checked via a throwaway `git worktree` at
+HEAD. kernel-parity 33/33. Full battery green modulo one PRE-EXISTING
+failure (typed RMW guard-count pin, test/optimizer.js) reproduced identically
+on the unmodified baseline worktree — not a regression. test:self green
+modulo the same pre-existing warm-instance perf-pin miss (also reproduced on
+baseline, numbers within noise). Fresh `npm run build` ×2: dist/jz.js,
+dist/interop.js, dist/jz.wasm SHA-256 identical.
+
 ## AUDIT-#14 RESPONSE (2026-08-07)
 P0 (carrier default flip BLOCKED — carrier-built kernel corrupts atom/string/
 closure CONSTANTS for BigInt-free programs, `() => undefined` O0 native
@@ -39,8 +75,9 @@ CARRIER_BOX session config, not import-time constant) · item 2 five
 still-failing representation shapes (flag off AND on: 5n-3n subtraction via
 generic param, Map-value-through-unary-callee, Array.from(BigInt64Array),
 BOOL∪NUMBER false join, dynamic subnormal in BigInt-using program) · item 3
-FeaturePlan/LinkDemand split (refines the strata design: DEMAND leaves
-ctx.features entirely) · item 4 registry → executable columns with generated
+FeaturePlan/LinkDemand split SLICES 1-2 LANDED 2026-08-07 (see below +
+.work/research.md §FeaturePlan freeze); slices 3 (reader-contract grep
+sweep) and 4 (post-carrier bigint gate retirement) still open · item 4 registry → executable columns with generated
 consumer arms · item 6 BodyModel dedupe (old deriveOffsetTees path still
 runs beside new tables; per-name classify walks are quadratic-ish) + HIR
 provenance link · item 7 solver/session counts unchanged (43 ctx importers,

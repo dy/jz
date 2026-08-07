@@ -1,6 +1,9 @@
-// Feature gating: verify ctx.features.* flips on iff usage/producer site fires,
-// and off-state code omits the gated imports/branches. WAT-level inspection —
-// each probe asserts specific symbols present/absent.
+// Feature gating: verify ctx.linkDemand.* (the DEMAND stratum — external,
+// typedarray, set, map, closure, f16, clamped; .work/research.md §FeaturePlan
+// freeze) flips on iff usage/producer site fires, and off-state code omits the
+// gated imports/branches. WAT-level inspection — each probe asserts specific
+// symbols present/absent. Test names below keep the pre-extraction
+// "features.X" label — same behavior, same gate, just relocated on ctx.
 import test from 'tst'
 import { is, ok, any } from 'tst/assert.js'
 import { compile } from '../index.js'
@@ -100,7 +103,7 @@ test('features.external ON: __dyn_get_any_t factory has EXTERNAL arm', () => {
   is(/__ext_prop/.test(body), true)
 })
 
-// === Organically usage-gated substrates (no ctx.features flag — inc(__*) drives them) ===
+// === Organically usage-gated substrates (no ctx.linkDemand flag — inc(__*) drives them) ===
 
 test('organic hash gating OFF: scalar-only — no hash substrate', () => {
   const w = wat(`export let f = (x) => x + 1`)

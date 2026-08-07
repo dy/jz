@@ -35,7 +35,7 @@ export default (ctx) => {
     __len: ['__typed_shift', '__ptr_offset', '__ptr_offset_fwd'],
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __typed_data: ['__ptr_offset', '__ptr_aux'],
-    __typed_idx: () => (ctx.features.f16 ? ['__f16_to_f64'] : []),
+    __typed_idx: () => (ctx.linkDemand.f16 ? ['__f16_to_f64'] : []),
     __ptr_offset: ['__ptr_offset_fwd'],
     __ptr_offset_fwd: [],
     __is_str_key: ['__ptr_type'],
@@ -267,7 +267,7 @@ export default (ctx) => {
   // home for `arr[i]` lowering: ARRAY and typed reads both route here, plain-array
   // programs get the ARRAY-only collapse, typed programs the full elem dispatch.
   ctx.core.stdlib['__typed_idx'] = () => {
-    if (!ctx.features.typedarray && !ctx.features.external) {
+    if (!ctx.linkDemand.typedarray && !ctx.linkDemand.external) {
       return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
     (local $len i32)
     (local.set $len (call $__len (local.get $ptr)))
@@ -318,11 +318,11 @@ export default (ctx) => {
                   (then (f64.convert_i32_u (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))
                   (else (f64.convert_i32_s (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
                 (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 2))
-                  (then ${ctx.features.f16 ? `(if (result f64) (i32.and (local.get $aux) (i32.const 32))
+                  (then ${ctx.linkDemand.f16 ? `(if (result f64) (i32.and (local.get $aux) (i32.const 32))
                     (then (call $__f16_to_f64 (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
                     (else ` : ''}(if (result f64) (i32.and (local.get $et) (i32.const 1))
                     (then (f64.convert_i32_u (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
-                    (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1)))))))${ctx.features.f16 ? '))' : ''})
+                    (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1)))))))${ctx.linkDemand.f16 ? '))' : ''})
                   (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
                     (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
                     (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))
@@ -1534,7 +1534,7 @@ export default (ctx) => {
     // Unknown but proven not-string → __len directly (skips the STRING arm of __length).
     if (notString) {
       inc('__len')
-      ctx.features.typedarray = true
+      ctx.linkDemand.typedarray = true
       return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', va]]], 'f64')
     }
     // Unknown → runtime dispatch via stdlib. Set/Map dispatch arms are pulled
@@ -1570,7 +1570,7 @@ export default (ctx) => {
     // nullish test and the dispatch both read the SAME evaluation.
     if (mayBeUndef) {
       inc('__length')
-      ctx.features.typedarray = true
+      ctx.linkDemand.typedarray = true
       const lt = temp('lnva')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${lt}`, va],
@@ -1580,7 +1580,7 @@ export default (ctx) => {
           ['else', typed(['call', '$__length', ['i64.reinterpret_f64', ['local.get', `$${lt}`]]], 'f64')]]], 'f64')
     }
     inc('__length')
-    ctx.features.typedarray = true
+    ctx.linkDemand.typedarray = true
     return typed(['call', '$__length', ['i64.reinterpret_f64', va]], 'f64')
   }
 
@@ -1741,7 +1741,7 @@ export default (ctx) => {
       inc('__dyn_get_expr_t_h')
       const call = ['call', '$__dyn_get_expr_t_h', receiver, key, emitTypeTag(receiver, vt), ['i32.const', strHashLiteral(prop)]]
       // Schema-set devirt marker — same contract as emitDynGetAnyTyped below
-      // (identical 4-arg layout); without it the wasi host (features.external
+      // (identical 4-arg layout); without it the wasi host (linkDemand.external
       // off routes reads here) never devirtualizes megamorphic prop reads.
       // A branch-versioned fallback is already dominated by a failed exact-sid
       // guard; rebuilding per-read schema tables there is dead overhead.
@@ -1923,7 +1923,7 @@ export default (ctx) => {
         // `fromOptional` (a `?.prop` read) short-circuits on nullish, so its
         // PTR.EXTERNAL arm is dead unless host externals are already in play —
         // don't force the __ext_prop import just for an optional read.
-        if (!isWasi && !fromOptional) ctx.features.external = true
+        if (!isWasi && !fromOptional) ctx.linkDemand.external = true
         const slow = () => isWasi ? emitDynGetExprTyped(va, key, vt, prop) : emitDynGetAnyTyped(va, key, vt, prop)
         // Monomorphic schema-slot devirtualization (see emitSchemaSlotGuarded):
         // `prop` uniquely identifies one registered schema program-wide, so
@@ -1970,7 +1970,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__length'] = () => {
     const types = [PTR.ARRAY]
-    if (ctx.features.typedarray) types.push(PTR.TYPED)
+    if (ctx.linkDemand.typedarray) types.push(PTR.TYPED)
     const eqT = (n) => `(i32.eq (local.get $t) (i32.const ${n}))`
     let disj = eqT(types[0])
     for (let i = 1; i < types.length; i++) disj = `(i32.or ${disj} ${eqT(types[i])})`
@@ -2335,7 +2335,7 @@ export default (ctx) => {
     }
     inc('__typeof')
     // Receiver type unknown; enable branches that wouldn't otherwise be reachable.
-    ctx.features.closure = true
+    ctx.linkDemand.closure = true
     // Ambiguous BOOL-merge operand (.work/todo.md §deletion-sweep):
     // valTypeOf(a) reads NUMBER here (the merge's benign coercion), so the
     // VAL.BOOL fold above correctly stays silent — but plain `emit(a)` still
@@ -2349,7 +2349,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__typeof'] = () => {
     const stringTest = `(i32.eq (local.get $t) (i32.const ${PTR.STRING}))`
-    const closureArm = ctx.features.closure
+    const closureArm = ctx.linkDemand.closure
       ? `(if (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE}))
       (then (return (global.get $__tof_function))))`
       : ''

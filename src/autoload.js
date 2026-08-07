@@ -1,6 +1,6 @@
 /** Runtime module autoload rules used by prepare(). */
 
-import { ctx, err } from './ctx.js'
+import { ctx, err, setFeature } from './ctx.js'
 import * as mods from '../module/index.js'
 
 const dict = obj => Object.assign(Object.create(null), obj)
@@ -208,7 +208,7 @@ export const includeForObjectPattern = () => includeMods('core', 'object', 'stri
 export const includeForKnownKeyIteration = includeForStringOnly
 export const includeForRuntimeKeyIteration = () => includeMods('core', 'string', 'collection')
 export const includeForTimerRuntime = () => {
-  ctx.features.timers = true
+  setFeature('timers', true)
   includeModule('timer')
   includeModule('fn')
 }

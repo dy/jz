@@ -16,7 +16,7 @@ import { valTypeOf } from '../src/kind.js'
 import { typedIdxProven, typedElemCtor, idxKey, constIntExpr } from '../src/type.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
-import { inc, PTR, LAYOUT, registerGetter } from '../src/ctx.js'
+import { inc, PTR, LAYOUT, registerGetter, setFeature } from '../src/ctx.js'
 import { ERR } from '../err-codes.js'
 
 const _NAN_BITS = nanPrefixHex()
@@ -242,8 +242,8 @@ export default (ctx) => {
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
     __typed_set_idx: () => ['__ptr_aux', '__ptr_offset',
-      ...(ctx.features.f16 ? ['__f64_to_f16'] : []), ...(ctx.features.clamped ? ['__u8_clamp'] : [])],
-    __typed_get_idx: () => ['__ptr_aux', '__ptr_offset', ...(ctx.features.f16 ? ['__f16_to_f64'] : [])],
+      ...(ctx.linkDemand.f16 ? ['__f64_to_f16'] : []), ...(ctx.linkDemand.clamped ? ['__u8_clamp'] : [])],
+    __typed_get_idx: () => ['__ptr_aux', '__ptr_offset', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
     // __clamp_idx is body-called by every range op (fill/copyWithin/subarray/slice). It has NO
     // other manual-dep edge in the whole stdlib, so it's reachable ONLY via resolveIncludes'
     // auto-scan — which diverges under self-host (jz.wasm), dropping it ("Unknown func
@@ -408,16 +408,16 @@ export default (ctx) => {
     const aux = typedAux(name)
     const stride = STRIDE[elemType]
     ctx.core.emit[`new.${name}`] = (lenExpr, offsetExpr, lenExpr2) => {
-      ctx.features.typedarray = true
-      if (name === 'Float16Array') ctx.features.f16 = true
-      if (name === 'Uint8ClampedArray') ctx.features.clamped = true
+      ctx.linkDemand.typedarray = true
+      if (name === 'Float16Array') ctx.linkDemand.f16 = true
+      if (name === 'Uint8ClampedArray') ctx.linkDemand.clamped = true
       const srcType = typeof lenExpr === 'string' ? lookupValType(lenExpr) : valTypeOf(lenExpr)
       // Subview: new TypedArray(buffer, byteOffset, length) — true JS-parity view.
       // Allocates a 16-byte descriptor [byteLen:i32][dataOff:i32][parentOff:i32][pad]
       // and tags the TYPED ptr with aux=elemType|8. Reads/writes alias the parent,
       // .buffer reconstructs the root BUFFER, .byteOffset = dataOff - parentOff.
       if (offsetExpr != null && lenExpr2 != null) {
-        ctx.features.typedView = true  // subview aliases the parent buffer — SLP must not assume disjoint bases
+        setFeature('typedView', true)  // subview aliases the parent buffer — SLP must not assume disjoint bases
         const src = temp('tvs')
         const parentOff = tempI32('tvp')
         const byteLen = tempI32('tvb')
@@ -503,11 +503,11 @@ export default (ctx) => {
       // the byteLen header is shared with the parent. __len(view) = byteLen >> shift
       // computes elemCount for this view's elemType.
       if (srcType === VAL.BUFFER) {
-        ctx.features.typedView = true  // zero-copy reinterpret aliases the source — SLP must not pack across it
+        setFeature('typedView', true)  // zero-copy reinterpret aliases the source — SLP must not pack across it
         return mkPtrIR(PTR.TYPED, aux, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(lenExpr))]])
       }
       if (srcType == null && ctx.core.emit[`${name}.from`]) {
-        ctx.features.typedView = true  // unknown arg: runtime may take the buffer zero-copy-view branch
+        setFeature('typedView', true)  // unknown arg: runtime may take the buffer zero-copy-view branch
 
         // Runtime dispatch: number → allocate; array/typed → copy elements; buffer → zero-copy view.
         const src = temp('ts')
@@ -596,7 +596,7 @@ export default (ctx) => {
   // bounds checks all read it at runtime — correct regardless of how the
   // receiver variable was assigned, and ArrayBuffer.isView(dv) is now true.
   ctx.core.emit['new.DataView'] = (bufExpr, offExpr, lenExpr) => {
-    ctx.features.typedarray = true
+    ctx.linkDemand.typedarray = true
     const src = temp('dvs')
     const parentOff = tempI32('dvp')
     const off = tempI32('dvo')
@@ -619,7 +619,7 @@ export default (ctx) => {
 
   // BigInt64Array(buffer) (bare form, legacy): coerce to same data, Float64Array-compatible storage.
   ctx.core.emit['BigInt64Array'] = (bufExpr) => {
-    ctx.features.typedarray = true
+    ctx.linkDemand.typedarray = true
     const va = asF64(emit(bufExpr))
     return mkPtrIR(PTR.TYPED, typedAux('BigInt64Array'), ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]])
   }
@@ -1137,9 +1137,9 @@ export default (ctx) => {
     const aux = typedAux(name)
     const stride = STRIDE[elemType], store = STORE[elemType]
     ctx.core.emit[`${name}.from`] = (src) => {
-      ctx.features.typedarray = true
-      if (name === 'Float16Array') ctx.features.f16 = true
-      if (name === 'Uint8ClampedArray') ctx.features.clamped = true
+      ctx.linkDemand.typedarray = true
+      if (name === 'Float16Array') ctx.linkDemand.f16 = true
+      if (name === 'Uint8ClampedArray') ctx.linkDemand.clamped = true
       const fl = { et: elemType, isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }
       // Bare array-literal source (`Int32Array.from([…])`, `new Int32Array([…])`): build the
       // typed array directly — alloc + one native-typed store per element — instead of
@@ -1255,8 +1255,8 @@ export default (ctx) => {
     const isView = viewOutput || (!chainOutput && ctor.endsWith('.view'))
     const name = ctor.endsWith('.view') ? ctor.slice(4, -5) : ctor.slice(4)
     const et = TYPED_ELEM_CODE[name]
-    if (name === 'Float16Array') ctx.features.f16 = true
-    if (name === 'Uint8ClampedArray') ctx.features.clamped = true
+    if (name === 'Float16Array') ctx.linkDemand.f16 = true
+    if (name === 'Uint8ClampedArray') ctx.linkDemand.clamped = true
     return et == null ? null : { et, isView, name,
       isBigInt: name === 'BigInt64Array' || name === 'BigUint64Array',
       isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }
@@ -1330,11 +1330,11 @@ export default (ctx) => {
             (if (i32.or (i64.eq (local.get $vb) (i64.const ${FALSE_NAN}))
                         (i64.eq (local.get $vb) (i64.const ${NULL_NAN})))
               (then (local.set $v (f64.const 0))))))
-        ${ctx.features.f16 ? `(if (i32.and (local.get $aux) (i32.const 32)) (then
+        ${ctx.linkDemand.f16 ? `(if (i32.and (local.get $aux) (i32.const 32)) (then
           (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1)))
             (call $__f64_to_f16 (local.get $v)))
           (return (local.get $v))))` : ''}
-        ${ctx.features.clamped ? `(if (i32.and (local.get $aux) (i32.const 64)) (then
+        ${ctx.linkDemand.clamped ? `(if (i32.and (local.get $aux) (i32.const 64)) (then
           (i32.store8 (i32.add (local.get $off) (local.get $i))
             (call $__u8_clamp (local.get $v)))
           (return (local.get $v))))` : ''}
@@ -1401,11 +1401,11 @@ export default (ctx) => {
               (then (f64.convert_i32_u (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))
               (else (f64.convert_i32_s (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
             (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 2))
-              (then ${ctx.features.f16 ? `(if (result f64) (i32.and (local.get $aux) (i32.const 32))
+              (then ${ctx.linkDemand.f16 ? `(if (result f64) (i32.and (local.get $aux) (i32.const 32))
                 (then (call $__f16_to_f64 (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
                 (else ` : ''}(if (result f64) (i32.and (local.get $et) (i32.const 1))
                 (then (f64.convert_i32_u (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
-                (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1)))))))${ctx.features.f16 ? '))' : ''})
+                (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1)))))))${ctx.linkDemand.f16 ? '))' : ''})
               (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
                 (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
                 (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))))))`
@@ -2696,7 +2696,7 @@ export default (ctx) => {
   // NOT a copy). Builds the 16-byte descriptor [byteLen][dataOff][parentOff] and tags the
   // TYPED ptr with aux|view, exactly like new TypedArray(buffer, byteOffset, length).
   ctx.core.emit['.typed:subarray'] = (arr, begin, end) => {
-    ctx.features.typedView = true  // zero-copy view aliases the receiver — covers inline `a.subarray(1)[i]=…` the bound-decl path in analyze.js misses
+    setFeature('typedView', true)  // zero-copy view aliases the receiver — covers inline `a.subarray(1)[i]=…` the bound-decl path in analyze.js misses
     const r = resolveElem(arr)
     if (!r) {
       // Elem type / view-ness not statically known (owned→view reassigned binding).
@@ -2848,14 +2848,14 @@ export default (ctx) => {
   ctx.core.emit['Uint8Array.fromBase64'] = (str, opts) => {
     const { url } = codecOpts(opts, 'fromBase64', false)
     ctx.runtime.throws = true
-    ctx.features.typedarray = true
+    ctx.linkDemand.typedarray = true
     inc('__b64_from')
     return typed(['call', '$__b64_from', asI64(emit(str)), ['i32.const', url]], 'f64')
   }
 
   ctx.core.emit['Uint8Array.fromHex'] = (str) => {
     ctx.runtime.throws = true
-    ctx.features.typedarray = true
+    ctx.linkDemand.typedarray = true
     inc('__hex_from')
     return typed(['call', '$__hex_from', asI64(emit(str))], 'f64')
   }

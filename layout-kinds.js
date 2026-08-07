@@ -183,7 +183,7 @@ export const KIND_REGISTRY = {
       'noted here, not elevated to FINDINGS (no other consumer claims otherwise to disagree with; it is simply a ' +
       'surprising consequence of "immediate when no payload" applied to CLOSURE, worth a future audit item)',
     interopDecode: 'mem.read: NO arm for t===10 — falls to the default `return i64ToF64(p)`, reinterpreting the boxed pointer\'s bits as a raw float. Unlike BIGINT (below) this looks intentional/inert: a CLOSURE crossing to the host has no meaningful host-side JS value to decode INTO (calling it needs a wrapped-export path, not mem.read) — flagged here as a documented gap, not elevated to a FINDING since no comment anywhere claims CLOSURE should decode to something else',
-    typeofArm: '"function" — the ONE kind besides STRING that $__typeof special-cases explicitly (closureArm, gated on ctx.features.closure)',
+    typeofArm: '"function" — the ONE kind besides STRING that $__typeof special-cases explicitly (closureArm, gated on ctx.linkDemand.closure)',
     findings: ['region-forwarding'],
   },
 

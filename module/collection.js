@@ -1097,9 +1097,9 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType) {
 
 
 export default (ctx) => {
-  // Feature-gated deps: EXTERNAL-dependent symbols are only pulled when features.external.
-  // Evaluated lazily at resolveIncludes() time — after emission has finalized ctx.features.
-  const ifExt = (name) => () => ctx.features.external ? [name] : []
+  // Feature-gated deps: EXTERNAL-dependent symbols are only pulled when linkDemand.external.
+  // Evaluated lazily at resolveIncludes() time — after emission has finalized ctx.linkDemand.
+  const ifExt = (name) => () => ctx.linkDemand.external ? [name] : []
   // Whether durableFwdLogIR emits a real call (vs '' — see its own comment): only when
   // __heap_reset exists (owned-memory builds; shared memory never declares it — core.js).
   // Gates the deps() edges below the SAME way, so a shared-memory build (where core.js
@@ -1123,8 +1123,8 @@ export default (ctx) => {
     // log (durableEntryLogIR) still calls $__durable_slot_log — without the
     // explicit edge the kernel leg drops the helper (auto-scan divergence, the
     // selfhost-includes class) and every `new Set(...)` fails to compile there.
-    __set_add: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
-    __set_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
+    __set_add: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __set_has: () => ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __set_delete: ['__map_hash', '__same_value_zero'],
     __set_add_all: ['__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order', '__set_add'],
     __set_filter: ['__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order', '__set_add', '__set_has', '__map_has'],
@@ -1132,28 +1132,28 @@ export default (ctx) => {
     __sclone: ['__sclone_rec', '__mkptr', '__alloc_hdr_n'],
     __sclone_rec: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_from', '__obj_clone', '__sclone_hash_vals'],
     __sclone_hash_vals: ['__sclone_rec'],
-    __map_set: () => [...(ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
-    __map_get: () => ctx.features.external ? ['__ext_prop', '__map_set', '__ptr_offset', '__ptr_offset_fwd'] : ['__map_set', '__ptr_offset', '__ptr_offset_fwd'],
-    __map_get_h: () => ctx.features.external ? ['__ext_prop', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
-    __map_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
+    __map_set: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __map_get: () => ctx.linkDemand.external ? ['__ext_prop', '__map_set', '__ptr_offset', '__ptr_offset_fwd'] : ['__map_set', '__ptr_offset', '__ptr_offset_fwd'],
+    __map_get_h: () => ctx.linkDemand.external ? ['__ext_prop', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
+    __map_has: () => ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     // Prehashed has-probes: caller folds the hash, so no __map_hash dependency.
-    __map_has_h: () => ctx.features.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
-    __set_has_h: () => ctx.features.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
+    __map_has_h: () => ctx.linkDemand.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
+    __set_has_h: () => ctx.linkDemand.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __map_delete: ['__map_hash', '__same_value_zero'],
     __map_from: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__len', '__typed_idx', '__map_set', '__mkptr', '__alloc_hdr_n', '__coll_order'],
     // own edge: __map_new's body calls $__alloc_hdr_n — auto-scan-only
     // reachability vanishes under self-host (test/selfhost-includes.js)
     __map_new: ['__alloc_hdr_n'],
     __hash_set: () => [
-      ...(ctx.features.external ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set'] : ['__str_hash', '__str_eq', '__ptr_type', '__dyn_set']),
+      ...(ctx.linkDemand.external ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set'] : ['__str_hash', '__str_eq', '__ptr_type', '__dyn_set']),
       '__zomb_scan',
       ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),
       ...slotLogDeps(),
     ],
-    __hash_get: () => ctx.features.external
+    __hash_get: () => ctx.linkDemand.external
       ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_prop']
       : ['__str_hash', '__str_eq', '__ptr_type'],
-    __hash_has: () => ctx.features.external
+    __hash_has: () => ctx.linkDemand.external
       ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_has']
       : ['__str_hash', '__str_eq', '__ptr_type'],
     __hash_new: ['__alloc_hdr_n'],
@@ -1180,10 +1180,10 @@ export default (ctx) => {
     __dyn_get_expr_t_h: ['__dyn_get_t_h', '__hash_get_local_h'],
     __dyn_get_expr: ['__dyn_get_expr_t', '__ptr_type'],
     __dyn_get_any: ['__dyn_get_any_t', '__ptr_type'],
-    __dyn_get_any_t: () => ctx.features.external
+    __dyn_get_any_t: () => ctx.linkDemand.external
       ? ['__dyn_get_t', '__hash_get_local', '__ext_prop', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd']
       : ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
-    __dyn_get_any_t_h: () => ctx.features.external
+    __dyn_get_any_t_h: () => ctx.linkDemand.external
       ? ['__dyn_get_t_h', '__hash_get_local_h', '__ext_prop']
       : ['__dyn_get_t_h', '__hash_get_local_h'],
     __dyn_get_or: ['__dyn_get'],
@@ -1330,7 +1330,7 @@ export default (ctx) => {
   // === Set ===
 
   ctx.core.emit['new.Set'] = (iterExpr) => {
-    ctx.features.set = true
+    ctx.linkDemand.set = true
     if (iterExpr == null) {
       const out = allocPtr({ type: PTR.SET, len: 0, cap: INIT_CAP, stride: SET_ENTRY + LANE, tag: 'set' })
       return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
@@ -1494,9 +1494,9 @@ export default (ctx) => {
   }
 
   // Generated Set probe functions
-  ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.features.external)
-  ctx.core.stdlib['__set_has'] = () => genLookup('__set_has', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.features.external)
-  ctx.core.stdlib['__set_has_h'] = () => genLookupStrictPrehashed('__set_has_h', SET_ENTRY, sameValueZeroEqG, PTR.SET, UNDEF_NAN, ctx.features.external, false)
+  ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
+  ctx.core.stdlib['__set_has'] = () => genLookup('__set_has', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
+  ctx.core.stdlib['__set_has_h'] = () => genLookupStrictPrehashed('__set_has_h', SET_ENTRY, sameValueZeroEqG, PTR.SET, UNDEF_NAN, ctx.linkDemand.external, false)
   ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET)
 
   // ES2025 Set algebra (union/intersection/difference/symmetricDifference +
@@ -1556,7 +1556,7 @@ export default (ctx) => {
   // === Map ===
 
   ctx.core.emit['new.Map'] = (iterExpr) => {
-    ctx.features.map = true
+    ctx.linkDemand.map = true
     if (iterExpr == null) {
       const out = allocPtr({ type: PTR.MAP, len: 0, cap: INIT_CAP, stride: MAP_ENTRY + LANE, tag: 'map' })
       return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
@@ -2006,11 +2006,11 @@ export default (ctx) => {
   }
 
   // Generated Map probe functions
-  ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.features.external)
-  ctx.core.stdlib['__map_get'] = () => genLookup('__map_get', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.features.external)
-  ctx.core.stdlib['__map_get_h'] = () => genLookupStrictPrehashed('__map_get_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP, UNDEF_NAN, ctx.features.external)
-  ctx.core.stdlib['__map_has_h'] = () => genLookupStrictPrehashed('__map_has_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP, UNDEF_NAN, ctx.features.external, false)
-  ctx.core.stdlib['__map_has'] = () => genLookup('__map_has', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, false, ctx.features.external)
+  ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.linkDemand.external)
+  ctx.core.stdlib['__map_get'] = () => genLookup('__map_get', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.linkDemand.external)
+  ctx.core.stdlib['__map_get_h'] = () => genLookupStrictPrehashed('__map_get_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP, UNDEF_NAN, ctx.linkDemand.external)
+  ctx.core.stdlib['__map_has_h'] = () => genLookupStrictPrehashed('__map_has_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP, UNDEF_NAN, ctx.linkDemand.external, false)
+  ctx.core.stdlib['__map_has'] = () => genLookup('__map_has', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, false, ctx.linkDemand.external)
   ctx.core.stdlib['__map_delete'] = genDelete('__map_delete', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP)
 
   // new Map(iterable) seeder. Source is another Map (copy live [key,val] slots) or
@@ -2704,7 +2704,7 @@ export default (ctx) => {
 
   // Like __dyn_get_expr but also resolves EXTERNAL host objects via __ext_prop.
   // Used at call sites where receiver type is statically unknown.
-  // When features.external is off, collapses to __dyn_get_expr shape (no EXTERNAL probe).
+  // When linkDemand.external is off, collapses to __dyn_get_expr shape (no EXTERNAL probe).
   ctx.core.stdlib['__dyn_get_any'] = () => {
     // Fast path: HASH check first, route directly to __hash_get_local. Hashes never carry
     // dyn_props (those are for OBJECT/ARRAY attached props), so the original __dyn_get
@@ -2715,7 +2715,7 @@ export default (ctx) => {
   }
 
   ctx.core.stdlib['__dyn_get_any_t'] = () => {
-    const extArm = ctx.features.external
+    const extArm = ctx.linkDemand.external
       ? `(if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
             (then (call $__ext_prop (local.get $obj) (local.get $key)))
             (else (i64.const ${UNDEF_NAN})))`
@@ -2765,7 +2765,7 @@ export default (ctx) => {
   // Hot for the layered-parser pattern — `parse.step`/`parse.space`/… reads a
   // function-object property with a literal key on every parser step.
   ctx.core.stdlib['__dyn_get_any_t_h'] = () => {
-    const extArm = ctx.features.external
+    const extArm = ctx.linkDemand.external
       ? `(if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
             (then (call $__ext_prop (local.get $obj) (local.get $key)))
             (else (i64.const ${UNDEF_NAN})))`
@@ -3140,9 +3140,9 @@ export default (ctx) => {
     (i32.const 1))`
 
   // Generated HASH probe functions
-  ctx.core.stdlib['__hash_set'] = () => genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, false, ctx.features.external, true)
-  ctx.core.stdlib['__hash_get'] = () => genLookup('__hash_get', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, true, ctx.features.external)
-  ctx.core.stdlib['__hash_has'] = () => genLookup('__hash_has', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, false, ctx.features.external)
+  ctx.core.stdlib['__hash_set'] = () => genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, false, ctx.linkDemand.external, true)
+  ctx.core.stdlib['__hash_get'] = () => genLookup('__hash_get', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, true, ctx.linkDemand.external)
+  ctx.core.stdlib['__hash_has'] = () => genLookup('__hash_has', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, false, ctx.linkDemand.external)
 
   // === `delete obj[k]`: lift from prepare for computed-key removal ===
   // Static-key `delete obj.x` / `delete obj["x"]` is rejected in prepare (fixed schema);
@@ -3214,7 +3214,7 @@ export default (ctx) => {
       ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]]]
 
     inc('__ptr_type', '__len', '__str_byteLen', '__hash_has', '__is_str_key', '__to_str', '__dyn_get', '__is_nullish')
-    if (ctx.features.external) inc('__ext_has')
+    if (ctx.linkDemand.external) inc('__ext_has')
 
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${objTmp}`, asF64(emit(obj))],
@@ -3251,7 +3251,7 @@ export default (ctx) => {
             ['then', ['call', '$__hash_has', ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]],
             ['else', ['call', '$__hash_has', ['i64.reinterpret_f64', objVal], ['call', '$__to_str', ['i64.reinterpret_f64', keyVal]]]]]]]],
 
-      ...(ctx.features.external ? [['if', ['i32.eq', typeVal, ['i32.const', PTR.EXTERNAL]],
+      ...(ctx.linkDemand.external ? [['if', ['i32.eq', typeVal, ['i32.const', PTR.EXTERNAL]],
         ['then', ['local.set', `$${outTmp}`, ['call', '$__ext_has',
           ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]]]]] : []),
 

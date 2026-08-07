@@ -2491,7 +2491,7 @@ export default (ctx) => {
     // indexing/spread dispatch through __typed_idx, whose element-unaware fallback
     // (f64.load, stride 8) is only valid when no typed array can flow in. Enabling
     // the feature pulls the element-aware variant — same invariant `.length` follows.
-    ctx.features.typedarray = true
+    ctx.linkDemand.typedarray = true
     return typed(['call', '$__str_encode', asI64(emit(str))], 'f64')
   })
 
@@ -2547,7 +2547,7 @@ export default (ctx) => {
 
   bind('.encodeInto', (obj, str, dst) => {
     ctx.runtime.throws = true
-    ctx.features.typedarray = true
+    ctx.linkDemand.typedarray = true
     inc('__str_encode_into', '__hash_new', '__hash_set')
     const n = tempI32('ein'), h = temp('eih')
     const hI64 = ['i64.reinterpret_f64', ['local.get', `$${h}`]]

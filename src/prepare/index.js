@@ -32,7 +32,7 @@
  */
 
 import { handlerArgs, refsName, ASSIGN_OPS, MUTATE_OPS, JZ_NULL, JZ_UNDEF, TYPEOF } from '../ast.js'
-import { ctx, err, derive, emitArity, declGlobal } from '../ctx.js'
+import { ctx, err, derive, emitArity, declGlobal, setFeature } from '../ctx.js'
 import { T } from '../ast.js'
 import { extractParams, collectParamNames, classifyParam } from '../ast.js'
 import { observeNodeFacts } from '../compile/program-facts.js'
@@ -1156,7 +1156,7 @@ function prep(node) {
   // that can actually produce one — everywhere else stays the original cheap
   // NaN-only check (see .work/todo.md, ring/fgather perf-ratchet regression).
   if (Array.isArray(node) && (node[0] === 'bigint' || (node[0] === '()' && node[1] === 'BigInt')))
-    ctx.features.bigint = true
+    setFeature('bigint', true)
   // Whole-program "does a jz Error object ever get constructed" flag — mirrors the
   // bigint flag immediately above (order-independence for the same reason: a
   // template literal stringifying a caught Error, ir.js's toStrI64 Error-schema
@@ -1183,7 +1183,10 @@ function prep(node) {
   const ctorCallee = Array.isArray(node) && node[0] === 'new' && Array.isArray(node[1]) && node[1][0] === '()' ? node[1][1]
     : Array.isArray(node) && (node[0] === 'new' || node[0] === '()') ? node[1] : null
   if (typeof ctorCallee === 'string' && ERR_CLASS_SET.has(ctorCallee)) {
-    ctx.features.error = true
+    setFeature('error', true)
+    // errorClasses mutates the SAME Set object in place (no key-level write for
+    // setFeature's tripwire to see) — both call sites run mid-prepare like `error`
+    // above, so it never needs the guard.
     ;(ctx.features.errorClasses ??= new Set()).add(ctorCallee)
   }
   // Whole-program "will a nullish-receiver check ever construct a TypeError"
@@ -1213,7 +1216,7 @@ function prep(node) {
   // correct) instanceof/toString check when the flagged site turns out not
   // to be nullish at runtime, never a missed flag.
   if (Array.isArray(node) && (node[0] === '.' || node[0] === '()') && censusShapedNode(node[1])) {
-    ctx.features.error = true
+    setFeature('error', true)
     ;(ctx.features.errorClasses ??= new Set()).add('TypeError')
   }
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc

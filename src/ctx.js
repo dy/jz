@@ -48,7 +48,8 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 // | memory    | compile  | index.js                        | compile                   |
 // | error     | compile  | prepare, compile, emit          | err()                     |
 // | transform | compile  | index.js                        | prepare, compile, emit    |
-// | features  | compile  | emit, modules, prepare          | compile, stdlib factories |
+// | features  | compile  | prepare, analyze                | compile, optimizer, stdlib factories |
+// | linkDemand| compile  | emit, modules                   | resolveIncludes()+, assemble |
 // | abi       | compile  | reset (makeAbi)                 | ir.js codegen, optimizer  |
 // | bridge    | compile  | reset (bridge.js)               | bridge.js → emit, modules |
 //
@@ -94,8 +95,10 @@ export const ctx = {
                   // peephole hook; expanding as per-site narrowing tags individual sites.
   bridge: {},     // emit/flat/wat dispatch, bound by reset() (see bridge.js). Lets every
                   // module call emit() without importing the emitter — breaks the cycle.
-  features: {},   // codegen capability flags (external, sso, typedarray, …), reset() seeds
+  features: {},   // frozen FeaturePlan (SESSION+PROGRAM+ANALYSIS facts), reset() seeds
                   // the defaults; see reset() for the field list and who flips each.
+  linkDemand: {}, // DEMAND stratum (emission-produced reachability), reset() seeds the
+                  // defaults; see reset()'s ctx.linkDemand doc for the field list.
 }
 
 /** Create a child scope via shallow flat copy with NO prototype chain. Critical:
@@ -261,6 +264,15 @@ export function reset(proto, globals, bridge) {
   // Fail loudly at session start instead, under the invariants leg.
   if (DBG_INVARIANTS) for (const h of ['emit', 'flat', 'body', 'bool', 'idx', 'spread', 'emitIdentitySafe'])
     if (typeof bridge?.[h] !== 'function') throw new Error(`reset: bridge hook '${h}' missing — every beginSession/reset caller must bind the full hook set (see bridge.js)`)
+  // FeaturePlan freeze tripwire state (see setFeature/assertCtxInvariants below): cleared
+  // HERE, not only at the optional 'post-reset' assertCtxInvariants call — `reset()` itself
+  // is the one entry point every caller uses, including raw-reset test harnesses
+  // (test/types.js's runAnalyze etc.) that never call beginSession/assertCtxInvariants at
+  // all. Clearing only on the phase call let a PRIOR compile's `_postAnalyze=true` leak
+  // into an unrelated later reset()-only test in the same warm process, false-tripping the
+  // tripwire on that test's own (legitimately pre-analyze) ctx.features writes.
+  _featureSnapshot = null
+  _postAnalyze = false
   ctx.bridge = bridge
   ctx.core = {
     emit: derive(proto),
@@ -634,16 +646,17 @@ export function reset(proto, globals, bridge) {
   // Advisory sink. Populated when compile() receives opts.warnings.
   ctx.warnings = null
 
-  // Feature flags: the FeaturePlan (.work/research.md §FeaturePlan freeze).
+  // Feature flags: the frozen FeaturePlan (.work/research.md §FeaturePlan freeze).
   // Every key here MUST be seeded, not an absent key: the self-hosted kernel's
   // absent-dyn-key read misfires truthy, so a missing key silently turns a gate ON
   // (the original bigint bug — pure-number programs exported subnormals as bigint
-  // carriers, -5e-324 → -1, data.js pins). Four strata, each with its own writer
+  // carriers, -5e-324 → -1, data.js pins). Three strata, each with its own writer
   // phase; assertCtxInvariants (below) snapshots SESSION+PROGRAM at 'post-prepare',
   // extends the snapshot with ANALYSIS at 'post-analyze', and asserts all three
-  // unchanged (+ every key present) at 'pre-assemble'. DEMAND is excluded from
-  // that check — it's still legitimately written during emission (a future slice
-  // is expected to extract it into its own dict so the freeze covers everything).
+  // unchanged (+ every key present) at 'pre-assemble' — a genuine freeze: nothing
+  // below writes ctx.features during emission any more (the DEMAND stratum that
+  // used to live here — external/typedarray/set/map/closure/f16/clamped — moved
+  // out to ctx.linkDemand, see its own doc a few lines down).
   //
   //   SESSION  — from opts, set once at reset(), stable for the whole compile:
   //     sso, blockingTimers
@@ -656,9 +669,6 @@ export function reset(proto, globals, bridge) {
   //     see assertCtxInvariants' comment for the monotone-not-frozen carve-out
   //     this forced.
   //     typedView
-  //   DEMAND   — emission-accumulated, monotone false→true, readable only at
-  //     resolveIncludes()+ (module template factories + deps lambdas) and
-  //     assemble: external, typedarray, set, map, closure, f16, clamped
   ctx.abi = makeAbi()
 
   ctx.features = {
@@ -699,19 +709,36 @@ export function reset(proto, globals, bridge) {
                       // vectorize.js) to bail on cross-base pairing when any view could
                       // alias. MUST be seeded (same absent-key hazard as bigint) — was
                       // written/read live but unseeded before this stratum.
+  }
 
-    // DEMAND — .work/research.md §FeaturePlan freeze plans a `ctx.linkDemand`
-    // extraction for these seven; still on ctx.features for now.
+  // linkDemand: the DEMAND stratum of the frozen FeaturePlan (.work/research.md
+  // §FeaturePlan freeze, audit-#14 item 3 refinement) — reachability facts
+  // EMISSION discovers ("this program's output will need EXTERNAL dispatch /
+  // a typed-array kind / Set / Map / closures / f16 / clamped stores"), as
+  // opposed to ctx.features' facts, which are all settled before/at analyze.
+  // Monotone false→true, written across emission (src/compile/emit.js,
+  // emit-assign.js, module/{typedarray,function,core,collection}.js — the
+  // `new Set()`/`new Map()`/typed-array-ctor/EXTERNAL-dispatch/closure-table
+  // sites). Read ONLY at resolveIncludes()+ (module template factories +
+  // deps-graph lambdas, e.g. module/collection.js's `ifExt`) and assemble —
+  // never at emit time, so a DEMAND flag flipping mid-emission is safe by
+  // construction: nothing has consulted it yet. Every key MUST be seeded
+  // (the same absent-key hazard as ctx.features — the self-hosted kernel's
+  // absent-dyn-key read misfires truthy). `external` is the one flag actually
+  // wired into an emission decision beyond template gating (it also gates the
+  // `host: 'wasi'` legalization check in index.js); the typed-kind ones
+  // (typedarray/set/map/closure/f16/clamped) are today usage-gated organically
+  // by inc()/stdlibDeps and mostly save bytes by eliding dead branches in the
+  // stdlib templates that read them (module/collection.js's EXTERNAL-arm
+  // elision is the canonical example).
+  ctx.linkDemand = {
     external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or __ext_call site.
     typedarray: false,// Float64Array/Int32Array/etc. Set on typed-array construction; gates PTR.TYPED dispatch.
     set: false,       // Set. Set on Set construction; gates PTR.SET dispatch.
     map: false,       // Map. Set on Map construction; gates PTR.MAP dispatch.
     closure: false,   // First-class functions. Set when ctx.closure.table is populated.
-    f16: false,       // Float16Array construction anywhere. MUST be seeded (same absent-key
-                      // hazard as bigint) — was written/read live but unseeded before this stratum.
-    clamped: false,   // Uint8ClampedArray construction anywhere. MUST be seeded (same
-                      // absent-key hazard as bigint) — was written/read live but unseeded
-                      // before this stratum.
+    f16: false,       // Float16Array construction anywhere.
+    clamped: false,   // Uint8ClampedArray construction anywhere.
   }
 }
 
@@ -829,11 +856,31 @@ const FEATURE_STRATA = {
   ANALYSIS: ['typedView'],
 }
 let _featureSnapshot = null
+let _postAnalyze = false // true once 'post-analyze' has fired for the current compile
 const snapFeatureVal = (v) => v instanceof Set ? [...v].sort() : v
 const snapFeatureEq = (a, b) => Array.isArray(a)
   ? Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i])
   : a === b
 const snapshotFeatures = (keys, into) => { for (const k of keys) into[k] = snapFeatureVal(ctx.features[k]); return into }
+
+/** Emission-time write tripwire for ctx.features (.work/research.md §FeaturePlan
+ *  freeze, Slice 2): every writer of a SESSION/PROGRAM/ANALYSIS key routes through
+ *  here instead of assigning directly, so a write that lands after 'post-analyze'
+ *  throws AT THE CALL SITE under JZ_DEBUG_INVARIANTS — naming the offending write
+ *  instead of leaving the drift to surface generically at 'pre-assemble' (Slice 1's
+ *  snapshot compare). One exemption, matching that same Slice 1 finding: `typedView`
+ *  legitimately keeps flipping false→true during emission (module/typedarray.js's
+ *  view-constructing constructor handlers — analyze.js's static tracker only catches
+ *  the NAMED-BINDING 3-arg view form, not buffer-reinterpret/unknown-arg/unbound
+ *  construction, so it cannot fully settle before emission walks those sites). No
+ *  other key should ever write true and then... write again after post-analyze —
+ *  DEMAND was extracted to ctx.linkDemand specifically so nothing else touches
+ *  ctx.features this late. */
+export function setFeature(key, value) {
+  if (DBG_INVARIANTS && _postAnalyze && !(key === 'typedView' && value === true))
+    throw new Error(`[ctx invariant] ctx.features.${key} written after post-analyze — frozen FeaturePlan facts must not change during emission (DEMAND writes belong on ctx.linkDemand)`)
+  ctx.features[key] = value
+}
 
 export function assertCtxInvariants(phase) {
   if (!DBG_INVARIANTS) return
@@ -846,7 +893,7 @@ export function assertCtxInvariants(phase) {
     ctx.transform.sessionPhase = phase
   }
 
-  must(ctx.core && ctx.module && ctx.scope && ctx.func && ctx.transform && ctx.features,
+  must(ctx.core && ctx.module && ctx.scope && ctx.func && ctx.transform && ctx.features && ctx.linkDemand,
        'sub-contexts present')
   if (phase !== 'pre-reset') {
     must(ctx.core.includes instanceof Set, 'core.includes is Set')
@@ -871,9 +918,9 @@ export function assertCtxInvariants(phase) {
   // (monotone, emission-time), not an ANALYSIS one. Gap in the freeze design's
   // stratification (.work/research.md §FeaturePlan freeze), banked here rather than
   // forced: typedView is checked monotone (never true→false) instead of frozen-equal.
-  if (phase === 'post-reset') _featureSnapshot = null
+  if (phase === 'post-reset') { _featureSnapshot = null; _postAnalyze = false }
   if (phase === 'post-prepare') _featureSnapshot = snapshotFeatures([...FEATURE_STRATA.SESSION, ...FEATURE_STRATA.PROGRAM], {})
-  if (phase === 'post-analyze') snapshotFeatures(FEATURE_STRATA.ANALYSIS, _featureSnapshot ??= {})
+  if (phase === 'post-analyze') { snapshotFeatures(FEATURE_STRATA.ANALYSIS, _featureSnapshot ??= {}); _postAnalyze = true }
   if (phase === 'pre-assemble') {
     for (const k of [...FEATURE_STRATA.SESSION, ...FEATURE_STRATA.PROGRAM]) {
       must(k in ctx.features, `ctx.features.${k} missing — every FeaturePlan key must be seeded, not an absent key`)

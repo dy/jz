@@ -112,7 +112,7 @@ export default (ctx) => {
   bind('crypto.getRandomValues', (arr) => {
     if (!seeded) needEntropy()
     ctx.runtime.throws = true
-    ctx.features.typedarray = true
+    ctx.linkDemand.typedarray = true
     inc('__get_random_values')
     return typed(['call', '$__get_random_values', asI64(emit(arr))], 'f64')
   })
