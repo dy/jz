@@ -1,5 +1,5 @@
 /**
- * Heap-kind registry SLICE 1 shadow-check (.work/heap-kind-registry-design.md).
+ * Heap-kind registry SLICE 1 shadow-check (.work/research.md §Heap-kind registry).
  *
  * Proves layout-kinds.js's KIND_REGISTRY columns against LIVE behavior: one
  * probe per kind × consumer (typeof, ===/==, Set/Map keying, interop

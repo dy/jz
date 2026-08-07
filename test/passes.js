@@ -1,4 +1,4 @@
-// Stage-0 architecture gates (see .work/architecture-plan.md):
+// Stage-0 architecture gates (see .work/research.md §Middle-end consolidation):
 //   1. REGISTRY COVERAGE — every flag any call site reads off the optimize
 //      config must be declared in PASS_NAMES or TUNING_KEYS. An unlisted name
 //      reads `undefined !== false` and silently runs at O0, breaking the

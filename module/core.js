@@ -63,7 +63,7 @@ export default (ctx) => {
     __durable_slot_log: ['__alloc'],
     __durable_slot_heal: [],
     __is_eph_bits: [],
-    // Region-arena Slice 1 (.work/region-arena-design.md) — see the definitions below
+    // Region-arena Slice 1 (.work/research.md §Region arena) — see the definitions below
     // for the full rationale. __region_copy_rec's dep list mirrors __sclone_rec's
     // (module/collection.js) plus __coll_order/__set_add for the SET/MAP branch.
     __region_mark: [],
@@ -657,7 +657,7 @@ export default (ctx) => {
     // the bump pointer at round start, then at round end Cheney-copy the round's
     // SURVIVING tree (`root`) down to the mark, compacting away everything else the
     // round allocated (churn/live measured 574x-2495x on the design's own corpora —
-    // .work/region-slice1-liveness.md; .work/region-arena-design.md is the design).
+    // .work/research.md §Region arena; .work/research.md §Region arena is the design).
     //
     // Reuses the EXACT forwarding-header convention the durable machinery
     // (__durable_fwd_log/heal above) and array/hash/set/map growth (module/array.js
@@ -721,7 +721,7 @@ export default (ctx) => {
       ;; accumulated re-keys) allocates ABOVE mark and would otherwise be
       ;; silently reclaimed by this function's OWN closing rewind below — the
       ;; exact "container's own backing store straddling the boundary" hazard
-      ;; already fixed for dirty/snapshots (region-slice1-build.md), just a
+      ;; already fixed for dirty/snapshots (research.md §Region arena), just a
       ;; DIFFERENT global that inventory sweep missed. Relocate it here,
       ;; unconditionally, the same way: __coll_order + reinsert (a relocated
       ;; i32-offset KEY needs a rehash — __map_hash-family hashing is bits-
@@ -849,7 +849,7 @@ export default (ctx) => {
       ;; CARRIER PROGRAM Slice 3 — registry-derived 'region-forwarding' arm
       ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[region-forwarding]),
       ;; dormant with the rest of __region_copy_rec until the region program's
-      ;; own re-enable path (.work/region-arena-design.md) — but no longer
+      ;; own re-enable path (.work/research.md §Region arena) — but no longer
       ;; falls to the trailing unreachable trap the finding named. Mirrors
       ;; STRING's own heap-block shape below (durable short-circuit / memo /
       ;; fresh-copy-with-delta), simplified for BIGINT's flat, header-less,

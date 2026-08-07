@@ -1151,7 +1151,7 @@ VT['()'] = (args) => {
   // `['()', expr]`, never a call. Falls through to here when `expr`'s own
   // head didn't match one of the callee-shaped special cases above (ternary/
   // '[]'/'.'/string dispatch) — a plain comparison/logical/literal grouping
-  // like `(x>0)`. carrier-invariant-design.md MECHANISM B: this fallthrough
+  // like `(x>0)`. research.md §Carrier invariant MECHANISM B: this fallthrough
   // used to return null (the detector blind spot — `((x>0)&&1)` collapsed to
   // an unrecognized NUMBER/null merge instead of the true BOOL∪NUMBER kind).
   // Pure structural unwrap: the grouping's type IS its inner expression's type.

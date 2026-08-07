@@ -2373,7 +2373,7 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
     const branches = op === '?:' ? [args[1], args[2]] : [args[0], args[1]]
     const ta = exprType(branches[0], locals, valTypes, strict), tb = exprType(branches[1], locals, valTypes, strict)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
-    // carrier-invariant-design.md: both branches are i32-REPRESENTABLE (a
+    // research.md §Carrier invariant: both branches are i32-REPRESENTABLE (a
     // comparison's 0/1 and a NUMBER literal both answer 'i32' here — this
     // function only asks "does the WASM storage type fit", not "do the two
     // branches carry the same represented VALUE"), but a BOOL∪NUMBER merge

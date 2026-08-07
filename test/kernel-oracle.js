@@ -148,7 +148,7 @@ export let f = (s) => g(s) === false`,
   { name: 'and-bool-merge-eq',
     src: `export let f = (x) => ((x > 0) && 1) === false`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
-  // FLIPPED from PENDING-FIX (carrier-invariant-design.md MECHANISM A — the
+  // FLIPPED from PENDING-FIX (research.md §Carrier invariant MECHANISM A — the
   // container-store carrier-collapse rows below this array): storedValue
   // promoted from src/compile/emit-assign.js to src/bridge.js as the ONE
   // producer chokepoint, replacing 16 raw `carrierF64(node, emit(node))`
@@ -277,7 +277,7 @@ export let f = (x) => g(x > 0 && 1)`,
   // no-op there (hasAmbiguousBoolMerge only recognizes the `?:`/`&&`/`||`/
   // `??`/`()` AST shape directly, not an identifier referencing one), and
   // the merge already collapsed at k's OWN declaration — the DECL-INIT WALL
-  // (carrier-invariant-design.md), the same root as the 'captured-then-read'
+  // (research.md §Carrier invariant), the same root as the 'captured-then-read'
   // PENDING-FIX row below, banked and out of scope here. Re-attempted
   // audit-#8 P0-4 Part 2 (2026-08-03): a NARROWER, hasAmbiguousBoolMerge-
   // gated fix (emit.js emitDecl's `argIR(init)`) proved byte-identical on
@@ -428,7 +428,7 @@ export let f = (s) => g(s) === false`
   }
 })
 
-// ── PENDING-FIX tier: carrier-invariant-design.md's 51-mismatch sweep ─────
+// ── PENDING-FIX tier: research.md §Carrier invariant's 51-mismatch sweep ─────
 //
 // MECHANISM A (the design's own framing): emit-assign.js's storedValue
 // (hasAmbiguousBoolMerge ? emitIdentitySafe : carrierF64(emit)) is the ONE
@@ -482,7 +482,7 @@ const PENDING_FIX = [
     wrong: 0 },
 ]
 
-test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier collapse (carrier-invariant-design.md — not yet fixed; formatter/ToPropertyKey rows CLOSED, see .work/todo.md §deletion-sweep)', async () => {
+test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier collapse (research.md §Carrier invariant — not yet fixed; formatter/ToPropertyKey rows CLOSED, see .work/todo.md §deletion-sweep)', async () => {
   if (onWasi()) return
   for (const { name, src, wrong, opts = [0, 2, 3] } of PENDING_FIX) {
     const mod = await oracle(src)

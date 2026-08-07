@@ -29,7 +29,7 @@
  * ternary-nullish 5, dataview 3, collection 1), fixpoint verdict 11 real box
  * sites (1 param + 10 module-init-constant locals) — same counts the design
  * doc's §1 recorded; committed as the program's tracked baseline in
- * .work/carrier-box-baseline.md (this file's own re-run command is there,
+ * .work/research.md §Carrier box-site baseline (this file's own re-run command is there,
  * verbatim, so the count is reproducible, not just asserted).
  *
  * This module is the seed the real solver fact (analyze.js intra-body sink

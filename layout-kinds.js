@@ -1,6 +1,6 @@
 /**
  * Heap-kind registry — the one per-tag authority every consumer of a NaN-boxed
- * value's KIND should eventually derive from (.work/heap-kind-registry-design.md,
+ * value's KIND should eventually derive from (.work/research.md §Heap-kind registry,
  * audit-#13 critical-path item 3).
  *
  * SLICE 1 (this file): the table + a shadow-check (test/layout-kinds.js) proving
@@ -284,7 +284,7 @@ export const FINDINGS = [
       'module/core.js\'s __region_copy_rec (the region-arena Cheney-copy tracer) has dispatch arms for ATOM/ ' +
       'STRING/ARRAY/SET/MAP/BIGINT only; OBJECT, HASH, CLOSURE, TYPED, BUFFER, and EXTERNAL still fall to a ' +
       'trailing `(unreachable)` trap, EXPLICITLY documented in-source as "out of Slice-1 scope" (the region ' +
-      'program\'s own Slice 1, .work/region-arena-design.md — a DIFFERENT Slice 1 than this file\'s). Module/ ' +
+      'program\'s own Slice 1, .work/research.md §Region arena — a DIFFERENT Slice 1 than this file\'s). Module/ ' +
       'collection.js\'s __sclone_rec (structuredClone) has real OBJECT/HASH arms already (via __obj_clone) but ' +
       'still has none for CLOSURE (throws DataCloneError instead, matching real JS) — the remaining live gap is ' +
       'OBJECT/HASH/CLOSURE inside __region_copy_rec specifically, region-program-scoped, not carrier-scoped.',

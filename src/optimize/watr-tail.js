@@ -314,7 +314,7 @@ export function legalizeForTarget(module, targetProfile) {
 export function watrTail(module, cfg, { funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile, regionHooks } = {}) {
   const legalized = legalizeForTarget(module, targetProfile)
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
-  // Region-arena Slice 1 (.work/region-arena-design.md): per-round mark/exit around
+  // Region-arena Slice 1 (.work/research.md §Region arena): per-round mark/exit around
   // watOptimize's fixpoint round loop, ON for kernel/self-host compiles only. The
   // ONLY caller that ever passes `regionHooks` is scripts/self.js's optimizeTail —
   // that file is NEVER imported/run as native JS (it's fed to jz's compiler purely

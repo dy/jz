@@ -23,7 +23,7 @@ export const emit = (...a) => ctx.bridge.emit(...a)
 // directly — the acyclic bridge indirection) — bound alongside it at reset().
 export const emitIdentitySafe = (...a) => ctx.bridge.emitIdentitySafe(...a)
 
-// THE represented-carrier chokepoint (carrier-invariant-design.md, "Decision:
+// THE represented-carrier chokepoint (research.md §Carrier invariant, "Decision:
 // box-at-production via ONE producer chokepoint") — the single sound producer
 // for any BOXED-VALUE storage position (array/object/Map/Set element, closure
 // arg, stdlib 'I' slot): emit ONCE, before branching on hasAmbiguousBoolMerge.

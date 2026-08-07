@@ -1460,7 +1460,7 @@ ${localDecls}
     // rewrite the top-level value, in which case fall to runtime.
     if (noReplacer && valTypeOf(x) === VAL.BOOL) return bool(x)
     inc('__stringify')
-    // storedValue (not raw emit): MECHANISM A (carrier-invariant-design.md) —
+    // storedValue (not raw emit): MECHANISM A (research.md §Carrier invariant) —
     // `__json_val`'s runtime dispatcher already discriminates a genuine number
     // from a boxed TRUE_NAN/FALSE_NAN atom (it checks "not NaN" before any
     // pointer-type test), so an ALREADY-boxed bool renders correctly. A BOOL∪

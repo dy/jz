@@ -707,7 +707,7 @@ The `jz` CASE under the `jz` TARGET is the last uncovered cell in the lab
 grid: jz compiling itself (`bench/jz/jz.js` → `scripts/self.js`, the whole
 compiler) into a wasm module that, once run, itself compiles 3 more
 programs 45 times over. It is gated on the region-arena allocator
-(concurrent work, `.work/region-arena-design.md`) — today's bump-and-
+(concurrent work, `.work/research.md §Region arena`) — today's bump-and-
 never-free allocator has no bound on this workload's working set. The bench
 plumbing is ready for the moment it lands: this cell's PREP (the compile)
 runs in its own isolated child process (`bench/_lib/compile-jz-self.mjs`,

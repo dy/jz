@@ -34,7 +34,7 @@ import jzify from '../jzify/index.js'
 // (missing ifset tiering, inlineWrappers, watr LICM, guard policy, the
 // large-module unroll2 rule, boundary pins, and the pointer repair), so
 // kernel O2/O3 output diverged from native on identical source.
-// Region-arena Slice 1 (.work/region-arena-design.md): this file is the ONLY
+// Region-arena Slice 1 (.work/research.md §Region arena): this file is the ONLY
 // caller that supplies watrTail's `regionHooks` — it is NEVER imported/run as
 // native JS (npm run build feeds it to jz's OWN compiler as source text, to
 // become dist/jz.wasm), so these literal `__region_mark()`/`__region_exit()`

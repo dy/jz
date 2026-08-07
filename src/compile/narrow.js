@@ -532,7 +532,7 @@ function narrowI32Results(funcs) {
     }
     if (te) ctx.types.typedElem = te
     const allV128 = exprs.every(e => exprType(e, locals, valTypes) === 'v128')
-    // carrier-invariant-design.md: exprType's own '&&'/'||'/'?:' conciliation
+    // research.md §Carrier invariant: exprType's own '&&'/'||'/'?:' conciliation
     // (src/type.js) only asks "is each branch i32-representable", the same
     // question CMP_OPS-vs-NUMBER-literal both answer 'i32' to — it has no
     // notion of hasAmbiguousBoolMerge's BOOL∪NUMBER identity concern, so
@@ -1570,7 +1570,7 @@ export default function narrowSignatures(programFacts, ast) {
   // recursive `buffer` arg to VAL.ARRAY (via callerParamFacts on iter 2,
   // or via the caller's own default expression on iter 1).
   const inferValAtSite = (arg, state) => {
-    // carrier-invariant-design.md: an ambiguous BOOL∪NUMBER merge argument
+    // research.md §Carrier invariant: an ambiguous BOOL∪NUMBER merge argument
     // (`cond && 1`) legitimately answers NUMBER here (inferValType →
     // valTypeOf's arithmetic-safe benign coercion — the SAME kind.js rule
     // hasAmbiguousBoolMerge exists to flag as unsound elsewhere) — but a

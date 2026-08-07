@@ -524,7 +524,7 @@ test('JSON.stringify: false still serialises as "false"', () => {
 
 // audit-#8 P0-4 (2026-08-03): a BOOL∪NUMBER ambiguous merge (valTypeOf
 // collapses to NUMBER) reaching JSON.stringify/JSON.parse's scalar-argument
-// ingress raw — carrier-invariant-design.md MECHANISM A, same class as the
+// ingress raw — research.md §Carrier invariant MECHANISM A, same class as the
 // String()/template-literal formatter wave (756ae10f), landed here via
 // storedValue at the stringify/space/parse argument chokepoints.
 test('JSON.stringify: ambiguous BOOL∪NUMBER merge argument boxes correctly', () => {

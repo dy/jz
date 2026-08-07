@@ -487,7 +487,7 @@ const compileJzSize = c => {
 // Every other (case,target) pair's prep runs IN bench.mjs's own process
 // (compileJzHost/compileJzSize above, or the other targets' execFileSync
 // calls) because it's cheap; this one is NOT — the actual unlock is the
-// region-arena allocator (concurrent work, .work/region-arena-design.md),
+// region-arena allocator (concurrent work, .work/research.md §Region arena),
 // which today's bump-and-never-free allocator doesn't have. Until it lands,
 // this compile can legitimately take minutes and/or the resulting module can
 // legitimately trap (verified live: a full compile+run took ~4-6 minutes and

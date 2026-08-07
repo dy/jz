@@ -678,3 +678,166 @@ regression vs the pre-migration baseline.
 
 Generic folds watr lacked, migrated in: rebox-fold `wrap∘reinterpret∘reinterpret∘extend → x`
 (watr `afbdd97`); constant-select side-effect guard (this branch).
+
+---
+
+# Architecture programs — design summaries (2026-08-07 consolidation)
+
+Full design docs were deleted per the one-record policy; every full text is
+recoverable via `git log --diff-filter=D -- .work/<name>.md` → `git show
+<sha>^:.work/<name>.md`. The living execution ledger is `.work/todo.md`
+(+ its two archives, grep-first). The ONLY standalone design doc kept is
+`.work/carrier-representation-design.md` — its program is in flight (an
+agent appends findings sections live); fold it here when the program closes.
+
+## [ ] Middle-end consolidation plan (was architecture-plan.md; audit-#13 critical path)
+
+From the 2026-07-20 architecture audit. Stages: **0 pass-registry +
+formatting-invariance — DONE** (registry with `enabled()` throwing on
+unregistered names; O0 = all-off asserted; code.length tuning deleted).
+**1 BindingId — DONE** (4a0102d2 totality + census collapse; bare-name
+schema class unrepresentable; α-rename byte-identity pin). **2 one fact
+solver, frozen plans** — slices 1-4 DONE (change-driven fixpoint 7e570e58;
+solver-owned D2 storage 878d3685; D1 worklist b01dbfb2; SLICE 4 exit-grep 0,
+FunctionPlan frozen with DBG enforcement — updateRep throws when frozen;
+P1→inheritPtrAliases, P2→closureAux channel, P3→Object.assign plan
+predictor, P4→assert-only). REMAINING: the ~31 analyzeBody call sites still
+route through the staleable cache with hand-placed invalidation — "declared
+invalidation" (one invalidateBodyFacts(body, reason) entry point; blanket
+phase-boundary calls become coverage assertions, then delete) and the
+per-domain worklists (D4→D2→D1→D3 order) are the open solver work.
+**3 loop model** — scaffold phase TERMINAL ({bl,op,blLoose} descriptor,
+15/16 recognizers); BodyModel continuation below. **4 CompileSession
+phase views** (~43 ctx importers) + target legalization profiles — OPEN.
+**5 claims/hygiene** — three-tier bench claims live; self-host workaround
+sweep ongoing via differential tests.
+
+## [ ] BodyModel / LoweredLoopPlan (was loop-bodymodel-design.md; Stage-3 remainder)
+
+Shares FACTS not scans: one order-independent per-block record built before
+any recognizer runs — `addrTable` (Map name→{kind: offset|fullAddr|idxTee|
+mirror, strideLog2, pixelStride, base}), `siteAccess` (WeakMap node→resolved
+affine access), `aliasClass` (base-identity partition; distinctness ONLY
+under existing solver proof, else same-class). Recognizer ADMISSION POLICY
+stays private per the terminal verdict (the 2026-07-31 shared-scan refusal:
+the differing knobs ARE the differing soundness conditions). Slices 1-3
+LANDED 2026-08-07 byte-identical (174 compiles ×3 tiers, zero WAT diffs):
+construction + shadow-asserts; the 3 class-A hoists (epilogueIsSafe,
+bumpPixelIV/rampPixelIV direct refs, matchChannelReducePixelLoop);
+tryMapReduceVectorize/tryRampMap onto the tables (tryStrengthReduceIV
+correctly excluded — matchAffineAddr never consulted the tables). REMAINING:
+slice 4 = HIR provenance link (each candidate block carries its originating
+loop-model.js LoopPlan id; BodyModel consults HIR facts — typedLen,
+neverGrown, hulls — through it; {bl,op,blLoose} becomes the lowering seam,
+not a parallel authority) under four BINDING pre-trio specs: (1) rewrites
+mint new block identities, (2) WeakMap miss = FAIL-OPEN (decline, never
+"no access"), (3) base distinctness needs solver proof, (4) first-match-wins
++ fresh identity per round. Slices 5-7 = the incremental trio
+(tryMemCopyFill → tryReduceVectorize → tryVectorize), each its own
+byte-identity-gated unit. Class-C recognizers (stencil ivCoeff, butterfly
+unification, divergent-escape, conv-column MAC) stay private by design.
+
+## [ ] Heap-kind registry (was heap-kind-registry-design.md; audit-#13 item 3)
+
+One per-tag authority (`layout-kinds.js`, repo root): 16 kinds × 7 columns
+(tag, allocShape, childPointers, forwarding, identity, interopDecode,
+typeofArm) — the composition point for carrier boxing × region relocation
+(which previously had NO shared contract; the region tracer traps on unknown
+kinds). Consumers DERIVE their arms from the table (err-codes.js
+compile-time-table precedent), migration per-consumer byte-identity-gated;
+divergence = a latent inconsistency FOUND. **Slice 1 LANDED**: table +
+shadow-check suite (test/layout-kinds.js, ~42 tests); its 4 PTR.BIGINT
+findings became carrier Slice 3's worklist. REMAINING: 2 __region_copy_rec
+generated from the forwarding column (gated on regions re-enable), 3
+$__eq/$__map_hash arms generated, 4 interop decode + i64exp lane fold-in,
+5 carrier read-side derives arms from registry (partially done via Slice 3).
+
+## [ ] FeaturePlan freeze (was featureplan-freeze-design.md; audit-#13 item 2)
+
+`ctx.features` is one mutable bag written across four phases; contract
+enforced by nothing — the bigint module-ordering hazard + absent-dyn-key
+kernel misfire (subnormal export bug) already paid for this. Design: declare
+strata — SESSION {sso, blockingTimers} (reset, from opts) · PROGRAM {bigint,
+error, errorClasses, timers} (prepare prescan, order-independent) · ANALYSIS
+{typedView} · DEMAND {external, typedarray, set, map, closure, f16, clamped}
+(emission-accumulated monotone false→true, readable only at
+resolveIncludes()+). SURVEY FINDINGS: `f16`/`clamped`/`typedView` are
+written/read but UNSEEDED in the ctx.js:628 init — violating its own MUST
+("seeded, not an absent key", the bigint precedent class). Enforcement =
+existing assertCtxInvariants pattern (subset-safe, no Proxy): stratum
+snapshots at post-prepare/post-analyze, compared at pre-assemble; DEMAND
+needs no snapshot. Slices: 1 seed+declare+assert (gate: byte-identity on
+size-sweep — a byte shift from dict-shape change is a FINDING), 2
+reader-contract grep sweep, 3 post-carrier bigint gate retirement (bigint
+stays a PROGRAM-stratum size gate). No FeaturePlan object — the bag stays a
+flat seeded dict; strata are a contract, not a runtime structure.
+
+## [ ] Region arena (was region-arena-design.md + slice1-build + slice1-liveness + kernel-memory-curve; DORMANT)
+
+Evidence (kernel-memory-curve, 2026-08-06): the bump arena's
+retain-everything cost ACCELERATES with input size — jessie 60KB graph →
+1.07GB peak, watr 104KB → 4.295GB (bare wasm32 ceiling), jzify-entry 406KB
+and the full 5.6MB jz×jz graph → deliberate __memgrow unreachable (>4GiB
+need). Confirmed genuine exhaustion (A), not address-signedness (B) — though
+one real B-class bug was found+fixed en route (__alloc un-widened i32 bump
+at the true ceiling → now sound trap). No signedness patch creates headroom:
+the jz×jz bench row needs regions.
+Design: `__region_mark()` (save bump top) / `__region_exit(mark, roots)`
+(Cheney-copy live tree above mark to a compacted block built at heap top
+with pointers pre-adjusted by final delta, one closing memory.copy;
+forwarding headers at old sites heal stale refs through the SAME
+__ptr_offset forwarding chase durable relocation already uses). Survivors
+identified by ROOT (each phase has one dominant output), not ctx tracing.
+Liveness measurement (GO): churn/live 574-2342× sustained per round; Slice 1
+(fixpoint-round region) removes cross-round accumulation only (~979MB /
+25.8% on watr-graph); the ~1GB target needs Slices 1+2 (front boundary)
+paired; Slice 3 (emit/encode boundary) unlocks jz×jz under 4GiB.
+Slice 1 BUILT (module/core.js primitives beside __clear) with 3 hazard
+fixes found live: (a) dirty/snapshots watr bookkeeping must be region ROOTS
+(backing-table grow mid-round would be reclaimed — real corruption), (b)
+SET/MAP always rebuild via __coll_order+reinsert (slot position is
+hash-of-key — an in-place patch would leave entries in wrong buckets), (c)
+durable ARRAYs still walk elements in place (grow-in-place containers hold
+non-durable refs). OBJECT/HASH/CLOSURE/TYPED/BUFFER/EXTERNAL trap rather
+than silently mishandle (registry Slice 2 retires this).
+DORMANT: hooks commented in scripts/self.js. O2 green after the 3 fixes; O3
+= fusedRewrite×treeshake joint interaction + an address-layout-sensitive O2
+heisenbug (banked, hardest open class). Re-enable gated on the watr
+regionHooks API publication (USER-owned dependency; pristine watr 5.7.12
+restored in node_modules) + the O3 hunt; warm checkpoint then gates SHIP.
+
+## [ ] Carrier invariant / storedValue (was carrier-invariant-design.md; predecessor of the carrier program)
+
+The boxed-value invariant program that preceded carrier-representation.
+THREE named mechanisms: **A** enumerated-list drift — storedValue's guard
+hand-reimplemented UNFIXED at 16 sites (array.js ×10, collection.js ×4,
+object.js, function.js); fix = one chokepoint (bridge.js storedValue), most
+landed via the formatter-dispatch commit. **B** detector blind spot —
+VT['()'] treated parenthesized non-calls as opaque, so wrongness and
+detector shared the blind spot by construction; FIXED (grouping unwrap).
+**C** narrow-local coercion blind to carrier atoms — toI32(boxed BOOL atom)
+collapsed TRUE_NAN and FALSE_NAN to 0 (ToInt32(NaN)=0), producing the
+universal export-loss; FIXED (unboxBoolIR bit-extraction arm in the
+decl-init ladder). Tag-preserving rebox landed as .srcPtrKind/.srcPtrAux
+(stamping live .ptrKind onto boxed results is UNSOUND — it's a live
+dispatch convention, confirmed by crash). THE RESIDUAL WALL (still closed):
+decl-init `val = viewInit || emit(init)` stays — flipping to
+argIR/storedValue makes the SELF-HOSTED kernel flip closure direct-dispatch
+eligibility for a non-reassigned single-capture shape (invalid WASM,
+local.set type mismatch; native provably unaffected — WAT byte-identical
+either way). resolveCallee/temp()-counter theory FALSIFIED (uniq is
+per-function). The kernel-oracle 'captured-then-read' row stays PENDING-FIX
+until that self-host generational-drift instance is named (same class as
+MECHANISM C's discovery context and the outline-hunt family).
+
+## [x] Carrier box-site baseline (was carrier-box-baseline.md; Slice-0 artifact)
+
+Repro: JZ_DBG_BIGINT_ERASURE=1 JZ_DBG_BIGINT_STATS=1 over the 149-module
+self graph (recipe in git history / erasure-diag.js). Result (2026-08-06):
+57 raw kind-erasing BIGINT flows (call-arg 37, closure-capture 6, return 5,
+ternary-nullish 5, dataview 3, collection 1); fixpoint resolves 46/57 (81%)
+fully raw → **11 real box sites**: 1 param (m61_layout$i64Hex bits) + 10
+module-init const locals (assemble NAN_PREFIX/TAG_SHIFT_BIG/… , encode
+F64_SIGN/F64_NAN/F64_QUIET) — zero hot-loop sites. assertErasureConsistency
+guards whole-program presence (the '(top)' attribution split between the
+two instruments is a naming mismatch, not a solver bug).

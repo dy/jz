@@ -6,7 +6,7 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
-## Status (2026-08-07, HEAP-KIND REGISTRY SLICE 1 landed — table + shadow-check, .work/heap-kind-registry-design.md)
+## Status (2026-08-07, HEAP-KIND REGISTRY SLICE 1 landed — table + shadow-check, .work/research.md §Heap-kind registry)
 New leaf modules `layout-kinds.js` (root, sibling to layout.js/err-codes.js —
 not module/layout-kinds.js: layout.js itself lives at repo root, matched that
 convention) and `test/layout-kinds.js`. Zero codegen change: KIND_REGISTRY
@@ -141,7 +141,7 @@ optimizer/passes/simd/simd-intrinsics/cond-vectorize/slp/unswitch-typed-
 param/kernel-parity/kernel-oracle/perf-ratchet/examples — 459 tests (5737
 assertions), same 2 pre-existing failures only.
 
-## Status (2026-08-07, BODYMODEL SLICE 1 landed — .work/loop-bodymodel-design.md §5)
+## Status (2026-08-07, BODYMODEL SLICE 1 landed — .work/research.md §BodyModel §5)
 BodyModel construction landed UNWIRED (zero consumers): `addrTable` generalizes
 `_offsetLocalStride`/`_isAddressLocal`/`_isPixelIndexLocal`/`matchMirrorAddr`
 into one per-name write-shape classification (`classifyAddrLocal`, one gather
@@ -214,7 +214,7 @@ materialization of internal codes, see git show for detail),
 represented-maybe-undefined-design.md (program complete through presentVal;
 model as-landed in src comments + this ledger), rival-wat-analysis.md
 (items landed / verdicts recorded here). KEPT: this ledger + its two
-grep-first archives, architecture-plan.md, the four active-frontier docs
+grep-first archives, research.md §Middle-end consolidation, the four active-frontier docs
 (carrier-invariant, carrier-representation, region-arena, region-slice1-build)
 + evidence files (region-slice1-liveness, kernel-memory-curve,
 carrier-box-baseline), and the user's own strategy/research/ecosystem/
@@ -334,7 +334,7 @@ pre-existing, unchanged by anything landed this session.
 ## since the prior session's green verdict and is non-deterministic across
 ## rebuilds — a NEW, separate, unresolved finding. Hooks STAY DORMANT. Ship
 ## gate NOT run (gated on kernel-oracle green, which is now less green than
-## the checkpoint this session started from). See .work/region-slice1-build.md's
+## the checkpoint this session started from). See .work/research.md §Region arena's
 ## "`_eqFast` candidate: confirm-or-refute session" section for the full account.
 
 Restored `regionHooks`, rebuilt, reproduced the O3 trap on dvnested-mechanism
@@ -393,7 +393,7 @@ removal event instead of inferred from config ablation.
 
 ## Status (2026-08-06, REGION-ARENA SLICE-1 KERNEL-ORACLE ROOT-CAUSE SESSION —
 ## 3 real hazards found+fixed, O2 fully green, O3 narrowed-not-named, hooks
-## STAY DORMANT — see .work/region-slice1-build.md's "root-cause session"
+## STAY DORMANT — see .work/research.md §Region arena's "root-cause session"
 ## section for the full account)
 
 Root-caused the kernel-oracle regression the prior session filed (below).
@@ -461,11 +461,11 @@ touched nested nodes get visited.
 
 ## Status (2026-08-06, REGION-ARENA SLICE-1 BUILD — primitives + wiring landed,
 ## NOT SAFE TO SHIP YET: a real kernel-oracle regression is open — see
-## .work/region-slice1-build.md for the full report)
+## .work/research.md §Region arena for the full report)
 
 Implemented `__region_mark`/`__region_exit`/`__region_copy_rec`
 (module/core.js) — the Cheney-copy-with-forwarding primitive
-region-arena-design.md Slice 1 calls for — and wired them into watOptimize's
+research.md §Region arena Slice 1 calls for — and wired them into watOptimize's
 per-round loop (scripts/self.js's regionHooks -> watr-tail.js -> an
 additive, opt-in `opts.regionMark`/`regionExit` hook patched into
 node_modules/watr/src/optimize.js + the sibling source repo, never touching
@@ -508,11 +508,11 @@ just the regionHooks wiring in scripts/self.js, rebuilding, make it pass?
 
 ## Status (2026-08-06, REGION-ARENA SLICE-1 PRE-WIRING MEASUREMENT — GO, with
 ## a sharper arithmetic than the design's acceptance line implied — see
-## .work/region-slice1-liveness.md)
+## .work/research.md §Region arena)
 
 Measured per-round LIVENESS vs CHURN in watOptimize's fixpoint
 (`node_modules/watr/src/optimize.js`'s `runRounds`) BEFORE any region
-wiring, per `region-arena-design.md` Risk §1's mandate. Method: a temp
+wiring, per `research.md §Region arena` Risk §1's mandate. Method: a temp
 same-module probe (`__RP` log + `opts.__maxRounds` round cap, reverted —
 `node_modules/watr` restored via `rm -rf` + `npm install watr@5.7.12
 --no-save`, sha256-verified byte-identical) driving (a) native runs for
@@ -529,7 +529,7 @@ WAT — the design's own 4.3GB-peak case), including the "confirm" round
 that changes nothing — decisively clears the design's ≥3×-sustained GO
 bar. jzify-entry (406KB / 14.6MB pre-watr WAT) exceeds the wasm32 4GiB
 ceiling before even ROUND 0's setup completes — sharpens (not just
-confirms) `kernel-memory-curve.md`: failure isn't many-rounds compounding,
+confirms) `research.md §Region arena`: failure isn't many-rounds compounding,
 one pre-round pass over that size already can't fit.
 
 **But**: per-round mark/exit only removes CROSS-round accumulation, not a
@@ -3257,7 +3257,7 @@ pins + new documented-divergence pin), test/kernel-oracle.js (AGREE move),
 README.md (divergence note rewritten).
 
 ## Status (2026-08-05, DECL-INIT WALL round 2 — still banked, mechanism now
-## precisely localized; see .work/carrier-invariant-design.md's final entry)
+## precisely localized; see .work/research.md §Carrier invariant's final entry)
 
 Time-boxed re-attempt at the narrow `argIR(init)` gate (emit.js ~1920,
 `val = viewInit || argIR(init)`) — same substitution the 2026-08-03 session
@@ -3328,7 +3328,7 @@ HEAD — `git status`/`git diff` clean before this commit). kernel-oracle's
 'captured-then-read' row stays PENDING-FIX, unflipped (451/451 assertions,
 same as baseline). kernel-parity re-verified 33/33 byte-identical after
 rebuilding dist/jz.wasm back to the unpatched baseline. See
-.work/carrier-invariant-design.md's final entry for the full WAT evidence
+.work/research.md §Carrier invariant's final entry for the full WAT evidence
 and the precise next lead (trace `isReassigned`'s OWN self-hosted
 compilation, not `resolveCallee`).
 
@@ -6102,7 +6102,7 @@ jessie (60KB) succeeds at a 1.07GB watermark; watr (104KB) succeeds but
 needs the ENTIRE 4GiB address space to do it (`memory.buffer.byteLength`
 == 65536 pages exactly); jzify-entry (406KB, only 4× bigger) already
 needs MORE than 4GiB and fails; the full jz-graph (5.58MB) fails the same
-way. Full curve + method: `.work/kernel-memory-curve.md`. Every failure —
+way. Full curve + method: `.work/research.md §Region arena`. Every failure —
 at dist/jz.wasm's standard 512MB-baked build AND at an exploratory
 full-4GiB-initial rebuild — resolves through `__memgrow`'s EXISTING,
 deliberate ceiling guard (`i64.gt_u need 65536 → unreachable` in
@@ -6475,7 +6475,7 @@ Files: `module/core.js` (the one src/ change — the `.length` fold, +21
 lines), `.work/todo.md` (this entry).
 
 LOOPPLAN SHARED BODY-ANALYSIS DESIGN (2026-08-06, audit item 8, read-only):
-`.work/loop-bodymodel-design.md` — the redesign the 2026-07-31 LOOPPLAN
+`.work/research.md §BodyModel` — the redesign the 2026-07-31 LOOPPLAN
 UNIFICATION TERMINAL verdict named (not a retry of the refused shared-scan
 path). Survey: 17 recognizer rows (16 dispatched + the deferred
 tryStrengthReduceIV fallback), ~30 derivation kinds; 4 verified byte-

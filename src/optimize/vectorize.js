@@ -1123,7 +1123,7 @@ function deriveOffsetTees(body, ind) {
   return offsetTees
 }
 
-// ---- BodyModel (.work/loop-bodymodel-design.md §2) — UNWIRED, zero consumers -------------
+// ---- BodyModel (.work/research.md §BodyModel §2) — UNWIRED, zero consumers -------------
 //
 // One shared per-block record generalizing three independent private discovery predicates
 // (`_offsetLocalStride`/`_isAddressLocal`/`_isPixelIndexLocal`) plus `matchMirrorAddr` into a
@@ -1512,7 +1512,7 @@ function matchLoopBrEnd(loopNode) {
 // here per LoopPlan; consumers read bl.writes/bl.referenced/bl.hasGlobalSet/bl.offsetTees
 // instead of re-walking.
 //
-// Also computes BodyModel (.work/loop-bodymodel-design.md, UNWIRED — zero consumers as of
+// Also computes BodyModel (.work/research.md §BodyModel, UNWIRED — zero consumers as of
 // LoopPlan BodyModel slice 1): `addrTable`/`siteAccess`/`aliasClass`, spread in below exactly
 // like `offsetTees` was in slice 6. JZ_DEBUG_INVARIANTS shadow-asserts the generalization
 // against the private predicates it will eventually let recognizers retire.
@@ -2791,7 +2791,7 @@ function tryMapReduceVectorize(bl, fnLocals, freshIdRef) {
   // Address tees: locals that equal `ind << K`. f64 loads must be stride-8 (K=3) so one
   // f64x2.load (16 bytes) covers iterations j and j+1 — consecutive elements. BodyModel fact
   // (bl.siteAccess, see buildSiteAccess) — computed once at the dispatch (shadow-assert-proven
-  // against the plain matchLaneAddr query this used to make live, .work/loop-bodymodel-design.md
+  // against the plain matchLaneAddr query this used to make live, .work/research.md §BodyModel
   // slice 1), was a private per-site matchLaneAddr(e[1], incVar, new Map(), bl.offsetTees) call.
 
   // f64x2 lift: load → f64x2.load (2 consecutive), const/invariant → splat, a lane local
@@ -4212,7 +4212,7 @@ function matchChannelGroup(body) {
   return null
 }
 
-// Class-A hoist (.work/loop-bodymodel-design.md §1a/§5 slice 3): the init+inner-loop-locate scan
+// Class-A hoist (.work/research.md §BodyModel §1a/§5 slice 3): the init+inner-loop-locate scan
 // tryBlurMultiPixel and tryChannelReduce each ran over their pixel-loop body — locate four
 // consecutive `acc_c = 0` inits, then the `(block (loop))` immediately after them, then the
 // channel-accumulation group inside it via matchChannelGroup, then verify the summed
@@ -4990,7 +4990,7 @@ const CMP_LANE = {  // f64/i32 scalar compare → f64x2 lane compare (iter is f6
 const readsVar = (n, v) => isArr(n) && ((n[0] === 'local.get' && n[1] === v) || n.some(c => readsVar(c, v)))
 const writesName = (n, name) => isArr(n) && (((n[0] === 'local.set' || n[0] === 'local.tee' || n[0] === 'global.set') && n[1] === name) || n.some(c => writesName(c, name)))
 
-// Epilogue safety (class-A hoist, .work/loop-bodymodel-design.md §1a/§5 slice 3): the per-pixel
+// Epilogue safety (class-A hoist, .work/research.md §BodyModel §1a/§5 slice 3): the per-pixel
 // epilogue runs scalar per lane (each statement bumped to pixel j+k), so every in-loop read it
 // makes must be a lane local (per-lane source via `laneMap`), a pixel IV (`pivType`), or a value
 // the epilogue itself computes (`epiWritten` — incl. within-statement tees, e.g. an Infinity-guard
