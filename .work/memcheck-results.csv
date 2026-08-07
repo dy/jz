@@ -1,50 +1,51 @@
 # jz-wasmtime vs moonrun (MoonBit) memory comparison — GOAL-MEMORY evidence
-# commit: bce7d1d7
-# date: 2026-08-05 (UTC, regenerated at HEAD -- reference-evidence-refresh session)
+# commit: 57ad846d
+# date: 2026-08-06 (UTC, regenerated at HEAD -- evidence-finale session)
 # machine: Apple M4 Max, darwin/arm64 (M4-reference machine)
-# command: node bench/bench.mjs --cases=<case> --targets=jz-wasmtime,moonbit --json=... (chunked, narrow-target isolation -- see .work/todo.md; the proven c28f218c/2f0720a5 precedent -- a bulk multi-target-per-process run's memKb column carries a spurious uniform floor shift, refuted here by staying to dedicated narrow (2-target) chunks, matching the committed evidence's ~13-15MB engine floor)
+# command: node bench/bench.mjs --cases=<case> --targets=jz-wasmtime,moonbit --json=... (chunked, narrow-target isolation -- see .work/todo.md; the proven c28f218c/2f0720a5/bce7d1d7 precedent -- a bulk multi-target-per-process run's memKb column carries a spurious uniform floor shift, guarded against here by staying to dedicated narrow (2-target) chunks, matching prior committed evidence's own methodology)
+# FINDING (this regen): jz-wasmtime's own engine floor moved from ~13.7MB (bce7d1d7, 2026-08-05) to ~22-28MB now, while moonrun's floor is UNCHANGED (matches bce7d1d7 within run-to-run noise, e.g. dict 15360 vs 15296, crc32 14320 vs 14320 exact) -- beats-or-matches collapsed from 40/43 to 1/43, median delta flipped from -912KB (jz leaner) to +7936KB (jz LARGER). Confirmed NOT a within-session artifact: the shift is already present in the git-HEAD-committed bench/results.json's jz-wasmtime rows (e.g. mat4 22624KB, crc32 22416KB, dict 22464KB, callback 22800KB, all pre-dating this session's own runs) -- it landed in some commit between bce7d1d7 and HEAD, not diagnosed further here (out of this task's scope; a real regression to root-cause next, not an artifact to explain away).
 # columns: case, jz_bytes (wasm size), jz_kb (peak RSS via /usr/bin/time -l), mbt_bytes (wasm size), mbt_kb (peak RSS)
 case,jz_bytes,jz_kb,mbt_bytes,mbt_kb
-alpha,8231,16928,12707,26720
-aos,9243,15248,13108,15360
-base64,4204,13856,14554,15360
-biquad,7560,21296,13902,22352
-bitwise,8116,14096,12604,14624
-blur,12392,17088,13862,26960
-bytebeat,7840,15888,12434,22608
-callback,3580,13824,12288,14528
-conv2d,7375,13776,13485,15008
-crc32,3709,13744,12592,14320
-dict,3550,13968,13045,15296
-dispatch,3863,13952,13161,14720
-dotprod,3359,13888,12482,14464
-fft,6032,15856,14524,17408
-hash,3254,13808,12731,14384
-hashjoin,3836,14144,13226,15616
-heat,3793,14848,12887,15552
-immutable,4191,17104,12896,15904
-json,12328,19136,17807,17904
-levenshtein,4498,13808,13109,14576
-lorenz,3715,14272,13147,15040
-lz,6456,13840,14095,15056
-mandelbrot,8535,14080,12622,14752
-mat4,4963,13824,13225,14880
-matmul,3769,15376,12646,16128
-nbody,10978,13968,14645,15328
-noise,6504,14288,13920,15136
-nqueens,3461,13856,12708,14272
-particle,8816,15888,13438,16688
-poly,3445,13888,12670,14528
-qoi,5853,14576,17474,19280
-radixsort,9734,14112,13439,15152
-raytrace,7473,17232,14918,18560
-shapes,6602,14640,13171,16176
-sieve,8026,14928,12602,18528
-sort,3924,13856,13834,15232
-spmv,4655,14624,13480,15568
-strbuild,3416,23824,13256,16016
-synth,3899,17984,13297,18960
-tokenizer,9353,14112,14495,15008
-vm,3663,13776,13327,14672
-wav,3946,15040,13837,16720
-wordcount,18328,15408,16424,16016
+alpha,8214,27936,12707,26704
+aos,9208,26016,13108,15312
+base64,4072,22160,14554,15376
+biquad,7524,31184,13902,22304
+bitwise,8077,23728,12604,14560
+blur,12375,28336,13862,26960
+bytebeat,7823,25488,12434,22528
+callback,3568,22336,12288,14544
+conv2d,7355,23408,13485,14992
+crc32,3697,22544,12592,14320
+dict,3538,21728,13045,15360
+dispatch,3842,22656,13161,14720
+dotprod,3340,21984,12482,14432
+fft,5995,25808,14524,17408
+hash,3242,22320,12731,14320
+hashjoin,3824,22512,13226,15648
+heat,3747,23008,12887,15568
+immutable,4179,25888,12896,15936
+json,12307,31424,17807,17792
+levenshtein,4486,22368,13109,14592
+lorenz,3678,22576,13147,15008
+lz,6437,23328,14095,15056
+mandelbrot,8516,24512,12622,14688
+mat4,4925,13808,13225,14880
+matmul,3732,23696,12646,16144
+nbody,10943,24368,14645,15328
+noise,6460,23888,13920,15104
+nqueens,3449,21488,12708,14320
+particle,8781,26000,13438,16640
+poly,3411,22512,12670,14496
+qoi,5841,23392,17474,19296
+radixsort,9361,24112,13439,15168
+raytrace,7437,26864,14918,18608
+shapes,6590,24112,13171,16160
+sieve,8009,24480,12602,18512
+sort,3830,22224,13834,15232
+spmv,4618,23376,13480,15520
+strbuild,3395,31792,13256,15984
+synth,3854,26544,13297,18960
+tokenizer,9332,24704,14495,15120
+vm,3642,22272,13327,14704
+wav,3926,23248,13837,16704
+wordcount,18316,25248,16424,16096
