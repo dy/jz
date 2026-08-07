@@ -1213,6 +1213,19 @@ function buildAddrTable(body, ind) {
   return addrTable
 }
 
+// Projects addrTable's offset-kind subset to the plain `Map<name, strideLog2>` shape
+// matchLaneAddr's `offsetTees` parameter expects — byte-identical to deriveOffsetTees's own
+// output (both wrap the same `_offsetLocalStride` call), so a caller consuming this instead of
+// `bl.offsetTees` directly reads the same values through BodyModel's shared table. tryRampMap's
+// own private `addrLocals` (recordAddrTees — an in-place-map CSE'd full-address tee, genuinely
+// recognizer-private per the design's terminal verdict) still combines with this at each
+// matchLaneAddr call; only the offsetTees half is BodyModel-sourced.
+function offsetTeesFromAddrTable(addrTable) {
+  const m = new Map()
+  for (const [name, e] of addrTable) if (e.kind === 'offset') m.set(name, e.strideLog2)
+  return m
+}
+
 // Per-load/store SITE resolved access (design §2): re-runs matchLaneAddr against the FROZEN
 // `offsetTees` table (read-only lookup) instead of a live-mutation map — the plain, non-AoS query
 // shape tryMapReduceVectorize/tryRampMap's non-recordAddrTees call sites already make: `node[1]`
@@ -2760,7 +2773,7 @@ function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
 // scalar remainder, continuing the accumulators. Returns {wrapper, newLocalDecls} or null.
 function tryMapReduceVectorize(bl, fnLocals, freshIdRef) {
   if (!bl || bl.preamble.length) return null
-  const { incVar, bound, boundLocal, body, offsetTees } = bl
+  const { incVar, bound, boundLocal, body, siteAccess } = bl
   if (!boundLocal && !isI32Const(bound)) return null
   if (body.length < 2) return null
 
@@ -2776,9 +2789,10 @@ function tryMapReduceVectorize(bl, fnLocals, freshIdRef) {
   for (const a of accSet) { if (writeCount.get(a) !== 1 || fnLocals.get(a) !== 'f64') return null }
 
   // Address tees: locals that equal `ind << K`. f64 loads must be stride-8 (K=3) so one
-  // f64x2.load (16 bytes) covers iterations j and j+1 — consecutive elements. LoopPlan fact
-  // (bl.offsetTees, see deriveOffsetTees) — computed once at the dispatch, was a private
-  // per-name gather+derive scan here (identical to tryRampMap's, now also plan-fed).
+  // f64x2.load (16 bytes) covers iterations j and j+1 — consecutive elements. BodyModel fact
+  // (bl.siteAccess, see buildSiteAccess) — computed once at the dispatch (shadow-assert-proven
+  // against the plain matchLaneAddr query this used to make live, .work/loop-bodymodel-design.md
+  // slice 1), was a private per-site matchLaneAddr(e[1], incVar, new Map(), bl.offsetTees) call.
 
   // f64x2 lift: load → f64x2.load (2 consecutive), const/invariant → splat, a lane local
   // → its f64x2 temp, sub/mul/add/div → f64x2.OP, sqrt → f64x2.sqrt. Anything else bails.
@@ -2791,7 +2805,7 @@ function tryMapReduceVectorize(bl, fnLocals, freshIdRef) {
     const op = e[0]
     if (op === 'f64.const') return ['f64x2.splat', e]
     if (op === 'f64.load') {
-      const m = matchLaneAddr(e[1], incVar, new Map(), offsetTees)
+      const m = siteAccess.get(e)
       if (!m || m.strideLog2 !== 3) { bad = true; return null }
       return ['v128.load', e[1]]   // 16 bytes = 2 consecutive f64s; the f64x2 op reads them
     }
@@ -4268,7 +4282,11 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   // increment shares the IV's name" check below is tryRampMap's own residual.
   const bl = matchBlockLoop(blockNode, { multiInc: true })
   if (!bl) return null
-  const { incVar: ivName, bound, boundLocal, body, increments, hasGlobalSet: blHasGlobalSet, writes: blWrites, referenced: blReferenced, offsetTees } = bl
+  const { incVar: ivName, bound, boundLocal, body, increments, hasGlobalSet: blHasGlobalSet, writes: blWrites, referenced: blReferenced, addrTable } = bl
+  // BodyModel fact (bl.addrTable's offset-kind subset, see offsetTeesFromAddrTable) — byte-
+  // identical to bl.offsetTees/deriveOffsetTees's output; combines below with this recognizer's
+  // own private recordAddrTees map (genuinely private per the design's terminal verdict).
+  const offsetTees = offsetTeesFromAddrTable(addrTable)
   if (!boundLocal && !isI32Const(bound)) return null
   if (!body.length) return null
   if (blHasGlobalSet) return null
@@ -4298,9 +4316,8 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   // CSE'd lane offsets: a local written ONLY as `i << K` (or bare `i`) is the
   // shared offset the IV stage threads across base pointers (src[i], dst[i],
   // out[i] all reuse one `(local.tee $p (local.get i))`). Resolve them so the
-  // load/store address matchers accept the `(local.get $p)` reuses. LoopPlan fact
-  // (bl.offsetTees, see deriveOffsetTees) — was a private per-name gather+derive
-  // scan here, identical to tryMapReduceVectorize's (now also plan-fed).
+  // load/store address matchers accept the `(local.get $p)` reuses. BodyModel fact
+  // (offsetTees, above — bl.addrTable's offset-kind subset via offsetTeesFromAddrTable).
 
   // CSE'd FULL lane address: an in-place map `a[i] = f(a[i])` shares one `(local.tee $A
   // (i32.add base i))` between the load and the store, reused as `(local.get $A)`. Without

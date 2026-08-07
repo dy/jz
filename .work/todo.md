@@ -6,6 +6,50 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-07, BODYMODEL SLICE 3 landed — post-hoc consumers onto BodyModel)
+`tryMapReduceVectorize` switched its one `f64.load` address query from a live
+`matchLaneAddr(e[1], incVar, new Map(), offsetTees)` call to `bl.siteAccess.get(e)`
+— slice 1's own shadow-assert (c) had already proven this exact query shape
+agrees with siteAccess across the whole bench corpus, so this is the
+"consume the plan" the design names tryMapReduceVectorize as the reference
+shape for. `tryRampMap` switched its `bl.offsetTees` destructure to
+`offsetTeesFromAddrTable(bl.addrTable)` (new adapter, projects addrTable's
+offset-kind subset to the plain `Map<name,strideLog2>` matchLaneAddr's
+`offsetTees` param expects — byte-identical BY CONSTRUCTION since both wrap
+the same `_offsetLocalStride` call) — its own private `recordAddrTees`
+incremental `addrLocals` map (the design's own "mixed" classification for
+this recognizer) stays untouched, still combined with the BodyModel-sourced
+offsetTees at each matchLaneAddr call, per "private admission policies stay
+private." `tryStrengthReduceIV` deliberately EXCLUDED — traced its
+`matchAffineAddr` helper down to the actual `matchLaneAddr(addr, ind,
+undefined, undefined, false, undefined, undefined, false)` call: addrLocals
+and offsetTees are BOTH `undefined` there, always — this recognizer never
+consulted a shared table to begin with (pure structural pattern match over
+every node in the raw loop body, with in-place parent/idx rewriting no
+per-site WeakMap naturally supports), so "wire it onto BodyModel" has no
+real referent; the design doc's own §6 risk register ("scope creep... leave
+that recognizer on its private scan") is the applicable principle here, not
+a slice-4 checklist item to force through. Byte-identity: zero WAT diffs,
+same 58-case/174-compile bench corpus, both non-debug and under
+JZ_DEBUG_INVARIANTS=1 (no shadow-assert throws). Gates (this final state):
+full battery run twice — once as one 91-file JZ_DEBUG_INVARIANTS=1 process
+(3362 tests/19488 assertions, 3354 pass, the SAME 2 pre-existing failures +
+zero new ones under the debug flag — the one extra flake seen in an earlier
+contended run, `declRange restamp for 'cf1_8'` audit-#12 item 2, reproduced
+IDENTICALLY on a clean-HEAD worktree under the same flag, confirmed
+pre-existing and unrelated), and again as 16 foreground chunks of 4-7 files
+(matches); kernel-parity 33/33 byte-identical; kernel-oracle 11/11 (451
+assertions); perf-ratchet 10/10 at +0; selfhost.js 21/21 (206 assertions,
+re-run clean after an earlier contended run showed a resource-exhaustion
+build failure — 6 concurrent heavy jobs on one machine, not a code issue);
+fuzz 2000×4 (default 30173 inputs compared/--typed/--typed-map/--typed-int):
+0 divergence all four; size sweep geomean jz/AS = 1.020× (holds exactly,
+re-confirmed uncontended); fresh `npm run build` ×2, dist/jz.wasm (16340.0
+kB) + dist/jz.js + dist/interop.js SHA-256 byte-identical across both runs.
+STOPPING here per the task's scope — design slices 5-7 (the incremental
+trio: tryMemCopyFill/tryReduceVectorize/tryVectorize) are their own later
+campaign, not attempted.
+
 ## Status (2026-08-07, BODYMODEL SLICE 2 landed — the 3 class-A hoists)
 Three zero-soundness-risk dedups, each byte-verified before hoisting: (1)
 `epilogueIsSafe(epilogue, loopNode, laneMap, pivType)` — the epiWritten/reads

@@ -1,8 +1,14 @@
 # Shared body-analysis BodyModel — design (Stage 3 remainder)
 
-Status: DESIGN ONLY, not landed. Read-only survey + proposal for the
-coordinator's mechanism review. Continues `.work/architecture-plan.md`
-Stage 3 after the scaffold-sharing phase went TERMINAL
+Status: §5 slices 1-4 LANDED 2026-08-07 (BodyModel construction + shadow-
+asserts, the 3 class-A hoists, tryMapReduceVectorize/tryRampMap onto the
+shared tables — tryStrengthReduceIV deliberately excluded, see slice 4's
+landed note) — see .work/todo.md's three BODYMODEL SLICE entries for the
+full gate record. Slices 5-7 (the incremental trio) are a later campaign,
+not attempted. Originally: DESIGN ONLY, not landed — read-only survey +
+proposal for the coordinator's mechanism review. Continues
+`.work/architecture-plan.md` Stage 3 after the scaffold-sharing phase went
+TERMINAL
 (`.work/todo.md:5224` "STAGE-3 SLICE 1", `archive-todo-2026-08.md:6198`
 "LOOPPLAN UNIFICATION TERMINAL"): the dispatch descriptor `{bl, op,
 blLoose}` (`matchBlockLoop`/`matchOuterPixelLoop`, src/optimize/
