@@ -938,5 +938,208 @@ the failure narrowed via bisection of `encode.js`'s actual functions
 (retire the magnitude heuristics) is blocked on Slice 4 landing — not
 attempted this session.
 
-**Local commit:** (recorded after this section lands in the commit itself).
+**Local commit:** 3daa4410.
+
+## §12. Slice 4 — ATTEMPT 2: def-side bug root-caused and fixed, flag-forced
+verification complete, flip re-attempted, hit a SECOND (self-host) wall,
+banked (2026-08-07)
+
+Dedicated session on exactly what §11 asked for: root-cause `test/watr.js`'s
+4-row `JZ_CARRIER_BOX=1` wall via the real battery (not a mimicked repro),
+narrowed by bisecting `encode.js`'s actual functions.
+
+**Root cause.** `needsBigintBox` (ir.js) — the shared predicate `carrierF64`
+and `'return'` use to decide "does this AST node reaching a W-sink need a
+real PTR.BIGINT box" — has two branches: a bare name defers to its
+solver-settled `bigintBoxed` rep (proven, narrow); any OTHER (inline)
+BIGINT-kinded expression boxes UNCONDITIONALLY (§9's own words: "box
+unconditionally... no rep needed"). That unconditional branch is sound
+exactly where carrierF64's own doc comment says it is: a REAL dyn-prop/
+array-elem/Set/Map store or closure-capture, whose value a LATER, separately
+-compiled reader can only observe through registry-aware dynamic dispatch
+($__dyn_get, $__typeof, …) — Slice 3's R-recovery arms. It is NOT sound
+wherever no such reader exists — and it was firing at several such sinks
+Slice 2 never distinguished:
+
+1. **`'return'`, mixed/closure context.** `ctx.func.boxedResult` (set
+   unconditionally for EVERY closure-convention body, regardless of whether
+   THIS closure's own return is uniformly BIGINT) and `ctx.func.
+   mixedAtomReturn` (a BOOL-only heuristic, "this func's own returns
+   disagree in type" — its own doc comment: "every non-bool-mixed function…
+   untouched either way" as the pre-carrier-box contract) both route through
+   the pre-existing `carrierF64` call at the return site — Slice 2 wired
+   `needsBigintBox` into that SAME call, so an inline BIGINT return boxed
+   unconditionally the moment EITHER flag was true, for reasons entirely
+   about BOOL, never about BIGINT. Watr's own `compile.js` `limits()` —
+   `is64 ? v => { if (typeof v === 'bigint') return v; return BigInt(v) } :
+   parseUint` — the closure's `return BigInt(v)` boxed (an inline
+   expression, `boxedResult` true only because it's a closure); `uleb(parse
+   (minVal), out)` then called the box through `call_indirect` with no
+   statically-provable-BIGINT call site for narrow.js to seed `uleb`'s own
+   param as `bigintBoxed` — `uleb`'s `n & 0x7Fn` read the pointer's own bits
+   raw. (A plain, non-closure, non-mixed function's return was ALSO wrong
+   this way — `i64.parse`'s `return _i64[0]`, a genuine BigInt64Array
+   element read with no ambiguity at all, boxed unconditionally too — the
+   very first repro that cracked this open.)
+2. **SRoA flat-object/array field storage** (`let o = {n: 1n}` / `let a =
+   [1n]`, no heap alloc — every read/write rewrites to a plain `o#i`/`a#i`
+   local, per scanFlatObjects' own contract). Routed through the SAME
+   `storedValue`/`carrierF64` chokepoint real heap-object schema stores use
+   (deliberately, for BOOL identity — a flat field MIGHT still be shadow-
+   readable dynamically) — but BIGINT has no such shadow-reader case a flat
+   field's own value ever needs, so the unconditional inline-box fallback
+   fired for nothing: `let o = {n: 4611686018427387903n}; o.n++` boxed the
+   LITERAL FIELD INIT (no ambiguity whatsoever) on construction; `o.n++`'s
+   own bigIntOperand arithmetic then read the pointer's bits raw.
+3. **A proven-ARRAY receiver's own numeric element store**, independent of
+   flat/SRoA-ness: no array-element consumer (this session confirmed via
+   grep — zero `PTR.BIGINT` references anywhere in module/array.js) is
+   registry-aware yet, matching Slice 5's own not-yet-landed status; a
+   receiver's OWN element-type census (`repOf(arr).arrayElemValType ===
+   VAL.BIGINT`) already proves every read takes the raw path regardless.
+4. **Array-literal and object-literal construction** (module/array.js,
+   module/object.js), independent of any later element/field WRITE: a
+   homogeneous-bigint literal element, or a non-shadowed (`!needsDynShadow`)
+   schema field, has the identical "no reader" argument at DEFINITION time.
+5. **A compiler-synthesized decl-destructure array-literal temp**
+   (`ctx.schema.arrayVars`, prepare/index.js prepDecl — "single-write,
+   non-escaping… only this destructure's own generated reads ever touch
+   it"): `let [a, b] = [1, BigInt(v)]` — mixed element types, so (4)'s
+   per-literal uniform-BIGINT admission didn't cover it either, yet NO
+   reader here is ever dynamic (every index resolves statically). Also
+   applies to the `'?:'` handler's OWN dedicated box (a genuinely different,
+   narrower mechanism than `needsBigintBox` — guards against a raw-bigint-
+   bits/null-sentinel COLLISION for a reader that inspects the merge's own
+   bits, not "registry-awareness" per se) when the merge feeds a destructure
+   temp: no reader inspects those bits there either.
+
+**Second, narrower gap (read side, not overreach): a ternary-nullish-BIGINT-
+declared local's own storage IS a box.** `let r = cond ? BigInt(x) : null`
+— unlike every `carrierF64`/`'return'` sink (whose doc comment is explicit:
+boxes a FRESH COPY at the point of use, "never the local's own storage"),
+the `'?:'` handler's box for THIS shape becomes the declared name's entire,
+permanent storage from that point on — there never was a separate raw-bits
+form of `r`. `isCurrentlyBoxedBigint` only ever recognized a boxed PARAM
+(the one case Slice 2 durably materializes outside a fresh-copy), so
+`readI64`-covered consumers like `.bigint:toString` (module/number.js) read
+`r`'s pointer bits raw. New `isTernaryBoxedBigint` (ir.js) closes it — backed
+by `ctx.func.ternaryBoxedNames`, an EMISSION-TIER TRANSIENT Set (compile/
+index.js `enterFunc`, reset per function), not `updateRep`/the rep system:
+`test/passes.js`'s own "emission tier never writes durable analysis state"
+exit grep is a real, checked architectural invariant a first draft of this
+fix violated and had to be redone around.
+
+Wiring it in turn exposed a THIRD, genuinely pre-existing gap: `coerceArg`
+crossing an already-boxed bare name (a boxed param OR now a ternary-boxed
+local) into a callee whose OWN param settled "receives BIGINT consistently,
+stays raw at the boundary" (`bigintBoxedVerdict`, narrow.js — a verdict
+computed from every call site's argument STATIC KIND alone, blind to one of
+those uniformly-BIGINT-typed values secretly being a durable box) crossed
+the box UNCHANGED, callee body misreading it raw. `chain(5)` → `arith(r)`
+(`r` ternary-boxed; coerceArg already correctly passes it through unboxed)
+→ `hex(r)` (`hex`'s param0 settled "stays raw", `r` is `arith`'s own
+ALREADY-boxed param) — `hex`'s `v.toString(16)` read the pointer raw.
+`coerceArg` now runtime-checks BOTH directions (box-when-raw, unbox-when-
+boxed-but-callee-expects-raw), nullish-guarded — a nullable-BIGINT argument
+may genuinely be the sentinel at runtime, never a box, in either direction.
+
+**A fourth bug, found only by attempting the fresh self-host build (below):
+`coerceArg`'s own new box/unbox blocks fed an UNTAGGED `['local.get', $t]`
+into `asI64`/`unboxBigInt`** — both dispatch on a node's `.type` to choose
+the coercion shape, defaulting an untagged node to "assume i32, needs
+`f64.convert_i32_s`" — even though `$t` is a genuine f64 temp. Fixed by
+tagging (`typed(['local.get', $t], 'f64')`), matching every other f64-temp-
+read call site's own convention. Found via `WebAssembly.Module()` validation
+failure compiling the compiler's OWN `layout.js` `ptrNanHex` during `npm run
+build`, bisected to the exact commit and function via a disposable worktree
+per landed commit plus a function-index correlation against the unoptimized
+WAT dump.
+
+**Fix mechanism, uniformly:** a new narrow-admission twin, `carrierF64Narrow`
+(ir.js) / `storedValueNarrow` (bridge.js) — identical BOOL-atom-boxing
+contract, but for BIGINT admits ONLY the bare-name case independently proven
+by `isProvenBoxedBigint` — never the unconditional inline-expression
+fallback. Threaded through: `'return'`'s `boxes` branch (mixed/closure),
+the SRoA flat-object/array field init (emit.js) and write-back
+(emit-assign.js, both the named-object and `[]`-element forms — the latter
+moved EARLIER in `emitElementAssign`, before the shared `keyExpr`/`valueExpr`
+computation, so `val` still emits exactly once), a known-ARRAY receiver's
+element store when its own census proves uniform BIGINT, array/object-
+literal construction (module/array.js `emitElem`/`elemStoredValue`, module/
+object.js's static-segment and runtime-alloc paths), and — via a NEW
+transient per-function flag, `ctx.func._arrayLiteralNeverEscapes`, set
+around the ONE `emit(init)` call at both its call sites (the plain `'='`
+handler and `emitDecl`'s own documented WALL site, which stays completely
+untouched otherwise) — a decl-destructure array-literal temp's own elements,
+including through a nested `'?:'` arm.
+
+**Gates, FLAG-FORCED (`JZ_CARRIER_BOX=1`), the end-to-end verification §11
+named and this attempt actually ran:**
+- `test/watr.js`: 35/35 (was 31/35).
+- Full battery (`node test/index.js`): 3386/3405 pass, 13 fail — ALL
+  pre-existing and out of THIS bug's scope, verified against a disposable
+  worktree at 3daa4410 with `JZ_CARRIER_BOX=1` forced: 11 `test/dyn-keys.js`
+  rows (Map/dict export-boundary write-side boxing — explicitly named in
+  §10 as "Slice 4/5 territory," a separate, larger, not-yet-scoped feature)
+  and 2 `test/optimizer.js` bounds-check-guard rows (present at
+  `CARRIER_BOX=0` too, this project's own pre-existing baseline, wholly
+  unrelated to BigInt). 6 skip.
+- `test/kernel-oracle.js`: 11/11 suites, 451/451 assertions.
+- `test/statements.js`: 202/202 (the 2^62±1 pins included).
+- `node test/fuzz.js` (2000 seeds × opt {0,1,2,3}) and its `--typed`/
+  `--typed-int`/`--typed-map` siblings (2000×4 each): 0 divergence, all four
+  runs.
+- Default build (`CARRIER_BOX` unset) re-verified unaffected after every
+  commit in this session.
+
+**The flip, re-attempted.** `CARRIER_BOX`'s default flipped to ON. Full
+battery unflagged: 3386/3405, identical to the flag-forced run — confirms
+the flip behaves exactly as forced. `npm run build` (the fresh self-host
+rebuild `dist/jz.wasm`, gate #4 in the original brief): compiled and
+WASM-validated cleanly (after the fourth bug above was found and fixed) —
+but the resulting KERNEL then **crashes** ("memory access out of bounds") or
+returns **wrong values** at optimize levels 2-3 on several of the exact
+shapes this section just fixed (a proven-bigint array literal, a ternary-
+nullish-BIGINT local), confirmed via direct `compileViaKernel` calls:
+
+```
+array literal bigint  O0/O1: 4611686018427387905n (correct)   O2/O3: CRASH
+ternary bigint         all levels via NATIVE: 0n (correct)     O2/O3 via KERNEL: CRASH
+obj field bigint       all levels via NATIVE: 4611686018427387906n (correct)
+                       O2 via KERNEL: 7597125510078484066n (WRONG, no crash)
+```
+
+The SAME programs compile and run correctly at every optimize level through
+the NATIVE (in-process, non-self-hosted) compiler — verified directly,
+confirming a pure self-host FIDELITY gap (the kernel's own optimizer passes
+mishandling some new code shape from this section's fix, not a logic error
+in the fix itself), the same CLASS of wall (not the same instance) as
+`emit.js`'s own extensively-documented decl-init WALL history.
+
+**Decision: banked, not landed — same discipline as attempt 1.**
+`CARRIER_BOX` reverted to OFF by default. Verified clean after the revert:
+default battery 3397/3405 (2 pre-existing, unrelated — the documented
+baseline, unchanged), fresh `npm run build` × 2 byte-identical
+(`d5b05c2a11380ca5dcfb8b1fc721cb7040743cbbdabcc3405ab375dfd3721561`), flag-
+forced battery unchanged (3386/3405, the same 13 pre-existing rows).
+`JZ_CARRIER_BOX=1` stays the opt-in probe flag — every fix landed this
+session is real, independently verified there, and unconditionally
+beneficial regardless of the default.
+
+**Oracle-flip inventory: none closed this slice** (the default never
+stayed flipped). The durable gains are the def-side/read-side fixes
+themselves — real correctness fixes behind the flag, verified end-to-end
+for the first time since Slice 2 landed.
+
+**What a third attempt needs**: a dedicated self-host-fidelity investigation
+— bisect which of this session's new code shapes (the narrow-admission
+carrier twins, `ctx.func.ternaryBoxedNames`, `coerceArg`'s runtime box/unbox
+blocks, `ctx.func._arrayLiteralNeverEscapes`) the self-hosted kernel's OWN
+compiled optimizer passes (O2/O3 specifically — O0/O1 are clean) mishandle,
+most likely via the same disposable-worktree-plus-minimal-repro discipline
+this session used for the def-side bug, but targeting `compileViaKernel`
+specifically rather than `test/watr.js`. Slice 5 (retire the magnitude
+heuristics) stays blocked on Slice 4 landing — not attempted.
+
+**Local commits:** 4b775e98, ed37a4e6, 5cea45e1, cfe25e05, 30535365.
 
