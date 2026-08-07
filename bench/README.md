@@ -56,6 +56,23 @@ for a full recontest, not a partial one. `test/bench-claims.js` requires
 `meta.anchors.pass` whenever `meta.partial` is set — a partial dataset
 without a passing anchor check doesn't ship.
 
+The writer enforces this structurally, not just at read time (audit-#13
+hygiene item 2a): a `--merge` that would leave `meta.partial: true` with no
+anchors verdict backing it — no `--verify-anchors` this run, and no carried
+prior `pass: true` from the file being merged into — REFUSES the write
+outright (nonzero exit, file untouched), same as the shrink-guard above. A
+`--verify-anchors` DRIFT counts as "no verdict backing it" too: a confirmed-
+bad machine state means even the row this run just measured is unconfirmed,
+not only the untouched rival rows. `--allow-unanchored` is the explicit
+escape hatch for a deliberate unverified write.
+
+Every `--json`/`--merge` write also captures `meta.machineState`
+(`swapUsedMB`/`uptimeDays`/`load1`/`powermode`, best-effort per-platform) —
+the WARM/MEMORY-FLOOR campaign (`.work/todo.md` "WARM + MEMORY-FLOOR"
+status) found heavy swap alone explains multi-percent timing drift with zero
+code change; `test/bench-claims.js`'s VALIDITY gate checks it against a sane
+bound.
+
 ```sh
 # fast refresh: jz + jz-w2c only, full corpus, ~10-15 min instead of hours
 node bench/bench.mjs --targets=jz,jz-w2c --json --merge --verify-anchors

@@ -9,6 +9,7 @@ import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import { renderBenchSvg } from '../scripts/bench-svg.mjs'
 import { LAB } from '../assets/headline.js'
+import { machineState } from './machine-state.mjs'
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(BENCH_DIR, '..')
@@ -1091,7 +1092,9 @@ let PAIRED = 0
 // unparseable) or when the merge would drop a case/target PREV had, unless
 // --merge-allow-shrink opts in. Was previously a silent no-op-into-full-write
 // on a missing/corrupt PREV — the exact shape that once dropped 59/60 cases
-// from bench/results.json.
+// from bench/results.json. ALSO refuses (audit-#13 hygiene item 2a) when the
+// resulting meta.partial has no anchors backing it (neither this run's
+// --verify-anchors nor a carried prior PASS) — see --allow-unanchored below.
 let MERGE = false
 // --merge-allow-shrink (audit-#12 item 4): the explicit escape hatch for a
 // DELIBERATE corpus change — dropping a case/target on purpose, or starting
@@ -1103,6 +1106,13 @@ let MERGE_ALLOW_SHRINK = false
 // the honest check that machine state hasn't drifted since that evidence was
 // recorded. Default 3 (the whole seed set below).
 let VERIFY_ANCHORS = 0
+// --allow-unanchored (audit-#13 hygiene item 2a): the explicit escape hatch
+// for the partial+unanchored write guard below — a --merge write is refused
+// by default when the resulting meta.partial is true and no anchors
+// verification (this run's --verify-anchors, or a carried prior PASS from
+// PREV.meta.anchors) backs it. The a9269390 manual restore proved this hole:
+// a narrow --merge with neither flag can drop/stale anchors silently.
+let ALLOW_UNANCHORED = false
 for (const arg of process.argv.slice(2)) {
   if (arg.startsWith('--targets=')) selectedTargets = arg.slice(10).split(',').filter(Boolean)
   else if (arg === '--paired') PAIRED = 4
@@ -1116,6 +1126,7 @@ for (const arg of process.argv.slice(2)) {
   else if (arg === '--merge-allow-shrink') MERGE_ALLOW_SHRINK = true
   else if (arg === '--verify-anchors') VERIFY_ANCHORS = 3
   else if (arg.startsWith('--verify-anchors=')) VERIFY_ANCHORS = Math.max(1, +arg.slice(17) || 3)
+  else if (arg === '--allow-unanchored') ALLOW_UNANCHORED = true
   // Bare args are CASES first (the documented `bench.mjs mat4` form): `jz` is
   // both a case (the self-host compiler workload) and a target — the case
   // wins; select the target via --targets=jz.
@@ -1522,6 +1533,11 @@ if (JSON_PATH) {
     // memKb methodology: peak RSS of the whole per-case process (engine + module),
     // read from the child's rusage via the time(1) wrapper around every measured run.
     ...(TIME_BIN && { memory: `peak RSS per process run (${TIME_BIN} ${TIME_ARGS[0]})` }),
+    // machineState (audit-#13 hygiene item 2b): captured on every timing write,
+    // not gated on --merge/--verify-anchors — swap/uptime/load/powermode are
+    // the validity CONTEXT test/bench-claims.js's VALIDITY row checks against a
+    // sane bound. See bench/machine-state.mjs for the WARM/MEMORY-FLOOR provenance.
+    machineState: machineState(),
     // --verify-anchors verdict (design Piece 2) — independent of --merge:
     // compares against ANCHOR_BASE, the file's content from BEFORE this run
     // (or the canonical committed evidence), so it's a real machine-state
@@ -1570,7 +1586,14 @@ if (JSON_PATH) {
     // from usedTargets, i.e. only the cases/targets this run touched)
     // silently drop every other target's invocation string.
     const mergedInvocations = { ...PREV.meta?.invocations, ...jsonOut.meta.invocations }
-    finalOut = { meta: { ...jsonOut.meta, invocations: mergedInvocations, ...(mixedVintage && { partial: true }) }, cases: mergedCases }
+    // anchors carry-forward (audit-#13 hygiene item 2a): this run's own
+    // --verify-anchors verdict wins when present; otherwise PREV's own
+    // meta.anchors (a prior run's verdict, already certified against a
+    // machine state that may or may not still hold — the "carried-and-
+    // still-valid" half of the write guard below) rides through untouched
+    // instead of silently vanishing the moment a --merge doesn't re-verify.
+    const anchorsForMeta = anchorsResult || PREV.meta?.anchors || null
+    finalOut = { meta: { ...jsonOut.meta, invocations: mergedInvocations, ...(mixedVintage && { partial: true }), ...(anchorsForMeta && { anchors: anchorsForMeta }) }, cases: mergedCases }
 
     // Shrink-guard, defense in depth (audit-#12 item 4): the spread-then-
     // overlay merge above can only ADD/UPDATE case and target keys, never
@@ -1594,6 +1617,18 @@ if (JSON_PATH) {
         }
       }
     }
+  }
+
+  // Structural partial+unanchored write guard (audit-#13 hygiene item 2a):
+  // commit a9269390's manual restore proved a narrow --merge with no --verify-anchors
+  // can leave meta.partial=true riding on rival-anchor evidence nobody this
+  // run (or any prior carried run) actually confirmed still holds. Refuse the
+  // write outright — not a warning — unless anchors were verified THIS run or
+  // carried forward from a PREV verdict that still reads PASS, or the caller
+  // explicitly opts out via --allow-unanchored.
+  if (finalOut.meta.partial && !finalOut.meta.anchors?.pass && !ALLOW_UNANCHORED) {
+    console.error(`--merge: refusing to write partial evidence with no verified anchors (neither this run's --verify-anchors nor a carried prior PASS verdict backs it) — use --verify-anchors to certify this run, or --allow-unanchored to write anyway.`)
+    process.exit(1)
   }
 
   writeFileSync(JSON_PATH, JSON.stringify(finalOut, null, 1))

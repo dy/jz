@@ -22,6 +22,7 @@ import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { machineState } from '../bench/machine-state.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WASM_BAND_TOL = 1.05   // keep in lockstep with test/bench.js
@@ -122,6 +123,44 @@ test('claims: partial (mixed-vintage) evidence requires a passing anchors check 
   if (!res.meta?.partial) { ok(true, 'not a partial refresh (meta.partial unset) — anchors not required'); return }
   ok(res.meta?.anchors?.pass === true,
     `meta.partial is true but meta.anchors.pass is not true (${JSON.stringify(res.meta?.anchors)}) — re-run with --verify-anchors before shipping a partial refresh`)
+})
+
+// VALIDITY — machine-state sanity for timing evidence (audit-#13 hygiene item
+// 2b, bench/machine-state.mjs). The WARM/MEMORY-FLOOR false-red campaign
+// (.work/todo.md §deletion-sweep "WARM + MEMORY-FLOOR reds RESOLVED as
+// ENVIRONMENT" status, 2026-08-06) found LIVE that swap pressure alone
+// explains multi-percent timing drift with zero code change — every fresh
+// timing write now carries meta.machineState; this gate holds it to a sane
+// bound so a future regression report can rule out "the machine was
+// swapping" before chasing a phantom code cause.
+const SWAP_SANE_BOUND_MB = 4096
+test('VALIDITY: committed evidence machineState (once captured) is within the swap-pressure sane bound', () => {
+  const state = res.meta?.machineState
+  if (!state) { ok(true, 'committed reference predates machineState capture (audit-#13 item 2b) — no field to check yet; the next --json/--merge refresh carries one'); return }
+  ok(state.swapUsedMB == null || state.swapUsedMB < SWAP_SANE_BOUND_MB,
+    `committed evidence's machineState.swapUsedMB=${state.swapUsedMB}MB exceeds the ${SWAP_SANE_BOUND_MB}MB sane bound — timing evidence recorded under swap pressure is validity-suspect; re-measure on a quieter (post-reboot) machine`)
+})
+
+// KNOWN-BAD, live, documented-red (2026-08-07) — NOT faked green. This probes
+// the ACTUAL current machine (not the committed snapshot above, which
+// predates machineState entirely) because the honest state right now is red:
+// this machine has run continuous agent compute for days and, independently
+// confirmed while writing this gate, carries ~17GB swap used — the exact
+// condition the WARM/MEMORY-FLOOR campaign diagnosed as an environment
+// artifact, not a code regression. Pinning the TRUE current reading (same
+// KNOWN-FAIL idiom test/dyn-keys.js/test/kernel-oracle.js use elsewhere in
+// this suite) keeps the row visibly red in intent instead of silently
+// skipping it. ACTION: once a reboot clears the swap, flip the assertion
+// below to `ok(elevated === false, ...)` and regenerate bench/results.json
+// (`--json --merge --verify-anchors`) so the committed evidence itself
+// carries a clean machineState too — at which point the test above starts
+// enforcing the bound for real.
+test('VALIDITY: live machine swap pressure — KNOWN-BAD, documented-red until post-reboot re-measure', () => {
+  const state = machineState()
+  if (state.swapUsedMB == null) { ok(true, 'swapUsedMB unavailable on this platform/host (non-darwin, or sysctl missing) — nothing to validate live'); return }
+  const elevated = state.swapUsedMB >= SWAP_SANE_BOUND_MB
+  ok(elevated,
+    `expected still-elevated live swap (documented-red, KNOWN-BAD until reboot) — got ${state.swapUsedMB}MB against the ${SWAP_SANE_BOUND_MB}MB bound. If this now reads BELOW the bound, the environment has recovered: flip this assertion to \`ok(!elevated, ...)\` and refresh bench/results.json's machineState via --json/--merge`)
 })
 
 // MEMORY freshness — same discipline as the FRESH test above, applied to the

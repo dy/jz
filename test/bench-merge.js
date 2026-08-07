@@ -142,7 +142,7 @@ test('bench --verify-anchors=1: takes the first N of the seed list', () => {
 })
 
 // ── --verify-anchors: fail path (perturbed scratch copy) ────────────────────
-test('bench --verify-anchors: detects drift and exits nonzero on a perturbed stored baseline', () => {
+test('bench --verify-anchors: detects drift, exits nonzero, and now REFUSES the write (audit-#13 hygiene item 2a)', () => {
   // Start from a just-measured baseline (see freshAnchorBaseline above) so the
   // TWO pairs we don't perturb stay reliably within tolerance — only the one
   // pair we deliberately break should fail.
@@ -150,10 +150,33 @@ test('bench --verify-anchors: detects drift and exits nonzero on a perturbed sto
   const perturbed = JSON.parse(readFileSync(scratch, 'utf8'))
   perturbed.cases.mat4.targets['c-wasm'].medianUs = 1   // impossibly fast — forces a hard drift
   writeFileSync(scratch, JSON.stringify(perturbed, null, 1))
+  const before = readFileSync(scratch, 'utf8')
 
   const { status, out } = runExpectFail(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--verify-anchors'])
   ok(status !== 0 && status != null, `expected nonzero exit on anchor drift, got ${status}`)
   ok(/DRIFT DETECTED/.test(out), `expected a drift report in output:\n${out.slice(-1500)}`)
+  // Superseded by the structural write guard: DRIFT is a CONFIRMED-bad machine
+  // state, same category as "never checked" from the writer's point of view —
+  // both mean this run's own freshly-measured row is exactly as unconfirmed as
+  // the untouched rival rows are. The write is refused outright, matching the
+  // never-verified reject-path pin below, not merely reported and shipped.
+  ok(/refusing to write partial evidence/.test(out), `expected the write-refusal message in output:\n${out.slice(-1500)}`)
+  ok(readFileSync(scratch, 'utf8') === before, 'refused write on anchor drift must leave the file untouched (no partial write, no stale anchors overwrite)')
+})
+
+test('bench --verify-anchors + --allow-unanchored: DRIFT is still reported and still exits nonzero, but the write proceeds with the false verdict recorded', () => {
+  const scratch = freshAnchorBaseline()
+  const perturbed = JSON.parse(readFileSync(scratch, 'utf8'))
+  perturbed.cases.mat4.targets['c-wasm'].medianUs = 1
+  writeFileSync(scratch, JSON.stringify(perturbed, null, 1))
+
+  // DRIFT DETECTED alone still sets a nonzero exit (a real machine-state
+  // finding, independent of whether the write itself is allowed) — so this is
+  // runExpectFail, not run(), even with the escape hatch supplied.
+  const { status, out } = runExpectFail(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--verify-anchors', '--allow-unanchored'])
+  ok(status !== 0 && status != null, `expected nonzero exit on anchor drift even with --allow-unanchored, got ${status}`)
+  ok(/DRIFT DETECTED/.test(out), `expected a drift report in output:\n${out.slice(-1500)}`)
+  ok(!/refusing to write/.test(out), `--allow-unanchored should bypass the write refusal:\n${out.slice(-1500)}`)
 
   const written = JSON.parse(readFileSync(scratch, 'utf8'))
   ok(written.meta.anchors?.pass === false, `meta.anchors.pass should be false: ${JSON.stringify(written.meta.anchors)}`)
@@ -161,10 +184,71 @@ test('bench --verify-anchors: detects drift and exits nonzero on a perturbed sto
   ok(bad && bad.pass === false && bad.ratio > 1.10, `the perturbed anchor pair should be flagged failed: ${JSON.stringify(bad)}`)
   const good = written.meta.anchors.pairs.filter(p => p !== bad)
   ok(good.every(p => p.pass === true), `unperturbed anchor pairs should still pass: ${JSON.stringify(good)}`)
-  // the merge write still happened despite the anchor failure — the drift
-  // report doesn't block the (already-measured) data from landing.
   ok(Object.keys(written.cases).length === Object.keys(reference.cases).length,
-    'merge should still complete (all cases present) even when anchors fail')
+    '--allow-unanchored should still complete the merge (all cases present) despite the anchor failure')
+})
+
+// ── partial+unanchored structural write guard (audit-#13 hygiene item 2a) ──
+// The a9269390 manual restore proved the hole: a narrow --merge with neither
+// --verify-anchors (this run) nor a carried prior PASS verdict can still
+// land meta.partial=true evidence with NOTHING backing the untouched rival
+// rows' trustworthiness. The writer now refuses that write structurally
+// (nonzero exit, no file touched) instead of relying on a downstream reader
+// (test/bench-claims.js's own meta.partial ⇒ meta.anchors.pass check) to
+// catch it after the fact — a check a hand-edited/restored file can bypass
+// entirely, which is exactly what happened.
+test('bench --merge: REJECT path — partial merge with no anchors verdict at all (neither fresh nor carried) refuses the write', () => {
+  // A plain --json (no --merge) write never carries a meta.anchors field
+  // (pinned above) — start there, then merge again on top of it so the
+  // second run's PREV genuinely has nothing to carry forward.
+  const scratch = join(scratchDir, `no-anchors-${scratchN++}.json`)
+  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`])
+  const before = readFileSync(scratch, 'utf8')
+  ok(JSON.parse(before).meta.anchors === undefined, 'setup: fresh plain write should carry no anchors field')
+
+  const { status, out } = runExpectFail(['--cases=fft', '--targets=jz', `--json=${scratch}`, '--merge'])
+  ok(status !== 0 && status != null, `expected nonzero exit when partial evidence has no anchors backing it, got ${status}`)
+  ok(/refusing to write partial evidence/.test(out), `expected the write-refusal message in output:\n${out.slice(-1500)}`)
+  ok(readFileSync(scratch, 'utf8') === before, 'refused write must leave the file untouched')
+})
+
+test('bench --merge: PASS path — a carried prior PASS anchors verdict lets a plain --merge (no --verify-anchors this run) write', () => {
+  // freshCopy() starts from the committed reference, whose meta.anchors.pass
+  // is true (a real --verify-anchors run backs it) — this run does a bare
+  // --merge with no --verify-anchors of its own; the carried verdict alone
+  // must be enough to satisfy the guard.
+  const scratch = freshCopy()
+  ok(reference.meta.anchors?.pass === true, 'setup: the committed reference must carry a passing anchors verdict for this pin to mean anything')
+  const out = run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
+  ok(!/refusing to write/.test(out), `a carried PASS verdict should not trigger the write refusal:\n${out.slice(-1500)}`)
+  const merged = JSON.parse(readFileSync(scratch, 'utf8'))
+  ok(merged.meta.partial === true, 'setup: this merge should still be partial (mixed-vintage)')
+  ok(merged.meta.anchors?.pass === true, 'meta.anchors.pass should carry forward from PREV unchanged')
+})
+
+test('bench --merge: PASS path — a fresh THIS-run --verify-anchors PASS satisfies the guard even with no carried prior verdict', () => {
+  const scratch = join(scratchDir, `fresh-anchors-${scratchN++}.json`)
+  run(['--cases=mat4,fft,synth', '--targets=c-wasm,as,jz', `--json=${scratch}`])
+  ok(JSON.parse(readFileSync(scratch, 'utf8')).meta.anchors === undefined, 'setup: fresh plain write should carry no anchors field')
+
+  const out = run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--verify-anchors'])
+  ok(!/refusing to write/.test(out), `a fresh this-run PASS should not trigger the write refusal:\n${out.slice(-1500)}`)
+  const merged = JSON.parse(readFileSync(scratch, 'utf8'))
+  ok(merged.meta.partial === true, 'setup: this merge should still be partial (mixed-vintage)')
+  ok(merged.meta.anchors?.pass === true, `expected a fresh passing anchors verdict: ${JSON.stringify(merged.meta.anchors)}`)
+})
+
+test('bench --merge --allow-unanchored: escape hatch lets a partial, wholly-unverified merge write anyway', () => {
+  const scratch = join(scratchDir, `no-anchors-allow-${scratchN++}.json`)
+  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`])
+  ok(JSON.parse(readFileSync(scratch, 'utf8')).meta.anchors === undefined, 'setup: fresh plain write should carry no anchors field')
+
+  const out = run(['--cases=fft', '--targets=jz', `--json=${scratch}`, '--merge', '--allow-unanchored'])
+  ok(!/refusing to write/.test(out), `--allow-unanchored should bypass the refusal:\n${out.slice(-1500)}`)
+  const merged = JSON.parse(readFileSync(scratch, 'utf8'))
+  ok(merged.meta.partial === true, 'setup: this merge should still be partial (mixed-vintage)')
+  ok(merged.meta.anchors === undefined, 'meta.anchors should still be absent — --allow-unanchored writes without fabricating a verdict')
+  ok(merged.cases.mat4 && merged.cases.fft, 'both the carried mat4 row and the freshly measured fft row should be present')
 })
 
 // ── --merge shrink-guard (audit-#12 item 4) ─────────────────────────────────
