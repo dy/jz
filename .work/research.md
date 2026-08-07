@@ -765,12 +765,20 @@ resolveIncludes()+). SURVEY FINDINGS: `f16`/`clamped`/`typedView` are
 written/read but UNSEEDED in the ctx.js:628 init — violating its own MUST
 ("seeded, not an absent key", the bigint precedent class). Enforcement =
 existing assertCtxInvariants pattern (subset-safe, no Proxy): stratum
-snapshots at post-prepare/post-analyze, compared at pre-assemble; DEMAND
-needs no snapshot. Slices: 1 seed+declare+assert (gate: byte-identity on
-size-sweep — a byte shift from dict-shape change is a FINDING), 2
-reader-contract grep sweep, 3 post-carrier bigint gate retirement (bigint
-stays a PROGRAM-stratum size gate). No FeaturePlan object — the bag stays a
-flat seeded dict; strata are a contract, not a runtime structure.
+snapshots at post-prepare/post-analyze, compared at pre-assemble.
+REFINED per audit-#14 item 3 (strata alone formalize today's ordering
+without producing a frozen plan): split the STRUCTURE, not just the
+contract — `ctx.features` becomes the FROZEN FeaturePlan (SESSION+PROGRAM+
+ANALYSIS facts only, genuinely immutable after analyze) and the DEMAND
+stratum moves OUT into `ctx.linkDemand` (monotone false→true helper/runtime
+reachability produced by emission, read only by resolveIncludes/assemble —
+the inc()-sibling channel it always semantically was). Emission then never
+writes ctx.features at all; the freeze is real, not a convention.
+Slices: 1 seed+declare+assert on the current bag (gate: byte-identity on
+size-sweep — a byte shift from dict-shape change is a FINDING), 2 the
+linkDemand extraction (~13 write sites + the module-template readers), 3
+reader-contract grep sweep, 4 post-carrier bigint gate retirement (bigint
+stays a frozen PROGRAM fact gating stdlib arm size).
 
 ## [ ] Region arena (was region-arena-design.md + slice1-build + slice1-liveness + kernel-memory-curve; DORMANT)
 
