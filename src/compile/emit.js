@@ -1363,7 +1363,7 @@ function tryIntDivTrunc(aNode, bNode) {
 
 /** Emit a call argument ONCE, choosing emit vs emitIdentitySafe up front — the
  *  same single-emission discipline as bridge.js's storedValue chokepoint
- *  (carrier-invariant-design.md), inlined here because emit.js IS emit/
+ *  (research.md §Carrier invariant), inlined here because emit.js IS emit/
  *  emitIdentitySafe's home module (no bridge indirection needed, but no
  *  after-the-fact carrierF64 rescue is possible either: calling coerceArg
  *  with a plain `emit(node)` result and branching on hasAmbiguousBoolMerge
@@ -1372,7 +1372,7 @@ function tryIntDivTrunc(aNode, bNode) {
  *  `f() > 0 && 1`). Callers pass this instead of a bare `emit(a)`. */
 const argIR = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node)
 
-// THE represented-carrier chokepoint (carrier-invariant-design.md), same
+// THE represented-carrier chokepoint (research.md §Carrier invariant), same
 // definition as bridge.js's exported storedValue — duplicated here (not
 // imported) because emit.js already owns `emit`/`emitIdentitySafe` directly;
 // going through bridge.js would round-trip via ctx.bridge for no reason.
@@ -1880,7 +1880,7 @@ export function emitDecl(...inits) {
     if (flatDecl && Array.isArray(init) && (init[0] === '{}' || init[0] === '[' || init[0] === '[]')) {
       for (let j = 0; j < flatDecl.names.length; j++) {
         const v = flatDecl.values[j]
-        // carrier-invariant-design.md: a flat/SRoA field local is the same
+        // research.md §Carrier invariant: a flat/SRoA field local is the same
         // untyped boxed-value slot a heap object's schema store is (module/
         // object.js's storedValue, now bridge.js's chokepoint) — the previous
         // bare `asF64(emit(v))` never boxed a proven-BOOL value at all (asF64
@@ -1990,7 +1990,7 @@ export function emitDecl(...inits) {
     // patch below applied.
     //
     // EXPORT-LOSS MECHANISM ROOT-CAUSED AND FIXED 2026-08-03 (dedicated hunt,
-    // carrier-invariant-design.md "DECL-INIT WALL" entries): the "total
+    // research.md §Carrier invariant "DECL-INIT WALL" entries): the "total
     // export loss for EVERY compiled program" symptom above is NOT an
     // unlocalized native self-compile miscompile — it is this file's OWN
     // local-storage coercion ladder a few lines down (`localType === 'v128'
@@ -2040,7 +2040,7 @@ export function emitDecl(...inits) {
     // test/kernel-parity.js's 'dict' corpus entry (`d[c] = (d[c] || 0) + 1`)
     // diverges from native at O2/O3 only (kernel ~3% larger WAT; O0
     // byte-identical) — no BOOL-atom coercion involved, a separate
-    // MECHANISM A site (carrier-invariant-design.md's 16 hand-reimplemented
+    // MECHANISM A site (research.md §Carrier invariant's 16 hand-reimplemented
     // `carrierF64(node, emit(node))` sites, or one of the 13 PENDING-FIX
     // oracle rows the design doc already gates production changes behind)
     // getting exercised for the first time with storedValue live at every
@@ -2296,7 +2296,7 @@ export function emitDecl(...inits) {
       // shift+mask, not numeric truncation). This was latent (never exercised) as long
       // as no decl-init call site fed a BOOL local through storedValue; named + fixed
       // here so the decl-init WALL's storedValue substitution stops corrupting BOOL
-      // locals narrowed to i32 storage (carrier-invariant-design.md, MECHANISM C).
+      // locals narrowed to i32 storage (research.md §Carrier invariant, MECHANISM C).
       coerced = localType === 'v128' ? val : localType === 'f64' ? asF64(val)
         : val.type === 'i32' ? val
         : valTypeOf(init) === VAL.BOOL ? unboxBoolIR(val)

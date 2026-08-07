@@ -27,7 +27,7 @@ import {
 import { emit, emitIdentitySafe, storedValue, storedValueNarrow } from '../bridge.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
-// THE chokepoint, promoted to bridge.js (carrier-invariant-design.md) — every
+// THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
 // module/*.js consumer imports the same `storedValue` this file does, instead
 // of hand-reimplementing the unsound `carrierF64(node, emit(node))` half.
 

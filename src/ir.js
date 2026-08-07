@@ -51,7 +51,7 @@ function boxPtrIR(i32node, ptrType, aux = 0) {
     ['i64.or',
       ['i64.const', '0x' + prefix.toString(16).toUpperCase()],
       ['i64.extend_i32_u', i32node]]], 'f64')
-  // TAG-PRESERVING REBOX (carrier-invariant-design.md, "DECL-INIT WALL
+  // TAG-PRESERVING REBOX (research.md §Carrier invariant, "DECL-INIT WALL
   // ROOT-CAUSED"): typed() above sets only .type on the fresh wrapper node —
   // the source i32node's .ptrKind/.ptrAux (set by readVar-style construction)
   // do NOT propagate onto it. The bits are right (the NaN-box correctly
