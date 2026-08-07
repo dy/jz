@@ -6,6 +6,98 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, EVIDENCE FINALE — full corpus re-measured at HEAD
+## 57ad846d, quiet machine (load ~2.9-3.5 throughout): FRESH/ANCHORS/COVERAGE/
+## SIZE all flip green; MEMORY goal FLIPPED RED (jz-wasmtime engine floor
+## jump, pre-existing not session-caused); warm self-host perf gate FAILS all
+## 3 rounds (new, quiet-confirmed regression); WINNING stays red on 11 wasm +
+## 4 V8-family + 5 bun/jsc cases — see full lists below)
+
+Native-lane (`jz-w2c` vs `nat`/`rust`/`go`/`zig`) re-measured corpus-wide
+(chunked, ~6-12 cases/invocation, `--merge`), all 58 EH-clear cases (60 minus
+`jessie`/`jz`, both intentionally EH-gated) — 50 have a native rival to
+compare against. jz-w2c beats the best native rival outright on 11/50
+(mat4 0.93×, mandelbrot 0.54×, dispatch 0.54×, dotprod 0.63×, matmul 0.66×,
+lz 0.77×, wordcount 0.80×, json 0.93×, noise 0.94×, poly 0.94×, lorenz
+0.97×, nbody 0.93×, trace 0.93× — several beating native `clang -O3`
+directly), geomean 1.496× (native stays the honest ceiling, per the
+guarantee doc). Worst gaps are the documented SIMD-width floor (`alpha`
+23.1× — native's 256-bit AVX2 vs wasm's 128-bit v128, a known, published
+gap) and no-GC arena allocation cases. Native-lane MEMORY: jz-w2c tracks
+native memKb closely, median delta only +48KB, 4/50 beats-or-matches
+outright; the handful of outliers (strbuild 7.9×, json 4.6×, immutable
+3.2×, wordcount 2.0×, shapes 1.3×) are the same allocation-churn signature
+already documented for the jz-wasmtime/moonrun comparison — not new.
+`--verify-anchors` (c-wasm×mat4, c-wasm×fft, as×synth) PASS both times run
+(within 1.02-1.07×) — machine state matches stored evidence, no drift.
+
+jz lane fully re-stamped corpus-wide (`--targets=jz --merge --verify-anchors`,
+all 60 cases, 7m22s — the `jz`-under-`jz` self-host row stays gated as
+documented, unrelated to this session). Confirms `base64`'s induction-variable
+fix (213c04b0, already an ancestor of the PREVIOUS results.json's base commit
+de7cf4e6 but never actually re-measured since — its stored row predated the
+fix at measuredAt 355a91c7) — now 3504µs → re-measured fresh, red narrowed
+1.109×→1.063× (tinygo) but not closed. `delayline`/`sort`/`radixsort` paired
+(ABBA, 4 rounds) spot-checked against their claims-relevant rivals: delayline
+vs rust-wasm confirmed real (1.114× paired, matches the single-shot 1.081×),
+radixsort vs zig-wasm confirmed real (1.041× paired, matches 1.040×), sort
+vs zig-wasm confirmed NOISY-but-in-band (0.80-1.07× across 4 rounds — the
+same V8-hosted-lane jitter the 2026-08 archive already banked, not a fresh
+regression).
+
+SIZE: geomean jz/AS **1.020×** (27/49 smaller) — CONFIRMED via two
+independent paths (`test/bench-claims.js`'s own computation off
+`bench/results.json`, AND a fresh direct `node scripts/bench-size.mjs` run)
+— exact match to 57ad846d's commit-message claim (1.045×→1.020×, the literal
+typed-array `.length` constant-fold). Comfortably under the 1.05× cap.
+
+MEMORY: `.work/memcheck-results.csv` regenerated at HEAD (dedicated narrow
+2-target `jz-wasmtime,moonbit` chunks, 4 chunks × ~11 cases, matching the
+c28f218c/2f0720a5/bce7d1d7 precedent's own methodology exactly — moonrun's
+numbers landed within noise of the bce7d1d7 snapshot, e.g. crc32 14320KB
+exact match, confirming the methodology is sound). **THE GOAL ITSELF
+FLIPPED**: beats-or-matches collapsed from 40/43 to **1/43**, median delta
+from -912KB (jz leaner) to **+7936KB (jz LARGER)**. Root cause: jz-wasmtime's
+OWN engine floor jumped from ~13.7MB (bce7d1d7, 2026-08-05) to ~22-28MB now
+— moonrun's floor is unchanged. Verified NOT a within-session or
+within-chunk artifact (re-checked with a single fresh case/single-target
+invocation: still 22MB) and NOT introduced by this session's own work — the
+shift is already present in the git-HEAD-committed `bench/results.json`'s
+jz-wasmtime rows from BEFORE this session touched anything (mat4 22624KB,
+crc32 22416KB, dict 22464KB, callback 22800KB). Landed in some commit
+between bce7d1d7 and today's HEAD — NOT diagnosed further here (out of this
+task's scope: a real regression to root-cause next, top open item, not an
+artifact to explain away).
+
+Selfhost-perf quiet run (fresh `npm run build`, dist/jz.wasm byte-reflects
+HEAD 57ad846d; machine confirmed quiet immediately before, load ~3.4-3.5):
+**warm-instance FAILS the strict-win cap on all 3 rounds** (1.105×/1.124×/
+1.123×, cap 1.03× — per-case worst: sort 1.14, biquad 1.11, crc32 1.13,
+mandelbrot 1.09, fft 1.10, mat4 1.08). Per the test's own protocol (3 full
+independent rounds, best-of, only fails when ALL exceed the cap) this is a
+genuine regression, not load noise — a NEW open item, not previously flagged
+in the archive. **fresh-instance PASSES comfortably** (0.821× vs 0.99× cap,
+per-case 0.78-0.85×) — the regression is warm-reuse-specific (`_clear`
+between compiles on one instance), not a blanket self-host slowdown.
+
+`npm run test:claims` full verdict at HEAD 57ad846d (12 test groups, 26
+assertions): FRESH PASS (both axes — results.json meta.commit and
+memcheck-results.csv's `# commit:` header both 57ad846d, watr 5.7.12
+matches). PARTIAL/ANCHORS PASS (results.json is `--merge`d/partial, but
+`meta.anchors.pass: true`). COVERAGE PASS (all 11 named rivals clear the
+42/60 floor). TIGHT-INT-LOOP EXCEPTION PASS. SIZE PASS (1.020×). WINNING
+still red — see the per-axis lists directly above and the SPEED goal bullet
+below (fail 6/12 test groups, all WINNING-axis, none newly caused by this
+session — corroborated live by `npm run test:bench` on this same quiet
+machine: delayline/fft/glyfparse trail their nearest wasm rival by
+1.09-1.51×, `glyfparse`'s gap already has a diagnosed general lever
+(runtime-bound cursor-hull versioning) in the test file's own comment).
+`npm run test:bench` also flagged, separately: perf-fuzz gate red (float/
+mixed geomean+max over cap — a fuzz-corpus finding, not scoped to this
+session's changes) and the examples corpus losing strict-win on
+`percolation` (0.79×, union-find gather, a long-documented gap) — both
+pre-existing, unchanged by anything landed this session.
+
 ## Status (2026-08-06, REGION-ARENA SLICE-1 `_eqFast` CONFIRM-OR-REFUTE SESSION
 ## — candidate REFUTED, O3 mechanism narrowed further (ptr_type+ptr_aux joint
 ## necessity, downstream of a clean region_exit, not yet fixed); O2 REGRESSED
@@ -3064,44 +3156,99 @@ compilation, not `resolveCallee`).
       Remaining true red after recovery: glyfparse 1.48, sort 1.35,
       delayline 1.26, base64 1.09, jessie/watr/colorpq/hashjoin (V8/JIT
       lanes), plus the documented hard tails (trace/sdf/shapes).
+      REFRESHED AT HEAD 2026-08-06 (57ad846d, THE EVIDENCE FINALE — quiet
+      machine, load ~2.9-3.5 throughout; full recipe/native-lane table in
+      Status above): COMPLETE holds (all 11 named rivals ≥ floor).
+      WINNING narrowed further from the 2026-08-03 snapshot but still red
+      on 3 axes. wasm-rival strict: 11 unproven (5 true red beyond the
+      1.05x band: base64 1.063x [tinygo, narrowed from 1.109x — the
+      213c04b0 induction fix was already landed but never re-measured
+      until now], delayline 1.081x [rust-wasm, paired-confirmed 1.114x],
+      glyfparse 1.222x [c-wasm, general lever already diagnosed — see
+      Status above], sdf 1.111x [c-wasm], trace 1.398x [c-wasm] — 6 more
+      inside the band: fft 1.028x, lz 1.024x, radixsort 1.040x
+      [paired-confirmed 1.041x], shapes 1.043x, sort 1.002x [paired:
+      0.80-1.07x across 4 rounds, confirmed NOISY not a regression], vm
+      1.011x). V8-family strict: 4 unproven, 3 red (colorlog 1.113x
+      [deno], colorpq 1.170x [v8], jessie 1.515x [v8] — 1 in band:
+      resample 1.009x). bun/jsc strict (outside the tight-int-loop
+      exception): 5 unproven, 3 red (colorlog 1.692x [jsc], jessie 1.886x
+      [bun], synth 1.104x [bun] — 2 in band: glyfparse 1.001x, resample
+      1.021x). Tight-int-loop exception: PASS, 0 exceeded. sieve/bitwise/
+      hashjoin/watr — RECOVERED, no longer red (the 2026-08-03/04
+      recovery wave holds). Net: 8 true reds total (down from the
+      2026-08-03 snapshot's much longer list), concentrated in the same
+      long-documented families — gather/branch scalar codegen (glyfparse/
+      sdf/trace/delayline), the induction-narrowing residual (base64),
+      and the self-host/lab-transcendental rows (jessie/colorlog/colorpq/
+      synth). `npm run test:bench` (live, this machine) corroborates
+      delayline/fft/glyfparse independently and separately flags a
+      perf-fuzz gate failure (float/mixed geomean+max over cap) and the
+      examples corpus losing strict-win on `percolation` (0.79x) — both
+      pre-existing, unchanged by this session.
 * [x] SIZE: par-or-smaller than AssemblyScript BY GEOMEAN, with full JS
       semantics — not strict-smaller. RECOVERED 2026-08-04, BELOW THE 1.05
       CAP: 1.060x → 1.057x (af08bead escape precision) → 1.055x (c8700daa
-      range proofs) → **1.0418x** (this session — bisected the previously
-      un-bisected residual to 5c437df5's emitLooseEq/emitStrictEq
-      both-nullable-NUMBER fallback over-generalizing to the full
-      string/pointer-kind `$__eq` dispatch on a pure-numeric checked-OOB
-      equality shape; narrowed with a proof-driven elision in
-      `src/compile/emit.js` — see Status above for the full attribution
-      table, the lever, and the gate re-run). Of the soundness-guard
-      candidates named in the original flip analysis, only ONE
-      (maybeUndefined's equality fallback, via lz/glyfparse) was the real
-      driver — 43.5% of the total shift from 2 of 49 cases; the
-      `__jz_last_err_bits` global+export tax (~40 cases x flat +26 B) was
-      investigated and confirmed NOT recoverable (already maximally
-      reachability-gated on `ctx.runtime.throws`; stripping it reopens
-      audit #7 P1's host-decode regression). AS's bench ports still use
+      range proofs) → 1.0418x → **1.020×** (57ad846d, 2026-08-06 — the
+      literal typed-array `.length` constant-fold: a bare-name receiver
+      with a known `typedLen` fact now folds `.length` to `f64.const`
+      instead of the polymorphic `$__len` dispatch call, unlocking
+      constant loop bounds → existing SIMD unroll on literal-sized typed
+      arrays). CONFIRMED via two independent paths this session
+      (test/bench-claims.js's computation off bench/results.json AND a
+      fresh direct `node scripts/bench-size.mjs` run — both read exactly
+      1.020×, 27/49 cases smaller). AS's bench ports still use
       `unchecked()` throughout (assertions build byte-identical) while jz
       pays real guards for JS OOB semantics — that structural gap is
       unchanged and is the honest floor under the recovered number, not
       chased further. Gate: geomean <= 1.05 vs AS (test/bench-claims.js
       size test tracks the committed-snapshot version of this; test/
       bench.js SIZE_GEOMEAN_MAX formally gates only the win/tie(13)
-      subset, 0.879x, never actually red).
-* [x] MEMORY: goal STAYS MET, RECONFIRMED 2026-08-03 at f704a077
-      (.work/memcheck-results.csv regenerated — dedicated narrow-target
-      2-target-per-chunk methodology, NOT the bulk run's memKb column,
-      see Status above for why). jz-wasmtime beats-or-matches moonrun
-      (MoonBit-wasm) peak RSS on 40/43 comparable cases (median delta
-      -912KB, jz leaner — same shape as the 2026-08-02 reading's
-      -1200KB, within normal run-to-run noise); engine floors wasmtime
-      ~13.7MB vs moonrun ~12.2MB unchanged. Confirmed the sieve/bitwise
-      SPEED regression does NOT carry a memory cost — both sit at the
-      normal ~14-15MB floor, isolating that bug to codegen/execution
-      time only.
+      subset, never actually red).
+* [ ] MEMORY: **GOAL FLIPPED RED 2026-08-06 at 57ad846d** (was [x] MET as
+      of 2026-08-03/f704a077). `.work/memcheck-results.csv` regenerated
+      with the SAME dedicated narrow-target 2-target-per-chunk methodology
+      that produced every prior PASS reading (4 chunks × ~11 cases,
+      `jz-wasmtime,moonbit` only — moonrun's own numbers landed within
+      noise of the bce7d1d7 snapshot, e.g. crc32 14320KB exact match,
+      confirming the methodology itself is still sound and this is not a
+      measurement artifact). jz-wasmtime beats-or-matches moonrun peak RSS
+      on **1/43** comparable cases now (was 40/43), median delta **+7936KB
+      jz LARGER** (was -912KB jz leaner). Root cause: jz-wasmtime's OWN
+      engine floor jumped from ~13.7MB to ~22-28MB — moonrun's ~12-27MB
+      floor is unchanged case-by-case. Verified NOT a within-session
+      artifact: a single fresh case/single-target invocation reproduces
+      22MB, AND the shift is already present in the git-HEAD-committed
+      bench/results.json's jz-wasmtime rows from BEFORE this session
+      touched anything (mat4 22624KB, crc32 22416KB, dict 22464KB,
+      callback 22800KB). Landed in some commit between bce7d1d7
+      (2026-08-05) and 57ad846d (2026-08-06) — NOT bisected/diagnosed
+      this session (out of scope; next session's top priority — root-
+      cause which commit moved the jz-wasmtime memory floor and why
+      moonrun's is unaffected, before deciding whether this is a real
+      compiler-side regression or a machine/wasmtime-version change).
 
 ## Open
 
+* [ ] WARM SELF-HOST PERF REGRESSION (FOUND 2026-08-06, EVIDENCE FINALE
+      session, quiet machine): `test/selfhost-perf.js`'s warm-instance gate
+      (one wasmtime instance, `_clear` between compiles, cap 1.03x vs V8 JS)
+      FAILS on all 3 independent rounds of its own retry protocol — 1.105x/
+      1.124x/1.123x, worst per-case sort 1.14x, crc32 1.13x, biquad 1.11x.
+      Per the test's own comment ("a genuine regression sits above the cap
+      on EVERY independent round; boundary noise does not"), this reads as
+      real, not load jitter — machine confirmed quiet (load ~3.4-3.5,
+      matching the session's baseline) immediately before. fresh-instance
+      (new instance per compile) PASSES cleanly (0.821x vs 0.99x cap) — so
+      this is warm-reuse/`_clear`-path-specific, not a blanket self-host
+      slowdown. NOT bisected this session (found at the very end, during
+      the publication-datum run) — next session should git-bisect between
+      the last known-passing warm reading (1.024x, f704a077, 2026-08-03)
+      and 57ad846d for the regressing commit; region-arena's `__region_*`
+      primitives (module/core.js, landed dormant/flag-gated in the
+      intervening commits) are a plausible first suspect given they touch
+      the same self-host/watOptimize round-loop machinery, but this is
+      unconfirmed — do not assume without bisecting.
 * [x] STRING-COMPARE MISPROOF WAVE (LANDED 2026-07-25 --
       the watr-in-kernel dynamic-compare family root; watr-diff harness
       proves the cure but ONE perf-shape regression blocks landing):
