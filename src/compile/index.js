@@ -451,6 +451,15 @@ function enterFunc(sig, body, { uniq = 0, directClosures = null, exported = fals
   ctx.func.closureAux = new Map()     // emission-minted closure table idx per unboxed CLOSURE local (slice-4 P2) — emission state, not analysis
   ctx.func.zeroInitSeen = new Set()   // names whose `let x=0` zero-init was elided once; a 2nd is a real re-init (unrolled bodies)
   ctx.func.maybeNullish = new Set()   // bindings assigned a nullish literal → coerce in arithmetic (null-flow)
+  // Emission-tier transient channel (NOT updateRep — passes.js's own "emission
+  // tier never writes durable analysis state" exit grep) for
+  // isTernaryBoxedBigint (ir.js): names whose decl-init IS a ternary-nullish
+  // BIGINT merge, so the declared local's OWN storage durably holds a real
+  // PTR.BIGINT box (or the null/undefined sentinel) rather than raw bits —
+  // populated by emitDecl (this file... — CARRIER PROGRAM, .work/carrier-
+  // representation-design.md §12) at the one point it's cheaply and soundly
+  // knowable, mirroring closureAux's own "emission state, not analysis" shape.
+  ctx.func.ternaryBoxedNames = new Set()
   ctx.func.refinements = new Map()     // flow-sensitive type facts (typeof/instanceof guards) — per-function; clear so none leak across bodies
   ctx.func.pendingLabel = null        // label awaiting its loop, for `continue <label>`
   ctx.func.uniq = uniq

@@ -520,17 +520,50 @@ export const needsBigintBox = (node) => {
 export const isCurrentlyBoxedBigint = (name) =>
   repOf(name)?.bigintBoxed === true && !!ctx.func.current?.params?.some(p => p.name === name)
 
+/** True iff `name` was declared directly from a ternary-nullish BIGINT merge
+ *  (`let r = cond ? BigInt(x) : null`) — the ONE OTHER shape (besides a
+ *  boxed param, isCurrentlyBoxedBigint above) whose "always stays raw" claim
+ *  is false. That predicate's own doc comment is explicit that carrierF64/
+ *  'return'/'?:' box a FRESH COPY "never the local's own storage" — true for
+ *  carrierF64/'return' (the box exists only at the point of USE, e.g.
+ *  storing `r` into an object property boxes a copy, `r` itself stays raw)
+ *  but NOT for '?:': when a ternary-nullish BIGINT merge is a decl's own
+ *  init, the merge's result — a real box on the bigint arm, the null/undef
+ *  sentinel on the other — becomes the declared name's ENTIRE, PERMANENT
+ *  storage from that point on; there never was a separate "raw bits" form of
+ *  `r` to begin with. `bigintBoxed` (analyze.js markBigintSink) can't record
+ *  this fact itself — it only fires for a BARE-NAME arm reaching a sink, and
+ *  a ternary's own arm is almost always an inline expression (`BigInt(x)`,
+ *  not a name) — so this is a SEPARATE fact, in a SEPARATE channel:
+ *  ctx.func.ternaryBoxedNames, an emission-tier TRANSIENT Set (compile/
+ *  index.js enterFunc, reset per function — NOT updateRep/the rep system;
+ *  passes.js's own "emission tier never writes durable analysis state" exit
+ *  grep is a real, checked invariant), populated by emitDecl (emit.js) at
+ *  the one point it's cheaply and soundly knowable: right after compiling a
+ *  decl whose init is exactly the shape kind.js VT['?:']/the '?:' handler's
+ *  own box condition recognizes (valTypeOf(init) === BIGINT for a '?:' node
+ *  — same test, so "boxed" here can never disagree with what the '?:'
+ *  handler itself actually built). Found live: watr-adjacent `let r = a > 0
+ *  ? BigInt(a) : null; return r == null ? 'x' : r.toString(16)` —
+ *  `.bigint:toString`'s own readI64(n, emit(n)) call (module/number.js) is
+ *  correctly wired, but couldn't see the box without this fact: `r` is a
+ *  LOCAL, not a param, so isCurrentlyBoxedBigint alone missed it. */
+export const isTernaryBoxedBigint = (name) => ctx.func.ternaryBoxedNames?.has(name) === true
+
 /** Read-side twin of carrierF64: extract raw i64 bits from a BIGINT-typed
  *  operand, unboxing FIRST when the bare name's current representation is a
- *  real PTR.BIGINT box (isCurrentlyBoxedBigint). Byte-identical to a plain
- *  asI64(emitted) call for every other shape — inline expressions, non-boxed
- *  locals, and (by construction) every param isProvenBoxedBigint would have
- *  boxed instead. The chokepoint the arithmetic core's ~10 VAL.BIGINT-gated
- *  `asI64(emit(x))` call sites route through (bigIntOperand/bigIntUnary and
- *  the postfix/compound-assign shortcuts that bypass them) so a boxed param
- *  never has its pointer bits misread as a bigint payload. */
+ *  real PTR.BIGINT box (isCurrentlyBoxedBigint or isTernaryBoxedBigint).
+ *  Byte-identical to a plain asI64(emitted) call for every other shape —
+ *  inline expressions, non-boxed locals, and (by construction) every param
+ *  isProvenBoxedBigint would have boxed instead. The chokepoint the
+ *  arithmetic core's ~10 VAL.BIGINT-gated `asI64(emit(x))` call sites route
+ *  through (bigIntOperand/bigIntUnary and the postfix/compound-assign
+ *  shortcuts that bypass them), plus method-dispatch consumers like
+ *  `.bigint:toString` (module/number.js), so a boxed param OR ternary-boxed
+ *  local never has its pointer bits misread as a bigint payload. */
 export function readI64(node, emitted) {
-  if (CARRIER_BOX && typeof node === 'string' && isCurrentlyBoxedBigint(node)) return unboxBigInt(emitted)
+  if (CARRIER_BOX && typeof node === 'string' && (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node)))
+    return unboxBigInt(emitted)
   return asI64(emitted)
 }
 

@@ -58,7 +58,7 @@ import {
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom, throwTypeErrorIR,
-  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, needsBigintBox, isProvenBoxedBigint, readI64,
+  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, unboxBigInt, needsBigintBox, isProvenBoxedBigint, isCurrentlyBoxedBigint, isTernaryBoxedBigint, readI64,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -1418,8 +1418,56 @@ function coerceArg(ir, param, node) {
   // instead of ambiguous raw bits. Only fires when THIS call's argument is
   // itself BIGINT-kinded; a non-bigint argument at the same position needs no
   // change (param.bigintBoxed says nothing about what THIS site passes).
-  if (CARRIER_BOX && param?.bigintBoxed && node !== undefined && valTypeOf(node) === VAL.BIGINT)
-    return boxBigInt(asI64(ir))
+  if (CARRIER_BOX && node !== undefined && valTypeOf(node) === VAL.BIGINT) {
+    // Is `node` a bare name whose CURRENT storage already IS a real box?
+    // Two durable sources, both for the WHOLE current function per their own
+    // doc comments (ir.js): isCurrentlyBoxedBigint (the current function's
+    // OWN bigintBoxed param, boxed by ITS caller's coerceArg on entry) and
+    // isTernaryBoxedBigint (a ternary-nullish BIGINT decl, whose OWN storage
+    // IS the box, never a fresh-copy-at-use-site like every other
+    // bigintBoxed sink — and, being nullish-typed by construction, may ALSO
+    // genuinely hold the null/undefined sentinel at runtime, never a box:
+    // both branches below guard on that at runtime, never assume-box or
+    // assume-raw statically for a nullable name).
+    const alreadyBoxed = typeof node === 'string' && (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node))
+    if (alreadyBoxed && !param?.bigintBoxed) {
+      // Callee's OWN param settled "receives BIGINT consistently, stays raw
+      // at the boundary" (bigintBoxedVerdict, narrow.js) — a verdict computed
+      // from EVERY call site's argument STATIC KIND alone, with no idea one
+      // of those uniformly-BIGINT-typed arguments is secretly a durable box.
+      // Unbox before crossing — the callee's body (readI64-covered arithmetic,
+      // OR a boundary re-export) assumes raw i64-as-f64 bits, and hands them
+      // straight through unmodified otherwise. Found live: `chain(5)` →
+      // `arith(r)` (`r` ternary-boxed, coerceArg correctly passes it through
+      // unboxed already — see below) → `hex(r)` (`hex`'s param0 settled
+      // "stays raw", `r` is `arith`'s own ALREADY-boxed param) — hex's
+      // `v.toString(16)` read the pointer's own bits raw.
+      const t = temp('argbx')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, ir],
+        ['if', ['result', 'f64'], isNullish(['local.get', `$${t}`]),
+          ['then', ['local.get', `$${t}`]],
+          ['else', fromI64(unboxBigInt(['local.get', `$${t}`]))]]], 'f64')
+    }
+    if (!alreadyBoxed && param?.bigintBoxed) {
+      // The mirror direction (Slice 2's original wiring): callee's param
+      // can't be trusted uniformly, box a genuinely-raw argument before the
+      // call. `alreadyBoxed` being false also covers the box-of-a-box guard
+      // isProvenBoxedBigint's own param exclusion established (Slice 2's
+      // "param double-box" bug) — this `if` simply never re-boxes an
+      // already-boxed bare name (the case just above already handled it,
+      // taking `ir` through unchanged when both callee and caller agree the
+      // value crosses as a box). Nullish-guarded for the same reason as the
+      // unbox direction above — a nullable-BIGINT argument (proven or
+      // unproven-boxed alike) may genuinely be the sentinel at runtime.
+      const t = temp('argbx')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, ir],
+        ['if', ['result', 'f64'], isNullish(['local.get', `$${t}`]),
+          ['then', ['local.get', `$${t}`]],
+          ['else', boxBigInt(asI64(['local.get', `$${t}`]))]]], 'f64')
+    }
+  }
   if (node !== undefined && (param == null || (param.type !== 'i32' && param.val == null)) &&
       valTypeOf(node) === VAL.BOOL)
     return carrierF64(node, ir)
@@ -2058,6 +2106,21 @@ export function emitDecl(...inits) {
     const prevNeverD = ctx.func._arrayLiteralNeverEscapes
     if (!viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '[' && ctx.schema.arrayVars?.has(name))
       ctx.func._arrayLiteralNeverEscapes = true
+    // isTernaryBoxedBigint (ir.js): a decl initialized directly from a
+    // ternary-nullish BIGINT merge (`let r = cond ? BigInt(x) : null`) —
+    // `valTypeOf(init) === VAL.BIGINT` for a '?:' node is EXACTLY the
+    // condition the '?:' handler (below in this file) itself boxes on (same
+    // kind.js VT['?:'] rule both consult), so this can never disagree with
+    // what actually got built. See isTernaryBoxedBigint's own doc comment
+    // (ir.js) for the full "why the local's own storage isn't raw here"
+    // reasoning and the live incident (`.bigint:toString` on a ternary-
+    // boxed local misread the pointer's bits raw). ctx.func.ternaryBoxedNames
+    // (compile/index.js enterFunc), NOT updateRep — this is the emission
+    // tier, which passes.js's own exit grep asserts never writes durable
+    // analysis state; a per-function transient Set is the established
+    // pattern here (maybeNullish/closureAux, same file, same shape).
+    if (CARRIER_BOX && !viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '?:' && valTypeOf(init) === VAL.BIGINT)
+      ctx.func.ternaryBoxedNames?.add(name)
     const val = viewInit || emit(init)
     ctx.func._arrayLiteralNeverEscapes = prevNeverD
     if (isObjLit) ctx.schema.targetStack.pop()
