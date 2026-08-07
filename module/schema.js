@@ -11,7 +11,7 @@ import { typed, asF64 } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
-import { err, inc } from '../src/ctx.js'
+import { err, inc, CARRIER_BOX } from '../src/ctx.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
@@ -370,5 +370,101 @@ export function initSchema(ctx) {
     const idx = ctx.schema.list[id]?.indexOf(prop)
     if (idx == null || idx < 0) return false
     return ctx.schema.slotI32Certain.get(id)?.[idx] === true
+  }
+
+  // === CARRIER PROGRAM §15/§16: slotBigintBoxed / slotBigintProven ===
+  //
+  // slotI32Certain's write-side twin. §15 root-caused a carrier-built kernel
+  // corrupting its own generated constants to a granularity mismatch: the
+  // write side boxed a schema slot's BIGINT value per-LITERAL (`needsDynShadow`
+  // of THIS construction alone), while the read side (emitSchemaSlotRead,
+  // module/core.js) had no matching arm at all — a bare f64.load handed a
+  // registry-only reader's box pointer to every consumer as if it were the
+  // field's raw value. The fix pairs write and read at SCHEMA granularity
+  // instead: a schemaId can be shared by a shadowed and a non-shadowed
+  // constructor, so the two sides can only agree exactly when EVERY
+  // constructor/assignment of a schema boxes a BIGINT slot the moment ANY ONE
+  // of them needs to.
+
+  // Memoized reverse index: dynKeyVars name → schemaId, rebuilt whenever
+  // ctx.types.dynKeyVars is reassigned (plan/index.js publishes a fresh Set
+  // each collectProgramFacts pass — reference-identity is the correct, cheap
+  // invalidation key). Built lazily (not at slot-census time): dynKeyVars/
+  // anyDynKey aren't published until AFTER observeProgramSlots' census runs
+  // (see slotBigintObserved's own doc, ctx.js) — schemaShadowed only needs to
+  // be correct by CODEGEN time, well after both are settled.
+  let shadowedSidsCache = null, shadowedSidsKey = null
+  const schemaShadowed = (sid) => {
+    if (ctx.types.anyDynKey) return true
+    const dyn = ctx.types.dynKeyVars
+    if (!dyn || !dyn.size) return false
+    if (shadowedSidsKey !== dyn) {
+      shadowedSidsCache = new Set()
+      for (const name of dyn) {
+        const s = repOf(name)?.schemaId ?? ctx.schema.vars.get(name)
+        if (s != null) shadowedSidsCache.add(s)
+      }
+      shadowedSidsKey = dyn
+    }
+    return shadowedSidsCache.has(sid)
+  }
+
+  /** WRITE-usable fact: true iff a BIGINT value stored at (sid, prop) must be
+   *  boxed (a real PTR.BIGINT heap cell) rather than left as raw i64-as-f64
+   *  bits. TRUE iff (a) slotBigintObserved (ctx.js) ever joined a BIGINT
+   *  write at this slot ANYWHERE in the program — a pure OR, so a slot that
+   *  also holds plain NUMBER writes elsewhere still boxes its BIGINT
+   *  instances — AND (b) SOME constructor/assignment of this schema is
+   *  dyn-shadowed (schemaShadowed above, the program-level mirror of
+   *  needsDynShadow's own two conditions). Deliberately WIDER than the read-
+   *  side twin below (slotBigintProvenBySid): it does NOT require the slot to
+   *  be uniformly BIGINT, because carrierF64/carrierF64Narrow (src/ir.js)
+   *  already gate boxing PER VALUE (`valTypeOf(value) === VAL.BIGINT`) — a
+   *  NUMBER-typed write routed through the "boxed" choice is unaffected,
+   *  falls to the same asF64 either way. Consumed directly by the write
+   *  sites that used to branch on raw needsDynShadow (module/object.js
+   *  literal/spread construction, src/compile/emit-assign.js field-assign)
+   *  — CARRIER_BOX-gated so a flag-off build's choice of storedValue vs.
+   *  storedValueNarrow is unaffected (byte-identical either way when the
+   *  flag is off — both degrade to the same asF64/boolBoxIR fallback). */
+  ctx.schema.slotBigintBoxedBySid = (sid, prop) => {
+    if (!CARRIER_BOX || sid == null) return false
+    const idx = ctx.schema.list[sid]?.indexOf(prop)
+    if (idx == null || idx < 0) return false
+    if (!ctx.schema.slotBigintObserved.get(sid)?.[idx]) return false
+    return schemaShadowed(sid)
+  }
+  /** varName convenience form — resolves sid via idOf (precise path only,
+   *  same discipline as slotVT/slotI32CertainAt: a poisoned/structural name
+   *  answers false here, leaving the caller's own raw-shadow fallback in
+   *  charge, exactly the pre-fix behavior for that narrow edge). */
+  ctx.schema.slotBigintBoxedAt = (varName, prop) => {
+    const id = ctx.schema.idOf(varName)
+    return id != null && ctx.schema.slotBigintBoxedBySid(id, prop)
+  }
+
+  /** READ-usable fact: narrower than slotBigintBoxedBySid above by one
+   *  clause — the slot's census must ALSO be uniformly BIGINT (slotTypes,
+   *  the clash-poisoned lattice — not slotBigintObserved's OR-join). Only
+   *  when EVERY write to (sid, prop) is proven BIGINT is a static read
+   *  allowed to UNCONDITIONALLY unbox: a slot that also holds a real,
+   *  unboxed NUMBER somewhere would have some instances misread as a box
+   *  payload otherwise — the exact class of bug this design forbids (a
+   *  runtime tag guard on possibly-raw bits is UNSOUND, since raw bigint
+   *  bits can coincide with a PTR.BIGINT NaN-box pattern; the pairing must
+   *  be static). False on any hazarded/unproven slot leaves the box flowing
+   *  untouched — registry-aware consumers ($__dyn_get/$__typeof/$__to_num/
+   *  $__eq) already handle PTR.BIGINT per Slice 3. Consumed by
+   *  emitSchemaSlotRead's call sites (module/core.js). */
+  ctx.schema.slotBigintProvenBySid = (sid, prop) => {
+    if (!CARRIER_BOX || sid == null || slotHazarded(sid, prop, true)) return false
+    const idx = ctx.schema.list[sid]?.indexOf(prop)
+    if (idx == null || idx < 0) return false
+    return ctx.schema.slotTypes.get(sid)?.[idx] === VAL.BIGINT && ctx.schema.slotBigintBoxedBySid(sid, prop)
+  }
+  ctx.schema.slotBigintProvenAt = (varName, prop) => {
+    const ids = ctx.func.refinements?.get(varName)?.schemaIds
+    if (ids?.length) return ids.every(id => ctx.schema.slotBigintProvenBySid(id, prop))
+    return ctx.schema.slotBigintProvenBySid(ctx.schema.idOf(varName), prop)
   }
 }

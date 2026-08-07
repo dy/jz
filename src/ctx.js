@@ -435,6 +435,34 @@ export function reset(proto, globals, bridge) {
                                 //   `ctx.schema.slotI32CertainAt` → raw i32 slot
                                 //   loads (module/core.js) + i32 local typing
                                 //   (type.js exprType '.').
+    slotBigintObserved: new Map(), // schemaId → Array<boolean> — CARRIER PROGRAM
+                                //   §15/§16 write census: a pure OR-join
+                                //   (unlike slotTypes' first-wins-then-clash
+                                //   lattice), true iff ANY write to this (sid,
+                                //   idx) slot anywhere in the program — a `{}`
+                                //   construction literal value, an `obj.prop=`
+                                //   assignment, or a hazarded write the kind
+                                //   census can't resolve precisely (Object.assign/
+                                //   spread merges, computed-key writes — see
+                                //   applySlotWriteHazards' fail-OPEN belt below,
+                                //   the opposite direction from every other
+                                //   census's fail-closed hazard poison: under-
+                                //   boxing a slot that really does carry a BigInt
+                                //   is unsound, over-boxing one that never does is
+                                //   a rare harmless cost) — is BIGINT-typed. A
+                                //   later differing-kind write never erases this
+                                //   bit: a slot mixing NUMBER and BIGINT writes
+                                //   must still box its BIGINT instances. Populated
+                                //   by observeProgramSlots alongside slotTypes
+                                //   (same clear-on-`fresh` lifecycle). Raw census
+                                //   only — never read directly; the boxing
+                                //   DECISION also needs the schema-wide
+                                //   needsDynShadow join (ctx.types.dynKeyVars /
+                                //   anyDynKey, published after this census runs),
+                                //   composed at consume time by
+                                //   ctx.schema.slotBigintBoxedAt/BySid and their
+                                //   narrower read-side twins slotBigintProvenAt/
+                                //   BySid (module/schema.js).
     dictValueTypes: new Map(),  // name → VAL.* | null — dict-value-census global
                                 //   half (.work/todo.md §deletion-sweep §1b):
                                 //   every VAL.* kind ever written through

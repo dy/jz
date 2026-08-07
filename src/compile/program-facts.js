@@ -3,7 +3,7 @@
  * @module program-facts
  */
 import { commaList, isFuncRef, isLiteralStr, ASSIGN_OPS, MUTATE_OPS } from '../ast.js'
-import { ctx, err, getFactStore } from '../ctx.js'
+import { ctx, err, getFactStore, DBG_INVARIANTS } from '../ctx.js'
 import { VAL, lookupValType, repOf, updateGlobalRep } from '../reps.js'
 import { valTypeOf, nullishArm } from '../kind.js'
 import { extractParams, classifyParam, collectAllBoundNames } from '../ast.js'
@@ -626,11 +626,27 @@ export function observeProgramSlots(ast, opts) {
   const slotConstInts = ctx.schema.slotConstInts
   const dictValueTypes = ctx.schema.dictValueTypes
   const mapValueTypes = ctx.schema.mapValueTypes
+  const slotBigintObserved = ctx.schema.slotBigintObserved
   // Unlike type facts, discriminant constants are rebuilt from the complete
   // program on every facts pass. This avoids emitter/function-order coupling:
   // codegen only consumes a settled whole-program census.
   slotConstInts.clear()
+  // CARRIER PROGRAM §15/§16: pure OR-join, the BIGINT twin of observeSlot's
+  // clash-poisoned lattice just below — see slotBigintObserved's own doc
+  // comment (ctx.js) for why this needs its OWN, never-poisoned channel.
+  // Hooked into observeSlot itself (not a separate call at each site) so
+  // every current and future observeSlot caller (the `{}` literal branch,
+  // the `.prop=` branch, the moduleInit record()/cached-replay paths) joins
+  // automatically — one write census, two projections.
+  const observeBigintJoin = (sid, idx, vt) => {
+    if (vt !== VAL.BIGINT) return
+    let arr = slotBigintObserved.get(sid)
+    if (!arr) { arr = []; slotBigintObserved.set(sid, arr) }
+    while (arr.length <= idx) arr.push(false)
+    arr[idx] = true
+  }
   const observeSlot = (sid, idx, vt) => {
+    observeBigintJoin(sid, idx, vt)
     if (!vt) return
     let arr = slotTypes.get(sid)
     if (!arr) { arr = []; slotTypes.set(sid, arr) }
@@ -687,10 +703,16 @@ export function observeProgramSlots(ast, opts) {
   // hazard recompute resolves receivers the early pass poisoned wholesale
   // (fftplan's `re[j] = tr` on a then-unnarrowed param poisoned the world).
   // Sound to rebuild: every kind consumer left reads at emit, after this.
-  if (opts?.fresh) { slotTypes.clear(); slotCtors.clear(); dictValueTypes.clear(); mapValueTypes.clear() }
+  if (opts?.fresh) { slotTypes.clear(); slotCtors.clear(); dictValueTypes.clear(); mapValueTypes.clear(); slotBigintObserved.clear() }
   const hazards = collectSlotWriteHazards(ast, opts?.fresh ? { paramReps: opts.paramReps } : undefined)
+  // Hazard fail-OPEN belt (slotBigintObserved's own doc, ctx.js): a slot the
+  // kind census can't resolve precisely (Object.assign/spread merges,
+  // computed-key writes, extern constructors) marks BIGINT-possible instead
+  // of poisoning to false — the opposite direction from poisonSlot/poisonCtor
+  // just below, because under-boxing a slot that really carries a BigInt is
+  // unsound while over-boxing one that never does is a rare, harmless cost.
   applySlotWriteHazards(hazards,
-    (sid, idx) => { poisonSlot(sid, idx); poisonCtor(sid, idx) },
+    (sid, idx) => { poisonSlot(sid, idx); poisonCtor(sid, idx); observeBigintJoin(sid, idx, VAL.BIGINT) },
     { observe: (sid, idx, vt) => { vt ? observeSlot(sid, idx, vt) : poisonSlot(sid, idx); poisonCtor(sid, idx) } })
   // Elem-ctor sibling of observeSlot — same first-wins-then-clash lattice. A
   // slot whose every observed value is one typed-array kind keeps that kind for
@@ -890,7 +912,12 @@ export function observeProgramSlots(ast, opts) {
         if (!isSelfPreservingPropWrite(node[1][1], node[1][2], effVal)) {
           const vt = writeVT(effVal, { paramVts })
           if (vt) observeSlot(sid, idx, vt)
-          else poisonSlot(sid, idx)
+          // Unresolvable VALUE kind on a resolvable receiver isn't covered by
+          // collectSlotWriteHazards (that hazard set tracks unresolvable
+          // RECEIVERS) — fail-open the bigint join here too (see
+          // slotBigintObserved's doc, ctx.js): the write could be a BigInt
+          // this census just couldn't independently prove.
+          else { poisonSlot(sid, idx); observeBigintJoin(sid, idx, VAL.BIGINT) }
         }
       }
     } else if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
@@ -1624,6 +1651,26 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   for (const [sid, arr] of slotIntLevels) {
     slotIntCertain.set(sid, arr.map(l => l === undefined ? undefined : l >= 1))
     slotI32Certain.set(sid, arr.map(l => l === 2))
+  }
+  // Invariant tripwire (design .work/carrier-representation-design.md §15/
+  // §16): a BIGINT-observed slot must never ALSO be i32Certain — i32Certain
+  // requires every write to be a strict-int32 NUMBER (isIntExpr), which is
+  // disjoint from a BIGINT write by construction (writeVT/isIntExpr never
+  // classify a bigint expression as int-level 2). packedI32/inlineCellI32
+  // (module/core.js, abi/index.js) trust i32Certain to raw-i32-load a slot —
+  // if that were ever true for a slot this session's own BIGINT census also
+  // marked, the packed path would corrupt a boxed pointer as a truncated
+  // int32. Assert-only; a real hit is a jz bug, not a value to silently trust
+  // either census over.
+  if (DBG_INVARIANTS) {
+    for (const [sid, arr] of ctx.schema.slotI32Certain) {
+      const bigints = ctx.schema.slotBigintObserved.get(sid)
+      if (!bigints) continue
+      for (let i = 0; i < arr.length; i++) {
+        if (arr[i] === true && bigints[i] === true)
+          throw new Error(`P-carrier invariant: schema ${sid} slot ${i} is BOTH i32Certain and slotBigintObserved — a BIGINT write can never be strict-int32`)
+      }
+    }
   }
 }
 
