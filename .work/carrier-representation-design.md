@@ -1143,3 +1143,139 @@ heuristics) stays blocked on Slice 4 landing — not attempted.
 
 **Local commits:** 4b775e98, ed37a4e6, 5cea45e1, cfe25e05, 30535365.
 
+## §13. Slice 4 — ATTEMPT 3: wall re-localized, NOT a self-host gap — a native
+compiler bug §12's own repros were too small to expose, banked (2026-08-07)
+
+Protocol per §12's own handoff: flag-forced rebuild (`JZ_CARRIER_BOX=1 npm run
+build`), reproduce the 3 named shapes directly via `compileViaKernel`, diff
+kernel WAT against native WAT for the smallest failer.
+
+**Reproduced exactly as §12 banked it.** Fresh flag-forced `dist/jz.wasm`:
+`arrayLiteralBigint` (`let a=[BIGVAL]; return a[0]`) — O0/O1 correct, O2/O3
+`memory access out of bounds`. `objFieldBigint` (`let o={n:BIGVAL}; return
+o.n`) — O0/O1 correct, O2/O3 wrong value (`8388357179923384654` instead of
+`4611686018427387906`). Both via direct `compileViaKernel({wat:true})` +
+`instantiate`, not `test/watr.js` (matches §12's own "target `compileViaKernel`
+specifically" instruction).
+
+**WAT diff, `objFieldBigint` at O2 (kernel vs native), the smallest failer:**
+kernel and native both fold the whole function to a single boundary-wrapper
+constant (`o`'s SRoA flat field never escapes — §12 point 2's own fix — so
+the entire body constant-folds and `$f` disappears, leaving only `$f$exp`).
+The ONE line that differs:
+```
+native: (i64.reinterpret_f64 (f64.const 2.000000000000001))
+kernel: (i64.reinterpret_f64 (f64.const 5.826595490514274e+252))
+```
+Both sides reach this via the SAME fold — `f64.reinterpret_i64(i64.const
+"4611686018427387906")` → `f64.const <value>` — watr's own constant folder
+(`node_modules/watr/src/optimize.js`, `f64FromI64`/`_i64Canon`/`_i64Hex16`,
+imported into jz's pipeline as `watOptimize`). O0/O1 never run `watOptimize`
+at all (`compileViaKernel`'s O0/O1 WAT is byte-identical to O0 — no inlining,
+no folding — confirmed directly), which is why they're clean: this bug is
+gated entirely behind whether the FOLD runs, not behind any target-program
+optimize-level semantics.
+
+**Re-tested §12's own "plain" claim and found it narrower than banked.**
+`let x = 4611686018427387906n; return x` (a BARE-NAME return, no object, no
+array, no ternary — none of this session's new carrier-box admission code
+even fires: `ctx.func.exported` excludes it from `needsBox`/`isProvenBoxedBigint`
+per Bug 1's own fix, confirmed by reading the `'return'` handler) — ALSO wrong
+at O2/O3 through the flag-forced kernel (`8388357179923384654`, the identical
+wrong constant), while the SAME shape through the DEFAULT (non-carrier)
+kernel — rebuilt clean, verified — is correct at every level. This proves
+the wall is not localized to the 3 named target-program SHAPES at all: it is
+a property of the KERNEL BUILD (whether `CARRIER_BOX` was baked in when
+`dist/jz.wasm` was compiled), independent of what the kernel is later asked
+to compile.
+
+**Root-caused past the self-host boundary entirely — this is a NATIVE
+compiler bug, not a self-host fidelity gap.** §12's own "native clean at
+every level" claim is true only for its own hand-sized repros. Compiling
+`node_modules/watr/src/optimize.js` itself — an ~8500-line real-world
+BigInt-heavy file jz already depends on and already self-hosts (it's part of
+`scripts/self.js`'s own module graph, `resolveModuleGraph(..., {resolveNode:
+true})`, exactly what `scripts/build-dist.mjs` runs) — through the plain
+in-process NATIVE compiler (`compile()`, no kernel, no `compileViaKernel`, no
+wasm-of-jz-self involved at all) with `JZ_CARRIER_BOX=1` at `optimize:{level:
+3}` (build-dist.mjs's own config) reproduces the IDENTICAL wrong constant:
+```js
+import { fold } from '.../node_modules/watr/src/optimize.js'
+export const run = () => fold(['f64.reinterpret_i64', ['i64.const', '4611686018427387906']])[1]
+```
+compiled+run via jz (`JZ_CARRIER_BOX=1`) → `5.826595490514274e+252`; the
+SAME `fold()` called directly as plain JS (no jz involved) → `2.000000000000001`
+(correct). This is decisive: `dist/jz.wasm`'s own wrongness is a downstream
+SYMPTOM of the NATIVE compiler (running under host JS, `CARRIER_BOX=1`)
+mis-compiling `watr/optimize.js`'s own BigInt-canonicalization helpers
+(`_i64Canon`/`_i64Hex16`/`f64FromI64`) when it builds the kernel — every
+subsequent kernel compile that needs THIS fold then inherits the corruption,
+regardless of what target program triggers it. §11/§12's whole "self-host
+fidelity gap" framing was the wrong altitude: no self-hosting is required to
+see this bug, only a BigInt-heavy source file large enough to hit the shape
+(watr/optimize.js; none of §7-§12's own repros were).
+
+**Partial localization inside `_i64Canon`/`_i64Hex16` (not fully named — see
+below).** WAT for the isolated `run()` probe (native, `CARRIER_BOX=1` vs `=0`,
+`optimize:3`, function-name-preserved output) diverges starting inside
+`_i64Canon`'s `neg ? -BigInt(mag) : BigInt(mag)` argument to `_i64Hex16(v)`
+(`_i64Hex16 = (v) => v.toString(16).padStart(16,'0')`), inlined together at
+O3. The `CARRIER_BOX=1` side inserts a `boxBigInt`/`unboxBigInt`-shaped
+sequence (`$__ptr_offset`'s inlined body — tag-mask `898` = bits {1,7,8,9} =
+{ARRAY,HASH,SET,MAP}, i.e. `FORWARDING_MASK`, then a conditional
+`$__ptr_offset_fwd` chase, then `i64.load`) around the ternary's raw
+arithmetic result that the `CARRIER_BOX=0` side never has. This IS the
+documented, correct shape of `unboxBigInt`/`ptrOffsetIR` (ir.js:771-775 — the
+generic `$__ptr_offset` runtime call is unconditional for every VAL kind,
+including BIGINT; §10's "no-op for non-forwarding tags" claim is about
+`$__ptr_offset`'s OWN runtime branch, not about skipping the call) — so its
+PRESENCE alone is not proof of a bug, only that a box/unbox pair was inserted
+where `CARRIER_BOX=0` has none. Two live candidates, not distinguished within
+this session's time-box:
+1. `_i64Hex16`'s shared param `v` settles `bigintBoxed=true` via
+   `bigintBoxedVerdict`'s WHOLE-FILE fixpoint (some OTHER of `_i64Hex16`'s
+   many call sites across this 8500-line file passes a genuinely
+   already-boxed bare name), so `coerceArg` boxes THIS site's inline ternary
+   argument to match — sound in principle (Bug 3, §12) but the box+unbox
+   round trip here does not recover the original value, meaning either
+   `boxBigInt`'s alloc/store or the inlined `unboxBigInt`'s
+   `$__ptr_offset`-chase reads back the wrong bits for THIS specific
+   caller/callee/inlining combination.
+2. The unary-minus BigInt arm (`-BigInt(mag)`) itself, combined with the
+   surrounding `'?:'`, hits `carrierF64Narrow`'s or `needsBigintBox`'s
+   BOOL/BIGINT dispatch in a way none of §12's own single-arm-ternary repros
+   exercised (their found-live shape was `cond ? BigInt(x) : null` — a
+   nullish merge; `_i64Canon`'s is `neg ? -BigInt(mag) : BigInt(mag)` — both
+   arms non-nullish BigInt, one negated).
+
+Not narrowed further: isolating (1) vs (2) needs a same-shape minimal
+repro reduced from `_i64Canon` itself (attempted — a hand-built two-call-site
+shared-param mimic did not reproduce byte-for-byte, likely missing the exact
+inlining/whole-file-fixpoint conditions the real file's OTHER ~30 call sites
+to `_i64Hex16`-shaped helpers create), the same "hand-built repro is not
+equivalent to the real file" lesson §11 already banked once for `test/watr.js`.
+
+**Decision: banked, not landed.** `CARRIER_BOX` stays OFF by default
+(unchanged this session — no default-flip was attempted, given the wall
+reproduces before the flip step is even reached). Verified clean after
+restoring a plain `npm run build` (no flag): default battery unaffected,
+`dist/jz.wasm` rebuilt without `JZ_CARRIER_BOX`. `JZ_CARRIER_BOX=1` stays the
+verified opt-in probe flag — nothing this session touched changes its
+correctness for the NATIVE, non-kernel-building use of the flag (compiling
+an ordinary target program with `JZ_CARRIER_BOX=1` set, not rebuilding
+`dist/jz.wasm` itself, is unaffected — the bug only bites when the flag is
+live WHILE COMPILING watr/optimize.js-shaped source, i.e. specifically
+`npm run build` with the flag forced).
+
+**What a fourth attempt needs**: reduce `_i64Canon`+`_i64Hex16` in place
+(temporarily edit `node_modules/watr/src/optimize.js` — or a scratch copy —
+down to just those two functions plus enough of `fold`'s dispatch to call
+them, re-running the exact `compile()`-with-`CARRIER_BOX=1`-at-O3 probe after
+each cut) until the wrong constant either disappears (narrows the guilty
+code) or survives at minimal size (a clean, committable repro) — this
+session's remaining scratch files were cleaned up (`.work/scratch-carrier-*`)
+without reaching that minimal form. Slice 5 stays blocked on Slice 4 landing.
+
+**Local commits:** none (investigation only — no source changes; `dist/jz.wasm`
+restored to its plain-build state, gitignored, not committed either way).
+
