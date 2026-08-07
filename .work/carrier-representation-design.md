@@ -1437,3 +1437,195 @@ session to build on, not landed.
 pointers.js (the pin), .work/carrier-representation-design.md (this
 entry) — filed separately, plain messages, no push.
 
+## §15. Audit-#14 finding: a carrier-built KERNEL corrupts its OWN generated
+constants — root-caused, PINNED, NOT fixed, flip stays banked (2026-08-07)
+
+An external alert reported a release-blocking repro contradicting §14's own
+"flip probe clean" bank: a carrier-built kernel emits corrupted `f64.const`/
+`i64.const` payloads for BigInt-FREE target programs, and `kernel-parity`
+diverges on `dict` under `JZ_CARRIER_BOX=1`. Session mandate: reproduce,
+pin, root-cause, fix if safely scoped, no default flip regardless of
+outcome. **The flip was already reverted before this investigation started**
+(`src/ctx.js`'s `CARRIER_BOX` is `JZ_CARRIER_BOX==='1'`, OFF by default,
+same shape as §14 left it) — this section is bounded to the finding itself.
+
+**First verification pass gave a FALSE NEGATIVE — worth recording as its own
+lesson.** The first attempt to reproduce the three named WAT differentials
+against `dist/jz.wasm` found no divergence at all — because the on-disk
+`dist/jz.wasm` was stale (an earlier `npm run build` invocation had been
+killed mid-run, before its own "wrote dist/jz.wasm" step, leaving a PLAIN,
+pre-session kernel on disk despite the build LOG showing success for the
+other artifacts). A full `JZ_CARRIER_BOX=1 node scripts/build-dist.mjs`,
+run to completion this time (confirmed by its own "wrote dist/jz.wasm"
+line), produces a genuinely carrier-boxed kernel — against THAT kernel,
+every claim reproduces exactly. Lesson: a build log's success does NOT
+prove the LAST artifact it lists was written if the process was
+interrupted; verify file mtimes before trusting a partial log.
+
+**Reproduced exactly, native-vs-fresh-carrier-kernel, at O0:**
+```
+                    native                          kernel
+() => undefined     f64.const nan:0x7FF8000200000000 nan:0x7FFA8002000DA0D8
+() => "abcdefghi"   f64.const nan:0x7FFA000000000007 nan:0x7FFA8000000DA0DC
+() => () => 1       f64.const nan:0x7FFD000000000000 nan:0x7FFF8000000DA0D8
+```
+(Absolute low-word offsets are allocation-order-dependent, not stable
+constants — re-running shifts them; the tag/shape corruption is what's
+diagnostic, not the exact digits.) `kernel-parity` (`node test/kernel-
+parity.js` run against the fresh carrier kernel) fails `dict` at O0/O2/O3
+(byte-length-equal, content-diverging); `sum`/`math`/`arr`/`fold`/`mfold`/
+`boolconst`/`nestedtyped`/`subviewtyped`/`dvnested`/`fromnested` all stay
+byte-identical — the corruption is not universal, it is conditional on
+whether the compiled PROGRAM (target OR the kernel compiling it) transitively
+needs one of `layout.js`'s derived hex constants.
+
+**Root cause, pinned exactly, via the REAL `layout.js` (a hand-mimicked
+single-call-site shape does NOT reproduce — same "mimic isn't equivalent"
+lesson §13 already banked once for `watr/optimize.js`):**
+
+`export let f = () => LAYOUT.NAN_PREFIX_BITS` (no `i64Hex`/`atomNanHex` call
+at all) already returns the wrong value under `JZ_CARRIER_BOX=1` via the
+NATIVE compiler — no self-hosting needed. Trace:
+
+1. `LAYOUT` (`layout.js`) is `export const LAYOUT = { …, NAN_PREFIX_BITS:
+   0x7FF8000000000000n, … }` — a module-scope object literal with one
+   BigInt field among a majority of NUMBER fields. `needsDynShadow(LAYOUT)`
+   is TRUE (some site elsewhere in the reachable graph reads it via dynamic/
+   bracket access), so `module/object.js`'s object-literal construction
+   picks the WIDE `fieldStoredValue = storedValue` (not the narrow-admission
+   `storedValueNarrow` — the `shadow ? storedValue : storedValueNarrow`
+   branch, module/object.js ~line 240 area). `storedValue` → `carrierF64` →
+   `needsBigintBox`'s unconditional inline-BIGINT-expression fallback boxes
+   the literal field on construction — CORRECTLY, by that path's own
+   contract (a registry-aware dynamic reader, `$__dyn_get`, exists for this
+   object and DOES know how to unbox a PTR.BIGINT per Slice 3's arms).
+   Confirmed directly in the WAT: the field's store is a real, correct
+   `call $__alloc(8)` / `i64.store` (right payload, `9221120237041090560` =
+   `0x7FF8000000000000n`) / `call $__mkptr(i32.const 5, …)` sequence.
+2. The READ side never got the matching arm. A STATIC `.field` access
+   (`LAYOUT.NAN_PREFIX_BITS`, or `atomNanHex`'s own `LAYOUT.NAN_PREFIX_BITS`
+   reference) compiles through `emitPropAccess` → `emitSchemaSlotRead`
+   (`module/core.js` ~1591-1610) — a **third** read mechanism, distinct
+   from both `$__dyn_get` (registry-aware, correctly PTR.BIGINT-arm'd by
+   Slice 3) and the bare-name arithmetic operand path (`readI64`, correctly
+   wired by Slice 3 for the ~16 arithmetic-core call sites). It resolves
+   the field to a fixed byte offset at COMPILE TIME and emits a bare
+   `f64.load` — `typed(load, 'f64')`, no value-kind awareness, no box
+   check. `readI64`'s own guard (`typeof node === 'string'`) structurally
+   CANNOT catch this: the AST node here is `['.', 'LAYOUT',
+   'NAN_PREFIX_BITS']`, never a bare string, by construction — Slice 3
+   never had a way to reach this call site AT ALL, not a narrowing bug in
+   an existing arm, a genuinely new, previously-invisible one.
+3. So the static read loads the BOXED POINTER's own NaN-box bits (tag=
+   `PTR.BIGINT`(5), a heap offset in the low word) and hands them straight
+   to every consumer as if they were the field's VALUE. `atomNanHex`/
+   `i64Hex`'s own arithmetic (confirmed correct in isolation, §earlier-
+   session code read) then computes a "hex string" out of the wrong input —
+   the corrupted constants baked into the target program's `f64.const`/
+   `i64.const` are a downstream symptom, not a separate bug.
+4. `kernel-parity`'s `dict` divergence is the SAME root cause at one more
+   remove: `dict`'s own source (`d[c] = (d[c]||0)+1`) has zero BigInt
+   syntax, but COMPILING it pulls in hash/dyn-prop stdlib machinery that
+   itself references `layout.js`-derived tag/mask constants internally —
+   when the KERNEL (built carrier-boxed) computes ITS OWN copy of those
+   constants via the same corrupted path, every subsequent compile that
+   needs them inherits wrong bytes, regardless of whether the TARGET
+   program touches BigInt at all. This generalizes the severity well past
+   "BigInt-heavy programs": a carrier-built kernel's `layout.js`-derived
+   constant surface is foundational and widely depended on.
+
+**Why this was invisible through §11-§14's own gates**: every one of those
+sessions' repros were either (a) direct target-program BigInt shapes
+(`arrayLiteralBigint`, ternary-boxed locals, `_i64Canon`/`_i64Hex16`) —
+none of which touch a MODULE-SCOPE OBJECT LITERAL with a mixed NUMBER/
+BIGINT field needing a dynamic shadow, or (b) `test/watr.js`'s real-program
+battery, which happens not to define an object literal shaped this way. The
+one thing EVERY prior session's repro had in common: none of them exercised
+a **static dot-access read of an object's own BOXED BigInt schema field**
+specifically — a third, independent read-side surface Slice 3's arm
+inventory never enumerated (it covered `$__dyn_get`/`$__typeof`/`$__eq`/
+`$__same_value_zero`/`$__map_hash`/interop-decode/arithmetic-core, never
+`emitSchemaSlotRead`).
+
+**Not fixed this session — deliberately, per this project's own "verify,
+don't force" precedent (§11-§14).** A sound fix needs: (a) a per-schema-slot
+VAL-kind fact (does `ctx.schema` currently expose "is slot N of schema S a
+BIGINT field" anywhere cheaply? — not found this session, would likely need
+adding), and (b) the exact write-side boxing condition (`needsDynShadow`
+of the SAME receiver) threaded through EVERY `emitSchemaSlotRead` call site
+— not just the dominant bare-name `obj.prop` shape this finding's repro
+hits, but also the chain-receiver, `emitSchemaSlotGuarded` monomorphic-
+devirtualization, and `structInline`/packed-i32-cell paths, each needing
+its own soundness check (a wrong unbox on an UNBOXED raw field would be a
+NEW bug, not a fix). Given this call site is on the hot path for EVERY
+object field read in the entire compiler, a rushed change carries real
+blast-radius risk this session's remaining time cannot safely absorb-and-
+verify (kernel-parity/kernel-oracle/fuzz/selfhost all touch it). Banked,
+matching §11/§12/§13's own repeated choice under the identical circumstance.
+
+**PINNED**: `test/fixtures/carrier-layout-repro.js` (new, imports the REAL
+`layout.js`) + `test/pointers.js` ("KNOWN-FAIL (JZ_CARRIER_BOX=1 only,
+audit-#14 …)" — 4 `not()` TODO-flip-guard assertions, same established
+pattern as this file's own preceding ternary pin and `test/dyn-keys.js`'s
+KNOWN-FAIL rows: PASSES today by asserting the wrongness precisely, and
+would need updating to `is()` once a real fix lands — the tripwire is
+`not()` firing on the CORRECT value, which would mean the bug silently
+regressed to "less wrong but still not right," not that the pin itself
+went red). Gated `if (process.env.JZ_CARRIER_BOX !== '1') return` — a true
+no-op, zero assertions, under the default (off) battery; `JZ_CARRIER_BOX=1
+node test/pointers.js` runs all 4 and confirms the exact wrongness.
+Verified: default `node test/pointers.js` 34/34 (62 assertions, unchanged
+count); `JZ_CARRIER_BOX=1 node test/pointers.js` 34/34 (66 assertions, +4).
+
+**The `test:wasm` timer/string-callback crash claim: attempted, NOT
+reproduced in targeted checks, left unconfirmed.** Ran `test/timers.js` and
+`test/async.js` under `JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm` against the
+genuinely fresh carrier kernel — both clean (5/5 and 13/13, no crash). This
+does not clear the claim (the full `test:wasm` leg is expensive — a prior
+partial run against a STALE, non-carrier kernel earlier in this session was
+invalidated and re-run was not completed to conclusion given time bounds)
+— it narrows it: the specific timer/print path this session checked is not
+where it lives, if it's real at all. §14's own original note ("plausible
+pre-existing test:wasm-harness flakiness … not investigated") already
+flagged this as unconfirmed BEFORE this session; this session neither
+confirms nor closes it.
+
+**Gates run this session:**
+- Reproduced all 3 named WAT differentials + `kernel-parity` `dict`
+  divergence against a freshly, fully rebuilt `JZ_CARRIER_BOX=1` kernel
+  (verified via the build log's own "wrote dist/jz.wasm" line, not assumed).
+- Root cause isolated to a single, real, un-mimicked repro (`LAYOUT.
+  NAN_PREFIX_BITS` alone, no `i64Hex` call needed) via the REAL `layout.js`.
+- `test/pointers.js`: 34/34 both under `JZ_CARRIER_BOX=1` (66 assertions)
+  and default (62 assertions, the new test a true no-op).
+- Default battery restored and verified clean AFTER rebuilding `dist/
+  jz.wasm` plain (no flag) at session end: `node test/index.js` 3407 total
+  / 3399 pass / 2 fail (the same pre-existing `test/optimizer.js` rows) / 6
+  skip. `node test/kernel-parity.js` 3/3 (33 assertions, byte-identical) —
+  confirms the flagged-build divergence does not leak into the default
+  artifact once rebuilt plain.
+- `src/ctx.js`'s `CARRIER_BOX` confirmed OFF by default (env-gated,
+  unchanged shape from §14's own revert) — no flip was committed this
+  session, matching the mandate.
+
+**What a fix session needs**: add a per-slot VAL-kind fact to `ctx.schema`
+(or reuse/extend an existing per-field fact if one is found on closer
+search — this session did not find one), thread `needsDynShadow(receiver)
+&& slotVal===VAL.BIGINT` into `emitSchemaSlotRead`'s BIGINT branch (unbox
+via the existing `unboxBigInt`/`readI64` machinery, matching the write
+side's own condition exactly — narrow admission, not a blanket unbox of
+every schema read), verify each of the 4+ call shapes (`emitPropAccess`'s
+bare-name/chain-receiver branches, `emitSchemaSlotGuarded`, `structInline`/
+`cellI32`) independently against hand-built repros BEFORE the kernel-scale
+probe, then re-run this section's own pins plus the full flagged-battery/
+kernel-parity/kernel-oracle/fuzz/selfhost discipline §11-§14 already
+established as this program's own gate list — only THEN reconsider the
+default flip, starting from §14's own "flip probe clean" bank plus this
+section's now-closed gap, not from scratch.
+
+**Local commits:** `src/ctx.js` (comment update recording this finding,
+default stays OFF — no behavior change), `test/pointers.js` +
+`test/fixtures/carrier-layout-repro.js` (the pin), `.work/carrier-
+representation-design.md` (this entry) — filed separately, plain messages,
+no push.
+
