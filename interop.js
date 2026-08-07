@@ -554,6 +554,14 @@ export const memory = (src) => {
       const len = m.getInt32(off - 4, true)
       return TEXT_DEC.decode(new Uint8Array(mem.buffer, off, len))
     }
+    // CARRIER PROGRAM Slice 3 — registry-derived 'interop-decode' arm
+    // (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[interop-decode]): the
+    // box's 8-byte payload cell IS the BigInt's raw two's-complement i64 —
+    // no header, no aux, read it back as a real host bigint. Distinct from
+    // decodeBigintSentinel above (a DIFFERENT, already-shipped mechanism for
+    // the raw-i64 jz:i64exp lane's own absent-key encoding, not this boxed-
+    // pointer path).
+    if (t === 5) return m.getBigInt64(off, true)  // BIGINT
     if (t === 6) {  // OBJECT
       const keys = mem.schemas[a]
       if (!keys) return p

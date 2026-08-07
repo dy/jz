@@ -499,6 +499,41 @@ export const needsBigintBox = (node) => {
   return Array.isArray(node) && node[0] !== '?:' && valTypeOf(node) === VAL.BIGINT
 }
 
+// === CARRIER PROGRAM Slice 3 (R-recovery, read side) ===
+
+/** True iff `name`'s f64 slot, INSIDE THIS FUNCTION, durably holds a real
+ *  PTR.BIGINT box rather than raw i64-as-f64 bits — the exact inverse
+ *  question isProvenBoxedBigint answers (that predicate is "still raw,
+ *  needs boxing at a further sink"; this one is "already boxed, needs
+ *  UNBOXING before raw i64 arithmetic touches it"). Per isProvenBoxedBigint's
+ *  own doc comment, only a PARAM can be durably boxed on entry: coerceArg
+ *  (emit.js) boxes the ARGUMENT at every call site whose callee param
+ *  settled bigintBoxed=true (Slice 2), so the callee's param slot holds
+ *  the caller's box from function entry onward — unlike a plain local,
+ *  whose OWN slot always stays raw (Slice 2's W-sink wiring boxes a FRESH
+ *  COPY at each qualifying use site — carrierF64/`return`/`'?:'` — never
+ *  the local's own storage; reps.js's bigintBoxed doc comment states the
+ *  DESIGN'S full intent as "boxed at the point of write, unboxed at every
+ *  later read" — this predicate + readI64 below is that read-side half,
+ *  scoped to the one case Slice 2 actually materializes a persistent box:
+ *  params crossing the call ABI). */
+export const isCurrentlyBoxedBigint = (name) =>
+  repOf(name)?.bigintBoxed === true && !!ctx.func.current?.params?.some(p => p.name === name)
+
+/** Read-side twin of carrierF64: extract raw i64 bits from a BIGINT-typed
+ *  operand, unboxing FIRST when the bare name's current representation is a
+ *  real PTR.BIGINT box (isCurrentlyBoxedBigint). Byte-identical to a plain
+ *  asI64(emitted) call for every other shape — inline expressions, non-boxed
+ *  locals, and (by construction) every param isProvenBoxedBigint would have
+ *  boxed instead. The chokepoint the arithmetic core's ~10 VAL.BIGINT-gated
+ *  `asI64(emit(x))` call sites route through (bigIntOperand/bigIntUnary and
+ *  the postfix/compound-assign shortcuts that bypass them) so a boxed param
+ *  never has its pointer bits misread as a bigint payload. */
+export function readI64(node, emitted) {
+  if (CARRIER_BOX && typeof node === 'string' && isCurrentlyBoxedBigint(node)) return unboxBigInt(emitted)
+  return asI64(emitted)
+}
+
 // === Nullish sentinels ===
 
 /** Reserved atoms (PTR.ATOM tag, offset=0).
@@ -1452,7 +1487,12 @@ function coerceRest(node, v, vt) {
     return typed(['i64.reinterpret_f64', ['call', '$__i32_to_str', v]], 'i64')
   }
   inc('__to_str')
-  return typed(['call', '$__to_str', asI64(v)], 'i64')
+  // readI64 (CARRIER PROGRAM Slice 3): a proven-BIGINT node whose bare name
+  // is a currently-boxed param must be unboxed before $__to_str sees it —
+  // for every other shape this is byte-identical to the old asI64(v) call
+  // (dynamic/unproven operands still pass their raw bits through unchanged,
+  // for $__to_str's own tag dispatch to interpret).
+  return typed(['call', '$__to_str', readI64(node, v)], 'i64')
 }
 
 /** Spec's Error.prototype.toString (20.5.3.4) for a proven Error-schema object,

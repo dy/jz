@@ -9,7 +9,7 @@
  * @module number
  */
 
-import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64 } from '../src/ir.js'
 import { ssoBitI64Hex, ptrNanHex, nanPrefixHex } from '../layout.js'
 import { emit, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
@@ -1585,6 +1585,16 @@ export default (ctx) => {
     (if (i32.and (i32.eqz (local.get $t))
                  (i32.ge_u (call $__ptr_aux (local.get $v)) (i32.const 16)))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.SYMBOL_TO_NUMBER}))) (throw $__jz_err (f64.const ${ERR.SYMBOL_TO_NUMBER}))))
+    ;; CARRIER PROGRAM Slice 3 — registry-derived 'interop-decode' arm
+    ;; (layout-kinds.js KIND_REGISTRY.BIGINT), the interop mem.read fix's
+    ;; in-wasm twin: ToNumber(bigint) is the mathematical value, read from the
+    ;; box's OWN payload cell — not the sibling ctx.features.bigint-gated
+    ;; magnitude arm above, which only ever sees RAW (unboxed) carrier bits
+    ;; and can never observe this tag (a NaN-boxed pointer always fails the
+    ;; self-equal test that arm gates on). Landed alongside, not replacing,
+    ;; that heuristic — Slice 5 retires it once every arm is verified.
+    (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
+      (then (return (f64.convert_i64_s (i64.load (call $__ptr_offset (local.get $v)))))))
     ;; Non-string values go through ToString per JS spec, then re-check the
     ;; type in case ToString itself returned a non-string sentinel.
     (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
@@ -1864,7 +1874,7 @@ export default (ctx) => {
 
   // BigInt.prototype.toString(radix) — i64-exact, default radix 10.
   reg('.bigint:toString', ['__radix_str'], (n, radix) =>
-    typed(['call', '$__radix_str', asI64(emit(n)), radix == null ? ['i32.const', 10] : asI32(emit(radix))], 'f64'))
+    typed(['call', '$__radix_str', readI64(n, emit(n)), radix == null ? ['i32.const', 10] : asI32(emit(radix))], 'f64'))
 
   reg('.number:toFixed', ['__ftoa'], (n, d) =>
     typed(['call', '$__ftoa', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 1]], 'f64'))
@@ -1905,7 +1915,7 @@ export default (ctx) => {
   ctx.core.emit['Number'] = (x) => {
     if (x === undefined) return typed(['f64.const', 0], 'f64')
     if (valTypeOf(x) === VAL.BIGINT)
-      return typed(['f64.convert_i64_s', asI64(emit(x))], 'f64')
+      return typed(['f64.convert_i64_s', readI64(x, emit(x))], 'f64')
     return toNumF64(x, emit(x))
   }
 
@@ -1940,7 +1950,7 @@ export default (ctx) => {
 
   // BigInt.asIntN(bits, bigint) — truncate to signed N-bit
   ctx.core.emit['BigInt.asIntN'] = (bits, val) => {
-    const vbits = asI32(emit(bits)), vval = asI64(emit(val))
+    const vbits = asI32(emit(bits)), vval = readI64(val, emit(val))
     // (val << (64 - bits)) >> (64 - bits)  — arithmetic shift for sign extension
     const shift = typed(['i64.sub', ['i64.const', 64], ['i64.extend_i32_s', vbits]], 'i64')
     const t = tempI64('bi')
@@ -1956,7 +1966,7 @@ export default (ctx) => {
   // which also zeroed every bigint *literal* (emit reinterprets `Nn` via
   // BigInt.asUintN(64,·).toString() through this very handler in the self-host).
   ctx.core.emit['BigInt.asUintN'] = (bits, val) => {
-    const vbits = asI32(emit(bits)), vval = asI64(emit(val))
+    const vbits = asI32(emit(bits)), vval = readI64(val, emit(val))
     const shift = typed(['i64.sub', ['i64.const', 64], ['i64.extend_i32_s', vbits]], 'i64')
     const t = tempI64('bu')
     return typed(['f64.reinterpret_i64', ['block', ['result', 'i64'],

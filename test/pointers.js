@@ -235,17 +235,24 @@ test('carrier: box/unbox roundtrip — bit pattern that aliases a real NaN-box (
   // structural (never re-derive box-vs-raw from bit SHAPE) — this pin proves
   // the box/unbox PAIR round-trips such a value correctly regardless: the
   // payload is opaque to boxBigInt/unboxBigInt, whatever bits it carries.
-  const { f } = run(`export let f = () => {
-    let a = [0]
-    let boxShapedBits = __box_bigint(0n)
-    return __unbox_bigint(__box_bigint(boxShapedBits))
-  }`)
   // boxShapedBits is itself a real PTR.BIGINT pointer (a NaN-boxed f64) —
   // re-boxing ITS bits as a fresh BigInt payload and unboxing must yield
   // those exact bits back, byte-identical, independent of what tag they
-  // happen to decode as.
-  const p = run(`export let g = () => { let a = [0]; return __box_bigint(0n) }`).g()
-  is(f64BitsBig(f()), f64BitsBig(p))
+  // happen to decode as. Compared entirely IN-WASM (i32 boolean result):
+  // CARRIER PROGRAM Slice 3 gave mem.read a real PTR.BIGINT decode arm, so
+  // returning the raw f64 bit pattern directly across the boundary is no
+  // longer a safe way to inspect it when those bits themselves alias a box
+  // shape (this test's own deliberate setup) — the boundary would
+  // (correctly, now) re-decode it as ANOTHER box's payload instead of
+  // preserving the bits verbatim. Bit-identical operands take $__eq's exact-
+  // bits fast path (top of the function, before any tag dispatch), so this
+  // comparison is sound regardless of what tag the shared bits alias.
+  const { f } = run(`export let f = () => {
+    let a = [0]
+    let boxShapedBits = __box_bigint(0n)
+    return __unbox_bigint(__box_bigint(boxShapedBits)) === boxShapedBits
+  }`)
+  is(f(), true)
 })
 
 test('carrier: two distinct boxes get distinct heap cells (not interned)', () => {

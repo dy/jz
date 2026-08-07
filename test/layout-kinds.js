@@ -15,7 +15,7 @@
  * existing gated-test convention.
  */
 import test from 'tst'
-import { is, ok, not } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { DBG_INVARIANTS } from '../src/ctx.js'
 import { PTR } from '../layout.js'
@@ -158,35 +158,50 @@ test('interop: MAP decodes to a real JS Map', () => ok(run('export let f = () =>
 test('interop: STRING decodes to a real JS string', () => is(run('export let f = () => "a"+"b"+"c"+"d"+"e"+"f"+"g"').f(), 'abcdefg'))
 
 // ============================================================================
-// FINDINGS — live reproductions. Each of these PASSES (it documents today's
-// actual behavior); the divergence from the OTHER consumer's stated intent
-// is the finding, spelled out in layout-kinds.js's FINDINGS array.
+// FINDINGS — CLOSED (CARRIER PROGRAM Slice 3, .work/carrier-representation-
+// design.md §7). These probes ORIGINALLY reproduced documented bugs (the
+// registry's own FINDINGS array recorded the divergence); Slice 3 landed the
+// missing arm each one exercises, so each now asserts the JS-CORRECT value —
+// the oracle-flip this slice's own worklist named. Retained under the same
+// names/probes (not deleted) as the regression pin for the arm that closed
+// each gap; layout-kinds.js's FINDINGS array now only lists the still-open
+// OBJECT/HASH/CLOSURE region-forwarding gap (region-program-scoped, not
+// carrier-scoped — untouched here).
 // ============================================================================
 
-test('finding[typeof]: typeof(boxed BigInt) reports "object", not "bigint"', () => {
+test('closed[typeof]: typeof(boxed BigInt) reports "bigint" ($__typeof PTR.BIGINT arm)', () => {
   // __box_bigint is the test-only intrinsic (module/core.js, mirrors
   // __mkptr/__ptr_type) that materializes a REAL PTR.BIGINT box without
   // needing JZ_CARRIER_BOX=1 — see test/pointers.js's own carrier-boxing
   // section. valTypeOf(__box_bigint(...)) is not statically provable BIGINT,
-  // so this reaches $__typeof's dynamic dispatch — the exact path with no arm.
-  is(run(`export let f = () => { let a = [0]; return typeof __box_bigint(5n) }`).f(), 'object')
+  // so this reaches $__typeof's dynamic dispatch — now a real tag arm.
+  is(run(`export let f = () => { let a = [0]; return typeof __box_bigint(5n) }`).f(), 'bigint')
 })
 
-test('finding[eq-identity]: === on two equal-value boxed BigInts is false', () => {
-  is(run(`export let f = () => { let a = [0]; return __box_bigint(5n) === __box_bigint(5n) }`).f(), false)
+test('closed[eq-identity]: === on two equal-value boxed BigInts is true ($__eq content-compare arm)', () => {
+  is(run(`export let f = () => { let a = [0]; return __box_bigint(5n) === __box_bigint(5n) }`).f(), true)
 })
 
-test('finding[eq-identity]: Set dedup by BigInt value fails across separate boxes', () => {
-  is(run(`export let f = () => { let a = [0]; let s = new Set(); s.add(__box_bigint(5n)); s.add(__box_bigint(5n)); return s.size }`).f(), 2)
+test('closed[eq-identity]: === on two DIFFERENT-value boxed BigInts is still false', () => {
+  is(run(`export let f = () => { let a = [0]; return __box_bigint(5n) === __box_bigint(6n) }`).f(), false)
 })
 
-test('finding[interop-decode]: a boxed BigInt returned to the host misdecodes (not 5, not a bigint)', () => {
+test('closed[eq-identity]: Set dedup by BigInt value now works across separate boxes ($__same_value_zero/$__map_hash arms)', () => {
+  is(run(`export let f = () => { let a = [0]; let s = new Set(); s.add(__box_bigint(5n)); s.add(__box_bigint(5n)); return s.size }`).f(), 1)
+})
+
+test('closed[interop-decode]: a boxed BigInt returned to the host decodes to a real host bigint (mem.read t===5 arm)', () => {
   const r = run(`export let f = () => { let a = [0]; return __box_bigint(5n) }`).f()
-  not(r, 5, 'must not silently look like the intended value')
-  ok(typeof r !== 'bigint', 'mem.read has no PTR.BIGINT arm — never produces a real bigint')
+  is(typeof r, 'bigint', 'mem.read now has a PTR.BIGINT arm — decodes the payload, not the pointer bits')
+  is(r, 5n)
 })
 
-test('finding[region-forwarding]: structuredClone passes a boxed BigInt through unchanged (no relocation) — the CONTRASTING behavior to __region_copy_rec\'s unreachable trap on the same missing kind (module/core.js; not runtime-probed here, unreachable from outside the self-host kernel\'s region rounds — see layout-kinds.js FINDINGS[region-forwarding])', () => {
+test('closed[truthy]: Boolean(boxed 0n) is false, Boolean(boxed nonzero) is true ($__is_truthy PTR.BIGINT arm)', () => {
+  is(run(`export let f = () => { let a = [0]; return __box_bigint(0n) ? 1 : 0 }`).f(), 0)
+  is(run(`export let f = () => { let a = [0]; return __box_bigint(-1n) ? 1 : 0 }`).f(), 1)
+})
+
+test('region-forwarding (BIGINT closed, informational): structuredClone passes a boxed BigInt through unchanged — now an explicit __sclone_rec arm (immutable content, registry: never relocates), not the old silent unrecognized-tag fallback', () => {
   is(run(`export let f = () => {
     let a = [0]
     let p = __box_bigint(5n)

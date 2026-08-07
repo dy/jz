@@ -58,7 +58,7 @@ import {
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom, throwTypeErrorIR,
-  boolBoxIR, carrierF64, unboxBoolIR, boxBigInt, needsBigintBox,
+  boolBoxIR, carrierF64, unboxBoolIR, boxBigInt, needsBigintBox, readI64,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -535,13 +535,30 @@ export function emitTypeofCmp(a, b, cmpOp) {
   if (code === TYPEOF.function) return isPtrKind(PTR.CLOSURE)
   if (code === TYPEOF.bigint) {
     const fold = staticFold(VAL.BIGINT); if (fold) return fold
-    // bigint heuristic: finite, nonzero, sub-normal abs (boxed BigInt carrier).
+    // bigint heuristic: finite, nonzero, sub-normal abs (RAW bigint carrier
+    // bits reinterpreted as f64) OR a real PTR.BIGINT box (CARRIER PROGRAM
+    // Slice 3, .work/carrier-representation-design.md §7 — the registry's
+    // 'typeof' finding, layout-kinds.js). Landed ALONGSIDE, not replacing,
+    // the magnitude fallback: round-3's own "verify every R-recovery arm
+    // independently before deleting the heuristic" discipline — Slice 5
+    // retires the magnitude half once every arm here is confirmed sound.
     const n = ['local.tee', `$${t}`, va]
-    return wrap(['i32.and',
+    const magCond = ['i32.and',
       ['f64.eq', n, ['local.get', `$${t}`]],
       ['i32.and',
         ['f64.ne', ['local.get', `$${t}`], ['f64.const', 0]],
-        ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', 2.2250738585072014e-308]]]])
+        ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', 2.2250738585072014e-308]]]]
+    // Gated on ctx.features.bigint (matches the $__is_truthy/$__to_num
+    // precedent this session's own gating fix applies): no program lacking
+    // any bigint syntax can ever construct a PTR.BIGINT box, so ptrTypeEq's
+    // $__ptr_type call is unreachable dead weight there — including it
+    // unconditionally would pull memory into a program whose ONLY typeof
+    // comparison is `typeof x === 'bigint'` (found live, same regression
+    // class as $__is_truthy's).
+    if (!ctx.features.bigint) return wrap(magCond)
+    const isPtr = ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]
+    const isBigintTag = ptrTypeEq(['local.get', `$${t}`], PTR.BIGINT)
+    return wrap(['i32.or', magCond, ['i32.and', isPtr, isBigintTag]])
   }
   if (code >= 0) return isPtrKind(code)
   return null
@@ -3033,12 +3050,12 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
     // (kernel carriers' NUMBER is a kind-default, not a proof).
     if ((vta === VAL.BIGINT) !== (vtb === VAL.BIGINT) && numLiteralNode(vta === VAL.BIGINT ? b : a)) {
       const conv = (node, v, isBig) => isBig
-        ? typed([bigintUnsignedBound(node) ? 'f64.convert_i64_u' : 'f64.convert_i64_s', asI64(v)], 'f64')
+        ? typed([bigintUnsignedBound(node) ? 'f64.convert_i64_u' : 'f64.convert_i64_s', readI64(node, v)], 'f64')
         : toNumF64(node, asF64(v))
       return typed([`f64.${f64op}`, conv(a, va, vta === VAL.BIGINT), conv(b, vb, vtb === VAL.BIGINT)], 'i32')
     }
     const op = bigintUnsignedBound(a) || bigintUnsignedBound(b) ? i32op.replace('_s', '_u') : i32op
-    return typed([`i64.${op}`, asI64(va), asI64(vb)], 'i32')
+    return typed([`i64.${op}`, readI64(a, va), readI64(b, vb)], 'i32')
   }
   if (vta === VAL.STRING && vtb === VAL.STRING) {
     return typed([`i32.${i32op}`, stringOps(a).cmp(asF64(va), asF64(vb), ctx), ['i32.const', 0]], 'i32')
@@ -4306,7 +4323,7 @@ function compoundAssign(name, val, f64op, i32op, arithOp) {
     // true for it (that predicate only matches `.`/`[]`/`.get()` AST shapes), so
     // readVar(name) stays the plain raw path; only `val` (the RHS, which CAN be a
     // dict/Map maybeUndefined read) needs bigIntOperand's runtime guard.
-    return writeVar(name, fromI64([`i64.${I64_ARITH_OP[arithOp]}`, asI64(readVar(name)), bigIntOperand(val)]), void_)
+    return writeVar(name, fromI64([`i64.${I64_ARITH_OP[arithOp]}`, readI64(name, readVar(name)), bigIntOperand(val)]), void_)
   }
   const va = readVar(name), vb = emit(val)
   // Peel f64.convert_i32_s/u when va is i32 — typed-array integer reads wrap their
@@ -4600,7 +4617,7 @@ function bigIntOperand(node) {
   // valTypeOf(node) is NOT a reliable "is this dict/Map read's census kind
   // bigint" proxy the way it is for a plain local. censusMaybeUndefinedKind
   // queries the census directly (see its own doc comment in kind.js).
-  if (censusMaybeUndefinedKind(node) !== VAL.BIGINT) return asI64(v)
+  if (censusMaybeUndefinedKind(node) !== VAL.BIGINT) return readI64(node, v)
   ctx.runtime.throws = true
   const t = temp('bigU')
   return typed(['block', ['result', 'i64'],
@@ -4638,7 +4655,7 @@ function bigIntOperand(node) {
 // `fromI64` path — byte-identical to before (same structural pin as
 // bigIntOperand's own non-maybeUndefined fast path).
 function bigIntUnary(node, mkI64, undefF64) {
-  if (censusMaybeUndefinedKind(node) !== VAL.BIGINT) return fromI64(mkI64(asI64(emit(node))))
+  if (censusMaybeUndefinedKind(node) !== VAL.BIGINT) return fromI64(mkI64(readI64(node, emit(node))))
   const t = temp('unaryBigU')
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(emit(node))],
@@ -5189,8 +5206,8 @@ export const emitter = {
       // so only `val` can be a maybeUndefined dict/Map read. `<<=`/`>>=` share the
       // binary `<<`/`>>` handler's sign-aware direction flip — see bigIntShiftIR.
       const result = fromI64((sym === '<<' || sym === '>>')
-        ? bigIntShiftIR(sym, asI64(readVar(name)), bigIntOperand(val))
-        : [`i64.${fn}`, asI64(readVar(name)), bigIntOperand(val)])
+        ? bigIntShiftIR(sym, readI64(name, readVar(name)), bigIntOperand(val))
+        : [`i64.${fn}`, readI64(name, readVar(name)), bigIntOperand(val)])
       return writeVar(name, result, void_)
     }
     return compoundAssign(name, val,
@@ -5240,7 +5257,7 @@ export const emitter = {
     // 1, fromI64. `name` is always a bare identifier here (prepare only routes '.'/'[]'
     // targets through '=' + '+'/'-', never through this table entry).
     if (valTypeOf(name) === VAL.BIGINT)
-      return writeVar(name, fromI64([`i64.${fn}`, asI64(v), ['i64.const', 1]]), void_)
+      return writeVar(name, fromI64([`i64.${fn}`, readI64(name, v), ['i64.const', 1]]), void_)
     const one = v.type === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
     return writeVar(name, typed([`${v.type}.${fn}`, v, one], v.type), void_)
   }])),
@@ -5257,7 +5274,7 @@ export const emitter = {
   // codegen on the BIGINT-gated path.
   ...Object.fromEntries([['+1', '+', 'add'], ['-1', '-', 'sub']].map(([op, sym, fn]) => [op, n => {
     if (valTypeOf(n) === VAL.BIGINT)
-      return fromI64([`i64.${fn}`, asI64(emit(n)), ['i64.const', 1]])
+      return fromI64([`i64.${fn}`, readI64(n, emit(n)), ['i64.const', 1]])
     // Self-referential typed-int-element increment (`count[d]++` — the
     // histogram/bucket-fill idiom): `n` is ALWAYS the exact same '[]' member
     // node this op's result is written straight back into (prepare's own
@@ -5295,11 +5312,11 @@ export const emitter = {
     // entry above); recover the old value with the same i64.add-by-constant
     // shape instead of falling into the generic BIGINT-mix check below.
     if (isPostfix(a, '--', b) && valTypeOf(a) === VAL.BIGINT)
-      return fromI64(['i64.add', asI64(emit(a)), ['i64.const', 1]])
+      return fromI64(['i64.add', readI64(a, emit(a)), ['i64.const', 1]])
     // Member BIGINT `obj.p++`'s postfix OLD-value recovery — see
     // bigintMemberAssignTarget above.
     if (isLit1(b) && bigintMemberAssignTarget(a))
-      return fromI64(['i64.add', asI64(emit(a)), ['i64.const', 1]])
+      return fromI64(['i64.add', readI64(a, emit(a)), ['i64.const', 1]])
     // A self-accumulation `a = a + …` lets the concat bump-EXTEND `a` in place (a is dead-after).
     // Read it for THIS concat, then clear so nested operands (not the accumulation target) stay fresh.
     const selfAccum = typeof a === 'string' && a === ctx.func._selfAccumConcat
@@ -5464,11 +5481,11 @@ export const emitter = {
     // handler's `(--n) + 1` case just above; see its comment for why this
     // bypasses bigintMixReject (compiler-synthesized constant, not a source mix).
     if (isPostfix(a, '++', b) && valTypeOf(a) === VAL.BIGINT)
-      return fromI64(['i64.sub', asI64(emit(a)), ['i64.const', 1]])
+      return fromI64(['i64.sub', readI64(a, emit(a)), ['i64.const', 1]])
     // Member BIGINT `obj.p--`'s postfix OLD-value recovery — see
     // bigintMemberAssignTarget above ('+').
     if (isLit1(b) && bigintMemberAssignTarget(a))
-      return fromI64(['i64.sub', asI64(emit(a)), ['i64.const', 1]])
+      return fromI64(['i64.sub', readI64(a, emit(a)), ['i64.const', 1]])
     // §14 point 4: joint runtime-domain dispatch (see bigIntDomain's own doc
     // comment) — binary form only; `b === undefined` here is unary minus
     // (reached through this same table entry, see the plain OR-gate below),
@@ -5494,7 +5511,7 @@ export const emitter = {
       // JS, never a TypeError (see bigIntOperand's doc comment). Leave its asI64
       // untouched; only the genuinely two-operand form below gets the runtime guard.
       return b === undefined
-        ? fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
+        ? fromI64(['i64.sub', ['i64.const', 0], readI64(a, emit(a))])
         : fromI64(['i64.sub', bigIntOperand(a), bigIntOperand(b)])
     }
     if (b === undefined) return emitNeg(a)

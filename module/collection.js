@@ -1276,12 +1276,22 @@ export default (ctx) => {
           (else
             (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
             (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+            ;; CARRIER PROGRAM Slice 3 — registry-derived 'eq-identity' arm
+            ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[eq-identity]):
+            ;; SameValueZero dedup by BigInt VALUE, not pointer-bits — the
+            ;; __eq twin (module/core.js) of the same registry-column fix.
+            (if (result i32)
+              (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.BIGINT})) (i32.eq (local.get $tb) (i32.const ${PTR.BIGINT})))
+              (then (i64.eq
+                (i64.load (call $__ptr_offset (local.get $a)))
+                (i64.load (call $__ptr_offset (local.get $b)))))
+              (else
             (if (result i32)
               (i32.and
                 (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
                 (i32.eq (local.get $tb) (i32.const ${PTR.STRING})))
               (then (call $__str_eq (local.get $a) (local.get $b)))
-              (else (i32.const 0))))))))`
+              (else (i32.const 0))))))))))`
 
   ctx.core.stdlib['__map_hash'] = `(func $__map_hash (param $v i64) (result i32)
     (local $f f64) (local $t i32) (local $h i32)
@@ -1293,6 +1303,17 @@ export default (ctx) => {
     (if (i32.and (f64.ne (local.get $f) (local.get $f))
           (i32.eq (local.get $t) (i32.const ${PTR.STRING})))
       (then (return (call $__str_hash (local.get $v)))))
+    ;; CARRIER PROGRAM Slice 3 — registry-derived 'eq-identity' arm
+    ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[eq-identity]): hash
+    ;; the PAYLOAD, not the pointer, so equal-value boxes land in the same
+    ;; bucket — a hash that disagreed with __same_value_zero's own content
+    ;; compare would silently break Set/Map lookup even after that fix.
+    (if (i32.and (f64.ne (local.get $f) (local.get $f))
+          (i32.eq (local.get $t) (i32.const ${PTR.BIGINT})))
+      (then (local.set $h (call $__hash (i64.load (call $__ptr_offset (local.get $v)))))
+        (return (if (result i32) (i32.le_s (local.get $h) (i32.const 1))
+          (then (i32.add (local.get $h) (i32.const 2)))
+          (else (local.get $h))))))
     (if (f64.eq (local.get $f) (f64.const 0)) (then (return (i32.const 2))))
     (if (i32.and (i32.eq (local.get $t) (i32.const 0)) (f64.ne (local.get $f) (local.get $f)))
       (then (return (i32.const 3))))
@@ -1847,8 +1868,15 @@ export default (ctx) => {
     (if (i64.eq (i64.and (local.get $bits) (i64.const 0xFFF0000000000000)) (i64.const 0xFFF0000000000000))
       (then (return (local.get $v))))
     (local.set $t (call $__ptr_type (local.get $bits)))
-    ;; atoms (canonical NaN / undefined / null / booleans) + immutable strings: share
-    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ATOM})) (i32.eq (local.get $t) (i32.const ${PTR.STRING})))
+    ;; atoms (canonical NaN / undefined / null / booleans) + immutable strings +
+    ;; immutable BigInt payload cells (CARRIER PROGRAM Slice 3, registry-derived
+    ;; 'region-forwarding' arm — layout-kinds.js KIND_REGISTRY.BIGINT: never
+    ;; relocates, content never changes post-allocation, so structuredClone's
+    ;; own value semantics are already satisfied by sharing the same box; the
+    ;; registry's eq-identity fix makes that indistinguishable from a fresh
+    ;; copy at every consumer that compares by value): share
+    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ATOM}))
+          (i32.or (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))))
       (then (return (local.get $v))))
     ;; functions / host handles: DataCloneError
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE})) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL})))

@@ -678,3 +678,178 @@ isn't landed) but IS what surfaced the two bugs above — this probe is what
 they were caught against, on hand-built repros first, then confirmed absent
 of NEW invariant/validation failures at kernel scale.
 
+## §10. Slice 3 — R-recovery (read side), as landed (2026-08-07)
+
+Lands ON the heap-kind registry (`.work/heap-kind-registry-design.md`,
+`layout-kinds.js`/`test/layout-kinds.js`, committed separately as the
+registry's own Slice 1): the registry's 4 BIGINT FINDINGS (`typeof`,
+`eq-identity`, `interop-decode`, `region-forwarding`) become real arms,
+each a direct transcription of the registry's own documented column.
+
+**Registry-derived arms landed:**
+1. `$__typeof` (module/core.js) — PTR.BIGINT tag arm → `"bigint"`, landed
+   alongside (not replacing) `emit['typeof']`'s static VAL.BIGINT fold — a
+   PROVEN-bigint operand still folds to the literal and never reaches this
+   dynamic dispatch.
+2. `$__eq`/`$__eq_strict` (module/core.js) — PTR.BIGINT content-compare arm
+   (`i64.eq` on the two payload cells, `$__ptr_offset`-derived — safe
+   unconditionally since PTR.BIGINT is never in FORWARDING_MASK).
+   `$__eq_strict` needed no separate arm (delegates to `$__eq` for the
+   bits-differ case already).
+3. `$__same_value_zero`/`$__map_hash` (module/collection.js) — NEW arms
+   (none existed): content-compare and payload-hash respectively, so
+   Set/Map dedup by BigInt VALUE across independently-boxed instances.
+4. `interop.js mem.read` — `t===5` decode arm: `m.getBigInt64(off, true)`,
+   a genuine host `bigint`. Distinct from the pre-existing raw-i64
+   `jz:i64exp` sentinel-lane decode (`decodeBigintSentinel`), untouched —
+   both mechanisms coexist per the mandate ("keep the sentinel lanes
+   working until Slice 5"). `mem.write` gained no arm: BIGINT content never
+   changes post-allocation, matching STRING's own no-write-arm precedent.
+5. `__sclone_rec` (module/collection.js) — BIGINT joins the ATOM/STRING
+   immutable-share arm (live, structuredClone-reachable). `__region_copy_rec`
+   (module/core.js) — a REAL (no longer trapping) but DORMANT arm mirroring
+   STRING's durable-check/memo/fresh-copy shape, simplified for BIGINT's
+   flat header-less 8-byte cell; still unreachable outside the region
+   program's own re-enable path (`.work/region-arena-design.md`), per the
+   registry finding's own scoping.
+6. `$__is_truthy` (module/core.js) — NEW arm: BigInt truthiness is
+   VALUE-dependent (`0n` falsy, else truthy), unlike every other pointer
+   kind reaching this dispatch (always truthy). `$__to_num` (module/
+   number.js) — NEW arm, the interop mem.read fix's in-wasm ToNumber twin:
+   reads the payload, `f64.convert_i64_s`.
+7. `TYPEOF.bigint` (src/compile/emit.js, `emitTypeofCmp` — the `typeof x
+   === 'bigint'` compile-time-comparison fast path): PTR.BIGINT tag check
+   landed ALONGSIDE the magnitude heuristic (OR'd), matching the mandate's
+   "verify every R-recovery arm before deleting the fallback" discipline.
+
+**Arithmetic-core unbox wrapper.** `src/ir.js` gained `isCurrentlyBoxedBigint`/
+`readI64` — the read-side twin of `isProvenBoxedBigint`/`carrierF64`. Per
+`isProvenBoxedBigint`'s own doc comment (only a PARAM crossing the call ABI
+is durably boxed on entry — coerceArg boxes the ARGUMENT once, at the call
+site, per Slice 2; a plain local's own slot always stays raw, since Slice 2
+boxes a fresh COPY at each W-sink occurrence, never the local's storage),
+`isCurrentlyBoxedBigint(name)` is TRUE exactly where `isProvenBoxedBigint`
+is forced false for a "still boxed," not "unproven," reason: a bigintBoxed
+param of the CURRENT function. `readI64(node, emitted)` unboxes first in
+that one case, else degenerates to a bare `asI64(emitted)` — byte-identical
+whenever `CARRIER_BOX` is off (a pure boolean short-circuit, no behavior
+change possible in the default build). Wired at every VAL.BIGINT-gated
+raw-payload-assuming site found by a full sweep: `bigIntOperand`,
+`bigIntUnary` (covers `emitNeg`/`~` via delegation), the bare-name postfix
+`++`/`--` and `+1`/`-1` member-postfix-recovery table entries, `+`/`-`'s
+three postfix-recovery/unary-minus short-circuits, `cmpOp`'s BIGINT branch
+(both the literal-mixed and pure-i64-compare arms), the `+=`/`-=`/`*=`/`/=`/
+`%=` and `<<=`/`>>=`/`&=`/`|=`/`^=` compound-assignment BIGINT branches — 16
+call sites total (the design's own "~10" estimate, undercounted the
+compound-assignment family). `toStrI64`'s `coerceRest` tail (src/ir.js)
+gained the same `readI64` swap for its final generic `$__to_str` call.
+`toNumF64` (src/ir.js) was NOT touched: its own VAL.BIGINT arm is the
+documented "self-host contract" pass-through (compiler-source BigInt used
+as an opaque bit container, never treated as a numeric value needing
+ToNumber) — a different, narrower concern than the carrier-box read side,
+confirmed via grep that no arithmetic-core call site routes a proven-BIGINT
+operand through it (all go through `bigIntOperand`/`bigIntUnary` instead).
+
+**Two real regressions found and fixed during this slice's own development**
+(the mandate's "verify, don't assume" discipline, same class of catch as
+Slice 2's own param/ternary double-box bugs):
+1. **Auto-dep-scan false positive.** A WAT *comment* (not code) referencing
+   `$__same_value_zero` inside `$__map_hash`'s new arm was picked up by
+   `test/selfhost-includes.js`'s text-based caller→callee reachability
+   check (which cannot distinguish a comment from a real `call`) — fixed by
+   dropping the `$` prefix in prose, matching the codebase's own established
+   convention for referencing a helper by name in a comment without
+   triggering the auto-scan.
+2. **Heap-free minimal-output regression.** `$__is_truthy` (reachable from
+   EVERY dynamic boolean coercion, including the boundary boolean-boxing
+   wrapper every exported boolean return uses) and `emitTypeofCmp`'s
+   `TYPEOF.bigint` fast path both gained an unconditional `$__ptr_type`/
+   `$__ptr_offset`/`i64.load` reference — found live via
+   `test/minimal-output.js`'s "heap-free boolean fn" pin (`(a) => a > 0`
+   started declaring memory it never needed). Root cause: `pullStdlib`'s
+   `needsMemory` computation trips on ANY reachable `__ptr_type` reference
+   or `i32.load`/`i64.load`-containing reachable template, and both of
+   these helpers are near-universally reachable. Fixed by gating each new
+   arm behind `ctx.features.bigint` (converting `$__is_truthy` to a
+   function-valued stdlib entry to allow this, matching `$__typeof`'s own
+   existing `closureArm` precedent and `$__to_num`'s own pre-existing
+   `ctx.features.bigint`-gated magnitude arms) — sound because no program
+   lacking any bigint syntax can ever construct a PTR.BIGINT box (neither
+   the test-only `__box_bigint` intrinsic nor carrier-box's write-side
+   wiring can exist without it), so the gate never hides a reachable case.
+   `$__eq`/`$__same_value_zero`/`$__map_hash`/`$__to_num`'s OWN new arms
+   needed NO such gating — each already unconditionally references
+   memory-touching machinery for an unrelated pre-existing reason
+   (`$__str_eq`/`$__str_hash`/string-parsing), confirmed empirically
+   (`a === b` and `+a`-style dynamic-coercion programs already declared
+   memory before this slice touched anything).
+
+**Gates, DEFAULT build (CARRIER_BOX unset):**
+- Full battery (`node test/index.js`): 3397/3405 pass, 2 pre-existing
+  failures (test/optimizer.js bounds-check-guard counts, same as Slice 0-2's
+  own documented baseline — re-verified unrelated to this slice via a
+  disposable `git worktree` at pre-Slice-3 HEAD), 6 skip.
+- kernel-parity: 33/33 byte-identical (O0/O2/O3 × 11 examples) — required a
+  `npm run build` re-snapshot of `dist/jz.wasm` first (the self-hosted
+  kernel's own stdlib templates now include the same registry arms; a stale
+  snapshot diverges from the freshly-compiled "native" side by construction,
+  not a real bug — the same "kernel-parity WILL break until re-snapshotted"
+  dynamic the mandate's Slice 4 gate section names ahead of time, just
+  triggered one slice early by the unconditional (non-CARRIER_BOX-gated)
+  registry arms).
+- kernel-oracle: 11/11 suites, 451/451 assertions (unchanged from Slice 2's
+  own baseline — expected, default build is representation-unchanged).
+- selfhost.js: 21/21.
+- perf-ratchet: 10/10 at +0 delta AFTER a justified re-baseline
+  (`node test/perf-ratchet.js --update`): `buf`/`nest`/`slice`/`ring`
+  moved +100/+220/+672/+400 loop-body ops (≤1% each) because `$__map_hash`'s
+  new BIGINT arm grows the body `optimize:2`'s inliner ALREADY chooses to
+  inline at these programs' dyn-prop-fallback call sites (array-element
+  writes through an unproven-type receiver) — confirmed via a disposable
+  `git worktree` at pre-Slice-3 HEAD reproducing the OLD baseline exactly,
+  then a per-seed WAT diff isolating the exact inlined `$__map_hash` body
+  growth. The other 6 categories (int/float/mixed/cond/condref/fgather)
+  moved +0 — this slice adds a small, bounded, and now-measured cost only
+  where a shared registry-derived helper happens to get inlined into a hot
+  loop, not a systemic regression.
+- size sweep: geomean 1.020× (jz/AssemblyScript) — unchanged from the
+  design's own cited baseline.
+- fuzz: 2000×4 (opt 0/1/2/3) + `--typed`/`--typed-int`/`--typed-map`
+  variants, 2000×4 each — 0 divergence across all five runs.
+- test262: 3000/3000 pass, 0 fail (54 tracked xfail, unrelated to BigInt).
+- test262-builtins: 852/852 pass, 0 fail (87 tracked xfail, incl. 6
+  documented "BigInt arithmetic/coercion — out of scope" rows, pre-existing,
+  unrelated to carrier boxing — jz's BigInt IS a real host bigint at the
+  boundary, per this slice's own interop-decode fix; the xfail rows probe
+  test262's OWN deeper BigInt-object-identity assumptions, a separate,
+  pre-existing scope boundary).
+- fresh `npm run build` × 2: `dist/jz.wasm` SHA-256 byte-identical
+  (`78f9d400c0f7e9c0d64b99fd066b73fdcebf56620afce728ad95ee5f0f41c776`)
+  across both builds.
+- `test/pointers.js`/`test/layout-kinds.js` (the registry's own probe +
+  Slice 1's unit pins): 32/32 and 43/43 respectively — the registry's 4
+  BIGINT findings flip from "live reproduction of a documented bug" to
+  "regression pin for the arm that closed it" (renamed `finding[X]` →
+  `closed[X]` in test/layout-kinds.js, oracle-flip inventory below).
+
+**Oracle-flip inventory (registry findings, this slice):**
+
+| # | Row | Before | After |
+|---|---|---|---|
+| 1 | `typeof(boxed BigInt)` | `"object"` (wrong) | `"bigint"` (JS-correct) |
+| 2 | `===` on two equal-value boxed BigInts | `false` (wrong) | `true` (JS-correct) |
+| 3 | Set dedup by BigInt value across separate boxes | size 2 (wrong) | size 1 (JS-correct) |
+| 4 | Boxed BigInt returned across the host boundary | number, wrong value | real host `bigint`, correct value |
+| 5 | `Boolean(boxed 0n)` | `true` (wrong) | `false` (JS-correct) |
+| 6 | `__region_copy_rec` on a BIGINT | `unreachable` trap | real (dormant) arm |
+
+Not yet flipped (explicitly out of Slice 3's read-side scope, Slice 4/5
+territory): every `test/dyn-keys.js` KNOWN-FAIL and the two documented
+carrier-collision gaps (§5 kill-list items 11-14) — those depend on
+`CARRIER_BOX` actually defaulting on (Slice 4) and, per this slice's own
+investigation, at least one (line 1131, "architecturally out of reach")
+additionally needs export/interop WRITE-side boxing that Slice 2 explicitly
+deferred and this slice's charter (read side only) does not add.
+
+**Local commit:** (recorded after this section lands in the commit itself).
+

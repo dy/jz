@@ -128,6 +128,18 @@ export default (ctx) => {
             ;; — that would deref garbage. number-vs-string is simply false.
             (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
             (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+            ;; CARRIER PROGRAM Slice 3 — registry-derived 'eq-identity' arm
+            ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[eq-identity]):
+            ;; two independently-boxed BigInts compare by PAYLOAD content, not
+            ;; pointer bits — the content-compare REF_EQ_KINDS' own comment
+            ;; (src/compile/emit.js) already documents as the intent, closing
+            ;; the gap where the promised fallback never existed.
+            (if (result i32)
+              (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.BIGINT})) (i32.eq (local.get $tb) (i32.const ${PTR.BIGINT})))
+              (then (i64.eq
+                (i64.load (call $__ptr_offset (local.get $a)))
+                (i64.load (call $__ptr_offset (local.get $b)))))
+              (else
             (if (result i32)
               (i32.and
                 (i32.and (f64.ne (local.get $fa) (local.get $fa)) (i32.eq (local.get $ta) (i32.const ${PTR.STRING})))
@@ -141,7 +153,7 @@ export default (ctx) => {
                     (i32.eq (i32.and (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const ${LAYOUT.AUX_SHIFT}))) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT})))
                   (then (i32.const 0))
                   (else (call $__str_eq (local.get $a) (local.get $b)))))
-              (else (i32.const 0))))))))))`
+              (else (i32.const 0)))))))))))))`
 
   // Strict `===` fallback for the fully-dynamic (neither-side-a-literal) case
   // emitStrictEq delegates to — everywhere ELSE strict and loose equality agree
@@ -164,12 +176,33 @@ export default (ctx) => {
 
   // Truthy check: handles regular numbers AND NaN-boxed pointers
   // Falsy: 0, -0, NaN, null, undefined, "" (empty SSO)
-  ctx.core.stdlib['__is_truthy'] = `(func $__is_truthy (param $v i64) (result i32)
+  // CARRIER PROGRAM Slice 3's BIGINT arm below is gated on ctx.features.bigint
+  // (not unconditional): $__is_truthy is reachable from EVERY dynamic boolean
+  // coercion (incl. the boundary boolean-boxing wrapper every exported boolean
+  // return uses), so an unconditional `i64.load`/`call $__ptr_offset` reference
+  // in its body would force memory declaration on every such program via
+  // pullStdlib's needsMemory scan — even one with no BigInt syntax anywhere,
+  // regressing the heap-free-minimal-output contract (found live: `(a) => a >
+  // 0`'s boolean export wrapper). No program lacking ctx.features.bigint can
+  // ever construct a PTR.BIGINT box (neither the test-only __box_bigint
+  // intrinsic nor carrier-box's write-side wiring — both require real bigint
+  // syntax), so the gate never hides a reachable case.
+  ctx.core.stdlib['__is_truthy'] = () => `(func $__is_truthy (param $v i64) (result i32)
     (local $f f64)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (result i32) (f64.eq (local.get $f) (local.get $f))
       (then (f64.ne (local.get $f) (f64.const 0)))
       (else
+        ${ctx.features.bigint ? `
+        ;; a boxed BigInt's truthiness is VALUE-dependent (0n falsy, everything
+        ;; else truthy — unlike every other heap kind reaching this dispatch,
+        ;; always truthy regardless of "emptiness"), so it can't share the
+        ;; blanket non-sentinel-pointer default below. Registry-derived
+        ;; (layout-kinds.js KIND_REGISTRY.BIGINT.identity: content, not
+        ;; pointer-bits).
+        (if (result i32) (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.BIGINT}))
+          (then (i64.ne (i64.load (call $__ptr_offset (local.get $v))) (i64.const 0)))
+          (else` : ''}
         (i32.and
           (i32.and
             (i32.and
@@ -178,7 +211,7 @@ export default (ctx) => {
             (i32.and
               (i64.ne (local.get $v) (i64.const ${UNDEF_NAN}))
               (i64.ne (local.get $v) (i64.const 0x7FFA400000000000))))
-          (i64.ne (local.get $v) (i64.const ${FALSE_NAN}))))))`
+          (i64.ne (local.get $v) (i64.const ${FALSE_NAN})))${ctx.features.bigint ? ')))' : ')'}))`
 
   ctx.core.stdlib['__is_str_key'] = `(func $__is_str_key (param $v i64) (result i32)
     (local $f f64)
@@ -812,6 +845,27 @@ export default (ctx) => {
       (local.set $t (call $__ptr_type (local.get $bits)))
       ;; ATOM (null/undefined/bool/canonical-NaN): immediate, passes through
       (if (i32.eq (local.get $t) (i32.const ${PTR.ATOM})) (then (return (local.get $v))))
+
+      ;; CARRIER PROGRAM Slice 3 — registry-derived 'region-forwarding' arm
+      ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[region-forwarding]),
+      ;; dormant with the rest of __region_copy_rec until the region program's
+      ;; own re-enable path (.work/region-arena-design.md) — but no longer
+      ;; falls to the trailing unreachable trap the finding named. Mirrors
+      ;; STRING's own heap-block shape below (durable short-circuit / memo /
+      ;; fresh-copy-with-delta), simplified for BIGINT's flat, header-less,
+      ;; 8-byte payload cell (no aux, no length, content never changes post-
+      ;; allocation — registry: never relocates, no children).
+      (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
+        (then
+          (local.set $off (call $__ptr_offset (local.get $bits)))
+          (if (i32.lt_u (local.get $off) (local.get $mark)) (then (return (local.get $v))))
+          (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+          (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
+          (local.set $newOff (call $__alloc (i32.const 8)))
+          (i64.store (local.get $newOff) (i64.load (local.get $off)))
+          (local.set $out (call $__mkptr (i32.const ${PTR.BIGINT}) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
+          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          (return (local.get $out))))
 
       (if (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
         (then
@@ -2205,7 +2259,12 @@ export default (ctx) => {
     // boolean; isBoolExpr additionally catches `Boolean(x)` and parenthesized forms.
     if (valTypeOf(a) === VAL.BOOL || isBoolExpr(a)) return emit(['str', 'boolean'])
     if (!ctx.runtime.typeofStrs) {
-      ctx.runtime.typeofStrs = ['number', 'undefined', 'string', 'function', 'symbol', 'object', 'boolean']
+      // 'bigint': CARRIER PROGRAM Slice 3 (.work/carrier-representation-design.md
+      // §7, layout-kinds.js registry's 'typeof' finding) — a boxed BigInt the
+      // static analysis can't prove (the ONLY way $__typeof's dynamic dispatch
+      // below ever sees a PTR.BIGINT tag; a proven-BIGINT operand statically
+      // folds to the literal above and never reaches here).
+      ctx.runtime.typeofStrs = ['number', 'undefined', 'string', 'function', 'symbol', 'object', 'boolean', 'bigint']
       for (const s of ctx.runtime.typeofStrs)
         declGlobal(`__tof_${s}`, 'f64')
     }
@@ -2254,6 +2313,13 @@ export default (ctx) => {
     (if ${stringTest}
       (then (return (global.get $__tof_string))))
     ${closureArm}
+    ;; CARRIER PROGRAM Slice 3 — registry-derived 'typeof' arm (layout-kinds.js
+    ;; KIND_REGISTRY.BIGINT / FINDINGS[typeof]): a dynamically-boxed BigInt this
+    ;; dispatch reaches (static PROVEN-bigint operands fold to the literal above
+    ;; and never reach this dynamic dispatch at all) reports "bigint", not the
+    ;; "object" default every other unrecognized-shape pointer falls to.
+    (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
+      (then (return (global.get $__tof_bigint))))
     (if (i32.eqz (local.get $t))
       (then (return (global.get $__tof_symbol))))
     (global.get $__tof_object))`

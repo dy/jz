@@ -9,7 +9,13 @@
  * the "fresh build byte-identical" gate). Later slices (region tracer, $__eq/
  * $__map_hash arm generation, interop decode, carrier read-side) GENERATE their
  * arms from this table instead of hand-rolling parallel switches — see the design
- * doc's "Consumers that DERIVE" list. None of that wiring exists yet.
+ * doc's "Consumers that DERIVE" list; that generation infrastructure is still
+ * future work (this table remains a leaf, imported by nothing), but CARRIER
+ * PROGRAM Slice 3 (.work/carrier-representation-design.md §7) hand-landed every
+ * BIGINT arm this table's own FINDINGS named as missing — $__typeof/$__eq/
+ * $__eq_strict/$__same_value_zero/$__map_hash/mem.read/__region_copy_rec/
+ * __sclone_rec — matching the columns documented below exactly, ahead of the
+ * table-driven codegen that will one day generate them FROM this file.
  *
  * LEAF MODULE — imports only layout.js (the err-codes.js pattern: safe for
  * `jz/interop` and tests without pulling the compiler).
@@ -196,10 +202,10 @@ export const KIND_REGISTRY = {
     allocShape: '8B payload cell — the BigInt\'s raw two\'s-complement i64 bits, no header at all (module/core.js __alloc(8), not __alloc_hdr — ir.js boxBigInt)',
     childPointers: 'none (leaf, like a heap string byte run)',
     forwarding: 'never relocates (not in FORWARDING_MASK — fixed 8B cell, content never changes post-allocation)',
-    identity: 'DOCUMENTED INTENT vs ACTUAL BEHAVIOR DIVERGE — see FINDINGS below. src/compile/emit.js\'s REF_EQ_KINDS comment states BIGINT "needs __eq (heap-allocated, content compare)" and deliberately excludes it from the pointer-bits fast path — but the $__eq/$__eq_strict/$__same_value_zero/$__map_hash bodies (module/core.js, module/collection.js) have NO PTR.BIGINT arm at all: two independently-boxed equal-value BigInts compare UNEQUAL (pointer-bits identity, same as ARRAY/OBJECT/etc.), not content-equal as the comment promises',
-    interopDecode: 'mem.read: NO arm for t===5 — falls to the default `return i64ToF64(p)`, reinterpreting the boxed pointer bits as a raw float (the exact "5n → 2.5e-323" misdecode interop.js\'s own decodeBigintSentinel comment describes, for the UNBOXED raw-i64exp path — this row is the analogous gap on the BOXED f64-pointer path, a different code path, same symptom)',
-    typeofArm: 'NO dynamic arm — module/core.js\'s emit[\'typeof\'] statically folds `valTypeOf(a) === VAL.BIGINT` to the literal string "bigint" and never calls $__typeof at all for a PROVEN-bigint operand. For an operand whose static type ISN\'T proven BIGINT (e.g. a raw __box_bigint(...) result, or — Slice-2-relevant — any value reaching $__typeof under a live carrier-box build), $__typeof falls through every arm (not STRING, not CLOSURE, not the ATOM eqz-check since tag=5≠0) to the "object" default — WRONG per real BigInt semantics (typeof 5n === "bigint")',
-    findings: ['typeof', 'eq-identity', 'interop-decode', 'region-forwarding'],
+    identity: 'CONTENT identity (CARRIER PROGRAM Slice 3, .work/carrier-representation-design.md — closes the divergence FINDINGS[eq-identity] documented): $__eq/$__eq_strict (module/core.js) and $__same_value_zero/$__map_hash (module/collection.js) all carry a PTR.BIGINT arm now — two independently-boxed equal-value BigInts compare EQUAL and hash to the same bucket, matching src/compile/emit.js\'s REF_EQ_KINDS comment\'s stated intent ("BIGINT needs __eq (heap-allocated, content compare)")',
+    interopDecode: 'mem.read t===5 (CARRIER PROGRAM Slice 3): reads the payload cell directly (`m.getBigInt64(off, true)`) and returns a real host `bigint` — closes FINDINGS[interop-decode]. Distinct from the UNBOXED raw-i64 jz:i64exp `s`-lane sentinel machinery (decodeBigintSentinel) — a separate, already-shipped mechanism for a different representation crossing the boundary, untouched by this fix',
+    typeofArm: '"bigint" dynamically too now (CARRIER PROGRAM Slice 3): $__typeof (module/core.js) carries a PTR.BIGINT tag arm, landed ALONGSIDE emit.js\'s magnitude-heuristic TYPEOF.bigint arm (not replacing it yet — Slice 5 retires the heuristic once every R-recovery arm is independently verified). A PROVEN-bigint operand still statically folds to the literal "bigint" and never reaches $__typeof at all; the dynamic arm is what a boxed-but-unproven value (the test-only __box_bigint intrinsic, or a live carrier-box consumer) now hits, closing FINDINGS[typeof]',
+    findings: [],
   },
 
   // ===========================================================================
@@ -259,73 +265,32 @@ export const KIND_REGISTRY = {
  * interop.js, now named in one place instead of being independently
  * rediscovered per audit.
  */
+// RESOLVED (CARRIER PROGRAM Slice 3, .work/carrier-representation-design.md
+// §7): the three BIGINT-only findings this table originally recorded here —
+// 'typeof' ($__typeof gained a PTR.BIGINT tag arm), 'eq-identity' ($__eq/
+// $__eq_strict/$__same_value_zero/$__map_hash gained content-compare/hash
+// arms), 'interop-decode' (interop.js mem.read gained a t===5 arm) — are
+// closed; each KIND_REGISTRY.BIGINT column above documents the landed arm in
+// place of the old divergence writeup. 'region-forwarding' stays open below,
+// narrowed: BIGINT's own gap (both __region_copy_rec and __sclone_rec now
+// carry an explicit, individually-correct arm) is closed, but OBJECT/HASH/
+// CLOSURE remain unrouted in __region_copy_rec — untouched by carrier
+// boxing, the region program's own Slice 2 territory.
 export const FINDINGS = [
   {
-    id: 'typeof',
-    kinds: ['BIGINT'],
-    summary:
-      'typeof a dynamically-boxed BigInt (PTR.BIGINT reached via $__typeof\'s runtime dispatch, i.e. any ' +
-      'value whose static type is NOT proven VAL.BIGINT) reports "object", not "bigint". Real BigInts almost ' +
-      'always take the STATIC fold in module/core.js emit[\'typeof\'] (valTypeOf(a)===VAL.BIGINT ⇒ literal ' +
-      '"bigint", bypassing $__typeof entirely) — this only bites a boxed BigInt the static analysis loses ' +
-      'track of, which today means: the test-only __box_bigint intrinsic, and (once wired) any real consumer ' +
-      'of PTR.BIGINT reached through carrier-box def-side wiring (.work/carrier-representation-design.md), ' +
-      'gated off (JZ_CARRIER_BOX) in every production build today.',
-    consumers: ['module/core.js $__typeof (no PTR.BIGINT arm)', 'module/core.js emit[\'typeof\'] static fold (only covers the PROVEN case)'],
-    probe: 'test/layout-kinds.js: "finding[typeof]: typeof(boxed BigInt) reports \\"object\\", not \\"bigint\\""',
-  },
-  {
-    id: 'eq-identity',
-    kinds: ['BIGINT'],
-    summary:
-      'Two independently-boxed BigInts with the SAME payload compare UNEQUAL under === (and ==, and Set/Map ' +
-      'membership) — module/core.js\'s $__eq/$__eq_strict and module/collection.js\'s $__same_value_zero/' +
-      '$__map_hash all fall through to generic pointer-bits comparison/hashing for PTR.BIGINT (no dedicated ' +
-      'arm), even though src/compile/emit.js\'s REF_EQ_KINDS comment explicitly documents the INTENDED ' +
-      'behavior as content compare ("BIGINT needs __eq (heap-allocated, content compare)") and deliberately ' +
-      'excludes BIGINT from the pointer-bits fast path on that basis. The exclusion is correct; the promised ' +
-      'fallback implementation is the gap.',
-    consumers: [
-      'src/compile/emit.js REF_EQ_KINDS comment (states the intent)',
-      'module/core.js $__eq / $__eq_strict (no PTR.BIGINT arm — falls through to unequal)',
-      'module/collection.js $__same_value_zero (same gap — Set/Map dedup by BigInt VALUE silently fails)',
-      'module/collection.js $__map_hash (hashes PTR.BIGINT via generic $__hash — pointer-bits, not payload-bits, so even equal-payload boxes usually land in different buckets)',
-    ],
-    probe: 'test/layout-kinds.js: "finding[eq-identity]: === on two equal-value boxed BigInts is false" / "finding[eq-identity]: Set dedup by BigInt value fails across separate boxes"',
-  },
-  {
-    id: 'interop-decode',
-    kinds: ['BIGINT'],
-    summary:
-      'interop.js mem.read has no t===5 (PTR.BIGINT) arm — a boxed BigInt returned across the host boundary ' +
-      'decodes via the generic default (`i64ToF64(p)`, reinterpreting the pointer\'s bits as a float) instead ' +
-      'of reading the payload cell back out as a BigInt. This is the BOXED-pointer analog of the misdecode ' +
-      'interop.js\'s OWN comment (decodeBigintSentinel, line ~154) documents for the UNBOXED raw-i64 jz:i64exp ' +
-      'path ("the original repro, 5n reading back 2.5e-323") — same symptom, different code path, not yet ' +
-      'fixed here since PTR.BIGINT decode was never wired at all (that census/sentinel machinery is a separate, ' +
-      'already-shipped mechanism for a DIFFERENT representation of BigInt crossing the boundary).',
-    consumers: ['interop.js mem.read (no PTR.BIGINT arm, falls to the generic float-reinterpret default)'],
-    probe: 'test/layout-kinds.js: "finding[interop-decode]: a boxed BigInt returned to the host misdecodes (not 5, not a bigint)"',
-  },
-  {
     id: 'region-forwarding',
-    kinds: ['BIGINT', 'OBJECT', 'HASH', 'CLOSURE'],
+    kinds: ['OBJECT', 'HASH', 'CLOSURE'],
     summary:
       'module/core.js\'s __region_copy_rec (the region-arena Cheney-copy tracer) has dispatch arms for ATOM/ ' +
-      'STRING/ARRAY/SET/MAP only; everything else — OBJECT, HASH, CLOSURE, TYPED, BUFFER, EXTERNAL, and BIGINT ' +
-      '— falls to a trailing `(unreachable)` trap, EXPLICITLY documented in-source as "out of Slice-1 scope" ' +
-      '(the region program\'s own Slice 1, .work/region-arena-design.md — a DIFFERENT Slice 1 than this file\'s). ' +
-      'This is not a surprise finding so much as the exact hazard the heap-kind-registry design doc opens with: ' +
-      '"a boxed BigInt under JZ_CARRIER_BOX=1 + live regionHooks would trap". Recorded here because a second ' +
-      'consumer — module/collection.js\'s __sclone_rec (structuredClone) — ALSO has no BIGINT arm but ' +
-      'disagrees about WHAT to do: its trailing default is `;; unrecognized tag — pass through` (silently ' +
-      'returns the same pointer, unrelocated/unshared), not a trap. Two consumers, same missing-kind gap, two ' +
-      'different failure modes (crash vs. silent aliasing) — exactly the "not another `if PTR.BIGINT` branch" ' +
-      'problem the registry exists to close in Slice 2+.',
+      'STRING/ARRAY/SET/MAP/BIGINT only; OBJECT, HASH, CLOSURE, TYPED, BUFFER, and EXTERNAL still fall to a ' +
+      'trailing `(unreachable)` trap, EXPLICITLY documented in-source as "out of Slice-1 scope" (the region ' +
+      'program\'s own Slice 1, .work/region-arena-design.md — a DIFFERENT Slice 1 than this file\'s). Module/ ' +
+      'collection.js\'s __sclone_rec (structuredClone) has real OBJECT/HASH arms already (via __obj_clone) but ' +
+      'still has none for CLOSURE (throws DataCloneError instead, matching real JS) — the remaining live gap is ' +
+      'OBJECT/HASH/CLOSURE inside __region_copy_rec specifically, region-program-scoped, not carrier-scoped.',
     consumers: [
-      'module/core.js __region_copy_rec (traps: unreachable)',
-      'module/collection.js __sclone_rec (passes through silently — no trap, no relocation)',
+      'module/core.js __region_copy_rec (traps: unreachable, for OBJECT/HASH/CLOSURE/TYPED/BUFFER/EXTERNAL)',
     ],
-    probe: 'test/layout-kinds.js: "finding[region-forwarding]: structuredClone passes a boxed BigInt through unchanged (…) — code-read only for __region_copy_rec itself: unreachable from outside the self-host kernel\'s region rounds"',
+    probe: 'code-read only: unreachable from outside the self-host kernel\'s region rounds (the region program\'s own re-enable path, not yet live).',
   },
 ]
