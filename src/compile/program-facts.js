@@ -1209,6 +1209,33 @@ export function collectSlotWriteHazards(ast, opts) {
     // Resolvable string receivers are the censuses' own precise territory.
     if (sidOf(obj) == null) hz.props.add(prop)
   }
+  // Object.assign target-schema resolution for the two shapes module/object.js's
+  // OWN `resolveSchema` recognizes structurally (mirrored here, not imported — an
+  // emitter module importing INTO this analysis layer would invert the dependency;
+  // duplicated with a documented reason, same convention the `{}` spread-literal
+  // branch below already uses): a literal `{...}` with no spread resolves to its
+  // own name-set, and `Object.create(null|undefined)` is emitter-lowered straight
+  // to the equivalent empty `{}` (module/object.js's `isNullishLiteral(proto) →
+  // ctx.core.emit['{}']()`), so its target schema is the EMPTY schema. Either way
+  // the write can only ever touch THAT one schema's slots — hz.sids scopes to it
+  // instead of hz.all's whole-program blanket. Returns null (defer to kindOf) for
+  // anything else, INCLUDING a spread literal or a non-nullish Object.create(proto)
+  // — those still need the real schema/kind proof, not this shortcut.
+  const staticAssignTargetNames = (t) => {
+    if (!Array.isArray(t)) return null
+    if (t[0] === '()' && t[1] === 'Object.create') {
+      const proto = commaList(t[2])[0]
+      const nullish = proto === undefined
+        || (Array.isArray(proto) && proto.length === 2 && proto[0] == null && proto[1] == null)
+      return nullish ? [] : null
+    }
+    if (t[0] === '{}') {
+      const props = t.length === 2 && Array.isArray(t[1]) && t[1][0] === ',' ? t[1].slice(1) : t.slice(1)
+      if (props.some(p => Array.isArray(p) && p[0] === '...')) return null
+      return props.filter(p => Array.isArray(p) && p[0] === ':').map(p => String(p[1]))
+    }
+    return null
+  }
   const keyedWrite = (obj, key) => {
     if (isLiteralStr(key)) return propWrite(obj, key[1])
     const sid = sidOf(obj)
@@ -1271,12 +1298,23 @@ export function collectSlotWriteHazards(ast, opts) {
         if (known && names.length) hz.sids.add(ctx.schema.register(names))
       }
     } else if (op === '()' && node[1] === 'Object.assign') {
-      const target = node[2]
+      // node[2] is the RAW args slot — for the common 2+-arg call (a target plus
+      // at least one source) it's a `,`-node, not the target itself; commaList
+      // unwraps it the same way callArgs/setCallArgs (ast.js) do everywhere else
+      // a call's args are read. Passing the un-unwrapped comma-node to sidOf/
+      // kindOf below never resolves (neither is a bare string nor a typeable
+      // expr), so every real (target, ...sources) call fell straight to hz.all
+      // — this fixes that dead resolution, it doesn't newly attempt one.
+      const target = commaList(node[2])[0]
       const sid = sidOf(target)
       if (sid != null) hz.sids.add(sid)
       else {
-        const vt = kindOf(target)
-        if (vt == null || vt === VAL.OBJECT) hz.all = true
+        const names = staticAssignTargetNames(target)
+        if (names) hz.sids.add(ctx.schema.register(names))
+        else {
+          const vt = kindOf(target)
+          if (vt == null || vt === VAL.OBJECT) hz.all = true
+        }
       }
     } else if (op === '()' && (node[1] === 'JSON.parse' ||
         (Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'JSON' && node[1][2] === 'parse'))) {
