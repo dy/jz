@@ -241,12 +241,20 @@ first (things already proven post-hoc-safe) to high-risk last (the trio).
    output on the full bench corpus — must be identical (this is the
    "generalization is safe" proof, cheap because it reuses the existing
    gate infrastructure and touches zero recognizer code).
+   **LANDED 2026-08-07** (task's "Slice 1", combined with item 2 below —
+   see .work/todo.md's BODYMODEL SLICE 1 entry for the full gate record).
 2. **`siteAccess` + `aliasClass`, unwired.** Build the per-site resolved
    table and the base-identity partition over the same corpus; shadow-assert
    `siteAccess` results against `matchLaneAddr`'s current post-hoc callers
    (`tryMapReduceVectorize`, `tryRampMap`'s non-`recordAddrTees` paths) —
    these already consume a precomputed table, so this slice proves the new
    table produces the same answers before anything risky touches it.
+   **LANDED 2026-08-07** — one real finding en route: `siteAccess`'s query
+   must read `node[1]` raw (no `offset=N` memarg unwrap), since neither
+   intended consumer ever unwraps one; an initial draft copied tryVectorize's
+   memarg-aware `memAddr` helper, which would have been a silently WIDER
+   acceptance than either consumer has ever had (exactly the §6 risk below) —
+   caught and fixed during construction, before any assert ran against it.
 3. **Wire the class-A duplicates (zero soundness risk, pure dedup):**
    `epiWritten`/`wr` epilogue-safety closure → one `epilogueIsSafe(epilogue,
    {loopNode, laneMap, pivType})` consumed by tryPerPixelColor/tryOuterStrip/

@@ -6,6 +6,55 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-07, BODYMODEL SLICE 1 landed — .work/loop-bodymodel-design.md §5)
+BodyModel construction landed UNWIRED (zero consumers): `addrTable` generalizes
+`_offsetLocalStride`/`_isAddressLocal`/`_isPixelIndexLocal`/`matchMirrorAddr`
+into one per-name write-shape classification (`classifyAddrLocal`, one gather
++ one per-name walk instead of four); `siteAccess` (WeakMap<node,{base,
+strideLog2,pixelStride,elemWidth,teeName}>) re-runs matchLaneAddr against the
+frozen offsetTees table at every load/store site; `aliasClass` partitions
+siteAccess's `base` subtrees by static local/global identity. All three spread
+into `bl` via `bodyFacts` exactly like `offsetTees` was in slice 6 (also added
+`bl.hasImpureCall`, listed in the design's BodyModel superset but previously
+only computed ad hoc by the outer-pixel recognizers — unconsumed here too).
+JZ_DEBUG_INVARIANTS-gated `assertBodyModelSound` shadow-asserts (a) addrTable's
+offset-kind subset ≡ deriveOffsetTees's own output (true by construction —
+classifyAddrLocal's offset branch calls the same `_offsetLocalStride`), (b)
+every fullAddr/idxTee entry is also accepted by `_isAddressLocal`/
+`_isPixelIndexLocal` (addrTable is a deliberately STRICTER subset — a name
+those classification-only booleans accept with a different base/stride per
+write, which can't arise from a realistic single-definition address-tee, is
+left OUT since siteAccess needs a single concrete value to resolve FROM), (c)
+siteAccess reproduces a fresh matchLaneAddr(node[1], ind, undefined,
+offsetTees) at every load/store site. ONE real bug caught by this exact
+proof-check before it shipped: `siteAccess`'s address query must read `node[1]`
+RAW, no `offset=N` memarg unwrap — tryMapReduceVectorize/tryRampMap (the
+intended slice-3 consumers) never unwrap a memarg either (tryMapReduceVectorize
+has no store path; tryRampMap's store-shape gate requires `length===3`,
+rejecting the 4-element memarg form outright), so unwrapping in siteAccess
+would have been a silently WIDER acceptance than either consumer has ever had
+— exactly the design's §6 risk. Caught during construction (an initial draft
+used a memAddr-unwrapping helper copied from tryVectorize's private one),
+fixed before any shadow-assert ran against real code, not found BY a failing
+assert. No divergence found on the actual corpus in any of the three checks.
+Byte-identity: zero WAT diffs across the 58-case/174-compile bench corpus
+(O0/O2/O3; 2 cases — jessie/jz — skip in this harness, self-referential
+compiler-graph sources needing full module-graph resolution, unrelated to this
+change) — trivially guaranteed (zero consumers) but measured anyway per the
+absolute-byte-identity discipline. Gates: battery 88 test files run in 16
+foreground chunks of 4-7 (matches the pre-existing 2 failures — interval walk
+/typed RMW — confirmed identical on a clean-HEAD worktree, unrelated to this
+change); JZ_DEBUG_INVARIANTS=1 full battery (91 files, one process) surfaced
+ONE additional pre-existing flake — `analyzeValTypes: declRange restamp for
+'cf1_8' diverges` (audit-#12 item 2's own probe) — reproduced IDENTICALLY on
+a clean-HEAD worktree under the same flag, confirmed unrelated (a different
+subsystem, src/compile/analyze.js, no relation to vectorize.js/BodyModel);
+kernel-parity 33/33 byte-identical; kernel-oracle 11/11 (451 assertions);
+perf-ratchet 10/10 at +0; selfhost.js 21/21 (206 assertions); fuzz 2000×4
+(default/--typed/--typed-map/--typed-int): 0 divergence all four; size sweep
+geomean jz/AS = 1.020× (holds exactly); fresh `npm run build` ×2, dist/jz.wasm
++ dist/jz.js + dist/interop.js SHA-256 byte-identical across both runs.
+
 ## Status (2026-08-06, BUILD REPRODUCIBILITY restored + audit-#13 received)
 Audit-#13 (the five-system convergence verdict) confirmed a real hygiene break:
 node_modules/watr/src/optimize.js carried the region Slice-1 hook patch
