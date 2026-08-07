@@ -42,6 +42,27 @@ modulo the same pre-existing warm-instance perf-pin miss (also reproduced on
 baseline, numbers within noise). Fresh `npm run build` ×2: dist/jz.js,
 dist/interop.js, dist/jz.wasm SHA-256 identical.
 
+## MAP.GET KIND PROMOTION — coordinator design seed (2026-08-07, the LAST carrier flip blocker's lever, §17)
+The hz.all trigger class is `keyedWrite` (program-facts.js:1239): the
+compiler's own `let arr = m.get(k); arr[idx] = v` idiom — kindOf(arr)
+unknown ⇒ hz.all blanket ⇒ slotBigintProven starved on self-compile ⇒
+LAYOUT constant corruption (§15-§17 chain). CRITICAL HISTORY: a Map
+value-census .get() consumer was LANDED (1db8e55e) and REVERTED as unsound
+(f8f61591, audit P0) — any promotion design MUST first read that revert's
+rationale and must not re-land the same shape. THE DESIGN INSIGHT to
+develop: the hazard census does not need full kind promotion — it needs
+only kind-DISJOINTNESS from OBJECT ("can this receiver be an OBJECT-schema
+instance?"). A Map whose every .set value is provably ARRAY-kinded yields
+.get values that are (ARRAY ∪ undefined) — disjoint from OBJECT — which is
+a strictly weaker, consumer-local fact than the reverted value-exactness
+promotion (it feeds ONLY keyedWrite's exempt test, never a value consumer).
+Sibling machinery: dictValueKindOf (kind.js, censusMaybeUndefined Slice 1)
+is the DICT twin of the needed MAP value-kind join. Verify: the exemption
+must join over ALL .set sites program-wide + spread/clone flows into the
+map; fail closed (keep hz.all) on any unproven set-site. Gate: kernel-parity
+dict clean under JZ_CARRIER_BOX=1 (the §17 acceptance), then the flip
+probe re-run.
+
 ## AUDIT-#14 RESPONSE (2026-08-07)
 P0 (carrier default flip BLOCKED — carrier-built kernel corrupts atom/string/
 closure CONSTANTS for BigInt-free programs, `() => undefined` O0 native
