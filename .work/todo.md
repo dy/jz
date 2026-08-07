@@ -6275,3 +6275,32 @@ SHA-1 byte-identical across both runs.
 
 Files: `module/core.js` (the one src/ change — the `.length` fold, +21
 lines), `.work/todo.md` (this entry).
+
+LOOPPLAN SHARED BODY-ANALYSIS DESIGN (2026-08-06, audit item 8, read-only):
+`.work/loop-bodymodel-design.md` — the redesign the 2026-07-31 LOOPPLAN
+UNIFICATION TERMINAL verdict named (not a retry of the refused shared-scan
+path). Survey: 17 recognizer rows (16 dispatched + the deferred
+tryStrengthReduceIV fallback), ~30 derivation kinds; 4 verified byte-
+identical class-A duplicates not yet hoisted (`epiWritten`/`wr` epilogue-
+safety closure — byte-diffed identical at vectorize.js:5687-5692/5879-5884/
+6080-6085; the `bump`/`rampOf` per-recognizer redeclarations; the blur/
+channel-reduce init+inner-loop-locate scan), ~6 class-B (parametrizable),
+~20 class-C (the incremental trio + tryStencil/tryButterfly/
+tryDivergentEscapeVectorize/tryConvColumn/tryToneMap stay private, per the
+terminal verdict). BodyModel spec: one per-block record (addrTable +
+siteAccess + aliasClass), computed once via a two-phase order-independent
+walk generalizing `deriveOffsetTees`/`_isAddressLocal`/`_isPixelIndexLocal`/
+`matchMirrorAddr`. Provisional-acceptance resolved (not deferred): verified
+all 3 trio call sites (tryVectorize scanForLoadsStores ~1496-1580,
+tryReduceVectorize scanExpr 2345-2375, tryMemCopyFill laneAddr 3722-3763)
+already run optimistic-accept-then-`_offsetLocalStride`-reverify — a
+tee-precedes-use argument shows two-phase precomputation is strictly
+equivalent, so the fact-table hoists cleanly while each recognizer's
+admission POLICY (viaLocal/AoS/tee-forbidding) stays private, unchanged from
+today's split. Dependence scoped down: no edge graph (only 3 recognizers
+touch it, each already has a working private mechanism); `aliasClass`
+supplies the shared base-identity fact only. 8-slice plan, byte-identity-
+gated per slice (177/180-style zero-WAT-diff discipline), ordered low-risk
+(BodyModel unwired + shadow-assert vs current output) to high-risk (trio,
+each its own slice, last). Decision left to whoever picks it up next — not
+landed, no source touched.
