@@ -1279,3 +1279,161 @@ without reaching that minimal form. Slice 5 stays blocked on Slice 4 landing.
 **Local commits:** none (investigation only — no source changes; `dist/jz.wasm`
 restored to its plain-build state, gitignored, not committed either way).
 
+## §14. Slice 4 — ATTEMPT 4: root cause named, fixed, flag-forced battery
+green, flip probe hit NO wall — same fix also clears §12's own self-host
+kernel-fidelity gap; landing the flip + Slice 5 itself banked (2026-08-07)
+
+**Discriminated: neither of §13's two named candidates, a third mechanism
+in the same neighborhood.** §13's own diagnostic instrumentation
+(`JZ_DBG_BIGINT_STATS=1`, `bigintBoxedStats`) settles candidate 1 first: a
+fresh dump of every param/local verdict touching `_i64Hex16`/`_i64Canon`/
+`_i64Arith`/`f64FromI64` across the real `optimize.js` compile shows **zero**
+params and **zero** locals boxed anywhere in that call graph — the
+whole-file `bigintBoxedVerdict` fixpoint never marks `_i64Hex16`'s param
+boxed at all, so there is no box/unbox param round-trip to lose bits in.
+Candidate 1 refuted by direct measurement, not argument.
+
+Candidate 2 ("carrierF64Narrow/needsBigintBox mis-dispatch on the unary-
+minus-in-ternary shape") pointed at the right neighborhood but the wrong
+function: `needsBigintBox` (ir.js) already unconditionally EXCLUDES every
+`'?:'` node (`node[0] !== '?:'`) — it never fires on a ternary at all,
+mis-dispatch or not. The actual bug is one level up, in **`emitDecl`**
+(emit.js ~2119-2133), the site that decides whether a decl's name enters
+`ctx.func.ternaryBoxedNames` (the §12 Slice-4-attempt-2 mechanism for "this
+local's own storage IS a box"). Its condition was `Array.isArray(init) &&
+init[0] === '?:' && valTypeOf(init) === VAL.BIGINT` — but kind.js's
+`VT['?:']` returns `VAL.BIGINT` from TWO structurally different rules: (a)
+`ta === VAL.BIGINT && nullishArm(c)` / the symmetric arm (line 179-180) —
+the genuine nullish-merge shape, which the `'?:'` handler (emit.js ~5873-
+5887) actually boxes; and (b) the much more general `if (ta && ta === tb)
+return ta` (line 149) — BOTH arms merely sharing a kind, with NO nullish
+requirement, which for two BigInt arms is `_i64Canon`'s own exact shape
+(`neg ? -BigInt(mag) : BigInt(mag)`, neither arm nullish) — a shape the
+`'?:'` handler leaves **entirely raw** (its own box condition, `bigintArm`,
+requires one arm nullish; with both arms BigInt it stays null and the
+generic `asF64`-merge path runs, no box). `emitDecl`'s own comment claimed
+"same test... can never disagree with what actually got built" — false for
+shape (b): the name gets registered as ternary-boxed even though nothing
+was ever boxed.
+
+The reason this bites `_i64Canon` specifically, and only through the real
+file: jz's own AST-level inliner (`src/compile/plan/inline.js`,
+`inlinedBody`) binds a non-simple call argument — a `'?:'` node is
+explicitly non-simple (its own comment: "a call, `?:`, indexed load") — to
+a fresh temp via a synthesized `const $tmp = arg` decl before splicing the
+callee body in, so that `_i64Canon(mag, neg)`'s call `_i64Hex16(neg ?
+-BigInt(mag) : BigInt(mag))` becomes, post-inline, a genuine DECL whose init
+is exactly the '?:' node — the one AST shape `emitDecl`'s check fires on.
+`_i64Hex16`'s inlined body then reads that temp through `readI64` (ir.js),
+which checks `isTernaryBoxedBigint` and — wrongly told "boxed" — calls
+`unboxBigInt`: an `i64.load` at `ptrOffsetIR`'s tag-masked, forwarding-
+chase-guarded offset, computed from the RAW asF64-reinterpreted ternary
+result as if those bits were a real heap pointer. That IS §13's own WAT-
+diff observation exactly (the `i32.and`/mask-898/`__ptr_offset_fwd`-chase/
+`i64.load` sequence wrapping the ternary's `local.tee $0` at O3, absent on
+the `CARRIER_BOX=0` side) — just misattributed to the wrong originating
+predicate. No hand-built two-call-site repro was needed once the mechanism
+was named structurally; the minimal pin below reproduces byte-for-byte
+without ever touching `optimize.js`.
+
+**Fix.** `emitDecl`'s registration condition (emit.js) now replicates the
+`'?:'` handler's OWN narrower box condition exactly — one arm BIGINT AND
+the other `nullishArm` — instead of the broad `valTypeOf(init) ===
+VAL.BIGINT`:
+```js
+if (CARRIER_BOX && !viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '?:' &&
+    ((valTypeOf(init[2]) === VAL.BIGINT && nullishArm(init[3])) || (valTypeOf(init[3]) === VAL.BIGINT && nullishArm(init[2]))))
+  ctx.func.ternaryBoxedNames?.add(name)
+```
+Stale doc comments asserting the false "same test" claim corrected in both
+emit.js (the fix site) and ir.js (`isTernaryBoxedBigint`'s own doc comment,
+which repeated the same wrong claim).
+
+**Faithful minimal pin** (test/pointers.js, "BigInt carrier boxing"
+section — no dependency on watr/optimize.js, no self-host): a `hex16`/
+`canon` pair shaped exactly like `_i64Hex16`/`_i64Canon`, called from a
+small loop (to clear jz's own hot-path inline-candidacy gates) at
+`optimize: { level: 3 }`. Verified against the reverted condition (a
+temporary in-place edit, restored immediately after, no stash/checkout
+used) before writing the fix back: the pre-fix condition crashes
+(`RuntimeError: memory access out of bounds` — the same failure CLASS §12's
+own kernel-fidelity wall hit, not just a wrong value) at O3; the fix makes
+it pass, both under `JZ_CARRIER_BOX=1` and unflagged (off-flag,
+`ternaryBoxedNames` is never populated at all — the shape is inert there by
+construction, so the pin is a pure non-regression check off-flag and the
+real assertion on).
+
+**Gates, FLAG-FORCED (`JZ_CARRIER_BOX=1`), foreground, full runs:**
+- Real repro (`fold()` on watr/src/optimize.js's own `_i64Canon`/
+  `_i64Hex16`, via `compile()` + `resolveModuleGraph(..., {resolveNode:
+  true})`, matching `build-dist.mjs`'s own config): O0-O3 all
+  `2.000000000000001` (was `5.826595490514274e+252` at O2/O3). Default
+  (unflagged) build: unaffected, was and stays correct at every level.
+- `test/watr.js`: 35/35 (matches §11/§12's own target).
+- Full battery (`node test/index.js`): 3406 total / 3387 pass / 13 fail / 6
+  skip — the 13 are EXACTLY §12's own documented pre-existing, out-of-scope
+  baseline (11 `test/dyn-keys.js` Map/dict export-boundary rows + 2
+  `test/optimizer.js` bounds-check-guard rows, present at `CARRIER_BOX=0`
+  too) — zero new failures. (3406 vs §12's 3405: +1 is this session's new
+  pin.)
+- Default battery (unflagged): 3406 / 3398 pass / 2 fail (the 2
+  pre-existing `test/optimizer.js` rows) / 6 skip — matches §12's own
+  "3397/3405, 2 pre-existing" baseline (+1 for the new pin).
+- `test/kernel-oracle.js`: 11/11 suites, 451/451 assertions.
+- `test/statements.js`: 202/202.
+- `node test/fuzz.js --count=2000` (opt {0,1,2,3}, 20 inputs each,
+  216162ms): 30173 compared, 9827 skipped (i32 contract exceeded), 0
+  non-numeric, **0 divergence**. (`--typed`/`--typed-int`/`--typed-map`
+  siblings NOT re-run this session — time-boxed; base fuzz already exercises
+  the fixed code path with zero findings.)
+
+**The flip, re-attempted — no wall this time.** `CARRIER_BOX` hardcoded
+`true` (temporary, reverted before commit). Default (unflagged) battery:
+3406/3387/13, byte-identical to the flag-forced run — confirms the flip
+behaves exactly as forced, as in §12. `npm run build` (fresh self-host
+rebuild, gate §12's SECOND wall lived in): compiled, WASM-validated,
+completed cleanly. Directly re-probed §12's own three named failing shapes
+(array-literal-bigint, obj-field-bigint, a ternary-bigint local) through
+`compileViaKernel` at O0-O3 each: **all twelve correct, zero crashes, zero
+wrong values** — the exact self-host kernel-fidelity gap §12 hit on ITS OWN
+flip attempt (`CRASH`/`memory access out of bounds` at O2/O3 on these same
+shapes) does not reproduce. `npm run build` × 2 with the flip: byte-
+identical (`5057747ba1539558225ebb61dd2b14725e0e39d9918776d388d1a9c004c8bcd7`).
+Plausible unifying explanation (not proven further this session): §12's own
+"what a third attempt needs" note named `ctx.func.ternaryBoxedNames` itself
+as one of the suspect NEW code shapes for the kernel's own optimizer passes
+to mishandle when self-hosting — this session's bug lives exactly there,
+and it is exercised by jz's OWN inliner, which the self-hosted kernel runs
+on ITS OWN BigInt-heavy source (including, transitively, on its own copies
+of BigInt-canonicalization helpers) every time it compiles anything — so
+one over-broad registration site plausibly explains both the native-compiler
+wall (§13/§14) and the self-host kernel-fidelity wall (§12) as the same
+single defect observed from two different vantage points. `npm run test:wasm`
+(chained: kernel compiling further programs) hit an unrelated crash — a
+`RangeError` in `interop.js` `mem.read`/`readArgBits` decoding a BIGINT
+inside an async `setTimeout` `print` callback path — NOT investigated (not
+one of §11/§12's own named gates, no BigInt-ternary/carrier-box code on that
+call path, plausible pre-existing `test:wasm`-harness flakiness given it
+isn't part of `test:matrix`).
+
+**Flip reverted, not landed — deliberately, not because of a new wall.**
+`CARRIER_BOX` restored to the env-gated default (OFF); `dist/jz.wasm`
+rebuilt plain (no flag), gitignored, not committed either way
+(`66813815dbbb09fa28c8034df369c722f902da6c9255c9134b11527ae2905fdc`).
+Landing the default flip is a bigger decision than this session's bounded
+probe covers: Slice 5 (§7 of this doc) is its OWN named follow-on with its
+OWN full-discipline requirement — "native + kernel (O0/O2/O3) + wasi +
+selfhost + fuzz (2000×4) + fresh build ×2 byte-identity + warm/fresh perf
+gates" plus the actual DELETION of §5's 10 magnitude/sentinel kill-list
+sites and flipping specific KNOWN-FAIL test rows to green pins — none of
+which this session ran (no wasi gate, no selfhost test suite, no perf
+gates, no kill-list deletion). A probe finding no wall is real, useful
+evidence the next attempt should lead with rather than re-deriving from
+scratch — but is not itself the rigor Slice 5's own charter demands before
+changing a project-wide default. Banked as "flip probe clean" for the next
+session to build on, not landed.
+
+**Local commits:** src/compile/emit.js + src/ir.js (the fix), test/
+pointers.js (the pin), .work/carrier-representation-design.md (this
+entry) — filed separately, plain messages, no push.
+
