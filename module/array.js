@@ -10,7 +10,7 @@
 
 import { typed, asF64, asI64, asI32, asI32Sat, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
-import { emit, spread, deps, idx as emitIndex, storedValue } from '../src/bridge.js'
+import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
@@ -692,6 +692,21 @@ export default (ctx) => {
   ctx.core.emit['['] = (...elems) => {
     const hasSpread = elems.some(e => Array.isArray(e) && e[0] === '...')
 
+    // Every element statically BIGINT (a homogeneous-bigint literal, e.g.
+    // `[1n, 2n]`) — the array's own element type is uniformly proven BY THIS
+    // LITERAL'S OWN SHAPE, so every later reader (this array's own arithmetic/
+    // iteration/comparison reads, all gated on the SAME uniform-BIGINT proof)
+    // already takes the static raw-i64 path, never a registry-aware dynamic
+    // dispatch — storedValue's unconditional inline-BIGINT box has no reader
+    // that would ever unbox it (see carrierF64Narrow's own doc comment,
+    // src/ir.js, and emit-assign.js's `arrProvenBigintElems` — the parallel
+    // fix for a later `arr[i] = bigint` write into a proven-bigint-element
+    // array; this is the SAME reasoning at construction time). Found live:
+    // `let a = [4611686018427387903n]; return a[0]` boxed the literal on
+    // construction, corrupted by the very next bare read (no write at all).
+    const elemStoredValue = elems.length && elems.every(e => valTypeOf(e) === VAL.BIGINT)
+      ? storedValueNarrow : storedValue
+
     if (!hasSpread) {
       const len = elems.length
       // R: Static data segment for arrays of pure-literal elements (own-memory only).
@@ -706,7 +721,7 @@ export default (ctx) => {
         // asF64 folds i32.const → f64.const literally, so int-literal arrays also qualify.
         // storedValue: a bool literal folds to its TRUE/FALSE atom const — still
         // static-extractable, and the element keeps boolean identity in the segment.
-        const vals = elems.map(e => storedValue(e))
+        const vals = elems.map(e => elemStoredValue(e))
         const slots = vals.map(v => extractF64Bits(v))
         if (slots.every(b => b !== null)) {
           const ptr = staticArrayPtr(slots)
@@ -725,7 +740,7 @@ export default (ctx) => {
       const a = allocArray(len, Math.max(len, minCap))
       const body = [...a.setup]
       for (let i = 0; i < len; i++)
-        body.push(['f64.store', slotAddr(a.local, i), storedValue(elems[i])])
+        body.push(['f64.store', slotAddr(a.local, i), elemStoredValue(elems[i])])
       body.push(a.ptr)
       return typed(['block', ['result', 'f64'], ...body], 'f64')
     }

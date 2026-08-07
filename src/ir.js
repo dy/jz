@@ -613,6 +613,60 @@ export function carrierF64(node, emitted) {
   return asF64(emitted)
 }
 
+/** Narrow-admission twin of carrierF64 — same BOOL-atom-boxing contract
+ *  (unconditional, unchanged), but for BIGINT admits ONLY the bare-name case
+ *  independently proven by isProvenBoxedBigint — never carrierF64's OTHER
+ *  (unconditional inline-expression) fallback. That fallback is sound at
+ *  carrierF64's REAL W-sinks (a genuine heap object/array/Set/Map's dyn-prop
+ *  or element store, closure-capture): storage a later, independently-
+ *  compiled reader can only observe through registry-aware dynamic dispatch
+ *  ($__dyn_get, iteration, …), which correctly recognizes a PTR.BIGINT box.
+ *  Two call sites need this narrower admission instead, both found live by
+ *  running test/watr.js's own self-hosted-through-jz battery under
+ *  JZ_CARRIER_BOX=1 (the first real end-to-end BigInt-heavy-program pass
+ *  Slice 2's own gates never ran — see .work/carrier-representation-
+ *  design.md §11/§12):
+ *
+ *  1. emit.js 'return', when `ctx.func.boxedResult`/`mixedAtomReturn`
+ *     ("boxes") is true. Neither flag is an interprocedural proof that any
+ *     CALLER of the result expects a BigInt box (unlike params, where
+ *     coerceArg/isCurrentlyBoxedBigint pair a call-site box with a
+ *     callee-body unbox) — `boxedResult` is set unconditionally for EVERY
+ *     closure-convention body regardless of whether THIS closure's own
+ *     return is uniformly BIGINT, and `mixedAtomReturn` is a parallel,
+ *     BOOL-only heuristic (its own doc comment at compile/index.js states
+ *     plainly "every non-bool-mixed function... [is] untouched either way"
+ *     as the pre-carrier-box contract). Found live: watr's own `compile.js`
+ *     `limits()` — `is64 ? v => { if (typeof v === 'bigint') return v;
+ *     return BigInt(v) } : parseUint` — the closure's `return BigInt(v)`
+ *     boxed unconditionally (an inline expression, `boxes` true only because
+ *     it's a closure body), then `uleb(parse(minVal), out)` called the box
+ *     through `call_indirect` with NO statically-provable-BIGINT call site
+ *     for narrow.js to seed `uleb`'s own param as bigintBoxed — `uleb`'s
+ *     `n & 0x7Fn` read the pointer's own bits raw.
+ *  2. emit.js's SRoA flat-object/array field init (`let o = {a: 1n}` — no
+ *     heap alloc; every read/write rewrites to a plain `o#i` local, per its
+ *     own comment). A flat field's value is emitted via storedValue for BOOL
+ *     identity's sake (an untyped slot ANY dynamic dyn-shadow fallback might
+ *     still observe) — but there is no such fallback for a name that never
+ *     needed one to become flat in the first place, and the flat-field READ
+ *     side (the `.`/`[]` flat hooks) reads the local's bits raw, with no
+ *     unboxing. Found live: `let o = {n: 4611686018427387903n}; o.n++` —
+ *     the object literal's OWN field initializer (a bare BIGINT LITERAL, no
+ *     ambiguity whatsoever) got boxed on write into the flat local, then
+ *     `o.n++`'s arithmetic (bigIntOperand/readI64, sound in isolation) read
+ *     that local's bits raw, misreinterpreting the pointer as a payload.
+ *
+ *  Both are the SAME class of bug as needsBigintBox's own doc comment warns
+ *  against generalizing beyond its verified sinks: a def-side box fired at a
+ *  W-sink shape whose actual consumer isn't the registry-aware dynamic
+ *  reader the unconditional fallback assumes. */
+export function carrierF64Narrow(node, emitted) {
+  if (valTypeOf(node) === VAL.BOOL) return boolBoxIR(emitted)
+  if (CARRIER_BOX && typeof node === 'string' && isProvenBoxedBigint(node)) return boxBigInt(asI64(emitted))
+  return asF64(emitted)
+}
+
 /** Recover the 0/1 i32 value of a known boxed-boolean f64 expression: `aux & 1`. */
 export function unboxBoolIR(f64expr) {
   if (Array.isArray(f64expr) && f64expr[0] === 'f64.const') {

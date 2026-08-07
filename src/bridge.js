@@ -9,7 +9,7 @@
  */
 
 import { ctx, emitter } from './ctx.js'
-import { typed, asF64, asI32, asI64, carrierF64 } from './ir.js'
+import { typed, asF64, asI32, asI64, carrierF64, carrierF64Narrow } from './ir.js'
 import { hasAmbiguousBoolMerge } from './kind.js'
 
 export { emitter } from './ctx.js'
@@ -39,6 +39,16 @@ export const emitIdentitySafe = (...a) => ctx.bridge.emitIdentitySafe(...a)
 // A). Formerly local to src/compile/emit-assign.js:42 (the same pattern
 // module/*.js already bridges emit/emitIdentitySafe through).
 export const storedValue = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64(node, emit(node))
+
+// Narrow-admission twin of storedValue — same single-emission/BOOL-identity
+// discipline, but routes the non-ambiguous fallback through carrierF64Narrow
+// (ir.js) instead of carrierF64: for a genuinely non-dynamic boxed-value slot
+// (SRoA flat-object/array field storage — no heap allocation, every read/
+// write rewritten to a plain local, no registry-aware dynamic reader ever
+// observes it) where carrierF64's unconditional inline-BIGINT fallback boxes
+// a value nothing downstream knows to unbox. See carrierF64Narrow's own doc
+// comment for the two call sites and the live incident that found this gap.
+export const storedValueNarrow = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64Narrow(node, emit(node))
 
 // Non-boxing twin of storedValue: for positions guarded by a static-kind-
 // driven fast path downstream (an i32-PROVEN emit shortcut, a typeof-operand

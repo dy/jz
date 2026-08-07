@@ -24,7 +24,7 @@ import {
   ptrOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
   usesDynProps, needsDynShadow, boolBoxIR, mkPtrIR, isNumericIR, undefExpr,
 } from '../ir.js'
-import { emit, emitIdentitySafe, storedValue } from '../bridge.js'
+import { emit, emitIdentitySafe, storedValue, storedValueNarrow } from '../bridge.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (carrier-invariant-design.md) — every
@@ -566,6 +566,26 @@ export function emitElementAssign(arr, idx, val) {
   if (rmw) return rmw
   const inplace = (ctx.transform.optFlags & OPTF.inplaceStore) ? tryInplaceReplaceStore(arr, idx, val) : null
   if (inplace) return inplace
+  // SRoA flat object/array: `o['k'] = x` / `a[2] = x` → `local.set $o#i` (no
+  // heap store). Checked EARLY, before keyExpr/valueExpr below, so `val`
+  // emits exactly once through storedValueNarrow — NOT the generic
+  // storedValue every other branch shares: see carrierF64Narrow's own doc
+  // comment (ir.js) for why an unconditional inline-BIGINT box is wrong for a
+  // flat field (reads/writes are all rewritten to plain local access, no
+  // registry-aware dynamic reader ever downstream of it). Key resolution
+  // mirrors the original `litKey ?? staticIndexKey(idx)` fallback chain
+  // exactly (a literal string key, else a static property key for an
+  // OBJECT-typed receiver, else a bare integer index) — `litKey` itself is
+  // computed further below only for the OTHER (non-flat) branches.
+  if (typeof arr === 'string' && ctx.func.flatObjects?.has(arr)) {
+    const fo = ctx.func.flatObjects.get(arr)
+    const flatLitKey = isLiteralStr(idx) ? idx[1] : lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx) : null
+    const flatKey = flatLitKey != null ? flatLitKey : staticIndexKey(idx)
+    const fi = flatKey != null ? fo.names.indexOf(flatKey) : -1
+    if (fi >= 0) return withTemp(storedValueNarrow(val), t => [
+      ['local.set', `$${arr}#${fi}`, ['local.get', `$${t}`]],
+      ['local.get', `$${t}`]])
+  }
   // _expect is clobbered by every sub-emit() — capture statement-position hint
   // up front so the typed-array element-write path can elide the value materialize.
   const void_ = ctx.func._expect === 'void'
@@ -589,7 +609,29 @@ export function emitElementAssign(arr, idx, val) {
   // sensitive consumer is the typed-array route — __typed_set_idx ToNumbers
   // NaN-boxed values (spec ToNumber for typed element writes), so a boxed
   // bool stores 0/1 there, never raw atom bits.
-  const valueExpr = storedValue(val)
+  //
+  // storedValueNarrow, NOT storedValue, when `arr` is a KNOWN ARRAY whose
+  // OWN element type is independently proven uniformly VAL.BIGINT
+  // (repOf(arr)?.arrayElemValType — the array-elem census analyze.js already
+  // maintains for `arr[i]`'s own read-side elision, kind.js valTypeOf):
+  // every consumer of THIS array's elements (this write's own later reads,
+  // arithmetic, iteration) already takes the STATIC bigint path BECAUSE the
+  // census proves it — module/array.js's numeric-index read is a bare
+  // f64.load, never routed through a registry-aware $__dyn_get/$__typeof
+  // dispatch, so a box written here has no reader that would ever unbox it
+  // (see carrierF64Narrow's own doc comment, ir.js, for the established
+  // pattern this mirrors — found live: `let a = [4611686018427387903n];
+  // a[0]++` boxed the literal on write, then `a[0]++`'s own bigIntOperand
+  // arithmetic read the pointer's bits raw). Only steps 3/7 below (a
+  // known-ARRAY receiver) can ever read `arrayElemValType` — every OTHER
+  // branch (schema/hash/typed/polymorphic) leaves `arr` unproven or not an
+  // ARRAY at all, so this condition is false there and behavior is
+  // unchanged: still the full storedValue box for a genuinely mixed/unproven
+  // element type, where a later dynamic reader may still need to tell a raw
+  // number from a boxed bigint apart.
+  const arrProvenBigintElems = typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY &&
+    repOf(arr)?.arrayElemValType === VAL.BIGINT
+  const valueExpr = arrProvenBigintElems ? storedValueNarrow(val) : storedValue(val)
   // dyn-closure-tables.js: `arr[idx] = val` into a proven-safe candidate closure
   // table — record this write's provenance (direct closure literal, or a call
   // to a function resolveDynFnTables can later prove is a closure factory) for
@@ -607,16 +649,9 @@ export function emitElementAssign(arr, idx, val) {
     : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
     : null
 
-  // 1. SRoA flat object/array: `o['k'] = x` / `a[2] = x` → `local.set $o#i` (no heap
-  // store). A bare integer index resolves its slot key here (not via `litKey`).
-  if (typeof arr === 'string' && ctx.func.flatObjects?.has(arr)) {
-    const fo = ctx.func.flatObjects.get(arr)
-    const flatKey = litKey != null ? litKey : staticIndexKey(idx)
-    const fi = flatKey != null ? fo.names.indexOf(flatKey) : -1
-    if (fi >= 0) return withTemp(valueExpr, t => [
-      ['local.set', `$${arr}#${fi}`, ['local.get', `$${t}`]],
-      ['local.get', `$${t}`]])
-  }
+  // 1. SRoA flat object/array — moved above (before keyExpr/valueExpr) so
+  // `val` emits once through storedValueNarrow instead of the shared
+  // storedValue; see that early check's own comment.
   // 2. Schema field literal key → direct payload-slot write.
   // SHADOW CONTRACT (same as the dot-path arms): when the module may read this
   // object dynamically, the mint seeded a props sidecar that __dyn_get probes
@@ -802,10 +837,13 @@ export function emitPropertyAssign(obj, prop, val) {
     }
   }
   // SRoA flat object: `o.prop = x` → `local.set $o#i` (no heap store).
+  // storedValueNarrow, NOT storedValue: see carrierF64Narrow's own doc
+  // comment (ir.js) — a flat field's reads/writes are all rewritten to plain
+  // local access, no registry-aware dynamic reader ever downstream of it.
   const flatW = typeof obj === 'string' ? ctx.func.flatObjects?.get(obj) : null
   if (flatW) {
     const fi = flatW.names.indexOf(prop)
-    if (fi >= 0) return withTemp(storedValue(val), t => [
+    if (fi >= 0) return withTemp(storedValueNarrow(val), t => [
       ['local.set', `$${obj}#${fi}`, ['local.get', `$${t}`]],
       ['local.get', `$${t}`]])
   }
@@ -842,7 +880,11 @@ export function emitPropertyAssign(obj, prop, val) {
             ...(shadow ? [['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', asF64(emit(obj))], asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${t}`]]]]]] : []),
             ['f64.convert_i32_s', ['local.get', `$${t}`]])
         }
-        return withTemp(storedValue(val), t => [
+        // storedValueNarrow when NOT shadowed: no __dyn_set mirror means no
+        // registry-aware reader ever observes this slot — see
+        // carrierF64Narrow's own doc comment (ir.js). Shadowed keeps the full
+        // storedValue box: $__dyn_get DOES read this value dynamically then.
+        return withTemp(shadow ? storedValue(val) : storedValueNarrow(val), t => [
           ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`]),
           ...(shadow ? [['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', asF64(emit(obj))], asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]] : []),
           ['local.get', `$${t}`]])
@@ -853,8 +895,15 @@ export function emitPropertyAssign(obj, prop, val) {
   if (typeof obj === 'string' && ctx.schema.slotOf) {
     const idx = ctx.schema.slotOf(obj, prop)
     if (idx >= 0) {
-      const va = emit(obj), vv = storedValue(val), t = temp()
       const shadow = needsDynShadow(obj)
+      // storedValueNarrow when NOT shadowed — see the identical reasoning at
+      // this function's flat-object/unboxed-ptrAux branches above and
+      // carrierF64Narrow's own doc comment (ir.js): no __dyn_set mirror means
+      // no registry-aware reader ever observes this slot. Found live:
+      // `let o = {n: 4611686018427387903n}; o.n += 1n` boxed the RHS
+      // unconditionally, then the very next `f64.load` at this fixed offset
+      // (this receiver has no shadow) read the pointer's bits raw.
+      const va = emit(obj), vv = shadow ? storedValue(val) : storedValueNarrow(val), t = temp()
       if (shadow) inc('__dyn_set')
       const stmts = [
         ['local.set', `$${t}`, vv],

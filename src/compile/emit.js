@@ -58,7 +58,7 @@ import {
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom, throwTypeErrorIR,
-  boolBoxIR, carrierF64, unboxBoolIR, boxBigInt, needsBigintBox, readI64,
+  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, needsBigintBox, isProvenBoxedBigint, readI64,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -1376,14 +1376,18 @@ const argIR = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : e
 // definition as bridge.js's exported storedValue — duplicated here (not
 // imported) because emit.js already owns `emit`/`emitIdentitySafe` directly;
 // going through bridge.js would round-trip via ctx.bridge for no reason.
-// Boxed-value slots emit.js constructs directly (SRoA flat-object/array field
-// locals below) need the FULL carrierF64 treatment `argIR` deliberately
-// skips (coerceArg applies its own valTypeOf===BOOL carrierF64 wrap on top
-// of argIR's result — layering carrierF64 here too would be a second,
-// redundant application; harmless since carrierF64 is idempotent on an
-// already-boxed atom, but this file keeps the two helpers distinct so each
-// call site's contract stays legible).
+// Boxed-value slots emit.js constructs directly need the FULL carrierF64
+// treatment `argIR` deliberately skips (coerceArg applies its own
+// valTypeOf===BOOL carrierF64 wrap on top of argIR's result — layering
+// carrierF64 here too would be a second, redundant application; harmless
+// since carrierF64 is idempotent on an already-boxed atom, but this file
+// keeps the two helpers distinct so each call site's contract stays legible).
 const storedValue = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64(node, emit(node))
+// Narrow-admission twin — see carrierF64Narrow's own doc comment (ir.js) for
+// why the SRoA flat-object/array field locals below need THIS, not the plain
+// storedValue above: a flat field's reads/writes are all rewritten to plain
+// local access, with no registry-aware dynamic reader ever downstream of it.
+const storedValueNarrow = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64Narrow(node, emit(node))
 
 /** Coerce an emitted arg IR to match a callee param. Param may carry ptrKind (pointer-ABI
  *  i32 offset), else falls back to numeric WASM type coercion.
@@ -1825,7 +1829,14 @@ export function emitDecl(...inits) {
         // is pure WASM-type coercion, weaker than carrierF64), and never
         // re-emitted an ambiguous BOOL∪NUMBER merge through emitIdentitySafe
         // either — a distinct, previously-undiscovered site of the same gap.
-        result.push(['local.set', `$${name}#${j}`, v === undefined ? undefExpr() : storedValue(v)])
+        // storedValueNarrow, NOT the plain storedValue: see carrierF64Narrow's
+        // own doc comment (ir.js) for why an unconditional inline-BIGINT box
+        // is wrong here specifically — a flat field's reads/writes are ALL
+        // rewritten to plain local access (the `.`/`[]` flat hooks just
+        // above, no dynamic $__dyn_get fallback), so there is no registry-
+        // aware reader to justify boxing a bare literal/expression on write.
+        // BOOL keeps the exact same unconditional atom-box either way.
+        result.push(['local.set', `$${name}#${j}`, v === undefined ? undefExpr() : storedValueNarrow(v)])
       }
       continue
     }
@@ -5101,32 +5112,31 @@ export const emitter = {
     const ambiguous = boxes && hasAmbiguousBoolMerge(expr)
     const emitted = ambiguous ? emitIdentitySafe(expr) : emit(expr)
     // Slice 2 (CARRIER PROGRAM, .work/carrier-representation-design.md §7)
-    // return def-side wiring. Not a NEW fact for the bare-name case: `boxes`'s
-    // own carrierF64 call two lines below already boxes a returned BIGINT
-    // when the function's result is a mixed-BOOL-atom return — this consults
-    // the SAME `bigintBoxed` rep at the one more consumption site a uniform
-    // (non-mixed) return tail would otherwise skip entirely (the
-    // `asParamType` fallback), for a name whose rep was already proven boxed
-    // by some OTHER sink in this same body (a dict store earlier, a closure
-    // capture, …). For an INLINE BIGINT expression (`return x + 1n`),
-    // needsBigintBox boxes unconditionally (analyze.js's own "inline
-    // expressions box at emission time, no rep needed" contract) — sound for
-    // an INTERNAL caller (Slice 3's read-side arms handle a boxed F64 result
-    // correctly) but NOT for `ctx.func.exported`: synthesizeBoundaryWrappers
-    // (compile/index.js) gives a proven-BIGINT export's own wrapper an
-    // ALREADY-UNAMBIGUOUS i64 ABI (`resultBigint`/`resultBigintSentinel`/
-    // `resultDynamic` all do a bare `i64.reinterpret_f64(call $name)`, no `r`
-    // marker — "the BigInt IS the value, no reinterpret needed" is the
-    // documented contract there) — boxing here would hand that wrapper a
-    // POINTER's bits to reinterpret as if they were the payload, corrupting
-    // every such export (found live: `export let f = () => 5n + 1n` under
-    // CARRIER_BOX=1 returned the box's own pointer bits, not 6n). Excluding
-    // exported functions costs nothing: that channel was never ambiguous to
-    // begin with, so it never needed the box in the first place.
-    const needsBox = CARRIER_BOX && !ctx.func.exported && pk == null && rt === 'f64' && needsBigintBox(expr)
-    const ir = needsBox ? boxBigInt(asI64(emitted))
-      : pk != null ? asPtrOffset(emitted, pk)
-      : boxes ? (ambiguous ? emitted : carrierF64(expr, emitted))
+    // return def-side wiring — carrierF64Narrow (ir.js), NOT the plain
+    // carrierF64 `boxes` used pre-Slice-2: see its own doc comment for why an
+    // unconditional inline-BIGINT box is wrong at ANY return position (a
+    // uniform function OR a closure/mixed-atom-return one) — it only fires
+    // for a bare name independently proven boxed by some OTHER sink in this
+    // same body (a dict store earlier, a closure capture, …), the one case
+    // where re-using the decision here introduces no NEW ambiguity a caller
+    // wasn't already going to see. `ctx.func.boxedResult`/`mixedAtomReturn`
+    // (`boxes`) keep their PRE-Slice-2 BOOL-atom-boxing behavior verbatim —
+    // carrierF64Narrow's BOOL branch is carrierF64's, untouched.
+    //
+    // `!ctx.func.exported` gates only the plain (non-`boxes`) path: even the
+    // bare-name-proven case must skip a proven-BIGINT export's own
+    // unambiguous i64 ABI (Bug 1, synthesizeBoundaryWrappers — see below).
+    // Not needed on the `boxes` path: `ctx.func.boxedResult` never applies to
+    // a top-level export (closures aren't exports), and `mixedAtomReturn` on
+    // an exported function means the export's OWN return type isn't a proven
+    // uniform BIGINT (mixedAtomReturn's condition is `valResult !== VAL.BOOL`
+    // regardless of what it IS, but a proven-uniform-BIGINT export would take
+    // the OTHER, `needsBox`-shaped ABI instead) — so its wrapper already takes
+    // the dynamic/tagged result ABI a box is correct for.
+    const ir = pk != null ? asPtrOffset(emitted, pk)
+      : boxes ? (ambiguous ? emitted : carrierF64Narrow(expr, emitted))
+      : (CARRIER_BOX && !ctx.func.exported && rt === 'f64' && typeof expr === 'string' && isProvenBoxedBigint(expr))
+        ? boxBigInt(asI64(emitted))
       : asParamType(emitted, rt)
     const ty = pk != null ? 'i32' : rt
     const tcoed = tcoTailRewrite(ir, ty)

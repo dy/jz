@@ -8,7 +8,7 @@
  */
 
 import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore } from '../src/ir.js'
-import { emit, storedValue } from '../src/bridge.js'
+import { emit, storedValue, storedValueNarrow } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
@@ -175,7 +175,11 @@ export default (ctx) => {
     // runtime-ADDED keys); with the mirror gone (tier 2), mutable literals must
     // allocate fresh per evaluation — the runtime path below.
     if (neverWritten && !shadow && values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
-      const emitted = values.map(storedValue)
+      // storedValueNarrow, NOT storedValue: this branch only runs when
+      // `!shadow` (just checked above), so there is NEVER a __dyn_get mirror
+      // for this literal's fields — no registry-aware dynamic reader can ever
+      // observe them. See carrierF64Narrow's own doc comment (ir.js).
+      const emitted = values.map(storedValueNarrow)
       // asF64 folds i32.const → f64.const so int-literal values also qualify.
       const slots = emitted.map(v => extractF64Bits(v))
       if (slots.every(b => b !== null)) {
@@ -206,8 +210,16 @@ export default (ctx) => {
     const body = [
       ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(schema.length)]]],
     ]
+    // storedValueNarrow when !shadow — same reasoning as the static-segment
+    // branch just above (carrierF64Narrow's own doc comment, ir.js): no
+    // __dyn_set mirror below means no registry-aware reader ever observes
+    // this slot. Found live: `let o = {n: 4611686018427387903n}; o.n += 1n`
+    // (this object doesn't qualify for the static path — `values.length < 2`
+    // — so it takes this runtime-alloc path) boxed the literal field on
+    // construction, corrupted by the next fixed-offset f64.load reading raw.
+    const fieldStoredValue = shadow ? storedValue : storedValueNarrow
     for (let i = 0; i < values.length; i++)
-      body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], slotOf(i), storedValue(values[i])))
+      body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], slotOf(i), fieldStoredValue(values[i])))
     body.push(['local.set', `$${ptr}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
     if (shadow) {
       inc('__dyn_set')
