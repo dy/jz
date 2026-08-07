@@ -540,11 +540,17 @@ export const isCurrentlyBoxedBigint = (name) =>
  *  passes.js's own "emission tier never writes durable analysis state" exit
  *  grep is a real, checked invariant), populated by emitDecl (emit.js) at
  *  the one point it's cheaply and soundly knowable: right after compiling a
- *  decl whose init is exactly the shape kind.js VT['?:']/the '?:' handler's
- *  own box condition recognizes (valTypeOf(init) === BIGINT for a '?:' node
- *  — same test, so "boxed" here can never disagree with what the '?:'
- *  handler itself actually built). Found live: watr-adjacent `let r = a > 0
- *  ? BigInt(a) : null; return r == null ? 'x' : r.toString(16)` —
+ *  decl whose init matches the '?:' handler's OWN (narrower) box condition —
+ *  exactly one arm BIGINT, the other a nullish literal — NOT the broader
+ *  kind.js VT['?:'] "both arms same kind" rule, which also types BIGINT for
+ *  two non-nullish BIGINT arms (`neg ? -BigInt(mag) : BigInt(mag)`) that the
+ *  '?:' handler leaves raw. Using the broad test here was itself a live bug
+ *  (.work/carrier-representation-design.md §13/§14: registered watr/src/
+ *  optimize.js's `_i64Canon` inline-argument temp as ternary-boxed though
+ *  nothing was boxed, so readI64 below unboxed a raw value as a bogus
+ *  pointer). Found live (the ORIGINAL incident this predicate exists for):
+ *  watr-adjacent `let r = a > 0 ? BigInt(a) : null; return r == null ? 'x' :
+ *  r.toString(16)` —
  *  `.bigint:toString`'s own readI64(n, emit(n)) call (module/number.js) is
  *  correctly wired, but couldn't see the box without this fact: `r` is a
  *  LOCAL, not a param, so isCurrentlyBoxedBigint alone missed it. */

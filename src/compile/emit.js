@@ -2117,19 +2117,32 @@ export function emitDecl(...inits) {
     if (!viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '[' && ctx.schema.arrayVars?.has(name))
       ctx.func._arrayLiteralNeverEscapes = true
     // isTernaryBoxedBigint (ir.js): a decl initialized directly from a
-    // ternary-nullish BIGINT merge (`let r = cond ? BigInt(x) : null`) —
-    // `valTypeOf(init) === VAL.BIGINT` for a '?:' node is EXACTLY the
-    // condition the '?:' handler (below in this file) itself boxes on (same
-    // kind.js VT['?:'] rule both consult), so this can never disagree with
-    // what actually got built. See isTernaryBoxedBigint's own doc comment
-    // (ir.js) for the full "why the local's own storage isn't raw here"
-    // reasoning and the live incident (`.bigint:toString` on a ternary-
-    // boxed local misread the pointer's bits raw). ctx.func.ternaryBoxedNames
+    // ternary-nullish BIGINT merge (`let r = cond ? BigInt(x) : null`).
+    // MUST replicate the '?:' handler's own (narrower) box condition below
+    // in this file — bigintArm != null, i.e. exactly ONE arm BIGINT and the
+    // OTHER a nullish literal — not the broader `valTypeOf(init) ===
+    // VAL.BIGINT` kind.js VT['?:'] carries for ANY two-same-kind arms
+    // (VT['?:'] line "if (ta && ta === tb) return ta" — BOTH arms BIGINT,
+    // NEITHER nullish, e.g. `neg ? -BigInt(mag) : BigInt(mag)`, ALSO types
+    // BIGINT there, but the '?:' handler leaves that shape raw, no box).
+    // Using the broad test here previously registered the decl'd name as
+    // ternary-boxed even when nothing was ever boxed — readI64 (ir.js) then
+    // unboxed a genuinely-raw asF64-merged value as if it were a real
+    // PTR.BIGINT pointer, `i64.load`-ing garbage at a bit-derived offset.
+    // Found live: jz compiling watr/src/optimize.js's own `_i64Canon`
+    // (`neg ? -BigInt(mag) : BigInt(mag)` inlined as `_i64Hex16`'s argument)
+    // under JZ_CARRIER_BOX=1 at O3 — `fold()` returned 5.826595490514274e+252
+    // instead of 2.000000000000001 (.work/carrier-representation-design.md
+    // §13/§14). See isTernaryBoxedBigint's own doc comment (ir.js) for the
+    // full "why the local's own storage isn't raw here" reasoning and the
+    // earlier live incident (`.bigint:toString` on a genuinely ternary-boxed
+    // local misread the pointer's bits raw). ctx.func.ternaryBoxedNames
     // (compile/index.js enterFunc), NOT updateRep — this is the emission
     // tier, which passes.js's own exit grep asserts never writes durable
     // analysis state; a per-function transient Set is the established
     // pattern here (maybeNullish/closureAux, same file, same shape).
-    if (CARRIER_BOX && !viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '?:' && valTypeOf(init) === VAL.BIGINT)
+    if (CARRIER_BOX && !viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '?:' &&
+        ((valTypeOf(init[2]) === VAL.BIGINT && nullishArm(init[3])) || (valTypeOf(init[3]) === VAL.BIGINT && nullishArm(init[2]))))
       ctx.func.ternaryBoxedNames?.add(name)
     const val = viewInit || emit(init)
     ctx.func._arrayLiteralNeverEscapes = prevNeverD
