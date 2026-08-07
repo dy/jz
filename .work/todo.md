@@ -6,6 +6,22 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, WARM + MEMORY-FLOOR reds RESOLVED as ENVIRONMENT, not code)
+The evidence-finale's two new reds are one machine condition: vm.swapusage
+13.4GB/14.3GB USED after ~3 days of continuous agent compute (8GB node heaps,
+4GiB wasm instances). (1) Warm-instance gate 1.07-1.13x: bisection NULL across
+the full lineage incl. the historically-1.005x checkpoint bce7d1d7 -- identical
+readings every checkpoint, monotonic round-1<2<3 drift on every invocation =
+progressive machine state, not a compiled artifact; fresh instances (hot new
+pages) pass 0.821x. (2) wasmtime RSS floor 13.7->18.3MB on a trivial 1-page
+module, wasmtime binary unchanged since Oct 2024, moonrun stable, node
+unchanged v25.9.0, no thermal/powermode flags -- memory-pressure accounting.
+ACTION (user): reboot (or fully relieve swap) before any publication-quality
+timing/memory evidence; re-run selfhost-perf + memcheck after. The committed
+finale evidence rows measured under this condition carry the caveat in their
+meta; claims axes unaffected except the warm datum + memcheck comparison,
+both to re-measure post-reboot.
+
 ## Status (2026-08-06, EVIDENCE FINALE — full corpus re-measured at HEAD
 ## 57ad846d, quiet machine (load ~2.9-3.5 throughout): FRESH/ANCHORS/COVERAGE/
 ## SIZE all flip green; MEMORY goal FLIPPED RED (jz-wasmtime engine floor
