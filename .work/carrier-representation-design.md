@@ -1629,3 +1629,333 @@ default stays OFF — no behavior change), `test/pointers.js` +
 representation-design.md` (this entry) — filed separately, plain messages,
 no push.
 
+---
+
+## §16. §15's read-side gap FIXED — the slotBigintBoxed/slotBigintProven
+per-schema-slot fact (2026-08-07)
+
+Closes §15's banked finding: `emitSchemaSlotRead` (module/core.js) now
+consults a per-(schemaId, slot) fact and unconditionally unboxes a
+PROVEN-uniformly-BIGINT, write-side-boxed slot instead of handing every
+consumer the box's raw pointer bits. The 4 §15 pins flip from `not()` to
+`is()` and pass. Default (CARRIER_BOX off) output stays byte-identical,
+confirmed by rebuild + kernel-parity + full battery, twice. Two genuinely
+new, PRE-EXISTING (not introduced this session, both verified against a
+disposable `git worktree add` at the session-start commit 0de59be4) gaps
+were found and root-caused while chasing `kernel-parity`'s `dict` row and
+the flag-forced battery to completion — neither is fixed here, both are
+precisely diagnosed and banked, matching this project's own §11-§15
+discipline.
+
+### The fact: `ctx.schema.slotBigintObserved` (census) → `slotBigintBoxed*`
+/ `slotBigintProven*` (module/schema.js, consumer projections)
+
+Same three-tier shape as `slotI32Certain`'s own idiom (working census →
+published projection → `*At`/`*BySid` consumer):
+
+- **`ctx.schema.slotBigintObserved`** (`src/ctx.js`): schemaId → `Array<
+  boolean>`, a pure OR-join (never poisoned, unlike `slotTypes`' first-
+  wins-then-clash lattice) — true iff ANY write to this slot anywhere in
+  the program is BIGINT-typed. Populated inside `observeProgramSlots`'
+  `observeSlot` itself (`src/compile/program-facts.js`), so every existing
+  call site (the `{}` literal branch, the `.prop=` branch, the moduleInit
+  `record()`/cached-replay paths) joins automatically — one write census,
+  two projections. **Fails OPEN on hazard**, the opposite direction from
+  every sibling census: `applySlotWriteHazards`' poison callback and the
+  MUTATE_OPS branch's "value kind unresolvable" arm both also mark
+  `observeBigintJoin(sid, idx, VAL.BIGINT)` — under-boxing a slot that
+  really carries a BigInt is unsound, over-boxing one that never does is a
+  rare, harmless cost (this fail-open direction is what §15's original
+  per-site `needsDynShadow` reasoning already implicitly relied on; the
+  census just makes it explicit and program-wide).
+- **`ctx.schema.slotBigintBoxedBySid(sid, prop)` / `slotBigintBoxedAt
+  (varName, prop)`** (module/schema.js): the WRITE-usable fact — TRUE iff
+  `slotBigintObserved` AND some constructor/assignment of the schema is
+  dyn-shadowed. Shadow is resolved program-wide (not per-literal) via a
+  memoized reverse index over `ctx.types.dynKeyVars` (∪ `anyDynKey`) → sid,
+  the exact two conditions `needsDynShadow` itself tests for a named
+  target — built lazily since `dynKeyVars`/`anyDynKey` publish AFTER the
+  slot census runs (plan/index.js), so the fact can only be correct by
+  CODEGEN time, which is all it needs. Deliberately WIDER than the read
+  twin below — no uniform-type requirement — because `carrierF64`/
+  `carrierF64Narrow` already gate boxing PER VALUE; a NUMBER-typed write
+  routed through "boxed" is unaffected (falls to the same `asF64` either
+  way, verified in `src/ir.js`: `storedValue`/`storedValueNarrow` are
+  byte-identical to each other whenever `CARRIER_BOX` is off, since both
+  degrade to the same `boolBoxIR`/`asF64` fallback — so swapping the
+  SELECTOR at every write site is a true no-op for the default build,
+  independent of whichever branch the fact happens to pick).
+- **`ctx.schema.slotBigintProvenBySid(sid, prop)` / `slotBigintProvenAt
+  (varName, prop)`**: the READ-usable fact — narrower by one clause:
+  `ctx.schema.slotTypes.get(sid)[idx] === VAL.BIGINT` (the CLASH-poisoned
+  lattice — every write must be UNIFORMLY BIGINT, not just ANY). Only a
+  uniform slot may unbox unconditionally; a slot that ALSO holds a real,
+  unboxed NUMBER somewhere would misread some instances' bits as a box
+  payload — exactly the unsoundness the design forbids (a runtime tag
+  guess on possibly-raw bits is unsound; the pairing must be static).
+- Invariant tripwire (`DBG_INVARIANTS`-gated, `analyzeSchemaSlotIntCertain`):
+  asserts no (sid, idx) is ever BOTH `slotI32Certain` and
+  `slotBigintObserved` — a BIGINT write can never be strict-int32 by
+  construction, so `inlineCellI32`'s packed-i32-cell path (which REQUIRES
+  every slot i32-certain) can never contain a BIGINT slot either — this is
+  how "packed-cellI32 is excluded automatically" was verified, not
+  assumed. Ran clean (no throw) across the default battery and the
+  CARRIER_BOX=1 pin under `JZ_DEBUG_INVARIANTS=1`.
+
+### Write-side call sites — 5, all now schema-fact-derived
+
+The 3 `shadow ? storedValue : storedValueNarrow` ternary sites §15
+implicitly pointed at, plus a 4th `structInline` site probed live (not
+assumed) per this session's mandate:
+
+1. `module/object.js` `{}` literal construction (~line 220): per-FIELD now,
+   not per-literal — `slotBigintBoxedBySid(schemaId, names[i])`.
+2. `module/object.js` spread-literal explicit-prop store (`emitObjectSpread`,
+   ~line 1031): was UNCONDITIONALLY wide before this session (safe, just
+   imprecise) — now schema-fact-derived for consistency; no-op under
+   CARRIER_BOX=off.
+3. `src/compile/emit-assign.js` `emitPropertyAssign`'s unboxed-`ptrAux`
+   dot-write branch (~line 906): `sid = vaProbe.ptrAux` (always concrete
+   here) → `slotBigintBoxedBySid(sid, prop)`.
+4. `src/compile/emit-assign.js` `emitPropertyAssign`'s `schema.slotOf`
+   dot-write branch (~line 934): `sid = ctx.schema.idOf(obj)`, falling back
+   to the raw `shadow` (pre-fix behavior, unchanged) on the rare structural-
+   subtyping edge where `idOf` has no precise sid but `slotOf`'s bucket
+   fallback still resolved an index.
+5. `src/compile/emit-assign.js` `tryStructInlineReplaceStore`'s non-packed
+   cell-value store: found via the "probe it, don't assume" instruction —
+   this write was ALSO unconditionally wide pre-session (its own dedicated
+   read arm is `emitSchemaSlotRead` too, reached via the `.cellI32`/
+   `ptrAux`-tagged cursor path in `emitPropAccess`), so it was already
+   SAFE, just inconsistent with the other 4 sites once those became fact-
+   derived. Converted for uniformity/optimization, not because leaving it
+   wide was unsound.
+
+`module/object.js`'s fixed-schema `Object.assign` copy (raw bit-for-bit
+slot copy, no re-boxing decision at all) and the two computed-key dynamic-
+assign paths (`emitObjectAssignDynamic`/`emitDynamicAssign`, also raw bit
+copies from already-resolved source slots) were AUDITED and found to need
+no change: they never call `storedValue`/`storedValueNarrow`, so my fact
+doesn't apply, and Object.assign's own hazard-poisoning of the TARGET sid
+(`collectSlotWriteHazards`) already protects the read side (a hazarded
+sid's `slotTypes` entry is null, so `slotBigintProvenBySid` never fires
+"unbox" on it, regardless of what the copy actually produced). The
+`propsPtr` shadow MIRROR at construction was verified, not assumed:
+```
+let o = { n: 4611686018427387903n, m: 5 }
+let x = o[k]   // forces needsDynShadow; k='n' at runtime
+```
+round-trips the true BigInt through `$__dyn_get` correctly (Slice 3's own
+PTR.BIGINT arm, unaffected by this session).
+
+### Read-side call sites — 5 threaded, 1 verified-and-deliberately-untouched
+
+`emitSchemaSlotRead` itself gained a 4th `bigintProven` param: when true,
+returns `unboxBigInt(typed(load, 'f64'))` — i64-typed, mirroring `readI64`/
+`unboxBigInt`'s own convention (src/ir.js). This is NOT a representation
+change for generic consumption: `asF64` on an i64-typed node does
+`f64.reinterpret_i64`, the SAME "opaque f64 carrier" bit-reinterpret every
+OTHER unboxed BigInt value in this compiler already uses as its default,
+narrow (non-shadowed) representation — and any consumer reaching a genuine
+W-sink re-boxes fresh via `carrierF64`'s unconditional inline-expression
+fallback (this `.` node is an Array, `valTypeOf` resolves BIGINT via
+`slotVT`) exactly like every other inline BIGINT expression already does.
+
+1. `module/core.js:1591` `emitSchemaSlotRead` (the def) — the fix itself.
+2. `module/core.js` literal-resolved anonymous-object fast path
+   (`emitPropAccess`'s `literalSlot` branch): needed a NEW sibling helper,
+   `literalSid(obj)`, since this branch had no sid at all before — derives
+   it the same way `module/object.js`'s construction would (`litId =
+   register(names)` in source order; this fast path only ever fires for an
+   ANONYMOUS literal, so `takeLiteralTarget()` is null at its real
+   construction and `schemaId` is always `litId`, no merge-schema branch to
+   reproduce).
+3. `module/core.js` unboxed-OBJECT-pointer `ptrAux`/BySid branch: sid is
+   `va.ptrAux`, already concrete.
+4. `module/core.js` chain-receiver branch (`o.meta.bias`-shaped): gated the
+   same way the pre-existing `i32Certain` consult already was —
+   `typeof obj === 'string' && slotBigintProvenAt(obj, prop)` — the
+   structural (non-string `obj`) fallback gets `false`, unchanged from
+   pre-fix (no per-sid proof attempted there before either).
+5. `module/core.js` boxed-object delegate path (`ctx.schema.isBoxed`):
+   `slotBigintProvenAt(obj, prop)`, `obj` a string var name.
+6. `emitSchemaSlotGuarded` — **verified, deliberately left untouched**. Its
+   `slow()` arm is a genuine dynamic dispatch (receiver could be any schema
+   or none) that always returns the BOX itself, never an unboxed payload —
+   a wasm `if` requires both arms to share one value type, so `fast`
+   unboxing while `slow` stays boxed would merge two DIFFERENT
+   representations into one node, exactly the class of bug this design
+   forbids. `fast`'s existing plain load is already correct as-is (matches
+   `slow`'s own contract) regardless of whether the guarded slot happens to
+   be proven-BIGINT. Documented in place rather than left silently
+   unconsidered.
+
+### structInline/SRoA — probed, not assumed
+
+Two independent questions, both resolved:
+- **Can `inlineCellI32` (packed i32 cells) ever hold a BIGINT slot?** No —
+  proven by construction (`inlineCellI32` requires every slot
+  `slotI32Certain`; the new `DBG_INVARIANTS` tripwire above asserts the
+  disjointness holds census-wide) and reconfirmed as a live invariant, not
+  an assumption.
+- **Can a structInline-eligible (non-packed) schema ALSO be dyn-shadowed?**
+  Yes, in principle — `analyzeStructInline`'s own doc comment states
+  standalone `{S}` objects of a structInline-eligible schema are
+  independent and can coexist with the inline array — and
+  `ctx.types.anyDynKey` is a whole-program flag, unaware of which specific
+  array is structInline. This is exactly why write-site #5 above
+  (`tryStructInlineReplaceStore`) was brought under the same fact: before
+  that change it was unconditionally wide (safe on its own), but pairing
+  it with the SAME fact the read side now consults removes any ambiguity
+  about whether a structInline element's BIGINT field is boxed — it now
+  answers identically to a standalone instance of the same schema, by
+  construction, not by coincidence.
+
+### The 4 §15 pins: FLIPPED
+
+`test/pointers.js`'s KNOWN-FAIL test is now `is()` (was `not()`), title
+changed from "returns pointer bits, not its payload" to "unboxes to its
+payload". Verified directly against the fixture (`LAYOUT.NAN_PREFIX_BITS`
+→ `9221120237041090560n` / `0x7FF8000000000000n`, `atomNanHex(1)`/`(2)` →
+the correct `0x7FF8000...` strings, `i64Hex(ptrBits(...))` → the correct
+composed hex) — `node test/pointers.js` 34/34 (62 assertions, default,
+unchanged count) and `JZ_CARRIER_BOX=1 node test/pointers.js` 34/34 (66
+assertions, +4, all passing where they used to `not()`-guard the wrongness).
+Directly probed the granularity fix itself (the whole point of the schema-
+wide redesign over the old per-literal one) with a hand-built repro: two
+literals `a`/`b` sharing one structural schema `{n, m}`, only `b` ever
+dyn-keyed (`b[k]`, forcing `anyDynKey` program-wide) — under
+`JZ_CARRIER_BOX=1`, `a.n` (the NON-shadowed sibling) and `b.n` (the
+shadowed one) BOTH read back their true, distinct BigInt values exactly.
+This is the scenario the entire write-side redesign (per-schema, not
+per-literal) exists to make sound — confirmed working, not just argued.
+
+### Gates run this session
+
+- **The 3 named WAT differentials** (native-vs-fresh-carrier-kernel, the
+  isolated fixture): CLOSED — reproduced correct output directly (not just
+  absence of the old wrong bytes).
+- **`JZ_CARRIER_BOX=1` kernel-parity, dict, O0/O2/O3: STILL diverges — but
+  ROOT-CAUSED to a SEPARATE, PRE-EXISTING issue this fix's own design
+  explicitly can't reach.** Verified via a direct `ctx.schema` diagnostic
+  after natively compiling the FULL `scripts/self.js` graph (the same
+  source `dist/jz.wasm` is built from) at O3: `LAYOUT`'s
+  `NAN_PREFIX_BITS` slot has `slotBigintObserved = true` and
+  `slotBigintBoxedBySid = true` (write side correctly boxes it) but
+  `slotTypes` is `null` for EVERY slot of EVERY schema in the whole
+  program, because `ctx.schema.slotWriteHazards.all = true` — a single
+  program-wide BLANKET hazard (`collectSlotWriteHazards`'s `hz.all`,
+  triggered by some unresolvable computed-key write somewhere in the
+  compiler's own ~370K-line self-hosted source, pre-existing and
+  unrelated to this session) poisons `slotTypes` for literally every
+  schema, so `slotBigintProvenBySid` (which REQUIRES the uniform-type
+  proof) can never fire ANYWHERE when compiling the whole compiler as a
+  target program — independent of how precise `slotBigintObserved`/
+  `slotBigintBoxedAt` are. This is the design's OWN documented boundary
+  ("for UNPROVEN reads leave the box flowing") landing on a case that is
+  provably unprovable given the CURRENT hazard scanner's precision, not a
+  gap in this session's fix. A real fix would mean hardening
+  `collectSlotWriteHazards`'s handling of the specific unresolvable write
+  (likely a `ctx.core.stdlib[dynamicName] = …`-shaped pattern somewhere in
+  module/*.js) — a separate, wide-blast-radius change (that hazard set
+  feeds `slotIntCertain`/`slotTypedCtors`/dict-and-map-value censuses too)
+  this session's remaining time cannot safely absorb-and-verify. NOT
+  fixed, explicitly banked. (Confirmed the SAME divergence reproduces
+  identically against a freshly, fully rebuilt carrier kernel — verified
+  via the build log's own "wrote dist/jz.wasm" line, §15's own lesson
+  applied again.)
+- **Default build byte-identity: CONFIRMED, twice.** `node test/kernel-
+  parity.js` against a freshly-rebuilt PLAIN (no flag) `dist/jz.wasm`: 3/3
+  (33 assertions, byte-identical, including `dict`). `node test/index.js`
+  (default): 3407 total / 3399 pass / 2 fail (the SAME 2 pre-existing
+  `test/optimizer.js`-adjacent rows §15's own baseline named — `interval
+  walk`/`typed RMW`) / 6 skip — run twice across this session (once
+  mid-session, once after the final rebuild), byte-for-byte the same
+  failure set both times.
+- **`JZ_CARRIER_BOX=1` flag-forced battery** (`node test/index.js`,
+  native, no kernel): 3407 total / 3380 pass / 21 fail. **Every one of the
+  21 verified PRE-EXISTING**, not a regression: built a disposable `git
+  worktree add … 0de59be4` (the session-start commit, before any of this
+  session's edits) and re-ran the failing rows directly against it —
+  `test/dyn-keys.js` alone reproduces 11/11 of them identically (the
+  "Slice 5/6/7"/"audit-#8 P0-4"/"§14 point 4" Map/dict-BigInt-census
+  export-boundary family — a DIFFERENT subsystem, `synthesizeBoundaryWrappers`/
+  `censusBigintSentinelKind`, not schema-slot reads at all). The remaining
+  rows are the SAME `dict`/`hz.all` root cause above (kernel-parity +
+  kernel-oracle's AGREE-tier, both import `kernel-parity.js`'s CORPUS) and
+  the SAME 2 pre-existing default-battery failures (typed RMW / interval
+  walk, unrelated to CARRIER_BOX entirely). Zero new failures.
+- **`test/watr.js`: 35/35** under `JZ_CARRIER_BOX=1` (107 assertions).
+- **kernel-oracle**: 3/11 test blocks pass; the 8 failures are the SAME
+  `dict`/`hz.all` family (kernel-parity's own CORPUS re-imported) plus one
+  PRE-EXISTING, already-`PENDING-FIX`-labeled row ("generic-scalar-decl
+  BOOL∪NUMBER carrier collapse") whose crash mode (a memory-OOB exception
+  instead of its own pinned wrong-value expectation) is investigated
+  below, alongside the timer-crash confirmation — same verdict: real,
+  pre-existing, unrelated to this session.
+- **`JZ_CARRIER_BOX=1` fuzz**: 500×4 clean (0 divergences, 7749 inputs
+  compared), then the full 2000×4 the mandate asked for — clean, 30173
+  inputs compared, 0 divergences (jz wasm == JS at every opt level, every
+  program).
+- **The `test:wasm` timer/string-callback crash: CONFIRMED (§15 left this
+  unconfirmed — narrower checks passed). Real, deterministic, and
+  PRE-EXISTING.** The full `JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm node
+  test/index.js` leg, run to completion against a freshly, fully rebuilt
+  carrier kernel, crashes the whole process (uncaught exception, not a
+  test failure) right after `setTimeout: callback fires`
+  (`test/statements.js`) — a `RangeError: Offset is outside the bounds of
+  the DataView` inside `interop.js`'s `mem.read`, reading a `t===5`
+  (PTR.BIGINT) tagged argument that OOBs. Minimized to a 3-line repro with
+  NO timer, NO closure, NO BigInt anywhere in the source at all —
+  `export let start = () => { console.log('bare-fired'); return 1 }`,
+  compiled via `compileViaKernel` then executed, crashes identically.
+  Bisected by string length: SSO strings (≤6 chars) print the wrong value
+  (`NaN`, not the text) but don't crash; heap strings (≥7 chars) throw the
+  same OOB. **Reproduced identically against a freshly-built carrier
+  kernel from the disposable baseline worktree (0de59be4, before this
+  session's changes)** — same crash, same stack, same threshold. This is
+  a real, pre-existing bug in string-argument marshaling for `console.log`
+  specifically under a SELF-HOSTED (kernel-compiled) `CARRIER_BOX=1`
+  build — `module/console.js`'s call site (`asI64Bits = (e) =>
+  ['i64.reinterpret_f64', asF64(emit(e))]`) never routes through
+  `storedValue`/`carrierF64`/any BIGINT-boxing logic at all, and native
+  compilation + execution of the identical source is clean (only self-
+  hosted execution crashes) — so this is unrelated to schema-slot BigInt
+  reads or this session's fix; root cause NOT investigated (a different
+  subsystem, out of this session's scope). This closes §15's own "not
+  investigated" note on the claim: it is real, and it predates §15 itself.
+- **`JZ_DEBUG_INVARIANTS=1`**: ran clean (no throw) across `test/objects.js`
+  and `JZ_CARRIER_BOX=1 node test/pointers.js` — the i32Certain/
+  slotBigintObserved disjointness invariant held everywhere probed.
+
+### Flip-readiness verdict
+
+**NO default flip.** `CARRIER_BOX` stays `JZ_CARRIER_BOX==='1'`-gated, OFF
+by default, unchanged shape from §14/§15. This session's fix closes §15's
+OWN named gap exactly (proven-uniform-BIGINT schema-slot reads now unbox
+soundly, paired at schema granularity with a schema-wide write-side fact)
+and banks two NEWLY-DISCOVERED-BUT-PRE-EXISTING, precisely root-caused,
+separate gaps (`collectSlotWriteHazards`' whole-program `hz.all` blanket
+poison defeating the uniform-type proof for the self-hosted compiler's own
+huge source; a self-hosted-only `console.log` string-marshaling crash) —
+NEITHER of which this session introduced or is positioned to safely fix
+within scope. A future flip-readiness session should start from: (1) this
+entry's `hz.all` diagnosis (harden `collectSlotWriteHazards` for the
+specific unresolvable-computed-key-write pattern it's tripping on inside
+the compiler's own source), (2) the `console.log`/self-hosted string-
+marshal crash (a `t===5` OOB unrelated to BigInt semantics — likely a
+tag/offset computation bug exposed only when self-hosting under
+CARRIER_BOX, worth its own targeted session), and (3) the pre-existing
+Slice 5/6/7 Map/dict-census export-boundary family in `test/dyn-keys.js`
+(11 already-failing rows under `JZ_CARRIER_BOX=1`, fully independent of
+schema-slot reads) — none of which block THIS session's own fix from
+being correct and safely bankable.
+
+**Local commits:** `src/ctx.js` + `src/compile/program-facts.js` +
+`module/schema.js` (the fact — census, invariant tripwire, consumer
+projections), `module/object.js` + `src/compile/emit-assign.js` (write-
+side call sites), `module/core.js` (read-side call sites +
+`emitSchemaSlotGuarded`'s verified-untouched documentation),
+`test/pointers.js` (the pin flip), `.work/carrier-representation-
+design.md` (this entry) — filed separately, plain messages, no push.
+
