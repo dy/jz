@@ -367,3 +367,35 @@ not forced) exactly as the ledger already does for stalled items.
   genuinely distinct soundness condition.
 - Any change to the scaffold layer (`matchBlockLoop`/`matchOuterPixelLoop`) —
   that phase is TERMINAL and this doc does not reopen it.
+
+## §LoweredLoopPlan framing (coordinator amendment, per audit-#13 — BINDING for slices 4+)
+BodyModel is NOT a third loop authority. The explicit relationship:
+    HIR LoopPlan (src/compile/loop-model.js, AST-level)
+        -> lowering / provenance mapping (which HIR loop produced this WAT block)
+    BodyModel (WAT-level, per-block: addrTable/siteAccess/aliasClass)
+        -> recognizer policy queries (admission stays private per recognizer)
+    transform
+Slice 4 (before the trio): thread the provenance link — each candidate block
+carries its originating HIR LoopPlan id; BodyModel derivations may consult HIR
+facts (typedLen, neverGrown, counter hulls) through that link instead of
+re-deriving from WAT. The dispatch descriptor {bl, op, blLoose} becomes the
+lowering seam, not a parallel authority.
+
+## §Pre-trio specs (audit-#13's four, resolved)
+1. Rewrite-then-reject invalidation: a transform MINTS A NEW BLOCK IDENTITY
+   (the setFuncBody "rewritten bodies are new identities" contract, applied at
+   the WAT tier: the fixpoint's dirty tracking re-enters with fresh nodes).
+   A rejected rewrite that restored the original tree keeps the original
+   identity — the model stays valid by construction. VERIFY in slice 4: every
+   vectorizer rewrite path either replaces the block node or is all-or-nothing.
+2. siteAccess after cloning: WeakMap-keyed on node identity — a cloned node
+   has no entry; consumers treat a miss as FAIL-OPEN (decline/re-derive),
+   never as "no access". Pin: a cloned-block probe asserting decline-not-wrong.
+3. Base distinctness: two aliasClasses are DISTINCT only under an existing
+   proof (distinctParams, separate fresh allocations, neverGrown anchors);
+   absent proof => conservatively same-class. The fact consulted is the
+   solver's, never re-derived locally.
+4. Stale-model reoffer: dispatch is first-match-wins per block per round;
+   after a transform the block re-enters the NEXT round with a fresh identity
+   (spec 1), so no recognizer ever sees a stale model. VERIFY the round loop
+   never offers a transformed block twice within one round.
