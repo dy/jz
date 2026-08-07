@@ -489,8 +489,20 @@ function tryStructInlineReplaceStore(arr, idx, val) {
   const body = [
     ['local.set', `$${kT}`, asI32(emit(idx))],
     ...(boxT ? [['local.set', `$${boxT}`, asF64(emit(arr))]] : []),
-    // packed values are int32-exact by the slotI32Certain census
-    ...fields.map((v, i) => ['local.set', `$${vTs[i]}`, packed ? asI32(emit(v)) : storedValue(v)]),
+    // packed values are int32-exact by the slotI32Certain census. Non-packed
+    // cells: CARRIER PROGRAM §15/§16 — the same per-schema slotBigintBoxedBySid
+    // fact the other three write sites use (module/object.js construction/
+    // spread, this function's own dot-assign branches), not an unconditional
+    // storedValue. structInline element writes have their OWN dedicated read
+    // arm (emitSchemaSlotRead, module/core.js, reached via the `.cellI32`/
+    // ptrAux-tagged cursor path in emitPropAccess) — pairing this write with
+    // that SAME fact is what makes the read side's unconditional unbox sound
+    // for an inline-array element exactly as it is for a standalone `{S}`
+    // object of the same schema (structInline's own analysis note: standalone
+    // objects of a structInline-eligible schema are independent and can
+    // coexist). No-op under CARRIER_BOX=off (byte-identical either way).
+    ...fields.map((v, i) => ['local.set', `$${vTs[i]}`, packed ? asI32(emit(v))
+      : (ctx.schema.slotBigintBoxedBySid?.(sid, schema[i]) ? storedValue : storedValueNarrow)(v)]),
     ['local.set', `$${cT}`, cellIdx],
     ['local.set', `$${bT}`, alias
       ? ['i32.sub', ['local.get', `$${alias}`], ['i32.shl', ['local.get', `$${cT}`], ['i32.const', 3]]]
@@ -884,7 +896,16 @@ export function emitPropertyAssign(obj, prop, val) {
         // registry-aware reader ever observes this slot — see
         // carrierF64Narrow's own doc comment (ir.js). Shadowed keeps the full
         // storedValue box: $__dyn_get DOES read this value dynamically then.
-        return withTemp(shadow ? storedValue(val) : storedValueNarrow(val), t => [
+        //
+        // CARRIER PROGRAM §15/§16: the BIGINT-boxing half of that choice
+        // derives from the per-schema slotBigintBoxedBySid fact instead of
+        // this write's own raw `shadow` (module/object.js's construction
+        // comment has the full granularity rationale) — `shadow` itself is
+        // untouched, still governs the __dyn_set mirror install below.
+        // No-op under CARRIER_BOX=off (storedValue/storedValueNarrow are
+        // byte-identical then).
+        const boxed = ctx.schema.slotBigintBoxedBySid?.(vaProbe.ptrAux, prop)
+        return withTemp(boxed ? storedValue(val) : storedValueNarrow(val), t => [
           ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`]),
           ...(shadow ? [['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', asF64(emit(obj))], asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]] : []),
           ['local.get', `$${t}`]])
@@ -903,7 +924,18 @@ export function emitPropertyAssign(obj, prop, val) {
       // `let o = {n: 4611686018427387903n}; o.n += 1n` boxed the RHS
       // unconditionally, then the very next `f64.load` at this fixed offset
       // (this receiver has no shadow) read the pointer's bits raw.
-      const va = emit(obj), vv = shadow ? storedValue(val) : storedValueNarrow(val), t = temp()
+      //
+      // CARRIER PROGRAM §15/§16: derive the BIGINT-boxing half from the
+      // per-schema slotBigintBoxedBySid fact (module/object.js's construction
+      // comment has the granularity rationale) — `shadow` itself stays the
+      // real needsDynShadow(obj), still governing the __dyn_set mirror below.
+      // `ctx.schema.slotOf` can resolve `idx` via its structural fallback
+      // even when `idOf(obj)` has no precise sid (a poisoned/ambiguous
+      // binding) — fall back to the raw per-site `shadow` exactly there,
+      // the pre-fix behavior, rather than guessing a sid to query.
+      const sid = ctx.schema.idOf(obj)
+      const boxed = sid != null ? ctx.schema.slotBigintBoxedBySid?.(sid, prop) : shadow
+      const va = emit(obj), vv = boxed ? storedValue(val) : storedValueNarrow(val), t = temp()
       if (shadow) inc('__dyn_set')
       const stmts = [
         ['local.set', `$${t}`, vv],

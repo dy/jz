@@ -217,9 +217,24 @@ export default (ctx) => {
     // (this object doesn't qualify for the static path — `values.length < 2`
     // — so it takes this runtime-alloc path) boxed the literal field on
     // construction, corrupted by the next fixed-offset f64.load reading raw.
-    const fieldStoredValue = shadow ? storedValue : storedValueNarrow
+    //
+    // CARRIER PROGRAM §15/§16: the per-FIELD choice derives from
+    // ctx.schema.slotBigintBoxedBySid (module/schema.js) — the per-SCHEMA
+    // census fact — instead of this literal's own raw `shadow`. A schemaId
+    // can be shared by a shadowed and a non-shadowed constructor; write and
+    // read (emitSchemaSlotRead, module/core.js) can only pair soundly at
+    // schema granularity, so a non-shadowed sibling of a schema that has ANY
+    // shadowed constructor boxes too — a rare, harmless cost, never a
+    // per-instance runtime tag guess. CARRIER_BOX-gated inside the helper
+    // (answers false when off); storedValue and storedValueNarrow are
+    // byte-identical to each other whenever the flag is off (both degrade to
+    // the same asF64/boolBoxIR fallback — see carrierF64/carrierF64Narrow,
+    // ir.js), so this substitution is a true no-op for the default build
+    // regardless of which branch the fact picks.
+    const fieldStoredValue = (i) =>
+      (ctx.schema.slotBigintBoxedBySid?.(schemaId, names[i]) ? storedValue : storedValueNarrow)(values[i])
     for (let i = 0; i < values.length; i++)
-      body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], slotOf(i), fieldStoredValue(values[i])))
+      body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], slotOf(i), fieldStoredValue(i)))
     body.push(['local.set', `$${ptr}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
     if (shadow) {
       inc('__dyn_set')
@@ -1015,7 +1030,14 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
       }
     } else if (Array.isArray(p) && p[0] === ':') {
       const ti = schema.indexOf(p[1])
-      if (ti >= 0) body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, storedValue(p[2])))
+      // CARRIER PROGRAM §15/§16 (see the plain-literal construction's own
+      // comment above, ~line 220): schema-wide fact instead of an
+      // unconditional box — a schema shared by a shadowed spread/literal
+      // elsewhere still boxes here even when THIS particular spread target
+      // isn't itself shadowed. No-op under CARRIER_BOX=off (storedValue and
+      // storedValueNarrow are byte-identical then).
+      if (ti >= 0) body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti,
+        (ctx.schema.slotBigintBoxedBySid?.(schemaId, p[1]) ? storedValue : storedValueNarrow)(p[2])))
     }
   }
 
