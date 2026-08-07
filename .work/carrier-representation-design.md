@@ -1959,3 +1959,286 @@ side call sites), `module/core.js` (read-side call sites +
 `test/pointers.js` (the pin flip), `.work/carrier-representation-
 design.md` (this entry) — filed separately, plain messages, no push.
 
+---
+
+## §17. §16's two banked gaps worked SEQUENTIALLY — Task 1 partially closed
+(a real, verified precision fix landed), Task 2 root-caused to be THE SAME
+gap as Task 1, not independent — both banked, no flip (2026-08-07)
+
+Session mandate: close §16's two banked, pre-existing gaps (finding 1 —
+`hz.all` blanket poison defeating `slotBigintProven` for the self-hosted
+compiler's own source; finding 2 — the carrier-kernel `console.log`
+crash) if safely scoped, bank precisely otherwise, no default flip
+regardless. Both walled on their STATED gates. Both are banked with a
+concrete, verified finding that neither session's remaining time forces
+past: **Task 2 is not an independent bug — it is Task 1's own gap at one
+more remove**, discovered by tracing past §16's own "root cause NOT
+investigated, different subsystem" note on the console.log crash.
+
+### Task 1 — `hz.all` precision: ONE real bug fixed, the dominant class banked
+
+**Root cause of the blanket, precisely isolated via `JZ_DEBUG_HZALL`
+instrumentation (temporary, stripped before commit) against the REAL
+`scripts/self.js` graph at O3** (not a mimicked repro — §13/§15's own
+"mimic isn't equivalent" lesson applied again): `collectSlotWriteHazards`
+(`src/compile/program-facts.js`) sets `hz.all = true` from exactly two
+sites — `keyedWrite`'s non-numeric-key fallback and the `Object.assign`
+branch. Both fire hundreds of times compiling the compiler's own ~370K-
+line source. Two DISTINCT causes were found, ONE fixed, ONE banked:
+
+1. **FIXED — a real, dead-code bug in the `Object.assign` branch,
+   unrelated to the `hz.all` DESIGN itself.** `const target = node[2]`
+   read the call's RAW args slot, not the target: for any real
+   `Object.assign(target, ...sources)` call (2+ total args — the only
+   shape Object.assign is ever meaningfully called with), `node[2]` is a
+   `,`-node (`[',', target, source, …]`), not `target` — the SAME shape
+   `ast.js`'s own `callArgs`/`commaList` exist to unwrap, used nowhere in
+   this branch. `sidOf`/`kindOf` on a `,`-node never resolve (neither a
+   bare string nor a typeable expr), so EVERY Object.assign call in the
+   whole program fell straight to `hz.all`, regardless of whether its
+   target was perfectly resolvable. Fixed: `commaList(node[2])[0]`
+   (`commaList` was already imported). Also added `staticAssignTargetNames`,
+   mirroring `module/object.js`'s own `resolveSchema` for the two
+   structurally-static target shapes it recognizes (a `{...}` literal with
+   no spread → its own name-set; `Object.create(null|undefined)` →
+   emitter-lowered straight to an empty `{}`, `isNullishLiteral` — so its
+   target schema is the EMPTY schema) — duplicated locally rather than
+   imported (an emitter module importing INTO this analysis layer would
+   invert the dependency), matching this file's own established practice
+   (the `{}` spread-literal branch a few lines above does the same). Either
+   way `hz.sids.add(...)` scopes the write to that ONE schema (a no-op for
+   the empty schema — zero slots to poison) instead of `hz.all`'s
+   whole-program blanket. **Verified via the self.js diagnostic: every
+   Object.assign-triggered `hz.all` site closes** (9 distinct sites, e.g.
+   `Object.assign(Object.create(null), parentXXX)` in `ctx.derive`,
+   `Object.assign(ctx.core.stdlibDeps, inargXXXX)` per stdlib module —
+   the latter's target is a property-chain access, still correctly
+   unresolvable and falls through to the untouched `kindOf` path, not a
+   spurious removal).
+
+2. **BANKED — the dominant `keyedWrite` class, genuinely not safely
+   fixable this session.** ~150-300+ sites, overwhelmingly one shape:
+   `arr[idx] = v` inside the compiler's OWN internal census helpers
+   (`observeSlot`/`poisonSlot`/`poisonCtor` in `src/compile/program-
+   facts.js` itself, self-hosted — i.e. compiling the compiler's OWN
+   census machinery AS a target program), where `arr` is `let arr =
+   someMap.get(key); if (!arr) { arr = []; someMap.set(key, arr) }`.
+   Traced to ground, not assumed:
+   - `arr`'s kind is genuinely unresolvable by this compiler's CURRENT
+     local flow analysis: `Map.get()`'s return is deliberately NOT
+     promoted to an exact VT (`src/kind.js`'s own comment on `VT['()']`:
+     "NO `.get` short-circuit here... VT['()'] does not promote a `.get()`
+     read to an exact VT" — REVERTED once already, audit-#10, for being
+     unsound in the closely-related `censusMaybeUndefinedKind` consumer).
+     The `arr = []` fallback branch IS Array-typed, but joining it with
+     the unresolved `.get()` branch still yields "unknown," by design.
+   - The KEY's own int-certainty (`idx`, almost always a plain function
+     PARAMETER) is ALSO unresolvable at this scan: `repOf(key)?.
+     intCertain` reads `ctx.func.localReps` — a map populated by the
+     ACTIVE emission cursor for whichever function is CURRENTLY being
+     planned/emitted elsewhere in the pipeline, not the function this
+     hazard walk is CURRENTLY visiting — disconnected from the walk's own
+     `curParamVts` (built correctly per-body, but only consulted by
+     `kindOf`, never by the numeric-key check). Verified directly: for
+     every captured `arr[idx]=` site, `keyValType`, `repOf(key)?.
+     intCertain`, AND `curParamVts.get(idx)` were ALL `null`/`undefined`
+     — not a case of "the fact exists but isn't wired," the fact
+     genuinely isn't computed yet at this pass.
+   - **Why this is NOT this session's fix to make**: both levers
+     (promoting `Map.get()`'s value kind; fixing param int-certainty
+     threading) touch machinery this project's OWN audit trail already
+     flagged as high-risk in the immediately adjacent domain (audit-#10's
+     revert of the identical `.get()`-promotion idea for
+     `censusMaybeUndefinedKind`) and is UNDER ACTIVE, DELIBERATE,
+     SLICE-BY-SLICE HARDENING RIGHT NOW (this repo's own most recent
+     prior commits: "maybeUndefined Slice 1: dict absent-key value join
+     (censusMaybeUndefined)"). Wiring either into
+     `collectSlotWriteHazards`'s `kindOf` — a SOUNDNESS-CRITICAL hazard
+     classification whose wrong answer silently under-poisons, not a
+     forgiving optimization heuristic — is exactly the "wide blast
+     radius... this session's remaining time cannot safely absorb-and-
+     verify" class this design has repeatedly, deliberately banked
+     (§11-§16) rather than forced. A narrower angle was also checked and
+     ruled out: `buildObjectSchemaSetArm` (`__dyn_set`, module/
+     collection.js) dispatches on the RECEIVER'S OWN embedded runtime
+     schema id, universally over `$__schema_tbl` — NOT scoped to
+     dyn-shadowed schemas only — so an unresolvable-kind receiver truly
+     CAN, at runtime, alias any registered schema's OBJECT pointer; there
+     is no cheap, sound way to shrink `hz.all`'s reachable-schema set
+     without either of the two risky levers above.
+
+**Gates run (Task 1):** self.js-diagnostic-confirmed (Object.assign class
+closes, keyedWrite class persists, `ctx.schema.slotWriteHazards.all`
+still `true` after the fix — expected, not a regression); default battery
+`node test/index.js` 3407/3399/2/6 (unchanged 2 pre-existing rows) both
+before and after a fresh plain `dist/jz.wasm` rebuild; default `kernel-
+parity` 3/3 (33 assertions, byte-identical) against a freshly, fully
+rebuilt plain kernel (verified via the build log's own "wrote dist/
+jz.wasm" line, §15's lesson applied); `JZ_CARRIER_BOX=1 kernel-parity`:
+`dict` STILL diverges O0/O2/O3 (expected — the banked class dominates),
+`sum`/`math` stay identical; `JZ_CARRIER_BOX=1` flag-forced battery
+3380/21 (IDENTICAL pass/fail counts to §16's own baseline, differentially
+confirmed against a disposable `git worktree add` at the pre-session
+commit 60944c3b — `test/dyn-keys.js` 46/11 and `kernel-oracle` 3/8 match
+the baseline worktree byte-for-byte); `test/pointers.js` 34/34 both modes
+(default 62 assertions, `JZ_CARRIER_BOX=1` 66, unchanged counts);
+`test/watr.js` 35/35 (107 assertions) under `JZ_CARRIER_BOX=1`;
+`JZ_DEBUG_INVARIANTS=1` clean (no throw) on `test/objects.js` and
+`JZ_CARRIER_BOX=1 test/pointers.js`; `JZ_CARRIER_BOX=1` fuzz 1500×4
+(22406 inputs, 0 divergences).
+
+**Commit:** `b4ce1f12` — `src/compile/program-facts.js` only.
+
+### Task 2 — the console.log carrier-kernel crash: root-caused to BE Task 1's gap, not a second bug
+
+**Re-verified the exact signature** (brief's own instruction, since §16
+left this "confirmed... not reproduced in targeted checks" the session
+before, then "CONFIRMED" only at the very end): `JZ_CARRIER_BOX=1
+JZ_TEST_TARGET=jz.wasm node test/index.js`, against a freshly, fully
+rebuilt carrier kernel (verified via the build log's own line, twice, at
+two different points this session), crashes the whole process — an
+uncaught `RangeError: Offset is outside the bounds of the DataView`
+inside `interop.js`'s `mem.read` (`DataView.prototype.getBigInt64`),
+reached via `readArgBits → write → imports.env.print`, immediately after
+the `setTimeout: callback fires` test (`test/statements.js`) — byte-for-
+byte the same stack, same trigger point, both times. **Root-caused past
+§16's own stopping point** (`module/console.js`'s `asI64Bits` "never
+routes through storedValue/carrierF64/any BIGINT-boxing logic at all... a
+different subsystem, root cause NOT investigated"): true, but a red
+herring — the corruption is not in HOW console.log boxes its argument, it
+is in the STRING CONSTANT it is handed, already wrong by the time
+console.log's own emit code sees it.
+
+**Traced via `compileViaKernel({wat:true})` diff, native-vs-carrier-
+kernel, on the minimized 1-line `console.log('bare-fired')` repro at O0**
+(exactly the established hunt method): the two WATs diverge on ONE
+instruction — the STRING LITERAL's own NaN-box constant:
+```
+native  (i64.reinterpret_f64 (f64.const nan:0x7FFA000000000007))
+kernel  (i64.reinterpret_f64 (f64.const nan:0x7FFA8000000DA1FC))
+```
+The SAME tag/shape corruption pattern as §15's ORIGINAL finding (`nan:
+0x7FF8...` → `nan:0x7FFA8...`-shaped, an extra high bit and garbage low
+word — a box's own pointer bits leaking instead of its decoded payload).
+Walked back to its source: `mkPtrIR`/`packPtrBits` (`src/ir.js`)
+constant-folds a NaN-boxed pointer via `layout.js`'s `ptrBits(type, aux,
+offset)`, which reads `LAYOUT.NAN_PREFIX_BITS` —
+**the exact same module-scope BOXED BigInt schema field §15 found and
+§16 fixed**, via the exact same static dot-access
+(`emitSchemaSlotRead` → `slotBigintProvenBySid`). §16's fix is sound and,
+confirmed via `test/pointers.js`'s own pin, correct for an ISOLATED
+compile (just `layout.js`, no whole-program hazard noise) — but it is
+**INERT for this exact field when the KERNEL ITSELF is built**: compiling
+the FULL `scripts/self.js` source (required to produce `dist/jz.wasm`)
+trips `collectSlotWriteHazards`' `hz.all` blanket via Task 1's OWN banked
+`keyedWrite` class somewhere else in that same ~370K-line source — which
+nulls `slotTypes` for EVERY schema program-wide, LAYOUT's included.
+Confirmed directly, not inferred: a `ctx.schema` diagnostic after
+natively compiling the full self.js graph at O0 (post-Task-1-fix) shows
+`slotWriteHazards.all === true` and `slotBigintProvenAt('LAYOUT',
+'NAN_PREFIX_BITS') === false` — the exact precondition §16's fix requires
+never holds for this compile. So the BUILT kernel's own compiled copy of
+`ptrBits` hands back the box's raw pointer bits instead of the true
+constant, and EVERY subsequent heap-string NaN-box constant the running
+kernel folds inherits the corruption — `console.log`'s argument is one
+instance of a much wider class (any heap string literal in ANY program
+the kernel compiles), matching and extending §16's own `dict`-divergence
+generalization ("every subsequent compile that needs them inherits wrong
+bytes... this generalizes the severity well past 'BigInt-heavy
+programs'").
+
+**Execution-confirmed, bisected exactly as §16 recorded** (not just the
+WAT diff): compiled the minimized repro via `compileViaKernel` +
+`instantiate`, then ran it.
+- Heap string (≥7 chars, `'bare-fired'`): throws the identical
+  `RangeError`/DataView-OOB.
+- SSO string (≤6 chars, `'short'`): does NOT crash, but prints the
+  corrupted decode — a host-side `console.log` spy shows the kernel
+  called `print` with the string `"NaN"`, not `"short"`.
+Native compiles and runs both cleanly (`start()` → `1`, no crash) —
+confirms this is self-host-only, not a general regression.
+
+**Verdict: this is Task 1's finding at one more remove, not a second,
+independent bug.** Closing Task 1's banked `keyedWrite` class (the same
+Map/dict `.get()`-derived receiver-kind gap, same audit-#10 caution) would
+close this crash too, with zero additional fix work — a future session
+should not re-investigate this as a separate "string-constant emission"
+or "i64exp lane" surface (both were named as plausible, untried
+neighbors in §16's own bank; neither is where this lives — `mkPtrIR`'s
+`LAYOUT.NAN_PREFIX_BITS` read is EXACTLY the surface §16 already fixed,
+just starved of its own precondition by Task 1's unclosed gap).
+
+**Pinned** (`test/kernel-oracle.js`, new `test(...)` block, `JZ_CARRIER_
+BOX=1`-gated, true no-op under default — same established pattern as
+§15/§16's `test/pointers.js` pin): native runs both the heap-string and
+SSO-string repros cleanly; the kernel throws the exact `RangeError` +
+`"Offset is outside the bounds of the DataView"` message on the heap
+string (a message-level tripwire — a DIFFERENT error means a NEW bug, not
+this one changing) and prints the exact `"NaN"` corruption on the SSO
+string. Verified: `node test/kernel-oracle.js` (default) — the block
+runs, guard fires, 0 assertions, true no-op; `JZ_CARRIER_BOX=1 node
+test/kernel-oracle.js` — all 6 assertions pass, pinning the wrongness
+precisely.
+
+**`JZ_CARRIER_BOX=1 test:wasm` leg: reconfirmed, NOT reachable "to
+completion."** Ran to conclusion (not partial) against the freshly
+rebuilt carrier kernel, twice (once before, once after the pin landed,
+same kernel both times) — crashes the whole node process identically
+both times, same stack, same trigger (`test/statements.js`'s "setTimeout:
+callback fires" — the first heap-length string argument to `console.log`
+anywhere in the default battery's own test order). This is the SAME
+crash §16 confirmed at its own session's end, unregressed and unfixed —
+"to completion" requires the underlying `hz.all`/`slotBigintProven`
+precondition gap (Task 1's own banked class) to close first; no amount of
+retrying or harness change gets past an unfixed, deterministic,
+uncaught-exception crash.
+
+**Gates run (Task 2):** default battery `node test/index.js` 3408/3400/2/6
+(the SAME 2 pre-existing rows, +1 for the new no-op pin) both before and
+after a fresh plain `dist/jz.wasm` rebuild; default `kernel-parity` 3/3;
+`JZ_CARRIER_BOX=1` flag-forced battery 3381/21 against a freshly rebuilt
+carrier kernel (the SAME 21 pre-existing rows §16/Task-1 both
+established, +1 pass for the new pin — first attempt used a STALE plain
+`dist/jz.wasm` left over from the intervening default-battery rebuild and
+showed 14/no-pin-pass, a false read caught and corrected by rebuilding
+carrier-boxed before re-running, §15's own stale-artifact lesson
+triggering again mid-session); `JZ_CARRIER_BOX=1 test:wasm`: reconfirmed
+crashing, twice, identically. No production-code change this task (the
+Object.assign fix already covers everything safely fixable) — Task 1's
+own fuzz/`DBG_INVARIANTS`/`watr.js`/pointers.js gates already cover the
+unchanged `src/` state; not re-run redundantly.
+
+**Commit:** `54336572` — `test/kernel-oracle.js` only.
+
+### Flip-readiness verdict
+
+**NO default flip** (mandated regardless of outcome this session).
+`CARRIER_BOX` stays `JZ_CARRIER_BOX==='1'`-gated, OFF by default,
+unchanged shape from §14/§15/§16. Net position: one real, verified,
+zero-risk precision bug fixed (Task 1's Object.assign dead-resolution +
+empty-schema exemption); one gap conclusively unified — what looked like
+two separate blockers is ONE blocker (`hz.all`'s whole-program blanket,
+specifically its `keyedWrite`-class trigger reading `Map`/dict `.get()`-
+derived receiver kinds) with two visible symptoms (kernel-parity's `dict`
+byte divergence; the carrier-kernel `console.log` crash) — both pinned,
+neither fixed. **A future flip-readiness session should start from
+EXACTLY ONE lever, not two**: closing the `keyedWrite`-class `hz.all`
+trigger for `Map`/dict `.get()`-derived receivers — which requires either
+(a) safely promoting `.get()`'s value kind for THIS soundness-critical
+consumer specifically (distinct from, and possibly safer than,
+`censusMaybeUndefinedKind`'s general-purpose promotion that audit-#10
+reverted — worth its own scoped investigation rather than assuming the
+same revert applies), or (b) threading the hazard-walk's OWN per-body
+`curParamVts` int-certainty (already computed for `kindOf`, not yet
+consulted for the KEY's numeric-exemption check) — both concrete,
+narrower than "fix the whole Map/dict value-kind census," and BOTH would
+close kernel-parity's `dict` row AND the console.log crash together, no
+separate work needed for either. The pre-existing Slice 5/6/7 Map/dict-
+census export-boundary family (`test/dyn-keys.js`, 11 rows under
+`JZ_CARRIER_BOX=1`) stays independent of this — a different subsystem,
+unaffected by and not blocking either lever above.
+
+**Local commits (this session), both LOCAL ONLY, plain messages, no
+push:** `b4ce1f12` (Task 1 fix), `54336572` (Task 2 pin), this entry
+filed separately.
+
