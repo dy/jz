@@ -276,6 +276,41 @@ test('carrier: PTR.BIGINT (5) is disjoint from every other pointer tag', () => {
   is(new Set(liveTags).size, liveTags.length)
 })
 
+test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullish-BIGINT-arm ternary (.work/carrier-representation-design.md §13/§14)', () => {
+  // isTernaryBoxedBigint (ir.js) exists for the ternary-NULLISH-merge shape
+  // (`cond ? BigInt(x) : null`) — the ONE decl-init form whose OWN storage IS
+  // a real box. emitDecl (emit.js) used to register a decl as ternary-boxed
+  // whenever `valTypeOf(init) === VAL.BIGINT` for a '?:' init, but kind.js
+  // VT['?:'] ALSO returns BIGINT for two same-kind, NEITHER-nullish arms
+  // (`ta && ta === tb`) — a shape the '?:' handler leaves entirely raw (its
+  // own box condition needs one arm nullish). That mismatch registered a
+  // false positive, so a later readI64 (ir.js) wrongly unboxed a genuinely-
+  // raw value: an `i64.load` at a garbage pointer offset derived from the
+  // raw bits. Found live compiling watr/src/optimize.js's own `_i64Canon`
+  // (`neg ? -BigInt(mag) : BigInt(mag)`, non-simple so jz's own inliner
+  // (compile/plan/inline.js) binds it to a fresh temp DECL when splicing
+  // `_i64Hex16`'s call — that decl is exactly the shape this test pins) under
+  // JZ_CARRIER_BOX=1 at O3: `fold()` returned 5.826595490514274e+252 instead
+  // of 2.000000000000001. Off-flag (CARRIER_BOX is a compile-time env-read
+  // const, ir.js/ctx.js), ternaryBoxedNames is never populated at all — this
+  // shape is a no-op there, so the assertion is meaningful specifically under
+  // JZ_CARRIER_BOX=1 and merely non-regressing (never crashes) otherwise —
+  // the failure mode observed here was OFTEN a trap (`memory access out of
+  // bounds`), not just a wrong value, so running this compiled+called
+  // unconditionally (regardless of which flag state the test process itself
+  // was started under) still catches a crash-class regression either way.
+  const src = `
+    const hex16 = (v) => v.toString(16)
+    const canon = (mag, neg) => hex16(neg ? -BigInt(mag) : BigInt(mag))
+    export let run = () => {
+      let s = ''
+      for (let i = 0; i < 4; i++) s = canon(2 + i, i % 2 === 0)
+      return s
+    }
+  `
+  is(run(src, { optimize: { level: 3 } }).run(), '5')
+})
+
 // === Limits ===
 
 test('nan-box: max aux (32767)', () => {
