@@ -717,21 +717,37 @@ export const optFlagsOf = (cfg) => {
 export const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
 // Carrier program (.work/carrier-representation-design.md). Slice 4 (flip
-// this default ON) was ATTEMPTED and hit a wall — banked, not landed; see
-// §11 of the design doc for the full writeup. OFF by default, matching
-// Slice 2/3's own bound: Slice 2 landed the def-side box wiring (ir.js
-// carrierF64, emit.js coerceArg/'return'/'?:'); Slice 3 landed the
-// R-recovery read side (every kind-erased reader's PTR.BIGINT arm, src/
-// ir.js readI64) — both independently verified. But flipping this flag's
-// DEFAULT surfaced a pre-existing SLICE 2 bug (not introduced by Slice 3,
-// confirmed by reproducing it on a clean pre-Slice-3 worktree with
-// JZ_CARRIER_BOX=1 forced): a loop-carried, extreme-magnitude BigInt local
-// (test/watr.js's own self-hosted-through-jz LEB128 i64 encoder, compiling
-// watr's `encode.js`) produces wrong bits under boxing. Root cause not
-// isolated — this needs the SAME unhurried, dedicated investigation Slice
-// 2's own def-side wiring got, not a rushed fix during a read-side/default-
-// flip session. `JZ_CARRIER_BOX=1` stays as the opt-in probe flag it always
-// was, for exactly this kind of targeted differential investigation.
+// this default ON): a first attempt (3daa4410) hit a wall — banked, not
+// landed, §11 of the design doc has the full writeup — and reverted the
+// default back OFF. That wall's root cause (a def-side box-wiring bug,
+// pre-existing since Slice 2, reproduced independently of Slice 3 on a
+// clean pre-Slice-3 worktree with JZ_CARRIER_BOX=1 forced) is found and
+// fixed, §12: `needsBigintBox`'s unconditional inline-BIGINT-expression
+// fallback — sound at carrierF64's genuinely dynamic sinks (a real dyn-prop/
+// Set/Map store, later read through registry-aware $__dyn_get) — was ALSO
+// firing at several sinks with no such reader (a closure/mixed-atom return,
+// an SRoA flat-object/array field, a proven-array-element store, array/
+// object-literal construction, a decl-destructure temp), plus a narrower
+// read-side gap (a ternary-nullish-BIGINT-declared local's own storage IS a
+// box, isCurrentlyBoxedBigint only recognized a boxed PARAM) and its
+// call-boundary mirror in coerceArg. A SECOND flip attempt (this session)
+// verified the flag-forced battery fully green on that fix (3386/3405 — the
+// only remaining rows are §12's own documented pre-existing debt, not this
+// bug class) and re-attempted the default flip — which hit a SECOND, NEW
+// wall: `npm run build`'s fresh self-host rebuild, with the flag defaulting
+// ON, compiles cleanly (WASM-valid) but the resulting KERNEL (dist/jz.wasm)
+// then CRASHES ("memory access out of bounds") or returns WRONG VALUES at
+// optimize levels 2-3 on several of the exact shapes §12 fixed (a proven-
+// bigint array literal, a ternary-nullish-BIGINT local) — confirmed a pure
+// self-host FIDELITY gap, not a logic bug in the fix itself: the SAME
+// programs compile and run correctly at every optimize level through the
+// NATIVE (in-process, non-self-hosted) compiler, verified directly. Banked,
+// not landed, same discipline as the first attempt — this needs its own
+// dedicated self-host-fidelity investigation (bisecting which of §12's new
+// code shapes the self-hosted kernel's OWN optimizer passes mishandle),
+// not a rushed fix layered onto an already-long session. `JZ_CARRIER_BOX=1`
+// stays as the opt-in probe flag — every §12 fix is real and independently
+// verified there, this wall is specific to the DEFAULT-ON self-host build.
 export const CARRIER_BOX = typeof process !== 'undefined' && process.env?.JZ_CARRIER_BOX === '1'
 
 // Session wave W1 (stage 4): the lifecycle table above is an executable,
