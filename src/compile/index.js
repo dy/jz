@@ -2397,6 +2397,11 @@ export default function compile(ast, profiler) {
       }
     })
   }
+  // FeaturePlan freeze (.work/research.md §FeaturePlan freeze): every per-function
+  // analyze pass has now run (analyzeFuncs + structInline/unionInline/unionClones
+  // above) — ctx.features' ANALYSIS stratum (typedView) is settled. Extends the
+  // post-prepare SESSION+PROGRAM snapshot; compared at 'pre-assemble' below.
+  assertCtxInvariants('post-analyze')
   const funcs = timePhase(profiler, 'emitFuncs', () => ctx.func.list.map(func => emitFunc(func, funcFacts.get(func), programFacts)))
   funcs.push(...synthesizeBoundaryWrappers())
 
@@ -2517,6 +2522,13 @@ export default function compile(ast, profiler) {
   finalizeClosureTable(sec)
 
   buildInternTable()
+
+  // FeaturePlan freeze (.work/research.md §FeaturePlan freeze): emission is done —
+  // asserts ctx.features' SESSION+PROGRAM+ANALYSIS strata are present and unchanged
+  // since their post-prepare/post-analyze snapshots, right before pullStdlib's
+  // resolveIncludes() starts reading the DEMAND stratum (module template factories
+  // + deps lambdas).
+  assertCtxInvariants('pre-assemble')
 
   timePhase(profiler, 'pullStdlib', () => pullStdlib(sec))
 

@@ -634,39 +634,44 @@ export function reset(proto, globals, bridge) {
   // Advisory sink. Populated when compile() receives opts.warnings.
   ctx.warnings = null
 
-  // Feature flags: capabilities the compiled module may exercise at runtime.
-  // Set true by producer sites (import points, auto-imports, dynamic call sites).
-  // Read by stdlib template factories and deps graph at resolveIncludes() time to
-  // elide dead branches / skip unused imports. All default false; templates must be
-  // safe when flag is off (i.e. no way to produce a value of the gated kind).
+  // Feature flags: the FeaturePlan (.work/research.md §FeaturePlan freeze).
+  // Every key here MUST be seeded, not an absent key: the self-hosted kernel's
+  // absent-dyn-key read misfires truthy, so a missing key silently turns a gate ON
+  // (the original bigint bug — pure-number programs exported subnormals as bigint
+  // carriers, -5e-324 → -1, data.js pins). Four strata, each with its own writer
+  // phase; assertCtxInvariants (below) snapshots SESSION+PROGRAM at 'post-prepare',
+  // extends the snapshot with ANALYSIS at 'post-analyze', and asserts all three
+  // unchanged (+ every key present) at 'pre-assemble'. DEMAND is excluded from
+  // that check — it's still legitimately written during emission (a future slice
+  // is expected to extract it into its own dict so the freeze covers everything).
   //
-  // Only `external` is wired into emission today. The rest are slots for future
-  // work — most are currently usage-gated organically by `inc()`/stdlibDeps (a
-  // stdlib only lands in the binary if something called inc() for it, directly
-  // or transitively). Promote them here when one of two conditions holds:
-  //   (a) a stdlib has dead conditional branches that can be elided when off
-  //       (how `external` saves bytes in __hash_*/__set_*/__map_*/__dyn_get_any)
-  //   (b) a capability needs an opt-in A/B switch against the default path
-  //       (SSO is the planned first user — default string-literal emission
-  //       currently forces SSO for ≤4 ASCII chars at string.js:49)
+  //   SESSION  — from opts, set once at reset(), stable for the whole compile:
+  //     sso, blockingTimers
+  //   PROGRAM  — prepare()'s universal per-node prescan, order-independent
+  //     (settled by post-prepare regardless of where the triggering node sits):
+  //     bigint, error, errorClasses, timers
+  //   ANALYSIS — settled by the per-function analyze pass (post-analyze) in
+  //     principle; typedView in practice keeps flipping false→true during
+  //     emission too (module/typedarray.js's view-constructing emit handlers) —
+  //     see assertCtxInvariants' comment for the monotone-not-frozen carve-out
+  //     this forced.
+  //     typedView
+  //   DEMAND   — emission-accumulated, monotone false→true, readable only at
+  //     resolveIncludes()+ (module template factories + deps lambdas) and
+  //     assemble: external, typedarray, set, map, closure, f16, clamped
   ctx.abi = makeAbi()
 
-  // Only flags actually read by codegen live here. Hash/regex/json substrates
-  // are pulled organically by inc(__*) — no flag mediates them, so no flag exists.
   ctx.features = {
-    external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or __ext_call site.
+    // SESSION
     sso: true,        // ≤4-ASCII string packing. Default on; flip off to A/B the heap-only path.
-    typedarray: false,// Float64Array/Int32Array/etc. Set on typed-array construction; gates PTR.TYPED dispatch.
-    set: false,       // Set. Set on Set construction; gates PTR.SET dispatch.
-    map: false,       // Map. Set on Map construction; gates PTR.MAP dispatch.
-    closure: false,   // First-class functions. Set when ctx.closure.table is populated.
+    blockingTimers: false,   // wasmtime CLI: include __timer_loop in _start
+
+    // PROGRAM
     bigint: false,    // BigInt construction anywhere (tagged literal / BigInt() call — prep()'s
                       // scan). Gates ir.js toNumF64's carrier check. MUST be seeded, not an
                       // absent key: the self-hosted kernel's absent-dyn-key read misfired
                       // truthy, turning the carrier gate ON for pure-number programs and
                       // exporting subnormals as bigint carriers (-5e-324 → -1, data.js pins).
-    timers: false,          // Set by prepare.js when timer module is included
-    blockingTimers: false,   // wasmtime CLI: include __timer_loop in _start
     error: false,     // A jz Error/TypeError/…/EvalError value ever gets constructed
                       // (`new X(...)` or bare `X(...)`, any of the 7 built-in classes)
                       // anywhere in the program — prep()'s universal per-node scan sets
@@ -683,6 +688,30 @@ export function reset(proto, globals, bridge) {
                       // a never-constructed class's `instanceof` folds to compile-time
                       // `false` and never mints/bakes a schema id for it (audit-#9 P0-2
                       // per-class-sid brand redesign).
+    timers: false,          // Set by prepare.js when timer module is included
+
+    // ANALYSIS
+    typedView: false, // A typed-array VIEW (subarray / buffer-reinterpret / unknown-arg ctor
+                      // that may zero-copy) exists somewhere in the program — set by
+                      // analyze.js's typed tracker (`c.endsWith('.view')`) and by the
+                      // `new TypedArray(buf, off, len)` / buffer-reinterpret emit sites
+                      // (module/typedarray.js). Read by the SLP vectorizer (optimize/
+                      // vectorize.js) to bail on cross-base pairing when any view could
+                      // alias. MUST be seeded (same absent-key hazard as bigint) — was
+                      // written/read live but unseeded before this stratum.
+
+    // DEMAND — .work/research.md §FeaturePlan freeze plans a `ctx.linkDemand`
+    // extraction for these seven; still on ctx.features for now.
+    external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or __ext_call site.
+    typedarray: false,// Float64Array/Int32Array/etc. Set on typed-array construction; gates PTR.TYPED dispatch.
+    set: false,       // Set. Set on Set construction; gates PTR.SET dispatch.
+    map: false,       // Map. Set on Map construction; gates PTR.MAP dispatch.
+    closure: false,   // First-class functions. Set when ctx.closure.table is populated.
+    f16: false,       // Float16Array construction anywhere. MUST be seeded (same absent-key
+                      // hazard as bigint) — was written/read live but unseeded before this stratum.
+    clamped: false,   // Uint8ClampedArray construction anywhere. MUST be seeded (same
+                      // absent-key hazard as bigint) — was written/read live but unseeded
+                      // before this stratum.
   }
 }
 
@@ -695,6 +724,9 @@ export function reset(proto, globals, bridge) {
  *  Phases checked:
  *   - `post-reset`     : every sub-context exists; Maps/Sets initialized.
  *   - `post-prepare`   : module + scope populated; func.list possibly empty.
+ *                        Also snapshots ctx.features' SESSION+PROGRAM strata
+ *                        (FeaturePlan freeze, .work/research.md) for the
+ *                        post-analyze/pre-assemble drift check below.
  *   - `pre-emit`       : func.current set; locals Map present — the per-
  *                        function-frame boundary right where `repsFrozen`
  *                        flips true (audit-#11: documented since 4b149108,
@@ -704,6 +736,19 @@ export function reset(proto, globals, bridge) {
  *                        wat/assemble.js buildStartFn's per-moduleInit and
  *                        main __start body). Unordered w.r.t. PHASE_ORDER —
  *                        fires once per function frame, not once per compile.
+ *   - `post-analyze`   : extends the post-prepare snapshot with ctx.features'
+ *                        ANALYSIS stratum (typedView) — fired once per compile,
+ *                        right after the per-function analyze passes settle and
+ *                        before any function emits. Unordered w.r.t. PHASE_ORDER
+ *                        (like pre-emit): asserted host- and self-host-uniformly
+ *                        from inside compile/index.js's compile(), independent
+ *                        of whether the caller ever reaches 'post-prepare'.
+ *   - `pre-assemble`   : asserts every SESSION+PROGRAM+ANALYSIS key is present
+ *                        AND unchanged since its post-prepare/post-analyze
+ *                        snapshot — the frozen FeaturePlan facts must not drift
+ *                        during emission. Fired once per compile, right before
+ *                        resolveIncludes()/pullStdlib start reading the DEMAND
+ *                        stratum. Unordered w.r.t. PHASE_ORDER, same reason.
  *   - `post-compile`   : no transient temps leaked (func.uniq stable across calls). */
 
 // Hot per-node pass flags flattened to ONE i32 bitmask (ctx.transform.optFlags,
@@ -762,10 +807,34 @@ export const CARRIER_BOX = typeof process !== 'undefined' && process.env?.JZ_CAR
 
 // Session wave W1 (stage 4): the lifecycle table above is an executable,
 // ORDERED contract — each named phase must follow its predecessor within one
-// compile session ('pre-emit' is a per-function interleave, unordered).
-// A skipped or repeated phase is a pipeline-wiring bug caught here instead of
-// as a distant stale-state failure.
+// compile session ('pre-emit', 'post-analyze', 'pre-assemble' are unordered:
+// 'pre-emit' is a per-function interleave; 'post-analyze'/'pre-assemble' fire
+// from inside compile/index.js's compile() itself — host- and self-host-
+// uniform — independent of whether the caller wired the optional
+// 'post-prepare'/'post-compile' hooks around it (self.js does not today)).
+// A skipped or repeated ORDERED phase is a pipeline-wiring bug caught here
+// instead of as a distant stale-state failure.
 const PHASE_ORDER = ['post-reset', 'post-prepare', 'post-compile']
+
+// FeaturePlan freeze (.work/research.md §FeaturePlan freeze): ctx.features'
+// SESSION+PROGRAM+ANALYSIS strata must not drift after their settling phase.
+// Snapshotted at 'post-prepare' (SESSION+PROGRAM, when wired) and extended at
+// 'post-analyze' (+ANALYSIS, always); compared at 'pre-assemble'. Module-scope
+// (not on ctx) — reset() doesn't own it, 'post-reset' clears it below so a
+// stale snapshot from a PRIOR compile in the same warm process (self.js
+// compiles many modules per process) can never leak into this one's check.
+const FEATURE_STRATA = {
+  SESSION: ['sso', 'blockingTimers'],
+  PROGRAM: ['bigint', 'error', 'errorClasses', 'timers'],
+  ANALYSIS: ['typedView'],
+}
+let _featureSnapshot = null
+const snapFeatureVal = (v) => v instanceof Set ? [...v].sort() : v
+const snapFeatureEq = (a, b) => Array.isArray(a)
+  ? Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i])
+  : a === b
+const snapshotFeatures = (keys, into) => { for (const k of keys) into[k] = snapFeatureVal(ctx.features[k]); return into }
+
 export function assertCtxInvariants(phase) {
   if (!DBG_INVARIANTS) return
   const fail = msg => { throw new Error(`[ctx invariant] ${phase}: ${msg}`) }
@@ -789,6 +858,34 @@ export function assertCtxInvariants(phase) {
   if (phase === 'pre-emit') {
     must(ctx.func.current, 'func.current set before emit')
     must(ctx.func.locals.size != null, 'locals open for writes')
+  }
+
+  // FeaturePlan freeze snapshot/compare (see FEATURE_STRATA above). SESSION+PROGRAM
+  // are genuinely settled by post-prepare (their only writers are prepare/index.js's
+  // per-node scan and autoload.js, both mid-prepare) — checked for exact equality.
+  // ANALYSIS (typedView) is NOT actually settled by post-analyze: besides analyze.js's
+  // static scan, module/typedarray.js's `new TypedArray(buf, off, len)` / buffer-
+  // reinterpret / unknown-arg-ctor EMIT handlers also set it, and live evidence
+  // (test/buffer.js's reinterpret/COPIES cases) shows it keeps flipping false→true
+  // during emitFuncs, past the post-analyze checkpoint — a DEMAND-shaped write
+  // (monotone, emission-time), not an ANALYSIS one. Gap in the freeze design's
+  // stratification (.work/research.md §FeaturePlan freeze), banked here rather than
+  // forced: typedView is checked monotone (never true→false) instead of frozen-equal.
+  if (phase === 'post-reset') _featureSnapshot = null
+  if (phase === 'post-prepare') _featureSnapshot = snapshotFeatures([...FEATURE_STRATA.SESSION, ...FEATURE_STRATA.PROGRAM], {})
+  if (phase === 'post-analyze') snapshotFeatures(FEATURE_STRATA.ANALYSIS, _featureSnapshot ??= {})
+  if (phase === 'pre-assemble') {
+    for (const k of [...FEATURE_STRATA.SESSION, ...FEATURE_STRATA.PROGRAM]) {
+      must(k in ctx.features, `ctx.features.${k} missing — every FeaturePlan key must be seeded, not an absent key`)
+      if (_featureSnapshot && k in _featureSnapshot)
+        must(snapFeatureEq(_featureSnapshot[k], snapFeatureVal(ctx.features[k])),
+          `ctx.features.${k} drifted after its settling phase — frozen FeaturePlan facts must not change during emission`)
+    }
+    for (const k of FEATURE_STRATA.ANALYSIS) {
+      must(k in ctx.features, `ctx.features.${k} missing — every FeaturePlan key must be seeded, not an absent key`)
+      if (_featureSnapshot && _featureSnapshot[k] === true)
+        must(ctx.features[k] === true, `ctx.features.${k} flipped true→false after post-analyze — ANALYSIS facts must be monotone`)
+    }
   }
 }
 
