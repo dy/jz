@@ -1,7 +1,7 @@
 {
  "meta": {
-  "date": "2026-08-06 23:37 UTC",
-  "commit": "57ad846d",
+  "date": "2026-08-07 00:03 UTC",
+  "commit": "4e346183",
   "host": {
    "platform": "darwin",
    "arch": "arm64",
@@ -43,6 +43,40 @@
    "jz-w2c2": "jz --host wasi -O3 --no-tail-call → w2c2 → clang -O3 -ffp-contract=off"
   },
   "memory": "peak RSS per process run (/usr/bin/time -l)",
+  "anchors": {
+   "pairs": [
+    {
+     "case": "mat4",
+     "target": "c-wasm",
+     "storedUs": 2554,
+     "freshUs": 2502,
+     "ratio": 1.0208,
+     "pass": true
+    },
+    {
+     "case": "fft",
+     "target": "c-wasm",
+     "storedUs": 1139,
+     "freshUs": 1044,
+     "ratio": 1.091,
+     "pass": true
+    },
+    {
+     "case": "synth",
+     "target": "as",
+     "storedUs": 2471,
+     "freshUs": 2370,
+     "ratio": 1.0426,
+     "pass": true
+    }
+   ],
+   "ratios": {
+    "c-wasm×mat4": 1.0208,
+    "c-wasm×fft": 1.091,
+    "as×synth": 1.0426
+   },
+   "pass": true
+  },
   "partial": true
  },
  "cases": {
@@ -4272,11 +4306,11 @@
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 724,
+     "medianUs": 727,
      "bytes": 1484,
-     "memKb": 51024,
+     "memKb": 51104,
      "parity": "ok",
-     "measuredAt": "57ad846d"
+     "measuredAt": "4e346183"
     },
     "as": {
      "medianUs": 6686,
@@ -4344,7 +4378,7 @@
      "reason": "exit 1: node:internal/errors:998\n  const err = new Error(message);\n              ^\n\nError: Command failed: wat2wasm \"/Users/div/projects/jz/bench/mat4/mat4.wat\" -o \"/var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/mat4/mat4-wat.wasm\"\n/User"
     }
    },
-   "compileMs": 80.4
+   "compileMs": 109.6
   },
   "matmul": {
    "name": "matrix multiply (A·Bᵀ)",
