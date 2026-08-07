@@ -1,7 +1,8 @@
 // NaN-boxing pointer encoding tests + multi-value threshold
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, not } from 'tst/assert.js'
 import jz from '../index.js'
+import { resolveModuleGraph } from '../src/resolve.js'
 
 function run(code, opts) {
   return jz(code, opts).exports
@@ -309,6 +310,40 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
     }
   `
   is(run(src, { optimize: { level: 3 } }).run(), '5')
+})
+
+// audit-#14 finding (.work/carrier-representation-design.md §15): a heap
+// object's BOXED BigInt schema field, read back via STATIC dot-access
+// (`obj.prop`, compiled to emitSchemaSlotRead's fixed-offset load,
+// module/core.js), never unboxes — readI64 (ir.js) only recognizes a
+// bare-name AST node (a plain string), and `['.', obj, prop]` is never
+// that, so this read site was never wired into Slice 3's R-recovery at
+// all. Reproduces with the REAL layout.js (a hand-mimicked single-call-site
+// shape does NOT reproduce — layout.js's i64Hex is called from ~9 sites,
+// forcing its own param bigintBoxed=true per the box-site census, and
+// LAYOUT needs a dynamic shadow — some site elsewhere reads it via bracket
+// access — so its NAN_PREFIX_BITS field is written through the WIDE
+// storedValue/carrierF64 path, a real box). Reading LAYOUT.NAN_PREFIX_BITS
+// back — even with NO i64Hex/atomNanHex call at all — returns the box's OWN
+// pointer bits (tag=PTR.BIGINT(5) + a compiler-heap offset) instead of the
+// field's payload. NOT closed this session: unboxing a schema-slot read
+// needs the field's own VAL kind (BIGINT or not) AND whether the write side
+// boxed it (needsDynShadow(obj), the exact condition emitPropAccess's own
+// write-side twin already checks) threaded into emitSchemaSlotRead — no
+// such per-field VAL-kind registry exists on ctx.schema today, so this is a
+// genuinely new plumbing gap, not a one-line fix; banked per this project's
+// own "verify, don't force" discipline (§11-§14 precedent) rather than
+// risk a rushed change to a call site every object field read goes through.
+test('KNOWN-FAIL (JZ_CARRIER_BOX=1 only, audit-#14/.work/carrier-representation-design.md §15): a boxed BigInt schema field read via static dot-access returns pointer bits, not its payload', () => {
+  if (process.env.JZ_CARRIER_BOX !== '1') return
+  const g = resolveModuleGraph(new URL('./fixtures/carrier-layout-repro.js', import.meta.url).pathname, { resolveNode: true })
+  const { rawField, undefAtom, nullAtom, ptrHex } = run(g.code, { modules: g.modules, optimize: 0 })
+  // TODO-flip guard (delete this `not` and assert `is` once fixed): every
+  // value below is currently WRONG under JZ_CARRIER_BOX=1.
+  not(rawField(), 9221120237041090560n, 'LAYOUT.NAN_PREFIX_BITS misreads as the box pointer, not 0x7FF8000000000000n')
+  not(undefAtom(), '0x7FF8000200000000', 'atomNanHex(2)/UNDEF_NAN corrupted by the same unboxed schema-field read')
+  not(nullAtom(), '0x7FF8000100000000', 'atomNanHex(1)/NULL_NAN corrupted the same way')
+  not(ptrHex(), '0x7FFB000300000400', 'i64Hex(ptrBits(...)) corrupted the same way')
 })
 
 // === Limits ===
