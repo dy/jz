@@ -6,6 +6,46 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## AUDIT-#14 RESPONSE (2026-08-07)
+P0 (carrier default flip BLOCKED — carrier-built kernel corrupts atom/string/
+closure CONSTANTS for BigInt-free programs, `() => undefined` O0 native
+nan:0x7FF8000200000000 vs kernel nan:0x7FFA8002000DA180, compiler-heap offset
+embedded): flip agent redirected mid-flight — revert flip edit, pin the 5
+native-vs-kernel differentials under carrier mode, hunt the internal
+bit-container leak (suspects = the census's 11 box sites, i64Hex/ptrBits ABI).
+Closed same-day, in-thread:
+  - item 5: BodyModel aliasClass distinct-by-default UNSOUND (`let b = a`
+    manufactured a distinctness proof) — now conservatively single-class
+    until the slice-4 provenance link threads real proofs (vectorize.js;
+    zero consumers existed, simd 158/158).
+  - item 8: --merge anchors carry-forward now stamps carried:true and can no
+    longer satisfy the partial-write guard (same-invocation pass required);
+    test/bench-claims.js rejects carried verdicts for partial evidence.
+  - item 9: validity gates un-inverted — committed-evidence-without-
+    machineState and elevated-live-swap now register as visible TODO rows
+    (test.todo, self-healing to real tests when the condition clears)
+    instead of green passes.
+  - item 4 (prose): registry BIGINT forwarding column now separates GROWTH
+    forwarding from REGION relocation (never-forwards ≠ region-immovable).
+  - item 10: remaining deleted-doc references marked (git history) across
+    layout.js/interop.js/test/deopt.js/module/atomics.js/jzify/transform.js/
+    scripts/bench-selfhost.mjs; README BigInt paragraph updated (carrier
+    implemented opt-in, not "not adopted"); vectorize.js UNWIRED comments
+    updated to slices-1-3-landed reality.
+QUEUED (multi-session, on the critical path): item 1 representation into
+frozen FunctionPlan (RawI64BigInt/BoxedBigInt/TaggedF64/Nullable lattice —
+subsumes ternaryBoxedNames/isCurrentlyBoxedBigint transient state; also make
+CARRIER_BOX session config, not import-time constant) · item 2 five
+still-failing representation shapes (flag off AND on: 5n-3n subtraction via
+generic param, Map-value-through-unary-callee, Array.from(BigInt64Array),
+BOOL∪NUMBER false join, dynamic subnormal in BigInt-using program) · item 3
+FeaturePlan/LinkDemand split (refines the strata design: DEMAND leaves
+ctx.features entirely) · item 4 registry → executable columns with generated
+consumer arms · item 6 BodyModel dedupe (old deriveOffsetTees path still
+runs beside new tables; per-name classify walks are quadratic-ish) + HIR
+provenance link · item 7 solver/session counts unchanged (43 ctx importers,
+31 analyzeBody, 59 presentVal).
+
 ## Status (2026-08-07, HEAP-KIND REGISTRY SLICE 1 landed — table + shadow-check, .work/research.md §Heap-kind registry)
 New leaf modules `layout-kinds.js` (root, sibling to layout.js/err-codes.js —
 not module/layout-kinds.js: layout.js itself lives at repo root, matched that
@@ -209,9 +249,9 @@ Deleted (recoverable from git history, all content reflected in landed code +
 ledger): the whole .work/archive/ dir (12 completed-program docs incl.
 bigint-round3 -- superseded by carrier-representation-design.md),
 fast-refresh-design.md (implemented b8fcfeb9+, docs live in bench/README),
-error-object-design.md (Slices A/B landed; Slice C's open spec = catch-site
+error-object-design.md (git history) (Slices A/B landed; Slice C's open spec = catch-site
 materialization of internal codes, see git show for detail),
-represented-maybe-undefined-design.md (program complete through presentVal;
+represented-maybe-undefined-design.md (git history) (program complete through presentVal;
 model as-landed in src comments + this ledger), rival-wat-analysis.md
 (items landed / verdicts recorded here). KEPT: this ledger + its two
 grep-first archives, research.md §Middle-end consolidation, the four active-frontier docs
@@ -3033,7 +3073,7 @@ original 7c23a06e comment worried about does not appear constructible under
 the current `censusMaybeUndefined` gate (Map/dict-only), so its cost was
 never actually paid, confirmed rather than assumed.
 Full account, mechanism rationale, and the kernel-parity bisection:
-`.work/error-object-design.md`'s "Three remaining gaps (audit-#11)" section.
+`.work/error-object-design.md (git history)`'s "Three remaining gaps (audit-#11)" section.
 
 **Files**: module/core.js (`isClosedObjNoStringMethod` schema-id gate,
 `errorMessageIR`'s VAL.HASH arm); src/compile/analyze.js (dict-mode-aware
@@ -3200,7 +3240,7 @@ bigint-USING program keeps the old, ambiguous `__to_num` heuristic wherever a
 value's STATIC kind is genuinely unproven (a dict-shaped property / mixed-
 type array element — not a plain local/param, which narrower inference
 already proves NUMBER). Nothing short of the boxed-bigint carrier redesign
-(ledgered, `.work/bigint-round3-design.md`, deliberately not adopted) removes
+(ledgered, `.work/bigint-round3-design.md (git history)`, deliberately not adopted) removes
 this. Pinned: `test/data.js` "audit-#11 P0-1: bigint-using-program carrier
 divergence — DOCUMENTED, still open by design" (`+o.a`/`+a[0]` give `1`
 instead of JS's `5e-324`, native AND kernel, both wrong the same documented
@@ -4090,7 +4130,7 @@ compilation, not `resolveCallee`).
   >2^52 bigints crossing kind-erased boundaries -- vanishingly rare
   in real programs); the 64-bit wrap model was never in question.
   Seven rounds banked a complete revisit map: design doc
-  (.work/bigint-round3-design.md incl. line-verified round-6
+  (.work/bigint-round3-design.md (git history) incl. line-verified round-6
   blueprint), solver fact LANDED and dormant (reps.bigintBoxed,
   erasure-diag.js), and every adjacent real bug found en route was
   FIXED and committed (compound-assign, closure return kinds,
@@ -4232,7 +4272,7 @@ compilation, not `resolveCallee`).
   TST_MANUAL=1 + await run() or the collector reads zero. Scratch:
   session scratchpad run-corpus-diag2.mjs, corpus-hits2.json,
   kernel-hits.json, repro-dict-bigint*.mjs.
-  ROUND 3 DESIGN COMPLETE 2026-07-29: .work/bigint-round3-design.md
+  ROUND 3 DESIGN COMPLETE 2026-07-29: .work/bigint-round3-design.md (git history)
   -- solver-computed bigintBoxed rep fact (raw iff def+all reachable
   uses prove BIGINT; clone narrow.js's nullability lattice), boxes
   materialize at last raw-eligible point, kind-erased readers
@@ -5685,7 +5725,7 @@ gap (§6's presentKindUnboxed/bigintBoxed producer wiring); `**` on BigInt
 ## §16→§18: toStrI64 STRING-census widening + presentVal param producers
 
 Lands both pieces §16 named as its own future slices. Full ledger: .work/
-represented-maybe-undefined-design.md §18.
+represented-maybe-undefined-design.md (git history) §18.
 
 **Piece A**: `toStrI64`'s STRING-census widening needed no new string-
 constant mechanism — found `__to_str`'s own UNDEF_NAN arm already calls

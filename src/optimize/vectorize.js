@@ -1123,14 +1123,14 @@ function deriveOffsetTees(body, ind) {
   return offsetTees
 }
 
-// ---- BodyModel (.work/research.md §BodyModel §2) — UNWIRED, zero consumers -------------
+// ---- BodyModel (.work/research.md §BodyModel §2) — slices 1-3 landed -------------
 //
 // One shared per-block record generalizing three independent private discovery predicates
 // (`_offsetLocalStride`/`_isAddressLocal`/`_isPixelIndexLocal`) plus `matchMirrorAddr` into a
 // single per-name write-shape classification (`addrTable`), and a per-load/store-SITE resolved
-// address table (`siteAccess`) + base-identity partition (`aliasClass`) built on top of it. Slice
-// 1 of the design's plan: computed alongside `bodyFacts` for every matched block, consumed by
-// NOTHING yet — every recognizer keeps reading its own private derivation exactly as before.
+// address table (`siteAccess`) + base-identity partition (`aliasClass`) built on top of it.
+// Consumers so far (slice 3): tryMapReduceVectorize + tryRampMap read `bl.addrTable`/
+// `bl.siteAccess`; the incremental trio (slices 5-7) still reads its own private derivations.
 // JZ_DEBUG_INVARIANTS shadow-asserts (`assertBodyModelSound`, below) prove the generalization
 // agrees with the private predicates it will eventually let recognizers retire, on every block
 // this compiler matches — see the design doc §6 "silently widening acceptance" risk this exists
@@ -1269,10 +1269,16 @@ function baseKeyOf(base) {
 
 // Partition of every base key seen in siteAccess into equivalence classes (design §4, v1 scope:
 // the static base-identity fact only — no dependence-edge graph, see §4/§7).
+// SOUNDNESS (audit-#14 item 5): two classes may be DISTINCT only under an existing proof
+// (distinctParams, separate fresh allocations, neverGrown anchors — none threaded until the
+// slice-4 HIR provenance link lands); absent proof, different keys are UNKNOWN aliasing and
+// must conservatively share one class — `let b = a` gives two names for one base, so
+// key-per-class would manufacture a distinctness proof out of a rename. Same-key positivity
+// ("provably the same base") doesn't need the partition: compare keys directly. Until a proof
+// channel is threaded, the sound partition is therefore the single universal class.
 function buildAliasClass(baseKeys) {
   const aliasClass = new Map()
-  let nextId = 0
-  for (const key of baseKeys) if (!aliasClass.has(key)) aliasClass.set(key, nextId++)
+  for (const key of baseKeys) if (!aliasClass.has(key)) aliasClass.set(key, 0)
   return aliasClass
 }
 
@@ -1512,8 +1518,8 @@ function matchLoopBrEnd(loopNode) {
 // here per LoopPlan; consumers read bl.writes/bl.referenced/bl.hasGlobalSet/bl.offsetTees
 // instead of re-walking.
 //
-// Also computes BodyModel (.work/research.md §BodyModel, UNWIRED — zero consumers as of
-// LoopPlan BodyModel slice 1): `addrTable`/`siteAccess`/`aliasClass`, spread in below exactly
+// Also computes BodyModel (.work/research.md §BodyModel; slices 1-3 landed — consumed by
+// tryMapReduceVectorize/tryRampMap): `addrTable`/`siteAccess`/`aliasClass`, spread in below exactly
 // like `offsetTees` was in slice 6. JZ_DEBUG_INVARIANTS shadow-asserts the generalization
 // against the private predicates it will eventually let recognizers retire.
 function bodyFacts(body, ind) {

@@ -803,7 +803,7 @@ export const wrap = (memSrc, inst, state) => {
   // finding-4: a RETURNED (not thrown) Error previously decoded as a plain
   // {message,name} object via mem.read's generic OBJECT case with no upgrade
   // at all, because only decodeThrown ever consulted `mem.errorSidToClass`
-  // (error-object-design.md §"Interop consequence" / audit-#9 P0-2's
+  // (error-object-design.md (git history) §"Interop consequence" / audit-#9 P0-2's
   // 'jz:errcls' custom section, read into this map at instantiation, above).
   // Gated the same way on both ends: `raw` must be a genuine NaN-boxed OBJECT
   // pointer (`isBox` + `type === 6`) before its aux bits are trusted as a sid

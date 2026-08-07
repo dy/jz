@@ -109,7 +109,7 @@ const timeMinWasm = (src) => {
 // N timed runs. String marshaling (fresh source pointer per run) stays outside the
 // timed region, same as timeMinWasm — the only difference is instantiation is
 // hoisted out of the loop too, removing the ~4% first-touch-page-fault tax fresh-
-// instance timing pays inside the timed region (see .work/selfhost-perf-groundtruth.md).
+// instance timing pays inside the timed region (see .work/selfhost-perf-groundtruth.md (git history)).
 // Returns null if the case traps mid-run (caller records it as skipped rather than
 // reporting a bogus/partial time).
 const timeMinWasmWarm = (src) => {

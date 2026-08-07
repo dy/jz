@@ -1586,13 +1586,14 @@ if (JSON_PATH) {
     // from usedTargets, i.e. only the cases/targets this run touched)
     // silently drop every other target's invocation string.
     const mergedInvocations = { ...PREV.meta?.invocations, ...jsonOut.meta.invocations }
-    // anchors carry-forward (audit-#13 hygiene item 2a): this run's own
-    // --verify-anchors verdict wins when present; otherwise PREV's own
-    // meta.anchors (a prior run's verdict, already certified against a
-    // machine state that may or may not still hold — the "carried-and-
-    // still-valid" half of the write guard below) rides through untouched
-    // instead of silently vanishing the moment a --merge doesn't re-verify.
-    const anchorsForMeta = anchorsResult || PREV.meta?.anchors || null
+    // anchors carry-forward (audit-#13 item 2a, tightened per audit-#14 item
+    // 8): this run's own --verify-anchors verdict wins when present; a PREV
+    // verdict rides through for the RECORD but stamped carried:true — it was
+    // certified against a machine state that may no longer hold (and this
+    // merge writes a NEW meta.machineState it was never measured under), so
+    // a carried verdict can never satisfy the partial-write guard below.
+    const anchorsForMeta = anchorsResult
+      || (PREV.meta?.anchors ? { ...PREV.meta.anchors, carried: true } : null)
     finalOut = { meta: { ...jsonOut.meta, invocations: mergedInvocations, ...(mixedVintage && { partial: true }), ...(anchorsForMeta && { anchors: anchorsForMeta }) }, cases: mergedCases }
 
     // Shrink-guard, defense in depth (audit-#12 item 4): the spread-then-
@@ -1619,15 +1620,16 @@ if (JSON_PATH) {
     }
   }
 
-  // Structural partial+unanchored write guard (audit-#13 hygiene item 2a):
-  // commit a9269390's manual restore proved a narrow --merge with no --verify-anchors
-  // can leave meta.partial=true riding on rival-anchor evidence nobody this
-  // run (or any prior carried run) actually confirmed still holds. Refuse the
-  // write outright — not a warning — unless anchors were verified THIS run or
-  // carried forward from a PREV verdict that still reads PASS, or the caller
-  // explicitly opts out via --allow-unanchored.
-  if (finalOut.meta.partial && !finalOut.meta.anchors?.pass && !ALLOW_UNANCHORED) {
-    console.error(`--merge: refusing to write partial evidence with no verified anchors (neither this run's --verify-anchors nor a carried prior PASS verdict backs it) — use --verify-anchors to certify this run, or --allow-unanchored to write anyway.`)
+  // Structural partial+unanchored write guard (audit-#13 item 2a, tightened
+  // per audit-#14 item 8): commit a9269390's manual restore proved a narrow
+  // --merge with no --verify-anchors can leave meta.partial=true riding on
+  // rival-anchor evidence nobody actually confirmed still holds. A CARRIED
+  // prior PASS does not count — it certifies a different machine state than
+  // the one this write records. Refuse the write outright — not a warning —
+  // unless anchors were verified THIS invocation, or the caller explicitly
+  // opts out via --allow-unanchored.
+  if (finalOut.meta.partial && !(anchorsResult?.pass === true) && !ALLOW_UNANCHORED) {
+    console.error(`--merge: refusing to write partial evidence without a SAME-INVOCATION anchors pass (a carried prior verdict certifies a different machine state) — add --verify-anchors to this run, or --allow-unanchored to write anyway.`)
     process.exit(1)
   }
 

@@ -14,7 +14,7 @@ const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Float16Array','Int3
   'ArrayBuffer','BigInt64Array','BigUint64Array','DataView'])
 
 // RHS names the SOUND core machinery (prepare's 'instanceof' handler + emit.js's
-// emitInstanceof, error-object-design.md §4) already supports — mirrors prepare/
+// emitInstanceof, error-object-design.md (git history) §4) already supports — mirrors prepare/
 // index.js:83's INSTANCEOF_ALLOW verbatim (same two upstream arrays, same four
 // tag names) so default and strict mode can never drift on which RHS is sound.
 // audit-#8 P0-1: this file's own 'instanceof' handler used to answer every one of

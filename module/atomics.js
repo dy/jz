@@ -1,7 +1,7 @@
 /**
  * Atomics — wasm threads (0xfe atomics) mapping for shared-memory SPMD kernels.
  *
- * v1 contract (Workers v1, .work/extension-surface.md): shared TYPED ARRAYS +
+ * v1 contract (Workers v1, .work/extension-surface.md (git history)): shared TYPED ARRAYS +
  * scalars only. Receivers must be PROVEN Int32Array — the one JS type whose
  * Atomics semantics map 1:1 onto i32.atomic.* (BigInt64Array can join later).
  * Strings/objects/hashes stay thread-local by documented contract.

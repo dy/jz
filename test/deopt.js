@@ -2,12 +2,12 @@
 // wrongly, paying the dynamic-dispatch tax despite carrying enough type evidence.
 //
 // Each case was found by firing realistic source "missiles" at the compiler and
-// reading the WAT fingerprint (see .work/battery.mjs, .work/FINDINGS.md). The
+// reading the WAT fingerprint (see .work/battery.mjs, .work/FINDINGS.md (git history)). The
 // pinning discipline mirrors perf-ratchet.js / forin-deopt.js: a correctness
 // `diff()` guards every case (never defend a miscompile), and each codegen pin
 // is a regression backstop that locks in the fix.
 //
-// The three deopt classes fixed here (full root-cause + fix in .work/FINDINGS.md):
+// The three deopt classes fixed here (full root-cause + fix in .work/FINDINGS.md (git history)):
 //
 //   D1 — built-in numeric properties (.length/.byteLength/.byteOffset/.size) in `+`.
 //        FIXED: propValType trait table (kind-traits.js) types these as NUMBER on
@@ -22,7 +22,7 @@
 //        direct-closure copy propagation (emit.js) makes that copy directly callable.
 //
 // Confirmed-reasonable cases (the "untyped stays dynamic" contract, NOT deopts)
-// are documented in .work/FINDINGS.md so future fuzzing doesn't re-flag them.
+// are documented in .work/FINDINGS.md (git history) so future fuzzing doesn't re-flag them.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, onWasi } from './_matrix.js'

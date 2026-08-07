@@ -208,7 +208,7 @@ export const ATOM_HI = {
 
 /**
  * jz:i64exp `s`-lane sentinel kinds (audit-#11 ABI formalization —
- * represented-maybe-undefined-design.md §6/§12 Slice 5, "present-key BigInt
+ * represented-maybe-undefined-design.md (git history) §6/§12 Slice 5, "present-key BigInt
  * through the export-boundary census"). Named here instead of as a bare
  * 1-4 integer independently re-derived at each of the compiler's producer
  * (kind.js censusBigintSentinelKind, compile/index.js's `func._exportI64`
