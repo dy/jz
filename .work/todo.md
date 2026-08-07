@@ -6,6 +6,22 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, .work markdown DELETION sweep per user directive)
+Deleted (recoverable from git history, all content reflected in landed code +
+ledger): the whole .work/archive/ dir (12 completed-program docs incl.
+bigint-round3 -- superseded by carrier-representation-design.md),
+fast-refresh-design.md (implemented b8fcfeb9+, docs live in bench/README),
+error-object-design.md (Slices A/B landed; Slice C's open spec = catch-site
+materialization of internal codes, see git show for detail),
+represented-maybe-undefined-design.md (program complete through presentVal;
+model as-landed in src comments + this ledger), rival-wat-analysis.md
+(items landed / verdicts recorded here). KEPT: this ledger + its two
+grep-first archives, architecture-plan.md, the four active-frontier docs
+(carrier-invariant, carrier-representation, region-arena, region-slice1-build)
++ evidence files (region-slice1-liveness, kernel-memory-curve,
+carrier-box-baseline), and the user's own strategy/research/ecosystem/
+marketing docs.
+
 ## Status (2026-08-06, WARM + MEMORY-FLOOR reds RESOLVED as ENVIRONMENT, not code)
 The evidence-finale's two new reds are one machine condition: vm.swapusage
 13.4GB/14.3GB USED after ~3 days of continuous agent compute (8GB node heaps,
