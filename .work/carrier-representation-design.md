@@ -851,5 +851,92 @@ investigation, at least one (line 1131, "architecturally out of reach")
 additionally needs export/interop WRITE-side boxing that Slice 2 explicitly
 deferred and this slice's charter (read side only) does not add.
 
+**Local commit:** 48139d9b.
+
+## §11. Slice 4 — ATTEMPTED, WALL HIT, banked (2026-08-07)
+
+Flipped `CARRIER_BOX` (src/ctx.js) default to ON. Two real bugs found; one
+fixed and kept, one banked as the slice's honest boundary.
+
+**Bug 1 — FOUND AND FIXED (kept, independent of the default flip).**
+`export let f = () => { let x = 5n; return x + 1n }` under `JZ_CARRIER_BOX=1`
+returned the box's own POINTER bits (`9221823924482868224n`, decoding to
+type=5/aux=0/offset=1024 — a real PTR.BIGINT pointer) instead of `6n`.
+Root cause: emit.js's `'return'` handler boxes ANY inline (non-bare-name)
+BIGINT return expression unconditionally (`needsBigintBox`'s own "inline
+expressions box at emission time, no rep needed" contract) — correct for an
+INTERNAL caller (Slice 3's read-side arms handle a boxed F64 correctly) but
+WRONG for `ctx.func.exported`: `synthesizeBoundaryWrappers` (compile/
+index.js) gives a proven-BIGINT export's wrapper an ALREADY-UNAMBIGUOUS i64
+ABI (`resultBigint`/`resultBigintSentinel`/`resultDynamic` all do a bare
+`i64.reinterpret_f64(call $name)`, no `r` decode marker — "the BigInt IS the
+value" is the documented contract) — boxing before that reinterpret hands
+the wrapper a pointer to misreinterpret as a payload. **Fixed** by excluding
+`ctx.func.exported` from `needsBox`'s condition (src/compile/emit.js) — the
+i64-export channel was never ambiguous to begin with, so it never needed
+boxing. This fix is orthogonal to the default-flip decision (harmless when
+CARRIER_BOX is off, correct when explicitly on) and is KEPT in this commit.
+
+**Bug 2 — FOUND, NOT FIXED, the actual wall.** `test/watr.js`'s own
+self-hosted-through-jz battery (`jz(watrJs, {modules: ENTRY_MODULES, …})` —
+compiling the `watr` npm package's OWN source, including its real i64
+LEB128 encoder `encode.js`, then using THAT compiled-by-jz assembler to
+compile hand-written WAT test cases and diff byte-for-byte against watr
+running natively) — 4 of 35 assertions fail under `JZ_CARRIER_BOX=1`, ALL
+involving extreme-magnitude 64-bit values: `i64.smax`/`i64.smin` literal
+encoding, `memory64` limits, `v128.const i64x2` max/min, a large table
+index. Isolated to a minimal repro (a `while(true)`-loop-carried BigInt
+local doing `n = n >> 7n` / `n & 0x7Fn` / `n === -1n`, LEB128-shaped)
+independently — that repro is ALSO wrong, but on FURTHER isolation turned
+out to be wrong even OFF the carrier path (reproduces identically with
+`JZ_CARRIER_BOX=0` and on the pre-Slice-3 worktree's own HEAD) — a
+DIFFERENT, unrelated, genuinely pre-existing arithmetic bug the carrier
+program does not own; a red herring, not this wall's cause.
+
+**Root-caused to Slice 2, not Slice 3/4, by direct reproduction**: a
+disposable `git worktree` at 35f5ce94 (heap-kind registry Slice 1, the
+commit immediately BEFORE this session's Slice 3 work) with
+`JZ_CARRIER_BOX=1` forced reproduces the SAME 4 `test/watr.js` failures,
+byte-for-byte (`memory64 limits: byte 23`, `int literals: byte 95`, `call
+indirect case: binary length`, `v128.const i64x2 max/min: byte 15`) — on
+that clean HEAD `JZ_CARRIER_BOX=0` (its own default) passes 35/35. This
+proves the bug lives entirely in Slice 2's landed def-side box wiring
+(carrierF64/coerceArg/'return'/'?:', ir.js/emit.js — none of it touched by
+Slice 3's read-side-only charter), surfacing for the FIRST TIME here
+because Slice 2's own gates never ran a real end-to-end BigInt-heavy
+program under the flag — its own landing notes say so explicitly
+("Correctness beyond 'does it allocate' was NOT the target"). Not isolated
+further: the actual watr `encode.js` code path differs from every hand-
+built repro tried, and diagnosing it properly needs the SAME unhurried,
+dedicated-session treatment Slice 2's own def-side wiring got — not a
+same-session fix bolted onto a default-flip investigation, which is
+exactly the discipline the round-1/round-2 history (§2 above) exists to
+enforce.
+
+**Decision: revert the default flip, keep everything independently green.**
+`CARRIER_BOX` reverted to OFF by default (`JZ_CARRIER_BOX=1` stays as the
+opt-in probe flag, unchanged shape from Slice 2/3). Verified clean after
+the revert: full battery 3397/3405 (same 2 pre-existing failures, 6 skip),
+kernel-parity 33/33, kernel-oracle 451/451, selfhost 21/21, fresh build ×2
+byte-identical
+(`1fc27b44d6de974be7901d9a4af01959319c065bac9e3bf2a739e4f5ff635c30`),
+`test/watr.js` 35/35 with the flag back at its default. Bug 1's fix stays
+landed (dead-but-correct off-flag, real fix on-flag).
+
+**Oracle-flip inventory: NONE closed this slice** (the default never
+flipped, so nothing in `test/dyn-keys.js` or the curated kernel-oracle rows
+changes state — all stay exactly where Slice 3 left them). The one
+concrete, durable gain: bug 1, a genuine Slice-2 export-boundary
+correctness fix, found and closed via this attempt.
+
+**What Slice 4 needs before a second attempt**: a dedicated root-cause
+session on Slice 2's def-side wiring specifically, using `test/watr.js`'s
+own self-hosted-through-jz battery (not a hand-built repro — confirmed NOT
+equivalent) as the reproduction harness, with `JZ_CARRIER_BOX=1` forced and
+the failure narrowed via bisection of `encode.js`'s actual functions
+(`i64`/`uleb`/hex-literal parsing) rather than a mimicked shape. Slice 5
+(retire the magnitude heuristics) is blocked on Slice 4 landing — not
+attempted this session.
+
 **Local commit:** (recorded after this section lands in the commit itself).
 

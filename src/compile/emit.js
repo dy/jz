@@ -5101,17 +5101,29 @@ export const emitter = {
     const ambiguous = boxes && hasAmbiguousBoolMerge(expr)
     const emitted = ambiguous ? emitIdentitySafe(expr) : emit(expr)
     // Slice 2 (CARRIER PROGRAM, .work/carrier-representation-design.md §7)
-    // return def-side wiring — OFF by default (CARRIER_BOX). Not a NEW fact:
-    // `boxes`'s own carrierF64 call two lines below already boxes a returned
-    // BIGINT when the function's result is a mixed-BOOL-atom return — this
-    // consults the SAME `bigintBoxed` rep at the one more consumption site a
-    // uniform (non-mixed) return tail would otherwise skip entirely (the
+    // return def-side wiring. Not a NEW fact for the bare-name case: `boxes`'s
+    // own carrierF64 call two lines below already boxes a returned BIGINT
+    // when the function's result is a mixed-BOOL-atom return — this consults
+    // the SAME `bigintBoxed` rep at the one more consumption site a uniform
+    // (non-mixed) return tail would otherwise skip entirely (the
     // `asParamType` fallback), for a name whose rep was already proven boxed
     // by some OTHER sink in this same body (a dict store earlier, a closure
-    // capture, …) — analyze.js's W-sink walk has no return-specific producer
-    // of its own (confirmed: no markBigintSink call at op==='return'), so this
-    // only fires when the fact already holds for an independent reason.
-    const needsBox = CARRIER_BOX && pk == null && rt === 'f64' && needsBigintBox(expr)
+    // capture, …). For an INLINE BIGINT expression (`return x + 1n`),
+    // needsBigintBox boxes unconditionally (analyze.js's own "inline
+    // expressions box at emission time, no rep needed" contract) — sound for
+    // an INTERNAL caller (Slice 3's read-side arms handle a boxed F64 result
+    // correctly) but NOT for `ctx.func.exported`: synthesizeBoundaryWrappers
+    // (compile/index.js) gives a proven-BIGINT export's own wrapper an
+    // ALREADY-UNAMBIGUOUS i64 ABI (`resultBigint`/`resultBigintSentinel`/
+    // `resultDynamic` all do a bare `i64.reinterpret_f64(call $name)`, no `r`
+    // marker — "the BigInt IS the value, no reinterpret needed" is the
+    // documented contract there) — boxing here would hand that wrapper a
+    // POINTER's bits to reinterpret as if they were the payload, corrupting
+    // every such export (found live: `export let f = () => 5n + 1n` under
+    // CARRIER_BOX=1 returned the box's own pointer bits, not 6n). Excluding
+    // exported functions costs nothing: that channel was never ambiguous to
+    // begin with, so it never needed the box in the first place.
+    const needsBox = CARRIER_BOX && !ctx.func.exported && pk == null && rt === 'f64' && needsBigintBox(expr)
     const ir = needsBox ? boxBigInt(asI64(emitted))
       : pk != null ? asPtrOffset(emitted, pk)
       : boxes ? (ambiguous ? emitted : carrierF64(expr, emitted))

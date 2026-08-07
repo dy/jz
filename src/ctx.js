@@ -716,16 +716,22 @@ export const optFlagsOf = (cfg) => {
 
 export const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
-// Carrier program (.work/carrier-representation-design.md) Slice 2 def-side
-// gate: OFF by default — every consumer of `bigintBoxed` (ir.js carrierF64,
-// emit.js coerceArg/'return'/'?:') stays on today's raw-carrier path
-// unconditionally, byte-identical to pre-Slice-2 output. ON only for the
-// flagged probe build that proves the def-side box wiring engages at the
-// 11 measured box sites — NOT a correctness switch for real programs: the
-// R-recovery read side (Slice 3, unboxing at consumption) is not landed, so
-// a JZ_CARRIER_BOX=1 build can allocate a box a downstream raw-bits reader
-// then misinterprets as pointer bits. Do not flip this on for anything but
-// a targeted Slice-2 probe.
+// Carrier program (.work/carrier-representation-design.md). Slice 4 (flip
+// this default ON) was ATTEMPTED and hit a wall — banked, not landed; see
+// §11 of the design doc for the full writeup. OFF by default, matching
+// Slice 2/3's own bound: Slice 2 landed the def-side box wiring (ir.js
+// carrierF64, emit.js coerceArg/'return'/'?:'); Slice 3 landed the
+// R-recovery read side (every kind-erased reader's PTR.BIGINT arm, src/
+// ir.js readI64) — both independently verified. But flipping this flag's
+// DEFAULT surfaced a pre-existing SLICE 2 bug (not introduced by Slice 3,
+// confirmed by reproducing it on a clean pre-Slice-3 worktree with
+// JZ_CARRIER_BOX=1 forced): a loop-carried, extreme-magnitude BigInt local
+// (test/watr.js's own self-hosted-through-jz LEB128 i64 encoder, compiling
+// watr's `encode.js`) produces wrong bits under boxing. Root cause not
+// isolated — this needs the SAME unhurried, dedicated investigation Slice
+// 2's own def-side wiring got, not a rushed fix during a read-side/default-
+// flip session. `JZ_CARRIER_BOX=1` stays as the opt-in probe flag it always
+// was, for exactly this kind of targeted differential investigation.
 export const CARRIER_BOX = typeof process !== 'undefined' && process.env?.JZ_CARRIER_BOX === '1'
 
 // Session wave W1 (stage 4): the lifecycle table above is an executable,
