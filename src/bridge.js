@@ -16,7 +16,7 @@ export { emitter } from './ctx.js'
 
 export const emit = (...a) => ctx.bridge.emit(...a)
 // Identity-safe re-emission of an ambiguous BOOL-merge node (kind.js
-// hasAmbiguousBoolMerge, .work/bool-merge-identity-design.md) — the
+// hasAmbiguousBoolMerge, .work/todo.md §deletion-sweep) — the
 // escape-site twin of `emit` for consumers (container/closure-arg boxing)
 // that need a merge's own BOOL arm to keep its atom identity. Bridged the
 // same way `emit` is (module/*.js and emit-assign.js can't import emit.js
@@ -47,7 +47,7 @@ export const storedValue = (node) => hasAmbiguousBoolMerge(node) ? emitIdentityS
 // `emit(node)`. Reinvented inline at src/compile/emit.js:1176 (that file owns
 // emit/emitIdentitySafe directly, no bridge round-trip needed there) and at
 // module/core.js's typeof operand — this is the bridged copy for module/*.js
-// consumers (formatter-dispatch-design.md).
+// consumers (.work/todo.md §deletion-sweep).
 export const argIR = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node)
 
 export const flat = (...a) => ctx.bridge.flat(...a)

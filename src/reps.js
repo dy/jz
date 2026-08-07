@@ -82,7 +82,7 @@ export const VAL = {
  *   (init or an assignment was a nullish literal) — suppresses the `=== null` /
  *   `=== undefined` constant-fold even when `val` is a definite non-null kind.
  * @property {boolean} [bigintBoxed]      VAL.BIGINT binding must materialize as a real
- *   PTR.BIGINT heap box (round-3/4 boundary boxing, .work/bigint-round3-design.md) —
+ *   PTR.BIGINT heap box (round-3/4 boundary boxing, .work/carrier-representation-design.md) —
  *   false (the default/absent case) means raw i64-as-f64 forever. true iff some
  *   reachable use is a kind-erasing W-sink: an intra-body sink (analyze.js walk —
  *   dyn-prop/array-elem store, Set/Map, ternary-nullish merge, closure capture,
@@ -92,7 +92,7 @@ export const VAL = {
  *   explicitly before raw i64 ops (ir.js boxBigInt/unboxBigInt).
  * @property {boolean} [mayBeUndefined]   binding's value can be real JS `undefined`
  *   at runtime despite a definite `val` kind claim — the container-read
- *   generalization of `nullable` (.work/represented-maybe-undefined-design.md
+ *   generalization of `nullable` (.work/todo.md §deletion-sweep
  *   §2). Slice 1 (decl-time producer, analyze.js analyzeValTypes' `let`/
  *   `const`/`=` sites): true when the RHS is itself a dict/Map maybeUndefined-
  *   shaped read (censusMaybeUndefinedKind(rhs) != null) or a bare name that
@@ -134,7 +134,7 @@ export const VAL = {
  *   consumers, kind-traits.js calleeValType, this design must not disturb).
  * @property {string}  [presentVal]       VAL.* kind the census claims for a
  *   binding's value WHEN PRESENT — the opt-in KIND-carrying sibling of
- *   `mayBeUndefined` (.work/represented-maybe-undefined-design.md §14,
+ *   `mayBeUndefined` (.work/todo.md §deletion-sweep §14,
  *   audit-#10's opt-in re-enablement gate, superseding §5's global-VT-
  *   promotion path Slice 4 landed and audit #10 reverted). NEVER a substitute
  *   for `val` and NEVER consulted by `valTypeOf`/`lookupValType` — `val` stays
@@ -197,13 +197,13 @@ export const VAL = {
  * @property {string}  [dictValueValType] VAL.* kind of every value ever written
  *   through `name[key] = v` (any key, HASH dict-mode local or global) —
  *   first-wins-then-clash lattice, absent/null = unproven or mixed. Additive-
- *   only fact (dict-value-census design, .work/dict-value-census-design.md):
+ *   only fact (dict-value-census design, .work/todo.md §deletion-sweep):
  *   NEVER a substitute for `val`, never mutated alongside it. Two producers
  *   remain live — analyze.js's same-body scan (local half, updateRep) and
  *   observeProgramSlots' dictValueTypes census (global half, updateGlobalRep)
  *   — the fact itself stays additive-only, never a `val` substitute. Two
- *   consumers, two different re-enablement states (represented-maybe-
- *   undefined-design.md, Slice 1 of §8): `dictValueKindOf` (kind.js) — the
+ *   consumers, two different re-enablement states (.work/todo.md
+ *   §deletion-sweep, Slice 1 of §8): `dictValueKindOf` (kind.js) — the
  *   helper VT['[]']/VT['.']'s dict-mode fold used to call to promote a dict
  *   read to an EXACT `val` — stays DORMANT, called from nowhere; re-enabling
  *   THAT is Slice 4, gated on §5's full criteria. `censusMaybeUndefinedKind`'s
@@ -212,20 +212,20 @@ export const VAL = {
  *   SAME `dictValueKindOf` helper directly (bypassing VT/valTypeOf entirely)
  *   and is RE-ENABLED (Slice 1), now also answering a bare NAME whose rep
  *   carries `mayBeUndefined` (reps.js, this file). See
- *   .work/represented-maybe-undefined-design.md for the `mayBeUndefined` REP
+ *   .work/todo.md §deletion-sweep for the `mayBeUndefined` REP
  *   field this needs and full re-enablement criteria for the VT-side
  *   consumer. Do not wire dictValueKindOf back into VT['[]']/VT['.'] without
  *   first meeting §5.
  * @property {string}  [mapValueValType] VAL.* kind of every value ever written
  *   through a proven-VAL.MAP receiver's `recv.set(k, v)` (any key) —
- *   dictValueValType's Map-census Tier 1 sibling (.work/map-value-census-
- *   design.md), same first-wins-then-clash lattice, additive-only, NEVER a
+ *   dictValueValType's Map-census Tier 1 sibling (.work/todo.md
+ *   §deletion-sweep), same first-wins-then-clash lattice, additive-only, NEVER a
  *   substitute for `val`. Two producers remain live — analyze.js's same-body
  *   scan (local half, updateRep) and observeProgramSlots' mapValueTypes
  *   census (global half, updateGlobalRep). Same two-consumer split as
  *   dictValueValType above: `mapValueKindOf` (kind.js) — VT['()']'s `.get`
- *   short-circuit — stays DORMANT (re-enabling it is Slice 4, .work/
- *   represented-maybe-undefined-design.md §5); `censusMaybeUndefinedKind`'s
+ *   short-circuit — stays DORMANT (re-enabling it is Slice 4,
+ *   .work/todo.md §deletion-sweep §5); `censusMaybeUndefinedKind`'s
  *   Map arm (kind.js), calling the SAME helper directly, is RE-ENABLED
  *   (Slice 1) alongside a bare-name REP fallback consulting the new
  *   `mayBeUndefined` field (this file). Do not wire mapValueKindOf back into

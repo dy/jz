@@ -579,8 +579,8 @@ export function emitElementAssign(arr, idx, val) {
   const useRuntimeKeyDispatch = !idxNumericName &&
     (keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING))
   // storedValue (not asF64(emit(idx))): the universal computed-key emit site
-  // feeding $__dyn_set — an 18th unswept MECHANISM A site (formatter-
-  // dispatch-design.md). storedValue already returns f64-typed IR in every
+  // feeding $__dyn_set — an 18th unswept MECHANISM A site (.work/todo.md
+  // §deletion-sweep). storedValue already returns f64-typed IR in every
   // branch, so no asF64 wrap is needed; the non-ambiguous fallback
   // (carrierF64) is byte-identical to the asF64(emit(idx)) call it replaces.
   const keyExpr = storedValue(idx)

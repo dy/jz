@@ -1142,7 +1142,7 @@ export function toNumF64(node, v) {
   if (typeof node === 'string' && ctx.func.maybeNullish?.has(node)) return coerceNullishToNum(asF64(v))
   const vt = valTypeOf(node)
   if (vt === VAL.BOOL) return typed(['f64.convert_i32_s', truthyIR(v)], 'f64')
-  // Slice 7 widening (.work/represented-maybe-undefined-design.md §14/§15's own
+  // Slice 7 widening (.work/todo.md §deletion-sweep §14/§15's own
   // honest-boundary gap): `vt` stays permanently null for a decl/param/capture-
   // hopped census-NUMBER claim (§14 point 3 — `val` never carries a census
   // claim, by construction) even though `presentVal` (Slice 6, kind.js
@@ -1156,7 +1156,7 @@ export function toNumF64(node, v) {
   // permissively unsound for BIGINT as it always was, not newly closed here).
   const censusNum = vt == null && censusMaybeUndefinedKind(node) === VAL.NUMBER
   if (vt === VAL.NUMBER || vt === VAL.BIGINT || censusNum) {
-    // maybeUndefined join (.work/maybe-undefined-design.md §1a): a dict-census
+    // maybeUndefined join (.work/todo.md §deletion-sweep §1a): a dict-census
     // NUMBER claim is a "every value ever WRITTEN" fact, not a "this key
     // exists" proof — an absent key reads real `undefined` at runtime. Gated
     // on VAL.NUMBER only (never BIGINT: real JS THROWS mixing BigInt and
@@ -1173,7 +1173,7 @@ export function toNumF64(node, v) {
       // Map direct-read shape (censusShapedNode) and a bare name (a local
       // read) — both pure. NOT true for kind.js's call-result arm
       // (censusMaybeUndefinedKind's `callResultMayBeUndefinedKind` fallback,
-      // represented-maybe-undefined-design.md §5 criterion 3): an arbitrary
+      // .work/todo.md §deletion-sweep §5 criterion 3): an arbitrary
       // function call can have real side effects, and cloneIR's triplication
       // would fire them 3x. Found LIVE (not assumed): a captured-mutation
       // counter incremented 3x instead of once when its value flowed through
@@ -1329,8 +1329,8 @@ export function toNumF64(node, v) {
  *  an abrupt completion through the closure call. */
 export function toStrI64(node, v) {
   const vt = valTypeOf(node)
-  // §16→§18 STRING-census widening (.work/represented-maybe-undefined-
-  // design.md): mirrors toNumF64's NUMBER-census widening (38dd0dca) for the
+  // §16→§18 STRING-census widening (.work/todo.md §deletion-sweep):
+  // mirrors toNumF64's NUMBER-census widening (38dd0dca) for the
   // STRING case. Two shapes both currently fall all the way through to the
   // fully generic `__to_str` dynamic dispatch at the bottom of this function
   // whenever `censusMaybeUndefined(node)` is true: a decl/param-hopped
@@ -1366,7 +1366,7 @@ export function toStrI64(node, v) {
   // generic __to_str dispatch, dragging its NUMBER arm's Ryu float formatter
   // (__ftoa/__ftoa_shortest/__ryu_*) into any module with a dynamic template
   // literal — even one that never stringifies a number.
-  // maybeUndefined join (.work/maybe-undefined-design.md §1/Slice 5): a
+  // maybeUndefined join (.work/todo.md §deletion-sweep §1/Slice 5): a
   // dict-census STRING claim (every value ever WRITTEN through `name[k]=v`
   // was a string) is, same as the NUMBER claim toNumF64 already guards,
   // "every value ever written" — NOT "this key exists". An absent key reads
@@ -1385,7 +1385,7 @@ export function toStrI64(node, v) {
   // during the Slice 5 site survey. Fixed at THIS chokepoint (not the
   // caller) so every caller (String(), strcat's per-part loop) inherits it.
   if (vt === VAL.STRING && !censusMaybeUndefined(node)) return asI64(v)
-  // Error-schema special case (.work/error-object-design.md §Consequence): `${e}`/
+  // Error-schema special case (.work/todo.md §deletion-sweep §Consequence): `${e}`/
   // String(e) on a real Error object must format via spec's Error.prototype.toString
   // (name if message empty / message if name empty / name+': '+message otherwise /
   // 'Error' if both empty — ECMA-262 20.5.3.4), not the generic OBJECT
@@ -1922,8 +1922,8 @@ export const isNull = (f64expr) => matchF64Bits(f64expr,
  *  `$__jz_err` channel. audit-#10 kind-specific member-access/call nullish-
  *  receiver checks are the caller: a REAL schema-tagged Error object, not a
  *  bare numeric code, is what makes `catch (e) { e instanceof TypeError }`
- *  true in-wasm (the tag+schema arm of the Error model's truth table, error-
- *  object-design.md §4 — the numeric-code range arm it also names was
+ *  true in-wasm (the tag+schema arm of the Error model's truth table,
+ *  .work/todo.md §deletion-sweep §4 — the numeric-code range arm it also names was
  *  removed as unsound, audit-#8 P0-2) and what lets interop.js's
  *  decodeThrown resolve an UNCAUGHT throw to a real host TypeError
  *  (errorSidClassOf) — no new decode machinery on either side, both paths

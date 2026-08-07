@@ -12,10 +12,11 @@ finding and its P0-4 corollary:
 > materialized." (P0-4)
 
 This doc is the seventh pass at the BigInt-carrier half of the problem
-(rounds 1–6, `.work/archive/bigint-round3-design.md`) and the first to
+(rounds 1–6, deleted round-3 design doc — history in `.work/todo.md`
+§deletion-sweep, this doc supersedes it) and the first to
 reconcile it with the OTHER half that has actually shipped since the
-parking decision: `mayBeUndefined`/`presentVal`
-(`.work/represented-maybe-undefined-design.md`). It does not re-open the
+parking decision: `mayBeUndefined`/`presentVal` (deleted design doc,
+history in `.work/todo.md` §deletion-sweep). It does not re-open the
 parking decision — it re-measures it, against today's tree, with numbers
 this session collected live, and hands the user a build-vs-keep-parked
 call with those numbers attached.
@@ -137,9 +138,9 @@ of scope") — a param-hop through a callee gets the right `typeof` (this
 session's own kind-5 sentinel machinery gets that far) but the WRONG
 VALUE (`r !== -5n`, pinned as a documented wrongness, not a crash).
 Two more documented divergences close as a side effect of real boxing:
-the bitwise both-absent `0n`-vs-`0` carrier-bits collision
-(`.work/represented-maybe-undefined-design.md` §19's own "documented
-gap" row) and the mixed-kind-Map negative control (§13, "honestly pinned
+the bitwise both-absent `0n`-vs-`0` carrier-bits collision (deleted design
+doc's §19 "documented gap" row, history in `.work/todo.md` §deletion-sweep)
+and the mixed-kind-Map negative control (§13, "honestly pinned
 as the DOCUMENTED, UNFIXED behavior").
 
 **`ctx.features.bigint`'s ordering fragility is a live, present-day bug
@@ -162,7 +163,8 @@ BigInt-carrier side, independently of this doc.
 ## 2. History metabolized
 
 - **Round 1 (always-box)**: correct, warm-blocked — measured
-  1.012–1.023× against the era's 0.99× cap (bigint-round3-design.md:3-7).
+  1.012–1.023× against the era's 0.99× cap (deleted round-3 design doc,
+  history in `.work/todo.md` §deletion-sweep).
   Failure mode: boxed EVERY BigInt binding unconditionally, including
   provably-raw arithmetic-only ones, paying real heap allocation in hot
   loops that never needed it.
@@ -204,7 +206,8 @@ BigInt-carrier side, independently of this doc.
   THEIR OWN CALL SITES, independent of how many raw BigInt literals exist
   elsewhere in the compiler's source — the erasure-diag probe (§1) is the
   live proof, run against the CURRENT (post-scrub-abandonment) tree.
-- **`represented-maybe-undefined-design.md` (audit #9–#11)**: built the
+- **The presentVal design** (deleted doc, history in `.work/todo.md`
+  §deletion-sweep, audit #9–#11): built the
   OTHER half of the mandate — `mayBeUndefined`/`presentVal` REP_FIELDS,
   propagated through decl/param/return/capture via the SAME
   `narrow.js` call-site-fixpoint machinery `nullable`/`bigintBoxed`
@@ -333,7 +336,7 @@ kind. This is the direct mechanism the mandate names: "represent
 | 10 | `ctx.features.bigint` itself (`src/prepare/index.js:1159` producer; `src/ir.js:1216`, `module/number.js:1547` — its ONLY two consumers) | Dead: its sole purpose was scoping the magnitude heuristic's cost. Deleting it also deletes the ordering-fragility bug (§1) at the root, not just its symptom |
 | 11 | `test/dyn-keys.js:1131` KNOWN-FAIL (zero-evidence dynamic-param pair, wrong `typeof`) | Flips green |
 | 12 | `test/dyn-keys.js:1309` KNOWN-FAIL (param-hop, right type/wrong value) | Flips green |
-| 13 | `.work/represented-maybe-undefined-design.md` §19's documented bitwise `0n`-vs-`0` gap | Closes (both operands are tag-checkable, no carrier-bits collision) |
+| 13 | Deleted presentVal design's §19 documented bitwise `0n`-vs-`0` gap (history in `.work/todo.md` §deletion-sweep) | Closes (both operands are tag-checkable, no carrier-bits collision) |
 | 14 | §13's mixed-kind-Map negative control (documented, unfixed) | Closes (every value in a mixed-kind Map decodes by its own tag, not a whole-receiver census claim) |
 | 15 | `test/data.js:46-80`'s subnormal-literal / 2^52-1 curated-then-fixed rows | Stay fixed, but the FIX no longer depends on `ctx.features.bigint`'s scan order — the fragility class these tests exist to pin dies at the root, not just at these two literals |
 

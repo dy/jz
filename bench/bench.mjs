@@ -1083,7 +1083,7 @@ let EMIT_WEB = false
 // rows still get each target's median-of-round values. Use focused:
 // `bench.mjs --paired --targets=jz,as shapes --json`.
 let PAIRED = 0
-// --merge (composes with --json[=path], .work/fast-refresh-design.md Piece 1):
+// --merge (composes with --json[=path], bench/README.md Piece 1):
 // a fast jz-only refresh writes just the selected (case,target) rows into the
 // existing file at JSON_PATH — every other row is byte-preserved — instead of
 // --json's plain whole-file rewrite. REFUSES (nonzero exit, no write —
@@ -1354,7 +1354,7 @@ for (const cid of selectedCases) {
   }
 }
 
-// --verify-anchors[=N] (design Piece 2, .work/fast-refresh-design.md): a fast
+// --verify-anchors[=N] (design Piece 2, bench/README.md): a fast
 // jz-only refresh trusts the STORED rival rows unchanged — the honest
 // question is whether this machine still produces the same numbers for them.
 // Seed set kept as a hand-picked const, not computed: the (case,target) pairs

@@ -51,7 +51,7 @@ test('strict rejects: class', () => throws('class Foo {}', 'class', 'class shoul
 test('prohibited: yield outside a generator', () => throws('export let f = () => { let x = yield 1; return x }', 'yield outside a generator', 'stray yield should error'))
 test('prohibited: delete', () => throws('delete obj.x', 'delete', 'delete should error'))
 // 'in' operator now supported for HASH key existence checks
-// instanceof GRADUATED (error-object-design.md Slice B) — Array/Map/Set/the 8
+// instanceof GRADUATED (.work/todo.md §deletion-sweep Slice B) — Array/Map/Set/the 8
 // TypedArray ctors/ArrayBuffer/the 7 Error classes now work (see the dedicated
 // test block below); an unsupported RHS (jz has no prototype chain) remains
 // a loud compile-time reject, the one surviving case this test now pins.
@@ -806,7 +806,7 @@ test('try: discarded method result before return compiles and runs', () => {
   is(j(`export let f = () => { let a = [1]; try { a.toSorted(); return 1 } catch (e) { return 2 } }`), 1) // default comparator pulls string module
 })
 
-// error-object-design.md Slice A: `new Error(msg)`/the 7 built-in subclasses
+// .work/todo.md §deletion-sweep Slice A: `new Error(msg)`/the 7 built-in subclasses
 // now construct a real in-wasm object (PTR.OBJECT, schema ['message','name'],
 // module/core.js buildErrorObject) instead of lowering to the bare message
 // value — supersedes the old "Error IS its message string" documented
@@ -816,7 +816,7 @@ test('try: discarded method result before return compiles and runs', () => {
 // empty / message if name empty / name+": "+message otherwise / "Error" if
 // both empty) via src/ir.js's toStrI64 Error-schema arm — the fix for the
 // pre-existing `${anyDynamicObject}` → "" bug, at least for Error objects.
-test('errors: real Error objects (error-object-design.md Slice A)', () => {
+test('errors: real Error objects (.work/todo.md §deletion-sweep Slice A)', () => {
   const j = (code) => jz(code).exports.f()
   is(j(`export let f = () => { try { throw new Error('boom') } catch (e) { return e.message } }`), 'boom', '.message reads the constructor argument')
   is(j(`export let f = () => { try { throw new TypeError('t') } catch (e) { return e.name } }`), 'TypeError', '.name reads the built-in class name')
@@ -918,7 +918,7 @@ test('errors: Error ctor message coercion (ES 20.5.1.1, audit-#9 P1)', () => {
 // didn't get the literal's short-circuit, so it fell into toStrI64's generic
 // OBJECT path — which has a real, pre-existing, general, Error-unrelated bug
 // for non-Array objects (confirmed live: `String(o)` for a bound plain object
-// returns typeof "object", not a string at all — error-object-design.md's
+// returns typeof "object", not a string at all — .work/todo.md §deletion-sweep's
 // own "Consequence" section already flags `${anyDynamicObject}` as broken,
 // out of scope for this design). Generalized `isClosedObjLiteralNoStringMethod`
 // (module/core.js) to `isClosedObjNoStringMethod`, extending the closed-world
@@ -982,7 +982,7 @@ test('errors: internal coded throw still binds catch(e) to the raw code (Slice C
 })
 
 // ============================================================================
-// instanceof (error-object-design.md Slice B; audit-#8 P0-1, 2026-08-03)
+// instanceof (.work/todo.md §deletion-sweep Slice B; audit-#8 P0-1, 2026-08-03)
 // ============================================================================
 // `instanceof` is a real op — op-policy.js's blanket REJECT_OPS entry is gone;
 // src/prepare/index.js's handler validates the RHS against a closed allowlist
@@ -1063,7 +1063,7 @@ test('instanceof: Error family — tag+schema compare, class hierarchy (both mod
 // The range arm is deleted; internal-code catches are honestly
 // `instanceof`-false for every Error class now — pinned below, both modes.
 // Recovering `instanceof` for a caught internal code needs a materialized
-// Error object at the catch site (error-object-design.md §7 Slice C,
+// Error object at the catch site (.work/todo.md §deletion-sweep §7 Slice C,
 // deliberately deferred, not landed here).
 test('instanceof: internal coded throws are NOT instanceof any Error class (audit-#8 P0-2, both modes)', () => {
   // repro 2, exact form: an arbitrary caller-supplied number that happens to
@@ -1121,7 +1121,7 @@ test('errors: __errcls__ is an ordinary, un-stolen property name (audit-#9 P0-2)
 // spread/assign copies nothing there) — but that made spread/assign disagree
 // with `Object.keys`/`JSON.stringify`/for-in (immediately above), which see
 // the physical 2-slot layout on the SAME object. audit-#10 finding-3
-// (error-object-design.md, "enumerability contradiction") named this an
+// (.work/todo.md §deletion-sweep, "enumerability contradiction") named this an
 // internally-impossible state and asked for a DECIDED, CONSISTENT choice
 // between (a) full JS fidelity (non-enumerable on all four surfaces — needs
 // a new per-property enumerability flag threaded through every enumeration

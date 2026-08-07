@@ -2933,8 +2933,8 @@ test('range-check fusion: recurses across a left-deep &&/|| chain — every adja
   // outer call's `b`), not immediate AST siblings the way the x-pair is. Before the
   // chain-recursion fix, only the FIRST (innermost) pair fused; every later pair kept
   // its two signed compares + i32.and. This is the 2D-bounds-check shape from trace.js
-  // and any scanner/raster code with more than one range test chained (rival-wat-
-  // analysis.md TRANSFERABLE item 1).
+  // and any scanner/raster code with more than one range test chained
+  // (.work/todo.md §deletion-sweep, rival-wat TRANSFERABLE item 1, LANDED).
   const wat = jz.compile(
     `export let f = (x, y) => { let xi = x|0, yi = y|0; let W = 512|0, H = 512|0; return (xi >= 0 && xi < W && yi >= 0 && yi < H) ? 1 : 0 }`,
     { wat: true, optimize: 'speed' })

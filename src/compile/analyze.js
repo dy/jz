@@ -668,7 +668,7 @@ export function analyzeBody(body) {
   }
 
   // === Round-3/4 boxed-bigint intra-body W-sink walk ===
-  // (design .work/bigint-round3-design.md §3.2 — clone of the escapes precedent
+  // (design .work/carrier-representation-design.md §3.2 — clone of the escapes precedent
   // above: same single-pass walk, same "mark the binding, don't re-derive later"
   // shape.) A bare-name value proven VAL.BIGINT that reaches one of these AST
   // positions must round-trip through a real PTR.BIGINT box (ir.js boxBigInt/
@@ -1244,7 +1244,7 @@ export function mayBeNullish(n, nameNullable = (name) => !!repOf(name)?.nullable
 }
 
 // Decl-time producer for the `mayBeUndefined` REP field
-// (.work/represented-maybe-undefined-design.md §2/§3 Slice 1) — the
+// (.work/todo.md §deletion-sweep §2/§3 Slice 1) — the
 // container-read sibling of `mayBeNullish` above, deliberately NOT folded
 // into it: `mayBeNullish` answers "could this expression itself be a nullish
 // LITERAL/merge", or with a Map/dict a `.get()`/`[]` call already fails
@@ -1398,7 +1398,7 @@ function dictDomainOf(body, name) {
  * and schema resolution.
  */
 // Strict write-kind resolver for the dict-value-type census (local half,
-// design .work/dict-value-census-design.md §1a) — a local mirror of
+// design .work/todo.md §deletion-sweep §1a) — a local mirror of
 // program-facts.js's writeVT/effectiveWriteValue. Not imported: program-facts.js
 // already imports analyzeBody from this module, so importing back would cycle.
 // Kept in exact lockstep with the program-facts.js pair — any resolver change
@@ -1471,7 +1471,7 @@ function dictValueTypeOf(body, name) {
   return poisoned ? null : (vt ?? null)
 }
 
-// Map-value-type census, local half (design .work/map-value-census-design.md
+// Map-value-type census, local half (design .work/todo.md §deletion-sweep
 // §1) — mirrors dictValueTypeOf above but matches `recv.set(k, v)` CALL nodes
 // instead of `[]=` writes (Map has no bracket-write form). No self-read/
 // paramVts handling here, same as dictValueTypeOf's own local half (those are
@@ -1511,8 +1511,8 @@ export function analyzeValTypes(body) {
     (n) => updateRep(n, { val: undefined }),
   )
   const getVal = name => ctx.func.localReps?.get(name)?.val
-  // presentVal slice: decl-time producer (.work/represented-maybe-undefined-
-  // design.md §14 Slice 6, reps.js `presentVal` doc comment). Own
+  // presentVal slice: decl-time producer (.work/todo.md §deletion-sweep
+  // §14 Slice 6, reps.js `presentVal` doc comment). Own
   // makeValTracker instance — a SEPARATE poison set from `setVal`'s (this
   // function is called fresh per analyzeValTypes invocation, exactly like
   // setVal above, so poison state never leaks across functions/compiles).
@@ -1726,8 +1726,8 @@ export function analyzeValTypes(body) {
           const dvt = dictValueTypeOf(body, a[1])
           if (dvt) updateRep(a[1], { dictValueValType: dvt })
         }
-        // Map-value-type census, local half (design .work/map-value-census-
-        // design.md §1) — sibling of the dict census above, gated on decl
+        // Map-value-type census, local half (design .work/todo.md
+        // §deletion-sweep §1) — sibling of the dict census above, gated on decl
         // vt === VAL.MAP instead of the HASH-literal `dict` shape check
         // (new Map() is a hard classification, valTypeOf(a[2]) already
         // resolves it via CALLEE_VAL — no structural re-derivation needed).

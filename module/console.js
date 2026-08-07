@@ -163,7 +163,7 @@ const setupWasi = (ctx) => {
       const writePart = (part) => {
         if (Array.isArray(part) && part[0] === 'str' && part[1] === '') return
         const vt = valTypeOf(part)
-        // maybeUndefined join (.work/maybe-undefined-design.md §1/Slice 5):
+        // maybeUndefined join (.work/todo.md §deletion-sweep §1/Slice 5):
         // a dict-census STRING/NUMBER claim is "every value ever WRITTEN",
         // not "this key exists" — an absent key is real `undefined` at
         // runtime. __write_str/__write_num/__write_int assume their arg IS

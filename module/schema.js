@@ -49,7 +49,7 @@ export function initSchema(ctx) {
     return id
   }
 
-  // === Error-class brand (audit-#9 P0-2, error-object-design.md redesign) ===
+  // === Error-class brand (audit-#9 P0-2, .work/todo.md §deletion-sweep redesign) ===
   //
   // Class identity lives in the SCHEMA ID itself — the NaN-box aux bits every
   // OBJECT pointer already carries — not in a source-visible/spellable slot.

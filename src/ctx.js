@@ -436,7 +436,7 @@ export function reset(proto, globals, bridge) {
                                 //   loads (module/core.js) + i32 local typing
                                 //   (type.js exprType '.').
     dictValueTypes: new Map(),  // name → VAL.* | null — dict-value-census global
-                                //   half (.work/dict-value-census-design.md §1b):
+                                //   half (.work/todo.md §deletion-sweep §1b):
                                 //   every VAL.* kind ever written through
                                 //   `name[key] = v` (any key) across the whole
                                 //   program (ast top-level, every function body,
@@ -451,7 +451,7 @@ export function reset(proto, globals, bridge) {
                                 //   observeProgramSlots itself; not consumed
                                 //   directly anywhere else.
     mapValueTypes: new Map(),  // name → VAL.* | null — Map-value-census Tier 1
-                                //   global half (.work/map-value-census-design.md
+                                //   global half (.work/todo.md §deletion-sweep
                                 //   §1): every VAL.* kind ever written through a
                                 //   proven-VAL.MAP receiver's `recv.set(k, v)`
                                 //   (any key) across the whole program — same

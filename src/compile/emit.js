@@ -286,8 +286,8 @@ const emitNeg = (a) => {
   // NUMBER literal here — see parse.js). No magnitude heuristic needed for
   // literals; the runtime magnitude heuristic (emit.js TYPEOF.bigint) remains
   // for genuinely dynamic/unknown-kind values, a separate, real carrier limit.
-  // `|| censusMaybeUndefinedKind(a) === VAL.BIGINT` (represented-maybe-undefined-
-  // design.md §6/§12 Slice 5): a census-shaped operand's exact-kind claim reaches
+  // `|| censusMaybeUndefinedKind(a) === VAL.BIGINT` (.work/todo.md
+  // §deletion-sweep §6/§12 Slice 5): a census-shaped operand's exact-kind claim reaches
   // `valTypeOf` here only via VT['[]']/['.']/['()']'s own Slice-4 exact-kind
   // promotion (kind.js) — a SEPARATE mechanism from the census helpers
   // (dictValueKindOf/mapValueKindOf) themselves, which this OR-arm consults
@@ -462,7 +462,7 @@ export function emitTypeofCmp(a, b, cmpOp) {
   if (typeof code !== 'number') return null
 
   const t = temp()
-  // Ambiguous BOOL-merge operand (.work/bool-merge-identity-design.md): the
+  // Ambiguous BOOL-merge operand (.work/todo.md §deletion-sweep): the
   // collapsed NUMBER kind is unsound for typeof, which must tell a genuine
   // number apart from a coerced-to-0/1 boolean — emitIdentitySafe re-emits
   // the merge with its own BOOL arm boxed to its atom, so the dynamic bit
@@ -2580,7 +2580,7 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 // the identical reason: an unwritten key reads back the same undefined —
 // `prec[op] === undefined` (does this key exist?) is that dict's own bounds
 // probe. The predicate is `censusMaybeUndefined` (kind.js,
-// .work/represented-maybe-undefined-design.md) — REACHABLE but not yet
+// .work/todo.md §deletion-sweep) — REACHABLE but not yet
 // LOAD-BEARING here: Slice 4's VT['[]']/VT['.']/VT['()'] exact-kind wiring
 // was reverted (audit #10, §14 is the re-enablement path), so `valTypeOf`
 // for a dict/Map read stays null and this function's callers never reach a
@@ -2608,7 +2608,7 @@ const nullableOperand = (n) => {
   return false
 }
 
-// .work/bool-merge-identity-design.md — identity-safe re-emission of an
+// .work/todo.md §deletion-sweep — identity-safe re-emission of an
 // ambiguous BOOL-merge node (hasAmbiguousBoolMerge, src/kind.js). Generalizes
 // the '?:'/'&&'/'||'/'??' handlers' own per-arm box-then-select shape below
 // (the "materialize it per-arm here, BEFORE the raw-bit collapses below erase
@@ -2795,7 +2795,7 @@ function emitLooseEq(a, b, negate, strict) {
   const vtb = numericVal(rawB)
   const numA = () => rawA === VAL.BOOL ? toNumF64(a, va) : asF64(va)
   const numB = () => rawB === VAL.BOOL ? toNumF64(b, vb) : asF64(vb)
-  // maybeUndefined join (.work/maybe-undefined-design.md §1/Slice 5): "either
+  // maybeUndefined join (.work/todo.md §deletion-sweep §1/Slice 5): "either
   // side known-pure NUMBER" above is only TRUE when that side's exact-kind
   // claim can't be falsified at runtime. `nullableOperand` (this file, above)
   // already unifies the two ways a NUMBER claim can lie — an unproven typed-
@@ -2961,7 +2961,7 @@ function emitStrictEq(a, b, negate) {
   const sa = sentinelOf(a), sb = sentinelOf(b)
   if (sb) return strictSentinel(a, sb === 'undef')
   if (sa) return strictSentinel(b, sa === 'undef')
-  // Ambiguous BOOL-merge operand(s) (.work/bool-merge-identity-design.md):
+  // Ambiguous BOOL-merge operand(s) (.work/todo.md §deletion-sweep):
   // kind.js's collapsed static kind for a `?:`/`&&`/`||`/`??` merge with one
   // BOOL arm and one NUMBER arm is NUMBER (the deliberate benign arithmetic-
   // context coercion) — trusting it here, either for the differing-class fold
@@ -4102,7 +4102,7 @@ function tryDirectClosureCall(callee, parsed) {
   // Slots are untyped boxed-value positions: a BOOL arg crosses as its atom box
   // (the paramTypes numeric lattice above already poisons on non-NUMBER args, so
   // the body never assumes raw numerics for these slots). An ambiguous BOOL-merge
-  // arg (.work/bool-merge-identity-design.md) needs emitIdentitySafe in place of
+  // arg (.work/todo.md §deletion-sweep) needs emitIdentitySafe in place of
   // carrierF64 — same post-hoc-powerless reasoning as the return tail/store sites.
   const slots = parsed.normal.map(a => hasAmbiguousBoolMerge(a) ? emitIdentitySafe(a) : carrierF64(a, emit(a)))
   while (slots.length < W) slots.push(undefExpr())
@@ -4365,7 +4365,7 @@ const numLiteralNode = (n) =>
   (Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && n[1] !== 0)
 function bigintMixReject(op, a, b) {
   if (b === undefined) return
-  // mayBeUndefined join (Slice 3, .work/represented-maybe-undefined-design.md
+  // mayBeUndefined join (Slice 3, .work/todo.md §deletion-sweep
   // §4 — the "NEWLY added to that list" gap): a BIGINT claim whose only proof
   // is a maybeUndefined-flagged dict/Map census read (arm 1/2, censusMaybeUndefined's
   // direct node shapes) or a bare name that copies one through (arm 3, the REP
@@ -4385,7 +4385,7 @@ function bigintMixReject(op, a, b) {
     err(`Cannot mix BigInt and other types in \`${op}\` (TypeError in JS) — convert explicitly with BigInt() or Number()`)
 }
 
-// §14 point 4 (audit #10, .work/represented-maybe-undefined-design.md §14):
+// §14 point 4 (audit #10, .work/todo.md §deletion-sweep §14):
 // JOINT runtime-domain dispatch for binary arithmetic/bitwise ops, superseding
 // the old per-op OR-gate (`valTypeOf(a)===BIGINT||valTypeOf(b)===BIGINT`, live
 // at every op below through 38dd0dca/f1c1256b) and Slice 7's `+`-only AND-gate
@@ -4688,7 +4688,7 @@ function bigintMemberAssignTarget(a) {
     (a[1][0] === '.' || a[1][0] === '[]') && valTypeOf(a[1]) === VAL.BIGINT ? a : null
 }
 
-// === instanceof (error-object-design.md §4) ===
+// === instanceof (.work/todo.md §deletion-sweep §4) ===
 // Reached only from raw `instanceof` AST nodes surviving to emit — i.e. strict-mode
 // source (prepare's 'instanceof' handler is the sole producer; jzify's default-mode
 // lowering rewrites every `instanceof` shape to something else before compile ever
@@ -4794,7 +4794,7 @@ function emitTypedInstanceof(a, rhs) {
       ['else', ['i32.const', 0]]]], 'i32')
 }
 
-/** Error family (7 classes, error-object-design.md §4's error-family arm). `Error`
+/** Error family (7 classes, .work/todo.md §deletion-sweep §4's error-family arm). `Error`
  *  itself is the base every one of the 7 extends (jz's flat one-level hierarchy — no
  *  deeper chain to walk), so it matches ANY Error-schema object regardless of which
  *  concrete class built it; a specific subclass (TypeError, …) must match exactly
@@ -4802,7 +4802,7 @@ function emitTypedInstanceof(a, rhs) {
  *  over jz's non-overlapping prototype set). */
 function emitErrorInstanceof(a, rhs) {
   // Fold, tier 1: LHS is a literal `new X(...)`/`X(...)` call node — prepare's generic
-  // "unknown ctor → plain call" path (error-object-design.md §2) keeps the literal
+  // "unknown ctor → plain call" path (.work/todo.md §deletion-sweep §2) keeps the literal
   // class name as the callee string, so no schema/rep lookup is even needed.
   const litClass = Array.isArray(a) && a[0] === '()' && typeof a[1] === 'string' && ERR_CLASS_NAMES.includes(a[1]) ? a[1] : null
   if (litClass) return foldInstanceof(emit(a), rhs === 'Error' || litClass === rhs)
@@ -4821,7 +4821,7 @@ function emitErrorInstanceof(a, rhs) {
   // A provably non-OBJECT LHS can never be our Error schema. This INCLUDES NUMBER:
   // audit-#8 P0-2 (2026-08-03) deleted the numeric-range arm that used to live
   // below — an internally-thrown coded value (JSON.parse failure, OOB Array#with,
-  // …) is caught as a raw NUMBER (error-object-design.md §3(b)), bit-identical to
+  // …) is caught as a raw NUMBER (.work/todo.md §deletion-sweep §3(b)), bit-identical to
   // a user's own `throw <sameNumber>`. Comparing that NUMBER against err-codes.js's
   // ERR_CODE_RANGES and calling a match "instanceof SyntaxError" meant ANY
   // caller-supplied number landing in a class's internal range answered `true`
@@ -4829,7 +4829,7 @@ function emitErrorInstanceof(a, rhs) {
   // sits in the derived range — a real repro, not a hypothetical). No numeric
   // range can distinguish "the compiler threw this code" from "the user threw
   // this number"; recovering `instanceof` for a caught internal code needs a
-  // materialized Error object at the catch site instead (error-object-design.md
+  // materialized Error object at the catch site instead (.work/todo.md §deletion-sweep
   // §7 Slice C, deliberately deferred — not landed here). Until then, internal-
   // code catches are honestly `instanceof`-false for every Error class, same as
   // any other non-Error value (§3(c)).
@@ -5072,7 +5072,7 @@ export const emitter = {
     // (or any non-bool-mixed) funcs are untouched.
     //
     // An ambiguous BOOL-merge return (`s => cond ? 1 : false`,
-    // .work/bool-merge-identity-design.md) needs the SAME box but carrierF64
+    // .work/todo.md §deletion-sweep) needs the SAME box but carrierF64
     // is post-hoc powerless for it: `expr`'s own valTypeOf collapses to NUMBER
     // (the merge's benign coercion), so carrierF64 never recognizes it as
     // BOOL-carrying — by the time `emitted` exists, the coerced false and a
@@ -5320,7 +5320,7 @@ export const emitter = {
     // String concatenation: pure string operands skip generic ToString coercion.
     const vtA = valTypeOf(a)
     const vtB = valTypeOf(b)
-    // mayBeUndefined join (Slice 3, .work/represented-maybe-undefined-design.md
+    // mayBeUndefined join (Slice 3, .work/todo.md §deletion-sweep
     // §4 — the "NEWLY added" `+` STRING-concat gap): a STRING claim whose only
     // proof is a maybeUndefined-flagged dict/Map census read (or a bare name
     // that copies one through) is "every value ever WRITTEN was a string", not

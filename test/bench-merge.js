@@ -1,4 +1,4 @@
-// Fast-refresh tooling pins (.work/fast-refresh-design.md Pieces 1-2):
+// Fast-refresh tooling pins (bench/README.md Pieces 1-2):
 // bench/bench.mjs's `--merge` and `--verify-anchors` flags. This file tests
 // the TOOLING, not the corpus — every probe is scoped to one cheap case
 // (`--cases=mat4 --targets=jz`, plus the 3 fixed anchor rows --verify-anchors

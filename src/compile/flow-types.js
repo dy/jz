@@ -94,7 +94,7 @@ export function extractRefinements(cond, out, sense = true) {
     if (val != null) { mergeRefinement(out, cond[2], { val }); return out }
   }
   // `x instanceof Array/Map/Set/<TypedCtor>/ArrayBuffer` under positive sense
-  // (error-object-design.md §4's sound instanceof op — src/prepare/index.js's
+  // (.work/todo.md §deletion-sweep §4's sound instanceof op — src/prepare/index.js's
   // handler, reached in BOTH strict source and default-mode source since
   // audit-#8 P0-1 made jzify pass these through instead of answering them
   // itself). Same refinement as the predicate-call arm above, keyed off the
@@ -247,11 +247,11 @@ export function predicateRefinement(callee) {
 
 /** Map an `instanceof` RHS class name to the VAL kind it asserts under positive
  *  sense, or null. Mirrors predicateRefinement above for the real `instanceof`
- *  op (error-object-design.md §4) — every TYPED_ELEM_NAMES ctor narrows to the
+ *  op (.work/todo.md §deletion-sweep §4) — every TYPED_ELEM_NAMES ctor narrows to the
  *  same generic VAL.TYPED tier __is_typed used to (element-type precision isn't
  *  a refinement fact this pass tracks). Error-family RHS names are deliberately
  *  NOT mapped: their LHS can be a real Error OBJECT or an internal NUMBER code
- *  (error-object-design.md §3(b)) — a positive `instanceof` here proves OBJECT,
+ *  (.work/todo.md §deletion-sweep §3(b)) — a positive `instanceof` here proves OBJECT,
  *  but that's not new information a generic OBJECT-kind receiver didn't already
  *  have, so there's no refinement value in adding it. */
 export function instanceofRefinement(rhs) {
@@ -505,8 +505,8 @@ export function closureBodyReturnKind(body, capturedKinds) {
 }
 
 /**
- * mayBeUndefined return-kind join (Slice 2, .work/represented-maybe-
- * undefined-design.md §3 "Return kinds") — the closureBodyReturnKind sibling:
+ * mayBeUndefined return-kind join (Slice 2, .work/todo.md
+ * §deletion-sweep §3 "Return kinds") — the closureBodyReturnKind sibling:
  * same return-tail sites (closureReturnSites), OR-folded instead of unified —
  * any site whose expr is itself census-shaped, or a bare name tracing
  * (through the body's own writes) to one, makes the WHOLE closure's result

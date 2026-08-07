@@ -145,7 +145,7 @@ export function observeNodeFacts(node, f) {
     const cargs = commaList(args[1])
     if (cargs.some(x => Array.isArray(x) && x[0] === '...')) f.hasSpread = true
     if (cargs.length > f.maxCall) f.maxCall = cargs.length
-    // Map-value census pre-scan gate (design .work/map-value-census-design.md
+    // Map-value census pre-scan gate (design .work/todo.md §deletion-sweep
     // §1): cheap SYNTACTIC over-approximation — any 2-arg `.set(k,v)` call
     // shape, no VAL.MAP proof (that's the census's own job at OBSERVE time,
     // visit()/visitInit() below) — mirrors hasSchemaLiterals' own `{}`-on-
@@ -407,7 +407,7 @@ export function collectProgramFacts(ast) {
   // map (already populated with the same overlay-aware walk).
   //
   // Also entered on hasMapSet ALONE (no `{}` anywhere): the map-value census
-  // (design .work/map-value-census-design.md §1) rides the SAME
+  // (design .work/todo.md §deletion-sweep §1) rides the SAME
   // observeProgramSlots walk (visit()'s `.set(...)` branch) — a Map-only
   // program/moduleInit has no `{}` to trip hasSchemaLiterals on its own.
   // analyzeSchemaSlotIntCertain stays gated on hasSchemaLiterals strictly —
@@ -459,7 +459,7 @@ export function collectProgramFacts(ast) {
 //     (analyzeBody.valTypes, installed as ctx.func.localValTypesOverlay below)
 //     — this is the missing PARAM-kind tier writeVT never had.
 //
-// Self-read neutrality (.work/dict-value-census-design.md): a read
+// Self-read neutrality (.work/todo.md §deletion-sweep): a read
 // `d[...]`/`d.prop`/`d?.prop` (any nesting through further `[]`) whose root
 // is `wctx.root` contributes the JOIN IDENTITY, not a poison — subscript's
 // `prec[op] = !lookup[c] && prec[op] || p` shape's `prec[op]` self-read is
@@ -499,7 +499,7 @@ const isSelfDictRead = (n, root) => {
 // bigintMixReject to catch downstream.
 
 // ── truthy/falsy/nonNullish value-set semantics for &&/||/?? (and only
-// there — see .work/dict-value-census-design.md) ──────────────────────────
+// there — see .work/todo.md §deletion-sweep) ──────────────────────────
 // A value-set is an array of `{ kind, bool }` elements: `kind` is a VAL.*
 // string or the pseudo-kind 'atom' (a provably undefined/null literal —
 // always falsy, never a real VAL); `bool` narrows a VAL.BOOL element's
@@ -664,7 +664,7 @@ export function observeProgramSlots(ast, opts) {
     else if (cur !== vt) dictValueTypes.set(name, null)
   }
   const poisonDictValue = (name) => dictValueTypes.set(name, null)
-  // Map-value-type census (Tier 1, design .work/map-value-census-design.md
+  // Map-value-type census (Tier 1, design .work/todo.md §deletion-sweep
   // §1): observeDictValue's own first-wins-then-clash lattice, applied to
   // `recv.set(k, v)` RHS values instead of `[]=` writes — Map has no
   // bracket-write form. Same whole-program name-keyed convention.
@@ -909,8 +909,8 @@ export function observeProgramSlots(ast, opts) {
       }
     } else if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
         typeof node[1][1] === 'string' && node[1][2] === 'set') {
-      // Map-value-type census (Tier 1, global half, design .work/map-value-
-      // census-design.md §1): `recv.set(k, v)` — Map's only write form (no
+      // Map-value-type census (Tier 1, global half, design .work/todo.md
+      // §deletion-sweep §1): `recv.set(k, v)` — Map's only write form (no
       // `[]=` shape exists), so this branch is a CALL-shape sibling of the
       // dict `[]=` branch above, not a MUTATE_OPS variant. Receiver gate is a
       // HARD classification (new Map() → CALLEE_VAL + recordGlobalRep) —
@@ -947,7 +947,7 @@ export function observeProgramSlots(ast, opts) {
   }
   teOverlay = null
   // hasMapSet joins hasSchemaLiterals as the moduleInit-walk trigger (design
-  // .work/map-value-census-design.md §1): a bundled sub-module whose init
+  // .work/todo.md §deletion-sweep §1): a bundled sub-module whose init
   // code is PURELY `const M = new Map(); M.set(...)` has no `{}` anywhere to
   // trip hasSchemaLiterals on its own — see hasMapSet's own doc comment
   // (observeNodeFacts, above) for the matching pre-scan.
@@ -1042,7 +1042,7 @@ export function observeProgramSlots(ast, opts) {
   // the late {fresh:true} rebuild), so a poisoned-then-cleared entry on rebuild
   // correctly overwrites the earlier value via updateGlobalRep's merge.
   for (const [name, vt] of dictValueTypes) updateGlobalRep(name, { dictValueValType: vt })
-  // Map-value-type census (Tier 1, design .work/map-value-census-design.md
+  // Map-value-type census (Tier 1, design .work/todo.md §deletion-sweep
   // §1) — same publish discipline as the dict-value census just above. The
   // consumer (kind.js's former mapValueKindOf) was reverted for unsoundness
   // (audit P0, .work/todo.md "audit-#7 P0 closed") — this fact is DORMANT,

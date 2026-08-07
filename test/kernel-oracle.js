@@ -119,7 +119,7 @@ const AGREE = [
   // PENDING-FIX not()-tripwire.
   { name: 'boolconst', src: CORPUS.boolconst,
     calls: [{ fn: 'f', args: [5] }, { fn: 'f', args: ['hi'] }, { fn: 'f', args: [true] }] },
-  // FLIPPED from PENDING-FIX (.work/bool-merge-identity-design.md — the
+  // FLIPPED from PENDING-FIX (.work/todo.md §deletion-sweep — the
   // ambiguous BOOL-merge identity fix): `cond ? 1 : false` used as a return
   // value, observed via `=== false` at a DIFFERENT function's call site (the
   // function-boundary mechanism, distinct from boolconst's own — this one
@@ -223,7 +223,7 @@ export let f = (x) => g(x > 0 && 1)`,
   { name: 'parenthesized-&&',
     src: `export let f = (x) => { let a = [(x > 0) && 1]; return a[0] }`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
-  // FLIPPED from PENDING-FIX (formatter-dispatch-design.md — formatter/
+  // FLIPPED from PENDING-FIX (.work/todo.md §deletion-sweep — formatter/
   // ToPropertyKey carrier-dispatch fix): the same MECHANISM A/argIR
   // producer-side collapse, un-swept at three consumer chokepoints.
   // String()'s VAL.NUMBER __ftoa fast path is a STATIC-VALTYPE check (not an
@@ -255,7 +255,7 @@ export let f = (x) => g(x > 0 && 1)`,
   { name: 'computed member key',
     src: `export let f = (x) => { let o = {}; o[x > 0 && 1] = 'v'; return o['0'] }`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
-  // READ-side sibling family (formatter-dispatch-design.md Finding #2, same
+  // READ-side sibling family (.work/todo.md §deletion-sweep Finding #2, same
   // landing session, not a documented-then-flipped PENDING-FIX gap — a
   // proactive fix): module/array.js's dyn-get key sites had the identical
   // bare `emit(idx)`/`asI64(emit(idx))`/`asF64(emit(idx))` producer bypass
@@ -405,7 +405,7 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
 test('kernel oracle: ternary BOOL|NUMBER return — AGREE (closed by the ambiguous-BOOL-merge identity work)', async () => {
   // Was PENDING FIX: g(false) returned the `false` atom collapsed to raw 0.0,
   // so `g(s) === false` read false for both arguments. Closed by
-  // .work/bool-merge-identity-design.md — hasAmbiguousBoolMerge admits the
+  // .work/todo.md §deletion-sweep — hasAmbiguousBoolMerge admits the
   // single-return ternary at the return tail, and emitStrictEq's differing-
   // class fold defers to the identity-safe path for ambiguous operands. The
   // former not() tripwire fired as designed; this is its designed rewrite.
@@ -442,7 +442,7 @@ export let f = (s) => g(s) === false`
 // literal stringification and computed-key ToPropertyKey conversion —
 // different consumer code (module/string.js's String() dispatch, template
 // concat emission, module/array.js's computed-key path). CLOSED by
-// formatter-dispatch-design.md — the three rows below moved to the AGREE
+// .work/todo.md §deletion-sweep — the three rows below moved to the AGREE
 // array's "FLIPPED from PENDING-FIX" formatter-dispatch entry, plus a
 // read-side sibling sweep (module/array.js dyn-get key sites, same design
 // doc's Finding #2). Only the generic-scalar-decl family remains here.
@@ -482,7 +482,7 @@ const PENDING_FIX = [
     wrong: 0 },
 ]
 
-test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier collapse (carrier-invariant-design.md — not yet fixed; formatter/ToPropertyKey rows CLOSED, see formatter-dispatch-design.md)', async () => {
+test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier collapse (carrier-invariant-design.md — not yet fixed; formatter/ToPropertyKey rows CLOSED, see .work/todo.md §deletion-sweep)', async () => {
   if (onWasi()) return
   for (const { name, src, wrong, opts = [0, 2, 3] } of PENDING_FIX) {
     const mod = await oracle(src)

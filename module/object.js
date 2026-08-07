@@ -95,7 +95,7 @@ export default (ctx) => {
         // alloc (a for-of/for-in iterator temp is declared in the loop's
         // own init, always textually after `const T = {}`), so emitting a
         // runtime `domain.length` read here dereferenced an uninitialized
-        // local (0.0) and trapped OOB (.work/for-of-dict-alloc-fix.md).
+        // local (0.0) and trapped OOB (.work/todo.md §deletion-sweep).
         // The hint is speed-only by contract (analyze.js dictDomainOf: an
         // over/underestimate cannot affect semantics) — unproven length
         // degrades to the default cap, never a runtime read.
@@ -849,12 +849,12 @@ const hasOutOfSchemaWrites = (obj, schema) => {
 // `sourceSchema` is the spread/Object.assign SOURCE-position schema resolver.
 // audit-#9 P0-2 gave Error a SOURCE-position override (`[]`, matching real
 // JS's non-enumerable `message`/`name`) that this session's finding-3 audit
-// (error-object-design.md's "enumerability contradiction") found made
+// (.work/todo.md §deletion-sweep's "enumerability contradiction") found made
 // `Object.keys`/`JSON.stringify` (physical 2-slot schema, enumerable) and
 // `spread`/`Object.assign` (`[]`, non-enumerable) internally contradictory —
 // the SAME object answering "does this property enumerate" differently
 // depending only on which builtin asked. DECISION (documented divergence,
-// error-object-design.md finding-3): Error is an ordinary object on every
+// .work/todo.md §deletion-sweep finding-3): Error is an ordinary object on every
 // enumeration surface — keys/JSON/spread/assign/for-in all see the physical
 // `['message','name']` layout, consistently. This diverges from real JS
 // (whose Error properties are non-enumerable on all four surfaces) but keeps

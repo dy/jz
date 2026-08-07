@@ -58,10 +58,10 @@ import { TYPED_ELEM_NAMES } from '../../layout.js'
 // SIMD intrinsic namespaces — pure namespaces backed by the `simd` module.
 const SIMD_NS = new Set(['f32x4', 'i32x4', 'f64x2', 'v128'])
 // prep()'s ctx.features.error scan below — O(1) membership over the 7 built-in
-// error classes (error-object-design.md §2).
+// error classes (.work/todo.md §deletion-sweep §2).
 const ERR_CLASS_SET = new Set(ERR_CLASS_NAMES)
 
-// `instanceof` RHS allowlist (error-object-design.md §4). jz has no prototype chain, so
+// `instanceof` RHS allowlist (.work/todo.md §deletion-sweep §4). jz has no prototype chain, so
 // RHS support is closed: Array/Map/Set fold or tag-compare (PTR.ARRAY/MAP/SET); the 8
 // TYPED_ELEM_NAMES ctors + ArrayBuffer tag/aux-compare (PTR.TYPED+aux / PTR.BUFFER); the
 // 7 Error classes tag+sid-compare (module/schema.js's ctx.schema.errorSid — one
@@ -1163,7 +1163,7 @@ function prep(node) {
   // arm, can textually precede the `new Error(...)`/`Error(...)` call site that
   // proves the schema exists at all). Catches BOTH the `new X(...)` raw shape
   // (before the 'new' handler rewrites it) and the bare-call `X(...)` shape — one
-  // of the 7 built-in classes (error-object-design.md §2: `Error(x)` without `new`
+  // of the 7 built-in classes (.work/todo.md §deletion-sweep §2: `Error(x)` without `new`
   // also constructs a fresh Error, same as `new Error(x)`). A shadowed `Error`
   // identifier (`function Error(x){…}`) can false-positive this flag — harmless:
   // ir.js's guard is a runtime tag+schema compare that simply never fires for a
@@ -1176,7 +1176,7 @@ function prep(node) {
   // `new X(args)` to a bare `['()', X, args]` call BEFORE prepare ever runs
   // (module/core.js's Error emitters work identically with or without `new`),
   // which is why this only ever manifested in STRICT mode (jzify skipped, raw
-  // parser shape survives to prepare) — found via error-object-design.md Slice
+  // parser shape survives to prepare) — found via .work/todo.md §deletion-sweep Slice
   // B's own strict-mode instanceof/toStrI64 acceptance testing, not a Slice B
   // regression. `ctorCallee` unwraps the same nested shape the 'new' handler
   // below already unwraps for the identical reason.
@@ -3603,7 +3603,7 @@ const handlers = {
     return ['new', prep(ctor), ...args.map(prep)]
   },
 
-  // instanceof (error-object-design.md §4) — jz has no prototype chain, so RHS support
+  // instanceof (.work/todo.md §deletion-sweep §4) — jz has no prototype chain, so RHS support
   // is a closed allowlist (INSTANCEOF_ALLOW above), not general reflection. Strict-mode
   // source (which skips jzify) reaches this handler directly on every raw `instanceof`
   // node. Default-mode source reaches it too, for every RHS this file's INSTANCEOF_ALLOW

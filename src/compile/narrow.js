@@ -726,8 +726,8 @@ function narrowValResults(funcs) {
       if (!vt0) continue
       if (allSame) {
         func.valResult = vt0
-        // mayBeUndefined return-kind join (Slice 2, .work/represented-maybe-
-        // undefined-design.md §3 "Return kinds"): OR across every return-tail
+        // mayBeUndefined return-kind join (Slice 2, .work/todo.md
+        // §deletion-sweep §3 "Return kinds"): OR across every return-tail
         // expr this SAME allSame fold already unified — a `return d[missing]`
         // arm's census shape, or a `return x` whose `x` traces to one through
         // this func's own writes (exprMayBeUndefinedIn — ctx-independent, see
@@ -1984,7 +1984,7 @@ export default function narrowSignatures(programFacts, ast) {
   // as null. observeSlot's first-wins-then-clash rule lets a later precise
   // observation upgrade `undefined` → NUMBER without poisoning earlier
   // monomorphic observations.
-  // hasMapSet joins hasSchemaLiterals (design .work/map-value-census-design.md
+  // hasMapSet joins hasSchemaLiterals (design .work/todo.md §deletion-sweep
   // §1) — same reasoning as program-facts.js's own gate widening: a Map-only
   // program has no `{}` to trip hasSchemaLiterals, but still needs this re-
   // observation pass for its own census (methodValType 'get' consumer wants
@@ -2312,7 +2312,7 @@ export default function narrowSignatures(programFacts, ast) {
       }
     }
   }
-  // bigintBoxed (round-3/4, design .work/bigint-round3-design.md §3.3): the
+  // bigintBoxed (round-3/4, design .work/carrier-representation-design.md §3.3): the
   // CALL-SITE half of the invariant for params — box a BIGINT argument before
   // a call whose target param can't be trusted to receive BIGINT uniformly.
   // Consulted by the call-site emitter, not by the callee body: once boxed,
@@ -2377,8 +2377,8 @@ export default function narrowSignatures(programFacts, ast) {
         if (!!r.bigintBoxed !== bigintBoxedVerdict(fname, k, r))
           throw new Error(`bigintBoxed fixpoint-completeness: ${fname} param ${k} verdict changed on re-derivation (${!!r.bigintBoxed} -> ${bigintBoxedVerdict(fname, k, r)})`)
 
-  // mayBeUndefined param propagation (Slice 2, .work/represented-maybe-
-  // undefined-design.md §3 "Param lattice") — the inter-procedural half of
+  // mayBeUndefined param propagation (Slice 2, .work/todo.md
+  // §deletion-sweep §3 "Param lattice") — the inter-procedural half of
   // the same fact Slice 1 (analyze.js analyzeValTypes) already seeds at decl
   // time. Modeled on bigintBoxedVerdict just above: same fail-closed
   // destructured-param default (isDestructuredParamBody, reused verbatim —

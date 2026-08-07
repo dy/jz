@@ -112,7 +112,7 @@ test('claims: reference evidence is fresh (no compiler commits past meta.commit)
 })
 
 // PARTIAL evidence must be anchor-verified (fast-refresh tightening,
-// .work/fast-refresh-design.md): `bench/bench.mjs --merge` can leave the
+// bench/README.md): `bench/bench.mjs --merge` can leave the
 // dataset mixing vintages — freshly re-measured jz rows alongside untouched
 // rival rows from an earlier commit. That's only honest evidence if a
 // `--verify-anchors` run in the same session certified the untouched rival

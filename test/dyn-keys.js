@@ -143,7 +143,7 @@ test('Map: a write through an alias is not lost to a stale census kind (audit P0
     return m.get('k') - 0`), NaN)  // 'oops1' - 0 === NaN, same as plain JS
 })
 
-// FIXED (.work/maybe-undefined-design.md Slice 1, value-join): dictValueKindOf
+// FIXED (.work/todo.md §deletion-sweep Slice 1, value-join): dictValueKindOf
 // (kind.js, consumed by VT['[]']/VT['.']) had the SAME absent-key
 // exact-promotion unsoundness as the reverted mapValueKindOf — the census is
 // "every value ever WRITTEN", not "this key exists". Closed by
@@ -159,7 +159,7 @@ test('dict: .get()-equivalent read on an absent key behaves as real undefined (S
   is(run(`const d = {}; const wk = 'a'; d[wk] = 1; const rk = 'zz'; return String(d[rk])`), 'undefined')
 })
 
-// FIXED (.work/maybe-undefined-design.md §2/Slice 3, nameEscapes alias gate):
+// FIXED (.work/todo.md §deletion-sweep §2/Slice 3, nameEscapes alias gate):
 // dictValueKindOf (the ALREADY-LIVE dict census consumer) had the SAME
 // alias-write unsoundness as the reverted mapValueKindOf — the census keys
 // observations by SYNTACTIC receiver name (analyze.js's dictValueTypeOf
@@ -210,7 +210,7 @@ test('dict: a write through an alias is not lost to a stale census kind (audit P
     return String(d[wk2])`), 'oops1')  // already correct pre-Slice-3 (see comment above) — control, not a flip
 })
 
-// FIXED (.work/maybe-undefined-design.md Slice 5 site survey — LEAK A):
+// FIXED (.work/todo.md §deletion-sweep Slice 5 site survey — LEAK A):
 // emitLooseEq/emitStrictEq's (src/compile/emit.js) raw `f64.eq`/`f64.ne` fast
 // path fired whenever EITHER side's static kind was VAL.NUMBER, with no
 // runtime tag check — unlike arithmetic (toNumF64) and String(), this never
@@ -249,7 +249,7 @@ test('dict: strict/loose equality between two independently-maybe-undefined read
     return d[rk] > 5 ? 1 : 0`), 0)
 })
 
-// FIXED (.work/maybe-undefined-design.md Slice 5 site survey — LEAK B):
+// FIXED (.work/todo.md §deletion-sweep Slice 5 site survey — LEAK B):
 // ir.js's toStrI64 — the SAME function module/string.js's `bind('String', …)`
 // already delegates to for the maybeUndefined-flagged case, on the stated
 // belief it "falls through to the LAST branch... already correct" — had its
@@ -340,8 +340,8 @@ test('Map: a read-only capture does not disqualify the census (control)', () => 
 // before ever reaching the dict census, so it already took the sound generic
 // toNumF64 path; the dynamic-key case below is the one that actually exercised
 // the raw-i64 branch.
-// Present-key case — FIXED (Slice 5, .work/represented-maybe-undefined-
-// design.md §6/§12, the `presentKindUnboxed` family — the last named
+// Present-key case — FIXED (Slice 5, .work/todo.md §deletion-sweep
+// §6/§12, the `presentKindUnboxed` family — the last named
 // value-wrong family from the audit campaign). Root (re-confirmed live,
 // unchanged from the Slice 4 finding below): bigIntUnary's runtime
 // select/isUndef branch already computes the CORRECT i64 negate/complement
@@ -431,7 +431,7 @@ test('dict: unary "-" on a LITERAL-key absent read (already sound — not this b
   is(run(`const d = {}; d['x'] = 1n; return -d['missing']`), NaN)
 })
 
-// Slice 5 (.work/represented-maybe-undefined-design.md §6/§12, presentKindUnboxed)
+// Slice 5 (.work/todo.md §deletion-sweep §6/§12, presentKindUnboxed)
 // repro 5 itself — the bare `m.get()`/`d[k]` read, no unary — closing the class
 // this design named the whole audit campaign's last value-wrong family. Was
 // KNOWN-FAIL: `m.set('x', 5n); export let f = () => m.get('x')` returned the host
@@ -480,7 +480,7 @@ test('Slice 5: negative controls — mixed-kind Map falls back to documented (un
   is(jz(`export let f = () => -5n`).exports.f(), -5n)
 })
 
-// Slice 6 (.work/represented-maybe-undefined-design.md §14/§15, "begin the
+// Slice 6 (.work/todo.md §deletion-sweep §14/§15, "begin the
 // presentVal opt-in model"): a NEW `presentVal` REP field (reps.js) rides
 // analyze.js's decl/reassign producer, poison-disciplined like `val` itself
 // (NOT a spread-merge boolean like `mayBeUndefined`) — the KIND-carrying
@@ -518,7 +518,7 @@ test('Slice 6: negative control — decl-hop through a mixed-kind Map stays the 
 })
 
 // FIXED (§14 point 4, audit #10's own "JOINT runtime domain dispatch" finding
-// — represented-maybe-undefined-design.md §14): a present-key census-BIGINT
+// — .work/todo.md §deletion-sweep §14): a present-key census-BIGINT
 // value used in BINARY `+` with a NUMBER now throws the TypeError real JS
 // gives for BigInt⊕Number mixing, instead of silently doing ordinary f64
 // addition on the raw i64-as-f64 carrier bits. Root cause was exactly audit
@@ -601,7 +601,7 @@ test('§14 point 4: documented gap — bitwise both-absent decodes as BigInt 0n,
   }
 })
 
-// AUDIT #10 BATTERY (represented-maybe-undefined-design.md §14): the full
+// AUDIT #10 BATTERY (.work/todo.md §deletion-sweep §14): the full
 // repro set the audit named as live consequences of Slice 4's global VT
 // promotion — composed expressions, container storage, kind-specific
 // dispatch, String `+` inversion, BigInt joint dispatch. Re-verified
@@ -772,7 +772,7 @@ test('Object.assign onto a literal (unbound) Error instance mutates it in place,
   is(g(), 'y', 'the message slot was actually overwritten')
 })
 
-// Slice 3 (.work/represented-maybe-undefined-design.md §4/§8 point 3): the
+// Slice 3 (.work/todo.md §deletion-sweep §4/§8 point 3): the
 // chokepoint-sweep completion — bigintMixReject (emit.js, the compile-time
 // BigInt/Number literal-mix TypeError check) and the `+` STRING-concat raw
 // fast path now also consult censusMaybeUndefined (the SAME predicate every
@@ -897,7 +897,7 @@ test('single-call-site "+" param-hop: sibling carrier-domain producers (regressi
   `, { jzify: true }).exports.f(10), NaN)
 })
 
-// Slice 4 (represented-maybe-undefined-design.md §8, VT re-enablement) —
+// Slice 4 (.work/todo.md §deletion-sweep §8, VT re-enablement) —
 // dictValueKindOf/mapValueKindOf wired back into VT['[]']/VT['.']/VT['()'].
 // §5 criterion 1's own acceptance shape: a census claim reaching a
 // NON-chokepoint consumer through 2+ hops (decl → arg → return → use), not
@@ -1012,7 +1012,7 @@ test('Slice 4: call-result arithmetic does not triplicate a captured-mutation si
   is(f(0), 15005, 's=15 (sum of xs), count=5 (one increment per call) — not 15015 (count tripled)')
 })
 
-// Slice 7 (.work/represented-maybe-undefined-design.md §14/§15, "widen the
+// Slice 7 (.work/todo.md §deletion-sweep §14/§15, "widen the
 // opt-in consumer chokepoints"): the arithmetic/coercion chokepoints
 // (ir.js toNumF64, emit.js's binary `+` BigInt dispatch) gated on
 // `valTypeOf(node)` FIRST and never saw a decl/direct census claim (`vt`

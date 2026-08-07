@@ -1300,7 +1300,7 @@ export default (ctx) => {
     ['i64.eq', ['local.get', bitsLocal], ['i64.const', NAN_BITS]],
     ['i64.eq', ['i64.and', ['local.get', bitsLocal], ['i64.const', '0xFFF0000000000000']], ['i64.const', '0xFFF0000000000000']]]
 
-  // maybeUndefined gate (.work/maybe-undefined-design.md §1/§4): a NUMBER claim
+  // maybeUndefined gate (.work/todo.md §deletion-sweep §1/§4): a NUMBER claim
   // sourced from a dict/map value census (censusMaybeUndefined) is really
   // NUMBER|undefined — an absent key reads back UNDEF_NAN at runtime, a bit
   // pattern that (unlike a genuine number-NaN) must NOT satisfy Number.isNaN.

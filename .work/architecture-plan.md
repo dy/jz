@@ -232,7 +232,7 @@ Exit: `grep 'updateRep\|schema\.vars\.set' src/compile/emit.js module/` → 0.
 
 ## Stage 3 — Loop model as the vectorizer's substrate
 
-(Opening survey DONE 2026-07-21 → .work/stage3-loop-survey.md: full
+(Opening survey DONE 2026-07-21 → .work/todo.md §deletion-sweep: full
 recognizer→class map, the ×4 IV-scaffold + ×3-4 affine duplications, the
 prose-only dependence model, and the `_rangeFacts` seed pattern; attack
 order recorded there.)

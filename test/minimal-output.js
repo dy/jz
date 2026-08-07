@@ -444,7 +444,7 @@ test('minimal [known-gap]: new Date still drags in the allocator', () => {
   else ok(true, 'KNOWN: new Date(0) pulls the full allocator/memgrow for a single pointer')
 })
 
-// === error-object-design.md Slice A: zero size cost for Error-free modules ===
+// === .work/todo.md §deletion-sweep Slice A: zero size cost for Error-free modules ===
 // buildErrorObject/toStrI64's Error-schema arm are gated on the Error-class
 // emit handlers and ctx.features.error (prepare's whole-program scan) firing —
 // a program that never constructs an Error must be byte-identical to what it

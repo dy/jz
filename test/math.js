@@ -535,7 +535,7 @@ test('Number.isNaN: dynamic/polymorphic argument (not statically NUMBER)', () =>
   is(f(4), false, 'undefined')
 })
 
-// maybeUndefined gate (.work/maybe-undefined-design.md Slice 2): a dict/map
+// maybeUndefined gate (.work/todo.md §deletion-sweep Slice 2): a dict/map
 // value-census NUMBER claim (kind.js dictValueKindOf/mapValueKindOf, live
 // since 5c437df5) is really NUMBER|undefined — a `.get()`/`[k]` read on a
 // key that was never WRITTEN reads back real JS `undefined` (UNDEF_NAN)
@@ -606,7 +606,7 @@ test('Number.isNaN: non-census proven-NUMBER argument keeps the bare self-compar
   is(dynMarker.test(censusWat), true, 'census-sourced NUMBER: dynamic tag-discrimination code IS emitted (the fix)')
 })
 
-// Sibling sweep (.work/maybe-undefined-design.md Slice 2): isFinite/isInteger/
+// Sibling sweep (.work/todo.md §deletion-sweep Slice 2): isFinite/isInteger/
 // isSafeInteger need NO equivalent gate — verified structural, not
 // accidental, per the comment at emitIsFinite (module/number.js): every
 // formula in this trio OPENS with `f64.eq(v,v)` (self-equality), which is

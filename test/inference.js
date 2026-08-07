@@ -2332,7 +2332,7 @@ test('closure return-kind: fails open when the return depends on an unsettled ca
 })
 
 // ───────────────────────────────────────────── dict-value-type census (global half)
-// .work/dict-value-census-design.md §1b/§5 step 2: observeProgramSlots' whole-
+// .work/todo.md §deletion-sweep §1b/§5 step 2: observeProgramSlots' whole-
 // program census of `name[key] = rhs` value kinds, published onto
 // ctx.scope.globalReps as dictValueValType. No consumer is wired yet (that's
 // step 3, pinned in dyn-keys.js/data.js) — these tests inspect the fact
@@ -2424,7 +2424,7 @@ test('dict-value census: an unresolvable write poisons the fact', () => {
     '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
 })
 
-// RE-REVERTED (represented-maybe-undefined-design.md §14, audit #10 — Slice
+// RE-REVERTED (.work/todo.md §deletion-sweep §14, audit #10 — Slice
 // 4's VT['[]']/['.']/['()'] wiring this "positive win" pin proved is dormant
 // again). Was: dictValueKindOf claiming the exact NUMBER kind at `OPCODE[nm]`
 // dropped `+`'s `$__str_concat` STRING-coercion fallback arm entirely for a
@@ -2510,7 +2510,7 @@ test('dict-value census: soundness carve-out — an unregistered key still ident
 
 // ─────────────────────────── writeVT strengthening: value-set &&/||/??, self-read
 // neutrality, parameter-kind channel (2026-07-31, subscript's real `prec[op] =
-// !lookup[c] && prec[op] || p` target — .work/dict-value-census-design.md's
+// !lookup[c] && prec[op] || p` target — .work/todo.md §deletion-sweep's
 // primary target didn't fire until these three pieces landed; see the writeVT
 // docstring in src/compile/program-facts.js for the resolver rules).
 
@@ -2608,7 +2608,7 @@ test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[
 })
 
 // ─────────────────────────── dict-value census: moduleInit gap fix (Fix A/B)
-// .work/dict-census-moduleinit-fix.md: bundled sub-module top-level init code
+// .work/todo.md §deletion-sweep: bundled sub-module top-level init code
 // (ctx.module.moduleInits, OUTSIDE `ast`) is exactly watr's real shape
 // (`export const OPCODE = {}` then `OPCODE[nm] = code++` in a bare top-level
 // C-STYLE `for` loop, const.js:161) — the census's own fixtures above never
@@ -2628,8 +2628,8 @@ test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[
 // was a latent OOB miscompile (dict-mode alloc emitted a RUNTIME read of
 // the leanHashDomains hint array's length at the `{}` literal's emission
 // point — a def-before-use when the domain is a local declared after the
-// dict, which a for-of iterator temp always is; .work/for-of-dict-alloc-
-// fix.md) — FIXED by static-only sizing (repOf arrayLen, mirroring
+// dict, which a for-of iterator temp always is; .work/todo.md
+// §deletion-sweep) — FIXED by static-only sizing (repOf arrayLen, mirroring
 // emit-assign.js's RMW capHint) and pinned in the for-of tests below.
 
 test('dict-value census: bundled moduleInit dict-write (watr\'s OPCODE shape, C-style for) populates globalReps', () => {
@@ -2706,14 +2706,14 @@ test('dict-value census: moduleInitSlot memo-cache replay is order-independent (
 })
 
 // ───────────────────────────────────────────── Map-value-type census (Tier 1)
-// .work/map-value-census-design.md: dict-value census's Map sibling — scalar
+// .work/todo.md §deletion-sweep: dict-value census's Map sibling — scalar
 // mapValueValType only (Tier 2 schema-id fact for the fftplan/provenance
 // OBJECT-valued edges is a separate, later design). Same first-wins-then-
 // clash lattice, published onto ctx.scope.globalReps as mapValueValType.
 //
 // The `.get()` read-side consumer (kind.js mapValueKindOf, VT['()']'s 'get'
 // short-circuit) was REVERTED (audit P0, external bisection, .work/todo.md
-// "audit-#7 P0 closed"), RE-ENABLED (.work/maybe-undefined-design.md §3,
+// "audit-#7 P0 closed"), RE-ENABLED (.work/todo.md §deletion-sweep §3,
 // Slice 4) once the absent-key case (censusMaybeUndefined's Map arm) and the
 // alias case (mapValueKindOf's nameEscapes gate) were closed at CONSUME
 // time, then REVERTED AGAIN (audit #9, .work/todo.md "audit-#9 P0-1
@@ -2722,7 +2722,7 @@ test('dict-value census: moduleInitSlot memo-cache replay is order-independent (
 // `undefined` instead of `NaN` (decl propagation evaporates the join), and
 // arithmetic sites outside the curated chokepoint list (the `+` STRING-
 // concat fast path, bigintMixReject's compile-time check) never consulted
-// it at all. See .work/represented-maybe-undefined-design.md for the
+// it at all. See .work/todo.md §deletion-sweep for the
 // replacement (a REPRESENTED `{presentKind, mayBeUndefined}` fact) and its
 // re-enablement criteria. The miscompile repros this section's tests below
 // still functionally pin (now green via the generic dynamic path, not any
@@ -2797,7 +2797,7 @@ test('map-value census: soundness carve-out — an unregistered key still identi
   is(has('zz'), true, 'unregistered key still observes undefined at runtime — the fold must not fire')
 })
 
-// RE-RE-REVERTED (represented-maybe-undefined-design.md §14, audit #10 —
+// RE-RE-REVERTED (.work/todo.md §deletion-sweep §14, audit #10 —
 // mapValueKindOf's own VT['()'] wiring, Slice 4, is dormant again). nameEscapes
 // itself is still unconditionally checked (both cases — the fact is computed
 // regardless), but the codegen-shape consequence is GONE: with the census
@@ -2853,7 +2853,7 @@ test('map-value census: bundled moduleInit Map.set (watr\'s memo shape, C-style 
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   // Cross-module coverage: bundled sub-module top-level init code
   // (ctx.module.moduleInits, OUTSIDE `ast`) — mirrors the dict census's own
-  // moduleInit fixture (dict-census-moduleinit-fix.md), but `new Map()` has
+  // moduleInit fixture (.work/todo.md §deletion-sweep), but `new Map()` has
   // no `{}` literal to trip hasSchemaLiterals on its own, so this also
   // exercises the hasMapSet gate widening (program-facts.js observeNodeFacts
   // + narrow.js's own hasSchemaLiterals-gated re-observation pass).
@@ -2906,7 +2906,7 @@ test('map-value census: moduleInitSlot memo-cache replay is order-independent (c
 })
 
 // for-of/for-in dict population — the def-before-use OOB class
-// (.work/for-of-dict-alloc-fix.md): the dict-mode `{}` alloc used to emit a
+// (.work/todo.md §deletion-sweep): the dict-mode `{}` alloc used to emit a
 // RUNTIME `domain.length` read for the leanHashDomains preallocation hint;
 // a for-of/for-in iterator temp (or any local domain array) is declared in
 // the loop's own init — AFTER the dict decl — so the read hit an
@@ -2965,7 +2965,7 @@ test('dict-mode alloc: statically-provable domain still sizes the preallocation 
 })
 
 // ─────────────────────────── receiver-HASH global classification
-// .work/dict-receiver-hash-design.md: module/object.js's `{}`-literal emitter
+// .work/todo.md §deletion-sweep: module/object.js's `{}`-literal emitter
 // already allocates a module-level dict global (computed-key writes only, no
 // static prop, empty merged schema) as a real HASH pointer — but every OTHER
 // function's read/write site was blind to it (recordGlobalRep leaves the

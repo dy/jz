@@ -204,7 +204,7 @@ VT['&&'] = VT['||'] = VT['??'] = (args) => {
   return null
 }
 
-// .work/bool-merge-identity-design.md — pure structural predicate: true exactly
+// .work/todo.md §deletion-sweep — pure structural predicate: true exactly
 // where a `?:`/`&&`/`||`/`??` node's own VT rule above takes the BOOL-vs-NUMBER
 // benign coercion branch (142-179's `?:` "the raw 0/1 bool carrier IS its
 // ToNumber image" lie, mirrored by `&&`/`||`/`??` above) — sound for arithmetic,
@@ -270,11 +270,11 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
 }
 
 // Dict-value-type census consumer — RESTORED AS AN INTERNAL HELPER ONLY
-// (.work/represented-maybe-undefined-design.md Slice 1, audit #9 follow-up).
+// (.work/todo.md §deletion-sweep Slice 1, audit #9 follow-up).
 // `name[key]`/`name.prop` on a HASH dict-mode receiver: the VAL.* kind of
 // every value ever WRITTEN through `name[anyKey] = v`
-// (.work/dict-value-census-design.md §2, nameEscapes alias gate per
-// .work/maybe-undefined-design.md §2 Slice 3 — unchanged logic, restored
+// (.work/todo.md §deletion-sweep §2, nameEscapes alias gate per
+// .work/todo.md §deletion-sweep §2 Slice 3 — unchanged logic, restored
 // verbatim from before the audit-#9 revert). NOT wired into VT['[]']/
 // VT['.']'s own dict-mode fold — Slice 4 (3782a692) wired it in briefly and
 // was REVERTED (audit #10: promoting a census read to an exact VT globally
@@ -282,7 +282,7 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
 // storage, kind-specific dispatch, string `+`, BigInt joint ops — silently
 // bypass the mayBeUndefined protection unless it separately remembers to
 // call censusMaybeUndefined too; opt-out instead of opt-in, unsound by
-// construction. .work/represented-maybe-undefined-design.md §14 is the
+// construction. .work/todo.md §deletion-sweep §14 is the
 // re-enablement path: an opt-in `presentVal` fact consumers must explicitly
 // ask for, not a global VT promotion). Called ONLY from
 // censusMaybeUndefinedKind below, which asks a narrower question ("is THIS
@@ -298,7 +298,7 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
 // TYPED-index read (kind.js:257-263 above). Identity (`===`/`==` against
 // null/undefined) and typeof MUST NOT const-fold on it: that carve-out lives
 // in emit.js's `nullableOperand`, which calls censusMaybeUndefined directly.
-// nameEscapes ALIAS GATE (.work/maybe-undefined-design.md §2, Slice 3): the
+// nameEscapes ALIAS GATE (.work/todo.md §deletion-sweep §2, Slice 3): the
 // census keys observations by SYNTACTIC receiver name (analyze.js's
 // dictValueTypeOf same-body scan, program-facts.js's observeDictValue global
 // half) — a write through an ALIAS (`const a = d; a[k] = v`) is invisible to
@@ -316,7 +316,7 @@ export function dictValueKindOf(name) {
 }
 
 // RECEIVER-KIND GUARD (test/simd.js regression, found landing the original
-// maybe-undefined-design.md Slice 1): the dict census's GLOBAL half
+// .work/todo.md §deletion-sweep Slice 1): the dict census's GLOBAL half
 // (program-facts.js) records a dictValueValType fact for ANY
 // `name[dynKey] = v`, receiver-kind-BLIND — a Float64Array named `a` written
 // via `a[i] = …` gets one too. In VT['[]']/VT['.']'s real dispatch this is
@@ -358,8 +358,8 @@ export function mapValueKindOf(name) {
   return null
 }
 
-// maybeUndefined value-join — RE-ENABLED (Slice 1, represented-maybe-
-// undefined-design.md §4/§8). Two ORIGINAL arms, unchanged logic, restored
+// maybeUndefined value-join — RE-ENABLED (Slice 1, .work/todo.md
+// §deletion-sweep §4/§8). Two ORIGINAL arms, unchanged logic, restored
 // from before the audit-#9 revert: a `name[key]`/`name.prop` dict-census
 // READ node (arm 1) or a `recv.get(key)` Map-census CALL node (arm 2) whose
 // claimed kind comes SOLELY from dictValueKindOf/mapValueKindOf's soundness
@@ -405,10 +405,10 @@ export function mapValueKindOf(name) {
 // those chokepoints' own outer gates to fall back to this function when
 // `valTypeOf` is null is explicitly NOT part of this slice (§14 names it as
 // the actual "runtime presence dispatch" work, a separate, larger surface —
-// see .work/represented-maybe-undefined-design.md §15 for exactly which
+// see .work/todo.md §deletion-sweep §15 for exactly which
 // consumers this slice made live vs left gated out, verified not assumed).
 //
-// censusShapedNode (Slice 2, .work/represented-maybe-undefined-design.md §3)
+// censusShapedNode (Slice 2, .work/todo.md §deletion-sweep §3)
 // factors OUT arms 1/2's pure AST-SHAPE test — no ctx lookup — so a whole-
 // program plan-time consumer can recognize the same two node shapes without
 // touching ctx.func.localReps/ctx.types.nameEscapes: narrow.js's param/
@@ -500,7 +500,7 @@ export function censusMaybeUndefinedKind(node) {
 }
 
 // Present-key BigInt through the census — export-boundary sentinel kind
-// (represented-maybe-undefined-design.md §6/§12 Slice 5, the `presentKindUnboxed`
+// (.work/todo.md §deletion-sweep §6/§12 Slice 5, the `presentKindUnboxed`
 // family). A bare census-BIGINT node (dict/Map read, mayBeUndefined bare name, or
 // call-result — censusMaybeUndefinedKind's own three arms) crosses the JS boundary
 // as either its raw i64 bits (present key) or the UNDEF_NAN atom (absent key,
@@ -513,7 +513,7 @@ export function censusMaybeUndefinedKind(node) {
 // bare case (bigIntUnary's own doc comment) — only the absent-case BIT PATTERN
 // interop must recognize differs per operator, hence the distinct kind. Returns 0
 // when `node` isn't any of these shapes (not this export lane at all).
-// Slice 7 binary sibling (.work/represented-maybe-undefined-design.md §14/§15),
+// Slice 7 binary sibling (.work/todo.md §deletion-sweep §14/§15),
 // generalized by §14 point 4 (audit #10): emit.js's `bigIntJointDispatch`
 // (superseding Slice 7's `+`-only `bothBigIntOperands`) reaches its i64
 // arithmetic — for ANY of the 9 binary arithmetic/bitwise ops now, not just
@@ -551,7 +551,7 @@ export function censusBigintSentinelKind(node) {
   // KNOWN-FAIL (`const f = (v) => -v; return f(m.get('x'))`, present-key
   // BIGINT). Deliberately NOT built on `func.valResult`/
   // `valResultMayBeUndefined` (narrowValResults' own return-kind join,
-  // .work/represented-maybe-undefined-design.md §3 "Return kinds"): that
+  // .work/todo.md §deletion-sweep §3 "Return kinds"): that
   // fixpoint runs BEFORE narrow.js's presentVal param propagation
   // (hardParamPresentVal) ever populates paramReps, so it can never observe
   // a param-sourced BIGINT claim through a unary wrapper — the identical
@@ -977,7 +977,7 @@ VT['.'] = (args) => {
 const numericBinaryVT = (args) =>
   valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
 for (const op of NUMERIC_BINARY_OPS) VT[op] = numericBinaryVT
-// §14 point 4 (audit #10, .work/represented-maybe-undefined-design.md §14):
+// §14 point 4 (audit #10, .work/todo.md §deletion-sweep §14):
 // the binary sibling of censusBigintUnaryVT below — generalizes VT['+']'s own
 // original both-census-BIGINT branch (kept there, unchanged) to the other 8
 // arithmetic/bitwise ops now that emit.js's `bigIntJointDispatch` (replacing
@@ -1007,7 +1007,7 @@ const numericUnaryVT = (args) =>
 for (const op of NUMERIC_UNARY_OPS) VT[op] = numericUnaryVT
 // …while `>>>` and unary-plus throw on bigint operands so they always yield Number.
 // `u-`/`~` census-BIGINT hardening (audit #10 fallout, found reverting Slice 4's VT
-// wiring — .work/represented-maybe-undefined-design.md §14): numericBinaryVT/
+// wiring — .work/todo.md §deletion-sweep §14): numericBinaryVT/
 // numericUnaryVT's shared "unknown operand → optimistic NUMBER default" (same class
 // as VT['+']'s own accepted imprecision, see valTypeOfWithLocals's SOUND-`+`/SOUND-
 // unary doc comments) used to resolve correctly for a census-BIGINT dict/Map operand
@@ -1040,7 +1040,7 @@ VT['+'] = (args) => {
   const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
   if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
   if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
-  // Slice 7 (.work/represented-maybe-undefined-design.md §14/§15 honest
+  // Slice 7 (.work/todo.md §deletion-sweep §14/§15 honest
   // boundary): BOTH operands' census independently claiming BIGINT upgrades
   // this static claim too — the binary sibling of censusBigintUnaryVT above,
   // same AND (never OR) requirement as emit.js's bigIntDomainsCanMix (a
@@ -1450,7 +1450,7 @@ function spreadSchema(obj) {
     return ctx.schema?.resolve?.(obj)
   }
   // Literal `new X(...)`/`X(...)` Error-constructor call — mirrors module/
-  // object.js `resolveSchema`'s identical branch (error-object-design.md
+  // object.js `resolveSchema`'s identical branch (.work/todo.md §deletion-sweep
   // finding-1/3: closes a pre-existing analyze/emit disagreement this session
   // found — a BOUND Error name already agreed via ctx.schema.resolve above,
   // but this literal shape fell through to `shapeOf` below, which doesn't

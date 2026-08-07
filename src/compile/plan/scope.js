@@ -230,7 +230,7 @@ export const refineFieldProvenance = (ast) => {
   }
 }
 
-// Receiver-HASH global classification (.work/dict-receiver-hash-design.md).
+// Receiver-HASH global classification (.work/todo.md §deletion-sweep).
 //
 // module/object.js's `{}`-literal emitter already allocates a module-level
 // dict global (`let X = {}` whose binding takes ONLY computed-key writes —

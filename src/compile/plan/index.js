@@ -82,7 +82,7 @@ export default function plan(ast, profiler) {
   t('inferModuleIntGlobals', () => inferModuleIntGlobals(ast))
 
   facts()
-  // Receiver-HASH global classification (.work/dict-receiver-hash-design.md):
+  // Receiver-HASH global classification (.work/todo.md §deletion-sweep):
   // fill `ctx.scope.globalValTypes` with VAL.HASH for module-level `{}`-decl
   // dict globals module/object.js's allocator already tags HASH at the
   // pointer level (identical predicate — target's merged schema empty +

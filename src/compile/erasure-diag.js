@@ -1,7 +1,7 @@
 /**
  * Boxed-bigint erasure diagnostic — CARRIER PROGRAM Slice 0 (.work/carrier-
  * representation-design.md §7), promoted from round-3/4's original probe
- * (.work/archive/bigint-round3-design.md §2/§4.2) to a maintained, documented
+ * (.work/archive/.work/carrier-representation-design.md §2/§4.2) to a maintained, documented
  * tool: the program's baseline erasure-inventory instrument, re-run against
  * the current kernel graph each time the box-site footprint needs re-
  * verifying (Slice 2's own gate report, future Slice 3/5 work). Still

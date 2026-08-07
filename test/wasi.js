@@ -200,7 +200,7 @@ test('WASI console.log: boolean read from a container prints as boolean', () => 
   is(captured.join(''), 'false\n')
 })
 
-// FIXED (.work/maybe-undefined-design.md Slice 5 site survey — LEAK C):
+// FIXED (.work/todo.md §deletion-sweep Slice 5 site survey — LEAK C):
 // module/console.js's writePart dispatched on a bare `valTypeOf(part)`
 // STRING/NUMBER check with no runtime tag verification — a dict-census
 // STRING/NUMBER claim ("every value ever written") on an ABSENT key fed

@@ -125,7 +125,7 @@ export default (ctx) => {
     // would let `x == null` fold to a constant false and skip the guard.
     const captureNullables = new Set()
     // Propagate the parent's `mayBeUndefined` mark (Slice 2, .work/represented-
-    // maybe-undefined-design.md §3 "Closure captures") — the container-read
+    // .work/todo.md §deletion-sweep §3 "Closure captures") — the container-read
     // sibling of captureNullables just above, same reasoning: a capture whose
     // parent binding can be real JS `undefined` despite a definite `val` claim
     // must keep that fact inside the body, or the body's own write facts

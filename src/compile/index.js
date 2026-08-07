@@ -360,8 +360,8 @@ function captureFuncInspect(func, facts, programFacts) {
     results: sig.results.slice(),
     ...(sig.ptrKind != null ? { resultPtrKind: sig.ptrKind } : {}),
     ...(sig.ptrAux != null ? { resultPtrAux: sig.ptrAux } : {}),
-    // valResult/valResultMayBeUndefined (Slice 2, .work/represented-maybe-
-    // undefined-design.md §3 "Return kinds") — narrowValResults' joined VAL
+    // valResult/valResultMayBeUndefined (Slice 2, .work/todo.md
+    // §deletion-sweep §3 "Return kinds") — narrowValResults' joined VAL
     // kind across every return site, and the mayBeUndefined OR-join riding
     // alongside it. Exposed for the same reason params/locals are: the pure-
     // analysis test harness precedent (test/types.js) this design's Slice 1
@@ -603,7 +603,7 @@ function analyzeFuncForEmit(func, programFacts) {
       // Cross-function never-relocation proof (analyzeParamNeverGrown) — the
       // raw-base array read (module/array.js arrBase) keys off this rep.
       if (r.neverGrown) updateRep(pname, { neverGrown: true })
-      // mayBeUndefined (Slice 2, .work/represented-maybe-undefined-design.md
+      // mayBeUndefined (Slice 2, .work/todo.md §deletion-sweep
       // §3) — narrow.js's inter-procedural join already proved this param's
       // ENTRY value can be a census-shaped read at some live call site.
       // Unconditional (no `!reassigned` guard, unlike r.val/r.recvArrTyped
@@ -837,7 +837,7 @@ function analyzeFuncForEmit(func, programFacts) {
     // undefined isn't a reference, so no i64 is needed and wrapping every void export
     // is pure overhead. A non-empty set must be all-NUMBER to stay f64.
     // `censusSafe` (audit #10 fallout, found while reverting Slice 4's VT wiring —
-    // .work/represented-maybe-undefined-design.md §14, extended by §14 point 4):
+    // .work/todo.md §deletion-sweep §14, extended by §14 point 4):
     // `valTypeOf(e)`/`func.valResult` for a bare census-BIGINT node, a `-`/`~` unary
     // wrapping one, OR (§14 point 4's own find) a BINARY arithmetic/bitwise node
     // whose operands `valTypeOfWithLocals` can't locally resolve is each op's OWN
@@ -864,7 +864,7 @@ function analyzeFuncForEmit(func, programFacts) {
   }
 
   // Present-key BigInt through the census, export sentinel lane (.work/
-  // represented-maybe-undefined-design.md §6/§12 Slice 5 — the
+  // .work/todo.md §deletion-sweep §6/§12 Slice 5 — the
   // `presentKindUnboxed` family): a dict/Map `.get()`/`[]` read (or a bare
   // name/call-result/unary `-`/`~` that traces to one) whose kind census
   // claims BIGINT, computed HERE — same "while reps are live" reasoning as
@@ -1403,8 +1403,8 @@ function emitFunc(func, funcFacts, programFacts) {
   // Requiring a SECOND return statement restricts boxing to genuine syntactic
   // joins (≥2 `return` sites in one body) — exactly the boolconst repro's
   // shape — and leaves every real single-return function, provable or not,
-  // untouched. ADDITIVE single-return admission (.work/bool-merge-identity-
-  // design.md): a single-expression arrow body whose lone return IS itself an
+  // untouched. ADDITIVE single-return admission (.work/todo.md
+  // §deletion-sweep): a single-expression arrow body whose lone return IS itself an
   // ambiguous BOOL-merge (`s => cond ? 1 : false`) is STRUCTURAL evidence of
   // genuine mixing, not "unproven" — categorically unlike the ≥2-return gate's
   // own concern (an early-unprovable UNIFORM result), so it's safe to admit
@@ -1464,7 +1464,7 @@ function emitFunc(func, funcFacts, programFacts) {
       // recvArrTyped: mirrors the analyzeFuncForEmit seeding above (see its comment).
       if (r.recvArrTyped && !reassigned) updateRep(pname, { recvArrTyped: true })
       // bigintBoxed: same unconditional-of-reassigned seeding as analyzeFuncForEmit
-      // (design .work/bigint-round3-design.md §3.3) — usually already present via
+      // (design .work/carrier-representation-design.md §3.3) — usually already present via
       // the cloneRepMap above, but re-applied here for the same reason r.val is.
       if (r.bigintBoxed && !ctx.func.localReps?.get(pname)?.bigintBoxed) updateRep(pname, { bigintBoxed: true })
       if (r.typedCtor && !reassigned) {
@@ -1649,7 +1649,7 @@ function emitFunc(func, funcFacts, programFacts) {
     // same reason as those two sites — the merge's own valTypeOf already
     // collapsed to NUMBER, so a post-hoc box (there is none on this path
     // today) would be powerless; the box has to happen while the merge's own
-    // arms are still separately known (.work/bool-merge-identity-design.md).
+    // arms are still separately known (.work/todo.md §deletion-sweep).
     // Guarded on sig.results[0] === 'f64': a proven-uniform-BOOL (or numeric)
     // result already narrows to i32 and needs no boxing here (the boundary
     // wrapper's own resultBool arm handles that crossing).
@@ -1871,8 +1871,8 @@ function emitClosureBody(cb) {
   if (cb.intConsts) for (const [name, v] of cb.intConsts) updateRep(name, { intConst: v })
   if (cb.intCertain) for (const name of cb.intCertain) updateRep(name, { intCertain: true })
   if (cb.nullables) for (const name of cb.nullables) updateRep(name, { nullable: true })
-  // mayBeUndefined closure captures (Slice 2, .work/represented-maybe-
-  // undefined-design.md §3 "Closure captures") — same seeding as cb.nullables
+  // mayBeUndefined closure captures (Slice 2, .work/todo.md
+  // §deletion-sweep §3 "Closure captures") — same seeding as cb.nullables
   // just above: the parent's mayBeUndefined mark on a captured binding must
   // survive into the closure's OWN body, or its own write facts (a settled
   // `val`) would let this fact evaporate exactly the way an un-seeded
@@ -2051,7 +2051,7 @@ function emitClosureBody(cb) {
     // for an ambiguous BOOL-merge (its own valTypeOf collapses to NUMBER before
     // carrierF64 ever sees it — the bits are already lost) — route through
     // emitIdentitySafe instead, which boxes the merge's own BOOL arm to its
-    // atom before the raw-bit collapse (.work/bool-merge-identity-design.md).
+    // atom before the raw-bit collapse (.work/todo.md §deletion-sweep).
     bodyIR = [hasAmbiguousBoolMerge(cb.body) ? emitIdentitySafe(cb.body) : carrierF64(cb.body, emit(cb.body))]
   }
 

@@ -130,7 +130,7 @@ test('bool: host boolean coerces to 0/1 in arithmetic', () => {
 test('bool: value-preserving &&/|| carry the boolean atom across the boundary (gap CLOSED)', () => {
   // Was a documented gap: `5 && true` crossed as raw 1 (the value-preserving
   // merge collapsed the BOOL arm to its numeric carrier). Closed by the
-  // ambiguous-BOOL-merge identity work (.work/bool-merge-identity-design.md):
+  // ambiguous-BOOL-merge identity work (.work/todo.md §deletion-sweep):
   // a merge with a statically-BOOL arm and a NUMBER sibling boxes the BOOL
   // arm at identity/boundary escapes, so the atom survives to JS exactly.
   // Pure-NUMBER merges stay raw (byte-identical fast path) — pinned below.

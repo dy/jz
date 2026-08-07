@@ -782,7 +782,7 @@ export default (ctx) => {
       inc('__is_str_key', '__to_str')
       const kt = temp()
       // storedValue (not asF64(emit(idx))): READ-side sibling of MECHANISM A
-      // (formatter-dispatch-design.md Finding #2) — an ambiguous BOOL∪NUMBER
+      // (.work/todo.md §deletion-sweep Finding #2) — an ambiguous BOOL∪NUMBER
       // merge key must reach __to_str/__hash_get_local boxed, or ToPropertyKey
       // normalizes the wrong (collapsed-number) bits. storedValue already
       // returns f64-typed IR, so no asF64 wrap is needed.
@@ -862,7 +862,7 @@ export default (ctx) => {
       const keyTmp = temp()
       inc('__is_str_key', '__to_str')
       // storedValue (not asF64(emit(idx))): READ-side sibling of MECHANISM A
-      // (formatter-dispatch-design.md Finding #2) — same ambiguous-merge-key
+      // (.work/todo.md §deletion-sweep Finding #2) — same ambiguous-merge-key
       // producer bypass as the HASH/OBJECT dyn-get sites below.
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${keyTmp}`, storedValue(idx)],
@@ -913,8 +913,8 @@ export default (ctx) => {
       if (useRuntimeKeyDispatch) {
         inc('__hash_get_local', '__is_str_key', '__dyn_get_expr')
         const keyTmp = temp()
-        // storedValue: READ-side sibling of MECHANISM A (formatter-dispatch-
-        // design.md Finding #2).
+        // storedValue: READ-side sibling of MECHANISM A (.work/todo.md
+        // §deletion-sweep Finding #2).
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${keyTmp}`, storedValue(idx)],
           ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
@@ -923,7 +923,7 @@ export default (ctx) => {
       }
       inc('__dyn_get_expr')
       // storedValue (not asI64(emit(idx))): same MECHANISM A read-side sibling —
-      // the HASH-receiver __dyn_get_expr fallthrough (formatter-dispatch-design.md
+      // the HASH-receiver __dyn_get_expr fallthrough (.work/todo.md §deletion-sweep
       // Finding #2). storedValue returns f64-typed IR; asI64 wraps it for the i64 arg.
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], asI64(storedValue(idx))]], 'f64')
     }
@@ -932,8 +932,8 @@ export default (ctx) => {
     // see the numeric-index design note below, which stays scoped to UNKNOWN receivers).
     if (vt === VAL.OBJECT && keyType !== VAL.STRING) {
       inc('__dyn_get_expr')
-      // storedValue: same MECHANISM A read-side sibling (formatter-dispatch-
-      // design.md Finding #2) — the OBJECT-receiver __dyn_get_expr fallthrough.
+      // storedValue: same MECHANISM A read-side sibling (.work/todo.md
+      // §deletion-sweep Finding #2) — the OBJECT-receiver __dyn_get_expr fallthrough.
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], asI64(storedValue(idx))]], 'f64')
     }
     // Known array → direct f64 element load, skip string check
@@ -1208,7 +1208,7 @@ export default (ctx) => {
       // for its own single `emit(idx)`.
       inc('__dyn_get_expr')
       // storedValue (not asF64(emit(idx))): READ-side sibling of MECHANISM A
-      // (formatter-dispatch-design.md Finding #2) — this arm fires exactly
+      // (.work/todo.md §deletion-sweep Finding #2) — this arm fires exactly
       // when keyType === VAL.NUMBER, which is what an ambiguous BOOL∪NUMBER
       // merge key statically collapses to; the __dyn_get_expr cold arm must
       // see the boxed atom, not the raw collapsed bits.
