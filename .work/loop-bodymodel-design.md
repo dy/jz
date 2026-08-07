@@ -264,11 +264,26 @@ first (things already proven post-hoc-safe) to high-risk last (the trio).
    blur/channel-reduce init+inner-loop-locate scan → one
    `matchChannelReducePixelLoop(loopNode, bodyStart, bodyEnd)` consumed by
    both.
+   **LANDED 2026-08-07** (task's "Slice 2"). One correction found while
+   hoisting the blur/channel-reduce scan: the two private copies were NOT
+   byte-identical text — tryChannelReduce's zero-init z-push carried an extra
+   `typeof s[1] === 'string'` guard tryBlurMultiPixel's copy lacked. Confirmed
+   dead (a `local.set`'s name slot is always a string in this IR) rather than
+   a behavior difference, so the shared function keeps the guard (matches the
+   codebase's prevailing name-narrowing convention) and byte-identity across
+   the bench corpus empirically confirms the two were equivalent in practice.
 4. **Wire `tryMapReduceVectorize`/`tryRampMap`/`tryStrengthReduceIV` onto
    `addrTable`+`siteAccess`** in place of `bl.offsetTees`/`matchAffineAddr`'s
    private grouping — these are today's cleanest post-hoc consumers, so this
    slice validates the query interface end-to-end on real recognizers before
    the trio.
+   **LANDED 2026-08-07 for tryMapReduceVectorize/tryRampMap** (task's
+   "Slice 3"). `tryStrengthReduceIV` deliberately NOT wired — see .work/
+   todo.md's BODYMODEL SLICE 3 entry for why: `matchAffineAddr` never
+   consulted `offsetTees`/`addrLocals` in the first place (its matchLaneAddr
+   call passes both as `undefined`, `allowTee: false` — pure structural
+   pattern match), so there is no shared table for it to move onto; forcing
+   one would be scope creep with no duplication to remove.
 5. **`tryMemCopyFill` onto `siteAccess`** (smallest of the trio: 2 static
    `laneAddr` calls, no walk). Its admission policy (reject viaLocal, require
    bare-i32 base) becomes a filter over `siteAccess` lookups. Own slice —

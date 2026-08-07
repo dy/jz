@@ -6,6 +6,27 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-07, BODYMODEL SLICE 2 landed — the 3 class-A hoists)
+Three zero-soundness-risk dedups, each byte-verified before hoisting: (1)
+`epilogueIsSafe(epilogue, loopNode, laneMap, pivType)` — the epiWritten/reads
+epilogue-safety closure, identical at all 3 outer-pixel call sites
+(tryPerPixelColor/tryOuterStrip/tryIteratedReduce), now one function; (2) the
+5 `bump`/3 `rampOf` one-line closures (`const bump = (n,k) =>
+bumpPixelIV(pivType,n,k)`) deleted, all 20 call sites inlined to
+`bumpPixelIV(pivType, …)`/`rampPixelIV(pivType, …)` directly (mechanical,
+perl-verified: 8 declarations removed, exactly 20 call sites rewritten); (3)
+`matchChannelReducePixelLoop(loopNode, bodyStart, bodyEnd)` — the init+inner-
+loop-locate scan tryBlurMultiPixel/tryChannelReduce each ran, now one
+function consumed by both. Correction found en route: the two blur/channel-
+reduce copies were NOT textually byte-identical (tryChannelReduce's z-push
+carried an extra `typeof s[1] === 'string'` guard) — confirmed dead (a
+`local.set` name slot is always a string) rather than a behavior gap; kept
+in the shared version, matching the file's prevailing convention. Byte-
+identity: zero WAT diffs, same 58-case/174-compile bench corpus. Gates:
+optimizer/passes/simd/simd-intrinsics/cond-vectorize/slp/unswitch-typed-
+param/kernel-parity/kernel-oracle/perf-ratchet/examples — 459 tests (5737
+assertions), same 2 pre-existing failures only.
+
 ## Status (2026-08-07, BODYMODEL SLICE 1 landed — .work/loop-bodymodel-design.md §5)
 BodyModel construction landed UNWIRED (zero consumers): `addrTable` generalizes
 `_offsetLocalStride`/`_isAddressLocal`/`_isPixelIndexLocal`/`matchMirrorAddr`

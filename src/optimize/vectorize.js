@@ -4198,6 +4198,51 @@ function matchChannelGroup(body) {
   return null
 }
 
+// Class-A hoist (.work/loop-bodymodel-design.md §1a/§5 slice 3): the init+inner-loop-locate scan
+// tryBlurMultiPixel and tryChannelReduce each ran over their pixel-loop body — locate four
+// consecutive `acc_c = 0` inits, then the `(block (loop))` immediately after them, then the
+// channel-accumulation group inside it via matchChannelGroup, then verify the summed
+// accumulators are exactly the four zero-inited ones. Functionally identical between the two
+// callers (tryChannelReduce's z-push carried one extra `typeof s[1] === 'string'` guard that's
+// always true for a `local.set`'s name slot — dead, not a behavior difference; the shared version
+// below keeps it, matching the codebase's prevailing name-narrowing convention). Returns
+// `{ initIdx, accInits, innerIdx, innerBlock, innerLoop, ilEnd, innerBody, grp }` or `null`.
+function matchChannelReducePixelLoop(loopNode, bodyStart, bodyEnd) {
+  // four `acc_c = 0` inits, consecutive
+  let initIdx = -1, accInits = null
+  for (let i = bodyStart; i + 3 <= bodyEnd; i++) {
+    const z = []
+    for (let c = 0; c < 4; c++) {
+      const s = loopNode[i + c]
+      if (isArr(s) && s[0] === 'local.set' && s.length === 3 && isI32Const(s[2]) && constNum(s[2]) === 0 && typeof s[1] === 'string') z.push(s[1])
+      else break
+    }
+    if (z.length === 4 && new Set(z).size === 4) { initIdx = i; accInits = z; break }
+  }
+  if (initIdx < 0) return null
+
+  // the inner accumulation loop: the (block (loop)) appearing after the inits
+  let innerIdx = -1, innerBlock = null
+  for (let i = initIdx + 4; i <= bodyEnd; i++) {
+    const s = loopNode[i]
+    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) { innerIdx = i; innerBlock = s; break }
+    if (isArr(s) && s[0] === 'loop') { innerIdx = i; innerBlock = ['block', s]; break }
+  }
+  if (!innerBlock) return null
+  const innerLoop = innerBlock.find(c => isArr(c) && c[0] === 'loop')
+  if (!innerLoop) return null
+  const ilEnd = innerLoop.length - 1
+  if (!(isArr(innerLoop[ilEnd]) && innerLoop[ilEnd][0] === 'br')) return null
+  const innerBody = innerLoop.slice(3, ilEnd - 1)
+
+  const grp = matchChannelGroup(innerBody)
+  if (!grp) return null
+  // the four channels summed must be exactly the four that were zero-inited (any order)
+  if (grp.accs.slice().sort().join('\x00') !== accInits.slice().sort().join('\x00')) return null
+
+  return { initIdx, accInits, innerIdx, innerBlock, innerLoop, ilEnd, innerBody, grp }
+}
+
 // ---- Byte-map recognizer (ramp + widening loads) ---------------------------
 //
 // Vectorize `for (i = 0; i < N; i++) out[i] = NARROW(f_i32(…))` where the i32
@@ -4678,30 +4723,11 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl) {
   if (!(isArr(inc) && inc[0] === 'local.set' && inc[1] === pivot && isArr(inc[2]) && inc[2][0] === 'i32.add'
     && isLocalGet(inc[2][1], pivot) && isI32Const(inc[2][2]) && constNum(inc[2][2]) === 1)) return null
 
-  // four `acc_c = 0` inits
-  let initIdx = -1, accInits = null
-  for (let i = 3; i + 3 <= bodyEnd; i++) {
-    const z = []
-    for (let c = 0; c < 4; c++) { const s = loopNode[i + c]; if (isArr(s) && s[0] === 'local.set' && s.length === 3 && isI32Const(s[2]) && constNum(s[2]) === 0) z.push(s[1]); else break }
-    if (z.length === 4 && new Set(z).size === 4) { initIdx = i; accInits = z; break }
-  }
-  if (initIdx < 0) return null
-  // the tap accumulation loop
-  let innerIdx = -1, innerBlock = null
-  for (let i = initIdx + 4; i <= bodyEnd; i++) {
-    const s = loopNode[i]
-    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) { innerIdx = i; innerBlock = s; break }
-    if (isArr(s) && s[0] === 'loop') { innerIdx = i; innerBlock = ['block', s]; break }
-  }
-  if (!innerBlock) return null
-  const innerLoop = innerBlock.find(c => isArr(c) && c[0] === 'loop')
-  if (!innerLoop) return null
-  const ilEnd = innerLoop.length - 1
-  if (!(isArr(innerLoop[ilEnd]) && innerLoop[ilEnd][0] === 'br')) return null
-  const innerBody = innerLoop.slice(3, ilEnd - 1)
-  const grp = matchChannelGroup(innerBody)
-  if (!grp) return null
-  if (grp.accs.slice().sort().join('\x00') !== accInits.slice().sort().join('\x00')) return null
+  // init+inner-loop-locate scan (matchChannelReducePixelLoop, hoisted — shared with
+  // tryChannelReduce): four `acc_c = 0` inits, then the tap accumulation loop.
+  const scan = matchChannelReducePixelLoop(loopNode, 3, bodyEnd)
+  if (!scan) return null
+  const { initIdx, accInits, innerIdx, innerBlock, innerLoop, ilEnd, innerBody, grp } = scan
   // CLAMP-FREE: nothing before the channel group may be an `if` (the edge clamp).
   for (let i = 0; i < grp.idx; i++) if (isArr(innerBody[i]) && innerBody[i][0] === 'if') return null
   // The tap loop must be the i32 form `k <= r`; extract the radius r (reused in the
@@ -4857,42 +4883,13 @@ function tryChannelReduce(blockNode, fnLocals, freshIdRef, bl) {
   if (!bl) return null
   const { loopNode, endIdx } = bl
 
-  // Pixel-loop body (between the exit guard and the back-branch). Find: four
-  // `acc_c = 0` inits and the inner accumulation loop that sums into them.
+  // Pixel-loop body (between the exit guard and the back-branch): four `acc_c = 0` inits and
+  // the inner accumulation loop that sums into them (matchChannelReducePixelLoop, hoisted —
+  // shared with tryBlurMultiPixel).
   const bodyStart = 3, bodyEnd = endIdx - 1   // [exit] at 2, [inc?][br] at the end
-  // The four zero-inits must be consecutive `(local.set $acc (i32.const 0))`.
-  let initIdx = -1, accInits = null
-  for (let i = bodyStart; i + 3 <= bodyEnd; i++) {
-    const z = []
-    for (let c = 0; c < 4; c++) {
-      const s = loopNode[i + c]
-      if (isArr(s) && s[0] === 'local.set' && s.length === 3 && isI32Const(s[2]) && constNum(s[2]) === 0 && typeof s[1] === 'string') z.push(s[1])
-      else break
-    }
-    if (z.length === 4 && new Set(z).size === 4) { initIdx = i; accInits = z; break }
-  }
-  if (initIdx < 0) return null
-
-  // The inner accumulation loop is the (block (loop)) appearing after the inits.
-  let innerIdx = -1, innerBlock = null
-  for (let i = initIdx + 4; i <= bodyEnd; i++) {
-    const s = loopNode[i]
-    if (isArr(s) && s[0] === 'block' && s.slice(1).some(c => isArr(c) && c[0] === 'loop')) { innerIdx = i; innerBlock = s; break }
-    if (isArr(s) && s[0] === 'loop') { innerIdx = i; innerBlock = ['block', s]; break }
-  }
-  if (!innerBlock) return null
-  // Locate the loop within the inner block and its body.
-  const innerLoop = innerBlock.find(c => isArr(c) && c[0] === 'loop')
-  if (!innerLoop) return null
-  const ilEnd = innerLoop.length - 1
-  if (!(isArr(innerLoop[ilEnd]) && innerLoop[ilEnd][0] === 'br')) return null
-  const innerBody = innerLoop.slice(3, ilEnd - 1)   // between exit guard and the (k+=1)(br)
-
-  const grp = matchChannelGroup(innerBody)
-  if (!grp) return null
-  // The four accumulators summed must be exactly the four that were zero-inited
-  // (same set, in any order).
-  if (grp.accs.slice().sort().join('\x00') !== accInits.slice().sort().join('\x00')) return null
+  const scan = matchChannelReducePixelLoop(loopNode, bodyStart, bodyEnd)
+  if (!scan) return null
+  const { initIdx, innerIdx, innerBlock, innerLoop, ilEnd, innerBody, grp } = scan
 
   // ── Lift. accv (v128) holds the four channel sums.
   const id = freshIdRef.next++
@@ -4975,6 +4972,25 @@ const CMP_LANE = {  // f64/i32 scalar compare → f64x2 lane compare (iter is f6
 }
 const readsVar = (n, v) => isArr(n) && ((n[0] === 'local.get' && n[1] === v) || n.some(c => readsVar(c, v)))
 const writesName = (n, name) => isArr(n) && (((n[0] === 'local.set' || n[0] === 'local.tee' || n[0] === 'global.set') && n[1] === name) || n.some(c => writesName(c, name)))
+
+// Epilogue safety (class-A hoist, .work/loop-bodymodel-design.md §1a/§5 slice 3): the per-pixel
+// epilogue runs scalar per lane (each statement bumped to pixel j+k), so every in-loop read it
+// makes must be a lane local (per-lane source via `laneMap`), a pixel IV (`pivType`), or a value
+// the epilogue itself computes (`epiWritten` — incl. within-statement tees, e.g. an Infinity-guard
+// temp inside an `(if … |0)` pack; straight-line source guarantees write-before-read). Verified
+// byte-identical at all three call sites (tryPerPixelColor, tryOuterStrip, tryIteratedReduce)
+// before this hoist — same `wr`/read-collection/rejection-loop shape, only the surrounding
+// variable names (`reads` vs `epiReadSet`) differed. Returns `{ epiWritten, reads }` (both Sets)
+// when safe, `null` when the epilogue reads an in-loop value with no per-lane source (caller bails).
+function epilogueIsSafe(epilogue, loopNode, laneMap, pivType) {
+  const epiWritten = new Set()
+  const wr = (n) => { if (!isArr(n)) return; const st = (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string'; if (st) epiWritten.add(n[1]); for (const c of (st ? n.slice(2) : n.slice(1))) wr(c) }
+  epilogue.forEach(wr)
+  const reads = new Set(); const rd = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get') reads.add(n[1]); else for (const c of n) rd(c) }
+  epilogue.forEach(rd)
+  for (const v of reads) if (writesName(loopNode, v) && !laneMap.has(v) && !epiWritten.has(v) && !pivType.has(v)) return null
+  return { epiWritten, reads }
+}
 // Pixel induction variables may be i32 (const-bound loops) or f64 (param-bound loops,
 // e.g. `for (x=0; x<width; ++x)` with f64 `width`). Match `v += 1` and `v < bound` for both.
 const matchPixelInc = (stmt) => {
@@ -5343,7 +5359,6 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
     if (n[0] === 'global.get') return ['f64x2.splat', n]   // loop-invariant module global (e.g. R3)
     return [LANE_PURE.f64.get(n[0]).simd, ...n.slice(1).map(lift)]
   }
-  const bump = (n, k) => bumpPixelIV(pivType, n, k)   // LoopPlan: matchOuterPixelLoop's pivType
 
   // Build a per-pixel c-var's two lanes by lifting its init to f64x2: the pixel IV becomes the
   // ramp [v, v+1], a dependency on another c-var resolves to that c-var's already-built lane
@@ -5469,7 +5484,7 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
       // Extract carried AND temp lanes: the escape compare may read a temp (the optimizer
       // copy-propagates `x = xt` so `x*x` becomes `xt*xt`); the skip test below needs it.
       for (const v of [...carried, ...temp]) out.push(['local.set', v, ['f64x2.extract_lane', k, ['local.get', shadow.get(v)]]])
-      for (let i = 0; i < innerIdx; i++) { const s = obody[i]; if (isArr(s) && s[0] === 'local.set' && perPxInit.has(s[1])) out.push(bump(s, k)) }
+      for (let i = 0; i < innerIdx; i++) { const s = obody[i]; if (isArr(s) && s[0] === 'local.set' && perPxInit.has(s[1])) out.push(bumpPixelIV(pivType, s, k)) }
       out.push(['local.set', itVar, ['local.get', shIt]])
       out.push(['if', ['local.get', escF], ['then',                 // exited via escape (not the limit)…
         ...escTees,
@@ -5478,7 +5493,7 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
           // escape-at-TOP tests before the update, so resume at the same it.
           ...(escAtMid ? [['local.set', itVar, ['i32.add', ['local.get', itVar], ['i32.const', 1]]]] : []),
           relabelInner()]]]])
-      for (const s of epilogue) out.push(bump(s, k))
+      for (const s of epilogue) out.push(bumpPixelIV(pivType, s, k))
       return out
     }
   } else if (midBreaks.length > 1) {
@@ -5569,7 +5584,7 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
       out.push(['local.set', itVar, ['i32.trunc_f64_s', ['f64x2.extract_lane', k, ['local.get', iterV]]]])
       // Extract per-lane outcome variables from their i32x4 shadows (i32 lane = 2*k).
       for (const [v, sv] of outcomeVec) out.push(['local.set', v, ['i32x4.extract_lane', 2 * k, ['local.get', sv]]])
-      for (const s of epilogue) out.push(bump(s, k))
+      for (const s of epilogue) out.push(bumpPixelIV(pivType, s, k))
       return out
     }
   } else {
@@ -5609,7 +5624,7 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
       const out = []
       for (const v of carriedInEpi) out.push(['local.set', v, ['f64x2.extract_lane', k, ['local.get', shadow.get(v)]]])
       out.push(['local.set', itVar, ['i32.trunc_f64_s', ['f64x2.extract_lane', k, ['local.get', iterV]]]])
-      for (const s of epilogue) out.push(bump(s, k))
+      for (const s of epilogue) out.push(bumpPixelIV(pivType, s, k))
       return out
     }
   }
@@ -5617,7 +5632,7 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
   // SIMD outer loop: process a pair while x+1 is still a valid pixel, then advance every pixel IV
   // by 2. The scalar tail (original block) finishes any last odd pixel.
   const simdOuter = ['block', sOut, ['loop', sOl,
-    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bump(['local.get', pxVar], 1), widthBound]]],
+    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bumpPixelIV(pivType, ['local.get', pxVar], 1), widthBound]]],
     ...pre, simdInner, ...postLoop, ...epiLane(0), ...epiLane(1),
     ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 2]]]),
     ['br', sOl]]]
@@ -5682,7 +5697,6 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
   const impureCall = (n) => isArr(n) && ((n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.') && !(pureFuncMap && pureFuncMap.has(n[1]))) || n.some(impureCall))
   if (obody.some(impureCall)) return null
 
-  const bump = (n, k) => bumpPixelIV(pivType, n, k)   // LoopPlan: matchOuterPixelLoop's pivType
 
   // Pixel-coordinate aliases: a local consistently CSE'd to `convert_i32_s(pixelIV)` (jz tees the f64
   // pixel-x once — reused for the store address AND the per-pixel math — so it lives inside the i32
@@ -5701,7 +5715,6 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
     }
   }
   // The two lanes of a pixel IV (or its alias): [v, v+1], in f64 (an i32 IV is converted per lane).
-  const rampOf = (piv) => rampPixelIV(pivType, piv)   // LoopPlan: matchOuterPixelLoop's pivType
 
   const id = freshIdRef.next++
   const nm = (s) => `$__ppc${id}_${s}`
@@ -5796,8 +5809,8 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
     if (op === 'local.get') {
       const v = n[1]
       if (laneMap.has(v)) return ['local.get', laneMap.get(v)]
-      if (pxAlias.has(v)) return rampOf(pxAlias.get(v))
-      if (pivType.get(v) === 'f64') return rampOf(v)
+      if (pxAlias.has(v)) return rampPixelIV(pivType, pxAlias.get(v))
+      if (pivType.get(v) === 'f64') return rampPixelIV(pivType, v)
       if (writesName(loopNode, v)) return null
       return ['f64x2.splat', n]
     }
@@ -5809,7 +5822,7 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
       return ['local.tee', lane, lifted]
     }
     if (op === 'global.get') return writesName(loopNode, n[1]) ? null : ['f64x2.splat', n]
-    if (op === 'f64.convert_i32_s' && isArr(n[1]) && n[1][0] === 'local.get' && pivType.get(n[1][1]) === 'i32') return rampOf(n[1][1])
+    if (op === 'f64.convert_i32_s' && isArr(n[1]) && n[1][0] === 'local.get' && pivType.get(n[1][1]) === 'i32') return rampPixelIV(pivType, n[1][1])
     if (op === 'call') {
       const v2 = PPC_CALL2[n[1]]
       if (v2 && n.length === 3) { const a = liftPPC(n[2]); return a && ['call', v2, a] }
@@ -5894,19 +5907,11 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
     : n.some(c => feedsIV(c, seen)))
   if (!feedsIV(storeStmt[1])) return null   // store cell wouldn't vary per lane → can't pair
 
-  // ---- epilogue safety: runs scalar per lane (each statement bumped to pixel j+k). It may read a
-  // lane local (extracted below), an invariant/pixel-IV, or a value the epilogue itself computes —
-  // incl. within-statement tees (e.g. the Infinity-guard temp inside an `(if … |0)` pack). Straight-
-  // line source guarantees write-before-read, so it suffices that every read of an in-loop local is
-  // a lane local or written somewhere in the epilogue (a lane local read is satisfied by extraction). ----
-  {
-    const epiWritten = new Set()
-    const wr = (n) => { if (!isArr(n)) return; const st = (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string'; if (st) epiWritten.add(n[1]); for (const c of (st ? n.slice(2) : n.slice(1))) wr(c) }
-    epilogue.forEach(wr)
-    const reads = new Set(); const rd = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get') reads.add(n[1]); else for (const c of n) rd(c) }
-    epilogue.forEach(rd)
-    for (const v of reads) if (writesName(loopNode, v) && !laneMap.has(v) && !epiWritten.has(v) && !pivType.has(v)) return null   // reads an in-loop value with no per-lane source
-  }
+  // ---- epilogue safety (epilogueIsSafe, hoisted — byte-identical at all 3 outer-pixel call
+  // sites): runs scalar per lane (each statement bumped to pixel j+k). It may read a lane local
+  // (extracted below), an invariant/pixel-IV, or a value the epilogue itself computes — incl.
+  // within-statement tees (e.g. the Infinity-guard temp inside an `(if … |0)` pack). ----
+  if (!epilogueIsSafe(epilogue, loopNode, laneMap, pivType)) return null   // reads an in-loop value with no per-lane source
   const epiReads = [...laneMap.keys()].filter(v => epilogue.some(s => readsVar(s, v)))
 
   // ============================ emit ============================
@@ -5914,11 +5919,11 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
   const laneCompute = [...laneLifted.keys()].map(v => ['local.set', laneMap.get(v), laneLifted.get(v)])
   const epiLane = (k) => [
     ...epiReads.map(v => ['local.set', v, ['f64x2.extract_lane', k, ['local.get', laneMap.get(v)]]]),
-    ...epilogue.map(s => bump(s, k)),
+    ...epilogue.map(s => bumpPixelIV(pivType, s, k)),
   ]
   const sOut = nm('ob'), sOl = nm('ol')
   const simdOuter = ['block', sOut, ['loop', sOl,
-    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bump(['local.get', pxVar], 1), widthBound]]],
+    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bumpPixelIV(pivType, ['local.get', pxVar], 1), widthBound]]],
     ...laneCompute, ...epiLane(0), ...epiLane(1),
     ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 2]]]),
     ['br', sOl]]]
@@ -5960,8 +5965,6 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
 
   const id = freshIdRef.next++
   const nm = (s) => `$__os${id}_${s}`
-  const bump = (n, k) => bumpPixelIV(pivType, n, k)   // LoopPlan: matchOuterPixelLoop's pivType
-  const rampOf = (piv) => rampPixelIV(pivType, piv)   // LoopPlan: matchOuterPixelLoop's pivType
   const readsName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => readsName(c, name)))
 
   const laneMap = new Map()   // f64 lane-local (per-pixel-varying) name → its v128 shadow
@@ -5975,11 +5978,11 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
     if (op === 'local.get') {
       const v = n[1]
       if (laneMap.has(v)) return ['local.get', laneMap.get(v)]
-      if (pivType.get(v) === 'f64') return rampOf(v)
+      if (pivType.get(v) === 'f64') return rampPixelIV(pivType, v)
       if (writesName(loopNode, v)) return null
       return ['f64x2.splat', n]
     }
-    if (op === 'f64.convert_i32_s' && isArr(n[1]) && n[1][0] === 'local.get' && pivType.get(n[1][1]) === 'i32') return rampOf(n[1][1])
+    if (op === 'f64.convert_i32_s' && isArr(n[1]) && n[1][0] === 'local.get' && pivType.get(n[1][1]) === 'i32') return rampPixelIV(pivType, n[1][1])
     if (op === 'global.get') return writesName(loopNode, n[1]) ? null : ['f64x2.splat', n]
     if (LOAD_OPS[op] === 'f64') {
       // pixel-invariant load (address reads neither the pixel IV nor any per-pixel lane) is the
@@ -6088,17 +6091,11 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
   }
 
   // ---- epilogue (obody[>innerIdx]): the per-pixel pack+store, run scalar per lane (bumped to xi+k),
-  // reading the extracted accumulator/lane values. Safety: every in-loop read must be a lane local,
-  // a pixel IV, or written within the epilogue itself. ----
+  // reading the extracted accumulator/lane values. Safety (epilogueIsSafe, hoisted — byte-identical
+  // at all 3 outer-pixel call sites): every in-loop read must be a lane local, a pixel IV, or
+  // written within the epilogue itself. ----
   const epilogue = obody.slice(innerIdx + 1)
-  {
-    const epiWritten = new Set()
-    const wr = (n) => { if (!isArr(n)) return; const st = (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string'; if (st) epiWritten.add(n[1]); for (const c of (st ? n.slice(2) : n.slice(1))) wr(c) }
-    epilogue.forEach(wr)
-    const reads = new Set(); const rd = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get') reads.add(n[1]); else for (const c of n) rd(c) }
-    epilogue.forEach(rd)
-    for (const v of reads) if (writesName(loopNode, v) && !laneMap.has(v) && !epiWritten.has(v) && !pivType.has(v)) return null
-  }
+  if (!epilogueIsSafe(epilogue, loopNode, laneMap, pivType)) return null
   // store must exist + vary per lane
   let hasStore = false
   const findStore = (n) => { if (!isArr(n)) return; if (STORE_OPS[n[0]]) hasStore = true; n.forEach(findStore) }
@@ -6118,11 +6115,11 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const laneCompute = [...laneInit, innerSimd]
   const epiLane = (k) => [
     ...epiReads.map(v => ['local.set', v, ['f64x2.extract_lane', k, ['local.get', laneMap.get(v)]]]),
-    ...epilogue.map(s => bump(s, k)),
+    ...epilogue.map(s => bumpPixelIV(pivType, s, k)),
   ]
   const sOut = nm('ob'), sOl = nm('ol')
   const simdOuter = ['block', sOut, ['loop', sOl,
-    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bump(['local.get', pxVar], 1), widthBound]]],
+    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bumpPixelIV(pivType, ['local.get', pxVar], 1), widthBound]]],
     ...laneCompute, ...epiLane(0), ...epiLane(1),
     ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 2]]]),
     ['br', sOl]]]
@@ -6167,8 +6164,6 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const shadowOf = (v) => { let s = laneMap.get(v); if (!s) { s = nm(v.replace(/\W/g, '')); laneMap.set(v, s) } return s }
   let sawHeavy = false            // a transcendental lifted inside a loop → SIMD is worth it
 
-  const bump = (n, k) => bumpPixelIV(pivType, n, k)   // LoopPlan: matchOuterPixelLoop's pivType
-  const rampOf = (piv) => rampPixelIV(pivType, piv)   // LoopPlan: matchOuterPixelLoop's pivType
   const readsName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => readsName(c, name)))
   // Lane-invariant: reads no per-pixel lane local and no pixel IV → identical value in both lanes.
   const laneInvariant = (n) => !isArr(n) ? true
@@ -6195,11 +6190,11 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
     if (op === 'local.get') {
       const v = n[1]
       if (laneMap.has(v)) return ['local.get', laneMap.get(v)]
-      if (pivType.get(v) === 'f64') return rampOf(v)
+      if (pivType.get(v) === 'f64') return rampPixelIV(pivType, v)
       if (writesName(loopNode, v)) return null
       return ['f64x2.splat', n]
     }
-    if (op === 'f64.convert_i32_s' && isArr(n[1]) && n[1][0] === 'local.get' && pivType.get(n[1][1]) === 'i32') return rampOf(n[1][1])
+    if (op === 'f64.convert_i32_s' && isArr(n[1]) && n[1][0] === 'local.get' && pivType.get(n[1][1]) === 'i32') return rampPixelIV(pivType, n[1][1])
     if (op === 'global.get') return writesName(loopNode, n[1]) ? null : ['f64x2.splat', n]
     if (LOAD_OPS[op] === 'f64') {
       const addr = typeof n[1] === 'string' && n[1].startsWith('offset=') ? n[2] : n[1]
@@ -6293,12 +6288,10 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const findStore = (n) => { if (!isArr(n)) return; if (STORE_OPS[n[0]]) hasStore = true; n.forEach(findStore) }
   epilogue.forEach(findStore)
   if (!hasStore) return null
-  const epiWritten = new Set()
-  const wr = (n) => { if (!isArr(n)) return; const st = (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string'; if (st) epiWritten.add(n[1]); for (const c of (st ? n.slice(2) : n.slice(1))) wr(c) }
-  epilogue.forEach(wr)
-  const epiReadSet = new Set(); const rd = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get') epiReadSet.add(n[1]); else for (const c of n) rd(c) }
-  epilogue.forEach(rd)
-  for (const v of epiReadSet) if (writesName(loopNode, v) && !laneMap.has(v) && !epiWritten.has(v) && !pivType.has(v)) return null
+  // epilogueIsSafe, hoisted — byte-identical at all 3 outer-pixel call sites.
+  const epiSafety = epilogueIsSafe(epilogue, loopNode, laneMap, pivType)
+  if (!epiSafety) return null
+  const epiReadSet = epiSafety.reads
   const epiReads = [...laneMap.keys()].filter(v => epiReadSet.has(v))
   if (!epiReads.length) return null
 
@@ -6306,11 +6299,11 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const newLocalDecls = [...new Set(laneMap.values())].map(n => ['local', n, 'v128'])
   const epiLane = (k) => [
     ...epiReads.map(v => ['local.set', v, ['f64x2.extract_lane', k, ['local.get', laneMap.get(v)]]]),
-    ...epilogue.map(s => bump(s, k)),
+    ...epilogue.map(s => bumpPixelIV(pivType, s, k)),
   ]
   const sOut = nm('ob'), sOl = nm('ol')
   const simdOuter = ['block', sOut, ['loop', sOl,
-    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bump(['local.get', pxVar], 1), widthBound]]],
+    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bumpPixelIV(pivType, ['local.get', pxVar], 1), widthBound]]],
     ...laneCompute, ...epiLane(0), ...epiLane(1),
     ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 2]]]),
     ['br', sOl]]]
@@ -6438,17 +6431,16 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const findStore = (n) => { if (!isArr(n)) return; if (STORE_OPS[n[0]]) hasStore = true; n.forEach(findStore) }
   epilogue.forEach(findStore)
   if (!hasStore) return null
-  const bump = (n, k) => bumpPixelIV(pivType, n, k)   // LoopPlan: matchOuterPixelLoop's pivType
   const epiLane = (k) => [
     ['local.set', accName, ['f64.convert_i32_s', ['i32x4.extract_lane', k & 3, ['local.get', k < 4 ? loV : hiV]]]],
-    ...epilogue.map(s => bump(s, k)),
+    ...epilogue.map(s => bumpPixelIV(pivType, s, k)),
   ]
 
   const newLocalDecls = [['local', loV, 'v128'], ['local', hiV, 'v128'], ['local', pV, 'v128']]
   const sOut = nm('ob'), sOl = nm('ol')
   // Guard requires 8 columns available (ox+7 < width); the kept scalar loop finishes the <8 tail.
   const simdOuter = ['block', sOut, ['loop', sOl,
-    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bump(['local.get', pxVar], 7), widthBound]]],
+    ['br_if', sOut, ['i32.eqz', [oExit.cmpOp, bumpPixelIV(pivType, ['local.get', pxVar], 7), widthBound]]],
     ...laneCompute, ...epiLane(0), ...epiLane(1), ...epiLane(2), ...epiLane(3), ...epiLane(4), ...epiLane(5), ...epiLane(6), ...epiLane(7),
     ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 8]]]),
     ['br', sOl]]]
