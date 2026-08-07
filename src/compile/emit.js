@@ -1442,12 +1442,20 @@ function coerceArg(ir, param, node) {
       // unboxed already — see below) → `hex(r)` (`hex`'s param0 settled
       // "stays raw", `r` is `arith`'s own ALREADY-boxed param) — hex's
       // `v.toString(16)` read the pointer's own bits raw.
+      // `typed(['local.get', ...], 'f64')`, NOT a bare array: asI64/asF64
+      // (ir.js) dispatch on `.type` to decide the coercion shape, defaulting
+      // an UNTAGGED node to "i32, needs f64.convert_i32_s" — found live as a
+      // self-host build failure (WebAssembly.Module() validation: "f64.
+      // convert_i32_s[0] expected type i32, found local.get of type f64") —
+      // `$t` is a genuine f64 local (temp() mints one), the untagged
+      // local.get read of it defaulted straight into that wrong i32 path.
       const t = temp('argbx')
+      const tGet = typed(['local.get', `$${t}`], 'f64')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, ir],
-        ['if', ['result', 'f64'], isNullish(['local.get', `$${t}`]),
-          ['then', ['local.get', `$${t}`]],
-          ['else', fromI64(unboxBigInt(['local.get', `$${t}`]))]]], 'f64')
+        ['if', ['result', 'f64'], isNullish(tGet),
+          ['then', tGet],
+          ['else', fromI64(unboxBigInt(tGet))]]], 'f64')
     }
     if (!alreadyBoxed && param?.bigintBoxed) {
       // The mirror direction (Slice 2's original wiring): callee's param
@@ -1460,12 +1468,14 @@ function coerceArg(ir, param, node) {
       // value crosses as a box). Nullish-guarded for the same reason as the
       // unbox direction above — a nullable-BIGINT argument (proven or
       // unproven-boxed alike) may genuinely be the sentinel at runtime.
+      // `tGet` typed 'f64' — see the unbox branch's own comment just above.
       const t = temp('argbx')
+      const tGet = typed(['local.get', `$${t}`], 'f64')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, ir],
-        ['if', ['result', 'f64'], isNullish(['local.get', `$${t}`]),
-          ['then', ['local.get', `$${t}`]],
-          ['else', boxBigInt(asI64(['local.get', `$${t}`]))]]], 'f64')
+        ['if', ['result', 'f64'], isNullish(tGet),
+          ['then', tGet],
+          ['else', boxBigInt(asI64(tGet))]]], 'f64')
     }
   }
   if (node !== undefined && (param == null || (param.type !== 'i32' && param.val == null)) &&
