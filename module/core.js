@@ -1588,7 +1588,7 @@ export default (ctx) => {
   // for ad-hoc props on pointer-backed values, so schema reads should bypass it.
   // Slot val-types reach the emit-time consumer via valTypeOf → ctx.schema.slotVT
   // (read on the AST `.prop` node), not via tagging this IR node.
-  function emitSchemaSlotRead(baseExpr, idx, i32Certain) {
+  function emitSchemaSlotRead(baseExpr, idx, i32Certain, bigintProven) {
     // An unboxed proven-non-ARRAY pointer (a structInline element cell, a narrowed local)
     // reaches ptrOffsetIR raw so it returns the offset directly — no `__ptr_offset` call.
     // Pre-boxing via asF64 strips ptrKind and forces every field read onto the call path
@@ -1599,6 +1599,10 @@ export default (ctx) => {
       : (baseExpr?.type === 'f64' ? baseExpr : asF64(baseExpr))
     // Packed i32 cells (structInline + inlineCellI32, flag rides the cursor
     // node): the field IS a raw i32 at +idx*4 — one i32.load, no trunc_sat.
+    // A BIGINT slot is never i32-certain (census invariant, program-facts.js
+    // analyzeSchemaSlotIntCertain) and inlineCellI32 requires EVERY slot
+    // i32-certain — bigintProven and cellI32 are mutually exclusive by
+    // construction, so this arm never needs to consult bigintProven at all.
     if (baseExpr?.cellI32) return typed(packedI32.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx), 'i32')
     const load = ctx.abi.object.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx)
     // Strict-int32 slot (ctx.schema.slotI32CertainAt — every censused write is
@@ -1607,6 +1611,28 @@ export default (ctx) => {
     // the ToInt32 guard/convert battery the f64 route pays (the immutable
     // kernel's per-field cost); f64 consumers convert back at one op.
     if (i32Certain) return typed(['i32.trunc_sat_f64_s', load], 'i32')
+    // CARRIER PROGRAM §15/§16: the third read surface Slice 3's arm inventory
+    // never enumerated. A PROVEN-BIGINT slot (ctx.schema.slotBigintProvenAt/
+    // BySid, module/schema.js — every write to this slot is proven BIGINT
+    // AND the schema's write side boxes it) is UNCONDITIONALLY boxed by
+    // construction (module/object.js's literal/spread construction, this
+    // file's dot-assign and structInline element-store arms all derive from
+    // the SAME per-schema fact) — a static read may unbox it directly instead
+    // of handing a registry-only box pointer to every consumer as if it were
+    // the field's raw value (the original §15 corruption: `LAYOUT.
+    // NAN_PREFIX_BITS`'s bare f64.load fed a boxed pointer's own bits straight
+    // into arithmetic). Returns the raw i64 payload — typed 'i64', mirroring
+    // readI64/unboxBigInt's own convention (src/ir.js): a generic consumer
+    // (asF64) reinterprets those bits into the SAME opaque f64 carrier every
+    // OTHER unboxed BigInt value uses by default in this compiler, and any
+    // consumer that reaches a genuine W-sink re-boxes fresh via carrierF64's
+    // unconditional inline-expression fallback (this `.` node is an Array,
+    // valTypeOf resolves BIGINT via slotVT) — exactly how every other inline
+    // BIGINT expression already round-trips. UNPROVEN reads (bigintProven
+    // false) fall through unchanged: the box keeps flowing as an opaque f64
+    // value, which registry-aware consumers ($__dyn_get/$__typeof/$__to_num/
+    // $__eq) already handle correctly per Slice 3.
+    if (bigintProven) return unboxBigInt(typed(load, 'f64'))
     return typed(load, 'f64')
   }
 
@@ -1659,6 +1685,20 @@ export default (ctx) => {
     // has no way to know the forwarding check is dead here — so this inlines
     // the same extraction __ptr_offset itself would perform for an OBJECT tag.
     const off = ['i32.wrap_i64', ['i64.and', bits, ['i64.const', LAYOUT.OFFSET_MASK]]]
+    // CARRIER PROGRAM §15/§16 (verified, not threaded — unlike emitSchemaSlotRead's
+    // other call sites): `slow()` is a GENUINE dynamic dispatch whose receiver
+    // could be any schema or none — it always returns the box itself (a valid
+    // NaN-boxed f64), never an unboxed payload, because a registry-aware reader
+    // can't statically prove a uniform kind. `fast`, below, must produce the
+    // exact SAME representation: a wasm `if` requires both arms to share one
+    // value type, and any downstream consumer of this merged result (readI64,
+    // carrierF64) needs ONE consistent contract across both arms, not "box on
+    // miss, raw payload on hit". So even when guard.sid/guard.slot IS a proven-
+    // BIGINT-boxed slot (ctx.schema.slotBigintProvenBySid), `fast`'s plain load
+    // is already correct AS-IS: it returns the box, matching `slow()` exactly —
+    // no unbox belongs here. (A future dedicated arm COULD unbox both sides at
+    // once by wrapping the whole `if` post-hoc, but no such consumer exists
+    // today — left as a documented no-op rather than adding unused plumbing.)
     const fast = typed(ctx.abi.object.ops.load(off, guard.slot), 'f64')
     const ir = typed(['if', ['result', 'f64'],
       cond,
@@ -1777,6 +1817,28 @@ export default (ctx) => {
     return -1
   }
 
+  // schemaId of a literal-resolved expression (literalSlot's own sibling),
+  // or null. `literalAst` bails on any spread source, so this always mirrors
+  // module/object.js's plain (non-spread) `litId = ctx.schema.register(names)`
+  // in the SAME source order — and since this fast path only ever fires for
+  // an ANONYMOUS literal (this file's own comment above literalAst: the
+  // varName-bound `let o = {a:1}; o.a` case already resolves via
+  // ctx.schema.idOf), `takeLiteralTarget()` is null at that literal's real
+  // construction, so `schemaId` there is ALWAYS `litId` too — no merge-schema
+  // branch to reproduce. CARRIER PROGRAM §15/§16: lets the literal fast path
+  // consult ctx.schema.slotBigintProvenBySid the same as every other
+  // emitSchemaSlotRead call site.
+  function literalSid(obj) {
+    const lit = literalAst(obj)
+    if (!lit) return null
+    const props = lit.slice(1)
+    const flat = props.length === 1 && Array.isArray(props[0]) && props[0][0] === ','
+      ? props[0].slice(1) : props
+    const names = []
+    for (const p of flat) if (Array.isArray(p) && p[0] === ':') names.push(p[1])
+    return ctx.schema.register(names)
+  }
+
   /** Emit .prop access for a WASM f64 node using schema or HASH fallback. */
   function emitPropAccess(va, obj, prop, fromOptional = false) {
     // Anonymous-literal fast path: when `obj` resolves at compile time to an
@@ -1789,7 +1851,7 @@ export default (ctx) => {
     // `({a:{b:1}}).a.b` where the receiver is anonymous. Spread sources
     // (`{...x}`) shift slot ordering and would need their own resolution.
     const slot = literalSlot(obj, prop)
-    if (slot >= 0) return emitSchemaSlotRead(va, slot)
+    if (slot >= 0) return emitSchemaSlotRead(va, slot, false, ctx.schema.slotBigintProvenBySid?.(literalSid(obj), prop))
     // Receiver IR is an unboxed OBJECT pointer carrying its own schema (a
     // structInline element cell, a narrowed local): resolve the field's fixed
     // slot directly from `ptrAux` — more precise than the structural
@@ -1797,7 +1859,8 @@ export default (ctx) => {
     if (va?.ptrKind === VAL.OBJECT && va.ptrAux != null && typeof prop === 'string') {
       const sch = ctx.schema.list[va.ptrAux]
       const si = sch ? sch.indexOf(prop) : -1
-      if (si >= 0) return emitSchemaSlotRead(va, si, ctx.schema.slotI32CertainBySid?.(va.ptrAux, prop))
+      if (si >= 0) return emitSchemaSlotRead(va, si, ctx.schema.slotI32CertainBySid?.(va.ptrAux, prop),
+        ctx.schema.slotBigintProvenBySid?.(va.ptrAux, prop))
     }
     let schemaIdx = typeof obj === 'string' ? ctx.schema.slotOf(obj, prop) : ctx.schema.slotOf(null, prop)
     // Chain receiver (e.g. `o.meta.bias`): when the chain resolves to a known
@@ -1836,7 +1899,8 @@ export default (ctx) => {
         if (va.cellI32) { base.cellI32 = true; base.unionKey = va.unionKey }
       }
       return emitSchemaSlotRead(base, schemaIdx,
-        typeof obj === 'string' && ctx.schema.slotI32CertainAt?.(obj, prop))
+        typeof obj === 'string' && ctx.schema.slotI32CertainAt?.(obj, prop),
+        typeof obj === 'string' && ctx.schema.slotBigintProvenAt?.(obj, prop))
     }
     if (typeof obj === 'string') {
       const vt = lookupValType(obj)
@@ -1965,7 +2029,8 @@ export default (ctx) => {
         return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', inner]]], 'f64')
       }
       const idx = ctx.schema.slotOf(obj, prop)
-      if (idx >= 0) return emitSchemaSlotRead(emit(obj), idx, ctx.schema.slotI32CertainAt?.(obj, prop))
+      if (idx >= 0) return emitSchemaSlotRead(emit(obj), idx, ctx.schema.slotI32CertainAt?.(obj, prop),
+        ctx.schema.slotBigintProvenAt?.(obj, prop))
     }
 
     if (prop === 'length') {
