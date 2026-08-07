@@ -6,6 +6,76 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-07, HEAP-KIND REGISTRY SLICE 1 landed — table + shadow-check, .work/heap-kind-registry-design.md)
+New leaf modules `layout-kinds.js` (root, sibling to layout.js/err-codes.js —
+not module/layout-kinds.js: layout.js itself lives at repo root, matched that
+convention) and `test/layout-kinds.js`. Zero codegen change: KIND_REGISTRY
+documents allocation shape / child pointers / forwarding policy / identity /
+interop decode / typeof arm for all 12 PTR.* tags + 4 ATOM sub-kinds (NULL/
+UNDEFINED/BOOLEAN/SYMBOL), read directly out of $__typeof/$__ptr_type,
+$__eq/$__eq_strict, $__same_value_zero/$__map_hash (module/core.js,
+module/collection.js), __region_copy_rec, interop.js mem.read/write, and
+src/compile/emit.js's REF_EQ_KINDS — not invented columns.
+
+FINDINGS (the headline — 4 cross-consumer disagreements, all centering on
+PTR.BIGINT, all live-reproduced in test/layout-kinds.js, none new bugs
+introduced by this slice):
+  1. typeof: a dynamically-boxed BigInt (static analysis can't prove
+     VAL.BIGINT, so misses emit['typeof']'s literal-string fold) reports
+     "object" via $__typeof — no PTR.BIGINT arm exists.
+  2. eq-identity: src/compile/emit.js's REF_EQ_KINDS comment states BIGINT
+     "needs __eq (heap-allocated, content compare)" and excludes it from the
+     pointer-bits fast path on that promise — but $__eq/$__eq_strict/
+     $__same_value_zero/$__map_hash have no PTR.BIGINT arm at all, so two
+     independently-boxed equal-value BigInts compare UNEQUAL and dedup
+     WRONG in Set/Map (pointer-bits, not content). The exclusion is correct;
+     the promised fallback was never built.
+  3. interop-decode: interop.js mem.read has no PTR.BIGINT arm; a boxed
+     BigInt crossing to the host reinterprets the POINTER's bits as a float
+     — the boxed-pointer analog of the misdecode mem.read's OWN
+     decodeBigintSentinel comment already documents for the separate
+     unboxed raw-i64 jz:i64exp path ("5n reading back 2.5e-323").
+  4. region-forwarding: __region_copy_rec (region-arena Cheney tracer) traps
+     `unreachable` on BIGINT/OBJECT/HASH/CLOSURE (explicitly documented
+     in-source "out of Slice-1 scope" — a DIFFERENT Slice 1, the region
+     program's own). module/collection.js's __sclone_rec (structuredClone)
+     has the SAME missing-kind gap but disagrees on failure mode: silent
+     pass-through, not a trap. Two consumers, one gap, two different
+     failure modes — exactly the registry's founding complaint ("not
+     another `if PTR.BIGINT` branch").
+Also noted (not elevated to FINDINGS — single-consumer, not cross-consumer
+disagreements): a zero-capture CLOSURE allocates no heap block (immediate
+tag+table-idx+offset-0), so `mk()===mk()` for a captureless factory is TRUE
+where real JS gives a fresh function object every call; TYPED's view
+descriptor carries a raw i32 bufferRootOff edge (not a boxed f64 slot) back
+to its BUFFER — a structurally different child-pointer shape a future
+tracer must special-case; every PTR.ATOM sub-kind (null/undefined/booleans/
+every Symbol) hashes to the SAME $__map_hash bucket (3) — correct via the
+$__same_value_zero tie-break, just a documented non-distinguishing hash.
+
+Shadow-check: test/layout-kinds.js, 41 tests / 66 assertions plain, 42/178
+under JZ_DEBUG_INVARIANTS=1 (one extra gated completeness meta-test) — both
+green. registry self-consistency assertions (every live PTR.* tag has a row;
+every FINDINGS id is cross-referenced from the rows it names) caught two
+real omissions during authoring (OBJECT/HASH missing the region-forwarding
+tag) and one wrong test assumption (the zero-capture CLOSURE identity
+probe) before landing — the shadow-check did its job.
+
+Gates: full battery in 15 foreground chunks of ~6 files (89 files total) —
+green except the SAME 2 pre-existing optimizer.js failures this file's
+other recent entries already track (unrelated to this slice — pure
+addition, nothing here touches src/optimize or any codegen path);
+kernel-parity 11/11 at O2 + 11/11 at O3, byte-identical; selfhost.js 21/21
+(206 assertions); fresh `npm run build` with vs. without the two new files
+present — dist/jz.js + dist/interop.js + dist/jz.wasm SHA-256 byte-identical
+both ways (confirms neither leaf is reachable from index.js/interop.js's
+esbuild entry points, so nothing here can leak into dist ahead of a later
+slice actually wiring codegen to the table).
+
+Slices 2-5 (region tracer generation, $__eq/$__map_hash arm generation,
+interop decode arms, carrier read-side dispatch) are NOT attempted — this
+slice is table + proof only, per the design doc.
+
 ## Status (2026-08-07, BODYMODEL SLICE 3 landed — post-hoc consumers onto BodyModel)
 `tryMapReduceVectorize` switched its one `f64.load` address query from a live
 `matchLaneAddr(e[1], incVar, new Map(), offsetTees)` call to `bl.siteAccess.get(e)`

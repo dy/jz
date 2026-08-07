@@ -51,6 +51,7 @@ const TESTS = [
   'perf',
   'timers',
   'invariants',
+  'layout-kinds',
   'pow-ulp',
   'pow-fold-ulp',
   'fifthroot-ulp',
