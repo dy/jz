@@ -2044,7 +2044,22 @@ export function emitDecl(...inits) {
     // (`isDeclared`/`resolveScope`/`hasFunc`/`includeForCallableValue`)
     // compiled locals actually get inlined into it and why the shift isn't
     // pure renaming.
+    // ctx.func._arrayLiteralNeverEscapes (module/array.js's array-literal
+    // emitter reads it): a compiler-synthesized decl-destructure array-
+    // literal temp (prepare/index.js prepDecl, ctx.schema.arrayVars — see
+    // that map's own doc comment there and carrierF64Narrow's, ir.js). A
+    // transient CONTEXT FLAG, not a change to the `emit(init)` call itself —
+    // this decl-init site is the documented WALL just above (repeated hunts,
+    // still banked): swapping this call to storedValue/argIR reshapes the
+    // self-hosted kernel's own compiled locals enough to trip a DIFFERENT,
+    // unrelated self-host miscompile. A flag only module/array.js's array-
+    // literal emitter consults carries none of that risk — it changes
+    // nothing about what `emit(init)` calls or how many temps it mints.
+    const prevNeverD = ctx.func._arrayLiteralNeverEscapes
+    if (!viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '[' && ctx.schema.arrayVars?.has(name))
+      ctx.func._arrayLiteralNeverEscapes = true
     const val = viewInit || emit(init)
+    ctx.func._arrayLiteralNeverEscapes = prevNeverD
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
     // emitting init — not just for sibling `let`s in the same block (emitBlockBody used
@@ -5173,7 +5188,21 @@ export const emitter = {
     const selfAccum = Array.isArray(val) && val[0] === '+' && val[1] === name
     const prevSA = ctx.func._selfAccumConcat
     ctx.func._selfAccumConcat = selfAccum ? name : null
+    // Compiler-synthesized decl-destructure array-literal temp (prepare/index.js
+    // prepDecl, ctx.schema.arrayVars — kind.js's own doc comment on that map:
+    // "tmp is a compiler-synthesized, single-write, non-escaping carrier that
+    // only this destructure's own generated reads ever touch"). `tmp = […]`'s
+    // own elements never cross the host boundary and are never read via a
+    // registry-aware dynamic dispatch — module/array.js's array-literal
+    // emitter reads this flag to admit storedValueNarrow unconditionally
+    // (dropping its default per-element-uniformity gate, which a mixed-type
+    // destructure source like `let [a, b] = [1, BigInt(v)]` fails even though
+    // no reader here is ever dynamic). See carrierF64Narrow's own doc comment
+    // (ir.js) for the established pattern this mirrors.
+    const prevNever = ctx.func._arrayLiteralNeverEscapes
+    if (Array.isArray(val) && val[0] === '[' && ctx.schema.arrayVars?.has(name)) ctx.func._arrayLiteralNeverEscapes = true
     const ev = emit(val)
+    ctx.func._arrayLiteralNeverEscapes = prevNever
     ctx.func._selfAccumConcat = prevSA
     return writeVar(name, ev, void_)
   },
@@ -5751,7 +5780,24 @@ export const emitter = {
     // NOT taken (wasteful, and a real double-eval hazard if the arm has its
     // own side effects) — round-2's own "ternary-beside-nullish wrongly
     // boxed" bug (.work/todo.md) is exactly this class of mistake.
-    if (CARRIER_BOX) {
+    // ctx.func._arrayLiteralNeverEscapes: skip the box for a compiler-
+    // synthesized decl-destructure array-literal element (see
+    // carrierF64Narrow's own doc comment, ir.js, and ctx.schema.arrayVars',
+    // kind.js). The box above exists to keep a raw bigint payload from
+    // coincidentally colliding with the NULL_NAN/UNDEF_NAN sentinel bit
+    // pattern for a consumer that inspects THIS merge's own bits to tell
+    // "was it the bigint arm or the nullish one" apart — but a destructure
+    // temp's element is read exactly once, by the synthesized extraction
+    // `expandDestruct` itself generates, and every downstream consumer
+    // (`c ? b * 2n : -1n`, the destructure's OWN nullability tracking) already
+    // disambiguates via the SAME condition the ternary itself branched on,
+    // never by inspecting the extracted binding's raw bits — so there is no
+    // sentinel-collision-observing reader here either, the same "no reader"
+    // guarantee the flag already established for module/array.js's element
+    // storage. Found live: `let [a, b] = [1, c ? BigInt(v) : null]; return c ?
+    // b * 2n : -1n` boxed the bigint arm unconditionally, then `b * 2n`'s own
+    // raw bigIntOperand arithmetic read the pointer's bits raw.
+    if (CARRIER_BOX && !ctx.func._arrayLiteralNeverEscapes) {
       const taM = valTypeOf(b), tbM = valTypeOf(c)
       const bigintArm = (taM === VAL.BIGINT && nullishArm(c)) ? 'b'
         : (tbM === VAL.BIGINT && nullishArm(b)) ? 'c' : null

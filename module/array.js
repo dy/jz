@@ -704,8 +704,31 @@ export default (ctx) => {
     // array; this is the SAME reasoning at construction time). Found live:
     // `let a = [4611686018427387903n]; return a[0]` boxed the literal on
     // construction, corrupted by the very next bare read (no write at all).
-    const elemStoredValue = elems.length && elems.every(e => valTypeOf(e) === VAL.BIGINT)
+    // ctx.func._arrayLiteralNeverEscapes (emit.js '=' handler / emitDecl): a
+    // compiler-synthesized decl-destructure temp — narrow unconditionally
+    // regardless of per-element uniformity, since NO element of THIS array is
+    // ever read dynamically (destructuring resolves every index statically,
+    // kind.js ctx.schema.arrayVars) or crosses the host boundary; other
+    // emitters an element's own emission recurses into (e.g. the '?:'
+    // ternary-nullish handler's OWN box decision, emit.js) consult the SAME
+    // flag for the identical reason, so it must stay READABLE for the
+    // duration of each element's emission — see carrierF64Narrow's own doc
+    // comment (ir.js) and the ternary handler's own comment for both sites.
+    // Cleared ONLY around a NESTED array literal among `elems`
+    // (`let [a, b] = [1n, [2n, 3n]]`, `b` bound to the whole inner array): a
+    // real, independently-escaping value that must not inherit it.
+    const neverEscapes = ctx.func._arrayLiteralNeverEscapes
+    const elemStoredValue = neverEscapes ||
+      (elems.length && elems.every(e => valTypeOf(e) === VAL.BIGINT))
       ? storedValueNarrow : storedValue
+    const emitElem = (e) => {
+      if (!Array.isArray(e) || e[0] !== '[') return elemStoredValue(e)
+      const prev = ctx.func._arrayLiteralNeverEscapes
+      ctx.func._arrayLiteralNeverEscapes = false
+      const r = elemStoredValue(e)
+      ctx.func._arrayLiteralNeverEscapes = prev
+      return r
+    }
 
     if (!hasSpread) {
       const len = elems.length
@@ -721,7 +744,7 @@ export default (ctx) => {
         // asF64 folds i32.const → f64.const literally, so int-literal arrays also qualify.
         // storedValue: a bool literal folds to its TRUE/FALSE atom const — still
         // static-extractable, and the element keeps boolean identity in the segment.
-        const vals = elems.map(e => elemStoredValue(e))
+        const vals = elems.map(e => emitElem(e))
         const slots = vals.map(v => extractF64Bits(v))
         if (slots.every(b => b !== null)) {
           const ptr = staticArrayPtr(slots)
@@ -740,7 +763,7 @@ export default (ctx) => {
       const a = allocArray(len, Math.max(len, minCap))
       const body = [...a.setup]
       for (let i = 0; i < len; i++)
-        body.push(['f64.store', slotAddr(a.local, i), elemStoredValue(elems[i])])
+        body.push(['f64.store', slotAddr(a.local, i), emitElem(elems[i])])
       body.push(a.ptr)
       return typed(['block', ['result', 'f64'], ...body], 'f64')
     }
