@@ -6,6 +6,20 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Status (2026-08-06, BUILD REPRODUCIBILITY restored + audit-#13 received)
+Audit-#13 (the five-system convergence verdict) confirmed a real hygiene break:
+node_modules/watr/src/optimize.js carried the region Slice-1 hook patch
+(sha 45283653) vs pristine 5.7.12 (7d1dd903) -- clean npm ci differed from the
+working tree. RESTORED pristine, dist rebuilt through it, oracle 11/11 +
+parity 33/33 green. The region program's watr-side hook is now a NAMED
+DEPENDENCY: regions cannot re-enable until watr publishes the regionHooks API
+(user owns watr; the additive patch is preserved in the sibling checkout
+/Users/div/projects/watr per the Slice-1 build report). Audit-#13's critical
+path 1-9 adopted as the master architecture plan (heap-kind registry as the
+carrier/region composition point; BodyModel as LoweredLoopPlan; FeaturePlan
+phase boundary; solver-owned BodyFacts; session views; structural evidence
+guards; dangling-doc-reference repair).
+
 ## Status (2026-08-06, .work markdown DELETION sweep per user directive)
 Deleted (recoverable from git history, all content reflected in landed code +
 ledger): the whole .work/archive/ dir (12 completed-program docs incl.
