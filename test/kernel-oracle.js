@@ -499,6 +499,73 @@ test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier c
   }
 })
 
+// ── KNOWN-FAIL tier: carrier-built KERNEL corrupts its OWN console.log string
+// constants (.work/carrier-representation-design.md §16 finding 2 → §17) ────
+//
+// A carrier-built KERNEL (JZ_CARRIER_BOX=1, self-hosted — dist/jz.wasm
+// compiled from scripts/self.js by the NATIVE compiler under the same flag)
+// miscompiles ANY heap string literal used as a console.log argument. Root
+// cause, traced past §16's own "unrelated, out of scope" note on this exact
+// crash: mkPtrIR/packPtrBits (src/ir.js) constant-folds a NaN-boxed pointer
+// via layout.js's `ptrBits`, which reads `LAYOUT.NAN_PREFIX_BITS` — the
+// SAME module-scope BOXED BigInt schema field §15 found and §16 fixed via
+// `slotBigintProvenBySid` (a per-schema uniform-type proof gating
+// emitSchemaSlotRead's unboxing). §16's fix is sound but INERT for this
+// field specifically when the KERNEL ITSELF is built: compiling scripts/
+// self.js (the whole ~370K-line compiler, needed to PRODUCE dist/jz.wasm)
+// trips collectSlotWriteHazards' hz.all blanket (§17 finding 1 — the exact
+// same root cause as kernel-parity's `dict` row) somewhere else in that huge
+// source, which nulls `slotTypes` for EVERY schema program-wide, LAYOUT's
+// included — so `slotBigintProvenBySid(LAYOUT_sid, 'NAN_PREFIX_BITS')` never
+// fires and the built kernel's OWN copy of `ptrBits` hands back the box's
+// raw pointer bits instead of the unboxed constant whenever it runs. Every
+// heap string literal the KERNEL (not native) subsequently compiles inherits
+// the corrupt tag — console.log's argument among them (module/console.js's
+// own emit site never touches BigInt-boxing logic at all; the corruption is
+// baked into the constant it's handed, not something console.log does).
+// Bisected by string length (mirrors the read's own SSO-vs-heap split):
+// SSO strings (≤6 chars, packed inline — no NaN-box offset to corrupt on
+// this path) print the WRONG value (host sees "NaN") but don't crash; heap
+// strings (≥7 chars, addressed via the corrupted NaN-boxed offset) throw —
+// interop.js's `mem.read` decodes the corrupted tag as `t===5` (PTR.BIGINT)
+// and reads a DataView offset past the real (short) payload, OOB.
+// §17 verdict: this is §17 finding 1 (hz.all's whole-program blanket) at one
+// more remove, NOT an independent bug — closing that finding's dominant
+// keyedWrite-class trigger (Map/dict `.get()`-derived receiver kinds; needs
+// the audit-#10-flagged, actively-slice-hardened value-kind census wired
+// into collectSlotWriteHazards' kindOf, deliberately not attempted this
+// session per that finding's own soundness caution) would close THIS row
+// too, with no separate fix required. NOT fixed here — pinned precisely so
+// a future close of §17 finding 1 flips both rows together.
+test('kernel oracle: KNOWN-FAIL (JZ_CARRIER_BOX=1 only, .work/carrier-representation-design.md §16→§17) — a carrier-built kernel miscompiles a console.log heap-string constant', async () => {
+  if (process.env.JZ_CARRIER_BOX !== '1') return
+  const heapSrc = `export let start = () => { console.log('bare-fired'); return 1 }`  // 10 chars — heap string
+  const ssoSrc = `export let start = () => { console.log('short'); return 1 }`        // 5 chars — SSO string
+  // Native: both run clean — the bug is self-host-only, confirming this is
+  // NOT a general console.log/string-constant regression.
+  is(runNative(heapSrc, 0).start(), 1, 'native: heap-string console.log runs cleanly')
+  is(runNative(ssoSrc, 0).start(), 1, 'native: SSO-string console.log runs cleanly')
+  // Kernel, heap string (≥7 chars): throws. TODO-flip guard — once §17
+  // finding 1 (or an independent fix) closes, this stops throwing; flip to
+  // an AGREE-tier execution/output check instead of deleting the row.
+  let threw = null
+  try { instantiate(compileViaKernel(heapSrc, { optimize: 0 })).exports.start() }
+  catch (e) { threw = e }
+  is(threw?.constructor?.name, 'RangeError', 'kernel: heap-string console.log throws a RangeError — TODO-flip guard')
+  is(threw?.message, 'Offset is outside the bounds of the DataView', 'kernel: same exact OOB signature as §16/§17 — a different message means a NEW bug, not this one closing')
+  // Kernel, SSO string (≤6 chars): does not throw, but prints the wrong
+  // value. Captured via a host-side console.log spy (the kernel's own
+  // print() import calls the REAL console.log for a correctly-decoded
+  // string; capturing here is what proves it decoded 'NaN', not 'short').
+  const seen = []
+  const origLog = console.log
+  console.log = (...a) => seen.push(a)
+  try { instantiate(compileViaKernel(ssoSrc, { optimize: 0 })).exports.start() }
+  finally { console.log = origLog }
+  is(seen.length, 1, 'kernel: SSO-string console.log calls print exactly once (does not crash)')
+  is(seen[0]?.[0], 'NaN', `kernel: SSO-string console.log prints the corrupted decode ("NaN") instead of "short" — TODO-flip guard, same §17 root cause`)
+})
+
 // ── AGREE tier: bare BigInt array-element return (re-audit #6 finding 2) ──
 //
 // FLIPPED from PENDING-FIX: `let a = [1n]; return a[0]` used to decode as a
