@@ -2411,3 +2411,189 @@ diagnosed, and reverted within this single session; only this ledger entry
 and the matching `.work/todo.md` status update are new, committed
 separately, plain messages, no push.
 
+
+## §19. PROPERTY-KIND TRACING scope check — WALL CONFIRMED, no implementation
+attempted (2026-08-07, .work/todo.md "PROPERTY-KIND TRACING — coordinator
+note", the mandated Step-1 gate before §18's next lever)
+
+**Mandate**: before attempting §18's own named next lever ("prove `const x
+= obj.prop` is a `Map` when `obj.prop` was initialized `new Map()`
+elsewhere"), verify whether the slot-write census even SEES `ctx.schema`'s
+construction site (`src/ctx.js` `reset()`, where `slotTypes` etc. are
+assigned `new Map()`) when the compiler compiles its own `scripts/self.js`
+graph. If ctx construction is opaque to the census, that is the real wall —
+bank precisely and STOP, no Step 2 (the slotMapCertain census column).
+
+**Verdict: WALL CONFIRMED, precisely and asymmetrically — the WRITE side
+sees it, the READ side categorically cannot. Stopped here per the brief's
+own instruction; nothing implemented.**
+
+### The write side: NOT opaque (a finding that revises §18's own framing)
+
+`observeProgramSlots`'s whole-program `{}`-literal walk (`src/compile/
+program-facts.js`, the `visit` closure's `op === '{}'` branch, lines
+877-895) registers EVERY object-literal node found anywhere in the AST —
+top-level `ast` and every function body in `ctx.func.list`, unconditional
+on what the literal is assigned to (no LHS check exists in this branch at
+all, confirmed by direct read): `const sid = ctx.schema.register(parsed.
+names); for (...) observeSlot(sid, i, valTypeOf(value))`. `ctx.schema =
+{ list: [], vars: new Map(), poisoned: new Set(), ..., slotTypes: new
+Map(), ... }` (`src/ctx.js:380-431`, inside `reset()`) is exactly such a
+literal — when `reset()` is compiled as part of the self-hosted
+`scripts/self.js` graph, this walk visits it like any other `{}` node,
+registers its own schema id (call it S2, keyed by its ~14-name property
+list), and **correctly observes S2's `slotTypes` slot as `VAL.MAP`** — `new
+Map()` already resolves via the pre-existing, unrelated Map-recognition
+path (`CALLEE_VAL`/`recordGlobalRep`, the same one `mapValueKindOf`'s
+receiver gate and `valTypeOf(recvName) === VAL.MAP` at program-facts.js:838
+both already rely on). **This means §18's own proposed Step 2 (a
+`slotMapCertain` column) is not the missing ingredient — the census
+already, unconditionally, today, without any new code, knows that the
+literal assigned to `ctx.schema` has a Map-kinded `slotTypes` property.**
+The wall is entirely on the read side.
+
+### The read side: categorically opaque — two independent mechanisms checked, both fail structurally
+
+`program-facts.js:624`'s own `const slotTypes = ctx.schema.slotTypes` (the
+exact read site §18 named) is a TWO-level property chain: `ctx` (bare
+global name) → `.schema` (property read) → `.slotTypes` (property read).
+For `kindOf`/`valTypeOf` to resolve this to `VAL.MAP`, it must first
+resolve the INNER read `ctx.schema` to schema id S2 — one level BELOW
+where §18 stopped looking (§18 examined `mapValueKindOf`'s receiver gate
+for the OUTER read; this session traced the INNER hop it depends on).
+Two, and only two, chain-resolution mechanisms exist in the kind system;
+both were read directly and both fail this exact shape:
+
+1. **`ctx.schema.slotVT`/`idOf` (`module/schema.js:103,252`) and its
+   `collectSlotWriteHazards` sibling `sidOf` (`program-facts.js:1201-
+   1203`) are bare-STRING-only.** All three key exclusively off `typeof
+   name === 'string'` — `ctx.func.refinements?.get(name)`, `repOf(name)`,
+   `ctx.schema.vars.get(name)` are all `Map` lookups by string identity.
+   A receiver that is itself a `.`-node (`ctx.schema`, an array, not a
+   string) can never be passed through and resolve — confirmed by direct
+   read, not inferred; there is no fallback branch for a non-string
+   receiver anywhere in these three functions.
+
+2. **`shapeOf` (`src/kind.js:1410`) DOES recursively walk `.`-chains**
+   (`op === '.' && typeof args[1] === 'string': const parent =
+   shapeOf(args[0])`) — this is the one place in the kind system with
+   actual multi-hop chain resolution — **but it bottoms out at a
+   completely different, unrelated fact table from the schema census**:
+   `shapeOf(bareName)` reads `ctx.func.localReps?.get(name)?.jsonShape ??
+   ctx.scope.globalReps?.get(name)?.jsonShape`. `jsonShape` is populated
+   ONLY by `recordGlobalRep`/`shapeOfObjectLiteralAst`, called ONLY at a
+   global's OWN declaration or WHOLE-value reassignment (`name = rhs`,
+   `depth === 0`) — never at a property-sub-assignment (`name.prop =
+   rhs`). `ctx` itself (`src/ctx.js:73`) is declared exactly ONCE, as a
+   single literal: `export const ctx = { core: {}, module: {}, scope: {},
+   func: {}, types: {}, schema: {}, ... }` — `schema: {}`, EMPTY, among
+   its 14 top-level props. The REAL shape later assigned to `ctx.schema`
+   (the `list`/`vars`/`slotTypes`/... literal) happens entirely via a
+   property WRITE inside `reset()` — invisible to `jsonShape`, which
+   forever reflects `ctx`'s original empty-`schema` declaration. So
+   `shapeOf('ctx')` never advances past the empty shape, and `shapeOf(['.',
+   'ctx', 'schema'])`'s recursive parent lookup dead-ends before it can
+   ever reach S2.
+
+### Empirical confirmation (JZ_DEBUG_PROPKIND, temporary, stripped before
+commit — same discipline as §17/§18's JZ_DEBUG_HZALL) against the REAL
+`scripts/self.js` graph, the exact compile `scripts/build-dist.mjs` itself
+runs for `dist/jz.wasm` (`resolveModuleGraph` + `compile(g.code, {modules,
+memory: 8192, optimize: { level: 3, watrGuard: false, snapshotInit: true
+} })`)
+
+Instrumented `VT['.']` (`src/kind.js`, right after the existing `slotVT`
+check already failed) to count every `.`-node read whose receiver is NOT a
+bare string and whose property name is one of `ctx.schema`'s own census
+field names (`slotTypes`, `mapValueTypes`, `dictValueTypes`,
+`slotConstInts`, `slotTypedCtors`, `slotIntCertain`, `slotBigintObserved`,
+`vars`, `list`, `poisoned`, `slotI32Certain`), and whether `shapeOf` on
+that receiver resolves to anything:
+
+```
+{ "seen": 2496, "shapeHit": 0, "samples": [
+  ["list", "[\".\",\"m56_ctx$ctx\",\"schema\"]", null],
+  ["list", "[\".\",\"m56_ctx$ctx\",\"func\"]", null],
+  ...
+  ["slotTypes", "[\".\",\"m56_ctx$ctx\",\"schema\"]", null] ] }
+```
+
+**2496 chained-receiver reads of a `ctx.schema.*`-shaped census field
+across the whole self-hosted source, 0 resolved via `shapeOf` —
+`shapeHit: 0/2496`.** The sampled hits include the EXACT target site:
+`program-facts.js:624`'s `const slotTypes = ctx.schema.slotTypes` itself
+(`m56_ctx$ctx` is the self-host module-mangled name for the `ctx` import),
+confirming the static-analysis prediction directly on the real compile,
+not just in isolation. (`ctx.func`/`ctx.module` etc. show up in `seen`
+too, at other property-census-field-named reads elsewhere in the source —
+same wall, same shape, not unique to `ctx.schema`.)
+
+### Verdict: SCOPE CHECK FAILS. No Step 2 attempted.
+
+Per the brief's own instruction, stopping here. `src/kind.js` reverted to
+HEAD (`git diff` empty, confirmed); the temporary probe script deleted;
+nothing committed to `src/`.
+
+**The precise fact missing, and what would provide it**: not `.get()`'s
+value kind (§18 solved that already, reverted only for zero measured
+effect) and not a slot's own MAP-kind census (proven, above, to already
+exist unconditionally for this exact case) — it is **a property-KIND
+fact one level up**: for a bare-name receiver `r` with a known schema id
+`Sr` (`ctx`, `Sr` = the 14-prop ctx-literal's sid) and a property `p`
+within `Sr` (`schema`), a NESTED schema id `Sp` such that "every
+resolvable write to `r.p` anywhere in the program is provably the SAME
+`{}`-literal shape" (`Sp` = S2, the `list/vars/.../slotTypes` literal).
+This is symmetric to `ctx.schema.vars`'s existing name→schema-id
+promotion for a bare DECL (`const x = {...}`) — but one level down,
+keyed by `(Sr, p)` instead of by a bare name, and sourced from a
+PROPERTY-assignment write (`r.p = {...}`) instead of a decl/assignment
+target. It requires two new things, not one: (a) a census table (a
+`slotObjSids: Map<sid, Array<childSid|null>>` sibling of `slotTypes`,
+populated by the SAME `.prop=`-write handling `observeProgramSlots`
+already has at program-facts.js:897-917, poisoned the same way on any
+non-uniform write) and (b) teaching `slotVT`/`idOf`/`sidOf` to accept
+a `.`-node receiver by recursively resolving through THAT table instead
+of requiring a bare string — i.e., generalizing `shapeOf`'s chain-walking
+*shape* to the schema census's chain-walking *sid*, since today those are
+two disjoint mechanisms and only the wrong one (jsonShape) walks chains.
+**This is a materially larger feature than §18's Step 2** — a genuine
+2-level (or N-level) property-kind-tracing system for the schema census
+itself, not a column addition to it — confirming, more precisely than
+§18's own "future attempt needs" note, that this is its own dedicated-
+session design, not an extension of the disjointness-census machinery
+§18 already wrote and reverted (which remains sound and reusable, per
+§18's own closing note, once THIS gap closes first).
+
+**Minimal reproducing shape** (for a future session's isolated repro,
+matching §17/§18's own established method — not run this session, the
+real-corpus evidence above already isolates the exact site):
+```js
+let g = { p: {} }
+function reset() { g.p = { m: new Map() } }
+function f() { const x = g.p.m }
+```
+Under the current machinery, `f`'s `g.p.m` read fails identically to
+`ctx.schema.slotTypes`, for the identical reason: `g`'s own declaration
+literal has `p: {}` (empty), `g.p`'s real shape is assigned later via a
+property write invisible to `jsonShape`, and `slotVT`/`idOf`/`sidOf`
+cannot accept `g.p` (a `.`-node) as a receiver at all.
+
+### Flip-readiness verdict
+
+**NO default flip** (unchanged — this session made no `src/` changes;
+`git diff` against HEAD is empty for every tracked file). §18's own
+verdict stands: `hz.all`'s dominant `keyedWrite` class remains banked. A
+future flip-readiness session pursuing this lever must build the 2-level
+property-kind census described above BEFORE §18's disjointness logic
+(sound, reverted, recoverable via `git show`) can ever go live — Step 2
+as scoped in the coordinator's seed (a same-level `slotMapCertain`
+column) is necessary but not sufficient, and was correctly gated OFF by
+this scope check before any implementation cost was spent on it.
+
+**Local: nothing committed to `src/`** — `src/kind.js`'s temporary
+`JZ_DEBUG_PROPKIND` instrumentation was written, run against the real
+self.js compile, and fully reverted within this session (empty `git
+diff`); the temporary probe script (`scripts/_propkind-probe.mjs`) was
+deleted, not committed. Only this ledger entry and the matching
+`.work/todo.md` status update are new, committed separately, plain
+messages, no push.

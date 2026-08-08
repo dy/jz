@@ -6643,3 +6643,39 @@ reverted — recover from git) disjointness logic becomes live. Scope check
 first: does the slot-write census see ctx.schema's construction site
 (src/ctx.js reset()) when compiling self.js? If ctx construction is opaque
 to it, THAT is the real wall — verify before building.
+
+**SCOPE CHECK RUN, WALL CONFIRMED, STOPPED before Step 2 (2026-08-07,
+.work/carrier-representation-design.md §19 — full writeup).** Asymmetric
+finding, sharper than this seed assumed: the WRITE side is NOT opaque —
+`observeProgramSlots`'s whole-program `{}`-literal walk (program-facts.js
+877-895) registers every object literal found anywhere in the source
+unconditional on its assignment target, so `ctx.schema = {...}` (ctx.js
+380-431, inside reset()) gets its own schema id and its `slotTypes`
+property is ALREADY, today, correctly observed VAL.MAP — the proposed
+slotMapCertain column (Step 2) is not the missing ingredient, it would be
+redundant with what the census already proves. The READ side is
+categorically opaque instead, one level up from where §18 stopped:
+resolving the INNER read `ctx.schema` (not `ctx.schema.slotTypes`) to a
+schema id at all. Two mechanisms checked, both fail structurally: (1)
+`slotVT`/`idOf`/`sidOf` (module/schema.js, program-facts.js) are
+bare-string-receiver-only, no fallback for a `.`-node receiver; (2)
+`shapeOf` (kind.js) DOES recursively walk `.`-chains but bottoms out on
+`jsonShape`, populated only at a global's OWN declaration/whole-reassign,
+never at a later property-sub-assignment — `ctx`'s own declaration
+(ctx.js:73) has `schema: {}` EMPTY, so the chain dead-ends before
+reaching ctx.schema's real, later-assigned shape. Empirically confirmed
+via JZ_DEBUG_PROPKIND (temporary, stripped) against the real
+scripts/self.js graph, the exact compile build-dist.mjs itself runs:
+2496 chained-receiver reads of a ctx.schema.*-shaped field, 0 resolved
+via shapeOf, including the exact target site (program-facts.js:624's
+`const slotTypes = ctx.schema.slotTypes`) sampled directly at null.
+**Missing fact**: a property-kind census one level up from Step 2's
+proposal — for receiver `ctx` (known schema id Sr) and property `schema`,
+a NESTED schema id Sp such that every resolvable write to `ctx.schema`
+is provably one `{}`-literal shape (symmetric to ctx.schema.vars's
+existing bare-decl→sid promotion, one level down, keyed by (Sr, prop)
+instead of by name) — PLUS teaching slotVT/idOf/sidOf to chain through
+it. A materially larger feature than Step 2, its own dedicated session
+(§19's own note). No src/ change committed — kind.js's temporary probe
+instrumentation fully reverted (empty git diff), confirmed. NO default
+flip (unchanged, no src/ touched this session).
