@@ -2599,8 +2599,9 @@ deleted, not committed. Only this ledger entry and the matching
 messages, no push.
 
 ## §20. PROPERTY-KIND TRACING implementation — census landed, chain
-resolves, DEEPER hz.all layer found blocking the consumer (2026-08-07,
-implementing §19's own missing-fact spec, the carrier flip's last
+resolves, THIRD hz.all layer found blocking the consumer, disjointness
+recovery attempted and reverted, WALL CONFIRMED (2026-08-07, implementing
+§19's own missing-fact spec, the carrier flip's last
 dependency chain)
 
 **Step 1 — the nested-sid census + chain-through, built exactly per §19's
@@ -2713,4 +2714,154 @@ failures, byte-for-byte same assertion count) — unrelated to this
 session's `src/` changes (codegen bounds-check elision, not schema/kind
 census).
 
-**Local commit: pending (this entry lands with it).**
+**Local commit: 32f87447** (`property-kind tracing: slotObjSids nested-sid
+census + chainSid walker (§19/§20)`).
+
+**Step 2 — recover §18's disjointness logic, JZ_DEBUG_HZALL before/after.**
+§18's own commit (`7e43df7e`) turned out to be ledger-only — the actual
+`collectMapGetExemptLocals`/`collectMapSetReachingDefs` source was written,
+gated, and reverted WITHIN that session, never committed (`git show
+7e43df7e --name-only` touches only the two `.work/*.md` files). "Recover
+from git" was therefore not literally possible; re-implemented from §18's
+own prose spec instead (detailed enough to reproduce faithfully):
+
+- **Fix 1** (`collectSlotWriteHazards`, program-facts.js): `curGetExempt`,
+  computed per function body (and once for `ast`) alongside `curSids`/
+  `curParamVts`, consulted ONLY as `kindOf`'s last `??` fallback. For each
+  local name, joined (first-wins-then-clash) the kind of every write site —
+  a `.get()`-shaped RHS via `mapValueKindOf`, any other RHS via `kindOf`
+  itself — walking into non-shadowing nested closures (mirrors
+  `observeNestedDictMapWrites`'s `collectAllBoundNames` shadow discipline).
+  Any unresolved site, `VAL.OBJECT` site, or disagreement drops the name.
+- **Fix 2** (`observeProgramSlots`, program-facts.js): `collectMapSetReachingDefs`
+  — a purely syntactic adjacency check (a `.set()` call's immediately
+  preceding sibling in the same `;`-list is a plain `name = rhs` to the
+  same name) — wired as a `writeVT(...) ?? setHints.get(node)` fallback at
+  both `.set()` observation sites (the main `visit` branch and
+  `observeNestedDictMapWrites`'s nested-closure twin), fixing the
+  `let arr = m.get(k); if (!arr) { arr = []; m.set(k, arr) }` self-write-
+  back circularity in the `mapValueTypes` census itself.
+
+Both pass sanity (`test/slot-hazards.js` 21/21, `test/dyn-keys.js` 57/57,
+`test/inference.js` 136/136).
+
+**Diagnostic (Gate 2, JZ_DEBUG_HZALL, temporary counters at `keyedWrite`'s
+two branches, matching §17/§18's own instrumentation exactly, stripped
+after use), real self.js compile: NO COLLAPSE.**
+`{"keyedWrite.early":322,"keyedExempt.early":54,"keyedExempt.late":80,
+"keyedWrite.late":327}` — statistically identical to §18's OWN baseline
+measurement (`{"keyedWrite.early":319,"keyedExempt.early":54,
+"objectAssign":18,"keyedExempt.late":80,"keyedWrite.late":324}`; the small
+319→322/324→327 deltas track ordinary codebase drift between sessions, not
+a real change — `keyedExempt` is BYTE-IDENTICAL, 54/80 both times). **Zero
+measured effect, again — but for a THIRD, deeper, newly-precise reason,
+not §18's original one.**
+
+**Root-caused, decisively, via direct instrumentation (not inferred):**
+`mapValueKindOf`'s receiver gate (`valTypeOf(recvName) === VAL.MAP`) for a
+property-chain-bound local like `slotTypes` (`const slotTypes =
+ctx.schema.slotTypes`) resolves through `VT['.']` → `ctx.schema.slotVT` —
+and `slotVT`'s OWN, PRE-EXISTING, UNCHANGED final-lookup gate
+(`slotHazarded`, WITH `hz.all`) blocks it, REGARDLESS of §19's chain
+census working correctly underneath it. Confirmed with a direct post-
+compile dump on the real self.js compile: `ctx.schema` chain-resolves to
+its real sid (63) cleanly (`slotObjSids` proves it) — but
+`ctx.schema.slotVT(['.', 'ctx', 'schema'], 'slotTypes')` still returns
+`null`, and the DUMP shows why precisely: `hz.all: true`, but
+**`hz.props.has('slotTypes') = false` and `hz.sids.has(63) = false`** — no
+TARGETED hazard implicates this sid or this prop name at all; it is
+PURELY the whole-program `hz.all` blanket, the exact same irrelevant-noise
+pattern §20's own Step 1 finding already established for `chainSid`'s
+intermediate hops — except this time in a consumer (`slotVT`'s FINAL
+kind-lookup) this session deliberately did NOT touch, because narrowing
+it is a materially different, larger-blast-radius change: `chainHazarded`
+(Step 1) is a NEW function serving ONLY `chainSid`'s NEW nested-sid walk;
+`slotHazarded` is the ORIGINAL, shared gate for EVERY existing `slotVT`/
+`slotIntCertainAt`/`slotI32CertainAt`/`slotTypedCtorAt` caller, landed and
+audited over many prior sessions (§9-§18). Loosening it program-wide
+would need the SAME kind of careful, dedicated soundness argument this
+session gave `chainHazarded` — extended to cover VALUE-precision
+consumers (`slotIntCertain`/`slotI32Certain`), which have a materially
+different risk profile than the SHAPE question `chainSid` answers (an
+element-level `arr[idx]=v` write can never change a schema slot's own
+declared VAL kind, only what an UNRELATED array's contents hold — plausibly
+irrelevant there too, but NOT verified this session, and int32-exactness
+in particular is value-exact, not kind-approximate, raising the stakes of
+being wrong). **This is the actual wall**: the census (§19) and the
+disjointness logic (§18) are BOTH sound and BOTH work exactly as designed
+— they simply cannot reach the target metric until a THIRD, larger,
+separately-scoped lever (loosening `slotVT`'s shared hazard gate, backed
+by its own dedicated soundness review across ALL its existing consumers)
+is pulled first. Not attempted this session — outside its scope, per the
+same "no forced fix, no speculative complexity for zero measured benefit"
+discipline §18 established.
+
+**Decision: revert Steps 2's Fix 1 + Fix 2, keep Step 1 (the census)
+landed.** Matches §18's own precedent for an identical zero-measured-
+effect finding exactly: `keyedWrite`/`hz.all` did not move, the addition
+is real per-compile cost (two more whole-body walks per function, forever,
+flag-independent) for zero benefit on the flagship program. Reverted
+`src/compile/program-facts.js` to `HEAD` (`git show HEAD:… >`, not
+`checkout`) — confirmed empty diff after. `src/ctx.js` and `module/
+schema.js` (Step 1's census + chainSid) are untouched by this revert and
+stay landed: chain resolution is real, verified, reusable infrastructure
+independent of whether `hz.all` ever collapses — the same distinction the
+design brief itself draws between "a real fix, kept regardless of outcome"
+and "speculative complexity for a target that didn't move." Post-revert
+sanity: `test/slot-hazards.js` 21/21, `test/dyn-keys.js` 57/57,
+`test/inference.js` 136/136, all green against the reverted source.
+
+**Steps 3-5 NOT run.** Gate 2 (this step) is the explicit go/no-go the
+task's own Sequence names before the expensive battery (kernel-parity
+O0/O2/O3, `test:wasm` to completion, flag-forced battery + watr 35/35 +
+kernel-oracle + fuzz 2000×4, default byte-identity, flip-readiness probe)
+— running it against a change that provably does not move `hz.all`/
+`keyedWrite` would be exactly the "force it anyway" this discipline exists
+to prevent (§18's own words, reused verbatim because the situation is
+structurally identical). No `CARRIER_BOX`-flag-gated code was written this
+session (Step 1's census is flag-INDEPENDENT by the task's own framing,
+and — since it never became load-bearing for anything Step 2 needed — its
+mere presence changes no observable compile decision anywhere: it is dead
+until a future session's `slotVT` fix wakes it, so there is nothing to
+gate behind the flag and no default-byte risk to check this session).
+
+### Flip-readiness verdict
+
+**NO default flip** (unchanged — `CARRIER_BOX` itself untouched this
+session; `git diff` against the prior commit is empty for `src/kind.js`
+and `src/compile/program-facts.js` after the Step 2 revert, non-empty only
+for `src/ctx.js`/`module/schema.js`'s landed Step 1 census, which is a
+pure addition with no consumer live yet — verified inert: nothing reads
+`slotObjSids` except `chainSid`, and nothing outside this session's own
+reverted Step 2 code ever called `chainSid` with a non-string receiver
+before this session; `idOf`'s pre-existing bare-string callers are
+byte-identical in behavior). `hz.all`'s dominant `keyedWrite` class remains
+banked, now traced to its THIRD, most precise layer yet: not "Map.get()'s
+value kind is unresolvable" (§17), not "the receiver-Map-kind gate can't
+see a property-aliased binding" (§18), not "the property chain itself
+can't resolve to a schema id" (§19) — all three of those are now SOLVED,
+landed, or faithfully re-derived — but "`ctx.schema.slotVT`'s existing,
+shared, multi-consumer hazard gate still treats the whole-program `hz.all`
+blanket as relevant to a KIND query it was never proven relevant to."
+**A future flip-readiness session's concrete next lever**: audit whether
+`hz.all` is genuinely load-bearing for `slotVT`/`slotIntCertainAt`/
+`slotI32CertainAt`'s callers, or whether (matching this session's own
+`chainHazarded` argument, extended) an element-level `[]=` write can never
+invalidate a schema slot's own KIND/precision claim — only a `.prop=`/`=`
+whole-slot write can, and THAT class is already fully covered by the
+targeted `hz.sids`/`hz.props` sets. If true program-wide (not just for
+the chain-resolution case this session verified), `slotHazarded` itself
+should drop the `hz.all` term (keeping `externSlotSids`/`kindSafeSids`/
+`hz.sids`/`hz.props`/`hz.numeric`), closing the loop this session traced
+but did not close. This needs its own dedicated soundness review across
+EVERY existing `slotHazarded` consumer before touching it — precisely the
+"materially larger feature... its own dedicated session" scoping §18/§19
+already established for their own levers, now handed down one level
+further.
+
+**Local: `src/ctx.js`, `src/compile/program-facts.js` (net: Step 1 only,
+Step 2 fully reverted), `module/schema.js` land in commit 32f87447**
+(already pushed to this ledger entry's own preceding commit — Step 2's
+revert leaves `program-facts.js` byte-identical to that commit, so no
+further `src/` commit is needed). This ledger entry + the matching
+`.work/todo.md` status update commit separately, plain messages, no push.

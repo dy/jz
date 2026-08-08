@@ -6693,3 +6693,27 @@ now confirmed to also gate a successfully chain-resolved receiver's KIND
 read, one layer past where this seed stopped. Next lever (§18's own
 disjointness recovery) is the intended fix for `hz.all` itself — see
 §20 for the full chain and its own diagnostic.
+
+**§18's disjointness logic RE-IMPLEMENTED (from its own prose spec — its
+commit turned out ledger-only, nothing to `git show`), Gate 2
+(JZ_DEBUG_HZALL) run: STILL NO COLLAPSE, WALL CONFIRMED (2026-08-07,
+§20's own final writeup).** `keyedWrite`/`keyedExempt` counts statistically
+identical to §18's own baseline (322/327 vs 319/324, `keyedExempt`
+byte-identical at 54/80 both times). Root-caused to a THIRD layer, more
+precise than either §17 or §18's own diagnosis: `ctx.schema.slotVT`'s
+EXISTING, shared, unchanged final-lookup hazard gate (`slotHazarded`, with
+`hz.all`) blocks a chain-resolved receiver's KIND read even though the
+chain itself resolves correctly (verified directly — `ctx.schema` → sid
+63, `hz.props.has('slotTypes')` = false, `hz.sids.has(63)` = false — pure
+irrelevant blanket, not a targeted hazard). Fix 1 (`curGetExempt`) + Fix 2
+(`collectMapSetReachingDefs`) reverted per §18's own precedent (zero
+measured effect, real per-compile cost) — Step 1's census (`slotObjSids`/
+`chainSid`) stays landed, sound, reusable. **Next lever, one level deeper
+than this seed scoped**: audit whether `slotHazarded`'s `hz.all` term is
+genuinely load-bearing for ANY of its callers (`slotVT`/
+`slotIntCertainAt`/`slotI32CertainAt`/`slotTypedCtorAt`) — an
+element-level `[]=` write can plausibly never invalidate a schema slot's
+own KIND, only a `.prop=`/`=` whole-slot write can (already covered by the
+targeted `hz.sids`/`hz.props` sets) — needs its own dedicated soundness
+review across every existing consumer before touching it. Full chain,
+diagnostics, and revert rationale in §20.
