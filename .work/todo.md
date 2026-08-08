@@ -6,6 +6,55 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## BodyModel dedupe (audit-#14 item 6) + slice 4 HIR provenance link — landed (2026-08-08)
+Per .work/research.md §BodyModel. Two commits, local only (4c49701c dedupe,
+6ff51122 slice 4).
+
+**Dedupe** (4c49701c): `deriveOffsetTees` retired — `bl.offsetTees` is now
+`addrTable`'s offset-kind projection via `offsetTeesFromAddrTable`, computed
+once in `buildBodyModel` (was a second independent derivation, licensed to
+retire by slice 1's own shadow-assert proving the two identical on the full
+corpus before this change); `tryRampMap` reads `bl.offsetTees` directly
+instead of re-projecting `addrTable` per call. `buildAddrTable` restructured
+to a real two-phase single walk (collect every write bucketed by name once,
+then classify each name against ONLY its own write list) — was quadratic in
+loop-body size × candidate-local count. `aliasClass`'s per-key Map fill
+replaced by the constant lookup it is (single-universal-class, audit-#14
+item 5) — API unchanged. Measured ~38-40% compile-time win on 2 of 3 largest
+bench cases (qoi, bezfit) from the quadratic fix; fftplan flat.
+
+**Slice 4** (6ff51122): emit.js's `'for'` handler mints a LoopPlan (id,
+ivName, counter hull, guardName, boundConst) per loop it lowers, linked to
+the WAT block node via loop-model.js's `loopPlanLink` WeakMap (identity-
+keyed: rewrite ⇒ fresh array ⇒ natural miss). vectorize.js's dispatch
+shadow-asserts the link against `bl`'s WAT-derived facts under
+JZ_DEBUG_INVARIANTS (`assertLoopPlanAgrees`) — no consumer wired beyond the
+link + assert, per the task's explicit scope.
+FINDING (from the shadow-assert itself, not papered): small-const
+outer-loop unroll + nested loop (`splitScratch`,
+`freshenUnrolledScalarBindings`) renames the nested loop's own IV local IN
+PLACE post-emission without changing the linked block's identity — 2 tests
+failed with a stale ivName. Root-caused and fixed at the source:
+`freshenUnrolledScalarBindings` now carries its rename map through any
+`loopPlanLink` entry it touches (metadata-only, zero effect on emitted
+bytes). Confirms pre-trio spec (1) is not automatic — future consumers of
+this link must know that ANY pass renaming a linked loop's own IV/guard
+local in place (not just tree-cloning passes) has to keep the link in sync.
+GATES: byte-identical 174-compile bench corpus (O0/O2/O3, checked via a
+throwaway `git worktree` at unmodified HEAD), test/simd.js 158/158, full
+battery 3400/3403 (same 3 pre-existing failures — interval-walk codec
+bounds-check count, typed-RMW guard-count pin, biquad declRange-restamp
+idempotence probe — all reproduced identically on the baseline worktree),
+kernel-parity 33/33, selfhost.js 21/21, fresh `npm run build` ×2 SHA-256
+identical (dist/jz.js, dist/interop.js, dist/jz.wasm). Empirical link
+hit-rate 12129/12428 (97.6%) across the full battery under
+JZ_DEBUG_INVARIANTS — the fail-open miss path is exercised for real, not
+just theoretically reachable.
+REMAINING: slices 5-7 (the incremental trio) untouched; no BodyModel
+derivation consults `loopPlanLink`'s typedLen/neverGrown facts yet (not
+populated on the record either — only the IV/hull facts needed for this
+slice's assert were captured, per YAGNI).
+
 ## FeaturePlan freeze — Slices 1-2 landed (2026-08-07)
 Per .work/research.md §FeaturePlan freeze (audit-#14 item 3). Slice 1: seeded
 the 3 previously-absent keys (f16/clamped/typedView) on ctx.js's

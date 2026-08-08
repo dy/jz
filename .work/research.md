@@ -725,17 +725,69 @@ LANDED 2026-08-07 byte-identical (174 compiles ×3 tiers, zero WAT diffs):
 construction + shadow-asserts; the 3 class-A hoists (epilogueIsSafe,
 bumpPixelIV/rampPixelIV direct refs, matchChannelReducePixelLoop);
 tryMapReduceVectorize/tryRampMap onto the tables (tryStrengthReduceIV
-correctly excluded — matchAffineAddr never consulted the tables). REMAINING:
-slice 4 = HIR provenance link (each candidate block carries its originating
-loop-model.js LoopPlan id; BodyModel consults HIR facts — typedLen,
-neverGrown, hulls — through it; {bl,op,blLoose} becomes the lowering seam,
-not a parallel authority) under four BINDING pre-trio specs: (1) rewrites
-mint new block identities, (2) WeakMap miss = FAIL-OPEN (decline, never
-"no access"), (3) base distinctness needs solver proof, (4) first-match-wins
-+ fresh identity per round. Slices 5-7 = the incremental trio
-(tryMemCopyFill → tryReduceVectorize → tryVectorize), each its own
-byte-identity-gated unit. Class-C recognizers (stencil ivCoeff, butterfly
-unification, divergent-escape, conv-column MAC) stay private by design.
+correctly excluded — matchAffineAddr never consulted the tables).
+
+**Dedupe (audit-#14 item 6) LANDED 2026-08-08**: the migration was
+performing MORE analysis, not one census — fixed at three points.
+`deriveOffsetTees` retired: `bl.offsetTees` is now `addrTable`'s offset-kind
+projection (`offsetTeesFromAddrTable`), built once inside `buildBodyModel`
+instead of a second independent derivation; `tryRampMap` reads
+`bl.offsetTees` directly instead of re-projecting `addrTable` itself per
+call. `assertBodyModelSound`'s now-tautological offsetTees-vs-addrTable
+check retired (the slice-1 shadow-assert already proved the two identical
+on the full corpus BEFORE the unification — that proof is what licensed
+retiring the standalone derivation). `buildAddrTable` restructured to a
+genuine two-phase single walk: phase 1 collects every write bucketed by
+name in one pass, phase 2 (`classifyAddrLocal`) classifies each name
+against its own pre-collected write list — was quadratic in loop-body size
+× candidate-local count, now linear. `aliasClass`'s per-key Map fill
+replaced by the constant lookup it actually is (single-universal-class per
+item 5) — API unchanged, no more loop over `baseKeys`. Gates: byte-identical
+174-compile corpus, test/simd.js 158/158, full battery/kernel-parity/
+selfhost/build×2 all clean (same 3 pre-existing failures, unrelated).
+Measured ~38-40% compile-time reduction on 2 of the 3 largest bench cases
+(qoi, bezfit — many candidate address-locals per loop body, where the
+quadratic walk hurt most); fftplan (butterfly, dual-IV, few candidates)
+roughly flat.
+
+**Slice 4 (HIR provenance link) LANDED 2026-08-08, link + shadow-assert
+only — no consumer wired**: emit.js's `'for'` handler (the sole plain-loop
+lowering seam) mints a LoopPlan record per loop it emits — id,
+induction-variable name (`guardCounterName`), the counter hull
+(`forCounterRange`'s proven [lo,hi]), guard name, provable-constant bound —
+linked to the emitted WAT block node via loop-model.js's `loopPlanLink`
+(WeakMap keyed on block-node IDENTITY: a rewrite minting a fresh array
+naturally drops the link, miss = fail-open). vectorize.js's dispatch looks
+the link up per matched `bl` and, under JZ_DEBUG_INVARIANTS, shadow-asserts
+the linked plan's IV name and constant bound agree with the WAT-derived
+`bl` facts where both resolve (`assertLoopPlanAgrees`). Verified all four
+BINDING pre-trio specs empirically, not just by inspection: (2) fail-open
+is REAL, not theoretical — 12129 hit / 299 miss (97.6%) across the full
+battery under JZ_DEBUG_INVARIANTS; (1) rewrites minting fresh identities
+mostly holds, but the shadow-assert caught ONE violation — small-const
+outer-loop unrolling with a nested loop (`splitScratch`,
+`freshenUnrolledScalarBindings`) renames the nested loop's OWN induction
+variable's WAT local IN PLACE post-emission without changing the linked
+block's identity, so the recorded ivName went stale relative to an
+unchanged-identity node (2 test failures: "small strided outer control loop
+specializes nested typed kernels", "labeled break crosses the inner loop").
+Root-caused and fixed at the source, not papered: `freshenUnrolledScalarBindings`
+now carries its rename map through any `loopPlanLink` entry it touches
+(metadata-only — mutates the linked plan object, never the emitted IR, so
+it cannot affect WAT bytes) instead of leaving a stale fact behind. (3)/(4)
+hold by construction (no consumer wired, dispatch order untouched). Gates:
+same as above, all clean.
+
+REMAINING: consulting HIR facts (typedLen, neverGrown) through the link is
+explicitly NOT wired — `{bl,op,blLoose}` is still the sole authority every
+recognizer reads; a future slice that wants to lean on `loopPlanLink` for a
+real decision inherits the freshenUnrolledScalarBindings lesson (any pass
+that renames a linked loop's own IV/guard local in place must keep the link
+in sync, not just passes that clone the block array). Slices 5-7 = the
+incremental trio (tryMemCopyFill → tryReduceVectorize → tryVectorize), each
+its own byte-identity-gated unit. Class-C recognizers (stencil ivCoeff,
+butterfly unification, divergent-escape, conv-column MAC) stay private by
+design.
 
 ## [ ] Heap-kind registry (was heap-kind-registry-design.md; audit-#13 item 3)
 
