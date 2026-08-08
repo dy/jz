@@ -955,7 +955,12 @@ function createPhaseState() {
       return callerTypedCtx
     },
 
-    invalidateBodyFacts() {
+    // Renamed from invalidateBodyFacts (FINDING-5, lattice-design.md §4): the
+    // product-lattice design reserves that name for a future module-level
+    // `invalidateBodyFacts(body, reason)` entry point (research.md:704-708) —
+    // this phase-local, bulk, no-args method is a different shape and had to
+    // move out of the way first.
+    clearNarrowingBodyState() {
       invalidateAllBodyFacts()
       clearDerived()
     },
@@ -1976,7 +1981,7 @@ export default function narrowSignatures(programFacts, ast) {
   narrowReturnArrayElems('arrayElemSchema', paramReps, valueUsed)
   narrowReturnArrayElems('arrayElemSchemaSet', paramReps, valueUsed)
   narrowReturnArrayElems('arrayElemValType', paramReps, valueUsed)
-  phase.invalidateBodyFacts()
+  phase.clearNarrowingBodyState()
   phase.refreshValTypes()
   // Re-observe schema slot val-types now that E2 has set `valResult` on user
   // funcs. First pass runs in collectProgramFacts before valResult is known, so
@@ -2096,7 +2101,7 @@ export default function narrowSignatures(programFacts, ast) {
   // Cache invalidation: analyzeBody.typedElems reads `ctx.func.map.get(...).sig.ptrKind`
   // for `let x = mkInput(...)` decls; entries cached during the initial walk
   // (before E3 ran) are stale (mkInput's ptrKind was unset then).
-  phase.invalidateBodyFacts()
+  phase.clearNarrowingBodyState()
   const callerTypedCtx = phase.callerTyped()
   // Per-caller receiver schemas for field-provenance args (`transform(plan.tw…)`):
   // a small decl scan per body — collision-free and live-rep-independent (the
