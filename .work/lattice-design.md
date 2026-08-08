@@ -652,3 +652,154 @@ opportunity.
    slice touching it is "the divergence shape is unchanged," never byte-
    identity — restated here so Slice 6/7's gate list doesn't accidentally
    demand an impossible bar.
+
+---
+
+## LATTICE OQ1 VERDICT (2026-08-08)
+
+**Answering §6 risk item 4.** §3.1's claim — "audit-#10's objection was
+specifically to **exact** promotion; it does not apply to a **safe
+over-approximation**" — is **not supported by the historical record** and
+is false as a blanket statement. §3.1/§3.3's "dissolves" language and
+Slice 7's acceptance criterion must not proceed on the current text.
+
+**The count is three reverts, not two, and the design cites the wrong one
+as its baseline for the exactness argument:**
+
+1. `1db8e55e` → reverted `f8f61591` (ledgered **audit-#7 P0**, 2026-08-02).
+   Exact-kind promotion (`mapValueKindOf` short-circuiting `VT['()']`'s
+   `.get` dispatch to a single `VAL.*`). Unsound two ways per the commit
+   message and `.work/todo.md`'s 2026-08-02 status entry: (a) **absent
+   key** — `m.get(missing)+1` gave `undefined` instead of `NaN`,
+   `String(m.get(missing))` gave `"NaN"` instead of `"undefined"`; (b)
+   **alias write** — census keyed by syntactic receiver name, so
+   `alias.set(k,v)` after `const alias=m` is invisible, leaving a stale
+   kind live after the alias write.
+2. `061e2c6e` (dict Slice 1, presence-join at curated chokepoints) +
+   Slices 2-3 → reverted `7288b69b` (**audit-#9 P0-1**, 2026-08-04). The
+   presence-aware fix was **AST-shape-only**: it recognized only the
+   direct read node, so it evaporated at a decl-hop (`let x =
+   m.get(missing); x+1`), and several consumer sites were never on the
+   curated gate list at all (the STRING `+`-concat fast path,
+   `bigintMixReject`'s compile-time BigInt-mix check) — the join itself
+   was sound where applied; its *coverage* wasn't, and coverage couldn't
+   be proven complete by manual chokepoint audit.
+3. `79082fb2`→`3782a692` (represented-maybeUndefined: `presentVal` as a
+   real REP field, correctly propagated through decl/param/return/closure
+   — `.work/represented-maybe-undefined-design.md` Slices 1-3, deleted at
+   `6039b38b` once superseded) → Slice 4 (`3782a692`) wired this
+   now-correctly-presence-gated `presentVal` claim back into
+   `VT['[]']/VT['.']/VT['()']` directly → reverted `098014a5` (**audit
+   #10**, 2026-08-04) — **this is the revert §3.1 cites.** Its own commit
+   message: *"a census claim promoted to a global exact-kind fold made
+   every `valTypeOf` consumer silently exposed to a maybeUndefined value
+   unless it separately remembered to check `censusMaybeUndefined`,
+   opt-out instead of opt-in."* Five NEW live failures were found by audit
+   #10 that Slice 4's own landing-session chokepoint walk had missed:
+   composed expressions (`?:`, `&&`, `||`, comma around a census read),
+   container storage (array/object literal wrapping a census read),
+   kind-specific dispatch (`Array.isArray`, `.length`, closure-call —
+   several decode as a WASM trap instead of a JS `TypeError`, e.g.
+   `m.get(missing).length`, `m.get(missing)()`), the String `+` fast
+   path, and BigInt joint dispatch.
+
+**The fact §3.1 gets backward:** audit #10's target (Slice 4) was
+**already presence-aware** — it promoted `presentVal`, built on top of
+correctly-propagated `mayBeUndefined`, not a naive write-kind claim blind
+to absence (that was `1db8e55e`/audit-#7's mistake, already fixed by the
+time Slice 4 landed). Audit #10 did not object to exactness. What it
+killed was feeding *any* census-derived claim — however presence-correct
+at the point of derivation — into a fact channel (`valTypeOf`/`VT`) whose
+consumer set is open-ended and not exhaustively enumerable by inspection,
+proven twice over (2 gaps at Slice-4's own landing, 5 more at audit #10,
+same manual-audit method both times). The fix that was actually accepted
+(`represented-maybe-undefined-design.md` §14, "opt-in `presentVal`
+model, supersedes §5") is structural: `val`/`valTypeOf` never carries a
+census claim; the claim lives on a separate, narrowly-named field
+(`presentVal`) read only by an individually-verified, explicitly
+opted-in consumer list; `valTypeOf` returns null (no optimistic default)
+for a census-shaped node absent that explicit ask. This is exactly the
+architecture live in `src/kind.js` today: `dictValueKindOf`/
+`mapValueKindOf` are internal-only helpers, never reaching `VT`, consulted
+solely through `censusMaybeUndefinedKind`'s curated chokepoint list.
+
+**Verdict on (a)/(b)/(c):**
+
+- **(c) is false.** The historical unsoundness is not scoped to exact-kind
+  promotion — two of the three reverts (audit-#9, audit #10) hit a
+  presence-aware claim and still failed, for a reason orthogonal to
+  exact-vs-set.
+- **(a) set-valued kind union feeding a boolean-disjointness consumer
+  (§17's `isDisjointFrom(arr, KEYED_EXEMPT_VALS)` reuse) is UNSOUND AS
+  SPECIFIED.** §3.1 writes the union directly into `arr.possibleKinds` —
+  the Fact record's general field, the same one §3's own table (line 288)
+  says replaces `valTypeOf`/`lookupValType` for every consumer, present
+  and future. That is exactly the opt-out shape audit #10 killed, with a
+  set standing in for the exact kind; nothing in the Fact record or the
+  projection catalog requires a `kindsOf`/`isDisjointFrom`/`isExactly`/
+  `cannotBe` caller to also consult `presence` before treating a kind
+  answer as license to skip a runtime check. Traced concretely:
+  `possibleKinds={ARRAY}, presence=true` (homogeneous-ARRAY map, key
+  absent, no `?? []` guard) makes `isDisjointFrom(arr,{OBJECT})`
+  sound-and-true for `keyedWrite`'s own narrow "could this alias a
+  tracked OBJECT schema slot" question specifically — `undefined` cannot
+  alias a schema slot either, so `hz.all`'s bookkeeping is genuinely
+  presence-orthogonal *for that one question*. But Slice 4b (§5)
+  explicitly proposes wiring the SAME `possibleKinds`/`kindsOf` answer
+  into `kind.js`'s general VT dispatch beyond `keyedWrite` ("starting
+  with... `keyedWrite`... and `mapValueKindOf`'s receiver-alias gate for
+  §18"), and any consumer that uses a proven-kind answer to select codegen
+  that skips a presence check reproduces the exact failure class the
+  audit-#10 battery already caught five times (kind-specific dispatch on
+  a genuinely-absent value: WASM trap instead of `TypeError`). The design
+  never states — and the projection catalog as written cannot enforce —
+  the conjunction `isDisjointFrom(k,S) AND !mayBeUndefined(k)` that
+  soundness for any codegen-affecting consumer actually requires.
+- **(b) presence-aware union feeding a value consumer that explicitly,
+  jointly reads BOTH the kind claim AND `mayBeUndefined` at one
+  individually-audited call site is SOUND** — this is precisely the
+  architecture §14 landed and that is live today (`censusMaybeUndefinedKind`,
+  restricted to internal-only helpers, consulted only by the curated
+  chokepoint list: `ir.js` `toNumF64`/`toStrI64`, `emit.js`'s
+  `nullableOperand`/`bigIntOperand`/`bigIntUnary`/`bigintMixReject`/
+  `+`-concat). The design's `mayBeUndefined(key)` projection (§3, line
+  292) is a correct re-homing of this — but only if it stays what it is
+  today: a projection an opted-in consumer explicitly calls alongside the
+  kind question, never a fact folded automatically into what `kindsOf`/
+  `isDisjointFrom` return.
+
+**The exact projection that must be restricted:** §3.1's `arr.possibleKinds
+∪= elementKinds(mapKey) ∪ {presence-implied-undefined}` must not write
+into the SAME `possibleKinds` field that `kindsOf`/`isExactly`/`cannotBe`/
+`isDisjointFrom` expose to every consumer. Two structurally sound
+alternatives, both matching the §14 precedent that's actually landed and
+green:
+
+- **Option A (match precedent).** Keep the Map/dict-census union OUT of
+  `arr`'s general Fact `possibleKinds` entirely. Give it its own
+  opt-in-only projection (`censusKindsOf(key)`, the set-valued sibling of
+  today's `presentVal`) that only an enumerated, individually-verified
+  consumer list may call — `keyedWrite`'s exemption check becomes one
+  such consumer, explicitly conjoined with `!mayBeUndefined(arr)` at that
+  call site, not a blanket `isDisjointFrom` reuse.
+- **Option B (harden the general projection).** Redefine `isDisjointFrom`'s
+  guarantee (§3's table) to be `possibleKinds(key) ∩ kindSet = ∅ AND
+  !presence(key)` whenever `possibleKinds` carries any census-sourced
+  contribution — presence becomes structurally part of the disjointness
+  answer, not a separate fact a caller might forget to check. This
+  changes the projection catalog's stated contract and requires
+  re-verifying `isDisjointFrom`'s other existing caller (`recvArrTyped`'s
+  ARRAY-OR-TYPED test) doesn't regress from the tightened conjunction it
+  never needed.
+
+**Conclusion for the coordinator:** risk register item 4 is right to flag
+this as unverified — this verdict confirms the gap is real, not merely
+cautious. It should be upgraded from "open question" to a **blocking
+precondition on Slice 4b and Slice 7**: re-run a scoped version of the
+audit-#10 battery (composed expressions, container storage,
+kind-specific/codegen dispatch — the three classes that caught 5 of the
+last 7 total failures across the three reverts) against
+`isDisjointFrom(arr, KEYED_EXEMPT_VALS)` and any other Slice-4b consumer
+specifically, before landing, and land Slice 4b only through Option A or
+Option B above — not through the plain `arr.possibleKinds ∪=` union §3.1
+currently specifies.
