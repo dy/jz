@@ -6,6 +6,53 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## SIZE-goal fresh verification at HEAD (2026-08-08, sha 1112b535)
+Scope: byte-counting only (VALID on this swap-stressed machine per current
+policy) — timing/memory stay embargoed, not touched here. Fresh `npm run
+build` confirmed (dist/{jz.js,interop.js,jz.wasm} mtimes post-date this
+run), then the full 60-case bench/ corpus run through
+`node scripts/bench-size.mjs --json` (the tool test/bench.js's SIZE section
+also shells out to) — same in-process `compile(src, {optimize:'size'})` path
+bench/bench.mjs's jzSizeWasmPath uses for bench/results.json's stored `jz`
+byte counts, confirmed by exact match on the 57 unaffected cases below.
+RESULT: **geomean jz/AS = 1.0201× (1.020×) over the 49 AS-comparable
+cases — IDENTICAL to the stored evidence** (bench/results.json, meta.commit
+4e346183 / measured at 57ad846d). Comfortably PASSES the 1.05× cap (both
+test/bench-claims.js's SIZE_GEOMEAN_MAX and test/bench.js's
+SIZE_GEOMEAN_MAX.as). 27/49 cases smaller than AS, matching prior evidence
+exactly — no case-level change in the AS-comparable set at all.
+3 BYTE DELTAS found outside the AS-comparable set (cases with no `as` port —
+`na`/absent in every gate's geomean input, so these do not move the 1.05×
+number): `fftplan` 30164→30283 B (+119, +0.39%), `provenance` 29395→29514 B
+(+119, +0.40%), `watr` 257471→257699 B (+228, +0.09%). Bisected via a
+throwaway `git worktree` stepping the 31 codegen-scope commits between
+57ad846d (evidence commit) and HEAD one at a time (`node
+scripts/bench-size.mjs fftplan provenance watr --json`): all three jump on
+the SAME single commit, **48139d9b "CARRIER Slice 3: BigInt read-side arms
+(registry-derived R-recovery)"** (2026-08-07), flat before and flat after
+through the remaining 30 commits to HEAD. That commit's own message already
+banks this: "size sweep 1.020x geomean unchanged" — the new BIGINT
+read-side arms ($__typeof/$__eq/$__same_value_zero/$__map_hash/interop
+decode/etc., gated behind `ctx.features.bigint`) cost real bytes only on
+the few large real-program cases that exercise them and have no AS
+counterpart to regress against. CONFIRMED here, not a new finding — no
+action, nothing to tune.
+All other 57/60 cases byte-identical to stored evidence (`jz` and `jessie`
+never had `as`/AS-comparable rows either way — `jessie` additionally fails
+under bench-size.mjs's narrower module wiring, a pre-existing tooling gap
+predating this commit range, not a HEAD regression: bench-size.mjs only
+special-cases `watr`'s external modules, never wired jessie's
+subscript/feature/jessie.js dep).
+EVIDENCE: bench/results.json's `jz.bytes` for fftplan/provenance/watr are
+now 119-228 B stale (still reads the 57ad846d values) — left UNTOUCHED:
+that field's `measuredAt` stamp is shared with the row's `medianUs`
+(timing), which stays embargoed on this machine, so bumping bytes without a
+matching fresh timing pass would misattribute provenance. A full
+`bench/bench.mjs --merge` (speed+size together) is the correct next refresh
+once timing evidence is unembargoed; until then this ledger entry is the
+authoritative fresh SIZE record. Goal HOLDS: ≤1.05× confirmed at HEAD, no
+regression to bank as a work order.
+
 ## heap-kind registry Slice 3: $__eq/$__map_hash arms generated — landed (2026-08-08)
 Per .work/research.md §Heap-kind registry. Local only.
 
