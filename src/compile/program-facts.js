@@ -7,7 +7,7 @@ import { ctx, err, getFactStore, DBG_INVARIANTS } from '../ctx.js'
 import { VAL, lookupValType, repOf, updateGlobalRep } from '../reps.js'
 import { valTypeOf, nullishArm } from '../kind.js'
 import { extractParams, classifyParam, collectAllBoundNames } from '../ast.js'
-import { staticObjectProps } from '../static.js'
+import { staticObjectProps, objLiteralSchemaId } from '../static.js'
 import { intLevelChecker, typedElemCtor } from '../type.js'
 import { ctorFromElemAux } from '../../layout.js'
 import { analyzeBody } from './analyze.js'
@@ -627,6 +627,7 @@ export function observeProgramSlots(ast, opts) {
   const dictValueTypes = ctx.schema.dictValueTypes
   const mapValueTypes = ctx.schema.mapValueTypes
   const slotBigintObserved = ctx.schema.slotBigintObserved
+  const slotObjSids = ctx.schema.slotObjSids
   // Unlike type facts, discriminant constants are rebuilt from the complete
   // program on every facts pass. This avoids emitter/function-order coupling:
   // codegen only consumes a settled whole-program census.
@@ -669,6 +670,25 @@ export function observeProgramSlots(ast, opts) {
     while (arr.length <= idx) arr.push(undefined)
     arr[idx] = null
   }
+  // Nested-sid census (§19/§20 PROPERTY-KIND TRACING): observeSlot/poisonSlot's
+  // own first-wins-then-clash lattice, one level up — tracks WHICH `{}`-literal
+  // schema a `r.p = {...}` write's RHS is, not just its VAL kind. Fed ONLY by
+  // the `.prop=`/`=`-write branch below (never the `{}`-literal decl-site
+  // branch just above — see slotObjSids' ctx.js doc comment for why).
+  const observeObjSid = (sid, idx, childSid) => {
+    let arr = slotObjSids.get(sid)
+    if (!arr) { arr = []; slotObjSids.set(sid, arr) }
+    while (arr.length <= idx) arr.push(undefined)
+    if (arr[idx] === null) return
+    if (arr[idx] === undefined) arr[idx] = childSid
+    else if (arr[idx] !== childSid) arr[idx] = null
+  }
+  const poisonObjSid = (sid, idx) => {
+    let arr = slotObjSids.get(sid)
+    if (!arr) { arr = []; slotObjSids.set(sid, arr) }
+    while (arr.length <= idx) arr.push(undefined)
+    arr[idx] = null
+  }
   // Dict-value-type census (global half, design §1b): observeSlot/poisonSlot's
   // first-wins-then-clash lattice, keyed by bare name instead of (sid, idx) —
   // same whole-program name-keyed convention as dynWriteVars/nameEscapes above.
@@ -703,7 +723,7 @@ export function observeProgramSlots(ast, opts) {
   // hazard recompute resolves receivers the early pass poisoned wholesale
   // (fftplan's `re[j] = tr` on a then-unnarrowed param poisoned the world).
   // Sound to rebuild: every kind consumer left reads at emit, after this.
-  if (opts?.fresh) { slotTypes.clear(); slotCtors.clear(); dictValueTypes.clear(); mapValueTypes.clear(); slotBigintObserved.clear() }
+  if (opts?.fresh) { slotTypes.clear(); slotCtors.clear(); dictValueTypes.clear(); mapValueTypes.clear(); slotBigintObserved.clear(); slotObjSids.clear() }
   const hazards = collectSlotWriteHazards(ast, opts?.fresh ? { paramReps: opts.paramReps } : undefined)
   // Hazard fail-OPEN belt (slotBigintObserved's own doc, ctx.js): a slot the
   // kind census can't resolve precisely (Object.assign/spread merges,
@@ -918,6 +938,14 @@ export function observeProgramSlots(ast, opts) {
           // slotBigintObserved's doc, ctx.js): the write could be a BigInt
           // this census just couldn't independently prove.
           else { poisonSlot(sid, idx); observeBigintJoin(sid, idx, VAL.BIGINT) }
+          // Nested-sid census (§19/§20): a `.`-node/bare-name receiver's `.prop`
+          // resolves to a whole-program-unique schema id only when EVERY write
+          // is provably the SAME `{}`-literal shape — any non-literal RHS
+          // (including one that resolves through further indirection) poisons,
+          // exactly like a kind clash, never silently skips.
+          const childSid = objLiteralSchemaId(effVal)
+          if (childSid != null) observeObjSid(sid, idx, childSid)
+          else poisonObjSid(sid, idx)
         }
       }
     } else if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
@@ -1199,7 +1227,11 @@ export function collectSlotWriteHazards(ast, opts) {
   const hz = { all: false, sids: new Set(), props: new Set(), numeric: false, kindSafeSids: new Map() }
   let curSids = null, curParamVts = null
   const sidOf = (obj) => {
-    if (typeof obj !== 'string' || ctx.schema.poisoned?.has(obj)) return null
+    // PROPERTY-KIND TRACING (§19/§20): a `.`-node receiver chain-resolves
+    // through slotObjSids (module/schema.js's chainSid — shared walker, see
+    // its doc comment) instead of requiring a bare string.
+    if (typeof obj !== 'string') return ctx.schema.chainSid(obj, sidOf)
+    if (ctx.schema.poisoned?.has(obj)) return null
     return curSids?.get(obj) ?? repOf(obj)?.schemaId ?? ctx.schema.vars.get(obj) ?? null
   }
   const kindOf = (obj) => typeof obj === 'string'

@@ -2597,3 +2597,120 @@ diff`); the temporary probe script (`scripts/_propkind-probe.mjs`) was
 deleted, not committed. Only this ledger entry and the matching
 `.work/todo.md` status update are new, committed separately, plain
 messages, no push.
+
+## §20. PROPERTY-KIND TRACING implementation — census landed, chain
+resolves, DEEPER hz.all layer found blocking the consumer (2026-08-07,
+implementing §19's own missing-fact spec, the carrier flip's last
+dependency chain)
+
+**Step 1 — the nested-sid census + chain-through, built exactly per §19's
+spec.**
+
+- `ctx.schema.slotObjSids: Map<sid, Array<childSid|null|undefined>>`
+  (`src/ctx.js`, sibling of `slotTypes`) — the nested-sid lattice, one
+  level up from the KIND census: `undefined` = no `.prop=`/`=`-write
+  observed, `null` = poisoned (≥2 distinct literal shapes, or any
+  non-literal RHS), `childSid` = every resolvable write is provably that
+  ONE `{}`-literal shape.
+- Populated ONLY by `observeProgramSlots`'s existing `.prop=`/`=`-write
+  branch (`src/compile/program-facts.js:917-936`) — deliberately NOT by
+  the `{}`-literal decl-site branch just above it. This was the key design
+  decision this session had to resolve, not spelled out in §19: `ctx`'s
+  own declaration (`ctx.js:73`) initializes `schema: {}` (EMPTY, 0 props)
+  — if the decl-site branch ALSO fed slotObjSids, `ctx.schema`'s entry
+  would first-wins-then-clash against the EMPTY schema, then clash again
+  against `reset()`'s real `{list, vars, ..., slotTypes, ...}` literal,
+  poisoning the exact flagship case to null. Scoping population to ONLY
+  the write branch (matching §19's own wording, "populated by the SAME
+  `.prop=`-write handling... at program-facts.js:897-917") sidesteps this
+  cleanly: `reset()`'s write is the ONLY site touching `ctx.schema`
+  anywhere in the program (confirmed by grep), so its entry lands clean,
+  unclashed. Trade-off, accepted: a PURE decl-only nested object (`let o =
+  {a: {x:1}}`, never reassigned) doesn't get a slotObjSids entry either —
+  a real coverage gap, but sound (fails closed, no fact, not a wrong one).
+- `ctx.schema.chainSid(node, resolveBare, depth)` (`module/schema.js`, new,
+  shared) — the ONE place that walks a multi-hop `.`-chain
+  (`ctx.schema.slotTypes` is `['.', ['.', 'ctx', 'schema'], 'slotTypes']`),
+  recursing through `slotObjSids` one hop at a time; `resolveBare` is
+  supplied per-caller (idOf's refinement/poison-aware lookup; collect-
+  SlotWriteHazards' `curSids`-aware one) so the walk logic itself isn't
+  duplicated. `ctx.schema.idOf` (~line 103) and `collectSlotWriteHazards`'s
+  local `sidOf` (~line 1201, program-facts.js) both route a non-string
+  receiver through it — `ctx.schema.slotVT` (~line 252) needed ZERO
+  changes: it already calls `idOf`, so it inherits chain-resolution for
+  free, confirming the design brief's own "prefer a shared walker, stays
+  minimal" steer was right — `shapeOf` (kind.js) was NOT touched (no
+  duplicate chain-walker built; the existing jsonShape-based one is
+  untouched and still serves its own, different callers).
+
+**A second, unplanned design decision, found only by running the real
+self.js compile (not the isolated repro) — `chainSid`'s OWN hazard gate
+had to be NARROWER than `slotVT`'s existing `slotHazarded`, or the whole
+census is inert by construction.** `slotHazarded`'s `hz.all` term is a
+WHOLE-PROGRAM blanket boolean, set by causes entirely unrelated to any
+specific sid (the exact `keyedWrite` class §17/§18 studied — `arr[idx]=v`
+on an unresolvable-kind `arr`). Gating `chainSid`'s intermediate-hop
+resolution on the full `slotHazarded` (as first written, mirroring
+`slotVT`'s existing discipline by analogy) reproduces a genuine bootstrap
+circularity on the real compile: chain resolution needs `hz.all` false to
+walk through `ctx` → `ctx.schema`; `hz.all`'s actual causes (§18's own
+diagnosis: ~319-324 `arr = ctx.schema.X.get(sid)`-shaped locals, ALL
+property-chain-bound, none literal) need chain resolution to have ALREADY
+resolved `ctx.schema.X`'s kind (via `mapValueKindOf`'s receiver gate)
+before they can exempt. Neither side can go first. Empirically confirmed,
+not assumed: a full self.js compile with `hz.all`/`hz.sids`/`hz.props`
+dumped post-compile showed `hz.all: true, sids.size: 7, props.size: 956`
+but **`hz.sids.has(55)` (ctx's own sid) = false, `hz.props.has('schema')`
+= false** — `ctx`/`schema` are not themselves implicated by anything
+targeted; only the irrelevant blanket blocks them.
+
+Root-caused, then fixed with a narrower, separately-justified gate:
+`chainHazarded(id, prop)` (module/schema.js) checks `externSlotSids`,
+`hz.sids`, and `hz.props` — the TARGETED, attributable hazards — but NOT
+`hz.all`/`hz.numeric`/`kindSafeSids`. Justification, not just expedience:
+`hz.all` protects a DIFFERENT invariant than nested-sid chain resolution
+needs — a slot's sampled VALUE KIND against writes the narrow per-(sid,idx)
+walk couldn't attribute at all (computed-key writes, Object.assign/spread
+merges, extern constructors). `slotObjSids` is populated by that SAME
+narrow walk and is ALREADY its own complete, self-poisoning census for
+bare-string-receiver dot-writes — a write it can't see is either (a)
+computed-key/aliased, caught by `hz.props`/`hz.sids` (SID/NAME-specific,
+kept), or (b) simply doesn't exist in the program (the common case,
+verified above for ctx/schema specifically). Verified sound AND effective
+after the fix: the isolated minimal repro (`let g = {p:{}}; function
+reset(){g.p={m:new Map()}}; function f(){const x=g.p.m}`) resolves `g.p.m`
+to `VAL.MAP` correctly; on the real self.js compile, `chainSid` now
+resolves `ctx` → sid, `ctx.schema` → sid 63 (`{list, vars, ..., slotTypes,
+...}`'s own sid) cleanly, 946/946 times sampled, confirmed via direct
+inspection of `ctx.schema.slotObjSids` post-compile.
+
+**Diagnostic (Gate 1, §19's own probe re-run, standalone script walking
+the compiled program's own AST post-compile + calling `ctx.schema.slotVT`
+directly — no `src/` instrumentation needed or landed): 0/276 distinct
+call sites resolve** (the original in-VT-call counting methodology, ad hoc
+and not landed, separately showed 0/2517 over the whole multi-pass
+compile — same verdict, different denominator). **This is NOT the same
+finding as §19's own wall** — the RECEIVER CHAIN now resolves correctly
+(`ctx.schema` → sid 63, verified directly), but `ctx.schema.slotVT`'s
+EXISTING, UNCHANGED final-lookup gate (`slotHazarded`, WITH `hz.all`) still
+blocks the KIND read on the resolved sid's slot — the SAME pre-existing
+`hz.all` wall §17/§18 already diagnosed, now confirmed to ALSO gate the
+downstream consumer of a successfully-chain-resolved receiver, one layer
+deeper than §19's own diagnosis reached. Deliberately NOT loosened:
+`slotVT`'s `slotHazarded` call is shared by EVERY caller (bare-name and
+chain-resolved alike), landed and audited over many sessions; narrowing
+it program-wide is a materially larger, separately-audited change this
+step does not make — the task's own Step 2 (§18's disjointness recovery)
+is the intended lever for reducing `hz.all` itself, tested next.
+
+**Sanity, this step**: `node test/slot-hazards.js` 21/21 (59 assertions),
+`node test/dyn-keys.js` 57/57 (284 assertions), `node test/inference.js`
+136/136 (299 assertions), full battery `npm test` 3400/3408 (19550
+assertions, 6 skip) — the 2 failures (`test/optimizer.js`, interval-walk
+codec bounds checks / typed RMW guard count) confirmed PRE-EXISTING via a
+disposable `git worktree` at HEAD (identical 217/219 pass, same 2 named
+failures, byte-for-byte same assertion count) — unrelated to this
+session's `src/` changes (codegen bounds-check elision, not schema/kind
+census).
+
+**Local commit: pending (this entry lands with it).**

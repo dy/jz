@@ -6679,3 +6679,17 @@ it. A materially larger feature than Step 2, its own dedicated session
 (§19's own note). No src/ change committed — kind.js's temporary probe
 instrumentation fully reverted (empty git diff), confirmed. NO default
 flip (unchanged, no src/ touched this session).
+
+**IMPLEMENTED (2026-08-07, .work/carrier-representation-design.md §20 —
+full writeup): `slotObjSids` census + `chainSid` walker landed
+(src/ctx.js, src/compile/program-facts.js, module/schema.js).** Chain
+resolution itself now WORKS — `ctx.schema` chain-resolves to its real sid
+on the actual self.js compile (verified directly). Gate 1's own
+diagnostic still shows 0 resolved reads, but for a SHARPER, deeper reason
+than this seed's own diagnosis: `ctx.schema.slotVT`'s EXISTING, unchanged
+`hz.all`-gated final lookup (not the chain itself) is the remaining
+blocker — the same pre-existing hazard blanket §17/§18 already named,
+now confirmed to also gate a successfully chain-resolved receiver's KIND
+read, one layer past where this seed stopped. Next lever (§18's own
+disjointness recovery) is the intended fix for `hz.all` itself — see
+§20 for the full chain and its own diagnostic.

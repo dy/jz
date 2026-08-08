@@ -101,6 +101,10 @@ export function initSchema(ctx) {
    *  bindAssignSchema) resolve to NO schema regardless of store: a fixed-slot
    *  read against one literal's layout would misread the other sources. */
   ctx.schema.idOf = (name) => {
+    // PROPERTY-KIND TRACING (§19/§20): a `.`-node receiver (`ctx.schema`, not
+    // a bare name) chain-resolves through slotObjSids instead — see chainSid's
+    // own doc comment above for the walk and its fail-closed discipline.
+    if (typeof name !== 'string') return ctx.schema.chainSid(name, ctx.schema.idOf)
     // A branch-local runtime schema guard is stronger than durable flow facts:
     // inside its fast arm even a deliberately-poisoned union binding has one
     // exact layout. The guarded slow arm retains the ordinary dynamic path.
@@ -247,6 +251,53 @@ export function initSchema(ctx) {
     if (hz.kindSafeSids?.has(id) && (!kindSafeOk || hz.kindSafeSids.get(id) == null)) return true
     return hz.all || hz.sids.has(id) || hz.props.has(prop) ||
       (hz.numeric && /^(0|[1-9][0-9]*)$/.test(String(prop)))
+  }
+
+  // Nested-sid hazard belt for chainSid — DELIBERATELY narrower than
+  // slotHazarded's `hz.all`/`hz.numeric`/`kindSafeSids` terms, which protect a
+  // DIFFERENT invariant (a slot's sampled VALUE KIND against writes the narrow
+  // per-(sid,idx) walk couldn't attribute — computed-key writes, Object.assign
+  // merges, extern constructors). slotObjSids is populated by that SAME narrow
+  // walk (the `.prop=`/`=`-write branch, program-facts.js) and is ALREADY its
+  // own complete, self-poisoning census for bare-string-receiver dot-writes —
+  // it doesn't need `hz.all`'s blanket "some untraceable write, who knows
+  // where" caution layered on top, and empirically (self.js compile) `hz.all`
+  // is a program-wide boolean set by causes (e.g. `arr[idx]=v` on an
+  // unresolvable-kind `arr`) that have NOTHING to do with THIS receiver's
+  // shape — consulting it here only reproduces the circularity chainSid
+  // exists to break (chain resolution feeds the very kind facts that would
+  // clear those causes). What DOES remain a real risk: a write through an
+  // UNRESOLVABLE ALIAS of this exact receiver/prop (`propWrite`'s own
+  // `hz.props`/`hz.sids` fallback, sid- and name-SPECIFIC, populated whenever
+  // `sidOf` can't resolve a `.`-write's receiver) or an extern-registered sid
+  // (host-side layout, never derived from program literals) — both checked
+  // below.
+  const chainHazarded = (id, prop) => {
+    if (ctx.schema.externSlotSids?.has(id)) return true
+    const hz = ctx.schema.slotWriteHazards
+    return !!hz && (hz.sids.has(id) || hz.props.has(prop))
+  }
+
+  /** PROPERTY-KIND TRACING (§19/§20): resolve a `.`-chain AST node — or a bare
+   *  name — to a schema id by walking `slotObjSids` one hop at a time.
+   *  `resolveBare(name)` resolves the BASE-CASE bare string (each caller
+   *  supplies its own — idOf's refinement/poison-aware lookup, or
+   *  collectSlotWriteHazards' curSids-aware one); this is the one shared place
+   *  that knows how to walk a MULTI-hop `.`-chain (`ctx.schema.slotTypes` is
+   *  `['.', ['.', 'ctx', 'schema'], 'slotTypes']`), so the walk itself isn't
+   *  duplicated per caller. depth guards against a cycle in principle (an AST
+   *  chain is a finite tree, so a real cycle can't occur — defensive, not a
+   *  reachable path). Fail-closed throughout: any unresolved parent, any
+   *  chainHazarded intermediate slot (see its own doc comment for why this is
+   *  narrower than slotHazarded), or depth overrun ⇒ null. */
+  ctx.schema.chainSid = (node, resolveBare, depth = 0) => {
+    if (typeof node === 'string') return resolveBare(node)
+    if (depth > 32 || !Array.isArray(node) || (node[0] !== '.' && node[0] !== '?.') || typeof node[2] !== 'string') return null
+    const parentSid = ctx.schema.chainSid(node[1], resolveBare, depth + 1)
+    if (parentSid == null) return null
+    const idx = ctx.schema.list[parentSid]?.indexOf(node[2])
+    if (idx == null || idx < 0 || chainHazarded(parentSid, node[2])) return null
+    return ctx.schema.slotObjSids.get(parentSid)?.[idx] ?? null
   }
 
   ctx.schema.slotVT = (varName, prop) => {

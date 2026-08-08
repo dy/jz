@@ -411,6 +411,24 @@ export function reset(proto, globals, bridge) {
                            // returns the slot's kind for `.prop` AST nodes, letting
                            // `+`/`===`/method dispatch elide `__is_str_key` checks
                            // on numeric properties of known shapes.
+    slotObjSids: new Map(), // schemaId → Array<childSchemaId | null | undefined> —
+                            //   PROPERTY-KIND TRACING (§19/§20, .work/
+                            //   carrier-representation-design.md): the nested-sid
+                            //   sibling of slotTypes' VAL-kind lattice, one level
+                            //   up. undefined: no `r.p = {...}` write observed,
+                            //   null: ≥2 distinct literal shapes (or a non-literal
+                            //   RHS) — poisoned, childSid: EVERY resolvable write
+                            //   to this (sid, idx) slot is provably that ONE `{}`-
+                            //   literal shape. Populated ONLY by observeProgramSlots'
+                            //   `.prop=`/`=`-write branch (NOT the `{}`-literal
+                            //   decl-site branch — a receiver's OWN declared value
+                            //   is a separate, potentially-placeholder shape; see
+                            //   §19's ctx.schema finding for why conflating the two
+                            //   would poison the flagship case). Read by
+                            //   ctx.schema.idOf (via chainSid) so a `.`-node
+                            //   receiver (`ctx.schema`, not a bare name) can chain-
+                            //   resolve to a schema id, precise-only, fail-closed
+                            //   on any unresolved/hazarded hop.
     slotConstInts: new Map(), // schemaId → Array<int | null | undefined>
                               //   integer discriminants observed at every source
                               //   literal construction of a schema. null means
