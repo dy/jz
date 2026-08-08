@@ -6900,3 +6900,28 @@ ends here, negatively — a future session should not re-attempt narrowing
 aim at making the CENSUS more precise, not the GATE looser. Full
 enumeration and the counter-example's exact trace through
 `collectSlotWriteHazards` in §21.
+
+## AUDIT-#15 RESPONSE (2026-08-08)
+Fixed-confirmed by the audit: anchors guard, validity TODO rows, FeaturePlan/
+linkDemand split, aliasClass conservative, BodyModel dedupe, schema-slot
+pairing. CLOSED same-day: item 9 bench-merge contract suite migrated
+(37e3f6a4, 20/20 — carried-PASS is now a REJECTION pin); item 4 typedView→
+linkDemand (f6223dd2 — freeze uniform, no carve-outs); item 7 first real cut:
+registry Slice 3 landed (32000610 — $__eq/$__same_value_zero/$__map_hash
+identity arms GENERATED from layout-kinds.js, now production-consumed; plus
+a real $__eq-vs-$__same_value_zero STRING-identity divergence FINDING).
+THE CENTER (items 1-3, audit's verdict): the exact-kind fact model is the
+convergence blocker — PossibleKinds × Presence × points-to × representation
+as ONE solver product lattice (SlotFact with named projections), replacing
+the fragmenting slot* census family. This subsumes: carrier flip (hz.all
+precision), Map.get presence, schema hazards, the §22 param-lattice
+sticky-null. It is the audit-#13 solver campaign made concrete — needs a
+dedicated design+implementation campaign (coordinator design pass first).
+QUEUED: item 5 LoopPlan ownership (immutable pre-emission plan keyed by
+NodeId/BindingId + separate lowering map; renames touch the map never the
+plan; move the link out of loop-model.js) · item 6 drop dead baseKeys
+collection in buildSiteAccess (aliasClass is constant until a points-to
+consumer exists) · item 8 "item" JSON trace (f64 bits 0x6d657469 = ASCII
+"item": a string/key carrier reaching a watr integer-immediate position —
+capture pre-watr AST, find the first malformed node) · item 10 solver/
+session (folds into the lattice campaign).
