@@ -1236,18 +1236,35 @@ export default (ctx) => {
       const bytes = [...text].map(c => c.charCodeAt(0))
       if (bytes.length < 2 || bytes.some(b => b > 127))
         return [...text].map(c => expect(c.charCodeAt(0))).join('\n    ')
+      // Two packers, deliberately: the 8-byte chunk is a genuine 64-bit value and
+      // needs BigInt (fed to i64Hex, which formats it as a WAT hex literal STRING —
+      // never round-trips through Number()). The ≤4-byte chunks fit a plain i32
+      // (all bytes are ASCII, so bit 31 of a 4-byte pack is always 0 — no sign
+      // trouble) and MUST stay plain-Number arithmetic, not BigInt: `Number(bigint)`
+      // here would route through the self-hosted kernel's own ToNumber(BigInt),
+      // whose bigint-vs-genuine-carrier disambiguation is a whole-program
+      // ctx.features.bigint flag baked once at first module-inclusion — under
+      // self-hosting (this very file compiled BY the kernel) module-inclusion
+      // ordering can bake the flag before it sees this file's own 8-byte-chunk
+      // BigInt use, leaving ToNumber(BigInt) on its unguarded arm, which returns
+      // the raw i64 carrier bits reinterpreted as f64 instead of converting —
+      // producing a malformed `(i32.const 9.06...e-315)` WAT literal (banked,
+      // .work/todo.md "JSON SHAPED-PARSER 'Bad int 9.067910317e-315'"). Avoiding
+      // BigInt entirely for the ≤4-byte packer sidesteps that arm rather than
+      // fixing it (the general fix is a separate, larger architectural task).
       const le = (arr) => arr.reduce((a, b, k) => a | (BigInt(b) << BigInt(8 * k)), 0n)
+      const leNum = (arr) => arr.reduce((a, b, k) => a | (b << (8 * k)), 0)
       const at = (i) => (i ? `offset=${i} ` : '') + '(local.get $kp)'
       const out = [`(local.set $kp (i32.add (global.get $__jpstr) (global.get $__jppos)))`]
       let i = 0
       for (; bytes.length - i >= 8; i += 8)
         out.push(`(if (i64.ne (i64.load ${at(i)}) (i64.const ${i64Hex(le(bytes.slice(i, i + 8)))})) (then ${fail}))`)
       if (bytes.length - i >= 4) {
-        out.push(`(if (i32.ne (i32.load ${at(i)}) (i32.const ${Number(le(bytes.slice(i, i + 4)))})) (then ${fail}))`)
+        out.push(`(if (i32.ne (i32.load ${at(i)}) (i32.const ${leNum(bytes.slice(i, i + 4))})) (then ${fail}))`)
         i += 4
       }
       if (bytes.length - i >= 2) {
-        out.push(`(if (i32.ne (i32.load16_u ${at(i)}) (i32.const ${Number(le(bytes.slice(i, i + 2)))})) (then ${fail}))`)
+        out.push(`(if (i32.ne (i32.load16_u ${at(i)}) (i32.const ${leNum(bytes.slice(i, i + 2))})) (then ${fail}))`)
         i += 2
       }
       if (i < bytes.length)

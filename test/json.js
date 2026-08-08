@@ -166,29 +166,28 @@ test('JSON.parse: nested chains stay on OBJECT fast path', () => {
   is(run(src).f(), 12)
 })
 
-// audit-#11 item 7 sub-4 (test:wasm leg classification, 2026-08-05): a REAL
-// self-host-only miscompile, found running this test under
-// JZ_TEST_TARGET=jz.wasm — reported here, NOT guarded/silenced (the gate
-// discipline for a genuine bug, distinct from a white-box ctx-introspection
-// gap or a stale assertion). Confirmed live: native `jz(src, {})` compiles
-// and runs this exact program correctly (`f()` → 12); the self-hosted kernel
-// (dist/jz.wasm compiling the SAME source) throws `Bad int
-// 9.067910317e-315` from watr's OWN integer encoder, reached from
-// interop.js's decodeThrown at the wasm-instantiate boundary — i.e. the
-// self-hosted compiler's in-kernel call to `watr`'s `compile()` (module/
-// json.js's shaped-parser codegen path) hands it a WAT node position that
-// expects an i32 immediate but received a raw NaN-boxed float bit pattern.
-// Reproduces via BOTH this file's assertions (the `{wat:true}` shape-check
-// AND the plain `run(src).f()` value check) and via a minimal standalone
-// repro (bytes-mode `jz(src, {})` with `_setCompileTarget(compileViaKernel)`
-// wired) — not order-dependent, not cross-test-file state (reproduces with
-// TST_GREP isolating just this test, no other json.js test executing first).
-// Same general fault CLASS the shaped-parser saga (.work/todo.md, "shaped-
-// parser CONFIRMED DEAD 2026-08-03") tracked and had believed closed —
-// re-surfaced by source changes since then, never re-caught because no
-// audit-#11-era session ran the full test:wasm leg before this one. Left
-// failing (not onKernel-guarded) so it stays a visible, honest signal until
-// someone bisects the self-hosted watr-encoding call site.
+// audit-#11 item 7 sub-4 / audit-#15 item 8 (fixed): under JZ_TEST_TARGET=jz.wasm
+// this threw `Bad int 9.067910317e-315` from watr's own integer encoder —
+// decoded bits (0x000000006d657469, low 32 = ASCII "item") proved a BigInt
+// CARRIER (raw i64 bits reinterpreted as f64, never converted) was landing in
+// an `(i32.const …)` WAT position. Root: module/json.js's `expectText` SWAR
+// key-match codegen packed each ≤4-byte text chunk through
+// `Number(BigInt(...))`, routed through the self-hosted kernel's own
+// ToNumber(BigInt) — gated on a whole-program `ctx.features.bigint` flag
+// baked once at first module-inclusion (src/prepare/index.js), which
+// self-hosting's module-inclusion ORDER can bake false before it ever sees
+// this same file's later BigInt use, leaving ToNumber(BigInt) on its
+// unguarded/raw-carrier arm. Fixed by never constructing a BigInt for the
+// ≤4-byte chunks in the first place (`leNum`, plain i32 bitwise pack — safe
+// since expectText is ASCII-only, so bit 31 of a 4-byte pack is never set);
+// only the genuine 8-byte/64-bit chunk still uses BigInt, feeding i64Hex
+// (a hex-STRING formatter, never routed through Number()/ToNumber). This
+// sidesteps the ctx.features.bigint ordering hazard for this call site
+// rather than fixing it generally — the general fix (scrub the ~17-file
+// self-hosted-reachable BigInt surface, or redesign the carrier
+// disambiguation off one whole-program boolean) is a separate, larger,
+// out-of-scope architectural task; see .work/todo.md "JSON SHAPED-PARSER
+// 'Bad int 9.067910317e-315'" for the full hunt and that larger scope.
 test('JSON.parse: stable let source uses shaped runtime parser', () => {
   const src = `
     let SRC = '{"items":[{"id":1,"kind":2,"value":10}],"meta":{"scale":7,"bias":11}}'
