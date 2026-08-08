@@ -2865,3 +2865,160 @@ Step 2 fully reverted), `module/schema.js` land in commit 32f87447**
 revert leaves `program-facts.js` byte-identical to that commit, so no
 further `src/` commit is needed). This ledger entry + the matching
 `.work/todo.md` status update commit separately, plain messages, no push.
+
+## §21. slotHazarded's `hz.all` term audited for the slot-KIND question
+(§20's own named lever) — REFUTED: `hz.all` IS load-bearing, a concrete
+miscompile shape named, no narrowing, no code change (2026-08-08)
+
+**The audit.** §20 banked a hypothesis: "an unresolved element write
+`arr[idx]=v` (what sets `hz.all`) can never change a schema SLOT's OWN
+KIND — only whole-slot writes can, already covered by `hz.sids`/
+`hz.props`/`externSlotSids`." If true, `slotVT`'s KIND lookup could gate
+on a narrower `slotKindHazarded` (drop the `hz.all` term), unblocking the
+chain-resolved reads §20's own `chainSid` census produces. Audited by
+reading, not assuming: every `hz.all` setter site
+(`collectSlotWriteHazards`, `src/compile/program-facts.js`) × every
+`slotHazarded` consumer (`module/schema.js`).
+
+**`hz.all` has exactly two setter sites**, both in `collectSlotWriteHazards`:
+1. `keyedWrite`'s non-numeric fallback (`program-facts.js:1271-1279`,
+   `hz.all = true` at line 1278) — reached by `[]=`, `delete[]`, and
+   destructuring-pattern element targets whose receiver's `sidOf` doesn't
+   resolve AND whose `kindOf` is either unresolved OR resolved to
+   something NOT in `KEYED_EXEMPT_VALS` (`{ARRAY, TYPED, HASH, MAP, SET,
+   STRING}` — **`VAL.OBJECT` is deliberately absent from this set**) AND
+   whose key is neither a `VAL.NUMBER` value nor `repOf(key)?.intCertain`.
+2. `Object.assign`'s unresolved-target fallback (`program-facts.js:1332-
+   1350`, `hz.all = true` at line 1348) — reached when the target's `sidOf`
+   doesn't resolve, `staticAssignTargetNames` doesn't structurally resolve
+   it either, and `kindOf(target)` is `null` or `VAL.OBJECT`.
+
+**Both sites are gated on "receiver's kind could be `VAL.OBJECT`," not on
+"receiver is definitely some other, exempt kind."** That is the whole
+point of excluding `VAL.OBJECT` from `KEYED_EXEMPT_VALS`: the branch is
+reached precisely when the compiler cannot rule out that the receiver is
+a live schema-object instance receiving a **dynamic-key property write**
+(computed key, or an unknown source's keys via `Object.assign`) — which
+is a whole-slot write by every definition already in this file's own
+vocabulary (`hz.sids`/`hz.props`'s job), just one whose target sid/prop
+the static census cannot name. §20's hypothesis implicitly assumed
+"unresolved kind" meant "definitely an array, we just can't prove it" —
+false: `kindOf(obj)` returning `null` or `VAL.OBJECT` are exactly the two
+cases where the receiver COULD be a schema instance.
+
+**Runtime confirmation, not just static reasoning**: `$__dyn_set`'s
+OBJECT arm (`buildObjectSchemaSetArm`, `module/collection.js:2338-2359`)
+reads the receiver's OWN embedded `$sid` from its NaN-box aux bits, loads
+THAT schema's key table from the global `$__schema_tbl`, linear-scans for
+the runtime key, and stores `$val` into whatever slot matches — dispatch
+is universal over every registered schema carried by the pointer, not
+scoped to any subset (dyn-shadowed or otherwise). So a receiver that is
+*at runtime* an instance of schema S, written through a call site the
+static census could not attribute to S (unresolved `sidOf`, unresolved or
+non-literal key), really does land in one of S's slots with whatever
+value kind the call site happens to pass — no static fact prevents it.
+
+**Concrete counter-example (names the exact shape, verified against the
+actual `keyedWrite`/`Object.assign` branches read above, not executed —
+the branch conditions alone are sufficient to place it)**:
+```js
+function Foo() { this.count = 0 }        // schema S; census: slot 'count' → VAL.NUMBER
+function corrupt(obj, key, val) { obj[key] = val }   // key: plain param, not a literal,
+                                                       // not repOf(key)?.intCertain
+function main() {
+  const f = new Foo()
+  corrupt(f, 'count', 'oops')             // obj: plain param, sidOf(obj) unresolved;
+}                                          // kindOf(obj) unresolved (could be VAL.OBJECT)
+```
+Inside `corrupt`'s body, `collectSlotWriteHazards`'s walk sees `obj[key] =
+val`: `sidOf(obj)` is `null` (an untyped parameter has no bound
+`schemaId`), `kindOf(obj)` is `null` (same reason) — falls straight past
+`KEYED_EXEMPT_VALS`. `key` is a bare parameter name too: `isLiteralStr`
+is false (routes past `propWrite`, so `hz.props` is NEVER populated for
+`'count'` by this site — `propWrite`'s `hz.props` fallback only fires for
+LITERAL string keys), `valTypeOf(key) !== VAL.NUMBER`, `repOf(key)?.
+intCertain` is not `true`. **Sets `hz.all = true`, and nothing else** —
+`hz.sids` doesn't gain S's sid (never resolved), `hz.props` doesn't gain
+`'count'` (key wasn't a literal). If `slotVT`'s gate dropped the `hz.all`
+term (a `slotKindHazarded` narrowed to `externSlotSids`/`hz.sids`/
+`hz.props`/`kindSafeSids`, mirroring `chainHazarded`'s existing shape),
+`slotVT('f', 'count')` at any read site downstream of `corrupt`'s call
+would still answer `VAL.NUMBER` — wrong, since `corrupt(f, 'count',
+'oops')` really did overwrite that exact slot with a string at runtime.
+Any consumer trusting that KIND fact for an unboxed/direct representation
+decision (the entire point `CARRIER_BOX`'s carrier-flip work exists to
+eventually enable) would misread the string's pointer bits as a number —
+a genuine type-confusion miscompile, not a conservative-but-safe
+imprecision.
+
+**Full caller × setter enumeration** (`slotHazarded(id, prop,
+kindSafeOk)` callers, `module/schema.js`) — every cell is the SAME
+verdict, for the SAME reason (the counter-example's receiver could feed
+any of them, since they all key off the same `(sid, prop)` the corrupted
+write hit):
+
+| caller | kindSafeOk | fact read | setter 1 (`keyedWrite`) | setter 2 (`Object.assign`) |
+|---|---|---|---|---|
+| `slotVT` (303-320) | true | slot KIND (`slotTypes`) — §20's named target | **load-bearing** (shape above) | **load-bearing** (same shape, `Object.assign(f, {count:'oops'})`) |
+| `slotBigintProvenBySid` (510-515) | true | slot KIND (`slotTypes === VAL.BIGINT`), feeds unconditional unbox | **load-bearing** (same shape, worse consequence: unconditional read of raw bits) | **load-bearing** |
+| `slotTypedCtorBySid` (333-340) | false | VALUE (typed-array ctor for raw load/store) | **load-bearing** | **load-bearing** |
+| `slotTypedCtorByProp` (347-359) | false | VALUE (speculative bare-prop ctor) | **load-bearing** | **load-bearing** |
+| `slotIntCertainAt` (365-389) | false | VALUE precision (int-certainty) | **load-bearing** | **load-bearing** |
+| `slotI32CertainAt` (395-418) | false | VALUE precision (strict int32) | **load-bearing** | **load-bearing** |
+| `slotI32CertainBySid` (419-424) | false | VALUE precision (strict int32, by-sid) | **load-bearing** | **load-bearing** |
+
+No cell dodges: every consumer reads a fact keyed by `(sid, prop)`, and
+both setter sites poison precisely because they CANNOT name a `(sid,
+prop)` pair to scope a targeted hazard to — the receiver might be any
+registered schema, the prop might be any of its slots. `hz.sids`/
+`hz.props`/`externSlotSids`/`kindSafeSids` cover every write the census
+CAN attribute; `hz.all` is not redundant noise layered on top of that,
+it is the sole belt for writes the census fundamentally cannot attribute
+to a specific slot at all — which is exactly the case where the receiver
+could be *anything*, KIND included.
+
+**Where this differs from `chainSid`'s own `chainHazarded` (§20), which
+correctly DOES drop `hz.all`**: `chainHazarded` gates `slotObjSids`
+lookups, whose only inputs are BARE-STRING, STATICALLY-CHAIN-RESOLVED
+receivers (`ctx.schema.slotTypes`-shaped `.`-chains) — a closed set this
+session's counter-example cannot reach, because `corrupt`'s `obj[key]`
+is never a static `.`-chain in the first place (it's a computed-key
+write on an opaque parameter). `chainSid`'s own narrowing was justified
+by showing the specific writes `hz.all` guards against (`keyedWrite`,
+`Object.assign`) can never alias a STATICALLY-NAMED chain's intermediate
+hop; that argument does NOT extend to `slotVT`'s general `(varName,
+prop)` gate, whose `varName` is exactly the unresolvable, possibly-
+aliased case `chainHazarded`'s own justification excludes by
+construction. §20's hypothesis conflated the two.
+
+**Verdict: Outcome B.** `hz.all` is genuinely load-bearing for the
+slot-KIND question, not just the value-precision one. No `slotKindHazarded`
+narrowing introduced — narrowing `slotVT`'s gate as proposed would be an
+unsound miscompile, not a coverage-only imprecision. No code changed
+(`src/`, `module/` untouched this session — audit only, per the brief's
+own "answer BEFORE any code change" gate). Steps 1-4 (the ladder) NOT
+run — Outcome B's own stated exit is "bank it in §21 with the shape and
+stop."
+
+### Flip-readiness verdict
+
+**NO default flip** (nothing changed to flip). `hz.all`'s dominant
+`keyedWrite` class (§17-§20) remains banked, unfixed, and now confirmed
+CORRECT to remain a blanket for every `slotHazarded` consumer including
+`slotVT` — not a narrowing opportunity. The carrier flip's dependency
+chain on this specific lever is CLOSED, negatively: the path from §16's
+original `hz.all` finding through §17 (root cause), §18 (disjointness,
+walled), §19/§20 (chain resolution, landed and real, but its downstream
+consumer `slotVT` correctly stays gated) ends here — a future
+flip-readiness session should not re-attempt narrowing `slotHazarded`
+itself. §17's own still-open, independent levers remain the live path
+(promoting `.get()`'s value kind for THIS soundness-critical consumer
+specifically, or threading `curParamVts` int-certainty into `keyedWrite`'s
+numeric-key check) — both aimed at making the CENSUS more PRECISE (fewer
+genuine `hz.all` triggers), not at loosening the GATE that consumes it.
+That distinction — precision of the census vs. soundness of the gate —
+is this session's own contribution: the gate was never the bug.
+
+**Local: nothing committed to `src/`/`module/`** (no code change, audit
+only). This ledger entry + the matching `.work/todo.md` status update
+commit separately, plain messages, no push.

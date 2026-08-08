@@ -6717,3 +6717,37 @@ own KIND, only a `.prop=`/`=` whole-slot write can (already covered by the
 targeted `hz.sids`/`hz.props` sets) — needs its own dedicated soundness
 review across every existing consumer before touching it. Full chain,
 diagnostics, and revert rationale in §20.
+
+**`hz.all` load-bearing audit run, REFUTED (2026-08-08, §21's own final
+writeup): §20's own named lever is closed, negatively — no narrowing, no
+code change.** §20's hypothesis ("an unresolved element write can never
+change a schema slot's own KIND") is false: `hz.all`'s two setter sites
+(`keyedWrite`'s non-numeric fallback, `Object.assign`'s unresolved-target
+fallback, both `program-facts.js`) are gated on "receiver's kind is
+unproven — could be `VAL.OBJECT`" (deliberately excluded from
+`KEYED_EXEMPT_VALS`), not "receiver is provably some exempt container
+kind." A receiver that IS, at runtime, a schema instance, written through
+a call site the static census can't attribute (unresolved `sidOf`,
+non-literal/non-int-certain key) really does land in one of that
+schema's slots via `$__dyn_set`'s universal `$__schema_tbl` dispatch
+(`module/collection.js`'s `buildObjectSchemaSetArm`) — concrete
+counter-example named in §21 (`function corrupt(obj,key,val){obj[key]=val}`
+called on a `Foo` instance with `'count'` as a runtime string, not a
+literal — sets `hz.all` and nothing else, since `hz.sids`/`hz.props`
+only populate for RESOLVED sids / LITERAL keys). Audited every
+`slotHazarded` caller (`slotVT`, `slotBigintProvenBySid`,
+`slotTypedCtorBySid`, `slotTypedCtorByProp`, `slotIntCertainAt`,
+`slotI32CertainAt`, `slotI32CertainBySid`) × both setter sites — every
+cell load-bearing, uniformly (all key off the same corruptible
+`(sid, prop)`). `chainSid`'s own `chainHazarded` narrowing (§20) stays
+sound and untouched — it only gates STATIC `.`-chain receivers, a closed
+set the counter-example can't reach; that argument does not extend to
+`slotVT`'s general `(varName, prop)` gate. No default flip (nothing
+changed). The carrier flip's dependency chain through `hz.all`/`slotVT`
+ends here, negatively — a future session should not re-attempt narrowing
+`slotHazarded`; the live levers are still §17's own two (promoting
+`.get()`'s value kind for this consumer specifically, or threading
+`curParamVts` int-certainty into `keyedWrite`'s numeric-key check) — both
+aim at making the CENSUS more precise, not the GATE looser. Full
+enumeration and the counter-example's exact trace through
+`collectSlotWriteHazards` in §21.
