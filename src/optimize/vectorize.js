@@ -1095,34 +1095,6 @@ function _offsetLocalStride(body, name, ind, allowAos, idxTees) {
   return found && ok ? stride : null
 }
 
-/**
- * Every scalar local in `body` whose sole write shape is `ind << K` (or bare `ind`, K=0) —
- * a CSE'd lane-offset alias reused across base pointers, exactly the plain (non-AoS) case
- * `_offsetLocalStride` validates per-name. A pure function of (body, ind): tryMapReduceVectorize
- * and tryRampMap each re-derived this identically (gather every locally-set/teed name, test each
- * via `_offsetLocalStride`); hoisted as the LoopPlan companion to bodyFacts so it's computed once
- * per block and consumed directly as `bl.offsetTees`. tryVectorize/tryReduceVectorize/
- * tryMemCopyFill build their OWN offsetTees incrementally while scanning load/store addresses
- * (a CSE'd offset must be provisionally accepted mid-scan, before its full-body soundness can be
- * checked) and tryVectorize additionally needs AoS pixel-index awareness (idxTees) this plain
- * derivation doesn't carry — those stay their own private incremental scans.
- */
-function deriveOffsetTees(body, ind) {
-  const offsetTees = new Map()
-  const names = new Set()
-  const gather = (n) => {
-    if (!isArr(n)) return
-    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') names.add(n[1])
-    for (let i = 1; i < n.length; i++) gather(n[i])
-  }
-  for (const s of body) gather(s)
-  for (const name of names) {
-    const k = _offsetLocalStride(body, name, ind)
-    if (k != null) offsetTees.set(name, k)
-  }
-  return offsetTees
-}
-
 // ---- BodyModel (.work/research.md §BodyModel §2) — slices 1-3 landed -------------
 //
 // One shared per-block record generalizing three independent private discovery predicates
@@ -1148,43 +1120,42 @@ function deriveOffsetTees(body, ind) {
 // table that `siteAccess` will resolve concrete addresses FROM needs the stronger single-value
 // guarantee, so this narrowing is deliberate; `assertBodyModelSound` measures it as a no-op on
 // the full corpus rather than asserting it away.
-function classifyAddrLocal(body, name, ind) {
-  // 'offset': reused verbatim from _offsetLocalStride — this IS deriveOffsetTees's own per-name
-  // test, so addrTable's offset-kind entries are byte-identical to bl.offsetTees BY CONSTRUCTION.
-  const off = _offsetLocalStride(body, name, ind)
+// `writes` is EVERY local.set/local.tee node targeting `name` anywhere in the block (collected
+// once by buildAddrTable's phase 1, below) — table-local: no re-walk of `body` per name.
+function classifyAddrLocal(writes, name, ind) {
+  // 'offset': reused verbatim from _offsetLocalStride, given the pre-collected write list as
+  // its pseudo-body (the same "synthetic single-write body" shape tryVectorize/tryMemCopyFill's
+  // own private incremental scans already pass it) — so addrTable's offset-kind entries stay
+  // byte-identical to the old deriveOffsetTees output BY CONSTRUCTION, just without re-deriving
+  // `writes` from scratch per name.
+  const off = _offsetLocalStride(writes, name, ind)
   if (off != null) return { kind: 'offset', strideLog2: off, pixelStride: 1 }
 
   let fullAddr = null, fullOk = true, fullFound = false
   let idx = null, idxOk = true, idxFound = false
   let mirror = null, mirrorOk = true, mirrorFound = false
 
-  const walk = (n) => {
-    if (!isArr(n)) return
-    if ((n[0] === 'local.tee' || n[0] === 'local.set') && n[1] === name && n.length === 3) {
-      const v = n[2]
-      fullFound = true
-      const m = matchLaneAddr(['local.tee', name, v], ind)
-      if (m) {
-        if (!fullAddr) fullAddr = { strideLog2: m.strideLog2, base: m.base }
-        else if (fullAddr.strideLog2 !== m.strideLog2 || !exprEq(fullAddr.base, m.base)) fullOk = false
-      } else fullOk = false
+  for (const n of writes) {
+    const v = n[2]
+    fullFound = true
+    const m = matchLaneAddr(['local.tee', name, v], ind)
+    if (m) {
+      if (!fullAddr) fullAddr = { strideLog2: m.strideLog2, base: m.base }
+      else if (fullAddr.strideLog2 !== m.strideLog2 || !exprEq(fullAddr.base, m.base)) fullOk = false
+    } else fullOk = false
 
-      idxFound = true
-      const p = matchConstMulIV(v, ind)
-      if (p != null) { if (idx == null) idx = p; else if (idx !== p) idxOk = false }
-      else idxOk = false
+    idxFound = true
+    const p = matchConstMulIV(v, ind)
+    if (p != null) { if (idx == null) idx = p; else if (idx !== p) idxOk = false }
+    else idxOk = false
 
-      mirrorFound = true
-      const mm = matchMirrorAddr(v, ind)
-      if (mm) {
-        if (!mirror) mirror = { strideLog2: mm.strideLog2, base: mm.base, invName: mm.invName }
-        else if (mirror.strideLog2 !== mm.strideLog2 || mirror.invName !== mm.invName || !exprEq(mirror.base, mm.base)) mirrorOk = false
-      } else mirrorOk = false
-      return
-    }
-    for (let i = 1; i < n.length; i++) walk(n[i])
+    mirrorFound = true
+    const mm = matchMirrorAddr(v, ind)
+    if (mm) {
+      if (!mirror) mirror = { strideLog2: mm.strideLog2, base: mm.base, invName: mm.invName }
+      else if (mirror.strideLog2 !== mm.strideLog2 || mirror.invName !== mm.invName || !exprEq(mirror.base, mm.base)) mirrorOk = false
+    } else mirrorOk = false
   }
-  for (const s of body) walk(s)
 
   if (fullFound && fullOk && fullAddr) return { kind: 'fullAddr', strideLog2: fullAddr.strideLog2, pixelStride: 1, base: fullAddr.base }
   if (idxFound && idxOk && idx != null) return { kind: 'idxTee', strideLog2: null, pixelStride: idx }
@@ -1193,31 +1164,40 @@ function classifyAddrLocal(body, name, ind) {
 }
 
 // The affine access table (design §2): every scalar i32 local in `body` whose write shape is
-// provably-consistent, keyed by name. Phase 1 (gather every candidate local.set/local.tee name)
-// mirrors deriveOffsetTees's own gather; phase 2 (classifyAddrLocal, above) is the generalized
-// per-name consistency test. Both phases are pure functions of (body, ind) — order-independent,
+// provably-consistent, keyed by name. Phase 1 is ONE walk collecting every local.set/local.tee
+// write node, BUCKETED BY NAME — the evidence phase 2 (classifyAddrLocal, above) classifies
+// against; phase 2 is then table-local (reads its name's own write list, never re-walks
+// `body`), replacing the earlier "gather names in one walk, then re-walk body once per
+// candidate name inside classifyAddrLocal" shape (quadratic in loop-body size × candidate-local
+// count — audit-#14 item 6). Both phases are pure functions of (body, ind) — order-independent,
 // per design §3's "collect every tee-definition first, resolve second" argument.
 function buildAddrTable(body, ind) {
-  const names = new Set()
+  const writesByName = new Map()
   const gather = (n) => {
     if (!isArr(n)) return
-    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') names.add(n[1])
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && n.length === 3) {
+      let list = writesByName.get(n[1])
+      if (!list) writesByName.set(n[1], list = [])
+      list.push(n)
+    }
     for (let i = 1; i < n.length; i++) gather(n[i])
   }
   for (const s of body) gather(s)
   const addrTable = new Map()
-  for (const name of names) {
-    const e = classifyAddrLocal(body, name, ind)
+  for (const [name, writes] of writesByName) {
+    const e = classifyAddrLocal(writes, name, ind)
     if (e) addrTable.set(name, e)
   }
   return addrTable
 }
 
 // Projects addrTable's offset-kind subset to the plain `Map<name, strideLog2>` shape
-// matchLaneAddr's `offsetTees` parameter expects — byte-identical to deriveOffsetTees's own
-// output (both wrap the same `_offsetLocalStride` call), so a caller consuming this instead of
-// `bl.offsetTees` directly reads the same values through BodyModel's shared table. tryRampMap's
-// own private `addrLocals` (recordAddrTees — an in-place-map CSE'd full-address tee, genuinely
+// matchLaneAddr's `offsetTees` parameter expects — the SOLE construction of this table now
+// (audit-#14 item 6): the earlier standalone `deriveOffsetTees` derivation was proven
+// byte-identical to this projection on the full corpus (slice 1's shadow-assert, the licensing
+// proof for this unification) and has been retired; `bodyFacts` derives `bl.offsetTees` FROM
+// `bl.addrTable` via this function instead of computing it twice. tryRampMap's own private
+// `addrLocals` (recordAddrTees — an in-place-map CSE'd full-address tee, genuinely
 // recognizer-private per the design's terminal verdict) still combines with this at each
 // matchLaneAddr call; only the offsetTees half is BodyModel-sourced.
 function offsetTeesFromAddrTable(addrTable) {
@@ -1270,23 +1250,28 @@ function baseKeyOf(base) {
 // Partition of every base key seen in siteAccess into equivalence classes (design §4, v1 scope:
 // the static base-identity fact only — no dependence-edge graph, see §4/§7).
 // SOUNDNESS (audit-#14 item 5): two classes may be DISTINCT only under an existing proof
-// (distinctParams, separate fresh allocations, neverGrown anchors — none threaded until the
-// slice-4 HIR provenance link lands); absent proof, different keys are UNKNOWN aliasing and
-// must conservatively share one class — `let b = a` gives two names for one base, so
+// (distinctParams, separate fresh allocations, neverGrown anchors — none threaded yet: the
+// slice-4 HIR provenance link landed as a link + shadow-assert only, no consumer, so it does
+// NOT supply a distinctness proof either); absent proof, different keys are UNKNOWN aliasing
+// and must conservatively share one class — `let b = a` gives two names for one base, so
 // key-per-class would manufacture a distinctness proof out of a rename. Same-key positivity
 // ("provably the same base") doesn't need the partition: compare keys directly. Until a proof
-// channel is threaded, the sound partition is therefore the single universal class.
+// channel is threaded, the sound answer is the single universal class — a CONSTANT, not a
+// per-key fact, so `.get(key)` needs no fill loop over `baseKeys` (audit-#14 item 6): every key
+// (baseKeys kept as buildSiteAccess's byproduct — the future per-site partition input once a
+// real proof channel lands, see the doc above) maps to class 0. A distinctness proof landing
+// later is what turns this into an actual per-key partition.
+const ALIAS_CLASS_UNIVERSAL = { get: () => 0 }
 function buildAliasClass(baseKeys) {
-  const aliasClass = new Map()
-  for (const key of baseKeys) if (!aliasClass.has(key)) aliasClass.set(key, 0)
-  return aliasClass
+  return ALIAS_CLASS_UNIVERSAL
 }
 
-function buildBodyModel(body, ind, offsetTees) {
+function buildBodyModel(body, ind) {
   const addrTable = buildAddrTable(body, ind)
+  const offsetTees = offsetTeesFromAddrTable(addrTable)
   const { siteAccess, baseKeys } = buildSiteAccess(body, ind, offsetTees)
   const aliasClass = buildAliasClass(baseKeys)
-  return { addrTable, siteAccess, aliasClass }
+  return { addrTable, offsetTees, siteAccess, aliasClass }
 }
 
 // JZ_DEBUG_INVARIANTS-gated proof that BodyModel's generalized tables agree with the private
@@ -1295,21 +1280,14 @@ function buildBodyModel(body, ind, offsetTees) {
 // counts). Throws on the first divergence found — a widening or narrowing in the generalization
 // is a correctness question to answer BEFORE any recognizer can depend on the shared table, not
 // a warning to log past. No-op unless JZ_DEBUG_INVARIANTS=1 (DBG_INVARIANTS), zero production cost.
-function assertBodyModelSound(body, ind, offsetTees, bm) {
-  const { addrTable, siteAccess } = bm
-
-  // (a) addrTable's offset-kind subset ≡ deriveOffsetTees's own output — true by construction
-  // (classifyAddrLocal's offset branch calls the SAME _offsetLocalStride deriveOffsetTees does),
-  // asserted anyway as the wiring-bug safety net this slice's gate exists for.
-  for (const [name, k] of offsetTees) {
-    const e = addrTable.get(name)
-    if (!e || e.kind !== 'offset' || e.strideLog2 !== k)
-      throw new Error(`BodyModel addrTable diverges from deriveOffsetTees for ${name}: offsetTees=${k}, addrTable=${JSON.stringify(e)}`)
-  }
-  for (const [name, e] of addrTable) {
-    if (e.kind === 'offset' && offsetTees.get(name) !== e.strideLog2)
-      throw new Error(`BodyModel addrTable has an offset entry for ${name} absent from deriveOffsetTees`)
-  }
+function assertBodyModelSound(body, ind, bm) {
+  const { addrTable, offsetTees, siteAccess } = bm
+  // (a) addrTable's offset-kind subset ≡ deriveOffsetTees's own output was asserted here through
+  // slice 3 — RETIRED (audit-#14 item 6): `offsetTees` is now DERIVED from `addrTable` (see
+  // `offsetTeesFromAddrTable`, `buildBodyModel`), so the two can no longer diverge — the check
+  // would compare addrTable to itself. The slice-1 shadow-assert already proved the two
+  // constructions identical on the full corpus BEFORE this unification; that proof is what
+  // licensed retiring the standalone derivation, not a claim that no check is needed at all.
 
   // (b) fullAddr/idxTee classification vs the private predicates they generalize — addrTable is
   // allowed to be a STRICTER subset (see classifyAddrLocal's doc) but never a WIDER one: every
@@ -1513,24 +1491,24 @@ function matchLoopBrEnd(loopNode) {
 // `referenced` (all names touched, get or set/tee — the classification domain),
 // `hasGlobalSet` (a global write breaks the "global.get is invariant" splat, checked
 // verbatim by tryVectorize/tryStencil/tryRampMap/tryToneMap), `hasImpureCall` (a non-pure
-// call breaks per-lane epilogue re-evaluation — see hasImpureCall's own doc), and
-// `offsetTees` (see deriveOffsetTees — the plain `ind << K` CSE-alias table). Computed once
-// here per LoopPlan; consumers read bl.writes/bl.referenced/bl.hasGlobalSet/bl.offsetTees
-// instead of re-walking.
+// call breaks per-lane epilogue re-evaluation — see hasImpureCall's own doc). Computed once
+// here per LoopPlan; consumers read bl.writes/bl.referenced/bl.hasGlobalSet instead of
+// re-walking.
 //
 // Also computes BodyModel (.work/research.md §BodyModel; slices 1-3 landed — consumed by
-// tryMapReduceVectorize/tryRampMap): `addrTable`/`siteAccess`/`aliasClass`, spread in below exactly
-// like `offsetTees` was in slice 6. JZ_DEBUG_INVARIANTS shadow-asserts the generalization
-// against the private predicates it will eventually let recognizers retire.
+// tryMapReduceVectorize/tryRampMap): `addrTable`/`offsetTees`/`siteAccess`/`aliasClass`, spread
+// in below (audit-#14 item 6: `offsetTees` is ONE construction now — `buildBodyModel` derives it
+// FROM `addrTable`, so it rides in with `...bm` instead of its own separate `deriveOffsetTees`
+// call). JZ_DEBUG_INVARIANTS shadow-asserts the generalization against the private predicates it
+// will eventually let recognizers retire.
 function bodyFacts(body, ind) {
   const writes = new Set()
   for (const s of body) collectWrites(s, writes)
   const referenced = new Set()
   for (const s of body) collectReferencedNames(s, referenced)
-  const offsetTees = deriveOffsetTees(body, ind)
-  const bm = buildBodyModel(body, ind, offsetTees)
-  if (DBG_INVARIANTS) assertBodyModelSound(body, ind, offsetTees, bm)
-  return { writes, referenced, hasGlobalSet: body.some(hasGlobalSet), hasImpureCall: body.some(hasImpureCall), offsetTees, ...bm }
+  const bm = buildBodyModel(body, ind)
+  if (DBG_INVARIANTS) assertBodyModelSound(body, ind, bm)
+  return { writes, referenced, hasGlobalSet: body.some(hasGlobalSet), hasImpureCall: body.some(hasImpureCall), ...bm }
 }
 
 function matchBlockLoop(blockNode, opts = {}) {
@@ -4288,11 +4266,10 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   // increment shares the IV's name" check below is tryRampMap's own residual.
   const bl = matchBlockLoop(blockNode, { multiInc: true })
   if (!bl) return null
-  const { incVar: ivName, bound, boundLocal, body, increments, hasGlobalSet: blHasGlobalSet, writes: blWrites, referenced: blReferenced, addrTable } = bl
-  // BodyModel fact (bl.addrTable's offset-kind subset, see offsetTeesFromAddrTable) — byte-
-  // identical to bl.offsetTees/deriveOffsetTees's output; combines below with this recognizer's
-  // own private recordAddrTees map (genuinely private per the design's terminal verdict).
-  const offsetTees = offsetTeesFromAddrTable(addrTable)
+  const { incVar: ivName, bound, boundLocal, body, increments, hasGlobalSet: blHasGlobalSet, writes: blWrites, referenced: blReferenced, offsetTees } = bl
+  // BodyModel fact (bl.offsetTees — see offsetTeesFromAddrTable, bl.addrTable's offset-kind
+  // subset, computed once at the dispatch); combines below with this recognizer's own private
+  // recordAddrTees map (genuinely private per the design's terminal verdict).
   if (!boundLocal && !isI32Const(bound)) return null
   if (!body.length) return null
   if (blHasGlobalSet) return null
@@ -4323,7 +4300,7 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   // shared offset the IV stage threads across base pointers (src[i], dst[i],
   // out[i] all reuse one `(local.tee $p (local.get i))`). Resolve them so the
   // load/store address matchers accept the `(local.get $p)` reuses. BodyModel fact
-  // (offsetTees, above — bl.addrTable's offset-kind subset via offsetTeesFromAddrTable).
+  // (bl.offsetTees, destructured above).
 
   // CSE'd FULL lane address: an in-place map `a[i] = f(a[i])` shares one `(local.tee $A
   // (i32.add base i))` between the load and the store, reused as `(local.get $A)`. Without
