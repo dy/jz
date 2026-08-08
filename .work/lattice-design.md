@@ -998,3 +998,14 @@ for the coordinator: adopt the 6a/6b split in place of the single-commit
 default — it satisfies the "every consumer its own byte-identity unit"
 discipline for 6a while honoring the all-or-nothing requirement only where
 it's actually load-bearing (6b).
+
+## COORDINATOR REVIEW COMPLETE (2026-08-08) — implementation authorized
+OQ3 ruling: the shared numeric/rep observation pass (FINDING-10) is adopt-
+if-free during Slice 4a — do not force; a follow-on slice may make the
+P-carrier tripwire structural. OQ2's 6a/6b split is ADOPTED as binding,
+including the chainHazarded-stays-narrow gotcha as an explicit 6b gate.
+OQ4's directionality guard: re-run the register-site read-path check as
+part of Slice 6's gate. With the OQ1 Option-A amendment, this design is
+mechanism-reviewed and BINDING. Slices proceed in order 0→7, each
+independently green, byte-identity-gated, per-step local commits; any wall
+banks per the standing discipline.
