@@ -888,6 +888,76 @@ byte-for-byte-close on baseline (1.095/1.123/1.121× vs 1.098/1.126/1.126×) —
 machine noise, not a regression. Fresh `npm run build` ×2: dist/jz.js,
 dist/interop.js, dist/jz.wasm all SHA-256 identical.
 
+**Slice 3 LANDED** (2026-08-08): the mis-stratification Slice 1-2 banked (not
+forced) — `typedView` checked monotone instead of frozen-equal — is resolved
+by moving it, not by tightening the check. `typedView` reclassified from
+ctx.features' ANALYSIS stratum to ctx.linkDemand's DEMAND stratum (where its
+write pattern always belonged): FEATURE_STRATA.ANALYSIS is now `[]` (kept as
+a named stratum for the next genuinely analyze-settled fact, not deleted);
+ctx.linkDemand gained a seeded `typedView: false` key beside its six existing
+DEMAND flags. Writers migrated: analyze.js:151's static `.view`-ctor tracker
+and module/typedarray.js's four view-constructing EMIT handlers (`new.*`'s
+subview/reinterpret/unknown-arg branches, `.typed:subarray`) now write
+`ctx.linkDemand.typedView = true` directly (module/typedarray.js's own
+factory closure already has `ctx` in scope, matching every sibling
+`ctx.linkDemand.*` write there) instead of routing through `setFeature()`.
+Reader migrated: optimize/vectorize.js's SLP store-pairing bail (~line 7114)
+now reads `ctx.linkDemand.typedView`. `setFeature` dropped from both writer
+files' imports (its only remaining callers — autoload.js's `timers` and
+prepare/index.js's `bigint`/`error` — are genuine PROGRAM-stratum facts,
+unaffected).
+PHASE-ORDERING VERIFIED (the task's explicit ask): compile/index.js emits
+every function AND closure body (emitFuncs at line ~2405, emitClosures,
+buildStartFn — the only writers left after this migration) before
+`assertCtxInvariants('pre-assemble')` (line ~2531), which itself precedes
+both `pullStdlib`/resolveIncludes (line 2533) and `optimizeModule` (line
+2539) — the phase vectorize.js's SLP pass actually runs in. So the read is
+not merely within linkDemand's documented "resolveIncludes()+" contract, it
+is LATER than resolveIncludes() itself: every writer has settled by the time
+the reader fires, by construction, with no ordering hazard. Documented at
+the point of use (ctx.js, the `ctx.linkDemand` block comment) rather than
+left implicit.
+Freeze itself is now genuinely uniform: the monotone carve-out in both
+`setFeature()` (the post-analyze write tripwire) and `assertCtxInvariants`'s
+pre-assemble snapshot-compare is gone — every remaining ctx.features key
+(SESSION+PROGRAM; ANALYSIS is empty) is exact-equality frozen from
+post-analyze on, no exceptions. Verified live: test/buffer.js's
+reinterpret/COPIES cases and test/slp.js's view-bail cases — the ones that
+forced the original carve-out — pass unchanged under
+`JZ_DEBUG_INVARIANTS=1` (they no longer touch ctx.features at all).
+GATES (2026-08-08): a from-scratch byte-identity sweep (v2, corrected — see
+the process note below) across every bench/* case excluding the two
+GRAPH_CASES (jessie/jz, which need resolveModuleGraph's bespoke wiring, out
+of scope) — 63 cases × O0/O2/O3 = 189 real compiles, sha256-hashed, HEAD
+0e6870f9 vs working tree — 0 diffs. Plus 5 extra typed-array/view/SLP/
+BigInt-identity/String-identity probes × 3 opt levels, also 0 diffs. Full
+battery: 3400/3402 pass (2 PRE-EXISTING failures, test/optimizer.js's
+interval-walk and typed-RMW guard-count pins — reproduced identically on a
+clean HEAD worktree, unrelated to this slice). kernel-parity 33/33
+(11×O0/O2/O3). opt0/opt3/wasi legs green (opt0/opt3: same 2 pre-existing
+misses; wasi: those 2 PLUS a 3rd, test/pointers.js's carrier ternaryBoxedNames
+pin, wasi-host-specific — all 3 reproduced identically on clean HEAD under
+`JZ_TEST_HOST=wasi`. `npm run test:matrix`'s `&&` chain does NOT actually run
+past `npm test` since it exits 1 on the pre-existing failures — legs run
+individually instead). test:self: selfhost.js 21/21; selfhost-perf.js's
+fresh-instance pin passes, its warm-instance pin fails — but reproduces
+IDENTICALLY on an unmodified baseline measured back-to-back in the same
+session (baseline 1.103×/1.120×/1.130× vs working tree 1.109×/1.129×/1.128×,
+both over the 1.03× cap; the SAME baseline measured earlier in the session
+passed at 1.013×) — machine contention from concurrent work on this shared
+dev box (another session committed 37e3f6a4 mid-task), not a regression;
+isolated further by building+testing Slice 3's changes alone in a fresh
+worktree (1.11-1.13×, same range) and confirming Task 2's changes alone
+pass cleanly in a quiet moment (1.018×) — the signal tracks machine load,
+not either slice's diff. `npm run build` ×2: dist/jz.js, dist/interop.js,
+dist/jz.wasm SHA-256 identical.
+PROCESS NOTE: the first byte-identity sweep attempt silently hashed IDENTICAL
+ERROR STRINGS (missing benchlib module wiring) for all 189 cases instead of
+real compiled output — a false-positive "0 diffs" that would have shipped
+unverified. Caught before relying on it (the compile() return-shape check:
+bare bytes vs `{wasm,...}` only when `opts.inspect` is set) and redone
+properly against scripts/bench-size.mjs's actual jzCompileSize wiring.
+
 ## [ ] Region arena (was region-arena-design.md + slice1-build + slice1-liveness + kernel-memory-curve; DORMANT)
 
 Evidence (kernel-memory-curve, 2026-08-06): the bump arena's

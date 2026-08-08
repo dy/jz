@@ -6,6 +6,41 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## typedView reclassification (FeaturePlan freeze Slice 3) — landed (2026-08-08)
+Per .work/research.md §FeaturePlan freeze. Local only.
+
+Closed the Slice 1-2 finding banked as a monotone carve-out — typedView is
+DEMAND-shaped (module/typedarray.js's view-constructing EMIT handlers flip
+it past post-analyze), not ANALYSIS-shaped. Moved out of ctx.features into
+ctx.linkDemand; writers (analyze.js, module/typedarray.js ×4) and the one
+reader (vectorize.js's SLP bail) migrated to direct `ctx.linkDemand.typedView`
+reads/writes, no more `setFeature()` indirection for it. Phase ordering
+verified and documented at ctx.linkDemand's init: every writer
+(emitFuncs/emitClosures/buildStartFn) settles before pre-assemble, which
+precedes both resolveIncludes and the optimizeModule pass vectorize.js's SLP
+runs in — the read is later than resolveIncludes(), not just within it. The
+freeze's monotone exception is gone: `setFeature()`'s post-analyze tripwire
+and assertCtxInvariants' pre-assemble check are now uniform exact-equality,
+no carve-outs.
+GATES: a from-scratch 189-case (63 bench cases × O0/O2/O3, excl. jessie/jz
+graph-cases) + 5-extra-probe sha256 byte-identity sweep — 0 diffs. Full
+battery 3400/3402 pass (2 pre-existing unrelated test/optimizer.js failures
+reproduced identically on clean HEAD). kernel-parity 33/33 (11×O0/O2/O3).
+opt0/opt3/wasi legs green (wasi has a 3rd pre-existing failure,
+test/pointers.js's carrier ternaryBoxedNames pin, reproduced on clean HEAD
+under JZ_TEST_HOST=wasi — `npm run test:matrix`'s `&&` chain does not
+actually run past `npm test` since it exits 1 on the pre-existing failures,
+so legs were run individually). test:self (selfhost.js 21/21; selfhost-
+perf.js's warm-instance pin failed but reproduced IDENTICALLY on an
+unmodified baseline measured back-to-back — this session's machine was under
+contention from a concurrent session (which landed 37e3f6a4 mid-task) —
+confirmed machine-noise, not a regression, by isolating this slice's diff
+alone in its own worktree+build). `npm run build` ×2 SHA-256-identical. One
+process note: the first byte-identity sweep attempt silently hashed
+identical ERROR strings (missing benchlib wiring) for all 189 cases — a
+false "0 diffs" — caught and redone against the real compiled bytes before
+trusting it.
+
 ## BodyModel dedupe (audit-#14 item 6) + slice 4 HIR provenance link — landed (2026-08-08)
 Per .work/research.md §BodyModel. Two commits, local only (4c49701c dedupe,
 6ff51122 slice 4).

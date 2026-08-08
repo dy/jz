@@ -685,12 +685,14 @@ export function reset(proto, globals, bridge) {
   //   PROGRAM  — prepare()'s universal per-node prescan, order-independent
   //     (settled by post-prepare regardless of where the triggering node sits):
   //     bigint, error, errorClasses, timers
-  //   ANALYSIS — settled by the per-function analyze pass (post-analyze) in
-  //     principle; typedView in practice keeps flipping false→true during
-  //     emission too (module/typedarray.js's view-constructing emit handlers) —
-  //     see assertCtxInvariants' comment for the monotone-not-frozen carve-out
-  //     this forced.
-  //     typedView
+  //   ANALYSIS — settled by the per-function analyze pass (post-analyze), exact-
+  //     equality frozen like every other stratum, no exceptions. Currently no
+  //     members: `typedView` — the one candidate — turned out to be DEMAND-
+  //     shaped in practice (module/typedarray.js's view-constructing EMIT
+  //     handlers keep flipping it false→true past post-analyze, not just
+  //     analyze.js's static tracker) and was reclassified onto ctx.linkDemand
+  //     (.work/research.md §FeaturePlan freeze). Kept as a named stratum for
+  //     the next genuinely analyze-settled fact, not deleted.
   ctx.abi = makeAbi()
 
   ctx.features = {
@@ -722,15 +724,7 @@ export function reset(proto, globals, bridge) {
                       // per-class-sid brand redesign).
     timers: false,          // Set by prepare.js when timer module is included
 
-    // ANALYSIS
-    typedView: false, // A typed-array VIEW (subarray / buffer-reinterpret / unknown-arg ctor
-                      // that may zero-copy) exists somewhere in the program — set by
-                      // analyze.js's typed tracker (`c.endsWith('.view')`) and by the
-                      // `new TypedArray(buf, off, len)` / buffer-reinterpret emit sites
-                      // (module/typedarray.js). Read by the SLP vectorizer (optimize/
-                      // vectorize.js) to bail on cross-base pairing when any view could
-                      // alias. MUST be seeded (same absent-key hazard as bigint) — was
-                      // written/read live but unseeded before this stratum.
+    // ANALYSIS — currently no members, see the stratum doc above ctx.abi.
   }
 
   // linkDemand: the DEMAND stratum of the frozen FeaturePlan (.work/research.md
@@ -753,6 +747,21 @@ export function reset(proto, globals, bridge) {
   // by inc()/stdlibDeps and mostly save bytes by eliding dead branches in the
   // stdlib templates that read them (module/collection.js's EXTERNAL-arm
   // elision is the canonical example).
+  //
+  // `typedView` (reclassified from ctx.features' ANALYSIS stratum, .work/
+  // research.md §FeaturePlan freeze): written by analyze.js's static `.view`-
+  // ctor tracker (mid-analyze, ANALYSIS-shaped) AND by module/typedarray.js's
+  // view-constructing EMIT handlers (`new.*`'s buffer-reinterpret/unknown-arg
+  // branches, `.typed:subarray` — genuinely DEMAND-shaped, only known once
+  // emission walks those call sites, past post-analyze). Its one reader,
+  // optimize/vectorize.js's SLP store-pairing bail, runs inside optimizeModule
+  // — PHASE ORDERING VERIFIED: compile/index.js emits every function AND
+  // closure body (emitFuncs/emitClosures/buildStartFn, the only writers) all
+  // complete before assertCtxInvariants('pre-assemble'), which itself precedes
+  // both pullStdlib(resolveIncludes) and optimizeModule. So the SLP read is
+  // not just within resolveIncludes()+, it is later than resolveIncludes()
+  // itself — safe by the same "nothing has consulted it yet" construction as
+  // every other DEMAND key.
   ctx.linkDemand = {
     external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or __ext_call site.
     typedarray: false,// Float64Array/Int32Array/etc. Set on typed-array construction; gates PTR.TYPED dispatch.
@@ -761,6 +770,13 @@ export function reset(proto, globals, bridge) {
     closure: false,   // First-class functions. Set when ctx.closure.table is populated.
     f16: false,       // Float16Array construction anywhere.
     clamped: false,   // Uint8ClampedArray construction anywhere.
+    typedView: false, // A typed-array VIEW (subarray / buffer-reinterpret / unknown-arg ctor
+                      // that may zero-copy) exists somewhere in the program — set by
+                      // analyze.js's typed tracker (`c.endsWith('.view')`) and by
+                      // module/typedarray.js's view-constructing emit handlers. Read by
+                      // the SLP vectorizer (optimize/vectorize.js) to bail on cross-base
+                      // pairing when any view could alias. See the phase-ordering note
+                      // above this object.
   }
 }
 
@@ -786,8 +802,9 @@ export function reset(proto, globals, bridge) {
  *                        main __start body). Unordered w.r.t. PHASE_ORDER —
  *                        fires once per function frame, not once per compile.
  *   - `post-analyze`   : extends the post-prepare snapshot with ctx.features'
- *                        ANALYSIS stratum (typedView) — fired once per compile,
- *                        right after the per-function analyze passes settle and
+ *                        ANALYSIS stratum (currently empty — see the stratum
+ *                        doc above ctx.abi) — fired once per compile, right
+ *                        after the per-function analyze passes settle and
  *                        before any function emits. Unordered w.r.t. PHASE_ORDER
  *                        (like pre-emit): asserted host- and self-host-uniformly
  *                        from inside compile/index.js's compile(), independent
@@ -875,7 +892,9 @@ const PHASE_ORDER = ['post-reset', 'post-prepare', 'post-compile']
 const FEATURE_STRATA = {
   SESSION: ['sso', 'blockingTimers'],
   PROGRAM: ['bigint', 'error', 'errorClasses', 'timers'],
-  ANALYSIS: ['typedView'],
+  ANALYSIS: [], // no members — typedView reclassified to ctx.linkDemand (DEMAND-shaped
+                // in practice); kept as a named stratum for the next genuinely
+                // analyze-settled fact.
 }
 let _featureSnapshot = null
 let _postAnalyze = false // true once 'post-analyze' has fired for the current compile
@@ -890,16 +909,12 @@ const snapshotFeatures = (keys, into) => { for (const k of keys) into[k] = snapF
  *  here instead of assigning directly, so a write that lands after 'post-analyze'
  *  throws AT THE CALL SITE under JZ_DEBUG_INVARIANTS — naming the offending write
  *  instead of leaving the drift to surface generically at 'pre-assemble' (Slice 1's
- *  snapshot compare). One exemption, matching that same Slice 1 finding: `typedView`
- *  legitimately keeps flipping false→true during emission (module/typedarray.js's
- *  view-constructing constructor handlers — analyze.js's static tracker only catches
- *  the NAMED-BINDING 3-arg view form, not buffer-reinterpret/unknown-arg/unbound
- *  construction, so it cannot fully settle before emission walks those sites). No
- *  other key should ever write true and then... write again after post-analyze —
- *  DEMAND was extracted to ctx.linkDemand specifically so nothing else touches
- *  ctx.features this late. */
+ *  snapshot compare). Uniform, no exceptions: `typedView` — the one key that used
+ *  to need a carve-out here, because it kept flipping false→true during emission —
+ *  moved to ctx.linkDemand (DEMAND-shaped in practice), so every remaining
+ *  ctx.features key really is frozen the instant post-analyze fires. */
 export function setFeature(key, value) {
-  if (DBG_INVARIANTS && _postAnalyze && !(key === 'typedView' && value === true))
+  if (DBG_INVARIANTS && _postAnalyze)
     throw new Error(`[ctx invariant] ctx.features.${key} written after post-analyze — frozen FeaturePlan facts must not change during emission (DEMAND writes belong on ctx.linkDemand)`)
   ctx.features[key] = value
 }
@@ -929,31 +944,22 @@ export function assertCtxInvariants(phase) {
     must(ctx.func.locals.size != null, 'locals open for writes')
   }
 
-  // FeaturePlan freeze snapshot/compare (see FEATURE_STRATA above). SESSION+PROGRAM
-  // are genuinely settled by post-prepare (their only writers are prepare/index.js's
-  // per-node scan and autoload.js, both mid-prepare) — checked for exact equality.
-  // ANALYSIS (typedView) is NOT actually settled by post-analyze: besides analyze.js's
-  // static scan, module/typedarray.js's `new TypedArray(buf, off, len)` / buffer-
-  // reinterpret / unknown-arg-ctor EMIT handlers also set it, and live evidence
-  // (test/buffer.js's reinterpret/COPIES cases) shows it keeps flipping false→true
-  // during emitFuncs, past the post-analyze checkpoint — a DEMAND-shaped write
-  // (monotone, emission-time), not an ANALYSIS one. Gap in the freeze design's
-  // stratification (.work/research.md §FeaturePlan freeze), banked here rather than
-  // forced: typedView is checked monotone (never true→false) instead of frozen-equal.
+  // FeaturePlan freeze snapshot/compare (see FEATURE_STRATA above). Uniform exact
+  // equality across every stratum, no exceptions — SESSION+PROGRAM are genuinely
+  // settled by post-prepare (their only writers are prepare/index.js's per-node
+  // scan and autoload.js, both mid-prepare); ANALYSIS is currently empty (its one
+  // former member, typedView, turned out to be DEMAND-shaped — module/typedarray.js's
+  // view-constructing EMIT handlers kept flipping it past post-analyze — and was
+  // reclassified onto ctx.linkDemand, .work/research.md §FeaturePlan freeze).
   if (phase === 'post-reset') { _featureSnapshot = null; _postAnalyze = false }
   if (phase === 'post-prepare') _featureSnapshot = snapshotFeatures([...FEATURE_STRATA.SESSION, ...FEATURE_STRATA.PROGRAM], {})
   if (phase === 'post-analyze') { snapshotFeatures(FEATURE_STRATA.ANALYSIS, _featureSnapshot ??= {}); _postAnalyze = true }
   if (phase === 'pre-assemble') {
-    for (const k of [...FEATURE_STRATA.SESSION, ...FEATURE_STRATA.PROGRAM]) {
+    for (const k of [...FEATURE_STRATA.SESSION, ...FEATURE_STRATA.PROGRAM, ...FEATURE_STRATA.ANALYSIS]) {
       must(k in ctx.features, `ctx.features.${k} missing — every FeaturePlan key must be seeded, not an absent key`)
       if (_featureSnapshot && k in _featureSnapshot)
         must(snapFeatureEq(_featureSnapshot[k], snapFeatureVal(ctx.features[k])),
           `ctx.features.${k} drifted after its settling phase — frozen FeaturePlan facts must not change during emission`)
-    }
-    for (const k of FEATURE_STRATA.ANALYSIS) {
-      must(k in ctx.features, `ctx.features.${k} missing — every FeaturePlan key must be seeded, not an absent key`)
-      if (_featureSnapshot && _featureSnapshot[k] === true)
-        must(ctx.features[k] === true, `ctx.features.${k} flipped true→false after post-analyze — ANALYSIS facts must be monotone`)
     }
   }
 }

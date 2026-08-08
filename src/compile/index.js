@@ -2399,8 +2399,11 @@ export default function compile(ast, profiler) {
   }
   // FeaturePlan freeze (.work/research.md §FeaturePlan freeze): every per-function
   // analyze pass has now run (analyzeFuncs + structInline/unionInline/unionClones
-  // above) — ctx.features' ANALYSIS stratum (typedView) is settled. Extends the
-  // post-prepare SESSION+PROGRAM snapshot; compared at 'pre-assemble' below.
+  // above) — this is the freeze point after which NO ctx.features key may change
+  // (uniform, no exceptions; typedView — the one key that used to keep flipping
+  // past this point — was reclassified onto ctx.linkDemand). Extends the
+  // post-prepare SESSION+PROGRAM snapshot with ANALYSIS (currently empty);
+  // compared at 'pre-assemble' below.
   assertCtxInvariants('post-analyze')
   const funcs = timePhase(profiler, 'emitFuncs', () => ctx.func.list.map(func => emitFunc(func, funcFacts.get(func), programFacts)))
   funcs.push(...synthesizeBoundaryWrappers())

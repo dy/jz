@@ -365,7 +365,7 @@ const hoistReductionInvariantsIn = (fn, fnLocals, freshIdRef, newLocalDecls) => 
 // BOTH lane values BEFORE either store, turning [read0, write0, read1, write1] into
 // [read0, read1, write0, write1].
 //   1. CROSS-base aliasing — guarded by one module fact: no typed-array VIEW exists
-//      (`ctx.features.typedView` false, checked at the dispatch). A view (subarray /
+//      (`ctx.linkDemand.typedView` false, checked at the dispatch). A view (subarray /
 //      buffer-backed ctor) is the only way two DISTINCT typed bases can overlap;
 //      without one, distinct bases own disjoint allocations and can't alias.
 //   2. WITHIN-base read-after-write — the high value (read1) must not load the low
@@ -7111,7 +7111,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma)
   // SLP within-iteration store pairs. Sound only with no aliasing typed-array view
   // in the module (else a shifted view could reorder-hazard the packed read/write).
-  if (slp && !ctx.features.typedView) slpStorePairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, slpGetCounts(fn))
+  if (slp && !ctx.linkDemand.typedView) slpStorePairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, slpGetCounts(fn))
   if (newLocalDeclsAll.length) simdFired = true
 
   // Walk body recursively. Process inner-most matches first (post-order)
