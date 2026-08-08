@@ -818,3 +818,183 @@ be adopted additionally as belt-and-braces on that one projection.
 Rationale: the three-revert history (f8f61591, 7288b69b, 098014a5) shows
 the killed axis is opt-out consumer exposure, not fact precision — the
 design must encode opt-in structurally, not procedurally.
+
+## LATTICE OQ2+OQ4 VERDICTS (2026-08-08)
+
+### OQ4 — §6 risk item 5, `pointsTo` height/termination
+
+**Verdict: TODAY's invariant holds — confirmed directly, not inferred.**
+No `ctx.schema.register` call site is reachable from a `pointsTo`-shaped
+fact-READ path. Every site's argument (the name-list it mints a sid for)
+is derived either from literal AST syntax or from a stable, already-settled
+schema-identity lookup (`ctx.schema.vars`, `repOf(obj)?.schemaId`,
+`ctx.schema.list[sid]`) — never from `hz.all`/`hz.sids`/`slotWriteHazards`
+membership, which is the field `pointsTo`/`'ALL'` will replace. Data flow
+is one-directional: AST/static-shape → `register` → sid → (feeds) hz/
+pointsTo. Nothing runs the other way. (Also: `pointsTo` itself does not
+exist in the codebase yet — `grep -rn pointsTo src/ module/` is empty — so
+this checks the design's own precondition against today's closest analog,
+the `hz.*` write-hazard registry §1.3 says `pointsTo` subsumes.)
+
+Full enumeration: 36 real call sites (37 grep hits, 1 is a comment at
+`module/core.js:1804`) across 14 files —
+`module/{schema,object,array,core,json,date}.js` (11),
+`src/prepare/index.js` (7), `src/compile/program-facts.js` (7),
+`src/compile/analyze.js` (5), `src/{static.js,compile/{infer,emit-assign,
+inplace-store,plan/scope}.js}` (5), full list confirmed by
+`find src module -name "*.js" | xargs grep -n "schema\.register("`.
+Classified into three groups, none of which reads `pointsTo`/hz as input:
+
+1. **Census/discovery walks that PRODUCE facts** (`walkFactsRoot`
+   `program-facts.js:240`, `observeNestedDictMapWrites`'s `{}`-literal arm
+   `program-facts.js:909`, `analyzeValTypes` `analyze.js:1720/1796/1801/
+   1911/1923`, `src/prepare/index.js`'s 7 sites — prepare runs before any
+   fact fixpoint exists in the pipeline at all). Argument is always
+   `staticObjectProps(...)`-parsed literal syntax or a `shapeOf`-derived
+   JSON-literal name list. No hz/pointsTo read anywhere in the call chain.
+
+2. **`collectSlotWriteHazards` itself** (`program-facts.js:1331,1346,1360`
+   — the two sites §1.3 names directly, plus a third for JSON.parse
+   keysets). This is the function that PRODUCES `hz.sids`/`hz.all`, so it's
+   the one place a register→hz→register cycle would have to originate. Read
+   directly: the merge name-lists come from `sidOf(obj)` (resolves via
+   `curSids`/`repOf(obj)?.schemaId`/`ctx.schema.vars` — a schema-identity
+   fact settled by EARLIER passes, not by this scan's own hz output) and
+   `ctx.schema.list[sid]` (an existing schema's already-registered name
+   list). Neither reads `hz.all`/`hz.sids`/`hz.props`/`hz.numeric`. The
+   three `register` calls only ever WRITE into `hz.sids`/`hz.kindSafeSids`
+   afterward — one-directional.
+
+3. **`register` calls inside the separate intCertain fixpoint**
+   (`program-facts.js:1672`, inside the `while`-style round loop at
+   `sweep`/`visit`, lines 1600-1722). Argument is `staticObjectProps(...)`
+   again — identical every round, so `register`'s own dedupe-by-shape
+   (`module/object.js:576`'s documented contract) makes repeated calls a
+   no-op re-fetch of the same sid, not alphabet growth. This fixpoint's
+   round count is driven by `observeSlot`'s int-level comparisons, never by
+   `register`.
+
+4. **Emission-time and post-census one-shot sites**
+   (`module/{object,array,core,json,date,schema}.js`, `emit-assign.js:382`,
+   `inplace-store.js:142`, `plan/scope.js:1131,1140`'s
+   `materializeAutoBoxSchemas`). These run during codegen (after the fact
+   fixpoint is fully resolved) or as a single deterministic pass over a
+   completed `propMap` snapshot — not inside any iterative fact re-read.
+
+**Guard to keep this true going forward:** the invariant is exactly "no
+`register` caller's argument-computation path passes through `hz.*`/
+`pointsTo`". Concretely, when `pointsTo` lands (Slice 6/7):
+- Keep the direction enforced structurally — `pointsTo`/`hz` stay
+  write-only from `register`'s perspective; `register`'s own argument
+  builders (`staticObjectProps`, `sidOf`, `ctx.schema.list[sid]` lookups,
+  `Object.keys(sample)`) must never be extended to accept a `pointsTo` Set
+  or iterate its members to decide what to register.
+- Add a cheap dev-mode assert in `ctx.schema.register` itself (mirroring
+  the project's existing `JZ_DEBUG_INVARIANTS` convention): reject if any
+  argument in the call stack traces to a live `pointsTo`/`slotWriteHazards`
+  read within the same call — impractical to check generically, so the
+  practical form is a **standing audit rule**: re-run this exact grep +
+  per-site read-path check (the one just performed) any time a NEW
+  `ctx.schema.register` call site is added, and gate it in review, not
+  just at Slice-6/7 landing.
+- No FINDING: the invariant is unconditionally true today: confirmed
+  by exhaustive enumeration, not sampling. §1.3's own text already reaches
+  this conclusion by construction (register's producing passes are
+  "already-audited... terminating"); this verdict is the direct
+  confirmation §1.3 asked the coordinator for.
+
+### OQ2 — §6 risk item 2, Slice 6 partial-revert / hazard-gap risk
+
+**Verdict: the slice is NOT one atomic blob — it splits into a LARGE,
+independently-revertible storage refactor and a SMALL, genuinely
+non-decomposable core. The design's "tag Slice 6 as a single
+non-decomposable commit" recommendation (§6 item 2) is safe but
+over-broad; a tighter partition is available and preferable (smaller
+non-decomposable surface = smaller review/revert blast radius).**
+
+Evidence — the hz/`pointsTo` composition boolean is not consulted from one
+chokepoint, it's consulted from **three** distinct sites across two files,
+found by tracing every `hz.all`/`hz.sids`/`hz.props`/`hz.numeric` read (not
+write) in `program-facts.js` and `module/schema.js`:
+
+1. `applySlotWriteHazards(hz, poison, opts)` (`program-facts.js:1409-1423`)
+   — the SHARED poison/observe gate called at slot-census (re)build time.
+   Its `whole` composition (`program-facts.js:1416-1417`): `hz.all ||
+   hz.sids.has(sid) || externs?.has(sid) || (hz.kindSafeSids?.has(sid) &&
+   kindSafe==null)`, plus per-slot `hz.props.has(...) ||
+   (hz.numeric && ...)` (line 1419). Called from exactly 2 sites:
+   `program-facts.js:734` (feeds `slotTypes`/`slotCtors`/
+   `slotBigintObserved` via its poison/observe callbacks) and
+   `program-facts.js:1699` (feeds the intCertain fixpoint's `slotIntCertain`/
+   `slotI32Certain` poisoning, inside `sweep()`).
+2. `slotHazarded` (`module/schema.js:247-253`) — the READ-time gate for
+   the 7 named consumers (`slotVT`, `slotBigintProvenBySid`,
+   `slotTypedCtorBySid`, `slotTypedCtorByProp`, `slotIntCertainAt`,
+   `slotI32CertainAt`, `slotI32CertainBySid`). Same shape as #1's `whole`
+   plus `hz.props`/`hz.numeric`: `hz.all || hz.sids.has(id) ||
+   hz.props.has(prop) || (hz.numeric && /^(0|[1-9][0-9]*)$/.test(...))`.
+   Because all 7 named consumers funnel through this ONE function, they
+   need **zero individual edits** for the hz→`pointsTo` swap — correcting
+   the slice spec's framing (§5, "Consumers migrated: the 7 `slotHazarded`
+   callers") which reads as if 7 call sites need touching; only the shared
+   gate does.
+3. `chainHazarded` (`module/schema.js:275-278`) — a DELIBERATELY NARROWER
+   sibling for `slotObjSids`/`chainSid` resolution: `hz.sids.has(id) ||
+   hz.props.has(prop)`, explicitly WITHOUT `hz.all`. The comment at
+   `schema.js:256-274` documents why: consulting the program-wide `hz.all`
+   blanket here would reproduce a resolution circularity (`chainSid`
+   feeds the very kind facts that would clear `hz.all`'s causes).
+
+**The minimal revert-safe partition, two commits:**
+
+- **Commit 6a — SlotFact storage unification (LARGE, independently
+  revertible, byte-identical).** `slotTypes`/`slotTypedCtors`/
+  `slotBigintObserved`/`slotObjSids`/`slotIntCertain`/`slotI32Certain` →
+  projections over one `Map<sid, Fact[]>`. This touches only the
+  DESTINATION of `applySlotWriteHazards`'s `poison`/`observe` callbacks
+  (`program-facts.js:734-736,1699` — rewrite the callback bodies to write
+  the unified map instead of 6 separate ones) and the projection getters
+  in `module/schema.js`. `applySlotWriteHazards`'s own hz-composition
+  logic (§ evidence #1 above), `slotHazarded`, and `chainHazarded` are
+  UNTOUCHED in this commit — same hz shape in, same poison semantics out.
+  Gate: every one of the 7 projection getters returns byte-identical
+  values pre/post, for every (sid, prop) pair, same as Slice 2's
+  `isDisjointFrom` precedent (§5, "no computation changes"). Revert-safe
+  by construction: reverting restores 6 separate Maps with zero hazard-
+  logic change — there is no intermediate state where hazard soundness
+  could regress, because this commit never changes what counts as
+  hazarded, only where the observed values are stored.
+
+- **Commit 6b — `hz.all`/`hz.sids` → `pointsTo` (SMALL, atomic, the true
+  non-decomposable core).** Must land, in ONE commit: (i) the setter
+  sites in `collectSlotWriteHazards` that currently do `hz.sids.add(...)`/
+  `hz.all = true` (`program-facts.js:1274,1279,1289-1290,1331,1343,1346,
+  1349`) rewritten to populate `pointsTo`/`'ALL'`; (ii) `applySlotWriteHazards`'s
+  `whole` composition (`program-facts.js:1416-1417`); (iii) `slotHazarded`
+  (`module/schema.js:252-253`); (iv) `chainHazarded`
+  (`module/schema.js:278`) — with its `'ALL'`-exclusion preserved
+  EXPLICITLY (`pointsTo !== 'ALL' && pointsTo.has(id)`, not
+  `pointsTo === 'ALL' || pointsTo.has(id)`), since a naive translation
+  that copies `slotHazarded`'s composition onto `chainHazarded` silently
+  re-widens the deliberately-narrower predicate back into the
+  circularity its own comment says it exists to avoid — this is a
+  concrete implementation gotcha this verdict surfaces, not one the
+  design doc states. `hz.props`/`hz.numeric` (§1.3: kept separate,
+  never folded into `pointsTo`) stay untouched vocabulary at all four
+  sites. This is the true atomic unit — small (roughly a dozen call
+  sites across 2 files, not "7 callers"), which makes "single
+  non-decomposable commit" a low-cost requirement here, not the
+  large-diff risk §6 item 2 implies. Partial landing (e.g. setters
+  write `pointsTo` while a reader still checks `hz.sids`, now
+  permanently empty) is exactly the silent-unsoundness failure mode —
+  every slot reads as un-hazarded, a miscompile, not a crash — so this
+  commit cannot be split further.
+
+Both commits still sit behind Slice 6's mandatory §21 re-audit gate
+(re-verify every setter site × every one of the three composition sites,
+not just re-derive by analogy, per survey's own explicit mandate quoted
+in §5) and the `JZ_CARRIER_BOX=1` divergence-shape check. Recommendation
+for the coordinator: adopt the 6a/6b split in place of the single-commit
+default — it satisfies the "every consumer its own byte-identity unit"
+discipline for 6a while honoring the all-or-nothing requirement only where
+it's actually load-bearing (6b).
