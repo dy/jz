@@ -6921,7 +6921,93 @@ QUEUED: item 5 LoopPlan ownership (immutable pre-emission plan keyed by
 NodeId/BindingId + separate lowering map; renames touch the map never the
 plan; move the link out of loop-model.js) · item 6 drop dead baseKeys
 collection in buildSiteAccess (aliasClass is constant until a points-to
-consumer exists) · item 8 "item" JSON trace (f64 bits 0x6d657469 = ASCII
-"item": a string/key carrier reaching a watr integer-immediate position —
-capture pre-watr AST, find the first malformed node) · item 10 solver/
-session (folds into the lattice campaign).
+consumer exists) · item 8 "item" JSON trace CLOSED, see below (2026-08-08) ·
+item 10 solver/session (folds into the lattice campaign).
+
+## AUDIT-#15 ITEM 8 CLOSED: JSON SHAPED-PARSER 'Bad int 9.067910317e-315' FIXED (2026-08-08)
+UNIFIES with the entry above ("JSON SHAPED-PARSER 'Bad int 9.067910317e-315'
+HUNTED — ROOT NAMED, BANKED NOT FIXED") — same bug, same root, this session
+landed the NARROW fix that entry's own "TRUE FIX (a)" option already named
+as in-bounds (json.js's own BigInt usage "is equally avoidable"), without
+touching the large ctx.features.bigint / layout.js surface the wider fix
+was rejected over.
+REPRO (fresh default kernel, `npm run build` then `JZ_TEST_TARGET=jz.wasm
+node test/index.js --file json`): 65/67, both fails `Bad int
+9.067910317e-315`, thrown at `interop.js:897 decodeThrown` from
+`compileViaKernel` compiling `test/json.js`'s "stable let source uses
+shaped runtime parser" / "runtime-selected literal sources share shaped
+parser" specimens (`JSON.parse` of a literal `{"items":[{"id":1,"kind":2,
+"value":10}],"meta":{"scale":7,"bias":11}}`-shaped source). Confirmed
+identically at JZ_TEST_OPTIMIZE=0/2/3.
+MALFORMED WAT (captured via `compileViaKernel(src, {wat:true})`, same
+specimen): 7 corrupted sites, e.g. `(i32.ne (i32.load (local.tee
+$__inl2_len (i32.add (global.get $__jpstr) (global.get $__jppos)))) (i32.const
+9.067910317e-315))`. DataView-decoded bits of each corrupted literal: low
+32 bits = 0x6d657469/0x6469/0x646e696b/0x756c6176/0x6174656d/0x6c616373/
+0x73616962, high 32 bits zero — ASCII "item"/"id"/"kind"/"valu"/"meta"/
+"scal"/"bias", byte-exact match to the prior session's decode.
+ROOT (reconfirmed, unchanged from the prior session): module/json.js's
+`emitJsonShapeParser` → `expectText` (~line 1235) SWAR key-match codegen.
+`expectText`'s `le(arr) = arr.reduce((a,b,k) => a | (BigInt(b) <<
+BigInt(8*k)), 0n)` BigInt-packs each text chunk; the ≤4-byte chunk path
+spliced `Number(le(bytes.slice(i,i+4)))` into the WAT template literal.
+`Number(bigint)` here is a REAL runtime call inside the self-hosted
+kernel's OWN execution of json.js's compiled logic, routed through
+module/number.js's `$__to_num`. `$__to_num`'s BigInt-vs-genuine-subnormal
+disambiguation is gated on `ctx.features.bigint`, a whole-program flag
+baked ONCE into `$__to_num`'s stdlib body as a plain string at first
+module-inclusion (autoload.js `includeModule`); when false, `$__to_num`
+returns any non-NaN f64 UNCONVERTED (the raw carrier-bits arm) — and a
+raw (unboxed) small BigInt IS stored as its own i64 bits reinterpreted as
+f64 by the self-host's carrier design, so an unconverted `Number(le(...))`
+prints as exactly this malformed decimal. Self-hosting compiles
+module/json.js itself into ONE whole-program build (`scripts/self.js` →
+`resolveModuleGraph` → one `compile()`, scripts/build-dist.mjs) sharing
+ONE `$__to_num`; the ordering hazard that leaves `ctx.features.bigint`
+false despite json.js's own later 8-byte-chunk BigInt use is the same one
+the prior session traced through `prep()`'s per-node module-triggering
+(prepare/index.js).
+NOT a formatter-dispatch bug (the coordinator's alternate hypothesis,
+precedented by 756ae10f's BOOL∪NUMBER carrier-dispatch class, was checked
+and ruled out): the corrupted bits are the RAW un-boxed BigInt payload
+(upper 32 bits zero), not a mis-tagged NaN-boxed pointer read through the
+wrong String()/template-literal arm — `$__to_num` already has a correct,
+unconditional NaN-boxed-pointer arm for BigInt (`PTR.BIGINT` tag check,
+~line 1596, Heap-kind registry Slice 3) that this value never reaches
+because it was never boxed to begin with. The bug is genuinely in
+ToNumber(BigInt)'s raw-carrier disambiguation, exactly as the prior
+session found — this session did not re-derive that, it re-confirmed it
+byte-for-byte against a fresh build and then acted on the prior session's
+own already-identified narrow fix.
+FIX LANDED (module/json.js): added `leNum = (arr) => arr.reduce((a,b,k) =>
+a | (b << (8*k)), 0)` — plain i32 bitwise packing, no BigInt — and switched
+the ≤4-byte and 2-byte chunk compares to it. Safe because `expectText`
+already restricts to ASCII-only text (`bytes.some(b => b > 127)` bails to
+the per-byte path for anything else), so a 4-byte pack's top byte is
+always < 0x80: bit 31 is never set, no int32-sign hazard. The genuine
+8-byte/64-bit chunk keeps `le`/BigInt, feeding `i64Hex` — a hex-STRING
+formatter that never calls `Number()`/routes through `$__to_num`, so it
+was never the corrupted path and needed no change. `ctx.features.bigint`
+and `$__to_num` are UNTOUCHED (`git diff` confirms only module/json.js +
+test/json.js changed) — this sidesteps the ordering hazard for this one
+call site rather than fixing it; the general fix (scrub the ~17-file
+self-hosted-reachable BigInt surface per the prior session's survey, or
+redesign the carrier disambiguation off one whole-program boolean) remains
+banked, unattempted, out of this session's bound.
+test/json.js updated: replaced the stale "left failing, honest signal"
+comment on the two audit-#11 item 7 sub-4 rows with the fix's root cause
+and mechanism (both rows are regression pins now, not known-red).
+GATES: `JZ_TEST_TARGET=jz.wasm node test/index.js --file json` 67/67 (110
+assertions) at JZ_TEST_OPTIMIZE unset (default O2) AND explicitly at
+O0/O2/O3, all four runs identical · native `node test/index.js --file
+json` 67/67 (no regression, unchanged from pre-fix) · `node
+test/kernel-oracle.js` 12/12 (451 assertions — subnormal-literal AGREE pin
+intact, confirming `ctx.features.bigint`'s behavior for every OTHER
+program is unchanged) · `node test/kernel-parity.js` 33/33 · full native
+battery `node test/index.js` 3407 pass / 2 fail / 6 skip (the 2 fails are
+the pre-existing `interval walk: strided companion cursor…` / `typed RMW:
+one guard covers…` codec-bounds rows, present byte-identically before this
+session's fix — unrelated, not newly broken) · two fresh `npm run build`
+runs produced byte-identical `dist/jz.wasm` (16890362 bytes, sha1
+eb89ffefe132eb9042743b49d014123e61a23087) both times, second build's kernel
+json leg reconfirmed 67/67.
