@@ -1225,7 +1225,7 @@ export function collectSlotWriteHazards(ast, opts) {
   if (pf.hazard && pf.hazard.gen === pf.gen && pf.hazard.late === late)
     return (ctx.schema.slotWriteHazards = pf.hazard.hz)
   const hz = { all: false, sids: new Set(), props: new Set(), numeric: false, kindSafeSids: new Map() }
-  let curSids = null, curParamVts = null
+  let curSids = null, curParamVts = null, curParamIntCertain = null
   const sidOf = (obj) => {
     // PROPERTY-KIND TRACING (§19/§20): a `.`-node receiver chain-resolves
     // through slotObjSids (module/schema.js's chainSid — shared walker, see
@@ -1274,7 +1274,8 @@ export function collectSlotWriteHazards(ast, opts) {
     if (sid != null) { hz.sids.add(sid); return }
     const vt = kindOf(obj)
     if (vt != null && vt !== VAL.OBJECT && KEYED_EXEMPT_VALS.has(vt)) return
-    if (valTypeOf(key) === VAL.NUMBER || (typeof key === 'string' && repOf(key)?.intCertain === true)) hz.numeric = true
+    if (valTypeOf(key) === VAL.NUMBER ||
+        (typeof key === 'string' && (repOf(key)?.intCertain === true || curParamIntCertain?.has(key)))) hz.numeric = true
     else hz.all = true
   }
   // Member targets buried in a destructuring pattern — written with values the
@@ -1374,12 +1375,23 @@ export function collectSlotWriteHazards(ast, opts) {
     // can't — `re[j] = tr` on a TYPED param must classify as an element write).
     if (late) {
       const reps = opts.paramReps.get(func.name)
+      const params = func.sig?.params || []
       curParamVts = reps
-        ? new Map((func.sig?.params || []).map((p, k) => [p.name, reps.get(k)?.val]).filter(([, v]) => v != null))
+        ? new Map(params.map((p, k) => [p.name, reps.get(k)?.val]).filter(([, v]) => v != null))
+        : null
+      // keyedWrite's numeric-key exemption (§21's lever 2): a param proven both
+      // wasm i32 AND VAL.NUMBER is genuinely integer-valued — `r.wasm === 'i32'`
+      // alone also covers VAL.BOOL params (narrow.js's argWasmType/exprType wasm
+      // rep is shared between int-narrowed numbers and booleans), so the val
+      // check is required to exclude those; a bare param used as `arr[idx] = v`
+      // (never reassigned, so intCertainMap's own reassignment-only fixpoint
+      // never sees it) is otherwise unresolvable at this scan — see §17.
+      curParamIntCertain = reps
+        ? new Set(params.filter((p, k) => p.type === 'i32' && reps.get(k)?.val === VAL.NUMBER).map(p => p.name))
         : null
     }
     visit(func.body)
-    curSids = curParamVts = null
+    curSids = curParamVts = curParamIntCertain = null
   }
   ctx.func.localValTypesOverlay = null
   if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) visit(mi)
