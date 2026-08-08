@@ -3022,3 +3022,199 @@ is this session's own contribution: the gate was never the bug.
 **Local: nothing committed to `src/`/`module/`** (no code change, audit
 only). This ledger entry + the matching `.work/todo.md` status update
 commit separately, plain messages, no push.
+
+## §22. §17/§21's own named lever 2 (thread param int-certainty into
+`keyedWrite`) — IMPLEMENTED, SOUND, VERIFIED FUNCTIONAL in isolation, ZERO
+measured effect on `scripts/self.js`'s dominant `hz.all` class — WALL,
+root-caused precisely, banked (2026-08-08)
+
+**The change.** `collectSlotWriteHazards`'s `keyedWrite` (`src/compile/
+program-facts.js`) already exempts a dynamic key from `hz.all` when it is
+a literal `VAL.NUMBER` or `repOf(key)?.intCertain === true` (a local whose
+OWN reassignment fixpoint proves it integer). Extended the SAME exemption
+to a bare PARAMETER name proven both wasm `i32` AND `VAL.NUMBER` in the
+already-settled cross-call `paramReps` lattice (`curParamVts`'s own
+source, `opts.paramReps`, built in `collectSlotWriteHazards`'s late-mode
+per-func loop) — `curParamIntCertain`, a `Set<name>` alongside the
+existing `curParamVts` map, consulted only as a THIRD alternative in the
+key check (literal → local-intCertain → param-intCertain), same
+soundness class as the two it joins (a numeric key is an element write,
+not a whole-slot write), fail-closed (unproven ⇒ `hz.all` stands, no
+change to `slotHazarded`'s gate — §21's own "do not touch" respected).
+`r.wasm === 'i32'` alone was NOT sufficient: narrow.js's own
+`argWasmType`/`exprType` wasm-rep classification shares `i32` between
+int-narrowed NUMBER params and BOOL params (`vk !== VAL.NUMBER && vk !==
+VAL.BOOL` gate, narrow.js:1734) — the `.val === VAL.NUMBER` co-check
+excludes the latter explicitly rather than relying on `_numericName`'s
+own accidental immunity to boolean `ToString`.
+
+**Facts-availability diagnosis (the brief's own first question).** At
+`collectSlotWriteHazards`'s EARLY invocation (no `opts.paramReps`), a
+param's WASM representation genuinely doesn't exist yet — `narrowSignatures`
+hasn't run — so `curParamIntCertain` is correctly `null` there, matching
+§17's own finding for `repOf`. At the LATE invocation
+(`refineSlotKindCensus`, post-`narrowSignatures`), `func.sig.params[k].type`
+and `paramReps.get(k).val` are BOTH real, settled facts — confirmed
+functional via an isolated positive repro (not just static reasoning):
+
+```js
+function poke(o, idx, v) { o[idx] = v; return o }
+function makeObj() { return { count: 0 } }
+export let f = (n) => {
+  let o = makeObj()
+  let i = 0
+  while (i < n) { poke(o, i, i); i = i + 1 }
+  return n
+}
+```
+compiled with `sourceInline: false` (isolating the mechanism from the
+inliner — see "confound" below) — `curParamIntCertain` for `poke` becomes
+`{idx}`, the late pass shows `keyedWrite.all=0 paramSaved=1` (was
+`all=1` pre-fix): the channel is real and the wiring works end-to-end.
+
+**Confound found and corrected mid-session**: the FIRST isolated probes
+(same shape, default `optimize: 2`, `sourceInline` on) showed `p.type`
+staying `f64` even for a param fed ONLY literal-integer arguments —
+looked like the lever was dead. Root cause: at `optimize:2`'s default
+inlining, the tiny single-call-site helper's signature-narrowing
+settling and the hazard-census rebuild raced in a way that left
+`curParamIntCertain` empty for that probe (not a `src/` bug — confirmed
+by re-running the IDENTICAL source with `sourceInline:false`, which
+narrows and fires correctly). Documented so a future session doesn't
+re-diagnose this as "the lever doesn't work" from a confounded probe.
+
+**On the REAL `scripts/self.js` corpus: ZERO effect, confirmed twice
+(temporary `JZ_DEBUG_HZALL` counters, same discipline as §17/§18, stripped
+before commit).** `JZ_SELFHOST_OPT=0`: `keyedWrite.all` early=320 late=320,
+`paramSaved=0`. Full production `scripts/build-dist.mjs`/`selfhost-
+build.mjs` profile (O3, the actual `dist/jz.wasm` build): early=320
+late=325, `paramSaved=0` — **no collapse, §17's own 319-ish baseline
+essentially unchanged** (the +1 early / +5 late drift versus §17's "319"
+is unrelated program-shape noise across sessions, not this lever — the
+Object.assign-class fix already landed in §17 accounts for the baseline
+shift, not this change).
+
+**Root cause of the zero-effect result, traced to ground (not assumed)**:
+sampled the first 20 `hz.all` misses at BOTH optimize levels — the SAME
+~20 functions every time (`m51_util$walkPost`'s `idx`, `m56_ctx$
+setFeature`'s `key`, `m49_compile$regtype`'s `idx`, …), all either (a) a
+bare PARAM whose `p.type` stays `f64` and whose `paramReps.get(k).val` is
+literally `null` — the sticky-TOP value `mergeParamFact` writes on
+CROSS-CALL-SITE DISAGREEMENT (`src/param-reps.js`'s own documented
+contract) — or `'string'` (a genuinely polymorphic param, correctly NOT
+exempted), or (b) a body-local (not a param at all — outside this lever's
+scope by design, a separate, still-open gap in `repOf`'s cursor alignment
+per §17's own note). The PARAM cases are the direct, confirmed signature
+of the exact same dynamic §17/§18 already diagnosed for the Map-receiver
+side of this idiom: `observeSlot`/`poisonSlot`/`poisonCtor`/`walkPost`-
+shaped helpers are called from HUNDREDS of sites across the self-hosted
+compiler's own source (§17's own count), so the cross-call `val`/`wasm`
+lattice's monotone meet (`mergeParamFact`: any two disagreeing sites →
+sticky `null`, forever) collapses to TOP the moment ONE call site passes
+an argument `exprType` can't prove integer — which, over hundreds of
+sites, is effectively certain. **This generalizes §17/§18's finding past
+the RECEIVER's kind (`arr` from `Map.get()`) to the KEY's int-certainty
+too — both facts die to the identical "shared generic helper, one
+dissenting call site poisons everyone" structural property of self.js's
+own architecture**, not to any gap in this lever's wiring.
+
+**Given the wall, the ladder's escalation steps were NOT run**: no
+disjointness re-derivation attempted (§18's own logic was never a fit for
+this lever — that was scoped to the RECEIVER kind, not the KEY; §21
+already closed that whole avenue for `slotVT`'s consumer side). Per the
+brief's own protocol ("if hz.all collapses: escalate; wall ⇒ bank and
+stop") — it did not collapse, so this entry stops here after the full
+regression ladder (below), matching §18/§19/§21's own precedent of
+running the verification gates on a zero/near-zero-effect change to
+confirm it's SAFE to keep even though it doesn't unblock the target.
+
+**Disposition: KEPT, not reverted** (unlike §18's disjointness recovery,
+which was reverted for being an entire unverified feature with zero
+effect). This lever is a 16-line, sound, minimal extension of an EXISTING,
+already-landed classification, using an EXISTING fact channel, verified
+functional in isolation, fail-closed, zero measured regression anywhere —
+it will fire for the general population of programs where an i32-narrowed
+integer param (via the EXISTING, unrelated typed-array-fed / recursion-fed
+/ bitwise-mutated narrowing routes) is ALSO used as a dynamic array/object
+key, a real if narrow class this session did not attempt to characterize
+further. Self.js's own dominant class simply isn't in that population,
+for the structural reason above.
+
+**Gates run, all green, zero regressions found:**
+- Default battery `node test/index.js`: 3408/3400/2/6 (19550 assertions) —
+  the SAME 2 pre-existing named failures as §17/§20's own baseline
+  (interval-walk codec bounds check, typed RMW guard count), unchanged.
+- Default `kernel-parity`: 3/3 (33 assertions), byte-identical O0/O2/O3,
+  against a freshly, fully rebuilt plain `dist/jz.wasm`.
+- Default `kernel-oracle`: 12/12 (451 assertions).
+- `node test/watr.js`: 35/35 (107 assertions). `node test/pointers.js`:
+  34/34 (62 assertions). `node test/slot-hazards.js`: 21/21 (59
+  assertions) — none of its scenarios touch an i32-narrowed param key, as
+  expected; unaffected.
+- `JZ_CARRIER_BOX=1 kernel-parity` (against a freshly, fully rebuilt
+  CARRIER-BUILT `dist/jz.wasm`, i.e. `JZ_CARRIER_BOX=1 node scripts/
+  selfhost-build.mjs`): `dict` STILL diverges O0/O2/O3, byte-for-byte the
+  SAME divergence shape as §17 (same sizes: 227398B/229709B/246043B) —
+  expected, unchanged, confirms the lever's zero self.js effect rather
+  than contradicting it.
+- `JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm node test/index.js` (test:wasm
+  to completion): still crashes identically — same `RangeError: Offset is
+  outside the bounds of the DataView` in `interop.js`'s `mem.read`, same
+  stack (`readArgBits → write → imports.env.print`), same trigger
+  (`test/statements.js`'s "setTimeout: callback fires" first heap-string
+  `console.log`) — the exact §16/§17 signature, unregressed.
+  `JZ_CARRIER_BOX=1` flag-forced battery: 3381/21 (19107 assertions) —
+  the SAME 21 pre-existing rows §17 established, unchanged.
+  `JZ_CARRIER_BOX=1` watr: 35/35 (107). `JZ_CARRIER_BOX=1` pointers: 34/34
+  (66 assertions, matches §17's own "default 62, CARRIER_BOX 66" shape).
+  `JZ_CARRIER_BOX=1` kernel-oracle: 4/12 pass, 8 fail — every failing row
+  individually named and matched against the ledger's own catalog (3×
+  kernel-parity `dict` divergence, 3× kernel-oracle `dict`-vs-JS-oracle
+  `actual:0 expected:3`, 1× ternary O0 BOOL∪NUMBER carrier-collapse
+  (pre-existing, unrelated), 1× "PENDING-FIX generic-scalar-decl
+  BOOL∪NUMBER carrier collapse" memory-out-of-bounds (pre-existing,
+  named)) — zero unnamed/new failures.
+  `JZ_CARRIER_BOX=1` fuzz: 4 independent 2000-program sweeps
+  (`--seedStart=1,2001,4001,6001`, opt {0,1,2,3}, 20 inputs/program) —
+  121883 inputs compared total, **0 divergences** across all four.
+- **Default byte-identity**: `scripts/bench-size.mjs --json`'s 57-case
+  corpus (mat4/biquad/watr/wordcount/… ) diffed byte-for-byte against a
+  disposable `git worktree` at pre-session HEAD (`8d92ed4a`) — **IDENTICAL,
+  every case** (this lever's precondition — an i32-narrowed param feeding
+  a dynamic keyed-write — doesn't occur anywhere in this corpus either,
+  consistent with the self.js finding that it's a narrow, if real,
+  precondition). `npm run build` ×2: `dist/jz.js`, `dist/interop.js`,
+  `dist/jz.wasm` SHA-256 identical both runs (reproducible).
+- **The self-hosted `dist/jz.wasm` build's own bytes DO differ** from the
+  pre-session baseline (confirmed, expected, explained — not a functional
+  regression): `scripts/self.js` includes `program-facts.js` itself as
+  part of the compiler's own source, so ANY text edit to it — even one
+  whose new branch is provably dead for this exact corpus (`paramSaved=0`
+  throughout) — changes the compiled kernel's bytes (new locals/branches
+  shift schema ids and code layout). Kernel-parity's 3/3 byte-identical
+  result against ARBITRARY other programs (sum/math/dict/arr/fold/mfold/…)
+  is the correct check for functional equivalence, not a same-bytes
+  requirement on the self-compiled kernel artifact itself — and it holds.
+
+**Flip-readiness verdict: UNCHANGED, still NO.** The `hz.all` `keyedWrite`
+class blocking the carrier flip (§17's original finding, confirmed
+unbudgeable through §18/§19/§20/§21 and now this session) remains exactly
+as banked — this lever closes a real but different, narrower gap (params
+that DO achieve cross-call `val`/`wasm` consensus and ARE i32-narrowed)
+that simply doesn't overlap with self.js's own dominant shape (shared
+generic helpers whose cross-call consensus is structurally poisoned by
+call-site volume, not by a missing lever). **A future flip-readiness
+session's only remaining named angle from §17 is the OTHER lever**:
+safely promoting `Map`/dict `.get()`'s value kind for `collectSlotWrite
+Hazards` specifically (distinct from the general-purpose promotion
+audit-#10 reverted) — §18 attempted and walled on a narrower version of
+this (local-literal `new Map()` only, not the property-chain-bound
+`ctx.schema.slotTypes`-shaped receivers that actually dominate); a full
+re-attempt would need property-kind tracing (§19/§20's own machinery,
+already landed) to first resolve the property-chain receiver to a sid,
+THEN prove that sid's own Map-value-kind census — a materially larger,
+multi-session composition, not a quick follow-up.
+
+**Commits (local only, plain messages, no push):** `28e4b4ae` —
+`src/compile/program-facts.js` only (the lever, `curParamIntCertain`).
+This ledger entry + `.work/todo.md` status update commit separately.

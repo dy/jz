@@ -93,6 +93,41 @@ LEVER for a future attempt: property-kind tracing (prove `const x =
 obj.prop` is a `Map` when `obj.prop` was initialized `new Map()` elsewhere)
 — a materially larger, separate feature, its own dedicated session.
 
+**LEVER 2 (curParamVts int-certainty into keyedWrite's numeric-key check)
+— IMPLEMENTED, SOUND, KEPT, ZERO effect on self.js's dominant class
+(2026-08-08, .work/carrier-representation-design.md §22 — full writeup,
+gates, root cause).** §17's own other named lever. `curParamIntCertain`
+(a param proven wasm i32 AND VAL.NUMBER in the late-mode `paramReps`
+lattice) now exempts a dynamic key the same way a literal-numeric key or
+a reassigned-local's `repOf(key)?.intCertain` already do. Verified
+functional in isolation (a minimal `poke(o, idx, v){ o[idx]=v }` repro
+reclassifies `hz.all`→`hz.numeric` when `idx` genuinely narrows to i32).
+**Zero effect on `scripts/self.js`'s own compile** (`JZ_DEBUG_HZALL`:
+`paramSaved=0` at both O0 and production O3) — root-caused: the dominant
+`keyedWrite` receivers' KEY params (`observeSlot`/`poisonSlot`/
+`walkPost`-shaped helpers) are called from hundreds of sites, and the
+cross-call `paramReps` lattice's monotone meet collapses their `.val`
+to sticky-`null` (TOP) the moment ONE call site can't prove the argument
+integer — the SAME "shared generic helper, one dissenting site poisons
+everyone" structural property §17/§18 already diagnosed for the
+RECEIVER's kind, now shown to also govern the KEY's int-certainty. No
+`hz.all` collapse (320→320 early, 325→325 late at O3) — the ladder's
+escalation steps (disjointness re-derivation) were correctly NOT run
+(wall, not partial progress). KEPT (not reverted, unlike §18): sound,
+narrow, verified-functional, zero regressions across the full gate
+ladder (default battery 3408/3400/2/6, kernel-parity 3/3, kernel-oracle
+12/12, watr 35/35, pointers 34/34, slot-hazards 21/21, CARRIER_BOX
+battery 3381/21 unchanged, CARRIER_BOX kernel-parity `dict` still
+diverges byte-identically to §17, CARRIER_BOX test:wasm crashes
+identically to §16/§17, fuzz 2000×4/0 divergences, 57-case size sweep
+byte-identical, `npm run build` ×2 reproducible). **Flip-readiness:
+UNCHANGED, still NO** — the ONLY remaining named lever is the OTHER one
+above (Map/dict `.get()` value-kind promotion, now understood to need
+property-kind tracing — §19/§20's landed machinery — as a PREREQUISITE
+to resolve the property-chain-bound receivers that actually dominate,
+not just literal-local Maps; a multi-session composition, not a quick
+follow-up). Commit: `28e4b4ae` (`src/compile/program-facts.js` only).
+
 ## AUDIT-#14 RESPONSE (2026-08-07)
 P0 (carrier default flip BLOCKED — carrier-built kernel corrupts atom/string/
 closure CONSTANTS for BigInt-free programs, `() => undefined` O0 native
