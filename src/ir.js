@@ -2291,6 +2291,41 @@ export function verifyFn(fn) {
   return bad
 }
 
+// === HIR provenance link (.work/research.md §BodyModel slice 4; audit-#15 item 5) ===
+//
+// Connects a WAT-level loop block node (the vectorizer's own scaffold — matchBlockLoop's
+// `blockNode`, src/optimize/vectorize.js) back to the facts proved about it at HIR-lowering time
+// (src/compile/emit.js's `'for'` handler, the sole writer) — its induction-variable/guard names
+// and the counter/guard hull `forCounterRange` proves (src/static.js) — so BodyModel can
+// eventually consult these instead of re-deriving them from the lowered WAT. Landed as the link +
+// a DBG shadow-assert only (vectorize.js's assertLoopPlanAgrees) — no consumer yet.
+//
+// Lives here, not in compile/loop-model.js (AST-level loop primitives, pre-emission) or
+// optimize/vectorize.js (the sole reader): this module is the neutral WAT-IR-node seam already
+// imported by both without a layering violation, and the link's key is a WAT node.
+//
+// Keyed by WAT block-node IDENTITY via a WeakMap, not a stamped property, per the design's
+// BINDING pre-trio spec (1): a rewrite that mints a fresh block array (any AST-to-WAT pass
+// running between emission and the vectorizer walk that reads it) naturally drops out of the map.
+// A miss is the CORRECT "decline, don't guess" answer for a rewritten loop (spec 2: fail-open),
+// never an error — every reader must treat `loopPlanLink.get(node) === undefined` as "no HIR
+// facts available", not as a negative fact about the loop.
+//
+// Each entry is `{ plan, lowering }`, NOT one flat record — audit-#15 item 5's correction:
+//   `plan`     — the immutable HIR-side facts (id, hull, boundConst). Frozen: renaming a WAT
+//                local downstream must never look like it changed what HIR proved.
+//   `lowering` — the WAT-side name map (ivName, guardName). Mutable, owned by the backend: a pass
+//                that renames a linked loop's own IV/guard local in place (emit.js's
+//                freshenUnrolledScalarBindings, the one instance found so far — see its own doc)
+//                updates ONLY this half, keeping the fact synchronized without mutating an HIR
+//                fact after the fact.
+export const loopPlanLink = new WeakMap()
+
+// Separate id space from compile/loop-model.js's freshLoopId: a LoopPlan id identifies a HIR loop
+// RECORD, never used to name anything emitted, so it must not share a counter with generated-
+// local suffixes.
+export const freshLoopPlanId = () => ctx.transform.loopPlanId++
+
 /**
  * Tail-call rewrite: walks tail positions of an emitted IR tree and replaces
  * direct `(call $name args...)` ops with `(return_call $name args...)`.

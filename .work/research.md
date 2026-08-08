@@ -789,6 +789,31 @@ its own byte-identity-gated unit. Class-C recognizers (stencil ivCoeff,
 butterfly unification, divergent-escape, conv-column MAC) stay private by
 design.
 
+**Ownership correction (audit-#15 item 5) LANDED 2026-08-08**: the audit's
+objection to slice 4 — `freshenUnrolledScalarBindings` mutating the linked
+plan's `ivName` in place meant the "HIR plan" was really backend metadata,
+and a rename must never touch an HIR fact — fixed at the schema. Each
+`loopPlanLink` entry is now `{ plan, lowering }`: `plan` (id, hull,
+boundConst) is `Object.freeze`d at mint time — the immutable HIR-side facts
+proved at `'for'`-emission; `lowering` (ivName, guardName) is the mutable
+WAT-side name map, owned by the backend. `freshenUnrolledScalarBindings`
+updates ONLY `lowering`; `assertLoopPlanAgrees` reads through the pair (`plan`
+for `id`/`boundConst`, `lowering` for `ivName`). The link's home also moved
+OUT of loop-model.js (AST-level loop primitives, pre-emission — a layering
+mismatch for a fact keyed on an EMITTED WAT block node) INTO ir.js, the
+neutral WAT-IR-node module both emit.js and vectorize.js already imported
+without a cycle (findBodyStart, verifyFn, loopTop already live there).
+Metadata-only: fail-open miss semantics and all four BINDING pre-trio specs
+unchanged, zero WAT output change expected or found. Gates: byte-identical
+58-case/174-compile bench sweep at O0/O2/O3 (0 diffs) against a clean-HEAD
+worktree baseline, test/simd.js 158/158, full battery 3407/3415 pass (the
+same 2 pre-existing unrelated fails — interval walk / typed RMW codec
+bounds), JZ_DEBUG_INVARIANTS=1 full battery: same + 1 pre-existing flake
+(`analyzeValTypes` declRange restamp for `cf1_8`, audit-#12 item 2's own
+idempotence probe — unrelated subsystem, confirmed before), kernel-parity
+33/33, `npm run build` ×2 dist/{jz.js,interop.js,jz.wasm} SHA-256
+byte-identical across both runs.
+
 ## [ ] Heap-kind registry (was heap-kind-registry-design.md; audit-#13 item 3)
 
 One per-tag authority (`layout-kinds.js`, repo root): 16 kinds × 7 columns

@@ -1,7 +1,6 @@
-import { findBodyStart, dollar } from '../ir.js'
+import { findBodyStart, dollar, loopPlanLink } from '../ir.js'
 import { warn, ctx, DBG_INVARIANTS } from '../ctx.js'
 import { nodeEqual as exprEq } from '../ast.js'
-import { loopPlanLink } from '../compile/loop-model.js'
 
 /**
  * Lane-local SIMD-128 vectorizer.
@@ -7019,17 +7018,19 @@ function tryButterfly(blockNode, fnLocals, freshIdRef) {
 // ---- HIR provenance link shadow-assert (.work/research.md §BodyModel slice 4) ---------
 //
 // JZ_DEBUG_INVARIANTS-gated: `node` is the raw WAT block node the dispatch just matched `bl`
-// against; `loopPlanLink` (loop-model.js) maps it back to the HIR facts proved about this loop
-// at emission time (emit.js's `'for'` handler, the sole writer), keyed by node IDENTITY. A miss
-// is the expected outcome once ANY rewrite has replaced the block array between emission and
-// here (pre-trio spec 2: fail-open) — proves nothing, asserts nothing. A HIT that disagrees is a
-// genuine finding: the two derivations describe the SAME loop and must name the same induction
-// variable / the same constant bound where both resolve one.
+// against; `loopPlanLink` (ir.js) maps it back to the HIR facts proved about this loop at
+// emission time (emit.js's `'for'` handler, the sole writer), keyed by node IDENTITY, as a
+// `{ plan, lowering }` pair — `plan` the frozen HIR-side facts, `lowering` the mutable WAT-side
+// name map (see ir.js's doc). A miss is the expected outcome once ANY rewrite has replaced the
+// block array between emission and here (pre-trio spec 2: fail-open) — proves nothing, asserts
+// nothing. A HIT that disagrees is a genuine finding: the two derivations describe the SAME loop
+// and must name the same induction variable / the same constant bound where both resolve one.
 function assertLoopPlanAgrees(node, bl) {
-  const plan = loopPlanLink.get(node)
-  if (!plan) return
-  if (plan.ivName != null && dollar(plan.ivName) !== bl.incVar)
-    throw new Error(`LoopPlan #${plan.id} IV diverges from WAT: HIR ivName=${plan.ivName} (${dollar(plan.ivName)}), WAT incVar=${bl.incVar}`)
+  const link = loopPlanLink.get(node)
+  if (!link) return
+  const { plan, lowering } = link
+  if (lowering.ivName != null && dollar(lowering.ivName) !== bl.incVar)
+    throw new Error(`LoopPlan #${plan.id} IV diverges from WAT: HIR ivName=${lowering.ivName} (${dollar(lowering.ivName)}), WAT incVar=${bl.incVar}`)
   if (plan.boundConst != null && isI32Const(bl.bound) && constNum(bl.bound) !== plan.boundConst)
     throw new Error(`LoopPlan #${plan.id} bound diverges from WAT: HIR boundConst=${plan.boundConst}, WAT bound=${constNum(bl.bound)}`)
 }

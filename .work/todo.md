@@ -6917,12 +6917,11 @@ the fragmenting slot* census family. This subsumes: carrier flip (hz.all
 precision), Map.get presence, schema hazards, the §22 param-lattice
 sticky-null. It is the audit-#13 solver campaign made concrete — needs a
 dedicated design+implementation campaign (coordinator design pass first).
-QUEUED: item 5 LoopPlan ownership (immutable pre-emission plan keyed by
-NodeId/BindingId + separate lowering map; renames touch the map never the
-plan; move the link out of loop-model.js) · item 6 drop dead baseKeys
-collection in buildSiteAccess (aliasClass is constant until a points-to
-consumer exists) · item 8 "item" JSON trace CLOSED, see below (2026-08-08) ·
-item 10 solver/session (folds into the lattice campaign).
+QUEUED: item 5 LoopPlan ownership CLOSED, see below (2026-08-08) · item 6 drop
+dead baseKeys collection in buildSiteAccess (aliasClass is constant until a
+points-to consumer exists) · item 8 "item" JSON
+trace CLOSED, see below (2026-08-08) · item 10 solver/session (folds into the
+lattice campaign).
 
 ## AUDIT-#15 ITEM 8 CLOSED: JSON SHAPED-PARSER 'Bad int 9.067910317e-315' FIXED (2026-08-08)
 UNIFIES with the entry above ("JSON SHAPED-PARSER 'Bad int 9.067910317e-315'
@@ -7011,3 +7010,45 @@ session's fix — unrelated, not newly broken) · two fresh `npm run build`
 runs produced byte-identical `dist/jz.wasm` (16890362 bytes, sha1
 eb89ffefe132eb9042743b49d014123e61a23087) both times, second build's kernel
 json leg reconfirmed 67/67.
+
+## AUDIT-#15 ITEM 5 CLOSED: LOOPPLAN OWNERSHIP SPLIT (2026-08-08)
+`loopPlanLink`'s slice-4 record was one flat object whose `ivName`/
+`guardName` `freshenUnrolledScalarBindings` mutated in place to stay
+synchronized with a post-emission local rename — the audit's finding that
+this made the "HIR plan" actually backend metadata, since a rename must
+never touch a fact HIR proved. Split each entry into `{ plan, lowering }`
+per the audit's canonical shape: `plan = Object.freeze({ id, hull,
+boundConst })` (HIR-side, immutable), `lowering = { ivName, guardName }`
+(WAT-side name map, mutable, backend-owned). `freshenUnrolledScalarBindings`
+(src/compile/emit.js) now touches only `lowering`; `assertLoopPlanAgrees`
+(src/optimize/vectorize.js) reads `plan.id`/`plan.boundConst` +
+`lowering.ivName` through the pair. Link's home moved OUT of
+src/compile/loop-model.js (AST-level loop-transform primitives, pre-emission
+— the wrong layer for a fact keyed on an emitted WAT block node) INTO
+src/ir.js: the neutral WAT-IR-node module both src/compile/emit.js (the sole
+minter) and src/optimize/vectorize.js (the sole reader) already import
+without a layering violation (findBodyStart/verifyFn/loopTop already live
+there). emit.js's `loopPlanLink, freshLoopPlanId` import folded into its
+existing `from '../ir.js'` block (the separate `from './loop-model.js'` line
+dropped — emit.js used nothing else from that module); vectorize.js's import
+folded into its existing `from '../ir.js'` line likewise. Fail-open miss
+semantics and all four BINDING pre-trio specs (identity-keyed WeakMap,
+fail-open on miss, no consumer beyond the shadow-assert, dispatch order
+untouched) unchanged — metadata-only, zero WAT output change.
+GATES: byte-identity sweep — 58-case/174-compile bench corpus (all
+non-self-referential bench/ cases × O0/O2/O3, jessie/jz excluded per the
+slice-4 precedent) compiled against a clean-HEAD `git worktree` baseline
+(commit c3c1fe7f) via a scratch diff script, 0 WAT-text diffs, 0 compile
+errors · `node test/index.js simd` 158/158 (582 assertions) · `node
+test/index.js kernel-parity` 33/33 (33 assertions, O0+O2+O3) · full native
+battery `npm test` 3407 pass / 2 fail / 6 skip (19564 assertions) — the 2
+fails are the pre-existing `interval walk: strided companion cursor…` /
+`typed RMW: one guard covers…` codec-bounds rows, unchanged from clean HEAD ·
+`JZ_DEBUG_INVARIANTS=1 node test/index.js` (exercises `assertLoopPlanAgrees`
++ `assertBodyModelSound` on every matched loop): 3407 pass / 3 fail / 6 skip
+— same 2 plus the pre-existing `analyzeValTypes: declRange restamp for
+'cf1_8' diverges` flake (audit-#12 item 2's own idempotence probe, a
+different subsystem — src/compile/analyze.js — confirmed unrelated in the
+BODYMODEL SLICE 1 landing above); no LoopPlan-agreement divergence surfaced
+· two fresh `npm run build` runs, dist/jz.js + dist/interop.js +
+dist/jz.wasm SHA-256 byte-identical across both.
