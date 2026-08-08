@@ -7118,3 +7118,23 @@ kernel-parity 33/33, full battery 3407/3415 pass (2 pre-existing unrelated
 fails), JZ_DEBUG_INVARIANTS=1 full battery 3407/3416 pass (same 2 + 1
 pre-existing unrelated flake), no BodyModel-soundness divergence surfaced ·
 `npm run build` ×2 byte-identical.
+
+## PRODUCT-LATTICE CAMPAIGN — design-pass opening brief (2026-08-08, coordinator)
+The audit-#15 center. One solver domain replacing the parallel censuses:
+`Fact = { possibleKinds (set, not exact-or-null), presence (present|maybeUndef),
+pointsTo (schema-id set), numeric (intCertain/range), rep (raw|boxed|tagged) }`
+with NAMED PROJECTIONS serving today's consumers (kindOf, slotVT, slotI32*,
+slotBigint*, censusMaybeUndefined, mapValueKindOf, paramReps.val).
+DESIGN-PASS INPUTS (survey in this order): src/infer.js phase chronology +
+paramReps lattice (the D1-D5 domain map in research.md §Middle-end) ·
+src/kind.js censusMaybeUndefined/dictValueKindOf (presence half exists) ·
+program-facts.js slot* family + hz model (points-to half exists as sids) ·
+§17-§22 (the FIVE walls this must dissolve: hz.all keyedWrite, Map.get
+exact-or-null, param sticky-null TOP-collapse, chained-receiver kind,
+carrier rep placement). CONSTRAINTS: monotone join (sets grow, never
+exact-flip-to-null); sticky-null dies — TOP is "all kinds possible", never
+poison; fail-closed consumers read projections that only NARROW; migration
+per-consumer byte-identity-gated (the registry/BodyModel discipline);
+slices land green individually. ACCEPTANCE: the §17 keyedWrite class
+collapses (the carrier flip's dependency) + audit-#15 items 1-3 close +
+the slot* family becomes projections of ONE SlotFact.
