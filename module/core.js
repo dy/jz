@@ -24,6 +24,7 @@ import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, OBJECT_SCHEMA_HI_MASK, ob
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, LENGTH_SSO_I64, SET_ENTRY, MAP_ENTRY, INIT_CAP, LANE } from './collection.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
+import { eqIdentityChain } from '../layout-kinds.js'
 
 const NAN_BITS = nanPrefixHex()
 
@@ -134,26 +135,7 @@ export default (ctx) => {
             ;; pointer bits — the content-compare REF_EQ_KINDS' own comment
             ;; (src/compile/emit.js) already documents as the intent, closing
             ;; the gap where the promised fallback never existed.
-            (if (result i32)
-              (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.BIGINT})) (i32.eq (local.get $tb) (i32.const ${PTR.BIGINT})))
-              (then (i64.eq
-                (i64.load (call $__ptr_offset (local.get $a)))
-                (i64.load (call $__ptr_offset (local.get $b)))))
-              (else
-            (if (result i32)
-              (i32.and
-                (i32.and (f64.ne (local.get $fa) (local.get $fa)) (i32.eq (local.get $ta) (i32.const ${PTR.STRING})))
-                (i32.and (f64.ne (local.get $fb) (local.get $fb)) (i32.eq (local.get $tb) (i32.const ${PTR.STRING}))))
-              (then
-                ;; both canonical interned (bit-ne already known) ⇒ unequal —
-                ;; skip the __str_eq call entirely (see STR_INTERN_BIT, layout.js)
-                (if (result i32)
-                  (i32.and
-                    (i32.eq (i32.and (i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const ${LAYOUT.AUX_SHIFT}))) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT}))
-                    (i32.eq (i32.and (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const ${LAYOUT.AUX_SHIFT}))) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT})))
-                  (then (i32.const 0))
-                  (else (call $__str_eq (local.get $a) (local.get $b)))))
-              (else (i32.const 0)))))))))))))`
+            ${eqIdentityChain()}))))))))`
 
   // Strict `===` fallback for the fully-dynamic (neither-side-a-literal) case
   // emitStrictEq delegates to — everywhere ELSE strict and loose equality agree

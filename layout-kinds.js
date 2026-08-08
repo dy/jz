@@ -30,7 +30,7 @@
  * instruction. See test/layout-kinds.js for the live probes that reproduce
  * each finding.
  */
-import { PTR, LAYOUT, ATOM, FORWARDING_MASK } from './layout.js'
+import { PTR, LAYOUT, ATOM, FORWARDING_MASK, STR_INTERN_BIT } from './layout.js'
 
 // Collection entry strides (module/collection.js) — not re-exported from
 // layout.js today (Slice 1 reads them at their source); duplicated here as
@@ -88,8 +88,15 @@ export const KIND_REGISTRY = {
     childPointers: 'none (leaf bytes) for all three shapes',
     forwarding: 'never relocates (module/string.js invariant, not in FORWARDING_MASK) — SLICE is out of __region_copy_rec\'s scope (unreachable trap; the parent it aliases may relocate, which would leave a dangling view — Slice-1 region program never produces slices, so this is dormant, not exercised)',
     identity: 'CONTENT identity — the one kind $__eq/$__eq_strict/$__same_value_zero special-case: bit-equal ⇒ trivially equal (SSO and canonical-interned strings), bit-different NaN-boxed STRING pair ⇒ __str_eq byte compare (skipped only when BOTH sides are STR_INTERN_BIT-marked, since two distinct canonicals can never be content-equal)',
+    // Executable field (Heap-kind registry Slice 3, .work/research.md §Heap-kind
+    // registry): drives layout-kinds.js's eqIdentityChain/sameValueZeroIdentityChain/
+    // mapHashStringArm generators below — `order` fixes this kind's position in the
+    // tag-dispatch chain (checked AFTER BIGINT; the tags are mutually exclusive so
+    // this is a byte-match constraint, not a soundness one).
+    identityArm: { kind: 'content', order: 1 },
     interopDecode: 'mem.read t===4: SSO_BIT → decodeSSO (7-bit-per-char unpack); else TEXT_DEC.decode over [off, off+len) read from the -4 header',
     typeofArm: '"string" — $__typeof\'s stringTest arm ($__ptr_type(v) === PTR.STRING)',
+    findings: ['identity-arm-divergence'],
   },
 
   ARRAY: {
@@ -203,6 +210,8 @@ export const KIND_REGISTRY = {
     childPointers: 'none (leaf, like a heap string byte run)',
     forwarding: 'GROWTH forwarding: never (not in FORWARDING_MASK — fixed 8B cell, content never changes post-allocation). REGION relocation is a distinct axis (audit-#14 item 4): __region_copy_rec fresh-copies an ephemeral BigInt cell like any leaf allocation — "no growth forwarding" must not be read as "region-immovable"',
     identity: 'CONTENT identity (CARRIER PROGRAM Slice 3, .work/carrier-representation-design.md — closes the divergence FINDINGS[eq-identity] documented): $__eq/$__eq_strict (module/core.js) and $__same_value_zero/$__map_hash (module/collection.js) all carry a PTR.BIGINT arm now — two independently-boxed equal-value BigInts compare EQUAL and hash to the same bucket, matching src/compile/emit.js\'s REF_EQ_KINDS comment\'s stated intent ("BIGINT needs __eq (heap-allocated, content compare)")',
+    // Executable field (Heap-kind registry Slice 3) — see STRING.identityArm's comment.
+    identityArm: { kind: 'content', order: 0 },
     interopDecode: 'mem.read t===5 (CARRIER PROGRAM Slice 3): reads the payload cell directly (`m.getBigInt64(off, true)`) and returns a real host `bigint` — closes FINDINGS[interop-decode]. Distinct from the UNBOXED raw-i64 jz:i64exp `s`-lane sentinel machinery (decodeBigintSentinel) — a separate, already-shipped mechanism for a different representation crossing the boundary, untouched by this fix',
     typeofArm: '"bigint" dynamically too now (CARRIER PROGRAM Slice 3): $__typeof (module/core.js) carries a PTR.BIGINT tag arm, landed ALONGSIDE emit.js\'s magnitude-heuristic TYPEOF.bigint arm (not replacing it yet — Slice 5 retires the heuristic once every R-recovery arm is independently verified). A PROVEN-bigint operand still statically folds to the literal "bigint" and never reaches $__typeof at all; the dynamic arm is what a boxed-but-unproven value (the test-only __box_bigint intrinsic, or a live carrier-box consumer) now hits, closing FINDINGS[typeof]',
     findings: [],
@@ -256,6 +265,109 @@ export const KIND_REGISTRY = {
   },
 }
 
+// ============================================================================
+// Identity-dispatch arm generation (Heap-kind registry Slice 3, .work/
+// research.md §Heap-kind registry — "3 $__eq/$__map_hash arms generated").
+// module/core.js's $__eq and module/collection.js's $__same_value_zero/
+// $__map_hash each hand-roll a tag-dispatch chain that special-cases the
+// CONTENT-identity kinds — every other kind needs no arm at all, relying on
+// the caller's own bit-equality fast path (pointer-bits identity IS bit
+// equality). Which kinds get an arm, and in what order, is now data: the
+// `identityArm` column on KIND_REGISTRY.STRING/BIGINT above (every other
+// row has no identityArm — nothing here reads one for them, so none is
+// seeded, matching this file's optional-column convention for `findings`).
+//
+// NOT a single generic WAT-synthesis template: $__eq and $__same_value_zero
+// realize the SAME STRING content-identity fact with two real textual
+// differences (a per-operand NaN re-guard, an interned-vs-interned short-
+// circuit — both present in $__eq, absent in $__same_value_zero). Forcing
+// them identical would be a BEHAVIOR change, which this slice's mandate
+// forbids ("moves the source of truth, not the behavior") — so the
+// divergence is named as FINDINGS[identity-arm-divergence] below instead of
+// silently unified, and each consumer keeps its own generator function.
+// ============================================================================
+
+export const CONTENT_IDENTITY_ORDER = Object.keys(KIND_REGISTRY)
+  .filter(k => KIND_REGISTRY[k].identityArm?.kind === 'content')
+  .sort((a, b) => KIND_REGISTRY[a].identityArm.order - KIND_REGISTRY[b].identityArm.order)
+
+// Every generator below hand-encodes CONTENT_IDENTITY_ORDER === ['BIGINT', 'STRING']
+// in its own nesting (BIGINT checked first) — this assert fires closed instead of
+// silently drifting if the registry's content-identity kind set or order ever
+// changes without the generator text being revisited.
+const assertContentOrder = (fnName) => {
+  if (CONTENT_IDENTITY_ORDER.length !== 2 || CONTENT_IDENTITY_ORDER[0] !== 'BIGINT' || CONTENT_IDENTITY_ORDER[1] !== 'STRING')
+    throw new Error(`${fnName}: KIND_REGISTRY's content-identity kinds changed (${CONTENT_IDENTITY_ORDER.join(',')}) — this hand-authored arm text needs updating to match`)
+}
+
+/** $__eq's (module/core.js) content-identity tag-dispatch chain, spliced in right
+ *  after $ta/$tb are extracted: BIGINT payload compare, else STRING (guarded
+ *  per-operand against a non-NaN false-tag alias, with an interned-vs-interned
+ *  short-circuit), else unequal. Verbatim source of truth for that span — see
+ *  test/layout-kinds.js's byte-identity proof. */
+export function eqIdentityChain() {
+  assertContentOrder('eqIdentityChain')
+  return `(if (result i32)
+              (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.BIGINT})) (i32.eq (local.get $tb) (i32.const ${PTR.BIGINT})))
+              (then (i64.eq
+                (i64.load (call $__ptr_offset (local.get $a)))
+                (i64.load (call $__ptr_offset (local.get $b)))))
+              (else
+            (if (result i32)
+              (i32.and
+                (i32.and (f64.ne (local.get $fa) (local.get $fa)) (i32.eq (local.get $ta) (i32.const ${PTR.STRING})))
+                (i32.and (f64.ne (local.get $fb) (local.get $fb)) (i32.eq (local.get $tb) (i32.const ${PTR.STRING}))))
+              (then
+                ;; both canonical interned (bit-ne already known) ⇒ unequal —
+                ;; skip the __str_eq call entirely (see STR_INTERN_BIT, layout.js)
+                (if (result i32)
+                  (i32.and
+                    (i32.eq (i32.and (i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const ${LAYOUT.AUX_SHIFT}))) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT}))
+                    (i32.eq (i32.and (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const ${LAYOUT.AUX_SHIFT}))) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | STR_INTERN_BIT})) (i32.const ${STR_INTERN_BIT})))
+                  (then (i32.const 0))
+                  (else (call $__str_eq (local.get $a) (local.get $b)))))
+              (else (i32.const 0)))))`
+}
+
+/** $__same_value_zero's (module/collection.js) content-identity chain — same
+ *  BIGINT arm as eqIdentityChain (byte-identical text), but a SIMPLER STRING
+ *  arm: see FINDINGS[identity-arm-divergence]. */
+export function sameValueZeroIdentityChain() {
+  assertContentOrder('sameValueZeroIdentityChain')
+  return `(if (result i32)
+              (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.BIGINT})) (i32.eq (local.get $tb) (i32.const ${PTR.BIGINT})))
+              (then (i64.eq
+                (i64.load (call $__ptr_offset (local.get $a)))
+                (i64.load (call $__ptr_offset (local.get $b)))))
+              (else
+            (if (result i32)
+              (i32.and
+                (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
+                (i32.eq (local.get $tb) (i32.const ${PTR.STRING})))
+              (then (call $__str_eq (local.get $a) (local.get $b)))
+              (else (i32.const 0)))))`
+}
+
+/** $__map_hash's (module/collection.js) STRING content-identity arm — an
+ *  early-return statement (map_hash's shape is sequential guards, not a
+ *  nested chain), hashes via __str_hash. */
+export function mapHashStringArm() {
+  return `(if (i32.and (f64.ne (local.get $f) (local.get $f))
+          (i32.eq (local.get $t) (i32.const ${PTR.STRING})))
+      (then (return (call $__str_hash (local.get $v)))))`
+}
+
+/** $__map_hash's BIGINT content-identity arm — hashes the payload cell via
+ *  __hash, folding away the two reserved sentinel buckets (0/1). */
+export function mapHashBigintArm() {
+  return `(if (i32.and (f64.ne (local.get $f) (local.get $f))
+          (i32.eq (local.get $t) (i32.const ${PTR.BIGINT})))
+      (then (local.set $h (call $__hash (i64.load (call $__ptr_offset (local.get $v)))))
+        (return (if (result i32) (i32.le_s (local.get $h) (i32.const 1))
+          (then (i32.add (local.get $h) (i32.const 2)))
+          (else (local.get $h))))))`
+}
+
 /**
  * Cross-consumer disagreements found while building the table above (Slice 1's
  * mandate: "report, don't pick a side silently"). Each entry names the
@@ -292,5 +404,33 @@ export const FINDINGS = [
       'module/core.js __region_copy_rec (traps: unreachable, for OBJECT/HASH/CLOSURE/TYPED/BUFFER/EXTERNAL)',
     ],
     probe: 'code-read only: unreachable from outside the self-host kernel\'s region rounds (the region program\'s own re-enable path, not yet live).',
+  },
+  {
+    id: 'identity-arm-divergence',
+    kinds: ['STRING'],
+    summary:
+      'Heap-kind registry Slice 3 (identity-dispatch arm generation, below) found this while extracting ' +
+      '$__eq\'s and $__same_value_zero\'s STRING content-identity arms verbatim: the two consumers realize the ' +
+      'SAME registry fact (STRING = content identity via __str_eq) with two real textual differences. (1) $__eq ' +
+      'guards EACH operand with `(f64.ne $fX $fX) && (tag===STRING)` before dispatching; $__same_value_zero ' +
+      'checks only `tag===STRING`, with no re-verification that the operand is actually NaN-boxed (relies on ' +
+      'the STRING tag bits being unreachable outside the NaN-payload space for a genuine finite number — ' +
+      'presumed sound today, not independently re-derived here, so a narrower guard than $__eq\'s own comment ' +
+      'says is needed to rule out "deref garbage"). (2) $__eq additionally short-circuits when BOTH operands ' +
+      'are STR_INTERN_BIT-marked (bit-different canonicals can never be content-equal, skips the __str_eq ' +
+      'call); $__same_value_zero has no such short-circuit — it always calls __str_eq, even for two distinct ' +
+      'canonical interned strings, a missed instance of the same optimization $__eq already applies. NOT fixed ' +
+      'by this slice (its mandate: move the source of truth, not the behavior) — each consumer keeps its own ' +
+      'generator function (eqIdentityChain / sameValueZeroIdentityChain below) preserving its own history ' +
+      'byte-for-byte; unifying them is a real, available follow-up, left to a future slice that can re-derive ' +
+      'whether $__eq\'s extra guard is load-bearing before either narrowing it or widening $__same_value_zero.',
+    consumers: [
+      'module/core.js $__eq (extra NaN re-guard + interned short-circuit)',
+      'module/collection.js $__same_value_zero (neither)',
+    ],
+    probe: 'code-read only: both arms are exercised by test/layout-kinds.js\'s existing Set/Map-keying and ' +
+      '=== probes, which pass under EITHER shape (the divergence is a latent perf/defense-in-depth gap, not ' +
+      'an observable behavior difference under any input reachable from jz source today) — see the byte-' +
+      'identity proof for the exact textual diff instead.',
   },
 ]

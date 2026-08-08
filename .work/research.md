@@ -800,11 +800,72 @@ compile-time-table precedent), migration per-consumer byte-identity-gated;
 divergence = a latent inconsistency FOUND. **Slice 1 LANDED**: table +
 shadow-check suite (test/layout-kinds.js, ~42 tests); its 4 PTR.BIGINT
 findings became carrier Slice 3's worklist. REMAINING: 2 __region_copy_rec
-generated from the forwarding column (gated on regions re-enable), 3
-$__eq/$__map_hash arms generated, 4 interop decode + i64exp lane fold-in,
-5 carrier read-side derives arms from registry (partially done via Slice 3).
+generated from the forwarding column (gated on regions re-enable), 4 interop
+decode + i64exp lane fold-in, 5 carrier read-side derives arms from registry
+(partially done via carrier Slice 3).
+
+**Slice 3 LANDED** (2026-08-08, the "3 $__eq/$__map_hash arms generated"
+item from the REMAINING list above): module/core.js's `$__eq` and
+module/collection.js's `$__same_value_zero`/`$__map_hash` no longer inline
+their content-identity dispatch text — they call generator functions
+(`eqIdentityChain`/`sameValueZeroIdentityChain`/`mapHashStringArm`/
+`mapHashBigintArm`) exported from layout-kinds.js, which is now imported by
+module/core.js and module/collection.js (production-consumed, per audit-#14
+item 4's demand — it stops being a leaf census). `$__eq_strict` needed no
+generator: it fully delegates to `$__eq` (a thin nullish-exception wrapper),
+no independent identity arm of its own.
+STRUCTURED COLUMN (the audit's "executable fields" ask): KIND_REGISTRY.
+{STRING,BIGINT} gained an `identityArm: { kind: 'content', order }` field
+(every other kind has none — nothing reads one for them, matching the
+file's existing optional-column convention for `findings`). `order` fixes
+BIGINT before STRING in the generated tag-dispatch chain (the tags are
+mutually exclusive, so this is a byte-match constraint on history, not a
+soundness one) — `CONTENT_IDENTITY_ORDER` derives the kind list + order from
+the registry, and every generator asserts it against the hard-coded shape
+of its own hand-authored text, so a future registry change that adds/
+reorders a content-identity kind fails CLOSED instead of silently drifting.
+MIGRATION METHOD: the exact hand-written WAT spans were extracted
+PROGRAMMATICALLY (paren-balance walk from each dispatch's opening `(if` to
+its matching close, not manual transcription) into the four generator
+functions verbatim, verified byte-identical against the original source via
+a throwaway script BEFORE the production files were touched, THEN swapped
+— the "prove equality, then move the source of truth" order the task
+specified. Golden-text pin tests (test/layout-kinds.js) freeze this: `is(
+eqIdentityChain(), <captured string>)` etc., 6 new tests — a future edit to
+either the generator or (if it existed) a hand-written twin would show as a
+string mismatch, not a distant behavior regression.
+FINDING (identity-arm-divergence, layout-kinds.js FINDINGS, cross-referenced
+from KIND_REGISTRY.STRING.findings) — surfaced by extracting the two
+eq-style chains verbatim, NOT papered over: `$__eq` and `$__same_value_zero`
+realize the SAME registry fact (STRING = content identity via `__str_eq`)
+with two real textual differences. (1) `$__eq` re-guards EACH operand with
+`f64.ne($fX,$fX) && tag===STRING` before dispatching (defends against a
+finite, non-NaN number whose bit pattern happens to alias the STRING tag —
+`$__eq`'s own comment names "ASCII content read as f64" as the concrete
+case); `$__same_value_zero` checks only the tag, with no such re-guard — a
+narrower defense than `$__eq`'s own stated reasoning says is needed. (2)
+`$__eq` additionally short-circuits when BOTH operands are STR_INTERN_BIT-
+marked (skips the `__str_eq` call — bit-different canonicals can never be
+content-equal); `$__same_value_zero` has no such short-circuit, a missed
+instance of the same optimization `$__eq` already applies. NOT unified by
+this slice (explicit mandate: move the source of truth, not the behavior)
+— each consumer keeps its own generator function, preserving its own
+history byte-for-byte; a future slice can re-derive whether `$__eq`'s extra
+guard is load-bearing before either narrowing it or widening
+`$__same_value_zero`.
+GATES (2026-08-08): per-arm byte-identity proof — all 4 generators verified
+byte-identical to the captured hand-written text at migration time (script,
+not committed as a test) + 6 golden-text pin tests in test/layout-kinds.js
+(51 tests total in that file now, all green, incl. under
+`JZ_DEBUG_INVARIANTS=1`). Full battery, kernel-parity 33/33, opt0/opt3/wasi,
+selfhost leg (selfhost.js 21/21; selfhost-perf.js's warm-instance pin is
+machine-noise, see the isolation evidence under §FeaturePlan freeze Slice 3),
+and the 189-case size-sweep are the SAME combined verification pass reported
+there (both slices landed together) — 0 byte diffs, 2-3 pre-existing
+unrelated failures depending on leg. `npm run build` ×2 SHA-256 identical.
 
 ## [ ] FeaturePlan freeze (was featureplan-freeze-design.md; audit-#13 item 2)
+
 
 `ctx.features` is one mutable bag written across four phases; contract
 enforced by nothing — the bigint module-ordering hazard + absent-dyn-key

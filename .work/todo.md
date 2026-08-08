@@ -6,6 +6,36 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## heap-kind registry Slice 3: $__eq/$__map_hash arms generated — landed (2026-08-08)
+Per .work/research.md §Heap-kind registry. Local only.
+
+$__eq/$__same_value_zero/$__map_hash's content-identity (STRING/BIGINT)
+dispatch arms are now GENERATED — layout-kinds.js exports
+eqIdentityChain/sameValueZeroIdentityChain/mapHashStringArm/mapHashBigintArm,
+called from module/core.js and module/collection.js instead of inlining the
+WAT text (layout-kinds.js is now production-consumed, closing audit-#14 item
+4's "becomes the authority" demand for this arm class). $__eq_strict needed
+no generator — it fully delegates to $__eq. KIND_REGISTRY.{STRING,BIGINT}
+gained a structured `identityArm: {kind, order}` field driving which kinds
+get an arm and in what order. Migration was extraction-verified byte-
+identical BEFORE the swap (paren-balanced programmatic extraction, not
+manual retyping) — 6 new golden-text pin tests in test/layout-kinds.js lock
+the generated text going forward.
+FINDING (identity-arm-divergence, layout-kinds.js FINDINGS): $__eq and
+$__same_value_zero realize STRING's "content identity" fact differently —
+$__eq has an extra per-operand NaN re-guard AND an interned-short-circuit
+optimization that $__same_value_zero lacks. Reported, not unified (output
+must not change) — left for a future slice.
+GATES (shared verification pass with the typedView slice above): per-arm
+byte-identity (script, pre-swap) + 6 golden pin tests, full battery
+(3400/3402 pass, 2 pre-existing unrelated test/optimizer.js failures),
+kernel-parity 33/33, opt0/opt3/wasi legs green (wasi's 3rd pre-existing
+failure — see the typedView entry above), test:self (selfhost.js 21/21;
+selfhost-perf.js's warm-instance pin is machine-noise, confirmed by
+isolating this slice's diff alone in its own worktree+build — passed
+cleanly at 1.018x in a quiet moment), the 189-case + 5-probe byte-identity
+sweep (0 diffs), and `npm run build` ×2 SHA-256-identical.
+
 ## typedView reclassification (FeaturePlan freeze Slice 3) — landed (2026-08-08)
 Per .work/research.md §FeaturePlan freeze. Local only.
 

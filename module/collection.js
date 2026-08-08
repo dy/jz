@@ -20,6 +20,7 @@ import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js
 import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex } from '../layout.js'
 import { ssoEncode } from './string.js'
 import { ERR } from '../err-codes.js'
+import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
 // NaN-box bits of the SSO string 'length' — computed once; see the STRING
@@ -1280,18 +1281,7 @@ export default (ctx) => {
             ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[eq-identity]):
             ;; SameValueZero dedup by BigInt VALUE, not pointer-bits — the
             ;; __eq twin (module/core.js) of the same registry-column fix.
-            (if (result i32)
-              (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.BIGINT})) (i32.eq (local.get $tb) (i32.const ${PTR.BIGINT})))
-              (then (i64.eq
-                (i64.load (call $__ptr_offset (local.get $a)))
-                (i64.load (call $__ptr_offset (local.get $b)))))
-              (else
-            (if (result i32)
-              (i32.and
-                (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
-                (i32.eq (local.get $tb) (i32.const ${PTR.STRING})))
-              (then (call $__str_eq (local.get $a) (local.get $b)))
-              (else (i32.const 0))))))))))`
+            ${sameValueZeroIdentityChain()})))))`
 
   ctx.core.stdlib['__map_hash'] = `(func $__map_hash (param $v i64) (result i32)
     (local $f f64) (local $t i32) (local $h i32)
@@ -1300,20 +1290,13 @@ export default (ctx) => {
     ;; NaN-boxed strings carry the tag inside a NaN payload. Regular numbers
     ;; (e.g. f64.convert_i32_s offsets used as __ihash keys) can alias mantissa
     ;; bits onto the type slot — gate the str-hash dispatch on actual NaN.
-    (if (i32.and (f64.ne (local.get $f) (local.get $f))
-          (i32.eq (local.get $t) (i32.const ${PTR.STRING})))
-      (then (return (call $__str_hash (local.get $v)))))
+    ${mapHashStringArm()}
     ;; CARRIER PROGRAM Slice 3 — registry-derived 'eq-identity' arm
     ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[eq-identity]): hash
     ;; the PAYLOAD, not the pointer, so equal-value boxes land in the same
     ;; bucket — a hash that disagreed with __same_value_zero's own content
     ;; compare would silently break Set/Map lookup even after that fix.
-    (if (i32.and (f64.ne (local.get $f) (local.get $f))
-          (i32.eq (local.get $t) (i32.const ${PTR.BIGINT})))
-      (then (local.set $h (call $__hash (i64.load (call $__ptr_offset (local.get $v)))))
-        (return (if (result i32) (i32.le_s (local.get $h) (i32.const 1))
-          (then (i32.add (local.get $h) (i32.const 2)))
-          (else (local.get $h))))))
+    ${mapHashBigintArm()}
     (if (f64.eq (local.get $f) (f64.const 0)) (then (return (i32.const 2))))
     (if (i32.and (i32.eq (local.get $t) (i32.const 0)) (f64.ne (local.get $f) (local.get $f)))
       (then (return (i32.const 3))))
