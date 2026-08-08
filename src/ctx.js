@@ -655,6 +655,10 @@ export function reset(proto, globals, bridge) {
     cseId: 0,           // monotonic id for CSE temps (freshCseName) — per-compile, so warm-process WAT text is deterministic
                         // (loop-model freshLoopId). Per-compile (reset here), not a module-global —
                         // so compile(P) is deterministic regardless of prior compiles in the process.
+    loopPlanId: 0,      // monotonic id for loop-model's HIR provenance LoopPlan records
+                        // (.work/research.md §BodyModel slice 4, freshLoopPlanId) — a SEPARATE
+                        // space from loopXformId: identifies a loop RECORD, never names anything
+                        // emitted. Per-compile (reset here) for the same determinism reason.
   }
 
   // Inspection sink. Populated by compile() only when transform.inspect is true.

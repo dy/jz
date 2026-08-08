@@ -67,6 +67,7 @@ import {
 import { isBoundName } from '../ir.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from './flow-types.js'
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
+import { loopPlanLink, freshLoopPlanId } from './loop-model.js'
 
 const stringOps = (node) => {
   const rep = typeof node === 'string' ? repOf(node) : null
@@ -1038,10 +1039,29 @@ function freshenUnrolledScalarBindings(body, ir) {
   }
   if (!rename.size) return ir
 
+  // HIR provenance link upkeep (.work/research.md §BodyModel slice 4 — found via its own
+  // shadow-assert, vectorize.js's assertLoopPlanAgrees): this rename mutates local names IN
+  // PLACE on the ALREADY-linked block node the nested loop's own 'for' emission minted a
+  // LoopPlan for — the block's IDENTITY survives (same array), so loopPlanLink still resolves
+  // it, but its recorded `ivName`/`guardName` (captured pre-rename) would go STALE if a renamed
+  // name was the loop's own induction/guard variable — exactly the small-const-unrolled-outer-
+  // loop-with-nested-loop shape (`splitScratch`'s only use case). Keep the fact accurate rather
+  // than evict it: a `block` descendant with a link gets its plan's name fields carried through
+  // the SAME rename map. Metadata-only — never touches `ir`'s own content, so this cannot affect
+  // emitted bytes.
   const rewrite = n => {
     if (!Array.isArray(n)) return
     if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && rename.has(n[1]))
       n[1] = rename.get(n[1])
+    else if (n[0] === 'block') {
+      const plan = loopPlanLink.get(n)
+      if (plan) {
+        const ivKey = plan.ivName != null ? `$${plan.ivName}` : null
+        if (ivKey && rename.has(ivKey)) plan.ivName = rename.get(ivKey).slice(1)
+        const gKey = plan.guardName != null ? `$${plan.guardName}` : null
+        if (gKey && rename.has(gKey)) plan.guardName = rename.get(gKey).slice(1)
+      }
+    }
     for (let i = 1; i < n.length; i++) rewrite(n[i])
   }
   for (const n of ir) rewrite(n)
@@ -6854,6 +6874,12 @@ export const emitter = {
     // only the resulting UPPER half is installed here.
     const guardName = Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && typeof cond[1] === 'string' ? cond[1] : null
     const guardBoundRange = guardName ? intExprRange(cond[2]) : null
+    // HIR provenance link fact (.work/research.md §BodyModel slice 4): the guard's RHS is a
+    // provable COMPILE-TIME CONSTANT exactly when its proven range collapses to a single point —
+    // the WAT-level bound the vectorizer later sees must be that SAME i32.const when so (see
+    // loop-model.js's loopPlanLink doc + vectorize.js's assertLoopPlanAgrees). No new semantics:
+    // reuses guardBoundRange, above.
+    const boundConst = guardBoundRange && guardBoundRange[0] === guardBoundRange[1] ? guardBoundRange[0] : null
     let guardHadPrev = false, guardPrev
     if (guardBoundRange) {
       const map = loopGuardHi()
@@ -6874,7 +6900,20 @@ export const emitter = {
     }
     if (step) loopBody.push(...emitVoid(step))
     loopBody.push(['br', loop])
-    result.push(['block', brk, ['loop', loop, ...loopBody]])
+    const loopBlockNode = ['block', brk, ['loop', loop, ...loopBody]]
+    // HIR provenance link (.work/research.md §BodyModel slice 4): stamp this WAT loop's
+    // originating HIR facts so the vectorizer's dispatch can shadow-assert against them — see
+    // loop-model.js's loopPlanLink doc for the identity/fail-open contract. Minted for every
+    // plain loop lowering, whether or not the vectorizer ever matches it (cheap: an id plus up
+    // to two small facts, no body walk).
+    loopPlanLink.set(loopBlockNode, {
+      id: freshLoopPlanId(),
+      ivName: counterName,
+      hull: counterRange ? { lo: counterRange[0], hi: counterRange[1] } : null,
+      guardName,
+      boundConst,
+    })
+    result.push(loopBlockNode)
     ctx.func.stack.pop()
     return result.length === 1 ? result[0] : result
   },

@@ -20,6 +20,26 @@ import { findMutations } from './analyze-scans.js'
 // id space collision-free across transforms.
 export const freshLoopId = () => ctx.transform.loopXformId++
 
+// HIR provenance link (.work/research.md §BodyModel slice 4): connects a WAT-level loop block
+// node (the vectorizer's own scaffold — matchBlockLoop's `blockNode`, src/optimize/vectorize.js)
+// back to the facts proved about it HERE, at HIR-lowering time — its induction-variable name and
+// the counter/guard hull `forCounterRange` proves (src/static.js) — so BodyModel can eventually
+// consult these instead of re-deriving them from the lowered WAT. Landed as the link + a DBG
+// shadow-assert only (vectorize.js's assertLoopPlanAgrees) — no consumer yet.
+//
+// Keyed by WAT block-node IDENTITY via a WeakMap, not a stamped property, per the design's
+// BINDING pre-trio spec (1): a rewrite that mints a fresh block array (any AST-to-WAT pass
+// running between emission — src/compile/emit.js's `'for'` handler, the sole writer — and the
+// vectorizer walk that reads it) naturally drops out of the map. A miss is the CORRECT
+// "decline, don't guess" answer for a rewritten loop (spec 2: fail-open), never an error —
+// every reader must treat `loopPlanLink.get(node) === undefined` as "no HIR facts available",
+// not as a negative fact about the loop.
+export const loopPlanLink = new WeakMap()
+
+// Separate id space from freshLoopId (above): a LoopPlan id identifies a HIR loop RECORD, never
+// used to name anything emitted, so it must not share a counter with generated-local suffixes.
+export const freshLoopPlanId = () => ctx.transform.loopPlanId++
+
 // Post-prepare number literals are sparse-array holes `[<hole>, v]` (length 2, the op
 // slot `n[0]` is the elided hole == null). `litVal` returns the numeric value or null;
 // `litN(n, k)` tests for the exact literal `k`.
