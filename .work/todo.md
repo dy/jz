@@ -7138,3 +7138,32 @@ per-consumer byte-identity-gated (the registry/BodyModel discipline);
 slices land green individually. ACCEPTANCE: the §17 keyedWrite class
 collapses (the carrier flip's dependency) + audit-#15 items 1-3 close +
 the slot* family becomes projections of ONE SlotFact.
+
+## PRODUCT-LATTICE Slices 0-1 LANDED (2026-08-08)
+Design mechanism-reviewed and BINDING (`.work/lattice-design.md` OQ1/OQ2/OQ4
+verdicts + COORDINATOR REVIEW COMPLETE). Slice 0 (`b538cea8` rename,
+`9e22eacd` joinKinds+Fact doc): FINDING-5's `invalidateBodyFacts` →
+`clearNarrowingBodyState` rename precondition (narrow.js, 2 call sites) +
+`joinKinds(fact, key, observedSet)` union primitive and the `Fact` JSDoc
+shape landed as dead code in param-reps.js, zero callers. Slice 1
+(`83f034b8`): `censusKindsOf(name)` opt-in projection in kind.js, per the
+COORDINATOR RULING on OQ1 (census-derived kind unions surface ONLY through
+an opt-in projection, never the general `possibleKinds` field — the
+presentVal precedent). Re-exposes dictValueKindOf/mapValueKindOf's existing
+single-kind-or-none answer through the Set/joinKinds vocabulary; zero
+consumers; dictValueKindOf/mapValueKindOf/censusMaybeUndefinedKind
+byte-for-byte untouched. Full AS-LANDED account (incl. the Slice-1
+file-scope reconciliation — "Files: src/kind.js" vs. genuine union
+precision needing producer-side changes the design's own Slice 7 already
+claims) in `.work/lattice-design.md`'s AS-LANDED sections.
+GATES (both slices, run together post-Slice-1): byte-identity — 58-case/
+174-compile bench corpus (all non-graph bench/ cases × O0/O2/O3) vs. a
+disposable `git worktree` at pre-slice HEAD (93d04a44), 0 diffs · full
+battery `npm test` 3407/3415 pass (2 pre-existing fails, confirmed
+unchanged against the same worktree baseline) · kernel-parity 33/33
+byte-identical · fuzz `node test/fuzz.js --count=2000 --opt=0,3` seeds
+1..2000 AND seeds 2001..4000 (`--seedStart=2001`) — 0 divergence both runs
+· `npm run build` ×2 byte-identical (dist/jz.js sha256 `01b4f258…`,
+dist/jz.wasm sha256 `47dccc12…`, dist/interop.js sha256 `ef42c9da…`, both
+rounds). Both slices GREEN, no deviation requiring a coordinator re-ruling.
+Next: Slice 2 (`recvArrTyped` reframed as `isDisjointFrom` precedent).

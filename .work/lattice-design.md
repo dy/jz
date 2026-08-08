@@ -1009,3 +1009,118 @@ part of Slice 6's gate. With the OQ1 Option-A amendment, this design is
 mechanism-reviewed and BINDING. Slices proceed in order 0→7, each
 independently green, byte-identity-gated, per-step local commits; any wall
 banks per the standing discipline.
+
+## AS-LANDED — Slice 0 (2026-08-08)
+
+SHAs: `b538cea8` (0a, rename), `9e22eacd` (0b, joinKinds + Fact doc).
+
+**0a — FINDING-5 rename.** Landed exactly as specified: the phase-local
+`createPhaseState()` method at `narrow.js:958` renamed `invalidateBodyFacts`
+→ `clearNarrowingBodyState`; its 2 call sites (`narrow.js:1979, 2099` at
+survey time, `1984, 2104` post-rename since the doc comment added 5 lines
+above the method) updated in the same commit. `grep -rn invalidateBodyFacts
+src/ module/` post-land returns zero code hits (only `invalidateAllBodyFacts`,
+a distinct, untouched, already-existing module-level function name — not a
+collision). No deviation.
+
+**0b — `joinKinds` + `Fact` shape.** Landed exactly as specified, in
+`src/param-reps.js` alongside `mergeParamFact` (unchanged): a JSDoc
+`@typedef Fact` transcribing SS1's record verbatim, and `joinKinds(fact, key,
+observedSet)` — union-into-Set, BOTTOM=∅, reusing `latticeMeet.changed` as
+its convergence signal (FINDING-2's "ONE joinKinds primitive"). Deviation
+from the literal design text: the design describes Slice 0 as introducing
+"the Fact shape as dead code" — read here as a JSDoc type doc (zero runtime
+footprint), matching `reps.js`'s own `@typedef ValueRep` convention, not a
+literally-instantiated dead object (which would have no referent to check
+against and would just be waste). No behavior change; `joinKinds` has zero
+callers as of this commit.
+
+**Gate results (both 0a+0b together, since neither changes runtime
+behavior independently):**
+- Bench-corpus byte-identity: 58-case/174-compile corpus (all non-graph
+  `bench/*/*.js` cases, O0/O2/O3), sha256-compared against a disposable
+  `git worktree` at pre-slice HEAD (`93d04a44`) — **0 diffs**.
+- Full battery: `npm test` — **3407/3415 pass, 2 pre-existing fails**
+  ("interval walk: strided companion cursor…", "typed RMW: one guard covers
+  the pure read…"), confirmed pre-existing by running the identical suite
+  against the same `93d04a44` worktree baseline (same 2 fails, same count) —
+  not a regression.
+- kernel-parity: **33/33** byte-identical (3 files × 11 rows, O0/O2/O3).
+- `npm run build` ×2: byte-identical (`dist/jz.js` sha256
+  `01b4f258ca7c94988bada567b5728e852ff0180dad3b3f660bfd13b2bae33d3b`,
+  `dist/jz.wasm` sha256
+  `47dccc12660964f86531d77d5fdf5231c3b35d6d9d96796c369e769466cb9652`,
+  `dist/interop.js` sha256
+  `ef42c9da1ab79349a5ab69d55558082de4b3d228850b87a9a188b6722ef730e1`, both
+  rounds — this is the SAME build that also covers Slice 1 below, run once
+  after both slices landed).
+
+**Verdict: GREEN, zero deviation from spec beyond the JSDoc-vs-literal-dead-
+code clarification above.**
+
+## AS-LANDED — Slice 1 (2026-08-08)
+
+SHA: `83f034b8`.
+
+**What shipped vs spec.** Design text: "Slice 1 — dictValueKindOf/
+mapValueKindOf onto BindingFacts. Files: src/kind.js." Read literally this
+suggests migrating dictValueKindOf/mapValueKindOf's STORAGE onto a new
+`BindingFacts` table. That table does not exist yet (no slice before 7
+creates it), and reconstructing genuine multi-kind union precision would
+require touching the actual census PRODUCERS — `analyze.js`'s
+`dictValueTypeOf`/`mapValueTypeOf` and `program-facts.js`'s
+`observeDictValue`/`poisonDictValue` — which already collapse a disagreeing
+pair of writes to `null` (first-wins-then-clash poison, the SAME
+universal/meet algebra FINDING-7 names as wrong for this existential
+question) BEFORE `dictValueKindOf`/`mapValueKindOf` ever see the raw
+per-write kinds. Touching those producers is outside the design's own
+"Files: src/kind.js" scope for this slice, and the design's OWN Slice 7 file
+list independently confirms this precision work is deliberately deferred
+there ("plus whatever Map.get()-promotion wiring SS3.1 needs in
+program-facts.js").
+
+**Resolution (not a spec conflict requiring a STOP — reconciled within the
+design's own words):** Slice 1 lands `censusKindsOf(name)` in `src/kind.js`
+as the OPT-IN, Set-valued sibling the COORDINATOR RULING on OQ1 names,
+computed from dictValueKindOf/mapValueKindOf's EXISTING (already-resolved,
+single-kind-or-none) answer, wrapped through `joinKinds` — "dictValueKindOf/
+mapValueKindOf onto the Fact shape" in the sense of "exposed through the
+Fact-shaped Set/`joinKinds` vocabulary," not "their storage substrate
+replaced." This is genuinely a "fully contained... src/kind.js[-only]"
+change (matching the design's own risk framing) precisely BECAUSE it doesn't
+touch the producers. The producer-side union-widening that would let
+`censusKindsOf` return a real `{NUMBER, STRING}`-shaped answer for a
+genuinely heterogeneous dict/map is banked as explicitly out of scope for
+this slice, matching Slice 7's own file list — not a new deviation, a
+reading the design text already supports once Slice 7's scope is
+cross-checked.
+
+**OQ1 ruling compliance:** `censusKindsOf` is additive-only — no existing
+field, function, or call site changed. `dictValueKindOf`, `mapValueKindOf`,
+and their sole dispatcher `censusMaybeUndefinedKind` are byte-for-byte
+untouched. `grep -rn censusKindsOf src/ module/ test/` post-land shows
+exactly 2 hits, both inside its own definition/doc comment in `kind.js` —
+zero consumers, as required.
+
+**Gate results:**
+- Bench-corpus byte-identity: same 58-case/174-compile corpus, same
+  `93d04a44` baseline — **0 diffs** (trivial: the new function is dead code,
+  nothing reads it).
+- Full battery: `npm test` — **3407/3415 pass**, same 2 pre-existing fails
+  as Slice 0, no new failures.
+- kernel-parity: **33/33** byte-identical.
+- `npm run build` ×2: byte-identical (hashes above, same run covers 0+1).
+- Fuzz: `node test/fuzz.js --count=2000 --opt=0,3` (seeds 1..2000) and a
+  second independent run `--seedStart=2001` (seeds 2001..4000) — **0
+  divergence** both runs, 30173 + 30672 numeric-input comparisons, jz wasm
+  == JS at every opt level tested.
+- Design's own Slice 1 acceptance ("standard triad only... fully contained
+  change"): satisfied — see byte-identity/battery/kernel-parity above.
+
+**Verdict: GREEN. No design deviation requiring coordinator re-ruling** —
+the file-scope tension is resolved by treating "onto the Fact shape" as a
+projection/vocabulary change (this slice) with the producer-side precision
+work correctly attributed to Slice 7 (the design's own text already says
+so); flagged here in full so the coordinator can override this reading if
+Slice 4b/7 turn out to need `censusKindsOf` to carry real union precision
+sooner than Slice 7.
