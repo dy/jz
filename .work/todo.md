@@ -6630,3 +6630,16 @@ gated per slice (177/180-style zero-WAT-diff discipline), ordered low-risk
 (BodyModel unwired + shadow-assert vs current output) to high-risk (trio,
 each its own slice, last). Decision left to whoever picks it up next — not
 landed, no source touched.
+
+## PROPERTY-KIND TRACING — coordinator note (2026-08-07, follow-on to §18's zero-effect finding)
+§18's sharpened lever ("prove `const x = ctx.schema.slotTypes` is a MAP")
+has a symmetry worth exploiting: per-schema-slot KIND facts are exactly what
+the carrier program just built (slotTypes census, slotBigintBoxed/Proven).
+A schema slot whose every write is a provable `new Map()` gives every
+static read of that slot VAL.MAP — the same census→read-side derivation,
+one more column. If that column exists, mapValueKindOf's receiver gate
+fires for the ctx-property idiom and §18's (sound, already-written,
+reverted — recover from git) disjointness logic becomes live. Scope check
+first: does the slot-write census see ctx.schema's construction site
+(src/ctx.js reset()) when compiling self.js? If ctx construction is opaque
+to it, THAT is the real wall — verify before building.
