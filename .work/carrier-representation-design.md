@@ -2242,3 +2242,172 @@ unaffected by and not blocking either lever above.
 push:** `b4ce1f12` (Task 1 fix), `54336572` (Task 2 pin), this entry
 filed separately.
 
+## §18. Map.get() kind-DISJOINTNESS census — ATTEMPTED, WALL HIT, banked
+(2026-08-07, .work/todo.md "MAP.GET KIND PROMOTION" seed, §17's own named
+lever)
+
+**The revert-dodge argument (verified BEFORE writing code, per the seed's own
+gate): confirmed sound, still holds.** `git show f8f61591`/`1db8e55e`: the
+reverted `mapValueKindOf` consumer (audit-#10 P0) promoted a `.get()` read to
+an EXACT `VAL.*` kind at a VALUE-consuming site (`VT['()']`'s `.get`
+short-circuit, feeding arithmetic/`String()`/BigInt dispatch downstream) —
+unsound two ways: an absent key reads real `undefined` regardless of the
+observed kind (`m.get(missing) + 1` gave `undefined` instead of `NaN`), and
+the census keys by syntactic receiver name, so a write through an alias is
+invisible to it. This session's design dodges BOTH, structurally, not by
+being more careful with the same shape: (1) the fact is consumed ONLY as a
+boolean "is this receiver ever an OBJECT-schema instance" question inside
+`collectSlotWriteHazards`'s own `kindOf` (src/compile/program-facts.js) —
+never a value, never fed to representation/emission/arithmetic — so even in
+the worst case (`.get()` on an absent key really does yield `undefined` at
+runtime) the disjointness property still holds, since `undefined` is not a
+`VAL.OBJECT` member either; (2) alias safety is not re-derived — it is
+`mapValueKindOf`'s OWN pre-existing `ctx.types.nameEscapes` gate (kind.js),
+the exact whole-program alias fact the audit named as missing, unchanged and
+reused as-is. Both arguments held through implementation and every gate run
+below — no soundness issue was found in review, testing, or the two builds
+that surfaced the WALL below (which is a coverage gap, not a soundness gap).
+
+**Implementation** (src/compile/program-facts.js, `collectSlotWriteHazards`):
+a new closure-local `collectMapGetExemptLocals(bodyRoot)`, computed per
+function body (and once for the top-level `ast`) alongside the existing
+`curSids`/`curParamVts`, feeding a `curGetExempt` map consulted ONLY as the
+LAST fallback in `kindOf`'s own `??` chain (`curParamVts?.get(obj) ??
+repOf(obj)?.val ?? valTypeOf(obj) ?? curGetExempt?.get(obj) ?? null`) — so it
+can only WIDEN an already-fail-closed decision, never override a resolved
+one. For a local name `arr`, it joins (first-wins-then-clash, same lattice
+`observeSlot`/`observeMapValue` already use elsewhere in this file) the kind
+of EVERY write site (decl init or reassignment, including through
+non-shadowing nested closures — mirrors `observeNestedDictMapWrites`'s
+`collectAllBoundNames` shadow discipline just above it) to `arr` anywhere in
+the body: a `.get()`-shaped RHS resolves via the EXISTING, unmodified,
+already-dormant `mapValueKindOf` (kind.js); any other RHS resolves via this
+same `kindOf` closure. Any unresolved site, any `VAL.OBJECT` site, or any
+disagreement between two sites drops the name entirely (never stored). A
+second, independently-motivated fix was needed alongside it: the Map's OWN
+value-kind census (`observeProgramSlots`'s `observeMapValue`, unchanged
+since 1db8e55e/f8f61591, feeds the dormant `mapValueValType` fact
+`mapValueKindOf` reads) POISONS on exactly the canonical self-referential
+idiom the seed names — `let arr = m.get(k); if (!arr) { arr = []; m.set(k,
+arr) }` — because `writeVT(cargs[1])`, resolving the `.set()` call's OWN
+value argument, sees the bare name `arr` and can't resolve it in general
+(that's the very fact in question, circularly). Added
+`collectMapSetReachingDefs(bodyRoot, paramVts)`: a purely SYNTACTIC
+adjacency check (no general dataflow) — is a `.set()` call's IMMEDIATELY
+PRECEDING SIBLING, in the same `;`-statement list, a plain `name = rhs`
+assignment to the same bare name with an independently resolvable kind? If
+so, straight-line execution guarantees the value at the call (no branch, no
+loop iteration, no intervening write can occur between two direct AST
+siblings) — sound regardless of what OTHER, unresolvable writes reach `name`
+elsewhere. Wired as a `writeVT(...) ?? setHints.get(node)` fallback at both
+existing `.set()` observation sites (`visit`'s branch and
+`observeNestedDictMapWrites`'s nested-closure branch). Verified working in
+isolation: a minimal repro (`const buckets = new Map(); const observeSlot =
+(key, idx, v) => { let arr = buckets.get(key); if (!arr) { arr = [];
+buckets.set(key, arr) }; arr[idx] = v }`) flips from `keyedWrite` (hz.all) to
+`keyedExempt` at the late/post-narrowing pass, for both fixes.
+
+**Diagnostic (Gate 1, `JZ_DEBUG_HZALL`, generation-tagged `early`/`late` —
+the §17 precedent's own instrumentation, re-added and stripped again before
+this commit) — THE WALL, found here, not anticipated by §17's own diagnosis:
+zero effect on the real `scripts/self.js` compile.** Two independent full
+self-host builds (a disposable `git worktree` at HEAD e16e5981 with only the
+counters added, vs. the working tree with the full fix), run twice
+(comparing byte-for-byte identical counter output both times): `{"keyedWrite
+.early":319,"keyedExempt.early":54,"objectAssign":18,"keyedExempt.late":80,
+"keyedWrite.late":324}` — IDENTICAL on both trees, before and after the fix,
+down to the exact integer. **Root-caused, not merely observed**: the
+dominant `keyedWrite` sites are the compiler's OWN census helpers this exact
+file defines — `observeSlot`/`poisonSlot`/`poisonCtor`
+(src/compile/program-facts.js:648-671, the identical idiom the seed names,
+`let arr = slotTypes.get(sid); if (!arr) { arr = []; slotTypes.set(sid, arr)
+}; arr[idx] = …`) — whose Map receiver (`slotTypes`, `slotCtors`,
+`dictValueTypes`, `mapValueTypes`, …) is declared `const slotTypes =
+ctx.schema.slotTypes` (line 624-628): a PROPERTY READ off host compiler
+state, not a locally-provable `new Map()` literal or a narrowed parameter.
+`mapValueKindOf`'s (and `observeMapValue`'s) receiver gate is a HARD
+classification — `valTypeOf(recvName) === VAL.MAP`, proven ONLY via the
+`new Map()` CALLEE_VAL/`recordGlobalRep` path (kind-traits.js) — which never
+fires for a property-aliased binding; this compiler's kind system does not
+trace object-property kinds through an arbitrary `const x = obj.prop` hop
+(doing so would need to determine `ctx.schema.slotTypes`'s OWN kind, which
+is exactly the same class of schema/property-kind inference this whole
+`hz.all` hazard system exists to gate — the identical problem one level up).
+Confirmed directly, not inferred, via two isolated minimal repros: a
+`const buckets = new Map()` MODULE-LEVEL literal receiver (the case my fix
+targets) correctly flips `keyedWrite`→`keyedExempt`; the SAME idiom with
+`buckets` threaded in as a plain function PARAMETER (`const observeSlot =
+(buckets, key, idx, v) => …` — structurally identical to how
+`observeSlot`/`poisonSlot` actually receive `slotTypes`, as a closure
+variable bound outside their own body rather than a fresh literal) stays
+`keyedWrite` — zero exemption, matching the real self.js measurement
+exactly. **Per Gate 1's own stated pass condition ("the dominant keyedWrite
+class should collapse") — it does not. Stopping here, per the design brief's
+own "if it does NOT dodge [the blocker], bank the finding and STOP — do not
+force" discipline** (that clause named the SOUNDNESS dodge specifically;
+this session's finding is a DIFFERENT, EMPIRICAL dodge-of-the-actual-target
+failure, surfaced only by running the gate honestly rather than assuming the
+seed's own diagnosis — §17 traced "arr's kind is unresolvable" but did not
+check whether the RECEIVER itself was ever provably a `Map` to begin with).
+
+**Decision: revert the source change, keep nothing landed.** Unlike
+§11's Bug 1 (an independently real, always-correct fix kept regardless of
+the flip's own outcome), this addition is pure speculative complexity for
+the stated target once Gate 1 fails it: real per-compile cost (two extra
+whole-body walks, `collectMapGetExemptLocals` + `collectMapSetReachingDefs`,
+on every function, forever, both `JZ_CARRIER_BOX` on and off — this is NOT a
+flag-gated addition) for a zero measured benefit on the flagship program,
+and no independent corpus/benchmark demonstrating value for the narrower
+module-level-literal-Map case it WOULD reach. Reverted
+`src/compile/program-facts.js` to HEAD (`git show HEAD:… >`, not `checkout`)
+— `src/kind.js` was never permanently touched (temporary diagnostic prints
+added and removed within-session, confirmed zero diff against HEAD before
+concluding). `dist/jz.wasm` rebuilt fresh from the restored HEAD source to
+clear the three experimental rebuilds this session produced.
+
+**What a future attempt needs, concretely, before trying this lever again**:
+the ACTUAL blocker is not "prove `.get()`'s value kind" (this session solved
+that, including the self-referential `.set()`-writes-back-the-`.get()`-
+result circularity) — it is "prove a `const local = obj.prop` binding is a
+`Map` at all," when `obj.prop` was itself initialized to `new Map()`
+somewhere else entirely (in this exact case, `ctx.js`'s own `resetFactStore`/
+session-init, a host-state initializer, not something the compiled PROGRAM's
+own schema census would ordinarily need to track). That is a materially
+larger, separate property-kind-tracing feature — likely its own
+dedicated-session design, same discipline §11/§16 already established for
+"a real fix exists, but not one this session's remaining time can safely
+absorb-and-verify." Gates 2-6 (kernel-parity `JZ_CARRIER_BOX=1` dict clean,
+`test:wasm` to completion, flag-forced battery + watr 35/35 + kernel-oracle
++ fuzz 2000×4, default byte-identity) were NOT run — Gate 1 is the FIRST
+gate in the brief's own ordered list, and it is the one this session's fix
+fails; running the later, far more expensive gates against a change that
+provably does not move the target metric would itself be the "force it
+anyway" this discipline exists to prevent. Post-revert sanity (not the full
+gate battery, since nothing is landed to gate — confirms the revert itself
+introduced no regression): `node test/slot-hazards.js` 21/21 (59
+assertions), `node test/dyn-keys.js` 57/57 (284 assertions), `node
+test/inference.js` 136/136 (299 assertions) all green against the restored
+HEAD source; fresh `dist/jz.wasm` rebuild completed from the restored
+source (confirms the repo is left in a normal, buildable HEAD state, not a
+half-reverted one).
+
+### Flip-readiness verdict
+
+**NO default flip** (unchanged — this session never touched `CARRIER_BOX`
+itself). §17's own verdict stands exactly as written: `hz.all`'s dominant
+`keyedWrite` class remains banked, now with a SHARPER root cause than §17
+had — it is specifically the property-aliased-Map-receiver gap, not simply
+"Map.get()'s value kind is unresolvable." A future flip-readiness session
+should start from the property-kind-tracing feature named above, not from
+re-attempting this exact disjointness-census shape — the census machinery
+itself (this session's `collectMapGetExemptLocals`/
+`collectMapSetReachingDefs`, both fully reverted; `mapValueKindOf`,
+pre-existing and untouched) is sound and reusable once the receiver-kind gap
+closes, so a future session should re-derive it from this entry rather than
+restart the soundness analysis from zero.
+
+**Local: nothing committed** — the source change was written, gated,
+diagnosed, and reverted within this single session; only this ledger entry
+and the matching `.work/todo.md` status update are new, committed
+separately, plain messages, no push.
+

@@ -63,6 +63,36 @@ map; fail closed (keep hz.all) on any unproven set-site. Gate: kernel-parity
 dict clean under JZ_CARRIER_BOX=1 (the §17 acceptance), then the flip
 probe re-run.
 
+**ATTEMPTED, WALL HIT, REVERTED (2026-08-07, .work/carrier-representation-
+design.md §18 — full writeup, root cause, gates, revert rationale).**
+Built exactly the design above (`collectMapGetExemptLocals` in
+`collectSlotWriteHazards`, plus a `.set()`-site reaching-def hop
+`collectMapSetReachingDefs` in `observeProgramSlots` to break a circularity
+§17 didn't anticipate — the canonical `let arr = m.get(k); if (!arr) { arr
+= []; m.set(k, arr) }` idiom's OWN `.set()` call writes back the very
+binding whose kind is in question, poisoning the Map's value census before
+the exemption can even consult it). Sound (verified against f8f61591's own
+two unsoundness arguments — neither applies, see §18). Diagnostic (Gate 1,
+`JZ_DEBUG_HZALL`, gen-tagged) on the real `scripts/self.js` compile: **zero
+effect** — `keyedWrite`/`keyedExempt` counts byte-for-byte identical before
+and after, confirmed via two independent full self-host builds. Root cause:
+the dominant `keyedWrite` receivers are the compiler's OWN census helpers
+(`observeSlot`/`poisonSlot`/`poisonCtor`), whose Map is `const slotTypes =
+ctx.schema.slotTypes` — a PROPERTY READ off host state, not a
+locally-provable `new Map()` literal — so `mapValueKindOf`'s hard
+`valTypeOf(recvName) === VAL.MAP` gate never fires, no matter how sound the
+disjointness logic downstream is. Confirmed via isolated repro (literal
+`new Map()` local → exemption fires; same idiom with the Map threaded in as
+a parameter, matching the real shape → zero exemption). Reverted
+`src/compile/program-facts.js` to HEAD (nothing landed); `src/kind.js`
+never permanently touched. Gates 2-6 (kernel-parity JZ_CARRIER_BOX=1 dict,
+test:wasm to completion, flag-forced battery+watr+kernel-oracle+fuzz
+2000×4, default byte-identity) NOT run — Gate 1 failed first, running the
+rest against a change with zero measured effect would be forcing it. NEXT
+LEVER for a future attempt: property-kind tracing (prove `const x =
+obj.prop` is a `Map` when `obj.prop` was initialized `new Map()` elsewhere)
+— a materially larger, separate feature, its own dedicated session.
+
 ## AUDIT-#14 RESPONSE (2026-08-07)
 P0 (carrier default flip BLOCKED — carrier-built kernel corrupts atom/string/
 closure CONSTANTS for BigInt-free programs, `() => undefined` O0 native
