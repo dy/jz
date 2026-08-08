@@ -6918,8 +6918,7 @@ precision), Map.get presence, schema hazards, the §22 param-lattice
 sticky-null. It is the audit-#13 solver campaign made concrete — needs a
 dedicated design+implementation campaign (coordinator design pass first).
 QUEUED: item 5 LoopPlan ownership CLOSED, see below (2026-08-08) · item 6 drop
-dead baseKeys collection in buildSiteAccess (aliasClass is constant until a
-points-to consumer exists) · item 8 "item" JSON
+dead baseKeys collection CLOSED, see below (2026-08-08) · item 8 "item" JSON
 trace CLOSED, see below (2026-08-08) · item 10 solver/session (folds into the
 lattice campaign).
 
@@ -7052,3 +7051,23 @@ different subsystem — src/compile/analyze.js — confirmed unrelated in the
 BODYMODEL SLICE 1 landing above); no LoopPlan-agreement divergence surfaced
 · two fresh `npm run build` runs, dist/jz.js + dist/interop.js +
 dist/jz.wasm SHA-256 byte-identical across both.
+
+## AUDIT-#15 ITEM 6 CLOSED: DEAD BASEKEYS DROPPED (2026-08-08)
+`buildSiteAccess` (src/optimize/vectorize.js ~line 1220) computed and
+returned `baseKeys` (a `JSON.stringify`-backed structural key per load/store
+site via `baseKeyOf`) purely to feed `buildAliasClass` — but `buildAliasClass`
+has been the single-universal-class CONSTANT (`ALIAS_CLASS_UNIVERSAL`) since
+audit-#14 item 6's dedupe landed, so every `baseKeys.push` was pure dead
+production cost, never read by anything. Removed: `buildSiteAccess` returns
+the bare `siteAccess` WeakMap (no more `{ siteAccess, baseKeys }` pair);
+`baseKeyOf` deleted (its only caller); `buildAliasClass()` takes no argument.
+`buildBodyModel` updated to match. Kept as-is per the correction's ask: the
+constant-lookup API (`ALIAS_CLASS_UNIVERSAL`) and its doc comment naming the
+future points-to consumer that will need the per-site base-key collection
+back — collection is to be REINTRODUCED alongside that consumer, not before.
+GATES: same sweep as item 5 above, run together in one session — byte-
+identical 58-case/174-compile bench corpus (0 diffs), test/simd.js 158/158,
+kernel-parity 33/33, full battery 3407/3415 pass (2 pre-existing unrelated
+fails), JZ_DEBUG_INVARIANTS=1 full battery 3407/3416 pass (same 2 + 1
+pre-existing unrelated flake), no BodyModel-soundness divergence surfaced ·
+`npm run build` ×2 byte-identical.

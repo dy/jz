@@ -814,6 +814,16 @@ idempotence probe — unrelated subsystem, confirmed before), kernel-parity
 33/33, `npm run build` ×2 dist/{jz.js,interop.js,jz.wasm} SHA-256
 byte-identical across both runs.
 
+**Dead baseKeys removal (audit-#15 item 6) LANDED 2026-08-08**:
+`buildSiteAccess` no longer collects `baseKeys` (a `JSON.stringify`
+structural key per load/store site) — dead production cost since
+`buildAliasClass` became the single-universal-class constant map (audit-#14
+item 6, .work/research.md above). `baseKeyOf` (baseKeys' sole consumer)
+removed with it. `buildAliasClass` now takes no input; the constant-lookup
+API (`ALIAS_CLASS_UNIVERSAL`) and the doc pointing at the future points-to
+consumer are kept as-is — collection is to be REINTRODUCED alongside that
+consumer landing, not before. Gates: same sweep as item 5 above, all clean.
+
 ## [ ] Heap-kind registry (was heap-kind-registry-design.md; audit-#13 item 3)
 
 One per-tag authority (`layout-kinds.js`, repo root): 16 kinds × 7 columns

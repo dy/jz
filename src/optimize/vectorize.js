@@ -1215,62 +1215,45 @@ function offsetTeesFromAddrTable(addrTable) {
 // 4-element memarg form outright — so a memarg-carrying site correctly gets NO entry here, matching
 // their existing silent-bail on such nodes exactly; unwrapping would be a WIDER acceptance than
 // either consumer has ever had, precisely the "silently widening" risk the design's §6 flags).
-// Returns { siteAccess, baseKeys } — baseKeys feeds buildAliasClass so the alias partition doesn't
-// need its own walk.
 function buildSiteAccess(body, ind, offsetTees) {
   const siteAccess = new WeakMap()
-  const baseKeys = []
   const walk = (node) => {
     if (!isArr(node)) return
     const op = node[0]
     if (LOAD_OPS[op] || STORE_OPS[op]) {
       const m = matchLaneAddr(node[1], ind, undefined, offsetTees)
-      if (m) {
-        siteAccess.set(node, { base: m.base, strideLog2: m.strideLog2, pixelStride: m.pixelStride || 1, elemWidth: 1 << m.strideLog2, teeName: m.teeName || null })
-        baseKeys.push(baseKeyOf(m.base))
-      }
+      if (m) siteAccess.set(node, { base: m.base, strideLog2: m.strideLog2, pixelStride: m.pixelStride || 1, elemWidth: 1 << m.strideLog2, teeName: m.teeName || null })
     }
     for (let i = 1; i < node.length; i++) walk(node[i])
   }
   for (const s of body) walk(s)
-  return { siteAccess, baseKeys }
+  return siteAccess
 }
 
-// Static-identity key for a `base` subtree (design §4): same local/global name → same key;
-// anything else → its own structural key (distinct-by-construction — two different fn params/
-// typed-array locals with no assignment aliasing them get different keys automatically, since
-// they're different `local.get` names). NOT pointer provenance — the model supplies the
-// base-identity fact only, per §4's scope discipline.
-function baseKeyOf(base) {
-  if (isArr(base) && base[0] === 'local.get' && typeof base[1] === 'string') return `local:${base[1]}`
-  if (isArr(base) && base[0] === 'global.get' && typeof base[1] === 'string') return `global:${base[1]}`
-  return `expr:${JSON.stringify(base)}`
-}
-
-// Partition of every base key seen in siteAccess into equivalence classes (design §4, v1 scope:
-// the static base-identity fact only — no dependence-edge graph, see §4/§7).
+// Partition of every access base in siteAccess into equivalence classes (design §4, v1 scope: the
+// static base-identity fact only — no dependence-edge graph, see §4/§7).
 // SOUNDNESS (audit-#14 item 5): two classes may be DISTINCT only under an existing proof
 // (distinctParams, separate fresh allocations, neverGrown anchors — none threaded yet: the
 // slice-4 HIR provenance link landed as a link + shadow-assert only, no consumer, so it does
-// NOT supply a distinctness proof either); absent proof, different keys are UNKNOWN aliasing
-// and must conservatively share one class — `let b = a` gives two names for one base, so
-// key-per-class would manufacture a distinctness proof out of a rename. Same-key positivity
-// ("provably the same base") doesn't need the partition: compare keys directly. Until a proof
-// channel is threaded, the sound answer is the single universal class — a CONSTANT, not a
-// per-key fact, so `.get(key)` needs no fill loop over `baseKeys` (audit-#14 item 6): every key
-// (baseKeys kept as buildSiteAccess's byproduct — the future per-site partition input once a
-// real proof channel lands, see the doc above) maps to class 0. A distinctness proof landing
-// later is what turns this into an actual per-key partition.
+// NOT supply a distinctness proof either); absent proof, different bases are UNKNOWN aliasing and
+// must conservatively share one class — `let b = a` gives two names for one base, so a per-base
+// partition would manufacture a distinctness proof out of a rename. Same-base positivity
+// ("provably the same base") doesn't need a partition: compare base identity directly. Until a
+// real proof channel is threaded, the sound answer is the single universal class — a CONSTANT.
+// audit-#15 item 6: the per-site base-key collection that used to feed this (a structural
+// `JSON.stringify` serialization per load/store site, in buildSiteAccess) was pure dead
+// production cost once this became a constant — dropped here; REINTRODUCE it alongside the
+// points-to consumer that would actually partition on it, not before.
 const ALIAS_CLASS_UNIVERSAL = { get: () => 0 }
-function buildAliasClass(baseKeys) {
+function buildAliasClass() {
   return ALIAS_CLASS_UNIVERSAL
 }
 
 function buildBodyModel(body, ind) {
   const addrTable = buildAddrTable(body, ind)
   const offsetTees = offsetTeesFromAddrTable(addrTable)
-  const { siteAccess, baseKeys } = buildSiteAccess(body, ind, offsetTees)
-  const aliasClass = buildAliasClass(baseKeys)
+  const siteAccess = buildSiteAccess(body, ind, offsetTees)
+  const aliasClass = buildAliasClass()
   return { addrTable, offsetTees, siteAccess, aliasClass }
 }
 
