@@ -38,7 +38,7 @@ const reference = JSON.parse(readFileSync(REFERENCE, 'utf8'))
 // ── --merge: byte-preservation + provenance ─────────────────────────────────
 test('bench --merge: unmeasured case is byte-preserved', () => {
   const scratch = freshCopy()
-  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
+  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--allow-unanchored'])
   const merged = JSON.parse(readFileSync(scratch, 'utf8'))
   ok(JSON.stringify(merged.cases.fft) === JSON.stringify(reference.cases.fft),
     'untouched case "fft" was not byte-preserved by --merge')
@@ -48,7 +48,7 @@ test('bench --merge: unmeasured case is byte-preserved', () => {
 
 test('bench --merge: unmeasured targets within the measured case are byte-preserved', () => {
   const scratch = freshCopy()
-  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
+  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--allow-unanchored'])
   const merged = JSON.parse(readFileSync(scratch, 'utf8'))
   for (const tid of Object.keys(reference.cases.mat4.targets)) {
     if (tid === 'jz') continue
@@ -59,7 +59,7 @@ test('bench --merge: unmeasured targets within the measured case are byte-preser
 
 test('bench --merge: measured row gains fresh data and measuredAt provenance', () => {
   const scratch = freshCopy()
-  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
+  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--allow-unanchored'])
   const merged = JSON.parse(readFileSync(scratch, 'utf8'))
   const jzRow = merged.cases.mat4.targets.jz
   ok(jzRow.measuredAt === HEAD_SHA, `mat4.jz.measuredAt = ${jzRow.measuredAt}, expected HEAD ${HEAD_SHA}`)
@@ -69,7 +69,7 @@ test('bench --merge: measured row gains fresh data and measuredAt provenance', (
 
 test('bench --merge: meta.invocations preserves entries for targets not touched this run', () => {
   const scratch = freshCopy()
-  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
+  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--allow-unanchored'])
   const merged = JSON.parse(readFileSync(scratch, 'utf8'))
   ok(Object.keys(merged.meta.invocations).length === Object.keys(reference.meta.invocations).length,
     `--merge with a narrow --targets= collapsed meta.invocations: ${Object.keys(merged.meta.invocations).length} entries vs ${Object.keys(reference.meta.invocations).length} stored`)
@@ -82,7 +82,7 @@ test('bench --merge: meta.invocations preserves entries for targets not touched 
 
 test('bench --merge: mixed-vintage rows set meta.partial; meta.commit is HEAD', () => {
   const scratch = freshCopy()
-  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
+  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--allow-unanchored'])
   const merged = JSON.parse(readFileSync(scratch, 'utf8'))
   ok(merged.meta.partial === true, 'meta.partial not set despite mixed-vintage rows (most rows carry no measuredAt yet)')
   ok(merged.meta.commit === HEAD_SHA, `meta.commit = ${merged.meta.commit}, expected ${HEAD_SHA}`)
@@ -90,7 +90,7 @@ test('bench --merge: mixed-vintage rows set meta.partial; meta.commit is HEAD', 
 
 test('bench --merge: parity is scored against the stored reference checksum, not a single-row vote', () => {
   const scratch = freshCopy()
-  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
+  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--allow-unanchored'])
   const merged = JSON.parse(readFileSync(scratch, 'utf8'))
   ok(merged.cases.mat4.ref === reference.cases.mat4.ref,
     `merged mat4.ref ${merged.cases.mat4.ref} != stored ${reference.cases.mat4.ref} — a lone re-measured row must not out-vote the established reference checksum`)
@@ -118,7 +118,7 @@ test('bench: without --merge, a full --json run is schema-identical to the pre-m
 // recorded.
 const freshAnchorBaseline = () => {
   const scratch = freshCopy()
-  run(['--cases=mat4,fft,synth', '--targets=c-wasm,as', `--json=${scratch}`, '--merge'])
+  run(['--cases=mat4,fft,synth', '--targets=c-wasm,as', `--json=${scratch}`, '--merge', '--allow-unanchored'])
   return scratch
 }
 
@@ -212,18 +212,26 @@ test('bench --merge: REJECT path — partial merge with no anchors verdict at al
   ok(readFileSync(scratch, 'utf8') === before, 'refused write must leave the file untouched')
 })
 
-test('bench --merge: PASS path — a carried prior PASS anchors verdict lets a plain --merge (no --verify-anchors this run) write', () => {
+test('bench --merge: REJECT path — a carried prior PASS anchors verdict does NOT satisfy the guard (audit-#14 item 8: same-invocation only)', () => {
   // freshCopy() starts from the committed reference, whose meta.anchors.pass
-  // is true (a real --verify-anchors run backs it) — this run does a bare
-  // --merge with no --verify-anchors of its own; the carried verdict alone
-  // must be enough to satisfy the guard.
+  // is true (a real --verify-anchors run backs it) — but that verdict was
+  // measured under a DIFFERENT machine state than the one this merge would
+  // record. A bare --merge with no --verify-anchors of its own must refuse.
   const scratch = freshCopy()
   ok(reference.meta.anchors?.pass === true, 'setup: the committed reference must carry a passing anchors verdict for this pin to mean anything')
-  const out = run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
-  ok(!/refusing to write/.test(out), `a carried PASS verdict should not trigger the write refusal:\n${out.slice(-1500)}`)
+  const before = readFileSync(scratch, 'utf8')
+  const { status, out } = runExpectFail(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
+  ok(status !== 0 && status != null, `expected nonzero exit when only a carried verdict backs a partial merge, got ${status}`)
+  ok(/SAME-INVOCATION anchors pass/.test(out), `expected the same-invocation refusal message:\n${out.slice(-1500)}`)
+  ok(readFileSync(scratch, 'utf8') === before, 'refused write must leave the file untouched')
+})
+
+test('bench --merge --allow-unanchored: a carried verdict rides through stamped carried:true (record kept, guard-inert)', () => {
+  const scratch = freshCopy()
+  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--allow-unanchored'])
   const merged = JSON.parse(readFileSync(scratch, 'utf8'))
-  ok(merged.meta.partial === true, 'setup: this merge should still be partial (mixed-vintage)')
-  ok(merged.meta.anchors?.pass === true, 'meta.anchors.pass should carry forward from PREV unchanged')
+  ok(merged.meta.anchors?.pass === true, 'the carried verdict itself should ride through unchanged')
+  ok(merged.meta.anchors?.carried === true, 'a carried verdict must be stamped carried:true so downstream guards (test/bench-claims.js) can reject it for partial evidence')
 })
 
 test('bench --merge: PASS path — a fresh THIS-run --verify-anchors PASS satisfies the guard even with no carried prior verdict', () => {
@@ -286,7 +294,7 @@ test('bench --merge-allow-shrink: escape hatch lets --merge proceed with no PREV
 
 test('bench --merge: a narrow --cases=/--targets= merge never shrinks case or target counts (shrink-guard does not false-positive)', () => {
   const scratch = freshCopy()
-  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
+  run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--allow-unanchored'])
   const merged = JSON.parse(readFileSync(scratch, 'utf8'))
   ok(Object.keys(merged.cases).length >= Object.keys(reference.cases).length,
     'a narrow --merge must never end up with fewer cases than PREV')
