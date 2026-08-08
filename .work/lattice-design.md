@@ -803,3 +803,18 @@ last 7 total failures across the three reverts) against
 specifically, before landing, and land Slice 4b only through Option A or
 Option B above — not through the plain `arr.possibleKinds ∪=` union §3.1
 currently specifies.
+
+## COORDINATOR RULING on OQ1 (2026-08-08, binding for implementation)
+Option A. Census-derived kind unions NEVER enter the general `possibleKinds`
+field — they live in a separate OPT-IN projection (`censusKindsOf`),
+mirroring the live presentVal architecture that survived audit hardening:
+the consumer set is enumerable by construction, each consumer added
+deliberately with its own gate. §3.1's promoted-union is amended
+accordingly; Slice 4b is RESTRICTED to opt-in consumers only; risk item 4
+is upgraded to a BLOCKING precondition on Slices 4b and 7. Option B
+(presence baked into isDisjointFrom) is rejected as primary — it repairs
+one projection while leaving the open-ended-consumer shape alive; it MAY
+be adopted additionally as belt-and-braces on that one projection.
+Rationale: the three-revert history (f8f61591, 7288b69b, 098014a5) shows
+the killed axis is opt-out consumer exposure, not fact precision — the
+design must encode opt-in structurally, not procedurally.
