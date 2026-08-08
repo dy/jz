@@ -70,3 +70,49 @@ export const ensureParamRep = (paramReps, funcName, k) => {
   if (!r) { r = {}; m.set(k, r) }
   return r
 }
+
+/**
+ * Fact — the product-lattice record (`.work/lattice-design.md` §1). Each field
+ * gets the algebra its OWN question requires instead of one poison-on-disagreement
+ * meet forced onto everything (mergeParamFact above is that meet — correct for
+ * `numeric`'s universal "does every write fit i32" question, wrong for an
+ * existential "which kinds was this ever observed as" question — FINDING-7 /
+ * lattice-design.md §thesis). Not yet instantiated anywhere; landed as a shape +
+ * primitive precondition for later migration slices (design §5, Slice 0).
+ *
+ * @typedef {Object} Fact
+ * @property {Set<string>} possibleKinds  Powerset over VAL.*. BOTTOM = ∅ (unobserved).
+ *   Join = ∪. Never null/undefined for a resolved key — TOP is the full 14-member
+ *   Set, an ordinary member of the same type as every narrowed answer (§1.6).
+ * @property {boolean} presence  false = PRESENT, true = MAYBE_UNDEF. Join = ∨
+ *   (monotone OR, same algebra as today's `mayBeUndefined`, re-homed only).
+ * @property {Set<string>|'ALL'} pointsTo  Powerset over SchemaId, or the literal
+ *   string `'ALL'` as an abstract top sentinel (never a materialized snapshot —
+ *   §1.3). Join = ∪, with `'ALL'` absorbing.
+ * @property {{level: 0|1|2, range: [number,number]|null}} numeric  MEET-semilattice,
+ *   unchanged polarity from today's `slotIntLevels` (§1.4) — a universal claim
+ *   ("every observed write fits i32"), so this field alone stays a meet, not a join.
+ * @property {Set<'raw'|'boxed'|'tagged'>} rep  Powerset over carrier class. Join = ∪.
+ */
+
+/**
+ * Join (union) an observed set of kinds into `fact[key]` — the existential
+ * counterpart to `mergeParamFact`'s meet, for fields whose sound algebra is
+ * "wider on disagreement," never "poison on disagreement" (§thesis, FINDING-2).
+ * BOTTOM is `∅`: an absent `fact[key]` is created as an empty Set on first use,
+ * never left `undefined`/`null` (§1.6 — no second sentinel-typed "unknown").
+ * Reuses `latticeMeet.changed` as the SAME convergence signal `mergeParamFact`
+ * drives, so a fixpoint loop can watch one flag regardless of which fields it
+ * touches this round.
+ *
+ * @param {Object} fact single Fact-shaped record (or any object with Set-valued fields)
+ * @param {string} key field name on `fact`
+ * @param {Iterable<*>} observedSet kinds observed at this site (may be a singleton)
+ */
+export const joinKinds = (fact, key, observedSet) => {
+  let set = fact[key]
+  if (!set) { set = new Set(); fact[key] = set }
+  for (const k of observedSet) {
+    if (!set.has(k)) { set.add(k); latticeMeet.changed = true }
+  }
+}
