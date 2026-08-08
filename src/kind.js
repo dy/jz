@@ -8,6 +8,7 @@
 
 import { ctx, getFactStore } from './ctx.js'
 import { VAL, lookupValType, repOf } from './reps.js'
+import { joinKinds } from './param-reps.js'
 import { intLiteralValue, staticIndexKey } from './static.js'
 import {
   BOOL_OPS, NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS, COMPOUND_NUMERIC_OPS,
@@ -356,6 +357,38 @@ export function mapValueKindOf(name) {
   if (local) return local
   if (!ctx.func.localReps?.has(name)) return ctx.scope.globalReps?.get(name)?.mapValueValType || null
   return null
+}
+
+// censusKindsOf(name) — OPT-IN, set-valued sibling of dictValueKindOf/
+// mapValueKindOf (COORDINATOR RULING on OQ1, .work/lattice-design.md: a
+// census-derived kind union must surface ONLY through its own opt-in
+// projection, never the general Fact.possibleKinds field a future slice
+// exposes for every OTHER kind question — mirrors the presentVal precedent:
+// a real, individually-gated consumer list built one caller at a time, never
+// a blanket promotion; the exact axis three prior reverts (f8f61591,
+// 7288b69b, 098014a5) killed). ZERO consumers as of product-lattice Slice 1
+// (.work/lattice-design.md §5) — the structural landing only. Folds through
+// the SAME `joinKinds` union primitive (param-reps.js) every later
+// Fact-shaped field will use, so this is the primitive's first real caller,
+// not a bespoke Set construction.
+//
+// PRECISION NOTE: dictValueKindOf/mapValueKindOf's underlying producers
+// (analyze.js's dictValueTypeOf/mapValueTypeOf, program-facts.js's
+// observeDictValue/poisonDictValue) still collapse a disagreeing pair of
+// writes to `null` (first-wins-then-clash, the SAME universal/poison algebra
+// FINDING-7 names as wrong for an existential question) — this projection
+// re-exposes exactly what they already resolved, through the Set-shaped
+// vocabulary; it does not yet recover the finer {NUMBER, STRING}-style union
+// a genuinely disagreeing dict/map would produce. Retiring that poison
+// collapse at the PRODUCER is Slice 7's job (design §5: "whatever
+// Map.get()-promotion wiring §3.1 needs in program-facts.js"), gated on its
+// own re-run of the audit-#10 battery — not this slice's, which only lands
+// the opt-in projection shape.
+export function censusKindsOf(name) {
+  const fact = {}
+  const kind = dictValueKindOf(name) ?? mapValueKindOf(name)
+  if (kind) joinKinds(fact, 'possibleKinds', [kind])
+  return fact.possibleKinds ?? new Set()
 }
 
 // maybeUndefined value-join — RE-ENABLED (Slice 1, .work/todo.md
