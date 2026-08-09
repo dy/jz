@@ -1,5 +1,5 @@
 import { findBodyStart, dollar, loopPlanLink } from '../ir.js'
-import { warn, ctx, DBG_INVARIANTS } from '../ctx.js'
+import { warn, ctx, DBG_INVARIANTS, registerResetHook } from '../ctx.js'
 import { nodeEqual as exprEq } from '../ast.js'
 
 /**
@@ -3142,6 +3142,16 @@ let _relaxF32 = false
 // optimize.crPow, armed the same way — the const-exponent pow arm picks its lowering
 // from it (lift ctx objects don't carry the optimize config; module flag is the pattern).
 let _crPow = false
+
+// Reset choreography (session survey audit-#13 slice a): the arm/disarm pair
+// around each vectorizeLaneLocal call (below) is a manual per-call-site contract,
+// not exception-safe — a thrown error mid-walk skips the disarm lines and leaves
+// these flags armed for the rest of the warm process. Registering a session-
+// boundary reset means that leak can never survive past the NEXT compile's
+// reset()/beginSession(), even though within-compile correctness still relies on
+// the call-site arm/disarm (unchanged here).
+const resetVectorizeState = () => { _whyNotActive = false; _whyNotReason = null; _relaxF32 = false; _crPow = false }
+registerResetHook(resetVectorizeState)
 
 // Mark a lift bail and record its reason. First-write-wins: the innermost failing op
 // sets ctx.failReason; outer frames see ctx.fail already set and return without

@@ -70,6 +70,7 @@ const TESTS = [
   'differential',
   'fuzz',
   'determinism',
+  'session-reentrancy',
   'grid-current',
   'perf-ratchet',
   'parser-bugs',

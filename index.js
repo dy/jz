@@ -53,7 +53,7 @@ import watOptimize from "watr/optimize";
 import { ctx, reset, err, warn, assertCtxInvariants } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import { frontHalf } from './src/front.js'
-import { beginSession } from './src/session.js'
+import { beginSession, registerSessionResetHook } from './src/session.js'
 import compile from './src/compile/index.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from './src/compile/emit.js'
 import { resolveOptimize } from './src/optimize/index.js'
@@ -371,6 +371,12 @@ jz.pool = async function pool(source, opts = {}) {
 // compiled to wasm by jz). null in production: one boolean check on a cold path.
 let compileTarget = null
 export const _setCompileTarget = (fn) => { compileTarget = fn }
+// Registered (not a bare beginSession call — session.js can't import index.js,
+// that would cycle) with session.js's session-only reset hooks (session survey
+// audit-#13 slice a): see that file's doc for why this is safe as a no-op-in-
+// practice fold into the single reset choreography rather than a live behavior
+// change (jz.compile below never reaches beginSession while compileTarget is set).
+registerSessionResetHook(() => { compileTarget = null })
 jz.compile = (code, opts = {}) => {
   if (compileTarget) return compileTarget(code, opts)
   try {

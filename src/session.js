@@ -24,6 +24,23 @@ import { resetNameUids } from 'watr/optimize'
 export { getFactStore }
 
 /**
+ * Session-only reset hooks (session survey audit-#13 slice a) — a NARROWER
+ * sibling of ctx.js's RESET_HOOKS (registerResetHook), for state that must
+ * survive a raw `reset()` call (ctx.js's own seam, used directly by
+ * test/types.js-style harnesses) but SHOULD clear when a real session begins.
+ * index.js's `compileTarget` test-injection override is the one caller: it is
+ * a process-wide switch (`_setCompileTarget`, set once for a whole
+ * `JZ_TEST_TARGET=jz.wasm` test run) that must NOT be touched by raw
+ * ctx.js reset() calls interleaved with ordinary tests in the same run — but
+ * IS safe to fold into beginSession() specifically, because jz.compile
+ * short-circuits BEFORE calling beginSession() whenever compileTarget is set
+ * (see index.js), so this hook is a structural no-op exactly when the
+ * override is live, and a harmless no-op (already null) otherwise.
+ */
+const SESSION_RESET_HOOKS = []
+export function registerSessionResetHook(fn) { SESSION_RESET_HOOKS.push(fn) }
+
+/**
  * TargetProfile (audit P1): the output target's compile-policy, named and frozen
  * per target, replacing scattered `ctx.transform.host === 'wasi'` string checks
  * (23 read sites across compile/emit/module before this — one string comparison,
@@ -296,6 +313,7 @@ export function beginSession({ emitter, globals, hooks, source, optimize, warnin
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   ctx.transform.optimize = resolveOptimize(optimize)
   ctx.transform.optFlags = optFlagsOf(ctx.transform.optimize)
+  for (const hook of SESSION_RESET_HOOKS) hook()
   assertCtxInvariants('post-reset')
   return ctx.transform.optimize
 }

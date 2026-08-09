@@ -101,6 +101,28 @@ export const ctx = {
                   // defaults; see reset()'s ctx.linkDemand doc for the field list.
 }
 
+/** Reset-hook registry (session survey audit-#13 slice a — single reset
+ *  choreography, not relocation): prepare/index.js's 14-let working set,
+ *  module/regex.js's 4-var literal parser, and optimize/vectorize.js's
+ *  why-not-simd arm/disarm flags all live at MODULE scope outside ctx for
+ *  performance (documented, deliberate at each site) — but before this, each
+ *  had its OWN independent reset point (prepare's own resetPrepState() call
+ *  at its entry, regex's inline reset at parseRegex()'s entry, vectorize's
+ *  disarm at its own call tail with no exception safety), invisible to
+ *  reset()/beginSession() — the seam session.js's own docstring already
+ *  names "the ONE owner of per-compile lifecycle state." A subsystem
+ *  registers its own reset callback here once at module load; reset() (used
+ *  by every entry point — beginSession AND raw-reset test harnesses alike,
+ *  see reset()'s own DBG_INVARIANTS bridge-hook comment) drains the list at
+ *  the end. Plain array + for-of, no Proxy/getter machinery (self-host
+ *  subset, survey §4) — index.js's `compileTarget` test-injection override is
+ *  deliberately NOT registered here: it is a process-wide switch that must
+ *  survive the raw `reset()` calls test/types.js makes directly (unlike the
+ *  other three, which are genuine per-compile working state) — see
+ *  session.js's narrower `registerSessionResetHook` for that one. */
+const RESET_HOOKS = []
+export function registerResetHook(fn) { RESET_HOOKS.push(fn) }
+
 /** Create a child scope via shallow flat copy with NO prototype chain. Critical:
  *  `{ ...parent }` would inherit Object.prototype in V8 (jz.js), so a name-keyed lookup
  *  like `chain['valueOf']`/`emit['toString']` returns the inherited method instead of
@@ -799,6 +821,11 @@ export function reset(proto, globals, bridge) {
                       // pairing when any view could alias. See the phase-ordering note
                       // above this object.
   }
+
+  // Single reset choreography (see RESET_HOOKS' doc above): every subsystem that
+  // keeps module-scope working state outside ctx for perf clears it HERE, driven
+  // by the one seam every entry point already calls.
+  for (const hook of RESET_HOOKS) hook()
 }
 
 /** Debug-mode invariant checks. Encodes the writers/readers contract documented

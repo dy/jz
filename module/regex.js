@@ -9,7 +9,7 @@
 
 import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, mkPtrIR, temp, tempI32, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { emit, deps } from '../src/bridge.js'
-import { ctx, err, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, registerGetter, declGlobal, registerResetHook } from '../src/ctx.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 
@@ -80,6 +80,17 @@ const PIPE = 124, STAR = 42, PLUS = 43, QUEST = 63, DOT = 46,
   BSLASH = 92, DASH = 45, COLON = 58, EQUAL = 61, EXCL = 33, LT = 60, GT = 62
 
 let src, idx, groupNum, groupNames
+
+// Reset choreography (session survey audit-#13 slice a): parseRegex() already
+// resets this state at its own entry (below) — required intra-compile, since one
+// program can contain many regex literals — but that left it invisible to
+// reset()/beginSession()'s single choreography (a second, independent reset
+// point per the survey). Registering a defensive session-boundary reset costs
+// nothing and means a stale parse left mid-pattern by a thrown SyntaxError in a
+// PRIOR compile can never be read by code that inspects this state before the
+// next parseRegex() call runs.
+const resetRegexParseState = () => { src = undefined; idx = 0; groupNum = 0; groupNames = [] }
+registerResetHook(resetRegexParseState)
 
 const cur = () => src.charCodeAt(idx),
   peek = () => src[idx],

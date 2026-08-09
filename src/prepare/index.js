@@ -32,7 +32,7 @@
  */
 
 import { handlerArgs, refsName, ASSIGN_OPS, MUTATE_OPS, JZ_NULL, JZ_UNDEF, TYPEOF } from '../ast.js'
-import { ctx, err, derive, emitArity, declGlobal, setFeature } from '../ctx.js'
+import { ctx, err, derive, emitArity, declGlobal, setFeature, registerResetHook } from '../ctx.js'
 import { T } from '../ast.js'
 import { extractParams, collectParamNames, classifyParam } from '../ast.js'
 import { observeNodeFacts } from '../compile/program-facts.js'
@@ -84,11 +84,12 @@ const ERR_CLASS_SET = new Set(ERR_CLASS_NAMES)
 const INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', ...TYPED_ELEM_NAMES, ...ERR_CLASS_NAMES])
 
 // Module-level prepare state. Six independent stacks/scalars that together form
-// the prepare-pass working set. Lifecycle: reinitialized via `resetPrepState()`
-// at the top of `prepare()` (line ~368) — any throw inside prepare is cleared
-// on the next entry, so leak across compilations is impossible. Kept at module
-// scope (rather than ctx.prepare.*) because 78 read sites would mean a single
-// indirection on every scope query; the consolidated reset documents the set.
+// the prepare-pass working set. Lifecycle: reinitialized by `resetPrepState()`,
+// registered below as a ctx.js reset-hook (session survey audit-#13 slice a) —
+// every reset()/beginSession() call clears it, so a throw inside a PRIOR prepare()
+// can never leak into the next compile either. Kept at module scope (rather than
+// ctx.prepare.*) because 78 read sites would mean a single indirection on every
+// scope query; the consolidated reset documents the set.
 let depth          // arrow nesting depth (0=top-level, >0=inside function)
 let scopes         // block scope stack: [{names: Set, renames: Map}]
 let staticConstScopes  // lexical const facts: [{strings: Map, arrays: Map}]
@@ -168,6 +169,7 @@ const resetPrepState = () => {
   renameSerial = [0]
   loopLocalNames = new Set()
 }
+registerResetHook(resetPrepState)
 
 /** BindingId totality: every function-local binding renames to the
  *  module-wide-unique `name<T>f<fnId>_<serial>` — fnId = the owning arrow's
@@ -705,6 +707,20 @@ function validateCoalesceMixing(n) {
 }
 
 export default function prepare(node) {
+  // FINDING (session survey audit-#13 slice a, self-host leg): reset()'s
+  // RESET_HOOKS (ctx.js) already clears this working set before prepare() runs
+  // (every caller — beginSession, raw-reset test harnesses — calls reset() first,
+  // verified by inspection of every call site), so this direct call is logically
+  // redundant. Kept anyway: removing it byte-identically passed native + full
+  // battery + JZ_DEBUG_INVARIANTS, but crashed the SELF-HOSTED kernel ("memory
+  // access out of bounds" on the very first compile, bisected to exactly this
+  // removal — module/regex.js's and optimize/vectorize.js's equivalent hooks,
+  // registered the same way, do NOT crash). Root cause not chased further (out
+  // of this campaign's scope — a compiler-internal question about a closure
+  // reachable only indirectly through RESET_HOOKS, not a session-choreography
+  // question); resetPrepState() stays idempotent and cheap, so keeping BOTH the
+  // direct call and the registration is the safe, correct choice, not a
+  // half-migration — see .work/session-survey.md AS-LANDED for the full account.
   resetPrepState()
   // Inject the module-include primitive so stdlib modules can pull dependency
   // modules (e.g. object → collection) without importing autoload.js — that
