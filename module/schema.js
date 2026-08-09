@@ -255,33 +255,42 @@ export function initSchema(ctx) {
     const hz = ctx.schema.slotWriteHazards
     if (!hz) return false
     if (hz.kindSafeSids?.has(id) && (!kindSafeOk || hz.kindSafeSids.get(id) == null)) return true
-    return hz.all || hz.sids.has(id) || hz.props.has(prop) ||
+    return hz.pointsTo === 'ALL' || hz.pointsTo.has(id) || hz.props.has(prop) ||
       (hz.numeric && /^(0|[1-9][0-9]*)$/.test(String(prop)))
   }
 
   // Nested-sid hazard belt for chainSid — DELIBERATELY narrower than
-  // slotHazarded's `hz.all`/`hz.numeric`/`kindSafeSids` terms, which protect a
-  // DIFFERENT invariant (a slot's sampled VALUE KIND against writes the narrow
-  // per-(sid,idx) walk couldn't attribute — computed-key writes, Object.assign
-  // merges, extern constructors). slotObjSids is populated by that SAME narrow
-  // walk (the `.prop=`/`=`-write branch, program-facts.js) and is ALREADY its
-  // own complete, self-poisoning census for bare-string-receiver dot-writes —
-  // it doesn't need `hz.all`'s blanket "some untraceable write, who knows
-  // where" caution layered on top, and empirically (self.js compile) `hz.all`
-  // is a program-wide boolean set by causes (e.g. `arr[idx]=v` on an
-  // unresolvable-kind `arr`) that have NOTHING to do with THIS receiver's
-  // shape — consulting it here only reproduces the circularity chainSid
-  // exists to break (chain resolution feeds the very kind facts that would
-  // clear those causes). What DOES remain a real risk: a write through an
-  // UNRESOLVABLE ALIAS of this exact receiver/prop (`propWrite`'s own
-  // `hz.props`/`hz.sids` fallback, sid- and name-SPECIFIC, populated whenever
-  // `sidOf` can't resolve a `.`-write's receiver) or an extern-registered sid
-  // (host-side layout, never derived from program literals) — both checked
-  // below.
+  // slotHazarded's `pointsTo==='ALL'`/`hz.numeric`/`kindSafeSids` terms, which
+  // protect a DIFFERENT invariant (a slot's sampled VALUE KIND against writes
+  // the narrow per-(sid,idx) walk couldn't attribute — computed-key writes,
+  // Object.assign merges, extern constructors). slotObjSids is populated by
+  // that SAME narrow walk (the `.prop=`/`=`-write branch, program-facts.js)
+  // and is ALREADY its own complete, self-poisoning census for bare-string-
+  // receiver dot-writes — it doesn't need `pointsTo`'s `'ALL'` blanket "some
+  // untraceable write, who knows where" caution layered on top, and
+  // empirically (self.js compile) `pointsTo==='ALL'` fires from causes (e.g.
+  // `arr[idx]=v` on an unresolvable-kind `arr`) that have NOTHING to do with
+  // THIS receiver's shape — consulting it here only reproduces the
+  // circularity chainSid exists to break (chain resolution feeds the very
+  // kind facts that would clear those causes). What DOES remain a real risk:
+  // a write through an UNRESOLVABLE ALIAS of this exact receiver/prop
+  // (`propWrite`'s own `hz.props`/`pointsTo` fallback, sid- and name-
+  // SPECIFIC, populated whenever `sidOf` can't resolve a `.`-write's
+  // receiver) or an extern-registered sid (host-side layout, never derived
+  // from program literals) — both checked below.
+  //
+  // GOTCHA (product-lattice design OQ2 verdict, .work/lattice-design.md
+  // "LATTICE OQ2+OQ4 VERDICTS" — Slice 6b's own named pitfall): this check
+  // MUST stay `pointsTo !== 'ALL' && pointsTo.has(id)`, never
+  // `pointsTo === 'ALL' || pointsTo.has(id)`. The latter is slotHazarded's
+  // shape — copying it here would silently re-widen this DELIBERATELY
+  // narrower predicate back into the exact circularity the paragraph above
+  // exists to avoid. A probe pinning this (chainHazarded excludes 'ALL')
+  // lives in test/slot-hazards.js.
   const chainHazarded = (id, prop) => {
     if (ctx.schema.externSlotSids?.has(id)) return true
     const hz = ctx.schema.slotWriteHazards
-    return !!hz && (hz.sids.has(id) || hz.props.has(prop))
+    return !!hz && ((hz.pointsTo !== 'ALL' && hz.pointsTo.has(id)) || hz.props.has(prop))
   }
 
   /** PROPERTY-KIND TRACING (§19/§20): resolve a `.`-chain AST node — or a bare

@@ -1193,9 +1193,20 @@ function isSelfPreservingPropWrite(obj, prop, rhs) {
 
 const KEYED_EXEMPT_VALS = new Set([VAL.ARRAY, VAL.TYPED, VAL.HASH, VAL.MAP, VAL.SET, VAL.STRING])
 
-/** Program-wide slot-write hazard scan → `{ all, sids, props, numeric,
+/** Program-wide slot-write hazard scan → `{ pointsTo, props, numeric,
  *  kindSafeSids }`, stashed on `ctx.schema.slotWriteHazards` for the census
- *  readers' belt checks. Recomputed per program-facts generation, and again
+ *  readers' belt checks. `pointsTo` (product-lattice design .work/
+ *  lattice-design.md §1.3/§5 Slice 6b, OQ2 verdict) is the hz.all/hz.sids
+ *  representation swap: `Set<SchemaId>` for every narrowed write, or the
+ *  literal string `'ALL'` — an ABSTRACT top sentinel (never a materialized
+ *  snapshot of every sid known so far — new sids can mint mid-scan,
+ *  ctx.schema.register calls at lines below and inside this very function;
+ *  OQ4 verified no register call's argument path reads pointsTo/hz, so this
+ *  stays sound) — replacing the former standalone `all: boolean` field.
+ *  `hz.props`/`hz.numeric` stay their OWN cross-cutting predicates,
+ *  deliberately NOT folded into `pointsTo` (§1.3: a property NAME or a
+ *  numeric-key CLASS poisoned program-wide is orthogonal to any per-sid
+ *  points-to set). Recomputed per program-facts generation, and again
  *  post-narrowing (plan's refine step, opts.paramReps) — narrowed param reps
  *  resolve receivers the early pass can't (`re[j] = tr` on a TYPED param is an
  *  element write, not a world-poison). `kindSafeSids` maps a sid to its
@@ -1209,7 +1220,23 @@ export function collectSlotWriteHazards(ast, opts) {
   const late = !!opts?.paramReps
   if (pf.hazard && pf.hazard.gen === pf.gen && pf.hazard.late === late)
     return (ctx.schema.slotWriteHazards = pf.hazard.hz)
-  const hz = { all: false, sids: new Set(), props: new Set(), numeric: false, kindSafeSids: new Map() }
+  // `all` is a plain, PLAIN-ASSIGNED (not accessor — jz's own language
+  // subset has no getter/setter support, and this object is compiled
+  // through itself at self-host build time) back-compat field: `src/kind.js`'s
+  // VT['.'] census-deferral read (the 4th composition site this session's
+  // re-audit found, alongside applySlotWriteHazards/slotHazarded/
+  // chainHazarded) stays UNTOUCHED source text — a concurrent, disjoint fix
+  // is landing in that file this session — so `hz.all` must keep answering
+  // soundly without requiring an edit there. Set ONLY by markPointsToAll,
+  // the SAME single site that establishes `pointsTo`'s 'ALL' sentinel — one
+  // classification, two fields, never two independently-timed writes (the
+  // FINDING-10 discipline: derived together or not at all).
+  const hz = { pointsTo: new Set(), all: false, props: new Set(), numeric: false, kindSafeSids: new Map() }
+  // pointsTo mutators: 'ALL' absorbs (once TOP, stays TOP — a later addSid is
+  // a no-op, matching hz.all's old sticky-poison shape); every setter below
+  // goes through these two instead of touching hz.sids/hz.all directly.
+  const addPointsTo = (sid) => { if (hz.pointsTo !== 'ALL') hz.pointsTo.add(sid) }
+  const markPointsToAll = () => { hz.pointsTo = 'ALL'; hz.all = true }
   let curSids = null, curParamVts = null, curParamIntCertain = null
   const sidOf = (obj) => {
     // PROPERTY-KIND TRACING (§19/§20): a `.`-node receiver chain-resolves
@@ -1256,12 +1283,12 @@ export function collectSlotWriteHazards(ast, opts) {
   const keyedWrite = (obj, key) => {
     if (isLiteralStr(key)) return propWrite(obj, key[1])
     const sid = sidOf(obj)
-    if (sid != null) { hz.sids.add(sid); return }
+    if (sid != null) { addPointsTo(sid); return }
     const vt = kindOf(obj)
     if (vt != null && vt !== VAL.OBJECT && KEYED_EXEMPT_VALS.has(vt)) return
     if (valTypeOf(key) === VAL.NUMBER ||
         (typeof key === 'string' && (repOf(key)?.intCertain === true || curParamIntCertain?.has(key)))) hz.numeric = true
-    else hz.all = true
+    else markPointsToAll()
   }
   // Member targets buried in a destructuring pattern — written with values the
   // censuses can't see; hazard them like opaque writes.
@@ -1271,7 +1298,7 @@ export function collectSlotWriteHazards(ast, opts) {
     if (op === '.' || op === '?.') {
       if (typeof pat[2] === 'string') {
         const sid = sidOf(pat[1])
-        if (sid != null) hz.sids.add(sid)
+        if (sid != null) addPointsTo(sid)
         else hz.props.add(pat[2])
       }
       return
@@ -1313,7 +1340,7 @@ export function collectSlotWriteHazards(ast, opts) {
             if (!names.includes(String(p[1]))) names.push(String(p[1]))
           }
         }
-        if (known && names.length) hz.sids.add(ctx.schema.register(names))
+        if (known && names.length) addPointsTo(ctx.schema.register(names))
       }
     } else if (op === '()' && node[1] === 'Object.assign') {
       // node[2] is the RAW args slot — for the common 2+-arg call (a target plus
@@ -1325,13 +1352,13 @@ export function collectSlotWriteHazards(ast, opts) {
       // — this fixes that dead resolution, it doesn't newly attempt one.
       const target = commaList(node[2])[0]
       const sid = sidOf(target)
-      if (sid != null) hz.sids.add(sid)
+      if (sid != null) addPointsTo(sid)
       else {
         const names = staticAssignTargetNames(target)
-        if (names) hz.sids.add(ctx.schema.register(names))
+        if (names) addPointsTo(ctx.schema.register(names))
         else {
           const vt = kindOf(target)
-          if (vt == null || vt === VAL.OBJECT) hz.all = true
+          if (vt == null || vt === VAL.OBJECT) markPointsToAll()
         }
       }
     } else if (op === '()' && (node[1] === 'JSON.parse' ||
@@ -1398,7 +1425,7 @@ export function applySlotWriteHazards(hz, poison, opts) {
     const names = list[sid]
     if (!names) continue
     const kindSafe = opts?.observe ? hz.kindSafeSids?.get(sid) : undefined
-    const whole = hz.all || hz.sids.has(sid) || externs?.has(sid) ||
+    const whole = hz.pointsTo === 'ALL' || hz.pointsTo.has(sid) || externs?.has(sid) ||
       (hz.kindSafeSids?.has(sid) && kindSafe == null)
     for (let i = 0; i < names.length; i++) {
       if (whole || hz.props.has(String(names[i])) || (hz.numeric && _numericName(names[i]))) { poison(sid, i); continue }

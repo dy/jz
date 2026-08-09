@@ -101,6 +101,54 @@ export let main = () => {
   for (const optimize of LEVELS) is(run(src, { optimize }).main(), 2, `O${optimize}: floor(1.5) NOT elided`)
 })
 
+test('slot-hazards: §21 counter-example — computed-key write through an untyped param still poisons the slot KIND (pointsTo===\'ALL\' load-bearing after the hz→pointsTo swap)', () => {
+  // .work/carrier-representation-design.md §21's own counter-example, verbatim
+  // shape: `corrupt`'s `obj[key]=val` has an unresolvable receiver (obj: plain
+  // param, no schemaId) AND an unresolvable key (key: plain param, not a
+  // literal, not repOf(key)?.intCertain) — collectSlotWriteHazards can name
+  // neither a sid nor a prop to scope the hazard to, so it sets pointsTo to
+  // the 'ALL' sentinel (was `hz.all = true`) and NOTHING else. If slotVT's
+  // gate ever dropped this term (or the product-lattice Slice 6b swap ever
+  // left a reader on the old, now-permanently-empty hz.sids), `f.count`
+  // downstream of `corrupt(f, 'count', 'oops')` would still answer NUMBER —
+  // wrong, since the call really did overwrite that slot with a string — and
+  // this test would decode the box's raw pointer bits as a number instead of
+  // taking the string concat path.
+  const src = `
+class Foo { constructor() { this.count = 0 } }
+const corrupt = (obj, key, val) => { obj[key] = val }
+export let main = () => {
+  const f = new Foo()
+  corrupt(f, 'count', 'oops')
+  return f.count + '!'
+}`
+  for (const optimize of LEVELS)
+    is(run(src, { optimize }).main(), 'oops!', `O${optimize}: pointsTo==='ALL' still gates the slot-KIND read (concat dispatch, not raw NUMBER arithmetic on a string box)`)
+
+  // White-box half: confirm this program really does drive pointsTo to 'ALL'
+  // (the precondition the assertion above is meaningless without), then pin
+  // the chainHazarded GOTCHA the OQ2 verdict names — chainHazarded must stay
+  // narrower than slotHazarded and NOT consult pointsTo==='ALL' at all, or a
+  // naive copy of slotHazarded's composition here would silently re-widen
+  // chainSid's deliberately narrower predicate back into the circularity its
+  // own doc comment (module/schema.js) exists to break.
+  jz.compile(src, { optimize: 0 })
+  const hz = ctx.schema.slotWriteHazards
+  ok(hz?.pointsTo === 'ALL', 'precondition: corrupt() really did drive pointsTo to the ALL sentinel')
+  // A SEPARATE, unrelated nested-object write (`.prop=` with a `{}`-literal
+  // RHS) — slotFacts' `.objSid` field (ex-slotObjSids), fed only by this
+  // write shape (ctx.js doc), independent of `corrupt`'s receiver/key.
+  const chainSrc = src.replace('const f = new Foo()', 'const f = new Foo()\n  const r = { p: 0 }\n  r.p = { q: 1 }')
+  jz.compile(chainSrc, { optimize: 0 })
+  const hz2 = ctx.schema.slotWriteHazards
+  ok(hz2?.pointsTo === 'ALL', 'precondition (chain probe): pointsTo still ALL with the added unrelated r.p write')
+  const rSid = ctx.schema.list.findIndex(props => props?.length === 1 && props[0] === 'p')
+  const qSid = ctx.schema.list.findIndex(props => props?.length === 1 && props[0] === 'q')
+  ok(rSid >= 0 && qSid >= 0, 'r/{q} schemas registered')
+  const resolvedChild = ctx.schema.chainSid(['.', 'r', 'p'], (name) => name === 'r' ? rSid : null)
+  is(resolvedChild, qSid, 'chainHazarded stays narrower than slotHazarded: r.p chain-resolves to the nested {q} schema despite pointsTo===\'ALL\' program-wide (an unrelated cause)')
+})
+
 test('slot-hazards: strict-i32 lattice range edges stay f64 (level 1, not 2)', () => {
   // A slot fed by integral-but-not-int32 producers must NOT take the raw i32
   // load route: 3e9 exceeds int32 (i32.trunc_sat would saturate to 2^31-1),
