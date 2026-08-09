@@ -941,6 +941,9 @@ export function appendStaticSlots(slots, headerBytes = 0) {
 
 /** Check if emitted node is a compile-time constant. */
 export const isLit = n => (n[0] === 'i32.const' || n[0] === 'f64.const') && typeof n[1] === 'number'
+// Unchecked — the caller must have proven isLit(n) first. Distinct contract from
+// loop-model.js's loopLitVal / prepare/index.js's local numLitVal (post-prepare-AST,
+// not emitted-IR, and both validate the literal shape before extracting).
 export const litVal = n => n[1]
 export const isNullLit = n => Array.isArray(n) && n.length === 2 && n[0] == null && n[1] == null
 export const isUndefLit = n => Array.isArray(n) && n.length === 0

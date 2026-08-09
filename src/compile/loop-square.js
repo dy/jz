@@ -23,13 +23,13 @@
 
 import { includeMods } from '../autoload.js'
 import { ctx } from '../ctx.js'
-import { litVal, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks, loopHazards, uniqueUnitIncOf } from './loop-model.js'
+import { loopLitVal, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks, loopHazards, uniqueUnitIncOf } from './loop-model.js'
 
 const SQUARE_BOUND_MAX = 2 ** 30
 // The constant numeric value of a bound: a literal, OR a module const folded to an int
 // (`const LIMIT = 1<<20` → ctx.scope.constInts.get('LIMIT') = 1048576 — the bench form).
 const boundVal = (n) => {
-  const lit = litVal(n)
+  const lit = loopLitVal(n)
   if (lit != null) return lit
   if (typeof n === 'string') { const v = ctx.scope.constInts?.get(n); return typeof v === 'number' ? v : null }
   return null

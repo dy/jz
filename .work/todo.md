@@ -8449,3 +8449,68 @@ unaffected.
 Gate predicate: `test/passes.js`, "raw stdlib assignments never shadow a
 reg()-registered name (stdlib two-dialect gate)" — 0 offenders.
 Files: CONTRIBUTING.md, module/math.js, test/passes.js.
+
+## CONSISTENCY-AUDIT RESPONSE, task 2/3 — mechanical dedup (2026-08-09)
+
+**cloneIR** — found 9 duplicate deep-clone helpers (self-referential
+`Array.isArray(n) ? n.map(X) : n`, functionally identical to ir.js's
+canonical `cloneIR`, ir.js:1243), more than the audit's own "×6" estimate:
+src/optimize/index.js had the literal `const cloneIR` redefinition (~3222)
+PLUS 7 inline copies under other names (`dup`, `copy`×2, `clone`×4, lines
+566/2458/2534/3436/3661/4066/4776 pre-edit), and src/compile/
+loop-recurrence.js had its own `clone` (using the file's local `isArr`
+self-host wrapper). All 8 optimize/index.js sites + loop-recurrence.js's
+now import `cloneIR` from `../ir.js` (loop-recurrence.js needed a new
+import; optimize/index.js already imported from ir.js, just added the
+name). Each removal verified individually: found the enclosing function's
+true scope boundary, confirmed no OTHER helper of the same name existed
+in-scope, renamed only that scope's call sites.
+
+**cloneNode** — 3 duplicates of ast.js's canonical `cloneNode` (ast.js:496,
+already the dominant import — src/type.js already used it). src/optimize/
+vectorize.js's own module-scope copy → import. src/prepare/index.js had
+TWO: one (line ~2296, in the JSON-revive IIFE builder) was a plain
+duplicate → import; the OTHER (line ~1131) turned out on inspection to
+carry a DIFFERENT contract (copies `.loc` onto the clone) AND, confirmed by
+grep, was never called anywhere in the file — genuine dead code, not a
+migration candidate. Deleted rather than "consolidated" (there was nothing
+live to consolidate).
+
+**litVal** — 3 DIFFERENT-CONTRACT functions of the same name: ir.js's
+`n => n[1]` (unchecked, caller must have proven `isLit(n)` first — the
+dominant one, imported by 4+ files: module/math.js, module/typedarray.js,
+src/compile/index.js, src/compile/emit.js), loop-model.js's (validates the
+literal shape, returns null otherwise — imported by 2 files: loop-
+recurrence.js, loop-square.js), and prepare/index.js's local one (also
+validates, plus recurses through unary minus — 0 external importers).
+Lowest-churn split per the coordinator's own fallback: kept ir.js's name
+(most consumers, most churn to rename) and renamed the two minority
+contracts instead — `loopLitVal` (loop-model.js + its 2 importers) and
+`numLitVal` (prepare/index.js, local-only). Added a one-line contract note
+at each of the three definitions cross-referencing the other two by name.
+
+**isArr** — found 4 real wrapper definitions (not 5 — the audit's count
+apparently included src/compile/analyze-scans.js:491's `isArr`, which is
+an unrelated boolean local, not the wrapper function). 3 of 4 already
+carried the "jz self-host rejects a builtin used as a first-class value"
+rationale comment (recurse.js, loop-recurrence.js, cse-load.js, each
+independently worded); src/optimize/vectorize.js:51 lacked it — added,
+matching wording.
+
+GATES: byte-identity — 60-case/180-compile bench corpus (`bench/*/*.js` at
+optimize 0/2/3) vs a disposable git worktree at pre-task HEAD (844bd792),
+0 diffs · full battery 3415/3423 pass (2 pre-existing fails, confirmed
+unchanged by running the identical 2 tests against the same disposable
+baseline worktree — NOT caused by this task) · kernel-parity 33/33 byte-
+identical · `node scripts/build-dist.mjs` ×2 byte-identical (dist/jz.js
+sha256 `307f2ca9…`, dist/jz.wasm sha256 `8d7d0a84…`, dist/interop.js sha256
+`ef42c9da…`, unchanged between the two runs). dist/jz.wasm itself is ~5 kB
+smaller than the pre-task build (16467.3 kB → 16462.3 kB) — expected and
+correct: self.js bundles src/+module/, so removing 12 duplicate function
+bodies from the compiler's OWN source shrinks its self-compiled binary;
+this is not a "zero output change" violation, since that gate is about
+compiled OUTPUT OF USER PROGRAMS (the bench corpus), verified 0 diffs
+above, not the compiler's own binary size.
+Files: src/ir.js, src/optimize/index.js, src/optimize/vectorize.js,
+src/prepare/index.js, src/compile/loop-recurrence.js, src/compile/
+loop-model.js, src/compile/loop-square.js.

@@ -17,11 +17,11 @@
 // keeps the seed load in step with the original (which reads `arr[LO-1]` only when it iterates),
 // and falls back to the untouched loop on the empty range — sound for any trip count.
 
-import { litVal, litN, unitIncVar, normalizeLoop, freshLoopId, loopHazards } from './loop-model.js'
+import { loopLitVal, litN, unitIncVar, normalizeLoop, freshLoopId, loopHazards } from './loop-model.js'
 import { rewriteBlocks, closureMutatedVars } from './loop-model.js'
+import { cloneIR } from '../ir.js'
 
 const isArr = (n) => Array.isArray(n)   // wrap (not alias): the self-host kernel rejects a builtin used as a first-class value
-const clone = (n) => isArr(n) ? n.map(clone) : n
 const isIvMinus1 = (n, iv) => isArr(n) && n[0] === '-' && n[1] === iv && litN(n[2], 1)   // (iv - 1)
 
 // Ops whose presence makes duplicating the body in place unsound (control that escapes the cell,
@@ -92,13 +92,13 @@ function tryUnroll(stmt, cm) {
 
   // init `let iv = LO`, LO a literal ≥ 1 (so arr[LO-1] is a valid in-bounds index)
   if (!(isArr(L.init) && L.init[0] === 'let' && isArr(L.init[1]) && L.init[1][0] === '=' && L.init[1][1] === iv)) return null
-  const LO = L.init[1][2], loVal = litVal(LO)
+  const LO = L.init[1][2], loVal = loopLitVal(LO)
   if (loVal == null || loVal < 1) return null
 
   // cond `iv <= HI` / `iv < HI`, HI loop-invariant
   if (!(isArr(L.cond) && (L.cond[0] === '<=' || L.cond[0] === '<') && L.cond[1] === iv)) return null
   const cmpOp = L.cond[0], HI = L.cond[2]
-  if (!(typeof HI === 'string' || litVal(HI) != null)) return null
+  if (!(typeof HI === 'string' || loopLitVal(HI) != null)) return null
 
   if (hasUnsafe(body)) return null
   const stmts = body.slice(1)
@@ -143,20 +143,20 @@ function tryUnroll(stmt, cm) {
   const id = freshLoopId()
   const left = `__rec${id}`
   const bodyS = scalarReplace(stmts, arr, iv, left, storeVal)
-  const cellJ = () => bodyS.map(clone)
-  const cellJ1 = renameDecls(bodyS.map(s => subPlus1(clone(s), iv)), `$r${id}`)
+  const cellJ = () => bodyS.map(cloneIR)
+  const cellJ1 = renameDecls(bodyS.map(s => subPlus1(cloneIR(s), iv)), `$r${id}`)
 
   const seed = ['let', ['=', left, ['[]', arr, loVal - 1]]]          // left = arr[LO-1]
-  const letIv = ['let', ['=', iv, clone(LO)]]                        // let iv = LO
-  const twoFit = cmpOp === '<=' ? ['<', iv, clone(HI)] : ['<', iv, ['-', clone(HI), 1]]
+  const letIv = ['let', ['=', iv, cloneIR(LO)]]                        // let iv = LO
+  const twoFit = cmpOp === '<=' ? ['<', iv, cloneIR(HI)] : ['<', iv, ['-', cloneIR(HI), 1]]
   const main = ['while', twoFit,
     [';', ['{}', [';', ...cellJ()]], ['{}', [';', ...cellJ1]], ['=', iv, ['+', iv, 2]]]]
-  const tail = ['if', [cmpOp, iv, clone(HI)],
+  const tail = ['if', [cmpOp, iv, cloneIR(HI)],
     ['{}', [';', ...cellJ(), ['=', iv, ['+', iv, 1]]]]]
   const block = ['{}', [';', letIv, seed, main, tail]]
   // Run the unrolled form only on a non-empty range (so the seed's arr[LO-1] load matches the
   // original, which reads it only when it iterates); otherwise the untouched loop.
-  return [['if', [cmpOp, clone(LO), clone(HI)], block, stmt]]
+  return [['if', [cmpOp, cloneIR(LO), cloneIR(HI)], block, stmt]]
 }
 
 export function unrollRecurrence(body) {
@@ -194,11 +194,11 @@ function tryUnrollScalarChain(stmt, cm) {
   const iv = unitIncVar(L.step)
   if (!iv) { if (DBG) console.error('[usc] no-unit-iv'); return null }
   if (!(isArr(L.init) && L.init[0] === 'let' && isArr(L.init[1]) && L.init[1][0] === '=' && L.init[1][1] === iv)) { if (DBG) console.error('[usc] init-shape'); return null }
-  const LO = L.init[1][2], loVal = litVal(LO)
+  const LO = L.init[1][2], loVal = loopLitVal(LO)
   if (loVal == null || loVal < 0) { if (DBG) console.error('[usc] lo', JSON.stringify(LO)); return null }
   if (!(isArr(L.cond) && (L.cond[0] === '<=' || L.cond[0] === '<') && L.cond[1] === iv)) { if (DBG) console.error('[usc] cond-shape'); return null }
   const cmpOp = L.cond[0], HI = L.cond[2]
-  if (!(typeof HI === 'string' || litVal(HI) != null)) { if (DBG) console.error('[usc] hi', JSON.stringify(HI)); return null }
+  if (!(typeof HI === 'string' || loopLitVal(HI) != null)) { if (DBG) console.error('[usc] hi', JSON.stringify(HI)); return null }
   if (hasUnsafe(body)) { if (DBG) console.error('[usc] unsafe'); return null }
   const stmts = body.slice(1)
 
@@ -247,13 +247,13 @@ function tryUnrollScalarChain(stmt, cm) {
 
   // --- transform: pair + tail ---
   const id = freshLoopId()
-  const cell = () => stmts.map(clone)
-  const cell1 = renameDecls(stmts.map(s => subPlus1(clone(s), iv)), `$c${id}`)
-  const letIv = ['let', ['=', iv, clone(LO)]]
-  const twoFit = cmpOp === '<=' ? ['<', iv, clone(HI)] : ['<', iv, ['-', clone(HI), 1]]
+  const cell = () => stmts.map(cloneIR)
+  const cell1 = renameDecls(stmts.map(s => subPlus1(cloneIR(s), iv)), `$c${id}`)
+  const letIv = ['let', ['=', iv, cloneIR(LO)]]
+  const twoFit = cmpOp === '<=' ? ['<', iv, cloneIR(HI)] : ['<', iv, ['-', cloneIR(HI), 1]]
   const main = ['while', twoFit,
     [';', ['{}', [';', ...cell()]], ['{}', [';', ...cell1]], ['=', iv, ['+', iv, 2]]]]
-  const tail = ['if', [cmpOp, iv, clone(HI)],
+  const tail = ['if', [cmpOp, iv, cloneIR(HI)],
     ['{}', [';', ...cell(), ['=', iv, ['+', iv, 1]]]]]
   return [['{}', [';', letIv, main, tail]]]
 }
@@ -283,7 +283,7 @@ const armUpdate = (s) => {
   if (s[0] === ';' && s.length === 2) return armUpdate(s[1])
   if ((s[0] === '++' || s[0] === '--') && typeof s[1] === 'string') return { v: s[1], d: s[0] === '++' ? 1 : -1 }
   if ((s[0] === '+=' || s[0] === '-=') && typeof s[1] === 'string') {
-    const c = litVal(s[2])
+    const c = loopLitVal(s[2])
     if (c != null && Number.isInteger(c)) return { v: s[1], d: s[0] === '+=' ? c : -c }
   }
   return null
@@ -299,7 +299,7 @@ function trySelectArmUpdates(stmt, zeroSafe) {
     if (!(isArr(cond) && (cond[0] === '===' || cond[0] === '==') && typeof cond[1] === 'string')) return null
     if (d == null) d = cond[1]
     else if (cond[1] !== d) return null
-    const k = litVal(cond[2])
+    const k = loopLitVal(cond[2])
     if (k == null || !Number.isInteger(k)) return null
     const u = armUpdate(then)
     if (!u) return null

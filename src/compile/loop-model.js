@@ -30,9 +30,10 @@ export const freshLoopId = () => ctx.transform.loopXformId++
 // the identity/fail-open contract (.work/research.md §BodyModel slice 4, audit-#15 item 5).
 
 // Post-prepare number literals are sparse-array holes `[<hole>, v]` (length 2, the op
-// slot `n[0]` is the elided hole == null). `litVal` returns the numeric value or null;
-// `litN(n, k)` tests for the exact literal `k`.
-export const litVal = (n) => Array.isArray(n) && n.length === 2 && n[0] == null && typeof n[1] === 'number' ? n[1] : null
+// slot `n[0]` is the elided hole == null). `loopLitVal` returns the numeric value or
+// null (distinct from ir.js's unchecked litVal — this one validates the literal shape
+// first); `litN(n, k)` tests for the exact literal `k`.
+export const loopLitVal = (n) => Array.isArray(n) && n.length === 2 && n[0] == null && typeof n[1] === 'number' ? n[1] : null
 export const litN = (n, k) => Array.isArray(n) && n.length === 2 && n[0] == null && n[1] === k
 
 // The induction variable a statement increments by exactly +1, else null. Covers

@@ -1,7 +1,7 @@
 import { findBodyStart, dollar, loopPlanLink } from '../ir.js'
 import { warn, ctx, DBG_INVARIANTS, registerResetHook } from '../ctx.js'
 import { assembleView } from '../session-views.js'
-import { nodeEqual as exprEq } from '../ast.js'
+import { nodeEqual as exprEq, cloneNode } from '../ast.js'
 
 /**
  * Lane-local SIMD-128 vectorizer.
@@ -48,7 +48,7 @@ import { nodeEqual as exprEq } from '../ast.js'
 
 
 
-const isArr = n => Array.isArray(n)
+const isArr = n => Array.isArray(n)   // wrap, not alias: jz self-host rejects a builtin used as a first-class value
 
 // Structural node equality — must be non-finite- AND bigint-safe: plain
 // JSON.stringify maps Infinity/-Infinity/NaN→null and -0→0, so it would equate a
@@ -4129,8 +4129,6 @@ function tryByteScan(bl, fnLocals, freshIdRef) {
     newLocalDecls,
   }
 }
-
-const cloneNode = (n) => Array.isArray(n) ? n.map(cloneNode) : n
 
 // ---- Channel-reduction recognizer (RGBA box-filter accumulation) -----------
 //

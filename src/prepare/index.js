@@ -31,7 +31,7 @@
  * @module prepare
  */
 
-import { handlerArgs, refsName, ASSIGN_OPS, MUTATE_OPS, JZ_NULL, JZ_UNDEF, TYPEOF } from '../ast.js'
+import { handlerArgs, refsName, ASSIGN_OPS, MUTATE_OPS, JZ_NULL, JZ_UNDEF, TYPEOF, cloneNode } from '../ast.js'
 import { ctx, err, derive, emitArity, declGlobal, setFeature, registerResetHook } from '../ctx.js'
 import { T } from '../ast.js'
 import { extractParams, collectParamNames, classifyParam } from '../ast.js'
@@ -463,8 +463,8 @@ function hoistIndexedConstLiterals(root) {
   // Parse shapes: number literal = [null, n]; unary minus = ['-', lit];
   // array literal = ['[]', elems] (unary '[]'), elems = [',', ...] | one lit | undefined;
   // subscript = ['[]', receiver, index] (binary '[]').
-  const litVal = (e) => Array.isArray(e) && e.length === 2 && e[0] == null && typeof e[1] === 'number' ? e[1]
-    : Array.isArray(e) && e[0] === '-' && e.length === 2 ? (v => v === null ? null : -v)(litVal(e[1]))
+  const numLitVal = (e) => Array.isArray(e) && e.length === 2 && e[0] == null && typeof e[1] === 'number' ? e[1]
+    : Array.isArray(e) && e[0] === '-' && e.length === 2 ? (v => v === null ? null : -v)(numLitVal(e[1]))
     : null
   // A literal read in WRITE position (`[1,2][0] = 5`, `[1,2][k]++`, `delete [1,2][0]`,
   // destructuring targets) must keep its fresh per-evaluation array — rewriting it
@@ -491,7 +491,7 @@ function hoistIndexedConstLiterals(root) {
     const inner = lit[1]
     const elems = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : inner === undefined ? [] : [inner]
     if (!elems.length) return
-    const vals = elems.map(litVal)
+    const vals = elems.map(numLitVal)
     if (vals.some(v => v === null)) return
     const key = vals.join(',')
     let name = lits.get(key)
@@ -1126,13 +1126,6 @@ function prepStrictEq(op, a, b) {
   const r = resolveTypeof([op, a, b])
   if (r[0] !== op) return prep(r)            // folded to a literal — re-prep is safe
   return [op, prep(r[1]), prep(r[2])]        // keep strict op; prep operands only
-}
-
-const cloneNode = (node) => {
-  if (!Array.isArray(node)) return node
-  const copy = node.map(cloneNode)
-  if (node.loc != null) copy.loc = node.loc
-  return copy
 }
 
 /** True if `node` contains a `break`/`continue` that belongs to it — i.e. not
@@ -2291,9 +2284,8 @@ function foldJsonReviver(callee, args) {
     return r("", walk(JSON.parse(s)))
   })`)
   // Fresh structural copy per site — prep mutates/renames in place.
-  // (Recursive copy, not structuredClone: the self-host kernel compiles this
-  // file and structuredClone is not a jz builtin.)
-  const cloneNode = (n) => Array.isArray(n) ? n.map(cloneNode) : n
+  // (cloneNode, not structuredClone: the self-host kernel compiles this file
+  // and structuredClone is not a jz builtin.)
   const iife = cloneNode(jsonReviveTemplate)
   const arrow = Array.isArray(iife) && iife[0] === '()' && iife.length === 2 ? iife[1] : iife
   return prep(['()', arrow, [',', list[0], list[1]]])

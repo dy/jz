@@ -28,7 +28,7 @@
 
 import { LAYOUT, ctx, OPTF, FORWARDING_MASK } from '../ctx.js'
 import { VAL } from '../reps.js'
-import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, hasExpensiveOp, f64Range, I32_MIN, I32_MAX } from '../ir.js'
+import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, hasExpensiveOp, f64Range, I32_MIN, I32_MAX, cloneIR } from '../ir.js'
 
 // Debug-mode IR structural check (JZ_DEBUG_INVARIANTS=1). Zero production cost.
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
@@ -563,7 +563,6 @@ function boolConvertToSelect(fn) {
 
   const isBool01 = (n) => Array.isArray(n) &&
     (BOOL_RESULT_OPS.has(n[0]) || (n[0] === 'local.get' && boolLocals.has(n[1])))
-  const dup = (n) => Array.isArray(n) ? n.map(dup) : n
 
   // Pass 2 — bottom-up rewrite.
   const rewrite = (n) => {
@@ -575,7 +574,7 @@ function boolConvertToSelect(fn) {
       let X = null, B = null
       if (conv(n[2]) && isLeaf(n[1])) { X = n[1]; B = n[2][1] }
       else if (n[0] === 'f64.add' && conv(n[1]) && isLeaf(n[2])) { X = n[2]; B = n[1][1] }
-      if (X) return ['select', [n[0], dup(X), ['f64.const', 1]], dup(X), B]
+      if (X) return ['select', [n[0], cloneIR(X), ['f64.const', 1]], cloneIR(X), B]
     }
     return n
   }
@@ -2455,7 +2454,6 @@ export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachable
     used.add(n)
     return n
   }
-  const copy = n => Array.isArray(n) ? n.map(copy) : n
   const chosenGlobals = new Set(chosen.map(rec => rec.global))
   // A base snapshot may originally live inside the first load's local.tee.
   // Since that load is about to become a cached local.get, materialize every
@@ -2502,7 +2500,7 @@ export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachable
     if (load) {
       const key = `${n[0]}|${load}`
       let rec = broadcasts.get(key)
-      if (!rec) broadcasts.set(key, rec = { nodes: [], depth: 0, exemplar: copy(n) })
+      if (!rec) broadcasts.set(key, rec = { nodes: [], depth: 0, exemplar: cloneIR(n) })
       rec.nodes.push(n); rec.depth = Math.max(rec.depth, d)
       return
     }
@@ -2531,7 +2529,6 @@ export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachable
 // groups retain the exact original bitselect and lane semantics.
 export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
   if (!Array.isArray(fn) || fn[0] !== 'func' || !hasIROp(fn, 'v128.bitselect')) return
-  const copy = n => Array.isArray(n) ? n.map(copy) : n
   const aliases = globalBaseAliases(fn), byteLens = typedGlobalByteLengths()
   const memoryWrites = reachableMemoryWrites?.get(fn[1]) || new Set(['*'])
   const safeLoad = n => {
@@ -2617,8 +2614,8 @@ export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
       // a value produced inside that region.
       if (!escapes) for (const name of reads(rhs[2])) if (regionWrites.has(name)) { escapes = true; break }
       if (escapes) continue
-      const guarded = ['if', ['v128.any_true', copy(mask)], ['then', ...region],
-        ['else', ['local.set', stmt[1], copy(rhs[2])]]]
+      const guarded = ['if', ['v128.any_true', cloneIR(mask)], ['then', ...region],
+        ['else', ['local.set', stmt[1], cloneIR(rhs[2])]]]
       loop.splice(start, region.length, guarded)
       end = start
     }
@@ -3212,14 +3209,14 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
  * Called in the 'post' phase of optimizeFunc, before vectorizeLaneLocal, so the
  * cleaned IR is what the vectorizer pattern-matches.
  */
-// Deep-clone an IR node (nested arrays of strings/numbers) — used to give
-// foldStrDispatchF64 (below) a private copy to mutate, so its guard-stripping
-// never leaks into the real, standalone-callable function it was copied from
-// (see foldStrDispatchF64's own soundness note: the fold is sound ONLY for a
-// call site whose argument is independently proven numeric by its OWN context
-// — e.g. a per-lane value read straight off a typed array inside a proven f64
-// SIMD context — never for the callee's bare declared param type).
-const cloneIR = (n) => Array.isArray(n) ? n.map(cloneIR) : n
+// cloneIR (imported from ir.js) deep-clones an IR node (nested arrays of
+// strings/numbers) — used below to give foldStrDispatchF64 a private copy to
+// mutate, so its guard-stripping never leaks into the real, standalone-
+// callable function it was copied from (see foldStrDispatchF64's own
+// soundness note: the fold is sound ONLY for a call site whose argument is
+// independently proven numeric by its OWN context — e.g. a per-lane value
+// read straight off a typed array inside a proven f64 SIMD context — never
+// for the callee's bare declared param type).
 
 // Build the "pure for SIMD lane-inline" map consumed by tryPerPixelColor's Phase-2
 // user-function inline (cfg._pureFuncMap). A user function qualifies when its body has
@@ -3433,7 +3430,6 @@ export function unswitchTypedParamLoop(fn) {
   const newLocals = []
   let baseId = nextLocalId(fn, 'utb')
 
-  const clone = (n) => Array.isArray(n) ? n.map(clone) : n
   const has = (n, pred) => Array.isArray(n) && (pred(n) || n.some((c, i) => i > 0 && has(c, pred)))
   const writes = (n, name) => has(n, (x) => (x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name)
   const reintParam = (n, p) => Array.isArray(n) && n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1]) && n[1][0] === 'local.get' && n[1][1] === p
@@ -3496,13 +3492,13 @@ export function unswitchTypedParamLoop(fn) {
     if (!Array.isArray(n)) return n
     if (n[0] === 'call' && n[1] === '$__to_num' && n.length === 3
         && Array.isArray(n[2]) && n[2][0] === 'i64.reinterpret_f64' && typedIdx(n[2][1], p))
-      return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', clone(n[2][1][3]), ['i32.const', 3]]]]
+      return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', cloneIR(n[2][1][3]), ['i32.const', 3]]]]
     if (typedIdx(n, p))
-      return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', clone(n[3]), ['i32.const', 3]]]]
+      return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', cloneIR(n[3]), ['i32.const', 3]]]]
     const guarded = n[0] === 'if' ? receiverGuardedRead(n, p) : null
     if (guarded) {
-      for (const d of guarded.drops) { const key = JSON.stringify(d); if (!hoisted.has(key)) hoisted.set(key, clone(d)) }
-      return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', clone(guarded.call[3]), ['i32.const', 3]]]]
+      for (const d of guarded.drops) { const key = JSON.stringify(d); if (!hoisted.has(key)) hoisted.set(key, cloneIR(d)) }
+      return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', cloneIR(guarded.call[3]), ['i32.const', 3]]]]
     }
     return n.map((c, i) => i === 0 ? c : cloneRead(c, p, base, hoisted))
   }
@@ -3630,8 +3626,8 @@ export function unswitchTypedParamLoop(fn) {
     // body — so they run ONCE, before the loop, deduplicated, alongside
     // baseSnap; the loop body then keeps the bare f64.load shape intact.
     const hoistedDrops = [...hoistedGuards.values()].map((d) => ['drop', d])
-    const fastLoop = ['block', blockLabel, ...preamble.map(clone),
-      ['loop', loopLabel, clone(loopNode[2]), ...fastStmts, clone(incNode), clone(loopNode[endIdx])]]
+    const fastLoop = ['block', blockLabel, ...preamble.map(cloneIR),
+      ['loop', loopLabel, cloneIR(loopNode[2]), ...fastStmts, cloneIR(incNode), cloneIR(loopNode[endIdx])]]
     parent[idx] = ['if', gate, ['then', baseSnap, ...hoistedDrops, fastLoop], ['else', blockNode]]
   }
 
@@ -3658,7 +3654,6 @@ export function unswitchTypedParamLoop(fn) {
  * representation-level loop unswitch, not a source/benchmark special case.
  * Large or call-bearing parser loops fail closed to avoid I-cache growth. */
 function unswitchStringRepLoop(fn) {
-  const clone = n => Array.isArray(n) ? n.map(clone) : n
   const size = n => !Array.isArray(n) ? 1 : 1 + n.slice(1).reduce((s, x) => s + size(x), 0)
   const containsName = (n, name) => {
     if (!Array.isArray(n)) return false
@@ -3702,8 +3697,8 @@ function unswitchStringRepLoop(fn) {
       const flag = flags[0]
       if (flag && flags.every(x => x === flag) && !hasCallOrWrite(n, flag)) {
         parent[idx] = ['if', ['local.get', flag],
-          ['then', choose(clone(n), flag, 1)],
-          ['else', choose(clone(n), flag, 2)]]
+          ['then', choose(cloneIR(n), flag, 1)],
+          ['else', choose(cloneIR(n), flag, 2)]]
         return
       }
     }
@@ -4063,7 +4058,6 @@ function rotateLoops(fn) {
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
 
-  const clone = (n) => Array.isArray(n) ? n.map(clone) : n
   // Break-condition C → loop-continue condition ¬C for the back-edge. Fold the
   // i32 forms so the back-edge stays ONE fused compare-and-branch (a wrapping
   // `i32.eqz` would add an op inside the hot loop); everything else wraps.
@@ -4120,7 +4114,7 @@ function rotateLoops(fn) {
     if (hasV128(head) || inner.some(hasV128)) return null            // vectorized: leave tight
     const cond = head[2]
     return ['block', blockLabel, ...preamble,
-      ['br_if', blockLabel, clone(cond)],
+      ['br_if', blockLabel, cloneIR(cond)],
       ['loop', loopLabel, ...loopHeader, ...inner, ['br_if', loopLabel, negate(cond)]]]
   }
 
@@ -4773,20 +4767,19 @@ export function devirtSchemaReads(fn) {
   const sidInit = []
   const recvReads = new Map()  // receiver local name → tagged-read count (pre-scan)
   const recvAllObject = new Map() // every tagged read already proves OBJECT by static VAL
-  const clone = (n) => Array.isArray(n) ? n.map(clone) : n
   // select(aux, -1, tag==OBJECT) — both operands pure, no branch
   const sidExprFor = (bits, objectKnown = false) => objectKnown
     ? ['i32.wrap_i64', ['i64.and',
-        ['i64.shr_u', clone(bits), ['i64.const', LAYOUT.AUX_SHIFT]],
+        ['i64.shr_u', cloneIR(bits), ['i64.const', LAYOUT.AUX_SHIFT]],
         ['i64.const', LAYOUT.AUX_MASK]]]
     : ['select',
         ['i32.wrap_i64', ['i64.and',
-          ['i64.shr_u', clone(bits), ['i64.const', LAYOUT.AUX_SHIFT]],
+          ['i64.shr_u', cloneIR(bits), ['i64.const', LAYOUT.AUX_SHIFT]],
           ['i64.const', LAYOUT.AUX_MASK]]],
         ['i32.const', -1],
         ['i32.eq',
           ['i32.wrap_i64', ['i64.and',
-            ['i64.shr_u', clone(bits), ['i64.const', LAYOUT.TAG_SHIFT]],
+            ['i64.shr_u', cloneIR(bits), ['i64.const', LAYOUT.TAG_SHIFT]],
             ['i64.const', LAYOUT.TAG_MASK]]],
           ['i32.const', PTR.OBJECT]]]
   // ≥2 reads on the receiver: amortize into an entry-hoisted local. A single
@@ -4855,7 +4848,7 @@ export function devirtSchemaReads(fn) {
     if (rT) newDecls.push(['local', rT, 'i64'])
     // receiver bits for arms/default: the stable local read inline (fresh clone
     // per use — IR nodes must not alias), or the spill
-    const recvBits = () => stable ? clone(stable.bits) : ['local.get', rT]
+    const recvBits = () => stable ? cloneIR(stable.bits) : ['local.get', rT]
     const out = `$__dsro${id}`, dflt = `$__dsrd${id}`
     const lo = withProp[0][0], hi = withProp[withProp.length - 1][0]
     const bySid = new Map(withProp)
