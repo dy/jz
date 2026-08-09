@@ -309,8 +309,15 @@ export const lookupNotString = name => {
 }
 
 /** Full domain of VAL.* kinds — the powerset universe `possibleKinds`/
- * `isDisjointFrom` range over (`.work/lattice-design.md` §1.1, §1.6). */
-export const ALL_KINDS = new Set(Object.values(VAL))
+ * `isDisjointFrom` range over (`.work/lattice-design.md` §1.1, §1.6).
+ * FROZEN ARRAY, not a Set (audit-#16 P1-5): an exported mutable Set would let
+ * any consumer shrink/grow the universe globally and Object.freeze cannot
+ * freeze Set contents. Consumers build their own local sets from it
+ * (spread/filter) or iterate it for a universe join — membership tests go
+ * through `isKind` below. */
+export const KIND_UNIVERSE = Object.freeze(Object.values(VAL))
+const KIND_UNIVERSE_SET = new Set(KIND_UNIVERSE)
+export const isKind = k => KIND_UNIVERSE_SET.has(k)
 
 /**
  * `isDisjointFrom(name, kindSet)` — sound iff `name`'s possible-kind set is

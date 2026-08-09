@@ -8,7 +8,6 @@
 
 import { ctx, getFactStore } from './ctx.js'
 import { VAL, lookupValType, repOf, mayBeUndefined } from './reps.js'
-import { joinKinds } from './param-reps.js'
 import { intLiteralValue, staticIndexKey } from './static.js'
 import {
   BOOL_OPS, NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS, COMPOUND_NUMERIC_OPS,
@@ -384,11 +383,14 @@ export function mapValueKindOf(name) {
 // Map.get()-promotion wiring §3.1 needs in program-facts.js"), gated on its
 // own re-run of the audit-#10 battery — not this slice's, which only lands
 // the opt-in projection shape.
+// PURE (audit-#16 P1-4): a projection must never touch solver state. The
+// earlier draft routed through joinKinds, whose latticeMeet.changed side
+// channel would flag convergence on every non-empty QUERY — a read
+// preventing a fixpoint from settling. Projections construct their answer
+// locally; only PRODUCERS join.
 export function censusKindsOf(name) {
-  const fact = {}
   const kind = dictValueKindOf(name) ?? mapValueKindOf(name)
-  if (kind) joinKinds(fact, 'possibleKinds', [kind])
-  return fact.possibleKinds ?? new Set()
+  return kind ? new Set([kind]) : new Set()
 }
 
 // maybeUndefined value-join — RE-ENABLED (Slice 1, .work/todo.md

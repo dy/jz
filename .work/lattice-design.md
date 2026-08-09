@@ -1587,3 +1587,21 @@ is now fully accounted for (0 migrated, 8 excluded), so no further work
 remains under this slice's name; a genuine `censusMaybeUndefinedKind`-shaped
 Set migration, if ever wanted, would require first re-opening OQ1's ruling
 itself, not a Slice-5-shaped consumer edit.
+
+## AUDIT-#16 FOUNDATION CORRECTIONS (2026-08-08, coordinator, pre-Slice-6-consumer)
+Landed before any possibleKinds consumer exists (all P0/P1 dormant, fixed at
+the root): P0-1 unresolved live observations (v==null at both mergeRule arms)
+now join the full KIND_UNIVERSE — possibleKinds is a genuine runtime-kind
+superset or ∅; the ∅=BOTTOM exclusion contract (fail closed on empty/absent,
+covers zero-observed/exported/host-callable params that never reach the
+rules) is written into param-reps.js as the binding projection contract.
+P1-3 cloneRep() is THE authoritative deep clone (possibleKinds Set copied;
+future Set fields get their line there); the three narrow.js spread-clone
+sites migrated — the confirmed clone-aliasing leak is closed. P1-4
+censusKindsOf is pure (no joinKinds/latticeMeet.changed from a query).
+P1-5 ALL_KINDS replaced by frozen KIND_UNIVERSE array + isKind() membership.
+P0-2 (presence lacks unknown/completeness): RULING — the boolean stays
+positive-evidence-only; `!mayBeUndefined(name)` is NOT a definitelyPresent
+proof and no consumer may treat it as one until a completeness bit lands
+(Slice 7 must respect this; the presence upgrade to a 4-point lattice or
+coverage bit is queued as its own gated slice, not improvised).

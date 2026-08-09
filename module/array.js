@@ -14,7 +14,7 @@ import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow } 
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
-import { VAL, lookupValType, lookupNotString, isDisjointFrom, ALL_KINDS } from '../src/reps.js'
+import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, DBG_INVARIANTS } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR } from './collection.js'
@@ -24,7 +24,7 @@ import { ERR } from '../err-codes.js'
 // Complement of {ARRAY, TYPED} in the VAL domain — the kindSet argument
 // recvArrTyped's isDisjointFrom check (reps.js, lattice-design.md §5 Slice 2
 // precedent) tests against. Computed once, module-level (not per-call).
-const NOT_ARRAY_OR_TYPED = new Set([...ALL_KINDS].filter(k => k !== VAL.ARRAY && k !== VAL.TYPED))
+const NOT_ARRAY_OR_TYPED = new Set(KIND_UNIVERSE.filter(k => k !== VAL.ARRAY && k !== VAL.TYPED))
 
 /** Allocate ARRAY (type=1): header + n*8 data. Returns { local, setup, ptr } where local is data offset. */
 function allocArray(len, cap) {

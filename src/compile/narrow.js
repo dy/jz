@@ -21,9 +21,9 @@ import { observeProgramSlots } from './program-facts.js'
 import { noteParamVerdict } from './bigint-boxed-stats.js'
 import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, exprMayBeUndefinedIn, exprPresentValIn } from '../kind.js'
 import { typedCtorElemValType } from '../kind-traits.js'
-import { VAL, updateRep, lookupValType } from '../reps.js'
+import { VAL, updateRep, lookupValType, KIND_UNIVERSE } from '../reps.js'
 import {
-  paramFactsOf, ensureParamRep, mergeParamFact, joinKinds, latticeMeet,
+  paramFactsOf, ensureParamRep, mergeParamFact, joinKinds, cloneRep, latticeMeet,
 } from '../param-reps.js'
 import {
   inferArrElemSchema, inferArrElemSchemaSet, inferArrElemValType,
@@ -1694,12 +1694,20 @@ export default function narrowSignatures(programFacts, ast) {
   // itself is untouched by this: the mergeParamFact call and the
   // `r[field]===null` early-return still fire exactly where they did before.
   const mergeRule = (field, infer, soft = false, trackKind = false) => ({
+    // audit-#16 P0-1: an UNRESOLVED live observation (v == null — a call-site
+    // argument the inferrer cannot classify, or a missing arg with no default)
+    // must join the FULL universe, not be skipped — otherwise possibleKinds
+    // reads as a complete superset while silently omitting the unclassifiable
+    // site, and a future `!set.has(K)` exclusion would be a live miscompile.
+    // (∅ stays BOTTOM = "zero observations"; the projection contract in
+    // param-reps.js makes exclusion fail closed on ∅ for the zero-observed/
+    // exported-param case that never reaches these rules at all.)
     missing(r, k, state) {
       const poisoned = r[field] === null
       if (poisoned && !trackKind) return
       const def = defaultArg(state, k)
       const v = def != null ? infer(def, k, state) : undefined
-      if (trackKind && v != null) joinKinds(r, 'possibleKinds', [v])
+      if (trackKind) joinKinds(r, 'possibleKinds', v != null ? [v] : KIND_UNIVERSE)
       if (poisoned) return
       if (def != null) mergeParamFact(r, field, v)
       else { r[field] = null; latticeMeet.changed = true }
@@ -1708,7 +1716,7 @@ export default function narrowSignatures(programFacts, ast) {
       const poisoned = r[field] === null
       if (poisoned && !trackKind) return
       const v = infer(arg, k, state)
-      if (trackKind && v != null) joinKinds(r, 'possibleKinds', [v])
+      if (trackKind) joinKinds(r, 'possibleKinds', v != null ? [v] : KIND_UNIVERSE)
       if (poisoned) return
       if (v == null) { if (!soft) { r[field] = null; latticeMeet.changed = true } return }
       mergeParamFact(r, field, v)
@@ -2994,7 +3002,7 @@ export function specializeBimorphicTyped(programFacts) {
       // `arr[i]` lowers to direct typed load. Each `{ ...r }` is a true clone, so
       // pinning typedCtor on it leaves the source rep untouched (__obj_clone).
       const cloneReps = new Map()
-      for (const [k, r] of reps) cloneReps.set(k, { ...r })
+      for (const [k, r] of reps) cloneReps.set(k, cloneRep(r))
       for (let i = 0; i < bimorphic.length; i++) {
         const k = bimorphic[i]
         const r = cloneReps.get(k) || {}
@@ -3119,7 +3127,7 @@ export function specializeUnionCursorParams(programFacts) {
     const reps = paramReps.get(func.name)
     if (reps) {
       const cloneReps = new Map()
-      for (const [k, r] of reps) cloneReps.set(k, { ...r })
+      for (const [k, r] of reps) cloneReps.set(k, cloneRep(r))
       paramReps.set(cloneName, cloneReps)
     }
     const cloneCursors = new Map()
@@ -3379,7 +3387,7 @@ export function speculateTypedParams(programFacts, ast) {
     ctx.func.names.add(cloneName)
 
     const cloneReps = new Map()
-    if (reps) for (const [k, r] of reps) cloneReps.set(k, { ...r })
+    if (reps) for (const [k, r] of reps) cloneReps.set(k, cloneRep(r))
     for (const s of specs) {
       const r = cloneReps.get(s.k) || {}
       r.typedCtor = s.ctor

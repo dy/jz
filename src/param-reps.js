@@ -120,3 +120,28 @@ export const joinKinds = (fact, key, observedSet) => {
     if (!set.has(k)) { set.add(k); latticeMeet.changed = true }
   }
 }
+
+/**
+ * THE authoritative Fact/rep clone (audit-#16 P1-3): `{ ...r }` shallow-copies
+ * Set-valued lattice fields, so a join on the clone silently mutates the
+ * source (confirmed live — a specialization's observation leaked into its
+ * origin's possibleKinds). Every rep-copy path MUST use this instead of a
+ * bare spread; new Set-valued Fact fields (pointsTo, rep) get their line here
+ * when they land, nowhere else.
+ */
+export const cloneRep = (r) => {
+  const c = { ...r }
+  if (r.possibleKinds) c.possibleKinds = new Set(r.possibleKinds)
+  return c
+}
+
+/**
+ * Exclusion-projection contract (audit-#16 P0-1, second half): `possibleKinds`
+ * with ∅ means ZERO observations (BOTTOM — an unanalyzed, exported,
+ * host-callable, or never-called binding), NOT "no kinds possible". Any
+ * projection that EXCLUDES a kind (`cannotBe`/disjointness over this field)
+ * must fail closed — return "cannot exclude" — when the set is empty or the
+ * fact is absent. Only a non-empty set (every live observation joined, with
+ * unresolvable observations joining the full KIND_UNIVERSE per narrow.js's
+ * mergeRule) may prove exclusion.
+ */
