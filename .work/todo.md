@@ -8341,3 +8341,75 @@ suite was run since nothing shipped to gate; this session's own
 verification was the two custom kernel rebuilds' direct repro tests, not
 the standard battery/kernel-parity/kernel-oracle rows (nothing changed that
 those rows would move on). HEAD unchanged at d5ea4312 throughout.
+
+## watr `devirt` stale-selector bug (banked at 148cadf7 above): FIXED
+## upstream, in the sibling repo — awaits watr publish (2026-08-09)
+
+Root cause confirmed exactly as banked: `node_modules/watr/src/optimize.js`
+`devirt()`'s call_indirect→guard-ladder rewrite (~line 5850-5915) reads the
+closure/dispatch-selector local via a bare `local.get` in the guard's `if`
+condition, but that local is only refreshed by a `local.tee` embedded in the
+SAME call_indirect's own arg list — which the rewrite relocates into the
+ladder's fallback `else` arm. The guard fires BEFORE any arm (including that
+tee) runs, so it reads whatever the local held from the PREVIOUS call at
+that site. Invariant dispatch targets never notice; targets that alternate
+per call (`(i%2===0?A:B)(...)` in a loop) get the wrong arm every other hit.
+The `idxLocal` path (hoisted, LICM'd slot-extraction locals) was already
+sound — single-assignment by construction, so any read sees the same value
+regardless of ordering; the bug is confined to the direct/unhoisted
+`f.local` path.
+
+**Fixed in `/Users/div/projects/watr`** (sibling repo, same author), commit
+`e336177` (`devirt: guard reads closure local fresh, not stale before its
+own tee`). Fix shape: when the vulnerable path applies (`idxLocal == null &&
+f.local != null`), search the call's own args for the embedded `local.tee
+$sel (producer)`; if found, wrap the whole guard ladder in a `block` that
+first re-runs a clone of `producer` into `$sel` via `local.set`, THEN the
+(otherwise unchanged) guard ladder — so the guard's `local.get` always sees
+a value freshly computed for THIS call, not the last one. The arms keep
+their own embedded tee untouched (re-confirms the same value; safe because
+`cands` being non-poisoned at this point already proves every write devirt
+has seen for this local is a pure const/select tree). No new locals minted,
+no argument-list restructuring — the smallest change that closes the
+ordering gap without touching the (already-sound) fallback or `then` arms.
+
+**Verification, watr side only** (per instruction: node_modules/watr in
+this repo stays pristine at the published 5.7.12 — jz's own build is NOT
+touched, and no jz source file was modified this session):
+- 9-line JS-shaped repro re-expressed as a standalone WAT module (no jz, no
+  self-hosting) — a 2-candidate loop dispatch alternating by parity — via
+  `devirt(parse(src))` in isolation: correct at every call, guard ladder
+  still collapses both candidates to direct calls, original call_indirect
+  kept as the fallback arm.
+- Same repro run through the FULL `optimize()` pipeline at `{level: 0}`,
+  `{level: 1}`, `{level: 2}`, `{level: 3}` — all four **PASS** (previously,
+  pre-fix, level 3 alone gave silently wrong output every other iteration;
+  levels 0-2 don't reach devirt and were already correct, confirmed
+  unchanged).
+- Pinned permanently: `/Users/div/projects/watr/test/optimize.js`, new test
+  `'devirt: guard reads the closure local FRESH, not stale-before-its-own-
+  tee (jz hunt, 2026-08)'`, immediately after the existing hoisted-slot-
+  extraction devirt test (same file/section as the prior jz-found watr bug
+  precedent, the packData `';'`-prefix regression). Asserts both the
+  isolated-devirt output and all four optimize levels.
+- **watr's full test suite: green.** `node test` → 611 total, 591 pass, 20
+  skip, 0 fail. `WATR_WASM=1 node test` (wasm-backed parse/print path,
+  optimize always JS-sourced) → same: 611/591/20/0. Both match the
+  pre-existing baseline exactly (no regressions, no newly-skipped tests).
+- Region-arena Slice 1 WIP (`let snapshots` / `regionMark` / `regionExit`
+  hooks around optimize.js:8347-8460, uncommitted before this session)
+  preserved byte-for-byte: the fix was staged and committed via a hand-
+  split patch (`git apply --cached` on only the devirt hunk) so the commit
+  contains ONLY the devirt fix; `git status` in watr confirms the
+  region-arena hunk is still present, unstaged, untouched, uncommitted
+  after the commit landed.
+
+**Awaits watr publish.** jz's `node_modules/watr` stays pinned at 5.7.12
+(pristine-vendor policy) — this fix is NOT live for jz until a future watr
+release ships it and jz's package.json is bumped to depend on it. Until
+then, `optimize.devirtIndirect` (jz's gate, default-on at level 3/'speed')
+continues to activate the pre-fix vendored `devirt` for any jz user build —
+the silent-wrong-output risk for alternating-target call sites remains live
+in `node_modules/watr` and in `dist/jz.wasm` (built at level 3) until the
+bump happens. No jz-side workaround applied (none requested; `devirtIndirect:
+false` remains the known escape hatch if ever needed before the bump).
