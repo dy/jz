@@ -173,3 +173,59 @@ test('passes: no bare optimization-object truthiness gates (audit P1 exit grep)'
   }
   is(offenders.join(', '), '', `bare optimize-object gates: ${offenders.join('; ')}`)
 })
+
+test('passes: raw stdlib assignments never shadow a reg()-registered name (stdlib two-dialect gate)', () => {
+  // CONTRIBUTING's stdlib registration rule: raw `ctx.core.emit[name] = fn` /
+  // `bind(name, fn)` is the default dialect — dep-free/arity-irrelevant
+  // handlers call `inc()` inline, no `reg()` needed. `reg(name, deps, fn)`
+  // (→ `emitter()`, src/ctx.js) is REQUIRED whenever deps must be
+  // auto-included on every call or `.argc` must be set explicitly (a raw
+  // handler has neither — arity falls back to `fn.length`, deps fall back to
+  // whatever `inc()` calls its own body remembers to make). Both dialects
+  // coexist by design (~34 reg() sites, ~580 raw) — this gate does NOT pick
+  // a dialect for new code, that's a body-content judgment no grep can make.
+  // It catches the one silently-dangerous MECHANICAL failure instead: a raw
+  // assignment textually AFTER a reg() call for the SAME name in the SAME
+  // top-level scope, which would overwrite reg()'s wrapper and drop its
+  // auto-inc(deps)/`.argc` with no error — the handler just quietly loses
+  // its dependency guarantee. (The reverse order — reg() overwriting an
+  // earlier raw assignment — just orphans dead code; not gated here, fix on
+  // sight.) Scoped per top-level function, not whole-file: module files
+  // sometimes define mutually-exclusive setup twins (console.js/fs.js/
+  // timer.js's setupWasi vs setupJsHost) that legitimately reuse names.
+  const files = []
+  const walkDir = (dir) => {
+    for (const f of readdirSync(dir)) {
+      const p = join(dir, f)
+      if (statSync(p).isDirectory()) walkDir(p)
+      else if (f.endsWith('.js')) files.push(p)
+    }
+  }
+  walkDir(join(ROOT, 'module'))
+  const SCOPE = /^(?:export default[^\n]*=>\s*\{|(?:export\s+)?const\s+[A-Za-z_$][\w$]*\s*=[^\n]*=>\s*\{|function\s+[A-Za-z_$][\w$]*\s*\()/gm
+  const EVENTS = /\breg\(\s*['"]([^'"]+)['"]|ctx\.core\.emit\[\s*['"]([^'"]+)['"]\s*\]\s*=(?!=)|\bbind\(\s*['"]([^'"]+)['"]/g
+  const offenders = []
+  for (const p of files) {
+    const src = readFileSync(p, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+    const bounds = [...src.matchAll(SCOPE)].map(m => m.index)
+    if (!bounds.length || bounds[0] !== 0) bounds.unshift(0)
+    bounds.push(src.length)
+    for (let i = 0; i < bounds.length - 1; i++) {
+      const chunk = src.slice(bounds[i], bounds[i + 1])
+      const registered = new Set()
+      let m
+      EVENTS.lastIndex = 0
+      while ((m = EVENTS.exec(chunk))) {
+        if (m[1] !== undefined) registered.add(m[1])
+        else {
+          const name = m[2] ?? m[3]
+          if (registered.has(name)) {
+            const line = chunk.slice(0, m.index).split('\n').length
+            offenders.push(`${p.slice(ROOT.length + 1)}:~L${line} raw assignment shadows reg('${name}')`)
+          }
+        }
+      }
+    }
+  }
+  is(offenders.join(', '), '', `raw stdlib assignments shadowing reg(): ${offenders.join('; ')}`)
+})

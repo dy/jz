@@ -8413,3 +8413,39 @@ the silent-wrong-output risk for alternating-target call sites remains live
 in `node_modules/watr` and in `dist/jz.wasm` (built at level 3) until the
 bump happens. No jz-side workaround applied (none requested; `devirtIndirect:
 false` remains the known escape hatch if ever needed before the bump).
+
+## CONSISTENCY-AUDIT RESPONSE, task 1/3 — stdlib registration split-brain (2026-08-09)
+
+CONTRIBUTING documented `reg()`/`wat()` as THE rule; reality is ~34 `reg()`
+calls against ~580 raw `ctx.core.stdlib[…]`/`ctx.core.emit[…]` assignments
+(re-measured this session — the audit's "~290 raw vs 6 reg()" figures were
+stale). Researched `reg`/`emitter`/`wat`/`bind` (src/bridge.js, src/ctx.js)
+directly rather than assume: `emitter(deps, fn)` (what `reg` wraps) does
+exactly two things a raw assignment doesn't — auto `inc(...deps)` on every
+call, and an explicit `.argc = fn.length` for `emitArity()`'s dispatch. Raw
+handlers call `inc()` inline instead (universal across module/*.js) and rely
+on `Function.length` for arity, which only diverges from the true logical
+arity for a rest-param wrapper. So the real, checkable rule is "raw for
+dep-free/arity-irrelevant handlers; `reg()`/`wat()` required when deps must
+auto-include or arity must be explicit" — not "reg() always". CONTRIBUTING.md
+amended to state this (both the "Stdlib registration" section and "Adding a
+stdlib method"). A precise per-handler "references an undeclared dep" gate
+can't be stated mechanically (would need real dep-flow analysis, not grep) —
+per the coordinator's own fallback, gated the WEAKER, mechanically-checkable
+invariant instead: **a raw assignment must never appear textually after a
+`reg()` call for the same name in the same top-level scope** (would silently
+drop `emitter()`'s auto-inc/argc with no error). New test/passes.js gate
+(`test/passes.js` idiom — walk module/*.js, strip comments, regex-scan,
+scoped per top-level `export default`/`const … =>`/`function` boundary so
+mutually-exclusive setup twins like console.js/fs.js/timer.js's
+setupWasi/setupJsHost don't false-positive on shared names). 0 offenders at
+baseline. Byproduct: the gate's own research surfaced one real (harmless-
+direction) instance of exactly this shadow shape — `module/math.js`'s
+`math.f16round`: a raw software-f16 `ctx.core.emit[...]` assignment
+immediately superseded by a `reg()` call two lines later, making the raw
+assignment provably dead (never observably called). Deleted as a drive-by
+fix confirming the gate's practical value; `node test/math.js` 75/75
+unaffected.
+Gate predicate: `test/passes.js`, "raw stdlib assignments never shadow a
+reg()-registered name (stdlib two-dialect gate)" — 0 offenders.
+Files: CONTRIBUTING.md, module/math.js, test/passes.js.

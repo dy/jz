@@ -266,12 +266,7 @@ export default (ctx) => {
     ], 'f64')
   }
   ctx.core.emit['math.fround'] = a => typed(['f64.promote_f32', ['f32.demote_f64', toNumF64(a, emit(a))]], 'f64')
-  // ES2025 Math.f16round — round to binary16 and back (kernels in core.js)
-  ctx.core.emit['math.f16round'] = a => {
-    inc('__f64_to_f16', '__f16_to_f64')
-    return typed(['call', '$__f16_to_f64', ['call', '$__f64_to_f16', toNumF64(a, emit(a))]], 'f64')
-  }
-  // ES2025 Math.f16round — no wasm f16 ops, so round in software (exactly).
+  // ES2025 Math.f16round — no wasm f16 ops, so round in software (exactly, kernel in core.js).
   reg('math.f16round', ['math.f16round'], a => fn('math.f16round', a))
 
   // Sign
