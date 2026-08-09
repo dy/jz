@@ -8514,3 +8514,57 @@ above, not the compiler's own binary size.
 Files: src/ir.js, src/optimize/index.js, src/optimize/vectorize.js,
 src/prepare/index.js, src/compile/loop-recurrence.js, src/compile/
 loop-model.js, src/compile/loop-square.js.
+
+## CONSISTENCY-AUDIT RESPONSE, task 3/3 — small wastes (2026-08-09)
+
+**Lazy blLoose/op (vectorize.js's SIMD dispatch, ~7112-7179).** Per block
+node walked, the dispatch ran THREE separate scaffold matchers up front
+(`bl`, `op`, `blLoose`) before even entering the `??` recognizer chain,
+whose own comment already states order is load-bearing (first match wins)
+— so reordering recognizers to compute lazily-consumed values later was
+not an option. Found `op` is consumed as the chain's very first operand
+(`tryDivergentEscapeVectorize`, which itself does `if (!outer) return
+null` as its first line — needs the value already computed, no cheap
+pre-check to defer past), so making IT lazy via a thunk gives zero
+measurable win under the fixed order; left it eager. `blLoose`, by
+contrast, is consumed only at chain positions 8-9 (`tryBlurMultiPixel`,
+`tryChannelReduce`) — unreached whenever any of the 6 earlier `bl`-based
+recognizers already matched (the common case for straightforward
+memcpy/reduce/vectorize loops) or the block isn't loop-shaped at all.
+Converted to a memoized lazy thunk (`getBlLoose()`, plain closure-captured
+flag + value, no library) called only at its two consumption sites — skips
+the second `matchBlockLoop` pass entirely on the common short-circuit
+path. Also fixed a genuine duplicate: the `--why-not-simd` diagnostic
+branch re-ran `matchOuterPixelLoop(node)` from scratch instead of reusing
+the already-computed `op` — now reuses it (diagnostic-only path, silent
+before, no behavior change, one fewer matcher call per unmatched block).
+
+**HELPER_COUNTERS drift gate.** `src/helper-counters.js`'s `HELPER_COUNTERS`
+array (33 hand-maintained `['__wasm_helper', 'label']` pairs feeding
+`--helper-counters` profiling instrumentation) had no gate against drift —
+a renamed/deleted helper leaves a stale entry that silently profiles
+nothing (`instrumentHelperCounter`'s guard just no-ops), and a genuinely
+hot new helper never added never appears in the ranking. New test/passes.js
+gate (same registry-gate idiom as Task 1's): every listed helper name must
+appear as a quoted string literal somewhere in module/*.js or src/*.js
+OTHER than helper-counters.js itself (excluded — its own array trivially
+contains every name it lists, so including it would make the gate
+vacuous). All 33 names verified present at baseline (spot-checked via grep
+before writing the test) — 0 missing.
+
+GATES: byte-identity — 60-case/180-compile bench corpus vs a disposable
+git worktree at pre-task-3 HEAD (8c65cbbe), 0 diffs · full battery
+3416/3424 pass (2 pre-existing fails, unchanged — same two as tasks 1-2) ·
+kernel-parity 33/33 byte-identical · `test/simd.js` 158/158 · `node
+scripts/build-dist.mjs` ×2 byte-identical (dist/jz.js sha256 `178fa6a2…`,
+dist/jz.wasm sha256 `3eb026a8…`, dist/interop.js sha256 `ef42c9da…`,
+identical between the two runs).
+Files: src/optimize/vectorize.js, test/passes.js.
+
+**CONSISTENCY-AUDIT RESPONSE: all 3 tasks CLOSED**, this session
+(2026-08-09). Coordinator's queued order 1-3 (stdlib split-brain →
+mechanical dedup → small wastes) completed in order, each gated and
+committed separately, local only. Item 4 (extract inferTypedValueRanges'
+range algebra toward static.js) and item 5 (leave fixpoint structure
+alone) remain queued, not attempted this session — out of this session's
+assigned scope.

@@ -7141,8 +7141,16 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // plan; a recognizer whose scaffold is null skips without walking.
       const op = matchOuterPixelLoop(node)
       // Loose-envelope variant of the same scaffold (any non-loop content
-      // tolerated) — shared by blur-multi-pixel + channel-reduce.
-      const blLoose = matchBlockLoop(node, { envelope: 'loose' })
+      // tolerated) — shared by blur-multi-pixel + channel-reduce, both LATE
+      // in the `??` chain below. Lazy + memoized: most blocks either aren't
+      // loop scaffolds at all or already match one of the earlier `bl`-based
+      // recognizers, so the chain short-circuits before ever reaching the
+      // two consumers — computing this third matcher pass upfront would be
+      // pure waste on that (common) path. `getBlLoose()` runs the actual
+      // `matchBlockLoop` at most once, on first read.
+      let blLoose, blLooseComputed = false
+      const getBlLoose = () => blLooseComputed ? blLoose
+        : (blLooseComputed = true, blLoose = matchBlockLoop(node, { envelope: 'loose' }))
       let r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef, op)
         ?? tryMemCopyFill(bl, fnLocals, freshIdRef)
         ?? tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
@@ -7150,8 +7158,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryMapReduceVectorize(bl, fnLocals, freshIdRef)
         ?? tryStencil(node, fnLocals, freshIdRef, stencil, bl)
         ?? tryRampMap(node, fnLocals, freshIdRef)
-        ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef, blLoose) : null)
-        ?? tryChannelReduce(node, fnLocals, freshIdRef, blLoose)
+        ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef, getBlLoose()) : null)
+        ?? tryChannelReduce(node, fnLocals, freshIdRef, getBlLoose())
         ?? tryByteScan(bl, fnLocals, freshIdRef)
         ?? tryPerPixelColor(node, fnLocals, freshIdRef, pureFuncMap, op)
         ?? tryOuterStrip(node, fnLocals, freshIdRef, outerStrip, op)
@@ -7162,7 +7170,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most
       // affine loops and would otherwise mask "didn't vectorize"). Diagnostic only.
-      if (!r && _whyNotActive && (bl || matchOuterPixelLoop(node))) {
+      // Reuses `op` (already matched above) instead of re-running matchOuterPixelLoop.
+      if (!r && _whyNotActive && (bl || op)) {
         whyNotN++
         warn('simd-why-not',
           `${fnName}: loop #${whyNotN} not vectorized — ${_whyNotReason || 'no SIMD-liftable shape (loop-carried dependency, non-affine address, or unsupported control flow)'}`,

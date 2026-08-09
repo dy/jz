@@ -14,6 +14,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { PASS_NAMES, TUNING_KEYS } from '../src/optimize/index.js'
+import { HELPER_COUNTERS } from '../src/helper-counters.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -228,4 +229,33 @@ test('passes: raw stdlib assignments never shadow a reg()-registered name (stdli
     }
   }
   is(offenders.join(', '), '', `raw stdlib assignments shadowing reg(): ${offenders.join('; ')}`)
+})
+
+test('passes: HELPER_COUNTERS names exist in module/src sources (drift gate)', () => {
+  // HELPER_COUNTERS (src/helper-counters.js) is a hand-maintained allowlist of hot
+  // WAT stdlib helpers instrumented for --helper-counters profiling. It drifts
+  // silently in both directions: a helper renamed/deleted in module/*.js leaves a
+  // stale entry that profiles nothing (instrumentHelperCounter's guard just no-ops),
+  // and a genuinely hot new helper that's never added never shows up in the
+  // ranking — neither failure throws. Gate (the passes.js registry idiom, applied
+  // to this second hand-maintained list): every listed helper name must appear as
+  // a quoted string literal somewhere in module/*.js or src/*.js OTHER than
+  // helper-counters.js itself (that file's own array trivially contains every
+  // name it lists, so it's excluded — checking against it would make the gate
+  // vacuous) — the practical greppable proxy for "this name is still real."
+  const files = []
+  const walkDir = (dir) => {
+    for (const f of readdirSync(dir)) {
+      const p = join(dir, f)
+      if (statSync(p).isDirectory()) walkDir(p)
+      else if (f.endsWith('.js') && p !== join(ROOT, 'src/helper-counters.js')) files.push(p)
+    }
+  }
+  walkDir(join(ROOT, 'module'))
+  walkDir(join(ROOT, 'src'))
+  const corpus = files.map(p => readFileSync(p, 'utf8')).join('\n')
+  const missing = HELPER_COUNTERS
+    .filter(([helper]) => !corpus.includes(`'${helper}'`) && !corpus.includes(`"${helper}"`))
+    .map(([helper]) => helper)
+  is(missing.join(', '), '', `HELPER_COUNTERS names missing from module/src sources: ${missing.join(', ')}`)
 })
