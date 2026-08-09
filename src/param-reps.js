@@ -77,8 +77,12 @@ export const ensureParamRep = (paramReps, funcName, k) => {
  * meet forced onto everything (mergeParamFact above is that meet — correct for
  * `numeric`'s universal "does every write fit i32" question, wrong for an
  * existential "which kinds was this ever observed as" question — FINDING-7 /
- * lattice-design.md §thesis). Not yet instantiated anywhere; landed as a shape +
- * primitive precondition for later migration slices (design §5, Slice 0).
+ * lattice-design.md §thesis). Landed as a shape + primitive precondition
+ * (design §5, Slice 0); `possibleKinds` itself is populated for paramReps'
+ * `val` as of Slice 4a (narrow.js's `mergeRule('val', …, trackKind=true)` +
+ * the two typed-clone override sites) — `val` keeps its own meet/sticky-null
+ * behavior byte-identical alongside it (design's 4a spec, OQ1-compliant: no
+ * consumer reads `possibleKinds` yet, so there is nothing to opt in).
  *
  * @typedef {Object} Fact
  * @property {Set<string>} possibleKinds  Powerset over VAL.*. BOTTOM = ∅ (unobserved).

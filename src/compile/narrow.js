@@ -23,7 +23,7 @@ import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, exprMayBeUndefin
 import { typedCtorElemValType } from '../kind-traits.js'
 import { VAL, updateRep, lookupValType } from '../reps.js'
 import {
-  paramFactsOf, ensureParamRep, mergeParamFact, latticeMeet,
+  paramFactsOf, ensureParamRep, mergeParamFact, joinKinds, latticeMeet,
 } from '../param-reps.js'
 import {
   inferArrElemSchema, inferArrElemSchemaSet, inferArrElemValType,
@@ -36,6 +36,22 @@ const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
 // its inputs' i32-ness (`f(n - 1)`), so it carries no independent type evidence.
 const RECUR_INT_OPS = new Set(['+', '-', '*', 'u-', 'u+', '&', '|', '^', '<<', '>>', '>>>', '~'])
 
+// DBG-only (product-lattice Slice 4a, .work/lattice-design.md §1.6): `val`
+// (the meet, sticky-null-poisonable) and `possibleKinds` (the existential
+// union) must never contradict — whenever a param's `val` has resolved to a
+// concrete kind, `possibleKinds` must contain it (a wider set is fine; the
+// two channels answer different questions but must agree on any fact both
+// claim to know). A miss here is a jz bug — some val-writing site forgot to
+// feed possibleKinds alongside it — never a value to silently trust one
+// channel over the other. Called after every phase that can still write
+// `.val` onto a paramReps entry (narrowSignatures' hard settle,
+// specializeBimorphicTyped's and speculateTypedParams' clone overrides).
+function assertValKindConsistent(paramReps) {
+  for (const [fname, reps] of paramReps)
+    for (const [k, r] of reps)
+      if (r.val != null && !r.possibleKinds?.has(r.val))
+        throw new Error(`possibleKinds/val consistency: ${fname} param ${k} val=${r.val} missing from possibleKinds=${r.possibleKinds ? [...r.possibleKinds].join(',') : 'undefined'}`)
+}
 
 function filterLiveCallSites(callSites, valueUsed) {
   if (!callSites.length) return
@@ -1669,16 +1685,31 @@ export default function narrowSignatures(programFacts, ast) {
   // or read it after a final hard settling sweep. `missing` poisons regardless —
   // an omitted arg with no default is undefined at runtime, a real reason not to
   // specialize, and must stay sticky.
-  const mergeRule = (field, infer, soft = false) => ({
+  //
+  // `trackKind` (val only — product-lattice Slice 4a, .work/lattice-design.md
+  // §3.2/§1.1): also union every per-site observation into `possibleKinds`,
+  // `val`'s existential twin. Computed UNCONDITIONALLY, even once `field` has
+  // already gone sticky-TOP — possibleKinds exists precisely to keep the kinds
+  // val's poison threw away, so it must not inherit val's early-return. `val`
+  // itself is untouched by this: the mergeParamFact call and the
+  // `r[field]===null` early-return still fire exactly where they did before.
+  const mergeRule = (field, infer, soft = false, trackKind = false) => ({
     missing(r, k, state) {
-      if (r[field] === null) return
+      const poisoned = r[field] === null
+      if (poisoned && !trackKind) return
       const def = defaultArg(state, k)
-      if (def != null) mergeParamFact(r, field, infer(def, k, state))
+      const v = def != null ? infer(def, k, state) : undefined
+      if (trackKind && v != null) joinKinds(r, 'possibleKinds', [v])
+      if (poisoned) return
+      if (def != null) mergeParamFact(r, field, v)
       else { r[field] = null; latticeMeet.changed = true }
     },
     apply(r, arg, k, state) {
-      if (r[field] === null) return
+      const poisoned = r[field] === null
+      if (poisoned && !trackKind) return
       const v = infer(arg, k, state)
+      if (trackKind && v != null) joinKinds(r, 'possibleKinds', [v])
+      if (poisoned) return
       if (v == null) { if (!soft) { r[field] = null; latticeMeet.changed = true } return }
       mergeParamFact(r, field, v)
     },
@@ -1746,7 +1777,7 @@ export default function narrowSignatures(programFacts, ast) {
     // sticky-poison it (the old clearStickyNull undid that). Soft leaves it BOTTOM;
     // the post-enrichment rerun fills it in. applyPointerParamAbi re-validates via
     // hardParamVal; a final hard sweep settles val for emit + late consumers.
-    mergeRule('val', (arg, _k, state) => inferValAtSite(arg, state), true),
+    mergeRule('val', (arg, _k, state) => inferValAtSite(arg, state), true, true),
     {
       missing: poison('wasm'),
       apply(r, arg, _k, state) {
@@ -2249,7 +2280,7 @@ export default function narrowSignatures(programFacts, ast) {
   // whose val isn't unanimous (a site left BOTTOM = genuinely untyped). After this,
   // r.val is sound for emit + the late/post-return consumers (applyI32ParamSpecial-
   // ization's skipTyped guard, specializeBimorphicTyped) — which read it directly.
-  runCallsiteLattice([mergeRule('val', (arg, _k, state) => inferValAtSite(arg, state))])
+  runCallsiteLattice([mergeRule('val', (arg, _k, state) => inferValAtSite(arg, state), false, true)])
   // recvArrTyped: same final-sweep timing as the val hard-settle just above (every
   // producer — results, typedCtor, enrichment — has run). A param whose exact `val`
   // just poisoned to null because two sites disagree (ARRAY vs TYPED) may still
@@ -2508,6 +2539,8 @@ export default function narrowSignatures(programFacts, ast) {
       if (p && r.bigintBoxed) p.bigintBoxed = true
     }
   }
+
+  if (DBG_INVARIANTS) assertValKindConsistent(paramReps)
 }
 
 /** Gate the jsstring carrier on the host. ON by default for the JS host: a
@@ -2967,6 +3000,7 @@ export function specializeBimorphicTyped(programFacts) {
         const r = cloneReps.get(k) || {}
         r.typedCtor = cmb[i]
         r.val = VAL.TYPED
+        joinKinds(r, 'possibleKinds', [VAL.TYPED])
         cloneReps.set(k, r)
       }
       paramReps.set(cloneName, cloneReps)
@@ -2980,6 +3014,8 @@ export function specializeBimorphicTyped(programFacts) {
       sites[i].node[1] = clone.name
     }
   }
+
+  if (DBG_INVARIANTS) assertValKindConsistent(paramReps)
 }
 
 /** Module-scope ITERATIVE call-site walk for specializeUnionCursorParams —
@@ -3348,12 +3384,15 @@ export function speculateTypedParams(programFacts, ast) {
       const r = cloneReps.get(s.k) || {}
       r.typedCtor = s.ctor
       r.val = VAL.TYPED
+      joinKinds(r, 'possibleKinds', [VAL.TYPED])
       cloneReps.set(s.k, r)
     }
     paramReps.set(cloneName, cloneReps)
 
     ;(ctx.types.specFns ||= new Map()).set(func.name, { clone: cloneName, guards: specs.map(s => ({ k: s.k, aux: s.aux })) })
   }
+
+  if (DBG_INVARIANTS) assertValKindConsistent(paramReps)
 }
 
 /**
