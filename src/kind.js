@@ -1006,7 +1006,7 @@ VT['.'] = (args) => {
         ? (repOf(args[0])?.schemaId ?? ctx.schema?.vars?.get(args[0])) : null
       if (sid != null && ctx.schema?.list?.[sid]?.indexOf(args[1]) >= 0) return null
       const hz = ctx.schema?.slotWriteHazards
-      if (hz && (hz.all || hz.props.has(args[1]) ||
+      if (hz && (hz.pointsTo === 'ALL' || hz.props.has(args[1]) ||
         (hz.numeric && /^(0|[1-9][0-9]*)$/.test(args[1])))) return null
       return child.val
     }

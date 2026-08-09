@@ -478,8 +478,8 @@ export function maybeUnboxBigInt(f64expr) {
  *  chain receiver, module/core.js emitSchemaSlotRead's own doc comment) of a
  *  schema slot the write-side census observed BIGINT on AND boxes wide
  *  (ctx.schema.slotBigintBoxedAt), but cannot PROVE uniformly BIGINT
- *  (ctx.schema.slotBigintProvenAt — `slotHazarded`'s `hz.all` blanket,
- *  §17-§21, audited genuinely load-bearing, REFUTED as narrowable). This is
+ *  (ctx.schema.slotBigintProvenAt — `slotHazarded`'s `pointsTo==='ALL'`
+ *  blanket, §17-§21, audited genuinely load-bearing, REFUTED as narrowable). This is
  *  the read-side gap §15 found and §16 could only close for the PROVEN
  *  half: `readI64`'s own `typeof node === 'string'` guard structurally
  *  cannot see a `.`-node operand at all, so an arithmetic-core call site

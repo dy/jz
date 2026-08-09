@@ -1217,14 +1217,15 @@ const KEYED_EXEMPT_VALS = new Set([VAL.ARRAY, VAL.TYPED, VAL.HASH, VAL.MAP, VAL.
 /** Program-wide slot-write hazard scan → `{ pointsTo, props, numeric,
  *  kindSafeSids }`, stashed on `ctx.schema.slotWriteHazards` for the census
  *  readers' belt checks. `pointsTo` (product-lattice design .work/
- *  lattice-design.md §1.3/§5 Slice 6b, OQ2 verdict) is the hz.all/hz.sids
- *  representation swap: `Set<SchemaId>` for every narrowed write, or the
+ *  lattice-design.md §1.3/§5 Slice 6b, OQ2 verdict; the former standalone
+ *  `hz.all: boolean`/`hz.sids: Set` pair Slice 6b collapsed into this one
+ *  field, and audit-#17 item 7 later removed the last `hz.all` compat
+ *  boolean entirely) is: `Set<SchemaId>` for every narrowed write, or the
  *  literal string `'ALL'` — an ABSTRACT top sentinel (never a materialized
  *  snapshot of every sid known so far — new sids can mint mid-scan,
  *  ctx.schema.register calls at lines below and inside this very function;
  *  OQ4 verified no register call's argument path reads pointsTo/hz, so this
- *  stays sound) — replacing the former standalone `all: boolean` field.
- *  `hz.props`/`hz.numeric` stay their OWN cross-cutting predicates,
+ *  stays sound). `hz.props`/`hz.numeric` stay their OWN cross-cutting predicates,
  *  deliberately NOT folded into `pointsTo` (§1.3: a property NAME or a
  *  numeric-key CLASS poisoned program-wide is orthogonal to any per-sid
  *  points-to set). Recomputed per program-facts generation, and again
@@ -1241,23 +1242,12 @@ export function collectSlotWriteHazards(ast, opts) {
   const late = !!opts?.paramReps
   if (pf.hazard && pf.hazard.gen === pf.gen && pf.hazard.late === late)
     return (ctx.schema.slotWriteHazards = pf.hazard.hz)
-  // `all` is a plain, PLAIN-ASSIGNED (not accessor — jz's own language
-  // subset has no getter/setter support, and this object is compiled
-  // through itself at self-host build time) back-compat field: `src/kind.js`'s
-  // VT['.'] census-deferral read (the 4th composition site this session's
-  // re-audit found, alongside applySlotWriteHazards/slotHazarded/
-  // chainHazarded) stays UNTOUCHED source text — a concurrent, disjoint fix
-  // is landing in that file this session — so `hz.all` must keep answering
-  // soundly without requiring an edit there. Set ONLY by markPointsToAll,
-  // the SAME single site that establishes `pointsTo`'s 'ALL' sentinel — one
-  // classification, two fields, never two independently-timed writes (the
-  // FINDING-10 discipline: derived together or not at all).
-  const hz = { pointsTo: new Set(), all: false, props: new Set(), numeric: false, kindSafeSids: new Map() }
+  const hz = { pointsTo: new Set(), props: new Set(), numeric: false, kindSafeSids: new Map() }
   // pointsTo mutators: 'ALL' absorbs (once TOP, stays TOP — a later addSid is
-  // a no-op, matching hz.all's old sticky-poison shape); every setter below
-  // goes through these two instead of touching hz.sids/hz.all directly.
+  // a no-op, matching the old hz.all sticky-poison shape); every setter below
+  // goes through these two instead of touching pointsTo directly.
   const addPointsTo = (sid) => { if (hz.pointsTo !== 'ALL') hz.pointsTo.add(sid) }
-  const markPointsToAll = () => { hz.pointsTo = 'ALL'; hz.all = true }
+  const markPointsToAll = () => { hz.pointsTo = 'ALL' }
   let curSids = null, curParamVts = null, curParamIntCertain = null
   const sidOf = (obj) => {
     // PROPERTY-KIND TRACING (§19/§20): a `.`-node receiver chain-resolves
@@ -1282,8 +1272,8 @@ export function collectSlotWriteHazards(ast, opts) {
   // own name-set, and `Object.create(null|undefined)` is emitter-lowered straight
   // to the equivalent empty `{}` (module/object.js's `isNullishLiteral(proto) →
   // ctx.core.emit['{}']()`), so its target schema is the EMPTY schema. Either way
-  // the write can only ever touch THAT one schema's slots — hz.sids scopes to it
-  // instead of hz.all's whole-program blanket. Returns null (defer to kindOf) for
+  // the write can only ever touch THAT one schema's slots — pointsTo scopes to it
+  // instead of the 'ALL' whole-program blanket. Returns null (defer to kindOf) for
   // anything else, INCLUDING a spread literal or a non-nullish Object.create(proto)
   // — those still need the real schema/kind proof, not this shortcut.
   const staticAssignTargetNames = (t) => {
@@ -1369,8 +1359,9 @@ export function collectSlotWriteHazards(ast, opts) {
       // unwraps it the same way callArgs/setCallArgs (ast.js) do everywhere else
       // a call's args are read. Passing the un-unwrapped comma-node to sidOf/
       // kindOf below never resolves (neither is a bare string nor a typeable
-      // expr), so every real (target, ...sources) call fell straight to hz.all
-      // — this fixes that dead resolution, it doesn't newly attempt one.
+      // expr), so every real (target, ...sources) call fell straight to the
+      // 'ALL' blanket (markPointsToAll) — this fixes that dead resolution, it
+      // doesn't newly attempt one.
       const target = commaList(node[2])[0]
       const sid = sidOf(target)
       if (sid != null) addPointsTo(sid)

@@ -614,7 +614,7 @@ test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier c
 // emitSchemaSlotRead's unboxing). §16's fix is sound but INERT for this
 // field specifically when the KERNEL ITSELF is built: compiling scripts/
 // self.js (the whole ~370K-line compiler, needed to PRODUCE dist/jz.wasm)
-// trips collectSlotWriteHazards' hz.all blanket (§17 finding 1 — the exact
+// trips collectSlotWriteHazards' pointsTo==='ALL' blanket (§17 finding 1 — the exact
 // same root cause as kernel-parity's `dict` row) somewhere else in that huge
 // source, which nulls `slotTypes` for EVERY schema program-wide, LAYOUT's
 // included — so `slotBigintProvenBySid(LAYOUT_sid, 'NAN_PREFIX_BITS')` never
@@ -630,7 +630,7 @@ test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier c
 // strings (≥7 chars, addressed via the corrupted NaN-boxed offset) throw —
 // interop.js's `mem.read` decodes the corrupted tag as `t===5` (PTR.BIGINT)
 // and reads a DataView offset past the real (short) payload, OOB.
-// §17 verdict: this is §17 finding 1 (hz.all's whole-program blanket) at one
+// §17 verdict: this is §17 finding 1 (pointsTo==='ALL' whole-program blanket) at one
 // more remove, NOT an independent bug — closing that finding's dominant
 // keyedWrite-class trigger (Map/dict `.get()`-derived receiver kinds; needs
 // the audit-#10-flagged, actively-slice-hardened value-kind census wired

@@ -8568,3 +8568,41 @@ committed separately, local only. Item 4 (extract inferTypedValueRanges'
 range algebra toward static.js) and item 5 (leave fixpoint structure
 alone) remain queued, not attempted this session — out of this session's
 assigned scope.
+
+AUDIT-#17 ITEM 7 CLOSED: hz.all compatibility boolean removed. The
+mid-session coordinator constraint that kept it alive (Slice 6b AS-LANDED,
+lattice-design.md — kind.js's VT['.'] read had to stay untouched source
+text while a concurrent audit-#16 fix landed there) no longer applies —
+kind.js is free again. Migrated the one real reader (src/kind.js:1009's
+VT['.'] census-deferral read, the 4th composition site Slice 6b's re-audit
+found: `hz.all || hz.props.has(...) || ...` → `hz.pointsTo === 'ALL' ||
+...`) and the one real writer (program-facts.js's markPointsToAll: `{
+hz.pointsTo = 'ALL'; hz.all = true }` → `{ hz.pointsTo = 'ALL' }`, and
+dropped `all: false` from the hz object literal). Grepped every other
+`hz.all` hit first (ir.js, program-facts.js's own doc comments, test/
+pointers.js, test/kernel-oracle.js, test/fixtures/carrier-conservative-
+pairing-repro.js, test/slot-hazards.js) — all prose/test-description
+mentions, zero further code reads or writes; updated the live-tense ones
+to `pointsTo==='ALL'` terminology, left the two already-historical ones
+("was `hz.all = true`") alone. Post-fix grep gate: zero `hz.all` hits
+anywhere in src/module/test except those two historical mentions.
+GATES: byte-identity 58-case/174-compile bench corpus (jessie/jz excluded,
+matching project convention) vs a disposable git worktree at pre-task HEAD
+(926eb9c0) — 0 diffs · full battery native/O0/O3 3416/3424 pass (same 2
+pre-existing fails as baseline, confirmed unchanged) · JZ_DEBUG_INVARIANTS=1
+battery 3418/3426 pass, same 2 pre-existing fails, zero invariant fires ·
+wasi 3414/3423 pass, 3 fails — differentially confirmed byte-identical
+against the same baseline worktree (not a regression) · kernel-parity
+33/33 (33 assertions) · test/slot-hazards.js 22/22 (65 assertions,
+including the §21 counter-example pinning `pointsTo==='ALL'`) · test:wasm
+(self-hosted kernel) 2709/2719 pass, 4 fails — differentially confirmed
+byte-identical against the same baseline worktree+dist build (the
+already-documented audit-#17 P0 nested-spread-schema pre-existing failure,
+unrelated to this change) · selfhost.js 21/21 (206 assertions) · fuzz.js
+2000 programs/30,173 comparisons, 0 divergence · audit-fixpoint.mjs PASS
+10/10 · `node scripts/build-dist.mjs` ×2 byte-identical (dist/jz.js sha256
+`360c684d…`, dist/jz.wasm sha256 `bf8e685f…`, dist/interop.js sha256
+`ef42c9da…`, identical both rounds).
+Files: src/kind.js, src/compile/program-facts.js, src/ir.js, test/
+pointers.js, test/kernel-oracle.js, test/fixtures/carrier-conservative-
+pairing-repro.js.
