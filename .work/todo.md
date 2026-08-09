@@ -7979,3 +7979,173 @@ NEXT: WAT-diff the module-scope init routine's compiled locals (native
 single-nested-object-literal probe) around the recursive-call boundary;
 the minimal repro above makes this a single targeted extraction, not
 another full-corpus bisect.
+
+## AUDIT-#17 P0 WAT-diff stage + unification hypothesis vs §24 — SPLIT,
+## NOT UNIFIED (decisive), exact compiled-WAT divergence STILL not pinned,
+## banked at a NEW wall (2026-08-09)
+
+Picked up the prior entry's own NEXT (WAT-diff the module-scope init
+routine's compiled locals) plus the coordinator's unification hypothesis
+("both §17 and §24 are ONE class — the kernel-compiled compiler
+miscompiles some part of MODULE-SCOPE INITIALIZER emission"). Result:
+**the two are demonstrably NOT the same mechanism** (see the decisive test
+below) — a clean split, not a flip — but the exact WAT-level divergence
+site for #17 itself is STILL not pinned; a new, narrower wall.
+
+**Reconfirmed the repro, refined the razor-edge.** Rebuilt dist/jz.wasm
+clean from a verified-clean tree (`npm run build` equivalent,
+`scripts/build-dist.mjs`): 16467.3 kB, byte-size-matching every prior
+default build in this chain. Against this FRESH artifact, `compileViaKernel`
+on 4 variants: `let right={required:{d:4},optional:{e:5}}` alone (no
+export) FAILS identically to the original `+ export let f=()=>1` repro —
+**export is NOT required**, narrowing the prior session's "razor-edge"
+framing (it only ever needed the module-scope decl-init itself). `const`
+in place of `let` also fails identically. The function-scope twin still
+compiles clean. Same error every time: `compiler internal: expected
+emitted IR value in <module>, got empty value` / `current AST: [null,4]`.
+
+**Step 1 (WAT-diff the repro itself) — DEGENERATE, confirmed structurally,
+not just re-asserted.** `compileViaKernel(repro, {wat:true})` doesn't
+produce malformed WAT to diff against native's — it THROWS during
+`compileWat` itself, before any WAT is returned (the self-hosted
+compiler's own `emit()` dispatch fails mid-compile). There is no
+kernel-side WAT artifact for this repro to diff; the divergence has to be
+sought in the KERNEL'S OWN COMPILED CODE (module/object.js's `{}` handler
+and callers, as compiled by the NATIVE bootstrapping compiler into
+dist/jz.wasm), not in the repro's output shape. This is why Step 2 (below)
+is the only viable step, not Step 1 as literally stated in the method.
+
+**Step 2 (localize the victim in native-compiled self.js) — ATTEMPTED,
+NOT LOCALIZED.** Bundled `scripts/self.js` via `resolveModuleGraph` and
+native-`compile(g.code, {modules:g.modules, wat:true, optimize:{level:0}})`
+— a 216 MB WAT text, 6132 `(func …)` definitions. `module/object.js`'s own
+top-level functions (`$m89_object$*`, 32 named: `resolveSchema`,
+`emitObjectSpread`, `takeLiteralTarget`, etc.) do NOT include a standalone
+function for `ctx.core.emit['{}']` itself — it's an anonymous arrow
+assigned into a dict property, so it compiles as one of ~1000+ unnamed
+`$closureN` functions (jz's closure-body naming is positional —
+`${T}closure${tableIndex}` — not source-derived), and attributing a
+specific `$closureN` back to `module/object.js`'s `{}` handler by grep
+alone, across a 216 MB file, was not achieved in the time budgeted. This
+is the concrete blocker for a future session (see NEXT).
+
+**Two concrete mechanism hypotheses formed and DIRECTLY TESTED, both
+RULED OUT (not merely unconfirmed) as the root cause for the shapes tried:**
+
+1. **`ctx.func.atModuleScope` (`src/wat/assemble.js:180`)** — the one
+   genuine, named "am I compiling module-scope-of-the-TARGET-program"
+   flag, set true for `buildStartFn`'s whole `emitVoid(ast)` call and
+   false for ordinary function bodies (`emitFunc`/`emitClosureBody`
+   never set it). Grepped every consumer: **exactly one**, `module/
+   array.js:748` (array-literal static-data-segment eligibility).
+   `module/object.js`'s `{}` handler never reads it, directly or
+   transitively through any obvious call. Ruled out as a DIRECT trigger
+   for the object-literal bug (it may still matter INDIRECTLY — e.g.
+   `compilePendingClosures()` running once after the WHOLE module-scope
+   body vs. once per function body — not probed further this session).
+
+2. **`_nonEscaping`/`OPTF.staticClosureEnv`** (`src/compile/index.js`'s
+   `scanAndTagNonEscapingClosures`, `module/function.js:204-223`) — a
+   call-site-only closure (like `object.js`'s own `fieldStoredValue`,
+   `const fieldStoredValue = (i) => …` called only as `fieldStoredValue(i)`
+   inside the store loop) gets its captured-variable environment
+   allocated in the STATIC DATA SEGMENT — ONE fixed, program-wide memory
+   address, reused by EVERY activation — instead of a fresh per-call heap
+   alloc. This looked like an exact mechanism match for "values goes
+   missing after a same-function recursive re-entry": a recursive
+   activation's own closure-creation would overwrite the SAME static slot
+   an outer, still-live activation's closure still needs to read from.
+   **Directly tested, NOT reproduced**, via 3 escalating synthetic
+   differential probes (native compile, no self-hosting needed — the same
+   codegen path a level-3 self.js build exercises), each recreating the
+   shape more faithfully:
+   - `recur(depth)` + `pick=(i)=>values[i]*10` over a fixed-length
+     literal array, recursing at non-last loop index — correct at O0-O3.
+     WAT inspection: `pick` produces NO separate function at all (fully
+     inlined into `$recur`, `call_indirect: false`) at every level —
+     `_nonEscaping` here means literal text-substitution, sidestepping
+     the static-env path entirely.
+   - Same shape over a RUNTIME-length array (`values.push` in a loop, so
+     the trip count isn't a compile-time constant, matching object.js's
+     own `values`) — still fully inlined, still correct at every level.
+   - `pick=(i)=>(depth>0?storedA:storedB)(values[i])` — a TERNARY between
+     two named top-level functions, forcing a REAL first-class-function
+     dispatch (`call_indirect: true` confirmed in the WAT) — still
+     correct (12, hand-computed) at every level, WITH genuine recursion
+     live on the stack mid-loop.
+   The static-env/direct-dispatch mechanism is empirically SOUND for
+   every recursion+closure shape tried. Either it's not the root cause,
+   or `fieldStoredValue`'s actual shape (a ternary choosing between
+   `storedValue`/`storedValueNarrow` — two IMPORTED cross-module function
+   references, not top-level sibling functions) differs from all 3 probes
+   in some way not yet identified — the next concrete thing to try (see
+   NEXT).
+
+**Step 3 — unification probe: DECISIVE SPLIT, not a flip.** Confirmed
+AUDIT-#17's failure reproduces on a FRESH, provably-current, **DEFAULT**
+(`JZ_CARRIER_BOX` unset) `dist/jz.wasm` — rebuilt clean this session,
+16467.3 kB, byte-size-identical to the long-established default baseline,
+confirmed via `scripts/build-dist.mjs`'s own "wrote dist/jz.wasm" line and
+matching every prior clean-build size in this ledger (§17 also 16467.3 kB;
+the CARRIER_BOX build is a DIFFERENT, larger size, 16519.5 kB per §24).
+This is the artifact `npm run build` / the repo ships TODAY, no flag
+needed. §24's UNDEF_NAN/module-scope-BigInt-const-initializer gap, by its
+OWN documented mechanism, is **entirely inert under this exact build** —
+its whole dispatch chain (`isSchemaSlotBigintPossible`'s `CARRIER_BOX &&`
+short-circuit, `readI64`'s new branch, `maybeUnboxBigInt`) compiles to
+NOTHING when the flag is off; §24 itself already proved this — "the
+default kernel's own compiled bytes cannot differ, and don't," confirmed
+by SHA-256, not just size. A bug that reproduces with the entire carrier
+dispatch machinery ABSENT from the compiled binary cannot share a
+triggering mechanism with a bug that requires that exact machinery to be
+present and reachable. **VERDICT: SPLIT.** AUDIT-#17 (module-scope nested-
+object-literal store loop) and §24 (module-scope BigInt-const `$__start`
+initializer) are two INDEPENDENT self-host miscompile classes, not one
+bug with two symptoms — the coordinator's unification hypothesis is
+answered NO, with direct evidence, not by default/absence of proof.
+
+**What the two DO genuinely share** (worth naming, not just dismissing):
+both are (a) triggered ONLY by a MODULE-SCOPE (i.e. `buildStartFn`/
+`$__start`-hosted) decl-init, (b) invisible to every synthetic/isolated
+differential probe run at the SAME optimize settings the real build uses
+(§24's own session found this for its shape; this session found it for
+#17's shape, independently, via 3 different closure/recursion probes),
+and (c) only manifest at the FULL, real, ~370K-line self-hosted-compiler
+SCALE. That's a recurring FAMILY, not a shared root cause — consistent
+with this whole chain's (§17-§23) own repeated finding that these gaps
+are watr-inliner/local-coalescing-SCALE artifacts (temp-counter shifts,
+local-renumbering collisions — see this file's own DECL-INIT WALL
+entries), not simple, isolatable logic bugs reachable by a small
+hand-written probe. A future session chasing either #17 or §24 should
+expect the SAME "sound in isolation, wrong at real scale" shape and plan
+accordingly (i.e. instrument the REAL self.js graph, not a synthetic
+stand-in — the §15/§16/§17-original session's own working method).
+
+**NO FIX LANDED, tree left clean.** No compiler source file touched this
+session — `git status`/`git diff` confirm a clean tree throughout (only
+the pre-existing untracked `.work/todo-original.md`). The ONLY side
+effect is the dist/ rebuild (gitignored, not committed) done to obtain a
+provably-current default artifact for the Step 3 test above. The 4
+test:wasm rows are UNCHANGED (still red) — no gate suite was run beyond
+this rebuild since nothing shipped to gate.
+
+**NEXT** (two independent leads, either sufficient to close #17 on its
+own — §24 stays a SEPARATE hunt per the split verdict above):
+1. Pin the exact `$closureN` in the 216 MB O0 self.js WAT dump that is
+   `module/object.js`'s `ctx.core.emit['{}']` — not by grep (its name is
+   positional, not source-derived) but by INSTRUMENTED TRACE: temporarily
+   tag the closure literal (`ctx.core.emit['{}'] = /* @closure-id */ (...)
+   => {...}`) or read off `ctx.closure.table`'s recorded index for this
+   exact source site during a native compile of self.js (a one-line debug
+   print of `ctx.closure.table.length` right before this literal's own
+   `ctx.closure.make` call would do it), then extract exactly that
+   `$closureN`'s WAT body and inspect its LOCAL allocation for the store
+   loop + recursive re-entry boundary — the original Step 2 goal, this
+   time with a way to actually FIND the function.
+2. Recreate `fieldStoredValue`'s EXACT shape (not an approximation): a
+   ternary selecting between two functions IMPORTED from another module
+   (mirroring `storedValue`/`storedValueNarrow`, both from `src/bridge.js`
+   via the module import graph, not two sibling top-level functions in
+   the same file) as the 4th differential probe — the one structural
+   difference between this session's 3 ruled-out probes and the real
+   `fieldStoredValue` not yet isolated and tested.

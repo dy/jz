@@ -3689,3 +3689,31 @@ readI64-scoped design), `src/ir.js` (`maybeUnboxBigInt`,
 `test/pointers.js` + `test/fixtures/carrier-conservative-pairing-repro.js`
 (the pin). This ledger entry + `.work/todo.md`'s matching status update
 commit separately, plain messages, no push.
+
+## §25. AUDIT-#17's unification hypothesis vs this §24 UNDEF_NAN gap —
+TESTED, ANSWERED NO (2026-08-09, `.work/todo.md`'s own matching entry has
+the full WAT-diff-stage evidence; this is the carrier-side pointer)
+
+A later session tested the coordinator's hypothesis that AUDIT-#17's
+module-scope nested-object-literal store-loop miscompile (`.work/todo.md`,
+`8b8bddca`) and THIS §24 entry's `UNDEF_NAN` module-scope BigInt-const-
+initializer gap were ONE mechanism (both "module-scope decl-init,
+kernel/self-host-only, not reproducible in an isolated repro"). **Decisive
+split, not a unification**: AUDIT-#17 reproduces on a freshly rebuilt,
+byte-size-verified **DEFAULT** (`JZ_CARRIER_BOX` unset) `dist/jz.wasm` —
+16467.3 kB, the exact size this doc's own §17/§22 entries record as the
+default baseline, distinct from this §24 entry's own recorded +51.8 KB
+CARRIER_BOX build size. Since `isSchemaSlotBigintPossible`'s entire
+dispatch (the ONLY thing that can reach `UNDEF_NAN`'s corrupted
+construction path) is `CARRIER_BOX &&`-gated and compiles to NOTHING in
+the default build (this §24 entry's own SHA-256-confirmed byte-identity
+claim), a bug that fires with that machinery physically absent from the
+binary cannot be the same bug as one that requires it. **This §24 gap
+stays exactly where this entry left it** — still un-root-caused past
+"traced to `UNDEF_NAN`'s construction, not reproducible in isolation,"
+still the concrete next lever for a CARRIER_BOX flip. AUDIT-#17 is a
+separate, ALSO-still-open hunt (`.work/todo.md`) — do not spend a future
+CARRIER_BOX session's budget trying to close both at once; they need
+independent root-causing. Full WAT-diff evidence (3 ruled-out closure/
+recursion mechanism hypotheses, the exact split test) lives in
+`.work/todo.md`'s own entry for this session, not duplicated here.
