@@ -194,10 +194,17 @@ export const VAL = {
  *   `censusMaybeUndefinedKind`-consulting chokepoints) already asks
  *   unconditionally — §16's own "needed NO widening" finding — so seeding
  *   this fact onto the param is the entire fix.
- * @property {string}  [dictValueValType] VAL.* kind of every value ever written
- *   through `name[key] = v` (any key, HASH dict-mode local or global) —
- *   first-wins-then-clash lattice, absent/null = unproven or mixed. Additive-
- *   only fact (dict-value-census design, .work/todo.md §deletion-sweep):
+ * @property {Set<string>} [dictValueValType] Set<VAL.*> — every kind ever
+ *   observed for a value written through `name[key] = v` (any key, HASH
+ *   dict-mode local or global). Product-lattice Slice 7: UNION lattice, not
+ *   first-wins-then-clash (this is an existential fact, per
+ *   .work/lattice-design.md §thesis — disagreeing writes widen the Set, an
+ *   unresolved write unions in the full KIND_UNIVERSE/TOP instead of a null
+ *   sentinel). `dictValueKindOf` (kind.js) projects the EXACT-OR-NULL answer
+ *   consumers historically got (`size===1` → that kind, else `null`) —
+ *   byte-identical to the old poison-to-null field. `censusKindsOf` (kind.js,
+ *   opt-in only, per the COORDINATOR RULING on OQ1) exposes the raw union.
+ *   Additive-only fact (dict-value-census design, .work/todo.md §deletion-sweep):
  *   NEVER a substitute for `val`, never mutated alongside it. Two producers
  *   remain live — analyze.js's same-body scan (local half, updateRep) and
  *   observeProgramSlots' dictValueTypes census (global half, updateGlobalRep)
@@ -216,11 +223,11 @@ export const VAL = {
  *   field this needs and full re-enablement criteria for the VT-side
  *   consumer. Do not wire dictValueKindOf back into VT['[]']/VT['.'] without
  *   first meeting §5.
- * @property {string}  [mapValueValType] VAL.* kind of every value ever written
- *   through a proven-VAL.MAP receiver's `recv.set(k, v)` (any key) —
- *   dictValueValType's Map-census Tier 1 sibling (.work/todo.md
- *   §deletion-sweep), same first-wins-then-clash lattice, additive-only, NEVER a
- *   substitute for `val`. Two producers remain live — analyze.js's same-body
+ * @property {Set<string>} [mapValueValType] Set<VAL.*> — every kind ever
+ *   observed for a value written through a proven-VAL.MAP receiver's
+ *   `recv.set(k, v)` (any key) — dictValueValType's Map-census Tier 1
+ *   sibling (.work/todo.md §deletion-sweep), same union lattice (product-
+ *   lattice Slice 7), additive-only, NEVER a substitute for `val`. Two producers remain live — analyze.js's same-body
  *   scan (local half, updateRep) and observeProgramSlots' mapValueTypes
  *   census (global half, updateGlobalRep). Same two-consumer split as
  *   dictValueValType above: `mapValueKindOf` (kind.js) — VT['()']'s `.get`

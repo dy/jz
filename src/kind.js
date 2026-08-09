@@ -306,13 +306,24 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
 // changes it. `ctx.types.nameEscapes` (program-facts.js, installed
 // plan/index.js) is a whole-program, name-keyed set of every binding read in
 // a VALUE position — exactly the set of names that COULD have been aliased.
-export function dictValueKindOf(name) {
-  if (ctx.types?.nameEscapes?.has(name)) return null
+// dictValueKindSet(name) — the raw union Set behind dictValueKindOf's
+// exact-or-null projection (product-lattice Slice 7). Same alias/receiver
+// gating as dictValueKindOf; returns undefined where dictValueKindOf would
+// return null (gated out or unobserved) so callers can distinguish "no
+// evidence" (∅, not even queried) from a genuine empty answer if that
+// distinction is ever needed — today's two callers (dictValueKindOf,
+// censusKindsOf) both treat a falsy return as "nothing."
+function dictValueKindSet(name) {
+  if (ctx.types?.nameEscapes?.has(name)) return undefined
   const local = ctx.func.localReps?.get(name)?.dictValueValType
   if (local) return local
   if (!ctx.func.localReps?.has(name) && ctx.types?.dynWriteVars?.has(name))
-    return ctx.scope.globalReps?.get(name)?.dictValueValType || null
-  return null
+    return ctx.scope.globalReps?.get(name)?.dictValueValType
+  return undefined
+}
+export function dictValueKindOf(name) {
+  const s = dictValueKindSet(name)
+  return s && s.size === 1 ? [...s][0] : null
 }
 
 // RECEIVER-KIND GUARD (test/simd.js regression, found landing the original
@@ -349,13 +360,19 @@ const dictCensusReceiverIsLive = (name) => {
 // a HARD classification (`new Map()` → CALLEE_VAL + recordGlobalRep,
 // kind-traits.js) — `valTypeOf(name) === VAL.MAP` alone proves the receiver,
 // no dynWriteVars-analog proxy needed on the global side.
-export function mapValueKindOf(name) {
-  if (typeof name !== 'string' || valTypeOf(name) !== VAL.MAP) return null
-  if (ctx.types?.nameEscapes?.has(name)) return null
+// mapValueKindSet(name) — mapValueKindOf's raw-Set sibling, same shape as
+// dictValueKindSet above (product-lattice Slice 7).
+function mapValueKindSet(name) {
+  if (typeof name !== 'string' || valTypeOf(name) !== VAL.MAP) return undefined
+  if (ctx.types?.nameEscapes?.has(name)) return undefined
   const local = ctx.func.localReps?.get(name)?.mapValueValType
   if (local) return local
-  if (!ctx.func.localReps?.has(name)) return ctx.scope.globalReps?.get(name)?.mapValueValType || null
-  return null
+  if (!ctx.func.localReps?.has(name)) return ctx.scope.globalReps?.get(name)?.mapValueValType
+  return undefined
+}
+export function mapValueKindOf(name) {
+  const s = mapValueKindSet(name)
+  return s && s.size === 1 ? [...s][0] : null
 }
 
 // censusKindsOf(name) — OPT-IN, set-valued sibling of dictValueKindOf/
@@ -371,26 +388,25 @@ export function mapValueKindOf(name) {
 // Fact-shaped field will use, so this is the primitive's first real caller,
 // not a bespoke Set construction.
 //
-// PRECISION NOTE: dictValueKindOf/mapValueKindOf's underlying producers
+// PRECISION (product-lattice Slice 7): the underlying producers
 // (analyze.js's dictValueTypeOf/mapValueTypeOf, program-facts.js's
-// observeDictValue/poisonDictValue) still collapse a disagreeing pair of
-// writes to `null` (first-wins-then-clash, the SAME universal/poison algebra
-// FINDING-7 names as wrong for an existential question) — this projection
-// re-exposes exactly what they already resolved, through the Set-shaped
-// vocabulary; it does not yet recover the finer {NUMBER, STRING}-style union
-// a genuinely disagreeing dict/map would produce. Retiring that poison
-// collapse at the PRODUCER is Slice 7's job (design §5: "whatever
-// Map.get()-promotion wiring §3.1 needs in program-facts.js"), gated on its
-// own re-run of the audit-#10 battery — not this slice's, which only lands
-// the opt-in projection shape.
+// observeDictValue/poisonDictValue) now UNION disagreeing writes instead of
+// collapsing to null (retiring the universal/poison algebra FINDING-7 names
+// as wrong for this existential question) — this projection reads the raw
+// Set those producers build (dictValueKindSet/mapValueKindSet, the same
+// gated, alias-safe lookup dictValueKindOf/mapValueKindOf themselves use,
+// just without their exact-or-null collapse), so a genuinely heterogeneous
+// dict/map now answers {NUMBER, STRING}-shaped, not null. A defensive copy
+// (`new Set(s)`) is returned — the underlying Set is a published rep field,
+// never mutated by a caller.
 // PURE (audit-#16 P1-4): a projection must never touch solver state. The
 // earlier draft routed through joinKinds, whose latticeMeet.changed side
 // channel would flag convergence on every non-empty QUERY — a read
 // preventing a fixpoint from settling. Projections construct their answer
 // locally; only PRODUCERS join.
 export function censusKindsOf(name) {
-  const kind = dictValueKindOf(name) ?? mapValueKindOf(name)
-  return kind ? new Set([kind]) : new Set()
+  const s = dictValueKindSet(name) ?? mapValueKindSet(name)
+  return s ? new Set(s) : new Set()
 }
 
 // maybeUndefined value-join — RE-ENABLED (Slice 1, .work/todo.md

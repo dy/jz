@@ -22,7 +22,7 @@ import { DBG_BIGINT_STATS, noteLocalBoxed } from './bigint-boxed-stats.js'
 
 import { commaList, ASSIGN_OPS, MUTATE_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, collectAllBoundNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR } from '../ast.js'
 import { ctx, err } from '../ctx.js'
-import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString } from '../reps.js'
+import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString, KIND_UNIVERSE } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst, censusMaybeUndefinedKind } from '../kind.js'
 import { intLiteralValue, nonNegIntLiteral, constIntExpr, intExprRange, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
 import { typedElemCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, scanBoundedArrIdx, inBoundsCharCodeAt, exprType, intCertainMap, intLevelMap, isTerminator } from '../type.js'
@@ -1446,10 +1446,20 @@ function dictEffectiveWriteValue(op, lhs, rhs) {
 // rule, this file's doc comment ~line 65). dictWalkLean/dictWalkI32 keep their
 // own `=>`-stopping cut — this census only feeds the maybeUndefined-joined
 // consumer path (kind.js dictValueKindOf), not those leaner direct-index ones.
+//
+// PRODUCT-LATTICE Slice 7: union-join instead of first-wins-then-clash
+// poison-to-null (.work/lattice-design.md §thesis — this is an EXISTENTIAL
+// fact, "which kinds has this dict been written with," and existential facts
+// compose by union, not meet). Returns the raw Set (possibly empty = BOTTOM/
+// unobserved): a disagreeing write ADDS to the set instead of nulling it; an
+// unresolved write union-joins the full KIND_UNIVERSE (TOP) instead of a
+// null sentinel — dictValueKindOf's exact-or-null projection (size===1 → the
+// kind, else null) reproduces today's observable answer byte-for-byte from
+// this Set, while censusKindsOf (opt-in) can now see the real union.
 function dictValueTypeOf(body, name) {
-  let vt, poisoned = false
+  const kinds = new Set()
   const walk = (node) => {
-    if (poisoned || !Array.isArray(node)) return
+    if (kinds.size === KIND_UNIVERSE.length || !Array.isArray(node)) return
     const op = node[0]
     if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return
     if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
@@ -1459,16 +1469,15 @@ function dictValueTypeOf(body, name) {
         while (Array.isArray(root) && root[0] === '[]') root = root[1]
         if (root === name) {
           const wvt = dictWriteVT(dictEffectiveWriteValue(op, node[1], node[2]))
-          if (!wvt) { poisoned = true; return }
-          if (vt === undefined) vt = wvt
-          else if (vt !== wvt) { poisoned = true; return }
+          if (!wvt) { for (const k of KIND_UNIVERSE) kinds.add(k); return }
+          kinds.add(wvt)
         }
       }
     }
     for (let i = 1; i < node.length; i++) walk(node[i])
   }
   walk(body)
-  return poisoned ? null : (vt ?? null)
+  return kinds
 }
 
 // Map-value-type census, local half (design .work/todo.md §deletion-sweep
@@ -1479,11 +1488,12 @@ function dictValueTypeOf(body, name) {
 // Caller gates on decl vt === VAL.MAP (receiver already proven), so `name`
 // need not be re-checked here. Observes THROUGH nested `=>` bodies with the
 // SAME shadow-bail as dictValueTypeOf above (audit-#8 P0-2) — see that
-// function's doc comment for the soundness argument.
+// function's doc comment for the soundness argument. Same product-lattice
+// Slice 7 union-join swap as dictValueTypeOf above — see its doc comment.
 function mapValueTypeOf(body, name) {
-  let vt, poisoned = false
+  const kinds = new Set()
   const walk = (node) => {
-    if (poisoned || !Array.isArray(node)) return
+    if (kinds.size === KIND_UNIVERSE.length || !Array.isArray(node)) return
     const op = node[0]
     if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return
     if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
@@ -1491,15 +1501,14 @@ function mapValueTypeOf(body, name) {
       const cargs = commaList(node[2])
       if (cargs.length === 2) {
         const wvt = dictWriteVT(cargs[1])
-        if (!wvt) { poisoned = true; return }
-        if (vt === undefined) vt = wvt
-        else if (vt !== wvt) { poisoned = true; return }
+        if (!wvt) { for (const k of KIND_UNIVERSE) kinds.add(k); return }
+        kinds.add(wvt)
       }
     }
     for (let i = 1; i < node.length; i++) walk(node[i])
   }
   walk(body)
-  return poisoned ? null : (vt ?? null)
+  return kinds
 }
 
 export function analyzeValTypes(body) {
@@ -1724,7 +1733,7 @@ export function analyzeValTypes(body) {
         // the HASH receiver stamp above — never a substitute for `val`.
         if (dict) {
           const dvt = dictValueTypeOf(body, a[1])
-          if (dvt) updateRep(a[1], { dictValueValType: dvt })
+          if (dvt.size) updateRep(a[1], { dictValueValType: dvt })
         }
         // Map-value-type census, local half (design .work/todo.md
         // §deletion-sweep §1) — sibling of the dict census above, gated on decl
@@ -1733,7 +1742,7 @@ export function analyzeValTypes(body) {
         // resolves it via CALLEE_VAL — no structural re-derivation needed).
         if (vt === VAL.MAP) {
           const mvt = mapValueTypeOf(body, a[1])
-          if (mvt) updateRep(a[1], { mapValueValType: mvt })
+          if (mvt.size) updateRep(a[1], { mapValueValType: mvt })
         }
         const leanDict = dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(a[1])
         if (leanDict) {
@@ -1852,13 +1861,13 @@ export function analyzeValTypes(body) {
       // sibling of the decl-site stamp above.
       if (dict) {
         const dvt = dictValueTypeOf(body, args[0])
-        if (dvt) updateRep(args[0], { dictValueValType: dvt })
+        if (dvt.size) updateRep(args[0], { dictValueValType: dvt })
       }
       // Map-value-type census, local half — reassignment site sibling of the
       // decl-site stamp above.
       if (vt === VAL.MAP) {
         const mvt = mapValueTypeOf(body, args[0])
-        if (mvt) updateRep(args[0], { mapValueValType: mvt })
+        if (mvt.size) updateRep(args[0], { mapValueValType: mvt })
       }
       if (dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(args[0])) {
         (ctx.func.leanHashLocals ??= new Set()).add(args[0])

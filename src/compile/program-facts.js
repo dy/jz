@@ -4,7 +4,7 @@
  */
 import { commaList, isFuncRef, isLiteralStr, ASSIGN_OPS, MUTATE_OPS } from '../ast.js'
 import { ctx, err, getFactStore, DBG_INVARIANTS } from '../ctx.js'
-import { VAL, lookupValType, repOf, updateGlobalRep } from '../reps.js'
+import { VAL, lookupValType, repOf, updateGlobalRep, KIND_UNIVERSE } from '../reps.js'
 import { valTypeOf, nullishArm } from '../kind.js'
 import { extractParams, classifyParam, collectAllBoundNames } from '../ast.js'
 import { staticObjectProps, objLiteralSchemaId } from '../static.js'
@@ -676,29 +676,46 @@ export function observeProgramSlots(ast, opts) {
     else if (f.objSid !== childSid) f.objSid = null
   }
   const poisonObjSid = (sid, idx) => { slotFact(sid, idx).objSid = null }
-  // Dict-value-type census (global half, design §1b): observeSlot/poisonSlot's
-  // first-wins-then-clash lattice, keyed by bare name instead of (sid, idx) —
-  // same whole-program name-keyed convention as dynWriteVars/nameEscapes above.
+  // Dict-value-type census (global half, product-lattice Slice 7): union-join
+  // (existential fact — "which kinds was this dict ever written with"), keyed
+  // by bare name instead of (sid, idx) — same whole-program name-keyed
+  // convention as dynWriteVars/nameEscapes above. Disagreeing writes UNION
+  // instead of the old first-wins-then-clash null-poison; an unresolved write
+  // unions in the full KIND_UNIVERSE (TOP) — absorbing, same effect on the
+  // exact-or-null projection (dictValueKindOf: size!==1 → null) as the old
+  // sentinel, but now `censusKindsOf` can see which kinds, plural.
+  const dictValueKindSet = (name) => {
+    let s = dictValueTypes.get(name)
+    if (!s) { s = new Set(); dictValueTypes.set(name, s) }
+    return s
+  }
   const observeDictValue = (name, vt) => {
     if (!vt) return
-    const cur = dictValueTypes.get(name)
-    if (cur === null) return
-    if (cur === undefined) dictValueTypes.set(name, vt)
-    else if (cur !== vt) dictValueTypes.set(name, null)
+    const s = dictValueKindSet(name)
+    if (s.size < KIND_UNIVERSE.length) s.add(vt)
   }
-  const poisonDictValue = (name) => dictValueTypes.set(name, null)
-  // Map-value-type census (Tier 1, design .work/todo.md §deletion-sweep
-  // §1): observeDictValue's own first-wins-then-clash lattice, applied to
-  // `recv.set(k, v)` RHS values instead of `[]=` writes — Map has no
-  // bracket-write form. Same whole-program name-keyed convention.
+  const poisonDictValue = (name) => {
+    const s = dictValueKindSet(name)
+    for (const k of KIND_UNIVERSE) s.add(k)
+  }
+  // Map-value-type census (Tier 1, product-lattice Slice 7): observeDictValue's
+  // own union lattice, applied to `recv.set(k, v)` RHS values instead of
+  // `[]=` writes — Map has no bracket-write form. Same whole-program
+  // name-keyed convention.
+  const mapValueKindSet = (name) => {
+    let s = mapValueTypes.get(name)
+    if (!s) { s = new Set(); mapValueTypes.set(name, s) }
+    return s
+  }
   const observeMapValue = (name, vt) => {
     if (!vt) return
-    const cur = mapValueTypes.get(name)
-    if (cur === null) return
-    if (cur === undefined) mapValueTypes.set(name, vt)
-    else if (cur !== vt) mapValueTypes.set(name, null)
+    const s = mapValueKindSet(name)
+    if (s.size < KIND_UNIVERSE.length) s.add(vt)
   }
-  const poisonMapValue = (name) => mapValueTypes.set(name, null)
+  const poisonMapValue = (name) => {
+    const s = mapValueKindSet(name)
+    for (const k of KIND_UNIVERSE) s.add(k)
+  }
   const paramReps = opts?.paramReps ?? null
   // Poison every hazarded slot's kind AND elem-ctor up front (unresolvable
   // receivers, computed-key writes, extern constructors — see
@@ -1075,19 +1092,23 @@ export function observeProgramSlots(ast, opts) {
     }
   }
   ctx.func.localValTypesOverlay = prevOverlay
-  // Publish the dict-value-type census onto globalReps (design §1b/§2's
-  // "no consumer wired yet" — this write is the plumbing, kind.js's
-  // dictValueKindOf reads it starting in the consumer-wiring step). Runs every
-  // observeProgramSlots call (both the early hasSchemaLiterals-gated pass and
-  // the late {fresh:true} rebuild), so a poisoned-then-cleared entry on rebuild
-  // correctly overwrites the earlier value via updateGlobalRep's merge.
-  for (const [name, vt] of dictValueTypes) updateGlobalRep(name, { dictValueValType: vt })
-  // Map-value-type census (Tier 1, design .work/todo.md §deletion-sweep
-  // §1) — same publish discipline as the dict-value census just above. The
-  // consumer (kind.js's former mapValueKindOf) was reverted for unsoundness
-  // (audit P0, .work/todo.md "audit-#7 P0 closed") — this fact is DORMANT,
-  // published but unread; see reps.js's mapValueValType doc for why.
-  for (const [name, vt] of mapValueTypes) updateGlobalRep(name, { mapValueValType: vt })
+  // Publish the dict-value-type census onto globalReps — kind.js's
+  // dictValueKindOf projects the exact-or-null answer from this Set
+  // (size===1 → the kind, else null); censusKindsOf (opt-in, product-lattice
+  // Slice 7) reads the raw union. Runs every observeProgramSlots call (both
+  // the early hasSchemaLiterals-gated pass and the late {fresh:true}
+  // rebuild), so a poisoned-then-cleared entry on rebuild correctly
+  // overwrites the earlier value via updateGlobalRep's merge. Published as a
+  // COPY (`new Set(s)`), never the live working Set, so a later observation
+  // in the SAME pass (before the next {fresh:true} clear) can't silently
+  // mutate an already-published rep field by aliasing.
+  for (const [name, s] of dictValueTypes) if (s.size) updateGlobalRep(name, { dictValueValType: new Set(s) })
+  // Map-value-type census (Tier 1) — same publish discipline as the
+  // dict-value census just above. Both dictValueKindOf and mapValueKindOf
+  // are live consumers (product-lattice Slice 1's censusMaybeUndefinedKind
+  // dispatch; Slice 7's keyedWrite consumer reads the raw Set via
+  // censusKindsOf).
+  for (const [name, s] of mapValueTypes) if (s.size) updateGlobalRep(name, { mapValueValType: new Set(s) })
 }
 
 // ————————————————————————————— slot-write hazards —————————————————————————————

@@ -503,33 +503,44 @@ export function reset(proto, globals, bridge) {
                                 //   `ctx.schema.slotI32CertainAt` → raw i32 slot
                                 //   loads (module/core.js) + i32 local typing
                                 //   (type.js exprType '.').
-    dictValueTypes: new Map(),  // name → VAL.* | null — dict-value-census global
-                                //   half (.work/todo.md §deletion-sweep §1b):
-                                //   every VAL.* kind ever written through
+    dictValueTypes: new Map(),  // name → Set<VAL.*> — dict-value-census global
+                                //   half (product-lattice Slice 7, retiring the
+                                //   old first-wins-then-clash poison-to-null
+                                //   algebra per .work/lattice-design.md §thesis:
+                                //   this is an EXISTENTIAL fact — "which kinds
+                                //   was this dict ever written with" — so
+                                //   disagreeing writes UNION into the Set
+                                //   instead of collapsing it to null; an
+                                //   unresolved write unions in the full
+                                //   KIND_UNIVERSE (TOP), never a sentinel).
+                                //   Every VAL.* kind ever written through
                                 //   `name[key] = v` (any key) across the whole
                                 //   program (ast top-level, every function body,
-                                //   module inits) — first-wins-then-clash,
-                                //   populated/cleared by observeProgramSlots
-                                //   alongside slotTypes/slotCtors. Rooted at the
-                                //   bare name (nested `[]` chains resolve to
-                                //   their root), whole-program name-keyed same as
-                                //   dynWriteVars/nameEscapes — NOT scope-aware,
-                                //   consumers gate at read time. Written into
-                                //   ctx.scope.globalReps as dictValueValType by
-                                //   observeProgramSlots itself; not consumed
-                                //   directly anywhere else.
-    mapValueTypes: new Map(),  // name → VAL.* | null — Map-value-census Tier 1
-                                //   global half (.work/todo.md §deletion-sweep
-                                //   §1): every VAL.* kind ever written through a
-                                //   proven-VAL.MAP receiver's `recv.set(k, v)`
-                                //   (any key) across the whole program — same
-                                //   first-wins-then-clash lattice and whole-
+                                //   module inits), populated/cleared by
+                                //   observeProgramSlots alongside slotTypes/
+                                //   slotCtors. Rooted at the bare name (nested
+                                //   `[]` chains resolve to their root), whole-
+                                //   program name-keyed same as dynWriteVars/
+                                //   nameEscapes — NOT scope-aware, consumers
+                                //   gate at read time. Published into
+                                //   ctx.scope.globalReps as dictValueValType (a
+                                //   Set, same exact-or-null projection kept by
+                                //   kind.js's dictValueKindOf) by
+                                //   observeProgramSlots itself; the raw Set is
+                                //   also the union censusKindsOf exposes.
+    mapValueTypes: new Map(),  // name → Set<VAL.*> — Map-value-census Tier 1
+                                //   global half, dictValueTypes' union-lattice
+                                //   sibling (product-lattice Slice 7): every
+                                //   VAL.* kind ever written through a proven-
+                                //   VAL.MAP receiver's `recv.set(k, v)` (any
+                                //   key) across the whole program — same
+                                //   union/TOP-on-unresolved algebra and whole-
                                 //   program name-keyed convention as
                                 //   dictValueTypes just above (Map has no `[]=`
                                 //   write form, so the census matches the CALL
                                 //   shape instead). Populated/cleared by
                                 //   observeProgramSlots alongside dictValueTypes;
-                                //   written into ctx.scope.globalReps as
+                                //   published into ctx.scope.globalReps as
                                 //   mapValueValType.
     externSlotSids: new Set(),  // schemaId set — sids whose slot VALUES can be
                                 //   written by machinery the write censuses never

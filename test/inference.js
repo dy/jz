@@ -2334,10 +2334,20 @@ test('closure return-kind: fails open when the return depends on an unsettled ca
 // ───────────────────────────────────────────── dict-value-type census (global half)
 // .work/todo.md §deletion-sweep §1b/§5 step 2: observeProgramSlots' whole-
 // program census of `name[key] = rhs` value kinds, published onto
-// ctx.scope.globalReps as dictValueValType. No consumer is wired yet (that's
-// step 3, pinned in dyn-keys.js/data.js) — these tests inspect the fact
+// ctx.scope.globalReps as dictValueValType. These tests inspect the fact
 // directly, module-global HASH dict, comma-chained export let, filled through
 // a param-aliased (dynamic-key) write in one function, read in another.
+//
+// PRODUCT-LATTICE Slice 7: dictValueValType/mapValueValType are now
+// Set<VAL.*> (union lattice, .work/lattice-design.md §thesis — disagreeing
+// writes widen the set instead of poisoning to null; an unresolved write
+// unions in the full KIND_UNIVERSE/TOP). soleKind() reproduces the OLD
+// exact-or-null field shape these fixtures assert against — the SAME
+// projection kind.js's dictValueKindOf/mapValueKindOf apply — so these tests
+// keep verifying the public exact-or-null contract byte-for-byte
+// unchanged; undefined (never observed) stays distinguishable from null
+// (observed but poisoned/mixed).
+const soleKind = s => s === undefined ? undefined : (s.size === 1 ? [...s][0] : null)
 //
 // audit-#11 item 7 sub-4 (test:wasm classification, 2026-08-05): every test in
 // this section (through the receiver-HASH section below) reads a host-side
@@ -2365,7 +2375,7 @@ test('dict-value census: module-global dict-mode value kind populates globalReps
     register('sub')
   `
   jz.compile(src, { wat: true })
-  is(ctx.scope.globalReps?.get('OPCODE')?.dictValueValType, 'number',
+  is(soleKind(ctx.scope.globalReps?.get('OPCODE')?.dictValueValType), 'number',
     'OPCODE[nm] = code++ census resolves to VAL.NUMBER')
 })
 
@@ -2392,7 +2402,7 @@ test('dict-value census: a raw bare-param VALUE fails open (poisons), same as th
     register('*', 20)
   `
   jz.compile(src, { wat: true })
-  is(ctx.scope.globalReps?.get('prec')?.dictValueValType, null,
+  is(soleKind(ctx.scope.globalReps?.get('prec')?.dictValueValType), null,
     'bare-param write value is unproven by writeVT — poisons, does not guess')
 })
 
@@ -2405,7 +2415,7 @@ test('dict-value census: mixed-kind writes poison the fact to null', () => {
     put('b', 'oops')
   `
   jz.compile(src, { wat: true })
-  is(ctx.scope.globalReps?.get('bag')?.dictValueValType, null,
+  is(soleKind(ctx.scope.globalReps?.get('bag')?.dictValueValType), null,
     'a NUMBER write and a STRING write clash — fact must poison, not settle')
 })
 
@@ -2420,7 +2430,7 @@ test('dict-value census: an unresolvable write poisons the fact', () => {
     store('x', {val: 1})
   `
   jz.compile(src, { wat: true })
-  is(ctx.scope.globalReps?.get('cache')?.dictValueValType, null,
+  is(soleKind(ctx.scope.globalReps?.get('cache')?.dictValueValType), null,
     '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
 })
 
@@ -2531,7 +2541,7 @@ test('dict-value census: self-read neutrality — a self-increment (`d[k]++`) is
     bump('b')
   `
   jz.compile(src, { wat: true })
-  is(ctx.scope.globalReps?.get('OPCODE')?.dictValueValType, 'number',
+  is(soleKind(ctx.scope.globalReps?.get('OPCODE')?.dictValueValType), 'number',
     'self-read `d[k]++` resolves NUMBER via the literal `1` operand alone')
 })
 
@@ -2550,7 +2560,7 @@ test('dict-value census: value-set &&/||/?? — a genuine kind mismatch reached 
     put('b')
   `
   jz.compile(src, { wat: true })
-  is(ctx.scope.globalReps?.get('bag')?.dictValueValType, null,
+  is(soleKind(ctx.scope.globalReps?.get('bag')?.dictValueValType), null,
     'STRING vs NUMBER through &&/|| composition must poison, not guess')
 })
 
@@ -2568,8 +2578,8 @@ test('dict-value census: ?? atom-arm — a null/undefined literal in the ?? arm 
     regB('x'); regB('y')
   `
   jz.compile(src, { wat: true })
-  is(ctx.scope.globalReps?.get('a')?.dictValueValType, 'number', 'null ?? p excludes the atom arm')
-  is(ctx.scope.globalReps?.get('b')?.dictValueValType, 'number', 'undefined ?? p — same exclusion')
+  is(soleKind(ctx.scope.globalReps?.get('a')?.dictValueValType), 'number', 'null ?? p excludes the atom arm')
+  is(soleKind(ctx.scope.globalReps?.get('b')?.dictValueValType), 'number', 'undefined ?? p — same exclusion')
 })
 
 test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[c] && prec[op] || p` resolves NUMBER end-to-end', () => {
@@ -2597,7 +2607,7 @@ test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[
     register('*', 2, 20)
   `
   const wat = jz.compile(src, { wat: true })
-  is(ctx.scope.globalReps?.get('prec')?.dictValueValType, 'number',
+  is(soleKind(ctx.scope.globalReps?.get('prec')?.dictValueValType), 'number',
     'the subscript shape resolves NUMBER: self-read neutrality + BOOL elimination + param channel')
   const body = wat.slice(wat.indexOf('$bigOp'))
   // cmpOp's own (census-independent) coerced-f64 compare shape — see the
@@ -2645,7 +2655,7 @@ test('dict-value census: bundled moduleInit dict-write (watr\'s OPCODE shape, C-
   )
   const mangled = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$OPCODE'))
   ok(mangled, 'a mangled global rep exists for the bundled OPCODE dict')
-  is(ctx.scope.globalReps.get(mangled)?.dictValueValType, 'number',
+  is(soleKind(ctx.scope.globalReps.get(mangled)?.dictValueValType), 'number',
     'the bare top-level `OPCODE[TABLE[i]] = code++` loop (visitInit, not visit) resolves VAL.NUMBER')
   is(exports.lookup('sub'), 1, 'functional result unaffected — census is purely additive')
 })
@@ -2663,7 +2673,7 @@ test('dict-value census: bundled moduleInit mixed-kind dict-write poisons the fa
   )
   const mangled = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
   ok(mangled, 'a mangled global rep exists for the bundled bag dict')
-  is(ctx.scope.globalReps.get(mangled)?.dictValueValType, null,
+  is(soleKind(ctx.scope.globalReps.get(mangled)?.dictValueValType), null,
     'a NUMBER write and a STRING write inside the moduleInit clash — must poison, not settle')
 })
 
@@ -2690,14 +2700,14 @@ test('dict-value census: moduleInitSlot memo-cache replay is order-independent (
   jz(src, { modules })
   const opcodeKey1 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$OPCODE'))
   const bagKey1 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
-  const opcode1 = ctx.scope.globalReps.get(opcodeKey1)?.dictValueValType
-  const bag1 = ctx.scope.globalReps.get(bagKey1)?.dictValueValType
+  const opcode1 = soleKind(ctx.scope.globalReps.get(opcodeKey1)?.dictValueValType)
+  const bag1 = soleKind(ctx.scope.globalReps.get(bagKey1)?.dictValueValType)
 
   jz(src, { modules })
   const opcodeKey2 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$OPCODE'))
   const bagKey2 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
-  const opcode2 = ctx.scope.globalReps.get(opcodeKey2)?.dictValueValType
-  const bag2 = ctx.scope.globalReps.get(bagKey2)?.dictValueValType
+  const opcode2 = soleKind(ctx.scope.globalReps.get(opcodeKey2)?.dictValueValType)
+  const bag2 = soleKind(ctx.scope.globalReps.get(bagKey2)?.dictValueValType)
 
   is(opcode1, 'number', 'first compile: OPCODE resolves NUMBER (cold walk agrees with cached replay within the compile)')
   is(bag1, null, 'first compile: bag poisons (poison survives cached replay within the compile)')
@@ -2738,7 +2748,7 @@ test('map-value census: module-global Map.set value kind populates globalReps', 
     put('b')
   `
   jz.compile(src, { wat: true })
-  is(ctx.scope.globalReps?.get('MEMO')?.mapValueValType, 'number',
+  is(soleKind(ctx.scope.globalReps?.get('MEMO')?.mapValueValType), 'number',
     'MEMO.set(k, n++) census resolves to VAL.NUMBER')
 })
 
@@ -2763,7 +2773,7 @@ test('map-value census: mixed-kind writes poison the fact to null', () => {
     put('b', 'oops')
   `
   jz.compile(src, { wat: true })
-  is(ctx.scope.globalReps?.get('bag')?.mapValueValType, null,
+  is(soleKind(ctx.scope.globalReps?.get('bag')?.mapValueValType), null,
     'a NUMBER write and a STRING write clash — fact must poison, not settle')
 })
 
@@ -2775,7 +2785,7 @@ test('map-value census: an unresolvable write poisons the fact', () => {
     store('x', {val: 1})
   `
   jz.compile(src, { wat: true })
-  is(ctx.scope.globalReps?.get('cache')?.mapValueValType, null,
+  is(soleKind(ctx.scope.globalReps?.get('cache')?.mapValueValType), null,
     '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
 })
 
@@ -2844,7 +2854,7 @@ test('map-value census: new Map(seed) literal stays uncovered — census ignores
     export let get = (k) => seeded.get(k)
   `
   jz.compile(src, { wat: true })
-  is(ctx.scope.globalReps?.get('seeded')?.mapValueValType, undefined,
+  is(soleKind(ctx.scope.globalReps?.get('seeded')?.mapValueValType), undefined,
     'seed-literal shape is out of Tier-1 scope by design — must not crash or falsely populate')
   is(run(src).get('a'), 1, 'seeded Map still functions correctly (generic .get path)')
 })
@@ -2867,7 +2877,7 @@ test('map-value census: bundled moduleInit Map.set (watr\'s memo shape, C-style 
   )
   const mangled = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$MEMO'))
   ok(mangled, 'a mangled global rep exists for the bundled MEMO map')
-  is(ctx.scope.globalReps.get(mangled)?.mapValueValType, 'number',
+  is(soleKind(ctx.scope.globalReps.get(mangled)?.mapValueValType), 'number',
     'the bare top-level `MEMO.set(i, v += 10)` loop (visitInit, not visit) resolves VAL.NUMBER')
   is(exports.lookup(1), 20, 'functional result correct')
 })
@@ -2890,14 +2900,14 @@ test('map-value census: moduleInitSlot memo-cache replay is order-independent (c
   jz(src, { modules })
   const memoKey1 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$MEMO'))
   const bagKey1 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
-  const memo1 = ctx.scope.globalReps.get(memoKey1)?.mapValueValType
-  const bag1 = ctx.scope.globalReps.get(bagKey1)?.mapValueValType
+  const memo1 = soleKind(ctx.scope.globalReps.get(memoKey1)?.mapValueValType)
+  const bag1 = soleKind(ctx.scope.globalReps.get(bagKey1)?.mapValueValType)
 
   jz(src, { modules })
   const memoKey2 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$MEMO'))
   const bagKey2 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
-  const memo2 = ctx.scope.globalReps.get(memoKey2)?.mapValueValType
-  const bag2 = ctx.scope.globalReps.get(bagKey2)?.mapValueValType
+  const memo2 = soleKind(ctx.scope.globalReps.get(memoKey2)?.mapValueValType)
+  const bag2 = soleKind(ctx.scope.globalReps.get(bagKey2)?.mapValueValType)
 
   is(memo1, 'number', 'first compile: MEMO resolves NUMBER (cold walk agrees with cached replay within the compile)')
   is(bag1, null, 'first compile: bag poisons (poison survives cached replay within the compile)')
