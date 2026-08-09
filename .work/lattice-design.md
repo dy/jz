@@ -1124,3 +1124,67 @@ work correctly attributed to Slice 7 (the design's own text already says
 so); flagged here in full so the coordinator can override this reading if
 Slice 4b/7 turn out to need `censusKindsOf` to carry real union precision
 sooner than Slice 7.
+
+## AS-LANDED — Slice 2 (2026-08-08)
+
+SHA: `0be8533e`.
+
+**What shipped.** Exactly as specified: `src/reps.js` gains `ALL_KINDS`
+(`new Set(Object.values(VAL))`, the 14-member domain) and `isDisjointFrom(name,
+kindSet)` — a projection returning `true` only when `name`'s existing
+`recvArrTyped` class proof holds AND `kindSet` excludes both `VAL.ARRAY` and
+`VAL.TYPED`. `module/array.js`'s single `recvArrTyped` definition site
+(numeric-key guard, was `ctx.func.localReps?.get(arr)?.recvArrTyped ===
+true`) now reads `isDisjointFrom(arr, NOT_ARRAY_OR_TYPED)`, with
+`NOT_ARRAY_OR_TYPED` (`ALL_KINDS \ {ARRAY, TYPED}`) computed once at module
+scope. Both of `recvArrTyped`'s two USE sites (the two `if (recvArrTyped)`
+checks further down the function) are untouched — only the single definition
+changed, since both reads already flowed from that one local.
+
+**No computation change, as the design specifies.** `isDisjointFrom` reads
+the exact same `r.recvArrTyped === true` bit `module/array.js` read directly
+before; the kindSet exclusion check is the algebraic identity
+`kindsOf ⊆ {ARRAY,TYPED} ⟺ kindsOf ∩ (ALL_KINDS∖{ARRAY,TYPED}) = ∅` — same
+boolean, every input. No other `recvArrTyped` producer (narrow.js
+`hardParamRecvArrTyped`, compile/index.js's two propagation sites) needed
+touching — the design's file list (`src/reps.js`, `src/module/array.js`)
+was exactly sufficient, no scope tension to bank.
+
+**OQ1 ruling compliance:** not applicable to this slice — `isDisjointFrom`
+here draws solely on `recvArrTyped` (an ordinary REP field, not a
+census-derived claim), so the Option-A opt-in restriction (binding on
+census-kind unions specifically) has nothing to gate. Flagged so a later
+slice doesn't assume `isDisjointFrom` is already OQ1-restricted by
+construction — it will need its own gate the day a census-sourced kind set
+feeds it.
+
+**Gate results:**
+- Bench-corpus byte-identity: 58-case/174-compile corpus (all non-graph
+  `bench/*/*.js` cases, O0/O2/O3), against a disposable `git worktree` at
+  pre-slice HEAD (`6a73b575`) — **0 diffs**.
+- Full battery: `npm test` — **3407/3415 pass**, same 2 pre-existing fails
+  as Slices 0-1 ("interval walk: strided companion cursor…", "typed RMW: one
+  guard covers the pure read…"), no new failures.
+- kernel-parity: **33/33** byte-identical (3 files × 11 rows, O0/O2/O3).
+- `npm run build` ×2 (foreground, both rounds after the source change):
+  byte-identical — `dist/jz.js` sha256
+  `7513a9c4cd81a1cbb58c320f9e282a4181300f30cc4e41a8f7f82f45378bb6fe`,
+  `dist/jz.wasm` sha256
+  `beb60df421e0e8f07cb08a9dc0785bdc3393096033c843959576c655b0de58e6`,
+  `dist/interop.js` sha256
+  `ef42c9da1ab79349a5ab69d55558082de4b3d228850b87a9a188b6722ef730e1` (identical
+  to Slice 0-1's own interop.js hash, as expected — this slice never touches
+  interop). `jz.js`/`jz.wasm` differ from Slice 0-1's recorded hashes, as
+  expected — they embed this slice's own source change.
+- Fuzz: `node test/fuzz.js --count=2000 --opt=0,3` (seeds 1..2000, 30173
+  numeric-input comparisons) and `--seedStart=2001` (seeds 2001..4000, 30672
+  comparisons) — **0 divergence** both runs.
+- test/perf.js (the two pins directly naming this mechanism — "receiver
+  proven ARRAY-or-TYPED across disagreeing call sites drops the guard
+  entirely" / "genuinely unproven receiver (ARRAY vs OBJECT) keeps the
+  numeric-key guard"): 55/55 pass, unchanged.
+
+**Verdict: GREEN, zero deviation from spec.** No behavior delta — the design's
+own framing for this slice ("no computation changes... trivial") is exactly
+what landed; there is no newly-firing disjointness to report (that only
+becomes possible once a real `possibleKinds` Set exists, Slice 6/7).
