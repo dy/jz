@@ -6,6 +6,54 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## STRING identity-arm divergence ($__eq vs $__same_value_zero): REAL bug, fixed — 2026-08-09
+layout-kinds-doc.js FINDINGS[identity-arm-divergence] (registry Slice 3)
+left open whether $__eq's extra per-operand NaN re-guard on its STRING
+content-identity arm was load-bearing or just defense-in-depth vs
+$__same_value_zero's simpler arm. Re-derived: LOAD-BEARING, not redundant.
+An ordinary finite f64 (self-equal, exponent nowhere near the NaN/Inf
+reserved range) can have ANY 4-bit pattern at mantissa bits 47-50 (the tag
+field) purely by construction — e.g. 0x3ff20000ffffffff (≈1.125), which
+aliases PTR.STRING's tag id (4). Live probe (test/layout-kinds.js): built a
+Set, added a real non-SSO heap string, forced a full $__map_hash collision
+between the string and the crafted float via direct LANE/entry memory
+writes (the same words `__set_add` itself writes on insert — a reachable
+runtime shape, not a fabricated one) — $__same_value_zero then dereferenced
+the float's low 32 bits as a string offset via __str_eq and TRAPPED
+("memory access out of bounds"); $__eq/$__eq_strict on the IDENTICAL bits
+correctly short-circuited to false, no crash. Fixed: sameValueZeroIdentityChain
+(layout-kinds.js) now carries eqIdentityChain's per-operand NaN re-guard,
+verbatim. The OTHER half of the divergence (the interned-vs-interned
+short-circuit) re-derived as genuinely perf-only — left as the one
+remaining textual difference, not unified. Gates: test/layout-kinds.js (new
+regression test), test/data.js + test/dyn-keys.js + test/jsstring.js +
+test/strings.js, full `npm test`, kernel-parity 33/33, `npm run build` x2 —
+all green. See layout-kinds-doc.js's FINDINGS entry for the full writeup.
+
+## Slice-6-banked crash follow-up: claim doesn't reproduce, crash never left — 2026-08-09
+.work/lattice-design.md's Slice 6b AS-LANDED gate section banked a finding:
+under `JZ_CARRIER_BOX=1`, the kernel-oracle PENDING-FIX "captured-then-read"
+BOOL∪NUMBER carrier-collapse row crashes on the pre-Slice-6 baseline's
+self-hosted kernel but supposedly NOT on "this tree's" (`ae2f653a`) kernel.
+Investigated directly: built 4 independent, isolated `JZ_CARRIER_BOX=1`
+`dist/jz.wasm` kernels via disposable `git worktree` checkouts (`8c1f5ea4`
+baseline, `ae2f653a` Slice 6b's own landing commit, `9a5ee117` registry
+Slice 4, HEAD) — 4 distinct wasm SHA-256 hashes (genuinely independent
+builds) — and ran the exact PENDING-FIX row against each. ALL FOUR crash
+identically ("memory access out of bounds", every optimize level 0/2/3,
+`ae2f653a` and HEAD each re-verified twice for certainty). The banked "this
+tree does not crash" claim does not reproduce from a clean rebuild of the
+exact commit it names — the crash was never fixed or moved by Slice 6a/6b/7
+or the registry split (none of those commits' diffs touch
+`src/compile/emit.js`'s `emitDecl`, the WALL this row's underlying wrong-
+value bug lives in, at all). Most likely explanation (unverified — the
+original session's exact dist bytes were never hashed/archived, `dist/` is
+gitignored): the "no crash" observation was probably made against an
+ad hoc mid-session `dist/jz.wasm` build, not a byte-verified checkout of
+`ae2f653a` itself. No code change — nothing to fix or revert; Slice 6/7 are
+exonerated. Full writeup: .work/lattice-design.md, Slice 6b AS-LANDED
+section, "Follow-up (2026-08-09)" addendum.
+
 ## LoopPlan pre-emission mint (audit-#16: the plan was still minted inside emit.js) — landed 2026-08-09
 Per .work/research.md §BodyModel / LoweredLoopPlan. Local only. Moves LoopPlan
 CREATION (id/hull/boundConst — the frozen HIR half) from emit.js's `'for'`

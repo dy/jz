@@ -1820,6 +1820,84 @@ the 3 composition sites, and `src/kind.js`'s back-compat field all changed
 together). Next: Slice 7 (sticky-null retirement), which depends on both
 6a and 6b having landed, per the design's own ordering.
 
+### Follow-up (2026-08-09): the banked "this tree's kernel does NOT crash"
+### claim does NOT reproduce — the crash was never gone
+
+The paragraph above ("banked here in full... the coordinator should decide
+whether this pre-existing, unrelated crash is worth a dedicated follow-up
+investigation") asked for exactly this. Investigated directly, not assumed.
+
+**Reproduction, 4 points, fully isolated.** Built a fresh `JZ_CARRIER_BOX=1`
+`dist/jz.wasm` (via `node scripts/build-dist.mjs`, no `npm ci`/dependency
+drift — `package.json`/`package-lock.json` are byte-identical from
+`8c1f5ea4` through HEAD) from FOUR independent, disposable `git worktree`
+checkouts, each with its OWN dist build (never sharing an instance,
+`node_modules` symlinked only — zero behavioral surface): `8c1f5ea4`
+(pre-Slice-6 baseline, the commit this row's own crash was first pinned
+against), `ae2f653a` (Slice 6b's OWN landing commit — the exact SHA the
+paragraph above calls "this tree" and claims does not crash), `9a5ee117`
+(heap-kind registry Slice 4, roughly midway between 6b and HEAD), and HEAD
+(`7db5717a`). Four distinct wasm SHA-256 hashes (confirming four genuinely
+independent builds, not a stale/reused artifact) — `f67e2f35...` (baseline),
+`816acb97...` (`ae2f653a`), `4b56fd72...` (`9a5ee117`), `9f188c7f...`
+(HEAD). Ran the exact `test/kernel-oracle.js` PENDING-FIX row's own
+mechanism (`instantiate(compileViaKernel(src, {optimize})).exports.f(-1)`,
+`src` = the `captured-then-read` row's exact source) against each of the
+four, at optimize 0/2/3.
+
+**Result: all four kernels throw `RuntimeError: memory access out of
+bounds`, identically, at every optimize level.** Including `ae2f653a` —
+re-verified twice (rebuilt once, ran twice against that one build) for
+certainty, since it's the load-bearing data point that contradicts the
+banked claim above. HEAD re-verified twice the same way. No flakiness
+observed anywhere; wasm's own memory-safety trap (an invalid page-relative
+byte offset) is not the kind of failure sensitive to incidental host-side
+nondeterminism the way a wrong-but-in-bounds VALUE bug could be — a fresh
+instance per compile (`test/kernel-target.js`'s own design) rules out
+cross-compile contamination as a confound too.
+
+**Verdict: the claim doesn't reproduce — there is no fix, and no "moved"
+crash to bisect, because the crash never left.** It is present,
+byte-for-byte reproducibly, at `8c1f5ea4` (expected — that's this row's own
+origin), at `ae2f653a` (NOT expected per the paragraph above), at
+`9a5ee117`, and at HEAD. Neither Slice 6a's `SlotFact` map unification, nor
+6b's `hz.all`→`pointsTo` swap, nor Slice 7, nor the registry split changed
+this row's crash-vs-no-crash shape at all — it was never a live variable
+across any of these slices' own diffs (none of them touch `src/compile/
+emit.js`'s `emitDecl`, the documented WALL this row's underlying wrong-
+value bug lives in, at all — confirmed by `git diff 8c1f5ea4 HEAD --
+src/compile/emit.js`: zero hits on `emitDecl`). The PENDING-FIX test's own
+documented-WRONG tripwire assertions (`wrong: 0`, asserted under the
+DEFAULT, non-carrier build) are likewise unchanged across the same range —
+the underlying logic bug (kernel returns 0 instead of the JS-oracle value)
+was never touched either. Both symptoms of the SAME still-open WALL
+(`src/compile/emit.js`'s `emitDecl`, the `const val = viewInit ||
+emit(init)` line) are exactly where Slice 6/7 left them.
+
+**Most likely explanation for the original observation, stated as a
+hypothesis, not a re-litigation:** `dist/` is gitignored and was almost
+certainly rebuilt ad hoc mid-session rather than from a byte-verified clean
+checkout of the exact committed `ae2f653a` tree — the session's own text
+documents 6a/6b interleaving with concurrently-landing, unrelated audit-#16
+commits (`3e42fbaa`/`0202b95f`) in the SAME working tree, so a `dist/
+jz.wasm` on disk at the moment "this tree's kernel" was probed could easily
+have been built from a transient intermediate state that was never
+committed as its own SHA, rather than from `ae2f653a` itself. This is
+offered as the most plausible account, not a verified one — the exact
+`dist/jz.wasm` bytes tested in that session were never hashed or archived,
+so it cannot be checked directly.
+
+**Action:** no code change (there is nothing to fix or revert — Slice 6/7
+are exonerated, not implicated). This row's own text above ("Banked here in
+full rather than silently absorbed... not a regression this slice
+introduced") is corrected: the crash IS present on "this tree" too, under a
+from-scratch rebuild of the exact commit named. `test/kernel-oracle.js`'s
+PENDING-FIX row itself needs no change — it already runs under the
+DEFAULT (non-carrier) build, where this crash does not manifest at all
+(`CARRIER_BOX` gates the whole ambiguous-merge boxing branch in `emit.js`
+off by default); this finding is scoped to the separate, opt-in
+`JZ_CARRIER_BOX=1` battery this ledger's own gate section describes.
+
 ## AS-LANDED — Slice 7 (2026-08-09, capstone — CAPPED, not the full acceptance)
 
 SHA: `f677092c` (step 1, landed). Step 2 (keyedWrite consumer): implemented,
