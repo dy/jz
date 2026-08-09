@@ -7722,3 +7722,35 @@ identical · test/selfhost.js under invariants 21/21 (206 assertions) ·
 test/session-reentrancy.js 3/3 (8 assertions), unaffected. Slice (d) (full
 CompileSession, gated on ctx.func decomposition) remains unstarted, per
 the ruling — a separate future campaign.
+
+## AUDIT-#17 + CONSISTENCY-AUDIT RESPONSE (2026-08-09)
+P0 (release-blocking): 4 full-test:wasm self-host failures at HEAD (nested
+spread ×2, through-function object, ternary/Map schema-poison — "expected
+emitted IR value ... got empty value"), order-dependent (pass isolated/at
+174e145d), regressed in the session/reset window — bisect+fix agent RUNNING;
+test:wasm added to every session/lattice slice gate going forward.
+CLOSED same-day: item 8 cloneRepMap shallow-copy sibling → routes through
+cloneRep (2e7db138).
+QUEUED from audit-#17: hz.all compatibility boolean removal (pointsTo==='ALL'
+is the authority) · kind-coverage/TOP explicit state for open callers +
+presence completeness (the P0-2 lineage — before any exclusion consumer) ·
+whole-graph feature discovery before template materialization (the RED
+oracle's fix) · LoopPlan operational (vectorizer still derives {bl,op,
+blLoose} independently) · typedView ownership note (alias-correctness fact,
+not link reachability — placement fixed timing, not concept).
+QUEUED from the consistency audit (order per its own ranking): (1) stdlib
+registration split-brain — reg() vs ~290 raw assignments: migrate or amend
+CONTRIBUTING + grep-gate (the pass-registry precedent) · (2) mechanical
+dedup: cloneIR ×6 → one import, cloneNode ×3, litVal ×3 DIFFERENT-CONTRACTS
+rename (irLitVal), refsName adoption at the 8 hand-rolled scanners · (3)
+lazy blLoose/op in the vectorizer dispatch + HELPER_COUNTERS drift gate ·
+(4) extract inferTypedValueRanges' range algebra toward static.js (1270-line
+function, absorbs the scanner cluster) · (5) leave fixpoint structure alone
+until CompileSession (ordering constraints load-bearing).
+FEATURE SUGGESTION (user, C bitfield packing): boolean schema-field packing
+— N boolean fields of one schema pack into one i32 bit-mask slot (the
+research.md "schema field packing" future note's boolean case). Fits the
+SlotFact/numeric-level machinery (a slot whose every write is BOOL packs to
+a bit; reads mask). Design note: representation-plan work — queue behind the
+carrier program's rep field (a packed slot is a third rep class alongside
+raw/boxed); real win on flag-heavy OBJECT schemas (8 bools: 64B → 4B).
