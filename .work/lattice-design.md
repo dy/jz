@@ -1447,3 +1447,143 @@ for a future slice that names one explicitly, with its own gate.
 Slice 4a already ran. Next: Slice 5 (FINDING-7 `!==`/`===` sites) or Slice 6
 (`SlotFact` unification), per the design's ordering — both independent of
 Slice 4b landing zero consumers here.
+
+## AS-LANDED — Slice 5 (2026-08-08)
+
+No code landed — **zero sites migrated, all 8 excluded by the standing OQ1
+ruling**, a legitimate outcome directly analogous to Slice 4b's.
+
+**The 8 code sites, exhaustively enumerated** (survey's own count: "emit.js:
+6 (298, 4596, 4754, 4792, 6224, +1 doc), ir.js: 2, type.js: 1" — the "+1 doc"
+is a comment at `emit.js:290` quoting the pattern that lands as real code at
+line 298 one line of context below it; a second such quoting comment sits at
+`emit.js:6222` immediately above line 6224 — neither is a second code site,
+confirmed by direct read, not assumed):
+
+| Site | Direction | Function | Shape |
+|---|---|---|---|
+| `emit.js:298` | `===` (OR'd with `valTypeOf(a)===VAL.BIGINT`) | `emitNeg` | opt-in chokepoint |
+| `emit.js:4596` | `===` | `bigIntDomain` | opt-in chokepoint |
+| `emit.js:4754` | `!==` | `bigIntOperand` | opt-in chokepoint |
+| `emit.js:4792` | `!==` | `bigIntUnary` | opt-in chokepoint |
+| `emit.js:6224` | `===` (OR'd with `valTypeOf(a)===VAL.BIGINT`) | `~` unary emit | opt-in chokepoint |
+| `ir.js:1285` | `===` (gated `vt==null &&`) | `toNumF64` | opt-in chokepoint |
+| `ir.js:1475` | `===` (gated `vt==null &&`) | `toStrI64` | opt-in chokepoint |
+| `type.js:2288` | `===` (unconditional, deliberately NOT `vt==null`-gated per its own §14 point-4 comment) | `preciseBigCensus` | opt-in chokepoint |
+
+Every one of the 8 is a `censusMaybeUndefinedKind(node) === / !== VAL.X`
+sub-expression — confirmed by direct read of each site (not sampled): all
+eight are exactly the audit-#8/§14-hardened "individually audited,
+explicitly opted-in chokepoint" architecture (`.work/lattice-design.md`
+OQ1 verdict's own words), the same architecture that survived three prior
+reverts (`1db8e55e`, `7288b69b`, `098014a5`) by staying opt-in rather than
+folding a census claim into a general-dispatch kind projection.
+
+**Why none of the 8 is eligible for the `isExactly`/`cannotBe(key, X)`
+migration Slice 5's literal text specifies — traced structurally, not
+asserted:**
+
+1. **The projections don't exist for what these sites read.** `isExactly`/
+   `cannotBe` (§3's catalog) are defined over `Fact.possibleKinds` — a
+   `key`-addressable field (`BindingFacts`/`ParamFacts`/`SlotFacts`, §2).
+   `censusMaybeUndefinedKind(node)` takes an arbitrary AST node (a
+   census-shaped `[]`/`.`/`()` read OR a bare name) and returns its OWN
+   independently-resolved single-kind-or-null answer — it is not a read of
+   `Fact.possibleKinds` at any key, so there is no `key` to hand
+   `isExactly`/`cannotBe`.
+2. **Even where a `key` could be manufactured (the bare-name arm), routing
+   through the general projection would be a live behavior change, not a
+   migration.** `Fact.possibleKinds`, per Slice 1's own landed decision AND
+   the COORDINATOR RULING on OQ1 (this file, above), never receives a
+   census-derived contribution — `censusKindsOf` is a separate, opt-in,
+   currently-zero-consumer sibling specifically BECAUSE folding census
+   claims into the general field is the exact opt-out-consumer-exposure
+   shape that killed three prior landings. `isExactly(key, VAL.BIGINT)` at
+   any of these 8 sites would therefore answer FALSE for every case the
+   census arm exists to catch (a dict/Map value proven BIGINT, or a
+   decl-hopped `presentVal`/`mayBeUndefined` claim) — silently discarding
+   exactly the information audit-#8/§14 fought to keep reachable. This is
+   not a hypothetical: `bigIntDomain`'s own doc comment (`emit.js:4558-4580`)
+   names the `'census'` domain as a THIRD, independent evidence source
+   precisely because `valTypeOf`/`Fact.possibleKinds`-shaped evidence
+   (`'bigint'`) does not cover it.
+3. **`censusMaybeUndefinedKind`'s own representation is not migrating under
+   this design.** FINDING-7's sentinel-inversion risk (survey lines
+   639-649) is a risk that only exists WHEN a field's storage flips from
+   "exact-kind-or-null" to "Set-valued, TOP=full-domain" — the survey's own
+   framing ("a naive migration to `!possibleKinds.has(VAL.BIGINT)`
+   preserves this only if TOP is represented as the FULL kind set") presumes
+   exactly that flip is happening. Slice 1 (AS-LANDED, above) landed
+   `censusKindsOf` as PURELY ADDITIVE — `dictValueKindOf`, `mapValueKindOf`,
+   and `censusMaybeUndefinedKind` are "byte-for-byte untouched," confirmed by
+   the zero-consumer grep at Slice-1 landing time and re-confirmed here
+   (unchanged since). No representation flip is scheduled for
+   `censusMaybeUndefinedKind` anywhere in the design (Slice 6/7's file lists
+   are `program-facts.js`/`module/schema.js`/`param-reps.js` — the slot* and
+   `val` families, not `kind.js`'s census helpers). With no flip, there is no
+   sentinel to invert — the risk the survey's row names never materializes
+   at these 8 sites under the design AS RULED, only under the naive
+   migration the ruling forecloses.
+4. **The `valTypeOf(a) === VAL.BIGINT` half of the two OR-expressions
+   (`emit.js:298, 6224`) is a different, out-of-scope producer, not a second
+   instance of the surveyed pattern.** `valTypeOf` recursively resolves an
+   arbitrary expression tree (literals, unary/binary ops, bare names) via
+   `VT[op]` — the survey's migration-risk row names `censusMaybeUndefinedKind`
+   specifically, not `valTypeOf`; `valTypeOf`'s own dispatch table is
+   untouched by every slice landed so far and is not on Slice 5's file list
+   in any generative sense (its consumers are legion — 492 `=== VAL.`/
+   `!== VAL.` matches repo-wide, most of them `kind-traits.js`'s VT dispatch
+   table computing a DERIVED kind from already-resolved operand kinds, a
+   sound-by-construction shape with no unresolved-sentinel to invert at all,
+   confirmed by grep and excluded from the survey's own count for exactly
+   this reason).
+
+**Directional check (per the task's own "review lowest-risk first"
+instruction, and per FINDING-7's explicit `!==`-is-higher-risk framing).**
+The 2 `!==` sites (`emit.js:4754, 4792`, `bigIntOperand`/`bigIntUnary`) were
+read in full context: both are audit-#8 P0-4-hardened, and both comments
+state directly that "unresolved ⇒ take the definitely-not-BIGINT fast path"
+is the INTENDED, already-proven-safe semantics (absent-key `ToNumeric`
+correctly yields Number NaN, never BigInt, so a census-unresolved node
+correctly takes the plain-i64-read path with no undefined-check). This
+confirms the survey's own characterization ("silently relying on
+'unresolved ⇒ treat as not-BIGINT' being safe in context") as accurate
+description of INTENDED behavior, not a latent bug — and per finding 3
+above, migrating the boolean's SHAPE (not its answer) is unreachable without
+violating OQ1, so the sound-idiom migration this slice was chartered to do
+has no landing site here. The 6 `===` sites carry no analogous risk in
+either direction (`null !== VAL.X` and `null === VAL.X` are both correct
+under EITHER exact-or-null or Set/TOP representation — the direction
+FINDING-7 itself calls the safe one).
+
+**Resolution — not a STOP.** This is the identical shape as Slice 4b's
+exclusion, one level down: OQ1's ruling ("census-derived kind unions NEVER
+enter the general `possibleKinds` field... they live in a separate OPT-IN
+projection") is a standing, already-coordinator-reviewed and BINDING part of
+this design, not a live ambiguity requiring a new ruling. Slice 4b excluded
+the two named PRODUCER-side candidates (`arr`'s `isDisjointFrom`,
+`mapValueKindOf`'s receiver-alias gate) on this exact ground; Slice 5's 8
+CONSUMER-side sites are excluded on the same ground, one hop downstream —
+they read the same opt-in mechanism OQ1 protects, through the SAME contract
+(`censusMaybeUndefinedKind`'s existing null-vs-kind answer, unchanged). Per
+the task's own spec-vs-live-conflict clause, a STOP is for an unresolved
+tension the design doc doesn't already adjudicate; this one is adjudicated,
+in the design doc itself, by name.
+
+**Site accounting.** Migrated: 0. Skipped (false positive for THIS slice's
+projection-catalog target, excluded by the standing OQ1 ruling): 8 (all
+`censusMaybeUndefinedKind` `===`/`!==` sites, table above). Banked as
+genuinely ambiguous: 0 — nothing here is ambiguous, all 8 resolve the same
+way for the same stated reason.
+
+**Verdict: GREEN by construction** — no code, no risk beyond what Slices 1
+and 4b already carried. No new gate run (no source line changed; the
+standard triad would trivially reproduce Slice 4a's own recorded numbers
+against an unmodified tree, not new evidence) — `npm test` re-run once for
+current-tree sanity only (see ledger). Next: Slice 6 (`SlotFact`
+unification, per the OQ2-adopted 6a/6b split) or Slice 7 (sticky-null
+retirement, blocked on Slice 6) — Slice 5's own `!==`/`===` consumer target
+is now fully accounted for (0 migrated, 8 excluded), so no further work
+remains under this slice's name; a genuine `censusMaybeUndefinedKind`-shaped
+Set migration, if ever wanted, would require first re-opening OQ1's ruling
+itself, not a Slice-5-shaped consumer edit.

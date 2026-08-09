@@ -7260,3 +7260,45 @@ coordinating-brief reconciliation (additive storage instead of the literal
 shim), no coordinator re-ruling required. Next: Slice 5 (FINDING-7
 `!==`/`===` sites) or Slice 6 (`SlotFact` unification), per the design's
 ordering.
+
+## PRODUCT-LATTICE Slice 5 EXCLUDED — zero migrated, 8 sites banked (2026-08-08)
+Reviewed all 8 surveyed `!==`/`===` consumer sites (survey's migration-risk
+table row: `censusMaybeUndefinedKind(x) === / !== VAL.BIGINT`, emit.js:298,
+4596, 4754, 4792, 6224; ir.js:1285, 1475; type.js:2288 — the survey's "+1
+doc" is a comment quoting the pattern, not a second code site) individually,
+per-site, per the task's own discipline. **All 8 excluded from migration by
+the standing COORDINATOR RULING on OQ1** (already binding, landed as part of
+this design doc — the same ruling Slice 4b's zero-consumer outcome rests
+on): every site reads `censusMaybeUndefinedKind`'s existing exact-kind-or-
+null answer directly, an OPT-IN, individually-audited chokepoint mechanism
+(the audit-#8/§14 architecture that survived three prior reverts,
+`1db8e55e`/`7288b69b`/`098014a5`, by staying opt-in). `isExactly`/
+`cannotBe(key, X)` — Slice 5's literal migration target — are defined over
+the GENERAL `Fact.possibleKinds` field, which OQ1's ruling forbids census
+claims from ever entering; routing any of these 8 sites through that
+projection would either have no `key` to pass (the census-shaped node arm,
+not name-addressable) or silently discard the census evidence the site
+exists to consult (the bare-name arm), a live behavior change, not a sound
+migration. Separately, `censusMaybeUndefinedKind`'s own representation is
+not scheduled to change anywhere in this design (Slice 1 landed it
+purely-additive, byte-for-byte untouched; Slice 6/7 touch the slot*/`val`
+families, not `kind.js`'s census helpers) — so FINDING-7's sentinel-
+inversion risk, which presumes a field's storage flipping from exact-or-null
+to Set/TOP, has no representation flip to attach to at these 8 sites; the
+risk the survey named is real only under the naive migration OQ1 already
+forecloses. The `valTypeOf(a) === VAL.BIGINT` half of the two OR-expressions
+(emit.js:298, 6224) is a separate, out-of-scope producer (arbitrary-
+expression dispatch, not the surveyed pattern). Directional check confirmed
+by reading both `!==` sites (`bigIntOperand`/`bigIntUnary`, emit.js:4754,
+4792) in full: "unresolved ⇒ not-BIGINT" is documented, audit-hardened,
+intended behavior (absent-key `ToNumeric` really is Number NaN, never
+BigInt), not a latent bug. Not a spec-vs-live STOP: OQ1's ruling already
+adjudicates this exclusion in the design doc itself, the same way it
+adjudicated Slice 4b's — full per-site table and reasoning in
+`.work/lattice-design.md`'s AS-LANDED — Slice 5 section.
+Site accounting: migrated 0, skipped/false-positive 8 (all, table in
+AS-LANDED), banked-as-ambiguous 0. GATES: no source changed — no new
+byte-identity/build/fuzz gate run (would only reproduce Slice 4a's own
+numbers against an unmodified tree); `npm test` re-run once for current-tree
+sanity. Next: Slice 6 (`SlotFact` unification, OQ2's 6a/6b split) or Slice 7
+(sticky-null retirement, depends on Slice 6).
