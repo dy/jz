@@ -8606,3 +8606,79 @@ unrelated to this change) · selfhost.js 21/21 (206 assertions) · fuzz.js
 Files: src/kind.js, src/compile/program-facts.js, src/ir.js, test/
 pointers.js, test/kernel-oracle.js, test/fixtures/carrier-conservative-
 pairing-repro.js.
+
+CONSISTENCY-AUDIT ITEM 4 CLOSED: inferTypedValueRanges' range algebra
+extracted. FINDING first: the queue text's "1270-line function" doesn't
+hold — measured, inferTypedValueRanges is lines 1290–1491 of narrow.js
+pre-change, 202 lines (next top-level fn — narrowSignatures — starts at
+1493); most likely "line 1270" (its rough start) got miscopied to
+"1270-line" somewhere upstream. Real size noted for the record, doesn't
+change the task.
+(a) Range algebra: `hull`/`literal`/`exprRange` relocated to static.js as
+`hull`/`typedValueLiteral`/`typedValueExprRange`, colocated with
+intExprRange. FINDING (not silently merged, per the task's own caution):
+real, load-bearing divergence from constIntExpr/intExprRange, not
+accidental duplication — (1) inferTypedValueRanges runs as literally the
+first line of narrowSignatures, before that same pass's own fixpoint
+populates per-function reps (repOf(name)?.intConst/.range — verified via
+narrow.js's own mergeParamFact/paramFactsOf, which write intConst DURING
+narrowSignatures); consulting repOf here would read stale-or-absent
+state, not a real constant. (2) intLiteralValue enforces an I32_MIN/
+I32_MAX clamp typedValueLiteral deliberately skips — a typed-array
+element hull routinely needs an out-of-i32 intermediate before
+storedRange clamps it to the element's own width. (3) intExprRange
+additionally resolves named-variable ranges, typed-array `.length`, `>>`,
+and `++`/`--` — narrower here for the same pipeline-ordering reason as
+(1). Merging would let MORE expressions resolve at this call site than
+before, changing which typed-array stores get bound-narrowed — an
+observable codegen change a byte-identity gate must catch, so kept
+separate. BYPRODUCT FINDING (not touched, out of scope): a THIRD partial
+duplicate of this same literal-folding shape lives in the same function's
+sibling, inferInternalArrayLengths's `cint` (module-local, no u-/+-*
+recursion) — and a FOURTH, content-diverging duplicate of elemBounds'
+own table lives in src/type.js's NARROW_ELEM_RANGE (missing Int32/
+Uint32, explicit .view-suffixed keys instead of suffix-stripping) — left
+alone, unifying those is a separate, unscoped change.
+(b) 4 hand-rolled `n===name` scanners migrated per CONTRIBUTING's "use
+refsName/refsAny/some, don't hand-roll name scanners": `refs`
+(inferInternalArrayLengths, ~15 call sites) and `mentions`
+(inferTypedValueRanges, ~6 call sites) were genuine unconditional-descend
+duplicates of refsName — now `refsName(n, name, { skipArrow: false })`
+(the exact idiom already used at 3 other call sites in the codebase:
+prepare/index.js ×2, compile/plan/literals.js), kept as thin local
+aliases (`const refs = (n, name) => refsName(...)`) to avoid touching ~20
+call sites' text and risking a byte-identity break for zero behavior
+change. FINDING: `carries` (both occurrences, byte-identical to each
+other) is NOT a generic scanner — it only descends through value-
+forwarding positions (`?:` both arms, `&&`/`||` both operands, `,` last
+element), deliberately NOT a blind full-tree walk (a property/element
+read consumes a name without forwarding it). No ast.js primitive matched
+this restricted-recursion semantic, so it was promoted to ast.js itself
+as a new export, `carriesName` — both narrow.js occurrences now alias it
+(`const carries = carriesName`), eliminating the exact-duplicate
+definition instead of just relocating one copy.
+(c) Function body split into 3 named nested functions at the structure's
+own boundaries (read first, not invented): `computeDirectEffects` (each
+function's own body in isolation), `propagateCallForwarding` (the
+call-forwarding fixpoint), `computeLocalRanges` (per-function local
+typed-array ranges) — kept as nested closures (not hoisted to module
+level) to close over `funcs`/`summaries`/`elemBounds`/`storedRange`/
+`initialRange` without threading them as explicit params, zero
+parameter-shape risk to the byte-identity gate.
+GATES: byte-identity 58-case/174-compile bench corpus (jessie/jz
+excluded) vs a disposable git worktree at pre-task HEAD (12391931,
+task 1's own commit) — 0 diffs · full battery native/O0/O3 3416/3424
+pass, JZ_DEBUG_INVARIANTS=1 3418/3426 pass — all identical to task 1's
+own numbers, same 2 pre-existing fails · wasi 3414/3423 pass, same 3
+pre-existing fails · kernel-parity 33/33 · test/slot-hazards.js 22/22 ·
+test/inference.js 136/136 · typed-array suites (types.js 178/178,
+simd.js 158/158, simd-intrinsics.js 15/15, unswitch-typed-param.js 7/7,
+array-methods.js 127/127+1 pre-existing skip) · test:wasm (self-hosted
+kernel) 2709/2719 pass, same 4 pre-existing fails as task 1 · selfhost.js
+21/21 · fuzz.js 2000 programs/30,173 comparisons, 0 divergence ·
+audit-fixpoint.mjs PASS 10/10 · `node scripts/build-dist.mjs` ×2
+byte-identical (dist/jz.js sha256 `d629789a…`, dist/jz.wasm sha256
+`5f209f9e…` — smaller than task 1's build, expected: the self-hosted
+kernel's own source shrank too — dist/interop.js sha256 `ef42c9da…`,
+identical both rounds).
+Files: src/ast.js, src/static.js, src/compile/narrow.js.

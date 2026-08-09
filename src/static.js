@@ -164,6 +164,79 @@ export function intExprRange(n) {
   return null
 }
 
+/** Interval hull (min-of-los, max-of-his) — null-safe, a missing side returns
+ *  the other side's own range unchanged. Generic interval-merge shared by the
+ *  typed-value-range family below and any other range-lattice join. */
+export function hull(a, b) { return !a ? b && [...b] : !b ? [...a] : [Math.min(a[0], b[0]), Math.max(a[1], b[1])] }
+
+// Typed-value-range family (consistency-audit item 4): backs narrow.js's
+// inferTypedValueRanges' typed-array element-store inference. A purpose-built,
+// DELIBERATELY NARROWER sibling of intLiteralValue/constIntExpr/intExprRange
+// above, not a drop-in replacement for them — relocated here (from a hand-
+// rolled duplicate in narrow.js) for a single home, not merged into the
+// canonical resolver, because the two diverge in real, load-bearing ways:
+//   1. inferTypedValueRanges runs as the FIRST step of narrowSignatures, before
+//      that same pass's own fixpoint has populated per-function reps
+//      (`repOf(name)?.intConst`/`.range` — see narrow.js's mergeParamFact/
+//      paramFactsOf). constIntExpr/intExprRange consult `repOf` directly;
+//      doing that here would read stale-or-absent state, not a genuine
+//      constant — so this family never consults `repOf` at all, only
+//      `ctx.scope.constInts` (the module-global, always-live table).
+//   2. intLiteralValue enforces an I32_MIN/I32_MAX clamp (return null outside
+//      it); a typed-array element hull routinely needs a huge or out-of-i32
+//      intermediate value BEFORE storedRange (narrow.js) clamps it down to the
+//      element's own width (e.g. a Uint8Array store), so typedValueLiteral
+//      stays unclamped by design.
+//   3. intExprRange additionally resolves named-variable ranges (`repOf(n)?.
+//      range`, refinements), a typed-array `.length` bound, `>>`, and `++`/
+//      `--` as expression values — none of which typedValueExprRange
+//      attempts, for the same pipeline-ordering reason as (1).
+// Merging these into constIntExpr/intExprRange would let MORE expressions
+// resolve than before at this call site, changing which typed-array stores
+// get bound-narrowed — an observable codegen change a byte-identity-gated
+// refactor cannot make. Kept as a separate, colocated pair instead.
+export function typedValueLiteral(n) {
+  if (typeof n === 'number' && Number.isInteger(n)) return n
+  if (Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && Number.isInteger(n[1])) return n[1]
+  if (Array.isArray(n) && n[0] === 'u-' && typeof n[1] === 'number' && Number.isInteger(n[1])) return -n[1]
+  if (typeof n === 'string') return ctx.scope.constInts?.get(n) ?? null
+  if (Array.isArray(n) && n.length === 3 && (n[0] === '+' || n[0] === '-' || n[0] === '*')) {
+    const a = typedValueLiteral(n[1]), b = typedValueLiteral(n[2])
+    if (a != null && b != null) return n[0] === '+' ? a + b : n[0] === '-' ? a - b : a * b
+  }
+  return null
+}
+
+/** Closed integer hull of an expression, restricted to typedValueLiteral's own
+ *  literal-composition-only resolution — see the doc comment above it. */
+export function typedValueExprRange(n) {
+  const c = typedValueLiteral(n)
+  if (c != null) return [c, c]
+  if (!Array.isArray(n)) return null
+  const op = n[0]
+  if (op === '?:') { const a = typedValueExprRange(n[2]), b = typedValueExprRange(n[3]); return a && b ? hull(a, b) : null }
+  if (op === '&') {
+    const m = typedValueLiteral(n[1]) ?? typedValueLiteral(n[2])
+    if (m != null && m >= 0 && m <= 0x7fffffff) return [0, m]
+  }
+  if (op === '>>>') {
+    const s = typedValueLiteral(n[2])
+    if (s != null && (s & 31) !== 0) return [0, 0xFFFFFFFF >>> (s & 31)]
+  }
+  if (op === 'u-' || op === '-') {
+    if (n.length === 2) { const a = typedValueExprRange(n[1]); return a ? [-a[1], -a[0]] : null }
+  }
+  if (op === '+' || op === '-' || op === '*') {
+    const a = typedValueExprRange(n[1]), b = typedValueExprRange(n[2])
+    if (!a || !b) return null
+    if (op === '+') return [a[0] + b[0], a[1] + b[1]]
+    if (op === '-') return [a[0] - b[1], a[1] - b[0]]
+    const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]
+    return [Math.min(...p), Math.max(...p)]
+  }
+  return null
+}
+
 // Loop-counter RANGE-PROOF lever (audit-#8 P1-2 follow-up to 3b50d504/16f2d7c8):
 // a bare counted loop `for (let i = C; i < B; i++)` proves nothing about `i` to
 // opBound/intExprRange today — `i` is written by the step, so it never qualifies

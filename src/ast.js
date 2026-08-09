@@ -356,6 +356,22 @@ export function refsAny(node, names, opts = {}) {
   return false
 }
 
+/** True if evaluating `node` may itself YIELD `name`'s own reference — narrower
+ *  than `refsName`: only descends through value-forwarding positions (`?:`'s
+ *  both arms, `&&`/`||`'s both operands, `,`'s last element) where the
+ *  operand's identity passes through unchanged. A property/element read,
+ *  arithmetic, or call CONSUMES `name` without forwarding it, so those don't
+ *  count — deliberately not a general "does this reference appear" scanner.
+ *  Used to detect aliasing/escape through a return or assignment RHS. */
+export function carriesName(node, name) {
+  if (node === name) return true
+  if (!Array.isArray(node)) return false
+  if (node[0] === '?:') return carriesName(node[2], name) || carriesName(node[3], name)
+  if (node[0] === '&&' || node[0] === '||') return carriesName(node[1], name) || carriesName(node[2], name)
+  if (node[0] === ',') return carriesName(node[node.length - 1], name)
+  return false
+}
+
 const CONTROL_TRANSFER = new Set(['return', 'throw', 'break', 'continue'])
 
 /** Does `body` contain return/throw/break/continue (not inside nested `=>`)? */
