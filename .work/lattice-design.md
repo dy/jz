@@ -1605,3 +1605,217 @@ positive-evidence-only; `!mayBeUndefined(name)` is NOT a definitelyPresent
 proof and no consumer may treat it as one until a completeness bit lands
 (Slice 7 must respect this; the presence upgrade to a 4-point lattice or
 coverage bit is queued as its own gated slice, not improvised).
+
+## AS-LANDED — Slice 6a (2026-08-08/09)
+
+SHA: `1d900cc8`.
+
+**What shipped.** `slotTypes`/`slotTypedCtors`/`slotObjSids`/`slotBigintObserved`
+— 4 of the design's named "slot* family" — GENUINELY DELETED (not faceted
+over): `src/ctx.js` no longer declares any of the 4 as `new Map()`; the sole
+storage is `ctx.schema.slotFacts: Map<sid, Array<SlotFact|undefined>>`, one
+record `{ kind, typedCtor, objSid, bigintObserved }` per `(sid, idx)`.
+`program-facts.js`'s `observeProgramSlots` (the single-pass producer all 4
+share) rewrites its `observeSlot`/`poisonSlot`/`poisonCtor`/`observeObjSid`/
+`poisonObjSid`/`observeCtor`/`observeBigintJoin` closures onto ONE shared
+grow-helper (`slotFact(sid,idx)`) instead of 4 separately-grown arrays.
+`module/schema.js`'s 8 consumer functions (`slotVT`, `slotTypedCtorBySid`,
+`slotTypedCtorByProp`, `chainSid`, `slotBigintBoxedBySid`,
+`slotBigintProvenBySid`, plus the 2 that read them transitively) share ONE
+`factAt(sid,idx)` read helper. `module/core.js`'s one direct
+`ctx.schema.slotTypes.get(...)` read (a guard-arm stamp check, outside both
+files the design's own file list names) migrated too — verified via
+exhaustive grep, zero surviving references to the 4 old names anywhere in
+`src/`/`module/`/`test/` outside historical doc comments.
+
+**Deliberately NOT unified** (banked, matching this session's own
+audit-#16-adjacent scoping discipline, not a design deviation requiring a
+STOP): `slotIntCertain`/`slotI32Certain` stay their own dedicated Maps. The
+design's consolidation table counts "5 parallel Map structures" (treating
+the intCertain/i32Certain PAIR as one item, since they're twin projections
+published together from ONE source, `slotIntLevels`) — unlike the 4 fields
+above, they were never a genuinely duplicated algebra (FINDING-2's actual
+target): `analyzeSchemaSlotIntCertain`'s round-based fixpoint already
+publishes both from a SINGLE `slotIntLevels` source with no independent
+clash-poison logic to delete. They also have a materially different
+clear/rebuild lifecycle (`opts.paramReps`-keyed, not `opts.fresh`-keyed) and
+genuine external Map-native consumers (`compile/index.js`'s `.size` gate,
+`test/slot-hazards.js`'s `.values()` assertion, the P-carrier invariant
+loop) that would need reconciling two independently-timed clear disciplines
+on shared storage for zero reduction in duplicated logic. Left untouched.
+
+**OQ1/OQ2/OQ4 compliance:** not directly applicable — 6a touches storage
+representation only, no new consumer reads `possibleKinds` and no
+`hz`/`pointsTo` composition changed (that's 6b). `applySlotWriteHazards`'s
+own hz-composition logic, `slotHazarded`, `chainHazarded` are byte-for-byte
+untouched in this commit, confirmed by grep — the OQ2 verdict's own
+"same hz shape in, same poison semantics out" requirement for 6a holds.
+
+**Gate results:**
+- Byte-identity: 58-case/174-compile corpus (bench-lib-resolved, matching
+  the documented precedent count exactly — 'jz' and 'jessie' excluded, the
+  latter a harness module-resolution gap not a compiler behavior gap),
+  disposable `git worktree` at pre-slice HEAD (`8c1f5ea4`) — **0 diffs**.
+- Full battery: `npm test` — **3407/3415 pass**, same 2 pre-existing fails
+  as every prior slice ("interval walk...", "typed RMW..."), no new
+  failures.
+- `JZ_DEBUG_INVARIANTS=1` battery: **3407/3416 pass**, 3 fails — the same 2
+  pre-existing plus one already-known flake (audit-#12 item 2's own
+  idempotence probe, unrelated) — the P-carrier invariant (now reading
+  `ctx.schema.slotFacts.get(sid)?.[i]?.bigintObserved` instead of the old
+  `slotBigintObserved.get(sid)?.[i]`) never fires.
+- kernel-parity: **33/33** byte-identical.
+- `npm run build` ×2: byte-identical — `dist/jz.js` sha256
+  `3b28dd11f82861785d5fa1373b9168b48cc2ca8975bcd691edd67af306e3baff`,
+  `dist/jz.wasm` sha256
+  `8c56f9f1d7ba90c3e2486e4adfce366b8a2e4420264a332d20727f0cfc45d934`,
+  `dist/interop.js` sha256
+  `ef42c9da1ab79349a5ab69d55558082de4b3d228850b87a9a188b6722ef730e1`
+  (identical to every prior slice's interop.js hash).
+- Fuzz: `node test/fuzz.js --count=2000 --opt=0,3` (seeds 1..2000) and
+  `--seedStart=2001` (seeds 2001..4000) — **0 divergence** both runs, 60845
+  numeric-input comparisons total.
+
+**Verdict: GREEN.** Independently revertible (single commit, `1d900cc8`);
+reverting restores the 4 separate Maps with zero hazard-logic change.
+
+## AS-LANDED — Slice 6b (2026-08-09)
+
+SHA: `ae2f653a`. Landed as ONE non-decomposable commit per the OQ2 verdict's
+atomicity requirement, exactly as ruled.
+
+**What shipped.** `hz.all`/`hz.sids` collapse into `hz.pointsTo:
+Set<SchemaId> | 'ALL'` (the abstract top sentinel — never materialized,
+matching §1.3's argued asymmetry). `hz.props`/`hz.numeric` stay untouched,
+separate cross-cutting predicates, per §1.3's explicit "do not fold these
+in" instruction. All setter sites in `collectSlotWriteHazards`
+(`keyedWrite`, `patternTargets`, the spread-literal branch, the
+`Object.assign` branch) route through two shared mutators — `addPointsTo`
+(no-ops once `pointsTo==='ALL'`, matching the old sticky-poison shape) and
+`markPointsToAll`. `applySlotWriteHazards`'s `whole` composition and
+`slotHazarded` (`module/schema.js`) both read `pointsTo === 'ALL' ||
+pointsTo.has(id)`. `chainHazarded` stays DELIBERATELY narrow — `pointsTo
+!== 'ALL' && pointsTo.has(id)`, never the widened form — with the OQ2
+verdict's own gotcha text reproduced as an in-code comment, and a
+differentially-verified regression test (flipping the operator to the wide
+form makes the new probe assertion fail — confirmed by deliberately
+introducing the bug, running the test, seeing it fail, then reverting).
+
+**§21 re-audit found a 4th composition site the design/OQ2 text didn't
+name:** `src/kind.js`'s `VT['.']` census-deferral read (`hz.all ||
+hz.props.has(...) || ...`, a decl-shape fallback independent of `slotHazarded`/
+`chainHazarded`/`applySlotWriteHazards`). Full enumeration method: grepped
+every `ctx.schema.slotWriteHazards` read site (not just the 3 the design
+names), found 5 total — 2 producer assignments, `slotHazarded`,
+`chainHazarded`, and this one. (The other 2 `slotWriteHazards` reads,
+`module/json.js`'s extern-write belts, touch only `hz.kindSafeSids`, an
+untouched field — not a 5th composition site.) This is the exact
+methodology §21/the design's own mandate requires ("re-run the exact audit
+methodology... before landing, not just re-derive it by analogy") — this
+session's re-run found a real gap the original methodology's own text
+missed counting.
+
+**Mid-session coordinator constraint (banked, not a STOP — a mechanical
+reconciliation):** an external audit-#16 fix landed concurrently in
+`src/kind.js`/`src/param-reps.js`/`src/reps.js` this same session (commits
+`3e42fbaa`/`0202b95f`, disjoint from this slice's own surfaces) — the
+coordinator's instruction was to leave those 3 files untouched. Since 6b's
+atomicity requirement (every `hz.all` reader must move together, or a
+silent un-hazarded miscompile opens per OQ2's own text) collides with "do
+not touch `kind.js`," the reconciliation: `hz.all` stays a REAL, PLAIN
+boolean field on the `hz` object (not deleted, not a getter/accessor — jz's
+own language subset has no getter/setter support, and this exact object
+literal is compiled through itself at self-host build time; a `get all()`
+accessor was tried first and correctly REJECTED by jz's own compiler with
+"object getter/setter not supported," caught by the build gate before it
+could land), set at the SAME single site (`markPointsToAll`) that
+establishes `pointsTo`'s `'ALL'` sentinel — one classification, two fields,
+never two independently-timed writes (the FINDING-10 discipline extended
+here: not just numeric/rep sharing one observation pass, but `pointsTo`/
+`hz.all` sharing one SETTER). `src/kind.js` diffs zero against HEAD,
+confirmed by `git diff HEAD -- src/kind.js`.
+
+**OQ4 directionality re-check (Slice 6's own gate, repeated per the task
+brief):** re-ran the exact grep (`schema\.register\(` across `src/`/
+`module/`) — **36 real call sites** (37 hits, 1 comment), matching OQ4's
+own count exactly. Read-path check on the two sites this slice's own edits
+touch (`program-facts.js`'s spread-literal and `Object.assign` branches,
+lines with `addPointsTo(ctx.schema.register(names))`): `names` is built
+from pure structural AST traversal (`staticAssignTargetNames`, the
+spread-entries loop) in both cases — no `hz`/`pointsTo` read anywhere in
+the argument-computation path. `addPointsTo`/`markPointsToAll` are
+write-only (never read from within a `register`-argument builder).
+Invariant holds unconditionally, same conclusion OQ4's original exhaustive
+enumeration reached — this is the confirmation, not a re-derivation.
+
+**Probe suite (targeted, per the task's own requirement):**
+`test/slot-hazards.js` gains one test pinning the exact §21 counter-example
+shape (`class Foo{constructor(){this.count=0}}`, `const corrupt=(obj,key,val)=>
+{obj[key]=val}`, called with an untyped-param receiver AND an untyped-param
+key) — asserts `f.count+'!'` decodes as `'oops!'` (string concat dispatch)
+at O0/O2, not a raw-NUMBER-arithmetic type confusion, confirming
+`pointsTo==='ALL'` still gates the slot-KIND read exactly as `hz.all` did.
+A white-box half then confirms the GOTCHA directly: after driving
+`pointsTo` to `'ALL'` via `corrupt()`, a SEPARATE, unrelated `r.p={q:1}`
+write (populating `slotFacts[...].objSid`, independent of `corrupt`'s
+sid/prop) still resolves through `ctx.schema.chainSid(['.','r','p'], ...)`
+to the nested `{q}` schema — proving `chainHazarded` did NOT get poisoned
+by the unrelated global `'ALL'`. Differentially verified: temporarily
+patching `chainHazarded` to the wide (`slotHazarded`-shaped) form and
+re-running makes this exact assertion fail (`actual: null, expected: 1`),
+then reverted — confirms the test actually discriminates the gotcha, not a
+vacuous pass.
+
+**Gate results:**
+- Byte-identity: same 58-case/174-compile corpus, same `8c1f5ea4` baseline
+  — **0 diffs**. `slotHazarded`'s answers are exactly today's for every
+  input, as required (this swap changes representation, not decisions).
+- Full battery: `npm test` — **3408/3416 pass** (one more total than 6a's
+  run — the new probe test's 6 assertions), same 2 pre-existing fails, no
+  new failures. Re-run a final time on the exact landed code (post the
+  `kind.js`-conflict reconciliation) for certainty: identical result.
+- `JZ_DEBUG_INVARIANTS=1` battery: **3407/3416 pass**, same 3 fails as 6a's
+  run (2 pre-existing + the unrelated audit-#12 flake).
+- kernel-parity: **33/33** byte-identical.
+- `npm run build` ×2: byte-identical — `dist/jz.js` sha256
+  `ac01a76229c50ad7a2d8d2eebfe6e39cf08a5dafece23da15b33ce2c633c97f7`,
+  `dist/jz.wasm` sha256
+  `a26a8f4cd955562e007e797d95ad6928aad09cbdfa453b95af76efb502b0b872`,
+  `dist/interop.js` sha256
+  `ef42c9da1ab79349a5ab69d55558082de4b3d228850b87a9a188b6722ef730e1`.
+  Self-hosting build (compiling jz's own source through itself, which the
+  getter-shim attempt broke) verified working with the final plain-field
+  form.
+- Fuzz: `node test/fuzz.js --count=2000 --opt=0,3` (seeds 1..2000) and
+  `--seedStart=2001` (seeds 2001..4000) — **0 divergence** both runs.
+- `JZ_CARRIER_BOX=1` battery: ran in full, twice, on a CLEAN isolated
+  rebuild of both this tree and a fresh `8c1f5ea4` baseline worktree (dist/
+  deleted and rebuilt fresh for each, sequentially, no concurrent load).
+  Both trees fail the SAME 11 top-level test groups (diffed by name,
+  zero groups differ) — the known, already-tracked `JZ_CARRIER_BOX=1`
+  divergence class (§6 risk item 8, "the gate is the divergence SHAPE
+  stays the same, never byte-identity"). One already-documented-broken row
+  ("kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier
+  collapse," an unrelated, pre-existing, already-tracked wall per its own
+  name and `research.md` citation — nothing to do with schema slot
+  hazards) fails with a hard crash ("memory access out of bounds") on the
+  baseline's self-hosted kernel and with its normal documented-wrong
+  tripwire assertions (no crash) on this tree's kernel — investigated
+  directly (not assumed): reproduced on a FRESH, isolated baseline rebuild
+  specifically to rule out environmental/concurrent-load corruption as the
+  cause, and the crash reproduced identically — this is a genuine,
+  reproducible property of the PRE-slice-6 baseline's self-hosted kernel
+  build for this one already-broken, unrelated test, not an artifact of
+  this session's concurrent execution and not a regression this slice
+  introduced (this tree's kernel does NOT crash on it). Banked here in
+  full rather than silently absorbed into "divergence shape unchanged,"
+  since the exact FAILURE MODE (crash vs assertion) did change for this
+  one row — the coordinator should decide whether this pre-existing,
+  unrelated crash is worth a dedicated follow-up investigation.
+
+**Verdict: GREEN.** Non-decomposable single commit (`ae2f653a`), matching
+OQ2's own "true atomic unit" framing. Reverting must revert this commit
+whole — no partial-revert path exists by construction (the setter sites,
+the 3 composition sites, and `src/kind.js`'s back-compat field all changed
+together). Next: Slice 7 (sticky-null retirement), which depends on both
+6a and 6b having landed, per the design's own ordering.

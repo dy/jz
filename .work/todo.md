@@ -7319,3 +7319,40 @@ Slice 3's prose going live — recover it) · FeaturePlan whole-graph oracle
 graph-complete) · LoopPlan pre-emission minting before any semantic consumer
 · lattice completion metric = DELETION (maps/joins/projections removed), not
 slice count.
+
+## PRODUCT-LATTICE Slice 6a/6b LANDED (2026-08-08/09)
+6a (`1d900cc8`): slotTypes/slotTypedCtors/slotObjSids/slotBigintObserved
+GENUINELY DELETED (per the deletion metric — 0 grep hits outside historical
+comments), replaced by ONE `ctx.schema.slotFacts: Map<sid,Fact[]>` with a
+shared grow/read helper on each side (program-facts.js producer,
+module/schema.js's 8 consumers). slotIntCertain/slotI32Certain deliberately
+NOT folded in (own producer lifecycle, real external Map consumers, no
+duplicated algebra to delete — banked, matches this session's own scoping
+discipline). Byte-identical: 58-case corpus 0 diffs, battery 3407/3415 (2
+pre-existing), invariants clean, kernel-parity 33/33, build ×2 identical,
+fuzz 4000×2 clean.
+6b (`ae2f653a`, ONE non-decomposable commit per OQ2): hz.all/hz.sids ->
+pointsTo (Set<SchemaId>|'ALL'); chainHazarded stays narrow
+(`pointsTo!=='ALL' && pointsTo.has(id)`, differentially-verified — flipping
+it to the wide form makes the new probe fail). §21 re-audit found a 4th
+composition site the design text didn't count: src/kind.js's VT['.']
+census-deferral read. Landed concurrently with audit-#16's OWN fix in that
+same file (`3e42fbaa`) — reconciled by leaving kind.js untouched (0 diff
+vs HEAD) and keeping hz.all as a plain boolean field set alongside
+pointsTo's 'ALL' at the one shared setter (a `get all()` accessor was tried
+first and correctly REJECTED by jz's own compiler — no getter/setter
+support in jz's language subset, caught by the self-host build gate).
+Probe: test/slot-hazards.js gains the exact §21 counter-example
+(untyped-param receiver+key computed write) + a white-box chainHazarded
+narrowness check. OQ4 re-check: 36 real register() sites, same count,
+same read-path conclusion. Gates: byte-identity 0 diffs, battery 3408/3416
+(2 pre-existing), invariants clean, kernel-parity 33/33, build ×2 identical
+(self-hosting verified working with the final plain-field form), fuzz
+4000×2 clean, JZ_CARRIER_BOX=1 divergence-shape unchanged (same 11 failing
+groups vs a freshly-rebuilt pre-slice-6 baseline) — ONE already-broken,
+unrelated PENDING-FIX row (BOOL∪NUMBER carrier collapse, nothing to do with
+slot hazards) crashes on the baseline's self-hosted kernel and doesn't on
+this tree's; reproduced on a clean isolated baseline rebuild to rule out
+concurrent-load corruption, banked for the coordinator as a pre-existing,
+unrelated finding, not a regression. Next: Slice 7 (sticky-null retirement,
+depends on both 6a+6b).
