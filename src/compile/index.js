@@ -46,6 +46,7 @@ import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { mintLoopPlans } from './loop-model.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
+import { cloneRep } from '../param-reps.js'
 import { unrollRecurrence, unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
 import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
@@ -315,7 +316,11 @@ const pruneUnusedThrowRuntime = (sec) => {
 
 // === Module compilation ===
 
-const cloneRepMap = map => map ? new Map([...map].map(([k, v]) => [k, { ...v }])) : null
+// Routes through cloneRep (param-reps.js) — THE authoritative deep clone
+// (audit-#16 P1-3): a bare `{ ...v }` shallow-copies Set-valued lattice
+// fields (possibleKinds), so a later join on the copy would silently mutate
+// the source map's rep (audit-#17 item 8, the confirmed cross-map sibling).
+const cloneRepMap = map => map ? new Map([...map].map(([k, v]) => [k, cloneRep(v)])) : null
 
 /** Serialize a ValueRep entry into a plain object for inspect output.
  *  Omits undefined fields so consumers can JSON-stringify without noise.
