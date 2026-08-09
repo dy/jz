@@ -7,7 +7,7 @@
  */
 
 import { ctx, getFactStore } from './ctx.js'
-import { VAL, lookupValType, repOf } from './reps.js'
+import { VAL, lookupValType, repOf, mayBeUndefined } from './reps.js'
 import { joinKinds } from './param-reps.js'
 import { intLiteralValue, staticIndexKey } from './static.js'
 import {
@@ -505,7 +505,10 @@ export function censusMaybeUndefinedKind(node) {
   }
   if (typeof node === 'string') {
     const r = repOf(node)
-    if (r?.mayBeUndefined) {
+    // presence check re-expressed via reps.js's mayBeUndefined(name) projection
+    // (lattice-design.md §5 Slice 3 precedent, the Fact.presence component
+    // formalized) — same underlying REP field, same computation.
+    if (mayBeUndefined(node)) {
       // presentVal FIRST (§14 Slice 6): the precise, poison-disciplined census
       // kind, live for a decl-hop local (never available via `val` — §14's
       // permanent invariant, `val` never carries a census claim for that

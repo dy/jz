@@ -327,3 +327,15 @@ export const isDisjointFrom = (name, kindSet) => {
   const r = ctx.func.localReps?.get(name)
   return r?.recvArrTyped === true && !kindSet.has(VAL.ARRAY) && !kindSet.has(VAL.TYPED)
 }
+
+/**
+ * `mayBeUndefined(name)` — Fact.`presence` projection (`.work/lattice-
+ * design.md` §1.2, §3's catalog row): true iff `name`'s binding has ever
+ * been observed to possibly be real JS `undefined` (monotone OR — "false =
+ * PRESENT, true = MAYBE_UNDEF" per the Fact JSDoc in param-reps.js). Slice
+ * 3's precedent: re-homes the EXISTING `mayBeUndefined` REP field (this
+ * file's own doc above — "already sound today under existential semantics
+ * ... not migrated conceptually, only re-homed") through the named
+ * projection idiom Slice 2 established — NO computation change.
+ */
+export const mayBeUndefined = name => ctx.func.localReps?.get(name)?.mayBeUndefined === true
