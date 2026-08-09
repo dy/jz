@@ -1188,3 +1188,94 @@ feeds it.
 own framing for this slice ("no computation changes... trivial") is exactly
 what landed; there is no newly-firing disjointness to report (that only
 becomes possible once a real `possibleKinds` Set exists, Slice 6/7).
+
+## AS-LANDED — Slice 3 (2026-08-08)
+
+SHA: `83d8f569`.
+
+**What shipped vs the design's literal Slice 3 text.** Design text: "presence
+unification (`censusMaybeUndefined` boolean family, 13 sites)... Consumers
+migrated: the 13 boolean call sites... Sub-slice discipline: shadow-assert
+FIRST (compute both the old `makeValTracker`-derived boolean and the new
+`presence` field... assert equal)... only delete `makeValTracker`'s poison-Set
+AFTER". Read literally this describes touching 13 call sites across
+`kind.js`/`emit.js`/`module/{core,string,console,number}.js` and shadow-
+verifying against a `makeValTracker`-derived boolean.
+
+Two things in that text don't match live code, checked directly rather than
+assumed: (1) `censusMaybeUndefined`'s 13+ call sites (`emit.js` ×8, `ir.js`
+×3, `module/{core,string,console}.js` ×4) already call
+`censusMaybeUndefined(node)`/`censusMaybeUndefinedKind(node)` as an opaque
+boolean/kind function — none of them read a REP field directly, so there is
+no per-call-site "migration" left to do; the presence check lives at exactly
+ONE place, `censusMaybeUndefinedKind`'s bare-name arm (`kind.js:508`,
+`if (r?.mayBeUndefined)`). (2) `makeValTracker` (`analyze.js:123`) is the
+poison-on-disagreement tracker used for `val`/`presentVal` — an unrelated
+kind-lattice mechanism (§thesis's own target for the *separate* `val`
+migration, design §5 Slice 4) — `mayBeUndefined` itself is set via plain
+`updateRep(name, {mayBeUndefined: true})` (`analyze.js:1747,1871`,
+`compile/index.js:626,1889`), an unconditional monotonic-OR merge with no
+poison branch and no `makeValTracker` involvement anywhere in its producer
+chain (checked directly: `grep -n mayBeUndefined src/compile/*.js`, all
+producer sites shown are plain `updateRep` calls). There is no second,
+independently-computed "old boolean" to shadow-assert against — `presence`
+*is* `mayBeUndefined`, today, not a parallel mechanism converging toward it
+(exactly what §1.2 itself already says: "isomorphic to the EXISTING
+`mayBeUndefined` field... not migrated conceptually, only re-homed").
+
+**Resolution (reconciled within the design's own words, matching Slice 1's
+precedent — not a spec conflict requiring a STOP):** landed per the
+coordinating brief's explicit narrower framing for this slice ("existing
+censusMaybeUndefined behavior byte-identical... becomes a projection reading
+the same underlying facts; no consumer behavior change this slice"), which
+is what §1.2's own text already supports once read literally (a re-homing,
+not a re-derivation). `src/reps.js` gains `mayBeUndefined(name)` — a named
+projection wrapping the exact same `ctx.func.localReps?.get(name)
+?.mayBeUndefined === true` read `kind.js` used to inline — and
+`censusMaybeUndefinedKind`'s ONE presence-check site now calls it. No shadow-
+assert was needed or run: a one-line delegation to the identical field read
+cannot diverge from itself, so there is nothing for a shadow run to compare
+against (the "prove equality, then move the source of truth" discipline
+research.md:862-871 describes applies to genuinely-independent twins, e.g.
+the layout-kinds.js migration it documents — not applicable here since only
+one mechanism exists). The 13+ `censusMaybeUndefined`/`censusMaybeUndefinedKind`
+call sites are untouched, confirmed byte-for-byte unchanged; `makeValTracker`
+is untouched (it is Slice 4's concern, not this slice's — the design's own
+file list for Slice 4 is `src/param-reps.js`, `src/compile/narrow.js`,
+disjoint from this slice's `src/reps.js`, `src/kind.js`).
+
+**OQ1 ruling compliance:** not applicable — this slice touches only the
+`presence` component (a plain REP field, never a census-derived KIND claim),
+so the Option-A opt-in restriction (binding on kind-unions specifically)
+has nothing to gate here. `mayBeUndefined(name)` is a direct field
+projection, not a `possibleKinds`-shaped answer.
+
+**Gate results:**
+- Bench-corpus byte-identity: 58-case/174-compile corpus, disposable `git
+  worktree` at pre-slice HEAD (`84347d08`) — **0 diffs**.
+- Full battery: `npm test` — **3407/3415 pass**, same 2 pre-existing fails,
+  no new failures.
+- kernel-parity: **33/33** byte-identical.
+- `npm run build` ×2 (foreground, explicit long timeout both rounds):
+  byte-identical — `dist/jz.js` sha256
+  `247f368324f42e37bf3f9dcd3bc3897528636ca3c17be3c1b9587e248faeb574`,
+  `dist/jz.wasm` sha256
+  `87bac73c58c1a8d9102ec26fc1c05caec053de29ddc8d9cadc67c03481d2a4b8`,
+  `dist/interop.js` sha256
+  `ef42c9da1ab79349a5ab69d55558082de4b3d228850b87a9a188b6722ef730e1`
+  (identical to Slices 0-2's own interop.js hash — this slice never touches
+  interop either).
+- Fuzz: `node test/fuzz.js --count=2000 --opt=0,3` (seeds 1..2000, 30173
+  comparisons) and `--seedStart=2001` (seeds 2001..4000, 30672 comparisons)
+  — **0 divergence** both runs.
+
+**Verdict: GREEN. No design deviation requiring coordinator re-ruling** —
+the file-scope/mechanism tension between the design's literal "13-site
+migration + shadow-assert against `makeValTracker`" text and live code is
+resolved the same way Slice 1's was: the coordinating brief's own narrower,
+explicit framing for this slice ("byte-identical... projection reading the
+same underlying facts... no consumer behavior change") already matches what
+§1.2 independently says about `presence`/`mayBeUndefined` being a re-homing,
+not a migration. Flagged in full so the coordinator can override this
+reading if a later slice (Slice 4+, once `val`'s own lattice changes) turns
+out to need the 13+ call sites individually touched after all.

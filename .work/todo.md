@@ -7167,3 +7167,47 @@ byte-identical · fuzz `node test/fuzz.js --count=2000 --opt=0,3` seeds
 dist/jz.wasm sha256 `47dccc12…`, dist/interop.js sha256 `ef42c9da…`, both
 rounds). Both slices GREEN, no deviation requiring a coordinator re-ruling.
 Next: Slice 2 (`recvArrTyped` reframed as `isDisjointFrom` precedent).
+
+## PRODUCT-LATTICE Slices 2-3 LANDED (2026-08-08)
+Slice 2 (`0be8533e` code, `84347d08` ledger): `src/reps.js` gains `ALL_KINDS`
+(the 14-member VAL domain) + `isDisjointFrom(name, kindSet)` — sound iff
+`name`'s possible-kind set is provably disjoint from `kindSet`. Re-expresses
+the EXISTING `recvArrTyped` `{ARRAY,TYPED}` class proof through this
+projection (`module/array.js`'s one `recvArrTyped` definition site now reads
+`isDisjointFrom(arr, NOT_ARRAY_OR_TYPED)` instead of the REP field directly)
+— zero computation change, establishes the projection idiom Slice 3 reuses.
+Slice 3 (`83d8f569` code): `src/reps.js` gains `mayBeUndefined(name)` — the
+Fact.`presence` projection, re-homing the EXISTING `mayBeUndefined` REP
+field (already sound, monotone-OR, per design §1.2) through the same
+projection idiom. `censusMaybeUndefinedKind`'s ONE presence-check site
+(`kind.js:508`) now calls it instead of reading the field inline; the
+13+ `censusMaybeUndefined`/`censusMaybeUndefinedKind` call sites across
+emit.js/ir.js/module/{core,string,console,number}.js are untouched — zero
+consumer behavior change. Both slices' AS-LANDED sections in
+`.work/lattice-design.md` document a design-text-vs-live-code reconciliation
+for each (Slice 2: none needed, spec matched code exactly; Slice 3: the
+design's literal "13-site migration + shadow-assert against
+`makeValTracker`" text doesn't match live code — `makeValTracker` is an
+unrelated `val`/`presentVal` mechanism, `mayBeUndefined`'s producers are
+plain unconditional `updateRep` calls with no second mechanism to shadow-
+assert against — resolved per the coordinating brief's own explicit narrower
+framing for this slice, matching Slice 1's precedent, not a STOP-worthy
+conflict).
+GATES (each slice run independently, foreground, explicit long timeouts):
+byte-identity — 58-case/174-compile bench corpus vs. a disposable `git
+worktree` at each slice's own pre-slice HEAD, 0 diffs both slices · full
+battery `npm test` 3407/3415 pass both slices (2 pre-existing fails,
+unchanged) · kernel-parity 33/33 byte-identical both slices · fuzz
+`node test/fuzz.js --count=2000 --opt=0,3` seeds 1..2000 AND seeds 2001..4000
+(`--seedStart=2001`) — 0 divergence, both slices, both runs · `npm run
+build` ×2 byte-identical both slices (Slice 2: dist/jz.js sha256
+`7513a9c4…`, dist/jz.wasm sha256 `beb60df4…`; Slice 3: dist/jz.js sha256
+`247f3683…`, dist/jz.wasm sha256 `87bac73c…`; dist/interop.js sha256
+`ef42c9da…` unchanged across both — neither slice touches interop.js) ·
+Slice 2 also gated test/perf.js's two `recvArrTyped`-naming pins, 55/55
+unchanged. No newly-firing disjointness/behavior delta in either slice — the
+design's own framing for both ("no computation changes... trivial" / "byte-
+identical... no consumer behavior change") is exactly what landed. Both
+slices GREEN, no deviation requiring a coordinator re-ruling. Next: Slice 4
+(`paramReps.val` → `ParamFacts.possibleKinds`, gated on OQ1's Option-A
+opt-in restriction for Slice 4b).
