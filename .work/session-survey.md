@@ -437,3 +437,19 @@ aggregate, not by subjective subtree importance.
 **Ordering recap: (a) prepare/regex module-state fold → (b) linkDemand
 setter → (c) view facades over already-disciplined + DI-parameter subtrees →
 (d) full CompileSession, gated on func's own decomposition.**
+
+## COORDINATOR RULING (2026-08-09, binding)
+The §5 ranking is ADOPTED as the campaign order. Slice (a) unified reset
+choreography: prepare/index.js's resetPrepState + module/regex.js parser
+state + vectorize.js debug flags + index.js compileTarget all wired through
+ONE beginSession()/reset() path (module-scope perf-motivated lets may stay
+module-scope — the requirement is single-choreography reset, not relocation).
+Slice (b) linkDemand setter mirroring setFeature() (monotone tripwire).
+Slice (c) plain destructured read-only facades (subset-safe: no Proxy, no
+getters — the survey §4 constraint is absolute) over the 7 disciplined
+subtrees + the DI-parameter seam for module files. Slice (d) full
+CompileSession record is GATED on ctx.func decomposition — a separate
+future campaign, not this one; do not attempt. Gates per slice: byte-identity
+sweep + battery + kernel-parity + build ×2 + a NEW reentrancy probe (two
+sequential compiles in one process, differing programs, assert no state
+bleed — the thing slice (a) exists to make true).
