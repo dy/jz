@@ -14,12 +14,17 @@ import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow } 
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
-import { VAL, lookupValType, lookupNotString } from '../src/reps.js'
+import { VAL, lookupValType, lookupNotString, isDisjointFrom, ALL_KINDS } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, DBG_INVARIANTS } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR } from './collection.js'
 import { ERR } from '../err-codes.js'
 
+
+// Complement of {ARRAY, TYPED} in the VAL domain — the kindSet argument
+// recvArrTyped's isDisjointFrom check (reps.js, lattice-design.md §5 Slice 2
+// precedent) tests against. Computed once, module-level (not per-call).
+const NOT_ARRAY_OR_TYPED = new Set([...ALL_KINDS].filter(k => k !== VAL.ARRAY && k !== VAL.TYPED))
 
 /** Allocate ARRAY (type=1): header + n*8 data. Returns { local, setup, ptr } where local is data offset. */
 function allocArray(len, cap) {
@@ -1163,8 +1168,10 @@ export default (ctx) => {
     // proof, so both runtime tag tests below (the ARRAY||TYPED ptrTypeEq guard
     // AND the STRING ptrTypeEq check) are dead — the receiver can never take
     // either's other arm. Collapses straight to the bare `__typed_idx` call,
-    // same shape a single-kind-proven `vt` receiver gets.
-    const recvArrTyped = typeof arr === 'string' && ctx.func.localReps?.get(arr)?.recvArrTyped === true
+    // same shape a single-kind-proven `vt` receiver gets. Expressed via
+    // isDisjointFrom (reps.js, lattice-design.md §5 Slice 2 precedent) —
+    // same computation, now through the projection idiom later slices reuse.
+    const recvArrTyped = typeof arr === 'string' && isDisjointFrom(arr, NOT_ARRAY_OR_TYPED)
     // A provably-NUMBER key can never be a string key, so the `__is_str_key`
     // dispatch is statically dead — its numeric arm is what runs. Fall through
     // to the direct ptr_type==STRING ? __str_idx : __typed_idx form below, which

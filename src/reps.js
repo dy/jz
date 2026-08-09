@@ -307,3 +307,23 @@ export const lookupNotString = name => {
   if (r?.size && r.get(name)?.notString) return true
   return ctx.func.localReps?.get(name)?.notString === true
 }
+
+/** Full domain of VAL.* kinds — the powerset universe `possibleKinds`/
+ * `isDisjointFrom` range over (`.work/lattice-design.md` §1.1, §1.6). */
+export const ALL_KINDS = new Set(Object.values(VAL))
+
+/**
+ * `isDisjointFrom(name, kindSet)` — sound iff `name`'s possible-kind set is
+ * PROVABLY disjoint from `kindSet` (`.work/lattice-design.md` §3's
+ * projection catalog: true only if `kindsOf(name) ∩ kindSet = ∅`). Slice 2's
+ * first-consumer precedent: re-expresses the EXISTING `recvArrTyped` class
+ * proof (this file's doc above — "every live call site proves ARRAY or
+ * TYPED", never poisoned by disagreement) through the projection idiom
+ * later slices reuse — NO computation change, `recvArrTyped` stays the only
+ * class-level fact this projection draws on until a general `possibleKinds`
+ * Set lands (design doc §5, Slice 6/7).
+ */
+export const isDisjointFrom = (name, kindSet) => {
+  const r = ctx.func.localReps?.get(name)
+  return r?.recvArrTyped === true && !kindSet.has(VAL.ARRAY) && !kindSet.has(VAL.TYPED)
+}
