@@ -467,3 +467,22 @@ commit. `dist/jz.wasm` was rebuilt by the diagnostic runs (`JZ_SELFHOST_
 OPT=0`, three times) — rebuilt once more from the reverted, plain source
 before concluding, so the repo is left in a normal, buildable state, not a
 stale-artifact one.
+
+## COORDINATOR RULING (2026-08-09, binding)
+(i) full context-sensitivity: REJECTED — fits nothing measured (0/20 wall
+params disagree; 0.76% program-wide, always landslide). (ii) VAL-kind
+specialization generalization: APPROVED as a standalone precision slice
+(≈42 clones, mechanical per §3) — value is general codegen, NOT the carrier
+wall. (iii) is landed. THE CARRIER CONSEQUENCE: the §15 chain cannot be
+closed by proving hazarded schemas safe — the hazards are genuine. The
+remaining sound direction is CONSERVATIVE PAIRING: under CARRIER_BOX, a
+schema slot that is (bigint-POSSIBLE ∧ hazarded/unproven) routes its STATIC
+reads through the registry-aware dynamic reader ($__dyn_get's PTR.BIGINT
+arm) instead of the bare f64.load — write side already boxes wide on
+shadowed schemas; reads stop needing the proof the program can't give.
+Cost lands only on hazarded+bigint-possible slots (rare; LAYOUT's own
+constants being the known case). This is the §16 slotBigintProven design's
+fail-OPEN half completed: proof ⇒ fast unboxed pairing; no proof ⇒ dynamic
+dispatch, never a bare misread. PROBE next: implement behind CARRIER_BOX,
+measure the §15 differentials + dict parity + test:wasm; if green, the
+flip-readiness probe finally has no known blocker.
