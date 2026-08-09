@@ -7842,3 +7842,140 @@ SlotFact/numeric-level machinery (a slot whose every write is BOOL packs to
 a bit; reads mask). Design note: representation-plan work — queue behind the
 carrier program's rep field (a packed slot is a third rep class alongside
 raw/boxed); real win on flag-heavy OBJECT schemas (8 bools: 64B → 4B).
+
+## AUDIT-#17 P0 root-cause hunt (2026-08-09, this session) — VICTIM LOCALIZED,
+## MINIMAL REPRO FOUND, NOT FIXED (banked at the WAT-diff wall)
+
+Picked up the audit-#17 P0 (4 test:wasm self-host-only failures — nested
+object-literal spread ×2, through-fn nested object, ternary/Map schema-
+poison — "compiler internal: expected emitted IR value ... got empty
+value", asF64 null in src/ir.js) where the bisect agent's correction
+(1ffea84f) left it: confirmed pre-existing, non-order-dependent, and
+re-opened it as a plain self-host miscompile. The bisect agent's own
+"recordGlobalRep/shapeOfObjectLiteralAst neighborhood" framing was a
+reasonable first guess from `ctx.error.node`'s dump but turned out to be
+STALE evidence, not the culprit — see below.
+
+METHOD: single-compile repro script (compileViaKernel from test/kernel-
+target.js, one fresh dist/jz.wasm instance, no suite) reproduced all 4 in
+seconds each, confirming the bisect agent's finding. `ctx.error.node`'s
+`[null,4]` / `[null,0]` / `["str","x"]` dumps are `emit()`'s own
+unconditional "last array node touched" tracker (src/compile/emit.js:7103)
+— for a NON-array `emit(null)` call (the `if (node == null) return null`
+early return) the tracker is NEVER updated, so the dump is a STALE sibling,
+not the true null-producing call. `formatErrorNode` (ctx.js) also collapses
+both `undefined` and `null` array elements to the string `"null"`, so
+`[null,4]` is simply the benign literal-wrapper node `[,4]` (emit.js's
+"Literal node `[, value]`" handler, emit.js ~7280) that happened to be the
+last thing processed before the real gap — not a corrupted/malformed node.
+Established this by re-deriving `emit()`'s dispatch structure directly
+(src/compile/emit.js) rather than trusting the dump.
+
+INSTRUMENTATION (temporary, unconditional `console.error` — NOT the
+existing `typeof process !== 'undefined' && process.env.JZ_DBG_*` gate
+pattern, which is DEAD under self-host: `process` doesn't exist in-kernel,
+so that gate silently drops all output exactly where it's needed):
+recordGlobalRep (compile/infer.js), shapeOf (kind.js), spreadSourceSchema/
+spreadLiteralSchema/emitObjectSpread (module/object.js), the object-literal
+handler `ctx.core.emit['{}']` and its static-segment/general-store-loop
+branches (module/object.js), and the decl-init `emit(init)` call site
+(compile/emit.js:2170 — itself the documented "DECL-INIT WALL" from the
+2026-08-03/08-05 sessions, research.md §Carrier invariant, same outline-
+hunt/MECHANISM-C precedent family). Rebuilt dist/jz.wasm with each
+instrumentation pass baked into the self-hosted kernel (console.error
+compiles through the existing 'console' module, already linked for self.js
+— module/console.js's env.print — so in-kernel prints route to real
+stdout), ran the SAME source natively (plain `compile()`, live src/*.js)
+and through the kernel, diffed the two traces line-for-line.
+
+FOUND: the module-global/spread schema-resolution chain (recordGlobalRep,
+shapeOf's `.` walk, spreadSourceSchema) is a RED HERRING — it resolves
+byte-identically under native and kernel, full match, every call. The two
+traces diverge INSIDE `ctx.core.emit['{}']` (module/object.js ~65-248),
+specifically its GENERAL (non-static-segment) per-field store loop
+(~237-238):
+```
+for (let i = 0; i < values.length; i++)
+  body.push(ctx.abi.object.ops.store(..., slotOf(i), fieldStoredValue(i)))
+```
+When `fieldStoredValue(i)` at some index `i` recurses (a nested object-
+literal property value re-enters `emit()` → `ctx.core.emit['{}']`, the SAME
+closure, while the outer loop is still live on the stack) AND `i` is NOT
+the loop's last index, the kernel's NEXT iteration (`i+1`) reads an empty
+value where native reads the correct AST node/value — `emit()` takes its
+`node == null` early return, and the eventual `asF64()` on that result
+throws. Proven by a 58-line trace that is byte-identical between native and
+kernel through the exact call/branch sequence (object literal sizes,
+`shadow`/`neverWritten`/`schemaId` decisions, per-field emitted types) up
+to the recursive call at the non-last index, then kernel silently fails to
+even dispatch into the nested literal's own `ctx.core.emit['{}']` — no
+"entered" print at all — while native proceeds normally.
+
+MINIMAL REPRO (module scope, seconds to reproduce, no suite needed):
+```js
+let right = { required: {d: 4}, optional: {e: 5} }
+export let f = () => 1
+```
+Fails only through the self-hosted kernel (`JZ_TEST_TARGET=jz.wasm` /
+compileViaKernel), compiles fine natively. Reduced further, confirmed by
+direct probe (not inference):
+  - Needs only ONE nested-object field, as long as it is NOT the last
+    field: `{ a: {d:4}, n: 99 }` fails; `{ n: 99, a: {d:4} }` (object last)
+    succeeds; `{ required: {d:4} }` (single field, no continuation)
+    succeeds; three plain-number fields (no recursion at all) succeeds.
+  - Needs MODULE scope: the exact same shape inside a function body
+    (`export let f = () => { let right = {required:{d:4},optional:{e:5}};
+    return right.required.d }`) compiles fine through the kernel — only a
+    module-level `let`/`const` triggers it.
+  - A parent whose children ALSO qualify for the static-data-segment fast
+    path (e.g. `{required:{d:4,x:1}, optional:{e:5,y:2}}`, both children
+    flat-numeric) does NOT fail — the static path returns without ever
+    running the buggy general loop with a live recursive call inside it.
+  - All 4 ORIGINALLY FAILING test:wasm tests reduce to this exact same
+    single root cause, confirmed by direct minimal extraction from each:
+    `test/spread.js` nested-schema cases (`groups`'s own literal has
+    `left`/`right` object children, non-last-index recursion), `test/
+    objects.js` "through-fn nested with multiple props" (the call-argument
+    literal `{a: {x:10}, b: {y:{z:20}}}` — `a` is a non-last nested-object
+    field), and "schema poison: ternary literals + Map-sourced entries"
+    (module-level `const OPS = {i32: {add: {...}}, f64: {add: {...}}}` —
+    `i32` is a non-last nested-object field; the ternary/Map machinery the
+    test's own name foregrounds is NOT the trigger, `OPS`'s own
+    construction alone reproduces it standalone). One mechanism, four
+    symptoms — the bisect agent's original grouping was right in spirit,
+    wrong in the specific culprit function.
+
+NOT YET FOUND: the exact self-hosted-compiled codegen defect (WHY the
+general loop's closure-captured `values` local goes missing for the
+NEXT iteration specifically after a same-function recursive re-entry, and
+specifically only at module scope). This is Step 3 of the hunt method
+(native `compile(selfJsSource, {wat:true})`, extract `ctx.core.emit['{}']`'s
+compiled WAT body — or whichever synthesized function backs the module-
+level init/start routine that hosts this loop at module scope — and inspect
+its local-slot allocation around the recursive call boundary for a reused/
+clobbered slot) — not attempted this session; it needs a WAT-level diff,
+not JS-level print tracing, and is its own dedicated hunt on the same
+precedent as the DECL-INIT WALL / outline-hunt / export-loss MECHANISM-C
+entries above (research.md §Carrier invariant). Reasonable hypothesis given
+the module-scope-only trigger: module-level statements compile into a
+synthesized init/start function distinct from ordinary named functions,
+and this synthesized function's own local allocation is the more likely
+site of a reentrancy defect than the general `ctx.core.emit['{}']` handler
+itself (which is an ordinary function called identically from both module
+and function scope, yet only misbehaves when invoked from the module-scope
+caller).
+
+NO FIX LANDED — bank, not patch: every lead above stops at "which exact
+compiled local" without a WAT diff to confirm it, and guessing a patch
+against an unconfirmed mechanism (the DECL-INIT WALL precedent's own
+repeated lesson) risks a symptom-shaped change or a new, differently-shaped
+self-host miscompile elsewhere. All instrumentation reverted (`git checkout
+-- module/object.js src/compile/emit.js src/compile/infer.js src/kind.js`,
+tree byte-identical to HEAD before this session, confirmed via `git
+status`/`git diff`) and dist/jz.wasm rebuilt clean (16467.3 kB, matching
+every prior clean build in this ledger). The 4 test:wasm rows stay red.
+NEXT: WAT-diff the module-scope init routine's compiled locals (native
+`compile(selfJsSource, {wat:true, optimize:{level:3}})` vs a hand-reduced
+single-nested-object-literal probe) around the recursive-call boundary;
+the minimal repro above makes this a single targeted extraction, not
+another full-corpus bisect.
