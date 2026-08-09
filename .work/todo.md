@@ -7687,3 +7687,38 @@ byte-identical · npm run build x2 byte-identical (dist/jz.js sha256
 1..4000), 0 divergence. Product-lattice campaign (Slices 0-7): CLOSED —
 every slice landed or definitively excluded/reverted with a precise,
 measured reason; no slice remains open.
+
+Session-campaign slice (c) — read-only phase-view facades (audit-#13 Stage
+4, .work/session-survey.md, COORDINATOR RULING). SHA `1c6891e3`. New
+src/session-views.js: plain derive()-built views over the subtrees
+ctx.js's own header table already documents as phase-disciplined —
+emitView() {abi,bridge,features}, assembleView() {memory,linkDemand},
+plus standalone warningsView()/inspectView() for the two advisory/host-
+facing sinks. No Proxy, no getters (self-host subset, survey §4 —
+session-views.js is itself reachable from scripts/self.js via
+vectorize.js/narrow.js/plan files/wat/assemble.js). Adopted at 9 verified-
+narrow, non-hot-path read sites: optimize/vectorize.js's SLP typedView
+bail, wat/assemble.js's heapUsesMem() helper, 5 warnings-presence guards
+(plan/advise.js x4, plan/scope.js x1, compile/narrow.js x1), index.js's 2
+host-facing inspect reads. Deliberately NOT adopted: every real external
+reader of abi/bridge/features (ir.js, compile/emit.js,
+compile/emit-assign.js, module/*.js emit handlers, optimize/index.js's
+peephole fold) runs per-AST-node inside emit-phase codegen — a fresh
+derive() allocation per call there is a real cost, not "cheap"; emitView()
+stays defined (documents the contract) with 0 adopted call sites.
+FINDING: the survey's own §5(c) "module/*.js DI-parameter files, natural
+second wave" does not hold as a whole-parameter swap — every module file's
+default export WRITES ctx.core.emit/ctx.core.stdlib at registration time
+(even module/simd.js, §1's narrowest-core-touch file, writes there), and
+`core` is not a disciplined subtree, so no read-only view can replace a
+module file's ctx parameter without also carrying write access — flagged
+in session-survey.md rather than forced. GATES: byte-identity 57
+bench/*-case/171-compile sweep vs a disposable git worktree at unmodified
+HEAD (`11f54428`), 0 diffs · full battery 3413/3421 (2 pre-existing,
+unchanged) · JZ_DEBUG_INVARIANTS battery 3414/3423 (same 2 + 1 known
+audit-#12 flake) · kernel-parity 3/3 (33 assertions) + kernel-oracle 13/13
+(469 assertions) against a fresh dist/jz.wasm · npm run build x2 SHA-256
+identical · test/selfhost.js under invariants 21/21 (206 assertions) ·
+test/session-reentrancy.js 3/3 (8 assertions), unaffected. Slice (d) (full
+CompileSession, gated on ctx.func decomposition) remains unstarted, per
+the ruling — a separate future campaign.

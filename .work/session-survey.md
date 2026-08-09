@@ -590,7 +590,111 @@ tripwire's phase anchor, and the write-site migration all match the
 ruling and the survey's own §5(b) estimate exactly; the only surprise was
 the file-count-off-by-one, immaterial to the mechanism.
 
-## Slice (c)/(d): not attempted this session
-Slice (c) (read-only facades over the 7 disciplined subtrees + the
-DI-parameter seam) and slice (d) (full CompileSession, gated on `ctx.func`
-decomposition per the ruling) are unstarted — out of this session's scope.
+## AS-LANDED — Slice (c) (2026-08-09)
+
+SHA: `1c6891e3`.
+
+**View catalog.** `src/session-views.js`, new. Plain objects built with
+ctx.js's own `derive()` (Object.create(null) + assign — never a bare
+`{...}` spread, never Proxy/getter, per survey §4's ABSOLUTE constraint),
+constructed FRESH at every call (never memoized: `ctx.abi`/`ctx.bridge`
+are reset()-REPLACED object identities, not mutated in place — a
+module-load-time snapshot would go stale after the first reset()).
+
+- `emitView()` — `{ abi, bridge, features }`. Matches ctx.js's own header
+  table: abi readers "ir.js codegen, optimizer"; bridge readers "bridge.js
+  → emit, modules"; features readers "compile, optimizer, stdlib
+  factories". **Zero adopted call sites** — see below.
+- `assembleView()` — `{ memory, linkDemand }`. Matches: linkDemand readers
+  "resolveIncludes()+, assemble"; memory readers "compile", concretely
+  wat/assemble.js's own layout reads. Adopted 2×.
+- `warningsView()` — `{ warnings }`. Standalone (its real readers span
+  plan through narrow, no single phase covers them). Adopted 5×.
+- `inspectView()` — `{ inspect }`. Standalone (its one real external
+  reader is the host boundary, post-compile). Adopted 2×.
+- No view for `error` — audited (survey §2 said its only reader is
+  `err()`) and confirmed by grep: nothing outside ctx.js reads
+  `ctx.error` as data, so there is no external read contract to make
+  structural. No separate `analysisView()` either — grepped every
+  analyze-phase file (compile/analyze.js, analyze-scans.js,
+  program-facts.js, infer.js) against all 7+1 disciplined subtrees: zero
+  real reads. Defining an empty view would be scaffolding with no
+  consumer — left out (YAGNI), not silently dropped.
+
+**Adopted (9 call sites, judged cheap — none per-AST-node):**
+optimize/vectorize.js's SLP `typedView` bail (`assembleView()`, once per
+function body, not per node); wat/assemble.js's `heapUsesMem()` helper
+(`assembleView()`, called ~2× per compile via heapGetIR/heapSetIR's
+save/restore, not per node); 5 warnings-presence guards
+(`warningsView()`) — plan/advise.js ×4 (adviseHeapGrowth,
+adviseSetMapIterationOrder, adviseSimdLoops, adviseGenericDispatch),
+plan/scope.js ×1 (inferModuleIntGlobals's truncation advisory, inside a
+per-global loop but low cardinality — module globals, not AST nodes),
+compile/narrow.js ×1 (adviseJsstringCarrier); index.js's 2 `ctx.inspect`
+reads at the wat/wasm return sites (`inspectView()`, once per compile
+each, genuinely the host boundary).
+
+**Left on raw ctx, with reasons (the judgment gate the task asked for):**
+every real external reader of `abi`/`bridge`/`features` is inside
+per-AST-node emit-phase codegen — ir.js (errToStringIR, toStrI64, string
+concat), compile/emit.js (~24 sites), compile/emit-assign.js (~6),
+module/{array,object,core,string,json}.js's emit handlers (~30 combined),
+and optimize/index.js's peephole fold (`ctx.abi?.number?.peephole`,
+confirmed hot: runs per rewritten IR node inside optimizeModule's fixpoint
+loop). `derive()` allocates a fresh object per call; wrapping any of
+these would add real per-node allocation to the hottest part of the
+compiler for a purely cosmetic read-contract gain — not "cheap" by this
+campaign's own standard (§5's FeaturePlan-precedent framing: mechanism
+cost should be proportional to write-site count, not blast-radius
+guessing, but here the READ frequency itself is the cost driver, which
+the precedent didn't have to weigh since setFeature/setLinkDemand are
+call-once-per-write, not call-once-per-node reads). `emitView()` stays
+defined — the contract is real and documented even with 0 adopters — for
+a future non-hot-path consumer or a proven-cheap-enough hot one.
+
+The DI-parameter class (§5(c)'s "16 module/*.js files, natural second
+wave", §1) turned out NOT viable as a whole-parameter swap, contradicting
+that framing on inspection: EVERY module/*.js file's default export
+WRITES `ctx.core.emit[...]`/`ctx.core.stdlib[...]` at registration time
+(even module/simd.js, the file with the single narrowest `core` touch in
+§1's census, 1 read-site — its own touch is a WRITE via
+`e['f32x4.splat'] = ...` where `e = ctx.core.emit`). `core` is not a
+disciplined subtree, so no view over the disciplined 7(+linkDemand) can
+replace a module file's DI parameter without ALSO carrying core-write
+access — which would defeat the "read-only facade" contract slice (c) is
+scoped to. Read-level (not parameter-level) adoption at specific
+disciplined-subtree read expressions inside these files was considered
+but not done this session (the memory.shared checks in
+module/{number,string,core,object}.js are template-generation-time reads
+inside large multi-subtree closures, not the standalone one-liners
+wat/assemble.js's heapUsesMem() turned out to be) — left as a future
+increment, not a blocker.
+
+**Gates:** byte-identity — 57 bench/* cases (excl. jessie/jz/watr, same
+exclusion as slices a/b — extra module wiring the harness doesn't
+reproduce) × O0/O2/O3 = 171 compiles, current tree vs. a throwaway `git
+worktree` at unmodified HEAD (`11f54428`) — **0 diffs**. Full battery
+**3413/3421** (same 2 pre-existing fails: interval-walk bounds-check
+count, typed-RMW guard-count pin). `JZ_DEBUG_INVARIANTS` battery
+**3414/3423** (same 2 + the same 1 known audit-#12 idempotence-probe
+flake as slice a/b). kernel-parity **3/3** (33 assertions) + kernel-oracle
+**13/13** (469 assertions) against a freshly rebuilt, verified-fresh-mtime
+`dist/jz.wasm`. `npm run build` ×2 — SHA-256 identical (`dist/jz.js`,
+`dist/interop.js`, `dist/jz.wasm`). `test/selfhost.js` under
+`JZ_DEBUG_INVARIANTS=1` — **21/21** (206 assertions) — confirms
+session-views.js itself compiles cleanly through the self-hosted kernel
+(it's reachable from scripts/self.js via vectorize.js/narrow.js/plan
+files/wat/assemble.js). `test/session-reentrancy.js` — **3/3** (8
+assertions), unaffected (this slice touches read paths only, no session
+lifecycle change).
+
+**Verdict: GREEN.** Pattern proven (2 phase-composite views + 2 standalone
+views, 9 real adopted call sites, no behavioral change) without a
+big-bang mechanical sweep — the module/*.js DI-parameter idea from §5(c)
+is corrected by this session's deeper read (core-write coupling makes it
+non-viable as stated), flagged here rather than silently attempted and
+fudged.
+
+## Slice (d): not attempted this session
+Full CompileSession, gated on `ctx.func` decomposition per the ruling —
+unstarted, out of scope (a separate future campaign, per the ruling).
