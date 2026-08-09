@@ -6,6 +6,38 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## CONSERVATIVE PAIRING (carrier flip probe): mechanism landed and verified sound, flip STILL blocked — 2026-08-09
+Per `.work/context-sensitivity-survey.md`'s COORDINATOR RULING. `readI64`
+(src/ir.js) gains `isSchemaSlotBigintPossible` + `maybeUnboxBigInt`: a
+schema slot that's bigint-POSSIBLE (write-side census, fail-open) but
+UNPROVEN (`hz.all`-blocked) now routes arithmetic-core BigInt-operand
+reads through a runtime `$__ptr_type` tag check instead of the naive
+`asI64` reinterpret — closing the exact §15 corruption vector. Deliberately
+does NOT touch `emitSchemaSlotRead`'s own return value (module/core.js) —
+that was the FIRST attempt, found to regress a plain-export/host-decode
+consumer class via a live differential, reverted before commit.
+**Verified independently 3 ways** (synthetic repro, the real layout.js
+fixture under a real `hz.all` trigger at every opt level + snapshotInit
+on/off, direct WAT inspection of the real self-hosted kernel's own
+compiled `atomNanHex`) — the mechanism itself is sound. **Gate 1 (default
+byte-identity): clean.** **Gate 2 (`JZ_CARRIER_BOX=1`): 2/3 §15 WAT
+differentials closed (string/closure); `undefined` still diverges, to a
+NEW wrong value, root-caused to `UNDEF_NAN`'s own module-scope
+const-initializer construction inside the real kernel's `$__start`/
+`snapshotInit` — NOT reproducible in any isolated repro, scale-dependent.**
+`dict` kernel-parity still diverges (same root cause). `test:wasm` does
+NOT complete — baseline crashes fast/cleanly at a known point; the fixed
+tree progresses further (148+ caught failures) then HANGS (28+ min,
+killed) — a worse observable outcome for this one gate, banked honestly.
+Flag-forced native battery/watr/kernel-oracle/fuzz(2000×4): all clean,
+zero new regressions. Possible∧unproven census on self.js: 40 sites.
+Kernel size delta: +51.8KB (+0.31%) under the flag, byte-identical
+default. **Flip-readiness: still NO** — next lever is the `UNDEF_NAN`/
+`NULL_NAN`/etc. module-scope-const-initializer gap specifically, not a
+repeat of this session's own mechanism (that part is done and safe to
+keep). Commit `83c7f9bc`. Full account: `.work/carrier-representation-
+design.md` §24.
+
 ## session-campaign slice (a)+(b): reset choreography + linkDemand setter — landed 2026-08-09
 Per .work/session-survey.md's COORDINATOR RULING. Slice (a) `7ed9b1ce`:
 prepare/index.js's resetPrepState, module/regex.js's literal-parser state,

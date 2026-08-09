@@ -3412,3 +3412,280 @@ reverted within this session, matching §18/§20's own "attempted, gated,
 reverted, nothing landed" precedent exactly. This ledger entry + the
 matching `.work/todo.md`/`.work/lattice-design.md` status updates commit
 separately, plain messages, no push.
+
+## §24. CONSERVATIVE PAIRING implemented — mechanism verified sound and
+correct for its own target class (arithmetic-core BigInt-operand reads),
+2/3 §15 WAT differentials CLOSED — but a NEW, deeper, scale-dependent wall
+found in the full self-hosted kernel build (a module-scope BigInt-constant
+construction gap, root-caused but not fixed) that keeps dict/test:wasm red
+— banked, no flip (2026-08-09, `.work/context-sensitivity-survey.md`'s
+COORDINATOR RULING: "the remaining sound direction is CONSERVATIVE
+PAIRING")
+
+**The change, exactly as landed (commit `83c7f9bc`).** Per the ruling's own
+wording ("route the STATIC read through the registry-aware dynamic reader
+… instead of the bare f64.load"), the FIRST implementation eagerly unboxed
+inside `emitSchemaSlotRead` itself (module/core.js) — a per-slot
+`bigintPossible` flag threaded through the same 4 read call sites §16
+threaded `bigintProven` through, dispatching a runtime `$__ptr_type` tag
+check + conditional `unboxBigInt`/raw-reinterpret at the READ SITE. **Found
+wrong by direct differential, before landing**: a plain `export let f = ()
+=> obj.bigField` (no arithmetic at all) regressed from a CORRECT BigInt
+result (baseline) to `NaN` (eager-unbox version) — because `emitSchemaSlotRead`'s
+return value is consumed by TWO structurally different classes of caller,
+and only ONE of them wants a pre-decoded payload:
+- **Arithmetic-core** (`readI64`/`bigIntOperand`/`bigIntUnary`, src/ir.js
+  + src/compile/emit.js): confidently treats the operand as BIGINT (via
+  the SURROUNDING EXPRESSION's own classification — `bigIntDomain`'s
+  'skip'-then-old-OR-gate fallback, emit.js, when the OTHER operand is a
+  proven BigInt literal), and calls `asI64` on whatever `emitSchemaSlotRead`
+  returned WITHOUT re-checking its tag. This is the ACTUAL §15 corruption
+  vector — confirmed by reproducing it exactly (see below).
+- **Generic/opaque consumers** (the WASM export boundary's host-side
+  `mem.read`-style decode in interop.js, `$__eq`/`$__typeof`/`$__dyn_get`'s
+  own runtime tag dispatch): these ALREADY correctly handle a
+  still-boxed, tag-preserving f64 value — that is their whole contract.
+  Eagerly unboxing at the read site hands them an ALREADY-DECODED payload
+  with NO tag left to check, which a boundary/typeof-style consumer then
+  misreads as if it were still an opaque, possibly-boxed value.
+  `emitSchemaSlotRead` itself has NO visibility into which of these two
+  classes will consume its result — that information lives one layer up,
+  at the CONSUMING expression, not at the read.
+
+**Fix, moved one layer up.** `emitSchemaSlotRead` (module/core.js) is
+**UNCHANGED** from HEAD — its possible∧unproven case keeps the plain bare
+load, identical to the bigint-impossible case, so every opaque/generic
+consumer keeps working exactly as before (the box stays box-shaped). The
+new dispatch lives at `readI64` (src/ir.js) — the SAME chokepoint
+`isCurrentlyBoxedBigint`/`isTernaryBoxedBigint` already gate their own
+unconditional unbox behind, per its own doc comment "the arithmetic core's
+~10 VAL.BIGINT-gated `asI64(emit(x))` call sites route through" — gaining
+a THIRD predicate, `isSchemaSlotBigintPossible(node)`: true iff `node` is
+a bare-name `.prop` AST shape (`['.', varName, prop]`, the same "structural
+fallback gets false" scope §16 already established for a chain receiver)
+whose `ctx.schema.slotBigintBoxedAt` is true (write-side, fail-open,
+unaffected by `hz.all`) and `slotBigintProvenAt` is NOT true. When it
+fires, `readI64` calls the new `maybeUnboxBigInt(emitted)` instead of the
+naive `asI64(emitted)` — a runtime `if ($__ptr_type(emitted)==PTR.BIGINT)
+unboxBigInt(emitted) else i64.reinterpret_f64(emitted)`, reusing
+`unboxBigInt`'s own `ptrOffsetIR` deref and `$__ptr_type` (the exact
+primitive `$__dyn_get`'s own dispatch, and every OTHER registry-aware
+reader's PTR.BIGINT arm, is built from — Slice 3) — no third, bespoke
+mechanism. Checked LAST in `readI64`, after the two static, zero-cost
+predicates, so a name that's ALSO a boxed param never pays the extra tag
+check.
+
+**Verified CORRECT and SOUND, independently, multiple ways, before
+touching the real kernel:**
+1. Isolated synthetic repro (`export const REC = {n: 0x7FF8...n, m:5};
+   function corrupt(o,k,v){o[k]=v}; export let combined = () =>
+   (REC.n | 3n).toString(16)`, `corrupt` tripping `hz.all` exactly per
+   §21's own counter-example shape): pre-fix reproduces the EXACT §15
+   corruption signature (`nan:0x7FFA8...`-shaped, box's own pointer bits
+   leaking); post-fix computes the mathematically correct
+   `7ff8000000000003`. Confirmed via a LIVE A/B against the unfixed
+   version (a temporary env-gated bypass, removed before commit) — not
+   inferred from code reading alone.
+2. The REAL `layout.js` fixture (`test/fixtures/carrier-conservative-
+   pairing-repro.js`, new — same shape as §15/§16's own
+   `carrier-layout-repro.js` PLUS a `corrupt` hazard trigger): all 4 of
+   §15/§16's own pinned assertions (`LAYOUT.NAN_PREFIX_BITS`,
+   `atomNanHex(1)`/`(2)`, `i64Hex(ptrBits(...))`) pass CORRECTLY even
+   though `slotBigintProvenAt('LAYOUT','NAN_PREFIX_BITS')` is FALSE here
+   (hazarded) — at O0/O2/O3, WITH and WITHOUT `snapshotInit` (the exact
+   flag `scripts/build-dist.mjs` uses). New permanent pin landed in
+   `test/pointers.js` (`JZ_CARRIER_BOX=1`-gated, true no-op under
+   default — 35/35 both modes, 62/70 assertions default/flagged,
+   matching §15/§16's own established pattern).
+3. Confirmed the mechanism reaches the REAL self-hosted compile: a
+   temporary probe (`JZ_DBG_CENSUS`, stripped before commit) against the
+   real `scripts/self.js` graph confirms `LAYOUT.NAN_PREFIX_BITS`'s own
+   read site fires `isSchemaSlotBigintPossible` with `boxed=true,
+   proven=false` (3 static occurrences), and direct WAT inspection of the
+   NATIVELY-compiled kernel's own `atomNanHex` function body (both O0 and
+   O3) shows the `maybeUnboxBigInt` `if`/`$__ptr_type` shape correctly,
+   structurally present — the fix's OWN generated code is not in
+   question; see the wall below for what still fails.
+
+**Gate 1 (default, CARRIER_BOX off) — CONFIRMED byte-identical, twice,
+in two independently isolated trees (the main tree AND a disposable `git
+worktree add` at this session's own commit, immune to a concurrent
+session's own activity in the shared main tree — see the concurrency note
+below):** 58-case `bench-size.mjs --json` sweep — 0 diffs vs a disposable
+worktree at pre-session HEAD, both runs. Default `kernel-parity`: 3/3 (33
+assertions), byte-identical, against a freshly, fully rebuilt plain
+`dist/jz.wasm` (confirmed via the build log's own "wrote dist/jz.wasm"
+line each time). Default battery `node test/index.js`: 3422/3414/2/6 (the
+SAME 2 pre-existing rows every prior session in this chain has named —
+interval-walk codec bounds check, typed RMW guard count — unchanged).
+`npm run build` ×2: `dist/jz.js`/`dist/interop.js`/`dist/jz.wasm` SHA-256
+identical both runs, both trees.
+
+**Gate 2 (`JZ_CARRIER_BOX=1`) — MIXED: the mechanism gate passes, the
+kernel-build gate does not.**
+
+- **The 3 named WAT differentials (native-vs-fresh-carrier-kernel, §15's
+  own repros): 2/3 CLOSED.** `() => "abcdefghi"` and `() => () => 1` are
+  now byte-identical native-vs-kernel (`nan:0x7FFA000000000007` /
+  `nan:0x7FFD000000000000`, matching §15's own recorded native values
+  exactly). `() => undefined` STILL diverges — but to a DIFFERENT wrong
+  value than §15 originally found (`nan:0x6E69666E494E614E`, decoding as
+  the ASCII bytes of the static string-table's own opening literal
+  ("NaNInfinity…") — a "read outside the box entirely" pattern, not the
+  original "read the box's own pointer bits" pattern §15 named). This is
+  a NEW manifestation, traced (not merely observed) to `UNDEF_NAN`'s own
+  construction: `src/ir.js`'s `export const UNDEF_NAN = atomNanHex(2)` is
+  a MODULE-SCOPE CONST — when self-hosted, its initializer compiles to a
+  real, non-inlined `call $atomNanHex (i32.const 2)` inside the KERNEL's
+  own `$__start` (confirmed by direct WAT inspection: `global.set
+  $m78_ir$UNDEF_NAN (call $m61_layout$atomNanHex (i32.const 2))`, module
+  init order ordinal 183 of 487, with `$m61_layout$LAYOUT` ALREADY
+  initialized at ordinal 95 — ruled out a naive "wrong init order"
+  hypothesis directly, not assumed). `build-dist.mjs`'s own
+  `snapshotInit: true` then runs THIS `$__start` once, for real, via
+  actual WebAssembly execution, and bakes the (wrong) result into the
+  shipped artifact's global initializers — so the corrupted value is
+  computed ONCE, at build time, then propagates into every program the
+  kernel later compiles (matching and confirming §16's own "generalizes
+  the severity well past BigInt-heavy programs" prediction).
+  **Deliberately NOT reproducible in any isolated test constructed this
+  session** — including a FAITHFUL recreation (the real `layout.js`, a
+  real `hz.all` trigger, the EXACT `{level:3, watrGuard:false,
+  snapshotInit:true}` build settings `build-dist.mjs` itself uses):
+  `atomNanHex(1)`/`(2)` decode CORRECTLY there, every optimize level,
+  with and without snapshotting. The gap is specific to the SCALE/
+  complexity of the real ~370K-line self-hosted source, not a flaw in
+  this session's own mechanism (item 3 above already confirms the
+  generated dispatch code is structurally sound) — the same
+  "materially larger, separately-scoped, not reproducible in a minimal
+  repro" class this whole chain (§17-§23) has repeatedly, correctly
+  banked rather than forced.
+- **Kernel-parity `dict`, O0/O2/O3: STILL DIVERGES**, at the EXACT same
+  byte sizes §17/§22 already recorded (native 227398/229709/246043 vs
+  kernel 227398/229235/245423) — reproduced in TWO independent, isolated
+  trees. Traced to the SAME `UNDEF_NAN` root cause above (`dict`'s own
+  hash/absent-key machinery uses `UNDEF_NAN` pervasively as its sentinel;
+  §16's own generalization argument, now doubly confirmed).
+- **`test:wasm` to completion: DOES NOT COMPLETE — a NEW, WORSE failure
+  mode than baseline, not merely "the same known crash."** Baseline
+  (disposable worktree at this session's own pre-fix commit): crashes
+  FAST and CLEANLY — the exact, already-documented `RangeError: Offset
+  is outside the bounds of the DataView` at `setTimeout: callback fires`
+  (test/statements.js), an UNCAUGHT exception ending the whole process,
+  reproduced identically to §15-§22's own recorded signature. The FIXED
+  tree: does NOT crash there — the arithmetic-core class this session
+  fixes no longer misfires at that exact point — but progresses further
+  into the suite (through `test/inference.js`) accumulating individual,
+  CAUGHT `RangeError: Offset is outside the bounds of the DataView`
+  test failures (148 counted before the run was terminated — a materially
+  LARGER failure surface than baseline's single crash point, consistent
+  with `UNDEF_NAN` being foundational and no longer masked by the earlier
+  crash), then **HANGS** — 28+ minutes of sustained ~100% CPU with ZERO
+  further stdout progress past "flow-fact: for-init decl reassigned in
+  the step carries no stale fact" (test/inference.js), requiring manual
+  `kill -9`. Not root-caused further this session (plausible: a loop
+  whose termination test compares against the now-corrupted `UNDEF_NAN`
+  bit pattern never resolves) — named precisely so a future session
+  doesn't re-discover "test:wasm hangs" from zero. This is the SAME
+  `UNDEF_NAN` root cause reaching further before failing, not a
+  second, independent defect — but the OBSERVABLE OUTCOME (hang vs.
+  clean crash) is strictly worse for this specific gate, reported
+  honestly rather than downplayed.
+- **Flag-forced NATIVE battery, watr, kernel-oracle — ALL CLEAN, ZERO new
+  regressions** (none of these touch the KERNEL ARTIFACT's own
+  correctness, only NATIVE `JZ_CARRIER_BOX=1` compiles + a
+  freshly-rebuilt-but-otherwise-unexercised kernel for parity/oracle
+  comparison): `node test/index.js` under the flag: 3422/3395/21/6 — the
+  SAME 21 pre-existing rows §17 first established (the `dyn-keys.js`
+  Slice 5/6/7 family + the kernel-parity/kernel-oracle `dict` rows),
+  unchanged, confirmed against a disposable worktree at this session's
+  pre-fix commit. `test/watr.js`: 35/35 (107 assertions). `test/kernel-
+  oracle.js`: 5/13 (113 assertions) — the SAME 8 pre-existing rows §22
+  established (3× kernel-parity `dict`, the `dict`-vs-oracle rows, the
+  ternary/generic-scalar-decl PENDING-FIX rows, the console.log
+  KNOWN-FAIL) — reproduced identically in TWO independent trees.
+- **Fuzz, `JZ_CARRIER_BOX=1`: CLEAN.** 4 independent 2000-program sweeps
+  (`--seedStart=1,2001,4001,6001`, opt {0,1,2,3}, 20 inputs/program) —
+  121883 inputs compared total (30173+30672+30572+30466), **0
+  divergences** — matches §22's own exact historical total.
+
+**Concurrency note.** A separate, concurrent session was independently
+active in this same shared working tree during this session (3 unrelated
+commits landed mid-session, `2e7db138`/`533aeae8`/`1ffea84f`, touching
+`src/reps.js` and ledger files — confirmed non-overlapping with this
+session's own files by direct diff) and at one point rebuilt the shared
+`dist/jz.wasm` to a DIFFERENT (non-carrier) artifact mid-run, silently
+invalidating one in-flight `test:wasm` gate run before it was noticed
+(caught by an unexplained artifact-size mismatch, not assumed safe — the
+same "verify, don't trust" discipline §15 established for stale builds,
+extended here to a stale-because-CONCURRENTLY-OVERWRITTEN build). Every
+gate number reported above was re-verified (or, for the ones landed
+before the interference began, ALREADY isolated) in a disposable `git
+worktree add` at this session's own commit, immune to further shared-tree
+activity — the numbers in this entry are the isolated-tree numbers, not
+the contaminated run's.
+
+**Possible∧unproven slot census on `scripts/self.js`** (temporary
+`JZ_DBG_CENSUS` probe, stripped before commit, real self.js compile at
+O3): **40 distinct static `(receiver.prop)` read sites** program-wide
+fire `isSchemaSlotBigintPossible`. Breakdown: 9 are `LAYOUT`'s own 10
+constant fields minus one already-proven elsewhere; 7 are the `VAL` enum
+object's members (`ARRAY`/`CLOSURE`/`DATE`/`HASH`/`MAP`/`OBJECT`/`SET`/
+`STRING`); the remaining 24 are compiler-INTERNAL IR/AST-representation
+fields on various mangled local bindings (`.local`/`.pre`/`.sign`/`.id`/
+`.name`/`.length`/`.get`/`.is`/`.ovr`/`.boundConst`) — consistent with a
+self-hosted compiler whose own generic IR/plan objects sometimes carry a
+BigInt LITERAL VALUE copied straight from the target program being
+compiled (the expected, unsurprising shape for this class, not
+independently investigated further).
+
+**Size/perf.** Carrier-kernel (`JZ_CARRIER_BOX=1` `dist/jz.wasm`) size
+delta: baseline 16467.7 KB → this session's fix 16519.5 KB, **+51.8 KB
+(+0.31%)** — measured via two independently, freshly rebuilt kernels (a
+disposable worktree at the pre-fix commit vs. this session's own isolated
+worktree), both confirmed via the build log's own "wrote dist/jz.wasm"
+line. Default (`CARRIER_BOX` off) kernel: **byte-identical**, SHA-256
+confirmed (not just size) — the new code path is unconditionally
+`CARRIER_BOX`-gated at its own first predicate check
+(`isSchemaSlotBigintPossible`'s `CARRIER_BOX &&` short-circuit), so the
+default kernel's own compiled bytes cannot differ, and don't.
+Self-host-perf (`scripts/bench-selfhost.mjs`, relative same-session): NOT
+separately measured — the flip-readiness gate already fails upstream of
+performance (dict + test:wasm, both still red), and running an expensive
+timing benchmark for a change that cannot flip regardless would be
+exactly the "run the next gate past a known wall" this chain's own
+discipline (§18/§20/§22) exists to avoid; reasoned, not measured, to be
+noise-level given the dispatch fires on only 40 rare, cold, one-time-init
+call sites program-wide, never on a hot per-iteration path.
+
+**Flip-readiness verdict: NO — unchanged, but the dependency chain moved.**
+`CARRIER_BOX` stays `JZ_CARRIER_BOX==='1'`-gated, OFF by default. This
+session's own mandate ("if green: flip-readiness probe has no known
+blocker") is NOT met — dict and test:wasm are both still red. What
+CLOSES, concretely: the arithmetic-core half of the §15/§16 read-side gap
+(possible∧unproven schema-slot BigInt operands feeding `readI64`-routed
+arithmetic) is now sound and independently verified, matching the
+coordinator's own ruling exactly, and is SAFE to keep regardless of the
+flip's own eventual outcome (zero default-build risk, zero native-battery
+regression, 2/3 differentials genuinely fixed). What does NOT close, and
+is the concrete next lever for a future flip-readiness session: `UNDEF_NAN`
+(and by the same construction shape, `NULL_NAN`/`FALSE_NAN`/`TRUE_NAN`)
+is a MODULE-SCOPE CONST whose initializer is a real, non-inlined function
+call reaching a possible∧unproven schema field — this session confirmed
+the GENERATED CODE for that call is structurally correct in isolation but
+STILL produces a wrong value once baked through the REAL kernel's own
+`$__start`/`snapshotInit` execution at real-compiler scale; the next
+session needs to root-cause THAT gap specifically (start by comparing the
+snapshot-captured global VALUE against a fresh, non-snapshotted kernel's
+own `$__start`-executed value for the SAME build — `snapshotInit:false`
+vs `true` on the REAL `scripts/self.js` graph, not an isolated repro,
+since no isolated repro reproduces it) before dict/test:wasm can go
+green.
+
+**Local commits:** `83c7f9bc` — `module/core.js` (a documentation-only
+note re-verifying `emitSchemaSlotGuarded`'s exclusion under the FINAL,
+readI64-scoped design), `src/ir.js` (`maybeUnboxBigInt`,
+`isSchemaSlotBigintPossible`, `readI64`'s new branch — the actual fix),
+`test/pointers.js` + `test/fixtures/carrier-conservative-pairing-repro.js`
+(the pin). This ledger entry + `.work/todo.md`'s matching status update
+commit separately, plain messages, no push.
