@@ -11,7 +11,7 @@ import { OPTF } from '../ctx.js'
  * @module compile/emit-assign
  */
 
-import { ctx, err, inc, warnDeopt, PTR, LAYOUT } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
 import { T } from '../ast.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey } from '../static.js'
 import { packedI32, structInline } from '../abi/index.js'
@@ -556,7 +556,7 @@ export function emitElementAssign(arr, idx, val) {
     ctx.func.locals.set(objTmp, 'f64')
     ctx.func.locals.set(arrTmp, 'f64')
     ctx.func.locals.set(resultTmp, 'f64')
-    if (ctx.transform.targetProfile.envImports) ctx.linkDemand.external = true
+    if (ctx.transform.targetProfile.envImports) setLinkDemand('external')
     inc('__hash_set')
     const storeIR = emitElementAssign(arrTmp, idx, val)
     return block64(
@@ -985,7 +985,7 @@ export function emitPropertyAssign(obj, prop, val) {
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
     }
     if (objType == null && ctx.transform.targetProfile.envImports) {
-      ctx.linkDemand.external = true
+      setLinkDemand('external')
     }
     inc('__hash_set')
     // `__hash_set` returns the (possibly reallocated) HASH pointer, which must be
@@ -1006,7 +1006,7 @@ export function emitPropertyAssign(obj, prop, val) {
       return [writeback, tget]
     })
   }
-  if (ctx.transform.targetProfile.envImports) ctx.linkDemand.external = true
+  if (ctx.transform.targetProfile.envImports) setLinkDemand('external')
   inc('__dyn_set')
   return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
 }

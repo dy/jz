@@ -27,7 +27,7 @@ import {
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
   ASSIGN_OPS, MUTATE_OPS, firstRefKind, isLeaf,
 } from '../ast.js'
-import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, CARRIER_BOX } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, CARRIER_BOX, setLinkDemand } from '../ctx.js'
 import {
   i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR,
   OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_NAMES, encodeTypedElemAux, TYPED_ELEM_VIEW_FLAG,
@@ -3971,7 +3971,7 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
       ['else', undefExpr()]], 'f64')
     const closureOnly = usesDynProps(vt) || !ctx.transform.targetProfile.envImports
     inc('__dyn_get_expr', '__ptr_type')
-    if (!closureOnly) { inc('__ext_call'); ctx.linkDemand.external = true }
+    if (!closureOnly) { inc('__ext_call'); setLinkDemand('external') }
     const extFallback = closureOnly ? undefExpr()
       : ['if', ['result', 'f64'],
           ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL),
@@ -4030,7 +4030,7 @@ function externalMethodFallback({ obj, method, parsed }) {
     if (!ctx.transform.targetProfile.envImports) return undefExpr()
     warnDeopt('deopt-method', `method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(…)\` on a value whose type couldn't be resolved dispatches through the JS host (\`__ext_call\`) — a wasm→JS round-trip per call, orders of magnitude slower than a direct call. Restructure so the receiver's type is provable, or keep it off the hot path.`)
     inc('__ext_call')
-    ctx.linkDemand.external = true
+    setLinkDemand('external')
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
     const arrayIR = buildArrayWithSpreads(combined)
     return typed(['f64.reinterpret_i64', ['call', '$__ext_call',
@@ -7239,7 +7239,7 @@ export function emit(node, expect) {
     // see module/console.js header). asF64() reinterprets to f64 at each read.
     if (HOST_GLOBALS.has(node) && !isBoundName(node) && !isGlobal(node)) {
       if (!ctx.transform.targetProfile.envImports) err(`host:'wasi': reference to host global \`${node}\` requires an env import. Remove the reference or use host:'js'.`)
-      ctx.linkDemand.external = true
+      setLinkDemand('external')
       ctx.core.hostGlobals.add(node)
       return typed(['global.get', `$${node}`], 'i64')
     }

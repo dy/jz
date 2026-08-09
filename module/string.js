@@ -25,7 +25,7 @@ import { typed, asF64, asI32, asI32Sat, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, T
 import { emit, emitIdentitySafe, argIR, bool, method, deps, wat, bind } from '../src/bridge.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
-import { ctx, inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
+import { ctx, inc, PTR, LAYOUT, err, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { ssoBitI64Hex, sliceBitI64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
 import { ERR } from '../err-codes.js'
 
@@ -2491,7 +2491,7 @@ export default (ctx) => {
     // indexing/spread dispatch through __typed_idx, whose element-unaware fallback
     // (f64.load, stride 8) is only valid when no typed array can flow in. Enabling
     // the feature pulls the element-aware variant — same invariant `.length` follows.
-    ctx.linkDemand.typedarray = true
+    setLinkDemand('typedarray')
     return typed(['call', '$__str_encode', asI64(emit(str))], 'f64')
   })
 
@@ -2547,7 +2547,7 @@ export default (ctx) => {
 
   bind('.encodeInto', (obj, str, dst) => {
     ctx.runtime.throws = true
-    ctx.linkDemand.typedarray = true
+    setLinkDemand('typedarray')
     inc('__str_encode_into', '__hash_new', '__hash_set')
     const n = tempI32('ein'), h = temp('eih')
     const hI64 = ['i64.reinterpret_f64', ['local.get', `$${h}`]]

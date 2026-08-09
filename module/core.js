@@ -18,7 +18,7 @@ import { T } from '../src/ast.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
-import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
 import { initSchema } from './schema.js'
@@ -1516,7 +1516,7 @@ export default (ctx) => {
     // Unknown but proven not-string → __len directly (skips the STRING arm of __length).
     if (notString) {
       inc('__len')
-      ctx.linkDemand.typedarray = true
+      setLinkDemand('typedarray')
       return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', va]]], 'f64')
     }
     // Unknown → runtime dispatch via stdlib. Set/Map dispatch arms are pulled
@@ -1552,7 +1552,7 @@ export default (ctx) => {
     // nullish test and the dispatch both read the SAME evaluation.
     if (mayBeUndef) {
       inc('__length')
-      ctx.linkDemand.typedarray = true
+      setLinkDemand('typedarray')
       const lt = temp('lnva')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${lt}`, va],
@@ -1562,7 +1562,7 @@ export default (ctx) => {
           ['else', typed(['call', '$__length', ['i64.reinterpret_f64', ['local.get', `$${lt}`]]], 'f64')]]], 'f64')
     }
     inc('__length')
-    ctx.linkDemand.typedarray = true
+    setLinkDemand('typedarray')
     return typed(['call', '$__length', ['i64.reinterpret_f64', va]], 'f64')
   }
 
@@ -1905,7 +1905,7 @@ export default (ctx) => {
         // `fromOptional` (a `?.prop` read) short-circuits on nullish, so its
         // PTR.EXTERNAL arm is dead unless host externals are already in play —
         // don't force the __ext_prop import just for an optional read.
-        if (!isWasi && !fromOptional) ctx.linkDemand.external = true
+        if (!isWasi && !fromOptional) setLinkDemand('external')
         const slow = () => isWasi ? emitDynGetExprTyped(va, key, vt, prop) : emitDynGetAnyTyped(va, key, vt, prop)
         // Monomorphic schema-slot devirtualization (see emitSchemaSlotGuarded):
         // `prop` uniquely identifies one registered schema program-wide, so
@@ -2317,7 +2317,7 @@ export default (ctx) => {
     }
     inc('__typeof')
     // Receiver type unknown; enable branches that wouldn't otherwise be reachable.
-    ctx.linkDemand.closure = true
+    setLinkDemand('closure')
     // Ambiguous BOOL-merge operand (.work/todo.md §deletion-sweep):
     // valTypeOf(a) reads NUMBER here (the merge's benign coercion), so the
     // VAL.BOOL fold above correctly stays silent — but plain `emit(a)` still

@@ -295,6 +295,10 @@ export function reset(proto, globals, bridge) {
   // tripwire on that test's own (legitimately pre-analyze) ctx.features writes.
   _featureSnapshot = null
   _postAnalyze = false
+  // linkDemand freeze tripwire state (setLinkDemand/assertCtxInvariants below) —
+  // same reasoning as _postAnalyze just above: cleared here so a raw-reset-only
+  // caller in the same warm process never inherits a PRIOR compile's `_preAssemble`.
+  _preAssemble = false
   ctx.bridge = bridge
   ctx.core = {
     emit: derive(proto),
@@ -967,6 +971,26 @@ export function setFeature(key, value) {
   ctx.features[key] = value
 }
 
+let _preAssemble = false // true once 'pre-assemble' has fired for the current compile
+
+/** Emission-time write tripwire for ctx.linkDemand (session survey audit-#13
+ *  slice b), mirroring setFeature() exactly — the DEMAND stratum's own freeze
+ *  point is 'pre-assemble', not 'post-analyze' (see ctx.linkDemand's own doc
+ *  above reset(): every writer — emit, emit-assign, analyze's typed tracker,
+ *  the module/* emit handlers — completes before assertCtxInvariants('pre-
+ *  assemble'), which itself precedes resolveIncludes()/pullStdlib and
+ *  optimizeModule, the DEMAND stratum's only readers). Monotone false→true by
+ *  construction (every call site sets `true`; no caller ever needs to unset a
+ *  flag), so there is no value param — a write past 'pre-assemble' would mean
+ *  a reader has already started consuming a DEMAND fact that's about to change
+ *  under it, the same "frozen facts drifting during emission" hazard
+ *  setFeature's post-analyze freeze guards, one phase boundary later. */
+export function setLinkDemand(key) {
+  if (DBG_INVARIANTS && _preAssemble)
+    throw new Error(`[ctx invariant] ctx.linkDemand.${key} written after pre-assemble — DEMAND facts must be settled before resolveIncludes()/assemble read them`)
+  ctx.linkDemand[key] = true
+}
+
 export function assertCtxInvariants(phase) {
   if (!DBG_INVARIANTS) return
   const fail = msg => { throw new Error(`[ctx invariant] ${phase}: ${msg}`) }
@@ -999,10 +1023,11 @@ export function assertCtxInvariants(phase) {
   // former member, typedView, turned out to be DEMAND-shaped — module/typedarray.js's
   // view-constructing EMIT handlers kept flipping it past post-analyze — and was
   // reclassified onto ctx.linkDemand, .work/research.md §FeaturePlan freeze).
-  if (phase === 'post-reset') { _featureSnapshot = null; _postAnalyze = false }
+  if (phase === 'post-reset') { _featureSnapshot = null; _postAnalyze = false; _preAssemble = false }
   if (phase === 'post-prepare') _featureSnapshot = snapshotFeatures([...FEATURE_STRATA.SESSION, ...FEATURE_STRATA.PROGRAM], {})
   if (phase === 'post-analyze') { snapshotFeatures(FEATURE_STRATA.ANALYSIS, _featureSnapshot ??= {}); _postAnalyze = true }
   if (phase === 'pre-assemble') {
+    _preAssemble = true
     for (const k of [...FEATURE_STRATA.SESSION, ...FEATURE_STRATA.PROGRAM, ...FEATURE_STRATA.ANALYSIS]) {
       must(k in ctx.features, `ctx.features.${k} missing — every FeaturePlan key must be seeded, not an absent key`)
       if (_featureSnapshot && k in _featureSnapshot)

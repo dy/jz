@@ -50,7 +50,7 @@ import watOptimize from "watr/optimize";
 // recompiles depends on this reset — a missing export must fail LOUDLY at
 // import, not silently degrade (the pre-5.7.11 optional-property fallback
 // masked exactly that hole).
-import { ctx, reset, err, warn, assertCtxInvariants } from './src/ctx.js'
+import { ctx, reset, err, warn, assertCtxInvariants, setLinkDemand } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import { frontHalf } from './src/front.js'
 import { beginSession, registerSessionResetHook } from './src/session.js'
@@ -467,7 +467,7 @@ const setupCtx = (code, opts) => {
   if (opts.modules) ctx.module.importSources = opts.modules
   if (opts.imports) {
     ctx.module.hostImports = opts.imports
-    if (importsMayReturnExternal(opts.imports)) ctx.linkDemand.external = true
+    if (importsMayReturnExternal(opts.imports)) setLinkDemand('external')
   }
   // Parser for compile-time import bundling (prepareModule). Injected, not
   // imported by prepare — see ctx.transform.parse note in prepare/index.js.
@@ -494,7 +494,7 @@ const setupCtx = (code, opts) => {
     for (const [name, fn] of Object.entries(opts._interp)) {
       if (name.startsWith('__ext_')) continue
       if (!ctx.transform.targetProfile.envImports) throw new Error(`host:'wasi' does not support _interp['${name}']: env imports are unavailable in WASI. Implement it natively.`)
-      ctx.linkDemand.external = true
+      setLinkDemand('external')
       const params = Array(fn.length).fill(['param', 'f64'])
       ctx.module.imports.push(['import', '"env"', `"${name}"`, ['func', `$${name}`, ...params, ['result', 'f64']]])
     }

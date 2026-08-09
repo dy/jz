@@ -21,7 +21,7 @@ import { DBG_BIGINT_STATS, noteLocalBoxed } from './bigint-boxed-stats.js'
  */
 
 import { commaList, ASSIGN_OPS, MUTATE_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, collectAllBoundNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR } from '../ast.js'
-import { ctx, err } from '../ctx.js'
+import { ctx, err, setLinkDemand } from '../ctx.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString, KIND_UNIVERSE } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst, censusMaybeUndefinedKind } from '../kind.js'
 import { intLiteralValue, nonNegIntLiteral, constIntExpr, intExprRange, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
@@ -148,7 +148,7 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
       // way two typed-array bindings can overlap. Recording that the program creates
       // ANY view lets memory-reordering passes (SLP) stay sound by bailing when set —
       // with no view, distinct typed bases own disjoint allocations.
-      if (typeof c === 'string' && c.endsWith('.view')) ctx.linkDemand.typedView = true
+      if (typeof c === 'string' && c.endsWith('.view')) setLinkDemand('typedView')
       const prev = get(name)
       if (prev && prev !== c) invalidate(name)
       else {

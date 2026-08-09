@@ -17,7 +17,7 @@
 
 import { typed, asI64 } from '../src/ir.js'
 import { emit, wat, hostImport, bind } from '../src/bridge.js'
-import { inc, declGlobal, PTR } from '../src/ctx.js'
+import { inc, declGlobal, PTR, setLinkDemand } from '../src/ctx.js'
 import { ERR } from '../err-codes.js'
 
 export default (ctx) => {
@@ -112,7 +112,7 @@ export default (ctx) => {
   bind('crypto.getRandomValues', (arr) => {
     if (!seeded) needEntropy()
     ctx.runtime.throws = true
-    ctx.linkDemand.typedarray = true
+    setLinkDemand('typedarray')
     inc('__get_random_values')
     return typed(['call', '$__get_random_values', asI64(emit(arr))], 'f64')
   })

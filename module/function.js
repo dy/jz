@@ -26,7 +26,7 @@ import { findFreeVars } from '../src/compile/analyze.js'
 import { closureBodyReturnKind, closureBodyReturnMayBeUndefined } from '../src/compile/flow-types.js'
 import { T } from '../src/ast.js'
 import { lookupValType, repOf, VAL } from '../src/reps.js'
-import { PTR, LAYOUT, inc, err, declGlobal } from '../src/ctx.js'
+import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand } from '../src/ctx.js'
 
 const intConstExpr = (node) => {
   if (typeof node === 'number' && Number.isInteger(node)) return node
@@ -192,7 +192,7 @@ export default (ctx) => {
     // At call site: allocate env, store captured values, return NaN-boxed pointer.
     // Tag IR with .closureBodyName so emitDecl can register the binding for direct dispatch
     // (skip call_indirect on a const-bound, non-escaping closure local). See emit.js '()' handler.
-    ctx.linkDemand.closure = true
+    setLinkDemand('closure')
     if (envCaptures.length === 0) {
       // No captures — just a function reference
       const ir = mkPtrIR(PTR.CLOSURE, tableIdx, 0)

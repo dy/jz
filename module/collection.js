@@ -16,7 +16,7 @@ import { emit, deps, call, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody, isLiteralStr } from '../src/ast.js'
-import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal } from '../src/ctx.js'
+import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex } from '../layout.js'
 import { ssoEncode } from './string.js'
 import { ERR } from '../err-codes.js'
@@ -1313,7 +1313,7 @@ export default (ctx) => {
   // === Set ===
 
   ctx.core.emit['new.Set'] = (iterExpr) => {
-    ctx.linkDemand.set = true
+    setLinkDemand('set')
     if (iterExpr == null) {
       const out = allocPtr({ type: PTR.SET, len: 0, cap: INIT_CAP, stride: SET_ENTRY + LANE, tag: 'set' })
       return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
@@ -1539,7 +1539,7 @@ export default (ctx) => {
   // === Map ===
 
   ctx.core.emit['new.Map'] = (iterExpr) => {
-    ctx.linkDemand.map = true
+    setLinkDemand('map')
     if (iterExpr == null) {
       const out = allocPtr({ type: PTR.MAP, len: 0, cap: INIT_CAP, stride: MAP_ENTRY + LANE, tag: 'map' })
       return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
