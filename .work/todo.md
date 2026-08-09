@@ -6,6 +6,68 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## FeaturePlan whole-graph oracle: differential fixture BANKED, not fixed (audit-#16) — 2026-08-09
+Per audit-#16's explicit prescription: build the cross-MODULE differential
+fixture for the `ctx.features.bigint` ordering hazard (the JSON shaped-
+parser bug's root class — see below, "JSON SHAPED-PARSER … HUNTED — ROOT
+NAMED, BANKED NOT FIXED") — BigInt use ONLY in a later-imported module,
+while an earlier-imported module materializes `$__to_num` (autoload.js
+`includeModule` → module/number.js `init(ctx)`, template baked ONCE, gated
+`${ctx.features.bigint ? … : …}`). VERDICT: RED, confirmed empirically at
+both native and kernel legs, all three optimize tiers (O0/O2/O3) — pinned
+as a KNOWN-FAIL test (`test/kernel-oracle.js`, "KNOWN-FAIL (audit-#16,
+ctx.features.bigint module-ordering, differential fixture)"), following the
+repo's TODO-flip-guard convention (asserts the exact WRONG value + a `not()`
+tripwire against the correct one, so a future fix flips this test loudly,
+not silently) — visible, not fake-green, per the audit's explicit ask.
+FIXTURE: `a.jz` (imported first, zero bigint syntax) does `+x` (OP_MODULES
+`'u+'` → `['number','string']`) — materializes `$__to_num` while
+`ctx.features.bigint` is still false. `b.jz` (imported second) is the ONLY
+module with bigint syntax: `const arr = [1.5, 123456789012345n, 2.5];
+export let mkBig = (i) => Number(arr[i])` (mixed-type array forces the
+dynamic runtime `$__to_num` call, not a compile-time fold or typed
+lowering). `main` imports `touch` from a.jz then `mkBig` from b.jz, calls
+both. Result: `6.09957581968707e-310` (the literal's raw i64 bits
+reinterpreted as f64, unconverted) instead of `123456789012345` — identical
+corruption class to the JSON bug. CONTROL (in the same test): reversing the
+import order (b.jz imported first) recovers the correct value at every
+tier, both legs — isolates the fault to ORDER, not the Number()/mixed-array
+mechanism, which is independently correct.
+ROOT (confirmed unchanged from the prior hunt, re-verified 2026-08-09):
+`prep()`'s per-node dispatch (src/prepare/index.js) runs `includeForOp`
+(module inclusion, may bake a template) BEFORE checking whether the node
+itself is the bigint-construction site; `prepareModule` gives each imported
+module its OWN separate `prep(ast)` call, so this is a cross-module hazard,
+not just cross-statement.
+FIX NOT RE-ATTEMPTED — prior session already attempted, verified, and
+REVERTED the obvious fix (whole-tree bigint-construction prescan run to
+completion before any module's stdlib template can materialize, both top-
+level and per-`prepareModule`): closes this narrow bug but flips
+`ctx.features.bigint` true for the SELF-HOSTED KERNEL BUILD too, because
+layout.js's `i64Hex`/`packPtrBits` family (imported unconditionally by
+src/ir.js, used for every NaN-boxed pointer encoding) contains real BigInt
+literals — RE-CONFIRMED STILL PRESENT today (`NAN_PREFIX_BITS`, `i64Hex`,
+`TAG_SHIFT`/`AUX_SHIFT`/`OFFSET_MASK` BigInt views, direct grep). The
+compiler's own self-hosted source is NOT bigint-free, contrary to the
+invariant `test/kernel-oracle.js`'s "subnormal literal — AGREE" test
+depends on (audit-#11 P0-1) — graph-completing the prescan correctly
+detects layout.js's BigInt usage and flips the kernel's `$__to_num` to the
+guarded arm program-wide, REGRESSING that test (a real subnormal Number
+misread as a BigInt-carrier collision again). Confirmed structural, not
+small: fix is (a) scrub real-BigInt syntax from the self-hosted-bundle-
+reachable source (layout.js rewritten to hi/lo-split plain-Number i64
+arithmetic, mirroring bignum.js's own deliberate BigInt-avoidance rewrite)
+to restore the "compiler source is bigint-free" invariant, or (b) redesign
+the carrier disambiguation off a single whole-program boolean toward
+something that survives the self-hosting identity conflation (compiler-as-
+program vs compiler-as-target share one flag today). Both out of this
+task's scope (audit-#16 asked for fixture-and-triage, not a carrier
+redesign).
+GATES: new test only, additive — full battery / kernel-parity / byte-
+identity / build gates run as part of this session's combined report below.
+Files: test/kernel-oracle.js (new KNOWN-FAIL test, ~90 lines, inserted
+after the subnormal-literal AGREE test it shares a root with).
+
 ## heap-kind registry Slice 4: prose/executable split — landed (2026-08-09)
 Per .work/research.md §Heap-kind registry. Local only. audit-#16 registry
 finding.

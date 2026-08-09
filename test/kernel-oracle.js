@@ -380,6 +380,107 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
   }
 })
 
+// ── KNOWN-FAIL tier: ctx.features.bigint module-inclusion-ORDERING hazard
+// (audit-#16, differential fixture the audit prescribes) ───────────────────
+//
+// The subnormal-literal test above closed audit-#11 P0-1 by gating __to_num's
+// BigInt-carrier heuristic on ctx.features.bigint — but that flag's freeze is
+// PHASE-complete (one prep() pass), not GRAPH-complete. `prep()`'s own per-
+// node dispatch runs `includeForOp(node[0])` (module inclusion — may bake a
+// module's stdlib template into a ctx.core.stdlib STRING, evaluated ONCE,
+// autoload.js includeModule → init(ctx)) BEFORE it checks whether THIS node
+// is a bigint-construction site (src/prepare/index.js prep(), the `if
+// (Array.isArray(node) && (node[0] === 'bigint' || …))` check). Any node
+// visited earlier than a program's own bigint-construction site, whose op
+// transitively needs the 'number' module (module/number.js's `$__to_num`,
+// gated `${ctx.features.bigint ? … : …}` at module-init time, module/
+// number.js ~1540), bakes the UNGATED (bigint-carrier-blind) arm PERMANENTLY
+// — later setting the flag true does not retroactively re-bake the string.
+// `prepareModule` (src/prepare/index.js ~3783) makes this a cross-MODULE
+// hazard, not just cross-statement: each imported module gets its OWN
+// separate `prep(ast)` call, so an earlier-imported module's numeric
+// coercion (`+x`, OP_MODULES['u+'] → ['number','string']) can materialize
+// `$__to_num` with the flag still false, before a LATER-imported module's
+// bigint literal is ever walked. Below, `a.jz` (imported first) contains
+// ONLY a numeric coercion, zero bigint syntax; `b.jz` (imported second) is
+// the ONLY module with bigint syntax anywhere in the program. Root class
+// matches the already-hunted JSON shaped-parser bug (.work/todo.md, "JSON
+// SHAPED-PARSER 'Bad int 9.067910317e-315' HUNTED — ROOT NAMED, BANKED NOT
+// FIXED") — same corrupted-carrier symptom (`Number()` of a boxed BigInt
+// printing its own raw i64 bits reinterpreted as f64), reproduced here via a
+// clean two-module fixture isolated from that bug's Map-value-census tangle.
+//
+// FIX ATTEMPTED PREVIOUSLY (that same todo.md entry) AND VERIFIED, THEN
+// REVERTED: hoisting the bigint-construction scan to a standalone whole-tree
+// prescan run to completion before ANY module's stdlib template can
+// materialize (both for the top-level program and per-module, before each
+// `prepareModule`'s own `prep(ast)`) closes THIS bug precisely — but flips
+// `ctx.features.bigint` true for the self-hosted KERNEL BUILD too, because
+// layout.js's `i64Hex`/`packPtrBits` family (imported unconditionally by
+// src/ir.js, used for EVERY NaN-boxed pointer encoding) contains real BigInt
+// literals (confirmed still present: layout.js `NAN_PREFIX_BITS`, `i64Hex`,
+// `TAG_SHIFT`/`AUX_SHIFT`/`OFFSET_MASK` BigInt views, 2026-08-09 grep) — so
+// the compiler's OWN self-hosted source is NOT bigint-free, contrary to the
+// invariant the subnormal-literal AGREE test above depends on. Graph-
+// completing the prescan correctly detects that pre-existing BigInt usage
+// and flips the kernel's `$__to_num` to the guarded arm program-wide, which
+// REGRESSES the subnormal-literal test (a real subnormal Number, e.g.
+// `-5e-324`, misread as a BigInt-carrier collision again) — trading the
+// narrow bug pinned here for the broader one P0-1 already closed. VERDICT:
+// structural, not small — true fix is either (a) scrub all real-BigInt
+// syntax from the self-hosted-bundle-reachable source (layout.js rewritten
+// to hi/lo-split plain-Number i64 arithmetic, mirroring bignum.js's own
+// deliberate BigInt-avoidance rewrite) to restore the "compiler source is
+// bigint-free" invariant, or (b) redesign the carrier disambiguation off a
+// single whole-program boolean toward something that survives the self-
+// hosting identity conflation (compiler-as-program vs compiler-as-target
+// share one flag today). BANKED, not fixed — pinned precisely (exact
+// corrupted value, both native AND kernel legs, both optimize tiers) so a
+// future close of either (a) or (b) flips this test's asserted values from
+// the corrupted carrier to `want` in one edit.
+test('kernel oracle: KNOWN-FAIL (audit-#16, ctx.features.bigint module-ordering, differential fixture) — an earlier-imported module\'s numeric coercion bakes $__to_num before a later-imported module\'s BigInt use is ever seen, corrupting Number() of that BigInt at BOTH native and kernel runtime', async () => {
+  if (onWasi()) return
+  const want = 123456789012345
+  const corrupted = 6.09957581968707e-310  // raw i64 bits of 123456789012345n reinterpreted as f64, unconverted — same corruption class as the JSON shaped-parser 9.067910317e-315 finding
+  // a.jz: imported FIRST, zero bigint syntax — a numeric coercion (OP_MODULES['u+']
+  // = ['number','string']) materializes $__to_num while ctx.features.bigint is still false.
+  const aSrc = `export let touch = (x) => +x`
+  // b.jz: imported SECOND — the ONLY module with bigint syntax in the whole program.
+  // A mixed-type array element (not statically bigint-typed) forces Number() through
+  // the real dynamic $__to_num call rather than a compile-time fold or typed lowering.
+  const bSrc = `
+    const arr = [1.5, 123456789012345n, 2.5]
+    export let mkBig = (i) => Number(arr[i])
+  `
+  const mainSrc = `
+    import { touch } from './a.jz'
+    import { mkBig } from './b.jz'
+    export let out = () => { touch(1); return mkBig(1) }
+  `
+  const modules = { './a.jz': aSrc, './b.jz': bSrc }
+  for (const opt of [0, 2, 3]) {
+    const nat = jz(mainSrc, { modules, optimize: opt }).exports.out()
+    const ker = instantiate(compileViaKernel(mainSrc, { modules, optimize: opt })).exports.out()
+    is(nat, corrupted, `O${opt}: native currently WRONG (raw BigInt carrier reinterpreted as f64) — TODO-flip guard`)
+    is(ker, corrupted, `O${opt}: kernel currently WRONG too, identical corruption — TODO-flip guard`)
+    not(nat, want, `O${opt}: tripwire — native must start disagreeing with the correct ToNumber value the moment this closes`)
+    not(ker, want, `O${opt}: tripwire — kernel must start disagreeing too`)
+  }
+  // Control: reversing the import order puts the bigint-construction site (b.jz)
+  // ahead of the numeric-coercion op (a.jz) in prep()'s walk, so the flag is set
+  // true BEFORE $__to_num materializes — proves the fault tracks ORDER, not the
+  // Number()/mixed-array mechanism itself (which is correct on its own).
+  const mainReversed = `
+    import { mkBig } from './b.jz'
+    import { touch } from './a.jz'
+    export let out = () => { touch(1); return mkBig(1) }
+  `
+  for (const opt of [0, 2, 3]) {
+    is(jz(mainReversed, { modules, optimize: opt }).exports.out(), want, `O${opt}: control — reversed import order is correct (isolates the fault to ORDER, not the value mechanism)`)
+    is(instantiate(compileViaKernel(mainReversed, { modules, optimize: opt })).exports.out(), want, `O${opt}: control kernel leg, same proof`)
+  }
+})
+
 // ── PENDING-FIX tier: a REAL finding, not a documented tradeoff ───────────
 //
 // (boolconst LANDED — moved to the AGREE array above. It lived here as a

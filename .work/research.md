@@ -1100,6 +1100,33 @@ unverified. Caught before relying on it (the compile() return-shape check:
 bare bytes vs `{wasm,...}` only when `opts.inspect` is set) and redone
 properly against scripts/bench-size.mjs's actual jzCompileSize wiring.
 
+**Slice 4 (post-carrier bigint gate retirement) — audit-#16 differential
+fixture run, STILL BLOCKED** (2026-08-09). The slice list above named item 4
+as "bigint stays a frozen PROGRAM fact gating stdlib arm size" — i.e. the
+open question is whether `bigint`'s freeze can be made GRAPH-complete (not
+just phase-complete within one `prep()` pass) without reopening the carrier
+tension §6 of carrier-representation-design.md already named. audit-#16
+asked for the differential fixture directly: a cross-module case with
+BigInt use ONLY in a later-imported module, an earlier-imported module
+materializing `$__to_num`. Built and run (`test/kernel-oracle.js`, KNOWN-
+FAIL tier) — RED at both native and kernel legs, all optimize tiers,
+confirming the gap is real and CURRENT, not historical. Root unchanged from
+the original hunt (prep()'s per-node `includeForOp` vs bigint-construction
+check ordering, now confirmed cross-module via `prepareModule`'s separate
+per-module `prep(ast)` calls). NOT re-attempted: the whole-tree-prescan fix
+was already verified+reverted in the original hunt (`.work/todo.md`, "JSON
+SHAPED-PARSER … BANKED NOT FIXED") because layout.js's real BigInt syntax
+(re-confirmed present today) makes the self-hosted compiler's own source
+non-bigint-free, so a graph-complete scan flips the kernel build's flag
+true and regresses the subnormal-literal AGREE test. Slice 4 stays BLOCKED
+on the same fork §6 names: (a) scrub layout.js's BigInt syntax to plain
+hi/lo-split Number arithmetic first (removes the false "compiler source has
+BigInt" signal, letting a graph-complete scan freeze correctly for BOTH
+target programs and the compiler's own self-hosted build), or (b) a non-
+boolean carrier-disambiguation redesign. Full root-cause + fixture detail:
+`.work/todo.md` §"FeaturePlan whole-graph oracle: differential fixture
+BANKED, not fixed (audit-#16)".
+
 ## [ ] Region arena (was region-arena-design.md + slice1-build + slice1-liveness + kernel-memory-curve; DORMANT)
 
 Evidence (kernel-memory-curve, 2026-08-06): the bump arena's
