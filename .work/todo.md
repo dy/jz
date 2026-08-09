@@ -7302,3 +7302,20 @@ byte-identity/build/fuzz gate run (would only reproduce Slice 4a's own
 numbers against an unmodified tree); `npm test` re-run once for current-tree
 sanity. Next: Slice 6 (`SlotFact` unification, OQ2's 6a/6b split) or Slice 7
 (sticky-null retirement, depends on Slice 6).
+
+## AUDIT-#16 RESPONSE (2026-08-08)
+Confirmed-fixed by audit: json shaped-parser, bench-merge contract, typedView,
+registry production consumers, LoopPlan split, dead baseKeys, OQ1 opt-in.
+CLOSED same-day (3e42fbaa, all while dormant — before any consumer): P0-1
+possibleKinds universe-join on unresolved observations + ∅=BOTTOM fail-closed
+exclusion contract · P0-2 ruled (presence boolean = positive evidence ONLY,
+definitelyPresent needs a completeness bit — binding on Slice 7) · P1-3
+cloneRep authoritative deep clone (leak confirmed+closed) · P1-4 pure
+censusKindsOf · P1-5 frozen KIND_UNIVERSE. Slice-6 agent redirected with the
+deletion metric (6a lands only if parallel maps genuinely DELETE).
+QUEUED: registry KIND_CODEGEN/prose split (+60KB dist/jz.wasm cost from
+Slice 3's prose going live — recover it) · FeaturePlan whole-graph oracle
+(late-module bigint differential fixture; the freeze is phase-complete, not
+graph-complete) · LoopPlan pre-emission minting before any semantic consumer
+· lattice completion metric = DELETION (maps/joins/projections removed), not
+slice count.
