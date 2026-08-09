@@ -6,6 +6,53 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## session-campaign slice (a)+(b): reset choreography + linkDemand setter — landed 2026-08-09
+Per .work/session-survey.md's COORDINATOR RULING. Slice (a) `7ed9b1ce`:
+prepare/index.js's resetPrepState, module/regex.js's literal-parser state,
+optimize/vectorize.js's why-not-simd flags register through ctx.js's new
+RESET_HOOKS (drained at reset()'s end — beginSession AND raw-reset test
+harnesses alike already call reset()). index.js's compileTarget test
+override went through a narrower session.js SESSION_RESET_HOOKS instead
+(beginSession-only) — folding it into RESET_HOOKS would have broken
+`JZ_TEST_TARGET=jz.wasm` runs the first time any raw-reset test executed
+(test/types.js calls reset() directly, mid-run, and is not excluded from
+the kernel-target leg). New reentrancy probe test/session-reentrancy.js:
+regex-heavy/regex-free + prepare-heavy/minimal pairs, both orderings,
+warm-in-process vs fresh-OS-process byte-equality — PASS, 3/3, 8/8
+assertions. FINDING: removing prepare()'s own direct resetPrepState() call
+(relying solely on the RESET_HOOKS drain) passed every native gate but
+crashed the SELF-HOSTED kernel — dist/jz.wasm built from that tree traps
+"memory access out of bounds" on kernel-parity's/kernel-oracle's first
+compile, bisected via a throwaway worktree to exactly that removal
+(module/regex.js's and vectorize.js's equivalent hooks, same registration
+shape, don't crash). Root cause not chased further (reads as a self-host
+closure-reachable-only-indirectly edge case, not a choreography defect —
+every real caller does invoke reset() before prepare(), which is why
+native never showed it); landed with BOTH the direct call and the
+registration kept, not a half-migration — resetPrepState is idempotent,
+costs nothing. Slice (b) `2cd19e6c`: setLinkDemand(key) mirrors
+setFeature() exactly (monotone, no value param — every one of the 36
+sites was already a bare `= true`), tripwire on a new _preAssemble flag
+set at the EXISTING assertCtxInvariants('pre-assemble') call (no new call
+site) — a real bug-catcher, not documentation-as-code, since every writer
+today already completes before that phase fires. 36 sites migrated across
+10 files (survey said 9 — undercounted index.js's 2 sites); typedarray.js
+sed migration initially missed 3 digit-bearing keys (`f16`) on a
+`[A-Za-z]+`-only regex, caught before landing. Full AS-LANDED account
+(deviations from the ruling, the self-host FINDING's bisection detail, all
+gate numbers) in .work/session-survey.md's own AS-LANDED — Slice (a) and
+AS-LANDED — Slice (b) sections. GATES (both slices, same combined tree):
+57-case/171-compile bench-corpus byte-identity vs a disposable worktree at
+unmodified HEAD (0c139eff) — 0 diffs · full battery 3413/3421 (2
+pre-existing fails, unchanged) · JZ_DEBUG_INVARIANTS battery 3414/3423
+(same 2 + 1 known audit-#12 flake, unchanged) · kernel-parity/kernel-oracle
+13/13 (469 assertions) against a freshly rebuilt dist/jz.wasm (verified
+fresh mtime) · npm run build ×2 SHA-256 identical (dist/jz.js,
+dist/interop.js, dist/jz.wasm) · test/selfhost.js 21/21 under
+JZ_DEBUG_INVARIANTS. Slices (c) (read-only facades) and (d) (full
+CompileSession, gated on ctx.func decomposition) NOT attempted — out of
+this session's scope, per the ruling.
+
 ## STRING identity-arm divergence ($__eq vs $__same_value_zero): REAL bug, fixed — 2026-08-09
 layout-kinds-doc.js FINDINGS[identity-arm-divergence] (registry Slice 3)
 left open whether $__eq's extra per-operand NaN re-guard on its STRING

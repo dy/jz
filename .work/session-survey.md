@@ -453,3 +453,144 @@ future campaign, not this one; do not attempt. Gates per slice: byte-identity
 sweep + battery + kernel-parity + build ×2 + a NEW reentrancy probe (two
 sequential compiles in one process, differing programs, assert no state
 bleed — the thing slice (a) exists to make true).
+
+## AS-LANDED — Slice (a) (2026-08-09)
+
+SHA: `7ed9b1ce`.
+
+**What shipped vs ruling.** `src/ctx.js` gained a `RESET_HOOKS` array +
+`registerResetHook(fn)`, drained at the end of `reset()` — the seam every
+entry point (`beginSession()`, AND raw-reset test harnesses like
+test/types.js that call `reset()` directly, confirmed by grep of every
+call site) already goes through. `prepare/index.js`'s `resetPrepState`,
+`module/regex.js`'s literal-parser state (`src`/`idx`/`groupNum`/
+`groupNames`), and `optimize/vectorize.js`'s why-not-simd arm/disarm flags
+(`_whyNotActive`/`_whyNotReason`/`_relaxF32`/`_crPow`) all register through
+it at module load.
+
+`index.js`'s `compileTarget` deliberately did NOT go through `RESET_HOOKS`
+— tracing every raw `reset()` call site showed test/types.js (which is
+NOT excluded from the `JZ_TEST_TARGET=jz.wasm` kernel-target leg) calls
+`reset()` directly, interleaved with `compile()`/`jz()` calls that must
+keep routing through the kernel target for that whole test run. Folding
+`compileTarget`'s reset into `RESET_HOOKS` would silently null the test
+harness's override mid-run the first time ANY raw-reset test executed,
+breaking `test:wasm` with no error, just silent fallback to the native
+path. Instead, `src/session.js` grew a narrower, second registry —
+`SESSION_RESET_HOOKS`/`registerSessionResetHook(fn)`, drained inside
+`beginSession()` only — and `index.js` registers `compileTarget`'s clear
+there. This is provably a no-op whenever it matters: `jz.compile` never
+reaches `beginSession()` while `compileTarget` is set (it short-circuits
+first), so the hook only ever fires when `compileTarget` is already null.
+Deviation from the ruling's literal "ONE beginSession()/reset() path" —
+flagged here rather than silently generalized, per this task's own
+standing instruction not to ship a kernel-affecting change quietly.
+
+**FINDING (self-host leg, the substantive one):** removing
+`prepare()`'s own direct `resetPrepState()` call and relying solely on the
+`RESET_HOOKS` drain (byte-identical, full-battery-clean, invariants-clean
+on the NATIVE leg) crashed the self-hosted kernel — `dist/jz.wasm` built
+from that tree traps with "memory access out of bounds" on kernel-parity's
+and kernel-oracle's very FIRST compile call, not a warm/second-compile
+issue. Bisected via a throwaway worktree, file-by-file: `module/regex.js`'s
+and `optimize/vectorize.js`'s equivalent hooks (registered the identical
+way, called only indirectly, never by direct name elsewhere) do NOT crash
+the kernel, alone or together. Re-adding `prepare()`'s own direct
+`resetPrepState()` call ALONGSIDE the registration (both paths, redundant)
+made the crash disappear completely, confirmed on a full rebuild. Root
+cause not chased further — this reads as a self-hosted-compiler edge case
+around a large (14-assignment, ~78-read-site), heavily-closed-over
+module-scope function becoming reachable ONLY through indirect
+(array-stored, `for`-of-invoked) calls with no remaining direct call site
+anywhere in the program, not a session-choreography defect (every real
+caller already invoked `reset()` before `prepare()`, which is why the
+native leg never showed a problem) — but that is a hypothesis, not a
+confirmed compiler diagnosis, and is explicitly out of THIS campaign's
+scope (session-choreography, not compiler-internals). Landed shape:
+`prepare()` keeps its direct `resetPrepState()` call AND the
+`registerResetHook(resetPrepState)` registration — both, not a
+half-migration — since `resetPrepState` is idempotent and cheap, this
+costs nothing and is proven safe by the same bisection.
+
+**Reentrancy probe:** `test/session-reentrancy.js`, new. Two program
+pairs picked to bleed through exactly the state this slice folded into one
+choreography — regex-heavy (named groups, backrefs, alternation, flags)
+→ regex-free, and prepare-state-heavy (deep arrow nesting, sibling-block
+shadowing, static-const tracking, loop-captured let, reassigned top-level
+binding, catch, destructuring) → minimal — compiled sequentially in one
+process, both orderings, each program's warm-in-process bytes asserted
+byte-equal to a compile of the SAME program in a brand-new node process
+(`test/_fresh-compile-worker.mjs`). Result: **PASS**, 3/3 tests, 8/8
+assertions, both orderings, both pairs.
+
+**Gates:** 57-case/171-compile bench-corpus byte-identity vs a disposable
+`git worktree` pinned at unmodified HEAD (`0c139eff`) — **0 diffs** (the 3
+standard excluded cases — jessie/jz/watr — need extra module wiring this
+harness didn't reproduce, same exclusion shape as prior sessions' "57
+bench/* cases"). Full battery **3413/3421** (2 pre-existing fails,
+unchanged: interval-walk codec bounds-check count, typed-RMW guard-count
+pin). `JZ_DEBUG_INVARIANTS` battery **3414/3423** (same 2 + 1 known
+audit-#12 idempotence-probe flake, unchanged). kernel-parity/kernel-oracle
+**13/13** (469 assertions) against a freshly rebuilt, verified-fresh-mtime
+`dist/jz.wasm`. `npm run build` ×2 — SHA-256 identical across both runs
+(`dist/jz.js`, `dist/interop.js`, `dist/jz.wasm`). `test/selfhost.js`
+under `JZ_DEBUG_INVARIANTS=1` — **21/21** (206 assertions, incl. 39 rounds
+of same-instance warm reuse).
+
+**Verdict: GREEN**, with two flagged deviations from a literal reading of
+the ruling (compileTarget's narrower hook, prepare()'s redundant direct
+call) — both load-bearing, both documented at their call sites, neither
+changes the campaign's actual goal (one discoverable reset choreography,
+reentrancy-probe-verified).
+
+## AS-LANDED — Slice (b) (2026-08-09)
+
+SHA: `2cd19e6c`.
+
+**What shipped.** `setLinkDemand(key)` in `src/ctx.js`, mirroring
+`setFeature()`'s shape exactly (same file, same pattern, adjacent code).
+No value parameter — every one of the 36 existing write sites was already
+a bare `= true` (monotone false→true by construction, confirmed by grep:
+zero non-`true` writes exist), so the setter doesn't need one. Tripwire:
+a new `_preAssemble` flag, set `true` at the EXISTING
+`assertCtxInvariants('pre-assemble')` call site (no new call site added —
+`ctx.linkDemand`'s own doc comment already identifies `pre-assemble` as
+the DEMAND stratum's freeze point, verified phase-ordering: every writer
+completes before it fires, `resolveIncludes()`/assemble read only after).
+`setLinkDemand` throws under `JZ_DEBUG_INVARIANTS` if called once
+`_preAssemble` is true — a REAL bug-catcher (a write past that point means
+a reader already started consuming a fact about to change under it), not
+"close to pure documentation-as-code" as §5's cost estimate speculated.
+
+**Write-site migration:** 36 raw `ctx.linkDemand.x = true` assignments
+across **10 files**, not the survey's own count of 9 — the survey's §1/§2
+census undercounted `index.js`'s 2 sites (same low-single-digit fuzziness
+the survey flagged for its own ctx-importer count). Per file:
+`src/compile/emit-assign.js` (3), `src/compile/analyze.js` (1),
+`src/compile/emit.js` (3), `module/typedarray.js` (16 — the sed migration
+initially missed 3 digit-bearing keys, `f16`, twice more `f16`/nothing
+else, because the first regex pass used `[A-Za-z]+` instead of
+`[A-Za-z0-9]+`; caught and fixed before landing), `module/function.js`
+(1), `module/core.js` (5), `module/string.js` (2), `module/crypto.js`
+(1), `module/collection.js` (2), `index.js` (2). Verified post-migration:
+`grep -rn "ctx\.linkDemand\.\w+ = true"` across src/ + module/ + index.js
+returns zero hits.
+
+**Gates:** identical shape and numbers to slice (a)'s (same combined
+tree) — byte-identity **0 diffs** (171/171), full battery **3413/3421**
+(same 2 pre-existing fails), `JZ_DEBUG_INVARIANTS` battery **3414/3423**
+(same 2 + 1 known flake), kernel-parity/kernel-oracle **13/13** (469
+assertions), `npm run build` ×2 SHA-256 identical, `test/selfhost.js`
+under invariants **21/21**. Targeted smoke (features, feature-gating,
+simd, objects, strings, external, wasi, array-methods, abi — the
+linkDemand-adjacent files) run standalone pre-commit: 706/706 pass.
+
+**Verdict: GREEN.** No design deviation — the setter's shape, the
+tripwire's phase anchor, and the write-site migration all match the
+ruling and the survey's own §5(b) estimate exactly; the only surprise was
+the file-count-off-by-one, immaterial to the mechanism.
+
+## Slice (c)/(d): not attempted this session
+Slice (c) (read-only facades over the 7 disciplined subtrees + the
+DI-parameter seam) and slice (d) (full CompileSession, gated on `ctx.func`
+decomposition per the ruling) are unstarted — out of this session's scope.
