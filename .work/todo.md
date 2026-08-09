@@ -7356,3 +7356,58 @@ this tree's; reproduced on a clean isolated baseline rebuild to rule out
 concurrent-load corruption, banked for the coordinator as a pre-existing,
 unrelated finding, not a regression. Next: Slice 7 (sticky-null retirement,
 depends on both 6a+6b).
+
+## PRODUCT-LATTICE Slice 7 (capstone) — producer union LANDED, keyedWrite
+consumer MEASURED and REVERTED, §22 acceptance NOT reached (2026-08-09)
+Step 1 (`f677092c`): dict/map value-census producers (analyze.js
+dictValueTypeOf/mapValueTypeOf, program-facts.js observeDictValue/
+poisonDictValue + mapValueTypes siblings) retire first-wins-then-clash
+poison-to-null for genuine Set<VAL.*> union storage — the LAST live
+poison-to-null producer this campaign named (dictValueKindOf/mapValueKindOf
+were already exact-or-null CONSUMERS since Slice 1; their producers stayed
+poisoned until now). A disagreeing write widens the set; an unresolved
+write unions in the full KIND_UNIVERSE (TOP), never a null sentinel.
+dictValueKindOf/mapValueKindOf keep byte-identical exact-or-null answers
+via projection (size===1 -> the kind, else null); censusKindsOf (Slice 1's
+opt-in projection) now reads the raw union — the first point in this
+campaign where a genuinely heterogeneous dict/map answers {NUMBER,
+STRING}-shaped instead of null. test/inference.js's ~24 white-box census
+fixtures updated to project the new Set-shaped field through the same
+exact-or-null rule (soleKind helper) — same assertions, same intent.
+Step 2: keyedWrite's receiver-kind exempt test wired to consult
+censusKindsOf (the opt-in projection, per the COORDINATOR RULING on OQ1) —
+re-deriving §18's disjointness logic a FOURTH time, now genuinely
+Set-valued. Isolated repro confirms the mechanism is live and correct.
+JZ_DEBUG_HZALL measurement against the real scripts/self.js compile:
+0 exemptions fired, both generations ({"keyedWrite.early":497,
+"keyedWrite.late":498,"censusExempt.early":0,"censusExempt.late":0}) — and
+0 WAT byte changes anywhere in the 58-case bench corpus, default mode.
+Root-caused to the EXACT wall carrier-representation-design.md §20/§21
+already found and confirmed unbudgeable: censusKindsOf's underlying
+mapValueKindOf HARD gate (valTypeOf(name)===VAL.MAP) still routes a
+property-aliased receiver (self.js's own dominant shape, `const slotTypes
+= ctx.schema.slotTypes`) through slotVT, gated by slotHazarded's hz.all —
+a circularity §21 independently confirmed is genuinely load-bearing, not a
+narrowing bug. REVERTED (program-facts.js only, clean revert to f677092c,
+confirmed by post-revert build-hash equivalence) — matches §18's/§20's own
+"real per-compile cost, zero measured benefit, no corpus evidence"
+disposition, third time in this shape. Producer union storage (step 1)
+stays landed, independently justified by deletion+byte-identity alone.
+§17 keyedWrite acceptance: NOT reached — definitively answered, not
+re-asserted. §22 acceptance (JZ_CARRIER_BOX=1 dict O0/O2/O3 clean): NOT
+attempted this session, correctly, per "IF it collapses" — the expensive
+carrier battery was not run against a change proven not to move the
+target (matches §18/§20's own discipline). Full mechanism-level account:
+carrier-representation-design.md §23. Lattice-side account:
+lattice-design.md AS-LANDED — Slice 7.
+GATES (step 1; step 2 has none, zero net code — see §23 for its own
+measurement gates): 58-case/174-compile bench-corpus byte-identity vs a
+disposable git worktree at pre-slice HEAD (4a35fdc8), 0 diffs · full
+battery 3408/3416 (2 pre-existing fails, unchanged) · JZ_DEBUG_INVARIANTS
+battery 3408/3417 (same 2 + 1 known audit-#12 flake) · kernel-parity 33/33
+byte-identical · npm run build x2 byte-identical (dist/jz.js sha256
+`b38a6105...`, dist/jz.wasm sha256 `4e6cebe6...`, dist/interop.js sha256
+`ef42c9da...`, unchanged from every prior slice) · fuzz 4000x2 (seeds
+1..4000), 0 divergence. Product-lattice campaign (Slices 0-7): CLOSED —
+every slice landed or definitively excluded/reverted with a precise,
+measured reason; no slice remains open.

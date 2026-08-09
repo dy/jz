@@ -3218,3 +3218,197 @@ multi-session composition, not a quick follow-up.
 **Commits (local only, plain messages, no push):** `28e4b4ae` —
 `src/compile/program-facts.js` only (the lever, `curParamIntCertain`).
 This ledger entry + `.work/todo.md` status update commit separately.
+
+## §23. product-lattice Slice 7 step 2 — §18's disjointness logic, FOURTH
+landing, now fed by a genuine Set-valued censusKindsOf union (opt-in,
+OQ1 Option-A) — WALL RECONFIRMED at the SAME §20/§21 layer, consumer
+REVERTED (2026-08-09)
+
+**Precondition (product-lattice Slice 7 step 1, landed, `f677092c`):** the
+dict/map value-census producers (`analyze.js` dictValueTypeOf/mapValueTypeOf,
+`program-facts.js` observeDictValue/observeMapValue/poisonDictValue/
+poisonMapValue) retired first-wins-then-clash poison-to-null for genuine
+UNION storage (a Set<VAL.\*>, unresolved writes union in the full
+KIND_UNIVERSE/TOP instead of a null sentinel) — `.work/lattice-design.md`'s
+thesis (existential facts compose by union, not meet). `dictValueKindOf`/
+`mapValueKindOf` keep byte-identical exact-or-null answers via projection;
+`censusKindsOf` (the Slice-1 opt-in projection) now reads the raw union, so
+a genuinely heterogeneous dict/map answers a real multi-kind set instead of
+null for the first time. This alone is justified by deletion + byte-identity
+(58-case corpus 0 diffs, full battery 3408/3416, `JZ_DEBUG_INVARIANTS`
+3408/3417 — same 2 pre-existing + 1 known audit-#12 flake, kernel-parity
+33/33, build ×2 identical, fuzz 4000×2 clean) independent of step 2's outcome
+below.
+
+**Step 2 — the FOURTH re-derivation of §18's disjointness logic, this time
+structurally opt-in per the COORDINATOR RULING on OQ1** (`.work/
+lattice-design.md`: census-derived kind unions surface ONLY through
+`censusKindsOf`, never a general kind fact; consumer added deliberately,
+individually gated). `collectCensusExemptLocals(bodyRoot, kindOf)`
+(`program-facts.js`, per-body, computed once per function — and once for
+top-level `ast` — alongside `curSids`/`curParamVts`, mirroring their exact
+lifecycle): for every LOCAL name written in a body (decl or plain `=`
+reassignment, bare-name target only), unions the resolved kind of every
+write site — a `X.get(key)`-shaped RHS resolves via `censusKindsOf(X)` (X's
+own dict/map value union, alias-gated by `dictValueKindOf`/`mapValueKindOf`'s
+existing `nameEscapes` check, reused as-is per §18's own soundness argument);
+any other RHS resolves via `kindOf`. Any unresolvable write (including a
+compound-assignment op this walk doesn't model) drops the name entirely —
+fail closed, no partial answer ever stored. Shadow-safe: an arrow's own
+bound names are excluded for the whole body while the walk still recurses
+into the arrow (a write to an OUTER name from inside a closure is a real
+write this census must see — NOT the same discipline as
+`dictValueTypeOf`'s own single-name early-`return`, which is only safe
+there because it tracks one name at a time). Wired into `keyedWrite` as a
+THIRD branch (after the sid-resolved and exact-`vt`-exempt branches):
+`vt == null && typeof obj === 'string'` consults
+`curCensusExempt.get(obj)`, exempting iff the unioned set is non-empty AND
+every member is in `KEYED_EXEMPT_VALS` (the same 6-kind allowlist the
+existing exact-kind branch already requires — a strict SUBSET check, not
+merely "excludes OBJECT," matching the existing branch's own conservatism).
+Presence (`mayBeUndefined`) deliberately NOT consulted, per the OQ1
+verdict's own analysis: `undefined` cannot alias a tracked OBJECT schema
+slot, so a `.get()` miss contributes nothing this disjointness question
+needs to exclude.
+
+**Isolated verification (before the expensive measurement, matching
+§18/§20's own discipline of confirming the mechanism works before running
+it against the flagship target):** a direct, non-self-referential repro
+(`const buckets = new Map(); seed = k => buckets.set(k, []); observeSlot =
+(key, idx, v) => { let arr = buckets.get(key); arr[idx] = v }`) DOES flip —
+`censusExempt.late` fires, `keyedWrite.late` drops to 0 for that function —
+confirming the mechanism is live and correctly wired, not dead code. The
+CANONICAL self-referential idiom this session's own seed and §18's both
+name (`let arr = m.get(k); if (!arr) { arr = []; m.set(k, arr) }`) does
+NOT flip under this session's implementation — Fix 2
+(`collectMapSetReachingDefs`, §18/§20's syntactic-adjacency recovery for
+the `.set()`-writes-back-its-own-`.get()`-result circularity) was
+deliberately NOT re-implemented this session (see "not attempted" below);
+under Slice 7 step 1's union producer, this specific idiom's poison-to-null
+became poison-to-TOP (the bare-name RHS `arr` in `m.set(k, arr)` is still
+unresolvable by `dictWriteVT` at the point `m`'s census sees it, so the
+UNION swallows the full KIND_UNIVERSE instead of nulling — same practical
+effect on this consumer's `every(k => KEYED_EXEMPT_VALS.has(k))` check: TOP
+includes non-exempt kinds, so no exemption either way). Confirms Slice 7's
+union swap is a strict precision GAIN over the old poison (§3.2 of the
+lattice design), not a magic fix for a DIFFERENT, still-open circularity.
+
+**Diagnostic (Gate 1, `JZ_DEBUG_HZALL`, matching §17/§18/§20's own
+instrumentation exactly — temporary, module-scope counters, NOT
+`globalThis` this time: `program-facts.js` is bundled into the self-hosted
+compiler's own source, and jz's language subset does not support a bare
+`globalThis` reference — the first attempt at this instrumentation broke
+`scripts/selfhost-build.mjs` outright ("globalThis is not in scope"),
+caught by running the self-host build as part of gating the instrumentation
+itself, not assumed safe; fixed by using a plain module-scope object
+instead — stripped after use, this correction is not carried forward),
+real self.js compile (`JZ_SELFHOST_OPT=0 node scripts/selfhost-build.mjs`):
+**NO COLLAPSE.** `{"keyedWrite.early":497,"keyedWrite.late":498,
+"censusExempt.early":0,"censusExempt.late":0}` — zero census exemptions
+fired anywhere in the real compile, at either generation. (The raw
+`keyedWrite` counts, 497/498, are higher than §17-§20's own ~319-327
+baseline — consistent with ordinary codebase growth over the sessions
+between then and now, same "ordinary codebase drift, not a real change"
+framing those sessions used for smaller deltas; not independently
+re-derived this session since the exemption count — the actual gate — is
+unambiguously zero regardless.)
+
+**Root-caused, not merely observed — this is the SAME wall §20/§21 already
+found and §21 confirmed unbudgeable, reconfirmed under the new union
+census, not a new failure mode.** `censusKindsOf(X)` for the RECEIVER map
+`X` still routes through `mapValueKindSet`'s HARD gate
+(`valTypeOf(name) === VAL.MAP`, kind.js, UNCHANGED by Slice 7 step 1 — the
+gate structure was deliberately preserved, only the SIZE semantics of what
+lies behind it changed). For self.js's OWN dominant idiom — a
+property-chain-bound local (`const slotTypes = ctx.schema.slotTypes`) —
+`valTypeOf` resolves through `VT['.']` → `ctx.schema.slotVT`, and `slotVT`'s
+existing, shared, multi-consumer hazard gate (`slotHazarded`, WITH
+`hz.all`) blocks it — the exact circularity §20 diagnosed (chain resolution
+needs `hz.all` false to prove the receiver a Map; `hz.all`'s own dominant
+cause needs that proof to clear first) and §21 separately, independently
+confirmed is NOT a narrowing bug to fix: `hz.all` is genuinely load-bearing
+for `slotVT`'s callers (a real soundness boundary, `.work/lattice-design.md`
+§3.3 also affirms this "does not dissolve, and must not, preserved
+exactly"). No amount of PRECISION on the CONSUMER side of this gate (exact
+kind vs. a real Set-valued union) reaches past a gate that is closed for an
+entirely orthogonal, already-audited reason. Confirmed directly: the
+bench-corpus check below shows the SAME zero-effect signature on the
+project's OWN 58-case corpus, not just self.js — this consumer produced
+**zero WAT byte changes anywhere**, default mode, across every case ×
+O0/O2/O3 — the mechanism is real (the isolated repro above proves it fires
+when nothing blocks it) but the precondition (a resolvable, non-`hz.all`-
+gated Map receiver feeding an otherwise-unresolvable local) essentially
+never occurs in either corpus.
+
+**Decision: REVERT the consumer** (`program-facts.js`'s
+`collectCensusExemptLocals` + its `keyedWrite` wiring + the `DBG_HZALL`
+instrumentation), matching §18's and §20's own identical-shape precedent
+exactly ("real per-compile cost... for zero measured benefit... no
+independent corpus/benchmark demonstrating value" — §18's words, reused
+verbatim because the situation is structurally identical a third time).
+Reverted `program-facts.js` to the Slice 7 step 1 commit (`f677092c`) via
+`git show f677092c:… >`, not `checkout` — confirmed empty diff after,
+confirmed no other file touched by step 2 (`git diff --stat HEAD` clean
+before the revert save-point). Step 1 (producer union storage) is UNTOUCHED
+by this revert and stays landed — independently justified by
+deletion+byte-identity alone, per this task's own standing instruction, not
+contingent on step 2's outcome.
+
+**What this closes, precisely, for a future session:** the disjointness
+LOGIC (§18, now re-verified sound a fourth time under a genuinely
+Set-valued opt-in census) is not the blocker and has not been since §20.
+The blocker is, concretely and specifically: `slotHazarded`'s `hz.all` term
+is shared by EVERY `slotVT`/`slotIntCertainAt`/`slotI32CertainAt`/
+`slotTypedCtorAt` caller, landed and audited over many sessions (§9-§21),
+and narrowing it — the ONE lever §20's own "Flip-readiness verdict"
+already named as the concrete next step — has STILL not been attempted,
+three sessions later (§20, this session). It needs its own dedicated
+soundness review across every `slotHazarded` consumer (the SAME
+`chainHazarded`-style argument this project has now used successfully
+twice, extended to cover `slotIntCertain`/`slotI32Certain`'s materially
+different, value-exact risk profile) before it can be pulled — a
+materially larger, separately-scoped feature, not a quick follow-up to any
+consumer-side census work. Slice 7's own remaining acceptance criteria
+(the `JZ_CARRIER_BOX=1` kernel-parity `dict` clean / `test:wasm` /
+flip-readiness battery) are correctly NOT run this session — the task's own
+"IF it collapses" gate — running the expensive battery against a change
+proven not to move the target would be exactly the "force it anyway" this
+project's standing discipline exists to prevent (§18's own words, invoked
+a third time).
+
+**Not attempted this session** (named so a future session doesn't
+re-derive the same scoping question from zero): `collectMapSetReachingDefs`
+(§18/§20's Fix 2, the self-referential `.set()`-writes-back-`.get()`
+syntactic-adjacency recovery) — skipped because the session's own isolated
+verification (above) showed the DOMINANT self.js wall is the
+property-aliased-receiver/`hz.all` gate, not the self-referential-write
+circularity Fix 2 targets; adding Fix 2 without first clearing the `hz.all`
+gate would add a second whole-program walk for a precondition that still
+can't reach self.js's dominant class either way — the SAME "no forced fix,
+no speculative complexity for zero measured benefit" reasoning that sank
+the rest of this consumer, applied preemptively rather than after a second
+failed measurement.
+
+**Gates run:** isolated repro sanity (above) — mechanism verified live.
+`JZ_DEBUG_HZALL` real self.js compile (`JZ_SELFHOST_OPT=0 node
+scripts/selfhost-build.mjs`) — the task's own first gate, per §18/§20's own
+"Gate 1 is the FIRST gate in the ordered list, and it is the one this
+session's fix fails; running the later, far more expensive gates... would
+itself be the force-it-anyway this discipline exists to prevent" — 0
+exemptions, consumer reverted before any further gate. 58-case/174-compile
+bench-corpus byte-identity (both BEFORE reverting, as an independent
+zero-benefit confirmation, and AFTER reverting, as a revert-correctness
+check): 0 diffs both times, and — notably — 0 diffs between the
+WITH-consumer and WITHOUT-consumer trees themselves (the consumer changed
+nothing observable anywhere in this corpus). Post-revert `npm run build`:
+byte-identical to Slice 7 step 1's own recorded hashes (`dist/jz.js`
+`b38a6105…`, `dist/jz.wasm` `4e6cebe6…`, `dist/interop.js` `ef42c9da…`) —
+confirms the revert is bit-for-bit equivalent to step 1's already-gated
+state, not merely textually clean. `test/slot-hazards.js` 22/22,
+`test/dyn-keys.js` 57/57 post-revert sanity.
+
+**Local: nothing new committed for step 2** — written, measured, and
+reverted within this session, matching §18/§20's own "attempted, gated,
+reverted, nothing landed" precedent exactly. This ledger entry + the
+matching `.work/todo.md`/`.work/lattice-design.md` status updates commit
+separately, plain messages, no push.

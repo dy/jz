@@ -1819,3 +1819,117 @@ whole — no partial-revert path exists by construction (the setter sites,
 the 3 composition sites, and `src/kind.js`'s back-compat field all changed
 together). Next: Slice 7 (sticky-null retirement), which depends on both
 6a and 6b having landed, per the design's own ordering.
+
+## AS-LANDED — Slice 7 (2026-08-09, capstone — CAPPED, not the full acceptance)
+
+SHA: `f677092c` (step 1, landed). Step 2 (keyedWrite consumer): implemented,
+measured, REVERTED — nothing committed for it. Full mechanism-level detail
+in `.work/carrier-representation-design.md` §23; this entry is the
+lattice-design-side account.
+
+**Step 1 — producer retirement, exactly per the design's own list
+(`analyze.js` dictValueTypeOf/mapValueTypeOf, `program-facts.js`
+observeDictValue/poisonDictValue + their mapValueTypes siblings).**
+First-wins-then-clash poison-to-null replaced by genuine UNION storage
+(`Set<VAL.*>`): a disagreeing write now widens the set; an unresolved write
+unions in the full `KIND_UNIVERSE` (TOP) instead of a null sentinel — the
+thesis's own existential algebra, finally reaching the LAST poison-on-
+disagreement producer this design named (`dictValueKindOf`/`mapValueKindOf`
+were already exact-or-null CONSUMERS since Slice 1; their producers stayed
+poison-to-null until now). `dictValueKindOf`/`mapValueKindOf` keep
+byte-identical exact-or-null answers via projection (`size===1` → the kind,
+else `null`) — every existing consumer (`censusMaybeUndefinedKind` and its
+13+ downstream call sites) is untouched, proven by the standard gate triad.
+`censusKindsOf` (Slice 1's opt-in projection) now reads the raw union
+directly instead of wrapping a pre-collapsed singleton — the FIRST point in
+this whole campaign where a genuinely heterogeneous dict/map answers a real
+`{NUMBER, STRING}`-shaped set instead of null, closing FINDING-7's root
+cause for this specific field family (the general `possibleKinds`
+sticky-null retirement for `paramReps` itself was ALREADY effectively moot
+per Slice 4a's additive-storage landing — `val` keeps its own untouched
+poison algebra there by design, `possibleKinds` was never poisoned to begin
+with; this step's retirement is the dict/map-value-census family
+specifically, the one family that STILL had a live poison-to-null producer
+after Slices 0-6).
+
+Test fixtures (`test/inference.js`, ~24 white-box sites reading
+`dictValueValType`/`mapValueValType` directly): updated to project the new
+Set-shaped rep field through the SAME exact-or-null rule (`soleKind`
+helper) the public `dictValueKindOf`/`mapValueKindOf` accessors apply —
+same assertions, same intent, new storage shape; this is testing an
+implementation detail that legitimately changed shape, not a behavior
+regression (136/136 pass, unchanged assertion count).
+
+**Step 2 — keyedWrite's receiver-kind exempt test, the FIRST (and, per this
+session's own finding, ONLY) candidate opt-in `censusKindsOf` consumer per
+Slice 4b/7's OQ1-restricted scope.** Implemented per the COORDINATOR
+RULING on OQ1 (Option A: opt-in only, individually gated, alias safety
+reused from `dictValueKindOf`/`mapValueKindOf`'s existing `nameEscapes`
+gate, presence irrelevant per the ruling's own analysis) and per §18's own
+disjointness spec, now re-derivable a fourth time with a REAL Set-valued
+census behind it instead of the old exact-or-null answer. Verified
+mechanically sound and live (an isolated non-self-referential repro flips
+`keyedWrite`→`censusExempt` correctly). **Measured zero effect on the real
+`scripts/self.js` compile** (`JZ_DEBUG_HZALL`: 0 exemptions, both
+generations) **and zero effect on the project's own 58-case bench corpus**
+(0 WAT byte changes anywhere, default mode) — root-caused to the EXACT
+wall `.work/carrier-representation-design.md` §20/§21 already found and
+confirmed unbudgeable: `censusKindsOf`'s underlying `mapValueKindOf` HARD
+gate (`valTypeOf(name)===VAL.MAP`) still routes a property-aliased receiver
+(self.js's own dominant shape, `const slotTypes = ctx.schema.slotTypes`)
+through `slotVT`, which is itself gated by `slotHazarded`'s `hz.all` term —
+the SAME circularity §20 diagnosed and §21 independently confirmed is
+genuinely load-bearing, not a narrowing bug. Slice 7's own union-precision
+work (step 1) cannot reach past a gate closed for an orthogonal,
+already-audited reason — precision on the CONSUMER side was never the
+missing piece past §20. **REVERTED**, matching §18's/§20's own identical
+"real per-compile cost, zero measured benefit, no independent corpus
+evidence" disposition, third time in this exact shape. Nothing lost:
+step 1 (the producer retirement) is independently justified by
+deletion+byte-identity alone and is untouched by this revert, per the
+task's own standing instruction.
+
+**§17 keyedWrite acceptance verdict**: the class does NOT collapse. Per
+the design's own §3.1/§3.3 predictions and the OQ1 ruling's own risk
+framing, this was flagged as the single highest-uncertainty item in the
+whole campaign — this session resolves the uncertainty with a direct
+measurement, not a re-assertion of the design's own (pre-OQ1,
+pre-§20/§21) optimism. The residual is the CORRECT, honest answer: an
+already-audited soundness boundary (`hz.all`'s load-bearing role in
+`slotHazarded`), not a representation gap this campaign's own scope
+(the Fact/censusKindsOf lattice) can close. **§22 acceptance (dict
+O0/O2/O3 clean under `JZ_CARRIER_BOX=1`) is NOT reached this session** —
+the task's own "IF it collapses" gate is the correct reason to stop here;
+the expensive carrier battery (kernel-parity, `test:wasm`, flag-forced
+battery, watr, oracle, fuzz) was correctly NOT run, matching §18/§20's own
+discipline against forcing an expensive gate against a target proven not
+to move.
+
+**Gate results (step 1 only — step 2 has none, zero net code):**
+- Bench-corpus byte-identity: 58-case/174-compile corpus vs. a disposable
+  `git worktree` at pre-slice HEAD (`4a35fdc8`) — **0 diffs**.
+- Full battery: `npm test` — **3408/3416 pass**, 2 pre-existing fails
+  unchanged.
+- `JZ_DEBUG_INVARIANTS=1` battery: **3408/3417 pass**, same 2 + 1 known
+  audit-#12 flake (`declRange restamp` idempotence probe under the perf
+  suite — pre-existing, documented at Slice 4a's own landing).
+- kernel-parity: **33/33** byte-identical.
+- `npm run build` ×2: byte-identical — `dist/jz.js` sha256 `b38a6105…`,
+  `dist/jz.wasm` sha256 `4e6cebe6…`, `dist/interop.js` sha256 `ef42c9da…`
+  (unchanged from every prior slice — this slice never touches interop).
+- Fuzz: `node test/fuzz.js --count=2000 --opt=0,3` seeds 1..2000 AND
+  seeds 2001..4000 (`--seedStart=2001`) — **0 divergence** both runs.
+- Step 2's own gates (isolated repro, `JZ_DEBUG_HZALL` self.js measurement,
+  bench-corpus check before/after revert, post-revert build-hash
+  equivalence to step 1) are recorded in the carrier doc's §23, not
+  repeated here — they gate a change that is no longer present in the
+  tree.
+
+**Verdict: Step 1 GREEN and landed. Step 2 attempted, measured, REVERTED —
+zero deviation from the task's own protocol ("if it does NOT collapse:
+root-cause the residual... keep whatever sub-landings are independently
+justified"). Producer union storage is that independently-justified
+sub-landing. The product-lattice campaign's own §17 keyedWrite acceptance
+criterion is now answered definitively: NOT reached, for a precisely
+identified, already-audited reason (`hz.all`'s load-bearing role in
+`slotHazarded`) outside this campaign's scope to close.**
