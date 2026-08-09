@@ -824,6 +824,39 @@ API (`ALIAS_CLASS_UNIVERSAL`) and the doc pointing at the future points-to
 consumer are kept as-is — collection is to be REINTRODUCED alongside that
 consumer landing, not before. Gates: same sweep as item 5 above, all clean.
 
+**LoopPlan pre-emission mint (audit-#16) LANDED 2026-08-09**: closes the gap
+the audit named — "the plan is still minted inside emit.js" — by moving
+`plan` (id/hull/boundConst) CONSTRUCTION from emit.js's `'for'` handler
+(emission time) to a new `mintLoopPlans` pass in loop-model.js, run PRE-
+EMISSION (from `analyzeFuncForEmit`, once per function, and from
+`emitClosureBody`, once per closure — closures don't route through
+`analyzeFuncForEmit` at all, a real gap caught before landing rather than
+after), keyed by loop BODY node identity (`astLoopPlan`, a new WeakMap —
+`body` chosen over the wrapping statement node because it's the one thing
+common to every one of emit.js's three call shapes for "the same" AST loop:
+plain dispatch, the typed-bounds guard's fast/checked-arm double-emission,
+and `'while'`'s delegation to the `'for'` handler). emit.js now LOOKS UP the
+plan (`astLoopPlan.get(bodyNode0)`) instead of building it; a miss skips the
+link entirely (fail-open, pre-trio spec 2 — unchanged). No optimizer
+consumer wired (unchanged scope) — {plan, lowering} split and the link's
+ir.js home (audit-#15 item 5's ownership correction, directly above) are
+untouched. This is the sequencing the audit asked for explicitly: pre-
+emission AND BindingId-keyed (loop body identity) BEFORE any semantic
+consumer exists, so a future consumer inherits a plan that was never
+emission-order-dependent to begin with. Gates: byte-identity sweep, 57
+bench/* cases (excludes jessie/jz/watr — graph/jzify-wired, out of scope) ×
+O0/O2/O3 = 171 compiles vs a clean-HEAD worktree, 0 diffs (guaranteed by
+construction: `plan` is read only by the JZ_DEBUG_INVARIANTS shadow-assert,
+never by codegen). test/simd.js 158/158, kernel-parity 33/33, full battery
+3409/3411 (same 2 pre-existing fails), JZ_DEBUG_INVARIANTS battery 3410/3413
+(same 2 PLUS one flaky pin — `analyzeValTypes` declRange restamp for
+`cf1_8`, audit-#12 item 2's own idempotence probe — reproduced byte-for-byte
+on a clean HEAD worktree before concluding pre-existing), `npm run build`
+×2 SHA-256 identical, test:self (selfhost.js 21/21; selfhost-perf.js's
+warm-instance pin missed its cap but reproduced near-identically on a clean
+HEAD worktree measured back-to-back — the same machine-contention class
+Slice 3's own gates already banked, not a regression).
+
 ## [ ] Heap-kind registry (was heap-kind-registry-design.md; audit-#13 item 3)
 
 One per-tag authority (`layout-kinds.js`, repo root): 16 kinds × 7 columns

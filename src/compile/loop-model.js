@@ -12,6 +12,9 @@
 import { MUTATE_OPS } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { findMutations } from './analyze-scans.js'
+import { guardCounterName, forCounterRange, intExprRange } from '../static.js'
+import { withRefinements } from './flow-types.js'
+import { freshLoopPlanId } from '../ir.js'
 
 // Fresh id for a loop transform's generated locals (`__lsrx<id>`, `__pks<id>`, …). Backed by
 // a per-compile counter (reset in ctx.reset), NOT a module-global: a module-`let` counter
@@ -141,4 +144,70 @@ export function rewriteBlocks(body, tryStmt) {
     return out
   }
   return walk(body)
+}
+
+// === LoopPlan pre-emission mint (audit-#16: was minted inside emit.js's 'for'
+// handler at emission time; moved here so the frozen HIR half is computed once,
+// where the facts originate, BEFORE any semantic consumer — ir.js's loopPlanLink
+// doc for the {plan, lowering} split and identity/fail-open contract is unchanged;
+// this only moves WHERE/WHEN `plan` is built, not what it means or where the link
+// itself lives) ===
+//
+// Keyed by the loop's own BODY node identity — NOT the wrapping `['for', …]`/
+// `['while', …]` statement node, and NOT the WAT block (that's loopPlanLink's own
+// key, ir.js). Two reasons `body` is the right anchor, both load-bearing in
+// emit.js's 'for' handler: (1) emit.js's typed-bounds guard split
+// (`versionableTypedNest`) re-emits the SAME logical loop twice via
+// `emitter['for'](null, cond, step, body)` — `init` nulled, but `body` passed
+// through unchanged — so keying by `body` naturally gives both the fast and
+// checked arm the SAME plan (correct: it's one AST loop, twice lowered), where
+// keying by the wrapping statement node would need one to be reconstructed and
+// wouldn't exist for this recursive call shape at all. (2) `'while'` delegates
+// to the SAME handler (`emitter['for'](null, cond, null, body)`) — `body` is the
+// only piece common to both loop kinds. emit.js captures this same identity as
+// `bodyNode0` at its handler's own entry, "survives the hoist rebind below" —
+// this WeakMap uses that identical anchor.
+export const astLoopPlan = new WeakMap()
+
+// Walks `body` (a function's, or a closure's OWN body — never descends into a
+// nested `=>`/`function`, which gets its own separate mint call when ITS
+// analyzeFuncForEmit runs) for 'for'/'while' loop statements, in the same
+// structural pre-order emit.js's own dispatch visits them, stacking each loop's
+// OWN counter refinement (withRefinements, matching emit.js's `counterRefs`)
+// before recursing into its body — so a NESTED loop's hull/boundConst proof sees
+// the same enclosing-counter context emission would install live. Not a strict
+// requirement for soundness: forCounterRange/intExprRange (static.js) fold
+// refinements monotonically (intersecting, never widening) — a proof made with
+// LESS context than emission's own can only come out less precise (a null hull/
+// boundConst) or identical, never a DIFFERENT concrete value, so any nesting
+// mismatch here fails open per the pre-trio spec, it does not miscompile.
+// Called once per function/closure, from analyzeFuncForEmit — after that
+// function's own loop-AST-rewrite passes (loop-divmod/loop-square/
+// unrollRecurrence/…, which run before analyze) and after its reps have
+// settled, so this sees the SAME final AST + maximally-settled `repOf` facts
+// emit.js's own (still separately, locally computed — this mint does not
+// replace emit.js's OPERATIONAL counterRange/guardBoundRange, only the
+// PROVENANCE `plan` record fed to loopPlanLink) computation will later see.
+export function mintLoopPlans(body) {
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>' || op === 'function') return   // separate function, separate mint call
+    const L = normalizeLoop(node)
+    if (!L) { for (let i = 0; i < node.length; i++) walk(node[i]); return }
+    const { init, cond, step, body: loopBody } = L
+    const counterName = guardCounterName(cond)
+    const counterRange = counterName ? forCounterRange(init, cond, step, counterName) : null
+    const guardName = Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && typeof cond[1] === 'string' ? cond[1] : null
+    const guardBoundRange = guardName ? intExprRange(cond[2]) : null
+    const boundConst = guardBoundRange && guardBoundRange[0] === guardBoundRange[1] ? guardBoundRange[0] : null
+    if (Array.isArray(loopBody)) astLoopPlan.set(loopBody, Object.freeze({
+      id: freshLoopPlanId(),
+      hull: counterRange ? Object.freeze({ lo: counterRange[0], hi: counterRange[1] }) : null,
+      boundConst,
+    }))
+    const counterRefs = counterRange ? new Map([[counterName, { rlo: counterRange[0], rhi: counterRange[1] }]]) : null
+    withRefinements(counterRefs, loopBody, () => walk(loopBody))
+  }
+  walk(body)
 }

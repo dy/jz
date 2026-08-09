@@ -6,6 +6,84 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## LoopPlan pre-emission mint (audit-#16: the plan was still minted inside emit.js) — landed 2026-08-09
+Per .work/research.md §BodyModel / LoweredLoopPlan. Local only. Moves LoopPlan
+CREATION (id/hull/boundConst — the frozen HIR half) from emit.js's `'for'`
+handler (emission time) to a new pre-emission pass, `mintLoopPlans`
+(src/compile/loop-model.js — the module's own doc already anticipated this:
+"[loopPlanLink] used to live here… It now lives in ir.js… while THIS module
+is AST-level loop primitives, pre-emission"), keyed by the loop's own BODY
+node identity via a new `astLoopPlan` WeakMap. Called once per function from
+`analyzeFuncForEmit` (src/compile/index.js, right before its `return`, after
+every loop-AST-rewrite pass — loop-divmod/loop-square/unrollRecurrence/
+selectArmUpdates/clampPeel — and every `updateRep` call have already run, so
+the walk sees the FINAL AST + maximally-settled reps) and once per closure
+from `emitClosureBody` (closures never route through analyzeFuncForEmit —
+missing this second call site would have silently left every closure-body
+loop unminted; caught before landing, not after). emit.js's `'for'` handler
+now LOOKS UP the plan (`astLoopPlan.get(bodyNode0)` — `bodyNode0`, the
+handler's own existing "identity for assumption owners — survives the hoist
+rebind" capture, already the right anchor) instead of constructing it;
+`loopPlanLink.set` is skipped (fail-open, pre-trio spec 2) on a miss rather
+than fabricating a plan. `freshLoopPlanId` import moved from emit.js to
+loop-model.js with the mint. No optimizer consumer wired (unchanged from
+Slice 4) — {plan, lowering} split and the link's ir.js home are exactly as
+landed, untouched.
+KEYING RATIONALE (not the wrapping `['for',…]`/`['while',…]` statement,
+`body` instead): two emit.js call shapes need the SAME plan without a
+wrapping node to key by — the typed-bounds guard split
+(`versionableTypedNest`) re-emits ONE AST loop twice via
+`emitter['for'](null, cond, step, body)` (fast/checked arms), and `'while'`
+delegates to the same handler via `emitter['for'](null, cond, null, body)`.
+`body` is the one piece common to every path; `cond`/`init` get nulled or
+reused across calls, `body` never does.
+SOUNDNESS OF THE MOVE (why a pre-emission walk that only APPROXIMATES
+emission's own refinement-stacking is still safe, not just convenient):
+`mintLoopPlans` walks each function's body in true nesting order, installing
+each loop's OWN counter refinement (`withRefinements`, mirroring emit.js's
+own `counterRefs` installation) before recursing into nested loops — the
+same stacking discipline emission itself uses. But even if it didn't
+perfectly replicate every OTHER refinement source (an enclosing `if`-branch
+guard, say): `forCounterRange`/`intExprRange` (static.js) fold refinements
+by INTERSECTION only (`if (rf.rlo > lo) lo = rf.rlo`) — strictly monotonic,
+never wrong. A proof made with less context than emission's own can only
+come out less precise (null hull/boundConst) or identical; it cannot claim a
+DIFFERENT concrete value. `assertLoopPlanAgrees` (vectorize.js) already only
+checks agreement when `plan.boundConst != null` — so any precision loss
+fails open into "no check", never a false assert. Confirmed live: the
+JZ_DEBUG_INVARIANTS battery (below) shows zero new failures.
+STOP-SET: the walk halts at `'=>'`/`'function'` — a nested closure gets its
+OWN mint call (from its OWN `emitClosureBody`, with its OWN `ctx.func`/reps
+context), never the outer function's. Descending through would mint with
+the WRONG per-function rep scope for a closure-local name.
+GATES (2026-08-09): byte-identity sweep — 57 bench/* cases (excludes the 3
+graph/jzify-wired special cases: jessie/jz/watr, out of scope, matching
+research.md's own precedent) × O0/O2/O3 = 171 compiles, sha256-hashed,
+working tree vs a clean-HEAD (9a5ee117) throwaway `git worktree` — 0 diffs
+(a metadata-only move: `plan`/`hull`/`boundConst` are read only by the
+JZ_DEBUG_INVARIANTS shadow-assert, never by codegen, so bytes cannot move).
+test/simd.js 158/158 (582 assertions). kernel-parity 33/33 (11×O0/O2/O3).
+Full battery 3409/3411 (same 2 PRE-EXISTING failures as an untouched HEAD —
+interval-walk bounds-check count, typed-RMW guard-count pin — unrelated).
+JZ_DEBUG_INVARIANTS battery: 3410/3413, 3 failures — the SAME 2 pre-existing
+ones PLUS one new-looking one ("perf: biquad cascade… analyzeValTypes:
+declRange restamp for 'cf1_8' diverges…", audit-#12 item 2 idempotence
+probe) that reproduces BYTE-FOR-BYTE IDENTICAL on a clean, unmodified HEAD
+worktree under the same flag — confirmed pre-existing, not a regression,
+before concluding. `npm run build` ×2: dist/jz.js, dist/interop.js,
+dist/jz.wasm SHA-256 identical between both runs. test:self: selfhost.js
+21/21; selfhost-perf.js's fresh-instance pin passes (0.836×, cap 0.99×), its
+warm-instance pin fails (1.099×/1.121×/1.123×, cap 1.03×) — reproduces
+near-identically (1.093×/1.123×/1.126×) on a clean HEAD worktree measured
+back-to-back in the same session, the SAME machine-contention class
+research.md §FeaturePlan freeze Slice 3 already banked (not this task's
+regression).
+Files: src/compile/loop-model.js (new `astLoopPlan` WeakMap + `mintLoopPlans`,
++static.js/flow-types.js/ir.js imports), src/compile/index.js (`mintLoopPlans`
+call sites: end of `analyzeFuncForEmit`, both branches of `emitClosureBody`),
+src/compile/emit.js (`'for'` handler: plan construction → `astLoopPlan.get
+(bodyNode0)` lookup; `freshLoopPlanId` import dropped, `astLoopPlan` added).
+
 ## FeaturePlan whole-graph oracle: differential fixture BANKED, not fixed (audit-#16) — 2026-08-09
 Per audit-#16's explicit prescription: build the cross-MODULE differential
 fixture for the `ctx.features.bigint` ordering hazard (the JSON shaped-

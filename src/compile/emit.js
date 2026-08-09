@@ -63,10 +63,11 @@ import {
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
   extractF64Bits,
-  loopPlanLink, freshLoopPlanId,
+  loopPlanLink,
 } from '../ir.js'
 import { isBoundName } from '../ir.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from './flow-types.js'
+import { astLoopPlan } from './loop-model.js'
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
 
 const stringOps = (node) => {
@@ -6903,21 +6904,21 @@ export const emitter = {
     if (step) loopBody.push(...emitVoid(step))
     loopBody.push(['br', loop])
     const loopBlockNode = ['block', brk, ['loop', loop, ...loopBody]]
-    // HIR provenance link (.work/research.md §BodyModel slice 4): stamp this WAT loop's
-    // originating HIR facts so the vectorizer's dispatch can shadow-assert against them — see
-    // ir.js's loopPlanLink doc for the {plan, lowering} split and the identity/fail-open
-    // contract. Minted for every plain loop lowering, whether or not the vectorizer ever matches
-    // it (cheap: an id plus up to two small facts, no body walk). `plan` is frozen — its facts
-    // are proved HERE, at HIR-lowering time, and must never be touched by a later rename; only
-    // `lowering` (the WAT-side name map) is mutable, kept in sync by freshenUnrolledScalarBindings.
-    loopPlanLink.set(loopBlockNode, {
-      plan: Object.freeze({
-        id: freshLoopPlanId(),
-        hull: counterRange ? Object.freeze({ lo: counterRange[0], hi: counterRange[1] }) : null,
-        boundConst,
-      }),
-      lowering: { ivName: counterName, guardName },
-    })
+    // HIR provenance link (.work/research.md §BodyModel slice 4; audit-#16 pre-
+    // emission move): stamp this WAT loop's originating HIR facts so the vectorizer's
+    // dispatch can shadow-assert against them — see ir.js's loopPlanLink doc for the
+    // {plan, lowering} split and the identity/fail-open contract. `plan` (id/hull/
+    // boundConst) is no longer built HERE — it's minted pre-emission, once per AST
+    // loop, by loop-model.js's mintLoopPlans (called from analyzeFuncForEmit /
+    // emitClosureBody, before any function's body is emitted), keyed by `bodyNode0`
+    // (this loop's OWN body identity — survives both the hoist rebind above and the
+    // typed-bounds guard's fast/checked-arm double-emission of this same AST loop,
+    // see mintLoopPlans' own doc). A miss (pre-trio spec 2: fail-open) means no HIR
+    // facts were minted for this loop — skip the link entirely rather than fabricate
+    // one; `lowering` (the WAT-side name map) stays mutable, kept in sync by
+    // freshenUnrolledScalarBindings.
+    const plan = astLoopPlan.get(bodyNode0)
+    if (plan) loopPlanLink.set(loopBlockNode, { plan, lowering: { ivName: counterName, guardName } })
     result.push(loopBlockNode)
     ctx.func.stack.pop()
     return result.length === 1 ? result[0] : result

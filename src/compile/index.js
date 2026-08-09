@@ -43,6 +43,7 @@ import { VAL, updateRep, REP_FIELDS } from '../reps.js'
 import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
+import { mintLoopPlans } from './loop-model.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
 import { unrollRecurrence, unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
@@ -900,6 +901,14 @@ function analyzeFuncForEmit(func, programFacts) {
     const s0 = rex.length > 0 ? censusBigintSentinelKind(rex[0]) : 0
     func._resultBigintSentinel = s0 > 0 && rex.every(e => censusBigintSentinelKind(e) === s0) ? s0 : 0
   }
+
+  // LoopPlan pre-emission mint (audit-#16, .work/research.md §BodyModel /
+  // LoweredLoopPlan): last, so it sees this function's FINAL AST (every loop-
+  // AST-rewrite pass above has already run) and maximally-settled `repOf`
+  // facts (every updateRep call above has already landed) — the same two
+  // preconditions emit.js's own (separately, locally computed) counter/guard
+  // range facts enjoy today, just at analyze time instead of emit time.
+  mintLoopPlans(body)
 
   return {
     block,
@@ -2047,11 +2056,20 @@ function emitClosureBody(cb) {
     // under self-host (jzify runs as closures there — natively jzify's own
     // function declarations compile through the correctly-ordered top level).
     populateBoxedSets()
+    // LoopPlan pre-emission mint (audit-#16, see analyzeFuncForEmit's own call
+    // for the doc): closures never route through analyzeFuncForEmit (this
+    // function, emitClosureBody, is their own separate analyze+emit path,
+    // compilePendingClosures/emitClosures phase) — mintLoopPlans stops at every
+    // '=>'/'function' boundary specifically so each function's OWN call mints
+    // ITS OWN loops under ITS OWN reps/ctx.func context; skipping this call here
+    // would silently leave every closure-body loop unminted instead.
+    mintLoopPlans(cb.body)
     ctx.func.repsFrozen = true   // FunctionPlan freeze: closure body emission begins
     assertCtxInvariants('pre-emit')
     bodyIR = emitBlockBody(cb.body)
   } else {
     populateBoxedSets()
+    mintLoopPlans(cb.body)   // expression-body arrows can't syntactically contain a loop, but stay uniform with the block branch above
     ctx.func.repsFrozen = true   // FunctionPlan freeze: expression-body emission
     assertCtxInvariants('pre-emit')
     // Closure-body twin of emitFunc's mixedAtomReturn tail: a single-expression
