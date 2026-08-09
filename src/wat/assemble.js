@@ -14,6 +14,7 @@
 
 import parseWat from 'watr/parse'
 import { ctx, inc, resolveIncludes, err, PTR, LAYOUT, HEAP, declGlobal, assertCtxInvariants } from '../ctx.js'
+import { assembleView } from '../session-views.js'
 
 // Stdlib WAT templates are fixed text (or feature-keyed text from a factory) —
 // `parseWat` of the same string always yields the same tree. Parsing is the
@@ -61,7 +62,7 @@ const SSO_BIT_BIG = BigInt(LAYOUT.SSO_BIT)
 
 // memory[HEAP.PTR_ADDR] holds the heap pointer only for shared memory (wasm globals are
 // per-instance — see module/core.js comment). Non-shared memory uses $__heap.
-const heapUsesMem = () => ctx.memory.shared
+const heapUsesMem = () => assembleView().memory.shared
 
 const heapGetIR = () => heapUsesMem()
   ? ['i32.load', ['i32.const', HEAP.PTR_ADDR]]

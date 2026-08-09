@@ -8,6 +8,7 @@
  */
 
 import { ctx, warn, err, DBG_INVARIANTS } from '../ctx.js'
+import { warningsView } from '../session-views.js'
 import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, callArgs, ASSIGN_OPS, extractParams, classifyParam } from '../ast.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from '../ir.js'
 import {
@@ -2740,7 +2741,7 @@ function applyJsstringBoundaryCarrier(paramReps, valueUsed) {
 
 /** Soft warnings when a string param could use the externref carrier but doesn't. */
 export function adviseJsstringCarrier(paramReps, valueUsed) {
-  if (!ctx.warnings || !jsstringEnabled()) return
+  if (!warningsView().warnings || !jsstringEnabled()) return
 
   for (const func of ctx.func.list) {
     if (func.raw || !func.exported || !func.body || func.rest) continue

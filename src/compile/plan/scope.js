@@ -21,6 +21,7 @@
  */
 
 import { ctx, warn, declGlobal } from '../../ctx.js'
+import { warningsView } from '../../session-views.js'
 import { ASSIGN_OPS, T, refsAny, extractParams, classifyParam, collectParamNames } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { typedElemCtor, ternaryCtorOfRhs, MIXED_CTORS, intLevelMap } from '../../type.js'
@@ -737,7 +738,7 @@ export const inferModuleIntGlobals = (ast) => {
     declGlobal(name, 'i32')
     // Advisory only (off unless opts.warnings): the value flows in from a parameter,
     // which may be a fractional Number that the i32 carrier truncates.
-    if (ctx.warnings && fromParam.has(name))
+    if (warningsView().warnings && fromParam.has(name))
       warn('int-global-truncation',
         `module global '${name}' is inferred i32 (integer) but is assigned from a parameter — if it can hold a fractional Number (e.g. DSP/filter state), the fraction is truncated; store fractional state in a Float64Array instead`,
         { fn: fromParam.get(name) })

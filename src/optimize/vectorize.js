@@ -1,5 +1,6 @@
 import { findBodyStart, dollar, loopPlanLink } from '../ir.js'
 import { warn, ctx, DBG_INVARIANTS, registerResetHook } from '../ctx.js'
+import { assembleView } from '../session-views.js'
 import { nodeEqual as exprEq } from '../ast.js'
 
 /**
@@ -7105,7 +7106,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma)
   // SLP within-iteration store pairs. Sound only with no aliasing typed-array view
   // in the module (else a shifted view could reorder-hazard the packed read/write).
-  if (slp && !ctx.linkDemand.typedView) slpStorePairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, slpGetCounts(fn))
+  if (slp && !assembleView().linkDemand.typedView) slpStorePairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, slpGetCounts(fn))
   if (newLocalDeclsAll.length) simdFired = true
 
   // Walk body recursively. Process inner-most matches first (post-order)

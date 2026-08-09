@@ -51,6 +51,7 @@ import watOptimize from "watr/optimize";
 // import, not silently degrade (the pre-5.7.11 optional-property fallback
 // masked exactly that hole).
 import { ctx, reset, err, warn, assertCtxInvariants, setLinkDemand } from './src/ctx.js'
+import { inspectView } from './src/session-views.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import { frontHalf } from './src/front.js'
 import { beginSession, registerSessionResetHook } from './src/session.js'
@@ -631,14 +632,14 @@ const jzCompileInner = (code, opts = {}) => {
   try {
     if (opts.wat) {
       const wat = time('watrPrint', () => watrPrint(optimized))
-      return opts.inspect ? { wat, inspect: ctx.inspect } : wat
+      return opts.inspect ? { wat, inspect: inspectView().inspect } : wat
     }
     const wasm = time('watrCompile', () => watrCompile(optimized))
     let bytes = wasm
     // opts.names emits a wasm `name` custom section (symbols for profilers/
     // debuggers). opts.profile.names is the older spelling — still honored.
     if (opts.names || opts.profile?.names) bytes = appendFunctionNames(bytes, optimized)
-    return opts.inspect ? { wasm: bytes, inspect: ctx.inspect } : bytes
+    return opts.inspect ? { wasm: bytes, inspect: inspectView().inspect } : bytes
   } catch (e) {
     // watr surfaces dangling identifiers as "Unknown local|func|global|table|memory $X".
     // That's always a jz codegen leak — we emitted IR that references something never

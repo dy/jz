@@ -1,4 +1,5 @@
 import { ctx, warn, err } from '../../ctx.js'
+import { warningsView } from '../../session-views.js'
 import { refsName, REFS_IN_EXPR } from '../../ast.js'
 import { intLiteralValue } from '../../static.js'
 import { VAL } from '../../reps.js'
@@ -88,7 +89,7 @@ function exportedFuncNames() {
 
 /** Bump-allocator growth advisories — no-op without an `opts.warnings` sink. */
 function adviseHeapGrowth() {
-  if (!ctx.warnings) return
+  if (!warningsView().warnings) return
   if (ctx.transform.alloc === false) return
 
   const exported = exportedFuncNames()
@@ -180,7 +181,7 @@ function isJsonStringifyCall(node) {
 }
 
 function adviseSetMapIterationOrder() {
-  if (!ctx.warnings) return
+  if (!warningsView().warnings) return
 
   for (const func of ctx.func.list) {
     if (func.raw || !func.body) continue
@@ -274,7 +275,7 @@ function simdLoopIssues(body, iv) {
 }
 
 function adviseSimdLoops() {
-  if (!ctx.warnings) return
+  if (!warningsView().warnings) return
   if (ctx.transform.optimize?.vectorizeLaneLocal === false) return
 
   for (const func of ctx.func.list) {
@@ -318,7 +319,7 @@ function adviseSimdLoops() {
 // module globals: their type is final here (params/locals resolve only at emit). Strict
 // mode, which already rejects dynamic features, escalates this to a hard error.
 function adviseGenericDispatch() {
-  if (!ctx.warnings && !ctx.transform.strict) return
+  if (!warningsView().warnings && !ctx.transform.strict) return
   const globals = ctx.scope.userGlobals
   if (!globals?.size) return
   const isGeneric = (name) => globals.has(name) && !ctx.scope.globalValTypes?.get(name)
