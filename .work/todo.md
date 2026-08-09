@@ -8162,3 +8162,182 @@ THAT older wall instead — three banked hunts becoming one class. The next
 hunt should test this FIRST (recreate the exact cross-module ternary-callee
 shape under re-entrant module-scope emission) before the closure-table
 index tracing.
+
+## AUDIT-#17 x carrier-wall unification hypothesis: FALSIFIED by direct test.
+## NOT AUDIT-#17's mechanism — but a real, separate, NEW correctness bug found
+## and fully root-caused as a byproduct: watr's `devirt` pass (2026-08-09)
+
+Picked up the coordinator note's directive: test the cross-module ternary-
+callee unification hypothesis FIRST, before the closure-table `$closureN`
+tracing fallback. Built a native differential recreation of
+`fieldStoredValue`'s EXACT shape at escalating fidelity, ran it through both
+native and the self-hosted kernel, and DECISIVELY RULED OUT the hypothesis
+— then chased the ONE genuine divergence the recreation did surface (an
+unrelated, previously-undocumented bug) to its exact line.
+
+**Recreation (fidelity a/b/c, all three, escalating).** Three real jz
+modules (coreMock.js / bridgeMock.js / objectMock.js, `{modules:{...}}` over
+`jz()`/`compileViaKernel`) mirroring module/object.js's `{}` handler +
+`fieldStoredValue` + bridge.js's storedValue/storedValueNarrow verbatim: (a)
+plain cross-module imports — a `dispatch['obj']=objHandler`-style generic
+table dispatch (matching `ctx.core.emit['{}']`'s own registration idiom) with
+a FOR LOOP calling `(i%2===0?storedValueA:storedValueB)(values[i])`, where
+storedValueA/B are imported from a separate module and RECURSE back into the
+SAME loop-owning function via the generic dispatch (non-last index, module
+scope, matching the 2-line repro's own shape exactly); (b) + a ternary AT
+THE DEF SITE of each import (`node.safe ? node.val : emitG(node)+1`,
+mirroring bridge.js's `hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node)
+: carrierF64(node, emit(node))`); (c) already inherent in both — the
+recursion happens while evaluating the argument to the ternary-selected
+call, exactly `(cond?A:B)(values[i])`. Each variant run at native O0-O3 AND
+through the kernel (`compileViaKernel`, forwarding the SAME optimize level
+to the input), BOTH at module scope (mirrors buildStartFn) and function
+scope (mirrors emitFunc, the repro's own negative control).
+
+**Result: SOUND at every level/scope that matters.** Native and kernel agree
+byte-for-byte at O0, O1, O2 — module scope AND function scope, both fidelity
+variants — matching the hand-computed expected values (13 and 15) every
+time, in both native execution AND the self-hosted kernel. No throw, no
+wrong value, no scope-sensitivity. This is a DIRECT, decisive negative for
+the hypothesis: the exact shape the coordinator named — ternary dispatch to
+two cross-module-imported functions, called in a loop, recursing back into
+the loop-owning function via a generic dispatch table, at module scope —
+does NOT reproduce AUDIT-#17 at the optimize levels AUDIT-#17 itself fires
+at (confirmed separately: the 2-line repro throws through the kernel at
+EVERY input optimize level 0-3 alike, so "which level" was never the axis).
+
+**The one real divergence found: native AND kernel both give the SAME WRONG
+NUMBER at O3 (not a throw — silent wrong output), scope-independently.**
+Chasing this (it looked promising — O3 is dist/jz.wasm's OWN build level)
+led to a full root-cause, and a decisive rule-out:
+- Shrunk to a single-file, no-cross-module, no-dict-dispatch minimal repro:
+  `const A=(d,v)=>d===0?v[0]:H(d-1,v)+1; const B=(d,v)=>d===0?v[0]:H(d-1,v)+2;
+  const H=(d,v)=>{let s=0; for(let i=0;i<v.length;i++) s=s+(i%2===0?A:B)(d,v);
+  return s}; export const f=()=>H(1,[4,5])` — expect 19, native/kernel both
+  give 18 at O3 (levels 0-2 correct). Needs: the FOR LOOP (two sequential
+  calls instead: correct), the TERNARY call-target dispatch (always-call-A:
+  correct), and the callee RECURSING BACK into the loop-owning function
+  (no-recursion control: correct) — all three together, at O3 only.
+- Per-flag isolation (all 10 level-3-exclusive optimize flags tried
+  individually with `{level:3, flag:false}`): only ONE flag fixes it —
+  `devirtIndirect:false`. (`rotateLoops:false` ALSO happened to fix it on
+  first probe — a red herring correlation, not causation; see below.)
+- WAT-diff (`jz.compile(src,{wat:true,optimize:{level:3,devirtIndirect:
+  false}})` vs `{level:3}`) named the exact mechanism: `optimize.
+  devirtIndirect` (jz's gate, default-on at level 3/'speed', off at level
+  2/'size' — src/optimize/watr-tail.js:44-47 sets watr's own `devirt:true`)
+  activates **watr's `devirt` pass** (node_modules/watr/src/optimize.js,
+  `devirt()` ~line 5655, the call_indirect rewrite loop ~5850-5915). This
+  pass turns a `call_indirect` whose closure/env argument is a `local.tee
+  $clos (select CANDIDATE_A CANDIDATE_B cond)` (≤4 known candidates) into a
+  guard ladder — `if clos==tagA then call $tramp_A else if clos==tagB then
+  call $tramp_B else <original call_indirect>` — hoisting the ORIGINAL
+  call_indirect (env-tee included) into the ladder's own fallback `else`
+  arm. **The guard's own condition reads the closure value via a BARE
+  `local.get $clos` (readBack, optimize.js:5903/5910)** — but `$clos` is
+  only WRITTEN by the `local.tee` that lives INSIDE the call_indirect's own
+  argument list, which the rewrite just relocated into the fallback arm.
+  Within one un-rewritten call_indirect, WASM's left-to-right arg evaluation
+  guarantees the tee runs before the idx read that consumes it — sound. Once
+  split into a guard + fallback, the guard's `local.get` fires FIRST, reading
+  whatever `$clos` held from the PREVIOUS call at this site — the fresh
+  value is only computed inside the branch already chosen. For a call site
+  whose target is INVARIANT across calls (the common case this pass is
+  built for) the stale read is harmless (same value either way). For a call
+  site that ALTERNATES targets across loop iterations (`(i%2===0?A:B)(...)`)
+  it's wrong every OTHER iteration — a genuine stale-read-before-write bug,
+  not a jz-side defect at all.
+- `rotateLoops:false` "fixing" the same repro on first probe was a pass-
+  ORDERING correlation: disabling it apparently changed the loop's shape
+  enough that `devirt`'s own pattern-matcher (`matchSlotOfLocal`/
+  `setsCount`/candidate collection in optimize.js) didn't recognize the
+  call site, not a rotateLoops defect. Reconfirmed clean with
+  `{level:3, devirtIndirect:false}` alone (rotateLoops left at its default
+  true): fixed. `{level:3}` alone (devirt on): still wrong. Isolation is
+  exact, not inferred.
+
+**Decisive rule-out (twice, with the RIGHT flag the second time — the first
+attempt used the red-herring rotateLoops flag and is superseded by this
+one).** Rebuilt a full self-hosted kernel (`jz.compile(self.js graph,
+{memory:8192, optimize:{level:3, watrGuard:false, snapshotInit:true,
+devirtIndirect:false}})`, matching build-dist.mjs's real config minus this
+one flag) — 16451.9 kB (vs the real dist/jz.wasm's 16467.3 kB). AUDIT-#17's
+2-line repro (`let right={required:{d:4},optional:{e:5}}; export let
+f=()=>1`) THROWS IDENTICALLY through this rebuilt kernel at every input
+optimize level 0/2/3 — same error, same `[null,4]` AST dump, byte-for-byte
+the same failure as the real dist/jz.wasm. **VERDICT: the devirt bug and
+AUDIT-#17 are two completely independent defects** — proven by disabling
+the ONLY mechanism this session found to matter and watching AUDIT-#17
+persist unchanged. (An earlier same-session rebuild with `rotateLoops:false`
+instead — before devirt was correctly isolated — showed the identical
+result; both rebuilds are consistent, this entry supersedes that one as the
+rigorous version since rotateLoops was never the real cause.)
+
+**Coordinator's unification hypothesis: NO**, same verdict class as the
+prior session's §24 split — decisive, not by absence of proof. Three banked
+hunts stay three: AUDIT-#17 (self-host-only, module-scope-only, compile-
+time-throw, mechanism still unnamed), the old carrier-invariant/storedValue
+wall (research.md §Carrier invariant, self-host closure-eligibility flip,
+banked closed), and now a FOURTH, unrelated finding — the devirt bug below
+— which is NOT a self-host bug at all (reproduces in plain native execution,
+no self-hosting involved).
+
+**NEW FINDING, worth its own triage (not attempted here — out of this
+hunt's scope, and it lives in a sibling project):** watr's `devirt` pass
+silently returns WRONG NUMBERS for any call site whose closure/dispatch
+target varies across invocations inside a loop, whenever jz's
+`optimize.devirtIndirect` is on — which is the DEFAULT at optimize level 3
+and the 'speed' preset (src/optimize/index.js:161,199) — i.e. this is
+live in the exact config `scripts/build-dist.mjs` uses to build the real
+dist/jz.wasm (line 127) and in anything a jz USER builds with `optimize:
+{level:3}` or `optimize:'speed'`. Silent wrong output, not a throw — higher
+severity than a compile-time gap. `/Users/div/projects/watr` (same author,
+sibling repo, currently at 5.7.12 with an UNRELATED uncommitted WIP in the
+same file — region-arena Slice 1, `let snapshots`/`regionMark`/`regionExit`
+around line 8347-8431, nothing to do with `devirt`) is presumably where a
+fix belongs; `node_modules/watr` in this repo is the vendored copy jz
+actually builds against. NOT fixed or touched this session (neither repo's
+tracked files were modified — confirmed clean via `git -C … status` on
+both). Minimal standalone repro (no jz internals, no self-hosting, single
+file, plain `jz()`):
+```js
+const A = (depth, values) => depth === 0 ? values[0] : H(depth - 1, values) + 1
+const B = (depth, values) => depth === 0 ? values[0] : H(depth - 1, values) + 2
+const H = (depth, values) => {
+  let sum = 0
+  for (let i = 0; i < values.length; i++)
+    sum = sum + (i % 2 === 0 ? A : B)(depth, values)
+  return sum
+}
+export const f = () => H(1, [4, 5])
+```
+`jz(src).exports.f()` → 18 at `optimize:{level:3}` (or `'speed'`), 19
+(correct) at level 0-2 or with `devirtIndirect:false`. Exact culprit:
+node_modules/watr/src/optimize.js `devirt()`'s call_indirect rewrite,
+`readBack` (~line 5903) read via bare `local.get` against a value only
+freshly written by the `local.tee` embedded in the SAME call_indirect's own
+(now-relocated-to-fallback) argument list.
+
+**AUDIT-#17 itself: still unresolved, banked at the SAME wall as before**
+(the split-verdict entry's WAT-diff wall) — this session closes lead (2)
+from the coordinator note (falsified) but did not attempt lead (1)
+(pin the '{}' handler's own `$closureN` in the 216 MB O0 self.js WAT dump
+via `ctx.closure.table.length` instrumented trace at the source site, then
+extract and inspect that function's local allocation around the store-loop
++ recursive-re-entry boundary — the split-verdict entry's own NEXT). That
+remains the concrete next step for a future session; this session's
+contribution is ruling out the cross-module-ternary shape as a shortcut
+past it, cleanly, and flagging the devirt bug for separate triage.
+
+**No fix landed for AUDIT-#17. No jz source file touched** (`git status`/
+`git diff` clean throughout, only the pre-existing untracked
+`.work/todo-original.md`) — no commits, nothing to revert. **Two throwaway
+self-hosted kernel builds this session** (rotateLoops:false and
+devirtIndirect:false variants, both scratchpad-only, neither overwrote the
+real `dist/jz.wasm` — confirmed by mtime/size: the real dist/jz.wasm stayed
+at 16467.3 kB throughout, matching every prior default-build entry in this
+ledger). The 4 test:wasm rows are UNCHANGED (still red) — no regular gate
+suite was run since nothing shipped to gate; this session's own
+verification was the two custom kernel rebuilds' direct repro tests, not
+the standard battery/kernel-parity/kernel-oracle rows (nothing changed that
+those rows would move on). HEAD unchanged at d5ea4312 throughout.
