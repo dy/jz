@@ -74,22 +74,23 @@ export const KIND_REGISTRY = {
 // row has no identityArm, so none is seeded).
 //
 // NOT a single generic WAT-synthesis template: $__eq and $__same_value_zero
-// realize the SAME STRING content-identity fact with two real textual
-// differences (a per-operand NaN re-guard, an interned-vs-interned short-
-// circuit — both present in $__eq, absent in $__same_value_zero). Forcing
-// them identical would be a BEHAVIOR change, which this table's mandate
-// forbids ("moves the source of truth, not the behavior") — so each
-// consumer keeps its own generator function below, hand-authored and
-// guarded (assertContentOrder) rather than synthesized from a shared
-// template, and the divergence is named in layout-kinds-doc.js's FINDINGS
-// (identity-arm-divergence) instead of silently unified. A genuinely
-// table-driven synthesis (loop over CONTENT_IDENTITY_ORDER, emit each arm's
-// text from a per-kind template) was evaluated for this split and rejected:
-// with only two content-identity kinds and two textually-DIFFERENT STRING
-// arms across consumers, any shared-template rewrite changes the generated
-// WAT text by construction — byte-identity with the pre-split generated
-// output wins over a marginal iteration-count reduction from 2 to "a loop
-// of 2".
+// realize the SAME STRING content-identity fact with ONE remaining real
+// textual difference (an interned-vs-interned short-circuit, present in
+// $__eq, absent in $__same_value_zero — pure perf, __str_eq already decides
+// that case correctly on its own). The per-operand NaN re-guard used to be a
+// second difference; audit re-derivation found it load-bearing (not
+// defense-in-depth as originally presumed — a genuine finite f64 whose
+// mantissa aliases the STRING tag reaches __str_eq and OOB-traps without it,
+// reproduced in test/layout-kinds.js) and it now ships in BOTH generators —
+// see sameValueZeroIdentityChain's own comment and layout-kinds-doc.js's
+// FINDINGS[identity-arm-divergence] for the closed writeup. Each consumer
+// still keeps its own generator function below, hand-authored and guarded
+// (assertContentOrder) rather than synthesized from a shared template: with
+// only two content-identity kinds and one remaining textually-different
+// STRING arm across consumers, a shared-template rewrite would change the
+// generated WAT text by construction — byte-identity with the existing
+// generated output wins over a marginal iteration-count reduction from 2 to
+// "a loop of 2".
 // ============================================================================
 
 export const CONTENT_IDENTITY_ORDER = Object.keys(KIND_REGISTRY)
@@ -135,8 +136,17 @@ export function eqIdentityChain() {
 }
 
 /** $__same_value_zero's (module/collection.js) content-identity chain — same
- *  BIGINT arm as eqIdentityChain (byte-identical text), but a SIMPLER STRING
- *  arm: see layout-kinds-doc.js's FINDINGS[identity-arm-divergence]. */
+ *  BIGINT arm as eqIdentityChain (byte-identical text). STRING arm carries the
+ *  SAME per-operand NaN re-guard as eqIdentityChain (audit: FINDINGS[identity-
+ *  arm-divergence] closed — the guard is load-bearing, not defense-in-depth:
+ *  an ordinary finite f64 whose mantissa bits 47-50 alias PTR.STRING can reach
+ *  this arm on a genuine hash collision against a real heap string, and
+ *  without the guard $__str_eq dereferences the number's low 32 bits as a
+ *  string offset — a real OOB trap, reproduced in test/layout-kinds.js).
+ *  Intentionally OMITS eqIdentityChain's interned-vs-interned short-circuit —
+ *  that half of the divergence stays: both operands are already proven real
+ *  STRING pointers past the guard, so skipping it is pure perf (__str_eq
+ *  itself decides interned-vs-interned correctly), not a soundness gap. */
 export function sameValueZeroIdentityChain() {
   assertContentOrder('sameValueZeroIdentityChain')
   return `(if (result i32)
@@ -147,8 +157,8 @@ export function sameValueZeroIdentityChain() {
               (else
             (if (result i32)
               (i32.and
-                (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
-                (i32.eq (local.get $tb) (i32.const ${PTR.STRING})))
+                (i32.and (f64.ne (local.get $fa) (local.get $fa)) (i32.eq (local.get $ta) (i32.const ${PTR.STRING})))
+                (i32.and (f64.ne (local.get $fb) (local.get $fb)) (i32.eq (local.get $tb) (i32.const ${PTR.STRING}))))
               (then (call $__str_eq (local.get $a) (local.get $b)))
               (else (i32.const 0)))))`
 }

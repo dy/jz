@@ -25,7 +25,8 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
+import { instantiate } from '../interop.js'
 import { DBG_INVARIANTS } from '../src/ctx.js'
 import { PTR } from '../layout.js'
 import { KIND_REGISTRY, CONTENT_IDENTITY_ORDER, eqIdentityChain, sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
@@ -240,11 +241,13 @@ test('region-forwarding (BIGINT closed, informational): structuredClone passes a
 //
 // FINDINGS[identity-arm-divergence] (layout-kinds.js): extracting these two
 // eq-style chains verbatim surfaced a genuine, PRE-EXISTING divergence
-// between $__eq and $__same_value_zero's STRING arms (an extra per-operand
-// NaN re-guard and an interned-vs-interned short-circuit, both present only
-// in $__eq) — visible below as the two golden strings NOT sharing a STRING
-// sub-fragment. Not unified here (this slice moves the source of truth, not
-// the behavior); see the FINDINGS entry for the full writeup.
+// between $__eq and $__same_value_zero's STRING arms. Registry Slice 5
+// re-derived it: the per-operand NaN re-guard was load-bearing (proven by
+// the live crash probe below, not just re-read) and now ships in BOTH golden
+// strings; the interned-vs-interned short-circuit is confirmed perf-only and
+// stays $__eq-exclusive — that's the one STRING sub-fragment the two golden
+// strings below still don't share. See the FINDINGS entry for the full
+// writeup.
 // ============================================================================
 
 test('registry: content-identity kinds are BIGINT then STRING, in that order', () => {
@@ -264,7 +267,74 @@ test('golden[eqIdentityChain]: $__eq\'s generated content-identity chain matches
 })
 
 test('golden[sameValueZeroIdentityChain]: $__same_value_zero\'s generated chain matches the captured hand-written text', () => {
-  is(sameValueZeroIdentityChain(), "(if (result i32)\n              (i32.and (i32.eq (local.get $ta) (i32.const 5)) (i32.eq (local.get $tb) (i32.const 5)))\n              (then (i64.eq\n                (i64.load (call $__ptr_offset (local.get $a)))\n                (i64.load (call $__ptr_offset (local.get $b)))))\n              (else\n            (if (result i32)\n              (i32.and\n                (i32.eq (local.get $ta) (i32.const 4))\n                (i32.eq (local.get $tb) (i32.const 4)))\n              (then (call $__str_eq (local.get $a) (local.get $b)))\n              (else (i32.const 0)))))")
+  is(sameValueZeroIdentityChain(), "(if (result i32)\n              (i32.and (i32.eq (local.get $ta) (i32.const 5)) (i32.eq (local.get $tb) (i32.const 5)))\n              (then (i64.eq\n                (i64.load (call $__ptr_offset (local.get $a)))\n                (i64.load (call $__ptr_offset (local.get $b)))))\n              (else\n            (if (result i32)\n              (i32.and\n                (i32.and (f64.ne (local.get $fa) (local.get $fa)) (i32.eq (local.get $ta) (i32.const 4)))\n                (i32.and (f64.ne (local.get $fb) (local.get $fb)) (i32.eq (local.get $tb) (i32.const 4))))\n              (then (call $__str_eq (local.get $a) (local.get $b)))\n              (else (i32.const 0)))))")
+})
+
+// FINDINGS[identity-arm-divergence] live regression: an ordinary finite,
+// self-equal f64 can have ANY 4-bit pattern at mantissa bits 47-50 (the tag
+// field) by sheer construction — including PTR.STRING's tag id (4) — purely
+// by chance. 0x3ff20000ffffffff (≈1.1250009536743162) is one such value:
+// finite (exponent 0x3ff, nowhere near the 0x7ff NaN/Inf reserved range),
+// self-equal, tag-bits-alias-STRING. Before this slice, $__same_value_zero's
+// STRING arm trusted the tag WITHOUT re-verifying the operand was actually
+// NaN-boxed (unlike $__eq, which re-guards each operand with `f64.ne(f,f)`)
+// — so on a genuine $__map_hash collision between such a float and a real
+// heap string, it dereferenced the float's low 32 bits as a string offset
+// via __str_eq and OOB-TRAPPED. Natural full-hash collisions are ~2^-32, far
+// outside what a jz-source fuzz probe could hit — this test reaches the same
+// runtime arm the way the runtime itself would (a genuine LANE hash-word
+// match), by writing the Set's own LANE/entry words directly, exactly as
+// __set_add itself does on an insert. See layout-kinds-doc.js's
+// FINDINGS[identity-arm-divergence] for the full writeup.
+test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-aliasing hash collision (regression pin)', () => {
+  const SET_ENTRY = 16
+  const code = `
+    export let mk = () => {
+      let s = new Set()
+      s.add("this is a genuinely long heap string, not SSO")
+      return s
+    }
+    export let hasQ = (s, n) => s.has(n)
+    export let eqQ = (a, b) => a === b
+  `
+  const { instance } = instantiate(compile(code))
+  const ex = instance.exports
+  const dv = new DataView(ex.memory.buffer)
+
+  const sBits = ex.mk()
+  const off = Number(sBits & 0xFFFFFFFFn)
+  const cap = dv.getInt32(off - 4, true)
+  const laneBase = off + cap * SET_ENTRY
+  let idx0 = -1
+  for (let i = 0; i < cap; i++) if (dv.getInt32(laneBase + i * 4, true) !== 0) { idx0 = i; break }
+  ok(idx0 >= 0, 'the string entry landed somewhere in the table')
+  const entryAddr = off + idx0 * SET_ENTRY
+  const hashWord = dv.getBigInt64(entryAddr, true)
+  const keyBits = dv.getBigInt64(entryAddr + 8, true)
+
+  // 0x3ff20000ffffffff: exponent=0x3ff (finite), mantissa bits 47-50 = 4 (PTR.STRING),
+  // aux bits (32-46) = 0 (no SSO/SLICE/INTERN alias), low 32 bits = 0xffffffff (a wildly
+  // invalid "string offset" if ever dereferenced).
+  const craftedBits = 0x3ff20000ffffffffn
+  ok(craftedBits === craftedBits, 'sanity: this is a real BigInt bit pattern')
+
+  const jzHash = (bits) => {
+    const lo = bits & 0xFFFFFFFFn, hi = (bits >> 32n) & 0xFFFFFFFFn
+    let h = Number((lo ^ hi) & 0xFFFFFFFFn) | 0
+    return (h <= 1 ? h + 2 : h) >>> 0
+  }
+  const hTarget = jzHash(craftedBits)
+  const idxTarget = hTarget & (cap - 1)
+  const targetEntryAddr = off + idxTarget * SET_ENTRY
+  dv.setBigInt64(targetEntryAddr, hashWord, true)
+  dv.setBigInt64(targetEntryAddr + 8, keyBits, true)
+  dv.setInt32(laneBase + idxTarget * 4, hTarget, true)
+  if (idxTarget !== idx0) dv.setInt32(laneBase + idx0 * 4, 0, true)
+
+  // The fixed $__same_value_zero must return false (not crash) — it must reject
+  // the non-NaN-boxed operand exactly like $__eq/$__eq_strict already do.
+  is(ex.hasQ(sBits, craftedBits), 0n, '$__same_value_zero: no false-positive AND no OOB trap on the forced collision')
+  is(ex.eqQ(craftedBits, keyBits), 9221120254220959744n, '$__eq agrees (false), unaffected — sanity cross-check')
 })
 
 test('golden[mapHashStringArm]: $__map_hash\'s generated STRING arm matches the captured hand-written text', () => {

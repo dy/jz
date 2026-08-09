@@ -80,7 +80,7 @@ const PROSE = {
       '(3) SLICE (aux SLICE_BIT set) — a view: length in aux[12:0], bytes alias a PARENT string\'s storage, no owned block.',
     childPointers: 'none (leaf bytes) for all three shapes',
     forwarding: 'never relocates (module/string.js invariant, not in FORWARDING_MASK) — SLICE is out of __region_copy_rec\'s scope (unreachable trap; the parent it aliases may relocate, which would leave a dangling view — Slice-1 region program never produces slices, so this is dormant, not exercised)',
-    identityNote: 'CONTENT identity — the one kind $__eq/$__eq_strict/$__same_value_zero special-case: bit-equal ⇒ trivially equal (SSO and canonical-interned strings), bit-different NaN-boxed STRING pair ⇒ __str_eq byte compare (skipped only when BOTH sides are STR_INTERN_BIT-marked, since two distinct canonicals can never be content-equal)',
+    identityNote: 'CONTENT identity — the one kind $__eq/$__eq_strict/$__same_value_zero special-case: bit-equal ⇒ trivially equal (SSO and canonical-interned strings), bit-different NaN-boxed STRING pair ⇒ __str_eq byte compare (skipped only when BOTH sides are STR_INTERN_BIT-marked, since two distinct canonicals can never be content-equal — $__eq only). Both consumers now re-verify EACH operand is an actual NaN bit-pattern (f64.ne(f,f)) before trusting its extracted tag as STRING — see FINDINGS[identity-arm-divergence] for why $__same_value_zero\'s copy of this guard is load-bearing, not redundant',
     interopDecode: 'mem.read t===4: SSO_BIT → decodeSSO (7-bit-per-char unpack); else TEXT_DEC.decode over [off, off+len) read from the -4 header',
     typeofArm: '"string" — $__typeof\'s stringTest arm ($__ptr_type(v) === PTR.STRING)',
     findings: ['identity-arm-divergence'],
@@ -285,30 +285,41 @@ export const FINDINGS = [
   {
     id: 'identity-arm-divergence',
     kinds: ['STRING'],
+    status: 'RESOLVED (registry Slice 5 — NaN re-guard was load-bearing, added to $__same_value_zero)',
     summary:
       'Heap-kind registry Slice 3 (identity-dispatch arm generation, layout-kinds.js) found this while extracting ' +
-      '$__eq\'s and $__same_value_zero\'s STRING content-identity arms verbatim: the two consumers realize the ' +
-      'SAME registry fact (STRING = content identity via __str_eq) with two real textual differences. (1) $__eq ' +
-      'guards EACH operand with `(f64.ne $fX $fX) && (tag===STRING)` before dispatching; $__same_value_zero ' +
-      'checks only `tag===STRING`, with no re-verification that the operand is actually NaN-boxed (relies on ' +
-      'the STRING tag bits being unreachable outside the NaN-payload space for a genuine finite number — ' +
-      'presumed sound today, not independently re-derived here, so a narrower guard than $__eq\'s own comment ' +
-      'says is needed to rule out "deref garbage"). (2) $__eq additionally short-circuits when BOTH operands ' +
-      'are STR_INTERN_BIT-marked (bit-different canonicals can never be content-equal, skips the __str_eq ' +
-      'call); $__same_value_zero has no such short-circuit — it always calls __str_eq, even for two distinct ' +
-      'canonical interned strings, a missed instance of the same optimization $__eq already applies. NOT fixed ' +
-      'by this slice (its mandate: move the source of truth, not the behavior) — each consumer keeps its own ' +
-      'generator function (eqIdentityChain / sameValueZeroIdentityChain, layout-kinds.js) preserving its own ' +
-      'history byte-for-byte; unifying them is a real, available follow-up, left to a future slice that can ' +
-      're-derive whether $__eq\'s extra guard is load-bearing before either narrowing it or widening ' +
-      '$__same_value_zero.',
+      '$__eq\'s and $__same_value_zero\'s STRING content-identity arms verbatim: the two consumers realized the ' +
+      'SAME registry fact (STRING = content identity via __str_eq) with two real textual differences, left open ' +
+      'pending re-derivation of whether either was load-bearing. Registry Slice 5 did that re-derivation: ' +
+      '(1) $__eq guards EACH operand with `(f64.ne $fX $fX) && (tag===STRING)` before dispatching; ' +
+      '$__same_value_zero checked only `tag===STRING` — PROVEN UNSOUND, not merely narrower defense-in-depth: ' +
+      'an ordinary finite f64 (self-equal, exponent far from the NaN/Inf reserved range) can have ANY 4-bit ' +
+      'pattern at mantissa bits 47-50 by construction (e.g. 1.1250009536743162, bits 0x3ff20000ffffffff), ' +
+      'including PTR.STRING\'s tag id 4, purely by chance (~1-in-16 finite doubles). Live probe: build a Set, ' +
+      'add a real non-SSO heap string, hand-craft such a float, force a FULL __map_hash collision between them ' +
+      '(direct LANE/entry memory writes — natural collision odds are ~2^-32, not something jz source alone can ' +
+      'hit, but the same LANE word the runtime writes and reads is reachable via any hash collision, so this is ' +
+      'a genuine reachable-shape proof, not a fabricated input) — $__same_value_zero then dereferences the ' +
+      'crafted number\'s low 32 bits as a string offset via __str_eq and TRAPS ("memory access out of bounds"). ' +
+      '$__eq/$__eq_strict on the IDENTICAL bit pattern correctly short-circuits to false (its per-operand guard ' +
+      'rejects the non-NaN operand before ever calling __str_eq) — no crash. Fixed: sameValueZeroIdentityChain ' +
+      '(layout-kinds.js) now carries the identical per-operand `(f64.ne $fX $fX) && (tag===STRING)` guard as ' +
+      'eqIdentityChain, verbatim. (2) $__eq additionally short-circuits when BOTH operands are STR_INTERN_BIT-' +
+      'marked (bit-different canonicals can never be content-equal, skips the __str_eq call); $__same_value_zero ' +
+      'still has no such short-circuit. Re-derived and CONFIRMED benign: both operands are already proven real ' +
+      'STRING pointers by the (now-shared) guard before this point, and __str_eq itself decides the interned-' +
+      'vs-interned case correctly on its own (bit-different ⇒ its own canonical-interned fast-return) — this ' +
+      'is pure perf, not left open pending anything further. The two generators (eqIdentityChain / ' +
+      'sameValueZeroIdentityChain, layout-kinds.js) still stay separate hand-authored functions, per this ' +
+      'table\'s "move the source of truth, not force byte-identical behavior" mandate — they are now behavior-' +
+      'equivalent on every reachable input, textually different only in the one remaining perf-only skip.',
     consumers: [
-      'module/core.js $__eq (extra NaN re-guard + interned short-circuit)',
-      'module/collection.js $__same_value_zero (neither)',
+      'module/core.js $__eq (NaN re-guard [now shared] + interned short-circuit [still $__eq-only, perf-only])',
+      'module/collection.js $__same_value_zero (NaN re-guard added Slice 5; no interned short-circuit, by design)',
     ],
-    probe: 'code-read only: both arms are exercised by test/layout-kinds.js\'s existing Set/Map-keying and ' +
-      '=== probes, which pass under EITHER shape (the divergence is a latent perf/defense-in-depth gap, not ' +
-      'an observable behavior difference under any input reachable from jz source today) — see the byte-' +
-      'identity proof for the exact textual diff instead.',
+    probe: 'test/layout-kinds.js: "identity-arm-divergence: $__same_value_zero traps without the per-operand ' +
+      'NaN re-guard (regression pin)" — crafts the exact 0x3ff20000ffffffff float, forces the LANE-word ' +
+      'collision, and asserts $__eq_strict stays false/safe while $__same_value_zero (pre-fix) would have ' +
+      'trapped; post-fix asserts both paths agree.',
   },
 ]
