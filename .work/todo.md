@@ -7211,3 +7211,52 @@ identical... no consumer behavior change") is exactly what landed. Both
 slices GREEN, no deviation requiring a coordinator re-ruling. Next: Slice 4
 (`paramReps.val` → `ParamFacts.possibleKinds`, gated on OQ1's Option-A
 opt-in restriction for Slice 4b).
+
+## PRODUCT-LATTICE Slice 4a LANDED, Slice 4b ZERO-CONSUMERS (2026-08-08)
+Slice 4a (`3947fef2`): `paramReps.val` gains `possibleKinds`, its existential
+twin — `mergeRule`'s new `trackKind` flag (set only on the two `val`
+producer sites: the soft fixpoint sweep + the hard settle sweep) unions
+every per-site kind observation into a `possibleKinds` Set via `joinKinds`,
+computed UNCONDITIONALLY even once `val` has gone sticky-TOP (the whole
+point — possibleKinds keeps the kinds val's poison discards). `val`'s own
+meet/sticky-null algebra is untouched — same `mergeParamFact` call, same
+`r[field]===null` early-return, at the same positions. The two
+typed-clone override sites (`specializeBimorphicTyped`,
+`speculateTypedParams`) also feed `possibleKinds` explicitly, since one of
+them (`speculateTypedParams`) can force `val=TYPED` on a rep whose
+`possibleKinds` wouldn't otherwise contain it (a genuinely-poisoned source
+promoted via stronger evidence than `inferValAtSite`) — without this, the
+new DBG-only `assertValKindConsistent` invariant (val, when resolved, is
+always ∈ possibleKinds) would be violable for real, not just theoretically.
+Design-text note: the design's literal 4a spec described a compatibility
+SHIM (`val`'s storage replaced, exact-kind callers read
+`possibleKinds.size===1 ? … : null`); this session's coordinating brief
+specified the stricter/safer additive form instead (`val` keeps its own
+untouched storage, `possibleKinds` stored alongside) — resolved the same way
+as Slices 1/3's brief-supersedes-literal-design-text precedent, full
+reconciliation in `.work/lattice-design.md`'s AS-LANDED — Slice 4a section.
+Slice 4b: **zero consumers landed**, per the task's own explicit "legitimate
+outcome." The design's only two named 4b candidates (`arr`'s `isDisjointFrom`
+in `keyedWrite`, `mapValueKindOf`'s receiver-alias gate for §18) are EXCLUDED
+by the COORDINATOR RULING on OQ1 — they are the exact census-derived-union
+shape the ruling restricted to the opt-in `censusKindsOf` projection, not
+`paramReps.possibleKinds`/general `isDisjointFrom`; no other consumer for
+paramReps' own `possibleKinds` is named anywhere in the design, so nothing
+else qualifies to land this session. Full exclusion-list rationale in
+`.work/lattice-design.md`'s AS-LANDED — Slice 4b section.
+GATES (Slice 4a; 4b has none — zero code): byte-identity — 59 compilable
+`bench/*/*.js` cases (the `jz` self-referential case fails to compile on
+BOTH sides, pre-existing) × O0/O2/O3 = 177 compiles vs. a disposable `git
+worktree` at pre-slice HEAD (`b5673050`), 0 diffs · full battery `npm test`
+3407/3415 pass (2 pre-existing fails, unchanged) · `JZ_DEBUG_INVARIANTS=1`
+battery 3407/3416 pass (the same 2 + one already-known audit-#12 flake,
+unrelated), **zero** `possibleKinds/val consistency` assert fires · kernel-
+parity 33/33 byte-identical · fuzz `node test/fuzz.js --count=2000 --opt=0,3`
+seeds 1..2000 AND seeds 2001..4000 (`--seedStart=2001`) — 0 divergence both
+runs · `npm run build` ×2 byte-identical (dist/jz.js sha256 `4f8cda07…`,
+dist/jz.wasm sha256 `36fb5b09…`, dist/interop.js sha256 `ef42c9da…`
+unchanged — this slice never touches interop.js). GREEN, one design-text-vs-
+coordinating-brief reconciliation (additive storage instead of the literal
+shim), no coordinator re-ruling required. Next: Slice 5 (FINDING-7
+`!==`/`===` sites) or Slice 6 (`SlotFact` unification), per the design's
+ordering.

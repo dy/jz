@@ -1279,3 +1279,171 @@ same underlying facts... no consumer behavior change") already matches what
 not a migration. Flagged in full so the coordinator can override this
 reading if a later slice (Slice 4+, once `val`'s own lattice changes) turns
 out to need the 13+ call sites individually touched after all.
+
+## AS-LANDED — Slice 4a (2026-08-08)
+
+SHA: `3947fef2`.
+
+**What shipped vs the design's literal 4a text.** Design text: "mergeParamFact's
+disagreement branch flips to union... A compatibility SHIM keeps every existing
+exact-kind caller byte-identical: `valTypeOf`-shaped callers read
+`possibleKinds.size===1 ? [...possibleKinds][0] : null`." Read literally this
+replaces `val`'s own storage with a shim computed FROM `possibleKinds`. The
+coordinating brief for this session specified a narrower, safer form instead —
+"`val`'s existing meet/sticky-null behavior stays BIT-IDENTICAL this slice...
+`possibleKinds` ... stored ALONGSIDE (not replacing) `val`" — no shim, `val`
+keeps its own independent storage and algebra untouched, `possibleKinds` is
+purely additive. This is a stricter reading of the same acceptance criterion
+("byte-identical... nothing downstream can tell the difference yet," design §5)
+reached without the shim's own flagged cost (risk register item 3: "new code on
+a hot path... needs a perf regression check the byte-identity gate alone won't
+catch") — the additive form makes byte-identity trivially, structurally true
+for `val` (it is never read through a derived path) rather than provably true
+of a new indirection. Matches the Slice 1/Slice 3 precedent of the
+coordinating brief's own narrower framing superseding the design's literal
+mechanism where the two diverge; not a spec conflict requiring a STOP.
+
+**Producer sites (the design's "same observation sites that feed val's meet").**
+Exhaustive grep-verified enumeration of every `paramReps` `.val` write in
+`narrow.js` (four hits total; a fifth, `p.val = r.val` at the sig.params
+stamp, line ~2536, writes a *different* object — `func.sig.params[k]`, not the
+paramReps rep — and was left untouched, out of scope):
+1. `mergeRule('val', inferValAtSite, true)` (line ~1780, inside `fixpointRules`,
+   the SOFT sweep run to convergence by `runFixpointConverged`'s worklist).
+2. `mergeRule('val', inferValAtSite)` (line ~2280, the ONE-SHOT HARD settle
+   sweep after every producer — results, typedCtor, enrichment — has run).
+3. `specializeBimorphicTyped`'s clone-rep override, `r.val = VAL.TYPED`
+   (line ~3000) — gated on `r.val === VAL.TYPED` already holding on the SOURCE
+   rep (`specializeBimorphicTyped`'s own bimorphic-position filter,
+   `r.val !== VAL.TYPED || r.typedCtor !== null` → skip), so the source rep's
+   `possibleKinds` (inherited via `{...r}` spread into `cloneReps`) already
+   contains `VAL.TYPED` before this line runs — the explicit `joinKinds` here
+   is defensive redundancy, not a new fact, kept anyway so the invariant does
+   not depend on a different function's filter staying aligned with this one.
+4. `speculateTypedParams`'s clone-rep override, `r.val = VAL.TYPED`
+   (line ~3386) — NOT similarly gated (its candidate filter accepts `r.val ===
+   null`, i.e. a genuinely-poisoned source, promoted here via a STRONGER,
+   independent inference — `inferTypedCtor`/`evidenceOfArg` — than
+   `inferValAtSite` ever ran). Here the explicit `joinKinds(r, 'possibleKinds',
+   [VAL.TYPED])` is load-bearing: without it, a poisoned source rep's
+   `possibleKinds` could lack `VAL.TYPED` even though the clone's `val` is
+   forcibly set to it, which would violate the consistency invariant for real.
+
+`mergeRule`'s `trackKind` flag (new 4th parameter, default `false`, `true` only
+at sites 1-2) computes the per-site kind once and feeds BOTH channels: `val`
+through the unchanged `mergeParamFact` call at the unchanged
+`r[field]===null` guard position, `possibleKinds` through `joinKinds`
+UNCONDITIONALLY (even once `val` has already gone sticky-TOP) — this is the
+one deliberate behavioral divergence from "identical code path," and it is
+required: `possibleKinds`'s entire reason to exist is retaining the kinds
+`val`'s poison discards, so gating it behind `val`'s own early-return would
+make it degenerate to mirroring `val` (empty or singleton, never the
+`{NUMBER,STRING}`-shaped answer §3.2 describes). Non-`val` `mergeRule` fields
+(`schemaId`) pass `trackKind=false` and are byte-identical to pre-slice code
+— `infer` is called from the exact same branch, same count, same order.
+
+**Consistency invariant.** `assertValKindConsistent(paramReps)`
+(module-scope, DBG-only) throws unless every resolved `r.val` is a member of
+`r.possibleKinds`, called after each of the three functions that can still
+write `.val` post-`narrowSignatures` returns: end of `narrowSignatures`
+itself, end of `specializeBimorphicTyped`, end of `speculateTypedParams`.
+Zero fires across the full `JZ_DEBUG_INVARIANTS=1` battery (below).
+
+**OQ1 ruling compliance.** Not yet applicable in the restrictive sense —
+`paramReps.possibleKinds` here is populated from per-call-site argument-kind
+inference (`inferValAtSite`), the SAME producer `val` already used, not from
+a census/`.get()`-sourced claim (the specific pattern OQ1's verdict examined
+and restricted). No consumer reads `possibleKinds` yet at all (see Slice 4b
+below), so the opt-in restriction has nothing to gate this slice — flagged
+so a later slice doesn't assume paramReps' `possibleKinds` is pre-cleared for
+general consumption; it is exactly as unconsumed as the design intends for a
+storage-only slice.
+
+**OQ3 (shared numeric/rep observation pass, FINDING-10) — not applicable
+here.** OQ3's adopt-if-free opportunity targets `numeric`/`rep`'s
+observation TIMING (unifying two separately-timed passes so the P-carrier
+invariant becomes structural). Slice 4a touches neither field — it is a
+`possibleKinds`/`val` change only — so there is no shared-pass opportunity
+to take or skip in this slice; noted per the task's instruction to record
+why, not silently passed over.
+
+**Gate results:**
+- Byte-identity: 59 compilable cases (all `bench/*/*.js` entries except `jz`,
+  a self-referential compiler-graph source that fails to compile on BOTH the
+  current tree and the baseline worktree — pre-existing, unrelated) × O0/O2/O3
+  = 177 compiles, against a disposable `git worktree` at pre-slice HEAD
+  (`b5673050`) — **0 diffs**.
+- Full battery: `npm test` — **3407/3415 pass**, same 2 pre-existing fails as
+  Slices 0-3 ("interval walk...", "typed RMW..."), no new failures.
+- `JZ_DEBUG_INVARIANTS=1` battery (exercises `assertValKindConsistent` on
+  every paramReps entry across the whole corpus): **3407/3416 pass**, 3 fails
+  — the same 2 pre-existing ones plus one already-known flake under this flag
+  (`analyzeValTypes: declRange restamp for 'cf1_8' diverges`, audit-#12 item 2's
+  own idempotence probe, unrelated to param-reps/narrow.js) — **zero**
+  occurrences of `possibleKinds/val consistency` in the failure list; the new
+  assert never fired.
+- kernel-parity: **33/33** byte-identical.
+- `npm run build` ×2: byte-identical — `dist/jz.js` sha256
+  `4f8cda078b8c64811463e438281ea2554f9360e5c00073b644c597fe1d5e0e42`,
+  `dist/jz.wasm` sha256
+  `36fb5b0997c7f659fca5d3d22b680fb80517aef630d624aebdfaa469dc6d2e63`,
+  `dist/interop.js` sha256
+  `ef42c9da1ab79349a5ab69d55558082de4b3d228850b87a9a188b6722ef730e1`
+  (identical to every prior slice's interop.js hash — this slice never
+  touches interop either).
+- Fuzz: `node test/fuzz.js --count=2000 --opt=0,3` (seeds 1..2000, 30173
+  numeric comparisons, 9827 skipped i32-contract-exceeded) and
+  `--seedStart=2001` (seeds 2001..4000, 30672 comparisons, 9328 skipped) —
+  **0 divergence** both runs.
+
+**Verdict: GREEN.** One design-text-vs-coordinating-brief reconciliation
+(the shim-vs-additive-storage divergence above), resolved the same way as
+Slices 1/3 — the brief's narrower, explicit framing for THIS session
+supersedes the design doc's literal mechanism, banked in full for the
+coordinator to override if a later slice needs the shim's actual
+`possibleKinds.size===1` behavior for some consumer the additive form
+doesn't serve.
+
+## AS-LANDED — Slice 4b (2026-08-08)
+
+No code landed — **zero consumers**, a legitimate outcome the task's own
+brief names explicitly ("It is a legitimate outcome for 4b to land ZERO
+consumers this session").
+
+**Exclusion list.** The design's own Slice 4b text (§5, pre-amendment) names
+exactly two consumers, both "starting with" — no others are named anywhere
+in the design for `possibleKinds`-shaped consumption: (1) `arr`'s
+`isDisjointFrom` check in `keyedWrite` (§3.1's `Map.get()`-promotion
+mechanism), (2) `mapValueKindOf`'s receiver-alias gate for §18. Both are
+EXCLUDED by the COORDINATOR RULING on OQ1: these are the EXACT two mechanisms
+the OQ1 verdict traced concretely and found unsound-as-specified — a
+census-derived kind union (`arr.possibleKinds ∪= elementKinds(mapKey) ∪
+{presence-implied-undefined}`) written into the SAME general `possibleKinds`
+field that `isDisjointFrom`/`kindsOf`/`isExactly`/`cannotBe` expose to every
+consumer, with no structural requirement that a codegen-affecting caller also
+consult `presence` — reproducing the exact opt-out-consumer-exposure shape
+that killed `1db8e55e`/`7288b69b`/`098014a5` (the three-revert history OQ1's
+verdict re-examined). The ruling's Option A requires census-derived kind
+unions to live behind a separate opt-in projection (`censusKindsOf`, already
+landed Slice 1) — `keyedWrite`'s `arr` check and `mapValueKindOf`'s
+receiver-alias gate would need to consume `censusKindsOf` (and explicitly
+conjoin `!mayBeUndefined`), not `paramReps.possibleKinds`/general
+`isDisjointFrom`, to land at all — a DIFFERENT, not-yet-attempted mechanism,
+correctly deferred to Slice 7 per the design's own file list ("plus whatever
+`Map.get()`-promotion wiring §3.1 needs in `program-facts.js`").
+
+**Why no other 4b candidate exists for THIS slice's producer.** Slice 4a's
+`possibleKinds` is populated for `paramReps` (per-parameter call-site kind
+observations) — a different producer from the `arr`/`mapValueKindOf`
+receiver-kind mechanism §3.1/OQ1 examined. No consumer anywhere in the design
+text reads `paramReps.possibleKinds` specifically; the two named 4b
+candidates were never about params at all. Since the design names no
+opt-in-safe consumer for paramReps' own `possibleKinds`, and the ruling
+forbids inventing a general-dispatch consumer ad hoc, the correct, minimal,
+ruling-compliant landing for this slice is zero consumers — precision banked
+for a future slice that names one explicitly, with its own gate.
+
+**Verdict: GREEN by construction** — no code, no risk, no gate beyond what
+Slice 4a already ran. Next: Slice 5 (FINDING-7 `!==`/`===` sites) or Slice 6
+(`SlotFact` unification), per the design's ordering — both independent of
+Slice 4b landing zero consumers here.
