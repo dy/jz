@@ -8149,3 +8149,16 @@ own — §24 stays a SEPARATE hunt per the split verdict above):
    the same file) as the 4th differential probe — the one structural
    difference between this session's 3 ruled-out probes and the real
    `fieldStoredValue` not yet isolated and tested.
+
+## COORDINATOR NOTE on the AUDIT-#17 leads (2026-08-09)
+Lead (2)'s shape — fieldStoredValue = a TERNARY dispatching between two
+cross-module-imported functions (storedValue/storedValueNarrow, bridge.js) —
+matches the research.md §Carrier invariant banked wall verbatim: "native
+miscompiles ITS OWN compilation of `x ? A(y) : B(y)`-shaped storedValue at
+this exact position in emitDecl" (the export-loss residue, resolveCallee
+red-herring falsified, self-host generational-drift class). If the '{}'
+handler's re-entrant loop dies on the SAME shape, AUDIT-#17 may unify with
+THAT older wall instead — three banked hunts becoming one class. The next
+hunt should test this FIRST (recreate the exact cross-module ternary-callee
+shape under re-entrant module-scope emission) before the closure-table
+index tracing.
