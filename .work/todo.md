@@ -7729,6 +7729,62 @@ spread ×2, through-function object, ternary/Map schema-poison — "expected
 emitted IR value ... got empty value"), order-dependent (pass isolated/at
 174e145d), regressed in the session/reset window — bisect+fix agent RUNNING;
 test:wasm added to every session/lattice slice gate going forward.
+
+CORRECTION (2026-08-09, bisect agent): the "order-dependent, regressed in the
+session/reset window" premise above does NOT hold — disproven by direct
+reproduction, not re-asserted. All 4 failures reproduce byte-identically
+(same error text, same `ctx.error.node` AST dump) in THREE independently
+isolating conditions at HEAD: the full test:wasm suite, `node test/index.js
+spread objects` alone, and a from-scratch one-file script that imports
+index.js + test/kernel-target.js and runs a SINGLE compile through a fresh
+dist/jz.wasm instance — no other compile before it in the process. That
+rules out order-dependence and any cross-compile state leak: kernel-
+target.js already hands every kernel compile a brand-new WebAssembly.Instance
+(fresh globals + fresh linear memory, `getSelfModule()` only caches the
+immutable compiled Module), and self.js's own entry points
+(compileSelf/compileWat/compileWarnings) call `beginSession()` → `reset()`
+at the top of every call regardless. Bisection: built dist/jz.wasm from a
+disposable worktree at 174e145d (the window's own start point, native
+`npm run build`, no bootstrap chain) and re-ran the same 3 repros — ALL 4
+tests fail identically, same error text, same AST dump, already at 174e145d.
+The 4 failing tests are old (`test/objects.js`'s two cases date to
+40fa6e6c/fef60c03; `test/spread.js`'s nested-schema case to a9adaa0f — none
+inside or near the 174e145d..HEAD window), so this is a pre-existing self-
+host-only miscompile in the nested-object/spread schema machinery
+(`asF64()` in src/ir.js receiving a null IR node — the producer lives in the
+program-facts/schema territory, not in this bisection's assigned files),
+never caught before because slices (a)/(b)/(c)'s own gates ran kernel-
+parity/kernel-oracle/selfhost.js under JZ_DEBUG_INVARIANTS, not the full
+test:wasm suite — hence "added to every slice gate going forward" above,
+which is what actually surfaced it, not a regression those slices caused.
+Reviewed the assigned suspects (src/ctx.js, src/session.js,
+src/prepare/index.js, module/regex.js, src/optimize/vectorize.js,
+index.js) line-by-line against this window: 2cd19e6c's ctx.js change
+(setLinkDemand's `_preAssemble` tripwire) is JZ_DEBUG_INVARIANTS-gated and
+test:wasm runs without that flag, so it's a no-op here; 1c6891e3's
+vectorize.js/index.js changes swap a direct `ctx.linkDemand`/`ctx.inspect`
+read for `assembleView()`/`inspectView()` — both built via ctx.js's existing
+`derive()` (`Object.assign(Object.create(null), parent)`), a SHALLOW copy
+that carries the same live object references forward, so the read is
+behaviorally identical; 7ed9b1ce's prepare/index.js hook is provably inert
+because prepare()'s own direct `resetPrepState()` call at its entry is
+UNCHANGED and still runs unconditionally on every call (the hook only adds a
+second, earlier, idempotent call from inside `reset()`); its module/regex.js
+hook is likewise redundant — `parseRegex()` keeps its own unchanged inline
+reset at entry. None of the four registered RESET_HOOKS callbacks are new
+*sources* of behavior beyond "reset already-idempotent module state a little
+earlier or a second time" — nothing in the window's diff reads or writes the
+object/spread schema state these 4 tests exercise. Root cause NOT chased
+further into program-facts.js/module/core.js/module/schema.js — explicitly
+out of this agent's scope (a concurrent session owns those files). No fix
+landed in ctx.js/session.js/prepare/index.js/regex.js/vectorize.js/index.js:
+there is nothing wrong in them to fix, and patching there would be a
+symptom-shaped change against a disproven hypothesis, not a root-cause fix.
+RECOMMENDATION: re-open as a plain (non-order-dependent, non-regression)
+self-host miscompile in nested OBJECT-literal/spread schema inference,
+owned by whoever holds program-facts.js/module/core.js/module/schema.js;
+the minimal standalone repro (one compile, no suite) is the fastest
+debugging entry point — far cheaper than the ~8 min full test:wasm run.
 CLOSED same-day: item 8 cloneRepMap shallow-copy sibling → routes through
 cloneRep (2e7db138).
 QUEUED from audit-#17: hz.all compatibility boolean removal (pointsTo==='ALL'
