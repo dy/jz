@@ -404,46 +404,84 @@ export function reset(proto, globals, bridge) {
                           // single-write and non-escaping by construction — read by
                           // kind.js valTypeOf's VT['[]'] to recover an element's kind
                           // through `let [a, b] = [1, BigInt(v)]`-shaped destructuring.
-    slotTypes: new Map(),  // schemaId → Array<VAL.* | null | undefined>
-                           //   undefined: no observation, null: ≥2 distinct kinds, VAL.*: monomorphic
-                           // Populated by collectProgramFacts on object literals;
-                           // read by ctx.schema.slotVT (precise-only) so valTypeOf
-                           // returns the slot's kind for `.prop` AST nodes, letting
-                           // `+`/`===`/method dispatch elide `__is_str_key` checks
-                           // on numeric properties of known shapes.
-    slotObjSids: new Map(), // schemaId → Array<childSchemaId | null | undefined> —
-                            //   PROPERTY-KIND TRACING (§19/§20, .work/
-                            //   carrier-representation-design.md): the nested-sid
-                            //   sibling of slotTypes' VAL-kind lattice, one level
-                            //   up. undefined: no `r.p = {...}` write observed,
-                            //   null: ≥2 distinct literal shapes (or a non-literal
-                            //   RHS) — poisoned, childSid: EVERY resolvable write
-                            //   to this (sid, idx) slot is provably that ONE `{}`-
-                            //   literal shape. Populated ONLY by observeProgramSlots'
-                            //   `.prop=`/`=`-write branch (NOT the `{}`-literal
-                            //   decl-site branch — a receiver's OWN declared value
-                            //   is a separate, potentially-placeholder shape; see
-                            //   §19's ctx.schema finding for why conflating the two
-                            //   would poison the flagship case). Read by
-                            //   ctx.schema.idOf (via chainSid) so a `.`-node
-                            //   receiver (`ctx.schema`, not a bare name) can chain-
-                            //   resolve to a schema id, precise-only, fail-closed
-                            //   on any unresolved/hazarded hop.
+    // SlotFact unification (product-lattice design .work/lattice-design.md
+    // §1/§5 Slice 6a, OQ2 6a/6b split): schemaId → Array<SlotFact | undefined>,
+    // one record per (sid, idx) replacing 4 formerly-parallel Maps that shared
+    // the IDENTICAL clash-poison/OR-join write discipline (FINDING-2) —
+    // slotTypes, slotObjSids, slotTypedCtors, slotBigintObserved. Each
+    // SlotFact = `{ kind, objSid, typedCtor, bigintObserved }`:
+    //   .kind:      VAL.* | null | undefined — undefined: no observation,
+    //     null: ≥2 distinct kinds observed (clash-poisoned), VAL.*:
+    //     monomorphic. Was slotTypes. Populated by observeProgramSlots on
+    //     object literals; read by ctx.schema.slotVT (precise-only) so
+    //     valTypeOf returns the slot's kind for `.prop` AST nodes, letting
+    //     `+`/`===`/method dispatch elide `__is_str_key` checks on numeric
+    //     properties of known shapes.
+    //   .objSid:    childSchemaId | null | undefined — PROPERTY-KIND TRACING
+    //     (§19/§20, .work/carrier-representation-design.md): the nested-sid
+    //     sibling of .kind's VAL-kind lattice, one level up. undefined: no
+    //     `r.p = {...}` write observed, null: ≥2 distinct literal shapes (or
+    //     a non-literal RHS) — poisoned, childSid: EVERY resolvable write to
+    //     this (sid, idx) slot is provably that ONE `{}`-literal shape. Was
+    //     slotObjSids. Populated ONLY by observeProgramSlots' `.prop=`/`=`-
+    //     write branch (NOT the `{}`-literal decl-site branch — a receiver's
+    //     OWN declared value is a separate, potentially-placeholder shape;
+    //     see §19's ctx.schema finding for why conflating the two would
+    //     poison the flagship case). Read by ctx.schema.idOf (via chainSid)
+    //     so a `.`-node receiver (`ctx.schema`, not a bare name) can chain-
+    //     resolve to a schema id, precise-only, fail-closed on any
+    //     unresolved/hazarded hop.
+    //   .typedCtor: ctor-string | null | undefined — undefined: no
+    //     observation, null: ≥2 distinct ctors, string: every observed value
+    //     of the slot is that typed-array kind. Was slotTypedCtors. The
+    //     elem-width sibling of .kind's VAL.TYPED — populated by
+    //     observeProgramSlots on object literals; read by
+    //     ctx.schema.slotTypedCtorAt (gated on the prop never being WRITTEN
+    //     program-wide) so `plan.twRe` keeps its concrete Float64Array kind
+    //     through field provenance (bench: provenance, fftplan).
+    //   .bigintObserved: true | undefined — CARRIER PROGRAM §15/§16 write
+    //     census: a pure OR-join (unlike .kind's first-wins-then-clash
+    //     lattice), true iff ANY write to this (sid, idx) slot anywhere in
+    //     the program — a `{}` construction literal value, an `obj.prop=`
+    //     assignment, or a hazarded write the kind census can't resolve
+    //     precisely (Object.assign/spread merges, computed-key writes — see
+    //     applySlotWriteHazards' fail-OPEN belt below, the opposite
+    //     direction from every other census's fail-closed hazard poison:
+    //     under-boxing a slot that really does carry a BigInt is unsound,
+    //     over-boxing one that never does is a rare harmless cost) — is
+    //     BIGINT-typed. A later differing-kind write never erases this bit:
+    //     a slot mixing NUMBER and BIGINT writes must still box its BIGINT
+    //     instances. Was slotBigintObserved. Populated by observeProgramSlots
+    //     alongside .kind (same clear-on-`fresh` lifecycle). Raw census
+    //     only — never read directly; the boxing DECISION also needs the
+    //     schema-wide needsDynShadow join (ctx.types.dynKeyVars/anyDynKey,
+    //     published after this census runs), composed at consume time by
+    //     ctx.schema.slotBigintBoxedAt/BySid and their narrower read-side
+    //     twins slotBigintProvenAt/BySid (module/schema.js).
+    //
+    // slotIntCertain/slotI32Certain (below) deliberately stay their OWN
+    // dedicated Maps, not folded in here: unlike the four fields above (one
+    // shared single-pass producer, observeProgramSlots, genuinely duplicated
+    // clash-poison algebra — FINDING-2's actual target), they're published
+    // together from ONE already-unduplicated source (slotIntLevels) by a
+    // materially different producer (analyzeSchemaSlotIntCertain's
+    // round-based fixpoint, its own clear/rebuild discipline keyed on
+    // opts.paramReps, not opts.fresh) and have genuine external Map-native
+    // consumers (compile/index.js's `.size` gate, slot-hazards.js's
+    // `.values()` assertion, the P-carrier invariant loop just below) —
+    // merging them onto this shared array would reconcile two independently-
+    // timed clear disciplines on the SAME storage for zero reduction in
+    // actual duplicated logic (there was never a second slotIntCertain-
+    // shaped algebra here to delete). See §6 risk item 6's own precedent for
+    // numeric's observation-timing independence — extended from the
+    // FINDING-10 pass-sharing question to the storage-representation
+    // question it structurally implies.
+    slotFacts: new Map(),
     slotConstInts: new Map(), // schemaId → Array<int | null | undefined>
                               //   integer discriminants observed at every source
                               //   literal construction of a schema. null means
                               //   conflicting/non-constant; consumed only for
                               //   branch refinement, never as a value substitute.
-    slotTypedCtors: new Map(),  // schemaId → Array<ctor-string | null | undefined>
-                                //   undefined: no observation, null: ≥2 distinct
-                                //   ctors, string: every observed value of the slot
-                                //   is that typed-array kind. The elem-width sibling
-                                //   of slotTypes' VAL.TYPED — populated by
-                                //   observeProgramSlots on object literals; read by
-                                //   ctx.schema.slotTypedCtorAt (gated on the prop
-                                //   never being WRITTEN program-wide) so `plan.twRe`
-                                //   keeps its concrete Float64Array kind through
-                                //   field provenance (bench: provenance, fftplan).
     slotIntLevels: new Map(),   // schemaId → Array<0|1|2 | undefined> — the int
                                 //   census's WORKING state (type.js lattice:
                                 //   1 integral, 2 strict-int32). Consumers read
@@ -465,34 +503,6 @@ export function reset(proto, globals, bridge) {
                                 //   `ctx.schema.slotI32CertainAt` → raw i32 slot
                                 //   loads (module/core.js) + i32 local typing
                                 //   (type.js exprType '.').
-    slotBigintObserved: new Map(), // schemaId → Array<boolean> — CARRIER PROGRAM
-                                //   §15/§16 write census: a pure OR-join
-                                //   (unlike slotTypes' first-wins-then-clash
-                                //   lattice), true iff ANY write to this (sid,
-                                //   idx) slot anywhere in the program — a `{}`
-                                //   construction literal value, an `obj.prop=`
-                                //   assignment, or a hazarded write the kind
-                                //   census can't resolve precisely (Object.assign/
-                                //   spread merges, computed-key writes — see
-                                //   applySlotWriteHazards' fail-OPEN belt below,
-                                //   the opposite direction from every other
-                                //   census's fail-closed hazard poison: under-
-                                //   boxing a slot that really does carry a BigInt
-                                //   is unsound, over-boxing one that never does is
-                                //   a rare harmless cost) — is BIGINT-typed. A
-                                //   later differing-kind write never erases this
-                                //   bit: a slot mixing NUMBER and BIGINT writes
-                                //   must still box its BIGINT instances. Populated
-                                //   by observeProgramSlots alongside slotTypes
-                                //   (same clear-on-`fresh` lifecycle). Raw census
-                                //   only — never read directly; the boxing
-                                //   DECISION also needs the schema-wide
-                                //   needsDynShadow join (ctx.types.dynKeyVars /
-                                //   anyDynKey, published after this census runs),
-                                //   composed at consume time by
-                                //   ctx.schema.slotBigintBoxedAt/BySid and their
-                                //   narrower read-side twins slotBigintProvenAt/
-                                //   BySid (module/schema.js).
     dictValueTypes: new Map(),  // name → VAL.* | null — dict-value-census global
                                 //   half (.work/todo.md §deletion-sweep §1b):
                                 //   every VAL.* kind ever written through

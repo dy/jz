@@ -1692,7 +1692,7 @@ export default (ctx) => {
     // raw load is already a plain number. toNumF64 then coerces only the
     // dyn-miss arm instead of wrapping the whole read in __to_num — the
     // shapes-dispatch pattern's per-field coercion collapses on the hot path.
-    if (ctx.schema.slotTypes?.get(guard.sid)?.[guard.slot] === VAL.NUMBER
+    if (ctx.schema.slotFacts?.get(guard.sid)?.[guard.slot]?.kind === VAL.NUMBER
         && ctx.types.writtenProps && !ctx.types.writtenProps.has(prop))
       ir.guardedNumSlot = true
     return ir

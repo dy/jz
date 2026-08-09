@@ -244,6 +244,12 @@ export function initSchema(ctx) {
   // unless the entry is a null-kinds emit-belt fallback. Value-level readers
   // (intCertain, elem-ctors) always fail closed on kind-safe sids: the JSON
   // parser writes arbitrary doubles/values within the sample's kinds.
+  // Grow-free read of the unified SlotFact record at (sid, idx) — product-
+  // lattice design Slice 6a (.work/lattice-design.md §5), ctx.js's
+  // `slotFacts` doc. Every projection below reads exactly ONE field off the
+  // SAME shared record instead of its own separately-grown array.
+  const factAt = (id, idx) => ctx.schema.slotFacts.get(id)?.[idx]
+
   const slotHazarded = (id, prop, kindSafeOk = false) => {
     if (ctx.schema.externSlotSids?.has(id)) return true
     const hz = ctx.schema.slotWriteHazards
@@ -297,7 +303,7 @@ export function initSchema(ctx) {
     if (parentSid == null) return null
     const idx = ctx.schema.list[parentSid]?.indexOf(node[2])
     if (idx == null || idx < 0 || chainHazarded(parentSid, node[2])) return null
-    return ctx.schema.slotObjSids.get(parentSid)?.[idx] ?? null
+    return factAt(parentSid, idx)?.objSid ?? null
   }
 
   ctx.schema.slotVT = (varName, prop) => {
@@ -307,7 +313,7 @@ export function initSchema(ctx) {
       for (const id of ids) {
         if (slotHazarded(id, prop, true)) return null
         const idx = ctx.schema.list[id]?.indexOf(prop)
-        const k = idx >= 0 ? ctx.schema.slotTypes.get(id)?.[idx] ?? null : null
+        const k = idx >= 0 ? factAt(id, idx)?.kind ?? null : null
         if (k == null || (kind != null && kind !== k)) return null
         kind = k
       }
@@ -316,7 +322,7 @@ export function initSchema(ctx) {
     const id = ctx.schema.idOf(varName)
     if (id == null || slotHazarded(id, prop, true)) return null
     const idx = ctx.schema.list[id]?.indexOf(prop)
-    return idx >= 0 ? (ctx.schema.slotTypes.get(id)?.[idx] ?? null) : null
+    return idx >= 0 ? (factAt(id, idx)?.kind ?? null) : null
   }
 
   /** Resolve the monomorphic typed-array ctor for `varName.prop`, or null.
@@ -336,7 +342,7 @@ export function initSchema(ctx) {
     if (id == null || slotHazarded(id, prop)) return null
     const idx = ctx.schema.list[id]?.indexOf(prop)
     if (idx == null || idx < 0) return null
-    return ctx.schema.slotTypedCtors.get(id)?.[idx] ?? null
+    return factAt(id, idx)?.typedCtor ?? null
   }
 
   /** Program-wide census ctor for a bare `.prop` read with NO receiver evidence
@@ -351,7 +357,7 @@ export function initSchema(ctx) {
     let ctor = null
     for (const b of bucket) {
       if (slotHazarded(b.id, prop)) return null
-      const c = ctx.schema.slotTypedCtors.get(b.id)?.[b.slot] ?? null
+      const c = factAt(b.id, b.slot)?.typedCtor ?? null
       if (!c || (ctor && c !== ctor)) return null
       ctor = c
     }
@@ -482,7 +488,7 @@ export function initSchema(ctx) {
     if (!CARRIER_BOX || sid == null) return false
     const idx = ctx.schema.list[sid]?.indexOf(prop)
     if (idx == null || idx < 0) return false
-    if (!ctx.schema.slotBigintObserved.get(sid)?.[idx]) return false
+    if (!factAt(sid, idx)?.bigintObserved) return false
     return schemaShadowed(sid)
   }
   /** varName convenience form — resolves sid via idOf (precise path only,
@@ -511,7 +517,7 @@ export function initSchema(ctx) {
     if (!CARRIER_BOX || sid == null || slotHazarded(sid, prop, true)) return false
     const idx = ctx.schema.list[sid]?.indexOf(prop)
     if (idx == null || idx < 0) return false
-    return ctx.schema.slotTypes.get(sid)?.[idx] === VAL.BIGINT && ctx.schema.slotBigintBoxedBySid(sid, prop)
+    return factAt(sid, idx)?.kind === VAL.BIGINT && ctx.schema.slotBigintBoxedBySid(sid, prop)
   }
   ctx.schema.slotBigintProvenAt = (varName, prop) => {
     const ids = ctx.func.refinements?.get(varName)?.schemaIds

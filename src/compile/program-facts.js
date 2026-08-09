@@ -621,13 +621,22 @@ const writeVT = (n, wctx) => {
 export function observeProgramSlots(ast, opts) {
   if (!ctx.schema?.register) return
   const pf = getFactStore().programFacts
-  const slotTypes = ctx.schema.slotTypes
-  const slotCtors = ctx.schema.slotTypedCtors
+  const slotFacts = ctx.schema.slotFacts
   const slotConstInts = ctx.schema.slotConstInts
   const dictValueTypes = ctx.schema.dictValueTypes
   const mapValueTypes = ctx.schema.mapValueTypes
-  const slotBigintObserved = ctx.schema.slotBigintObserved
-  const slotObjSids = ctx.schema.slotObjSids
+  // Grow-and-return the SlotFact object at (sid, idx) — the ONE shared
+  // storage primitive every writer below mutates (product-lattice design
+  // Slice 6a, ctx.js's slotFacts doc). Replaces the 4 separately-grown
+  // arrays (slotTypes/slotObjSids/slotTypedCtors/slotBigintObserved) each
+  // used to maintain via its own copy of this exact grow-loop.
+  const slotFact = (sid, idx) => {
+    let arr = slotFacts.get(sid)
+    if (!arr) { arr = []; slotFacts.set(sid, arr) }
+    while (arr.length <= idx) arr.push(undefined)
+    if (arr[idx] === undefined) arr[idx] = {}
+    return arr[idx]
+  }
   // Unlike type facts, discriminant constants are rebuilt from the complete
   // program on every facts pass. This avoids emitter/function-order coupling:
   // codegen only consumes a settled whole-program census.
@@ -641,54 +650,32 @@ export function observeProgramSlots(ast, opts) {
   // automatically — one write census, two projections.
   const observeBigintJoin = (sid, idx, vt) => {
     if (vt !== VAL.BIGINT) return
-    let arr = slotBigintObserved.get(sid)
-    if (!arr) { arr = []; slotBigintObserved.set(sid, arr) }
-    while (arr.length <= idx) arr.push(false)
-    arr[idx] = true
+    slotFact(sid, idx).bigintObserved = true
   }
   const observeSlot = (sid, idx, vt) => {
     observeBigintJoin(sid, idx, vt)
     if (!vt) return
-    let arr = slotTypes.get(sid)
-    if (!arr) { arr = []; slotTypes.set(sid, arr) }
-    while (arr.length <= idx) arr.push(undefined)
-    if (arr[idx] === null) return
-    if (arr[idx] === undefined) arr[idx] = vt
-    else if (arr[idx] !== vt) arr[idx] = null
+    const f = slotFact(sid, idx)
+    if (f.kind === null) return
+    if (f.kind === undefined) f.kind = vt
+    else if (f.kind !== vt) f.kind = null
   }
   // Hard kind-poison (observeSlot's `!vt` arm is a SKIP, not a poison): a write
   // whose kind can't be independently proven forces the slot polymorphic.
-  const poisonSlot = (sid, idx) => {
-    let arr = slotTypes.get(sid)
-    if (!arr) { arr = []; slotTypes.set(sid, arr) }
-    while (arr.length <= idx) arr.push(undefined)
-    arr[idx] = null
-  }
-  const poisonCtor = (sid, idx) => {
-    let arr = slotCtors.get(sid)
-    if (!arr) { arr = []; slotCtors.set(sid, arr) }
-    while (arr.length <= idx) arr.push(undefined)
-    arr[idx] = null
-  }
+  const poisonSlot = (sid, idx) => { slotFact(sid, idx).kind = null }
+  const poisonCtor = (sid, idx) => { slotFact(sid, idx).typedCtor = null }
   // Nested-sid census (§19/§20 PROPERTY-KIND TRACING): observeSlot/poisonSlot's
   // own first-wins-then-clash lattice, one level up — tracks WHICH `{}`-literal
   // schema a `r.p = {...}` write's RHS is, not just its VAL kind. Fed ONLY by
   // the `.prop=`/`=`-write branch below (never the `{}`-literal decl-site
-  // branch just above — see slotObjSids' ctx.js doc comment for why).
+  // branch just above — see slotFacts' `.objSid` doc comment (ctx.js) for why).
   const observeObjSid = (sid, idx, childSid) => {
-    let arr = slotObjSids.get(sid)
-    if (!arr) { arr = []; slotObjSids.set(sid, arr) }
-    while (arr.length <= idx) arr.push(undefined)
-    if (arr[idx] === null) return
-    if (arr[idx] === undefined) arr[idx] = childSid
-    else if (arr[idx] !== childSid) arr[idx] = null
+    const f = slotFact(sid, idx)
+    if (f.objSid === null) return
+    if (f.objSid === undefined) f.objSid = childSid
+    else if (f.objSid !== childSid) f.objSid = null
   }
-  const poisonObjSid = (sid, idx) => {
-    let arr = slotObjSids.get(sid)
-    if (!arr) { arr = []; slotObjSids.set(sid, arr) }
-    while (arr.length <= idx) arr.push(undefined)
-    arr[idx] = null
-  }
+  const poisonObjSid = (sid, idx) => { slotFact(sid, idx).objSid = null }
   // Dict-value-type census (global half, design §1b): observeSlot/poisonSlot's
   // first-wins-then-clash lattice, keyed by bare name instead of (sid, idx) —
   // same whole-program name-keyed convention as dynWriteVars/nameEscapes above.
@@ -723,7 +710,7 @@ export function observeProgramSlots(ast, opts) {
   // hazard recompute resolves receivers the early pass poisoned wholesale
   // (fftplan's `re[j] = tr` on a then-unnarrowed param poisoned the world).
   // Sound to rebuild: every kind consumer left reads at emit, after this.
-  if (opts?.fresh) { slotTypes.clear(); slotCtors.clear(); dictValueTypes.clear(); mapValueTypes.clear(); slotBigintObserved.clear(); slotObjSids.clear() }
+  if (opts?.fresh) { slotFacts.clear(); dictValueTypes.clear(); mapValueTypes.clear() }
   const hazards = collectSlotWriteHazards(ast, opts?.fresh ? { paramReps: opts.paramReps } : undefined)
   // Hazard fail-OPEN belt (slotBigintObserved's own doc, ctx.js): a slot the
   // kind census can't resolve precisely (Object.assign/spread merges,
@@ -740,12 +727,10 @@ export function observeProgramSlots(ast, opts) {
   // being written program-wide — see schema.slotTypedCtorAt).
   const observeCtor = (sid, idx, ctor) => {
     if (!ctor) return
-    let arr = slotCtors.get(sid)
-    if (!arr) { arr = []; slotCtors.set(sid, arr) }
-    while (arr.length <= idx) arr.push(undefined)
-    if (arr[idx] === null) return
-    if (arr[idx] === undefined) arr[idx] = ctor
-    else if (arr[idx] !== ctor) arr[idx] = null
+    const f = slotFact(sid, idx)
+    if (f.typedCtor === null) return
+    if (f.typedCtor === undefined) f.typedCtor = ctor
+    else if (f.typedCtor !== ctor) f.typedCtor = null
   }
   const observeConstInt = (sid, idx, value) => {
     let arr = slotConstInts.get(sid)
@@ -1746,10 +1731,10 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   // either census over.
   if (DBG_INVARIANTS) {
     for (const [sid, arr] of ctx.schema.slotI32Certain) {
-      const bigints = ctx.schema.slotBigintObserved.get(sid)
-      if (!bigints) continue
+      const facts = ctx.schema.slotFacts.get(sid)
+      if (!facts) continue
       for (let i = 0; i < arr.length; i++) {
-        if (arr[i] === true && bigints[i] === true)
+        if (arr[i] === true && facts[i]?.bigintObserved === true)
           throw new Error(`P-carrier invariant: schema ${sid} slot ${i} is BOTH i32Certain and slotBigintObserved — a BIGINT write can never be strict-int32`)
       }
     }
