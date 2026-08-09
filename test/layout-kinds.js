@@ -1,17 +1,26 @@
 /**
- * Heap-kind registry SLICE 1 shadow-check (.work/research.md §Heap-kind registry).
+ * Heap-kind registry shadow-check (.work/research.md §Heap-kind registry).
  *
- * Proves layout-kinds.js's KIND_REGISTRY columns against LIVE behavior: one
- * probe per kind × consumer (typeof, ===/==, Set/Map keying, interop
- * roundtrip) plus one live-reproducing probe per FINDINGS entry. Every
- * assertion here encodes what the runtime ACTUALLY does today — a divergence
- * from some OTHER consumer's stated intent is recorded as a FINDING in
- * layout-kinds.js, not "fixed" by picking a side in this file (Slice 1 is
- * table + proof, zero codegen change — see the design doc's Slices list).
+ * Proves layout-kinds.js's compact KIND_REGISTRY + layout-kinds-doc.js's
+ * prose extension against LIVE behavior: one probe per kind × consumer
+ * (typeof, ===/==, Set/Map keying, interop roundtrip) plus one live-
+ * reproducing probe per FINDINGS entry. Every assertion here encodes what
+ * the runtime ACTUALLY does today — a divergence from some OTHER consumer's
+ * stated intent is recorded as a FINDING in layout-kinds-doc.js, not "fixed"
+ * by picking a side in this file.
+ *
+ * Imports BOTH modules (Slice 4 split, audit-#16 registry finding): plain
+ * KIND_REGISTRY (layout-kinds.js) is the compact table production actually
+ * consumes — tag/aux/identity/identityArm reads and the identity-dispatch
+ * generators below are checked against it directly. KIND_REGISTRY_DOC
+ * (layout-kinds-doc.js) is the prose-extended table — FINDINGS
+ * cross-referencing and the full-column completeness check use it, since
+ * the prose columns (allocShape, childPointers, forwarding, identityNote,
+ * interopDecode, typeofArm, findings) no longer live on the compact table.
  *
  * Runs identically under plain and JZ_DEBUG_INVARIANTS=1 (no codegen this
- * slice touches is gated on that flag) — the one DBG_INVARIANTS-conditional
- * test below adds a stricter completeness check, matching test/invariants.js's
+ * file touches is gated on that flag) — the DBG_INVARIANTS-conditional
+ * tests below add stricter completeness checks, matching test/invariants.js's
  * existing gated-test convention.
  */
 import test from 'tst'
@@ -19,7 +28,8 @@ import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { DBG_INVARIANTS } from '../src/ctx.js'
 import { PTR } from '../layout.js'
-import { KIND_REGISTRY, FINDINGS, CONTENT_IDENTITY_ORDER, eqIdentityChain, sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
+import { KIND_REGISTRY, CONTENT_IDENTITY_ORDER, eqIdentityChain, sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
+import { KIND_REGISTRY as KIND_REGISTRY_DOC, FINDINGS } from '../layout-kinds-doc.js'
 
 const run = (code, opts) => jz(code, opts).exports
 
@@ -32,21 +42,26 @@ test('registry: every live PTR.* tag has at least one KIND_REGISTRY row', () => 
   for (const [name, tag] of Object.entries(PTR)) ok(tagsInRegistry.has(tag), `PTR.${name} (${tag}) missing from KIND_REGISTRY`)
 })
 
-test('registry: every FINDINGS id is cross-referenced from every kind it names', () => {
+test('registry: every FINDINGS id is cross-referenced from every kind it names (doc-extended table)', () => {
   for (const f of FINDINGS) {
     for (const kindName of f.kinds) {
-      const row = KIND_REGISTRY[kindName]
+      const row = KIND_REGISTRY_DOC[kindName]
       ok(row, `FINDINGS[${f.id}] names unknown kind ${kindName}`)
-      ok(row.findings?.includes(f.id), `KIND_REGISTRY.${kindName}.findings missing '${f.id}'`)
+      ok(row.findings?.includes(f.id), `KIND_REGISTRY_DOC.${kindName}.findings missing '${f.id}'`)
     }
   }
 })
 
 if (DBG_INVARIANTS) {
-  test('registry: every KIND_REGISTRY row declares all seven documented columns', () => {
-    const COLS = ['tag', 'allocShape', 'childPointers', 'forwarding', 'identity', 'interopDecode', 'typeofArm']
+  test('registry: every KIND_REGISTRY_DOC row declares all seven documented columns', () => {
+    const COLS = ['tag', 'allocShape', 'childPointers', 'forwarding', 'identityNote', 'interopDecode', 'typeofArm']
+    for (const [name, row] of Object.entries(KIND_REGISTRY_DOC))
+      for (const c of COLS) ok(c in row, `KIND_REGISTRY_DOC.${name} missing column '${c}'`)
+  })
+
+  test('registry: doc-extended table adds prose on top of the SAME compact rows (no duplication of executable fields)', () => {
     for (const [name, row] of Object.entries(KIND_REGISTRY))
-      for (const c of COLS) ok(c in row, `KIND_REGISTRY.${name} missing column '${c}'`)
+      is(KIND_REGISTRY_DOC[name].tag, row.tag, `KIND_REGISTRY_DOC.${name}.tag diverged from the compact table`)
   })
 }
 

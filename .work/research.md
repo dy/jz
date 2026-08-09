@@ -899,6 +899,52 @@ and the 189-case size-sweep are the SAME combined verification pass reported
 there (both slices landed together) — 0 byte diffs, 2-3 pre-existing
 unrelated failures depending on leg. `npm run build` ×2 SHA-256 identical.
 
+**Slice 4 LANDED** (2026-08-09, audit-#16 registry finding — the production
+dist-cost fix for Slice 3's landing): Slice 3 put KIND_REGISTRY on the
+production import path (module/core.js, module/collection.js's generators
+iterate it) without splitting its PROSE columns (allocShape, childPointers,
+forwarding, interopDecode, typeofArm descriptions, findings) off first —
+esbuild's minifier strips JS comments but not string-literal PROPERTY
+VALUES, so that prose rode into dist/jz.js verbatim and, via the generated
+WAT text it fed, into dist/jz.wasm too: audit-#16 measured +19,613B /
++60,511B on Slice 3's landing. FIX: split into layout-kinds.js (compact
+EXECUTABLE metadata only — per-kind `{tag, aux, identity, identityArm}`,
+enums/numbers/short symbols, no prose; this is what module/core.js and
+module/collection.js import) and layout-kinds-doc.js (NEW file, root —
+imports and EXTENDS the compact table with the full prose under
+`{auxNote, allocShape, childPointers, forwarding, identityNote,
+interopDecode, typeofArm, findings}` plus the FINDINGS array; test-only,
+never imported by module/*.js). No information lost — every prose string
+relocated verbatim, not rewritten or summarized. test/layout-kinds.js
+imports both (52 tests now, was 51 — one new cross-check that the doc
+table's compact columns haven't diverged from the production table).
+GENERATOR TABLE-DRIVEN VERDICT: evaluated a genuine loop-driven synthesis
+(iterate CONTENT_IDENTITY_ORDER, emit each arm from a shared template)
+instead of the four hand-written, individually-guarded generator functions
+— rejected: with only 2 content-identity kinds and $__eq/$__same_value_zero
+carrying a REAL textual divergence on the STRING arm (FINDINGS[identity-
+arm-divergence], unchanged by this slice), any shared-template rewrite
+changes the generated WAT text by construction. Byte-identity with the
+pre-split generated output wins over collapsing "2 hand-written functions"
+into "a loop of 2" — the guarded hand-written form (assertContentOrder fires
+closed on drift) stays, documented in layout-kinds.js's own comment block.
+GATES (2026-08-09): dist size recovery — dist/jz.js -17,454B (2,096,051 →
+2,078,597), dist/jz.wasm -50,441B (16,908,182 → 16,857,741), both measured
+against a clean-HEAD (229cd670, pre-split) `npm run build` baseline; the
+residual gap vs Slice 3's full +19,613B/+60,511B addition is the compact
+table's own footprint (tag/aux/identity enums — intentionally still present,
+since production still needs SOME per-kind data, just not the prose) · 58-
+case/174-compile bench corpus (all non-self-referential bench/ cases incl.
+watr × O0/O2/O3, jessie/jz excluded) compiled against the same clean-HEAD
+baseline via a scratch diff script — 0 WAT-text diffs, 0 compile errors ·
+test/layout-kinds.js 52/52 (plain and `JZ_DEBUG_INVARIANTS=1`, 203
+assertions under the flag) · full battery 3408/3416 pass (19,570 assertions;
+2 pre-existing unrelated codec-bounds fails, 6 skip — same rows as Slice 3's
+own gate) · kernel-parity 33/33 (33 assertions, O0+O2+O3) · selfhost leg
+(selfhost.js 21/21, 206 assertions) · two fresh `npm run build` runs,
+dist/jz.js + dist/interop.js + dist/jz.wasm SHA-256 byte-identical across
+both.
+
 ## [ ] FeaturePlan freeze (was featureplan-freeze-design.md; audit-#13 item 2)
 
 

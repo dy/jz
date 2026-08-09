@@ -6,6 +6,47 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## heap-kind registry Slice 4: prose/executable split — landed (2026-08-09)
+Per .work/research.md §Heap-kind registry. Local only. audit-#16 registry
+finding.
+
+Slice 3 (above) put KIND_REGISTRY on the production import path without
+splitting its prose columns off first — esbuild's minifier strips JS
+comments but not string-literal property VALUES, so the full per-kind prose
+(allocShape, childPointers, forwarding, interopDecode, typeofArm
+descriptions, findings) rode into dist/jz.js verbatim and, via the generated
+WAT text it fed, into dist/jz.wasm too. Measured cost: +19,613B dist/jz.js,
++60,511B dist/jz.wasm on Slice 3's landing.
+FIX: split layout-kinds.js down to compact EXECUTABLE metadata only
+(`{tag, aux, identity, identityArm}` — enums/numbers/short symbols, no
+prose; the four identity-dispatch generators + their PTR/LAYOUT/
+STR_INTERN_BIT reads are the only other content, unchanged). NEW
+layout-kinds-doc.js (root) imports and EXTENDS the compact table with the
+relocated prose under `{auxNote, allocShape, childPointers, forwarding,
+identityNote, interopDecode, typeofArm, findings}` + the FINDINGS array —
+every prose string moved verbatim, nothing rewritten or summarized, nothing
+duplicated across the two files. Never imported by module/*.js — test-only.
+test/layout-kinds.js imports both (52 tests, was 51 — one new check that the
+doc table's compact columns track the production table exactly).
+GENERATOR TABLE-DRIVEN VERDICT: a genuine loop-driven synthesis (iterate
+CONTENT_IDENTITY_ORDER, emit each arm from one shared template) was
+evaluated and rejected — $__eq and $__same_value_zero's STRING arms are
+textually DIFFERENT (FINDINGS[identity-arm-divergence], untouched by this
+slice), so any shared template changes the generated WAT by construction.
+Byte-identity with the pre-split output wins; the four hand-written,
+individually-guarded generator functions stay as-is.
+GATES: dist size recovery vs a clean-HEAD (229cd670) `npm run build`
+baseline — dist/jz.js -17,454B (2,096,051→2,078,597), dist/jz.wasm -50,441B
+(16,908,182→16,857,741); residual gap vs Slice 3's addition is the compact
+table's own intentional footprint. 58-case/174-compile bench corpus (incl.
+watr, jessie/jz excluded) vs the same clean-HEAD baseline via a scratch
+diff script: 0 WAT-text diffs, 0 errors. test/layout-kinds.js 52/52 (plain
+and JZ_DEBUG_INVARIANTS=1). Full battery 3408/3416 pass (2 pre-existing
+unrelated codec-bounds fails, 6 skip — same rows as Slice 3's own gate).
+kernel-parity 33/33. selfhost.js 21/21. Two fresh `npm run build` runs,
+dist/jz.js + dist/interop.js + dist/jz.wasm SHA-256 byte-identical across
+both.
+
 ## SIZE-goal fresh verification at HEAD (2026-08-08, sha 1112b535)
 Scope: byte-counting only (VALID on this swap-stressed machine per current
 policy) — timing/memory stay embargoed, not touched here. Fresh `npm run
