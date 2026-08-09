@@ -341,6 +341,37 @@ test('carrier: a boxed BigInt schema field read via static dot-access unboxes to
   is(ptrHex(), '0x7FFB000300000400', 'i64Hex(ptrBits(...)) computes correctly through the unboxed schema field')
 })
 
+// CONSERVATIVE PAIRING (.work/carrier-representation-design.md — the §15/§16
+// chain's closing move, .work/context-sensitivity-survey.md's COORDINATOR
+// RULING): §16 closed the PROVEN half of the read-side gap (a schema slot
+// whose write-side census uniformly, provably resolves BIGINT unboxes
+// unconditionally) but left the UNPROVEN half open whenever `hz.all`
+// (§17-§21's own audited, load-bearing blanket, REFUTED as narrowable)
+// poisons `slotTypes` program-wide — the exact shape the real self-hosted
+// `scripts/self.js` compile hits (§16/§17's own diagnosis: LAYOUT's own
+// schema never proves BIGINT there, only observes+boxes it). This fixture
+// reproduces that precondition in isolation: `corrupt`'s `obj[key] = val`
+// (unresolvable receiver AND key) trips the SAME `keyedWrite` hz.all
+// blanket, so `slotBigintProvenAt('LAYOUT', 'NAN_PREFIX_BITS')` is FALSE
+// here even though `slotBigintBoxedAt` (write-side, fail-open, unaffected
+// by hz.all) is TRUE — the exact possible∧unproven precondition
+// isSchemaSlotBigintPossible (src/ir.js) targets. Pre-fix, this reproduces
+// the identical §15 corruption pattern (a box's own NaN-tag bits misread as
+// the payload, `nan:0x7FFA8...`-shaped) via `atomNanHex`/`i64Hex`'s
+// arithmetic-core BigInt operand dispatch (readI64's own naive `asI64`
+// fallback, `typeof node === 'string'` never matching a `.`-node) — verified
+// live via a disposable pre-fix diff before landing the fix, not assumed.
+test('carrier: a bigint-possible-but-UNPROVEN (hz.all-poisoned) schema field read through arithmetic still decodes correctly (.work/carrier-representation-design.md CONSERVATIVE PAIRING)', () => {
+  if (process.env.JZ_CARRIER_BOX !== '1') return
+  const g = resolveModuleGraph(new URL('./fixtures/carrier-conservative-pairing-repro.js', import.meta.url).pathname, { resolveNode: true })
+  const { poke, rawField, undefAtom, nullAtom, ptrHex } = run(g.code, { modules: g.modules, optimize: 0 })
+  poke()
+  is(rawField(), 9221120237041090560n, 'LAYOUT.NAN_PREFIX_BITS still decodes to 0x7FF8000000000000n under hz.all')
+  is(undefAtom(), '0x7FF8000200000000', 'atomNanHex(2)/UNDEF_NAN reads correctly through the unproven schema field')
+  is(nullAtom(), '0x7FF8000100000000', 'atomNanHex(1)/NULL_NAN reads correctly through the unproven schema field')
+  is(ptrHex(), '0x7FFB000300000400', 'i64Hex(ptrBits(...)) computes correctly through the unproven schema field')
+})
+
 // === Limits ===
 
 test('nan-box: max aux (32767)', () => {

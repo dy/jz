@@ -448,6 +448,60 @@ export function unboxBigInt(f64expr) {
   return typed(['i64.load', ptrOffsetIR(f64expr, VAL.BIGINT)], 'i64')
 }
 
+/** Runtime twin of unboxBigInt for a value with no STATIC boxed-or-raw proof
+ *  either way (CONSERVATIVE PAIRING — coordinator ruling, .work/context-
+ *  sensitivity-survey.md 2026-08-09, closing the §15/§16 chain): tag-checks
+ *  the value at runtime via `$__ptr_type` (the same primitive every
+ *  registry-aware dynamic reader — $__dyn_get/$__typeof/$__to_num/$__eq's
+ *  own PTR.BIGINT arms, Slice 3 — already dispatches on) and unboxes through
+ *  unboxBigInt's own ptrOffsetIR deref when it IS a real box; otherwise the
+ *  f64 bit pattern already IS the raw payload (this slot's write side never
+ *  boxes a NUMBER-typed store — module/object.js's storedValue/
+ *  storedValueNarrow split — so a non-boxed instance needs no decoding, only
+ *  reinterpreting). One memory read either way (`f64expr` teed once, reused
+ *  for the tag check and both arms) — cost lands only on the caller's own
+ *  choice to invoke this, never on a proven-BIGINT or proven-not-BIGINT
+ *  read. Returns i64, matching unboxBigInt's own convention. */
+export function maybeUnboxBigInt(f64expr) {
+  const t = temp('mbig')
+  inc('__ptr_type')
+  return typed(['if', ['result', 'i64'],
+    ['i32.eq',
+      ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.tee', `$${t}`, f64expr]]],
+      ['i32.const', PTR.BIGINT]],
+    ['then', unboxBigInt(['local.get', `$${t}`])],
+    ['else', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], 'i64')
+}
+
+/** True iff `node` is a `.prop` read (bare-name receiver only — the same
+ *  "structural fallback gets false" scope §16 already established for a
+ *  chain receiver, module/core.js emitSchemaSlotRead's own doc comment) of a
+ *  schema slot the write-side census observed BIGINT on AND boxes wide
+ *  (ctx.schema.slotBigintBoxedAt), but cannot PROVE uniformly BIGINT
+ *  (ctx.schema.slotBigintProvenAt — `slotHazarded`'s `hz.all` blanket,
+ *  §17-§21, audited genuinely load-bearing, REFUTED as narrowable). This is
+ *  the read-side gap §15 found and §16 could only close for the PROVEN
+ *  half: `readI64`'s own `typeof node === 'string'` guard structurally
+ *  cannot see a `.`-node operand at all, so an arithmetic-core call site
+ *  reading a possible-but-unproven schema field via `LAYOUT.NAN_PREFIX_BITS`-
+ *  shaped source (§15's own repro) fell to the naive `asI64` reinterpret —
+ *  misreading a real box's own NaN-tag bits as the payload. Deliberately
+ *  does NOT touch emitSchemaSlotRead's own return value (module/core.js):
+ *  that value must stay box-preserving f64 for every OTHER consumer this
+ *  same read reaches (the WASM export boundary's host-side generic decode,
+ *  $__eq, $__typeof, $__dyn_get) — all already correctly PTR.BIGINT-aware
+ *  at the point THEY dereference, per Slice 3 — eagerly unboxing at the
+ *  read site itself was tried and found to break exactly that class (a
+ *  plain `export let f = () => obj.bigField` regressed from a correct
+ *  BigInt result to NaN once the read pre-decoded the box, confirmed via a
+ *  live differential against the unfixed baseline before landing this
+ *  narrower, readI64-scoped version instead). */
+export const isSchemaSlotBigintPossible = (node) =>
+  CARRIER_BOX && Array.isArray(node) && node[0] === '.' &&
+  typeof node[1] === 'string' && typeof node[2] === 'string' &&
+  ctx.schema.slotBigintBoxedAt?.(node[1], node[2]) === true &&
+  ctx.schema.slotBigintProvenAt?.(node[1], node[2]) !== true
+
 /** True iff `name`'s solver-settled rep (reps.js `bigintBoxed`, round-3/4
  *  fixpoint) proves this binding must materialize as a real PTR.BIGINT box
  *  AT A W-SINK INSIDE THIS FUNCTION — i.e. `name` currently holds RAW i64
@@ -566,10 +620,21 @@ export const isTernaryBoxedBigint = (name) => ctx.func.ternaryBoxedNames?.has(na
  *  through (bigIntOperand/bigIntUnary and the postfix/compound-assign
  *  shortcuts that bypass them), plus method-dispatch consumers like
  *  `.bigint:toString` (module/number.js), so a boxed param OR ternary-boxed
- *  local never has its pointer bits misread as a bigint payload. */
+ *  local never has its pointer bits misread as a bigint payload.
+ *
+ *  CONSERVATIVE PAIRING's own class (isSchemaSlotBigintPossible, above) is
+ *  a THIRD, narrower shape this same chokepoint now also covers: a `.prop`
+ *  read of a schema field this program can't PROVE uniformly BIGINT (so
+ *  `emitted` stays the box-preserving f64 emitSchemaSlotRead's default arm
+ *  always returned, unlike the two name-based predicates above, which
+ *  select an ALREADY-i64-typed `emitted` at the read site itself). Checked
+ *  last — after the two proven, static, zero-runtime-cost predicates — so
+ *  a name that's ALSO a boxed param never pays the extra tag check its own
+ *  static proof already made unnecessary. */
 export function readI64(node, emitted) {
   if (CARRIER_BOX && typeof node === 'string' && (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node)))
     return unboxBigInt(emitted)
+  if (isSchemaSlotBigintPossible(node)) return maybeUnboxBigInt(emitted)
   return asI64(emitted)
 }
 

@@ -1681,6 +1681,20 @@ export default (ctx) => {
     // no unbox belongs here. (A future dedicated arm COULD unbox both sides at
     // once by wrapping the whole `if` post-hoc, but no such consumer exists
     // today — left as a documented no-op rather than adding unused plumbing.)
+    // CONSERVATIVE PAIRING (coordinator ruling, .work/context-sensitivity-
+    // survey.md) — re-verified, explicitly excluded, not just left alone:
+    // this arm's OWN output stays box-or-raw either way (unchanged above),
+    // and the new dispatch lives one layer up, at readI64 (src/ir.js) — it
+    // consults the ORIGINAL source AST node (`.prop`), not which internal
+    // branch (this guard, or a plain schema read) produced the value, so a
+    // guarded read's combined fast/slow result is already covered by readI64
+    // once IT fires — no separate wiring needed here. It structurally never
+    // fires for THIS site's own `obj` though: readI64's predicate needs
+    // `obj` itself bound to a resolvable schemaId (ctx.schema.slotBigintBoxedAt),
+    // and this whole function only runs when `obj`'s kind is fully unknown
+    // (emitPropAccess's `vt == null` branch) — the same "structural fallback
+    // gets false" scope-out §16 already established for the chain-receiver
+    // case, not a new gap.
     const fast = typed(ctx.abi.object.ops.load(off, guard.slot), 'f64')
     const ir = typed(['if', ['result', 'f64'],
       cond,
