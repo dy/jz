@@ -8898,3 +8898,244 @@ $closure854) rather than trying to re-diff its own body twice. Within
 $closure854 itself, use the loop-index/length-compare shape (`i32.lt_s`
 against a length local fed by `values.length`) to disambiguate the two
 candidate loops at 20902 and 21969 before reading either in full.
+
+## AUDIT-#17 store-loop WAT-diff (banked step 3-4): general per-field store
+## loop ISOLATED and READ COMPLETE, recursion channels traced and RULED
+## OUT one by one — WASM-frame locality holds, $__closure_spill inert for
+## the minimal repro, $__heap_reset absent from this function. Banked at
+## a memory-level wall, not a local/global-variable wall (2026-08-09)
+
+Picked up the prior entry's own NEXT: regenerate the WAT dump, re-locate
+$closure854, isolate the general per-field store loop among its 9
+call_indirect-enclosing loops, and trace the loop's per-iteration state
+across the re-entrant call_indirect. **The loop is now definitively
+isolated and fully read; three concrete recursion-clobber hypotheses were
+formed and directly falsified — no fourth hypothesis was confirmed. Banked
+at a narrower, memory-level wall, not the "which loop" wall.**
+
+**Step 1 — regenerate + re-locate, TWO new gotchas found (the recipe
+itself needed correction, not just a re-run).** Regenerated via the exact
+`scripts/build-dist.mjs` recipe (`resolveModuleGraph(scripts/self.js,
+{resolveNode:true})` → `compile(g.code, {modules:g.modules, memory:8192,
+optimize:{level:3, watrGuard:false, snapshotInit:true}, wat:true})`) — 372
+MB / 7,941,191 lines (vs the prior session's 372,298,667 chars / 7,942,065
+lines — near-identical, minor drift from intervening commits).
+  1. **The prior session's own "sanitized away" claim about the closure
+     T-prefix marker is WRONG for this build** (or drifted true→false
+     between sessions): grepping literal `(func $closure854` and even
+     bare `$closure` found ZERO hits. Root cause, found by raw byte
+     inspection (`data.find(b'closure854')`): the private-use marker
+     (U+E000, bytes `EE 80 80`) IS present, unsanitized, between `$` and
+     `closure854` in the printed WAT text (`(func $\xee\x80\x80closure854`).
+     A literal-`$`-anchored grep silently misses every closure function in
+     this dump; a bare substring grep (`closure854` with no `$` anchor)
+     finds it. **Corrected gotcha for the next session: check BOTH
+     directions (anchored and marker-free) before concluding a name is
+     absent — "sanitized" is not a stable property across builds.**
+  2. Re-instrumented `module/function.js`'s `ctx.closure.make` with the
+     documented `restParam?.startsWith('rawProps')` fingerprint (same
+     method as the banked lead-1 entry) to positively confirm the closure
+     index rather than trust a possibly-stale number: **HITS=
+     ["closure854:rawPropsf1969_0"] — same index, same restParam suffix,
+     confirming the closure-table order is stable across this session's
+     source drift.** (Briefly suspected the number itself had shifted and
+     chased dedup as an explanation — instrumented `dedupClosureBodies`
+     to report `redirect.get('closure854')`; came back `undefined`, i.e.
+     854 was NOT deduped away this time either — the marker byte, not
+     dedup or renumbering, was the entire explanation. Ruled out as a
+     lead, not worth re-chasing.) Both instrumentation edits reverted
+     (`git show HEAD:module/function.js > module/function.js`, same for
+     `src/wat/assemble.js`; `git status`/`git diff` confirmed clean after).
+  3. Found `(func $closure854` at line 6062563 (prior session: 6062570 —
+     a 7-line drift, consistent with minor upstream changes, not a
+     structural shift); next top-level func `$closure856` at 6085745. Body
+     span 6062563-6085744 = 23,182 lines lines, matching the prior
+     session's 23,182-line count exactly — **the function's internal
+     structure has NOT changed since the prior session**, only its
+     absolute file offset.
+
+**Step 2 — isolate the general per-field store loop among the 9
+candidates, DONE with a decisive, source-grounded disambiguator (not a
+guess).** Wrote a paren-depth matcher (python, tracking `(`/`)` per
+character with a stack of open-tag records) over the extracted 23,182-line
+body — found 32 `loop` constructs, 45 `call_indirect` sites (prior
+session: 30+/43 — small drift, same shape), and confirmed the SAME 9
+innermost-enclosing-loop line offsets the prior session found by hand:
+13466, 14260, 14786, 16065, 17265, 17791, 19073, 20902, 21969 (relative to
+the extracted body) — **exact match, byte-for-byte reproducible via the
+script**, closing the "was this really 9" open question.
+  - Read module/object.js's `{}` handler source completely (lines 65-249)
+    to get the ground-truth shape to match against, not just the loop's
+    own internal logic. Two facts pin the disambiguation:
+    - The **general store loop** is `for (let i=0;i<values.length;i++)
+      body.push(ctx.abi.object.ops.store(...,slotOf(i),fieldStoredValue(i)))`
+      (object.js:237-238) — `values.length` is a RUNTIME length (values is
+      a JS array built by `.push()` in an earlier loop over `props`), so
+      JS semantics require it re-read EVERY iteration via a real
+      `$__length`/`$__len` call, not a compile-time constant.
+    - The loop that BUILDS `names`/`values` from `props` (object.js:126-128,
+      `for (const p of props) { if (...) {names.push(p[1]); values.push(p[2])} }`)
+      iterates over `props`, which derives from the handler's OWN rest
+      parameter `rawProps` — i.e. its trip count is the REST ARG COUNT,
+      not `values.length`.
+  - Read both 624-line and 920-line candidate loops' exit conditions
+    directly (the method's own prescribed disambiguator): loop 20902-21526
+    exits via `br_if $loop42056 (i32.lt_s (if1969_34+1, (local.get
+    $restIdx42175)))` — a local named **`restIdx`**, matching "iterate
+    over the rest-arg-derived `props`" exactly. Loop 21969-22889 exits via
+    `br_if $loop42106 (i32.lt_s (if1969_35+1, select(trunc_sat(call
+    $__length(local.get $__a3)), 0, ne(...,inf))))` — a **runtime
+    `$__length` call on an array pointer**, re-evaluated at the loop exit
+    check, matching `i < values.length` exactly (the `select(...,inf)`
+    guard is `$__length`'s own not-an-array sentinel handling, unrelated
+    to the disambiguation). Its body accumulates via `local.set $__a6
+    (call $__arr_push1 ...)` — matching `body.push(...)` (Array.push in
+    the self-hosted compiler's OWN source compiles to `$__arr_push1`,
+    since `body` is a growable JS array of IR nodes — this is the
+    "compiler compiling its own IR-array-building code" meta-layer, worth
+    naming explicitly since it makes the WAT look like it's building
+    arrays of arrays of stores, which it literally is: IR nodes ARE
+    runtime JS arrays at this compiler's own self-hosted level).
+  - **CONFIRMED: loop 21969-22889 (relative) = absolute file lines
+    6084531-6085451 (920 lines) IS the general per-field store loop.**
+    Loop 20902-21526 is the earlier names/values-population loop, a
+    DIFFERENT loop entirely — the prior session's "28 stores" note for
+    21969-22889 almost certainly meant "28 nested store-shaped IR-array
+    constructions" (this loop's body LITERALLY BUILDS an IR array literal
+    representing a `f64.store`-shaped node for the compiler's OWTPUT,
+    hence the deeply nested `$__alloc_hdr_*`/`f64.store offset=N` blocks
+    seen when reading it — that nesting is the loop CONSTRUCTING an IR
+    node, not the loop ITSELF containing 28 real WASM stores).
+
+**Step 3 — read the loop completely, traced every per-iteration state
+item across the recursive call_indirect boundary. Three concrete
+clobber hypotheses formed and DIRECTLY FALSIFIED (not merely
+unconfirmed):**
+
+1. **WASM-local-frame aliasing** (the loop counter `$if1969_35`, the
+   accumulator `$__a6`, the values-array pointer feeding the length check
+   `$__a3`, the closure's own `$__env` parameter — all the loop's directly
+   visible per-iteration state). **Falsified by construction, not by
+   probe**: `slotOf`/`fieldStoredValue`'s wrapper (the ternary picking
+   `storedValue`/`storedValueNarrow`) are non-escaping closures over
+   `schema`/`names`/`values`/`schemaId` (object.js:190,229-230) and got
+   INLINED (only ONE `call_indirect` appears in the whole loop, not two or
+   three, confirming `slotOf` compiled to a direct local read, matching
+   the ALREADY-FALSIFIED `_nonEscaping`/`OPTF.staticClosureEnv` hypothesis
+   from two sessions ago — same conclusion, reached here structurally via
+   the call_indirect count instead of via a synthetic probe). Every one of
+   these is therefore an ordinary WASM local or the closure's own
+   parameter — per-ACTIVATION-private by the WASM spec itself (a
+   `call_indirect` re-entering the same function definition always gets a
+   fresh local vector; there is no VM-level mechanism for one activation's
+   locals to alias another's). This channel is sound BY CONSTRUCTION, not
+   just untested — ruling it out doesn't need a differential probe the way
+   the closure-env-in-static-segment hypothesis did.
+
+2. **`$__closure_spill`** (the ONE confirmed GLOBAL — i.e. cross-activation
+   —  state reachable from this loop: found via the recursive
+   `call_indirect` site itself, absolute line ~6085160, immediately
+   preceded by `(global.set $__closure_spill (local.get $sa42148))`).
+   Traced its full contract: `src/ir.js:786-790`'s doc comment
+   ("MAX_CLOSURE_ARITY... spread calls are unbounded: the spread site
+   publishes the full args-array offset in `$__closure_spill`, and a
+   rest-param callee reads args[MAX..argc-1] from it"), the write side
+   (`src/compile/index.js` / `module/function.js:264,289` — `ctx.closure.
+   call`'s `prebuiltArray` path, which EVERY `emit()` dispatch to
+   `ctx.core.emit[tag](...)` must use since `node.slice(1)`'s length isn't
+   known at the CALLER's own compile time), and the read side
+   (`src/compile/index.js:2166-2196` — the callee's rest-param-unpack
+   prologue, gated by a RUNTIME `if (argc > W-fixedN)`, `W=
+   MAX_CLOSURE_ARITY=8`). **Directly computed, not assumed, that this
+   overflow-read branch is INERT for the minimal repro**: `{}` handler has
+   `fixedN=0` (its only param is the rest param), so `restSlots=8`; the
+   2-line repro's object literals each have ≤2 raw AST children
+   (`rawProps.length` ≤2 for both the outer and the nested literal) — well
+   under 8 — so the runtime `argc > restSlots` check is FALSE on both the
+   outer and every recursive call, and the loop that reads
+   `$__closure_spill` never executes. Also checked: nothing in a single
+   activation's OWN prologue (fixed-param unpack, rest-len/rest-array
+   alloc, the inline-slot copy loop) makes any closure-dispatching call
+   BEFORE its own (skipped, for this repro) `$__closure_spill` read — so
+   even where this channel IS live (objects/argument lists >8 wide), a
+   single activation's read always immediately follows its own caller's
+   write with no intervening call that could reuse the global. **Ruled out
+   as the direct mechanism for the 2-line repro** — it may still matter
+   for shapes with >8 fields/args (a live open question for a future
+   session, see NEXT), but the MINIMAL repro doesn't reach it, so it
+   cannot be what's failing here.
+
+3. **`$__heap_reset` / `__hash_reuse_eph`** (the "ephemeral reuse"
+   bump-allocator watermark seen in object.js's dictionary-mode branch and
+   its `heapResetIR` helper — hypothesized as a plausible "recursion
+   reclaims memory the outer activation still needs" channel, matching
+   this whole audit's family precedent of scale/allocator artifacts).
+   **Directly falsified by grep, not reasoning**: `__heap_reset` does not
+   appear ANYWHERE inside `$closure854`'s 23,182-line body (0 matches;
+   187 matches elsewhere in the 7.9M-line file) — it's wired into a
+   DIFFERENT branch of the `{}` handler (the dict-mode early return,
+   object.js:80-94) that doesn't reach this loop at all. Ruled out.
+
+**What the loop's own allocator traffic DOES look like** (read but not yet
+followed to a conclusion): within the confirmed loop, every iteration's
+value-construction calls `$__alloc_hdr_2_16`/`$__alloc_hdr_5_16`/`$__alloc`/
+`$__ptr_offset_fwd`/`$__len` repeatedly (building the nested IR-array-
+literal representing the emitted `store` node) — all DIRECT calls (not
+closure dispatch), consistent with a simple bump allocator with no
+reuse/free in this path. Did not confirm whether the allocator can ever
+wrap, hit a growth/compaction path that MOVES already-allocated data (the
+one channel not yet ruled out that would explain "a value already read
+correctly during array-population, `values[i+1]`, reads as null after a
+nested-object recursion" without needing a WASM-local or global-variable
+bug at all — a memory-level corruption instead of a control/state-flow
+one). This is the concrete, narrower NEXT wall.
+
+**Banking, not patching — no fix landed, no jz source file left
+modified.** `git status`/`git diff` confirmed clean (only the pre-existing
+untracked `.work/todo-original.md`) after reverting both temporary
+instrumentation edits (`module/function.js`'s `ctx.closure.make` fingerprint
+print, `src/wat/assemble.js`'s `dedupClosureBodies` redirect-report print).
+No gate suite run — nothing shipped to gate; the 4 test:wasm rows stay red.
+Scratch WAT dumps (self-O3.wat, 372 MB; closure854.wat, 23,182 lines)
+written under the session scratchpad, not committed, not left in the repo.
+
+**NEXT** (three concrete, narrower options, any one sufficient to close
+the remaining gap):
+  1. Whether `values`'s backing array storage (or the outer object's own
+     `$t`/`$ptr` allocation, done once before the loop via `$__alloc_hdr`)
+     can be MOVED/reallocated by allocator traffic DURING the recursive
+     call — requires reading `$__alloc`/`$__alloc_hdr`/the array-growth
+     helper's own WAT (not yet extracted) to check for a copy-on-grow path
+     reachable from within a nested `{}`-handler invocation, and if found,
+     confirming with a dynamic probe (instrumented allocator print,
+     comparing the `values` array's own base pointer before/after the
+     recursive call at a specific field index) rather than static reading
+     alone — this class of bug is invisible to WAT inspection if the
+     defect is "wrong reuse decision" rather than "wrong instruction
+     emitted".
+  2. The still-not-directly-tested `$__closure_spill` overflow channel for
+     shapes with MORE than 8 top-level object fields or nested call args —
+     the minimal repro doesn't exercise it, but the original 4 failing
+     test:wasm rows (`OPS = {i32:{add:{...}}, f64:{add:{...}}}` etc.) may
+     have wider fan-out at some level and could reach the overflow-copy
+     loop (`src/compile/index.js:2183-2193`) while nested inside a live
+     recursive activation — worth a direct arg-count check against each
+     of the 4 original failing cases before assuming they all reduce to
+     the exact same channel as the 2-line repro.
+  3. The still-open, never-directly-probed "module-scope vs function-scope
+     CALLING CONTEXT" diff the method's step 3 asks for: find the actual
+     call SITE that invokes `$closure854`'s table slot from `$__start`
+     (module-scope path) vs from an ordinary function body's emission, and
+     diff what's set up immediately before each — `buildStartFn`
+     (`src/wat/assemble.js:152-230`) is the NATIVE compiler's own
+     module-scope-emission logic (compiled, at bootstrap, into part of
+     what `$closure854`'s CALLERS eventually run inside dist/jz.wasm) —
+     its own doc comment flags that "module-scope object literals can
+     create closure bodies while emit(ast) runs" and that
+     `emitClosureBody` "owns `ctx.func.*` while it runs", restored via a
+     `startCtx` snapshot after — a snapshot/restore pattern this whole
+     audit chain's own precedent (DECL-INIT WALL family) has repeatedly
+     found defects in elsewhere. Not yet traced whether THIS specific
+     snapshot/restore interacts with the store loop's recursive
+     `$closure854` re-entry, or is a red herring for a case (ours) that
+     never mints a NEW closure mid-object-literal at all.
