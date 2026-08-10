@@ -6,6 +6,36 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## CONSERVATIVE PAIRING (carrier flip probe): UNDEF_NAN/NULL_NAN root-caused and FIXED, dict+test:wasm-hang both closed, flip STILL blocked — 2026-08-10
+`§24`'s own `UNDEF_NAN`/`dict`/`test:wasm`-hang wall (below) is root-caused
+and fixed. Built a WAT-level trace instrument (`scripts/trace-inject.mjs`,
+committed) and traced `atomNanHex`/`i64Hex` directly inside a real,
+non-snapshotted kernel `$__start`: `atomNanHex` itself was innocent (every
+real invocation returns correct bits) — the bug is in `i64Hex`, whose
+`bits` param the whole-program `bigintBoxed` solver proves always arrives
+boxed; `atomNanHex`'s own carrier-only "return raw for a reserved-sentinel
+collision" optimization crosses that call boundary through `coerceArg`
+(src/compile/emit.js), whose `isNullish()`-guarded box-skip is a VALUE
+test that can't distinguish "genuinely nullable type" from "this BigInt's
+value happens to bit-collide with NULL_NAN/UNDEF_NAN" — so it skips
+boxing for `atomId` 1/2, and `i64Hex`'s unchecked `unboxBigInt` derefs
+their low-32-bits-as-address (0, since the id lives at bit 32+), reading
+the formatter's own string table at address 0. Fixed by gating the
+raw-passthrough on the argument actually being a `?:` nullish-BigInt
+merge (`nodeIsNullishBigintMerge`), matching the ternaryBoxedNames gate
+already used elsewhere. `§15` WAT differentials 3/3 closed (`() =>
+undefined` now byte-identical). `dict` kernel-parity O0/O2/O3: 3/3, fully
+green. `test:wasm` COMPLETES (first time ever under CARRIER_BOX) —
+2712/2719, 1 pre-existing unrelated failure (verified NOT a regression:
+reproduces on the pre-fix kernel too — a THIRD, distinct CONSERVATIVE
+PAIRING gap, `pointsTo==='ALL'`-poisoned schema read misreads under
+kernel-target self-compilation specifically, banked for a future session).
+kernel-oracle 11/13 (was 5/13). Flag-forced battery 15 fail (was 21).
+Fuzz 0/121883. Default byte-identity + build×2: clean. **Flip-readiness:
+still NO** — the coordinator's own call, not this session's; one
+newly-surfaced item (above) keeps `test:wasm` short of 100%. Full account:
+`.work/carrier-representation-design.md` §29.
+
 ## CONSERVATIVE PAIRING (carrier flip probe): mechanism landed and verified sound, flip STILL blocked — 2026-08-09
 Per `.work/context-sensitivity-survey.md`'s COORDINATOR RULING. `readI64`
 (src/ir.js) gains `isSchemaSlotBigintPossible` + `maybeUnboxBigInt`: a

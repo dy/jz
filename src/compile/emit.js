@@ -1412,6 +1412,35 @@ const storedValue = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(nod
 // local access, with no registry-aware dynamic reader ever downstream of it.
 const storedValueNarrow = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64Narrow(node, emit(node))
 
+// carrier-representation-design.md §29: `coerceArg`'s box-direction branch
+// below used `isNullish(tGet)` — a RUNTIME BIT-PATTERN test — as its "is this
+// argument genuinely nullable" guard, deciding whether to skip `boxBigInt`
+// and pass the value through raw. That test can't distinguish "this node's
+// STATIC TYPE is really a BIGINT∪nullish union" (the ternary-merge shape
+// kind.js's own VT['?:'] nullishArm rule types VAL.BIGINT for, matching the
+// check just below — the ONLY place in the type system a node types BIGINT
+// while its runtime value can genuinely BE the NULL_NAN/UNDEF_NAN sentinel)
+// from "this node's VALUE happens to bit-collide with one of those two
+// reserved constants" — a plain, never-null BIGINT expression whose result
+// is occasionally, by construction, IDENTICAL to a reserved atom's own bit
+// pattern (found live: `layout.js` atomNanHex's own `LAYOUT.NAN_PREFIX_BITS
+// | (BigInt(atomId) << AUX_SHIFT)` — never nullable, but for atomId 1/2 its
+// VALUE is bit-for-bit NULL_NAN/UNDEF_NAN). The false-positive skipped
+// `boxBigInt` for that pure-BIGINT argument and passed it raw into `i64Hex`
+// — whose OWN `bits` param the whole-program `bigintBoxed` solver proved
+// "always arrives boxed" and unboxes with ZERO runtime tag check
+// (unboxBigInt, ir.js) — so `i64Hex` treated the raw sentinel's low 32 bits
+// (0 for both NULL_NAN and UNDEF_NAN — their id lives at bit 32+) as a heap
+// address and `i64.load`'d address 0, reading the formatter's own static
+// string table's opening bytes. Restricting the runtime nullish-guarded
+// passthrough to the ONE shape that can genuinely BE null (a `?:` node with
+// a nullish arm, mirroring the ternaryBoxedNames gate a few hundred lines
+// below verbatim) restores boxBigInt's unconditional call for every other
+// BIGINT-typed argument — exactly the invariant i64Hex's own bigintBoxed
+// proof already assumes.
+const nodeIsNullishBigintMerge = (node) => Array.isArray(node) && node[0] === '?:' &&
+  ((valTypeOf(node[2]) === VAL.BIGINT && nullishArm(node[3])) || (valTypeOf(node[3]) === VAL.BIGINT && nullishArm(node[2])))
+
 /** Coerce an emitted arg IR to match a callee param. Param may carry ptrKind (pointer-ABI
  *  i32 offset), else falls back to numeric WASM type coercion.
  *  `node` (the arg's AST, when the caller has it): a statically-BOOL arg headed
@@ -1492,6 +1521,13 @@ function coerceArg(ir, param, node) {
       // unbox direction above — a nullable-BIGINT argument (proven or
       // unproven-boxed alike) may genuinely be the sentinel at runtime.
       // `tGet` typed 'f64' — see the unbox branch's own comment just above.
+      // Nullish-GUARDED only for a node that can genuinely BE null/undefined
+      // at runtime (a `?:` nullish-BIGINT merge, nodeIsNullishBigintMerge
+      // above) — every other BIGINT-typed argument boxes unconditionally, so
+      // a value that merely happens to bit-collide with a reserved sentinel
+      // (atomNanHex's own NULL_NAN/UNDEF_NAN construction) still gets boxed,
+      // matching what the callee's own bigintBoxed proof assumes (§29).
+      if (!nodeIsNullishBigintMerge(node)) return boxBigInt(asI64(ir))
       const t = temp('argbx')
       const tGet = typed(['local.get', `$${t}`], 'f64')
       return typed(['block', ['result', 'f64'],

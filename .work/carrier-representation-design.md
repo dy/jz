@@ -4252,3 +4252,295 @@ commits): carrier kernel built there 3 times — snapshotInit:true WAT dump
 new this session), and a raw-bytes instantiate-and-inspect build (15265.9
 KB wasm, `{level:3, watrGuard:false, snapshotInit:false}`) — all
 JZ_CARRIER_BOX=1, all read-only against the shared tree.
+
+## §29. The mechanism, named — root-caused and FIXED (2026-08-10, isolated
+`git worktree add --detach`, fix applied to both trees; the shared tree's
+`dist/jz.wasm` was never touched by any wasm-instantiating step). §15's
+differentials, kernel-parity `dict` O0/O2/O3, and `test:wasm`'s own hang are
+ALL closed. `test:wasm` completes (2712/2719, 1 pre-existing unrelated
+failure, verified NOT a regression). Fuzz 0/121883 divergences. **Still NO
+default flip — one newly-surfaced, pre-existing kernel-target gap (item 8
+below) keeps `test:wasm` short of 100% green.**
+
+**The instrument.** Built `scripts/trace-inject.mjs` (committed, reusable):
+parses a NAMED function's own line-range slice out of a multi-hundred-MB WAT
+dump (via `watr/parse`, wrapped in a throwaway module — never re-parses the
+whole file), tee-wraps chosen subexpressions into fresh debug locals feeding
+a `(import "dbg" "trace" (func $dbgtrace (param i64 i64)))`, re-prints via
+`watr/print`, and splices N such regions back into the full text in one
+pass. Built the carrier kernel with a REAL (`snapshotInit:false`) `$__start`
+in a disposable worktree, instrumented `atomNanHex` (the §24-§28 suspect)
+AND, once that proved clean, `i64Hex` (its tail-call target), reassembled
+via `watr/parse`+`compile`, instantiated with stub `env.*` imports (none
+fired — $__start stayed fully hermetic, matching §28's own probe) plus a
+real `dbg.trace` collecting `(tag, value)` pairs, ran `$__start` once.
+
+Two real bugs surfaced and got fixed along the way, both in the injector
+itself, both left as permanent lessons in the script's own comments: (a)
+`push(...hugeArray)` blows the call stack at multi-million-line scale —
+`concat()` doesn't; (b) jz's own generated-local names can carry a U+E000
+PUA marker (`src/ast.js`'s own `T` constant) that's invisible in every
+terminal/JSON.stringify rendering — a hand-typed bare `'$mbig0'` reference
+silently fails to resolve at assemble time ("Unknown local $mbig0",
+reported at a MISLEADING position near the end of the file, since watr's
+error position tracks its own internal processing state, not the literal
+token) while printing identically; always reuse the exact string captured
+off the AST. A third, structural bug: new `(local ...)` declarations MUST
+be spliced in before a func's FIRST instruction, not just before its LAST
+— worked by coincidence for `atomNanHex` (one-instruction body) and
+silently corrupted `i64Hex` (many instructions) until caught.
+
+**1. `atomNanHex` itself is innocent — the §24-§28 suspect is cleared.**
+Traced all 7 real `atomNanHex` invocations this build actually makes (the
+task's own framing, inherited from §24-§28, named 4 — `$__start`'s own
+`layout.js`-module init calling `NULL_NAN`/`UNDEF_NAN`/`FALSE_NAN`/
+`TRUE_NAN` — but a SECOND, independent module, `$m117_index` (index.js),
+has its own `NULL_BITS`/`UNDEF_BITS`/`FALSE_BITS` trio calling the exact
+same `atomNanHex`, ~35K lines later in the same `$__start`, ids 1/2/4
+again): the `LAYOUT.NAN_PREFIX_BITS` schema-slot deref (`maybeUnboxBigInt`,
+src/ir.js — the §24 CONSERVATIVE PAIRING mechanism) reads byte-identical,
+correct values on EVERY call — `dbgLayoutBase=0xd9d18`, `dbgRawField=
+0x7ffa8000000d9d68` (tag=5, aux=0, offset=0xd9d68), `dbgTag=5`,
+`dbgAddr=0xd9d68`, `dbgLoaded=0x7ff8000000000000` — always. `atomNanHex`'s
+own return value (traced as `dbgResult`, captured before the tail-call into
+`i64Hex`) is mathematically correct on every one of the 7 calls:
+
+| seq | id | dbgResult (raw arg to i64Hex) |
+|---|---|---|
+| 1 | 1 (NULL) | `0x7FF8000100000000` — correct, unboxed (sentinel passthrough) |
+| 2 | 2 (UNDEF) | `0x7FF8000200000000` — correct, unboxed (sentinel passthrough) |
+| 3 | 4 (FALSE) | `0x7ffa8000000f4fe0` — correct, boxed (tag=5, no sentinel match) |
+| 4 | 5 (TRUE) | `0x7ffa8000000f50f0` — correct, boxed |
+| 5 | 1 (2nd module) | `0x7FF8000100000000` — correct, unboxed |
+| 6 | 2 (2nd module) | `0x7FF8000200000000` — correct, unboxed |
+| 7 | 4 (2nd module) | `0x7ffa800000127e98` — correct, boxed |
+
+This directly REFUTES §27/§28's own "invocation-count/warm-up" framing:
+calls 5-6 are the 5th/6th REAL invocations (well past any plausible
+warm-up window) and STILL take the unboxed-sentinel path for ids 1/2 —
+the divergence is 100% id-VALUE-dependent (1, 2 always unboxed; 4, 5
+always boxed), never invocation-count-dependent.
+
+**2. `i64Hex` is where the misread actually lives.** `i64Hex($bits)`
+(layout.js: `bits => '0x' + _hx8(Number((bits>>32n)&0xFFFFFFFFn)) +
+_hx8(Number(bits&0xFFFFFFFFn))`) compiles, under CARRIER_BOX, to: extract
+`$__poff0 = low32($bits)`, run a FORWARDING_MASK tag-check that decides
+ONLY whether to chase a GC-forwarding pointer (never whether to deref AT
+ALL), then `i64.load($__poff0)` UNCONDITIONALLY, twice (high/low halves,
+same address, same loaded value, split by shift vs mask) — this is sound
+ONLY if `$bits`'s low 32 bits are ALWAYS a real heap address, i.e. `$bits`
+is ALWAYS a boxed BIGINT pointer. Traced calls 1-2 exactly:
+
+| seq | id | dbgAddrHi | dbgLoadedHi | dbgResult2 (baked global content ptr) |
+|---|---|---|---|---|
+| 1 | 1 | `0x0` | `0x6e69666e494e614e` **WRONG** | `0x7ffa0002000f4df8` → `"0x6E69666E494E614E"` |
+| 2 | 2 | `0x0` | `0x6e69666e494e614e` **WRONG** | `0x7ffa0002000f4fc8` → `"0x6E69666E494E614E"` |
+| 3 | 4 | `0xf4fe0` | `0x7ff8000400000000` correct | `0x7ffa0002000f50d8` → `"0x7FF8000400000000"` |
+| 4 | 5 | `0xf50f0` | `0x7ff8000500000000` correct | `0x7ffa0002000f51e8` → `"0x7FF8000500000000"` |
+| 5 | 1 (2nd) | `0x0` | `0x6e69666e494e614e` **WRONG** | (same wrong pattern) |
+| 6 | 2 (2nd) | `0x0` | `0x6e69666e494e614e` **WRONG** | (same wrong pattern) |
+| 7 | 4 (2nd) | `0x127e98` | `0x7ff8000400000000` correct | (correct) |
+
+For calls 1/2/5/6 (ids 1, 2 — the unboxed sentinel-passthrough path),
+`$bits`'s low 32 bits are 0 (the id lives at bit 32+, per `AUX_SHIFT`;
+NULL_NAN/UNDEF_NAN's own construction never touches bits 0-31), so
+`i64Hex` reads `i64.load(address 0)` — the formatter's own static
+string-table's opening bytes, `"NaNInfinity-Infinitytrue…"` — decoding to
+exactly `0x6E69666E494E614E`, bit-for-bit the §26a/§27/§28 corruption
+signature. For calls 3/4/7 (ids 4, 5 — always boxed, since their combined
+bits never match either hardcoded sentinel literal `atomNanHex` special-
+cases), the low 32 bits legitimately ARE the box's own heap address, so
+`i64Hex`'s blind trust happens to be correct — which is why only 2 of the
+4 sentinels, and only for the ids that collide with a reserved atom's own
+bit pattern, ever broke.
+
+**3. The source decision, traced to its exact origin.** `i64Hex`'s `bits`
+param is solver-proven (`reps.js`'s whole-program `bigintBoxed` fixpoint)
+to always arrive boxed at every call site — so `readI64` (src/ir.js) routes
+every arithmetic use of `bits` inside `i64Hex`'s own body through the
+UNCHECKED `unboxBigInt` (`isCurrentlyBoxedBigint('bits')` gate), never the
+runtime-tag-checked `maybeUnboxBigInt` twin `atomNanHex`'s own read uses.
+That proof is a call-site CONTRACT: every caller must box a BigInt
+argument before crossing into a `bigintBoxed` param. `atomNanHex`'s own
+tail-call `i64Hex(LAYOUT.NAN_PREFIX_BITS | (BigInt(atomId) << AUX_SHIFT))`
+crosses that boundary through `coerceArg` (src/compile/emit.js). Its
+box-direction branch (`!alreadyBoxed && param?.bigintBoxed`) used
+`isNullish(tGet)` — a RUNTIME BIT-PATTERN test — to decide whether to
+SKIP `boxBigInt` and pass the value raw, "guarded" (per its own, now
+stale, doc comment) for "a nullable-BIGINT argument [that] may genuinely
+be the sentinel at runtime." That guard is CORRECT for its intended shape
+— a `?:` ternary with one nullish arm, the ONE place `kind.js`'s own
+`VT['?:']` types a node BIGINT while its runtime value can genuinely BE
+null/undefined — but `isNullish()` tests VALUE, not TYPE: it can't
+distinguish "this node's static type is really nullable" from "this
+node's value happens to bit-collide with a reserved sentinel." The OR
+expression `LAYOUT.NAN_PREFIX_BITS | (BigInt(atomId) << AUX_SHIFT)` is
+never nullable — no ternary anywhere — but for `atomId` 1/2 its VALUE is,
+BY CONSTRUCTION (that expression's entire purpose is minting those two
+sentinels), bit-for-bit identical to NULL_NAN/UNDEF_NAN. The false
+positive skips `boxBigInt`, breaking the call-site contract `i64Hex`'s own
+`bigintBoxed` proof — and its unchecked `unboxBigInt` — assumes.
+
+**4. Fix, at the ordering-authority root, `coerceArg` (src/compile/
+emit.js).** Added `nodeIsNullishBigintMerge(node)` — the exact `?:`
+nullish-arm shape `ctx.func.ternaryBoxedNames`'s own gate (a few hundred
+lines below, verbatim pattern) already recognizes as "genuinely can be
+null" — and restricted the box-direction branch's `isNullish`-guarded
+raw-passthrough to fire ONLY for that shape:
+```js
+if (!nodeIsNullishBigintMerge(node)) return boxBigInt(asI64(ir))
+```
+Every OTHER BIGINT-typed argument (including `atomNanHex`'s own OR
+expression) now boxes unconditionally, restoring the invariant `i64Hex`'s
+`bigintBoxed` proof assumes. Whole change is inside the existing
+`if (CARRIER_BOX && …)` gate — zero default-build code-path change by
+construction (confirmed: default `dist/jz.wasm` SHA-256 byte-identical
+across two independent rebuilds, this session).
+
+**5. Direct verification, before running any gate.** Built the CARRIER_BOX
+kernel to real wasm bytes with `snapshotInit:true` (`build-dist.mjs`'s own
+exact production path — the artifact users actually ship), instantiated
+with stub `env.*` imports (none fired), scanned linear memory: `"0x7FF80001
+00000000"` (correct NULL_NAN) found at byte 1002808; `"0x7FF800020000
+0000"` (correct UNDEF_NAN) found at byte 1003080; `"0x6E69666E494E614E"`
+(the corruption every prior session named) — NOT FOUND anywhere in memory;
+`"0x7FF8000400000000"`/`"0x7FF8000500000000"` (FALSE/TRUE_NAN) unchanged,
+correct; all 4 evenly spaced 272 bytes apart (no incidental collision).
+
+**6. Gates — ALL closed except one newly-surfaced, pre-existing,
+verified-not-a-regression item (§29.8).** Sequential, foreground, in an
+isolated `git worktree add --detach` at `689dab68` (fix applied there
+identically to the shared tree). Killed a first attempt at delegating this
+to a background sub-agent partway through (per the coordinator's own
+correction mid-session — it had left two concurrent `node test/index.js`
+runs and a `build-dist.mjs` run alive in the SAME worktree; all killed,
+`dist/` wiped, restarted clean) — every number below is from this
+session's own direct, sequential re-run, not the killed agent's.
+
+- **Default (`CARRIER_BOX` off) byte-identity, build ×2:** `dist/jz.js`/
+  `dist/interop.js`/`dist/jz.wasm` SHA-256 identical across two independent
+  `npm run build` runs (no flag). `dist/jz.wasm` 16477.8 KB both times.
+- **Native battery, default:** `node test/index.js` — 3424 total (19602
+  assertions), **3416 pass, 2 fail** (the SAME two pre-existing,
+  CARRIER_BOX-unrelated rows every prior session in this chain has named —
+  interval-walk codec bounds check, typed RMW guard count), 6 skip.
+- **Flag-forced native battery (`JZ_CARRIER_BOX=1`):** 3424 total (19504
+  assertions), **3403 pass, 15 fail** (6, 6 skip) — **DOWN from the 21-row
+  baseline §17-§24 established** (this fix closed 6 of those rows). Named
+  survivors spot-checked: `Map`/`dict` unary `-`/`~` on an absent-key read
+  (audit-#8 P0-4 Part 3, unrelated dyn-keys.js class), `Slice 5: bare Map/
+  dict .get()/[] materializes BigInt across the export boundary` (dyn-keys
+  Slice 5/6/7 family, pre-existing), the kernel-oracle console.log
+  KNOWN-FAIL (§16→§17, pre-existing) — all pre-existing classes this
+  chain already named, none new.
+- **§15 WAT differentials — 3/3 CLOSED** (native vs a fresh
+  `JZ_CARRIER_BOX=1` kernel, via `compileViaKernel`, O0): `() =>
+  "abcdefghi"` → `nan:0x7FFA000000000007` both; `() => () => 1` → `nan:
+  0x7FFD000000000000` both; **`() => undefined` → `nan:0x7FF800020000
+  0000` both, full WAT text byte-identical** — the ONE differential every
+  session since §24 left open, now closed.
+- **`dict` kernel-parity, O0/O2/O3 — 3/3 (33 assertions), FULLY GREEN**
+  (`test/kernel-parity.js`, `JZ_CARRIER_BOX=1`): every CORPUS row (`sum`,
+  `math`, `dict`, `arr`, `fold`, `mfold`, `boolconst`, `nestedtyped`,
+  `subviewtyped`, `dvnested`, `fromnested`) byte-identical native-vs-kernel
+  WAT at all 3 optimize levels — `dict` (the row §17-§24 tracked at
+  diverging byte sizes every session) is now identical, not just
+  same-size.
+- **`kernel-oracle.js` — 11/13 (455 assertions)**, up from the §22
+  baseline's 5/13 (113 assertions): the 3× kernel-parity `dict` rows and
+  the dict-vs-oracle correctness rows this chain tracked as failing are
+  now ALL passing (kernel-parity's own 3 blocks are subsumed here and are
+  green). Only 2 pre-existing, unrelated KNOWN-FAIL rows remain: audit-#16
+  (`ctx.features.bigint` module-ordering, wrong at BOTH native and kernel
+  — not a kernel-only bug) and the console.log heap-string kernel
+  miscompile (§16→§17, already on record).
+- **`node test/watr.js` — 35/35 (107 assertions), unchanged.**
+- **`JZ_CARRIER_BOX=1 test:wasm` — COMPLETES (no longer hangs).** 2719
+  total (12863 assertions), **2712 pass, 1 fail** (6 skip) — the FIRST
+  time in this entire chain `test:wasm` has ever finished under
+  CARRIER_BOX rather than crashing fast or hanging 28+ minutes. The one
+  failure is a NEW finding, precisely named and verified NOT caused by
+  this session's fix — see item 8.
+- **Fuzz, `JZ_CARRIER_BOX=1`: 0 divergences, 4/4 sweeps clean.**
+  `--seedStart=1,2001,4001,6001`, `--opt=0,1,2,3`, `--inputs=20`,
+  `--count=2000` each: 30173 + 30672 + 30572 + 30466 = **121883 inputs
+  compared, 0 divergences** — exactly reproducing §22/§24's own historical
+  total, no drift.
+
+**7. Pins.** No new fixture landed this session — `test/kernel-parity.js`'s
+own `dict` row (now byte-identical) and `test/kernel-oracle.js`'s own
+correctness rows already ARE the permanent, checked-in regression pins for
+exactly this class of bug (they build a fresh carrier kernel and diff
+against native/JS on every run); adding a redundant standalone fixture
+would duplicate coverage `test/pointers.js`'s existing `carrier-
+conservative-pairing-repro.js`-based pins (§24) already provide at the
+native tier. `scripts/trace-inject.mjs` is committed as the reusable
+debugging asset the task asked for.
+
+**8. NEW finding this session — a second, distinct, pre-existing
+CONSERVATIVE PAIRING gap, verified NOT caused by this fix, banked
+precisely for a future session.** `test:wasm`'s one failure: `test/
+pointers.js`'s own "carrier: a bigint-possible-but-UNPROVEN
+(pointsTo==='ALL'-poisoned) schema field read through arithmetic still
+decodes correctly" pin — GREEN at native (this session, both flag-forced
+battery and test:wasm's own native-side siblings pass it) — reads
+`rawField()` as `NaN` instead of `9221120237041090560n` when the SAME
+fixture is compiled BY THE KERNEL ITSELF (`JZ_TEST_TARGET=jz.wasm`, which
+this pin had NEVER previously reached, since every prior CARRIER_BOX
+`test:wasm` run crashed or hung well before this point in the suite).
+**Verified NOT a regression from this session's fix**: reverted `src/
+compile/emit.js` to `HEAD` in the isolated worktree (`git stash push --
+src/compile/emit.js`), rebuilt the CARRIER_BOX kernel from that pre-fix
+source, re-ran `JZ_TEST_TARGET=jz.wasm JZ_CARRIER_BOX=1 node test/index.js
+pointers` — the IDENTICAL failure reproduces byte-for-byte
+(`actual: NaN`, `expected: 9221120237041090560n`) on the unmodified,
+pre-fix kernel. Restored the fix (`git stash pop`), rebuilt (SHA-256
+`36e2726b…` — identical to the pre-verification build, confirming
+deterministic rebuild), re-confirmed present. This is a THIRD, previously
+invisible layer of the same CONSERVATIVE PAIRING family (§16/§24): the
+`pointsTo==='ALL'`-poisoned (bigint-possible∧UNPROVEN) schema-slot read,
+sound at native scale (this session and §24 both confirm), diverges when
+the READING CODE ITSELF is compiled by a CARRIER_BOX-built kernel rather
+than run natively — a genuinely new, kernel-scale, "non-reproducible
+outside `test:wasm` reaching this exact point" wall, in the same family
+this whole chain has repeatedly banked rather than forced. Not
+root-caused this session (found in the gate suite's own tail, no budget
+left to trace it with the same rigor as §29's own main finding) — named
+precisely, with its own reproduction recipe (`JZ_TEST_TARGET=jz.wasm
+JZ_CARRIER_BOX=1 node test/index.js pointers`, ~15s), so the next session
+doesn't have to re-discover it from a bare `test:wasm` failure count.
+
+**Flip-readiness verdict: NOT YET — but the dependency chain moved
+further than any prior session.** Every blocker §17-§28 named by number —
+`dict` kernel-parity (§17, reconfirmed every session since), the `()
+=> undefined` WAT differential (§24, reconfirmed §26/§27/§28), `test:
+wasm`'s own hang (§24, reconfirmed §26/§27/§28) — is CLOSED this session.
+What keeps the flip itself banked: `test:wasm` is not 100% green (1 of
+2719, item 8) and the flag-forced battery still carries 15 pre-existing
+rows. Per the coordinator's own explicit instruction this session: **NO
+default flip** — `CARRIER_BOX` stays `JZ_CARRIER_BOX==='1'`-gated, OFF by
+default; the flip decision itself is the coordinator's, made in-thread,
+not this session's to make even with every named historical blocker
+closed. The concrete next lever for whichever session attempts the flip:
+root-cause item 8 (the `pointsTo==='ALL'` kernel-target-only NaN
+misread) with the SAME trace-inject.mjs-style direct instrumentation this
+session used for `i64Hex` — reusable, committed, ready.
+
+**Local commits.** `src/compile/emit.js` (`coerceArg`'s `nodeIsNullish
+BigintMerge` guard — the actual fix), `scripts/trace-inject.mjs` (the
+instrument, new), this ledger entry (`.work/carrier-representation-
+design.md` only). Plain messages, no push.
+
+**SHAs.** Investigated and fixed at `689dab68` (HEAD at session start,
+unchanged in the main tree until this session's own commits below).
+Disposable worktree `/tmp/jz-carrier-wt-instrument` (`git worktree add
+--detach` at `689dab68`, fix applied identically, removed at session
+end): carrier kernel built there repeatedly, all `JZ_CARRIER_BOX=1`, all
+read-only against the shared tree — final post-fix `dist/jz.wasm` SHA-256
+`36e2726b1a7d5d2d281d3a1682e4bad899cfbf060c6db2f431d77ba4b82187dc`
+(16528.2 KB; +50.4 KB / +0.31% over the default 16477.8 KB, matching
+§24's own cited delta almost exactly), reproduced byte-identically across
+two independent rebuilds pre- and post- the stash/pop verification in
+item 8. Shared tree's own `dist/jz.wasm`: untouched, never rebuilt this
+session (the fix landed in `src/` only; the shared tree carries no `dist/`
+under version control).
