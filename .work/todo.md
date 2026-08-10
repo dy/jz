@@ -8791,3 +8791,110 @@ functions never exercised by these bench kernels.
 Files: src/compile/narrow.js (new export `specializeValKindDichotomy`,
 after `specializeBimorphicTyped`), src/compile/plan/index.js (wired in,
 `optimizing()`-gated like `speculateTypedParams`).
+
+## AUDIT-#17 lead 1 executed: $closureN PINNED at last — $closure854 =
+## the '{}' handler, WAT extracted, store-loop NOT yet isolated — banked
+## at a NARROWER wall (2026-08-09)
+
+Picked up the split-verdict entry's own NEXT (lead 1: pin the '{}'
+handler's exact `$closureN` via `ctx.closure.table` instrumented trace,
+since grep-by-name is impossible — closure names are positional, not
+source-derived). **Achieved what two prior sessions could not: the exact
+function is $closure854.**
+
+**Method.** Instrumented NATIVELY (temporary, `module/function.js`'s
+`ctx.closure.make`, right after `const fnName = ...`): push `fnName` to
+`globalThis.__AUDIT17_HITS` whenever `params.length === 1 && restParam?.
+startsWith('rawProps')` — `rawProps` is module/object.js's `{}` handler's
+own rest-param name (`ctx.core.emit['{}'] = (...rawProps) => {...}`,
+object.js:65) and, per a direct grep, appears NOWHERE else in module/ or
+src/ — a fully unique fingerprint. First attempt used exact equality
+(`restParam === 'rawProps'`) and found ZERO hits even on a tiny isolated
+probe — the compiler's own hygiene pass RENAMES locals/params (confirmed:
+`rawProps` → `rawPropsf1_0`-shaped in a minimal differential probe), so
+exact-match silently never fires. Switched to `startsWith('rawProps')` —
+fires exactly once, `HITS=["closure854:rawPropsf1969_0"]`, against a
+NATIVE compile of `scripts/self.js` at build-dist.mjs's own settings
+(`resolveModuleGraph(self.js,{resolveNode:true})` → `compile(g.code,
+{modules:g.modules, memory:8192, optimize:{level:3, watrGuard:false,
+snapshotInit:true}, wat:true})` — identical to line 124-128 of
+scripts/build-dist.mjs except `wat:true` for text extraction, which only
+changes the RETURN FORMAT per emit.js's own doc comment, not codegen).
+Instrumentation fully reverted after (`git show HEAD:module/function.js >
+module/function.js`, confirmed `git status`/`git diff` clean, only the
+pre-existing untracked `.work/todo-original.md`).
+
+**Extraction.** The resulting WAT is 372,298,667 chars / 7,942,065 lines —
+NOTE: the WAT function/table names carry NO literal `T` (``) prefix
+in printed text (the private-use marker is source-internal only,
+sanitized away by the WAT printer) — `$closure854`, not `$closure
+854`; a naive template-literal grep including the marker silently misses
+every hit, the FIRST failure mode hit this session. Found `(func
+$closure854` at line 6062570; the next top-level `(func $...` at the same
+indent is `$closure856` at line 6085752 — so $closure854's compiled body
+spans lines 6062570-6085751 (23,182 lines). It is a MASSIVE, heavily
+O3-inlined dispatch function: 43 `call_indirect` sites, 30+ `loop`
+constructs — the whole `{}` handler's call graph (schema resolution,
+static-segment fast path, spread handling, the general per-field store
+loop) got inlined into ONE function body, not left as separate callees.
+
+**Sub-finding, investigated and RULED OUT as a lead (worth banking so a
+future session doesn't re-chase it):** the closure TABLE (`elem` section)
+lists `... $tramp_m89_object$resolveSchema $closure854 $closure562
+$closure856 ...` — i.e. slot 855 is MISSING; whatever would have been
+`$closure855` was merged by `dedupClosureBodies` (src/wat/assemble.js:
+440-498, a sound alpha-equivalence structural dedup — confirmed no
+`closure855` substring anywhere in the 372 MB file). This LOOKED like a
+promising mechanism (855 sits immediately after 854 in table order,
+`fieldStoredValue` — module/object.js's own store-loop dispatcher,
+already the coordinator's top suspect — is defined lexically right after
+the handler, so 855 was hypothesized to BE it, redirected to a
+possibly-mismatched merge partner). **Directly checked and REFUTED:**
+`$closure562`'s actual body (line 5762462) is a trivial single-arg
+identity-shaped wrapper (`(a0) => asF64(emit([lit-tag, a0]))`, no
+branch) — structurally nothing like `fieldStoredValue`'s real shape (a
+TERNARY between two cross-module-imported functions, `storedValue`/
+`storedValueNarrow`). Either slot 855 isn't `fieldStoredValue` at all (closure
+index assignment order follows the closure-body COMPILE QUEUE, not
+strict lexical nesting order — an assumption this session made and this
+finding disproves), or `fieldStoredValue` lives at a different index
+entirely. The dedup pass itself is sound by construction (canonicalize
+alpha-renames locals/params before hashing — two bodies only merge if
+byte-identical post-rename, which is safe regardless of which source
+variable the shared position captures). NOT the mechanism — do not
+re-open this sub-lead without new evidence.
+
+**NOT YET DONE (the concrete remainder of lead 1 + all of the method's
+steps 3-4):** which of $closure854's 30+ loops is the general per-field
+store loop (`for (i=0;i<values.length;i++) store(...,slotOf(i),
+fieldStoredValue(i))`) was NOT isolated. Nine loops directly enclose a
+`call_indirect` (lines 13466, 14260, 14786, 16065, 17265, 17791, 19073,
+20902, 21969 within the extracted body); the two largest/store-heaviest
+(20902-21526: 3 call_indirect, 14 stores; 21969-22889: 1 call_indirect,
+28 stores) are the best candidates but UNCONFIRMED — did not trace which
+one's loop-counter/length-compare shape matches `values.length`, nor
+extract the SAME handler's WAT for a function-scope-triggering probe to
+do the module-scope-vs-function-scope diff the method's step 3/4 calls
+for (that comparison needs its own extraction pass, not attempted this
+session — the 23K-line single-function scale made even ONE side of that
+diff the bulk of this session's budget).
+
+**Banking, not patching** — per this hunt's own repeated lesson (DECL-
+INIT WALL family), guessing a fix against an unconfirmed mechanism risks
+a symptom-shaped change. **NO FIX LANDED. No jz source file left modified**
+(`git status`/`git diff` clean, confirmed after reverting the
+module/function.js instrumentation). The 4 test:wasm rows stay red — no
+gate suite run beyond the instrumented/reverted native builds above
+(nothing shipped to gate). Scratch WAT dumps (374 MB) deleted, not
+committed.
+
+**NEXT** (now unblocked — the previously-impossible "which $closureN"
+step is DONE): extract $closure854's WAT from an ANALOGOUS compile where
+the repro's nested-object pattern sits at FUNCTION scope instead of
+module scope (the negative control) — same function, since it's ONE
+handler either way — and diff the CALL SITES that reach it (buildStartFn/
+`$__start` vs ordinary `emitFunc`/`emitClosureBody` call paths into
+$closure854) rather than trying to re-diff its own body twice. Within
+$closure854 itself, use the loop-index/length-compare shape (`i32.lt_s`
+against a length local fed by `values.length`) to disambiguate the two
+candidate loops at 20902 and 21969 before reading either in full.
