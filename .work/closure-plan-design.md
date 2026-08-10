@@ -669,3 +669,23 @@ zero cost from removing.
 
 **Local commit**: `.work/closure-plan-design.md` only. No `src/` changes —
 confirmed via `git diff --stat` showing only this file before commit (§0).
+
+## COORDINATOR RULINGS (2026-08-10, binding)
+1. Plan keying: BODY node (the loopPlanLink precedent — the identity that
+   survives lowering; decl nodes die in prepare). WeakMap, fail-open.
+2. Static-path retirement: YES, land NOW as its own slice — 0 grants on both
+   corpora independently re-derived; deletion first simplifies the surface
+   the plan replaces. (scanAndTagNonEscapingClosures + module/function.js's
+   static-env branch + OPTF.staticClosureEnv registry entry + the _nonEscaping
+   plumbing; keep the audit-#17/#18 pins as history — they now pin the
+   heap path's correctness.)
+3. callMultiplicity: DROPPED from the record — it was the static-env
+   concept's need; lambda-lifting has no shared storage, multiplicity is
+   irrelevant. Record stays minimal: {storage, captures}.
+4. The 371-vs-626 count discrepancy: reconcile inside slice 1's shadow-assert
+   (likely predicate-version drift — audit-#18's count predates
+   onlyCallIsSelf); a reconciliation failure is a FINDING.
+5. Slices 1-2 (plan introduction + lift-decision computation, both
+   byte-identity-gated) AUTHORIZED alongside the retirement slice. Slice 3
+   (lift emission, measured-delta) waits for coordinator review of slice 2's
+   decision census.
