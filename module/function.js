@@ -182,8 +182,14 @@ export default (ctx) => {
     const legacyStorage = envCaptures.length === 0 ? 'zero-capture' : boxedCaptures.length ? 'boxed-cell' : 'heap'
     const plan = astClosurePlan.get(body)
     if (DBG_INVARIANTS && plan) {
+      // Slice 2's 'lift-eligible' is UNWIRED plan DATA layered on top of a
+      // 'heap' decision (design §2.1 — a lift candidate is, by construction,
+      // a captured, all-unboxed-capture closure, i.e. exactly what legacy
+      // computes as 'heap') — normalize it back for this comparison, since
+      // the legacy inline path has no lift-eligibility concept to agree with.
+      const normalizedPlanStorage = plan.storage === 'lift-eligible' ? 'heap' : plan.storage
       const capturesMatch = plan.captures.length === envCaptures.length && plan.captures.every((name, i) => name === envCaptures[i])
-      if (plan.storage !== legacyStorage || !capturesMatch)
+      if (normalizedPlanStorage !== legacyStorage || !capturesMatch)
         err(`ClosureEnvPlan drift: ${fnName} plan=${plan.storage}/[${plan.captures}] legacy=${legacyStorage}/[${envCaptures}]`)
     }
     const storage = plan ? plan.storage : legacyStorage
