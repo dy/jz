@@ -9300,3 +9300,150 @@ directly instrumentable NATIVELY (temporary prints in `ctx.schema.register`/
 rebuild needed to at least characterize whether ANY such shared state
 exists and gets touched twice before the outer loop's next iteration —
 matching this whole audit's own established cheapest-first-probe method).
+
+## AUDIT-#17 ROOT CAUSE FOUND AND FIXED — the static-closure-env optimization
+## is unsound under re-entrant enclosing-function calls (2026-08-09)
+
+Picked up the banked schema-reentrancy angle. Instrumented NATIVELY first
+(module/object.js's `{}` handler: per-iteration prints of i, values.length,
+values[i], schemaId, fieldStoredValue's own entry/result — plus a second,
+finer pass instrumenting src/bridge.js's storedValueNarrow and src/compile/
+emit.js's emit() at their own entries) to get a clean reference trace for
+the 2-line repro, then baked the SAME instrumentation into the kernel
+(rebuilt dist/jz.wasm — `console.error` routes through the WASI/host shim,
+confirmed working) and diffed kernel vs native line-for-line.
+
+**DIVERGENCE, named precisely**: at the OUTER object's loop iteration i=1
+(the `optional:{e:5}` field, right after i=0's `required:{d:4}` recursed),
+native's `fieldStoredValue(1)` reads `values[1]` correctly
+(`["{}",[":","e",[null,5]]]`) and recurses cleanly. The KERNEL's own
+in-loop print (line 238, `values[i]` read directly) ALSO shows the correct
+value at this same point — but `fieldStoredValue`'s OWN internal read of
+`values[1]` (module/object.js:235, inside the closure) sees `undefined`.
+Two textually-adjacent reads of the same `values[i]` expression, same `i`,
+diverge ONLY in the kernel: the loop body's direct read is fine; the
+closure's captured read is corrupted. `storedValueNarrow` then receives
+`undefined`, `emit(undefined)` takes the `node == null` early return
+(NULL-RETURN, no dispatch), and the eventual `asF64` throws — with
+`ctx.error.node` showing the STALE `[null,4]` from the ALREADY-COMPLETED
+i=0 processing (confirming the earlier session's "stale tracker" reading
+was correct — the real failure is `fieldStoredValue`'s own `values[i]`,
+not `ctx.error.node`'s dump).
+
+**ROOT CAUSE, named exactly**: `module/object.js`'s `{}` handler declares
+`const fieldStoredValue = (i) => (...)(values[i])` OUTSIDE the per-field
+store loop, called once per field FROM INSIDE the loop
+(module/object.js:234-237, pre-fix). Because it's const-bound, non-boxed,
+non-global, never reassigned, and only ever referenced as a direct callee,
+`scanAndTagNonEscapingClosures` (src/compile/index.js, run once per
+`enterFunc`) tags it `_nonEscaping`. `ctx.closure.make`
+(module/function.js:204-223) then takes the `body._nonEscaping &&
+(ctx.transform.optFlags & OPTF.staticClosureEnv)` branch (staticClosureEnv
+is ON from optimize level 1 up — src/optimize/index.js's L2_PRESET/level-1
+preset — so the DEFAULT self-host build, level 3, always has it on):
+instead of a fresh per-call heap allocation for the closure's captured env
+(`values`/`names`/`schemaId`), it writes the captures into a
+COMPILE-TIME-FIXED STATIC DATA SEGMENT address (`appendStaticSlots`) — ONE
+shared address for EVERY dynamic invocation of this declaration site.
+
+That's sound only if at most one dynamic call to the closure is ever
+outstanding per enclosing-function activation. `ctx.core.emit['{}']` is
+RE-ENTRANT: a nested object-literal field value recurses back into the
+SAME handler (via `emit()`'s dynamic AST-op dispatch), which — because
+it's the SAME source-level declaration — creates its OWN
+`fieldStoredValue` closure AT THE SAME STATIC ADDRESS, overwriting the
+OUTER activation's captures with the INNER (nested) object's own `values`/
+`names`/`schemaId`. When the outer loop resumes and calls
+`fieldStoredValue(1)`, the closure's identity (its NaN-boxed pointer,
+pointing at the fixed static offset) is still correct, but the DATA at
+that offset now belongs to the inner `{d:4}` object (`values` of length
+1) — so `values[1]` reads `undefined`. This is a GENERAL, program-wide
+unsoundness (any jz-compiled program — not just the compiler's own
+self-hosted source — with a non-escaping helper closure called
+repeatedly from a loop inside a function that can re-enter itself while
+the closure has calls outstanding hits the same corruption), not specific
+to object literals or schema bookkeeping — "compile-time schema-reentrancy"
+was the right neighborhood, wrong culprit (`ctx.schema.*` itself resolves
+byte-identically between native and kernel, as the prior P0 session
+already found; the corrupted state is `ctx.closure.make`'s static-env
+slot, a JS/WASM-closure-representation bug, not a schema-bookkeeping one).
+
+**Why module-scope only (fully explained, not just observed)**: a
+function-scope local object literal that never escapes gets SROA'd away
+by jz's own optimizer BEFORE ever reaching the general per-field store
+loop — confirmed directly: `export let f = () => { let right =
+{required:{d:4},optional:{e:5}}; return right.required.d +
+right.optional.e }` (both fields read, ruling out simple dead-field
+elimination) compiles fine through the (still-buggy, pre-fix)
+instrumented kernel, and the trace shows NO "ENTER schemaId" for the
+OUTER object at all — `right` never materializes as a real heap object,
+so `ctx.core.emit['{}']`'s general loop (and its `fieldStoredValue`
+closure) never runs for it. Module-scope `let`/`const` bindings
+(`buildStartFn`) don't get this same escape-driven simplification, so a
+module-level object literal with ≥2 fields and a non-last nested-object
+field UNCONDITIONALLY exercises the buggy path. Last-position safety and
+scale-invariance both fall out directly: last position means no
+`fieldStoredValue` call happens AFTER the recursive clobber; any
+field-count works because it's the ADJACENCY (a call after a recursive
+reentry), not the count, that matters.
+
+**FIX (root, general — not object.js-specific)**: `src/compile/index.js`,
+`scanAndTagNonEscapingClosures`. Added `calledOnlyOutsideLoops(node, name,
+inLoop)`, tracking loop-nesting (`for`/`for-of`/`for-in`/`while`/`do` —
+the same op-name set `emitLoopFreshBoxed` already uses for the analogous
+per-iteration-freshness question) as it walks the enclosing body; a
+closure is granted `_nonEscaping` only when EVERY call to it, in addition
+to the existing "never referenced except as callee" gate, is OUTSIDE any
+loop. A call site inside a loop can run more than once per enclosing-
+function activation — exactly the shape that lets a recursive reentry
+land between two of that closure's calls — so withholding the tag there
+forces `ctx.closure.make`'s always-sound fresh-heap-alloc path instead.
+Zero effect on the optimization's actual target (a closure called once
+per activation, straight-line or single-branch) — those still qualify.
+(A narrower residual: a closure called from exactly ONE non-loop site
+with a recursion-capable call sitting textually between its declaration
+and that one use is theoretically still exposed — not proven to occur
+anywhere in the corpus or self-host build; documented here rather than
+chased, since building a full call-graph reentrancy proof was judged
+out of proportion to a shape nothing currently exercises.)
+
+**FALSIFICATION DISCIPLINE HONORED**: confirmed the fix is the actual
+cause, not a coincidental side effect, by reverting ONLY
+`src/compile/index.js` to HEAD (`git show HEAD:... >`) and re-running the
+native repro (still passes — expected, the bug never reproduces natively)
+and, separately, the pre-existing `test/optimizer.js` "typed RMW" battery
+failure (still fails identically WITH and WITHOUT the fix — confirmed
+pre-existing/unrelated, not introduced by this change) before restoring
+the fix.
+
+**GATES**:
+  - 4 positional repro rows (module-scope 2-field, through-fn nested,
+    schema-poison Map/ternary-shaped const, single-nested-non-last) —
+    all OK through the fixed, freshly-rebuilt kernel.
+  - `JZ_TEST_TARGET=jz.wasm node test/index.js` (full test:wasm): 2719
+    total (12858 assertions), 2713 pass, 6 skip, **0 fail**.
+  - `node test/kernel-parity.js`: 3/3 groups, 33/33 assertions,
+    byte-identical WAT at O0/O2/O3.
+  - `node test/kernel-oracle.js`: 13/13, 469 assertions (the known
+    JZ_CARRIER_BOX=1-only tripwire is a deliberate `KNOWN-FAIL` row, not a
+    failure).
+  - `node scripts/battery.mjs`: fixpoint/fuzz(30173 cmp)/build/self/kernel
+    all green; native/O0/O3/dbg/wasi each report ONE red —
+    `test/optimizer.js` "typed RMW: one guard covers the pure read and
+    ignored OOB store" (5 guards vs expected 4) — verified PRE-EXISTING by
+    reverting the fix and re-running standalone: identical 5-vs-4 failure
+    on unmodified HEAD. Not this task's regression; not touched.
+  - Build ×2: `dist/jz.wasm` byte-identical across two consecutive clean
+    `node scripts/build-dist.mjs` runs from the fixed tree (16872648
+    bytes both times, `cmp` clean).
+  - `git status`/`git diff --stat`: only `src/compile/index.js` changed
+    (33 insertions/2 deletions); no instrumentation left in module/
+    object.js, src/bridge.js, or src/compile/emit.js (all three restored
+    via `git show HEAD:path >` before the fix landed, confirmed clean
+    before rebuilding).
+
+**NEXT** (if ever revisited): the documented residual (single non-loop
+call site, recursion-capable call between declaration and that one use)
+would need a real call-graph reentrancy analysis to close soundly —
+nothing in the current corpus or self-host build exercises it, so this is
+a documented gap, not a known-red row.

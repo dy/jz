@@ -406,6 +406,37 @@ function scanAndTagNonEscapingClosures(body) {
     return true
   }
 
+  // AUDIT-#17 root-cause fix: `ctx.closure.make`'s static-env path (module/function.js
+  // OPTF.staticClosureEnv) gives a "non-escaping" closure's captured env a single,
+  // COMPILE-TIME-FIXED static-data-segment address — sound only if at most one dynamic
+  // invocation of the closure is ever live for a given enclosing-function activation.
+  // A closure called repeatedly from inside a loop is invoked many times per activation;
+  // if the ENCLOSING function is itself re-entrant (directly or, as here, through a
+  // dynamic dispatcher like emit()'s AST-node table) and that reentry happens between
+  // two loop iterations, the recursive activation's OWN closure-creation at the SAME
+  // declaration site overwrites the SAME static slot — the outer loop's next call then
+  // reads the recursive callee's captures instead of its own (found live: module/
+  // object.js's `{}` handler's `fieldStoredValue`, called once per field from inside the
+  // per-field store loop, re-entered via a nested object-literal field's own `{}` — the
+  // NEXT field's captured `values` read back `undefined`, "compiler internal: expected
+  // emitted IR value ... got empty value", .work/todo.md AUDIT-#17). A call site lexically
+  // inside ANY loop can run more than once per activation, so `_nonEscaping` must not be
+  // granted there — the tag is what module/function.js's OPTF.staticClosureEnv branch
+  // gates on, so withholding it here forces the (always-sound) fresh-heap-alloc closure
+  // path for exactly this shape, with zero effect on any single-invocation-per-activation
+  // closure (the case the optimization actually targets safely).
+  const calledOnlyOutsideLoops = (node, name, inLoop) => {
+    if (!Array.isArray(node)) return true
+    const op = node[0]
+    if (op === 'str') return true
+    const loopHere = inLoop || op === 'for' || op === 'for-of' || op === 'for-in' || op === 'while' || op === 'do'
+    if (op === '()' && node[1] === name) return !loopHere
+    for (let i = 1; i < node.length; i++) {
+      if (!calledOnlyOutsideLoops(node[i], name, loopHere)) return false
+    }
+    return true
+  }
+
   const walk = (node) => {
     if (!Array.isArray(node)) return
     const op = node[0]
@@ -416,7 +447,7 @@ function scanAndTagNonEscapingClosures(body) {
           const init = decl[2]
           if (Array.isArray(init) && init[0] === '=>') {
             const arrow_body = init[2]
-            if (arrow_body && typeof arrow_body === 'object' && !ctx.func.boxed?.has(name) && !isGlobal(name) && !isReassigned(body, name) && onlyCalledNotReferenced(body, name)) {
+            if (arrow_body && typeof arrow_body === 'object' && !ctx.func.boxed?.has(name) && !isGlobal(name) && !isReassigned(body, name) && onlyCalledNotReferenced(body, name) && calledOnlyOutsideLoops(body, name, false)) {
               arrow_body._nonEscaping = name
             }
           }
@@ -426,7 +457,7 @@ function scanAndTagNonEscapingClosures(body) {
       const name = node[1]
       const init = node[2]
       const arrow_body = init[2]
-      if (arrow_body && typeof arrow_body === 'object' && !ctx.func.boxed?.has(name) && !isGlobal(name) && !isReassigned(body, name) && onlyCalledNotReferenced(body, name)) {
+      if (arrow_body && typeof arrow_body === 'object' && !ctx.func.boxed?.has(name) && !isGlobal(name) && !isReassigned(body, name) && onlyCalledNotReferenced(body, name) && calledOnlyOutsideLoops(body, name, false)) {
         arrow_body._nonEscaping = name
       }
     }
