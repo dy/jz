@@ -486,3 +486,18 @@ fail-OPEN half completed: proof ⇒ fast unboxed pairing; no proof ⇒ dynamic
 dispatch, never a bare misread. PROBE next: implement behind CARRIER_BOX,
 measure the §15 differentials + dict parity + test:wasm; if green, the
 flip-readiness probe finally has no known blocker.
+
+## (ii) AS-LANDED (2026-08-09)
+`specializeValKindDichotomy` (src/compile/narrow.js, wired into
+compile/plan/index.js after `specializeBimorphicTyped`, `optimizing()`-
+gated). Trigger and treatment, measured counts, WAT-level op-count
+evidence, and the full gate suite are logged in `.work/todo.md`'s
+"VAL-KIND SPECIALIZATION SLICE" entry (2026-08-09) — not duplicated here.
+One deviation from this doc's own §4 cost estimate, named for the record:
+§4's "~21 functions/~42 clones" assumed reusing step 4 VERBATIM (one
+clone per distinct value, both kinds cloned); the task that landed this
+instead specified dominant-clone-plus-generic-fallback (1 clone/function,
+minority stays on the untouched original) — landed 4 functions/4 clones
+on self.js, all 4 drawn directly from this doc's own §1a top-disagreement
+table. Smaller yield is the direct, expected consequence of the shape
+that shipped, not a shortfall against the estimate.

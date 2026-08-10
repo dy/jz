@@ -8682,3 +8682,112 @@ byte-identical (dist/jz.js sha256 `d629789a…`, dist/jz.wasm sha256
 kernel's own source shrank too — dist/interop.js sha256 `ef42c9da…`,
 identical both rounds).
 Files: src/ast.js, src/static.js, src/compile/narrow.js.
+
+## VAL-KIND SPECIALIZATION SLICE — landed (2026-08-09)
+Per `.work/context-sensitivity-survey.md`'s COORDINATOR RULING, (ii)
+approved standalone: generalize `specializeBimorphicTyped`'s clone
+mechanism from the `typedCtor` sub-lattice to the general `val` field.
+
+TRIGGER (`specializeValKindDichotomy`, narrow.js): for a non-exported,
+non-raw, non-rest, ≥2-call-site user function, for every param position
+`k` whose settled `paramReps` entry has `r.val === null` (param-reps.js's
+own meet — TOP only on genuine kind-vs-kind disagreement, never on mere
+unclassifiability, which stays BOTTOM/`undefined` and never reaches this
+check) and is still plain-boxed (`p.type==='f64'`, `p.ptrKind==null`, no
+default): re-derive each call site's kind fresh from `argList[k]` via
+`inferValType(arg, callerValTypes)` (module-scope, `infer.js` — the same
+inferrer narrowSignatures' own D-phase `mergeRule('val', …)` runs) over
+`buildCallerCtx()` (already module-scope in narrow.js, unchanged, reused
+as-is). If exactly 2 distinct resolved kinds appear and one is a landslide
+majority (≥90% of RESOLVED sites — the task's literal threshold; resolved
+sites can be <100% of static sites, unlike specializeBimorphicTyped's
+abort-on-any-unresolved-site discipline) and the dominant kind isn't
+`VAL.TYPED` (that dichotomy stays specializeBimorphicTyped's own domain —
+pinning TYPED needs the matching `ptrKind`/`type` ABI switch this pass
+deliberately never touches, verified safe-to-skip by reading
+`applyPointerParamAbi`'s own `hardParamVal ∈ {OBJECT,SET,MAP,BUFFER}` gate
+and emit.js's `narrowed = recvIR.type==='i32' && (ptrKind===TYPED ||
+val===TYPED)` — always ABI-gated, never trusting `val` alone).
+
+TREATMENT (deliberately NOT specializeBimorphicTyped's step 4): collect
+every qualifying position on the function FIRST, then build ONE combined
+clone pinning all of them together (never one clone per position — an
+earlier draft that looped positions independently was caught before
+landing: it let a later position's `sites[i].node[1]` rewrite silently
+discard an earlier position's, for any site matching both). A site routes
+to the clone only if it matches the dominant kind at EVERY pinned
+position; any site that misses on even one — minority kind OR still-
+unresolved — keeps calling the untouched, fully generic original. Because
+a VAL-kind pin is a dispatch HINT, not an ABI change (confirmed by reading
+every `lookupValType`/`repOf(x)?.val` consumer in emit.js: REF_EQ_KINDS
+bitwise-eq fold, `tryStaticDispatch`'s per-kind method emitter,
+`tryRuntimeStringFork`/`tryRuntimeNumberMethod`'s `if (!vt) …` runtime-
+fork gates, `emitSpreadCopy`'s bulk-copy vs scalar-loop vs dispatched
+branch — every one keys off `val` as a hint and falls back safely when
+unset), this partial-coverage clone is sound without touching
+`func.sig.params[k].type`/`ptrKind` at all — unlike
+specializeBimorphicTyped, there is no partial-coverage risk to fail closed
+against, because the original function is never mutated. Confirmed the
+seed path is already wired for any VAL kind, not just TYPED:
+`compile/index.js:585`, `if (r.val && !reassigned && !localReps.get(pname)
+?.val) updateRep(pname, { val: r.val })` — generic, pre-existing,
+unchanged.
+
+MEASURED (self.js, `JZ_SELFHOST_OPT=3`): 4 functions / 4 clones — every
+one a landslide row named in the survey's own §1a top-disagreement table:
+`m78_ir$typed` (ARRAY, 932/934), `m78_ir$mkPtrIR` (2 params combined into
+1 clone: NUMBER+NUMBER), `m82_bridge$wat` (STRING, 101/105),
+`m82_bridge$reg` (ARRAY, 31/34). Short of the survey §4 back-of-envelope
+"~21 functions/~42 clones" — that estimate assumed reusing
+specializeBimorphicTyped's step 4 VERBATIM (one clone per distinct value,
+BOTH kinds cloned, no fallback); this task's own instructions specified
+the dominant-clone+generic-fallback shape instead (1 clone/function,
+matching what actually landed) — the smaller yield is the direct,
+expected consequence of that explicit design choice, not a shortfall.
+`m56_ctx$declGlobal` (98.7% NUMBER) and the `wasm`-field rows
+(`m78_ir$ptrTypeEq`, `m50_encode$uleb`) didn't fire: `inferValType` is
+deliberately the plain call-site inferrer, not `inferValAtSite`'s full
+enrichment (default-arg/param-fact/arr-elem fallbacks) — a strictly
+narrower, safe-direction re-derivation, named honestly per the survey's
+own "small mechanical" framing rather than chased for parity; `wasm` is a
+separate field, out of this slice's scope by the coordinator ruling's own
+"VAL-kind" wording.
+
+WAT-LEVEL EVIDENCE (machine-independent, per the gate's own instruction —
+this machine is swap-stressed, stopwatch numbers untrustworthy): isolated
+repro (`val.slice(0)` on a param fed ARRAY at 9 sites / OBJECT at 1,
+`optimize:'speed'`) — the generic fallback's body opens with a
+`f64.eq`-NaN-check + NaN-box tag-extraction + `i32.eq` fork picking
+STRING-slice vs array-slice (136 op-tokens, 185 lines); the specialized
+clone's body skips the fork entirely, opening straight into the bounds-
+check/copy sequence (112 op-tokens, 147 lines) — a measured **18% op-
+token / 21% line reduction** on the specialized path, exactly the
+`tryStaticDispatch`-skips-the-runtime-fork win the emit.js read predicted.
+`test/perf-ratchet.js`'s own 10 kernels: all `+0` (unaffected — none
+contain the rare landslide shape; expected, not a null result).
+
+GATES: full battery native 3416/3424 pass (2 pre-existing optimizer.js
+WAT-shape fails, confirmed pre-existing via a disposable HEAD worktree,
+identical on both sides) · O3 3416/3424, same 2 · `JZ_DEBUG_INVARIANTS=1`
+O3 3418/3426 pass (assertValKindConsistent never throws — clone
+`possibleKinds`/`val` stay consistent) · test:wasm (self-hosted kernel,
+rebuilt from this change) 2709/2719 pass, same 4 pre-existing fails ·
+fuzz.js 2000 programs × opt{0,1,2,3}, 30,173 comparisons, 0 divergence ·
+selfhost.js 21/21 (36 self-compile rounds) · kernel-parity included in the
+full battery, unaffected. SIZE: `bench:size`'s 60-kernel corpus (mat4,
+biquad, sdf, …) — byte-IDENTICAL before/after (none contain the trigger
+shape); `test:bench`'s own gate `size geomean jz/as = 0.855× ≤ 1.05×`
+PASS, unchanged by this slice. The actual cost lands only where the pass
+fires: self-hosted `dist/jz.wasm` (not part of the size-sweep gate, the
+compiler binary itself) grew 16,855,744 → 16,874,983 B, **+19,239 B /
++0.114%** for 4 new clone bodies — bounded, matches the "≤84 worst case"
+cost model's spirit even though realized well below it. `test:bench`'s
+other 14 failures are pure SPEED gates (fastest-wasm ms comparisons vs
+rust/c-wasm, perf-fuzz geomean, floatbeat) carrying their own inline
+ledger citations (f1e877b8, 2026-07-25) predating this change —
+unaffected by a pass that only fires on 4 internal self-hosted-compiler
+functions never exercised by these bench kernels.
+
+Files: src/compile/narrow.js (new export `specializeValKindDichotomy`,
+after `specializeBimorphicTyped`), src/compile/plan/index.js (wired in,
+`optimizing()`-gated like `speculateTypedParams`).

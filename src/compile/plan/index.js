@@ -17,6 +17,8 @@
  *        - narrowSignatures — pick a specialization per function from call sites
  *        - specializeBimorphicTyped — split typed-elem hot paths into two variants
  *          when callers diverge between two ctors
+ *        - specializeValKindDichotomy — clone+pin a param's VAL kind when call
+ *          sites landslide-disagree (≥90% one kind), fallback stays generic
  *        - refineDynKeys — tighten dynamic property-key sets
  *
  * No bytes are emitted here; emit.js consumes the planned ctx + programFacts.
@@ -28,7 +30,7 @@ import { ctx } from '../../ctx.js'
 import { invalidateAllBodyFacts } from '../analyze.js'
 import { collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown } from '../program-facts.js'
 import narrowSignatures, {
-  specializeBimorphicTyped, speculateTypedParams, refineDynKeys,
+  specializeBimorphicTyped, specializeValKindDichotomy, speculateTypedParams, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, narrowBoolResults,
   strictBoundaryTypeCheck,
 } from '../narrow.js'
@@ -174,6 +176,9 @@ export default function plan(ast, profiler) {
   // facts, so it runs after the signature fixpoint.
   if (optimizing()) t('scanInplaceStores', () => scanInplaceStores(programFacts))
   t('specializeBimorphicTyped', () => specializeBimorphicTyped(programFacts))
+  // VAL-kind landslide specialization (context-sensitivity-survey.md §3-4): a
+  // pure precision/perf slice, sized/gated the same as speculateTypedParams.
+  if (optimizing()) t('specializeValKindDichotomy', () => specializeValKindDichotomy(programFacts))
   if (optimizing()) t('speculateTypedParams', () => speculateTypedParams(programFacts, ast))
   t('refineDynKeys', () => refineDynKeys(programFacts))
   // Late: return sids (narrowSignatures) + the slot/write censuses are complete —

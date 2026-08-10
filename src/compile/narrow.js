@@ -2998,6 +2998,151 @@ export function specializeBimorphicTyped(programFacts) {
   if (DBG_INVARIANTS) assertValKindConsistent(paramReps)
 }
 
+/**
+ * Phase: VAL-kind landslide specialization — the general-kind sibling of
+ * specializeBimorphicTyped (`.work/context-sensitivity-survey.md` §3-4,
+ * COORDINATOR RULING 2026-08-09). specializeBimorphicTyped only fires on
+ * the `typedCtor` sub-lattice (`r.val === VAL.TYPED && r.typedCtor ===
+ * null`); this fires on the general `val` field itself, for the params the
+ * survey's ground-truth census found genuinely, cross-call-site polymorphic
+ * — 13/1711 multi-site `val` rows program-wide, and EVERY one of them a
+ * landslide majority/minority split (932/934, never a balanced polymorphic
+ * spread, §1a).
+ *
+ * `r.val === null` on a settled paramReps entry is ALREADY exactly "≥2
+ * call sites disagreed on the kind" (param-reps.js's meet: BOTTOM stays
+ * `undefined` while every site is merely unclassifiable — `mergeParamFact`
+ * is never even called for those — and only flips to TOP/`null` on a real
+ * kind-vs-kind conflict). So the trigger is a single field read; the work
+ * is re-deriving each site's kind from its own `argList[k]` (mirroring
+ * specializeBimorphicTyped's `inferTypedCtor` re-derivation, step 3) via
+ * `inferValType` — the same call-site inferrer narrow.js's own D-phase
+ * `mergeRule('val', ...)` runs, over the identical per-caller `valTypes`
+ * context `buildCallerCtx()` already builds for that fixpoint.
+ *
+ * Unlike the typed case, a VAL-kind pin is NOT an ABI change — `val` is
+ * read as a dispatch HINT everywhere in emit.js (method-call static
+ * dispatch, REF_EQ_KINDS bitwise-eq fold, spread-copy strategy, jsstring/
+ * pointer-ABI decisions all separately gate on their OWN ptrKind/type
+ * fields, never on `val` alone) — so pinning it on a clone used ONLY by
+ * the call sites PROVEN to carry that kind is sound without touching
+ * `func.sig.params[k].type`/`ptrKind` at all. That decouples this pass
+ * from specializeBimorphicTyped's "abort unless EVERY site resolves"
+ * discipline: a genuine landslide majority (≥90% of RESOLVED sites, per
+ * the task's threshold) gets ONE clone; the minority AND any still-
+ * unresolved sites simply keep calling the untouched, fully generic
+ * original — no partial-coverage risk, because the original never
+ * changes.
+ */
+export function specializeValKindDichotomy(programFacts) {
+  const { callSites, valueUsed, paramReps } = programFacts
+  const DOMINANCE = 0.9
+
+  const sitesByCallee = new Map()
+  for (const cs of callSites) {
+    const list = sitesByCallee.get(cs.callee)
+    if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
+  }
+
+  // Per-caller val-type context (D-phase's own `inferValType(arg, callerValTypes)`
+  // inputs) — module-scope, built once, same shape narrowSignatures' D-phase uses.
+  const callerCtx = buildCallerCtx()
+
+  const originals = ctx.func.list.slice()
+  for (const func of originals) {
+    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    if (!func.body) continue
+    if (func.rest) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
+    const sites = sitesByCallee.get(func.name)
+    if (!sites || sites.length < 2) continue
+
+    // Find every landslide-dichotomy position on this function FIRST, then build
+    // ONE combined clone pinning all of them together — never one clone per
+    // position (which would fight over the same `sites` array's `node[1]`,
+    // each position's rewrite silently discarding an earlier position's).
+    // Mirrors specializeBimorphicTyped's own step 4 (one clone per distinct
+    // COMBO across all bimorphic positions, not per position).
+    const pins = []            // { k, domKind }
+    const perPosKinds = []     // parallel to pins: siteKinds vector for that position
+    for (let k = 0; k < func.sig.params.length; k++) {
+      const r = reps.get(k)
+      if (!r || r.val !== null) continue           // only genuinely poisoned (kind-vs-kind disagreement)
+      const p = func.sig.params[k]
+      if (p.type !== 'f64' || p.ptrKind != null) continue  // already narrowed away from generic boxed — nothing to add
+      if (func.defaults?.[p.name] != null) continue
+
+      // Re-derive each site's kind fresh from argList[k] — same inference the
+      // fixpoint itself used, just re-run per site instead of joined.
+      const counts = new Map()
+      const siteKinds = new Array(sites.length).fill(null)
+      let resolved = 0
+      for (let si = 0; si < sites.length; si++) {
+        const site = sites[si]
+        if (k >= site.argList.length) continue
+        const kind = inferValType(site.argList[k], callerCtx.get(site.callerFunc)?.callerValTypes)
+        if (kind == null) continue
+        siteKinds[si] = kind
+        resolved++
+        counts.set(kind, (counts.get(kind) || 0) + 1)
+      }
+      if (resolved === 0 || counts.size !== 2) continue   // need exactly 2 distinct resolved kinds
+
+      let domKind = null, domCount = -1
+      for (const [kind, c] of counts) if (c > domCount) { domCount = c; domKind = kind }
+      if (domCount / resolved < DOMINANCE) continue        // not a landslide — no clear majority to exploit
+      // specializeBimorphicTyped's own domain — pinning TYPED needs the matching
+      // ptrKind/type ABI switch (applyPointerParamAbi/bimorphic's job), which this
+      // pass deliberately never touches; leave TYPED dichotomies to that pass.
+      if (domKind === VAL.TYPED) continue
+
+      pins.push({ k, domKind })
+      perPosKinds.push(siteKinds)
+    }
+    if (!pins.length) continue
+
+    // ONE clone, pinned at every qualifying position to its dominant kind. A
+    // site routes to the clone only if it matches EVERY pinned position's
+    // dominant kind; any site that misses on even one (minority OR
+    // unresolved) keeps calling the untouched, fully generic original.
+    const suffix = pins.map(pn => pn.domKind).join('$')
+    let cloneName = `${func.name}$${suffix}`
+    let n = 0
+    while (ctx.func.names.has(cloneName)) cloneName = `${func.name}$${suffix}$${++n}`
+
+    const cloneSig = {
+      params: func.sig.params.map(pp => ({ ...pp })),
+      results: [...func.sig.results],
+    }
+    const clone = { ...func, name: cloneName, sig: cloneSig }
+    ctx.func.list.push(clone)
+    ctx.func.map.set(cloneName, clone)
+    ctx.func.names.add(cloneName)
+    if (typeof process !== 'undefined' && process.env?.JZ_DBG_VALKIND)
+      console.error('[valkind-clone]', func.name, '->', cloneName, JSON.stringify(pins.map(pn => pn.domKind)))
+
+    const cloneReps = new Map()
+    for (const [kk, rr] of reps) cloneReps.set(kk, cloneRep(rr))
+    for (const { k, domKind } of pins) {
+      const cr = cloneReps.get(k) || {}
+      cr.val = domKind
+      joinKinds(cr, 'possibleKinds', [domKind])
+      cloneReps.set(k, cr)
+    }
+    paramReps.set(cloneName, cloneReps)
+
+    for (let si = 0; si < sites.length; si++) {
+      let matches = true
+      for (let pi = 0; pi < pins.length && matches; pi++)
+        if (perPosKinds[pi][si] !== pins[pi].domKind) matches = false
+      if (matches) sites[si].node[1] = cloneName
+    }
+  }
+
+  if (DBG_INVARIANTS) assertValKindConsistent(paramReps)
+}
+
 /** Module-scope ITERATIVE call-site walk for specializeUnionCursorParams —
  *  capture-free worklist, never recursive (a nested self-recursive closure
  *  mutating captured state is the exact shape the self-hosted kernel's
