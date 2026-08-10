@@ -9139,3 +9139,164 @@ the remaining gap):
      snapshot/restore interacts with the store loop's recursive
      `$closure854` re-entry, or is a red herring for a case (ours) that
      never mints a NEW closure mid-object-literal at all.
+
+## AUDIT-#17 allocator-traffic hypothesis (banked NEXT #1 from 736c57f9):
+## TESTED AND FALSIFIED by direct WAT + allocator-source evidence — a FOURTH
+## clobber hypothesis closed. New behavioral data gathered. Banked at the
+## SAME memory-level wall, redirected toward NEXT-option 3 (2026-08-09)
+
+Picked up 736c57f9's own NEXT #1: whether `values`'s backing storage (or the
+outer object's own alloc) can be MOVED/reallocated by allocator traffic
+DURING the recursive `fieldStoredValue(i)` call inside the general per-field
+store loop (absolute WAT lines 6084531-6085451 in that session's dump), with
+a RAW i32 offset cached across the boundary and not re-chased
+(`inlinePtrOffsetFast`-shaped). **Directly falsified for this channel — not
+merely unconfirmed.**
+
+**Method 1 — behavioral probe (cheap, no rebuild, existing dist/jz.wasm via
+`compileViaKernel`): does the failure move with the non-last-index field
+count/position?** Answer: **NO — it is purely positional, count- and
+MAX_CLOSURE_ARITY(8)-invariant.** `{a:{x:1}, b:2, ..., i:9}` (9 fields, one
+nested at index 0) fails identically to the 2-field repro; `{b:{}, c:{},
+a:{x:1}}` (nested field LAST) succeeds regardless of how many earlier plain
+fields precede it; a nested field at ANY non-last position fails, a nested
+field at the last position never does, independent of total field count.
+This rules out an argc/MAX_CLOSURE_ARITY=8-crossing effect (already the
+weakest-evidenced of the three prior-falsified hypotheses) contributing at
+higher field counts — the earlier session's minimal 2-field repro was
+already fully general, not a lucky small case.
+
+**Method 2 — regenerated the WAT (exact `scripts/build-dist.mjs` recipe:
+`resolveModuleGraph(scripts/self.js,{resolveNode:true})` → `compile(g.code,
+{modules:g.modules, memory:8192, optimize:{level:3, watrGuard:false,
+snapshotInit:true}, wat:true})`) via a scratch script (kept OUTSIDE the repo,
+under the session scratchpad — never written into the tree), re-located
+`$closure854` (bare-substring `closure854` grep, no `$`-anchor — the marker-
+byte gotcha still applies), and re-derived the store loop by the SAME
+disambiguator as 736c57f9 (`restIdx`-exit populate loop vs `$__length`-exit
+store loop). **Byte-for-byte structural match to the prior session's dump**:
+same 32 loops at the same relative line offsets (13466, 14260, …, 20902,
+21969), store loop confirmed at relative 21969-22889 (920 lines) — the
+function's internal shape has not moved since 736c57f9, only its absolute
+file offset drifted with intervening commits. Read the full 920-line loop
+body directly (not sampled).
+
+**Finding — every touch of `values` (compiled to local `$__a3`) in the store
+loop is FORWARDING-SAFE, none is a cached raw offset:**
+  - The loop's own exit check re-calls `(call $__length (i64.reinterpret_f64
+    (local.get $__a3)))` fresh EVERY iteration (matches 736c57f9's own
+    finding, re-confirmed byte-for-byte).
+  - The element read (`values[i]`) is NOT `module/array.js`'s
+    `$__arr_idx_known` fast path (jz's own type inference apparently can't
+    prove `values` — a local inside the SELF-HOSTED COMPILER'S OWN SOURCE —
+    is always an Array at this call site) — it's the fully GENERIC
+    polymorphic index read: a runtime tag dispatch (`$__licm17`-cached ptr-
+    type) choosing `$__str_idx` (STRING) / `$__typed_idx` (ARRAY/TYPED) /
+    `$__dyn_get_expr` (else), **every arm re-taking `(local.get $__a3)` and
+    re-boxing it fresh** — none of the three helpers is called through a
+    hoisted/cached i32 offset local. Grepped the whole 920-line loop for
+    `arr_idx|typed_idx|__len\b|__ptr_offset\b`: exactly the two calls above,
+    nothing else — no third, cached-offset path exists to have missed.
+  - **Corrected a framing error in the banked hypothesis itself**: the
+    recursive re-entry into `fieldStoredValue(i)`'s `emit()` is a NAMED,
+    DIRECT call — `(call $m82_bridge$emit …)` (`src/bridge.js`'s exported
+    `emit`) — not a `call_indirect` sitting directly in this loop. The ONE
+    `call_indirect` this loop DOES contain (absolute line ≈22598, relative
+    ≈630) is a SEPARATE, unrelated branch — an error-object (`ptr type tag
+    ==11`) formatting path that calls into `$__ext_call` — not on the
+    `values[i]` → `emit()` path at all. (`$m82_bridge$emit`'s own body,
+    which does the real dynamic `ctx.core.emit[tag]` dispatch and therefore
+    contains ITS OWN `call_indirect` back into a fresh `$closure854`
+    activation for a nested `{}`, is a separate top-level function — not
+    re-extracted this session; not needed to falsify THIS channel, since the
+    question was whether `values` in the OUTER activation survives past
+    whatever the callee does, regardless of how the callee is invoked.)
+
+**Method 3 — read the allocator itself (`module/core.js:500-508`,
+`$__alloc`) to check whether the "moves/reuses backing storage" premise is
+even physically possible for a NON-growing allocation.** `$__alloc` is a
+**pure monotonic bump allocator**: `local.set $next (align8(ptr+bytes))` →
+`(if (> next heap_end) (call $__memgrow next))` → `global.set $__heap next`
+→ return the OLD `$ptr`. It never touches, moves, or reuses previously
+allocated bytes — `__memgrow` only EXTENDS linear memory (WASM
+`memory.grow` is append-only by spec; it cannot displace existing data).
+The ONLY relocation mechanism in the whole runtime is per-structure GROWTH
+forwarding (`arrGrow`, `module/array.js:617`, for a specific array/hash that
+itself outgrows its own capacity, writing a forwarding marker at ITS OLD
+address) — confirmed already-known from 736c57f9's own citations
+(`src/ir.js:829`, `module/core.js`'s durable-relocation-log comment,
+`module/core.js:527-548`). **An allocation UNRELATED to `values` (e.g. the
+nested object literal's own header/schema/body arrays, built during the
+recursive `emit()` call) can NEVER move or reuse `values`'s own bytes** —
+only `values` GROWING PAST ITS OWN CAPACITY would trigger that, and the
+store loop runs strictly AFTER `values`'s own populate loop finished (no
+further pushes to `values` occur once the store loop starts). This closes
+off the general "allocator traffic during the recursive call reuses the
+outer array's storage" framing at the allocator-design level, not just for
+this one loop's WAT shape — there is no compacting/moving GC in this
+runtime for the hypothesis to exploit outside of a structure's own regrowth.
+
+**VERDICT: FALSIFIED, not merely unconfirmed** — joining WASM-local-frame
+aliasing, `$__closure_spill` overflow, and `$__heap_reset` as the fourth
+directly-ruled-out clobber-channel hypothesis for this bug. The `values`
+pointer channel specifically, and the "unrelated allocation moves live data"
+mechanism generally (given the bump-allocator-only, forwarding-only-on-own-
+regrowth design), cannot explain the repro.
+
+**What this REDIRECTS toward, not yet probed**: the symptom's own shape —
+`emit()`'s `node == null` early return, a CLEAN empty value rather than
+garbage bytes — was already a soft signal (736c57f9 itself noted it, without
+drawing this conclusion) that this is more likely a CONTROL-FLOW / IR-
+construction defect (the recursive `emit()` call returning/being fed a
+genuinely-absent AST node) than a raw-memory corruption one. Combined with
+this session's field-count/position data (purely positional, no scale
+dependence) — a scale-independent, purely-structural trigger is a better fit
+for a **compile-time IR-shape defect in how the store loop or its caller
+constructs the recursive call's ARGUMENT** (something about "is this the
+last field" changing what gets passed to `fieldStoredValue`/`emit`
+structurally, at COMPILE TIME, in the self-hosted build) than for a runtime
+memory-timing race. The still-untouched 736c57f9 NEXT-option 3 (module-scope
+vs function-scope CALLING CONTEXT: `buildStartFn`'s `ctx.func.*` snapshot/
+restore around `$__start`-hosted emission vs ordinary `emitFunc`/
+`emitClosureBody`) is now the ONLY one of the three original NEXT options
+left unprobed, and best matches this session's redirect — worth promoting
+to the lead hypothesis for a future session, alongside a NEW angle this
+session's data suggests: since the trigger is "any non-last nested-object
+field" with no scale/count dependence, checking whether `slotOf`/`schema`
+ordering or `ctx.schema.idOf`/`ctx.schema.register`'s OWN reentrancy (called
+again by the RECURSIVE nested-literal's own `{}` handler invocation, mid-
+loop, while the OUTER schema resolution is still "in progress" in some
+compile-time bookkeeping sense — e.g. a shared, non-reentrant module-level
+scratch/counter in `ctx.schema.*` rather than a WASM-heap-memory structure)
+gets corrupted by the recursive call — a COMPILE-TIME-STATE reentrancy bug
+in the compiler's own JS object graph (`ctx.schema.list`/`ctx.schema.vars`
+etc.), not a WASM-memory one. Not directly probed this session — flagged as
+the concrete next angle since it would also explain "last field is safe"
+(nothing runs the loop AGAIN after the last field, so no bookkeeping state
+needs to survive a nested reentry) and "module-scope only" (if the relevant
+scratch state is initialized/reset differently — or not at all — outside a
+function-call boundary that ordinary function-scope compiles always cross).
+
+**No fix landed, none attempted — a fix against a hypothesis that had
+already moved from "confirm" to "falsify" would be a guess.** Gates: NOT
+re-run (nothing shipped — the 4 test:wasm rows are UNCHANGED, reconfirmed
+red via the same repro this session, `compiler internal: expected emitted
+IR value in <module>, got empty value`). Re-decode site count: N/A, no
+codegen change made. `git status`/`git diff` confirmed clean throughout
+(only the pre-existing untracked `.work/todo-original.md`) — all WAT
+extraction and probing used a scratch script OUTSIDE the repo
+(`/private/tmp/.../scratchpad/extract-closure854.mjs`,
+`probe-fields.mjs`), nothing written into the tree, nothing to revert. No
+commits made this session (nothing to commit).
+
+**NEXT**: promote 736c57f9's NEXT-option 3 (module-scope vs function-scope
+calling-context diff via `buildStartFn`'s snapshot/restore) to the lead, OR
+pursue this session's new compile-time-state-reentrancy angle
+(`ctx.schema.*`/similar non-WASM-memory compiler bookkeeping touched again
+by a nested `{}` handler invocation mid-loop) — both are cheaper to test
+than another WAT dive: the schema-reentrancy angle in particular is
+directly instrumentable NATIVELY (temporary prints in `ctx.schema.register`/
+`idOf`/`resolve`, native `compile()` of the repro, no kernel/self-host
+rebuild needed to at least characterize whether ANY such shared state
+exists and gets touched twice before the outer loop's next iteration —
+matching this whole audit's own established cheapest-first-probe method).
