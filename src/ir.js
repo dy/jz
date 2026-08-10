@@ -417,10 +417,9 @@ export const fromI64 = n => {
 }
 
 // === BigInt carrier boxing (CARRIER PROGRAM Slice 1, .work/carrier-
-// representation-design.md §7) — dormant primitives: no production emission
-// path calls these unconditionally yet (Slice 2 wires the first def-side
-// consumer, behind JZ_CARRIER_BOX/CARRIER_BOX — default OFF, so every
-// existing call site's byte output is unchanged). PTR.BIGINT (layout.js,
+// representation-design.md §7, default flipped ON at §34) — every consumer
+// below is gated behind JZ_CARRIER_BOX/CARRIER_BOX (`JZ_CARRIER_BOX=0` opts
+// back out to the legacy raw carrier). PTR.BIGINT (layout.js,
 // tag 5) is the heap-boxed representation round-3/4's `bigintBoxed` solver
 // fact (reps.js) names: an 8-byte cell holding the raw i64 payload,
 // NaN-boxed the same way every other heap kind (STRING/OBJECT/…) already is.

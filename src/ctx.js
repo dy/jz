@@ -907,21 +907,15 @@ export const optFlagsOf = (cfg) => {
 
 export const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
-// Carrier program (.work/carrier-representation-design.md). Slice 4 (flip
-// this default ON): four attempts (§11-§14 of the design doc) found and
-// fixed real bugs — a def-side box-wiring overreach, a ternary-nullish-
-// BIGINT read-side gap, and its root cause (emitDecl's ternary-boxed
-// registration matching a broader kind.js VT['?:'] rule than the '?:'
-// handler's own narrower box condition) — and §14's flip probe hit no wall
-// on the gates it ran. STILL OFF BY DEFAULT: audit #14 found a release-
-// blocking gap those probes did not cover — a carrier-built KERNEL corrupts
-// generated f64 constants for BigInt-FREE target programs (undefined atom,
-// string atom, closure atom all leak compiler-heap box bits into the
-// emitted constant instead of the atom's own value; §15 has the repro and
-// root-cause hunt). `JZ_CARRIER_BOX=1` stays the opt-in probe flag for A/B
-// and native-only use — do not build dist/jz.wasm with it set until §15's
-// finding is closed.
-export const CARRIER_BOX = typeof process !== 'undefined' && process.env?.JZ_CARRIER_BOX === '1'
+// Carrier program (.work/carrier-representation-design.md). FLIPPED ON BY
+// DEFAULT (§34: FLIP-READY verdict, every §15-§34 blocker closed — carrier
+// test:wasm fully green, kernel-parity/kernel-oracle agree with native under
+// the flag, fuzz zero-divergence, default-battery delta scoped to the one
+// pre-pinned audit-#16 row). The BigInt tagged-pointer box (PTR.BIGINT) is
+// now the standard representation; `JZ_CARRIER_BOX=0` is the escape-hatch
+// opt-OUT back to the legacy raw-i64-in-f64-slot carrier, kept for A/B and
+// as a rollback lever, not because the boxed path is in doubt.
+export const CARRIER_BOX = typeof process === 'undefined' || process.env?.JZ_CARRIER_BOX !== '0'
 
 // Session wave W1 (stage 4): the lifecycle table above is an executable,
 // ORDERED contract — each named phase must follow its predecessor within one
