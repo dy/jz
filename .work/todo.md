@@ -6,6 +6,28 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## carrier `ternaryBoxedNames`/`.bigint:toString` gap: traced to a precise,
+## narrow location, NOT fixed — flip still blocked — 2026-08-10
+Full account: `.work/carrier-representation-design.md` §33. Localized the
+self-host divergence §32 could only name to ONE call site: `ctx.func.
+ternaryBoxedNames.has(name)`, called from `isTernaryBoxedBigint`
+(`src/ir.js`), returns a stale/wrong answer despite the Set's content being
+independently proven correct at that exact point (iteration + `===`
+match, hash function proven 100% deterministic via direct `__str_hash`
+tracing). Ruled out with direct evidence: `CARRIER_BOX` (proven true
+throughout), the write/read condition pairing (both fire correctly),
+`__str_hash` non-determinism, ephemeral/reused Set memory (Set allocation
+never touches that path), multi-pass/different-Set-instance (an `enterFunc`
+sequence counter proves one live Set throughout), and a standalone
+(non-compiler) repro of the same string/Set shape (works correctly). A `?.`
+(optional-chaining)-removal fix APPEARED to work in one heavily-instrumented
+build but did NOT hold under a clean rebuild — direct evidence this is a
+self-host memory-layout-sensitive miscompile (heisenbug-prone), not a
+provably-isolated single-line bug. No source fix landed this session — the
+gap is banked, precisely bounded, for a future session to close with
+binary-level (not source-recompile) instrumentation of the exact failing
+kernel. Flip-readiness: still NOT READY, same blocker as §32, now narrower.
+
 ## AUDIT-#18 (`9e4764c3`) DOWNSTREAM GATE LADDER — full correctness + honest
 ## cost accounting, run against its own parent (`fb202a09`) — 2026-08-10
 

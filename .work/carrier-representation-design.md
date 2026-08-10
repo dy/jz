@@ -5402,3 +5402,227 @@ self-consistent measurement (see gates above) rather than a shared-tree
 rebuild, given the concurrent contamination; never built
 `CARRIER_BOX`-flagged in the shared tree, per this design's own standing
 rule (still in force — the new gap keeps it in force).
+
+## §33. The `ternaryBoxedNames`/`.bigint:toString` gap, traced to a precise,
+narrow location — `Set.prototype.has()` on a self-hosted-compiled Set
+returns a stale/wrong answer at ONE specific call site despite the Set's
+content being independently proven correct — but NOT confidently fixed;
+banked per this session's own wall-and-stop mandate, flip still blocked
+(2026-08-10)
+
+Picked up exactly where §32 left off: root-cause the `ternaryBoxedNames`/
+`isTernaryBoxedBigint` self-host divergence §32 named but couldn't crack
+(its own naive `console.error` probes, gated on `name === 'r'`, never
+fired). Two isolated worktrees this session, both off `c3c184fc` (HEAD at
+session start, §32's own commit + one intervening unrelated landing):
+`/tmp/jz-carrier-wt-ternary` (primary) and `/tmp/jz-carrier-wt-ternary2`
+(parallel bisection, spun up once the first worktree's own full
+`test:wasm` run needed the dist artifact undisturbed for ~15 minutes).
+
+**Repro reconfirmed at HEAD, byte-for-byte matching §32's own citation.**
+`JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm node test/index.js`: 2720 total
+(12865 assertions), **2713 pass, 1 fail, 6 skip** — the same single row
+(`bigint∪null: kind carries through the nullish ternary arm… ternary-of-
+bigint receiver dispatches .bigint:toString(radix)`). WAT diff
+(`compileViaKernel({wat:true})`, O0, single-function `viaTern` repro)
+reproduces §32's own citation exactly once CARRIER_BOX is genuinely forced
+for BOTH legs (a first attempt at this diff used `process.env.
+JZ_CARRIER_BOX='1'` set INSIDE an ESM script, after its own `import`
+statements — ESM import evaluation is hoisted ahead of ordinary top-level
+statements, so that assignment landed too late and silently compiled the
+"native" leg unflagged; corrected to `JZ_CARRIER_BOX=1 node
+scratch.mjs`). Confirmed: native's decl-init box (the `$__alloc`/
+`i64.store`/`$__mkptr` sequence for `r`'s own storage) and kernel's are
+IDENTICAL — the write side is sound in both legs, matching §12's own
+"?:' handler owns the box end-to-end" design. The divergence is exactly
+where §32 pinned it: native's `.bigint:toString` operand read is `(i64.load
+(call $__ptr_offset (i64.reinterpret_f64 (local.get $r))))` (dereferences
+the box); kernel's is a bare `(i64.reinterpret_f64 (local.get $r))` (never
+dereferences) — `isTernaryBoxedBigint('r')` evaluates `true` in native,
+`false` in the kernel, for byte-identical source.
+
+**Methodological finding, worth bearing before anyone re-derives this:
+§32's `name === 'r'` probes were gated on the WRONG value, not
+unreachable.** `src/prepare/index.js`'s `mintLocal` (`${name}${T}f
+${owner}_${serial}`, `T` = U+E000, `src/ast.js`) renames every source
+identifier — INCLUDING inside the self-hosted COMPILER's own source, since
+`mintLocal` is jz's ordinary hygiene pass and the compiler's own code is
+just another target program under self-hosting — before `compile/emit.js`
+ever sees it. `name` at `emitDecl`'s own `ternaryBoxedNames.add(name)` call
+site is never the literal string `'r'`; it is an 8-code-unit mangled name
+(`r` + the PUA marker + `f1_1`, confirmed live via `charCodeAt` dumps) that
+`=== 'r'` silently, permanently fails to match — the write site IS
+reached, every session, the naive probe just never printed. Re-gating on
+AST SHAPE (`Array.isArray(init) && init[0] === '?:'`) instead of the
+mangled NAME VALUE got probes to fire immediately. (A second, independent
+byte-decoding quirk surfaced alongside this: `charCodeAt` on the PUA marker
+sometimes returned its raw 3-byte UTF-8 encoding as three separate "code
+units" instead of one U+E000 code point, inconsistently across otherwise-
+identical rebuilds — never chased further, flagged here only so a future
+`charCodeAt`-based probe on a self-hosted PUA-marked name isn't misread.)
+
+**The precise divergence, isolated via a sequence-numbered `enterFunc`
+probe (`ctx.__dbgEnterFuncSeq`, incremented once per `enterFunc` call,
+stamped on every trace line) — ruling out every "different Set instance"
+explanation up front.** For the minimal repro (`const r = a > 0 ?
+BigInt(a) : null; return r.toString(16)` — no null-guard needed in the
+return at all, narrower than §32's own citation), exactly 2 `enterFunc`
+calls fire for the whole compile (the function body + its `$exp` export
+wrapper); every write/read probe below is tagged `seq=2` — the SAME live
+`ctx.func.ternaryBoxedNames` Set, never reset, throughout:
+```
+TRACE_WRITE_AFTER          seq=2  has=1 size=1   (emitDecl, right after .add(name))
+TRACE_TOSTRING_BEFORE_EMIT seq=2  has=1 size=1   (module/number.js, before emit(n))
+TRACE_TOSTRING_AFTER_EMIT  seq=2  has=1 size=1   (module/number.js, right after emit(n) returns)
+TRACE_READI64_ENTRY        seq=2  has=1 size=1   (readI64's own first line, ir.js)
+TRACE_READI64_AFTER_CURBOXED seq=2 has=0 size=1  (immediately after, inside the SAME readI64 call)
+TRACE_READ_SITE            seq=2  has=0 size=1   (isTernaryBoxedBigint, called from readI64)
+```
+Direct iteration at the failing read site (`for (const k of ctx.func.
+ternaryBoxedNames) …`) finds exactly one member, and `k === name` (real
+strict string equality, routed through `__str_eq`/`__str_eq_cold` —
+independently read and confirmed sound for every string shape: SSO,
+canonical-interned, plain heap, and SLICE_BIT views) is **true**. The Set
+demonstrably still holds the right, matching entry when `.has()` says it
+doesn't.
+
+**Ruled out, each with direct evidence, not inference:**
+- **`CARRIER_BOX` itself** — proven `true` throughout this exact kernel
+  (§32's own fix, unchanged at HEAD).
+- **The write-condition (`emitDecl`) and the `'?:'` handler's own box
+  condition disagreeing** — both fire correctly for this repro; the WAT
+  box sequence for `r`'s own storage is present and identical to native's.
+- **`__str_hash` non-determinism / hash-table corruption.** Instrumented
+  `__str_hash`, `__set_add` (`genUpsert`), and `__set_has` (`genLookup`)
+  directly at the WAT-template level (`module/collection.js`, gated on a
+  content check — first byte `'r'`, second byte ≥ 0x80 — not the unreliable
+  hash VALUE, which turned out to collide with dozens of unrelated
+  compiler-internal `r`-prefixed mangled names). Across ~35 distinct Set
+  instances matching that gate and hundreds of `__str_hash` calls, the hash
+  for a given bit-identical pointer was IDENTICAL every time, and every
+  insert-then-lookup pair correlated by table address was internally
+  consistent (found correctly). The WAT-level instrumentation itself,
+  heavy enough to shift the kernel's own allocation layout, made the
+  TARGETED failure stop reproducing in that specific build (`viaTern(255)`
+  still returned the correct answer with the collection.js probes in
+  place) while the JS-level, source-only probes (this session's real
+  finding) reproduced it every time — a first, concrete sign this is
+  layout-sensitive.
+- **Ephemeral/reused Set memory** (the `__hash_reuse_eph`/`__alloc_hash_eph`
+  pattern §12's own array-literal flag and module/object.js's dictionary-
+  mode `{}` literals use). `new Set()` (module/collection.js `'new.Set'`)
+  always allocates via `allocPtr`'s durable `__alloc_hdr_n` path — never
+  touches the ephemeral allocator at all; ruled out by direct code
+  inspection, not just testing.
+- **A different `ctx.func.ternaryBoxedNames` at read time** (multi-pass
+  compile, `ctx.func` reset in between) — the `enterFunc` sequence counter
+  above rules this out directly: one `enterFunc` call, one Set, tagged
+  identically at every probe.
+- **A standalone (non-compiler) repro.** A plain target program building
+  the identical string shape (`String.fromCharCode(0xE000)` + concat, >6
+  chars, non-SSO/non-ASCII, `Set.add`/`.has()` with unrelated intervening
+  work — a loop building another string, an object literal, a bigint
+  literal) compiles and runs correctly through the same kernel. The
+  trigger is specific to the compiler's own `emitDecl → readI64 →
+  isTernaryBoxedBigint` call chain, not reproducible from an ordinary
+  target-program shape with the same string/Set profile.
+
+**The narrowest isolation reached: the flip happens between `emit(n)`
+returning (still correct) and the FIRST statement inside `readI64`
+(`isCurrentlyBoxedBigint(node)`, short-circuit-evaluated before
+`isTernaryBoxedBigint`) — and persisted even with `isCurrentlyBoxedBigint`
+stubbed to a bare `return false` (no `repOf` call, no `params` access, no
+work at all).** That stub-still-fails result means the corruption isn't in
+`isCurrentlyBoxedBigint`'s logic (confirmed: replacing its `.some()` with a
+hand-written loop changed nothing either) — something about REACHING that
+point in `readI64`, or about the SPECIFIC SECOND `.has()` call inside
+`isTernaryBoxedBigint`'s own body once execution crosses into it, is what
+flips the answer. A follow-up probe calling `.has()` three times in a row
+in a single expression (no separate function) all returned correctly, and
+an extracted `dbgNoOptChain` helper (identical logic, no `?.`) called FIRST
+from inside `isTernaryBoxedBigint`, ALSO answered correctly — only the
+existing `ctx.func.ternaryBoxedNames?.has(name) === true` line (optional
+chaining on the method call) failed, in that SAME instrumented build.
+
+**The `?.` lead did NOT hold up under a clean rebuild — flagged explicitly
+so no future session re-spends time on it without re-verifying first.**
+Replacing BOTH `?.` call sites (`isTernaryBoxedBigint`'s read AND
+`emitDecl`'s `ternaryBoxedNames?.add(name)` write) with plain null-checked
+non-optional calls, removing every debug scaffold, and rebuilding clean:
+`viaTern(255)` **still** returned the wrong raw hex
+(`7ffa800000000400`, not `'ff'`) — byte-identical failure to the
+unpatched kernel. The earlier "fixed" result was observed ONLY inside a
+build still carrying the extra `dbgNoOptChain` function and its
+`console.error` calls; removing that scaffolding (with or without the `?.`
+change) changes the compiled kernel's own memory/allocation layout enough
+to flip the bug's own reproducibility — strong, direct evidence this is a
+genuine **self-host memory-layout-sensitive miscompile** (the same broad
+class as `?.`, hash tables, or anything else touched here, all consistent
+with "some compiled artifact aliases/overwrites a few bytes it shouldn't,
+and whether THIS repro's own Set lands on the corrupted bytes depends on
+exactly what else got compiled around it"), not a clean, provably-isolated
+single-line logic bug this session could respon­sibly ship a fix for. No
+change applied to `src/` this session — attempted fixes were verified NOT
+to close the gap and were reverted in both worktrees before anything was
+committed.
+
+**Gates.** No source fix landed, so no downstream gate table beyond
+reconfirming the standing baseline: `JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm
+node test/index.js`, fresh kernel at `c3c184fc`: **2720 total (12865
+assertions), 2713 pass, 1 fail (the same row), 6 skip** — byte-for-byte
+§32's own citation, confirming this session introduced no regression and
+the gap is exactly as precisely-characterized above, nothing more, nothing
+less.
+
+**Flip-readiness verdict — §11 probe: still NOT READY, same named blocker
+as §32, now precisely bounded to a single call site rather than a whole
+subsystem.** `CARRIER_BOX` stays `JZ_CARRIER_BOX==='1'`-gated, OFF by
+default, unchanged from §14-§32. No default flip.
+
+**A future session's concrete starting point — narrower than §32's own
+handoff, aimed at the ONE remaining unknown.** The mechanism is now
+localized to a single `.has()` call inside `isTernaryBoxedBigint`,
+reachable only from `readI64`'s dispatch, on a Set proven correct by every
+other means of inspection at that exact point in program order. Every
+attempt so far modified the COMPILER'S OWN SOURCE and rebuilt — and this
+session's own `?.`-removal result shows that rebuild changes the trigger
+condition itself (heisenbug-prone, `dist/jz.wasm`'s own allocation layout
+shifts with every source edit). The next attempt should instrument the
+ALREADY-BUILT, UNMODIFIED kernel binary directly — `scripts/trace-
+inject.mjs`'s own technique (parse the compiled WAT text of `readI64`'s
+and `isTernaryBoxedBigint`'s own compiled functions — search
+`(func $m78_ir$readI64` / an inlined equivalent in `kernel.wat`, generated
+via `compile(selfGraph, {wat:true, optimize:{level:3,…}})` — same profile
+`build-dist.mjs` uses — splice `dbg.trace`/`$__print` calls directly into
+THAT WAT text, then re-encode and run) so the EXACT SAME kernel binary
+that fails is the one being probed, with zero risk of the instrumentation
+itself perturbing the bug away. Watch specifically for what changes about
+the SET'S OWN MEMORY (the table pointer bits, the LANE mirror array's
+stored hash at the entry's own bucket, the ENTRY table's own stored key)
+between the moment `readI64` enters and the moment `isTernaryBoxedBigint`
+reads `.has()` — this session's own evidence (content intact via iteration,
+hash stable via direct `__str_hash` tracing, `.add`/`.has` machinery
+correct for ~35 other instances) narrows the remaining suspects to
+something in the SET'S OWN TABLE MEMORY specifically at THIS bucket,
+touched by something in `readI64`'s own compiled prologue or the call
+boundary into `isTernaryBoxedBigint` — not the Set implementation in
+general, not `ternaryBoxedNames`'s write/read condition pairing, not
+`CARRIER_BOX`.
+
+**Local commits (shared tree, plain messages, no push, staged by exact
+filename only).** This ledger entry only — no `src/`/`module/` change,
+per the "no verified fix" finding above.
+
+**SHAs.** Investigated at `c3c184fc` (HEAD at session start). Two isolated
+worktrees: `git worktree add --detach /tmp/jz-carrier-wt-ternary c3c184fc`
+(primary — repro reconfirmation, WAT diff, `__str_hash`/`__set_add`/
+`__set_has` WAT-level instrumentation, full `test:wasm` baseline
+reconfirmation) and `git worktree add --detach /tmp/jz-carrier-wt-ternary2
+c3c184fc` (parallel — `enterFunc` sequence-numbered bisection, the
+`isCurrentlyBoxedBigint`-stub/`.some()`-vs-loop tests, the `?.`-removal
+attempt and its clean-rebuild refutation); both `node_modules` symlinked,
+read-only; every instrumented `JZ_CARRIER_BOX=1 scripts/build-dist.mjs`
+rebuild (a dozen-plus generations across both worktrees, each isolated to
+its own worktree's own `dist/`) done there; every tracked-file change
+reverted (`git checkout --`) in both worktrees before this entry was
+written; removed at session end.
