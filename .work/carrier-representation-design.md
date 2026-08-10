@@ -4544,3 +4544,239 @@ two independent rebuilds pre- and post- the stash/pop verification in
 item 8. Shared tree's own `dist/jz.wasm`: untouched, never rebuilt this
 session (the fix landed in `src/` only; the shared tree carries no `dist/`
 under version control).
+
+## §30. The flag-forced tail enumerated, classified, and mostly closed:
+15 → 4 (11 of the 13-row tail fixed — 9 by a compiler fix, 2 by correcting
+a stale test), zero new failures, item 8 re-verified unchanged (2026-08-10)
+
+**1. Enumeration.** Flag-forced battery (`JZ_CARRIER_BOX=1 node test/
+index.js`, isolated `git worktree add --detach` at `1a91c23f`, foreground):
+3403/15/6, byte-for-byte matching §29's own cited baseline. Default
+battery, same tree: 3416/2/6 (interval-walk codec bounds check, typed RMW
+guard count — the SAME 2 rows every session since §14 has named,
+unrelated to `CARRIER_BOX`). Subtracting the 2 default-mode rows from the
+15 flag-forced ones leaves the **13-row tail**, extracted from the raw log
+via each failing assertion's own `actual`/`expected` pair (the harness's
+own summary truncates to 3 rows + a `⋮ N more` placeholder — the full set
+needed `awk`-ing the per-assertion `×` markers directly, not the tail
+summary).
+
+**2. Classification table.**
+
+| # | row | class | mechanism |
+|---|---|---|---|
+| 1 | `Map: unary "-"/"~" on a .get() absent key…` (audit-#8 P0-4 Part 3) | (c)→FIXED | `bigIntUnary`'s maybeUndefined `select` arm |
+| 2 | `dict: unary "-"/"~" on a DYNAMIC-key absent read…` (dict sibling) | (c)→FIXED | same |
+| 3 | `Slice 5: bare Map/dict .get()/[] read materializes the true BigInt…` | (c)→FIXED | `synthesizeBoundaryWrappers`' `resultBigintSentinel` lane |
+| 4 | `Slice 5: negative controls — mixed-kind Map…` | (c)→FIXED (test) | stale assertion, unrelated to the compiler fix |
+| 5 | `Slice 6: decl-hop present-key BigInt census read…` | (c)→FIXED | same boundary-wrapper lane as #3 |
+| 6 | `Slice 6: negative control — decl-hop through a mixed-kind Map…` | (c)→FIXED (test) | stale assertion, same class as #4 |
+| 7 | `§14 point 4: full presence×domain matrix over all 9 binary ops…` | (c)→FIXED | `bigIntJointDispatch`'s `bigResult` |
+| 8 | `Slice 7: decl-hop binary "+" between two present-key BigInt census reads…` | (c)→FIXED | same as #7 |
+| 9 | `Slice 7: negative controls — single-proven-side BigInt mixes…` | (c)→FIXED | same as #7 |
+| 10 | `§14 point 4 FIXED: the 9-op census-BigInt sub-case…` | (c)→FIXED | same as #7 |
+| 11 | `single-call-site unary "-" param-hop: present-key BigInt census value (module-level Map)…` | (c)→FIXED | same as #1 |
+| 12 | `kernel oracle: KNOWN-FAIL (audit-#16, ctx.features.bigint module-ordering…)` | (b) banked | pre-existing, wrong at BOTH native and kernel — a separate FeaturePlan module-inclusion-order bug, zero overlap with `CARRIER_BOX` |
+| 13 | `kernel oracle: KNOWN-FAIL (JZ_CARRIER_BOX=1 only … console.log heap-string)` | (b) banked | `CARRIER_BOX`-only self-hosted-kernel miscompile, §16→§17, unrelated mechanism |
+
+Every row in the 13-row tail is class (c) at the START of this session
+(none pre-classified) — 11 resolved to a single ROOT MECHANISM (rows
+1-3/5/7-11) or its direct byproduct (rows 4/6, a stale test assertion
+riding the same code path); rows 12-13 root-caused to PRE-EXISTING,
+separately-scoped, ALREADY-NAMED walls (§16→§17 for row 13, audit-#16 for
+row 12) and re-classified as (b) — instances of walls this chain already
+banked under a different name, not new discoveries.
+
+**The 5 audit-#14 item-2 rep shapes — checked, NONE overlap the tail.**
+Re-ran each by name: `test/dyn-keys.js`'s "5n-3n subtraction via generic
+param" (line 1131, `KNOWN-FAIL … architecturally out of reach`) and
+"Map-value-through-unary-callee, LOCAL receiver" (line 1309, `KNOWN-FAIL …
+out of scope`) both still assert their own documented-wrong value with a
+tripwire (pass GREEN by design, unaffected); `test/array-methods.js`'s
+`Array.from(BigInt64Array)` bracket-read row passes clean; `test/
+kernel-oracle.js`'s `captured-then-read` BOOL∪NUMBER `PENDING-FIX` row
+(the "dynamic subnormal"-adjacent generic-scalar-decl class) is inside the
+kernel-oracle 11/13 — not one of the 2 real fails, unaffected. These 5 were
+already converted from "silently wrong" to "loudly KNOWN-FAIL, pinned"
+by earlier sessions (audit-#8/§14) — this session's own tail is a
+DIFFERENT population entirely (Map/dict census-BIGINT crossing a boxed
+CARRIER_BOX representation), confirmed by zero name/line overlap.
+
+**3. Root cause (rows 1-3/5/7-11), found from the actual-vs-expected
+bytes, not inferred.** `Slice 5`'s own failure printed `actual:
+9221823924482868464n` for `m.set('x', 5n); return m.get('x')` — decoded,
+`0x7FFA8000000004F0`: a well-formed `PTR.BIGINT` (tag=5) NaN-box, never
+dereferenced. Under `CARRIER_BOX`, a Map/dict's own live storage cell for
+a BigInt value holds exactly this: `coerceArg`'s box-direction branch
+(`src/compile/emit.js`, §29's own fix site) boxes every BigInt-typed
+argument crossing into `.set()`/`[]=` unconditionally, so the container's
+"raw f64 carrier" for that slot IS the box. Three call sites, all built
+for the OFF-FLAG raw-i64 carrier doctrine (pre-dating `CARRIER_BOX`
+entirely), never learned to check:
+- `bigIntUnary`'s maybeUndefined `select` arm (`emit.js`) computed
+  `mkI64(['i64.reinterpret_f64', …])` directly on the census value —
+  negating/complementing the BOX'S OWN bits, not the payload.
+- `bigIntOperand`'s maybeUndefined throw-check arm (`emit.js`), same
+  pattern, past the point the UNDEF_NAN check has already ruled out the
+  sentinel.
+- `bigIntJointDispatch`'s `bigResult` (`emit.js`) called `asI64` on BOTH
+  operands unconditionally, regardless of `bigIntDomain`'s own `'census'`
+  classification (the ONE domain that can be container-sourced — `'bigint'`
+  and the null-domain magnitude heuristic are never boxed, by construction:
+  neither is ever Map/dict-set).
+- `synthesizeBoundaryWrappers`' `resultBigintSentinel` export lane
+  (`compile/index.js`) built the JS-boundary i64 via a bare
+  `i64.reinterpret_f64` on the callee's raw return — the SAME class one
+  layer further out: `interop.js`'s `decodeBigintSentinel` (the `s`-marker
+  decode this lane feeds) has no memory handle to dereference a box with,
+  unlike the generic `r`-marker decode's own PTR.BIGINT arm (`interop.js`
+  `mem.read`, already correct — confirmed live: the `resultDynamic`/
+  `resultBigint` lanes, which route through `mem.read`, were NEVER broken;
+  only the `s`-marker's memory-less compare was).
+
+**4. Fix — reuse `maybeUnboxBigInt` (ir.js, CONSERVATIVE PAIRING, §16/
+§24/§29), narrowly scoped.** All four sites now route the present-value
+arm through it, `CARRIER_BOX`-gated:
+- `bigIntUnary`/`bigIntOperand`: direct call — both already run inside
+  normal per-function body emission, the SAME context `temp()`'s
+  `ctx.func.locals` registration is built for; sound because both sites
+  are reached ONLY when `censusMaybeUndefinedKind(node) === VAL.BIGINT`
+  (the node IS census-sourced, by the very branch that got here) and,
+  for `bigIntOperand`, ONLY past the throw check (provably present); for
+  `bigIntUnary`'s `select`, the BigInt arm is unconditionally COMPUTED but
+  conditionally DISCARDED — running `maybeUnboxBigInt` on the sentinel
+  case is harmless (UNDEF_NAN's ATOM tag never collides with PTR.BIGINT,
+  so it falls to the same plain reinterpret the discarded arm always
+  produced).
+- `bigIntJointDispatch`: a new `i64Operand(dom, get)` helper applies
+  `maybeUnboxBigInt` ONLY when `dom === 'census'` — `'bigint'`-domain and
+  null-domain (raw exported-param magnitude heuristic) operands are never
+  container-sourced and stay on the unchanged `asI64` path. Reached only
+  after `flagA===flagB` picked the BigInt arm, so a `'census'` operand
+  here is provably present.
+- `synthesizeBoundaryWrappers`: **cannot** call `maybeUnboxBigInt`
+  directly — it allocates its own scratch local via `temp()`, which
+  registers onto `ctx.func.locals`, but this wrapper function is
+  hand-assembled (`wrapNode`, no `(local …)` section for the single-result
+  shape at all) in a SEPARATE pass after normal body emission, where
+  `ctx.func` belongs to whatever function compiled last — `temp()` would
+  silently register the scratch local onto the WRONG function. Found
+  live, not assumed (`'mbig0' is not in scope` at compile time on the
+  first attempt). Fixed by inlining `maybeUnboxBigInt`'s own logic against
+  a manually-declared, collision-checked local (`__expbig0`, bumped
+  against `sig.params`), mirroring the multi-value branch's own existing
+  `__mlaneN` discipline for the identical reason, immediately above in the
+  same function.
+
+Every site is gated `CARRIER_BOX ? … : <the prior exact expression>` — off
+`CARRIER_BOX` is false, so every branch is byte-identical to before this
+session by construction.
+
+**5. Rows 4/6 — not a compiler bug, a stale test.** Both "negative
+control" tests asserted the OFF-FLAG raw-i64 carrier's own documented,
+still-real gap (`m.get(k)` on a mixed BIGINT/NUMBER Map misreads a small
+BigInt's raw bits as a subnormal float, `2.5e-323`) — unconditionally,
+never branching on `CARRIER_BOX`. Verified directly, not assumed: checked
+out `src/compile/{emit,index}.js` at `1a91c23f` (this session's OWN
+pre-fix HEAD) into a scratch copy and re-ran the exact repro — **already**
+returns the correct `5n` under `CARRIER_BOX`, byte-for-byte, before this
+session's fix ever touched anything. Root cause: this shape's census
+(`dictValueKindOf`/`mapValueKindOf`) returns null for a mixed receiver, so
+`censusBigintSentinelKind` never fires — it takes the `resultDynamic`
+lane, which routes through `interop.js`'s generic `decode()`/`mem.read`,
+whose PTR.BIGINT arm was ALREADY correct (item 4's own finding above).
+Fixed the two assertions to branch on `process.env.JZ_CARRIER_BOX`
+(`test/dyn-keys.js`) rather than the compiler — a genuinely separate,
+already-latent test/reality mismatch this session happened to surface
+while classifying the tail, not a new discovery about the mechanism.
+
+**6. Rows 12-13 — banked, precisely, matching their own already-named
+walls.** Row 12 (audit-#16, `ctx.features.bigint` module-inclusion
+ordering) is wrong at BOTH native AND kernel — never a `CARRIER_BOX`
+question, a separate FeaturePlan-ordering bug with its own name and no
+lever this session's fix touches. Row 13 (§16→§17, `console.log`
+heap-string kernel miscompile) is `CARRIER_BOX`-only but lives inside the
+SELF-HOSTED KERNEL's own generated code, not the native compiler — the
+same class of "kernel-target-only, invisible to any native-scale
+gate" wall §26-§29 spent multiple sessions root-causing for the
+`atomNanHex`/`i64Hex` case; this row needs the identical
+`trace-inject.mjs`-grade instrumentation (committed, reusable, §29) to
+root-cause, not attempted this session (a materially separate,
+multi-hour investigation, not a "one clear named fix").
+
+**7. `test:wasm`'s item-8 gap (§29) — re-verified, UNCHANGED, still
+banked.** Built a fresh `JZ_CARRIER_BOX=1` kernel in the isolated worktree
+(`JZ_CARRIER_BOX=1 node scripts/build-dist.mjs`, 16531.8 KB, matching
+§29's own cited CARRIER_BOX size), ran the exact reproduction recipe
+`JZ_TEST_TARGET=jz.wasm JZ_CARRIER_BOX=1 node test/index.js pointers`:
+34/35, the SAME single row red — `rawField()` (the `pointsTo==='ALL'`
+schema field read, `test/pointers.js`'s CONSERVATIVE PAIRING pin) still
+returns `NaN` instead of `9221120237041090560n` when the reading code
+itself is compiled BY a carrier-built kernel rather than run natively.
+Byte-for-byte the same finding §29 named — this session's Map/dict census
+fix (items 3-4 above) is a DIFFERENT mechanism (a container's own storage
+cell vs. a schema-slot arithmetic read inside kernel-generated code) and
+does not touch it, confirmed rather than assumed.
+
+**8. Gates, every landing.** Sequential, foreground, isolated `git
+worktree add --detach` at `1a91c23f` for all `CARRIER_BOX` measurement,
+plus independent confirmation in the shared tree after committing:
+- **Flag-forced battery: 3403/15/6 → 3414/4/6** (19504 → 19596
+  assertions) — the 4 survivors are rows 12-13 above plus the 2
+  CARRIER_BOX-unrelated default-mode rows (interval-walk, typed RMW),
+  confirmed identical in BOTH the worktree and the shared tree post-commit.
+  Zero new failures at any point.
+- **Default battery: 3416/2/6, unchanged** (19602 assertions) — identical
+  in the worktree, the shared tree before this session's edits, and the
+  shared tree after — the same 2 pre-existing rows every session since
+  §14 has named.
+- **`node test/dyn-keys.js`: 57/57 both flags** (284 assertions) — was
+  55/57 flag-forced, 57/57 default before the test fix; 57/57 both after.
+- **`node test/pointers.js`: 35/35 both flags.** **`node test/watr.js`:
+  35/35.**
+- **`JZ_CARRIER_BOX=1 kernel-parity`: 3/3 (33 assertions), byte-identical
+  O0/O2/O3** — unchanged from §29.
+- **`JZ_CARRIER_BOX=1 kernel-oracle`: 11/13 (455 assertions), unchanged**
+  — the SAME 2 rows (audit-#16, console.log heap-string) as §29's own
+  baseline, byte-for-byte.
+- **Fuzz, `JZ_CARRIER_BOX=1`: 2 independent 2000-program sweeps**
+  (`--seedStart=1,2001`, `--opt=0,1,2,3`, `--inputs=20`): 30173 + 30672 =
+  **60845 inputs compared, 0 divergences.**
+- **Default build ×2, in BOTH the worktree and the shared tree (4
+  independent builds total): byte-identical across all 4** — `dist/jz.js`
+  `420596426c6b224ad07bc03ec75e2b5c5c51a3785e6cd1f0fdee7d03a985759e`,
+  `dist/interop.js`
+  `ef42c9da1ab79349a5ab69d55558082de4b3d228850b87a9a188b6722ef730e1`,
+  `dist/jz.wasm`
+  `6fe9f1e84a3723cfe79aac616dd6797832fdf237a8cbb4c9674c6a9ec97b19b7`
+  (16481.3 KB) — identical whether built in the isolated worktree or the
+  shared tree, confirming the fix is fully deterministic and CARRIER_BOX
+  gated (the shared tree never ran a `CARRIER_BOX`-flagged build of its
+  own `dist/`).
+
+**Flip-readiness verdict: NOT YET, but the tail shrank from 13 to 2.**
+Everything closable without a new multi-session investigation is closed:
+9 real compiler rows fixed by one root-caused mechanism (the fourth
+`maybeUnboxBigInt` consumer class this chain has now found — schema-slot
+arithmetic §16/§24, `atomNanHex`/`i64Hex` §29, and now Map/dict census
+values), 2 more by a verified-unrelated test-staleness fix. What remains
+is exactly 2 rows (12-13) plus the separately-tracked `test:wasm` item-8
+finding — all THREE now demonstrably requiring the SAME class of
+dedicated, multi-hour, kernel-scale trace-instrumentation §26-§29 already
+proved out (`scripts/trace-inject.mjs`, committed, reusable) — not a
+"next quick lever," a concrete next SESSION's starting point.
+
+**Local commits (shared tree, plain messages, no push).**
+`8857842d` — `src/compile/emit.js` + `src/compile/index.js` (the
+`maybeUnboxBigInt` fix, items 3-4). `53a0e39f` — `test/dyn-keys.js` (the
+2 stale-assertion fixes, item 5). This ledger entry + `.work/todo.md`
+status update commit separately.
+
+**SHAs.** Investigated at `1a91c23f` (HEAD at session start). Isolated
+`git worktree add --detach /tmp/jz-carrier-wt-tail 1a91c23f`
+(`node_modules` symlinked from the shared tree, read-only), fix applied
+identically, all `CARRIER_BOX` measurement and the `JZ_CARRIER_BOX=1
+scripts/build-dist.mjs` kernel build (16531.8 KB) done there; removed at
+session end. Shared tree: fix committed at `8857842d`/`53a0e39f`, default
+`dist/jz.wasm` rebuilt twice for the byte-identity gate (not committed,
+gitignored).

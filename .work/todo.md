@@ -6,6 +6,53 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## carrier flip tail: 15→4 flag-forced failures (11 of the 13-row tail closed), flip STILL blocked — 2026-08-10
+Full account: `.work/carrier-representation-design.md` §30. Enumerated the
+flag-forced battery's 15 rows against the 2 pre-existing default-mode
+rows, leaving the 13-row `CARRIER_BOX` tail (all class (c), unclassified,
+at session start — none of it overlaps the 5 audit-#14 item-2 rep shapes,
+which stay correctly pinned KNOWN-FAIL/PENDING-FIX, re-verified). Found
+the root mechanism from the failing assertion's own actual/expected bytes
+(`0x7FFA8000000004F0` returned for a `Map.get()` that should read `5n` —
+a raw, undereferenced `PTR.BIGINT` box): a Map/dict's own storage cell for
+a BigInt value under `CARRIER_BOX` holds the BOXED pointer (`coerceArg`'s
+§29 fix boxes every BigInt argument crossing into `.set()`/`[]=`), but
+`bigIntUnary`/`bigIntOperand`/`bigIntJointDispatch` (src/compile/emit.js)
+and `synthesizeBoundaryWrappers`' `resultBigintSentinel` export lane
+(src/compile/index.js) — all four built for the OFF-FLAG raw-i64 carrier
+doctrine — never learned to check. Fixed by routing the present-value arm
+through `maybeUnboxBigInt` (ir.js CONSERVATIVE PAIRING, §16/§24/§29),
+`CARRIER_BOX`-gated; the boundary-wrapper site can't call it directly
+(its `temp()` would register onto the wrong function's locals — the
+wrapper is hand-assembled, no scratch-local plumbing) so it's inlined
+against a manually-declared, collision-checked local instead (mirrors the
+existing `__mlaneN` discipline). Closes 9 rows. 2 more rows ("negative
+control" tests pinning a mixed-kind-Map gap) turned out to be a STALE TEST
+ASSERTION, not a compiler bug — verified against the session's own pre-fix
+HEAD that `CARRIER_BOX` already decoded this shape correctly, unrelated to
+and predating this session's fix (the mixed-kind census falls back to the
+`resultDynamic` lane, which already routes through `interop.js`'s
+`mem.read`'s own correct PTR.BIGINT arm); fixed the 2 assertions to
+branch on `JZ_CARRIER_BOX` instead. Remaining 2 rows (kernel-oracle
+audit-#16 module-ordering; §16→§17 console.log heap-string kernel
+miscompile) root-caused to ALREADY-NAMED, separately-scoped walls —
+banked precisely, not new. `test:wasm`'s own item-8 finding (§29,
+`pointsTo==='ALL'` schema-slot read misdecoding when compiled BY a
+carrier kernel) re-verified UNCHANGED via a fresh `JZ_CARRIER_BOX=1`
+kernel build + the exact repro recipe — confirmed a DIFFERENT mechanism
+from this session's fix, still banked.
+Gates: flag-forced battery 3403/15/6 → 3414/4/6 (zero new failures at any
+point), default battery 3416/2/6 unchanged, kernel-parity 33/33 unchanged,
+kernel-oracle 11/13 unchanged, `dyn-keys.js`/`pointers.js`/`watr.js` all
+green both flags, fuzz 2000×2 (`JZ_CARRIER_BOX=1`) 0/60845 divergences,
+default build ×2 byte-identical in BOTH an isolated worktree and the
+shared tree (4 independent builds, identical hashes). Flip-readiness:
+STILL NO — but the tail is now 2 rows, both requiring the SAME
+dedicated, multi-hour, kernel-scale trace-instrumentation class (§26-§29's
+`scripts/trace-inject.mjs`) as `test:wasm`'s own item 8, not a quick
+follow-up. Commits (local only): `8857842d` (the fix), `53a0e39f` (the 2
+test corrections).
+
 ## CONSERVATIVE PAIRING (carrier flip probe): UNDEF_NAN/NULL_NAN root-caused and FIXED, dict+test:wasm-hang both closed, flip STILL blocked — 2026-08-10
 `§24`'s own `UNDEF_NAN`/`dict`/`test:wasm`-hang wall (below) is root-caused
 and fixed. Built a WAT-level trace instrument (`scripts/trace-inject.mjs`,
