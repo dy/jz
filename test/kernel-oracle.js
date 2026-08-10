@@ -470,7 +470,8 @@ test('kernel oracle: KNOWN-FAIL (audit-#16, ctx.features.bigint module-ordering,
   // which shape gap keeps it open; a future session's starting point, not
   // re-investigated here). Verified live, both directions, all three opt
   // tiers, default AND flag-forced, before landing this branch.
-  const nativeCorrupted = process.env.JZ_CARRIER_BOX !== '1'
+  // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0.
+  const nativeCorrupted = process.env.JZ_CARRIER_BOX === '0'
   for (const opt of [0, 2, 3]) {
     const nat = jz(mainSrc, { modules, optimize: opt }).exports.out()
     const ker = instantiate(compileViaKernel(mainSrc, { modules, optimize: opt })).exports.out()
@@ -676,7 +677,9 @@ test('kernel oracle: console.log string constants — AGREE (closed incidentally
   for (const opt of [0, 1, 2, 3]) {
     for (const [label, src, want] of [['heap', heapSrc, 'bare-fired'], ['sso', ssoSrc, 'short']]) {
       is(runNative(src, opt).start(), 1, `${label} O${opt}: native runs cleanly`)
-      if (process.env.JZ_CARRIER_BOX !== '1') continue  // kernel leg below is meaningful only under the flag
+      // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0 —
+      // kernel leg below is meaningful only when carrier boxing is active.
+      if (process.env.JZ_CARRIER_BOX === '0') continue
       const seen = []
       const origLog = console.log
       console.log = (...a) => seen.push(a)

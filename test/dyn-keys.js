@@ -477,7 +477,9 @@ test('Slice 5: negative controls — mixed-kind Map falls back to documented (un
   // is real only for the off-flag representation. The NUMBER member is
   // unaffected either way (it was never carrying a BigInt-shaped bit pattern).
   const mixed = jz(`export let f = (k) => { const m = new Map(); m.set('a', 5n); m.set('b', 6); return m.get(k) }`, { jzify: true })
-  is(mixed.exports.f('a'), process.env.JZ_CARRIER_BOX === '1' ? 5n : 2.5e-323)
+  // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0 — the
+  // predicate below is the active-flag test, not an opt-in test.
+  is(mixed.exports.f('a'), process.env.JZ_CARRIER_BOX !== '0' ? 5n : 2.5e-323)
   is(mixed.exports.f('b'), 6)
   // A statically-proven BigInt export (no census, no maybe-undefined) keeps taking
   // the ORIGINAL unmarked resultBigint lane, byte-for-byte unaffected by Slice 5 —
@@ -523,7 +525,8 @@ test('Slice 6: decl-hop present-key BigInt census read materializes the true Big
 // directly against the pre-carrier-§30 source, unrelated to that fix).
 test('Slice 6: negative control — decl-hop through a mixed-kind Map stays the documented (unfixed) Slice 5 gap', () => {
   const mixed = jz(`export let f = () => { const m = new Map(); m.set('a', 5n); m.set('b', 6); let x = m.get('a'); return x }`, { jzify: true })
-  is(mixed.exports.f(), process.env.JZ_CARRIER_BOX === '1' ? 5n : 2.5e-323)
+  // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0.
+  is(mixed.exports.f(), process.env.JZ_CARRIER_BOX !== '0' ? 5n : 2.5e-323)
 })
 
 // FIXED (§14 point 4, audit #10's own "JOINT runtime domain dispatch" finding

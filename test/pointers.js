@@ -332,7 +332,8 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
 // slot unboxes unconditionally instead of handing every consumer the box's
 // raw pointer bits.
 test('carrier: a boxed BigInt schema field read via static dot-access unboxes to its payload (.work/carrier-representation-design.md §15/§16)', () => {
-  if (process.env.JZ_CARRIER_BOX !== '1') return
+  // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0.
+  if (process.env.JZ_CARRIER_BOX === '0') return
   const g = resolveModuleGraph(new URL('./fixtures/carrier-layout-repro.js', import.meta.url).pathname, { resolveNode: true })
   const { rawField, undefAtom, nullAtom, ptrHex } = run(g.code, { modules: g.modules, optimize: 0 })
   is(rawField(), 9221120237041090560n, 'LAYOUT.NAN_PREFIX_BITS unboxes to 0x7FF8000000000000n')
@@ -362,7 +363,8 @@ test('carrier: a boxed BigInt schema field read via static dot-access unboxes to
 // fallback, `typeof node === 'string'` never matching a `.`-node) — verified
 // live via a disposable pre-fix diff before landing the fix, not assumed.
 test('carrier: a bigint-possible-but-UNPROVEN (pointsTo===\'ALL\'-poisoned) schema field read through arithmetic still decodes correctly (.work/carrier-representation-design.md CONSERVATIVE PAIRING)', () => {
-  if (process.env.JZ_CARRIER_BOX !== '1') return
+  // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0.
+  if (process.env.JZ_CARRIER_BOX === '0') return
   const g = resolveModuleGraph(new URL('./fixtures/carrier-conservative-pairing-repro.js', import.meta.url).pathname, { resolveNode: true })
   const { poke, rawField, undefAtom, nullAtom, ptrHex } = run(g.code, { modules: g.modules, optimize: 0 })
   poke()
