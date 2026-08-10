@@ -481,8 +481,25 @@ test('kernel oracle: KNOWN-FAIL (audit-#16, ctx.features.bigint module-ordering,
       is(nat, want, `O${opt}: native CORRECT under JZ_CARRIER_BOX=1 (§31 — closed incidentally by §24 CONSERVATIVE PAIRING, not by an audit-#16 fix)`)
       not(nat, corrupted, `O${opt}: tripwire — native must start agreeing again if this regresses`)
     }
-    is(ker, corrupted, `O${opt}: kernel currently WRONG${nativeCorrupted ? ' too, identical corruption' : ' (unlike native under this flag)'} — TODO-flip guard`)
-    not(ker, want, `O${opt}: tripwire — kernel must start disagreeing too`)
+    if (nativeCorrupted) {
+      is(ker, corrupted, `O${opt}: kernel currently WRONG too, identical corruption — TODO-flip guard`)
+      not(ker, want, `O${opt}: tripwire — kernel must start disagreeing too`)
+    } else {
+      // .work/carrier-representation-design.md §32: CARRIER_BOX's OWN
+      // declaration (src/ctx.js) is a `typeof process !== 'undefined'`
+      // host-capability probe — jz's compiler correctly (spec §13.5.3)
+      // folds this to `false` for ANY self-hosted compile, since `process`
+      // is never declared in jz's own source, permanently disabling every
+      // CARRIER_BOX-gated mechanism (incl. §24 CONSERVATIVE PAIRING's
+      // maybeUnboxBigInt dispatch) inside any kernel regardless of build
+      // flag — the actual root cause of test:wasm item 8 (`rawField()`).
+      // scripts/build-dist.mjs now injects the real build-time flag value
+      // as a source-text literal before self-hosting, so CARRIER_BOX-gated
+      // logic — including this row's own accidental-fix mechanism, same as
+      // native's — now genuinely activates inside the kernel too.
+      is(ker, want, `O${opt}: kernel CORRECT under JZ_CARRIER_BOX=1 (§32 — CARRIER_BOX self-host build-time injection makes §24 CONSERVATIVE PAIRING activate inside the kernel for the first time, same mechanism as native's own accidental fix)`)
+      not(ker, corrupted, `O${opt}: tripwire — kernel must start agreeing with the corrupted value again if this regresses`)
+    }
   }
   // Control: reversing the import order puts the bigint-construction site (b.jz)
   // ahead of the numeric-coercion op (a.jz) in prep()'s walk, so the flag is set

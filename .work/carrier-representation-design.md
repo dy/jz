@@ -5113,3 +5113,292 @@ fix applied identically and committed, default `dist/jz.wasm` rebuilt for
 the byte-identity gate (not committed, gitignored, matches §29/§30's own
 practice) — never built `CARRIER_BOX`-flagged in the shared tree, per this
 design's own standing rule (gap 2 keeps it in force).
+
+## §32. Item 8 (`rawField()`) ROOT-CAUSED AND FIXED — the named lead
+(`refineDynKeys`) was WRONG; the real cause was never a census-divergence
+bug at all. FIXING it unmasks a second, previously-invisible self-host
+gap (`ternaryBoxedNames`/`.bigint:toString`) — test:wasm still short of
+100% green, flip STILL blocked, but on a materially different, more
+precise blocker (2026-08-10)
+
+**Verified truly-current kernel first (§15's own lesson).** Rebuilt
+`JZ_CARRIER_BOX=1` from `fb202a09` (HEAD at session start, §31's own
+commit) in a fresh isolated worktree (`git worktree add --detach
+/tmp/jz-carrier-wt-item8 fb202a09`) — 16531.8 KB, matching §29/§30/§31's
+own cited size exactly. `JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm node
+test/index.js pointers`: 34/35, `rawField()` → `NaN`, byte-for-byte the
+same failure §29-§31 all cited. Not stale — the bug is real on a
+genuinely current kernel.
+
+**The probe: a direct runtime read of the census verdict, not a WAT diff.**
+Per this session's mandate, instrumented the actual write-side decision
+chain with data-gated `console.error` probes (gated on `prop ===
+'NAN_PREFIX_BITS'`/`name === 'r'` — NOT `process.env`-gated, since an
+env-gated probe would itself fold to dead code under self-hosting, the
+same trap this session's finding is about) at three points: `CARRIER_BOX`'s
+own top-level declaration (`src/ctx.js`), `isSchemaSlotBigintPossible`
+(`src/ir.js`), and `ctx.schema.slotBigintBoxedBySid` (`module/schema.js`).
+Rebuilt the kernel with each probe generation, ran the exact repro
+directly (`self.exports.default(...)` on `test/fixtures/carrier-
+conservative-pairing-repro.js`'s resolved module graph, bypassing the test
+harness). **Every probe read `0`/false inside the running kernel — including
+`CARRIER_BOX`'s own declaration, printed once at kernel-init ($__start)
+time, before any target-program compilation even begins.** This single
+fact refutes every prior session's framing at the root: the write-side
+census (`anyDynKey`, `slotBigintBoxedBySid`, `schemaShadowed`) was never
+reached with a wrong ANSWER — `slotBigintBoxedBySid`'s own FIRST guard
+(`if (!CARRIER_BOX || sid == null) return false`) short-circuits before
+ever touching the census machinery §16-§31 all suspected.
+
+**Root cause, confirmed via static analysis of the compiler's own `typeof`
+folding (not inferred — read directly).** `src/ctx.js`:
+```js
+export const CARRIER_BOX = typeof process !== 'undefined' && process.env?.JZ_CARRIER_BOX === '1'
+```
+a native-process host-capability-probe idiom — correct when this line runs
+as ordinary NATIVE JavaScript (`node index.js`, `node scripts/build-
+dist.mjs`'s own process). But `CARRIER_BOX` is also a plain top-level
+`const`, imported and consumed as a VALUE throughout the compiler's own
+source (`module/schema.js`, `module/object.js`, `src/ir.js`) — and THAT
+source is exactly what gets self-hosted (compiled BY jz, via `build-
+dist.mjs`'s `compile(g.code, {modules: g.modules, ...})` call on
+`scripts/self.js`'s resolved graph). `src/prepare/index.js`'s own `typeof`
+handler (`staticTypeofString`/`isUnresolvableBareIdent`, spec §13.5.3,
+comment: "Unresolvable bare refs fold to 'undefined'... the only place a
+stray identifier doesn't ReferenceError") CORRECTLY, UNCONDITIONALLY folds
+`typeof process` to the literal string `'undefined'` for ANY jz compile —
+native or self-hosted — because `process` is never declared anywhere in
+jz's own source or its `GLOBALS` table. That makes `CARRIER_BOX`'s own
+initializer fold to `false` the instant IT ITSELF is compiled (not run)
+by jz — permanently, structurally, for EVERY self-hosted kernel ever
+built, regardless of which flag state built it. **This is not a self-host
+MISCOMPILE — the compiler produces textbook-correct code for what the
+source literally says.** `CARRIER_BOX`'s own declaration is simply an
+idiom that was never designed to survive being compiled rather than run;
+the self-hosted kernel structurally cannot observe a live env var (wasm
+has no `process`, no `env`).
+
+**Fix — bake the build's actual flag value in as a source-text literal
+before self-hosting (`scripts/build-dist.mjs`), the standard technique for
+a build-time constant that must survive into a self-hosted artifact
+(webpack `DefinePlugin` / rustc `cfg!` precedent):**
+```js
+const g = resolveModuleGraph(resolve(ROOT, 'scripts/self.js'), { resolveNode: true })
+{
+  const CTX_PATH = Object.keys(g.modules).find(p => p.endsWith('/src/ctx.js'))
+  const needle = "export const CARRIER_BOX = typeof process !== 'undefined' && process.env?.JZ_CARRIER_BOX === '1'"
+  g.modules[CTX_PATH] = g.modules[CTX_PATH].replace(needle, `export const CARRIER_BOX = ${process.env.JZ_CARRIER_BOX === '1'}`)
+}
+```
+(guarded by two `throw`s if the module isn't found or the declaration's
+shape ever changes, so a future refactor fails loudly instead of silently
+reverting to the old bug). Scoped to `build-dist.mjs`'s own self-hosting
+step only — every native code path (`node index.js`, every `test/*.js`)
+still imports and reads `src/ctx.js`'s real declaration, completely
+untouched. `scripts/selfhost-build.mjs` (the OTHER self-hosting script,
+"the selfhost gate" per its own header, never `CARRIER_BOX`-tested by any
+existing gate) was deliberately NOT touched — out of scope, noted for a
+future session if that path is ever exercised under the flag.
+
+**Verified fixed, directly.** Rebuilt `JZ_CARRIER_BOX=1` with the fix:
+16531.8 KB, identical size to the unfixed build (the injection replaces
+one line of source text with another of comparable size — the compiled
+kernel's STRUCTURE is unaffected, only the boolean value one runtime
+check reads). `JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm node test/index.js
+pointers`: **35/35 (70 assertions)** — `rawField()` now correctly returns
+`9221120237041090560n`. `CARRIER_BOX`'s own top-level probe (re-instrumented
+briefly to confirm) now reads `1`/true inside the running kernel, exactly
+once, at `$__start` time — the flag genuinely activates inside a
+self-hosted kernel for the first time in this design's entire history.
+
+**Bonus, unplanned: incidentally fixes audit-#16's kernel leg too.**
+§31's own gap-3 writeup already speculated this ("plausibly the SAME class
+as gap-2's write-side self-host divergence, not confirmed") — now
+confirmed. Audit-#16's native-leg accidental fix (§24 CONSERVATIVE
+PAIRING's `maybeUnboxBigInt` dispatch, itself `CARRIER_BOX`-gated via
+`isSchemaSlotBigintPossible`) was ALSO silently inert inside every prior
+kernel for the exact same structural reason — fixing `CARRIER_BOX` makes
+it activate in the kernel too. `test/kernel-oracle.js`'s audit-#16 block
+updated: the kernel-leg assertion now branches on `nativeCorrupted` the
+same way the native-leg assertion already did (§31's own pattern), asserts
+`want` under `JZ_CARRIER_BOX=1` (was pinned as "expected wrong"), keeps
+the default-mode pin ("both wrong," the real, still-open `ctx.features.bigint`
+module-ordering bug, untouched) exactly as-is.
+
+**A NEW gap surfaces — NOT fixed, distinct mechanism, own repro.** Full
+`JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm node test/index.js`: **2712/2719
+(12862 assertions), 1 fail** — same PASS COUNT as §29's own original
+citation, but the FAILING ROW CHANGED: `rawField()` is gone from the fail
+list; in its place, `test/inference.js`'s "bigint∪null: kind carries
+through the nullish ternary arm" — `ternary-of-bigint receiver dispatches
+.bigint:toString(radix)`. Repro (not `CARRIER_BOX`-gated in its own test —
+runs under every flag state, a pre-existing, non-carrier-specific test):
+```js
+export let viaTern = (a) => {
+  const r = a > 0 ? BigInt(a) : null
+  return r == null ? 'null' : r.toString(16)
+}
+```
+`viaTern(255)`: native (`JZ_CARRIER_BOX=1`) → `'ff'` (correct, verified
+live). Kernel (same flag, same fixed kernel) → `'7ffa800000000400'` (a raw
+NaN-box hex string, unconverted — the SAME symptom CLASS as item 8: a
+box's own tag bits leaking through unconverted). WAT diff
+(`compileViaKernel({wat:true})`, O0, isolated single-function repro):
+native `.bigint:toString`'s operand read is
+```
+(i64.load (call $__ptr_offset (i64.reinterpret_f64 (local.get $r))))
+```
+(dereferences the box); kernel emits a bare
+```
+(i64.reinterpret_f64 (local.get $r))
+```
+— never dereferences, exactly `readI64`'s naive fallback, meaning the
+kernel's own compiled `isTernaryBoxedBigint('r')` (`src/ir.js`, gated on
+`ctx.func.ternaryBoxedNames`, a per-function transient Set populated by
+`emitDecl`, `src/compile/emit.js`) evaluates FALSE where native's
+evaluates TRUE, for byte-identical source — a genuine self-host
+divergence, this time NOT explained by `CARRIER_BOX` itself (confirmed
+correctly `true` throughout this fixed kernel — this is a DIFFERENT,
+downstream mechanism). **Comment in `src/ir.js` at `isTernaryBoxedBigint`'s
+own declaration names this EXACT repro as "the ORIGINAL incident this
+predicate exists for"** — the fix that's supposed to handle this shape
+already exists and is `CARRIER_BOX`-gated correctly; something ELSE in its
+own write/read pairing (the `emitDecl` `?:`-shape gate at emit.js ~2203,
+or `ternaryBoxedNames` Set membership itself) diverges under self-hosting.
+
+**Not root-caused further this session.** Placed the same class of direct,
+data-gated `console.error` probes at the write site (`ctx.func.ternary
+BoxedNames?.add(name)`, gated on `name === 'r'`, unconditional otherwise —
+NOT inside the `if (CARRIER_BOX && ...)` gate, to catch the condition
+evaluating either arm) and the read site (`isTernaryBoxedBigint`'s own
+`.has(name)` check) — **neither probe printed a single line** when the
+freshly-rebuilt (probe-included) kernel compiled the `viaTern` repro,
+despite the bug reproducing on that exact build. This means the
+divergence is NOT a simple "the condition evaluates false" shape (that
+would still have printed the entry probe) — it's upstream of even
+REACHING this instrumented code path as naively probed, structurally
+different from item 8's own diagnosis (which DID print cleanly at every
+probe point). Needs `scripts/trace-inject.mjs`-grade in-kernel byte-level
+tracing (reserved since §29, never yet needed until now) to pin down
+correctly, not another console.error probe — named precisely, with a
+verified, minimal, single-function repro and its own WAT-diff evidence,
+so a future session doesn't have to re-derive either.
+
+**Gates run this session (isolated worktree `/tmp/jz-carrier-wt-item8`,
+`git worktree add --detach fb202a09`, `node_modules` symlinked, foreground
+throughout — three separate races with an UNRELATED concurrent process's
+own build/test activity caught and cleaned up mid-session, once in this
+worktree [killed, `dist/` wiped, rebuilt clean] and twice more misidentified
+before confirming by `cwd` they belonged to other sessions entirely, per
+this design's own §29 precedent for exactly this class of mistake):**
+- **`JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm node test/index.js pointers`
+  (test:wasm's carrier leg, targeted): 34/35 → 35/35.** Item 8 CLOSED.
+- **Full `JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm node test/index.js`:
+  2712/2719 (12862 assertions), 1 fail** — same pass count as §29's own
+  baseline, but the failing row is now the NEW gap above, not `rawField()`.
+  **NOT fully green — the flip bar is not met.**
+- **Flag-forced battery (`JZ_CARRIER_BOX=1 node test/index.js`, native
+  only): 3416/2 (19634 assertions)** — byte-for-byte the SAME 2
+  pre-existing rows (interval-walk, typed RMW) as §31's own cited PARITY
+  baseline. Unaffected by this session's fix (native-only, no kernel
+  involvement) — confirmed unchanged, as expected.
+- **Default battery (`node test/index.js`, unflagged, against a freshly,
+  independently rebuilt DEFAULT kernel — NOT the flagged one, to avoid a
+  same-process kernel/env mismatch this session hit once and corrected):
+  3416/2 (19610 assertions)** — byte-for-byte the SAME 2 rows, matching
+  §31's own cited default baseline exactly.
+- **`JZ_CARRIER_BOX=1 node test/kernel-oracle.js`: 13/13 (493
+  assertions).** **`node test/kernel-oracle.js` (default, against the
+  independently-rebuilt default kernel): 13/13 (477 assertions).** Both
+  counts match §31's own citation exactly; the flag-forced leg's audit-#16
+  row is now genuinely GREEN (not merely a corrected "expected wrong" pin)
+  for the first time.
+- **`JZ_CARRIER_BOX=1 node test/kernel-parity.js`: 3/3 (33 assertions),
+  unchanged.**
+- **Fuzz, `JZ_CARRIER_BOX=1`: 2 independent 2000-program sweeps**
+  (`--seedStart=1,2001`, `--opt=0,1,2,3`, `--inputs=20`): 30173 + 30672 =
+  **60845 inputs compared, 0 divergences** — matches §29/§30/§31's own
+  cited total exactly (this session's `src/`-equivalent change is
+  `scripts/build-dist.mjs` + `test/kernel-oracle.js` only — zero compiler
+  source touched — so an unchanged fuzz result is the expected, confirming
+  outcome).
+- **Default build ×3 in the isolated worktree, byte-identical to EACH
+  OTHER and to §29/§30/§31's own cited hashes exactly**: `dist/jz.js
+  420596426c6b224ad07bc03ec75e2b5c5c51a3785e6cd1f0fdee7d03a985759e`,
+  `dist/jz.wasm
+  6fe9f1e84a3723cfe79aac616dd6797832fdf237a8cbb4c9674c6a9ec97b19b7`
+  (16481.3 KB), `dist/interop.js
+  ef42c9da1ab79349a5ab69d55558082de4b3d228850b87a9a188b6722ef730e1`.
+  **Shared-tree default build attempted for the customary both-trees
+  confirmation but abandoned as uninformative**: an unrelated concurrent
+  session was actively editing `src/compile/index.js`
+  (`scanAndTagNonEscapingClosures`, a `JZ_COUNT_NONESCAPING` diagnostic,
+  unrelated to this design) in the shared tree at the same time, so any
+  shared-tree build during this window reflects a mixed, uncommitted state
+  — not a clean `fb202a09`+fix baseline. Confirmed innocent by direct
+  A/B: rebuilding BOTH the unmodified `fb202a09` source and this session's
+  fixed source in the shared tree, in that contaminated state, produced
+  the IDENTICAL hash to each other (`06eedc1c…`, 16476.3 KB) — proving
+  the shared-tree/worktree size delta (16476.3 vs 16481.3 KB) is the
+  OTHER session's uncommitted edit, not this fix; the isolated worktree's
+  own 3-way self-consistent, `§29`-matching byte-identity is the
+  trustworthy measurement.
+
+**Flip-readiness verdict — §11 probe: still NOT READY, but the blocker is
+now materially different and more precisely named than at any prior
+session.** The specific, named mandate for this session — root-cause and
+fix item 8's write-side census miscompile — is COMPLETE: the named lead
+(`refineDynKeys`) is REFUTED, the true root cause (`CARRIER_BOX`'s
+`typeof process` host-detection idiom, structurally incompatible with
+self-hosting) is fixed at the root, verified via direct runtime probes
+(not inference), and the fix is a proven no-op for the default build
+(byte-identical, isolated, 3 independent confirmations) and for the
+flag-forced native-only battery (unchanged, as expected). **But `src/
+ctx.js`'s own standing bar for the flip — CARRIER_BOX producing a
+CORRECT self-hosted kernel, not merely a battery-parity one — is still
+unmet**: fixing item 8 unmasked a SECOND, structurally different,
+previously-invisible self-host gap (`ternaryBoxedNames`/`.bigint:toString`
+dispatch) that `test:wasm`'s full run exists precisely to catch. This is
+not a regression this session introduced — it's a PRE-EXISTING bug that
+was NEVER ONCE exercised in this design's entire history, because
+`CARRIER_BOX` was silently inert inside every self-hosted kernel ever
+built before this fix. **No default flip.** `CARRIER_BOX` stays
+`JZ_CARRIER_BOX==='1'`-gated, OFF by default, unchanged shape from
+§14-§31.
+
+**A future flip-readiness session's concrete starting point.** Root-cause
+the `ternaryBoxedNames`/`isTernaryBoxedBigint` divergence named above,
+using `scripts/trace-inject.mjs` (committed, reusable, §29) rather than a
+plain `console.error` probe (verified this session NOT to reach the
+naively-instrumented call sites at all) — splice debug traces directly
+into the kernel-compiled `emitDecl`/`isTernaryBoxedBigint` WASM bodies to
+see where the write/read pairing actually breaks. Once found: given this
+design has now found the SAME "silently-inert-under-self-hosting" root
+shape TWICE (`CARRIER_BOX` itself, this session; plausibly others still
+hiding) — worth an explicit audit for every OTHER module-level constant in
+`src/`/`module/` gated on `typeof process`/`process.env` and consumed as a
+VALUE (not just inside a dead `if`) by compiler logic reachable from
+`scripts/self.js`'s own module graph, before the next flip attempt, so
+this exact class of bug doesn't recur a third time under a different
+flag's name.
+
+**Local commits (shared tree, plain messages, no push, staged by exact
+filename only — an unrelated concurrent session's own uncommitted edit to
+`src/compile/index.js` was present in the shared tree throughout and is
+NOT part of this commit).** `scripts/build-dist.mjs` (the fix),
+`test/kernel-oracle.js` (audit-#16 kernel-leg pin correction). This ledger
+entry + `.work/todo.md` status update filed separately.
+
+**SHAs.** Investigated and fixed at `fb202a09` (HEAD at session start,
+§31's own commit). Isolated `git worktree add --detach
+/tmp/jz-carrier-wt-item8 fb202a09` (`node_modules` symlinked, read-only);
+every `CARRIER_BOX` measurement, all four `JZ_CARRIER_BOX=1
+scripts/build-dist.mjs` kernel builds (stale-check, probe generations ×3,
+final fix-only), the two independent default (`fb202a09`) kernel builds,
+and every WAT-diff/direct-probe trace done there; removed at session end.
+Shared tree: fix applied identically and committed; the default
+byte-identity gate relied on the isolated worktree's own 3-way
+self-consistent measurement (see gates above) rather than a shared-tree
+rebuild, given the concurrent contamination; never built
+`CARRIER_BOX`-flagged in the shared tree, per this design's own standing
+rule (still in force — the new gap keeps it in force).

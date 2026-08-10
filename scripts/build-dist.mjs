@@ -118,6 +118,41 @@ if (spraeEntry) {
 // ── dist/jz.wasm — the jz compiler, compiled to wasm by jz (full self-host) ───
 const wasmOut = resolve(OUT, 'jz.wasm')
 const g = resolveModuleGraph(resolve(ROOT, 'scripts/self.js'), { resolveNode: true })
+// CARRIER_BOX self-host build-time injection (.work/carrier-representation-
+// design.md §32 — the item-8/rawField() root cause). src/ctx.js declares
+// `CARRIER_BOX = typeof process !== 'undefined' && process.env?.JZ_CARRIER_BOX
+// === '1'` — a native-process host-capability probe, correct when ctx.js runs
+// NATIVELY (this very build process). But when ctx.js's OWN SOURCE is what's
+// being self-hosted (compiled BY jz, below), jz's compiler — CORRECTLY, per
+// spec §13.5.3 (prepare/index.js staticTypeofString/isUnresolvableBareIdent)
+// — folds `typeof process` to the literal 'undefined' for ANY compile,
+// because `process` is never declared anywhere in jz's own source or its
+// GLOBALS table. That permanently folds CARRIER_BOX to `false` inside ANY
+// self-hosted kernel, regardless of the flag THIS build runs under: the
+// running kernel's own compiled decisions (module/schema.js
+// slotBigintBoxedBySid, src/ir.js isSchemaSlotBigintPossible, etc.) can
+// never observe a live env var — wasm has no `process`. Confirmed live via
+// direct console.error probes at 3 independent call sites, all reading
+// false inside a freshly built JZ_CARRIER_BOX=1 kernel, root-causing the
+// test:wasm item-8 `rawField()` → NaN gap exactly (its very first guard,
+// `if (!CARRIER_BOX || …) return false`, short-circuits before ever
+// reaching the write-side census this design's prior sessions suspected).
+// Not a self-host miscompile of program logic — CARRIER_BOX's own
+// declaration is a host-detection idiom structurally incompatible with
+// being compiled rather than run. Bake THIS BUILD's actual flag value in as
+// a source-text literal before compiling, the standard technique for a
+// build-time constant that must survive into a self-hosted artifact
+// (webpack DefinePlugin / rustc cfg! precedent) — scoped to this one
+// self-hosting compile only; native runs (`node index.js`, every test/
+// *.js) read the real declaration, untouched.
+{
+  const CTX_PATH = Object.keys(g.modules).find(p => p.endsWith('/src/ctx.js'))
+  if (!CTX_PATH) throw new Error('build-dist.mjs: src/ctx.js not found in self.js module graph — CARRIER_BOX injection site missing')
+  const needle = "export const CARRIER_BOX = typeof process !== 'undefined' && process.env?.JZ_CARRIER_BOX === '1'"
+  if (!g.modules[CTX_PATH].includes(needle))
+    throw new Error('build-dist.mjs: CARRIER_BOX declaration shape changed in src/ctx.js — update this self-host injection to match')
+  g.modules[CTX_PATH] = g.modules[CTX_PATH].replace(needle, `export const CARRIER_BOX = ${process.env.JZ_CARRIER_BOX === '1'}`)
+}
 // Match selfhost-build.mjs's measured release profile: this artifact is a
 // compiler executable, not a size-distributed web asset. O3 keeps its warm
 // compile geomean decisively below the same pipeline on V8.

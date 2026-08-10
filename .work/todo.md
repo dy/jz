@@ -6,6 +6,66 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## carrier item-8 (`rawField()`) ROOT-CAUSED AND FIXED — named lead (refineDynKeys) was wrong; real cause unmasks a SECOND self-host gap, flip still blocked — 2026-08-10
+Full account: `.work/carrier-representation-design.md` §32. Verified
+truly-current kernel first (§15 lesson) — item 8 reproduces clean, not
+stale. Probed the write-side decision chain directly (data-gated
+`console.error`, not `process.env`-gated) at 3 points: `CARRIER_BOX`'s own
+top-level declaration, `isSchemaSlotBigintPossible`, `slotBigintBoxedBySid`
+— ALL read `0`/false inside the running kernel, including the top-level
+declaration itself, printed once at `$__start` init, before any target
+compile begins. Root cause: `src/ctx.js`'s `CARRIER_BOX = typeof process
+!== 'undefined' && process.env?.JZ_CARRIER_BOX === '1'` is a native-
+process host-capability probe; jz's own `typeof`-folding (spec §13.5.3,
+`prepare/index.js` `staticTypeofString`) CORRECTLY, unconditionally folds
+`typeof process` to `'undefined'` for ANY jz compile (native or self-
+hosted) since `process` is never declared in jz's own source — making
+`CARRIER_BOX` permanently `false` inside EVERY self-hosted kernel ever
+built, regardless of build flag. Not a self-host miscompile — the
+compiler is textbook-correct for what the source says; the idiom itself
+was never designed to survive being compiled rather than run. The
+originally-named lead (`refineDynKeys`/`anyDynKey` self-host census
+divergence) is REFUTED — `slotBigintBoxedBySid`'s own first guard
+short-circuits before ever reaching that machinery.
+**Fix**: `scripts/build-dist.mjs` now text-substitutes `CARRIER_BOX`'s
+declaration with a literal boolean matching THIS build's actual env,
+before self-hosting `scripts/self.js` — standard build-time-constant-
+survives-self-hosting technique, scoped to the self-hosting compile only.
+Verified: `JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm node test/index.js
+pointers` 34/35 → **35/35**. Default build byte-identical (3× isolated-
+worktree rebuilds, matching §29-§31's own cited hashes exactly) — true
+no-op off-flag. **Bonus**: incidentally fixes audit-#16's kernel-leg too
+(same silently-inert-`CARRIER_BOX` mechanism as native's own accidental
+fix) — `test/kernel-oracle.js` updated, now genuinely 13/13 both flag
+states (was a corrected "expected wrong" pin before).
+**New gap surfaced, NOT fixed**: fixing item 8 activates `CARRIER_BOX`
+inside the kernel for the FIRST TIME in this design's history — unmasking
+a second, previously-invisible self-host divergence: `ctx.func.ternary
+BoxedNames`/`isTernaryBoxedBigint` (a LOCAL declared `cond ? BigInt(x) :
+null` fails to unbox before `.toString(radix)` dispatch in the kernel;
+native correct). Full test:wasm: 2712/2719 (same pass count as §29's own
+baseline) — 1 fail, but the FAILING ROW CHANGED (rawField() gone,
+this new gap in its place). WAT diff confirms the same symptom CLASS
+(box's own bits leak unconverted) via a DIFFERENT mechanism — probes at
+the write/read sites (`emit.js`'s `ternaryBoxedNames.add`, `ir.js`'s
+`isTernaryBoxedBigint`) never fired at all, meaning this needs
+`trace-inject.mjs`-grade in-kernel tracing, not a console.error probe —
+named precisely with a minimal repro + WAT-diff evidence, banked for a
+future session.
+Gates: item-8 repro 34/35→35/35; full test:wasm 2712/2719 (failing row
+changed, not fully green); flag-forced battery 3416/2 (19634, unchanged,
+matches §31 parity exactly); default battery 3416/2 (19610, matches §31
+exactly, against an independently-rebuilt default kernel); kernel-oracle
+13/13 both flag states (493 flag-forced / 477 default, matches §31's own
+counts, audit-16 flag-forced row now genuinely green not just corrected);
+kernel-parity 3/3 unchanged; fuzz 2×2000 (60845 inputs, 0 divergences,
+matches §29-§31 exactly). **§11 probe: NOT READY** — the specific named
+mandate (item 8) is fully closed at the root, but `src/ctx.js`'s own flip
+bar (a CORRECT self-hosted kernel, not just battery parity) is still
+unmet: the newly-surfaced ternaryBoxedNames gap is exactly the class
+test:wasm exists to catch. Commits (local only, named files):
+`scripts/build-dist.mjs`, `test/kernel-oracle.js`.
+
 ## carrier flip tail: 4→2 flag-forced failures, PARITY REACHED (flag == default, 2 rows each), flip STILL blocked on ONE named gap — 2026-08-10
 Full account: `.work/carrier-representation-design.md` §31. Attacked §30's
 final 2 named rows plus the standing `test:wasm` item-8 gap. Two of the
