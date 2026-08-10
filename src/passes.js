@@ -17,7 +17,6 @@ export const PASS_NAMES = [
   // Named here so ALL_OFF genuinely disables them; L1 keeps them (pre-existing tier
   // behavior — they ran at every truthy cfg).
   'inlineToNum',              // inline NaN-check ToNumber fast path (O0: compact __to_num call)
-  'staticClosureEnv',         // non-escaping closures: env slots in static data (scan + emit)
   'hashRmwFusion',            // lean-dict layout + d[k]=f(d[k]) single-probe RMW fusion (one representation feature)
   'inplaceStore',             // in-place replace store on the inline-cell layout
   'devirtClosureTables',      // dyn fn-table candidates: scan + call-site tags + resolve
@@ -122,5 +121,5 @@ export const TUNING_KEYS = [
 // cfg→mask mapping (src/ctx.js OPTF/optFlagsOf), so a flag cannot exist in one
 // and be missed in the other. Order = bit position — append-only. Every name
 // must also be registered above; optimize/index.js asserts that at module load.
-export const HOT_PASSES = ['inlineToNum', 'hashRmwFusion', 'inplaceStore', 'staticClosureEnv',
+export const HOT_PASSES = ['inlineToNum', 'hashRmwFusion', 'inplaceStore',
   'devirtClosureTables', 'devirtDynProps', 'leanCheckedIdx']

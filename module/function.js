@@ -1,4 +1,3 @@
-import { OPTF } from '../src/ctx.js'
 /**
  * Function module — closures, first-class functions, call_indirect.
  *
@@ -11,7 +10,7 @@ import { OPTF } from '../src/ctx.js'
  * @module fn
  */
 
-import { typed, asF64, asI32, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, appendStaticSlots } from '../src/ir.js'
+import { typed, asF64, asI32, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN } from '../src/ir.js'
 import { emit, storedValue } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze.js'
@@ -196,27 +195,6 @@ export default (ctx) => {
     if (envCaptures.length === 0) {
       // No captures — just a function reference
       const ir = mkPtrIR(PTR.CLOSURE, tableIdx, 0)
-      ir.closureBodyName = fnName
-      ir.closureFuncIdx = tableIdx
-      return ir
-    }
-
-    if (body._nonEscaping && (ctx.transform.optFlags & OPTF.staticClosureEnv)) {
-      // Allocate environmental slots in the static data segment
-      const staticOff = appendStaticSlots(new Array(envCaptures.length).fill('0x0000000000000000'))
-      const block = []
-      // Store captured values in env: boxed cells as raw i32 in low 4 bytes, others as f64.
-      // Avoids i32↔f64 roundtrip; body loads via i32.load/f64.load using the same branch.
-      for (let i = 0; i < envCaptures.length; i++) {
-        const addr = ['i32.const', staticOff + i * 8]
-        if (ctx.func.boxed?.has(envCaptures[i]))
-          block.push(['i32.store', addr, ['local.get', `$${ctx.func.boxed.get(envCaptures[i])}`]])
-        else
-          block.push(['f64.store', addr, asF64(emit(envCaptures[i]))])
-      }
-      block.push(mkPtrIR(PTR.CLOSURE, tableIdx, ['i32.const', staticOff]))
-
-      const ir = typed(['block', ['result', 'f64'], ...block], 'f64')
       ir.closureBodyName = fnName
       ir.closureFuncIdx = tableIdx
       return ir

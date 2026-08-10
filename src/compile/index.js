@@ -29,7 +29,7 @@ import { OPTF } from '../ctx.js'
 import parseWat from 'watr/parse'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants, CARRIER_BOX } from '../ctx.js'
 import { i64Hex } from '../../layout.js'
-import { T, isBlockBody, isReassigned, refsName, REFS_IN_EXPR, returnExprs, MUTATE_OPS } from '../ast.js'
+import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS } from '../ast.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusBigintSentinelKind } from '../kind.js'
 import { intLiteralValue } from '../static.js'
 import { intCertainMap, typedStaticLen } from '../type.js'
@@ -69,7 +69,7 @@ import {
   mkPtrIR,
   isLit, litVal, isNullishLit, emitNum,
   temp,
-  isGlobal, isConst, boxedAddr, readVar, writeVar, isNullish, isUndef,
+  isConst, boxedAddr, readVar, writeVar, isNullish, isUndef,
   slotAddr, elemLoad, elemStore, arrayLoop, allocPtr,
   multiCount, loopTop, flat, reconstructArgsWithSpreads,
   valKindToPtr, findBodyStart, tcoTailRewrite,
@@ -380,117 +380,6 @@ function captureFuncInspect(func, facts, programFacts) {
   }
 }
 
-function scanAndTagNonEscapingClosures(body) {
-  if (!body) return
-  const onlyCalledNotReferenced = (node, name) => {
-    if (typeof node === 'string') return node !== name
-    if (!Array.isArray(node)) return true
-    const op = node[0]
-    if (op === 'str') return true
-    if (op === '=>') {
-      return !refsName(node[1], name, REFS_IN_EXPR) && !refsName(node[2], name, REFS_IN_EXPR)
-    }
-    if (op === '=' && node[1] === name) {
-      return onlyCalledNotReferenced(node[2], name)
-    }
-    if (op === '()' && node[1] === name) {
-      for (let i = 2; i < node.length; i++) {
-        if (!onlyCalledNotReferenced(node[i], name)) return false
-      }
-      return true
-    }
-    if (op === '.' || op === '?.') return onlyCalledNotReferenced(node[1], name)
-    if (op === ':') return onlyCalledNotReferenced(node[2], name)
-    for (let i = 1; i < node.length; i++) {
-      if (!onlyCalledNotReferenced(node[i], name)) return false
-    }
-    return true
-  }
-
-  // AUDIT-#17 root-cause fix: `ctx.closure.make`'s static-env path (module/function.js
-  // OPTF.staticClosureEnv) gives a "non-escaping" closure's captured env a single,
-  // COMPILE-TIME-FIXED static-data-segment address — sound only if at most one dynamic
-  // invocation of the closure is ever live for a given enclosing-function activation.
-  // A closure called repeatedly from inside a loop is invoked many times per activation;
-  // if the ENCLOSING function is itself re-entrant (directly or, as here, through a
-  // dynamic dispatcher like emit()'s AST-node table) and that reentry happens between
-  // two loop iterations, the recursive activation's OWN closure-creation at the SAME
-  // declaration site overwrites the SAME static slot — the outer loop's next call then
-  // reads the recursive callee's captures instead of its own (found live: module/
-  // object.js's `{}` handler's `fieldStoredValue`, called once per field from inside the
-  // per-field store loop, re-entered via a nested object-literal field's own `{}` — the
-  // NEXT field's captured `values` read back `undefined`, "compiler internal: expected
-  // emitted IR value ... got empty value", .work/todo.md AUDIT-#17). A call site lexically
-  // inside ANY loop can run more than once per activation, so `_nonEscaping` must not be
-  // granted there — the tag is what module/function.js's OPTF.staticClosureEnv branch
-  // gates on, so withholding it here forces the (always-sound) fresh-heap-alloc closure
-  // path for exactly this shape, with zero effect on any single-invocation-per-activation
-  // closure (the case the optimization actually targets safely).
-  const calledOnlyOutsideLoops = (node, name, inLoop) => {
-    if (!Array.isArray(node)) return true
-    const op = node[0]
-    if (op === 'str') return true
-    const loopHere = inLoop || op === 'for' || op === 'for-of' || op === 'for-in' || op === 'while' || op === 'do'
-    if (op === '()' && node[1] === name) return !loopHere
-    for (let i = 1; i < node.length; i++) {
-      if (!calledOnlyOutsideLoops(node[i], name, loopHere)) return false
-    }
-    return true
-  }
-
-  // audit-#18 completion of the AUDIT-#17 fix: the loop rule alone does not enforce
-  // "at most one live invocation per activation". A closure called TWICE outside any
-  // loop, with a potentially re-entering call between the two (`const a = f();
-  // outer(n-1); return a + f()`), still reads the recursive activation's captures
-  // from the shared static slot — found live by audit #18 (outer(2): 12 expected,
-  // 6 at O2/O3). Re-entry can only happen through some OTHER call in the body, so
-  // the sound conservative grant is: the body performs NO call to anything except
-  // the closure itself. Any foreign call — named, member, computed, indirect —
-  // might transitively re-enter the enclosing function (directly recursive, via a
-  // dispatcher table, or through a host import calling back), and no cheap local
-  // proof distinguishes the safe ones here. This keeps the optimization for its
-  // actual target (a leaf helper factored out of a straight-line body) and forces
-  // the always-sound heap env everywhere re-entry is even conceivable.
-  const onlyCallIsSelf = (node, name) => {
-    if (!Array.isArray(node)) return true
-    const op = node[0]
-    if (op === 'str') return true
-    if (op === '()' && node[1] !== name) return false
-    for (let i = 1; i < node.length; i++) {
-      if (!onlyCallIsSelf(node[i], name)) return false
-    }
-    return true
-  }
-
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === 'let' || op === 'const') {
-      for (const decl of node.slice(1)) {
-        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string') {
-          const name = decl[1]
-          const init = decl[2]
-          if (Array.isArray(init) && init[0] === '=>') {
-            const arrow_body = init[2]
-            if (arrow_body && typeof arrow_body === 'object' && !ctx.func.boxed?.has(name) && !isGlobal(name) && !isReassigned(body, name) && onlyCalledNotReferenced(body, name) && calledOnlyOutsideLoops(body, name, false) && onlyCallIsSelf(body, name)) {
-              arrow_body._nonEscaping = name
-            }
-          }
-        }
-      }
-    } else if (op === '=' && typeof node[1] === 'string' && Array.isArray(node[2]) && node[2][0] === '=>') {
-      const name = node[1]
-      const init = node[2]
-      const arrow_body = init[2]
-      if (arrow_body && typeof arrow_body === 'object' && !ctx.func.boxed?.has(name) && !isGlobal(name) && !isReassigned(body, name) && onlyCalledNotReferenced(body, name) && calledOnlyOutsideLoops(body, name, false) && onlyCallIsSelf(body, name)) {
-        arrow_body._nonEscaping = name
-      }
-    }
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(body)
-}
-
 // Reset per-function emit-frame state — the single source of frame entry.
 // `emitFunc`, `analyzeFuncForEmit`, and `emitClosureBody` all route through
 // here. Top-level funcs start `uniq` at 0; closures pass a higher base so
@@ -537,7 +426,6 @@ function enterFunc(sig, body, { uniq = 0, directClosures = null, exported = fals
   ctx.func.charDecompGlobals = false  // only emitFunc's named path drains — it re-arms
   ctx.func.probeHoist = null
   ctx.func.lenHoist = null
-  if ((ctx.transform.optFlags & OPTF.staticClosureEnv)) scanAndTagNonEscapingClosures(body)
 }
 
 // Allocate + null-init a heap cell for every boxed local that isn't seeded

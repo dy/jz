@@ -127,7 +127,7 @@ const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
   1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true,
     // The formerly-implicit emit-time transforms ran at every truthy cfg — L1 keeps them.
-    inlineToNum: true, staticClosureEnv: true, hashRmwFusion: true, inplaceStore: true,
+    inlineToNum: true, hashRmwFusion: true, inplaceStore: true,
     devirtClosureTables: true, devirtDynProps: true }),
   // Default (level 2 / 'balanced'): every stable pass + full watr. Pre-4.6.9 had to
   // force 'light' mode here (inline / inlineOnce / coalesce all off) to dodge the
