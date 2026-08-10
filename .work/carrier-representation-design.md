@@ -5626,3 +5626,188 @@ rebuild (a dozen-plus generations across both worktrees, each isolated to
 its own worktree's own `dist/`) done there; every tracked-file change
 reverted (`git checkout --`) in both worktrees before this entry was
 written; removed at session end.
+
+## §34. The `ternaryBoxedNames`/`.bigint:toString` gap — ROOT-CAUSED AND
+FIXED. Not a Set/hash-table bug at all: a general (non-carrier-gated)
+boolean-boxing miscompile in `.has`/`.delete` on an unproven Map/Set
+receiver. All gates green. FLIP-READY per the §11 probe — no default flip,
+coordinator's call (2026-08-10)
+
+**Probe 0 (cheap first).** Fresh carrier kernel at HEAD (`5487128b`, which
+already includes `2cc75d29`'s heap-base 64-byte alignment — a real layout
+change since §33). `JZ_CARRIER_BOX=1 node scripts/build-dist.mjs` then
+`compileViaKernel('export let viaTern = (a) => { const r = a > 0 ?
+BigInt(a) : null; return r.toString(16) }')` → `viaTern(255)` still
+returned **`7ffa800000000400`** — byte-for-byte the SAME wrong value §33's
+own citation recorded pre-alignment-change. The heap-base realignment did
+NOT move this bug at all (same wrong bits, not merely "still fails") —
+telling in hindsight: it confirms the bug was never in the Set's *memory
+layout* to begin with (see mechanism below), so a layout-only change had
+nothing to perturb.
+
+**Method: §33's own mandate — instrument the compiled KERNEL directly,
+never re-run the self-host build off edited source.** Generated the
+kernel's own WAT TEXT via the IDENTICAL pipeline/config `build-dist.mjs`
+uses for the binary (`resolveModuleGraph('scripts/self.js')`, the same
+CARRIER_BOX source-literal injection, `optimize:{level:3,watrGuard:false,
+snapshotInit:true}`) — just `{wat:true}` instead of the final byte-encode,
+so `scripts/self.js`/`src/*`/`module/*` are read byte-for-byte unmodified
+and the WAT text is the exact textual twin of the real `dist/jz.wasm`
+(357 MB). Extracted `$m78_ir$readI64`'s own compiled body by name (same
+line-range/depth-counting technique as `scripts/trace-inject.mjs`'s
+`findFunc`) — no splicing needed once the body was legible: **`readI64`'s
+inlined `isTernaryBoxedBigint` dispatch (small enough to fold into its
+caller at O3, so there is no standalone `$m78_ir$isTernaryBoxedBigint`
+function to instrument) resolves `ctx.func.ternaryBoxedNames?.has(name)`
+via a real `call $__set_has`, whose raw i32 result is converted with a
+bare `f64.convert_i32_s` — a genuine NUMBER (0.0/1.0), never a NaN payload
+— and THAT gets bit-compared via `i64.eq` against `TRUE_NAN`'s literal
+bits (`0x7ff8000500000000`).** `0.0`/`1.0`'s IEEE bits can never equal a
+NaN payload, so `.has(name) === true` reads `false` unconditionally,
+independent of the real answer — no memory corruption, no hash collision,
+no forwarding-pointer staleness; a pure representation mismatch at the
+`===` comparison site. This directly explains every one of §33's own
+findings: the Set's content was ALWAYS correct (iteration + `__str_hash`
++ `$__set_has`'s own internal probe all agreed) because `$__set_has`
+itself was never wrong — only the glue converting its raw i32 answer into
+something comparable against a boxed `true` literal was.
+
+**Confirmed with a plain NATIVE (non-self-hosted) repro before touching
+the kernel again** — the bug needs no self-hosting at all, it is a general
+jz codegen gap that happens to be exercised by the compiler's own source:
+```js
+function enterFunc() { return {} }
+let cur = enterFunc()
+function addName(o, n) { o.ternaryBoxedNames ??= new Set(); o.ternaryBoxedNames.add(n) }
+function isBoxed(o, n) { return o.ternaryBoxedNames?.has(n) === true }
+addName(cur, 'r')
+export let f = () => isBoxed(cur, 'r')   // native jz: returns FALSE (wrong)
+```
+matching `readI64`'s own compiled shape instruction-for-instruction.
+
+**Mechanism, traced to source.** `module/collection.js`'s `collProbeDyn`
+(the generic `.has`/`.delete` emitter used whenever the receiver's Map-vs-
+Set-ness isn't statically provable — `ctx.core.emit['.has']`/`['.delete']`)
+built its result as `typed(['f64.convert_i32_s', ['if', …dispatch to
+$__map_has/$__set_has…]], 'f64')` — a raw, UNBOXED number. `kind.js`'s
+`methodValType` (`src/kind-traits.js:187`) only claims `VAL.BOOL` for
+`.has`/`.delete` when the receiver is *statically proven* Map/Set
+(correctly conservative — an unproven receiver could carry a user-defined
+`.has` property returning anything); `ctx.func.ternaryBoxedNames`,
+reached only via `?.` off a dynamically-shaped `ctx.func`, is exactly the
+unproven case, so `valTypeOf` returns `null` for the call. `emit.js`'s
+strict-`===` handler (`src/compile/emit.js:3183-3192`, "One side
+statically BOOL, other side dynamic-unknown … Compare bits: the BOOL side
+boxes to its atom, the unknown side is compared verbatim") then treats the
+unknown-typed `.has()` operand as ALREADY canonically represented — the
+same "dynamic values are always canonically boxed" contract every OTHER
+unproven-typed expression in jz upholds (a property read, an array
+element of unproven kind, …) — and bit-compares it, unboxed, against
+`true`'s boxed atom. `collProbeDyn` was the one producer violating that
+contract. (The proven-receiver fast path, `.${VAL.SET}:has`, has the
+identical raw `f64.convert_i32_s` shape and is UNCHANGED by this fix — it
+is safe specifically because `methodValType` DOES claim `VAL.BOOL` there,
+routing `===` through the OTHER branch, `strictA===VAL.BOOL &&
+strictB===VAL.BOOL`, which normalizes both sides via `truthyIR` instead of
+bit-comparing verbatim.)
+
+**Fix, at the root** (`module/collection.js`): `collProbeDyn` now wraps
+its i32 dispatch result in `boolBoxIR` (imported from `src/ir.js`,
+already used elsewhere for exactly this "materialize the boxed-boolean
+carrier from a 0/1-valued expression … used only at observation/escape
+sites" purpose) instead of a bare `f64.convert_i32_s` — the unproven
+`.has`/`.delete` result is now a real `TRUE_NAN`/`FALSE_NAN` atom, honoring
+the same canonical-representation contract every other dynamic-value
+producer already does. No change to `kind.js`/`methodValType`'s
+conservative typing (still correctly refuses to claim `VAL.BOOL` for a
+receiver that might carry a user-defined `.has`) and no change to the
+proven-receiver fast path.
+
+**Verified natively first** (`isBoxed`/`viaTern`-shaped repros above now
+return the correct answer), **then via a freshly rebuilt carrier kernel**:
+`JZ_CARRIER_BOX=1 node scripts/build-dist.mjs` + `compileViaKernel`'s
+`viaTern(255)` → **`'ff'`** (was `7ffa800000000400`).
+
+**Byte-identity / default-delta analysis** (the fix is NOT `CARRIER_BOX`-
+gated — it changes default codegen for any unproven-receiver `.has`/
+`.delete`). WAT-diffed a receiver-unproven repro before vs. after the fix
+at default (`optimize:0`): the ONLY delta is the expected one — the old
+`(f64.convert_i32_s (if …))` becomes `(call $__mkptr (i32.const 0)
+(i32.or (i32.const 4) (i32.ne (if …) (i32.const 0))) (i32.const 0))`
+(`boolBoxIR`'s exact `4 | bit` atom construction, per its own doc
+comment). A schema-provable receiver (`{s}.has(...)` where `s` is proven
+`VAL.SET`) and a Set-free control program are BOTH byte-identical
+before/after — confirms the delta is precisely scoped to the buggy
+unproven-receiver shape, nothing else.
+
+**Gates — ALL GREEN:**
+- **Carrier `test:wasm`** (`JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm node
+  test/index.js`): **2720 total (12869 assertions), 2714 pass, 0 fail, 6
+  skip** — the §32/§33 row (`bigint∪null` ternary → `.bigint:toString`)
+  now passes; nothing else regressed.
+- **Flag battery parity** (`JZ_CARRIER_BOX=1 node test/index.js`): **3425
+  total (19637 assertions), 3417 pass, 2 fail** — the SAME 2 pre-existing,
+  UNRELATED optimizer bounds-check gaps (`interval walk: strided companion
+  cursor…`, `typed RMW: one guard covers…`) confirmed to fail IDENTICALLY
+  on the pre-fix tree (`5487128b`, unmodified worktree) — not a
+  regression. Matches the historical "3416/2" signature (2 pre-existing
+  fails; suite total grew to 3425 with ordinary interim development).
+- **Default battery** (`node test/index.js`, no flag): 3425 total, 3416
+  pass, 3 fail — the SAME 2 pre-existing rows PLUS `kernel oracle: KNOWN-
+  FAIL (audit-#16 …)`, which is explicitly pinned (by its own test title)
+  to fail on the DEFAULT/no-flag leg only and pass under
+  `JZ_CARRIER_BOX=1` — exactly reproduced below, not a regression.
+- **`test/layout-kinds.js`'s own `identity-arm-divergence` regression
+  pin** needed a one-line update: `hasQ`'s receiver is unproven, so its
+  `.has()` now returns the canonical `FALSE_NAN` atom
+  (`9221120254220959744n`) instead of the stale unboxed `0n` the pin
+  hard-coded — the SAME constant its own sibling assertion (`eqQ`, two
+  lines below) already used for "boxed false" over the export boundary.
+  The safety property the pin exists for (no false-positive, no OOB trap
+  on a forced hash collision) is unchanged and still asserted; only the
+  wire encoding of "false" updated to match the fix. 51/51 assertions
+  pass in `test/layout-kinds.js` after the update.
+- **`kernel-parity`**: **33/33** assertions, unchanged.
+- **`kernel-oracle`, both flags**: `JZ_CARRIER_BOX=1` → **13/13**; default
+  (no flag) → **12/13**, the one fail being the SAME pre-pinned
+  `audit-#16 KNOWN-FAIL` row (its own title: "native+kernel runtime under
+  default, kernel-only [correct] under `JZ_CARRIER_BOX=1`") — exactly the
+  documented, expected default-leg-only shape, not new.
+- **Fuzz, both flags**: `node test/fuzz.js --count=2000` (default) and
+  `JZ_CARRIER_BOX=1 node test/fuzz.js --count=2000` — **2000 programs ×
+  opt{0,1,2,3} × 20 inputs each, 30173 inputs compared per sweep, 0
+  divergence**, both legs.
+- **Build ×2** (default, shared tree, two independent `node scripts/
+  build-dist.mjs` runs): byte-identical —
+  `dist/jz.js 1658f51c2539d93d6b6712b92006948399e39cb9bbf6b8d19c1d2e5e7dd7a2e6`,
+  `dist/jz.wasm 720151eac7fb7a60f3dd52d75274f0f5dabc30b994fef81c14f8da472ffe8e34`
+  (16475.0 KB), `dist/interop.js
+  ef42c9da1ab79349a5ab69d55558082de4b3d228850b87a9a188b6722ef730e1` — the
+  `interop.js` hash matches earlier sessions' own citations exactly
+  (hand-written file, untouched by this or any `module/`-only fix),
+  confirming scope.
+
+**Flip-readiness verdict — §11 probe: FLIP-READY.** This was the last
+carrier gap named across §16-§33: carrier `test:wasm` is now fully green
+(0 fail), `kernel-oracle`/`kernel-parity` agree with native under the
+flag, fuzz shows zero divergence under either flag, and the default-battery
+delta between flag-forced and default is EXACTLY the one pre-pinned,
+independently-tracked `audit-#16` row the flag is documented to fix. No
+other named blocker remains in this ledger. Per this session's own
+mandate and the coordinator's standing ruling, this does NOT flip
+`CARRIER_BOX`'s default — `src/ctx.js` stays `JZ_CARRIER_BOX==='1'`-gated,
+OFF by default. The flip itself is the coordinator's call to make.
+
+**Local commits (shared tree, plain messages, no push, staged by exact
+filename only).** `module/collection.js` (the fix), `test/layout-kinds.js`
+(the stale-constant update), this ledger entry.
+
+**SHAs.** Investigated and fixed at `5487128b` (HEAD at session start,
+§33's own commit). One scratch worktree, created inside the session
+scratchpad (not `/tmp` root): `git worktree add --detach <scratchpad>/
+carrier-wt-ternary-bin 5487128b` — read-only pre-fix comparison tree (the
+"before" leg of the byte-identity/default-delta analysis and the
+pre-existing-failure cross-check for the 2 unrelated optimizer gaps);
+`node_modules` symlinked; removed (`git worktree remove --force`) at
+session end. No source edits made or reverted inside the worktree — it
+was comparison-only, the fix itself landed directly on the shared tree.

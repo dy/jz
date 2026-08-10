@@ -332,8 +332,13 @@ test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-a
   if (idxTarget !== idx0) dv.setInt32(laneBase + idx0 * 4, 0, true)
 
   // The fixed $__same_value_zero must return false (not crash) — it must reject
-  // the non-NaN-boxed operand exactly like $__eq/$__eq_strict already do.
-  is(ex.hasQ(sBits, craftedBits), 0n, '$__same_value_zero: no false-positive AND no OOB trap on the forced collision')
+  // the non-NaN-boxed operand exactly like $__eq/$__eq_strict already do. `hasQ`'s
+  // receiver is unproven, so `.has()` routes through collProbeDyn (module/collection.js)
+  // — its result is now the canonical boxed FALSE_NAN atom (not a raw 0.0 number, whose
+  // exported bits used to read back as `0n`), matching `eqQ` below's own boxed-false
+  // convention (carrier-representation-design.md §33/§34: collProbeDyn used to return
+  // an unboxed number, breaking `=== true` bit-comparisons on the same value elsewhere).
+  is(ex.hasQ(sBits, craftedBits), 9221120254220959744n, '$__same_value_zero: no false-positive AND no OOB trap on the forced collision')
   is(ex.eqQ(craftedBits, keyBits), 9221120254220959744n, '$__eq agrees (false), unaffected — sanity cross-check')
 })
 

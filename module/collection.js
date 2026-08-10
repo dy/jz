@@ -11,7 +11,7 @@
  * @module collection
  */
 
-import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, undefExpr, mkPtrIR, ptrTypeEq, elemStore, elemLoad, extractF64Bits } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, undefExpr, mkPtrIR, ptrTypeEq, elemStore, elemLoad, extractF64Bits, boolBoxIR } from '../src/ir.js'
 import { emit, deps, call, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -1372,6 +1372,23 @@ export default (ctx) => {
   // silently report absent. Mirrors collViewDyn below; typed receivers skip it.
   // `h` (optional precomputed key hash) appends to the call → routes to the `_h` prehashed
   // probes, skipping __map_hash per access; omitted → the generic hashing probes.
+  //
+  // Result MUST be the canonical boxed boolean (boolBoxIR), not a raw f64.convert_i32_s
+  // number: kind.js's methodValType only claims VAL.BOOL for `.has`/`.delete` when the
+  // receiver is STATICALLY proven Map/Set (a genuinely-unproven receiver could carry a
+  // user-defined `.has` property returning anything, so that guard is correct and
+  // stays). This dynamic dispatch path is exactly the "receiver unproven" case, so
+  // valTypeOf(this call) is null/unknown at every use site — and emit.js's strict `===`
+  // (`(strictA===VAL.BOOL)!==(strictB===VAL.BOOL) && …`) treats an unknown-typed operand
+  // as "already carries its true runtime representation verbatim", comparing its raw
+  // bits directly against the OTHER side's boxed atom (e.g. `x.has(k) === true` bit-
+  // compares against TRUE_NAN). A raw 0.0/1.0 number can never equal a NaN payload, so
+  // every unproven `.has()/.delete() === true` silently read false regardless of the
+  // real answer (self-host's own `ctx.func.ternaryBoxedNames?.has(name) === true` hit
+  // this exact gap — .work/carrier-representation-design.md §33/§34). The FAST (real
+  // Map/Set) branch below is the only one that produced the bare number; the call_indirect
+  // branch (a genuine custom `.has` closure) already returns a properly boxed value via
+  // the normal call-return convention.
   const collProbeDyn = (mapFn, setFn) => (collExpr, key, h) => {
     inc(mapFn, setFn, '__ptr_type')
     const o = temp('cp'), k = tempI64('cpk')
@@ -1379,10 +1396,10 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${o}`, asF64(emit(collExpr))],
       ['local.set', `$${k}`, asI64(emit(key))],
-      ['f64.convert_i32_s', ['if', ['result', 'i32'],
+      boolBoxIR(typed(['if', ['result', 'i32'],
         ptrTypeEq(['local.get', `$${o}`], PTR.MAP),
         ['then', ['call', `$${mapFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`], ...extra]],
-        ['else', ['call', `$${setFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`], ...extra]]]]], 'f64')
+        ['else', ['call', `$${setFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`], ...extra]]], 'i32'))], 'f64')
   }
   // `.has` on an unproven receiver: a literal key folds its hash and uses the _h probes.
   ctx.core.emit['.has'] = (collExpr, key) => {
