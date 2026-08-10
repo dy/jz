@@ -466,12 +466,18 @@ test('Slice 5: negative controls — mixed-kind Map falls back to documented (un
   // A Map whose values are a MIX of BIGINT and NUMBER writes: dictValueKindOf/
   // mapValueKindOf's own census returns null for a mixed receiver (no single exact
   // kind to claim), so censusBigintSentinelKind never fires either — this falls
-  // back to the OLD generic resultDynamic lane, whose decode still misreads the
-  // BigInt member's raw i64 bits as a subnormal float. Honestly pinned as the
-  // documented, unfixed behavior (not silently left to drift) — the NUMBER member
-  // is unaffected (it was never carrying a BigInt-shaped bit pattern to begin with).
+  // back to the OLD generic resultDynamic lane. Off-flag (raw-i64 carrier), that
+  // lane's decode still misreads the BigInt member's raw i64 bits as a subnormal
+  // float — honestly pinned as the documented, unfixed behavior (not silently
+  // left to drift). Under CARRIER_BOX the SAME lane is already correct
+  // (unrelated to and predating carrier §30's own fix — the resultDynamic export
+  // marker's `ie.r` bit already routes through interop.js's generic decode(),
+  // whose PTR.BIGINT arm dereferences the box; verified directly against the
+  // pre-§30 source too, byte-for-byte, not assumed) — the mixed-kind carve-out
+  // is real only for the off-flag representation. The NUMBER member is
+  // unaffected either way (it was never carrying a BigInt-shaped bit pattern).
   const mixed = jz(`export let f = (k) => { const m = new Map(); m.set('a', 5n); m.set('b', 6); return m.get(k) }`, { jzify: true })
-  is(mixed.exports.f('a'), 2.5e-323)
+  is(mixed.exports.f('a'), process.env.JZ_CARRIER_BOX === '1' ? 5n : 2.5e-323)
   is(mixed.exports.f('b'), 6)
   // A statically-proven BigInt export (no census, no maybe-undefined) keeps taking
   // the ORIGINAL unmarked resultBigint lane, byte-for-byte unaffected by Slice 5 —
@@ -512,9 +518,12 @@ test('Slice 6: decl-hop present-key BigInt census read materializes the true Big
 // Negative control (Slice 6): the mixed-kind-Map carve-out (Slice 5's own
 // documented, unfixed gap) must stay unfixed through the decl-hop too — the
 // census returns null for a mixed receiver regardless of which hop asks.
+// Same off-flag-only carve-out as Slice 5's own negative control above —
+// under CARRIER_BOX this decl-hop shape is already correct too (verified
+// directly against the pre-carrier-§30 source, unrelated to that fix).
 test('Slice 6: negative control — decl-hop through a mixed-kind Map stays the documented (unfixed) Slice 5 gap', () => {
   const mixed = jz(`export let f = () => { const m = new Map(); m.set('a', 5n); m.set('b', 6); let x = m.get('a'); return x }`, { jzify: true })
-  is(mixed.exports.f(), 2.5e-323)
+  is(mixed.exports.f(), process.env.JZ_CARRIER_BOX === '1' ? 5n : 2.5e-323)
 })
 
 // FIXED (§14 point 4, audit #10's own "JOINT runtime domain dispatch" finding
