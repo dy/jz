@@ -3717,3 +3717,81 @@ CARRIER_BOX session's budget trying to close both at once; they need
 independent root-causing. Full WAT-diff evidence (3 ruled-out closure/
 recursion mechanism hypotheses, the exact split test) lives in
 `.work/todo.md`'s own entry for this session, not duplicated here.
+
+## §26. AUDIT-#17 (`6490bb68`, staticClosureEnv unsound under re-entrant
+enclosing-function calls) re-tested against §24's own CARRIER_BOX wall —
+CONFIRMED UNRELATED, byte-for-byte, not merely argued (2026-08-09)
+
+§25 argued the split structurally (CARRIER_BOX-gated dispatch compiles to
+nothing in the default build AUDIT-#17 touches). This entry runs §24's own
+repros directly against a kernel built at `6490bb68` (AUDIT-#17 landed) to
+confirm empirically, not just by absence-of-mechanism argument.
+
+**Default (`CARRIER_BOX` off) kernel, freshly rebuilt at `6490bb68`,
+verified via the build log's own "wrote dist/jz.wasm" line (16872648
+bytes):** `kernel-parity` 3/3 (33 assertions) byte-identical O0/O2/O3
+including `dict` (never diverges off-flag — the CARRIER_BOX-only
+mechanism). `kernel-oracle` 13/13 (469 assertions) — the `captured-then-
+read` PENDING-FIX row (§ below) and the audit-#16 FeaturePlan KNOWN-FAIL
+row both still assert their exact WRONG values with tripwires intact,
+unchanged. Full default battery `node test/index.js`: 3424/3416/2/6 — the
+same 2 pre-existing failures (interval-walk codec bounds, typed RMW guard
+count) the fix commit's own gates already named, zero new regressions.
+
+**Fresh `JZ_CARRIER_BOX=1` kernel, built in an isolated `git worktree add`
+at `6490bb68` (immune to the shared tree), verified via the same "wrote
+dist/jz.wasm" line (16926082 bytes / 16529.4 kB — +52.2 KB over this
+session's own default-build baseline, consistent with §24's own recorded
++51.8 KB):**
+- **The 3 WAT differentials, O0, native-vs-this-fresh-kernel:** `() =>
+  "abcdefghi"` and `() => () => 1` stay byte-identical (still CLOSED, as
+  §24 landed — unaffected either way). `() => undefined` **STILL
+  diverges, to the EXACT SAME corrupted value §24 recorded**:
+  `nan:0x6E69666E494E614E` (the ASCII "NaNInfinity…" static-string-table
+  bytes) vs native's `nan:0x7FF8000200000000` — byte-for-byte identical to
+  §24's own finding, not a new manifestation.
+- **`kernel-parity` `dict`, O0/O2/O3: STILL diverges, at the EXACT SAME
+  byte sizes** §17/§22/§24 already recorded — native 227398/229709/246043
+  vs kernel 227398/229235/245423, reproduced exactly.
+- **Flag-forced `kernel-oracle`: 5/13 (113 assertions)** — the SAME 8 rows
+  §24 recorded fail identically (3× `dict` parity, the `dict`-vs-oracle
+  row, ternary/`captured-then-read` PENDING-FIX, the console.log
+  KNOWN-FAIL) — byte-identical reproduction, not a changed failure set.
+- **Flag-forced `test/pointers.js`: 35/35 (70 assertions)**, matching §24
+  exactly — the native CARRIER_BOX mechanism itself (unrelated to the
+  kernel-build wall) stays sound.
+- **`JZ_CARRIER_BOX=1 test:wasm`: STILL HANGS, at the SAME point.**
+  Accumulated 145 individual CAUGHT `RangeError: Offset is outside the
+  bounds of the DataView` failures (§24: 148 — same order, minor drift
+  from unrelated intervening commits, not a material difference), then
+  stalled — sustained 100% CPU, zero further stdout progress — at the
+  IDENTICAL stopping point §24 named verbatim: "flow-fact: for-init decl
+  reassigned in the step carries no stale fact" (`test/inference.js`).
+  Confirmed genuinely stalled (not merely slow) by direct observation:
+  static log byte-count and static test name across multiple checks
+  spanning several minutes of continuous 100% CPU, then killed (`kill -9`)
+  — the identical hang signature, not re-run to §24's own full 28-minute
+  confirmation since the match (same test, same line, same failure-count
+  order, sustained zero-growth stall) was already unambiguous.
+
+**Verdict: AUDIT-#17's fix does not touch this wall in any way — every
+number §24 recorded reproduces exactly against the AUDIT-#17-fixed
+kernel.** This is the direct empirical confirmation of §25's own
+structural argument (CARRIER_BOX-gated code is physically absent from the
+default build AUDIT-#17's bug class lives in), not a re-derivation of it.
+No pins flip. §24/§25's own "what a fix session needs" (root-cause
+`UNDEF_NAN`'s module-scope BigInt-const-initializer corruption at real
+self-hosted-kernel scale — comparing `snapshotInit:false` vs `true` on the
+REAL `scripts/self.js` graph) stays exactly where §24 left it; this entry
+adds no new lead toward it.
+
+**Gates this session:** default `kernel-parity` (3/3), default
+`kernel-oracle` (13/13, 469 assertions), default `node test/index.js`
+(3424/3416/2/6), flagged `test/pointers.js` (35/35, 70), flagged
+`kernel-parity` (0/3, the known `dict` divergence), flagged `kernel-
+oracle` (5/13, 113), flagged `test:wasm` (hangs, reconfirmed). All flagged
+gates run in an isolated `git worktree add` at `6490bb68`, never touching
+the shared tree's own default `dist/jz.wasm`. `.work/todo.md`'s own
+matching entry has the full cross-wall summary (kernel-oracle
+`captured-then-read`, the region-arena plausibility read, the FeaturePlan
+pin) — not duplicated here.

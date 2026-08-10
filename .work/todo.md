@@ -9447,3 +9447,110 @@ call site, recursion-capable call between declaration and that one use)
 would need a real call-graph reentrancy analysis to close soundly —
 nothing in the current corpus or self-host build exercises it, so this is
 a documented gap, not a known-red row.
+
+## Status (2026-08-09, AUDIT-#17 (`6490bb68`) RE-TESTED AGAINST EVERY BANKED
+## KERNEL-SCALE WALL — one wall (CARRIER_BOX/UNDEF_NAN) confirmed byte-for-
+## byte unaffected; the other four confirmed unchanged; region-arena's O2
+## heisenbug read (not live-retested, dependency absent) judged UNRELATED
+## by mechanism, not by absence-of-evidence)
+
+Session mandate: `6490bb68` fixed a GENERAL self-host miscompile class
+(`staticClosureEnv`'s static data-segment slot overwritten by a re-entrant
+enclosing-function call's own closure creation). Re-ran every OTHER banked
+kernel-scale wall's own repro against a fresh kernel built at that commit
+to check whether any of them shared the root cause. None did — full
+account below, per wall.
+
+**1. CARRIER_BOX wall (`.work/carrier-representation-design.md` §15/§24) —
+STILL-RED, reproduces byte-for-byte identically.** Full account in this
+doc's own new §26 (not duplicated here). Summary: fresh default kernel at
+`6490bb68` — `kernel-parity`/`kernel-oracle`/full battery all clean, same
+2 pre-existing failures as the fix commit's own gates. Fresh
+`JZ_CARRIER_BOX=1` kernel (isolated worktree) — the `() => undefined` WAT
+differential, `kernel-parity` `dict` (O0/O2/O3, exact same byte sizes),
+flagged `kernel-oracle` (5/13, same 8 rows), and `JZ_CARRIER_BOX=1
+test:wasm` (145 caught failures then hangs at the identical "flow-fact:
+for-init decl reassigned in the step" `test/inference.js` line, same
+signature as §24's 148-then-hang) all reproduce exactly. AUDIT-#17's fix
+is entirely inert here — confirms §25's own structural argument (the
+CARRIER_BOX dispatch AUDIT-#17's bug lives nowhere near compiles to
+nothing off-flag) empirically rather than by inference alone.
+
+**2. `test/kernel-oracle.js` 'captured-then-read' PENDING-FIX row
+(research.md §Carrier invariant's "THE RESIDUAL WALL") — STILL-RED,
+unchanged, confirmed a different mechanism.** Re-ran `node test/kernel-
+oracle.js` (default kernel, `6490bb68`): 13/13 (469 assertions) — the row
+still asserts the wrong value (`0`) at O0/O2/O3 with both tripwires
+(`not(nat, want)`/`not(ker, want)`) firing as designed, byte-identical to
+its pre-fix shape. Not a coincidence: research.md's own account of this
+wall names the mechanism explicitly — `resolveCallee`'s closure
+DIRECT-DISPATCH ELIGIBILITY flips between native and kernel for the
+minimal `const g = () => v; return g()` shape when the decl-init ladder
+changes, producing INVALID WASM (a `local.set` type mismatch) at compile
+time — a self-hosted-codegen-validity bug in a completely different
+subsystem (module init emission/resolveCallee) from AUDIT-#17's RUNTIME
+data-corruption-via-shared-static-slot bug. No value-correctness
+re-verification needed since the row's own assertions (wrong-value +
+tripwire) are unchanged byte-for-byte; not flipped.
+
+**3. Region arena O2 "address-layout-sensitive heisenbug" + O3
+fusedRewrite×treeshake interaction (research.md §Region arena, DORMANT) —
+NOT live-retested (watr `regionHooks` patch absent from `node_modules`,
+pristine 5.7.12, exactly as the ledger already notes) — verdict, from
+reading the banked description against AUDIT-#17's own root cause:
+**UNRELATED, not "plausible-retest-later."** AUDIT-#17 corrupts CLOSURE
+CAPTURE DATA (a `values[i]`-style read inside a closure observes stale/
+wrong data from an inner re-entrant activation sharing its static env
+slot) — the symptom is a WRONG VALUE. The region-arena heisenbug's own
+root-causing sessions (`.work/todo.md`, two dedicated sessions) narrowed
+it to a Cheney-copy GC ROOT-COVERAGE gap: `__region_exit` is confirmed to
+complete cleanly every time (debug instrumentation, "reaches its own
+final instruction," "no out-of-scope kind ever seen") — the trap is
+`memory access out of bounds`, DOWNSTREAM of a clean region_exit, isolated
+to `$__ptr_type`/`$__ptr_aux`'s call-site inlining plus a `_eqFast` dyn-
+prop `walkRewrite` (src/optimize/index.js) stamps onto a NESTED node the
+region-copy walker's root inventory may not visit. Read `walkRewrite`
+directly this session (src/optimize/index.js ~4246-4330): `freshI64`/
+`freshF64`/`get` are each created EXACTLY ONCE per `fusedRewrite` call
+(not inside a loop, not re-created by a re-entrant enclosing call) and
+threaded as plain PARAMETERS through the recursive walk, not re-declared
+per node — the AUDIT-#17 shape (a closure re-CREATED at a shared static
+slot by a re-entrant caller) does not occur here at all; `_eqFast` is a
+plain property WRITE on an AST node object, not a closure-capture read.
+Both bugs share only the surface symptom "layout-sensitive, unrelated
+code changes flip pass/fail" — expected of ANY bug tied to compile-time-
+fixed offsets (static slot reuse OR GC root-walk coverage), not evidence
+of a shared mechanism. **Verdict: unrelated; do not fold the AUDIT-#17
+fix's success into this wall's own future root-causing budget.**
+
+**4. `test/kernel-oracle.js` audit-#16 FeaturePlan whole-graph KNOWN-FAIL
+row (`eb0bb5d4`, `ctx.features.bigint` module-inclusion-ordering hazard) —
+STILL-RED, confirmed unchanged, structural as documented.** Ran as part
+of item 1's default `kernel-oracle` 13/13 pass above: the row still
+asserts the corrupted `Number()` value (`6.09957581968707e-310`) at
+native AND kernel legs, all 3 optimize tiers, both tripwires firing; the
+reversed-import CONTROL rows still assert the correct value, isolating
+the fault to prep()'s per-module `include ForOp`-before-bigint-scan
+ORDERING, not to any closure/re-entrancy mechanism. No change.
+
+**5. Other PENDING-FIX/KNOWN-FAIL kernel rows in `test/kernel-oracle.js`/
+`test/data.js` — none found beyond items 1/2/4 above.** Full-file scan
+(`grep -n 'PENDING-FIX\|KNOWN-FAIL'`) of both files: `kernel-oracle.js`
+has exactly 3 live red rows (items 1's console.log KNOWN-FAIL, item 2, item
+4 — all covered above); `data.js` has no PENDING-FIX/KNOWN-FAIL-tagged
+kernel row (the one "SELF-HOSTED kernel miscompiled into infinite
+recursion" comment near line 1335 documents a HISTORICAL bug already
+worked around by rewriting the source to an iterative form — no live red
+assertion remains to re-test). Full default `node test/index.js`:
+3424/3416/2/6, unchanged (item 1's own number, not re-quoted per wall).
+
+**Net: zero pins flipped.** AUDIT-#17's fix is a clean, narrowly-scoped
+closure-reentrancy fix — it does not generalize to any of these five
+banked walls, each confirmed (four empirically re-run, one read-verdict)
+to live in a genuinely different mechanism. No gates beyond the ones named
+per-wall above were run (no pin flip ⇒ no kernel-parity/battery re-gate
+required by this project's own flip discipline).
+
+**Local commits**: `.work/carrier-representation-design.md` (§26, item 1's
+full account), `.work/todo.md` (this entry) — filed separately, plain
+messages, no push.
