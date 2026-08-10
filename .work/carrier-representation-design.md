@@ -3807,3 +3807,177 @@ build). Next carrier session: find where UNDEF_NAN's initializer expression
 (layout.js atom construction) could resolve to a string-pool address —
 likely a static-data-segment layout collision or an offset read from the
 wrong segment table when the carrier build shifts segment contents.
+
+## §27. Decode independently reconfirmed; §26a's OWN hypothesis (data-segment/
+string-pool offset collision) TESTED AND REFUTED by direct byte-level
+evidence; root narrowed to a NEW, sharper, ORDER-DEPENDENT shape — BANKED
+at a deeper wall, no fix attempted (2026-08-10, isolated `git worktree`,
+never touched the shared tree's `dist/jz.wasm`)
+
+**Method note**: everything below was produced against a FRESH
+`JZ_CARRIER_BOX=1` kernel built in a disposable `git worktree add --detach`
+at this session's own HEAD (`b80641d3`) — `16926082` bytes, matching §26's
+own recorded size exactly (confirmed via the build log's "wrote
+dist/jz.wasm" line). The shared tree's own `dist/jz.wasm` (default,
+16872648 bytes) was read but never rebuilt or overwritten.
+
+**1. Decode independently reconfirmed.** Compiled `export let f = () =>
+undefined` through the fresh carrier kernel at O0 (`compileWat`, the same
+ABI `test/kernel-target.js` uses): `(f64.const nan:0x6E69666E494E614E)`,
+byte-identical to §24/§26/§26a. Decoding the 8 bytes little-endian gives
+ASCII `NaNInfin` — confirmed programmatically (not by inspection), matching
+§26a's own decode exactly.
+
+**2. §26a's OWN hypothesis — "static-data-segment/string-pool offset
+collision… when the carrier build shifts segment contents" — TESTED,
+REFUTED.** Wrote a minimal WASM binary-format parser (no existing tool
+needed) and dumped every data segment (offset + byte length) from BOTH the
+fresh carrier kernel and the shared tree's existing default kernel
+(16872648 bytes, a valid recent default build). Both modules carry
+**1887 data segments** (segment 0 = the `snapshotInit`-baked heap image at
+memory offset 0; segments 1–1886 = one per compile-time static slot,
+`appendStaticSlots`' normal per-literal emission — present, and IDENTICALLY
+laid out, in every self-hosted build, not a CARRIER_BOX artifact). Diffing
+the full (offset, byteLength) list between the two kernels: **1886 of 1887
+segments are byte-for-byte identical** (same memory offset, same length,
+in both builds). The ONE difference is segment 0's own total length
+(default 1455480 vs carrier 1456424, +944 bytes — the carrier kernel's
+`$__start` simply allocates 944 more bytes of live heap before finishing,
+unsurprising given carrier boxing adds runtime structures). None of the
+1886 small segments overlaps the +944-byte tail, and none of them sits
+anywhere near the address this bug actually reads (item 3, below). **The
+segment-layout/offset-collision hypothesis is dead**: nothing about WASM
+data-segment packing shifts between these two builds in a way that could
+explain the corruption.
+
+**3. The REAL mechanism, nailed byte-exact: this is a literal `i64.load`
+from memory address 0 — not a segment-offset shift, not a pointer-tag
+misread.** Compiled the kernel a second time with `wat: true` (same
+`{level:3, watrGuard:false, snapshotInit:true}` settings, post-snapshot
+so globals/symbol names survive) to get readable WAT — 357 MB, `grep`ped
+directly for `UNDEF_NAN`. Found the BAKED global:
+```
+(global $m78_ir$UNDEF_NAN (mut f64) (f64.const nan:0x7FFA0002000F4FC8))
+```
+Decoded against layout.js's own NaN-box fields (`TAG_SHIFT=47`,
+`AUX_SHIFT=32`): tag=4 (`PTR.STRING`), aux=2 (`STR_HCACHE_BIT` — a
+plain-heap string with a lazy `[hash u32][len u32][bytes]` header, per
+layout.js's own doc comment), offset=`0xF4FC8` (1003464). **This global,
+and its box, are completely sound** — a well-formed, correctly-tagged
+pointer to a real, correctly-headed heap string (`hash=0` uncomputed,
+`len=18`, matching an 18-char string exactly). Dumping the actual heap
+bytes at that address (from the snapshot-baked data segment, at
+`segment0FileStart + 1003464`): the string's CONTENT is
+`"0x6E69666E494E614E"` — i.e. the box, the pointer, the heap allocation,
+and the header are ALL correct; only the 18 characters actually written
+into that string are wrong. **This is therefore conclusively a
+BUILD-TIME BAKE bug** (the wrong content was already computed and stored
+during the kernel's own real `$__start` execution, which `snapshotInit`
+faithfully captured), not a read-time/offset bug reached later when the
+kernel compiles a target program — the target-compile side (`() =>
+undefined`) is just reading this already-wrong global correctly.
+
+Then, the decisive trace: dumped the kernel's own memory bytes at address
+**0** (the very first bytes of its own data segment). They read
+`4e 61 4e 49 6e 66 69 6e 69 74 79 2d 49 6e 66 69 6e 69 74 79 74 72 75 65 …`
+— ASCII `"NaNInfinity-Infinitytrue…"`, the formatter's own static
+string-table literal, confirmed to sit at memory address 0 (the start of
+linear memory) in this build. Interpreting the first 8 bytes at address 0
+as a little-endian `i64.load` (standard WASM load semantics) gives
+**exactly `0x6E69666E494E614E`** — bit-for-bit identical to the corrupted
+`UNDEF_NAN` value, not a coincidental substring match. **The mechanism is:
+some read that should compute the address of `LAYOUT.NAN_PREFIX_BITS`'s
+own schema slot instead computes address 0** (a null/uninitialized/default
+address that happens to be where this build places its formatter string
+table), and an `i64.load` from there reads that table's opening bytes
+straight into what becomes `UNDEF_NAN`'s string content.
+
+**4. Bake-vs-read discriminator, answered precisely: the schema-slot READ
+itself resolves to the wrong ADDRESS at build time; the box/pointer/heap
+machinery downstream of that read is entirely sound.** Traced the call
+chain: `UNDEF_NAN = atomNanHex(2)` → `atomNanHex(id) = i64Hex(LAYOUT.
+NAN_PREFIX_BITS | (BigInt(id) << AUX_SHIFT))` (layout.js). `LAYOUT.
+NAN_PREFIX_BITS` is a `.prop` read on a module-scope object literal — the
+EXACT shape §24's own `isSchemaSlotBigintPossible` predicate targets (its
+own doc comment names this exact field as the original §15 repro), and
+§24's own `JZ_DBG_CENSUS` probe already confirmed this read site fires
+`isSchemaSlotBigintPossible` with `boxed=true, proven=false`. That routes
+through `readI64`'s CARRIER_BOX-only branch → `maybeUnboxBigInt(emitted)`
+(src/ir.js). Read `maybeUnboxBigInt` and `emitSchemaSlotRead`
+(module/core.js) directly: `maybeUnboxBigInt` only tags-checks and
+conditionally derefs the VALUE `emitted` already computed — it cannot by
+itself manufacture a wrong ADDRESS, and for `LAYOUT.NAN_PREFIX_BITS`'s
+NORMAL (correct) case its `else` branch (`i64.reinterpret_f64`) is exactly
+right (the field is stored raw/unboxed — `0x7FF8000000000000` reinterpreted
+IS the payload, tag reads as `PTR.ATOM` not `PTR.BIGINT`, correctly
+skipping the `unboxBigInt` arm). So the wrong address has to originate in
+`emitted` itself — `emitSchemaSlotRead`'s own `ptrOffsetIR(base, VAL.
+OBJECT)` + slot-index arithmetic — which is **UNCHANGED, identical text,
+in both builds** (§24 confirmed this explicitly). For the computed address
+to differ between builds while the codegen function is byte-identical, the
+INPUT to that function (the base pointer read for `LAYOUT`, or the slot
+index assigned to `NAN_PREFIX_BITS`) has to differ — i.e. this is a
+build-time-baked VALUE/INDEX mismatch feeding an otherwise-correct,
+unchanged read expression, not a segment/pointer-tag decode bug.
+
+**5. Sharpest new finding — the corruption is NOT uniform across the 4
+identically-shaped `atomNanHex` calls, which rules out a simple "always
+wrong" schema/offset mismatch and points at something ORDER-DEPENDENT.**
+`NULL_NAN`/`UNDEF_NAN`/`FALSE_NAN`/`TRUE_NAN` are ALL `atomNanHex(1/2/4/5)`
+— same function, same `LAYOUT.NAN_PREFIX_BITS` read, back-to-back module
+inits. Decoded and dumped the heap content each of the 4 baked globals
+points to:
+```
+NULL_NAN   (id=1)  offset=0xF4DF8  →  "0x6E69666E494E614E"   WRONG
+UNDEF_NAN  (id=2)  offset=0xF4FC8  →  "0x6E69666E494E614E"   WRONG (identical to NULL_NAN's)
+FALSE_NAN  (id=4)  offset=0xF50D8  →  "0x7FF8000400000000"   CORRECT
+TRUE_NAN   (id=5)  offset=0xF51E8  →  "0x7FF8000500000000"   CORRECT
+```
+Only the FIRST TWO calls (in source/init order) are corrupted, and both
+corrupted calls land on the EXACT SAME wrong string — i.e. the `| (id <<
+32)` OR has zero visible effect on the corrupted pair (consistent with the
+whole `LAYOUT.NAN_PREFIX_BITS | …` value being replaced wholesale by the
+address-0 load, swamping a 1-bit/2-bit perturbation at bit 32/33). The
+LAST TWO calls, same call shape, same read, are exactly right. This directly
+falsifies every "permanently wrong offset/schema/segment" framing (that
+class of bug would hit all 4 identically) and reframes the wall as
+**stateful/temporal**: something that is NOT YET valid (an address, a
+lazily-initialized table, a cache) when the kernel's `$__start` reaches the
+1st–2nd `atomNanHex` calls becomes valid by the 3rd–4th. Not root-caused
+further this session — the next lever is finding what changes between
+`UNDEF_NAN`'s init (ordinal 183, §24) and `FALSE_NAN`'s init immediately
+after: candidates worth checking first are (a) a lazy/memoized digit-table
+or interning structure `_hx8`/`.toString(16)`'s own compiled BigInt-to-
+string path reads via the SAME `isSchemaSlotBigintPossible` machinery, only
+warmed up after its first two (wrong) uses, and (b) whether `TOMB_NAN`'s
+own plain-string-literal declaration (src/ir.js, between `UNDEF_NAN` and
+`FALSE_NAN` in source) triggers some side effect that happens to correct
+the underlying state.
+
+**Verdict: BUILD-TIME BAKE bug, address-computation class (not a decode,
+not a segment/offset-collision, not a permanently-stale offset) —
+order-dependent across the first 2 of 4 identical call sites. No fix
+attempted — root-caused one layer past §26a's own hypothesis (and that
+hypothesis is now affirmatively ruled out, not just unconfirmed), but the
+exact mechanism producing address 0 on calls 1–2 and the correct address on
+calls 3–4 needs its own dedicated trace (adding `JZ_DBG_CENSUS`-style
+instrumentation to `emitSchemaSlotRead`'s base-pointer/slot-index inputs,
+or to whatever `_hx8`'s compiled `.toString(16)` lowers to, comparing call
+1 vs call 3) before a fix is safe to attempt.**
+
+**Gates this session: none run — no `src/` change was made, so §15's
+differentials / dict O0/O2/O3 / `JZ_CARRIER_BOX=1 test:wasm` / the
+flag-forced battery / default byte-identity are all UNCHANGED from §26's
+own numbers** (still: 2/3 WAT differentials closed, `() => undefined`
+diverging exactly as recorded; `dict` diverging at the same byte sizes;
+`test:wasm` still hangs at the same point). Default kernel untouched
+(read-only inspection of the shared tree's existing `dist/jz.wasm`, never
+rebuilt). Per the coordinator's own mandate, no default flip, no source
+change to gate.
+
+**SHAs.** Investigated at `b80641d3` (HEAD, unchanged — this session made
+no `src/` edits). Disposable worktree (removed at session end, never
+merged, no commits): fresh `JZ_CARRIER_BOX=1` kernel built there,
+16926082 bytes, matching §26's own recorded size exactly. This ledger
+entry (`.work/carrier-representation-design.md` only) is this session's
+one commit.
