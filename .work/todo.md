@@ -9902,3 +9902,70 @@ required by this project's own flip discipline).
 **Local commits**: `.work/carrier-representation-design.md` (§26, item 1's
 full account), `.work/todo.md` (this entry) — filed separately, plain
 messages, no push.
+
+## FeaturePlan slice 4 (post-carrier bigint SEMANTIC-gate retirement) —
+## ATTEMPTED, WALL HIT, FULLY REVERTED (2026-08-10,
+## carrier-representation-design.md §36)
+
+Task: after §35's default `CARRIER_BOX` flip, retire the AMBIGUITY-HEURISTIC
+half of `ctx.features.bigint`'s job (the subnormal-magnitude fallback in
+`toNumF64`/`$__to_num`/`TYPEOF.bigint`) behind `JZ_CARRIER_BOX=0` only,
+keeping the STDLIB-ARM-SIZE half (`module/core.js` `__is_truthy`, whether
+the arm exists at all) untouched — on the premise that a boxed program's
+every reachable BigInt is proven-boxed, so the raw-carrier heuristic is dead
+weight under the default and only load-bearing under the opt-out.
+
+**Premise DISPROVEN, with a live regression** — `carrierF64`'s boxing
+chokepoint (`src/ir.js`) only boxes BigInt values at genuine STORAGE-SINK
+positions (object/dyn-prop/array-elem store, Set/Map, closure capture,
+proven call-args) — deliberately, matching `test/data.js`'s own already-
+passing sibling test ("bigint: internal calls keep the i64 carrier — only
+the JS boundary surfaces it"). An internal/transient BigInt value (an
+arithmetic result, a bare `return`) never crosses a sink and stays RAW even
+under default `CARRIER_BOX=1` — the exact ambiguity the heuristic guards.
+`$__to_num`/`TYPEOF.bigint` are shared, call-site-agnostic bodies serving
+BOTH the storage-sink-sourced class (heuristic safely retirable — CONFIRMED:
+the original audit-#11 P0-1 repro in `test/data.js` now reads exact) AND the
+internal-value class (heuristic NOT safely retirable) at once, so a blanket
+`CARRIER_BOX` gate on the shared body is unsound for the second class.
+Caught via `test/watr.js`'s `memory64 limits - BigInt limits encoded as
+zero` regression pin (a previously-fixed self-hosting artifact — GREEN on
+the pre-attempt tree, confirmed via a scratch `git worktree` at HEAD):
+`watr/src/compile.js`'s `limits()` feeds a freshly-`BigInt(str)`-parsed
+value into `watr/src/encode.js`'s `uleb()`, whose 64-bit branch does
+`Number(n & 0x7Fn)` on an internal, never-stored bitwise-AND result — under
+the slice-4 edit this returned `0` instead of `1` for `(memory i64 1 1)`'s
+limit bytes. Reproduced further with a minimal isolated (non-watr) repro:
+a BigInt threaded through a `return`/local-reassignment chain made `typeof
+result === 'bigint'` itself read FALSE downstream, because the retired
+`TYPEOF.bigint` arm checks only the `PTR.BIGINT` tag — false for a genuine
+BigInt that was never boxed since it crossed no storage sink.
+
+**Fully reverted before landing anything**: `src/ir.js`, `src/compile/
+emit.js`, `module/number.js`, `test/data.js`, `README.md` restored to HEAD
+(`git show HEAD:<path>` per file — this session's git-safety constraint
+forbids `git checkout --`), verified clean via `git status`/`git diff
+--stat` and by re-passing `test/watr.js` (35/35) and re-checking `test/
+kernel-oracle.js`/`test/data.js` (both untouched, still green). No commit
+made — the tree never left `34b23b07`.
+
+**What a sound next attempt needs** (either, not neither): (a) thread
+provenance (storage-sink-sourced vs possibly-internal) through to the
+shared `$__to_num`/`TYPEOF.bigint` call sites so the heuristic can be
+skipped ONLY for the proven-safe class — a real design task, the same
+"non-boolean carrier-disambiguation redesign" fork §6 of the design doc
+already named as option (b) for the ORIGINAL (pre-existing) ordering-hazard
+blocker above; or (b) widen `carrierF64`'s boxing scope to cover internal/
+transient BigInt values too — reopens the round-1 warm-cost tension §7 of
+the design doc exists to avoid. The SIZE-vs-AMBIGUITY reader classification
+this attempt used is still sound and worth keeping for whichever path is
+taken next; only the "gate the existing shared heuristic on CARRIER_BOX"
+mechanism itself is wrong. Slice 4 stays BLOCKED, now on two independent,
+named blockers (the pre-existing ordering-scan gap, and this session's
+provenance-discrimination gap) — full account: carrier-representation-
+design.md §36.
+
+**Local commits**: none — nothing landed, tree unmodified. This entry plus
+`.work/research.md`'s slice-4 status and `.work/carrier-representation-
+design.md` §36 are the only artifacts of this session, capturing the
+disproof for whoever attempts this next.

@@ -1160,6 +1160,35 @@ boolean carrier-disambiguation redesign. Full root-cause + fixture detail:
 `.work/todo.md` §"FeaturePlan whole-graph oracle: differential fixture
 BANKED, not fixed (audit-#16)".
 
+**Post-carrier-flip retirement attempt — ATTEMPTED, WALL HIT, REVERTED
+(2026-08-10, carrier-representation-design.md §36).** After §35's default
+flip, a SECOND angle was tried: not the graph-completeness fix above, but
+retiring the AMBIGUITY-HEURISTIC half of `ctx.features.bigint`'s job
+(narrower than full freeze — keep the STDLIB-ARM-SIZE half as-is, gate only
+the subnormal-magnitude fallback in `toNumF64`/`$__to_num`/`TYPEOF.bigint`
+behind `!CARRIER_BOX`) on the theory that a boxed program's every reachable
+BigInt is proven-boxed, so the heuristic is dead weight under the default.
+DISPROVEN with a live regression (`test/watr.js`'s memory64-limits pin,
+plus a minimal isolated repro): `carrierF64`'s boxing chokepoint only boxes
+BigInt values at genuine STORAGE-SINK positions (object/dyn-prop/array-elem
+store, Set/Map, closure capture, proven call-args) — BY DESIGN, per
+`test/data.js`'s own sibling test ("internal calls keep the i64 carrier").
+An internal/transient BigInt expression (arithmetic result, bare `return`
+value) never crosses a sink and stays RAW even under default `CARRIER_BOX`,
+so the ambiguity the heuristic guards against is exactly as live there as
+under the opt-out. `$__to_num`/`TYPEOF.bigint` are shared, call-site-
+agnostic bodies serving BOTH provenance classes at once, so a blanket
+`CARRIER_BOX` gate is unsound — it silently breaks the internal-value class
+(confirmed: a real BigInt began reading `typeof … === 'bigint'` as false,
+and `Number()` returning `0` instead of the true value). Fully reverted
+before landing (`src/ir.js`, `src/compile/emit.js`, `module/number.js`,
+`test/data.js`, `README.md` restored to HEAD `34b23b07`, verified clean via
+`git status`/`git diff --stat` and by re-passing `test/watr.js` 35/35).
+Slice 4 stays BLOCKED — now on TWO independent, named blockers (the
+pre-existing ordering-scan gap above, AND this session's provenance-
+discrimination gap) — full detail + what a sound next attempt needs:
+carrier-representation-design.md §36.
+
 ## [ ] Region arena (was region-arena-design.md + slice1-build + slice1-liveness + kernel-memory-curve; DORMANT)
 
 Evidence (kernel-memory-curve, 2026-08-06): the bump arena's

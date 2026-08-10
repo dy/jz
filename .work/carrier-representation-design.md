@@ -5954,3 +5954,102 @@ non-bigint byte-identity method above), so no separate pre-flip checkout
 was required. `dist/` is git-ignored (build artifact, not tracked) — the
 ×2 byte-identity check compared two fresh local builds directly, not
 commits.
+
+## §36. FeaturePlan slice 4 (post-carrier bigint SEMANTIC-gate retirement) —
+ATTEMPTED, WALL HIT, REVERTED (2026-08-10). The task's own premise ("a boxed
+program has no ambiguity — PTR.BIGINT tag discriminates, so the magnitude
+heuristic is reachable only under the opt-out") is FALSE for the general
+case; disproven with a live regression, not merely suspected. Slice 4 stays
+BLOCKED, joining the pre-flip blocker research.md already named (item 4's
+"the ordering gap remains structurally") with a SECOND, independent, more
+fundamental one found this session.
+
+**What was attempted**: gate the three direct `ctx.features.bigint`
+AMBIGUITY-HEURISTIC readers (the subnormal-magnitude fallback in
+`toNumF64`'s inline fast path, `src/ir.js` ~1499-1518; the same fallback in
+`$__to_num`'s call body, `module/number.js` ~1540-1576; the `magCond` half
+of `TYPEOF.bigint`'s OR, `src/compile/emit.js` ~538-565) behind `&&
+!CARRIER_BOX` — i.e. skip the heuristic whenever boxing is the active
+default, since (the hypothesis) every BigInt the program can construct is
+by then proven-boxed and the `PTR.BIGINT` tag alone discriminates. The
+STDLIB-ARM-SIZE reader (`module/core.js`'s `__is_truthy`, ~161-196, whether
+the truthy-dispatch even carries a bigint-specific branch) was correctly
+left untouched throughout — that classification (SIZE vs AMBIGUITY) itself
+was sound and is worth keeping for the next attempt.
+
+**Why the premise is false — carrierF64's own documented scope, read
+literally**: `carrierF64`'s boxing chokepoint (`src/ir.js` ~706-717) boxes a
+BigInt value ONLY at genuine STORAGE-SINK positions it names explicitly —
+object/dyn-prop store, array-elem store, Set/Map, closure capture (plus
+proven call-ARG crossings, `coerceArg`'s own §29 guarantee). It deliberately
+does NOT box an INTERNAL, never-stored BigInt expression — an arithmetic
+result, a bare `return` value, a value threaded through local reassignment —
+this is not an oversight, it is `test/data.js`'s own SEPARATE, already-
+passing test ("bigint: internal calls keep the i64 carrier (only the JS
+boundary surfaces it)") documenting the SAME scoping as an intentional
+design point. `$__to_num`/`TYPEOF.bigint`, however, are SHARED, call-site-
+agnostic stdlib bodies — every consumer in the whole program, whether its
+BigInt operand arrived via a boxed storage-sink read OR via an unboxed
+internal computation, funnels through the identical compiled function body.
+Gating that shared body's heuristic off under `CARRIER_BOX` is sound for the
+FIRST provenance class (storage-sink reads — confirmed: `test/data.js`'s
+audit-#11 P0-1 repro, `let big=1n; o.a=5e-324; ...; return +o.a`, DOES now
+read exact under the retirement, since `5e-324` is a plain float that was
+never boxed to begin with and the storage-sink write side is proven-sound)
+but UNSOUND for the SECOND (internal/transient BigInt values) — for those,
+raw-carrier subnormal-collision ambiguity is exactly as real under default
+`CARRIER_BOX=1` as it ever was under the opt-out, because boxing was never
+supposed to reach them in the first place.
+
+**Live regression that proved it, not a hypothetical**: `test/watr.js`'s
+`watr bug: memory64 limits - BigInt limits encoded as zero` row (a
+regression pin for a PREVIOUSLY-FIXED jz self-hosting artifact — confirmed
+GREEN on the pre-slice-4 tree, both directly re-run and via a scratch
+`git worktree` at HEAD) FAILED under the slice-4 edit: jz-compiled
+`watr/src/compile.js`'s `limits()` (`is64 ? v => {... return BigInt(str)}`)
+feeds a freshly-`BigInt(str)`-parsed value through `uleb()`
+(`watr/src/encode.js`), whose 64-bit branch computes `Number(n & 0x7Fn)` —
+an INTERNAL bitwise-AND result, never stored anywhere, i.e. exactly the
+second provenance class. Under the slice-4 edit this returned `0` instead
+of `1` for `(memory i64 1 1)`'s limit bytes — a real miscompile, reproduced
+further with a minimal isolated repro (no watr involved): a value crossing
+a `return`/local-reassignment chain (`function myLimits(node){ let a =
+myParse(node.shift()); let b = myParse(node.shift()); return a + b*1000n }`)
+made `typeof result === 'bigint'` itself return FALSE inside a downstream
+`myUleb`, because the retired `TYPEOF.bigint` arm now checks ONLY the
+`PTR.BIGINT` tag (`isPtr && isBigintTag`) — false for a value that is
+genuinely a BigInt but was never boxed, since it crossed no storage sink.
+
+**Reverted, fully, before landing anything**: `src/ir.js`, `src/compile/
+emit.js`, `module/number.js`, `test/data.js`, `README.md` restored to HEAD
+(`git show HEAD:<path>` per-file, not `git checkout --`, per this session's
+own git-safety constraint) — verified via `git status`/`git diff --stat`
+(clean) and by re-running `test/watr.js` (35/35, the memory64-limits row
+green again) and `test/kernel-oracle.js`/`test/data.js` untouched. Nothing
+from this session shipped; the source tree at the end of this session is
+byte-identical to `34b23b07` (§35's own landing commit).
+
+**What the next attempt actually needs** (both bars, not either): the
+retirement is sound only once EITHER (a) `$__to_num`/`TYPEOF.bigint` can
+distinguish provenance at each call site (thread a "definitely storage-sink-
+sourced" vs "possibly-internal" bit through to the shared stdlib body — a
+real design task, not a flag flip, and the exact "non-boolean carrier-
+disambiguation redesign" fork §6 already named as option (b) for the
+ORIGINAL blocked item), OR (b) `carrierF64`'s boxing scope is deliberately
+widened to cover internal/transient BigInt values too (reopens the round-1
+warm-cost tension §7 exists to avoid — boxing every BigInt-producing
+expression, not just storage sinks, taxes BigInt arithmetic that today never
+touches the heap). Retrying the narrow "just gate the existing heuristic on
+CARRIER_BOX" shape without one of these two will reproduce this exact
+regression. The STDLIB-ARM-SIZE / AMBIGUITY-HEURISTIC reader classification
+this session established (§36 above) is still correct and worth keeping —
+only the "AMBIGUITY readers retire behind CARRIER_BOX" mechanism itself is
+wrong, not the taxonomy.
+
+**Gates run this session** (all against the now-reverted, i.e. unmodified,
+tree — reported for the record, not as slice-4 progress): `test/watr.js`
+35/35 (post-revert); `test/kernel-oracle.js` 13/13 both legs (default AGREE
+matches §35's own citation exactly, unrelated to this attempt — the audit-
+#16 fixture's fix was §24 CONSERVATIVE PAIRING, landed before this session);
+`test/data.js` 126/126 both legs (unmodified). No commit made — nothing to
+commit, the tree never left `34b23b07`.
