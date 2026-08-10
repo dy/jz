@@ -6,6 +6,58 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## carrier flip tail: 4→2 flag-forced failures, PARITY REACHED (flag == default, 2 rows each), flip STILL blocked on ONE named gap — 2026-08-10
+Full account: `.work/carrier-representation-design.md` §31. Attacked §30's
+final 2 named rows plus the standing `test:wasm` item-8 gap. Two of the
+three were STALE KNOWN-FAIL pins, not open bugs: (1) console.log
+heap-string kernel miscompile (§16→§17) — re-verified via WAT diff and
+found ALREADY FIXED, incidentally, by §24's CONSERVATIVE PAIRING (its
+runtime `maybeUnboxBigInt` dispatch at `readI64` closes `ptrBits`'s own
+`LAYOUT.NAN_PREFIX_BITS` read without needing `pointsTo==='ALL'` ever to
+resolve) — §29/§30 both re-ran the row and saw "still 1 failure," masking
+that the FAILURE MODE flipped (used to correctly assert a crash; now
+fails because nothing crashes). Flipped KNOWN-FAIL → AGREE. (2) audit-#16
+module-ordering — was classified flag-independent ("wrong at BOTH native
+and kernel"); FALSE under `JZ_CARRIER_BOX=1`: native now agrees with the
+correct value (same §24 fallout, a different call shape), kernel stays
+wrong — fixed the stale native-leg assertion to branch on
+`JZ_CARRIER_BOX`, kernel-leg pin unchanged (bug still real, still open).
+(3) `test:wasm` item 8 (`rawField()` → `NaN`) — STILL RED, but
+root-caused MORE PRECISELY: NOT the read-side `pointsTo==='ALL'`/
+`slotBigintProvenAt` story every prior session assumed (§16-§30) — a WAT
+diff proved `rawField`'s own read code is byte-identical native vs.
+kernel; the divergence is in `$__start`'s LAYOUT construction (the WRITE
+side): native boxes `NAN_PREFIX_BITS` (a real heap-allocated PTR.BIGINT
+pointer), the self-hosted kernel stores the bare literal unboxed — a
+self-host miscompile of the compiler's OWN `anyDynKey`/
+`slotBigintBoxedAt` write-side census, confirmed via raw-memory
+extraction (`0x7FFA800000003338` native vs. `0x7FF8000000000000` kernel).
+Also explains why the OTHER 3 assertions in the same test (`undefAtom`/
+`nullAtom`/`ptrHex`) pass: they consume the field through §24's own
+runtime dispatch, which is internally self-consistent with "not boxed" —
+only the bare, un-wrapped `rawField()` export crosses the JS boundary,
+where `LAYOUT.NAN_PREFIX_BITS`'s own value (`0x7FF8000000000000n`) is
+bit-identical to a malformed empty box, the one BigInt value in the whole
+design where raw and box collide. A concrete (unverified) next lead:
+`refineDynKeys` (src/compile/narrow.js ~3529) narrows `anyDynKey` via a
+captured-then-mutated-then-read boolean local, the same SHAPE CLASS as
+the already-pinned "captured-then-read" PENDING-FIX row (though that pin
+needs an ambiguous BOOL∪NUMBER merge value, which this local never has —
+not confirmed to be literally the same bug).
+Gates: flag-forced battery 3414/4 → **3416/2 (PARITY with default's own
+3416/2, identical rows)**, kernel-oracle 11/13 → **13/13 both flag
+states**, kernel-parity 33/33 unchanged, `test:wasm` pointers.js 34/35
+unchanged (item 8 still red, as expected — not fixed this session), fuzz
+2000×2 (`JZ_CARRIER_BOX=1`) 0/60845 divergences (unchanged — zero `src/`
+change landed), default build ×3 byte-identical (2 isolated-worktree + 1
+shared-tree, matching every prior session's own cited hashes exactly).
+**§11 flip-readiness probe run** (parity reached, per this session's own
+mandate) — verdict **NOT READY**: item 8 is a live, confirmed,
+self-hosted-only correctness bug, exactly the release-blocking class
+`src/ctx.js`'s own standing comment on `CARRIER_BOX` names as the bar.
+No default flip. Commit (local only): `test/kernel-oracle.js` (both pin
+fixes).
+
 ## carrier flip tail: 15→4 flag-forced failures (11 of the 13-row tail closed), flip STILL blocked — 2026-08-10
 Full account: `.work/carrier-representation-design.md` §30. Enumerated the
 flag-forced battery's 15 rows against the 2 pre-existing default-mode

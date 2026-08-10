@@ -4780,3 +4780,336 @@ scripts/build-dist.mjs` kernel build (16531.8 KB) done there; removed at
 session end. Shared tree: fix committed at `8857842d`/`53a0e39f`, default
 `dist/jz.wasm` rebuilt twice for the byte-identity gate (not committed,
 gitignored).
+
+## §31. Final 2-3 gaps attacked: 2 of 3 KNOWN-FAIL pins were STALE (bugs
+already closed, incidentally, by §24/§29/§30 — corrected, not fixed here),
+the third (test:wasm item 8) root-caused MORE PRECISELY than §16-§30's own
+framing — a write-side box/no-box divergence under self-host, not a
+read-side hz.all/unproven gap — banked (2026-08-10)
+
+**Method note.** `scripts/trace-inject.mjs`'s own splicing mechanics
+(function-range slice → parse → tee-wrap → re-splice) were read and kept in
+reserve, but not literally re-invoked: every gap this session closed or
+sharpened was diagnosed first via §17's OWN lighter technique (native-vs-kernel WAT
+diff on a minimized repro, `compileViaKernel({wat:true})`) plus raw-i64
+extraction via `instantiate(...).instance.exports` (bypassing interop.js's
+host-side decode to see the WASM-level return bits directly) — both landed
+the diagnosis before AST-level tracing was ever needed. The byte-level
+instrument remains reserved for whichever future session chases WHY the
+kernel's own `anyDynKey`/`slotBigintBoxedAt` census evaluates differently
+than native's (item 3 below) — that question lives INSIDE the running
+kernel's own compiled state, past what a WAT diff alone can show.
+
+### Gap 3 — audit-#16 (`ctx.features.bigint` module-ordering): NOT
+flag-independent — CORRECTED, one stale assertion fixed
+
+§30 classified this row as "wrong at BOTH native AND kernel — never a
+CARRIER_BOX question," outside the flip delta. **Verified false under
+`JZ_CARRIER_BOX=1`**: native now returns the mathematically CORRECT value
+(`123456789012345`) at every optimize tier (O0/O2/O3), while the KERNEL
+leg is still wrong (`6.09957581968707e-310`, byte-identical corruption to
+before) — an asymmetric split the original "both wrong" pin couldn't
+express, verified live via a bypass script re-running the test's own exact
+fixture with try/catch per assertion instead of the harness's throw-on-
+first-fail (which had been silently swallowing assertions 2-4 and the
+reversed-import control's own 6 assertions every session since this row
+was pinned). Under DEFAULT (no flag), both legs are UNCHANGED — still
+identically corrupted, confirmed live at all 3 opt tiers — so the pin's
+OLD assertions remain exactly correct there.
+
+**Mechanism (not independently re-investigated further — inherited, not
+re-derived): native's fix is almost certainly incidental fallout from §24's
+CONSERVATIVE PAIRING** (see gap-1's writeup below — same `readI64`/
+`maybeUnboxBigInt` runtime dispatch closes this repro's `Number(arr[i])`
+mixed-array BigInt-census read the same way it closes `ptrBits`'s
+`LAYOUT.NAN_PREFIX_BITS` read), landing AFTER audit-#16 was pinned and
+never cross-checked against it. The underlying audit-#16 bug itself
+(`$__to_num` baked before `ctx.features.bigint` is set, per-module
+`prep()` ordering) is UNCHANGED and still real — only its NATIVE-leg
+symptom disappeared as an unrelated fix's side effect; the KERNEL leg,
+whose own `$__to_num`/CONSERVATIVE-PAIRING dispatch is baked from a
+SEPARATE self-hosted build, did not get the same benefit (root cause not
+pinned down further this session — plausibly the SAME class as gap-2's
+write-side self-host divergence, not confirmed).
+
+**Fix landed**: `test/kernel-oracle.js`'s audit-#16 test now branches its
+native-leg assertion on `process.env.JZ_CARRIER_BOX` (mirrors §30's own
+rows-4/6 `dyn-keys.js` stale-assertion pattern exactly) — default keeps the
+original "both wrong" pins verbatim; `JZ_CARRIER_BOX=1` asserts native now
+agrees with `want` (with a fresh tripwire on regression back to
+`corrupted`) while keeping the kernel-leg "still wrong" pin unchanged. The
+reversed-import CONTROL block (isolates the fault to import ORDER) needed
+no change — verified unaffected, both legs agree with `want` under both
+flag states, all 3 opt tiers.
+
+### Gap 1 — console.log heap-string kernel miscompile (§16→§17): ALREADY
+FIXED, stale KNOWN-FAIL pin flipped to AGREE
+
+**§29/§30 both re-ran this row and recorded "unchanged" — correct at the
+PASS/FAIL BLOCK level, stale at the ASSERTION level.** The block failed
+both times (matching the prior baseline's OWN 1-failure count), masking
+that the FAILURE MODE had flipped: assertion 3 (`threw?.constructor?.name
+=== 'RangeError'`) used to correctly pin a real crash; it now fails
+because NOTHING throws anymore — the kernel runs clean. Verified directly,
+repeatedly, fresh-process, both manually and via the actual pinned test
+body: `console.log('bare-fired')` (heap string, ≥7 chars) and
+`console.log('short')` (SSO string, ≤6 chars) BOTH print their CORRECT,
+undecorated value through a carrier-built kernel, at every optimize level
+(0/1/2/3) — deterministic across repeated runs, not a fluke.
+
+**Root cause of the (accidental) fix, confirmed via WAT diff — the
+minimized `console.log('bare-fired')` repro's native and kernel WATs are
+now BYTE-IDENTICAL** (they diverged, per §17's own citation, before §24
+landed: `nan:0x7FFA000000000007` vs `nan:0x7FFA8000000DA1FC`). §24's
+CONSERVATIVE PAIRING (commit `83c7f9bc`, .work/carrier-representation-
+design.md §24, landed AFTER §17 named this bug) added a RUNTIME
+(`$__ptr_type`-checking, not static-proof-gated) dispatch at `readI64`'s
+arithmetic-core call sites: `isSchemaSlotBigintPossible` fires whenever a
+bare `.prop` read is write-side boxed (`slotBigintBoxedAt`, fail-open,
+unaffected by `pointsTo==='ALL'`) but read-side UNPROVEN, routing through
+`maybeUnboxBigInt` instead of a naive unconditional reinterpret. `ptrBits`'s
+own body (`layout.js`) — `LAYOUT.NAN_PREFIX_BITS | ((type&15)<<47) | …` —
+IS exactly this shape (an arithmetic-core BigInt-operand OR-expression).
+Once §24's dispatch got baked into the self-hosted kernel build, the
+RUNNING kernel's own compiled `ptrBits` started correctly unboxing the
+LAYOUT box AT RUNTIME (checking the ACTUAL tag bits of whatever value it's
+handed) instead of trusting a static proof that `pointsTo==='ALL'`
+(§17 finding 1, still open — §18/§21/§22/§23 all walled trying to close it
+safely) had poisoned — making `ptrBits` immune to that poison specifically
+BECAUSE it no longer needs the poisoned fact at all. §29/§30 never
+cross-checked this specific row against §24's landing; this session did.
+
+**Fix landed**: flipped `test/kernel-oracle.js`'s KNOWN-FAIL block to
+AGREE tier (renamed, restructured per the file's own `runNative`/
+`compileViaKernel` + console.log-spy convention already used two blocks
+above it) — asserts BOTH heap and SSO strings print correctly on BOTH legs
+at all 4 optimize tiers, under both flag states (native-only check when
+`JZ_CARRIER_BOX` is unset, matching every other AGREE-tier block's shape).
+
+### Gap 2 — test:wasm item 8 (`pointsTo==='ALL'` schema field read
+misreads under kernel self-compilation): STILL RED, but root-caused MORE
+PRECISELY — a WRITE-SIDE box/no-box divergence, not a read-side gap
+
+**Re-verified unchanged**: `JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm node
+test/index.js pointers` — 34/35, the SAME single row red (`rawField()`
+returns `NaN` instead of `9221120237041090560n`), byte-for-byte matching
+§29/§30's own citation. The OTHER 3 assertions in the SAME test block
+(`undefAtom`/`nullAtom`/`ptrHex` — all arithmetic-wrapped reads of the
+identical `LAYOUT.NAN_PREFIX_BITS` field) PASS — a fact §29/§30 both
+recorded but never explained. This session explains it.
+
+**§16/§17's own framing (repeated verbatim through §29/§30) says this is a
+READ-SIDE gap**: `slotBigintProvenAt('LAYOUT','NAN_PREFIX_BITS')` never
+proves TRUE under the self-hosted build's `pointsTo==='ALL'` blanket, so
+`emitSchemaSlotRead` "hands back the box's raw pointer bits." **Traced via
+WAT diff (native vs. kernel, the isolated `carrier-conservative-pairing-
+repro.js` fixture, `compileViaKernel({wat:true})`) — this framing is
+WRONG for this specific row.** `$rawField`'s own compiled body (a bare
+`f64.load` at `LAYOUT_ptr+48`) is BYTE-IDENTICAL between native and
+kernel — the READ CODE never differs. The divergence is in `$__start`'s
+LAYOUT CONSTRUCTION (the WRITE side):
+```
+native (correct — a real box):
+  (f64.store (obj0+48) (block (result f64)
+    (local.set $bbig2 (call $__alloc (i32.const 8)))
+    (i64.store (local.get $bbig2) (i64.const 9221120237041090560))
+    (call $__mkptr (i32.const 5) (i32.const 0) (local.get $bbig2))))
+
+kernel (wrong — the bare literal, never boxed):
+  (f64.store (obj0+48) (f64.reinterpret_i64 (i64.const 9221120237041090560)))
+```
+Confirmed independently via raw-memory extraction (`instantiate(wasm)
+.instance.exports.rawField()`, bypassing interop.js's host-side decode
+entirely): native's raw i64 is `0x7FFA800000003338` (a well-formed
+PTR.BIGINT box, tag=5); kernel's raw i64 is `0x7FF8000000000000` — the
+BARE `NAN_PREFIX_BITS` VALUE ITSELF, completely unboxed. The compiler's
+OWN write-side boxing decision (`slotBigintBoxedBySid`, module/object.js's
+`{}`-literal construction, §16 write-site #1 — fail-open, "unaffected by
+`pointsTo==='ALL'`" per §16's own claim) evaluates to a DIFFERENT boolean
+when its OWN logic is executed AS COMPILED BY THE KERNEL vs. natively, for
+byte-identical source. This is a SELF-HOSTED MISCOMPILE of the compiler's
+own `anyDynKey`/dyn-shadow census (the fixture's `corrupt(obj,key,val)`
+unresolvable dynamic write is what makes `anyDynKey` true program-wide,
+which is what makes LAYOUT's write-side decision "box" — natively correct,
+kernel-wrong) — NOT a `pointsTo==='ALL'`/`slotBigintProvenAt` question at
+all, despite every prior session's framing.
+
+**Why the OTHER 3 assertions pass despite this**: `undefAtom`/`nullAtom`/
+`ptrHex` all consume `LAYOUT.NAN_PREFIX_BITS` through `atomNanHex`/
+`i64Hex`/`ptrBits`'s own arithmetic — the SAME §24 CONSERVATIVE PAIRING
+runtime dispatch that closed gap 1 (`isSchemaSlotBigintPossible` +
+`maybeUnboxBigInt`, gated on `slotBigintBoxedAt`, checked at RUNTIME via
+`$__ptr_type`). Since the kernel's write side genuinely did NOT box this
+slot, `maybeUnboxBigInt`'s runtime tag check correctly sees "not a box"
+and passes the raw value through untouched — CORRECT, because the value
+really isn't boxed in the kernel's world. The compiler is INTERNALLY
+SELF-CONSISTENT (write says "raw", arithmetic reads correctly treat it as
+raw) — only `rawField()`'s BARE, UN-WRAPPED return crosses the JS export
+boundary, where interop.js's generic "r"-marker decode (`decode()`,
+tag-sniffing, unconditional on which representation THIS PARTICULAR
+compile chose) sees `0x7FF8000000000000`'s zero tag/aux/offset bits and
+reads them as a MALFORMED PTR.ATOM(id=0) — not a valid atom id (NULL=1/
+UNDEF=2/FALSE=4/TRUE=5) — falling to its NaN error path. This is also
+why the value is uniquely adversarial: `LAYOUT.NAN_PREFIX_BITS`'s OWN
+VALUE (`0x7FF8000000000000n`) is BIT-IDENTICAL to "an empty/malformed box"
+— the one BigInt value in the entire carrier design space where "raw" and
+"a degenerate box" are indistinguishable by inspection alone. Native never
+exposes this because native happens to always box this field (the
+fixture's `anyDynKey` trigger, matching real self.js); the kernel's
+write-side divergence exposes it.
+
+**NOT fixed — two open, DISTINCT threads, correctly separated for the
+first time**: (1) WHY the kernel's own compiled `anyDynKey`/
+`slotBigintBoxedAt` census evaluates false when native's evaluates true,
+for byte-identical source — a genuine self-host miscompile in the
+compiler's OWN dyn-shadow detection, requiring INSIDE-THE-KERNEL
+instrumentation (trace-inject.mjs-grade — this is the piece that
+genuinely needs it, unlike gaps 1/3 above) to pin down. **A concrete,
+plausible (NOT verified — source-read only, no live trace) starting
+candidate for a future session**: `refineDynKeys` (src/compile/narrow.js
+~3529) narrows `ctx.types.anyDynKey` from the initial scan's `true` back
+to `false` via a `let real = false` captured and mutated by a nested
+`visit` closure, then read back in the outer loop (`if (real) break`) and
+finally consulted at the function's tail (`if (!real) ctx.types.anyDynKey
+= false`) — a captured-then-mutated-then-read BOOLEAN local is exactly the
+shape class this SAME file already pins as a live, PENDING-FIX self-host
+gap elsewhere (`test/kernel-oracle.js`'s "captured-then-read" row) —
+though that pinned repro requires an AMBIGUOUS BOOL∪NUMBER merge value,
+which `real` never is (checked — every assignment to `real` is a bare
+`true`/`false` literal), so it is NOT confirmed to be literally the same
+bug, only worth checking first. (2) whether
+interop.js's generic "r"-marker decode should be hardened against the
+raw/box bit-collision at `0x7FF8000000000000` regardless of (1) — a
+narrower, more contained, JS-host-side-only fix that was DELIBERATELY NOT
+attempted here: it would paper over a real compiler self-host bug rather
+than fix it (this project's own "optimize the tool, never the input" /
+fix-root-cause discipline), and risks masking future instances of the
+SAME collision at other export sites. (1) is the real lever; (2) is a
+band-aid, named only so a future session doesn't reach for it first.
+
+### The 2-3 gaps, precisely closed out
+
+1. **audit-#16 module-ordering: was miscounted as flag-independent — is
+   NOT.** Stale native-leg assertion under `JZ_CARRIER_BOX=1` fixed;
+   underlying bug (kernel leg, and the ordering root cause itself) STILL
+   real, still open, unchanged.
+2. **console.log heap-string: CLOSED.** Was already fixed by §24's
+   CONSERVATIVE PAIRING landing after §17; this session found and pinned
+   it. KNOWN-FAIL → AGREE.
+3. **test:wasm item 8 (`rawField()`): STILL OPEN, root-caused more
+   precisely** — write-side self-host divergence, not the read-side
+   `pointsTo==='ALL'` gap every prior session assumed. Banked with the
+   corrected mechanism and the two now-separated next levers.
+
+### Gates run this session (isolated worktree `/tmp/jz-carrier-wt-gaps`,
+`git worktree add --detach 4b7777c5`, `node_modules` symlinked, foreground
+throughout)
+
+- **Flag-forced battery**: `4b7777c5` baseline 3414/4 (19596 assertions,
+  matching §30's own citation exactly, re-confirmed before any edit) →
+  after both fixes: **3416/2 (19634 assertions)** — audit-#16 and
+  console.log rows both now GREEN; the 2 survivors are the SAME
+  pre-existing, `CARRIER_BOX`-unrelated interval-walk/typed-RMW rows every
+  session since §14 has named, byte-identical row text to default's own 2.
+  **This reaches the flip bar's own definition of PARITY: flag-forced
+  fails ⊆ default fails, 2 rows each, identical rows** — confirmed in
+  BOTH the isolated worktree and, independently, the shared tree (default
+  leg only — no `CARRIER_BOX` build in the shared tree, per this design's
+  own standing rule not to build `dist/jz.wasm` flagged there until every
+  named gap closes; gap 2 keeps that rule in force).
+- **Default battery**: `node test/index.js` — **3416/2 (19610
+  assertions)**, unchanged pass/fail shape (the same 2 pre-existing rows),
+  assertion count up by 8 vs. §30's own 19602 baseline (console.log's new
+  AGREE-tier block now runs its native-only checks under default too;
+  audit-#16 unchanged under default by construction) — confirmed
+  identically in the worktree AND the shared tree.
+- **`node test/kernel-oracle.js`**: **13/13 both flag states** (was 11/13
+  under `JZ_CARRIER_BOX=1`; console.log + audit-#16 rows both closed/
+  corrected) — 477 assertions default, 493 flag-forced — confirmed in
+  both trees (default leg) and the worktree (both legs).
+- **`JZ_CARRIER_BOX=1 kernel-parity`: 3/3 (33 assertions), byte-identical
+  O0/O2/O3** — unchanged.
+- **`JZ_CARRIER_BOX=1 JZ_TEST_TARGET=jz.wasm node test/index.js pointers`
+  (carrier test:wasm)**: 34/35, unchanged — gap 2's single row still red,
+  as expected (not fixed this session).
+- **Fuzz, `JZ_CARRIER_BOX=1`**: 2 independent 2000-program sweeps
+  (`--seedStart=1,2001`, `--opt=0,1,2,3`, `--inputs=20`): 30173 + 30672 =
+  **60845 inputs compared, 0 divergences** — byte-identical to §30's own
+  citation (this session's only `src/` change is zero — no compiler edit
+  landed, only test/kernel-oracle.js — so an unchanged fuzz result is the
+  expected, confirming outcome, not a coincidence).
+- **Default build ×2** (worktree) **+ ×1 more** (shared tree, independent
+  process) — all 3 byte-identical to EACH OTHER and to §30's own cited
+  hashes: `dist/jz.js
+  420596426c6b224ad07bc03ec75e2b5c5c51a3785e6cd1f0fdee7d03a985759e`,
+  `dist/jz.wasm
+  6fe9f1e84a3723cfe79aac616dd6797832fdf237a8cbb4c9674c6a9ec97b19b7`
+  (16481.3 KB), `dist/interop.js
+  ef42c9da1ab79349a5ab69d55558082de4b3d228850b87a9a188b6722ef730e1` —
+  confirms the test-only change has zero effect on compiler output, as
+  expected.
+
+### Flip-readiness verdict — §11 probe: NOT READY, one concrete named blocker
+
+The main battery reaching PARITY (flag-forced fails ⊆ default fails, same
+2 rows) triggers the §11 probe per this session's mandate. A literal
+`ctx.js` default-flip-and-rebuild was judged REDUNDANT rather than
+skipped: `CARRIER_BOX` is a single exported const computed once from
+`process.env.JZ_CARRIER_BOX`, consulted identically by every call site
+regardless of whether the `true` comes from a flipped source default or a
+forced env var — there is no code path in this compiler that can tell the
+difference. This session's own gates (above) already exercised the
+IDENTICAL "as if defaulted on" surface: a fresh `JZ_CARRIER_BOX=1
+scripts/build-dist.mjs` kernel, the full flag-forced battery run against
+it, `kernel-oracle`, `kernel-parity`, `test:wasm`'s `pointers.js` leg, and
+2×2000 fuzz sweeps — the complete probe surface §11-§14's own historical
+attempts used, with zero coverage gap a literal source-default edit would
+have added.
+
+**Verdict: NOT READY.** Gap 2 (test:wasm item 8, `rawField()` → `NaN`) is
+a live, reproducible, CONFIRMED self-hosted correctness bug under
+`JZ_CARRIER_BOX=1` — exactly the class of release-blocking gap `src/
+ctx.js`'s own standing comment on `CARRIER_BOX` names as the bar ("a
+carrier-built KERNEL corrupts generated f64 constants... do not build
+dist/jz.wasm with it set until [the] finding is closed"). This session's
+gap-2 work sharpened WHICH finding blocks the flip (a write-side
+`anyDynKey`/`slotBigintBoxedAt` self-host divergence, not the read-side
+`pointsTo==='ALL'` story §16-§30 assumed) but did not close it. The 2-row
+main-battery delta reaching parity is real progress — it means every
+OTHER previously-known flag-forced-only symptom is now closed or
+correctly re-classified — but the flip bar is `CARRIER_BOX` producing a
+CORRECT self-hosted kernel, not merely a battery-parity kernel; gap 2 is
+exactly the kind of self-host-only, main-battery-invisible bug that
+`JZ_TEST_TARGET=jz.wasm`/`kernel-oracle`/`test:wasm` exist to catch
+precisely because the main battery cannot. **No default flip — matches
+both this session's own finding and the coordinator's standing ruling.**
+`CARRIER_BOX` stays `JZ_CARRIER_BOX==='1'`-gated, OFF by default,
+unchanged shape from §14-§30.
+
+**A future flip-readiness session's concrete starting point**: trace
+INSIDE the running carrier kernel (trace-inject.mjs-grade instrumentation,
+now genuinely warranted — this is the one gap this session's lighter WAT-
+diff technique could not fully resolve) why `refineDynKeys`'s `real`
+local — or whatever other site turns out to own the divergence — settles
+differently for `ctx.types.anyDynKey` between a native and a self-hosted
+compile of the identical `carrier-conservative-pairing-repro.js` fixture.
+Once found, the fix likely closes gap 2, and by extension hardens whatever
+OTHER export lane shares the same raw/box bit-collision at
+`0x7FF8000000000000` (LAYOUT's own value) — worth an explicit grep for
+other module-scope BigInt constants sharing this exact pathological
+bit-pattern before declaring it closed.
+
+**Local commits (shared tree, plain messages, no push).** `test/
+kernel-oracle.js` only (both pin fixes, gaps 1 and 3). This ledger entry
++ `.work/todo.md` status update filed separately.
+
+**SHAs.** Investigated at `4b7777c5` (HEAD at session start, §30's own
+commit). Isolated `git worktree add --detach /tmp/jz-carrier-wt-gaps
+4b7777c5` (`node_modules` symlinked, read-only); all `CARRIER_BOX`
+measurement, the `JZ_CARRIER_BOX=1 scripts/build-dist.mjs` kernel build
+(16531.8 KB, matching §30's own cited `CARRIER_BOX` size), and every WAT-
+diff/raw-memory trace done there; removed at session end. Shared tree:
+fix applied identically and committed, default `dist/jz.wasm` rebuilt for
+the byte-identity gate (not committed, gitignored, matches §29/§30's own
+practice) — never built `CARRIER_BOX`-flagged in the shared tree, per this
+design's own standing rule (gap 2 keeps it in force).
