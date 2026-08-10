@@ -6,6 +6,32 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## GOAL STATE: carrier BigInt boxing (`CARRIER_BOX`) is now ON BY DEFAULT — the flip landed — 2026-08-10
+Full account: `.work/carrier-representation-design.md` §35 (the flip
+record) and §34 (the FLIP-READY verdict it executes — superseding the
+`ternaryBoxedNames` entry below, which was that gap's last NOT-fixed
+snapshot; §34 root-caused and fixed it the same day: a general, non-
+carrier-gated boolean-boxing miscompile in `collProbeDyn`'s unproven
+`.has`/`.delete`, unrelated to Sets/hashing at all). `src/ctx.js`'s
+`CARRIER_BOX` inverted from opt-in (`JZ_CARRIER_BOX=1`) to opt-out
+(`JZ_CARRIER_BOX=0`); `scripts/build-dist.mjs`'s self-host build-time
+literal injection follows the same formula; 6 test call sites that used to
+read the opt-in env var as a live "is boxing active" proxy now read the
+opt-out sense instead (`test/kernel-oracle.js` ×2, `test/pointers.js` ×2,
+`test/dyn-keys.js` ×2); README's BigInt-divergence FAQ entry updated.
+**Full gate ladder green, matching §34's own predictions exactly**: default
+battery 3417/2 (same 2 pre-existing rows), `test:wasm` FULL 2714/2720 0
+fail, kernel-parity 33/33, kernel-oracle 13/13, selfhost 21/21, fuzz
+2000×{0,1,2,3} 0 divergence, SIZE geomean 1.0193 (≤1.05, no bigint cases
+in the size corpus to report per-case deltas for), perf-ratchet 10/10 all
++0, explicit non-bigint byte-identity 400/400 (perf-corpus.mjs full sweep,
+default vs `JZ_CARRIER_BOX=0`), `JZ_CARRIER_BOX=0` opt-out sanity leg
+(full battery, not just a subset) reproduces the exact pre-flip default's
+historical 3-fail signature. Build ×2 byte-identical. Nothing reverted;
+timing certification alone deferred (swap embargo, doesn't gate — bigint-
+free output proven byte-identical, bigint timing was never in the SPEED
+corpus).
+
 ## carrier `ternaryBoxedNames`/`.bigint:toString` gap: traced to a precise,
 ## narrow location, NOT fixed — flip still blocked — 2026-08-10
 Full account: `.work/carrier-representation-design.md` §33. Localized the

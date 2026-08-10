@@ -5811,3 +5811,146 @@ pre-existing-failure cross-check for the 2 unrelated optimizer gaps);
 `node_modules` symlinked; removed (`git worktree remove --force`) at
 session end. No source edits made or reverted inside the worktree — it
 was comparison-only, the fix itself landed directly on the shared tree.
+
+## §35. THE FLIP — CARRIER_BOX default is now ON. Coordinator-authorized
+execution of §34's FLIP-READY verdict; full gate ladder re-run at the new
+default, all green, no red in a way §34 didn't already predict — LANDED,
+not reverted (2026-08-10).
+
+**The edit, at the root** (`src/ctx.js`): the declaration inverts from
+opt-in to opt-out —
+```
+// before (§32, opt-in):
+export const CARRIER_BOX = typeof process !== 'undefined' && process.env?.JZ_CARRIER_BOX === '1'
+// after (§35, opt-out):
+export const CARRIER_BOX = typeof process === 'undefined' || process.env?.JZ_CARRIER_BOX !== '0'
+```
+Read as: default TRUE; `typeof process === 'undefined'` (a non-Node host)
+also defaults TRUE (never a live opt-out channel there); `JZ_CARRIER_BOX=0`
+is now the only way to get FALSE. `scripts/build-dist.mjs`'s self-host
+build-time literal injection (§32's own `99360578`) follows the identical
+formula — its needle/replacement both updated to the new source text and
+`process.env.JZ_CARRIER_BOX !== '0'` respectively, so a self-hosted kernel
+built under `JZ_CARRIER_BOX=0` genuinely gets the opt-out (pre-flip, this
+same jz-can't-see-`process` mechanism froze every kernel at OFF regardless
+of the build's own flag — post-flip it would freeze every kernel at ON,
+silently discarding the escape hatch, had the injection formula not been
+updated in lockstep).
+
+**Test flips — 6 call sites, all previously reading the OLD opt-in env var
+(`JZ_CARRIER_BOX === '1'` / `!== '1'`) as a live proxy for "is carrier
+boxing active in this run", now reading the NEW opt-out sense
+(`=== '0'` / `!== '0'`) instead. Each is a pure sense-inversion, same
+semantic meaning ("is the box active"), verified by both the new-default
+battery (all 6 sites' rows pass) AND the `JZ_CARRIER_BOX=0` full battery
+(same 6 sites correctly flip back to legacy-off assertions, reproducing
+the exact pre-flip default signature — see the sanity leg below):**
+- `test/kernel-oracle.js:474` — `nativeCorrupted` (audit-#16 differential
+  fixture): was `process.env.JZ_CARRIER_BOX !== '1'`, now `=== '0'`.
+- `test/kernel-oracle.js:679` (`continue` guard, console.log kernel leg):
+  was `!== '1'`, now `=== '0'`.
+- `test/pointers.js:335` (boxed-schema-field-unboxes-on-read, `return`
+  guard): was `!== '1'`, now `=== '0'`.
+- `test/pointers.js:365` (CONSERVATIVE PAIRING unproven-schema-field,
+  `return` guard): was `!== '1'`, now `=== '0'`.
+- `test/dyn-keys.js:482` (Slice 5 mixed-kind-Map negative control, expected
+  value ternary): was `=== '1' ? 5n : 2.5e-323`, now `!== '0' ? 5n :
+  2.5e-323`.
+- `test/dyn-keys.js:529` (Slice 6 decl-hop sibling of the above): same
+  ternary flip.
+
+No OTHER call site in `test/`, `src/`, or `module/` branches on the literal
+env var to decide an expected VALUE (a broader grep turns up only test
+*titles*/historical narrative comments citing `JZ_CARRIER_BOX=1` as the
+name of the mechanism that closed a past gap — accurate as history, left
+untouched; not live conditionals). `src/ir.js`'s Slice-1 header comment
+("dormant primitives … default OFF") was the one other present-tense
+factual claim about the flag's current state outside test files — updated
+to say what's true now (every CARRIER_BOX-gated consumer live-active by
+default, `JZ_CARRIER_BOX=0` the escape hatch). README's BigInt-divergence
+paragraph updated per item 2 below.
+
+**README** (`One known divergence class` faq entry): replaced the
+"implemented behind opt-in `JZ_CARRIER_BOX=1`… default stays off until
+verification fully closes" sentence — that verification is exactly what
+§34 completed. Also corrected an overclaim the old sentence carried:
+boxing removes the raw-i64/subnormal collision for every slot the
+write-side census can reason about, but `__to_num`'s OWN ambiguity check
+(module/number.js, `ctx.features.bigint`-gated) is a *whole-program* fact
+("can this program construct a BigInt anywhere"), not a per-slot one — a
+distinct, coarser mechanism the boxing project never touched. Verified
+live, post-flip, before writing the sentence (not assumed): the exact
+`test/data.js` audit-#11 P0-1 repro (`let big = 1n; …o.a = 5e-324…return
++o.a`) still reads `1` (the documented wrong value) under the new default,
+identically to before — `ctx.features.bigint` stays poisoned
+program-wide by the mere presence of a BigInt construction anywhere,
+independent of whether THIS slot's own writes are census-provable. The
+README now says so plainly instead of implying the flip erases it.
+
+**Gate ladder — full re-run at the new default, ALL GREEN, matching §34's
+own predictions exactly (no surprise red):**
+
+| Gate | Result | §34 prediction | Match |
+|---|---|---|---|
+| Build ×2 (default, fresh) | byte-identical: `jz.js` `f9b038d5…`, `jz.wasm` `56c9663d…` (16525.4 KB), `interop.js` `ef42c9da…` (unchanged from §34's own citation) | byte-identical | yes |
+| Default battery (`node test/index.js`) | 3425 total (19637 assertions), 3417 pass, 2 fail (same 2 pre-existing optimizer bounds-check rows), 6 skip | ~3417/2, same 2 rows | exact match |
+| `test:wasm` FULL (`JZ_TEST_TARGET=jz.wasm`) | 2720 total (12869 assertions), 2714 pass, **0 fail**, 6 skip | 0 fail beyond skip | exact match |
+| `kernel-parity` (standalone) | 33/33 assertions | unchanged | yes |
+| `kernel-oracle` (standalone) | 13/13 (493 assertions) — audit-#16 row now AGREE (was the one default-only KNOWN-FAIL pre-flip) | 13/13 | exact match |
+| selfhost | 21/21 (206 assertions) | 21/21 | exact match |
+| fuzz (default, 2000×{0,1,2,3}) | 30173 inputs compared, 9827 skipped (i32 contract exceeded), 0 non-numeric, **0 divergence** | 0 divergence | yes |
+| statements / layout-kinds (pins) | inside the green default battery (not among the 2 fails) | green | yes |
+| SIZE (`bench-size.mjs`) | geomean jz/AS = **1.0193** (n=49 AS-ported cases) | ≤1.05 | pass, ~unchanged from §34-era ~1.02× |
+| perf-ratchet (bigint-free corpus, op counts) | 10/10 categories, **all +0** vs baseline (int 659, float 565, mixed 971, cond 593, buf 21682, nest 22411, slice 76072, ring 117680, condref 103818, fgather 83320) | 0 regression | exact match |
+| Non-bigint byte-identity (explicit) | 400/400 compiled-byte SHA-256 hashes identical, default vs `JZ_CARRIER_BOX=0`, across `scripts/perf-corpus.mjs`'s full 10-category × 10-seed × 4-optimize-level sweep | byte-identical (machinery is `ctx.features.bigint`-gated) | exact match |
+| `JZ_CARRIER_BOX=0` sanity leg | FULL battery (not just a subset): 3425 total (19598 assertions — 39 fewer than default, from the 6 flipped test sites correctly skipping their now-inactive carrier-only assertions), 3416 pass, 3 fail — the SAME 2 pre-existing rows **plus** the audit-#16 KNOWN-FAIL kernel-oracle row, i.e. the exact pre-flip DEFAULT's own historical 3-fail signature, reproduced faithfully | escape hatch restores legacy behavior | exact match |
+
+**Per-case size deltas for bigint-using cases: NONE EXIST.** Checked
+directly (`grep -nE "BigInt|[0-9]n\b"` over every `bench/*/*.js` main
+source, excluding `.as.ts` AssemblyScript ports) — the only two hits
+(`biquad`, `mandelbrot`) are comment text ("No DataView, no BigInt…"), not
+code. `scripts/bench-size.mjs`'s entire corpus is BigInt-free by
+construction, so the SIZE gate's 1.0193 geomean is, structurally, the same
+measurement as the non-bigint byte-identity check above — nothing in that
+corpus could have moved even if the flip were broken. No bigint-having
+case exists anywhere in the size-tracked benchmark set to report a
+per-case delta for; this is a real absence, not an oversight.
+
+**Non-bigint byte-identity verdict: CONFIRMED, explicitly.** Beyond the
+structural argument above (every CARRIER_BOX-gated call site sits behind
+`ctx.features.bigint`, so a program that can never construct a BigInt
+never reaches one), directly measured: `scripts/perf-corpus.mjs`'s full
+generator corpus (`int`/`float`/`mixed`/`cond`/`buf`/`nest`/`slice`/
+`ring`/`condref`/`fgather`, 10 seeds each, optimize 0–3 = 400 compiled
+programs) hashed (SHA-256 of the compiled wasm bytes) once under the new
+default and once under `JZ_CARRIER_BOX=0` — `diff` of the two 400-line
+hash dumps is empty. Zero non-bigint byte deltas anywhere in the swept
+corpus.
+
+**Warm/absolute timing: NOT measured, per the mandate (swap embargo).**
+The flip's timing certification is deferred to a post-reboot session; it
+does not block this flip because (a) bigint-free program output is now
+proven byte-identical (not merely "should be" — the 400-case sweep above
+is direct evidence), so bigint-free timing cannot have moved, and (b)
+BigInt-heavy program timing was never part of the SPEED goal corpus this
+project tracks (`test/bench.js`'s SPEED_TOL/NATIVE_GEOMEAN_MAX bands are
+all non-bigint kernels).
+
+**Verdict: FLIP LANDED.** Every gate the ladder named came back exactly
+as §34 predicted; nothing surprised. `CARRIER_BOX` is ON by default;
+`JZ_CARRIER_BOX=0` is the documented, tested, working opt-out.
+
+**Local commits (shared tree, plain messages, no push, staged by exact
+filename only).** Three: (1) the flip itself — `src/ctx.js`,
+`scripts/build-dist.mjs`, `README.md`, `src/ir.js`; (2) the 6 test-site
+sense-inversions — `test/dyn-keys.js`, `test/kernel-oracle.js`,
+`test/pointers.js`; (3) this ledger entry plus `.work/todo.md`'s
+goal-state update.
+
+**SHAs.** Flipped at `cf7b1b71` (HEAD at session start, §34's own commit).
+No worktree needed this session — the `JZ_CARRIER_BOX=0` opt-out leg IS
+the "before" comparison, live on the same shared tree post-flip (see the
+non-bigint byte-identity method above), so no separate pre-flip checkout
+was required. `dist/` is git-ignored (build artifact, not tracked) — the
+×2 byte-identity check compared two fresh local builds directly, not
+commits.
