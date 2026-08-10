@@ -689,3 +689,127 @@ confirmed via `git diff --stat` showing only this file before commit (§0).
    byte-identity-gated) AUTHORIZED alongside the retirement slice. Slice 3
    (lift emission, measured-delta) waits for coordinator review of slice 2's
    decision census.
+
+---
+
+## AS-LANDED (2026-08-10) — slices R, 1, 2
+
+Three commits, in order, matching §4's own sequencing (slice R first, slices
+1-2 each their own commit though authorized together):
+
+- `cf760af8` — slice R: `scanAndTagNonEscapingClosures` + its `enterFunc`
+  call site, `module/function.js`'s static-env branch, the
+  `OPTF.staticClosureEnv` registry entry (`src/passes.js` PASS_NAMES +
+  HOT_PASSES + the level-1 preset reference), and the `emit.js`
+  `_nonEscaping` tag-forwarding plumbing — all deleted. The audit-#17/#18
+  regression test (`test/closures.js` "static closure env: re-entrant
+  enclosing function…") is untouched by name and content; it now pins the
+  heap path's own correctness rather than the retired static path's.
+- `c624a25b` — slice 1: `src/compile/closure-plan.js` (new), `astClosurePlan`
+  + `mintClosureEnvPlans`, minted alongside `mintLoopPlans` at all three
+  call sites (`analyzeFuncForEmit`, `emitClosureBody`'s block and
+  expression-body arms). `ctx.closure.make` consults the plan
+  (`storage` drives the `zero-capture` vs. alloc branch), fail-open on a
+  miss, `JZ_DEBUG_INVARIANTS`-gated shadow-assert against the legacy inline
+  decision.
+- `64953399` — slice 2: `'lift-eligible'` storage value, UNWIRED (plan data
+  only — `ctx.closure.make`'s branch stays binary, so a lift-eligible
+  closure emits exactly like `'heap'` today).
+
+### Reconciliation (coordinator ruling 4): the 371-vs-626 discrepancy
+
+**Finding: a measurement-point artifact, not a predicate-version or
+source-drift issue.** Re-derived both numbers fresh, on the SAME commit
+(pre-slice-R HEAD, `6242d0ee`, via a disposable worktree), using the exact
+weak-predicate relaxation §0 describes:
+
+- Counting at `scanAndTagNonEscapingClosures`'s OWN grant sites (audit-#18's
+  own instrumentation point): **1048**. This is the WRONG place to count —
+  `enterFunc` calls the scan at every frame entry for a body (analyze pass,
+  emission pass, AND per-closure-body emission, per `enterFunc`'s own
+  three-caller doc), so a grant gets counted 2-3× over. 1048 (this session,
+  current source) vs. audit-#18's own 626 (an earlier session, less source)
+  are consistent with the SAME over-counting artifact at two different
+  points in self.js's growth — not a different predicate.
+- Counting downstream, at `ctx.closure.make` (`body._nonEscaping` read
+  exactly once per closure literal, the natural dedup point — matching what
+  a frozen pre-emission mint like `ClosureEnvPlan` produces by construction):
+  **371** — an EXACT match to the design doc's own §1.5 number, on the same
+  commit, independently re-derived this session.
+
+Conclusion: 371 is the correct, reproducible count; 626 (and this session's
+own re-derived 1048) are both grant-site artifacts of the OLD mechanism's
+multi-pass re-scan, not a real population difference. `ClosureEnvPlan`'s
+single mint-per-body-per-frame design (§3, mirroring `mintLoopPlans`)
+structurally cannot reproduce this artifact — there is no second scan to
+over-count from.
+
+### Slice 2 decision census
+
+Bench (58-case corpus, `bench-size.mjs`'s own `optimize:'size'` options) and
+self.js (`build-dist.mjs`'s own options), counted at `astClosurePlan.set`
+(i.e. MINT-COVERED closures only — closures whose plan lookup would fail
+open, e.g. destructured-param closures whose body node is rewritten before
+`ctx.closure.make` sees it, are not counted here; that population is a
+separate, smaller gap from the escaping/boxed-capture funnel this table
+measures):
+
+| storage | bench (58 cases) | self.js |
+|---|---|---|
+| zero-capture | 31 | 1059 |
+| heap | 10 | 1298 |
+| boxed-cell | 34 | 1367 |
+| **lift-eligible** | **1** | **148** |
+| mint-covered total | 76 | 3872 |
+
+Mint coverage (mint-covered / §1.5's own total-closures-created count) is
+**76/174 (44%) on bench** and **3872/4404 (88%) on self.js** — the gap is
+closures whose shape this mint's walker doesn't classify (destructured
+params, primarily) or whose enclosing binding form the walker doesn't
+special-case; ALL such closures fail open to the legacy inline decision
+(verified byte-identical + 0 `JZ_DEBUG_INVARIANTS` fires), so the gap is a
+census-completeness limitation, not a correctness one. Bench's lower
+coverage rate tracks §5.2's own finding: bench closures skew toward
+single-boxed-capture accumulator shapes, several of which sit inside
+destructured-param callback signatures (array-method callbacks) the mint
+skips by design.
+
+The self.js **148** lift-eligible count is lower than §1.5's own **161**
+(measured via a from-scratch relaxed-predicate scan, not this mint) — both
+numbers are in the same ballpark and consistent with the SAME 88% mint-
+coverage gap: 161 × 0.88 ≈ 142, close to 148 given the two measurements use
+different code paths (this mint's `onlyCalledNotReferenced` + stability
+check vs. §1.5's relaxed `scanAndTagNonEscapingClosures` + separate boxed-
+capture join). Both agree on the header finding: a modest, precisely
+bounded population (~150 self.js closures, ~1 bench closure), not the much
+larger raw escaping-count §1.5 itself warned against over-reading.
+
+### Gate summary
+
+- Byte-identity: 58-case bench corpus (jessie/jz excluded), O0/O2/O3, 174
+  compiles — 0 diffs at every slice (R, 1, 2 each independently re-verified
+  against the pre-slice-R baseline).
+- Battery (`node scripts/battery.mjs`): fixpoint/fuzz(30173 cmp)/build/
+  self(21/21)/kernel(2714 pass) all green at every slice; native/O0/O3/dbg/
+  wasi each show exactly the ONE pre-existing, already-documented
+  `test/optimizer.js` "typed RMW: one guard covers the pure read and
+  ignored OOB store" flake (5 guards vs. expected 4) — confirmed
+  pre-existing and unrelated by reproducing it identically on a disposable
+  worktree at the pre-slice-R commit (`6242d0ee`), both standalone
+  (`node test/optimizer.js`) and via the full suite (`node test/index.js`,
+  same 2 fails: this one + "interval walk…codec bounds checks"). Not this
+  campaign's regression; not touched.
+- `JZ_DEBUG_INVARIANTS` battery leg (dbg): 0 `ClosureEnvPlan` shadow-assert
+  fires at slice 1 and slice 2 — one real gap the assert itself caught
+  during slice 2's own gate run (the normalization fix now in
+  `64953399`, `'lift-eligible'` was flagging a false drift against the
+  legacy path before that fix landed).
+- `node test/kernel-parity.js`: 3/3 groups, 33/33 assertions, byte-identical
+  WAT at O0/O2/O3 — at every slice.
+- `node scripts/build-dist.mjs` ×2: byte-identical dist output across two
+  consecutive runs, at every slice (dist/jz.wasm hashes differ SLICE-TO-
+  SLICE, as expected — dist/jz.wasm compiles `scripts/self.js`, whose own
+  source now includes the new `closure-plan.js` file, so the self-hosted
+  compiler's OWN size changes; this is not the byte-identity gate's
+  target — the bench-corpus check above, same fixed input source compiled
+  by different compiler versions, is).

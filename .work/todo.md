@@ -9969,3 +9969,52 @@ design.md §36.
 `.work/research.md`'s slice-4 status and `.work/carrier-representation-
 design.md` §36 are the only artifacts of this session, capturing the
 disproof for whoever attempts this next.
+
+## ClosureEnvPlan slices R, 1, 2 landed (2026-08-10)
+
+Full account: `.work/closure-plan-design.md`'s own AS-LANDED section
+(appended this session, after the COORDINATOR RULINGS). Three local commits,
+in order:
+
+- `cf760af8` (slice R): retired the dead static-env closure path —
+  `scanAndTagNonEscapingClosures` + call site, `module/function.js`'s
+  `OPTF.staticClosureEnv` branch, the `src/passes.js` registry entry, the
+  `emit.js` `_nonEscaping` plumbing. 0 grants on both corpora (confirmed
+  independently twice before this session, per the design doc's own §0/§1.5)
+  — pure dead-code deletion, byte-identical.
+- `c624a25b` (slice 1): `src/compile/closure-plan.js` — `astClosurePlan`
+  (WeakMap, keyed on the arrow's BODY node per coordinator ruling 1) +
+  `mintClosureEnvPlans`, minted alongside `mintLoopPlans` everywhere that
+  already mints loop plans. `ctx.closure.make` now consults the plan
+  (fail-open on a miss), `JZ_DEBUG_INVARIANTS`-gated shadow-assert vs. the
+  legacy inline decision, 0 fires.
+- `64953399` (slice 2): `'lift-eligible'` storage value, UNWIRED plan data
+  (design §2.1's eligibility predicate — captured, zero boxed captures,
+  stable binding, only-called, NO loop/reentrancy restriction). Emission
+  untouched. Decision census: bench 1/76 mint-covered closures eligible,
+  self.js 148/3872. Coordinator review of this census is the gate for
+  slice 3 (lift emission).
+
+**Reconciliation finding (coordinator ruling 4)**: the 371-vs-626 self.js
+weak-predicate count discrepancy the design doc flagged as unresolved is a
+measurement-point artifact, not a predicate or source-drift issue —
+`scanAndTagNonEscapingClosures` was re-scanned 2-3× per body by `enterFunc`'s
+three callers (analyze pass, emission pass, per-closure-body emission), so
+counting AT ITS grant sites (audit-#18's own method, and this session's own
+fresh re-derivation: 1048 on current source) inherently over-counts; counting
+DOWNSTREAM at `ctx.closure.make` (one read per closure literal — exactly
+what a frozen mint like `ClosureEnvPlan` produces by construction) gives 371,
+an EXACT match to the design doc's own number, re-derived independently this
+session on the SAME pre-slice-R commit. `ClosureEnvPlan`'s single-mint design
+structurally cannot reproduce the over-counting artifact.
+
+**Gates** (every slice independently re-verified against the pre-slice-R
+baseline): 58-case bench corpus byte-identical at O0/O2/O3 · full battery
+green except the ONE pre-existing, already-documented (line 9779 above)
+`test/optimizer.js` "typed RMW" flake, confirmed unrelated by reproducing it
+identically on a disposable worktree at `6242d0ee` · kernel-parity 33/33 ·
+build ×2 byte-identical (dist/jz.wasm hash differs slice-to-slice, expected —
+it compiles `scripts/self.js`, whose own source now includes the new file).
+
+**NEXT**: slice 3 (lift emission — the first slice that can change shipped
+bytes) waits for coordinator review of the census above.
