@@ -813,3 +813,16 @@ larger raw escaping-count §1.5 itself warned against over-reading.
   compiler's OWN size changes; this is not the byte-identity gate's
   target — the bench-corpus check above, same fixed input source compiled
   by different compiler versions, is).
+
+## COORDINATOR RULING — slice 3 (2026-08-10, binding)
+DEFERRED, evidence-driven. The census: bench 1/76 lift-eligible (the corpus
+simply doesn't carry lift-shaped closures), self.js 148/3872 (real but
+modest kernel benefit). Correctness-by-construction was already achieved by
+the retirement (heap path everywhere — the audit-#17/#18 class is
+unrepresentable). Lift emission is therefore a perf/size play whose
+measured corpus payoff is ~nil against a real call-site-rewrite risk — the
+inlinePureFns precedent applies verbatim: correct architectural home built,
+transform deferred until a real case needs it (a closure-bound hot bench
+case, or kernel-build profiling showing closure-alloc cost post-reboot).
+The plan record + eligibility data stay live so that day needs only the
+emitter.
