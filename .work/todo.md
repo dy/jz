@@ -6,6 +6,117 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## AUDIT-#18 (`9e4764c3`) DOWNSTREAM GATE LADDER — full correctness + honest
+## cost accounting, run against its own parent (`fb202a09`) — 2026-08-10
+
+Ran the complete downstream gate ladder for `9e4764c3` (`onlyCallIsSelf`,
+the audit-#18 completion of AUDIT-#17's staticClosureEnv fix — grant the
+static-env optimization only when the enclosing body's SOLE calls are to
+the closure itself; any foreign call withholds the tag, since it might
+transitively re-enter and clobber the shared static slot). Tags withdrawn
+from more closures is the KNOWN, ACCEPTED cost of closing the soundness
+gap — this session measures exactly how much it costs, not whether to
+keep the fix (correctness wins regardless).
+
+**1. CORRECTNESS — all green, zero unexpected failures:**
+
+| gate | result |
+|---|---|
+| `test:wasm` (`JZ_TEST_TARGET=jz.wasm node test/index.js`) | 2720 total (12861 assertions), **2714 pass, 6 skip, 0 fail** |
+| `kernel-parity` | 3/3 groups, **33/33** assertions, byte-identical WAT at O0/O2/O3 |
+| `kernel-oracle` | **13/13** groups, 477 assertions (banked KNOWN-FAIL/PENDING-FIX rows unchanged, none newly broken) |
+| `selfhost` (`test/selfhost.js`) | **21/21**, 206 assertions (39 self-hosting rounds, no allocator trap, fields read back correctly every round) |
+| `fuzz` default, 2000 seeds, opt{0,1,2,3} | 30,173 inputs compared, **0 divergence** (9,827 skipped i32-contract-exceeded) — 224.5s |
+| `fuzz --typed`, 2000 seeds | **0 divergence** — 494.0s |
+| `fuzz --typed-map`, 2000 seeds | **0 divergence** — 41.1s |
+| `fuzz --typed-int`, 2000 seeds | **0 divergence** — 39.3s |
+| `build ×2` (`node scripts/build-dist.mjs`, twice, clean) | byte-identical: 16,871,709 bytes both times, sha256 `06eedc1c…` |
+
+`test:wasm`'s own numbers land exactly where audit-#18's own commit
+predicts: pre-fix HEAD (`fb202a09`) banked at 2719 total/2713 pass/6 skip;
+this run is 2720/2714/6 — the +1 test / 0 new fails is precisely the one
+regression test audit-#18 itself added to `test/closures.js` (13 lines),
+now passing. No other row moved.
+
+**2. IMPACT MEASUREMENT — the honest cost accounting:**
+
+| metric | pre-fix (`fb202a09`) | post-fix (`9e4764c3`) | delta |
+|---|---|---|---|
+| size-sweep geomean jz/AS (`scripts/bench-size.mjs`) | 1.020× (stored) | **1.019×** | −0.001× (flat/marginally better; ≤1.05 gate holds) |
+| perf-ratchet, 10 categories (loop-body op counts) | baseline (committed) | **+0 every category** | int 659, float 565, mixed 971, cond 593, buf 21682, nest 22411, slice 76072, ring 117680, condref 103818, fgather 83320 — all exact matches, zero regression |
+| `_nonEscaping` surviving-tag count (bench corpus, 59/60 compilable cases, + `scripts/self.js`, same options as the real build/size-sweep pipelines) | **642** grants (16 bench corpus + 626 self.js) | **0** grants survive | **100% withdrawn on this corpus** |
+| `dist/jz.wasm` size | 16,876,867 bytes (built fresh, isolated worktree at `fb202a09`) | 16,871,709 bytes | **−5,158 bytes (−0.031%), smaller** |
+
+Method for the tag count: `src/compile/index.js`'s `scanAndTagNonEscapingClosures`
+was temporarily instrumented (env-var-gated counters at both grant sites,
+counting "would grant under audit-#17's 4 conditions" vs "grants under
+audit-#18's added `onlyCallIsSelf` gate") and run once, in-process, over
+the bench corpus (compiled with the exact `imports`/`alloc:false`/`optimize:'size'`
+options `bench-size.mjs` uses) plus `scripts/self.js` (compiled with the
+exact `modules`/`memory`/`optimize:{level:3,...}` options `build-dist.mjs`
+uses) — measuring both counters in the SAME walk avoids any drift from a
+separate pre-fix rebuild. Instrumentation reverted immediately after
+(`git diff src/compile/index.js` clean before this entry was written).
+`dist/jz.wasm` size delta used a real isolated `git worktree` build at
+`fb202a09` (node_modules symlinked, not copied) compared against the two
+already-verified byte-identical `9e4764c3` builds; worktree removed after.
+
+**3. Why zero measurable regression despite 100% tag withdrawal (reported
+precisely, not left as a surprising unexplained number):**
+- **Ratchet's 0 delta is mechanically guaranteed, not a lucky corpus
+  match**: audit-#17 (the prior session) already restricted the grant to
+  closures called ONLY outside any loop. `test/perf-ratchet.js` counts ops
+  lexically inside `(loop …)` bodies only. A closure whose ONLY calls are
+  outside loops can never have its call-site representation (static slot
+  vs. heap alloc) show up in a loop-body op count, regardless of how many
+  tags audit-#18 withdraws — the two gates measure disjoint code regions
+  by construction.
+- **The size delta is a genuine, measured result, not intuitive**: losing
+  the static-slot optimization on all 626 self.js call sites did not cost
+  bytes — the kernel got smaller. Not root-caused this session (out of
+  scope for a gate-ladder run); plausible candidates for a future look:
+  fewer static-data-segment slot addresses to plumb/reset at compile time,
+  or the heap-alloc path's runtime helper being shared/reused across call
+  sites versus each static slot needing its own distinct offset
+  bookkeeping. Flagged, not asserted.
+- **No per-case "who pays" list for ClosureEnvPlan**: since withdrawal is
+  100% and both cost metrics (size, ratchet) show no regression on the
+  corpus actually measured, there is nothing to hand off as a paying case
+  this session. This does NOT mean the optimization is dead in general —
+  self.js is one large program dense with multi-call helper bodies (every
+  withdrawn closure had at least one foreign call in its enclosing body,
+  which is exactly what audit-#18 targets); a smaller program with a
+  genuine call-once, self-recursive-only helper would still qualify and
+  keep the tag. None of the 60 bench cases + self.js happened to contain
+  that exact shape. If ClosureEnvPlan (audit-#18's own prescription —
+  lambda-lifting for direct closures) is picked up, self.js itself is the
+  most productive corpus to re-derive concrete paying shapes from, since
+  it is the one place all 626 withdrawn grants are known to live.
+
+**Verdict**: ship as-is. Correctness: clean across every gate. Cost: not
+merely under the ≤1.05 size gate but immeasurable on the corpus tested —
+size improved, ratchet untouched, no regression to report per-case. No
+revert warranted, no urgent lambda-lifting follow-up implied by this
+data (though the design doc's prescription stands for whenever a program
+DOES hit the still-live gap this fix intentionally leaves: a closure
+called from exactly one non-loop site with a recursion-capable call
+sitting textually between its declaration and that use).
+
+**Note on a concurrent landing**: `99360578` (carrier §32, `build-dist.mjs`
+CARRIER_BOX build-time-literal injection + `test/kernel-oracle.js` update)
+landed on `main` during this session, on top of `9e4764c3`. Unrelated to
+this fix's surfaces (`src/compile/index.js`, closure codegen) — confirmed
+by its own diff (`.work/*.md`, `scripts/build-dist.mjs`, `test/kernel-oracle.js`
+only) and by this session's own correctness-gate runs, all captured
+against `9e4764c3` before `99360578` landed (kernel-oracle's own output
+text, read live, matched the pre-`99360578` row wording — confirmed the
+in-process read predated the concurrent edit). Not re-run against
+`99360578`; not this session's mandate.
+
+**Local commits**: `.work/todo.md` (this entry) only — no source changes
+(instrumentation was added and fully reverted in-session, never
+committed); no push.
+
 ## carrier item-8 (`rawField()`) ROOT-CAUSED AND FIXED — named lead (refineDynKeys) was wrong; real cause unmasks a SECOND self-host gap, flip still blocked — 2026-08-10
 Full account: `.work/carrier-representation-design.md` §32. Verified
 truly-current kernel first (§15 lesson) — item 8 reproduces clean, not
