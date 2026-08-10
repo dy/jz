@@ -3981,3 +3981,274 @@ merged, no commits): fresh `JZ_CARRIER_BOX=1` kernel built there,
 16926082 bytes, matching §26's own recorded size exactly. This ledger
 entry (`.work/carrier-representation-design.md` only) is this session's
 one commit.
+
+## §28. The read-before-init trace — one layer past §27: the write-side
+BOXING mechanism nailed exactly (LAYOUT.NAN_PREFIX_BITS's own construction,
+byte-for-byte), a live-memory proof the box is NOT permanently corrupted,
+and a NEW, undocumented compiler-synthesized dispatch found inside
+`atomNanHex`'s own body — but the exact instant of the call-1/2-vs-3/4 flip
+still resists an isolated repro. BANKED, no fix attempted (2026-08-10,
+isolated `git worktree add --detach`, never touched the shared tree's
+`dist/jz.wasm`)
+
+**Method.** Built the carrier kernel TWICE in a disposable worktree
+(`03f1d469` HEAD): once `snapshotInit:true` (357.0 MB WAT dump, matching
+§27's own size) confirming the baked-wrong global reproduces exactly;
+once `snapshotInit:false` (376.5 MB WAT dump) to get a REAL, callable
+`$__start` with `call $m61_layout$atomNanHex` sites intact (snapshotting
+deletes `$__start` after baking, per `src/snapshot.js`'s own doc comment
+— §27's own WAT dump, being post-snapshot, could show the baked GLOBAL's
+wrong value but not the CALL SEQUENCE producing it). Isolated `$__start`'s
+73846-line body (lines 7979603-8053448 of the dump) and grepped WITHIN
+that isolated slice only — the raw whole-file grep §26a/§27's own method
+implicitly relied on is unsafe at this scale: the self-hosted compiler's
+OWN WAT-template strings (module/core.js's stdlib bodies, compiled as
+DATA since the compiler carries its own codegen templates as string
+literals) contain "global.set", "UNDEF_NAN", "layout" etc. as literal
+SUBSTRINGS throughout the data segments, so an unfiltered grep for e.g.
+`global.set $m78_ir$UNDEF_NAN` returns zero matches (mangled the wrong
+way) while an unfiltered `UNDEF_NAN` returns thousands of false
+positives from embedded template text. Isolating the function body first
+made every subsequent grep exact.
+
+**1. The 4 calls are TEXTUALLY/EXECUTION-ORDER back-to-back — REFUTES the
+"something initializes between call 2 and 3" framing at `$__start`'s top
+level.** `start-body.wat` lines 19128-19140:
+```
+(global.set $m76_policy$JZIFY_CLASS_ERRORS (local.get $141154))
+(global.set $m78_ir$NULL_NAN  (call $m61_layout$atomNanHex (i32.const 1)))
+(global.set $m78_ir$UNDEF_NAN (call $m61_layout$atomNanHex (i32.const 2)))
+(global.set $m78_ir$FALSE_NAN (call $m61_layout$atomNanHex (i32.const 4)))
+(global.set $m78_ir$TRUE_NAN  (call $m61_layout$atomNanHex (i32.const 5)))
+```
+Zero instructions between any of the four. `src/ir.js`'s own source has
+`TOMB_NAN` (a plain string literal) and `BOOL_ATOM_BASE` (a plain number)
+declared BETWEEN `UNDEF_NAN` and `FALSE_NAN` (lines 653-665) — both
+constant-folded away entirely (no `global.set` emitted for either,
+confirmed absent from the isolated body), which is WHY the compiled
+`$__start` shows the 4 calls immediately adjacent even though the SOURCE
+doesn't. §27's own "next lever" framing (find what lands between call 2
+and 3) is empirically dead: nothing does, at this level. Whatever the
+mechanism is, it lives INSIDE `atomNanHex`'s (or a callee's) own
+execution, triggered by INVOCATION COUNT, not by an interposed sibling
+init.
+
+**2. `LAYOUT.NAN_PREFIX_BITS`'s write side, traced byte-for-byte: it IS a
+CARRIER_BOX-only heap-boxed BigInt pointer, not raw — directly
+contradicting this doc's own §24 claim about the "normal" case.**
+`start-body.wat` lines 10183-10231 show `LAYOUT`'s construction: a
+10-field scratch object `$box` (`call $__alloc_hdr_0_10`) populated via
+plain `f64.store` for 9 of its 10 fields (offsets 0/8/16/24/32/40/56/64/72
+— TAG_SHIFT/TAG_MASK/AUX_SHIFT/AUX_MASK/OFFSET_MASK/NAN_PREFIX/SSO_BIT/
+SLICE_BIT/SLICE_LEN_MASK, all plain JS numbers) — but offset 48
+(NAN_PREFIX_BITS, the one genuine BigInt literal) is special-cased:
+```
+(f64.store offset=48 (local.get $box)
+  (block (result f64)
+    (i64.store (local.tee $ml141177 (call $__alloc (i32.const 8)))
+               (i64.const 9221120237041090560))   ;; = 0x7FF8000000000000, exact
+    (call $__mkptr_5_0_d (local.get $ml141177))))  ;; wraps a PTR.BIGINT(5) box
+```
+i.e. under CARRIER_BOX, `NAN_PREFIX_BITS`'s write side (§24's own
+"write-side, fail-open" `slotBigintBoxedAt`) BOXES it: a fresh 8-byte
+heap cell (`$__alloc(8)`), the correct raw bits stored there, then a
+tag=BIGINT pointer wrapping that cell written into `LAYOUT`'s own field
+slot. `LAYOUT` itself is then `$141154 = call $__mkptr(6, 28, $box)` — an
+OBJECT-tagged pointer whose OFFSET literally IS `$box`'s own address (no
+copy). `$m61_layout$LAYOUT`'s `global.set` (line 10310) happens ONCE, at
+module-init ordinal ~95 (§24's own number), ~88 modules and ordinal-183
+calls before `atomNanHex` is ever invoked. This DIRECTLY CONTRADICTS §24's
+own claim ("the field is stored raw/unboxed... reinterpreted IS the
+payload, tag reads as PTR.ATOM not PTR.BIGINT") — that claim was wrong,
+or described a DIFFERENT build/site; this session's own direct trace
+of THIS build's THIS field shows unambiguously tag=BIGINT, boxed,
+heap-allocated. (`atomNanHex`'s own compiled body, read in full below,
+independently confirms this: its FIRST action is exactly the
+`maybeUnboxBigInt`-style tag==5 dispatch, which would be dead code if the
+field were ever raw.)
+
+**3. Live-memory proof: the box is genuinely, stably CORRECT — the
+corruption is NOT a lasting bad write, confined to the first two READS.**
+Built a THIRD artifact — raw wasm bytes (`snapshotInit:false`, so
+`$__start` stays a real, auto-run `(start)` section) — and instantiated
+it directly via `WebAssembly.Instance` (stub imports throwing on any host
+call, matching `src/snapshot.js`'s own hermeticity-probe pattern; none
+fired — confirms `$__start` is fully hermetic here too). Scanned linear
+memory for the 10-field object matching `LAYOUT`'s known first 5 fields
+(47, 15, 32, 32767, 4294967295) — found ONE match, at byte offset 892184.
+Its field at +48: raw bits `0x7ffa8000000d9d68` → tag=5 (BIGINT), aux=0,
+offset=892264. Dereferencing address 892264 directly: `0x7ff8000000000000`
+— EXACTLY correct. **The canonical `LAYOUT.NAN_PREFIX_BITS` box, inspected
+live in a running instance, is well-formed and correct** — not
+permanently zeroed, not permanently pointing at address 0. Since nothing
+in `$__start`'s own text revisits this field after ordinal ~95 (item 2),
+and this scan ran well after `$__start` completed (several `compileWat`
+calls later), this proves whatever goes wrong for `atomNanHex` calls 1-2
+is a TRANSIENT MISREAD specific to those two invocations, not a
+persisted bad value at the read address — tightening §27's own "stateful/
+temporal" framing from "something isn't valid yet" to "the SAME correct
+memory location, read by the SAME compiled instructions, resolves
+differently on 2 particular invocations of a pure, argument-only
+function" — which is the genuinely hard remaining puzzle.
+
+**4. Independently re-reproduced §27's exact signature through a THIRD,
+unrelated harness (no `test/kernel-target.js`, no `compileWat`'s own
+existing test wiring) — rules out a harness artifact.** Marshaled through
+`interop.js`'s own `instantiate()` (`mem.String`/`mem.read`, the same
+production ABI `dist/jz.wasm` users go through) rather than
+`test/kernel-target.js`'s bespoke wiring: `() => undefined` and `() =>
+null` both compile (at O0) to `nan:0x6E69666E494E614E` — byte-identical
+to §24/§26/§26a/§27. Stable across 3 repeat compiles in the SAME warm
+instance (expected: `UNDEF_NAN` is a baked module global, read not
+recomputed). Forced `FALSE_NAN`/`TRUE_NAN` materialization (`[true][0]`,
+observed-identity array indexing) through the SAME instance:
+`nan:0x7FF8000500000000` — exactly correct (tag=ATOM, aux=5), confirming
+calls 3-4 are right in THIS independently-built, independently-marshaled
+instance too, not an artifact of any one test path.
+
+**5. `atomNanHex`'s FULL compiled body, read in its entirety (157 lines,
+not the previously-inspected first 60): a NEW, previously-undocumented
+compiler-synthesized special-case dispatch — direct hardcoded-literal
+comparisons against `NULL_NAN`/`UNDEF_NAN`'s own HOST-COMPUTED values.**
+After the tag==5 deref (item 2's box, dereferenced via a
+`followForwardingWat`-shaped guard that's provably a no-op here — BIGINT
+isn't in `FORWARDING_MASK`, confirmed by decoding the guard's own `898`
+literal as exactly `(1<<PTR.ARRAY)|(1<<PTR.HASH)|(1<<PTR.SET)|(1<<PTR.MAP)`)
+and the `BigInt(atomId) << AUX_SHIFT` shift (reading the destructured
+`$m61_layout$AUX_SHIFT` module const, itself set correctly at ordinal
+~96, right after `LAYOUT` — confirmed, not assumed), the combined i64 OR
+result is checked against TWO HARDCODED i64 LITERALS:
+```
+(i32.or (i64.eq <combined> (i64.const 0x7FF8000100000000))    ;; = NULL_NAN's own value
+        (i64.eq <combined> (i64.const 0x7FF8000200000000)))   ;; = UNDEF_NAN's own value
+(then (local.get $mbig0))                          ;; MATCH: return RAW, unboxed
+(else (i64.store (call $__alloc 8) <combined>)      ;; NO MATCH: heap-box it
+      (call $__mkptr_5_0_d ...))
+```
+These two literals are `NULL_NAN`/`UNDEF_NAN`'s OWN CORRECT bit patterns,
+baked by the HOST compiler (which evaluates `layout.js`/`ir.js`
+natively while building the kernel, so it already knows these two
+sentinel values at host-compile time) into the GENERATED CODE for
+`atomNanHex` itself — i.e. `atomNanHex`'s compiled body carries a
+"if my own result happens to equal one of the two reserved ATOM
+sentinels my caller (`ir.js`) is ABOUT to bind me to, return it raw
+instead of boxing it as a BigInt pointer" special case. This is
+consistent with (not independently confirmed against) the documented
+"unforgeable... no boxing path ever produces" invariant `TOMB_NAN`'s own
+doc comment states for reserved atoms (src/ir.js): boxing a BigInt that
+happens to collide with a reserved sentinel's bit pattern would make two
+semantically different things bit-identical, so SOME pass avoids it.
+This dispatch was NOT visible in §24/§26/§27's own inspection (all three
+stopped at the tag-check / deref, the first ~60 lines) — it explains
+WHY calls 3-4 (FALSE_NAN/TRUE_NAN, whose target literals never match
+either hardcoded comparison) unconditionally box, while calls 1-2 take a
+DIFFERENT code path when their deref succeeds. It does NOT by itself
+explain the call-1/2-vs-3/4 asymmetry — for a WRONG deref (item 3's
+address-0 misread), the combined result is `<ASCII "NaNInfin" bytes> |
+(id<<32)`, which matches NEITHER hardcoded literal, so a wrong call
+ALSO falls to the box-else-branch, same as calls 3-4 structurally — the
+divergence is still upstream of this dispatch, inside the deref itself.
+
+**6. One concrete candidate tested and RULED OUT: `$__num_to_bigint`
+(module/number.js) — no memoization, no allocation, no state.** The
+task's own leading candidate ("a lazy/memoized digit-table... only
+warmed up after its first two uses") pointed here first, since
+`atomNanHex` calls it twice per invocation (`$atomId` → BigInt, for both
+shift directions). Read its full body: `(f64.reinterpret_i64
+(i64.trunc_sat_f64_s (local.get $n)))`, preceded only by a stateless
+range check (throws `NUMBER_TO_BIGINT_RANGE` for non-integral/infinite
+input). Pure bit-reinterpret, zero heap traffic, zero globals touched,
+zero cross-call state — cannot be the warm-up mechanism. Cleanly closes
+this lead rather than leaving it open by default.
+
+**7. What remains unexplained, precisely.** Given items 1-6: the
+divergence is NOT in `$__start`'s call ordering (1), NOT in
+`LAYOUT.NAN_PREFIX_BITS`'s write correctness (2, 3), NOT a test-harness
+artifact (4), NOT explained (though newly documented) by the sentinel-
+passthrough dispatch (5), and NOT in `$__num_to_bigint` (6). What's left:
+the `i32.wrap_i64 (i64.reinterpret_f64 (global.get $m61_layout$LAYOUT))`
+base-pointer read, or the `f64.load offset=48` itself, or the tag-check's
+own bit arithmetic, resolve DIFFERENTLY on invocations 1-2 vs 3-4 of the
+SAME compiled instructions reading the SAME (proven-stable) memory
+location — which, for ordinary sequential WASM execution with no
+intervening writes (1), is the genuinely hard remainder. The only
+mechanisms this session did NOT get to rule in or out: (a) whether V8's
+own JIT tiering/Liftoff-to-Turbofan transition for THIS SPECIFIC function
+could produce transiently different results on its first few calls
+(would be a V8 bug, not a jz bug — very unlikely but not eliminated;
+no cross-engine check attempted — no second WASM runtime, e.g. wasmtime/
+wasmer, was available this session to test); (b) whether `$__memgrow`
+fires between calls 1-2 and 3-4 specifically for THIS build's heap
+trajectory (the CARRIER_BOX build's own +944-byte `$__start` heap growth,
+§27 item 2) and, if a grow happens to land in that exact window,
+whether `$__heap_end64` or the memory `ArrayBuffer` itself gets
+transiently inconsistent mid-grow in a way `atomNanHex`'s own reads could
+observe (memory.grow is synchronous/atomic per the WASM spec, so this is
+a weak lead, but not directly tested this session — the next session's
+first move should be counting `$__memgrow` calls between ordinals ~95 and
+~183 via the SAME isolated-body-grep technique item 1 established, since
+that's now a cheap, mechanical check this session ran out of budget for).
+
+**Verdict: BANKED, one genuine layer deeper than §27, no fix attempted.**
+The write-side boxing mechanism for `LAYOUT.NAN_PREFIX_BITS` is now fully
+named and byte-verified (item 2); the box itself is proven NOT
+permanently corrupted (item 3); a previously-undocumented dispatch inside
+`atomNanHex` is now on the record (item 5); one concrete candidate is
+closed with evidence (item 6); the "between call 2 and 3" framing is
+empirically retired in favor of "invocation-count-dependent within the
+SAME function, memory proven stable" (item 1, 3). Per this whole chain's
+own established discipline (§17-§27: bank a scale-dependent wall rather
+than force an uncertain fix), no source change was made and none is
+proposed — the remaining gap needs INSTRUCTION-LEVEL tracing mid-`$__start`
+(a WASM single-stepper, or a temporary trace call injected into the
+compiled `atomNanHex`/`i64Hex` bodies specifically, reading `$__poff0`
+and the loaded `$mbig0` bits at each of the 4 call sites) that this
+session did not build — safer to bank precisely than to guess at
+instrumentation under time pressure on a KERNEL-SCALE, non-reproducible-
+in-isolation wall.
+
+**Discriminator (default vs CARRIER_BOX), reconfirmed a third independent
+way.** Item 2's write-side boxing (`$__alloc(8)` + `$__mkptr_5_0_d`) and
+item 5's read-side dispatch are BOTH exclusively reachable through
+`isSchemaSlotBigintPossible`'s `CARRIER_BOX &&`-gated predicate (§24) —
+under default, `LAYOUT.NAN_PREFIX_BITS`'s write would be a plain
+`f64.store offset=48 (box) (f64.const ...)` (no allocation, no tag,
+matching the OTHER 9 fields' own direct-store shape this session
+directly observed at offsets 0-40/56-72) and its read a plain `f64.load`
+(no tag-check, no deref, no sentinel dispatch) — structurally incapable
+of this failure mode. This session adds a THIRD independent confirmation
+layer beyond §25's structural argument and §26's byte-identity
+re-test: direct codegen inspection of BOTH the write AND read sides for
+this exact field in this exact build, not merely their absence/byte-count.
+
+**Gates this session: none newly run — no `src/` change was made** (same
+posture as §26/§27). §27's own numbers stand unchanged since HEAD is
+identical (`03f1d469`, no commits since): 2/3 WAT differentials closed,
+`() => undefined` diverging to the same `nan:0x6E69666E494E614E` (this
+session's own items 1/4 independently reconfirm the VALUE, not merely
+cite §27); `dict` O0/O2/O3 diverging at the same byte sizes (not
+re-measured this session — no source change to invalidate §26's own
+re-verified numbers); `test:wasm` presumed still hanging at the same
+point (not re-run — a 28-minute-class gate with a known, unchanged
+outcome and no code change is exactly the "run the next gate past a
+known wall" §18/§20/§22 established as wasted budget). Default
+(`CARRIER_BOX` off) build: untouched — this session never rebuilt
+`dist/jz.wasm` in the shared tree, only in the disposable worktree
+(removed at session end).
+
+**Flip-readiness verdict: NO — unchanged.** `dict` and `test:wasm` both
+still red; no source change was made to gate; the wall is one layer
+better-understood but not closed. Per the coordinator's own mandate: no
+default flip, no source change to gate.
+
+**Local commits.** This ledger entry (`.work/carrier-representation-design.md`
+only) is this session's one commit, plain message, no push.
+
+**SHAs.** Investigated at `03f1d469` (HEAD, unchanged — this session made
+no `src/` edits). Disposable worktree `/tmp/jz-carrier-wt` (`git worktree
+add --detach` at `03f1d469`, removed at session end, never merged, no
+commits): carrier kernel built there 3 times — snapshotInit:true WAT dump
+(357.0 MB, matching §27 exactly), snapshotInit:false WAT dump (376.5 MB,
+new this session), and a raw-bytes instantiate-and-inspect build (15265.9
+KB wasm, `{level:3, watrGuard:false, snapshotInit:false}`) — all
+JZ_CARRIER_BOX=1, all read-only against the shared tree.
