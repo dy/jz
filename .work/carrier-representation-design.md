@@ -3795,3 +3795,15 @@ the shared tree's own default `dist/jz.wasm`. `.work/todo.md`'s own
 matching entry has the full cross-wall summary (kernel-oracle
 `captured-then-read`, the region-arena plausibility read, the FeaturePlan
 pin) — not duplicated here.
+
+## §26a — coordinator decode note (2026-08-10)
+§26's re-tested `() => undefined` corruption bits 0x6E69666E494E614E decode
+as ASCII "nifnINaN" little-endian = the byte run "NaNInfin" — i.e. the
+FORMATTER STRING TABLE's "NaN"/"Infinity" literal bytes are landing in the
+emitted constant. The §24 UNDEF_NAN module-scope const-initializer is not
+computing a wrong NUMBER — it is reading from a STRING-data region (a
+static-data-segment/string-pool offset confusion under CARRIER_BOX kernel
+build). Next carrier session: find where UNDEF_NAN's initializer expression
+(layout.js atom construction) could resolve to a string-pool address —
+likely a static-data-segment layout collision or an offset read from the
+wrong segment table when the carrier build shifts segment contents.
