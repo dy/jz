@@ -27,7 +27,7 @@ import { OPTF } from '../ctx.js'
  */
 
 import parseWat from 'watr/parse'
-import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants } from '../ctx.js'
+import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants, CARRIER_BOX } from '../ctx.js'
 import { i64Hex } from '../../layout.js'
 import { T, isBlockBody, isReassigned, refsName, REFS_IN_EXPR, returnExprs, MUTATE_OPS } from '../ast.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusBigintSentinelKind } from '../kind.js'
@@ -76,6 +76,7 @@ import {
   boolBoxIR,
   I32_MIN, I32_MAX, dollar,
   carrierF64,
+  unboxBigInt,
 } from '../ir.js'
 import plan from './plan/index.js'
 import { foldStaticConstAggregates } from './plan/literals.js'
@@ -1870,11 +1871,68 @@ function synthesizeBoundaryWrappers() {
         carrier = typed(['call', '$__is_truthy', toI64(callIR)], 'i32')
       }
       body = toI64(boolBoxIR(carrier))
-    } else if (resultBigint || resultBigintSentinel || resultDynamic) {
-      // BigInt rides the i64-reinterpret-f64 carrier internally; a dynamic result (census-
-      // BIGINT-sentinel included) is already an f64 NaN-box carrier. Either way expose
-      // the raw i64 at the JS boundary for a lossless value. Internal callers use `$name` (the
-      // f64 carrier) untouched; only `$exp` is i64.
+    } else if (resultBigintSentinel) {
+      // Census-BIGINT sentinel lane (§6/§12 Slice 5): under CARRIER_BOX, a
+      // dict/Map value census-classified BIGINT crosses this exact lane
+      // carrying whatever the container's OWN storage cell holds — which,
+      // for a real BigInt, is now a boxed PTR.BIGINT pointer (the container
+      // stores values by their live f64 carrier uninterpreted, and a
+      // CARRIER_BOX BigInt's live carrier IS the box — coerceArg boxes every
+      // BigInt-typed argument at the `.set()`/`[]=` call site unconditionally
+      // per §29's own coerceArg fix). interop.js's `decodeBigintSentinel`
+      // (the `s`-marker decode this lane feeds) only ever compares the raw
+      // i64 against a SENTINEL's fixed bit pattern or returns it as-is — it
+      // has no memory access to dereference a box, unlike the generic `r`-
+      // marker decode's own PTR.BIGINT arm (interop.js mem.read). A naive
+      // `i64.reinterpret_f64` here exposes the BOX POINTER's own tag/offset
+      // bits as if they were the payload (verified live: `m.set('x',5n);
+      // return m.get('x')` crossed as the box's raw bits, not `5n`). Fixed
+      // at the source instead of teaching interop.js to dereference blind:
+      // `maybeUnboxBigInt` (ir.js, the CONSERVATIVE PAIRING primitive §16/
+      // §24/§29 already established) runtime-tag-checks and dereferences
+      // ONLY a genuine PTR.BIGINT box, passing every other bit pattern
+      // (including the UNDEF_NAN/etc. sentinels this very lane's OWN decode
+      // still needs to match byte-exact) through untouched — sound because
+      // this lane's provenance is ALREADY proven census-BIGINT-or-sentinel
+      // (the `func._resultBigintSentinel` gate above), never an arbitrary
+      // raw BigInt whose bit pattern might coincidentally alias a NaN-box.
+      // Off-flag: CARRIER_BOX is false, so this is byte-identical to the
+      // pre-existing `toI64(callIR)` — zero default-build change.
+      //
+      // Can't call `maybeUnboxBigInt` (ir.js) directly: it allocates its own
+      // scratch local via `temp()`, which registers into `ctx.func.locals` —
+      // this wrapper function is assembled by hand (`wrapNode`, no `(local
+      // ...)` section for the single-result shape at all, unlike the multi-
+      // value branch above which manages its own `__mlaneN` locals
+      // explicitly) and is built in a separate pass after normal body
+      // emission, so `ctx.func` here belongs to whatever function compiled
+      // last — `temp()` would silently register the scratch local onto the
+      // WRONG function's locals list, producing an unresolvable reference.
+      // Inlined by hand instead, reusing `maybeUnboxBigInt`'s own logic
+      // (ir.js) verbatim but against a manually-declared, collision-checked
+      // local — the same collision-avoidance discipline the multi-value
+      // `__mlaneN` lanes just above already use for the identical reason.
+      if (CARRIER_BOX) {
+        const pnames = new Set(sig.params.map((p) => p.name))
+        let bl = '__expbig0'
+        while (pnames.has(bl)) bl = `_${bl}`
+        wrapNode.push(['local', `$${bl}`, 'f64'])
+        inc('__ptr_type')
+        body = typed(['if', ['result', 'i64'],
+          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.tee', `$${bl}`, callIR]]], ['i32.const', PTR.BIGINT]],
+          ['then', unboxBigInt(['local.get', `$${bl}`])],
+          ['else', ['i64.reinterpret_f64', ['local.get', `$${bl}`]]]], 'i64')
+      } else body = toI64(callIR)
+    } else if (resultBigint || resultDynamic) {
+      // BigInt rides the i64-reinterpret-f64 carrier internally; a dynamic result is already
+      // an f64 NaN-box carrier. Either way expose the raw i64 at the JS boundary for a
+      // lossless value. Internal callers use `$name` (the f64 carrier) untouched; only `$exp`
+      // is i64. Neither lane needs resultBigintSentinel's own CARRIER_BOX unboxing: `resultBigint`
+      // is EXCLUSIVE with `resultBigintSentinel` by construction (line above — a census-sourced
+      // BIGINT always takes the sentinel lane first), so a plain-`resultBigint` value is provably
+      // never container-sourced; `resultDynamic` crosses with `ie.r` set, so interop.js's own
+      // generic `decode()`/mem.read already carries a PTR.BIGINT arm that dereferences it
+      // (interop.js:564) — no source-side change needed there.
       body = toI64(callIR)
     } else if (sig.results[0] === 'i32') {
       body = [sig.unsignedResult ? 'f64.convert_i32_u' : 'f64.convert_i32_s', callIR]

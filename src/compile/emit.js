@@ -58,7 +58,7 @@ import {
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom, throwTypeErrorIR,
-  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, unboxBigInt, needsBigintBox, isProvenBoxedBigint, isCurrentlyBoxedBigint, isTernaryBoxedBigint, readI64,
+  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, unboxBigInt, maybeUnboxBigInt, needsBigintBox, isProvenBoxedBigint, isCurrentlyBoxedBigint, isTernaryBoxedBigint, readI64,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -4717,7 +4717,17 @@ function bigIntJointDispatch(a, b, i64Compute, numCompute) {
   const throwIR = typed(['block', ['result', 'f64'],
     ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.BIGINT_UNDEF_MIX]]],
     ['throw', '$__jz_err', ['f64.const', ERR.BIGINT_UNDEF_MIX]]], 'f64')
-  const bigResult = fromI64(i64Compute(asI64(typed(getA, 'f64')), asI64(typed(getB, 'f64'))))
+  // Per-operand CARRIER_BOX unbox, scoped to EXACTLY the 'census' domain
+  // (a dict/Map value census-classified BIGINT — the container's own live
+  // carrier for a real BigInt is a boxed PTR.BIGINT pointer under
+  // CARRIER_BOX, coerceArg's own §29 box-on-write guarantee). The 'bigint'
+  // domain (a statically PROVEN BigInt expression) and the null-domain
+  // magnitude heuristic (a raw exported-param carrier) are never container-
+  // sourced — `asI64` stays correct, unchanged, for both. Reached only when
+  // flagA===flagB picked the BigInt arm, so a 'census' operand here is
+  // provably present (not the UNDEF_NAN sentinel) — safe to dereference.
+  const i64Operand = (dom, get) => CARRIER_BOX && dom === 'census' ? maybeUnboxBigInt(get) : asI64(typed(get, 'f64'))
+  const bigResult = fromI64(i64Compute(i64Operand(domA, getA), i64Operand(domB, getB)))
   // Number-domain operand normalization: a `census` operand only ever reaches
   // numCompute when its OWN flag proved it undef (the flagA===flagB join
   // above), so its TRUE ToNumeric value is the Number NaN (ES2024 13.5.6/
@@ -4791,13 +4801,24 @@ function bigIntOperand(node) {
   if (censusMaybeUndefinedKind(node) !== VAL.BIGINT) return readI64(node, v)
   ctx.runtime.throws = true
   const t = temp('bigU')
+  // Past the throw check, `$t` is provably PRESENT (the UNDEF_NAN branch
+  // above always throws) — a real dict/Map census BigInt. Under CARRIER_BOX
+  // the container's own live carrier for a BigInt value is a boxed
+  // PTR.BIGINT pointer (coerceArg boxes every BigInt argument crossing into
+  // `.set()`/`[]=` unconditionally, §29), so a naive `i64.reinterpret_f64`
+  // exposes the box's own tag/offset bits instead of the payload — the same
+  // class synthesizeBoundaryWrappers' resultBigintSentinel lane hit.
+  // `maybeUnboxBigInt` (CONSERVATIVE PAIRING, §16/§24/§29) dereferences a
+  // genuine box and passes anything else through unchanged; off-flag this
+  // is byte-identical to the prior plain reinterpret.
+  const bits = CARRIER_BOX ? maybeUnboxBigInt(['local.get', `$${t}`]) : ['i64.reinterpret_f64', ['local.get', `$${t}`]]
   return typed(['block', ['result', 'i64'],
     ['local.set', `$${t}`, asF64(v)],
     ['if', isUndef(['local.get', `$${t}`]),
       ['then',
         ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.BIGINT_UNDEF_MIX]]],
         ['throw', '$__jz_err', ['f64.const', ERR.BIGINT_UNDEF_MIX]]]],
-    ['i64.reinterpret_f64', ['local.get', `$${t}`]]], 'i64')
+    bits], 'i64')
 }
 
 // audit-#8 P0-4 Part 3: unary twin of bigIntOperand above — same runtime
@@ -4828,9 +4849,17 @@ function bigIntOperand(node) {
 function bigIntUnary(node, mkI64, undefF64) {
   if (censusMaybeUndefinedKind(node) !== VAL.BIGINT) return fromI64(mkI64(readI64(node, emit(node))))
   const t = temp('unaryBigU')
+  // Same CARRIER_BOX gap as bigIntOperand's own throw-check branch above,
+  // narrower consequence (a wrong VALUE, not a wrong-address dereference —
+  // this arm is discarded via `select` whenever `$t` really is UNDEF_NAN, so
+  // running `maybeUnboxBigInt` unconditionally here is sound: UNDEF_NAN's own
+  // ATOM tag never matches PTR.BIGINT, so it falls to the same plain
+  // reinterpret this select arm always ran, and its result is discarded
+  // regardless). Off-flag: byte-identical to the prior plain reinterpret.
+  const bits = CARRIER_BOX ? maybeUnboxBigInt(['local.get', `$${t}`]) : ['i64.reinterpret_f64', ['local.get', `$${t}`]]
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(emit(node))],
-    ['select', undefF64, ['f64.reinterpret_i64', mkI64(['i64.reinterpret_f64', ['local.get', `$${t}`]])],
+    ['select', undefF64, ['f64.reinterpret_i64', mkI64(bits)],
       isUndef(['local.get', `$${t}`])]], 'f64')
 }
 
