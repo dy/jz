@@ -438,7 +438,7 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
 // corrupted value, both native AND kernel legs, both optimize tiers) so a
 // future close of either (a) or (b) flips this test's asserted values from
 // the corrupted carrier to `want` in one edit.
-test('kernel oracle: KNOWN-FAIL (audit-#16, ctx.features.bigint module-ordering, differential fixture) — an earlier-imported module\'s numeric coercion bakes $__to_num before a later-imported module\'s BigInt use is ever seen, corrupting Number() of that BigInt at BOTH native and kernel runtime', async () => {
+test('kernel oracle: KNOWN-FAIL (audit-#16, ctx.features.bigint module-ordering, differential fixture) — an earlier-imported module\'s numeric coercion bakes $__to_num before a later-imported module\'s BigInt use is ever seen, corrupting Number() of that BigInt at native+kernel runtime under default, kernel-only under JZ_CARRIER_BOX=1 (§31)', async () => {
   if (onWasi()) return
   const want = 123456789012345
   const corrupted = 6.09957581968707e-310  // raw i64 bits of 123456789012345n reinterpreted as f64, unconverted — same corruption class as the JSON shaped-parser 9.067910317e-315 finding
@@ -458,12 +458,30 @@ test('kernel oracle: KNOWN-FAIL (audit-#16, ctx.features.bigint module-ordering,
     export let out = () => { touch(1); return mkBig(1) }
   `
   const modules = { './a.jz': aSrc, './b.jz': bSrc }
+  // §31: under JZ_CARRIER_BOX=1, the NATIVE leg is no longer corrupted here —
+  // incidentally closed the same way the console.log row above was (§24
+  // CONSERVATIVE PAIRING's runtime maybeUnboxBigInt dispatch at readI64,
+  // unrelated to ctx.features.bigint/module-ordering itself, which is
+  // STILL real and STILL open). The KERNEL leg stays wrong: its own
+  // compiled $__to_num was baked by the self-hosted build BEFORE this
+  // specific census value ever reaches a readI64 call site CONSERVATIVE
+  // PAIRING covers (Number()'s own dynamic coercion path is a different
+  // call shape than ptrBits' arithmetic OR-expression — not yet verified
+  // which shape gap keeps it open; a future session's starting point, not
+  // re-investigated here). Verified live, both directions, all three opt
+  // tiers, default AND flag-forced, before landing this branch.
+  const nativeCorrupted = process.env.JZ_CARRIER_BOX !== '1'
   for (const opt of [0, 2, 3]) {
     const nat = jz(mainSrc, { modules, optimize: opt }).exports.out()
     const ker = instantiate(compileViaKernel(mainSrc, { modules, optimize: opt })).exports.out()
-    is(nat, corrupted, `O${opt}: native currently WRONG (raw BigInt carrier reinterpreted as f64) — TODO-flip guard`)
-    is(ker, corrupted, `O${opt}: kernel currently WRONG too, identical corruption — TODO-flip guard`)
-    not(nat, want, `O${opt}: tripwire — native must start disagreeing with the correct ToNumber value the moment this closes`)
+    if (nativeCorrupted) {
+      is(nat, corrupted, `O${opt}: native currently WRONG (raw BigInt carrier reinterpreted as f64) — TODO-flip guard`)
+      not(nat, want, `O${opt}: tripwire — native must start disagreeing with the correct ToNumber value the moment this closes`)
+    } else {
+      is(nat, want, `O${opt}: native CORRECT under JZ_CARRIER_BOX=1 (§31 — closed incidentally by §24 CONSERVATIVE PAIRING, not by an audit-#16 fix)`)
+      not(nat, corrupted, `O${opt}: tripwire — native must start agreeing again if this regresses`)
+    }
+    is(ker, corrupted, `O${opt}: kernel currently WRONG${nativeCorrupted ? ' too, identical corruption' : ' (unlike native under this flag)'} — TODO-flip guard`)
     not(ker, want, `O${opt}: tripwire — kernel must start disagreeing too`)
   }
   // Control: reversing the import order puts the bigint-construction site (b.jz)
@@ -600,71 +618,57 @@ test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier c
   }
 })
 
-// ── KNOWN-FAIL tier: carrier-built KERNEL corrupts its OWN console.log string
-// constants (.work/carrier-representation-design.md §16 finding 2 → §17) ────
+// ── AGREE tier: carrier-built KERNEL console.log string constants (.work/
+// carrier-representation-design.md §16 finding 2 → §17 → §31) ─────────────
 //
-// A carrier-built KERNEL (JZ_CARRIER_BOX=1, self-hosted — dist/jz.wasm
-// compiled from scripts/self.js by the NATIVE compiler under the same flag)
-// miscompiles ANY heap string literal used as a console.log argument. Root
-// cause, traced past §16's own "unrelated, out of scope" note on this exact
-// crash: mkPtrIR/packPtrBits (src/ir.js) constant-folds a NaN-boxed pointer
-// via layout.js's `ptrBits`, which reads `LAYOUT.NAN_PREFIX_BITS` — the
-// SAME module-scope BOXED BigInt schema field §15 found and §16 fixed via
-// `slotBigintProvenBySid` (a per-schema uniform-type proof gating
-// emitSchemaSlotRead's unboxing). §16's fix is sound but INERT for this
-// field specifically when the KERNEL ITSELF is built: compiling scripts/
-// self.js (the whole ~370K-line compiler, needed to PRODUCE dist/jz.wasm)
-// trips collectSlotWriteHazards' pointsTo==='ALL' blanket (§17 finding 1 — the exact
-// same root cause as kernel-parity's `dict` row) somewhere else in that huge
-// source, which nulls `slotTypes` for EVERY schema program-wide, LAYOUT's
-// included — so `slotBigintProvenBySid(LAYOUT_sid, 'NAN_PREFIX_BITS')` never
-// fires and the built kernel's OWN copy of `ptrBits` hands back the box's
-// raw pointer bits instead of the unboxed constant whenever it runs. Every
-// heap string literal the KERNEL (not native) subsequently compiles inherits
-// the corrupt tag — console.log's argument among them (module/console.js's
-// own emit site never touches BigInt-boxing logic at all; the corruption is
-// baked into the constant it's handed, not something console.log does).
-// Bisected by string length (mirrors the read's own SSO-vs-heap split):
-// SSO strings (≤6 chars, packed inline — no NaN-box offset to corrupt on
-// this path) print the WRONG value (host sees "NaN") but don't crash; heap
-// strings (≥7 chars, addressed via the corrupted NaN-boxed offset) throw —
-// interop.js's `mem.read` decodes the corrupted tag as `t===5` (PTR.BIGINT)
-// and reads a DataView offset past the real (short) payload, OOB.
-// §17 verdict: this is §17 finding 1 (pointsTo==='ALL' whole-program blanket) at one
-// more remove, NOT an independent bug — closing that finding's dominant
-// keyedWrite-class trigger (Map/dict `.get()`-derived receiver kinds; needs
-// the audit-#10-flagged, actively-slice-hardened value-kind census wired
-// into collectSlotWriteHazards' kindOf, deliberately not attempted this
-// session per that finding's own soundness caution) would close THIS row
-// too, with no separate fix required. NOT fixed here — pinned precisely so
-// a future close of §17 finding 1 flips both rows together.
-test('kernel oracle: KNOWN-FAIL (JZ_CARRIER_BOX=1 only, .work/carrier-representation-design.md §16→§17) — a carrier-built kernel miscompiles a console.log heap-string constant', async () => {
-  if (process.env.JZ_CARRIER_BOX !== '1') return
+// FLIPPED from KNOWN-FAIL (2026-08-10, §31): a carrier-built KERNEL
+// (JZ_CARRIER_BOX=1, self-hosted — dist/jz.wasm compiled from scripts/
+// self.js by the NATIVE compiler under the same flag) used to miscompile
+// ANY heap string literal used as a console.log argument — traced by §17 to
+// mkPtrIR/packPtrBits (src/ir.js) constant-folding a NaN-boxed pointer via
+// layout.js's `ptrBits`, whose `LAYOUT.NAN_PREFIX_BITS` read starves for
+// `slotBigintProvenBySid` under the self-hosted build's whole-program
+// `pointsTo==='ALL'` blanket (§17 finding 1, kernel-parity's `dict` row —
+// STILL open, §18/§21/§22/§23 all walled on closing it safely). This row
+// closed anyway, NOT via that lever: §24's CONSERVATIVE PAIRING (commit
+// `83c7f9bc`, landed AFTER §17 named this bug) added a SEPARATE, RUNTIME
+// (not static-proof-gated) dispatch at `readI64`'s arithmetic-core call
+// sites — `isSchemaSlotBigintPossible` fires whenever a bare `.prop` read
+// is write-side boxed (`slotBigintBoxedAt`, fail-open, unaffected by
+// `pointsTo==='ALL'`) but read-side unproven, routing through
+// `maybeUnboxBigInt`'s runtime `$__ptr_type` tag check instead of a naive
+// unconditional reinterpret. `ptrBits`'s own `LAYOUT.NAN_PREFIX_BITS | (…)`
+// IS exactly this shape (an arithmetic-core BigInt-operand OR-expression) —
+// so once §24 baked THAT dispatch into the self-hosted kernel build, the
+// running kernel's own compiled `ptrBits` started correctly unboxing the
+// LAYOUT box AT RUNTIME, immune to whether `slotBigintProvenAt` was ever
+// statically proven for the self-hosted build. §29/§30 both re-ran this
+// row and recorded "unchanged" — true at the PASS/FAIL BLOCK level (the
+// block still read 1 failure both times) but stale at the ASSERTION level:
+// the failure had silently flipped from "throws, as expected" to "runs
+// clean, breaking the KNOWN-FAIL pin's own throw assertion" — the coarse
+// per-block count masked the flip. Re-verified directly (§31): heap string
+// ('bare-fired', ≥7 chars) and SSO string ('short', ≤6 chars) BOTH print
+// their correct, undecorated value on the kernel leg, at every optimize
+// level (0/1/2/3), deterministically, across repeated fresh-process runs —
+// not a fluke of one run. Native was never affected (self-host-only bug).
+test('kernel oracle: console.log string constants — AGREE (closed incidentally by §24 CONSERVATIVE PAIRING, .work/carrier-representation-design.md §16→§17→§31)', async () => {
+  if (onWasi()) return
   const heapSrc = `export let start = () => { console.log('bare-fired'); return 1 }`  // 10 chars — heap string
   const ssoSrc = `export let start = () => { console.log('short'); return 1 }`        // 5 chars — SSO string
-  // Native: both run clean — the bug is self-host-only, confirming this is
-  // NOT a general console.log/string-constant regression.
-  is(runNative(heapSrc, 0).start(), 1, 'native: heap-string console.log runs cleanly')
-  is(runNative(ssoSrc, 0).start(), 1, 'native: SSO-string console.log runs cleanly')
-  // Kernel, heap string (≥7 chars): throws. TODO-flip guard — once §17
-  // finding 1 (or an independent fix) closes, this stops throwing; flip to
-  // an AGREE-tier execution/output check instead of deleting the row.
-  let threw = null
-  try { instantiate(compileViaKernel(heapSrc, { optimize: 0 })).exports.start() }
-  catch (e) { threw = e }
-  is(threw?.constructor?.name, 'RangeError', 'kernel: heap-string console.log throws a RangeError — TODO-flip guard')
-  is(threw?.message, 'Offset is outside the bounds of the DataView', 'kernel: same exact OOB signature as §16/§17 — a different message means a NEW bug, not this one closing')
-  // Kernel, SSO string (≤6 chars): does not throw, but prints the wrong
-  // value. Captured via a host-side console.log spy (the kernel's own
-  // print() import calls the REAL console.log for a correctly-decoded
-  // string; capturing here is what proves it decoded 'NaN', not 'short').
-  const seen = []
-  const origLog = console.log
-  console.log = (...a) => seen.push(a)
-  try { instantiate(compileViaKernel(ssoSrc, { optimize: 0 })).exports.start() }
-  finally { console.log = origLog }
-  is(seen.length, 1, 'kernel: SSO-string console.log calls print exactly once (does not crash)')
-  is(seen[0]?.[0], 'NaN', `kernel: SSO-string console.log prints the corrupted decode ("NaN") instead of "short" — TODO-flip guard, same §17 root cause`)
+  for (const opt of [0, 1, 2, 3]) {
+    for (const [label, src, want] of [['heap', heapSrc, 'bare-fired'], ['sso', ssoSrc, 'short']]) {
+      is(runNative(src, opt).start(), 1, `${label} O${opt}: native runs cleanly`)
+      if (process.env.JZ_CARRIER_BOX !== '1') continue  // kernel leg below is meaningful only under the flag
+      const seen = []
+      const origLog = console.log
+      console.log = (...a) => seen.push(a)
+      try { instantiate(compileViaKernel(src, { optimize: opt })).exports.start() }
+      finally { console.log = origLog }
+      is(seen.length, 1, `${label} O${opt}: kernel console.log calls print exactly once (no crash)`)
+      is(seen[0]?.[0], want, `${label} O${opt}: kernel prints the correct decoded string`)
+    }
+  }
 })
 
 // ── AGREE tier: bare BigInt array-element return (re-audit #6 finding 2) ──
