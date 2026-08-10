@@ -25,7 +25,8 @@ import { findFreeVars } from '../src/compile/analyze.js'
 import { closureBodyReturnKind, closureBodyReturnMayBeUndefined } from '../src/compile/flow-types.js'
 import { T } from '../src/ast.js'
 import { lookupValType, repOf, VAL } from '../src/reps.js'
-import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand } from '../src/ctx.js'
+import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, DBG_INVARIANTS } from '../src/ctx.js'
+import { astClosurePlan } from '../src/compile/closure-plan.js'
 
 const intConstExpr = (node) => {
   if (typeof node === 'number' && Number.isInteger(node)) return node
@@ -50,6 +51,9 @@ const intConstExpr = (node) => {
   }
 }
 
+// Republished on ctx.closure below for src/compile/closure-plan.js's
+// mintClosureEnvPlans — a pure function of `body` alone, safely re-derivable
+// pre-emission to replicate ctx.closure.make's own int-const capture fold.
 const topLevelIntConsts = (body) => {
   const inner = Array.isArray(body) && body[0] === '{}' ? body[1] : body
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : []
@@ -75,6 +79,12 @@ export default (ctx) => {
   if (!ctx.closure.types) ctx.closure.types = new Set()
   if (!ctx.closure.table) ctx.closure.table = []
   if (!ctx.closure.bodies) ctx.closure.bodies = []
+  // Republished for src/compile/closure-plan.js's mintClosureEnvPlans (Slice 1,
+  // .work/closure-plan-design.md) — via ctx.closure rather than a direct
+  // cross-import, so this module-factory file and the plan mint it feeds don't
+  // form an import cycle (matches ctx.closure.make/.call's own module→ctx→src
+  // publication channel).
+  ctx.closure.topLevelIntConsts = topLevelIntConsts
 
   ctx.closure.types.add(1) // presence triggers $ftN type emission
 
@@ -159,6 +169,25 @@ export default (ctx) => {
     // All closures use uniform convention: (env: f64, args_array: f64) → f64
     // The body unpacks individual params from the args array
     const boxedCaptures = envCaptures.filter(c => ctx.func.boxed?.has(c))
+
+    // ClosureEnvPlan (Slice 1, .work/closure-plan-design.md) — the frozen
+    // pre-emission storage decision (src/compile/closure-plan.js's
+    // mintClosureEnvPlans), keyed on THIS closure's own body node. A miss
+    // (destructured params rewrote `body` into a fresh node before this call
+    // — see that module's doc — or this closure sits outside a shape the
+    // mint walks) fails open to the legacy inline re-derivation below;
+    // `storage` ends up identical either way, this only records which path
+    // produced it. Coordinator ruling 4: reconcile the shadow-assert's own
+    // finding (371-vs-626 count discrepancy) in the slice ledger, not here.
+    const legacyStorage = envCaptures.length === 0 ? 'zero-capture' : boxedCaptures.length ? 'boxed-cell' : 'heap'
+    const plan = astClosurePlan.get(body)
+    if (DBG_INVARIANTS && plan) {
+      const capturesMatch = plan.captures.length === envCaptures.length && plan.captures.every((name, i) => name === envCaptures[i])
+      if (plan.storage !== legacyStorage || !capturesMatch)
+        err(`ClosureEnvPlan drift: ${fnName} plan=${plan.storage}/[${plan.captures}] legacy=${legacyStorage}/[${envCaptures}]`)
+    }
+    const storage = plan ? plan.storage : legacyStorage
+
     // i32-narrowed cells travel with the capture: the closure body must access
     // the shared cell at the same width the owner does (see funcFacts.cellTypes).
     const cellI32Captures = boxedCaptures.filter(c => ctx.func.cellTypes?.has(c))
@@ -192,7 +221,7 @@ export default (ctx) => {
     // Tag IR with .closureBodyName so emitDecl can register the binding for direct dispatch
     // (skip call_indirect on a const-bound, non-escaping closure local). See emit.js '()' handler.
     setLinkDemand('closure')
-    if (envCaptures.length === 0) {
+    if (storage === 'zero-capture') {
       // No captures — just a function reference
       const ir = mkPtrIR(PTR.CLOSURE, tableIdx, 0)
       ir.closureBodyName = fnName

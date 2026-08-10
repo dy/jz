@@ -44,6 +44,7 @@ import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { mintLoopPlans } from './loop-model.js'
+import { mintClosureEnvPlans } from './closure-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
 import { cloneRep } from '../param-reps.js'
@@ -858,6 +859,11 @@ function analyzeFuncForEmit(func, programFacts) {
   // preconditions emit.js's own (separately, locally computed) counter/guard
   // range facts enjoy today, just at analyze time instead of emit time.
   mintLoopPlans(body)
+  // ClosureEnvPlan pre-emission mint (Slice 1, .work/closure-plan-design.md)
+  // — same call site, same "last, sees final AST + settled ctx.func.boxed"
+  // guarantee; ctx.closure.make reads astClosurePlan back at each closure
+  // literal's own emission.
+  mintClosureEnvPlans(body)
 
   return {
     block,
@@ -2070,12 +2076,14 @@ function emitClosureBody(cb) {
     // ITS OWN loops under ITS OWN reps/ctx.func context; skipping this call here
     // would silently leave every closure-body loop unminted instead.
     mintLoopPlans(cb.body)
+    mintClosureEnvPlans(cb.body)   // same reasoning: a closure nested in THIS closure's body needs its own mint call here
     ctx.func.repsFrozen = true   // FunctionPlan freeze: closure body emission begins
     assertCtxInvariants('pre-emit')
     bodyIR = emitBlockBody(cb.body)
   } else {
     populateBoxedSets()
     mintLoopPlans(cb.body)   // expression-body arrows can't syntactically contain a loop, but stay uniform with the block branch above
+    mintClosureEnvPlans(cb.body)
     ctx.func.repsFrozen = true   // FunctionPlan freeze: expression-body emission
     assertCtxInvariants('pre-emit')
     // Closure-body twin of emitFunc's mixedAtomReturn tail: a single-expression
