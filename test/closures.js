@@ -1644,3 +1644,16 @@ test('closures: i32-narrowed param coerces with ES ToInt32 WRAP, not saturation'
   }`)
   is(f(), 'bff000000')
 })
+
+// audit-#18: staticClosureEnv must not fire when the enclosing function can
+// re-enter between two closure calls — the recursive activation overwrites the
+// shared static capture slot (outer(2) read 6 instead of 12 at O2/O3). The
+// sound grant requires the body's only calls to be the closure itself
+// (src/compile/index.js onlyCallIsSelf).
+test('static closure env: re-entrant enclosing function with two call sites reads its own captures', async () => {
+  const src = `export function outer(n) { const x = n; const f = () => x * x + x; const a = f(); if (n > 0) outer(n - 1); return a + f() }`
+  for (const lvl of [0, 2, 3]) {
+    const { instance } = await WebAssembly.instantiate(compile(src, { optimize: lvl }))
+    is(instance.exports.outer(2), 12, `optimize ${lvl}`)
+  }
+})

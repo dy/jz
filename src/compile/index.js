@@ -438,6 +438,30 @@ function scanAndTagNonEscapingClosures(body) {
     return true
   }
 
+  // audit-#18 completion of the AUDIT-#17 fix: the loop rule alone does not enforce
+  // "at most one live invocation per activation". A closure called TWICE outside any
+  // loop, with a potentially re-entering call between the two (`const a = f();
+  // outer(n-1); return a + f()`), still reads the recursive activation's captures
+  // from the shared static slot — found live by audit #18 (outer(2): 12 expected,
+  // 6 at O2/O3). Re-entry can only happen through some OTHER call in the body, so
+  // the sound conservative grant is: the body performs NO call to anything except
+  // the closure itself. Any foreign call — named, member, computed, indirect —
+  // might transitively re-enter the enclosing function (directly recursive, via a
+  // dispatcher table, or through a host import calling back), and no cheap local
+  // proof distinguishes the safe ones here. This keeps the optimization for its
+  // actual target (a leaf helper factored out of a straight-line body) and forces
+  // the always-sound heap env everywhere re-entry is even conceivable.
+  const onlyCallIsSelf = (node, name) => {
+    if (!Array.isArray(node)) return true
+    const op = node[0]
+    if (op === 'str') return true
+    if (op === '()' && node[1] !== name) return false
+    for (let i = 1; i < node.length; i++) {
+      if (!onlyCallIsSelf(node[i], name)) return false
+    }
+    return true
+  }
+
   const walk = (node) => {
     if (!Array.isArray(node)) return
     const op = node[0]
@@ -448,7 +472,7 @@ function scanAndTagNonEscapingClosures(body) {
           const init = decl[2]
           if (Array.isArray(init) && init[0] === '=>') {
             const arrow_body = init[2]
-            if (arrow_body && typeof arrow_body === 'object' && !ctx.func.boxed?.has(name) && !isGlobal(name) && !isReassigned(body, name) && onlyCalledNotReferenced(body, name) && calledOnlyOutsideLoops(body, name, false)) {
+            if (arrow_body && typeof arrow_body === 'object' && !ctx.func.boxed?.has(name) && !isGlobal(name) && !isReassigned(body, name) && onlyCalledNotReferenced(body, name) && calledOnlyOutsideLoops(body, name, false) && onlyCallIsSelf(body, name)) {
               arrow_body._nonEscaping = name
             }
           }
@@ -458,7 +482,7 @@ function scanAndTagNonEscapingClosures(body) {
       const name = node[1]
       const init = node[2]
       const arrow_body = init[2]
-      if (arrow_body && typeof arrow_body === 'object' && !ctx.func.boxed?.has(name) && !isGlobal(name) && !isReassigned(body, name) && onlyCalledNotReferenced(body, name) && calledOnlyOutsideLoops(body, name, false)) {
+      if (arrow_body && typeof arrow_body === 'object' && !ctx.func.boxed?.has(name) && !isGlobal(name) && !isReassigned(body, name) && onlyCalledNotReferenced(body, name) && calledOnlyOutsideLoops(body, name, false) && onlyCallIsSelf(body, name)) {
         arrow_body._nonEscaping = name
       }
     }
