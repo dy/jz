@@ -2166,6 +2166,117 @@ this wall is just what makes the desync REACHABLE in practice (region round
 boundaries are the dominant place a long-lived table crosses a heal), not
 what CAUSES it — a materially different, and probably easier, fix target.
 
+**DESYNC FIX LANDED (9d0e3384, shared tree)**: the class fix recommended
+above shipped — `module/collection.js`'s `genDelete` now relogs/cancels
+pending durable-slot logs through a backward-shift (`__durable_slot_relog`/
+`__durable_slot_cancel`, module/core.js), and every `__coll_order` consumer
+(~14 call sites across collection.js/core.js/json.js/object.js) binds its
+iteration/allocation bound to the live `$__coll_order_n` global `__coll_order`
+now stamps, never the table's header length. Verified: 1500+ native Map/Set/
+Object trials (0 desyncs, 4 distinct failure signatures fixed en route),
+fresh kernel build clean (kernel-oracle 13/13, kernel-parity 33/33 incl. the
+dict row, fuzz 200+2000×2, npm test 3415/3421 — 6 pre-existing unrelated
+fails). This is a general writer-correctness fix, not region-specific;
+regions stayed dormant in the shared tree throughout (scripts/self.js
+unchanged by that commit).
+
+**SESSION (2026-08-11, FINAL-ASSEMBLY ATTEMPT — rebase Slice 2 onto the
+desync fix): verdict — the second wall (String(x>0&&1) O2) is CONFIRMED DEAD;
+the 60-row wall NARROWS (61→49, of which only 39 are the still-unresolved
+deep OOB class) but is NOT closed. Not landed — banked on a named branch.**
+
+Disposable scratchpad worktree (`region-final-2026-08-11`, branched off
+`9d0e3384`, node_modules copied — watr 5.7.13 confirmed). Merged
+`region-slice2-2026-08-11` (@ `88958115`) on top via a real two-parent merge
+commit (`77ebcd70`). One real conflict, in `module/core.js`: HEAD (9d0e3384)
+still carried the old hand-written `__region_copy_rec` body verbatim (the
+desync fix never touched region-copy code); the branch had already deleted
+that whole body in favor of `regionCopyRecBody()` (layout-kinds.js). Resolved
+by taking the branch's (empty) deletion — verified byte-identical to the
+branch's own intended shape by direct diff against `region-slice2-2026-08-11`'s
+own file. `src/wat/assemble.js`'s `needsSchemaTbl` OR-clause merged clean, no
+conflict.
+
+**A second, un-merged instance of the SAME desync bug found and fixed during
+the merge**: `regionArmSetMap` (layout-kinds.js, the SET/MAP region-relocation
+arm — the branch's own code, predates the desync fix) still read a table's
+HEADER length (`i32.load(off-8)`) as `__coll_order`'s iteration bound during
+rebuild-on-relocate — exactly the propagation vector the desync fix's own
+ledger entry (5e77f814) named as "the prime, structurally implicated suspect."
+The desync fix's audit (~14 call sites) could not have caught this since
+layout-kinds.js's Slice-2 additions lived only on the banked branch, invisible
+to that session's tree. Fixed to bind on `$__coll_order_n` instead, matching
+the pattern the fix applied everywhere else (call `__coll_order`, THEN read
+the live-count global). `regionArmHash` (delegates to `__region_relocate_props`,
+which walks all `$cap` slots checking per-slot occupancy directly, never
+trusting a count field) and `regionArmArray` (walks its OWN header length,
+not `__coll_order` — a materially different, always-correct shape for a plain
+slot array) were checked and are NOT vulnerable to this class.
+
+**Repro verdict — CLEAN, 5/5**: `compileViaKernel('export let f = (x) =>
+String(x > 0 && 1)', {optimize:2})` — the kernel-oracle row this whole wall
+was named after — compiles cleanly 5/5 (`f(1)="1"`, `f(-1)="false"`,
+5310 bytes each). kernel-oracle 13/13 (493 assertions) × 3 reps clean.
+kernel-parity 33/33 clean. This falsifies nothing — it CONFIRMS the desync
+fix's mechanism closes this specific, previously 3/3-deterministic wall.
+
+**60-row wall verdict — NARROWED, NOT CLOSED**: `JZ_TEST_TARGET=jz.wasm
+JZ_FUZZ_GATE=0.05 node test/index.js` (same scaling every prior session used)
+→ **2667/2716 pass, 49 fail, 6 skip** (was 2655/2716, 61 fail pre-rebase).
+Categorized all 49 by trap message (parsed per-test from the raw log, not the
+summary's truncated 3-line preview): **8 are the documented, INTENTIONAL
+CLOSURE trap** (`unreachable`, not `memory access out of bounds` — Slice 2
+deliberately left CLOSURE relocation unbuilt, a named, accepted scope
+boundary, not a bug) — e.g. "class static field and method", "Set: no
+duplicates", "§14 point 4: full presence×domain matrix". **39 are the SAME
+unresolved deep OOB class** every prior Slice-2 session's exhaustive
+bisection (pass-name ablation, size-lottery refutation, WAT-diff,
+$__alloc-entry trace) failed to close — `memory access out of bounds`, during
+the KERNEL'S OWN compilation, spanning Number/parseFloat, Set algebra,
+closures-per-iteration-capture, Date.UTC, SSO invariants, Object.assign,
+JSON.stringify, TypedArray codecs, and more (full list in session transcript)
+— no narrower common shape than "compiler-internal object graph diverse/large
+enough to perturb the kernel's own fused-caller layout" was found or sought
+this session (per the prior sessions' own conclusion that this needs a
+runtime lever — the `$__alloc`-entry-style trace, never yet tried on THIS
+class specifically since the desync trace hijacked that lever's first use —
+not more static bisection). 2 residual failures are unexplained and not yet
+triaged against a dormant-kernel baseline: "host decode: trap-lowered radix
+throw..." (expected RangeError, got RuntimeError) and "typed-array
+divergence" — plausibly pre-existing kernel-target-only flakes unrelated to
+regions, not confirmed either way this session.
+
+**Per the stop-on-fail tripwire**: NOT landed, NOT closed. The mandated
+ladder beyond kernel-oracle/kernel-parity/repro-x5/the 60-row scaled suite —
+full un-scaled test:wasm, fuzz 200+2000×2, full battery, dormant
+byte-identity, build×2, shared-tree re-enable, the memory watermark curve,
+jz×jz — was **NOT run**, gated on the 60-row wall closing, and it does not.
+Shared tree verified untouched throughout (worked entirely in the scratchpad
+worktree; the concurrent PlanStore session's own commits — `975ada70`
+onward through `0edcddea` — landed independently, unrelated, confirmed by
+`git log`/`git status` before and after this session's work). All work
+(the merge + the `regionArmSetMap` fix + the corrected header-comment
+chronology in scripts/self.js) lives on branch `region-final-2026-08-11`
+(one commit `77ebcd70`, message includes this same summary) — supersedes
+`region-slice2-2026-08-11` for resume purposes (`git worktree add <path>
+region-final-2026-08-11` restores the exact state). Worktree removed at
+session end.
+
+**Recommendation for next session**: (1) the `regionArmSetMap` fix is real
+and worth landing standalone regardless of the wall (dormant, dead code
+today, same "worth keeping" logic the OBJECT ephemeral-dyn-props fix earned
+earlier); (2) don't re-attempt the pass-name/size-lottery/WAT-diff bisection
+axes on the 60-row wall — all exhausted per the prior sessions' own
+recommendation, and this session's rebase (removing 12 of the 60 original
+failures, all apparently instances the desync fix's mechanism also touched)
+doesn't change that verdict, it just shrinks the corpus; (3) the next lever
+is the `$__alloc`-entry-style runtime trace, this time pointed at one of the
+39 SURVIVING repros directly (e.g. "Number/parseFloat: subnormals..." or
+"Set algebra: union/intersection..." — both short, self-contained test
+sources, no fuzz harness needed) rather than the String() row that's now
+closed; (4) triage the 2 unexplained residuals against a dormant-kernel
+control run of the same scaled suite before assuming they're pre-existing.
+
 ## [ ] Carrier invariant / storedValue (was carrier-invariant-design.md; predecessor of the carrier program)
 
 The boxed-value invariant program that preceded carrier-representation.

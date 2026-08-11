@@ -10556,3 +10556,84 @@ carry none of that):
 src/compile/loop-model.js, src/ir.js, src/compile/emit.js,
 src/optimize/vectorize.js, module/function.js, test/session-reentrancy.js) +
 this entry.
+
+## Status (2026-08-11, COLLECTION OCCUPANCY-LENGTH DESYNC FIXED, `9d0e3384`,
+## shared tree — general writer correctness, not region-specific)
+
+The desync the prior region-Slice-2 session traced and banked (5e77f814: a
+Map/Set/HASH crossing a durable-slot heal could desync its header length
+from `__coll_order`'s real live count, decoding garbage as the kernel's own
+static string-table data) got its class fix landed: `module/collection.js`'s
+`genDelete` now relogs a pending durable-slot log's address through its own
+backward-shift (`__durable_slot_relog`) and cancels a log for the key
+actually being removed BEFORE the shift walk starts, at its own captured
+address (`__durable_slot_cancel`) — three real writer bugs pinned via native
+(non-kernel) repros: an out-of-bounds SET value write in the heal path, a
+stale post-shift log address, and a cancel-at-the-wrong-address collision.
+Every `__coll_order` consumer (~14 call sites, collection.js/core.js/
+json.js/object.js) now bounds its iteration/allocation on the live
+`$__coll_order_n` global `__coll_order` stamps, never the header field.
+1500+ native trials, 0 desyncs after the fix. Fresh kernel: kernel-oracle
+13/13, kernel-parity 33/33 (incl. dict row), fuzz 200+2000×2 clean, npm test
+3415/3421 (6 pre-existing unrelated fails). Regions stayed dormant in the
+shared tree throughout this fix — general writer hardening, reachable via
+region round churn but not caused by it.
+
+**Commits**: `9d0e3384` (module/collection.js, module/core.js).
+
+## Status (2026-08-11, FINAL-ASSEMBLY ATTEMPT — rebase Slice 2 onto the
+## desync fix: second wall CONFIRMED DEAD, 60-row wall NARROWS 61→49 but NOT
+## CLOSED. Not landed. Full account: .work/research.md §Region arena)
+
+Disposable scratchpad worktree (`region-final-2026-08-11`, off `9d0e3384`,
+node_modules copied, watr 5.7.13). Merged `region-slice2-2026-08-11`
+(`88958115`) via a real two-parent merge commit (`77ebcd70`) — one conflict
+in module/core.js (the desync fix never touched region-copy code, so HEAD
+still had the old hand-written `__region_copy_rec` body the branch had
+already deleted in favor of `regionCopyRecBody()`; took the branch's
+deletion, verified byte-identical to its own intended shape). Found and
+fixed a SECOND, un-merged instance of the same desync bug while resolving:
+`regionArmSetMap` (layout-kinds.js, predates the desync fix) still trusted a
+table's header length as `__coll_order`'s iteration bound during
+rebuild-on-relocate — exactly the propagation vector the desync fix's own
+ledger entry named as the prime suspect, invisible to that fix's audit since
+this file lived only on the banked branch. Fixed to bind on
+`$__coll_order_n` like every other consumer.
+
+**Repro (String(x>0&&1) O2, the second wall) — CLEAN 5/5.** kernel-oracle
+13/13 (493 assertions) × 3 reps clean, kernel-parity 33/33 clean. Confirms
+the desync fix's mechanism closes this wall.
+
+**60-row wall (JZ_TEST_TARGET=jz.wasm JZ_FUZZ_GATE=0.05) — 2667/2716 pass,
+49 fail, 6 skip** (was 2655/2716, 61 fail pre-rebase). Categorized all 49 by
+trap message: 8 are the documented, INTENTIONAL CLOSURE trap (`unreachable`
+— Slice 2's named, accepted scope boundary, not a bug); 39 are the SAME
+unresolved deep "kernel-own-layout-sensitive OOB" class every prior Slice-2
+bisection session (pass-name ablation, size-lottery refutation, WAT-diff,
+$__alloc-entry trace) failed to close; 2 unexplained residuals not yet
+triaged against a dormant-kernel baseline.
+
+**Per the stop-on-fail tripwire**: NOT landed, NOT closed. Full un-scaled
+test:wasm, fuzz 200+2000×2, full battery, dormant byte-identity, build×2,
+shared-tree re-enable, the memory watermark curve, and jz×jz were **NOT
+run** — all gated on the 60-row wall closing, and it doesn't. Shared tree
+verified untouched (worked entirely in the scratchpad worktree; the
+concurrent PlanStore session's own commits landed independently,
+unrelated). All work banked on branch `region-final-2026-08-11` (one commit
+`77ebcd70`) — supersedes `region-slice2-2026-08-11` for resume. Worktree
+removed at session end.
+
+**Recommendation for next session**: (1) land the `regionArmSetMap` fix
+standalone (dormant, dead code today, real correctness fix regardless of
+the wall); (2) don't re-attempt pass-name/size-lottery/WAT-diff bisection on
+the 60-row wall — exhausted, and this session's rebase just shrinks the
+corpus (removes 12 of 60, apparently all the desync fix's own mechanism
+also touched) without changing that verdict; (3) next lever is the
+`$__alloc`-entry-style runtime trace pointed at one of the 39 surviving
+repros directly (e.g. "Number/parseFloat: subnormals..." or "Set algebra:
+union/intersection...", both short/self-contained, no fuzz harness needed)
+— not the String() row, which is now closed; (4) triage the 2 unexplained
+residuals against a dormant-kernel control run before assuming pre-existing.
+
+**Commits**: none to the shared tree's compiler source. This entry +
+`.work/research.md`'s matching append only.
