@@ -7132,8 +7132,27 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       const bl = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true })
       // HIR provenance link shadow-assert (.work/research.md §BodyModel slice 4) — see
       // assertLoopPlanAgrees's own doc. `bl`-scoped only (the IV/bound facts it exists to
-      // cross-check); a null `bl` has nothing to compare.
+      // cross-check); a null `bl` has nothing to compare. Runs BEFORE the consultation below
+      // so it still checks the fresh WAT derivation, unmodified by the override.
       if (DBG_INVARIANTS && bl) assertLoopPlanAgrees(node, bl)
+      // FIRST REAL CONSUMPTION (.work/research.md §BodyModel; architecture re-audit item 7):
+      // the shadow-assert above has now run across the full battery with zero divergences —
+      // wherever the link resolves an IV name, it is PROVEN to equal `bl.incVar`'s WAT-derived
+      // one. Roles invert: the plan becomes the primary source for the name every bl-based
+      // recognizer below reads (tryMemCopyFill/tryVectorize/tryReduceVectorize/
+      // tryMapReduceVectorize/tryStencil/tryByteScan/tryToneMap/tryStrengthReduceIV — all share
+      // this one `bl`), and `matchInc1`'s WAT walk above becomes the fail-open FALLBACK (link
+      // miss keeps its structurally-derived name) plus, under JZ_DEBUG_INVARIANTS, the shadow
+      // (assertLoopPlanAgrees, run just above, already fills that role — nothing left to add).
+      // Bound/hull are NOT flipped here: assertLoopPlanAgrees only proves `plan.boundConst`
+      // against `bl.bound` in the branch where `bl.bound` is ALREADY an `i32.const` node — i.e.
+      // exactly the case where the WAT derivation is already the concrete number in one read: a
+      // non-const (boundLocal) bound is never compared, so consulting the plan there would be
+      // unproven. Narrowed to the proven subset (banked finding, .work/research.md §BodyModel).
+      if (bl) {
+        const link = ctx.plans.loweringLinks.get(node)
+        if (link && link.lowering.ivName != null) bl.incVar = dollar(link.lowering.ivName)
+      }
       // LoopPlan classification (stage-3 slice 1): the OUTER-pixel scaffold is
       // matched ONCE here — the five outer-family recognizers consume this
       // descriptor (with its inner-loop census) instead of each re-matching.
