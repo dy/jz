@@ -10719,3 +10719,40 @@ AS-LANDED section. No item required reverting or descoping any of its
 stated scope; item 4's one deliberate scope decision (destructured-closure
 support via `rawParams` keying rather than moving the destructuring rewrite
 earlier) is argued from first principles in its own entry, not asserted.
+
+---
+
+## Status (2026-08-11, ARCHITECTURE RE-AUDIT item 9 LANDED — possibleKinds
+## coverage bit, presence tri-state, complete deep cloning, 3 commits)
+
+Three independent sub-items from the re-audit brief — open/closed kind
+coverage, unknown-capable presence, complete deep cloning — each its own
+commit + isolated gate run (disposable `git worktree` at pre-session HEAD
+`ca6d75b0`, byte-identity spot-check via the SAME 10-case bench set item
+3's own gate table uses). Full account, including the exact producer-site
+enumerations and per-sub-item rationale, in `.work/lattice-design.md`'s
+new "AS-LANDED — architecture re-audit item 9" section — summarized here:
+
+| sub-item | commit | one-line verdict |
+|---|---|---|
+| 9(c) — complete deep cloning | `9e4db0ba` | `cloneRep` only special-cased `possibleKinds`; a clone through `cloneRepMap` (`ctx.func.localReps`) shallow-copied `dictValueValType`/`mapValueValType` (Set<VAL.*>, Slice 7's producer-union storage) — the SAME aliasing leak audit-#16 P1-3 fixed for `possibleKinds`, incomplete. `REP_SET_FIELDS` (param-reps.js) is now the one registration point (3 fields: `possibleKinds`, `dictValueValType`, `mapValueValType` — `arrayElemSchemaSet`/`schemaIdSet`/`range`/`arrayElemRange` are plain arrays, excluded, always replaced wholesale); `JZ_DEBUG_INVARIANTS` asserts no OTHER rep field is a `Set` — a drift gate |
+| 9(a) — open/closed kind coverage | `4c109344` | `possibleKinds` gains `kindsCoverage: 'open'\|'closed'` — a non-empty set proves "observed," never "exhaustive," while external-caller coverage is open. narrow.js marks 'closed' only for a func that is not raw, not exported, and never escaped into `valueUsed` — the SAME predicate `narrowReturnArrayElems`'s own `targets` filter already uses for "have we seen every call site." Exclusion-projection contract updated: `possibleKinds.size > 0 && kindsCoverage === 'closed'`. Zero consumers — this is what finally makes `possibleKinds` safe to consume for exclusion |
+| 9(b) — presence tri-state | `f091c391` | Completes the AUDIT-#16 P0-2 ruling's queued upgrade. `presence`: absent=UNKNOWN \| `'present'` \| `'maybe-undef'`, landed on both `ValueRep` and the paramReps Fact record. 6 existing `mayBeUndefined:true` sites gain a `'maybe-undef'` sibling write (same condition, same site); ONE new, conservative producer (analyze.js decl site only) proves `'present'`: non-nullish init (`!mayBeNullish`) AND never reassigned (`writeCount===0`) — both predicates reused verbatim from `nullable`/`range`'s own producers at that site. `mayBeUndefined` itself byte-identical, zero consumers touched; `!mayBeUndefined(name)` is STILL not a `definitelyPresent` proof, but `presence==='present'` now is one |
+
+**Gate ladder** (same shape × 3, each on top of the previous sub-item's
+landed commit):
+
+| check | 9(c) | 9(a) | 9(b) |
+|---|---|---|---|
+| byte-identity spot ×10 (O2) | 10/10 identical | 10/10 identical | 10/10 identical |
+| `node scripts/battery.mjs` (incl. `dbg` = O3+`JZ_DEBUG_INVARIANTS`) | GREEN except the one pre-existing "typed RMW" flake (all 5 test legs, same signature every prior session records); fuzz 30173/0 divergence; self 21/21; kernel 2716 pass; fixpoint PASS; build OK | same signature — only "typed RMW", all else green | same signature — only "typed RMW", all else green |
+| maybeUndefined suites (`test/dyn-keys.js`, `test/types.js`, `test/inference.js`) | — | — | 57/57, 178/178, 136/136 — all pass |
+
+**Verdict: all three GREEN and landed**, each independently revertible
+(own commit, disjoint field names). All three fields have zero semantic
+consumers as of this landing — this session lands the lattice correction
+FINALLY making `possibleKinds`/`presence` safe to consume and closing the
+`cloneRep` aliasing gap, not a consumer migration.
+
+**Commits**: `9e4db0ba` (9c), `4c109344` (9a), `f091c391` (9b) + this
+entry + `.work/lattice-design.md`'s matching AS-LANDED append.

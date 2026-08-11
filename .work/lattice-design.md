@@ -2011,3 +2011,111 @@ sub-landing. The product-lattice campaign's own §17 keyedWrite acceptance
 criterion is now answered definitively: NOT reached, for a precisely
 identified, already-audited reason (`hz.all`'s load-bearing role in
 `slotHazarded`) outside this campaign's scope to close.**
+
+---
+
+## AS-LANDED — architecture re-audit item 9 (2026-08-11)
+
+Three independent sub-items, each its own commit + isolated gate run
+against a disposable `git worktree` at pre-session HEAD (`ca6d75b0`),
+byte-identity spot-checked via `bench/{alpha,blur,bytebeat,crc32,fft,
+mandelbrot,nbody,particle,synth,lorenz}` at O2 (the same 10-case precedent
+set item 3's own gate table uses). All three are purely additive — zero
+consumers read any of the three new fields yet — so byte-identity is
+structurally guaranteed, not just observed.
+
+**9(c) — `cloneRep` REP_SET_FIELDS list + drift assert.** SHA `9e4db0ba`.
+Grepped every Set-valued field reachable through `cloneRep`'s two real
+call-site families (`narrow.js`'s 4 paramReps clone sites; `compile/
+index.js`'s `cloneRepMap`, applied to `ctx.func.localReps`) — found 3:
+`possibleKinds` (paramReps Fact, already handled since audit-#16 P1-3),
+`dictValueValType`, `mapValueValType` (both `reps.js` REP_FIELDS, Slice
+7's producer-union `Set<VAL.*>` storage, confirmed NOT special-cased by
+the old `cloneRep` body — the exact live aliasing leak the task named).
+`arrayElemSchemaSet`/`schemaIdSet`/`range`/`arrayElemRange` are `number[]`,
+not `Set` — `updateRep` always replaces them wholesale (never mutates an
+existing array in place, confirmed by reading every write site), so a
+shallow array-reference copy is sound and they're excluded from the list
+with that rationale recorded in-code. `REP_SET_FIELDS` (param-reps.js,
+beside the `Fact` typedef) is now the one registration point; under
+`JZ_DEBUG_INVARIANTS`, `cloneRep` also asserts no OTHER field on a cloned
+rep is a `Set` instance — a future Set-valued field landing without a line
+here now fails loud instead of silently aliasing.
+
+**9(a) — `possibleKinds` gains `kindsCoverage: 'open'|'closed'`.** SHA
+`4c109344`. Found the export/indirect status the brief asked for: narrow.js
+already computes it — `f.exported` (external JS/host caller, arbitrary
+args) and `valueUsed.has(f.name)` (the function's name escaped into a
+first-class-value use — stored, passed, returned — so it can be invoked
+outside the literal `f(...)` nodes `callSites` tracked). This EXACT
+predicate (`!f.raw && !f.exported && !valueUsed.has(f.name)`) already
+gates `narrowReturnArrayElems`'s own `targets` filter for the identical
+"have we truly seen every call site" question (line ~1010) — reused
+verbatim, not reinvented. One producer loop, placed at the very end of
+`narrowSignatures` (after every possibleKinds-affecting fixpoint has
+converged, right before the `assertValKindConsistent` DBG check): for
+every non-raw, non-exported, non-value-used function, every one of its
+existing paramReps entries gets `kindsCoverage = 'closed'`; every other
+param stays at the field's default-absent 'open'. The exclusion-projection
+contract (param-reps.js, right below `cloneRep`) is updated to require
+`possibleKinds.size > 0 && kindsCoverage === 'closed'` — a non-empty set
+alone proves "these kinds were observed," never "no other kind is
+possible," since an exported/value-used function's uncovered external
+callers could always supply an unobserved kind. Zero consumers still —
+this is what finally makes `possibleKinds` safe to consume for exclusion.
+
+**9(b) — `presence` tri-state sibling of `mayBeUndefined`.** SHA
+`f091c391`. Completes the AUDIT-#16 P0-2 ruling's queued upgrade (line
+1603 above: "the presence upgrade to a 4-point lattice or coverage bit is
+queued as its own gated slice, not improvised"). `presence` is `undefined`
+(UNKNOWN) | `'present'` | `'maybe-undef'`, landed on BOTH record shapes
+`mayBeUndefined` already lives on — `ValueRep` (`reps.js` REP_FIELDS,
+`localReps`/`globalReps`) and the paramReps Fact record. 6 existing
+`mayBeUndefined: true` (or `r.mayBeUndefined = true`) producer sites all
+gained a `presence: 'maybe-undef'` (or `r.presence = 'maybe-undef'`)
+sibling write, same condition, same site, zero new logic: analyze.js's
+decl and reassign census-shaped-RHS sites; compile/index.js's param
+propagation and closure-capture seed; narrow.js's paramReps-level
+destructured-param-body fail-closed and call-site-union writes. ONE new,
+conservative producer proves `'present'`: analyze.js's decl site only,
+`if (mayBeUndefinedRhs) presence='maybe-undef'; else if (!mayBeNullish(rhs)
+&& writeCount(body,name,0)===0) presence='present'` — reusing `nullable`'s
+own non-nullish-init predicate and `range`'s own never-reassigned check
+verbatim (both already computed at that exact site for other fields), if/
+else-if so the two arms are mutually exclusive by construction. No
+`'present'` arm at any other site (reassign/param/closure-capture) — each
+is documented in-code with why a positive proof isn't available there.
+`mayBeUndefined` itself, and its `reps.js` `mayBeUndefined(name)`
+projection, are BYTE-IDENTICAL — no consumer was touched. The standing
+ruling stays exactly as ruled: `!mayBeUndefined(name)` is still NOT a
+`definitelyPresent` proof; `presence === 'present'` now IS one.
+
+**Gate ladder** (identical shape run 3× — once per sub-item, on top of the
+previous sub-item's already-landed commit):
+
+| check | 9(c) | 9(a) | 9(b) |
+|---|---|---|---|
+| byte-identity spot ×10 (alpha/blur/bytebeat/crc32/fft/mandelbrot/nbody/particle/synth/lorenz, O2) | 10/10 identical | 10/10 identical | 10/10 identical |
+| `JZ_DEBUG_INVARIANTS=1 node test/index.js` (O3) | 3420/3429 (2 pre-existing + 1 known audit-#12 flake) | — (covered by battery `dbg` leg) | 3421/3429 (2 pre-existing; the audit-#12 flake did not fire this run) |
+| `node test/dyn-keys.js` / `test/types.js` / `test/inference.js` (maybeUndefined suites) | — | — | 57/57, 178/178, 136/136 — all pass |
+| `node scripts/battery.mjs` (native/O0/O3/dbg/wasi/fuzz/fixpoint/build/kernel/self, dbg = O3+`JZ_DEBUG_INVARIANTS`) | GREEN except the one pre-existing "typed RMW" flake (fired on all 5 test legs, same signature every prior session records); fuzz 30173/0 divergence; self 21/21; kernel 2716 pass; fixpoint PASS; build succeeded | same signature — only the "typed RMW" flake, all 5 legs; fuzz/self/kernel/fixpoint/build all green | same signature — only the "typed RMW" flake, all 5 legs; fuzz/self/kernel/fixpoint/build all green |
+
+**Verdict: all three sub-items GREEN and landed**, each independently
+revertible (own commit, no cross-sub-item coupling — 9(a)/9(b)/9(c) touch
+disjoint field names and, other than sharing `narrow.js`'s
+`narrowSignatures` tail and `param-reps.js`'s `Fact` typedef as edit
+sites, disjoint logic). Field/producer counts: 9(c) — 3 Set fields
+registered (1 pre-existing, 2 newly covered); 9(a) — 1 producer loop
+covering every non-raw/non-exported/non-value-used function's params;
+9(b) — 6 `'maybe-undef'` producer sites (mirroring the existing boolean
+1:1) + 1 new, deliberately narrow `'present'` producer. All three fields
+have zero semantic consumers as of this landing, matching the task's own
+framing ("finally safe to consume" / "the boolean stays... consumers
+unchanged") — this session lands the lattice correction, not a
+consumer migration.
+
+**Commits**: `9e4db0ba` (9c: src/param-reps.js, src/compile/index.js),
+`4c109344` (9a: src/param-reps.js, src/compile/narrow.js), `f091c391`
+(9b: src/reps.js, src/compile/analyze.js, src/compile/index.js,
+src/compile/narrow.js) + this entry + `.work/todo.md`'s matching Status
+append.
