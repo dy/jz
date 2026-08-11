@@ -2577,3 +2577,33 @@ hoistConstantPool's implementation read: no module-scope holder. This
 record motivated the boundary-arithmetic audit that followed (whose window
 (B) — forwarding stubs destroyed by the closing compaction memcpy —
 explains the reshuffle mechanism exactly).
+
+## §Region arena — TWO “UNTRIAGED RESIDUALS” TRIAGED (2026-08-11)
+
+Both names were misleading because each test's `try` spans compilation and
+execution. Neither was a target-program value divergence.
+
+1. **Float64Array fuzz residual: closed by Watr 5.7.14.** Reproduced against
+   JZ `1455a278` plus pre-root Watr `fa3fe0e`: fuzz seed 3,
+   `export let f=(buf,n)=>{...buf[i]=buf[i]*-1...}`, fails while the region-live
+   kernel compiles the target at O2 with `memory access out of bounds`; O0/O1/O3
+   are clean. The finding's real record is `{kind:'jz-compile', opt:2}`, not a
+   mismatched Float64Array element. With the identical JZ commit and Watr 5.7.14,
+   that source compiles at all four levels and the scaled fuzz row passes. This
+   accounts for one of the 49→42 rows removed by complete safepoint rooting.
+
+2. **Radix host-decode residual: part of the surviving region wall.** At O2 the
+   region-live kernel fails before producing the target module, so target
+   `__jz_last_err_bits` decoding never runs. Pre-root Watr surfaced an OOB; Watr
+   5.7.14 moves the failure to an unmarked `unreachable` with kernel marker 0.
+   The top frame is `wasm-function[12]`, already identified by the exact-kernel
+   disassembly above as `$__alloc`'s unsigned-wrap guard. O0 compiles cleanly.
+   This is a compact reproducer for the still-open post-safepoint stale-size/
+   allocation-window class, not a bug in RangeError decoding.
+
+A clean dormant control at `444990d0`, exact published Watr 5.7.14, compiles
+both sources at O0/O1/O2/O3. Its targeted hosted run
+`JZ_TEST_TARGET=jz.wasm JZ_FUZZ_GATE=0.05 node test/index.js errors fuzz`
+passes 141/141 tests (305 assertions), including a real RangeError with thrown
+code 205 and the Float64Array oracle. Classification is therefore decisive:
+one residual is fixed upstream; one is region-only and remains banked.
