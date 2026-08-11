@@ -2562,3 +2562,18 @@ module-init const locals (assemble NAN_PREFIX/TAG_SHIFT_BIG/… , encode
 F64_SIGN/F64_NAN/F64_QUIET) — zero hot-loop sites. assertErasureConsistency
 guards whole-program presence (the '(top)' attribution split between the
 two instruments is a naming mismatch, not a solver bug).
+
+## §Region arena — TARGET-PASS ABLATION RECORD (2026-08-11, coordinator-preserved; the executing agent reported but failed to commit this)
+The untried axis: TARGET optimize-pass ablation through a FIXED region-live
+kernel (zero rebuilds). Facts from the run: repros trap ONLY at target L2
+(clean 0/1/3, 5/5 deterministic). Sweep of all 62 PASS_NAMES both
+directions: enable-at-L0 → zero single-flag triggers; disable-at-L2 → 10
+individual passes clear the join repro; only watr/foldSetToTee/
+hoistConstantPool clear all 4 probes. DECISIVE: forcing {level:2,
+hoistConstantPool:false} across the FULL scaled test:wasm suite → 47 fail
+vs baseline 49, but only 9 rows common — 40 fixed, 38 PREVIOUSLY-CLEAN rows
+now fail. A RESHUFFLE, not a fix: pure allocation-ordinal sensitivity.
+hoistConstantPool's implementation read: no module-scope holder. This
+record motivated the boundary-arithmetic audit that followed (whose window
+(B) — forwarding stubs destroyed by the closing compaction memcpy —
+explains the reshuffle mechanism exactly).
