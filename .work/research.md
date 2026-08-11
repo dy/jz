@@ -2277,6 +2277,179 @@ sources, no fuzz harness needed) rather than the String() row that's now
 closed; (4) triage the 2 unexplained residuals against a dormant-kernel
 control run of the same scaled suite before assuming they're pre-existing.
 
+**`__region_copy_rec` ORDERING AUDIT (2026-08-11), paper-execution + native
+verification (no kernel instrumentation — the heisenbug rules that out) —
+disposable worktree `region-final-2026-08-11` (branch resumed from `77ebcd70`)
+— verdict: a real, independently-confirmed diamond/durable-revisit bug FOUND
+and FIXED, but it does NOT discriminate or close the 39-row wall. Fix banked
+on the branch (new commit), not landed to main; this ledger entry is the bank
+record.**
+
+*Method*: per the prior sessions' own conclusion that instrumentation
+perturbs this class of bug, audited `__region_copy_rec`'s (layout-kinds.js
+`regionCopyRecBody`/arms) and `__region_exit`'s (module/core.js) exact
+instruction ordering by reading, not tracing — specifically: for every kind,
+when does a node's OLD-site forwarding header (or, for durable nodes, its
+own in-place fields) get written relative to (a) its own copy into staging,
+(b) recursion into its children, (c) the closing `memory.copy`? Built an
+ordering table (every arm's memo-check-point vs children-recursion-point vs
+old-site-header-write-point) and enumerated diamond/cycle/durable-boundary
+windows against it, THEN verified the one real finding with a native
+(non-kernel) `compile()` probe — no dist/jz.wasm rebuild needed for
+discovery, matching the desync-fix session's own precedent for reaching for
+the cheaper tool first.
+
+*Ordering table, summary*: ARRAY/OBJECT — `off=__ptr_offset(bits)` →
+memo-check(bits) → durable-check; BOTH branches memo themselves (`memo[bits]
+= out`) BEFORE recursing into children; ephemeral branch's OLD-site
+forwarding header write happens AFTER the full child-recursion loop. SET/MAP
+— same memo-before-recurse shape, no durable branch (always rebuilds).
+`__ptr_offset` (module/core.js:327, `layout.js` `followForwardingWat`) chases
+the `off-4==-1` sentinel ONLY for ARRAY/HASH/SET/MAP (`FORWARDING_MASK`);
+OBJECT/TYPED/BUFFER/BIGINT/STRING never chase — pure bit-mask extraction.
+
+*Window found and confirmed*: `__region_relocate_props` (module/core.js —
+the function BOTH the ARRAY/OBJECT dyn-props sidecar path AND a bare
+PTR.HASH region-root, via `regionArmHash`, delegate to) had NO memo
+hit-check/set on its DURABLE branch — the one place in the entire dispatch,
+alongside TYPED's durable VIEW branch (layout-kinds.js `regionArmTyped`),
+that walks/mutates a node's children in place without the "memo BEFORE
+recursing" guard every other durable branch (ARRAY, OBJECT) already has.
+Consequence: a durable HASH reached via TWO paths in one `__region_exit`
+round gets its slot-walk loop re-executed on the second visit; the loop
+re-reads each slot's CURRENT value and re-feeds it through
+`__region_copy_rec` — but the first visit already overwrote that slot with
+the child's `$out`, the FINAL (delta-adjusted, not-yet-physically-valid —
+the closing `memory.copy` hasn't run yet) address. The second pass hands
+this final-bits value to `__region_copy_rec` as fresh input: for an
+ARRAY/HASH/SET/MAP child, `__ptr_offset`'s forwarding-chase reads whatever
+unrelated data currently occupies that not-yet-written final address (real
+heap territory, `[mark,T)`, but not the child's data), and the child-level
+memo (keyed on the ORIGINAL bits) misses, so the value gets silently
+re-derived from garbage — the same "misread header/sentinel" shape the task
+named (`cap=-1`-style), one level indirect: a stale-final-value re-input,
+not a raced sentinel read. TYPED's durable VIEW branch has the identical gap
+(its own `off+8` field gets overwritten with the buffer's FINAL address on
+first visit; a second visit re-reads it as `$oldRoot` and recurses on a
+bogus synthesized BUFFER box) — narrower to trigger in practice (needs a
+durable view descriptor whose buffer becomes ephemeral in the SAME round;
+jz never re-points an existing view's `rootOff` via ordinary construction,
+so this requires cross-round persistence) but the same class, fixed for
+symmetry.
+
+*Cycle case*: `node_modules/watr/src/optimize.js` carries no `.parent`
+back-references — no true structural cycles in Slice 1's own AST scope, only
+diamonds (CSE/shared subtrees). Slice 2's broader (compiler-internal
+OBJECT/HASH) scope CAN self-reference; native probe (self-referential
+durable HASH, diamond-shared, ephemeral child) confirms the memo-before-
+recurse pattern (now including the fix) terminates correctly — no hang, no
+corruption, O0/O2/O3.
+
+*Memcpy-overlap case*: no defect found — all region-copy work (incl.
+`__region_relocate_props`) executes in the staging phase, before the closing
+`memory.copy`; `$__dyn_props` relocation is bound to `$__coll_order_n`
+(9d0e3384's own fix), not header length; cross-round, `__region_exit` resets
+`$__heap = mark+size` at each close, so the next round's mark starts exactly
+where the compacted survivors end.
+
+*Native verification* (`compile()` directly, zero kernel rebuild, zero
+flakes across O0/O1/O2/O3): a durable `Object.fromEntries([["a",0]])` dict
+(confirmed `PTR.HASH`-tagged via a direct `__ptr_type()` probe — jz object
+LITERALS and `JSON.parse` both produce `PTR.OBJECT`, schema-based, NOT HASH,
+which is why an earlier attempt using `JSON.parse` read back correct and had
+to be replaced) referenced twice from one ephemeral array (`let root=[d,d]`)
+with an ephemeral array assigned into one of its keys after
+`__region_mark()`. Pre-fix: single reference or no ephemeral child → correct;
+two-or-more references to the SAME durable dict → the ephemeral child
+silently reads back truncated to length 0, deterministically, every opt
+level (this run's heap held zeroed bytes at the bogus "final" address — no
+trap here, but kernel-scale heaps with real leftover data at that address
+range are exactly where a `memory access out of bounds` would come from
+instead). Post-fix (memo hit-check+set added to `__region_relocate_props`'s
+durable branch, module/core.js; same fix shape added to `regionArmTyped`'s
+durable VIEW branch, layout-kinds.js): the original repro, a triple-diamond
+variant, a 256-element ephemeral-child variant, the self-referential-cycle
+variant, and a nested HASH-of-HASH diamond variant ALL read back correct.
+The all-scalar (no ephemeral child) diamond control was already correct
+pre-fix and stayed correct post-fix (confirms the fix doesn't touch the safe
+case).
+
+*Kernel build + gate ladder, run against the fixed worktree*
+(`scripts/build-dist.mjs` unmodified — `REGION_HOOKS_ACTIVE=true` is already
+the marker state on this branch, so `resolveSelfhostBuild` derives
+`regionArenaLive=true` and applies `inlinePtrOffsetFast:false` automatically;
+`dist/jz.wasm` 14466.1 kB): **kernel-oracle 13/13 (493 assertions), clean.
+kernel-parity 33/33, byte-identical, clean. The already-closed
+`String(x>0&&1)` O2 repro stays closed, 3/3. Native battery (`npm test`,
+region-irrelevant but run as a control): 3419/3427, same 2 pre-existing
+known-banked fails (interval-walk/typed-RMW codec-bounds), 6 skip — no
+regression.**
+
+**The 49-row scaled `test:wasm` wall (`JZ_TEST_TARGET=jz.wasm
+JZ_FUZZ_GATE=0.05`) is UNCHANGED: 2667/2716 pass, 49 fail, 6 skip — same
+total, same pass count, same fail count as the pre-fix baseline, and
+extracting every failing test's name (not just the truncated summary)
+confirms it is the SAME 49 rows, not a coincidentally-equal-sized different
+set** — Number/parseFloat subnormals, Set algebra, Date.UTC (×3), SSO
+invariant (builder append, repeat/pad), Object.assign boxed-array-write,
+JSON.stringify parsed-input, deopt D1 byteLength/byteOffset/size, the
+host-decode radix-throw residual, the Float64Array fuzz typed-array-
+divergence residual, and every other named row from the prior session's own
+39+8+2 breakdown are all still present, verbatim, in this run's fail list.
+
+**Discriminating-prediction result (the task's own falsifiability test):
+NEGATIVE.** The window found (durable-container diamond-revisit) does NOT
+discriminate the 39/49 failing rows from the passing ones — fixing it
+changes ZERO rows in either direction. This is a clean, load-bearing
+negative result, not an inconclusive one: the fix is real (independently
+verified, deterministic, native, no ambiguity), the gate ladder ran to
+completion (not aborted early), and the fail set was compared by NAME, not
+just count. The mechanism dominating the 49-row wall is confirmed, again,
+to be something else — consistent with every prior session's own finding
+that it is a kernel-own-compiled-shape-sensitive class, not a logic bug
+reachable through the region arms' own semantics for these specific 39
+programs' actual compiler-internal object graphs (this session's window
+requires a diamond-shared DURABLE HASH/TYPED-view specifically; the 39 rows
+apparently don't happen to produce one during THEIR compile, even though the
+mechanism is real and would corrupt one if they did).
+
+**Fix-or-bank: BANKED (code), LANDED (ledger only) — not landed to main.**
+Per the stop-on-fail tripwire: the wall is not dead, so the mandated ladder
+beyond kernel-oracle/kernel-parity/the-49-row-scaled-suite (fuzz 200+2000×2,
+full un-scaled `test:wasm`, full battery re-run, dormant byte-identity,
+build×2, memory watermark curve, jz×jz) was NOT run — contingent on the wall
+closing, and it doesn't. The fix (module/core.js `__region_relocate_props`,
+layout-kinds.js `regionArmTyped`) is committed as a new commit ON TOP of
+`region-final-2026-08-11` (still un-landed, still dormant in the shared
+tree) — worth keeping regardless of this wall, same "real bug, land it
+standalone" logic the OBJECT ephemeral-dyn-props and `regionArmSetMap` fixes
+earned earlier in this same section, and it closes two genuine, independently
+demonstrated correctness gaps (diamond-shared durable HASH; diamond-shared
+durable TYPED view) that user-facing region-live code would eventually hit
+regardless of whether they explain THIS wall. Shared tree (`main`) untouched
+except this ledger entry; worktree removed at session end.
+
+**Recommendation for next session**: (1) don't re-open the diamond/durable-
+revisit axis — it's now closed, both by code fix and by the negative
+discriminating-prediction result; (2) the productive next lever is still the
+one named by the immediately-prior session and never yet tried on this
+specific class: a `$__alloc`-entry-style (or, better per this session's own
+finding that alloc-entry was already falsified for a DIFFERENT repro, an
+entry-guard on whichever function the STACK TRACE actually blames — the
+prior session's own `$__map_from`/`forwardPropagate` technique) runtime
+trace pointed DIRECTLY at one of the 39 surviving repros (e.g.
+"Number/parseFloat: subnormals..." or "Set algebra: union/intersection...")
+rather than at generic allocator entry; (3) given this session's own
+ordering audit found no further LOGIC gap in the region arms themselves
+(every arm now correctly memos-before-recursing on every branch, durable and
+ephemeral), the remaining mechanism is very likely NOT in `__region_copy_rec`
+/`__region_relocate_props` at all — it is more likely to be, per the
+prior sessions' own repeated finding, in how watr's OWN cross-function
+fusion reshapes a caller that happens to hold a decoded offset across a
+`__region_exit` call without re-deriving it — the search should move OFF
+this file's own arms and onto the fused-caller / decoded-offset-cache axis
+those sessions already pointed at, not back into `__region_copy_rec`.
+
 ## [ ] Carrier invariant / storedValue (was carrier-invariant-design.md; predecessor of the carrier program)
 
 The boxed-value invariant program that preceded carrier-representation.
