@@ -10505,3 +10505,54 @@ carries none of that):
 
 **Commits**: `0833ef58` (scripts/build-profile.mjs new + scripts/build-dist.mjs
 + scripts/selfhost-build.mjs + scripts/self.js marker) + this entry.
+
+## Status (2026-08-11, ARCHITECTURE RE-AUDIT item 3 LANDED — ctx.plans session
+## PlanStore for the 3 pre-emission plan maps, `975ada70`)
+
+**Finding, restated**: `astClosurePlan` (src/compile/closure-plan.js),
+`astLoopPlan` (src/compile/loop-model.js), and `loopPlanLink` (src/ir.js) were
+three separately-owned module-scope `let` WeakMap bindings, each independently
+reassigned to a fresh WeakMap by its own private `resetX()` closure registered
+on ctx.js's `RESET_HOOKS` (`registerResetHook`) — the audit-#19 P0
+session-ownership fix (self-hosting lowers WeakMap to a strong Map, so a
+module-global map would leak plans from a PRIOR `compile()` into the next one,
+and arena-reset offset reuse can pointer-collide a fresh AST node with a stale
+key) applied three times over, once per map, three parallel copies of the same
+plumbing.
+
+**Fix**: folded into ONE `ctx.plans = { closures, loops, loweringLinks }`
+subtree, assigned directly inside `src/ctx.js`'s `reset()` — the SAME idiom
+`ctx.features`/`ctx.linkDemand` already use immediately above it (a plain
+object literal rebuilt fresh every reset(), no hook-array indirection) — for
+state whose 3 owning modules had no reason to keep private reset plumbing once
+reset() can hand them a fresh subtree directly. Also added `ctx.plans` to
+`assertCtxInvariants`'s "sub-contexts present" check for symmetry with the
+other subtrees. The 3 exports (`astClosurePlan`, `astLoopPlan`, `loopPlanLink`)
+and 3 reset hooks (`resetAstClosurePlan`, `resetAstLoopPlan`,
+`resetLoopPlanLink`) are deleted; every consumer now reads `ctx.plans.*`
+directly — `module/function.js`'s `ctx.closure.make` (`ctx.plans.closures`),
+`src/compile/emit.js`'s `'for'` handler + the unroll rename walk
+(`ctx.plans.loops`, `ctx.plans.loweringLinks`), `src/optimize/vectorize.js`'s
+`assertLoopPlanAgrees` (`ctx.plans.loweringLinks`). `test/session-
+reentrancy.js`'s doc comment updated to describe the new subtree instead of
+the retired RESET_HOOKS mechanism (code unchanged — it's a black-box
+`compile()` probe, never imported the maps directly).
+
+**Gate ladder** (two isolated worktrees — `975ada70` item-3 and `c10a13f9`
+item-2-only baseline — `node_modules` symlinked from the main tree, which had
+a concurrent, uncommitted region investigation in module/core.js et al. from
+another session mid-flight throughout; both worktrees' checked-out commits
+carry none of that):
+
+| check | result |
+|---|---|
+| byte-identity spot-check ×10 (alpha/blur/bytebeat/crc32/fft/mandelbrot/nbody/particle/synth/lorenz, `optimize:'size'`, same bench-size.mjs config) | IDENTICAL, item-3 vs. item-2-only baseline, all 10 sha256 match |
+| `node test/session-reentrancy.js` | 5/5 (12 assertions) — the audit-#19 P0 stale-plan probe, including the `CLOSURE_LOOP_A`/`B` pair this fix's own precedent test targets |
+| `node test/kernel-parity.js` | 3/3 groups, 33/33 assertions, byte-identical WAT at O0/O2/O3 |
+| `node scripts/battery.mjs` (incl. `dbg` = O3 + `JZ_DEBUG_INVARIANTS=1`) | GREEN except the one pre-existing, already-documented flake ("typed RMW: one guard covers the pure read and ignored OOB store", codec-bounds guard-coalescing — fired on all 5 of native/O0/O3/dbg/wasi this run, consistent with it being load/timing-sensitive under concurrent CPU contention, not a real regression; identical single-test signature to item 2's battery run above); `dbg` leg green otherwise — 0 new `assertCtxInvariants`/invariant fires from the `ctx.plans` refactor; fixpoint PASS; fuzz 30173 compared, 0 divergence; self 21/21 (206 assertions); kernel 2716 pass; build succeeded (dist hash differs from item 2's, expected — self-hosting a different compiler source) |
+| native `node test/index.js` (pre-worktree sanity, run in-tree right after the edit) | 3419/3427 pass, the same 2 pre-existing flakes, before the isolated-worktree re-verification above |
+
+**Commits**: `975ada70` (src/ctx.js, src/compile/closure-plan.js,
+src/compile/loop-model.js, src/ir.js, src/compile/emit.js,
+src/optimize/vectorize.js, module/function.js, test/session-reentrancy.js) +
+this entry.
