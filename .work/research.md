@@ -2607,3 +2607,124 @@ both sources at O0/O1/O2/O3. Its targeted hosted run
 passes 141/141 tests (305 assertions), including a real RangeError with thrown
 code 205 and the Float64Array oracle. Classification is therefore decisive:
 one residual is fixed upstream; one is region-only and remains banked.
+
+## §Region arena — STRUCTURAL-FUSION DISCRIMINATOR: PAD/PIN PAIR (2026-08-11),
+disposable scratchpad worktrees off `region-final-2026-08-11`@`0d089b49`
+(decisive) and `d1f2f2ba` (pad-control), node_modules cloned per-worktree —
+verdict: BOTH tests NEGATIVE. The "compiled SHAPE of `__region_copy_rec`
+crosses a watr fusion/inlining threshold" hypothesis (this section's own
+prior "wall2 WAT-diff" and "second-wall pass bisection" entries' final open
+angle) is now REFUTED on both its named sub-mechanisms. Wall NOT closed;
+banked, no further hunting attempted this session per the task's own
+"wall ⇒ bank, stop" instruction. Independent of, and not informed by, the
+concurrent "safepoint rooting" thread visible immediately above this entry
+(49→42) — this session worked strictly the structural-fusion axis named in
+its own brief, against the `0d089b49` baseline (49→45, windows A+B).
+
+**Repro used** (found faster/cheaper than the historical `String(x>0&&1)`
+row, which the ordering-audit fix already closed): kernel-oracle's own
+`computed member key` row, `export let f = (x) => { let o = {}; o[x > 0 &&
+1] = 'v'; return o['0'] }`, O3, deterministic 3-4/3-4 reps every build below
+— same ambiguous-BOOL∪NUMBER-merge family as the closed row, different
+concrete source. Found by running `test/kernel-oracle.js` once against a
+freshly-built decisive kernel (14814428 bytes): **13-row harness now reports
+3 failures, not the banked 13/13** — `fromnested` (O2,
+`Int32Array.from([Float64Array.from([5])[0], 2])`) and `computed member key`
+(O3) both trap, a REGRESSION in kernel-oracle itself versus every prior
+session's 13/13 report, first surfaced here. `fromnested` was checked
+against a plain, unpadded `d1f2f2ba`+regionHooks-wired control and **traps
+there too, 3/3** — pre-existing, region-unrelated, disqualified as a
+discriminator. `computed member key` is clean 3/3 on that same unpadded
+control — a valid discriminator, used for both tests below.
+
+**PAD TEST**: measured `__region_copy_rec`'s SOURCE-template shape directly
+(module/core.js's hand-written stdlib entry vs. layout-kinds.js's
+`regionCopyRecBody({hasDynProps:true})`, the shape the kernel's own compile
+of itself actually pulls): control 87 lines / 6720 chars / 19 declared
+locals; decisive 434 lines / 32781 chars / 22 locals. Appended an inert
+padding block directly inside the control's `__region_copy_rec` body,
+immediately after the ATOM immediate-check (same structural position real
+arms occupy), gated behind `(if (i32.eq $t (i32.const -999999)) …)` —
+`$t` is `__ptr_type`'s return, a small enumerated tag range, so
+`-999999` is unreachable by construction; 343 inert `local.set` statements
+over 3 new padding locals. Measured post-splice: 434 lines (exact match) /
+31887 chars (2.7% under target) / 22 locals (exact match). Rebuilt
+(14844274 bytes, +55 kB over unpadded control's 14789181): `computed member
+key` O3 stays **clean 4/4**, `string-ambiguous` (the already-closed row)
+stays clean 4/4, `fromnested` O2 still traps 4/4 (unchanged, confirming the
+padded rebuild is otherwise behaviorally stable, not a broken build).
+**Verdict: pure inert size/local-count growth INSIDE `__region_copy_rec`'s
+own body, matched to the decisive build's measured shape, does NOT
+reproduce the wall.** Consistent with (extends, not merely repeats) the
+prior "layout-lottery hypothesis REFUTED" and "content isolation… does not
+reproduce" findings — those tested size/content elsewhere in the bundle or
+as unwired sibling functions; this is the first test of padding inside the
+one function itself, and it too comes back clean.
+
+**PIN TEST**: added `watr: { pin: ['$__region_copy_rec',
+'$__region_relocate_props'] }` to the region-live meta-compile's optimize
+config only (`compile()`'s `optimize.watr` object, verified to flow through
+`resolveOptimize`'s `n === 'watr' && typeof v === 'object'` passthrough into
+`resolveWatrOpts`, the same `pin` channel `SIMD_PINNED` uses for
+`$math.*`/transcendentals against watr's `inline`/`inlineWrappers`/
+`inlineOnce`/`dedupe` sole-caller passes — grep-verified as the ONLY four
+passes `pin` gates in `node_modules/watr/src/optimize.js`). Rebuilt decisive
+with the pin active: **byte-identical to the unpinned decisive build**,
+14814428 bytes both — the pin is a proven, whole-kernel no-op. `computed
+member key` O3 still traps 3/3, unchanged. **Verdict: explicitly protecting
+`__region_copy_rec`/`__region_relocate_props` from watr's inliner has ZERO
+effect** — because, consistent with the wall2 WAT-diff session's own
+earlier finding ("`__region_copy_rec` has exactly ONE external
+(non-self-recursive) caller… present as a named function in both dumps"),
+neither function was ever an inlining target to begin with (both are
+directly or mutually self-recursive, which excludes them from `inline`/
+`inlineOnce`/`dedupe`'s sole-caller-fusion candidacy regardless of `pin`).
+The task's own named mechanism — "watr's fusion/inlining of copy_rec's
+shape" as a caller-fusion event — does not exist as stated; there was
+nothing for the pin to prevent.
+
+**By-name verification: not run.** Byte-identity between pinned and
+unpinned decisive builds is strictly stronger proof than a by-name compare
+would be (identical bytes cannot produce a different pass/fail set); running
+the full scaled `test:wasm` suite against them would be certain to reproduce
+the identical 45-row set already banked at `0d089b49` and was skipped as
+non-informative. The padded control was not run through the full suite
+either — a single clean, previously-representative repro plus the
+already-established "unpadded control passes the full suite cleanly" fact
+make a full run non-discriminating for a negative single-repro result;
+skipped per the same reasoning, not for want of time.
+
+**Where this leaves the wall**: every named axis in "the last uneliminated
+axis" framing is now closed, all negative — not a single pass (prior
+session's batch-1/2 ablation), not generic size (prior session's inert
+padding elsewhere in the bundle), not new-arm content alone (prior
+session's content-isolation), not bare size/local-count matched INSIDE the
+one function (this session's PAD test), not fusion-into-a-caller of that one
+function (this session's PIN test, and it was never fusing in the first
+place). What is NOT yet ruled out, and is the honest remaining candidate:
+the SPECIFIC bit-pattern/instruction-sequence content of the real arms
+(dispatch rewiring + real arms together, already shown jointly necessary)
+perturbing some OTHER auto-numbered function's compiled shape downstream —
+a `$closureN`/`$__mkptr_6_N_d`-class renumbering event, per this section's
+own wall2 entry, structurally invisible to every static, name-based
+technique tried so far (including this session's). The wall2 session's own
+un-pulled lever — a runtime `$__alloc`-entry-style trace pointed DIRECTLY at
+`computed member key`'s actual faulting frame (not generic allocator entry;
+the desync-fix session's own `$__map_from`/`forwardPropagate` stack-walk
+technique) — remains the most concrete untried next step, now with a
+cheaper, single-repro-deterministic fixture (`computed member key` O3) in
+hand instead of the historical fuzz-seed-derived ones.
+
+**Per the stop-on-fail tripwire**: NOT landed, NOT closed. No shared-tree
+source file was ever modified — all edits (padding splice, regionHooks
+uncomment, pin override) live only in two disposable scratchpad worktrees,
+removed at session end. `git status`/`git diff` in the shared tree show no
+changes from this session's work (an unrelated `src/compile/plan/inline.js`
+edit, present at session start, was resolved by other concurrent work before
+this entry was written — not touched by this session either way). Gate
+ladder beyond the two discriminator repros (kernel-oracle full 13/13,
+kernel-parity, fuzz 200+2000×2, full battery, dormant byte-identity,
+build×2, memory watermark curve, jz×jz) NOT run — contingent on the wall
+closing, and it does not. SHAs: decisive base `0d089b49`
+(region-final-2026-08-11), pad-control base `d1f2f2ba`. No branches created;
+both worktrees were scratch-only (uncommitted edits, discarded on removal).
