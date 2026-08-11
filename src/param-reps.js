@@ -88,6 +88,20 @@ export const ensureParamRep = (paramReps, funcName, k) => {
  * @property {Set<string>} possibleKinds  Powerset over VAL.*. BOTTOM = ∅ (unobserved).
  *   Join = ∪. Never null/undefined for a resolved key — TOP is the full 14-member
  *   Set, an ordinary member of the same type as every narrowed answer (§1.6).
+ * @property {'open'|'closed'} [kindsCoverage]  Sibling of `possibleKinds` (re-audit
+ *   item 9(a)): whether EVERY call site feeding `possibleKinds` was actually
+ *   enumerated by this fixpoint. A non-empty `possibleKinds` alone cannot prove
+ *   exclusion — an external caller (exported) or an indirect one (the function's
+ *   name escapes into `valueUsed`, so it can be invoked through a value/table
+ *   this walk's `callSites` census never sees) could still pass an unobserved
+ *   kind. DEFAULT is 'open' (the field is absent unless a producer explicitly
+ *   marks 'closed'); a producer may mark 'closed' ONLY where it has verified
+ *   every call site is enumerated and none is external/indirect/exported —
+ *   narrow.js's own `!f.raw && !f.exported && !valueUsed.has(f.name)` predicate
+ *   (already used by `narrowReturnArrayElems`'s targets filter for the identical
+ *   "have we truly seen every site" question). See the exclusion-projection
+ *   contract below, updated to require `possibleKinds.size > 0 && kindsCoverage
+ *   === 'closed'`.
  * @property {boolean} presence  false = PRESENT, true = MAYBE_UNDEF. Join = ∨
  *   (monotone OR, same algebra as today's `mayBeUndefined`, re-homed only).
  * @property {Set<string>|'ALL'} pointsTo  Powerset over SchemaId, or the literal
@@ -164,12 +178,21 @@ export const cloneRep = (r) => {
 }
 
 /**
- * Exclusion-projection contract (audit-#16 P0-1, second half): `possibleKinds`
- * with ∅ means ZERO observations (BOTTOM — an unanalyzed, exported,
- * host-callable, or never-called binding), NOT "no kinds possible". Any
- * projection that EXCLUDES a kind (`cannotBe`/disjointness over this field)
- * must fail closed — return "cannot exclude" — when the set is empty or the
- * fact is absent. Only a non-empty set (every live observation joined, with
- * unresolvable observations joining the full KIND_UNIVERSE per narrow.js's
- * mergeRule) may prove exclusion.
+ * Exclusion-projection contract (audit-#16 P0-1, second half; UPDATED by
+ * re-audit item 9(a) to add the coverage conjunct): `possibleKinds` with ∅
+ * means ZERO observations (BOTTOM — an unanalyzed, exported, host-callable,
+ * or never-called binding), NOT "no kinds possible". Any projection that
+ * EXCLUDES a kind (`cannotBe`/disjointness over this field) must fail closed
+ * — return "cannot exclude" — when the set is empty, the fact is absent, OR
+ * `kindsCoverage !== 'closed'`. A non-empty set alone is NOT sufficient: it
+ * proves "these kinds were observed," not "no other kind is possible" —
+ * that second half needs `kindsCoverage`'s proof that every call site was
+ * actually seen (an exported/value-used function's uncovered external
+ * callers could always supply an unobserved kind, however consistent the
+ * enumerated sites are). Only `possibleKinds.size > 0 && kindsCoverage ===
+ * 'closed'` (every live observation joined, with unresolvable observations
+ * joining the full KIND_UNIVERSE per narrow.js's mergeRule, AND no
+ * external/indirect caller escaped enumeration) may prove exclusion. Still
+ * zero semantic consumers as of this field landing — this is what FINALLY
+ * makes `possibleKinds` safe to consume for exclusion, not a live migration.
  */

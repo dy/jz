@@ -2520,6 +2520,26 @@ export default function narrowSignatures(programFacts, ast) {
     }
   }
 
+  // kindsCoverage (re-audit item 9(a), param-reps.js's Fact JSDoc + updated
+  // exclusion-projection contract): mark 'closed' ONLY for a func whose every
+  // call site this fixpoint's `callSites` census actually enumerated — not
+  // raw (no facts model), not exported (no external JS/host caller with
+  // arbitrary args), and its name never escaped into `valueUsed` (no
+  // indirect/first-class-value call — stored/passed/returned as a value —
+  // that could invoke it outside the literal `f(...)` nodes `callSites`
+  // tracked). Same predicate `narrowReturnArrayElems`'s own `targets` filter
+  // already uses for the identical "have we truly seen every site" question
+  // (line ~1010 above). DEFAULT stays 'open' (field absent) for every other
+  // param — a wider possibleKinds set from more call sites is always safe to
+  // ADD later; downgrading a wrongly-'closed' mark is not, so this only ever
+  // marks 'closed' where the predicate holds, never guesses.
+  for (const func of ctx.func.list) {
+    if (func.raw || func.exported || valueUsed.has(func.name)) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
+    for (const r of reps.values()) r.kindsCoverage = 'closed'
+  }
+
   if (DBG_INVARIANTS) assertValKindConsistent(paramReps)
 }
 
