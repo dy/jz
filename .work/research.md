@@ -1223,6 +1223,67 @@ heisenbug (banked, hardest open class). Re-enable gated on the watr
 regionHooks API publication (USER-owned dependency; pristine watr 5.7.12
 restored in node_modules) + the O3 hunt; warm checkpoint then gates SHIP.
 
+RE-TEST (2026-08-10/11, watr 5.7.13 regionHooks published — shape verified:
+opts.regionMark?.()/opts.regionExit(mark,[ast,dirty,snapshots]) in
+node_modules/watr/src/optimize.js:8395/8460 matches self.js's dormant
+`{mark:()=>__region_mark(), exit:(mark,root)=>__region_exit(mark,root)}`
+exactly, and module/core.js's __region_mark/__region_exit intrinsics (2419-
+2420) match both ends). Re-wired, rebuilt: **both original banked walls are
+DEAD on the curated corpus** — kernel-oracle 13/13 (493 assertions) × 5
+clean reps at O0/O2/O3 (dvnested-mechanism, the original tripwire, traps
+zero times), kernel-parity 33/33 byte-identical at O0/O2/O3, zero flakes.
+The 3 hazard fixes already landed in module/core.js's __region_copy_rec/
+__region_relocate_props (dyn-props sidecar migration, dead code while
+dormant) are confirmed live-correct — that's what killed the O2 wall. The
+O3 fusedRewrite×treeshake wall is also gone on this corpus; not isolated
+which of watr 5.7.13's devirt stale-selector fix (e336177) vs. the O2 fixes
+killed it, and it no longer matters — moot once the curated corpus is clean.
+
+**A NEW WALL, found by broader coverage the curated 13-program suite never
+exercised**: an isolated re-run of test:wasm's own fuzz GATE (`fuzz({count:
+200, seedStart:1, inputs:12, inputSeed:7, optLevels:[0,1,2,3]})`, the exact
+object `npm run test:wasm`'s "no new miscompiles in seeds 1..200" test
+uses) found **7/200 real findings**, all `jz-compile` kind, `memory access
+out of bounds`, O2-only (seeds 32/101/157) or O3-only (36/69/103/161), zero
+at O0/O1. **Confirmed region-caused by direct A/B**: the same 7 seeds, same
+process, rebuilt with hooks dormant — 0 findings, clean. Reproduces
+deterministically in an isolated single-process run (200-600ms/seed, ample
+free memory) — not a swap/contention artifact (the session's machine did
+independently hit a near-exhausted-swap condition, 15.99/17.4GB used,
+matching a previously-diagnosed environment-artifact signature from an
+earlier ledger entry, but the traps were verified to reproduce cleanly
+*without* that condition present at verification time). Two minimal repros
+banked: seed 69 opt3 (`export let f = (p0) => { let v0 = p0; let v1 =
+Math.trunc(0); v1 = (-(Math.min(Math.ceil(5), (~(Math.sqrt(v0)))))); let v2
+= Math.imul(Math.round(v1), v0); return Math.max((-(Math.min((p0 % v2),
+(((v0 >= v1)) ? (v2) : (0))))), p0); }`) and seed 161 opt3 (longer,
+adds a `while` loop — see session transcript). Both are plain scalar f64
+arithmetic (Math.trunc/min/imul/ceil/sqrt/round over one param) — no
+arrays, closures, dicts, or typed arrays — meaning the hazard is OUTSIDE
+the design's own hazard inventory (SET/MAP rebuild, durable-array in-place
+walk, dyn-props sidecar), a genuinely new, not-yet-understood mechanism.
+NOT root-caused this session (no time to bisect which region-copy path
+drops or corrupts state for pure-scalar function bodies).
+
+**Per the stop-on-fail tripwire**: hooks reverted to DORMANT again
+(scripts/self.js's regionHooks line re-commented — `git diff` against HEAD
+is empty), dist/jz.wasm rebuilt dormant and reverified clean (kernel-oracle
+13/13/493, kernel-parity 33/33 byte-identical). The rest of the mandated
+ladder (test:wasm full run, selfhost, fuzz 2000×2, build×2 byte-identity,
+memory watermark curve, jz×jz) was NOT run — gated on the wall being dead,
+and it isn't. `npm test` (native battery) WAS run once against the
+region-live build before the fuzz leg exposed the wall: 3419/3427 pass, the
+2 known-banked pre-existing fails (interval-walk/typed-RMW codec-bounds
+rows) unchanged, 6 skip — no NEW native-battery regression; the wall is
+specific to the self-hosted kernel target.
+
+**Recommendation**: next session, root-cause the scalar-only region-copy
+hazard using the two banked repros (cheapest entry: instrument
+__region_copy_rec/__region_exit the same way the original root-cause
+session did — dbg globals for stage/rounds/kind — on seed 69's ~230-char
+repro directly via kernel-target.js, no fuzz harness needed) before any
+further re-enable attempt. Re-enable stays gated on that fix.
+
 ## [ ] Carrier invariant / storedValue (was carrier-invariant-design.md; predecessor of the carrier program)
 
 The boxed-value invariant program that preceded carrier-representation.

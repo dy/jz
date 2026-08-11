@@ -4438,6 +4438,19 @@ compilation, not `resolveCallee`).
       moonrun's is unaffected, before deciding whether this is a real
       compiler-side regression or a machine/wasmtime-version change).
 
+      REGION-ARENA RE-TEST (2026-08-10/11, watr 5.7.13 regionHooks
+      published): the jz×jz self-host compile-time OOB's fix path
+      (region arena, separate axis from the jz-wasmtime runtime-floor
+      regression above) was re-attempted. Both originally-banked walls
+      (dvnested-mechanism O2/O3 trap, O3 fusedRewrite×treeshake) are DEAD
+      on the curated kernel-oracle/kernel-parity corpus — but broader
+      fuzz coverage found a NEW, confirmed region-caused wall (7/200 fuzz
+      seeds trap "memory access out of bounds" at O2/O3, A/B-verified
+      against a dormant rebuild). Hooks reverted to dormant per the
+      tripwire discipline; jz×jz stays blocked. Memory watermark curve
+      NOT re-run (gated on the wall being dead). Full account: .work/
+      research.md §Region arena's "RE-TEST (2026-08-10/11...)" section.
+
 ## Open
 
 * [ ] WARM SELF-HOST PERF REGRESSION (FOUND 2026-08-06, EVIDENCE FINALE
@@ -10189,3 +10202,103 @@ selfhost/fuzz-default quartet at ~16 min). Nothing reverted, nothing
 re-baselined — every gate matches its pre-bump number exactly, confirming
 the devirt fix is a pure correctness gain with no measurable regression
 anywhere in jz's own corpus.
+
+## Status (2026-08-10/11, REGION-ARENA RE-ENABLE ATTEMPT — watr 5.7.13's
+## regionHooks unblocked the re-test; both ORIGINAL banked walls are DEAD,
+## but broader fuzz coverage found a NEW, confirmed region-caused wall.
+## Tripwire discipline: hooks reverted to DORMANT, stopped — see
+## .work/research.md §Region arena's "RE-TEST" section for the full account)
+
+**Hook-shape verification**: watr 5.7.13's `node_modules/watr/src/
+optimize.js` (`opts.regionMark?.()` at line 8395, `opts.regionExit(mark,
+[ast,dirty,snapshots])` at 8460) matches scripts/self.js's dormant-commented
+`regionHooks: { mark: () => __region_mark(), exit: (mark, root) =>
+__region_exit(mark, root) }` exactly, which matches module/core.js's
+`__region_mark`/`__region_exit` intrinsics (2419-2420: `__region_mark`
+takes no args returns f64; `__region_exit` takes `(mark, root)` returns
+f64). No shape mismatch — safe to re-wire.
+
+**Re-wired** (uncommented the regionHooks line), rebuilt dist/jz.wasm
+(~7 min self-host build, clean).
+
+**Both original banked walls: DEAD on the curated corpus.** `test/kernel-
+oracle.js` 13/13 (493 assertions) × 5 clean repeated runs at O0/O2/O3 —
+dvnested-mechanism (the original tripwire trap) never reproduces. `test/
+kernel-parity.js` 33/33 byte-identical at O0/O2/O3 (confirms regions don't
+touch target OUTPUT, only the kernel's own compile-time memory, as
+designed). The 3 hazard fixes already landed in module/core.js's
+`__region_copy_rec`/`__region_relocate_props` (dyn-props sidecar
+migration — dead code while dormant) are now confirmed live-correct; that's
+what killed the O2 wall. The O3 fusedRewrite×treeshake `$__ptr_type`/
+`$__ptr_aux` joint-necessity wall is also gone on this corpus — not
+isolated whether watr 5.7.13's devirt stale-selector fix (e336177) or
+something else killed it; moot once kernel-oracle/kernel-parity are both
+clean at O3.
+
+**A NEW WALL, found by coverage the curated 13-program suite never had**:
+an isolated direct call to `test/fuzz.js`'s `fuzz()` with the EXACT `GATE`
+object `npm run test:wasm`'s "fuzz: no new miscompiles in seeds 1..200 ×
+opt {0,1,2,3}" test uses (`{count:200, seedStart:1, inputs:12, inputSeed:7,
+optLevels:[0,1,2,3]}`, routed through `test/kernel-target.js`'s
+`compileViaKernel` the same way the real test does) found **7/200 real
+findings**, all `kind:"jz-compile"`, `err:"memory access out of bounds"`:
+O2-only at seeds 32/101/157, O3-only at seeds 36/69/103/161, zero at O0/O1.
+
+**Confirmed region-CAUSED, not environment noise, via direct A/B**: backed
+up the region-live dist/jz.wasm, re-commented the regionHooks line, rebuilt
+dormant (~7 min), re-ran the SAME 7 seeds against the dormant kernel — **0
+findings, all clean**. Then re-verified the region-live traps still
+reproduce in a fresh isolated single-process run (200-600ms/seed, no other
+heavy processes running, ample free memory) — deterministic, not a fluke.
+Worth naming precisely because the session's machine also independently hit
+a near-exhausted-swap condition (15.99/17.4GB used) partway through — the
+exact signature a prior ledger entry ("WARM + MEMORY-FLOOR reds RESOLVED as
+ENVIRONMENT, not code", 2026-08-06) diagnosed as a false positive — so the
+traps were deliberately re-verified clean *after* killing every stray
+concurrent process, ruling that out as the explanation here.
+
+Two minimal repros banked (both plain scalar f64 arithmetic — no arrays,
+closures, dicts, or typed arrays, meaning this hazard sits OUTSIDE every
+class the design's own hazard inventory named):
+- seed 69, opt 3: `export let f = (p0) => { let v0 = p0; let v1 =
+  Math.trunc(0); v1 = (-(Math.min(Math.ceil(5), (~(Math.sqrt(v0));
+  let v2 = Math.imul(Math.round(v1), v0); return Math.max((-(Math.min((p0
+  % v2), (((v0 >= v1)) ? (v2) : (0))))), p0); }`
+- seed 161, opt 3: same shape, longer, adds a `while` loop (full source in
+  research.md).
+Not root-caused this session — no time to bisect which `__region_copy_rec`
+path drops or corrupts state for a pure-scalar function body (no
+array/dict/closure surface at all, so none of the 3 already-fixed hazard
+sites apply; a genuinely new, fourth mechanism).
+
+**Per the stop-on-fail tripwire**: hooks reverted to DORMANT (scripts/
+self.js's regionHooks line re-commented — `git diff scripts/self.js`
+against HEAD is empty). dist/jz.wasm rebuilt dormant a final time and
+reverified clean: kernel-oracle 13/13 (493 assertions), kernel-parity 33/33
+byte-identical. The rest of the mandated ladder — full `test:wasm`,
+`test:self`, fuzz 2000×2, build×2 byte-identity, the memory watermark curve
+(jessie/watr/jzify-entry/jz×jz), and the jz×jz value-verify probe — was
+**NOT run**, gated on the wall being dead, and it isn't. `npm test` (native
+battery) WAS run once against the region-live build, before the fuzz leg
+exposed the wall: 3419/3427 pass, the 2 known-banked pre-existing fails
+(interval-walk/typed-RMW codec-bounds rows, unrelated) unchanged, 6 skip —
+no NEW native-battery regression; the wall is specific to the self-hosted
+kernel target, invisible to the native lane.
+
+**Process note**: this session's own diagnostic probes (run concurrently
+with the main `test:wasm` invocation to sanity-check its multi-hour
+runtime) stacked multiple heavy node processes on one machine and
+independently drove it into the swap-exhaustion condition noted above —
+self-inflicted, corrected by killing the stray processes before the final
+A/B verification. Not a finding about the compiler; a process-hygiene note
+for next time (don't run parallel kernel-fuzz probes alongside a live
+mandated-gate run).
+
+**Recommendation**: next session, root-cause the scalar-only region-copy
+hazard using the two banked repros — cheapest entry point is a direct
+`compileViaKernel(src, {optimize:3})` call on seed 69's ~230-char source
+(no fuzz harness, no test suite needed to reproduce), instrumented the same
+way the original root-cause session did (`__region_dbg_*` globals for
+stage/rounds/kind in module/core.js). Re-enable stays gated on that fix;
+the jz×jz bench row and the MEMORY goal's compile-time-OOB axis stay
+blocked until then.
