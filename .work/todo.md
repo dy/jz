@@ -10637,3 +10637,85 @@ residuals against a dormant-kernel control run before assuming pre-existing.
 
 **Commits**: none to the shared tree's compiler source. This entry +
 `.work/research.md`'s matching append only.
+
+## Status (2026-08-11, ARCHITECTURE RE-AUDIT item 4 LANDED — ClosureId +
+## authoritative per-capture plan record, `0edcddea`)
+
+Full account in `.work/closure-plan-design.md`'s own "AS-LANDED (2026-08-11)
+— architecture re-audit item 4" section (record shape, primary/shadow flip,
+the destructured-param-closure `rawParams`-keying design and why the
+"normalize earlier" alternative was rejected, coverage report, full gate
+table). Summary:
+
+- Record deepened to `{id: ClosureId, storage: 'none'|'heap', captures:
+  [{name, bindingId, mode: 'value'|'cell'|'constant', constant?}]}` —
+  `module/function.js:108-155`'s (pre-item-4 numbering) inline free-var/
+  constant-fold/boxed-cell re-derivation is now the mint's job; the emitter
+  consumes the plan as PRIMARY and its own derivation is the
+  `JZ_DEBUG_INVARIANTS` shadow-assert (flipped from slice 1/2).
+- Destructured-param closures now get plans (previously excluded entirely) —
+  keyed on `rawParams` (stable across emit.js's body-reconstructing
+  destructuring-prepend rewrite) instead of `body` for that case only, not
+  by moving the rewrite itself earlier (would reorder `ctx.func.uniq`'s
+  temp-name allocation against every other consumer in the function and
+  change WAT text for unrelated code — rejected on that basis, not merely
+  asserted: traced `ctx.func.uniq`'s ~40 call sites across prepare/compile/
+  emit before concluding).
+- Coverage (independently re-measured this session, temporary `globalThis.
+  __ITEM4_CENSUS` counters, reverted before commit): self.js 4003/4417
+  (90.6%, up from the AS-LANDED slice-2 census's 3872/4404 = 88.0%); bench
+  11/19 (57.9%) — bench's TOTAL (19) does not reconcile with the slice-2
+  census's own bench total (174) at the SAME instrumentation point and
+  compile config; flagged as an OPEN QUESTION, not silently smoothed over
+  (self.js's close agreement with precedent argues the counting mechanism
+  itself is sound). Fail-open remainder fully enumerated by shape: primitive-
+  body expression arrows (WeakMap needs an object key — 27 self.js, 0 bench)
+  and closures the mint's walker doesn't classify or reach (387 self.js, 8
+  bench — all 8 in one case, `dispatch`, an array-indexed closure table).
+
+**Concurrent-tree note**: `9d0e3384` ("collection occupancy-length desync:
+fix 3 general writer bugs...") landed on main between this item's own
+predecessor commit (`975ada70`, item 3) and this item's commit — from another
+session's concurrent work, untouched by this item. The 58-case byte-identity
+sweep was FIRST run (incorrectly) against `975ada70` as baseline, produced 8
+false-positive diffs (all in Set/Map/collection-heavy bench cases —
+`base64`/`bezfit`/`fftplan`/`provenance`/`watr`/`wav`/`wordcount`), traced to
+`9d0e3384`'s own unrelated fix via `git log 975ada70..0edcddea`, and
+re-run cleanly against `9d0e3384` (this item's TRUE immediate parent) for
+0 diffs. Caught before drawing any conclusion from the false positive.
+
+**Gate ladder** (isolated worktrees, `0edcddea` vs. `9d0e3384`):
+
+| check | result |
+|---|---|
+| 58-case × O0/O2/O3 byte-identity sweep | 174/174 identical |
+| `node test/kernel-parity.js` | 3/3 groups, 33/33 assertions |
+| `node test/closures.js` (`JZ_DEBUG_INVARIANTS=1`, O3) | 110/110, 0 drift fires |
+| `node scripts/battery.mjs` | GREEN modulo the one pre-existing documented flake (all 5 legs); dbg leg clean otherwise; fuzz 30173/0 divergence; self 21/21; kernel 2716 pass |
+| `JZ_TEST_TARGET=jz.wasm node test/index.js` | 2716/2722 pass, 6 skip, 0 fail |
+| `node scripts/build-dist.mjs` ×2 | byte-identical |
+| direct-execution correctness spot-check (destructured-param closures) | 2/2 correct (accumulator + default-value-override cases) |
+
+**Commits**: `0edcddea` (src/ctx.js, src/compile/closure-plan.js,
+src/compile/emit.js, module/function.js) + this entry +
+`.work/closure-plan-design.md`'s matching AS-LANDED append.
+
+---
+
+## ARCHITECTURE RE-AUDIT items 2-4 — SESSION SUMMARY (2026-08-11)
+
+All three items landed sequentially, each its own commit(s) + isolated-
+worktree gate ladder, per the audit brief:
+
+| item | commit | one-line verdict |
+|---|---|---|
+| 2 — one BuildProfile for both self-host builders | `0833ef58` | build-dist.mjs/selfhost-build.mjs now share `scripts/build-profile.mjs`'s `resolveSelfhostBuild()`; `JZ_CARRIER_BOX=0` honored by BOTH (previously a silent no-op via selfhost-build.mjs); region-arena gate derives ONCE from an explicit `scripts/self.js` marker, not a regex duplicated per builder |
+| 3 — session PlanStore | `975ada70` | `astClosurePlan`/`astLoopPlan`/`loopPlanLink`'s 3 module-`let` WeakMaps + 3 private reset hooks folded into `ctx.plans = {closures, loops, loweringLinks}`, rebuilt directly in `reset()` (the `ctx.features`/`ctx.linkDemand` subtree idiom) |
+| 4 — ClosureId + authoritative per-capture plan | `0edcddea` | record deepened to `{id, storage, captures:[{name,bindingId,mode,constant?}]}`; emitter now CONSUMES the plan (was: computed-then-checked-against); destructured-param closures newly covered via `rawParams` keying; coverage 90.6% self.js / 57.9% bench (bench total unreconciled vs. a prior session, flagged) |
+
+Every item's own gate ladder is in its own `## Status` entry above (this
+file) and, for item 4, additionally in `.work/closure-plan-design.md`'s
+AS-LANDED section. No item required reverting or descoping any of its
+stated scope; item 4's one deliberate scope decision (destructured-closure
+support via `rawParams` keying rather than moving the destructuring rewrite
+earlier) is argued from first principles in its own entry, not asserted.

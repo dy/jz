@@ -890,3 +890,151 @@ consecutive builds); a 10-case × O2 bench-corpus byte-identity spot-check
 (alpha/blur/bytebeat/crc32/fft/mandelbrot/nbody/particle/synth/lorenz)
 sha256-diffed against the unfixed shared tree at the SAME HEAD — 0 diffs, a
 pure lifecycle change.
+
+## AS-LANDED (2026-08-11) — architecture re-audit item 4: ClosureId +
+## authoritative per-capture plan record (`0edcddea`)
+
+Per the audit's own record shape: `{ id: ClosureId, storage: 'none'|'heap',
+captures: [{ name, bindingId, mode: 'value'|'cell'|'constant', constant? }] }`
+— a deepening of slice 1/2's `{ storage, captures: string[] }` record, not a
+new mechanism. Three changes:
+
+1. **`id`** — a stable ClosureId, `ctx.transform.closureId++` (src/ctx.js's
+   reset(), mirroring loop-model's `freshLoopPlanId`) — identifies a PLAN
+   RECORD, never names anything emitted.
+2. **`storage` narrowed to `'none'|'heap'`** — the now-dead `'boxed-cell'`
+   distinction moves onto each capture's own `mode` (below); the never-wired
+   `'lift-eligible'` tag (design §4 slice 3, COORDINATOR RULING: DEFERRED) is
+   dropped from the enum entirely — it had zero consumers and slice 3 remains
+   not undertaken (this item does not revisit that ruling).
+3. **`captures` becomes `[{name, bindingId, mode, constant?}]`** — the
+   planner (closure-plan.js's `mintArrow`) now computes the FULL
+   classification (free vars, constant folds via `ctx.scope.constInts`/
+   `topLevelIntConsts`, boxed cells via `ctx.func.boxed`) that module/
+   function.js's `ctx.closure.make` used to independently re-derive inline
+   at lines 108-155 (pre-item-4 numbering) EVERY closure literal.
+   `bindingId` is `name` itself when it carries prepare/index.js's
+   `<T>f<fnId>_<serial>` BindingId-totality suffix (every function-local
+   capture), `undefined` for a bare module-scope global (BindingId totality
+   only renames function-locals) — "when-available" per the record's own
+   spec, not a promise.
+
+**Primary/shadow flip**: `ctx.closure.make` now derives `envCaptures`/
+`captureIntConsts`/`boxedCaptures`/`storage` FROM the plan when one is
+present (`legacyDerive()`'s inline walk over `captures` is SKIPPED on that
+path) — the reverse of slice 1, which always computed the legacy path and
+only used the plan for an after-the-fact `storage`-string check. Under
+`JZ_DEBUG_INVARIANTS`, `legacyDerive()` still runs, now as the shadow-assert:
+its `env`/`boxed`/`intConsts`/`storage` are compared field-for-field against
+the plan-derived values (order-sensitive for the two arrays, Map-equality for
+`intConsts`), throwing `ClosureEnvPlan drift: …` on any disagreement.
+
+**Destructured-param closures get plans too.** Previously EXCLUDED entirely
+(closure-plan.js's own doc: "the body identity this mint would key on does
+not yet exist at mint time" — emit.js's `'=>'` handler reconstructs a FRESH
+body array to prepend the destructuring `let`s, so a body-keyed plan minted
+against the pre-rewrite body could never be looked up again). Two options
+considered:
+- **Move the destructuring rewrite earlier** (into the mint, or into a
+  prepare-phase normalization pass, matching prepare/index.js's `defFunc`
+  precedent for TOP-LEVEL functions, which already desugars destructured
+  params at prepare time). REJECTED: the rewrite mints fresh temp names via
+  `ctx.func.uniq++`; moving that allocation earlier than today's
+  emission-time point reorders it against every OTHER `ctx.func.uniq`
+  consumer in the enclosing function (loop transforms, literal-promotion
+  passes, every preceding statement's own emission-time temps) — a REAL
+  output change (different generated local names) for any program with a
+  destructured-param closure, which the byte-identity gate this item ships
+  under forbids. Confirmed by direct reasoning about `ctx.func.uniq`'s ~40
+  call sites across prepare/compile/emit, not just asserted.
+- **Key the plan on `rawParams` instead of `body`, for the destructured case
+  only** — CHOSEN. `rawParams` is untouched by the destructuring-prepend
+  rewrite (only `body` is reassigned); the generic AST dispatcher passes
+  handler arguments via a shallow `node.slice(1)`, so the handler's
+  `rawParams` local is the SAME reference the mint saw. `ctx.closure.make`
+  tries the body key first (the common case), then `rawParams` as a
+  fallback. The mint's own free-var scan for this case additionally excludes
+  every param's bound names — plain AND destructured (a small local
+  `collectPatternNames`, mirroring prepare/lift-iife.js's private helper of
+  the same name and shape) — from the capture scan, matching what the
+  post-rewrite body's synthesized `let` destructure statement would have
+  taught `findFreeVars` had the rewrite already happened.
+
+**Correctness spot-check** (destructured closures, direct execution, not
+just byte-diff): a `.forEach(({a, b}) => { sum += a + b })` accumulator (36,
+matches hand-computed expectation) and a destructured param with a default
+value plus a second call site overriding it (96, matches). Both also clean
+under `JZ_DEBUG_INVARIANTS=1` (0 `ClosureEnvPlan drift` fires).
+
+### Coverage report
+
+Measured independently this session (methodology: `globalThis.__ITEM4_
+CENSUS`-gated counters at `ctx.closure.make`'s plan lookup and at the mint's
+key-type-miss branch — temporary, reverted before commit, same technique the
+original survey in §0 of this document used and discarded the same way):
+
+| corpus | mint-covered / total closures | % | miss: primitive-body key | miss: other/unreached |
+|---|---|---|---|---|
+| self.js (build-dist.mjs's own `resolveSelfhostBuild()` options) | 4003 / 4417 | 90.6% | 27 | 387 |
+| bench (57/58 cases — `watr` excluded from THIS particular measurement pass only, a script gap in the module-loading shim, not a coverage gap; `jessie`/`jz` excluded per precedent) | 11 / 19 | 57.9% | 0 | 8 |
+
+**self.js**: up from the AS-LANDED slice-2 census's 3872/4404 (88.0%) — a
+real, modest gain (+131 net covered, uncovered population 532→414) primarily
+attributable to destructured-param closures now minting. Total-closure count
+(4417 vs 4404) is close enough to be ordinary source drift between sessions
+(self.js's own module graph grows commit-to-commit — the design doc's own
+§6 item 5 already established this is expected, not a measurement bug).
+
+**bench**: total-closures-created (19, this session, at `ctx.closure.make`)
+does NOT reconcile with the AS-LANDED slice-2 census's own bench total (174,
+same instrumentation point, same corpus, same compile config —
+`bench-size.mjs`'s `optimize:'size', alloc:false`). NOT reconciled this
+session (flagged, not silently smoothed over, per this document's own
+established practice for the 371-vs-626 and 148-vs-161 discrepancies above).
+Spot-checked individually: every closure-bearing bench case this session's
+census found (bezfit, delayline, deltae, dispatch, glyfparse, nbody,
+provenance, resample, sdf, slices, spmv, trace — 12 cases, matching names
+against §5.2's own list almost exactly) reproduces a plausible, individually-
+verified count (1 closure each, except `dispatch`'s 8 — an array-indexed
+closure table, 0/8 mint-covered, a genuine `other/unreached` case: PLAUSIBLY
+built by a shape (populated by NAME reference to already-let-bound closures,
+or a runtime-constructed table) the walker's structural pattern-matching
+doesn't reach, not investigated further this session — the mint's fail-open
+guarantee means this is a lost optimization opportunity, not a correctness
+risk). Most likely explanation for the 174-vs-19 gap: the prior session's
+`__CEP_SURVEY` counters (this document's own §0) were NOT re-run this
+session to cross-check — a live re-measurement was not attempted, so a
+counter-placement or corpus-config drift between the two sessions' harnesses
+cannot be ruled out. The self.js number's close agreement with precedent
+argues the MECHANISM (this session's instrumentation) is sound; the bench
+discrepancy is the OPEN QUESTION.
+
+**`dispatch`'s 0/8** and self.js's 387 `other/unreached` are the FULL
+enumerated fail-open remainder by shape, on this measurement: (1) an arrow
+whose ENTIRE body is a bare expression collapsing to a primitive AST node
+(string/number, e.g. `x => x`) — WeakMap requires an object key, 27 self.js
+instances, 0 bench; (2) closures reached by `ctx.closure.make` whose
+enclosing form the mint's `walk()` never visits or whose free-var scan this
+session did not further classify — 387 self.js instances, 8 bench (all in
+`dispatch`). Both remainders fail OPEN (verified: 0 `JZ_DEBUG_INVARIANTS`
+`ClosureEnvPlan drift` fires anywhere in the full battery run below), never
+silently wrong.
+
+### Gate ladder (two isolated worktrees: `0edcddea` item-4 and `9d0e3384`
+### its immediate parent on main — NOT `975ada70`/item-3, which predates an
+### unrelated concurrent collection-fix commit that also landed on main
+### mid-session and would have produced false byte-diffs against an older
+### baseline; caught and corrected before drawing any conclusion)
+
+| check | result |
+|---|---|
+| 58-case × O0/O2/O3 byte-identity sweep (jessie/jz excluded, 174 compiles) | 174/174 byte-identical vs. immediate-parent baseline |
+| `node test/kernel-parity.js` | 3/3 groups, 33/33 assertions, byte-identical WAT at O0/O2/O3 |
+| `node test/closures.js` under `JZ_DEBUG_INVARIANTS=1`, `JZ_TEST_OPTIMIZE=3` | 110/110 (221 assertions), 0 `ClosureEnvPlan drift` fires |
+| `node scripts/battery.mjs` (incl. `dbg`) | GREEN except the one pre-existing, already-documented flake ("typed RMW: one guard covers…", fired on all 5 of native/O0/O3/dbg/wasi this run — same single-test signature as items 2 and 3's battery runs); fixpoint PASS; fuzz 30173 compared, 0 divergence; self 21/21 (206 assertions); kernel 2716 pass; build succeeded |
+| `JZ_TEST_TARGET=jz.wasm node test/index.js` (test:wasm) | 2716/2722 pass, 6 skip, 0 fail |
+| `node scripts/build-dist.mjs` ×2 | byte-identical (`eefd3c66…`) |
+
+**Commits**: `0edcddea` (src/ctx.js, src/compile/closure-plan.js,
+src/compile/emit.js, module/function.js) + this entry + `.work/todo.md`'s
+matching append.
