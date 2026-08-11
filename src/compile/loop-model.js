@@ -10,7 +10,7 @@
 // — adding the next loop transform is then one recognizer over these, not a fourth copy.
 
 import { MUTATE_OPS } from '../ast.js'
-import { ctx } from '../ctx.js'
+import { ctx, registerResetHook } from '../ctx.js'
 import { findMutations } from './analyze-scans.js'
 import { guardCounterName, forCounterRange, intExprRange } from '../static.js'
 import { withRefinements } from './flow-types.js'
@@ -168,7 +168,14 @@ export function rewriteBlocks(body, tryStmt) {
 // only piece common to both loop kinds. emit.js captures this same identity as
 // `bodyNode0` at its handler's own entry, "survives the hoist rebind below" —
 // this WeakMap uses that identical anchor.
-export const astLoopPlan = new WeakMap()
+// SESSION-OWNED (audit-#19 P0, same fix as closure-plan.js's astClosurePlan —
+// see its doc comment for the full stale-plan-HIT hazard under self-hosting).
+// `let`, reassigned to a fresh WeakMap per session by resetAstLoopPlan,
+// registered as a ctx.js RESET_HOOKS entry; every importer sees the live
+// ES-module binding, so no consumer call site changes.
+export let astLoopPlan = new WeakMap()
+const resetAstLoopPlan = () => { astLoopPlan = new WeakMap() }
+registerResetHook(resetAstLoopPlan)
 
 // Walks `body` (a function's, or a closure's OWN body — never descends into a
 // nested `=>`/`function`, which gets its own separate mint call when ITS

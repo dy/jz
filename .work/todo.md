@@ -10038,3 +10038,38 @@ selfhost-build (JZ_CARRIER_BOX=0 must be honored by EVERY kernel builder;
 plus the "OFF by default" comment sweep). Items 5-7 = the standing queue
 (RepresentationPlan provenance · whole-graph discovery · fact/session/
 variant/loop ownership).
+
+## AUDIT-#19 P0 LANDED (2026-08-10) — plan-map session ownership
+Fixed in an isolated worktree at HEAD `3f344c6d`. Idiom chosen: NOT the
+fact-store `getFactStore()` accessor (that exists solely to dodge an import
+cycle across program-facts.js/analyze.js/wat-assemble.js; none of the three
+plan maps has that problem) but the simpler sibling already used by
+prepare/index.js's 14-let working set and vectorize.js's why-not-simd flags —
+each map turned into a module-scope `let` (was `const`), reassigned to a
+fresh WeakMap by a `resetX` closure registered via `ctx.js`'s
+`registerResetHook` (RESET_HOOKS, drained by every `reset()`/`beginSession()`
+— both native and self-host `setupSelf` legs). ES-module live bindings mean
+every existing named import keeps working with zero call-site changes.
+WeakMap stays the TYPE; only ownership+lifecycle changed (cleared per
+session, bounding the strong-Map kernel lowering). Files: `src/compile/
+closure-plan.js` (astClosurePlan), `src/compile/loop-model.js` (astLoopPlan),
+`src/ir.js` (loopPlanLink). Full AS-LANDED note: `.work/closure-plan-
+design.md`.
+
+Probe: `test/session-reentrancy.js` gained a 4th pair (`CLOSURE_LOOP_A`/
+`CLOSURE_LOOP_B`, structurally-parallel closures+loops with different literal
+bounds), both orders, warm-vs-fresh-process byte-equality — 5/5 tests, 12/12
+assertions. (`onKernel()`-skipped like the suite's existing pairs — the real
+arena-offset-collision vehicle is self-host warm-instance reuse
+(`JZ_BENCH_WARM`), a benchmark-only path with its own unrelated known gaps;
+this probe validates no regression to ordinary warm reentrancy.)
+
+Gates: full battery 3427/3419 pass/2 fail (both pre-existing documented
+flakes, "interval walk: strided companion cursor…" + "typed RMW: one guard
+covers…", unchanged) /6 skip · `test/simd.js` 158/158 · `test/kernel-
+parity.js` 33/33 (O0/O2/O3) · `scripts/build-dist.mjs` ×2 byte-identical ·
+10-case × O2 bench-corpus spot-check (alpha/blur/bytebeat/crc32/fft/
+mandelbrot/nbody/particle/synth/lorenz) sha256-diffed against the unfixed
+shared tree at the same HEAD — 0 diffs, pure lifecycle change confirmed.
+
+Applied to shared tree: see commit below.

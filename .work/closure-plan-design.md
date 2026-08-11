@@ -826,3 +826,67 @@ transform deferred until a real case needs it (a closure-bound hot bench
 case, or kernel-build profiling showing closure-alloc cost post-reboot).
 The plan record + eligibility data stay live so that day needs only the
 emitter.
+
+## AS-LANDED (2026-08-10) — audit-#19 P0: session-owned plan storage
+
+Confirmed-fixed hazard: `astClosurePlan` (this module) was a module-scope
+`const … = new WeakMap()`, same shape as `astLoopPlan` (loop-model.js) and
+`loopPlanLink` (ir.js). Under self-hosting, WeakMap lowers to a strong Map
+(the kernel has no native GC) — entries from a PRIOR `compile()` session
+therefore survive into the next one for the lifetime of the wasm instance.
+Combined with the self-hosted kernel's bump-allocator arena (`scripts/self.js`
+setupSelf's own doc: "the arena is a bump allocator that `_clear` rewinds
+between compiles… a post-`_clear` allocation can overwrite a dangling entry's
+bytes"), a fresh AST node minted after reset can be allocated at the SAME
+arena offset a stale key occupied — a stale-plan HIT exactly where every
+reader (`ctx.closure.make`, emit.js's `'for'` handler, vectorize.js's
+SIMD-eligibility check) fails open on a MISS, per the pre-trio spec. Precedent
+followed: NOT the ctx.js fact-store's `getFactStore()`-accessor idiom (that
+exists to dodge an import cycle across program-facts.js/analyze.js/
+wat/assemble.js — none of these three maps have that problem, each already
+lives in and is imported directly from its own home module) but the simpler
+sibling idiom already used for prepare/index.js's 14-let working set and
+optimize/vectorize.js's why-not-simd flags: a module-scope **`let`** (not
+`const`), reassigned to a fresh WeakMap by a small `resetX` closure,
+registered once via `ctx.js`'s `registerResetHook` (session survey audit-#13
+slice a's `RESET_HOOKS`, drained by every `reset()`/`beginSession()` call —
+both native `index.js` setupCtx and the self-host kernel's `setupSelf` run
+the identical `src/session.js` `beginSession`, so the fix covers both legs
+uniformly). ES-module live bindings mean every existing named import
+(`module/function.js`'s `astClosurePlan`, `src/compile/emit.js`'s
+`astLoopPlan`/`loopPlanLink`, `optimize/vectorize.js`'s `loopPlanLink`) keeps
+working with ZERO call-site changes — the reassignment inside the defining
+module is visible to every importer automatically. WeakMap stays the TYPE
+(native-GC benefit when NOT self-hosted); only OWNERSHIP+LIFECYCLE changed —
+bounded to one compile's worth of nodes, which is what makes the strong-Map
+kernel lowering sound.
+
+Files: `src/compile/closure-plan.js` (`astClosurePlan` → `let` +
+`resetAstClosurePlan` + `registerResetHook`), `src/compile/loop-model.js`
+(`astLoopPlan`, same shape), `src/ir.js` (`loopPlanLink`, same shape).
+`test/session-reentrancy.js` gained a fourth pair, `CLOSURE_LOOP_A`/
+`CLOSURE_LOOP_B` — two STRUCTURALLY parallel programs (same shape/position:
+a zero-capture closure, a heap-capture closure, a boxed-cell closure via a
+reassigned-inside-closure counter, two loops with different literal bounds)
+compiled sequentially in one process both orders, asserted byte-equal to a
+fresh-process compile of each — a stale plan leaking from A into B's
+same-shaped nodes would read the WRONG hull/boundConst/storage and
+miscompile, not merely no-op, so this is a real regression guard even though
+(like the suite's existing two pairs) it is `onKernel()`-skipped: the actual
+arena-offset-collision vehicle is self-hosted warm-instance reuse
+(`JZ_BENCH_WARM`), a benchmark-only path with its own unrelated known gaps
+(bench-selfhost.mjs's documented WAT-reparse flake) — the in-process JS-host
+probe validates the fix does not regress ordinary warm reentrancy, matching
+the standing suite's own stated scope.
+
+Gates (isolated worktree, HEAD `3f344c6d`): full battery 3427 total / 3419
+pass / 2 fail (both the pre-existing, already-documented `interval walk:
+strided companion cursor…` and `typed RMW: one guard covers…` codec-bounds
+flakes, unchanged) / 6 skip; `test/simd.js` 158/158; `test/kernel-parity.js`
+33/33 (O0/O2/O3); `test/session-reentrancy.js` 5/5 (12 assertions, the new
+pair included); `scripts/build-dist.mjs` ×2 byte-identical (dist/jz.js,
+dist/jz.wasm, dist/interop.js, assets/sprae.js sha256 match across two
+consecutive builds); a 10-case × O2 bench-corpus byte-identity spot-check
+(alpha/blur/bytebeat/crc32/fft/mandelbrot/nbody/particle/synth/lorenz)
+sha256-diffed against the unfixed shared tree at the SAME HEAD — 0 diffs, a
+pure lifecycle change.

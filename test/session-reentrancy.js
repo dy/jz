@@ -92,6 +92,67 @@ const PREPARE_HEAVY = `
   }`
 const MINIMAL = `export let f = () => 1`
 
+// Closure/loop-plan pair (audit-#19 P0 probe): compile/closure-plan.js's
+// astClosurePlan, compile/loop-model.js's astLoopPlan, and ir.js's
+// loopPlanLink used to be module-global WeakMaps — under self-hosting
+// WeakMap lowers to a strong Map (no native GC), so entries from a PRIOR
+// compile() survive into the next one, and the kernel's arena-reset offset
+// reuse can pointer-collide a fresh AST node with a stale key, producing a
+// stale-plan HIT exactly where every reader here fails open on a miss. The
+// fix made all three session-owned (fresh WeakMap per reset()/beginSession(),
+// via ctx.js's RESET_HOOKS). CLOSURE_LOOP_A/B are STRUCTURALLY parallel —
+// same shape/position for a zero-capture closure, a heap-capture closure, a
+// boxed-cell closure (a reassigned-inside-closure counter), and two loops
+// (one with a typed hull, one plain) — but with different literal bounds, so
+// a stale plan leaking from A into B's same-shaped nodes would read the
+// WRONG hull/boundConst/storage and miscompile, not merely no-op.
+const CLOSURE_LOOP_A = `
+  export let mk = (n) => {
+    let zero = () => 42
+    let base = n
+    let heapFn = () => base + 1
+    let counter = 0
+    let inc = () => { counter += 1; return counter }
+    let total = 0
+    for (let i = 0; i < n; i++) { if (i < 100) total += i * 2 }
+    let acc = 0
+    for (let j = 0; j < 50; j++) acc += heapFn() + zero()
+    counter = inc() + inc()
+    return total + acc + counter
+  }`
+const CLOSURE_LOOP_B = `
+  export let mk = (n) => {
+    let zero = () => 7
+    let base = n * 2
+    let heapFn = () => base - 3
+    let counter = 100
+    let inc = () => { counter -= 1; return counter }
+    let total = 0
+    for (let i = 0; i < n; i++) { if (i < 10) total += i }
+    let acc = 0
+    for (let j = 0; j < 5; j++) acc += heapFn() - zero()
+    counter = inc() - inc()
+    return total + acc + counter
+  }`
+
+test('session-reentrancy: closure/loop-plan A then structurally-similar B — warm matches fresh-process (audit-#19 stale-plan probe)', () => {
+  if (onKernel()) return
+  const warmA = compile(CLOSURE_LOOP_A)
+  const warmB = compile(CLOSURE_LOOP_B)
+  const freshA = compileFresh(CLOSURE_LOOP_A)
+  const freshB = compileFresh(CLOSURE_LOOP_B)
+  ok(eq(warmA, freshA), 'closure/loop-plan A differs between warm (first in process) and fresh-process compile')
+  ok(eq(warmB, freshB), 'closure/loop-plan B differs after structurally-similar A vs. fresh-process — a stale astClosurePlan/astLoopPlan/loopPlanLink entry bled through')
+})
+
+test('session-reentrancy: closure/loop-plan order-reversed — B then A — warm matches fresh-process', () => {
+  if (onKernel()) return
+  const warmB = compile(CLOSURE_LOOP_B)
+  const warmA = compile(CLOSURE_LOOP_A)
+  ok(eq(warmB, compileFresh(CLOSURE_LOOP_B)), 'closure/loop-plan B (compiled first) differs from fresh-process compile')
+  ok(eq(warmA, compileFresh(CLOSURE_LOOP_A)), 'closure/loop-plan A (compiled second, after structurally-similar B) differs from fresh-process — a stale plan entry bled through')
+})
+
 test('session-reentrancy: regex-heavy then regex-free — warm matches fresh-process', () => {
   if (onKernel()) return  // native reset-choreography probe; the wasm kernel owns its own internal reset, unrelated to src/ctx.js's RESET_HOOKS
   const warmA = compile(REGEX_HEAVY)

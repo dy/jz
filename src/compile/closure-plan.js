@@ -1,6 +1,6 @@
 import { extractParams, classifyParam, isReassigned, refsName, REFS_IN_EXPR } from '../ast.js'
 import { findFreeVars } from './analyze.js'
-import { ctx } from '../ctx.js'
+import { ctx, registerResetHook } from '../ctx.js'
 import { isGlobal } from '../ir.js'
 
 // ClosureEnvPlan (.work/closure-plan-design.md, audit-#18 item 1) — mirrors
@@ -48,7 +48,23 @@ import { isGlobal } from '../ir.js'
 // vs. everything else — so a 3rd/4th storage label needs no new emission
 // branch to stay behavior-neutral). Slice 3 is the first slice allowed to
 // give it its own codegen.
-export const astClosurePlan = new WeakMap()
+// SESSION-OWNED (audit-#19 P0): a `let` binding, not `const` — reassigned to
+// a fresh WeakMap by resetAstClosurePlan below, registered as a ctx.js reset
+// hook (session survey audit-#13 slice a's RESET_HOOKS, the exact idiom
+// prepare/index.js's resetPrepState and optimize/vectorize.js's
+// resetVectorizeState already use). Every importer (`import { astClosurePlan }
+// from …`) sees the live ES-module binding, so reassignment here is visible
+// everywhere with no call-site changes. Ownership matters because under
+// self-hosting WeakMap lowers to a strong Map (no native GC) — a module-global
+// map would let plans from a PRIOR compile() session survive into the next
+// one, and arena-reset offset reuse can then pointer-collide a fresh AST
+// node with a stale key, producing a stale-plan HIT where every reader here
+// assumes a miss (fail-open, see the coordinator rulings above). Clearing per
+// session bounds the map to one compile's worth of nodes, which is what makes
+// keeping WeakMap (native-GC benefit when NOT self-hosted) sound again.
+export let astClosurePlan = new WeakMap()
+const resetAstClosurePlan = () => { astClosurePlan = new WeakMap() }
+registerResetHook(resetAstClosurePlan)
 
 // Lift-eligibility (design §2.1, conditions 1-3 — condition 4, "no loop/
 // reentrancy restriction", is satisfied by simply NOT checking it; this is
