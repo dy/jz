@@ -1841,6 +1841,140 @@ the KERNEL binary itself (the root-cause session's own technique for
 status around `__region_copy_rec`'s call sites — that is the one lever this
 session did not pull.
 
+**WAT-DIFF OF __region_copy_rec's NEIGHBORHOOD (2026-08-11), disposable
+worktrees `wall2-control` (`d1f2f2ba`+regionHooks wired) / `wall2-decisive`
+(same + `git diff d1f2f2ba region-slice2-2026-08-11 -- layout-kinds.js
+module/core.js` applied, assemble.js withheld — the exact decisive-test
+shape from the pass-bisection session, verified below) — verdict: the one
+lever named above pulled; narrows the wall to ONE arm's tail, does not close
+it. Not landed, not closed — banked.**
+
+*Setup*: both kernels built via unmodified `scripts/build-dist.mjs`
+(node_modules copied per-worktree, watr 5.7.13). Sizes matched the bank
+exactly (control 14442.0 kB, decisive 14458.9 kB — the prior session's own
+numbers), and the repro reconfirmed on THESE two binaries directly (not
+inherited): a `repro-check.mjs` driving `test/kernel-target.js`'s
+`compileViaKernel('export let f = (x) => String(x > 0 && 1)', {optimize:2})`
+3× each — control 3/3 clean (`f(1)="1"`, `f(-1)="false"`), decisive 3/3
+`RuntimeError: memory access out of bounds`. Confirms the two worktrees are
+the real control/decisive pair, not a stale carryover.
+
+*Technique*: rather than `wasm2wat` on the byte-encoded kernel (no name
+section unless `opts.names` is threaded through, and the original root-cause
+session's own disassembly had to fall back to bare `wasm-function[N]`
+frames), used the SAME lever that session already validated for this
+purpose — a NATIVE `compile(g.code, {modules:g.modules, memory:8192,
+optimize:{level:3, watrGuard:false, snapshotInit:true,
+inlinePtrOffsetFast:false}, wat:true})` on each worktree's own
+`resolveModuleGraph('scripts/self.js')` (mirroring build-dist.mjs's wasm
+call exactly, CARRIER_BOX injection included) — this returns the KERNEL's
+own optimized internals as READABLE, ALWAYS-NAMED WAT text directly, no
+disassembler needed. Two ~280 MB dumps (`control.wat`/`decisive.wat`,
+~6.03M/~6.4M lines). Indexed every top-level `(func $name ...)` (name, start
+line, line count) via a streaming line-reader (`func-index.mjs`) rather than
+loading either file whole.
+
+*Driver identity, confirmed stable*: `__region_copy_rec` has exactly ONE
+external (non-self-recursive) caller in both dumps — `__region_exit` itself
+has ZERO surviving named occurrences in either build (fully inlined, same
+finding as the original root-cause session's `runRounds`), folded directly
+into the `regionHooks.exit` callback closure (`$closure2906` in control,
+`$closure2903` in decisive — the number shift is pure closure-ID churn from
+Slice-2's added source elsewhein the bundle, not a content change). Diffed
+that closure's full 164-line body byte-for-byte (with only its own name
+normalized): **zero diff**. The mark/heap-compaction/dyn-props-migration
+driver logic that calls `__region_copy_rec` and does the closing
+`memory.copy` is untouched, confirming the second wall is not a driver-side
+effect.
+
+*Whole-kernel stable-name diff*: filtered both indexes to `$__`-prefixed
+names excluding `$closureN`/`$cseN`/`$__inlN` (auto-numbered, expected to
+churn) — 409/410 stable names, 350 present under the IDENTICAL name in both
+builds. Of those 350, **348 are byte-identical in line count**; the only two
+that differ are `__region_copy_rec` (717→1312 lines, +595) and
+`__region_relocate_props` (151→160, +9) — exactly the two functions Slice-2
+authored, nothing else in the kernel's own named stdlib surface shifted
+shape. (A separate ~57/58-entry churn in the `$__mkptr_6_N_d` family —
+per-aux-value pointer-construction specializations, auto-numbered by
+discovery order during the kernel's own compile — renumbers throughout the
+dump when layout-kinds.js's dead-when-dormant ~637 new lines are present,
+independent of module/core.js's dispatch wiring; this is the SAME
+"kernel-own-size-sensitive layout dependency" mechanism the pass-bisection
+session already named for the dormant +16.3 kB growth, not new evidence, and
+the content-isolation test already showed this alone does not trip the
+wall.)
+
+*`__region_copy_rec`'s own body, read structurally*: confirmed (again, via
+direct WAT read rather than ablation) that all 5 new arms sit behind
+`(if (i32.eq $t ...))` dispatches on the object's TAG — for the `String(x >
+0 && 1)` repro (plain f64/BOOL scalar merge, no heap allocation crosses a
+region boundary at all) none of these branches can be live, matching the
+prior session's `unreachable`-stub ablation exactly. Went one step further:
+audited every NEW local (`$cap`/`$oldRoot`/`$newRoot`/`$cse961`/`$cse964`/
+`$cse965`/`$cse966`) for a value TEE'd before a `call
+$__region_copy_rec` (recursion) and read after — the one real hit is the
+pre-existing SET/MAP arm (unchanged verbatim per design, byte-identical
+logic, just two watr-CSE-introduced temps): `$cse964`/`$cse966` cache `off-4`
+/`off-8` (computed once, before the child-copy loop) and are read again
+AFTER the loop to write the forwarding sentinel (`old[off-8] = newOff-delta;
+old[off-4] = -1`) — control computes the same two addresses fresh, inline,
+at the same post-loop site instead of caching them. Proved this specific
+reuse sound: `$off` (the value the cached addresses derive from) has exactly
+one `local.set` in the whole arm, at arm entry, never touched again —
+WASM's calling convention leaves callee-invisible to caller locals, so a
+recursive `call $__region_copy_rec` inside the loop cannot alias or
+invalidate `$off`-derived arithmetic held in a local. No unsound cache
+found in the one arm reachable by non-scalar test corpora either; this is
+consistent with (not contradicting) the original ablation's "none of the
+five is even being reached in this repro."
+
+**Verdict, narrower than the session start but still open**: the wall is
+now pinned to being caused SPECIFICALLY by `__region_copy_rec`'s own +595-
+line growth (not the arms' logic, not the driver, not any other named
+stdlib function, not bare kernel-size, not a single pass) — but WHERE that
+growth trips something remains unlocated. Every angle available to static
+WAT reading (name-stable diff, structural safety read of the one
+call-spanning cache pattern that exists) is now exhausted; the growth's
+effect must be on the compiled shape of one of the ~6,000 auto-numbered
+`$closureN` functions (the compiler's own JS-sourced internals — index.js/
+src/*/module/* compiled AS the kernel's OWN program), where name-based
+diffing is structurally unusable (numbering is assignment-order-dependent
+and shifts under ANY source-size change, confirmed by the `$__mkptr_6_N_d`
+churn above) — a name-stable technique can't see this class of shift by
+construction, full stop; it isn't a matter of trying harder with the same
+tool.
+
+**Per the stop-on-fail tripwire**: NOT landed, NOT closed. Both worktrees
+(`wall2-control`, `wall2-decisive`) and their `dist/jz.wasm`/`*.wat` dumps
+removed at session end; shared tree verified untouched throughout
+(`git status`/`git diff` show only the pre-existing untracked
+`todo-original.md` and this ledger entry). `region-slice2-2026-08-11` branch
+unchanged. Gate ladder not run beyond the repro-x3 reconfirmation above
+(kernel-oracle/kernel-parity/fuzz/battery/build×2/memory curve/jz×jz all
+contingent on the wall closing).
+
+**Recommendation for next session**: abandon name-based WAT diffing for this
+specific remaining gap — it has now been shown structurally incapable of
+seeing a `$closureN` renumber-and-refuse-fusion event. The next lever is
+runtime, not static: the design's own trace-inject instrument
+(`scripts/trace-inject.mjs`), applied NOT to `__region_copy_rec` itself
+(already instrumented once, already known to perturb the heisenbug) but to
+`$__alloc`'s `bytes` argument specifically — the class fix in the prior
+ROOT-CAUSE ATTEMPT entry recommended exactly this ("(a) a UNIVERSAL validity
+check wrapped around every `$__alloc`/`$__alloc_hdr*` call site's `bytes`
+argument... edit only the guard condition, add no new globals/locals") and
+it was never attempted; it's the one item on that list that survives this
+session's finding that the fault is a THIRD-PARTY closure's shape, not
+region logic itself, since a guard at the allocator's own entry catches a
+garbage `bytes` value regardless of which caller produced it, without
+needing to locate that caller by name first. If that guard traps with a
+DIFFERENT signature than plain `memory access out of bounds` (e.g. a custom
+trap reason string byte-decodable from the trap message), the specific
+`bytes` value at the moment of corruption becomes visible without touching
+any other kernel-internal source line — the same "cheapest single-line
+perturbation, most likely to preserve the manifestation" logic named before,
+now aimed with this session's narrower target.
+
 ## [ ] Carrier invariant / storedValue (was carrier-invariant-design.md; predecessor of the carrier program)
 
 The boxed-value invariant program that preceded carrier-representation.
