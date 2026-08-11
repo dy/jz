@@ -3063,7 +3063,11 @@ export function specializeBimorphicTyped(programFacts) {
  */
 export function specializeValKindDichotomy(programFacts) {
   const { callSites, valueUsed, paramReps } = programFacts
-  const DOMINANCE = 0.9
+  // Landslide threshold — a pass-registry tuning key (src/passes.js
+  // TUNING_KEYS), not a hidden local constant (architecture re-audit item
+  // 10): same value, now a visible/overridable knob like every other tuning
+  // key (e.g. scalarTypedArrayLen).
+  const DOMINANCE = ctx.transform.optimize?.valKindDominance ?? 0.9
 
   const sitesByCallee = new Map()
   for (const cs of callSites) {
@@ -3133,38 +3137,19 @@ export function specializeValKindDichotomy(programFacts) {
     // site routes to the clone only if it matches EVERY pinned position's
     // dominant kind; any site that misses on even one (minority OR
     // unresolved) keeps calling the untouched, fully generic original.
-    const suffix = pins.map(pn => pn.domKind).join('$')
-    let cloneName = `${func.name}$${suffix}`
-    let n = 0
-    while (ctx.func.names.has(cloneName)) cloneName = `${func.name}$${suffix}$${++n}`
-
-    const cloneSig = {
-      params: func.sig.params.map(pp => ({ ...pp })),
-      results: [...func.sig.results],
-    }
-    const clone = { ...func, name: cloneName, sig: cloneSig }
-    ctx.func.list.push(clone)
-    ctx.func.map.set(cloneName, clone)
-    ctx.func.names.add(cloneName)
+    // No `sig` override: this pass never changes the ABI, only paramReps —
+    // materializeVariant's default (a fresh copy of origin.sig) is exactly
+    // the clone this used to build by hand.
+    const eligibleSites = sites.filter((_, si) => pins.every((pn, pi) => perPosKinds[pi][si] === pn.domKind))
+    const clone = materializeVariant({
+      origin: func, name: `${func.name}$${pins.map(pn => pn.domKind).join('$')}`, paramReps,
+      factOverrides: pins.map(({ k, domKind }) => ({
+        k, patch: r => { r.val = domKind; joinKinds(r, 'possibleKinds', [domKind]) },
+      })),
+      eligibleSites, fallback: func,
+    })
     if (typeof process !== 'undefined' && process.env?.JZ_DBG_VALKIND)
-      console.error('[valkind-clone]', func.name, '->', cloneName, JSON.stringify(pins.map(pn => pn.domKind)))
-
-    const cloneReps = new Map()
-    for (const [kk, rr] of reps) cloneReps.set(kk, cloneRep(rr))
-    for (const { k, domKind } of pins) {
-      const cr = cloneReps.get(k) || {}
-      cr.val = domKind
-      joinKinds(cr, 'possibleKinds', [domKind])
-      cloneReps.set(k, cr)
-    }
-    paramReps.set(cloneName, cloneReps)
-
-    for (let si = 0; si < sites.length; si++) {
-      let matches = true
-      for (let pi = 0; pi < pins.length && matches; pi++)
-        if (perPosKinds[pi][si] !== pins[pi].domKind) matches = false
-      if (matches) sites[si].node[1] = cloneName
-    }
+      console.error('[valkind-clone]', func.name, '->', clone.name, JSON.stringify(pins.map(pn => pn.domKind)))
   }
 
   if (DBG_INVARIANTS) assertValKindConsistent(paramReps)

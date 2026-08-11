@@ -115,6 +115,8 @@ export const TUNING_KEYS = [
   'inlinePureFns',            // opt-in pure-function WAT inlining (assemble)
   'approxPow',                // opt-in low-precision pow fifthroot gate (module/math.js emitPow)
   'noSimd',                   // suppress every jz-emitted v128 (lane vectorizer + SLP) — true scalar baseline
+  'valKindDominance',         // specializeValKindDichotomy's landslide threshold (fraction of resolved
+                              // call sites a VAL kind must dominate to earn a pinned clone) — default 0.9
 ]
 
 // Hot per-node pass flags: ONE list generates both the bitmask constants and the
