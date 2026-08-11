@@ -62,6 +62,8 @@ export default (ctx) => {
     __durable_fwd_log: ['__alloc'],
     __durable_fwd_heal: [],
     __durable_slot_log: ['__alloc'],
+    __durable_slot_relog: [],
+    __durable_slot_cancel: [],
     __durable_slot_heal: [],
     __is_eph_bits: [],
     // Region-arena Slice 1 (.work/research.md §Region arena) — see the definitions below
@@ -602,6 +604,74 @@ export default (ctx) => {
       (i32.store (local.get $base) (local.get $addr))
       (i32.store (i32.add (local.get $base) (i32.const 4)) (local.get $tbl))
       (global.set $__durable_slot_n (i32.add (local.get $n) (i32.const 1))))`
+    // A durable-slot log entry names a PHYSICAL address (the entry slot, or a value
+    // word inside it) captured at LOG time. That address goes stale if the SAME
+    // table's genDelete backward-shifts a LATER key across it before this round's
+    // _clear() ever runs — delete relocates live bytes (memory.copy) but has no way
+    // to know a log entry points into what it's about to move. A stale address then
+    // makes __durable_slot_heal zombie/decrement whatever NOW occupies the old spot
+    // (collateral damage to an unrelated entry) while the entry that should have
+    // died survives, unTOMB'd, with a real hash word — __coll_order finds it as a
+    // live, garbage-keyed phantom (native repro: durable Map, one same-round insert,
+    // then delete enough OTHER keys to backward-shift the inserted entry's slot,
+    // then _clear() — .size correctly hits 0 but .keys() still yields one entry).
+    // Fix at the move site, not the heal: genDelete calls this for every entry it
+    // relocates, sliding any logged address that fell inside the entry's old byte
+    // range by the same delta the memory.copy just applied — the log stays accurate
+    // through however many shifts happen before heal runs. Cheap in the (dominant)
+    // no-pending-log case: $__durable_slot_n is 0 whenever no durable table received
+    // a fresh insert this round, and the caller checks that BEFORE calling in (see
+    // genDelete) so this function's own scan never runs on the hot delete path.
+    ctx.core.stdlib['__durable_slot_relog'] = `(func $__durable_slot_relog (param $old i32) (param $new i32) (param $size i32)
+      (local $i i32) (local $n i32) (local $base i32) (local $a i32) (local $bare i32)
+      (local.set $n (global.get $__durable_slot_n))
+      (block $done (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+        (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $i) (i32.const 3))))
+        (local.set $a (i32.load (local.get $base)))
+        (local.set $bare (i32.and (local.get $a) (i32.const -2)))
+        (if (i32.and (i32.ge_u (local.get $bare) (local.get $old))
+                     (i32.lt_u (local.get $bare) (i32.add (local.get $old) (local.get $size))))
+          (then (i32.store (local.get $base)
+            (i32.or (i32.add (local.get $new) (i32.sub (local.get $bare) (local.get $old)))
+                    (i32.and (local.get $a) (i32.const 1))))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l))))`
+    // Sibling of __durable_slot_relog above, for the OTHER thing that can happen to
+    // a logged address before heal runs: the entry (or the durable slot a value was
+    // logged against) gets genuinely `.delete()`d THIS SAME round, before _clear().
+    // genDelete already decremented the table's real length for that delete — a
+    // stale log entry left pointing at the (now zeroed, or since reused by a LATER
+    // insert's probe) address would make __durable_slot_heal decrement AGAIN
+    // (double-decrement: native repro — durable Map, insert a key this round, then
+    // `.delete()` that same key before `_clear()`, size correctly nets to 0, but the
+    // stale log still fires at clear and drives it to -1) and/or zombie or
+    // value-clear whatever unrelated LIVE entry has since taken that address (a
+    // second native repro: two keys durably inserted into the SAME table this
+    // round, delete only the first — if that delete's backward-shift moves the
+    // SECOND key into the first's old slot, the first key's own still-pending log
+    // now points at the second key's relocated data; uncancelled, it zombies and
+    // double-decrements the second key too, though nothing ever asked to remove
+    // it). Called from genDelete with the MATCHED entry's OWN address (collection.js
+    // durableSlotCancelIR's comment has the full call-site reasoning — it is NOT
+    // simply "wherever the shift loop's final vacated slot lands"). Cancels by
+    // zeroing the log record's own addr word — 0 is never a real logged
+    // address, every log target is a heap offset well above the reserved
+    // low-memory region — any pending log whose address fell inside that entry's
+    // byte range, so __durable_slot_heal below skips it entirely.
+    ctx.core.stdlib['__durable_slot_cancel'] = `(func $__durable_slot_cancel (param $addr i32) (param $size i32)
+      (local $i i32) (local $n i32) (local $base i32) (local $a i32) (local $bare i32)
+      (local.set $n (global.get $__durable_slot_n))
+      (block $done (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+        (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $i) (i32.const 3))))
+        (local.set $a (i32.load (local.get $base)))
+        (local.set $bare (i32.and (local.get $a) (i32.const -2)))
+        (if (i32.and (i32.ge_u (local.get $bare) (local.get $addr))
+                     (i32.lt_u (local.get $bare) (i32.add (local.get $addr) (local.get $size))))
+          (then (i32.store (local.get $base) (i32.const 0))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l))))`
     ctx.core.stdlib['__durable_slot_heal'] = `(func $__durable_slot_heal
       (local $i i32) (local $n i32) (local $a i32) (local $base i32) (local $tbl i32)
       (local.set $n (global.get $__durable_slot_n))
@@ -610,21 +680,37 @@ export default (ctx) => {
         (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $i) (i32.const 3))))
         (local.set $a (i32.load (local.get $base)))
         (local.set $tbl (i32.load (i32.add (local.get $base) (i32.const 4))))
+        ;; addr 0 marks a CANCELLED entry (__durable_slot_cancel, above) — a delete
+        ;; this round removed the logged target before heal ever ran; skip it.
+        (if (local.get $a) (then
         (if (i32.and (local.get $a) (i32.const 1))
           ;; bit0: ENTRY heal — this round INSERTED the entry into durable storage; a
-          ;; fresh instance would not have it. Zombie it (key TOMB, value undefined —
-          ;; probes pass over, __coll_order skips) and decrement the table len so
-          ;; len-sized iteration and .size agree. Runs AFTER __durable_fwd_heal, so a
-          ;; grown-then-healed table's len is already its restored pre-grow value.
+          ;; fresh instance would not have it. Zombie it (key TOMB — probes pass over,
+          ;; __coll_order skips) and decrement the table len so len-sized iteration
+          ;; and .size agree. Runs AFTER __durable_fwd_heal, so a grown-then-healed
+          ;; table's len is already its restored pre-grow value.
+          ;;
+          ;; Key-only: do NOT also clear a "value" word at $a+16. genUpsert shares
+          ;; this log between SET (16-byte entries: hash@0, key@8 — no value field)
+          ;; and MAP/HASH (24-byte: hash@0, key@8, value@16) — a SET's $a+16 is the
+          ;; NEXT entry's hash word (or past the table's own end, for the last slot),
+          ;; so writing there corrupted a neighbor's occupancy bit, planting a
+          ;; phantom "live" entry __coll_order would then find (native repro: a
+          ;; durable Set + one same-round insert + _clear() left .size correct
+          ;; but .keys() one element too many, decoding the stray UNDEF_NAN write).
+          ;; The value word is provably dead weight for MAP/HASH too — every
+          ;; consumer (genLookup's probe, genUpsert's zombie-rescan, __coll_order's
+          ;; gather) treats key===TOMB_NAN as skip-unconditionally and never reads
+          ;; the paired value, so clearing it served no reachable purpose there
+          ;; either. TOMB-ing the key alone is sufficient and stride-safe.
           (then
             (local.set $a (i32.and (local.get $a) (i32.const -2)))
             (i64.store (i32.add (local.get $a) (i32.const 8)) (i64.const ${TOMB_NAN}))
-            (i64.store (i32.add (local.get $a) (i32.const 16)) (i64.const ${UNDEF_NAN}))
             (i32.store (i32.sub (local.get $tbl) (i32.const 8))
               (i32.sub (i32.load (i32.sub (local.get $tbl) (i32.const 8))) (i32.const 1))))
           ;; plain: VALUE heal — the entry pre-existed durably; its old value is
           ;; unrecoverable, undefined is the honest read.
-          (else (i64.store (local.get $a) (i64.const ${UNDEF_NAN}))))
+          (else (i64.store (local.get $a) (i64.const ${UNDEF_NAN}))))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l)))
       (global.set $__durable_slot_n (i32.const 0))
@@ -721,10 +807,10 @@ export default (ctx) => {
         (then
           (local.set $dpOff (call $__ptr_offset (local.get $dpBits)))
           (local.set $dpCap (i32.load (i32.sub (local.get $dpOff) (i32.const 4))))
-          (local.set $dpN (i32.load (i32.sub (local.get $dpOff) (i32.const 8))))
           (local.set $dpNewOff (call $__alloc_hdr_n (i32.const 0) (local.get $dpCap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${LANE}))))
           (local.set $dpOutPhys (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (local.get $dpNewOff)))
           (local.set $dpOrd (call $__coll_order (local.get $dpOff) (local.get $dpCap) (i32.const ${MAP_ENTRY})))
+          (local.set $dpN (global.get $__coll_order_n))
           (block $ded (loop $del
             (br_if $ded (i32.ge_s (local.get $dpI) (local.get $dpN)))
             (local.set $dpSlot (i32.load (i32.add (local.get $dpOrd) (i32.shl (local.get $dpI) (i32.const 2)))))
@@ -1035,8 +1121,8 @@ export default (ctx) => {
           (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
           ;; walk the source in insertion order (__coll_order), like __sclone_rec's SET/MAP
           ;; branch — inserting into a fresh cap-sized table never grows, so $outPhys stays canonical
-          (local.set $n (i32.load (i32.sub (local.get $off) (i32.const 8))))
           (local.set $ord (call $__coll_order (local.get $off) (local.get $cap) (local.get $stride)))
+          (local.set $n (global.get $__coll_order_n))
           (block $cd (loop $cl
             (br_if $cd (i32.ge_s (local.get $i) (local.get $n)))
             (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
@@ -1074,6 +1160,20 @@ export default (ctx) => {
   // the JS spec's insertion order. Lives in core (not collection) because object
   // and json iterate HASH tables without pulling the collection module. Insertion
   // sort: enumerated collections are small, and it stays branch-light when sorted.
+  //
+  // $__coll_order_n: the buffer's REAL live-entry extent, stamped into this global
+  // right before return. Every caller that treats the returned buffer as a bound
+  // list MUST read this (not the table's own header length word at off-8) as its
+  // iteration bound — the header and the real gathered count are NOT guaranteed to
+  // agree (audit: .work/research.md §Region arena's 5e77f814 entry — a `new
+  // Map(existingMap)` copy trusting the header length read a zeroed slot past
+  // __coll_order's actual output, decoding the kernel's own static string-table
+  // data at address 0). A single caller-local capture right after the call (the
+  // existing pattern every site already uses for its OWN loop-bound local) is
+  // reentrancy-safe: nested __coll_order calls from within the loop body (e.g.
+  // structuredClone/region-copy recursing into a nested Set/Map) only clobber the
+  // global AFTER the outer bound is already captured into its own local.
+  declGlobal('__coll_order_n', 'i32')
   ctx.core.stdlib['__coll_order'] = `(func $__coll_order (param $off i32) (param $cap i32) (param $stride i32) (result i32)
     (local $i i32) (local $n i32) (local $slot i32) (local $buf i32)
     (local $j i32) (local $k i32) (local $cur i32) (local $sq i32)
@@ -1114,6 +1214,7 @@ export default (ctx) => {
       (i32.store (i32.add (local.get $buf) (i32.shl (i32.add (local.get $k) (i32.const 1)) (i32.const 2))) (local.get $cur))
       (local.set $j (i32.add (local.get $j) (i32.const 1)))
       (br $sl)))
+    (global.set $__coll_order_n (local.get $n))
     (local.get $buf))`
 
   // for-in's HASH key enumeration with a 1-slot enum cache (V8's EnumCache analog).
@@ -1129,8 +1230,14 @@ export default (ctx) => {
   // off (≠ cached), and a husk off is never re-issued within an arena epoch.
   // ONLY sound for for-in (`__keys_ro`), whose result is read-only by construction —
   // Object.keys must keep fresh-array semantics (callers may mutate the result).
+  // $n (the table's own header length) stays the CACHE KEY — cheap, read before
+  // __coll_order even runs, gating the whole fast path — but the OUTPUT array's
+  // size and the fill loop's bound use $realN (__coll_order's own live-gathered
+  // count) instead: a header/real-occupancy desync must not leave the returned
+  // array's tail uninitialized (over-alloc from a stale-high header) or read past
+  // __coll_order's actual buffer (see __coll_order's own header comment).
   ctx.core.stdlib['__hash_keys_ro'] = `(func $__hash_keys_ro (param $hbits i64) (result f64)
-    (local $off i32) (local $n i32) (local $ord i32) (local $i i32) (local $out i32)
+    (local $off i32) (local $n i32) (local $realN i32) (local $ord i32) (local $i i32) (local $out i32)
     (local.set $off (call $__ptr_offset (local.get $hbits)))
     ;; degenerate/null backing (off below heap base): empty result, uncached
     (if (i32.lt_u (local.get $off) (i32.const ${HEAP.START}))
@@ -1141,9 +1248,10 @@ export default (ctx) => {
       (then (return (global.get $__enumc_arr))))
     (local.set $ord (call $__coll_order (local.get $off)
       (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const 24)))
-    (local.set $out (call $__alloc_hdr (local.get $n) (local.get $n)))
+    (local.set $realN (global.get $__coll_order_n))
+    (local.set $out (call $__alloc_hdr (local.get $realN) (local.get $realN)))
     (block $brk (loop $l
-      (br_if $brk (i32.ge_s (local.get $i) (local.get $n)))
+      (br_if $brk (i32.ge_s (local.get $i) (local.get $realN)))
       (i64.store (i32.add (local.get $out) (i32.shl (local.get $i) (i32.const 3)))
         (i64.load (i32.add (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))) (i32.const 8))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))

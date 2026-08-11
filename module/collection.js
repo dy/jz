@@ -158,15 +158,66 @@ export const durableSlotLogIR = (slotLocal, byteOff, valLocal) => {
 // hashed 15.5 MB of garbage-length "strings" where round 1 hashed 415 KB — the
 // whole 2× warm-vs-fresh gap). Log the ENTRY base with bit0 set plus the table
 // storage base; the heal turns the entry into a zombie — key ← TOMB_NAN
-// (unforgeable, deref-free in every eq family), value ← undefined, table len
-// decremented — that probes pass over and __coll_order/len-sized iterations
-// skip. The slot stays occupied until the table grows (zombies never resurrect:
-// nothing eq-matches TOMB_NAN). Entry addresses are 8-aligned → bit0 is free.
+// (unforgeable, deref-free in every eq family) — and decrements the table len,
+// that probes pass over and __coll_order/len-sized iterations skip. The slot
+// stays occupied until the table grows (zombies never resurrect: nothing
+// eq-matches TOMB_NAN). Entry addresses are 8-aligned → bit0 is free. See
+// durableSlotRelogIR below for why the logged address must stay accurate if a
+// LATER delete this same round moves this entry before the log is healed.
 export const durableEntryLogIR = (slotLocal, offLocal) => {
   if (!ctx.scope.globals.has('__heap_reset')) return ''
   return `
     (if (i32.lt_u (local.get $${slotLocal}) ${heapResetWat()})
       (then (call $__durable_slot_log (i32.or (local.get $${slotLocal}) (i32.const 1)) (local.get $${offLocal}))))`
+}
+
+// genDelete's backward-shift relocates a live entry's bytes (memory.copy) to
+// close the gap left by the removed key. Any durable-slot log recorded earlier
+// THIS round (durableEntryLogIR above, or durableSlotLogIR — a value write into
+// a durable slot) may have captured a physical address inside the entry range
+// being moved; left un-adjusted, that log then points at whatever the shift left
+// behind (a different entry, or nothing), so __durable_slot_heal zombies/decrements
+// the WRONG data at _clear() while the entry that should have died survives with
+// a live hash word — __coll_order finds it as a garbage-keyed phantom. Slides any
+// logged address inside [oldLocal, oldLocal+entrySize) by the same delta the copy
+// just applied, keeping the log accurate through however many shifts happen before
+// heal runs. Gated on $__durable_slot_n != 0 (read, not just the compile-time
+// __heap_reset gate) so an ordinary (non-durable, or durable-but-nothing-logged-
+// yet) delete — the overwhelmingly common case — pays one global read and a
+// forward branch, never the call.
+export const durableSlotRelogIR = (oldLocal, newLocal, entrySize) => {
+  if (!ctx.scope.globals.has('__heap_reset')) return ''
+  return `
+    (if (global.get $__durable_slot_n)
+      (then (call $__durable_slot_relog (local.get $${oldLocal}) (local.get $${newLocal}) (i32.const ${entrySize}))))`
+}
+
+// The OTHER thing that can happen to a logged address before it's healed: the
+// entry (or the durable slot a value was logged against) is genuinely deleted
+// THIS SAME round, before _clear() ever runs. genDelete already decremented the
+// table's real length for that delete — a stale log left pointing at the
+// (zeroed, or later reused) address would make __durable_slot_heal decrement
+// AGAIN and/or corrupt whatever unrelated entry has since taken the address.
+// Call with the MATCHED entry's own address ($slot, captured once before the
+// backward-shift walk even starts) — not the loop's final vacated position
+// ($i once the walk ends). Those are the same address only when the walk needs
+// no shift; when it does, some OTHER live entry gets physically copied INTO
+// $slot to close the gap (and durableSlotRelogIR, called at each shift hop,
+// correctly moves THAT entry's own pending log along with it) — so by the time
+// the walk ends, $slot holds someone else's now-relocated data and $i is the
+// genuinely empty tail, while the KEY actually being removed was $slot all
+// along. Cancelling at the wrong (post-shift $i) address left the removed
+// key's own log live: __durable_slot_heal then zombied and double-decremented
+// whatever entry the shift had relocated INTO $slot — a real, live, unrelated
+// entry silently deleted (native repro: 2 durable inserts into the same table
+// this round, delete only the FIRST — if deleting it backward-shifts the
+// SECOND into its slot, that second entry vanishes at the next _clear() even
+// though nothing ever asked for it to be removed).
+export const durableSlotCancelIR = (addrLocal, entrySize) => {
+  if (!ctx.scope.globals.has('__heap_reset')) return ''
+  return `
+    (if (global.get $__durable_slot_n)
+      (then (call $__durable_slot_cancel (local.get $${addrLocal}) (i32.const ${entrySize}))))`
 }
 
 // Clamp to the >=2 convention (0=empty slot, 1=tombstone) — shared by every hash
@@ -515,9 +566,15 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
         (br_if $absent (i32.ge_s (local.get $tries) (local.get $cap)))
         (br $probe)))
       (return (i32.const 0)))
-    ;; $slot holds the entry to remove ($ls its lane word). Walk forward; move back
-    ;; any entry whose home is not cyclically within (i, j], else it would become
-    ;; unreachable from its home. The lane word travels with each moved entry.
+    ;; $slot holds the entry to remove ($ls its lane word). Cancel any pending
+    ;; durable log for THIS key's own address before the shift walk below can
+    ;; relocate a DIFFERENT (still-live) entry onto that same address — cancelling
+    ;; after the walk instead cannot tell the two apart once they collide (see
+    ;; durableSlotCancelIR's comment for the full native repro).
+    ${durableSlotCancelIR('slot', entrySize)}
+    ;; Walk forward; move back any entry whose home is not cyclically within
+    ;; (i, j], else it would become unreachable from its home. The lane word
+    ;; travels with each moved entry.
     (local.set $i (local.get $slot))
     (local.set $j (local.get $slot))
     (local.set $li (local.get $ls))
@@ -538,7 +595,7 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
       (if (i32.le_u (local.get $i) (local.get $j))
         (then (br_if $shift (i32.and (i32.lt_u (local.get $i) (local.get $k)) (i32.le_u (local.get $k) (local.get $j)))))
         (else (br_if $shift (i32.or  (i32.lt_u (local.get $i) (local.get $k)) (i32.le_u (local.get $k) (local.get $j))))))
-      (memory.copy (local.get $i) (local.get $j) (i32.const ${entrySize}))
+      (memory.copy (local.get $i) (local.get $j) (i32.const ${entrySize}))${durableSlotRelogIR('j', 'i', entrySize)}
       (i32.store (local.get $li) (i32.load (local.get $lj)))
       (local.set $i (local.get $j))
       (local.set $li (local.get $lj))
@@ -1110,6 +1167,12 @@ export default (ctx) => {
   // durableSlotLogIR's call pair, gated identically (see its comment): every helper
   // that stores a VALUE into a collection slot may log a durable-slot write.
   const slotLogDeps = () => needsDurableFwdLog() ? ['__durable_slot_log', '__is_eph_bits'] : []
+  // genDelete's backward-shift calls durableSlotRelogIR/durableSlotCancelIR
+  // unconditionally in its template (gated only at runtime by
+  // $__durable_slot_n) — same explicit-edge reasoning as slotLogDeps:
+  // self-host's auto-scan would otherwise drop these helpers and every
+  // kernel-compiled `.delete()` would trap.
+  const relogDeps = () => needsDurableFwdLog() ? ['__durable_slot_relog', '__durable_slot_cancel'] : []
   deps({
     __same_value_zero: ['__str_eq'],
     __map_hash: ['__hash', '__str_hash'],
@@ -1126,7 +1189,7 @@ export default (ctx) => {
     // selfhost-includes class) and every `new Set(...)` fails to compile there.
     __set_add: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __set_has: () => ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
-    __set_delete: ['__map_hash', '__same_value_zero'],
+    __set_delete: () => ['__map_hash', '__same_value_zero', ...relogDeps()],
     __set_add_all: ['__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order', '__set_add'],
     __set_filter: ['__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order', '__set_add', '__set_has', '__map_has'],
     __set_all: ['__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order', '__set_has', '__map_has'],
@@ -1140,7 +1203,7 @@ export default (ctx) => {
     // Prehashed has-probes: caller folds the hash, so no __map_hash dependency.
     __map_has_h: () => ctx.linkDemand.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __set_has_h: () => ctx.linkDemand.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
-    __map_delete: ['__map_hash', '__same_value_zero'],
+    __map_delete: () => ['__map_hash', '__same_value_zero', ...relogDeps()],
     __map_from: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__len', '__typed_idx', '__map_set', '__mkptr', '__alloc_hdr_n', '__coll_order'],
     // own edge: __map_new's body calls $__alloc_hdr_n — auto-scan-only
     // reachability vanishes under self-host (test/selfhost-includes.js)
@@ -1190,7 +1253,7 @@ export default (ctx) => {
     __dyn_get_or: ['__dyn_get'],
     __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
-    __hash_del_local: ['__str_hash', '__str_eq', '__ptr_type'],
+    __hash_del_local: () => ['__str_hash', '__str_eq', '__ptr_type', ...relogDeps()],
     __dyn_del: ['__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx'],
     __str_arr_idx: ['__str_byteLen', '__char_at'],
     __coll_clear: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd'],
@@ -1513,8 +1576,8 @@ export default (ctx) => {
   const setWalkPreamble = `(local $off i32) (local $cap i32) (local $n i32) (local $ord i32) (local $i i32) (local $slot i32) (local $key i64) (local $has i32)
     (local.set $off (call $__ptr_offset (local.get $src)))
     (local.set $cap (call $__cap (local.get $src)))
-    (local.set $n (call $__len (local.get $src)))
-    (local.set $ord (call $__coll_order (local.get $off) (local.get $cap) (local.get $stride)))`
+    (local.set $ord (call $__coll_order (local.get $off) (local.get $cap) (local.get $stride)))
+    (local.set $n (global.get $__coll_order_n))`
   const setWalkKey = `(local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
       (local.set $key (i64.load (i32.add (local.get $slot) (i32.const 8))))`
   const otherHas = `(if (result i32) (local.get $otherIsMap)
@@ -1662,10 +1725,12 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(expr))],
       ['local.set', `$${cb}`, asF64(emit(fn))],
-      ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
       ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
       ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
       ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', stride]]],
+      // Bound is __coll_order's OWN live count, not the header length (core.js
+      // __coll_order header comment: the two can disagree).
+      ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$febrk${id}`, ['loop', `$feloop${id}`,
         ['br_if', `$febrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
@@ -1936,9 +2001,11 @@ export default (ctx) => {
           (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.add (local.get $stride) (i32.const ${LANE})))))
         (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
         ;; walk the source in insertion order; ≤len inserts into cap slots never grow,
-        ;; so $out's bits stay canonical (the memo entry above remains the pointer)
-        (local.set $n (i32.load (i32.sub (local.get $src) (i32.const 8))))
+        ;; so $out's bits stay canonical (the memo entry above remains the pointer).
+        ;; Bound is __coll_order's OWN live count, not the header length — see
+        ;; __coll_order's header comment (core.js) for why they can disagree.
         (local.set $ord (call $__coll_order (local.get $src) (local.get $cap) (local.get $stride)))
+        (local.set $n (global.get $__coll_order_n))
         (block $cd (loop $cl
           (br_if $cd (i32.ge_s (local.get $i) (local.get $n)))
           (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
@@ -2037,7 +2104,11 @@ export default (ctx) => {
     (if (i32.eq (local.get $t) (i32.const ${PTR.MAP}))
       (then
         ;; Copy in source insertion order so the new map enumerates identically.
+        ;; Bound is __coll_order's OWN live count, not the header length used
+        ;; above for $newcap sizing — see __coll_order's header comment (core.js)
+        ;; for why they can disagree.
         (local.set $ord (call $__coll_order (local.get $off) (local.get $cap) (i32.const ${MAP_ENTRY})))
+        (local.set $n (global.get $__coll_order_n))
         (block $dm (loop $lm
           (br_if $dm (i32.ge_s (local.get $i) (local.get $n)))
           (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
@@ -3385,11 +3456,14 @@ export default (ctx) => {
         ['then',
           ['local.set', `$${off}`, ['call', '$__ptr_offset', ['local.get', `$${ptrI64}`]]],
           ['local.set', `$${cap}`, ['call', '$__cap', ['local.get', `$${ptrI64}`]]],
-          ['local.set', `$${n}`, ['call', '$__len', ['local.get', `$${ptrI64}`]]],
           // Snapshot live slots in insertion order (JS for-in spec order). Walk
           // the snapshot; re-check occupancy so a key the body deletes before it
-          // is reached is skipped rather than re-bound from an emptied slot.
+          // is reached is skipped rather than re-bound from an emptied slot. Bound
+          // is __coll_order's OWN live count, not the header length (core.js
+          // __coll_order header comment: the two can disagree — a header-trusting
+          // bound can walk off the snapshot into unrelated memory).
           ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', MAP_ENTRY]]],
+          ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
           ['local.set', `$${i}`, ['i32.const', 0]],
           ['block', brk, ['loop', loop,
             ['br_if', brk, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
@@ -3412,17 +3486,21 @@ export default (ctx) => {
 // picks the column: 8 = key (Set element / Map key), 16 = Map value. Mirrors
 // object.js's hash*FromTemp. Used by `__iter_arr` and `.keys()`/`.values()`.
 function collKeysFromTemp(t, stride, fieldOff = 8) {
-  inc('__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order')
+  inc('__ptr_offset', '__ptr_offset_fwd', '__cap', '__coll_order')
   const off = tempI32('cko'), cap = tempI32('ckc'), n = tempI32('ckn')
   const i = tempI32('cki'), ord = tempI32('ckr'), slot = tempI32('cks')
+  // len is __coll_order's OWN live count, not the table's header length (core.js
+  // __coll_order header comment: the two can disagree) — out MUST be sized to
+  // what the fill loop below actually writes, or a header-trusting size leaves
+  // its tail uninitialized (header too high) or reads past $ord (header too low).
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'cka' })
   const id = ctx.func.uniq++
   return ['block', ['result', 'f64'],
-    ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    out.init,
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', stride]]],
+    ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
+    out.init,
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$ckbrk${id}`, ['loop', `$ckloop${id}`,
       ['br_if', `$ckbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
@@ -3440,17 +3518,19 @@ function collKeysFromTemp(t, stride, fieldOff = 8) {
 // [slot+aOff, slot+bOff] boxed into the output: Map entries use (8,16) → [k,v];
 // Set entries use (8,8) → [v,v].
 function collEntriesFromTemp(t, stride, aOff = 8, bOff = 16) {
-  inc('__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__alloc_hdr', '__coll_order')
+  inc('__ptr_offset', '__ptr_offset_fwd', '__cap', '__alloc_hdr', '__coll_order')
   const off = tempI32('ceo'), cap = tempI32('cec'), n = tempI32('cen')
   const i = tempI32('cei'), ord = tempI32('cer'), slot = tempI32('ces'), pair = tempI32('cep')
+  // len is __coll_order's OWN live count, not the header length — see
+  // collKeysFromTemp's comment above (same reasoning applies here).
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'cea' })
   const id = ctx.func.uniq++
   return ['block', ['result', 'f64'],
-    ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    out.init,
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', stride]]],
+    ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
+    out.init,
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$cebrk${id}`, ['loop', `$celoop${id}`,
       ['br_if', `$cebrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],

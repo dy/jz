@@ -1177,17 +1177,20 @@ function emitHashEntries(obj) {
 // IR shape from the same source — only difference is whether they enter from
 // a static type guard or a runtime ptr-type check.
 function hashKeysFromTemp(t) {
-  inc('__ptr_offset', '__cap', '__len', '__coll_order')
+  inc('__ptr_offset', '__cap', '__coll_order')
   const off = tempI32('hko'), cap = tempI32('hkc'), n = tempI32('hkn')
   const i = tempI32('hki'), ord = tempI32('hkr'), slot = tempI32('hks')
+  // len is __coll_order's OWN live count, not the header length (core.js
+  // __coll_order header comment: the two can disagree) — out must be sized to
+  // what the fill loop below actually writes.
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hka' })
   const id = ctx.func.uniq++
   return ['block', ['result', 'f64'],
-    ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    out.init,
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
+    ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
+    out.init,
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$brk${id}`, ['loop', `$loop${id}`,
       ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
@@ -1201,17 +1204,18 @@ function hashKeysFromTemp(t) {
 }
 
 function hashValuesFromTemp(t) {
-  inc('__ptr_offset', '__cap', '__len', '__coll_order')
+  inc('__ptr_offset', '__cap', '__coll_order')
   const off = tempI32('hvo'), cap = tempI32('hvc'), n = tempI32('hvn')
   const i = tempI32('hvi'), ord = tempI32('hvr'), slot = tempI32('hvs')
+  // len is __coll_order's OWN live count — see hashKeysFromTemp's comment above.
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hva' })
   const id = ctx.func.uniq++
   return ['block', ['result', 'f64'],
-    ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    out.init,
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
+    ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
+    out.init,
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$vbrk${id}`, ['loop', `$vloop${id}`,
       ['br_if', `$vbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
@@ -1225,17 +1229,18 @@ function hashValuesFromTemp(t) {
 }
 
 function hashEntriesFromTemp(t) {
-  inc('__ptr_offset', '__cap', '__len', '__alloc_hdr', '__coll_order')
+  inc('__ptr_offset', '__cap', '__alloc_hdr', '__coll_order')
   const off = tempI32('heo'), cap = tempI32('hec'), n = tempI32('hen')
   const i = tempI32('hei'), ord = tempI32('her'), slot = tempI32('hes'), pair = tempI32('hep')
+  // len is __coll_order's OWN live count — see hashKeysFromTemp's comment above.
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hea' })
   const id = ctx.func.uniq++
   return ['block', ['result', 'f64'],
-    ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    out.init,
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
+    ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
+    out.init,
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$ebrk${id}`, ['loop', `$eloop${id}`,
       ['br_if', `$ebrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
@@ -1370,6 +1375,17 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
   // only ever uses the sidecar slot (poffG stays 0 for it).
   const poffG = tempI32('oepoG'), pcapG = tempI32('oepcG'), dnG = tempI32('oednG'), ordG = tempI32('oeordG')
   const poffS = tempI32('oepoS'), pcapS = tempI32('oepcS'), dnS = tempI32('oednS'), ordS = tempI32('oeordS')
+  // dnG/dnS (above) stay the HEADER length — the cheap for-in cache key
+  // (roHit/cache-store below), read before __coll_order ever runs. dnGReal/
+  // dnSReal are __coll_order's OWN live counts, read right after each call —
+  // walkDyn's actual loop bound MUST use these, not the header, or a header/
+  // real-occupancy desync walks past __coll_order's real buffer (see
+  // __coll_order's header comment, core.js, for why they can disagree). `total`
+  // (below) keeps sizing off the header value — header ≥ real is the only
+  // possible direction (an insert can only ever be dropped from the gathered
+  // count, never conjured), so it stays a valid upper bound for the trimmed
+  // (header-patched) output allocation.
+  const dnGReal = tempI32('oednGr'), dnSReal = tempI32('oednSr')
   const total = tempI32('oetot')
   const out = tempI32('oeo'), i = tempI32('oei'), o = tempI32('oej')
   const slot = tempI32('oesl')
@@ -1539,11 +1555,15 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
     // present in both — reassigned at runtime after being set at init — is
     // emitted once, from the authoritative global copy).
     ['if', ['i32.ne', ['local.get', `$${poffG}`], ['i32.const', 0]],
-      ['then', ['local.set', `$${ordG}`, ['call', '$__coll_order', ['local.get', `$${poffG}`], ['local.get', `$${pcapG}`], ['i32.const', 24]]]]],
+      ['then',
+        ['local.set', `$${ordG}`, ['call', '$__coll_order', ['local.get', `$${poffG}`], ['local.get', `$${pcapG}`], ['i32.const', 24]]],
+        ['local.set', `$${dnGReal}`, ['global.get', '$__coll_order_n']]]],
     ['if', ['i32.ne', ['local.get', `$${poffS}`], ['i32.const', 0]],
-      ['then', ['local.set', `$${ordS}`, ['call', '$__coll_order', ['local.get', `$${poffS}`], ['local.get', `$${pcapS}`], ['i32.const', 24]]]]],
-    walkDyn('oeg', dnG, ordG, null),
-    walkDyn('oes', dnS, ordS, { dn: dnG, ord: ordG }),
+      ['then',
+        ['local.set', `$${ordS}`, ['call', '$__coll_order', ['local.get', `$${poffS}`], ['local.get', `$${pcapS}`], ['i32.const', 24]]],
+        ['local.set', `$${dnSReal}`, ['global.get', '$__coll_order_n']]]],
+    walkDyn('oeg', dnGReal, ordG, null),
+    walkDyn('oes', dnSReal, ordS, { dn: dnGReal, ord: ordG }),
     ['i32.store', ['i32.sub', ['local.get', `$${out}`], ['i32.const', 8]], ['local.get', `$${o}`]],
     // Fill the enum cache (keyed by sidecar — see roHit above). Objects without
     // a sidecar are either tier-1 (returned above) or global-only (rare; a 0 key

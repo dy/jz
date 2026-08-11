@@ -460,8 +460,10 @@ export default (ctx) => {
     (local $off i32) (local $cap i32) (local $n i32) (local $i i32) (local $slot i32) (local $ord i32) (local $first i32) (local $pv i64)
     (local.set $off (call $__ptr_offset (local.get $val)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (local.set $n (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (local.set $ord (call $__coll_order (local.get $off) (local.get $cap) (i32.const 24)))
+    ;; Bound is __coll_order's OWN live count, not the header length — see
+    ;; __coll_order's header comment (core.js) for why they can disagree.
+    (local.set $n (global.get $__coll_order_n))
     (local.set $first (i32.const 1))
     (call $__json_enter (local.get $val))
     (call $__jput (i32.const 123))
@@ -599,10 +601,19 @@ export default (ctx) => {
     ;; G walks first (schema-dedup only); S walks second (schema-dedup AND
     ;; G-dedup, so a key present in both — reassigned at runtime after being
     ;; set at init — emits once, from the authoritative G copy).
+    ;; dnG/dnS are reassigned to __coll_order's OWN live count right after each
+    ;; call — not left at the header length read above — so every downstream
+    ;; bound use (both walks' own loop, plus the S-walk's nested G-dedup scan at
+    ;; $sgd below) matches what ordG/ordS actually contain. See __coll_order's
+    ;; header comment (core.js) for why the header and the real count can disagree.
     (if (i32.ne (local.get $poffG) (i32.const 0))
-      (then (local.set $ordG (call $__coll_order (local.get $poffG) (local.get $pcapG) (i32.const 24)))))
+      (then
+        (local.set $ordG (call $__coll_order (local.get $poffG) (local.get $pcapG) (i32.const 24)))
+        (local.set $dnG (global.get $__coll_order_n))))
     (if (i32.ne (local.get $poffS) (i32.const 0))
-      (then (local.set $ordS (call $__coll_order (local.get $poffS) (local.get $pcapS) (i32.const 24)))))
+      (then
+        (local.set $ordS (call $__coll_order (local.get $poffS) (local.get $pcapS) (i32.const 24)))
+        (local.set $dnS (global.get $__coll_order_n))))
     (if (i32.ne (local.get $dnG) (i32.const 0))
       (then
             (local.set $i (i32.const 0))
