@@ -26,7 +26,6 @@ import { closureBodyReturnKind, closureBodyReturnMayBeUndefined } from '../src/c
 import { T } from '../src/ast.js'
 import { lookupValType, repOf, VAL } from '../src/reps.js'
 import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, DBG_INVARIANTS } from '../src/ctx.js'
-import { astClosurePlan } from '../src/compile/closure-plan.js'
 
 const intConstExpr = (node) => {
   if (typeof node === 'number' && Number.isInteger(node)) return node
@@ -180,7 +179,7 @@ export default (ctx) => {
     // produced it. Coordinator ruling 4: reconcile the shadow-assert's own
     // finding (371-vs-626 count discrepancy) in the slice ledger, not here.
     const legacyStorage = envCaptures.length === 0 ? 'zero-capture' : boxedCaptures.length ? 'boxed-cell' : 'heap'
-    const plan = astClosurePlan.get(body)
+    const plan = ctx.plans.closures.get(body)
     if (DBG_INVARIANTS && plan) {
       // Slice 2's 'lift-eligible' is UNWIRED plan DATA layered on top of a
       // 'heap' decision (design §2.1 — a lift candidate is, by construction,

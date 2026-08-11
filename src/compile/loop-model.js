@@ -10,7 +10,7 @@
 // — adding the next loop transform is then one recognizer over these, not a fourth copy.
 
 import { MUTATE_OPS } from '../ast.js'
-import { ctx, registerResetHook } from '../ctx.js'
+import { ctx } from '../ctx.js'
 import { findMutations } from './analyze-scans.js'
 import { guardCounterName, forCounterRange, intExprRange } from '../static.js'
 import { withRefinements } from './flow-types.js'
@@ -168,14 +168,10 @@ export function rewriteBlocks(body, tryStmt) {
 // only piece common to both loop kinds. emit.js captures this same identity as
 // `bodyNode0` at its handler's own entry, "survives the hoist rebind below" —
 // this WeakMap uses that identical anchor.
-// SESSION-OWNED (audit-#19 P0, same fix as closure-plan.js's astClosurePlan —
-// see its doc comment for the full stale-plan-HIT hazard under self-hosting).
-// `let`, reassigned to a fresh WeakMap per session by resetAstLoopPlan,
-// registered as a ctx.js RESET_HOOKS entry; every importer sees the live
-// ES-module binding, so no consumer call site changes.
-export let astLoopPlan = new WeakMap()
-const resetAstLoopPlan = () => { astLoopPlan = new WeakMap() }
-registerResetHook(resetAstLoopPlan)
+// SESSION-OWNED (audit-#19 P0, folded into ctx.plans by architecture re-audit
+// item 3, .work/todo.md — see src/compile/closure-plan.js's sibling doc
+// comment for the full stale-plan-HIT hazard under self-hosting). Lives at
+// `ctx.plans.loops`, a fresh WeakMap every reset() (src/ctx.js).
 
 // Walks `body` (a function's, or a closure's OWN body — never descends into a
 // nested `=>`/`function`, which gets its own separate mint call when ITS
@@ -209,7 +205,7 @@ export function mintLoopPlans(body) {
     const guardName = Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && typeof cond[1] === 'string' ? cond[1] : null
     const guardBoundRange = guardName ? intExprRange(cond[2]) : null
     const boundConst = guardBoundRange && guardBoundRange[0] === guardBoundRange[1] ? guardBoundRange[0] : null
-    if (Array.isArray(loopBody)) astLoopPlan.set(loopBody, Object.freeze({
+    if (Array.isArray(loopBody)) ctx.plans.loops.set(loopBody, Object.freeze({
       id: freshLoopPlanId(),
       hull: counterRange ? Object.freeze({ lo: counterRange[0], hi: counterRange[1] }) : null,
       boundConst,

@@ -63,11 +63,9 @@ import {
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
   extractF64Bits,
-  loopPlanLink,
 } from '../ir.js'
 import { isBoundName } from '../ir.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from './flow-types.js'
-import { astLoopPlan } from './loop-model.js'
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
 
 const stringOps = (node) => {
@@ -1056,7 +1054,7 @@ function freshenUnrolledScalarBindings(body, ir) {
     if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && rename.has(n[1]))
       n[1] = rename.get(n[1])
     else if (n[0] === 'block') {
-      const link = loopPlanLink.get(n)
+      const link = ctx.plans.loweringLinks.get(n)
       if (link) {
         const { lowering } = link
         const ivKey = lowering.ivName != null ? `$${lowering.ivName}` : null
@@ -6982,8 +6980,8 @@ export const emitter = {
     // facts were minted for this loop — skip the link entirely rather than fabricate
     // one; `lowering` (the WAT-side name map) stays mutable, kept in sync by
     // freshenUnrolledScalarBindings.
-    const plan = astLoopPlan.get(bodyNode0)
-    if (plan) loopPlanLink.set(loopBlockNode, { plan, lowering: { ivName: counterName, guardName } })
+    const plan = ctx.plans.loops.get(bodyNode0)
+    if (plan) ctx.plans.loweringLinks.set(loopBlockNode, { plan, lowering: { ivName: counterName, guardName } })
     result.push(loopBlockNode)
     ctx.func.stack.pop()
     return result.length === 1 ? result[0] : result

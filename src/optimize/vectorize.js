@@ -1,4 +1,4 @@
-import { findBodyStart, dollar, loopPlanLink } from '../ir.js'
+import { findBodyStart, dollar } from '../ir.js'
 import { warn, ctx, DBG_INVARIANTS, registerResetHook } from '../ctx.js'
 import { assembleView } from '../session-views.js'
 import { nodeEqual as exprEq, cloneNode } from '../ast.js'
@@ -7018,7 +7018,7 @@ function tryButterfly(blockNode, fnLocals, freshIdRef) {
 // nothing. A HIT that disagrees is a genuine finding: the two derivations describe the SAME loop
 // and must name the same induction variable / the same constant bound where both resolve one.
 function assertLoopPlanAgrees(node, bl) {
-  const link = loopPlanLink.get(node)
+  const link = ctx.plans.loweringLinks.get(node)
   if (!link) return
   const { plan, lowering } = link
   if (lowering.ivName != null && dollar(lowering.ivName) !== bl.incVar)

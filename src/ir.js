@@ -1,4 +1,4 @@
-import { OPTF, registerResetHook } from './ctx.js'
+import { OPTF } from './ctx.js'
 import { ERR } from '../err-codes.js'
 /**
  * Pure IR construction helpers for WAT-as-array output.
@@ -2386,15 +2386,13 @@ export function verifyFn(fn) {
 //                freshenUnrolledScalarBindings, the one instance found so far — see its own doc)
 //                updates ONLY this half, keeping the fact synchronized without mutating an HIR
 //                fact after the fact.
-// SESSION-OWNED (audit-#19 P0, same fix as compile/closure-plan.js's
-// astClosurePlan and compile/loop-model.js's astLoopPlan — see the former's
-// doc comment for the full stale-plan-HIT hazard under self-hosting). `let`,
-// reassigned to a fresh WeakMap per session by resetLoopPlanLink, registered
-// as a ctx.js RESET_HOOKS entry; every importer sees the live ES-module
-// binding, so no consumer call site changes.
-export let loopPlanLink = new WeakMap()
-const resetLoopPlanLink = () => { loopPlanLink = new WeakMap() }
-registerResetHook(resetLoopPlanLink)
+// SESSION-OWNED (audit-#19 P0, folded into ctx.plans by architecture re-audit
+// item 3, .work/todo.md — see src/compile/closure-plan.js's sibling doc
+// comment for the full stale-plan-HIT hazard under self-hosting). Lives at
+// `ctx.plans.loweringLinks`, a fresh WeakMap every reset() (src/ctx.js).
+// Readers: `ctx.plans.loweringLinks.get(node) === undefined` is the CORRECT
+// "decline, don't guess" answer for a rewritten loop (spec 2: fail-open),
+// never an error.
 
 // Separate id space from compile/loop-model.js's freshLoopId: a LoopPlan id identifies a HIR loop
 // RECORD, never used to name anything emitted, so it must not share a counter with generated-

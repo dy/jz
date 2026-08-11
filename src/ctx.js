@@ -826,6 +826,30 @@ export function reset(proto, globals, bridge) {
                       // above this object.
   }
 
+  // ctx.plans — session-owned plan store (architecture re-audit item 3, .work/
+  // todo.md): the THREE pre-emission frozen-fact WeakMaps (src/compile/
+  // closure-plan.js's ClosureEnvPlan records, src/compile/loop-model.js's
+  // LoopPlan records, src/ir.js's WAT-side loopPlanLink records) used to be
+  // three separate module-scope `let` bindings, each independently reassigned
+  // to a fresh WeakMap by its own resetX() hook registered on RESET_HOOKS
+  // (registerResetHook) — the audit-#19 P0 session-ownership fix applied three
+  // times over, once per map, because self-hosting lowers WeakMap to a strong
+  // Map (no native GC), so a module-global map would let entries from a PRIOR
+  // compile() survive into the next one. Folded into ONE ctx subtree here,
+  // rebuilt directly by reset() every session — the SAME idiom ctx.features/
+  // ctx.linkDemand already use just above (a plain object assigned fresh every
+  // reset(), no hook-array indirection) — for state whose owning modules have
+  // no reason to keep their own private reset plumbing once reset() can just
+  // hand them a fresh subtree directly. Consumers (module/function.js's
+  // ctx.closure.make, src/compile/emit.js's loop/closure-plan reads,
+  // src/optimize/vectorize.js's loopPlanLink read) read ctx.plans.* — no
+  // import-time WeakMap binding to go stale.
+  ctx.plans = {
+    closures: new WeakMap(),      // src/compile/closure-plan.js mintClosureEnvPlans, keyed on closure body node
+    loops: new WeakMap(),         // src/compile/loop-model.js mintLoopPlans, keyed on loop body node
+    loweringLinks: new WeakMap(), // src/ir.js, keyed on the WAT loop-block node — { plan, lowering }
+  }
+
   // Single reset choreography (see RESET_HOOKS' doc above): every subsystem that
   // keeps module-scope working state outside ctx for perf clears it HERE, driven
   // by the one seam every entry point already calls.
@@ -996,7 +1020,7 @@ export function assertCtxInvariants(phase) {
     ctx.transform.sessionPhase = phase
   }
 
-  must(ctx.core && ctx.module && ctx.scope && ctx.func && ctx.transform && ctx.features && ctx.linkDemand,
+  must(ctx.core && ctx.module && ctx.scope && ctx.func && ctx.transform && ctx.features && ctx.linkDemand && ctx.plans,
        'sub-contexts present')
   if (phase !== 'pre-reset') {
     must(ctx.core.includes instanceof Set, 'core.includes is Set')
