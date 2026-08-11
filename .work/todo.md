@@ -10756,3 +10756,70 @@ FINALLY making `possibleKinds`/`presence` safe to consume and closing the
 
 **Commits**: `9e4db0ba` (9c), `4c109344` (9a), `f091c391` (9b) + this
 entry + `.work/lattice-design.md`'s matching AS-LANDED append.
+
+---
+
+## Status (2026-08-11, ARCHITECTURE RE-AUDIT item 7 LANDED — LoopPlan's
+## first real consumer, ending "shadow-only", 1 commit)
+
+Closes the re-audit's own framing: "make LoopPlan the source for IV, bound,
+hull, and loop-shape facts... until the vectorizer consumes it, LoopPlan
+remains duplicate census work." The narrowest sound slice, picked by
+evidence rather than guess: slice 4's `assertLoopPlanAgrees` shadow-assert
+(landed 2026-08-08, .work/research.md §BodyModel) is itself the proof of
+which facts are safe to consume — it has run clean (0 divergences) across
+every battery since. Its own comparison list is exactly two facts: the IV
+name (always) and the constant bound (only when `bl.bound` is already an
+`i32.const` WAT node). Those are the two candidates; only the IV name had
+anything left to flip (the bound branch is already a one-field read in the
+WAT derivation — nothing to gain by consulting the plan there instead).
+
+vectorize.js's single dispatch site — the `(block (loop))` scaffold match
+that feeds 8 recognizers off one shared `bl` (tryMemCopyFill, tryVectorize,
+tryReduceVectorize, tryMapReduceVectorize, tryStencil, tryByteScan,
+tryToneMap, tryStrengthReduceIV) — now looks up `ctx.plans.loweringLinks`
+right after matching `bl`, and on a hit overwrites `bl.incVar` with the
+plan-sourced name. The WAT-derived `matchInc1`/`exitInfo` scan keeps running
+in full regardless (it locates and validates the increment statement —
+loop-shape structure, not just a name source) and becomes the fail-open
+fallback on a miss. `assertLoopPlanAgrees` is unchanged in code but inverts
+role: it now checks the fallback (fresh WAT derivation, read before the
+override) against the primary (the plan), instead of the other way around —
+exactly the brief's "inverted roles."
+
+Bound/hull explicitly NOT flipped — narrowed to the proven subset, per the
+brief's own instruction. `plan.hull` has no assert comparison at all;
+`bl.bound`'s `boundLocal` (non-constant) case is never compared either. Both
+are banked findings for a future slice that wants to build its OWN
+shadow-assert proof first, not an extension of this one's scope.
+
+**Consultation count** (temporary `globalThis.__ITEM7_CENSUS` counters,
+gated, reverted before commit — same method as architecture re-audit item
+4's census): across `node test/index.js`'s default-tier suite, 12444 `bl`
+matches, 12106 plan consultations — 97.3%, consistent with slice 4's
+originally measured 97.6% link-hit rate on the full battery corpus (different
+corpus, same order). Each consultation is one WAT-re-derivation that 8
+recognizers no longer need to trust independently — the "duplicate census
+work" the re-audit named, replaced by one shared read.
+
+**Gate ladder** (`b8279a23` baseline worktree vs. `07cefe7c`):
+
+| check | result |
+|---|---|
+| 58-case × O0/O2/O3 byte-identity sweep (174 compiles) | 174/174 identical |
+| `node test/simd.js` | 158/158 (582 assertions) |
+| `node test/index.js` | 3419/3421 (same 2 pre-existing unrelated fails), 6 skip |
+| `JZ_DEBUG_INVARIANTS=1 node test/index.js` | 3420/3423 (same 2 + the known `cf1_8` idempotence flake) — 0 LoopPlan-agreement divergences |
+| `node test/kernel-parity.js` | 3/3 groups, 33/33 assertions, byte-identical WAT O2/O3 |
+| `JZ_TEST_TARGET=jz.wasm node test/index.js` | 2716/2722 pass, 6 skip, 0 fail |
+| `node scripts/battery.mjs` | BATTERY GREEN, exit 0 (verdict line itself fell outside the captured `tail -80` window — the harness's own exit-code readout is the authoritative signal per the script's own `process.exit(failed.length ? 1 : 0)`) |
+| `node scripts/build-dist.mjs` ×2 | byte-identical SHA-256 |
+
+**Verdict: LANDED.** LoopPlan is no longer shadow-only — one dispatch-site
+consultation feeds 8 recognizers their IV name from the plan, fail-open to
+the WAT derivation on any miss, byte-identical by construction (the flipped
+value is proven equal to the one it replaces on every path the assert
+covers).
+
+**Commit**: `07cefe7c` (src/optimize/vectorize.js) + this entry +
+`.work/research.md`'s matching §BodyModel append.

@@ -857,6 +857,83 @@ warm-instance pin missed its cap but reproduced near-identically on a clean
 HEAD worktree measured back-to-back — the same machine-contention class
 Slice 3's own gates already banked, not a regression).
 
+**First real consumption (architecture re-audit item 7) LANDED 2026-08-11**:
+closes the gap the re-audit named — "until the vectorizer consumes it,
+LoopPlan remains duplicate census work." Scope picked by evidence, not
+guess: slice 4's `assertLoopPlanAgrees` shadow-assert is itself the proof of
+WHICH facts are safe to flip — it has run the full battery +
+JZ_DEBUG_INVARIANTS repeatedly since 2026-08-08 with zero divergences on the
+IV-name comparison (`dollar(lowering.ivName) === bl.incVar`). vectorize.js's
+single dispatch site (the `(block (loop))` scaffold match feeding
+tryMemCopyFill/tryVectorize/tryReduceVectorize/tryMapReduceVectorize/
+tryStencil/tryByteScan/tryToneMap/tryStrengthReduceIV — 8 recognizers
+sharing one `bl`) now looks up `ctx.plans.loweringLinks` right after
+matching `bl` and, when the link resolves an IV name, overwrites
+`bl.incVar` with the plan-sourced name (`dollar(link.lowering.ivName)`) —
+the WAT-derived name computed by `matchInc1`/`exitInfo` above (still run in
+full, unavoidably: it's what locates the increment statement and validates
+loop shape at all, not merely a name source) becomes the fail-open FALLBACK
+on a link miss. Roles invert: `assertLoopPlanAgrees`, unchanged in code, now
+checks the FALLBACK (the fresh WAT derivation, read before the override)
+against the PRIMARY (the plan) — the same equality, opposite narrative —
+instead of the other way around. Byte-identical by construction on every
+hit (the assert already proves the two strings equal whenever it doesn't
+throw; the override substitutes one proven-equal string for another).
+
+Bound/hull NOT flipped — narrowed to the proven subset (banked finding).
+`assertLoopPlanAgrees` only compares `plan.boundConst` against `bl.bound` in
+the branch where `bl.bound` is ALREADY an `i32.const` WAT node — i.e.
+exactly the one case where the WAT derivation is already the concrete
+number in a single field read (`constNum(bl.bound)`), so consulting the
+plan there buys nothing. The `boundLocal` (non-constant, `local.get`) case
+is NEVER compared by the assert — no proof exists to license flipping it.
+`plan.hull` (the [lo,hi] counter range) has no consumer or assert
+comparison at all yet — same gap, unflippable until a future slice proves
+it against something. **Finding banked**: the assert's own coverage is
+narrower than "IV, bound, hull" — only IV name and the ALREADY-i32.const
+bound case are proven; a future slice wanting to consume `plan.hull` or the
+`boundLocal` case needs its OWN shadow-assert proof first (the same
+discipline slice 4 followed), not an extension of this one's scope.
+
+Consultation count (temporary `globalThis.__ITEM7_CENSUS` counters, gated,
+reverted before commit — same method as architecture re-audit item 4's
+census): across `node test/index.js`'s full default-tier suite, 12444 `bl`
+matches, 12106 plan consultations (97.3% — consistent with slice 4's
+originally measured 97.6% link-hit rate on the full battery corpus;
+different corpus, same order). Each consultation is one WAT-derivation
+(`matchInc1`'s name, downstream of the increment-statement scan) that no
+longer needs to be the value 8 recognizers read — the STRUCTURAL scan
+(`matchInc1`, `matchExitBrIf`) still runs (loop-shape validation,
+unavoidable), but its returned NAME is now discarded in favor of the
+plan's on a hit. This is the "duplicate census work" reduction the
+re-audit asked for: one shared read (`ctx.plans.loweringLinks.get`)
+replaces what was 8 recognizers each trusting a WAT re-derivation for the
+same fact.
+
+Gates (`b8279a23` baseline worktree vs. `07cefe7c`):
+
+| check | result |
+|---|---|
+| 58-case × O0/O2/O3 byte-identity sweep (174 compiles, in-process sha256 vs isolated worktree at `b8279a23`) | 174/174 identical |
+| `node test/simd.js` | 158/158 (582 assertions) |
+| `node test/index.js` | 3419/3421 pass (same 2 pre-existing unrelated fails — interval-walk/typed-RMW codec bounds), 6 skip |
+| `JZ_DEBUG_INVARIANTS=1 node test/index.js` | 3420/3423 pass (same 2 PLUS the known `cf1_8` idempotence flake, audit-#12 item 2's own probe) — 0 LoopPlan-agreement divergences (assertLoopPlanAgrees never fired) |
+| `node test/kernel-parity.js` | 3/3 groups, 33/33 assertions, byte-identical WAT O2/O3 |
+| `JZ_TEST_TARGET=jz.wasm node test/index.js` | 2716/2722 pass, 6 skip, 0 fail (matches the documented baseline exactly) |
+| `node scripts/battery.mjs` (native/O0/O3/dbg/wasi/fuzz/fixpoint/build/kernel/self, internally parallel DAG) | BATTERY GREEN, exit 0 — the verdict line prints first specifically so it survives tail-truncation, and the harness's own process exit code (0) independently confirms `failed.length === 0` per the script's own logic; the captured log's tail (piped through `tail -80`, cut before the verdict re-printed) instead shows live per-leg O3/dbg/wasi diagnostic streams, all expected fail-closed/fail-open regression assertions, not failures |
+| `node scripts/build-dist.mjs` ×2 | byte-identical SHA-256 (`32bb23f8…` jz.js, `ef42c9da…` interop.js, `207d9083…` jz.wasm) |
+
+**Files**: src/optimize/vectorize.js (the dispatch site, ~20 lines: doc +
+the `if (bl) { const link = ...; if (link && ...) bl.incVar = ... }`
+block).
+
+REMAINING: bound/hull consumption stays open (unproven — see finding
+above). Slices 5-7 (memcpy/reduce/vectorize as their own units) collapse
+into this one shared-dispatch flip since all 8 recognizers read the SAME
+`bl.incVar`.
+
+**Commit**: `07cefe7c`.
+
 ## [ ] Heap-kind registry (was heap-kind-registry-design.md; audit-#13 item 3)
 
 One per-tag authority (`layout-kinds.js`, repo root): 16 kinds × 7 columns
