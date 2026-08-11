@@ -1698,6 +1698,149 @@ false, mirroring how Slice 4 already solved an analogous dist-cost bleed
 for KIND_REGISTRY's prose columns — NOT attempted this session, may need
 its own design.
 
+**SECOND-WALL PASS BISECTION (2026-08-11), disposable worktrees off
+`region-slice2-2026-08-11`/`d1f2f2ba` (all removed at session end, node_modules
+copied per-worktree — watr 5.7.13 confirmed) — verdict: NOT a single pass, NOT
+a generic size lottery. The wall requires module/core.js's real dispatch
+rewiring AND layout-kinds.js's new arms TOGETHER; neither alone reproduces it.
+Not landed, not closed — banked per the stop-on-fail tripwire.**
+
+*Repro confirmed x3*: `region-slice2-2026-08-11` worktree, rebuilt via
+`scripts/build-dist.mjs` unmodified — kernel-oracle's `String(x > 0 && 1)` O2
+row traps `memory access out of bounds` 3/3, deterministic, matching the prior
+session's bank exactly.
+
+*Method*: a throwaway `bisect-build.mjs` (kernel-wasm-only rebuild, skips
+esbuild's dist/jz.js|interop.js|assets/sprae.js — irrelevant to
+`compileViaKernel`, cuts each iteration to the ~4 min wasm-only compile) reads
+`ABLATE_JZ`/`ABLATE_WATR` env vars and forces the named jz PASS_NAMES flags or
+watr `optimize()` stage flags to `false` on top of the kernel meta-compile's
+existing `{level:3, watrGuard:false, snapshotInit:true,
+inlinePtrOffsetFast:false}` config (build-dist.mjs's own `REGION_HOOKS_LIVE`
+block, byte-for-byte). Ablations ran as parallel detached-HEAD worktrees (14
+cores available, ~1.1 core/build) to keep wall time down.
+
+*Batch 1 — the bank's own named suspects* (each ablated alone, 3 reps):
+jz `fusedRewrite`; watr `treeshake`; jz `treeshake` (jz's own
+`removeDead` sweep, src/compile/index.js — a DIFFERENT mechanism from watr's
+internal `treeshake` stage, both tested separately); watr `cse`; watr `licm`;
+watr `inline` (the fusion driver itself — `runRounds`'s caller-fusion
+machinery the root-cause session's own finding pointed at); watr `offset`
+(fold add+const into load/store offset — directly pointer-decode-adjacent).
+**All 7 still trap, unchanged.**
+
+*Batch 2 — the remaining offset/CSE/hoist family, grouped to cut wall time*:
+jz `loadCSE,cseScalarLoad,hoistGlobalConstLoads,hoistGlobalPtrOffset,
+hoistLoopGlobalPtrOffset,hoistInvariantPtrOffset,hoistPtrType,hoistAddrBase,
+hoistInvariantLoop,promoteGlobals,propagateSingleUse,specializeMkptr,
+sortLocalsByUse,foldSetToTee` (14 flags, ALL off at once); watr
+`propagate,coalesce,locals,mergeBlocks,vacuum,inlineOnce,inlineWrappers,fold,
+deadset` (9 flags, ALL off at once); jz `arenaRewind` alone (per-call heap
+rewind — semantically adjacent to region-exit's own reclaim shape); jz
+`hoistInvariantLoop` alone (isolated from the batch, in case the group masked
+a single culprit). **All 4 still trap, unchanged.** Combined with batch 1,
+every jz PASS_NAMES entry with any plausible offset/CSE/hoist/fusion
+relationship, and every watr-side stage with any plausible relationship, has
+now been ablated (individually or in a group whose members were later also
+covered individually/regrouped) — no single named pass, in isolation, is
+necessary for the trap.
+
+*Layout-lottery hypothesis (coordinator-directed test)*: does the wall reduce
+to "kernel-own compiled SIZE crosses some address-sensitive threshold,
+independent of WHAT grew it" — the class the 2026-08-06/2026-08-11 sessions'
+own heisenbug findings ("any change to module/core.js, even inert extra
+globals... shifts allocation offsets downstream") would predict? Built a
+CLEAN `d1f2f2ba` + regionHooks-wired control (zero Slice-2 diff) — confirmed
+clean 3/3 (matches the prior session's own control finding exactly), size
+14442.0 kB. Appended semantically inert, mutually-distinct (to dodge watr's
+`dedupe` pass collapsing identical bodies), never-called exported padding
+functions directly to `scripts/self.js`'s own tail:
+  - +40 functions (+7.0 kB, 14449.0 kB total) — clean 3/3, no trap.
+  - +140 functions (+24.6 kB, 14466.6 kB total — 1.5x Slice 2's OWN measured
+    +16.3 kB dormant-build growth) — clean 3/3, no trap.
+**Pure inert size growth, even at 1.5x Slice 2's own footprint, does NOT
+reproduce the wall.** The simple "any size growth trips it" form of the
+layout-lottery hypothesis is REFUTED — this is not a generic address-lottery
+independent of content.
+
+*Content isolation*: applied ONLY `layout-kinds.js`'s Slice-2 diff (the ~637-
+line region-arm generator additions) onto the clean `d1f2f2ba`+regionHooks
+control, `module/core.js` and `src/wat/assemble.js` left byte-for-byte
+untouched (so `__region_copy_rec`'s dispatch still calls the OLD hand-written
+body — the new arms exist as real, exported, dead-from-the-kernel's-own-
+dispatch-perspective functions, same "present in the bundle, never invoked"
+shape the earlier session's own explanation of the mechanism describes).
+Size 14452.7 kB (+10.7 kB). **Clean 3/3 — no trap.** layout-kinds.js's new
+content, PRESENT but UNWIRED, does not reproduce the wall either.
+
+**Decisive test**: applied `layout-kinds.js`'s diff AND `module/core.js`'s
+diff together (the real `__region_copy_rec` dispatch rewiring to
+`regionCopyRecBody()` — this is what actually ROUTES compiled calls through
+the new OBJECT/HASH/TYPED/BUFFER/CLOSURE arms) — but withheld
+`src/wat/assemble.js`'s `needsSchemaTbl` fix (the one other Slice-2 file,
+15-line diff, the `ctx.core.includes.has('__region_copy_rec')` OR-clause that
+guarantees `$__schema_tbl` gets built whenever region-copy is live, so
+OBJECT's arm can safely read a schema's slot count). Size 14458.9 kB.
+**TRAPS, 3/3 — reproduces the wall**, WITHOUT the assemble.js piece at all.
+This pins the mechanism precisely: neither module/core.js's dispatch
+rewiring nor layout-kinds.js's new content alone is sufficient — BOTH
+together are, and assemble.js's needsSchemaTbl fix is NOT what's standing
+between this repro and green (consistent with, and an independent
+confirmation of, the original Slice-2 session's own step-3 finding: "reverted
+the deps()/assemble.js needsSchemaTbl changes to byte-identical originals —
+trap PERSISTS").
+
+**Verdict**: the second class member is NOT a bisectable optimizer pass (jz or
+watr) and NOT a generic kernel-own-size address lottery. It is a real
+STRUCTURAL consequence of `__region_copy_rec` itself changing shape — Slice 2
+rewires that one function's body from a small hand-written WAT template to a
+`regionCopyRecBody()` assembly carrying ~20 new locals
+(`regionCopyRecLocals`) and 8 new inline arms — and the original session's OWN
+ablation already showed it is not any ONE arm's logic (OBJECT/HASH/TYPED/
+BUFFER/CLOSURE stubbed to bare `unreachable` one at a time and all together —
+"trap PERSISTS unchanged... so none of the five is even being reached in this
+repro"). The remaining, NOT yet tested axis: `__region_copy_rec`'s own new
+SIZE/local-count may cross an inlining or fusion threshold specific to THAT
+function (it is called from many sites — recursion plus every region-exit —
+so `inlineOnce`/`mayInline`'s single-caller gate does not apply, but watr's
+general fusion of a hot, frequently-called function into a large caller,
+matching `runRounds`'s own "no surviving named function... fully inlined"
+shape the ORIGINAL inlinePtrOffsetFast root-cause found, remains untested at
+the level of "does `__region_copy_rec` SPECIFICALLY get a different
+inlining/fusion outcome pre- vs post-Slice-2, independent of any single pass
+flag" — batch 1/2's pass-level ablations show no SINGLE flag is necessary,
+but a STRUCTURAL side effect of the new body's size on watr's fusion
+heuristics, which no single flag toggles off, was not isolated this session).
+
+**Per the stop-on-fail tripwire**: NOT landed, NOT closed. Shared tree
+verified untouched throughout (`git status`/`git diff` show only the
+pre-existing untracked `todo-original.md` before and after); all six
+disposable worktrees (`region-wt`, `ab1`-`ab11`, `ab-pad`, `ab-pad2`,
+`ab-pad3`) removed at session end via `git worktree remove --force` (each
+was either a clean detached-HEAD checkout with no commits, or had its
+ablation diffs only on-disk/uncommitted — no branch created, nothing to lose).
+`region-slice2-2026-08-11` branch preserved exactly as banked (one commit,
+untouched). Gate ladder (repro is confirmed but NOT the fix — kernel-oracle
+13/13, kernel-parity 33/33, fuzz 200+2000×2, full battery, dormant
+byte-identity, build×2, memory curve, jz×jz) NOT run — every gate beyond the
+repro itself is contingent on the wall being closed, and it is not. No merge.
+
+**Recommendation for next session**: stop bisecting BY PASS NAME — that
+axis is now exhausted (batch 1 + batch 2 cover every offset/CSE/hoist/fusion-
+adjacent flag in both jz's PASS_NAMES and watr's PASSES registries) and the
+padding experiments show it is not a bare-size effect either. The open
+angle is `__region_copy_rec`'s OWN pre- vs post-Slice-2 compiled shape at the
+KERNEL's fused-caller level: dump named WAT for the function (or its fused
+successor) from the clean `d1f2f2ba` control vs the `ab-pad3` decisive-test
+build (both already characterized above, reproducible via the same `git
+apply` recipe — `git diff d1f2f2ba region-slice2-2026-08-11 -- layout-kinds.js`
+and `-- module/core.js`, applied on a fresh `d1f2f2ba`+regionHooks-wired
+worktree) via `compileWat` on a trivial source and `wasm2wat --enable-all` on
+the KERNEL binary itself (the root-cause session's own technique for
+`inlinePtrOffsetFast`), diffing which functions changed identity/inlining
+status around `__region_copy_rec`'s call sites — that is the one lever this
+session did not pull.
+
 ## [ ] Carrier invariant / storedValue (was carrier-invariant-design.md; predecessor of the carrier program)
 
 The boxed-value invariant program that preceded carrier-representation.
