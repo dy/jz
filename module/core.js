@@ -883,6 +883,15 @@ export default (ctx) => {
       (local $bits i64) (local $hit i64) (local $out f64)
       (if (f64.eq (local.get $propsF) (f64.const 0)) (then (return (local.get $propsF))))
       (local.set $bits (i64.reinterpret_f64 (local.get $propsF)))
+      ;; Ordering audit (.work/research.md §Region arena, __region_copy_rec ORDERING
+      ;; AUDIT): memo hit-check BEFORE any work, matching every other kind's arm —
+      ;; this was previously missing on THIS function's durable path (see below).
+      ;; A bare PTR.HASH region-root CAN be diamond-shared (unlike an ARRAY/OBJECT
+      ;; dyn-props sidecar, always 1:1 per-owner); an ARRAY/OBJECT/HASH dyn-props
+      ;; sidecar reached from a durable container this function ITSELF also walks
+      ;; recursively (nested dicts) needs the same short-circuit.
+      (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+      (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
       (local.set $off (call $__ptr_offset (local.get $bits)))
       (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
       (local.set $n (i32.load (i32.sub (local.get $off) (i32.const 8))))
@@ -890,7 +899,30 @@ export default (ctx) => {
         (then
           ;; durable container (created a prior compile / never grown this round):
           ;; values updated in place, container address unchanged — mirrors
-          ;; __region_copy_rec's ARRAY branch's own durable-walk-in-place case.
+          ;; __region_copy_rec's ARRAY/OBJECT branches' own durable-walk-in-place
+          ;; case, INCLUDING their "memo itself BEFORE walking children" step —
+          ;; the bug this audit found: without it, a SECOND visit to the SAME
+          ;; durable container (diamond-shared) re-walks every slot and re-runs
+          ;; __region_copy_rec on each VALUE — but the first visit already
+          ;; OVERWROTE ephemeral values in place with their FINAL (delta-adjusted,
+          ;; not-yet-physically-valid — the closing memory.copy hasn't landed)
+          ;; address. Re-presenting that final bit pattern as if it were fresh
+          ;; input bits: __ptr_offset's forwarding-chase (ARRAY/HASH/SET/MAP are
+          ;; all FORWARDING_MASK members) reads whatever unrelated data currently
+          ;; occupies that not-yet-written final address, the child-level $memo
+          ;; (keyed on ORIGINAL bits) doesn't recognize the final bits as the same
+          ;; object, and the value gets silently re-derived from garbage — a
+          ;; corrupted (observed: silently truncated to length 0; kernel-scale
+          ;; heaps with real leftover garbage there can misread a huge/negative
+          ;; length instead, matching the wall's "memory access out of bounds"
+          ;; signature) copy, with NO trap in the common case, confirmed via a
+          ;; native (non-kernel) probe: a durable Object.fromEntries(...) HASH
+          ;; reached twice from one ephemeral array ([d, d]), with one ephemeral
+          ;; array-valued property assigned after __region_mark() — control
+          ;; (single reference, or no ephemeral child) reads back correct;
+          ;; two-or-more references to the SAME durable dict corrupts the
+          ;; ephemeral child deterministically at every opt level (0-3).
+          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $propsF))))
           (block $pd (loop $pl
             (br_if $pd (i32.ge_s (local.get $i) (local.get $cap)))
             (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const ${MAP_ENTRY}))))

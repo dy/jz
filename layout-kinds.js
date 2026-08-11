@@ -524,7 +524,22 @@ export function regionArmTyped() {
               (if (i32.lt_u (local.get $off) (local.get $mark))
                 (then
                   ;; durable descriptor (stable address) — its root buffer may still be
-                  ;; ephemeral (this round); rebase in place if it moved.
+                  ;; ephemeral (this round); rebase in place if it moved. Ordering audit
+                  ;; (.work/research.md §Region arena): memo-guard the durable branch
+                  ;; itself, same fix class as __region_relocate_props's durable branch
+                  ;; below (both were the only two "walks/mutates in place, no memo"
+                  ;; arms in the whole dispatch — ARRAY/OBJECT's durable branches memo
+                  ;; themselves before this). Without it, a diamond-shared durable view
+                  ;; (the SAME descriptor object reachable via two root paths) would
+                  ;; re-read off+8 on a second visit AFTER the first visit already
+                  ;; overwrote it with the FINAL (delta-adjusted, not-yet-physically-
+                  ;; valid) buffer address — re-deriving $oldRoot from that final value
+                  ;; and recursing into __region_copy_rec on a bogus synthesized BUFFER
+                  ;; box, corrupting state exactly like the HASH-durable case this audit
+                  ;; found and fixed natively.
+                  (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+                  (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (local.get $v))))
+                  (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $v))))
                   (local.set $oldRoot (i32.load (i32.add (local.get $off) (i32.const 8))))
                   (local.set $rootBox (call $__region_copy_rec
                     (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0) (local.get $oldRoot))
