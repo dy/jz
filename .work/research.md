@@ -2770,3 +2770,197 @@ skip. The warm self-host perf pin also failed identically on pre-variant
 `5746138f` (roughly 1.12–1.14×); fresh-instance passed. Therefore neither
 standing failure class is attributed to item 10, and no cap/baseline was
 changed.
+
+## §Region arena — RUNTIME TRACE: the survivor axis root-caused to a specific
+holder (2026-08-11), disposable scratchpad worktree off `0d089b49`
+(region-final-2026-08-11) — verdict: the "arms' content perturbing some OTHER
+auto-numbered function downstream" survivor from the pad/pin session is now a
+NAMED holder with a decoded garbage value and a region-round correlation.
+Not landed — a real fix is architectural (extends the watr-integration root
+bundle or the mark/exit insertion scope), matching every prior session's own
+"class fix, session-plus scope" conclusion. Banked per the stop-on-fail
+tripwire.
+
+**Setup, the §29 discipline exactly.** Worktree off `0d089b49`, node_modules
+symlinked. Built the region-live kernel ONCE via a scratch script mirroring
+`resolveSelfhostBuild`'s exact profile plus `names: true` (index.js's own
+wasm name-section export, `opts.names`/`appendFunctionNames` — undocumented
+for this purpose before now) — 14590.7 kB, `regionArenaLive: true`,
+`optimize: {level:3, watrGuard:false, snapshotInit:true,
+inlinePtrOffsetFast:false}`. Confirmed the repro 3/3: kernel-oracle's
+`computed member key` row (`export let f = (x) => { let o = {}; o[x > 0 &&
+1] = 'v'; return o['0'] }`, O3) — `RuntimeError: memory access out of
+bounds`, deterministic every rep. `names:true` paid off immediately: Node's
+own RuntimeError stack came back FULLY symbolicated, no manual
+`functionNameSection`-convention index-counting needed (the wall2/alloc-guard
+sessions' own workaround) —
+
+```
+$__map_delete (wasm-function[99])
+  ← m120_optimize$forwardPropagate (3052)
+  ← closure2190 (5154)
+  ← m51_util$walkN (143) ×2
+  ← m120_optimize$propagate (953)
+  ← closure2287 (2457) ← closure2291 (1079) ← closure2779 (5483) ← closure1493 (4784)
+```
+
+**The frame.** `$__map_delete` is `module/collection.js`'s `genDelete`
+stdlib — the SAME family the desync-fix session's `$__map_from` finding
+implicated, but a DIFFERENT consumer, and this time called from
+`node_modules/watr/src/optimize.js`'s own `forwardPropagate` (line
+3152) — watr's own optimizer, self-hosted into the kernel — at `known.delete
+(tgt)` (its `local.set`/`local.tee` invalidation path, line 3190/3226).
+`known` is `forwardPropagate`'s own `const known = new Map()`, function-local,
+declared line 3155.
+
+**The faulting instruction, found before any instrumentation.**
+`wasm-objdump -d` on the named `dist/jz.wasm` cross-referenced against the
+RuntimeError's own module offset in the raw trap: byte `0x4451c` inside
+`func[99] <__map_delete>` is `i32.load 2 0` reading local 11 (`$ls`) — the
+FIRST hash-lane probe read (`$ls = $lb + ((h & (cap-1)) << 2)`, `$lb = $off +
+cap*24`), matching genDelete's own WAT shape (confirmed identical between the
+`compile(...,{wat:true})` text dump and the disassembled bytes).
+
+**Instrument.** `scripts/trace-mapdelete.mjs` (scratch, reuses
+`trace-inject.mjs`'s own `findFunc`/`parseFunc`/`firstBodyIdx`/`printFunc`
+splicing mechanics, structural node-shape asserts throughout — throws on any
+shape drift rather than tracing the wrong thing), applied to the kernel's own
+`compile(...,{wat:true})` text dump (275.5 MB — reassembly via
+`watr/parse`+`watr/compile` took 4.0 s this session, well under the
+§29-era 81 s estimate). Hoisted the `$h`/`$ls` address computation OUT of
+its nested expression into standalone statements BEFORE the block that
+performs the load — semantics-preserving (locals are function-scoped, not
+block-scoped) — so the WOULD-BE-faulting address is captured
+UNCONDITIONALLY, even though the load itself then traps. Captured: `$coll`/
+`$key` at entry, the INITIAL header-cap read (before any `-1` forwarding-hop
+chase), the POST-forwarding-check final `$off`/`$cap`, `$lb`/`$end`, `$h`,
+the exact `$ls` address, and `global.get $__heap` as a coarse region-round-
+activity proxy. Reassembled, instantiated BY HAND (bypassing interop.js's
+`instantiate()` — its `opts.imports` wrapper auto-decodes host-import args as
+NaN-boxed jz values, which would corrupt a raw i64 debug channel; same §29/
+alloc-guard-session caution) with minimal env stubs matching the kernel's own
+6 import signatures exactly (`__ext_prop`/`__ext_has`/`__ext_set`/
+`__ext_call`/`print`/`now` — none fire for this repro) plus a real
+`dbg.trace` collector, using interop.js's own EXPORTED `memory()` helper for
+ABI-correct `String()`/`read()` marshaling (not reimplemented by hand),
+called `exports.default(source, strict=0, optJSON={level:3}, modules=0,
+host=0)` — the exact ABI `test/kernel-target.js`'s `compileViaKernel` uses.
+
+**The garbage decode.** 38,188 total `$__map_delete` invocations during this
+ONE tiny compile; 38,147 sane (`capInit` ∈ {8, 16, 64} or the legitimate `-1`
+forwarding sentinel, 41 times) — EXACTLY ONE anomalous, the very LAST call,
+the one that traps:
+
+```
+coll        = 0x7ffc800001f4c448
+key         = 0x7ffa000001a593dc
+capInit     = 0x000000007ffa0000   <- garbage from the FIRST read, before any forwarding chase
+off (final) = 0x0000000001f4c448   (32818248 — a plain, in-range heap offset)
+cap (final) = 0x000000007ffa0000   (same garbage — the -1 chase never fires, since it isn't -1)
+lb          = 0x000000000164c448
+end         = 0x00000000014cc448
+h           = 0x000000008c5fc9fa
+ls (fault)  = 0x0000000032cbec30   (852,225,072 — 315,354,160 bytes past the 512 MB/8192-page bound)
+```
+
+`0x7ffa0000` decodes exactly per `layout.js`'s own NaN-box scheme
+(`TAG_SHIFT=47`, `TAG_MASK=0xF`, `PTR.STRING=4`): tag nibble `(0x7ffa0000 >>
+15) & 15 == 4` (`PTR.STRING`), aux `0x7ffa0000 & 0x7FFF == 0`. genDelete
+reads `cap` at `off-4`, immediately after `len` at `off-8` — an 8-byte
+`[len,cap]` header. A 4-byte read at `off-4` coming back as a STRING
+pointer's HIGH half means a full 8-byte, non-SSO STRING box (tag=STRING,
+aux=0) was written starting at `off-8`, physically straddling the exact
+bytes this Map's own header lives at — a different, unrelated heap object
+now occupies this Map's header. `$ls`, computed from the garbage `cap`,
+lands 315 MB past the linear-memory bound — exactly the observed `memory
+access out of bounds`.
+
+**Region-round correlation.** Across all 38,188 calls, the traced
+`$__heap` watermark DROPS (a region_exit compaction signature) only 5 times
+total. The LAST drop — invocation 36,912 of 38,188, well before the
+corrupted final call — goes `0x1fc0b40 → 0x1d7b960` (33,295,168 →
+30,914,912 bytes, a ~2.4 MB reclaim). The corrupted Map's own header address
+(`0x1f4c448` = 32,818,248) sits STRICTLY BETWEEN that drop's post- and
+pre-compaction watermarks — squarely inside the range the last region_exit
+reclaimed as free — yet ABOVE the post-compaction floor, i.e. within the
+territory the heap re-grew through afterward (climbing monotonically
+30,914,912 → 32,825,888+ over the following ~1,276 calls, zero further
+compaction in between). This exact address never appears as an `off` in any
+of the 38,187 prior traced calls this run — its only appearance is the
+corrupted one.
+
+**The holder, named directly, one hop (matches or beats the §29 chain's own
+2-hop precedent).** `known` — `forwardPropagate`'s own per-call `Map()`
+local (`node_modules/watr/src/optimize.js:3155`) — is invisible to
+region-arena's root enumeration BY CONSTRUCTION: `runRounds`'s own
+`regionExit` call (`optimize.js:8471`) passes exactly `[ast, dirty,
+snapshots, opts.constF64]` as the live root bundle — a hand-curated,
+pass-EXTERNAL list. `forwardPropagate`'s `known`, `propagate`'s own
+use-count maps, and any other PASS-INTERNAL Map/Set/Array live entirely
+outside that bundle. The SAME comment block (`optimize.js:8466`,
+`CNT = null; CNT_FN = null; SW.length = 0; SW_MEM = false`) already
+hand-drains a DIFFERENT, incomplete allowlist of pass-scratch MODULE
+GLOBALS right before every `regionExit` call, specifically because
+module-scope pass scratch is "normally already dead" there — an
+acknowledged, partial patch for exactly this class of hazard, that never
+covered `known` (a plain per-call LOCAL, not a module global — never a
+candidate for that drain list in the first place). The exact
+allocation-order race that lets the string collide with `known`'s header —
+whether `known`'s own storage is the stale side of a lingering, un-relocated
+reference, or whether the allocator legitimately handed out address
+32,818,248 twice — needs one further level of trace (instrumenting
+`$__mkptr`/`__alloc_hdr_n`/the region_exit call itself around this specific
+address) to pin down beyond the mechanism class; not attempted this session.
+
+**Fix-or-bank: BANKED.** This is the exact class every prior region-wall
+session's own recommendation converged on ("some OTHER auto-numbered
+function... structurally invisible to every static technique... the next
+lever is runtime") — now with a decisive runtime trace naming the SPECIFIC
+holder (`known`, inside watr's own self-hosted `forwardPropagate`) and the
+SPECIFIC provenance class (a pass-internal collection outside region-arena's
+4-item root bundle, colliding with a STRING allocated into territory the
+prior round's compaction reclaimed). A provably-correct fix is architectural,
+not a one-line patch: either (a) extend the watr-integration root bundle (or
+its per-pass scratch-drain allowlist) to cover every pass's own live locals
+across a round boundary — touches every entry in watr's `PASSES` table,
+well beyond session scope — or (b) scope WHERE `regionMark`/`regionExit`
+get inserted so no pass with untracked live locals ever straddles a round
+boundary — harder to verify sound without auditing every pass for the same
+shape. Neither is session-scoped or provably correct without that broader
+audit, matching the desync-fix session's own precedent for this class
+("session-plus scope, not a session-remainder scope").
+
+**By-name verdict: N/A** — no fix applied, no shared-tree source change.
+
+**Gates: NOT run** — contingent on the wall closing (kernel-oracle ×N,
+kernel-parity, fuzz 200+2000×2, full battery, dormant byte-identity, build
+×2, memory watermark curve, jz×jz all gated on a landed fix, per the task's
+own acceptance framing).
+
+**Per the stop-on-fail tripwire**: NOT landed, NOT closed. `git status` in
+the shared tree shows zero changes from this session (HEAD advanced to
+`6adde860` via unrelated concurrent work, confirmed by `git log`/`git status`
+before and after). Every artifact this session produced — the named-build
+script, the WAT dump, `trace-mapdelete.mjs`, the reassembly/instantiation
+harness, the 275.5 MB instrumented WAT, the ~38 MB raw trace log — lives only
+in the scratchpad worktree (`/private/tmp/.../scratchpad/region-runtime-
+trace`), removed at session end, never committed. SHAs: base `0d089b49`
+(region-final-2026-08-11, unchanged); no branch created for this session's
+own work (pure investigation, no edits to bank as a diff).
+
+**Recommendation for next session**: (1) don't re-run the static/pass-name/
+size axes — exhausted, all negative, per every prior session including the
+pad/pin discriminator pair; (2) the next concrete lever is tracing
+`$__mkptr`/the STRING-allocation call sites plus `__region_exit`'s own
+compaction loop around address range `[0x1d7b960, 0x1fc0b40]` for THIS
+specific repro, to determine whether `known`'s Map or the colliding STRING
+is the one holding a stale reference — this pins the exact allocation-order
+race and turns "architectural fix, unscoped" into a scoped one; (3) if that
+trace shows `known` itself is the stale side (a genuinely-reclaimed,
+still-referenced pass-internal value), the scoped fix is almost certainly
+"treat forwardPropagate's own `known` as an explicit implicit root at the
+`runRounds` regionExit call site" — the SAME shape as the `$__dyn_props`
+implicit-root fix already landed for a structurally identical gap
+(`.work/research.md`, `__region_exit`'s own header comment); if instead the
+STRING is the stale side, the fix target moves to whatever allocates
+strings during watr's own pass execution.
