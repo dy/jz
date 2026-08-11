@@ -1752,8 +1752,19 @@ export function analyzeValTypes(body) {
           if (domain) (ctx.func.leanHashDomains ??= new Map()).set(a[1], domain)
         }
         setVal(a[1], vt)
-        if (mayBeNullish(a[2])) updateRep(a[1], { nullable: true })
-        if (mayBeUndefinedRhs(a[2])) updateRep(a[1], { mayBeUndefined: true })
+        const declMayBeNullish = mayBeNullish(a[2])
+        if (declMayBeNullish) updateRep(a[1], { nullable: true })
+        // presence (re-audit item 9(b)): 'maybe-undef' mirrors mayBeUndefined's
+        // own boolean exactly (same condition, same site). 'present' is a
+        // SEPARATE, narrower positive proof — non-nullish init (declMayBeNullish
+        // already computed above for `nullable`) AND never reassigned anywhere
+        // in the body (writeCount, the SAME never-reassigned check the range
+        // stamp below reuses) — mutually exclusive with 'maybe-undef' by
+        // construction (if/else if): a census-shaped RHS is already
+        // mayBeNullish-true (mayBeNullish fails closed on any call/bracket
+        // read), so the two arms never both fire for the same write.
+        if (mayBeUndefinedRhs(a[2])) updateRep(a[1], { mayBeUndefined: true, presence: 'maybe-undef' })
+        else if (!declMayBeNullish && writeCount(body, a[1], 0) === 0) updateRep(a[1], { presence: 'present' })
         setPresentVal(a[1], censusMaybeUndefinedKind(a[2]))
         // Closed integer hull for never-reassigned decls whose init the range
         // evaluator can bound (masks, ternary hulls, bounded products) — chains
@@ -1877,7 +1888,13 @@ export function analyzeValTypes(body) {
       }
       setVal(args[0], poisonUndeclared(args[0], vt))
       if (mayBeNullish(args[1])) updateRep(args[0], { nullable: true })
-      if (mayBeUndefinedRhs(args[1])) updateRep(args[0], { mayBeUndefined: true })
+      // presence (re-audit item 9(b)): 'maybe-undef' mirrors mayBeUndefined's
+      // boolean here too. No 'present' arm at a REASSIGN site — this write
+      // itself makes writeCount(body, args[0], 0) ≥ 1 for the whole body, so
+      // the decl site's never-reassigned precondition for 'present' is
+      // already false whenever this site can even fire (decl-site 'present'
+      // never gets set for a name that reaches a reassignment anywhere).
+      if (mayBeUndefinedRhs(args[1])) updateRep(args[0], { mayBeUndefined: true, presence: 'maybe-undef' })
       setPresentVal(args[0], censusMaybeUndefinedKind(args[1]))
       if (vt === VAL.REGEX) trackRegex(args[0], args[1])
       if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(args[1])) trackTyped(args[0], args[1])

@@ -577,7 +577,11 @@ function analyzeFuncForEmit(func, programFacts) {
       // makes unnecessary. A body write the fixpoint couldn't see keeps the
       // flag one step more conservative than strictly needed; per the
       // design's own fail-closed direction that's the safe side to be wrong on.
-      if (r.mayBeUndefined) updateRep(pname, { mayBeUndefined: true })
+      // presence (re-audit item 9(b)): mirrors mayBeUndefined's own stamp
+      // here — 'maybe-undef', the only state this paramReps-sourced fact can
+      // prove (a param's positive-presence proof, if any, is a body-local
+      // decl question the caller-side join below has no view into).
+      if (r.mayBeUndefined) updateRep(pname, { mayBeUndefined: true, presence: 'maybe-undef' })
     }
   }
   // Caller-side nullability: a NO-DEFAULT param observes the UNDEF pad whenever a
@@ -1910,7 +1914,10 @@ function emitClosureBody(cb) {
   // survive into the closure's OWN body, or its own write facts (a settled
   // `val`) would let this fact evaporate exactly the way an un-seeded
   // `nullable` would.
-  if (cb.mayBeUndefineds) for (const name of cb.mayBeUndefineds) updateRep(name, { mayBeUndefined: true })
+  // presence (re-audit item 9(b)): mirrors mayBeUndefined's own seed here —
+  // 'maybe-undef' only (a captured binding's positive-presence proof, if any,
+  // is a fact about the PARENT body's decl, not something this seed re-proves).
+  if (cb.mayBeUndefineds) for (const name of cb.mayBeUndefineds) updateRep(name, { mayBeUndefined: true, presence: 'maybe-undef' })
   if (cb.valTypes) for (const [name, vt] of cb.valTypes) updateRep(name, { val: vt })
   if (cb.schemaVars) {
     ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])

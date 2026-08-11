@@ -2422,16 +2422,22 @@ export default function narrowSignatures(programFacts, ast) {
   // universal-nullability contract), mayBeUndefined's provenance is narrow
   // enough that "no trace to a census read" is the same honest default the
   // decl producer (Slice 1) already applies to every ordinary RHS.
+  // presence (re-audit item 9(b)): 'maybe-undef' sibling stamped alongside
+  // r.mayBeUndefined at both writes below — same fail-closed
+  // (destructured-param-body) and call-site-union sources, no 'present' arm
+  // here (a param's positive-presence proof, if any, is settled at the
+  // ARGUMENT's own decl site in the caller body, not something this
+  // whole-program join independently proves).
   for (const [fname, reps] of paramReps) {
     for (const [k, r] of reps) {
       if (r.mayBeUndefined) continue
       const func = ctx.func.map?.get(fname)
       if (!func?.sig?.params || k >= func.sig.params.length) continue
       const pname = func.sig.params[k].name
-      if (isDestructuredParamBody(func, pname)) { r.mayBeUndefined = true; continue }
+      if (isDestructuredParamBody(func, pname)) { r.mayBeUndefined = true; r.presence = 'maybe-undef'; continue }
       for (const cs of callSites) {
         if (cs.callee !== fname || k >= cs.argList.length) continue
-        if (exprMayBeUndefinedIn(cs.argList[k], cs.callerFunc?.body)) { r.mayBeUndefined = true; break }
+        if (exprMayBeUndefinedIn(cs.argList[k], cs.callerFunc?.body)) { r.mayBeUndefined = true; r.presence = 'maybe-undef'; break }
       }
     }
   }

@@ -132,6 +132,39 @@ export const VAL = {
  *   kind join's result alongside func.valResult / ctx.closure.valResult —
  *   parallel facts, not merged into those (their return shapes have live
  *   consumers, kind-traits.js calleeValType, this design must not disturb).
+ * @property {'present'|'maybe-undef'} [presence]  Tri-state sibling of
+ *   `mayBeUndefined` (re-audit item 9(b), completing the AUDIT-#16 P0-2
+ *   ruling's queued upgrade: "the boolean stays positive-evidence-only...
+ *   the presence upgrade to a 4-point lattice or coverage bit is queued as
+ *   its own gated slice"). Absent = UNKNOWN (not-yet-analyzed — the SAME
+ *   silence `mayBeUndefined`'s `false`/absent already conflates with
+ *   "proven present", which is exactly the gap this field closes: `!mayBeUndefined(name)`
+ *   remains NOT a definitelyPresent proof (the standing ruling — the boolean
+ *   alone still can't distinguish "never observed maybe-undef" from
+ *   "positively proven present"), but `presence === 'present'` IS a real
+ *   proof. `'maybe-undef'` is set at every site that sets `mayBeUndefined:
+ *   true` today (decl/reassign census-shaped RHS — analyze.js; param
+ *   propagation and closure-capture seed — compile/index.js; the paramReps
+ *   Fact-level destructured-param-body and call-site-union writes —
+ *   narrow.js) — same monotone-OR-safe algebra, never un-set. `'present'`
+ *   is a SEPARATE, much narrower producer (analyze.js's decl site only, one
+ *   arm): a decl whose init is provably non-nullish (`!mayBeNullish(rhs)` —
+ *   the SAME conservative, fail-closed-on-any-call/member-read predicate
+ *   `nullable`'s own producer already uses) AND never reassigned anywhere in
+ *   the body (`writeCount(body, name, 0) === 0` — the SAME never-reassigned
+ *   check `range`'s own decl producer already uses, just above). Mutually
+ *   exclusive with the `'maybe-undef'` arm at that site by construction (one
+ *   `if`/`else if`, not two independent `if`s) — a census-shaped RHS is
+ *   already `mayBeNullish`-true (a call/bracket read fails `mayBeNullish`
+ *   closed), so the two arms never both fire for the same write. Deliberately
+ *   conservative per the task's own instruction — few `'present'` marks are
+ *   fine, a missed one just stays UNKNOWN, never wrong. `mayBeUndefined`
+ *   itself is UNCHANGED (still written at every site, still the sole field
+ *   every existing consumer reads) — `presence` is purely additive; a
+ *   `mayBeUndefined(name)` projection could derive as `presence(name) ===
+ *   'maybe-undef'` but no consumer does yet (re-audit item 9(b) lands the
+ *   field with zero consumers, same "safe to consume later" precedent as
+ *   item 9(a)'s `kindsCoverage`).
  * @property {string}  [presentVal]       VAL.* kind the census claims for a
  *   binding's value WHEN PRESENT — the opt-in KIND-carrying sibling of
  *   `mayBeUndefined` (.work/todo.md §deletion-sweep §14,
@@ -261,7 +294,7 @@ export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
   'typedCtor', 'wasm', 'nullable', 'neverGrown', 'bigintBoxed', 'recvArrTyped', 'dictValueValType',
-  'mapValueValType', 'mayBeUndefined', 'presentVal',
+  'mapValueValType', 'mayBeUndefined', 'presentVal', 'presence',
 ])
 
 const DBG_REPS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
