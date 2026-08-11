@@ -2728,3 +2728,45 @@ build×2, memory watermark curve, jz×jz) NOT run — contingent on the wall
 closing, and it does not. SHAs: decisive base `0d089b49`
 (region-final-2026-08-11), pad-control base `d1f2f2ba`. No branches created;
 both worktrees were scratch-only (uncommitted edits, discarded on removal).
+
+## §Region arena — SAFEPOINT FIX PUBLISHED; NO-FORWARDING BANKED (2026-08-11)
+
+Watr 5.7.14 (`a563a63`) is tagged, pushed, and published at npm integrity
+`sha512-PNBeHpM7rzstcEDxiG26NW4qonyvo7EPFhSK/tgoTc7QysL/IVPOE9qMclVvjaEGtCb5ExFFLBwqZ4owSHj5bw==`.
+Its publish gate passed build, declarations, native tests, and the hosted wasm
+suite. JZ now pins that exact release (`444990d0`), not a caret or local symlink.
+
+The independently banked JZ branch `region-forwarding-fix` at `0fd60ce2`
+removes every region-created old-site forwarding stub and names ARRAY/OBJECT
+relocation `trace-copy`; ordinary collection growth forwarding is untouched.
+A root-only control and that no-stub branch, both using Watr 5.7.14, produce
+exactly the same 42 failing names under
+`JZ_TEST_TARGET=jz.wasm JZ_FUZZ_GATE=0.05 node test/index.js` (2722 total,
+2674 pass, 42 fail, 6 skip). Thus complete Watr rooting closes 7 of the prior
+49 rows, while deleting unusable forwarding stubs changes zero rows. The
+no-stub layout registry passes 51 tests / 79 assertions.
+
+Regions remain dormant. Kernel parity still OOBs on O2 `fromnested`, and the
+root-only control reproduces it, so that allocation window is independent of
+stub deletion. No region branch is merged or advertised; resume from
+`0fd60ce2`, not from a local dependency patch.
+
+## §Architecture re-audit item 10 — ONE VARIANT MATERIALIZER COMPLETE (2026-08-11)
+
+All five specialization producers now delegate clone registration, fact-copy,
+and atomic `{node[1], callSite.callee}` retargeting to
+`src/compile/variant.js`: union-cursor (`e5f503ab`), speculative typed
+(`31e76fe8`), VAL-kind dichotomy (`0ddac820`), bimorphic typed (`eeb28b8b`),
+and fixed-rest (`9e941607`). A source census leaves variant registration and
+call-edge retargeting only in that materializer; normal function discovery
+remains in the scope/index registries.
+
+Verification on the final tree: focused native suites 366/366 (688 assertions);
+targeted hosted `errors fuzz rest-params types` 352/352 (639 assertions);
+kernel parity 33/33 byte-identical WAT and kernel oracle 13/13 (493 assertions);
+self-host correctness 21/21 (206 assertions). The full native battery remains
+at its recorded baseline: 3419 pass, 2 standing optimizer-shape failures, 6
+skip. The warm self-host perf pin also failed identically on pre-variant
+`5746138f` (roughly 1.12–1.14×); fresh-instance passed. Therefore neither
+standing failure class is attributed to item 10, and no cap/baseline was
+changed.
