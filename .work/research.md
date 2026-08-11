@@ -934,6 +934,126 @@ into this one shared-dispatch flip since all 8 recognizers read the SAME
 
 **Commit**: `07cefe7c`.
 
+## [x] FunctionVariantPlan (architecture re-audit item 10) LANDED 2026-08-11
+
+The audit's finding: five specialization analyses — fixed-rest arity
+(`specializeFixedRestCalls`, plan/inline.js), bimorphic typed-elem split
+(`specializeBimorphicTyped`, narrow.js ~2880), VAL-kind landslide dichotomy
+(`specializeValKindDichotomy`), union-cursor carrier clones
+(`specializeUnionCursorParams`), and guarded speculative typed clones
+(`speculateTypedParams`) — each independently clone/name/register/copy-facts/
+retarget a func variant, byte-for-byte duplicated mechanism five times. The
+asks: keep the five ANALYSES separate PRODUCERS; make MATERIALIZATION
+singular; make call-edge retargeting ATOMIC (the audit's own framing:
+`site.node[1]` mutation alone leaves `site.callee` conceptually stale); move
+`specializeValKindDichotomy`'s 0.9 dominance threshold to the pass registry.
+
+**Commonality table** (byte-similar MECHANISM vs genuinely path-specific
+POLICY, the BodyModel survey's facts-vs-policy discipline):
+
+| step | fixed-rest | bimorphic typed | VAL-kind dichotomy | union-cursor | speculative typed |
+|---|---|---|---|---|---|
+| name mint | `${name}#restN`, idempotent reuse | ctor-combo suffix, disambiguated | dom-kind suffix, disambiguated | `$union`, disambiguated | `$spec`, disambiguated |
+| clone build | shared shape | shared | shared | shared | shared |
+| sig | CUSTOM (fixed+unrolled rest params) | CUSTOM (per-position ptrKind=TYPED) | DEFAULT (fresh copy, no ABI change) | CUSTOM (per-position ptrKind=OBJECT) | CUSTOM (per-position ptrKind=TYPED) |
+| body | CUSTOM (`rewriteRestBody`) | DEFAULT (origin.body) | DEFAULT | DEFAULT | DEFAULT |
+| register list/map/names | shared | shared | shared | shared | shared |
+| paramReps copy+patch | none (pre-paramReps phase) | shared shape (typedCtor+val+joinKinds) | shared shape (val+joinKinds) | none normally (no kind change) | shared shape, EVEN with no origin reps |
+| call-edge retarget | ALL sites + `setCallArgs` (path-specific extra) | PER-COMBO subset | PER-position-match subset | ALL sites | NONE (EMIT-time guarded dispatch) |
+| side registry | none | none | none | `ctx.schema.inlineUnionCursors` | `ctx.types.specFns` |
+
+**Extracted**: `materializeVariant({origin, key, name, sig, body, cloneFields,
+paramReps, factOverrides, eligibleSites, fallback})` (new src/compile/variant.js,
+sits beside neither narrow.js nor plan/inline.js since both consume it).
+Handles the shared steps only: name-mint (two modes — `key`-keyed idempotent
+reuse for fixed-rest's converging site-groups, vs disambiguate-on-collision
+for the other four, which never expect reuse); clone-object construction;
+`ctx.func.{list,map,names}` registration; paramReps copy+patch (one
+reconciled rule replaces three different original semantics — write iff
+there's a source reps map to copy OR an override with somewhere to land,
+verified to reproduce bimorphic/valkind's always-present-reps case,
+speculate's always-write-even-when-absent case, and union's skip-when-
+neither case, all three exactly). Each path stays its own producer, deciding
+whether/what/which; genuinely unique steps stay in the path as policy:
+fixed-rest's body rewrite + arg-count trim, bimorphic's MAX_CLONES_PER_FN
+polymorphic-blowup gate, union-cursor's `cursorsBySig` side table, and
+speculateTypedParams' EMIT-time guarded-dispatch registration (`ctx.types.
+specFns`) instead of a static retarget — noted, not contorted into the
+shared function.
+
+**Atomicity**: `retarget` inside `materializeVariant` always sets
+`site.node[1]` AND `site.callee` together — no code path produces one
+without the other. Grepped every `.callee` consumer to confirm the
+staleness claim before fixing it: narrow.js's own ~15 `sitesByCallee`/
+`cs.callee` scans (mostly pre-date the four late-phase specializations, so
+unaffected by ordering), plan/literals.js's two `sitesByCallee` builders,
+and — the one with real teeth — dyn-closure-tables.js's
+`proveClosureFactory`, which filters `programFacts.callSites` by
+`cs.callee === calleeName` POST-EMIT (`resolveDynFnTables`, called from
+compile/index.js after every function has emitted) to verify a closure-
+factory's default-closure param is never overridden at any of its call
+sites — a stale `.callee` there is a real, if narrow, correctness-adjacent
+gap for `devirtClosureTables` closure-table devirtualization.
+
+**Migrated all five, one commit each** (`e5f503ab` union-cursor,
+`31e76fe8` speculative typed, `0ddac820` VAL-kind dichotomy + DOMINANCE to
+registry, `eeb28b8b` bimorphic typed, `9e941607` fixed-rest — last, because
+it's the one whose clone-eligibility test (destructured single-array params
+route through the SAME `.rest` machinery) turned out to exercise the
+atomicity fix for real).
+
+**The atomic fix isn't cosmetic — caught it live, not just in theory.** The
+58-case × O0/O2/O3 byte-identity sweep (vs a disposable worktree pinned at
+this session's start, `5746138f`) came back 171/174 identical; the 3 diffs
+were all `watr` (jz compiling watr's own WAT-encoder source — the one
+self-referential bootstrap case in the corpus), −174 bytes at every
+optimize level. Root-caused by direct A/B toggle of the `.callee` write
+alone (isolated with a debug harness, `JZ_DBG_FR`, fully stripped before
+commit): `watr.js` contains `let g = ([a, b]) => b` called once with a
+2-element array literal — a destructured single-array param IS represented
+internally via `.rest`, so `g` is itself eligible for `specializeFixedRestCalls`
+and gets retargeted to a `g#rest1` clone. Under the OLD split retarget,
+narrowSignatures' own call-site census (filters by `.callee`) kept
+attributing that site to the stale pre-specialization name `g` — so the
+inferred `val: ARRAY` fact landed on the now-uncalled original, while the
+clone actually being called got NO facts and stayed unnarrowed. The atomic
+fix moves the fact to the function really being called, unlocking leaner
+codegen for a param `narrowSignatures` had always been ABLE to prove, just
+attributing to the wrong name. Verified BENIGN, not merely different:
+instantiated both binaries (interop.js host) and ran the watr micro-
+benchmark end to end — IDENTICAL checksum (`-875812435`) at O0/O2/O3,
+confirming smaller codegen, not a behavior change. `test/types.js`'s
+"destructured param element keeps whole-array kind" test asserted the fact
+on `g` unconditionally — true only because of the very bug just fixed;
+updated to check whichever of `g`/`g#rest1` actually carries it (same commit,
+`9e941607`).
+
+**DOMINANCE → registry**: `specializeValKindDichotomy`'s local `const
+DOMINANCE = 0.9` is now `ctx.transform.optimize?.valKindDominance ?? 0.9` —
+same value, `valKindDominance` added to src/passes.js `TUNING_KEYS`
+(matching `scalarTypedArrayLen`'s own convention: a numeric knob no preset
+currently overrides, default via `??`). `test/passes.js`'s registry-coverage
+gate (every optimize-config read must be a registered pass or tuning key)
+enforces the read site stays registered.
+
+**Gate ladder** (`5746138f` baseline worktree vs `9e941607`):
+
+| check | result |
+|---|---|
+| 58-case × O0/O2/O3 byte-identity sweep (174 compiles) | 171/174 identical — 3 explained + checksum-verified-benign (`watr`, above) |
+| `node test/kernel-parity.js` | 3/3 groups, 33/33 assertions |
+| `node --test test/passes.js` | clean (registry coverage incl. `valKindDominance`; formatting invariance) |
+| `node test/index.js` | 3419/3427 pass (same 2 pre-existing: interval-walk codec-bounds, typed-RMW guard-coalescing), 6 skip — matches clean-baseline signature exactly |
+| `JZ_DEBUG_INVARIANTS=1 node test/index.js` | 3420/3429 pass (same 2 PLUS the pre-existing `cf1_8` idempotence flake, audit-#12 item 2's own probe, unrelated subsystem) — matches clean-baseline signature exactly |
+| `JZ_TEST_TARGET=jz.wasm node test/index.js` | 2716/2722 pass, 6 skip, 0 fail |
+| `node scripts/build-dist.mjs` ×2 | SHA-256 byte-identical (dist/jz.wasm, dist/jz.js, dist/interop.js) |
+| targeted correctness | struct-inline.js 17/17, dyn-closure-tables.js 8/8 (exercises the exact `.callee`-filtering consumer the atomicity fix targets), speculate.js 6/6, rest-params.js 33/33, types.js 178/178, inference.js 136/136, optimizer.js 217/219 (same 2 pre-existing codec-bounds flakes) |
+
+**Verdict: LANDED.** All five paths migrated; zero output change except one
+verified, checksum-confirmed inference improvement the atomicity fix itself
+unlocked. `materializeVariant` is now the one place a sixth specialization
+path (if one is ever needed) mints/registers/retargets a variant.
+
 ## [ ] Heap-kind registry (was heap-kind-registry-design.md; audit-#13 item 3)
 
 One per-tag authority (`layout-kinds.js`, repo root): 16 kinds × 7 columns

@@ -10823,3 +10823,69 @@ covers).
 
 **Commit**: `07cefe7c` (src/optimize/vectorize.js) + this entry +
 `.work/research.md`'s matching §BodyModel append.
+
+## Status (2026-08-11, ARCHITECTURE RE-AUDIT item 10 LANDED — one
+## materializeVariant shared by all five func-specialization paths, atomic
+## call-edge retarget, DOMINANCE to registry, 5 commits)
+
+Five analyses (fixed-rest arity, bimorphic typed-elem split, VAL-kind
+landslide dichotomy, union-cursor carrier clones, guarded speculative typed
+clones) each hand-rolled the same mint/clone/register/paramReps-patch/
+retarget mechanism. Extracted `materializeVariant` (new src/compile/
+variant.js); each analysis stays its own producer (whether/what/which),
+migrated one at a time onto the shared materializer, each its own commit +
+byte-identity check: `e5f503ab` union-cursor, `31e76fe8` speculative typed,
+`0ddac820` VAL-kind dichotomy (+ DOMINANCE→registry), `eeb28b8b` bimorphic
+typed, `9e941607` fixed-rest (last — see below for why). Full commonality
+table, extraction rationale, and per-path gate detail in
+`.work/research.md`'s new §FunctionVariantPlan section — summarized here.
+
+Atomic retarget (`site.node[1]` + `site.callee` set together, always) closes
+the staleness the re-audit named. Grepped every `.callee` consumer first:
+the one with real teeth is dyn-closure-tables.js's `proveClosureFactory`
+(post-emit closure-table devirtualization, filters `programFacts.callSites`
+by `.callee`) — a stale `.callee` there is a real, narrow correctness-
+adjacent gap, now closed.
+
+**Caught it live, not just in theory**: the 58-case byte-identity sweep came
+back 171/174 — the 3 diffs are all `watr` (jz self-compiling its own WAT
+encoder), −174 bytes at O0/O2/O3. Root cause: `watr.js` has `let g = ([a, b])
+=> b` — a destructured single-array param, internally rest-shaped, so `g`
+gets a `specializeFixedRestCalls` clone (`g#rest1`). Under the OLD split
+retarget, narrowSignatures' `.callee`-filtered call-site census kept
+attributing the retargeted site to the stale name `g`, so the inferred
+`val:ARRAY` fact landed on the now-uncalled original while the real callee
+(`g#rest1`) got no facts. The atomic fix moves the fact to the actual
+callee — smaller codegen, same behavior. VERIFIED, not assumed: instantiated
+both binaries (interop.js host), ran the watr micro-benchmark, IDENTICAL
+checksum (`-875812435`) at O0/O2/O3. `test/types.js`'s "destructured param
+element keeps whole-array kind" test asserted the fact on `g` unconditionally
+— true only because of this bug; updated to check whichever of `g`/`g#rest1`
+carries it (same commit as the fixed-rest migration, since that's the path
+that surfaced it).
+
+DOMINANCE (specializeValKindDichotomy's 0.9 landslide threshold) is now
+`ctx.transform.optimize?.valKindDominance ?? 0.9`, `valKindDominance` added
+to src/passes.js `TUNING_KEYS` — same value, visible/overridable like every
+other tuning key, enforced by test/passes.js's registry-coverage gate.
+
+**Gate ladder** (`5746138f` baseline worktree vs. `9e941607`):
+
+| check | result |
+|---|---|
+| 58-case × O0/O2/O3 byte-identity sweep (174 compiles) | 171/174 identical — 3 explained + checksum-verified-benign (`watr`) |
+| `node test/kernel-parity.js` | 3/3 groups, 33/33 assertions |
+| `node --test test/passes.js` | clean (registry coverage incl. `valKindDominance`; formatting invariance) |
+| `node test/index.js` | 3419/3427 pass (same 2 pre-existing: interval-walk, typed-RMW), 6 skip — matches clean-baseline signature exactly |
+| `JZ_DEBUG_INVARIANTS=1 node test/index.js` | 3420/3429 pass (same 2 + the pre-existing `cf1_8` idempotence flake) — matches clean-baseline signature exactly |
+| `JZ_TEST_TARGET=jz.wasm node test/index.js` | 2716/2722 pass, 6 skip, 0 fail |
+| `node scripts/build-dist.mjs` ×2 | SHA-256 byte-identical |
+| targeted correctness | struct-inline.js 17/17, dyn-closure-tables.js 8/8, speculate.js 6/6, rest-params.js 33/33, types.js 178/178, inference.js 136/136, optimizer.js 217/219 (same 2 pre-existing) |
+
+**Verdict: LANDED.** Every path migrated; zero output change except the one
+verified inference improvement the atomicity fix itself unlocked.
+
+**Commits**: `e5f503ab`, `31e76fe8`, `0ddac820`, `eeb28b8b`, `9e941607`
+(src/compile/variant.js new; src/compile/narrow.js, src/compile/plan/
+inline.js, src/passes.js, test/types.js) + this entry +
+`.work/research.md`'s new §FunctionVariantPlan section.
