@@ -288,7 +288,20 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     // later static `o.x` read returns the stale slot. That mirror is gated on
     // `$__schema_tbl != 0`, so a write-only module (no `__dyn_get*`) must still
     // build the table. (needsSchemaTbl below skips it when every schema is empty.)
-    ctx.core.includes.has('__dyn_set')
+    ctx.core.includes.has('__dyn_set') ||
+    // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry):
+    // __region_copy_rec's OBJECT arm (layout-kinds.js regionArmObject) derives
+    // slot COUNT from `$__schema_tbl[sid]` — same `(if $__schema_tbl != 0 ...)`
+    // guard every other reader here uses, but if the table were never actually
+    // BUILT (this OR-chain not tripped), that guard reads 0 slots for every
+    // real OBJECT: an ephemeral relocation then allocates the WRONG (1-slot,
+    // via __alloc_hdr's own `max(n,1)`) block and copies zero of its real
+    // fields — __alloc_hdr never zero-fills payload, so the "extra" slots a
+    // wider real schema needed sit as bump-allocator GARBAGE, later read back
+    // as a bogus NaN-boxed pointer and dereferenced — confirmed live (kernel-
+    // oracle String()-with-ambiguous-bool-merge repro, region-live only,
+    // `memory access out of bounds`, root-caused to exactly this gap).
+    ctx.core.includes.has('__region_copy_rec')
   const needsSchemaTbl = (ctx.schema.list.length && tblConsumed &&
     (hasStringify || ctx.schema.list.some(s => s.length > 0))) ||
     hasJpObj

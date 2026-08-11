@@ -121,7 +121,7 @@ function optimizeTail(module, cfg) {
       ? [...cfg._vectorizedFnNames].filter(name => ctx.func.map.get(name.slice(1))?.exported)
       : [],
     targetProfile: ctx.transform.targetProfile,
-    // regionHooks: { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) },
+    regionHooks: { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) },
   })
 }
 
