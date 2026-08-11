@@ -1506,6 +1506,198 @@ large/heap-diverse as jz×jz itself, and that precondition doesn't hold.
 Worktree removed at session end; `git status`/`git diff` in the shared tree
 show only the intended build-dist.mjs change plus this ledger entry.
 
+**Heap-kind registry Slice 2 ATTEMPTED, WALL HIT, BANKED (2026-08-11), disposable
+worktree (`region-slice2-2026-08-11`, node_modules copied — watr 5.7.13
+confirmed) — verdict: real relocation logic built + one genuine bug found and
+fixed, but the second wall above is NOT closed by it; a DEEPER, still-open
+address-layout-sensitivity class dominates. Not landed.**
+
+**Structured columns** (layout-kinds.js KIND_REGISTRY, new `children`/
+`relocate` executable fields per kind, doc-string enum matching the task's
+own vocabulary): ARRAY `slots(len@-8)`/`copy-forward`; OBJECT `schema-
+slots(aux)+sidecar`/`copy-forward` (slot count from `$__schema_tbl[sid]` —
+the same lookup `__obj_clone`/`__sclone_rec` already use, NOT a header word
+— OBJECT's header len/cap slots are unused); HASH `hash-entries(kv)`/
+`value-relocate` (a NEW verb: KEYS are content-hashed STRINGs, invariant
+under relocation, matching what `__region_relocate_props` — the existing
+dyn-props-sidecar helper — already does for exactly this shape; a bare
+PTR.HASH region-root value turned out to be PHYSICALLY IDENTICAL to that
+sidecar case, so the arm is one line: delegate to it directly); SET/MAP kept
+`rebuild` (unchanged, verbatim); TYPED `buffer-edge(raw-i32)`/`copy-rebase`
+(owned storage is a leaf `copy`; a VIEW's descriptor holds `bufferRootOff`
+as a RAW i32 offset, not a boxed f64 child — rebased by recursing
+`__region_copy_rec` on a synthesized BUFFER box for the root, mirroring
+`__sclone_rec`'s TYPED view arm, then re-deriving `dataOff` from the
+possibly-relocated root's new offset); BUFFER `none`/`copy` (memo'd —
+region relocation, unlike structuredClone, must preserve "same `.buffer`"
+identity across multiple views sharing one root); EXTERNAL `none`/
+`immediate` (the offset is a host-table INDEX, not a wasm address — nothing
+to relocate); CLOSURE `env(aux-arity)`/`trap` — the one kind deliberately
+NOT built: `aux` carries the function-table index, not the capture count,
+and the env block is a bare `__alloc` with no header (module/function.js) —
+no aux-indexed capture-count table exists at runtime (unlike OBJECT's
+`$__schema_tbl`), and building one (a `$__closure_env_len` table, mirroring
+the schema table) is a real, bounded, but NOT session-sized option, scoped
+out per the task's own "keep a PRECISE trap for that sub-case, document"
+permission — a single named `(if (tag==CLOSURE) (then (unreachable)))` arm,
+not lumped into a blanket six-kind trap.
+
+**Generator + byte-identity verdict**: BIGINT/STRING/ARRAY/SET+MAP extracted
+PROGRAMMATICALLY from the git blob (paren/marker-anchored slicing, never
+hand-retyped) into `regionArm*` functions in layout-kinds.js, verified
+byte-identical to the pre-Slice-2 hand-written text via a throwaway eval
+script (both `hasDynProps` states for ARRAY) BEFORE module/core.js's
+`__region_copy_rec` stdlib entry was switched to call the assembled
+`regionCopyRecBody()` — **PASSED**, matching Slice 3's own established
+"prove equality, then move the source of truth" discipline. OBJECT/HASH/
+TYPED/BUFFER/EXTERNAL newly authored; CLOSURE a one-line named trap.
+`__region_relocate_props` (module/core.js) hardened with a memo (hit-check
++ set) it never needed before — ARRAY/OBJECT's dyn-props sidecar is always
+1:1 (never diamond-shared), but a bare HASH region-root value legitimately
+CAN be (aliasing: `let b = a` copies the same HASH bits into a second
+reachable slot) or self-referential — unguarded, a revisit would either
+double-copy (breaking `===`) or infinite-loop on a cycle.
+
+**A REAL BUG FOUND AND FIXED, live-verified (native `compile()`, no self-
+host needed — this repro is orders of magnitude faster to iterate than a
+kernel rebuild and should be the FIRST tool reached for next time)**:
+OBJECT's first ephemeral-branch draft mirrored ARRAY's dyn-props migration
+policy verbatim — relocate the props hash, ALWAYS re-file it into the
+global `$__dyn_props` table keyed by the object's final address, and mark
+the old inline slot with `i64.const -1` (ARRAY's "moved elsewhere" sentinel
+— `module/collection.js`'s `__dyn_set` ARRAY arm explicitly recognizes a
+non-zero, non-HASH-tagged off-16 word as "look in the global table",
+falling through past its inline check). **OBJECT's `__dyn_set` arm has NO
+such fallback** (the "OBJECT: heap-allocated AND ephemeral... writes
+propsPtr directly at off-16" comment, module/collection.js): it treats ANY
+non-zero off-16 word as an already-valid HASH pointer, unconditionally, no
+tag check. Writing `-1` there — sound for ARRAY, silent corruption for
+OBJECT — misdirects the next dynamic-property access into dereferencing the
+`-1` bit pattern as a real pointer. Minimal repro (native, no kernel):
+`let o = {}; o["extra"] = 77` inside a region round, read back after
+`__region_exit` — `memory access out of bounds`, 100% deterministic, fails
+at O0/O2/O3 identically. Root-caused by comparing which native repro
+variants passed (durable object + dyn-prop: fine — DIFFERENT policy branch)
+against which failed (ephemeral object + dyn-prop: broken), then reading
+`__dyn_set`'s own OBJECT arm to find the missing tag-check. FIX: OBJECT's
+ephemeral relocation keeps props INLINE at the object's NEW off-16
+unconditionally — never migrates to `$__dyn_props`, matching what
+`__dyn_set` actually expects to find there for an ephemeral receiver.
+Verified (native, isolated per-case + 3× repeat, O0/O2/O3): ephemeral
+dyn-prop write+read, diamond-shared OBJECT relocation, self-referential
+OBJECT (both schema-field and dyn-prop cycles), nested OBJECT-in-OBJECT,
+bare HASH as region root, HASH-of-HASH, JSON.parse'd dict crossing a region
+boundary, `new Map`/`new Map(anotherMap)` seeded from a post-relocation
+ARRAY/MAP, TYPED array relocation, ArrayBuffer + two sharing TYPED views
+(post-relocation write-through-one-read-through-other) — ALL PASS. This is
+real, load-bearing, and stays fixed in the banked branch.
+
+**THE WALL: kernel-oracle's `String()`-with-ambiguous-bool-merge O2 row
+(`export let f = (x) => String(x > 0 && 1)`) traps `memory access out of
+bounds` — PROVEN NOT to be a logic bug in any Slice-2 arm.** Bisection
+method: (1) ablated OBJECT/HASH/TYPED/BUFFER/CLOSURE one at a time (and all
+four non-CLOSURE ones together) to a bare `(then (unreachable))` stub each
+— trap PERSISTS unchanged (`memory access out of bounds`, never
+`unreachable` — so none of the five is even being reached in this repro);
+(2) reverted `__region_relocate_props`'s memo hardening to a byte-identical
+copy of the pre-Slice-2 text — trap PERSISTS; (3) reverted the
+`deps()`/assemble.js `needsSchemaTbl` changes to byte-identical originals —
+trap PERSISTS; (4) with module/core.js's `__region_copy_rec` AND
+`__region_relocate_props` bodies AND deps BOTH restored to git-blob-verified
+byte-identical text (confirmed via the same programmatic-diff method used
+for the extraction proof) — trap STILL PERSISTS. At this point the ONLY
+remaining diff from a clean d1f2f2ba+regionHooks-wired control build is
+layout-kinds.js's ~470 new (entirely UNCALLED, dead-from-module/core.js's-
+perspective) lines. **Confirmed this alone flips it**: a control build with
+`__region_copy_rec`/`__region_relocate_props` restored byte-identical AND
+layout-kinds.js's dead additions still present — traps. A genuinely clean
+d1f2f2ba+regionHooks-wired build (separate worktree, zero Slice-2 diff at
+all) — does NOT trap, compiles cleanly at every opt level. The mechanism:
+`scripts/self.js`'s bundle (what `build-dist.mjs` feeds to the NATIVE
+compiler to produce `dist/jz.wasm`) includes module/core.js AND
+layout-kinds.js as literal JS SOURCE TEXT the kernel itself must compile —
+every top-level exported function in that bundle becomes a real wasm
+function in the KERNEL regardless of whether module/core.js's own stdlib
+wiring ever calls it at STDLIB-PULL time for a GIVEN target compile (a
+runtime-inclusion-vs-compile-time-presence distinction this session
+conflated at first). More kernel-own-source size ⇒ different function-table
+indices / code offsets / heap layout for the KERNEL'S OWN compiled
+internals ⇒ a PRE-EXISTING, still-unidentified layout-sensitive OOB class
+(same SHAPE as the already-fixed `inlinePtrOffsetFast` mechanism — "a cache
+we didn't anticipate... the trap fires downstream, after control returns
+from a clean `__region_exit`" — but evidently NOT the same instance, since
+the meta-compile's `inlinePtrOffsetFast:false` gate is already active here
+and doesn't save this row) gets tripped by DIFFERENT specific allocations
+than before. This matches the ledger's own long history of this class
+exactly (the 2026-08-06 "5 unrelated debug globals flipped an O2 pass/fail"
+finding, the 2026-08-11 root-cause session's "any change to module/core.js,
+even inert extra globals in a hot function... shifts allocation offsets
+downstream") — but this is the FIRST time it's been shown to trigger from
+size growth in a DIFFERENT file (layout-kinds.js) that the region machinery
+doesn't even call at runtime when dormant, and the first time proven not to
+be closed by the `inlinePtrOffsetFast` fix alone.
+
+**Measured impact on the 60-row wall Slice 2 was meant to close**: full
+`test:wasm` (`JZ_FUZZ_GATE=0.05`, same scaling as the prior session) —
+**2655/2716 pass, 61 fail, 6 skip** — ONE WORSE than the documented 60-fail
+baseline, not better. `kernel-oracle`: 12/13 (474 assertions, the String()
+row above). `kernel-parity`: 33/33 clean. Two named example rows from the
+NEW 61-fail set ("Number/parseFloat: subnormals..." and "deopt D1: sibling
+numeric props narrow too — .byteLength/.byteOffset/.size") are THE SAME
+example rows the prior session named in the ORIGINAL 60-fail set — meaning
+Slice 2's real, verified OBJECT/HASH/TYPED/BUFFER logic does NOT visibly
+fix them; they are almost certainly still hitting the SAME address-layout-
+sensitive OOB class above (the heap-kind trap that used to fire
+deterministically for these rows is now GONE — replaced with real logic —
+which lets the compile proceed FURTHER into the fused optimizer internals,
+where it can now reach this OTHER, deeper, unresolved trap instead). Net:
+Slice 2 removes one wall and immediately exposes a second, deeper one that
+was always there but previously masked by the first (every compile that
+used to die early at the OBJECT/HASH/etc. trap never got far enough to
+reach it). **Dormant-build byte-identity gate FAILS too**: a dormant build
+(regionHooks commented, matching the shared tree) with Slice 2's code
+present is 16543.6KB vs a clean d1f2f2ba dormant build's 16527.3KB — +16.3KB,
+NOT byte-identical — direct consequence of the same "kernel compiles its
+own dead code" mechanism above, since module/core.js/layout-kinds.js's
+extra source lines exist in the bundle whether or not any single target
+compile ever pulls the corresponding stdlib entries.
+
+**Per the stop-on-fail tripwire**: NOT landed. Shared tree untouched
+(`git status`/`git diff` show only this ledger entry and the pre-existing
+untracked `todo-original.md`) — all work lives on the un-deleted branch
+`region-slice2-2026-08-11` (one commit, message includes this same summary;
+worktree removed, branch kept for direct resume — `git worktree add <path>
+region-slice2-2026-08-11` restores the exact state, no re-derivation
+needed). Full mandated ladder (fuzz 200+2000×2, full un-scaled battery,
+build×2, shared-tree re-enable, memory curve, jz×jz) NOT run — gated on
+this wall, and it isn't dead.
+
+**Recommendation for next session**: (1) the OBJECT ephemeral-dyn-props fix
+is real and worth keeping regardless of the wall — consider landing it
+STANDALONE (dormant, region-only dead code today) as its own small, reviewed
+commit, decoupled from the rest of Slice 2, so it doesn't get lost; (2) the
+NEW wall needs the SAME instrumented-bisection method the original
+`inlinePtrOffsetFast` hunt used, but this session's OWN finding changes
+where to point it: the suspect is no longer pointer-decode caching
+specifically — it's ANY kernel-own-size-sensitive layout dependency, so the
+next probe should target watr's OWN cross-function fusion/CSE machinery
+more broadly (the root-cause session's "fully inlined... invisible at
+jz-pass time" finding about `runRounds` applies generally, not just to
+`__ptr_offset`) — try ablating fusedRewrite/treeshake individually for the
+meta-compile the same way `inlinePtrOffsetFast` was isolated, using the
+`String(x > 0 && 1)` O2 repro (deterministic, fails at EVERY opt level
+0-3 unlike the original bug, and native-reproducible is NOT available since
+this is kernel-internal-only — needs `compileViaKernel(src,{level,wat:true})`
+same as this session used) as the cheap, fast, 100%-reproducible fixture
+instead of the original fuzz-discovered seeds; (3) the dormant-build size
+regression is a SEPARATE, real cost this session did not attempt to solve —
+worth asking whether any evaluation of Slice 2's OWN size (region-arm
+generator functions specifically) can be gated out of the kernel's own
+bundle when `build-dist.mjs`'s existing `REGION_HOOKS_LIVE` detection is
+false, mirroring how Slice 4 already solved an analogous dist-cost bleed
+for KIND_REGISTRY's prose columns — NOT attempted this session, may need
+its own design.
+
 ## [ ] Carrier invariant / storedValue (was carrier-invariant-design.md; predecessor of the carrier program)
 
 The boxed-value invariant program that preceded carrier-representation.
