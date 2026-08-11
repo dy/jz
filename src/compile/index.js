@@ -320,8 +320,11 @@ const pruneUnusedThrowRuntime = (sec) => {
 
 // Routes through cloneRep (param-reps.js) — THE authoritative deep clone
 // (audit-#16 P1-3): a bare `{ ...v }` shallow-copies Set-valued lattice
-// fields (possibleKinds), so a later join on the copy would silently mutate
-// the source map's rep (audit-#17 item 8, the confirmed cross-map sibling).
+// fields, so a later join on the copy would silently mutate the source
+// map's rep (audit-#17 item 8, the confirmed cross-map sibling). `map` here
+// is `ctx.func.localReps` (ValueRep records) — cloneRep's REP_SET_FIELDS
+// list (param-reps.js, re-audit item 9(c)) covers its `dictValueValType`/
+// `mapValueValType` Sets alongside paramReps' `possibleKinds`.
 const cloneRepMap = map => map ? new Map([...map].map(([k, v]) => [k, cloneRep(v)])) : null
 
 /** Serialize a ValueRep entry into a plain object for inspect output.
