@@ -10073,3 +10073,119 @@ mandelbrot/nbody/particle/synth/lorenz) sha256-diffed against the unfixed
 shared tree at the same HEAD — 0 diffs, pure lifecycle change confirmed.
 
 Applied to shared tree: see commit below.
+
+## watr 5.7.13 integration — FULL VERIFICATION GREEN, devirt fix confirmed
+## LIVE in jz's own output (2026-08-10)
+
+Verified `a5ab9ac7`'s bump (watr 5.7.12→5.7.13: devirt call_indirect
+stale-selector guard fix `e336177`, upstream sibling repo `/Users/div/
+projects/watr`, + additive no-op `regionHooks` scaffold `5e42c47`) end to
+end from jz's side. The bump itself touches only package.json/package-
+lock.json (`git show a5ab9ac7 --stat` — 2 files, 5 lines) — no jz source
+changed. `regionHooks` read directly in watr's `src/optimize.js`:
+`opts.regionMark?.()` / `if (opts.regionExit)`, both optional-chained/
+guarded — build-dist.mjs and every jz caller pass neither, confirmed no-op,
+not wired this session per instruction.
+
+**Gate ladder, run against a fresh `node_modules/watr@5.7.13` tree** (all
+green, all numbers match the pre-bump baseline — the `§CARRIER_BOX` flip
+entry above, `battery 3417/2` etc. — number-for-number):
+- `npm run build` ×2: byte-identical (16923788 B both). vs the stale
+  working-tree dist left over from BEFORE the bump (16918942 B, mtime
+  confirmed to predate the bump commit) — dist grew +4846 B (+0.029%),
+  attributed to the devirt fix inserting a selector-refresh op at self-
+  hosted-compiler dispatch sites (jz's own AST-walker/optimizer dispatch
+  tables are exactly the per-iteration-varying-closure shape the fix
+  targets). Not a regression — a correctness cost, as the task brief
+  itself predicted.
+- `node scripts/battery.mjs`: fixpoint/fuzz/self/kernel green; native/O0/
+  O3/wasi/dbg legs all show the SAME 2 pre-existing rows (`test/
+  optimizer.js`: "interval walk: strided companion cursor…", "typed RMW:
+  one guard covers…" — both typed-array bound-check guard-coalescing
+  tests, no closure/dispatch involvement, confirmed unrelated by reading
+  the test bodies). Full native run: 3425 total, 3417 pass, 2 fail, 6
+  skip — exactly `3417/2`.
+- `JZ_TEST_TARGET=jz.wasm node test/index.js` (test:wasm FULL): 2720
+  total, 2714 pass, 6 skip, 0 fail.
+- `node test/kernel-parity.js`: 3/3 groups, 33/33 assertions, byte-
+  identical WAT at O0/O2/O3. **No re-baseline** — none of the 11 kernel
+  shapes (sum/math/dict/arr/fold/mfold/boolconst/nestedtyped/
+  subviewtyped/dvnested/fromnested) contain a per-iteration-varying
+  indirect-dispatch call site.
+- `node test/kernel-oracle.js`: 13/13 groups, 493 assertions (baseline
+  cited 469 — the +24 growth is prior-session corpus additions between
+  banked entries, not a devirt effect; same PENDING-FIX/KNOWN-FAIL rows
+  present with tripwires firing as designed, none flipped).
+- `node test/selfhost.js`: 21/21, 206 assertions.
+- Fuzz, 2000 seeds × 4 variants (default ran foreground after a background
+  attempt raced a completion notification against a `kill` — rerun clean
+  foreground, `timeout: 600000`, per-variant times: default ~243s,
+  typed-int ~49s, typed-map ~46s, typed ~597s — the `--typed`
+  [Float64Array] variant is legitimately the heaviest, not stuck):
+  default 30173 compared, 0 divergence · `--typed-int` 0 divergence ·
+  `--typed-map` 0 divergence · `--typed` 0 divergence.
+- `node scripts/bench-size.mjs`: geomean jz/AS = 1.019× (baseline
+  1.0193× — same value, `toFixed(3)` rounding). **No per-case deltas** —
+  root-caused, not just observed: `optimize:'size'` (what bench-size.mjs
+  always compiles with) sets `devirtIndirect: false` explicitly
+  (`src/optimize/index.js:182`, "guards + duplicated args grow bytes —
+  speed-only trade") — devirt never fires under the size preset, so even
+  the `dispatch` bench case (an 8-way data-indexed closure table in a
+  loop — structurally the exact shape the fix targets) is unaffected by
+  construction, confirmed by reading the preset table, not just by the
+  flat numbers.
+- `node test/perf-ratchet.js`: 10/10 categories (int/float/mixed/cond/
+  buf/nest/slice/ring/condref/fgather), every one exactly +0 vs baseline.
+  No re-baseline — read `scripts/perf-corpus.mjs`'s `condref` generator
+  (the only category with an argument-selected array reference): the
+  selector (`k`) is a function PARAMETER, loop-invariant, never the
+  per-iteration-varying pattern devirt's fix touches.
+- `node test/watr.js`: 35/35, 107 assertions, incl. the metacircular
+  "jz-built watr.wasm produces byte-identical output" block (11 `.wat`
+  fixtures, length + full byte match) — jz's own watr-in-watr build is
+  unaffected.
+
+**devirt-live verification** (task's own 9-line H/A/B repro — two mutually
+recursive closures picked by `i%2===0?A:B` inside a loop — compiled
+THROUGH jz, not watr directly): `jz(src, {optimize:{level:3}}).exports.
+f()` → **19 (CORRECT)** at every level 0-3. `jz.compile(src,
+{optimize:{level:3}, wat:true})`'s emitted WAT, function `$H`'s loop body:
+
+    (local.set $clos4
+      (local.tee $cse12 (f64.reinterpret_i64 (select ... i%2==0 ...))))
+    (if (result f64)
+      (i64.eq (i64.reinterpret_f64 (local.get $clos4)) (i64.const ...A-tag))
+      (then (call $tramp_A (local.tee $clos4 (local.get $cse12)) ...))
+      (else (if ... (then (call $tramp_B ...)) (else (call_indirect ...)))))
+
+The selector producer (`local.set $clos4 (local.tee $cse12 producer)`)
+runs immediately BEFORE the guard's own `local.get $clos4` read, every
+loop iteration — the fixed shape (pre-fix: the guard read stale, the
+producer only ran inside the call_indirect fallback's own relocated arg
+list, so alternating dispatch got the previous call's target). devirt
+fully collapsed both candidates to direct trampoline calls (`$tramp_A`/
+`$tramp_B`), with the original `call_indirect` kept as an unreachable-in-
+practice fallback (the `elem` table has exactly the 2 candidate funcs).
+
+**Concurrent-tree note**: HEAD moved from `a5ab9ac7` to `504cf398` mid-
+session (audit-#19 plan-map session-ownership P0, `3f344c6d`+`504cf398`,
+entries directly above this one) — that fix's own gates (full battery,
+kernel-parity 33/33, build ×2 byte-identical, 10-case sha256 spot-check)
+independently proved it output-invariant. Re-verified the load-bearing
+subset at the NEW HEAD rather than re-running the full ladder a second
+time: `npm run build` ×2 byte-identical at `504cf398` (16923992 B — +204 B
+vs the pre-plan-map-fix build, attributable to the fix's own ~37-line net
+source growth self-hosting into the kernel, not to watr), `test/kernel-
+parity.js` 33/33 unchanged, devirt 9-line repro still 19/CORRECT at every
+level through the new kernel. No conflict with this ledger entry's own
+edit — `.work/todo.md` was clean (only the pre-existing untracked
+`todo-original.md`) at the moment of writing.
+
+**Commits (local only, no push)**: this entry only, `.work/todo.md`.
+
+Full ladder wall: ~35 min (dominated by the `--typed` fuzz variant's
+~10 min foreground rerun and the initial concurrent-load battery/test:wasm/
+selfhost/fuzz-default quartet at ~16 min). Nothing reverted, nothing
+re-baselined — every gate matches its pre-bump number exactly, confirming
+the devirt fix is a pure correctness gain with no measurable regression
+anywhere in jz's own corpus.
