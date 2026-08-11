@@ -27,7 +27,7 @@ import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, exprMayBeUndefin
 import { typedCtorElemValType } from '../kind-traits.js'
 import { VAL, updateRep, lookupValType, KIND_UNIVERSE } from '../reps.js'
 import {
-  paramFactsOf, ensureParamRep, mergeParamFact, joinKinds, cloneRep, latticeMeet,
+  paramFactsOf, ensureParamRep, mergeParamFact, joinKinds, latticeMeet,
 } from '../param-reps.js'
 import {
   inferArrElemSchema, inferArrElemSchemaSet, inferArrElemValType,
@@ -2958,8 +2958,8 @@ export function specializeBimorphicTyped(programFacts) {
     if (distinct.size < 2) continue          // F-phase already mono — nothing to do
     if (distinct.size > MAX_CLONES_PER_FN) continue  // polymorphic blow-up
 
-    // Build one clone per distinct combo.
-    const cloneByKey = new Map()
+    // Build one clone per distinct combo, retargeting only the sites whose
+    // own combo matches it.
     for (const [dkey, cmb] of distinct) {
       // NB: this loop variable must NOT reuse the name `combo` (declared twice above, at the
       // site loop and the distinct-building loop). The self-host miscompiles a for-of loop
@@ -2968,9 +2968,6 @@ export function specializeBimorphicTyped(programFacts) {
       // last site's ctor and every clone would get the same (wrong) element type → silent
       // garbage. A unique name gets a clean per-iteration binding.
       const suffix = cmb.map(c => c.replace(/^new\./, '').replace(/\./g, '_')).join('$')
-      let cloneName = `${func.name}$${suffix}`
-      let n = 0
-      while (ctx.func.names.has(cloneName)) cloneName = `${func.name}$${suffix}$${++n}`
 
       // Build cloneSig with clean, fully-formed object literals — never by spreading a
       // live object and then overriding/extending its keys. A MULTI-prop spread of a
@@ -2991,34 +2988,19 @@ export function specializeBimorphicTyped(programFacts) {
         }),
         results: [...func.sig.results],
       }
-      const clone = { ...func, name: cloneName, sig: cloneSig }
-      ctx.func.list.push(clone)
-      ctx.func.map.set(cloneName, clone)
-      ctx.func.names.add(cloneName)
 
       // Mirror per-param reps under the clone's name with mono ctors at bimorphic
       // positions. emitFunc's preseed reads typedCtor → seeds typedElem map →
-      // `arr[i]` lowers to direct typed load. Each `{ ...r }` is a true clone, so
+      // `arr[i]` lowers to direct typed load. cloneRep is a true clone, so
       // pinning typedCtor on it leaves the source rep untouched (__obj_clone).
-      const cloneReps = new Map()
-      for (const [k, r] of reps) cloneReps.set(k, cloneRep(r))
-      for (let i = 0; i < bimorphic.length; i++) {
-        const k = bimorphic[i]
-        const r = cloneReps.get(k) || {}
-        r.typedCtor = cmb[i]
-        r.val = VAL.TYPED
-        joinKinds(r, 'possibleKinds', [VAL.TYPED])
-        cloneReps.set(k, r)
-      }
-      paramReps.set(cloneName, cloneReps)
-
-      cloneByKey.set(dkey, clone)
-    }
-
-    // Rewrite each site's call AST to point at the matching clone.
-    for (let i = 0; i < sites.length; i++) {
-      const clone = cloneByKey.get(siteCombos[i].join('|'))
-      sites[i].node[1] = clone.name
+      materializeVariant({
+        origin: func, name: `${func.name}$${suffix}`, sig: cloneSig, paramReps,
+        factOverrides: bimorphic.map((k, i) => ({
+          k, patch: r => { r.typedCtor = cmb[i]; r.val = VAL.TYPED; joinKinds(r, 'possibleKinds', [VAL.TYPED]) },
+        })),
+        eligibleSites: sites.filter((_, i) => siteCombos[i].join('|') === dkey),
+        fallback: func,
+      })
     }
   }
 
