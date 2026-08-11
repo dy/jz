@@ -1395,6 +1395,117 @@ battery/test:wasm/build×2/memory curve/jz×jz) NOT run — gated on the wall
 being dead, and it is not; narrower now, but still open. Worktree removed
 at session end.
 
+**ABLATION CONFIRMED + CLASS FIX LANDED (2026-08-11), disposable worktree
+(`region-ablation-2026-08-11` off `3c286c88`, node_modules copied — watr
+5.7.13 confirmed) — verdict: inlinePtrOffsetFast IS the mechanism.**
+Named angle (a) from the prior entry: forced the KERNEL'S OWN meta-compile
+(build-dist.mjs's `compile(g.code, {optimize:{level:3,...}})` call, the
+ONE call site that compiles scripts/self.js into dist/jz.wasm) to
+`inlinePtrOffsetFast:false` while regionHooks stayed wired
+(scripts/self.js's `regionHooks:` line uncommented) — a pure meta-compile
+config change, zero module/core.js or scripts/self.js body churn. **CLEAN**
+on every leg: kernel-oracle 13/13 (493 assertions) × 3 reps, kernel-parity
+33/33 × 3 reps, the full 200-seed fuzz sweep (`fuzz({count:200,seedStart:1,
+inputs:12,inputSeed:7,optLevels:[0,1,2,3]})`, the EXACT GATE object
+test:wasm's own "no new miscompiles" test uses) × 3 reps zero findings, all
+7 originally-banked seeds (32/101/157 O2, 36/69/103/161 O3) individually
+re-run × 3 reps each — clean, and fuzz-2000 (`--count=2000 --opt=0,1,2,3`)
+× 2 reps — clean. Suspect CONFIRMED.
+
+*Mechanism*: `inlinePtrOffsetFastPass` (src/optimize/index.js:3914) expands
+`(call $__ptr_offset X)` into a loop-free, CSE-eligible i32.and/i64.shr_u/
+load expression AT EVERY CALL SITE — exactly so watr's own optimizer (and
+jz's own hoistPtrType/hoistInvariantPtrOffset regionTrackCSE family, this
+same file's ~line 269 "CSE repeated call across stable regions" machinery)
+can fold/hoist it like any other pure op — that IS the hazard once
+regionHooks are wired: a `$__region_exit` call relocates live heap objects
+and re-derives their offsets through the SAME forwarding chase
+(`followForwardingWat`, layout.js:293, cap=-1 sentinel at off-4/new-offset
+at off-8) this inlined form independently reproduces — but once inlined,
+the expansion is INDISTINGUISHABLE FROM PURE to every downstream CSE, none
+of which know a `$__region_exit` call in between invalidates a previously-
+decoded offset. The out-of-line `call $__ptr_offset` form is naturally
+conservative (a `call` is a CSE barrier by construction); the inlined form
+is not. Confirmed this can't be fixed by a precise per-function dominator/
+interval exclusion INSIDE inlinePtrOffsetFastPass itself (the design's
+angle (i)): watr's OWN cross-function inlining runs AFTER jz's per-function
+optimizeFunc pass (this file's own sequencing comment above optimizeFunc —
+"optimizeFunc runs ONCE, in the 'pre' phase... watOptimize is the sole
+generic fixpoint optimizer... after"), and the root-cause session's own
+finding that watr's runRounds (the $__region_exit caller) has "NO surviving
+named function in the O3 output — fully inlined" means the true CSE
+opportunity (pure-decode ops and the region_exit call sharing one fused
+caller) only exists POST-fusion — invisible at jz-pass time. A local
+analysis would be unsound; the coarse, provably-correct gate has to sit
+above both passes.
+
+*Class fix* (scripts/build-dist.mjs, the one call site that ever wires
+regionHooks live): `REGION_HOOKS_LIVE = /^\s*regionHooks:\s*\{/m.test(g.code)`
+detects the ACTIVE (uncommented) `regionHooks:` line in scripts/self.js's
+own source text and spreads `inlinePtrOffsetFast:false` into the optimize
+config for EXACTLY that meta-compile when true. Regex correctly excludes
+the commented/dormant form (`// regionHooks: {` fails `^\s*regionHooks:`
+since `\s*` doesn't match `//`) — verified directly. This is NOT a global
+pass disable (native compiles, the test suite, jzify, every user program,
+and a DORMANT self-host build are untouched — inlinePtrOffsetFast keeps its
+real speed-tier win everywhere else); it's a one-line, compile-time,
+provably-scoped exclusion at the single build where the hazard's
+precondition (regionHooks wired) holds. **Verified a true no-op on the
+dormant path**: built dormant self.js (hooks commented, matching the
+shared tree) twice — once with the pre-session build-dist.mjs, once with
+the fix — `cmp` byte-identical (16527.3 kB both). Build×2 determinism also
+verified on the region-live/fixed build: two consecutive builds with
+regionHooks wired + the fix, `cmp` byte-identical (14788580 bytes both).
+Landed in the shared tree (build-dist.mjs only; scripts/self.js's
+regionHooks line stays commented — see wall below).
+
+**A SECOND, LARGER, PRE-EXISTING WALL surfaced this session, blocking
+shared-tree re-enable independent of the fix above**: ran the full
+`test:wasm` suite (`JZ_TEST_TARGET=jz.wasm node test/index.js`, scaled via
+`JZ_FUZZ_GATE=0.05` — the officially-supported CI-runner knob — purely to
+make the OTHER ~2700 non-fuzz assertions complete in reasonable wall time;
+the fuzz legs themselves were already covered more precisely above at full
+count) against the region-live + inlinePtrOffsetFast-fixed kernel: **2656/
+2716 pass, 60 fail, 6 skip** (native battery, same build lineage, no
+JZ_TEST_TARGET: 3419/3427 pass, only the 2 pre-existing known-banked fails
+— interval-walk/typed-RMW — unchanged, confirming the failures are
+kernel-target-specific). All 60 failures are `RuntimeError: memory access
+out of bounds` with unnamed wasm-function stack frames — same class of trap
+as the original bug, but NOT the same mechanism: inspected several (Number/
+parseFloat subnormals, Object.assign boxed-array-write, SSO builder-append,
+Date.UTC, URLSearchParams, collections insertion-order iteration, deopt D1
+byteLength/byteOffset/size) — every one traps DURING THE KERNEL'S OWN
+COMPILATION of the test source (deep fused-function call stacks, same
+signature as $__alloc's wraparound guard in the original root-cause), not
+during target execution. This matches the region-arena DESIGN's own
+documented, PRE-EXISTING limit exactly (see this section's "Slice 1 BUILT"
+paragraph above): only ARRAY/SET/MAP relocate on region_exit; OBJECT/HASH/
+CLOSURE/TYPED/BUFFER/EXTERNAL "trap rather than silently mishandle
+(registry Slice 2 retires this)". The curated kernel-oracle/kernel-parity
+corpus and the scalar-arithmetic fuzz generator never exercise those other
+heap kinds in the COMPILER'S OWN internal AST/IR representation, so this
+gap was previously theoretical/design-level — this is the first time it's
+been measured: compiling ~2.2% of a realistic, broad-coverage test corpus
+hits it. No prior session ran the FULL test:wasm suite against a
+region-live kernel (every prior RE-TEST note explicitly says "NOT run —
+gated on the wall being dead"); this is a new, load-bearing data point, not
+a regression from the inlinePtrOffsetFast fix (which only concerns
+pointer-decode caching in scalar compiler-internal code, orthogonal to
+WHICH heap kinds region_exit is willing to relocate).
+
+**Per the stop-on-fail tripwire**: the inlinePtrOffsetFast wall IS dead
+(ablation confirmed, fix landed) — but regions stay DORMANT in the shared
+tree (scripts/self.js's regionHooks line stays commented) because of the
+Slice-2 heap-kind wall above, which the fix does not and cannot touch. Ship
+gate updated: re-enable now requires BOTH the (closed) inlinePtrOffsetFast
+class fix AND Slice 2 (the OBJECT/HASH/CLOSURE/TYPED/BUFFER/EXTERNAL
+relocation registry — un-built; the design's own "registry Slice 2 retires
+this" is not a session-sized task). Memory watermark curve and the jz×jz
+verdict were NOT attempted — both require regions live for a program as
+large/heap-diverse as jz×jz itself, and that precondition doesn't hold.
+Worktree removed at session end; `git status`/`git diff` in the shared tree
+show only the intended build-dist.mjs change plus this ledger entry.
+
 ## [ ] Carrier invariant / storedValue (was carrier-invariant-design.md; predecessor of the carrier program)
 
 The boxed-value invariant program that preceded carrier-representation.

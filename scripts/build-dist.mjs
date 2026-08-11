@@ -153,10 +153,44 @@ const g = resolveModuleGraph(resolve(ROOT, 'scripts/self.js'), { resolveNode: tr
 // Match selfhost-build.mjs's measured release profile: this artifact is a
 // compiler executable, not a size-distributed web asset. O3 keeps its warm
 // compile geomean decisively below the same pipeline on V8.
+// REGION-ARENA × inlinePtrOffsetFast (.work/research.md §Region arena,
+// ROOT-CAUSE ATTEMPT 2026-08-11 — confirmed by ablation, 7/7 banked fuzz
+// findings + both minimal repros clean ×3 reps with this flag off, kernel-
+// oracle 13/13×3, kernel-parity 33/33×3, dead on the full 200-seed sweep×3):
+// inlinePtrOffsetFast (src/passes.js:48) expands `(call $__ptr_offset X)`
+// into a loop-free, CSE-eligible i32.and/i64.shr_u/load expression AT EVERY
+// CALL SITE, precisely so watr's own optimizer can fold/hoist it like any
+// other pure op. That is exactly the hazard when regionHooks are wired
+// (scripts/self.js below): a region_exit call relocates live heap objects
+// and re-derives their offsets through the SAME forwarding chase this
+// inlined form reproduces — but once inlined, the expansion LOOKS pure to
+// every downstream CSE (watr's own, jz's hoistPtrType/hoistInvariantPtrOffset
+// regionTrackCSE family), which has zero notion that a `$__region_exit`
+// call anywhere in between invalidates a previously-decoded offset. The
+// out-of-line `call $__ptr_offset` form is naturally conservative (a call is
+// a CSE barrier); the inlined form is not, and watr's OWN cross-function
+// inlining runs AFTER jz's per-function optimizeFunc pass (see this file's
+// pass-order note above optimizeFunc), so a precise per-function dominator/
+// interval exclusion inside inlinePtrOffsetFastPass itself cannot see the
+// hazard — the CSE opportunity only exists post-fusion. The sound,
+// compile-time gate is therefore here, at the one call site that ever wires
+// regionHooks live: detect the ACTIVE (uncommented) `regionHooks:` line in
+// scripts/self.js's own source and force inlinePtrOffsetFast off for
+// EXACTLY that build. Every other compile — native, the test suite, jzify,
+// any user program, even a DORMANT self-host build — is untouched: this is
+// a narrow exclusion at the one build where the hazard's precondition
+// holds, not a global pass disable (which would give up the pass's real
+// speed-tier win for ordinary programs). Verified a true no-op on the
+// dormant path: byte-identical dist/jz.wasm with and without this block
+// while scripts/self.js's regionHooks line stays commented.
+const REGION_HOOKS_LIVE = /^\s*regionHooks:\s*\{/m.test(g.code)
 const wasm = compile(g.code, {
   modules: g.modules,
   memory: 8192,
-  optimize: { level: 3, watrGuard: false, snapshotInit: true },
+  optimize: {
+    level: 3, watrGuard: false, snapshotInit: true,
+    ...(REGION_HOOKS_LIVE ? { inlinePtrOffsetFast: false } : null),
+  },
 })
 new WebAssembly.Module(wasm)  // validate before writing
 writeFileSync(wasmOut, wasm)

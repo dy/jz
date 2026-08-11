@@ -10388,3 +10388,68 @@ session end; no shared-tree commit from this session.
 
 **Commits**: none to the shared tree's compiler source. This entry +
 `.work/research.md`'s matching append only.
+
+## Status (2026-08-11, ABLATION CONFIRMED + CLASS FIX LANDED — verdict:
+## inlinePtrOffsetFast IS the mechanism; a SECOND, larger, pre-existing
+## wall (Slice-2 heap-kind registry, un-built) blocks shared-tree re-enable
+## independent of the fix. Full account: .work/research.md §Region arena's
+## "ABLATION CONFIRMED + CLASS FIX LANDED" section)
+
+Angle (b) from the prior entry, run for real: disposable worktree
+(`region-ablation-2026-08-11` off `3c286c88`), regionHooks re-wired
+worktree-only, build-dist.mjs's KERNEL-OWN meta-compile forced to
+`inlinePtrOffsetFast:false`. **CLEAN on everything**: kernel-oracle 13/13×3,
+kernel-parity 33/33×3, the exact 200-seed GATE object×3 (zero findings),
+all 7 originally-banked seeds individually×3 (clean), fuzz-2000×2 (clean).
+Suspect CONFIRMED — angle (c) from the prior entry applies: no need to
+isolate the exact faulting call site inside the fused caller.
+
+**Class fix** (not a per-call-site patch — the fused-caller size made that
+infeasible, as the prior session found, and it turns out unnecessary):
+build-dist.mjs now detects the ACTIVE (uncommented) `regionHooks:` line in
+scripts/self.js's own source (`/^\s*regionHooks:\s*\{/m`) and spreads
+`inlinePtrOffsetFast:false` into ONLY that one meta-compile's optimize
+config. Every other compile (native, test suite, jzify, user programs, a
+DORMANT self-host build) is untouched — verified: dormant-build output is
+`cmp` byte-identical with and without the fix (16527.3 kB both, both in the
+worktree and re-verified in the real shared tree after landing). Build×2
+determinism verified on the region-live/fixed build too (byte-identical,
+14788580 bytes both reps). **Landed in the shared tree**: scripts/
+build-dist.mjs only. scripts/self.js's regionHooks line stays commented —
+see the wall below.
+
+**A second wall, found by running test:wasm's FULL suite for the first time
+against a region-live kernel** (prior sessions only ran the curated
+kernel-oracle/kernel-parity/fuzz corpus — every prior entry explicitly
+notes the full test:wasm leg "NOT run"): `JZ_TEST_TARGET=jz.wasm
+JZ_FUZZ_GATE=0.05 node test/index.js` (fuzz legs scaled down since they
+were already covered above at full count; every other assertion runs at
+full weight) → **2656/2716 pass, 60 fail, 6 skip** — all 60 `RuntimeError:
+memory access out of bounds`, unnamed fused-function stack, DURING THE
+KERNEL'S OWN COMPILATION of the test source (not target execution).
+Spans Number/parseFloat, Object.assign, SSO string-builder, Date.UTC,
+URLSearchParams, collection iteration, deopt-D1 typed-array props — no
+common feature except all involve OBJECT/HASH/CLOSURE/TYPED/BUFFER/
+EXTERNAL heap kinds in the COMPILER's own internal AST/IR, which
+research.md's region-arena design section has documented since Slice 1
+as deliberately TRAPPING rather than relocating ("registry Slice 2 retires
+this") — Slice 1 only relocates ARRAY/SET/MAP. The curated corpus and the
+scalar-arithmetic fuzz generator structurally never touch this gap; this
+session is the first MEASUREMENT of its breadth (~2.2% of a broad real
+corpus). Native battery on the same build (no JZ_TEST_TARGET): 3419/3427,
+only the 2 pre-existing known-banked fails, unchanged — confirms the 60
+are kernel-target-specific, not a general regression, and NOT caused by
+the inlinePtrOffsetFast fix (orthogonal: that fix concerns pointer-decode
+caching in scalar code, not which heap kinds region_exit relocates).
+
+**Per the stop-on-fail tripwire**: the ORIGINAL wall (inlinePtrOffsetFast)
+is closed. Regions stay DORMANT in the shared tree regardless — gated now
+on Slice 2 (the OBJECT/HASH/CLOSURE/TYPED/BUFFER/EXTERNAL relocation
+registry), a separate, much larger, pre-existing, un-built piece of the
+design, not a session-sized task. Memory watermark curve and jz×jz NOT
+attempted — both need regions live for a heap-diverse program at jz×jz's
+own scale, and that precondition doesn't hold. Worktree removed at session
+end.
+
+**Commits**: scripts/build-dist.mjs (the class fix) + this entry +
+`.work/research.md`'s matching append.
