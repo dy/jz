@@ -98,19 +98,64 @@ export default (ctx) => {
    * @param {{ params: string[], body, captures: string[], restParam: string|null }} info
    * @returns {WasmNode} NaN-boxed closure pointer
    */
-  ctx.closure.make = ({ params, body, captures, restParam, defaults }) => {
+  ctx.closure.make = ({ params, body, captures, restParam, defaults, rawParams }) => {
     const fixedN = params.length - (restParam ? 1 : 0)
     if (fixedN > MAX_CLOSURE_ARITY) err(`Closure with ${fixedN} fixed params exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
     if (restParam && fixedN >= MAX_CLOSURE_ARITY) err(`Closure with rest param needs at least one free slot — ${fixedN} fixed params leaves none (MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY})`)
     // Generate closure body function name
     const fnName = `${T}closure${ctx.closure.table.length}`
-    const localIntConsts = ctx.func.body ? topLevelIntConsts(ctx.func.body) : new Map()
-    const captureIntConsts = new Map()
-    for (const name of captures) {
-      const v = ctx.scope.constInts?.get(name) ?? localIntConsts.get(name)
-      if (v != null && !ctx.func.boxed?.has(name)) captureIntConsts.set(name, v)
+
+    // ClosureEnvPlan (src/compile/closure-plan.js's mintClosureEnvPlans,
+    // architecture re-audit item 4, .work/todo.md) — the frozen pre-emission
+    // capture classification (free vars, constant folds, boxed cells), keyed
+    // on THIS closure's own body node, or — a destructured-param closure
+    // only, see that module's own doc — on `rawParams` (untouched by the
+    // destructuring-prepend rewrite that reassigns `body` before this call,
+    // emit.js's '=>' handler). A miss (this closure sits outside a shape the
+    // mint walks) fails open to the legacy inline re-derivation below.
+    const plan = ctx.plans.closures.get(body) ??
+      (rawParams != null && typeof rawParams === 'object' ? ctx.plans.closures.get(rawParams) : undefined)
+
+    const legacyDerive = () => {
+      const localIntConsts = ctx.func.body ? topLevelIntConsts(ctx.func.body) : new Map()
+      const intConsts = new Map()
+      for (const name of captures) {
+        const v = ctx.scope.constInts?.get(name) ?? localIntConsts.get(name)
+        if (v != null && !ctx.func.boxed?.has(name)) intConsts.set(name, v)
+      }
+      const env = intConsts.size ? captures.filter(name => !intConsts.has(name)) : captures
+      const boxed = env.filter(c => ctx.func.boxed?.has(c))
+      return { env, intConsts, boxed, storage: env.length === 0 ? 'none' : 'heap' }
     }
-    const envCaptures = captureIntConsts.size ? captures.filter(name => !captureIntConsts.has(name)) : captures
+
+    // Plan is PRIMARY when present: the mint already computed the full
+    // classification, so the legacy walk over `captures` below is skipped
+    // entirely on the common path — only DBG_INVARIANTS still runs it, as a
+    // shadow-assert rather than the source of truth (flipped from Slice 1).
+    let envCaptures, captureIntConsts, boxedCaptures, storage
+    if (plan) {
+      captureIntConsts = new Map()
+      const boxed = []
+      envCaptures = []
+      for (const c of plan.captures) {
+        if (c.mode === 'constant') captureIntConsts.set(c.name, c.constant)
+        else { envCaptures.push(c.name); if (c.mode === 'cell') boxed.push(c.name) }
+      }
+      boxedCaptures = boxed
+      storage = plan.storage
+    } else {
+      ;({ env: envCaptures, intConsts: captureIntConsts, boxed: boxedCaptures, storage } = legacyDerive())
+    }
+
+    if (DBG_INVARIANTS && plan) {
+      const legacy = legacyDerive()
+      const sameOrder = (a, b) => a.length === b.length && a.every((v, i) => v === b[i])
+      const sameMap = (a, b) => a.size === b.size && [...a].every(([k, v]) => b.get(k) === v)
+      if (storage !== legacy.storage || !sameOrder(envCaptures, legacy.env) ||
+          !sameOrder(boxedCaptures, legacy.boxed) || !sameMap(captureIntConsts, legacy.intConsts))
+        err(`ClosureEnvPlan drift: ${fnName} plan storage=${storage} env=[${envCaptures}] boxed=[${boxedCaptures}] consts=[${[...captureIntConsts]}] vs legacy storage=${legacy.storage} env=[${legacy.env}] boxed=[${legacy.boxed}] consts=[${[...legacy.intConsts]}]`)
+    }
+
     const captureValTypes = new Map()
     const captureSchemaVars = new Map()
     const captureTypedElems = new Map()
@@ -165,34 +210,6 @@ export default (ctx) => {
       }
     }
 
-    // All closures use uniform convention: (env: f64, args_array: f64) → f64
-    // The body unpacks individual params from the args array
-    const boxedCaptures = envCaptures.filter(c => ctx.func.boxed?.has(c))
-
-    // ClosureEnvPlan (Slice 1, .work/closure-plan-design.md) — the frozen
-    // pre-emission storage decision (src/compile/closure-plan.js's
-    // mintClosureEnvPlans), keyed on THIS closure's own body node. A miss
-    // (destructured params rewrote `body` into a fresh node before this call
-    // — see that module's doc — or this closure sits outside a shape the
-    // mint walks) fails open to the legacy inline re-derivation below;
-    // `storage` ends up identical either way, this only records which path
-    // produced it. Coordinator ruling 4: reconcile the shadow-assert's own
-    // finding (371-vs-626 count discrepancy) in the slice ledger, not here.
-    const legacyStorage = envCaptures.length === 0 ? 'zero-capture' : boxedCaptures.length ? 'boxed-cell' : 'heap'
-    const plan = ctx.plans.closures.get(body)
-    if (DBG_INVARIANTS && plan) {
-      // Slice 2's 'lift-eligible' is UNWIRED plan DATA layered on top of a
-      // 'heap' decision (design §2.1 — a lift candidate is, by construction,
-      // a captured, all-unboxed-capture closure, i.e. exactly what legacy
-      // computes as 'heap') — normalize it back for this comparison, since
-      // the legacy inline path has no lift-eligibility concept to agree with.
-      const normalizedPlanStorage = plan.storage === 'lift-eligible' ? 'heap' : plan.storage
-      const capturesMatch = plan.captures.length === envCaptures.length && plan.captures.every((name, i) => name === envCaptures[i])
-      if (normalizedPlanStorage !== legacyStorage || !capturesMatch)
-        err(`ClosureEnvPlan drift: ${fnName} plan=${plan.storage}/[${plan.captures}] legacy=${legacyStorage}/[${envCaptures}]`)
-    }
-    const storage = plan ? plan.storage : legacyStorage
-
     // i32-narrowed cells travel with the capture: the closure body must access
     // the shared cell at the same width the owner does (see funcFacts.cellTypes).
     const cellI32Captures = boxedCaptures.filter(c => ctx.func.cellTypes?.has(c))
@@ -226,7 +243,7 @@ export default (ctx) => {
     // Tag IR with .closureBodyName so emitDecl can register the binding for direct dispatch
     // (skip call_indirect on a const-bound, non-escaping closure local). See emit.js '()' handler.
     setLinkDemand('closure')
-    if (storage === 'zero-capture') {
+    if (storage === 'none') {
       // No captures — just a function reference
       const ir = mkPtrIR(PTR.CLOSURE, tableIdx, 0)
       ir.closureBodyName = fnName

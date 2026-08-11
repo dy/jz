@@ -706,6 +706,10 @@ export function reset(proto, globals, bridge) {
                         // (.work/research.md §BodyModel slice 4, freshLoopPlanId) — a SEPARATE
                         // space from loopXformId: identifies a loop RECORD, never names anything
                         // emitted. Per-compile (reset here) for the same determinism reason.
+    closureId: 0,       // monotonic id for src/compile/closure-plan.js's ClosureId (architecture
+                        // re-audit item 4, .work/todo.md) — a SEPARATE space from the others
+                        // above: identifies a closure PLAN RECORD, never names anything emitted.
+                        // Per-compile (reset here) for the same determinism reason.
   }
 
   // Inspection sink. Populated by compile() only when transform.inspect is true.
