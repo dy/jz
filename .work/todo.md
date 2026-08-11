@@ -10302,3 +10302,89 @@ way the original root-cause session did (`__region_dbg_*` globals for
 stage/rounds/kind in module/core.js). Re-enable stays gated on that fix;
 the jz×jz bench row and the MEMORY goal's compile-time-OOB axis stay
 blocked until then.
+
+## Status (2026-08-11, REGION-LIVE ROOT-CAUSE ATTEMPT — verdict: runtime
+## trap in the kernel's own execution (not a target miscompile), mechanism
+## narrowed one layer, wall NOT closed, tripwire held, shared tree
+## untouched. Full account: .work/research.md §Region arena's "ROOT-CAUSE
+## ATTEMPT" section)
+
+Worked entirely in a disposable git worktree under the session scratchpad
+(branch `region-live-investigate` off `69c2994a`; node_modules copied from
+the shared tree, watr 5.7.13 confirmed). Re-wired regionHooks there only —
+`69c2994a`'s real tree verified clean (`git status`/`git diff`) at every
+checkpoint and at session end.
+
+**Miscompile-vs-runtime-trap, resolved**: `compileWat` (the `wat:true` leg,
+pure WAT-IR text out, no target execution) traps identically to the bytes
+leg on seed 69 opt3 — same message, same point. The kernel's OWN execution
+traps mid-compile; this is not a bad address baked into emitted target WAT
+that only bites when that wasm later runs. No target-WAT diff needed or
+possible (region-live never emits one for this repro).
+
+**Mechanism, narrowed one layer**: `__region_copy_rec`/`__region_exit`
+breadcrumb globals (module/core.js, worktree-only, `declGlobal`-based,
+stage/kind/off/mark/delta/round) proved that ROUND-2's `__region_exit` call
+reaches its own final instruction cleanly before the trap — the region
+copy/relocate traversal itself is not what faults. Decompiled the SAME
+kernel binary with `wasm2wat --enable-all` (wabt 1.0.36) and read the Node
+RuntimeError's wasm-function stack: the trap is `unreachable` inside
+`wasm-function[12]` == `$__alloc` (byte-for-byte matches module/core.js's
+template, including its unsigned-wraparound guard `if (next < ptr)
+unreachable`). Its caller (`wasm-function[3053]`) is a single, thousands-
+of-lines FUSED function — cross-checked via a NAMED WAT of the identical
+self.js/watr module graph (`compile(g.code, {modules, optimize:{level:3,
+...}, wat:true})`, replicating build-dist.mjs's exact call): watr's own
+`runRounds` (node_modules/watr/src/optimize.js:8381, the function that
+calls the regionMark/regionExit hooks) has NO surviving named function at
+O3 — fully inlined. Verdict: `$__alloc` gets called with a garbage
+(wraparound) size from deep inside watr's own fused round/rewrite
+machinery, AFTER a clean region_exit — the design's own named risk ("a
+cache we didn't anticipate") one layer more specific: something downstream
+holds a decoded length/offset from BEFORE round 2's boundary and feeds it
+to a POST-boundary allocation without re-deriving it via the forwarding-
+aware `__ptr_offset` accessor. `inlinePtrOffsetFast` (src/passes.js:48 —
+speed-tier-only, baked into the kernel's own build since build-dist.mjs
+uses `level:3`; inlines `__ptr_offset`'s fast path at each call site,
+keeping only the cold relocation-chase out-of-line) is the standing
+suspect named in this session's brief and fits the shape — NOT confirmed
+as the specific culprit; the fused caller was too large to bisect by
+reading alone this session.
+
+**Heisenbug, reconfirmed one layer worse** than the 2026-08-06 entry's own
+finding (5 unrelated debug globals flipped an O2 pass/fail): here, adding
+THREE more `global.set`s inside `$__alloc` itself (on top of the
+region_copy_rec/region_exit breadcrumbs already present) made BOTH banked
+repros (seed 69 AND seed 161, opt3) compile CLEANLY — zero trap, all 3
+rounds completing (confirmed regions genuinely ran via the same debug
+globals: `rounds=3, calls=1898, alloc_calls=76995`). The UNINSTRUMENTED
+region-live binary (a saved copy, zero source diff from the `69c2994a`
+re-test) traps `memory access out of bounds` — the ORIGINAL bank's exact
+message — 3/3 repeat runs on a fixed binary, fully deterministic. The bug
+is real and stable for a GIVEN binary; it's the CHOICE of binary (any
+module/core.js change, even inert extra globals in a hot allocator) that
+is unstable — consistent with an allocation-COUNT/offset-sensitive
+corruption, not a logic bug that reproduces identically under recompile.
+
+**Method conclusion**: source-level breadcrumb instrumentation is a poor
+tool here — every observation attempt is itself a memory operation that
+shifts downstream allocation offsets and changes whether/how the bug
+manifests. Recommended next angles (banked, none attempted this session):
+(a) a single-line ceiling assertion on `$__alloc`'s existing `bytes`
+argument (perturbs the guard condition only, adds no new globals/locals —
+most likely to preserve the OOB manifestation rather than dodge it); (b)
+bisect watr's own pass list the way the 2026-08-06 session bisected
+`$__ptr_type`/`$__ptr_aux` — `inlinePtrOffsetFast:false` on the KERNEL's
+OWN build (a one-line build-dist.mjs edit, zero module/core.js churn) as
+the first ablation; (c) if (b) clears the wall, that alone confirms the
+class without needing to isolate the exact faulting call site inside the
+fused caller.
+
+**Gates**: NOT run (kernel-oracle/kernel-parity/fuzz-2000×2/battery/
+test:wasm/build×2/memory curve/jz×jz) — gated on the wall being dead, and
+it is not, only narrower. `69c2994a`'s regionHooks line stays commented
+(dormant) in the shared tree; nothing to re-baseline. Worktree removed at
+session end; no shared-tree commit from this session.
+
+**Commits**: none to the shared tree's compiler source. This entry +
+`.work/research.md`'s matching append only.

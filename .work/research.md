@@ -1284,6 +1284,117 @@ session did — dbg globals for stage/rounds/kind — on seed 69's ~230-char
 repro directly via kernel-target.js, no fuzz harness needed) before any
 further re-enable attempt. Re-enable stays gated on that fix.
 
+**ROOT-CAUSE ATTEMPT (2026-08-11), disposable worktree — verdict: RUNTIME
+TRAP in the kernel's own execution, not a target miscompile; mechanism
+narrowed one layer deeper, wall NOT closed, shared tree untouched, tripwire
+held.** Worked in a git worktree under the session scratchpad (branch
+`region-live-investigate` off `69c2994a`, node_modules copied from the
+shared tree — watr 5.7.13 confirmed), regionHooks re-wired there only
+(`git diff` against `69c2994a` in the real tree is empty throughout).
+
+*Miscompile vs. runtime trap, resolved*: `compileWat(seed69Src, {level:3})`
+(watr/kernel-target.js's own `--wat` leg, no target execution involved,
+just WAT-IR text out) traps IDENTICALLY to the bytes leg — same message,
+same seed, same opt level. Since `wat:true` never runs the TARGET program,
+the trap is unambiguously inside the KERNEL's OWN execution while compiling
+seed 69, not a bad address baked into the target's emitted WAT that only
+manifests when THAT wasm runs. There is no target WAT to diff (region-live
+never produces one for this repro — it dies mid-compile), so step 2's
+"diff target WAT region-live vs dormant" doesn't apply here; confirmed via
+direct trap-message inspection instead.
+
+*Mechanism, narrowed*: instrumented `__region_copy_rec`/`__region_exit`
+(module/core.js, worktree-only) with breadcrumb globals (`declGlobal`,
+exported) recording stage/kind/off/mark/delta/newOff/round, updated in
+program order — a synchronous wasm trap leaves the instance's globals
+intact, so the LAST value written is the last checkpoint reached. Finding:
+for seed 69 opt3 on that (differently-perturbed, see heisenbug note below)
+build, `__region_exit`'s ROUND-2 call reaches its own FINAL instruction
+cleanly (stage marker placed as the literal last `global.set` before the
+return expression fires; `rounds=2`, `calls=1200`) — **the region
+copy/relocate traversal itself does not trap**. The trap fires downstream,
+after control returns from a clean `__region_exit`. Decompiled that same
+kernel binary with `wasm2wat --enable-all` (wabt 1.0.36, vendored at
+`/Users/div/projects/watr`'s repo-neighbor checkout) and read the Node
+`RuntimeError`'s own stack (`wasm-function[N]:0xOFFSET` frames, present
+even without a name section): the trap is `unreachable` inside
+`wasm-function[12]`, whose body byte-for-byte matches module/core.js's
+hand-written `$__alloc` template (bump pointer, `align8(heap+bytes+7)`,
+`if (next < ptr) unreachable` — the documented unsigned-wraparound guard).
+Its caller (`wasm-function[3053]`, ~70 locals, thousands of lines) is a
+single MASSIVELY FUSED function — confirmed by cross-checking a NAMED WAT
+of the SAME self.js/watr module graph (compiled directly via `compile(g.code,
+{modules:g.modules, optimize:{level:3,...}, wat:true})`, replicating
+build-dist.mjs's own call exactly): watr's own `runRounds` (node_modules/
+watr/src/optimize.js:8381, the function that calls `opts.regionMark?.()`/
+`opts.regionExit(...)`) has NO surviving named function in the O3 output —
+fully inlined, consistent with scripts/self.js's own prior-session note
+that `$__ptr_type`/`$__ptr_aux` "end up with ZERO remaining func defs" at
+O3. Net: `$__alloc` is called with a garbage (wraparound-triggering) size
+from deep inside watr's own fused round/rewrite machinery, AFTER a clean
+region_exit — i.e. the CLASS is exactly the design's own named risk, "a
+cache we didn't anticipate": something downstream holds a decoded
+length/offset computed BEFORE the round-2 boundary and feeds it to a
+POST-boundary allocation without re-deriving it through the forwarding-
+aware `__ptr_offset` accessor. `inlinePtrOffsetFast` (src/passes.js:48,
+"speed-tier only... inline __ptr_offset's loop-free body... at each
+surviving call site — the cold relocation-chase call stays out-of-line")
+is the standing suspect named in this session's own brief and fits the
+shape (build-dist.mjs compiles self.js at `level:3`, so this pass IS baked
+into the kernel's own compiled watr internals) — NOT confirmed as the
+specific culprit this session; the fused caller is too large to bisect by
+reading alone in the time available.
+
+**Heisenbug reconfirmed, one layer worse than previously documented**: the
+2026-08-06 entry above already found that 5 UNRELATED debug globals added
+to module/core.js flipped an O2 pass/fail. This session found the SAME
+class strikes even a single extra function's worth of instrumentation:
+- Build A (region_copy_rec/region_exit breadcrumbs only): seed 69 opt3
+  traps `unreachable` inside `$__alloc` (the finding above).
+- Build B (Build A + 3 more `global.set`s inside `$__alloc` itself,
+  recording its own `bytes`/caller-count/return-ptr): seed 69 opt3 compiles
+  CLEANLY — zero trap, all 3 rounds complete (`rounds=3, calls=1898,
+  alloc_calls=76995`) — confirmed regions genuinely ran (not silently
+  disabled) via the same debug globals. Seed 161 opt3 ALSO went clean on
+  this build.
+- The UNINSTRUMENTED region-live binary (saved copy, zero source changes
+  from the `69c2994a` re-test) traps `memory access out of bounds`
+  (matching the original bank exactly) 3/3 repeat runs, fully deterministic
+  for a FIXED binary — this is a real, stable bug, not scheduler/GC noise.
+  It is the CHOICE OF BINARY (any change to module/core.js, even inert
+  extra globals in a hot function) that is unstable, consistent with an
+  address/allocation-COUNT-sensitive corruption (a race between a stale
+  cached decode and a bump-pointer offset that only collides under specific
+  allocation-ordinal conditions), not a logic bug that reproduces
+  identically under any recompile.
+
+**Consequence for method**: source-level breadcrumb instrumentation is a
+poor tool for this specific bug — every attempted observation changes the
+observed behavior (Heisenberg in the literal sense: the debug write itself
+is a memory operation that shifts allocation offsets downstream). A
+different technique is needed next: e.g. (a) a UNIVERSAL validity check
+wrapped around every `$__alloc`/`$__alloc_hdr*` call site's `bytes`
+argument (assert `bytes < some sane ceiling` before the existing wraparound
+guard, on the UNINSTRUMENTED-shape binary, i.e. edit only the guard
+condition, add no new globals/locals) — cheapest single-line perturbation,
+most likely to preserve the "memory access out of bounds" manifestation
+rather than dodge it; (b) bisect watr's OWN pass list (as the 2026-08-06
+session did for the O3 `$__ptr_type`/`$__ptr_aux` joint-necessity finding)
+with `inlinePtrOffsetFast` as the FIRST ablation candidate (build-dist.mjs
+can pass `optimize:{level:3, inlinePtrOffsetFast:false, ...}` for the
+KERNEL's OWN build — a one-line build-dist.mjs edit, no module/core.js
+churn, so it doesn't perturb layout the same way); (c) if (b) clears the
+wall, that CONFIRMS the class without needing to isolate the exact call
+site inside the fused function.
+
+**Per the stop-on-fail tripwire**: worktree-only, `69c2994a`'s tree
+verified untouched (`git status`/`git diff` clean except the pre-existing
+untracked `todo-original.md`) — regionHooks stayed dormant in the shared
+tree throughout. Gate ladder (kernel-oracle/kernel-parity/fuzz-2000×2/
+battery/test:wasm/build×2/memory curve/jz×jz) NOT run — gated on the wall
+being dead, and it is not; narrower now, but still open. Worktree removed
+at session end.
+
 ## [ ] Carrier invariant / storedValue (was carrier-invariant-design.md; predecessor of the carrier program)
 
 The boxed-value invariant program that preceded carrier-representation.
