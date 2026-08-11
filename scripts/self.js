@@ -100,7 +100,20 @@ import jzify from '../jzify/index.js'
 // narrowed but not fixed (2 sub-rewrites confirmed jointly necessary, no
 // verified patch), and O2 is a live, unresolved, non-deterministic
 // regression the original task framing didn't know about. Re-wire by
-// restoring the regionHooks line below; the warm checkpoint then gates SHIP.
+// restoring the regionHooks line below (AND flipping REGION_HOOKS_ACTIVE, next);
+// the warm checkpoint then gates SHIP.
+//
+// Explicit region-hooks-active marker (architecture re-audit item 2,
+// .work/todo.md) — read as a literal string match by scripts/build-profile.mjs's
+// resolveSelfhostBuild, replacing build-dist.mjs's old regex-over-source
+// detection (`/^\s*regionHooks:\s*\{/m`). A single-purpose toggle instead of a
+// structural guess: TOGGLE THIS *and* the regionHooks line inside optimizeTail
+// TOGETHER — both must agree, or resolveSelfhostBuild's derived flag disagrees
+// with what optimizeTail actually wires. A caller of resolveSelfhostBuild may
+// also override the derivation explicitly via its own `regionArena` profile
+// field (see that helper's doc) — this marker is only the DEFAULT-derivation
+// source when a caller doesn't override.
+export const REGION_HOOKS_ACTIVE = false
 function optimizeTail(module, cfg) {
   return watrTail(module, cfg, {
     funcCount: ctx.func.list.length,
