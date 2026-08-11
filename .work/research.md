@@ -1975,6 +1975,197 @@ any other kernel-internal source line — the same "cheapest single-line
 perturbation, most likely to preserve the manifestation" logic named before,
 now aimed with this session's narrower target.
 
+**RUNTIME $__alloc-ENTRY GUARD (2026-08-11), disposable worktree
+(`region-alloc-guard`, scratchpad, off `region-slice2-2026-08-11` @
+`88958115`, node_modules copied — watr 5.7.13 confirmed) — verdict: the
+named lever ($__alloc-entry trace) FALSIFIED its own working hypothesis, then
+a follow-up trace on the ACTUAL faulting function found and decoded the real
+garbage, named its provenance class, and traced it to source. Not landed —
+the fix touches shared collection-iteration plumbing (`__coll_order`
+consumers) too broadly for a session-scoped, provably-correct patch. Banked
+per the stop-on-fail tripwire.**
+
+*Rebuild + repro*: unmodified `scripts/build-dist.mjs` recipe (kernel-wasm-
+only leg, skips the esbuild dist/jz.js|interop.js|sprae legs — irrelevant to
+this repro), `dist/jz.wasm` 14806320 bytes. kernel-oracle's `String(x > 0 &&
+1)` O2 row (`compileViaKernel('export let f = (x) => String(x > 0 && 1)',
+{optimize:2})`) — `RuntimeError: memory access out of bounds`, 3/3 clean
+reps, matching the bank exactly.
+
+*Instrument, built at the WAT level on the BUILT binary (per the prior
+session's own caution — source-level module/core.js edits are a proven
+heisenbug trigger for this exact wall)*: dumped the kernel's own optimized
+internals as ALWAYS-NAMED WAT text via the same `compile(g.code, {modules,
+memory:8192, optimize:{level:3, watrGuard:false, snapshotInit:true,
+inlinePtrOffsetFast:false}, wat:true})` lever the wall2 WAT-diff session
+validated (276.5 MB text, 6.46M lines). A NEW script (`trace-alloc.mjs`,
+scratchpad-only — reuses `trace-inject.mjs`'s own findFunc/parseFunc/
+printFunc splicing mechanics, not a rewrite) prepends `(call $dbgtrace ...)`
+host-import traces to `$__alloc`'s own `$bytes` param + `$__heap` global
+(both still pristine at function entry, before the existing bump-pointer
+logic's `local.tee $bytes` reuse of the param — no tee-wrapping needed) and
+to `$__alloc_hdr`/`$__alloc_hdr_n`'s own `$len`/`$cap`/`$stride` params.
+Re-assembled via `watr/parse` + `watr/compile` (81s for the 276 MB text —
+NOT the multi-hundred-MB-multi-hour concern the original script's own
+comments anticipated), instantiated by hand (bypassing `interop.js`'s
+`instantiate()` — its `opts.imports` wrapper auto-decodes host-import args as
+NaN-boxed jz values via `state.mem.read`, which would corrupt a raw i64 debug
+channel; used `interop.js`'s exported `memory()` marshaling helper directly
+against a manually-built `WebAssembly.Instance` instead, matching the raw ABI
+— every export param is i64 f64-reinterpret bits, BigInt required, `0n` is
+the correct "absent" sentinel since jz's own unboxed-number representation
+IS the f64 value and 0.0's bits are 0n).
+
+**Hypothesis FALSIFIED**: ran the repro against the $__alloc-instrumented
+binary — traps identically (`memory access out of bounds`, not
+`unreachable`), but the full alloc-entry trace (648,844 real allocations
+before the trap, every `bytes`/`heap_before` value inspected) shows **every
+single `$__alloc` call before the trap requests a small, sane byte count (8,
+16, 24, 32, 48, 464, 912…)** — nothing oversized, nothing wraparound-shaped.
+$__alloc's own guard never fires; the trap is not a "garbage bytes" event at
+all. This itself is the falsification the guard was built to either confirm
+or refute (per the prior session's own framing) — refuted, cleanly.
+
+**Follow-up: locate the REAL faulting frame.** Captured the raw Node
+`RuntimeError` stack (`wasm-function[N]` frames, no name section on the
+reassembled binary) and mapped every index to jz's own name via the SAME
+counting convention `index.js`'s `functionNameSection` uses (import funcs
+first in declared order, then defined funcs in declared order — verified by
+parsing the actual AST rather than eyeballing text, since a first attempt via
+naive line-regex undercounted). Stack, innermost first: **`$__map_from`**
+(idx 98) ← `$m122_optimize$substGets` (idx 798, self-recursive ×3) ←
+`$m122_optimize$forwardPropagate` (3054) ← `$closure2193` (5160) ←
+`$m51_util$walkN` (144) ← `$tramp_m122_optimize$propagate` (3490) ← …
+← `$compileSelf` (3258) ← `$compileSelf$exp` (6030, the export wrapper).
+**The trap is not target-program-related at all — it fires inside jz's OWN
+`forwardPropagate` optimizer pass, while the KERNEL compiles the repro
+source, at a `new Map(existingMap)` call** (`module/collection.js`'s
+`__map_from` stdlib, emitted for any `new Map(iterable)` in jz-compiled JS —
+general-purpose, not region-specific machinery itself).
+
+**Second instrumentation pass, same discipline (WAT-level, on the built
+binary, zero source churn)**: extended `trace-alloc.mjs` to tee-wrap
+`$__map_from`'s own `$t`/`$off`/`$cap`/`$n` (tag-check + MAP-branch reads) and
+its copy loop's `$i`/`$off`(reused as slot addr)/key/value loads. Re-ran —
+**decisive capture**, the last `__map_from` invocation before the trap:
+
+```
+mapfrom.t   9          (PTR.MAP)
+mapfrom.off 14014800
+mapfrom.cap 16
+mapfrom.n   6                      <- source map's HEADER claims 6 live entries
+loop i=0  slotoff=14015064  key=0x7ffa000000aa499c  val=0x7ffb021900d5c768   (looks like a real boxed entry)
+loop i=1  slotoff=14015040  key=0x7ffa000000a9d394  val=0x7ffb021900d5ce00   (real)
+loop i=2  slotoff=14014872  key=0x7ffa000000a9d3cc  val=0x7ffb021900d5d460   (real)
+loop i=3  slotoff=14014824  key=0x7ffa000000a9d57c  val=0x7ffa000000a9d4fc   (real)
+loop i=4  slotoff=0         key=0x69666e492d797469  val=0x657572747974696e   <- GARBAGE
+```
+
+**The garbage decode**: `slotoff=0` at loop iteration 4 — the "order" array
+built by `__coll_order` (module/core.js) holds a real slot ADDRESS for
+entries 0-3 but a bare **zero** at index 4, even though the source map's own
+header field said 6 entries exist. `i64.load offset=8/16 (addr=0)` doesn't
+trap (address 8/24 is in-bounds — it's just the WRONG memory) — it reads the
+KERNEL'S OWN static string-table data segment, which literally starts at
+linear-memory address 0: `"NaNInfinity-Infinitytruefalsenullundefined…"`.
+Decoded LE byte-for-byte: `key` bytes = `i,t,y,-,I,n,f,i` = **`"ity-Infi"`**,
+exactly the data segment's own bytes at offset 8 (`…Infin`**`ity-Infi`**`nity…`,
+i.e. the tail of "Infinity" + "-Infi" of "-Infinity"); `val` bytes land a few
+bytes further into the same literal (`"…nitytrue…"` region). This is the
+SAME corruption signature class the carrier-representation-design.md §29
+session found for a completely different bug (`i64Hex` reading
+`i64.load(address 0)`) — reading the static string pool because a decoded
+"pointer" was zero, not a real heap offset. **Provenance class, named per the
+task's own vocabulary: neither a boxed-pointer-as-length nor a stale
+pre-relocation address nor a sign-reinterpreted huge value — a bare NULL
+slot pointer, arising from a stale/over-counted OCCUPANCY COUNT (a
+collection's header length exceeding its real live-slot count).**
+
+**Mechanism, traced one step upstream, source-mapped by shape**: `__map_from`
+(module/collection.js:2021) and — independently, same anti-pattern —
+`regionArmSetMap` (layout-kinds.js:331, the SET/MAP region-relocation arm)
+BOTH read a collection's header length field (`i32.load(off-8)`, called `$n`)
+and use it UNCHECKED as the iteration bound over `__coll_order`'s returned
+buffer (`__coll_order(off, cap, stride)`, module/core.js:874), assuming the
+two numbers always agree. They are NOT guaranteed to: `__coll_order`'s own
+gather loop (module/core.js:886-889) explicitly SKIPS "healed zombie"
+entries (`hash word ≠ 0` but `key == TOMB_NAN` — module/collection.js:154-164's
+own documented durable-slot-heal contract: "table len decremented — that
+probes pass over and __coll_order/len-sized iterations skip"), i.e. the
+DESIGN's own intent is that header-length and coll_order's real count track
+together, decremented in lockstep on every heal. Whatever concretely broke
+that lockstep for THIS table was not isolated to a single instruction this
+session (the desync must have already existed on SOME upstream table before
+this `__map_from` call ran — this session's trace starts at the symptom, not
+the origin) — but `regionArmSetMap`'s rebuild is the prime, structurally
+implicated suspect: its own copy loop (layout-kinds.js:358-370) reads the OLD
+table's `$n` ONCE, builds the NEW (rebuilt) table by inserting exactly `$n`
+times via real `__map_set`/`__set_add` calls (each of which correctly
+increments the NEW header's own length by 1 per insert — verified by reading
+`genUpsert`, module/collection.js:314-419, which does NOT have this bug in
+isolation: normal insert and grow-rehash both track length correctly against
+real occupancy). Consequence: `regionArmSetMap` **faithfully PROPAGATES**
+whatever `$n` it was handed — including a pre-existing mismatch — from the
+OLD table onto the NEW one, one-for-one, with no re-derivation from
+`__coll_order`'s own real count. If `__coll_order` ever returns fewer live
+entries than `$n` (for whatever upstream reason first desynced them), this
+rebuild doesn't just misread garbage locally the way `__map_from` does — it
+INSERTS that garbage key/value pair into the rebuilt table as a real entry
+(via a genuine `__map_set` call, line 364-366) and keeps the wrong length,
+so the corruption survives the rebuild and can propagate to the NEXT
+consumer — which is exactly the shape of a table whose `new Map(existingMap)`
+copy (`__map_from`, general-purpose, unrelated to regions itself) later
+inherits and trips over.
+
+**Fix-or-bank: BANKED, not landed.** This is squarely a class fix, not a
+one-line patch: at minimum two consumers (`__map_from`'s copy loop,
+`regionArmSetMap`'s rebuild loop) trust a length field that `__coll_order`'s
+own contract does not actually guarantee matches its real output count, and
+`__coll_order` has OTHER general callers (`__hash_keys_ro`, for-in/
+Object.keys/spread/JSON enumeration paths) not yet audited for the same
+assumption. The provably-correct, scoped-right fix is conceptual, not
+symptomatic: `__coll_order` should be the single source of truth for "how
+many real entries exist" — either return its own live count alongside the
+buffer (a signature change touching every call site) or have every
+length-bound consumer stop trusting the header field and instead use
+`__coll_order`'s actual output extent. Doing this soundly requires: (a)
+locating where the header-length/real-occupancy lockstep FIRST breaks
+(not isolated this session — the trace starts at the symptom's second or
+third generation, not the origin table), (b) auditing every `i32.load(off-8)`
+-as-iteration-bound call site across module/core.js + module/collection.js +
+layout-kinds.js, (c) the full mandated gate ladder (kernel-oracle ×3,
+kernel-parity, fuzz 200+2000×2, full battery, dormant byte-identity, build
+×2) on top of that — a session-plus scope, not a session-remainder scope.
+Zero shared-tree source changes made; the two throwaway instrumentation
+scripts (`trace-alloc.mjs`, `run-traced.mjs`, `dump-wat.mjs`,
+`build-wasm-only.mjs`) and their multi-hundred-MB WAT/trace artifacts live
+only in the scratchpad worktree, not landed anywhere.
+
+**Gates**: repro ×3 confirmed (both the original `dist/jz.wasm` harness and
+the hand-instantiated instrumented-binary harness, same trap signature).
+kernel-oracle/kernel-parity/fuzz/battery/dormant-byte-identity/build×2/
+shared-tree re-enable/memory curve/jz×jz **NOT run** — all contingent on the
+wall closing, and it does not; per the stop-on-fail tripwire, no attempt is
+made to guess a partial fix under this uncertainty.
+
+**Recommendation for next session**: (1) don't re-hunt the `$__alloc`-entry
+angle again — it's now definitively closed (falsified with a full 648K-call
+trace, not a hunch); (2) the productive next lever is auditing
+`__coll_order`'s call sites for the same "trusts a header length instead of
+the real returned count" shape — start from `regionArmSetMap` (layout-
+kinds.js:358) and `__map_from` (module/collection.js:2037) since both are
+now proven-implicated, then grep every other `call $__coll_order` site; (3)
+try a NATIVE (non-kernel) repro before reaching for another kernel rebuild:
+construct a Set/Map, force a durable-slot heal (a delete that crosses a
+`__clear`/arena-rewind boundary — `module/collection.js:154`'s own documented
+mechanism) to desync length from real occupancy in a controlled way, and
+check whether `__coll_order`'s general (non-region) consumers already
+mishandle it identically — if so, this is NOT actually region-arena-specific
+at its root and the region-live requirement seen across every session on
+this wall is just what makes the desync REACHABLE in practice (region round
+boundaries are the dominant place a long-lived table crosses a heal), not
+what CAUSES it — a materially different, and probably easier, fix target.
+
 ## [ ] Carrier invariant / storedValue (was carrier-invariant-design.md; predecessor of the carrier program)
 
 The boxed-value invariant program that preceded carrier-representation.
