@@ -10453,3 +10453,55 @@ end.
 
 **Commits**: scripts/build-dist.mjs (the class fix) + this entry +
 `.work/research.md`'s matching append.
+
+## Status (2026-08-11, ARCHITECTURE RE-AUDIT item 2 LANDED — one BuildProfile
+## for both self-host builders, `0833ef58`)
+
+**Finding, restated**: build-dist.mjs alone did the CARRIER_BOX build-time
+source-define rewrite (.work/carrier-representation-design.md §32/§34) and the
+region-arena × inlinePtrOffsetFast gate (.work/research.md §Region arena);
+selfhost-build.mjs did NEITHER — `JZ_CARRIER_BOX=0` was silently a no-op
+through that entry point (the flag was read at `compile()` call time, but
+without the source-literal injection, src/ctx.js's own `typeof process ===
+'undefined'` fold — the SAME hazard both files' comments already documented —
+freezes CARRIER_BOX to `true` inside any self-hosted kernel regardless of the
+env var), and a region-live kernel built via selfhost-build.mjs would carry
+the inlinePtrOffsetFast region hazard ungated. The regex-over-source
+region-hooks detection (`/^\s*regionHooks:\s*{/m` against scripts/self.js's
+own text) was also duplicated logic that only build-dist.mjs ran.
+
+**Fix**: `scripts/build-profile.mjs`'s `resolveSelfhostBuild({carrierBox,
+debugInvariants, regionArena, optimize, snapshot, watrGuard, memory,
+helperCounters, helperCallsites})` — the ONE place either self-host build
+config resolves. Returns `{graph, defines, regionArenaLive, optimize,
+optimizerOverrides, memory, helperCounters, helperCallsites}`. Both
+build-dist.mjs and selfhost-build.mjs now call this and feed `compile()`
+straight from its output; neither does its own `resolveModuleGraph` or
+source-text injection any more. `regionArena` resolution: an explicit
+profile field always wins ("the caller says so"); left null/undefined (both
+builders' default), the helper derives it ONCE from a new explicit
+scripts/self.js marker (`export const REGION_HOOKS_ACTIVE = false`, toggled
+alongside the (still dormant) `regionHooks:` line inside `optimizeTail` — a
+single literal-string match, replacing the old structural regex). Also added
+(new capability, opt-in, default off, unused by either builder's current
+call — no behavior change): `debugInvariants` bakes `DBG_INVARIANTS = true`
+into the self-hosted src/ctx.js via the identical source-injection mechanism,
+for a future debug-instrumented kernel build.
+
+**Gate ladder** (isolated worktree at `0833ef58`, `node_modules` symlinked
+from the main tree — kept separate from the shared main working tree, which
+had a concurrent, uncommitted region-Slice-2 investigation in module/core.js
+et al. mid-flight from another session; the worktree's checked-out commit
+carries none of that):
+
+| check | result |
+|---|---|
+| `build-dist.mjs` ×2 (default config) | byte-identical (`a47b6126…`) |
+| `selfhost-build.mjs` ×2 (default config) | byte-identical (`a47b6126…`) |
+| cross-builder identity, default config | `build-dist.mjs` == `selfhost-build.mjs` (SAME hash `a47b6126…`) |
+| `JZ_CARRIER_BOX=0`, both builders | byte-identical to each other (`4cacb21c…`), and correctly DIFFERENT from the default-config hash (proves the flag is now actually honored through both entry points — the bug this item fixes) |
+| `node test/kernel-parity.js` | 3/3 groups, 33/33 assertions, byte-identical WAT at O0/O2/O3 |
+| `node scripts/battery.mjs` | GREEN except the one pre-existing, already-documented flake (`test/optimizer.js` "typed RMW: one guard covers the pure read and ignored OOB store" — codec-bounds guard-coalescing, unrelated to build tooling, cited repeatedly earlier in this ledger); fixpoint PASS; fuzz 30173 compared, 0 divergence; self 21/21 (206 assertions); kernel 2716 pass; build leg reused (hash-unchanged, confirms no drift) |
+
+**Commits**: `0833ef58` (scripts/build-profile.mjs new + scripts/build-dist.mjs
++ scripts/selfhost-build.mjs + scripts/self.js marker) + this entry.
