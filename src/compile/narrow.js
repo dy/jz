@@ -33,6 +33,7 @@ import {
   inferArrElemSchema, inferArrElemSchemaSet, inferArrElemValType,
   inferSchemaId, inferValType, inferTypedCtor, inferParams,
 } from './infer.js'
+import { materializeVariant } from './variant.js'
 
 const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
 // Integer-preserving ops: an expr over integers stays integer (ToInt32-consistent) through these.
@@ -3250,33 +3251,22 @@ export function specializeUnionCursorParams(programFacts) {
       }
     }
     if (!ok) continue
-    let cloneName = `${func.name}$union`
-    let n = 0
-    while (ctx.func.names.has(cloneName)) cloneName = `${func.name}$union$${++n}`
-    const cloneParams = []
-    for (let k = 0; k < func.sig.params.length; k++) {
-      const p = func.sig.params[k]
-      // Same contract: match specializeBimorphicTyped's param-literal shape
-      // ({ name, type, ptrKind, ptrAux } — ptrAux null behaves as absent).
-      if (idxs.includes(k)) cloneParams.push({ name: p.name, type: 'i32', ptrKind: VAL.OBJECT, ptrAux: null })
-      else cloneParams.push({ ...p })
+    // Same contract: match specializeBimorphicTyped's param-literal shape
+    // ({ name, type, ptrKind, ptrAux } — ptrAux null behaves as absent).
+    const cloneSig = {
+      params: func.sig.params.map((p, k) =>
+        idxs.includes(k) ? { name: p.name, type: 'i32', ptrKind: VAL.OBJECT, ptrAux: null } : { ...p }),
+      results: [...func.sig.results],
     }
-    const cloneSig = { params: cloneParams, results: [...func.sig.results] }
-    const clone = { ...func, name: cloneName, sig: cloneSig }
-    ctx.func.list.push(clone)
-    ctx.func.map.set(cloneName, clone)
-    ctx.func.names.add(cloneName)
+    const clone = materializeVariant({
+      origin: func, name: `${func.name}$union`, sig: cloneSig,
+      paramReps, eligibleSites: sites, fallback: func,
+    })
     clones.push(clone)
-    const reps = paramReps.get(func.name)
-    if (reps) {
-      const cloneReps = new Map()
-      for (const [k, r] of reps) cloneReps.set(k, cloneRep(r))
-      paramReps.set(cloneName, cloneReps)
-    }
+
     const cloneCursors = new Map()
     for (const [cn, ck] of cursors) cloneCursors.set(cn, ck)
-    cursorsBySig.set(cloneSig, cloneCursors)
-    for (const site of sites) site.node[1] = cloneName
+    cursorsBySig.set(clone.sig, cloneCursors)
   }
   return clones
 }
