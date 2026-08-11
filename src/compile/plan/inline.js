@@ -33,6 +33,7 @@ import {
   LOOP_OPS, isSimpleArg, mutatesAny, loopDepth, nodeSize, clonePlain, collectBindings,
   fixedTypedArraysInBody, forLoopBodyIndex, withForLoopBody,
 } from './common.js'
+import { materializeVariant } from '../variant.js'
 
 // Returns { prefix, value } where prefix is the substituted body statements
 // (excluding any trailing `return X`), and value is the substituted return
@@ -871,32 +872,24 @@ export const specializeFixedRestCalls = (programFacts) => {
     if (!rewritten.ok) continue
 
     const cloneName = `${name}${T}rest${restN}`
-    if (!ctx.func.map.has(cloneName)) {
-      const restSigParams = restParams.map(name => ({ name, type: 'f64' }))
-      const clone = {
-        ...func,
-        name: cloneName,
-        exported: false,
-        rest: null,
-        // Build the specialized sig fresh. `params`/`results` are sig's only
-        // fields and both are replaced here, so a `{ ...func.sig, … }` spread
-        // would be pure redundancy — and a full-override spread of a live sig
-        // object also trips the self-host codegen, so the explicit form is both
-        // simpler and the one that round-trips through jz.wasm.
-        sig: {
-          params: [...fixedParams, ...restSigParams],
-          results: [...func.sig.results],
-        },
-        body: rewritten.node,
-      }
-      ctx.func.list.push(clone)
-      ctx.func.names.add(cloneName)
-      ctx.func.map.set(cloneName, clone)
-    }
+    // `key: cloneName` — idempotent identity: name+restN is a deterministic,
+    // unique key, so a func already registered under it (from an earlier
+    // call into this same builder) IS this variant, reused as-is rather than
+    // re-cloned. Build the specialized sig fresh. `params`/`results` are
+    // sig's only fields and both are replaced here, so a `{ ...func.sig, … }`
+    // spread would be pure redundancy — and a full-override spread of a live
+    // sig object also trips the self-host codegen, so the explicit form is
+    // both simpler and the one that round-trips through jz.wasm.
+    materializeVariant({
+      origin: func, key: cloneName, name: cloneName,
+      sig: { params: [...fixedParams, ...restParams.map(name => ({ name, type: 'f64' }))], results: [...func.sig.results] },
+      body: rewritten.node,
+      cloneFields: { rest: null },
+      eligibleSites: sites, fallback: func,
+    })
 
     const fixedN = func.sig.params.length - 1
     for (const site of sites) {
-      site.node[1] = cloneName
       setCallArgs(site.node, site.argList.slice(0, fixedN + restN))
       changed = true
     }

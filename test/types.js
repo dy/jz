@@ -714,7 +714,14 @@ test('array-destructure kind: destructured param element keeps whole-array kind 
     export let f = (v) => g([1, BigInt(v)])
   `
   const insp = compile(src, { wat: true, inspect: true }).inspect
-  is(insp.functions.g?.params?.[0]?.val, VAL.ARRAY)
+  // g's one call site passes a fixed 1-arg array — a destructured single-array
+  // param is represented via the same `.rest` machinery specializeFixedRestCalls
+  // targets, so the site can legitimately route to g's `#rest1` clone instead
+  // of g itself (architecture re-audit item 10's atomic call-edge retarget:
+  // the inferred fact now correctly lands on whichever func the AST actually
+  // calls, not a stale pre-specialization name). Check whichever carries it.
+  const clone = insp.functions[`g${T}rest1`]
+  is(insp.functions.g?.params?.[0]?.val ?? clone?.params?.[0]?.val, VAL.ARRAY)
 })
 
 test('array-destructure behavior: typeof destructured bigint element is "bigint"', () => {
