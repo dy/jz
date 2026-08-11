@@ -736,13 +736,33 @@ export default (ctx) => {
     // round allocated (churn/live measured 574x-2495x on the design's own corpora —
     // .work/research.md §Region arena; .work/research.md §Region arena is the design).
     //
-    // Reuses the EXACT forwarding-header convention the durable machinery
-    // (__durable_fwd_log/heal above) and array/hash/set/map growth (module/array.js
-    // arrGrow, module/collection.js genUpsertGrow) already use: a relocated block
-    // leaves `[-8:newOffset][-4:-1 sentinel]` at its OLD site, and __ptr_offset
-    // already chases it on every ARRAY/HASH/SET/MAP deref — so a stale reference
-    // that survives past region_exit (a cache we didn't anticipate) still self-heals
-    // through infrastructure that's already deployed everywhere, for free.
+    // NO in-place forwarding-header convention (boundary-arithmetic audit,
+    // .work/research.md §Region arena — window B; this section originally read
+    // like the durable machinery's __durable_fwd_log/heal above and array/hash/
+    // set/map growth's grow-in-place stub, module/array.js arrGrow/module/
+    // collection.js genUpsertGrow: leave `[-8:newOffset][-4:-1 sentinel]` at the
+    // OLD site for __ptr_offset to chase on a later deref. That convention is
+    // sound for GROWTH — the old site stays part of the same live arena forever,
+    // so the stub is reliably there whenever chased. It is NOT sound here: this
+    // function's own closing `memory.copy(mark, T, size)` below overwrites every
+    // byte of [mark, mark+size) with the compacted survivors before ANY consumer
+    // outside this traversal could read a stub written there, and the very next
+    // round starts allocating fresh churn from the new heap top, overwriting
+    // whatever stub bytes landed in [mark+size, T) the instant that space is
+    // reused — a write with no reachable reader, always, not merely a rare race
+    // (this was the target-pass-ablation "reshuffle" mechanism: different pass
+    // orderings changed how much of that dead zone got clobbered before a stray
+    // reference — if one ever existed — could chase it, reshuffling WHICH corpus
+    // rows happened to trap without ever closing the wall). Healing is instead
+    // direct and eager: every arm below rewrites its OWN parent's slot with the
+    // relocated child's value as the walk descends, and the memo (`root`'s outer
+    // call returns `$out`) makes the relocated ROOT itself the healed reference —
+    // no chase, no dead-on-arrival write. This covers everything reachable from
+    // `root`; a holder OUTSIDE root is a root-completeness question for the
+    // CALLER's registration (watr's runRounds passes exactly [ast, dirty,
+    // snapshots] as root and drains every other known module-scope scratch
+    // global before calling in — src/optimize.js), not something an in-place
+    // stub could ever have fixed anyway (it never survived long enough to help).
     //
     // Scope (the watr WAT-IR tree + the round loop's own dirty/snapshots
     // bookkeeping — never user data, this is an internal-only pair of intrinsics,
@@ -755,9 +775,10 @@ export default (ctx) => {
     // relocate too; handled below exactly like __sclone_rec's SET/MAP branch,
     // rebuilt via __coll_order insertion order so dirty-filtering's performance
     // survives the boundary intact, not just "safely degrades" to always-dirty).
-    // OBJECT/HASH/CLOSURE/TYPED/BUFFER/EXTERNAL and SLICE-view strings are OUT OF
-    // SCOPE for Slice 1 (watr's own AST + bookkeeping never produce them) —
-    // trapped defensively (`unreachable`) rather than silently mishandled.
+    // OBJECT/HASH/TYPED/BUFFER/EXTERNAL gained real arms in Slice 2
+    // (layout-kinds.js's regionCopyRecBody/KIND_REGISTRY) — CLOSURE is the one
+    // remaining deliberate, named trap (env length isn't recoverable from a bare
+    // CLOSURE box at runtime — see layout-kinds.js regionArmClosureTrap).
     //
     // Self-overlap: the compacted copy is NOT written in place at `mark` — source
     // (the round's live data, scattered through [mark, T)) and a naive in-place
@@ -828,12 +849,13 @@ export default (ctx) => {
               (i64.reinterpret_f64 (f64.load (i32.add (local.get $dpSlot) (i32.const 16))))))
             (local.set $dpI (i32.add (local.get $dpI) (i32.const 1)))
             (br $del)))
-          ;; forward the OLD block to its FINAL (post-relocation) address, same
-          ;; convention as every other relocated header — and store the SAME
-          ;; final (delta-adjusted) pointer into the global: $dpOutPhys is only
+          ;; NO old-site forwarding stub (boundary-arithmetic audit, window B —
+          ;; see regionArmArray's comment, layout-kinds.js, for the full
+          ;; mechanism). $__dyn_props is a GLOBAL, not a value threaded through
+          ;; a caller — the ONLY live reference to this table is the global
+          ;; itself, healed directly on the next line; nothing else could ever
+          ;; hold the old address to chase, stub or no stub. $dpOutPhys is only
           ;; valid to DEREFERENCE right now (T-relative staging), never to keep.
-          (i32.store (i32.sub (local.get $dpOff) (i32.const 8)) (i32.sub (local.get $dpNewOff) (local.get $delta)))
-          (i32.store (i32.sub (local.get $dpOff) (i32.const 4)) (i32.const -1))
           (global.set $__dyn_props (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (i32.sub (local.get $dpNewOff) (local.get $delta))))))
       ` : ''}
       (local.set $size (i32.sub (global.get $__heap) (local.get $T)))
@@ -948,8 +970,8 @@ export default (ctx) => {
             (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 16))) (local.get $memo) (local.get $mark) (local.get $delta)))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $ql)))
-      (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.sub (local.get $newOff) (local.get $delta)))
-      (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+      ;; NO old-site forwarding stub — boundary-arithmetic audit, window B (see
+      ;; regionArmArray's comment, layout-kinds.js, for the full mechanism).
       (local.get $out))`
 
     // Function form (not a plain template string): the ARRAY/OBJECT dyn-props

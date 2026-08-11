@@ -317,11 +317,30 @@ export function regionArmArray({ hasDynProps }) {
           ;; a build with no array/object dynamic-property support anywhere skips
           ;; this block entirely.
           ${ephemeralDynProps}
-          ;; forward the OLD site to the FINAL (post-relocation) address — any stale ARRAY
-          ;; reference that survives past region_exit self-heals via the existing
-          ;; __ptr_offset forwarding chase, exactly like a grown array's old header.
-          (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.sub (local.get $newOff) (local.get $delta)))
-          (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+          ;; NO old-site forwarding stub (boundary-arithmetic audit, window B —
+          ;; .work/research.md §Region arena: this function's own CALLER,
+          ;; __region_exit, closes with a memory.copy(mark, T, size) — that copy
+          ;; physically overwrites every byte in [mark, mark+size) with the
+          ;; compacted survivors BEFORE any consumer outside this traversal can
+          ;; possibly read a just-written stub there, and the round after that
+          ;; one starts allocating fresh churn from the new heap top, overwriting
+          ;; whatever stub bytes landed in [mark+size, T) the instant that space
+          ;; is reused — a write with no reachable reader, in EVERY case, not a
+          ;; probabilistic one (this was the target-pass-ablation "reshuffle"
+          ;; mechanism: different pass orderings change how much of the dead
+          ;; zone gets clobbered before a stray external reference — if one ever
+          ;; existed — got a chance to chase it, reshuffling WHICH corpus rows
+          ;; happened to trap, never fixing the underlying wall). Every reference
+          ;; reachable from the region root is healed the honest way instead —
+          ;; directly, by this very function returning $out and rewriting each
+          ;; parent slot with it as the walk descends (already done above) — so
+          ;; no chase is needed for anything region_exit is actually responsible
+          ;; for. A holder OUTSIDE the root (watr's runRounds passes exactly
+          ;; [ast, dirty, snapshots] as root, and drains every other known
+          ;; module-scope scratch global before calling in — src/optimize.js)
+          ;; is a root-completeness bug in the CALLER's registration, not
+          ;; something an in-place stub could have fixed anyway (it never
+          ;; survived long enough to be read).
           (return (local.get $out))))`
 }
 
@@ -368,8 +387,10 @@ export function regionArmSetMap() {
                 (i64.reinterpret_f64 (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $memo) (local.get $mark) (local.get $delta)))))))
             (local.set $i (i32.add (local.get $i) (i32.const 1)))
             (br $cl)))
-          (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.sub (local.get $newOff) (local.get $delta)))
-          (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+          ;; NO old-site forwarding stub — boundary-arithmetic audit, window B
+          ;; (see regionArmArray's matching comment above for the full
+          ;; mechanism: __region_exit's closing memory.copy destroys any stub
+          ;; written here before an external reader could ever chase it).
           (return (local.get $out))))`
 }
 
@@ -489,8 +510,13 @@ export function regionArmObject({ hasDynProps }) {
           ;; ephemeral OBJECTs are always heap-resident (never static-segment), so no
           ;; $__heap_start guard is needed here (mirrors ARRAY's ephemeral branch).
           ${ephemeralDynProps}
-          (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.sub (local.get $newOff) (local.get $delta)))
-          (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+          ;; NO old-site forwarding stub (boundary-arithmetic audit, window A):
+          ;; PTR.OBJECT is not a FORWARDING_MASK member (layout.js) — __ptr_offset's
+          ;; chase never even inspects an OBJECT-tagged pointer's header for one, so
+          ;; a stub written here could never be read by ANY consumer, ever, chase or
+          ;; no chase — a dead write regardless of the closing-memcpy timing that
+          ;; kills every OTHER kind's stub too (window B — see regionArmArray).
+          ;; Consistent with TYPED/BUFFER, neither of which ever wrote one either.
           (return (local.get $out))))`
 }
 

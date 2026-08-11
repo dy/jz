@@ -2647,6 +2647,168 @@ fusion reshapes a caller that happens to hold a decoded offset across a
 this file's own arms and onto the fused-caller / decoded-offset-cache axis
 those sessions already pointed at, not back into `__region_copy_rec`.
 
+## §Region arena — TARGET-PASS ABLATION RECORD (2026-08-11, carried over from
+main 9447f78d for continuity — this branch's own research.md predates that
+commit)
+
+The untried axis: TARGET optimize-pass ablation through a FIXED region-live
+kernel (zero rebuilds). Facts from the run: repros trap ONLY at target L2
+(clean 0/1/3, 5/5 deterministic). Sweep of all 62 PASS_NAMES both
+directions: enable-at-L0 → zero single-flag triggers; disable-at-L2 → 10
+individual passes clear the join repro; only watr/foldSetToTee/
+hoistConstantPool clear all 4 probes. DECISIVE: forcing {level:2,
+hoistConstantPool:false} across the FULL scaled test:wasm suite → 47 fail
+vs baseline 49, but only 9 rows common — 40 fixed, 38 PREVIOUSLY-CLEAN rows
+now fail. A RESHUFFLE, not a fix: pure allocation-ordinal sensitivity.
+hoistConstantPool's implementation read: no module-scope holder. This
+record motivated the boundary-arithmetic audit that followed (whose window
+(B) — forwarding stubs destroyed by the closing compaction memcpy —
+explains the reshuffle mechanism exactly).
+
+## §Region arena — BOUNDARY-ARITHMETIC AUDIT + WINDOW A/B FIX ATTEMPT (2026-08-11)
+
+**The audit** (reconstructed from source — no prior written form of this
+audit was ever committed; only the ablation-record entry above and its
+"boundary-arithmetic audit that followed" pointer survived). Two independent
+dead/broken writes found in `__region_copy_rec`'s relocation arms:
+
+- **Window (A)** — `regionArmObject` (layout-kinds.js) wrote an old-site
+  forwarding stub (`[-8:newOffset][-4:-1 sentinel]`) for every relocated
+  OBJECT. `PTR.OBJECT` is not a `FORWARDING_MASK` member (layout.js:
+  `FORWARDING_MASK = ARRAY|HASH|SET|MAP` only) — `__ptr_offset`'s chase never
+  even inspects an OBJECT-tagged pointer's header for a stub. Dead write,
+  unconditionally, independent of timing.
+
+- **Window (B)** — every OTHER relocated kind that DOES sit in
+  `FORWARDING_MASK` (ARRAY, SET/MAP, and HASH via `__region_relocate_props`,
+  plus the `$__dyn_props` global's own relocation in `__region_exit`) wrote
+  the same old-site stub, correctly gated by `FORWARDING_MASK` this time —
+  but `__region_exit`'s own closing `memory.copy(mark, T, size)` (module/
+  core.js) overwrites every byte of `[mark, mark+size)` with the compacted
+  survivors before any consumer OUTSIDE this traversal could ever read a
+  stub written there, and the very next round starts allocating fresh churn
+  from the new heap top, overwriting whatever stub bytes landed in
+  `[mark+size, T)` the instant that space is reused. A write with no
+  reachable reader — always, not a rare race — and exactly the mechanism the
+  ablation record's reshuffle evidence pointed at: different pass orderings
+  change how much of that dead zone gets clobbered (by round-N+1's own
+  fresh, UNRELATED churn) before a stray external reference — if one ever
+  existed — could chase a still-live stub, reshuffling WHICH corpus rows
+  happen to trap without ever closing the wall.
+
+**Root-completeness check** (why no separate log/registration was built):
+read watr's own `runRounds` (`/Users/div/projects/watr/src/optimize.js`,
+the JS source region-hooks-active self.js compiles) completely before
+touching anything. It passes exactly `root = [ast, dirty, snapshots]` to
+`regionExit`, reassigns all three from the return value every round, and
+unconditionally drains every OTHER known module-scope scratch global
+(`CNT`/`CNT_FN`/`SW`/`SW_MEM`) immediately before calling in — there is no
+currently-registered cross-round holder outside `root`. `pristine`/
+`beforeRound`/`cur` (the size-guard's round-start clones, outer `optimize()`
+scope) are all allocated via `clone()` — a full structural deep copy — at
+points strictly BEFORE that round's `__region_mark()`, so they stay durable
+(below every future mark) forever and never alias anything region_exit
+would reclaim. Given this, and given `__region_copy_rec` already heals
+everything reachable from `root` DIRECTLY (every arm rewrites its own
+parent's slot with the relocated child as the walk descends; the memo makes
+the returned `$out` the healed root reference) — no chase is needed for
+ROOT-reachable data, chase or no chase. **Composition chosen: delete the
+in-place stub writes outright, do not build a separate out-of-band log.**
+The `$memo` Map `__region_copy_rec` already builds (old bits → new/final
+bits, a genuine out-of-band structure, never co-located with the moved
+data — same shape as the durable-fwd log's own precedent) already serves
+every purpose stub-chasing was meant to serve, for everything region_exit is
+actually responsible for; a holder outside `root` is the CALLER's
+registration bug, not something a stub already proven dead-on-arrival could
+ever have fixed.
+
+**Fix landed** (banked on this branch, NOT merged to main): deleted the
+in-place `[-8:newOffset][-4:-1]` stub-write pair at all five sites —
+`regionArmArray`, `regionArmSetMap`, `regionArmObject` (layout-kinds.js),
+`__region_relocate_props`'s ephemeral branch, and `__region_exit`'s
+`$__dyn_props` relocation (module/core.js) — replacing each with a short
+comment naming which window it closes. No other line changed (verified via
+`git diff | grep -v ';;'`: exactly 5 removed `i32.store` pairs plus prose).
+Window A is a pure, unconditional dead-code deletion (behavior-preserving by
+construction — the chase never read it). Window B removes a write that
+could never survive to be read; per the root-completeness argument above,
+nothing sound depends on it.
+
+**BY-NAME VERDICT — NOT EMPTY (a reshuffle, the audit's own sharp negative
+signature)**: baseline (pre-fix, `dist/jz.wasm` built at branch tip
+1455a278) scaled `test:wasm` (`JZ_TEST_TARGET=jz.wasm JZ_FUZZ_GATE=0.05 node
+test/index.js`) — 49 fail, captured by name. Fixed build (same command,
+same corpus) — **45 fail**, verified DETERMINISTIC across two consecutive
+runs of the fixed binary (byte-identical failing-name sets both times). By
+name: **33 rows common to both** (unchanged), **16 rows cleared**, **12 NEW
+rows appeared that did not fail at baseline** — net -4, not the mandated
+EMPTY. Cleared: `.indexOf: string via variable`, `Array.from: dynamic
+array-like length`, `JSON.stringify: parsed input …circular`,
+`Number.isFinite/.isInteger/.isSafeInteger: dict/map value-census`,
+`Number: parseInt whitespace/radix`, `Number: toString zero`, `SSO
+invariant: builder append`, `String: match found`, `audit #10` ×2, `bool
+identity: mixed ?:/&&/||/??`, `class: pseudo-classical constructor`,
+`inferModuleGlobalValTypes`, `optional: ?.method() on local string`, `regex:
+matchAll`, `slot-types: unobserved slot`. New: `Array.from(string)`,
+`Number: Number(string) coerces`, `SSO invariant: long/non-ASCII strings`,
+`TextEncoder: spread of encode result`, `URLSearchParams: sort/escaping`,
+`Uint8Array.fromBase64/fromHex`, `closures: module-scope for-of`, `const
+fn-table: element-as-value`, `extractRefinements: instanceof
+Float64Array`, `spread: {...a, z:3} add prop`, `subview — out-of-range
+index`, `uninitialized field reads as undefined`.
+
+**Diagnostic follow-up** (before banking, not a fix attempt): inspected
+every NEW failure's trap. 10/12 are the SAME signature as the original 49 —
+`RuntimeError: memory access out of bounds`, deep repeated-frame recursive
+stacks, tripped DURING the kernel's own compilation of the test source (not
+during compiled-output execution) — structurally identical to the
+pre-existing OOB class, not a new symptom shape. 2/12
+(`Array.from(string)`, `TextEncoder: spread of encode result`) trap
+`unreachable` instead — a DIFFERENT flavor, consistent with the same
+underlying mechanism landing on a different NaN-box tag/dispatch path this
+time (a deliberately-trapped kind, e.g. CLOSURE's named region trap, reached
+via garbage that decodes to a different tag than before) rather than a
+second, independent bug class. Conclusion: windows A and B are both real,
+independently correct, and the fix is minimal and behavior-preserving for
+everything it touches — but they do NOT fully explain the 49-row wall as
+the ablation record's window-B pointer predicted. Removing the stub writes
+changes WHAT GARBAGE occupies the reclaimed dead zone (previously the
+deterministic `-1`-sentinel forwarding-header bit pattern; now whatever the
+round's own prior churn left behind) without changing WHETHER something
+still reads that dead zone as if it were live data — so the wall's true
+root cause is a THIRD, still-unidentified gap: something reachable during
+the self-hosted kernel's own compilation is NOT fully healed by
+`__region_copy_rec`'s root walk (a genuine root-completeness miss — a
+holder, or a `children` edge, this session did not find), and windows A/B
+only changed which specific corpus programs happen to read the resulting
+garbage as a valid pointer.
+
+**Gates**: by-name comparison only (the sharp test the audit specified),
+run ×2 on the fixed build for determinism. Per the stop-on-fail tripwire,
+the full mandated ladder (kernel-oracle ×3, kernel-parity, fuzz 200+2000×2,
+full battery, dormant byte-identity, build×2) was NOT run — gated on the
+by-name wall closing, and it does not. No memory curve, no jz×jz verdict
+(same gate).
+
+**Fix-or-bank: BANKED, not landed.** Windows A and B are real fixes, worth
+keeping (Window A is unconditionally correct; Window B removes a
+provably-dead-on-arrival write and is the architecturally sound precedent
+regardless of whether it alone closes the wall) — but the wall survives.
+Code changes (layout-kinds.js, module/core.js) committed to this branch;
+not merged to main. **Recommendation for next session**: don't re-litigate
+windows A/B (both are settled, provably correct in isolation) — the
+productive next lever is finding the THIRD gap: audit every
+`__region_copy_rec`/`__region_relocate_props`/`regionArmTyped` arm's
+`children` enumeration against what the self-hosted kernel's OWN compile
+pipeline actually attaches to its AST/IR nodes (the dyn-props sidecar
+precedent — `fn.cseLoadBases`, already found and fixed — is exactly the
+SHAPE of bug to look for: an out-of-band edge the tracer's declared
+`children` column doesn't know about). Start from the 10 "memory access out
+of bounds during kernel-self-compile, deep recursive frames" new rows above
+(closures/const-fn-table/spread/subview/uninitialized-field are the
+narrowest repros) with a NATIVE (non-kernel) probe before reaching for
+another kernel rebuild, per this session's own precedent.
+
 ## [ ] Carrier invariant / storedValue (was carrier-invariant-design.md; predecessor of the carrier program)
 
 The boxed-value invariant program that preceded carrier-representation.
