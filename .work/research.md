@@ -2964,3 +2964,145 @@ implicit-root fix already landed for a structurally identical gap
 (`.work/research.md`, `__region_exit`'s own header comment); if instead the
 STRING is the stale side, the fix target moves to whatever allocates
 strings during watr's own pass execution.
+
+## §Region arena — ALLOCATION-COLLISION ARITHMETIC AUDIT (2026-08-11): size
+invariant CLEARED, one dormant forwarding-delta hazard found, `known`-Map
+wall UNCHANGED
+
+Read audit of `module/core.js`'s `__region_exit`/`__region_copy_rec`/
+`__region_relocate_props` and `module/collection.js`'s `genUpsert`/
+`genUpsertGrow`, against the task's own synthesis: two live objects
+overlapping is an allocation collision, so either `$__heap` was set wrong at
+exit (too low ⇒ new allocations overlap compacted survivors) or staging
+allocated past the measured size. No worktree, no kernel rebuild — a paper
+audit of the current tree (main HEAD `4adc7048` at start), verified by
+mathematical proof against `genUpsert`'s own load-factor invariant and
+cross-checked against `9d0e3384`'s own stress-verification scope. No source
+changed.
+
+**Size-invariant table.** `__region_exit` (core.js:772-833) computes
+`$size = $__heap - $T` at line 830, the LAST statement before the closing
+`(memory.copy (mark) (T) (size))` (831) and `$__heap = mark+size` (832) —
+nothing allocates between the size read and the reset. Every staging
+allocator enumerated by the task runs BEFORE that read, hence inside `size`
+by construction:
+
+| Arm | Where it allocates | Runs before line 830's `$size` read? | Can it grow mid-staging? | If it grows, is the growth's own address counted in `size`? | Is the OLD site's forwarding pointer written delta-correct? |
+|---|---|---|---|---|---|
+| ARRAY/STRING/BIGINT copy (`__region_copy_rec`, core.js:926-1096) | plain `$__alloc`/`$__alloc_hdr` bump, no rehash | yes (called from line 781, before 830) | n/a — flat copy, no table | n/a | n/a (STRING never forwards; ARRAY/BIGINT write `newOff - delta`, core.js:934, 1094 — correct) |
+| SET/MAP rebuild (`__region_copy_rec`, core.js:1098-1139) | `__alloc_hdr_n(0, $cap, stride+LANE)` — fresh table pre-sized to the SOURCE's own `cap` (1113), then `$__coll_order` + `$__map_set`/`$__set_add` reinsert (1124-1136) | yes | in principle yes (`genUpsert`'s own 75%-load check, collection.js:399) — but see proof below: provably never fires given the pre-sizing | yes — any allocation genUpsert's grow branch makes is still an ordinary `$__alloc_hdr_n` bump, so it lands before line 830 regardless | **NO** — `genUpsert`'s forward=true grow path (collection.js:425-429) stores the raw, T-relative `$newptr` at `(off-8)` unadjusted; `__region_copy_rec`'s own convention always writes `newOff-delta` (core.js:1094,1137-1138) — a structural mismatch, see below |
+| `__region_relocate_props` sidecar (core.js:858-894) | `__alloc_hdr_n($n, $cap, MAP_ENTRY+LANE)` — exact-size verbatim `memory.copy` of the WHOLE old block (bucket positions provably stable, keys are interned strings), no rehash, no grow branch at all | yes (called recursively from `__region_copy_rec`, itself before 830) | no — never calls genUpsert/genUpsertGrow | n/a | writes `newOff-delta` (892) — correct |
+| `$__dyn_props` global migration (core.js:802-828) | `__alloc_hdr_n(0, $dpCap, MAP_ENTRY+LANE)` — fresh table pre-sized to the OLD `$__dyn_props` block's own `cap` (810), then `$__coll_order` + `$__ihash_set_local` reinsert (812-821) | yes (before 830) | same shape as the SET/MAP arm, via `genUpsertGrow`'s `forward=true` path (collection.js:671-683) | yes, same reasoning | **NO** — same raw-`$newptr` write (collection.js:680) |
+
+**Proof the two "yes, can grow" cells never actually fire.** `genUpsert`/
+`genUpsertGrow` both grow-before-insert: the check `size*4 >= cap*3`
+(collection.js:399, :645) runs BEFORE every insert, so a table's own tracked
+occupancy (`off-8`, incremented on every new-key insert, decremented on
+every delete — collection.js's `genDelete`/`durableSlotLogIR` machinery)
+can never reach `0.75*cap` without growing first; therefore at any moment a
+table's real live count `n` satisfies `n*4 < cap*3` strictly. Both
+region-staging rebuild sites pre-size their FRESH table to the SOURCE's own
+`cap` (not to `n`, not to `n`-plus-slack) and reinsert exactly
+`$__coll_order_n` (`n`) items starting from a fresh `size=0`
+(`__alloc_hdr_n(0, cap, ...)` — confirmed: the `len` param zero-inits the
+size field, core.js:1479-1486). The tightest in-loop check is at the LAST
+insert (`i = n-1`, current size `= n-1`): `(n-1)*4 < 3*cap` follows directly
+from `n*4 < 3*cap`. So a same-cap rebuild of a table's own live entries can
+never cross the grow threshold — **the collision window from the task's own
+"grow during rebuild" hypothesis does not exist under the current codebase**,
+CONTINGENT on the occupancy-count field actually tracking real occupancy.
+That contingency is exactly what `9d0e3384` ("collection occupancy-length
+desync: fix 3 general writer bugs, harden `__coll_order` consumers")
+targeted and its own verification note explicitly names "grow-interaction ×
+multi-structure-per-round" as one of its 1500+ native stress dimensions (0
+desyncs found) — `9d0e3384` is an ancestor of both the current `main` HEAD
+and the runtime-trace session's base (`0d089b49`), so its fix is already
+live under this audit. No residual desync mechanism was found this session
+beyond what `9d0e3384` already closed.
+
+**A real but DORMANT hazard found, not the cause of the observed trace.**
+`genUpsert`'s (SET/MAP) and `genUpsertGrow`'s (HASH/`$__dyn_props`) own
+75%-load grow path is a GENERAL, delta-agnostic routine — used everywhere
+in the runtime, not just region-staging — and its forward-marking write
+(`(i32.store (off-8) (local.get $newptr))`, collection.js:426,680) always
+stores the address `$__alloc_hdr_n` JUST returned, i.e. wherever `$__heap`
+currently points. Outside region-staging that IS the final address (correct).
+Inside region-staging (`delta != 0`), every OTHER relocation write in this
+same function family adjusts by `-delta` before storing (core.js:826-828,
+892-893, 1094, 1137-1138) because the staged copy hasn't been moved down to
+its final `[mark, mark+size)` home yet. If a genUpsert-family grow ever DID
+fire while `delta != 0`, the old table's forwarding stub would carry a
+T-relative address `delta` bytes too high — exactly the "points into
+territory the next round's allocations legitimately reuse" corruption shape
+this whole wall is chasing. Proven dormant today by the invariant above
+(no grow fires in either audited rebuild site), so it is NOT what produced
+the `known`-Map trace — `known` never enters `__region_copy_rec`,
+`__region_relocate_props`, or the `$__dyn_props` migration at all (it's
+outside the `[ast, dirty, snapshots]` root bundle, per `4adc7048`'s own
+finding). Not fixed this session: a general fix requires threading a
+region-delta concept through `genUpsert`/`genUpsertGrow`, both hot,
+non-region-aware functions called from ordinary (non-staging) code
+constantly — invasive, not a session-scoped patch, and moot until region-
+arena is re-enabled (`scripts/self.js`'s `REGION_HOOKS_ACTIVE = false`
+today). Flagged for whoever eventually lands the architectural root-bundle
+fix: harden this (delta-plumbing, or a debug-only "never grows here" trap)
+before trusting a SET/MAP/HASH rebuild under load factors any tighter than
+what `9d0e3384` stress-tested.
+
+**Collision window found: NONE.** `__region_exit`'s size arithmetic is
+provably correct — `size` is measured after every staging allocator in
+scope (including a hypothetical mid-rebuild grow, which would still land
+inside `[T, $__heap)` before the read) and nothing allocates between that
+read and the closing `memory.copy`/heap reset. The task's own synthesis
+("too low `$__heap`" / "staging allocated past measured size") is a real
+allocation-collision taxonomy, but this audit closes off BOTH arithmetic
+branches for the two in-root-bundle SET/MAP-shaped arms: the arithmetic is
+sound, and no staging write escapes the counted `size`. This independently
+CONFIRMS (via an orthogonal proof path, not by re-reading the same trace)
+`4adc7048`'s own conclusion: the `known`-Map corruption is caused by `known`
+never being counted AT ALL — not measured wrong, not overflowing measured
+size, simply invisible to the root-bundle enumeration that `size`/`root`
+are computed from. "$__heap set wrong at exit" is true only in the sense
+that it's correct for the root bundle it was given and that bundle is
+incomplete — not an arithmetic defect in `__region_exit` itself.
+
+**Fix-or-bank: BANKED.** No source change lands — there is nothing to fix
+at the arithmetic layer; the size invariant already matches the task's own
+recommended pattern ("measure size AFTER all staging allocations complete").
+The actual defect remains exactly what `4adc7048` named: extend the
+watr-integration root bundle (or its per-pass scratch-drain allowlist) to
+cover every pass's own live locals across a round boundary, or rescope where
+`regionMark`/`regionExit` get inserted — both session-plus scope, unchanged
+by this audit. This audit's contribution is negative-but-decisive: it rules
+the arithmetic axis OUT, so no future session needs to re-open it.
+
+**By-name verdict: N/A** — no shared-tree source change; `module/core.js`
+and `module/collection.js` read-only this session.
+
+**Gates: NOT RUN** — no fix to gate. kernel-oracle/kernel-parity/fuzz/full
+battery/dormant byte-identity/build×2/memory-watermark-curve/jz×jz all
+remain contingent on the wall closing, per the task's own acceptance
+framing, and it does not close this session.
+
+**Memory curve / jz×jz: NOT REACHED.**
+
+**SHAs:** main HEAD at session start and end: `4adc7048` (unchanged apart
+from this ledger entry). Files audited, unmodified: `module/core.js`
+(`__region_mark`/`__region_exit`/`__region_relocate_props`/
+`__region_copy_rec`, lines ~766-1151), `module/collection.js` (`genUpsert`
+lines 365-471, `genUpsertGrow` lines 611-733, `__alloc_hdr`/`__alloc_hdr_n`
+core.js:1464-1486). `9d0e3384` confirmed ancestor of both `main` and
+`0d089b49` (region-final-2026-08-11); its own commit message's stress-test
+dimensions ("grow-interaction × multi-structure-per-round", 1500+ trials, 0
+desyncs) is the empirical backing this audit's math leans on rather than
+re-deriving from scratch. No worktree created — pure static/paper audit, no
+build, no repro re-run.
+
+**Recommendation for next session:** unchanged from `4adc7048` — the only
+remaining lever is the architectural root-bundle extension (or
+`regionMark`/`regionExit` re-scoping); this session additionally hands that
+future work a documented pre-condition — before trusting any SET/MAP/HASH
+rebuild under load factors tighter than `9d0e3384`'s stress corpus, hem in
+or assert against the `genUpsert`/`genUpsertGrow` delta-unaware
+grow-forwarding write named above, since region-arena re-enabling is
+exactly the condition that makes it reachable.
