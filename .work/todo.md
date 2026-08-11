@@ -10018,3 +10018,23 @@ it compiles `scripts/self.js`, whose own source now includes the new file).
 
 **NEXT**: slice 3 (lift emission — the first slice that can change shipped
 bytes) waits for coordinator review of the census above.
+
+## AUDIT-#19 RESPONSE (2026-08-11)
+Confirmed-fixed by audit: static-env structural retirement · carrier flip ·
+closure pre-emission planning · heap alignment. NEW P0 (adopted, correct):
+module-global plan WeakMaps (astClosurePlan, astLoopPlan, loopPlanLink) are
+unsafe under self-hosting — WeakMap lowers to strong Map (no GC), plans
+survive across compile() sessions, arena-reset offset reuse can pointer-
+collide a fresh AST node with a stale key ⇒ stale-plan HIT where fail-open
+assumed miss. Fix: session-owned storage (the body-fact store precedent) —
+QUEUED first, lands right after the watr-5.7.13 integration agent frees the
+tree. ADOPTED next-order (audit's 1-4): session-owned plan maps · stable
+ClosureId + per-capture {mode: value|cell|constant} plan record (the
+storage-enum axis conflation is fair — boxed-cell describes capture slots,
+not env storage) · legacy capture re-derivation deletion once coverage is
+total (incl. expression-bodied/destructured shapes via normalization, not
+exclusion) · one shared self-host build-defines helper across build-dist +
+selfhost-build (JZ_CARRIER_BOX=0 must be honored by EVERY kernel builder;
+plus the "OFF by default" comment sweep). Items 5-7 = the standing queue
+(RepresentationPlan provenance · whole-graph discovery · fact/session/
+variant/loop ownership).
