@@ -10889,3 +10889,173 @@ verified inference improvement the atomicity fix itself unlocked.
 (src/compile/variant.js new; src/compile/narrow.js, src/compile/plan/
 inline.js, src/passes.js, test/types.js) + this entry +
 `.work/research.md`'s new §FunctionVariantPlan section.
+
+## Status (2026-08-11, SPEED-TAIL CAMPAIGN — colorlog/base64 levers RE-
+## DISSECTED, base64 residual gets a NEW, sharper root cause; delayline
+## RECONFIRMED floor; sdf/trace/shapes floors stand; glyfparse project-sized
+## lever unchanged — ZERO src/ changes, banked not rushed, full account below)
+
+Ordered per the brief: (1) colorlog plan-time prover, (2) delayline/base64
+residuals, (3) trace/sdf/shapes/glyfparse hard-tail triage. HEAD moved under
+this session (concurrent agents landing on main throughout — observed
+`4adc7048` → `46382ffa` mid-session via unrelated ledger/variant-materializer
+commits); re-verified working tree clean and re-read current HEAD before
+each conclusion below. Collision map observed: narrow.js/compile is another
+agent's declared surface (VariantPlan) and, per this session's OWN tracing
+(below), turned out to be the actual landing site for BOTH named levers —
+so **zero src/ edits were made this session**, on top of a genuinely deeper
+diagnosis than the levers this ledger banked before.
+
+**Target 1 — colorlog, the "plan-time prover."** Re-verified Admission 3
+(§ "colorlog + base64 NAMED LEVERS", 2026-08-06) is still accurate, with one
+correction: `forCounterRange`'s move to `static.js` (213c04b0, landed for
+base64) did NOT resolve the blocker the way it looks like it should have.
+`forCounterRange(init,cond,step,name)` is now a pure AST→range function
+(no `ctx.func.refinements` closure), so it's technically callable from
+narrow.js's plan-time `exprMayBeUndefinedIn` (kind.js:712) — but the actual
+missing piece was never `forCounterRange` itself, it's the INTERPROCEDURAL
+COMPOSITION around it: proving `src[j]`/`src[j+1]`/`src[j+2]` in-bounds for
+`decode(src[j])`'s argument needs (a) `n`'s value (logc4ToXyz's own param,
+provable via the existing intConst call-site fixpoint), (b) `src`'s
+allocation length (provable via the existing arrayLen interprocedural
+fixpoint, chained through `mkInput`'s return), AND (c) `j`'s hull as a
+function of the loop's own counter `i` (`j = 3*i`, the SAME co-induction
+shape `stampCoInductionRanges` proves for base64's `op` — but that's an
+ANALYZE-TIME pass keyed on `repOf`/`ctx.func`, not callable from narrow.js's
+flat whole-program call-site walk). (a) and (b) are already-computed FACTS
+sitting in `paramReps` by the time the `mayBeUndefined` join runs
+(confirmed by reading narrow.js's own pass order: the `arrayLen`
+fixed-point at ~line 2046-2060 runs before the mayBeUndefined loop at
+~line 2441) — so a real, GENERAL fix is buildable: a small, new,
+purely-structural walker (NOT a reuse of `forCounterRange`/`intExprRange`,
+which are `repOf`-scoped) that, given a call argument shaped
+`['[]', arrParam, idxExpr]` and the caller's own body + already-computed
+`paramReps`, finds the enclosing canonical for-loop, resolves `idxExpr` as
+a compile-time-constant multiple of the loop counter (extending
+`nameShift`'s +/- shape to also cover `K*name`), and combines with the
+caller's own `intConst`/`arrayLen` param facts (read directly, no
+`repOf`/`ctx.func` needed) to prove the read in-bounds. This is smaller and
+more general than the three prior sessions' "genuine new mechanism, banked"
+verdict assumed (they were blocked on believing `forCounterRange` itself
+needed reinventing; it doesn't — the gap is the interprocedural glue around
+it). **Not landed**: its one legal home is the `mayBeUndefined` call-site
+join in narrow.js (`src/compile/narrow.js` ~line 2441,
+`exprMayBeUndefinedIn(cs.argList[k], cs.callerFunc?.body)` in
+`inferTypedValueRanges`) — narrow.js is this session's declared collision
+file (VariantPlan agent's surface per the brief's own collision map), so no
+edit was attempted there. Design is fully specified above for whichever
+session next has narrow.js clear to land it.
+
+**Target 2 — base64 1.063× residual: NEW root cause found, sharper than
+the "op as f64" lever (213c04b0) already landed for this case — a general
+gap, not previously banked anywhere in this file.** Read `decode`'s hot
+loop directly post-213c04b0: `dec[src[i]]` (the decode-table lookup, called
+~393K times/kernel run) and `buildDec`'s `dec[enc[i]] = i` (setup, not hot)
+both emit `warning[deopt-dyn-read]`/`warning[deopt-dyn-write]` — `dec`, a
+plain `new Uint8Array(256)` with a SINGLE call site into each consumer,
+falls back to `$__dyn_get`/`$__dyn_set` (the generic hash-dispatch path,
+~1.5-2× slower per the warning's own text) instead of the typed-array fast
+path. Minimally isolated with throwaway repros (not committed, scratchpad
+only): a typed-array parameter indexed by a NON-LITERAL key — bare name OR
+nested expression, read OR write — loses its typed classification inside
+the callee, EVEN with a single call site passing an unambiguous
+`new Uint8Array(...)`. A literal-key access on the exact same param in the
+exact same function shape works fine. Traced the mechanism precisely (NOT
+just asserted): `module/typedarray.js`'s `resolveElem` (the ONE place
+`.typed:[]`/`.typed:[]=` resolve an array's element ctor) reads
+`ctx.types.typedElem.get(name)`; that map is seeded in
+`src/compile/index.js`'s `analyzeFuncForEmit` (~line 495-524) directly from
+`paramReps.get(funcName).get(k).typedCtor`, gated ONLY on `typedCtor` being
+non-null and the param never being REASSIGNED (element writes don't count
+— confirmed by reading `analyze-scans.js`'s `findMutations`, which only
+flags bare-name LHS assigns/`++`/`--`, never `arr[k]=v`) — so this seed
+path is NOT the blocker and is index-shape-agnostic, contradicting the
+initial hypothesis. Instrumented it directly (temp `console.error`,
+reverted, zero diff left behind) and got NO output for any of the minimal
+repros — because `decode`/`setAt`/`buildDec` (tiny, single-call-site) get
+FULLY INLINED before `analyzeFuncForEmit` ever sees them as standalone
+functions (confirmed: the compiled WAT for both the repros and the real
+bench show only ONE surviving function, `$runKernel`/`$main`, with
+`inl<N>_<name>`-renamed locals — the `emit.js` source-level inliner, not
+the WAT-level pure-fn inliner in `src/optimize/vectorize.js`). So the real
+gap is in how the EMIT-TIME inliner (`emit.js`, the `inl<N>_` renaming
+machinery) carries — or fails to carry — an inlined parameter's
+`typedCtor`/`ctx.types.typedElem` seed into the inlined-and-renamed local's
+own rep, specifically for the "indexed by a non-literal key" shape.
+`typedBase`/`typedDataAddr` (module/typedarray.js, already read) prove the
+LOAD/STORE machinery is representation-agnostic (handles both a raw-i32
+ABI-narrowed pointer and a boxed-f64 NaN-boxed pointer identically via
+`i64.and` + `OFFSET_MASK`) — so this is purely a missing REP-CARRY on the
+inliner side, not a codegen-shape limitation. **Not landed**: the fix's
+legal home is `emit.js`'s inline-substitution path — a large, central,
+heavily-trafficked file this session judged too risky to blind-edit given
+(a) the collision map's "narrow.js/compile" caution (emit.js lives in the
+same directory and is adjacent territory to the declared VariantPlan
+surface) and (b) HEAD moving under this session from concurrent commits,
+raising real collision risk for a file this trafficked. **This is a NEW
+finding** — no prior ledger entry (Admission 1/Target 4/213c04b0) named the
+inliner's rep-carry as base64's post-fix residual; all three assumed the
+remaining gap was more induction-variable-range work. Likely blast radius
+beyond base64: ANY hot loop with a lookup/histogram/permutation-table
+pattern (`table[dynamicIdx]` on a small inlined typed-array param) —
+plausibly relevant to sort/radixsort/dict/qoi's own "scalar-codegen-race"
+residuals too, worth checking first when this lands.
+
+**Target 3 — delayline 1.113× (rust-wasm): RECONFIRMED FLOOR, not a lever.**
+Compiled `bench/delayline/delayline.js` fresh at O3 and read the WAT
+directly (`$runKernel`, fully inlined). Confirmed 719a3a18's fix is intact
+and the codegen is already optimal for this shape: branchless triangle-LFO
+via `select`, `dq`/`dInt`/`dFrac` fully strength-reduced to i32 shift +
+exactly 2 f64 conversions (no f64 round-trip survives), `cse0` reused
+across the `ring[i0]` read and the final `y` write, zero redundant
+address recomputation. This matches the bench source's OWN header comment
+("a genuine loop-carried feedback (unsoftenable — it IS the filter)") —
+the `head`/`ring` read-after-write chain is a true serial dependency in
+both jz's and rustc's output; the residual gap is rustc/LLVM's
+instruction-scheduling quality on an already-minimal op count, the SAME
+"scalar-codegen-race" class already floored for sort/dict/qoi (WASM_TODO's
+own language). No jz-side lever found or expected here — CONFIRMED FLOOR,
+same class, no WAT-shape delta to chase.
+
+**Target 4 — trace/sdf/shapes: verdicts re-read, UNCHANGED, both explicitly
+already say "no mechanical lever remains" in their own WASM_TODO text — per
+the brief's own instruction ("only attack ones with a named jz-side gap"),
+these were NOT re-attacked this session.** sdf ("the residual is the hard
+research tail; no mechanical lever remains"), trace ("Next honest lever is
+machine-code profiling, not WAT shape"), shapes ("next lever is
+machine-code profiling"). All three CONFIRMED FLOORS by their own standing
+text; no new evidence gathered or needed.
+
+**Target 5 — glyfparse: lever IS named (S2 while-fixpoint runtime-bound
+cursor-hull versioning, WASM_TODO's own text) but is a standalone interval-
+analysis project (a new S2 vm-counter capability), not a session-sized
+lever — correctly out of scope for a same-session attempt. Not attempted,
+not re-diagnosed; status unchanged from WASM_TODO's own entry.**
+
+**Gate table**: N/A — zero src/ changes this session (every path traced to
+a file outside this session's safe surface, per the collision map, or to an
+already-confirmed floor). No commits. All findings above are new (base64)
+or sharper (colorlog) than what this ledger held before; delayline/trace/
+sdf/shapes are reconfirmations, not new claims.
+
+**WASM_TODO annotations**: none added — the WASM_TODO registry in
+`test/bench.js` doesn't carry `colorlog`/`delayline`/`base64` entries today
+(they're compared against V8-family/wasm rivals respectively but sit below
+the registry's own inclusion bar at last edit); `sdf`/`trace`/`shapes`'s
+existing entries already read as confirmed floors and needed no edit;
+`glyfparse`'s entry already names its own lever accurately. Per the task's
+own rule ("a lever that structurally closes a case's root cause gets the
+entry annotated... do NOT delete") — nothing closed this session, so
+nothing to annotate or delete.
+
+**Recommendation for next session**: (1) base64 — land the emit.js
+inliner rep-carry fix (design above), OR failing that, wire the SAME
+minimal repro (this entry's `f.js`/`g.js`/`j.js` shapes, not committed,
+reproduce freely) into a standalone non-inlined test to isolate the
+`emit.js` mechanism without base64's own inlining noise; (2) colorlog —
+build the small structural co-induction+bounds walker (design above) at
+narrow.js's `mayBeUndefined` join once narrow.js is clear of concurrent
+work; (3) do NOT re-chase delayline/sdf/trace/shapes as WAT-shape problems
+— all four are confirmed, evidence-backed floors as of this session.
+
+**Commits**: none. This entry only.
