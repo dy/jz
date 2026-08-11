@@ -3504,8 +3504,6 @@ export function speculateTypedParams(programFacts, ast) {
     }
     if (!specs.length) continue
 
-    let cloneName = `${func.name}$spec`
-    while (ctx.func.names.has(cloneName)) cloneName += '$'
     const specAt = new Map(specs.map(s => [s.k, s]))
     const cloneSig = {
       params: func.sig.params.map((p, idx) => {
@@ -3514,23 +3512,20 @@ export function speculateTypedParams(programFacts, ast) {
       }),
       results: [...func.sig.results],
     }
-    const clone = { ...func, name: cloneName, sig: cloneSig, exported: false }
-    ctx.func.list.push(clone)
-    ctx.func.map.set(cloneName, clone)
-    ctx.func.names.add(cloneName)
+    // No eligibleSites: unlike the other four paths, dispatch here is a
+    // runtime-guarded call inserted at EMIT time (emitSpeculativeCall, off
+    // ctx.types.specFns) — a genuinely unique step this analysis keeps as
+    // its own policy rather than a static call-edge retarget.
+    const clone = materializeVariant({
+      origin: func, name: `${func.name}$spec`, sig: cloneSig, paramReps,
+      factOverrides: specs.map(s => ({
+        k: s.k,
+        patch: r => { r.typedCtor = s.ctor; r.val = VAL.TYPED; joinKinds(r, 'possibleKinds', [VAL.TYPED]) },
+      })),
+      eligibleSites: [], fallback: func,
+    })
 
-    const cloneReps = new Map()
-    if (reps) for (const [k, r] of reps) cloneReps.set(k, cloneRep(r))
-    for (const s of specs) {
-      const r = cloneReps.get(s.k) || {}
-      r.typedCtor = s.ctor
-      r.val = VAL.TYPED
-      joinKinds(r, 'possibleKinds', [VAL.TYPED])
-      cloneReps.set(s.k, r)
-    }
-    paramReps.set(cloneName, cloneReps)
-
-    ;(ctx.types.specFns ||= new Map()).set(func.name, { clone: cloneName, guards: specs.map(s => ({ k: s.k, aux: s.aux })) })
+    ;(ctx.types.specFns ||= new Map()).set(func.name, { clone: clone.name, guards: specs.map(s => ({ k: s.k, aux: s.aux })) })
   }
 
   if (DBG_INVARIANTS) assertValKindConsistent(paramReps)
