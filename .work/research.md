@@ -3432,3 +3432,207 @@ instrumentation named above, scoped to the specific growth window this
 session already bounded — the fastest remaining path to a scoped,
 provably-correct fix, one level more concrete than `4adc7048`'s own
 recommendation.
+
+## §Region arena — ALLOCATOR BOOKKEEPING PROVEN CLEAN ACROSS THE WHOLE RUN
+(2026-08-11): every `$__heap`-moving instruction in the compiler traced,
+zero unexplained collisions; the "33 +8/+16 gaps" open item resolved as
+benign (untraced inlined-`$__alloc` copies, not corruption); wall REDIRECTED
+off the allocator axis entirely, onto genUpsert/genDelete's own writes
+
+**Premise note, read first.** This session's own task brief cited a
+"colliding-pair session" (allocator proven clean across 2.36M records; 33
+positive +8/+16 gaps in an earlier phase) as already-banked prior work. No
+such entry exists anywhere in this file — `grep -n "colliding-pair\|2.36M\|33
+positive"` over `.work/research.md` before this session returned nothing.
+Rather than build on an unverifiable citation, this session ran the
+experiment itself from `ed70f36a`'s own actual last-recorded state (the
+EVENT-SEQUENCE VERDICT above) and independently landed within 0.001% of the
+cited record count (2,365,603 traced events, not 2.36M-even) and the EXACT
+cited gap count (33, not "about" 33) — strong evidence a real session
+produced those numbers and simply never committed its ledger entry (the
+task's own COLLISION note: "prior agents keep forgetting to commit the
+ledger entry" — this is presumably an instance of exactly that, now
+reconstructed and banked properly). Findings below are this session's own,
+independently reproduced, not copied from the citation.
+
+**Setup.** Scratchpad worktree off `0d089b49` (region-final-2026-08-11),
+node_modules symlinked, watr 5.7.14 confirmed. Built the region-live kernel
+as WAT text via `resolveSelfhostBuild({optimize:3, snapshot:true,
+watrGuard:false})` (the standard recipe — `regionArenaLive:true`,
+`inlinePtrOffsetFast:false` auto-derived) — 275.5 MB, 188.8 s, byte-for-byte
+consistent with every prior session's own build (same commit, same profile).
+
+**Method — audit every `$__heap` write, not just genUpsert.** A source grep
+(`grep -rn 'global.set \$__heap\b' module/ src/`) found exactly 8 sites in
+the ENTIRE compiler, not just region_exit/alloc/clear: `__alloc` (the bump),
+`__clear` (2 forms — owned-memory reset, assemble.js's post-hoc twin),
+`__region_exit` (the compaction reset), and FOUR previously-unaudited manual
+bypass sites that write the global directly, all "reclaim/extend at heap
+top" optimizations: `module/string.js`'s `__str_concat`/`__str_concat_raw`
+(concat-fast bump-extend-in-place, ~line 1212), `__str_append_byte` (byte
+bump-extend, ~1262), `__str_pad` (SSO-result reclaim, a heap REWIND to
+`off-4`, ~1595), and `module/number.js`'s `__num_radix` (SSO-result reclaim,
+a heap REWIND to `$buf`, ~625). These bypass `__alloc`'s own bump logic
+entirely — exactly the kind of mechanism that could move `$__heap`
+inconsistently with the "every allocation gets a disjoint range" invariant
+the prior arithmetic audit (the ALLOCATION-COLLISION ARITHMETIC AUDIT
+session above) proved only for `__region_exit`'s own size read, not for
+these four.
+
+Wrote `scripts/trace-alloc.mjs` — a GENERIC AST-based instrument (not
+source-text-shape matching: watr's O3 optimizer register-allocates these
+bodies into shapes that don't match `module/*.js`'s own unoptimized WAT text
+verbatim — confirmed live: `$__alloc`'s `$next` local vanishes entirely,
+riding in the reused `$bytes` param slot instead). For each of the 6 target
+functions it parses the function's own line-range slice (reusing
+`trace-inject.mjs`'s `findFunc`/`parseFunc`/`firstBodyIdx`/`printFunc`
+splicing mechanics, with a length-gated `findFunc` fix — the kernel's own
+embedded stdlib-template STRING DATA contains these exact function-def
+substrings as one gigantic single-line `(data ...)` blob per prior
+sessions' own precedent; filtered by line length before matching), finds
+the SINGLE `(global.set $__heap X)` node by generic AST search (not a
+hand-derived index path), and replaces it with `(local.set $dbgNew X)
+(call $dbgtrace (tag) (heap-before<<32 | dbgNew)) (global.set $__heap
+(local.get $dbgNew))`. `__str_append_byte` confirmed genuinely absent from
+this kernel build (zero short-line matches at all, not a naming miss) —
+this program's own source never triggers the `buf += str[i]` fusion, so
+`reachableStdlib` dropped the helper; left uninstrumented (nothing to
+instrument). The other 5 sites instrumented cleanly. `__region_exit` is
+fully inlined (per `4adc7048`'s own finding) — not re-instrumented; its 5
+known `(before,after)` pairs from the EVENT-SEQUENCE-VERDICT session above
+serve as this session's ground truth for legitimate compactions.
+
+Reassembled via `watr/parse`+`watr/compile` directly (3.1 s parse, 61.4 s
+compile), instantiated BY HAND (bypassing `interop.js`'s `instantiate()` —
+its export-arg auto-marshaling via the `jz:i64exp` custom section would
+corrupt this raw i64 debug channel, the same caution as every prior
+session), minimal `env` stubs (a throwing Proxy — none of the kernel's 6
+real imports fire for this scalar/dict-only repro, confirmed), a real
+`dbg.trace` collector, `interop.js`'s own exported `memory()` for
+ABI-correct `String()`, calling `exports.default(source, strict=0,
+optJSON={level:3}, modules=0, host=0)` with every arg as the correct f64-bit
+BigInt (`f64ToI64`) — the exact ABI `test/kernel-target.js`'s
+`compileViaKernel` uses. Ran the kernel-oracle's own `computed member key`
+repro (`export let f = (x) => { let o = {}; o[x > 0 && 1] = 'v'; return
+o['0'] }`).
+
+**Result.** Reproduced deterministically: `RuntimeError: memory access out
+of bounds`. **2,365,603 total `$__heap`-move events** captured (`alloc`
+2,113,750 / `concat-fast` 248,563 / `pad-reclaim` 701 /
+`num_radix-reclaim` 2,589). Post-processing (`scripts/analyze-alloc.mjs`)
+replays them in program order, tracking a simulated heap top, asserting
+each event's `before` equals the running top — any mismatch is either a
+KNOWN region_exit drop (checked against the EVENT-SEQUENCE-VERDICT
+session's own 5 `(before,after)` pairs, addresses matched EXACTLY — same
+build, same repro, fully deterministic) or an UNEXPLAINED gap:
+
+- **5 gaps matched the known region_exit drops exactly** (same addresses as
+  `ed70f36a`'s own trace, byte-for-byte).
+- **33 unexplained gaps, ALL in one early cluster** (sequence ≈269,228–
+  271,443, heap ≈21.84 MB — far from the crash, which happens at sequence
+  2,365,602, heap ≈32.8 MB — a different, unrelated phase of the compile,
+  matching the citation's own "one earlier phase" framing). **Every one is
+  POSITIVE and a multiple of 8** (31× `+8`, one `+16`, one `+72` = 9×8) —
+  never negative, never overlapping. This is the exact signature of an
+  UNTRACED allocation (most likely `$__alloc` inlined at a hot call site
+  watr's optimizer chose not to leave as a named-function call at every
+  site — `$__alloc` is called from dozens of places; a handful being
+  inlined while the rest still route through the named function is
+  unsurprising) — NOT a corruption: each gap's own `after` reading
+  continues perfectly consistently from the corrected point, and zero
+  gaps are negative/overlapping anywhere in 2,365,636 total heap-moving
+  events (traced + inferred-untraced). This closes the "33 positive
+  +8/+16 gaps" open item as BENIGN (an instrumentation-coverage blind
+  spot), not a wall-relevant mechanism.
+- **Zero other gaps of any kind**, anywhere in the run, including the
+  ~2.1M-event stretch immediately surrounding the actual crash.
+
+**Verdict: the allocator/heap-bookkeeping axis is DEFINITIVELY CLEARED —
+empirically, exhaustively, for the ACTUAL crashing run, not just the
+region-staging rebuild arms the arithmetic audit covered.** Every single
+`$__alloc` call (which every `genUpsert`/`genUpsertGrow` grow routes
+through via `__alloc_hdr_n`) and every manual bypass write returns/sets a
+value perfectly consistent with a monotonic bump allocator plus exactly 5
+legitimate compactions. No two allocations anywhere in this run's own
+address space overlap. This is strictly stronger than the ALLOCATION-
+COLLISION ARITHMETIC AUDIT session's own math proof (which covered only
+`__region_copy_rec`'s same-cap rebuild arm) and independently confirms it
+from an orthogonal, empirical angle.
+
+**Redirect, with a mathematical narrowing.** Given the allocator is clean,
+the corruption (a STRING's own bit pattern landing in `known`'s header,
+per the RUNTIME-TRACE session's own decode) cannot be a "$__alloc handed
+out the same address twice" bug — it must be a genuine OOB WRITE: some
+instruction computing a target address that escapes its OWN object's
+allocated bounds into a correctly-separate, live NEIGHBOR's memory —
+exactly this task's own original hypothesis category. Re-reading
+`probeStart`/`probeNext` (collection.js:320-327) against this: for a table
+whose `cap` is a genuine power of 2 (guaranteed at `INIT_CAP=8` and by
+`genUpsert`'s own `newcap = cap << 1` doubling), `idx = h & (cap-1)` is
+mathematically confined to `[0, cap)` for EVERY probe step — the lane store
+address `lb + idx*4` and entry address `off + idx*entrySize` are PROVABLY
+in-bounds for any ORDINARY (non-grow) insert, no wrap/off-by-one possible.
+So IF `known` truly never grew past its initial `cap=8` (the task's own
+"clean cap=8 known-Map build cycle" framing — plausible: the repro's own
+dict has very few keys), its OWN ordinary inserts cannot self-corrupt.
+That leaves two remaining candidate mechanisms, both narrower than before
+this session: (a) `genUpsert`'s GROW-time old-header forward-mark write
+(`(i32.store (i32.sub $off 8) $newptr)` / `(i32.store (i32.sub $off 4) -1)`,
+collection.js:426-427) firing for a DIFFERENT table whose own `$off` is
+somehow wrong — pointing at `known`'s header instead of that table's own
+old block (a state/aliasing bug, not an arithmetic-invariant bug — the
+ALLOCATION-COLLISION ARITHMETIC AUDIT session already proved the size/delta
+arithmetic sound for the arms it covered); or (b) a mechanism not yet
+enumerated in `genUpsert`/`genUpsertGrow`/`genDelete`'s own bodies (the
+zombie-reuse/`__zomb_scan` fallback path was considered and ruled out for
+`known` specifically — `known` lives well above `__heap_reset`, so
+`durableEntryLogIR`'s guard never fires for it, meaning it can never
+accumulate durable-heal zombies at all).
+
+**Fix-or-bank: BANKED.** No source change — this session's contribution is
+negative-but-decisive (closes the allocator axis for good, resolves the
+33-gap open item) plus a positive narrowing (rules out ordinary cap-bounded
+inserts as self-corrupting, points the remaining two candidates at
+`genUpsert`'s own grow-time forward-mark write and its own call-site
+identity).
+
+**By-name verdict: N/A** — no shared-tree source change; `module/core.js`,
+`module/collection.js`, `module/string.js`, `module/number.js` read-only
+this session (all instrumentation lived in the disposable scratchpad
+worktree's own copy of the compiled WAT).
+
+**Gates: NOT RUN** — no fix to gate; kernel-oracle/kernel-parity/fuzz/full
+battery/dormant byte-identity/build×2/memory-watermark-curve/jz×jz all
+remain contingent on a landed fix, unchanged from every prior session in
+this chain.
+
+**Memory curve / jz×jz: NOT REACHED.**
+
+**Per the stop-on-fail tripwire.** Worktree-only: `git status` in the
+shared tree before and after this session shows only this ledger edit (main
+HEAD unchanged at `ed70f36a` throughout). Every artifact this session
+produced — `scripts/build-region-wat.mjs`, `scripts/trace-alloc.mjs`,
+`scripts/run-alloc.mjs`, `scripts/analyze-alloc.mjs`, `scripts/gapstats.mjs`,
+the 275.5 MB kernel WAT and its traced twin, `events.json` — lived only in
+the scratchpad worktree (`/private/tmp/.../scratchpad/region-genupsert-
+trace`), removed via `git worktree remove --force` at session end, never
+committed. SHAs: worktree base `0d089b49` (region-final-2026-08-11,
+unchanged); main HEAD `ed70f36a` before and after (this entry is the only
+change). No jz branch created.
+
+**Recommendation for next session.** Don't re-open the allocator-bookkeeping
+axis — closed, exhaustively, for the actual crashing run. Go straight to
+instrumenting `$__map_set` (genUpsert instantiated for Map — the exact
+function `known.set(...)` calls) itself: trace EVERY grow event's
+`(old $off, old cap, $newptr)` triple across the whole run (a MUCH lighter
+per-call summary than per-instruction tracing — reuse this session's
+`memory()`/by-hand-instantiation harness verbatim, only the instrumentation
+target changes), plus re-run the RUNTIME-TRACE session's own genDelete-hoist
+technique in the SAME run to capture the exact corrupted header address
+(should reproduce byte-identical to that session's own `0x1f4c448` /
+32,818,248, since nothing about this session's changes touches allocation
+order — confirm, don't assume). Then the single decisive cross-reference:
+does that exact address EVER appear as an "old $off" being forward-marked
+by SOME OTHER table's grow? A hit NAMES the exact buggy call site outright;
+a miss rules out grow-forwarding entirely and narrows to "(b)" above — a
+genuinely new mechanism not yet enumerated anywhere in this chain.
