@@ -6,6 +6,89 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## `arr[arr.length] = x` KERNEL-CODEGEN CLASS — FOUND AND FIXED (a general
+## NATIVE miscompile, not a self-host-only divergence) — 2026-08-12
+Investigated the class bba45c0d's own "region arena" entry (`.work/
+research.md §Region arena`) flagged and left banked: `ctx.closure.envMeta`
+was grown via `envMeta[tableIdx] = {…}` instead of `.push()`, blamed on
+"the self-hosted kernel's own array-write codegen for arr[arr.length]=x
+apparently takes a different path than .push()'s" and fixed with a one-line
+swap — CLASS not investigated. Minimal-repro method (native vs DEFAULT-mode
+kernel, no region flag): a bare-local receiver (`a[a.length]=x`, `a` a
+plain `let`) never diverged at any growth boundary (0..1000, capacity
+crossings at 1/2/4/8/16/32/64) — that shape routes through
+`src/compile/emit-assign.js`'s Step 7 (`typeof arr==='string' &&
+valTypeOf(arr)===VAL.ARRAY`), which is correct. A **property-chain
+receiver** (`o.inner.arr[o.inner.arr.length]=x` — 2+ levels, or ANY
+receiver Step 7 can't statically type as ARRAY, including a bare local of
+*unproven* VT) diverged immediately, at n=1, EVERY TIME — and **natively**,
+not just under the kernel: `o.inner.arr.length` stayed 0 forever, the
+element write silently landing nowhere JS could see it.
+
+**Root cause** (`src/compile/emit-assign.js`, `emitElementAssign`'s Step 8,
+"Polymorphic + runtime key dispatch" — fires when the index's type isn't
+proven at compile time, e.g. an opaque `.length` read): hand-rolled a
+TYPED-only 2-fork for its numeric-key branch (`numStore` → `objHashOrRawStore`
+→ OBJECT/HASH → `__dyn_set`, else → raw `f64.store`) instead of reusing
+`emitPolymorphicElementStore`'s full ARRAY/TYPED/OBJECT-HASH/raw fork (used
+by Step 9, the sibling "receiver definitely not statically ARRAY" path).
+**ARRAY was never checked** — an ARRAY pointer reaching Step 8's numeric
+branch fell into the raw-store fallback, which `rawIndexedStore`'s own doc
+comment says assumes "the ARRAY/TYPED forks are taken first" — a
+precondition Step 8 violated. The raw store writes the VALUE at
+`ptrOffset+idx*8` but skips `__arr_grow` (capacity check/relocation) AND
+the length-header bump `__arr_set_idx_ptr` performs — so a fresh/small
+array's `.length` never advances and later bounds-checked reads see it as
+unchanged. The comment guarding the old 2-fork stated the (false) premise
+plainly: "dynamic-key dispatch only fires when receiver isn't statically
+ARRAY (Step 7 already caught that), so the ARRAY branch would be dead
+code" — conflating "not PROVEN ARRAY" with "not POSSIBLY ARRAY"; a
+property-chain expression is exactly the shape that's opaque to Step 7 yet
+routinely IS an ARRAY at runtime.
+
+**Fix**: Step 8's numeric branch now calls `emitPolymorphicElementStore`
+directly (same function Step 9 uses), with `persist` wired to
+`persistBinding(arr)` only when `arr` is a named binding (mirrors Step 9's
+own persist rule) — one dispatch, ARRAY no longer special-cased out by
+omission. Deleted the now-dead hand-rolled 2-fork and its now-unused
+`numStore` local.
+
+**Why this reads as "kernel-only" in the bba45c0d note**: it isn't — the
+minimal native repro (`o.inner.arr[o.inner.arr.length]=x`) diverges from
+plain JS on NATIVE `jz()` alone, no kernel involved. `dist/jz.wasm` only
+LOOKED kernel-specific because it's a compiled snapshot of the (buggy)
+source — rebuilding it from the fix makes the kernel leg agree again. The
+real historical shape (`ctx.closure.table.push(name)` beside
+`ctx.closure.envMeta[ctx.closure.envMeta.length]={…}`, both hung off a
+`ctx.closure` property chain, index derived from an unproven `.length`
+read) reproduces the same "sibling table grows, indexed-append table stays
+empty" signature standalone, confirming the match.
+
+**Regression pins**: `test/kernel-oracle.js` AGREE tier, two new rows
+(`array-growth-class: arr[arr.length]=x through a 2-level property chain`,
+`array-growth-class: sibling push()+indexed-append tables (envMeta
+shape)`) — 3-way native/kernel/JS-oracle differential at O0/O1/O2/O3, the
+established method for exactly this bug class.
+
+**Gate ladder** (worktree `main`, base `1d3856d2`, fix at `emit-assign.js`
+head `2cd19e6c`, `dist/jz.wasm` rebuilt from the fix):
+
+| check | result |
+|---|---|
+| repro pins (`test/kernel-oracle.js`, 2 new rows × 4 opt levels) | all pass — pre-fix: native AND kernel both wrong, agreeing with each other, disagreeing with the JS oracle; post-fix: all three agree |
+| `node test/kernel-parity.js` | 3/3 groups, 33/33 assertions, byte-identical WAT at O2/O3 |
+| `node test/kernel-oracle.js` | 13/13 groups, 541 assertions (incl. the 2 new rows) |
+| Native `node test/index.js` (default O2) | 3419/3427 pass, 6 skip — 2 fails, both the pre-existing documented flakes (`interval walk…`, `typed RMW…`), 0 new |
+| `JZ_TEST_TARGET=jz.wasm node test/index.js` (full test:wasm, rebuilt kernel) | 2716/2722 pass, **0 fail**, 6 skip |
+| `node test/fuzz.js --count=2000 --seedStart=1` | 30173 inputs compared, 0 divergence |
+| `node test/fuzz.js --count=2000 --seedStart=2001` | 30672 inputs compared, 0 divergence |
+| `node scripts/battery.mjs` | RED only on the SAME pre-existing `typed RMW` flake, on native/O0/O3/dbg/wasi identically (matches every prior session's baseline signature) — fixpoint PASS, fuzz clean, build succeeded, self 21/21, kernel 2716 pass/6 skip |
+| `node scripts/build-dist.mjs` ×2 (explicit, outside battery) | byte-identical: `dist/jz.wasm` sha256 `2112b919…` both times |
+
+**Files**: `src/compile/emit-assign.js` (Step 8's numeric-key branch now
+delegates to `emitPolymorphicElementStore`; dead `numStore` removed),
+`test/kernel-oracle.js` (2 new AGREE rows).
+
 ## GOAL STATE: MEMORY (region-arena Slice 1) — win MEASURED, jz×jz still needs Slices 2/3 — 2026-08-12
 Full account: `.work/research.md §Region arena`'s "MEMORY-CURVE-MEASURED"
 entry. Slice 1 (fixpoint-round region), fixed watr `895ca5b` (the LAST HOP

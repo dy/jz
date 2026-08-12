@@ -754,48 +754,26 @@ export function emitElementAssign(arr, idx, val) {
   // fully-opaque expression) gets the OBJECT-safe fork that routes to the propsPtr
   // sidecar instead of an out-of-bounds raw f64.store.
   const mayBeObject = typeof arr !== 'string' || repOf(arr)?.notString !== true
-  // OBJECT-safe numeric store when the receiver may be an object, else the lean raw store.
-  const numStore = (o, i, v) => mayBeObject ? objHashOrRawStore(o, i, v, arrVT) : rawIndexedStore(o, i, v, arrVT)
 
-  // 8. Polymorphic + runtime key dispatch — key kind unknown AND receiver shape
-  //    possibly TypedArray (or fully opaque). Numeric branch forks on __ptr_type.
-  //    Deliberately a 2-fork (TYPED vs else) rather than reusing
-  //    emitPolymorphicElementStore's 3-fork: dynamic-key dispatch only fires when
-  //    receiver isn't statically ARRAY (Step 7 already caught that), so the
-  //    ARRAY branch would be dead code that bloats every unknown-key write.
+  // 8. Polymorphic + runtime key dispatch — key kind unknown, receiver shape
+  //    unproven. "Not statically ARRAY" (Step 7 already caught the PROVEN
+  //    case: a named local whose VAL is known ARRAY) is NOT "never ARRAY at
+  //    runtime" — an opaque/property-chain receiver (`o.inner.arr[k] = v`,
+  //    no locally-typed ARRAY binding for Step 7 to catch) routinely IS an
+  //    ARRAY pointer at runtime. This used to hand-roll a TYPED-only 2-fork
+  //    (ARRAY never checked) that silently raw-stored ARRAY receivers here —
+  //    skipping __arr_grow and the length-header bump __arr_set_idx_ptr does,
+  //    so `arr[arr.length] = x` on any receiver Step 7 couldn't statically
+  //    prove ARRAY corrupted the array instead of growing it (write landed,
+  //    `.length` never moved — the array read back unchanged/empty forever).
+  //    Reuses emitPolymorphicElementStore's full ARRAY/TYPED/OBJECT-HASH/raw
+  //    fork instead, closing the gap at its root: one dispatch, no receiver
+  //    shape special-cased out of the ARRAY check again by omission.
   if (useRuntimeKeyDispatch) {
     inc('__dyn_set', '__is_str_key')
-    const hasTypedSet = !!ctx.core.stdlib['__typed_set_idx']
-    if (knownArrVT == null && hasTypedSet) {
-      const objTmp = temp('asu')
-      const idxTmp = tempI32('asi')
-      const valTmp = temp()
-      inc('__ptr_type', '__typed_set_idx')
-      if (mayBeObject) inc('__i32_to_str')
-      // When arr type is unknown (could be TypedArray) and __typed_set_idx is
-      // available, dispatch the numeric branch through __ptr_type so TypedArray
-      // writes go by element type. Without this, ternary-typed arrays (e.g.
-      // `num === 4 ? new Uint32Array(4) : new Uint8Array(16)`) would silently
-      // f64.store boxed bytes regardless of element width.
-      return dispatchByKeyKind(arr, keyExpr, valueExpr, keyNode => ['block', ['result', 'f64'],
-        ['local.set', `$${objTmp}`, asF64(emit(arr))],
-        ['local.set', `$${idxTmp}`, asI32(typed(keyNode, 'f64'))],
-        ['local.set', `$${valTmp}`, valueExpr],
-        ['if', ['result', 'f64'],
-          ptrTypeEq(['local.get', `$${objTmp}`], PTR.TYPED),
-          ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
-          ['else', numStore(objTmp, idxTmp, valTmp)]]])
-    }
-    const objTmpB = temp('asu')
-    const idxTmpB = tempI32('asi')
-    const valTmp = temp()
-    inc('__ptr_type')
-    if (mayBeObject) inc('__i32_to_str')
-    return dispatchByKeyKind(arr, keyExpr, valueExpr, keyNode => ['block', ['result', 'f64'],
-      ['local.set', `$${objTmpB}`, asF64(emit(arr))],
-      ['local.set', `$${idxTmpB}`, asI32(typed(keyNode, 'f64'))],
-      ['local.set', `$${valTmp}`, valueExpr],
-      numStore(objTmpB, idxTmpB, valTmp)])
+    const persist = typeof arr === 'string' ? persistBinding(arr) : null
+    return dispatchByKeyKind(arr, keyExpr, valueExpr, keyNode =>
+      emitPolymorphicElementStore(emit(arr), asI32(typed(keyNode, 'f64')), valueExpr, arrVT, persist, mayBeObject))
   }
 
   // 9. Opaque receiver (non-string expr) or string-named with unknown VT — pure

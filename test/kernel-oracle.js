@@ -292,6 +292,53 @@ export let f = (x) => g(x > 0 && 1)`,
   { name: 'computed member key read (inline, dynamic hash)',
     src: `export let f = (x) => { let o = {}; o['0'] = 'zero'; o['false'] = 'FALSE'; return o[x > 0 && 1] }`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  // arr[arr.length] = x growth on a receiver Step 7 of emit-assign.js's
+  // emitElementAssign can't STATICALLY prove ARRAY (a property-chain
+  // expression, not a named local of known VAL) — found chasing bba45c0d's
+  // "self-hosted kernel's own array-write codegen for arr[arr.length]=x
+  // takes a different path than .push()'s" note (region CLOSURE arm entry,
+  // .work/research.md). The instance there (ctx.closure.envMeta[tableIdx] =
+  // {…}) got a one-line .push() swap and the CLASS went uninvestigated;
+  // this is the class, isolated and fixed at the root. Root cause: the
+  // 'useRuntimeKeyDispatch' fork (Step 8, key-kind unknown at compile time —
+  // exactly what `o.inner.arr.length` used as an index is, since it's read
+  // off an unproven receiver) hand-rolled a TYPED-only 2-fork for its
+  // numeric branch instead of reusing emitPolymorphicElementStore's full
+  // ARRAY/TYPED/OBJECT-HASH/raw fork — an ARRAY pointer landed in the
+  // "everything else" raw f64.store, which skips __arr_grow AND the
+  // length-header bump __arr_set_idx_ptr performs entirely. A 1-level
+  // property chain (`o.arr[o.arr.length]=x`) never hit this (Step 7 already
+  // resolves a single named-object-field ARRAY statically); 2+ levels
+  // (`o.inner.arr[...]`, or ANY receiver Step 7 can't type) always did —
+  // the growth silently no-oped, `.length` stayed 0 forever. Was value-
+  // identical between native and kernel (both wrong the same way — this is
+  // a plain NATIVE miscompile, not a self-host-only divergence; the AGREE
+  // tier is still the right home since native/kernel/oracle all disagreed
+  // pre-fix and all three agree post-fix).
+  { name: 'array-growth-class: arr[arr.length]=x through a 2-level property chain',
+    src: `export let f = (n) => { let o = { inner: { arr: [] } }; for (let i = 0; i < n; i++) o.inner.arr[o.inner.arr.length] = i * 3; let s = 0; for (let j = 0; j < o.inner.arr.length; j++) s += o.inner.arr[j]; return o.inner.arr.length + '|' + s }`,
+    calls: [{ fn: 'f', args: [0] }, { fn: 'f', args: [1] }, { fn: 'f', args: [9] }, { fn: 'f', args: [64] }] },
+  // Closest analog to the real bba45c0d shape: a helper closure repeatedly
+  // indexed-appending into a 2-level property-chain table shared with a
+  // sibling `.push()`'d table at the same call site (ctx.closure.table.push
+  // next to ctx.closure.envMeta[tableIdx]=…) — the table.length-derived
+  // index is itself unproven-numeric (read off the same unproven chain),
+  // so it's the useRuntimeKeyDispatch fork on BOTH the receiver and the key.
+  { name: 'array-growth-class: sibling push()+indexed-append tables (envMeta shape)',
+    src: `export let f = (n) => {
+      let ctx = { closure: { table: [], envMeta: [] } }
+      let addToTable = (name, cap) => {
+        let idx = ctx.closure.table.length
+        ctx.closure.table.push(name)
+        ctx.closure.envMeta[ctx.closure.envMeta.length] = { cap: cap, idx: idx }
+        return idx
+      }
+      for (let i = 0; i < n; i++) addToTable('fn' + i, i + 1)
+      let s = 0
+      for (let j = 0; j < ctx.closure.envMeta.length; j++) s += ctx.closure.envMeta[j].cap + ctx.closure.envMeta[j].idx
+      return ctx.closure.table.length + '|' + ctx.closure.envMeta.length + '|' + s
+    }`,
+    calls: [{ fn: 'f', args: [0] }, { fn: 'f', args: [1] }, { fn: 'f', args: [5] }, { fn: 'f', args: [64] }] },
 ]
 
 for (const opt of [0, 2, 3]) {
