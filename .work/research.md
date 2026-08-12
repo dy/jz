@@ -5680,3 +5680,42 @@ region mechanisms' root inventories, not attempted this session.
 region-final-2026-08-11 — `git diff` against it is empty). watr `895ca5b`
 (`/Users/div/projects/watr`, unpublished, unchanged). No src-tree commit
 from this front-boundary sub-session — see Disposition above.
+
+### Watermark re-measurement (this session, honest/bounded — no checked-in
+### memory-curve script exists to reproduce the prior session's exact
+### harness, which lived on `main` and is not recovered here)
+
+Direct kernel-ABI probes (`inst.exports.default(source, strict, optJSON,
+modulesJSON)`) against this session's own `dist/jz.wasm` (CLOSURE arm
+landed, bba45c0d; front boundary NOT landed, banked):
+
+- **small-source**: trivial program compiles instantly at the smallest
+  budget tried (16 pages, ~1 MB).
+- **jzify-entry** (`resolveModuleGraph('jzify/index.js', {resolveNode:
+  true})`'s bundled graph): **compiles cleanly across the WHOLE tested
+  range**, 512 pages (~0.03 GB) through 65536 pages (~4.29 GB) — matches or
+  exceeds the previously-documented Slice-1 "FAIL→OK" win; this session
+  found no lower bound where it still fails, unlike the earlier curve's own
+  specific transition point (not independently reconciled — different
+  probe granularity, not a contradiction).
+- **jz×jz** (second-order: feeding this kernel `resolveModuleGraph
+  ('scripts/self.js', {resolveNode:true})`'s own bundled graph — i.e.,
+  asking the self-hosted kernel to compile its own full compiler source,
+  same shape as the original watermark curve's own extreme point):
+  **fails `unreachable` uniformly across every budget tried** (8192/32768/
+  65536 pages) — NOT the previously-documented OOM-at-2³² signature
+  (which needed to GROW to the 4 GiB address-space boundary before
+  failing; this fails immediately regardless of budget). Not diagnosed
+  further this session — could be a genuinely different/earlier blocker,
+  or an artifact of this session's simplified direct-ABI harness (no
+  established script exercises kernel-compiling-its-own-source; the
+  original curve's own harness is not recovered here). Front boundary —
+  the confirmed prerequisite for jz×jz progress per the design's own
+  scoping ("the ~1GB target needs Slices 1+2 paired") — did NOT land this
+  session, so jz×jz was not expected to newly succeed regardless of this
+  measurement's precision.
+
+**Conclusion**: the CLOSURE arm's own win (jzify-entry holding/improving,
+small-source unaffected) is confirmed; jz×jz remains blocked, consistent
+with the front-boundary wall still standing. No regression found anywhere
+this session measured.
