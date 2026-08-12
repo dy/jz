@@ -1029,7 +1029,7 @@ export default (ctx) => {
     // __region_relocate_props/TYPED, closed here the same way (memo set
     // before the in-place mutation, not after).
     ctx.core.stdlib['__region_relocate_cell'] = `(func $__region_relocate_cell (param $cellOff i32) (param $memo i64) (param $mark i32) (param $delta i32) (result i32)
-      (local $key f64) (local $hit i64) (local $newOff i32)
+      (local $key f64) (local $hit i64) (local $newOff i32) (local $logOff i32)
       (local.set $key (f64.convert_i32_s (local.get $cellOff)))
       (local.set $hit (call $__map_get (local.get $memo) (i64.reinterpret_f64 (local.get $key))))
       (if (i32.eqz (call $__is_nullish (local.get $hit)))
@@ -1039,10 +1039,35 @@ export default (ctx) => {
           (drop (call $__map_set (local.get $memo) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (local.get $key))))
           (f64.store (local.get $cellOff) (call $__region_copy_rec (f64.load (local.get $cellOff)) (local.get $memo) (local.get $mark) (local.get $delta)))
           (return (local.get $cellOff))))
+      ;; Ephemeral — $newOff is a PHYSICAL staging address (current heap top,
+      ;; ABOVE mark); the ONLY closing fixup pass is __region_exit's single
+      ;; bulk memory.copy(mark, T, size), which moves bytes verbatim and
+      ;; never revisits pointer VALUES already written into the staged block.
+      ;; Every other arm (see __region_relocate_props's own $out just above,
+      ;; and __mkptr call sites throughout __region_copy_rec) therefore
+      ;; pre-adjusts by -delta BEFORE writing a relocated address anywhere a
+      ;; slot might read it back — this cell arm was the one place that
+      ;; memoized/returned the raw physical $newOff instead, so any caller
+      ;; that stores the result into an env slot (regionArmClosure,
+      ;; layout-kinds.js — both its durable and ephemeral branches) persisted
+      ;; a not-yet-final address, valid to dereference only AFTER this
+      ;; round's closing copy — a real, confirmed-by-comparison-to-every-
+      ;; sibling-arm's-own-convention bug, fixed here (.work/research.md
+      ;; §Region arena, __region_relocate_cell delta-adjustment entry).
+      ;; NOT the sole cause of the front-boundary's own garbage-cellOff wall:
+      ;; a debug-global trace (same entry) caught the SAME symptom (a
+      ;; ~1.2GB cellOff against 512MB memory) on a closure whose env block
+      ;; was being relocated for the FIRST time this round (never touched
+      ;; this fix's own write path yet) — a second, still-open mechanism,
+      ;; diagnosed but not fixed. $logOff (= $newOff - $delta) is the FINAL
+      ;; address, matching every other kind's own convention exactly;
+      ;; $newOff itself stays the write target since the payload store below
+      ;; runs THIS round, before the bulk copy lands.
       (local.set $newOff (call $__alloc (i32.const 8)))
-      (drop (call $__map_set (local.get $memo) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $newOff)))))
+      (local.set $logOff (i32.sub (local.get $newOff) (local.get $delta)))
+      (drop (call $__map_set (local.get $memo) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $logOff)))))
       (f64.store (local.get $newOff) (call $__region_copy_rec (f64.load (local.get $cellOff)) (local.get $memo) (local.get $mark) (local.get $delta)))
-      (local.get $newOff))`
+      (local.get $logOff))`
 
     // Function form (not a plain template string): the ARRAY/OBJECT dyn-props
     // migration inside regionCopyRecBody (layout-kinds.js) is gated on

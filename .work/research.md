@@ -6141,3 +6141,228 @@ test the type-confusion hypothesis: dump the RAW bytes at a captured
 `cellOff` immediately BEFORE it's dereferenced (this session did this for
 Bug 1's string but not yet for Bug 2's cell) — a NaN-boxed ordinary number
 would show a plausible IEEE754 pattern, not zeros-with-one-stray-word.
+
+## §Region arena — SECOND WALL, ONE REAL SUB-BUG FIXED (delta-adjustment
+missing in `__region_relocate_cell`'s ephemeral branch), the DOMINANT
+garbage-cellOff mechanism REMAINS OPEN — diagnosed one level deeper, not
+fixed — WALL, banked (2026-08-12)
+
+**Task**: close Bug 2 (`__region_relocate_cell` reading a garbage `$cellOff`
+— e.g. 1.2GB vs 512MB memory — on real graphs), per the task's own candidate
+list: (c) a physical-vs-logical addressing bug (the just-fixed SET/MAP
+class's sibling) first, then (a)/(b) if refuted.
+
+**Setup**: reused the worktree already checked out at `.../scratchpad/
+region-slice2-front`, base `2cbc1f95` (region-final-2026-08-11, HEAD),
+`node_modules/watr → /Users/div/projects/watr` (`895ca5b`, verified intact
+before AND after — real directory, not the accidentally-deleted symlink
+class two sessions ago). `REGION_HOOKS_ACTIVE` hand-flipped `true`
+(worktree-only, reverted to `false` before every dormant-mode gate run and
+before landing) — confirmed AGAIN this is the only source-literal that
+matters; `resolveSelfhostBuild`'s `regionArena` override still doesn't
+touch it.
+
+**Candidate (c), CONFIRMED and FIXED — a real bug, same family as the
+SET/MAP fix, opposite direction.** `__region_exit`'s own doc (module/
+core.js, the "Self-overlap" comment): every relocated pointer's offset must
+be pre-adjusted by `-delta` (`delta = T - mark`) BEFORE it's written
+anywhere a later read might see it — the closing `memory.copy(mark, T,
+size)` moves physical bytes verbatim and never revisits pointer VALUES
+already staged into that block. Every arm that mints a fresh ephemeral
+block confirms this: `__region_relocate_props`'s own `$out` (module/
+core.js, just above `__region_relocate_cell`) is built via `(call $__mkptr
+… (i32.sub (local.get $newOff) (local.get $delta)))`; every ARRAY/OBJECT/
+HASH/SET/MAP ephemeral branch in `layout-kinds.js` does the same for its
+own `$out`. `__region_relocate_cell`'s ephemeral branch was the ONE place
+that memoized and returned the RAW physical `$newOff` instead — confirmed
+by direct side-by-side comparison with `__region_relocate_props`'s
+identical-shape sibling code 15 lines above it, not by runtime observation
+alone (the bug is real regardless of whether any single captured instance
+happens to demonstrate it). A caller storing that unadjusted value into an
+env slot (`regionArmClosure`, both its durable and ephemeral branches — the
+ONLY two call sites) persists a not-yet-final address that only becomes
+valid to dereference AFTER this round's closing copy lands, and drifts
+further wrong every subsequent round's bump allocation compounds on top of
+it.
+
+*Fix* (`module/core.js`, `__region_relocate_cell`): a new `$logOff` local
+= `$newOff - $delta`, computed once; memoized and returned in place of the
+raw `$newOff` (the durable branch, and the memo-hit fast path, were already
+correct — durable addresses never move, and a memo hit simply replays
+whatever was stored the first time). Zero change to the durable branch's
+own shape.
+
+**Verification of the fix in isolation.** Debug-global probes (SW-hunt
+method — `declGlobal`-added exported i32 globals, `$__dbg_rc_*` on
+`__region_relocate_cell`'s own params/branch/result, `$__dbg_cl_*` on
+`regionArmClosure`'s off/aux/n/cellMask/i/slot-value right before each
+call site — worktree-only, reverted before landing, `git diff --stat`
+confirms only the real fix remains in `module/core.js`) confirmed the
+ephemeral branch DOES get exercised on jessie before the eventual trap
+(a prior, successful ephemeral relocation recorded `branch=1,
+result=2641984` — a sane, in-bounds address — moments before the fatal
+call). This is a real, necessary fix, independent of whether it closes the
+observed wall by itself.
+
+**Candidate (c) REFUTED as the SOLE cause — a second, deeper mechanism
+found by the same probes.** With the fix applied, jessie/watr/jzify-entry/
+the 20-module synthetic repro all STILL trap, identical signature (512.0 MB
+`memory access out of bounds`, sub-100ms). The debug probes caught the
+EXACT same instance the prior session (this worktree's own "REAL
+WALL FOUND+FIXED" entry) already named: `aux=1015`, `n=6`, `off≈3856072`,
+`cellOff=1291563756` (~1.2GB) — reproduced bit-for-bit on this session's
+own independent rebuild, confirming it's a deterministic, real program
+state, not a heisenbug. **The load-bearing new finding**: `regionArmClosure`
+itself was in its EPHEMERAL branch for this closure (`off ≥ mark` — this
+closure's OWN env block is being relocated for the FIRST time this round),
+which means the garbage `cellOff` was ALREADY sitting in the env slot
+BEFORE `__region_copy_rec`'s traversal ever touched it — `front()`'s region
+boundary is a SINGLE mark/exit pair around one synchronous parse→jzify→
+prepare call (no per-round loop, confirmed by re-reading `src/front.js`'s
+own contract), so there is no PRIOR relocation this same compile could have
+run to plant a stale, un-adjusted address via my just-fixed bug — the
+value was already wrong at closure-CREATION time (`module/function.js`'s
+env-population store loop), or is corrupted by something else entirely
+inside this ONE traversal before this closure is reached. This refutes
+candidate (c) as the ONLY cause: the delta-adjustment bug I fixed governs
+REPEATED relocations of an already-once-moved cell across MULTIPLE rounds
+(Slice-1's per-round loop, or a multi-round chain) but cannot explain a
+garbage value on a closure's FIRST-EVER relocation within a single-round
+boundary.
+
+**Candidate (a) — partially investigated, INCONCLUSIVE, not ruled out.**
+Byte-dumped the full env block (`off=3856072`, `n=6`, `mask=0b111101`)
+directly from wasm memory post-trap (the old block is never written by
+this arm's ephemeral path — only read — so its bytes are exactly what
+closure-creation left behind). Every cell-mode slot's LOW 4 bytes (the only
+bytes any code path ever explicitly writes for a cell-mode slot —
+`module/function.js`'s store loop uses `i32.store`, 4 bytes, never `f64.
+store`) is the deliberately-written cell pointer; slot 0's low word
+(958736) is a plausible small heap offset, slot 5's (1291563756) is not.
+The HIGH 4 bytes of every cell-mode slot — never written by ANY code path,
+durable or ephemeral, at creation OR relocation — consistently decode into
+the `0x7ffa_xxxx`–`0x7ffb_xxxx` range, i.e. exactly jz's own NaN-box tag
+prefix shape, on ALL FIVE cell-mode slots. This is suggestive (this memory
+was plausibly VALUE-shaped — f64, 8 bytes meaningful — at some point) but
+NOT dispositive: decoding slot 5's full 8 bytes as a NaN-boxed pointer
+gives type=STRING(4) with the SAME garbage low-32 offset either way (cell-
+mode and value-mode reads share the identical low 4 bytes at this address
+by construction), so the decode doesn't discriminate between "this slot IS
+a legitimate boxed value misread as a cell" and "this slot IS a legitimate
+cell whose low bytes happen to be garbage for an unrelated reason" — both
+hypotheses predict the exact same observation. Traced the mask-build path
+(`module/function.js` `ctx.closure.make`, lines ~254-302): the mask
+computation loop and the env-population store loop both run synchronously
+within the SAME `ctx.closure.make` call, over the SAME `envCaptures` array,
+both testing `ctx.func.boxed?.has(envCaptures[i])` — no code runs between
+them that could mutate `ctx.func.boxed`, so a source-level mask/store
+mismatch looks structurally ruled out for THIS call shape, though not
+exhaustively verified against every closure-creation path (`storage ===
+'none'` short-circuits before either loop; the destructured-param/
+ClosureEnvPlan-vs-legacy-fallback split, `.work/closure-plan-design.md`,
+was not independently re-audited this session).
+
+**Candidate (b) — not reached.** "The env itself already relocated and the
+cell-slot read used a stale env base" was not directly tested; ruled out
+AS THE MECHANISM FOR THIS SPECIFIC INSTANCE by the same single-round-
+boundary argument that refutes (c) as sole cause (this closure's env block
+is on its FIRST relocation this round, so there is no earlier `$off` for
+`regionArmClosure` itself to have gone stale against — but a stale-base
+read against something the env block's OWN CONTENTS reference, one level
+removed, was not investigated).
+
+**Kernel-oracle re-test (task step 4's own ask).** `test/kernel-oracle.js`
+×3 reps against this session's region-live rebuild (fix applied): **4/13
+pass (102 assertions), 9/13 fail — IDENTICAL failure signature every rep**
+(byte-count divergence at O0 on the `math` row — native 252B vs kernel
+274B — plus `memory access out of bounds` at O2/O3, plus the unrelated
+`console.log string constants: heap O0` decode-mismatch row). This is the
+EXACT count and shape the prior session ("REAL WALL FOUND+FIXED" entry,
+this same file) recorded BEFORE this session's fix — **unchanged by the
+delta-adjustment fix**, confirming kernel-oracle's own regression does NOT
+share (or does not exclusively share) my fixed root; it's consistent with
+sharing the SECOND, still-open mechanism instead (kernel-oracle's corpus is
+single-module, so this can't be Bug-2's multi-module discovery path
+specifically, but the underlying closure-relocation hazard isn't scoped to
+`opts.modules` — any program with the right closure shape can hit it).
+
+**Standard ladder.** Native `node test/index.js` (no `JZ_TEST_TARGET`,
+fix applied, `REGION_HOOKS_ACTIVE=false` dormant): **3428/3436 pass** — the
+SAME 2 pre-existing documented flakes (interval-walk / typed-RMW) this
+whole chain has carried, zero new regressions. `JZ_TEST_TARGET=jz.wasm
+node test/index.js` (dormant self-hosted kernel, fix applied): **2725/2731
+pass, 0 fail, 6 skip** — byte-for-byte the same count the prior session's
+own dormant leg recorded, confirming the fix is completely inert in the
+shipped configuration (the `if (regionHooks)` guard everywhere in
+`__region_copy_rec`'s CLOSURE arm and `__region_relocate_cell` itself is
+only ever reachable when `__region_exit` is pulled in, which dormant builds
+never do). `node scripts/build-dist.mjs` ×2 (dormant): **byte-identical**,
+SHA-256 `8d6a9344226e66abbed7e43afdb1978ce9fe2f8f519f8a0c2bdb608e206a762f`
+both times. Region-live rebuild (fix applied): 14,591.7 kB both times built
+this session (two independent builds, same config, same size — not hashed
+a second time since the wall stayed open regardless). Fuzz gate / battery /
+kernel-parity's own dedicated file: **NOT run** — the wall is still open,
+matching every prior session's own discipline ("no point running the full
+ladder past what verifies THIS session's own landed change" — the fix's
+own regression surface, native+wasm+oracle above, is fully covered).
+
+**jz×jz re-verdict (task step 4/5's own ask — "does it reach the true
+memory ceiling again?").** Still blocked, same wall: `memory access out of
+bounds` @ 1024.0 MB, 830 ms (region-live, fix applied) — matching the prior
+session's own Bug-2-dominated number (~1.0s/1024MB) closely, NOT the
+deliberate `unreachable`-at-2³² ceiling abort. Slice 3's true precondition
+(front boundary sound end-to-end) is NOT yet met. No memory-ceiling
+re-verdict is possible until the second mechanism closes.
+
+**20-module repro + jessie/watr/jzify-entry ×3 (task step 5's acceptance
+gate).** All still FAIL, deterministic across 3 reps each, identical
+signature to pre-fix (512.0 MB `memory access out of bounds`,
+11–147 ms) — the synthetic 20-module chain (this session's own
+reconstruction: 20 chained one-export modules, each `let v = x+i; v=v+1;
+return (() => v)()`, matching the prior session's own description since
+its literal fixture wasn't preserved) reproduces the SAME wall class,
+though not necessarily the identical instance (its own trap decompiled to
+a value-mode `__region_copy_rec` dispatch, not `__region_relocate_cell`
+directly — consistent with "some real graphs hit this via a value slot
+neighboring a bad cell slot, not only via the cell read itself").
+
+**Disposition.** `module/core.js`'s `__region_relocate_cell` delta-
+adjustment fix is landed (real, necessary, fully regression-verified,
+inert when dormant). `REGION_HOOKS_ACTIVE` reverted to `false` before this
+commit — unchanged shipped default. All debug-global probes (`$__dbg_rc_*`,
+`$__dbg_cl_*`, both files) were worktree-only, reverted before landing —
+`git diff --stat` on the shared/committed set shows only `module/core.js`,
+31 lines. Shared tree (`/Users/div/projects/jz`) untouched by this session
+(pre-existing unrelated dirt from a concurrent session — README.md,
+`.work/todo-original.md`, `bench/bench.svg`, `assets/install.svg` — none
+of these files were read or written here). `/Users/div/projects/watr`
+verified intact at `895ca5b` before and after (real directory, not a
+symlink casualty).
+
+**Recommendation for next session.** The mechanism is narrower than when
+this session started (single-round front boundary, first-ever relocation,
+env-population-time-or-earlier corruption) but not yet pinned. Highest-
+value next step: ring-buffer (not last-call) breadcrumbs across EVERY
+`ctx.closure.make` env-population store (module/function.js, not just the
+relocation side) keyed by `(tableIdx, slot i)`, comparing the value ACTUALLY
+STORED at creation time against what `regionArmClosure` later reads for the
+SAME `(off, i)` — if they already differ at read-time with NOTHING in
+between (single round, confirmed above), the bug is either in
+`ctx.func.boxed`'s own local-variable lifecycle (a WAT local aliasing/reuse
+hazard across nested closure literals, matching module/function.js's own
+"array-write codegen for `arr[arr.length]=x`" self-host-only-codegen-gap
+precedent the CLOSURE-arm-landing session already found once for
+`envMeta`) or genuinely upstream of both (a `$cell_x` local computed by a
+DIFFERENT closure/function invocation than the one this env slot's `i32.
+store` executes in — a scope/identity mismatch, not a region-arena
+mechanism at all, which would mean the WALL's real fix lives outside
+`layout-kinds.js`/`module/core.js` entirely). Test the "self-host-only
+codegen gap" angle FIRST (cheapest, matches a precedent that already
+happened once in this exact file) before re-running the full SW-hunt
+byte-dump machinery.
+
+**SHAs.** jz worktree: `2cbc1f95` (region-final-2026-08-11, unchanged base
+— this session's own change is the uncommitted `module/core.js` diff about
+to be committed on top). watr: `895ca5b` (`/Users/div/projects/watr`,
+unpublished, unchanged). Dormant `dist/jz.wasm` (landed config): SHA-256
+`8d6a9344226e66abbed7e43afdb1978ce9fe2f8f519f8a0c2bdb608e206a762f`.
