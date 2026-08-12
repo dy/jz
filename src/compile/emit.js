@@ -27,7 +27,7 @@ import {
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
   ASSIGN_OPS, MUTATE_OPS, firstRefKind, isLeaf,
 } from '../ast.js'
-import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, CARRIER_BOX, setLinkDemand } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, CARRIER_BOX, setLinkDemand, getFactStore } from '../ctx.js'
 import {
   i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR,
   OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_NAMES, encodeTypedElemAux, TYPED_ELEM_VIEW_FLAG,
@@ -594,9 +594,17 @@ const selectCondOK = (cond) => !dataDependentFlag(cond)
 // Eager boolean chains win in leaf numeric kernels but regress orchestration/
 // compiler code whose first guard usually rejects before a costly RHS. Keep
 // the latency trade in call-free bodies; nested closures are separate bodies.
+// Memoised per body (AdHocMemo retirement — ctxfunc-survey.md §2/§5: WeakMap
+// on body identity, getFactStore().boolEager, same idiom as type.js's
+// inBoundsCharCodeAt). The cached value is a boolean, so the lookup uses
+// `.has()`, not truthiness — `false` is a valid cached result. A non-array
+// body can't be a WeakMap key; `walk` itself no-ops on one (never sets
+// `calls`), so the vacuous answer is `true`, returned uncached.
 const boolEagerBody = () => {
   const body = ctx.func.body
-  if (ctx.func._boolEagerBody === body) return ctx.func._boolEagerValue
+  if (!Array.isArray(body)) return true
+  const cache = getFactStore().boolEager
+  if (cache.has(body)) return cache.get(body)
   let calls = false
   const walk = (n, root = false) => {
     if (calls || !Array.isArray(n)) return
@@ -605,8 +613,9 @@ const boolEagerBody = () => {
     for (let i = 1; i < n.length; i++) walk(n[i])
   }
   walk(body, true)
-  ctx.func._boolEagerBody = body
-  return (ctx.func._boolEagerValue = !calls)
+  const result = !calls
+  cache.set(body, result)
+  return result
 }
 
 // Map/Set methods whose generic (`.${method}`) emitter assumes a collection

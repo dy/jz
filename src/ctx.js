@@ -267,6 +267,24 @@ function createFactStore() {
     mayBeUndefinedTrace: new WeakMap(),
     mapGetShapedTrace: new WeakMap(),
     presentValTrace: new WeakMap(),
+    // ctx.func AdHocMemo retirement (ctxfunc-survey.md §2/§5, coordinator
+    // ruling #2): 6 hand-rolled single-slot `_xBody === body ? cached :
+    // recompute` caches, each keyed on the CURRENT function body's identity
+    // and — like mayBeUndefinedTrace et al. above — persisting ACROSS
+    // enterFunc by design (self-invalidating purely by body identity, not
+    // reset per-function). Same WeakMap-on-identity idiom, same session-
+    // ownership reasoning (kernel WeakMap→strong-Map lowering means a bare
+    // module-global would leak entries across compiles; resetFactStore()
+    // swaps in a fresh WeakMap every beginSession). See each consuming site
+    // for the field it replaces.
+    ccInBounds: new WeakMap(),        // src/type.js inBoundsCharCodeAt (was ctx.func._ccBody/ccInBounds)
+    aiInBounds: new WeakMap(),        // src/type.js inBoundsArrIdx (was ctx.func._aiBody/aiInBounds)
+    aiLitBounds: new WeakMap(),       // src/type.js inBoundsArrIdx/litBoundArrIdx (was ctx.func.aiLitBounds)
+    ipProven: new WeakMap(),          // src/type.js intervalProvenIdx (was ctx.func._ipBody/ipProven)
+    ipRanges: new WeakMap(),          // src/type.js intervalProvenIdx/intervalIdxRanges/stampClonedIdxProof (was ctx.func.ipRanges)
+    constPropAliases: new WeakMap(),  // src/compile/flow-types.js constPropAliases (was ctx.func._constPropAliasBody/_constPropAliases)
+    boolEager: new WeakMap(),         // src/compile/emit.js boolEagerBody (was ctx.func._boolEagerBody/_boolEagerValue)
+    typedBundleGuards: new WeakMap(), // module/typedarray.js typedBundleGuard (was ctx.func._typedBundleBody/_typedBundleGuards)
   }
 }
 let _factStore = createFactStore()
@@ -389,10 +407,12 @@ export function reset(proto, globals, bridge) {
     // by the pass owners so re-entrant analyzeBody calls don't clobber each other.
     localValTypesOverlay: null,
     localTypedElemsOverlay: null,
-    _ccBody: null,      // memo key: body node last scanned by inBoundsCharCodeAt (src/type.js)
-    ccInBounds: null,   // memo value: Set of in-bounds charCodeAt callee nodes for _ccBody
-    _aiBody: null,      // memo key: body node last scanned by inBoundsArrIdx (src/type.js)
-    aiInBounds: null,   // memo value: Set of in-bounds "recv\0idx" array-read keys for _aiBody
+    // (AdHocMemo retirement — the 6 single-slot `_xBody`/result memo pairs
+    // that used to live here, e.g. `_ccBody`/`ccInBounds`, are now
+    // WeakMaps on getFactStore(), keyed on body identity: see
+    // createFactStore()'s comment above. They persisted across enterFunc
+    // by design, so they never belonged in this per-function reset shape
+    // to begin with.)
   }
 
   ctx.types = {

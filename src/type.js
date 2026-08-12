@@ -11,7 +11,7 @@
  * @module type
  */
 import { isI32, isReassigned, cloneNode, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS } from './ast.js'
-import { ctx } from './ctx.js'
+import { ctx, getFactStore } from './ctx.js'
 import { VAL, lookupValType } from './reps.js'
 import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, censusShapedNode, censusMaybeUndefinedKind, exprPresentValIn, exprMapGetShapedIn } from './kind.js'
 import { propValType, CMP_OPS } from './kind-traits.js'
@@ -916,15 +916,20 @@ export function scanBoundedLoops(node, set) {
 const NO_BOUNDED_CC = new Set()  // shared immutable empty result
 
 /** Set of `['.', recv, 'charCodeAt']` callee nodes in the current function whose
- *  index argument is provably within `[0, recv.length)`. Memoised per body. */
+ *  index argument is provably within `[0, recv.length)`. Memoised per body
+ *  (AdHocMemo retirement — ctxfunc-survey.md §2/§5: WeakMap on body identity,
+ *  getFactStore().ccInBounds, same session-ownership idiom as kind.js's
+ *  mayBeUndefinedTrace — persists across enterFunc by design, self-
+ *  invalidating on body identity, cleared fresh every beginSession). */
 export function inBoundsCharCodeAt(ctx) {
   const body = ctx.func?.body
   if (!Array.isArray(body)) return NO_BOUNDED_CC
-  if (ctx.func._ccBody === body) return ctx.func.ccInBounds
+  const cache = getFactStore().ccInBounds
+  const hit = cache.get(body)
+  if (hit) return hit
   const set = new Set()
   scanBoundedLoops(body, set)
-  ctx.func.ccInBounds = set
-  ctx.func._ccBody = body
+  cache.set(body, set)
   return set
 }
 
@@ -1003,17 +1008,20 @@ export function scanBoundedArrIdx(node, set, litSet) {
 }
 
 /** Set of `"recv\x00idx"` keys for `recv[idx]` reads in the current function proven
- *  in-bounds. Memoised per body (separate slot from the charCodeAt proof). */
+ *  in-bounds. Memoised per body (separate slot from the charCodeAt proof; AdHocMemo
+ *  retirement — see inBoundsCharCodeAt's comment for the WeakMap idiom, here
+ *  getFactStore().aiInBounds/aiLitBounds, always populated together). */
 export function inBoundsArrIdx(ctx) {
   const body = ctx.func?.body
   if (!Array.isArray(body)) return NO_BOUNDED_CC
-  if (ctx.func._aiBody === body) return ctx.func.aiInBounds
+  const cache = getFactStore().aiInBounds
+  const hit = cache.get(body)
+  if (hit) return hit
   const set = new Set()
   const litSet = new Map()
   scanBoundedArrIdx(body, set, litSet)
-  ctx.func.aiInBounds = set
-  ctx.func.aiLitBounds = litSet
-  ctx.func._aiBody = body
+  cache.set(body, set)
+  getFactStore().aiLitBounds.set(body, litSet)
   return set
 }
 
@@ -1022,7 +1030,8 @@ export function inBoundsArrIdx(ctx) {
  *  static length (typedIdxProven). Memoised with inBoundsArrIdx. */
 export function litBoundArrIdx(ctx) {
   inBoundsArrIdx(ctx)
-  return ctx.func?.aiLitBounds || NO_LIT_BOUNDS
+  const body = ctx.func?.body
+  return getFactStore().aiLitBounds.get(body) || NO_LIT_BOUNDS
 }
 const NO_LIT_BOUNDS = new Map()
 
@@ -1974,18 +1983,21 @@ const NARROW_ELEM_RANGE = {
   'new.Int16Array.view': [-32768, 32767], 'new.Uint16Array.view': [0, 65535],
 }
 
-/** Memoized per-function set of interval-proven `recv[idx]` keys. */
+/** Memoized per-function set of interval-proven `recv[idx]` keys (AdHocMemo
+ *  retirement — see inBoundsCharCodeAt's comment for the WeakMap idiom, here
+ *  getFactStore().ipProven/ipRanges, always populated together). */
 export function intervalProvenIdx(ctx) {
   const body = ctx.func?.body
   if (!Array.isArray(body)) return NO_INTERVAL_PROVEN
-  if (ctx.func._ipBody === body) return ctx.func.ipProven
+  const cache = getFactStore().ipProven
+  const hit = cache.get(body)
+  if (hit) return hit
   const out = new Set(), ranges = new Map()
   const lens = (name) => ctx.types.typedLen?.get(name) ?? ctx.scope?.globalTypedLen?.get(name)
     ?? ctx.func.localReps?.get(name)?.arrayLen ?? null
   scanIntervalIdx(body, out, lens, ranges)
-  ctx.func.ipProven = out
-  ctx.func.ipRanges = ranges
-  ctx.func._ipBody = body
+  cache.set(body, out)
+  getFactStore().ipRanges.set(body, ranges)
   return out
 }
 
@@ -1993,7 +2005,8 @@ export function intervalProvenIdx(ctx) {
  *  unknown) — the versioning guard closes them with a runtime `hi < len`. */
 export function intervalIdxRanges(ctx) {
   intervalProvenIdx(ctx)
-  return ctx.func?.ipRanges || NO_INTERVAL_RANGES
+  const body = ctx.func?.body
+  return getFactStore().ipRanges.get(body) || NO_INTERVAL_RANGES
 }
 const NO_INTERVAL_RANGES = new Map()
 const NO_INTERVAL_PROVEN = new Set()
@@ -2083,8 +2096,12 @@ function stampClonedIdxProof(node, out) {
   const k = idxKey(node[1], node[2])
   const ip = intervalProvenIdx(ctx)   // memoized; NO_INTERVAL_PROVEN when no function ctx
   if (ip.has(k)) ip.add(idxKey(out[1], out[2]))
-  const rng = ctx.func?.ipRanges?.get(k)
-  if (rng != null) ctx.func.ipRanges.set(idxKey(out[1], out[2]), rng)   // hulls survive substitution too
+  // intervalProvenIdx(ctx) above already populated getFactStore().ipRanges for
+  // ctx.func.body when it's a valid function body (AdHocMemo retirement — was
+  // ctx.func.ipRanges, a plain field mirroring the same memoized Map).
+  const ranges = Array.isArray(ctx.func?.body) ? getFactStore().ipRanges.get(ctx.func.body) : null
+  const rng = ranges?.get(k)
+  if (rng != null) ranges.set(idxKey(out[1], out[2]), rng)   // hulls survive substitution too
   const owner = ctx.types?.assumedBounds?.get(k)
   if (owner != null) ctx.types.assumedBounds.set(idxKey(out[1], out[2]), owner)
 }

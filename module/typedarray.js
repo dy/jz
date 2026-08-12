@@ -16,7 +16,7 @@ import { valTypeOf } from '../src/kind.js'
 import { typedIdxProven, typedElemCtor, idxKey, constIntExpr } from '../src/type.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
-import { inc, PTR, LAYOUT, registerGetter, setLinkDemand } from '../src/ctx.js'
+import { inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { ERR } from '../err-codes.js'
 
 const _NAN_BITS = nanPrefixHex()
@@ -1619,11 +1619,18 @@ export default (ctx) => {
   // signed guard can therefore feed the whole adjacent bundle; negative pc
   // still yields each read's normal undefined arm. The dispatch/state body is
   // NOT cloned (unlike whole-loop versioning), so V8 sees one compact loop.
+  // Memoised per body (AdHocMemo retirement — ctxfunc-survey.md §2/§5: WeakMap
+  // on body identity, getFactStore().typedBundleGuards, same idiom as
+  // src/type.js's inBoundsCharCodeAt — was ctx.func._typedBundleBody/
+  // _typedBundleGuards). A non-array body can't be a WeakMap key and can't
+  // hold a bundle-guardable loop anyway.
   const typedBundleGuard = (arr, i) => {
     if (typeof arr !== 'string') return null
-    if (ctx.func._typedBundleBody !== ctx.func.body) {
-      ctx.func._typedBundleBody = ctx.func.body
-      ctx.func._typedBundleGuards = new Map()
+    const body = ctx.func.body
+    if (!Array.isArray(body)) return null
+    const store = getFactStore().typedBundleGuards
+    if (!store.has(body)) {
+      const guards = new Map()
       const stmtsOf = (b) => {
         while (Array.isArray(b) && b[0] === '{}' && b.length === 2) b = b[1]
         return Array.isArray(b) && (b[0] === ';' || b[0] === '{}') ? b.slice(1) : [b]
@@ -1683,16 +1690,17 @@ export default (ctx) => {
                 const len = staticTypedLen(recv)
                 if (bad.has(recv) || g.keys.length < 2 || len == null || len < bound * width) continue
                 const guard = { pc, primary: g.keys[0], temp: null }
-                for (const key of g.keys) ctx.func._typedBundleGuards.set(key, guard)
+                for (const key of g.keys) guards.set(key, guard)
               }
             }
           }
         }
         for (let k = 1; k < n.length; k++) scan(n[k])
       }
-      scan(ctx.func.body)
+      scan(body)
+      store.set(body, guards)
     }
-    const key = idxKey(arr, i), g = ctx.func._typedBundleGuards.get(key)
+    const key = idxKey(arr, i), g = store.get(body).get(key)
     if (!g) return null
     if (!g.temp) g.temp = tempI32('tbg')
     // The iv's CELL may be f64 (a maybe-miss def widened it — `pc = code[t]`

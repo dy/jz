@@ -415,3 +415,70 @@ guess folded into this survey.
    structural during the frame extraction (the frame swap becomes explicit
    push/pop or fresh-frame-per-closure — pick during implementation,
    byte-gated).
+
+## AS-LANDED — Slice 1: AdHocMemo retirement (2026-08-12)
+
+All 6 memo pairs/groups the census found (§1a, §2) converted to WeakMaps
+keyed on body identity, living on `getFactStore()` (src/ctx.js) — the exact
+precedent §5 nominated (`ir.js`'s `DOLLAR` Map / `ctx.js`'s existing
+`mayBeUndefinedTrace`/`mapGetShapedTrace`/`presentValTrace` WeakMaps, all
+already housed there for the identical reason: session-owned, kernel
+WeakMap→strong-Map lowering makes a bare module-global leak entries across
+compiles — audit-#11/#12's own framing, re-confirmed here rather than
+assumed). `getFactStore()` gained 8 new WeakMap fields (`aiInBounds` and
+`ipProven` each pair with a second field — `aiLitBounds`, `ipRanges` — that
+was always populated in lockstep, so 6 memo PAIRS/groups map to 8 fields,
+not 6). `resetFactStore()` (called every `beginSession`) already rebuilds
+the whole store fresh — no new reset plumbing needed, confirming §4/§5's
+"closes the reentrancy-thrash finding structurally" claim: a `WeakMap`
+swapped in fresh every session can't thrash under interleaving by
+construction, whether or not any caller is currently reentrant.
+
+**Disposition of the 6 caches:**
+
+| cache (was `ctx.func.*`) | new home | file |
+|---|---|---|
+| `_ccBody`/`ccInBounds` | `getFactStore().ccInBounds` | src/type.js `inBoundsCharCodeAt` |
+| `_aiBody`/`aiInBounds`/`aiLitBounds` | `getFactStore().aiInBounds`/`aiLitBounds` | src/type.js `inBoundsArrIdx`/`litBoundArrIdx` |
+| `_ipBody`/`ipProven`/`ipRanges` | `getFactStore().ipProven`/`ipRanges` | src/type.js `intervalProvenIdx`/`intervalIdxRanges`/`stampClonedIdxProof` |
+| `_constPropAliasBody`/`_constPropAliases` | `getFactStore().constPropAliases` | src/compile/flow-types.js `constPropAliases` |
+| `_boolEagerBody`/`_boolEagerValue` | `getFactStore().boolEager` | src/compile/emit.js `boolEagerBody` |
+| `_typedBundleBody`/`_typedBundleGuards` | `getFactStore().typedBundleGuards` | module/typedarray.js `typedBundleGuard` |
+
+Every site's cache-or-recompute shape is preserved exactly (`cache.get(body)`
+replaces `ctx.func._xBody === body`; `cache.set(body, …)` replaces the
+paired field writes). `boolEagerBody`'s cached value is a `boolean`, so its
+lookup uses `.has()`/`.get()` rather than truthiness (`false` is a valid
+cached result — a truthiness check would have re-scanned every call-free
+body forever). Every site that could theoretically see a non-array/absent
+`ctx.func.body` (a WeakMap key must be an object) now short-circuits BEFORE
+touching the WeakMap, returning the same vacuous answer the old code
+produced for that case (empty Set/Map, or `true` for `boolEagerBody`'s
+`!calls` default) — none of these guards fire on any path exercised by the
+gates below; they exist for construction-safety, not because a real caller
+hits them. `ctx.func`'s reset shape (`src/ctx.js` `reset()`) had the
+`_ccBody`/`ccInBounds`/`_aiBody`/`aiInBounds` declarations removed (the
+other 4 fields were never declared there — lazily created on first write,
+confirmed by reading `enterFunc`'s own 23-field reset list, §3); the 6
+caches never belonged in the per-function reset shape since they
+deliberately persist across `enterFunc`.
+
+**Byte-identity by construction, confirmed, not just asserted**: every
+cache-or-recompute call site produces the identical value for the identical
+input on every path the gates below exercise (60-case × 3 opt levels,
+kernel-parity, full battery, fuzz) — 0 diffs.
+
+**Gates:**
+
+| gate | result |
+|---|---|
+| 60-case × O0/O2/O3 byte-identity sweep (180 compiles, vs `38b08f19` worktree baseline) | 180/180 identical |
+| `node scripts/battery.mjs` (native/O0/O3/dbg/wasi/fuzz/fixpoint/build/kernel/self) | GREEN modulo 1 pre-existing flake (`test/optimizer.js` "typed RMW: one guard covers..." — confirmed byte-identical fail on the unmodified baseline, unrelated to this slice); fuzz 30173 compared, 0 divergence; self 21/21; kernel 2716 pass/6 skip |
+| `node test/index.js` (native) | 3419/3427 pass, 2 pre-existing fails (both confirmed on baseline), 6 skip |
+| `JZ_DEBUG_INVARIANTS=1` (battery's `dbg` leg) | same 2 pre-existing fails, 0 new |
+| `node test/kernel-parity.js` | 3/3 groups, 33/33 assertions, byte-identical WAT at O0/O2/O3 |
+| `JZ_TEST_TARGET=jz.wasm node test/index.js` (test:wasm) | 2716/2722 pass, 6 skip, 0 fail |
+| `node scripts/build-dist.mjs` ×2 | byte-identical SHA-256 (`dist/jz.wasm` 74605ad2…, `dist/jz.js` f865dabf…) |
+| `node test/session-reentrancy.js` | 5/5 (12 assertions) |
+
+**Verdict: LANDED.**

@@ -17,7 +17,7 @@
  * @module compile/flow-types
  */
 
-import { ctx } from '../ctx.js'
+import { ctx, getFactStore } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { isReassigned, isBlockBody, alwaysReturns, TYPEOF, typeofPredicate } from '../ast.js'
 import { constIntExpr } from '../static.js'
@@ -211,10 +211,18 @@ function excludeIntegerDiscriminant(a, b, out) {
   mergeRefinement(out, alias.obj, fact)
 }
 
-/** Map immutable `const tag = obj.kind` aliases in the current function. */
+/** Map immutable `const tag = obj.kind` aliases in the current function.
+ *  Memoised per body (AdHocMemo retirement — ctxfunc-survey.md §2/§5: WeakMap
+ *  on body identity, getFactStore().constPropAliases, same idiom as
+ *  type.js's inBoundsCharCodeAt). A non-array body (no active function) can't
+ *  be a WeakMap key and can't contain any alias anyway — returns a fresh
+ *  empty Map, uncached, matching the walk's own no-op on a non-array root. */
 function constPropAliases() {
   const body = ctx.func.body
-  if (ctx.func._constPropAliasBody === body) return ctx.func._constPropAliases
+  if (!Array.isArray(body)) return new Map()
+  const cache = getFactStore().constPropAliases
+  const hit = cache.get(body)
+  if (hit) return hit
   const out = new Map()
   const walk = (n, root = false) => {
     if (!Array.isArray(n)) return
@@ -229,8 +237,7 @@ function constPropAliases() {
     for (let i = 1; i < n.length; i++) walk(n[i])
   }
   walk(body, true)
-  ctx.func._constPropAliasBody = body
-  ctx.func._constPropAliases = out
+  cache.set(body, out)
   return out
 }
 
