@@ -505,14 +505,14 @@ export const censusShapedNode = (node) =>
 // `calleeValType` returns `f.valResult` unconditionally with no accompanying
 // signal. Mirrors calleeValType's own two lookup paths (direct closure via
 // `ctx.func.directClosures` + `ctx.closure.valResult`, plain named function
-// via `ctx.func.map`) so a call-result claim and its mayBeUndefined
+// via `ctx.funcs.map`) so a call-result claim and its mayBeUndefined
 // companion always travel together.
 function callResultMayBeUndefinedKind(node) {
   if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string') return null
   const callee = node[1]
   const closBody = ctx.func.directClosures?.get(callee)
   if (closBody) return ctx.closure?.valResultMayBeUndefined?.get(closBody) ? (ctx.closure?.valResult?.get(closBody) ?? null) : null
-  const f = ctx.func.map?.get(callee)
+  const f = ctx.funcs.map?.get(callee)
   return f?.valResultMayBeUndefined ? (f.valResult ?? null) : null
 }
 
@@ -598,7 +598,7 @@ export function censusBigintSentinelKind(node) {
       && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT)
     return BIGINT_SENTINEL_KIND.JOINT_BINARY
   // Kind 5 (§16→§18 "presentVal param producers"): a call whose CALLEE is a
-  // plain single-param function/const-arrow (ctx.func.map) entirely made of
+  // plain single-param function/const-arrow (ctx.funcs.map) entirely made of
   // `-`/`~` applied to its OWN param (`const g = (v) => -v`, or an equivalent
   // single-return block `{ return -v }`) — the call-boundary sibling of kinds
   // 2/3 above, closing the exact param-hop shape 38dd0dca/§16 pinned as a
@@ -612,7 +612,7 @@ export function censusBigintSentinelKind(node) {
   // ordering gap 15c789ac's own commit already found and documented
   // ("narrowValResults' own join stays empirically unreachable") for
   // mayBeUndefined's return-kind join. Reading the callee's raw AST directly
-  // (ctx.func.map, populated by prepare — before any narrowing runs) and the
+  // (ctx.funcs.map, populated by prepare — before any narrowing runs) and the
   // ARGUMENT's own presentVal-fed census claim (censusMaybeUndefinedKind,
   // computed HERE, at whatever time THIS caller is itself analyzed — after
   // narrowing has settled) sidesteps that ordering entirely, at the cost of
@@ -624,7 +624,7 @@ export function censusBigintSentinelKind(node) {
   // some path even when every EXPLICIT return matches the sentinel shape, so
   // that case must NOT claim kind 5.
   if (Array.isArray(node) && node[0] === '()' && typeof node[1] === 'string' && node.length === 3) {
-    const callee = ctx.func.map?.get(node[1])
+    const callee = ctx.funcs.map?.get(node[1])
     const params = callee?.sig?.params
     if (params?.length === 1 && (!isBlockBody(callee.body) || alwaysReturns(callee.body))) {
       const pname = params[0].name

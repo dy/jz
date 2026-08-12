@@ -111,7 +111,7 @@ function emitDecompCharRead(dec, iI32, ctx, oobNan, inBounds = false) {
   // tier in a compact graph uses a select that unswitchStringRepLoop can fold
   // out of the loop. Other tiers/large graphs keep the predictable branch —
   // evaluating both arms without the unswitch regresses the self-host parser.
-  const canUnswitch = ctx.transform.optimize?.unswitchStringRepLoop === true && ctx.func.list.length <= 64
+  const canUnswitch = ctx.transform.optimize?.unswitchStringRepLoop === true && ctx.funcs.list.length <= 64
   const ccByte = canUnswitch
     ? ['select', ssoByteExpr, heapByteExpr, ['local.get', `$${dec.sso}`]]
     : ['if', ['result', 'i32'], ['local.get', `$${dec.sso}`], ['then', ssoByteExpr], ['else', heapByteExpr]]

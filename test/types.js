@@ -1005,8 +1005,8 @@ function runAnalyze(code, paramVals) {
   // modules the analyzer pulls in (e.g. module/math.js) read it unconditionally.
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   prepare(parse(code))
-  const fn = ctx.func.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
-    || ctx.func.list[0]
+  const fn = ctx.funcs.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
+    || ctx.funcs.list[0]
   const body = fn.body
   ctx.func.locals = analyzeBody(body).locals
   // BindingId totality renames locals/params to `name<T>f<id>_<n>` — resolve a
@@ -1156,8 +1156,8 @@ function runAnalyzeMayBeUndefined(code, dynWriteVarNames) {
   reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   prepare(parse(code))
-  const fn = ctx.func.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
-    || ctx.func.list[0]
+  const fn = ctx.funcs.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
+    || ctx.funcs.list[0]
   const body = fn.body
   ctx.func.locals = analyzeBody(body).locals
   const keys = () => [...(ctx.func.locals?.keys() ?? []), ...(fn.sig?.params?.map(p => p.name) ?? []), ...(ctx.func.localReps?.keys() ?? [])]
@@ -1258,8 +1258,8 @@ function runAnalyzePresentVal(code, dynWriteVarNames) {
   reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   prepare(parse(code))
-  const fn = ctx.func.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
-    || ctx.func.list[0]
+  const fn = ctx.funcs.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
+    || ctx.funcs.list[0]
   const body = fn.body
   ctx.func.locals = analyzeBody(body).locals
   const keys = () => [...(ctx.func.locals?.keys() ?? []), ...(fn.sig?.params?.map(p => p.name) ?? []), ...(ctx.func.localReps?.keys() ?? [])]
@@ -1458,7 +1458,7 @@ function getFirstBody(code) {
   reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   prepare(parse(code))
-  const fn = ctx.func.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body)) || ctx.func.list[0]
+  const fn = ctx.funcs.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body)) || ctx.funcs.list[0]
   return fn.body
 }
 

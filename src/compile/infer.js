@@ -466,7 +466,7 @@ export function inferSchemaId(expr, lookupMap) {
     return parsed ? ctx.schema.register(parsed.names) : null
   }
   if (op === '()' && typeof expr[1] === 'string') {
-    const f = ctx.func.map?.get(expr[1])
+    const f = ctx.funcs.map?.get(expr[1])
     if (f?.valResult === VAL.OBJECT && f.sig.ptrAux != null) return f.sig.ptrAux
     return null
   }
@@ -514,7 +514,7 @@ export function inferArrElemSchema(expr, cx) {
     return null
   }
   if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-    const f = ctx.func.map?.get(expr[1])
+    const f = ctx.funcs.map?.get(expr[1])
     if (f?.arrayElemSchema != null) return f.arrayElemSchema
   }
   if (Array.isArray(expr) && expr[0] === '[') {
@@ -549,7 +549,7 @@ export function inferArrElemSchemaSet(expr, cx) {
     return null
   }
   if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-    const f = ctx.func.map?.get(expr[1])
+    const f = ctx.funcs.map?.get(expr[1])
     if (typeof f?.arrayElemSchemaSet === 'string') return f.arrayElemSchemaSet
   }
   return null
@@ -570,7 +570,7 @@ export function inferArrElemValType(expr, cx) {
     return null
   }
   if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-    const f = ctx.func.map?.get(expr[1])
+    const f = ctx.funcs.map?.get(expr[1])
     if (f?.arrayElemValType != null) return f.arrayElemValType
   }
   return null
@@ -589,7 +589,7 @@ export function inferTypedCtor(expr, cx) {
   const ctor = typedElemCtor(expr)
   if (ctor) return ctor
   if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-    const f = ctx.func.map?.get(expr[1])
+    const f = ctx.funcs.map?.get(expr[1])
     if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) return ctorFromElemAux(f.sig.ptrAux)
   }
   // Field provenance: `plan.twRe` where the receiver's schema slot holds one

@@ -719,7 +719,7 @@ test('closure-unbox: o.fn(g) — object-property closure dispatch', () => {
 
 test('closure-unbox: o.fn(g) — module-level binding', () => {
   // Module-level `let g = (n) => …` is extracted via defFunc into
-  // ctx.func.list (top-level function). Post-prep scan in prepare.js detects
+  // ctx.funcs.list (top-level function). Post-prep scan in prepare.js detects
   // top-level func names used in value positions and includeModule('fn').
   const { f } = runHost(`
     let g = (n) => n + 100

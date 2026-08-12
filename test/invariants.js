@@ -140,7 +140,7 @@ test('invariant: analyzeBody cache-hit throws under JZ_DEBUG_INVARIANTS after an
   if (!DBG_INVARIANTS) return  // the assert is a no-op outside the battery's dbg leg (JZ_DEBUG_INVARIANTS=1) — nothing to observe without it
   reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
   compile('export let f = (a) => a + 1')
-  const func = ctx.func.map.get('f')
+  const func = ctx.funcs.map.get('f')
   ctx.func.current = func.sig
   analyzeBody(func.body) // populate/confirm the cache under the real, current signature
   const p = func.sig.params[0]
@@ -158,7 +158,7 @@ test('invariant: the reanalyzeBody/setFuncBody seam never reproduces the stale-s
   if (!DBG_INVARIANTS) return
   reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
   compile('export let f = (a) => a + 1')
-  const func = ctx.func.map.get('f')
+  const func = ctx.funcs.map.get('f')
   ctx.func.current = func.sig
   analyzeBody(func.body)
   const p = func.sig.params[0]

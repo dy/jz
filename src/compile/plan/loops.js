@@ -61,7 +61,7 @@ const wrapStmtList = (stmts, orig) => {
 // General: `const rows = [[…],…]; const row = rows[idx]; … row.length`.
 export const bindNestedRowLengths = () => {
   let changed = false
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const r = bindNestedRowLengthsInBody(func.body)
     if (r.changed) { func.body = r.node; changed = true }
@@ -379,7 +379,7 @@ const unrollRowLenPadLoopsInBody = (body, outerTables = null) => {
 
 export const unrollRowLenPadLoops = () => {
   let changed = false
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const r = unrollRowLenPadLoopsInBody(func.body)
     if (r.changed) { func.body = r.node; changed = true }
@@ -463,7 +463,7 @@ export const splitCharScanLoops = () => {
     if (node[0] === 'for' && node.length === 5 && parent && trySplitFor(node, parent, idx)) { changed = true; return }
     for (let k = 1; k < node.length; k++) visit(node[k], node, k)
   }
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
     visit(func.body, null, -1)
     // body root itself can't be a bare `for` without a parent slot — wrap-walk

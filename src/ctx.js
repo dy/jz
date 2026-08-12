@@ -74,7 +74,8 @@ export const ctx = {
   core: {},       // emitter table + stdlib registry (seeded by reset + modules)
   module: {},     // module graph: imports, resolved sources, module-init blocks
   scope: {},      // bindings: globals, consts, typed-elem ctors per global
-  func: {},       // current function: locals, signature, name registry, uniq counter
+  funcs: {},      // compile-lifetime ProgramFunctions registry: list + indexes + exports
+  func: {},       // active function analysis/emission frame: locals, signature, uniq counter
   types: {},      // per-function type analysis: typedElem map, dyn-key vars
   schema: {},     // object shape inference: var→schema, schema list
   closure: {},    // first-class fn infrastructure (installed by module/function.js)
@@ -384,12 +385,22 @@ export function reset(proto, globals, bridge) {
     moduleLoopCaptured: new Set(),
   }
 
-  ctx.func = {
+  // Compile-lifetime function registry. This is the authoritative program
+  // catalog; unlike ctx.func's active analysis/emission frame it is never
+  // replaced at function entry. Keep the record identity stable for the whole
+  // session while prepare/variant/plan append and index functions.
+  ctx.funcs = {
     list: [],
     names: new Set(),  // Set<string> — known func names (list + imported funcs); populated at compile() start
     map: new Map(),    // Map<string, func> — name → func entry; populated at compile() start
     multiProp: new Set(),  // Set<"obj.prop"> — function-properties assigned >1× (wrapper composition); suppresses the static fn.prop() direct call
     exports: Object.create(null),  // name-keyed: prototype-less (see derive) — `export let valueOf` must not hit Object.prototype
+    globalDevirt: null, // Map<global, function name> published by plan/scope.js, consumed by emit
+  }
+
+  // Active per-function analysis/emission frame. ProgramFunctions fields live
+  // exclusively on ctx.funcs above; no compatibility mirror is retained.
+  ctx.func = {
     current: null,
     locals: new Map(),
     localReps: null,
@@ -1044,12 +1055,15 @@ export function assertCtxInvariants(phase) {
     ctx.transform.sessionPhase = phase
   }
 
-  must(ctx.core && ctx.module && ctx.scope && ctx.func && ctx.transform && ctx.features && ctx.linkDemand && ctx.plans,
+  must(ctx.core && ctx.module && ctx.scope && ctx.funcs && ctx.func && ctx.transform && ctx.features && ctx.linkDemand && ctx.plans,
        'sub-contexts present')
   if (phase !== 'pre-reset') {
     must(ctx.core.includes instanceof Set, 'core.includes is Set')
     must(ctx.core.emit && typeof ctx.core.emit === 'object', 'core.emit table')
-    must(Array.isArray(ctx.func.list), 'func.list array')
+    must(Array.isArray(ctx.funcs.list), 'funcs.list array')
+    must(ctx.funcs.names instanceof Set, 'funcs.names Set')
+    must(ctx.funcs.map instanceof Map, 'funcs.map Map')
+    must(ctx.funcs.multiProp instanceof Set, 'funcs.multiProp Set')
     must(ctx.func.locals instanceof Map, 'func.locals Map')
     must(ctx.func.refinements instanceof Map, 'func.refinements Map')
   }

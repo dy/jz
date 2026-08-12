@@ -116,9 +116,9 @@ import jzify from '../jzify/index.js'
 export const REGION_HOOKS_ACTIVE = false
 function optimizeTail(module, cfg) {
   return watrTail(module, cfg, {
-    funcCount: ctx.func.list.length,
+    funcCount: ctx.funcs.list.length,
     boundaryPins: cfg._vectorizedFnNames?.size
-      ? [...cfg._vectorizedFnNames].filter(name => ctx.func.map.get(name.slice(1))?.exported)
+      ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
       : [],
     targetProfile: ctx.transform.targetProfile,
     // regionHooks: { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) },

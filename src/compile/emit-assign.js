@@ -959,7 +959,7 @@ export function emitPropertyAssign(obj, prop, val) {
       inc('__dyn_set')
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
     }
-    if (ctx.func.names.has(obj) && !isBoundName(obj)) {
+    if (ctx.funcs.names.has(obj) && !isBoundName(obj)) {
       inc('__dyn_set')
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
     }

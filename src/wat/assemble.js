@@ -255,7 +255,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
       boxInit.push(
         ['local.set', `$${bt}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)]]],
         ['f64.store', ['local.get', `$${bt}`],
-          ctx.func.names.has(name) ? ['f64.const', 0] : ['global.get', `$${name}`]],
+          ctx.funcs.names.has(name) ? ['f64.const', 0] : ['global.get', `$${name}`]],
         ...schema.slice(1).map((_, i) =>
           ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (i + 1) * 8]], ['f64.const', 0]]),
         ['global.set', `$${name}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${bt}`])])
@@ -1155,7 +1155,7 @@ export function optimizeModule(sec, profiler) {
       if (Array.isArray(fn) && fn[0] === 'func' && typeof fn[1] === 'string')
         fnByName.set(fn[1], fn)
     }
-    for (const func of ctx.func.list) {
+    for (const func of ctx.funcs.list) {
       const fn = fnByName.get(`$${func.name}`)
       if (fn) applyArenaRewind(func, fn, safeCallees)
     }

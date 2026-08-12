@@ -553,3 +553,31 @@ every synthetic name downstream is byte-identical.
 | `node test/session-reentrancy.js` | 5/5 (12 assertions) |
 
 **Verdict: LANDED.**
+
+## AS-LANDED — Slice 3: ProgramFunctions extraction (2026-08-12)
+
+The compile-lifetime registry is now the explicit `ctx.funcs` record:
+`list`, `names`, `map`, `exports`, `multiProp`, and `globalDevirt`. The active
+analysis/emission frame remains `ctx.func`; it contains none of those fields and
+no compatibility mirror. `reset()` creates both records independently, and
+`assertCtxInvariants()` pins the registry's full shape. All production readers
+and writers, self-host entry readers, and reset-level test harnesses now use the
+new authority directly.
+
+This is the coordinator-ruling #1 registry/frame split's first half. It deletes
+duplicate ownership rather than adding a facade: prepare/module export swapping,
+variant materialization, plan publication, direct-call lookup, emit, optimize,
+and assembly all address `ctx.funcs`. `test/session-reentrancy.js` pins both
+record separation and fresh-registry behavior across sequential compiles.
+
+**Gates:** `npm test` reaches the same two standing optimizer-shape failures
+(3419 pass, 2 fail, 6 skip); no new failure. `test/session-reentrancy.js` 7/7
+(18 assertions). `npm run build` ×2 produced byte-identical `dist/jz.wasm`
+SHA-256 `e0752988f3f645028159bc06814f3e401b2f4913e047ed5c30545d3f68806954`.
+`npm run test:self` passed correctness 21/21 and fresh-instance perf; its warm
+compile timing pin was machine-load red in all three rounds (1.039–1.060× vs
+1.03 cap), so no performance claim is made from that noisy run.
+
+**Next:** extract the active record / EmitFrame structurally. AnalysisFacts is
+still deletion-by-redirection into `funcFacts`, per ruling #3, not another
+record to move wholesale.

@@ -154,7 +154,7 @@ export function calleeValType(callee, _args, ctx) {
     const vt = ctx.closure?.valResult?.get(closBody)
     if (vt) return vt
   }
-  const f = ctx.func.map?.get(callee)
+  const f = ctx.funcs.map?.get(callee)
   if (f?.valResult) return f.valResult
   return null
 }

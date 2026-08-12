@@ -3,7 +3,7 @@
  *
  * # Stage contract
  *   IN:  raw jessie AST from subscript/jessie (possibly jzified).
- *   OUT: normalized AST + populated `ctx.func.list`, `ctx.module.imports`, `ctx.schema.list`,
+ *   OUT: normalized AST + populated `ctx.funcs.list`, `ctx.module.imports`, `ctx.schema.list`,
  *        `ctx.scope.consts`, `ctx.module.moduleInits`.
  *   POST: no `var`/`function`/`class`/`this` remain; ++/-- rewritten as +=/-=; arrow
  *        bodies carry no type metadata yet (that's analyze/compile's job).
@@ -11,7 +11,7 @@
  * # Concerns (per-node handler table, applied together per op)
  *   1. Validate      — reject prohibited features (this, class, async, var, delete, ...)
  *   2. Resolve       — scope chain + import bindings (Math.sin → math.sin, etc.)
- *   3. Extract       — arrow functions → ctx.func.list with sig
+ *   3. Extract       — arrow functions → ctx.funcs.list with sig
  *   4. Normalize     — ++/-- → +=/-=, unary ± disambiguation, for-head flattening
  *   5. Auto-import   — Math/Array/etc usage triggers includeModule(...)
  *   6. Track schemas — object literals, Object.assign inference (inferAssignSchema)
@@ -649,19 +649,19 @@ function recordModuleInitFacts(root) {
     if (op === '()') {
       for (let i = 1; i < args.length; i++) {
         const a = args[i]
-        if (isFuncRef(a, ctx.func.names)) { facts.hasFuncValue = true; return }
+        if (isFuncRef(a, ctx.funcs.names)) { facts.hasFuncValue = true; return }
         visitFuncValue(a)
       }
       return
     }
     if (op === '.' || op === '?.') {
-      if (isFuncRef(args[0], ctx.func.names)) { facts.hasFuncValue = true; return }
+      if (isFuncRef(args[0], ctx.funcs.names)) { facts.hasFuncValue = true; return }
       visitFuncValue(args[0])
       return
     }
     if (op === '=>') { visitFuncValue(args[1]); return }
     for (const a of args) {
-      if (isFuncRef(a, ctx.func.names)) { facts.hasFuncValue = true; return }
+      if (isFuncRef(a, ctx.funcs.names)) { facts.hasFuncValue = true; return }
       visitFuncValue(a)
     }
   }
@@ -749,7 +749,7 @@ export default function prepare(node) {
   // value, ...) skip the depth>0 prep-time include, so they reach emit unsupported
   // unless we catch them here.
   if (!ctx.module.modules.fn) {
-    const funcNames = new Set(ctx.func.list.map(f => f.name))
+    const funcNames = new Set(ctx.funcs.list.map(f => f.name))
     // A bare reference is a first-class function VALUE if it names either a user
     // function or a builtin `builtinFunctionValue` can mint a closure-table entry
     // for (e.g. `xs.filter(Array.isArray)` — prep collapses the member access to
@@ -759,7 +759,7 @@ export default function prepare(node) {
       if (!Array.isArray(n)) return false
       const [op, ...args] = n
       // Any inline arrow surviving prep is a closure value (defFunc-lifted ones
-      // are extracted from the AST into ctx.func.list).
+      // are extracted from the AST into ctx.funcs.list).
       if (op === '=>') return true
       if (op === '()') {
         // callee at args[0]: skip if it's a bare func name (direct call); recurse rest
@@ -792,7 +792,7 @@ export default function prepare(node) {
     // is invisible to this scan, ctx.closure.table never gets set up, and the
     // importing module's `T.x2(n)` call reaches emit with no table to index into.
     if (!needs && ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) if (visit(mi)) { needs = true; break }
-    if (!needs) for (const f of ctx.func.list) if (f.body && visit(f.body)) { needs = true; break }
+    if (!needs) for (const f of ctx.funcs.list) if (f.body && visit(f.body)) { needs = true; break }
     if (!needs && ctx.module.initFacts?.hasFuncValue) needs = true
     if (needs) includeForCallableValue()
   }
@@ -806,7 +806,7 @@ export default function prepare(node) {
     }
     for (let i = 0; i < n.length; i++) scanTimers(n[i])
   }
-  const allNodes = [ast, ...ctx.func.list.map(f => f.body)]
+  const allNodes = [ast, ...ctx.funcs.list.map(f => f.body)]
   for (const node of allNodes) scanTimers(node)
   if (usedTimers.size) {
     includeForTimerRuntime()
@@ -833,7 +833,7 @@ export default function prepare(node) {
       for (let i = 1; i < n.length; i++) scan(n[i], childInDecl)
     }
     scan(ast, false)
-    for (const f of ctx.func.list) if (f.body) scan(f.body, false)
+    for (const f of ctx.funcs.list) if (f.body) scan(f.body, false)
     for (const name of writes) {
       ctx.scope.shapeStrs?.delete(name)
       ctx.scope.shapeStrArrays?.delete(name)
@@ -1003,7 +1003,7 @@ function bindDeclSchema(name, sid) {
   ctx.schema.vars.set(name, sid)
 }
 
-const hasFunc = name => ctx.func.names.has(name)
+const hasFunc = name => ctx.funcs.names.has(name)
 // A builtin name (`Map`, `Array`, `Math`, …) is shadowed when the user bound it
 // as a local (let/const/param, via `isDeclared`), a top-level function (via
 // `hasFunc`), or a top-level let/const global (via `userGlobals`). A shadowed
@@ -1027,9 +1027,9 @@ const shadowsBuiltin = name => typeof name === 'string' &&
 const isFuncValueLocal = name => typeof name === 'string' && funcValueNames.some(s => s.has(name))
 
 const renameFunc = (func, nextName) => {
-  ctx.func.names.delete(func.name)
+  ctx.funcs.names.delete(func.name)
   func.name = nextName
-  ctx.func.names.add(nextName)
+  ctx.funcs.names.add(nextName)
 }
 
 // `typeof`-string → code table lives in ast.js (TYPEOF) — shared with
@@ -1045,7 +1045,7 @@ function isUnresolvableBareIdent(name) {
   if (scopes.length && isDeclared(name)) return false
   if (ctx.scope.chain[name]) return false
   if (GLOBALS[name]) return false
-  if (ctx.func.names.has(name)) return false
+  if (ctx.funcs.names.has(name)) return false
   if (ctx.func?.locals?.has?.(name)) return false
   // Top-level decls live in ctx.scope.globals / userGlobals (set by prepDecl at
   // depth 0). Current arrow's local names are tracked in funcLocalNames.
@@ -1760,7 +1760,7 @@ function namespaceMemberAssigns(pattern, rhsRaw) {
  *  '.' handler would arm it (arity > 0), so an incidental first-class use
  *  (`let g = sin` elsewhere) still finds closure support wired up. */
 function registerBuiltinAlias(name, key) {
-  if (ctx.func.exports[name]) {
+  if (ctx.funcs.exports[name]) {
     // A CONSTANT member (Math.PI — an arity-0 value emitter) exported by name
     // needs real storage, not a wrapper function: `Math.max(1, …)` used to
     // synthesize `(a) => math.PI(a)` here, so importers doing arithmetic on PI
@@ -1916,7 +1916,7 @@ function prepDecl(op, ...inits) {
       const fn = hasFunc(init) ? init : (hasFunc(ctx.scope.chain[init]) ? ctx.scope.chain[init] : null)
       if (fn) {
         ctx.scope.chain[name] = fn
-        if (name in ctx.func.exports) ctx.func.exports[name] = fn
+        if (name in ctx.funcs.exports) ctx.funcs.exports[name] = fn
         continue
       }
     }
@@ -2242,7 +2242,7 @@ function foldFnCallApplyBind(callee, args) {
   // bind(thisArg, ...pre) → an arrow closing over the pre-bound args. When the
   // callee's arity is known (a lifted top-level fn), mint EXPLICIT remaining
   // params — a rest+spread arrow would hit the non-variadic spread-call limit.
-  const f = ctx.func.list.find(fn => fn.name === name)
+  const f = ctx.funcs.list.find(fn => fn.name === name)
   if (f && !f.rest) {
     const remaining = Math.max(0, f.sig.params.length - rest.length)
     const ps = Array.from({ length: remaining }, () => `${T}b${freshId(ctx)}`)
@@ -2358,7 +2358,7 @@ function resolveCallee(callee, args) {
       if (hasModule(resolved) && !ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
       return callee
     }
-    if (depth > 0 && !resolved && !INTRINSIC_CALLEES.has(callee) && !ctx.func.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`))
+    if (depth > 0 && !resolved && !INTRINSIC_CALLEES.has(callee) && !ctx.funcs.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`))
       includeForCallableValue()
     return callee
   }
@@ -2480,9 +2480,9 @@ const handlers = {
         let name = `${fnBase}$${lhs[2]}`
         // Reassignment → the property is mutable; record it so `fn.prop()` calls
         // emit a dynamic property read + indirect call instead of a direct call.
-        if (ctx.func.names.has(name)) {
-          ctx.func.multiProp.add(`${fnBase}.${lhs[2]}`)
-          do { name = `${fnBase}$${lhs[2]}$${freshId(ctx)}` } while (ctx.func.names.has(name))
+        if (ctx.funcs.names.has(name)) {
+          ctx.funcs.multiProp.add(`${fnBase}.${lhs[2]}`)
+          do { name = `${fnBase}$${lhs[2]}$${freshId(ctx)}` } while (ctx.funcs.names.has(name))
         }
         // Build the target `.` node directly from the resolved base — re-`prep`ing
         // the lhs would resolve a multiProp `fn.prop` to an rvalue (closure
@@ -2496,7 +2496,7 @@ const handlers = {
         if (defFunc(name, prep(rhs))) {
           const ownerEnd = fnBase.lastIndexOf('$')
           if (ownerEnd > 0) {
-            const fn = ctx.func.list.find(f => f.name === name)
+            const fn = ctx.funcs.list.find(f => f.name === name)
             // _ownerPrefix exempts the lift from the writing module's NAME
             // mangling only — its BODY is this module's text and must still get
             // this module's reference-renaming walk (unlike _modulePrefix, which
@@ -2837,11 +2837,11 @@ const handlers = {
     if (Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const'))
       for (const i of decl.slice(1))
         if (Array.isArray(i) && i[0] === '=') {
-          if (typeof i[1] === 'string') ctx.func.exports[i[1]] = true
+          if (typeof i[1] === 'string') ctx.funcs.exports[i[1]] = true
           // `export let { a, b: c } = …` / `export let [x, y] = …` — every
           // BoundName of the declaration is an export (ES §16.2.3.2). Surfaced
           // by window-function's `export let { cos, sin, abs } = Math`.
-          else if (isDestructPattern(i[1])) for (const n of bindingNames(i[1])) ctx.func.exports[n] = true
+          else if (isDestructPattern(i[1])) for (const n of bindingNames(i[1])) ctx.funcs.exports[n] = true
         }
     // export name → bare-identifier re-export (shorthand for `export { name }`).
     // Register the binding and emit nothing; without this the name falls through
@@ -2849,7 +2849,7 @@ const handlers = {
     // while the export itself is silently lost.
     if (typeof decl === 'string') {
       const resolved = ctx.scope.chain[decl]
-      ctx.func.exports[decl] = (resolved && resolved !== decl) ? resolved : decl
+      ctx.funcs.exports[decl] = (resolved && resolved !== decl) ? resolved : decl
       return null
     }
     // export { name, name as alias } from './mod' or export * from './mod'
@@ -2862,7 +2862,7 @@ const handlers = {
         if (decl[1] === '*') {
           // export * from './mod' → register all exports
           for (const [name, mangled] of resolved.exports) {
-            if (name !== 'default') ctx.func.exports[name] = mangled
+            if (name !== 'default') ctx.funcs.exports[name] = mangled
           }
         } else if (Array.isArray(decl[1]) && decl[1][0] === '{}') {
           // export { a, b as c } from './mod'
@@ -2874,7 +2874,7 @@ const handlers = {
             const alias = typeof item === 'string' ? item : item[2]
             const mangled = resolved.exports.get(name)
             if (!mangled) err(`'${name}' is not exported from '${mod}'`)
-            ctx.func.exports[alias] = mangled
+            ctx.funcs.exports[alias] = mangled
           }
         }
       }
@@ -2888,11 +2888,11 @@ const handlers = {
       for (const item of items) {
         if (typeof item === 'string') {
           const resolved = ctx.scope.chain[item]
-          ctx.func.exports[item] = (resolved && resolved !== item) ? resolved : item
+          ctx.funcs.exports[item] = (resolved && resolved !== item) ? resolved : item
         } else if (Array.isArray(item) && item[0] === 'as') {
           const [, source, alias] = item
           const resolved = ctx.scope.chain[source]
-          ctx.func.exports[alias] = (resolved && resolved !== source) ? resolved : source
+          ctx.funcs.exports[alias] = (resolved && resolved !== source) ? resolved : source
         }
       }
       return null
@@ -2902,11 +2902,11 @@ const handlers = {
       const val = decl[1]
       // export default name → export existing name as 'default'
       if (typeof val === 'string' && (hasFunc(val) || ctx.scope.globals.has(val))) {
-        ctx.func.exports['default'] = val  // alias
+        ctx.funcs.exports['default'] = val  // alias
         return null
       }
       // export default arrow → create function named 'default'
-      ctx.func.exports['default'] = true
+      ctx.funcs.exports['default'] = true
       if (Array.isArray(val) && val[0] === '=>') {
         if (defFunc('default', prep(val))) return null
       }
@@ -3727,11 +3727,11 @@ function defFunc(name, node) {
   // Only main-module top-level exports become wasm-boundary exports.
   // Sub-module `export let X` is just a re-importable symbol — staying internal
   // unlocks treeshake + type specialization once main stops referencing it.
-  const exported = !!ctx.func.exports[name] && ctx.module.moduleStack.length === 0
+  const exported = !!ctx.funcs.exports[name] && ctx.module.moduleStack.length === 0
   const funcInfo = { name, body, exported, sig, ...(hasDefaults && { defaults }) }
   if (hasRest.length) funcInfo.rest = hasRest[0]  // track rest param name
-  ctx.func.list.push(funcInfo)
-  ctx.func.names.add(name)
+  ctx.funcs.list.push(funcInfo)
+  ctx.funcs.names.add(name)
   return true
 }
 
@@ -3818,11 +3818,11 @@ function prepareModule(specifier, source) {
   }
 
   // Save caller state
-  const savedScope = ctx.scope.chain, savedExports = ctx.func.exports
-  const savedFuncCount = ctx.func.list.length  // track new funcs from this module
+  const savedScope = ctx.scope.chain, savedExports = ctx.funcs.exports
+  const savedFuncCount = ctx.funcs.list.length  // track new funcs from this module
   const savedModulePrefix = ctx.module.currentPrefix
   ctx.scope.chain = derive(savedScope)  // inherit parent scope
-  ctx.func.exports = Object.create(null)  // name-keyed: prototype-less (see derive)
+  ctx.funcs.exports = Object.create(null)  // name-keyed: prototype-less (see derive)
   ctx.module.currentPrefix = prefix
 
   try {
@@ -3861,7 +3861,7 @@ function prepareModule(specifier, source) {
     // `exportLocal(name, name)`) already have exportName === localName, so this
     // is a no-op there.
     if (localName !== exportName) moduleExports.set(localName, mangled)
-    const func = ctx.func.list.find(f => f.name === localName)
+    const func = ctx.funcs.list.find(f => f.name === localName)
     if (func) { renameFunc(func, mangled); func._modulePrefix = prefix }
     if (ctx.scope.globals.has(localName)) {
       // Records carry no name — a rename is a pure Map re-key.
@@ -3871,8 +3871,8 @@ function prepareModule(specifier, source) {
       if (ctx.scope.globalTypes.has(localName)) { ctx.scope.globalTypes.set(mangled, ctx.scope.globalTypes.get(localName)); ctx.scope.globalTypes.delete(localName) }
     }
   }
-  for (const name of Object.keys(ctx.func.exports)) {
-    const val = ctx.func.exports[name]
+  for (const name of Object.keys(ctx.funcs.exports)) {
+    const val = ctx.funcs.exports[name]
     // Default export alias: export default existingName → map 'default' to that name's mangled form
     if (name === 'default' && typeof val === 'string') {
       // Will resolve after all named exports are mangled
@@ -3889,11 +3889,11 @@ function prepareModule(specifier, source) {
       // prefix would break in-module call sites that still reference the
       // original mangled name. Pass through verbatim.
       if (val.includes('$') &&
-          (ctx.func.list.some(f => f.name === val) || ctx.scope.globals.has(val))) {
+          (ctx.funcs.list.some(f => f.name === val) || ctx.scope.globals.has(val))) {
         moduleExports.set(name, val)
         continue
       }
-      if (ctx.func.list.some(f => f.name === val || f.name === `${prefix}$${val}`) || ctx.scope.globals.has(val) || ctx.scope.globals.has(`${prefix}$${val}`)) {
+      if (ctx.funcs.list.some(f => f.name === val || f.name === `${prefix}$${val}`) || ctx.scope.globals.has(val) || ctx.scope.globals.has(`${prefix}$${val}`)) {
         exportLocal(name, val)
         continue
       }
@@ -3903,8 +3903,8 @@ function prepareModule(specifier, source) {
     exportLocal(name, name)
   }
   // Resolve default export alias after named exports are mangled
-  if (typeof ctx.func.exports['default'] === 'string') {
-    const alias = ctx.func.exports['default']
+  if (typeof ctx.funcs.exports['default'] === 'string') {
+    const alias = ctx.funcs.exports['default']
     if (moduleExports.has(alias)) {
       // Already renamed as a named export
       moduleExports.set('default', moduleExports.get(alias))
@@ -3922,8 +3922,8 @@ function prepareModule(specifier, source) {
   // (fn property assignments like f32.parse, internal helpers like cleanInt).
   // Funcs added by nested prepareModule calls are tagged with `_modulePrefix`
   // by their own pass; skip those so prefixes don't stack (`a$b$name`).
-  for (let i = savedFuncCount; i < ctx.func.list.length; i++) {
-    const func = ctx.func.list[i]
+  for (let i = savedFuncCount; i < ctx.funcs.list.length; i++) {
+    const func = ctx.funcs.list[i]
     if (func.raw || func.name.startsWith(prefix + '$')) continue
     if (func._modulePrefix && func._modulePrefix !== prefix) continue
     // Cross-module func-prop lifts carry the OWNING module's prefix in their
@@ -3963,8 +3963,8 @@ function prepareModule(specifier, source) {
       for (let j = 0; j < node.length; j++) node[j] = walk(node[j], skip)
       return node
     }
-    for (let i = savedFuncCount; i < ctx.func.list.length; i++) {
-      const func = ctx.func.list[i]
+    for (let i = savedFuncCount; i < ctx.funcs.list.length; i++) {
+      const func = ctx.funcs.list[i]
       if (!func.body) continue
       // Sub-module funcs already had their own walk; parent's rename map doesn't apply.
       if (func._modulePrefix && func._modulePrefix !== prefix) continue
@@ -3991,7 +3991,7 @@ function prepareModule(specifier, source) {
     // mid-prep, skipping this would leave ctx.scope/exports/prefix/moduleStack
     // corrupted for the rest of the pipeline.
     ctx.scope.chain = savedScope
-    ctx.func.exports = savedExports
+    ctx.funcs.exports = savedExports
     ctx.module.currentPrefix = savedModulePrefix
     ctx.module.moduleStack.pop()
   }

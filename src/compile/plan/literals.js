@@ -514,7 +514,7 @@ const scalarizeTypedArrayParams = (func, paramCands) => {
 }
 
 export const scalarizeFunctionTypedArrays = (programFacts) => {
-  const fixedByFunc = new Map(ctx.func.list.map(func => [func, fixedTypedArraysInBody(func.body)]))
+  const fixedByFunc = new Map(ctx.funcs.list.map(func => [func, fixedTypedArraysInBody(func.body)]))
   const sitesByCallee = new Map()
   for (const site of programFacts.callSites) {
     if (!site.callerFunc) continue
@@ -522,7 +522,7 @@ export const scalarizeFunctionTypedArrays = (programFacts) => {
     if (list) list.push(site); else sitesByCallee.set(site.callee, [site])
   }
   let changed = false
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const paramCands = scalarTypedParamCandidates(func, sitesByCallee.get(func.name), fixedByFunc)
     const names = new Set([...paramCands.keys(), ...fixedByFunc.get(func).keys()])
@@ -564,7 +564,7 @@ export const scalarizeFunctionTypedArrays = (programFacts) => {
 //   • scalar (non-TYPED) params are ignored — they can't alias a buffer.
 // Conservatively all-or-nothing per function: any non-fresh/duplicate typed arg ⇒ no fact.
 export const analyzeParamDistinctness = (programFacts) => {
-  const freshByFunc = new Map(ctx.func.list.map(func => [func, freshTypedArrayLocals(func.body)]))
+  const freshByFunc = new Map(ctx.funcs.list.map(func => [func, freshTypedArrayLocals(func.body)]))
   const sitesByCallee = new Map()
   for (const site of programFacts.callSites) {
     if (!site.callerFunc) continue
@@ -574,7 +574,7 @@ export const analyzeParamDistinctness = (programFacts) => {
   // Preserve the old common path without candidate records/callbacks: direct
   // fresh arrays prove in one pass. Only a failed direct proof allocates a
   // record for the forwarding fixpoint below.
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     func.distinctParams = null
     const params = func.sig?.params, sites = sitesByCallee.get(func.name)
     if (!params || !sites?.length) continue
@@ -818,7 +818,7 @@ export function foldStaticConstAggregates(ast) {
   // one can be read from another or from a function body (mirrors the constInts fold).
   const seqs = [ast, ...(ctx.module.moduleInits || [])]
   const moduleStmts = seqs.flatMap(moduleStmtsOf)
-  const funcs = ctx.func.list.filter(f => f.body && !f.raw)
+  const funcs = ctx.funcs.list.filter(f => f.body && !f.raw)
   // A function parameter named `x` rebinds `x` for the whole body — its `x[…]` reads
   // the param, not the module binding (params live on `f.sig`, separate from `.body`,
   // so the body scan can't see them). Such a function is skipped (scan) / excluded
@@ -856,7 +856,7 @@ export function foldStaticConstAggregates(ast) {
 
   const arr = new Map(), obj = new Map(), initStmts = new Map()
   const consider = (name, value, init) => {
-    if (ctx.func.exports?.[name]) return                 // exported → escapes to JS
+    if (ctx.funcs.exports?.[name]) return                 // exported → escapes to JS
     const elems = scalarArrayElems(value)
     if (elems) { arr.set(name, elems); initStmts.set(name, init); return }
     const props = scalarObjectProps(value)
@@ -952,7 +952,7 @@ function scalarizeArrayLiterals(node) {
 
 export const scalarizeFunctionArrayLiterals = () => {
   let changed = false
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     let guard = 0
     while (guard++ < 4) {
@@ -1339,7 +1339,7 @@ const promoteIntArrayLiteralsInBody = (body) => {
 // `includeModule('typedarray')` on a no-op (already loaded) is cheap.
 export const promoteIntArrayLiterals = () => {
   let changed = false
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const r = promoteIntArrayLiteralsInBody(func.body)
     if (r.changed) {
@@ -1353,7 +1353,7 @@ export const promoteIntArrayLiterals = () => {
 
 export const scalarizeFunctionObjectLiterals = () => {
   let changed = false
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     let guard = 0
     while (guard++ < 4) {

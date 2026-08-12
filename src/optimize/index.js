@@ -3764,7 +3764,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
   const counts = new Map()
   if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn, counts)
-  if (cfg && cfg.unswitchStringRepLoop === true && ctx.func.list.length <= 64 &&
+  if (cfg && cfg.unswitchStringRepLoop === true && ctx.funcs.list.length <= 64 &&
       fn.some(n => Array.isArray(n) && n[0] === 'local' && typeof n[1] === 'string' && n[1].endsWith('$ccsso')))
     unswitchStringRepLoop(fn)
   if (cfg && cfg.boolConvertToSelect === true) boolConvertToSelect(fn)
@@ -4649,7 +4649,7 @@ export function treeshake(funcSections, allModuleNodes, opts) {
   while (stack.length) visitCalls(funcByName.get(stack.pop()))
 
   // Compiler-internal funcs (stdlib helpers, allocator wrappers — everything not in the
-  // user's own `ctx.func.list`) carry no source meaning, so an unreachable one is reclaimed
+  // user's own `ctx.funcs.list`) carry no source meaning, so an unreachable one is reclaimed
   // at EVERY opt level: it's never a live-coding aid, just over-production (e.g. `s + '!'`
   // pulls the alloc trio's `__alloc_hdr`, which string concat never calls, and a dead-branch
   // dep like `__str_len`). User funcs are reclaimed only when DCE is on, so O0/O1 keep a

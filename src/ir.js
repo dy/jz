@@ -2302,7 +2302,7 @@ export function multiCount(callNode) {
   if (!Array.isArray(callNode) || callNode[0] !== '()') return 0
   const name = callNode[1]
   if (typeof name !== 'string') return 0
-  const func = ctx.func.map?.get(name)
+  const func = ctx.funcs.map?.get(name)
   return func?.sig.results.length > 1 ? func.sig.results.length : 0
 }
 
@@ -2452,9 +2452,9 @@ export const tcoTailRewrite = (ir, resultType) => {
   if (op === 'call' && typeof ir[1] === 'string') {
     // IR call name is `$name`; func.map keys are bare `name`.
     const calleeName = ir[1].startsWith('$') ? ir[1].slice(1) : ir[1]
-    const callee = ctx.func.map.get(calleeName)
+    const callee = ctx.funcs.map.get(calleeName)
     // If this is a known user func, verify result-type match. Otherwise
-    // (closures, imports, runtime helpers — not in `ctx.func.map`) trust the
+    // (closures, imports, runtime helpers — not in `ctx.funcs.map`) trust the
     // tail-position invariant: emit.js' asParamType/asPtrOffset already wrapped
     // any mismatched call in a conversion op, so a bare `(call $X …)` at the
     // tail of the function/if/block has by construction the same result type

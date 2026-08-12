@@ -80,7 +80,7 @@ function isArenaRewindable(func) {
 
 function exportedFuncNames() {
   const names = new Set()
-  for (const [key, val] of Object.entries(ctx.func.exports)) {
+  for (const [key, val] of Object.entries(ctx.funcs.exports)) {
     const name = val === true ? key : (typeof val === 'string' ? val : null)
     if (name) names.add(name)
   }
@@ -94,7 +94,7 @@ function adviseHeapGrowth() {
 
   const exported = exportedFuncNames()
 
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
 
     const fn = func.name
@@ -183,7 +183,7 @@ function isJsonStringifyCall(node) {
 function adviseSetMapIterationOrder() {
   if (!warningsView().warnings) return
 
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
     const fn = func.name
     const bindings = collectSetMapBindings(func.body)
@@ -278,7 +278,7 @@ function adviseSimdLoops() {
   if (!warningsView().warnings) return
   if (ctx.transform.optimize?.vectorizeLaneLocal === false) return
 
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
     const fn = func.name
 
@@ -341,7 +341,7 @@ function adviseGenericDispatch() {
     scan(body)
     return set
   }
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
     const fn = func.name
     const narrowed = guarded(func.body)

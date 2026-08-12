@@ -27,6 +27,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { compile } from '../index.js'
+import { ctx } from '../src/ctx.js'
 import { onKernel } from './_matrix.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -136,6 +137,25 @@ const CLOSURE_LOOP_B = `
     counter = inc() - inc()
     return total + acc + counter
   }`
+
+test('ProgramFunctions authority is distinct from the active function frame', () => {
+  if (onKernel()) return
+  compile(MINIMAL)
+  ok(ctx.funcs && ctx.funcs !== ctx.func, 'program registry and active frame must be separate records')
+  ok(Array.isArray(ctx.funcs.list) && ctx.funcs.list.length > 0, 'program registry owns the prepared function list')
+  ok(ctx.funcs.names instanceof Set && ctx.funcs.map instanceof Map, 'program registry owns its derived indexes')
+  ok(!('list' in ctx.func) && !('names' in ctx.func) && !('map' in ctx.func) && !('exports' in ctx.func),
+    'active frame retains no compatibility mirror of ProgramFunctions fields')
+})
+
+test('ProgramFunctions resets between sequential compiles', () => {
+  if (onKernel()) return
+  compile('export let first = () => 1')
+  ok(ctx.funcs.names.has('first'), 'first compile registered its function')
+  compile('export let second = () => 2')
+  ok(!ctx.funcs.names.has('first') && ctx.funcs.names.has('second'),
+    'second compile receives a fresh program registry, not the prior session catalog')
+})
 
 test('session-reentrancy: closure/loop-plan A then structurally-similar B — warm matches fresh-process (audit-#19 stale-plan probe)', () => {
   if (onKernel()) return

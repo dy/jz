@@ -58,6 +58,6 @@ export function frontHalf(code, { strict, jzify, time = (n, f) => f(), afterPrep
   if (afterPrepare) afterPrepare()
   // preEval: fold every statically-evaluable construct (numeric/string/bool chains,
   // pure Math.* calls, zero-arg pure calls incl. lift-iife's IIFEs) down to literals,
-  // over the prepared AST + every ctx.func.list body, before compile ever sees them.
+  // over the prepared AST + every ctx.funcs.list body, before compile ever sees them.
   return time('preEval', () => preEval(ast))
 }

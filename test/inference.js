@@ -1359,7 +1359,7 @@ test('bare-escape scan: Math.imul multi-arg list passes idx-mode through its com
 // LOCAL behavior unchanged — a nested `=>` stays a separate scope/body) —
 // `true` descends into nested arrow bodies too, since an inline callback
 // closure (`.forEach(x => { g = x })`) is never lifted to its own
-// ctx.func.list entry at prepare time and would otherwise be invisible to
+// ctx.funcs.list entry at prepare time and would otherwise be invisible to
 // a scan that stops at `=>`. `inferModuleIntGlobals` calls it ONCE over a
 // synthetic whole-program body (module-init AST + every function body
 // concatenated) — a global's relevant scope for the "does every read

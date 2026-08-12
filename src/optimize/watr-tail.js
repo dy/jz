@@ -150,7 +150,7 @@ function insertLikeCompileFuncsPush(module, funcNode) {
 }
 
 // Command-mode export names iterated in this fixed order when a source exports both
-// — src/compile/index.js used to walk `Object.entries(ctx.func.exports)` (source
+// — src/compile/index.js used to walk `Object.entries(ctx.funcs.exports)` (source
 // declaration order); no WASI test declares both `run` and `_start` as aliases of the
 // same target, so this fixed order is an intentional, disclosed narrowing (see
 // legalizeForTarget's doc comment), not a rediscovery of that removed ctx read.
@@ -161,7 +161,7 @@ const WASI_COMMAND_ENTRIES = ['run', '_start']
  * wasmtime/wasmer reject f64-returning functions under those names. Ported from
  * src/compile/index.js's (removed) pre-assembly rewrite onto the assembled tree:
  * finds the target func by name instead of mutating `sec.funcs` in place. The
- * target is discovered structurally, not via `ctx.func.exports` — a direct
+ * target is discovered structurally, not via `ctx.funcs.exports` — a direct
  * `export let run = …` shows up as an inline `['export', '"run"']` on the func
  * node itself; `export { main as run }` shows up as a customs alias entry
  * `['export', '"run"', ['func', '$main']]` (src/compile/index.js's "Named export

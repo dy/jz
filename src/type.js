@@ -2165,7 +2165,7 @@ const typedElemCtorOf = (name, locals) =>
 // near 2^32 doesn't wrap; bitwise/store consumers are ToInt32-exact and keep the i32 bits.
 const isUnsignedI32Expr = (e, locals) => Array.isArray(e) && (
   e[0] === '>>>' ||
-  (e[0] === '()' && typeof e[1] === 'string' && ctx.func.map?.get(e[1])?.sig?.unsignedResult === true) ||
+  (e[0] === '()' && typeof e[1] === 'string' && ctx.funcs.map?.get(e[1])?.sig?.unsignedResult === true) ||
   (e[0] === '[]' && typeof e[1] === 'string' && typedElemAux(typedElemCtorOf(e[1], locals)) === 5)
 )
 
@@ -2432,7 +2432,7 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
     // (mix in callback bench: i32-FNV) keep h as an i32 local instead of widening
     // to f64 and round-tripping i32↔f64 every iteration.
     if (typeof args[0] === 'string') {
-      const f = ctx.func.map?.get(args[0])
+      const f = ctx.funcs.map?.get(args[0])
       if (f?.sig?.results?.length === 1 && f.sig.results[0] === 'i32' && f.sig.ptrKind == null) return 'i32'
       if (f?.sig?.results?.length === 1 && f.sig.results[0] === 'v128') return 'v128'   // SIMD helper
     }

@@ -580,7 +580,7 @@ export function exprSchemaId(expr, localSchemaMap) {
   const op = expr[0]
   if (op === '{}') return objLiteralSchemaId(expr)
   if (op === '()' && typeof expr[1] === 'string') {
-    const f = ctx.func.map?.get(expr[1])
+    const f = ctx.funcs.map?.get(expr[1])
     if (f?.valResult === VAL.OBJECT && f.sig?.ptrAux != null) return f.sig.ptrAux
     return null
   }

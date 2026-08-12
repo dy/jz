@@ -255,12 +255,12 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         // PROVEN object/hash receiver keeps `length` as a real property.
         const lenVt = prop === 'length' ? ctx.scope.globalValTypes?.get(obj) : null
         const lengthIsResize = prop === 'length' && lenVt !== VAL.OBJECT && lenVt !== VAL.HASH
-        if (!lengthIsResize && typeof obj === 'string' && (ctx.scope.globals.has(obj) || ctx.func.names.has(obj))) {
+        if (!lengthIsResize && typeof obj === 'string' && (ctx.scope.globals.has(obj) || ctx.funcs.names.has(obj))) {
           if (!acc.propMap.has(obj)) acc.propMap.set(obj, new Set())
           acc.propMap.get(obj).add(prop)
         }
       }
-      if (op === '()' && isFuncRef(args[0], ctx.func.names)) {
+      if (op === '()' && isFuncRef(args[0], ctx.funcs.names)) {
         // Record the call site even inside an arrow body. The param-inference
         // lattice (narrow.js) must see EVERY arg a callee receives — including
         // calls made from a closure (`mfb(() => ci(2))`) — or it over-specializes:
@@ -275,12 +275,12 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         }
         for (let i = 1; i < args.length; i++) {
           const a = args[i]
-          if (isFuncRef(a, ctx.func.names)) acc.valueUsed.add(a)
+          if (isFuncRef(a, ctx.funcs.names)) acc.valueUsed.add(a)
           else walkFacts(a, true, inArrow, caller)
         }
         return
       }
-      if ((op === '.' || op === '?.') && isFuncRef(args[0], ctx.func.names)) return
+      if ((op === '.' || op === '?.') && isFuncRef(args[0], ctx.funcs.names)) return
       if (op === 'let' || op === 'const') {
         for (const decl of args) {
           if (Array.isArray(decl) && decl[0] === '=' && decl.length >= 3) {
@@ -305,7 +305,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
             // name case, never re-marks the LHS.
             observeNodeFacts(decl, acc)
             const name = decl[1]
-            if (typeof name === 'string' && ctx.func.names.has(name)) {
+            if (typeof name === 'string' && ctx.funcs.names.has(name)) {
               const isFuncLit = Array.isArray(decl[2]) && decl[2][0] === '=>'
               if (isFuncLit || caller?.name !== name) acc.valueUsed.add(name)
             }
@@ -313,7 +313,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
             // is a VALUE use: resolveClosureWidth must size the uniform ABI to the
             // referenced function's full arity, or its boundary trampoline forwards
             // $__a{k} slots it never declared. Mirrors the '=' handler below.
-            if (isFuncRef(decl[2], ctx.func.names)) acc.valueUsed.add(decl[2])
+            if (isFuncRef(decl[2], ctx.funcs.names)) acc.valueUsed.add(decl[2])
             else walkFacts(decl[2], true, inArrow, caller)
           } else walkFacts(decl, true, inArrow, caller)
         }
@@ -323,12 +323,12 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         // RHS may be a bare function reference (`store[0] = pick3`) — record it as a
         // value use so resolveClosureWidth sizes the closure ABI to its arity. Matches
         // the func-ref handling in the call/let/general cases below.
-        if (isFuncRef(args[1], ctx.func.names)) acc.valueUsed.add(args[1])
+        if (isFuncRef(args[1], ctx.funcs.names)) acc.valueUsed.add(args[1])
         else walkFacts(args[1], true, inArrow, caller)
         return
       }
       for (const a of args) {
-        if (isFuncRef(a, ctx.func.names)) acc.valueUsed.add(a)
+        if (isFuncRef(a, ctx.funcs.names)) acc.valueUsed.add(a)
         else walkFacts(a, true, inArrow, caller)
       }
     } else {
@@ -347,7 +347,7 @@ export function collectProgramFacts(ast) {
   const doArity = !!ctx.closure.make
   const f = emptyWalkFacts()
   mergeWalkFacts(f, walkFactsRoot(ast, true, null, doSchema, false))
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.body && !func.raw) mergeWalkFacts(f, walkFactsRoot(func.body, true, func, doSchema, true))
   }
   const { propMap, valueUsed, callSites } = f
@@ -367,7 +367,7 @@ export function collectProgramFacts(ast) {
   // change this census repair must not smuggle in.
   const initCallSites = (node) => {
     if (!Array.isArray(node)) return
-    if (node[0] === '()' && isFuncRef(node[1], ctx.func.names)) {
+    if (node[0] === '()' && isFuncRef(node[1], ctx.funcs.names)) {
       const a = node[2]
       const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
       f.callSites.push({ callee: node[1], argList, callerFunc: null, node })
@@ -846,7 +846,7 @@ export function observeProgramSlots(ast, opts) {
     const c = typedElemCtor(expr)
     if (c) return c
     if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-      const f = ctx.func.map?.get(expr[1])
+      const f = ctx.funcs.map?.get(expr[1])
       if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) return ctorFromElemAux(f.sig.ptrAux)
     }
     return null
@@ -987,7 +987,7 @@ export function observeProgramSlots(ast, opts) {
   }
   const prevOverlay = ctx.func.localValTypesOverlay
   if (ast) { ctx.func.localValTypesOverlay = null; teOverlay = null; maskMax = collectMaskMax(ast); visit(ast) }
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const facts = analyzeBody(func.body)
     ctx.func.localValTypesOverlay = facts.valTypes
@@ -1391,7 +1391,7 @@ export function collectSlotWriteHazards(ast, opts) {
   // overlay both fall to unknown and the scan poisons the world.
   const prevOverlay = ctx.func.localValTypesOverlay
   if (ast) { ctx.func.localValTypesOverlay = null; curSids = null; visit(ast) }
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     ctx.func.localValTypesOverlay = analyzeBody(func.body).valTypes
     curSids = late ? collectBodyElemSids(func, opts.paramReps) : null
@@ -1486,10 +1486,10 @@ const _NG_SAFE_METHODS = new Set([
  *  call graph) and stamp `paramReps[f][k].neverGrown` for safe-read params.
  *  Consumed at emit via localReps (module/array.js's raw-base fast path). */
 export function analyzeParamNeverGrown(paramReps) {
-  if (!ctx.func?.list?.length) return
+  if (!ctx.funcs.list.length) return
   const poisoned = new Set(), edges = new Map()
   const prevOverlay = ctx.func.localValTypesOverlay
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const facts = analyzeBody(func.body)
     ctx.func.localValTypesOverlay = facts.valTypes
@@ -1533,9 +1533,9 @@ export function analyzeParamNeverGrown(paramReps) {
         // (Arrow LITERAL args are fine — their bodies are scanned right here.)
         const argRoot = n[2]
         const args = Array.isArray(argRoot) && argRoot[0] === ',' ? argRoot.slice(1) : argRoot === undefined ? [] : [argRoot]
-        for (const a of args) if (typeof a === 'string' && ctx.func.map?.has(a)) { dirty = true; return }
+        for (const a of args) if (typeof a === 'string' && ctx.funcs.map?.has(a)) { dirty = true; return }
         if (typeof c === 'string') {
-          if (ctx.func.map?.has(c)) out.add(c)
+          if (ctx.funcs.map?.has(c)) out.add(c)
           else if (!(c.startsWith('math.') || c.startsWith('new.') || _NG_SAFE_CALLEES.has(c))) { dirty = true; return }
         } else if (Array.isArray(c) && (c[0] === '.' || c[0] === '?.') && typeof c[2] === 'string') {
           // A method name WRITTEN anywhere program-wide could be a user
@@ -1569,7 +1569,7 @@ export function analyzeParamNeverGrown(paramReps) {
         if (poisoned.has(callee) || !edges.has(callee)) { poisoned.add(name); changed = true; break }
     }
   }
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw || poisoned.has(func.name) || !edges.has(func.name)) continue
     const params = func.sig?.params || []
     for (let k = 0; k < params.length; k++) {
@@ -1724,7 +1724,7 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
     flipped = false
     curSids = null
     if (ast) visit(ast, bodyIntCertainOf(ast, fresh))
-    for (const func of ctx.func.list) {
+    for (const func of ctx.funcs.list) {
       if (!func.body || func.raw) continue
       curSids = bodySidsOf(func)
       visit(func.body, bodyIntCertainOf(func.body, fresh))

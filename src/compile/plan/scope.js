@@ -82,7 +82,7 @@ export const inferModuleLetTypes = (ast) => {
   // typed before inlining runs, did not). `@`/`:` can't occur in a JS identifier,
   // so the virtual key never collides with a real binding.
   const fnames = new Set()
-  for (const f of ctx.func.list) if (f.body && !f.raw && typeof f.name === 'string') fnames.add(f.name)
+  for (const f of ctx.funcs.list) if (f.body && !f.raw && typeof f.name === 'string') fnames.add(f.name)
   // Typed-array methods that preserve the receiver's element ctor: `.subarray`
   // and `.slice` (same-kind view/copy), `.map` (same-kind, per propagateTyped).
   const CTOR_PRESERVING = new Set(['subarray', 'slice', 'map'])
@@ -167,7 +167,7 @@ export const inferModuleLetTypes = (ast) => {
   walk(ast, 'mod', null)
   // Defensive sweep: cover any func.list body not reachable by descent from `ast`
   // (hoisted / submodule). Name-stable scope keeps it idempotent with the descent.
-  for (const f of ctx.func.list) if (f.body && !f.raw) enterFn(f.body, f.name)
+  for (const f of ctx.funcs.list) if (f.body && !f.raw) enterFn(f.body, f.name)
 
   // Least-fixed-point over the alias graph. join: null is bottom, MIXED is top.
   const join = (a, b) => a === MIXED || b === MIXED ? MIXED : a == null ? b : b == null ? a : a === b ? a : MIXED
@@ -351,11 +351,11 @@ const GLOBAL_VT_CONFLICT = Symbol('global-vt-conflict')
 // Exported mutable global — the wasm export lets the host assign it any value
 // through `instance.exports.name.value = …`, a write no AST scan can see.
 // `mut: false` (const) globals export as immutable wasm globals — the JS API
-// throws on `.value =`, so a const export is safe regardless of `ctx.func.exports`.
+// throws on `.value =`, so a const export is safe regardless of `ctx.funcs.exports`.
 const isHostWritableGlobal = (name) => {
   const decl = ctx.scope.globals.get(name)
   if (!decl?.mut) return false
-  for (const [exportName, val] of Object.entries(ctx.func.exports || {}))
+  for (const [exportName, val] of Object.entries(ctx.funcs.exports || {}))
     if (val === name || (val === true && exportName === name)) return true
   return false
 }
@@ -378,13 +378,13 @@ export const inferModuleGlobalValTypes = (ast, paramReps) => {
   const candidates = new Set()
   for (const name of ctx.scope.userGlobals) {
     if (ctx.scope.globalValTypes?.get(name)) continue      // already proven (recordGlobalRep / inferModuleLetTypes / a prior call)
-    if (ctx.func.names?.has(name)) continue                 // a function binding, not a data global
+    if (ctx.funcs.names?.has(name)) continue                 // a function binding, not a data global
     if (isHostWritableGlobal(name)) continue                 // host can write any bit pattern — no claim possible
     candidates.add(name)
   }
   if (!candidates.size) return
 
-  const fnames = ctx.func.names || new Set()
+  const fnames = ctx.funcs.names || new Set()
   // defs keys: bare candidate names (module-wide — globally unique) and
   // `@ret:<fn>` virtual nodes (also globally unique). No scope qualification
   // needed — everything that ISN'T a candidate-to-candidate or fn-return alias
@@ -486,7 +486,7 @@ export const inferModuleGlobalValTypes = (ast, paramReps) => {
   }
   findArrows(ast)
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) findArrows(init)
-  for (const f of ctx.func.list) {
+  for (const f of ctx.funcs.list) {
     if (!f.body || f.raw) continue
     walkFn(f.body, (f.sig?.params || []).map(p => p.name), f.name)
   }
@@ -567,7 +567,7 @@ export const inferModuleIntGlobals = (ast) => {
     const decl = ctx.scope.globals.get(name)
     if (!(decl?.mut && decl.type === 'f64')) continue
     if (ctx.scope.globalValTypes?.get(name) !== VAL.NUMBER) continue
-    if (ctx.func.names?.has(name)) continue
+    if (ctx.funcs.names?.has(name)) continue
     candidates.add(name)
   }
   if (!candidates.size) return
@@ -672,7 +672,7 @@ export const inferModuleIntGlobals = (ast) => {
   // without walking them a dep's `export const TWO_PI = Math.PI * 2` records no
   // RHS at all and the integer default i32-demotes it (init truncated 6.283 → 6).
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) walk(init, null)
-  for (const f of ctx.func.list) {
+  for (const f of ctx.funcs.list) {
     if (!f.body || f.raw) continue
     const params = new Set((f.sig?.params || []).map(p => p.name))
     walk(f.body, params.size ? { params, fn: f.name } : null)
@@ -720,12 +720,12 @@ export const inferModuleIntGlobals = (ast) => {
   //     widenLocalTypes' CMP_OPS pass already accepts, generalized to
   //     program-wide governance the same way the escape scope itself is) —
   //     via collectBareEscapes' crossClosure mode, so an escape hiding
-  //     inside an inline arrow (never lifted to its own ctx.func.list
+  //     inside an inline arrow (never lifted to its own ctx.funcs.list
   //     entry) is still caught.
   let strictLevel = null, bareEscaped = null
   if (candidates.size) {
     const funcBodies = []
-    for (const f of ctx.func.list) if (f.body && !f.raw) funcBodies.push(f.body)
+    for (const f of ctx.funcs.list) if (f.body && !f.raw) funcBodies.push(f.body)
     const programBody = [';', ast, ...(ctx.module.moduleInits || []), ...funcBodies]
     strictLevel = intLevelMap(programBody)
     if ([...candidates].some(n => strictLevel.get(n) !== 2))
@@ -769,14 +769,14 @@ export const inferModuleIntGlobals = (ast) => {
  * eliminate the `__dyn_*` machinery from a namespace-only program outright.
  */
 export const flattenFuncNamespaces = (ast) => {
-  const names = ctx.func.names
+  const names = ctx.funcs.names
   if (!names?.size) return false
   // Cheap structural gate: a flattenable namespace exists only if some lifted
   // `f$prop` name's `f` is itself a function (prepare lifts every `f.prop =
   // arrow` — multiProp slots included). The base `f` may itself carry a module
   // prefix (`mod$f`), so scan every `$` boundary, not just the first; a
   // populated `multiProp` registry is itself a direct namespace witness.
-  let hasNs = ctx.func.multiProp.size > 0
+  let hasNs = ctx.funcs.multiProp.size > 0
   if (!hasNs) outer: for (const n of names) {
     for (let i = n.indexOf('$'); i > 0; i = n.indexOf('$', i + 1))
       if (names.has(n.slice(0, i))) { hasNs = true; break outer }
@@ -792,7 +792,7 @@ export const flattenFuncNamespaces = (ast) => {
     let decide
     const plan = (prop, d) => { if (!decide) flat.set(f, decide = new Map()); decide.set(prop, d) }
     for (const prop of info.props) {
-      if (ctx.func.multiProp.has(`${f}.${prop}`)) { plan(prop, { global: `${f}${T}${prop}` }); continue }
+      if (ctx.funcs.multiProp.has(`${f}.${prop}`)) { plan(prop, { global: `${f}${T}${prop}` }); continue }
       const w = info.writes.get(prop)
       // Single top-level write of the lifted `$f$prop` (the `f.prop = arrow`
       // definition shape): calls to it already lower to a direct `call $f$prop`,
@@ -852,7 +852,7 @@ export const flattenFuncNamespaces = (ast) => {
   ast.length = 0
   for (let i = 0; i < newAst.length; i++) ast.push(newAst[i])
   invalidateProgramFactsCache(ast)
-  for (const fn of ctx.func.list) {
+  for (const fn of ctx.funcs.list) {
     if (fn.body && !fn.raw) fn.body = rewrite(fn.body)
     // Default-param values are AST stored OUTSIDE fn.body (fn.defaults) — a
     // closure default like subscript's `dispatch = (ops, tail, fn = (…) => {…
@@ -890,10 +890,10 @@ export const flattenFuncNamespaces = (ast) => {
  *      from it — so every call site runs strictly post-init, where G ≡ F.
  * Devirt then only swaps an indirect call for a direct call to the very same
  * callee: it cannot change behavior, only drop dispatch overhead. The result is
- * recorded in `ctx.func.globalDevirt` (`Map<global, fn>`) and consumed by emit.
+ * recorded in `ctx.funcs.globalDevirt` (`Map<global, fn>`) and consumed by emit.
  */
 export const devirtGlobalCalls = (ast) => {
-  const fnNames = ctx.func.names
+  const fnNames = ctx.funcs.names
   if (!fnNames?.size || !ctx.scope.globals?.size) return
 
   // Module-init statement stream, in execution order: moduleInits run first in
@@ -972,7 +972,7 @@ export const devirtGlobalCalls = (ast) => {
     for (let i = 1; i < node.length; i++) scanWrites(node[i], false)
   }
   for (const stmt of initStmts) scanWrites(stmt, true)
-  for (const fn of ctx.func.map.values())
+  for (const fn of ctx.funcs.map.values())
     if (fn.body && !fn.raw) scanWrites(fn.body, false)
 
   // Resolve each global's value by a linear pass over init in execution order.
@@ -1030,8 +1030,8 @@ export const devirtGlobalCalls = (ast) => {
 
     const name = `${T}devirt${freshId(ctx)}`
     const funcInfo = { name, body: node[2], exported: false, sig: { params: params.map(n => ({ name: n, type: 'f64' })), results: ['f64'] } }
-    ctx.func.list.push(funcInfo)
-    ctx.func.map.set(name, funcInfo)
+    ctx.funcs.list.push(funcInfo)
+    ctx.funcs.map.set(name, funcInfo)
     fnNames.add(name)
     return name
   }
@@ -1107,7 +1107,7 @@ export const devirtGlobalCalls = (ast) => {
     const f = queue.pop()
     if (reachable.has(f)) continue
     reachable.add(f)
-    const fn = ctx.func.map.get(f)
+    const fn = ctx.funcs.map.get(f)
     if (fn?.body && !fn.raw) seedCalls(fn.body)
   }
   const calledInInit = new Set()
@@ -1115,10 +1115,10 @@ export const devirtGlobalCalls = (ast) => {
     if (devirt.has(c)) calledInInit.add(c)
   })
   for (const s of initStmts) collectCalled(s)
-  for (const f of reachable) { const fn = ctx.func.map.get(f); if (fn?.body) collectCalled(fn.body) }
+  for (const f of reachable) { const fn = ctx.funcs.map.get(f); if (fn?.body) collectCalled(fn.body) }
   for (const g of calledInInit) devirt.delete(g)
 
-  if (devirt.size) ctx.func.globalDevirt = devirt
+  if (devirt.size) ctx.funcs.globalDevirt = devirt
 }
 
 export const materializeAutoBoxSchemas = (programFacts) => {
@@ -1134,13 +1134,13 @@ export const materializeAutoBoxSchemas = (programFacts) => {
       }
       continue
     }
-    const valueProps = [...props].filter(prop => !ctx.func.names.has(`${name}$${prop}`))
+    const valueProps = [...props].filter(prop => !ctx.funcs.names.has(`${name}$${prop}`))
     if (!valueProps.length) continue
     const allProps = [...props]
     const schema = ['__inner__', ...allProps]
     const schemaId = ctx.schema.register(schema)
     ctx.schema.vars.set(name, schemaId)
-    if (ctx.func.names.has(name) && !ctx.scope.globals.has(name))
+    if (ctx.funcs.names.has(name) && !ctx.scope.globals.has(name))
       declGlobal(name, 'f64')
     if (!ctx.schema.autoBox) ctx.schema.autoBox = new Map()
     ctx.schema.autoBox.set(name, { schemaId, schema })
@@ -1160,7 +1160,7 @@ export const resolveClosureWidth = (programFacts) => {
   // 1-arg indirect call emits `(local.get $__a2)` against a 2-param trampoline.
   let maxValueArity = 0
   if (valueUsed) for (const name of valueUsed) {
-    const n = ctx.func.map.get(name)?.sig?.params?.length ?? 0
+    const n = ctx.funcs.map.get(name)?.sig?.params?.length ?? 0
     if (n > maxValueArity) maxValueArity = n
   }
   ctx.closure.width = (hasSpread && hasRest)
@@ -1178,6 +1178,6 @@ export const canSkipWholeProgramNarrowing = (programFacts) =>
   // Typed default-arg annotations (`arr = new Int32Array(0)`) feed the param
   // lattice even with zero call sites — a host-called SPMD kernel (Workers v1)
   // gets its pointer-ABI lane and Atomics receiver proof from exactly this.
-  !ctx.func.list.some(f => f.defaults && Object.values(f.defaults).some(d =>
+  !ctx.funcs.list.some(f => f.defaults && Object.values(f.defaults).some(d =>
     Array.isArray(d) && d[0] === '()' && typeof d[1] === 'string' &&
     d[1].startsWith('new.') && d[1].endsWith('Array')))

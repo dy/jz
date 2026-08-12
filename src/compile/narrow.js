@@ -63,7 +63,7 @@ function filterLiveCallSites(callSites, valueUsed) {
   if (!callSites.length) return
 
   const live = new Set()
-  for (const f of ctx.func.list) {
+  for (const f of ctx.funcs.list) {
     if (f.exported || valueUsed.has(f.name)) live.add(f.name)
   }
 
@@ -89,7 +89,7 @@ function buildCallerCtx() {
   const callerCtx = new Map()
   const globalTE = ctx.scope.globalTypedElem || new Map()
   callerCtx.set(null, { callerLocals: ctx.scope.globalTypes, callerValTypes: ctx.scope.globalValTypes, callerTypedElems: globalTE })
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const facts = analyzeBody(func.body)
     // COPY before adding params: analyzeBody's returned maps are shared cache
@@ -109,7 +109,7 @@ function buildCallerCtx() {
 function buildCallerElems(sliceKey) {
   const m = new Map()
   m.set(null, new Map())
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     m.set(func, analyzeBody(func.body)[sliceKey])
   }
@@ -191,7 +191,7 @@ function callerArgSelfConsistentI32(func, k, callSites) {
 }
 
 function applyI32ParamSpecialization(paramReps, valueUsed, callSites, { skipTyped = false } = {}) {
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.raw || valueUsed.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
@@ -247,7 +247,7 @@ function applyI32ParamSpecialization(paramReps, valueUsed, callSites, { skipType
 // — length evidence for a receiver that never proved typed is dead weight the
 // `.length` fold must not trust.
 function validateTypedLenParams(paramReps, valueUsed) {
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     const hostReachable = func.exported || func.raw || valueUsed.has(func.name)
     const reps = paramReps.get(func.name)
     if (!reps) continue
@@ -269,7 +269,7 @@ function validateTypedLenParams(paramReps, valueUsed) {
 }
 
 function validateIntConstParams(paramReps, valueUsed) {
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.exported || func.raw || valueUsed.has(func.name)) continue
     if (!func.body) continue
     const reps = paramReps.get(func.name)
@@ -291,7 +291,7 @@ function validateIntConstParams(paramReps, valueUsed) {
 }
 
 function applyPointerParamAbi(paramReps, valueUsed, hardParamVal) {
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.exported || func.raw || valueUsed.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
@@ -346,13 +346,13 @@ function applyPointerParamAbi(paramReps, valueUsed, hardParamVal) {
 }
 
 function narrowableFuncs(valueUsed) {
-  return ctx.func.list.filter(f =>
+  return ctx.funcs.list.filter(f =>
     !f.raw && !valueUsed.has(f.name) && f.sig.results.length === 1
   )
 }
 
 function refreshCallerValTypes(callerCtx) {
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const entry = callerCtx.get(func)
     if (entry) entry.callerValTypes = analyzeBody(func.body).valTypes
@@ -383,7 +383,7 @@ function buildCallerTypedCtx() {
   const callerTypedCtx = new Map()
   const globalTE = ctx.scope.globalTypedElem || new Map()
   callerTypedCtx.set(null, globalTE)
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     callerTypedCtx.set(func, callerTypedElemsFor(func, globalTE))
   }
@@ -397,7 +397,7 @@ function buildCallerTypedLenCtx() {
   const out = new Map()
   const globalTL = ctx.scope.globalTypedLen || new Map()
   out.set(null, globalTL)
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const facts = analyzeBody(func.body)
     const local = facts.typedLens || new Map()
@@ -413,7 +413,7 @@ function buildCallerTypedLenCtx() {
 }
 
 function applyTypedPointerParamAbi(paramReps, valueUsed) {
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.exported || func.raw || valueUsed.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
@@ -442,7 +442,7 @@ function applyTypedPointerParamAbi(paramReps, valueUsed) {
 }
 
 function enrichCallerValTypesFromPointerParams(callerCtx) {
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const entry = callerCtx.get(func)
     if (!entry) continue
@@ -456,7 +456,7 @@ function enrichCallerValTypesFromPointerParams(callerCtx) {
 
 function refreshCallerLocals(callerCtx) {
   const prevTE = ctx.types.typedElem
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     // Seed pointer-narrowed params' val-kind so analyzeBody recognises e.g.
     // `n = arr.length` (arr a TYPED/BUFFER pointer param) as an i32 local — without
@@ -509,7 +509,7 @@ function resetParamWasmFacts(paramReps) {
  *
  * Fixpoint: a call to another narrowed func contributes i32; iterate until
  * stable so chains of i32-only helpers all narrow together. exprType already
- * consults ctx.func.map for narrowed user-function results plus the
+ * consults ctx.funcs.map for narrowed user-function results plus the
  * Math.imul/Math.clz32/charCodeAt stdlib subset.
  *
  * Safe for exports — boundary wrapper restores the f64 JS ABI. `return;`
@@ -521,7 +521,7 @@ function narrowI32Results(funcs) {
   // a function already proven unsignedResult. Other i32 tails are signed.
   const isUnsignedTail = (e) => Array.isArray(e) && (
     e[0] === '>>>' ||
-    (e[0] === '()' && typeof e[1] === 'string' && ctx.func.map?.get(e[1])?.sig?.unsignedResult === true)
+    (e[0] === '()' && typeof e[1] === 'string' && ctx.funcs.map?.get(e[1])?.sig?.unsignedResult === true)
   )
   const callsSelf = (n, name) => Array.isArray(n) && ((n[0] === '()' && n[1] === name) || n.some(c => callsSelf(c, name)))
   // Classify a func's return tails as all-v128 / all-i32 (+ sign) under the CURRENT sig.results.
@@ -797,7 +797,7 @@ function typedAuxOfReturn(expr, localElemMap) {
       const ctor = typedElemCtor(expr)
       return ctor != null ? typedElemAux(ctor) : null
     }
-    const f = ctx.func.map.get(args[0])
+    const f = ctx.funcs.map.get(args[0])
     if (f?.valResult === VAL.TYPED && f.sig.ptrAux != null) return f.sig.ptrAux
     return null
   }
@@ -1008,7 +1008,7 @@ const _FIELD_TO_SLICE = {
 /** Propagate Array<T> element facts from return paths into caller paramReps (phase G). */
 function narrowReturnArrayElems(field, paramReps, valueUsed) {
   const sliceKey = _FIELD_TO_SLICE[field]
-  const targets = ctx.func.list.filter(f =>
+  const targets = ctx.funcs.list.filter(f =>
     !f.raw && !f.exported && !valueUsed.has(f.name) &&
     f.valResult === VAL.ARRAY && f[field] == null
   )
@@ -1044,7 +1044,7 @@ function narrowReturnArrayElems(field, paramReps, valueUsed) {
           return null
         }
         if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-          const f = ctx.func.map?.get(expr[1])
+          const f = ctx.funcs.map?.get(expr[1])
           if (f?.[field] != null) return f[field]
         }
         if (Array.isArray(expr) && expr[0] === '?:') {
@@ -1135,7 +1135,7 @@ function inferInternalArrayLengths(paramReps) {
     return false
   }
   const funcLens = new Map()
-  for (const f of ctx.func.list) {
+  for (const f of ctx.funcs.list) {
     if (f.raw || !Array.isArray(f.body)) continue
     const arr = returnedName(f.body)
     if (!arr) continue
@@ -1191,7 +1191,7 @@ function inferInternalArrayLengths(paramReps) {
   // fact across known reader helpers. Any alias, closure capture, return,
   // indexed/property write, method call, or unknown call poisons the summary.
   const carries = carriesName
-  const funcs = ctx.func.list.filter(f => !f.raw && Array.isArray(f.body))
+  const funcs = ctx.funcs.list.filter(f => !f.raw && Array.isArray(f.body))
   const safeParams = new Map(funcs.map(f => [f.name, f.sig.params.map(() => true)]))
   for (const f of funcs) {
     const ps = new Map(f.sig.params.map((p, i) => [p.name, i])), safe = safeParams.get(f.name)
@@ -1377,7 +1377,7 @@ function singleDefRhs(body, name) {
  *  swapping its `constIntExpr` (repOf-based) arg resolver for the caller-
  *  safe one. */
 function builderTypedArrayLen(calleeName, paramReps) {
-  const f = ctx.func.map?.get(calleeName)
+  const f = ctx.funcs.map?.get(calleeName)
   if (!f?.body || f.raw) return null
   const rs = returnExprs(f.body)
   const arr = rs.length && rs.every(x => typeof x === 'string' && x === rs[0]) ? rs[0] : null
@@ -1550,7 +1550,7 @@ function inferTypedValueRanges(paramReps) {
   // Expressions that can evaluate to the array object itself. Element/property
   // reads merely consume it and must not be mistaken for aliases.
   const carries = carriesName
-  const funcs = ctx.func.list.filter(f => !f.raw && Array.isArray(f.body))
+  const funcs = ctx.funcs.list.filter(f => !f.raw && Array.isArray(f.body))
   const summaries = new Map()
   for (const f of funcs) summaries.set(f.name, f.sig.params.map(() => ({ range: null, writes: false, bad: false })))
 
@@ -1735,7 +1735,7 @@ export default function narrowSignatures(programFacts, ast) {
   // whose callee is exported / value-used / unknown, or whose caller has no ctx.
   const siteState = (cs) => {
     const { callee, argList, callerFunc } = cs
-    const func = ctx.func.map.get(callee)
+    const func = ctx.funcs.map.get(callee)
     if (!func || func.exported || valueUsed.has(callee)) return null
     const ctxEntry = callerCtx.get(callerFunc)
     if (!ctxEntry) return null
@@ -2117,7 +2117,7 @@ export default function narrowSignatures(programFacts, ast) {
   // shape). A WEAK seed: set only at BOTTOM, so call-site facts merge/poison
   // over it as usual. Runtime safety for Atomics receivers is the tag+elem
   // guard in __atomics_addr (module/atomics.js) — a wrong host arg throws.
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.sig?.params || !func.defaults) continue
     for (let k = 0; k < func.sig.params.length; k++) {
       const d = func.defaults[func.sig.params[k].name]
@@ -2342,7 +2342,7 @@ export default function narrowSignatures(programFacts, ast) {
   //  specialization pass below; `ctorFromElemAux` stays in analyze.js next
   //  to its encode/decode partner.)
   // Per-caller typed-elem map, recomputed now that E3 has tagged helper sigs.
-  // Cache invalidation: analyzeBody.typedElems reads `ctx.func.map.get(...).sig.ptrKind`
+  // Cache invalidation: analyzeBody.typedElems reads `ctx.funcs.map.get(...).sig.ptrKind`
   // for `let x = mkInput(...)` decls; entries cached during the initial walk
   // (before E3 ran) are stale (mkInput's ptrKind was unset then).
   phase.clearNarrowingBodyState()
@@ -2376,7 +2376,7 @@ export default function narrowSignatures(programFacts, ast) {
     }
   }
   const callerSidsCtx = new Map()
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const sids = new Map(moduleSids), poisoned = new Set()
     const scan = (n) => {
@@ -2595,7 +2595,7 @@ export default function narrowSignatures(programFacts, ast) {
     return false
   }
   const bigintBoxedVerdict = (fname, k, r) => {
-    const func = ctx.func.map?.get(fname)
+    const func = ctx.funcs.map?.get(fname)
     if (!func?.sig?.params || k >= func.sig.params.length) return false
     const pname = func.sig.params[k].name
     if (isDestructuredParamBody(func, pname)) return true
@@ -2664,7 +2664,7 @@ export default function narrowSignatures(programFacts, ast) {
   for (const [fname, reps] of paramReps) {
     for (const [k, r] of reps) {
       if (r.mayBeUndefined) continue
-      const func = ctx.func.map?.get(fname)
+      const func = ctx.funcs.map?.get(fname)
       if (!func?.sig?.params || k >= func.sig.params.length) continue
       const pname = func.sig.params[k].name
       if (isDestructuredParamBody(func, pname)) { r.mayBeUndefined = true; r.presence = 'maybe-undef'; continue }
@@ -2729,7 +2729,7 @@ export default function narrowSignatures(programFacts, ast) {
   for (const [fname, reps] of paramReps) {
     for (const [k, r] of reps) {
       if (r.presentVal) continue
-      const func = ctx.func.map?.get(fname)
+      const func = ctx.funcs.map?.get(fname)
       if (!func?.sig?.params || k >= func.sig.params.length) continue
       const pname = func.sig.params[k].name
       if (isDestructuredParamBody(func, pname)) continue
@@ -2757,7 +2757,7 @@ export default function narrowSignatures(programFacts, ast) {
   // UNTYPED f64 param boxes to its TRUE/FALSE atom (boolean identity crosses
   // the boundary), while a val-known param keeps the raw 0/1 ABI its body
   // assumes. Read by coerceArg (emit.js).
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.sig || func.raw) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
@@ -2783,7 +2783,7 @@ export default function narrowSignatures(programFacts, ast) {
   // param — a wider possibleKinds set from more call sites is always safe to
   // ADD later; downgrading a wrongly-'closed' mark is not, so this only ever
   // marks 'closed' where the predicate holds, never guesses.
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.raw || func.exported || valueUsed.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
@@ -2825,7 +2825,7 @@ export function applyJsstringBoundaryCarrierStandalone(programFacts) {
  * unconditionally — pointer/array/number results are untouched.
  */
 export function narrowBoolResults() {
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.raw || func.valResult || !func.body || func.sig.results.length !== 1) continue
     const body = func.body
     const isBlock = isBlockBody(body)
@@ -2942,7 +2942,7 @@ function paramAllUsesJsstringMappable(body, name, safeCC) {
 }
 
 function applyJsstringBoundaryCarrier(paramReps, valueUsed) {
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.raw || !func.exported) continue
     if (!func.body) continue
     if (func.rest) continue                          // rest position stays packed-array
@@ -2984,7 +2984,7 @@ function applyJsstringBoundaryCarrier(paramReps, valueUsed) {
 export function adviseJsstringCarrier(paramReps, valueUsed) {
   if (!warningsView().warnings || !jsstringEnabled()) return
 
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.raw || !func.exported || !func.body || func.rest) continue
     if (valueUsed?.has(func.name)) continue
 
@@ -3080,7 +3080,7 @@ export function strictBoundaryTypeCheck(programFacts) {
   }
 
   for (const cs of callSites) {
-    const func = ctx.func.map.get(cs.callee)
+    const func = ctx.funcs.map.get(cs.callee)
     if (!func || func.raw || !func.sig) continue
     if (func.rest) continue                       // rest packs args into an array
     for (let k = 0; k < cs.argList.length && k < func.sig.params.length; k++) {
@@ -3137,7 +3137,7 @@ export function specializeBimorphicTyped(programFacts) {
   // Per-caller typed-param map: caller's own params that F/G already narrowed
   // (so transitive `sum(arr)` inside a func that took `arr` from above resolves).
   const callerTypedParamsCtx = new Map()
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     const m = paramFactsOf(paramReps, func, 'typedCtor') || null
     let acc = m
     if (func.sig?.params) for (const p of func.sig.params) {
@@ -3149,8 +3149,8 @@ export function specializeBimorphicTyped(programFacts) {
     if (acc) callerTypedParamsCtx.set(func, acc)
   }
 
-  // Snapshot ctx.func.list — we'll be appending clones during the loop.
-  const originals = ctx.func.list.slice()
+  // Snapshot ctx.funcs.list — we'll be appending clones during the loop.
+  const originals = ctx.funcs.list.slice()
   for (const func of originals) {
     if (func.exported || func.raw || valueUsed.has(func.name)) continue
     if (!func.body) continue
@@ -3304,7 +3304,7 @@ export function specializeValKindDichotomy(programFacts) {
   // inputs) — module-scope, built once, same shape narrowSignatures' D-phase uses.
   const callerCtx = buildCallerCtx()
 
-  const originals = ctx.func.list.slice()
+  const originals = ctx.funcs.list.slice()
   for (const func of originals) {
     if (func.exported || func.raw || valueUsed.has(func.name)) continue
     if (!func.body) continue
@@ -3428,12 +3428,12 @@ export function specializeUnionCursorParams(programFacts) {
   if (!cursorsBySig?.size) return clones
   const { valueUsed, paramReps } = programFacts
   const candidateNames = new Set()
-  for (const func of ctx.func.list)
+  for (const func of ctx.funcs.list)
     if (!func.raw && func.sig && cursorsBySig.get(func.sig)?.size) candidateNames.add(func.name)
   const sitesByCallee = new Map()
-  for (const func of ctx.func.list) if (!func.raw && func.body)
+  for (const func of ctx.funcs.list) if (!func.raw && func.body)
     collectUnionSites(func.body, func, candidateNames, sitesByCallee)
-  const originals = ctx.func.list.slice()
+  const originals = ctx.funcs.list.slice()
   for (const func of originals) {
     if (func.exported || func.raw || func.rest || !func.body || valueUsed.has(func.name)) continue
     const cursors = cursorsBySig.get(func.sig)
@@ -3529,7 +3529,7 @@ export function speculateTypedParams(programFacts, ast) {
   }
   const callerTypedCtx = buildCallerTypedCtx()
   const callerTypedParamsCtx = new Map()
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     const m = paramFactsOf(paramReps, func, 'typedCtor') || null
     let acc = m
     if (func.sig?.params) for (const p of func.sig.params) {
@@ -3557,7 +3557,7 @@ export function speculateTypedParams(programFacts, ast) {
   function retCensus(fname, depth) {
     if (retMemo.has(fname)) return retMemo.get(fname)
     retMemo.set(fname, null)                       // cycle guard
-    const func = ctx.func.map.get(fname)
+    const func = ctx.funcs.map.get(fname)
     if (!func?.body || func.raw || depth > MAX_DEPTH) return null
     const te = analyzeBody(func.body).typedElems
     let ctor = null
@@ -3600,7 +3600,7 @@ export function speculateTypedParams(programFacts, ast) {
     if (proven) return proven
     if (Array.isArray(arg)) {
       if (arg[0] === '.' && typeof arg[2] === 'string') return ctx.schema.slotTypedCtorByProp(arg[2])
-      if (arg[0] === '()' && typeof arg[1] === 'string' && ctx.func.map.has(arg[1])) return retCensus(arg[1], depth)
+      if (arg[0] === '()' && typeof arg[1] === 'string' && ctx.funcs.map.has(arg[1])) return retCensus(arg[1], depth)
       return typedElemCtor(arg)
     }
     if (typeof arg !== 'string') return null
@@ -3667,7 +3667,7 @@ export function speculateTypedParams(programFacts, ast) {
   }
 
   const DBG = typeof process !== 'undefined' && !!process.env?.JZ_DBG_SPEC
-  const originals = ctx.func.list.slice()
+  const originals = ctx.funcs.list.slice()
   for (const func of originals) {
     if (func.raw || func.rest || !func.body) continue
     if (func.sig?.results?.length !== 1) continue
@@ -3813,7 +3813,7 @@ export function refineDynKeys(programFacts) {
   const isLive = f => f.exported || paramReps.has(f.name) || (valueUsed && valueUsed.has(f.name))
 
   const topMap = buildTypeMap(null, null, null)
-  for (const f of ctx.func.list) {
+  for (const f of ctx.funcs.list) {
     if (real) break
     if (!f.body || !isLive(f)) continue
     visit(buildTypeMap(f.name, f.body, f.sig?.params), f.body)

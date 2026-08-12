@@ -92,7 +92,7 @@ export function scanDynClosureTableCandidates(ast) {
   // that never declare them (the normal case — a global's uses are scattered
   // across every function that touches it, not just its declaring scope).
   const bodies = [...topRoots]
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.body && !func.raw) bodies.push(func.body)
     if (func.defaults) for (const dv of Object.values(func.defaults)) bodies.push(dv)
   }
@@ -209,7 +209,7 @@ export function scanClosureTableLatticeCandidates(ast) {
   if (!candidates.size) return candidates
 
   const bodies = [...topRoots]
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.body && !func.raw) bodies.push(func.body)
     if (func.defaults) for (const dv of Object.values(func.defaults)) bodies.push(dv)
   }
@@ -230,13 +230,13 @@ export function scanClosureTableLatticeCandidates(ast) {
 
 // True when `name` is a top-level `export` binding (`export let name = …` /
 // `export {name}` / re-export). Mirrors plan/scope.js's isHostWritableGlobal
-// shape check (same `ctx.func.exports` map: exportName -> bound name, or
+// shape check (same `ctx.funcs.exports` map: exportName -> bound name, or
 // `true` for a same-name shorthand export). An exported imperative table can
 // be *reassigned wholesale* by the host between calls (`instance.exports.
 // name.value = …`) — no AST scan sees that, so it disqualifies here exactly
 // as isHostWritableGlobal disqualifies a mutable exported global elsewhere.
 const isExportedName = (name) => {
-  for (const [exportName, val] of Object.entries(ctx.func.exports || {}))
+  for (const [exportName, val] of Object.entries(ctx.funcs.exports || {}))
     if (val === name || (val === true && exportName === name)) return true
   return false
 }
@@ -364,7 +364,7 @@ function everyUseIsIndexedCallOrLiteralWrite(node, name, sink, inLoop) {
  *      imperativeClosureTableEarlyMergeable) — compile/index.js's per-body
  *      bodyName only exists once THAT function has emitted, and closure
  *      bodies queued during function emission COMPILE as soon as every
- *      function in ctx.func.list has emitted (compilePendingClosures' first
+ *      function in ctx.funcs.list has emitted (compilePendingClosures' first
  *      flush) — before module-init code (`ast`/moduleInits) has emitted at
  *      all. A candidate confined ENTIRELY to function bodies (jessie's shape:
  *      writes inside `register`, reads inside `next`, both ordinary named
@@ -392,7 +392,7 @@ export function scanImperativeClosureTableLatticeCandidates(ast) {
   if (!candidates.size) return candidates
 
   const bodies = [...topRoots]
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (func.body && !func.raw) bodies.push(func.body)
     if (func.defaults) for (const dv of Object.values(func.defaults)) bodies.push(dv)
   }
@@ -502,7 +502,7 @@ export function recordDirectReturnClosure(funcName, ir) {
 const classifyWriteRhs = (node, val) => {
   if (val?.closureBodyName != null && val?.closureFuncIdx != null)
     return { kind: 'direct', name: val.closureBodyName, idx: val.closureFuncIdx }
-  if (Array.isArray(node) && node[0] === '()' && typeof node[1] === 'string' && ctx.func.names.has(node[1]))
+  if (Array.isArray(node) && node[0] === '()' && typeof node[1] === 'string' && ctx.funcs.names.has(node[1]))
     return { kind: 'call', callee: node[1] }
   return null
 }
@@ -560,7 +560,7 @@ function proveClosureFactory(calleeName, programFacts, cache) {
   cache.set(calleeName, null)   // reentrancy guard
   let verdict = ctx.scope.directReturnClosures?.get(calleeName) || null
   if (!verdict) {
-    const fn = ctx.func.map?.get(calleeName)
+    const fn = ctx.funcs.map?.get(calleeName)
     if (fn && !fn.raw && fn.body && fn.defaults && !fn.exported && !programFacts.valueUsed?.has(calleeName)) {
       const rets = extractReturnExprs(fn.body)
       if (rets && rets.length) {

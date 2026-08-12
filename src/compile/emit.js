@@ -1225,7 +1225,7 @@ function canThrow(body, seen = new Set()) {
     // resolve) are conservatively throwing — a user `try` must wrap them.
     if (typeof callee !== 'string') return true
     const bodyName = ctx.func.directClosures?.get(callee)
-    const f = ctx.func.map?.get(bodyName || callee)
+    const f = ctx.funcs.map?.get(bodyName || callee)
     if (!f?.body || f.raw) return true
     if (!seen.has(f.name)) {
       seen.add(f.name)
@@ -1278,9 +1278,9 @@ const extractHoistableLiterals = (body) => {
 }
 
 // A source-defined function (carries a body) — as opposed to an imported name,
-// which `ctx.func.names` also holds but which has no body and may legitimately
+// which `ctx.funcs.names` also holds but which has no body and may legitimately
 // share a name with a built-in emitter (e.g. an imported `parseInt`).
-const isUserFunc = name => !!ctx.func.map.get(name)?.body
+const isUserFunc = name => !!ctx.funcs.map.get(name)?.body
 
 /** Emit pending `finally` cleanups for an abrupt control-flow exit.
  *  Inner cleanups run before outer cleanups. While emitting each cleanup, remove
@@ -1831,7 +1831,7 @@ function attachSigMeta(callIR, sig) {
  */
 export function materializeMulti(callNode) {
   const name = callNode[1]
-  const func = ctx.func.map.get(name)
+  const func = ctx.funcs.map.get(name)
   const n = func.sig.results.length
   const argList = commaList(callNode[2])
   const emittedArgs = emitCallArgs(argList, func.sig.params)
@@ -1977,8 +1977,8 @@ export function emitDecl(...inits) {
     // Multi-value ephemeral destructuring — skip heap alloc when temp is
     // assigned from a multi-value call then immediately destructured element-by-element.
     if (name.startsWith(T) && Array.isArray(init) && init[0] === '()' && typeof init[1] === 'string'
-      && ctx.func.names?.has(init[1])) {
-      const func = ctx.func.map.get(init[1])
+      && ctx.funcs.names?.has(init[1])) {
+      const func = ctx.funcs.map.get(init[1])
       const n = func?.sig.results.length
       if (n > 1) {
         const targets = []
@@ -2076,7 +2076,7 @@ export function emitDecl(...inits) {
     // opaque bit-pattern atom that needed unboxBoolIR's shift+mask instead).
     // PROOF: native-WAT-diffed self.js compiled with the storedValue patch
     // vs without (scripts/self.js's own `prepare/index.js` defFunc — `const
-    // exported = !!ctx.func.exports[name] && ctx.module.moduleStack.length
+    // exported = !!ctx.funcs.exports[name] && ctx.module.moduleStack.length
     // === 0`, a BOOL const later read back into the `funcInfo` object
     // literal) showed EXACTLY this: the good build compiles `exported` as a
     // plain `f64.gt`/`i32.eqz` i32 result; the patched build wraps the same
@@ -3733,10 +3733,10 @@ function trySpliceInsert(callee, obj, method, parsed) {
 // the property was reassigned (wrapper composition) — then it is a mutable slot
 // and must be read dynamically before the call.
 function tryFnPropCall(callee, obj, method, parsed) {
-  if (typeof obj === 'string' && ctx.func.names.has(obj) && !ctx.func.multiProp.has(`${obj}.${method}`)) {
+  if (typeof obj === 'string' && ctx.funcs.names.has(obj) && !ctx.funcs.multiProp.has(`${obj}.${method}`)) {
     const fname = `${obj}$${method}`
-    if (ctx.func.names.has(fname)) {
-      const func = ctx.func.map.get(fname)
+    if (ctx.funcs.names.has(fname)) {
+      const func = ctx.funcs.map.get(fname)
       const emittedArgs = emitCallArgs(parsed.normal, func.sig.params)
       // Drop extras like the plain-call path (emit.js regular-call arm): the dyn
       // closure ABI absorbed over-arity (`parse.enter?.(p, end)` on a 0-param
@@ -4175,7 +4175,7 @@ function emitBuiltinCall(callee, parsed) {
  *  Handles rest params (collect into trailing array), in-spread fixed params
  *  (runtime split), default-param padding, multi-value return materialization. */
 function emitDirectFunctionCall(callee, parsed, callArgs) {
-  const func = ctx.func.map.get(callee)
+  const func = ctx.funcs.map.get(callee)
 
   // Rest param case: collect all args (including expanded spreads) into array
   if (func?.rest) {
@@ -7105,15 +7105,15 @@ export const emitter = {
     // one statically-known function rewrites to that function, so the
     // known-top-level-function branch emits a direct `call`, dropping the
     // indirect/trampoline path.
-    if (typeof callee === 'string' && ctx.func.globalDevirt?.has(callee))
-      callee = ctx.func.globalDevirt.get(callee)
+    if (typeof callee === 'string' && ctx.funcs.globalDevirt?.has(callee))
+      callee = ctx.funcs.globalDevirt.get(callee)
 
     if (Array.isArray(callee) && callee[0] === '.')  return emitMethodCall(callee, parsed, callArgs)
 
     if (typeof callee === 'string' && ctx.core.emit[callee] && !isBoundName(callee) && !isUserFunc(callee))
       return emitBuiltinCall(callee, parsed)
 
-    if (typeof callee === 'string' && ctx.func.names.has(callee) && !isBoundName(callee))
+    if (typeof callee === 'string' && ctx.funcs.names.has(callee) && !isBoundName(callee))
       return emitDirectFunctionCall(callee, parsed, callArgs)
 
     if (typeof callee === 'string' && !parsed.hasSpread && ctx.func.directClosures?.has(callee)) {
@@ -7205,10 +7205,10 @@ export function emit(node, expect) {
     if (ctx.func.boxed?.has(node) || isBoundName(node) || isGlobal(node) || repOf(node)?.intConst != null)
       return readVar(node)
     // Top-level function used as value → wrap as closure pointer for call_indirect
-    if (ctx.func.names.has(node) && !isBoundName(node) && ctx.closure.table) {
+    if (ctx.funcs.names.has(node) && !isBoundName(node) && ctx.closure.table) {
       // Trampoline signature: uniform closure ABI (env f64, argc i32, a0..a{MAX-1} f64) → f64.
       // Forwards the first N inline slots to $func where N = func's fixed param count.
-      const func = ctx.func.map.get(node)
+      const func = ctx.funcs.map.get(node)
       const sigParams = func?.sig.params || []
       if (sigParams.length > MAX_CLOSURE_ARITY) err(`Function ${node} used as closure value has ${sigParams.length} params, exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
       const trampolineName = `${T}tramp_${node}`

@@ -9,9 +9,9 @@
  *     ↓  jzify (default-on; skipped under opts.strict) — lower full-JS subset (var/function/class/switch) to jz-native
  *   desugared AST: arrow functions + let/const/if only
  *     ↓  prepare — validate (reject disallowed ops), normalize (++/--→+=/-=, scope rename),
- *        extract (functions→ctx.func.list with sig), resolve (imports→ctx.module.imports),
+ *        extract (functions→ctx.funcs.list with sig), resolve (imports→ctx.module.imports),
  *        track (object-literal schemas via ctx.schema.register)
- *   prepared AST: normalized, with `ctx.func.list` / `ctx.module.imports` / `ctx.schema.list`
+ *   prepared AST: normalized, with `ctx.funcs.list` / `ctx.module.imports` / `ctx.schema.list`
  *     populated. Arrow bodies carry no type info yet.
  *     ↓  compile — drives per-function emit, interleaves analysis (locals/valTypes/captures/
  *        narrowing fixpoint) with IR generation via the emitter table (src/compile/emit.js).
@@ -395,7 +395,7 @@ jz.compile = (code, opts = {}) => {
 }
 
 // =============================================================================
-// Optimization auto-tuning: scan prepared AST + ctx.func.list to infer program
+// Optimization auto-tuning: scan prepared AST + ctx.funcs.list to infer program
 // properties, then emit per-pass overrides. When the user does not explicitly
 // configure individual passes, the result is merged in before resolveOptimize()
 // so the compiler self-tunes.
@@ -600,9 +600,9 @@ const jzCompileInner = (code, opts = {}) => {
   // miscompiled (dropped a reassigned-param tee, corrupted divergent-escape
   // SIMD). Shared VERBATIM with scripts/self.js so kernel output cannot drift.
   const optimized = watrTail(module, cfg, {
-    funcCount: ctx.func.list.length,
+    funcCount: ctx.funcs.list.length,
     boundaryPins: cfg._vectorizedFnNames?.size
-      ? [...cfg._vectorizedFnNames].filter(name => ctx.func.map.get(name.slice(1))?.exported)
+      ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
       : [],
     time,
     targetProfile: ctx.transform.targetProfile,

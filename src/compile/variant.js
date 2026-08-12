@@ -77,9 +77,9 @@ export function materializeVariant({
     throw new Error(`materializeVariant: fallback must be origin (${origin?.name} vs ${fallback?.name})`)
 
   let cloneName = name
-  let clone = key != null ? ctx.func.map.get(cloneName) : null
+  let clone = key != null ? ctx.funcs.map.get(cloneName) : null
   if (!clone) {
-    if (key == null) while (ctx.func.names.has(cloneName)) cloneName += '$'
+    if (key == null) while (ctx.funcs.names.has(cloneName)) cloneName += '$'
     clone = {
       ...origin,
       name: cloneName,
@@ -88,9 +88,9 @@ export function materializeVariant({
       body: body !== undefined ? body : origin.body,
       ...cloneFields,
     }
-    ctx.func.list.push(clone)
-    ctx.func.map.set(cloneName, clone)
-    ctx.func.names.add(cloneName)
+    ctx.funcs.list.push(clone)
+    ctx.funcs.map.set(cloneName, clone)
+    ctx.funcs.names.add(cloneName)
 
     if (paramReps) {
       const reps = paramReps.get(origin.name)

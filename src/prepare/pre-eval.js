@@ -50,7 +50,7 @@
  * those shape-sensitive passes fires. Tier 1 stays inside the proven-safe
  * boundary: fold every expression tree, never rewrite a bare-name reference.
  *
- * A single top-to-bottom pass over (every ctx.func.list body + the module
+ * A single top-to-bottom pass over (every ctx.funcs.list body + the module
  * body) is a full fixpoint: evalConst re-derives everything it needs from the
  * RAW callee body on demand (via state.funcByName), so it never depends on
  * another function having been folded first, regardless of declaration order.
@@ -900,7 +900,7 @@ function foldFunctionBody(body, state) {
   return foldBlockLike(body, new Map(), state)
 }
 
-/** Run preEval over the prepared module AST + every ctx.func.list body (mutated in place —
+/** Run preEval over the prepared module AST + every ctx.funcs.list body (mutated in place —
  *  the same funcInfo objects compile() reads). Single top-to-bottom pass; see module doc for
  *  why that's already a full fixpoint. */
 export function preEval(ast) {
@@ -909,9 +909,9 @@ export function preEval(ast) {
   // so it's unconditionally available: native and the self-host kernel now
   // fold identically (test/kernel-parity.js fold|0/2/3 graduated).
   const rationalOn = ctx.transform.optimize?.rationalConst !== false
-  const funcByName = new Map(ctx.func.list.map(f => [f.name, f]))
+  const funcByName = new Map(ctx.funcs.list.map(f => [f.name, f]))
   const state = { rationalOn, funcByName, evaluating: new Set() }
-  for (const f of ctx.func.list) f.body = foldFunctionBody(f.body, state)
+  for (const f of ctx.funcs.list) f.body = foldFunctionBody(f.body, state)
   if (ast == null) return ast
   return foldBlockLike(ast, new Map(), state)
 }

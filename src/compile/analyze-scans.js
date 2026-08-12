@@ -354,7 +354,7 @@ export function scanBindingUses(body, trackNames) {
 
   for (const [name, s] of summary) if (s.decls === 0 && !trackNames?.has(name)) summary.delete(name)
   // `body` can be null (a module whose every top-level statement got lifted
-  // into ctx.func.list, e.g. a single `export const f = () => …` leaves
+  // into ctx.funcs.list, e.g. a single `export const f = () => …` leaves
   // nothing at module scope) — WeakMap keys must be objects.
   if (!trackNames && body != null && typeof body === 'object') bindingUses.set(body, summary)
   return summary
@@ -892,7 +892,7 @@ const mathFnName = (callee) =>
 // arrows are a separate scope for a same-named local, boxed-capture handles
 // the mutated-and-shared case), so the default (false) stops there. A MODULE
 // GLOBAL's relevant scope is the WHOLE PROGRAM — an inline arrow passed as a
-// callback (`.forEach(x => { g = x })`) is not lifted to its own ctx.func.list
+// callback (`.forEach(x => { g = x })`) is not lifted to its own ctx.funcs.list
 // entry at prepare time (only named function/arrow bindings are), so it stays
 // an inline `=>` node in the enclosing body and would be invisible to a scan
 // that stops there. See collectBareEscapes' own crossClosure doc.
@@ -946,7 +946,7 @@ function collectComparedNames(body, crossClosure) {
  * `=>` is a separate scope/body, not scanned): pass `true` for a MODULE
  * GLOBAL's whole-program scan (plan/scope.js `inferModuleIntGlobals`) — a
  * global's storage is ONE cell for the entire program, so an escape hiding
- * inside an inline closure (never lifted to its own ctx.func.list entry,
+ * inside an inline closure (never lifted to its own ctx.funcs.list entry,
  * e.g. `.forEach(x => { g = x })`) is exactly as disqualifying as one at
  * top level. Callers pass a synthetic whole-program body (module-init AST +
  * every function body concatenated) so the SAME comparison-governed

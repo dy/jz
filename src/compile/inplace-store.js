@@ -89,7 +89,7 @@ export function scanInplaceStores(programFacts) {
     return r
   }
 
-  for (const fn of ctx.func.list) {
+  for (const fn of ctx.funcs.list) {
     if (!fn.body || fn.raw) continue
     const facts = analyzeBody(fn.body)
     const reps = paramReps?.get(fn.name)

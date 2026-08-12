@@ -2356,7 +2356,7 @@ export default (ctx) => {
     // dynamic: their live value is the prop-global and may legitimately be nullish.
     if (Array.isArray(callee) && callee[0] === '.' && typeof callee[1] === 'string' && typeof callee[2] === 'string') {
       const base = ctx.scope.chain[callee[1]] || callee[1]
-      if (ctx.func.names.has(`${base}$${callee[2]}`) && !ctx.func.multiProp.has(`${base}.${callee[2]}`)) {
+      if (ctx.funcs.names.has(`${base}$${callee[2]}`) && !ctx.funcs.multiProp.has(`${base}.${callee[2]}`)) {
         const callArgs = args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
         return asF64(ctx.core.emit['()'](callee, callArgs))
       }

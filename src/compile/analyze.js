@@ -4,7 +4,7 @@ import { DBG_BIGINT_STATS, noteLocalBoxed } from './bigint-boxed-stats.js'
  * Pre-analysis passes — type inference, local analysis, capture detection.
  *
  * # Stage contract
- *   IN:  prepared AST + ctx.func.list (from prepare).
+ *   IN:  prepared AST + ctx.funcs.list (from prepare).
  *   OUT: per-function populated `ctx.func.localReps` (val field) + `ctx.func.locals` + `ctx.func.boxed`,
  *        module-global `ctx.scope.globalValTypes`, type-analysis `ctx.types.typedElem` /
  *        `.dynKeyVars` / `.anyDynKey`.
@@ -197,7 +197,7 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
     // TYPED-narrowed call result carries its elem aux on f.sig.ptrAux — reverse-map
     // to a canonical ctor so the unboxed local's rep restores the same aux.
     if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
-      const f = ctx.func.map?.get(rhs[1])
+      const f = ctx.funcs.map?.get(rhs[1])
       if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) {
         const c = ctorFromElemAux(f.sig.ptrAux)
         if (c) setOrInvalidate(c)
@@ -510,7 +510,7 @@ export function analyzeBody(body) {
         }
       }
       if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
-        const f = ctx.func.map?.get(rhs[1])
+        const f = ctx.funcs.map?.get(rhs[1])
         if (f?.arrayElemSchema != null) observeArrSchema(name, f.arrayElemSchema)
         // Return-channel closed union ('a,b,…' canonical key from
         // narrowReturnArrayElems): fold each member through the observer —
@@ -573,7 +573,7 @@ export function analyzeBody(body) {
       }
     }
     if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
-      const f = ctx.func.map?.get(rhs[1])
+      const f = ctx.funcs.map?.get(rhs[1])
       if (f?.arrayElemValType) observeArrValType(name, f.arrayElemValType)
     }
     // `Array.from(arg, () => new XxxArray(...))` — codec channelData and per-row
@@ -846,11 +846,11 @@ export function analyzeBody(body) {
         // Pure bigint-value transforms (BigInt.asIntN/asUintN) and Atomics ops
         // (compile-time-proven receiver, design §2 W-sink 8 exemption) — not
         // kind-erasing; leave the arithmetic-core raw path alone.
-      } else if (typeof callee !== 'string' || !ctx.func.map?.has(callee)) {
+      } else if (typeof callee !== 'string' || !ctx.funcs.map?.has(callee)) {
         // Unresolvable target — external import, unclassified builtin, or
         // computed/closure dispatch through a value — fail-closed per design
         // §3.1: can't prove the callee's param treats this argument as
-        // BIGINT, so box it before the call. A string callee IN ctx.func.map
+        // BIGINT, so box it before the call. A string callee IN ctx.funcs.map
         // (a known user function) is the narrow.js/emit.js call-site half
         // (design §3.3) instead — not duplicated here.
         for (const a of argList) markBigintSink(Array.isArray(a) && a[0] === '...' ? a[1] : a)
@@ -1163,7 +1163,7 @@ export function invalidateLocalsCache(body) {
  *     narrow.js's per-phase sweeps, narrowReturnArrayElems's per-target
  *     sweep, plan/index.js's post-narrowing flush before emit begins. Named
  *     so a new phase boundary reaches for the existing primitive instead of
- *     re-deriving its own `for (const f of ctx.func.list) invalidateLocalsCache(f.body)`.
+ *     re-deriving its own `for (const f of ctx.funcs.list) invalidateLocalsCache(f.body)`.
  *
  * Ambient-overlay staleness (ctx.func.localReps / ctx.types.typedElem /
  * ctx.schema.slotI32Certain changing WITHOUT a signature retype) stays the
@@ -1198,7 +1198,7 @@ export function invalidateBodies(bodies) {
  *  callerLocals/valTypes lattices, or the final flush before emit begins).
  *  See the seam doc above. */
 export function invalidateAllBodyFacts() {
-  for (const func of ctx.func.list) if (func.body && !func.raw) invalidateLocalsCache(func.body)
+  for (const func of ctx.funcs.list) if (func.body && !func.raw) invalidateLocalsCache(func.body)
 }
 
 // Can this RHS expression produce null/undefined? FAIL-CLOSED: anything not
@@ -1833,7 +1833,7 @@ export function analyzeValTypes(body) {
         // slotVT lookup chain in `analyzeValTypes`'s own walk + per-func emit
         // dispatch reading localReps.
         if (vt === VAL.OBJECT && Array.isArray(a[2]) && a[2][0] === '()' && typeof a[2][1] === 'string') {
-          const f = ctx.func.map?.get(a[2][1])
+          const f = ctx.funcs.map?.get(a[2][1])
           if (f?.sig?.ptrAux != null) updateRep(a[1], { schemaId: f.sig.ptrAux })
         }
         // `const p = arr[i]` — when arr's element schema is known (from .push observations
@@ -2025,7 +2025,7 @@ export function unboxablePtrs(body, locals, boxed) {
       // valResult) ensures the call already produces an i32 — which dual-write picks
       // up to bind ptrKind/schemaId on the local.
       if (expr[0] === '()' && typeof expr[1] === 'string') {
-        const f = ctx.func.map?.get(expr[1])
+        const f = ctx.funcs.map?.get(expr[1])
         return f?.sig?.ptrKind === kind
       }
       // `let p = arr[i]` where arr has a known elem schema: the runtime helper
@@ -2055,7 +2055,7 @@ export function unboxablePtrs(body, locals, boxed) {
         if (kind === VAL.TYPED) return callee.endsWith('Array') && callee !== 'new.ArrayBuffer'
       }
       // Call to narrow-ABI'd helper of matching VAL kind.
-      const f = ctx.func.map?.get(callee)
+      const f = ctx.funcs.map?.get(callee)
       if (f?.sig?.ptrKind === kind) return true
     }
     // Method call returning TYPED: `arr.map(fn)` where `arr` is in typedElem
@@ -2108,7 +2108,7 @@ export function unboxablePtrs(body, locals, boxed) {
  *                 (intConst substitution carries no tag — mirrored)
  *   bare global → tag iff i32-stored && repOfGlobal(y).ptrKind (constInts /
  *                 constNums substitutions carry no tag — mirrored)
- *   direct call → attachSigMeta: ctx.func.map.get(f).sig.ptrKind / ptrAux
+ *   direct call → attachSigMeta: ctx.funcs.map.get(f).sig.ptrKind / ptrAux
  *
  * Program-order walk so alias chains (`a ← src; t ← a`) resolve through reps
  * exactly as sequential emitDecl calls would; nested '=>' bodies are skipped
@@ -2136,7 +2136,7 @@ export function inheritPtrAliases(body, locals, boxed) {
       return null
     }
     if (Array.isArray(init) && init[0] === '()' && typeof init[1] === 'string') {
-      const f = ctx.func.map?.get(init[1])
+      const f = ctx.funcs.map?.get(init[1])
       if (f?.sig?.ptrKind != null) return { ptrKind: f.sig.ptrKind, ptrAux: f.sig.ptrAux ?? null }
     }
     return null
@@ -2391,7 +2391,7 @@ export function analyzeStructInline(funcFacts, programFacts) {
     if (op === '()') {
       const callee = node[1]
       if (typeof callee === 'string') {
-        const sid = ctx.func.map?.get(callee)?.arrayElemSchema
+        const sid = ctx.funcs.map?.get(callee)?.arrayElemSchema
         if (sid != null) black.add(sid)
       } else if (Array.isArray(callee) && callee[0] === '.' && callee[2] === 'push') {
         for (const a of argsOf(node)) {
@@ -2418,7 +2418,7 @@ export function analyzeStructInline(funcFacts, programFacts) {
   // call can carry an inline array, so the walk is a guaranteed no-op — skip
   // it (compile-time: the self-host compiler has hundreds of array-free frames
   // whose full-body walk was pure waste).
-  const anyArrRetFn = ctx.func.list.some(f => f?.arrayElemSchema != null && !f.raw)
+  const anyArrRetFn = ctx.funcs.list.some(f => f?.arrayElemSchema != null && !f.raw)
   for (const [func, facts] of funcFacts) {
     const body = func?.body
     // A reps-less frame (zero locals/params — a composing `main`) still gets
@@ -2459,7 +2459,7 @@ export function analyzeStructInline(funcFacts, programFacts) {
       const elems = staticArrayElems(expr)
       if (elems) return elems.length === 0
       return expr[0] === '()' && typeof expr[1] === 'string' &&
-        ctx.func.map?.get(expr[1])?.arrayElemSchema === sid
+        ctx.funcs.map?.get(expr[1])?.arrayElemSchema === sid
     }
     const isUserCall = (e) => Array.isArray(e) && e[0] === '()' && typeof e[1] === 'string'
 
@@ -2511,15 +2511,15 @@ export function analyzeStructInline(funcFacts, programFacts) {
     function verifyCall(node) {
       const callee = node[1]
       const args = argsOf(node)
-      const known = typeof callee === 'string' && ctx.func.map?.has(callee)
+      const known = typeof callee === 'string' && ctx.funcs.map?.has(callee)
       const cParams = known ? paramReps?.get(callee) : null
       for (let k = 0; k < args.length; k++) {
         const arg = args[k]
         if (typeof arg === 'string' && arrName.has(arg)) {
           const sid = arrName.get(arg)
           if (!(known && cParams?.get(k)?.arrayElemSchema === sid)) black.add(sid)
-        } else if (isUserCall(arg) && ctx.func.map?.get(arg[1])?.arrayElemSchema != null) {
-          const rsid = ctx.func.map.get(arg[1]).arrayElemSchema
+        } else if (isUserCall(arg) && ctx.funcs.map?.get(arg[1])?.arrayElemSchema != null) {
+          const rsid = ctx.funcs.map.get(arg[1]).arrayElemSchema
           if (!(known && cParams?.get(k)?.arrayElemSchema === rsid)) black.add(rsid)
           verifyCall(arg)
         } else if (!flag(arg)) verify(arg)
@@ -2671,7 +2671,7 @@ export function analyzeStructInline(funcFacts, programFacts) {
           // through verifyCall directly and never reach this poison. An
           // expression-bodied arrow's whole body is its return position —
           // sanction it under the same fact agreement.
-          const retSid = ctx.func.map?.get(callee)?.arrayElemSchema
+          const retSid = ctx.funcs.map?.get(callee)?.arrayElemSchema
           if (retSid != null && !(node === body && func.arrayElemSchema === retSid)) black.add(retSid)
           verifyCall(node)
           return
@@ -2698,7 +2698,7 @@ export function analyzeStructInline(funcFacts, programFacts) {
           // `return g()` in a function with NO matching elem fact lets an
           // inline-carried array escape into fact-less land — poison unless
           // the facts agree (the agreeing case is the sanctioned position).
-          const rsid = ctx.func.map?.get(e[1])?.arrayElemSchema
+          const rsid = ctx.funcs.map?.get(e[1])?.arrayElemSchema
           if (rsid != null && func.arrayElemSchema !== rsid) black.add(rsid)
           verifyCall(e)
           return
@@ -3069,7 +3069,7 @@ export function analyzeUnionInline(funcFacts, programFacts) {
             const elems = staticArrayElems(rhs)
             const bornEmpty = elems && elems.length === 0
             const bornCall = Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string' &&
-              ctx.func.map?.get(rhs[1])?.arrayElemSchemaSet === key
+              ctx.funcs.map?.get(rhs[1])?.arrayElemSchemaSet === key
             const bornAlias = typeof rhs === 'string' && uArr.get(rhs) === key
             if (!(bornEmpty || bornCall || bornAlias)) black.add(key)
             continue
@@ -3222,7 +3222,7 @@ export function analyzeUnionInline(funcFacts, programFacts) {
  * computed-indexed and must not be touched.
  */
 export function analyzeFuncNamespaces(ast) {
-  const funcNames = ctx.func.names
+  const funcNames = ctx.funcs.names
   if (!funcNames || !funcNames.size) return new Map()
 
   const ns = new Map()
@@ -3327,7 +3327,7 @@ export function analyzeFuncNamespaces(ast) {
   // live there. Walk them at init scope so writes are recorded and an escape
   // inside init code still disqualifies.
   for (const mi of ctx.module.moduleInits || []) visitTop(mi)
-  for (const fn of ctx.func.list) if (fn.body && !fn.raw) visit(fn.body, false)
+  for (const fn of ctx.funcs.list) if (fn.body && !fn.raw) visit(fn.body, false)
 
   return ns
 }

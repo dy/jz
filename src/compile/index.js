@@ -3,7 +3,7 @@ import { OPTF } from '../ctx.js'
  * Compile prepared AST to WASM module (S-expression arrays for watr).
  *
  * # Stage contract
- *   IN:  prepared AST (from prepare) + `ctx.func.list` with raw bodies.
+ *   IN:  prepared AST (from prepare) + `ctx.funcs.list` with raw bodies.
  *   OUT: WAT IR `['module', ...sections]` ready for watrCompile/watrPrint.
  *   FLOW: orchestrator only. Calls analyze passes per function, then emit(body) via
  *         src/emit.js's dispatch, then optimizeFunc (src/optimize.js) per function,
@@ -96,7 +96,7 @@ import { instrumentHelperCallsites } from '../helper-counters.js'
 //
 //   1. `f.exported`  — *syntactic* inline-export form, snapshot at `defFunc`
 //      time (prepare.js). True iff the func decl carried the inline `export`
-//      keyword AND `ctx.func.exports[name]` was already populated by parent
+//      keyword AND `ctx.funcs.exports[name]` was already populated by parent
 //      decl processing. Only the inline-emit gate below (`(func (export "name") ...)`)
 //      should read it — that emit path requires the inline-syntax invariant
 //      to avoid duplicate-export collisions with sec.customs.
@@ -120,7 +120,7 @@ import { instrumentHelperCallsites } from '../helper-counters.js'
  *  public name. */
 const isExported = f => {
   if (f.exported) return true
-  for (const val of Object.values(ctx.func.exports)) {
+  for (const val of Object.values(ctx.funcs.exports)) {
     if (val === f.name) return true
   }
   return false
@@ -131,7 +131,7 @@ const isExported = f => {
  *  JS-visible name, since the host (interop.js wrap) keys by export name. */
 function exportNamesOf(funcName) {
   const names = []
-  for (const [key, val] of Object.entries(ctx.func.exports)) {
+  for (const [key, val] of Object.entries(ctx.funcs.exports)) {
     if ((val === true && key === funcName) || val === funcName) names.push(key)
   }
   return names
@@ -139,7 +139,7 @@ function exportNamesOf(funcName) {
 
 const timePhase = (profiler, name, fn) => profiler?.time ? profiler.time(name, fn) : fn()
 
-// Per-compile func name set + map live on ctx.func.names / ctx.func.map,
+// Per-compile func name set + map live on ctx.funcs.names / ctx.funcs.map,
 // populated at compile() entry. Both reset by ctx.js reset() and re-filled here.
 
 // Low-level IR helpers previously lived here. Pure ones moved to src/ir.js;
@@ -1136,7 +1136,7 @@ function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof = true)
     // param (plasma/raymarcher's `t`) unproven → per-pixel `__to_num` + polymorphic-`+`
     // string forks. Judge by the callee param's own numericity (recursive, cycle-guarded).
     if (op === '()' && typeof node[1] === 'string' && !_seen.has(node[1])) {
-      const fn = ctx.func.map?.get(node[1])
+      const fn = ctx.funcs.map?.get(node[1])
       if (fn && fn.body && !fn.raw && Array.isArray(fn.sig?.params) && !fn.rest) {
         const args = callArgList(node)
         for (let i = 0; i < args.length; i++) {
@@ -1679,7 +1679,7 @@ function emitFunc(func, funcFacts, programFacts) {
  */
 function synthesizeBoundaryWrappers() {
   const wrappers = []
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!isBoundaryWrapped(func)) continue
     const { name, sig } = func
     // i64 boundary carrier (Safari-safe). A genuine number is never a NaN-box, so it crosses
@@ -2250,17 +2250,17 @@ export default function compile(ast, profiler) {
   // ctx.transform.optimize before reaching here — every optimize-gated pass below
   // reads `cfg && cfg.x === false`, so a null cfg silently runs every pass.
   // Populate known function names + lookup map on ctx.func for direct call detection
-  ctx.func.names.clear()
-  ctx.func.map.clear()
-  for (const f of ctx.func.list) { ctx.func.names.add(f.name); ctx.func.map.set(f.name, f) }
+  ctx.funcs.names.clear()
+  ctx.funcs.map.clear()
+  for (const f of ctx.funcs.list) { ctx.funcs.names.add(f.name); ctx.funcs.map.set(f.name, f) }
   // Include imported functions for call resolution (e.g. template interpolations).
   // Also register a synthesized sig in func.map so emit's arity-aware branches see
   // the import's declared param count — needed for arg pad/truncate to match it.
   for (const imp of ctx.module.imports) {
     if (imp[3]?.[0] !== 'func') continue
     const fname = imp[3][1].replace(/^\$/, '')
-    ctx.func.names.add(fname)
-    if (!ctx.func.map.has(fname)) {
+    ctx.funcs.names.add(fname)
+    if (!ctx.funcs.map.has(fname)) {
       const params = []
       let result = 'f64'
       for (let k = 2; k < imp[3].length; k++) {
@@ -2268,7 +2268,7 @@ export default function compile(ast, profiler) {
         if (Array.isArray(part) && part[0] === 'param') params.push({ type: part[1] || 'f64' })
         else if (Array.isArray(part) && part[0] === 'result') result = part[1] || 'f64'
       }
-      ctx.func.map.set(fname, { name: fname, sig: { params, results: [result] } })
+      ctx.funcs.map.set(fname, { name: fname, sig: { params, results: [result] } })
     }
   }
 
@@ -2401,7 +2401,7 @@ export default function compile(ast, profiler) {
 
   const funcFacts = new Map()
   timePhase(profiler, 'analyzeFuncs', () => {
-    for (const func of ctx.func.list) {
+    for (const func of ctx.funcs.list) {
       if (func.raw) continue
       const facts = analyzeFuncForEmit(func, programFacts)
       funcFacts.set(func, facts)
@@ -2448,7 +2448,7 @@ export default function compile(ast, profiler) {
   // post-prepare SESSION+PROGRAM snapshot with ANALYSIS (currently empty);
   // compared at 'pre-assemble' below.
   assertCtxInvariants('post-analyze')
-  const funcs = timePhase(profiler, 'emitFuncs', () => ctx.func.list.map(func => emitFunc(func, funcFacts.get(func), programFacts)))
+  const funcs = timePhase(profiler, 'emitFuncs', () => ctx.funcs.list.map(func => emitFunc(func, funcFacts.get(func), programFacts)))
   funcs.push(...synthesizeBoundaryWrappers())
 
   const closureFuncs = []
@@ -2701,7 +2701,7 @@ export default function compile(ast, profiler) {
   // VAL.ARRAY narrow path reads i32 at `__ptr_offset(UNDEF_NAN) - 8`, hitting
   // OOB instead of the polymorphic length-check fallback's tag-aware return-0.
   const restParamFuncs = []
-  for (const f of ctx.func.list) {
+  for (const f of ctx.funcs.list) {
     if (!isExported(f) || !f.rest) continue
     const fixed = f.sig.params.length - 1
     for (const exportName of exportNamesOf(f.name)) restParamFuncs.push({ name: exportName, fixed })
@@ -2716,7 +2716,7 @@ export default function compile(ast, profiler) {
   // string for jsstring-carrier params whose default-substitution happens
   // JS-side. Empty list emits nothing.
   const extExports = []
-  for (const f of ctx.func.list) {
+  for (const f of ctx.funcs.list) {
     if (!isExported(f) || !isBoundaryWrapped(f) || !f._exportExtParams) continue
     const p = []
     const d = {}
@@ -2759,7 +2759,7 @@ export default function compile(ast, profiler) {
   // Written under every JS-visible alias, like jz:extparam. Each shape is built as a direct
   // literal (no spread) — the self-host kernel's fixed schemas don't enumerate post-hoc keys.
   const i64Exports = []
-  for (const f of ctx.func.list) {
+  for (const f of ctx.funcs.list) {
     if (!isExported(f) || !isBoundaryWrapped(f) || !f._exportI64) continue
     const { p, r, m, s } = f._exportI64
     for (const exportName of exportNamesOf(f.name))
@@ -2772,13 +2772,13 @@ export default function compile(ast, profiler) {
   // alias under host:'wasi' emits its natural entry here too — legalizeForTarget (audit
   // P1 TargetProfile stage, src/optimize/watr-tail.js) rewrites it into the () -> () wrapper
   // afterward, keyed off this same customs entry shape (no wasiCommandExports skip needed).
-  for (const [name, val] of Object.entries(ctx.func.exports)) {
+  for (const [name, val] of Object.entries(ctx.funcs.exports)) {
     if (val === true) {
       if (ctx.scope.userGlobals?.has(name)) sec.customs.push(['export', `"${name}"`, ['global', `$${name}`]])
       continue
     }
     if (typeof val !== 'string') continue
-    const func = ctx.func.list.find(f => f.name === val)
+    const func = ctx.funcs.list.find(f => f.name === val)
     // Boundary-wrapped funcs export through the synthesized $${val}$exp wrapper
     // so the JS-visible alias preserves f64 ABI.
     if (func) sec.customs.push(['export', `"${name}"`, ['func', `$${isBoundaryWrapped(func) ? val + '$exp' : val}`]])
@@ -2795,7 +2795,7 @@ export default function compile(ast, profiler) {
     [{ arr: sec.stdlib }, { arr: sec.funcs }, { arr: sec.start }],
     [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports, ...sec.tags],
     { removeDead: !optCfg || optCfg.treeshake !== false, globals: sec.globals, userGlobals: ctx.scope.userGlobals,
-      userFuncs: new Set(ctx.func.list.map(f => `$${f.name}`)) }
+      userFuncs: new Set(ctx.funcs.list.map(f => `$${f.name}`)) }
   )
 
   pruneUnusedThrowRuntime(sec)

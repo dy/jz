@@ -14,7 +14,7 @@
  *                                  is destructured at fixed indices; the
  *                                  spread call collapses to a fixed-arity one.
  *
- * Each transform mutates `ctx.func.list` / `func.body` and returns `boolean`
+ * Each transform mutates `ctx.funcs.list` / `func.body` and returns `boolean`
  * indicating whether anything changed (so `plan()` knows to invalidate the
  * program-facts cache).
  *
@@ -426,8 +426,8 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   // both on the speed tier so levels ≤2 keep their conservative inlining policy.
   const speedTier = !!(cfg && cfg.inlineFns)
 
-  const fixedByFunc = new Map(ctx.func.list.map(func => [func, fixedTypedArraysInBody(func.body)]))
-  const typedByFunc = new Map(ctx.func.list.map(func => [func, analyzeBody(func.body).typedElems]))
+  const fixedByFunc = new Map(ctx.funcs.list.map(func => [func, fixedTypedArraysInBody(func.body)]))
+  const typedByFunc = new Map(ctx.funcs.list.map(func => [func, analyzeBody(func.body).typedElems]))
   const sitesByCallee = new Map()
   for (const cs of programFacts.callSites) {
     const list = sitesByCallee.get(cs.callee)
@@ -484,7 +484,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   // gate and becomes a leaf candidate. Each pass adds ≥1 or stops, so it's bounded.
   for (let recollect = true; recollect;) {
   recollect = false
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (candidates.has(func.name)) continue
     const sites = sitesByCallee.get(func.name)
     // Exported leaf/kernel with exactly one internal caller (e.g. fill→beat in
@@ -542,7 +542,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       // Calls to functions that are THEMSELVES candidates are fine — they inline away;
       // only a call to a non-candidate user function blocks (a later fixpoint pass re-checks).
       // Speed-tier only; lower tiers keep the strict "any user call ⇒ outline" rule.
-      if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.func.names.has(n[1]) && !(speedTier && candidates.has(n[1])))) continue
+      if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.names.has(n[1]) && !(speedTier && candidates.has(n[1])))) continue
       // Per-iteration call overhead dwarfs body-size bloat when EVERY site sits
       // inside a caller's loop (game-of-life's rot: ~40 nodes × 2 sites, fired
       // for most of 260k cells/frame; cloth's relax: ~160 nodes × 2 sites, fired
@@ -625,7 +625,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // these tiny leaves — and inlining one devirtualizes a closure dispatch.
     if (fixedSiteExported || forwarders.has(name) || leaves.has(name) || sites?.length === 1) exportedCandidates.set(name, func)
   }
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     // Skip exports: they're entry points usually invoked once. Inlining a
     // hot kernel here would put the loop into a function V8's wasm tier-up
@@ -804,7 +804,7 @@ const inlineLocalLambdasInBody = (getBody, setBody) => {
 
 export const inlineLocalLambdas = () => {
   let changed = false
-  for (const func of ctx.func.list) {
+  for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     if (inlineLocalLambdasInBody(() => func.body, b => { func.body = b })) changed = true
   }
@@ -848,7 +848,7 @@ const rewriteRestBody = (node, restName, restParams) => {
 export const specializeFixedRestCalls = (programFacts) => {
   const sitesByKey = new Map()
   for (const site of programFacts.callSites) {
-    const func = ctx.func.map.get(site.callee)
+    const func = ctx.funcs.map.get(site.callee)
     if (!func?.rest || func.exported || func.raw || !func.body) continue
     if (programFacts.valueUsed.has(func.name)) continue
     if (func.defaults && Object.keys(func.defaults).length) continue
@@ -864,7 +864,7 @@ export const specializeFixedRestCalls = (programFacts) => {
   let changed = false
   for (const [key, sites] of sitesByKey) {
     const [name, restNText] = key.split('/')
-    const func = ctx.func.map.get(name)
+    const func = ctx.funcs.map.get(name)
     const restN = Number(restNText)
     const fixedParams = func.sig.params.slice(0, -1).map(p => ({ ...p }))
     const restName = func.rest
