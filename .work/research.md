@@ -3226,3 +3226,209 @@ rebuild under load factors tighter than `9d0e3384`'s stress corpus, hem in
 or assert against the `genUpsert`/`genUpsertGrow` delta-unaware
 grow-forwarding write named above, since region-arena re-enabling is
 exactly the condition that makes it reachable.
+
+## §Region arena — EVENT-SEQUENCE VERDICT: NO mid-pass exit, 5/5 clean
+(2026-08-11), disposable worktree off `0d089b49` (region-final-2026-08-11)
+— verdict: the "earlier control-flow reading" (regionExit fires only
+between rounds, no pass call live) is CONFIRMED CORRECT by direct runtime
+instrumentation, not just by source inspection — REFUTING the "mid-pass
+exit" alternative. The prior runtime-trace session's own framing ("known's
+storage reclaimed by an exit AND used after = the Map was LIVE across an
+exit") is now understood more precisely: it does not mean live *during* the
+exit call (proven impossible this session) — it means `known`'s own
+address, allocated cleanly inside its own still-executing call, gets
+overwritten LATER in that same call by an unrelated allocation, entirely
+within one uninterrupted post-exit bump-growth window (zero further
+compaction). That reframes the bug class away from region-exit *timing*
+altogether and toward ordinary allocator/heap-arithmetic address reuse —
+narrower, and different, than the "extend the root bundle" fix class every
+prior session (including `4adc7048`'s own) converged on, since extending
+the root bundle only helps if a live value is being *reclaimed* by an exit
+it should have survived, and no exit ever fires while a value it would need
+to reclaim is live. Not landed — no source change, wall stays open. Banked
+per the stop-on-fail tripwire.
+
+**Method.** Worktree off `0d089b49`, node_modules symlinked, watr 5.7.14
+confirmed. Built the region-live kernel as WAT TEXT directly (a scratch
+`scripts/build-region-wat.mjs` calling `compile(profile.graph.code,
+{modules, memory, optimize, wat:true})` via `resolveSelfhostBuild()` —
+WAT text carries symbolic names natively, no separate `names:true`
+wasm-name-section step needed) — 275.5 MB, `regionArenaLive: true`,
+`optimize: {level:3, watrGuard:false, snapshotInit:true,
+inlinePtrOffsetFast:false}` (the standing region-arena gate, unchanged).
+
+**Locating the two hook sites — the first finding, before any trace ran.**
+`(func $__region_mark ...)` / `(func $__region_exit ...)` do NOT survive as
+standalone named functions ANYWHERE in the compiled O3 kernel (grep across
+6.4M lines, filtering out false positives from the kernel's own embedded
+stdlib-template STRING DATA — `module/core.js`'s WAT template text for
+these exact functions is itself compiled-in as runtime string data, since
+the self-hosted kernel needs it to emit these functions into ANY target
+program it compiles, and raw substring search collides with that data).
+Both hooks are FULLY INLINED into their sole caller — consistent with
+`4adc7048`'s own "no surviving named function... fully inlined" finding for
+`runRounds`/`$__ptr_type`/`$__ptr_aux`, now shown to extend to the hooks
+themselves. `__region_mark`'s trivial one-expression body
+(`f64.convert_i32_u(global.get $__heap)`) leaves no distinguishing local to
+search for and was not separately traced (see "what wasn't needed" below).
+`__region_exit` WAS located: its own declared locals (`$mark`, `$delta`,
+`$memo`, `$dpCap`, `$dpI`, `$dpN`, `$dpNewOff`, `$dpOff`, `$dpOrd`,
+`$dpOutPhys` — `module/core.js:803-895`) survive post-inlining with an
+`$__inl74_` rename prefix (watr's own inline-group naming), found by
+grepping for `__inl[0-9]*_delta\b` (a name specific enough not to collide
+with stdlib-template string data) and landing inside `$closure2907` — the
+`regionHooks.exit: (mark, root) => __region_exit(mark, root)` closure,
+confirmed by matching its full local list and by its closing instruction
+being exactly `__region_exit`'s own contract:
+`(global.set $__heap (i32.add (local.get $__inl74_mark) (local.get
+$__argc)))` (`$__argc`, an unused param slot, reused by watr's register
+allocator to hold `size`). A second copy (`$closure2759`, `$__inl73_`
+prefix) exists for a different top-level entry point (`compileWat`, dead
+code for this repro's `default`/`compileSelf` path — confirmed by the
+5-events match below) and was left uninstrumented.
+`$m120_optimize$forwardPropagate` (`node_modules/watr/src/optimize.js:3152`)
+survives as an ordinary named function (multiple call sites — one per dirty
+function per round from `propagate`, line 5147 — disqualifies it from
+watr's sole-caller inline/inlineOnce/dedupe family), with its own `known`
+local directly visible (i32), and exactly one syntactic exit
+(`(return (local.get $changed))`, matching its JS source's single `return
+changed`).
+
+**Instrumentation** (`scripts/trace-eventseq.mjs`, scratch — reuses
+`trace-inject.mjs`'s own splicing mechanics: line-range slice, `watr/parse`
++ mutate + `watr/print`, single-pass reassembly; note jz-generated closure
+names carry an invisible U+E000 PUA marker after `$` — `bare()`-stripped
+before comparison, same convention as `trace-inject.mjs`'s own doc). A
+single monotonic global counter (`$__dbgSeq`) orders every event; `(tag,
+seq)` pairs go out over a new `(import "dbg" "trace" (func $dbgtrace (param
+i64 i64)))`. forwardPropagate: tag 1 at entry (right after its locals), tag
+2 right before its sole return. `$closure2907`: tag 3 right before the
+closing `global.set $__heap`, bracketed by tag 10 (old heap value) / tag 11
+(new heap value, a pure re-evaluation of the same `mark+size` expression —
+no added side effects). Reassembled via `watr/parse`+`watr/compile`
+directly (2.2 s parse, 61.7 s compile — both consistent with the historical
+§29-era estimates), instantiated BY HAND (bypassing `interop.js`'s
+`instantiate()` — its export-call wrapper auto-marshals plain JS args into
+the kernel's real i64-carrier ABI via a `jz:i64exp` custom-section map,
+which would have been the easy path, but doing it by hand keeps the import
+side, where `dbg.trace`'s raw i64 bits must NOT be NaN-decoded, unambiguous
+— same §29/RUNTIME-TRACE-session caution). Confirmed the export ABI
+directly from the named WAT (`$compileSelf$exp`, exported as both
+`"compileSelf"` and `"default"`): all 5 params are i64, each
+`f64.reinterpret_i64`'d immediately — every argument had to be the correct
+f64-bit pattern as a BigInt (`interop.js`'s own `f64ToI64`), not a bare `0`/
+`1`; `mem.String()` already returns the right BigInt shape. Minimal `env`
+stubs for the kernel's other 6 imports (`__ext_prop/has/set/call`, `print`,
+`now`) — none fired, matching the repro's own scalar/dict-only shape.
+
+**Result — the repro reproduced identically** (`RuntimeError: memory
+access out of bounds`, same message as every prior banked report). Total
+events: 5010 — forwardPropagate 2498 entries / 2497 returns (the 2498th,
+seq 5000, never returns — the call still on the stack at the trap, matching
+`4adc7048`'s own symbolicated stack: `$__map_delete ← forwardPropagate ←
+...`), region_exit fired exactly **5** times — an EXACT match to
+`4adc7048`'s own, independently-derived `$__heap`-watermark-drop count
+("only 5 times total"), strong cross-validation that this instrumentation
+found the complete, correct site.
+
+```
+region_exit seq=1849: entries-so-far=924  returns-so-far=924  (live=0) heap 44912736 -> 27168424
+region_exit seq=2944: entries-so-far=1471 returns-so-far=1471 (live=0) heap 39194552 -> 28123848
+region_exit seq=3585: entries-so-far=1791 returns-so-far=1791 (live=0) heap 36168912 -> 29049024
+region_exit seq=3948: entries-so-far=1972 returns-so-far=1972 (live=0) heap 35912944 -> 29969352
+region_exit seq=4149: entries-so-far=2072 returns-so-far=2072 (live=0) heap 35881368 -> 30889456
+```
+
+Every single one of the 5 fires at `entries-so-far == returns-so-far` —
+**zero forwardPropagate calls live at any region_exit, ever, in this run.**
+The crashing call (entry seq 5000) starts 851 sequence-ticks (≈426
+forwardPropagate call-pairs) after the LAST region_exit (seq 4149) — deep
+inside a single, uninterrupted growth window with no further compaction
+before the trap. Directly answering the task's own question: **no exit
+fires between a forwardPropagate entry and its return — not once, across
+the whole repro.**
+
+**What this settles.** The two framings named in the task brief are NOT
+both partially right in some blended way — one is flatly correct and one
+was an imprecise gloss on the same underlying fact. "regionExit fires only
+between rounds when no pass call is live" is TRUE, now verified at the
+runtime/instruction level (not merely by reading `runRounds`'s synchronous,
+non-reentrant JS source, which already implied it but couldn't rule out a
+compiler-introduced reordering). "`known`'s storage reclaimed by an exit
+AND used after" does NOT describe a value surviving PAST its round's own
+exit while still needed (the classic missing-root shape `4adc7048`'s fix
+recommendation targeted) — every forwardPropagate call whose `known` could
+possibly be live-across-an-exit has ALREADY RETURNED by the time that
+round's regionExit runs, by construction (synchronous call stack, proven
+empirically above). The actual mechanism is a call whose OWN `known`,
+allocated fresh WELL AFTER the last exit, gets its live memory silently
+reused by something else *later in the same still-running call* — i.e. two
+logically-live allocations landing on the identical address inside one
+monotonic bump-growth window with no compaction between them. A correct
+bump allocator cannot do this on its own; either a `known`-family
+allocation's SIZE/advance of `$__heap` is short somewhere, or the collision
+originates in a different, not-yet-traced `$__mkptr`/`__alloc_hdr_n` call
+path.
+
+**What wasn't needed, and why.** `__region_mark` was never separately
+instrumented — it's a pure bookmark (`f64.convert_i32_u(global.get
+$__heap)`, no side effects, nothing to reclaim), so a mark firing mid-pass
+would be harmless by construction; only `__region_exit`'s reclaiming
+compaction can produce the corruption class this whole wall chases, and it
+is the one instrumented and traced to zero mid-pass fires. `$closure2759`
+(the `compileWat`-path's own region_exit copy) was left uninstrumented —
+this repro exercises only `default`/`compileSelf`, and the 5-events exact
+match against `4adc7048`'s independent count confirms nothing on that path
+fired either.
+
+**Fix-or-bank: BANKED — no fix attempted, per the task's own "wall ⇒ bank,
+stop" instruction once the sequence question was answered.** The task's own
+branch-3 framing ("the Map REFERENCE outlives the call — trace where; fix
+at that holder") does not quite fit what was found either: this is not a
+reference outliving its call, it is a live call's own fresh allocation
+losing its address to something else before that same call is done with
+it. The next concrete, scoped step (not attempted this session): instrument
+`$__mkptr`/`__alloc_hdr_n` directly (every call, not just the two hook
+sites) across the growth window `[30,889,456 → the crash]` — the territory
+entirely produced by ordinary bump allocation after the last (5th, clean)
+region_exit — to find the SPECIFIC second allocation that lands on
+`known`'s already-live address, which pins whether the bug is a
+short-by-N-bytes size computation somewhere in that family or a genuinely
+duplicated `$__heap` read/write race. This is the same lever `4adc7048`'s
+own recommendation named, now provably narrowed OFF the region_exit/root-
+bundle axis entirely (that axis is closed by this session, not just
+"still the leading theory").
+
+**By-name verdict: N/A** — no shared-tree source change; `module/core.js`
+and `node_modules/watr/src/optimize.js` read-only this session (the
+instrumentation only ever touched a scratch WAT dump inside the disposable
+worktree).
+
+**Gates: NOT RUN** — no fix to gate. kernel-oracle ×N / kernel-parity /
+fuzz 200+2000×2 / full battery / dormant byte-identity / build×2 / memory
+watermark curve / jz×jz all remain contingent on a landed fix, per the
+task's own acceptance framing, and none lands this session.
+
+**Memory curve / jz×jz: NOT REACHED.**
+
+**Per the stop-on-fail tripwire**: worktree-only. `git status`/`git diff`
+in the shared tree show zero changes from this session (main HEAD moved to
+`e87618c2` via unrelated concurrent work, confirmed before and after —
+this ledger entry is the only edit this session makes to the shared tree).
+Every artifact this session produced — `scripts/build-region-wat.mjs`,
+`scripts/trace-eventseq.mjs`, `scripts/run-eventseq.mjs`, the 275.5 MB
+instrumented WAT, its compiled-bytes cache, the raw event log — lives only
+in the scratchpad worktree, removed at session end, never committed. SHAs:
+jz worktree base `0d089b49` (region-final-2026-08-11, unchanged); watr
+`node_modules` symlinked from the shared tree, version 5.7.14 confirmed
+(`a563a63`, unchanged). No jz branch created — pure instrumentation and
+trace, no diff to bank. watr repo untouched (no edits, no build) this
+session.
+
+**Recommendation for next session**: don't re-open the mid-pass-exit
+question — closed, negative, with an exact independent-count
+cross-validation (5/5). Go straight to the `$__mkptr`/`__alloc_hdr_n`
+instrumentation named above, scoped to the specific growth window this
+session already bounded — the fastest remaining path to a scoped,
+provably-correct fix, one level more concrete than `4adc7048`'s own
+recommendation.
