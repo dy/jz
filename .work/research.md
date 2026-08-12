@@ -4977,3 +4977,103 @@ own `.work-scratch/inject.mjs` (also not committed, per this chain's
 disposable-worktree convention — re-derive from this entry's own
 description if the site-tagging technique is needed again, or commit it
 preemptively next time since it's now proven twice in one chain).
+
+## §Region arena — MEMORY-CURVE-MEASURED: the full four-point curve,
+dormant vs region-live, with the fixed kernel (2026-08-12)
+
+**Setup — two worktrees, one variable.** Both off `0d089b49` (region-final-
+2026-08-11, the LAST HOP entry's own base), both with `node_modules/watr`
+pointed at `/Users/div/projects/watr` directly (`895ca5b`, the LAST HOP's
+own SW-root fix — unpublished, local-only). One built as-is (this
+checkpoint's `scripts/self.js` already carries `REGION_HOOKS_ACTIVE = true`
+and an active `regionHooks:` line — region-live by default at this commit).
+The other had that toggle reverted to dormant (worktree-only edit: `false` +
+the `regionHooks:` line re-commented, matching the shared tree's own
+dormant shape exactly) before building. Same source base for BOTH legs by
+construction — isolates the region-arena toggle as the only variable,
+deliberately NOT the shared tree's own `main` dist as the dormant baseline:
+`0d089b49` trails current `main` (`98e0c27f`) by 21 commits / 1,226 changed
+lines across closure-plan/narrow/variant-materializer work unrelated to
+region-arena — comparing against it would have confounded codebase drift
+with the Slice-1 effect being measured.
+
+**Build.** `scripts/build-profile.mjs`'s `resolveSelfhostBuild()` defaults
+both times (optimize level 3, memory 8192 pages, `regionArena` marker-
+derived). Region-live: SHA-256 `f961b9b1062d8e8cb…` — **byte-identical to
+the LAST HOP entry's own verified build** (same config: `0d089b49` base,
+watr `895ca5b`, same resolver defaults) — this session's worktree
+independently reproduces that one's, not a new artifact. Dormant: SHA-256
+`473e4b7258cc514ec…` (no prior session built a dormant kernel from this
+exact checkpoint to compare against — new this session).
+
+**Method — the archived kernel-memory-curve recipe, unchanged** (`git show
+6bbe75a8:.work/kernel-memory-curve.md`): `instantiate(wasm, {memory: 8192})`
+(compile-time-baked, confirmed irrelevant, kept for parity with the
+archived invocation), `exports.default(memory.String(code), 0, optJSON,
+modulesJSON, 0)` — the exact ABI `test/kernel-target.js` uses —
+`self.memory.buffer.byteLength` read immediately on success or throw (the
+organic post-compile watermark, not a synthetic cap). Three real,
+unmodified graphs via `resolveModuleGraph(entry, {resolveNode: true})`:
+`bench/jessie/jessie.js`, `bench/watr/watr.js`, `.work/jzify-entry.mjs` —
+plus `bench/jz/jz.js` (jz×jz, 156 modules) run separately. `optJSON:
+{level:2}` throughout, matching the archived recipe's own choice (the
+CURVE's compile-target optimize level, an unchanged parameter distinct from
+the KERNEL's own O3 self-host build level).
+
+**The table.**
+
+| graph | size | dormant peak | region-live peak | Δ |
+|---|---|---|---|---|
+| jessie | 62,825 B | 1,073.7 MB — OK | 1,073.7 MB — OK | 0 — unaffected at this scale |
+| watr | 103,774 B | 4,295.0 MB — OK (ceiling-graze) | 2,147.5 MB — OK | **−2,147.5 MB / −50.0%** |
+| jzify-entry | 428,103 B | **FAIL** — `unreachable` @ 4,295.0 MB | **OK** — 4,295.0 MB | capacity UNLOCKED (impossible → succeeds) |
+| jz×jz | 5,883,905 B (156 mod) | **FAIL** — `unreachable` @ 4,295.0 MB | **FAIL** — `unreachable` @ 4,295.0 MB | unchanged — **expected**, Slices 2/3 unbuilt |
+
+Free correctness cross-check: jessie's and watr's compiled-bytes OUTPUT is
+byte-identical between dormant and region-live (107,037 B / 315,091 B
+respectively, both kernels) — on the two rows where both kernels succeed,
+Slice 1 changes peak memory only, never compiled output.
+
+**Reading it.** The design's own liveness measurement (GO note, churn/live
+574-2342×/round) predicted "~979MB / 25.8% on watr-graph from cross-round
+reclamation alone." Measured reality: **−2,147.5 MB / −50.0%** — roughly
+DOUBLE the predicted reduction, enough to move watr from scraping the
+wasm32 ceiling (the original curve's own words: "succeeds by the skin of
+its teeth") to comfortable headroom at half the address space. jzify-entry
+crosses from FAIL to OK outright — Slice 1 ALONE unlocks a whole curve
+point the original evidence recorded as exceeding 4GiB. jessie is
+unaffected — too small/shallow a compile for cross-round accumulation to
+matter at 1GB scale, consistent with the design's own framing (Slice 1
+removes cross-ROUND accumulation; a compile with little of that has little
+to reclaim). jz×jz is unchanged in EITHER kernel — same deliberate
+`unreachable` abort at exactly 4,294,967,296 bytes (2³²), same shape, both
+kernels — matching the design's own scoping exactly (Slice 1 =
+fixpoint-round region only; the ~1GB jz×jz target needs Slices 1+2 paired;
+Slice 3, emit/encode boundary, unlocks jz×jz under 4GiB — neither built).
+Not a regression, not a new wall — the LAST HOP entry's own verdict,
+reconfirmed this time against a properly paired dormant baseline instead of
+reasoned from the design doc alone.
+
+**Verification.** Region-live kernel SHA matches the LAST HOP entry's own
+verified build exactly (independent worktree, same inputs, same output —
+cross-validates both sessions). Both kernels pass `new
+WebAssembly.Module(wasm)` validation before use. `git status` in the jz
+repo shows only this ledger edit — no shared-tree source touched; the two
+build worktrees and their `node_modules/watr → .../watr` overrides are
+disposable, discarded with the worktrees.
+
+**SHAs.** jz: `98e0c27f` (main, unchanged — this ledger entry is the only
+jz-repo change). Worktree base: `0d089b49` (region-final-2026-08-11). watr:
+`895ca5b` (`/Users/div/projects/watr`, unpublished, local-only). Region-live
+kernel: `f961b9b1062d8e8cb…`. Dormant kernel (this session, same base):
+`473e4b7258cc514ec…`.
+
+**Recommendation.** The full four-point curve is now on record for both
+kernels — the LAST HOP entry's own "if the full four-point curve is ever
+wanted" open item is closed. jz×jz's own headline number still needs Slices
+2/3 (front/emit boundaries), not further curve measurement — this entry
+changes nothing about that scope. The shared-tree region landing (adopting
+watr `895ca5b` for real — a published point release or an npm-linked pin —
+and flipping `main`'s `scripts/self.js` `regionHooks` on) stays its own
+separate, PUBLISH-GATED step: this session measured the win, it did not
+land it.

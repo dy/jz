@@ -6,6 +6,25 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## GOAL STATE: MEMORY (region-arena Slice 1) — win MEASURED, jz×jz still needs Slices 2/3 — 2026-08-12
+Full account: `.work/research.md §Region arena`'s "MEMORY-CURVE-MEASURED"
+entry. Slice 1 (fixpoint-round region), fixed watr `895ca5b` (the LAST HOP
+entry's SW-root fix), measured against a properly paired dormant baseline
+(same `0d089b49` source base, region toggle the only variable): watr-graph
+4,295.0MB→2,147.5MB (**−50.0%**, ~2× the design's own liveness-based ~25.8%
+prediction), jzify-entry FAIL→OK (a whole curve point unlocked outright),
+jessie unaffected (too small for cross-round accumulation to matter).
+jz×jz: **still FAILS** — same deliberate `unreachable` at exactly 2³² bytes
+in BOTH kernels, expected — matches the design's own scoping exactly (Slice
+1 removes cross-round accumulation only; the ~1GB jz×jz target needs Slices
+1+2 paired; Slice 3, the emit/encode boundary, unlocks jz×jz under 4GiB —
+neither built). The shared-tree region landing (adopting watr `895ca5b` for
+real — published point release or npm-linked pin — and flipping `main`'s
+`scripts/self.js` `regionHooks` on) is **PUBLISH-GATED on watr `895ca5b`**
+(currently local-only, `/Users/div/projects/watr`, not published or pinned
+in jz's own `package.json`) — this session measured the win, it did not
+land it.
+
 ## GOAL STATE: carrier BigInt boxing (`CARRIER_BOX`) is now ON BY DEFAULT — the flip landed — 2026-08-10
 Full account: `.work/carrier-representation-design.md` §35 (the flip
 record) and §34 (the FLIP-READY verdict it executes — superseding the
