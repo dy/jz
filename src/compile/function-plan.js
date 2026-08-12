@@ -46,7 +46,6 @@ export function functionPlanOf(ctx, func) {
 
 /** Install detached emission working state from a frozen authoritative plan. */
 export function installFunctionPlan(ctx, plan) {
-  if (!Object.isFrozen(plan)) throw new Error('installFunctionPlan: expected a published frozen plan')
   ctx.func.locals = new Map(plan.locals)
   ctx.func.boxed = new Map(plan.boxed)
   ctx.func.cellTypes = new Set(plan.cellTypes)

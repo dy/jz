@@ -21,6 +21,7 @@
  */
 
 import { ctx, warn, declGlobal } from '../../ctx.js'
+import { withValueOverlay } from '../flow-state.js'
 import { warningsView } from '../../session-views.js'
 import { ASSIGN_OPS, T, refsAny, extractParams, classifyParam, collectParamNames } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
@@ -447,10 +448,7 @@ export const inferModuleGlobalValTypes = (ast, paramReps) => {
         if (r.val && paramNames[idx] != null && !overlay.has(paramNames[idx])) overlay.set(paramNames[idx], r.val)
     }
 
-    const prevOverlay = ctx.func.localValTypesOverlay
-    ctx.func.localValTypesOverlay = overlay
-    try { walkStmts(body, bound, funcName) }
-    finally { ctx.func.localValTypesOverlay = prevOverlay }
+    withValueOverlay(overlay, () => walkStmts(body, bound, funcName))
   }
 
   const walkStmts = (node, bound, retFn) => {

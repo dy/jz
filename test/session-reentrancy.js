@@ -30,6 +30,7 @@ import { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { enterActiveFunction, isInactiveFunction, restoreActiveFunction } from '../src/compile/active-function.js'
 import { installFunctionPlan } from '../src/compile/function-plan.js'
+import { withFunctionField } from '../src/compile/flow-state.js'
 import { onKernel } from './_matrix.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -186,6 +187,22 @@ test('ActiveFunction swaps and restores record identity, not selected fields', (
   restoreActiveFunction(ctx, displaced)
   ok(ctx.func === outer && !ctx.func.localValTypesOverlay.has('inner-only'),
     'restore reinstates prior identity; inner overlays cannot leak')
+})
+
+test('FlowState scopes restore the owning frame even when nested work throws', () => {
+  if (onKernel()) return
+  compile('export let f = x => x')
+  const frame = ctx.func
+  const outer = frame._expect
+  let threw = false
+  try {
+    withFunctionField('_expect', 'void', () => {
+      ok(ctx.func === frame && ctx.func._expect === 'void', 'scope mutates the active record, not a detached facade')
+      withFunctionField('_expect', 'inner', () => { throw new Error('probe') })
+    })
+  } catch { threw = true }
+  ok(threw && ctx.func === frame && ctx.func._expect === outer,
+    'nested throw restored both scopes and preserved active-record identity')
 })
 
 test('FunctionPlan is session-owned, published once, and detached from emission state', () => {

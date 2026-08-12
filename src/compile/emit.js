@@ -66,6 +66,7 @@ import {
 } from '../ir.js'
 import { isBoundName, freshId } from '../ir.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from './flow-types.js'
+import { withExpectedValue, withFinallyStack, withSchemaSpeculation, withTryState } from './flow-state.js'
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
 
 const stringOps = (node) => {
@@ -1304,14 +1305,7 @@ function emitFinalizers(minDepth = 0) {
   return out
 }
 
-function withFinallyStack(stack, fn) {
-  const prev = ctx.func.finallyStack || []
-  ctx.func.finallyStack = stack
-  try { return fn() }
-  finally { ctx.func.finallyStack = prev }
-}
-
-// withRefinements moved to ./flow-types.js
+// Scoped FlowState combinators live in ./flow-state.js.
 
 /** Coerce an AST node to an i32 boolean, folding && / || at the boolean boundary. */
 export function toBool(node) {
@@ -2672,16 +2666,17 @@ export function emitBlockBody(node) {
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
   const out = []
   const accumulated = []
-  const prevValOverlay = ctx.func.localValTypesOverlay
-  ctx.func.localValTypesOverlay = new Map(prevValOverlay || [])
+  const frame = ctx.func
+  const prevValOverlay = frame.localValTypesOverlay
+  frame.localValTypesOverlay = new Map(prevValOverlay || [])
   // Nested-assignment blocklist for this block. Per-block own-scan is sufficient:
   // an outer name whose fact was blocked in the outer block never entered the
   // outer overlay (which this block's overlay copies), and a name reassigned at
   // THIS block's top level re-records right after the assignment (dominating the
   // rest of this block) — the scan blocks exactly the recordings that don't
   // dominate their possible staleness point.
-  const prevFlowBlocked = ctx.func.flowValBlocked
-  ctx.func.flowValBlocked = collectNestedAssigns(stmts)
+  const prevFlowBlocked = frame.flowValBlocked
+  frame.flowValBlocked = collectNestedAssigns(stmts)
   try {
     for (let i = 0; i < stmts.length; i++) {
       const s = stmts[i]
@@ -2724,8 +2719,8 @@ export function emitBlockBody(node) {
       }
     }
   } finally {
-    ctx.func.localValTypesOverlay = prevValOverlay
-    ctx.func.flowValBlocked = prevFlowBlocked
+    frame.localValTypesOverlay = prevValOverlay
+    frame.flowValBlocked = prevFlowBlocked
     // Restore prior refinements on block exit.
     for (let i = accumulated.length - 1; i >= 0; i--) {
       const [name, prev] = accumulated[i]
@@ -3484,10 +3479,7 @@ function emitSpreadElementLoop(spreadExpr, bodyFn, { reverse = false } = {}) {
 }
 
 function emitAsValue(fn) {
-  const prev = ctx.func._expect
-  ctx.func._expect = null
-  try { return fn() }
-  finally { ctx.func._expect = prev }
+  return withExpectedValue(null, fn)
 }
 
 function emitSingleSpreadMethodCall(objArg, parsed, method, methodEmitter) {
@@ -5165,8 +5157,7 @@ export const emitter = {
     ctx.runtime.throws = ctx.runtime.userThrows = true
     const id = freshId(ctx)
     ctx.func.locals.set(errName, 'f64')
-    const prev = ctx.func.inTry; ctx.func.inTry = true
-    let bodyIR; try { bodyIR = emitVoid(body) } finally { ctx.func.inTry = prev }
+    const bodyIR = withTryState(true, () => emitVoid(body))
     const handlerIR = emitVoid(handler)
     return typed(['block', `$outer${id}`, ['result', 'f64'],
       ['block', `$catch${id}`, ['result', 'f64'],
@@ -5206,12 +5197,7 @@ export const emitter = {
     const parentStack = ctx.func.finallyStack || []
     const activeStack = parentStack.concat([{ cleanup, depth: ctx.func.stack.length }])
 
-    const prevTry = ctx.func.inTry
-    ctx.func.inTry = true
-    const bodyIR = withFinallyStack(activeStack, () => {
-      try { return emitVoid(body) }
-      finally { ctx.func.inTry = prevTry }
-    })
+    const bodyIR = withTryState(true, () => withFinallyStack(activeStack, () => emitVoid(body)))
     const normalCleanup = withFinallyStack(parentStack, () => emitVoid(cleanup))
     const throwCleanup = withFinallyStack(parentStack, () => emitVoid(cleanup))
 
@@ -6439,11 +6425,8 @@ export const emitter = {
 
       // The fallback is already dominated by `sid !== spec.schemaId`; do not
       // rebuild per-read schema guards/devirt tables inside this cold arm.
-      const prevSlow = ctx.func._schemaSpecSlow
-      ctx.func._schemaSpecSlow = true
-      let slow
-      try { slow = withRefinements(refs, branch, () => emitVoid(branch)) }
-      finally { ctx.func._schemaSpecSlow = prevSlow }
+      const slow = withSchemaSpeculation(true,
+        () => withRefinements(refs, branch, () => emitVoid(branch)))
 
       const raw = readVar(spec.name)
       // An unresolved schema-bearing value uses the boxed f64 carrier. A raw

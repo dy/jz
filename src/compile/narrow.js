@@ -8,6 +8,7 @@
  */
 
 import { ctx, warn, err, DBG_INVARIANTS } from '../ctx.js'
+import { withTypedElemOverlay } from './flow-state.js'
 import { warningsView } from '../session-views.js'
 import {
   isBlockBody, alwaysReturns, hasBareReturn, returnExprs, callArgs, ASSIGN_OPS, extractParams, classifyParam,
@@ -1965,11 +1966,7 @@ export default function narrowSignatures(programFacts, ast) {
       if (pf) for (const [name, ctor] of pf) if (ctor != null) m.set(name, ctor)
       state._teOverlay = m
     }
-    const prev = ctx.func.localTypedElemsOverlay
-    ctx.func.localTypedElemsOverlay = state._teOverlay
-    let wt
-    try { wt = exprType(arg, state.callerLocals) }
-    finally { ctx.func.localTypedElemsOverlay = prev }
+    const wt = withTypedElemOverlay(state._teOverlay, () => exprType(arg, state.callerLocals))
     // An i32-typed BARE NAME that carries a POINTER kind in the caller (a local
     // or param already narrowed to an unboxed i32 offset) is NOT integer
     // evidence: narrowing the callee's param to plain i32 on it makes every

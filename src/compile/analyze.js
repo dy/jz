@@ -22,6 +22,7 @@ import { DBG_BIGINT_STATS, noteLocalBoxed } from './bigint-boxed-stats.js'
 
 import { commaList, ASSIGN_OPS, MUTATE_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, collectAllBoundNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR } from '../ast.js'
 import { ctx, err, setLinkDemand } from '../ctx.js'
+import { withFunctionField } from './flow-state.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString, KIND_UNIVERSE } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst, censusMaybeUndefinedKind } from '../kind.js'
 import { intLiteralValue, nonNegIntLiteral, constIntExpr, intExprRange, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
@@ -868,12 +869,9 @@ export function analyzeBody(body) {
   // Install the in-progress valTypes as a lookup overlay so successive decls
   // resolve chains (`const a = new TypedArr(); const b = a[0]` → b: NUMBER)
   // and shorthand-bound `{a}` props see a's type. Restored after walk completes.
-  const prevOverlay = ctx.func.localValTypesOverlay
-  const prevTypedOverlay = ctx.func.localTypedElemsOverlay
-  ctx.func.localValTypesOverlay = valTypes
-  ctx.func.localTypedElemsOverlay = typedElems
   let unsignedLocals, numericFill
-  try {
+  withFunctionField('localValTypesOverlay', valTypes, () =>
+    withFunctionField('localTypedElemsOverlay', typedElems, () => {
     walk(body)
     // Co-induction accumulator fact (INDUCTION-VARIABLE FACT project,
     // analyze-scans.js's own header doc): durably stamps a body-local
@@ -899,10 +897,7 @@ export function analyzeBody(body) {
       return valTypeOf(rhs) === VAL.NUMBER
     }
     numericFill = scanNumericFill(body, numericFillRhs)
-  } finally {
-    ctx.func.localValTypesOverlay = prevOverlay
-    ctx.func.localTypedElemsOverlay = prevTypedOverlay
-  }
+  }))
 
   // SRoA: dissolve non-escaping object-literal bindings into field locals.
   // The dead `o` local is dropped — every `o` reference is rewritten by the

@@ -662,3 +662,33 @@ Certification:
 - build twice: byte-identical; `dist/jz.wasm` SHA-256
   `57f14eb5aa04201fc6e49ab541381afcd7ad86eaefcccbe0394b1d77ff13fdbc`
 - self-host correctness/warm reuse: 21/21, 206 assertions
+
+## AS-LANDED — Slice 4d: first scoped FlowState APIs (2026-08-12)
+
+Added `src/compile/flow-state.js`: one throw-safe field scope primitive plus
+named scopes for value/typed overlays, expected-value mode, try state,
+finally stacks, flow blocking, and schema speculation. Migrated the concrete
+manual save/restore sites in `analyzeBody`, plan/scope, narrow's typed-argument
+probe, catch/finally emission, value-context emission, and schema fallback.
+`emitBlockBody` now captures the active-record reference before its compound
+value-overlay/refinement transaction so restoration cannot target a replaced
+frame.
+
+This is intentionally not a facade over a second store: scopes mutate one
+field on the current ActiveFunction and restore the same owning record in
+`finally`. Durable facts remain in FunctionPlan; these APIs own only dynamic
+control context. `withRefinements` remains the established map-delta scope.
+The larger program-facts overlay walkers remain a follow-on because they change
+overlays repeatedly during one whole-program traversal rather than forming one
+lexical scope.
+
+Certification:
+- `test/session-reentrancy.js`: 12/12, 32 assertions (also debug invariants)
+- `test/statements.js`: 202/202, 468 assertions
+- `test/inference.js`: 136/136, 299 assertions
+- `test/invariants.js` debug: 18/18, 31 assertions
+- `npm test`: 3425 pass, only the two standing optimizer-shape failures, 6 skip
+- kernel oracle 13/13; kernel parity 3/3
+- build twice byte-identical; `dist/jz.wasm` SHA-256
+  `e9eef17ecb8b2b17a8d50ed4035a324e8455f939f1163600c06b7e34fb8b44bf`
+- self-host correctness/warm reuse: 21/21, 206 assertions
