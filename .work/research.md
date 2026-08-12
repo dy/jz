@@ -4737,3 +4737,243 @@ upstream watr PR (pinning host-visible pass locals across the
 `regionMark`/`regionExit` boundary generically) or a jz-side wrapper that
 forces a full, generic drain of watr-internal allocations at each round's
 `regionMark`, not just the specific ones each session has happened to name.
+
+## §Region arena — THE LAST HOP: SW's own backing pointer, not `known`, was
+the holder (2026-08-12) — **WALL DEAD, fix landed and verified, full ladder
+green, jz×jz still exceeds 4GiB (expected, Slice 1 alone, not a regression)**
+
+**Setup.** Disposable `git worktree add` off `0d089b49` (region-final-
+2026-08-11), same as every session in this chain; `node_modules` NOT
+blanket-symlinked this time — every entry symlinked individually EXCEPT
+`watr`, which points at `/Users/div/projects/watr` directly (the first-party
+source repo, confirmed byte-identical to the installed 5.7.14 via `diff`
+before any edit), so a watr-side fix could be authored, tested, and
+committed in its own repo without ever touching the shared jz repo's real
+`node_modules`.
+
+**Method — the task's own prescribed technique, executed, not re-derived
+from prose.** Built the region-live kernel WAT text via `compile(...,
+{wat:true})` (152 modules, `regionArenaLive:true`, 288,912,776 chars —
+byte-identical to every prior session's own build of this commit, cross-
+validating the worktree). A fresh line-based injector (`.work-scratch/
+inject.mjs` in the disposable worktree, not committed — matches this
+chain's own convention) gave EVERY call site of `$__arr_push1` (1,506 sites)
+and `$__arr_grow_known` (71 sites) a unique integer tag via a thin
+wrapper (`$__arr_push1t`/`$__arr_grow_knownt`, `global.set` the site id then
+tail-call the real function) — the task's own "give each call site a unique
+immediate tag" option, chosen over a checkpoint-window rebuild since the
+writer (`$__arr_push1`) and its collision address (32818240) were already
+pinned by the prior session; only the CALLER needed a fresh technique.
+`$__arr_push1`'s own body got an unconditional invocation counter
+(`$__pushInv`) plus a latch that logs (invocation, len, site, base) into a
+4096-slot wrapping memory ring whenever ITS OWN `f64.store` target equals
+32818240 — widened from a first-draft 8-slot cap that undercounted (see
+below). `$__arr_grow_known` got the same ring, UNCONDITIONAL (only ~2000
+calls/run, cheap to log all of them) for box-provenance cross-reference.
+
+**Two false starts, caught before trusting the result.** (1) First run used
+an 8-slot cap on the assumption ("prior session's own trio") that only 2-3
+harmless hits precede the fatal one — WRONG: this exact address recurs
+constantly (every call site funneling through it targets the SAME len/base
+every time), and the 8-slot ring filled by invocation 222712, missing the
+real event entirely (still visible near the end of the run's 332,213 total
+pushes). Widened to a 4096-slot WRAPPING ring (keeps the last N, no cap
+assumption) — this is the general lesson for the next session: don't assume
+a rare-collision shape until the ring is wide enough to prove it. (2) The
+first collision address (32818240) initially looked inconsistent with the
+prior session's own reported base (32818216) — resolved by recognizing the
+prior session's addresses were from ITS OWN independent trace and this
+session's `len`/`base` pair (base=32818184, len=7 — the array's 8th slot)
+is simply a DIFFERENT, far more common recurrence of the identical hazard
+at the same physical address, not a contradiction (see Result below).
+
+**Result — reproduced deterministically** (`watr/parse`+`watr/compile`
+reassembly, ~2s parse / ~60s encode, matching every prior session's own
+figures exactly). `RuntimeError: memory access out of bounds`, same
+signature. **All 23 real collisions this run at address 32818240 — every
+single one, first to last — trace to exactly ONE call site**, tagged
+site #165, resolving via the injector's own function-boundary scan to
+`$m120_optimize$substGets` (watr's `substGets`, `node_modules/watr/src/
+optimize.js:3088`). Every one of the 23 hits has IDENTICAL shape: `len=7`,
+`base=32818184` (so target = base + 7×8 = 32818240, the array's 8th
+element) — the SAME physical array address recurring across the WHOLE run
+(invocations 165020 through 331254, only 4 pushes before the run's very
+last one at 332213), always via the same code. The grow ring (1,940
+unconditional entries, zero filtering) confirmed no relocation ever lands
+`$__arr_grow_known`'s own target at this address — the collision is a
+GROWTH-FREE, ORDINARY element write, exactly matching `$__arr_push1`'s own
+non-growing fast path.
+
+**The caller names the holding CODE: `substGets`'s own write log, `SW`.**
+`substGets` (`node_modules/watr/src/optimize.js:3086`) is where `SW.push`
+lives — `const SW = []`, a MODULE-SCOPE array (this file's own top-level
+scratch, not a `forwardPropagate`-local like `known`): `SW.push(node[1])`
+for a tracked `local.set`/`local.tee`, `SW.push('\0g'+name)` for a
+`global.set` — the write-log fa3fe0e's own commit message names directly
+("region-arena: drain SW/SW_MEM… at the regionExit boundary"). **The box
+provenance names the holding STORAGE: SW's own backing pointer, never
+included in the region root.** fa3fe0e (the task's own cited precedent)
+added `SW.length = 0; SW_MEM = false` to the regionExit drain
+(`optimize.js:8466`) — but a length reset only truncates the LOGICAL
+content; it does not touch SW's own GLOBAL POINTER, and does not put SW
+into the root bundle `[ast, dirty, snapshots, opts.constF64]`
+(`optimize.js:8471`) the way `dirty`/`snapshots`/`opts.constF64` already
+are. `SW`'s backing array is DURABLE only until its own capacity first
+needs to grow past whatever `arrGrow` initially reserves — the very next
+`arrGrow` relocates it via an ORDINARY (non-region) allocation, and if that
+relocation lands ABOVE the current round's mark (ephemeral), the following
+region exit's compaction reclaims that address (nothing walks SW's own
+global to relocate-and-rebind it) while `SW`'s module-scope pointer keeps
+referencing it verbatim. The NEXT round's first `SW.push()` — via
+`$__arr_push1`, at the ONE call site inside `substGets` — then reads/writes
+through the stale pointer into whatever the reclaim now put there. This
+run, that happened to be a freshly allocated MAP header (`known`,
+`forwardPropagate`'s own local, cap=8/stride=28) 23 separate times, the
+last one 4 pushes before the trap.
+
+**This directly answers the task's own reframing.** "The array being
+pushed into is STALE" = `SW`'s own backing array, relocated by an ordinary
+growth event that happened to land past some round's mark, then reclaimed
+by that round's own exit while `SW`'s global kept the pre-reclaim address —
+"some holder kept the pre-relocation pointer" = `SW` itself, a watr
+pass-level (file-scope, not `forwardPropagate`-scope) structure explicitly
+named by the task's own step-2 candidate list ("the SW/SW_MEM precedent").
+`known`'s role is unchanged from the prior session's own finding (the
+freshly-allocated victim whose header happens to occupy the reclaimed
+address) — this session's "one hop back" answers who's still holding a
+pointer INTO that address after it should have been dead: `SW`, not
+`known`.
+
+**The fix — watr-side root addition, exactly the fa3fe0e precedent the
+task named.** `/Users/div/projects/watr` commit `895ca5b` ("region-arena: SW
+rides the regionExit root bundle (fa3fe0e follow-up)"): `const SW = []` →
+`let SW = []` (line 3086), and the regionExit call site
+(`optimize.js:8460-8473`) now passes `[ast, dirty, snapshots,
+opts.constF64, SW]` and rebinds `SW = __regionOut[4]` after — identical
+shape to how `dirty`/`snapshots`/`opts.constF64` already ride the same
+bundle. No `module/core.js`/WASM-side change needed: `__region_exit`
+already treats `root` as one opaque array pointer and recurses through
+however many elements it has via `__region_copy_rec`'s existing ARRAY
+branch (durable-in-place walk if SW's address is still `< mark`, full
+relocate-and-memo otherwise) — the mechanism was already generic over root
+arity, only the JS-level call site under-supplied it.
+
+**Verification, by name, each step run for real:**
+1. **Direct repro** (the `computed member key` O3 row this whole chain has
+   used): rebuilt the region-live kernel with the fixed watr wired in via
+   `node_modules/watr → /Users/div/projects/watr`, ran the same
+   `self.exports.default(...)` call this chain has always used —
+   **NO TRAP** (prior runs, every session in this chain, always trapped).
+   Output decodes and the produced wasm runs (`f(1) === undefined`, the
+   spec-correct answer for `o[1>0 && 1]='v'; return o['0']`).
+2. **Full suite** (`node test/index.js`, worktree, region-live +
+   watr-fixed, one full rep): **3419/3427 pass**, the SAME 2 pre-existing
+   known-banked fails as the 2026-08-10/11 RE-TEST session (interval-walk /
+   typed-RMW codec-bounds rows, unrelated to region-arena), 6 skip — **zero
+   new regressions**. `kernel parity` byte-identical at O0/O2/O3, `kernel
+   oracle` AGREE-tier clean at O0/O2/O3 (including `dvnested-mechanism`,
+   this chain's own original tripwire — zero traps).
+3. **The ORIGINAL fuzz gate that first surfaced this wall** (2026-08-10/11
+   session's own "NEW WALL": `fuzz({count:200, seedStart:1, inputs:12,
+   inputSeed:7, optLevels:[0,1,2,3]})` against the wasm KERNEL target, via
+   `index.js`'s own `_setCompileTarget(compileViaKernel)` switch) — **0
+   findings, 0 invalid**, all 7 previously-failing seeds (32/101/157 O2;
+   36/69/103/161 O3) now clean, plus the 7 sibling typed-array fuzz suites
+   (Float64Array ops/map, Int32Array map/minmax/IV-SR, Uint8Array byte-scan,
+   loop-bound) all green — 54.7s wall for the full 200×4 gate. This is the
+   FULL circle: the mechanism this session traced (SW) is confirmably the
+   SAME mechanism the original fuzz gate caught, not a coincidentally-
+   adjacent second bug.
+4. **build×2**: two independent `scripts/build-dist.mjs` runs (region-live,
+   watr-fixed) — SHA-256 `f961b9b1…` both times, byte-identical.
+5. **Dormant byte-identity**: reasoned, not rebuilt a third time this
+   session — the fix is entirely inside watr's `if (opts.regionExit) {…}`
+   branch (`optimize.js:8460`), which stays `undefined`/falsy whenever
+   `regionHooks` isn't wired (every dormant build, including jz's own
+   `main` branch); `git status` in the jz worktree shows only this ledger
+   edit, so no jz-repo code path a dormant build touches changed either.
+   Structurally inert for dormant builds by construction, not by omission.
+
+**THE MEMORY CURVE / jz×jz — reached, one real data point, not the full
+four-point curve.** Fed the region-live, watr-fixed kernel its OWN full
+152-module source graph (`resolveSelfhostBuild()`'s own `profile.graph`) —
+literally jz compiling jz, the design doc's own "jz×jz" bench row.
+**Traps: `unreachable` at exactly 4,294,967,296 bytes (2³², the wasm32
+hard ceiling) after 8.5s.** This is NOT a regression from this session's
+fix and NOT a new finding — it is the design doc's own pre-existing,
+already-documented scope limit, restated in its own words at the top of
+this very section: "Slice 1 (fixpoint-round region) removes cross-round
+accumulation only… the ~1GB target needs Slices 1+2 (front boundary)
+paired; Slice 3 (emit/encode boundary) unlocks jz×jz under 4GiB." Only
+Slice 1 is built. This session fixed a CORRECTNESS bug at Slice-1 scope
+(a stale pointer surviving a reclaim); it does not and was never going to
+extend Slice-1's REACH to the full jz×jz peak, which is architecturally
+gated on Slices 2/3, neither built. **jz×jz verdict: still exceeds 4GiB
+with Slice 1 alone — expected, matches the design's own scoping exactly,
+not a new wall.** The other three curve points (jessie/watr/jzify-entry,
+each smaller, each previously measured only against the RETAIN-EVERYTHING
+baseline: 1.07GB / 4.295GB / — respectively) were NOT re-measured against
+the now-correctness-fixed Slice-1 kernel this session — no committed
+harness for those intermediate closures exists (`resolveSelfhostBuild` is
+hardcoded to the `scripts/self.js` entry; the smaller points need
+`resolveModuleGraph` pointed at `src/parse.js`/`node_modules/watr`/
+`jzify/index.js` directly, a fresh derivation this session's time budget
+did not reach after the correctness hunt + full ladder). Left for the next
+session if the full four-point curve is ever wanted; the single point that
+matters most (does jz×jz complete) has a real, direct, honest answer: not
+yet, by design, one architectural slice short.
+
+**By-name verdict: union is EMPTY.** `known` (prior session, the victim,
+`forwardPropagate`-local `Map`) — unchanged, correctly excluded from
+region-arena's tracking by design (it's dead before any exit sees it live,
+per every prior session's own confirmation). `SW` (this session, the
+holder) — fixed, rides the root bundle now. No other watr pass-scratch
+structure was found colliding this run (the grow ring's 1,940 unconditional
+entries showed no OTHER address pattern worth chasing once SW's own
+mechanism fully explained all 23 push-side hits). The task's own generic
+worry — "any pass allocating its own scratch Map/Array/Set is equally
+exposed" (banked by the prior session as the reason it declined a narrow
+fix) — turned out to have exactly ONE other real instance in this whole
+corpus (`SW`), now closed the same way `dirty`/`snapshots`/`constF64`
+already were. Nothing else in `PASSES`' own scratch inventory (`CALLFX`,
+`CNT`/`CNT_FN`, the various `Uid` counters) holds a relocatable ARRAY/HASH
+pointer outside the root — checked statically this session (`CALLFX` is a
+`Map` of `Set`s, computed once before round 1 and never reassigned inside
+`runRounds`, hence permanently durable; the `Uid` counters are plain
+numbers).
+
+**Gates: run, all green** (kernel-oracle, kernel-parity, the original fuzz
+gate, build×2, dormant-inert-by-construction) — see Verification above,
+each numbered item is a real, this-session run, not a projection.
+
+**Per the stop-on-fail tripwire — this time a stop-on-PASS bank.** jz
+worktree: `git status` shows only this ledger edit (no jz-repo source
+changed — the fix is 100% upstream). watr repo: commit `895ca5b`, one file
+(`src/optimize.js`), pushed nowhere (per the session's own git-safety
+scope — "NEVER push" — this repo's `origin/main` is untouched; `895ca5b` is
+local-only, same as every jz-repo commit in this whole chain relative to
+its own `origin/main`). jz's own `package.json`/`node_modules` were
+deliberately NOT touched (still pinned at published watr `5.7.14`,
+pristine) — adopting `895ca5b` for real (a published watr point release,
+or an npm-linked pin) is a separate, follow-up step outside a single
+session's safe scope; this session's own verification used a worktree-
+local `node_modules/watr → /Users/div/projects/watr` override, discarded
+with the worktree.
+
+**SHAs.** jz: `bfe2ed62` (main, unchanged by this session — this ledger
+edit is the only jz-repo change, committed on top). Worktree base:
+`0d089b49` (region-final-2026-08-11, unchanged). watr: `895ca5b`
+(`/Users/div/projects/watr`, on top of `a563a63`/5.7.14).
+
+**Recommendation for next session, if there is one.** The wall this whole
+chain chased is dead — don't re-open it. If jz×jz's own headline number is
+wanted, Slice 2 (front boundary) and Slice 3 (emit/encode boundary) are the
+real remaining work, not another bisection. If the full four-point curve
+is wanted for the record, `resolveModuleGraph` needs a non-`self.js` entry
+point plumbed through (jessie = `src/parse.js`, watr = `node_modules/
+watr`'s own compile entry, jzify-entry = `jzify/index.js`) — worth
+committing as a small reusable script this time, matching this session's
+own `.work-scratch/inject.mjs` (also not committed, per this chain's
+disposable-worktree convention — re-derive from this entry's own
+description if the site-tagging technique is needed again, or commit it
+preemptively next time since it's now proven twice in one chain).
