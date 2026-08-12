@@ -11346,3 +11346,35 @@ index arithmetic keep their kind facts" (`src/static.js` +
 only, no code (this entry).
 
 **Commits**: none. This entry only.
+
+## Status (2026-08-12) — ctx.func campaign, slice 1 (AdHocMemo retirement)
+
+Per `.work/ctxfunc-survey.md`'s COORDINATOR RULINGS #2. Full detail (per-cache
+disposition table, gate table) lives in that survey's own AS-LANDED section;
+this entry is the pointer + headline. Slice 2 (uniq extraction) is a
+follow-on within the same campaign, landing separately.
+
+**Slice 1 — AdHocMemo retirement (`e8510fe4`).** The 6 hand-rolled
+single-slot `_xBody === body ? cached : recompute` caches on `ctx.func`
+(charCodeAt/array-idx/interval bounds proofs in `src/type.js`, `const`-alias
+tracking in `src/compile/flow-types.js`, eager-bool-chain gating in
+`src/compile/emit.js`, the typed-array bundle-guard cache in
+`module/typedarray.js`) became 8 WeakMap fields on `ctx.js`'s existing
+`getFactStore()` — the same session-owned idiom `mayBeUndefinedTrace`/
+`mapGetShapedTrace`/`presentValTrace` already use there, not a new pattern.
+`resetFactStore()` (already called every `beginSession`) is the only reset
+these need; the 6 caches never belonged in `ctx.func`'s per-`enterFunc`
+reset shape since they deliberately persist across it.
+
+**Gates:** 60-case×O0/O2/O3 byte-identity 180/180 · `node scripts/battery.mjs`
+GREEN modulo 1 pre-existing flake (`test/optimizer.js` "typed RMW..." —
+confirmed identical on the unmodified `38b08f19` baseline worktree) · fuzz
+30173 compared, 0 divergence · `node test/kernel-parity.js` 3/3 groups, 33/33
+assertions · `JZ_TEST_TARGET=jz.wasm node test/index.js` 2716/2722 pass, 6
+skip, 0 fail · `node scripts/build-dist.mjs` ×2 byte-identical SHA-256 ·
+`node test/session-reentrancy.js` 5/5 (12 assertions) · self 21/21.
+
+**Commits** (LOCAL ONLY, not pushed): `e8510fe4` "ctx.func AdHocMemo
+retirement..." (`src/ctx.js`, `src/type.js`, `src/compile/flow-types.js`,
+`src/compile/emit.js`, `module/typedarray.js`, `.work/ctxfunc-survey.md`,
+this entry).
