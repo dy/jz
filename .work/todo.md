@@ -11058,4 +11058,187 @@ narrow.js's `mayBeUndefined` join once narrow.js is clear of concurrent
 work; (3) do NOT re-chase delayline/sdf/trace/shapes as WAT-shape problems
 — all four are confirmed, evidence-backed floors as of this session.
 
+## Status (2026-08-11, SPEED-TAIL CAMPAIGN — Lever 1 (colorlog co-induction
+## prover) LANDED, structural + value-correctness verified; Lever 2 (base64
+## inliner typedCtor carry) BANKED with a corrected root cause — the ledgered
+## defect does not reach the final WAT on current HEAD, so there is nothing
+## to land)
+
+Picked up narrow.js clear of the VariantPlan collision (checked `git status`
+before each edit, per the brief's own protocol) and landed the design this
+same file banked above.
+
+**Lever 1 — colorlog, the co-induction prover: LANDED.** Built the walker
+exactly as designed: `src/static.js` gets `linearIndexOf` (generalizes
+`nameShift`'s bare +/- shift to a full `K*name (+/- shift)` linear form, pure,
+no `repOf`) plus a private `pureIntLiteral`. `src/compile/narrow.js` gets six
+new module-level helpers ahead of `inferTypedValueRanges` —
+`literalOrCallerParamInt` (caller-param-fact/module-const int resolver, never
+`repOf`), `singleDefRhs`, `builderTypedArrayLen` (chains a builder function's
+own provable typed-array return length through its own settled `intConst`
+param facts — colorlog's `src = mkInput(N_PIXELS)`), `callerArrayLen`,
+`coInductionCounterHull` (self-contained canonical-for-loop hull via
+`normalizeLoop`/`unitIncVar` from `loop-model.js`, never `forCounterRange`),
+`findCoInductionLoopCtx` (identity-walks the caller body for the exact call-
+argument node, tracking the innermost loop's counter/hull/decl-hop map), and
+`arrayReadProvenInBounds` (the entry point). Wired into the `mayBeUndefined`
+join (~line 2467): each call-site argument first gets
+`arrayReadProvenInBounds` tried; only on failure does the existing
+`exprMayBeUndefinedIn` over-approximation apply. Sound-narrow throughout — a
+shape it can't recognize just falls through unchanged.
+
+**Root-cause correction found while implementing**: the design doc above
+assumed `arrayLen`'s existing `funcLens`/`internalArrayLengths` machinery
+already "chains through mkInput's return" — traced it directly
+(`inferInternalArrayLengths`, narrow.js ~1073) and found it's a `staticArrayElems`-
+gated, LITERAL-ARRAY/`.push()`-only mechanism (`.work/todo.md`'s own
+"whole-program internal PLAIN array" scope) — it never resolves a `new
+Float64Array(n*3)` builder. Confirmed empirically (temp instrumentation,
+reverted): by the time the join runs, `logc4ToXyz` is ALREADY plan-time-
+inlined into `run` (`src/compile/plan/inline.js`, not emit.js — a different,
+earlier, AST-level inliner than base64's target below), so `src` is a LOCAL
+of `run` bound to `mkInput(N_PIXELS)`'s return, not a param at all — the
+walker's `callerArrayLen` therefore needed BOTH a caller-param arm and a
+caller-LOCAL-bound-to-a-builder-call arm (`builderTypedArrayLen`, new,
+resolves the builder's OWN `new T(lenExpr)` length via the builder's own
+settled `intConst` param fact, single-def + `findMutations`-checked
+unreassigned). This is a genuinely new, general capability, not just wiring
+the design doc's assumed-existing piece — worth flagging for any future
+`arrayLen` consumer that hits the same "plain-array-only" wall.
+
+**Structural verification — colorlog `$decode`'s coercion dispatch fully
+elided.** Before (current HEAD, `bench/colorlog/colorlog.js`,
+`optimize:{level:'speed'}`): `$decode`'s body carries the census
+`mayBeUndefined` coercion (`ir.js` `toNumF64`'s `coerceNullishToNum`) at
+BOTH uses of its param `v` — 59 total instructions (13 `f64.const`, 7
+`local.get`, 4 `i64.reinterpret_f64`, 4 `i64.eq`, 4 `i64.const`, 3 `if`, 2
+`select`, plus the arithmetic). After: 29 instructions — both
+`i64.reinterpret_f64`/`i64.eq`/`select`/sentinel-`i64.const` groups gone,
+`v` used directly via plain `local.get` at both sites (verified by diffing
+`$decode`'s func body text before/after — a clean −30 op / −51% reduction,
+matching the design's "dispatch elision on the hot loop" prediction). This
+removes a real runtime branch+select pair from EVERY one of `decode`'s ~3M
+calls (3 calls/pixel × 1M pixels), not just a static-size win.
+
+**Blast radius wider than colorlog alone**: a size-sweep across all 60
+`bench/*` cases (`optimize:'size'`, before vs after, same-process A/B via
+file-swap since it's a src-tree-wide change) shows exactly 4 cases changed
+size — ALL SHRANK, none grew: `colorconv` 2505→2421 (0.967×), `colorlch`
+3015→2931 (0.972×), `colorlog` 2071→1980 (0.956×), `deltae` 3966→3612
+(0.911×) — every other case byte-identical. Geomean over all 60:
+**0.9965×** (well inside the ≤1.05 gate — a net improvement, not just
+neutral). Confirms the "closes the whole shape-class" framing: every
+lab/transcendental-color kernel with the same index-arithmetic-proven-in-
+bounds shape benefits, not a colorlog-only patch.
+
+**Value-correctness — exhaustive, not spot-checked.** Wrote a same-process
+before/after checksum sweep (`jz(code,{modules,optimize:'speed'}).exports.main()`,
+captured `console.log`'s `checksum=` field) across all 60 `bench/*` cases:
+**0 mismatches, 60/60 identical** (jessie/jz's graph-module-resolution
+errors are identical strings before/after too, not new failures — my
+sweep script's own scope limit, not a jz defect). colorlog itself:
+`583146345` before AND after (median_us also dropped ~15.6ms→~8.7ms in the
+same in-process run — informal, not a gated timing claim, but consistent
+with the op-count reduction). Exceeds the "kernel-parity 33/33" bar (60/60).
+
+**Gate table** (file-swap A/B against `git show HEAD:src/{compile/narrow.js,static.js}`
+for every gate that could plausibly be affected by a change this close to
+narrow.js's core fixpoints):
+| gate | result |
+|---|---|
+| full battery (`node test/index.js`) | 3419/3421 pass — 2 fails, BOTH reproduced verbatim on unmodified HEAD (test/optimizer.js's own `(func ` split heuristic mis-isolates `$main`'s text when the module also exports anonymous `_alloc`/`_clear` wrappers — pre-existing test fragility, not a regression) |
+| `JZ_DEBUG_INVARIANTS=1` battnery | 3420/3423 (`test/index.js` + the biquad idempotence-probe pass) — the 2 above plus one more (`test/perf.js` biquad declRange restamp probe), ALL THREE reproduced verbatim on unmodified HEAD |
+| kernel-parity (checksum sweep) | 60/60 identical (exceeds 33/33) |
+| `npm run test:wasm` | 2716/2716 pass, 0 fail |
+| `node test/fuzz.js --count=2000` ×2 (seeds 1-2000, 2001-4000) | both "no divergence — jz wasm == JS for every program at every opt level" |
+| `node test/perf-ratchet.js` | 10/10 categories at baseline exactly (+0 each) |
+| size-sweep geomean (60 cases, size-tuned) | 0.9965× (≤1.05 gate; net improvement) |
+| `npm run build` ×2 | both succeeded, byte-identical output (`dist/jz.js` 2041.2 kB, `dist/jz.wasm` 16591.5 kB both runs) |
+
+Note on the bench.mjs harness: an early `node bench/bench.mjs colorlog jz`
+run threw `RuntimeError: unreachable` under this session's own change,
+which read as a possible regression — investigated by the SAME file-swap
+A/B and found it reproduces byte-for-byte on unmodified HEAD too (then a
+LinkError on a re-run, a different failure again on unmodified HEAD) —
+this specific harness invocation is flaky/environment-sensitive in this
+sandbox (also saw unrelated porffor/rust toolchain failures in the same
+runs) independent of any src change; not gated on, superseded by the
+direct checksum sweep above which IS deterministic and exhaustive.
+
+**WASM_TODO**: no entry added for colorlog (or base64, Lever 2 below) —
+re-confirmed test/bench.js's `WASM_TODO` dict is scoped to WASM_RIVALS
+comparisons (c-wasm/rust-wasm/go-wasm/tinygo/zig-wasm/as); colorlog is
+compared against the V8-family/JSC (a different, ungated comparison class
+per this file's own prior entry), same as base64. Forcing an entry into a
+registry whose own documented scope excludes these cases would be a
+mislabeled entry, not an honest annotation — same call the prior session
+made, re-verified rather than assumed.
+
+**Lever 2 — base64, the inliner typedCtor carry: BANKED, root cause
+corrected — nothing to land.** Re-investigated the prior session's claim
+("decode's hot loop falls to `$__dyn_get`") by reading the ACTUAL compiled
+WAT directly rather than trusting the warning text. `bench/base64/base64.js`
+compiled fresh (`optimize:{level:'speed'}`): `$runKernel` (the ONLY
+surviving user function — `encode`/`decode`/`buildEnc`/`buildDec`/`initBuf`
+are all plan-time-inlined into it, same `src/compile/plan/inline.js`
+mechanism as colorlog's Lever 1, NOT "emit.js's inline-substitution path"
+as the prior session named it) shows `dec[src[i]]` compiling to a clean
+`i32.add(local.get $dec, i32.load8_u(...))` + `i32.load8_u` — a direct typed
+double-index load. **Zero occurrences of `$__dyn_get`/`__is_str_key` in the
+whole compiled module** (`grep dyn` on the full WAT: no matches). The task's
+own acceptance bar ("base64's decode loop WAT shows typed indexing — no
+`$__dyn_get`") is ALREADY MET on current HEAD, before any change.
+
+Traced why the `deopt-dyn-read`/`deopt-dyn-write` warnings still fire
+(confirmed via `{modules,imports,optimize,warnings}` collection —
+`decf11_2`/`decf8_1`, real warning text, not imagined) despite the clean
+final WAT: a stack-traced `dynLoad` invocation (temp instrumentation,
+reverted) showed the warning fires through a REAL `emitFunc` call
+(`compile/index.js:2450`'s `ctx.func.list.map`), but a `JZ_DEBUG_RAWFN`
+dump of `$runKernel`'s own raw emitted IR (right when `emitFunc` returns,
+BEFORE any watr optimize/tree-shake pass) already contains ZERO
+`__dyn_get`/`__is_str_key` — so the slow-path IR that DOES get emitted
+belongs to a DIFFERENT function body, not `$runKernel`'s. `decf11_2`/
+`decf8_1`'s naming (`name` + `f<funcId>` + `_<paramIdx>`, NOT the inliner's
+`inl<N>_name` rename convention) identifies them as `decode`/`buildDec`'s
+OWN pre-substitution param identity — i.e. the warning fires while
+`decode`/`buildDec` are STILL independently analyzed and emitted as
+standalone functions (their entry still sits in `ctx.func.list` at
+`emitFuncs` time even though `plan/inline.js` already spliced their sole
+call site elsewhere), where their OWN `dec` param has no live call sites
+left to feed the interprocedural `typedCtor` fixpoint — genuinely
+unprovable, genuinely slow-path IR, for a function nobody calls anymore.
+`src/wat/assemble.js`'s own doc confirms the closing step ("watr later
+treeshakes the dead function") — a whole-module dead-function prune (this
+file's own `compile/index.js:2787` "prune funcs unreachable from entry
+points" plus watr's own tree-shake) removes these orphaned standalone
+bodies wholesale before the final WAT is assembled, taking their slow-path
+IR with them. Confirmed the survivor list directly: the final base64 module
+has NO `decode`/`buildDec`/`encode`/`initBuf` functions at all, standalone
+or otherwise — only `$runKernel`, `$main`, and the shared runtime helpers.
+
+**So the actual defect is real but different and much smaller than the
+ledgered one**: wasted compile-time (emitting a slow-path body for a
+function about to be pruned) plus a genuinely misleading warning (tells the
+user decode's read is slow when the SHIPPED code is fast) — not a shipped-
+code performance defect, and NOT an inliner rep-carry gap (the LIVE,
+inline-spliced copy inside `$runKernel` never goes through the slow path at
+all — its `dec`/`src` references are `runKernel`'s OWN top-level params,
+correctly typed via the ordinary interprocedural fixpoint, no rename-carry
+needed since the sole call site's argument names happened to match the
+params 1:1). Implementing the ledgered fix (carry `typedCtor` onto
+inliner-renamed locals) would touch real code for zero measurable effect on
+shipped base64 — declining to fabricate a change against a root cause that
+doesn't hold, per this campaign's own "value-correctness/structural truth
+over checklist completion" discipline. **Not landed. No src changes for
+this lever.** Flagged as a smaller, separate, genuinely-real candidate for
+a future session: skip (or defer) full analysis+emission for a function
+whose live call-site count just dropped to zero post-inline, closing both
+the wasted work and the spurious warning — worth naming precisely so it
+isn't re-diagnosed as "the same inliner rep-carry gap" again.
+
+**Commits**: Lever 1 (colorlog) — `src/static.js` + `src/compile/narrow.js`,
+this ledger entry, local only, SHA recorded in the next entry once
+committed. Lever 2 (base64) — ledger only, no code.
+
 **Commits**: none. This entry only.

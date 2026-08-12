@@ -299,6 +299,54 @@ export function nameShift(expr, name) {
   if (expr[0] === '-' && expr[1] === name) { const k = constIntExpr(expr[2]); return Number.isInteger(k) ? -k : null }
   return null
 }
+
+// Literal-only integer read — deliberately NOT constIntExpr/intLiteralValue
+// (both consult repOf for a bare-name operand). linearIndexOf below composes
+// across a caller-body DECL HOP (colorlog's `const j = 3 * i`) at narrow.js's
+// whole-program plan-time walk, where no per-function ctx.func is installed
+// (see linearIndexOf's own doc) — a bare-name K operand there would read
+// whichever function's ctx.func.localReps happens to be installed, silently
+// wrong rather than failing closed. Scale/shift operands in practice are
+// always literal (index-arithmetic constants), so this restriction costs
+// nothing real.
+const pureIntLiteral = (e) => {
+  if (typeof e === 'number' && Number.isInteger(e)) return e
+  if (Array.isArray(e) && e.length === 2 && e[0] == null && typeof e[1] === 'number') return e[1]
+  if (Array.isArray(e) && e[0] === 'u-' && e.length === 2) { const v = pureIntLiteral(e[1]); return v == null ? null : -v }
+  return null
+}
+
+// linearIndexOf(expr) — generalizes nameShift above from a pure +/- SHIFT of
+// `name` to a full linear form `K*name (+/- shift)`, K a compile-time
+// integer SCALE. Returns {name, scale, shift} or null (scale=1 covers
+// nameShift's own shape exactly). Needed by the co-induction bounds prover
+// (narrow.js's mayBeUndefined join, .work/todo.md "colorlog — the co-
+// induction prover"): a loop-local index (`const j = 3 * i`) used at a call
+// site (`decode(src[j])`) is a SCALED reference to the enclosing loop's own
+// counter, not a bare shift of it — nameShift alone can't see through the
+// `j = 3*i` decl-hop. Pure (no repOf/ctx.func — see pureIntLiteral above),
+// safe to call from narrow.js's whole-program plan-time walk.
+export function linearIndexOf(expr) {
+  if (typeof expr === 'string') return { name: expr, scale: 1, shift: 0 }
+  if (!Array.isArray(expr) || expr.length !== 3) return null
+  if (expr[0] === '*') {
+    if (typeof expr[1] === 'string') { const k = pureIntLiteral(expr[2]); if (k != null) return { name: expr[1], scale: k, shift: 0 } }
+    if (typeof expr[2] === 'string') { const k = pureIntLiteral(expr[1]); if (k != null) return { name: expr[2], scale: k, shift: 0 } }
+    return null
+  }
+  if (expr[0] === '+' || expr[0] === '-') {
+    const base = linearIndexOf(expr[1])
+    if (base) { const k = pureIntLiteral(expr[2]); if (k != null) return { name: base.name, scale: base.scale, shift: base.shift + (expr[0] === '+' ? k : -k) } }
+    if (expr[0] === '+') {
+      const base2 = linearIndexOf(expr[2])
+      const k2 = pureIntLiteral(expr[1])
+      if (base2 && k2 != null) return { name: base2.name, scale: base2.scale, shift: base2.shift + k2 }
+    }
+    return null
+  }
+  return null
+}
+
 // Which name does a relational guard's LHS actually compare — bare, or
 // shifted by a compile-time constant (nameShift's own shapes)? Both
 // forCounterRange callers need this BEFORE they can even name which
