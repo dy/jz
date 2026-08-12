@@ -5582,3 +5582,101 @@ assemble.js` (side-table build in `buildStartFn`), `test/layout-kinds.js`
 **SHA**: `dist/jz.wasm` this session's rebuild `01abc18e…`. watr `895ca5b`
 (`/Users/div/projects/watr`, unpublished, unchanged). Worktree base:
 `16f1f701` (region-final-2026-08-11).
+
+## §Region arena — FRONT BOUNDARY RE-ATTEMPTED post-CLOSURE-arm: real
+## progress (the ORIGINAL narrowest repros now clear), a NARROWER wall found
+## (closures-with-captures / dynamic-props), banked not landed (2026-08-12)
+
+**Context**: bba45c0d landed a real CLOSURE region-copy arm — the exact
+blocker 16f1f701's own front-boundary session named as the reason "root the
+whole durable ctx.module/ctx.schema/ctx.closure wholesale" was "provably
+dead-end territory (the CLOSURE trap makes it structurally impossible, not
+merely untried)". With that trap gone, this session re-wired the SAME
+front-boundary seam that session designed (`src/front.js`'s `frontHalf`
+gains an `optimizeTail`-shaped `regionHooks` parameter; `scripts/self.js`'s
+`front()` wraps it, gated on the SAME `REGION_HOOKS_ACTIVE` marker via a
+ternary instead of a second hand-synchronized commented-out object-literal
+line) and re-attempted exactly the root that session's own hazard inventory
+prescribed: `[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure]`.
+
+**Real, verified progress**: the ORIGINAL session's own two narrowest
+repros — `compile('')` and `sum` — **now compile cleanly through the front
+boundary**, where the prior session reported `compile('')` itself trapping
+downstream in `compile()`'s first touch of un-rooted state. Breadcrumb-
+global bisection (`$__dbg_fb`, temporary, NOT landed — stamped at
+`__region_exit`'s pre-walk/pre-memcpy/final-return points) confirms
+`__region_exit` itself completes cleanly (reaches its own final marker)
+for EVERY repro tried, matching the prior session's own finding pattern —
+the fault, when it fires, is always downstream of a successful region-round
+return, never inside the walk.
+
+**Ablation (this session, confirms the prescribed root is the correct
+MINIMAL one for the baseline case)**: dropping `ctx.module` OR `ctx.schema`
+from the root breaks even `sum` (`RuntimeError: memory access out of
+bounds`) — confirming BOTH are load-bearing exactly as diagnosed, not
+merely "safe to add." The full 5-element root is required and sufficient
+for `sum`/`compile('')`.
+
+**A NARROWER wall remains**: any program using a closure WITH a capture
+(even the single most trivial case, `(a) => { let g = (x) => x + a; return
+g(1) }`) OR a dynamic object property write (`let d = {}; d['a'] = 1`)
+still traps `memory access out of bounds`, downstream of `__region_exit`'s
+own successful return (confirmed via the same breadcrumb). Zero-capture
+closures, static-schema object literals, and plain arrays all compile
+clean through the boundary. Adding `ctx.scope` to the root (the one major
+`ctx.*` namespace not in the prescribed inventory — `globals`/`consts`/
+`constInts`/`dynKeyVars`/…) does NOT close this wall either (tested,
+banked). `ctx.closure`'s presence/absence in the root does not change
+whether the capture/dict cases fail (tested via ablation) — ruling out
+"which top-level ctx field is missing" as the remaining question; the
+issue is narrower and deeper than root-completeness.
+
+**Not chased further this session** (stop-on-fail tripwire, matching this
+whole ledger's own "wall found and precisely characterized, banked not
+forced" discipline): the leading hypothesis for next session — SOMETHING
+specific to capture-folding (`ctx.scope.constInts`, read by
+`ctx.closure.make`) or dynamic-property bookkeeping that grows/mutates
+AFTER the front boundary's own mark/exit (i.e., DURING emission, which
+Slice-1's OWN round boundary — still `[ast, dirty, snapshots]`, UNCHANGED
+by this session — also does not root) is getting silently reclaimed by a
+LATER Slice-1 round, the SAME hazard class this session's own CLOSURE-arm
+work just found and fixed for `ctx.closure.envMeta` (indexed-assignment vs
+`.push()` was ruled out as the SPECIFIC mechanism here — `ctx.schema.
+register`/`module/schema.js` already uses `.push()` correctly — so if this
+IS the same class, the growing-and-unrooted structure is a DIFFERENT one,
+not yet found). Confirmed NOT the CLOSURE arm itself misbehaving on THIS
+specific input (dbg breadcrumbs from the CLOSURE arm — same globals as
+bba45c0d's own bisection — were checked and never fire during these
+specific traps either, though not exhaustively re-verified for every repro
+this session).
+
+**Disposition**: BANKED, not landed, per the stop-on-fail tripwire. All
+debug instrumentation removed; `src/front.js`/`scripts/self.js` reverted to
+their exact pre-session content (`git diff` against `bba45c0d` is empty in
+both — confirmed). Rebuilt and reconfirmed: `dist/jz.wasm` SHA-256
+`01abc18e…`, byte-identical to bba45c0d's own committed build — this
+session's exploration left zero trace in the shared tree.
+
+**Recommendation for next session**: don't re-litigate root completeness
+(`[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure]` is confirmed
+correct-and-minimal for the baseline case, `sum`/`compile('')` proof-tested
+this session) or CLOSURE-arm correctness (bba45c0d's own gate ladder is
+exhaustive and unrelated failures were checked via breadcrumb). The
+concrete next lever: breadcrumb-trace (or narrow via native, non-kernel
+repro if `regionHooks` can be exercised outside self-host — this session
+did NOT attempt that, unlike bba45c0d's own native-probe-first discipline,
+because `regionHooks` is wired through `watrTail`'s JS-level callback
+plumbing, not a bare `ctx.core.emit` intrinsic like `__region_mark`/
+`__region_exit` themselves are) the EXACT moment a capture-folding or
+dynamic-prop-tracking structure grows POST-front-boundary and gets
+reclaimed by a Slice-1 round that still doesn't know about it — likely
+requires EXTENDING Slice-1's OWN root (`[ast, dirty, snapshots]`,
+`src/optimize.js`) to ALSO cover `ctx.schema`/`ctx.closure`/`ctx.scope`
+growth that happens DURING emission, not just the front boundary rooting
+them ONCE before emission starts — a plausible unification of the two
+region mechanisms' root inventories, not attempted this session.
+
+**SHAs**: worktree base `bba45c0d` (this session's own CLOSURE-arm commit,
+region-final-2026-08-11 — `git diff` against it is empty). watr `895ca5b`
+(`/Users/div/projects/watr`, unpublished, unchanged). No src-tree commit
+from this front-boundary sub-session — see Disposition above.
