@@ -2340,7 +2340,7 @@ export function cseSafeLoadBases(body, locals, localReps) {
  * element-replace — poisons S.
  *
  * Reads codegen truth: a binding is `Array<S>` iff its settled rep
- * (`funcFacts.get(func).localReps`) carries `arrayElemSchema = S` — the exact
+ * (`ctx.plans.functions.get(func).localReps`) carries `arrayElemSchema = S` — the exact
  * map the emitter consults — so the analysis and the emitter never disagree on
  * which bindings are inline-carried.
  *
@@ -2349,7 +2349,7 @@ export function cseSafeLoadBases(body, locals, localReps) {
  * argument, an `Array<S>`-returning call, an `[{S}, …]` literal, or a captured
  * tracked array inside one is poisoned.
  */
-export function analyzeStructInline(funcFacts, programFacts) {
+export function analyzeStructInline(programFacts) {
   const inlineArray = ctx.schema?.inlineArray
   if (!inlineArray || !ctx.schema?.list) return
   const { paramReps } = programFacts
@@ -2419,7 +2419,8 @@ export function analyzeStructInline(funcFacts, programFacts) {
   // it (compile-time: the self-host compiler has hundreds of array-free frames
   // whose full-body walk was pure waste).
   const anyArrRetFn = ctx.funcs.list.some(f => f?.arrayElemSchema != null && !f.raw)
-  for (const [func, facts] of funcFacts) {
+  for (const func of ctx.funcs.list) {
+    const facts = ctx.plans.functions.get(func)
     const body = func?.body
     // A reps-less frame (zero locals/params — a composing `main`) still gets
     // the walk: its call compositions can forward inline-carried returns.
@@ -2781,7 +2782,7 @@ export function analyzeStructInline(funcFacts, programFacts) {
  *  strict-int32), same-function cursors (`measure(rows[i])` param cursors are
  *  stage 3 — the pointer-ABI seam), reads only (element replace poisons).
  */
-export function analyzeUnionInline(funcFacts, programFacts) {
+export function analyzeUnionInline(programFacts) {
   const registry = ctx.schema?.inlineUnion
   if (!registry || !ctx.schema?.list) return
   const DBG = typeof process !== 'undefined' && process.env?.JZ_DBG_INLARR
@@ -2806,7 +2807,8 @@ export function analyzeUnionInline(funcFacts, programFacts) {
     return slot ?? -1
   }
 
-  for (const [func, facts] of funcFacts) {
+  for (const func of ctx.funcs.list) {
+    const facts = ctx.plans.functions.get(func)
     const body = func?.body
     if (func?.raw || body == null || typeof body !== 'object') continue
     const reps = facts?.localReps ?? new Map()

@@ -841,13 +841,13 @@ export function reset(proto, globals, bridge) {
   }
 
   // ctx.plans — session-owned plan store (architecture re-audit item 3, .work/
-  // todo.md): the THREE pre-emission frozen-fact WeakMaps (src/compile/
+  // todo.md): the pre-emission frozen-fact WeakMaps (src/compile/
   // closure-plan.js's ClosureEnvPlan records, src/compile/loop-model.js's
   // LoopPlan records, src/ir.js's WAT-side loopPlanLink records) used to be
   // three separate module-scope `let` bindings, each independently reassigned
   // to a fresh WeakMap by its own resetX() hook registered on RESET_HOOKS
   // (registerResetHook) — the audit-#19 P0 session-ownership fix applied three
-  // times over, once per map, because self-hosting lowers WeakMap to a strong
+  // times over, once per original map, because self-hosting lowers WeakMap to a strong
   // Map (no native GC), so a module-global map would let entries from a PRIOR
   // compile() survive into the next one. Folded into ONE ctx subtree here,
   // rebuilt directly by reset() every session — the SAME idiom ctx.features/
@@ -859,6 +859,7 @@ export function reset(proto, globals, bridge) {
   // src/optimize/vectorize.js's loopPlanLink read) read ctx.plans.* — no
   // import-time WeakMap binding to go stale.
   ctx.plans = {
+    functions: new WeakMap(),     // src/compile/function-plan.js, keyed on prepared function record
     closures: new WeakMap(),      // src/compile/closure-plan.js mintClosureEnvPlans, keyed on closure body node
     loops: new WeakMap(),         // src/compile/loop-model.js mintLoopPlans, keyed on loop body node
     loweringLinks: new WeakMap(), // src/ir.js, keyed on the WAT loop-block node — { plan, lowering }

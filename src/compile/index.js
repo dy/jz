@@ -29,6 +29,7 @@ import { OPTF } from '../ctx.js'
 import parseWat from 'watr/parse'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants, CARRIER_BOX } from '../ctx.js'
 import { enterActiveFunction, restoreActiveFunction } from './active-function.js'
+import { functionPlanOf, installFunctionPlan, publishFunctionPlan } from './function-plan.js'
 import { i64Hex } from '../../layout.js'
 import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS } from '../ast.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusBigintSentinelKind } from '../kind.js'
@@ -340,7 +341,7 @@ const repView = (rep) => {
 }
 
 /** Capture a function's inferred shape into ctx.inspect.functions. Called after
- *  analyzeFuncForEmit when transform.inspect is set — reads from funcFacts +
+ *  analyzeFuncForEmit when transform.inspect is set — reads from FunctionPlan +
  *  programFacts.paramReps, never from the live ctx.func.* (which churns per emit). */
 function captureFuncInspect(func, facts, programFacts) {
   if (!ctx.inspect || func.raw) return
@@ -1308,10 +1309,10 @@ function hoistUnionCursorUnbox(stmts, func) {
 /**
  * Phase: emit one user function to WAT IR.
  *
- * Reads precomputed `funcFacts` and the narrowed `func.sig`; applies scoped
+ * Reads the published `FunctionPlan` and narrowed `func.sig`; applies scoped
  * schema param bindings during emission so they cannot leak between functions.
  */
-function emitFunc(func, funcFacts, programFacts) {
+function emitFunc(func, functionPlan, programFacts) {
   const { paramReps } = programFacts
 
   // Raw WAT functions (e.g., _alloc, _clear from memory module)
@@ -1376,19 +1377,8 @@ function emitFunc(func, funcFacts, programFacts) {
   // Only this path drains charDecomp prologues (collectParamInits below) —
   // the shape-1b global-receiver decomposition may mint only here.
   ctx.func.charDecompGlobals = true
-  const block = funcFacts.block
-  ctx.func.locals = new Map(funcFacts.locals)
-  ctx.func.boxed = new Map(funcFacts.boxed)
-  ctx.func.cellTypes = new Set(funcFacts.cellTypes)
-  ctx.func.flatObjects = new Map(funcFacts.flatObjects)
-  ctx.func.sliceViews = new Set(funcFacts.sliceViews)
-  ctx.func.localReps = cloneRepMap(funcFacts.localReps)
-  ctx.func.leanHashLocals = new Set(funcFacts.leanHashLocals || [])
-  ctx.func.i32HashLocals = new Set(funcFacts.i32HashLocals || [])
-  ctx.func.leanHashDomains = new Map(funcFacts.leanHashDomains || [])
-  ctx.types.typedElem = funcFacts.typedElem ? new Map(funcFacts.typedElem) : null
-  ctx.types.typedLen = funcFacts.typedLen ? new Map(funcFacts.typedLen)
-    : ctx.scope.globalTypedLen ? new Map(ctx.scope.globalTypedLen) : null
+  const block = functionPlan.block
+  installFunctionPlan(ctx, functionPlan)
 
   // D: Apply call-site param facts (only if body analysis didn't already set them).
   // Schema bindings additionally write into ctx.schema.vars so prop-access dispatch
@@ -1401,7 +1391,7 @@ function emitFunc(func, funcFacts, programFacts) {
       // Same entry-vs-body-reassignment hazard analyzeFuncForEmit guards against
       // (see its comment): r.val/r.typedCtor/r.schemaId describe the CALLER's
       // argument, sound only while the body never writes the name. This step
-      // duplicates that seeding (funcFacts.localReps already carries whatever
+      // duplicates that seeding (FunctionPlan.localReps already carries whatever
       // analyzeFuncForEmit settled, guarded — but re-applying the UNGUARDED
       // call-site fact here would undo it) so it needs the identical guard.
       const reassigned = isReassigned(body, pname)
@@ -1435,13 +1425,13 @@ function emitFunc(func, funcFacts, programFacts) {
   // Stamp the emit-side CSE soundness whitelist onto the func node (expando —
   // watr print/compile ignore non-index props). `cseScalarLoad` reads it; absent
   // it the pass is a no-op. `$`-prefixed to match WAT local names directly.
-  if (funcFacts.cseLoadBases?.size)
-    fn.cseLoadBases = new Set([...funcFacts.cseLoadBases].map(n => `$${n}`))
+  if (functionPlan.cseLoadBases?.size)
+    fn.cseLoadBases = new Set([...functionPlan.cseLoadBases].map(n => `$${n}`))
   // Param-distinctness fact (alias analysis): typed-array params proven mutually-distinct buffers
   // at every call site. `$`-prefixed to match WAT param names; read by hoistInvariantLoop to hoist
   // a load from one such param across a store to another (they can't alias).
-  if (funcFacts.distinctParams?.size)
-    fn.distinctParams = new Set([...funcFacts.distinctParams].map(n => `$${n}`))
+  if (functionPlan.distinctParams?.size)
+    fn.distinctParams = new Set([...functionPlan.distinctParams].map(n => `$${n}`))
   // Stable-header pointer facts: bindings whose length-HEADER word (at base-8) is
   // provably immutable for the binding's entire lifetime — VAL.TYPED (a typed array
   // is a fixed-size allocation, no grow op exists — see module/typedarray.js typedBase)
@@ -1450,9 +1440,9 @@ function emitFunc(func, funcFacts, programFacts) {
   // guard's length DECODE (`i32.shr_u(i32.load(i32.sub(ptr, 8)), shift)`) as loop-invariant
   // — it needs no alias-analysis against the loop's stores (unlike the cell/distinctParam
   // loads above) because nothing can ever write that word once the receiver is allocated.
-  if (funcFacts.localReps?.size) {
+  if (functionPlan.localReps?.size) {
     const stableHeaderNames = new Set()
-    for (const [nm, r] of funcFacts.localReps)
+    for (const [nm, r] of functionPlan.localReps)
       if (r && (r.val === VAL.TYPED || r.neverGrown === true)) stableHeaderNames.add(`$${nm}`)
     if (stableHeaderNames.size) fn.stableHeaderNames = stableHeaderNames
   }
@@ -1917,7 +1907,7 @@ function emitClosureBody(cb) {
     : (globalTL ? new Map(globalTL) : null)
   // In closure bodies, boxed captures use the original name as both var and cell local
   ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
-  // i32-narrowed cells: the owner decided the cell width (funcFacts.cellTypes);
+  // i32-narrowed cells: the owner decided the cell width (FunctionPlan.cellTypes);
   // every body sharing the cell must read/write it at that width.
   ctx.func.cellTypes = new Set(cb.cellI32 || [])
   const parentBoxedCaptures = new Set(cb.boxed || [])
@@ -2354,16 +2344,15 @@ export default function compile(ast, profiler) {
 
   // Inspect sink: editor hosts opt in via { inspect: true } to read inferred shapes.
   // Initialized here (post-plan) so paramReps and schema.list are stable, populated
-  // per-function below as funcFacts settle. Bytes themselves are unchanged.
+  // per-function below as FunctionPlans settle. Bytes themselves are unchanged.
   if (ctx.transform.inspect) ctx.inspect = { functions: {}, schemas: ctx.schema.list.map(s => s.slice()) }
 
-  const funcFacts = new Map()
+  const publishPlan = (func, facts) => publishFunctionPlan(ctx, func, facts)
   timePhase(profiler, 'analyzeFuncs', () => {
     for (const func of ctx.funcs.list) {
       if (func.raw) continue
-      const facts = analyzeFuncForEmit(func, programFacts)
-      funcFacts.set(func, facts)
-      captureFuncInspect(func, facts, programFacts)
+      const functionPlan = publishPlan(func, analyzeFuncForEmit(func, programFacts))
+      captureFuncInspect(func, functionPlan, programFacts)
       scanErasureSinks(func)
     }
   })
@@ -2381,9 +2370,9 @@ export default function compile(ast, profiler) {
   // wholesale — the REFERENCE MODES for three-way differentials (off / on /
   // plain JS); with an empty registry every consumer takes the plain path.
   if (ctx.transform.optimize?.structInline !== false)
-    timePhase(profiler, 'structInline', () => analyzeStructInline(funcFacts, programFacts))
+    timePhase(profiler, 'structInline', () => analyzeStructInline(programFacts))
   if (ctx.transform.optimize?.unionInline !== false) {
-    timePhase(profiler, 'unionInline', () => analyzeUnionInline(funcFacts, programFacts))
+    timePhase(profiler, 'unionInline', () => analyzeUnionInline(programFacts))
     // Carrier-specialized clones (after the registry settles): verified
     // cursor-param functions get a raw-i32 `$union` sibling; sanctioned
     // callsites rewrite to it — no NaN-box crosses the call.
@@ -2392,9 +2381,8 @@ export default function compile(ast, profiler) {
     // per clone rather than sharing the original's f64-sig facts.
     timePhase(profiler, 'unionClones', () => {
       for (const clone of specializeUnionCursorParams(programFacts)) {
-        const facts = analyzeFuncForEmit(clone, programFacts)
-        funcFacts.set(clone, facts)
-        captureFuncInspect(clone, facts, programFacts)
+        const functionPlan = publishPlan(clone, analyzeFuncForEmit(clone, programFacts))
+        captureFuncInspect(clone, functionPlan, programFacts)
       }
     })
   }
@@ -2406,7 +2394,8 @@ export default function compile(ast, profiler) {
   // post-prepare SESSION+PROGRAM snapshot with ANALYSIS (currently empty);
   // compared at 'pre-assemble' below.
   assertCtxInvariants('post-analyze')
-  const funcs = timePhase(profiler, 'emitFuncs', () => ctx.funcs.list.map(func => emitFunc(func, funcFacts.get(func), programFacts)))
+  const funcs = timePhase(profiler, 'emitFuncs', () => ctx.funcs.list.map(func =>
+    func.raw ? emitFunc(func, null, programFacts) : emitFunc(func, functionPlanOf(ctx, func), programFacts)))
   funcs.push(...synthesizeBoundaryWrappers())
 
   const closureFuncs = []

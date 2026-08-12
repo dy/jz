@@ -632,3 +632,33 @@ Certification:
 - build twice: byte-identical; `dist/jz.wasm` SHA-256
   `63ef4ce18f359c37f0184df63f593f9938a037b9ab67e4fe97f97961f4efe9de`
 - self-host correctness/warm reuse: 21/21, 206 assertions
+
+## AS-LANDED — Slice 4c: authoritative frozen FunctionPlan (2026-08-12)
+
+`src/compile/function-plan.js` turns `analyzeFuncForEmit`'s existing return seam
+into an explicit record. Each prepared function publishes exactly once into the
+session-owned `ctx.plans.functions` WeakMap. `analyzeStructInline` and
+`analyzeUnionInline` now read that authority directly; the local `funcFacts`
+map is deleted. `emitFunc` resolves the plan by function identity and installs
+deep mutable working copies into the ActiveFunction record.
+
+The published record owns locals, local reps, boxed/cell facts, flat/slice and
+lean-hash facts, typed element/length facts, CSE bases, and distinct-param facts.
+Its object is frozen; every mutable Map/Set and every Set-valued rep field is
+detached through the established `cloneRep` discipline both at publication and
+at emission install. Emission can mint locals or adjust working reps without
+rewriting plan truth. Missing or duplicate publication is an internal error.
+Closures remain on their dedicated analyze+emit lifecycle for now; `__start`
+remains an explicit synthetic ActiveFunction because its module-init units
+interleave analysis and emission.
+
+Certification:
+- `test/session-reentrancy.js`: 11/11, 30 assertions (also debug invariants)
+- `test/closures.js`: 110/110, 221 assertions
+- `test/invariants.js` debug: 18/18, 31 assertions
+- `npm test`: 3425 pass, only the two standing optimizer-shape failures, 6 skip
+- kernel oracle: 13/13, 541 assertions
+- kernel parity: 3/3, 33 assertions
+- build twice: byte-identical; `dist/jz.wasm` SHA-256
+  `57f14eb5aa04201fc6e49ab541381afcd7ad86eaefcccbe0394b1d77ff13fdbc`
+- self-host correctness/warm reuse: 21/21, 206 assertions

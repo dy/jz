@@ -29,6 +29,7 @@ import { dirname, join } from 'node:path'
 import { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { enterActiveFunction, isInactiveFunction, restoreActiveFunction } from '../src/compile/active-function.js'
+import { installFunctionPlan } from '../src/compile/function-plan.js'
 import { onKernel } from './_matrix.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -102,7 +103,7 @@ const MINIMAL = `export let f = () => 1`
 // reuse can pointer-collide a fresh AST node with a stale key, producing a
 // stale-plan HIT exactly where every reader here fails open on a miss. The
 // fix made all three session-owned (fresh WeakMap per reset()/beginSession());
-// folded into ONE `ctx.plans = {closures, loops, loweringLinks}` subtree,
+// folded into the session-owned `ctx.plans` subtree,
 // rebuilt directly by reset(), by architecture re-audit item 3 (.work/todo.md).
 // CLOSURE_LOOP_A/B are STRUCTURALLY parallel —
 // same shape/position for a zero-capture closure, a heap-capture closure, a
@@ -187,6 +188,24 @@ test('ActiveFunction swaps and restores record identity, not selected fields', (
     'restore reinstates prior identity; inner overlays cannot leak')
 })
 
+test('FunctionPlan is session-owned, published once, and detached from emission state', () => {
+  if (onKernel()) return
+  compile('export let planned = n => { let xs = [n, n + 1]; return xs[0] }')
+  const func = ctx.funcs.map.get('planned')
+  const plan = ctx.plans.functions.get(func)
+  ok(plan && Object.isFrozen(plan), 'function identity resolves to a frozen published plan')
+  ok(plan.locals instanceof Map && plan.localReps instanceof Map && plan.cellTypes instanceof Set,
+    'plan owns locals, reps, and cell facts instead of an ambient last-function cache')
+  const displaced = enterActiveFunction(ctx, { sig: func.sig, body: func.body })
+  installFunctionPlan(ctx, plan)
+  const plannedLocals = plan.locals.size
+  ctx.func.locals.set('emit-only', 'i32')
+  ctx.func.localReps.set('emit-only', { val: 1 })
+  ok(plan.locals.size === plannedLocals && !plan.locals.has('emit-only') && !plan.localReps.has('emit-only'),
+    'emission receives deep working copies; mutable frame facts cannot rewrite the plan')
+  restoreActiveFunction(ctx, displaced)
+})
+
 test('active frame restores as one record after functions, late closures, and __start', () => {
   if (onKernel()) return
   compile(`
@@ -210,7 +229,7 @@ test('session-reentrancy: closure/loop-plan A then structurally-similar B — wa
   const freshA = compileFresh(CLOSURE_LOOP_A)
   const freshB = compileFresh(CLOSURE_LOOP_B)
   ok(eq(warmA, freshA), 'closure/loop-plan A differs between warm (first in process) and fresh-process compile')
-  ok(eq(warmB, freshB), 'closure/loop-plan B differs after structurally-similar A vs. fresh-process — a stale ctx.plans.{closures,loops,loweringLinks} entry bled through')
+  ok(eq(warmB, freshB), 'closure/loop-plan B differs after structurally-similar A vs. fresh-process — a stale ctx.plans entry bled through')
 })
 
 test('session-reentrancy: closure/loop-plan order-reversed — B then A — warm matches fresh-process', () => {
