@@ -4285,3 +4285,225 @@ mutation this chain hasn't considered (e.g. a `table.copy`/`data.drop`
 misuse, or the JS-host `memory()` shim's own bump allocator — ruled
 structurally unlikely since this repro never crosses the host boundary
 after `default()` is called, but not yet directly excluded).
+
+## §Region arena — KERNEL-WIDE SOFTWARE WATCHPOINT (every store family, one
+pass) + FOUR MORE NAMED CANDIDATES RULED OUT BY DIRECT TRACE: no foreign
+write found (2026-08-12), disposable scratchpad worktree off `0d089b49`
+(region-final-2026-08-11) — verdict: the FRAME-FLIP session's own recommended
+next lever (f64.store kernel-wide, extended here to every store family
+per the task's own brief) is now ALSO exhaustively covered, by a NEW
+technique (entry-checkpoint diffing, not per-instruction tracing) — and its
+own top hit is a FALSE POSITIVE, independently disproven by three targeted
+fine-passes plus a direct argument-provenance check. Banked per the
+stop-on-fail tripwire; the actual foreign write is STILL not found.
+
+**Setup.** Fresh `git worktree add` off `0d089b49`, `node_modules` symlinked,
+watr 5.7.14 confirmed. Built the region-live kernel via the same
+`resolveSelfhostBuild()` defaults + `{names:true, wat:true}` recipe every
+session in this chain uses: 152 modules, `regionArenaLive:true`, 288,912,776
+chars (275.5 MB) — byte-identical to every prior session's own build.
+
+**Mechanism 1 — kernel-wide software watchpoint (`watch-inject.mjs`), the
+NEW technique this session contributes.** Rather than instrumenting every
+individual store instruction (INSERT-PATH's own i64.store-only method: 179
+functions, 646 sites — this build measures 76,759 raw `f64.store` and 97,142
+raw `i32.store` occurrences kernel-wide, two orders of magnitude too many to
+sweep individually per-site within a session's build-time budget), this
+session prepends a CHECKPOINT to the prologue of every one of the kernel's
+6,029 real top-level functions (found by anchored text-scan, `/^  \(func
+\$/`, filtering out both the 6 `env`-import func declarations and — the
+session's own first instrumentation trap — occurrences of a function's own
+name as a plain substring inside the embedded self-host SOURCE-DATA blob,
+which `.includes()` matches before the real declaration for some names; the
+FRAME-FLIP session's own `$closure2907` lookup hazard, reconfirmed here for
+`$__region_relocate_props` and generalized into an anchored-regex helper).
+Each checkpoint diffs the watched 16-byte window `[32818240, 32818256)`
+(the task's own literal range: the corrupted `[len,cap]` word at `off-8` plus
+the first entries-stride slot at `off`) against two mutable globals holding
+the last-observed value; on a change it traces `(uniqueTagForThisFunc,
+newValue)` and updates the global. No growth-guard is needed — this build's
+`(memory (export "memory") 8192)` is already 512 MB at module-instantiation
+time, well past the watched window, so the two `i64.load`s never trap even
+at the very first checkpoint. This covers EVERY store family the task names
+(f64.store, i64.store, i32.store pairs, v128.store, memory.fill/copy
+destinations, or anything else) in a single pass, because it detects the
+window's own CONTENT changing regardless of which instruction changed it —
+the tradeoff is resolution: it localizes to "some function's own
+prologue-to-first-nested-call segment," not a specific instruction.
+
+**Two fresh instrumentation traps, found and fixed before a clean run:**
+1. **Decl-skip regex over-matched body instructions.** The line-based
+   "still inside param/result/local declarations" scan used `/^\s*\((param|
+   result|local)\b/` — `\b` alone also fires on `(local.get`/`(local.set`/
+   `(local.tee` (a word boundary exists right before the `.`), swallowing
+   real body instructions into the "still in decls" scan and splicing the
+   checkpoint MID-EXPRESSION (paren-balanced, so `parseWat` never catches it
+   — only `compileWat`'s "Unknown instruction export" assembly-time check
+   does, and only indirectly, three functions removed from the actual
+   splice site). Fixed: require whitespace after the keyword, not just `\b`.
+2. **The inline `(export "...")` abbreviation.** The kernel's last 5 real
+   functions (`compileSelf$exp` and its 4 siblings) place `(export "name")`
+   as their OWN first line, directly after `(func $name`, before any
+   params — `(func $name (export "foo") (param ...) ...)`. Without
+   special-casing it, the decl-skip stops at that line and splices the
+   checkpoint BETWEEN the func name and its export clause, turning the
+   export into a body-nested node (caught by an AST walk: 7 functions with a
+   stray `'export'` tag — 5 named `$..$exp` wrappers plus the two anonymous
+   `_alloc`/`_clear` funcs, whose OWN inline-export-as-first-child shape a
+   naive validator flags as "bad" too, a FALSE positive the session had to
+   separately work through). Fixed: also skip `(export ...)` lines in the
+   decl-scan.
+
+**Result — reproduced deterministically.** `RuntimeError: memory access out
+of bounds`, `__jz_last_err_bits = 0n` (matching every prior session's own
+signature). 45 total checkpoint events across the whole run (function-entry
+diffs, not per-instruction — this run's own low count directly confirms the
+window changes RARELY relative to how often ANY of the 6,029 instrumented
+functions is entered, millions of times, across the whole `compileSelf`
+call). Two early events are static-data noise (the embedded source blob's
+own bytes happen to occupy this address range before any dynamic allocation
+reaches it); the LAST creation-shaped event matches `$__alloc_hdr_n_0_8_28`
+— `known`'s own header init, same signature as every prior session's own
+decode. The remaining ~40 events cluster on two generic, extremely hot
+utility functions — `$__len` (cycling through MANY different STRING-box-
+shaped values, `0x7ffa0000_xxxxxxxx`, across many DIFFERENT calls) and
+`$__dyn_move` (entered right after a STRING-box-shaped pair first appears)
+— consistent with ordinary bump-allocator churn of unrelated objects
+passing through this address before `known`'s own tenancy, not yet
+distinguishable from a real foreign write by entry-checkpoint diffing alone.
+
+**Mechanism 2 — three targeted fine-passes, full per-instruction trace
+(not diffing), following the coarse trace's own top-ranked lead
+(`$__dyn_move`) one hop at a time — ALL THREE CLEAN:**
+1. **`$__ihash_set_local`** ($__dyn_move's only memory-touching callee, the
+   `$__dyn_props` ihash-map's own entry-set/grow routine). INSERT-PATH's own
+   family pass already bounds-checked its 10 `i64.store` sites (clean); this
+   session's own generic recursive store-node walker (a reusable script,
+   `trace-dynprops.mjs` — hoists every store's ADDR operand, folding any
+   `offset=N` immediate, into a fresh local; traces `(siteId, address)`
+   UNCONDITIONALLY on every execution) covers all 16 of its store sites
+   (10 `i64.store` + 6 `i32.store`, the latter never checked before — the
+   lane-bitmap write and the size-counter increment). 95 total events across
+   19 real invocations. **Zero hits** in `[32818240, 32818256)`.
+2. **`$__map_delete`** — not as the reader FRAME-FLIP already proved innocent
+   of computation error, but as a WRITER: its own backward-shift deletion
+   loop contains a `memory.copy(h, hw, 24)` (shifting one 24-byte entry per
+   iteration) plus 5 housekeeping stores, none previously instrumented by
+   any session (FRAME-FLIP only traced $__map_delete's own *reads*). 1872
+   events across (a small fraction of) 38,188 real invocations. **Zero
+   hits** — the 6 non-zero addresses observed cluster at ~37.6M, nowhere
+   near known's 32.8M window.
+3. **`$__region_relocate_props`** — a FRAME-FLIP-named but never-instrumented
+   "sibling helper" of `__region_copy_rec`, with its own `memory.copy`
+   (relocating a whole props/Map-shaped table, stride 28 — the SAME stride
+   family `known` itself uses) plus two `f64.store` sites relocating each
+   entry's value (the exact opcode the task's own hypothesis names). **Zero
+   events of any kind** — never invoked in this repro at all.
+
+**Mechanism 3 — the presumed `__region_exit` reincarnation, direct check —
+closure numbering is NOT stable build-to-build.** `$__dyn_move`'s 5 real
+call sites include one auto-numbered closure; in THIS build it is
+`$closure3999` (6,061 lines, has `$__alloc_hdr_n_0_8_28`, has `$__dyn_move`,
+has the exact "$__dyn_props migration block" shape FRAME-FLIP described:
+`f64.store (pt1-16) (f64.load (pt0-16))` immediately followed by
+`(call $__dyn_move (pt0) (pt1))` — as strong a shape-match to FRAME-FLIP's
+own `$closure2907` as this build offers). Instrumented all 47 of its store/
+range sites (generic walker again) — **zero events of any kind**: never
+invoked in this repro. Cross-checked: `$closure2907` (FRAME-FLIP's own name,
+same byte-identical build) exists in THIS build too, but is a DIFFERENT,
+152-line function with no `alloc_hdr_n_0_8_28`/`dyn_move` at all — closure
+auto-numbering is not stable across separate build invocations even at
+identical total output size, a reusable caution for any future session that
+tries to re-locate a named closure by number across builds.
+
+**Mechanism 4 — `$__dyn_move`'s own argument provenance, directly, across
+every real invocation (`trace-dynmove-args.mjs`).** Traced `(oldOff,
+newOff)` unconditionally at `$__dyn_move`'s own entry — cheapest possible
+check, one two-line splice, no per-store walking needed. 2014 real
+invocations (a mix from `$__arr_grow`/`$__arr_shift`/`$__arr_grow_known` —
+ordinary array-relocation helpers, not region-arena's own object relocation
+— plus `$m49_compile$codeItemSize`, a compiler-internal caller, confirming
+most of the coarse trace's own `$__dyn_move` signal is unrelated churn from
+`compileSelf`'s own internal bookkeeping arrays, not `known`'s relocation at
+all). **Zero** of the 2014 `(oldOff, newOff)` pairs land inside or bracket
+`known`'s header window `[32818216, 32818272)` — the closest cluster sits
+32,933,032–33,018,296 and 32,633,384–32,756,640 (both ~60-200 KB away).
+
+**The verdict.** The coarse checkpoint's own top-ranked lead (`$__dyn_move`
+proximity) is a FALSE POSITIVE, disproven four independent ways in this
+session alone (its only real callee clean, its own arguments never near the
+window, the closure shape-matched to `__region_exit` never invoked, and — by
+elimination — the generic-utility-churn explanation fits every remaining
+observation better). This is a genuine, reusable METHODOLOGICAL finding, not
+just a negative result: entry-only checkpointing brackets a write to "some
+function's own prologue-to-first-nested-call segment," but CANNOT distinguish
+a real causal writer from an unrelated call to a hot, generic utility
+function that merely happens to be entered nearby in the trace's own
+sequence — the technique is sound for cheaply proving a NAMED site clean
+(as it did, comprehensively, for 4 more named candidates this session), but
+its own "closest preceding event" is not evidence of causation and must
+always be confirmed by a full per-instruction fine-pass before being
+reported as a finding (this session's own first draft of this ledger entry
+would have wrongly named `$__dyn_move` as the writer had the three
+fine-passes not been run). The union of every candidate this whole chain has
+now checked by direct trace — i64.store kernel-wide (INSERT-PATH),
+`__region_copy_rec`'s own 16 sites incl. f64.store (FRAME-FLIP), the closing
+bulk `memory.copy` (FRAME-FLIP), `$__ihash_set_local`'s full store family,
+`$__map_delete`'s full store family, `$__region_relocate_props`'s full store
+family, the presumed `__region_exit` closure's full store family, and
+`$__dyn_move`'s own argument provenance — is EMPTY. The foreign write is
+still not directly observed.
+
+**Fix-or-bank: BANKED — no fix.** Matches every prior session's own
+"architectural, not session-scoped" precedent; no shared-tree source change
+(`module/core.js`, `module/collection.js` read-only this session — all
+instrumentation lived in the disposable scratchpad worktree's own copies of
+the compiled WAT).
+
+**By-name verdict: N/A** — no shared-tree source change.
+
+**Gates: NOT RUN** — no fix to gate; kernel-oracle/kernel-parity/fuzz/full
+battery/dormant byte-identity/build×2/memory-watermark-curve/jz×jz all
+remain contingent on a landed fix, unchanged from every prior session in
+this chain.
+
+**Memory curve / jz×jz: NOT REACHED.**
+
+**Per the stop-on-fail tripwire.** Worktree-only: `git status` in the shared
+tree before and after this session shows only this ledger edit. Every
+artifact this session produced — `build-region-wat.mjs`, `watch-inject.mjs`,
+`run-watch.mjs`, `trace-dynprops.mjs`/`run-dynprops.mjs`,
+`trace-mapdelete.mjs`/`run-mapdelete.mjs`,
+`trace-relocateprops.mjs`/`run-relocateprops.mjs`,
+`trace-closure3999.mjs`/`run-closure3999.mjs`,
+`trace-dynmove-args.mjs`/`run-dynmoveargs.mjs`, six ~275-278 MB instrumented
+WATs, and their JSON event/site sidecars — lived only in the scratchpad
+worktree (`/private/tmp/.../scratchpad/region-fstore-wt`), never committed.
+SHAs: worktree base `0d089b49` (region-final-2026-08-11, unchanged); watr
+`node_modules` symlinked, 5.7.14 confirmed. No jz branch created — pure
+instrumentation and trace, no diff to bank.
+
+**Recommendation for next session.** The kernel-wide entry-checkpoint
+technique (`watch-inject.mjs`) is validated, reusable, and cheap (one build,
+one ~23s injection pass, no per-site parsing) — but its own hit list is a
+LEAD LIST, never a finding, until each lead is confirmed by a full
+per-instruction fine-pass (`trace-dynprops.mjs`'s own generic recursive
+store-node walker, parameterized by function name, is the reusable tool for
+that — three sessions' worth of naming hazards are now fixed into it:
+offset=N immediate folding, PUA-marked closure names, inline-export-
+abbreviation decl-skip, blob-substring false-match). Don't re-open
+`$__dyn_move`, `$__ihash_set_local`, `$__map_delete`, `$__region_relocate_props`,
+or this build's `$closure3999` — all closed, exhaustively, by direct trace.
+The concrete next lever this session leaves un-run: extend
+`watch-inject.mjs`'s OWN checkpoint to function EXIT points too (not just
+entry) — entry-only checkpointing cannot see a write that happens after a
+function's own last nested call returns, with nothing further called before
+its own return (a genuine blind spot this session's methodology section
+names but does not close). A second, complementary option: run the true
+per-instruction sweep the task originally asked for, but scoped to
+INSERT-PATH's own already-measured "tractable set" (stdlib-generator
+functions in `module/collection.js`/`array.js`/`string.js`, ~179-300
+functions by that precedent) for f64.store/i32.store/v128.store/memory.fill
+specifically, rather than the full 6,029-function / ~180K-instruction
+kernel-wide surface this session's own opcode census shows is too large for
+an unconditional per-site sweep within one session's build-time budget.
