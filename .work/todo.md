@@ -11237,8 +11237,10 @@ whose live call-site count just dropped to zero post-inline, closing both
 the wasted work and the spurious warning — worth naming precisely so it
 isn't re-diagnosed as "the same inliner rep-carry gap" again.
 
-**Commits**: Lever 1 (colorlog) — `src/static.js` + `src/compile/narrow.js`,
-this ledger entry, local only, SHA recorded in the next entry once
-committed. Lever 2 (base64) — ledger only, no code.
+**Commits** (LOCAL ONLY, not pushed): Lever 1 (colorlog) —
+`e493f441` "colorlog co-induction prover: array reads proven in-bounds by
+index arithmetic keep their kind facts" (`src/static.js` +
+`src/compile/narrow.js` + this ledger entry). Lever 2 (base64) — ledger
+only, no code (this entry).
 
 **Commits**: none. This entry only.
