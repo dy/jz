@@ -11346,3 +11346,68 @@ index arithmetic keep their kind facts" (`src/static.js` +
 only, no code (this entry).
 
 **Commits**: none. This entry only.
+
+## Status (2026-08-12, REGION ARENA FRONT BOUNDARY / SLICE 2 — ATTEMPTED,
+## WALL BANKED, nothing landed). Full account: `.work/research.md §Region
+## arena`'s "FRONT BOUNDARY (Slice 2) ATTEMPTED" entry.
+
+Task: build the region design's Slice 2 (mark before parse/jzify, exit
+after prepare, root = the prepared AST) — the design's own next lever after
+Slice 1 (fixpoint-round region, DONE + measured on `main`: watr −50%,
+jzify-entry FAIL→OK, jz×jz unchanged by design, still needs Slices 2+3).
+
+**Seam**: `src/front.js`'s `frontHalf()`, optional `regionHooks` param
+mirroring `scripts/self.js`'s existing `optimizeTail` precedent for the
+round boundary — `mark()` before `parse()`, `exit(mark, root)` right after
+`prepare()`, before `preEval`.
+
+**Two real bugs found+diagnosed** (both correctly root-caused, both left
+unlanded since the deeper wall makes fixing them pointless until it closes):
+`ctx.func.list` is NOT durable across this boundary despite starting as
+`reset()`'s `[]` (this compiler's single-block ARRAY layout reallocates
+wholesale on first grow past starting capacity — no separate backing
+pointer to relocate, the WHOLE container moves); `ctx.module.imports` is
+read by `compile()`'s very first loop and was missing from every root
+tried.
+
+**The wall: compiler-internal closures cannot cross ANY region boundary
+with `__region_copy_rec` as it exists today.** `module/core.js`'s
+per-compile init (called once every `prepare()`, not once per process)
+mints `ctx.schema.register`/`find`/`idOf`/… (~15 accessor closures over
+fresh per-call `byKey`/`byProp` Maps), `ctx.module.include`, `ctx.closure.
+make`/`call` — all read deep into analyze/compile/emit, all freshly boxed
+during the exact ephemeral span Slice 2 needs to reclaim. Including them in
+root traps unconditionally (CLOSURE's region-copy arm is a deliberate,
+by-design trap — "env length isn't recoverable from a bare CLOSURE box at
+runtime," not a coverage gap); excluding them lets `__region_exit`'s
+closing `memory.copy` silently reclaim their backing memory (confirmed via
+breadcrumb-global instrumentation: `__region_exit` itself always completes
+cleanly; the OOB always fires downstream, inside `compile()`'s first touch
+of whatever ctx state wasn't rooted) — a genuine, deterministic
+use-after-free, not the CLOSURE trap firing. Reproduces on `compile('')`,
+the simplest possible input, at every opt level including O0 — not an
+optimizer interaction, a structural gap.
+
+**Disposition**: reverted clean. `git diff` against `0d089b49` (this
+branch's tip) is empty in the shared tree — `src/front.js`/`scripts/
+self.js` back to exact pre-session content, all debug instrumentation
+(temporary breadcrumb globals in module/core.js) removed. Rebuilt:
+SHA-256 `f961b9b1062d8e8cb…`, matches the already-verified `0d089b49`
+artifact exactly (independent re-derivation, not a new claim).
+`kernel-oracle` 13/13 (493 assertions) re-run on the reverted build as a
+sanity check — clean, matching the documented baseline; rest of the ladder
+inherited unmodified since no source changed. Memory watermarks unchanged
+from the existing `MEMORY-CURVE-MEASURED` record (nothing new to measure —
+Slice 2 didn't land).
+
+**Recommendation**: two real paths forward, both bigger than one session —
+(1) a real CLOSURE region-copy arm (needs a capture-count/env-length side
+table, `layout-kinds.js`'s own CLOSURE-trap comment already names this as
+future, bounded work); (2) restructure `prepare()` so per-compile module
+registration completes before the mark (a pre-scan deciding every module
+the source needs, registered upfront) instead of scattered lazily
+throughout the whole walk. Either one, once landed, closes the
+`ctx.func.list`/`ctx.module.imports` findings for free.
+
+**Commits**: none to the shared tree's compiler source (worktree discarded
+at session end). This entry + `.work/research.md`'s matching append only.

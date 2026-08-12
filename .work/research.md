@@ -2809,6 +2809,202 @@ of bounds during kernel-self-compile, deep recursive frames" new rows above
 narrowest repros) with a NATIVE (non-kernel) probe before reaching for
 another kernel rebuild, per this session's own precedent.
 
+## §Region arena — FRONT BOUNDARY (Slice 2) ATTEMPTED, NEW WALL CLASS FOUND:
+## compiler-internal closures can't cross ANY region boundary (2026-08-12)
+
+**Context this session started from** (per `main`'s own ledger, ahead of
+this branch — not merged here, cited for record): Slice 1 (fixpoint-round
+region) is DONE + measured (LAST HOP / MEMORY-CURVE-MEASURED entries,
+`main`): watr-graph −2,147.5 MB/−50%, jzify-entry FAIL→OK, jz×jz unchanged
+(still `unreachable` @ 4,294,967,296 B, by design — Slice 1 alone was never
+going to reach it). The design's own next lever, restated in its own words:
+"Slice 1 removes cross-round accumulation only… the ~1GB target needs
+Slices 1+2 (front boundary) paired; Slice 3 (emit/encode boundary) unlocks
+jz×jz under 4GiB." This session's task: build Slice 2 — mark before parse/
+jzify, exit after prepare, root = the prepared AST.
+
+**Seam chosen**: `src/front.js`'s `frontHalf()` — the ONE semantic pipeline
+both host (`index.js`) and every self-hosted kernel entry (`scripts/
+self.js`'s `front()`) run (`parse → reject-reserved-prefix → liftIIFEs →
+jzify → prepare → preEval`). `frontHalf` already takes a `time`/
+`afterPrepare` callback-injection pattern for host-only concerns, so adding
+an optional `regionHooks` parameter (mirroring `optimizeTail`'s own
+precedent in `scripts/self.js` for the Slice-1 round boundary) is the
+natural wiring point: `mark = regionHooks?.mark()` as the very first
+statement (before `parse()`), `regionHooks.exit(mark, root)` called right
+after `prepare(parsed)` returns, before `preEval`. Undefined (a no-op) for
+every native host caller; only the kernel's own `front()` would ever supply
+real `{mark: () => __region_mark(), exit: (mark, root) =>
+__region_exit(mark, root)}` closures — same shape as `optimizeTail`'s
+proven-working pattern, same `REGION_HOOKS_ACTIVE` toggle would gate both
+boundaries together.
+
+**Hazard inventory, method: enumerate every `ctx.*` write inside
+`src/prepare/{index,lift-iife,math-kernel}.js` (the whole ephemeral span
+between mark and exit), classify each as (a) read post-boundary or dead by
+construction, (b) durable container / ephemeral payload or genuinely
+ephemeral container, (c) safe to relocate or a CLOSURE.**
+
+1. **`ctx.func.list` — REAL bug, found+fixed this session.** Arrow/named
+   functions are extracted OUT of the tree during `prepare` (their bodies
+   live ONLY in `ctx.func.list`, not reachable by walking `ast` —
+   `preEval` itself already walks `ast` + every `ctx.func.list` body
+   separately, confirming they're disjoint). Assumed durable at first
+   (starts as reset()'s `[]`, allocated before mark) — WRONG: this
+   compiler's ARRAY layout is one contiguous block (length header
+   immediately below the element slots, no separate indirect backing
+   pointer — `layout-kinds.js` `regionArmArray`'s single `$off =
+   __ptr_offset(bits)` read proves this), so the FIRST `.push()` past
+   the starting capacity reallocates a brand-new, ephemeral (post-mark)
+   block and rebinds the `list` property to it. Root must carry
+   `ctx.func.list` as a VALUE (read back its relocated address from
+   `__region_exit`'s return, exactly like `ast`), not merely trust it's
+   reachable off a durable `ctx.func`. Confirmed by direct empirical
+   bisection (see Method below) — the very first build with root =
+   `[ast, ctx.func.list]` but no write-back OOB-trapped on the single
+   simplest possible program (`sum`, a plain scalar loop, no closures/
+   arrays/objects at all), at every opt level including O0.
+2. **`ctx.module.imports` — REAL bug, found, NOT fixed (session ran out of
+   runway before the deeper wall closed it anyway).** `prepare/index.js`
+   pushes host-import declarations onto this durable-but-grows array; `src/
+   compile/index.js`'s `compile()` — the very FIRST thing it does, before
+   any user code — iterates `ctx.module.imports` directly. Confirmed via
+   direct instrumentation (below) that a root of `[ast, ctx.func.list]`
+   with BOTH correctly write-back'd still traps — not inside
+   `__region_exit` (which completes cleanly, confirmed by breadcrumb
+   globals reaching its own final `global.set` every time regardless of
+   root content) but downstream, inside `compile()`'s own first loop —
+   `ctx.module.imports` is exactly the shape of hazard (2) and the
+   confirmed next miss.
+3. **THE WALL: compiler-internal CLOSURES minted per-compile by prepare's
+   own lazy module registration.** `module/core.js`'s default export (a
+   single arrow function spanning the whole file, invoked ONCE PER
+   COMPILE via `prepare()`'s own `includeModule('core')` call, itself the
+   very first non-housekeeping line of `prepare()`) calls `module/
+   schema.js`'s `initSchema(ctx)` — whose own doc says outright "Called
+   once per compilation." `initSchema` closes over two FRESH per-call
+   local `Map`s (`byKey`/`byProp`) and assigns ~15 arrow-function closures
+   onto `ctx.schema.{register, find, isBoxed, emitInner, slotOf,
+   guardedSlotOf, chainSid, slotVT, slotTypedCtor*, slotIntCertainAt,
+   slotBigint*, errorSid, isErrorSid, errorClassOf, errorSidEntries,
+   errorClassesUsed, idOf, resolve}` — every one of them capturing that
+   call's own fresh `byKey`/`byProp`. `prepare/index.js` similarly
+   assigns `ctx.module.include = includeModule` (a plain top-level
+   function reference, but still boxed as a fresh CLOSURE value at that
+   assignment site — this compiler's CLOSURE representation always
+   allocates an env block via `__alloc`, arity 0 or not, no evidence of
+   closure interning anywhere the way STRING is interned). `module/
+   function.js` similarly installs `ctx.closure.make`/`ctx.closure.call`.
+   Every one of these closures is READ EXTENSIVELY past the front
+   boundary — `ctx.module.include` alone has 8 call sites across `ir.js`/
+   `object.js`/`math.js`/`regex.js`/`array.js`, all in the emit phase, all
+   downstream of where Slice 2's exit would fire.
+
+   **Neither direction crosses the boundary.** Include them in root (e.g.
+   root ctx.module/ctx.schema/ctx.closure wholesale, the natural
+   "root the whole durable subtree" move that made `ctx.func.list`-style
+   fixes tractable elsewhere) — `__region_copy_rec`'s CLOSURE arm
+   (`layout-kinds.js` `regionArmClosureTrap`) traps UNCONDITIONALLY the
+   instant the walker's dispatch sees `PTR.CLOSURE`, regardless of
+   durability: "a CLOSURE's capture count… is not recoverable from a bare
+   CLOSURE box at runtime… this trap is the honest alternative to
+   guessing" — a DELIBERATE, by-design limitation from registry Slice 2,
+   not a coverage gap this session could close by adding an arm. Exclude
+   them (leave `ctx.module`/`ctx.schema` un-rooted, as this session's
+   actual attempts did) — `__region_copy_rec` never touches them, so no
+   TRAP fires during the boundary call itself, but `__region_exit`'s
+   closing `memory.copy(mark, T, size)` still silently reclaims their
+   backing memory: nothing walked them, so they're not part of `size`,
+   so they sit in the discarded `[mark+size, T)` dead zone the instant
+   region_exit returns — the very next allocation (anything `compile()`
+   does) happily overwrites them, and the STALE pointer `ctx.schema.
+   register` etc. still holds becomes a plain use-after-free. **This is
+   NOT the CLOSURE trap firing — it's silent corruption**, confirmed by
+   direct instrumentation (below): `__region_exit` reaches its own final
+   `global.set` cleanly every time, in every configuration tried; the
+   fault always lands downstream, deterministically inside `compile()`'s
+   first touch of whatever ctx state wasn't rooted.
+
+**Method (empirical, since blind reasoning about a corrupted-vs-clean
+distinction wasn't converging fast enough): breadcrumb globals**
+(`$__dbg_mark`/`$__dbg_T`/`$__dbg_dp`/`$__dbg_stage`, `$__dbg_stage2`,
+temporary, module/core.js + scripts/self.js, NOT landed — see Disposition
+below), the same technique the original round-boundary root-cause sessions
+used (a synchronous wasm trap leaves the instance's globals intact, so the
+LAST value written is the last checkpoint reached). Stage markers placed at
+`__region_exit`'s own body (mark/T computed, region_copy_rec call
+returned, dyn-props relocation block, closing memory.copy) and at
+`frontHalf`'s own exit call / `compileSelf`'s phase boundaries
+(front/compileAst/optimizeTail/watrCompile). Bisected on the empty-string
+program (source `''`) — the simplest possible input, `compile('')` — to
+remove every candidate variable except the mechanism itself:
+- root = `42` (an ATOM, zero tree-walking required) — STILL traps, and
+  `__region_exit` reaches its own final instruction (stage 4) — proves the
+  fault is downstream of `__region_exit` entirely, not inside it (the
+  `''` program still populates `$__dyn_props` — confirmed non-zero even
+  for an empty source — since prepare's OWN bookkeeping, not the target
+  program, is what uses it; the dp-relocation block runs and completes
+  cleanly every time tested).
+- root = `[ast, ctx.func.list]` with correct write-back — STILL traps;
+  `compileSelf`'s own stage markers show `front()` (mark → parse → prepare
+  → exit → preEval, all of it) completes and RETURNS successfully (stage
+  400 reached) but `compileAst()` never finishes (stage 500 never reached)
+  — isolates the fault to `compile()`'s own first touches of un-rooted ctx
+  state, exactly hazard #2/#3 above.
+
+**Disposition — WALL, not landed, per the stop-on-fail tripwire.** All
+debug instrumentation removed; `src/front.js` and `scripts/self.js`
+reverted to their exact pre-session content (`git diff` against `0d089b49`
+is empty in both). Rebuilt and reconfirmed: SHA-256 `f961b9b1062d8e8cb…`,
+byte-identical to the LAST HOP/MEMORY-CURVE-MEASURED entries' own verified
+region-live build from this exact base (independent proof this worktree's
+exploration left zero trace) — this is NOT a "dormant by construction"
+claim for a NEW toggle (there is none to add — nothing landed), it's a
+direct re-derivation of the already-known-good `0d089b49` artifact.
+`node test/kernel-oracle.js` re-run on this reverted build as a sanity
+check (not a new-code gate — nothing changed): 13/13 (493 assertions),
+clean, matching the already-documented baseline. The rest of the mandated
+ladder (kernel-parity, fuzz, full battery, build×2) was not re-run since no
+source changed — those results are inherited unmodified from `0d089b49`'s
+own prior verification.
+
+**Watermarks: unchanged from the MEMORY-CURVE-MEASURED entry** (`main`,
+same `0d089b49` base, same watr `895ca5b`, byte-identical wasm) — Slice 2
+did not land, so there is no new watermark to report. For the record: jessie
+1,073.7 MB (unaffected at this scale, both kernels), watr 2,147.5 MB
+(Slice-1 win holds, −50% vs. dormant), jzify-entry 4,295.0 MB OK (Slice-1's
+FAIL→OK win holds), jz×jz still `unreachable` @ 4,294,967,296 B (2³²,
+unchanged — Slice 2/3 still both required, matches the design's own
+scoping exactly, not a new finding).
+
+**Recommendation for next session.** Don't re-attempt "root the whole
+durable ctx subtree" as a blanket move for `ctx.module`/`ctx.schema`/
+`ctx.closure` — it's provably dead-end territory (the CLOSURE trap makes
+it structurally impossible, not merely untried). Two real paths forward,
+neither attempted this session (both bigger than a single-session slice):
+(1) give CLOSURE a real region-copy arm — needs a capture-count/env-length
+side table (mirroring `$__schema_tbl`'s pattern for OBJECT/HASH), named as
+"a real, bounded option for a future slice" in `layout-kinds.js`'s own
+CLOSURE-trap comment already, now with a concrete forcing case (front-
+boundary module registration) instead of a hypothetical one; (2)
+restructure `prepare()` so per-compile module registration
+(`includeModule` calls, scattered throughout the ENTIRE walk, driven by
+which source features are seen — not just the one `includeModule('core')`
+at the top) completes before the mark, e.g. a source pre-scan that decides
+every module the compile will need and registers them all upfront — a
+real architectural change to `prepare/index.js` and the "called once per
+compilation" convention every stdlib module's init function follows,
+not a boundary-placement tweak. Either fix, once landed, should also close
+`ctx.func.list`/`ctx.module.imports` for free (they become reachable off a
+now-safely-rootable `ctx.module`/`ctx.func`, no bespoke field list needed)
+— don't re-litigate those two, they're correctly diagnosed, just blocked
+on the deeper fix landing first.
+
+**SHAs.** Worktree base: `0d089b49` (region-final-2026-08-11, unchanged —
+this session's `git diff` against it is empty). watr: `895ca5b`
+(`/Users/div/projects/watr`, unpublished, local-only, unchanged). No jz-repo
+compiler-source commit from this session — see Disposition above.
+
 ## [ ] Carrier invariant / storedValue (was carrier-invariant-design.md; predecessor of the carrier program)
 
 The boxed-value invariant program that preceded carrier-representation.
