@@ -6,6 +6,29 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Region arena front boundary — SET/MAP rebuild timing bug FOUND+FIXED,
+## a SECOND wall (CLOSURE cellOff corruption) found behind it — 2026-08-12
+Full account: `.work/research.md §Region arena`'s "REAL WALL FOUND+FIXED"
+entry. Landed (`layout-kinds.js`, `module/collection.js`, `module/core.js`,
+region-final-2026-08-11 branch): `__region_copy_rec`'s SET/MAP rebuild
+hashed a relocated STRING/BIGINT key through its not-yet-valid LOGICAL
+(post-move) pointer instead of the still-safe ORIGINAL one — fixed via a
+new `$__map_set_h`/`$__set_add_h` prehashed-insert pair. Closes the WHOLE
+synthetic multi-module family (5–47 chained modules, 100% clean, was
+non-monotonic 5/10 ok, 12/14/15/17 fail, 16/18 ok before). jessie/watr/
+jzify-entry/jz×jz still trap — now ~8× faster, inside `__region_relocate_
+cell` (CLOSURE boxed-cell side path): a SECOND wall, diagnosed (cellOff
+garbage, e.g. 1.2 GB > total memory) but not root-caused. Also found
+kernel-oracle's own 9/13 fail under a GENUINELY region-live build is
+PRE-EXISTING (verified byte-for-byte against unmodified 47140301) — no
+prior session's "13/13 green" claim was ever tested with the hooks
+actually hand-flipped live, the exact gap 8bed8c3f warned the next session
+about. Dormant regression: `npm test` 3428/3436 (2 known flakes),
+`JZ_TEST_TARGET=jz.wasm` 2725/2731 (0 new fail) — fix is fully inert
+dormant. `REGION_HOOKS_ACTIVE` left `false` (dormant, unchanged default).
+Next: reuse the SAME trap-frame+debug-global method on `__region_relocate_
+cell`/`regionArmClosure`, one level deeper (per-slot ring, not last-call).
+
 ## `arr[arr.length] = x` KERNEL-CODEGEN CLASS — FOUND AND FIXED (a general
 ## NATIVE miscompile, not a self-host-only divergence) — 2026-08-12
 Investigated the class bba45c0d's own "region arena" entry (`.work/

@@ -25,7 +25,7 @@
  * LEAF MODULE — imports only layout.js (the err-codes.js pattern: safe for
  * `jz/interop` and tests without pulling the compiler).
  */
-import { PTR, LAYOUT, ATOM, STR_INTERN_BIT } from './layout.js'
+import { PTR, LAYOUT, ATOM, STR_INTERN_BIT, STR_HCACHE_BIT } from './layout.js'
 
 // Collection entry strides (module/collection.js) — duplicated here rather than
 // imported, matching layout-kinds-doc.js's OWN precedent for the same three
@@ -157,10 +157,42 @@ export function regionArmBigint() {
           (return (local.get $out))))`
 }
 
-/** STRING's region arm — verbatim (module/core.js, pre-Slice-2). SSO is
- *  immediate; SLICE views are out of scope (unreachable — the region program
- *  never produces one); plain heap strings never forward (module/string.js
- *  invariant) so the raw offset mask is always canonical. */
+/** STRING's region arm. SSO is immediate; SLICE views are out of scope
+ *  (unreachable — the region program never produces one); plain heap
+ *  strings never forward (module/string.js invariant) so the raw offset
+ *  mask is always canonical.
+ *
+ *  HCACHE header fix (region-arena front-boundary hunt, .work/research.md
+ *  §Region arena): module/string.js allocates a heap-built (non-SSO,
+ *  STR_HCACHE_BIT) string with an 8-byte `[hash u32][len u32]` header, and
+ *  layout.js's own STR_HCACHE_BIT doc says the lazy-cache design is
+ *  "Sound because heap strings never relocate and die with their arena" —
+ *  an invariant true before this region arm existed and false the instant
+ *  it does. The prior version here allocated/copied only a bare 4-byte
+ *  `[len]` header for EVERY ephemeral string, silently dropping the hash-
+ *  cache word for any HCACHE string (which is most non-trivial runtime-
+ *  built strings, e.g. every prepareModule renameFunc mangled name —
+ *  `${prefix}$${name}` concatenation): the new location's -8 slot is left
+ *  as whatever byte happens to precede it in the bump arena, and the next
+ *  `__str_hash` on that string reads garbage there — either a bogus
+ *  "cached" hash directly, or (the observed failure) a false miss that
+ *  falls through into reading -4 as a length despite it not being where
+ *  this call expects it, walking the FNV loop off the end of memory
+ *  (root-caused via a trap-frame decompile plus a worktree-only debug-
+ *  global probe on `$__str_hash`'s own inputs, the SW-hunt method). Fix: give an HCACHE
+ *  string its real 8-byte header at the new address too, RESETTING the
+ *  cache to 0 (the documented "uncomputed" sentinel — byte-FNV clamps to
+ *  ≥2 so 0 stays unambiguous) instead of copying whatever the old cache
+ *  held. Sound, not a hack: 0 is the exact state a freshly bump-extended
+ *  HCACHE string already starts from, and module/string.js's own in-place
+ *  mutators already reset the cell to 0 on any content change — this is
+ *  one more legitimate "uncomputed" transition, costing one lazy recompute
+ *  on next hash, never a wrong answer. STR_INTERN_BIT also carries a -8
+ *  cached hash (layout.js doc) but is unaffected: every INTERN pointer
+ *  resolves to the static string pool (module/string.js's own intern
+ *  lookup returns the STATIC candidate's offset), which is always below
+ *  `$__heap_start` and therefore always durable (`off < mark`) — it can
+ *  never reach the ephemeral branch below to begin with. */
 export function regionArmString() {
   return `(if (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
         (then
@@ -175,8 +207,14 @@ export function regionArmString() {
           (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
           (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
           (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 4))))
-          (local.set $newOff (i32.add (call $__alloc (i32.add (i32.const 4) (local.get $len))) (i32.const 4)))
-          (i32.store (i32.sub (local.get $newOff) (i32.const 4)) (local.get $len))
+          (if (i32.and (local.get $aux) (i32.const ${STR_HCACHE_BIT}))
+            (then
+              (local.set $newOff (i32.add (call $__alloc (i32.add (i32.const 8) (local.get $len))) (i32.const 8)))
+              (i32.store (i32.sub (local.get $newOff) (i32.const 8)) (i32.const 0))
+              (i32.store (i32.sub (local.get $newOff) (i32.const 4)) (local.get $len)))
+            (else
+              (local.set $newOff (i32.add (call $__alloc (i32.add (i32.const 4) (local.get $len))) (i32.const 4)))
+              (i32.store (i32.sub (local.get $newOff) (i32.const 4)) (local.get $len))))
           (memory.copy (local.get $newOff) (local.get $off) (local.get $len))
           (local.set $out (call $__mkptr (i32.const ${PTR.STRING}) (local.get $aux) (i32.sub (local.get $newOff) (local.get $delta))))
           (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
@@ -389,12 +427,38 @@ export function regionArmSetMap() {
           (block $cd (loop $cl
             (br_if $cd (i32.ge_s (local.get $i) (local.get $n)))
             (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
+            ;; Region-arena rebuild fix (.work/research.md §Region arena, front-
+            ;; boundary hunt — full mechanism on __set_add_h/__map_set_h,
+            ;; module/collection.js): a relocated key's stored bits are the
+            ;; LOGICAL (post-move) address — correct to STORE, but its target
+            ;; memory only physically exists at the PRE-move address until
+            ;; region_exit's closing memory.copy. $__map_hash's STRING/BIGINT
+            ;; arms dereference the key's payload (content hash); every other
+            ;; kind hashes the raw bits with no dereference. So: content-hashed
+            ;; keys hash the ORIGINAL bits (content is copied byte-for-byte,
+            ;; identical either way, and the original address stays valid to
+            ;; read all the way to region_exit's own last instruction); every
+            ;; other key hashes the RELOCATED bits (bits-based, must match
+            ;; what a future lookup — which only ever sees the stored, final
+            ;; bits — will compute; no dereference, so the not-yet-moved
+            ;; address is never touched). Then insert with the precomputed
+            ;; hash via the STRICT prehashed sibling (skips $__map_set/
+            ;; $__set_add's OWN internal re-hash of the — for content kinds,
+            ;; still-premature — relocated pointer).
+            (local.set $propsF (f64.load (i32.add (local.get $slot) (i32.const 8))))
+            (local.set $newFinal (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $propsF)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+            (local.set $oldProps (call $__region_copy_rec (local.get $propsF) (local.get $memo) (local.get $mark) (local.get $delta)))
+            (local.set $len (call $__map_hash (i64.reinterpret_f64
+              (select (local.get $propsF) (local.get $oldProps)
+                (i32.or (i32.eq (local.get $newFinal) (i32.const ${PTR.STRING})) (i32.eq (local.get $newFinal) (i32.const ${PTR.BIGINT})))))))
             (if (i32.eq (local.get $t) (i32.const ${PTR.MAP}))
-              (then (drop (call $__map_set (i64.reinterpret_f64 (local.get $outPhys))
-                (i64.reinterpret_f64 (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $memo) (local.get $mark) (local.get $delta)))
+              (then (drop (call $__map_set_h (i64.reinterpret_f64 (local.get $outPhys))
+                (i64.reinterpret_f64 (local.get $oldProps))
+                (local.get $len)
                 (i64.reinterpret_f64 (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 16))) (local.get $memo) (local.get $mark) (local.get $delta))))))
-              (else (drop (call $__set_add (i64.reinterpret_f64 (local.get $outPhys))
-                (i64.reinterpret_f64 (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $memo) (local.get $mark) (local.get $delta)))))))
+              (else (drop (call $__set_add_h (i64.reinterpret_f64 (local.get $outPhys))
+                (i64.reinterpret_f64 (local.get $oldProps))
+                (local.get $len)))))
             (local.set $i (i32.add (local.get $i) (i32.const 1)))
             (br $cl)))
           ;; NO old-site forwarding stub — boundary-arithmetic audit, window B

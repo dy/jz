@@ -98,6 +98,19 @@ export default (ctx) => {
     __region_copy_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish',
       '__alloc', '__alloc_hdr', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order',
       '__len', '__region_relocate_props', '__region_relocate_cell',
+      // SET/MAP rebuild fix (.work/research.md §Region arena, front-boundary
+      // hunt): regionArmSetMap (layout-kinds.js) now hashes a relocated
+      // entry's key itself (via $__map_hash, on whichever bits are currently
+      // safe to dereference) and inserts with the STRICT prehashed siblings
+      // ($__map_set_h/$__set_add_h, module/collection.js) instead of the
+      // growing, self-hashing $__map_set/$__set_add — an explicit edge
+      // (matching every other helper reachable ONLY from a spliced WAT
+      // template body, not a real call site auto-scan can see): self-host's
+      // own realize/regex-scan misses template-only calls (test/selfhost-
+      // includes.js's own "Unknown func" class), so without this a region-
+      // live self-hosted kernel traps the instant it rebuilds its first
+      // relocated Set/Map.
+      '__map_hash', '__map_set_h', '__set_add_h',
       // ARRAY/OBJECT dyn-props migration (see the definitions below): a relocated
       // container's off-16 propsPtr sidecar needs the SAME grow/shift migration
       // arrGrow/arrShift already perform (module/array.js

@@ -1093,8 +1093,19 @@ function genLookupStrictPrehashed(name, entrySize, eqExpr, expectedType, missing
     ${notFound})`
 }
 
-function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType) {
-  return `(func $${name} (param $obj i64) (param $key i64) (param $h i32) (param $val i64) (result i64)
+// `hasVal` (region-arena rebuild fix, .work/research.md §Region arena):
+// added so PTR.SET (16-byte, key-only entries — no room for a value word at
+// slot+16) can share this generator instead of a hand-duplicated copy —
+// mirrors genUpsert's own hasVal toggle immediately above verbatim. Default
+// true preserves every existing caller (__hash_set_local_h, MAP-shaped)
+// byte-for-byte.
+function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType, hasVal = true) {
+  const valParam = hasVal ? '(param $val i64) ' : ''
+  const storeValNew = hasVal ? `\n          (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}` : ''
+  const storeValMatch = hasVal
+    ? `(then\n                (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}\n                (br $done))`
+    : `(then (br $done))`
+  return `(func $${name} (param $obj i64) (param $key i64) (param $h i32) ${valParam}(result i64)
     (local $off i32) (local $cap i32) (local $end i32) (local $slot i32) (local $zb i32) (local $ztr i32)
     ${laneLocals} (local $zbl i32)
     (if (i32.ne
@@ -1120,8 +1131,7 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType) {
             (else ${slotFromLane(entrySize)}))
           ${seqStore}
           (i32.store (local.get $ls) (local.get $h))
-          (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}
-          (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
+          (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeValNew}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
             (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
           (br $done)))
@@ -1132,9 +1142,7 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType) {
             (then (if (i32.eqz (local.get $zb))
               (then (local.set $zb (local.get $slot)) (local.set $zbl (local.get $ls)))))
             (else (if ${eqExpr}
-              (then
-                (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
-                (br $done)))))))
+              ${storeValMatch})))))
       ${probeNext()}
       (local.set $ztr (i32.add (local.get $ztr) (i32.const 1)))
       (if (i32.ge_s (local.get $ztr) (local.get $cap))
@@ -1144,8 +1152,7 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType) {
           (local.set $ls (local.get $zbl))
           ${seqStore}
           (i32.store (local.get $ls) (local.get $h))
-          (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}
-          (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
+          (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeValNew}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
             (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
           (br $done)))
@@ -1188,6 +1195,9 @@ export default (ctx) => {
     // explicit edge the kernel leg drops the helper (auto-scan divergence, the
     // selfhost-includes class) and every `new Set(...)` fails to compile there.
     __set_add: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    // Region-arena rebuild fix — caller (layout-kinds.js regionArmSetMap)
+    // folds the hash, mirrors __hash_set_local_h's own prehashed dep shape.
+    __set_add_h: () => ['__same_value_zero', '__zomb_scan', ...slotLogDeps()],
     __set_has: () => ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __set_delete: () => ['__map_hash', '__same_value_zero', ...relogDeps()],
     __set_add_all: ['__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order', '__set_add'],
@@ -1197,6 +1207,8 @@ export default (ctx) => {
     __sclone_rec: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_from', '__obj_clone', '__sclone_hash_vals'],
     __sclone_hash_vals: ['__sclone_rec'],
     __map_set: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    // Region-arena rebuild fix — MAP-shaped sibling of __set_add_h.
+    __map_set_h: () => ['__same_value_zero', '__zomb_scan', ...slotLogDeps()],
     __map_get: () => ctx.linkDemand.external ? ['__ext_prop', '__map_set', '__ptr_offset', '__ptr_offset_fwd'] : ['__map_set', '__ptr_offset', '__ptr_offset_fwd'],
     __map_get_h: () => ctx.linkDemand.external ? ['__ext_prop', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __map_has: () => ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
@@ -1558,6 +1570,32 @@ export default (ctx) => {
 
   // Generated Set probe functions
   ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
+  // Region-arena rebuild fix (.work/research.md §Region arena, front-boundary
+  // hunt): __region_copy_rec's SET/MAP arm (layout-kinds.js regionArmSetMap)
+  // rebuilds a relocated Set/Map into a fresh cap-sized table (never grows,
+  // same assumption $outPhys staying canonical already relies on). The plain
+  // $__set_add/$__map_set hash the KEY IT'S GIVEN — but the key it's given is
+  // the recursively-relocated (region_copy_rec'd) pointer, which for an
+  // EPHEMERAL entry is the LOGICAL (post-move) address: correct to STORE
+  // (every pointer inside the compacted copy must already be final so the
+  // closing bulk memory.copy needs no second fixup pass — regionArmArray's
+  // own comment), but not yet valid to DEREFERENCE — its bytes only exist
+  // physically at the pre-move address until region_exit's LAST instruction.
+  // Hashing a STRING key through that not-yet-valid address reads whatever
+  // stale/zeroed memory currently sits there (root-caused via a trap-frame
+  // decompile plus a worktree-only debug-global probe on $__str_hash's own
+  // inputs, the SW-hunt method — a `[hash][len]` load that should read a
+  // real string header instead reads leftover zeros, so the FNV byte-loop
+  // runs off the end of memory). Fix:
+  // hash the ORIGINAL (pre-relocation) key first — always safely
+  // dereferenceable throughout the WHOLE traversal, durable or not, since
+  // the source zone [mark, T) is read-only until region_exit's own closing
+  // memory.copy, never a write target before then (regionArmArray's own
+  // "self-overlap" comment) — then relocate, then insert with the
+  // precomputed hash via this STRICT (fixed-capacity, matches the rebuild's
+  // own no-growth invariant) prehashed sibling instead of re-hashing the
+  // logical pointer.
+  ctx.core.stdlib['__set_add_h'] = () => genUpsertStrictPrehashed('__set_add_h', SET_ENTRY, sameValueZeroEqG, PTR.SET, false)
   ctx.core.stdlib['__set_has'] = () => genLookup('__set_has', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
   ctx.core.stdlib['__set_has_h'] = () => genLookupStrictPrehashed('__set_has_h', SET_ENTRY, sameValueZeroEqG, PTR.SET, UNDEF_NAN, ctx.linkDemand.external, false)
   ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET)
@@ -2074,6 +2112,9 @@ export default (ctx) => {
 
   // Generated Map probe functions
   ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.linkDemand.external)
+  // Region-arena rebuild fix — see __set_add_h's own comment for the full
+  // mechanism; this is its MAP-shaped (hasVal) sibling.
+  ctx.core.stdlib['__map_set_h'] = () => genUpsertStrictPrehashed('__map_set_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP)
   ctx.core.stdlib['__map_get'] = () => genLookup('__map_get', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.linkDemand.external)
   ctx.core.stdlib['__map_get_h'] = () => genLookupStrictPrehashed('__map_get_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP, UNDEF_NAN, ctx.linkDemand.external)
   ctx.core.stdlib['__map_has_h'] = () => genLookupStrictPrehashed('__map_has_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP, UNDEF_NAN, ctx.linkDemand.external, false)

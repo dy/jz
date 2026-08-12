@@ -5882,3 +5882,262 @@ other watermark point already holds. The `ctx.schema` ablation loose end
 above (real but not fully explained) is worth a focused session if the
 5-element root is ever trimmed for size/complexity reasons, but is NOT
 blocking — the full root as prescribed is correct, tested, and cheap.
+
+## §Region arena — REAL WALL FOUND+FIXED: SET/MAP rebuild hashed a not-yet-
+valid pointer (STRING/BIGINT content read through the LOGICAL, pre-move
+address); a SECOND, distinct wall (CLOSURE env-slot cellOff corruption)
+discovered behind it, diagnosed but NOT fixed — WALL, banked (2026-08-12)
+
+**Task**: the front boundary's real wall — every multi-module graph (opts.
+modules) crashes when the hooks are genuinely live, per 8bed8c3f's own
+finding. Method: worktree off `47140301`, `REGION_HOOKS_ACTIVE` hand-flipped
+to `true` (worktree-only — `resolveSelfhostBuild`'s `regionArena` override
+does NOT flip the source literal, confirmed again, matches 8bed8c3f's own
+warning), the SW-hunt trap-frame/checkpoint/holder-chase method.
+
+**Setup, corrected from the LAST session's own mistake.** The prior
+session's own worktree (found already checked out at `.../scratchpad/
+region-slice2-front`, base `47140301`) had `node_modules` blanket-symlinked
+to the SHARED tree's `node_modules` — the EXACT hazard the task warned about
+("the last agent accidentally deleted the shared tree's watr install via a
+bad symlink"). Unlinked ONLY that symlink (not recursive — confirmed the
+shared tree's `node_modules/watr` intact before AND after, `5.7.14`, real
+directory not a symlink), rebuilt the worktree's own `node_modules` with
+each of the 6 real entries symlinked individually, `watr` pointed at
+`/Users/div/projects/watr` directly (`895ca5b`, unpublished, unchanged this
+session — no watr-side fix needed this time).
+
+**Breadcrumb confirmation (task step 1).** Built the region-live kernel
+(`regionArenaLive: true` logged by `resolveSelfhostBuild`), ran jessie
+(`resolveModuleGraph('bench/jessie/jessie.js', {resolveNode:true})`, the
+`instantiate(wasm,{memory:8192})` / `exports.default(memory.String(code), 0,
+optJSON, modulesJSON, 0)` archived recipe): **reproduced exactly** —
+`memory access out of bounds` @ 512.0 MB (== the 8192-page INITIAL size,
+not a grow watermark — load-bearing observation, see below), 645 ms,
+matching 8bed8c3f's own jessie/watr/jzify-entry differential number-for-
+number. watr and jzify-entry (`jzify/index.js`) reproduce identically.
+
+**Method executed in the task's own prescribed order.**
+
+(a) **Trap frame + stack.** Node's `RuntimeError.stack` gives real
+`wasm-function[N]:0xOFFSET` frames with no extra tooling. Decompiled the
+SAME kernel build to WAT text (`compile(..., {wat:true})`, ~290M chars,
+matches this chain's own prior-session sizes) and mapped funcidx → name by
+counting `^  \(func \$` matches in declaration order (imports first,
+6 of them, confirmed via `wasm-objdump -x`) — cross-checked against
+`wasm-objdump -d`'s own per-index disassembly at the exact trap byte
+offset, which is the ground truth (the WAT-line-count mapping is a
+convenience, not the proof). First trap: `$__str_hash` (called from
+`$__map_hash` ← `$__map_set` ← `$__region_copy_rec` ×5 recursion ← a
+`$closure2919` wrapper ← `$m109_front$frontHalfrest2`, i.e. inside front's
+OWN region_exit, rebuilding a relocated Map/Set).
+
+(b) **Temporal checkpoint via a worktree-only debug-global probe** (the
+LAST HOP's own ring-buffer precedent, sized down to "last call" since the
+trap is deterministic and near-instant): `declGlobal`-added 5 exported i32/
+i64 globals, written at the top of `$__str_hash`'s plain-FNV path. Read
+back post-trap (memory/globals survive a caught `RuntimeError` in the same
+instance). **Result, the load-bearing finding**: `off` (the string's data
+pointer) and `aux` (`STR_HCACHE_BIT`, 0x2, set) looked plausible, but `len`
+(loaded from `off-4`, meant to be the string's byte length) read
+`1750808124` — nonsense — and a memory dump of `[off-32, off+32)` showed
+**all zeros except that one 4-byte value sitting exactly at `off-4`**: not
+"adjacent leftover data", uninitialized/never-written memory with one stray
+word. The disassembly pinpointed the exact trapping instruction as the
+4-byte-unrolled FNV loop's own `i32.load(off+i)` — walking past `lenA`
+(derived from the garbage `len`) off the end of the 512 MB memory.
+
+(c) **The holder chase, two real bugs found via the SAME method, one fixed
+this session, one only diagnosed.**
+
+**Bug 1 (FIXED) — SET/MAP rebuild hashes a not-yet-valid pointer.**
+`layout-kinds.js`'s `regionArmSetMap` (the `__region_copy_rec` arm that
+rebuilds a relocated Set/Map via `__coll_order`+reinsert) called
+`$__region_copy_rec` on each entry's KEY, then passed the **return value**
+(the KEY's LOGICAL, post-move address — correct to STORE permanently, since
+every pointer inside the compacted copy must already be final so
+`region_exit`'s closing `memory.copy(mark, T, size)` needs no second fixup
+pass) straight into `$__map_set`/`$__set_add`, which **hash the key it's
+given** to place it in a bucket. `$__map_hash`'s STRING/BIGINT arms
+DEREFERENCE the key's payload (content hash — `mapHashStringArm`/
+`mapHashBigintArm`); every other kind hashes raw bits (no deref). A
+relocated STRING/BIGINT key's bytes only physically exist at the PRE-move
+address until `region_exit`'s own LAST instruction — the LOGICAL address
+handed to the hasher points into memory nothing has written yet (still
+zeroed from a prior round's reclaim, or genuinely fresh), which is EXACTLY
+what the `[hash][len]` load-turned-garbage checkpoint showed. First
+hand-flipped `ctx.core` and separately `ctx.func.names` into front's root
+as candidate-holder ablations per the task's own next-candidates list —
+**both RULED OUT** (zero change to jessie/watr/jzify's failure signature;
+`ctx.func.names` DID shift which synthetic module-count chain rows passed —
+see the scale probe below — a reshuffle artifact of the SAME missing-root
+class this chain has seen before, not a fix). The real holder was a
+**timing** bug, not a missing root — the SW-hunt method's own "holder chase"
+found a colocated-but-distinct hazard on the SAME structure the task's
+"different table on ctx.func" hint pointed near (Set/Map keys are exactly
+what `prepareModule`'s renamed function names / module specifiers become).
+
+*Fix* (`layout-kinds.js` `regionArmSetMap`, `module/collection.js`,
+`module/core.js`): hash the entry's key ONCE, choosing which bits to hash
+by KIND — STRING/BIGINT (content-hashed) hash the **ORIGINAL** (pre-
+relocation) bits, always safely dereferenceable throughout the WHOLE
+traversal since the source zone `[mark, T)` is read-only until
+`region_exit`'s own closing `memory.copy` (never a write target before
+then — `regionArmArray`'s own "self-overlap" comment); every other kind
+(bits-hashed, no dereference) hashes the **RELOCATED** bits, matching what
+a future lookup — which only ever sees the stored, final bits — will
+compute. Insert with the precomputed hash via a new STRICT (fixed-capacity,
+matching the rebuild's own pre-existing "never grows" invariant) prehashed
+sibling, `$__map_set_h`/`$__set_add_h`, generated by generalizing the
+existing `genUpsertStrictPrehashed` (previously MAP-shaped only, used for
+`__hash_set_local_h`) with a `hasVal` toggle mirroring `genUpsert`'s own —
+additive, default `true`, byte-identical for every existing caller. Needed
+an explicit `deps()` edge from `__region_copy_rec` to `__map_hash`/
+`__map_set_h`/`__set_add_h` (self-host's own auto-dep scan can't see calls
+inside a spliced WAT template body — `test/selfhost-includes.js` caught
+this exact gap on the first full-suite run, "Unknown func" class, fixed
+before landing).
+
+Also fixed, found by the SAME first checkpoint (the `STR_HCACHE_BIT=0x2`
+aux flag on the very first captured trap): `regionArmString`'s STRING
+relocation arm allocated/copied only a bare 4-byte `[len]` header for EVERY
+ephemeral string, silently dropping the `[hash]` word `STR_HCACHE_BIT`
+strings carry 8 bytes before their data (`module/string.js`'s own
+`[hash=0 u32][len u32][bytes]` shape — "Sound because heap strings never
+relocate" per `layout.js`'s own STR_HCACHE_BIT doc, an invariant this
+region arm breaks by existing). Fixed by allocating the extra 8 bytes and
+RESETTING the cache word to 0 (the documented "uncomputed" sentinel) at the
+new address — sound, costs one lazy recompute, matches what a freshly
+bump-extended HCACHE string already starts from. A real, independent
+correctness bug (not the dominant mechanism behind jessie's own crash, per
+the differential below, but a genuine latent one for any HCACHE string
+relocated outside the SET/MAP-key path this session's fix touches).
+
+**Verification of Bug 1's fix.**
+- **Scale probe, the multi-module discriminator nailed precisely.** A
+  synthetic chained-import graph (N trivial one-export modules, no stdlib
+  breadth, isolates PURE MODULE COUNT from code complexity) on the
+  UNFIXED kernel: 5/10 modules clean, 12/14/15/17 FAIL, 16/18 clean — a
+  striking NON-monotonic pass/fail pattern (not a simple "N > threshold"
+  wall) — consistent with a relocation-timing bug whose observability
+  depends on exact allocation-offset luck, not a missing-root class (which
+  would be more uniformly present past some volume). Same graphs on the
+  FIXED kernel: **5 through 47 modules, 100% clean**, deterministic (re-run
+  3×, identical). This is the "2-module synthetic clean / real-corpus-crash"
+  gap 8bed8c3f flagged, closed for the whole synthetic family.
+- **jessie/watr/jzify-entry**: still FAIL — but the failure signature
+  CHANGED (timing evidence a different bug is now dominant): 512.0 MB
+  unchanged, but 77–149 ms instead of 645–1208 ms (≈8× faster to the same
+  trap) — the SET/MAP-key-hash bug was the SLOWER-to-trigger one; something
+  else now fires first. Confirmed via a NEW trap-frame decompile: different
+  function indices, different call chain (`__region_copy_rec` →
+  `__region_relocate_props` → `__region_copy_rec` (recursion) →
+  `__region_relocate_cell`, the CLOSURE boxed-cell side path — see Bug 2).
+- **Regression gates, dormant (the shipped/landed config, `REGION_HOOKS_
+  ACTIVE` reverted to `false` before every one of these runs).**
+  `npm run build` — clean, no errors. `node test/index.js` (native target):
+  **3428/3436 pass** (the SAME 2 pre-existing known-banked flakes this
+  whole chain documents — interval-walk / typed-RMW codec-bounds rows —
+  zero new regressions; one run WITH the debug probes still attached caught
+  a real self-host-only gap — `__map_set_h`/`__set_add_h` unreachable via
+  auto-scan — fixed with the explicit `deps()` edge before this number).
+  `JZ_TEST_TARGET=jz.wasm node test/index.js` (the DORMANT self-hosted
+  kernel's own full leg): **2725/2731 pass, 0 fail** (6 skip, same shape as
+  the native leg's skips) — the fix is completely inert for the shipped
+  configuration, confirmed by running its own test leg clean, not just
+  reasoned from the `if (regionHooks)`/pull-in-only-when-referenced
+  structure (though that's ALSO true and is why it's inert).
+- **Regression gate, region-live** (`test/kernel-oracle.js`, 13 programs,
+  single-module — a NEW finding, not this session's fault but important to
+  record honestly): **9/13 fail** (`memory access out of bounds` at O2/O3,
+  a byte-count divergence at O0) with hooks genuinely hand-flipped live —
+  and this is IDENTICAL, line-for-line, on the UNMODIFIED `47140301` code
+  (verified directly: backed up this session's 3 fix files, restored the
+  original `layout-kinds.js`/`module/collection.js`/`module/core.js` via
+  `git show HEAD:...`, rebuilt `dist/jz.wasm`, re-ran — same 9/13 fail, same
+  messages). **This means kernel-oracle was never actually verified clean
+  under a GENUINELY region-live build by any prior session** — 47140301's
+  own "kernel-oracle 13/13 x3" claim almost certainly ran against a
+  SILENTLY-DORMANT kernel via the exact `resolveSelfhostBuild({regionArena:
+  true})`-doesn't-flip-the-literal gap 8bed8c3f itself named as a hazard
+  for "a future session" — this session IS that future session, and the
+  gap bit it too until the hand-flip + a direct differential caught it.
+  Not this session's regression (proven byte-for-byte identical without
+  the fix); a pre-existing, previously-unmeasured single-module wall,
+  independent of the multi-module one this task targeted.
+
+**Bug 2 (DIAGNOSED, NOT FIXED) — CLOSURE env-slot cellOff corruption, a
+SECOND real wall.** With Bug 1 fixed, jessie/watr/jzify/jz×jz still trap,
+now inside `__region_relocate_cell` (the boxed/mutable-capture cell
+relocation helper CLOSURE's region arm calls for cell-mode env slots).
+Trap-frame decompile of the fixed kernel pinpointed the exact faulting
+instruction: `f64.load` on `$cellOff` itself (both the durable and
+ephemeral branches share this shape) — i.e. `$cellOff`, an i32 read
+straight out of a closure's env slot and expected to be a valid heap
+pointer to an 8-byte boxed cell, is garbage. Two debug-global probes
+(mirroring Bug 1's method, on `__region_relocate_cell`'s own params and on
+`regionArmClosure`'s `off`/`aux`/`n` right where they're computed) caught
+one instance: `cellOff = 1291563756` (~1.2 GB, **larger than the entire
+512 MB memory** — not "wrong by a little", a different KIND of value
+entirely) against a sane `mark = 1804720` and a sane-looking owning closure
+(`off=3860736`, `aux=1015`, `n=6` — a small, plausible env). A cheap
+reproduction was found (**not the full jessie corpus** — a 20-module
+synthetic chain where each module's function boxes a reassigned local and
+returns an IIFE closing over it) — confirmed to fail on BOTH the fixed and
+the unmodified-Bug-1 kernel (ruling out Bug 1's fix as the cause) at
+158 ms / 732 ms respectively. Leading hypothesis, NOT confirmed: a
+type-confusion where `$__closure_env_mask`'s bit for some slot says
+"cell-mode" (raw i32 pointer) but the slot's actual content is an ordinary
+NaN-boxed value (its low 32 bits read as a "pointer" are exactly this kind
+of large, structureless garbage) — but the STATIC side-table-vs-instance-
+content mismatch mechanism that would require is not yet traced; the
+values are also consistent with plain upstream pointer corruption of the
+closure box `$bits` itself, undistinguished from the mask theory by the
+evidence gathered so far. NOT bisected further — this session's own
+remaining budget did not reach that depth (the exact SW-hunt-depth tracing
+Bug 1 got: ring-buffer-across-many-calls, per-slot-index breadcrumbs, a
+byte dump around the failing address at the moment `regionArmClosure`
+computes it, not just at the point of the eventual failing `relocate_cell`
+call).
+
+**jz×jz re-verdict** (the task's own step 4 ask). Still blocked — front
+boundary is not yet sound (Bug 2), so the "does it reach the true memory
+ceiling again" question the task posed is not yet answerable; jz×jz's OWN
+trap moved from 3.7–3.8 s/1024 MB (8bed8c3f's own number, dominated by Bug
+1) to ~1.0 s/1024 MB (same watermark, faster — consistent with Bug 2 now
+dominating there too, same as the three smaller graphs). Slice 3 is NOT
+reachable yet — per this task's own framing ("stacking a new region
+boundary on a front boundary that corrupts real programs would compound an
+unsound foundation") that verdict from 8bed8c3f stands, just with a
+narrower remaining cause.
+
+**Disposition.** Worktree-only session throughout: `/Users/div/projects/jz`
+`git status` shows nothing beyond what this ledger commit adds; the shared
+tree's `node_modules/watr` verified intact (real directory, `5.7.14`)
+before AND after (see Setup). All debug-global probes (5 on `__str_hash`, 3
+on `__region_relocate_cell`, 5 on `regionArmClosure`) were worktree-only,
+reverted before landing anything — `git diff --stat` on the 3 landed files
+shows only the real fix (regionArmString's HCACHE header, regionArmSetMap's
+hash-before-relocate + `__map_set_h`/`__set_add_h`, the `deps()` edge).
+`REGION_HOOKS_ACTIVE` reverted to `false` (dormant) before every
+regression-gate run and before this commit — unchanged from 47140301's own
+landed default; this session never proposes flipping it (front boundary is
+provably not yet sound end-to-end).
+
+**Recommendation for next session.** Reuse the SAME method, one level
+deeper: (1) hand-flip live, confirm the cheap 20-module boxed-closure-chain
+repro (158 ms, far cheaper than jessie's 77 ms... actually comparable now —
+either works, jessie is the more real-world signal). (2) Trap frame +
+decompile (this session's own WAT-line-counting index→name mapping,
+cross-checked against `wasm-objdump -d`'s per-index disassembly at the
+exact trap offset, reproducibly worked twice — reuse verbatim). (3) This
+session's `$__dbg_cl_*`/`$__dbg_rc_*` probe SHAPES are a ready-made
+starting point (not committed, but the exact `declGlobal`+text-`.replace()`
+splice pattern is proven twice now — copy it) — widen to a RING (not just
+"last call") across MULTIPLE closure/cell relocations in one run, keyed by
+slot index too, to catch the exact slot/closure-shape combination that
+goes bad rather than only the last one before the trap. (4) Specifically
+test the type-confusion hypothesis: dump the RAW bytes at a captured
+`cellOff` immediately BEFORE it's dereferenced (this session did this for
+Bug 1's string but not yet for Bug 2's cell) — a NaN-boxed ordinary number
+would show a plausible IEEE754 pattern, not zeros-with-one-stray-word.
