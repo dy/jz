@@ -5096,3 +5096,190 @@ watr `895ca5b` for real — a published point release or an npm-linked pin —
 and flipping `main`'s `scripts/self.js` `regionHooks` on) stays its own
 separate, PUBLISH-GATED step: this session measured the win, it did not
 land it.
+
+## §Region arena — Slice 3 attempt: jz×jz's trap is NOT the memgrow ceiling
+anymore, a REAL front-boundary correctness bug, found by broader coverage
+(2026-08-12) — WALL, banked
+
+**Task**: build Slice 3 (emit/encode boundary) per the design, gated on
+first confirming 47140301's own commit message ("jz×jz still blocked —
+unreachable ~13.9s in, matching the prior watermark session's own non-OOM
+signature") — the entry flagged its own prerequisite claim as possibly
+stale. It was: **jz×jz's actual current trap, with regionHooks genuinely
+wired, is a raw `memory access out of bounds` fault — NOT the deliberate
+`__memgrow` "need > 65536 pages" `unreachable` ceiling abort — and it is
+caused SOLELY by the front boundary (Slice 2), not Slice 1, not an
+interaction.** Root-caused the CLASS (front boundary breaks on real
+multi-module graphs the curated corpus never tested) but not the exact
+missing-root mechanism. Slice 3 was NOT built: stacking a new region
+boundary on a front boundary that corrupts real programs would compound an
+unsound foundation, not extend one.
+
+**Setup**: worktree off `47140301` (region-final-2026-08-11, front boundary
+rebased+relanded), `node_modules/watr → /Users/div/projects/watr` (`895ca5b`,
+pristine 5.7.14 otherwise). First mistake, caught and fixed immediately:
+symlinking the worktree's whole `node_modules` to the shared tree's (instead
+of an independent install + a `node_modules/watr`-only override) meant `rm
+node_modules/watr` deleted the SHARED tree's pristine watr install — restored
+via `npm install watr@5.7.14 --no-save` in `/Users/div/projects/jz` before any
+further work; verified restored (`require('watr/package.json').version` →
+`5.7.14`) and confirmed the shared tree's `git status` carries no source
+change (two unrelated files were already dirty from a concurrent session —
+`README.md`, `.work/todo-original.md` — untouched, not this session's).
+
+**Characterization method** (the archived kernel-memory-curve.md recipe,
+verbatim): `instantiate(wasm, {memory: 8192})`,
+`exports.default(memory.String(code), 0, memory.String('{"level":2}'),
+memory.String(modulesJSON), 0)`, `memory.buffer.byteLength` read on success
+or at the catch. **First finding, load-bearing**: `resolveSelfhostBuild({
+regionArena: true })` does NOT flip `scripts/self.js`'s own
+`REGION_HOOKS_ACTIVE` source literal — it only derives the
+`inlinePtrOffsetFast` optimizer gate from it. A build using the explicit
+override alone is silently STILL DORMANT at runtime (confirmed: identical
+peak memory to the true dormant build on every graph tested). The literal
+had to be hand-flipped (`export const REGION_HOOKS_ACTIVE = true`,
+worktree-only) to get a genuinely region-live kernel — this is exactly the
+kind of gap a future session could re-fall into; `resolveSelfhostBuild`'s own
+doc doesn't say the override is build-config-only, non-source-affecting.
+
+**The four-way differential** (dormant / Slice-1-only / front-only / both —
+each a separate `REGION_HOOKS_ACTIVE=true` self-host build, `front()`'s and
+`optimizeTail()`'s own regionHooks ternaries independently disabled via a
+worktree-only `DBG_SLICE1_ONLY`/`DBG_FRONT_ONLY` flag, never committed),
+`optJSON:{level:2}` throughout, matching the archived curve exactly:
+
+| graph (real, unmodified via `resolveModuleGraph`) | dormant | Slice-1-only | front-only (Slice 2) | Slice 1+2 (both) |
+|---|---|---|---|---|
+| small (synthetic 2-module, trivial) | OK 48 B | — | OK 48 B | — |
+| jessie (47 mod, 70,435 B) | OK 107,924 B @ 1024.0 MB | OK 107,924 B @ 1024.0 MB (1.9 s) | **FAIL** `memory access out of bounds` @ 512.0 MB, 0.6 s | (front dominates — not separately re-run) |
+| watr (7 mod, ~103 KB combined) | OK 315,422 B @ 2048.0 MB (5.6 s) | OK 315,422 B @ 2048.0 MB (5.1 s) | **FAIL** OOB @ 512.0 MB, 0.7 s | **FAIL** OOB @ 512.0 MB, 0.7 s |
+| jzify-entry (70 mod, 439,126 B) | OK 614,597 B @ 4096.0 MB (11.0 s) | OK 614,597 B @ 4096.0 MB (10.3 s) | **FAIL** OOB @ 512.0 MB, 0.7 s | **FAIL** OOB @ 512.0 MB, 0.8 s |
+| jz×jz (155 mod, 5,883,905 B — the acceptance target) | **FAIL** `unreachable` @ exactly 4,294,967,296 B (2³²), 6.8 s | **FAIL** `unreachable` @ 2³², 6.6 s | **FAIL** `memory access out of bounds` @ 1024.0 MB, 3.7 s | **FAIL** OOB @ 1024.0 MB, 3.8 s |
+
+Reading it: Slice 1 alone is clean and unchanged from every prior
+session's own verdict (jz×jz correctly reaches the deliberate ceiling abort,
+same signature, same shape — no regression). The instant front boundary's
+own regionHooks go live (front-only, no Slice 1 needed to reproduce), EVERY
+real multi-module graph — even the smallest curve point, jessie — traps with
+a raw, non-deliberate OOB fault in under a second, nowhere near either the
+old peak-memory ceiling or any interesting compile depth. **jz×jz's `unreachable
+~13.9s` / "non-OOM signature" claim in 47140301 and the `FAIL uniformly…
+NOT the OOM-at-2³² signature` claim in 9a08f4f2 are correct in their core
+observation (it is not the ceiling abort) but stale/imprecise in the
+specifics** (my direct, reproducible measurement: OOB fault at 1024.0 MB,
+3.7-3.8 s, not 13.9 s — both entries' own harnesses were candidly
+self-caveated as "bounded"/"not diagnosed further", and neither isolated the
+cause to front boundary specifically).
+
+**Why the curated gates missed it**: kernel-oracle (13 programs), kernel-parity
+(33 rows) and the 200-seed fuzz gate are ALL single-string compiles — none
+of them ever sets `opts.modules`, so `prepareModule`'s import-bundling path
+(which populates `ctx.scope.globals` per bundled module, among other state)
+never runs under any of 47140301's own "18/18 green" / "0 findings"
+verification. This is the same class of gap the 2026-08-10/11 session
+already found once (7/200 fuzz-gate OOB findings the 13-program corpus
+missed) — broader coverage keeps finding what narrower coverage can't see.
+
+**Scale probe**: a synthetic 2-module program (`import {helper} from
+'./helper.js'; export let f = (n) => helper(n)+1`) compiles CLEAN through
+front-only region-live — so the trigger isn't "any module bundling", it's
+some allocation-volume/complexity threshold between trivial and
+jessie-scale (47 modules / 70 KB is already enough). Consistent with the
+SW-bug mechanism class (a structure grows past the region's mark mid-round,
+relocates outside whatever's rooted, gets reclaimed) needing SOME volume of
+allocation to trigger an actual grow event — a tiny synthetic case may never
+grow anything.
+
+**One hypothesis tested, RULED OUT**: `ctx.scope` (specifically `.globals`,
+a `Map` populated per bundled module by `prepareModule` — grep-confirmed,
+not itself in front's five-element root `[ast, ctx.func.list, ctx.module,
+ctx.schema, ctx.closure]`) looked like the same missing-root class as the
+SW bug. Added it to the root (`src/front.js`, worktree-only, NOT committed
+to the shared tree): `[ast, ctx.func.list, ctx.module, ctx.schema,
+ctx.closure, ctx.scope]`, rebuilt, re-ran the full differential — **zero
+change**: identical trap, identical message, identical ~512 MB / ~1024 MB
+peak, identical sub-second-to-few-second timing on every graph. `ctx.scope`
+either isn't the (sole) missing root, or the real mechanism sits deeper (a
+different structure entirely, or a hazard that isn't a simple missing-root
+case). NOT bisected further — the SW bug took a full dedicated session of
+runtime tracing (breadcrumb globals in `__region_copy_rec`/`__region_exit`,
+`wasm2wat --enable-all` trap-frame reading against a decompiled binary) to
+find; this session's remaining budget did not reach that depth.
+
+**Slice 3 hazard inventory** (done, for whenever front boundary is actually
+fixed — read-only work, no source landed): the emit/encode seam is
+`scripts/self.js`'s `compileSelf`/`compileWarnings`/`compileWat`/
+`compileProfile`, all sharing the shape `optimizeTail(compileAst(front(...)),
+ctx.transform.optimize)`. Wrapping `compileAst` alone in its own mark/exit
+(root = its returned module tree) needs three MORE ctx containers rooted
+alongside it, found by tracing every ctx read between `compileAst`'s return
+and `watrCompile`'s byte-encode: `ctx.func` (optimizeTail's own
+`funcCount: ctx.func.list.length` / `boundaryPins`'s `ctx.func.map.get`),
+`ctx.transform` (the `cfg` argument itself, incl. `cfg._vectorizedFnNames`,
+`.targetProfile`), `ctx.scope` (`stablePtrGlobalNames()`'s
+`ctx.scope.globalValTypes`, read inside `watrTail`'s post-watr
+`hoistGlobalPtrOffset` repair). Rooting the CONTAINERS (not individual leaf
+fields) is deliberate and safe: `layout-kinds.js`'s `regionCopyRecBody` now
+has an arm for every real heap kind (BIGINT/STRING/ARRAY/OBJECT/HASH/SET+MAP/
+TYPED/BUFFER/CLOSURE — the old "OBJECT traps" scope note is stale, closed by
+the Heap-kind registry work), so a whole-object copy is sound; every
+sub-field a downstream reader needs travels with its container the same way
+`ctx.module`/`ctx.schema`/`ctx.closure` already ride front's own root.
+Confirmed NOT needed: `ctx.schema` (`devirtSchemaReads`'s
+`ctx.schema?.list` read happens inside `compileAst` itself, via
+`assemble.js`'s `optimizeModule`, before any Slice-3 exit would fire) and
+`ctx.module` (nothing post-`compileAst` reads it). This inventory is
+unapplied — no point wiring a THIRD region boundary while the SECOND one
+corrupts real programs.
+
+**Verdict**: jz×jz does not compile under 4GiB through the kernel (still —
+same as every prior session). The blocking mechanism has changed character:
+it is no longer "Slices 2+3 architecturally unbuilt", it is "Slice 2 as
+landed is unsound on real programs" — a correctness bug, not a missing
+increment. Per the task's own branch ("if it's NOT memory anymore... it may
+be a compile-correctness limit... needing its own fix before/instead of
+Slice 3"): confirmed NOT memory, root-caused to the CLASS (front boundary,
+real multi-module graphs) but not the exact mechanism. No value-verification
+possible (nothing compiled). No watermark-table update beyond the
+differential above (dormant/Slice-1 unaffected and correctly scoped; front
+boundary's own prior "both wall-halves dead" verdict stands for its OWN
+tested corpus and does not generalize to `opts.modules` compiles). No gate
+ladder run — gated on a real fix existing, and none does yet.
+
+**Disposition**: worktree-only throughout (`git status` in
+`/Users/div/projects/jz` shows only this ledger edit; no shared-tree source
+touched). The `ctx.scope`-in-root edit (`src/front.js`) and the
+`DBG_SLICE1_ONLY`/`DBG_FRONT_ONLY` probes (`scripts/self.js`) live ONLY in
+the disposable worktree, discarded with it — the `ctx.scope` change is
+UNVERIFIED (didn't fix the bug) and must not be mistaken for a landed fix by
+a future session grepping for it. `main`'s `REGION_HOOKS_ACTIVE` stays
+`false` (dormant), unchanged. `node_modules/watr` in the shared tree:
+restored to pristine published `5.7.14` (see Setup above) — the accidental
+delete-then-restore leaves it exactly as it was before this session, not
+pinned to `895ca5b`.
+
+**SHAs**. jz: `69cec4a2` (main, unchanged by this session — two files
+dirty from a concurrent session, README.md/.work/todo-original.md, not
+touched here; this ledger edit is the only change this session makes).
+Worktree base: `47140301` (region-final-2026-08-11). watr:
+`895ca5b` (`/Users/div/projects/watr`, unpublished, unchanged).
+
+**Recommendation for next session**. Do NOT attempt Slice 3 until front
+boundary is fixed. To root-cause the real missing-root mechanism: reuse the
+SW-bug method exactly — breadcrumb `declGlobal`s in
+`__region_copy_rec`/`__region_exit` (module/core.js) recording
+stage/kind/off/mark/delta/round in program order, run the CHEAPEST failing
+repro (jessie, 47 modules, fails in 0.6 s — far cheaper than jz×jz's 3.7 s
+or watr/jzify-entry), read the last checkpoint before the trap, then
+decompile the built kernel with `wasm2wat --enable-all` and match the
+`RuntimeError`'s `wasm-function[N]:0xOFFSET` frame the same way the LAST
+HOP entry did for SW. `ctx.scope` is ruled out; next candidates by the same
+"grows during prepareModule, not in front's five-element root" logic:
+`ctx.core` (stdlib/include bookkeeping — module/core.js's own
+`ctx.core.includes` Set grows per pulled-in helper) and `ctx.types` (per-
+function type facts, though these are typically function-scoped and reset,
+less likely to survive to a stale read). Also worth checking: does the
+crash require SPECIFICALLY `prepareModule`'s prefix-mangling rename loop
+(`ctx.scope.globals.set(mangled, ...); ctx.scope.globals.delete(localName)`
+— a delete-then-insert on a Map, a different mutation shape than plain
+growth) rather than growth per se.
