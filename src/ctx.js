@@ -348,7 +348,7 @@ export function reset(proto, globals, bridge) {
   ctx.module = {
     imports: [],
     modules: {},
-    importSources: null,
+    importSources: null,  // user compile's bundled source graph; reset() clears it every session
     importAsts: null,   // self-host: pre-parsed [specifier, ast] pairs (the kernel can't parse).
                         // Consulted by prepareModule before falling back to ctx.transform.parse(source).
     hostImports: null,

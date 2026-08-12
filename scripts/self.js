@@ -158,6 +158,9 @@ function setupSelf(strict, optJSON, modulesJSON, host) {
   // Bundled-module sources (the native opts.modules channel): one JSON dict
   // over the wasm ABI — prepare's import resolution reads importSources the
   // same way native does.
+  // reset() already clears the source-graph authority. Populate it only when
+  // this compile actually received opts.modules; never inherit the compiler's
+  // own build graph into a later user compile.
   if (modulesJSON) ctx.module.importSources = JSON.parse(modulesJSON)
 }
 
