@@ -896,12 +896,36 @@ export default (ctx) => {
     // leaves that Set unreachable from the region root, so region_exit's
     // closing rewind silently reclaims it — the trap manifests later, whenever
     // that specific memory gets reused and read back as garbage.
-    // KEYS in this table are always prop-name STRINGS: SSO/interned in every
-    // real case here (compiler-internal single-word identifiers), so their
-    // hash bucket position is immutable across relocation — no rehash/
-    // reinsert needed, just a verbatim bulk copy (unlike $__dyn_props's OWN
+    // KEYS in this table are always prop-name STRINGS (JS object keys are
+    // always strings — a genuine language invariant, not an SSO-only
+    // assumption): every key is content-hashed, so its hash bucket position
+    // is immutable across relocation regardless of whether the string is
+    // SSO-inline or a real heap allocation — no rehash/reinsert needed, just
+    // a verbatim bulk copy of the bucket structure (unlike $__dyn_props's OWN
     // table below, whose keys are OFFSETS that genuinely change value and do
-    // need __coll_order + reinsert). Slot stride is bare MAP_ENTRY (matching
+    // need __coll_order + reinsert). BUT bucket-position stability is a
+    // separate question from the KEY FIELD'S OWN STORED BITS staying valid:
+    // a non-SSO key is a STRING pointer, and relocation must still fix up
+    // THAT pointer to the string's new address — exactly the same "value
+    // needs __region_copy_rec, container structure doesn't need rehash"
+    // split regionArmSetMap (layout-kinds.js) already applies to VALUES,
+    // just for the KEY side this time. Front-boundary front-boundary audit
+    // (.work/research.md §Region arena, "second still-unfound mechanism"):
+    // this function's original write relocated the VALUE at slot+16 (both
+    // branches below) but left the KEY at slot+8 as a verbatim bit-copy —
+    // correct ONLY for the compiler-internal dyn-props sidecar's own keys
+    // (always short single-word identifiers that happen to fit inline SSO in
+    // every real instance seen), silently WRONG for any general PTR.HASH
+    // value regionArmHash exposes this function to (a plain user/self-hosted-
+    // compiler `{}` used as a dynamic dict, e.g. module/prepare's per-function
+    // `defaults` map keyed by parameter names) whose keys can exceed SSO
+    // width: the stale, unrelocated key pointer keeps pointing at the OLD,
+    // now-reclaimed address — reads fine immediately after exit (bytes not
+    // yet overwritten) and silently corrupts once a later allocation reuses
+    // that space (jessie/watr/jzify-entry's post-funcIdx-skew front-boundary
+    // failures, `src/compile/plan/scope.js` flattenFuncNamespaces's
+    // `Object.keys(fn.defaults)` reading garbage). Fixed below: relocate the
+    // key field too, no rehash needed. Slot stride is bare MAP_ENTRY (matching
     // __coll_order/genUpsertGrow's OWN per-slot indexing — module/collection.js
     // genUpsertGrow's $entrySize, NOT entrySize+LANE, which is the ALLOCATION
     // size only: a trailing i32-per-slot lane array sits AFTER all cap slots,
@@ -970,8 +994,13 @@ export default (ctx) => {
             (br_if $pd (i32.ge_s (local.get $i) (local.get $cap)))
             (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const ${MAP_ENTRY}))))
             (if (i64.ne (i64.load (local.get $slot)) (i64.const 0))
-              (then (f64.store (i32.add (local.get $slot) (i32.const 16))
-                (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 16))) (local.get $memo) (local.get $mark) (local.get $delta)))))
+              (then
+                ;; KEY at +8, fixed up in place — no rehash (see this function's
+                ;; own doc: content-hashed bucket position is stable regardless).
+                (f64.store (i32.add (local.get $slot) (i32.const 8))
+                  (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $memo) (local.get $mark) (local.get $delta)))
+                (f64.store (i32.add (local.get $slot) (i32.const 16))
+                  (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 16))) (local.get $memo) (local.get $mark) (local.get $delta)))))
             (local.set $i (i32.add (local.get $i) (i32.const 1)))
             (br $pl)))
           (return (local.get $propsF))))
@@ -987,8 +1016,12 @@ export default (ctx) => {
         (br_if $qd (i32.ge_s (local.get $i) (local.get $cap)))
         (local.set $slot (i32.add (local.get $newOff) (i32.mul (local.get $i) (i32.const ${MAP_ENTRY}))))
         (if (i64.ne (i64.load (local.get $slot)) (i64.const 0))
-          (then (f64.store (i32.add (local.get $slot) (i32.const 16))
-            (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 16))) (local.get $memo) (local.get $mark) (local.get $delta)))))
+          (then
+            ;; KEY at +8 — same fixup as the durable branch above, no rehash.
+            (f64.store (i32.add (local.get $slot) (i32.const 8))
+              (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $memo) (local.get $mark) (local.get $delta)))
+            (f64.store (i32.add (local.get $slot) (i32.const 16))
+              (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 16))) (local.get $memo) (local.get $mark) (local.get $delta)))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $ql)))
       ;; NO old-site forwarding stub — boundary-arithmetic audit, window B (see

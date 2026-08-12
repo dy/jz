@@ -6605,3 +6605,176 @@ unchanged). Dormant `dist/jz.wasm` (this session's fixed rebuild): SHA-256
 `f78405074f09d63c1b4b238dc5da6d28f840248f0f886a0773da7bb9aa9579ea` (NOT
 byte-identical to the prior `8d6a9344…` baseline — see the dormant
 byte-identity finding above for why that's expected and harmless).
+
+## §Region arena — jessie's "expected emitted IR value" error root-caused
+and FIXED: `__region_relocate_props` (module/core.js) relocated a HASH
+table's VALUE field but never its KEY field — jessie/watr/jzify-entry now
+compile clean, kernel-oracle 6/13→9/13, a DIFFERENT front-boundary wall
+found behind it (2026-08-12)
+
+**Task, per the coordinator's brief**: chase jessie's region-live "compiler
+internal: expected emitted IR value" error (§Region arena's `0e73fa6a`
+entry named this the most tractable of the three still-failing fixtures
+post-funcIdx-skew-fix) via the AUDIT-#17 playbook — reproduce, capture
+`ctx.error.node`, minimize, trace-diff native vs kernel, find the phase-
+order/plan-map mechanism.
+
+**First finding: the SPECIFIC error text didn't reproduce.** Worktree
+reused at `.../scratchpad/region-slice2-front` (already at `0e73fa6a`,
+clean). Rebuilt a region-live kernel (`REGION_HOOKS_ACTIVE` hand-flipped
+`true`, `scripts/selfhost-build.mjs`, verified via a dormant rebuild's SHA-
+256 matching the commit message's own recorded `f7840507…` byte-for-byte —
+confirms this session's build pipeline is faithful) and ran jessie/watr/
+jzify-entry through it (`resolveModuleGraph(entry,{resolveNode:true})` +
+`compileViaKernel`, `test/kernel-target.js`'s own machinery, matching the
+prior session's exact recipe). Result: watr → `unreachable` (matches the
+prior session's table exactly) and jzify-entry → `memory access out of
+bounds` (matches exactly) — but **jessie → `memory access out of bounds`
+too**, not the `expected emitted IR value` text the prior entry recorded,
+3/3 reps, deterministic in this environment. A named-kernel rebuild
+(`compile(...,{names:true})`, bypassing `compileViaKernel` to instantiate
+directly) symbolicated jessie's AND jzify-entry's traps as IDENTICAL top
+frames (`$__str_hash` ← `$__dyn_get` ← `$m137_scope$flattenFuncNamespaces`)
+— one shared mechanism, not two. **Verdict: the prior entry's specific
+error-text claim doesn't reproduce bit-for-bit in this environment (a
+GARBAGE-VALUE-DEPENDENT bug's exact trap shape is sensitive to incidental
+heap-layout details that can differ session to session even with byte-
+identical source+config — env/build nondeterminism the prior entry didn't
+anticipate), but the underlying MECHANISM is the same class the entry
+named ("second, still-unfound mechanism") and the symbolicated trace
+pointed straight at it.** Chased the reproducible signature actually in
+hand rather than forcing the literal error text.
+
+**Minimized via direct bracketing (the AUDIT-#17 "native vs kernel trace
+diff" discipline, adapted: no native/kernel split exists inside a single
+in-kernel compile, so bracketed PRE-EXIT vs POST-EXIT vs LATER-IN-COMPILE
+instead).** Instrumented `flattenFuncNamespaces` (`src/compile/plan/
+scope.js`) with unconditional `console.error` (the AUDIT-#17 pattern —
+`process.env`-gated debug output is dead in-kernel) — found `fn.defaults`
+(a per-function-record dynamic dict, `module/prepare/index.js`'s `defFunc`:
+`const defaults = {}; defaults[c.name] = defVal`, spread into `funcInfo`)
+reads as **raw memory-dump garbage** (`Object.keys` returning byte-noise,
+not strings) by the time `flattenFuncNamespaces` runs. Bracketed further:
+added prints in `src/front.js` immediately before/after `regionHooks.exit`
+— `fn.defaults` reads **perfectly clean, byte-identical to native, on BOTH
+sides of the exit call itself**. The corruption therefore happens strictly
+BETWEEN front()'s return and `flattenFuncNamespaces` (i.e., during the
+early part of `compileAst`/`src/compile/index.js`) — the signature of a
+STALE POINTER into abandoned (never-relocated) memory that reads fine
+until a LATER allocation reuses and overwrites that space, not a
+relocation-time value corruption.
+
+**Root cause, confirmed by source inspection once the shape was known.**
+`fn.defaults` compiles to heap-kind `PTR.HASH` (a plain `{}` used as a
+dynamic string-keyed dict). `regionArmHash` (`layout-kinds.js:597-606`)
+relocates ANY bare `PTR.HASH` value by delegating to
+`__region_relocate_props` (`module/core.js`) — a function ORIGINALLY
+written for one specific case: the compiler's own internal "dyn-props"
+sidecar table, whose keys are always short, single-word, SSO-inline
+compiler-internal identifiers. That function's own doc explicitly reasons
+"KEYS in this table are always prop-name STRINGS: SSO/interned… so their
+hash bucket position is immutable across relocation — no rehash/reinsert
+needed, just a verbatim bulk copy" — TRUE (content-hashing means bucket
+position never depends on address), but the function's IMPLEMENTATION
+conflated "bucket position doesn't need recomputing" with "the key field
+needs no `__region_copy_rec` at all": both the durable in-place loop and
+the ephemeral bulk-copy loop relocated ONLY the VALUE field (`slot+16`) —
+the KEY field (`slot+8`, `MAP_ENTRY=24` layout `[hash,key,value]`) was
+copied verbatim, bits unchanged. Safe for the sidecar's own SSO-only keys
+(no address inside an inline value to fix). **Wrong for `regionArmHash`'s
+later, broader reuse of this same function for ANY reachable `PTR.HASH`
+value** (Heap-kind registry Slice 2, `.work/research.md` — the comment at
+that call site even names the widened-reuse risk for diamond-sharing but
+not for non-SSO keys): jessie's own `err(msg, at, lines, last, before,
+ptr, chr, after)`-shaped default-param dict has several keys (`before`,
+`after`, `chr`, …) that don't fit a NaN-boxed inline SSO string, so those
+keys are real heap-allocated STRING pointers — left unrelocated, still
+pointing at the pre-compaction address, which region_exit's heap-rewind
+treats as free space the NEXT compile-phase allocation is free to reuse.
+Reads clean immediately after exit (bytes not yet overwritten), garbage
+once something else allocates over that space — exactly what the PRE/
+POST-EXIT-vs-later bracketing showed.
+
+**The `ctx.plans` WeakMap hypothesis (the task's own prime suspect):
+CHECKED, REFUTED for this mechanism.** `mintLoopPlans`/`mintClosureEnvPlans`
+(the `ctx.plans.loops`/`.closures` WeakMaps, `src/ctx.js:857-858`) are
+called exclusively from `src/compile/index.js` (`compileAst`), which
+`scripts/self.js`'s `compileAst(front(source, strict))` only invokes AFTER
+`front()` — and therefore after `regionHooks.exit` — returns. Both mint
+and every read happen strictly post-exit, on the already-relocated AST;
+there is no phase-order gap for these two specific maps. (`ctx.closure.
+closures.get(body)` in `module/function.js` even documents its OWN miss as
+an intentional, safe fail-open to a legacy re-derivation — matching the
+task's own "MISSES are fail-open, ok" framing exactly, for a DIFFERENT
+reason than staleness.) The real bug is a sibling of the hypothesis's
+shape (an "escaping region reference" not covered by the 5-element root)
+but in a different structure: not a WeakMap keyed on AST-node identity,
+but a HASH table's own KEY field silently exempted from relocation by a
+function written for a narrower, SSO-only original use case.
+
+**The fix — two lines added to `__region_relocate_props`'s two existing
+per-slot loops** (`module/core.js`): relocate the KEY field (`slot+8`) via
+`__region_copy_rec`, identically to how the VALUE field (`slot+16`)
+already was, in both the durable (in-place, `off < mark`) and ephemeral
+(bulk-copy) branches. No rehash needed (per the function's own correct
+half of its reasoning — content-hash bucket position is genuinely stable
+regardless of the key's storage form) — this is a pure key-pointer fixup,
+the exact same "value needs `__region_copy_rec`, container structure
+doesn't need rehash" split `regionArmSetMap` already applies to VALUES,
+just for the KEY side of a content-hashed HASH table instead of a bits-
+hashed SET/MAP.
+
+**Verification.**
+- **jessie/watr/jzify-entry, region-live, 3 reps each: ALL THREE compile
+  clean** (`bench/jessie/jessie.js` 107,037 B, `bench/watr/watr.js`
+  315,422 B, `jzify/index.js` 611,610 B — deterministic across reps).
+- **Dormant-vs-region-live byte-identity** (the same cross-check the
+  MEMORY-CURVE-MEASURED entry used): built BOTH a dormant and a region-live
+  kernel from this session's identical fixed source and compiled all three
+  fixtures through each — **byte-for-byte identical output, both kernels,
+  all three fixtures** (native differs from both by a few dozen bytes each
+  — the ALREADY-DOCUMENTED, unrelated self-host/native codegen-shape parity
+  gap, "native emits more bytes than the kernel", not a region-arena
+  correctness issue). The region-arena boundary is now fully correctness-
+  transparent for these three real-world corpora.
+- **kernel-oracle, region-live: 9/13 pass** (up from the funcIdx-skew
+  session's own 6/13), **203/203 assertions collected within the 9 passing
+  groups, no early-exit truncation**. The 4 remaining fails: 3 are ONE
+  test (`array-growth-class: sibling push()+indexed-append tables (envMeta
+  shape)`, O0/O2/O3) — a NEW, DIFFERENT front-boundary mechanism (an
+  ARRAY-of-schema-OBJECTs growth pattern deliberately mirroring the
+  funcIdx-skew shape, `test/kernel-oracle.js:327-341` — traced only far
+  enough to confirm it's NOT the HASH-key bug this session fixed: the
+  `{cap,idx}` records are fixed-shape OBJECT literals, not a dynamic HASH,
+  so a different relocation arm is implicated; not chased further this
+  session, banked as the next wall). The 4th is the pre-existing, already-
+  tracked, unrelated `PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier
+  collapse` row (research.md §Carrier invariant).
+- **Native ladder, dormant rebuild**: `node test/index.js` 3428/3436 pass
+  — the SAME 2 pre-existing documented flakes (interval-walk, typed-RMW),
+  0 new regressions. `JZ_TEST_TARGET=jz.wasm node test/index.js` (dormant
+  self-hosted): 2725/2731 pass, 0 fail, 6 skip — byte-for-byte the same
+  count every prior session in this chain has recorded.
+- **jz×jz** (`bench/jz/jz.js`, 155 modules, region-live): still fails —
+  but the signature CHANGED, `unreachable` at 7.6s (was `memory access out
+  of bounds` at ~2.8s pre-fix) — moved deeper, matching this whole chain's
+  established pattern of the fix narrowing without yet closing the full
+  self-compile case. Not the by-design Slice-3 memory-ceiling signature
+  (that one is ~8.5s / exactly 4 GiB).
+
+**Disposition.** `module/core.js`'s `__region_relocate_props` fix lands —
+real, confirmed, minimal (2 added `__region_copy_rec` calls + doc). Per
+the task's own protocol: **WALL — bank, stop.** The array-growth-class
+kernel-oracle row is the concrete next lead (own root-cause hunt, likely a
+distinct OBJECT/ARRAY-growth relocation gap, not a HASH-key one).
+`scripts/self.js`'s `REGION_HOOKS_ACTIVE` reverted to `false` before this
+commit (flipped `true` only inside this disposable worktree to build
+region-live test kernels, reverted after). `git diff --stat` on the landed
+set: `module/core.js` only (+42/-9, all inside `__region_relocate_props`
+and its doc).
+
+**SHAs.** jz worktree: `0e73fa6a` (region-final-2026-08-11, this session's
+own `module/core.js` diff commits on top). watr: `895ca5b` (`/Users/div/
+projects/watr`, unpublished, unchanged). Dormant `dist/jz.wasm` (this
+session's fixed rebuild, `REGION_HOOKS_ACTIVE=false`): SHA-256
+`639b83f1e95f08a0bf2ac26ff9c11ee6018e263bca9052b9d0b4e21c711576ae`.
