@@ -76,6 +76,7 @@ export const ctx = {
   module: {},     // module graph: imports, resolved sources, module-init blocks
   scope: {},      // bindings: globals, consts, typed-elem ctors per global
   funcs: {},      // compile-lifetime ProgramFunctions registry: list + indexes + exports
+  names: {},      // compile-lifetime synthetic-name authorities outside active emission frames
   func: {},       // active function analysis/emission frame: locals, signature, uniq counter
   types: {},      // per-function type analysis: typedElem map, dyn-key vars
   schema: {},     // object shape inference: var→schema, schema list
@@ -398,6 +399,10 @@ export function reset(proto, globals, bridge) {
     exports: Object.create(null),  // name-keyed: prototype-less (see derive) — `export let valueOf` must not hit Object.prototype
     globalDevirt: null, // Map<global, function name> published by plan/scope.js, consumed by emit
   }
+
+  // Prepare/session synthetic names must not consume the active frame's temp
+  // counter: prepare runs before any function entry and spans bundled modules.
+  ctx.names = { prepare: 0 }
 
   // Complete active-function analysis/emission authority. Every real function
   // boundary replaces this record by identity through enterActiveFunction();

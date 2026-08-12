@@ -141,6 +141,17 @@ const CLOSURE_LOOP_B = `
     return total + acc + counter
   }`
 
+test('prepare naming is compile-owned and distinct from EmitFrame names', () => {
+  if (onKernel()) return
+  compile('export let f = ({ x }, ...ys) => { let [a, b] = ys; return x + a + b }')
+  const firstPrepareCount = ctx.names.prepare
+  ok(firstPrepareCount > 0 && ctx.func.uniq === 0,
+    'prepare consumed its own counter while the restored inactive EmitFrame stayed untouched')
+  compile('export let g = ({ y }) => y')
+  ok(ctx.names.prepare > 0 && ctx.names.prepare <= firstPrepareCount && ctx.func.uniq === 0,
+    'the prepare counter resets per compile independently of function temp names')
+})
+
 test('ProgramFunctions authority is distinct from the active function frame', () => {
   if (onKernel()) return
   compile(MINIMAL)

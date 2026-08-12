@@ -42,7 +42,7 @@ import { STMT_OPS } from '../ast.js'
 import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from '../op-policy.js'
 import { recordGlobalRep } from '../compile/infer.js'
 import { FIRST_CLASS_BUILTIN_NAMES } from '../compile/emit.js'
-import { isFuncRef, freshId } from '../ir.js'
+import { isFuncRef } from '../ir.js'
 import { censusShapedNode } from '../kind.js'
 import {
   CTORS, COLLECTION_CTORS, TIMER_NAMES,
@@ -706,6 +706,8 @@ function validateCoalesceMixing(n) {
   for (let i = 1; i < n.length; i++) validateCoalesceMixing(n[i])
 }
 
+const freshPrepareId = () => ctx.names.prepare++
+
 export default function prepare(node) {
   // FINDING (session survey audit-#13 slice a, self-host leg): reset()'s
   // RESET_HOOKS (ctx.js) already clears this working set before prepare() runs
@@ -894,7 +896,7 @@ function prescanBlockDecls(node) {
         // of letting it fall through to the single-instance global spelling.
         const isLL = loopLocalNames.has(name)
         top.set(name, (depth !== 0 || isLL) ? mintForScope(name, isLL)
-          : (isDeclared(name) || fnNames?.has(name)) ? `${name}${T}${freshId(ctx)}` : name)
+          : (isDeclared(name) || fnNames?.has(name)) ? `${name}${T}${freshPrepareId()}` : name)
       }
     }
   }
@@ -1379,7 +1381,7 @@ function scalarArrayDestruct(pattern, rhs) {
   const decls = []
   const assigns = []
   for (let i = 0; i < targets.length; i++) {
-    const tmp = `${T}d${freshId(ctx)}`
+    const tmp = `${T}d${freshPrepareId()}`
     decls.push(['=', tmp, prep(values[i])])
     assigns.push(['=', targets[i], tmp])
   }
@@ -1554,7 +1556,7 @@ function pushPatternAssign(target, valueExpr, out, decls = null) {
     // Destructuring default fires ONLY on undefined (ES §13.15.5.3) — `??` would
     // also fire on null (`[a = 1] = [null]` must leave a null). Spill the read
     // once, test against undefined, keep the default lazily evaluated.
-    const tmp = `${T}d${freshId(ctx)}`
+    const tmp = `${T}d${freshPrepareId()}`
     if (decls) decls.push(['=', tmp, valueExpr])
     else out.push(['=', tmp, valueExpr])
     pushPatternAssign(target[1], ['?:', ['===', tmp, [, JZ_UNDEF]], prep(target[2]), tmp], out, decls)
@@ -1562,7 +1564,7 @@ function pushPatternAssign(target, valueExpr, out, decls = null) {
   }
 
   if (isDestructPattern(target)) {
-    const tmp = `${T}d${freshId(ctx)}`
+    const tmp = `${T}d${freshPrepareId()}`
     if (decls) decls.push(['=', tmp, valueExpr])
     else out.push(['=', tmp, valueExpr])
     expandDestruct(target, tmp, out, decls)
@@ -2009,7 +2011,7 @@ function prepDecl(op, ...inits) {
             declName = mintForScope(n, isLoopLocal)
             top.set(n, declName)
           } else if (isDeclared(n) || fnNames?.has(n)) {
-            declName = `${n}${T}${freshId(ctx)}`
+            declName = `${n}${T}${freshPrepareId()}`
             top.set(n, declName)
           } else top.set(n, n)
           if (declName !== n) patRenames.set(n, declName)
@@ -2033,7 +2035,7 @@ function prepDecl(op, ...inits) {
         expandDestruct(name, normed, rest)
         continue
       }
-      const tmp = `${T}d${freshId(ctx)}`
+      const tmp = `${T}d${freshPrepareId()}`
       declareGlobal(tmp, false)
       rest.push(['=', tmp, normed])
       // Propagate schema to temp so rest destructuring can resolve it
@@ -2079,7 +2081,7 @@ function prepDecl(op, ...inits) {
           declName = mintForScope(name, isLoopLocal)
           top.set(name, declName)
         } else if (isDeclared(name) || fnNames?.has(name)) {
-          declName = `${name}${T}${freshId(ctx)}`
+          declName = `${name}${T}${freshPrepareId()}`
           top.set(name, declName)
         } else top.set(name, name)
       }
@@ -2245,11 +2247,11 @@ function foldFnCallApplyBind(callee, args) {
   const f = ctx.funcs.list.find(fn => fn.name === name)
   if (f && !f.rest) {
     const remaining = Math.max(0, f.sig.params.length - rest.length)
-    const ps = Array.from({ length: remaining }, () => `${T}b${freshId(ctx)}`)
+    const ps = Array.from({ length: remaining }, () => `${T}b${freshPrepareId()}`)
     return seq(['=>', ps.length ? ['()', argsSlot(ps)] : ['()', null],
       ['()', name, argsSlot([...rest, ...ps])]])
   }
-  const r = `${T}b${freshId(ctx)}`
+  const r = `${T}b${freshPrepareId()}`
   return seq(['=>', ['()', ['...', r]], ['()', name, argsSlot([...rest, ['...', r]])]])
 }
 
@@ -2455,7 +2457,7 @@ const handlers = {
       if (scalar) return scalar
 
       const normed = prep(rhs)
-      const tmp = `${T}d${freshId(ctx)}`
+      const tmp = `${T}d${freshPrepareId()}`
       const decls = [['=', tmp, normed]]
       // Propagate schema to temp so rest destructuring can resolve it
       if (typeof normed === 'string' && ctx.schema.vars.has(normed))
@@ -2482,7 +2484,7 @@ const handlers = {
         // emit a dynamic property read + indirect call instead of a direct call.
         if (ctx.funcs.names.has(name)) {
           ctx.funcs.multiProp.add(`${fnBase}.${lhs[2]}`)
-          do { name = `${fnBase}$${lhs[2]}$${freshId(ctx)}` } while (ctx.funcs.names.has(name))
+          do { name = `${fnBase}$${lhs[2]}$${freshPrepareId()}` } while (ctx.funcs.names.has(name))
         }
         // Build the target `.` node directly from the resolved base — re-`prep`ing
         // the lhs would resolve a multiProp `fn.prop` to an rvalue (closure
@@ -2559,7 +2561,7 @@ const handlers = {
     // patterns) — the raw pattern node is not a bindable catch local.
     let cParam = catchClause?.[1], cHandler = catchClause?.[2]
     if (catchClause && isDestructPattern(cParam)) {
-      const tmp = `${T}cp${freshId(ctx)}`
+      const tmp = `${T}cp${freshPrepareId()}`
       const declStmt = ['let', ['=', cParam, tmp]]
       cHandler = Array.isArray(cHandler) && cHandler[0] === '{}'
         ? (Array.isArray(cHandler[1]) && cHandler[1][0] === ';'
@@ -2589,7 +2591,7 @@ const handlers = {
           scope.set(cParam, renamed)
           cParam = renamed
         } else if (isDeclared(cParam) || fnNames?.has(cParam)) {
-          const renamed = `${cParam}${T}${freshId(ctx)}`
+          const renamed = `${cParam}${T}${freshPrepareId()}`
           scope.set(cParam, renamed)
           cParam = renamed
         } else scope.set(cParam, cParam)
@@ -2826,7 +2828,7 @@ const handlers = {
   // this prepare-stage twin, strict `do-while` reaches emit as a raw 'do' and dies ("Unknown op: do"),
   // contradicting the README's strict-subset list. Re-prep the synthetic tree so scope/normalize apply.
   'do': (body, cond) => {
-    const flag = `${T}do${freshId(ctx)}`
+    const flag = `${T}do${freshPrepareId()}`
     return prep([';',
       ['let', ['=', flag, [null, true]]],
       ['while', ['||', flag, cond],
@@ -2956,7 +2958,7 @@ const handlers = {
         censusUnknownInitDecl(pName(c.name))
         nextParams.push(['=', pName(c.name), prep(c.defValue)])
       } else {
-        const tmp = `${T}p${freshId(ctx)}`
+        const tmp = `${T}p${freshPrepareId()}`
         fnScope.set(tmp, tmp)
         nextParams.push(c.kind === 'destruct-default' ? ['=', tmp, prep(c.defValue)] : tmp)
         bodyPrefix.push(prep(['let', ['=', c.pattern, tmp]]))
@@ -3242,7 +3244,7 @@ const handlers = {
     if (items.some(isComputed)) {
       const staticItems = items.filter(p => !isComputed(p))
       const computedItems = items.filter(isComputed)
-      const tmp = `${T}o${freshId(ctx)}`
+      const tmp = `${T}o${freshPrepareId()}`
       // Body: comma sequence of dict-sets, terminated with the tmp itself.
       // Computed key shape from parser is `[':', ['[]', keyExpr], valExpr]` —
       // unwrap the `['[]', keyExpr]` to grab keyExpr directly.
@@ -3314,7 +3316,7 @@ const handlers = {
         if (nm && bodyCapturesName(body, nm)) captured.push(nm)
       }
       if (captured.length) {
-        const carrier = new Map(captured.map(n => [n, `${n}${T}pi${freshId(ctx)}`]))
+        const carrier = new Map(captured.map(n => [n, `${n}${T}pi${freshPrepareId()}`]))
         const renamed = (n) => substIdents(n, carrier)
         const decl = ['let', ...head[1].slice(1).map(d => {
           if (typeof d === 'string') return carrier.get(d) ?? d
@@ -3393,7 +3395,7 @@ const handlers = {
             // Body can't change the bound → snapshot it once into an i32 local. Keeps
             // the counter `i` i32 through compare + `i++` (no per-iteration f64 round
             // trip) and gives the vectorizer the hoisted trip count it matches on.
-            const lenVar = `${T}len${freshId(ctx)}`
+            const lenVar = `${T}len${freshPrepareId()}`
             const lenDecl = ['let', ['=', lenVar, bound]]
             init = init ? [';', init, lenDecl] : lenDecl
             if (cond[0] === '<' || cond[0] === '<=') cond = [cond[0], cond[1], lenVar]
@@ -3417,9 +3419,9 @@ const handlers = {
       // `for ((x) of …)` — unwrap a cover-parenthesized target (mirrors for-in).
       let ofLhs = decl; while (Array.isArray(ofLhs) && ofLhs[0] === '()' && ofLhs.length === 2) ofLhs = ofLhs[1]
       const varName = isDeclHead ? decl[1] : ofLhs
-      const idx = `${T}i${freshId(ctx)}`
-      const lenVar = `${T}len${freshId(ctx)}`
-      const arrVar = `${T}arr${freshId(ctx)}`
+      const idx = `${T}i${freshPrepareId()}`
+      const lenVar = `${T}len${freshPrepareId()}`
+      const arrVar = `${T}arr${freshPrepareId()}`
       // Normalize the source to an index-iterable once: a Set→keys / Map→[k,v]
       // array, while an Array/String/TypedArray passes through untouched (no
       // copy). Without this, `coll[i]` on a Set/Map reads raw open-addressing
@@ -3478,7 +3480,7 @@ const handlers = {
         : typeof src === 'string'
           ? ['?', ['==', src, [null, null]], ['[]', null], ['()', '__keys_ro', src]]
           : ['()', '__keys_ro', src]
-      const ks = `${T}fik${freshId(ctx)}`, ix = `${T}fii${freshId(ctx)}`, lenV = `${T}fil${freshId(ctx)}`
+      const ks = `${T}fik${freshPrepareId()}`, ix = `${T}fii${freshPrepareId()}`, lenV = `${T}fil${freshPrepareId()}`
       const decls = ['let',
         ['=', ks, keysExpr],
         ['=', ix, [, 0]],
@@ -3704,7 +3706,7 @@ function defFunc(name, node) {
       // (paramReps / speculation), never this unconditional install. The
       // param stays censused unknown by the '=>' handler.
     } else {
-      const tmp = `${T}p${freshId(ctx)}`
+      const tmp = `${T}p${freshPrepareId()}`
       params.push({ name: tmp, type: 'f64' })
       if (c.kind === 'destruct-default') defaults[tmp] = c.defValue   // prepped (see 'default' above)
       bodyPrefix.push(['let', ['=', c.pattern, tmp]])

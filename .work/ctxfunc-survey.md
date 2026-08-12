@@ -692,3 +692,25 @@ Certification:
 - build twice byte-identical; `dist/jz.wasm` SHA-256
   `e9eef17ecb8b2b17a8d50ed4035a324e8455f939f1163600c06b7e34fb8b44bf`
 - self-host correctness/warm reuse: 21/21, 206 assertions
+
+## AS-LANDED — Slice 4e: split prepare naming from EmitFrame naming (2026-08-12)
+
+Closed the last known double-lifetime field from the survey. Prepare's 23
+synthetic-name call sites now consume `ctx.names.prepare`, reset once per
+compile. `ctx.func.uniq` is exclusively the active EmitFrame counter and is no
+longer touched before a function/__start frame exists. Bundled-module recursive
+prepare shares the compile counter intentionally, preserving collision freedom.
+
+This is an ownership split, not a renumbering optimization: source-prepared
+names remain monotone in their own domain; emitted temp/label names restart per
+complete ActiveFunction as before. The reentrancy probe proves prepare can
+consume names while the restored inactive frame's `uniq` stays zero and that
+the prepare authority resets on the next compile.
+
+Certification:
+- `test/session-reentrancy.js`: 13/13, 34 assertions
+- `npm test`: 3426 pass, only the two standing optimizer-shape failures, 6 skip
+- kernel oracle 13/13; kernel parity 3/3
+- build twice byte-identical; `dist/jz.wasm` SHA-256
+  `305f473c5ee4b693c26d8e03373592986bbc31b452bb5943e9077fc365895ad2`
+- self-host correctness/warm reuse: 21/21, 206 assertions
