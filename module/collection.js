@@ -11,7 +11,7 @@
  * @module collection
  */
 
-import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, undefExpr, mkPtrIR, ptrTypeEq, elemStore, elemLoad, extractF64Bits, boolBoxIR } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, undefExpr, mkPtrIR, ptrTypeEq, elemStore, elemLoad, extractF64Bits, boolBoxIR, freshId } from '../src/ir.js'
 import { emit, deps, call, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -1720,7 +1720,7 @@ export default (ctx) => {
     const t = temp('fe'), cb = temp('fecb')
     const off = tempI32('feo'), cap = tempI32('fec'), n = tempI32('fen')
     const i = tempI32('fei'), ord = tempI32('fer'), slot = tempI32('fes')
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     const at = (o) => typed(['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', o]]], 'f64')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(expr))],
@@ -1834,7 +1834,7 @@ export default (ctx) => {
     const recv = temp('gbs'), cb = temp('gbc'), result = temp('gbr')
     const len = tempI32('gbl'), i = tempI32('gbi')
     const item = temp('gbv'), key = tempI64('gbk'), bucket = temp('gbb')
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     const resI64 = ['i64.reinterpret_f64', ['local.get', `$${result}`]]
     const nb = allocPtr({ type: PTR.ARRAY, len: 0, cap: 0, tag: 'gbn' })
     const initResult = isMap
@@ -3421,7 +3421,7 @@ export default (ctx) => {
     const i = tempI32('hi'), slot = tempI32('hs')
     const ptrI64 = tempI64('hp'), srcOff = tempI32('hso'), srcType = tempI32('hst')
     if (!ctx.func.locals.has(varName)) ctx.func.locals.set(varName, 'f64')
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     const brk = `$brk${id}`, loop = `$loop${id}`, cont = `$cont${id}`
     const va = asF64(emit(src))
     const needsCont = hasOwnContinue(body)
@@ -3494,7 +3494,7 @@ function collKeysFromTemp(t, stride, fieldOff = 8) {
   // what the fill loop below actually writes, or a header-trusting size leaves
   // its tail uninitialized (header too high) or reads past $ord (header too low).
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'cka' })
-  const id = ctx.func.uniq++
+  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
@@ -3524,7 +3524,7 @@ function collEntriesFromTemp(t, stride, aOff = 8, bOff = 16) {
   // len is __coll_order's OWN live count, not the header length — see
   // collKeysFromTemp's comment above (same reasoning applies here).
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'cea' })
-  const id = ctx.func.uniq++
+  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
@@ -3552,7 +3552,7 @@ function arrIdxFromTemp(t) {
   inc('__len')
   const n = tempI32('ain'), i = tempI32('aii')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'aia' })
-  const id = ctx.func.uniq++
+  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     out.init,
@@ -3570,7 +3570,7 @@ function arrEntriesFromTemp(t) {
   inc('__len', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr')
   const n = tempI32('aen'), i = tempI32('aei'), src = tempI32('aes'), pair = tempI32('aep')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'aea' })
-  const id = ctx.func.uniq++
+  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     out.init,
@@ -3597,7 +3597,7 @@ function arrEntriesFromTempTyped(t) {
   inc('__len', '__typed_get_idx', '__alloc_hdr')
   const n = tempI32('aetn'), i = tempI32('aeti'), pair = tempI32('aetp')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'aet' })
-  const id = ctx.func.uniq++
+  const id = freshId(ctx)
   const P = () => ['i64.reinterpret_f64', ['local.get', `$${t}`]]
   return ['block', ['result', 'f64'],
     ['local.set', `$${n}`, ['call', '$__len', P()]],

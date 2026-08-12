@@ -68,18 +68,25 @@ import { LAYOUT, oobNanIR, ssoBitI64Hex } from '../../layout.js'
  *  emit time; correctness over a micro-memo. */
 const ssoBitI64 = () => ssoBitI64Hex()
 
+/** Mint a fresh integer id. Replicated here (not imported from `src/ir.js`'s
+ *  canonical `freshId`) to keep this module loadable during ctx.js bootstrap
+ *  — see header note about the cycle. Same one-liner, same sequence
+ *  (`ctx.func.uniq++`) — a cycle-safety duplicate, not a second mechanism
+ *  (ctxfunc-survey.md §2/§5, coordinator ruling #2 "uniq extraction"). */
+const freshId = (ctx) => ctx.func.uniq++
+
 /** Allocate a fresh i64 local in the current function. Replicated here (not
  *  imported from `src/ir.js`) to keep this module loadable during ctx.js
  *  bootstrap — see header note about the cycle. */
 const allocLocalI64 = (ctx, tag) => {
   let name
-  do { name = `_${tag}${ctx.func.uniq++}` } while (ctx.func.locals.has(name))
+  do { name = `_${tag}${freshId(ctx)}` } while (ctx.func.locals.has(name))
   ctx.func.locals.set(name, 'i64')
   return name
 }
 const allocLocalI32 = (ctx, tag) => {
   let name
-  do { name = `_${tag}${ctx.func.uniq++}` } while (ctx.func.locals.has(name))
+  do { name = `_${tag}${freshId(ctx)}` } while (ctx.func.locals.has(name))
   ctx.func.locals.set(name, 'i32')
   return name
 }
@@ -416,7 +423,7 @@ export const sso = {
       // rejects (mirrors freshLocal's registration).
       const fresh = () => {
         let n
-        do { n = `seq${ctx.func.uniq++}` } while (ctx.func.locals.has(n))
+        do { n = `seq${freshId(ctx)}` } while (ctx.func.locals.has(n))
         ctx.func.locals.set(n, 'i64')
         return n
       }

@@ -64,7 +64,7 @@ import {
   reconstructArgsWithSpreads, tcoTailRewrite,
   extractF64Bits,
 } from '../ir.js'
-import { isBoundName } from '../ir.js'
+import { isBoundName, freshId } from '../ir.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from './flow-types.js'
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
 
@@ -523,7 +523,7 @@ export function emitTypeofCmp(a, b, cmpOp) {
     // that isn't STRING/CLOSURE/nullish. Numbers (incl. NaN) and bigint aren't NaN-box
     // pointers, so isPtr already rejects them.
     inc('__ptr_type')
-    const tt = `${T}${ctx.func.uniq++}`; ctx.func.locals.set(tt, 'i32')
+    const tt = `${T}${freshId(ctx)}`; ctx.func.locals.set(tt, 'i32')
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
     const heapKind = ['i32.and',
       ['i32.and',
@@ -1041,7 +1041,7 @@ function freshenUnrolledScalarBindings(body, ir) {
         ctx.types.typedElem?.has(name)) continue
     const rep = ctx.func.localReps?.get(name)
     if (rep?.val != null && rep.val !== VAL.NUMBER && rep.val !== VAL.BOOL) continue
-    const fresh = `${T}us${ctx.func.uniq++}_${name}`
+    const fresh = `${T}us${freshId(ctx)}_${name}`
     ctx.func.locals.set(fresh, type)
     rename.set(`$${name}`, `$${fresh}`)
   }
@@ -2385,7 +2385,7 @@ export function emitDecl(...inits) {
       const schema = ctx.schema.resolve(name)
       if (schema?.[0] === '__inner__') {
         inc('__alloc_hdr', '__mkptr')
-        const bt = `${T}bx${ctx.func.uniq++}`
+        const bt = `${T}bx${freshId(ctx)}`
         ctx.func.locals.set(bt, 'i32')
         const innerName = `${name}${T}inner`
         ctx.func.locals.set(innerName, 'f64')
@@ -2421,9 +2421,9 @@ function emitSpreadCopy(dest, posLocal, srcLocal, srcLenLocal, staticVT) {
       ['call', '$__ptr_offset', srcI64()],
       ['i32.shl', ['local.get', `$${srcLenLocal}`], ['i32.const', 3]]])
   const scalarLoop = () => {
-    const sidx = `${T}sidx${ctx.func.uniq++}`
+    const sidx = `${T}sidx${freshId(ctx)}`
     ctx.func.locals.set(sidx, 'i32')
-    const loopId = ctx.func.uniq++
+    const loopId = freshId(ctx)
     // When the source is statically known to be a typed array, __typed_idx suffices.
     // Otherwise (STRING, or unknown type whose runtime value may be a string) dispatch on
     // ptr_type: STRING→__str_idx, else→__typed_idx.
@@ -2522,15 +2522,15 @@ export function buildArrayWithSpreads(items) {
     if (sec.type === 'array') {
       sec.itemLocals = []
       for (let i = 0; i < sec.items.length; i++) {
-        const it = `${T}ai${ctx.func.uniq++}`
+        const it = `${T}ai${freshId(ctx)}`
         ctx.func.locals.set(it, 'f64')
         sec.itemLocals.push(it)
         ir.push(['local.set', `$${it}`, asF64(emit(sec.items[i]))])
       }
     } else {
-      sec.local = `${T}sp${ctx.func.uniq++}`
+      sec.local = `${T}sp${freshId(ctx)}`
       ctx.func.locals.set(sec.local, 'f64')
-      sec.lenLocal = `${T}spl${ctx.func.uniq++}`
+      sec.lenLocal = `${T}spl${freshId(ctx)}`
       ctx.func.locals.set(sec.lenLocal, 'i32')
       const n = multiCount(sec.expr)
       // Normalize a (non-multi) spread source to an index-iterable: Set→keys /
@@ -3399,12 +3399,12 @@ function parseCallArgs(args) {
 function emitBulkPushSpread(objArg, parsed) {
   const spreadExpr = parsed.spreads[0].expr
   inc('__len'); inc('__arr_grow'); inc('__set_len'); inc('__ptr_offset')
-  const o = `${T}po${ctx.func.uniq++}`,
-        sa = `${T}psa${ctx.func.uniq++}`,
-        sl = `${T}psl${ctx.func.uniq++}`,
-        ol = `${T}pol${ctx.func.uniq++}`,
-        si = `${T}psi${ctx.func.uniq++}`,
-        base = `${T}pb${ctx.func.uniq++}`
+  const o = `${T}po${freshId(ctx)}`,
+        sa = `${T}psa${freshId(ctx)}`,
+        sl = `${T}psl${freshId(ctx)}`,
+        ol = `${T}pol${freshId(ctx)}`,
+        si = `${T}psi${freshId(ctx)}`,
+        base = `${T}pb${freshId(ctx)}`
   ctx.func.locals.set(o, 'f64'); ctx.func.locals.set(sa, 'f64')
   ctx.func.locals.set(sl, 'i32'); ctx.func.locals.set(ol, 'i32')
   ctx.func.locals.set(si, 'i32'); ctx.func.locals.set(base, 'i32')
@@ -3454,9 +3454,9 @@ function emitBulkPushSpread(objArg, parsed) {
  *  `unshift` to preserve argument order under successive prepends). Returns the
  *  IR instruction list (caller embeds it into its own block64). */
 function emitSpreadElementLoop(spreadExpr, bodyFn, { reverse = false } = {}) {
-  const arr = `${T}sp${ctx.func.uniq++}`
-  const len = `${T}splen${ctx.func.uniq++}`
-  const idx = `${T}spidx${ctx.func.uniq++}`
+  const arr = `${T}sp${freshId(ctx)}`
+  const len = `${T}splen${freshId(ctx)}`
+  const idx = `${T}spidx${freshId(ctx)}`
   ctx.func.locals.set(arr, 'f64'); ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(idx, 'i32')
   // Emission-minted temp seed → transient overlay (slice 3c-a class): the fresh
   // spread-staging local's VT rides the overlay for the loop-body IR generation.
@@ -3466,7 +3466,7 @@ function emitSpreadElementLoop(spreadExpr, bodyFn, { reverse = false } = {}) {
   if (spreadVT) ctx.func.localValTypesOverlay.set(arr, spreadVT)
   inc('__len')
   const n = multiCount(spreadExpr)
-  const loopId = ctx.func.uniq++
+  const loopId = freshId(ctx)
   const exhausted = reverse
     ? ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]]
     : ['i32.ge_u', ['local.get', `$${idx}`], ['local.get', `$${len}`]]
@@ -3494,7 +3494,7 @@ function emitSingleSpreadMethodCall(objArg, parsed, method, methodEmitter) {
   const inPlace = SPREAD_MUTATORS.has(method)
   // unshift prepends each arg to the front — forward iteration reverses intent.
   const reverse = method === 'unshift'
-  const acc = `${T}acc${ctx.func.uniq++}`
+  const acc = `${T}acc${freshId(ctx)}`
   ctx.func.locals.set(acc, 'f64')
   const ir = [['local.set', `$${acc}`, asF64(emit(objArg))]]
   if (reverse) {
@@ -3505,7 +3505,7 @@ function emitSingleSpreadMethodCall(objArg, parsed, method, methodEmitter) {
     // the kernel's own `inject.unshift(setBase, ...stores)`). Argument
     // EVALUATION order stays left-to-right: normals spill to temps first.
     const temps = parsed.normal.map((a) => {
-      const t = `${T}usv${ctx.func.uniq++}`
+      const t = `${T}usv${freshId(ctx)}`
       ctx.func.locals.set(t, 'f64')
       ir.push(['local.set', `$${t}`, asF64(emitAsValue(() => emit(a)))])
       return t
@@ -3538,7 +3538,7 @@ function emitMultiSpreadMethodCall(objArg, parsed, method, methodEmitter) {
   const inPlace = SPREAD_MUTATORS.has(method)
   const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
   // Accumulator (only used when not in-place); recv passed to methodEmitter is the live target.
-  const acc = inPlace ? null : `${T}acc${ctx.func.uniq++}`
+  const acc = inPlace ? null : `${T}acc${freshId(ctx)}`
   if (acc) ctx.func.locals.set(acc, 'f64')
   const recv = inPlace ? objArg : acc
   const ir = inPlace ? [] : [['local.set', `$${acc}`, asF64(emit(objArg))]]
@@ -3552,12 +3552,12 @@ function emitMultiSpreadMethodCall(objArg, parsed, method, methodEmitter) {
     const segs = []
     for (const item of combined) {
       if (Array.isArray(item) && item[0] === '__spread') {
-        const t = `${T}ussp${ctx.func.uniq++}`
+        const t = `${T}ussp${freshId(ctx)}`
         ctx.func.locals.set(t, 'f64')
         ir.push(['local.set', `$${t}`, asF64(emitAsValue(() => emit(item[1])))])
         segs.push(['spread', t])
       } else {
-        const t = `${T}usv${ctx.func.uniq++}`
+        const t = `${T}usv${freshId(ctx)}`
         ctx.func.locals.set(t, 'f64')
         ir.push(['local.set', `$${t}`, asF64(emitAsValue(() => emit(item)))])
         if (segs.length && segs[segs.length - 1][0] === 'batch') segs[segs.length - 1].push(t)
@@ -3823,7 +3823,7 @@ function tryRuntimeStringFork({ obj, method, vt, callMethod }) {
   // VAL.ARRAY is structurally incompatible with PTR.STRING — no fork needed.
   // Only fork when vt is truly unknown (!vt), not for proven types.
   if (!vt && ctx.core.emit[strKey] && ctx.core.emit[genKey]) {
-    const t = `${T}rt${ctx.func.uniq++}`, tt = `${T}rtt${ctx.func.uniq++}`
+    const t = `${T}rt${freshId(ctx)}`, tt = `${T}rtt${freshId(ctx)}`
     ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
     const strEmitter = ctx.core.emit[strKey]
     const genEmitter = ctx.core.emit[genKey]
@@ -3879,7 +3879,7 @@ function tryRuntimeStringFork({ obj, method, vt, callMethod }) {
 function tryRuntimeNumberMethod({ obj, method, parsed, vt, callMethod }) {
   const numEmitter = ctx.core.emit[`.number:${method}`]
   if (vt || !numEmitter || parsed.hasSpread || !ctx.closure.call) return
-  const t = `${T}rn${ctx.func.uniq++}`
+  const t = `${T}rn${freshId(ctx)}`
   ctx.func.locals.set(t, 'f64')
   // audit-#10: only a genuinely mayBeUndefined receiver pays for the nullish
   // guard — same `censusMaybeUndefined` predicate as every other check in
@@ -5163,7 +5163,7 @@ export const emitter = {
     if (!canThrow(body)) return emitVoid(body)
 
     ctx.runtime.throws = ctx.runtime.userThrows = true
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     ctx.func.locals.set(errName, 'f64')
     const prev = ctx.func.inTry; ctx.func.inTry = true
     let bodyIR; try { bodyIR = emitVoid(body) } finally { ctx.func.inTry = prev }
@@ -5201,7 +5201,7 @@ export const emitter = {
     }
 
     ctx.runtime.throws = ctx.runtime.userThrows = true
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     const errLocal = temp('err')
     const parentStack = ctx.func.finallyStack || []
     const activeStack = parentStack.concat([{ cleanup, depth: ctx.func.stack.length }])
@@ -6897,7 +6897,7 @@ export const emitter = {
       const ex = extractHoistableLiterals(body)
       if (ex) { preLoopLits = ex.hoisted; body = ex.body }
     }
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     const brk = `$brk${id}`, loop = `$loop${id}`
     // The cont wrapper is only needed if the body has a `continue` AND there is a step
     // expression — `continue` must jump to before the step. Without a step, `continue`
@@ -6997,7 +6997,7 @@ export const emitter = {
   },
 
   'switch': (discriminant, ...cases) => {
-    const disc = `${T}disc${ctx.func.uniq++}`
+    const disc = `${T}disc${freshId(ctx)}`
     ctx.func.locals.set(disc, 'f64')
 
     const result = [['local.set', `$${disc}`, asF64(emit(discriminant))]]
@@ -7005,7 +7005,7 @@ export const emitter = {
     for (const c of cases) {
       if (c[0] === 'case') {
         const [, test, body] = c
-        const skip = `$skip${ctx.func.uniq++}`
+        const skip = `$skip${freshId(ctx)}`
         // Block: skip if discriminant != test, otherwise execute body
         result.push(['block', skip,
           ['br_if', skip, typed(['f64.ne', typed(['local.get', `$${disc}`], 'f64'), asF64(emit(test))], 'i32')],
@@ -7020,7 +7020,7 @@ export const emitter = {
 
   'while': (cond, body) => emitter['for'](null, cond, null, body),
   'label': (name, body) => {
-    const brk = `$label${ctx.func.uniq++}`
+    const brk = `$label${freshId(ctx)}`
     ctx.func.stack.push({ label: name, brk })
     // Hand the label to the immediately-enclosed loop so `continue name` can target it.
     ctx.func.pendingLabel = name
@@ -7061,7 +7061,7 @@ export const emitter = {
       else if (c.kind === 'plain') params.push(c.name)
       else if (c.kind === 'default') { params.push(c.name); defaults[c.name] = c.defValue }
       else {
-        const tmp = `${T}p${ctx.func.uniq++}`
+        const tmp = `${T}p${freshId(ctx)}`
         params.push(tmp)
         if (c.kind === 'destruct-default') defaults[tmp] = c.defValue
         bodyPrefix.push(['let', ['=', c.pattern, tmp]])

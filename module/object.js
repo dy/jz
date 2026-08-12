@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore } from '../src/ir.js'
+import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore, freshId } from '../src/ir.js'
 import { emit, storedValue, storedValueNarrow } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -318,7 +318,7 @@ export default (ctx) => {
     const v = temp('ik'), i = tempI32('iki'), len = tempI32('ikl')
     const vPtr = () => ['i64.reinterpret_f64', ['local.get', `$${v}`]]
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'ik' })
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${v}`, asF64(emit(obj))],
       ['local.set', `$${len}`, ['call', `$${lenCall}`, vPtr()]],
@@ -462,7 +462,7 @@ export default (ctx) => {
       const s = temp('osv'), i = tempI32('osvi'), len = tempI32('osvl')
       const sPtr = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
       const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'osv' })
-      const id = ctx.func.uniq++
+      const id = freshId(ctx)
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(obj))],
         ['local.set', `$${len}`, ['call', '$__str_len', sPtr()]],
@@ -499,7 +499,7 @@ export default (ctx) => {
       const s = temp('oes'), i = tempI32('oesi'), len = tempI32('oesl'), pair = tempI32('oep')
       const sPtr = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
       const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'oes' })
-      const id = ctx.func.uniq++
+      const id = freshId(ctx)
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(obj))],
         ['local.set', `$${len}`, ['call', '$__str_len', sPtr()]],
@@ -521,7 +521,7 @@ export default (ctx) => {
       const v = temp('oea'), i = tempI32('oeai'), len = tempI32('oeal'), base = tempI32('oeab'), pair = tempI32('oeap')
       const vPtr = () => ['i64.reinterpret_f64', ['local.get', `$${v}`]]
       const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'oea' })
-      const id = ctx.func.uniq++
+      const id = freshId(ctx)
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${v}`, asF64(emit(obj))],
         ['local.set', `$${len}`, ['call', '$__len', vPtr()]],
@@ -656,7 +656,7 @@ export default (ctx) => {
     const va = asF64(emit(arr))
     const t = temp('fe'), ptr = tempI32('fp'), len = tempI32('fl')
     const i = tempI32('fi'), pair = tempI32('fv')
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__hash_new']],
       ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]],
@@ -767,7 +767,7 @@ function emitDynamicAssign(target, sources, sourceSchemas = sources.map(sourceSc
   const t = temp('adt'), s = temp('ads'), sBase = tempI32('adsb')
   const keys = temp('adk'), keysBase = tempI32('adkb'), len = tempI32('adn')
   const i = tempI32('adi'), key = temp('adkey')
-  const id = ctx.func.uniq++
+  const id = freshId(ctx)
   const body = [['local.set', `$${t}`, asF64(emit(target))]]
 
   for (let si = 0; si < sources.length; si++) {
@@ -821,7 +821,7 @@ function emitObjectAssignDynamic(target, sources) {
   const t = temp('oat'), s = temp('oas'), sBase = tempI32('oasb')
   const keys = temp('oak'), keysBase = tempI32('oakb'), len = tempI32('oan')
   const i = tempI32('oai'), key = temp('oakey')
-  const id = ctx.func.uniq++
+  const id = freshId(ctx)
   const setKey = (keyBits, valBits) =>
     ['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]], keyBits, valBits]]
   const body = [['local.set', `$${t}`, asF64(emit(target))]]
@@ -1062,7 +1062,7 @@ function emitDynamicSpread(props) {
   const t = temp('dst'), s = temp('dss'), sBase = tempI32('dssb')
   const keys = temp('dsk'), keysBase = tempI32('dskb'), len = tempI32('dsn')
   const i = tempI32('dsi'), key = temp('dskey')
-  const id = ctx.func.uniq++
+  const id = freshId(ctx)
   // `__hash_set` may rehash and return a new pointer, so thread it back into $t.
   const setKey = (keyBits, valBits) =>
     ['local.set', `$${t}`, ['f64.reinterpret_i64',
@@ -1184,7 +1184,7 @@ function hashKeysFromTemp(t) {
   // __coll_order header comment: the two can disagree) — out must be sized to
   // what the fill loop below actually writes.
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hka' })
-  const id = ctx.func.uniq++
+  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
@@ -1209,7 +1209,7 @@ function hashValuesFromTemp(t) {
   const i = tempI32('hvi'), ord = tempI32('hvr'), slot = tempI32('hvs')
   // len is __coll_order's OWN live count — see hashKeysFromTemp's comment above.
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hva' })
-  const id = ctx.func.uniq++
+  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
@@ -1234,7 +1234,7 @@ function hashEntriesFromTemp(t) {
   const i = tempI32('hei'), ord = tempI32('her'), slot = tempI32('hes'), pair = tempI32('hep')
   // len is __coll_order's OWN live count — see hashKeysFromTemp's comment above.
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hea' })
-  const id = ctx.func.uniq++
+  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
@@ -1390,7 +1390,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
   const out = tempI32('oeo'), i = tempI32('oei'), o = tempI32('oej')
   const slot = tempI32('oesl')
   const j = tempI32('oej2'), skip = tempI32('oesk'), pair = tempI32('oep')
-  const id = ctx.func.uniq++
+  const id = freshId(ctx)
   const env = { out, o, src, base, i, slot, pair }
   // for-in enum cache, OBJECT arm (see core.js __hash_keys_ro for the scheme).
   // Key = (sidecar off, sidecar len): the sidecar identifies the object (one

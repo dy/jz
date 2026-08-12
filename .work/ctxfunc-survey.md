@@ -482,3 +482,74 @@ kernel-parity, full battery, fuzz) — 0 diffs.
 | `node test/session-reentrancy.js` | 5/5 (12 assertions) |
 
 **Verdict: LANDED.**
+
+## AS-LANDED — Slice 2: uniq extraction (2026-08-12)
+
+The 128 `ctx.func.uniq++` sites (census: 129 W-sites total, 128 the `++`
+idiom — the 129th is `ctx.func.uniq = uniq`, a save/restore assignment at
+`compile/index.js:421`, correctly left untouched, not a mint site) now mint
+through ONE function: `export function freshId(ctx) { return ctx.func.uniq++
+}` (`src/ir.js`, beside `freshLocal`/`temp`/`tempI32`/`tempI64` — the exact
+family this belongs to per the survey's own runner-up framing). `freshLocal`
+itself now calls `freshId(ctx)` internally instead of touching
+`ctx.func.uniq` directly, so the local-minting and bare-id-minting paths
+share the one increment point. `freshId` takes `ctx` explicitly (not
+`ir.js`'s own module-scope import) so the same function works unchanged at
+every call site regardless of whether that site's own `ctx` binding is an
+import or a factory parameter (`module/*.js`'s `export default (ctx) => …`
+shape).
+
+**One exception, deliberate**: `src/abi/string.js` cannot import from
+`src/ir.js` — its own header comment documents why (`src/ir.js` is loaded
+transitively FROM `src/ctx.js`, so an `abi/string.js → ir.js` import would
+close a real load cycle, reading `LAYOUT.NAN_PREFIX_BITS` before `ctx.js`'s
+own `LAYOUT` const is bound; this is why `allocLocalI64`/`allocLocalI32` in
+that file already replicate `freshLocal` locally instead of importing it).
+`freshId` is replicated there too, as a one-line `const freshId = (ctx) =>
+ctx.func.uniq++`, commented as a cycle-safety duplicate of the canonical
+`ir.js` definition, not a second mechanism — matching the file's own
+existing precedent rather than inventing a new one.
+
+**Site count by file** (128 total, matches the census exactly):
+
+| file | sites |
+|---|---|
+| src/prepare/index.js | 25 |
+| src/compile/emit.js | 33 |
+| src/compile/index.js | 5 |
+| src/compile/emit-assign.js | 5 |
+| src/compile/plan/literals.js | 5 |
+| src/compile/plan/loops.js | 4 |
+| src/compile/plan/inline.js | 3 |
+| src/compile/plan/scope.js | 1 |
+| src/ir.js (freshId's own definition site + freshLocal + 2 direct) | 3 |
+| src/abi/string.js (cycle-safe local replica) | 3 |
+| module/array.js | 11 |
+| module/object.js | 12 |
+| module/typedarray.js | 8 |
+| module/atomics.js | 2 |
+| module/collection.js | 8 |
+
+Mechanical by construction: every replacement is the exact substring
+`ctx.func.uniq++` → `freshId(ctx)`, applied uniformly (scripted, then
+verified with `node --check` on all 15 touched files and a full-tree grep
+confirming zero remaining `ctx.func.uniq++` occurrences outside `freshId`'s
+own two definitions). The counter sequence is unchanged — same field
+(`ctx.func.uniq`), same reset (`enterFunc`'s `uniq: 0`... — actually set via
+`enterFunc`'s reset list, §3), same save/restore sites
+(`compile/index.js:421`'s `ctx.func.uniq = uniq`, `compile/index.js:1963`
+and `wat/assemble.js:243`'s snapshot reads) — all three left untouched, so
+every synthetic name downstream is byte-identical.
+
+**Gates:**
+
+| gate | result |
+|---|---|
+| 60-case × O0/O2/O3 byte-identity sweep (180 compiles, vs `38b08f19` worktree baseline, Slice 1 + Slice 2 combined) | 180/180 identical |
+| `node scripts/battery.mjs` | same result as Slice 1's table (re-run against the combined tree) — GREEN modulo the same 1 pre-existing flake |
+| `node test/kernel-parity.js` | 3/3 groups, 33/33 assertions |
+| `JZ_TEST_TARGET=jz.wasm node test/index.js` | 2716/2722 pass, 6 skip, 0 fail |
+| `node scripts/build-dist.mjs` ×2 | byte-identical SHA-256 |
+| `node test/session-reentrancy.js` | 5/5 (12 assertions) |
+
+**Verdict: LANDED.**

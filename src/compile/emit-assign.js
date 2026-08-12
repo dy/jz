@@ -23,6 +23,7 @@ import {
   typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
   ptrOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
   usesDynProps, needsDynShadow, boolBoxIR, mkPtrIR, isNumericIR, undefExpr,
+  freshId,
 } from '../ir.js'
 import { emit, emitIdentitySafe, storedValue, storedValueNarrow } from '../bridge.js'
 
@@ -58,9 +59,9 @@ const persistBinding = name => ptr => persistBindingPtr(name, ptr)
  *  the array header (capacity grow); `persist` writes the new pointer back to
  *  the receiver binding. Returns the stored value as the block result. */
 function storeArrayPayload(arrExpr, idxNode, valueExpr, persist) {
-  const arrTmp = `${T}asi${ctx.func.uniq++}`
-  const idxTmp = `${T}asj${ctx.func.uniq++}`
-  const valTmp = `${T}asv${ctx.func.uniq++}`
+  const arrTmp = `${T}asi${freshId(ctx)}`
+  const idxTmp = `${T}asj${freshId(ctx)}`
+  const valTmp = `${T}asv${freshId(ctx)}`
   ctx.func.locals.set(arrTmp, 'f64')
   ctx.func.locals.set(idxTmp, 'i32')
   ctx.func.locals.set(valTmp, 'f64')
@@ -807,8 +808,8 @@ export function emitPropertyAssign(obj, prop, val) {
     if (recvVt === VAL.TYPED) err(`Typed arrays are fixed-size — cannot assign to \`${typeof obj === 'string' ? obj : '<expr>'}.length\``)
     if (recvVt === VAL.ARRAY || recvVt == null) {
       inc('__arr_set_length')
-      const arrTmp = `${T}aln${ctx.func.uniq++}`
-      const nTmp = `${T}alv${ctx.func.uniq++}`
+      const arrTmp = `${T}aln${freshId(ctx)}`
+      const nTmp = `${T}alv${freshId(ctx)}`
       ctx.func.locals.set(arrTmp, 'f64')
       ctx.func.locals.set(nTmp, 'i32')
       // Write the relocated pointer back to a simple var receiver so later

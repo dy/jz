@@ -78,6 +78,7 @@ import {
   I32_MIN, I32_MAX, dollar,
   carrierF64,
   unboxBigInt,
+  freshId,
 } from '../ir.js'
 import plan from './plan/index.js'
 import { foldStaticConstAggregates } from './plan/literals.js'
@@ -2107,14 +2108,14 @@ function emitClosureBody(cb) {
   }
 
   // Pre-allocate cache locals for env unpacking
-  const envBase = cb.captures.length > 0 ? `${T}envBase${ctx.func.uniq++}` : null
+  const envBase = cb.captures.length > 0 ? `${T}envBase${freshId(ctx)}` : null
   if (envBase) ctx.func.locals.set(envBase, 'i32')
   // Rest param: allocate helper locals (len + offset + spill loop index) before emitting decls
   let restOff, restLen, restIdx
   if (cb.rest) {
-    restOff = `${T}restOff${ctx.func.uniq++}`
-    restLen = `${T}restLen${ctx.func.uniq++}`
-    restIdx = `${T}restIdx${ctx.func.uniq++}`
+    restOff = `${T}restOff${freshId(ctx)}`
+    restLen = `${T}restLen${freshId(ctx)}`
+    restIdx = `${T}restIdx${freshId(ctx)}`
     ctx.func.locals.set(restOff, 'i32')
     ctx.func.locals.set(restLen, 'i32')
     ctx.func.locals.set(restIdx, 'i32')
@@ -2203,7 +2204,7 @@ function emitClosureBody(cb) {
     }
     // Overflow beyond the inline slots: copy args[width..argc-1] from the spill array
     // (set by the spread-call site). rest[i] = spill[(fixedN+i)*8] for i in [restSlots, restLen).
-    const rid = ctx.func.uniq++
+    const rid = freshId(ctx)
     fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', restSlots]],
       ['then',
         ['local.set', `$${restIdx}`, ['i32.const', restSlots]],

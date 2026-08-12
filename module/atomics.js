@@ -12,7 +12,7 @@
  *
  * @module atomics
  */
-import { typed, asI64, asI32, toNumF64 } from '../src/ir.js'
+import { typed, asI64, asI32, toNumF64, freshId } from '../src/ir.js'
 import { valTypeOf } from '../src/kind.js'
 import { emit, deps } from '../src/bridge.js'
 import { inc, err, PTR } from '../src/ctx.js'
@@ -89,7 +89,7 @@ export default (ctx) => {
   // store returns the stored value (spec: the coerced input)
   ctx.core.emit['Atomics.store'] = (arr, i, v) => {
     const w = recvWidth(arr)
-    const t = `atst${ctx.func.uniq++}`
+    const t = `atst${freshId(ctx)}`
     ctx.func.locals.set(t, w)
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, val(v, w)],
@@ -133,7 +133,7 @@ export default (ctx) => {
 
   // isLockFree(n) — wasm i32 atomics are lock-free at 1/2/4 (and 8 via i64).
   ctx.core.emit['Atomics.isLockFree'] = (n) => {
-    const t = `atlf${ctx.func.uniq++}`
+    const t = `atlf${freshId(ctx)}`
     ctx.func.locals.set(t, 'i32')
     const v = () => ['local.get', `$${t}`]
     return typed(['block', ['result', 'i32'],

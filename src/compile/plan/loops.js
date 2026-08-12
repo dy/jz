@@ -19,6 +19,7 @@
 
 import { ctx } from '../../ctx.js'
 import { stmtList, T, some, isReassigned, hasControlTransfer } from '../../ast.js'
+import { freshId } from '../../ir.js'
 import { constIntExpr } from '../../static.js'
 import { containsDeclOf, cloneWithSubst, isUnitIncrement } from '../../type.js'
 import { includeModule } from '../../autoload.js'
@@ -156,7 +157,7 @@ const bindNestedRowLengthsSeq = (body) => {
   const lensSyms = new Map()
   for (const alias of rowAliases.values()) {
     if (lensSyms.has(alias.prog)) continue
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     lensSyms.set(alias.prog, { name: `${T}rowlen${id}`, lens: alias.lens })
   }
 
@@ -439,14 +440,14 @@ const trySplitFor = (node, parent, idx) => {
   const declNames = new Set()
   collectBindings(body, declNames)
   const rename = new Map()
-  for (const d of declNames) rename.set(d, `${T}rs${ctx.func.uniq++}_${d}`)
-  const i2 = `${T}rsi${ctx.func.uniq++}`
+  for (const d of declNames) rename.set(d, `${T}rs${freshId(ctx)}_${d}`)
+  const i2 = `${T}rsi${freshId(ctx)}`
   const subst = new Map([[i, i2]])
   const tailBody = cloneWithSubst(body, subst, rename)
   const tailStep = cloneWithSubst(step, subst, new Map())
 
   includeModule('math')  // plan-time injection of math.min/math.ceil — prepare's auto-import has already run
-  const M = `${T}ccm${ctx.func.uniq++}`
+  const M = `${T}ccm${freshId(ctx)}`
   node[1] = ['let', ['=', M, ['()', 'math.min', [',', B, ['.', recv, 'length']]]], iDecl]
   node[2] = ['<', i, M]
   const tailFor = ['for', ['let', ['=', i2, ['()', 'math.ceil', M]]], ['<', i2, B], tailStep, tailBody]

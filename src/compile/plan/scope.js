@@ -28,7 +28,7 @@ import { typedElemCtor, ternaryCtorOfRhs, MIXED_CTORS, intLevelMap } from '../..
 import { inferSchemaId } from '../infer.js'
 import { valTypeOf } from '../../kind.js'
 import { typedElemAux } from '../../../layout.js'
-import { MAX_CLOSURE_ARITY, UNDEF_NAN } from '../../ir.js'
+import { MAX_CLOSURE_ARITY, UNDEF_NAN, freshId } from '../../ir.js'
 import { analyzeFuncNamespaces, analyzeBody } from '../analyze.js'
 import { collectBareEscapes } from '../analyze-scans.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
@@ -1028,7 +1028,7 @@ export const devirtGlobalCalls = (ast) => {
     collectFreeIdents(node[2], bound, free)
     for (const name of free) if (!ctx.scope.globals.has(name) && !fnNames.has(name)) return null
 
-    const name = `${T}devirt${ctx.func.uniq++}`
+    const name = `${T}devirt${freshId(ctx)}`
     const funcInfo = { name, body: node[2], exported: false, sig: { params: params.map(n => ({ name: n, type: 'f64' })), results: ['f64'] } }
     ctx.func.list.push(funcInfo)
     ctx.func.map.set(name, funcInfo)

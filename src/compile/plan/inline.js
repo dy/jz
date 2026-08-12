@@ -26,6 +26,7 @@ import {
   callArgs, setCallArgs, some, blockStmts, T, refsName, refsAny, REFS_IN_EXPR, MUTATE_OPS,
   extractParams,
 } from '../../ast.js'
+import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { constIntExpr } from '../../static.js'
 import { analyzeBody } from '../analyze.js'
@@ -89,7 +90,7 @@ const inlinedBody = (func, args) => {
   for (let i = 0; i < params.length; i++) {
     const arg = args[i]
     if (isSimpleArg(arg)) { subst.set(params[i].name, arg); continue }
-    const tmp = `${T}inarg${ctx.func.uniq++}`
+    const tmp = `${T}inarg${freshId(ctx)}`
     argPrefix.push(['const', ['=', tmp, arg]])
     subst.set(params[i].name, tmp)
   }
@@ -99,7 +100,7 @@ const inlinedBody = (func, args) => {
   for (const p of params) locals.delete(p.name)
 
   const rename = new Map()
-  for (const name of locals) rename.set(name, `${T}inl${ctx.func.uniq++}_${name}`)
+  for (const name of locals) rename.set(name, `${T}inl${freshId(ctx)}_${name}`)
 
   const stmts = blockStmts(func.body)
   const mark = bodyHasCall(func.body) ? n => n : eagerCallFreeBooleans
@@ -367,7 +368,7 @@ const hoistNestedCalls = (body, blockNames) => {
     if (!Array.isArray(n) || n[0] === '=>') return n
     if (!cond && !eff.seen && n[0] === '()' && typeof n[1] === 'string' && blockNames.has(n[1])) {
       const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false, { seen: false }))]
-      const tmp = `${T}inl${ctx.func.uniq++}_h`
+      const tmp = `${T}inl${freshId(ctx)}_h`
       pre.push(['const', ['=', tmp, call]])
       changed = true
       return [null, tmp]

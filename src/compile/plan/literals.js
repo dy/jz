@@ -27,6 +27,7 @@ import { ctx } from '../../ctx.js'
 import {
   some, T, stmtList, refsName, REFS_IN_EXPR, ASSIGN_OPS, MUTATE_OPS, isReassigned, hasControlTransfer,
 } from '../../ast.js'
+import { freshId } from '../../ir.js'
 import {
   intLiteralValue, nonNegIntLiteral, constIntExpr, staticObjectProps, staticPropertyKey,
 } from '../../static.js'
@@ -336,7 +337,7 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
 
   const arrays = new Map()
   for (const [name, c] of [...candidates, ...mirrored]) {
-    const slots = Array.from({ length: c.len }, (_, k) => `${name}${T}ta${ctx.func.uniq++}_${k}`)
+    const slots = Array.from({ length: c.len }, (_, k) => `${name}${T}ta${freshId(ctx)}_${k}`)
     arrays.set(name, { len: c.len, slots, mirrored: c.mirrored, coerce: c.coerce })
   }
 
@@ -442,7 +443,7 @@ const unrollTypedArrayLoops = (node, names) => {
         // sees one SSA-like definition per copy instead of a multi-def scratch
         // local shared by all copies (the same shape LLVM gets after unroll).
         const rename = new Map()
-        for (const b of bindings) rename.set(b, `${T}ul${ctx.func.uniq++}_${b}`)
+        for (const b of bindings) rename.set(b, `${T}ul${freshId(ctx)}_${b}`)
         const cloned = cloneWithSubst(node[4], new Map([[trip.name, [null, i]]]), rename)
         const r = unrollTypedArrayLoops(cloned, names)
         out.push(...stmtList(r.node))
@@ -499,7 +500,7 @@ const scalarizeTypedArrayParams = (func, paramCands) => {
     arrays.set(name, {
       len: c.len,
       coerce: c.coerce,
-      slots: Array.from({ length: c.len }, (_, k) => `${name}${T}tap${ctx.func.uniq++}_${k}`),
+      slots: Array.from({ length: c.len }, (_, k) => `${name}${T}tap${freshId(ctx)}_${k}`),
     })
   }
   const prologue = []
@@ -650,7 +651,7 @@ const scalarizeArrayLiteralSeq = (seq) => {
 
   const arrays = new Map()
   for (const [name, c] of candidates) {
-    const temps = c.elems.map((_, k) => `${name}${T}arr${ctx.func.uniq++}_${k}`)
+    const temps = c.elems.map((_, k) => `${name}${T}arr${freshId(ctx)}_${k}`)
     arrays.set(name, temps)
   }
 
@@ -705,7 +706,7 @@ const scalarizeObjectLiteralSeq = (seq, escapes) => {
   for (const [name, c] of candidates) {
     const fields = new Map()
     for (let i = 0; i < c.props.names.length; i++) {
-      fields.set(c.props.names[i], `${name}${T}obj${ctx.func.uniq++}_${i}`)
+      fields.set(c.props.names[i], `${name}${T}obj${freshId(ctx)}_${i}`)
     }
     objects.set(name, fields)
   }

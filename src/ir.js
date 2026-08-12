@@ -1041,7 +1041,22 @@ export const emitNum = v => isI32(v)
   // `nan` token assembles to the canonical 0x7FF8 number-NaN unambiguously.
   : typed(['f64.const', v !== v ? 'nan' : v], 'f64')
 
-// === Temp locals ===
+// === Fresh ids / temp locals ===
+
+/** Mint a fresh integer id — the ONE increment point for `ctx.func.uniq`
+ *  (ctx.func BodyContext bucket, ctxfunc-survey.md §2/§5, coordinator ruling
+ *  #2 "uniq extraction"). Every synthetic name/id the compiler mints — locals
+ *  (freshLocal below), block/loop labels, closure/versioning ids — funnels
+ *  through this instead of touching `ctx.func.uniq` directly, so the
+ *  counter's own representation can change in exactly one place. The
+ *  sequence itself is unchanged: still `ctx.func.uniq++`, still reset to 0 by
+ *  enterFunc, still copied verbatim by the save/restore sites (compile/
+ *  index.js, wat/assemble.js buildStartFn) — a pure mechanical rename of the
+ *  idiom, not a new allocation policy. Takes `ctx` explicitly (not the
+ *  module-scope import) so every call site works unchanged whether its own
+ *  `ctx` binding is an import or a factory parameter (module/*.js, src/abi/
+ *  string.js's cycle-safety constraint). */
+export function freshId(ctx) { return ctx.func.uniq++ }
 
 /** Allocate a fresh local name with the given tag, registered as `type`. The
  *  selfhost compiler doesn't yet handle exported-const arrow factories returning
@@ -1049,7 +1064,7 @@ export const emitNum = v => isI32(v)
  *  delegate to this shared core. */
 function freshLocal(type, tag) {
   let name
-  do { name = `${T}${tag}${ctx.func.uniq++}` } while (ctx.func.locals.has(name))
+  do { name = `${T}${tag}${freshId(ctx)}` } while (ctx.func.locals.has(name))
   ctx.func.locals.set(name, type)
   return name
 }
@@ -1212,7 +1227,7 @@ function toPrimitiveChain(node, v, order) {
   if (!present.length) return null
   ctx.runtime.throws = true
   inc('__is_object')
-  const blk = `$tp${ctx.func.uniq++}`
+  const blk = `$tp${freshId(ctx)}`
   const prim = tempI64('prim')
   const optr = tempI32('op')
   // Resolve the object's data pointer once — `v` may carry side effects and is
@@ -2230,7 +2245,7 @@ export function elemStore(ptr, i, val) {
 export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse) {
   const arr = ptrLocal ? null : temp('aa'), ptr = ptrLocal ?? tempI32('ap'), i = tempI32('ai'), item = temp('av')
   const len = lenLocal ?? tempI32('al')
-  const id = ctx.func.uniq++
+  const id = freshId(ctx)
   const setup = []
   if (!ptrLocal) {
     inc('__ptr_offset')

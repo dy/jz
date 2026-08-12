@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { typed, asF64, asI64, asI32, asI32Sat, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, asI32Sat, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
@@ -480,7 +480,7 @@ export default (ctx) => {
       const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
       const ch = typed(['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]], 'f64')
       const item = cb ? cb.call([ch, idxArg(cb, i)]) : ch
-      const id = ctx.func.uniq++
+      const id = freshId(ctx)
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(src))],
         ['local.set', `$${len}`, ['call', '$__str_len', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
@@ -528,7 +528,7 @@ export default (ctx) => {
       const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
       const undef = typed(['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]], 'f64')
       const item = cb ? cb.call([undef, idxArg(cb, i)]) : undef
-      const id = ctx.func.uniq++
+      const id = freshId(ctx)
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${len}`, asI32(emit(lengthExpr))],
         out.init,
@@ -555,7 +555,7 @@ export default (ctx) => {
     const cb = makeCallback(mapFn, [null, { val: VAL.NUMBER }])
     const s = temp('afs'), len = tempI32('afl'), i = tempI32('afi'), item = temp('afv')
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'aff' })
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(src))],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
@@ -1578,7 +1578,7 @@ export default (ctx) => {
     const vs = asI32Sat(emit(start))
     const s = tempI32('sps'), cnt = tempI32('spc'), len = tempI32('spl'), off = tempI32('spo'), j = tempI32('spj')
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${cnt}`], tag: 'sp' })
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     // Known ARRAY → fuse len with offset (__len would re-compute __ptr_offset + dispatch).
     const svt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     const lenInit = svt === VAL.ARRAY
@@ -1729,7 +1729,7 @@ export default (ctx) => {
   const earlyExitMethod = ({ tag, init, test, onMatch, reverse }) => (arr, fn) => {
     const recv = hoistArrayValue(arr)
     const r = temp(tag)
-    const exit = `$exit${ctx.func.uniq++}`
+    const exit = `$exit${freshId(ctx)}`
     const cb = makeCallback(fn, callbackArgReps(arr))
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', test(cb, i, item),
@@ -2102,7 +2102,7 @@ export default (ctx) => {
     const i = tempI32('ri')
     const j = tempI32('rj')
     const tmp = temp('rt')
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     const exit = `$revexit${id}`, loop = `$revloop${id}`
 
     inc('__ptr_offset')
@@ -2154,7 +2154,7 @@ export default (ctx) => {
     const j = tempI32('sj')
     const cur = temp('sc')
     const neighbor = temp('sn')
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     const outerExit = `$sortexit${id}`, innerExit = `$sortinnerexit${id}`
     const outerLoop = `$sortouter${id}`, innerLoop = `$sortinner${id}`
 
@@ -2309,7 +2309,7 @@ export default (ctx) => {
     const vv = storedValue(val)
     const eq = arrEqIR(val)
     const result = tempI32('ix')
-    const exit = `$exit${ctx.func.uniq++}`
+    const exit = `$exit${freshId(ctx)}`
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', eq(item, vv),
         ['then', ['local.set', `$${result}`, ['local.get', `$${i}`]], ['br', exit]]]
@@ -2326,7 +2326,7 @@ export default (ctx) => {
     const vv = storedValue(val)
     const eq = arrEqIR(val)
     const result = tempI32('ic')
-    const exit = `$exit${ctx.func.uniq++}`
+    const exit = `$exit${freshId(ctx)}`
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', eq(item, vv),
         ['then', ['local.set', `$${result}`, ['i32.const', 1]], ['br', exit]]]
@@ -2473,7 +2473,7 @@ export default (ctx) => {
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]],
       ['local.set', `$${srcOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]]
     )
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     body.push(
       ['block', `$done${id}`, ['loop', `$loop${id}`,
         ['br_if', `$done${id}`, ['i32.ge_s', ['local.get', `$${pos}`], ['local.get', `$${len}`]]],
@@ -2491,7 +2491,7 @@ export default (ctx) => {
     const otherOff = tempI32('co2')
     for (let i = 0; i < otherVals.length; i++) {
       const vo = otherVals[i]
-      const id2 = ctx.func.uniq++
+      const id2 = freshId(ctx)
       body.push(
         ['local.set', `$${pos}`, ['i32.const', 0]],
         ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', vo]]],

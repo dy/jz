@@ -8,7 +8,7 @@ import { OPTF } from '../src/ctx.js'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal, freshId } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -457,7 +457,7 @@ export default (ctx) => {
         const out = allocPtr({ type: PTR.TYPED, aux,
           len: ['i32.mul', ['local.get', `$${cl}`], ['i32.const', stride]], stride: 1, tag: 'tc' })
         const srcElem = ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${srcTemp}`]], ['local.get', `$${ci}`]]
-        const cid = ctx.func.uniq++
+        const cid = freshId(ctx)
         const dstOff = ['i32.add', ['local.get', `$${out.local}`], ['i32.mul', ['local.get', `$${ci}`], ['i32.const', stride]]]
         const special = name === 'Float16Array' || name === 'Uint8ClampedArray'
         const tcv = !special && elemType <= 5 ? temp('tcv') : null
@@ -1191,7 +1191,7 @@ export default (ctx) => {
       const out = allocPtr({ type: PTR.TYPED, aux,
         len: ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]], stride: 1, tag: 'tf' })
       const t = out.local
-      const id = ctx.func.uniq++
+      const id = freshId(ctx)
       const srcF64 = ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
       const dstAddr = ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]]
       const tfv = !fl.isF16 && !fl.isClamped && elemType <= 5 ? temp('tfv') : null
@@ -1539,7 +1539,7 @@ export default (ctx) => {
     const arrL = temp('tsa'), cbL = temp('tsf')
     const len = tempI32('tsn'), i = tempI32('tsi'), j = tempI32('tsj')
     const cur = temp('tsc'), nb = temp('tsb')
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     const oE = `$tsoe${id}`, oL = `$tsol${id}`, iE = `$tsie${id}`, iL = `$tsil${id}`
     const ptr = () => ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]
     const jp1 = ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]
@@ -2145,7 +2145,7 @@ export default (ctx) => {
     } else {
       store = ['drop', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${dst}`]], idx, val]]
     }
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${dst}`, r ? typedDataAddr(emit(arr), r.isView) : asF64(emit(arr))],
       ['local.set', `$${srcTmp}`, srcVal],
@@ -2185,7 +2185,7 @@ export default (ctx) => {
       const pattern = analyzeSimd(body, param)
 
       if (pattern) {
-        const id = ctx.func.uniq++
+        const id = freshId(ctx)
         const funcName = `__simd_map_${id}`
         const wat = genSimdMap(funcName, elemType, pattern)
         if (wat) {
@@ -2214,7 +2214,7 @@ export default (ctx) => {
         return elemStoreIR(r, off, val)
       }
 
-      const id = ctx.func.uniq++
+      const id = freshId(ctx)
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${ptr}`, typedDataAddr(va, isView)],
         ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', asF64(va)]]],
@@ -2247,7 +2247,7 @@ export default (ctx) => {
   // resolution). `i`/`len`/`ptr` are i32 local-name strings.
   const typedLoop = (arr, bodyFn) => {
     const r = resolveElem(arr)
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     const exit = `$brk${id}`
     const len = tempI32('tll'), i = tempI32('tli')
     // Static fast path: concrete element kind (and non-BigInt-ness) proven at
@@ -2558,7 +2558,7 @@ export default (ctx) => {
     const dst = allocPtr({ type: PTR.TYPED, aux: typedAux(r.name || ET_NAME[et]),
       len: ['i32.shl', ['local.get', `$${maxLen}`], ['i32.const', SHIFT[et]]],
       stride: 1, tag: 'tfd' })
-    const id = ctx.func.uniq++
+    const id = freshId(ctx)
     const passes = truthyIR(ctx.closure.call(
       typed(['local.get', `$${cbLoc}`], 'f64'),
       [loadAt(srcPtr, srci), typed(['f64.convert_i32_s', ['local.get', `$${srci}`]], 'f64')]))
