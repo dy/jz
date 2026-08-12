@@ -82,6 +82,17 @@ export function restoreActiveFunction(ctx, previous) {
   ctx.func = previous
 }
 
+/** Mint an id from the current EmitFrame name authority. */
+export function freshEmitId(ctx) {
+  return ctx.func.uniq++
+}
+
+/** Register one local on the current EmitFrame. */
+export function declareLocal(ctx, name, type) {
+  ctx.func.locals.set(name, type)
+  return name
+}
+
 /** Debug/test predicate for the post-compile inactive record. */
 export function isInactiveFunction(frame) {
   return frame.current === null && frame.body === null && frame.atModuleScope === false &&

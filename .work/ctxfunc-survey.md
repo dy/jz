@@ -714,3 +714,18 @@ Certification:
 - build twice byte-identical; `dist/jz.wasm` SHA-256
   `305f473c5ee4b693c26d8e03373592986bbc31b452bb5943e9077fc365895ad2`
 - self-host correctness/warm reuse: 21/21, 206 assertions
+
+## AS-LANDED — Slice 4f: EmitFrame id/local authority (2026-08-12)
+
+`freshEmitId` and `declareLocal` now live with the ActiveFunction/EmitFrame
+record in `src/compile/active-function.js`. `src/ir.js`'s public `freshId` and
+temp factories delegate to them. The cycle-sensitive ABI string module also
+delegates directly to this authority instead of retaining the last duplicate
+`ctx.func.uniq++` implementation. Production grep now finds exactly one raw
+increment, inside `freshEmitId`.
+
+This is the first hiding seam, not a claim that all raw local declarations are
+migrated: the public compatibility name remains because scores of emitters use
+it, while counter representation and local registration now each have one
+owner. `npm test` reaches only the two standing optimizer-shape failures (3427
+pass, 6 skip); kernel parity 3/3 and self-host correctness 21/21 pass.

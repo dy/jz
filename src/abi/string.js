@@ -58,6 +58,7 @@ const ssoI64 = (sF64) => ['i64.reinterpret_f64', sF64]
 
 import { isReassigned, isLeaf } from '../ast.js'
 import { LAYOUT, oobNanIR, ssoBitI64Hex } from '../../layout.js'
+import { declareLocal, freshEmitId } from '../compile/active-function.js'
 
 /** Pre-shifted SSO discriminator — layout.js is cycle-free; the thunk exists for
  *  load-order laziness ONLY. Deliberately NOT memoized: a module-level memo of a
@@ -68,12 +69,8 @@ import { LAYOUT, oobNanIR, ssoBitI64Hex } from '../../layout.js'
  *  emit time; correctness over a micro-memo. */
 const ssoBitI64 = () => ssoBitI64Hex()
 
-/** Mint a fresh integer id. Replicated here (not imported from `src/ir.js`'s
- *  canonical `freshId`) to keep this module loadable during ctx.js bootstrap
- *  — see header note about the cycle. Same one-liner, same sequence
- *  (`ctx.func.uniq++`) — a cycle-safety duplicate, not a second mechanism
- *  (ctxfunc-survey.md §2/§5, coordinator ruling #2 "uniq extraction"). */
-const freshId = (ctx) => ctx.func.uniq++
+/** Cycle-safe local alias of the EmitFrame authority (does not import ir.js). */
+const freshId = (ctx) => freshEmitId(ctx)
 
 /** Allocate a fresh i64 local in the current function. Replicated here (not
  *  imported from `src/ir.js`) to keep this module loadable during ctx.js
@@ -81,8 +78,7 @@ const freshId = (ctx) => ctx.func.uniq++
 const allocLocalI64 = (ctx, tag) => {
   let name
   do { name = `_${tag}${freshId(ctx)}` } while (ctx.func.locals.has(name))
-  ctx.func.locals.set(name, 'i64')
-  return name
+  return declareLocal(ctx, name, 'i64')
 }
 const allocLocalI32 = (ctx, tag) => {
   let name

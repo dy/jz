@@ -23,6 +23,7 @@ import { ERR } from '../err-codes.js'
  */
 
 import { ctx, err, inc, PTR, LAYOUT, CARRIER_BOX } from './ctx.js'
+import { declareLocal, freshEmitId } from './compile/active-function.js'
 import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf } from './ast.js'
@@ -1043,20 +1044,8 @@ export const emitNum = v => isI32(v)
 
 // === Fresh ids / temp locals ===
 
-/** Mint a fresh integer id — the ONE increment point for `ctx.func.uniq`
- *  (ctx.func BodyContext bucket, ctxfunc-survey.md §2/§5, coordinator ruling
- *  #2 "uniq extraction"). Every synthetic name/id the compiler mints — locals
- *  (freshLocal below), block/loop labels, closure/versioning ids — funnels
- *  through this instead of touching `ctx.func.uniq` directly, so the
- *  counter's own representation can change in exactly one place. The
- *  sequence itself is unchanged: still `ctx.func.uniq++`, still reset to 0 by
- *  enterFunc, still copied verbatim by the save/restore sites (compile/
- *  index.js, wat/assemble.js buildStartFn) — a pure mechanical rename of the
- *  idiom, not a new allocation policy. Takes `ctx` explicitly (not the
- *  module-scope import) so every call site works unchanged whether its own
- *  `ctx` binding is an import or a factory parameter (module/*.js, src/abi/
- *  string.js's cycle-safety constraint). */
-export function freshId(ctx) { return ctx.func.uniq++ }
+/** Backward-compatible name for the EmitFrame id authority. */
+export function freshId(ctx) { return freshEmitId(ctx) }
 
 /** Allocate a fresh local name with the given tag, registered as `type`. The
  *  selfhost compiler doesn't yet handle exported-const arrow factories returning
@@ -1065,8 +1054,7 @@ export function freshId(ctx) { return ctx.func.uniq++ }
 function freshLocal(type, tag) {
   let name
   do { name = `${T}${tag}${freshId(ctx)}` } while (ctx.func.locals.has(name))
-  ctx.func.locals.set(name, type)
-  return name
+  return declareLocal(ctx, name, type)
 }
 export function temp    (tag = '') { return freshLocal('f64', tag) }
 export function tempI32 (tag = '') { return freshLocal('i32', tag) }
