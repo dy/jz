@@ -3847,3 +3847,218 @@ bounded) — looking for the SPECIFIC store whose own `$slot` computation
 the actual buggy call site — the same one-more-level-of-trace every prior
 session's own recommendation has been converging toward, now with the
 grow-path entirely eliminated as noise.
+
+## §Region arena — INSERT-PATH STORE-ADDRESS TRACE: every i64.store in the
+ENTIRE kernel eliminated, candidate (b) itself now MISS — wall redirected to
+`__region_exit`'s own bulk `memory.copy` (2026-08-11), disposable scratchpad
+worktree off `0d089b49` (region-final-2026-08-11) — verdict: the GROW-CROSSREF
+session's own candidate (b) ("an ordinary insert-path INSERT store... address-
+computation bug") is ITSELF now ruled out, exhaustively, not just narrowed.
+Watched every `i64.store` instruction that exists ANYWHERE in the compiled
+kernel — not a hand-picked family, a literal enumeration off the built
+binary's own text — for a write into `known`'s header range
+`[32,818,216, 32,818,272)`. One hit, and it is `known`'s own legitimate
+allocation, not a foreign write. Banked per the stop-on-fail tripwire.
+
+**Setup.** Fresh `git worktree add` off `0d089b49` (not reused from a prior
+session's now-removed scratchpad), `node_modules` symlinked, watr 5.7.14
+confirmed (`require('watr/package.json').version`). Built the region-live
+kernel via `build-region-wat.mjs` (`resolveSelfhostBuild()` defaults +
+`names:true, wat:true` — the same recipe every session in this chain uses):
+152 modules, `regionArenaLive:true`, 288,912,776 chars (275.5 MB), 187.0 s
+build — byte-length matches the GROW-CROSSREF/RUNTIME-TRACE sessions' own
+builds of the same commit (275.5 MB) exactly.
+
+**Instrument, one build, two mechanisms** (`trace-insert-watch.mjs`, scratch,
+reuses `trace-inject.mjs`'s own `findFunc`/`parseFunc`/`firstBodyIdx`/
+`printFunc` splicing mechanics):
+
+**(A) Family bounds-assert.** Every `i64.store` inside `$__map_set`,
+`$__set_add`, `$__hash_set`, `$__hash_set_local`, `$__ihash_set_local` (48
+sites: 11+7+10+10+10) gets its address hoisted into a local and asserted
+`>= $off` and `< $off + $cap*(entrySize+LANE)` — the task's own stated
+hypothesis test (a store landing below its own table's payload start = the
+header-relative/payload-relative base-mismatch bug). O3's own CSE erases
+`$off`/`$cap` in `$__map_set`/`$__hash_set` this build (reconfirming the
+GROW-CROSSREF session's own finding, live in a fresh build) — those two fall
+back to the same fixed-range watch (B) uses rather than skip the two
+functions outright.
+
+**(B) Global i64.store address watch — the definitive, family-independent
+mechanism the task's own step 3/4 asks for.** Rather than guessing which
+OTHER function might store a value near `known`'s header, enumerated every
+`i64.store` that exists anywhere in the 6,035-function compiled kernel by
+text: scan every `(func $NAME` declaration line and every line containing
+`i64.store`, binary-search each store line to its enclosing function. 179
+distinct functions contain at least one raw `i64.store` (out of 6,035 total
+functions) — confirming by direct measurement, not assumption, that raw
+memory stores in a self-hosted build concentrate in a tractable, enumerable
+set of stdlib-generator functions (collection/array/object/string/core.js
+templates) plus a modest set of jz-compiled "closure" functions, not spread
+across the whole call graph (jz user code never emits `i64.store` directly —
+only stdlib calls). Every one of the 179 gets its own store's address
+unconditionally traced when it lands in `[32,818,216, 32,818,272)` (known's
+`[off-16,off)` propsPtr+len+cap header plus one entry-stride slop either
+side). Two real bugs found and fixed while building this instrument (both
+are reusable cautions for the next session, not repro-specific):
+
+1. **Dropped `offset=N` immediates.** `i64.store` nodes in this kernel
+   sometimes carry a leading `offset=N` immediate (45 occurrences measured:
+   `(i64.store offset=8 ADDR VAL)`). A naive hoist-ADDR-into-a-local +
+   reissue-the-store silently drops that immediate, corrupting the
+   EFFECTIVE address by N bytes on every such site. First symptom: an
+   UNCONDITIONAL (source-independent — reproduced even on `() => 1`), not
+   repro-specific, "Unknown optimize level 'undefined'" thrown from
+   `$m116_index$resolveOptimize`/`$__jp` — i.e. the corruption doesn't even
+   need the region-arena bug to manifest, it breaks the FIRST JSON.parse of
+   the compile's own `optJSON` argument. Fixed by folding the offset into
+   the hoisted local's own value (`effectiveAddr = base + offsetImm`) and
+   reissuing the store with no offset immediate at all — the local already
+   holds the true address, which is also exactly what the bounds/watch
+   comparisons want.
+2. **Harness memory-helper mismatch.** `interop.js`'s `memory()` needs the
+   FULL `{instance, exports, module}` shape to sync its JS-side allocator
+   (used by `mem.String()` to build the ABI arguments) with the module's own
+   real `$__heap` global; passing bare `instance.exports.memory` makes it
+   fall back to a naive, unsynced JS bump allocator that can hand out
+   addresses colliding with the module's own static data. This masked the
+   real trap under an unrelated `WebAssembly.Exception` (a corrupted-string
+   decode failure) until fixed — same class of caution every prior session's
+   own "bypass `instantiate()`, use `memory()`/`f64ToI64` directly" note
+   already flagged, but for the ARGUMENT-BUILDING side, not just the
+   import-decoding side.
+
+**ABI, confirmed directly off the compiled WAT** (not assumed from the JS
+test helper): `$compileSelf$exp` — `(param $source i64)(param $strict
+i64)(param $optJSON i64)(param $modulesJSON i64)(param $host i64)(result
+i64)` — every parameter and the result ride raw i64 bits (jz's own
+V8-NaN-canonicalization-avoiding boundary carrier, `interop.js`'s
+`buildImports` own comment). `mem.String()` already returns bits as a
+BigInt — passed straight through, no f64 round-trip; `0n` is the ABI's own
+"absent" sentinel. Reassembled via `watr/parse` (2.0-2.9 s) + `watr/compile`
+(60-63 s), instantiated BY HAND (bypassing `interop.js`'s `instantiate()` —
+same raw-i64-channel caution as every prior session), minimal `env` (a
+throwing Proxy), a real `dbg.trace` collector, ran the kernel-oracle's own
+`computed member key` repro at O3 (`optJSON = mem.String(JSON.stringify({level:
+3}))`, matching the GROW-CROSSREF/RUNTIME-TRACE sessions' own repro exactly).
+
+**Result — reproduced deterministically, byte-identical across 2/2 runs.**
+`RuntimeError: memory access out of bounds`, `__jz_last_err_bits` = `0n`
+(decodes to `0` — a genuine UNMARKED foreign trap, matching every prior
+session's own signature, not an internal `throw`). 95,844 total `dbg.trace`
+events, byte-identical between both runs (same tag histogram, same final
+event).
+
+**(A) family — no addr-below-own-table violation anywhere; only known
+grow-loop noise above.** Tags for "addr < off" (the task's own stated
+hypothesis) never fired for ANY of the 5 functions — zero hits. The
+CSE-fallback fixed-range watch tags for `$__map_set`/`$__hash_set` (which
+lost `$off`/`$cap` to O3) never fired either. The only family hits are the
+upper-bound check (`addr >= off + cap*stride`) on `$__set_add` (21,071
+events) and `$__hash_set_local` (74,772 events) — confirmed, by direct
+inspection of the decoded `(addr, bound)` pairs, to be a blind spot of the
+instrument itself, not a real violation: these functions' own GROW loops
+rehash into a fresh `$newptr` table BEFORE `$off`/`$cap` get reassigned to
+`$newptr`/`$newcap`, so every rehash-loop store legitimately compares
+against the STALE pre-grow bound (`addr - bound` deltas measured at 16-424
+bytes, scattered arbitrarily across the run — the rehash loop's own natural
+fill pattern, not a fixed offset). Directly filtered all 95,843 of these
+events against the actual watched corrupted range
+`[32,818,216, 32,818,272)`: **zero** land there.
+
+**(B) global watch — exactly one hit, and it is `known`'s own birth, not a
+foreign write.** `$__alloc_hdr_n_0_8_28`, address `32,818,232` — this is
+`known`'s own `[off-16]` props-pointer slot (`off = 32,818,248`, matching
+every prior session's own byte-identical decode), the LAST of the 95,844
+events, immediately preceding the trap. The specialized function's own name
+encodes its call-time constants — `len=0, cap=8, stride=28` — and `cap=8`
+/ `stride=28` (`MAP_ENTRY(24)+LANE(4)`) are collection.js's own `INIT_CAP`
+and Map-entry-plus-lane stride EXACTLY: this is `$__alloc_hdr_n` zeroing the
+freshly-allocated header's own props-pointer field at the moment `known`
+itself (`forwardPropagate`'s `new Map()`, per the RUNTIME-TRACE session's own
+naming) is CREATED — not a write landing inside an already-live object's
+header from outside. No OTHER of the 179 watched functions' `i64.store`
+sites — spanning literally every raw memory-store instruction that exists in
+the compiled binary — ever touches this address range, at any point in the
+95,844-event run.
+
+**The verdict.** The task's own hypothesis (a header-relative/payload-
+relative base-convention mismatch at ANY compiled `i64.store` site — not
+just the named genUpsert/genUpsertGrow family, the WHOLE kernel) is now
+RULED OUT exhaustively, not narrowed: every `i64.store` instruction that
+exists in the built binary was watched against the exact corrupted range,
+and none writes there except the victim's own creation. This closes the
+ENTIRE `i64.store` candidate class the GROW-CROSSREF session's own
+recommendation opened ("candidate (b)... points future instrumentation at
+ordinary key/val STORE address computation") — that candidate is itself now
+a MISS. Combined with the RUNTIME-TRACE session's own byte-level finding (a
+full 8-byte STRING box materializes at `known`'s header, and `known`'s
+address sits squarely inside the territory the LAST `region_exit`
+compaction reclaimed-then-regrew) and its own architectural diagnosis
+(`known` is a `forwardPropagate`-local `Map`, structurally invisible to
+region-arena's 4-item root bundle), the only mechanism left standing by
+elimination is `__region_exit`'s own closing bulk `(memory.copy (local.get
+$mark) (local.get $T) (local.get $size))` (`module/core.js:831`) — a raw
+byte-range memmove with NO per-object dispatch at all, compacting the
+entire post-mark heap down by `delta` bytes. A bulk copy explains the exact
+byte signature (a STRING box's bytes landing intact at `known`'s header)
+without requiring ANY typed value-store to ever target that address
+directly — the address is collateral: `known`'s backing table lives in
+territory the region arena, unaware of it, is free to overwrite via a plain
+byte-range copy that never resolves individual object identities. This
+turns the RUNTIME-TRACE session's own "candidate mechanism" into "the only
+remaining mechanism, by elimination" — not yet directly traced, but no
+longer one candidate among several.
+
+**Fix-or-bank: BANKED — no fix.** Matches every prior session's own
+"architectural, not session-scoped" precedent for this exact hazard
+(`known` escaping the region root); this session's own contribution is
+negative-but-decisive (eliminates the entire `i64.store` instruction class,
+not just one family) plus a positive narrowing (the bulk `memory.copy` at
+`module/core.js:831` is now the sole remaining candidate mechanism, named by
+elimination) and two reusable instrumentation cautions (`offset=N` immediate
+preservation; `memory()`'s full-instance-shape requirement for ABI argument
+construction, not just import decoding).
+
+**By-name verdict: N/A** — no shared-tree source change; `module/
+collection.js`, `module/core.js` read-only this session (all
+instrumentation lived in the disposable scratchpad worktree's own copy of
+the compiled WAT).
+
+**Gates: NOT RUN** — no fix to gate; kernel-oracle/kernel-parity/fuzz/full
+battery/dormant byte-identity/build×2/memory-watermark-curve/jz×jz all
+remain contingent on a landed fix, unchanged from every prior session in
+this chain.
+
+**Memory curve / jz×jz: NOT REACHED.**
+
+**Per the stop-on-fail tripwire.** Worktree-only: `git status` in the shared
+tree before and after this session shows only this ledger edit. Every
+artifact this session produced — `build-region-wat.mjs`,
+`trace-insert-watch.mjs`, `trace-insert-watch-Aonly.mjs` (bisection scratch),
+`run-insert-watch.mjs`, the 275.5 MB named WAT, the 276.1 MB instrumented
+WAT, `kernel-region-instr.wat.events.json` (95,844 rows),
+`kernel-region-instr.wat.watchmap.json` — lived only in the scratchpad
+worktree (`/private/tmp/.../scratchpad/region-insert-trace-wt`), never
+committed. SHAs: worktree base `0d089b49` (region-final-2026-08-11,
+unchanged); watr `node_modules` symlinked, 5.7.14 confirmed. No jz branch
+created — pure instrumentation and trace, no diff to bank.
+
+**Recommendation for next session.** Don't re-open the `i64.store` axis on
+this repro — closed, exhaustively, kernel-wide (not just the collection
+family), by direct address watch on every store instruction the compiled
+binary contains. Instrument `__region_exit`'s own closing `memory.copy`
+call (`module/core.js:831`) directly: trace `$mark`/`$T`/`$size`/`$delta` on
+every `__region_exit` invocation, and check whether `[32,818,216,
+32,818,272)` falls inside `[mark, T)` for any of them — particularly the
+LAST region-round compaction, which the RUNTIME-TRACE session already
+bounded to the watermark window `[30,914,912, 32,825,888]`. This is the
+first DIRECT test of the bulk-copy mechanism (every prior session, including
+this one, has only ever inferred it from surrounding evidence). If
+confirmed, the fix is the one every session in this chain has already
+named: extend region-arena's root bundle (or its per-pass scratch-drain
+allowlist, `optimize.js:8466`'s existing partial drain) to cover watr's own
+pass-internal locals like `forwardPropagate`'s `known` — a genuine
+architectural change (touches every entry in watr's `PASSES` table or the
+`regionMark`/`regionExit` insertion scope), not a one-line patch, matching
+every prior session's own "session-plus scope" conclusion for this hazard.
