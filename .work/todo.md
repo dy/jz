@@ -11378,3 +11378,63 @@ skip, 0 fail · `node scripts/build-dist.mjs` ×2 byte-identical SHA-256 ·
 retirement..." (`src/ctx.js`, `src/type.js`, `src/compile/flow-types.js`,
 `src/compile/emit.js`, `module/typedarray.js`, `.work/ctxfunc-survey.md`,
 this entry).
+
+## Status (2026-08-12) — ctx.func campaign, slice 2 (uniq extraction)
+
+Follow-on to slice 1 above, same session, same campaign
+(`.work/ctxfunc-survey.md` COORDINATOR RULINGS #2).
+
+**Slice 2 — uniq extraction (`0c4fb9c9`).** The 128 `ctx.func.uniq++` sites
+(census: 129 write-sites total for `uniq`; the 129th, `ctx.func.uniq = uniq`
+at `compile/index.js:421`, is a save/restore assignment, correctly left
+untouched — not a mint site) now mint through one function, `freshId(ctx)`
+in `src/ir.js` (beside `freshLocal`/`temp`/`tempI32`/`tempI64` — the family
+it belongs to), which `freshLocal` itself now calls internally instead of
+touching `ctx.func.uniq` directly. `freshId` takes `ctx` explicitly (not
+`ir.js`'s own module-scope import) so it works unchanged whether a call
+site's own `ctx` binding is an import or a factory parameter
+(`module/*.js`'s `export default (ctx) => …` shape). `src/abi/string.js`
+replicates the one-liner locally rather than importing it — it already
+replicates `freshLocal` for the same documented reason: `src/ir.js` is
+loaded transitively FROM `src/ctx.js`, so an `abi/string.js → ir.js` import
+would close a real load cycle (`LAYOUT.NAN_PREFIX_BITS` read before
+`ctx.js`'s own `LAYOUT` const is bound). Mechanical, scripted: exact-
+substring `ctx.func.uniq++` → `freshId(ctx)` across 15 files, verified with
+a full-tree grep showing zero remaining occurrences outside `freshId`'s two
+definitions (the canonical one in `ir.js`, the cycle-safe replica in
+`abi/string.js`). Site counts by file: `prepare/index.js` 25,
+`compile/emit.js` 33, `compile/index.js` 5, `compile/emit-assign.js` 5,
+`compile/plan/literals.js` 5, `compile/plan/loops.js` 4,
+`compile/plan/inline.js` 3, `compile/plan/scope.js` 1, `ir.js` 3 (its own
+definition site + `freshLocal` + 2 direct uses), `abi/string.js` 3 (replica),
+`module/array.js` 11, `module/object.js` 12, `module/typedarray.js` 8,
+`module/atomics.js` 2, `module/collection.js` 8 — 128 total, matches the
+census exactly. The counter sequence itself is unchanged: same field
+(`ctx.func.uniq`), same `enterFunc` reset, same three save/restore/snapshot
+sites (`compile/index.js:421,1963`, `wat/assemble.js:243`) all left
+untouched — every synthetic name downstream is byte-identical by
+construction.
+
+**Gates (combined tree, slice 1 + slice 2):** 60-case×O0/O2/O3 byte-identity
+180/180 (vs `38b08f19` worktree baseline) · `node scripts/battery.mjs` GREEN
+modulo the same 1 pre-existing flake as slice 1 (confirmed unrelated) · fuzz
+30173 compared, 0 divergence · self 21/21 · kernel 2716 pass/6 skip ·
+`node test/kernel-parity.js` 3/3 groups, 33/33 assertions ·
+`JZ_TEST_TARGET=jz.wasm node test/index.js` 2716/2722 pass, 6 skip, 0 fail ·
+`node scripts/build-dist.mjs` ×2 byte-identical SHA-256
+(`dist/jz.wasm` 74605ad2…, `dist/jz.js` f865dabf…) ·
+`node test/session-reentrancy.js` 5/5 (12 assertions).
+
+AnalysisFacts (198W, ruling #3) and the FunctionIdentity/BodyContext frame
+split (ruling #1, `ctx.funcs`/`ctx.frame`) are explicitly NOT this session's
+scope — ruling #3 names AnalysisFacts's endgame as deletion-by-redirection
+into the existing `funcFacts` Map, one reader-family at a time, a separate
+future session.
+
+**Commits** (LOCAL ONLY, not pushed): `0c4fb9c9` "ctx.func uniq extraction:
+128-site ctx.func.uniq++ idiom -> one freshId(ctx) mint helper" (`src/ir.js`,
+`src/abi/string.js`, `src/prepare/index.js`, `src/compile/index.js`,
+`src/compile/emit-assign.js`, `src/compile/plan/{inline,literals,scope,
+loops}.js`, `src/compile/emit.js`, `module/{typedarray,array,object,
+atomics,collection}.js`, `.work/ctxfunc-survey.md`). This entry — ledger
+follow-up commit, `.work/todo.md` only.
