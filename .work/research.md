@@ -3636,3 +3636,214 @@ does that exact address EVER appear as an "old $off" being forward-marked
 by SOME OTHER table's grow? A hit NAMES the exact buggy call site outright;
 a miss rules out grow-forwarding entirely and narrows to "(b)" above — a
 genuinely new mechanism not yet enumerated anywhere in this chain.
+
+## §Region arena — GROW-EVENT × CORRUPTED-HEADER CROSS-REFERENCE: MISS,
+candidate (a) DEFINITIVELY RULED OUT (2026-08-11), disposable scratchpad
+worktree off `0d089b49` (region-final-2026-08-11) — verdict: across every
+grow event in the ENTIRE run, from ALL FOUR forward-marking genUpsert/
+genUpsertGrow consumers (`$__map_set`, `$__set_add`, `$__hash_set`,
+`$__hash_set_local`), not one write-address or freshly-allocated `$newptr`
+ever touches `known`'s own corrupted header address (`32,818,248` /
+`0x1f4c448`) or its header-write target (`32,818,240` / `0x1f4c440`) — ZERO
+hits, not a near-miss. The dormant forwarding-delta hazard the arithmetic
+audit flagged (collection.js:426-427/680-681, raw un-adjusted `$newptr`
+write) is CONFIRMED dormant for this repro too, empirically, not just
+proven-unreachable-in-one-arm as the audit's own math covered. Wall
+UNCHANGED, redirected to candidate (b): an unenumerated OOB-write mechanism,
+narrowed further by this session's own value-shape read (below). Banked per
+the stop-on-fail tripwire.
+
+**Setup.** Scratchpad worktree off `0d089b49`, node_modules symlinked, watr
+5.7.14 confirmed. Built the region-live kernel as a NAMED WAT-text dump
+(`build-region-wat.mjs`, `resolveSelfhostBuild()` + `names:true` — the
+RUNTIME-TRACE session's own recipe, chosen over the EVENT-SEQUENCE/ALLOCATOR
+sessions' unnamed dump specifically so every target function is locatable by
+literal name, not by post-hoc stack symbolication) — 275.5 MB text, 188s
+build, `regionArenaLive:true`, `optimize:{level:3, watrGuard:false,
+snapshotInit:true, inlinePtrOffsetFast:false}` (the standing gate, unchanged,
+byte-shape-consistent with every prior session's own build of the same
+commit).
+
+**Source read, before instrumenting.** Confirmed by direct read of
+`module/collection.js` which of the task's named "$__map_set/$__set_add
+family" consumers actually carry the dormant forward-mark write at all.
+`genUpsert` (SET/MAP: `$__map_set`, `$__set_add`) always forwards — no
+`forward` param, hardcoded. `genUpsertGrow` (HASH family) takes an explicit
+`forward` flag: `$__hash_set` (collection.js:3214,
+`genUpsertGrow(..., false, ctx.linkDemand.external, true)`) and
+`$__hash_set_local` (collection.js:2298, `genUpsertGrow(..., true, false,
+true)`) both pass `forward=true` — candidates. `$__ihash_set_local`
+(collection.js:2317, `genUpsertGrow('__ihash_set_local', ..., true)` — only
+6 args, `forward` defaults **false**) REMINTS on grow (fresh `$__mkptr`
+pointer, collection.js:686-688) — no old-header write exists in that path at
+all, so it was EXCLUDED from the instrument rather than force-fit into the
+"exactly one match" structural assert (would have thrown a false shape-drift
+error). This also corrects an imprecision in the prior ALLOCATION-COLLISION
+ARITHMETIC AUDIT session's own table: it cited "`$__ihash_set_local`
+reinsert" as reaching "the same raw-`$newptr` write (collection.js:680)" for
+the `$__dyn_props` migration arm — re-reading `core.js:802-828` (unchanged
+since that audit) shows the OLD header's forward-mark for that arm is
+written MANUALLY by `__region_exit` itself, one statement AFTER the
+`$__ihash_set_local` reinsert loop, and — unlike collection.js:680 — it IS
+delta-adjusted (`i32.sub $dpNewOff $delta`, core.js:826). The `$__dyn_props`
+arm was never actually exposed to the raw-write hazard the audit flagged;
+the citation pointed at the wrong write. Not consequential to this session's
+own verdict (that arm plays no role in the `known`-Map trace either way,
+per every prior session), but corrected here for the ledger's own record.
+
+**Instrumentation, one build, two instruments** (`trace-growcrossref.mjs`,
+scratch, reuses `trace-inject.mjs`'s own `findFunc`/`parseFunc`/
+`firstBodyIdx`/`printFunc` splicing mechanics plus a new generic
+`findSoleChild` AST search — not a hand-derived index path, since O3's own
+CSE renames `$off` into anonymous `$cseNN` locals inconsistently per call
+site, confirmed live: `$__map_set`'s own `$off` local vanishes entirely,
+riding a reused `$cse30`/`$cse31` pair instead, while `$__map_delete`
+happened to keep its literal source names this build). For each of the 4
+forward-marking functions, `findSoleChild` searches the WHOLE function body
+for the one-and-only `i32.store` node whose VALUE operand is `(local.get
+$newptr)` — asserted unique (throws otherwise), robust to whatever the
+address expression's own post-O3 shape is, since only the value operand is
+pattern-matched. Hoists that address into a fresh `$dbgWaddr` local, traces
+`(seq<<32|tag, waddr<<32|newptr)`, re-issues the original store unchanged.
+Tags: 101 `$__map_set`, 102 `$__set_add`, 103 `$__hash_set`, 104
+`$__hash_set_local`. For `$__map_delete`, reapplied the RUNTIME-TRACE
+session's own genDelete-hoist technique to THIS build's own compiled shape
+(structurally identical to that session's description — plain `$off`/`$cap`/
+`$h`/`$ls`/`$lb`/`$end` locals, not CSE'd here): hoisted the `$ls` address
+computation (which contains the `$h` hash computation as its own nested
+tee) out of the `(local.tee $hw (i32.load (local.tee $ls ...)))` expression
+into a standalone `local.set` BEFORE the load, so the trace fires
+unconditionally even on the call whose subsequent load then traps. Tags 200
+(`off`/`cap` packed), 201 (`h`/`ls` packed), 202 (`$__heap` watermark) fire
+on every call. A single new module-level `$__dbgSeq` (mut i32) global plus
+the `(import "dbg" "trace" (func $dbgtrace (param i64 i64)))` complete the
+instrument — same convention as every prior session in this chain.
+
+Reassembled via `watr/parse`+`watr/compile` directly (2.3 s parse, 61.1 s
+compile), instantiated BY HAND (bypassing `interop.js`'s `instantiate()` —
+same raw-i64-channel caution as every prior session), minimal `env` (a
+throwing Proxy — none of the kernel's real imports fire for this repro,
+confirmed), a real `dbg.trace` collector, `interop.js`'s own exported
+`memory()`/`f64ToI64` for ABI-correct `String()`/arg marshaling, calling
+`exports.default(source, strict=0, optJSON={level:3}, modules=0, host=0)` —
+the exact ABI `test/kernel-target.js`'s `compileViaKernel` uses. Ran the
+kernel-oracle's own `computed member key` repro.
+
+**Result — reproduced deterministically, byte-identical to the RUNTIME-TRACE
+session's own decode.** `RuntimeError: memory access out of bounds`, same
+message. 123,335 total events: grow events 3,719 (`$__map_set`) + 1,115
+(`$__set_add`) + 3 (`$__hash_set`) + 3,934 (`$__hash_set_local`) = **8,771
+total grow events**; `$__map_delete` traced **38,188 calls** (matching the
+RUNTIME-TRACE session's own count exactly). Exactly ONE anomalous
+`$__map_delete` call — the LAST one (seq 123,333, the call whose subsequent
+load then traps) — decoding to `off=32,818,248` (`0x1f4c448`),
+`cap=2,147,090,432` (`0x7ffa0000`), `h=2,355,087,866` (`0x8c5fc9fa`),
+`ls=852,225,072` (`0x32cbec30`), `heap=32,825,888` — **every single field
+byte-identical to the RUNTIME-TRACE session's own independently-captured
+decode**, confirming (not assuming) that nothing about the intervening
+sessions' own read-only audits/instrumentation perturbed allocation order,
+exactly as that session's own recommendation asked to verify.
+
+**The cross-reference.** Corrupted header lives at `[off-8, off)` =
+`[32,818,240, 32,818,248)` per `genDelete`'s own `[len,cap]` read
+convention (matching the RUNTIME-TRACE session's own byte-level framing —
+"a full 8-byte... STRING box was written starting at `off-8`"). Searched
+all 8,771 grow events' own `waddr` (`old_off - 8`, the forward-mark's write
+target) AND `newptr` (the freshly `__alloc_hdr_n`'d replacement table) for
+either `32,818,248` or `32,818,240`, in both directions (as a write address
+and as an allocated address):
+
+```
+target: off=32818248 (0x1f4c448), corrupted write-addr (off-8)=32818240 (0x1f4c440)
+  exact waddr matches: 0
+  waddr == off (not off-8) matches: 0
+any grow event touching 32818248 or 32818240 (as waddr OR newptr): 0
+```
+
+**MISS — unambiguous, zero hits across all 8,771 grow events, all 4
+forward-marking consumers, both directions of comparison.** No genUpsert/
+genUpsertGrow grow event, anywhere in this run, ever writes to or allocates
+`known`'s own header address. Candidate (a) — "some OTHER table's grow-time
+forward-mark write fires with a wrong/stale `$off` and clobbers `known`'s
+header" — is RULED OUT for this repro, not merely "not yet found." This is
+consistent with, not contradictory to, the ALLOCATION-COLLISION ARITHMETIC
+AUDIT session's own proof (that session covered only the two region-staging
+same-cap rebuild arms and explicitly left the general-purpose runtime-call
+reachability open as "moot until region-arena re-enabled" — this session
+answers that open question empirically, for the actual crashing repro, and
+the answer is negative) — there is no reachability-proof gap to name,
+because the audit never claimed the general runtime path was unreachable,
+only that the two staging arms it covered couldn't trigger a grow in the
+first place. No task-brief "HIT" branch applies.
+
+**Narrowing candidate (b), from the byte shape.** A structural read of
+`genUpsert`'s own forward-mark write (collection.js:425-429, confirmed
+still verbatim at the base commit) shows it can NEVER have produced the
+observed corruption even in principle, independent of address: it performs
+TWO separate `i32.store`s — `(off-8) = $newptr` (a small, in-range heap
+address, typically < `2^25` this run) and `(off-4) = -1` (`0xFFFFFFFF`). Read
+back as one `i64`, the HIGH word (at `off-4`) would be `0xFFFFFFFF`, whose
+NaN-box tag nibble `(0xFFFFFFFF >> 15) & 15 == 15` — not `4` (`PTR.STRING`).
+The RUNTIME-TRACE session's own decode requires the high word at `off-4` to
+be `0x7ffa0000` (tag nibble `4`, a genuine STRING pointer's high half) —
+categorically not what a genUpsert-family forward-mark ever writes, by
+construction, for ANY table's `$off`, not just `known`'s. This is a second,
+independent line of evidence (value-shape, not just address) confirming the
+same MISS the address cross-reference already established, and it rules out
+the ENTIRE genUpsert/genUpsertGrow forward-mark write FAMILY as a candidate
+mechanism outright, not just this run's own instances of it. The actual
+write that clobbered `known`'s header must be a plain `i64.store` of a real
+NaN-boxed STRING VALUE — most likely an ordinary key or value store (e.g.
+`genUpsert`'s own `(i64.store (i32.add $slot 8) $key)` / `(... 16) $val)`
+shape, or any other collection/property write in the same family) executing
+with a `$slot`/target address that has escaped ITS OWN object's bounds into
+`known`'s neighboring header — i.e. candidate (b) narrows specifically
+toward an address-computation bug in an ordinary (non-grow) INSERT path, not
+a grow/forwarding path at all.
+
+**Fix-or-bank: BANKED — no fix, per MISS.** Nothing to patch: this session's
+own contribution is negative-but-decisive (rules out the entire
+forward-mark-write family, both by address and by value shape) plus a
+positive narrowing (points future instrumentation at ordinary key/val STORE
+address computation in the insert path, not the grow path) and a ledger
+correction (the `$__dyn_props` arm's actual write site).
+
+**By-name verdict: N/A** — no shared-tree source change; `module/
+collection.js`, `module/core.js` read-only this session (all
+instrumentation lived in the disposable scratchpad worktree's own copy of
+the compiled WAT).
+
+**Gates: NOT RUN** — no fix to gate; kernel-oracle/kernel-parity/fuzz/full
+battery/dormant byte-identity/build×2/memory-watermark-curve/jz×jz all
+remain contingent on a landed fix, unchanged from every prior session in
+this chain.
+
+**Memory curve / jz×jz: NOT REACHED.**
+
+**Per the stop-on-fail tripwire.** Worktree-only: `git status` in the shared
+tree before and after this session shows only this ledger edit (main HEAD
+moved `732eff4b` → `6b90a694` via unrelated concurrent work, confirmed
+before/after). Every artifact this session produced —
+`build-region-wat.mjs`, `inspect-funcs.mjs`, `probe-mapdelete.mjs`,
+`trace-growcrossref.mjs`, `run-growcrossref.mjs`, `analyze-growcrossref.mjs`,
+the 275.5 MB named/traced WAT pair, `events.json` (123,335 rows),
+`analysis.log` — lived only in the scratchpad worktree
+(`/private/tmp/.../scratchpad/region-grow-crossref`), never committed. SHAs:
+worktree base `0d089b49` (region-final-2026-08-11, unchanged); watr
+`node_modules` symlinked, 5.7.14 confirmed. No jz branch created — pure
+instrumentation and trace, no diff to bank.
+
+**Recommendation for next session.** Don't re-open the grow-forwarding axis
+— closed, by address AND by value shape, exhaustively for this repro's own
+8,771 grow events. Instrument the ORDINARY insert-path stores instead: every
+`i64.store` of a `$key`/`$val`-shaped operand in `genUpsert`'s non-grow probe
+loop (collection.js's `$done`/`$probe` block, the `(i64.store (i32.add $slot
+8) $key)` / `(...16) $val)` pair) across watr's own self-hosted pass
+execution, scoped to the address window `[30,914,912, 32,825,888]` (the
+post-4th-region_exit growth window the RUNTIME-TRACE session already
+bounded) — looking for the SPECIFIC store whose own `$slot` computation
+(from some OTHER table's `$off`/`$h`/probe-index arithmetic) lands on
+`32,818,240`. That store's own table identity, at the moment it fires, names
+the actual buggy call site — the same one-more-level-of-trace every prior
+session's own recommendation has been converging toward, now with the
+grow-path entirely eliminated as noise.
