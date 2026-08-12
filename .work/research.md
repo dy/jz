@@ -4978,6 +4978,25 @@ disposable-worktree convention — re-derive from this entry's own
 description if the site-tagging technique is needed again, or commit it
 preemptively next time since it's now proven twice in one chain).
 
+## §CompileSession — `ctx.func` decomposition prerequisite surveyed (2026-08-12)
+
+Read-only HEAD survey (`14c4f7a2`), full record in
+`.work/compile-session-func-survey.md`. jz-parser census replaces the old
+regex-era “410 writes” estimate: 43 real files touch `ctx.func`, 25 write it;
+65 live fields carry 654 reads / 443 direct writes. The bag is six records
+wearing one name, not one function context: ProgramFunctions (222R/29W),
+ActiveFunction (93R/22W), FunctionAnalysis/Plan (158R/59W), EmitFrame
+(89R/247W), FlowState (78R/70W), BodyMemo (12R/16W). `uniq` + `locals` alone
+are 215/443 writes; `uniq` conflates prepare/session and per-function naming.
+Two concrete drift finds: `p1Predicted` has no frame-entry reset; debug-only
+`ctx.func.name` reads a field never assigned (should be `current?.name`).
+Recommended prerequisite order: F0 ownership pins → F1 ProgramFunctions → F2
+BodyMemo → F3 ActiveFunction+EmitFrame/reference swaps → F4 authoritative
+frozen FunctionPlan (building on `analyzeFuncForEmit`'s existing return shape)
+→ F5 scoped FlowState APIs. Full CompileSession remains gated until those six
+lifetimes no longer share `ctx.func`; do not embed/rename the current bag.
+Survey changed docs only; no compiler or region source touched.
+
 ## §Region arena — MEMORY-CURVE-MEASURED: the full four-point curve,
 dormant vs region-live, with the fixed kernel (2026-08-12)
 

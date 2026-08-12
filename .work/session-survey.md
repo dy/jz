@@ -698,3 +698,21 @@ fudged.
 ## Slice (d): not attempted this session
 Full CompileSession, gated on `ctx.func` decomposition per the ruling —
 unstarted, out of scope (a separate future campaign, per the ruling).
+
+## FOLLOW-UP — `ctx.func` decomposition prerequisite surveyed (2026-08-12)
+
+Read-only field/lifetime inventory completed at `14c4f7a2`; full report:
+[`.work/compile-session-func-survey.md`](compile-session-func-survey.md).
+The old regex estimate (410 writes) is now an exact parser census: 43 real
+consumer files, 25 direct writer files, 65 live fields, 654 reads and 443
+direct writes. The load is highly structured rather than flat: `ctx.func`
+contains six distinct owners/lifetimes — ProgramFunctions, ActiveFunction,
+FunctionAnalysis/FunctionPlan, EmitFrame, FlowState, and BodyMemo. `uniq` +
+`locals` alone account for 215/443 writes; `uniq` additionally conflates
+prepare/session and per-function naming domains.
+
+**Ruling requested:** decompose in F0 ownership pins → F1 ProgramFunctions →
+F2 BodyMemo → F3 ActiveFunction+EmitFrame → F4 frozen FunctionPlan → F5 scoped
+FlowState order. Do not implement a full CompileSession record by embedding or
+renaming today's `ctx.func`; that preserves the ambiguity this gate exists to
+remove. No compiler source changed in this survey.
