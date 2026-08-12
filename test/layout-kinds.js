@@ -180,9 +180,9 @@ test('interop: STRING decodes to a real JS string', () => is(run('export let f =
 // missing arm each one exercises, so each now asserts the JS-CORRECT value —
 // the oracle-flip this slice's own worklist named. Retained under the same
 // names/probes (not deleted) as the regression pin for the arm that closed
-// each gap; layout-kinds.js's FINDINGS array now only lists the still-open
-// OBJECT/HASH/CLOSURE region-forwarding gap (region-program-scoped, not
-// carrier-scoped — untouched here).
+// each gap; layout-kinds.js's FINDINGS['region-forwarding'] entry is now
+// RESOLVED too (region-relocate[CLOSURE] tests below), region-program-scoped,
+// not carrier-scoped.
 // ============================================================================
 
 test('closed[typeof]: typeof(boxed BigInt) reports "bigint" ($__typeof PTR.BIGINT arm)', () => {
@@ -224,6 +224,111 @@ test('region-forwarding (BIGINT closed, informational): structuredClone passes a
     let c = structuredClone(p)
     return __ptr_offset(p) === __ptr_offset(c)
   }`).f(), true)
+})
+
+// ============================================================================
+// FINDINGS[region-forwarding] — CLOSURE region-copy arm (regionArmClosure,
+// layout-kinds.js), the region program's own front-boundary forcing case
+// (.work/research.md §Region arena). __region_mark/__region_exit are
+// ordinary ctx.core.emit-dispatched intrinsics (module/core.js) — reachable
+// from plain jz source natively, no self-host kernel needed to exercise the
+// arm itself (the self-hosted kernel gate ladder — kernel-oracle/kernel-
+// parity/fuzz/test:wasm — is what proves it under REAL region rounds; these
+// are the fast, direct regression pins for the mechanism).
+// ============================================================================
+
+test('region-relocate[CLOSURE]: zero-capture closure crosses a region boundary (no heap block — passthrough)', () => {
+  is(run(`export let f = () => {
+    let mark = __region_mark()
+    let g = () => 41
+    let out = __region_exit(mark, [g])
+    return out[0]() + 1
+  }`).f(), 42)
+})
+
+test('region-relocate[CLOSURE]: unboxed (value-mode) captures survive relocation', () => {
+  is(run(`export let f = (a) => {
+    let mark = __region_mark()
+    let g = (x) => x + a
+    let out = __region_exit(mark, [g])
+    return out[0](10)
+  }`).f(5), 15)
+})
+
+test('region-relocate[CLOSURE]: boxed (cell-mode) mutable capture survives relocation and keeps mutating', () => {
+  is(run(`export let f = () => {
+    let mark = __region_mark()
+    let n = 1
+    let inc = () => { n = n + 1; return n }
+    inc()
+    let out = __region_exit(mark, [inc])
+    return out[0]()
+  }`).f(), 3)
+})
+
+test('region-relocate[CLOSURE]: a cell shared by two closures relocates to the SAME address (aliasing preserved)', () => {
+  is(run(`export let f = () => {
+    let mark = __region_mark()
+    let n = 0
+    let inc = () => { n = n + 1; return n }
+    let get = () => n
+    inc(); inc()
+    let out = __region_exit(mark, [inc, get])
+    out[0]()
+    return out[1]()
+  }`).f(), 3)
+})
+
+test('region-relocate[CLOSURE]: a closure captured inside another closure\'s env recurses through the arm', () => {
+  is(run(`export let f = () => {
+    let mark = __region_mark()
+    let inner = () => 7
+    let outer = () => inner() + 1
+    let out = __region_exit(mark, [outer])
+    return out[0]()
+  }`).f(), 8)
+})
+
+test('region-relocate[CLOSURE]: >8 captures (beyond MAX_CLOSURE_ARITY call-arity, env is unbounded)', () => {
+  is(run(`export let f = () => {
+    let a=1,b=2,c=3,d=4,ee=5,ff=6,g=7,h=8,i=9,j=10
+    let mark = __region_mark()
+    let sum10 = () => a+b+c+ee+ff+g+h+i+j+d
+    let out = __region_exit(mark, [sum10])
+    return out[0]()
+  }`).f(), 55)
+})
+
+test('region-relocate[CLOSURE]: a closure created BEFORE mark (durable) is walked in place, not reallocated', () => {
+  is(run(`
+    let n = 0
+    let inc = () => { n = n + 1; return n }
+    export let f = () => {
+      inc()
+      let mark = __region_mark()
+      let out = __region_exit(mark, [inc])
+      return out[0]()
+    }
+  `).f(), 2)
+})
+
+test('region-relocate[CLOSURE]: diamond-shared closure identity (===) survives relocation (memoized, not double-copied)', () => {
+  is(run(`export let f = () => {
+    let mark = __region_mark()
+    let g = () => 9
+    let out = __region_exit(mark, [g, g])
+    return out[0] === out[1]
+  }`).f(), true)
+})
+
+test('region-relocate[CLOSURE]: self-referential recursive closure (reassigned through a boxed cell) survives relocation', () => {
+  is(run(`export let f = (n) => {
+    let mark = __region_mark()
+    let fact = (x) => 1
+    fact = (x) => x <= 1 ? 1 : x * fact(x - 1)
+    let out = __region_exit(mark, [fact])
+    return out[0](n)
+  }`).f(5), 120)
 })
 
 // ============================================================================

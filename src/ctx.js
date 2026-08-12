@@ -616,6 +616,11 @@ export function reset(proto, globals, bridge) {
     bodies: null,
     make: null,
     call: null,
+    envMeta: null,   // Array<{len, cellMask}>, parallel to `table` (index = funcIdx) — region
+                     // arena's CLOSURE relocation side table source (module/function.js's
+                     // ctx.closure.make; materialized by src/wat/assemble.js). Reset fresh
+                     // every compile like `table`/`bodies` — module/function.js's own
+                     // `if (!ctx.closure.envMeta) …` guard (re)creates the array on first use.
     // Map<closureBodyName, VAL.*> — round-6 prereq (a): the closure return-kind
     // pre-pass (module/function.js, ctx.closure.make) derives each closure's
     // unified return-tail VAL kind from its raw AST at CREATION time (always

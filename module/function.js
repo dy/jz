@@ -78,6 +78,20 @@ export default (ctx) => {
   if (!ctx.closure.types) ctx.closure.types = new Set()
   if (!ctx.closure.table) ctx.closure.table = []
   if (!ctx.closure.bodies) ctx.closure.bodies = []
+  // Region arena CLOSURE relocation (.work/research.md §Region arena, the
+  // FRONT-BOUNDARY-forcing "give CLOSURE a real region-copy arm" lever) —
+  // one {len, cellMask} record per funcIdx (ctx.closure.table index),
+  // captured HERE, at the one site that unconditionally knows the real env
+  // it allocates for THIS closure, regardless of whether a ClosureEnvPlan
+  // covered it (.work/closure-plan-design.md's 90.6%/57.9% mint coverage) or
+  // fell open to the legacy inline derivation below — both paths converge on
+  // the SAME `envCaptures`/`ctx.func.boxed` facts before reaching this push,
+  // so recording it here (not from the plan) is 100% coverage by
+  // construction, not a fail-open approximation. Read back by
+  // src/wat/assemble.js to materialize the `$__closure_env_len`/
+  // `$__closure_env_mask` side table __region_copy_rec's CLOSURE arm
+  // (layout-kinds.js regionArmClosure) looks up by funcIdx (aux).
+  if (!ctx.closure.envMeta) ctx.closure.envMeta = []
   // Republished for src/compile/closure-plan.js's mintClosureEnvPlans (Slice 1,
   // .work/closure-plan-design.md) — via ctx.closure rather than a direct
   // cross-import, so this module-factory file and the plan mint it feeds don't
@@ -238,6 +252,27 @@ export default (ctx) => {
       (ctx.closure.valResultMayBeUndefined ||= new Map()).set(fnName, true)
 
     const tableIdx = addToTable(fnName)
+
+    // Region arena side table (see ctx.closure.envMeta init above): every
+    // slot's mode is EXACTLY the `ctx.func.boxed?.has(envCaptures[i])` test
+    // the store loop below also uses — same source of truth, computed once
+    // here instead of re-derived twice. Bit i set ⇒ slot i holds a raw i32
+    // cell pointer (boxed/mutable capture); clear ⇒ a NaN-boxed f64 value.
+    // >31 captures (unobserved on any measured corpus — .work/closure-plan-
+    // design.md §1.5's histogram tops out at 27) can't fit the i32 mask;
+    // region_copy_rec's CLOSURE arm traps that one case by name rather than
+    // silently truncating which slots it treats as pointers.
+    let envCellMask = 0
+    for (let i = 0; i < envCaptures.length && i < 32; i++)
+      if (ctx.func.boxed?.has(envCaptures[i])) envCellMask |= (1 << i)
+    // .push(), not envMeta[tableIdx] = … — tableIdx is ALWAYS the current
+    // ctx.closure.envMeta.length (addToTable always pushes a fresh, unique
+    // fnName, per its own doc), so this is value-identical to the indexed
+    // form but matches ctx.closure.table.push(fnName)/ctx.closure.bodies.
+    // push(bodyFn)'s own growth path exactly, one line above/below — the
+    // self-hosted kernel's own array-write codegen for `arr[arr.length] = x`
+    // is a separate, less-exercised path than `.push()`.
+    ctx.closure.envMeta.push({ len: envCaptures.length, cellMask: envCellMask })
 
     // At call site: allocate env, store captured values, return NaN-boxed pointer.
     // Tag IR with .closureBodyName so emitDecl can register the binding for direct dispatch

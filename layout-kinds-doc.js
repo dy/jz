@@ -99,7 +99,7 @@ const PROSE = {
     auxNote: 'schema id (sid) — indexes ctx.schema\'s slot-name table',
     allocShape: '16B header (__alloc_hdr, off-16 = dyn-props sidecar word) + N*8B fixed schema slots (N = schema sid\'s prop count, compile-time fixed per shape)',
     childPointers: 'each of the N schema slots (a boxed value) + the off-16 dyn-props sidecar (same shape/hazard as ARRAY\'s)',
-    forwarding: 'never relocates via growth (fixed slot count once allocated, NOT in FORWARDING_MASK) — but __region_copy_rec has NO arm for it at all: falls to the trailing `(unreachable)` (explicitly documented "OBJECT/HASH/CLOSURE/TYPED/BUFFER/EXTERNAL: out of Slice-1 scope" — a live-but-unrouted region-program gap, Slice 2 territory per the design doc)',
+    forwarding: 'never relocates via growth (fixed slot count once allocated, NOT in FORWARDING_MASK) — __region_copy_rec\'s OBJECT arm (Slice 2) walks its schema slots (durable: in place, memo\'d; ephemeral: fresh __alloc_hdr copy), slot count from `$__schema_tbl[sid]`, plus the off-16 dyn-props sidecar (same shape as ARRAY\'s)',
     identityNote: 'pointer-bits (REF_EQ_KINDS)',
     interopDecode: 'mem.read t===6: mem.schemas[aux] → {} with each key read from its slot via mem.read (recursive)',
     typeofArm: '"object". Date/RegExp are schema\'d OBJECT instances too (VAL.REGEX/VAL.DATE in src/reps.js are compile-time STATIC refinements the analyzer tracks — NOT separate PTR tags; at the heap-kind level they are ordinary OBJECT rows)',
@@ -109,7 +109,7 @@ const PROSE = {
   HASH: {
     allocShape: '16B header (same __alloc_hdr_n shape as SET/MAP) + cap*24B (MAP_ENTRY) slots [hash i64 @0][key f64 @8][value f64 @16] + trailing cap*4B (LANE) probe-index array',
     childPointers: 'each occupied slot (hash word ≠ 0) contributes TWO boxed children: key @8, value @16',
-    forwarding: 'never relocates via plain growth in the OBJECT/ARRAY sidecar role (module/core.js\'s __region_relocate_props walks it in place if durable, rebuild-fresh + rehash if ephemeral — a DIFFERENT, narrower helper than __region_copy_rec, used only for the dyn-props-sidecar case). As a bare HASH value reached via __region_copy_rec\'s general dispatch: unrouted, falls to the unreachable trap (same gap as OBJECT)',
+    forwarding: 'never relocates via plain growth in the OBJECT/ARRAY sidecar role (module/core.js\'s __region_relocate_props walks it in place if durable, rebuild-fresh + rehash if ephemeral — a DIFFERENT, narrower helper than __region_copy_rec, used only for the dyn-props-sidecar case). A bare HASH value reached via __region_copy_rec\'s general dispatch (regionArmHash, layout-kinds.js) delegates to that SAME helper directly — physically identical shape, same content-hashed-STRING-key bucket-stability argument',
     identityNote: 'pointer-bits (never used as a first-class jz value for ==/===/Set-Map keying — HASH is always an internal dyn-props sidecar or dict backing store, never returned to user code as itself)',
     interopDecode: 'mem.read t===7: walks cap slots (hash≠0 test), builds {} keyed by mem.read(key) → mem.read(value)',
     typeofArm: '"object" (same default arm as ARRAY/OBJECT/SET/MAP/TYPED/BUFFER/EXTERNAL/BIGINT — HASH is never directly typeof\'d by ordinary jz source since it has no literal syntax; probed synthetically in the shadow-check via __mkptr(PTR.HASH,...), the test/pointers.js EXTERNAL precedent)',
@@ -160,7 +160,7 @@ const PROSE = {
     auxNote: 'function-table index (indirect_call target), NOT a heap-block discriminator',
     allocShape: 'offset → captured-upvalues block, N contiguous f64 slots (N = this closure SHAPE\'s capture count, fixed at compile time per call site/literal — module/function.js). A closure with zero captures uses offset 0 (no heap block at all, mkPtrIR(PTR.CLOSURE, tableIdx, 0))',
     childPointers: 'each of the N captured-upvalue slots (a boxed value)',
-    forwarding: 'never relocates (not in FORWARDING_MASK) — but __region_copy_rec has no arm for it either (falls to the same unreachable trap as OBJECT/HASH — "out of Slice-1 scope")',
+    forwarding: 'never relocates via growth (fixed slot count once allocated, NOT in FORWARDING_MASK) — __region_copy_rec\'s CLOSURE arm (regionArmClosure, layout-kinds.js — the region program\'s front-boundary forcing case) walks its env slots (durable: in place, memo\'d; ephemeral: fresh __alloc copy), slot count + per-slot boxed/raw mode from the `$__closure_env_len`/`$__closure_env_mask` side table (funcIdx-keyed, src/wat/assemble.js, sourced from ctx.closure.make\'s own env-allocation-site facts). A zero-capture closure (offset 0, no heap block) passes through immediately',
     identityNote:
       'pointer-bits (REF_EQ_KINDS) — but NOT uniformly "fresh allocation per creation" like real JS: a closure with ' +
       'ONE OR MORE captures gets a real heap block per creation (genuinely distinct pointers, matches real JS). A ' +
@@ -260,27 +260,38 @@ export const KIND_REGISTRY = Object.fromEntries(
 // $__eq_strict/$__same_value_zero/$__map_hash gained content-compare/hash
 // arms), 'interop-decode' (interop.js mem.read gained a t===5 arm) — are
 // closed; each KIND_REGISTRY.BIGINT column above documents the landed arm in
-// place of the old divergence writeup. 'region-forwarding' stays open below,
-// narrowed: BIGINT's own gap (both __region_copy_rec and __sclone_rec now
-// carry an explicit, individually-correct arm) is closed, but OBJECT/HASH/
-// CLOSURE remain unrouted in __region_copy_rec — untouched by carrier
-// boxing, the region program's own Slice 2 territory.
+// place of the old divergence writeup. 'region-forwarding' is now RESOLVED
+// (below): OBJECT/HASH/TYPED/BUFFER/EXTERNAL landed real __region_copy_rec
+// arms (Heap-kind registry Slice 2), and CLOSURE — the one kind that needed
+// a genuinely new mechanism (a funcIdx-keyed env-length/cell-mode side
+// table, since its capture count isn't recoverable from a bare box) —
+// landed too (.work/research.md §Region arena, the front-boundary's own
+// forcing case). Every real heap kind now has a real arm; kept here, not
+// deleted, per this table's own "RESOLVED stays on record" precedent
+// (identity-arm-divergence below).
 export const FINDINGS = [
   {
     id: 'region-forwarding',
     kinds: ['OBJECT', 'HASH', 'CLOSURE'],
+    status: 'RESOLVED (Heap-kind registry Slice 2 — OBJECT/HASH/TYPED/BUFFER/EXTERNAL landed real __region_copy_rec arms; CLOSURE landed via the $__closure_env_len/$__closure_env_mask side table, .work/research.md §Region arena)',
     summary:
-      'module/core.js\'s __region_copy_rec (the region-arena Cheney-copy tracer) has dispatch arms for ATOM/ ' +
-      'STRING/ARRAY/SET/MAP/BIGINT only; OBJECT, HASH, CLOSURE, TYPED, BUFFER, and EXTERNAL still fall to a ' +
+      'module/core.js\'s __region_copy_rec (the region-arena Cheney-copy tracer) originally had dispatch arms for ' +
+      'ATOM/STRING/ARRAY/SET/MAP/BIGINT only; OBJECT, HASH, CLOSURE, TYPED, BUFFER, and EXTERNAL fell to a ' +
       'trailing `(unreachable)` trap, EXPLICITLY documented in-source as "out of Slice-1 scope" (the region ' +
-      'program\'s own Slice 1, .work/research.md §Region arena — a DIFFERENT Slice 1 than this file\'s). Module/ ' +
-      'collection.js\'s __sclone_rec (structuredClone) has real OBJECT/HASH arms already (via __obj_clone) but ' +
-      'still has none for CLOSURE (throws DataCloneError instead, matching real JS) — the remaining live gap is ' +
-      'OBJECT/HASH/CLOSURE inside __region_copy_rec specifically, region-program-scoped, not carrier-scoped.',
+      'program\'s own Slice 1, .work/research.md §Region arena — a DIFFERENT Slice 1 than this file\'s). All six ' +
+      'now have real arms: OBJECT/HASH/TYPED/BUFFER/EXTERNAL via Slice 2\'s registry-generated arms (schema-slot ' +
+      'lookup, dyn-props delegation, view-rebase, memo\'d leaf copy, host-index passthrough); CLOSURE via a ' +
+      'dedicated funcIdx-keyed side table (env slot count + per-slot boxed/raw mode, captured at ' +
+      'ctx.closure.make\'s own allocation site, module/function.js) plus a new __region_relocate_cell helper for ' +
+      'the boxed/mutable-capture case (an env slot holding a raw pointer to a shared cell, not a NaN-boxed f64). ' +
+      'Module/collection.js\'s __sclone_rec (structuredClone) still has none for CLOSURE (throws DataCloneError ' +
+      'instead, matching real JS) — that gap is carrier/structuredClone-scoped, deliberately untouched by this ' +
+      'region-program-scoped fix (real JS structuredClone also rejects functions).',
     consumers: [
-      'module/core.js __region_copy_rec (traps: unreachable, for OBJECT/HASH/CLOSURE/TYPED/BUFFER/EXTERNAL)',
+      'module/core.js __region_copy_rec (real arms for every heap kind, incl. CLOSURE)',
+      'module/core.js __region_relocate_cell (new — CLOSURE\'s boxed-capture cell relocation)',
     ],
-    probe: 'code-read only: unreachable from outside the self-host kernel\'s region rounds (the region program\'s own re-enable path, not yet live).',
+    probe: 'test/layout-kinds.js registry checks + native region_mark/region_exit probes (no self-host needed — __region_mark/__region_exit are ordinary ctx.core.emit-dispatched calls reachable from plain jz source) + the self-hosted kernel gate ladder (kernel-oracle/kernel-parity/fuzz/test:wasm) once regionHooks are wired live.',
   },
   {
     id: 'identity-arm-divergence',

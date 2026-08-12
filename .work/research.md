@@ -5435,3 +5435,150 @@ watr `895ca5b` for real — a published point release or an npm-linked pin —
 and flipping `main`'s `scripts/self.js` `regionHooks` on) stays its own
 separate, PUBLISH-GATED step: this session measured the win, it did not
 land it.
+
+## §Region arena — CLOSURE REGION-COPY ARM LANDED (2026-08-12): the
+## front-boundary's own forcing case closed, a real self-host array-growth
+## bug found+fixed en route
+
+**Context**: 16f1f701's own front-boundary session named the concrete next
+lever precisely: "(1) give CLOSURE a real region-copy arm — needs a
+capture-count/env-length side table … now with a concrete forcing case
+(front-boundary module registration)". This session built exactly that —
+audit-#19's own architecture-review record shape (`{id, storage, captures:
+[{name, bindingId, mode, constant}]}`, `.work/closure-plan-design.md`'s
+LANDED ClosureEnvPlan) already carries every per-capture fact the arm
+needs; the side table just needed materializing at assembly time.
+
+### The side table
+
+`$__closure_env_len`/`$__closure_env_mask` — two flat i32 arrays, funcIdx-
+indexed (funcIdx = `ctx.closure.table` index = the CLOSURE box's `aux`
+field), built in `src/wat/assemble.js`'s `buildStartFn` from
+`ctx.closure.envMeta` (module/function.js). **Source, per the task's own
+100%-coverage mandate**: captured at `ctx.closure.make`'s OWN env-
+allocation site (module/function.js), not re-derived from the plan — both
+ClosureEnvPlan-covered closures (90.6% self.js / 57.9% bench mint coverage,
+architecture re-audit item 4) and the legacy-fallback remainder converge on
+the SAME `envCaptures`/`ctx.func.boxed` facts before that push, so this is
+100% coverage BY CONSTRUCTION, not a fail-open approximation riding the
+plan's own coverage gap. `cellMask` bit *i* set ⇒ slot *i* holds a raw i32
+pointer to a shared, independently-heap-allocated boxed-capture cell (the
+mutable-capture mechanism, `ctx.func.boxed`) rather than a NaN-boxed f64
+value — read off the SAME `ctx.func.boxed?.has(envCaptures[i])` test the
+env-population store loop already uses, computed once instead of derived
+twice. >31-capture closures (unobserved on every measured corpus — .work/
+closure-plan-design.md §1.5 tops out at 27) can't fit the i32 bitmask — a
+single NAMED trap for that one case, not a silent truncation.
+
+Built via a runtime alloc+store sequence in `$__start` (mirrors
+`schemaInit`'s own dynamic-fallback shape, NOT `appendStaticSlots`'s
+static-data-segment path — that helper's `staticPtrSlots` NaN-prefix
+pointer-marking is for BOXED values; reusing it for plain integers risked a
+false-positive match on a cellMask's bit pattern). Gated on
+`ctx.core.includes.has('__region_exit')` — checked directly, NOT
+`__region_copy_rec` (a find worth flagging: `needsSchemaTbl`'s own
+pre-existing OR-chain checks `'__region_copy_rec'` too, but that's read
+AFTER `pullStdlib`/`resolveIncludes()` expands transitive deps; THIS code
+runs earlier, in `buildStartFn`, where `ctx.core.includes` only has
+directly-`inc()`'d names — `__region_copy_rec` is exclusively a DEP of
+`__region_exit`, never `inc()`'d on its own, so reading it here would
+always read false. `__region_exit` is `inc()`'d synchronously the moment
+source calls it, which by `buildStartFn` has already happened). Every other
+build (default dist, native compiles, any program that never calls a
+region boundary) pays zero bytes — confirmed by direct byte-diff (below).
+
+### The arm
+
+`layout-kinds.js` `regionArmClosure` (was `regionArmClosureTrap`) —
+`KIND_REGISTRY.CLOSURE.relocate` `'trap'` → `'env-relocate'`. Shape mirrors
+OBJECT's durable/ephemeral split (env block = fixed-count-once-allocated
+run, no separate indirect backing pointer, same as OBJECT's schema slots):
+zero-capture (offset literal `0`, no heap block — `mkPtrIR(PTR.CLOSURE,
+tableIdx, 0)`) passes through before touching `$memo` (bits never change,
+trivially identity-safe, mirrors the preamble's ATOM arm); durable (`off <
+mark`) walks slots in place, memo'd at its own address; ephemeral allocates
+a fresh block and recurses per slot. Per-slot dispatch reads the cellMask
+bit: value slots recurse through `__region_copy_rec` directly (f64); cell
+slots go through a NEW helper, `__region_relocate_cell` (module/core.js) —
+a boxed-capture cell is a bare `__alloc(8)` block (ONE f64 payload slot, no
+NaN-boxed identity of its own), referenced by a RAW i32 pointer, so it
+can't route through `__region_copy_rec`'s own f64-tag dispatch. Memoized by
+a SYNTHETIC key (`f64.convert_i32_s(cellOff)` — always a plain finite
+float, never a NaN-boxed bit pattern, so it can never collide with a real
+heap pointer's own memo entry — the SAME trick `regionArmArray`'s dyn-props
+migration already uses to key `$__dyn_props` by a raw i32 offset). This
+dedup is load-bearing, not an optimization: a cell shared by two closures
+(aliasing two mutable captures of the same source variable — the entire
+point of the boxed-cell mechanism) MUST relocate to the SAME new address
+from both env slots, confirmed by a dedicated native regression pin
+(`region-relocate[CLOSURE]: a cell shared by two closures…`, below). The
+durable branch carries the SAME memo-before-mutate ordering the TYPED
+view-rebase audit fix required (this file, ORDERING AUDIT entry) — a
+diamond-shared durable cell revisited twice without it would re-derive from
+its own already-relocated (delta-adjusted, not-yet-physically-valid)
+payload, the identical corruption class that fix closed for
+`__region_relocate_props`/TYPED.
+
+### A real bug found and fixed en route (self-host array-growth hazard)
+
+**First full `test:wasm` run against the arm found 9 named failures**
+(`iterator helpers`/`generators`/`fetch: host wasi warns`/`shadow
+contract`/`param narrowing`, all `RuntimeError: memory access out of
+bounds`), all reproducing on the SAME minimal native (non-kernel) repro:
+`function* g(n){…} export let f=()=>{let m=g(8).map(x=>x*10); return 1}` —
+fails on the fixed `dist/jz.wasm`, compiles clean on the unmodified
+`0d089b49` baseline. **Breadcrumb-global bisection** (this session's own
+`$__dbg_cl`/`$__dbg_cl_aux`/`$__dbg_cl_off`/`$__dbg_cl_n`/`$__dbg_cl_i`/
+`$__dbg_cl_tbllen`, stamped at every step of `regionArmClosure`/
+`__region_relocate_cell`, temporary, NOT landed) proved the trap fires with
+`$__dbg_cl` still at its ZERO default — **the new relocation arm never
+executes in the failing run at all**. Root cause: `ctx.closure.envMeta`
+(module/function.js) was populated via **indexed assignment**
+(`ctx.closure.envMeta[tableIdx] = {…}`) instead of `.push()`, unlike its
+two siblings one line away (`ctx.closure.table.push(fnName)`,
+`ctx.closure.bodies.push(bodyFn)`) — even though `tableIdx` is PROVABLY
+always the array's current length at that point (`addToTable` always mints
+a fresh, unique `fnName`, so `indexOf` never hits, always pushes — making
+the indexed form value-identical to `.push()` in EVERY case). The
+self-hosted kernel's own array-WRITE codegen for `arr[arr.length] = x`
+apparently takes a materially different, less-exercised path than
+`.push()`'s — GENERIC finding, not specific to this table (flagged for a
+future audit item, not chased further this session; the fix is a one-line,
+zero-risk swap to the proven-safe sibling idiom). **Fix**: `.push()`.
+Confirmed: `generator+map` and `generator+map+filter` (previously
+`RuntimeError`) both compile clean on the rebuilt kernel; full re-run of
+the entire mandated ladder below, clean.
+
+### Gate ladder (all runs against this session's own rebuilt `dist/jz.wasm`,
+### region-live, `REGION_HOOKS_ACTIVE=true`, watr `895ca5b`/5.7.14)
+
+| check | result |
+|---|---|
+| 11 native probes (`__region_mark`/`__region_exit` called directly from plain jz source — no self-host needed; zero-cap, value-cap, cell-cap, shared-cell alias, nested closure, >8 captures, durable, diamond identity, recursion via boxed cell, per-iteration loop closures) | all pass, O0–O3 |
+| 9 new pinned regression tests, `test/layout-kinds.js` (`region-relocate[CLOSURE]: …`) | 60/60 (88 assertions) |
+| `node test/closures.js` | 110/110 (221 assertions) |
+| Native `node test/index.js` (no `JZ_TEST_TARGET`) | 3419/3427 — only the 2 pre-existing documented flakes (`interval walk…`, `typed RMW…`), 0 new |
+| `node test/kernel-oracle.js` ×3 | 13/13 (493 assertions) each rep |
+| `node test/kernel-parity.js` | 3/3 groups, 33/33 assertions |
+| 200-seed fuzz gate ×3 (`JZ_TEST_TARGET=jz.wasm`, the `fuzz: no new miscompiles in seeds 1..200 × opt {0,1,2,3}` test + its typed/IV-SR/byte-scan/param-bound siblings) | clean every rep |
+| **`JZ_TEST_TARGET=jz.wasm node test/index.js` (full test:wasm)** | **2725/2731 pass, 0 fail, 6 skip** — the 3 `RuntimeError` string matches in the log are an intentional expected-trap regression test (`host decode: a genuine unmarked trap still surfaces as RuntimeError`), not failures |
+| `node scripts/battery.mjs` | RED only on the ONE pre-existing, already-documented `typed RMW: one guard covers…` flake, on native/O0/O3/dbg/wasi identically (matches every prior session's own baseline signature) — fuzz 30173 compared/0 divergence, self 21/21, fixpoint PASS, build succeeded, kernel 2725 pass/6 skip |
+| Dormant byte-identity (closure-heavy native compile — recursion via array of closures, boxed captures, nested arrows — `__region_mark`/`__region_exit` never called) | SHA-256 identical before/after this session's full diff (`b6ac115b…`) |
+| `node scripts/build-dist.mjs` ×2 | byte-identical (`dist/jz.wasm`, `dist/jz.js`, `dist/interop.js` SHA-256 match across two consecutive builds) |
+
+### Files
+
+`layout-kinds.js` (KIND_REGISTRY.CLOSURE + `regionArmClosure` +
+`regionCopyRecLocals`/`regionCopyRecBody` composition), `layout-kinds-doc.js`
+(FINDINGS['region-forwarding'] → RESOLVED, OBJECT/HASH/CLOSURE `forwarding`
+prose updated to match the Slice-2/this-session landed state), `module/
+core.js` (`__region_relocate_cell` + deps + `$__closure_env_len`/
+`$__closure_env_mask` global decls), `module/function.js`
+(`ctx.closure.envMeta` capture at `ctx.closure.make`, `.push()`), `src/
+ctx.js` (`ctx.closure.envMeta: null` reset-shape documentation), `src/wat/
+assemble.js` (side-table build in `buildStartFn`), `test/layout-kinds.js`
+(9 new `region-relocate[CLOSURE]` pins).
+
+**SHA**: `dist/jz.wasm` this session's rebuild `01abc18e…`. watr `895ca5b`
+(`/Users/div/projects/watr`, unpublished, unchanged). Worktree base:
+`16f1f701` (region-final-2026-08-11).

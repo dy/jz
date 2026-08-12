@@ -58,7 +58,7 @@ const LANE = 4          // trailing i32-per-slot fast-probe lane, appended after
  *                              payload slots hold boxed children (the generic recursion target) vs a raw,
  *                              non-boxed edge (TYPED view's bufferRootOff) vs none (leaf). Full prose is
  *                              doc's `childPointers`.
- * @property {'copy'|'copy-forward'|'rebuild'|'value-relocate'|'copy-rebase'|'immediate'|'trap'} relocate
+ * @property {'copy'|'copy-forward'|'rebuild'|'value-relocate'|'copy-rebase'|'immediate'|'env-relocate'} relocate
  *                              Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): how
  *                              __region_copy_rec moves this kind across a region boundary — a DISTINCT
  *                              axis from GROWTH forwarding (FORWARDING_MASK, layout.js): 'copy' leaf
@@ -72,10 +72,13 @@ const LANE = 4          // trailing i32-per-slot fast-probe lane, appended after
  *                              relocate the block AND rewrite a raw (non-boxed) child edge through the
  *                              child's own new address (TYPED view → BUFFER); 'immediate' passthrough,
  *                              no wasm-heap block to move (ATOM/NUMBER, and EXTERNAL — an index into a
- *                              HOST table, not a wasm offset); 'trap' — deliberately unrouted (CLOSURE:
- *                              env length isn't recoverable from a bare CLOSURE box at runtime — capture
- *                              count is a compile-time-only fact per call site, no aux-indexed table
- *                              exists — see FINDINGS below).
+ *                              HOST table, not a wasm offset); 'env-relocate' — CLOSURE: env slot COUNT
+ *                              and per-slot boxed/raw MODE come from the `$__closure_env_len`/
+ *                              `$__closure_env_mask` side table (funcIdx-keyed, built in src/wat/
+ *                              assemble.js from facts module/function.js's ctx.closure.make captures at
+ *                              its own env-allocation site — not recoverable from a bare CLOSURE box at
+ *                              runtime any other way, since `aux` carries the function-table index, not
+ *                              the arity).
  */
 
 /** @type {Record<string, KindEntry>} */
@@ -89,7 +92,7 @@ export const KIND_REGISTRY = {
   MAP: { tag: PTR.MAP, aux: 0, identity: 'pointer-bits', children: 'hash-entries(kv)', relocate: 'rebuild' },
   TYPED: { tag: PTR.TYPED, aux: 'elemTypeCode', identity: 'pointer-bits', children: 'buffer-edge(raw-i32)', relocate: 'copy-rebase' },
   BUFFER: { tag: PTR.BUFFER, aux: 0, identity: 'pointer-bits', children: 'none', relocate: 'copy' },
-  CLOSURE: { tag: PTR.CLOSURE, aux: 'fnTableIndex', identity: 'pointer-bits', children: 'env(aux-arity)', relocate: 'trap' },
+  CLOSURE: { tag: PTR.CLOSURE, aux: 'fnTableIndex', identity: 'pointer-bits', children: 'env(funcIdx→len/mask table)', relocate: 'env-relocate' },
   EXTERNAL: { tag: PTR.EXTERNAL, aux: 'reserved', identity: 'pointer-bits', children: 'none', relocate: 'immediate' },
   BIGINT: { tag: PTR.BIGINT, aux: 0, identity: 'content', identityArm: { kind: 'content', order: 0 }, children: 'none', relocate: 'copy' },
   'ATOM.NULL': { tag: PTR.ATOM, aux: ATOM.NULL, identity: 'exact-bits', children: 'none', relocate: 'immediate' },
@@ -126,8 +129,15 @@ export const KIND_REGISTRY = {
 // __sclone_rec's TYPED view arm; BUFFER mirrors __sclone_rec's BUFFER arm
 // with a memo added, since — unlike structuredClone — region relocation
 // must preserve the "same .buffer" identity multiple views may share).
-// CLOSURE stays a deliberate, NAMED trap (not lumped into a blanket
-// unreachable with five other kinds) — see FINDINGS['closure-env-length'].
+// CLOSURE (region arena FRONT-BOUNDARY forcing case, .work/research.md
+// §Region arena — the front boundary's own wall: "give CLOSURE a real
+// region-copy arm — needs a capture-count/env-length side table") gets a
+// real arm too: env slot count + per-slot boxed/raw mode come from the
+// `$__closure_env_len`/`$__closure_env_mask` side table (funcIdx-keyed,
+// src/wat/assemble.js), sourced from facts module/function.js's
+// ctx.closure.make already computes at its own env-allocation site — see
+// FINDINGS['region-forwarding'] (layout-kinds-doc.js) for the now-RESOLVED
+// history (OBJECT/HASH/TYPED/BUFFER/EXTERNAL landed Slice 2; CLOSURE here).
 // ============================================================================
 
 /** BIGINT's region arm — verbatim (module/core.js, pre-Slice-2). Flat 8-byte
@@ -634,18 +644,85 @@ export function regionArmExternal() {
   return `(if (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL})) (then (return (local.get $v))))`
 }
 
-/** CLOSURE's region arm — a deliberate, NAMED trap (Slice 2), not lumped
- *  into a blanket unreachable with five other kinds. See FINDINGS
- *  ['closure-env-length'] for why: unlike every other heap kind here, a
- *  CLOSURE's capture count (the length of its env block, needed to know how
- *  many boxed children to recurse into) is not recoverable from a bare
- *  CLOSURE box at runtime — `aux` carries the function-table index, not the
- *  arity, and no aux-indexed capture-count table exists (module/function.js
- *  allocates the env block with a bare `__alloc`, no header). Building one
- *  (mirroring $__schema_tbl) is a real, bounded option for a future slice —
- *  not attempted here; this trap is the honest alternative to guessing. */
-export function regionArmClosureTrap() {
-  return `(if (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE})) (then (unreachable)))`
+/** CLOSURE's region arm — the front-boundary forcing case (.work/research.md
+ *  §Region arena), a real relocation now instead of a trap. Shape mirrors
+ *  OBJECT's durable/ephemeral split (the env block, like OBJECT's schema
+ *  slots, is a fixed-count-once-allocated run with no separate indirect
+ *  backing pointer) with two differences: (1) slot COUNT and per-slot
+ *  boxed/raw MODE come from the `$__closure_env_len`/`$__closure_env_mask`
+ *  side table (funcIdx = aux indexes it — module/function.js's
+ *  ctx.closure.make captures both facts at its own env-allocation site,
+ *  materialized here by src/wat/assemble.js, exactly mirroring
+ *  `$__schema_tbl`'s "build once, index by a stable small int" shape); (2) a
+ *  zero-capture closure's offset is the LITERAL immediate `0` (no heap block
+ *  at all — module/function.js `mkPtrIR(PTR.CLOSURE, tableIdx, 0)`), passed
+ *  through unchanged before ever touching `$memo` (bits never change across
+ *  any relocation, so this is trivially identity-safe, mirroring the
+ *  preamble's ATOM arm). A cell-mode slot (mask bit set — the boxed/mutable-
+ *  capture path, module/function.js's `ctx.func.boxed`) holds a RAW i32
+ *  pointer to a shared, independently-heap-allocated 8-byte payload cell
+ *  (`${T}cell_${name}`) — NOT a NaN-boxed f64 — so it can't route through
+ *  `__region_copy_rec`'s own f64 dispatch; `__region_relocate_cell` (module/
+ *  core.js) is the dedicated helper, memoized by a synthetic (never-NaN,
+ *  never colliding with a real heap pointer's bits) f64 key so a cell shared
+ *  by two closures (the whole point of the boxed-capture mechanism) lands on
+ *  the SAME new address from both env slots — breaking that would silently
+ *  un-alias a mutable capture across the boundary. */
+export function regionArmClosure() {
+  return `(if (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE}))
+        (then
+          (local.set $off (call $__ptr_offset (local.get $bits)))
+          (local.set $aux (call $__ptr_aux (local.get $bits)))
+          ;; zero-capture: no heap block, offset is the literal 0 sentinel — see doc above.
+          (if (i32.eqz (local.get $off)) (then (return (local.get $v))))
+          (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+          (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
+          ;; Side table absent is impossible once ANY real (non-zero-offset)
+          ;; CLOSURE value reaches here — a program with zero closures never
+          ;; constructs a PTR.CLOSURE box with a real heap block at all.
+          (if (i32.eqz (global.get $__closure_env_len)) (then (unreachable)))
+          (local.set $n (i32.load (i32.add (global.get $__closure_env_len) (i32.shl (local.get $aux) (i32.const 2)))))
+          ;; >31 captures can't fit the i32 cell-mode bitmask (module/function.js's
+          ;; own envCellMask cap — unobserved on every measured corpus, .work/
+          ;; closure-plan-design.md §1.5 tops out at 27 captures) — a NAMED trap
+          ;; for that one case, not a silent truncation of which slots are pointers.
+          (if (i32.gt_s (local.get $n) (i32.const 32)) (then (unreachable)))
+          (local.set $cellMask (i32.load (i32.add (global.get $__closure_env_mask) (i32.shl (local.get $aux) (i32.const 2)))))
+          (if (i32.lt_u (local.get $off) (local.get $mark))
+            (then
+              ;; Durable env block — exclusively owned by this ONE closure box
+              ;; (unlike a boxed cell, which CAN be shared — see
+              ;; __region_relocate_cell), so its address never changes; memo
+              ;; itself, walk slots in place, mirroring ARRAY/OBJECT's own
+              ;; durable branches.
+              (local.set $out (call $__mkptr (i32.const ${PTR.CLOSURE}) (local.get $aux) (local.get $off)))
+              (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+              (block $cld (loop $cll
+                (br_if $cld (i32.ge_s (local.get $i) (local.get $n)))
+                (local.set $slot (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))
+                (if (i32.and (i32.shr_u (local.get $cellMask) (local.get $i)) (i32.const 1))
+                  (then (i32.store (local.get $slot)
+                    (call $__region_relocate_cell (i32.load (local.get $slot)) (local.get $memo) (local.get $mark) (local.get $delta))))
+                  (else (f64.store (local.get $slot)
+                    (call $__region_copy_rec (f64.load (local.get $slot)) (local.get $memo) (local.get $mark) (local.get $delta)))))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $cll)))
+              (return (local.get $out))))
+          (local.set $newOff (call $__alloc (i32.shl (local.get $n) (i32.const 3))))
+          (local.set $out (call $__mkptr (i32.const ${PTR.CLOSURE}) (local.get $aux) (i32.sub (local.get $newOff) (local.get $delta))))
+          ;; memo BEFORE recursing into slots — cycles / diamond sharing terminate on revisit
+          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          (block $ced (loop $cel
+            (br_if $ced (i32.ge_s (local.get $i) (local.get $n)))
+            (local.set $slot (i32.add (local.get $newOff) (i32.shl (local.get $i) (i32.const 3))))
+            (if (i32.and (i32.shr_u (local.get $cellMask) (local.get $i)) (i32.const 1))
+              (then (i32.store (local.get $slot)
+                (call $__region_relocate_cell (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))) (local.get $memo) (local.get $mark) (local.get $delta))))
+              (else (f64.store (local.get $slot)
+                (call $__region_copy_rec (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))) (local.get $memo) (local.get $mark) (local.get $delta)))))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $cel)))
+          (return (local.get $out))))`
 }
 
 /** Extended locals declaration for __region_copy_rec (Slice 2 adds TYPED's
@@ -655,7 +732,7 @@ export function regionCopyRecLocals() {
   return `(local $bits i64) (local $t i32) (local $off i32) (local $aux i32) (local $hit i64) (local $out f64)
       (local $newOff i32) (local $n i32) (local $i i32) (local $slot i32) (local $len i32) (local $cap i32)
       (local $stride i32) (local $ord i32) (local $outPhys f64) (local $oldProps f64) (local $dpRoot f64) (local $newFinal i32) (local $propsF f64)
-      (local $oldRoot i32) (local $rootBox f64) (local $newRoot i32)`
+      (local $oldRoot i32) (local $rootBox f64) (local $newRoot i32) (local $cellMask i32)`
 }
 
 /** Preamble — verbatim (module/core.js, pre-Slice-2) plus ONE new immediate
@@ -675,11 +752,11 @@ export function regionCopyRecPreamble() {
 `
 }
 
-/** Composes the full __region_copy_rec body (Slice 2): preamble, then every
- *  kind's arm in KIND_REGISTRY's own declared order (skipping ATOM/EXTERNAL/
- *  NUMBER, folded into the preamble already), then the trailing backstop —
- *  now reachable ONLY by a tag value no PTR.* enumerates (never CLOSURE,
- *  which traps explicitly above it) and by CLOSURE's own deliberate trap.
+/** Composes the full __region_copy_rec body (Slice 2 + the CLOSURE arm):
+ *  preamble, then every kind's arm in KIND_REGISTRY's own declared order
+ *  (skipping ATOM/EXTERNAL/NUMBER, folded into the preamble already), then
+ *  the trailing backstop — reachable ONLY by a tag value no PTR.*
+ *  enumerates; every real heap kind, CLOSURE included, now has its own arm.
  *  `hasDynProps` is the caller-resolved `ctx.scope.globals.has('__dyn_props')`
  *  flag (layout-kinds.js stays ctx-free — see regionArmArray's doc). */
 export function regionCopyRecBody({ hasDynProps }) {
@@ -701,10 +778,10 @@ export function regionCopyRecBody({ hasDynProps }) {
 
       ${regionArmBuffer()}
 
-      ${regionArmClosureTrap()}
+      ${regionArmClosure()}
 
       ;; any tag not one of the above is not a valid PTR.* value — impossible
-      ;; by construction (every real heap kind now has an arm or a named trap).
+      ;; by construction (every real heap kind now has an arm).
       (unreachable))`
 }
 

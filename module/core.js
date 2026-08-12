@@ -88,9 +88,16 @@ export default (ctx) => {
     // __is_nullish added for this function's OWN memo hardening (see its
     // definition below).
     __region_relocate_props: ['__ptr_offset', '__alloc_hdr_n', '__mkptr', '__region_copy_rec', '__map_get', '__map_set', '__is_nullish'],
+    // CLOSURE's env arm (layout-kinds.js regionArmClosure) — a boxed/mutable
+    // capture's env slot holds a raw i32 pointer to an independently-heap-
+    // allocated cell (module/function.js's `ctx.func.boxed`), not a NaN-boxed
+    // f64, so it needs its OWN relocation helper (memoized by a synthetic
+    // key so a cell shared by two closures relocates to ONE address, not
+    // two) rather than routing through __region_copy_rec's f64 dispatch.
+    __region_relocate_cell: ['__map_get', '__map_set', '__is_nullish', '__region_copy_rec', '__alloc'],
     __region_copy_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish',
       '__alloc', '__alloc_hdr', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order',
-      '__len', '__region_relocate_props',
+      '__len', '__region_relocate_props', '__region_relocate_cell',
       // ARRAY/OBJECT dyn-props migration (see the definitions below): a relocated
       // container's off-16 propsPtr sidecar needs the SAME grow/shift migration
       // arrGrow/arrShift already perform (module/array.js
@@ -776,9 +783,10 @@ export default (ctx) => {
     // rebuilt via __coll_order insertion order so dirty-filtering's performance
     // survives the boundary intact, not just "safely degrades" to always-dirty).
     // OBJECT/HASH/TYPED/BUFFER/EXTERNAL gained real arms in Slice 2
-    // (layout-kinds.js's regionCopyRecBody/KIND_REGISTRY) — CLOSURE is the one
-    // remaining deliberate, named trap (env length isn't recoverable from a bare
-    // CLOSURE box at runtime — see layout-kinds.js regionArmClosureTrap).
+    // (layout-kinds.js's regionCopyRecBody/KIND_REGISTRY); CLOSURE gained one
+    // too (the front-boundary forcing case, .work/research.md §Region arena)
+    // via the `$__closure_env_len`/`$__closure_env_mask` side table — see
+    // layout-kinds.js regionArmClosure.
     //
     // Self-overlap: the compacted copy is NOT written in place at `mark` — source
     // (the round's live data, scattered through [mark, T)) and a naive in-place
@@ -974,6 +982,55 @@ export default (ctx) => {
       ;; regionArmArray's comment, layout-kinds.js, for the full mechanism).
       (local.get $out))`
 
+    // Relocate a boxed-capture's shared payload cell (module/function.js's
+    // `ctx.func.boxed` mechanism — an 8-byte `__alloc(8)` block holding ONE
+    // f64 value, mutated in place so every closure that captured the SAME
+    // source variable observes the SAME writes). Region arena's CLOSURE arm
+    // (layout-kinds.js regionArmClosure) calls this per cell-mode env slot
+    // INSTEAD OF __region_copy_rec directly: the slot holds the cell's RAW
+    // i32 ADDRESS, not a NaN-boxed f64, so it can't go through that
+    // function's own f64 tag dispatch.
+    //
+    // Memoized like every other arm — but a cell has no NaN-boxed identity
+    // to key $memo on (it's a bare i32, never wrapped in a PTR.* tag), so
+    // this synthesizes one: `f64.convert_i32_s(cellOff)` is always a plain
+    // FINITE float (never a NaN-boxed bit pattern — every real heap pointer
+    // this traversal ever memoizes carries the NaN prefix, layout.js), so it
+    // can never collide with a real pointer's own memo entry, and reusing
+    // $memo (already threaded through, already scoped to exactly one
+    // __region_exit call) needs no new global state — the same trick
+    // regionArmArray's own dyn-props migration already uses to key
+    // $__dyn_props by a raw i32 offset (`f64.convert_i32_s`, that function's
+    // own comment). This dedup is load-bearing, not an optimization: a cell
+    // shared by two closures (aliasing two mutable captures of the same
+    // source variable — the entire point of the boxed-cell mechanism) MUST
+    // relocate to the SAME new address from both env slots, or the two
+    // closures silently stop seeing each other's writes post-relocation.
+    //
+    // Durable branch carries the SAME memo-BEFORE-mutate ordering the TYPED
+    // view-rebase audit fix required (.work/research.md §Region arena,
+    // ordering audit): without it, a diamond-shared durable cell revisited a
+    // second time in the same traversal would re-read its OWN already-
+    // relocated (delta-adjusted, not-yet-physically-valid) payload as if it
+    // were fresh input — the identical corruption class that fix closed for
+    // __region_relocate_props/TYPED, closed here the same way (memo set
+    // before the in-place mutation, not after).
+    ctx.core.stdlib['__region_relocate_cell'] = `(func $__region_relocate_cell (param $cellOff i32) (param $memo i64) (param $mark i32) (param $delta i32) (result i32)
+      (local $key f64) (local $hit i64) (local $newOff i32)
+      (local.set $key (f64.convert_i32_s (local.get $cellOff)))
+      (local.set $hit (call $__map_get (local.get $memo) (i64.reinterpret_f64 (local.get $key))))
+      (if (i32.eqz (call $__is_nullish (local.get $hit)))
+        (then (return (i32.trunc_f64_s (f64.reinterpret_i64 (local.get $hit))))))
+      (if (i32.lt_u (local.get $cellOff) (local.get $mark))
+        (then
+          (drop (call $__map_set (local.get $memo) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (local.get $key))))
+          (f64.store (local.get $cellOff) (call $__region_copy_rec (f64.load (local.get $cellOff)) (local.get $memo) (local.get $mark) (local.get $delta)))
+          (return (local.get $cellOff))))
+      (local.set $newOff (call $__alloc (i32.const 8)))
+      (drop (call $__map_set (local.get $memo) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $newOff)))))
+      (f64.store (local.get $newOff) (call $__region_copy_rec (f64.load (local.get $cellOff)) (local.get $memo) (local.get $mark) (local.get $delta)))
+      (local.get $newOff))`
+
     // Function form (not a plain template string): the ARRAY/OBJECT dyn-props
     // migration inside regionCopyRecBody (layout-kinds.js) is gated on
     // `ctx.scope.globals.has('__dyn_props')`, which must be read at PULL time
@@ -991,11 +1048,24 @@ export default (ctx) => {
     // function BODY (locals + preamble + every kind's arm) is generated from
     // layout-kinds.js's regionCopyRecBody — BIGINT/STRING/ARRAY/SET+MAP
     // extracted verbatim from the pre-Slice-2 hand-written text (byte-identity
-    // pinned in test/layout-kinds.js), OBJECT/HASH/TYPED/BUFFER/EXTERNAL newly
-    // authored, CLOSURE a deliberate named trap — see that file's own header
-    // for the full rationale and FINDINGS['closure-env-length'] for why.
+    // pinned in test/layout-kinds.js), OBJECT/HASH/TYPED/BUFFER/EXTERNAL/
+    // CLOSURE all now real arms — see that file's own header for the full
+    // rationale and FINDINGS['region-forwarding'] (layout-kinds-doc.js) for
+    // the closed history.
+    //
+    // `$__closure_env_len`/`$__closure_env_mask`: CLOSURE's side table
+    // (funcIdx → env slot count / cell-mode bitmask, src/wat/assemble.js
+    // builds it from ctx.closure.envMeta once ctx.closure.table is final).
+    // Declared unconditionally here, mirroring `$__schema_tbl` just below —
+    // a build with no closures anywhere (or with __region_copy_rec pulled in
+    // but assemble.js never populating the table because ctx.closure.table
+    // is empty) still gets both globals seeded to 0, so regionArmClosure's
+    // own `$__closure_env_len == 0` guard degrades safely rather than
+    // referencing an undeclared global.
     ctx.core.stdlib['__region_copy_rec'] = () => {
       if (!ctx.scope.globals.has('__schema_tbl')) declGlobal('__schema_tbl', 'i32')
+      if (!ctx.scope.globals.has('__closure_env_len')) declGlobal('__closure_env_len', 'i32')
+      if (!ctx.scope.globals.has('__closure_env_mask')) declGlobal('__closure_env_mask', 'i32')
       return `(func $__region_copy_rec (param $v f64) (param $memo i64) (param $mark i32) (param $delta i32) (result f64)
 ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props') })}`
     }
