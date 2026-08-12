@@ -41,6 +41,7 @@ const parseTemplate = (str) => {
 export const clearStdlibParseCache = () => { stdlibParseCache = new Map() }
 import { T } from '../ast.js'
 import { analyzeValTypes, analyzeBody, findMutations } from '../compile/analyze.js'
+import { enterActiveFunction, restoreActiveFunction } from '../compile/active-function.js'
 import { VAL } from '../reps.js'
 import {
   optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, collectReachableMemoryWrites,
@@ -150,15 +151,12 @@ function applyArenaRewind(func, fn, safeCallees) {
 }
 
 export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
-  ctx.func.locals = new Map()
-  ctx.func.localValTypesOverlay = new Map()   // transient temp-seed channel (slice 3c-a), mirrors enterFunc
-  ctx.func.closureAux = new Map()             // emission-minted closure idx channel (slice-4 P2), mirrors enterFunc
-  ctx.func.repsFrozen = false                 // __start plan phase opens (last emitted function left it frozen)
-  ctx.func.localReps = null
-  ctx.func.boxed = new Map()
-  ctx.func.cellTypes = new Set()
-  ctx.func.stack = []
-  ctx.func.current = { params: [], results: [] }
+  const outerFrame = enterActiveFunction(ctx, {
+    sig: { name: '__start', params: [], results: [] },
+    body: ast,
+    moduleScope: true,
+  })
+  try {
   // Reserve prepare-generated temp names (for-of `arrVar`/`idx`/`len`,
   // destructure scratch, …) in the __start frame so emit's temp()/tempI32()
   // skip them — the same pre-seed analyzeFuncForEmit gives every function frame.
@@ -173,11 +171,8 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   analyzeValTypes(ast)
   const normalizeIR = ir => !ir?.length ? [] : Array.isArray(ir[0]) ? ir : [ir]
 
-  // Mark module-scope emission: top-level statements run exactly once, so a constant
-  // array/object literal here is a single instance that can safely live in a static
-  // data segment (no per-call freshness to violate). Function bodies — compiled
-  // separately, and the late closures below — leave this unset and alloc fresh.
-  ctx.func.atModuleScope = true
+  // This complete frame is module-scoped: top-level statements run exactly once,
+  // so constant aggregate literals can safely live in static data.
   // ES §14.7.4.7 per-iteration bindings: prepare already routed every
   // closure-captured loop-body let/const into ctx.scope.moduleLoopCaptured
   // (see prepare/index.js's loopLocalNames) instead of the single-instance
@@ -227,24 +222,10 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // Module-scope object literals can create closure bodies while `emit(ast)`
   // runs. Those late closures may pull in stdlib helpers (notably JSON.parse)
   // that affect __start setup, so flush them before deciding which runtime
-  // tables __start must initialize. Restore the start-function context after
-  // compiling closure bodies; emitClosureBody owns ctx.func.* while it runs.
+  // tables __start must initialize. emitClosureBody now swaps the complete
+  // active record, so no selected-field snapshot is needed here.
   const beforeLateClosures = closureFuncs.length
-  const startCtx = {
-    locals: ctx.func.locals,
-    localReps: ctx.func.localReps,
-    boxed: ctx.func.boxed,
-    stack: ctx.func.stack,
-    current: ctx.func.current,
-    body: ctx.func.body,
-    directClosures: ctx.func.directClosures,
-    preboxed: ctx.func.preboxed,
-    localProps: ctx.func.localProps,
-    uniq: ctx.func.uniq,
-    refinements: ctx.func.refinements,
-  }
   compilePendingClosures()
-  Object.assign(ctx.func, startCtx)
 
   const boxInit = []
   if (ctx.schema.autoBox) {
@@ -386,6 +367,9 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   compilePendingClosures()
   if (closureFuncs.length > beforeLateClosures)
     sec.funcs.unshift(...closureFuncs.slice(beforeLateClosures))
+  } finally {
+    restoreActiveFunction(ctx, outerFrame)
+  }
 }
 
 /**

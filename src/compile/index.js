@@ -28,6 +28,7 @@ import { OPTF } from '../ctx.js'
 
 import parseWat from 'watr/parse'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants, CARRIER_BOX } from '../ctx.js'
+import { enterActiveFunction, restoreActiveFunction } from './active-function.js'
 import { i64Hex } from '../../layout.js'
 import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS } from '../ast.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusBigintSentinelKind } from '../kind.js'
@@ -385,54 +386,11 @@ function captureFuncInspect(func, facts, programFacts) {
   }
 }
 
-// Reset per-function emit-frame state — the single source of frame entry.
-// `emitFunc`, `analyzeFuncForEmit`, and `emitClosureBody` all route through
-// here. Top-level funcs start `uniq` at 0; closures pass a higher base so
-// their synthetic labels can't collide with the parent frame's.
-function enterFunc(sig, body, { uniq = 0, directClosures = null, exported = false } = {}) {
-  ctx.func.stack = []
-  // §14 point 4 (audit #10): whole-function-emission flag exposing whether
-  // THIS function is itself a WASM export — emit.js's `bigIntDomain` needs
-  // it to restrict the runtime BigInt-magnitude heuristic to a genuine
-  // export's own param (whose representation crosses the JS boundary through
-  // interop.js's marshalling) vs an arbitrary internal helper's param (whose
-  // value is computed entirely within the compiled program, unbounded
-  // magnitude — closing a real self-host regression, layout.js's `i64Hex`).
-  ctx.func.exported = !!exported
-  ctx.func.repsFrozen = false   // plan phase opens — reps writable until body emission starts
-  ctx.func.p1Predicted = new Set() // analyze/emit agreement is frame-local; never inherit a sibling body's predictions
-  // Overlay (tier #2) present for the WHOLE emission of every function —
-  // emitBlockBody layers per-block copies on top. Guarantees emission-minted
-  // temp seeds (Stage 2 slice 3c-a) always have their transient channel.
-  ctx.func.localValTypesOverlay = new Map()
-  ctx.func.closureAux = new Map()     // emission-minted closure table idx per unboxed CLOSURE local (slice-4 P2) — emission state, not analysis
-  ctx.func.zeroInitSeen = new Set()   // names whose `let x=0` zero-init was elided once; a 2nd is a real re-init (unrolled bodies)
-  ctx.func.maybeNullish = new Set()   // bindings assigned a nullish literal → coerce in arithmetic (null-flow)
-  // Emission-tier transient channel (NOT updateRep — passes.js's own "emission
-  // tier never writes durable analysis state" exit grep) for
-  // isTernaryBoxedBigint (ir.js): names whose decl-init IS a ternary-nullish
-  // BIGINT merge, so the declared local's OWN storage durably holds a real
-  // PTR.BIGINT box (or the null/undefined sentinel) rather than raw bits —
-  // populated by emitDecl (this file... — CARRIER PROGRAM, .work/carrier-
-  // representation-design.md §12) at the one point it's cheaply and soundly
-  // knowable, mirroring closureAux's own "emission state, not analysis" shape.
-  ctx.func.ternaryBoxedNames = new Set()
-  ctx.func.refinements = new Map()     // flow-sensitive type facts (typeof/instanceof guards) — per-function; clear so none leak across bodies
-  ctx.func.pendingLabel = null        // label awaiting its loop, for `continue <label>`
-  ctx.func.uniq = uniq
-  ctx.func.current = sig
-  ctx.func.body = body
-  ctx.func.boxedResult = false        // closure-convention bodies set true after enterFunc (ftN boxed result)
-  ctx.func.valResult = null           // regular (non-closure) bodies set func.valResult after enterFunc — see emit.js 'return'
-  ctx.func.mixedAtomReturn = false    // emitFunc sets true for a >=2-return-statement, non-uniform-BOOL func — see emit.js 'return'
-  ctx.func.directClosures = directClosures
-  ctx.func.localProps = null
-  ctx.func.charDecomp = null
-  ctx.func.concatBufs = null
-  ctx.func.charDecompGlobals = false  // only emitFunc's named path drains — it re-arms
-  ctx.func.probeHoist = null
-  ctx.func.lenHoist = null
-  ctx.func.hoistTempDefs = null
+// Replace the complete active-function authority at a real function boundary.
+// Top-level funcs start `uniq` at 0; closures pass a higher base so their
+// synthetic labels cannot collide with the displaced parent frame.
+function enterFunc(sig, body, options = {}) {
+  return enterActiveFunction(ctx, { sig, body, ...options })
 }
 
 // Allocate + null-init a heap cell for every boxed local that isn't seeded
@@ -481,7 +439,8 @@ function analyzeFuncForEmit(func, programFacts) {
   if (_o && _o.clampPeel !== false && isBlockBody(func.body)) func.body = peelClampedStencil(func.body)
 
   const { name, body, sig } = func
-  enterFunc(sig, body, { exported: func.exported })
+  const previousFrame = enterFunc(sig, body, { exported: func.exported })
+  try {
 
   const block = isBlockBody(body)
   ctx.func.boxed = new Map()
@@ -875,7 +834,7 @@ function analyzeFuncForEmit(func, programFacts) {
   // literal's own emission.
   mintClosureEnvPlans(body)
 
-  return {
+  const facts = {
     block,
     locals: new Map(ctx.func.locals),
     boxed: new Map(ctx.func.boxed),
@@ -890,6 +849,10 @@ function analyzeFuncForEmit(func, programFacts) {
     typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null,
     typedLen: ctx.types.typedLen ? new Map(ctx.types.typedLen) : null,
     localReps: cloneRepMap(ctx.func.localReps),
+  }
+  return facts
+  } finally {
+    restoreActiveFunction(ctx, previousFrame)
   }
 }
 
@@ -1358,7 +1321,9 @@ function emitFunc(func, funcFacts, programFacts) {
   const multi = sig.results.length > 1
   const _reps = paramReps.get(name)
 
-  enterFunc(sig, body, { exported })
+  const previousFrame = enterFunc(sig, body, { exported })
+  let schemaVarsPrev = null
+  try {
   // Escape-boxing gate for return-position BOOL literals/expressions (emit.js
   // 'return'): a func with >= 2 syntactic return statements whose overall
   // valResult ISN'T proven uniformly BOOL may still have individual return
@@ -1428,7 +1393,7 @@ function emitFunc(func, funcFacts, programFacts) {
   // D: Apply call-site param facts (only if body analysis didn't already set them).
   // Schema bindings additionally write into ctx.schema.vars so prop-access dispatch
   // hits the slot map. ctx.schema.vars is saved/restored so bindings don't leak.
-  const schemaVarsPrev = new Map(ctx.schema.vars)
+  schemaVarsPrev = new Map(ctx.schema.vars)
   if (_reps) {
     for (const [k, r] of _reps) {
       if (k >= sig.params.length) continue
@@ -1648,9 +1613,11 @@ function emitFunc(func, funcFacts, programFacts) {
     fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, tcoTailRewrite(finalIR, sig.results[0]))
   }
 
-  // Restore schema.vars so param bindings don't leak to next function.
-  ctx.schema.vars = schemaVarsPrev
   return fn
+  } finally {
+    if (schemaVarsPrev) ctx.schema.vars = schemaVarsPrev
+    restoreActiveFunction(ctx, previousFrame)
+  }
 }
 
 /**
@@ -1900,14 +1867,22 @@ function synthesizeBoundaryWrappers() {
 function emitClosureBody(cb) {
   const prevSchemaVars = ctx.schema.vars
   const prevTypedElems = ctx.types.typedElem
-  // Reset per-function state for closure body
-  ctx.func.repsFrozen = false   // closure plan phase opens (restores below are plan writes)
-  ctx.func.locals = new Map()
-  ctx.func.localReps = null
-  ctx.func.leanHashLocals = new Set()
-  ctx.func.i32HashLocals = new Set()
-  ctx.func.leanHashDomains = new Map()
-  ctx.func.hoistTempDefs = null
+  // Bare `;`-sequence bodies (no enclosing `{}`) reach us when callers built a
+  // statement list directly — normalize before the frame captures body identity.
+  if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = ['{}', cb.body]
+  // Uniform convention: (env f64, argc i32, a0..a{width-1} f64) → f64
+  const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
+  const paramDecls = [{ name: '__env', type: 'f64' }, { name: '__argc', type: 'i32' }]
+  for (let i = 0; i < W; i++) paramDecls.push({ name: `__a${i}`, type: 'f64' })
+  const previousFrame = enterFunc({ params: paramDecls, results: ['f64'] }, cb.body, {
+    uniq: Math.max(ctx.func.uniq, 100),
+    directClosures: cb.directClosures ? new Map(cb.directClosures) : null,
+  })
+  try {
+  // The ftN f64 result is a boxed-value position: `return <bool>` must cross
+  // as the true/false atom.
+  ctx.func.boxedResult = true
+
   if (cb.intConsts) for (const [name, v] of cb.intConsts) updateRep(name, { intConst: v })
   if (cb.intCertain) for (const name of cb.intCertain) updateRep(name, { intCertain: true })
   if (cb.nullables) for (const name of cb.nullables) updateRep(name, { nullable: true })
@@ -1946,28 +1921,6 @@ function emitClosureBody(cb) {
   // every body sharing the cell must read/write it at that width.
   ctx.func.cellTypes = new Set(cb.cellI32 || [])
   const parentBoxedCaptures = new Set(cb.boxed || [])
-  ctx.func.preboxed = new Set()
-  // Bare `;`-sequence bodies (no enclosing `{}`) reach us when callers built a
-  // statement list directly — wrap into a block body so the multi-stmt path
-  // runs (otherwise emit returns an untyped list and asF64 wraps it with
-  // `f64.convert_i32_s`, yielding invalid WAT).
-  if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = ['{}', cb.body]
-  // Uniform convention: (env f64, argc i32, a0..a{width-1} f64) → f64
-  const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
-  const paramDecls = [{ name: '__env', type: 'f64' }, { name: '__argc', type: 'i32' }]
-  for (let i = 0; i < W; i++) paramDecls.push({ name: `__a${i}`, type: 'f64' })
-  // Enter the closure frame. uniq ≥ 100 keeps synthetic labels from colliding
-  // with the parent. directClosures: closure.make snapshotted the parent's
-  // direct-call map for each capture, so a call to a captured const closure
-  // still lowers to `call $closureN` instead of call_indirect (A3 across the
-  // capture boundary).
-  enterFunc({ params: paramDecls, results: ['f64'] }, cb.body, {
-    uniq: Math.max(ctx.func.uniq, 100),
-    directClosures: cb.directClosures ? new Map(cb.directClosures) : null,
-  })
-  // The ftN f64 result is a boxed-value position: `return <bool>` must cross
-  // as the true/false atom (emit.js 'return' consults this; enterFunc clears it).
-  ctx.func.boxedResult = true
 
   const fn = ['func', `$${cb.name}`]
   fn.push(['param', '$__env', 'f64'])
@@ -2237,9 +2190,12 @@ function emitClosureBody(cb) {
   // I: Skip trailing fallback when last statement is return
   // Implicit fall-through return is `undefined` per JS spec, not 0.
   if (block && !(bodyIR.at(-1)?.[0] === 'return' || bodyIR.at(-1)?.[0] === 'return_call')) fn.push(undefExpr())
-  ctx.schema.vars = prevSchemaVars
-  ctx.types.typedElem = prevTypedElems
   return fn
+  } finally {
+    ctx.schema.vars = prevSchemaVars
+    ctx.types.typedElem = prevTypedElems
+    restoreActiveFunction(ctx, previousFrame)
+  }
 }
 
 /**

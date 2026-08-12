@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
+import { enterActiveFunction, isInactiveFunction, restoreActiveFunction } from '../src/compile/active-function.js'
 import { onKernel } from './_matrix.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -166,6 +167,40 @@ test('function-entry state pins: P1 predictions and diagnostic identity are fram
   ok(ctx.func.p1Predicted instanceof Set && ctx.func.p1Predicted !== firstPredicted,
     'a later function/session cannot inherit the prior frame prediction set')
   ok(!('name' in ctx.func), 'dead ctx.func.name authority was not introduced; diagnostics use current?.name')
+})
+
+test('ActiveFunction swaps and restores record identity, not selected fields', () => {
+  if (onKernel()) return
+  compile('export let f = x => x + 1')
+  const outer = ctx.func
+  const displaced = enterActiveFunction(ctx, {
+    sig: { name: 'probe', params: [], results: [] },
+    body: ['{}'],
+    uniq: 17,
+  })
+  ok(displaced === outer && ctx.func !== outer, 'entry displaces the whole prior record')
+  ok(ctx.func.p1Predicted instanceof Set && ctx.func.hoistTempDefs === null && ctx.func.uniq === 17,
+    'the complete constructor owns prediction, hoist-temp, and temp-name state')
+  ctx.func.localValTypesOverlay.set('inner-only', 1)
+  restoreActiveFunction(ctx, displaced)
+  ok(ctx.func === outer && !ctx.func.localValTypesOverlay.has('inner-only'),
+    'restore reinstates prior identity; inner overlays cannot leak')
+})
+
+test('active frame restores as one record after functions, late closures, and __start', () => {
+  if (onKernel()) return
+  compile(`
+    let base = 3
+    let make = n => x => x + n + base
+    let add = make(4)
+    export let run = x => add(x)
+  `)
+  ok(isInactiveFunction(ctx.func),
+    'compile restored the inactive session frame instead of leaving function/start/expression fields')
+  ok(ctx.func.atModuleScope === false && ctx.func.stack.length === 0 && ctx.func.uniq === 0,
+    'synthetic __start and late-closure emission restored the displaced frame by identity')
+  ok(ctx.func._expect === null && ctx.func._selfAccumConcat === null && ctx.func._schemaSpecSlow === false,
+    'expression-emission scopes cannot leak out of the active record')
 })
 
 test('session-reentrancy: closure/loop-plan A then structurally-similar B — warm matches fresh-process (audit-#19 stale-plan probe)', () => {

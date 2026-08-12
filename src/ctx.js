@@ -8,6 +8,7 @@
  */
 
 import { makeAbi } from './abi/index.js'
+import { createActiveFunction, isInactiveFunction } from './compile/active-function.js'
 import { HOT_PASSES } from './passes.js'
 export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, ssoBitI64Hex, sliceBitI64Hex, ptrNanHex, ptrBoxPrefixBigInt, encodePtrHi, decodePtrType, decodePtrAux, ATOM_HI, oobNanLiteral, oobNanIR, followForwardingWat } from '../layout.js'
 
@@ -40,7 +41,7 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 // | core      | compile  | reset, modules, inc(), emit*    | emit, compile, modules    |
 // | module    | compile  | prepare, index.js               | prepare, compile, emit    |
 // | scope     | compile  | analyze, compile, plan, modules, assemble | compile, emit   |
-// | func      | function | compile, narrow, assemble       | emit, modules             |
+// | func      | function | active-function authority, compile scopes | emit, modules       |
 // | types     | function | analyze, plan                   | emit, modules             |
 // | schema    | compile  | prepare, analyze, compile       | prepare, analyze, emit    |
 // | closure   | init     | modules (fn plugin), plan, emit | emit, compile             |
@@ -62,12 +63,12 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 //   ctx.scope.{globalValTypes, globalTypedElem, globals, globalTypes} via
 //   inferModuleLetTypes / unboxConstTypedGlobals / inferModuleIntGlobals,
 //   and ctx.types.{dynKeyVars, anyDynKey} from collectProgramFacts results.
-// narrow-phase writers: narrowSignatures (under plan) temporarily swaps
-//   ctx.func.{localReps, locals, current} per-function with save/restore
-//   so per-call-site signature inference sees the right scope.
-// assemble-phase writers: buildStartFn (wat/assemble.js) re-owns the ctx.func frame
-//   (locals/stack/refinements/…) to emit the module-init `start` fn, save/restoring
-//   around it; the data pass also const-folds ctx.scope.globals (mut→false) and
+// narrow-phase writers: narrowSignatures (under plan) installs scoped overlays
+//   within the current record so per-call-site inference sees the right scope.
+// assemble-phase writers: buildStartFn (wat/assemble.js) swaps one complete
+//   active-function record to emit the module-init `start` fn; closure emission
+//   does the same and restores by identity. The data pass also const-folds
+//   ctx.scope.globals (mut→false) and
 //   declares the __heap* globals. emit seeds ctx.closure.{paramTypes,paramTypedCtors}
 //   at direct-call sites (read by emitClosureBody); plan sets ctx.closure.{floor,width}.
 export const ctx = {
@@ -398,33 +399,11 @@ export function reset(proto, globals, bridge) {
     globalDevirt: null, // Map<global, function name> published by plan/scope.js, consumed by emit
   }
 
-  // Active per-function analysis/emission frame. ProgramFunctions fields live
-  // exclusively on ctx.funcs above; no compatibility mirror is retained.
-  ctx.func = {
-    current: null,
-    locals: new Map(),
-    localReps: null,
-    refinements: new Map(),  // flow-sensitive: name → {val?: VAL.*, notString?: true, schemaId?: number} inside a guarded branch
-    boxed: new Map(),
-    cellTypes: new Set(), // boxed vars whose CELL stores raw i32 (closure-capture narrowing)
-    stack: [],
-    uniq: 0,
-    inTry: false,
-    localProps: null,
-    // Pass-scoped overlays installed by analyzeBody/observeSlots. While set,
-    // `lookupValType`/`typedElemCtor` consult the in-progress fact maps before
-    // falling back to global state — lets shorthand `{x}` / typed-array writes
-    // observe locals that haven't been promoted to ctx.types yet. Saved/restored
-    // by the pass owners so re-entrant analyzeBody calls don't clobber each other.
-    localValTypesOverlay: null,
-    localTypedElemsOverlay: null,
-    // (AdHocMemo retirement — the 6 single-slot `_xBody`/result memo pairs
-    // that used to live here, e.g. `_ccBody`/`ccInBounds`, are now
-    // WeakMaps on getFactStore(), keyed on body identity: see
-    // createFactStore()'s comment above. They persisted across enterFunc
-    // by design, so they never belonged in this per-function reset shape
-    // to begin with.)
-  }
+  // Complete active-function analysis/emission authority. Every real function
+  // boundary replaces this record by identity through enterActiveFunction();
+  // nested emitters restore the displaced record rather than copying a selected
+  // field list. ProgramFunctions fields live exclusively on ctx.funcs above.
+  ctx.func = createActiveFunction()
 
   ctx.types = {
     typedElem: null,
@@ -1071,6 +1050,8 @@ export function assertCtxInvariants(phase) {
     must(ctx.func.current, 'func.current set before emit')
     must(ctx.func.locals.size != null, 'locals open for writes')
   }
+  if (phase === 'post-compile')
+    must(isInactiveFunction(ctx.func), 'active function record restored after analysis/emission')
 
   // FeaturePlan freeze snapshot/compare (see FEATURE_STRATA above). Uniform exact
   // equality across every stratum, no exceptions — SESSION+PROGRAM are genuinely

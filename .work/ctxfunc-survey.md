@@ -599,3 +599,36 @@ failures (3421 pass, 2 fail, 6 skip); debug invariants pass 18/18.
 The next frame slice remains structural: one complete active-frame record and
 reference swap for nested closure / synthetic `__start` emission, deleting
 `buildStartFn`'s selected-field snapshot.
+
+## AS-LANDED — Slice 4b: complete ActiveFunction record + reference swaps (2026-08-12)
+
+`src/compile/active-function.js` is now the one complete constructor for the
+active analysis/emission record. `reset()` creates the inactive record through
+that constructor. Every real function boundary (`analyzeFuncForEmit`,
+`emitFunc`, `emitClosureBody`) installs a fresh record and restores the displaced
+record in `finally`; synthetic `__start` does the same.
+
+The old `buildStartFn` selected-field snapshot/Object.assign restore is deleted.
+There is no compatibility mirror or second active-field list: production writes
+to `ctx.func` identity occur only in `active-function.js` (enter/restore) and
+`ctx.js` (session reset). Fields still scoped within one function (flow overlays,
+try/finally stack, expression expectations) remain mutations of that active
+record rather than pretending to be separate function authorities.
+
+The complete record includes the fields formerly created by use, including
+`p1Predicted`, `hoistTempDefs`, `finallyStack`, `flowValBlocked`, expression
+scopes, temp/overlay maps, and diagnostic identity through `current`. A debug
+post-compile invariant requires an inactive frame, and the reentrancy probe
+covers named functions + late nested closures + synthetic `__start`.
+
+Certification:
+- `test/session-reentrancy.js`: 10/10, 27 assertions (also under debug invariants)
+- `test/closures.js`: 110/110, 221 assertions (also under debug invariants)
+- `test/statements.js`: 202/202, 468 assertions
+- `test/invariants.js`: 18/18; debug 18/18
+- `npm test`: 3423 pass, only the two standing optimizer-shape failures, 6 skip
+- kernel oracle: 13/13, 541 assertions
+- kernel parity: 3/3, 33 assertions
+- build twice: byte-identical; `dist/jz.wasm` SHA-256
+  `63ef4ce18f359c37f0184df63f593f9938a037b9ab67e4fe97f97961f4efe9de`
+- self-host correctness/warm reuse: 21/21, 206 assertions
