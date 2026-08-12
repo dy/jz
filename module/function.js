@@ -101,9 +101,21 @@ export default (ctx) => {
 
   ctx.closure.types.add(1) // presence triggers $ftN type emission
 
-  const addToTable = (name) => {
+  // Region arena side table mint (.work/research.md §Region arena, funcIdx
+  // skew) — the ONE place that grows ctx.closure.table. Every OTHER minter
+  // (emit.js's builtinFunctionValue and its top-level-function-used-as-value
+  // trampoline path) must route through this too, so envMeta grows in
+  // lockstep with table and index i always means the SAME closure in both —
+  // a bare `table.push()` elsewhere silently desyncs the two arrays, and
+  // every closure minted after that point gets attributed to the WRONG
+  // funcIdx's env-length/cell-mask by src/wat/assemble.js's side-table build.
+  ctx.closure.mint = (name, meta) => {
     let idx = ctx.closure.table.indexOf(name)
-    if (idx === -1) { idx = ctx.closure.table.length; ctx.closure.table.push(name) }
+    if (idx === -1) {
+      idx = ctx.closure.table.length
+      ctx.closure.table.push(name)
+      ctx.closure.envMeta.push(meta || { len: 0, cellMask: 0 })
+    }
     return idx
   }
 
@@ -251,8 +263,6 @@ export default (ctx) => {
     if (closureBodyReturnMayBeUndefined(body, captureValTypes))
       (ctx.closure.valResultMayBeUndefined ||= new Map()).set(fnName, true)
 
-    const tableIdx = addToTable(fnName)
-
     // Region arena side table (see ctx.closure.envMeta init above): every
     // slot's mode is EXACTLY the `ctx.func.boxed?.has(envCaptures[i])` test
     // the store loop below also uses — same source of truth, computed once
@@ -265,14 +275,9 @@ export default (ctx) => {
     let envCellMask = 0
     for (let i = 0; i < envCaptures.length && i < 32; i++)
       if (ctx.func.boxed?.has(envCaptures[i])) envCellMask |= (1 << i)
-    // .push(), not envMeta[tableIdx] = … — tableIdx is ALWAYS the current
-    // ctx.closure.envMeta.length (addToTable always pushes a fresh, unique
-    // fnName, per its own doc), so this is value-identical to the indexed
-    // form but matches ctx.closure.table.push(fnName)/ctx.closure.bodies.
-    // push(bodyFn)'s own growth path exactly, one line above/below — the
-    // self-hosted kernel's own array-write codegen for `arr[arr.length] = x`
-    // is a separate, less-exercised path than `.push()`.
-    ctx.closure.envMeta.push({ len: envCaptures.length, cellMask: envCellMask })
+    // ctx.closure.mint (not addToTable/bare push) — mints the table slot AND
+    // the matching envMeta record atomically, see ctx.closure.mint's own doc.
+    const tableIdx = ctx.closure.mint(fnName, { len: envCaptures.length, cellMask: envCellMask })
 
     // At call site: allocate env, store captured values, return NaN-boxed pointer.
     // Tag IR with .closureBodyName so emitDecl can register the binding for direct dispatch

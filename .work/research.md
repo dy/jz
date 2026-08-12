@@ -6366,3 +6366,242 @@ byte-dump machinery.
 to be committed on top). watr: `895ca5b` (`/Users/div/projects/watr`,
 unpublished, unchanged). Dormant `dist/jz.wasm` (landed config): SHA-256
 `8d6a9344226e66abbed7e43afdb1978ce9fe2f8f519f8a0c2bdb608e206a762f`.
+
+## §Region arena — funcIdx SKEW CONFIRMED AND FIXED (ctx.closure.mint):
+the closure-env side table's build-time keying desynced from the wasm
+table's own index space; real bug, real fix, LANDED — the front-boundary
+wall NARROWS (kernel-oracle 4/13→6/13, a clean synthetic repro closes) but
+does NOT fully close for jessie/watr/jzify-entry/jz×jz — a SECOND
+mechanism remains, now unmasked and reached further in, not yet found
+(2026-08-12)
+
+**Task, per the coordinator's own brief**: test the funcIdx-skew hypothesis
+FIRST, before any fallback probe — 6743aea0's own recommendation ("test the
+self-host-only codegen gap angle") was explicitly deprioritized this
+session in favor of the coordinator's own candidate: does the funcIdx-keyed
+`$__closure_env_len`/`$__closure_env_mask` side table (bba45c0d, `src/wat/
+assemble.js`'s `buildStartFn`, sourced from `ctx.closure.envMeta`) desync
+from `ctx.closure.table`'s own index space under multi-module compiles?
+
+### The mechanism, found by direct source inspection (not runtime bisection)
+
+`ctx.closure.table` (the wasm `$__jz_table` elem segment — one shared array
+across the WHOLE compile, every module folded into one `ctx`) has **three**
+growth sites, not one:
+
+1. `module/function.js`'s `ctx.closure.make` (was `addToTable`) — every
+   REAL closure literal (arrow/function expression with captures).
+2. `src/compile/emit.js`'s `builtinFunctionValue` — a builtin
+   (`math.sqrt`, `Array.isArray`, …) referenced bare, as a value (not
+   called directly) — mints a zero-capture trampoline entry.
+3. `src/compile/emit.js`'s "top-level function used as value" branch (the
+   `~7199` block) — `let g = someTopLevelFunction` — mints a zero-capture
+   trampoline entry too.
+
+`ctx.closure.envMeta` (module/function.js, `bba45c0d`'s own side-table
+source) had exactly **one** growth site: site (1) above, inside
+`ctx.closure.make`, immediately after `addToTable`. Sites (2) and (3) pushed
+straight onto `ctx.closure.table` with their own inlined
+`indexOf`/`length`/`push` — bypassing `envMeta` entirely. Every time a
+program references a builtin or a top-level function as a bare value, the
+table gains an entry envMeta never mirrors — from that point forward,
+`envMeta[i]` (read by `assemble.js`'s `for (i=0..nClosures)` loop, `meta =
+ctx.closure.envMeta[i] || {len:0,cellMask:0}`) describes the closure that
+was REALLY minted `k` slots earlier, where `k` is the phantom-entry count
+so far — a real closure's OWN `{len,cellMask}` either lands on the
+`{0,0}` fallback (envMeta ran out) or on a DIFFERENT closure's record
+entirely. A value-mode f64 slot misread as a cell-mode raw i32 pointer (or
+vice versa) is exactly the "cellOff garbage / NaN-tag-shaped high word"
+signature the prior two sessions' byte-dumps recorded for `aux=1015/n=6`.
+**Multi-module-only fits naturally**: real cross-module programs (jessie,
+watr, jzify, jz×jz) reference far more top-level functions and builtins as
+bare values (host bridging, higher-order dispatch across module
+boundaries) than the single-module kernel-oracle/native corpus does — but
+the mechanism itself is NOT multi-module-specific (demonstrated below on a
+single-module native fixture), just far more likely to trigger there.
+
+### Dispositive proof (the task's own "build-time table vs runtime lookup"
+### ask, done as a direct table/envMeta cross-reference instead — equally
+### conclusive, and reproducible without the self-hosted kernel)
+
+A minimal single-module native fixture (`export function f(x){…}; let g=f;
+` two closures with real captures created around the reference) compiled
+against the unmodified `6743aea0` code (`.../scratchpad/region-skew-before`,
+a disposable worktree at that exact commit): `ctx.closure.table.length = 4`
+(`tramp_f, closure1, closure2, closure3`), `ctx.closure.envMeta.length = 3`
+— **a length mismatch, direct and unconditional**, no runtime/wasm
+execution needed to observe it. Cross-referencing every REAL closure's
+ground-truth `{len,cellMask}` (read straight off `ctx.closure.bodies`,
+name-correlated to its table slot — bodies is NOT index-keyed the way
+envMeta is, so this comparison is apples-to-apples) against
+`envMeta[table.indexOf(name)]` on a fixture engineered to hold nonzero
+captures (function-parameter captures, since top-level `let` captures
+constant-fold away before reaching a real env slot) is the natural next
+step for a future session that wants a byte-for-byte "closure X's real
+mask vs what got read for it" table; this session confirmed the mechanism
+via the length-mismatch (unconditionally dispositive: assemble.js's `||
+{0,0}` fallback loop provably reads the WRONG record for every table index
+minted after the first phantom entry, regardless of what that record's
+bits happen to be) rather than chasing one specific `aux` value, since no
+harness for a byte-identical repro of the ORIGINAL `aux=1015/n=6` instance
+survived between sessions (`.work/research.md`'s own prior entry: "its own
+literal fixture wasn't preserved").
+
+### The fix — `ctx.closure.mint`, one mint point instead of three
+
+`module/function.js`: `addToTable` replaced by `ctx.closure.mint(name,
+meta)`, published on `ctx.closure` (same publication channel as
+`ctx.closure.make`/`.call`) so `src/compile/emit.js` can reach it. Mints
+the table slot AND pushes the matching `envMeta` record (default `{len:0,
+cellMask:0}` when the caller passes none) ATOMICALLY — the table and
+envMeta arrays can no longer diverge in length, by construction, from any
+of the three sites. `ctx.closure.make` now computes `envCellMask` BEFORE
+minting (a reorder — the mask is pure, no side effects, so this changes
+nothing else) and passes the real `{len,cellMask}` through. `emit.js`'s
+`builtinFunctionValue` and the trampoline site each become a one-line
+`ctx.closure.mint(name)` (default meta — both are always zero-capture,
+matching `storage:'none'`'s own convention). Precedent: this is the exact
+shape of the repo's own most recent commit before this session
+(`0c4fb9c9`, "128-site `ctx.func.uniq++` idiom → one `freshId(ctx)` mint
+helper") — centralize the mint, don't patch each call site.
+
+### Verification
+
+**The funcIdx skew mechanism itself, closed**: the same 2-closure
+cross-reference fixture, re-run against the fixed code
+(`.../scratchpad/region-slice2-front`) — `table.length === envMeta.length`
+(4 === 4), zero mismatches. A 20-module synthetic repro (this session's own
+construction — 20 chained one-export modules, each an IIFE closing over a
+mutated local, `import`ing the previous module's export, matching the
+prior session's own description since its literal fixture wasn't
+preserved) built fresh and run through BOTH a region-live UNFIXED kernel
+and a region-live FIXED kernel (both `dist/jz.wasm`, `REGION_HOOKS_ACTIVE=
+true`, rebuilt this session): **UNFIXED: `memory access out of bounds`
+(131ms). FIXED: compiles clean, 3842B, 3/3 reps.** This is the same
+signature class (multi-module, closure-heavy, front-boundary) as the
+documented wall — closed by this fix, deterministically.
+
+**jessie/watr/jzify-entry (the task's own acceptance-gate fixtures,
+`src/parse.js`/`node_modules/watr/watr.js`/`jzify/index.js`, each compiled
+through the region-live kernel via `compileViaKernel(code,{modules})`,
+`test/kernel-target.js`'s own machinery, 3 reps each): STILL FAIL, but the
+failure SIGNATURE CHANGED for two of the three** — before this fix, all
+three (plus the 20-module repro) traps identically, `memory access out of
+bounds`, 77–186ms. After: jessie now fails
+`compiler internal: expected emitted IR value in <module>, got empty
+value` (a totally different error CLASS — a self-host codegen gap, `src/
+ir.js`'s own generic "emit returned null" assertion, not a memory-safety
+trap); watr now fails `unreachable` (also different); jzify-entry still
+fails `memory access out of bounds`, unchanged. **A confirming sanity
+check, not a refutation of the fix**: the SAME three fixtures compile
+100% CLEAN through this session's own DORMANT kernel build (`REGION_HOOKS_
+ACTIVE=false`, same fixed source) — proving these are genuinely
+region-arena-triggered failures (no general self-host feature gap in
+compiling these real corpora), and that the fix demonstrably moves the
+failure POINT further into each compile (progressing past whatever this
+fix closes) without yet reaching the end. **Verdict: the funcIdx skew was
+real, confirmed, and is now fixed — but it was not the ONLY front-boundary
+mechanism.** A second, still-unfound bug remains, now unmasked (previously
+these three fixtures never got far enough to reach it). Native jz×jz
+(`scripts/self.js`'s own 154-module graph, fed to itself via the region-live
+kernel): still fails, `memory access out of bounds`, 2.8s — notably FAST,
+not the ~8.5s/exactly-4,294,967,296-byte signature the design doc's own
+memory-ceiling wall produces (`.work/research.md`'s MEMORY-CURVE-MEASURED
+entry), so this is the SAME residual mechanism as jessie/watr, not the
+already-documented, by-design Slice-3 ceiling.
+
+**kernel-oracle (region-live, the task's own explicit target, `test/
+kernel-oracle.js` ×3 reps against this session's own fixed rebuild): 6/13
+pass (203/203 assertions collected every rep — no early-exit truncation),
+7/13 fail, IDENTICAL failure signature every rep.** The unfixed baseline
+(same session, same rebuild machinery, `.../region-skew-before` at
+`6743aea0`, region-live): **4/13 pass, 9/13 fail, only 102/203 assertions
+collected** (two rows crash before reaching their own assertions). **A
+real, reproducible 2-row improvement** (4→6), not noise. The 7 remaining
+failures are NOT new: `subviewtyped` WAT-parity divergence at O0/O2/O3 (a
+self-host CODEGEN SHAPE gap — native emits more bytes than the kernel,
+not a trap — orthogonal to region arena) and the row explicitly
+self-labeled `kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER
+carrier collapse (research.md §Carrier invariant — not yet fixed...)` — a
+DIFFERENT, already-tracked, already-named work item, not a region-arena
+regression. 13/13 not reached this session.
+
+**Full native ladder, dormant (shipped `REGION_HOOKS_ACTIVE=false`
+config, this session's own fixed rebuild)**: `node test/layout-kinds.js`
+60/60 (88 assertions, includes all 9 `region-relocate[CLOSURE]` pins).
+`node test/closures.js` 110/110 (221 assertions). `node test/index.js`
+(native, no `JZ_TEST_TARGET`): **3428/3436 pass — the SAME 2 pre-existing
+documented flakes this whole chain has always carried (interval-walk,
+typed-RMW), 0 new regressions.** `JZ_TEST_TARGET=jz.wasm node test/
+index.js` (dormant self-hosted kernel): **2725/2731 pass, 0 fail, 6 skip —
+byte-for-byte the SAME count every prior session in this chain has
+recorded.** 200-seed fuzz gate (dormant): clean, 0 divergence.
+
+**Dormant "byte-identity" — NOT byte-identical, but BEHAVIORALLY inert; a
+finding worth recording precisely rather than asserting the stronger
+(false) claim.** SHA-256 of the dormant `dist/jz.wasm` DIFFERS before vs
+after this fix (`8d6a9344…` unfixed vs `f7840507…` fixed) — this session
+traced why: `REGION_HOOKS_ACTIVE=false` does NOT prevent `__region_exit`/
+`$__closure_env_len`/`$__closure_env_mask` from being compiled INTO
+`dist/jz.wasm` at all (`strings dist/jz.wasm | grep -c region_exit` reads
+31 in BOTH the fixed and unfixed dormant builds) — `scripts/self.js`'s own
+`REGION_HOOKS_ACTIVE ? {mark:…,exit:…} : undefined` ternary is a RUNTIME
+branch, not a compile-time dead-branch elimination (the arrow-function
+closures inside the `true` arm are lexically part of the reachable
+program either way), so `assemble.js`'s `closureEnvInit` sequence — which
+allocates and POPULATES `$__closure_env_len`/`$__closure_env_mask` from
+`ctx.closure.envMeta` unconditionally inside `$__start` — runs at every
+`dist/jz.wasm` instantiation, dormant or not. This fix changes that
+init DATA (more entries now correctly populated instead of silently
+short). The data is provably NEVER READ in dormant mode (`__region_copy_
+rec`'s CLOSURE arm — the only reader — is reachable exclusively through
+`__region_exit`, which `regionHooks` being `undefined` at runtime means is
+never CALLED, only compiled-in-but-dead) — confirmed empirically, not just
+argued: `JZ_TEST_TARGET=jz.wasm node test/index.js` against the fixed
+dormant build reproduced the EXACT SAME 2725/2731/0-fail/6-skip count as
+every historical baseline in this chain. **Byte-identical is the wrong bar
+here; behaviorally-identical is the true one, and it holds.**
+
+**Disposition.** `ctx.closure.mint` (module/function.js + src/compile/
+emit.js, two call sites) is a real, confirmed, necessary fix — lands. The
+front-boundary wall NARROWS (kernel-oracle 4→6/13, a clean synthetic
+repro, jessie/watr's failure point moves deeper into the compile) but does
+NOT close for the full task acceptance gate (jessie/watr/jzify-entry/jz×jz
+all still fail, two with genuinely NEW error signatures proving a SECOND
+mechanism, not yet found). Per the task's own protocol: **WALL — bank,
+stop.** `scripts/self.js`'s `REGION_HOOKS_ACTIVE` reverted to `false`
+before this commit (temporarily flipped `true` in TWO disposable worktrees
+this session purely to build region-live test kernels — both reverted,
+neither worktree's dirt reaches this commit). `git diff --stat` on the
+landed set: `module/function.js` (+17/-6), `src/compile/emit.js`
+(+8/-4) — exactly the two files this entry describes, nothing else.
+
+**Recommendation for next session.** Two concrete, narrower leads, both
+better than resuming the byte-dump SW-hunt cold:
+1. **jessie's new error is the most tractable** — `compiler internal:
+   expected emitted IR value in <module>, got empty value`, AST `[null,
+   20]` (the number literal `20`) — a DETERMINISTIC, NON-crashing (no wasm
+   trap, a clean thrown JS error with a real AST node attached) self-host
+   codegen gap. Bisect `src/parse.js`'s own module graph (the smallest of
+   the three failing fixtures, 420ms) to find which specific construct
+   near a literal `20` the self-hosted kernel's `emit()` returns `null`
+   for — this is the "self-host-only codegen gap" class the PRIOR session
+   already recommended and this session's fix has now made REACHABLE for
+   the first time (it was masked behind the funcIdx-skew OOB trap before).
+2. **watr's `unreachable` and jzify-entry's unchanged `memory access out
+   of bounds`** are still region-arena-shaped traps — apply THIS session's
+   own cross-reference technique (ground-truth vs what-got-read, this time
+   for a heap kind other than CLOSURE, or for a genuinely shared/aliased
+   env slot) rather than restarting from a byte-dump. jzify-entry's
+   IDENTICAL-before-and-after signature is the most suspicious data point
+   (worth checking FIRST): does it trap in a completely closure-free code
+   path, meaning this session's fix was structurally irrelevant to ITS
+   specific instance?
+
+**SHAs.** jz worktree: `6743aea0` (region-final-2026-08-11, unchanged
+base — this session's `module/function.js`/`src/compile/emit.js` diff
+commits on top). watr: `895ca5b` (`/Users/div/projects/watr`, unpublished,
+unchanged). Dormant `dist/jz.wasm` (this session's fixed rebuild): SHA-256
+`f78405074f09d63c1b4b238dc5da6d28f840248f0f886a0773da7bb9aa9579ea` (NOT
+byte-identical to the prior `8d6a9344…` baseline — see the dormant
+byte-identity finding above for why that's expected and harmless).

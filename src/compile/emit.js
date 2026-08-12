@@ -269,8 +269,12 @@ function builtinFunctionValue(name) {
     ctx.core.stdlib[fn] = `(func $${fn} ${params.join(' ')} (result f64) ${op ? `(${op} (local.get $__a0))` : bodyGen()})`
     inc(fn)
   }
-  let idx = ctx.closure.table.indexOf(fn)
-  if (idx < 0) { idx = ctx.closure.table.length; ctx.closure.table.push(fn) }
+  // ctx.closure.mint (not a bare table.push) — keeps ctx.closure.envMeta
+  // aligned with ctx.closure.table by funcIdx; see module/function.js's
+  // ctx.closure.mint doc (.work/research.md §Region arena, funcIdx skew).
+  // A builtin-as-value closure is always zero-capture, so the default
+  // {len:0, cellMask:0} meta is correct here.
+  const idx = ctx.closure.mint(fn)
   const ir = mkPtrIR(PTR.CLOSURE, idx, 0)
   ir.closureFuncIdx = idx
   return ir
@@ -7273,8 +7277,12 @@ export function emit(node, expect) {
           inc(trampolineName, ...(ptrResult ? ['__mkptr'] : []), ...(restIdx >= 0 ? ['__alloc_hdr', '__mkptr'] : []))
         }
       }
-      let idx = ctx.closure.table.indexOf(trampolineName)
-      if (idx < 0) { idx = ctx.closure.table.length; ctx.closure.table.push(trampolineName) }
+      // ctx.closure.mint (not a bare table.push) — same funcIdx-alignment
+      // reason as builtinFunctionValue above. A top-level function used as
+      // a bare value has no captures (its real params are forwarded inline
+      // by the trampoline body, not carried via an env block), so the
+      // default {len:0, cellMask:0} meta is correct here too.
+      const idx = ctx.closure.mint(trampolineName)
       const ir = mkPtrIR(PTR.CLOSURE, idx, 0)
       ir.closureFuncIdx = idx
       return ir
