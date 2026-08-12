@@ -4062,3 +4062,226 @@ pass-internal locals like `forwardPropagate`'s `known` — a genuine
 architectural change (touches every entry in watr's `PASSES` table or the
 `regionMark`/`regionExit` insertion scope), not a one-line patch, matching
 every prior session's own "session-plus scope" conclusion for this hazard.
+
+## §Region arena — FRAME-FLIP COMPARISON: the pointer is PROVEN CORRECT
+(bit-for-bit, creation to use), the closing bulk `memory.copy` is PROVEN
+INNOCENT (all 5 rounds this run, by direct trace — the INSERT-PATH session's
+own recommended next lever), `__region_copy_rec`'s own forwarding-header AND
+element-relocation writes (i32/i64/f64.store, all 16 sites, every
+invocation) are PROVEN INNOCENT too — wall SURVIVES with every named
+candidate mechanism in this entire chain now eliminated by direct runtime
+trace, not inference (2026-08-11), disposable scratchpad worktree off
+`0d089b49` (region-final-2026-08-11) — verdict: this session's own opening
+hypothesis ("the corrupted value is the POINTER, not the memory") is
+FALSIFIED by its own prescribed test. Banked per the stop-on-fail tripwire.
+
+**Setup.** Fresh `git worktree add` off `0d089b49`, `node_modules` symlinked,
+watr 5.7.14 confirmed. Built the region-live kernel via the same
+`resolveSelfhostBuild()` defaults + `{names:true, wat:true}` recipe every
+session in this chain uses: 152 modules, `regionArenaLive:true`, 288,912,776
+chars (275.5 MB) — byte-identical to every prior session's own build of this
+commit.
+
+**Instrument, one build, five points** (`instrument.mjs`, scratch, reuses
+`trace-inject.mjs`'s own `findFunc`/`parseFunc`/`firstBodyIdx`/`printFunc`
+splicing mechanics plus a new generic recursive store-node walker):
+(a) `$__alloc_hdr_n_0_8_28`'s own return (raw i32 ptr) — `known`'s creation;
+cap=8/stride=28 (`INIT_CAP`+`MAP_ENTRY(24)+LANE(4)`) is a Map-only
+specialization, confirmed by cross-checking the sibling Set specialization
+`$__alloc_hdr_n_0_8_20` (stride 20 = `SET_ENTRY(16)+LANE(4)`) exists
+separately. (b) `$__map_set`/`$__map_delete` ENTRY — the `$coll` i64 param
+bits AS PASSED at every use site, traced unconditionally before any internal
+computation. (c) `$__region_copy_rec` — EVERY `i32.store`/`i64.store`/
+`f64.store` instruction anywhere in its body (16 sites total, found by a
+generic parent-array recursive walk, not a hand-picked family), address
+unconditionally traced on every invocation — module/core.js's ARRAY and
+SET/MAP relocation branches each leave a forwarding header at the relocated
+object's OLD site via `i32.store` (off-8/off-4), and the ARRAY branch copies
+element slots via `f64.store` — neither opcode was ever in scope for the
+prior INSERT-PATH session's i64.store-only sweep. (d) `__region_exit`'s own
+closing bulk `memory.copy(mark, T, size)` — confirmed fully INLINED under
+this O3 build (no standalone `$__region_exit` function exists; 0 declared,
+only 2 raw text hits and both are inside the embedded self-host SOURCE-DATA
+blob, not real call sites — a fresh trap for naive text search this session
+had to work around: `(func $__region_exit` legitimately absent is not the
+same as "code doesn't exist"). Located its landing site by hand: of 23
+`call $__region_copy_rec` occurrences outside `__region_copy_rec`'s own
+body, all but 3 sit inside the embedded compiler-source data blob (char
+offset < 4.4M, where the first real function declaration begins); the
+remaining 3 resolve to `$__region_relocate_props` (2, a sibling helper) and
+one auto-numbered closure — `$closure2907` — whose body is `__region_exit`
+reproduced instruction-for-instruction (memo-Map creation via
+`alloc_hdr_n(0,8,28)`+`mkptr(MAP)`, the `$__dyn_props` migration block, the
+closing `memory.copy`+`global.set $__heap` pair — module/core.js:772-833's
+own shape exactly, down to the `$__dyn_props` presence check). Traced
+`mark`/`T`/`size` on its one `memory.copy` call, every invocation. (e)
+`$__map_delete`'s own POST-forward-check `$off`/`$cap` — not just the entry
+param, the ACTUAL value its own compiled cap-load produces, located by
+matching the exact compiled tee-chain shape by hand off the built WAT
+(`(local.tee $cap (i32.load (i32.sub (local.tee $off ...) 4)))`).
+
+**A fresh instrumentation trap, found and fixed before running**: `$closure2907`
+is jz's own auto-numbered name, but the func declaration in the built WAT
+reads `$` + U+E000 (PUA marker, `src/ast.js`'s own generated-identifier
+convention) + `closure2907` — a plain substring `findFunc('closure2907')`
+silently finds nothing (0 results, no error) because the search never falls
+back past the first candidate. `trace-inject.mjs`'s own doc comment already
+flagged this exact hazard for LOCAL names; it applies to auto-numbered
+CLOSURE names too. Fixed by trying the plain needle first, falling back to a
+regex allowing an optional U+E000 right after `$`.
+
+**Result — reproduced deterministically, 2/2 independent instrumented
+rebuilds** (once at 4 points, once more after adding (e) and the f64.store
+class to (c) — every earlier number reconfirmed unchanged): `RuntimeError:
+memory access out of bounds`. Full harness: `watr/parse`+`watr/compile`
+reassembly (2.1-2.5s parse, 60-61s compile), instantiated BY HAND (bypassing
+`interop.js`'s `instantiate()`, same raw-i64-channel caution every prior
+session in this chain uses), `interop.js`'s own `memory()` helper given the
+full `{instance, exports, module}` shape (same full-instance-shape caution),
+ran the kernel-oracle `computed member key` repro at O3.
+
+**(a)+(b) — THE COMPARISON: creation box bits vs. the faulting call's box
+bits are IDENTICAL, bit-for-bit.** `$__alloc_hdr_n_0_8_28` returns raw ptr
+`32,818,248` (creation #32,794 of 32,794 total this run); the expected
+`mkptr(PTR.MAP=9, aux=0, offset=32818248)` box is `0x7ffc800001f4c448`. The
+FAULTING `$__map_delete` call (#38,188 of 38,188, the very last) enters with
+`$coll = 0x7ffc800001f4c448` — the SAME bits, exactly, no divergence in any
+field (tag, aux, or offset). Across the run's full 158,565 `__map_set` +
+38,188 `__map_delete` calls, this exact box value (decoded offset
+32,818,248) is used EXACTLY ONCE — by the fatal delete call itself, 94
+trace-events after its own creation, with no `__map_set` call ever touching
+it (the invalidation path deletes a key from a map that was seemingly never
+populated, or was populated through a path this instrumentation's tags don't
+cover — not pursued further, orthogonal to the frame-flip question).
+**This falsifies the task's own opening hypothesis outright**: the box was
+never bent between creation and use — it is the identical value, unmutated,
+the whole way through. Per the task's own decision tree ("IDENTICAL ⇒ the
+box was always wrong — the creation-side mkptr computed bad bits"): also
+false — the raw ptr IS what the allocator returned, and `mkptr`'s encoding
+is a pure, unconditional formula (`NAN_BITS | (type<<47) | (aux<<32) | off`)
+that this session verified by direct arithmetic reconstruction, not
+assumption, and it matches exactly. Neither branch of the task's own
+two-way fork applies — the ACTUAL finding is a third case the task's framing
+didn't anticipate: the pointer is exactly right, correctly created,
+correctly delivered unchanged to its one and only use site, and the fault is
+still a **memory** problem — the byte content of a correctly-addressed
+region genuinely differs from what was legitimately written there.
+
+**(c) — `__region_copy_rec` PROVEN INNOCENT, all 16 store sites, every
+opcode, every invocation.** 89,149 traced store-address events across 2
+runs (204 events under the i32/i64-only pass, 89,149 once f64.store — the
+ARRAY branch's element-relocation writes — was added). Zero land in known's
+header window `[32,818,216, 32,818,272)`. Every address this function ever
+wrote to, this entire run, clusters in the 22M-45M range — a completely
+different address band from known's own 32.8M, for both the forwarding-
+header pairs (ARRAY/SET/MAP branches) and the bulk element copies.
+
+**(d) — the closing bulk `memory.copy` PROVEN INNOCENT, all 5 rounds, by
+direct trace — the INSERT-PATH session's own recommended next lever, now
+actually run** (not inferred from surrounding evidence, the state every
+prior session in this chain left it in):
+
+| round | mark | T | size | dest range | overlaps window? |
+|---|---|---|---|---|---|
+| 1 | 26,109,000 | 43,853,312 | 1,059,424 | [26,109,000, 27,168,424) | no |
+| 2 | 27,168,424 | 38,239,128 | 955,424 | [27,168,424, 28,123,848) | no |
+| 3 | 28,123,848 | 35,243,736 | 925,176 | [28,123,848, 29,049,024) | no |
+| 4 | 29,049,024 | 34,992,616 | 920,328 | [29,049,024, 29,969,352) | no |
+| 5 | 29,969,352 | 34,961,264 | 920,104 | [29,969,352, 30,889,456) | no |
+
+All 5 compactions happen BEFORE the fault; none of their destination ranges
+reach anywhere near known's header. Independently, `known`'s own creation
+(seq 394,990) postdates round 5 (seq 387,820) entirely, and its address
+(32,818,248) sits ABOVE round 5's post-compaction ceiling (30,889,456) — the
+RUNTIME-TRACE session's own "climbing monotonically... zero further
+compaction in between" finding, now confirmed by DIRECT mark/T/size
+extraction rather than the `$__heap`-watermark proxy that session used. This
+mechanism is not just empirically clean here — it is temporally impossible
+for this specific fault: `known` didn't exist yet during any of the 5
+rounds' own bulk copies.
+
+**(e) — the garbage is real and reproduces exactly, independently.** The
+faulting call's own post-forward-check `$off` = `32,818,248` (matches (b)'s
+decode exactly — the address arithmetic inside `$__map_delete` is not
+miscompiled; hand-reading the built WAT confirms the compiled shape matches
+`module/collection.js`'s `genDelete` source verbatim, no CSE aliasing). Its
+`$cap` = `0x7ffa0000` (2,147,090,432) — byte-identical to the RUNTIME-TRACE
+session's own independently-built, independently-instrumented decode of the
+same repro, reconfirming determinism across the whole chain. `0x7ffa0000` in
+the HIGH 32 bits of an 8-byte slot is exactly the shape a boxed STRING VALUE
+(`PTR.STRING=4`, aux=0) written via a single `f64.store`/`i64.store` at
+address `off-8` (not `off-4` — the two 4-byte header words read together as
+one 8-byte unit) would produce — that byte-level diagnosis, from the
+RUNTIME-TRACE session, still stands; only its two candidate mechanisms (the
+bulk copy, and by extension anything inside `__region_copy_rec`) are now
+closed.
+
+**The verdict.** Every NAMED candidate mechanism this entire research chain
+has produced, across 2026-08-11's whole session sequence, is now eliminated
+by direct runtime trace: every `i64.store` in the compiled kernel
+(INSERT-PATH), the `genUpsert`/`genUpsertGrow` `i32.store` forwarding family
+(GROW-CROSSREF), `__region_copy_rec`'s own `i32.store`/`i64.store`/
+`f64.store` forwarding-header and element-relocation writes (this session),
+and `__region_exit`'s own closing bulk `memory.copy` (this session, located
+and traced directly for the first time in the chain). The pointer is proven
+correct. What remains, unchecked by any session including this one: the
+`f64.store`/`i64.store` VALUE-write instruction class *outside*
+`__region_copy_rec` — an ORDINARY jz-compiled write (an array element store,
+an object property store, another collection's own entry-value store)
+whose target address happens, by bump-allocator coincidence, to land inside
+known's live header. This is the one class of write this whole chain has
+never enumerated kernel-wide (INSERT-PATH's own sweep was explicitly
+i64.store-only "not a hand-picked family... but for i64.store"; this
+session's f64.store sweep was scoped to one function). A full kernel-wide
+`f64.store` address-watch, the same enumerate-every-occurrence-and-compare
+technique already proven out twice in this chain (i64.store kernel-wide,
+i32/i64/f64.store within `__region_copy_rec`), is the concrete, well-scoped,
+not-yet-attempted next lever.
+
+**Fix-or-bank: BANKED — no fix.** No source change; every function touched
+this session (`module/core.js`, `module/collection.js`) was read-only — all
+instrumentation lived in the disposable scratchpad worktree's own copy of
+the compiled WAT.
+
+**By-name verdict: N/A** — no shared-tree source change.
+
+**Gates: NOT RUN** — no fix to gate; kernel-oracle/kernel-parity/fuzz/full
+battery/dormant byte-identity/build×2/memory-watermark-curve/jz×jz all
+remain contingent on a landed fix, unchanged from every prior session in
+this chain.
+
+**Memory curve / jz×jz: NOT REACHED.**
+
+**Per the stop-on-fail tripwire.** Worktree-only: `git status` in the shared
+tree before and after this session shows only this ledger edit. Every
+artifact this session produced — `build-region-wat.mjs`, `instrument.mjs`,
+`run-instr.mjs`, the 275.5 MB named WAT, the ~276 MB instrumented WAT (×2
+builds), `trace-events.json` (395,087 rows) — lived only in the scratchpad
+worktree, never committed. SHAs: worktree base `0d089b49`
+(region-final-2026-08-11, unchanged); watr `node_modules` symlinked, 5.7.14
+confirmed. No jz branch created — pure instrumentation and trace, no diff to
+bank.
+
+**Recommendation for next session.** Don't re-open the pointer-bending axis
+— closed, decisively, by the task's own prescribed comparison (IDENTICAL,
+not different). Don't re-open `__region_copy_rec` or the closing bulk
+`memory.copy` — both now traced directly (not inferred) and both clean.
+Extend the enumerate-and-watch technique to `f64.store`/`i64.store`
+KERNEL-WIDE (mirroring INSERT-PATH's own i64.store sweep, but for the VALUE
+write, not the header write — likely a much larger instrumentation surface
+than 179 functions, since ordinary array/object writes are common kernel-
+wide; may need sampling or a narrower pre-filter, e.g. restricting to
+functions reachable from `forwardPropagate`'s own call graph, or to stores
+whose value operand carries a STRING tag pattern, to keep the sweep
+tractable) for the address range `[32,818,240, 32,818,248)` specifically
+(the 8-byte `[len,cap]` word `(e)` shows is the actual corrupted unit, not
+the full header window `(c)`/`(d)` used defensively). If that sweep also
+comes back clean, the remaining candidates are: a genuine allocator
+under-reservation bug (two calls computing overlapping ranges without any
+compaction between them — `732eff4b`'s own "allocator bookkeeping proven
+clean" finding may need revisiting for this SPECIFIC address pair rather
+than the whole run in aggregate), or a WASM-level non-store memory
+mutation this chain hasn't considered (e.g. a `table.copy`/`data.drop`
+misuse, or the JS-host `memory()` shim's own bump allocator — ruled
+structurally unlikely since this repro never crosses the host boundary
+after `default()` is called, but not yet directly excluded).
