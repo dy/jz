@@ -166,8 +166,14 @@ function setupSelf(strict, optJSON, modulesJSON, host) {
 // prepare -> preEval. The kernel previously composed prepare(lower(...)) per
 // entry WITHOUT preEval, so statically-foldable programs compiled to different
 // bits than native (audit P0 2026-07-25: 0.1+0.2-0.3 fold, Math.sqrt(9) at O0).
+// Region-arena FRONT boundary (.work/research.md §Region arena): mirrors
+// optimizeTail's own regionHooks line above verbatim — same REGION_HOOKS_ACTIVE
+// marker, same ternary shape, same literal __region_mark()/__region_exit()
+// calls that only ever compile to real wasm calls (this file is never run
+// natively — see this file's own header comment). frontHalf's own doc has the
+// root/rebind contract.
 function front(source, strict) {
-  return frontHalf(source, { strict, jzify })
+  return frontHalf(source, { strict, jzify, regionHooks: REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined })
 }
 
 /**

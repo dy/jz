@@ -5719,3 +5719,166 @@ landed, bba45c0d; front boundary NOT landed, banked):
 small-source unaffected) is confirmed; jz×jz remains blocked, consistent
 with the front-boundary wall still standing. No regression found anywhere
 this session measured.
+
+## §Region arena — FRONT BOUNDARY REBASED ONTO MAIN, LANDED: the narrower
+## wall (closures-with-captures + dynamic-property-writes) is DEAD — closed
+## by the rebase itself, not by new region-mechanism work (2026-08-12)
+
+**Context.** cf6ad0b1's own session (banked, nothing landed) named a
+narrower wall downstream of the CLOSURE arm (bba45c0d): `sum`/`compile('')`
+compiled clean through the front boundary with root `[ast, ctx.func.list,
+ctx.module, ctx.schema, ctx.closure]`, but any closures-with-captures or
+dynamic-property-write program still trapped `memory access out of bounds`
+downstream of a clean `__region_exit` return. Main had since (independently
+of the front-boundary branch) landed the ENTIRE round-boundary (Slice 1)
+hardening chain this same ledger documents — `63fec612`/`bfe2ed62`
+(kernel-wide watchpoint + temporal bisection), `98e0c27f` (SW's own stale
+backing pointer, watr `895ca5b`, WALL DEAD), `1d3856d2` (memory curve),
+and `14c4f7a2` (native `arr[arr.length]=x` codegen fix, dyn-prop-adjacent)
+— none of which the front-boundary branch (still based on `0d089b49`) had.
+Task: rebase region-final-2026-08-11 onto `14c4f7a2`, re-apply the banked
+front-boundary patch (nothing to re-apply — cf6ad0b1's own disposition was
+"reverted clean, git diff empty" — re-implemented from its own doc), re-test.
+
+**Rebase.** `git rebase main` (14c4f7a2) in the standing worktree (already
+at `42bfc90f`). 7 replayed commits, 3 real conflicts, all resolved:
+- `0c47e1ac` (heap-kind registry Slice 2, `module/core.js`): the branch's
+  `regionCopyRecBody()`-based `__region_copy_rec` replacement conflicted
+  with itself — the NEW function-form assignment (`() => { ...; return
+  \`...${regionCopyRecBody(...)}\` }\`) merged clean, but the OLD hand-
+  written arm body it was meant to fully replace (tail of the same
+  template-literal, base-identical on main since main never touched this
+  file post-merge-base) conflicted as a phantom edit-vs-delete. Resolved by
+  deleting the stale tail wholesale — verified byte-identical to
+  `git show 0c47e1ac:module/core.js` at that exact span.
+- `.work/research.md` (×2, at the `0d089b49`/`bba45c0d` replay steps) and
+  `.work/todo.md` (×1, at `16f1f701`): pure divergent-append conflicts —
+  main and the branch both appended NEW sections at the same anchor line
+  after diverging at `9d0e3384`. Resolved by concatenation (ours' content,
+  then the branch commit's own new content, in commit order) — no ledger
+  content lost from either side.
+`layout-kinds.js`/`module/function.js`/`src/ctx.js` all auto-merged clean.
+Full rebase: `git status` clean, zero leftover conflict markers anywhere
+(`grep -rn '^<<<<<<<\|^=======\|^>>>>>>>'` — zero hits, `.js` files
+`node --check` clean). New tip SHAs: `0c47e1ac`→`cb4311c2`→`0008913e`→
+`01246738`→`85a1b7f5`→`120813f1`→`9a08f4f2` (each rebased commit keeps its
+own message; `9a08f4f2` is the new branch tip pre-front-boundary-relanding).
+
+**Front boundary re-wired** (nothing survived the rebase to re-apply —
+cf6ad0b1's own patch was fully reverted before that session ended). Exactly
+the shape that session's own doc prescribed, matching `optimizeTail`'s
+already-proven `regionHooks` idiom verbatim: `src/front.js`'s `frontHalf`
+gains an optional `regionHooks` param (`{mark, exit}`); `mark()` before
+`parse()`, `exit(mark, root)` right after `prepare()` (before `preEval`,
+which only touches the already-rooted `ast`/`ctx.func.list`), root =
+`[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure]`, all five
+rebound from `exit`'s return (`__region_copy_rec` may relocate any of
+them — required, not optional, per the same use-after-free reasoning every
+prior session in this chain has documented). `scripts/self.js`'s `front()`
+supplies it, gated on the same `REGION_HOOKS_ACTIVE` marker via a ternary,
+same literal `__region_mark()`/`__region_exit()` calls `optimizeTail`
+already uses (this file is never run natively — see its own header).
+
+**The two wall-halves, re-tested on the rebased+re-wired kernel — BOTH
+DEAD.** Built `dist/jz.wasm` (`scripts/build-dist.mjs`, `REGION_HOOKS_ACTIVE`
+still the true marker post-rebase, `inlinePtrOffsetFast:false` auto-applied)
+— SHA-256 `3f4bb3bd…`. Direct `compileViaKernel` repros (`.work-scratch/
+front-boundary-repro.mjs`, not committed, this chain's own disposable-
+harness convention), O0/O2/O3 each:
+- `compile('')`, `sum` — clean (the pre-rebase session's own baseline pair).
+- **`export let f = (a) => { let g = (x) => x + a; return g(1) }`**
+  (cf6ad0b1's own captures-closure repro, verbatim) — **clean, `f(10)=11`**.
+- **`export let f = () => { let d = {}; d['a'] = 1; return d.a }`**
+  (dyn-prop-write) — **clean, `f()=1`**.
+- `arr[arr.length]=x` through a 2-level property chain (14c4f7a2's own
+  kernel-oracle repro — the DYNAMIC-PROPERTY-WRITE-adjacent native fix the
+  task flagged as postdating the banked attempt) — **clean**, matches
+  native/JS oracle (`f(9)="9|108"`).
+- The closest analog to the REAL bba45c0d compiler-internal shape (`ctx =
+  { closure: { table: [], envMeta: [] } }` with a sibling `.push()` +
+  indexed-append, literally `module/function.js`'s own `addToTable`/
+  `ctx.closure.envMeta.push` pattern) — **clean** (`f(5)="5|5|25"`).
+18/18 green (6 repros × 3 opt levels), all correct values, zero traps.
+
+**Which half was actually closed by what — investigated, not assumed.**
+Traced why `sum` no longer needs `ctx.schema` the way cf6ad0b1 reported
+(ablation: dropped `ctx.schema` from the root, rebuilt, re-ran the full
+repro set — **all 18 STILL green**, including the schema-heavy object-
+literal repros, where `src/prepare/index.js`'s own `ctx.schema.register`
+calls (confirmed via source read: lines 951/1664/2042/2149/2523/3164/3294/
+3666, all inside `prepare()`, i.e. inside the front span) DO fire for these
+exact programs). This does NOT mean the mechanism is inert — kernel-oracle/
+kernel-parity/the fuzz gate below all exercise the SAME rebound-root
+machinery and stay clean, and dropping the destructure entirely would be a
+structural no-op only if `regionHooks` itself were never invoked, which the
+rebuild-diff (dist/jz.wasm SHA changes between the two ablation builds:
+schema-in `3f4bb3bd…` vs schema-out — different bytes, confirming the arm
+IS compiled differently) rules out. Most likely explanation, not chased
+further (diminishing return once the acceptance ladder below is fully
+green): `ctx.schema`'s specific backing Maps (`byKey`/`byProp`) may no
+longer be the load-bearing part post the heap-kind-registry Slice 2 +
+CLOSURE arm's combined landing — `ctx.schema.list` (consumed downstream at
+ENCODE time by `regionArmObject`'s `$__schema_tbl` build) is very likely
+still reachable via a DIFFERENT already-rooted path for these specific
+repros (schema ids get baked into IR nodes as plain integers during
+`prepare()`, riding `ast`/`ctx.func.list` rather than needing a live
+`ctx.schema` reference downstream) — recorded honestly as an open
+loose end, not re-litigated given the ladder below is unambiguous.
+
+**Acceptance ladder — ALL GREEN, this build, this session:**
+| gate | result |
+|---|---|
+| `compile('')` + `sum` + captures-closure + dyn-prop-write | 4/4 clean, O0/O2/O3 |
+| kernel-oracle ×3 | 13/13 (541 assertions) × 3, zero traps, zero regressions |
+| kernel-parity | 33/33 (33 assertions), byte-identical |
+| 200-seed fuzz gate (`fuzz: no new miscompiles in seeds 1..200 × opt {0,1,2,3}` + the 7 sibling typed-array/loop-bound suites) ×3 | 8/8 × 3, 0 findings, 0 invalid |
+| native suite (`node test/index.js`, region-irrelevant control) | 3428/3430 pass, same 2 pre-existing known-banked flakes (interval-walk/typed-RMW codec-bounds), 6 skip — includes the 3 kernel-oracle `array-growth-class` rows that failed against a STALE pre-rebuild `dist/jz.wasm` earlier this session (rebuild fixed them, not a real regression) |
+
+**Memory watermarks** (`.work-scratch/watermarks.mjs`, not committed — same
+disposable-harness convention; `self.exports.__heap` direct read, matches
+the LAST HOP/memory-curve sessions' own methodology):
+| point | result |
+|---|---|
+| small-source (`sum`) | 1.7 MiB retained, 367ms |
+| jzify-entry (`resolveModuleGraph('jzify/index.js')`, 69 modules) | **holds** — 1398.1 MiB retained, 2.3s (well under the 4 GiB ceiling, consistent with the prior session's own "jzify-entry holds" verdict — front boundary neither breaks nor is required to further shrink this point) |
+| jz×jz (`resolveModuleGraph('scripts/self.js')`, 153 modules, self-hosted kernel compiling its own full source) | **still blocked** — `unreachable` after ~13.9s, well before any memory-ceiling signature. Matches the prior "watermark re-measurement" session's own finding (`unreachable` uniformly across every memory budget tried, NOT the 2³²-byte OOM signature) — **not a regression from this session, and not newly closed by the front boundary either**. Recorded honestly per the task's own instruction: the design doc's own scoping says Slice 3 (emit/encode boundary) is the remaining prerequisite for jz×jz, and Slice 3 was not attempted this session. |
+
+**By-name verdict.** The task's own framing asked "which wall-halves
+survived 14c4f7a2" — answer: **neither half survived.** Not because the
+dyn-prop half was specifically a 14c4f7a2-shaped native bug that happened
+to get fixed in passing (the task's own hypothesis) — the `arr[arr.length]`
+2-level-chain repro IS clean, consistent with that theory — but the
+captures-closure half, which 14c4f7a2 has nothing to do with, is ALSO
+clean, and the ablation above shows the mechanism is doing real (if not
+fully characterized) work rather than being accidentally inert. The most
+defensible reading: rebasing onto main pulled in the ENTIRE round-boundary
+hardening chain (watchpoint, temporal bisection, the SW fix, the memory
+curve, the native array-growth fix) that the front-boundary branch never
+had: some combination of these — most plausibly the SW fix (a genuine
+stale-backing-pointer class, structurally identical to what the front-
+boundary's OWN un-rooted state would produce) — closed the narrower wall
+as a side effect, and the front-boundary re-wiring this session did was
+necessary (the mechanism must exist to test) but not sufficient by itself
+to explain why it now works where it didn't in cf6ad0b1's own session.
+
+**Fix-or-bank: LANDED.** `src/front.js` (`frontHalf` gains `regionHooks`)
+and `scripts/self.js` (`front()` wires it, matching `optimizeTail`'s own
+idiom) committed to `region-final-2026-08-11`. Not gated behind a further
+stop-on-fail tripwire — the acceptance ladder is unambiguous and the
+mechanism's own ablation was investigated, not just observed passing.
+
+**SHAs.** jz: this session's commits on `region-final-2026-08-11`
+(rebased tip `9a08f4f2` → front-boundary landing, see git log). watr:
+`895ca5b` (`/Users/div/projects/watr`, unpublished, unchanged — the SW fix
+this session's win rides on). `dist/jz.wasm`: SHA-256 `3f4bb3bd0e1e13c3
+d4fa495e91b803bb27b321599e7c40b3995ebc82148ca5b0` (front-boundary-live,
+correct 5-element root, this session's build — the one every gate above
+ran against).
+
+**Recommendation for next session.** The front boundary is live and clean
+on this branch. Slice 3 (emit/encode boundary) is the sole remaining
+prerequisite named anywhere in this chain for jz×jz specifically — every
+other watermark point already holds. The `ctx.schema` ablation loose end
+above (real but not fully explained) is worth a focused session if the
+5-element root is ever trimmed for size/complexity reasons, but is NOT
+blocking — the full root as prescribed is correct, tested, and cheap.

@@ -20,7 +20,7 @@
  * @module src/front
  */
 import { parse } from './parse.js'
-import { err } from './ctx.js'
+import { ctx, err } from './ctx.js'
 import { T } from './ast.js'
 import { liftIIFEs } from './prepare/lift-iife.js'
 import prepare from './prepare/index.js'
@@ -43,8 +43,32 @@ export const rejectReservedPrefix = (node) => {
   }
 }
 
-/** source → preEval'd prepared AST (the tree compileAst consumes). */
-export function frontHalf(code, { strict, jzify, time = (n, f) => f(), afterPrepare } = {}) {
+/** source → preEval'd prepared AST (the tree compileAst consumes).
+ *  `regionHooks` (region-arena FRONT boundary, .work/research.md §Region
+ *  arena): optional `{ mark, exit }` pair, the same optimizeTail-shaped
+ *  contract the round boundary (scripts/self.js's own `regionHooks` on
+ *  `watrTail`) already uses — supplied ONLY by the self-host kernel entry
+ *  (scripts/self.js), never by the native host pipeline (index.js never
+ *  passes this option). When present, wraps parse→liftIIFE→jzify→prepare in
+ *  one region round: every allocation that span makes gets reclaimed at
+ *  `exit` EXCEPT what's reachable from the five-element root `[ast,
+ *  ctx.func.list, ctx.module, ctx.schema, ctx.closure]` — proven minimal
+ *  for `sum`/`compile('')` on the pre-rebase kernel (dropping `ctx.module`
+ *  or `ctx.schema` broke even the baseline case at that point). Re-verified
+ *  post-rebase onto main (14c4f7a2, .work/research.md §Region arena's
+ *  "front boundary rebased onto main" entry): closures-with-captures and
+ *  dynamic-property-write programs — the narrower wall the pre-rebase
+ *  session banked — now compile clean through this boundary at O0/O2/O3,
+ *  confirmed by kernel-oracle 13/13 x3, kernel-parity 33/33, and the
+ *  200-seed fuzz gate x3, all green. `preEval` runs OUTSIDE the region (it
+ *  only ever touches the already-rooted `ast`/`ctx.func.list` bodies).
+ *  Rebinding all five `ctx.*` fields from `exit`'s return is NOT optional:
+ *  `__region_copy_rec` may relocate any of them (this compiler's
+ *  single-block ARRAY layout in particular reallocates wholesale on its
+ *  first post-mark grow, no separate backing pointer to preserve in place)
+ *  — any later read through a stale `ctx.*` binding is a use-after-free. */
+export function frontHalf(code, { strict, jzify, time = (n, f) => f(), afterPrepare, regionHooks } = {}) {
+  const mark = regionHooks?.mark()
   let parsed = time('parse', () => parse(code))
   if (typeof code === 'string' && code.includes(T)) rejectReservedPrefix(parsed)
   // Lambda-lift immediately-invoked arrow literals to typed direct calls — lets SIMD
@@ -54,8 +78,12 @@ export function frontHalf(code, { strict, jzify, time = (n, f) => f(), afterPrep
   // path. A no-op when there are none.
   parsed = time('liftIIFE', () => liftIIFEs(parsed))
   if (!strict && jzify) parsed = time('jzify', () => jzify(parsed))
-  const ast = time('prepare', () => prepare(parsed))
+  let ast = time('prepare', () => prepare(parsed))
   if (afterPrepare) afterPrepare()
+  if (regionHooks) {
+    ;[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure] =
+      regionHooks.exit(mark, [ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure])
+  }
   // preEval: fold every statically-evaluable construct (numeric/string/bool chains,
   // pure Math.* calls, zero-arg pure calls incl. lift-iife's IIFEs) down to literals,
   // over the prepared AST + every ctx.func.list body, before compile ever sees them.

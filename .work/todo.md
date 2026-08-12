@@ -11411,3 +11411,56 @@ throughout the whole walk. Either one, once landed, closes the
 
 **Commits**: none to the shared tree's compiler source (worktree discarded
 at session end). This entry + `.work/research.md`'s matching append only.
+
+## Status (2026-08-12, REGION ARENA FRONT BOUNDARY — REBASED ONTO MAIN,
+## LANDED: the narrower wall is DEAD). Full account: `.work/research.md
+## §Region arena`'s "FRONT BOUNDARY REBASED ONTO MAIN, LANDED" entry.
+
+Task: rebase `region-final-2026-08-11` onto main (`14c4f7a2`, which had
+independently landed the whole round-boundary/Slice-1 hardening chain —
+watchpoint, temporal bisection, the SW stale-pointer fix, the memory curve,
+the native `arr[arr.length]=x` fix), re-apply cf6ad0b1's own banked front-
+boundary patch (nothing survived to re-apply — re-implemented from its own
+doc), re-test the two wall-halves (captures-closure, dyn-prop-write).
+
+**Rebase**: 7 commits replayed, 3 conflicts (one real code conflict in
+`module/core.js` — a phantom edit-vs-delete on `__region_copy_rec`'s
+already-superseded hand-written body, resolved by deleting the stale tail;
+two pure divergent-append ledger conflicts, resolved by concatenation).
+Clean, zero markers left, `node --check` clean on every touched `.js`.
+
+**Front boundary re-wired**: `src/front.js`'s `frontHalf` gains an optional
+`regionHooks` param (mark before `parse()`, exit after `prepare()`, root =
+`[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure]`, all five
+rebound from the exit's return); `scripts/self.js`'s `front()` wires it,
+matching `optimizeTail`'s own already-proven `regionHooks` idiom exactly.
+
+**Both wall-halves DEAD, not just the dyn-prop half the task suspected**:
+cf6ad0b1's own captures-closure repro (`(a) => { let g = (x) => x + a;
+return g(1) }`) and dyn-prop-write repro (`let d={}; d['a']=1`) both compile
+clean at O0/O2/O3 on the rebased+re-wired kernel, plus 14c4f7a2's own
+`arr[arr.length]` 2-level-chain repro and the closest analog to the REAL
+bba45c0d shape (`ctx={closure:{table:[],envMeta:[]}}` sibling push+indexed-
+append) — 18/18 green. Ablated `ctx.schema` out of the root to check
+whether the mechanism is genuinely doing work (not a no-op): still 18/18
+green — the specific `ctx.schema` load-bearing-ness cf6ad0b1 reported did
+NOT reproduce post-rebase (recorded as an open, non-blocking loose end, not
+chased further — the dist/jz.wasm SHA differs between the two ablation
+builds, confirming the arm compiles differently either way, so the
+mechanism itself is live, just not narrowly pinned down to `ctx.schema`
+specifically for these repros).
+
+**Full ladder green**: kernel-oracle 13/13 (541 assertions) ×3, kernel-
+parity 33/33, the 200-seed fuzz gate (+7 sibling typed-array/loop-bound
+suites) ×3 — 0 findings every run — native suite 3428/3430 (2 pre-existing
+known-banked flakes only). Memory watermarks: small-source 1.7 MiB, jzify-
+entry holds at 1398.1 MiB (well under 4 GiB), jz×jz still blocked
+(`unreachable` ~13.9s in, matching the prior watermark session's own
+non-OOM signature — NOT a regression, Slice 3/emit-boundary is the named
+remaining prerequisite, not attempted this session).
+
+**Fix-or-bank: LANDED** (not banked) — the front boundary is live on
+`region-final-2026-08-11`, committed alongside this entry.
+
+**Commits**: `src/front.js`, `scripts/self.js` (region-hooks wiring) + this
+entry + `.work/research.md`'s matching append.
