@@ -397,3 +397,21 @@ whichever future session scopes that bucket specifically, not answered
 here — it would change that bucket's whole cost model and deserves its own
 census pass over `funcFacts`' actual field list vs. `ctx.func`'s, not a
 guess folded into this survey.
+
+## COORDINATOR RULINGS (2026-08-12, binding)
+1. The campaign spine: the REGISTRY/FRAME split (the ctx.transform precedent)
+   — ctx.funcs (registry: list/names/map/multiProp/exports, compile-lifetime)
+   vs ctx.frame (the active function, per-enterFunc). Named that way; the
+   split is the slice-(d) prerequisite's actual shape.
+2. First slice: AdHocMemo (the nomination ACCEPTED — 6 single-slot memo
+   caches → the WeakMap-on-identity precedent; byte-identical by
+   construction). Second: uniq extraction (the 129-site idiom → one
+   counter object on the frame).
+3. AnalysisFacts (198W): NOT a decomposition target — it's a MIRROR of the
+   frozen funcFacts Map; the campaign's endgame there is deletion-by-
+   redirection (readers go to the store), one reader-family at a time,
+   byte-gated. This is what actually kills the ambient-cache audit finding.
+4. The emitClosureBody flat-worklist reentrancy convention: make it
+   structural during the frame extraction (the frame swap becomes explicit
+   push/pop or fresh-frame-per-closure — pick during implementation,
+   byte-gated).
