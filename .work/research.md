@@ -4507,3 +4507,233 @@ functions by that precedent) for f64.store/i32.store/v128.store/memory.fill
 specifically, rather than the full 6,029-function / ~180K-instruction
 kernel-wide surface this session's own opcode census shows is too large for
 an unconditional per-site sweep within one session's build-time budget.
+
+## §Region arena — TEMPORAL BISECTION: the writer CAUGHT DIRECTLY for the
+first time in this chain — `$__arr_push1`'s ordinary element `f64.store`,
+address bit-for-bit `known`'s own watched-window start, 1 checkpoint before
+the first garbage observation (2026-08-12), disposable scratchpad worktree
+off `0d089b49` (region-final-2026-08-11) — verdict: GARBAGE, not intact, at
+the last checkpoint before the trap (read directly off exported globals, not
+inferred from the diff ring's silence); the corruption window narrows to
+[checkpoint 48838090, 48844136], 6,046 entries wide, provably unchanged
+throughout; the writer is `$__arr_push1` (module/array.js's single-element
+push helper) growing an ORDINARY, region-arena-oblivious array whose target
+slot coincides with `known`'s header by bump-allocator address reuse — the
+exact "ordinary jz-compiled write" mechanism every prior session in this
+chain named as the last unchecked candidate, now directly observed, not
+eliminated-by-exclusion. Root cause reconfirms (does not revise) every prior
+session's own "architectural, not session-scoped" verdict: `known` is
+`node_modules/watr/src/optimize.js`'s own `forwardPropagate`'s bare
+`new Map()` local (line 3155, a third-party dependency, not this repo's
+`src/`), invisible to region-arena's root/liveness tracking. Banked per the
+stop-on-fail tripwire.
+
+**Setup.** Fresh `git worktree add` off `0d089b49`
+(`/private/tmp/.../scratchpad/region-bisect-wt`), `node_modules` symlinked,
+watr 5.7.14 confirmed. Built the region-live kernel via the same
+`resolveSelfhostBuild()` defaults every session in this chain uses: 152
+modules, `regionArenaLive:true`, 288,912,776 chars (275.5 MB) — byte-identical
+to every prior session's own build of this commit.
+
+**Method — the task's own prescribed technique, actually rebuilt and
+extended.** `watch-inject.mjs` (the KERNEL-WIDE session's own technique,
+named in its recommendation but never committed — every disposable
+worktree in this chain is removed after its session, so nothing survives
+between sessions but this ledger's prose) had to be re-derived from that
+entry's own description, not reused verbatim. Re-derivation surfaced one
+FRESH bug the prior prose didn't document: the decl-skip regex
+(`^\s*\((param|result|local)[\s)]`, unanchored on indent) also matches a
+NESTED `if`/`block`'s own standalone `(result i32)` signature line —
+confirmed empirically: `$__str_byteLen`'s body opens `(if\n      (result
+i32)\n ...)` immediately after its own 4-space decls, at 6-space indent. An
+indent-blind scan would extend the "still in decls" region past the
+function's real decls and splice the checkpoint INSIDE the `if`'s own
+argument list — paren-balanced (so `parseWat` doesn't catch it) but
+structurally wrong, the same silent-corruption shape the KERNEL-WIDE
+session's own bug #1 already warned about, one level more subtle. Fixed by
+anchoring both the decl-skip and the export-skip regex to EXACTLY 4-space
+indent (this printer's own function-level-decl convention, confirmed against
+$__map_delete/$__str_byteLen/$compileSelf$exp's own raw shapes before
+trusting it at scale). The anchored function-count (6,029) matched the
+KERNEL-WIDE session's own count exactly, cross-validating both derivations
+independently.
+
+Per the task's own explicit ask, the checkpoint was extended beyond
+diff-only tracing: (1) a global `i64` counter, incremented at EVERY
+checkpoint (not just on a content change); (2) two EXPORTED globals holding
+the CURRENT raw 16-byte window content, unconditionally overwritten every
+checkpoint — read directly off `inst.exports.__dbgCounter`/`__dbgWinLo`/
+`__dbgWinHi` after the trap, no host-call overhead paid for this (pure
+`global.set`, not a `dbg.trace` call); (3) a WASM-side circular ring buffer
+(65,536 slots, one `i32.store` per checkpoint, no host call) recording the
+raw function-entry SEQUENCE for the last 65,536 checkpoints before the trap,
+decoded from `inst.exports.memory.buffer` after catching the trap. The
+existing diff-trace `dbg.trace(tag, value)` channel was kept too (now
+`dbg.trace(tag, counter, value)`, 3 `i64` params) for cross-checking against
+the KERNEL-WIDE session's own 45-event finding.
+
+**Three fresh instrumentation traps this session found and fixed before
+trusting any number** (beyond the decl-skip bug above):
+1. **Tag-encoding collision, first draft.** Lo-channel used the raw function
+   index `i` as its tag, Hi-channel used `2i+1` — these ranges overlap (Lo-tag
+   for func #19 == Hi-tag for func #9). Caught by cross-checking the
+   decoder's own assumed `tag=2i(+1)` scheme against what the injector
+   actually emitted, before trusting the first run's function attribution.
+   Fixed: both channels now `2i`/`2i+1`, symmetric.
+2. **Reading the WRONG `WebAssembly.Memory`.** The ring-buffer dump initially
+   read `mem.buffer` — the harness's own `env.memory` import object — but
+   this kernel declares its OWN internal memory (`(memory (export "memory")
+   8192)`), never imports one; `env.memory` is inert. Every ring slot decoded
+   as function index 0 (zero-initialized, coincidentally `$__mkptr_1_0_d`'s
+   own index) — caught by the suspicious result (one function, 20,000
+   consecutive entries, contradicting the diff-trace ring's own independent
+   report of `$__len`/`$__length` entries in the exact same range) before
+   trusting it. Fixed: read `inst.exports.memory.buffer`.
+3. **Fine-pass instrumentation order.** A first attempt instrumented
+   `$__arr_push1`'s 2 store sites on top of the ALREADY window-checkpointed
+   file — the checkpoint's own ring-buffer `i32.store` (address bookkeeping)
+   became arr_push1's FIRST top-level `i32.store`, so a naive
+   `findIndex('i32.store')` silently instrumented the WRONG store, and a
+   splice-ordering bug (inserting at the earlier index first) additionally
+   invalidated the captured `f64.store` index. Caught by nonsensical traced
+   addresses (`0`, and exactly `400000000` — the OTHER pass's own
+   `RING_BASE` constant) before trusting it. Fixed by reordering the
+   pipeline: instrument `$__arr_push1` FIRST on the clean base (pre-declaring
+   the shared `$__dbgCounter`/window globals + `$dbgtrace` import itself),
+   THEN run `watch-inject.mjs` on that output (updated to detect and reuse
+   pre-existing declarations rather than double-declaring them) — this also
+   gives the fine-pass's own trace events the SAME counter timeline as the
+   window checkpoints, letting the two be compared directly by checkpoint
+   number.
+
+**Result — reproduced deterministically, 2 independent full pipeline runs
+(before and after the tag-collision fix) agreeing exactly on the counter
+(48,846,519) and the 45-event diff ring.** `RuntimeError: memory access out
+of bounds`, matching every prior session's own signature. Full harness:
+`watr/parse`+`watr/compile` reassembly (1.8-2.6s parse, 58-60s compile),
+instantiated by hand, `interop.js`'s `memory()` helper given the full
+instance shape, ran the kernel-oracle `computed member key` repro
+(`test/kernel-oracle.js`'s own AGREE-tier row, O3): `export let f = (x) => {
+let o = {}; o[x > 0 && 1] = 'v'; return o['0'] }`.
+
+**THE BISECTION VERDICT: GARBAGE, read directly, not inferred.** At the last
+checkpoint before the trap (global counter 48,846,519), `__dbgWinLo` =
+`__dbgWinHi` = `0x7ffa000001a594d4` — a boxed STRING-shaped NaN pattern
+(`0x7ffa0000` high half), matching every prior session's own byte-level
+diagnosis of the fault, NOT the creation-correct `(len=0,cap=8/entries0=0)`
+shape. This directly answers the task's own bisection question — the prior
+"INTACT" hypothesis (silence in the diff ring meaning nothing changed) is
+FALSE; the window changes rarely, but it does change, and by trap time it is
+long since corrupted.
+
+**Creation, pinned exactly (first time any session has traced it live, not
+inferred from watr's own source).** Checkpoint #48838086: `$m120_optimize$forwardPropagate`
+(watr's own forward-propagation pass, bundled as module 120 of jz's
+self-host kernel) is entered; #48838087 `$__alloc`; #48838088
+`$__alloc_hdr_n_0_8_28` (the Map-only cap=8/stride=28 specialization every
+prior session named from the built WAT, now observed as forwardPropagate's
+own direct callee, live). Checkpoint #48838090 (`$__length`'s own entry) is
+the first to observe the fresh header: Lo=`0x0000000800000000` (cap=8,
+len=0), Hi=`0x0000000000000000` (entries[0]=0) — the textbook fresh-Map
+shape.
+
+**The corruption window, narrowed to 6,046 checkpoint-entries, PROVABLY
+UNCHANGED throughout.** Between checkpoint #48838090 (creation, observed)
+and #48844136 (`$__len`'s entry, the first to observe garbage), the
+diff-trace ring records ZERO events — the window's content matches the
+creation-correct value at every intervening checkpoint that happened to read
+it. The corrupting write therefore lands in the single instruction gap
+between checkpoint #48844135 and #48844136.
+
+**The writer, caught directly — `$__arr_push1`.** The full per-checkpoint
+entry sequence (WASM-side ring buffer, no host-call cost) shows checkpoint
+#48844135 is `$__arr_push1` (`module/array.js`'s compiled single-element
+`Array.prototype.push` helper — an entirely ordinary, region-arena-oblivious
+value write), immediately followed by #48844136 `$__len` — the exact
+observation point. A targeted fine-pass instrumenting `$__arr_push1`'s own 2
+store sites (the `f64.store` writing the pushed VALUE at `base+len*8`, and
+the `i32.store` updating the length word at `base-8`) unconditionally,
+across all 332,213 real invocations this run, confirms it directly: the
+invocation AT checkpoint #48844135 targets address `32818240` — bit-for-bit
+`known`'s own watched-window start (`WIN_LO`) — via its `f64.store`. The
+VERY NEXT push call, checkpoint #48844497, targets `32818248` (`WIN_HI`),
+exactly matching the diff-trace ring's own event #45 one checkpoint later
+(#48844498, `$__len` observing the Hi half now garbage too). 84 of
+`$__arr_push1`'s 332,213 invocations this run land in or adjacent to the
+watched window; all but the last 3 (checkpoints 48842339→32818232,
+48844135→32818240, 48844497→32818248 — three CONSECUTIVE 8-byte slots of one
+growing array's own element range) happen BEFORE `known`'s own creation
+(#48838088) and are harmless — nothing live occupied that address yet. Only
+this final trio, occurring while `known` was still alive (and about to be
+read by `$__map_delete` near the run's very end), collides with a
+still-live object.
+
+**Root cause: reconfirms, does not revise, every prior session's own
+verdict — with the mechanism now named exactly.** `known` is
+`node_modules/watr/src/optimize.js:3155`'s own `const known = new Map()`
+inside `forwardPropagate` — a bare host-language local of a THIRD-PARTY
+dependency (watr, an npm package, not vendored under this repo's `src/`),
+invisible to region-arena's root/liveness tracking because it is never part
+of the AST/ctx object graph that tracking walks. `scripts/self.js`'s
+`optimizeTail` is the only caller wiring `regionHooks.mark`/`.exit`, and
+`node_modules/watr/src/optimize.js`'s own optimize loop calls
+`opts.regionMark?.()` ONCE PER ROUND (bracketing ALL of `PASSES`, not one
+pass) — so this session's own direct trace additionally rules out a
+cross-round compaction bug for THIS fault specifically (no
+`$__alloc_hdr_n`/bulk-relocation signature appears anywhere in the
+[48838090, 48844136] window; the corrupting write is an ordinary allocator
+hand-out, not a relocation). The defect is `known` sharing address space
+with an unrelated array's own reserved storage because region-arena's
+allocator bookkeeping has no way to know `known` is still live — exactly
+the "known escaping the region root" hazard every session since
+INSERT-PATH has named, now proven by direct capture of the actual
+overwriting instruction instead of by elimination.
+
+**Fix-or-bank: BANKED — no fix.** `known`'s own allocator is watr's compiled
+optimize pass; a scoped, safe fix cannot live in a `forwardPropagate`-only
+allowlist entry (per INSERT-PATH's own citation, this hazard is generic to
+"every entry in watr's PASSES table" — any pass allocating its own scratch
+Map/Array/Set is equally exposed, and a narrow patch would just relocate the
+bug to the next such site). A real fix needs region-arena's root/liveness
+tracking extended to cover watr-internal pass-scratch allocations
+generically — spanning this repo's own `regionHooks` wiring AND, since
+`known` lives in an external, versioned npm dependency, either an upstream
+watr change or a jz-side generic pinning mechanism across the watr call
+boundary. Not a same-session, safely-scoped patch; matches every prior
+session's own "architectural, not session-scoped" conclusion exactly, now
+on strictly stronger evidence (a direct catch, not an elimination chain).
+
+**By-name verdict: N/A** — no shared jz-repo source change. `node_modules/watr`
+read-only (external dependency, inspected not edited); every instrumentation
+artifact (`watch-inject.mjs`, `arr-push1-inject.mjs`, `run-bisect.mjs`, the
+275-294 MB WAT variants, `sidecar*.json`, `bisect-run*.log`) lived only in
+the disposable scratchpad worktree, never committed.
+
+**Gates: NOT RUN** — no fix to gate; kernel-oracle/kernel-parity/fuzz/full
+battery/dormant byte-identity/build×2/memory-watermark-curve/jz×jz all
+remain contingent on a landed fix, unchanged from every prior session in
+this chain.
+
+**Memory curve / jz×jz: NOT REACHED.**
+
+**Per the stop-on-fail tripwire.** Worktree-only: `git status` in the shared
+tree before and after this session shows only this ledger edit. SHAs:
+worktree base `0d089b49` (region-final-2026-08-11, unchanged); watr
+`node_modules` symlinked, 5.7.14 confirmed. No jz branch created — pure
+instrumentation and trace, no diff to bank. Worktree removed at session end.
+
+**Recommendation for next session.** Don't re-open the bisection question —
+answered directly (GARBAGE) and the writer directly caught, both firsts in
+this chain. Don't re-derive `watch-inject.mjs` from prose again — this
+session's own copy (with the 4-space indent anchor fix, the symmetric tag
+scheme, and the counter+ring-buffer extensions) is the reusable reference;
+consider committing it to `scripts/` (outside the region investigation's own
+disposable-worktree convention) so the NEXT session doesn't re-pay the same
+four instrumentation traps. The concrete next step, if this wall is ever
+worked: read `node_modules/watr/src/optimize.js`'s PASSES table (line 8045)
+and enumerate every pass allocating its own scratch `Map`/`Array`/`Set` (not
+just `forwardPropagate`) — the fix's real scope — then decide between an
+upstream watr PR (pinning host-visible pass locals across the
+`regionMark`/`regionExit` boundary generically) or a jz-side wrapper that
+forces a full, generic drain of watr-internal allocations at each round's
+`regionMark`, not just the specific ones each session has happened to name.
