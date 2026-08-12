@@ -157,6 +157,17 @@ test('ProgramFunctions resets between sequential compiles', () => {
     'second compile receives a fresh program registry, not the prior session catalog')
 })
 
+test('function-entry state pins: P1 predictions and diagnostic identity are frame-local', () => {
+  if (onKernel()) return
+  compile('export let a = () => { let xs = [1, 2]; return xs[0] }')
+  const firstPredicted = ctx.func.p1Predicted
+  ok(firstPredicted instanceof Set, 'function entry seeds p1Predicted explicitly')
+  compile('export let b = () => { let o = { x: 1 }; return o.x }')
+  ok(ctx.func.p1Predicted instanceof Set && ctx.func.p1Predicted !== firstPredicted,
+    'a later function/session cannot inherit the prior frame prediction set')
+  ok(!('name' in ctx.func), 'dead ctx.func.name authority was not introduced; diagnostics use current?.name')
+})
+
 test('session-reentrancy: closure/loop-plan A then structurally-similar B — warm matches fresh-process (audit-#19 stale-plan probe)', () => {
   if (onKernel()) return
   const warmA = compile(CLOSURE_LOOP_A)

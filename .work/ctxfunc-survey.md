@@ -581,3 +581,21 @@ compile timing pin was machine-load red in all three rounds (1.039–1.060× vs
 **Next:** extract the active record / EmitFrame structurally. AnalysisFacts is
 still deletion-by-redirection into `funcFacts`, per ruling #3, not another
 record to move wholesale.
+
+## AS-LANDED — Slice 4a: frame-entry ownership pins (2026-08-12)
+
+Before the ActiveFunction/EmitFrame reference-swap, `enterFunc()` now seeds the
+previously shape-by-use `p1Predicted` Set on every function and closure entry,
+and explicitly clears `hoistTempDefs` with the rest of the frame. The two debug
+invariant messages no longer read the nonexistent `ctx.func.name`; their sole
+identity authority is `ctx.func.current?.name`.
+
+This closes the two concrete drift findings from the ownership survey without
+creating a compatibility field. `test/session-reentrancy.js` proves the P1 Set
+is replaced across sequential entries/sessions and that no `name` field appears
+on the active frame. `npm test` reaches only the two standing optimizer-shape
+failures (3421 pass, 2 fail, 6 skip); debug invariants pass 18/18.
+
+The next frame slice remains structural: one complete active-frame record and
+reference swap for nested closure / synthetic `__start` emission, deleting
+`buildStartFn`'s selected-field snapshot.

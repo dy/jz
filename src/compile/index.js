@@ -400,6 +400,7 @@ function enterFunc(sig, body, { uniq = 0, directClosures = null, exported = fals
   // magnitude — closing a real self-host regression, layout.js's `i64Hex`).
   ctx.func.exported = !!exported
   ctx.func.repsFrozen = false   // plan phase opens — reps writable until body emission starts
+  ctx.func.p1Predicted = new Set() // analyze/emit agreement is frame-local; never inherit a sibling body's predictions
   // Overlay (tier #2) present for the WHOLE emission of every function —
   // emitBlockBody layers per-block copies on top. Guarantees emission-minted
   // temp seeds (Stage 2 slice 3c-a) always have their transient channel.
@@ -431,6 +432,7 @@ function enterFunc(sig, body, { uniq = 0, directClosures = null, exported = fals
   ctx.func.charDecompGlobals = false  // only emitFunc's named path drains — it re-arms
   ctx.func.probeHoist = null
   ctx.func.lenHoist = null
+  ctx.func.hoistTempDefs = null
 }
 
 // Allocate + null-init a heap cell for every boxed local that isn't seeded

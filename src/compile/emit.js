@@ -2327,9 +2327,9 @@ export function emitDecl(...inits) {
     const valPtrKind = val.ptrKind ?? val.srcPtrKind
     if (DBG_INVARIANTS) {
       if (ptrKind == null && valPtrKind != null && localType === 'i32' && !ctx.func.boxed?.has(name))
-        throw new Error(`P1 predictor miss: ${ctx.func.name || '(top)'}/${name} init carries ptrKind=${valPtrKind} unpredicted`)
+        throw new Error(`P1 predictor miss: ${ctx.func.current?.name || '(top)'}/${name} init carries ptrKind=${valPtrKind} unpredicted`)
       if (ptrKind != null && ctx.func.p1Predicted?.has(name) && valPtrKind !== ptrKind)
-        throw new Error(`P1 predictor drift: ${ctx.func.name || '(top)'}/${name} predicted ${ptrKind}, emit sees ${valPtrKind}`)
+        throw new Error(`P1 predictor drift: ${ctx.func.current?.name || '(top)'}/${name} predicted ${ptrKind}, emit sees ${valPtrKind}`)
     }
     let coerced
     if (ptrKind != null) {
