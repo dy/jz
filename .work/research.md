@@ -7844,6 +7844,2660 @@ gate builds (worktree-local overlay, not committed, discarded): region-live
 `dist/jz.wasm` SHA-256 `a854a4c8…` (×2 identical); dormant `dist/jz.wasm`
 SHA-256 `ffb6e45a…` (×2 identical).
 
+## §Region arena — TARGET-PASS ABLATION RECORD (2026-08-11, carried over from
+main 9447f78d for continuity — this branch's own research.md predates that
+commit)
+
+The untried axis: TARGET optimize-pass ablation through a FIXED region-live
+kernel (zero rebuilds). Facts from the run: repros trap ONLY at target L2
+(clean 0/1/3, 5/5 deterministic). Sweep of all 62 PASS_NAMES both
+directions: enable-at-L0 → zero single-flag triggers; disable-at-L2 → 10
+individual passes clear the join repro; only watr/foldSetToTee/
+hoistConstantPool clear all 4 probes. DECISIVE: forcing {level:2,
+hoistConstantPool:false} across the FULL scaled test:wasm suite → 47 fail
+vs baseline 49, but only 9 rows common — 40 fixed, 38 PREVIOUSLY-CLEAN rows
+now fail. A RESHUFFLE, not a fix: pure allocation-ordinal sensitivity.
+hoistConstantPool's implementation read: no module-scope holder. This
+record motivated the boundary-arithmetic audit that followed (whose window
+(B) — forwarding stubs destroyed by the closing compaction memcpy —
+explains the reshuffle mechanism exactly).
+
+## §Region arena — BOUNDARY-ARITHMETIC AUDIT + WINDOW A/B FIX ATTEMPT (2026-08-11)
+
+**The audit** (reconstructed from source — no prior written form of this
+audit was ever committed; only the ablation-record entry above and its
+"boundary-arithmetic audit that followed" pointer survived). Two independent
+dead/broken writes found in `__region_copy_rec`'s relocation arms:
+
+- **Window (A)** — `regionArmObject` (layout-kinds.js) wrote an old-site
+  forwarding stub (`[-8:newOffset][-4:-1 sentinel]`) for every relocated
+  OBJECT. `PTR.OBJECT` is not a `FORWARDING_MASK` member (layout.js:
+  `FORWARDING_MASK = ARRAY|HASH|SET|MAP` only) — `__ptr_offset`'s chase never
+  even inspects an OBJECT-tagged pointer's header for a stub. Dead write,
+  unconditionally, independent of timing.
+
+- **Window (B)** — every OTHER relocated kind that DOES sit in
+  `FORWARDING_MASK` (ARRAY, SET/MAP, and HASH via `__region_relocate_props`,
+  plus the `$__dyn_props` global's own relocation in `__region_exit`) wrote
+  the same old-site stub, correctly gated by `FORWARDING_MASK` this time —
+  but `__region_exit`'s own closing `memory.copy(mark, T, size)` (module/
+  core.js) overwrites every byte of `[mark, mark+size)` with the compacted
+  survivors before any consumer OUTSIDE this traversal could ever read a
+  stub written there, and the very next round starts allocating fresh churn
+  from the new heap top, overwriting whatever stub bytes landed in
+  `[mark+size, T)` the instant that space is reused. A write with no
+  reachable reader — always, not a rare race — and exactly the mechanism the
+  ablation record's reshuffle evidence pointed at: different pass orderings
+  change how much of that dead zone gets clobbered (by round-N+1's own
+  fresh, UNRELATED churn) before a stray external reference — if one ever
+  existed — could chase a still-live stub, reshuffling WHICH corpus rows
+  happen to trap without ever closing the wall.
+
+**Root-completeness check** (why no separate log/registration was built):
+read watr's own `runRounds` (`/Users/div/projects/watr/src/optimize.js`,
+the JS source region-hooks-active self.js compiles) completely before
+touching anything. It passes exactly `root = [ast, dirty, snapshots]` to
+`regionExit`, reassigns all three from the return value every round, and
+unconditionally drains every OTHER known module-scope scratch global
+(`CNT`/`CNT_FN`/`SW`/`SW_MEM`) immediately before calling in — there is no
+currently-registered cross-round holder outside `root`. `pristine`/
+`beforeRound`/`cur` (the size-guard's round-start clones, outer `optimize()`
+scope) are all allocated via `clone()` — a full structural deep copy — at
+points strictly BEFORE that round's `__region_mark()`, so they stay durable
+(below every future mark) forever and never alias anything region_exit
+would reclaim. Given this, and given `__region_copy_rec` already heals
+everything reachable from `root` DIRECTLY (every arm rewrites its own
+parent's slot with the relocated child as the walk descends; the memo makes
+the returned `$out` the healed root reference) — no chase is needed for
+ROOT-reachable data, chase or no chase. **Composition chosen: delete the
+in-place stub writes outright, do not build a separate out-of-band log.**
+The `$memo` Map `__region_copy_rec` already builds (old bits → new/final
+bits, a genuine out-of-band structure, never co-located with the moved
+data — same shape as the durable-fwd log's own precedent) already serves
+every purpose stub-chasing was meant to serve, for everything region_exit is
+actually responsible for; a holder outside `root` is the CALLER's
+registration bug, not something a stub already proven dead-on-arrival could
+ever have fixed.
+
+**Fix landed** (banked on this branch, NOT merged to main): deleted the
+in-place `[-8:newOffset][-4:-1]` stub-write pair at all five sites —
+`regionArmArray`, `regionArmSetMap`, `regionArmObject` (layout-kinds.js),
+`__region_relocate_props`'s ephemeral branch, and `__region_exit`'s
+`$__dyn_props` relocation (module/core.js) — replacing each with a short
+comment naming which window it closes. No other line changed (verified via
+`git diff | grep -v ';;'`: exactly 5 removed `i32.store` pairs plus prose).
+Window A is a pure, unconditional dead-code deletion (behavior-preserving by
+construction — the chase never read it). Window B removes a write that
+could never survive to be read; per the root-completeness argument above,
+nothing sound depends on it.
+
+**BY-NAME VERDICT — NOT EMPTY (a reshuffle, the audit's own sharp negative
+signature)**: baseline (pre-fix, `dist/jz.wasm` built at branch tip
+1455a278) scaled `test:wasm` (`JZ_TEST_TARGET=jz.wasm JZ_FUZZ_GATE=0.05 node
+test/index.js`) — 49 fail, captured by name. Fixed build (same command,
+same corpus) — **45 fail**, verified DETERMINISTIC across two consecutive
+runs of the fixed binary (byte-identical failing-name sets both times). By
+name: **33 rows common to both** (unchanged), **16 rows cleared**, **12 NEW
+rows appeared that did not fail at baseline** — net -4, not the mandated
+EMPTY. Cleared: `.indexOf: string via variable`, `Array.from: dynamic
+array-like length`, `JSON.stringify: parsed input …circular`,
+`Number.isFinite/.isInteger/.isSafeInteger: dict/map value-census`,
+`Number: parseInt whitespace/radix`, `Number: toString zero`, `SSO
+invariant: builder append`, `String: match found`, `audit #10` ×2, `bool
+identity: mixed ?:/&&/||/??`, `class: pseudo-classical constructor`,
+`inferModuleGlobalValTypes`, `optional: ?.method() on local string`, `regex:
+matchAll`, `slot-types: unobserved slot`. New: `Array.from(string)`,
+`Number: Number(string) coerces`, `SSO invariant: long/non-ASCII strings`,
+`TextEncoder: spread of encode result`, `URLSearchParams: sort/escaping`,
+`Uint8Array.fromBase64/fromHex`, `closures: module-scope for-of`, `const
+fn-table: element-as-value`, `extractRefinements: instanceof
+Float64Array`, `spread: {...a, z:3} add prop`, `subview — out-of-range
+index`, `uninitialized field reads as undefined`.
+
+**Diagnostic follow-up** (before banking, not a fix attempt): inspected
+every NEW failure's trap. 10/12 are the SAME signature as the original 49 —
+`RuntimeError: memory access out of bounds`, deep repeated-frame recursive
+stacks, tripped DURING the kernel's own compilation of the test source (not
+during compiled-output execution) — structurally identical to the
+pre-existing OOB class, not a new symptom shape. 2/12
+(`Array.from(string)`, `TextEncoder: spread of encode result`) trap
+`unreachable` instead — a DIFFERENT flavor, consistent with the same
+underlying mechanism landing on a different NaN-box tag/dispatch path this
+time (a deliberately-trapped kind, e.g. CLOSURE's named region trap, reached
+via garbage that decodes to a different tag than before) rather than a
+second, independent bug class. Conclusion: windows A and B are both real,
+independently correct, and the fix is minimal and behavior-preserving for
+everything it touches — but they do NOT fully explain the 49-row wall as
+the ablation record's window-B pointer predicted. Removing the stub writes
+changes WHAT GARBAGE occupies the reclaimed dead zone (previously the
+deterministic `-1`-sentinel forwarding-header bit pattern; now whatever the
+round's own prior churn left behind) without changing WHETHER something
+still reads that dead zone as if it were live data — so the wall's true
+root cause is a THIRD, still-unidentified gap: something reachable during
+the self-hosted kernel's own compilation is NOT fully healed by
+`__region_copy_rec`'s root walk (a genuine root-completeness miss — a
+holder, or a `children` edge, this session did not find), and windows A/B
+only changed which specific corpus programs happen to read the resulting
+garbage as a valid pointer.
+
+**Gates**: by-name comparison only (the sharp test the audit specified),
+run ×2 on the fixed build for determinism. Per the stop-on-fail tripwire,
+the full mandated ladder (kernel-oracle ×3, kernel-parity, fuzz 200+2000×2,
+full battery, dormant byte-identity, build×2) was NOT run — gated on the
+by-name wall closing, and it does not. No memory curve, no jz×jz verdict
+(same gate).
+
+**Fix-or-bank: BANKED, not landed.** Windows A and B are real fixes, worth
+keeping (Window A is unconditionally correct; Window B removes a
+provably-dead-on-arrival write and is the architecturally sound precedent
+regardless of whether it alone closes the wall) — but the wall survives.
+Code changes (layout-kinds.js, module/core.js) committed to this branch;
+not merged to main. **Recommendation for next session**: don't re-litigate
+windows A/B (both are settled, provably correct in isolation) — the
+productive next lever is finding the THIRD gap: audit every
+`__region_copy_rec`/`__region_relocate_props`/`regionArmTyped` arm's
+`children` enumeration against what the self-hosted kernel's OWN compile
+pipeline actually attaches to its AST/IR nodes (the dyn-props sidecar
+precedent — `fn.cseLoadBases`, already found and fixed — is exactly the
+SHAPE of bug to look for: an out-of-band edge the tracer's declared
+`children` column doesn't know about). Start from the 10 "memory access out
+of bounds during kernel-self-compile, deep recursive frames" new rows above
+(closures/const-fn-table/spread/subview/uninitialized-field are the
+narrowest repros) with a NATIVE (non-kernel) probe before reaching for
+another kernel rebuild, per this session's own precedent.
+
+## §Region arena — FRONT BOUNDARY (Slice 2) ATTEMPTED, NEW WALL CLASS FOUND:
+## compiler-internal closures can't cross ANY region boundary (2026-08-12)
+
+**Context this session started from** (per `main`'s own ledger, ahead of
+this branch — not merged here, cited for record): Slice 1 (fixpoint-round
+region) is DONE + measured (LAST HOP / MEMORY-CURVE-MEASURED entries,
+`main`): watr-graph −2,147.5 MB/−50%, jzify-entry FAIL→OK, jz×jz unchanged
+(still `unreachable` @ 4,294,967,296 B, by design — Slice 1 alone was never
+going to reach it). The design's own next lever, restated in its own words:
+"Slice 1 removes cross-round accumulation only… the ~1GB target needs
+Slices 1+2 (front boundary) paired; Slice 3 (emit/encode boundary) unlocks
+jz×jz under 4GiB." This session's task: build Slice 2 — mark before parse/
+jzify, exit after prepare, root = the prepared AST.
+
+**Seam chosen**: `src/front.js`'s `frontHalf()` — the ONE semantic pipeline
+both host (`index.js`) and every self-hosted kernel entry (`scripts/
+self.js`'s `front()`) run (`parse → reject-reserved-prefix → liftIIFEs →
+jzify → prepare → preEval`). `frontHalf` already takes a `time`/
+`afterPrepare` callback-injection pattern for host-only concerns, so adding
+an optional `regionHooks` parameter (mirroring `optimizeTail`'s own
+precedent in `scripts/self.js` for the Slice-1 round boundary) is the
+natural wiring point: `mark = regionHooks?.mark()` as the very first
+statement (before `parse()`), `regionHooks.exit(mark, root)` called right
+after `prepare(parsed)` returns, before `preEval`. Undefined (a no-op) for
+every native host caller; only the kernel's own `front()` would ever supply
+real `{mark: () => __region_mark(), exit: (mark, root) =>
+__region_exit(mark, root)}` closures — same shape as `optimizeTail`'s
+proven-working pattern, same `REGION_HOOKS_ACTIVE` toggle would gate both
+boundaries together.
+
+**Hazard inventory, method: enumerate every `ctx.*` write inside
+`src/prepare/{index,lift-iife,math-kernel}.js` (the whole ephemeral span
+between mark and exit), classify each as (a) read post-boundary or dead by
+construction, (b) durable container / ephemeral payload or genuinely
+ephemeral container, (c) safe to relocate or a CLOSURE.**
+
+1. **`ctx.func.list` — REAL bug, found+fixed this session.** Arrow/named
+   functions are extracted OUT of the tree during `prepare` (their bodies
+   live ONLY in `ctx.func.list`, not reachable by walking `ast` —
+   `preEval` itself already walks `ast` + every `ctx.func.list` body
+   separately, confirming they're disjoint). Assumed durable at first
+   (starts as reset()'s `[]`, allocated before mark) — WRONG: this
+   compiler's ARRAY layout is one contiguous block (length header
+   immediately below the element slots, no separate indirect backing
+   pointer — `layout-kinds.js` `regionArmArray`'s single `$off =
+   __ptr_offset(bits)` read proves this), so the FIRST `.push()` past
+   the starting capacity reallocates a brand-new, ephemeral (post-mark)
+   block and rebinds the `list` property to it. Root must carry
+   `ctx.func.list` as a VALUE (read back its relocated address from
+   `__region_exit`'s return, exactly like `ast`), not merely trust it's
+   reachable off a durable `ctx.func`. Confirmed by direct empirical
+   bisection (see Method below) — the very first build with root =
+   `[ast, ctx.func.list]` but no write-back OOB-trapped on the single
+   simplest possible program (`sum`, a plain scalar loop, no closures/
+   arrays/objects at all), at every opt level including O0.
+2. **`ctx.module.imports` — REAL bug, found, NOT fixed (session ran out of
+   runway before the deeper wall closed it anyway).** `prepare/index.js`
+   pushes host-import declarations onto this durable-but-grows array; `src/
+   compile/index.js`'s `compile()` — the very FIRST thing it does, before
+   any user code — iterates `ctx.module.imports` directly. Confirmed via
+   direct instrumentation (below) that a root of `[ast, ctx.func.list]`
+   with BOTH correctly write-back'd still traps — not inside
+   `__region_exit` (which completes cleanly, confirmed by breadcrumb
+   globals reaching its own final `global.set` every time regardless of
+   root content) but downstream, inside `compile()`'s own first loop —
+   `ctx.module.imports` is exactly the shape of hazard (2) and the
+   confirmed next miss.
+3. **THE WALL: compiler-internal CLOSURES minted per-compile by prepare's
+   own lazy module registration.** `module/core.js`'s default export (a
+   single arrow function spanning the whole file, invoked ONCE PER
+   COMPILE via `prepare()`'s own `includeModule('core')` call, itself the
+   very first non-housekeeping line of `prepare()`) calls `module/
+   schema.js`'s `initSchema(ctx)` — whose own doc says outright "Called
+   once per compilation." `initSchema` closes over two FRESH per-call
+   local `Map`s (`byKey`/`byProp`) and assigns ~15 arrow-function closures
+   onto `ctx.schema.{register, find, isBoxed, emitInner, slotOf,
+   guardedSlotOf, chainSid, slotVT, slotTypedCtor*, slotIntCertainAt,
+   slotBigint*, errorSid, isErrorSid, errorClassOf, errorSidEntries,
+   errorClassesUsed, idOf, resolve}` — every one of them capturing that
+   call's own fresh `byKey`/`byProp`. `prepare/index.js` similarly
+   assigns `ctx.module.include = includeModule` (a plain top-level
+   function reference, but still boxed as a fresh CLOSURE value at that
+   assignment site — this compiler's CLOSURE representation always
+   allocates an env block via `__alloc`, arity 0 or not, no evidence of
+   closure interning anywhere the way STRING is interned). `module/
+   function.js` similarly installs `ctx.closure.make`/`ctx.closure.call`.
+   Every one of these closures is READ EXTENSIVELY past the front
+   boundary — `ctx.module.include` alone has 8 call sites across `ir.js`/
+   `object.js`/`math.js`/`regex.js`/`array.js`, all in the emit phase, all
+   downstream of where Slice 2's exit would fire.
+
+   **Neither direction crosses the boundary.** Include them in root (e.g.
+   root ctx.module/ctx.schema/ctx.closure wholesale, the natural
+   "root the whole durable subtree" move that made `ctx.func.list`-style
+   fixes tractable elsewhere) — `__region_copy_rec`'s CLOSURE arm
+   (`layout-kinds.js` `regionArmClosureTrap`) traps UNCONDITIONALLY the
+   instant the walker's dispatch sees `PTR.CLOSURE`, regardless of
+   durability: "a CLOSURE's capture count… is not recoverable from a bare
+   CLOSURE box at runtime… this trap is the honest alternative to
+   guessing" — a DELIBERATE, by-design limitation from registry Slice 2,
+   not a coverage gap this session could close by adding an arm. Exclude
+   them (leave `ctx.module`/`ctx.schema` un-rooted, as this session's
+   actual attempts did) — `__region_copy_rec` never touches them, so no
+   TRAP fires during the boundary call itself, but `__region_exit`'s
+   closing `memory.copy(mark, T, size)` still silently reclaims their
+   backing memory: nothing walked them, so they're not part of `size`,
+   so they sit in the discarded `[mark+size, T)` dead zone the instant
+   region_exit returns — the very next allocation (anything `compile()`
+   does) happily overwrites them, and the STALE pointer `ctx.schema.
+   register` etc. still holds becomes a plain use-after-free. **This is
+   NOT the CLOSURE trap firing — it's silent corruption**, confirmed by
+   direct instrumentation (below): `__region_exit` reaches its own final
+   `global.set` cleanly every time, in every configuration tried; the
+   fault always lands downstream, deterministically inside `compile()`'s
+   first touch of whatever ctx state wasn't rooted.
+
+**Method (empirical, since blind reasoning about a corrupted-vs-clean
+distinction wasn't converging fast enough): breadcrumb globals**
+(`$__dbg_mark`/`$__dbg_T`/`$__dbg_dp`/`$__dbg_stage`, `$__dbg_stage2`,
+temporary, module/core.js + scripts/self.js, NOT landed — see Disposition
+below), the same technique the original round-boundary root-cause sessions
+used (a synchronous wasm trap leaves the instance's globals intact, so the
+LAST value written is the last checkpoint reached). Stage markers placed at
+`__region_exit`'s own body (mark/T computed, region_copy_rec call
+returned, dyn-props relocation block, closing memory.copy) and at
+`frontHalf`'s own exit call / `compileSelf`'s phase boundaries
+(front/compileAst/optimizeTail/watrCompile). Bisected on the empty-string
+program (source `''`) — the simplest possible input, `compile('')` — to
+remove every candidate variable except the mechanism itself:
+- root = `42` (an ATOM, zero tree-walking required) — STILL traps, and
+  `__region_exit` reaches its own final instruction (stage 4) — proves the
+  fault is downstream of `__region_exit` entirely, not inside it (the
+  `''` program still populates `$__dyn_props` — confirmed non-zero even
+  for an empty source — since prepare's OWN bookkeeping, not the target
+  program, is what uses it; the dp-relocation block runs and completes
+  cleanly every time tested).
+- root = `[ast, ctx.func.list]` with correct write-back — STILL traps;
+  `compileSelf`'s own stage markers show `front()` (mark → parse → prepare
+  → exit → preEval, all of it) completes and RETURNS successfully (stage
+  400 reached) but `compileAst()` never finishes (stage 500 never reached)
+  — isolates the fault to `compile()`'s own first touches of un-rooted ctx
+  state, exactly hazard #2/#3 above.
+
+**Disposition — WALL, not landed, per the stop-on-fail tripwire.** All
+debug instrumentation removed; `src/front.js` and `scripts/self.js`
+reverted to their exact pre-session content (`git diff` against `0d089b49`
+is empty in both). Rebuilt and reconfirmed: SHA-256 `f961b9b1062d8e8cb…`,
+byte-identical to the LAST HOP/MEMORY-CURVE-MEASURED entries' own verified
+region-live build from this exact base (independent proof this worktree's
+exploration left zero trace) — this is NOT a "dormant by construction"
+claim for a NEW toggle (there is none to add — nothing landed), it's a
+direct re-derivation of the already-known-good `0d089b49` artifact.
+`node test/kernel-oracle.js` re-run on this reverted build as a sanity
+check (not a new-code gate — nothing changed): 13/13 (493 assertions),
+clean, matching the already-documented baseline. The rest of the mandated
+ladder (kernel-parity, fuzz, full battery, build×2) was not re-run since no
+source changed — those results are inherited unmodified from `0d089b49`'s
+own prior verification.
+
+**Watermarks: unchanged from the MEMORY-CURVE-MEASURED entry** (`main`,
+same `0d089b49` base, same watr `895ca5b`, byte-identical wasm) — Slice 2
+did not land, so there is no new watermark to report. For the record: jessie
+1,073.7 MB (unaffected at this scale, both kernels), watr 2,147.5 MB
+(Slice-1 win holds, −50% vs. dormant), jzify-entry 4,295.0 MB OK (Slice-1's
+FAIL→OK win holds), jz×jz still `unreachable` @ 4,294,967,296 B (2³²,
+unchanged — Slice 2/3 still both required, matches the design's own
+scoping exactly, not a new finding).
+
+**Recommendation for next session.** Don't re-attempt "root the whole
+durable ctx subtree" as a blanket move for `ctx.module`/`ctx.schema`/
+`ctx.closure` — it's provably dead-end territory (the CLOSURE trap makes
+it structurally impossible, not merely untried). Two real paths forward,
+neither attempted this session (both bigger than a single-session slice):
+(1) give CLOSURE a real region-copy arm — needs a capture-count/env-length
+side table (mirroring `$__schema_tbl`'s pattern for OBJECT/HASH), named as
+"a real, bounded option for a future slice" in `layout-kinds.js`'s own
+CLOSURE-trap comment already, now with a concrete forcing case (front-
+boundary module registration) instead of a hypothetical one; (2)
+restructure `prepare()` so per-compile module registration
+(`includeModule` calls, scattered throughout the ENTIRE walk, driven by
+which source features are seen — not just the one `includeModule('core')`
+at the top) completes before the mark, e.g. a source pre-scan that decides
+every module the compile will need and registers them all upfront — a
+real architectural change to `prepare/index.js` and the "called once per
+compilation" convention every stdlib module's init function follows,
+not a boundary-placement tweak. Either fix, once landed, should also close
+`ctx.func.list`/`ctx.module.imports` for free (they become reachable off a
+now-safely-rootable `ctx.module`/`ctx.func`, no bespoke field list needed)
+— don't re-litigate those two, they're correctly diagnosed, just blocked
+on the deeper fix landing first.
+
+**SHAs.** Worktree base: `0d089b49` (region-final-2026-08-11, unchanged —
+this session's `git diff` against it is empty). watr: `895ca5b`
+(`/Users/div/projects/watr`, unpublished, local-only, unchanged). No jz-repo
+compiler-source commit from this session — see Disposition above.
+
+## [ ] Carrier invariant / storedValue (was carrier-invariant-design.md; predecessor of the carrier program)
+
+The boxed-value invariant program that preceded carrier-representation.
+THREE named mechanisms: **A** enumerated-list drift — storedValue's guard
+hand-reimplemented UNFIXED at 16 sites (array.js ×10, collection.js ×4,
+object.js, function.js); fix = one chokepoint (bridge.js storedValue), most
+landed via the formatter-dispatch commit. **B** detector blind spot —
+VT['()'] treated parenthesized non-calls as opaque, so wrongness and
+detector shared the blind spot by construction; FIXED (grouping unwrap).
+**C** narrow-local coercion blind to carrier atoms — toI32(boxed BOOL atom)
+collapsed TRUE_NAN and FALSE_NAN to 0 (ToInt32(NaN)=0), producing the
+universal export-loss; FIXED (unboxBoolIR bit-extraction arm in the
+decl-init ladder). Tag-preserving rebox landed as .srcPtrKind/.srcPtrAux
+(stamping live .ptrKind onto boxed results is UNSOUND — it's a live
+dispatch convention, confirmed by crash). THE RESIDUAL WALL (still closed):
+decl-init `val = viewInit || emit(init)` stays — flipping to
+argIR/storedValue makes the SELF-HOSTED kernel flip closure direct-dispatch
+eligibility for a non-reassigned single-capture shape (invalid WASM,
+local.set type mismatch; native provably unaffected — WAT byte-identical
+either way). resolveCallee/temp()-counter theory FALSIFIED (uniq is
+per-function). The kernel-oracle 'captured-then-read' row stays PENDING-FIX
+until that self-host generational-drift instance is named (same class as
+MECHANISM C's discovery context and the outline-hunt family).
+
+## [x] Carrier box-site baseline (was carrier-box-baseline.md; Slice-0 artifact)
+
+Repro: JZ_DBG_BIGINT_ERASURE=1 JZ_DBG_BIGINT_STATS=1 over the 149-module
+self graph (recipe in git history / erasure-diag.js). Result (2026-08-06):
+57 raw kind-erasing BIGINT flows (call-arg 37, closure-capture 6, return 5,
+ternary-nullish 5, dataview 3, collection 1); fixpoint resolves 46/57 (81%)
+fully raw → **11 real box sites**: 1 param (m61_layout$i64Hex bits) + 10
+module-init const locals (assemble NAN_PREFIX/TAG_SHIFT_BIG/… , encode
+F64_SIGN/F64_NAN/F64_QUIET) — zero hot-loop sites. assertErasureConsistency
+guards whole-program presence (the '(top)' attribution split between the
+two instruments is a naming mismatch, not a solver bug).
+
+## §Region arena — CLOSURE REGION-COPY ARM LANDED (2026-08-12): the
+## front-boundary's own forcing case closed, a real self-host array-growth
+## bug found+fixed en route
+
+**Context**: 16f1f701's own front-boundary session named the concrete next
+lever precisely: "(1) give CLOSURE a real region-copy arm — needs a
+capture-count/env-length side table … now with a concrete forcing case
+(front-boundary module registration)". This session built exactly that —
+audit-#19's own architecture-review record shape (`{id, storage, captures:
+[{name, bindingId, mode, constant}]}`, `.work/closure-plan-design.md`'s
+LANDED ClosureEnvPlan) already carries every per-capture fact the arm
+needs; the side table just needed materializing at assembly time.
+
+### The side table
+
+`$__closure_env_len`/`$__closure_env_mask` — two flat i32 arrays, funcIdx-
+indexed (funcIdx = `ctx.closure.table` index = the CLOSURE box's `aux`
+field), built in `src/wat/assemble.js`'s `buildStartFn` from
+`ctx.closure.envMeta` (module/function.js). **Source, per the task's own
+100%-coverage mandate**: captured at `ctx.closure.make`'s OWN env-
+allocation site (module/function.js), not re-derived from the plan — both
+ClosureEnvPlan-covered closures (90.6% self.js / 57.9% bench mint coverage,
+architecture re-audit item 4) and the legacy-fallback remainder converge on
+the SAME `envCaptures`/`ctx.func.boxed` facts before that push, so this is
+100% coverage BY CONSTRUCTION, not a fail-open approximation riding the
+plan's own coverage gap. `cellMask` bit *i* set ⇒ slot *i* holds a raw i32
+pointer to a shared, independently-heap-allocated boxed-capture cell (the
+mutable-capture mechanism, `ctx.func.boxed`) rather than a NaN-boxed f64
+value — read off the SAME `ctx.func.boxed?.has(envCaptures[i])` test the
+env-population store loop already uses, computed once instead of derived
+twice. >31-capture closures (unobserved on every measured corpus — .work/
+closure-plan-design.md §1.5 tops out at 27) can't fit the i32 bitmask — a
+single NAMED trap for that one case, not a silent truncation.
+
+Built via a runtime alloc+store sequence in `$__start` (mirrors
+`schemaInit`'s own dynamic-fallback shape, NOT `appendStaticSlots`'s
+static-data-segment path — that helper's `staticPtrSlots` NaN-prefix
+pointer-marking is for BOXED values; reusing it for plain integers risked a
+false-positive match on a cellMask's bit pattern). Gated on
+`ctx.core.includes.has('__region_exit')` — checked directly, NOT
+`__region_copy_rec` (a find worth flagging: `needsSchemaTbl`'s own
+pre-existing OR-chain checks `'__region_copy_rec'` too, but that's read
+AFTER `pullStdlib`/`resolveIncludes()` expands transitive deps; THIS code
+runs earlier, in `buildStartFn`, where `ctx.core.includes` only has
+directly-`inc()`'d names — `__region_copy_rec` is exclusively a DEP of
+`__region_exit`, never `inc()`'d on its own, so reading it here would
+always read false. `__region_exit` is `inc()`'d synchronously the moment
+source calls it, which by `buildStartFn` has already happened). Every other
+build (default dist, native compiles, any program that never calls a
+region boundary) pays zero bytes — confirmed by direct byte-diff (below).
+
+### The arm
+
+`layout-kinds.js` `regionArmClosure` (was `regionArmClosureTrap`) —
+`KIND_REGISTRY.CLOSURE.relocate` `'trap'` → `'env-relocate'`. Shape mirrors
+OBJECT's durable/ephemeral split (env block = fixed-count-once-allocated
+run, no separate indirect backing pointer, same as OBJECT's schema slots):
+zero-capture (offset literal `0`, no heap block — `mkPtrIR(PTR.CLOSURE,
+tableIdx, 0)`) passes through before touching `$memo` (bits never change,
+trivially identity-safe, mirrors the preamble's ATOM arm); durable (`off <
+mark`) walks slots in place, memo'd at its own address; ephemeral allocates
+a fresh block and recurses per slot. Per-slot dispatch reads the cellMask
+bit: value slots recurse through `__region_copy_rec` directly (f64); cell
+slots go through a NEW helper, `__region_relocate_cell` (module/core.js) —
+a boxed-capture cell is a bare `__alloc(8)` block (ONE f64 payload slot, no
+NaN-boxed identity of its own), referenced by a RAW i32 pointer, so it
+can't route through `__region_copy_rec`'s own f64-tag dispatch. Memoized by
+a SYNTHETIC key (`f64.convert_i32_s(cellOff)` — always a plain finite
+float, never a NaN-boxed bit pattern, so it can never collide with a real
+heap pointer's own memo entry — the SAME trick `regionArmArray`'s dyn-props
+migration already uses to key `$__dyn_props` by a raw i32 offset). This
+dedup is load-bearing, not an optimization: a cell shared by two closures
+(aliasing two mutable captures of the same source variable — the entire
+point of the boxed-cell mechanism) MUST relocate to the SAME new address
+from both env slots, confirmed by a dedicated native regression pin
+(`region-relocate[CLOSURE]: a cell shared by two closures…`, below). The
+durable branch carries the SAME memo-before-mutate ordering the TYPED
+view-rebase audit fix required (this file, ORDERING AUDIT entry) — a
+diamond-shared durable cell revisited twice without it would re-derive from
+its own already-relocated (delta-adjusted, not-yet-physically-valid)
+payload, the identical corruption class that fix closed for
+`__region_relocate_props`/TYPED.
+
+### A real bug found and fixed en route (self-host array-growth hazard)
+
+**First full `test:wasm` run against the arm found 9 named failures**
+(`iterator helpers`/`generators`/`fetch: host wasi warns`/`shadow
+contract`/`param narrowing`, all `RuntimeError: memory access out of
+bounds`), all reproducing on the SAME minimal native (non-kernel) repro:
+`function* g(n){…} export let f=()=>{let m=g(8).map(x=>x*10); return 1}` —
+fails on the fixed `dist/jz.wasm`, compiles clean on the unmodified
+`0d089b49` baseline. **Breadcrumb-global bisection** (this session's own
+`$__dbg_cl`/`$__dbg_cl_aux`/`$__dbg_cl_off`/`$__dbg_cl_n`/`$__dbg_cl_i`/
+`$__dbg_cl_tbllen`, stamped at every step of `regionArmClosure`/
+`__region_relocate_cell`, temporary, NOT landed) proved the trap fires with
+`$__dbg_cl` still at its ZERO default — **the new relocation arm never
+executes in the failing run at all**. Root cause: `ctx.closure.envMeta`
+(module/function.js) was populated via **indexed assignment**
+(`ctx.closure.envMeta[tableIdx] = {…}`) instead of `.push()`, unlike its
+two siblings one line away (`ctx.closure.table.push(fnName)`,
+`ctx.closure.bodies.push(bodyFn)`) — even though `tableIdx` is PROVABLY
+always the array's current length at that point (`addToTable` always mints
+a fresh, unique `fnName`, so `indexOf` never hits, always pushes — making
+the indexed form value-identical to `.push()` in EVERY case). The
+self-hosted kernel's own array-WRITE codegen for `arr[arr.length] = x`
+apparently takes a materially different, less-exercised path than
+`.push()`'s — GENERIC finding, not specific to this table (flagged for a
+future audit item, not chased further this session; the fix is a one-line,
+zero-risk swap to the proven-safe sibling idiom). **Fix**: `.push()`.
+Confirmed: `generator+map` and `generator+map+filter` (previously
+`RuntimeError`) both compile clean on the rebuilt kernel; full re-run of
+the entire mandated ladder below, clean.
+
+### Gate ladder (all runs against this session's own rebuilt `dist/jz.wasm`,
+### region-live, `REGION_HOOKS_ACTIVE=true`, watr `895ca5b`/5.7.14)
+
+| check | result |
+|---|---|
+| 11 native probes (`__region_mark`/`__region_exit` called directly from plain jz source — no self-host needed; zero-cap, value-cap, cell-cap, shared-cell alias, nested closure, >8 captures, durable, diamond identity, recursion via boxed cell, per-iteration loop closures) | all pass, O0–O3 |
+| 9 new pinned regression tests, `test/layout-kinds.js` (`region-relocate[CLOSURE]: …`) | 60/60 (88 assertions) |
+| `node test/closures.js` | 110/110 (221 assertions) |
+| Native `node test/index.js` (no `JZ_TEST_TARGET`) | 3419/3427 — only the 2 pre-existing documented flakes (`interval walk…`, `typed RMW…`), 0 new |
+| `node test/kernel-oracle.js` ×3 | 13/13 (493 assertions) each rep |
+| `node test/kernel-parity.js` | 3/3 groups, 33/33 assertions |
+| 200-seed fuzz gate ×3 (`JZ_TEST_TARGET=jz.wasm`, the `fuzz: no new miscompiles in seeds 1..200 × opt {0,1,2,3}` test + its typed/IV-SR/byte-scan/param-bound siblings) | clean every rep |
+| **`JZ_TEST_TARGET=jz.wasm node test/index.js` (full test:wasm)** | **2725/2731 pass, 0 fail, 6 skip** — the 3 `RuntimeError` string matches in the log are an intentional expected-trap regression test (`host decode: a genuine unmarked trap still surfaces as RuntimeError`), not failures |
+| `node scripts/battery.mjs` | RED only on the ONE pre-existing, already-documented `typed RMW: one guard covers…` flake, on native/O0/O3/dbg/wasi identically (matches every prior session's own baseline signature) — fuzz 30173 compared/0 divergence, self 21/21, fixpoint PASS, build succeeded, kernel 2725 pass/6 skip |
+| Dormant byte-identity (closure-heavy native compile — recursion via array of closures, boxed captures, nested arrows — `__region_mark`/`__region_exit` never called) | SHA-256 identical before/after this session's full diff (`b6ac115b…`) |
+| `node scripts/build-dist.mjs` ×2 | byte-identical (`dist/jz.wasm`, `dist/jz.js`, `dist/interop.js` SHA-256 match across two consecutive builds) |
+
+### Files
+
+`layout-kinds.js` (KIND_REGISTRY.CLOSURE + `regionArmClosure` +
+`regionCopyRecLocals`/`regionCopyRecBody` composition), `layout-kinds-doc.js`
+(FINDINGS['region-forwarding'] → RESOLVED, OBJECT/HASH/CLOSURE `forwarding`
+prose updated to match the Slice-2/this-session landed state), `module/
+core.js` (`__region_relocate_cell` + deps + `$__closure_env_len`/
+`$__closure_env_mask` global decls), `module/function.js`
+(`ctx.closure.envMeta` capture at `ctx.closure.make`, `.push()`), `src/
+ctx.js` (`ctx.closure.envMeta: null` reset-shape documentation), `src/wat/
+assemble.js` (side-table build in `buildStartFn`), `test/layout-kinds.js`
+(9 new `region-relocate[CLOSURE]` pins).
+
+**SHA**: `dist/jz.wasm` this session's rebuild `01abc18e…`. watr `895ca5b`
+(`/Users/div/projects/watr`, unpublished, unchanged). Worktree base:
+`16f1f701` (region-final-2026-08-11).
+
+## §Region arena — FRONT BOUNDARY RE-ATTEMPTED post-CLOSURE-arm: real
+## progress (the ORIGINAL narrowest repros now clear), a NARROWER wall found
+## (closures-with-captures / dynamic-props), banked not landed (2026-08-12)
+
+**Context**: bba45c0d landed a real CLOSURE region-copy arm — the exact
+blocker 16f1f701's own front-boundary session named as the reason "root the
+whole durable ctx.module/ctx.schema/ctx.closure wholesale" was "provably
+dead-end territory (the CLOSURE trap makes it structurally impossible, not
+merely untried)". With that trap gone, this session re-wired the SAME
+front-boundary seam that session designed (`src/front.js`'s `frontHalf`
+gains an `optimizeTail`-shaped `regionHooks` parameter; `scripts/self.js`'s
+`front()` wraps it, gated on the SAME `REGION_HOOKS_ACTIVE` marker via a
+ternary instead of a second hand-synchronized commented-out object-literal
+line) and re-attempted exactly the root that session's own hazard inventory
+prescribed: `[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure]`.
+
+**Real, verified progress**: the ORIGINAL session's own two narrowest
+repros — `compile('')` and `sum` — **now compile cleanly through the front
+boundary**, where the prior session reported `compile('')` itself trapping
+downstream in `compile()`'s first touch of un-rooted state. Breadcrumb-
+global bisection (`$__dbg_fb`, temporary, NOT landed — stamped at
+`__region_exit`'s pre-walk/pre-memcpy/final-return points) confirms
+`__region_exit` itself completes cleanly (reaches its own final marker)
+for EVERY repro tried, matching the prior session's own finding pattern —
+the fault, when it fires, is always downstream of a successful region-round
+return, never inside the walk.
+
+**Ablation (this session, confirms the prescribed root is the correct
+MINIMAL one for the baseline case)**: dropping `ctx.module` OR `ctx.schema`
+from the root breaks even `sum` (`RuntimeError: memory access out of
+bounds`) — confirming BOTH are load-bearing exactly as diagnosed, not
+merely "safe to add." The full 5-element root is required and sufficient
+for `sum`/`compile('')`.
+
+**A NARROWER wall remains**: any program using a closure WITH a capture
+(even the single most trivial case, `(a) => { let g = (x) => x + a; return
+g(1) }`) OR a dynamic object property write (`let d = {}; d['a'] = 1`)
+still traps `memory access out of bounds`, downstream of `__region_exit`'s
+own successful return (confirmed via the same breadcrumb). Zero-capture
+closures, static-schema object literals, and plain arrays all compile
+clean through the boundary. Adding `ctx.scope` to the root (the one major
+`ctx.*` namespace not in the prescribed inventory — `globals`/`consts`/
+`constInts`/`dynKeyVars`/…) does NOT close this wall either (tested,
+banked). `ctx.closure`'s presence/absence in the root does not change
+whether the capture/dict cases fail (tested via ablation) — ruling out
+"which top-level ctx field is missing" as the remaining question; the
+issue is narrower and deeper than root-completeness.
+
+**Not chased further this session** (stop-on-fail tripwire, matching this
+whole ledger's own "wall found and precisely characterized, banked not
+forced" discipline): the leading hypothesis for next session — SOMETHING
+specific to capture-folding (`ctx.scope.constInts`, read by
+`ctx.closure.make`) or dynamic-property bookkeeping that grows/mutates
+AFTER the front boundary's own mark/exit (i.e., DURING emission, which
+Slice-1's OWN round boundary — still `[ast, dirty, snapshots]`, UNCHANGED
+by this session — also does not root) is getting silently reclaimed by a
+LATER Slice-1 round, the SAME hazard class this session's own CLOSURE-arm
+work just found and fixed for `ctx.closure.envMeta` (indexed-assignment vs
+`.push()` was ruled out as the SPECIFIC mechanism here — `ctx.schema.
+register`/`module/schema.js` already uses `.push()` correctly — so if this
+IS the same class, the growing-and-unrooted structure is a DIFFERENT one,
+not yet found). Confirmed NOT the CLOSURE arm itself misbehaving on THIS
+specific input (dbg breadcrumbs from the CLOSURE arm — same globals as
+bba45c0d's own bisection — were checked and never fire during these
+specific traps either, though not exhaustively re-verified for every repro
+this session).
+
+**Disposition**: BANKED, not landed, per the stop-on-fail tripwire. All
+debug instrumentation removed; `src/front.js`/`scripts/self.js` reverted to
+their exact pre-session content (`git diff` against `bba45c0d` is empty in
+both — confirmed). Rebuilt and reconfirmed: `dist/jz.wasm` SHA-256
+`01abc18e…`, byte-identical to bba45c0d's own committed build — this
+session's exploration left zero trace in the shared tree.
+
+**Recommendation for next session**: don't re-litigate root completeness
+(`[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure]` is confirmed
+correct-and-minimal for the baseline case, `sum`/`compile('')` proof-tested
+this session) or CLOSURE-arm correctness (bba45c0d's own gate ladder is
+exhaustive and unrelated failures were checked via breadcrumb). The
+concrete next lever: breadcrumb-trace (or narrow via native, non-kernel
+repro if `regionHooks` can be exercised outside self-host — this session
+did NOT attempt that, unlike bba45c0d's own native-probe-first discipline,
+because `regionHooks` is wired through `watrTail`'s JS-level callback
+plumbing, not a bare `ctx.core.emit` intrinsic like `__region_mark`/
+`__region_exit` themselves are) the EXACT moment a capture-folding or
+dynamic-prop-tracking structure grows POST-front-boundary and gets
+reclaimed by a Slice-1 round that still doesn't know about it — likely
+requires EXTENDING Slice-1's OWN root (`[ast, dirty, snapshots]`,
+`src/optimize.js`) to ALSO cover `ctx.schema`/`ctx.closure`/`ctx.scope`
+growth that happens DURING emission, not just the front boundary rooting
+them ONCE before emission starts — a plausible unification of the two
+region mechanisms' root inventories, not attempted this session.
+
+**SHAs**: worktree base `bba45c0d` (this session's own CLOSURE-arm commit,
+region-final-2026-08-11 — `git diff` against it is empty). watr `895ca5b`
+(`/Users/div/projects/watr`, unpublished, unchanged). No src-tree commit
+from this front-boundary sub-session — see Disposition above.
+
+### Watermark re-measurement (this session, honest/bounded — no checked-in
+### memory-curve script exists to reproduce the prior session's exact
+### harness, which lived on `main` and is not recovered here)
+
+Direct kernel-ABI probes (`inst.exports.default(source, strict, optJSON,
+modulesJSON)`) against this session's own `dist/jz.wasm` (CLOSURE arm
+landed, bba45c0d; front boundary NOT landed, banked):
+
+- **small-source**: trivial program compiles instantly at the smallest
+  budget tried (16 pages, ~1 MB).
+- **jzify-entry** (`resolveModuleGraph('jzify/index.js', {resolveNode:
+  true})`'s bundled graph): **compiles cleanly across the WHOLE tested
+  range**, 512 pages (~0.03 GB) through 65536 pages (~4.29 GB) — matches or
+  exceeds the previously-documented Slice-1 "FAIL→OK" win; this session
+  found no lower bound where it still fails, unlike the earlier curve's own
+  specific transition point (not independently reconciled — different
+  probe granularity, not a contradiction).
+- **jz×jz** (second-order: feeding this kernel `resolveModuleGraph
+  ('scripts/self.js', {resolveNode:true})`'s own bundled graph — i.e.,
+  asking the self-hosted kernel to compile its own full compiler source,
+  same shape as the original watermark curve's own extreme point):
+  **fails `unreachable` uniformly across every budget tried** (8192/32768/
+  65536 pages) — NOT the previously-documented OOM-at-2³² signature
+  (which needed to GROW to the 4 GiB address-space boundary before
+  failing; this fails immediately regardless of budget). Not diagnosed
+  further this session — could be a genuinely different/earlier blocker,
+  or an artifact of this session's simplified direct-ABI harness (no
+  established script exercises kernel-compiling-its-own-source; the
+  original curve's own harness is not recovered here). Front boundary —
+  the confirmed prerequisite for jz×jz progress per the design's own
+  scoping ("the ~1GB target needs Slices 1+2 paired") — did NOT land this
+  session, so jz×jz was not expected to newly succeed regardless of this
+  measurement's precision.
+
+**Conclusion**: the CLOSURE arm's own win (jzify-entry holding/improving,
+small-source unaffected) is confirmed; jz×jz remains blocked, consistent
+with the front-boundary wall still standing. No regression found anywhere
+this session measured.
+
+## §Region arena — FRONT BOUNDARY REBASED ONTO MAIN, LANDED: the narrower
+## wall (closures-with-captures + dynamic-property-writes) is DEAD — closed
+## by the rebase itself, not by new region-mechanism work (2026-08-12)
+
+**Context.** cf6ad0b1's own session (banked, nothing landed) named a
+narrower wall downstream of the CLOSURE arm (bba45c0d): `sum`/`compile('')`
+compiled clean through the front boundary with root `[ast, ctx.func.list,
+ctx.module, ctx.schema, ctx.closure]`, but any closures-with-captures or
+dynamic-property-write program still trapped `memory access out of bounds`
+downstream of a clean `__region_exit` return. Main had since (independently
+of the front-boundary branch) landed the ENTIRE round-boundary (Slice 1)
+hardening chain this same ledger documents — `63fec612`/`bfe2ed62`
+(kernel-wide watchpoint + temporal bisection), `98e0c27f` (SW's own stale
+backing pointer, watr `895ca5b`, WALL DEAD), `1d3856d2` (memory curve),
+and `14c4f7a2` (native `arr[arr.length]=x` codegen fix, dyn-prop-adjacent)
+— none of which the front-boundary branch (still based on `0d089b49`) had.
+Task: rebase region-final-2026-08-11 onto `14c4f7a2`, re-apply the banked
+front-boundary patch (nothing to re-apply — cf6ad0b1's own disposition was
+"reverted clean, git diff empty" — re-implemented from its own doc), re-test.
+
+**Rebase.** `git rebase main` (14c4f7a2) in the standing worktree (already
+at `42bfc90f`). 7 replayed commits, 3 real conflicts, all resolved:
+- `0c47e1ac` (heap-kind registry Slice 2, `module/core.js`): the branch's
+  `regionCopyRecBody()`-based `__region_copy_rec` replacement conflicted
+  with itself — the NEW function-form assignment (`() => { ...; return
+  \`...${regionCopyRecBody(...)}\` }\`) merged clean, but the OLD hand-
+  written arm body it was meant to fully replace (tail of the same
+  template-literal, base-identical on main since main never touched this
+  file post-merge-base) conflicted as a phantom edit-vs-delete. Resolved by
+  deleting the stale tail wholesale — verified byte-identical to
+  `git show 0c47e1ac:module/core.js` at that exact span.
+- `.work/research.md` (×2, at the `0d089b49`/`bba45c0d` replay steps) and
+  `.work/todo.md` (×1, at `16f1f701`): pure divergent-append conflicts —
+  main and the branch both appended NEW sections at the same anchor line
+  after diverging at `9d0e3384`. Resolved by concatenation (ours' content,
+  then the branch commit's own new content, in commit order) — no ledger
+  content lost from either side.
+`layout-kinds.js`/`module/function.js`/`src/ctx.js` all auto-merged clean.
+Full rebase: `git status` clean, zero leftover conflict markers anywhere
+(`grep -rn '^<<<<<<<\|^=======\|^>>>>>>>'` — zero hits, `.js` files
+`node --check` clean). New tip SHAs: `0c47e1ac`→`cb4311c2`→`0008913e`→
+`01246738`→`85a1b7f5`→`120813f1`→`9a08f4f2` (each rebased commit keeps its
+own message; `9a08f4f2` is the new branch tip pre-front-boundary-relanding).
+
+**Front boundary re-wired** (nothing survived the rebase to re-apply —
+cf6ad0b1's own patch was fully reverted before that session ended). Exactly
+the shape that session's own doc prescribed, matching `optimizeTail`'s
+already-proven `regionHooks` idiom verbatim: `src/front.js`'s `frontHalf`
+gains an optional `regionHooks` param (`{mark, exit}`); `mark()` before
+`parse()`, `exit(mark, root)` right after `prepare()` (before `preEval`,
+which only touches the already-rooted `ast`/`ctx.func.list`), root =
+`[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure]`, all five
+rebound from `exit`'s return (`__region_copy_rec` may relocate any of
+them — required, not optional, per the same use-after-free reasoning every
+prior session in this chain has documented). `scripts/self.js`'s `front()`
+supplies it, gated on the same `REGION_HOOKS_ACTIVE` marker via a ternary,
+same literal `__region_mark()`/`__region_exit()` calls `optimizeTail`
+already uses (this file is never run natively — see its own header).
+
+**The two wall-halves, re-tested on the rebased+re-wired kernel — BOTH
+DEAD.** Built `dist/jz.wasm` (`scripts/build-dist.mjs`, `REGION_HOOKS_ACTIVE`
+still the true marker post-rebase, `inlinePtrOffsetFast:false` auto-applied)
+— SHA-256 `3f4bb3bd…`. Direct `compileViaKernel` repros (`.work-scratch/
+front-boundary-repro.mjs`, not committed, this chain's own disposable-
+harness convention), O0/O2/O3 each:
+- `compile('')`, `sum` — clean (the pre-rebase session's own baseline pair).
+- **`export let f = (a) => { let g = (x) => x + a; return g(1) }`**
+  (cf6ad0b1's own captures-closure repro, verbatim) — **clean, `f(10)=11`**.
+- **`export let f = () => { let d = {}; d['a'] = 1; return d.a }`**
+  (dyn-prop-write) — **clean, `f()=1`**.
+- `arr[arr.length]=x` through a 2-level property chain (14c4f7a2's own
+  kernel-oracle repro — the DYNAMIC-PROPERTY-WRITE-adjacent native fix the
+  task flagged as postdating the banked attempt) — **clean**, matches
+  native/JS oracle (`f(9)="9|108"`).
+- The closest analog to the REAL bba45c0d compiler-internal shape (`ctx =
+  { closure: { table: [], envMeta: [] } }` with a sibling `.push()` +
+  indexed-append, literally `module/function.js`'s own `addToTable`/
+  `ctx.closure.envMeta.push` pattern) — **clean** (`f(5)="5|5|25"`).
+18/18 green (6 repros × 3 opt levels), all correct values, zero traps.
+
+**Which half was actually closed by what — investigated, not assumed.**
+Traced why `sum` no longer needs `ctx.schema` the way cf6ad0b1 reported
+(ablation: dropped `ctx.schema` from the root, rebuilt, re-ran the full
+repro set — **all 18 STILL green**, including the schema-heavy object-
+literal repros, where `src/prepare/index.js`'s own `ctx.schema.register`
+calls (confirmed via source read: lines 951/1664/2042/2149/2523/3164/3294/
+3666, all inside `prepare()`, i.e. inside the front span) DO fire for these
+exact programs). This does NOT mean the mechanism is inert — kernel-oracle/
+kernel-parity/the fuzz gate below all exercise the SAME rebound-root
+machinery and stay clean, and dropping the destructure entirely would be a
+structural no-op only if `regionHooks` itself were never invoked, which the
+rebuild-diff (dist/jz.wasm SHA changes between the two ablation builds:
+schema-in `3f4bb3bd…` vs schema-out — different bytes, confirming the arm
+IS compiled differently) rules out. Most likely explanation, not chased
+further (diminishing return once the acceptance ladder below is fully
+green): `ctx.schema`'s specific backing Maps (`byKey`/`byProp`) may no
+longer be the load-bearing part post the heap-kind-registry Slice 2 +
+CLOSURE arm's combined landing — `ctx.schema.list` (consumed downstream at
+ENCODE time by `regionArmObject`'s `$__schema_tbl` build) is very likely
+still reachable via a DIFFERENT already-rooted path for these specific
+repros (schema ids get baked into IR nodes as plain integers during
+`prepare()`, riding `ast`/`ctx.func.list` rather than needing a live
+`ctx.schema` reference downstream) — recorded honestly as an open
+loose end, not re-litigated given the ladder below is unambiguous.
+
+**Acceptance ladder — ALL GREEN, this build, this session:**
+| gate | result |
+|---|---|
+| `compile('')` + `sum` + captures-closure + dyn-prop-write | 4/4 clean, O0/O2/O3 |
+| kernel-oracle ×3 | 13/13 (541 assertions) × 3, zero traps, zero regressions |
+| kernel-parity | 33/33 (33 assertions), byte-identical |
+| 200-seed fuzz gate (`fuzz: no new miscompiles in seeds 1..200 × opt {0,1,2,3}` + the 7 sibling typed-array/loop-bound suites) ×3 | 8/8 × 3, 0 findings, 0 invalid |
+| native suite (`node test/index.js`, region-irrelevant control) | 3428/3430 pass, same 2 pre-existing known-banked flakes (interval-walk/typed-RMW codec-bounds), 6 skip — includes the 3 kernel-oracle `array-growth-class` rows that failed against a STALE pre-rebuild `dist/jz.wasm` earlier this session (rebuild fixed them, not a real regression) |
+
+**Memory watermarks** (`.work-scratch/watermarks.mjs`, not committed — same
+disposable-harness convention; `self.exports.__heap` direct read, matches
+the LAST HOP/memory-curve sessions' own methodology):
+| point | result |
+|---|---|
+| small-source (`sum`) | 1.7 MiB retained, 367ms |
+| jzify-entry (`resolveModuleGraph('jzify/index.js')`, 69 modules) | **holds** — 1398.1 MiB retained, 2.3s (well under the 4 GiB ceiling, consistent with the prior session's own "jzify-entry holds" verdict — front boundary neither breaks nor is required to further shrink this point) |
+| jz×jz (`resolveModuleGraph('scripts/self.js')`, 153 modules, self-hosted kernel compiling its own full source) | **still blocked** — `unreachable` after ~13.9s, well before any memory-ceiling signature. Matches the prior "watermark re-measurement" session's own finding (`unreachable` uniformly across every memory budget tried, NOT the 2³²-byte OOM signature) — **not a regression from this session, and not newly closed by the front boundary either**. Recorded honestly per the task's own instruction: the design doc's own scoping says Slice 3 (emit/encode boundary) is the remaining prerequisite for jz×jz, and Slice 3 was not attempted this session. |
+
+**By-name verdict.** The task's own framing asked "which wall-halves
+survived 14c4f7a2" — answer: **neither half survived.** Not because the
+dyn-prop half was specifically a 14c4f7a2-shaped native bug that happened
+to get fixed in passing (the task's own hypothesis) — the `arr[arr.length]`
+2-level-chain repro IS clean, consistent with that theory — but the
+captures-closure half, which 14c4f7a2 has nothing to do with, is ALSO
+clean, and the ablation above shows the mechanism is doing real (if not
+fully characterized) work rather than being accidentally inert. The most
+defensible reading: rebasing onto main pulled in the ENTIRE round-boundary
+hardening chain (watchpoint, temporal bisection, the SW fix, the memory
+curve, the native array-growth fix) that the front-boundary branch never
+had: some combination of these — most plausibly the SW fix (a genuine
+stale-backing-pointer class, structurally identical to what the front-
+boundary's OWN un-rooted state would produce) — closed the narrower wall
+as a side effect, and the front-boundary re-wiring this session did was
+necessary (the mechanism must exist to test) but not sufficient by itself
+to explain why it now works where it didn't in cf6ad0b1's own session.
+
+**Fix-or-bank: LANDED.** `src/front.js` (`frontHalf` gains `regionHooks`)
+and `scripts/self.js` (`front()` wires it, matching `optimizeTail`'s own
+idiom) committed to `region-final-2026-08-11`. Not gated behind a further
+stop-on-fail tripwire — the acceptance ladder is unambiguous and the
+mechanism's own ablation was investigated, not just observed passing.
+
+**SHAs.** jz: this session's commits on `region-final-2026-08-11`
+(rebased tip `9a08f4f2` → front-boundary landing, see git log). watr:
+`895ca5b` (`/Users/div/projects/watr`, unpublished, unchanged — the SW fix
+this session's win rides on). `dist/jz.wasm`: SHA-256 `3f4bb3bd0e1e13c3
+d4fa495e91b803bb27b321599e7c40b3995ebc82148ca5b0` (front-boundary-live,
+correct 5-element root, this session's build — the one every gate above
+ran against).
+
+**Recommendation for next session.** The front boundary is live and clean
+on this branch. Slice 3 (emit/encode boundary) is the sole remaining
+prerequisite named anywhere in this chain for jz×jz specifically — every
+other watermark point already holds. The `ctx.schema` ablation loose end
+above (real but not fully explained) is worth a focused session if the
+5-element root is ever trimmed for size/complexity reasons, but is NOT
+blocking — the full root as prescribed is correct, tested, and cheap.
+
+## §Region arena — REAL WALL FOUND+FIXED: SET/MAP rebuild hashed a not-yet-
+valid pointer (STRING/BIGINT content read through the LOGICAL, pre-move
+address); a SECOND, distinct wall (CLOSURE env-slot cellOff corruption)
+discovered behind it, diagnosed but NOT fixed — WALL, banked (2026-08-12)
+
+**Task**: the front boundary's real wall — every multi-module graph (opts.
+modules) crashes when the hooks are genuinely live, per 8bed8c3f's own
+finding. Method: worktree off `47140301`, `REGION_HOOKS_ACTIVE` hand-flipped
+to `true` (worktree-only — `resolveSelfhostBuild`'s `regionArena` override
+does NOT flip the source literal, confirmed again, matches 8bed8c3f's own
+warning), the SW-hunt trap-frame/checkpoint/holder-chase method.
+
+**Setup, corrected from the LAST session's own mistake.** The prior
+session's own worktree (found already checked out at `.../scratchpad/
+region-slice2-front`, base `47140301`) had `node_modules` blanket-symlinked
+to the SHARED tree's `node_modules` — the EXACT hazard the task warned about
+("the last agent accidentally deleted the shared tree's watr install via a
+bad symlink"). Unlinked ONLY that symlink (not recursive — confirmed the
+shared tree's `node_modules/watr` intact before AND after, `5.7.14`, real
+directory not a symlink), rebuilt the worktree's own `node_modules` with
+each of the 6 real entries symlinked individually, `watr` pointed at
+`/Users/div/projects/watr` directly (`895ca5b`, unpublished, unchanged this
+session — no watr-side fix needed this time).
+
+**Breadcrumb confirmation (task step 1).** Built the region-live kernel
+(`regionArenaLive: true` logged by `resolveSelfhostBuild`), ran jessie
+(`resolveModuleGraph('bench/jessie/jessie.js', {resolveNode:true})`, the
+`instantiate(wasm,{memory:8192})` / `exports.default(memory.String(code), 0,
+optJSON, modulesJSON, 0)` archived recipe): **reproduced exactly** —
+`memory access out of bounds` @ 512.0 MB (== the 8192-page INITIAL size,
+not a grow watermark — load-bearing observation, see below), 645 ms,
+matching 8bed8c3f's own jessie/watr/jzify-entry differential number-for-
+number. watr and jzify-entry (`jzify/index.js`) reproduce identically.
+
+**Method executed in the task's own prescribed order.**
+
+(a) **Trap frame + stack.** Node's `RuntimeError.stack` gives real
+`wasm-function[N]:0xOFFSET` frames with no extra tooling. Decompiled the
+SAME kernel build to WAT text (`compile(..., {wat:true})`, ~290M chars,
+matches this chain's own prior-session sizes) and mapped funcidx → name by
+counting `^  \(func \$` matches in declaration order (imports first,
+6 of them, confirmed via `wasm-objdump -x`) — cross-checked against
+`wasm-objdump -d`'s own per-index disassembly at the exact trap byte
+offset, which is the ground truth (the WAT-line-count mapping is a
+convenience, not the proof). First trap: `$__str_hash` (called from
+`$__map_hash` ← `$__map_set` ← `$__region_copy_rec` ×5 recursion ← a
+`$closure2919` wrapper ← `$m109_front$frontHalfrest2`, i.e. inside front's
+OWN region_exit, rebuilding a relocated Map/Set).
+
+(b) **Temporal checkpoint via a worktree-only debug-global probe** (the
+LAST HOP's own ring-buffer precedent, sized down to "last call" since the
+trap is deterministic and near-instant): `declGlobal`-added 5 exported i32/
+i64 globals, written at the top of `$__str_hash`'s plain-FNV path. Read
+back post-trap (memory/globals survive a caught `RuntimeError` in the same
+instance). **Result, the load-bearing finding**: `off` (the string's data
+pointer) and `aux` (`STR_HCACHE_BIT`, 0x2, set) looked plausible, but `len`
+(loaded from `off-4`, meant to be the string's byte length) read
+`1750808124` — nonsense — and a memory dump of `[off-32, off+32)` showed
+**all zeros except that one 4-byte value sitting exactly at `off-4`**: not
+"adjacent leftover data", uninitialized/never-written memory with one stray
+word. The disassembly pinpointed the exact trapping instruction as the
+4-byte-unrolled FNV loop's own `i32.load(off+i)` — walking past `lenA`
+(derived from the garbage `len`) off the end of the 512 MB memory.
+
+(c) **The holder chase, two real bugs found via the SAME method, one fixed
+this session, one only diagnosed.**
+
+**Bug 1 (FIXED) — SET/MAP rebuild hashes a not-yet-valid pointer.**
+`layout-kinds.js`'s `regionArmSetMap` (the `__region_copy_rec` arm that
+rebuilds a relocated Set/Map via `__coll_order`+reinsert) called
+`$__region_copy_rec` on each entry's KEY, then passed the **return value**
+(the KEY's LOGICAL, post-move address — correct to STORE permanently, since
+every pointer inside the compacted copy must already be final so
+`region_exit`'s closing `memory.copy(mark, T, size)` needs no second fixup
+pass) straight into `$__map_set`/`$__set_add`, which **hash the key it's
+given** to place it in a bucket. `$__map_hash`'s STRING/BIGINT arms
+DEREFERENCE the key's payload (content hash — `mapHashStringArm`/
+`mapHashBigintArm`); every other kind hashes raw bits (no deref). A
+relocated STRING/BIGINT key's bytes only physically exist at the PRE-move
+address until `region_exit`'s own LAST instruction — the LOGICAL address
+handed to the hasher points into memory nothing has written yet (still
+zeroed from a prior round's reclaim, or genuinely fresh), which is EXACTLY
+what the `[hash][len]` load-turned-garbage checkpoint showed. First
+hand-flipped `ctx.core` and separately `ctx.func.names` into front's root
+as candidate-holder ablations per the task's own next-candidates list —
+**both RULED OUT** (zero change to jessie/watr/jzify's failure signature;
+`ctx.func.names` DID shift which synthetic module-count chain rows passed —
+see the scale probe below — a reshuffle artifact of the SAME missing-root
+class this chain has seen before, not a fix). The real holder was a
+**timing** bug, not a missing root — the SW-hunt method's own "holder chase"
+found a colocated-but-distinct hazard on the SAME structure the task's
+"different table on ctx.func" hint pointed near (Set/Map keys are exactly
+what `prepareModule`'s renamed function names / module specifiers become).
+
+*Fix* (`layout-kinds.js` `regionArmSetMap`, `module/collection.js`,
+`module/core.js`): hash the entry's key ONCE, choosing which bits to hash
+by KIND — STRING/BIGINT (content-hashed) hash the **ORIGINAL** (pre-
+relocation) bits, always safely dereferenceable throughout the WHOLE
+traversal since the source zone `[mark, T)` is read-only until
+`region_exit`'s own closing `memory.copy` (never a write target before
+then — `regionArmArray`'s own "self-overlap" comment); every other kind
+(bits-hashed, no dereference) hashes the **RELOCATED** bits, matching what
+a future lookup — which only ever sees the stored, final bits — will
+compute. Insert with the precomputed hash via a new STRICT (fixed-capacity,
+matching the rebuild's own pre-existing "never grows" invariant) prehashed
+sibling, `$__map_set_h`/`$__set_add_h`, generated by generalizing the
+existing `genUpsertStrictPrehashed` (previously MAP-shaped only, used for
+`__hash_set_local_h`) with a `hasVal` toggle mirroring `genUpsert`'s own —
+additive, default `true`, byte-identical for every existing caller. Needed
+an explicit `deps()` edge from `__region_copy_rec` to `__map_hash`/
+`__map_set_h`/`__set_add_h` (self-host's own auto-dep scan can't see calls
+inside a spliced WAT template body — `test/selfhost-includes.js` caught
+this exact gap on the first full-suite run, "Unknown func" class, fixed
+before landing).
+
+Also fixed, found by the SAME first checkpoint (the `STR_HCACHE_BIT=0x2`
+aux flag on the very first captured trap): `regionArmString`'s STRING
+relocation arm allocated/copied only a bare 4-byte `[len]` header for EVERY
+ephemeral string, silently dropping the `[hash]` word `STR_HCACHE_BIT`
+strings carry 8 bytes before their data (`module/string.js`'s own
+`[hash=0 u32][len u32][bytes]` shape — "Sound because heap strings never
+relocate" per `layout.js`'s own STR_HCACHE_BIT doc, an invariant this
+region arm breaks by existing). Fixed by allocating the extra 8 bytes and
+RESETTING the cache word to 0 (the documented "uncomputed" sentinel) at the
+new address — sound, costs one lazy recompute, matches what a freshly
+bump-extended HCACHE string already starts from. A real, independent
+correctness bug (not the dominant mechanism behind jessie's own crash, per
+the differential below, but a genuine latent one for any HCACHE string
+relocated outside the SET/MAP-key path this session's fix touches).
+
+**Verification of Bug 1's fix.**
+- **Scale probe, the multi-module discriminator nailed precisely.** A
+  synthetic chained-import graph (N trivial one-export modules, no stdlib
+  breadth, isolates PURE MODULE COUNT from code complexity) on the
+  UNFIXED kernel: 5/10 modules clean, 12/14/15/17 FAIL, 16/18 clean — a
+  striking NON-monotonic pass/fail pattern (not a simple "N > threshold"
+  wall) — consistent with a relocation-timing bug whose observability
+  depends on exact allocation-offset luck, not a missing-root class (which
+  would be more uniformly present past some volume). Same graphs on the
+  FIXED kernel: **5 through 47 modules, 100% clean**, deterministic (re-run
+  3×, identical). This is the "2-module synthetic clean / real-corpus-crash"
+  gap 8bed8c3f flagged, closed for the whole synthetic family.
+- **jessie/watr/jzify-entry**: still FAIL — but the failure signature
+  CHANGED (timing evidence a different bug is now dominant): 512.0 MB
+  unchanged, but 77–149 ms instead of 645–1208 ms (≈8× faster to the same
+  trap) — the SET/MAP-key-hash bug was the SLOWER-to-trigger one; something
+  else now fires first. Confirmed via a NEW trap-frame decompile: different
+  function indices, different call chain (`__region_copy_rec` →
+  `__region_relocate_props` → `__region_copy_rec` (recursion) →
+  `__region_relocate_cell`, the CLOSURE boxed-cell side path — see Bug 2).
+- **Regression gates, dormant (the shipped/landed config, `REGION_HOOKS_
+  ACTIVE` reverted to `false` before every one of these runs).**
+  `npm run build` — clean, no errors. `node test/index.js` (native target):
+  **3428/3436 pass** (the SAME 2 pre-existing known-banked flakes this
+  whole chain documents — interval-walk / typed-RMW codec-bounds rows —
+  zero new regressions; one run WITH the debug probes still attached caught
+  a real self-host-only gap — `__map_set_h`/`__set_add_h` unreachable via
+  auto-scan — fixed with the explicit `deps()` edge before this number).
+  `JZ_TEST_TARGET=jz.wasm node test/index.js` (the DORMANT self-hosted
+  kernel's own full leg): **2725/2731 pass, 0 fail** (6 skip, same shape as
+  the native leg's skips) — the fix is completely inert for the shipped
+  configuration, confirmed by running its own test leg clean, not just
+  reasoned from the `if (regionHooks)`/pull-in-only-when-referenced
+  structure (though that's ALSO true and is why it's inert).
+- **Regression gate, region-live** (`test/kernel-oracle.js`, 13 programs,
+  single-module — a NEW finding, not this session's fault but important to
+  record honestly): **9/13 fail** (`memory access out of bounds` at O2/O3,
+  a byte-count divergence at O0) with hooks genuinely hand-flipped live —
+  and this is IDENTICAL, line-for-line, on the UNMODIFIED `47140301` code
+  (verified directly: backed up this session's 3 fix files, restored the
+  original `layout-kinds.js`/`module/collection.js`/`module/core.js` via
+  `git show HEAD:...`, rebuilt `dist/jz.wasm`, re-ran — same 9/13 fail, same
+  messages). **This means kernel-oracle was never actually verified clean
+  under a GENUINELY region-live build by any prior session** — 47140301's
+  own "kernel-oracle 13/13 x3" claim almost certainly ran against a
+  SILENTLY-DORMANT kernel via the exact `resolveSelfhostBuild({regionArena:
+  true})`-doesn't-flip-the-literal gap 8bed8c3f itself named as a hazard
+  for "a future session" — this session IS that future session, and the
+  gap bit it too until the hand-flip + a direct differential caught it.
+  Not this session's regression (proven byte-for-byte identical without
+  the fix); a pre-existing, previously-unmeasured single-module wall,
+  independent of the multi-module one this task targeted.
+
+**Bug 2 (DIAGNOSED, NOT FIXED) — CLOSURE env-slot cellOff corruption, a
+SECOND real wall.** With Bug 1 fixed, jessie/watr/jzify/jz×jz still trap,
+now inside `__region_relocate_cell` (the boxed/mutable-capture cell
+relocation helper CLOSURE's region arm calls for cell-mode env slots).
+Trap-frame decompile of the fixed kernel pinpointed the exact faulting
+instruction: `f64.load` on `$cellOff` itself (both the durable and
+ephemeral branches share this shape) — i.e. `$cellOff`, an i32 read
+straight out of a closure's env slot and expected to be a valid heap
+pointer to an 8-byte boxed cell, is garbage. Two debug-global probes
+(mirroring Bug 1's method, on `__region_relocate_cell`'s own params and on
+`regionArmClosure`'s `off`/`aux`/`n` right where they're computed) caught
+one instance: `cellOff = 1291563756` (~1.2 GB, **larger than the entire
+512 MB memory** — not "wrong by a little", a different KIND of value
+entirely) against a sane `mark = 1804720` and a sane-looking owning closure
+(`off=3860736`, `aux=1015`, `n=6` — a small, plausible env). A cheap
+reproduction was found (**not the full jessie corpus** — a 20-module
+synthetic chain where each module's function boxes a reassigned local and
+returns an IIFE closing over it) — confirmed to fail on BOTH the fixed and
+the unmodified-Bug-1 kernel (ruling out Bug 1's fix as the cause) at
+158 ms / 732 ms respectively. Leading hypothesis, NOT confirmed: a
+type-confusion where `$__closure_env_mask`'s bit for some slot says
+"cell-mode" (raw i32 pointer) but the slot's actual content is an ordinary
+NaN-boxed value (its low 32 bits read as a "pointer" are exactly this kind
+of large, structureless garbage) — but the STATIC side-table-vs-instance-
+content mismatch mechanism that would require is not yet traced; the
+values are also consistent with plain upstream pointer corruption of the
+closure box `$bits` itself, undistinguished from the mask theory by the
+evidence gathered so far. NOT bisected further — this session's own
+remaining budget did not reach that depth (the exact SW-hunt-depth tracing
+Bug 1 got: ring-buffer-across-many-calls, per-slot-index breadcrumbs, a
+byte dump around the failing address at the moment `regionArmClosure`
+computes it, not just at the point of the eventual failing `relocate_cell`
+call).
+
+**jz×jz re-verdict** (the task's own step 4 ask). Still blocked — front
+boundary is not yet sound (Bug 2), so the "does it reach the true memory
+ceiling again" question the task posed is not yet answerable; jz×jz's OWN
+trap moved from 3.7–3.8 s/1024 MB (8bed8c3f's own number, dominated by Bug
+1) to ~1.0 s/1024 MB (same watermark, faster — consistent with Bug 2 now
+dominating there too, same as the three smaller graphs). Slice 3 is NOT
+reachable yet — per this task's own framing ("stacking a new region
+boundary on a front boundary that corrupts real programs would compound an
+unsound foundation") that verdict from 8bed8c3f stands, just with a
+narrower remaining cause.
+
+**Disposition.** Worktree-only session throughout: `/Users/div/projects/jz`
+`git status` shows nothing beyond what this ledger commit adds; the shared
+tree's `node_modules/watr` verified intact (real directory, `5.7.14`)
+before AND after (see Setup). All debug-global probes (5 on `__str_hash`, 3
+on `__region_relocate_cell`, 5 on `regionArmClosure`) were worktree-only,
+reverted before landing anything — `git diff --stat` on the 3 landed files
+shows only the real fix (regionArmString's HCACHE header, regionArmSetMap's
+hash-before-relocate + `__map_set_h`/`__set_add_h`, the `deps()` edge).
+`REGION_HOOKS_ACTIVE` reverted to `false` (dormant) before every
+regression-gate run and before this commit — unchanged from 47140301's own
+landed default; this session never proposes flipping it (front boundary is
+provably not yet sound end-to-end).
+
+**Recommendation for next session.** Reuse the SAME method, one level
+deeper: (1) hand-flip live, confirm the cheap 20-module boxed-closure-chain
+repro (158 ms, far cheaper than jessie's 77 ms... actually comparable now —
+either works, jessie is the more real-world signal). (2) Trap frame +
+decompile (this session's own WAT-line-counting index→name mapping,
+cross-checked against `wasm-objdump -d`'s per-index disassembly at the
+exact trap offset, reproducibly worked twice — reuse verbatim). (3) This
+session's `$__dbg_cl_*`/`$__dbg_rc_*` probe SHAPES are a ready-made
+starting point (not committed, but the exact `declGlobal`+text-`.replace()`
+splice pattern is proven twice now — copy it) — widen to a RING (not just
+"last call") across MULTIPLE closure/cell relocations in one run, keyed by
+slot index too, to catch the exact slot/closure-shape combination that
+goes bad rather than only the last one before the trap. (4) Specifically
+test the type-confusion hypothesis: dump the RAW bytes at a captured
+`cellOff` immediately BEFORE it's dereferenced (this session did this for
+Bug 1's string but not yet for Bug 2's cell) — a NaN-boxed ordinary number
+would show a plausible IEEE754 pattern, not zeros-with-one-stray-word.
+
+## §Region arena — SECOND WALL, ONE REAL SUB-BUG FIXED (delta-adjustment
+missing in `__region_relocate_cell`'s ephemeral branch), the DOMINANT
+garbage-cellOff mechanism REMAINS OPEN — diagnosed one level deeper, not
+fixed — WALL, banked (2026-08-12)
+
+**Task**: close Bug 2 (`__region_relocate_cell` reading a garbage `$cellOff`
+— e.g. 1.2GB vs 512MB memory — on real graphs), per the task's own candidate
+list: (c) a physical-vs-logical addressing bug (the just-fixed SET/MAP
+class's sibling) first, then (a)/(b) if refuted.
+
+**Setup**: reused the worktree already checked out at `.../scratchpad/
+region-slice2-front`, base `2cbc1f95` (region-final-2026-08-11, HEAD),
+`node_modules/watr → /Users/div/projects/watr` (`895ca5b`, verified intact
+before AND after — real directory, not the accidentally-deleted symlink
+class two sessions ago). `REGION_HOOKS_ACTIVE` hand-flipped `true`
+(worktree-only, reverted to `false` before every dormant-mode gate run and
+before landing) — confirmed AGAIN this is the only source-literal that
+matters; `resolveSelfhostBuild`'s `regionArena` override still doesn't
+touch it.
+
+**Candidate (c), CONFIRMED and FIXED — a real bug, same family as the
+SET/MAP fix, opposite direction.** `__region_exit`'s own doc (module/
+core.js, the "Self-overlap" comment): every relocated pointer's offset must
+be pre-adjusted by `-delta` (`delta = T - mark`) BEFORE it's written
+anywhere a later read might see it — the closing `memory.copy(mark, T,
+size)` moves physical bytes verbatim and never revisits pointer VALUES
+already staged into that block. Every arm that mints a fresh ephemeral
+block confirms this: `__region_relocate_props`'s own `$out` (module/
+core.js, just above `__region_relocate_cell`) is built via `(call $__mkptr
+… (i32.sub (local.get $newOff) (local.get $delta)))`; every ARRAY/OBJECT/
+HASH/SET/MAP ephemeral branch in `layout-kinds.js` does the same for its
+own `$out`. `__region_relocate_cell`'s ephemeral branch was the ONE place
+that memoized and returned the RAW physical `$newOff` instead — confirmed
+by direct side-by-side comparison with `__region_relocate_props`'s
+identical-shape sibling code 15 lines above it, not by runtime observation
+alone (the bug is real regardless of whether any single captured instance
+happens to demonstrate it). A caller storing that unadjusted value into an
+env slot (`regionArmClosure`, both its durable and ephemeral branches — the
+ONLY two call sites) persists a not-yet-final address that only becomes
+valid to dereference AFTER this round's closing copy lands, and drifts
+further wrong every subsequent round's bump allocation compounds on top of
+it.
+
+*Fix* (`module/core.js`, `__region_relocate_cell`): a new `$logOff` local
+= `$newOff - $delta`, computed once; memoized and returned in place of the
+raw `$newOff` (the durable branch, and the memo-hit fast path, were already
+correct — durable addresses never move, and a memo hit simply replays
+whatever was stored the first time). Zero change to the durable branch's
+own shape.
+
+**Verification of the fix in isolation.** Debug-global probes (SW-hunt
+method — `declGlobal`-added exported i32 globals, `$__dbg_rc_*` on
+`__region_relocate_cell`'s own params/branch/result, `$__dbg_cl_*` on
+`regionArmClosure`'s off/aux/n/cellMask/i/slot-value right before each
+call site — worktree-only, reverted before landing, `git diff --stat`
+confirms only the real fix remains in `module/core.js`) confirmed the
+ephemeral branch DOES get exercised on jessie before the eventual trap
+(a prior, successful ephemeral relocation recorded `branch=1,
+result=2641984` — a sane, in-bounds address — moments before the fatal
+call). This is a real, necessary fix, independent of whether it closes the
+observed wall by itself.
+
+**Candidate (c) REFUTED as the SOLE cause — a second, deeper mechanism
+found by the same probes.** With the fix applied, jessie/watr/jzify-entry/
+the 20-module synthetic repro all STILL trap, identical signature (512.0 MB
+`memory access out of bounds`, sub-100ms). The debug probes caught the
+EXACT same instance the prior session (this worktree's own "REAL
+WALL FOUND+FIXED" entry) already named: `aux=1015`, `n=6`, `off≈3856072`,
+`cellOff=1291563756` (~1.2GB) — reproduced bit-for-bit on this session's
+own independent rebuild, confirming it's a deterministic, real program
+state, not a heisenbug. **The load-bearing new finding**: `regionArmClosure`
+itself was in its EPHEMERAL branch for this closure (`off ≥ mark` — this
+closure's OWN env block is being relocated for the FIRST time this round),
+which means the garbage `cellOff` was ALREADY sitting in the env slot
+BEFORE `__region_copy_rec`'s traversal ever touched it — `front()`'s region
+boundary is a SINGLE mark/exit pair around one synchronous parse→jzify→
+prepare call (no per-round loop, confirmed by re-reading `src/front.js`'s
+own contract), so there is no PRIOR relocation this same compile could have
+run to plant a stale, un-adjusted address via my just-fixed bug — the
+value was already wrong at closure-CREATION time (`module/function.js`'s
+env-population store loop), or is corrupted by something else entirely
+inside this ONE traversal before this closure is reached. This refutes
+candidate (c) as the ONLY cause: the delta-adjustment bug I fixed governs
+REPEATED relocations of an already-once-moved cell across MULTIPLE rounds
+(Slice-1's per-round loop, or a multi-round chain) but cannot explain a
+garbage value on a closure's FIRST-EVER relocation within a single-round
+boundary.
+
+**Candidate (a) — partially investigated, INCONCLUSIVE, not ruled out.**
+Byte-dumped the full env block (`off=3856072`, `n=6`, `mask=0b111101`)
+directly from wasm memory post-trap (the old block is never written by
+this arm's ephemeral path — only read — so its bytes are exactly what
+closure-creation left behind). Every cell-mode slot's LOW 4 bytes (the only
+bytes any code path ever explicitly writes for a cell-mode slot —
+`module/function.js`'s store loop uses `i32.store`, 4 bytes, never `f64.
+store`) is the deliberately-written cell pointer; slot 0's low word
+(958736) is a plausible small heap offset, slot 5's (1291563756) is not.
+The HIGH 4 bytes of every cell-mode slot — never written by ANY code path,
+durable or ephemeral, at creation OR relocation — consistently decode into
+the `0x7ffa_xxxx`–`0x7ffb_xxxx` range, i.e. exactly jz's own NaN-box tag
+prefix shape, on ALL FIVE cell-mode slots. This is suggestive (this memory
+was plausibly VALUE-shaped — f64, 8 bytes meaningful — at some point) but
+NOT dispositive: decoding slot 5's full 8 bytes as a NaN-boxed pointer
+gives type=STRING(4) with the SAME garbage low-32 offset either way (cell-
+mode and value-mode reads share the identical low 4 bytes at this address
+by construction), so the decode doesn't discriminate between "this slot IS
+a legitimate boxed value misread as a cell" and "this slot IS a legitimate
+cell whose low bytes happen to be garbage for an unrelated reason" — both
+hypotheses predict the exact same observation. Traced the mask-build path
+(`module/function.js` `ctx.closure.make`, lines ~254-302): the mask
+computation loop and the env-population store loop both run synchronously
+within the SAME `ctx.closure.make` call, over the SAME `envCaptures` array,
+both testing `ctx.func.boxed?.has(envCaptures[i])` — no code runs between
+them that could mutate `ctx.func.boxed`, so a source-level mask/store
+mismatch looks structurally ruled out for THIS call shape, though not
+exhaustively verified against every closure-creation path (`storage ===
+'none'` short-circuits before either loop; the destructured-param/
+ClosureEnvPlan-vs-legacy-fallback split, `.work/closure-plan-design.md`,
+was not independently re-audited this session).
+
+**Candidate (b) — not reached.** "The env itself already relocated and the
+cell-slot read used a stale env base" was not directly tested; ruled out
+AS THE MECHANISM FOR THIS SPECIFIC INSTANCE by the same single-round-
+boundary argument that refutes (c) as sole cause (this closure's env block
+is on its FIRST relocation this round, so there is no earlier `$off` for
+`regionArmClosure` itself to have gone stale against — but a stale-base
+read against something the env block's OWN CONTENTS reference, one level
+removed, was not investigated).
+
+**Kernel-oracle re-test (task step 4's own ask).** `test/kernel-oracle.js`
+×3 reps against this session's region-live rebuild (fix applied): **4/13
+pass (102 assertions), 9/13 fail — IDENTICAL failure signature every rep**
+(byte-count divergence at O0 on the `math` row — native 252B vs kernel
+274B — plus `memory access out of bounds` at O2/O3, plus the unrelated
+`console.log string constants: heap O0` decode-mismatch row). This is the
+EXACT count and shape the prior session ("REAL WALL FOUND+FIXED" entry,
+this same file) recorded BEFORE this session's fix — **unchanged by the
+delta-adjustment fix**, confirming kernel-oracle's own regression does NOT
+share (or does not exclusively share) my fixed root; it's consistent with
+sharing the SECOND, still-open mechanism instead (kernel-oracle's corpus is
+single-module, so this can't be Bug-2's multi-module discovery path
+specifically, but the underlying closure-relocation hazard isn't scoped to
+`opts.modules` — any program with the right closure shape can hit it).
+
+**Standard ladder.** Native `node test/index.js` (no `JZ_TEST_TARGET`,
+fix applied, `REGION_HOOKS_ACTIVE=false` dormant): **3428/3436 pass** — the
+SAME 2 pre-existing documented flakes (interval-walk / typed-RMW) this
+whole chain has carried, zero new regressions. `JZ_TEST_TARGET=jz.wasm
+node test/index.js` (dormant self-hosted kernel, fix applied): **2725/2731
+pass, 0 fail, 6 skip** — byte-for-byte the same count the prior session's
+own dormant leg recorded, confirming the fix is completely inert in the
+shipped configuration (the `if (regionHooks)` guard everywhere in
+`__region_copy_rec`'s CLOSURE arm and `__region_relocate_cell` itself is
+only ever reachable when `__region_exit` is pulled in, which dormant builds
+never do). `node scripts/build-dist.mjs` ×2 (dormant): **byte-identical**,
+SHA-256 `8d6a9344226e66abbed7e43afdb1978ce9fe2f8f519f8a0c2bdb608e206a762f`
+both times. Region-live rebuild (fix applied): 14,591.7 kB both times built
+this session (two independent builds, same config, same size — not hashed
+a second time since the wall stayed open regardless). Fuzz gate / battery /
+kernel-parity's own dedicated file: **NOT run** — the wall is still open,
+matching every prior session's own discipline ("no point running the full
+ladder past what verifies THIS session's own landed change" — the fix's
+own regression surface, native+wasm+oracle above, is fully covered).
+
+**jz×jz re-verdict (task step 4/5's own ask — "does it reach the true
+memory ceiling again?").** Still blocked, same wall: `memory access out of
+bounds` @ 1024.0 MB, 830 ms (region-live, fix applied) — matching the prior
+session's own Bug-2-dominated number (~1.0s/1024MB) closely, NOT the
+deliberate `unreachable`-at-2³² ceiling abort. Slice 3's true precondition
+(front boundary sound end-to-end) is NOT yet met. No memory-ceiling
+re-verdict is possible until the second mechanism closes.
+
+**20-module repro + jessie/watr/jzify-entry ×3 (task step 5's acceptance
+gate).** All still FAIL, deterministic across 3 reps each, identical
+signature to pre-fix (512.0 MB `memory access out of bounds`,
+11–147 ms) — the synthetic 20-module chain (this session's own
+reconstruction: 20 chained one-export modules, each `let v = x+i; v=v+1;
+return (() => v)()`, matching the prior session's own description since
+its literal fixture wasn't preserved) reproduces the SAME wall class,
+though not necessarily the identical instance (its own trap decompiled to
+a value-mode `__region_copy_rec` dispatch, not `__region_relocate_cell`
+directly — consistent with "some real graphs hit this via a value slot
+neighboring a bad cell slot, not only via the cell read itself").
+
+**Disposition.** `module/core.js`'s `__region_relocate_cell` delta-
+adjustment fix is landed (real, necessary, fully regression-verified,
+inert when dormant). `REGION_HOOKS_ACTIVE` reverted to `false` before this
+commit — unchanged shipped default. All debug-global probes (`$__dbg_rc_*`,
+`$__dbg_cl_*`, both files) were worktree-only, reverted before landing —
+`git diff --stat` on the shared/committed set shows only `module/core.js`,
+31 lines. Shared tree (`/Users/div/projects/jz`) untouched by this session
+(pre-existing unrelated dirt from a concurrent session — README.md,
+`.work/todo-original.md`, `bench/bench.svg`, `assets/install.svg` — none
+of these files were read or written here). `/Users/div/projects/watr`
+verified intact at `895ca5b` before and after (real directory, not a
+symlink casualty).
+
+**Recommendation for next session.** The mechanism is narrower than when
+this session started (single-round front boundary, first-ever relocation,
+env-population-time-or-earlier corruption) but not yet pinned. Highest-
+value next step: ring-buffer (not last-call) breadcrumbs across EVERY
+`ctx.closure.make` env-population store (module/function.js, not just the
+relocation side) keyed by `(tableIdx, slot i)`, comparing the value ACTUALLY
+STORED at creation time against what `regionArmClosure` later reads for the
+SAME `(off, i)` — if they already differ at read-time with NOTHING in
+between (single round, confirmed above), the bug is either in
+`ctx.func.boxed`'s own local-variable lifecycle (a WAT local aliasing/reuse
+hazard across nested closure literals, matching module/function.js's own
+"array-write codegen for `arr[arr.length]=x`" self-host-only-codegen-gap
+precedent the CLOSURE-arm-landing session already found once for
+`envMeta`) or genuinely upstream of both (a `$cell_x` local computed by a
+DIFFERENT closure/function invocation than the one this env slot's `i32.
+store` executes in — a scope/identity mismatch, not a region-arena
+mechanism at all, which would mean the WALL's real fix lives outside
+`layout-kinds.js`/`module/core.js` entirely). Test the "self-host-only
+codegen gap" angle FIRST (cheapest, matches a precedent that already
+happened once in this exact file) before re-running the full SW-hunt
+byte-dump machinery.
+
+**SHAs.** jz worktree: `2cbc1f95` (region-final-2026-08-11, unchanged base
+— this session's own change is the uncommitted `module/core.js` diff about
+to be committed on top). watr: `895ca5b` (`/Users/div/projects/watr`,
+unpublished, unchanged). Dormant `dist/jz.wasm` (landed config): SHA-256
+`8d6a9344226e66abbed7e43afdb1978ce9fe2f8f519f8a0c2bdb608e206a762f`.
+
+## §Region arena — funcIdx SKEW CONFIRMED AND FIXED (ctx.closure.mint):
+the closure-env side table's build-time keying desynced from the wasm
+table's own index space; real bug, real fix, LANDED — the front-boundary
+wall NARROWS (kernel-oracle 4/13→6/13, a clean synthetic repro closes) but
+does NOT fully close for jessie/watr/jzify-entry/jz×jz — a SECOND
+mechanism remains, now unmasked and reached further in, not yet found
+(2026-08-12)
+
+**Task, per the coordinator's own brief**: test the funcIdx-skew hypothesis
+FIRST, before any fallback probe — 6743aea0's own recommendation ("test the
+self-host-only codegen gap angle") was explicitly deprioritized this
+session in favor of the coordinator's own candidate: does the funcIdx-keyed
+`$__closure_env_len`/`$__closure_env_mask` side table (bba45c0d, `src/wat/
+assemble.js`'s `buildStartFn`, sourced from `ctx.closure.envMeta`) desync
+from `ctx.closure.table`'s own index space under multi-module compiles?
+
+### The mechanism, found by direct source inspection (not runtime bisection)
+
+`ctx.closure.table` (the wasm `$__jz_table` elem segment — one shared array
+across the WHOLE compile, every module folded into one `ctx`) has **three**
+growth sites, not one:
+
+1. `module/function.js`'s `ctx.closure.make` (was `addToTable`) — every
+   REAL closure literal (arrow/function expression with captures).
+2. `src/compile/emit.js`'s `builtinFunctionValue` — a builtin
+   (`math.sqrt`, `Array.isArray`, …) referenced bare, as a value (not
+   called directly) — mints a zero-capture trampoline entry.
+3. `src/compile/emit.js`'s "top-level function used as value" branch (the
+   `~7199` block) — `let g = someTopLevelFunction` — mints a zero-capture
+   trampoline entry too.
+
+`ctx.closure.envMeta` (module/function.js, `bba45c0d`'s own side-table
+source) had exactly **one** growth site: site (1) above, inside
+`ctx.closure.make`, immediately after `addToTable`. Sites (2) and (3) pushed
+straight onto `ctx.closure.table` with their own inlined
+`indexOf`/`length`/`push` — bypassing `envMeta` entirely. Every time a
+program references a builtin or a top-level function as a bare value, the
+table gains an entry envMeta never mirrors — from that point forward,
+`envMeta[i]` (read by `assemble.js`'s `for (i=0..nClosures)` loop, `meta =
+ctx.closure.envMeta[i] || {len:0,cellMask:0}`) describes the closure that
+was REALLY minted `k` slots earlier, where `k` is the phantom-entry count
+so far — a real closure's OWN `{len,cellMask}` either lands on the
+`{0,0}` fallback (envMeta ran out) or on a DIFFERENT closure's record
+entirely. A value-mode f64 slot misread as a cell-mode raw i32 pointer (or
+vice versa) is exactly the "cellOff garbage / NaN-tag-shaped high word"
+signature the prior two sessions' byte-dumps recorded for `aux=1015/n=6`.
+**Multi-module-only fits naturally**: real cross-module programs (jessie,
+watr, jzify, jz×jz) reference far more top-level functions and builtins as
+bare values (host bridging, higher-order dispatch across module
+boundaries) than the single-module kernel-oracle/native corpus does — but
+the mechanism itself is NOT multi-module-specific (demonstrated below on a
+single-module native fixture), just far more likely to trigger there.
+
+### Dispositive proof (the task's own "build-time table vs runtime lookup"
+### ask, done as a direct table/envMeta cross-reference instead — equally
+### conclusive, and reproducible without the self-hosted kernel)
+
+A minimal single-module native fixture (`export function f(x){…}; let g=f;
+` two closures with real captures created around the reference) compiled
+against the unmodified `6743aea0` code (`.../scratchpad/region-skew-before`,
+a disposable worktree at that exact commit): `ctx.closure.table.length = 4`
+(`tramp_f, closure1, closure2, closure3`), `ctx.closure.envMeta.length = 3`
+— **a length mismatch, direct and unconditional**, no runtime/wasm
+execution needed to observe it. Cross-referencing every REAL closure's
+ground-truth `{len,cellMask}` (read straight off `ctx.closure.bodies`,
+name-correlated to its table slot — bodies is NOT index-keyed the way
+envMeta is, so this comparison is apples-to-apples) against
+`envMeta[table.indexOf(name)]` on a fixture engineered to hold nonzero
+captures (function-parameter captures, since top-level `let` captures
+constant-fold away before reaching a real env slot) is the natural next
+step for a future session that wants a byte-for-byte "closure X's real
+mask vs what got read for it" table; this session confirmed the mechanism
+via the length-mismatch (unconditionally dispositive: assemble.js's `||
+{0,0}` fallback loop provably reads the WRONG record for every table index
+minted after the first phantom entry, regardless of what that record's
+bits happen to be) rather than chasing one specific `aux` value, since no
+harness for a byte-identical repro of the ORIGINAL `aux=1015/n=6` instance
+survived between sessions (`.work/research.md`'s own prior entry: "its own
+literal fixture wasn't preserved").
+
+### The fix — `ctx.closure.mint`, one mint point instead of three
+
+`module/function.js`: `addToTable` replaced by `ctx.closure.mint(name,
+meta)`, published on `ctx.closure` (same publication channel as
+`ctx.closure.make`/`.call`) so `src/compile/emit.js` can reach it. Mints
+the table slot AND pushes the matching `envMeta` record (default `{len:0,
+cellMask:0}` when the caller passes none) ATOMICALLY — the table and
+envMeta arrays can no longer diverge in length, by construction, from any
+of the three sites. `ctx.closure.make` now computes `envCellMask` BEFORE
+minting (a reorder — the mask is pure, no side effects, so this changes
+nothing else) and passes the real `{len,cellMask}` through. `emit.js`'s
+`builtinFunctionValue` and the trampoline site each become a one-line
+`ctx.closure.mint(name)` (default meta — both are always zero-capture,
+matching `storage:'none'`'s own convention). Precedent: this is the exact
+shape of the repo's own most recent commit before this session
+(`0c4fb9c9`, "128-site `ctx.func.uniq++` idiom → one `freshId(ctx)` mint
+helper") — centralize the mint, don't patch each call site.
+
+### Verification
+
+**The funcIdx skew mechanism itself, closed**: the same 2-closure
+cross-reference fixture, re-run against the fixed code
+(`.../scratchpad/region-slice2-front`) — `table.length === envMeta.length`
+(4 === 4), zero mismatches. A 20-module synthetic repro (this session's own
+construction — 20 chained one-export modules, each an IIFE closing over a
+mutated local, `import`ing the previous module's export, matching the
+prior session's own description since its literal fixture wasn't
+preserved) built fresh and run through BOTH a region-live UNFIXED kernel
+and a region-live FIXED kernel (both `dist/jz.wasm`, `REGION_HOOKS_ACTIVE=
+true`, rebuilt this session): **UNFIXED: `memory access out of bounds`
+(131ms). FIXED: compiles clean, 3842B, 3/3 reps.** This is the same
+signature class (multi-module, closure-heavy, front-boundary) as the
+documented wall — closed by this fix, deterministically.
+
+**jessie/watr/jzify-entry (the task's own acceptance-gate fixtures,
+`src/parse.js`/`node_modules/watr/watr.js`/`jzify/index.js`, each compiled
+through the region-live kernel via `compileViaKernel(code,{modules})`,
+`test/kernel-target.js`'s own machinery, 3 reps each): STILL FAIL, but the
+failure SIGNATURE CHANGED for two of the three** — before this fix, all
+three (plus the 20-module repro) traps identically, `memory access out of
+bounds`, 77–186ms. After: jessie now fails
+`compiler internal: expected emitted IR value in <module>, got empty
+value` (a totally different error CLASS — a self-host codegen gap, `src/
+ir.js`'s own generic "emit returned null" assertion, not a memory-safety
+trap); watr now fails `unreachable` (also different); jzify-entry still
+fails `memory access out of bounds`, unchanged. **A confirming sanity
+check, not a refutation of the fix**: the SAME three fixtures compile
+100% CLEAN through this session's own DORMANT kernel build (`REGION_HOOKS_
+ACTIVE=false`, same fixed source) — proving these are genuinely
+region-arena-triggered failures (no general self-host feature gap in
+compiling these real corpora), and that the fix demonstrably moves the
+failure POINT further into each compile (progressing past whatever this
+fix closes) without yet reaching the end. **Verdict: the funcIdx skew was
+real, confirmed, and is now fixed — but it was not the ONLY front-boundary
+mechanism.** A second, still-unfound bug remains, now unmasked (previously
+these three fixtures never got far enough to reach it). Native jz×jz
+(`scripts/self.js`'s own 154-module graph, fed to itself via the region-live
+kernel): still fails, `memory access out of bounds`, 2.8s — notably FAST,
+not the ~8.5s/exactly-4,294,967,296-byte signature the design doc's own
+memory-ceiling wall produces (`.work/research.md`'s MEMORY-CURVE-MEASURED
+entry), so this is the SAME residual mechanism as jessie/watr, not the
+already-documented, by-design Slice-3 ceiling.
+
+**kernel-oracle (region-live, the task's own explicit target, `test/
+kernel-oracle.js` ×3 reps against this session's own fixed rebuild): 6/13
+pass (203/203 assertions collected every rep — no early-exit truncation),
+7/13 fail, IDENTICAL failure signature every rep.** The unfixed baseline
+(same session, same rebuild machinery, `.../region-skew-before` at
+`6743aea0`, region-live): **4/13 pass, 9/13 fail, only 102/203 assertions
+collected** (two rows crash before reaching their own assertions). **A
+real, reproducible 2-row improvement** (4→6), not noise. The 7 remaining
+failures are NOT new: `subviewtyped` WAT-parity divergence at O0/O2/O3 (a
+self-host CODEGEN SHAPE gap — native emits more bytes than the kernel,
+not a trap — orthogonal to region arena) and the row explicitly
+self-labeled `kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER
+carrier collapse (research.md §Carrier invariant — not yet fixed...)` — a
+DIFFERENT, already-tracked, already-named work item, not a region-arena
+regression. 13/13 not reached this session.
+
+**Full native ladder, dormant (shipped `REGION_HOOKS_ACTIVE=false`
+config, this session's own fixed rebuild)**: `node test/layout-kinds.js`
+60/60 (88 assertions, includes all 9 `region-relocate[CLOSURE]` pins).
+`node test/closures.js` 110/110 (221 assertions). `node test/index.js`
+(native, no `JZ_TEST_TARGET`): **3428/3436 pass — the SAME 2 pre-existing
+documented flakes this whole chain has always carried (interval-walk,
+typed-RMW), 0 new regressions.** `JZ_TEST_TARGET=jz.wasm node test/
+index.js` (dormant self-hosted kernel): **2725/2731 pass, 0 fail, 6 skip —
+byte-for-byte the SAME count every prior session in this chain has
+recorded.** 200-seed fuzz gate (dormant): clean, 0 divergence.
+
+**Dormant "byte-identity" — NOT byte-identical, but BEHAVIORALLY inert; a
+finding worth recording precisely rather than asserting the stronger
+(false) claim.** SHA-256 of the dormant `dist/jz.wasm` DIFFERS before vs
+after this fix (`8d6a9344…` unfixed vs `f7840507…` fixed) — this session
+traced why: `REGION_HOOKS_ACTIVE=false` does NOT prevent `__region_exit`/
+`$__closure_env_len`/`$__closure_env_mask` from being compiled INTO
+`dist/jz.wasm` at all (`strings dist/jz.wasm | grep -c region_exit` reads
+31 in BOTH the fixed and unfixed dormant builds) — `scripts/self.js`'s own
+`REGION_HOOKS_ACTIVE ? {mark:…,exit:…} : undefined` ternary is a RUNTIME
+branch, not a compile-time dead-branch elimination (the arrow-function
+closures inside the `true` arm are lexically part of the reachable
+program either way), so `assemble.js`'s `closureEnvInit` sequence — which
+allocates and POPULATES `$__closure_env_len`/`$__closure_env_mask` from
+`ctx.closure.envMeta` unconditionally inside `$__start` — runs at every
+`dist/jz.wasm` instantiation, dormant or not. This fix changes that
+init DATA (more entries now correctly populated instead of silently
+short). The data is provably NEVER READ in dormant mode (`__region_copy_
+rec`'s CLOSURE arm — the only reader — is reachable exclusively through
+`__region_exit`, which `regionHooks` being `undefined` at runtime means is
+never CALLED, only compiled-in-but-dead) — confirmed empirically, not just
+argued: `JZ_TEST_TARGET=jz.wasm node test/index.js` against the fixed
+dormant build reproduced the EXACT SAME 2725/2731/0-fail/6-skip count as
+every historical baseline in this chain. **Byte-identical is the wrong bar
+here; behaviorally-identical is the true one, and it holds.**
+
+**Disposition.** `ctx.closure.mint` (module/function.js + src/compile/
+emit.js, two call sites) is a real, confirmed, necessary fix — lands. The
+front-boundary wall NARROWS (kernel-oracle 4→6/13, a clean synthetic
+repro, jessie/watr's failure point moves deeper into the compile) but does
+NOT close for the full task acceptance gate (jessie/watr/jzify-entry/jz×jz
+all still fail, two with genuinely NEW error signatures proving a SECOND
+mechanism, not yet found). Per the task's own protocol: **WALL — bank,
+stop.** `scripts/self.js`'s `REGION_HOOKS_ACTIVE` reverted to `false`
+before this commit (temporarily flipped `true` in TWO disposable worktrees
+this session purely to build region-live test kernels — both reverted,
+neither worktree's dirt reaches this commit). `git diff --stat` on the
+landed set: `module/function.js` (+17/-6), `src/compile/emit.js`
+(+8/-4) — exactly the two files this entry describes, nothing else.
+
+**Recommendation for next session.** Two concrete, narrower leads, both
+better than resuming the byte-dump SW-hunt cold:
+1. **jessie's new error is the most tractable** — `compiler internal:
+   expected emitted IR value in <module>, got empty value`, AST `[null,
+   20]` (the number literal `20`) — a DETERMINISTIC, NON-crashing (no wasm
+   trap, a clean thrown JS error with a real AST node attached) self-host
+   codegen gap. Bisect `src/parse.js`'s own module graph (the smallest of
+   the three failing fixtures, 420ms) to find which specific construct
+   near a literal `20` the self-hosted kernel's `emit()` returns `null`
+   for — this is the "self-host-only codegen gap" class the PRIOR session
+   already recommended and this session's fix has now made REACHABLE for
+   the first time (it was masked behind the funcIdx-skew OOB trap before).
+2. **watr's `unreachable` and jzify-entry's unchanged `memory access out
+   of bounds`** are still region-arena-shaped traps — apply THIS session's
+   own cross-reference technique (ground-truth vs what-got-read, this time
+   for a heap kind other than CLOSURE, or for a genuinely shared/aliased
+   env slot) rather than restarting from a byte-dump. jzify-entry's
+   IDENTICAL-before-and-after signature is the most suspicious data point
+   (worth checking FIRST): does it trap in a completely closure-free code
+   path, meaning this session's fix was structurally irrelevant to ITS
+   specific instance?
+
+**SHAs.** jz worktree: `6743aea0` (region-final-2026-08-11, unchanged
+base — this session's `module/function.js`/`src/compile/emit.js` diff
+commits on top). watr: `895ca5b` (`/Users/div/projects/watr`, unpublished,
+unchanged). Dormant `dist/jz.wasm` (this session's fixed rebuild): SHA-256
+`f78405074f09d63c1b4b238dc5da6d28f840248f0f886a0773da7bb9aa9579ea` (NOT
+byte-identical to the prior `8d6a9344…` baseline — see the dormant
+byte-identity finding above for why that's expected and harmless).
+
+## §Region arena — jessie's "expected emitted IR value" error root-caused
+and FIXED: `__region_relocate_props` (module/core.js) relocated a HASH
+table's VALUE field but never its KEY field — jessie/watr/jzify-entry now
+compile clean, kernel-oracle 6/13→9/13, a DIFFERENT front-boundary wall
+found behind it (2026-08-12)
+
+**Task, per the coordinator's brief**: chase jessie's region-live "compiler
+internal: expected emitted IR value" error (§Region arena's `0e73fa6a`
+entry named this the most tractable of the three still-failing fixtures
+post-funcIdx-skew-fix) via the AUDIT-#17 playbook — reproduce, capture
+`ctx.error.node`, minimize, trace-diff native vs kernel, find the phase-
+order/plan-map mechanism.
+
+**First finding: the SPECIFIC error text didn't reproduce.** Worktree
+reused at `.../scratchpad/region-slice2-front` (already at `0e73fa6a`,
+clean). Rebuilt a region-live kernel (`REGION_HOOKS_ACTIVE` hand-flipped
+`true`, `scripts/selfhost-build.mjs`, verified via a dormant rebuild's SHA-
+256 matching the commit message's own recorded `f7840507…` byte-for-byte —
+confirms this session's build pipeline is faithful) and ran jessie/watr/
+jzify-entry through it (`resolveModuleGraph(entry,{resolveNode:true})` +
+`compileViaKernel`, `test/kernel-target.js`'s own machinery, matching the
+prior session's exact recipe). Result: watr → `unreachable` (matches the
+prior session's table exactly) and jzify-entry → `memory access out of
+bounds` (matches exactly) — but **jessie → `memory access out of bounds`
+too**, not the `expected emitted IR value` text the prior entry recorded,
+3/3 reps, deterministic in this environment. A named-kernel rebuild
+(`compile(...,{names:true})`, bypassing `compileViaKernel` to instantiate
+directly) symbolicated jessie's AND jzify-entry's traps as IDENTICAL top
+frames (`$__str_hash` ← `$__dyn_get` ← `$m137_scope$flattenFuncNamespaces`)
+— one shared mechanism, not two. **Verdict: the prior entry's specific
+error-text claim doesn't reproduce bit-for-bit in this environment (a
+GARBAGE-VALUE-DEPENDENT bug's exact trap shape is sensitive to incidental
+heap-layout details that can differ session to session even with byte-
+identical source+config — env/build nondeterminism the prior entry didn't
+anticipate), but the underlying MECHANISM is the same class the entry
+named ("second, still-unfound mechanism") and the symbolicated trace
+pointed straight at it.** Chased the reproducible signature actually in
+hand rather than forcing the literal error text.
+
+**Minimized via direct bracketing (the AUDIT-#17 "native vs kernel trace
+diff" discipline, adapted: no native/kernel split exists inside a single
+in-kernel compile, so bracketed PRE-EXIT vs POST-EXIT vs LATER-IN-COMPILE
+instead).** Instrumented `flattenFuncNamespaces` (`src/compile/plan/
+scope.js`) with unconditional `console.error` (the AUDIT-#17 pattern —
+`process.env`-gated debug output is dead in-kernel) — found `fn.defaults`
+(a per-function-record dynamic dict, `module/prepare/index.js`'s `defFunc`:
+`const defaults = {}; defaults[c.name] = defVal`, spread into `funcInfo`)
+reads as **raw memory-dump garbage** (`Object.keys` returning byte-noise,
+not strings) by the time `flattenFuncNamespaces` runs. Bracketed further:
+added prints in `src/front.js` immediately before/after `regionHooks.exit`
+— `fn.defaults` reads **perfectly clean, byte-identical to native, on BOTH
+sides of the exit call itself**. The corruption therefore happens strictly
+BETWEEN front()'s return and `flattenFuncNamespaces` (i.e., during the
+early part of `compileAst`/`src/compile/index.js`) — the signature of a
+STALE POINTER into abandoned (never-relocated) memory that reads fine
+until a LATER allocation reuses and overwrites that space, not a
+relocation-time value corruption.
+
+**Root cause, confirmed by source inspection once the shape was known.**
+`fn.defaults` compiles to heap-kind `PTR.HASH` (a plain `{}` used as a
+dynamic string-keyed dict). `regionArmHash` (`layout-kinds.js:597-606`)
+relocates ANY bare `PTR.HASH` value by delegating to
+`__region_relocate_props` (`module/core.js`) — a function ORIGINALLY
+written for one specific case: the compiler's own internal "dyn-props"
+sidecar table, whose keys are always short, single-word, SSO-inline
+compiler-internal identifiers. That function's own doc explicitly reasons
+"KEYS in this table are always prop-name STRINGS: SSO/interned… so their
+hash bucket position is immutable across relocation — no rehash/reinsert
+needed, just a verbatim bulk copy" — TRUE (content-hashing means bucket
+position never depends on address), but the function's IMPLEMENTATION
+conflated "bucket position doesn't need recomputing" with "the key field
+needs no `__region_copy_rec` at all": both the durable in-place loop and
+the ephemeral bulk-copy loop relocated ONLY the VALUE field (`slot+16`) —
+the KEY field (`slot+8`, `MAP_ENTRY=24` layout `[hash,key,value]`) was
+copied verbatim, bits unchanged. Safe for the sidecar's own SSO-only keys
+(no address inside an inline value to fix). **Wrong for `regionArmHash`'s
+later, broader reuse of this same function for ANY reachable `PTR.HASH`
+value** (Heap-kind registry Slice 2, `.work/research.md` — the comment at
+that call site even names the widened-reuse risk for diamond-sharing but
+not for non-SSO keys): jessie's own `err(msg, at, lines, last, before,
+ptr, chr, after)`-shaped default-param dict has several keys (`before`,
+`after`, `chr`, …) that don't fit a NaN-boxed inline SSO string, so those
+keys are real heap-allocated STRING pointers — left unrelocated, still
+pointing at the pre-compaction address, which region_exit's heap-rewind
+treats as free space the NEXT compile-phase allocation is free to reuse.
+Reads clean immediately after exit (bytes not yet overwritten), garbage
+once something else allocates over that space — exactly what the PRE/
+POST-EXIT-vs-later bracketing showed.
+
+**The `ctx.plans` WeakMap hypothesis (the task's own prime suspect):
+CHECKED, REFUTED for this mechanism.** `mintLoopPlans`/`mintClosureEnvPlans`
+(the `ctx.plans.loops`/`.closures` WeakMaps, `src/ctx.js:857-858`) are
+called exclusively from `src/compile/index.js` (`compileAst`), which
+`scripts/self.js`'s `compileAst(front(source, strict))` only invokes AFTER
+`front()` — and therefore after `regionHooks.exit` — returns. Both mint
+and every read happen strictly post-exit, on the already-relocated AST;
+there is no phase-order gap for these two specific maps. (`ctx.closure.
+closures.get(body)` in `module/function.js` even documents its OWN miss as
+an intentional, safe fail-open to a legacy re-derivation — matching the
+task's own "MISSES are fail-open, ok" framing exactly, for a DIFFERENT
+reason than staleness.) The real bug is a sibling of the hypothesis's
+shape (an "escaping region reference" not covered by the 5-element root)
+but in a different structure: not a WeakMap keyed on AST-node identity,
+but a HASH table's own KEY field silently exempted from relocation by a
+function written for a narrower, SSO-only original use case.
+
+**The fix — two lines added to `__region_relocate_props`'s two existing
+per-slot loops** (`module/core.js`): relocate the KEY field (`slot+8`) via
+`__region_copy_rec`, identically to how the VALUE field (`slot+16`)
+already was, in both the durable (in-place, `off < mark`) and ephemeral
+(bulk-copy) branches. No rehash needed (per the function's own correct
+half of its reasoning — content-hash bucket position is genuinely stable
+regardless of the key's storage form) — this is a pure key-pointer fixup,
+the exact same "value needs `__region_copy_rec`, container structure
+doesn't need rehash" split `regionArmSetMap` already applies to VALUES,
+just for the KEY side of a content-hashed HASH table instead of a bits-
+hashed SET/MAP.
+
+**Verification.**
+- **jessie/watr/jzify-entry, region-live, 3 reps each: ALL THREE compile
+  clean** (`bench/jessie/jessie.js` 107,037 B, `bench/watr/watr.js`
+  315,422 B, `jzify/index.js` 611,610 B — deterministic across reps).
+- **Dormant-vs-region-live byte-identity** (the same cross-check the
+  MEMORY-CURVE-MEASURED entry used): built BOTH a dormant and a region-live
+  kernel from this session's identical fixed source and compiled all three
+  fixtures through each — **byte-for-byte identical output, both kernels,
+  all three fixtures** (native differs from both by a few dozen bytes each
+  — the ALREADY-DOCUMENTED, unrelated self-host/native codegen-shape parity
+  gap, "native emits more bytes than the kernel", not a region-arena
+  correctness issue). The region-arena boundary is now fully correctness-
+  transparent for these three real-world corpora.
+- **kernel-oracle, region-live: 9/13 pass** (up from the funcIdx-skew
+  session's own 6/13), **203/203 assertions collected within the 9 passing
+  groups, no early-exit truncation**. The 4 remaining fails: 3 are ONE
+  test (`array-growth-class: sibling push()+indexed-append tables (envMeta
+  shape)`, O0/O2/O3) — a NEW, DIFFERENT front-boundary mechanism (an
+  ARRAY-of-schema-OBJECTs growth pattern deliberately mirroring the
+  funcIdx-skew shape, `test/kernel-oracle.js:327-341` — traced only far
+  enough to confirm it's NOT the HASH-key bug this session fixed: the
+  `{cap,idx}` records are fixed-shape OBJECT literals, not a dynamic HASH,
+  so a different relocation arm is implicated; not chased further this
+  session, banked as the next wall). The 4th is the pre-existing, already-
+  tracked, unrelated `PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier
+  collapse` row (research.md §Carrier invariant).
+- **Native ladder, dormant rebuild**: `node test/index.js` 3428/3436 pass
+  — the SAME 2 pre-existing documented flakes (interval-walk, typed-RMW),
+  0 new regressions. `JZ_TEST_TARGET=jz.wasm node test/index.js` (dormant
+  self-hosted): 2725/2731 pass, 0 fail, 6 skip — byte-for-byte the same
+  count every prior session in this chain has recorded.
+- **jz×jz** (`bench/jz/jz.js`, 155 modules, region-live): still fails —
+  but the signature CHANGED, `unreachable` at 7.6s (was `memory access out
+  of bounds` at ~2.8s pre-fix) — moved deeper, matching this whole chain's
+  established pattern of the fix narrowing without yet closing the full
+  self-compile case. Not the by-design Slice-3 memory-ceiling signature
+  (that one is ~8.5s / exactly 4 GiB).
+
+**Disposition.** `module/core.js`'s `__region_relocate_props` fix lands —
+real, confirmed, minimal (2 added `__region_copy_rec` calls + doc). Per
+the task's own protocol: **WALL — bank, stop.** The array-growth-class
+kernel-oracle row is the concrete next lead (own root-cause hunt, likely a
+distinct OBJECT/ARRAY-growth relocation gap, not a HASH-key one).
+`scripts/self.js`'s `REGION_HOOKS_ACTIVE` reverted to `false` before this
+commit (flipped `true` only inside this disposable worktree to build
+region-live test kernels, reverted after). `git diff --stat` on the landed
+set: `module/core.js` only (+42/-9, all inside `__region_relocate_props`
+and its doc).
+
+**SHAs.** jz worktree: `0e73fa6a` (region-final-2026-08-11, this session's
+own `module/core.js` diff commits on top). watr: `895ca5b` (`/Users/div/
+projects/watr`, unpublished, unchanged). Dormant `dist/jz.wasm` (this
+session's fixed rebuild, `REGION_HOOKS_ACTIVE=false`): SHA-256
+`639b83f1e95f08a0bf2ac26ff9c11ee6018e263bca9052b9d0b4e21c711576ae`.
+
+## §Region arena — array-growth-class row ROOT-CAUSE HUNT: task's own three
+candidates ALL REFUTED, real trigger isolated to closure free-variable
+capture of a non-constant-foldable value, crash site upstream of
+`ctx.closure.make` — a FOURTH, still-unfound front-boundary mechanism, WALL
+(no fix, characterized only) — THEN jz×jz's `unreachable` CONFIRMED as the
+deliberate 4 GiB ceiling, not a correctness bug (2026-08-12)
+
+**Task, per the coordinator's brief**: (1) chase kernel-oracle's remaining
+`array-growth-class: sibling push()+indexed-append tables (envMeta shape)`
+row (O0/O2/O3), the one row 63a5551e's HASH-key fix left standing, against
+three named candidates — (a) `arrGrow`'s growth-forwarding write vs region
+relocation, (b) ARRAY-of-OBJECTS relocation ordering, (c) a verbatim-bit-
+copy gap in ARRAY's own element loop; (2) once landed-or-banked, re-
+characterize jz×jz's `unreachable` — deliberate memgrow ceiling (2³²) or a
+distinct correctness wall.
+
+**Setup**: reused the already-checked-out worktree at `.../scratchpad/
+region-slice2-front`, HEAD `63a5551e` (region-final-2026-08-11), clean.
+`node_modules/watr → /Users/div/projects/watr` (`895ca5b`, verified intact
+throughout). `REGION_HOOKS_ACTIVE` hand-flipped `true`/`false` in
+`scripts/self.js` per leg, worktree-only, reverted to `false` (the shared
+committed default) before finishing — `resolveSelfhostBuild`'s own
+`regionArena` override still doesn't touch this literal (reconfirmed, same
+gap every prior session already flagged).
+
+**Reproduced the baseline exactly.** Region-live rebuild, kernel-oracle:
+**9/13 pass, 203 assertions in the 9 passing groups** — byte-for-byte the
+commit's own recorded count. The 4 fails are the SAME 3 reps of the
+array-growth-class row (O0/O2/O3, `memory access out of bounds`) plus the
+pre-existing, unrelated `PENDING-FIX — generic-scalar-decl BOOL∪NUMBER
+carrier collapse` tripwire row (§Carrier invariant, not region-arena).
+Dormant rebuild (SHA-256 `639b83f1…`, byte-identical to the commit's own
+recorded dormant SHA — confirms this session's build pipeline reproduces
+the prior session's exactly): kernel-oracle **13/13 pass** — the array-
+growth-class row is ONLY broken region-live, never dormant. **This
+confirms the row is a genuine region-arena mechanism, not a pre-existing-
+unrelated codegen bug** (the other framing the task asked to rule in/out).
+
+**Root-cause hunt — black-box bisection against a NAMED region-live kernel**
+(`compile(profile.graph.code, {…, names:true})`, bypassing
+`compileViaKernel`/`dist/jz.wasm` to instantiate directly — symbolicated
+stack traces instead of bare `wasm-function[N]` offsets). ~20 source
+variants compiled through the SAME kernel instance shape, isolating one
+axis at a time:
+
+- **The oracle row's own source, minimized**: `ctx.closure.table.push(name);
+  ctx.closure.envMeta[…] = {cap, idx}` inside a closure `addToTable`,
+  called in a loop — traps `memory access out of bounds` at
+  `closure4232` (a self-hosted compiler-internal closure, `wasm-
+  function[3758]`), consistently, 3/3 reps.
+- **Candidate (a) REFUTED**: replacing `.push()`+indexed-append with TWO
+  `.push()` calls (matching `ctx.closure.mint`'s own real shape exactly)
+  — still traps, identical signature. Removing array GROWTH entirely (a
+  closure that only READS `arr.length`, or returns a captured object with
+  zero array involvement) — STILL traps. No `__arr_grow` call exists
+  anywhere in the minimal failing case.
+- **Candidate (b) REFUTED**: no ARRAY-of-OBJECTS shape is needed at all —
+  a closure capturing a bare OBJECT (`let o = {v:n}; let g = () => o.v`)
+  or a bare STRING (`let s='hi'; let g = () => s.length`) fails identically
+  with zero arrays anywhere in the program.
+- **Candidate (c) REFUTED**: same reason — no ARRAY element loop is
+  reachable in the minimal repro, so no verbatim-bit-copy gap in it can be
+  the cause.
+- **Real trigger, isolated**: a CALLED arrow-function closure that
+  captures a free variable whose value is NOT reducible to a compile-time
+  constant. `let x=5; g=()=>x` (int literal, folds to `intConsts`), `let
+  x=true`/`null`/`undefined`/`5n; g=()=>x` (all constant-foldable) — ALL
+  COMPILE CLEAN. `let x=n+1; g=()=>x+1` (arithmetic on a param, provably
+  NUMBER-typed, `storage='heap'`, `boxed=[]` per a `ctx.closure.make`
+  breadcrumb) — COMPILES CLEAN. `let x=n; g=()=>x` (a bare, unmodified
+  copy of a param — genuinely dynamic, no operator forces a type proof)
+  — TRAPS, but at a DIFFERENT site (`__dyn_get_t_h`/`__dyn_get_t`, generic
+  dynamic-property-get, `wasm-function[1271]`), not `closure4232`. STRING/
+  OBJECT/ARRAY captures always trap regardless of whether the closure body
+  touches the captured value at all (bare `g=()=>o` with the member read
+  moved to the CALL SITE still traps) — ruling out "the closure body's own
+  codegen" as the mechanism; it is about closure CREATION, not closure USE.
+- **`ctx.closure.make` breadcrumb (temporary, reverted): the crash
+  happens BEFORE `ctx.closure.make` is ever reached.** A `console.error`
+  at the top of `ctx.closure.make` (module/function.js) fires reliably for
+  every PASSING case and NEVER fires for any FAILING case — proving the
+  corruption is read (or the fault occurs) inside emit.js's `'=>':`
+  handler's OWN preamble (`extractParams`/`classifyParam`'s for-of over
+  `raw`, `findFreeVars(body, paramSet, captures)`, `for (const def of
+  Object.values(defaults)) findFreeVars(…)`) or upstream of it — NOT
+  inside `ctx.closure.make`, `ctx.closure.mint`, or `regionArmClosure`/
+  `__region_relocate_cell` (the "cellOff"/funcIdx-skew mechanism 6743aea0
+  and 0e73fa6a already found and fixed). **This is a DIFFERENT, so-far-
+  unnamed FOURTH mechanism** (after: the SW backing-pointer wall / the
+  cellOff delta-adjustment bug / the funcIdx-skew bug / the HASH-key bug),
+  not a recurrence of any of the three already-closed ones.
+- **Two distinct crash signatures, same upstream cause (working theory,
+  NOT confirmed)**: `closure4232`'s trap decompiles (`wasm2wat
+  --enable-all` + `wasm-objdump -d` cross-referenced against the exact
+  faulting file offset) to a SET/MAP-to-array conversion loop
+  (`__coll_order` + `f64.load slot+16`) being reached with a tag that
+  should be ARRAY but reads as SET(8)/MAP(9) — i.e. a pointer whose TAG
+  BITS are already wrong by the time this generic dispatch reads them.
+  `__dyn_get_t_h`'s trap is a plain dynamic property-get gone OOB. Both
+  read as DOWNSTREAM symptoms of the SAME upstream corruption manifesting
+  at whichever consumer a given closure SHAPE happens to reach first, not
+  two independent bugs — not verified by a shared root cause, only by the
+  shared "before `ctx.closure.make`" boundary and shared region-liveness
+  gate (both vanish dormant).
+
+**NOT further isolated.** The established SW-bug method (breadcrumb every
+candidate write site, decompile the exact trap frame, match wasm-function
+offsets against source) would be the next step, but was not completed this
+session — the same order of effort TWO PRIOR FULL SESSIONS (6743aea0,
+0e73fa6a) each spent on SIBLINGS of this exact "front boundary, not-yet-
+found mechanism" class, each closing ONE layer and uncovering the next.
+Best lead for whoever picks this up: `front()`'s region round wraps ONLY
+parse→jzify→prepare (a single mark/exit pair, confirmed by re-reading
+`src/front.js`'s own contract, same finding 6743aea0 already made) — emit
+runs strictly AFTER that boundary closes, so if the corruption is really
+upstream of `ctx.closure.make`, the WRITE happened during `front()`'s own
+region_exit (compacting whatever scope/type-fact structure differs between
+a NUMBER-provable capture and a dynamic one), and the READ (this session's
+trap) is purely downstream — bisect by breadcrumbing `ctx.scope`/`ctx.types`/
+`ctx.func`'s own Set/Map-shaped fields' CONTENTS immediately after
+`front()` returns vs immediately before the closure literal is emitted,
+for a `let x=n; g=()=>x` repro (cheapest failing case, traps in <100ms).
+
+**Disposition — NO FIX LANDED, wall banked per protocol.** Every edit this
+session (the `ctx.closure.make` breadcrumb, `REGION_HOOKS_ACTIVE` toggles)
+was worktree-only and reverted; `git diff --stat` in the worktree shows
+NOTHING outstanding beyond this ledger entry. kernel-oracle stays at
+**9/13** (unchanged from 63a5551e — this session characterized, did not
+move, the count).
+
+**Gates (this session's own verification, no source changed so this is a
+re-confirmation, not a fix's regression suite).** jessie/watr/jzify-entry
+region-live ×3 reps: **all clean**, 107,037 / 315,422 / 611,610 bytes,
+deterministic — matches 63a5551e's own recorded counts exactly. Same three
+fixtures on the dormant rebuild: **byte-identical output** to region-live,
+×3 reps (dormant byte-identity gate). kernel-oracle: dormant **13/13**,
+region-live **9/13** (both reconfirmed above). Native ladder (`node
+test/index.js`, dormant `dist/jz.wasm`): **3428/3436**, the same 2 pre-
+existing documented flakes (interval-walk, typed-RMW), 0 new. Dormant
+self-hosted (`JZ_TEST_TARGET=jz.wasm node test/index.js`): **2725/2731
+pass, 0 fail, 6 skip** — byte-for-byte the historical baseline every prior
+session in this chain has recorded. Build ×2: dormant SHA-256 reproduces
+the commit's own recorded `639b83f1…` exactly (independent rebuild, same
+bytes); region-live SHA-256 (`37746348cc6f3d91991d8d0106341ce5c24c71193b0
+5be6284f8e9e0c2782ecc`) reproduces identically across two independent
+builds this session. All gates green; zero regressions; zero source
+landed.
+
+**Lead 2 — jz×jz re-characterization.** With Lead 1 banked (not landed —
+the task's own "landed or banked" branch), tested whether jz×jz's
+`unreachable` is the deliberate `__memgrow` ceiling or the front-boundary
+correctness wall the "Slice 3 attempt" entry found. Ran jz×jz's real
+155-module graph (`bench/jz/jz.js`, `resolveModuleGraph(…,
+{resolveNode:true})`, exactly `test/kernel-target.js`'s own recipe)
+through the SAME named region-live kernel used for Lead 1's bisection,
+`optJSON:{level:2}`, 2 reps.
+
+**Result: `unreachable`, deterministic both reps, at EXACTLY 4,294,967,296
+bytes (2³², 65536 pages, 4096.0 MB), ~7.0s.** Symbolicated stack:
+`__alloc ← __alloc_hdr_n ← __map_from ← closure2391 ← closure2393 ←
+closure2382 ← closure2398 ← m127_narrow$narrowSignatures ← closure2671 ←
+closure1495 ← m133_index$plan ← closure2757 ← m121_index$compile ←
+compileSelf` — a legitimate allocation deep in the compiler's own
+type-narrowing/planning phase, growing memory until `__alloc`'s call chain
+hits `module/core.js`'s `__memgrow`. Source-verified against the trap: line
+455, `(if (i64.gt_u (i64.extend_i32_u (local.get $need)) (i64.const 65536))
+(then (unreachable)))` — the documented, deliberate wasm32-max-pages abort,
+the ONLY `unreachable` on the `__alloc`→`__memgrow` call path (the sibling
+`next < ptr` overflow guards, lines 487/498/535, are a secondary guard for
+the SAME boundary condition per their own comment, not an independent trap
+class). **Verdict: YES — jz×jz's `unreachable` IS the deliberate 2³²
+memgrow ceiling, not a distinct correctness bug.** This is the front
+boundary reaching as far as it can go for THIS corpus before hitting hard
+wasm32 physics, not a wall region-arena code put there.
+
+**Caveat — do NOT read this as "the front boundary is universally sound."**
+Lead 1, in this SAME session, found a real, still-open, region-live-only
+correctness bug (the array-growth-class row above) that lives in front-
+boundary-adjacent territory (closure creation, upstream of
+`ctx.closure.make`) and corrupts a DIFFERENT, smaller synthetic program.
+jz×jz (155 real modules) simply never happens to exercise that specific
+closure-capture shape badly enough to trip it before running out of
+address space first — "sound enough to reach the ceiling on this corpus"
+is not "sound in general," and kernel-oracle's own 9/13 (not 13/13) is the
+proof already in hand. Per the "Slice 3 attempt" entry's own established
+discipline ("stacking a new region boundary on a front boundary that
+corrupts real programs would compound an unsound foundation, not extend
+one") — **Slice 3's hazard inventory was NOT started this session.** It
+was already fully drafted once (the "Slice 3 attempt" entry, root =
+`[module, ctx.func, ctx.transform, ctx.scope]`) and re-doing it adds
+nothing while Lead 1's wall stands; building on top of a front boundary
+with a KNOWN, unclosed correctness bug — even one narrow enough that jz×jz
+itself doesn't trip it — would repeat exactly the mistake that entry
+already named and avoided.
+
+**Oracle characterization table (final, this session).**
+
+| row | dormant | region-live | class |
+|---|---|---|---|
+| 9 AGREE/DIVERGENT rows (ternary, console.log constants, bare BigInt array-elem, etc.) | pass | pass | n/a — clean |
+| array-growth-class: sibling push()+indexed-append tables (envMeta shape), O0/O2/O3 | pass | **FAIL** — `memory access out of bounds` | **region-mechanism** — confirmed region-only via dormant/region-live differential; root cause NOT found (4th front-boundary mechanism, upstream of `ctx.closure.make`); WALL |
+| PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier collapse | pass (tripwire, asserts the still-wrong value) | pass (same) | **pre-existing-unrelated** — §Carrier invariant, not region-arena, unaffected by region-liveness either way |
+
+**Recommendation for next session.** Lead 1: breadcrumb `ctx.scope`/
+`ctx.types`/`ctx.func`'s Set/Map-shaped fields across `front()`'s own
+region_exit boundary specifically (not inside `ctx.closure.make` — already
+ruled out as the read site) for the `let x=n; g=()=>x` repro (cheapest,
+<100ms). Lead 2: closed as a characterization — jz×jz needs no further
+memory-curve work; its own remaining blocker is now identical to Lead 1's
+(the front-boundary correctness wall), not a separate memory-ceiling
+problem. Do not attempt Slice 3 until kernel-oracle's array-growth-class
+row is 13/13.
+
+**SHAs.** jz worktree: `63a5551e` (region-final-2026-08-11, HEAD,
+unchanged — no source landed this session, only this ledger entry). Main
+repo: `69cec4a2` (unchanged; pre-existing unrelated dirt from a concurrent
+session — `README.md`, `.work/todo-original.md`, `bench/bench.svg`,
+`assets/install.svg` — untouched by this session). watr: `895ca5b`
+(`/Users/div/projects/watr`, unpublished, unchanged). Dormant `dist/
+jz.wasm` (this session's rebuild): SHA-256 `639b83f1e95f08a0bf2ac26ff9c11e
+e6018e263bca9052b9d0b4e21c711576ae` (byte-identical to 63a5551e's own
+recorded dormant SHA). Region-live `dist/jz.wasm` (this session's rebuild,
+×2 reproduced): SHA-256 `37746348cc6f3d91991d8d0106341ce5c24c71193b05be62
+84f8e9e0c2782ecc`.
+
+## §Region arena — FOURTH MECHANISM narrowed to an exact trap SITE
+(`foldStaticConstAggregates`'s own dynamic-property dispatch, upstream of
+ANY per-function/closure analysis) and an even narrower minimal repro —
+root cause STILL NOT FOUND, a genuine heisenbug under source instrumentation,
+WALL banked (2026-08-12)
+
+**Task**: pick up 4cb205e6's own banked FOURTH mechanism (a closure
+capturing a non-constant-foldable free variable traps region-live before
+`ctx.closure.make` is ever reached) and root-cause it, reusing the
+breadcrumb+checkpoint toolkit the SW-bug/cellOff/funcIdx-skew/HASH-key
+sessions each used to close their own layer.
+
+**Setup**: reused the pre-existing worktree at `.../scratchpad/
+region-slice2-front`, HEAD `4cb205e6` (region-final-2026-08-11), clean.
+`node_modules/watr → /Users/div/projects/watr`, confirmed pristine
+`895ca5b`/5.7.14 throughout. Built a NAMED region-live kernel (a scratch
+script mirroring `build-dist.mjs`'s `dist/jz.wasm` build exactly, but with
+`REGION_HOOKS_ACTIVE` hand-flipped `true` and `compile(..., {names:true})`
+so traps symbolicate to real function names instead of bare
+`wasm-function[N]`), then ran the repro directly against it via
+`interop.js`'s own `instantiate`/`memory.String` recipe (mirrors
+`test/kernel-target.js`) — bypassing `dist/jz.wasm` entirely, same method
+the 4cb205e6 session itself used for its own bisection.
+
+**Reproduced, deterministically, 3/3 reps, byte-identical stack every
+time**:
+```
+export let f = (n) => { let x = n; let g = () => x; return g() }
+```
+traps `memory access out of bounds`:
+```
+at __dyn_get_t_h        (wasm-function[1271])
+at __dyn_get_t           (wasm-function[1269])
+at __dyn_get_expr        (wasm-function[9])
+at m140_literals$foldStaticConstAggregates (wasm-function[3235]:0x769a08)
+at closure2756           (wasm-function[2507])   — the `timePhase(profiler,
+                                                     'foldAggregates', () =>
+                                                     foldStaticConstAggregates(ast))`
+                                                     wrapper closure itself
+at m121_index$compile    (wasm-function[970])    — compileAst
+at compileSelf           (wasm-function[3279])
+```
+
+**New finding — the trap site is NOT where the prior session's breadcrumb
+bounded it.** 4cb205e6's `ctx.closure.make` breadcrumb only proved
+"upstream of `ctx.closure.make`" and speculated the fault was in emit.js's
+`'=>'` handler preamble or `ctx.closure.mint`. It is neither. The real
+trap is inside **`src/compile/plan/literals.js`'s `foldStaticConstAggregates`**
+— called from `compile/index.js:2363` (`foldAggregates` phase), which runs
+near the START of `compileAst`, BEFORE any per-function analysis
+(`analyzeFuncForEmit`, `mintClosureEnvPlans`/`mintLoopPlans`,
+`ctx.closure.mint`) ever begins for ANY function — so "before
+`ctx.closure.make`" was true but vacuous: the crash is a whole PHASE
+earlier, not "just before" closure emission. The fault is a DYNAMIC
+property-get (`__dyn_get_expr`→`__dyn_get_t`→`__dyn_get_t_h`, the generic
+runtime dispatch for a `.field` read the compiler couldn't prove a static
+shape for) — disassembled at the exact offset (`wasm-objdump -d`, function
+3235 spans lines 3148877–3157376 of the dump): a NaN-box sentinel check
+immediately followed by the `__dyn_get_expr` call, i.e. genuinely a
+runtime-dispatched property read, not a fixed-offset field access.
+
+**Refuting the earlier PRE-exit-mint suspicion (task's own candidate (a)).**
+Grepped every call site of `mintClosureEnvPlans`/`ctx.plans.closures` (the
+ONE pre-emission WeakMap-keyed capture structure in the whole compiler):
+all three (`compile/index.js:873`, `:2089`, `:2096`) run inside
+`analyzeFuncForEmit`/`emitClosureBody`, themselves only ever reached from
+within `compileAst` — i.e. strictly POST front-exit, confirming the prior
+session's own "verified post-exit" note. `prepare/index.js`'s `defFunc`
+(the only PREPARE-phase, pre-exit construct resembling a "closure
+prescan") is irrelevant here: `if (depth > 0) return false` at its very
+top means a nested closure like `g = () => x` (depth > 0, inside `f`'s
+body) is NEVER touched by it — `g` stays a plain AST value straight
+through prepare, exactly as the "Any inline arrow surviving prep is a
+closure value" comment (prepare/index.js) already documents. No
+PREPARE-phase capture structure exists for this shape. Candidate (a), AS
+FRAMED, does not apply to this repro.
+
+**A much narrower minimal repro, found via a 14-variant differential matrix
+run against the SAME already-built kernel (no rebuild per variant — only
+the `run` half changes)**. The trap requires ALL FIVE of: exactly one
+param (`n`); exactly one intermediate LOCAL that is a bare, unmodified copy
+of that param (`let x = n` — `const x = n` traps identically, so the
+declarator keyword is not the discriminator); exactly one closure
+capturing that local and NOTHING else (`g = () => x`); that local used
+NOWHERE else in the function body; and the closure CALLED exactly once, as
+the function's sole return expression. Flipping ANY ONE of the following
+alone makes the SAME source compile CLEAN through the SAME kernel:
+- capture the param `n` directly, skip the intermediate local — OK
+- reference `x` anywhere else in `f`'s body too (`return g() + x`) — OK
+- add a second closure also capturing `x` (`let h = () => x; …g()+h()`) — OK
+- add ANY extra local, even unused, even before or after `x`
+  (`let a = 1; let x = n; …`) — OK
+- add an extra unused param (`(m, n) => …`) — OK
+- force a type-proof via arithmetic (`let x = n + 0; …`) — OK (matches
+  4cb205e6's own "arithmetic on a param… COMPILES CLEAN" finding)
+- define `g` but never call it — OK (matches 4cb205e6's own finding)
+
+This is the exact-shape wall: `ctx.func.list.length === 1`, one param, one
+closure-only local, one closure, one call. Every dodge changes some COUNT
+(locals, closures, params, or uses) by exactly one — consistent with an
+index/offset-sensitive mechanism (same class as the already-fixed funcIdx
+skew and cellOff delta-adjustment bugs), not a shape/type mechanism.
+
+**Heisenbug confirmed — source instrumentation INSIDE the faulting function
+changes the outcome.** Added `console.error` breadcrumbs at the top of
+`foldStaticConstAggregates` (before its first closure — the
+`ctx.func.list.filter(f => f.body && !f.raw)` call — ever executes),
+rebuilt the named kernel fresh, reran the identical repro: **compiled
+CLEAN, zero trap.** Reverted the breadcrumbs, rebuilt again: **trap
+reproduces again, identical stack, 3/3 reps.** This rules out further
+"instrument the hot function, rebuild, observe" iteration as a viable
+method here — any JS-source edit to `literals.js` perturbs codegen/
+inlining/allocation offsets enough to dodge the trigger window, the
+signature of a genuine stale-pointer/missing-root class bug (not a logic
+bug, which would reproduce regardless of surrounding dead code). This
+mirrors the ORIGINAL "SW bug" session's own method constraint — it also
+could not use naive source breadcrumbs and instead instrumented
+`module/core.js`'s WAT-level `__region_copy_rec`/`__region_exit`
+intrinsics directly.
+
+**NOT further isolated — root cause still unknown.** Did not attempt the
+WAT-level intrinsic breadcrumb this session (budget). Best lead for
+whoever picks this up: the trap is a dynamic-property dispatch reached
+from `foldStaticConstAggregates`'s own top section — the first candidate
+worth instrumenting (at the WAT/intrinsic level, not JS source) is
+whatever backs `ctx.func.list[0]`'s funcInfo record (`{name, body,
+exported, sig}`, minted by `defFunc` at PREPARE time, i.e. pre-exit,
+inside the 5-element root's `ctx.func.list` array) — specifically whether
+its OBJECT-kind heap value (nested one level inside the correctly-rooted
+ARRAY) is fully/recursively relocated by `__region_copy_rec`, or whether a
+dynamic-shape/`$__dyn_props` sidecar on THAT SPECIFIC record (tipped into
+dynamic mode by something closure-related — unconfirmed) is where the stale
+pointer lives. The five-dodge-conditions-of-exactly-one above make this an
+unusually tractable repro for the intrinsic-level breadcrumb method (the
+whole compile is sub-100ms) — just not reachable via JS-source
+instrumentation, which this session's own heisenbug finding rules out.
+
+**Disposition — NO FIX LANDED, wall re-banked, narrower than before.**
+Every edit this session (the scratch named-kernel build script, the
+`REGION_HOOKS_ACTIVE` flip, the `foldStaticConstAggregates` breadcrumbs)
+was worktree-only and fully reverted/removed; `git status`/`git diff
+--stat` in the worktree show NOTHING outstanding beyond this ledger entry.
+kernel-oracle's array-growth-class row stays unmoved (still the same
+region-only failure the 4cb205e6 session already recorded at 9/13 — not
+re-run this session, no source changed to justify a re-verification, per
+the same discipline every characterization-only entry in this section
+already follows).
+
+**No gate ladder run** — per established discipline ("gated on a real fix
+existing, and none does yet"), and consistent with every other
+characterization-only entry in this section. No value-verification
+possible (nothing new compiled that wasn't already known to compile).
+
+**SHAs.** jz worktree: `4cb205e6` (region-final-2026-08-11, HEAD,
+unchanged — no source landed this session, only this ledger entry). Main
+repo: `14553f2b` (moved since 4cb205e6's own session from unrelated
+concurrent work — "centralize emit frame name authority" and siblings —
+untouched by this session; pre-existing dirt `README.md`,
+`.work/todo-original.md`, `bench/bench.svg`, `assets/install.svg` also
+untouched). watr: `895ca5b` (`/Users/div/projects/watr`, unpublished,
+unchanged, reconfirmed pristine 5.7.14). No `dist/jz.wasm` rebuilt this
+session (only the disposable scratch named-kernel, deleted).
+
+## §Region arena — FOURTH MECHANISM, WAT-INTRINSIC BREADCRUMB TRACE: exact
+faulting call captured with real register/memory evidence — receiver is an
+EPHEMERAL ARRAY whose off-16 dyn-props slot holds a non-zero, HASH-tag-
+decoding pointer to a degenerate (cap=0) structure, impossible from any
+legitimate hash-creation path — root WRITE not yet found, a genuinely
+narrower WALL, re-banked (2026-08-12)
+
+**Task**: pick up 2f596a84's own banked lead (the trap is a dynamic-property
+dispatch reached from `foldStaticConstAggregates`'s own top section; best
+lead = whatever backs `ctx.func.list[0]`'s funcInfo record, WAT-level
+intrinsic breadcrumbs on `__region_copy_rec`/`__region_exit`, the SW-bug
+session's own method) and root-cause it using the prescribed WAT-level
+intrinsic-breadcrumb technique (source instrumentation is heisenbug-bounded,
+per 2f596a84's own finding).
+
+**Setup**: reused the pre-existing worktree at `.../scratchpad/
+region-slice2-front`, HEAD `2f596a84` (region-final-2026-08-11), clean.
+`node_modules/watr → /Users/div/projects/watr`, confirmed pristine
+`895ca5b`/5.7.14. Built a NAMED region-live kernel via a disposable scratch
+script (`.work/scratch-build-named.mjs`, deleted at session end) mirroring
+`build-dist.mjs`'s `dist/jz.wasm` build with `compile(..., {names:true})`,
+against `scripts/self.js`'s `REGION_HOOKS_ACTIVE` hand-flipped `true`
+(worktree-only, reverted). Reproduced the 5-condition minimal repro
+(`export let f = (n) => { let x = n; let g = () => x; return g() }`)
+deterministically 3/3, byte-identical stack, matching 2f596a84's own
+finding exactly:
+```
+__dyn_get_t_h ← __dyn_get_t ← __dyn_get_expr ← foldStaticConstAggregates
+← closure2756 (timePhase wrapper) ← compile ← compileSelf
+```
+
+**Razor-state correction #1 — funcInfo is a HASH, not an OBJECT.** 2f596a84's
+own best lead framed `ctx.func.list[0]`'s funcInfo record as a schema'd
+OBJECT ("whether its OBJECT-kind heap value... is fully/recursively
+relocated"). Static audit of `defFunc` (`src/prepare/index.js:3731`):
+```js
+const funcInfo = { name, body, exported, sig, ...(hasDefaults && { defaults }) }
+```
+— a CONDITIONAL SPREAD (`...(hasDefaults && {defaults})`, contributing zero
+keys when `hasDefaults` is false, one key when true) breaks static-shape
+unification for this literal. Verified directly: compiled a synthetic
+snippet matching this exact expression shape (`{ name, body, exported, sig,
+...(hasDefaults && { defaults }) }`) via native `compile(src, {wat:true})`
+and read the emitted WAT — the literal lowers to `$__hash_new` +
+`$__hash_set` ×4 (a dynamic dict), NOT a schema-slotted `$__alloc_hdr`+fixed
+offsets. **funcInfo is `PTR.HASH` (tag 7), always** — the OBJECT framing was
+wrong; `regionArmHash`/`__region_relocate_props` (already hardened by
+63a5551e's key-relocation fix, itself re-audited this session and found
+sound: both durable and ephemeral branches relocate KEY *and* VALUE,
+memo'd, cycle-safe) is the actually-relevant arm for funcInfo itself — and
+it is NOT where this trap lives (see below).
+
+**Method note, load-bearing for any future NaN-boxing trace session: an f64
+`WebAssembly.Global`'s `.value` getter CANONICALIZES every NaN payload to
+the single bit pattern `0x7FF8000000000000`** — the exact tag/aux/offset
+bits a NaN-boxed NAN-canonicalizing pointer needs ARE the payload, and they
+are UNRECOVERABLE through a plain f64 global read (confirmed empirically:
+first breadcrumb pass, storing `$obj`/`$props` into `f64`-typed debug
+globals, printed self-contradictory snapshots — e.g. `$obj` decoding as
+`tag=0` while `$type` [computed upstream as `__ptr_type($obj)`, MUST agree]
+read `1`). Fix: declare NaN-boxed debug globals as **`i64`**, store the raw
+`i64` local directly (no `f64.reinterpret_i64`) — `i64` globals surface as
+JS `BigInt` (no float conversion), preserving bits exactly. This is a
+generalizable correction to the SW-bug session's own toolkit for any future
+`declGlobal`-breadcrumb session — every prior breadcrumb entry in this file
+that stored a pointer-typed value in an `f64` debug global should be
+suspected of the same silent corruption if its numbers ever looked
+self-inconsistent.
+
+**With i64 globals, an atomic snapshot (all captures fired at ONE program
+point, immediately before the faulting read, all reading the SAME call's
+still-live params/locals — an earlier draft that scattered captures across
+multiple points in the function produced cross-call-contaminated,
+self-contradictory data since not every call reaches every trace point)
+recovered the exact faulting call, reproduced 3/3 with matching numbers**
+(one representative rep):
+```
+__dbgCount    1121        (this is the 1121st __dyn_get_t_h call this compile)
+__dbgObj      tag=1(ARRAY) aux=0 off=1654000
+__dbgType     1                                  (agrees with $obj's own tag — self-consistent)
+__dbgOff      1654000
+__dbgProps    tag=7(HASH) aux=0 off=1654032      (= obj_off + 32, read from $obj's OWN off-16 slot)
+__dbgPoff     1654032
+__dbgPcap     0                                   (!!! — the crash trigger)
+__dbgH        931910521
+__dbgSlot     892669632                          (= poff + (h & (pcap-1))*24, pcap=0 ⇒ h&-1=h ⇒ wild)
+__dbgHeap     1654560 (at raw-memory-dump time; grows slightly further by trap time)
+__dbgMark     1567360   (region_exit's own $mark — captured via a second breadcrumb in __region_exit)
+__dbgT        1670248   (region_exit's own $T = heap size at exit)
+__dbgDelta    102888
+__dbgHeapStart 677632
+__dbgExitCount 1        (confirms front's single mark/exit design — no loop, no cross-round contamination)
+```
+**The receiver is confirmed EPHEMERAL**: `obj_off (1654000) > mark (1567360)`
+— this ARRAY was relocated by `__region_copy_rec`'s own compaction this
+round (a durable/pre-mark array's address never changes). Its own header
+reads `len=0, cap=0` (raw memory dump, `[obj_off-8]` full i64 = 0) — a
+genuinely EMPTY array. Its off-16 slot (`[obj_off-16]`) is NOT zero — it
+decodes as a plausible `PTR.HASH` pointer to `obj_off+32`.
+
+**The mechanism, precisely**: `__dyn_get_t_h`'s ARRAY branch
+(`module/collection.js`, "ARRAY: header propsPtr at $off-16 is valid only
+when shift hasn't rewritten..." arm) reads `$off-16`, masks off bit0, and —
+finding a HASH tag — trusts it UNCONDITIONALLY as a live props table,
+without ever validating `cap > 0`. The table it's handed genuinely has
+`cap=0` (raw-memory-confirmed, not a misread — `[poff-8]`'s full i64 is
+exactly `0`, both len and cap 4-byte lanes zero). The probe-slot formula
+`$slot = $poff + (h & ($pcap - 1)) * MAP_ENTRY` assumes `$pcap` is a power
+of two ≥ 1 (the standard bitmask-modulo trick); with `$pcap = 0`,
+`$pcap - 1 = -1` (all bits set), so `h & -1 = h` unchanged — NOT bounded to
+`[0, cap)` at all. `$slot` becomes `poff + h*24` wrapped mod 2³² — verified
+by hand (`931910521 * 24 mod 2³² + 1653608 = 892669632`, exactly matching
+`$__dbgSlot`) — a wild, unmapped address, faulting on the subsequent
+`i64.load($slot)`.
+
+**Root WRITE not yet found — this is the actual wall.** `cap=0` is
+IMPOSSIBLE from every legitimate hash-creation path audited this session:
+`__hash_new` (`module/collection.js`) hard-codes `INIT_CAP=8`;
+`__hash_new_small` floors at `Math.max(hashSmallInitCap|0, 2)` — both ≥ 2,
+never 0. Audited `regionArmArray`'s `ephemeralDynProps` (the ONLY code that
+writes an ARRAY's off-16 slot during relocation, `layout-kinds.js`) against
+the observed value and it does NOT match either of its own two write
+shapes: it leaves off-16 UNTOUCHED (0, inherited from `__alloc_hdr`'s own
+unconditional `i64.store($ptr,0)` zero-init) when the old array had no
+props, or writes the SENTINEL `-1` (0xFFFFFFFFFFFFFFFF, "props migrated to
+the global `$__dyn_props` table") when it did — NEVER a direct live
+pointer. The observed off-16 value (a real, non-sentinel, non-zero
+HASH-tagged pointer) is consistent with NEITHER shape, meaning **this
+specific write did not happen during region-copy at all** — it must be
+either (a) a NORMAL (non-region) `__dyn_set` call, post-region-exit, during
+compileAst's own execution, that legitimately created a dyn-props table for
+this array (but then EVERY such creation goes through `__hash_new_small`,
+contradicting cap=0 yet again — unless it REUSED/grew an already-bad
+existing pointer rather than creating fresh), or (b) two adjacent, otherwise
+INDEPENDENT allocations whose address ranges overlap by exactly one
+16-byte header's worth (an off-by-16 in some size/offset computation, not
+yet isolated to a specific call site) — raw-memory archaeology around
+`obj_off` (see the ledger's own working notes, not reproduced here) showed
+a chain of coherently-shaped-but-degenerate headers 16-32 bytes apart,
+consistent with EITHER a real allocation-overlap bug OR simply the
+repetitive bit-vocabulary of adjacent small NaN-boxed structures — not
+disambiguated this session.
+
+**NOT further isolated — budget did not reach a landed fix.** Next lead for
+whoever picks this up: instrument `__dyn_set`'s ARRAY branch (`module/
+collection.js`, the `(if (i32.eq $type PTR.ARRAY) ...)` arm around its own
+`__hash_new_small` call) to log every (receiver off, created/reused props
+off, resulting cap) triple — confirm whether the `cap=0` table this session
+found is EVER visited by `__dyn_set` at all (my read says it should always
+see cap≥2 fresh or an existing cap it never shrinks) or whether it is
+reached ONLY via `__dyn_get_t_h`'s read path, meaning the write is
+somewhere region-copy hasn't been looked at yet — the SET/MAP or CLOSURE
+arms (both untouched by this session), or `__region_exit`'s own trailing
+`$__dyn_props`-implicit-root pass (module/core.js, the "values are per-array
+props HASH pointers... copied bit-for-bit, NOT recursed through
+__region_copy_rec" block) — a candidate this session named but did not
+instrument: if THIS pass's verbatim-value-copy convention is wrong for a
+value that itself needs recursive relocation (the exact 63a5551e-class
+mistake, one level removed — a props-HASH pointer stored as a *value* inside
+$__dyn_props's OWN table, left un-relocated), a stale/degenerate table is
+exactly what would result. Also worth checking: does the trap require
+SPECIFICALLY the closure (`g = () => x`) to exist — 2f596a84's own
+five-dodge-conditions still hold unverified against THIS session's deeper
+finding (not re-run; no reason to expect they've changed, but not
+confirmed).
+
+**Verified NOT the cause this session (ruled out, don't re-chase)**: HASH
+key-relocation (63a5551e, re-audited, sound — both loops relocate key AND
+value); funcInfo's own representation (confirmed HASH, not OBJECT — the
+`regionArmObject`/schema-table path is not on this trap's call graph at
+all, since the receiver here is ARRAY-typed, not HASH or OBJECT); the
+`__region_exit` root-walk's own ordering/memo discipline (unremarkable —
+`$__dbgExitCount=1`, single clean pass, `$mark`/`$T`/`$delta` all
+sane and mutually consistent).
+
+**Disposition — NO FIX LANDED, wall re-banked, narrower and evidence-backed
+(exact numbers, not speculation) for the first time.** Every edit this
+session (`scripts/self.js`'s `REGION_HOOKS_ACTIVE` flip, the debug-global
+breadcrumbs in `module/core.js`'s `__region_exit` and `module/
+collection.js`'s `__dyn_get_t_h`, the disposable `.work/scratch-build-
+named.mjs`/`.work/scratch-repro.mjs` scripts) was worktree-only and fully
+reverted/deleted; `git status`/`git diff --stat` in the worktree show
+NOTHING outstanding beyond this ledger entry. kernel-oracle's array-growth-
+class row stays unmoved (still the same region-only failure prior sessions
+recorded at 9/13 — not re-run, no source changed to justify
+re-verification, per this section's own established discipline).
+
+**No gate ladder run** — no fix exists to gate. No milestone change (front
+boundary is still NOT sound; Slice 3 stays not-live).
+
+**SHAs.** jz worktree: `2f596a84` (region-final-2026-08-11, HEAD, unchanged
+— no source landed this session, only this ledger entry). Main repo:
+unchanged by this session (this worktree is on the region branch, not
+main). watr: `895ca5b` (`/Users/div/projects/watr`, unpublished, unchanged,
+reconfirmed pristine 5.7.14). No `dist/jz.wasm` rebuilt; the disposable
+named kernel was deleted at session end.
+
+## §Region arena — BOTH standing rows are ONE mechanism, not two: real
+symbolication (names:true bytes, not wat:true — the prior sessions' method
+was silently broken) pins the exact crashing function and a 9-byte minimal
+repro; 3 concrete root-completeness hypotheses tested and REFUTED; a
+genuinely separate, region-unrelated `ctx.features.errorClasses` DBG_INVARIANTS
+gap found and set aside; WALL NOT CLOSED, next lead narrowed (2026-08-13)
+
+**Setup.** Fresh worktree
+`/private/tmp/claude-501/.../scratchpad/region-peel-f` off `ab2f2f40`
+(detached). `node_modules/watr` reinstalled via `npm ci` and verified
+byte-identical to the local `watr` repo at `895ca5b` (both `watr.js` and
+`package.json` diff clean) — confirmed again at session end, unchanged.
+Read `.work/research.md` §Region arena in full, including the 63a5551e/
+41024dd6/ab2f2f40 entries the brief named.
+
+**Method fix (this is the session's first real finding): the predecessors'
+"decompile via wasm-objdump" lead was never actually blocked on wasm-objdump
+— it was blocked on a wrong `compile()` call.** `index.js`'s pipeline
+appends the wasm `name` custom section (`appendFunctionNames`) ONLY on the
+bytes return path (line ~641); `opts.wat: true` returns straight from
+`watrPrint(optimized)` several lines EARLIER (line ~635) and never reaches
+that append. The prior sessions built their "named" kernel with BOTH
+`wat:true` AND `names:true` together (`compile(..., {wat:true, names:true})`)
+— `names:true` was silently a no-op, so their WAT-text function order was
+never actually backed by a real name section, and their "count `(func
+$name` occurrences in file order" symbolication of `wasm-function[N]` was
+guessing against an unrelated numbering, correctly diagnosed as unreliable
+but never traced to ITS OWN root cause. This session built the region-live
+kernel via `compile(profile.graph.code, {modules, memory, optimize,
+names: true})` — bytes, no `wat:true` — and V8's own stack traces now
+print real, compiler-assigned names directly (`closure4232`,
+`m106_emit$emit`, `m106_emit$emitDecl`, …) with zero guessing. `wasm-objdump
+-d` on the same bytes (confirmed to carry a `name` custom section via `-h`)
+independently corroborates every name V8 reports.
+
+**Both standing oracle rows are the SAME crash, not two mechanisms.**
+Reproduced both `test/kernel-oracle.js` rows (envMeta-shape line 327 and
+PENDING-FIX captured-then-read line 665) directly against the named kernel
+(`exports.default(...)`, the same ABI `compileViaKernel` uses) at O0/O2/O3,
+×3 each: **identical stack trace, identical crash address, for both**:
+```
+RuntimeError: memory access out of bounds
+    at closure4232 (wasm://wasm/…:wasm-function[3757]:0x821a6f)
+    at m106_emit$emit (wasm-function[82])
+    at m106_emit$emitDecl (wasm-function[2059])
+    at m106_emit$emitVoid → emitBlockBody → m121_index$emitFunc → closure2763 → m121_index$compile → compileSelf → compileSelf$exp
+```
+Both traps are inside the KERNEL's own emit phase (well before
+`optimizeTail`/`watOptimize` ever runs — Slice 1's round-loop reclaim is
+provably not implicated, it hasn't started yet), confirming and sharpening
+the prior session's "crashes inside the kernel's own compilation, not the
+compiled program" finding into "crashes at the exact same instruction for
+both rows." Dormant (REGION_HOOKS_ACTIVE=false) compiles both clean, ×2 —
+confirmed region-live-specific, not a pre-existing bug this session
+stumbled into.
+
+**Minimal repro found by black-box bisection (no source edits), 9
+characters shorter than 63a5551e's own `let x=n;g=()=>x` and — critically
+— actually reproduces on the CURRENT tree (that older repro no longer
+traps here, shapes have drifted, exactly as `ab2f2f40`'s entry warned):**
+```js
+export let f = () => { let arr = [() => 1]; return arr.length }
+```
+Bisection table (region-live kernel, opt0, same crash frame/address for
+every failing row):
+| variant | result |
+|---|---|
+| `let arr=[() => 1]; return 0` (arr never read) | **OK** — provably DCE'd |
+| `let arr=[() => 1]; return arr.length` | **TRAPS** |
+| `let arr=[() => 1]; return arr[0]()` | **TRAPS** |
+| `const g=()=>1; const h=g; return h()` (closure never boxed into a container) | **OK** |
+| `const g=()=>1; const call=(fn)=>fn(); return call(g)` (closure passed as an arg, not array-stored) | **OK** |
+| `let v=x>0&&1; const g=()=>v; return g()` (direct call, BOOL∪NUMBER capture) | **OK** — refutes carrier-collapse as the PENDING-FIX row's own mechanism |
+| array element is a plain OBJECT / STRING / top-level named function, `.length` read | **OK** in every case |
+| array element is a LOCAL closure (captures 0 or N vars, doesn't matter), `.length` OR `[0]()` read | **TRAPS**, always the same frame |
+
+Net: the trigger is "a locally-declared arrow closure is stored as an
+array element AND the array is later read (any read — even `.length`,
+never mind actually calling the closure)." Capture count, capture type,
+BOOL∪NUMBER-ness, and whether the closure is ever actually invoked are
+ALL irrelevant — narrower and more precise than either prior row's own
+framing ("envMeta shape" / "carrier collapse") suggested. `test/kernel-
+oracle.js`'s PENDING-FIX row's own comment ("NOT the minimal `const g =
+() => v; return g()` shape") is correct but the reason given (carrier
+collapse) is wrong — the real reason is direct-call closures never get
+boxed into a container at all.
+
+**Faulting instruction (wasm-objdump -d on the exact crash address):** a
+double-indirection gather loop —
+```
+out[i] = *(f64*)( *(i32*)(ptrArrBase + i*4) + 16 )
+```
+(local-60-based f64 output array stride 8; local-71-based i32 pointer
+array stride 4; dereferenced pointer's +16 field read as f64 — the VALUE
+field of a 24-byte HASH/MAP entry, hash@0/key@8/value@16, per
+`__durable_slot_heal`'s own documented layout) preceded immediately by
+`call $__coll_order` + `call $__alloc_hdr`. This is a Map/Hash-values-into-
+a-fresh-array gather shape, structurally identical to what `__region_copy_
+rec`'s own SET/MAP arm does for its `dirty`/`snapshots` rebuild — but
+`closure4232` is a JS-source-derived closure (an anonymous arrow, not a
+`$`-named WAT stdlib function), and its own WAT body (found at
+`kernel-broken.wat:4276233`, ~100 declared locals) opens with the exact
+`if (!ctx.closure.make) err(…)` guard literally written in `src/compile/
+emit.js`'s `'=>':` handler (line 7048) — strong, not just suggestive,
+evidence `closure4232` IS (or directly inlines) `ctx.closure.make`
+(`module/function.js`), the ONE function every arrow-closure literal
+compiles through, called for BOTH the crashing and non-crashing bisection
+rows alike — so the crash is NOT inside `.make()` uniformly, it's inside
+something ONLY the "closure escapes into a container" path additionally
+reaches (module/array.js's `fnElements` tagging and/or `src/compile/dyn-
+closure-tables.js`'s candidate-scanning machinery are the leading
+suspects, not yet confirmed against this exact repro's shape since it
+isn't module-scope and doesn't obviously hit the one `ptr.fnElements =`
+site currently found by grep — a gap in the account, named explicitly
+rather than glossed over).
+
+**Three concrete hypotheses tested by direct rebuild-and-repro (not
+guessed, not left as speculation) — ALL THREE REFUTED, evidence banked so
+the next session doesn't re-spend the ~4.5 min/build cost re-testing
+them:**
+1. *`ctx.scope`/`ctx.types` missing from `src/front.js`'s 5-element region
+   root* (`[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure]`) —
+   both are genuine top-level `ctx.*` fields with Set/Map-shaped children
+   written during `prepare()` (`ctx.scope.chain/globals/userGlobals/consts/
+   moduleLoopCaptured/shapeStrs`, `ctx.types.typedElem/dynKeyVars`) and
+   NOT in the root — the closest structural match to the banked lead's own
+   wording. Added both as two more root elements + rebind targets, rebuilt,
+   reran the minimal repro + both rows at O0/O2/O3 ×3: **identical crash,
+   same frame, same address to the byte** (`0x821a6f` unchanged). REFUTED.
+2. *`ctx.closure` itself is the miscopied root* (its own properties
+   include genuine closure-typed values — `.mint`/`.make`/`.call` — whose
+   PTR.CLOSURE relocation depends on `$__closure_env_len`/`$__closure_env_
+   mask` side tables baked describing the KERNEL's OWN closures at kernel-
+   build time). Dropped `ctx.closure` from the root/rebind entirely
+   (left durable, untouched by region_exit), rebuilt, reran: **identical
+   crash** (address shifted by a few bytes from the smaller root tuple,
+   same frame, same relative logic). REFUTED — ctx.closure's presence or
+   absence in the root has zero effect on this crash.
+3. *`ctx.features` missing from the root* — found via a genuinely useful
+   side door: building with `debugInvariants:true` (resolveSelfhostBuild's
+   own opt-in knob) surfaces a CLEAN, explicit, non-OOB failure instead of
+   the raw trap: `[ctx invariant] pre-assemble: ctx.features.errorClasses
+   missing — every FeaturePlan key must be seeded, not an absent key`.
+   `ctx.features` (`src/ctx.js`: `features: {}`, a top-level ctx field
+   NOT in the root) gets `errorClasses` seeded via `(ctx.features.
+   errorClasses ??= new Set()).add(...)` inside `src/prepare/index.js`
+   (i.e. during `prepare()`, inside the region span) — textbook root-
+   completeness-gap shape, matching the campaign's prior 4 fixed
+   mechanisms closely. Added `ctx.features` as a 6th root element,
+   rebuilt: **the invariant failure is UNCHANGED, byte-identical message**
+   — AND (decisive control) the SAME invariant failure reproduces on a
+   **DORMANT** build (`REGION_HOOKS_ACTIVE=false`, `regionArenaLive:
+   false`) with `debugInvariants:true`. This proves the `ctx.features.
+   errorClasses` gap is REGION-UNRELATED — a real, separate, pre-existing
+   DBG_INVARIANTS coverage gap (plausibly: a program that never
+   constructs/throws an Error never reaches whatever normally seeds
+   `errorClasses`, and the invariant check doesn't tolerate that), out of
+   this campaign's scope, named here so nobody re-discovers it as a false
+   lead. Neither confirms nor refutes anything about the OOB mechanism
+   (the debug-invariants build never gets far enough to reach `closure4232`
+   — it trips the earlier, unrelated check first on every program).
+
+**Disposition — NO FIX LANDED, wall re-banked with substantially narrower
+evidence than any prior session left.** All three edits (`src/front.js`
+×2 shapes, `scripts/self.js` REGION_HOOKS_ACTIVE toggle) were worktree-
+scratch, built/tested, then reverted; `git diff --stat` in the worktree
+at session end is empty against `ab2f2f40`. kernel-oracle unchanged at
+**9/13 region-live** (not re-run this session beyond the two named rows'
+own direct repro, which is the same evidence the milestone check already
+has — no regression, no progress on the count). No gate battery run
+(nothing landed to gate).
+
+**Recommendation for next session — go deeper on the SAME mechanism, not
+wider.** The three refuted hypotheses (§1-3 above) all targeted "a whole
+`ctx.*` subtree is missing from the region root" — that WHOLE CLASS is now
+weak evidence (0 for 3), unlike the campaign's prior 4 mechanisms which
+were exactly that shape and fixed on the first or second try. Two live
+threads, either is cheaper than re-trying root-completeness variants:
+(a) **Finish the `closure4232` attribution.** It opens with `emit.js`'s
+`'=>':` handler's own `err()` guard verbatim, so it's extremely likely
+`ctx.closure.make`'s own compiled body (module/function.js:127-280) OR a
+helper it inlines — but `.make()` runs on EVERY closure literal
+(crashing and non-crashing bisection rows alike), so the actual fault
+must be in a sub-path gated on "this closure escapes as a value," not
+`.make()` uniformly. Grep `module/array.js`'s DYNAMIC (non-module-scope)
+array-literal path — `allocArray`, not the `ptr.fnElements =` static-
+data-segment branch found this session (which requires
+`ctx.func.atModuleScope`, not the repro's shape) — for an analogous
+closure-value-tagging step; that's the most likely site of the ACTUAL
+coll_order/gather codegen closure4232's WAT body shows two clusters of.
+(b) **Splice a genuine WAT-level breadcrumb** (per the campaign's own
+mandatory method — NOT another JS-source hypothesis edit) at `closure4232`'s
+own entry (module index 3757 is now a KNOWN, STABLE address across builds
+sharing this exact root shape — confirmed identical across all 4 builds
+this session) capturing the `$aux`/`$n`/`$cellMask` locals (this session's
+own disassembly names them precisely: locals decoded from the raw hex dump
+map directly onto the WAT text's declared local list in the SAME order,
+so this is mechanical, not a re-guess) into an i64 debug global right
+before the faulting `f64.load offset=16`, for the 9-character minimal
+repro — the cheapest possible instrumented run (~250s build, sub-second
+repro). That number, cross-referenced against `ctx.closure.envMeta`'s own
+JS-side contents at the SAME point (a second breadcrumb, same technique),
+will show directly whether the gather is reading a wrong/uninitialized
+slot count vs. a wrong base pointer — the two remaining candidate
+mechanisms this session did not have time to distinguish.
+
+**Also banked, not this campaign's concern:** `ctx.features.errorClasses`'s
+DBG_INVARIANTS gap (§3 above) — reproduces dormant, unrelated to region
+work, worth a throwaway one-line fix (`errorClasses: null` should
+satisfy an own-property-existence check already, so the invariant check
+itself, or FeaturePlan's PROGRAM-tier seeding order, likely has the real
+gap) but explicitly out of scope for this session's mandate.
+
+**Gates.** No source changed persists beyond this ledger entry — every
+edit was built, tested, and reverted; worktree `git diff --stat` against
+`ab2f2f40` is empty. `node_modules/watr` reconfirmed byte-identical to
+`895ca5b` (`watr.js`/`package.json` diff clean) both before and after.
+kernel-oracle: unchanged at 9/13 region-live (this session's own direct
+repro of both standing rows, ×3 each, matches the milestone check's
+existing count — no new run of the full suite since nothing landed to
+gate). "REGION FRONT COMPLETE candidate" NOT declared — unchanged from
+the prior milestone check.
+
+**SHAs.** jz worktree: `ab2f2f40` base, unchanged (nothing committed
+beyond this ledger entry). watr: `895ca5b`/5.7.14, reconfirmed identical.
+No `dist/jz.wasm` artifact from this session persists (all builds were
+scratch, in the session scratchpad, never copied into the worktree's own
+`dist/`).
+
+## §Region arena — REGION FRONT COMPLETE (2026-08-13): watr 5.7.15
+published (gitHead `2bde3c1` ⊇ `895ca5b`), pin bumped, `region-final-
+2026-08-11` merged into main, full gate battery 13/13 ×3 BOTH configs
+against registry-resolved watr — the region-arena front this campaign has
+run since 2026-08-11 is DONE
+
+**Declaration.** Every gate this campaign's own acceptance bar names is
+green, against exactly what a plain `npm ci` resolves — not a symlink, not
+a worktree overlay, not a hand-carried fix. `REGION_HOOKS_ACTIVE` ships
+`false` (dormant) on `main`; region-live is a deliberate hand-flip /
+build-profile choice, not the default. **REGION FRONT COMPLETE.**
+
+**What landed (three pieces, three commits, this session, on `main`):**
+1. **Pin bump** (`f91da3c6`): `package.json`/`package-lock.json`
+   `watr@5.7.14` → `watr@5.7.15` (`npm i watr@5.7.15 --save-exact`,
+   matching the repo's existing exact-pin style). `npm view watr@5.7.15
+   gitHead` → `2bde3c100a08e5d70caff308b0f972df9115d215`; `/Users/div/
+   projects/watr` confirms `895ca5b` is an ancestor of `2bde3c1`
+   (`git merge-base --is-ancestor 895ca5b 2bde3c1`, exit 0). **Content-
+   verified, not version-string-verified**: registry-resolved
+   `node_modules/watr/src/optimize.js` (post `npm ci`) carries the exact
+   distinguishing hunk the WALL2 entry named — `let SW = []` (line 3102,
+   was `const`) and the regionExit call site's 5th-element rebind `SW =
+   __regionOut[4]` (line 8493) — the two-line diff that makes SW ride the
+   regionExit root bundle instead of being silently reclaimed.
+2. **Merge** (`68ee6fd4`): `git merge region-final-2026-08-11` (branch tip
+   `70cf7315`, 22 commits, merge-base `14c4f7a2`) into `main` (`53b17654`
+   + the pin-bump commit). **Two conflicts, both in `.work/` logs, zero
+   conflicts in source.**
+   - `.work/research.md`: took MAIN's version per policy, then diffed
+     `## §` section headers both sides (`grep '^## §'`, 33 main / 38
+     branch) — 14 branch-only entries (the branch's own post-divergence
+     region-arena narrative: TARGET-PASS ABLATION RECORD, BOUNDARY-
+     ARITHMETIC AUDIT, FRONT BOUNDARY Slice-2/rebase entries, CLOSURE
+     REGION-COPY ARM LANDED, REAL WALL FOUND+FIXED, SECOND WALL, funcIdx
+     SKEW, jessie's IR-value error, array-growth-class hunt, both FOURTH-
+     MECHANISM trace entries, BOTH-standing-rows) appended verbatim, in
+     branch order, after main's own tail. Result: 47 sections, superset of
+     both parents, nothing lost. (9 main-only entries — this campaign's
+     own post-divergence work, CompileSession remediation, FeatureReach
+     census, stdlib dedup, test262 re-pin, guard-coalesce, combined-tip
+     validation — were already present in the taken MAIN base, no action
+     needed.)
+   - `.work/todo.md`: same take-MAIN policy. Branch's own todo entries are
+     rolling-status duplicates of material already captured in full inside
+     `research.md` (each branch todo entry points back to its own
+     `research.md §Region arena` entry by name) — all substantive content
+     already carried by the research.md merge above, so no branch-only
+     todo content was lost by taking main's version wholesale.
+   - **Zero conflicts** in `layout-kinds.js`, `layout-kinds-doc.js`,
+     `module/collection.js`, `module/core.js`, `module/function.js`,
+     `scripts/self.js`, `src/compile/emit.js`, `src/ctx.js`, `src/front.js`,
+     `src/wat/assemble.js`, `test/layout-kinds.js` — all auto-merged
+     clean (branch region infrastructure landing on top of main's already-
+     cherry-picked runtime fixes, exactly as expected). `src/compile/
+     narrow.js`, `src/static.js`, `README.md` — untouched by the merge,
+     never at risk (forbidden-file check: clean).
+   - `REGION_HOOKS_ACTIVE` sanity: `false` in merged `scripts/self.js`
+     (line 116), confirmed post-merge — dormant ships by default.
+3. **This ledger entry** — the declaration.
+
+**Gates — registry watr (`npm ci` against the updated lock), merged
+worktree, all green:**
+
+| gate | result |
+|---|---|
+| kernel-oracle, dormant ×3 | **13/13, 13/13, 13/13** (541 assertions each, deterministic) |
+| kernel-oracle, region-live ×3 (hand-flipped, reverted after) | **13/13, 13/13, 13/13** (541 assertions each, deterministic) |
+| `npm test` (native, dormant) | 3447 total / **3440 pass / 1 fail** / 6 skip — the 1 fail is exactly the banked `test/optimizer.js` pin ("typed RMW: one guard covers the pure read and ignored OOB store…") — ONE fail, not the branch's own stale 2-optimizer-pin state, confirming main's `4de7efa0` guard-fix content survived the merge intact |
+| `test:wasm` (dormant) | 2742 total / **2736 pass / 0 fail** / 6 skip |
+| `node test/selfhost.js` | **21/21** (206 assertions) |
+| `npm run test:262` (language) | **3000 pass / 0 fail**, negAccept 1889 (unchanged ceiling) |
+| `npm run test:262:builtins` | **852 pass / 0 fail** |
+| self-build ×2, dormant | SHA-256 **converges**: `jz.js` `f5879205…`, `jz.wasm` `38d4ecf1…`, `interop.js` `ef42c9da…`, `sprae.js` `4c726c20…` — byte-identical both runs |
+| self-build ×2, region-live (hand-flipped, reverted after) | SHA-256 **converges**: `jz.wasm` `e901d3c9…` (the other three files identical to the dormant build — only the self-hosted kernel embedded in `jz.wasm` differs by `REGION_HOOKS_ACTIVE`) — byte-identical both runs |
+| `npm run test:claims` size leg | size geomean jz/AS = **1.020×** (27/49 cases smaller), within the 1.019–1.020× baseline band — gate passes (2/2 size-leg assertions ok); the suite's other 8 fails are the already-documented staleness (`memcheck-results.csv` predates HEAD) and strict-leadership/no-red-cases perf-claim sub-assertions, reboot-gated and out of this task's scope, unchanged in kind from every prior session's own report |
+| jessie/watr/jzify-entry, region-live ×3 (hand-flipped, reverted after) | **ALL CLEAN, deterministic, zero traps**: jessie 107,883 B (47 modules) ×3 identical SHA-256, watr 315,218 B (7 modules) ×3 identical, jzify-entry 616,399 B (70 modules) ×3 identical |
+
+**13/13 both configs, from a plain `npm ci` — the exact bar the WALL2
+entry named as blocking.** `REGION_HOOKS_ACTIVE` confirmed `false` after
+every hand-flip-and-revert cycle (`git diff scripts/self.js` clean at
+session end).
+
+**The operational lesson, stated once for the next campaign that touches
+a vendored dependency: content-verify pins, not version strings.** The
+WALL2 entry's own root cause was a pin-verification convention
+(`watr.js`+`package.json` diff) that could not distinguish a stale
+`src/optimize.js` from a fixed one, because neither file it checked ever
+touches optimizer source — the version STRING can say `5.7.14` on both
+sides of a real behavioral drift. This session's own verification (before
+trusting the publish) was to diff the actual file the fix lives in against
+its known-good source, by content, not to trust `npm view`'s `version`
+field or a `package.json` string match. Any future "is the published
+package the one I think it is" check should name the specific file/hunk
+the fix touches and diff THAT — the general pattern (composed entry
+points and version fields are blind to their own dependencies' internals)
+will recur with the next vendored fix, not just this one.
+
+**Disposition.** Committed on `main`: `f91da3c6` (pin bump), `68ee6fd4`
+(merge), and this ledger entry. `dist/` artifacts from every gate build
+(dormant and region-live, both self-build and jessie/watr/jzify-entry
+legs) are gitignored scratch, not committed. Worktree removed at session
+end.
 ## BigInt retirement design (2026-08-13)
 
 `.work/bigint-retirement-design.md` — design-only (no `src/` changes),

@@ -269,7 +269,20 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     // later static `o.x` read returns the stale slot. That mirror is gated on
     // `$__schema_tbl != 0`, so a write-only module (no `__dyn_get*`) must still
     // build the table. (needsSchemaTbl below skips it when every schema is empty.)
-    ctx.core.includes.has('__dyn_set')
+    ctx.core.includes.has('__dyn_set') ||
+    // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry):
+    // __region_copy_rec's OBJECT arm (layout-kinds.js regionArmObject) derives
+    // slot COUNT from `$__schema_tbl[sid]` — same `(if $__schema_tbl != 0 ...)`
+    // guard every other reader here uses, but if the table were never actually
+    // BUILT (this OR-chain not tripped), that guard reads 0 slots for every
+    // real OBJECT: an ephemeral relocation then allocates the WRONG (1-slot,
+    // via __alloc_hdr's own `max(n,1)`) block and copies zero of its real
+    // fields — __alloc_hdr never zero-fills payload, so the "extra" slots a
+    // wider real schema needed sit as bump-allocator GARBAGE, later read back
+    // as a bogus NaN-boxed pointer and dereferenced — confirmed live (kernel-
+    // oracle String()-with-ambiguous-bool-merge repro, region-live only,
+    // `memory access out of bounds`, root-caused to exactly this gap).
+    ctx.core.includes.has('__region_copy_rec')
   const needsSchemaTbl = (ctx.schema.list.length && tblConsumed &&
     (hasStringify || ctx.schema.list.some(s => s.length > 0))) ||
     hasJpObj
@@ -351,12 +364,73 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     for (const s of ctx.runtime.typeofStrs)
       typeofInit.push(['global.set', `$__tof_${s}`, emit(['str', s])])
   }
+
+  // Region arena CLOSURE relocation side table (.work/research.md §Region
+  // arena, the front-boundary's own forcing case) — funcIdx → {env slot
+  // count, cell-mode bitmask}, sourced from ctx.closure.envMeta (module/
+  // function.js's ctx.closure.make captures both facts at its own
+  // env-allocation site, so this is a straight materialization, not a
+  // re-derivation). Gated on `__region_exit` — NOT `__region_copy_rec`
+  // itself (needsSchemaTbl's OBJECT gate just above reads that name, but
+  // pullStdlib's resolveIncludes() — which expands `inc()`'d names into
+  // their full transitive-dep closure — runs AFTER buildStartFn; every
+  // OTHER condition in that OR-chain is a DIRECTLY-inc()'d name so it stays
+  // accurate there, but `__region_copy_rec` is exclusively a DEP of
+  // `__region_exit`, never inc()'d on its own, so reading it HERE would
+  // always be false). `__region_exit` is `inc()`'d synchronously the moment
+  // source calls it (ctx.core.emit['__region_exit'], module/core.js) — by
+  // buildStartFn, `emitVoid(ast)` has already run, so this reads accurately.
+  // Every other build (the default dist, native compiles, any program that
+  // never reaches a region boundary) pays zero bytes for this.
+  // By the time we reach here every closure literal in the program has been
+  // through ctx.closure.make (the two compilePendingClosures() drains above
+  // — line ~246 and the late-closures one after this block — only compile
+  // closure BODIES; a closure's ctx.closure.table/envMeta entry is minted
+  // synchronously when its LITERAL is emitted, which for a top-level
+  // program has always already happened by this point in buildStartFn).
+  //
+  // Runtime alloc+store sequence (mirrors schemaInit's own dynamic-fallback
+  // shape just above, NOT appendStaticSlots's static-data-segment path):
+  // appendStaticSlots's per-8-byte-slot pointer-relocation marking
+  // (staticPtrSlots, keyed on the NaN-prefix bit pattern) is for BOXED
+  // values — reusing it for these plain integers risks a false-positive
+  // match purely by chance on a cellMask's bit pattern. A future slice could
+  // add a dedicated raw-i32 static-segment appender (this table has no
+  // runtime-computed content unlike schema keys, so it could ALWAYS take
+  // the fast path schemaInit only gets to when every key folds statically)
+  // — not done here; this is the same O(n) instruction cost schemaInit's
+  // own fallback already accepts, paid only by region-live builds.
+  const closureEnvInit = []
+  if (ctx.core.includes.has('__region_exit') && ctx.closure.table?.length) {
+    const nClosures = ctx.closure.table.length
+    const lenT = `${T}cenvlen`
+    const maskT = `${T}cenvmask`
+    ctx.func.locals.set(lenT, 'i32')
+    ctx.func.locals.set(maskT, 'i32')
+    inc('__alloc')
+    if (!ctx.scope.globals.has('__closure_env_len')) declGlobal('__closure_env_len', 'i32')
+    if (!ctx.scope.globals.has('__closure_env_mask')) declGlobal('__closure_env_mask', 'i32')
+    closureEnvInit.push(
+      ['local.set', `$${lenT}`, ['call', '$__alloc', ['i32.const', nClosures * 4]]],
+      ['global.set', '$__closure_env_len', ['local.get', `$${lenT}`]],
+      ['local.set', `$${maskT}`, ['call', '$__alloc', ['i32.const', nClosures * 4]]],
+      ['global.set', '$__closure_env_mask', ['local.get', `$${maskT}`]],
+    )
+    for (let i = 0; i < nClosures; i++) {
+      const meta = ctx.closure.envMeta[i] || { len: 0, cellMask: 0 }
+      closureEnvInit.push(
+        ['i32.store', ['i32.add', ['local.get', `$${lenT}`], ['i32.const', i * 4]], ['i32.const', meta.len]],
+        ['i32.store', ['i32.add', ['local.get', `$${maskT}`], ['i32.const', i * 4]], ['i32.const', meta.cellMask]],
+      )
+    }
+  }
+
   const wasiTimers = ctx.features.timers && ctx.transform.targetProfile.timerModel === 'blocking'
-  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length || wasiTimers) {
+  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length || closureEnvInit.length || wasiTimers) {
     const initIR = normalizeIR(init)
     const startFn = ['func', '$__start']
     for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
-    startFn.push(...strPoolInit, ...typeofInit, ...boxInit, ...schemaInit,
+    startFn.push(...strPoolInit, ...typeofInit, ...boxInit, ...schemaInit, ...closureEnvInit,
       ...(wasiTimers ? [['call', '$__timer_init']] : []),
       ...moduleInits, ...initIR,
       ...(ctx.features.blockingTimers ? [['call', '$__timer_loop']] : []),
