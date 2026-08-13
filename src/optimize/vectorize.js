@@ -4649,12 +4649,16 @@ function buildPivotCoeff(loopNode, pivot) {
 // unless the body is exactly: clamp-free `xi=x+k; p=(row+xi)<<2; acc_c += u8[base+c]`
 // over a unit-stride x, then a 4-byte RGBA store `dst[ab1+c] = f(acc_c)`. r≥127 →
 // i16 overflow → bail. Leaves a scalar remainder loop for the ≤3 trailing pixels.
-function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl) {
+// 4px/step tier of the unified CHANNEL-REDUCE recognizer (see `tryChannelReduce` below,
+// the dispatch entry). Takes the ALREADY-COMPUTED `scan` (matchChannelReducePixelLoop),
+// shared with the 1px/step tier (`tryChannelReduce1px`) so the dispatch entry runs the
+// scan exactly once instead of each tier separately re-deriving it on a blur-tier bail
+// (design §2 "CHANNEL-REDUCE … nearly free" merge).
+function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
   // Loose-envelope scaffold, matched once at the dispatch (LoopPlan). The exit
   // guard below accepts NO label check and lt_s only (not lt_u), a strictly
   // narrower shape than matchExitBrIf, so it stays this recognizer's own
   // residual rather than folding into the shared scaffold.
-  if (!bl) return null
   const { loopNode, endIdx } = bl
   // exit guard: br_if $brk (i32.eqz (i32.lt_s x BOUND))
   const exit = loopNode[2]
@@ -4668,10 +4672,6 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl) {
   if (!(isArr(inc) && inc[0] === 'local.set' && inc[1] === pivot && isArr(inc[2]) && inc[2][0] === 'i32.add'
     && isLocalGet(inc[2][1], pivot) && isI32Const(inc[2][2]) && constNum(inc[2][2]) === 1)) return null
 
-  // init+inner-loop-locate scan (matchChannelReducePixelLoop, hoisted — shared with
-  // tryChannelReduce): four `acc_c = 0` inits, then the tap accumulation loop.
-  const scan = matchChannelReducePixelLoop(loopNode, 3, bodyEnd)
-  if (!scan) return null
   const { initIdx, accInits, innerIdx, innerBlock, innerLoop, ilEnd, innerBody, grp } = scan
   // CLAMP-FREE: nothing before the channel group may be an `if` (the edge clamp).
   for (let i = 0; i < grp.idx; i++) if (isArr(innerBody[i]) && innerBody[i][0] === 'if') return null
@@ -4820,20 +4820,15 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl) {
   return { wrapper, newLocalDecls }
 }
 
-function tryChannelReduce(blockNode, fnLocals, freshIdRef, bl) {
-  // Loose envelope: LICM may hoist an invariant edge-clamp bound ahead of the loop when
-  // this pixel loop nests in an outer row loop; preserved verbatim by the wrapper rebuild.
-  // Unlike tryBlurMultiPixel this never validates the exit/inc shape — it trusts
-  // `bodyStart..bodyEnd` as the body outright. Loose scaffold from the dispatch.
-  if (!bl) return null
-  const { loopNode, endIdx } = bl
-
-  // Pixel-loop body (between the exit guard and the back-branch): four `acc_c = 0` inits and
-  // the inner accumulation loop that sums into them (matchChannelReducePixelLoop, hoisted —
-  // shared with tryBlurMultiPixel).
-  const bodyStart = 3, bodyEnd = endIdx - 1   // [exit] at 2, [inc?][br] at the end
-  const scan = matchChannelReducePixelLoop(loopNode, bodyStart, bodyEnd)
-  if (!scan) return null
+// 1px/step tier of the unified CHANNEL-REDUCE recognizer (see `tryChannelReduce` below,
+// the dispatch entry) — the fallback of `tryBlurMultiPixel`'s 4px/step tier. Takes the
+// ALREADY-COMPUTED `scan` (matchChannelReducePixelLoop), shared with the 4px tier.
+// Loose envelope: LICM may hoist an invariant edge-clamp bound ahead of the loop when
+// this pixel loop nests in an outer row loop; preserved verbatim by the wrapper rebuild.
+// Unlike tryBlurMultiPixel this never validates the exit/inc shape — it trusts
+// `bodyStart..bodyEnd` as the body outright. Loose scaffold from the dispatch.
+function tryChannelReduce1px(blockNode, fnLocals, freshIdRef, bl, scan) {
+  const { loopNode } = bl
   const { initIdx, innerIdx, innerBlock, innerLoop, ilEnd, innerBody, grp } = scan
 
   // ── Lift. accv (v128) holds the four channel sums.
@@ -4873,6 +4868,30 @@ function tryChannelReduce(blockNode, fnLocals, freshIdRef, bl) {
   newLoop.splice(initIdx, 4, zeroInit)                       // 4 inits → 1 splat (do last; lower index)
   const wrapper = blockNode.map(c => c === loopNode ? newLoop : c)
   return { wrapper, newLocalDecls }
+}
+
+// ---- Unified CHANNEL-REDUCE recognizer (dispatch entry) ---------------------
+//
+// One recognizer, two codegen tiers (design §2 "CHANNEL-REDUCE (#13-14) → 1 general
+// recognizer … nearly free" — tryBlurMultiPixel's own doc already called itself "the
+// fast tier of tryChannelReduce", bailing to it on any deviation). The ONE shared
+// structural scan (matchChannelReducePixelLoop) runs ONCE here instead of each tier
+// separately re-deriving it on a blur-tier bail (today's redundant double-scan when
+// blurMP's own later guards — clamp-free interior, tap-loop shape, RGBA store match —
+// fail after the scan already succeeded). Same dispatch order as before the merge
+// (`(blurMP ? tryBlurMultiPixel(...) : null) ?? tryChannelReduce(...)`), so behavior
+// is unchanged by construction — pure entry-point + shared-scan consolidation.
+function tryChannelReduce(blockNode, fnLocals, freshIdRef, bl, blurMP) {
+  if (!bl) return null
+  const { loopNode, endIdx } = bl
+  const bodyStart = 3, bodyEnd = endIdx - 1   // [exit] at 2, [inc?][br] at the end
+  const scan = matchChannelReducePixelLoop(loopNode, bodyStart, bodyEnd)
+  if (!scan) return null
+  if (blurMP) {
+    const r = tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan)
+    if (r) return r
+  }
+  return tryChannelReduce1px(blockNode, fnLocals, freshIdRef, bl, scan)
 }
 
 /**
@@ -7129,8 +7148,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryReduce(bl, fnLocals, freshIdRef, multiAcc)
         ?? tryStencil(node, fnLocals, freshIdRef, stencil, bl)
         ?? tryRampMap(node, fnLocals, freshIdRef)
-        ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef, getBlLoose()) : null)
-        ?? tryChannelReduce(node, fnLocals, freshIdRef, getBlLoose())
+        ?? tryChannelReduce(node, fnLocals, freshIdRef, getBlLoose(), blurMP)
         ?? tryPerPixelColor(node, fnLocals, freshIdRef, pureFuncMap, op)
         ?? tryOuterStrip(node, fnLocals, freshIdRef, outerStrip, op)
         ?? tryIteratedReduce(node, fnLocals, freshIdRef, outerStrip, op)
