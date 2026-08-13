@@ -978,21 +978,29 @@ export default (ctx) => {
   ctx.core.stdlib['__jp_arr'] = `(func $__jp_arr (result f64)
     (local $ptr i32) (local $len i32) (local $cap i32) (local $new i32) (local $ch i32)
     (local.set $cap (i32.const 8))
-    (local.set $ptr (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $cap) (i32.const 3)))))
-    (local.set $ptr (i32.add (local.get $ptr) (i32.const 8)))
+    ;; Alloc via the canonical header allocator (NOT a hand-rolled
+    ;; (i32.const 8)+cap*8 alloc) — __dyn_get_t_h's ARRAY branch
+    ;; unconditionally reads the propsPtr word at off-16 for every ARRAY
+    ;; receiver (module/collection.js); a short header leaves it aliasing
+    ;; whatever memory preceded the allocation (FOURTH mechanism,
+    ;; .work/research.md §Region arena). $ptr is the DATA pointer
+    ;; __alloc_hdr returns (already past the 16-byte header) — every store
+    ;; site below drops the old scheme's extra +8 offset.
+    (local.set $ptr (call $__alloc_hdr (i32.const 0) (local.get $cap)))
     ${WS()}
     (if (i32.eq ${PEEK} (i32.const 93))
       (then ${ADV(1)}
-        (i32.store (i32.sub (local.get $ptr) (i32.const 8)) (i32.const 0))
-        (i32.store (i32.sub (local.get $ptr) (i32.const 4)) (local.get $cap))
         (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $ptr)))))
     (block $d (loop $l
       ${WS()}
-      ;; Grow if needed
+      ;; Grow if needed: fresh __alloc_hdr buffer + a plain data copy. This
+      ;; array is purely function-local until the final mkptr below — no
+      ;; other pointer can alias it mid-construction, so (unlike
+      ;; __arr_grow) there is no forwarding header or dyn-props sidecar to
+      ;; preserve across the copy.
       (if (i32.ge_s (local.get $len) (local.get $cap))
         (then
-          (local.set $new (call $__alloc (i32.add (i32.const 8) (i32.shl (i32.shl (local.get $cap) (i32.const 1)) (i32.const 3)))))
-          (local.set $new (i32.add (local.get $new) (i32.const 8)))
+          (local.set $new (call $__alloc_hdr (local.get $len) (i32.shl (local.get $cap) (i32.const 1))))
           (memory.copy (local.get $new) (local.get $ptr) (i32.shl (local.get $len) (i32.const 3)))
           (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
           (local.set $ptr (local.get $new))))
@@ -1008,8 +1016,10 @@ export default (ctx) => {
         (else (global.set $__jp_err (i32.const 1)) (br $d)))
       (br $l)))
     ${ADV(1)}
+    ;; Patch final length into the header (cap is already correct from the
+    ;; last __alloc_hdr call above; propsPtr was zeroed by __alloc_hdr and
+    ;; never touched since — a fresh internal array).
     (i32.store (i32.sub (local.get $ptr) (i32.const 8)) (local.get $len))
-    (i32.store (i32.sub (local.get $ptr) (i32.const 4)) (local.get $cap))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $ptr)))`
 
   // Schema cache lookup/register. Cache is a 64-entry open-addressed table
@@ -1342,23 +1352,32 @@ export default (ctx) => {
       return `${WS()}
     ${expect(91)}
     (local.set $${cap} (i32.const 8))
-    (local.set $${ptr} (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $${cap}) (i32.const 3)))))
-    (local.set $${ptr} (i32.add (local.get $${ptr}) (i32.const 8)))
+    ;; Alloc via the canonical header allocator (NOT a hand-rolled
+    ;; (i32.const 8)+cap*8 alloc) — __dyn_get_t_h's ARRAY branch
+    ;; unconditionally reads the propsPtr word at off-16 for every ARRAY
+    ;; receiver (module/collection.js); a short header leaves it aliasing
+    ;; whatever memory preceded the allocation (FOURTH mechanism,
+    ;; .work/research.md §Region arena). $ptr is the DATA pointer
+    ;; __alloc_hdr returns (already past the 16-byte header) — every store
+    ;; site below drops the old scheme's extra +8 offset.
+    (local.set $${ptr} (call $__alloc_hdr (i32.const 0) (local.get $${cap})))
     ${WS()}
     (if (i32.eq ${PEEK} (i32.const 93))
       (then
         ${ADV(1)}
-        (i32.store (i32.sub (local.get $${ptr}) (i32.const 8)) (i32.const 0))
-        (i32.store (i32.sub (local.get $${ptr}) (i32.const 4)) (local.get $${cap}))
         (local.set $${out} (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $${ptr}))))
       (else
         (block $ad${id} (loop $al${id}
+          ;; Grow if needed: fresh __alloc_hdr buffer + a plain data copy.
+          ;; This array is purely function-local until the final mkptr
+          ;; below — no other pointer can alias it mid-construction, so
+          ;; (unlike __arr_grow) there is no forwarding header or
+          ;; dyn-props sidecar to preserve across the copy.
           (if (i32.ge_s (local.get $${len}) (local.get $${cap}))
             (then
-              (local.set $${cap} (i32.shl (local.get $${cap}) (i32.const 1)))
-              (local.set $${next} (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $${cap}) (i32.const 3)))))
-              (local.set $${next} (i32.add (local.get $${next}) (i32.const 8)))
+              (local.set $${next} (call $__alloc_hdr (local.get $${len}) (i32.shl (local.get $${cap}) (i32.const 1))))
               (memory.copy (local.get $${next}) (local.get $${ptr}) (i32.shl (local.get $${len}) (i32.const 3)))
+              (local.set $${cap} (i32.shl (local.get $${cap}) (i32.const 1)))
               (local.set $${ptr} (local.get $${next}))))
           ${parse(elem, val)}
           (f64.store (i32.add (local.get $${ptr}) (i32.shl (local.get $${len}) (i32.const 3))) (local.get $${val}))
@@ -1371,8 +1390,10 @@ export default (ctx) => {
           ${WS()}
           (br $al${id})))
         ${ADV(1)}
+        ;; Patch final length into the header (cap is already correct from
+        ;; the last __alloc_hdr call above; propsPtr was zeroed by
+        ;; __alloc_hdr and never touched since — a fresh internal array).
         (i32.store (i32.sub (local.get $${ptr}) (i32.const 8)) (local.get $${len}))
-        (i32.store (i32.sub (local.get $${ptr}) (i32.const 4)) (local.get $${cap}))
         (local.set $${out} (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $${ptr})))))`
     }
 

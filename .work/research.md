@@ -6416,6 +6416,440 @@ top (see commit log). Main repo: unchanged by this session (region branch,
 not main). watr: `895ca5b` (`/Users/div/projects/watr`, unpublished,
 unchanged, reconfirmed pristine 5.7.14 before and after). `dist/jz.wasm`
 not retained (region-live build SHA `9227af7d...eef1cc9` and dormant build
+
+## §Region arena — HEADER-MATERIALIZATION CLASS ERADICATED: full runtime
+audit, 5 more instances found+fixed beyond the one named remaining site,
+complete site inventory recorded; oracle re-triaged, STAYS 9/13 (Part 1's
+sweep does not touch the 2 remaining mechanisms — confirmed by direct
+compiler-internal-trap evidence, not inference) (2026-08-13)
+
+**Task.** Part 1 of a 3-part campaign session: (a) fix the ONE KNOWN
+remaining header-materialization instance 41024dd6 named but didn't reach —
+`module/regex.js`'s growable regex `.split()` builder — through the
+canonical allocator; (b) AUDIT every `module/*.js` + WAT-template-emitting
+`src/*.js` site that materializes an ARRAY/OBJECT/TYPED/SET/MAP/HASH header
+by hand instead of calling `__alloc_hdr`/`__alloc_hdr_n`, fixing every real
+instance and documenting every proven-clean site; (c) re-run the region
+oracle and re-triage before Part 2, since the same class could plausibly
+explain some of the 4 standing failures.
+
+**Setup.** Fresh `git worktree add` off `41024dd6` (region-final-2026-08-11
+HEAD). `node_modules` individually symlinked (`@esbuild`, `esbuild`,
+`sprae`, `subscript`, `tst` → the main repo's copies; `watr` →
+`/Users/div/projects/watr` directly — `895ca5b`/5.7.14, reconfirmed
+identical before AND after this session, only its own pre-existing
+untracked `watr` dir entry in that repo's own `git status`, unrelated).
+
+**Classification key (established once, applied to every site below).**
+`module/collection.js`'s own `hasPropsSidecarWat` comment (line ~2395) is
+the authoritative source: `__dyn_get_t_h`/`__dyn_set` read/write the
+propsPtr word at `off-16` ONLY for **ARRAY, OBJECT, TYPED, SET, MAP**
+(HASH is its own storage, no sidecar, exempted by its own dedicated arm).
+Every OTHER tag (STRING, CLOSURE, ATOM, BUFFER, REGEX, DATE, EXTERNAL,
+BIGINT) has NO such slot and NEVER reads off-16 — confirmed by reading
+`__dyn_get_t_h`'s own STRING early-return (line ~2544: STRING receivers
+return `UNDEF_NAN` before the type ever reaches the off-16 read). A raw
+`$__alloc` call is only an instance of this defect class if its result is
+`$__mkptr`'d with one of the five propsPtr-bearing tags AND its header is
+shorter than 16 bytes / omits the propsPtr word.
+
+**Fixed (7 NEW sites beyond the one already-known one — 8 total, 5
+files).**
+1. `module/regex.js` — growable regex `.split()` builder
+   (`__regex_split_${id}`, backs `str.split(/re/)`) — the session's primary
+   assignment. Hand-rolled 8-byte header + two grow-doublings, identical
+   shape to the pre-fix `__arr_flat`. Routed the initial alloc AND both
+   grow-doubling reallocs through `__alloc_hdr`; the intermediate array is
+   purely function-local until the final `mkptr` (nothing else can alias it
+   mid-construction), so — unlike `__arr_grow` — no forwarding-header/
+   dyn-props-sidecar preservation is needed across the copy, just a plain
+   `memory.copy`. Verified: 103/103 native regex tests; hand-run 8/9/20-
+   piece splits (0/1/2 grow-doublings) byte-for-byte against native JS
+   `.split()`; dyn-prop set+read on both a no-grow and a two-grow result.
+2. `module/regex.js` — `buildMatchArr` (the `.match()`/`.exec()` result
+   array, also feeds `.groups` via `$__dyn_set` when named capture groups
+   are present) — a SECOND, independently-found instance, exact-size (no
+   growth needed, mechanical `__alloc_hdr(N,N)` swap). The MOST direct
+   possible consumer of this defect class: a named-group match literally
+   dyn-sets onto the array the same statement it's built in. Verified:
+   103/103 regex tests; `"2026-08-13".match(/(?<year>...)/)` decoding
+   correctly with a 10-element unrelated array allocated immediately
+   before it (heap-neighbor pressure); a second dyn-prop set on top of
+   `.groups` itself.
+3. `module/json.js` — `__jp_arr` (the runtime `JSON.parse` array builder,
+   grow-doubling, previously undocumented as an instance — NOT named in
+   41024dd6). Same shape and same fix as regex's split builder. Verified:
+   67/67 native JSON tests; a 20-element runtime-only JSON array (opaque
+   `String.fromCharCode`-built source, defeats const-fold AND shape-parse)
+   forcing two grow-doublings, plus a dyn-prop set on the result.
+4. `module/json.js` — the compile-time SHAPE-parser's `parseArray` closure
+   (`emitJsonShapeParser`'s per-shape generated parser, backs
+   `JSON.parse(stableLetSource)` when the source resolves to one of a
+   small set of literal shapes at compile time) — a FOURTH, independently-
+   found instance, identical grow-doubling shape. Verified via the exact
+   trigger test/json.js's own tests use (`let SRC = '...'; JSON.parse(SRC)`
+   — a stable-`let`, non-const source), confirmed the shape fast path
+   fired (`$__dyn_get` absent from `$g`'s own compiled body, matching
+   test/json.js's own established methodology) with a 20-element nested
+   array + a dyn-prop set on it.
+5. `module/typedarray.js` — `genSimdMap` (the SIMD-fused `.map()` result
+   builder for `Int32Array`/`Float64Array`/etc. — `.typed:map`'s fast
+   path) — hand-rolled 8-byte header (byteLen stored at BOTH offset-0 and
+   offset-4, i.e. len=cap=byteLen, matching `__alloc_hdr_n`'s own
+   convention exactly) storing a `PTR.TYPED` result; TYPED IS in the
+   propsPtr set. Routed through `__alloc_hdr_n(byteLen, byteLen, 1)` —
+   the SAME stride=1/len=cap=byteLen shape `__typed_slice_rt` (already
+   correct, unmodified) establishes as canonical for TYPED results.
+   Verified: 58/58 native buffer tests; `Int32Array.map(x=>x*2)` /
+   `Float64Array.map(x=>x+1)` value-correct against native JS, PLUS a
+   dyn-prop set on the SIMD-mapped result (the actual defect).
+6. `module/string.js` — `__b64_from` (`Uint8Array.fromBase64`) — hand-
+   rolled 8-byte header producing `PTR.TYPED`. Genuinely different fix
+   shape from the others: the real decoded length is only known AFTER
+   `__b64_dec_raw` runs (unlike every `__alloc_hdr(len,cap)` call site
+   elsewhere, where at least an upper bound resolves BEFORE the header is
+   needed), so `__alloc_hdr` itself can't be called — reserved 16 header
+   bytes + the decode upper-bound scratch up front (`__alloc(16+max)`,
+   `i64.store` propsPtr=0 explicitly), decoded into `base+16`, then
+   patched len/cap in after decoding. Verified against
+   `Buffer.from(...,'base64').toString()` plus a dyn-prop set.
+7. `module/string.js` — `__hex_from` (`Uint8Array.fromHex`) — same defect,
+   same fix shape as `__b64_from` (real length known post-decode only).
+   Verified against `Buffer.from(...,'hex').toString()` plus a dyn-prop
+   set.
+8. `src/compile/emit.js` — the multi-return-value closure trampoline
+   (`.sig.results.length > 1` branch, packs N WASM-multi-value returns
+   into a real JS-visible array when the function is referenced AS A
+   VALUE and called through `call_indirect`'s uniform ABI) — hand-rolled
+   `(n*8+8)`-byte header producing `PTR.ARRAY`. Exact-size, mechanical
+   `__alloc_hdr(n,n)` swap; dropped the now-fully-unused `'__alloc'` dep,
+   made `'__alloc_hdr'` unconditional (was gated on `restIdx>=0`, but the
+   multi-return branch needs it regardless of rest-param presence).
+   Verified: 9/9 multi-return + 110/110 closures native tests; confirmed
+   via a temporary breadcrumb (reverted) that a genuinely call_indirect'd,
+   2-arity-selected multi-return closure DOES reach this exact branch
+   (`results 2`); value-correct across both selected functions plus a
+   dyn-prop set on the packed result (default O2 inlines the tiny
+   trampoline into its single call site, so the named function itself
+   doesn't survive in the final WAT text — behavior + the direct
+   `console.error` breadcrumb are the evidence, not a WAT `grep`).
+
+**Proven CLEAN — not instances (with reason).**
+- `module/typedarray.js` `__subarray`/the `new T(buf,off,len)`
+  constructor/`new DataView(...)`/structuredClone's TYPED-view rebuild arm
+  (4 `__alloc(16)` sites) — a TYPED **view** is a deliberately DIFFERENT
+  16-byte shape, `[byteLen][dataOff][rootOff][pad]` (explicitly documented
+  at the DataView constructor), not an `__alloc_hdr` header at all; calling
+  `__alloc_hdr` here would be WRONG (wrong field semantics entirely).
+- `module/collection.js`'s `__alloc_hash_eph` — hand-INLINED but CORRECT:
+  writes `i64.store ptr 0` (propsPtr, zeroed) then len@8/cap@12 explicitly
+  — the full 16-byte header, just skipping `__alloc_hdr_n`'s `memory.fill`
+  of the (for a fresh ephemeral hash) provably-unreachable entry bytes. A
+  deliberate, documented perf specialization, not a truncated header.
+- `module/console.js`, `module/fs.js`, `module/crypto.js`,
+  `module/number.js`, `module/math.js`, `module/date.js`,
+  `module/timer.js` — grepped for every `mkptr`+propsPtr-tag pairing:
+  ZERO matches in any of these 7 files. Every `$__alloc` call in them
+  produces PTR.STRING/PTR.BUFFER results or pure internal scratch (WASI
+  iovecs, hash digest buffers, number-formatting buffers) — never a
+  propsPtr-bearing tag.
+- `module/string.js`'s remaining ~20 `$__alloc` sites — all PTR.STRING
+  (STRING is explicitly NOT in the propsPtr set per the classification
+  key above).
+- `module/function.js`'s closure-env-array alloc (`__alloc(envCaptures.
+  length*8)`) — PTR.CLOSURE-tagged; CLOSURE is not in the propsPtr set,
+  and env arrays have no len/cap header at all (indexed purely by
+  compile-time-known offsets in generated code).
+- `module/core.js`'s `__region_relocate_cell`'s own `__alloc(8)` (a raw
+  region-arena boxed-cell mirror) and `__coll_order`'s scratch slot-offset
+  buffer (`__alloc(shl(header_len,2))`) — neither is ever `mkptr`-wrapped;
+  both are pure internal bookkeeping, never a JS-visible value.
+- `src/compile/emit.js`'s string-concat/template-literal builder
+  (`totalIR()`-sized `__alloc`) — produces PTR.STRING with the correct
+  8-byte `[hash][len]` STRING header (not the 16-byte ARRAY/OBJECT
+  shape) — proven by its own `mkPtrIR(PTR.STRING, ...)` call site.
+- The "boxed cell" `__alloc(8)` pattern (closure-captured mutable `let`
+  storage) — `src/compile/emit.js` (3 sites), `src/compile/index.js`
+  (5 sites), `src/ir.js` (1 site), `module/core.js`'s cell-relocation
+  site above, `module/function.js`'s per-capture cell store — NEVER
+  `mkptr`-wrapped at all; the raw i32 address is used directly as an
+  `f64.store`/`f64.load` target by compiler-generated code, entirely
+  outside the NaN-boxed-pointer/dyn-dispatch machinery.
+- `src/wat/assemble.js`'s `$__schema_tbl`/`$__strBase`/
+  `$__closure_env_len`/`$__closure_env_mask`/`$__gsnap_base` allocations —
+  all raw internal tables/pools referenced via dedicated globals, never
+  `mkptr`-wrapped (the schema table's OWN per-schema key ARRAYS, stored
+  INSIDE it, already correctly use `__alloc_hdr` — confirmed unchanged).
+- `src/optimize/index.js`'s `$__alloc` references — string literals in
+  optimizer analysis code (detecting whether a function body CONTAINS an
+  allocation call), not an allocation site itself.
+- `module/object.js` — audited, already exclusively `__alloc_hdr`/
+  `__alloc_hdr_n`, zero raw `$__alloc` sites.
+- `module/array.js` — audited (the `.push()`/indexed-append/`__arr_grow`
+  family), already exclusively `__alloc_hdr`, zero raw `$__alloc` sites.
+
+**Bonus finding — NOT fixed, out of scope, named for a future session.**
+Setting a dynamic property on a **TypedArray VIEW** (`.subarray()`
+result, `new T(buf,off,len)`, `new DataView(...)`) traps `memory access
+out of bounds` — reproduced NATIVELY, dormant mode, ZERO region-arena
+involvement (`let v=new Int32Array([1..6]).subarray(1,4); v.tag='hi'`).
+Root cause (by inspection, not instrumented further): `__dyn_get_t_h`/
+`__dyn_set` include PTR.TYPED in `hasPropsSidecarWat` unconditionally,
+but a VIEW's pointer offset is the `[byteLen][dataOff][rootOff][pad]`
+descriptor's OWN address, not an `__alloc_hdr`-shaped buffer — reading
+`off-16` for a view walks into whatever memory precedes that (correctly
+16-byte, by design) descriptor. Pre-existing, NOT region-arena-specific
+(so it does not explain any of the 4 oracle failures below), genuinely
+architectural (`__dyn_get_t_h ` would need to gate on the view bit, not
+just the TYPED tag) — flagged, not attempted, per this session's charter
+(header-materialization only).
+
+**Gates (region-live unless noted).**
+- Native full suite (`node test/index.js`): **3428/3436 pass, 6 skip** —
+  the SAME 2 pre-existing documented flakes (`interval walk`, `typed
+  RMW`), 0 new. Self-hosted (`JZ_TEST_TARGET=jz.wasm`): **2725/2731 pass,
+  0 fail, 6 skip** — byte-for-byte the historical baseline.
+- Touched-module native suites individually: regex 103/103, json 67/67,
+  buffer 58/58, jsstring 10/10, strings 153/153, multi-return 9/9,
+  closures 110/110, webglobals 26/26, array-methods 127/128 (1
+  pre-existing skip) — all green.
+- **Region oracle: 9/13 pass (203 assertions in the 9 passing groups),
+  UNCHANGED, ×3 reps, byte-for-byte the same 4 failing test() blocks as
+  41024dd6's own baseline** (3× "native+kernel agree with JS at
+  O0/O2/O3" + the PENDING-FIX carrier-collapse row). Part 1's sweep does
+  NOT touch either standing mechanism — see the next entry for why,
+  established by direct trap evidence, not by assumption.
+- **Region oracle dormant: 13/13 pass (541 assertions).**
+- kernel-parity region-live: **3/3 (33/33) byte-identical.** Dormant:
+  **3/3 (33/33) byte-identical.**
+- jessie/watr/jzify-entry region-live ×3 reps: **all clean, deterministic,
+  zero traps** — jessie 106,974 B (byte-identical to 41024dd6's own
+  recorded size — Part 1 doesn't touch anything jessie's own corpus
+  exercises), watr 315,200 B, jzify-entry 611,971 B (both a few hundred
+  bytes off 41024dd6's own recorded sizes — legitimate: Part 1's fixes
+  change codegen shape for `.split()`/`JSON.parse()`/`.map()` on
+  TypedArrays/`fromBase64`/`fromHex`/multi-return-as-value, all of which
+  watr's own self-hosted WAT parser and/or jzify's own AST-walking code
+  plausibly touches).
+- Self-build ×2 SHA-converges: region-live SHA-256
+  `b807a0350c48ad2afeb55b58b889e5c4ab16aaa44e51f1e1a9e63f21e27749ce`
+  identical across 2 independent builds. Dormant SHA-256
+  reconfirmed internally consistent (16,677.7 kB both builds).
+- Dormant byte-identity — same reframe 41024dd6 already established:
+  these are stdlib allocator fixes, unconditional on
+  `REGION_HOOKS_ACTIVE`, so dormant OUTPUT legitimately changes
+  (`.split()`/`JSON.parse()`/etc. codegen shape differs pre/post-fix in
+  BOTH configurations). What's verified instead: dormant kernel-oracle
+  13/13, dormant kernel-parity 3/3, dormant native suite at the
+  established baseline — all green, zero regressions.
+
+**Disposition.** Landed: `module/regex.js`, `module/json.js`,
+`module/string.js`, `module/typedarray.js`, `src/compile/emit.js` (5
+files). `scripts/self.js`'s `REGION_HOOKS_ACTIVE` restored to `false`
+(worktree-only flips, reverted). All instrumentation/harness scripts this
+session produced (`.work/build-region-wat.mjs`, `.work/run-repro.mjs`,
+`.work/run-graphs.mjs`, `.work/jzify-entry.mjs`, ad hoc `.work/*-check.mjs`
+verification scripts, the 276.7 MB named kernel WAT, `dist/*`) deleted at
+session end. `git status`/`git diff --stat` show only the 5 named files
+plus this ledger entry.
+
+## §Region arena — 4 REMAINING ORACLE ROWS RE-TRIAGED: BOTH failing
+mechanisms crash the SELF-HOSTED KERNEL DURING COMPILATION (not the
+compiled program's own execution) — new evidence the PENDING-FIX carrier-
+collapse row REGRESSED from a stable wrong-VALUE to an actual TRAP under
+region-arena; root cause NOT found for either, walls re-banked with
+narrower, more precise evidence than either predecessor left (2026-08-13)
+
+**Task.** Part 2: attack kernel-oracle's 4 standing region-live failures
+(unchanged by Part 1, confirmed above) one at a time, WAT/binary-level
+instrumentation only, per the campaign's established method. First locate
+each row's own prior diagnosis in the ledger.
+
+**The 4 failures are 2 distinct mechanisms, not 4** (consistent with
+every predecessor session's own count): 3 assertions (O0/O2/O3) are the
+SAME single AGREE-tier row, `array-growth-class: sibling push()+
+indexed-append tables (envMeta shape)`
+(test/kernel-oracle.js:327-341); the 4th is the separate
+`PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier collapse` row
+(test/kernel-oracle.js:655-684, `captured-then-read`).
+
+**Prior diagnosis, row 1 (envMeta shape) — TWO CONFLICTING claims found
+in the ledger, resolved by direct re-instrumentation, not by picking
+one.** 41024dd6's own entry attributes this row to test/kernel-oracle.js's
+own in-file comment (line ~303: `useRuntimeKeyDispatch`'s hand-rolled
+2-fork skipping `__arr_grow`/the length-header bump for unproven ARRAY
+receivers on 2+-level property chains) — "unrelated to allocator header
+sizing... this session's fix class does not apply to it." But that
+in-file comment (test/kernel-oracle.js:295-317) is actually about the
+IMMEDIATELY PRECEDING row (`array-growth-class: arr[arr.length]=x through
+a 2-level property chain`, line 318-320) — a DIFFERENT AGREE-tier entry,
+already fixed (its own comment: "native and kernel agree POST-fix"), one
+array-literal position earlier in the same source array. The comment
+directly above row 327 itself (line 321-326) says something narrower and
+more tentative: row 327 is merely "the CLOSEST ANALOG to the real
+bba45c0d shape," speculating it's "the useRuntimeKeyDispatch fork on BOTH
+the receiver and the key" — a hypothesis, not a confirmed root cause. The
+63a5551e session (before 41024dd6) actually TESTED this hypothesis via
+black-box bisection and REFUTED it directly: removing ALL array growth
+from the minimal failing repro (two bare `.push()` calls matching
+`ctx.closure.mint`'s real shape, then a zero-array-involvement closure
+capturing a bare OBJECT or STRING) still crashed identically — "No
+`__arr_grow` call exists anywhere in the minimal failing case." 41024dd6's
+"unrelated to allocator header sizing, does not apply" conclusion is
+correct in outcome but cites the WRONG comment as its source — the actual
+prior diagnosis (63a5551e, still unrefuted) is: **a called arrow-function
+closure capturing a free variable not reducible to a compile-time
+constant, crash site upstream of `ctx.closure.make`, unnamed "FOURTH,
+still-unfound front-boundary mechanism"** (a different FOURTH than the
+one this campaign's 41024dd6 session closed — the numbering collided
+across sessions; 63a5551e's own FOURTH is NOT 41024dd6's FOURTH).
+
+**Prior diagnosis, row 2 (PENDING-FIX carrier collapse) — established as
+region-agnostic, NOW CONTRADICTED by this session's own reproduction.**
+The 63a5551e session's own final characterization table (research.md,
+"Oracle characterization table (final, this session)") records this row
+as `pass (tripwire, asserts the still-wrong value) | pass (same) |
+pre-existing-unrelated ... unaffected by region-liveness either way`.
+That was true AT THAT TIME. Re-run this session against the region-live
+build (Part 1's fixes applied, ×3 reps): **it now fails with `memory
+access out of bounds`, not a wrong-value tripwire mismatch** — the exact
+same trap signature as row 1. This is a genuine finding, not a
+Part-1-fix artifact: dormant kernel-oracle stays 13/13 (the row still
+passes its tripwire dormant), and Part 1's own fixes don't touch
+`emit.js`'s `emitDecl`/carrier-boxing machinery at all (the 5 touched
+files are regex/json/string/typedarray allocator sites + the multi-return
+trampoline). The likely explanation, NOT instrumented further this
+session: intervening carrier-collapse-adjacent commits on this branch
+(`90e10c3d` "fix Number.isNaN carrier miscompile", `756ae10f` "formatter
+carrier-dispatch: box ambiguous BOOL∪NUMBER merges…", both landed AFTER
+63a5551e's own session, per this worktree's own `git log`) changed this
+row's compiled SHAPE enough to newly trip a region-arena mechanism that
+didn't reach it before — consistent with 41024dd6's own account of this
+whole defect class as heisenbug-sensitive to exact allocation offsets.
+
+**This session's own re-instrumentation (both rows, same method).** Built
+a NAMED region-live kernel as WAT text (`compile(profile.graph.code,
+{modules, memory, optimize} = resolveSelfhostBuild(), wat:true,
+names:true)`, `REGION_HOOKS_ACTIVE` hand-flipped `true`, worktree-only,
+reverted at session end — 276.7 MB, `regionArenaLive:true`, matching
+every predecessor session's own build shape). Reassembled via
+`watr/compile` + `interop.js`'s `instantiate`, then called the kernel's
+own `default` export (`compileSelf(code, strict, optJSON, modulesJSON,
+hostJSON)`, exactly `test/kernel-target.js`'s own `compileViaKernel`
+recipe) directly on both rows' exact source strings.
+
+**Result: BOTH rows crash INSIDE THE KERNEL'S OWN COMPILATION CALL — the
+exception is thrown by `self.exports.default(...)` itself, before any
+compiled bytes exist to instantiate or run.** This is a materially more
+precise finding than either predecessor session recorded explicitly (both
+inferred "upstream of ctx.closure.make" from breadcrumb non-firing, but
+neither stated outright "the KERNEL's own compilation crashes, this isn't
+a bug in the OUTPUT program at all" as the very first, cheapest
+observation). Stack traces (Chrome/V8, `RuntimeError: memory access out
+of bounds`):
+- Row 1 (envMeta shape): innermost frame `wasm-function[3758]` — the
+  SAME raw function index the 63a5551e session's own decompile named
+  "`closure4232`, a self-hosted compiler-internal closure" for this exact
+  row, strong evidence Part 1's fixes did not shift this function's index
+  (plausible: none of Part 1's 5 touched files are anywhere near the
+  self-hosted compiler's own closure-plan/emit machinery this trap sits
+  in).
+- Row 2 (captured-then-read): innermost frame `wasm-function[819]` — a
+  DIFFERENT index than row 1's, but the same failure MODE (both throw
+  from inside `self.exports.default`, both `memory access out of
+  bounds`, neither reaches a compiled-bytes result).
+
+**Text-position-based function-index symbolication attempted, ABANDONED
+as unreliable.** Tried mapping `wasm-function[N]` back to a source name by
+counting `(func $name` occurrences in file order in the named WAT text.
+Cross-checked against known-shape names near each index
+(`m5_parse$unary` at 819, `tramp_m139_loops$splitCharScanLoops` at 3758)
+— NEITHER resembles the closure/envMeta/carrier-collapse machinery either
+row's own source would plausibly reach, meaning declaration-order-in-text
+does NOT track the compiled binary's actual function-index space (watr's
+own compile pass reorders/prunes) — this bisection method needs the SAME
+decompile-the-exact-trap-frame-via-`wasm-objdump`-file-offset approach
+the 63a5551e/6743aea0/0e73fa6a sessions each already used successfully,
+not a cheaper regex substitute. NOT completed this session — named
+explicitly as the correct next step, not skipped silently.
+
+**Differential already established (no new work needed): CONFIRMED
+region-live-specific for both rows.** Dormant kernel-oracle (13/13, ×1
+this session, matching the fixed-build gate above) proves both rows
+compile and run cleanly dormant — the trap requires
+`REGION_HOOKS_ACTIVE`.
+
+**Disposition — NO FIX LANDED for either row, walls re-banked with
+narrower evidence, per protocol.** Every edit this session touching these
+2 rows (`REGION_HOOKS_ACTIVE` toggle, the named-kernel build, the repro
+harness) was worktree-only and reverted/deleted; `git diff --stat` in the
+worktree shows nothing outstanding beyond the landed Part 1 files plus
+this ledger entry. kernel-oracle region-live stays at **9/13** (unchanged
+— this session characterized both rows more precisely, corrected one
+mis-cited prior diagnosis, and surfaced one genuine NEW regression
+(PENDING-FIX row: wrong-value → trap), but did not move the count).
+
+**Recommendation for next session (both rows, one method).** Both rows'
+traps are INSIDE the self-hosted kernel's own compilation of a small
+program containing a closure over a non-provably-constant free variable —
+continue 63a5551e's own last-named lead (never completed): breadcrumb
+`ctx.scope`/`ctx.types`/`ctx.func`'s Set/Map-shaped fields' CONTENTS
+immediately after `front()`'s own `region_exit` returns vs. immediately
+before the closure literal is emitted, for the cheapest failing repro
+(`let x=n; g=()=>x` traps in <100ms per 63a5551e's own timing) — THEN,
+once a candidate write/read site is named, decompile the ACTUAL trap
+frame via `wasm2wat --enable-all` + `wasm-objdump -d` cross-referenced
+against the exact faulting file offset (NOT text-position counting — see
+the abandoned attempt above) to get a reliable source-level name for
+`wasm-function[3758]`/`wasm-function[819]`. Both rows sharing the same
+"crashes inside kernel compilation, closure-over-non-constant-capture"
+shape is suggestive they're the SAME mechanism, but this is NOT
+confirmed — treat as two data points for one hypothesis, not one closed
+finding, until an actual shared write/read site is named.
+
+**Gates.** No source changed this session beyond Part 1's own 5 files
+(already gated above) — this entry is characterization only, re-confirmed
+via a fresh region-live build + fresh dormant build, both already
+recorded in the Part 1 entry's own gate list. kernel-oracle: 9/13
+region-live (×3 reps, this entry), 13/13 dormant (×1, this entry) — no
+regression from Part 1, no new fix.
+
+**SHAs.** jz worktree: `41024dd6` base, this session's Part 1 fix
+committed on top (see commit log; Part 2 landed no source, only this
+ledger entry). watr: `895ca5b`, reconfirmed unchanged. Region-live
+`dist/jz.wasm` (this session, Part 2's own rebuild): SHA-256
+`b807a0350c48ad2afeb55b58b889e5c4ab16aaa44e51f1e1a9e63f21e27749ce`
+(reproduced identically across 2 independent builds — recorded in the
+Part 1 entry). Dormant `dist/jz.wasm` (final worktree state): 16,677.7
+kB, `REGION_HOOKS_ACTIVE` confirmed `false` in the committed
+`scripts/self.js`.
+
+## §Region arena — MILESTONE CHECK: NOT REGION FRONT COMPLETE, 9/13
+region-live, Slice 3 NOT started (per standing directive) (2026-08-13)
+
+**Per the campaign brief's own gate:** kernel-oracle region-live did not
+reach 13/13 this session (stays 9/13, Part 1's sweep fixed a real and
+substantial defect class — 8 sites across 5 files — but neither of the
+2 standing mechanisms is in that class, confirmed by direct trap evidence
+in the entry above, not assumption). **"REGION FRONT COMPLETE candidate"
+is NOT declared.**
+
+**What remains before that declaration is possible:** close the 2
+standing mechanisms above (both now characterized as self-hosted-
+kernel-internal-compilation traps, closure-over-non-constant-capture-
+shaped, sharing a stack-trace failure mode but not yet proven to share a
+root cause) — see the recommendation immediately above for the concrete
+next instrumentation step.
+
+**What remains for the MEMORY goal (Slice 3) once the front IS sound:**
+per the 63a5551e session's own citation (and the "Slice 3 attempt" entry
+it references), the emit/encode boundary root sketch is
+`[module, ctx.func, ctx.transform, ctx.scope]` (8bed8c3f ledger entry).
+**Slice 3 was NOT started this session** — per the standing discipline
+this campaign has held since 63a5551e ("stacking a new region boundary on
+a front boundary that corrupts real programs would compound an unsound
+foundation, not extend one"), unchanged by this session because the front
+itself is still not 13/13.
 `3a5cdf13...909e66e` recorded above for reference, files deleted).
 
 ## §CompileSession re-audit remediation — P1/P2/P3 landed, P4 (larger) banked with a design sketch (2026-08-13)

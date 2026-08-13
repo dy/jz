@@ -204,17 +204,23 @@ function genSimdMap(name, elemType, pattern) {
   const scalarStoreExpr = `${scalarLoadSet}\n      (${store} ${dstByteOff} ${scalarOp})`
 
   return `(func $${name} (param $src i64) (result f64)
-    (local $len i32) (local $srcOff i32) (local $dstOff i32) (local $dst i32)
+    (local $len i32) (local $srcOff i32) (local $dstOff i32)
     (local $i i32) (local $simdLen i32) (local $byteOff i32)
     (local $v v128)
     ${scalarLocal}
     (local.set $len (call $__len (local.get $src)))
     (local.set $srcOff (call $__typed_data (local.get $src)))
-    ;; Alloc result typed array: header(8) + data. Header stores byteLen = len << ${shift}.
-    (local.set $dst (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $len) (i32.const ${shift})))))
-    (i32.store (local.get $dst) (i32.shl (local.get $len) (i32.const ${shift})))
-    (i32.store (i32.add (local.get $dst) (i32.const 4)) (i32.shl (local.get $len) (i32.const ${shift})))
-    (local.set $dstOff (i32.add (local.get $dst) (i32.const 8)))
+    ;; Alloc result typed array via the canonical header allocator (NOT a
+    ;; hand-rolled (i32.const 8)+byteLen alloc) — TYPED is in
+    ;; __dyn_get_t_h's propsPtr-sidecar set (module/collection.js:
+    ;; hasPropsSidecarWat), so a genuine .map() result needs the same
+    ;; 16-byte [propsPtr@-16,len@-8,cap@-4] header every other ARRAY/
+    ;; OBJECT/TYPED/SET/MAP allocation gets, or that word aliases whatever
+    ;; memory preceded this allocation (FOURTH mechanism class,
+    ;; .work/research.md §Region arena). __typed_slice_rt (below) already
+    ;; establishes the canonical shape for TYPED results: stride=1 (raw
+    ;; bytes), len=cap=byteLen — mirrored here exactly.
+    (local.set $dstOff (call $__alloc_hdr_n (i32.shl (local.get $len) (i32.const ${shift})) (i32.shl (local.get $len) (i32.const ${shift})) (i32.const 1)))
     ;; SIMD loop: process ${vw} elements at a time
     (local.set $simdLen (i32.and (local.get $len) (i32.const ${~(vw - 1)})))
     (local.set $i (i32.const 0))
@@ -2190,7 +2196,11 @@ export default (ctx) => {
         const wat = genSimdMap(funcName, elemType, pattern)
         if (wat) {
           ctx.core.stdlib[funcName] = wat
-          inc(funcName, '__typed_data', '__len')
+          // __alloc_hdr_n: body-calls it directly (canonical 16-byte header
+          // alloc, replacing a prior hand-rolled 8-byte one — self-host
+          // auto-scan can't be relied on for a dynamically-named factory
+          // function; see test/selfhost-includes.js).
+          inc(funcName, '__typed_data', '__len', '__alloc_hdr_n')
           return typed(['call', `$${funcName}`, asI64(emit(arr))], 'f64')
         }
       }
