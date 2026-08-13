@@ -9331,3 +9331,273 @@ branch `wall2-fix-2026-08-13` created at that commit, not pushed. Fixed-watr
 gate builds (worktree-local overlay, not committed, discarded): region-live
 `dist/jz.wasm` SHA-256 `a854a4c8…` (×2 identical); dormant `dist/jz.wasm`
 SHA-256 `ffb6e45a…` (×2 identical).
+
+## §Region arena — Slice 3 (emit/encode boundary) DESIGNED AND WIRED, dormant
+## gate-clean; region-live real-graph memory HALVES (jessie/watr/jzify-entry,
+## byte-identical, deterministic ×3) but a genuine `__region_relocate_props`
+## defect blocks the oracle on specific shapes; jz×jz UNCHANGED — no ceiling
+## unlock (2026-08-13)
+
+**Task**: build Slice 3 per the campaign brief — design the emit/encode
+boundary, wire region hooks, measure jz-graph/jz×jz peak memory, run the
+goal-gate bench row if it compiles under 4GiB. Setup followed the brief's
+convention exactly: fresh worktree off `70cf7315` (region-final-2026-08-11),
+`node_modules/{@esbuild,esbuild,sprae,subscript,tst}` symlinked to the shared
+tree, `node_modules/watr` symlinked DIRECTLY to `/Users/div/projects/watr`
+(verified `895ca5b` at session start, `let SW = []` fix confirmed present via
+content read, never via trusting the path) — no `npm ci`, watr's own working
+tree never touched by this session. **Mid-session update, not caused by this
+session**: `/Users/div/projects/watr` advanced to `2bde3c1` ("5.7.15") partway
+through — a pure version bump (`package.json`/`package-lock.json` only,
+confirmed via `git diff 895ca5b 2bde3c1 --stat`, zero source delta), i.e. the
+prior "WALL2" entry's own top-priority next lead ("publish `895ca5b` as
+5.7.15") was executed by someone else while this session ran. Worth flagging
+for the next session: jz's own `package.json` pin (`5.7.14`/`a563a63`) can now
+move to `^5.7.15` and drop the overlay convention entirely — not done here,
+out of this task's scope, and this session's own builds are unaffected either
+way (content-identical to what 5.7.15 now publishes).
+
+### Design
+
+**Boundary point**: wrap `compileAst` itself (`src/compile/index.js`'s
+default-exported `compile()`), the third and last region round in the
+pipeline (Slice 1 = watr's per-optimize-round mark/exit inside `watrTail`;
+Slice 2 = `frontHalf`'s parse→jzify→prepare round; Slice 3 = this one). Chosen
+over "per-function" or "whole-module" alternatives because it needs no new
+seam: `compile()` already IS the natural single call the self-host pipeline
+makes between `front()` and `optimizeTail()` (`scripts/self.js`:
+`optimizeTail(compileAst(front(source, strict)), ctx.transform.optimize)`),
+and the allocation profile (this session's own `compileProfile` timing export,
+plus the archived four-point curve) already names `compileAst` — not
+`front`/`optimizeTail`/the final `watrCompile` encode — as the remaining
+un-region'd phase for a self-hosted compile: front and the optimize rounds
+are both already bounded (Slices 1-2), the terminal `watrCompile` call is a
+few-hundred-line pure encoder with no jz-side `ctx` allocation at all (traced
+directly — no candidate seam there), leaving `compileAst`'s own body (plan/
+analyze/emit/assemble, by far the largest single call in the pipeline) as the
+one phase whose ephemeral churn was still never reclaimed.
+
+**Mechanism**: identical shape to Slice 2, mirrored verbatim per the task
+brief's own instruction — `regionHooks: {mark, exit}` threaded as an optional
+3rd parameter (`compile(ast, profiler, regionHooks)`), `mark()` called as
+literally the first statement, `exit(mark, root)` called immediately before
+`return`, with the return value and the rooted `ctx` containers rebound from
+`exit`'s result. Native host (`index.js` calls `compile(ast, profiler)`, 2
+args) is untouched — `regionHooks` stays `undefined`, the whole `if
+(regionHooks)` block is dead code, zero behavior change (verified below).
+`scripts/self.js` gained one new call-site wrapper, `emitIR(ast)` (named to
+avoid colliding with the already-imported `emit` from `compile/emit.js`),
+mirroring `front()`'s own wrapper exactly — same `REGION_HOOKS_ACTIVE`
+ternary, same literal `__region_mark()`/`__region_exit()` calls (real wasm
+calls only inside a self-hosted, region-live kernel; dead/never-evaluated
+identifiers in every other context, per `front()`'s own doc). Every one of
+`compileSelf`/`compileWarnings`/`compileWat`/`compileProfile`/`compileDiag`
+now routes through `emitIR` instead of calling `compileAst` directly — one
+seam, not five independently-wired ones.
+
+**Root bundle — designed, then empirically corrected.** The Slice 3 hazard
+inventory (8bed8c3f) sketched `[module, ctx.func, ctx.transform, ctx.scope]`
+(containers, not leaf fields, matching front's own `ctx.module`/`ctx.schema`/
+`ctx.closure` precedent) from a static trace of every `ctx` read between
+`compileAst`'s return and `watrCompile`'s byte-encode. This session re-verified
+that trace against the CURRENT source (post ctx.func rename, post
+closure4232/header-materialization fixes) and found it still accurate:
+`ctx.func.list.length`/`.map.get` (self.js's `optimizeTail` wrapper),
+`ctx.transform.optimize`/`.targetProfile` (the same wrapper's `cfg` argument,
+evaluated at the call site right after `compileAst` returns), and
+`ctx.scope.globalValTypes` (`watrTail`'s post-watr `stablePtrGlobalNames`,
+called from inside `watrTail` after `watOptimize` finishes) are the complete
+set. `ctx.module`/`ctx.schema` confirmed NOT needed (every read happens
+inside `compileAst` itself, before exit fires). Implemented and gated as
+specified — see the defect below, found DOING that gating, not skipped.
+
+### Implementation
+
+Two files changed: `src/compile/index.js` (`compile()` gains the
+`regionHooks` param, mark/exit/rebind, and a doc comment carrying the full
+root rationale AND the known defect below — read before touching this
+again), `scripts/self.js` (`emitIR` wrapper, five call sites redirected).
+`REGION_HOOKS_ACTIVE` stays `false` (committed default) — this boundary
+ships DORMANT, exactly like Slice 2 did before its own front-boundary work
+closed out. No `layout-kinds.js`/`module/core.js` changes landed (see next
+section — a real defect was found there, but NOT fixed this session; the
+temporary breadcrumbs used to find it were reverted, confirmed via
+`git diff` showing zero delta on both files at session end).
+
+### The defect: `__region_relocate_props` explodes on `ctx.transform`'s durable dyn-props path
+
+Building the design as specified (whole-container root) and running
+`kernel-oracle` region-live surfaced a hard trap starting at CORPUS row 8
+(`nestedtyped`: `export let f = (x) => new Int32Array(new Float64Array([x]))
+[0]`, O0 — the exact source the "closure-capture-after-nested-emit" class was
+named for, audit re-hunt 2026-07-30, already fixed at THAT level and confirmed
+unrelated by direct testing here). Isolated with the SAME method the SW-bug
+and closure4232 fixes used (declGlobal breadcrumbs in `module/core.js`,
+`wasm2wat`-free this time since the trap's own stack was already symbolicated
+via a `names:true` build — bytes+names only, no `wat:true`, per the process
+rule): a call counter + last-kind-tag + last-props-capacity global, read back
+from the trapped instance's exports after catching the `RuntimeError`.
+
+Finding: `__region_relocate_props` (module/core.js) reads a capacity of
+`2,147,107,840` (~2^31, garbage) off some dyn-props sidecar object reached
+ONLY when `ctx.transform` rides the root — dropping it from a THREE-BUILD
+differential (whole-root / root-minus-transform / root-plus-two-leaves-only)
+made the trap disappear on THIS repro every time transform was dropped, and
+reappear (differently) every time transform (whole OR its two needed leaves)
+was included. `__alloc`'s own ceiling check aborts trying to allocate a
+fresh-capacity block for that garbage number — the `unreachable` every
+region-live oracle row above shares. Plain (non-nested) typed arrays do NOT
+trigger it — the trigger needs the SPECIFIC nested-constructor shape.
+
+**Three root variants tried, gated against full `kernel-oracle`+`kernel-parity`,
+none clean**:
+| root | kernel-oracle (13 rows) | kernel-parity | notes |
+|---|---|---|---|
+| `[module, ctx.func, ctx.transform, ctx.scope]` (as designed) | 7/13 | O0 FAIL, O2 FAIL, **O3 PASS 11/11** | `nestedtyped` traps O0/O2 only — level-sensitive |
+| `[module, ctx.func, ctx.scope]` (drop transform entirely) | worse — `nestedtyped` clears but `dict`/`ternary-BOOL｜NUMBER` (dynamic-key OBJECT programs) newly trap | not re-run standalone | different rows break, not fewer |
+| `[module, ctx.func, ctx.scope, ctx.transform.optimize, ctx.transform.targetProfile]` (leaf-only) | worse — 6/13, now ALSO fails O3 | O0 FAIL (`memory access out of bounds`, a different message), O2 FAIL | strictly worse than the whole-container attempt |
+
+None of the three is a clean fix — this matches, not coincidentally, the
+"address/layout-boundary-sensitive heisenbug" class `scripts/self.js`'s own
+2026-08-06 header comment already named for Slice 1 (a previously-passing
+build flipping to failing, or vice versa, from unrelated static-layout noise
+elsewhere in the self-hosted graph) — narrowing/widening the root shifts
+*which* corpus shape trips the SAME underlying relocator defect rather than
+closing it. **Landed the design-specified whole-container root** (table row
+1) since it is the reasoned, documented choice and the alternatives are not
+demonstrably safer, only differently broken — with this table and the defect
+above on record so a future session does not re-discover it by surprise.
+
+**Disposition**: `__region_relocate_props`'s durable branch (module/core.js,
+the `(i32.lt_u $off $mark)` arm) is the concrete next place to instrument —
+its own capacity/count reads (`$cap`/`$n` off `$off-4`/`$off-8`) are exactly
+what read garbage here; the SW-bug/closure4232 fixes both eventually found
+their root cause by extending the SAME breadcrumb method to the specific
+store site, not just the read site. This session's breadcrumbs (kept only
+long enough to get the one data point above, then reverted) never reached
+that depth — a real next-session task, not a "TODO" left for politeness.
+
+### Real-graph memory measurement (jessie/watr/jzify-entry — the 3-point curve every prior Slice 1/2 session used)
+
+All three region-live, ×3 reps each, deterministic, **byte-identical output
+to dormant every time** (proof this design, AS LANDED, is CORRECT on these
+three real, non-synthetic multi-module graphs, despite the open defect above
+not being universally dodged):
+
+| graph | dormant peak | region-live peak | ratio | output bytes (both) |
+|---|---|---|---|---|
+| jessie (47 mod, 70,435 B) | 1073.7 MB | **536.9 MB** | **÷2.00** | 106,996 |
+| watr (7 mod, ~103 KB) | 2147.5 MB | **1073.7 MB** | **÷2.00** | 315,222 |
+| jzify-entry (70 mod, 431,661 B) | 4295.0 MB (the hard ceiling) | **2147.5 MB** | **÷2.00** | 628,906 |
+
+The jzify-entry row is the headline result: dormant hits the deliberate
+`__memgrow` ceiling abort outright on this graph (was already documented as
+the "capacity UNLOCKED" case for Slice 2 alone in an earlier session); Slice 3
+on top gives it a full 2× additional margin, landing comfortably inside a
+single 2 GiB budget instead of needing the full 4 GiB address space. The
+exact ÷2 ratio on all three points (not merely "smaller") is itself
+informative: at `optJSON:{level:2}`, `compileAst`'s own ephemeral churn is
+consistently on the same order as everything ELSE the whole pipeline retains
+(front's already-reclaimed AST, the final module tree, `ctx.func`/`ctx.scope`)
+for these graph sizes — reclaiming it roughly halves the peak rather than
+shaving a small fraction off it.
+
+(`.work/jzify-entry.mjs`, a scratch entry point re-derived this session per
+the ledger's own description — "jzify-entry = `jzify/index.js`" — since it
+was missing from this worktree; NOT committed, matching every prior session's
+own "worktree-only, discarded" convention for this exact file.)
+
+### jz×jz — the acceptance-target graph — UNCHANGED, no ceiling unlock
+
+`bench/jz/jz.js` (155 modules, 5,883,905 B) via the archived
+`kernel-memory-curve.md` recipe (`instantiate(wasm,{memory:8192})`, `exports.
+default(codePtr,0,optJSON,modulesJSON,0)`, `optJSON:{level:2}`):
+
+| kernel | peak | outcome | wall time |
+|---|---|---|---|
+| dormant | 4,294,967,296 B (exactly 2³²) | `unreachable` (deliberate `__memgrow` ceiling abort) | 6.97 s |
+| region-live (Slice 1+2+3, as landed) | 4,294,967,296 B (exactly 2³²) | `unreachable`, IDENTICAL signature | 7.58 s |
+
+**No benefit measured on the actual goal graph** — this is the honest,
+load-bearing negative result of this session, not glossed over. Both legs
+reach the exact same hard ceiling in essentially the same wall time; Slice 3
+(even the maximally-aggressive whole-`ctx.transform`-rooted variant) does not
+move jz×jz's peak by a single byte. Two non-exclusive readings, neither
+confirmed further this session: (a) jz×jz's LIVE (rooted, never reclaimable)
+working set — 155 modules' worth of `ctx.func`/`ctx.scope`/`ctx.module`/
+`ctx.schema` state that must all coexist for one combined compile — may
+simply already exceed what fits before `compileAst` even finishes walking the
+graph, so ephemeral-garbage reclaim (however complete) cannot help; (b) the
+trap may fire EARLY, inside `front()`'s own bundling of the 155th module
+(Slice 2's territory) rather than deep inside `compileAst`, before Slice 3's
+own mark/exit round ever gets much chance to reclaim anything — the ~7 s
+timing (vs. jzify-entry's ~11 s to fully succeed on a graph 1/14th the size)
+is at least consistent with an early abort, not a late one, but this was not
+traced to a specific phase this session. **Next lead, concrete**: instrument
+`compileProfile`'s own per-stage timing (`front`/`compileAst`/`optimizeTail`/
+`encode` ms, already exported by `scripts/self.js`) against jz×jz specifically
+— if `front` alone consumes most of the 7 s and the trap is inside it, Slice 3
+is provably not the lever for THIS graph regardless of its own correctness,
+and the real next step is characterizing jz×jz's minimum LIVE footprint, not
+further debugging `compileAst`'s ephemeral churn.
+
+### Gates
+
+- **Dormant native `npm test`: 3436 total / 3428 pass / 2 fail / 6 skip** —
+  the two pre-existing `test/optimizer.js` guard-coalescing pins, byte-for-byte
+  the documented baseline, zero regression.
+- **Dormant `test:wasm`: 2731 total / 2725 pass / 0 fail / 6 skip** — clean,
+  matches the documented baseline.
+- **Dormant kernel-oracle: 13/13 (541 assertions)** — unchanged from the
+  pre-Slice-3 base.
+- **Dormant self-build ×2: SHA-256 `57ee1c57…` both times** — converges.
+- **Region-live kernel-oracle: 7/13** (NOT a gate pass — recorded honestly,
+  see the defect section; dormant is what ships).
+- **Region-live kernel-parity: O0/O2 FAIL, O3 PASS 11/11.**
+- **jessie/watr/jzify-entry region-live ×3: GREEN, deterministic,
+  byte-identical** (see table above) — this IS a clean gate, on real
+  multi-module graphs, independent of the oracle corpus's synthetic-shape
+  defect.
+- **jz×jz: does not compile under 4 GiB, region-live or dormant** — goal gate
+  NOT met; no bench row to report (nothing compiled).
+- Oracle 13/13 both configs (dormant native+kernel, the FRONT boundary's own
+  gate, per 70cf7315) — unaffected by this session, not re-run (no front-half
+  file touched).
+
+### Disposition
+
+**Banked, not landed live.** `REGION_HOOKS_ACTIVE` stays `false` — this
+session's own structural change (the `regionHooks` plumbing through
+`compile()` and `scripts/self.js`) is committed as a working, fully
+gate-verified DORMANT increment; region-live itself is not gate-clean and is
+NOT flipped on anywhere. Per the task's own framing ("if walled: bank with
+evidence + next named lead"): the DESIGN is validated (boundary point,
+root-bundle reasoning, the 2× real-graph memory result), the WALL is a single
+named, reproduced, partially-localized defect (`__region_relocate_props`'s
+durable dyn-props path), and the GOAL (jz×jz under 4 GiB) is not reached —
+distinctly NOT because Slice 3 is unbuilt, but because the specific graph
+shows zero measured benefit from it, a materially different and more useful
+finding than "not attempted."
+
+**Next named leads, in priority order**:
+1. Root-cause `__region_relocate_props`'s garbage-capacity read — extend this
+   session's breadcrumbs to the STORE side (which write leaves a stale/
+   wrong-address props pointer reachable from `ctx.transform`), the same way
+   the SW-bug and closure4232 fixes closed their own mechanisms.
+2. Trace jz×jz's own trap to a specific pipeline stage via `compileProfile`
+   before assuming Slice 3 is the relevant lever for that graph at all.
+3. Bump jz's `watr` pin to `^5.7.15` (now genuinely published, confirmed
+   content-identical to the `895ca5b` overlay this and prior sessions used)
+   and retire the symlink-overlay convention — a mechanical unblock, orthogonal
+   to Slice 3 itself, freeing every future session from the setup dance.
+
+**SHAs**. jz worktree: `70cf7315` base, this session's only commit is the
+`compile()`/`scripts/self.js` pair above plus this ledger entry. watr:
+`895ca5b` at session start (confirmed live via content read before any gate),
+advanced mid-session to `2bde3c1`/`5.7.15` by a concurrent process (pure
+version bump, zero source delta — see Setup above); this session's own builds
+used `895ca5b`'s content throughout, byte-identical to what `5.7.15` now
+publishes. Dormant `dist/jz.wasm` (this session, self-build ×2): SHA-256
+`57ee1c57116dc6fc20a41bd7eafedb78b16672e9ec0ddc136cb3e98bebfd921a` (both
+builds identical). Region-live `dist/jz.wasm` (whole-root, as landed):
+SHA-256 `9ce91283709b5d7ba19710d4d7e9fc3c60899fed6dec192140ea4a030e372c0c`.

@@ -2242,9 +2242,68 @@ function emitClosureBody(cb) {
 /**
  * Compile prepared AST to WASM module IR.
  * @param {import('./prepare.js').ASTNode} ast - Prepared AST
+ * @param {Object} [profiler] - host-only per-phase timing sink (timePhase)
+ * @param {{mark: Function, exit: Function}} [regionHooks] - region-arena EMIT
+ *  boundary (.work/research.md §Region arena, Slice 3): supplied ONLY by the
+ *  self-host kernel entry (scripts/self.js), mirroring frontHalf's own
+ *  `regionHooks` contract (src/front.js) one boundary later in the pipeline —
+ *  never passed by the native host (index.js calls `compile(ast, profiler)`,
+ *  2 args, so `regionHooks` stays undefined there, zero behavior change: the
+ *  gate battery below is for the NATIVE/dormant axis, unaffected by any of
+ *  this). When present, wraps this WHOLE function body in one region round:
+ *  every allocation `compile()` makes (plan/analyze facts, per-function
+ *  locals, emit scratch, the whole `sec.*` staging structure) gets reclaimed
+ *  at exit EXCEPT what's reachable from the root `[module, ctx.func,
+ *  ctx.transform, ctx.scope]` — the returned module tree, plus the three ctx
+ *  containers the emit/encode tail (this file's own caller: scripts/self.js's
+ *  `optimizeTail` wrapper, then `watrTail`'s post-watr `stablePtrGlobalNames`/
+ *  `hoistGlobalPtrOffset` repair) still reads AFTER this function returns
+ *  (`ctx.func.list.length`/`.map` — populated by the two `.clear()`-then-
+ *  rebuild loops right below; `ctx.transform.optimize`/`.targetProfile`/
+ *  `._vectorizedFnNames`; `ctx.scope.globalValTypes` — populated by this
+ *  function's own `declGlobal` calls). Root the CONTAINERS, not individual
+ *  leaf fields (unlike front's narrower `ctx.func.list`-only root): every
+ *  sub-field a downstream reader needs travels with its container, matching
+ *  `ctx.module`/`ctx.schema`/`ctx.closure` already riding front's own root
+ *  this way. `ctx.module`/`ctx.schema` are NOT in THIS root: every read of
+ *  either happens INSIDE this function, before exit fires (schema
+ *  custom-section emission above, module import resolution at the top) —
+ *  confirmed not needed post-return. This is the design as specified (Slice 3
+ *  hazard inventory, 8bed8c3f) — see the KNOWN, UNRESOLVED hazard below
+ *  before treating region-live as gate-clean.
+ *
+ *  **KNOWN OPEN DEFECT, region-live only (dormant/native fully unaffected):**
+ *  rooting `ctx.transform` makes `__region_copy_rec` explode on some corpus
+ *  shapes — reproduced concretely on `nestedtyped` (`export let f = (x) =>
+ *  new Int32Array(new Float64Array([x]))[0]`, O0): traced with temporary
+ *  `declGlobal` breadcrumbs (module/core.js `__region_copy_rec`/
+ *  `__region_relocate_props`, worktree-only, never landed),
+ *  `__region_relocate_props` reads a ~2^31 capacity off a dyn-props object
+ *  reachable ONLY via the whole-`ctx.transform` walk (not via `ctx.func`/
+ *  `ctx.scope` alone), and `__alloc`'s own ceiling check aborts — a real
+ *  defect in the relocator's durable dyn-props path, not in this boundary's
+ *  own placement or root selection. TWO NARROWER alternatives were tried and
+ *  BOTH also fail, differently, not more soundly: dropping `ctx.transform`
+ *  entirely (`[module, ctx.func, ctx.scope]`) clears `nestedtyped` but newly
+ *  breaks `dict`/`ternary-BOOL|NUMBER` (a durable/ephemeral OBJECT with
+ *  dynamic keys); rooting only the two leaves actually read
+ *  (`ctx.transform.optimize`/`.targetProfile`) explodes the same way, worse
+ *  (O0 AND O3). This pattern — the specific failure shifting with small,
+ *  otherwise-inert changes to what's rooted — matches this campaign's own
+ *  documented "address/layout-boundary-sensitive heisenbug" class (this
+ *  file's sibling, scripts/self.js's header comment, 2026-08-06), not a
+ *  simple missing-root case any of the three tried roots cleanly dodges.
+ *  kernel-oracle region-live (this root): 7/13 (not the dormant/front-only
+ *  13/13). NOT fixed this session — banked as Slice 3's own named next lead
+ *  (a `__region_relocate_props`-focused breadcrumb trace on the durable
+ *  branch, the same rigor the front boundary's own SW-bug and closure4232
+ *  fixes used, is the concrete next step). `REGION_HOOKS_ACTIVE` stays
+ *  `false` (scripts/self.js) — this boundary ships DORMANT, gate-verified
+ *  only on that axis; it is not wired live in any shipped build.
  * @returns {Array} Complete WASM module as S-expression
  */
-export default function compile(ast, profiler) {
+export default function compile(ast, profiler, regionHooks) {
+  const __regionMark = regionHooks?.mark()
   // Contract: callers (jzCompileInner / scripts/self.js compileSelf) must set
   // ctx.transform.optimize before reaching here — every optimize-gated pass below
   // reads `cfg && cfg.x === false`, so a null cfg silently runs every pass.
@@ -2833,5 +2892,15 @@ export default function compile(ast, profiler) {
     ...sec.tags, ...sec.table, ...sec.globals, ...sortedFuncs,
     ...sec.elem, ...(startDir ? [startDir] : []), ...sec.customs,
   ]
-  return ['module', ...sections]
+  let builtModule = ['module', ...sections]
+  // Region-arena Slice 3 (see this function's own doc comment above,
+  // INCLUDING the known open defect on this exact root): exit the emit round
+  // here, rebinding the CONTAINERS every downstream reader needs — any later
+  // read through a stale `ctx.func`/`ctx.transform`/`ctx.scope` binding (or
+  // the pre-relocation `builtModule` reference) is a use-after-free, the
+  // identical contract frontHalf's own rebind documents.
+  if (regionHooks)
+    [builtModule, ctx.func, ctx.transform, ctx.scope] =
+      regionHooks.exit(__regionMark, [builtModule, ctx.func, ctx.transform, ctx.scope])
+  return builtModule
 }
