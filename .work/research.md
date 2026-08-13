@@ -7531,3 +7531,38 @@ none touching this session's files except `src/ctx.js` — a 4-line
 `ctx.types.typedLen`/`assertCtxInvariants` diff with zero overlap,
 confirmed via `git diff e836e631..HEAD -- src/ctx.js`). watr: `5.7.14`,
 reconfirmed byte-identical before and after.
+
+## §combined main-tip validation @ 6ffb28fc (2026-08-13)
+
+**Scope.** Main now stacks five independently-gated changes, each
+previously validated on its own older base: `4de7efa0` (named
+`_alloc`/`_clear` export templates, `module/core.js`), `bc835a61` +
+`4c5bb15d` (header-materialization class: `module/array.js`, `regex.js`,
+`string.js`, `json.js`, `typedarray.js`, `src/compile/emit.js`),
+`ea423728` (session remediation: `src/compile/function-plan.js`,
+`active-function.js`, `ctx.js`, `compile/index.js`), `f55ed89b`
+(ephemeral-HASH entry-region clearing, `module/collection.js`),
+`6ffb28fc` (stdlib registration fail-fast: `src/ctx.js`, `bridge.js`,
+`autoload.js`). Validated the COMBINED tip in an isolated worktree
+(`/private/tmp/.../main-validate-2`, detached at `6ffb28fc`, own
+`node_modules` via `npm install` — not shared with the main checkout;
+`node_modules/watr` aggregate SHA-256 in the main checkout confirmed
+identical before and after: `c7a80fc9…`). No fixes applied — validation
+only.
+
+| gate | result |
+|---|---|
+| native `npm test` | 3438 total (19720 assertions) / **3431 pass** / **1 fail** / 6 skip — the fail is exactly the expected banked `typed RMW: one guard covers the pure read and ignored OOB store` guard-count pin; totals drifted up from the older 3429-baseline (new tests landed with the stack) but the failure set is unchanged |
+| `test:wasm` (`JZ_TEST_TARGET=jz.wasm`) | 2733 total (12876 assertions) / **2727 pass** / **0 fail** / 6 skip — matches expectation exactly |
+| `node test/selfhost.js` | **21/21** (206 assertions) — matches expectation exactly |
+| `JZ_DEBUG_INVARIANTS=1 node test/session-reentrancy.js` | **15/15** (41 assertions) — matches expectation exactly, including the FunctionPlan deep-freeze tripwire firing correctly |
+| `JZ_DEBUG_INVARIANTS=1 node test/index.js` (invariants suite) | 3440 total (19855 assertions) / 3432 pass / **2 fail** / 6 skip — the banked `typed RMW` pin PLUS the documented pre-existing `analyzeValTypes` declRange/`cf1_8` idempotence flake (audit-#12 item 2's own probe) — matches the historical clean-baseline signature (same 2-fail pattern recorded repeatedly in this ledger since 2026-08-08) |
+| self-build ×2 | `npm run build` (`scripts/build-dist.mjs`) run twice; SHA-256 of `dist/jz.js`, `dist/jz.wasm`, `dist/interop.js`, `assets/sprae.js` **byte-identical** across both runs |
+| `npm run test:claims` size leg | size geomean jz/as = **1.020×** (27/49 cases smaller) — within the 1.019–1.020× baseline band, gate passes; the 8 other `test:claims` failures are all staleness (reference/memcheck evidence predates HEAD by 97 commits) and strict-leadership/no-red-cases perf-claim sub-assertions, reboot-gated and ignored per task scope |
+| `npm run test:262` | Pass **3000** / Fail **0** / Xfail 54 — matches expectation exactly |
+| `npm run test:262:builtins` | Pass **852** / Fail **0** / Xfail 87 — matches expectation exactly |
+
+**Verdict: combined tip clean.** Every gate matches its documented
+expectation; no failure outside the pre-existing banked set surfaced.
+Since nothing regressed, no bisection across the five stacked commits was
+needed.
