@@ -5942,3 +5942,193 @@ unchanged, reconfirmed pristine 5.7.14 both before and after this session).
 No `dist/jz.wasm` retained; every scratch artifact this session produced
 (kernel WAT/WASM builds, instrumentation scripts, native smoke-test files)
 was deleted at session end.
+
+## §guard-coalesce: the 2 native fails are ONE printer artifact (real fix) +
+## ONE structural allocator-inlining gap (banked, not a coalescing defect)
+
+Dispatched to close the guard-coalescing gap the prior `§test:wasm residuals
+triage` entry flagged for the 2 red native `test/optimizer.js` tests:
+`interval walk: strided companion cursor + packed OR index erase codec bounds
+checks` (:3955) and `typed RMW: one guard covers the pure read and ignored
+OOB store` (:3984). That entry's own root-cause guess — "2 inlined
+allocator-growth guards, one per typed-array allocation" (test 1) / "one RMW
+op's read-guard and write-guard didn't coalesce" (test 2) — turned out to be
+WRONG on direct inspection of the compiled WAT. Re-diagnosed from scratch in
+worktree `guard-coalesce` (branch `guard-coalesce-2026-08-12`, base
+`054d3642`).
+
+**Diagnosis 1 (test 1, and half of test 2's delta) — a WAT-printer/naive-
+parser artifact, not an optimizer defect.** Both tests extract "just $main's
+body" via `wat.split('(func ').find(c => /^\$main\b/.test(c))` — a text
+split on the literal substring `(func ` (trailing space). `module/core.js`'s
+`_allocRawFuncs` (the raw-WAT-text `_alloc`/`_clear` host-API exports,
+unconditionally emitted whenever `alloc !== false` and the program touches
+memory — `src/wat/assemble.js:940-941`) were defined ANONYMOUS:
+`'(func (export "_alloc") ...)'`. watr's printer renders an anonymous func as
+`(func\n  (export "_alloc") ...)` — no name token, so no space right after
+`func` — which the split's literal `'(func '` delimiter does NOT match. The
+next real boundary the split DOES recognize is whatever named function
+follows, so `_alloc`'s (and `_clear`'s) ENTIRE body silently gets vacuumed
+onto the end of whatever chunk precedes it in the module — here, `$main`.
+Confirmed by hand: dumping `$main`'s *true* text span (by function-count,
+`(func` occurrences, not the regex) for test 1's `pack()` codec program shows
+**zero** `i32.lt_u` in $main's own body — the two `call $__alloc_hdr_n` sites
+for `input`/`table`/`out` are plain (uninlined) calls, contributing nothing;
+the reported "2" were `_alloc`'s own fixed, program-independent wraparound +
+memgrow-slow-path guards, unconditionally present whenever the always-live
+host export exists, textually merged in by the split bug. For test 1 this
+means the true count is 0 ≤ 1 — already fully coalesced, the test was only
+ever failing because of the leak.
+
+For test 2 (RMW), $main's own body genuinely has exactly 3 `i32.lt_u` — one
+per `a[i] = …` op, each already merging its read AND its ignored-OOB write
+under ONE guard (confirmed: each is a single `if (lt_u …) (then (load …)
+(store …))`, contradicting the prior triage's "read-guard/write-guard didn't
+merge" claim outright). The reported "5" was 3 (real) + 2 (leaked from the
+same anonymous `_alloc` export, which for THIS program's `new Int32Array(4)`
+also has its OWN un-shared copy of `$__alloc`+`$__memgrow`'s guards inlined
+into it by watr's `inlineOnce` — see Diagnosis 2). The test expects exactly
+4 (3 RMW + "one allocator guard").
+
+**Fix 1 (real, shipped)**: name both `_allocRawFuncs` templates —
+`$_alloc$exp` / `$_clear$exp`, the SAME `$name$exp` convention
+`src/compile/index.js` already uses for every other JS-boundary export
+wrapper (e.g. `$main$exp`) — so the printer always emits `(func $_alloc$exp
+(export "_alloc") …)` with a name token (and therefore a space) right after
+`func`, restoring the invariant every OTHER emitted function already has:
+addressable/greppable by a stable `(func $name` boundary. Deliberately NOT
+`$__`-prefixed: `test/minimal-output.js`'s `deadInternalFuncs` flags any
+`$__foo` referenced exactly once in the module text (its own def — an export
+wrapper is never internally `call`ed, only invoked by the host via its
+export STRING) as dead compiler boilerplate; `$__export_alloc` tripped this
+false-positive on first attempt (5 new native fails: the 3
+`minimal: … emits no dead internal func` tests plus their O2 companions) —
+`$main$exp`-style naming sidesteps it exactly the way the same file already
+hand-excludes `$__start`. Zero behavioral change (a function's WAT `$name`
+is a compile-time label, resolved to an index before encoding — confirmed
+zero byte-size delta on every `golden size:` pin in `test/perf.js`, byte-
+identical to the unmodified baseline).
+
+**Diagnosis 2 (test 2's remaining gap, 3 vs 4) — a real, but STRUCTURAL,
+allocator-inlining gap, not a bound-check/interval-proof defect.** After Fix
+1, test 2's honest, artifact-free count is 3 (RMW only) — $main's `new
+Int32Array(4)` still compiles to a plain `call $__alloc`, contributing 0
+guards. Traced why: watr's `inlineOnce` (the ONLY thing that ever folds
+`$__alloc`'s own body into a caller — the multi-caller `inline` pass stays
+SIMD-only at the speed tier by jz's own deliberate policy,
+`src/optimize/watr-tail.js:52-55` `resolveWatrOpts`, `inline: 'simd'`, to
+avoid duplicating scalar helper bodies at every call site) only dissolves a
+callee with EXACTLY ONE caller module-wide. `$__alloc` structurally has TWO
+whenever `alloc:true` (the default) and the program allocates: the program's
+own call site(s), AND the always-live `_alloc` host-API export (which must
+stay live — the compiler cannot know whether external JS will call it, so it
+can never be pruned short of the explicit `alloc:false` opt-out). That
+second caller permanently blocks `inlineOnce` from ever firing on `$__alloc`
+for ANY program shape, independent of guard-coalescing quality.
+
+Proved this two ways:
+  1. **`alloc:false` experiment** (no host export ⇒ `$__alloc` genuinely
+     single-caller): compiling test 2's exact source with `alloc:false`
+     collapses the whole module to ONE function, and `inlineOnce` cascades
+     `$__alloc` (1 guard: the wraparound check) AND `$__memgrow` (1 more: its
+     own slow-path bound check — `$__memgrow` is `$__alloc`'s single caller
+     too, in this tiny synthetic program) fully into `$main`. Result: 3 RMW +
+     2 allocator = **5** total, not 4 — the FULLY-coalesced, honest shape for
+     this specific corpus overshoots the pin by one, because `$__memgrow`'s
+     own necessary bound check ALSO rides along once its sole caller
+     (`$__alloc`) gets spliced in.
+  2. **Decoupling experiment** (reverted, not shipped): gave `_alloc$exp` a
+     PRIVATE clone of `$__alloc`'s body (own name, own `$__memgrow` call
+     site) instead of sharing `$__alloc` — this genuinely drops `$__alloc`'s
+     internal-caller count to 1 (test 2's `$main` becomes its only real
+     caller), AND (because the private clone's OWN `call $__memgrow` keeps
+     `$__memgrow` at 2 total callers) correctly stops `$__memgrow`'s slow
+     path from also inlining. Result: **exactly 4** (3 RMW + 1 wraparound,
+     `call $__memgrow` staying a real out-of-line call) — proving 4 IS a
+     real, sound, reachable shape, and that the prior triage's instinct
+     ("one allocator guard") was the theoretically-correct target.
+     Reverted anyway: the clone is a genuine, unavoidable, FIXED per-program
+     byte cost (duplicating `$__alloc`'s ~6-line body) paid by EVERY
+     `alloc:true` program that allocates, whether or not it has a single
+     internal call site to benefit — and it is NOT free: it pushed
+     `test/perf.js`'s `golden size: typed-array loop` pin from 1495 (± the
+     naming-only fix, byte-identical to baseline) to 1543 — +77B, past its
+     own ±70B (~5%) tolerance. Trading one exact-guard-count shape pin for a
+     regression on an unrelated, previously-green byte-size pin is not an
+     acceptable trade, and widening it to "every `alloc:true` program pays a
+     few dozen bytes" is a broad-blast-radius policy change disproportionate
+     to a 2-test guard-count pin — especially since jz's own architecture
+     ALREADY deliberately avoids exactly this class of duplication-for-
+     speed at the multi-caller `inline` pass (`inline: 'simd'`, same file,
+     same reasoning) for the same cost/benefit reason.
+
+**Disposition on test 2**: banking as a genuinely over-tight pin, NOT fixed.
+It is not an unsound demand in isolation (proof #2 above shows a real,
+correct compiled shape hits exactly 4) — but reaching it requires an
+allocator-architecture change (decoupling the always-live host `_alloc`/
+`_clear` exports from sharing `$__alloc`'s identity with internal call
+sites) whose cost is paid by every allocating `alloc:true` program, not just
+this corpus, and which a full session's session did not have room to
+re-validate against the ENTIRE size-gate/bench-size corpus (only this one
+golden pin was checked) with the rigor that change deserves. This is squarely
+NOT the `bound-check/interval-proof pass` the task named as the intended
+target — no bound-check anywhere in $main is under- or over-proven; the gap
+is 100% about whether a shared stdlib helper's body physically appears in
+$main's text, gated by watr's (external, in `node_modules/`) single-caller
+`inlineOnce` cardinality rule interacting with jz's OWN deliberate choice to
+keep the host `_alloc`/`_clear` API surface always-live. Recommend a future
+session implement the decoupling as its own scoped, size-gate-audited change
+(not bundled with a guard-count pin fix), OR re-pin test 2 to 3 (the honest,
+zero-inline achievable count) if the exact-4 shape is judged not worth the
+byte cost — neither of which this session's mandate authorized doing itself.
+
+**Fix applied**: `module/core.js` only — named `_alloc$exp`/`_clear$exp`
+(Fix 1 above). No `src/compile/narrow.js` or `src/static.js` changes (never
+needed — the real defect lived in a raw-WAT-text stdlib template, not the
+narrowing/static-analysis layer the task flagged as forbidden territory).
+
+**Gates** (worktree `guard-coalesce`, branch `guard-coalesce-2026-08-12`,
+base `054d3642`):
+  - Target tests: `interval walk: …` now PASSES (0 ≤ 1, real). `typed RMW: …`
+    stays red (3 vs exactly-4 pin) — banked above, not a regression (was
+    already red at dispatch).
+  - Native `node test/index.js`: **3435 total (19710 assertions), 3428 pass,
+    1 fail (the banked `typed RMW` test), 6 skip** — zero OTHER regressions
+    (was 3425/…/2-fail at the ledger's prior snapshot; +10 total from tests
+    added elsewhere between sessions, unrelated).
+  - `test:wasm` (`JZ_TEST_TARGET=jz.wasm`): **2730 total (12869 assertions),
+    2724 pass, 6 skip, 0 fail** — unchanged from the prior triage's
+    baseline, still fully green (this leg structurally can never see the
+    two `test/optimizer.js` shape pins — KERNEL_EXCLUDE).
+  - `npm run test:262`: **Pass 3000, Fail 0** (Neg-reject 2156, Neg-accept
+    1889 tracked-not-gated, Skip 16561, Xfail 54 — all pre-existing/
+    documented, unrelated to this change).
+  - `npm run test:262:builtins`: **Pass 852, Fail 0** (remaining rows are
+    the pre-existing documented "out of scope"/"not implemented" list).
+  - `npm run test:self` (self-host round-trip, byte-convergence): the
+    convergence assertions themselves — **21/21 pass** across 39 recompile
+    rounds, "compiled wasm bytes (no allocator trap)" + "g's own field reads
+    back true" every round, confirming the kernel still byte-converges
+    building itself twice. The SAME script also runs `selfhost-perf.js`
+    (timing, not convergence): its "warm-instance self-host compile < V8 JS"
+    perf-pin failed (geomean 1.126×/1.140×/1.149× vs a 1.03× cap) — verified
+    this is PRE-EXISTING on the unmodified `054d3642` baseline too (`git
+    stash` + rerun: 1.104×/1.138×/1.148×, same shape, same fail) — machine-
+    load noise from this session's own concurrent test262/build/bench runs
+    plus other worktrees active on this host, not caused by this change (the
+    fix touches zero codegen paths any of `mat4/fft/biquad/sort/crc32/
+    mandelbrot` exercise). Not part of the task's named byte-convergence
+    gate; recorded for the next session so it isn't re-diagnosed as new.
+  - `npm run build` + `npm run bench:size`: **geomean jz/AS = 1.019×**
+    (jz/(jz+wasmopt) = 0.972×) — matches the task's cited 1.0193 baseline,
+    no material regression. Per-example deltas are the normal ±few-% run-to-
+    run jitter already visible in the tool's own printed diffs, nothing tied
+    to this change (which touches only two never-internally-called stdlib
+    export wrappers' `$name` strings).
+  - Shared `node_modules/watr`: confirmed `5.7.14` before AND after (nothing
+    installed/modified).
+
+**Files/commits**: `module/core.js` (the fix), this ledger entry. Worktree
+`/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-
+b25b5ba26704/scratchpad/guard-coalesce`, branch `guard-coalesce-2026-08-12`,
+base `054d3642`.

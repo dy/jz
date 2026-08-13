@@ -1567,9 +1567,24 @@ export default (ctx) => {
   // Allocator + exports are deferred: only included when memory is actually needed.
   // Any module using allocPtr/inc('__alloc') pulls these in via ctx.core.stdlibDeps.
   // compile.js emits _alloc/_clear exports + memory section only when __alloc is in includes.
+  // Both wrappers now carry an explicit `$name` — previously anonymous
+  // `(func (export …) …)`, which watr's printer renders `(func\n  (export …) …)`
+  // (no space after `func`, since there's no name token to follow it). That's
+  // valid WAT, but it breaks any naive `(func ` (trailing-space) text-boundary
+  // split that treats every function as greppable-by-name — including several
+  // test/optimizer.js WAT-shape probes (`wat.split('(func ').find(c =>
+  // /^\$main\b/.test(c))`), which would silently vacuum this wrapper's own body
+  // into whatever function happened to print immediately before it. Named
+  // `$_alloc$exp`/`$_clear$exp` — the SAME `$name$exp` convention
+  // src/compile/index.js uses for every other boundary-export wrapper (e.g.
+  // `$main$exp`) — deliberately NOT `$__`-prefixed: test/minimal-output.js's
+  // `deadInternalFuncs` treats any `$__foo` referenced exactly once in the module
+  // text (its own definition — an export wrapper is never internally `call`ed,
+  // only invoked by the host via its export string) as dead compiler
+  // boilerplate, the same reason it hand-excludes `$__start`.
   ctx.core._allocRawFuncs = [
-    '(func (export "_alloc") (param $bytes i32) (result i32) (call $__alloc (local.get $bytes)))',
-    '(func (export "_clear") (call $__clear))',
+    '(func $_alloc$exp (export "_alloc") (param $bytes i32) (result i32) (call $__alloc (local.get $bytes)))',
+    '(func $_clear$exp (export "_clear") (call $__clear))',
   ]
 
   // Not-nullish check: f64 WAT node is neither NULL_NAN nor UNDEF_NAN.
