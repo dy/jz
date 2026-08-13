@@ -6132,3 +6132,29 @@ base `054d3642`):
 `/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-
 b25b5ba26704/scratchpad/guard-coalesce`, branch `guard-coalesce-2026-08-12`,
 base `054d3642`.
+
+## §FeatureReachCensus — strategic audit: which complexity engines does the real corpus exercise (2026-08-12/13)
+
+Measurement-only census, full record in `.work/feature-reach-census.md`. Compiled all 130
+non-test, non-self-host corpus programs (59 `bench/*`, 68 `examples/*` + the SIMD
+raymarcher variant + a generated jukebox beat, plus the jzify-entry real-input subject —
+`bench/jz/jz.js` self-host and `test/**`/test262 excluded per the audit's own scope) at
+`-O3 --resolve` in a disposable worktree (`reach-census`, base `7b07a810`, removed after),
+and grepped the emitted WAT for each of the ten named engines' runtime intrinsics/NaN-box
+sentinels — plus a temporary (worktree-only, never committed) `JZ_TRACE_SIMD` trace patch
+to `vectorize.js`'s first-match recognizer chain, since no existing flag reports *which*
+SIMD recognizer fired (only `--why-not-simd`'s non-match reasons already existed).
+Headline findings: BigInt (all 3 paths) and regex/async/generators are reached by **zero**
+of the 130 programs — confirmed at the source level, no corpus file contains the syntax at
+all. Of the vectorizer's 19 recognizers (16 in the block-loop chain + 3 straight-line
+pre-pass lifts), 6 are single-specimen (`tryBlurMultiPixel`/`tryChannelReduce`→
+`bench/blur`, `tryOuterStrip`→`examples/interference`, `tryIteratedReduce`→
+`examples/lyapunov`, `tryConvColumn`→`bench/conv2d`, `hoistReductionInvariantsIn`→
+`bench/mat4`), and 2 (`tryByteScan`, `vectorizeStraightLineF64DotPairsIn`) have zero reach
+in this corpus. NaN-boxed carrier and the presence/nullability coercion machinery both
+show a caveat worth reading before citing the raw counts: the former is foundational
+(reached the instant any program does generic I/O) and the latter has a ~4-occurrence
+boilerplate floor across `examples/` (shared demo-export ABI shape) that isn't real
+program-specific nullability logic — the full breakdown, per-engine detection methods, the
+complete 130-program × 8-engine matrix, and the verdict table are in the linked file. No
+removal recommendations made — data only, per the audit's own mandate.
