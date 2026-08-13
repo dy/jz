@@ -5351,3 +5351,88 @@ files (`src/compile/narrow.js`, `src/static.js`, `README.md`) untouched.
 **SHAs**. jz: `75a9638d` (main tip at session start, per the task's own
 floor). Worktree base: `75a9638d`. watr: `5.7.14`
 (`/Users/div/projects/jz/node_modules/watr`, unchanged, published).
+
+## §test:wasm residuals triage — the "2 fails" are NATIVE, not test:wasm;
+## test:wasm is fully green (2026-08-12)
+
+Dispatched to triage "the 2 remaining `test:wasm` failures (tally: 3425
+total, 3417 pass, 2 fail)". That tally does not describe `test:wasm` — it's
+the **native** suite (`node test/index.js`, no `JZ_TEST_TARGET`). `test:wasm`
+itself (`JZ_TEST_TARGET=jz.wasm node test/index.js`) is 100% green at this
+session's base (`14553f2b`): fresh run, `dist/jz.wasm` auto-built from
+current source (gitignored, not committed — `kernel-target.js` rebuilds it
+on first use when missing), **2730 total (12869 assertions), 2724 pass, 6
+skip, 0 fail**. Confirmed twice: once here, and independently corroborated
+by TODAY's own `.work/todo.md` line 82 (the `arr[arr.length]=x` kernel-
+codegen-class entry, same date): "`JZ_TEST_TARGET=jz.wasm node test/index.js`
+(full test:wasm, rebuilt kernel) | 2716/2722 pass, **0 fail**, 6 skip" — same
+verdict, small count drift (2716→2730, +14) from tests added between that
+entry's rebuild and this one, not a regression.
+
+**Where the 3417/3425/2 tally actually comes from**: the **native** leg.
+Same `.work/todo.md` line 81, same date: "Native `node test/index.js`
+(default O2) | 3419/3427 pass, 6 skip — 2 fails, both the pre-existing
+documented flakes (`interval walk…`, `typed RMW…`), 0 new". Re-ran it here
+independently (`node test/index.js optimizer`, the single file both live
+in) at the same `14553f2b` base — same 2 failures, byte-identical names:
+  - `interval walk: strided companion cursor + packed OR index erase codec
+    bounds checks` (`test/optimizer.js:3955`)
+  - `typed RMW: one guard covers the pure read and ignored OOB store`
+    (`test/optimizer.js:3984`)
+
+**Root cause, both** (traced by hand, not from history — reading the
+compiled WAT directly): these are optimizer-**shape** pins (`i32.lt_u`
+guard-*count* assertions on the compiled `$main` body), not value/
+correctness assertions — and each test's own value assertion (`is(run(src,
+...).main(), exportsJs.main(), ...)`) passes; only the count assertion
+fails. Test 1 (codec): expects ≤1 `lt_u` (only allocator-growth checks may
+survive; the codec loop's own bound checks should fully prove away via the
+interval/companion-cursor analysis) — actual 2. Dumping the WAT for `$main`
+confirms the 2 `lt_u` sites are BOTH inlined allocator-growth guards
+(`$__inl4_...`/`$__inl3_...` locals — inlined `__alloc_hdr_n`/`__alloc`
+call sites, not raw calls), one per typed-array allocation whose growth
+check didn't get coalesced with the others (`input`/`table`/`out` each
+alloc independently). Test 2 (RMW): expects exactly 4 `lt_u` (3 per-RMW-op
+guards + 1 allocator guard, i.e. each of the 3 `a[i] = ...` ops should
+share ONE guard between its read and its ignored-OOB write) — actual 5, one
+RMW op's read-guard and write-guard didn't coalesce into one. Same root
+cause class both times: the bound-check-guard-coalescing pass (interval/
+range-proof analysis feeding `i32.lt_u` elision — lives outside `narrow.js`/
+`static.js`, likely `src/type.js` interval-tracking or `src/compile/peel-
+stencil.js`'s loop-cursor analysis, not confirmed to file/line) leaves one
+extra guard un-merged on these two corpus shapes. **Not a miscompile** — no
+wrong values anywhere, confirmed by the passing value assertions in both
+tests plus this session's own WAT reads. Classification: **(c) known
+optimizer-completeness gap** (missed guard-coalescing on multi-allocation /
+multi-op RMW shapes), already flagged pre-existing across many prior
+sessions (first appeared long before this session — `test/optimizer.js`'s
+own KERNEL_EXCLUDE entry for `'optimizer'` in `test/index.js` exists
+BECAUSE these are optimizer-shape pins the kernel leg (always `optimize:
+false`) structurally can't run — confirming by construction these two can
+never be `test:wasm` failures, at any commit, past or future, without a
+`test/index.js` KERNEL_EXCLUDE change).
+
+**Disposition**: no fix attempted — out of the dispatched scope (`test:
+wasm` has zero failures to fix), already triaged and marked pre-existing/
+unrelated by multiple prior sessions (this session just independently
+re-derived the same root cause from the WAT, not copied), and the
+guard-coalescing pass is optimizer-internal, not `narrow.js`/`static.js`,
+but touching it was never in scope here. Recommend closing/re-labeling
+these 2 native `test/optimizer.js` rows as an explicit tracked debt (a
+`KNOWN-GAP` comment on the two tests, same pattern `minimal-output.js` uses
+for `new Date still drags in the allocator`) rather than leaving them as
+bare native-suite fails that keep getting re-discovered and re-triaged
+across sessions — a one-line doc change, not attempted here (not asked
+for, and touches shared `test/optimizer.js`, not this task's named files).
+
+**Gates**: no source changed, so no build/self-host/full-suite gate is
+required by the task's own step 3 ("if a fix lands"). Confirmed anyway:
+shared `node_modules/watr` intact before (`watr ok 5`) and after (unchanged
+— nothing installed/modified this session) this worktree's use.
+
+**Files/commits**: none touched besides this ledger entry. Worktree:
+`/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-
+b25b5ba26704/scratchpad/residuals-triage`, base `14553f2b` (main HEAD at
+dispatch, unchanged — matches current `main` HEAD, confirming the other
+agent's narrow.js/static.js work is still uncommitted there and doesn't
+affect this pinned base).
