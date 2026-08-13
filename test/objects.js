@@ -1164,7 +1164,7 @@ test('static literal: read-only literals keep the shared static instance', () =>
 // or different-shape literal, even in dead code — unbinds and poisons the name:
 // fixed-slot reads against one literal's layout would misread the other
 // sources' objects (the `.x` = foreign slot-0 class of bug, found via the
-// self-host kernel where a dead-branch literal poisoned tryReduceVectorize's
+// self-host kernel where a dead-branch literal poisoned tryReduce's
 // table entries and killed all reduce vectorization in jz.wasm).
 
 test('schema poison: dead-code literal must not fix slots for a table-sourced var', () => {

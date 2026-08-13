@@ -2561,7 +2561,7 @@ test('SIMD map-reduce - bit-exact f64 reduction (the n-body force loop)', () => 
 
 test('SIMD reduce - offset-indexed dot (matmul A[off+i]*B[off+i]) folds the invariant into the base', () => {
   // The index `off+i` lowers to (i32.shl (i32.add off i) 3), which matchLaneAddr rejects
-  // (the IV isn't the bare shift operand). tryReduceVectorize folds the loop-invariant
+  // (the IV isn't the bare shift operand). tryReduce folds the loop-invariant
   // `off` into the base — (base + (off+i)<<3) → ((base + off<<3) + i<<3) — so the offset
   // is the bare IV the matcher/lifter accept; the byte address is unchanged ⇒ bit-exact.
   // Small-int data keeps the product-sum exact in f64. This is the inner dot of a

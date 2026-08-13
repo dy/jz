@@ -1102,7 +1102,7 @@ function _offsetLocalStride(body, name, ind, allowAos, idxTees) {
 // (`_offsetLocalStride`/`_isAddressLocal`/`_isPixelIndexLocal`) plus `matchMirrorAddr` into a
 // single per-name write-shape classification (`addrTable`), and a per-load/store-SITE resolved
 // address table (`siteAccess`) + base-identity partition (`aliasClass`) built on top of it.
-// Consumers so far (slice 3): tryMapReduceVectorize + tryRampMap read `bl.addrTable`/
+// Consumers so far (slice 3): tryReduceBitExact + tryRampMap read `bl.addrTable`/
 // `bl.siteAccess`; the incremental trio (slices 5-7) still reads its own private derivations.
 // JZ_DEBUG_INVARIANTS shadow-asserts (`assertBodyModelSound`, below) prove the generalization
 // agrees with the private predicates it will eventually let recognizers retire, on every block
@@ -1209,9 +1209,9 @@ function offsetTeesFromAddrTable(addrTable) {
 
 // Per-load/store SITE resolved access (design §2): re-runs matchLaneAddr against the FROZEN
 // `offsetTees` table (read-only lookup) instead of a live-mutation map — the plain, non-AoS query
-// shape tryMapReduceVectorize/tryRampMap's non-recordAddrTees call sites already make: `node[1]`
+// shape tryReduceBitExact/tryRampMap's non-recordAddrTees call sites already make: `node[1]`
 // RAW (empty addrLocals: neither consumer resolves a `(local.get $A)` full-address-tee today; NO
-// memarg unwrap: neither consumer ever unwraps a folded `offset=N` memarg either — tryMapReduceVectorize
+// memarg unwrap: neither consumer ever unwraps a folded `offset=N` memarg either — tryReduceBitExact
 // has no store path at all, tryRampMap's own store-shape gate requires `length===3`, rejecting the
 // 4-element memarg form outright — so a memarg-carrying site correctly gets NO entry here, matching
 // their existing silent-bail on such nodes exactly; unwrapping would be a WIDER acceptance than
@@ -1292,7 +1292,7 @@ function assertBodyModelSound(body, ind, bm) {
   }
 
   // (c) siteAccess reproduces the plain (non-AoS, no addrLocals) matchLaneAddr query
-  // tryMapReduceVectorize/tryRampMap's non-recordAddrTees paths already make at every
+  // tryReduceBitExact/tryRampMap's non-recordAddrTees paths already make at every
   // load/store site — a fresh re-derivation compared against the built table (the same
   // cache-freshness-assert shape as analyze.js's assertBodyFactsFresh).
   const walk = (node) => {
@@ -1480,7 +1480,7 @@ function matchLoopBrEnd(loopNode) {
 // re-walking.
 //
 // Also computes BodyModel (.work/research.md §BodyModel; slices 1-3 landed — consumed by
-// tryMapReduceVectorize/tryRampMap): `addrTable`/`offsetTees`/`siteAccess`/`aliasClass`, spread
+// tryReduceBitExact/tryRampMap): `addrTable`/`offsetTees`/`siteAccess`/`aliasClass`, spread
 // in below (audit-#14 item 6: `offsetTees` is ONE construction now — `buildBodyModel` derives it
 // FROM `addrTable`, so it rides in with `...bm` instead of its own separate `deriveOffsetTees`
 // call). JZ_DEBUG_INVARIANTS shadow-asserts the generalization against the private predicates it
@@ -2333,7 +2333,20 @@ function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
 // Float adds are not strictly associative — vectorized reduction differs
 // from scalar reduction by ulps. Acceptable when bit-exact equality is not
 // required (which it isn't, by spec, in JS engines either).
-function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
+//
+// REDUCTION unification (.work/vectorizer-generality-design.md §2 "REDUCTION (#5-6) → 1
+// general recognizer"): this is the reassociating (tree-reduce + horizontal-sum) fold-order
+// tier of the ONE reduction transform — a single scalar accumulator, `S = OP(S, EXPR(arr[i]))`.
+// `tryReduceBitExact` below is the other fold-order tier (scalar-order-preserving f64x2
+// pairing, multi-accumulator). `tryReduce`, at the bottom of this section, is the shared
+// dispatch entry: try this (reassociating) shape first — exactly today's `tryReduceVectorize
+// ?? tryMapReduceVectorize` order — falling to the bit-exact shape only when this one bails.
+// The two shapes' preconditions are structurally disjoint (single vs. multi accumulator,
+// one-or-two-statement canonical body vs. arbitrary straight-line multi-statement body) enough
+// that unifying their MATCH bodies (not just their dispatch slot) would risk a behavior change
+// under the byte-identical gate; kept as two internal matchers behind one recognizer entry,
+// selected by which fold order (`bitExact`) actually fires — see `tryReduce`.
+function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   // Same scaffold as tryVectorize, but no preamble: a reduction block is just the loop.
   if (!bl || bl.preamble.length) return null
   const { loopNode, incIdx, incVar } = bl
@@ -2735,11 +2748,14 @@ function tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc = false) {
 // INDEPENDENTLY of the accumulators. Process 2 iterations per step in f64x2 — every lane
 // op (sub/mul/add/div/sqrt) is IEEE-754-identical to scalar f64 (no FMA in non-relaxed
 // SIMD) — then accumulate each accumulator's two lane contributions IN SCALAR ORDER, so
-// the reduction is BIT-EXACT (unlike the reassociating tryReduceVectorize). Wins when the
+// the reduction is BIT-EXACT (unlike the reassociating `tryReduceReassoc`). Wins when the
 // per-element compute is expensive (a sqrt + reciprocal) so the 2-wide arithmetic
 // outweighs the serial lane-accumulation. The original block is preserved as the ≤1
 // scalar remainder, continuing the accumulators. Returns {wrapper, newLocalDecls} or null.
-function tryMapReduceVectorize(bl, fnLocals, freshIdRef) {
+//
+// Other fold-order tier of the unified REDUCTION recognizer (see `tryReduceReassoc`'s doc
+// above and `tryReduce` below) — the `bitExact` branch.
+function tryReduceBitExact(bl, fnLocals, freshIdRef) {
   if (!bl || bl.preamble.length) return null
   const { incVar, bound, boundLocal, body, siteAccess } = bl
   if (!boundLocal && !isI32Const(bound)) return null
@@ -2827,6 +2843,18 @@ function tryMapReduceVectorize(bl, fnLocals, freshIdRef) {
       ['i32.and', ['i32.sub', boundExpr, ['local.get', incVar]], ['i32.const', -2]]]]
   const wrapper = ['block', boundSetup, simdBlock, bl.blockNode]
   return { wrapper, newLocalDecls: [['local', simdBoundName, 'i32'], ...newLocalDecls] }
+}
+
+// ---- Unified REDUCTION recognizer (dispatch entry) --------------------------
+//
+// One recognizer, two fold-order tiers keyed on shape (design §2 "REDUCTION (#5-6) → 1
+// general recognizer"): try the reassociating single-accumulator shape first (`tryReduceReassoc`
+// — today's `tryReduceVectorize`), fall to the bit-exact multi-accumulator shape
+// (`tryReduceBitExact` — today's `tryMapReduceVectorize`) only when the first bails. Same
+// dispatch order as before the merge (`tryReduceVectorize(...) ?? tryMapReduceVectorize(...)`),
+// so this is a pure entry-point consolidation — behavior is unchanged by construction.
+function tryReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
+  return tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc) ?? tryReduceBitExact(bl, fnLocals, freshIdRef)
 }
 
 // Scalar locals that are ALWAYS computed as `(i32.add base (i32.shl ind K))`
@@ -6535,7 +6563,7 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   }
 
   const newLanedLocals = new Map()       // origName → laneName (bare string; see getOrAllocLanedLocal)
-  // SAME field set + ORDER as the ctx in tryVectorize / tryReduceVectorize / tryRampMap. The
+  // SAME field set + ORDER as the ctx in tryVectorize / tryReduce / tryRampMap. The
   // self-host kernel infers ONE struct layout per shared callee, and `liftFail` is shared with
   // liftExprV — so every ctx reaching it MUST have the identical shape, or the inferred layout is
   // wrong for some and field reads corrupt (this is the exact regression 11657cf fixed; the
@@ -7064,8 +7092,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // the shadow-assert above has now run across the full battery with zero divergences —
       // wherever the link resolves an IV name, it is PROVEN to equal `bl.incVar`'s WAT-derived
       // one. Roles invert: the plan becomes the primary source for the name every bl-based
-      // recognizer below reads (tryMemCopyFill/tryVectorize/tryReduceVectorize/
-      // tryMapReduceVectorize/tryStencil/tryToneMap/tryStrengthReduceIV — all share
+      // recognizer below reads (tryMemCopyFill/tryVectorize/tryReduce/
+      // tryStencil/tryToneMap/tryStrengthReduceIV — all share
       // this one `bl`), and `matchInc1`'s WAT walk above becomes the fail-open FALLBACK (link
       // miss keeps its structurally-derived name) plus, under JZ_DEBUG_INVARIANTS, the shadow
       // (assertLoopPlanAgrees, run just above, already fills that role — nothing left to add).
@@ -7098,8 +7126,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       let r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef, op)
         ?? tryMemCopyFill(bl, fnLocals, freshIdRef)
         ?? tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
-        ?? tryReduceVectorize(bl, fnLocals, freshIdRef, multiAcc)
-        ?? tryMapReduceVectorize(bl, fnLocals, freshIdRef)
+        ?? tryReduce(bl, fnLocals, freshIdRef, multiAcc)
         ?? tryStencil(node, fnLocals, freshIdRef, stencil, bl)
         ?? tryRampMap(node, fnLocals, freshIdRef)
         ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef, getBlLoose()) : null)
