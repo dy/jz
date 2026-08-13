@@ -6778,3 +6778,228 @@ own `module/core.js` diff commits on top). watr: `895ca5b` (`/Users/div/
 projects/watr`, unpublished, unchanged). Dormant `dist/jz.wasm` (this
 session's fixed rebuild, `REGION_HOOKS_ACTIVE=false`): SHA-256
 `639b83f1e95f08a0bf2ac26ff9c11ee6018e263bca9052b9d0b4e21c711576ae`.
+
+## §Region arena — array-growth-class row ROOT-CAUSE HUNT: task's own three
+candidates ALL REFUTED, real trigger isolated to closure free-variable
+capture of a non-constant-foldable value, crash site upstream of
+`ctx.closure.make` — a FOURTH, still-unfound front-boundary mechanism, WALL
+(no fix, characterized only) — THEN jz×jz's `unreachable` CONFIRMED as the
+deliberate 4 GiB ceiling, not a correctness bug (2026-08-12)
+
+**Task, per the coordinator's brief**: (1) chase kernel-oracle's remaining
+`array-growth-class: sibling push()+indexed-append tables (envMeta shape)`
+row (O0/O2/O3), the one row 63a5551e's HASH-key fix left standing, against
+three named candidates — (a) `arrGrow`'s growth-forwarding write vs region
+relocation, (b) ARRAY-of-OBJECTS relocation ordering, (c) a verbatim-bit-
+copy gap in ARRAY's own element loop; (2) once landed-or-banked, re-
+characterize jz×jz's `unreachable` — deliberate memgrow ceiling (2³²) or a
+distinct correctness wall.
+
+**Setup**: reused the already-checked-out worktree at `.../scratchpad/
+region-slice2-front`, HEAD `63a5551e` (region-final-2026-08-11), clean.
+`node_modules/watr → /Users/div/projects/watr` (`895ca5b`, verified intact
+throughout). `REGION_HOOKS_ACTIVE` hand-flipped `true`/`false` in
+`scripts/self.js` per leg, worktree-only, reverted to `false` (the shared
+committed default) before finishing — `resolveSelfhostBuild`'s own
+`regionArena` override still doesn't touch this literal (reconfirmed, same
+gap every prior session already flagged).
+
+**Reproduced the baseline exactly.** Region-live rebuild, kernel-oracle:
+**9/13 pass, 203 assertions in the 9 passing groups** — byte-for-byte the
+commit's own recorded count. The 4 fails are the SAME 3 reps of the
+array-growth-class row (O0/O2/O3, `memory access out of bounds`) plus the
+pre-existing, unrelated `PENDING-FIX — generic-scalar-decl BOOL∪NUMBER
+carrier collapse` tripwire row (§Carrier invariant, not region-arena).
+Dormant rebuild (SHA-256 `639b83f1…`, byte-identical to the commit's own
+recorded dormant SHA — confirms this session's build pipeline reproduces
+the prior session's exactly): kernel-oracle **13/13 pass** — the array-
+growth-class row is ONLY broken region-live, never dormant. **This
+confirms the row is a genuine region-arena mechanism, not a pre-existing-
+unrelated codegen bug** (the other framing the task asked to rule in/out).
+
+**Root-cause hunt — black-box bisection against a NAMED region-live kernel**
+(`compile(profile.graph.code, {…, names:true})`, bypassing
+`compileViaKernel`/`dist/jz.wasm` to instantiate directly — symbolicated
+stack traces instead of bare `wasm-function[N]` offsets). ~20 source
+variants compiled through the SAME kernel instance shape, isolating one
+axis at a time:
+
+- **The oracle row's own source, minimized**: `ctx.closure.table.push(name);
+  ctx.closure.envMeta[…] = {cap, idx}` inside a closure `addToTable`,
+  called in a loop — traps `memory access out of bounds` at
+  `closure4232` (a self-hosted compiler-internal closure, `wasm-
+  function[3758]`), consistently, 3/3 reps.
+- **Candidate (a) REFUTED**: replacing `.push()`+indexed-append with TWO
+  `.push()` calls (matching `ctx.closure.mint`'s own real shape exactly)
+  — still traps, identical signature. Removing array GROWTH entirely (a
+  closure that only READS `arr.length`, or returns a captured object with
+  zero array involvement) — STILL traps. No `__arr_grow` call exists
+  anywhere in the minimal failing case.
+- **Candidate (b) REFUTED**: no ARRAY-of-OBJECTS shape is needed at all —
+  a closure capturing a bare OBJECT (`let o = {v:n}; let g = () => o.v`)
+  or a bare STRING (`let s='hi'; let g = () => s.length`) fails identically
+  with zero arrays anywhere in the program.
+- **Candidate (c) REFUTED**: same reason — no ARRAY element loop is
+  reachable in the minimal repro, so no verbatim-bit-copy gap in it can be
+  the cause.
+- **Real trigger, isolated**: a CALLED arrow-function closure that
+  captures a free variable whose value is NOT reducible to a compile-time
+  constant. `let x=5; g=()=>x` (int literal, folds to `intConsts`), `let
+  x=true`/`null`/`undefined`/`5n; g=()=>x` (all constant-foldable) — ALL
+  COMPILE CLEAN. `let x=n+1; g=()=>x+1` (arithmetic on a param, provably
+  NUMBER-typed, `storage='heap'`, `boxed=[]` per a `ctx.closure.make`
+  breadcrumb) — COMPILES CLEAN. `let x=n; g=()=>x` (a bare, unmodified
+  copy of a param — genuinely dynamic, no operator forces a type proof)
+  — TRAPS, but at a DIFFERENT site (`__dyn_get_t_h`/`__dyn_get_t`, generic
+  dynamic-property-get, `wasm-function[1271]`), not `closure4232`. STRING/
+  OBJECT/ARRAY captures always trap regardless of whether the closure body
+  touches the captured value at all (bare `g=()=>o` with the member read
+  moved to the CALL SITE still traps) — ruling out "the closure body's own
+  codegen" as the mechanism; it is about closure CREATION, not closure USE.
+- **`ctx.closure.make` breadcrumb (temporary, reverted): the crash
+  happens BEFORE `ctx.closure.make` is ever reached.** A `console.error`
+  at the top of `ctx.closure.make` (module/function.js) fires reliably for
+  every PASSING case and NEVER fires for any FAILING case — proving the
+  corruption is read (or the fault occurs) inside emit.js's `'=>':`
+  handler's OWN preamble (`extractParams`/`classifyParam`'s for-of over
+  `raw`, `findFreeVars(body, paramSet, captures)`, `for (const def of
+  Object.values(defaults)) findFreeVars(…)`) or upstream of it — NOT
+  inside `ctx.closure.make`, `ctx.closure.mint`, or `regionArmClosure`/
+  `__region_relocate_cell` (the "cellOff"/funcIdx-skew mechanism 6743aea0
+  and 0e73fa6a already found and fixed). **This is a DIFFERENT, so-far-
+  unnamed FOURTH mechanism** (after: the SW backing-pointer wall / the
+  cellOff delta-adjustment bug / the funcIdx-skew bug / the HASH-key bug),
+  not a recurrence of any of the three already-closed ones.
+- **Two distinct crash signatures, same upstream cause (working theory,
+  NOT confirmed)**: `closure4232`'s trap decompiles (`wasm2wat
+  --enable-all` + `wasm-objdump -d` cross-referenced against the exact
+  faulting file offset) to a SET/MAP-to-array conversion loop
+  (`__coll_order` + `f64.load slot+16`) being reached with a tag that
+  should be ARRAY but reads as SET(8)/MAP(9) — i.e. a pointer whose TAG
+  BITS are already wrong by the time this generic dispatch reads them.
+  `__dyn_get_t_h`'s trap is a plain dynamic property-get gone OOB. Both
+  read as DOWNSTREAM symptoms of the SAME upstream corruption manifesting
+  at whichever consumer a given closure SHAPE happens to reach first, not
+  two independent bugs — not verified by a shared root cause, only by the
+  shared "before `ctx.closure.make`" boundary and shared region-liveness
+  gate (both vanish dormant).
+
+**NOT further isolated.** The established SW-bug method (breadcrumb every
+candidate write site, decompile the exact trap frame, match wasm-function
+offsets against source) would be the next step, but was not completed this
+session — the same order of effort TWO PRIOR FULL SESSIONS (6743aea0,
+0e73fa6a) each spent on SIBLINGS of this exact "front boundary, not-yet-
+found mechanism" class, each closing ONE layer and uncovering the next.
+Best lead for whoever picks this up: `front()`'s region round wraps ONLY
+parse→jzify→prepare (a single mark/exit pair, confirmed by re-reading
+`src/front.js`'s own contract, same finding 6743aea0 already made) — emit
+runs strictly AFTER that boundary closes, so if the corruption is really
+upstream of `ctx.closure.make`, the WRITE happened during `front()`'s own
+region_exit (compacting whatever scope/type-fact structure differs between
+a NUMBER-provable capture and a dynamic one), and the READ (this session's
+trap) is purely downstream — bisect by breadcrumbing `ctx.scope`/`ctx.types`/
+`ctx.func`'s own Set/Map-shaped fields' CONTENTS immediately after
+`front()` returns vs immediately before the closure literal is emitted,
+for a `let x=n; g=()=>x` repro (cheapest failing case, traps in <100ms).
+
+**Disposition — NO FIX LANDED, wall banked per protocol.** Every edit this
+session (the `ctx.closure.make` breadcrumb, `REGION_HOOKS_ACTIVE` toggles)
+was worktree-only and reverted; `git diff --stat` in the worktree shows
+NOTHING outstanding beyond this ledger entry. kernel-oracle stays at
+**9/13** (unchanged from 63a5551e — this session characterized, did not
+move, the count).
+
+**Gates (this session's own verification, no source changed so this is a
+re-confirmation, not a fix's regression suite).** jessie/watr/jzify-entry
+region-live ×3 reps: **all clean**, 107,037 / 315,422 / 611,610 bytes,
+deterministic — matches 63a5551e's own recorded counts exactly. Same three
+fixtures on the dormant rebuild: **byte-identical output** to region-live,
+×3 reps (dormant byte-identity gate). kernel-oracle: dormant **13/13**,
+region-live **9/13** (both reconfirmed above). Native ladder (`node
+test/index.js`, dormant `dist/jz.wasm`): **3428/3436**, the same 2 pre-
+existing documented flakes (interval-walk, typed-RMW), 0 new. Dormant
+self-hosted (`JZ_TEST_TARGET=jz.wasm node test/index.js`): **2725/2731
+pass, 0 fail, 6 skip** — byte-for-byte the historical baseline every prior
+session in this chain has recorded. Build ×2: dormant SHA-256 reproduces
+the commit's own recorded `639b83f1…` exactly (independent rebuild, same
+bytes); region-live SHA-256 (`37746348cc6f3d91991d8d0106341ce5c24c71193b0
+5be6284f8e9e0c2782ecc`) reproduces identically across two independent
+builds this session. All gates green; zero regressions; zero source
+landed.
+
+**Lead 2 — jz×jz re-characterization.** With Lead 1 banked (not landed —
+the task's own "landed or banked" branch), tested whether jz×jz's
+`unreachable` is the deliberate `__memgrow` ceiling or the front-boundary
+correctness wall the "Slice 3 attempt" entry found. Ran jz×jz's real
+155-module graph (`bench/jz/jz.js`, `resolveModuleGraph(…,
+{resolveNode:true})`, exactly `test/kernel-target.js`'s own recipe)
+through the SAME named region-live kernel used for Lead 1's bisection,
+`optJSON:{level:2}`, 2 reps.
+
+**Result: `unreachable`, deterministic both reps, at EXACTLY 4,294,967,296
+bytes (2³², 65536 pages, 4096.0 MB), ~7.0s.** Symbolicated stack:
+`__alloc ← __alloc_hdr_n ← __map_from ← closure2391 ← closure2393 ←
+closure2382 ← closure2398 ← m127_narrow$narrowSignatures ← closure2671 ←
+closure1495 ← m133_index$plan ← closure2757 ← m121_index$compile ←
+compileSelf` — a legitimate allocation deep in the compiler's own
+type-narrowing/planning phase, growing memory until `__alloc`'s call chain
+hits `module/core.js`'s `__memgrow`. Source-verified against the trap: line
+455, `(if (i64.gt_u (i64.extend_i32_u (local.get $need)) (i64.const 65536))
+(then (unreachable)))` — the documented, deliberate wasm32-max-pages abort,
+the ONLY `unreachable` on the `__alloc`→`__memgrow` call path (the sibling
+`next < ptr` overflow guards, lines 487/498/535, are a secondary guard for
+the SAME boundary condition per their own comment, not an independent trap
+class). **Verdict: YES — jz×jz's `unreachable` IS the deliberate 2³²
+memgrow ceiling, not a distinct correctness bug.** This is the front
+boundary reaching as far as it can go for THIS corpus before hitting hard
+wasm32 physics, not a wall region-arena code put there.
+
+**Caveat — do NOT read this as "the front boundary is universally sound."**
+Lead 1, in this SAME session, found a real, still-open, region-live-only
+correctness bug (the array-growth-class row above) that lives in front-
+boundary-adjacent territory (closure creation, upstream of
+`ctx.closure.make`) and corrupts a DIFFERENT, smaller synthetic program.
+jz×jz (155 real modules) simply never happens to exercise that specific
+closure-capture shape badly enough to trip it before running out of
+address space first — "sound enough to reach the ceiling on this corpus"
+is not "sound in general," and kernel-oracle's own 9/13 (not 13/13) is the
+proof already in hand. Per the "Slice 3 attempt" entry's own established
+discipline ("stacking a new region boundary on a front boundary that
+corrupts real programs would compound an unsound foundation, not extend
+one") — **Slice 3's hazard inventory was NOT started this session.** It
+was already fully drafted once (the "Slice 3 attempt" entry, root =
+`[module, ctx.func, ctx.transform, ctx.scope]`) and re-doing it adds
+nothing while Lead 1's wall stands; building on top of a front boundary
+with a KNOWN, unclosed correctness bug — even one narrow enough that jz×jz
+itself doesn't trip it — would repeat exactly the mistake that entry
+already named and avoided.
+
+**Oracle characterization table (final, this session).**
+
+| row | dormant | region-live | class |
+|---|---|---|---|
+| 9 AGREE/DIVERGENT rows (ternary, console.log constants, bare BigInt array-elem, etc.) | pass | pass | n/a — clean |
+| array-growth-class: sibling push()+indexed-append tables (envMeta shape), O0/O2/O3 | pass | **FAIL** — `memory access out of bounds` | **region-mechanism** — confirmed region-only via dormant/region-live differential; root cause NOT found (4th front-boundary mechanism, upstream of `ctx.closure.make`); WALL |
+| PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier collapse | pass (tripwire, asserts the still-wrong value) | pass (same) | **pre-existing-unrelated** — §Carrier invariant, not region-arena, unaffected by region-liveness either way |
+
+**Recommendation for next session.** Lead 1: breadcrumb `ctx.scope`/
+`ctx.types`/`ctx.func`'s Set/Map-shaped fields across `front()`'s own
+region_exit boundary specifically (not inside `ctx.closure.make` — already
+ruled out as the read site) for the `let x=n; g=()=>x` repro (cheapest,
+<100ms). Lead 2: closed as a characterization — jz×jz needs no further
+memory-curve work; its own remaining blocker is now identical to Lead 1's
+(the front-boundary correctness wall), not a separate memory-ceiling
+problem. Do not attempt Slice 3 until kernel-oracle's array-growth-class
+row is 13/13.
+
+**SHAs.** jz worktree: `63a5551e` (region-final-2026-08-11, HEAD,
+unchanged — no source landed this session, only this ledger entry). Main
+repo: `69cec4a2` (unchanged; pre-existing unrelated dirt from a concurrent
+session — `README.md`, `.work/todo-original.md`, `bench/bench.svg`,
+`assets/install.svg` — untouched by this session). watr: `895ca5b`
+(`/Users/div/projects/watr`, unpublished, unchanged). Dormant `dist/
+jz.wasm` (this session's rebuild): SHA-256 `639b83f1e95f08a0bf2ac26ff9c11e
+e6018e263bca9052b9d0b4e21c711576ae` (byte-identical to 63a5551e's own
+recorded dormant SHA). Region-live `dist/jz.wasm` (this session's rebuild,
+×2 reproduced): SHA-256 `37746348cc6f3d91991d8d0106341ce5c24c71193b05be62
+84f8e9e0c2782ecc`.
