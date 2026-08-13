@@ -17,6 +17,7 @@ for the full dissection of anything that needs it.
 * [ ] audiojs
 * [ ] unplugin
 * [ ] hsluv wasm — https://www.hsluv.org/implementations/
+* [ ] jz-strict minimal exported subset (less than 100-200kb if possible)
 
 ## Floatbeat (name TBD)
 
