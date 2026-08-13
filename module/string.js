@@ -2759,16 +2759,26 @@ export default (ctx) => {
     (i32.store (local.get $base) (i32.wrap_i64 (local.get $rw)))
     (call $__sso_norm (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (i32.add (local.get $base) (i32.const 4)))))`)
 
+  // Canonical 16-byte header, hand-written (NOT __alloc_hdr): the real
+  // length $n is only known AFTER decoding, unlike every other
+  // __alloc_hdr(len,cap) call site in this codebase, so the header can't
+  // be filled at alloc time — $base reserves 16 header bytes + $max
+  // scratch (the base64-decode upper bound) up front, decode writes into
+  // $base+16, then propsPtr/len/cap are patched in afterward. Still fixes
+  // the FOURTH-mechanism defect class (.work/research.md §Region arena):
+  // the OLD 8-byte-header version left the propsPtr word at off-16
+  // entirely unallocated, aliasing whatever memory preceded this call.
   wat('__b64_from', `(func $__b64_from (param $v i64) (param $url i32) (result f64)
     (local $s i64) (local $max i32) (local $base i32) (local $rw i64) (local $n i32)
     (local.set $s (call $__to_str (local.get $v)))
     (local.set $max (i32.add (i32.mul (i32.add (i32.shr_u (call $__str_byteLen (local.get $s)) (i32.const 2)) (i32.const 1)) (i32.const 3)) (i32.const 3)))
-    (local.set $base (call $__alloc (i32.add (i32.const 8) (local.get $max))))
-    (local.set $rw (call $__b64_dec_raw (local.get $s) (i32.add (local.get $base) (i32.const 8)) (i32.const 2147483647) (local.get $url)))
+    (local.set $base (call $__alloc (i32.add (i32.const 16) (local.get $max))))
+    (i64.store (local.get $base) (i64.const 0))
+    (local.set $rw (call $__b64_dec_raw (local.get $s) (i32.add (local.get $base) (i32.const 16)) (i32.const 2147483647) (local.get $url)))
     (local.set $n (i32.wrap_i64 (local.get $rw)))
-    (i32.store (local.get $base) (local.get $n))
-    (i32.store (i32.add (local.get $base) (i32.const 4)) (local.get $n))
-    (call $__mkptr (i32.const ${PTR.TYPED}) (i32.const 1) (i32.add (local.get $base) (i32.const 8))))`)
+    (i32.store (i32.add (local.get $base) (i32.const 8)) (local.get $n))
+    (i32.store (i32.add (local.get $base) (i32.const 12)) (local.get $n))
+    (call $__mkptr (i32.const ${PTR.TYPED}) (i32.const 1) (i32.add (local.get $base) (i32.const 16))))`)
 
   wat('__b64_set', `(func $__b64_set (param $dst i64) (param $s i64) (param $url i32) (result i64)
     (call $__b64_dec_raw (local.get $s)
@@ -2815,15 +2825,20 @@ export default (ctx) => {
     (i64.or (i64.shl (i64.extend_i32_u (local.get $i)) (i64.const 32))
       (i64.extend_i32_u (local.get $written))))`)
 
+  // Canonical 16-byte header, hand-written (NOT __alloc_hdr) — same reason
+  // and same fix shape as __b64_from above (the real length is only known
+  // after decoding); closes the same FOURTH-mechanism defect class
+  // (.work/research.md §Region arena) for Uint8Array.fromHex.
   wat('__hex_from', `(func $__hex_from (param $v i64) (result f64)
     (local $s i64) (local $base i32) (local $rw i64) (local $n i32)
     (local.set $s (call $__to_str (local.get $v)))
-    (local.set $base (call $__alloc (i32.add (i32.const 8) (i32.shr_u (call $__str_byteLen (local.get $s)) (i32.const 1)))))
-    (local.set $rw (call $__hex_dec_raw (local.get $s) (i32.add (local.get $base) (i32.const 8)) (i32.const 2147483647)))
+    (local.set $base (call $__alloc (i32.add (i32.const 16) (i32.shr_u (call $__str_byteLen (local.get $s)) (i32.const 1)))))
+    (i64.store (local.get $base) (i64.const 0))
+    (local.set $rw (call $__hex_dec_raw (local.get $s) (i32.add (local.get $base) (i32.const 16)) (i32.const 2147483647)))
     (local.set $n (i32.wrap_i64 (local.get $rw)))
-    (i32.store (local.get $base) (local.get $n))
-    (i32.store (i32.add (local.get $base) (i32.const 4)) (local.get $n))
-    (call $__mkptr (i32.const ${PTR.TYPED}) (i32.const 1) (i32.add (local.get $base) (i32.const 8))))`)
+    (i32.store (i32.add (local.get $base) (i32.const 8)) (local.get $n))
+    (i32.store (i32.add (local.get $base) (i32.const 12)) (local.get $n))
+    (call $__mkptr (i32.const ${PTR.TYPED}) (i32.const 1) (i32.add (local.get $base) (i32.const 16))))`)
 
   wat('__hex_set', `(func $__hex_set (param $dst i64) (param $s i64) (result i64)
     (call $__hex_dec_raw (local.get $s)

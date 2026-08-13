@@ -7246,8 +7246,13 @@ export function emit(node, expect) {
             `(f64.store (i32.add (local.get $${arr}) (i32.const ${i * 8})) (local.get $${name}))`
           ).join(' ')
           const capture = temps.slice().reverse().map(name => `(local.set $${name})`).join(' ')
-          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) (local $${arr} i32) ${tempLocals} ${restLocals}${restPrelude}(call $${node} ${fwd}) ${capture} (local.set $${arr} (call $__alloc (i32.const ${n * 8 + 8}))) (i32.store (local.get $${arr}) (i32.const ${n})) (i32.store (i32.add (local.get $${arr}) (i32.const 4)) (i32.const ${n})) (local.set $${arr} (i32.add (local.get $${arr}) (i32.const 8))) ${stores} (call $__mkptr (i32.const 1) (i32.const 0) (local.get $${arr})))`
-          inc(trampolineName, '__alloc', '__mkptr', ...(restIdx >= 0 ? ['__alloc_hdr'] : []))
+          // Canonical 16-byte header (__alloc_hdr: propsPtr@-16, len@-8,
+          // cap@-4), NOT a hand-rolled (n*8+8) alloc — __dyn_get_t_h's
+          // ARRAY branch always reads the propsPtr word at off-16 (FOURTH
+          // mechanism, .work/research.md §Region arena: a short header
+          // aliases whatever memory preceded the allocation).
+          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) (local $${arr} i32) ${tempLocals} ${restLocals}${restPrelude}(call $${node} ${fwd}) ${capture} (local.set $${arr} (call $__alloc_hdr (i32.const ${n}) (i32.const ${n}))) ${stores} (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $${arr})))`
+          inc(trampolineName, '__alloc_hdr', '__mkptr')
         } else {
           // Rebox the inner result into the uniform closure ABI (always f64).
           const resType = func?.sig.results[0]

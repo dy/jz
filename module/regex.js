@@ -18,7 +18,16 @@ import { VAL } from '../src/reps.js'
 // Captures read from globals $__re_g${i}_start / _end. -1 → undefined.
 const buildMatchArr = (strLocal, msLocal, meLocal, nGroups, groupNames = []) => {
   const N = nGroups + 1
-  inc('__alloc', '__mkptr', '__str_slice')
+  // Canonical 16-byte header (__alloc_hdr: propsPtr@-16, len@-8, cap@-4),
+  // NOT a hand-rolled 8-byte alloc — __dyn_get_t_h's ARRAY branch always
+  // reads the propsPtr word at off-16 (FOURTH mechanism, .work/research.md
+  // §Region arena: a short header aliases whatever memory preceded the
+  // allocation). This array is an especially direct instance: a named-group
+  // match result feeds STRAIGHT into `$__dyn_set` below (`.groups`), so a
+  // missing propsPtr word doesn't just misread stale bytes on a later
+  // access — it corrupts whatever memory preceded this allocation the
+  // moment the dyn-props sidecar is created.
+  inc('__alloc_hdr', '__mkptr', '__str_slice')
   const arr = tempI32('mka')
   const arrPtr = temp('mkap')
   const captures = []
@@ -37,10 +46,8 @@ const buildMatchArr = (strLocal, msLocal, meLocal, nGroups, groupNames = []) => 
     ['else', ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${strLocal}`]],
       ['local.get', `$${captures[i][0]}`], ['local.get', `$${captures[i][1]}`]]]]
   const stmts = [
-    ['local.set', `$${arr}`, ['call', '$__alloc', ['i32.const', 8 + N * 8]]],
-    ['i32.store', ['local.get', `$${arr}`], ['i32.const', N]],
-    ['i32.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 4]], ['i32.const', N]],
-    ['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]],
+    ['local.set', `$${arr}`, ['call', '$__alloc_hdr', ['i32.const', N], ['i32.const', N]]],
+    ['f64.store', ['local.get', `$${arr}`],
       ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${strLocal}`]],
         ['local.get', `$${msLocal}`], ['local.get', `$${meLocal}`]]],
   ]
@@ -49,10 +56,10 @@ const buildMatchArr = (strLocal, msLocal, meLocal, nGroups, groupNames = []) => 
     stmts.push(['local.set', `$${captures[i][1]}`, ['global.get', `$__re_g${i}_end`]])
   }
   for (let i = 1; i <= nGroups; i++) {
-    stmts.push(['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8 + i * 8]],
+    stmts.push(['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', i * 8]],
       captureValue(i)])
   }
-  stmts.push(['local.set', `$${arrPtr}`, mkPtrIR(PTR.ARRAY, 0, ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]])])
+  stmts.push(['local.set', `$${arrPtr}`, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${arr}`])])
   if (named.length) {
     const groups = temp('mkg')
     stmts.push(['local.set', `$${groups}`, ['call', '$__hash_new_small']])
@@ -1399,17 +1406,29 @@ export default (ctx) => {
     // Generate a split-by-regex WAT function for this regex
     const splitName = `__regex_split_${id}`
     if (!ctx.core.stdlib[splitName]) {
-      inc('__str_to_buf', '__str_slice', '__alloc')
+      inc('__str_to_buf', '__str_slice', '__alloc_hdr')
       ctx.core.stdlib[splitName] = `(func $${splitName} (param $str i64) (result f64)
         (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
         (local $mstart i32) (local $mend i32) (local $prevEnd i32)
         (local $arrOff i32) (local $count i32) (local $cap i32)
-        (local $newArr i32) (local $j i32)
+        (local $newArr i32)
         (local.set $off (call $__str_to_buf (local.get $str)))
         (local.set $len (call $__str_byteLen (local.get $str)))
-        ;; Alloc result array (cap=8 initially)
+        ;; Alloc result array via the canonical header allocator (NOT a
+        ;; hand-rolled (i32.const 8)+cap*8 alloc) — __dyn_get_t_h's ARRAY
+        ;; branch unconditionally reads the propsPtr word at off-16 for
+        ;; every ARRAY receiver (module/collection.js); a short header
+        ;; leaves it aliasing whatever memory preceded the allocation,
+        ;; silently correct only on virgin (zeroed) linear memory, wrong
+        ;; once region-arena compaction reuses address ranges (FOURTH
+        ;; mechanism, .work/research.md §Region arena). $arrOff is now the
+        ;; DATA pointer __alloc_hdr returns (already past the 16-byte
+        ;; header), so every store site below drops the old scheme's extra
+        ;; +8 offset. $len passed as 0 (nothing written yet); the real
+        ;; length is patched into the header's len slot once $count is
+        ;; final, mirroring matchAllImpl's two-pass sibling above.
         (local.set $cap (i32.const 8))
-        (local.set $arrOff (call $__alloc (i32.add (i32.const 8) (i32.mul (local.get $cap) (i32.const 8)))))
+        (local.set $arrOff (call $__alloc_hdr (i32.const 0) (local.get $cap)))
         (local.set $prevEnd (i32.const 0))
         (local.set $count (i32.const 0))
         (local.set $pos (i32.const 0))
@@ -1424,20 +1443,18 @@ export default (ctx) => {
           ;; Found match at $pos..$result — slice prevEnd..pos into array
           (local.set $mstart (local.get $pos))
           (local.set $mend (local.get $result))
-          ;; Grow array if at capacity
+          ;; Grow array if at capacity: fresh __alloc_hdr buffer + a plain
+          ;; data copy. This array is purely function-local until the final
+          ;; mkptr below — no other pointer can alias it mid-construction,
+          ;; so (unlike __arr_grow) there is no forwarding header or
+          ;; dyn-props sidecar to preserve across the copy.
           (if (i32.ge_u (local.get $count) (local.get $cap))
             (then
               (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
-              (local.set $newArr (call $__alloc (i32.add (i32.const 8) (i32.mul (local.get $cap) (i32.const 8)))))
-              (local.set $j (i32.const 0))
-              (block $cd (loop $cl
-                (br_if $cd (i32.ge_s (local.get $j) (local.get $count)))
-                (f64.store (i32.add (i32.add (local.get $newArr) (i32.const 8)) (i32.shl (local.get $j) (i32.const 3)))
-                  (f64.load (i32.add (i32.add (local.get $arrOff) (i32.const 8)) (i32.shl (local.get $j) (i32.const 3)))))
-                (local.set $j (i32.add (local.get $j) (i32.const 1)))
-                (br $cl)))
+              (local.set $newArr (call $__alloc_hdr (local.get $count) (local.get $cap)))
+              (memory.copy (local.get $newArr) (local.get $arrOff) (i32.shl (local.get $count) (i32.const 3)))
               (local.set $arrOff (local.get $newArr))))
-          (f64.store (i32.add (i32.add (local.get $arrOff) (i32.const 8)) (i32.mul (local.get $count) (i32.const 8)))
+          (f64.store (i32.add (local.get $arrOff) (i32.shl (local.get $count) (i32.const 3)))
             (call $__str_slice (local.get $str) (local.get $prevEnd) (local.get $mstart)))
           (local.set $count (i32.add (local.get $count) (i32.const 1)))
           (local.set $prevEnd (local.get $mend))
@@ -1448,22 +1465,17 @@ export default (ctx) => {
         (if (i32.ge_u (local.get $count) (local.get $cap))
           (then
             (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
-            (local.set $newArr (call $__alloc (i32.add (i32.const 8) (i32.mul (local.get $cap) (i32.const 8)))))
-            (local.set $j (i32.const 0))
-            (block $cd2 (loop $cl2
-              (br_if $cd2 (i32.ge_s (local.get $j) (local.get $count)))
-              (f64.store (i32.add (i32.add (local.get $newArr) (i32.const 8)) (i32.shl (local.get $j) (i32.const 3)))
-                (f64.load (i32.add (i32.add (local.get $arrOff) (i32.const 8)) (i32.shl (local.get $j) (i32.const 3)))))
-              (local.set $j (i32.add (local.get $j) (i32.const 1)))
-              (br $cl2)))
+            (local.set $newArr (call $__alloc_hdr (local.get $count) (local.get $cap)))
+            (memory.copy (local.get $newArr) (local.get $arrOff) (i32.shl (local.get $count) (i32.const 3)))
             (local.set $arrOff (local.get $newArr))))
-        (f64.store (i32.add (i32.add (local.get $arrOff) (i32.const 8)) (i32.mul (local.get $count) (i32.const 8)))
+        (f64.store (i32.add (local.get $arrOff) (i32.shl (local.get $count) (i32.const 3)))
           (call $__str_slice (local.get $str) (local.get $prevEnd) (local.get $len)))
         (local.set $count (i32.add (local.get $count) (i32.const 1)))
-        ;; Write array header (len + cap at arrOff)
-        (i32.store (local.get $arrOff) (local.get $count))
-        (i32.store (i32.add (local.get $arrOff) (i32.const 4)) (local.get $cap))
-        (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (i32.add (local.get $arrOff) (i32.const 8))))`
+        ;; Patch final length into the header (cap is already correct from
+        ;; the last __alloc_hdr call above; propsPtr was zeroed by
+        ;; __alloc_hdr and never touched since — a fresh internal array).
+        (i32.store (i32.sub (local.get $arrOff) (i32.const 8)) (local.get $count))
+        (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $arrOff)))`
       inc(splitName)
     }
 
