@@ -136,6 +136,96 @@ export const durableFwdLogIR = (off, newOff, len, cap) => {
       (then (call $__durable_fwd_log (local.get $${off}) (local.get $${len}) (local.get $${cap}))))`
 }
 
+// IN-PLACE sibling of durableFwdLogIR: a header whose GROWTH still fits inside
+// its existing capacity never relocates, so durableFwdLogIR's off/newOff-cross
+// gate never fires for it — but the header's `len` word is about to advance
+// past its post-__start value exactly as ephemerally as a relocating grow's,
+// and unlike the relocating case nothing else logs it. Call this immediately
+// BEFORE the len word is overwritten (array.js's __arr_push1/
+// __arr_set_idx_ptr/__arr_set_length/__arr_unshift/__arr_splice, core.js's
+// __set_len) so `__durable_fwd_log` still captures the header's true
+// pre-round (len, cap) — it reads both fresh off the header itself, so no
+// extra locals are needed at the call site. `__durable_fwd_log`'s own
+// idempotent-per-`off` scan (core.js) makes this safe to call on EVERY write,
+// relocating or not: only the FIRST touch of a given durable header each
+// round ever records anything, so N in-place writes before an eventual grow
+// (or none at all) all converge on the one correct original snapshot.
+export const durableLenLogIR = (base) => {
+  if (!ctx.scope.globals.has('__heap_reset')) return ''
+  return `
+    (if (i32.lt_u (local.get $${base}) ${heapResetWat()})
+      (then (call $__durable_fwd_log (local.get $${base})
+        (i32.load (i32.sub (local.get $${base}) (i32.const 8)))
+        (i32.load (i32.sub (local.get $${base}) (i32.const 4))))))`
+}
+
+// ARRAY-only sibling of durableLenLogIR/durableFwdLogIR: those two heal a durable
+// header's (len, cap) WORDS but never touch the CELLS between them — every in-place
+// element write (`arr[i]=x` on an existing index, .splice/.copyWithin/.unshift's
+// memory.copy shifts, .reverse/.sort's swaps, .fill's overwrite, and a `.length=`
+// grow-in-place refill re-entering indices a same-round shrink narrowed past)
+// mutates DURABLE data cells with no log at all, so `_clear()`'s header-only heal
+// restores the right LENGTH but round 2 still reads round 1's leftover bytes at
+// every surviving index (.work/research.md's own repro: `a.splice(1,2)` on
+// `[1,2,3,4,5]` gave `3` both rounds — length healed — but the SURVIVING elements
+// differed round to round). HASH/SET/MAP don't have this gap because their entries
+// are individually addressed and durableEntryLogIR/durableSlotLogIR already log
+// each one; an array's N element cells have no such per-slot identity to hang a
+// per-write log off without paying an idempotent-scan on EVERY store — ruinous for
+// .sort()/.reverse() (O(n) or O(n log n) swaps, each a separate write) and no
+// cheaper than the alternative below for the bulk ops (.fill/.splice/.copyWithin)
+// that dominate the broken-op list.
+//
+// Fix: WHOLE-ARRAY snapshot-on-first-touch, not per-element logging. The first
+// mutating call of a round to a given durable array (header-changing OR
+// element-changing — `__durable_arr_snap`'s own idempotent-per-`off` scan, mirroring
+// `__durable_fwd_log`'s, makes call ORDER irrelevant: whichever site touches this
+// array first this round does the real work, every later site this round is a cheap
+// no-op) memcpy's its CURRENT `len*8` live bytes into a fresh shadow buffer and logs
+// (off, len, cap, shadow) — ONE bounded copy per touched durable array per round,
+// not one log call per element write. `_clear()`'s `__durable_arr_heal` (core.js)
+// restores the header words from the log AND memcpy's the shadow back — exact
+// byte-for-byte data recovery (unlike durableSlotLogIR's collection-value heal,
+// which only guarantees "not a dangling pointer" and gives up the true prior value
+// as unrecoverable; arrays need the true value back, not just a safe substitute, to
+// satisfy the splice repro's "reads back wrong DATA" complaint). Reading CURRENT
+// len at the call site is only safe because it's captured at the round's true FIRST
+// touch (idempotency, same reasoning as durableLenLogIR) — every LATER call this
+// round, however it got there, is protected by an ALREADY-correct snapshot.
+// ARRAY-only by design: replaces durableLenLogIR/durableFwdLogIR at every array.js
+// call site (arrGrow's relocation, __arr_set_idx_ptr, __arr_push1, __arr_set_length,
+// __arr_unshift, __arr_splice, __arr_fill, __arr_copyWithin, .reverse, .sort) except
+// __arr_shift (left on the old header-only mechanism — see that function's own
+// comment: an in-place shift's rebasing is documented as legitimate persistent
+// state, a header-identity choice orthogonal to per-element data corruption, not
+// touched by this fix) and __set_len's non-ARRAY branch (TYPED/HASH/SET/MAP share
+// __set_len's generic tag dispatch but have different entry strides — this helper's
+// `len*8`-byte-cell assumption is array-specific; __set_len keeps durableLenLogIR
+// for those). Collections keep durableFwdLogIR/durableLenLogIR unchanged for their
+// OWN table-header growth — this is a parallel, independent mechanism, not a
+// replacement of the shared one.
+export const durableArrSnapIR = (base) => {
+  if (!ctx.scope.globals.has('__heap_reset')) return ''
+  return `
+    (if (i32.lt_u (local.get $${base}) ${heapResetWat()})
+      (then (call $__durable_arr_snap (local.get $${base}))))`
+}
+
+// IR-node (array-tree) twin of durableArrSnapIR, for the two array mutators built as
+// raw IR arrays instead of WAT-template strings (.reverse/.sort — emitArrayReverseInPlace/
+// emitArraySortInPlace, module/array.js — a callback comparator can't be spliced into a
+// backtick template) and the no-insert-args `.splice(start, count)` inline emitter
+// (ctx.core.emit['.splice'], module/array.js), which was found — in the course of this
+// fix — to have NO durable header-length log at all (a separate, narrower gap than the
+// per-element one, since it's a DIFFERENT code path than the `__arr_splice` stdlib
+// function the heal-length session patched: that one only handles the WITH-inserts
+// overload). This one call, added to that emitter, fixes both gaps for that path at once.
+export const durableArrSnapNode = (base) => {
+  if (!ctx.scope.globals.has('__heap_reset')) return ['nop']
+  return ['if', ['i32.lt_u', ['local.get', `$${base}`], ['global.get', '$__heap_reset']],
+    ['then', ['call', '$__durable_arr_snap', ['local.get', `$${base}`]]]]
+}
+
 // Value-write sibling of durableFwdLogIR: an EPHEMERAL boxed value stored into a
 // DURABLE collection slot dangles across `_clear` (the corpus-wide warm trap — a
 // durable memo dict handing round-1 node arrays into round-2's tree). Log the slot

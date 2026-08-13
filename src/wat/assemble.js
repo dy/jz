@@ -851,7 +851,8 @@ export function pullStdlib(sec) {
       if (!ctx.memory.shared && ctx.scope.globals.has('__heap_reset')) {
         const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
         const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start', '__dyn_props', '__dyn_props_filter',
-          '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n', '__gsnap_base',
+          '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n',
+          '__durable_arr_buf', '__durable_arr_n', '__gsnap_base',
           '__enumc_off', '__enumc_len', '__enumc_arr'])
         const runtimeWritten = new Set()
         const scanSet = (node) => {
@@ -915,6 +916,35 @@ export function pullStdlib(sec) {
           const tail = startFn[startFn.length - 1]
           if (Array.isArray(tail) && tail[0] === 'call' && tail[1] === '$__timer_loop') startFn.splice(startFn.length - 1, 0, ...inject)
           else startFn.push(...inject)
+          // __heap_reset's DECLARED init is HEAP.START (the static-data-end address —
+          // correct for the no-__start case, where it never gets overwritten and IS the
+          // true rewind point). But every durable-vs-ephemeral guard (durableFwdLogIR/
+          // durableLenLogIR/durableSlotLogIR/durableEntryLogIR — collection.js) reads
+          // $__heap_reset's CURRENT value, and while __start is STILL RUNNING (before the
+          // `capture` instruction just injected above), that current value is still the
+          // stale HEAP.START — which sits ABOVE the low reserved/static-data region a
+          // compile-time-constant literal (array/object/collection built entirely from
+          // literals) gets folded into. Any IN-PLACE header mutation of such a literal
+          // reachable from module-level (non-function) init code — e.g. `let a = [1,2,3];
+          // a.length = 2` at top level — then reads its own low static address as "off <
+          // __heap_reset" and WRONGLY logs itself as a durable→this-round mutation to heal
+          // away, even though it's establishing THIS module's own post-__start baseline,
+          // not a runtime round's transient state. `_clear()` then "heals" it back to its
+          // PRE-init-mutation content — corrupting the very state `_clear()` is supposed to
+          // restore TO (native repro: `let a=[1,2,3,4,5,6,7,8]; a.length=5` then a BARE
+          // `_clear()` with no other call reads the array back as all 8 original elements,
+          // not the 5 the top-level truncate left it at). Fix: sentinel $__heap_reset to 0
+          // (below every real, unsigned pointer — the reserved low region already treats
+          // <8 as null/invalid, so 0 is never a live object's own address) as the FIRST
+          // instruction of `__start`'s body, before any of its own init code runs. Every
+          // guard above is `offset < $__heap_reset`-shaped (or `>=` for __is_eph_bits, same
+          // polarity), so while __start executes, EVERY offset — static-low or freshly
+          // heap-allocated — reads as "not durable yet", and none of the four helpers logs
+          // anything (correct: __start has no prior round to protect against). The existing
+          // end-of-body `capture` above restores the TRUE semantics — $__heap_reset becomes
+          // the real post-init watermark — the instant __start finishes, unchanged for
+          // every caller after that point.
+          startFn.splice(findBodyStart(startFn), 0, ['global.set', '$__heap_reset', ['i32.const', 0]])
           }
         }
       }
@@ -976,6 +1006,16 @@ export function pullStdlib(sec) {
         // get/set only).
         inc('__durable_fwd_heal')
         resets.push(`(call $__durable_fwd_heal)`)
+      }
+      // Durable ARRAY element-data heal (module/collection.js's durableArrSnapIR/
+      // durableArrSnapNode, core.js's __durable_arr_snap/__durable_arr_heal — the
+      // per-array-element sibling of the header-only fwd heal above; see either
+      // helper's doc comment for the full rationale). Same explicit-include
+      // reasoning as __durable_fwd_heal just above (its only call site is this
+      // injected text).
+      if (ctx.core.includes.has('__durable_arr_snap')) {
+        inc('__durable_arr_heal')
+        resets.push(`(call $__durable_arr_heal)`)
       }
       // Durable SLOT heal (core.js __durable_slot_log/__durable_slot_heal — the
       // entry/value sibling of the relocation heal above): every logged durable

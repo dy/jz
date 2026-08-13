@@ -590,6 +590,181 @@ test('_clear() heals ephemeral values written into DURABLE collection slots', ()
   is(exports.main(), 7, 'round 2: healed entry reads undefined → memo rebuilds, no stale read')
 })
 
+test('_clear() heals a durable array header past IN-PLACE growth, not just relocation', () => {
+  // Root-caused from .work/research.md's banked lead 2 ("warm _clear() corruption
+  // non-repro… new durable-array heal length defect banked"): `site.length` read
+  // 154 instead of 150 after one push-grow-clear-regrow round. `let site = []`
+  // gets a __start capacity of 4 — the first 4 pushes of a round fit IN PLACE
+  // (len bumped 0→1→2→3→4 directly on the durable header, no relocation, so
+  // arrGrow's own durableFwdLogIR — gated on off/newOff crossing the durable/
+  // ephemeral boundary — never fires). Only the 5th push crosses into a fresh
+  // ephemeral block and finally logs, but by then it reads len=4 off the header,
+  // not the header's true post-__start value of 0. `__durable_fwd_heal` then
+  // "restored" the header to a length it never had: healed len 4 + this round's
+  // 150 real pushes = 154. The fix (module/collection.js durableLenLogIR, called
+  // from every in-place length-mutating site, idempotent via
+  // __durable_fwd_log's now-dedup-per-`off` scan in module/core.js) captures the
+  // header's true (len, cap) on the FIRST touch of a round — in place or
+  // relocating — so N in-place writes before an eventual grow all converge on
+  // the one correct snapshot.
+  const { exports } = jz(`
+    let site = []
+    export let grow = (n) => { for (let i = 0; i < n; i++) site.push(i + '|' + i); return site.length }`,
+    { optimize: false })
+  is(exports.grow(150), 150, 'round 1: 150 real pushes')
+  exports._clear()
+  is(exports.grow(150), 150, 'round 2: healed length is exactly 150, not 154')
+  exports._clear()
+  is(exports.grow(150), 150, 'round 3: still exactly 150 — the fix is not a one-shot coincidence')
+})
+
+test('_clear() heals in-place length writes on the OTHER durable-array length sites', () => {
+  // durableLenLogIR (module/collection.js) is called from every site that can
+  // write a durable array header's `len` word without relocating — not just
+  // __arr_push1 (the test above): __arr_set_idx_ptr (index assignment past the
+  // current length), __arr_set_length (`.length =`), __arr_unshift, and
+  // core.js's __set_len (`.pop()`). Each gets its own durable array here, grown/
+  // shrunk once, `_clear()`d, then repeated — the SAME operation must read back
+  // the SAME result both rounds if the header truly reset to its post-__start
+  // state.
+  const { exports } = jz(`
+    let idx = [1, 2]
+    export let setIdx = (n) => { idx[n] = 9; return idx.length }
+    let len = [1, 2]
+    export let setLen = (n) => { len.length = n; return len.length }
+    let uns = [1, 2]
+    export let unshift = (n) => { for (let i = 0; i < n; i++) uns.unshift(i); return uns.length }
+    let pp = [1, 2, 3, 4, 5]
+    export let pop = (n) => { let v; for (let i = 0; i < n; i++) v = pp.pop(); return pp.length }`,
+    { optimize: false })
+  is(exports.setIdx(5), 6, 'round 1: index-assign grows past length in place')
+  exports._clear()
+  is(exports.setIdx(5), 6, 'round 2: same result — no leaked round-1 length')
+
+  is(exports.setLen(6), 6, 'round 1: .length = grows within/past capacity')
+  exports._clear()
+  is(exports.setLen(6), 6, 'round 2: same result')
+
+  is(exports.unshift(3), 5, 'round 1: unshift grows in place')
+  exports._clear()
+  is(exports.unshift(3), 5, 'round 2: same result')
+
+  is(exports.pop(2), 3, 'round 1: pop shrinks in place')
+  exports._clear()
+  is(exports.pop(2), 3, 'round 2: same result — the original popped elements are back')
+})
+
+// Root-cause prerequisite for the per-element fix below (found while building it,
+// not the length-heal session): every durable-vs-ephemeral guard (durableFwdLogIR/
+// durableLenLogIR/durableArrSnapIR/durableSlotLogIR/durableEntryLogIR) tests
+// `offset < $__heap_reset`. `$__heap_reset` is only captured to its TRUE post-init
+// watermark as the LAST thing `__start` does — while `__start` is still running its
+// OWN body, the global still reads its declared constant (HEAP.START, the
+// static-data-end address). A compile-time-constant literal (array/hash/set/map
+// built entirely from literals) gets folded BELOW that address — so any in-place
+// header mutation reachable from module-level (non-function) init code, e.g.
+// `let a = [1,2,3,4,5,6,7,8]; a.length = 5` as top-level statements, reads its own
+// low static address as "< __heap_reset" and wrongly logs itself as a this-round
+// mutation to heal AWAY — even though it's establishing the module's own
+// post-__start baseline. `_clear()` then "heals" the array back to its
+// PRE-init-truncation content, corrupting the very state `_clear()` exists to
+// restore TO. Fixed in src/wat/assemble.js by sentinel-ing `$__heap_reset` to 0 as
+// the first instruction of `__start`'s own body (below every real pointer — nothing
+// durable yet while `__start` runs), so every guard reads "not durable yet"
+// throughout init; the pre-existing end-of-body capture still sets the TRUE
+// watermark the instant `__start` finishes.
+test('_clear() does not corrupt a durable array whose header is mutated by MODULE-LEVEL (non-function) init code', () => {
+  const { exports } = jz(`
+    let a = [1,2,3,4,5,6,7,8]
+    a.length = 5
+    export let dump = () => a.join(',')`,
+    { optimize: false })
+  is(exports.dump(), '1,2,3,4,5', 'post-init: the top-level truncate already ran')
+  exports._clear()
+  is(exports.dump(), '1,2,3,4,5', 'a bare _clear() with no other call must not revert past the top-level truncate')
+  exports._clear()
+  is(exports.dump(), '1,2,3,4,5', 'repeated bare _clear() — not a one-shot coincidence')
+})
+
+// splice-heal-2026-08-13: the length fix above heals the HEADER (len/cap) but a
+// durable array has no per-ELEMENT heal at all — in-place mutations of EXISTING
+// cells (arr[i]= on an in-bounds index, splice/copyWithin/unshift's memory.copy
+// shifts, reverse/sort's swaps, fill's overwrite, and a `.length=` grow-in-place
+// refill re-entering indices a same-round shrink narrowed past) leak round 1's
+// bytes into round 2 even though the LENGTH reads back correct — banked lead from
+// .work/research.md's own heal-length entry (`a.splice(1,2)` on `[1,2,3,4,5]` gave
+// `3` both rounds, length healed, but the SURVIVING elements differed round to
+// round). Each case below: mutate a durable array, `_clear()`, re-run the exact
+// same operation — a correct heal means round 2 gives the SAME answer as round 1
+// (starting from the same restored [1,2,3,4,5] baseline both times), not round 1's
+// leftover data feeding into round 2's computation.
+test('_clear() heals a durable array\'s ELEMENT DATA, not just its header, across every in-place mutator', () => {
+  const { exports } = jz(`
+    let a1 = [1,2,3,4,5]
+    export let idx = () => { a1[1] = 99; return a1.join(',') }
+    let a2 = [1,2,3,4,5]
+    export let splice = () => { a2.splice(1,2); return a2.join(',') }
+    let a3 = [1,2,3,4,5]
+    export let spliceIns = () => { a3.splice(1,2,99); return a3.join(',') }
+    let a4 = [1,2,3,4,5]
+    export let copyWithin = () => { a4.copyWithin(0,3); return a4.join(',') }
+    let a5 = [1,2,3,4,5]
+    export let reverse = () => { a5.reverse(); return a5.join(',') }
+    let a6 = [5,3,1,4,2]
+    export let sort = () => { a6.sort(); return a6.join(',') }
+    let a7 = [1,2,3,4,5]
+    export let fill = () => { a7.fill(9,1,3); return a7.join(',') }
+    let a8 = [1,2,3,4,5,6,7,8]
+    a8.length = 5
+    export let unshiftInPlace = () => { a8.unshift(9); return a8.join(',') }`,
+    { optimize: false })
+  const ops = {
+    idx: '1,99,3,4,5', splice: '1,4,5', spliceIns: '1,99,4,5', copyWithin: '4,5,3,4,5',
+    reverse: '5,4,3,2,1', sort: '1,2,3,4,5', fill: '1,9,9,4,5', unshiftInPlace: '9,1,2,3,4,5',
+  }
+  for (const [name, expect] of Object.entries(ops)) is(exports[name](), expect, `${name}: round 1`)
+  exports._clear()
+  for (const [name, expect] of Object.entries(ops)) is(exports[name](), expect, `${name}: round 2 — same answer as round 1, not round 1's leftover data`)
+  exports._clear()
+  for (const [name, expect] of Object.entries(ops)) is(exports[name](), expect, `${name}: round 3 — not a one-shot coincidence`)
+})
+
+// A `.length=` shrink-then-grow WITHIN one round re-enters indices a prior same-round
+// truncate narrowed past — the undefined-fill loop for the grow overwrites TRUE
+// original data with `undefined` unless the array-wide snapshot was taken before
+// EITHER length write this round (not just the second one).
+test('_clear() heals a durable array\'s data past a same-round shrink-then-grow `.length=` pair', () => {
+  const { exports } = jz(`
+    let a = [1,2,3,4,5]
+    export let f = () => { a.length = 2; a.length = 5; return a.join(',') }`,
+    { optimize: false })
+  is(exports.f(), '1,2,undefined,undefined,undefined', 'round 1')
+  exports._clear()
+  is(exports.f(), '1,2,undefined,undefined,undefined', 'round 2 — same answer, not a further-eroded array')
+})
+
+// .shift()'s in-place rebasing is documented (module/array.js, __arr_shift's own
+// comment) as INTENTIONALLY surviving `_clear()` — a durable array's header pointer
+// permanently advances, treated as legitimate persistent state, not a per-round
+// mutation to undo. This is a deliberate, narrower design choice than the element-data
+// heal above: shift never corrupts any surviving element's VALUE (every element that
+// survives a shift keeps its true original content, byte-for-byte — nothing here is a
+// data-corruption bug), it only changes which physical cells count as "the array" —
+// pinning the KNOWN, ACCEPTED behavior (compounds across rounds) so a future change
+// to this design is a deliberate, visible diff here, not a silent regression.
+test('_clear() does NOT heal .shift()\'s header rebasing (documented intentional, not a per-element data bug)', () => {
+  const { exports } = jz(`
+    let a = [1,2,3,4,5]
+    export let f = () => a.shift()
+    export let dump = () => a.join(',')`,
+    { optimize: false })
+  is(exports.f(), 1, 'round 1: shift returns the first element')
+  is(exports.dump(), '2,3,4,5', 'round 1: remaining elements, in place')
+  exports._clear()
+  is(exports.f(), 2, 'round 2: NOT healed back to 1 — the rebasing persisted through _clear()')
+  is(exports.dump(), '3,4,5', 'round 2: one element shorter than round 1 — compounds, by design')
+})
+
 // Relocation-forwarding bound check (layout.js followForwardingWat/ptrOffsetFwdWat):
 // every ARRAY/SET/MAP/HASH pointer dereference validates its offset against
 // "memory.size() * 65536" before trusting a cap=-1 forwarding sentinel. That bound

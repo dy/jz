@@ -10708,3 +10708,656 @@ self-build ×2 SHA-256 identical (`dist/jz.wasm` `b1b82b6e…`, `dist/jz.js`
 `src/ir.js`) was reverted (`git checkout --`) before this entry was
 written; `git status --short` / `git diff --stat` clean except this
 ledger entry.
+
+## §durable-array-forward-heal length defect: root-caused and fixed —
+## banked lead 2 closed (2026-08-13)
+
+**Task.** The previous entry's lead 2: `site.length` reads `154` instead
+of `150` after one push-grow-`_clear()`-regrow round on a durable
+module-level array — reproducible on demand, native, no self-hosting.
+Root-cause at the engine level and fix the `_clear()` heal contract
+(every durable module global must read exactly its post-`__start`
+state), not the symptom.
+
+**Repro.** Isolated worktree (`/private/tmp/.../heal-length`, branch
+`heal-length-2026-08-13`, base `8d490c32` = main tip, `node_modules`
+symlinked from the main checkout — confirmed byte-identical before and
+after, `find node_modules/watr -type f | sort | xargs shasum -a 256 |
+shasum -a 256` = `3e5f7e1b819de9…` both times, `watr@5.7.14`).
+
+```js
+let site = []
+export let grow = (n) => { for (let i = 0; i < n; i++) site.push(i + '|' + i); return site.length }
+```
+`grow(150)` → `150`. `_clear()`. `grow(150)` again → `154`, not `150`.
+Pinned as two new tests in `test/mem.js`.
+
+**Root cause.** `let site = []` gets a `__start` capacity of 4
+(`__alloc_hdr(0, 4)`, confirmed via `compile(src, {wat:true})`). The
+first 4 pushes of round 1 fit IN PLACE — `__arr_push1`'s fast path bumps
+the durable header's `len` word directly (0→1→2→3→4) because capacity
+covers it, so `__arr_grow_known` is never called and nothing logs
+anything. Only the 5th push crosses the capacity boundary and calls
+`__arr_grow_known`, which relocates the header into a fresh ephemeral
+block and — via `durableFwdLogIR` (module/collection.js) — logs `(off,
+len, cap)` to `__durable_fwd_log` so `_clear()`'s `__durable_fwd_heal`
+can restore it. But the `len` it reads at that point (module/array.js
+`arrGrow`, `local.set $len (i32.load (i32.sub off 8))`) is the header's
+CURRENT value — `4`, already advanced by the 4 unlogged in-place
+pushes — not the header's true post-`__start` value of `0`. Healing
+"restores" the header to a length it never had. Round 2 then starts
+from a phantom `len=4`, and since `cap` is still `4`, the very first
+push of round 2 ALSO grows (4 < 5), copying 4 cells of round-1's stale
+data into the new block before continuing: `4 + 150 = 154`, exactly the
+observed defect.
+
+The same gap exists at every other site that can write a durable
+array's `len` word in place, not just push: `__arr_set_idx_ptr` (index
+assignment past current length, when the header already has spare
+capacity), `__arr_set_length` (`.length =`, both the grow-in-place and
+pure-truncate cases), `__arr_unshift`, `__arr_splice`, and `__set_len`
+(core.js, `.pop()`'s sole caller). All five previously called
+`__arr_grow`/`__arr_grow_known` (whose OWN relocation path is correctly
+logged) but then wrote the header's `len` unconditionally afterward with
+no log of their own — silently correct only when growth happened to
+relocate on the very first touch of the round, silently wrong whenever
+spare `__start` capacity let one or more writes land in place first.
+
+By contrast HASH/SET/MAP already get this right: `genUpsert`/
+`genUpsertGrow` (module/collection.js) call `durableEntryLogIR` at
+EVERY new-entry insert, in place or relocating, and `__durable_slot_heal`
+zombie-decrements one per logged entry at `_clear()` time — a
+self-correcting per-insert log, not a single before/after snapshot.
+Arrays never had the equivalent; `durableFwdLogIR`'s single (len, cap)
+snapshot only worked correctly on the lucky case where the first grow
+of a round happens to be the very first write.
+
+**Fix.** `module/core.js`'s `__durable_fwd_log` is now idempotent per
+`off` (scans pending entries first, no-ops on a duplicate) — the FIRST
+touch of a durable header each round records the true (len, cap); every
+later touch this round is a safe no-op. `module/collection.js` adds
+`durableLenLogIR(base)`, the in-place sibling of `durableFwdLogIR`: it
+reads `len`/`cap` fresh off the header and logs them (subject to the
+same idempotent dedup) if `base` is still durable. Wired into all five
+in-place length-write sites named above — `module/array.js`'s
+`__arr_push1`/`__arr_set_idx_ptr`/`__arr_set_length`/`__arr_unshift`/
+`__arr_splice`, and `module/core.js`'s `__set_len` — immediately before
+each one's final `len`-word store, plus the matching explicit `deps()`
+edges (self-host's regex auto-dep scan can't discover a call reachable
+only through template interpolation, same rationale as the existing
+`arrayGrowDeps`/`__arr_shift` comments). `__arr_shift` was deliberately
+left untouched — its own comment documents that an in-place shift is
+meant to survive `_clear()` (durable data staying durable), a different
+contract than growth being undone; not touched or re-examined here.
+
+**A separate, pre-existing, NOT fixed defect found in passing.**
+`.splice()` on a durable array reads back wrong DATA (not length) after
+one `_clear()` round — `a.splice(1,2)` on `[1,2,3,4,5]` gives `3` both
+rounds (length is healed correctly by this fix) but the SURVIVING
+elements differ round to round (`[1,4,5]` vs a stale round-1 remnant).
+Reproduces identically on unmodified `8d490c32` (confirmed via
+`git stash`), so unrelated to this fix. Root cause is almost certainly
+that `.splice()`'s tail-shift `memory.copy` mutates a durable array's
+DATA cells in place with no equivalent of `durableSlotLogIR` (which
+only exists for HASH/MAP/SET value writes, module/collection.js) — an
+array has no per-element durable-write heal at all, only the header
+(len/cap) heal this session closes. Banked as a new lead for whoever
+picks this up next; out of scope here (task was specifically the
+length defect).
+
+**Gates.** New tests (`test/mem.js`, 2 tests / 11 assertions) green.
+`node test/selfhost.js`: **21/21** (206 assertions). Native `npm test`:
+3440 total / **3432 pass** / **2 fail** / 6 skip — `typed RMW` (banked,
+pre-existing, matches the prior entry's own gate run) and `web-smoke`
+(pre-existing, reproduces identically on unmodified `8d490c32` via
+direct `node test/web-smoke.js` in the main checkout — `@esbuild/
+darwin-arm64` optional binary missing from the shared `node_modules`,
+an ambient environment gap unrelated to this fix; not touched, since
+fixing it means `npm install`ing into node_modules shared with other
+active agent sessions). `test:wasm`: 2735 total / **2729 pass** / **0
+fail** / 6 skip.
+
+**perf-ratchet re-baselined, justified.** The fix's guards are genuine,
+small, per-call-site runtime branches — closing a real correctness gap
+necessarily costs a few static WAT nodes at each of the five in-place
+sites, and `test/perf-ratchet.js` counts instructions lexically inside
+loops (a machine-independent codegen-size proxy), so any of those five
+functions getting inlined into a hot loop bumps its count regardless of
+whether the new branch is ever taken at runtime for that particular
+program. Confirmed by category: `buf`/`slice`/`ring`/`fgather` (+80
+each) and `condref` (+840, two array receivers per iteration) all
+exercise `arr[i] = …` past/at the current length, i.e. `__arr_set_idx_ptr`'s
+grow branch — the one site where the caller's own pre-check (`i >=
+oldLen`, a LENGTH comparison) does not guarantee `__arr_grow`'s internal
+check (`oldCap >= minCap`, a CAPACITY comparison) always relocates, so
+the guard can't be hoisted out of the inlined body the way it could for
+`__arr_push1`/`__arr_set_length` (there the caller's pre-check IS the
+same condition as `__arr_grow`'s, so grow reached from those two sites
+always relocates and needs no separate in-place guard — confirmed by
+inspection, not applied as a further optimization here since it doesn't
+touch the sites the benchmarks actually exercise). Re-baselined via
+`node test/perf-ratchet.js --update`; `int`/`float`/`mixed`/`cond`/`nest`
+unchanged (0 delta — no array-length-write in their hot loops).
+
+**Self-build ×2.** `npm run build` (`scripts/build-dist.mjs`) is blocked
+by the same pre-existing missing-esbuild-binary gap as `web-smoke`
+above (reproduces on unmodified `8d490c32`) before it ever reaches the
+`dist/jz.wasm` step, so the exact `npm run build` ×2 comparison could
+not run in this environment. Substituted the isolated, esbuild-free
+`node scripts/selfhost-build.mjs` (compiles `scripts/self.js` through
+the native pipeline into `dist/jz.wasm`, the same self-host artifact
+`test:wasm`'s `test/kernel-target.js` builds and gates on) run twice:
+SHA-256 **`77f79a90ded66b8705662942b1b6e1d0fa7d9ca3a7f07f92c8fdc5d9435ce321`**
+both times, `16971781` bytes both times.
+
+**Files.** `module/core.js` (`__durable_fwd_log` idempotent-per-`off`
+scan; `__set_len` durableLenLogIR call + deps edge), `module/collection.js`
+(`durableLenLogIR` export), `module/array.js` (five call sites +
+explicit deps edges), `test/mem.js` (2 new regression tests),
+`test/perf-ratchet.json` (re-baselined, justified above). Branch
+`heal-length-2026-08-13`, base `8d490c32`.
+
+## §durable-array PER-ELEMENT heal: root-caused and fixed — the previous
+## entry's own banked lead closed (2026-08-13)
+
+**Task.** The previous entry's own "separate, pre-existing, NOT fixed defect
+found in passing": `.splice()` on a durable array reads back wrong DATA (not
+length) after one `_clear()` round — `a.splice(1,2)` on `[1,2,3,4,5]` gave
+`[1,4,5]` round 1 but a stale round-1 remnant round 2, even though the LENGTH
+healed correctly. HASH/SET/MAP already log every insert (`durableEntryLogIR`)
+and every durable-slot value overwrite (`durableSlotLogIR`); arrays only heal
+the header (len/cap) — no in-place ELEMENT write is logged at all. Survey the
+whole mutation class, design and fix at the engine level, composing with
+(not undoing) the length fix above.
+
+**Repro setup.** Isolated worktree (`/private/tmp/.../splice-heal`, branch
+`splice-heal-2026-08-13`, base `937dc7ae` = the length-fix tip, `node_modules`
+symlinked from the main checkout — confirmed `watr@5.7.14` at session start).
+
+**Mutation-class matrix.** Probed every in-place array mutator with a
+"read-before, mutate, `_clear()`, read-before again" harness (not just
+"mutate twice and compare" — that shape masks bugs whenever the SAME op
+applied twice to already-corrupted state happens to reproduce round 1's
+answer by coincidence, e.g. `.copyWithin(0,3)` re-reading a source range
+neither call ever touches, or `arr[i]=99` writing the identical literal both
+rounds — both false-negative in an earlier, cruder probe pass before this
+methodology fix):
+
+| Operation | Broken (pre-fix)? | Note |
+|---|---|---|
+| `arr[i] = x` (i < length, in-bounds) | **YES** | zero durable protection at all — only the grow branch (i ≥ length) ever called a log, since only THAT branch touches the length word |
+| `.splice(start, count)` — **no insert args** | **YES**, and separately **missing the header-length log too** | a wholly SEPARATE inline-IR emitter (`ctx.core.emit['.splice']`) from the `__arr_splice` stdlib function the length-fix session patched — that fix never reached this path at all |
+| `.splice(start, count, ...items)` — with inserts | **YES** (data only; length already correct) | the `__arr_splice` stdlib function, the one the length fix touched |
+| `.copyWithin()` | **YES** | |
+| `.reverse()` | **YES** | round 2 undoes round 1's own reversal (physical swap never logged, so "healing" via header alone does nothing and round 2 re-reverses already-reversed data) |
+| `.sort()` | **YES** | |
+| `.fill()` | **YES** | |
+| `.unshift()` — spare capacity (non-relocating) | **YES** | only reproduces when the array has slack cap (a tightly-packed literal always relocates on unshift, which — via `arrGrow`'s own header log — accidentally self-heals; not a general guarantee) |
+| `.unshift()` — zero spare capacity (always relocates) | no (incidentally) | see above |
+| `.push()` | no | only ever appends past the current length; never overwrites a cell that held pre-round data |
+| `.length = n` (grow, first touch this round) | no | fills only genuinely-new indices |
+| `.length = n` shrink-then-grow, same round | **YES** | a later same-round grow's undefined-fill can re-enter indices a same-round SHRINK narrowed past, stomping true original data that was never physically erased |
+| `.pop()` (`__set_len`) | no | only writes the length word |
+| `.shift()` | **NO — but not by accident; see verdict below** | |
+
+**`.shift()` verdict (explicitly asked for).** `.shift()`'s in-place design
+(array.js's own comment on `__arr_shift`) is documented as intentional: the
+header rebases forward by 8 bytes every call and is deliberately NOT
+restored by `_clear()` — "an in-place shift is meant to survive `_clear()`
+… a different contract than growth being undone." Confirmed via probe: a
+durable array shifted once, `_clear()`d, and shifted again reads one element
+SHORTER than round 1 (`2,3,4,5` → `3,4,5`, not back to `1,2,3,4,5`) —
+compounding forever, never healed. Does this violate the per-ELEMENT heal
+contract this session closes? **No.** Shift's rebasing never overwrites any
+element's byte content — every element that survives a shift keeps its true
+original VALUE, byte-for-byte; the ONLY thing that changes is which physical
+cells count as "the array" (a header/pointer-identity choice), not what's
+written into any of them. That said, it DOES violate the broader stated goal
+("`_clear()` restores every runtime-written module global to its
+post-`__start` value") at the identity level — a genuine, pre-existing,
+deliberate design tradeoff, orthogonal to and outside the scope of a
+per-element DATA fix. Left untouched; pinned as a regression test
+documenting the CURRENT (accepted) behavior so a future change to this
+design is a visible diff here, not a silent regression.
+
+**A second, independent root cause found while building the fix (not part of
+the per-element task, but a genuine prerequisite bug in the EXISTING
+mechanism the length-fix session shipped).** Every durable-vs-ephemeral guard
+(`durableFwdLogIR`/`durableLenLogIR`/`durableSlotLogIR`/`durableEntryLogIR`,
+and now `durableArrSnapIR` below) tests `offset < $__heap_reset`.
+`$__heap_reset` is captured to its TRUE post-init watermark only as the LAST
+instruction `__start` emits — while `__start` is still running its OWN body,
+the global still reads its DECLARED init constant (`HEAP.START`, the
+static-data-end address). A compile-time-constant literal (an array built
+entirely from literals, e.g.) gets folded BELOW that address. So any
+in-place header mutation reachable from MODULE-LEVEL (non-function) init
+code — e.g. `let a = [1,2,3,4,5,6,7,8]; a.length = 5` as bare top-level
+statements — reads its own low static address as "< `__heap_reset`" and
+WRONGLY logs itself as a this-round mutation to heal AWAY, even though it is
+establishing the module's own post-`__start` BASELINE. `_clear()` then
+"heals" the array back to its PRE-init-truncation content — corrupting the
+very state `_clear()` exists to restore TO. Native repro (reproduces on
+UNMODIFIED `937dc7ae`, before any of this session's other changes): `let
+a=[1,2,3,4,5,6,7,8]; a.length=5` then a BARE `_clear()` with no other call
+at all reads the array back as all 8 original elements, not the 5 the
+top-level truncate left it at. Confirmed via a raw-WAT diagnostic build
+(exported the internal `__durable_fwd_n`/`__durable_fwd_buf`/`a` globals) —
+the truncate DOES log an entry (`off=96 len=8 cap=8`, `off=96` sitting well
+below the declared `__heap_reset` init of 1024) purely because it executed
+before the capture instruction ran.
+
+Fix (in `src/wat/assemble.js`, alongside the existing end-of-`__start`
+`$__heap_reset` capture): sentinel `$__heap_reset` to **0** — below every
+real, unsigned pointer (the reserved low region already treats `<8` as
+null/invalid, so 0 is never a live object's own address) — as the FIRST
+instruction of `__start`'s own body, before any of its init code runs. Every
+guard is `offset < $__heap_reset`-shaped (or the inverse polarity for
+`__is_eph_bits`), so while `__start` executes, EVERY offset — static-low or
+freshly heap-allocated — reads as "not durable yet," and none of the durable
+logs fire (correct: `__start` has no prior round to protect against). The
+PRE-EXISTING end-of-body capture instruction is untouched and still
+restores the TRUE semantics — `$__heap_reset` becomes the real post-init
+watermark — the instant `__start` finishes, for every caller after that
+point. Scoped to the branch that already injects the capture (`startFn`
+exists and isn't dropped by the "Tier 2 payoff" no-op-`__start` case), via
+`findBodyStart` (src/ir.js) to splice ahead of any existing body content —
+so a program with no `__start` at all (nothing to protect against) is
+completely unaffected. Pinned as its own regression test (`test/mem.js`) —
+independent of the per-element fix, and reproduces without it.
+
+**Design decision (per the task's own framing, decided before coding).**
+Two candidates:
+1. **Per-element logging**, mirroring `durableEntryLogIR`'s per-INSERT log:
+   one idempotent-scan-and-log call at every element STORE.
+2. **Whole-array snapshot-on-first-mutation per round**: one memcpy of the
+   array's current live bytes into a shadow buffer, the FIRST time any
+   mutating operation touches a given durable array each round (idempotent
+   by `off`, same pattern as the existing header log) — restoring
+   everything with one memcpy at heal time.
+
+**Chose (2), for two compounding reasons, one correctness and one cost:**
+
+- *Correctness.* HASH/SET/MAP's per-slot log (`durableSlotLogIR`) is only
+  correct because it's paired with `__is_eph_bits`: it fires ONLY when the
+  overwritten value is a boxed EPHEMERAL pointer (the thing that would
+  otherwise dangle), and even then it deliberately gives up the true prior
+  value — heal writes `undefined`, documented as "unrecoverable, the honest
+  read." That's the right contract for a table whose ENTRY still exists;
+  it's the WRONG contract for `.splice()`/`.sort()`/etc., which must give
+  the exact SAME answer every round starting from the exact same original
+  array (the ledger's own repro: `a.splice(1,2)` must read `[1,4,5]` EVERY
+  round, not `[undefined,...]` on round 2). A per-element analogue of
+  `durableSlotLogIR` would only catch ephemeral-pointer overwrites and
+  silently miss every plain-NUMBER overwrite (arrays are f64 cells, not
+  boxed pointers, for the overwhelmingly common numeric case) — the exact
+  bug this session exists to close. True byte-for-byte recovery requires
+  capturing the ORIGINAL value BEFORE the first touch, which whole-array
+  snapshot does trivially (memcpy the live range once) and per-element
+  logging would require too (log `(addr, oldValue)`, not just `(addr)`) —
+  at which point per-element buys nothing over whole-array except worse
+  asymptotics (below).
+- *Cost, honestly measured.* `.sort()`/`.reverse()` do O(n log n)/O(n)
+  ELEMENT WRITES per call (many separate swaps); `.fill()`/`.copyWithin()`/
+  `.splice()` do bulk multi-element writes. A per-write log call, even
+  idempotent-deduped, pays its (bounded, but nonzero) scan cost on EVERY
+  element touched — for `.sort()` specifically this is O(n log n) scan
+  calls in the worst case before the array-level idempotency would even
+  have a chance to short-circuit anything (the FIRST swap's log call is
+  real work regardless; only the SECOND swap onward would be idempotent
+  no-ops, but that's still one call per swap). Whole-array snapshot pays
+  ONE memcpy of `len*8` bytes — O(n) total, ONE time, regardless of how
+  many subsequent writes happen this round to this array. Strictly cheaper
+  for every op in the broken-op list, and the only design that doesn't
+  blow up for `.sort()`/`.reverse()`.
+
+Hybrid (hash-style per-slot value healing for scalar overwrites, something
+else for bulk ops) was considered and rejected: it would need the SAME
+`(addr, oldValue)` capture per element as per-element logging to be
+CORRECT (not just "no dangling pointer," which is not the array contract),
+so it inherits per-element's cost with none of its (already marginal)
+benefit.
+
+**Fix.** New, ARRAY-ONLY, parallel mechanism (module/core.js:
+`__durable_arr_buf`/`__durable_arr_n` globals, `__durable_arr_snap`/
+`__durable_arr_heal` stdlib functions; module/collection.js:
+`durableArrSnapIR`/`durableArrSnapNode` — string and IR-node twins, mirroring
+`durableLenLogIR`'s own shape). `__durable_arr_snap(off)` idempotent-scans
+its OWN 256-entry/16-byte-stride table by `off` (independent of the
+existing `__durable_fwd_log`/`__durable_slot_log` tables collections use —
+never interacts with them); on the round's true first touch, reads `len`/
+`cap` FRESH off the header and memcpy's the current `len*8` live bytes into
+a fresh shadow block, logging `(off, len, cap, shadow)`. `__durable_arr_heal`
+(wired into `__clear`, gated on `ctx.core.includes.has('__durable_arr_snap')`,
+same explicit-include pattern as the other three heals since its only call
+site is the injected `__clear` text) restores the header words AND
+memcpy's the shadow back — exact recovery, not a lossy fallback.
+
+Wired into EVERY array-mutating call site (replacing `durableLenLogIR`/
+`durableFwdLogIR` outright at every one of these, not layered alongside —
+see the "why full replacement, not layering" note below): `arrGrow`'s
+relocation point (both `__arr_grow`/`__arr_grow_known`), `__arr_set_idx_ptr`
+(now covers the in-bounds fast path too, not just the grow branch),
+`__arr_push1`, `__arr_set_length`, `__arr_unshift`, `__arr_splice` (the
+with-inserts stdlib function), the no-insert-args `.splice` inline emitter
+(newly wired — this is where the missing header-length log above also gets
+fixed, same call closes both), `__arr_fill`, `__arr_copyWithin` (both newly
+wired — previously zero durable protection of any kind), `.reverse`, `.sort`
+(both newly wired, via the IR-node twin — these build raw IR arrays, not
+WAT-template strings, since a comparator callback can't be spliced into a
+backtick template). `core.js`'s `__set_len` (pop, shared with TYPED/HASH/
+SET/MAP's generic tag dispatch) branches: the ARRAY(1) tag now calls
+`durableArrSnapIR`; the other four tags keep `durableLenLogIR` unchanged
+(different entry strides — this mechanism's `len*8`-byte-cell assumption is
+array-specific). `__arr_shift` is the one array.js call site deliberately
+LEFT on the old mechanism — see the shift verdict above.
+
+**Why full replacement, not layering old-header-log-for-push +
+new-mechanism-for-everything-else.** `.push()` itself never needs
+per-element protection (append-only). Tried keeping it on the cheaper old
+header-only log and layering the new one only at genuinely
+data-corrupting sites — this is UNSOUND: whichever call touches a durable
+array first each round must capture the TRUE original state, and with TWO
+independent, uncoordinated tables, a shrink (say `.length=2`, captured by
+the NEW mechanism first) followed by `.push()` (captured SEPARATELY by the
+OLD mechanism, now reading the ALREADY-shrunk length as if it were
+"original") leaves two heals racing to write the SAME header words with
+DIFFERENT captured values — whichever heal runs second silently clobbers
+the correct one. Verified this exact race by construction before
+rejecting it. One mechanism, one idempotent table, used UNIFORMLY by every
+mutating site (even the ones — like push — that individually never need
+the data half) is the only design where "whichever site touches a given
+array first this round" is unambiguous regardless of WHICH site that is.
+
+**Gates.** Mutation-class matrix: all entries fixed except `.shift()`
+(verdict above, pinned not changed) — reconfirmed via both a
+targeted native probe harness and `test/mem.js`'s new regression tests.
+`node test/selfhost.js`: **21/21** (206 assertions), reconfirmed after the
+full fix. Native `npm test`: **3444 total / 3437 pass / 1 fail / 6 skip** —
+the one fail is the pre-existing banked `typed RMW` pin (same as the base
+commit; `web-smoke` — previously banked as an environment gap in the prior
+session — now passes outright, since this environment's shared
+`node_modules` has a working `@esbuild/darwin-arm64` binary this time).
+`test:wasm`: **2739 total / 2733 pass / 0 fail / 6 skip**. `test:ratchet`
+(perf-ratchet): **10/10**, re-baselined via `--update` — justified below.
+Self-build ×2 via `npm run build` (esbuild works in this environment,
+unlike the prior session's noted gap — no need for the
+`scripts/selfhost-build.mjs` substitute): `dist/jz.wasm` SHA-256
+**`7258af747846ef25a9af77d4b4e2717621b00f8770c18698d91cc9f16d77db3c`** both
+runs, `dist/jz.js` SHA-256 **`0903589a5cd80eb25d1a1b5725aeebef43af81f578e42def4a738787f007f15b`**
+both runs.
+
+Two transient, non-reproducing failures surfaced on ONE intermediate run
+(2 `session-reentrancy` tests) under this environment's heavy concurrent
+load (multiple other agent sessions, load average ~10 on a 14-core
+machine) — investigated rather than dismissed: isolated re-run of
+`test/session-reentrancy.js` alone passed 15/15; a differential run against
+the UNMODIFIED base commit (via `git stash` of only this session's tracked
+changes, confirmed restored via `git stash pop` immediately after) showed a
+DIFFERENT set of transient failures (3 `kernel-parity` mismatches — an
+artifact of comparing a native recompile against `dist/jz.wasm`, which at
+that moment still held THIS session's post-fix build while the source was
+stashed back to pre-fix, not a real bug in either version); a clean
+third full run with the fix restored reproduced neither failure set
+(3444/3437/1/6, matching the reported gate exactly). Concluded: both were
+environmental flakiness under shared-machine load, not a regression from
+this fix — the fully clean third run is the reported gate above.
+
+**Environment note — shared `node_modules/watr` drifted mid-session (not
+this session's own action).** `watr` was `5.7.14` at this worktree's start
+(matching the prior session's own note); a check near the end of this
+session found it at `5.7.15`, with every file's mtime clustered at the
+session's own start time — a CONCURRENT agent's `npm install` in the same
+shared `node_modules`, not anything this session ran (this session never
+invoked `npm install`/`update`). Not fixed or reverted (touching shared
+`node_modules` mid-flight risks disrupting whatever other session installed
+it deliberately). All gates above were reconfirmed via fresh runs AFTER
+this drift was noticed (the selfhost/npm-test reruns quoted above post-date
+it), so the reported numbers are internally consistent against whichever
+watr version was live at measurement time; self-build ×2 SHA-convergence
+(a strictly stronger, drift-independent check — it would catch nondeterminism
+regardless of which watr build produced it) is the more authoritative
+signal and is unaffected either way.
+
+**Files.** `module/core.js` (`__durable_arr_buf`/`__durable_arr_n` globals,
+`__durable_arr_snap`/`__durable_arr_heal` stdlib functions + deps() edges,
+`__set_len` ARRAY-tag branch swapped to `durableArrSnapIR`), `module/
+collection.js` (`durableArrSnapIR`/`durableArrSnapNode` exports),
+`module/array.js` (every mutating call site swapped or newly wired, per the
+list above), `src/wat/assemble.js` (`$__heap_reset` init-sentinel fix in
+`__start`'s body; `SNAP_PROTOCOL` extended with the two new globals;
+`__durable_arr_heal` wired into `__clear`), `test/mem.js` (4 new regression
+tests: the init-timing prerequisite fix, the full per-element mutation
+matrix, the same-round shrink-then-grow case, and the `.shift()`-is-not-fixed
+pin), `test/perf-ratchet.json` (re-baselined — `condref` +2280, honestly
+attributable to `__arr_set_idx_ptr`'s in-bounds fast path gaining its first
+-ever durable guard, closing exactly the `arr[i]=x` gap this session's own
+matrix lists first; `buf`/`slice`/`ring`/`fgather` each -200, a byproduct of
+`durableArrSnapIR`'s call sites being SMALLER than the `durableLenLogIR`
+calls they replace — one argument instead of two inlined `i32.load`s; every
+other category 0 delta). Branch `splice-heal-2026-08-13`, base `937dc7ae`.
+
+## §durable-array heal chain landed onto post-region-front main (2026-08-13)
+
+**Task.** Land `heal-length-2026-08-13` (937dc7ae, header-only length heal) and
+`splice-heal-2026-08-13` (39830afe, per-element snapshot heal + `$__heap_reset`
+init-sentinel fix) onto main — which had moved since the chain's own base
+(`8d490c32`): the region-arena front merged (`893821ee`), touching the SAME
+four source files the chain touches (`module/core.js`, `module/collection.js`,
+`module/array.js`, `src/wat/assemble.js`). A real integration, not a rubber
+stamp.
+
+**Mechanics.** Worktree from main tip `893821ee`, branch
+`heal-landing-2026-08-13`. Cherry-picked 937dc7ae then 39830afe, in order.
+**Both cherry-picks auto-merged with zero textual conflicts** — region's own
+infrastructure (`regionCopyRecBody` import/call in `module/core.js`, the
+`SNAP_PROTOCOL` set and the arena-rewind/dyn-props machinery in
+`src/wat/assemble.js`) sits at different call sites than the heal chain's own
+insertions, so git's line-based merge never had to choose between them.
+`.work/research.md` per the stated policy: took main's version, both chain
+entries auto-appended verbatim after main's own tail (confirmed:
+`diff <(git show main:.work/research.md) <(sed -n '1,10711p' .work/research.md)`
+byte-identical apart from a trailing newline).
+
+**Semantic check (the auto-merge being textually clean doesn't mean
+semantically clean — verified by hand).** Diffed every hunk in
+`module/array.js`/`module/core.js`/`module/collection.js` against the two
+source commits' own diffs line-for-line: identical. Confirmed **exactly one
+coherent heal design survives, no orphaned duplicate logging** —
+`durableArrSnapIR`/`durableArrSnapNode` (module/collection.js) fully replace
+`durableLenLogIR`/`durableFwdLogIR` at every array.js call site the splice-heal
+session touched (`arrGrow`'s relocation point, `__arr_set_idx_ptr`,
+`__arr_push1`, `__arr_set_length`, `__arr_unshift`, `__arr_splice`,
+`__arr_fill`, `__arr_copyWithin`, the no-insert-args `.splice` emitter,
+`.reverse`, `.sort`) — grep confirms zero remaining `durableLenLogIR`/
+`durableFwdLogIR` calls in `module/array.js` outside `__arr_shift` (deliberately
+untouched, documented) and `arrGrow`'s OWN still-correct use of
+`durableFwdLogIR` for the **collection** (hash/set/map) growth path, a
+different mechanism `module/core.js`'s `__set_len` dispatches to by tag
+(ARRAY → `durableArrSnapIR`, TYPED/HASH/SET/MAP → `durableLenLogIR`,
+unchanged). `module/collection.js` keeps both mechanisms exported side by
+side, each documented as owning a disjoint call-site set — not a
+"replacement gone half-done," a genuine two-mechanism design where each
+mechanism owns exactly the sites its own header comment claims.
+
+**Region arena × heal shadow-buffer — the semantic question this landing
+was asked to answer.**
+
+*Question.* `__durable_arr_snap` (module/core.js) allocates a shadow copy of
+a durable array's live bytes via `call $__alloc` (the same bump allocator
+region-live compiles use for their own transient churn) and records
+`(off, len, cap, shadow)` in `__durable_arr_buf`'s own 256-entry table.
+`__region_exit` compacts away everything in `[mark, T)` NOT reachable from its
+caller-supplied `root` (`watr`'s own `[ast, dirty, snapshots]` triple — see
+`module/core.js`'s own `__region_exit` header comment). Does a region
+boundary ever relocate or silently reclaim a heal shadow buffer, corrupting a
+later `_clear()`?
+
+*Answer: no — for two independent, compounding reasons, one structural and
+one empirical.*
+
+1. **Structural: the two mechanisms never share a live window.**
+   `__region_mark`/`__region_exit` are internal-only intrinsics — reserved
+   double-underscore names, never reachable from jz *user* source (the
+   reserved-prefix guard in `front.js`'s parse pipeline rejects them). The
+   ONLY call sites in the whole tree are `scripts/self.js`'s own
+   `optimizeTail` (wraps watr's per-round WAT-IR optimize loop) and `front`
+   (gated behind `REGION_HOOKS_ACTIVE`, off by default). Both exist
+   exclusively to reclaim the SELF-HOSTED COMPILER's OWN transient AST churn
+   while it compiles a program — never to wrap execution of the compiled
+   program itself, and never reachable from a plain `_clear()` call a *user*
+   program makes on its OWN durable arrays (which is everything
+   `test/mem.js`'s heal mutation-matrix exercises). A user-level durable
+   array can therefore never be mid-region when `_clear()` runs, in any
+   build, dormant or region-live.
+   Separately: `__region_copy_rec`'s own durable branch never relocates
+   anything below `mark` in the first place — "durable addresses never move,
+   and a memo hit simply replays whatever was stored the first time"
+   (module/core.js's own region-copy comment) — so even if a durable array
+   WERE somehow reachable from a region root, its own bytes are walked
+   in-place, never copied to the new arena. The hazard, if any, is narrower
+   than "the array moves" — it's specifically "the shadow buffer's OWN
+   backing memory, allocated via the ordinary bump allocator, sits in a
+   region's reclaimable churn zone if allocated while a region is open."
+
+2. **Structural, second layer: same pattern class as an ALREADY-AUDITED,
+   ALREADY-SHIPPED mechanism.** `__durable_arr_buf`'s own backing block is
+   lazily `__alloc`'d on the FIRST durable-array mutation this compile
+   (`if (i32.eqz (global.get $__durable_arr_buf)) (then (global.set
+   $__durable_arr_buf (call $__alloc ...)))`) — structurally IDENTICAL to the
+   PRE-EXISTING `__durable_fwd_buf` (hash/set/map header-growth heal) and
+   `__durable_slot_log` (collection value-write heal), both landed and
+   region-tested BEFORE this session (893821ee's own gate table:
+   "kernel-oracle, region-live ×3 (hand-flipped, reverted after): 13/13,
+   13/13, 13/13"). The "first-touch-mid-region-loses-the-block" hazard class
+   is not new — the region campaign's own `__region_exit` already documents
+   fixing exactly this shape for `$__dyn_props`'s backing table ("first-ever
+   dyn-props write this round... allocates ABOVE mark and would otherwise be
+   silently reclaimed" — module/core.js, `__region_exit`'s `$__dyn_props`
+   implicit-root block). `__durable_arr_buf` is one more instance of the SAME
+   lazy-alloc idiom `__durable_fwd_buf`/`__durable_slot_log` already use in
+   production — not a new risk category this session introduces.
+
+3. **Empirical.** Hand-flipped `REGION_HOOKS_ACTIVE` true in
+   `scripts/self.js`, rebuilt `dist/jz.wasm` (region-live), and ran the FULL
+   heal mutation-matrix (`test/mem.js`, every mutator × 3 rounds, the
+   module-level-init-timing regression test, the same-round shrink-then-grow
+   case, the `.shift()` non-heal pin) THROUGH the region-live self-hosted
+   kernel (`JZ_TEST_TARGET=jz.wasm node test/mem.js`, i.e. the heal-test
+   snippets get COMPILED BY a kernel that itself uses regions internally
+   while compiling them): **55/55 pass, 151 assertions, region-live.**
+   `kernel-oracle.js` region-live (hand-flipped): unaffected by regions
+   either way (see the self-host finding below — its 2 failures are
+   IDENTICAL in dormant and region-live, confirming the one new self-host
+   issue this session found is orthogonal to region entirely). Reverted
+   `REGION_HOOKS_ACTIVE` to `false` after (confirmed: `git diff
+   scripts/self.js` clean at landing time, matching the region campaign's own
+   hand-flip-and-revert discipline).
+
+**Verdict, stated plainly: `__region_exit` neither relocates nor orphans the
+heal shadow buffer, because the two mechanisms are architecturally
+non-overlapping (region hooks only ever wrap the compiler's OWN AST, heal
+only ever protects a program's OWN durable arrays) — and even under the
+narrower "compiler's own durable state" reading, `__durable_arr_buf` inherits
+the SAME already-shipped, already-region-tested safety profile as
+`__durable_fwd_buf`/`__durable_slot_log`, verified afresh end-to-end via the
+full mutation-matrix executing through a region-live kernel.**
+
+**New finding — a self-host-only, region-INDEPENDENT miscompile, root-caused,
+NOT fixed (banked, matching the `typed RMW` precedent).**
+
+Landing this chain (specifically `splice-heal-2026-08-13`'s array.js changes
+— growing several multi-caller, pervasively-inlined array primitives
+`__arr_push1`/`__arr_set_idx_ptr`/etc., "hot for `arr[i]=val` (~18M calls in
+watr self-host)" per array.js's own comment, by one guard call each) shifts
+inlining decisions elsewhere in the self-hosted kernel's OWN compiled form
+enough to newly trip a LATENT bug: `dist/jz.wasm`, asked at RUNTIME to
+compile `kernel-parity.js`/`kernel-oracle.js`'s own `boolconst` corpus row
+(`const g = (n) => { if (typeof n === 'number') return n; return false };
+export let f = (s) => g(s) === false`) at optimize level 3 (`speed` tier,
+the ONLY tier that enables `boolConvertToSelect`), emits a `local.get
+$__inl2_0` (a watr-inliner-created temp) with no matching local declaration
+— `WebAssembly.Exception: Unknown local $__inl2_0` on instantiation.
+
+Root-caused, not guessed:
+- **Native is 100% unaffected** — byte-identical WAT before/after this
+  landing (`diff` clean), for every optimize level. The heal fix itself is
+  sound; only the self-hosted KERNEL's compiled form of an UNRELATED pass
+  misbehaves.
+- **Isolated by bisection** (three worktrees, each independently built and
+  gated): plain post-region main + 2 inert stdlib functions/globals of
+  comparable size → clean (rules out pure funcIdx/globalIdx ordinal shift).
+  Plain post-region main + ONLY `module/core.js`/`module/collection.js`'s
+  new standalone functions (no array.js call-site growth) → clean. Plain
+  post-region main + array.js's actual hot-primitive-site growth (with or
+  without `src/wat/assemble.js`'s `$__heap_reset` sentinel fix) → **the
+  divergence, both times** — pins the trigger specifically to array.js's
+  necessary growth of these hot, pervasively-self-hosted-inlined primitives,
+  not to the new durable-array-snapshot mechanism's own logic, the sentinel
+  fix, or ordinal shift in general.
+- **Pass identified**: disabling `boolConvertToSelect` for this ONE compile
+  request (`{level:3, boolConvertToSelect:false}`) makes native and kernel
+  agree byte-for-byte (184 B both, executing correctly). `boolConvertToSelect`
+  (src/optimize/index.js) runs PRE-watr (confirmed via call-site trace —
+  `src/wat/assemble.js`'s `optimizeFunc` call precedes `optimizeTail`'s watr
+  invocation), so it cannot itself be referencing a watr-inliner-created
+  name; the bug is in how WATR'S OWN inliner (vendored, `node_modules/watr`)
+  handles a body boolConvertToSelect has reshaped to contain a `select` node,
+  under inlining-decision conditions this landing's array.js growth newly
+  exercises — vendored-dependency territory, confirmed NOT jz's own
+  `boolConvertToSelect` implementation (it never touches locals/declarations
+  at all, only rewrites `f64.sub`/`f64.add` subtrees into `select`).
+- **Tried and rejected**: gating `boolConvertToSelect` off specifically for
+  BUILDING the self-hosted kernel (`scripts/build-profile.mjs`'s
+  `resolveSelfhostBuild`, mirroring the existing `inlinePtrOffsetFast:false`
+  region-live override) — does NOT fix it (verified: rebuilt `dist/jz.wasm`
+  with this override, `boolconst` O3 still diverges identically). The
+  BUILD-time config only shapes how the kernel's OWN code gets compiled;
+  `boolConvertToSelect`'s logic still gets INVOKED at kernel RUNTIME whenever
+  a caller's own request sets `cfg.boolConvertToSelect` (level 3's own
+  preset does, unconditionally) — no build-time lever changes that. No
+  narrower, verified, in-scope fix found.
+- **Scope of real impact, narrow**: `boolConvertToSelect` is OFF at jz's
+  own default level (L2_PRESET explicitly sets it `false`) — only an
+  EXPLICIT level-3/`speed` request through the SELF-HOSTED kernel
+  specifically, on a program with this exact bool-arithmetic shape, is
+  affected. Native compiles, and every kernel compile at levels 0–2, are
+  unaffected. Independent of region: reproduces identically dormant AND
+  region-live (`REGION_HOOKS_ACTIVE` false or true) — confirmed via the
+  gate table below.
+
+**Banked as a second known failure, same disposition as the pre-existing
+`typed RMW` pin** (native `npm test`: 3453 total / 3444 pass / **3 fail** / 6
+skip — `typed RMW` (pre-existing, unrelated) + `kernel parity: boolconst O3`
++ `kernel oracle: … O3: Unknown local $__inl2_0` (both new, this landing,
+root-caused above). NOT silently swept — this entry IS the record; a future
+session fixing watr's inliner (or finding a safe, narrower jz-side mitigation)
+flips both rows back green.
+
+**Gates.**
+
+| gate | result |
+|---|---|
+| heal mutation-matrix (`test/mem.js`), native/dormant | **55/55** (151 assertions) |
+| heal mutation-matrix, region-live (hand-flipped, via kernel) | **55/55** (151 assertions) |
+| `node test/selfhost.js`, dormant | **21/21** (206 assertions) |
+| native `npm test`, dormant | 3453 total / **3444 pass** / **3 fail** (1 pre-existing banked `typed RMW` + 2 new self-host-only, root-caused above) / 6 skip |
+| `kernel-oracle.js`, dormant ×3 | **11/13, 11/13, 11/13** — deterministic, same 2 rows every rep (`boolconst` O3 kernel-parity + kernel-oracle) |
+| `kernel-oracle.js`, region-live ×3 (hand-flipped, reverted after) | **11/13, 11/13, 11/13** — IDENTICAL 2 rows, confirming the self-host finding is region-independent |
+| `test/perf-ratchet.js` | **10/10** — baselines carried from the chain's own two re-baselines (`condref` +2280, `buf`/`slice`/`ring`/`fgather` −200 each, justified in the chain's own two ledger entries), unchanged by this landing |
+| self-build ×2, dormant | SHA-256 converges: `dist/jz.wasm` `442d286c…` both runs |
+| watr version | `5.7.15` before and after (`node_modules/watr/package.json`), unchanged |
+
+`test:wasm` (dormant) and `test:wasm` region-live: see this session's own
+follow-up note — region-live `test:wasm`'s own FULL fuzz-heavy leg
+(hundreds of kernel compiles × fresh 512 MB instances each) hit this
+environment's memory ceiling mid-run (silently killed, no crash text —
+consistent with a jetsam/OOM kill, not a correctness signal); the
+CRITICAL region-live signals (heal mutation-matrix, kernel-oracle ×3) were
+captured cleanly via the lighter-weight, targeted runs above instead.
+
+**Files landed** (pathspec commit onto main, preserving all unrelated
+uncommitted work in the user's own checkout untouched): `module/core.js`,
+`module/collection.js`, `module/array.js`, `src/wat/assemble.js`,
+`test/mem.js`, `test/perf-ratchet.json`, `.work/research.md`. Source branches
+`heal-length-2026-08-13`/`splice-heal-2026-08-13` and their worktrees deleted
+after the landing commit.

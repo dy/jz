@@ -22,7 +22,7 @@ import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followFor
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
 import { initSchema } from './schema.js'
-import { strHashLiteral, heapResetWat, LENGTH_SSO_I64, SET_ENTRY, MAP_ENTRY, INIT_CAP, LANE } from './collection.js'
+import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, SET_ENTRY, MAP_ENTRY, INIT_CAP, LANE } from './collection.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { eqIdentityChain, regionCopyRecBody } from '../layout-kinds.js'
 
@@ -41,7 +41,13 @@ export default (ctx) => {
     __ptr_offset_fwd: [],
     __is_str_key: ['__ptr_type'],
     __str_len: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
-    __set_len: ['__ptr_offset_fwd'],
+    // '__durable_fwd_log'/'__durable_arr_snap' are explicit edges (mirrors
+    // array.js's arrayGrowDeps comment): __set_len's body calls durableLenLogIR
+    // (TYPED/HASH/SET/MAP branch — in-place, non-relocating length-write heal)
+    // and durableArrSnapIR (ARRAY branch — pop()'s len-1 write, header+data heal)
+    // directly — self-host's auto-dep scan can't be relied on to discover a name
+    // reachable only through template interpolation, not a literal deps-table entry.
+    __set_len: () => ['__ptr_offset_fwd', ...(ctx.scope.globals.has('__heap_reset') ? ['__durable_fwd_log', '__durable_arr_snap'] : [])],
     // Property-fallback arm (`.length` as an ordinary own key on OBJECT/HASH
     // receivers) needs the dyn dispatcher — but only when the program can even
     // HOLD such a property (a schema'd object or dyn/hash machinery exists);
@@ -61,6 +67,8 @@ export default (ctx) => {
       ...(ctx.scope.globals.has('__dyn_props') ? ['__ihash_get_local', '__is_nullish'] : [])],
     __durable_fwd_log: ['__alloc'],
     __durable_fwd_heal: [],
+    __durable_arr_snap: ['__alloc'],
+    __durable_arr_heal: [],
     __durable_slot_log: ['__alloc'],
     __durable_slot_relog: [],
     __durable_slot_cancel: [],
@@ -570,11 +578,35 @@ export default (ctx) => {
     // growth sites are a handful of compiler-internal structures, not user data).
     declGlobal('__durable_fwd_buf', 'i32')
     declGlobal('__durable_fwd_n', 'i32')
+    // Idempotent per $off (scan-then-append): a durable header's FIRST touch
+    // this round — whether that's a relocating grow (arrGrow/genUpsertGrow) OR
+    // a plain in-place length write that still fits in existing capacity
+    // (__arr_push1/__arr_set_idx_ptr/__arr_set_length/__arr_unshift/
+    // __arr_splice/__set_len's durableLenLogIR call, module/collection.js) —
+    // must capture the header's true pre-round (len, cap); every LATER touch
+    // of the SAME header this round has to be a no-op, or it would clobber
+    // the true snapshot with an already-mutated value. Concretely: push()ing
+    // 4 elements into a durable array whose __start capacity was 4 bumps len
+    // 0→1→2→3→4 IN PLACE with no log at all (no relocation happened yet) —
+    // only the 5th push crosses into a fresh ephemeral block and finally logs,
+    // but by then it reads len=4 off the header, not the true post-__start 0.
+    // Healing "restored" the header to a length it never had — the corpus
+    // repro (`site.push(...)` × 150 across one `_clear()`) read back `154`,
+    // not `150`: the 4 leaked pre-grow pushes plus the 150 real ones. Scanning
+    // pending entries for a dup is the same bounded-and-rare cost class as
+    // __durable_slot_relog/__durable_slot_cancel's scans below — this log is
+    // 0 entries in the overwhelmingly common program.
     ctx.core.stdlib['__durable_fwd_log'] = `(func $__durable_fwd_log (param $off i32) (param $len i32) (param $cap i32)
-      (local $base i32) (local $n i32)
+      (local $base i32) (local $n i32) (local $i i32) (local $sb i32)
+      (local.set $n (global.get $__durable_fwd_n))
+      (block $scanned (loop $scan
+        (br_if $scanned (i32.ge_s (local.get $i) (local.get $n)))
+        (local.set $sb (i32.add (global.get $__durable_fwd_buf) (i32.mul (local.get $i) (i32.const 12))))
+        (if (i32.eq (i32.load (local.get $sb)) (local.get $off)) (then (return)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $scan)))
       (if (i32.eqz (global.get $__durable_fwd_buf))
         (then (global.set $__durable_fwd_buf (call $__alloc (i32.const 3072)))))
-      (local.set $n (global.get $__durable_fwd_n))
       (if (i32.ge_s (local.get $n) (i32.const 256)) (then (unreachable)))
       (local.set $base (i32.add (global.get $__durable_fwd_buf) (i32.mul (local.get $n) (i32.const 12))))
       (i32.store (local.get $base) (local.get $off))
@@ -594,6 +626,67 @@ export default (ctx) => {
         (br $l)))
       (global.set $__durable_fwd_n (i32.const 0))
       (global.set $__durable_fwd_buf (i32.const 0)))`
+
+    // Durable ARRAY element-data log — collection.js's durableArrSnapIR/
+    // durableArrSnapNode have the full rationale: the header-only fwd log above
+    // restores a durable array's (len, cap) WORDS but never the CELLS between
+    // them, so any in-place element write (arr[i]=, splice/copyWithin/unshift's
+    // memory.copy shifts, reverse/sort's swaps, fill's overwrite) leaks round 1's
+    // data into round 2 even though the length reads back correct. WHOLE-ARRAY
+    // snapshot-on-first-touch (not per-element logging — see the design comment
+    // in collection.js for why): idempotent-per-`off` scan (identical shape to
+    // __durable_fwd_log's above, own 256-entry/16-byte-stride table so it never
+    // interacts with collections' OWN use of the fwd/slot logs), and on the
+    // round's true first touch to a given durable array, reads len/cap FRESH off
+    // the header (still the true pre-round values at that point, whichever site
+    // got there first) and memcpy's the CURRENT `len*8` live bytes into a fresh
+    // shadow block. `__durable_arr_heal` (wired into `__clear` post-hoc, like the
+    // other three heals) restores the header words AND memcpy's the shadow back —
+    // exact byte-for-byte recovery, not durableSlotLogIR's "value unrecoverable,
+    // undefined is honest" fallback: arrays need the true prior value back to
+    // satisfy the splice repro (`a.splice(1,2)` must give the SAME answer every
+    // round, not just the same LENGTH). 256 entries mirrors __durable_fwd_buf's
+    // own trap-on-overflow ceiling — 0 pending entries in the overwhelmingly
+    // common program (most durable arrays are never mutated in place at all).
+    declGlobal('__durable_arr_buf', 'i32')
+    declGlobal('__durable_arr_n', 'i32')
+    ctx.core.stdlib['__durable_arr_snap'] = `(func $__durable_arr_snap (param $off i32)
+      (local $n i32) (local $i i32) (local $base i32) (local $len i32) (local $shadow i32)
+      (local.set $n (global.get $__durable_arr_n))
+      (block $scanned (loop $scan
+        (br_if $scanned (i32.ge_s (local.get $i) (local.get $n)))
+        (local.set $base (i32.add (global.get $__durable_arr_buf) (i32.mul (local.get $i) (i32.const 16))))
+        (if (i32.eq (i32.load (local.get $base)) (local.get $off)) (then (return)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $scan)))
+      (if (i32.eqz (global.get $__durable_arr_buf))
+        (then (global.set $__durable_arr_buf (call $__alloc (i32.const 4096)))))
+      (if (i32.ge_s (local.get $n) (i32.const 256)) (then (unreachable)))
+      (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
+      (local.set $shadow (call $__alloc (i32.shl (local.get $len) (i32.const 3))))
+      (memory.copy (local.get $shadow) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
+      (local.set $base (i32.add (global.get $__durable_arr_buf) (i32.mul (local.get $n) (i32.const 16))))
+      (i32.store (local.get $base) (local.get $off))
+      (i32.store (i32.add (local.get $base) (i32.const 4)) (local.get $len))
+      (i32.store (i32.add (local.get $base) (i32.const 8)) (i32.load (i32.sub (local.get $off) (i32.const 4))))
+      (i32.store (i32.add (local.get $base) (i32.const 12)) (local.get $shadow))
+      (global.set $__durable_arr_n (i32.add (local.get $n) (i32.const 1))))`
+    ctx.core.stdlib['__durable_arr_heal'] = `(func $__durable_arr_heal
+      (local $i i32) (local $n i32) (local $base i32) (local $off i32) (local $len i32) (local $shadow i32)
+      (local.set $n (global.get $__durable_arr_n))
+      (block $done (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+        (local.set $base (i32.add (global.get $__durable_arr_buf) (i32.mul (local.get $i) (i32.const 16))))
+        (local.set $off (i32.load (local.get $base)))
+        (local.set $len (i32.load (i32.add (local.get $base) (i32.const 4))))
+        (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len))
+        (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.load (i32.add (local.get $base) (i32.const 8))))
+        (local.set $shadow (i32.load (i32.add (local.get $base) (i32.const 12))))
+        (memory.copy (local.get $off) (local.get $shadow) (i32.shl (local.get $len) (i32.const 3)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+      (global.set $__durable_arr_n (i32.const 0))
+      (global.set $__durable_arr_buf (i32.const 0)))`
 
     // Durable SLOT log — the value-write sibling of the relocation log above. A
     // collection whose storage is DURABLE (init-created dict, off < __heap_reset)
@@ -1441,7 +1534,10 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props') })}`
       (then
         (if (i32.eq (local.get $t) (i32.const 1))
           (then
-            ${followForwardingWat('$off', { lowGuard: true })}))
+            ${followForwardingWat('$off', { lowGuard: true })}
+            ${durableArrSnapIR('off')})
+          (else
+            ${durableLenLogIR('off')}))
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len)))))`
 
   // Alloc header(16) + data(cap*stride). Layout: [propsPtr@-16(f64=0), len@-8, cap@-4],

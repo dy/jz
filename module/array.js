@@ -17,7 +17,7 @@ import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion,
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, DBG_INVARIANTS } from '../src/ctx.js'
-import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR } from './collection.js'
+import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { ERR } from '../err-codes.js'
 
 
@@ -203,23 +203,27 @@ const arrMethod = (name, nArgs = 0) => (...args) => {
 }
 
 const needsArrayDynMove = () => ctx.core.includes.has('__dyn_set')
-// Whether durableFwdLogIR emits a real call (vs '' — see its own comment): only when
-// __heap_reset exists (owned-memory builds; shared memory never declares it — core.js).
-// Gates the deps() edge below the SAME way, so a shared-memory build (where core.js
-// never registers __durable_fwd_log/__durable_fwd_heal) never requests a name nothing
-// delivers — see collection.js's durableFwdLogIR comment for the full rationale.
+// Whether durableFwdLogIR/durableArrSnapIR emit a real call (vs '' — see either's own
+// comment): only when __heap_reset exists (owned-memory builds; shared memory never
+// declares it — core.js). Gates the deps() edges below the SAME way, so a shared-memory
+// build (where core.js never registers the durable-heal stdlib names) never requests a
+// name nothing delivers — see collection.js's durableFwdLogIR/durableArrSnapIR comments
+// for the full rationale. Name kept (not renamed to something array-snap-specific): still
+// gates __arr_shift's OWN continued use of durableFwdLogIR (the one array.js call site NOT
+// migrated to durableArrSnapIR — see that function's comment), so it remains an accurate
+// name for what it tests, just no longer the ONLY durable-heal gate in this file.
 const needsDurableFwdLog = () => ctx.scope.globals.has('__heap_reset')
 // knownArray=true (__arr_grow_known): the raw offset + inline forwarding chase (see
 // arrGrow below) calls $__ptr_offset_fwd directly, not the generic $__ptr_offset.
-// '__durable_fwd_log' is an EXPLICIT edge (not left to the auto-dep scan): arrGrow's
-// body always contains a durableFwdLogIR() call, but self-host's realize/regex-scan
+// '__durable_arr_snap' is an EXPLICIT edge (not left to the auto-dep scan): arrGrow's
+// body always contains a durableArrSnapIR() call, but self-host's realize/regex-scan
 // auto-deps path silently drops a helper reachable only that way (the exact
 // "Unknown func $__clamp_idx" shape documented in test/selfhost-includes.js) — that
 // test would fail (and the kernel would trap) without this line.
 const arrayGrowDeps = (knownArray = false) => () => [
   ...(knownArray ? ['__ptr_offset_fwd'] : ['__ptr_type', '__ptr_offset']),
   '__alloc_hdr', '__mkptr',
-  ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),
+  ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : []),
   ...(needsArrayDynMove() ? ['__dyn_move'] : []),
 ]
 
@@ -296,13 +300,20 @@ export default (ctx) => {
       ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),  // explicit edge — see arrayGrowDeps's comment
       ...(needsArrayDynMove() ? ['__dyn_move', '__hash_new', '__ihash_set_local'] : []),
     ],
-    __arr_fill: ['__ptr_offset', '__clamp_idx'],  // body-calls __clamp_idx; declare it (self-host auto-scan can't be relied on — see test/selfhost-includes.js)
-    __arr_copyWithin: ['__ptr_type', '__ptr_offset', '__clamp_idx'],
-    __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset'],
-    __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd'],
-    __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type'],
-    __arr_unshift: ['__arr_grow', '__len', '__ptr_offset'],
-    __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr'],
+    // '__durable_arr_snap' is an explicit edge on __arr_fill/__arr_copyWithin
+    // (newly wired by this fix — see durableArrSnapIR's comment in collection.js)
+    // and on all five below — see arrayGrowDeps's comment: each now calls
+    // durableArrSnapIR directly in its OWN body (the whole-array element+header
+    // heal, replacing the old header-only durableLenLogIR call at these same
+    // sites), which self-host's auto-dep scan cannot be relied on to discover
+    // just because a callee (__arr_grow*) already depends on the name transitively.
+    __arr_fill: () => ['__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],  // body-calls __clamp_idx; declare it (self-host auto-scan can't be relied on — see test/selfhost-includes.js)
+    __arr_copyWithin: () => ['__ptr_type', '__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_unshift: ['__arr_grow', '__len', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_flat: ['__ptr_offset', '__len', '__ptr_type', '__alloc_hdr', '__mkptr'],  // body-calls __alloc_hdr; declare it (self-host auto-scan can't be relied on — see test/selfhost-includes.js)
     __typed_idx: () => ctx.linkDemand.typedarray || ctx.linkDemand.external
       ? ['__len', '__ptr_offset_fwd']
@@ -610,7 +621,7 @@ export default (ctx) => {
     (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
     ${headerPropsCopyIR()}
     ${maybeDynMoveIR()}
-    ${durableFwdLogIR('off', 'newOff', 'len', 'oldCap')}
+    ${durableArrSnapIR('off')}
     (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
@@ -621,12 +632,20 @@ export default (ctx) => {
   // Hot for arr[i] = val (~18M calls in watr self-host). Compute base via __ptr_offset
   // once and read len from the inline header (i32.load base-8) — avoids __len's separate
   // forwarding follow. On the rare grow path the base is recomputed after relocation.
+  // durableArrSnapIR fires ONCE right after `base` resolves, before ANY write this call
+  // could make (in-bounds overwrite of an EXISTING index, or the grow branch's gap-fill +
+  // append) — this is the ONLY site an in-bounds `arr[i]=` overwrite (i < oldLen, no grow
+  // at all) ever reaches, and it previously had ZERO durable protection (durableLenLogIR
+  // only lived inside the grow branch, since only growth ever touched the LENGTH word —
+  // but an in-bounds overwrite mutates a DATA cell with no length change at all, the exact
+  // per-element gap this fix closes).
   ctx.core.stdlib['__arr_set_idx_ptr'] = `(func $__arr_set_idx_ptr (param $ptr i64) (param $i i32) (param $val f64) (result f64)
     (local $base i32) (local $p f64) (local $oldLen i32) (local $k i32)
     (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (if (i32.lt_s (local.get $i) (i32.const 0))
       (then (return (local.get $p))))
     (local.set $base (call $__ptr_offset (local.get $ptr)))
+    ${durableArrSnapIR('base')}
     (local.set $oldLen (i32.load (i32.sub (local.get $base) (i32.const 8))))
     (if (i32.ge_u (local.get $i) (local.get $oldLen))
       (then
@@ -648,11 +667,24 @@ export default (ctx) => {
   // Out-of-line .push(val) for known-ARRAY receivers — keeps each call site to a
   // single call + var update instead of ~30 inlined instructions. Returns the
   // (possibly relocated) array pointer; caller derives the new length if needed.
+  // durableArrSnapIR fires right after $base resolves (before the grow check and the
+  // final store) even though push1 ITSELF never overwrites an existing index (it only
+  // appends at $len, always a fresh slot) — see durableArrSnapIR's own comment: this
+  // uniformity is load-bearing, not defensive belt-and-suspenders. If push1 kept the
+  // old header-only log instead, and some OTHER op (e.g. a same-round `.length=`
+  // shrink) had ALREADY logged this array into the array-snapshot table first, push1's
+  // separate (old-mechanism) log would independently capture the header's CURRENT
+  // (already-shrunk, not true-original) len into a DIFFERENT table — both heals then
+  // run at `_clear()` and the one that runs second clobbers the other's correct
+  // restore with its wrong one. One mechanism, one idempotent table, whichever call
+  // reaches a given durable array first this round — is the only way every caller's
+  // "first touch" assumption stays true simultaneously.
   ctx.core.stdlib['__arr_push1'] = `(func $__arr_push1 (param $ptr i64) (param $val f64) (result f64)
     (local $p f64) (local $base i32) (local $len i32)
     (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (local.set $base (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ${followForwardingWat('$base', { lowGuard: true })}
+    ${durableArrSnapIR('base')}
     (local.set $len (i32.load (i32.sub (local.get $base) (i32.const 8))))
     (if (i32.lt_s (i32.load (i32.sub (local.get $base) (i32.const 4))) (i32.add (local.get $len) (i32.const 1)))
       (then
@@ -676,6 +708,7 @@ export default (ctx) => {
     (if (i32.lt_s (local.get $n) (i32.const 0)) (then (local.set $n (i32.const 0))))
     (local.set $base (call $__ptr_offset (local.get $ptr)))
     (if (i32.lt_u (local.get $base) (i32.const 8)) (then (return (local.get $p))))
+    ${durableArrSnapIR('base')}
     (local.set $oldLen (i32.load (i32.sub (local.get $base) (i32.const 8))))
     (local.set $cap (i32.load (i32.sub (local.get $base) (i32.const 4))))
     (if (i32.gt_s (local.get $n) (local.get $cap))
@@ -1558,6 +1591,7 @@ export default (ctx) => {
         (local.set $off (call $__ptr_offset (local.get $arr)))
         (if (i32.ge_u (local.get $off) (i32.const 8))
           (then
+            ${durableArrSnapIR('off')}
             (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
             (local.set $end (call $__clamp_idx (local.get $end) (local.get $len)))
@@ -1569,8 +1603,15 @@ export default (ctx) => {
               (br $fill)))))))
     (f64.reinterpret_i64 (local.get $arr)))`
 
-  // .splice(start) | .splice(start, deleteCount) → remove range, return removed as new array
+  // .splice(start) | .splice(start, deleteCount) → remove range, return removed as new array.
+  // No-insert-args overload — a SEPARATE inline-IR emitter from the __arr_splice stdlib
+  // function below (which only handles the WITH-inserts overload). Found in the course of
+  // this fix to have had NO durable header-length log at all (a narrower, separate gap
+  // from the per-element one the heal-length session's own fix didn't reach, since it's a
+  // different code path): durableArrSnapNode below closes both at once (header len/cap AND
+  // element data, one call).
   ctx.core.emit['.splice'] = (arr, start, deleteCount) => {
+    if (needsDurableFwdLog()) inc('__durable_arr_snap')  // explicit edge — see durableArrSnapIR's comment
     const recv = hoistArrayValue(arr)
     const va = recv.value
     // ToIntegerOrInfinity position arg (23.1.3.30 step 3) — asI32Sat, not asI32 (see
@@ -1589,6 +1630,7 @@ export default (ctx) => {
       recv.setup,
       ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]],
       lenInit,
+      durableArrSnapNode(off),
       // clamp start to [0, len]
       ['local.set', `$${s}`, vs],
       ['if', ['i32.lt_s', ['local.get', `$${s}`], ['i32.const', 0]],
@@ -1669,10 +1711,17 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
+  // durableArrSnapIR fires on the (possibly post-grow) $off, before the shift-copy and
+  // prepend store: if __arr_grow relocated, $off is now ephemeral and the guard no-ops
+  // (grow's OWN call already protected the OLD block, which nothing here touches
+  // in-place anymore); if it didn't relocate (spare capacity), $off is still the
+  // ORIGINAL durable address and this is the only protection the shift-copy gets — grow
+  // itself only ever logs on ITS relocating path, never on a same-capacity return.
   ctx.core.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr i64) (param $val f64) (result f64)
     (local $off i32) (local $len i32) (local $a f64)
     (local.set $a (call $__arr_grow (local.get $arr) (i32.add (call $__len (local.get $arr)) (i32.const 1))))
     (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $a))))
+    ${durableArrSnapIR('off')}
     (local.set $len (call $__len (i64.reinterpret_f64 (local.get $a))))
     (memory.copy
       (i32.add (local.get $off) (i32.const 8))
@@ -1715,6 +1764,7 @@ export default (ctx) => {
     (if (i32.gt_s (local.get $newLen) (local.get $len))
       (then (local.set $a (call $__arr_grow (local.get $arr) (local.get $newLen)))))
     (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $a))))
+    ${durableArrSnapIR('off')}
     (memory.copy
       (i32.add (local.get $off) (i32.shl (i32.add (local.get $s) (local.get $m)) (i32.const 3)))
       (i32.add (local.get $off) (i32.shl (i32.add (local.get $s) (local.get $cnt)) (i32.const 3)))
@@ -2107,6 +2157,7 @@ export default (ctx) => {
     const exit = `$revexit${id}`, loop = `$revloop${id}`
 
     inc('__ptr_offset')
+    if (needsDurableFwdLog()) inc('__durable_arr_snap')  // explicit edge — see durableArrSnapIR's comment
 
     const addr = (idxIR) => ['i32.add', ['local.get', `$${base}`], ['i32.shl', idxIR, ['i32.const', 3]]]
 
@@ -2114,6 +2165,7 @@ export default (ctx) => {
       setup,
       ['local.set', `$${arrTmp}`, value],
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
+      durableArrSnapNode(base),
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]],
@@ -2182,6 +2234,7 @@ export default (ctx) => {
     }
 
     inc('__ptr_offset')
+    if (needsDurableFwdLog()) inc('__durable_arr_snap')  // explicit edge — see durableArrSnapIR's comment
 
     const addr = (idxIR) => ['i32.add', ['local.get', `$${base}`], ['i32.shl', idxIR, ['i32.const', 3]]]
     const jPlus1 = ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]
@@ -2191,6 +2244,7 @@ export default (ctx) => {
       cmpSetup,
       ['local.set', `$${arrTmp}`, value],
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
+      durableArrSnapNode(base),
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
 
       ['local.set', `$${i}`, ['i32.const', 1]],
@@ -2274,6 +2328,7 @@ export default (ctx) => {
     (if (i32.eq (call $__ptr_type (local.get $arr)) (i32.const ${PTR.ARRAY}))
       (then
         (local.set $off (call $__ptr_offset (local.get $arr)))
+        ${durableArrSnapIR('off')}
         (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
         (local.set $target (call $__clamp_idx (local.get $target) (local.get $len)))
         (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
