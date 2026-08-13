@@ -1883,6 +1883,77 @@ function synthesizeBoundaryWrappers() {
 }
 
 
+// Two-level read-through Map facade (.work/research.md §Region arena, jz×jz
+// ceiling fix): emitClosureBody used to open every schema/typed-capturing
+// closure body with `new Map([...whole_program_table, ...cb_own_captures])`
+// — an O(programSize) full clone, paid PER CLOSURE, restored (discarded) at
+// the body's own tail. For a bundled program whose own fact table scales
+// with total module count (jz×jz: 155 modules merged into one AST/scope),
+// that made compiling N closures cost O(N × programSize) — exactly the
+// superlinear-in-program-size-not-in-closure-count shape that traps the
+// jz×jz self-host kernel-compile at the 2^32-byte ceiling deep inside
+// buildStart's emitClosures rounds (root-caused, not yet fixed, by the
+// 2a78a6f6 ledger entry this fix answers).
+//
+// MapOverlay replaces the clone with two layers: `own` (this closure's own
+// captures/writes) is checked first, falling through to `base` (the
+// enclosing table — module-global or the parent closure's own view) on
+// miss — O(1) construction, O(|own|) get/set, independent of base's size.
+// Shadow order matches the eager merge exactly: `new Map([...base, ...own])`
+// lets later (own) entries win on key collision, which is what `own` wins
+// on every read here reproduces. Writes (`.set`/`.delete`) land ONLY in
+// `own`, so `base` — which may be a caller-owned module-global map, never
+// safe to mutate in place — is never touched, the same non-leak guarantee
+// the old clone-then-discard pattern gave "for free". Restoring the PARENT's
+// view on exit is then just re-pointing ctx.schema.vars/ctx.types.typedElem
+// back at whatever it was before this call (already how the tail restore
+// worked — no change needed there), not "popping" anything structural: each
+// closure call builds its OWN fresh overlay from the CURRENT (possibly
+// itself an overlay, for a nested closure) prev value as `base`.
+//
+// Verified (grep across analyze.js, emit.js, emit-assign.js, infer.js,
+// inplace-store.js, plan/scope.js, program-facts.js, prepare/index.js,
+// type.js, kind.js, kind-traits.js, static.js): every read of
+// ctx.schema.vars / ctx.types.typedElem / ctx.types.typedLen is a bare
+// `.get`/`.has`/`.set`/`.delete` call — never a spread, `.keys()`/
+// `.entries()`/`.values()`, `for..of`, or `.size` read while a closure body
+// could be mid-emission — so a get/has/set/delete facade is a complete,
+// behavior-preserving substitute; no consumer needed converting.
+//
+// Plain factory (no `class`) on purpose: this file's own source text is
+// bundled into the self-host kernel (see emitClosureBody's doc above), and
+// jz compiles the WHOLE 155-module program including this one — `class` is
+// otherwise unused anywhere in src/, an untested self-host surface not worth
+// risking here. `delete` as a shorthand method-definition name (class OR
+// object-literal) trips the self-host front end's parser (a reserved word in
+// definition position); `.delete(name)` as a plain member-access CALL is
+// already used throughout the codebase and self-hosts fine (prepare/
+// index.js, analyze.js, …), so the delete method is attached via a plain
+// assignment (`overlay.delete = …`, the same member-access production as
+// every existing call site) after the object literal, never defined inline.
+const MAP_OVERLAY_TOMBSTONE = Symbol('MapOverlay.deleted')
+function makeMapOverlay(base, own) {
+  const b = base || null
+  const o = own || new Map()
+  const has = (k) => o.has(k) ? o.get(k) !== MAP_OVERLAY_TOMBSTONE : (b ? b.has(k) : false)
+  const overlay = {
+    base: b,
+    own: o,
+    has,
+    get(k) {
+      if (o.has(k)) { const v = o.get(k); return v === MAP_OVERLAY_TOMBSTONE ? undefined : v }
+      return b ? b.get(k) : undefined
+    },
+    set(k, v) { o.set(k, v) },
+  }
+  overlay.delete = (k) => {
+    const had = has(k)
+    if (had) o.set(k, MAP_OVERLAY_TOMBSTONE)
+    return had
+  }
+  return overlay
+}
+
 /**
  * Phase: emit one closure body to WAT IR.
  *
@@ -1892,7 +1963,10 @@ function synthesizeBoundaryWrappers() {
  *
  * Mutates ctx.func.* per-body state (locals, boxed, localReps) and
  * ctx.schema.vars / ctx.types.typedElem (restored on exit so capture-binding
- * leaks don't poison the next body). Returns the WAT IR for the func node.
+ * leaks don't poison the next body). ctx.schema.vars / ctx.types.typedElem /
+ * ctx.types.typedLen ride a MapOverlay (above) rather than a fresh full
+ * clone while this body compiles — see MapOverlay's own doc for why.
+ * Returns the WAT IR for the func node.
  */
 function emitClosureBody(cb) {
   const prevSchemaVars = ctx.schema.vars
@@ -1920,14 +1994,14 @@ function emitClosureBody(cb) {
   if (cb.mayBeUndefineds) for (const name of cb.mayBeUndefineds) updateRep(name, { mayBeUndefined: true, presence: 'maybe-undef' })
   if (cb.valTypes) for (const [name, vt] of cb.valTypes) updateRep(name, { val: vt })
   if (cb.schemaVars) {
-    ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])
+    ctx.schema.vars = makeMapOverlay(prevSchemaVars, new Map(cb.schemaVars))
     for (const [name, sid] of cb.schemaVars) updateRep(name, { schemaId: sid })
   }
   const globalTE = ctx.scope.globalTypedElem
   if (cb.typedElems) {
-    ctx.types.typedElem = globalTE ? new Map([...globalTE, ...cb.typedElems]) : new Map(cb.typedElems)
+    ctx.types.typedElem = makeMapOverlay(globalTE, new Map(cb.typedElems))
   } else if (globalTE) {
-    ctx.types.typedElem = new Map(globalTE)
+    ctx.types.typedElem = makeMapOverlay(globalTE)
   } else {
     ctx.types.typedElem = prevTypedElems
   }
@@ -1935,8 +2009,8 @@ function emitClosureBody(cb) {
   // typedIdxProven bounds proof reads the merged view.
   const globalTL = ctx.scope.globalTypedLen
   ctx.types.typedLen = cb.typedLens
-    ? (globalTL ? new Map([...globalTL, ...cb.typedLens]) : new Map(cb.typedLens))
-    : (globalTL ? new Map(globalTL) : null)
+    ? makeMapOverlay(globalTL, new Map(cb.typedLens))
+    : (globalTL ? makeMapOverlay(globalTL) : null)
   // In closure bodies, boxed captures use the original name as both var and cell local
   ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
   // i32-narrowed cells: the owner decided the cell width (funcFacts.cellTypes);

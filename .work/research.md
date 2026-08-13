@@ -9875,3 +9875,252 @@ investigation, fully reverted, never committed). watr: `5.7.15`
 (this session, self-build ×2): SHA-256
 `2eb9f61724d05d438c1c0e161911e8a55f40c982a8f56c6a84052e2d6b414bca` (both
 builds identical).
+
+## §Region arena — jz×jz closure-clone pathology FIXED (MapOverlay); the goal
+## gate still traps at the 4GiB wasm ceiling, but for a DIFFERENT, LATER
+## reason now measured and named: watr's own `watOptimize` pass, not
+## `compileAst`'s closure machinery (2026-08-13)
+
+**Task**: implement 2a78a6f6's own named design lever — replace
+`emitClosureBody`'s eager `new Map([...prevSchemaVars, ...cb.schemaVars])`
+(and the parallel `ctx.types.typedElem`/`typedLen` merges) with a two-level
+overlay, O(closure's own captures) instead of O(programSize) per closure —
+then re-run the jz×jz goal gate to see whether `compileAst` now completes
+under 4 GiB.
+
+### The fix
+
+**`MapOverlay`** (`src/compile/index.js`, defined just above
+`emitClosureBody`): a plain factory (`makeMapOverlay(base, own)`, not
+`class` — see below), two layers — `own` (this closure's own captures,
+starts as a small `new Map(cb.schemaVars)`/`new Map(cb.typedElems)`/
+`new Map(cb.typedLens)` copy, bounded by the closure's own capture count)
+checked first, falling through to `base` (the enclosing table — the
+program-wide `ctx.schema.vars`, module-global `ctx.scope.globalTypedElem`/
+`globalTypedLen`, or an enclosing closure's own overlay for nested
+closures) on miss. `get`/`has` are the read path; `set` writes only into
+`own`; `delete` (see the `class`-avoidance note) tombstones in `own` so a
+base-visible key reads as absent without ever touching `base`. Construction
+is O(1); every operation is O(1) amortized (native `Map.get/has/set` on
+whichever layer), independent of `base`'s size. Shadow order matches the
+old eager merge exactly — `own` wins on key collision, same as the second
+spread (`...cb.schemaVars`) winning in `new Map([...prev, ...cb])`. The
+three `emitClosureBody` assignment sites (`ctx.schema.vars`,
+`ctx.types.typedElem`, `ctx.types.typedLen`) now build a `makeMapOverlay(...)`
+instead of a clone; the tail restore (`ctx.schema.vars = prevSchemaVars`,
+`ctx.types.typedElem = prevTypedElems`) is unchanged — "restore" was always
+just re-pointing the ctx field back at the parent's value, which composes
+fine whether that value is a real `Map` or another `MapOverlay` (nested
+closures re-overlay on top of an overlay `base` transparently).
+
+**Consumer audit** (why a facade, not per-call-site conversion): grepped
+the WHOLE repo (not just `src/` — see the miss below) for `schema.vars`,
+`types.typedElem`, `types.typedLen`. Every read across analyze.js, emit.js,
+emit-assign.js, infer.js, inplace-store.js, plan/scope.js, program-facts.js,
+prepare/index.js, type.js, kind.js, kind-traits.js, static.js is a bare
+`.get`/`.has`/`.set`/`.delete` — never a spread, `.keys()`/`.entries()`/
+`.values()`, `for..of`, or `.size` while a closure body could be
+mid-emission. A facade is a complete, zero-consumer-edits substitute.
+
+**The one real miss, caught by testing, not by the audit**: my grep was
+scoped to `src/` and missed `module/function.js:227` — `ctx.closure.make`'s
+own capture-scan, which built `new Set(ctx.schema.vars.keys())` (a SECOND,
+separate O(programSize) full-table copy, at closure-CREATION time, firing
+for every arrow/function-expression literal seen while ANY body emits — the
+more frequent, and on measurement the DOMINANT, sibling of
+`emitClosureBody`'s own per-BODY merge) then handed it to
+`findFreeVars(body, params, refs, schemaNames)` as the `scope` param. Naive
+fix #1 (pass `ctx.schema.vars` straight through, since `findFreeVars`'s
+`scope.has(name)` read looked read-only) broke `npm test` immediately — 111
+NEW failures, `internal: out.add is not a function` — because
+`analyze-scans.js`'s `findFreeVars` has a SECOND, easy-to-miss use of
+`scope`: its own `let`/`const`/`for(let…)` branches call
+`collectParamNames(decls, scope)`, which calls `scope.add(name)`, to record
+body-local shadow declarations (so a closure's own inner `let x` doesn't
+get misread as a free reference to an outer schema var named `x`) — a real
+MUTABLE Set interface, not read-only lookup, and `ctx.schema.vars` is a
+`Map` (no `.add`). Fixed properly with the same two-layer split MapOverlay
+uses, inlined for this one call site: a fresh per-closure `scopeOwn = new
+Set()` that `.add` writes into, `.has` checking `scopeOwn` then
+`ctx.schema.vars` — O(1) construction, shadow-writes never leak into the
+shared program-wide table. **Lesson for future overlay work in this
+codebase**: audit READ shape is not enough for a "pass the live table
+through" style fix — audit for MUTATION methods on the SAME parameter too,
+at every call site, not just the immediate one.
+
+**No `class`, no `delete`-as-method-name**: `src/compile/index.js`'s own
+source text is bundled into the self-host kernel (jz compiles jz), so new
+code here must self-host. First attempt used `class MapOverlay { … delete(k)
+{…} }` — broke the self-host `selfhost-build.mjs` build outright (subscript,
+the self-hosted front end's own parser, chokes on `delete` as a
+class-method-definition name — a reserved word in definition position;
+`.delete(x)` as a plain member-access CALL, already used throughout the
+self-hosted corpus, is fine). Also `class` itself is otherwise UNUSED
+anywhere in `src/`/`module/` — an untested self-host surface not worth
+risking even after working around the `delete` issue. Rewrote as a plain
+factory function returning an object literal; `.delete` is attached via a
+post-hoc assignment (`overlay.delete = (k) => {…}`, the same
+member-access-after-dot production every existing `.delete(...)` call site
+already exercises) rather than defined inline.
+
+### The goal gate: NOT met, but the named pathology IS fixed — measured,
+### not inferred
+
+Peak-memory reads via `self.memory.buffer.byteLength` after
+`self.exports.default(...)` (the established `mem-curve.mjs` method) still
+show jz×jz trapping at exactly 4294967296 bytes (4 GiB) in BOTH dormant and
+region-live self-host kernels, both before AND after this fix — the coarse
+"did it fit" outcome is unchanged. That reading alone doesn't distinguish
+"the fix did nothing" from "the fix helped a lot but a DIFFERENT cost now
+fills the same ceiling" — `buffer.byteLength` only ever reports the last
+successfully-grown size, always landing at the hard cap on ANY trap
+regardless of how close-vs-far the real peak was. Needed a finer probe.
+
+**Native phase-by-phase measurement (compile()'s own first-class
+`opts.profile` sink — zero source perturbation, the exact instrumentation
+seam index.js already ships) is unambiguous.** Compiling jz×jz NATIVELY
+(same `src/compile/index.js`, no wasm ceiling) with `opts.profile`:
+
+| build | `emitClosures` calls before done/trap | `compile()` outcome | peak RSS at `compile()` done |
+|---|---|---|---|
+| base (2a78a6f6, pre-fix) | 27 total `timePhase` calls reached, deep in `buildStart`'s flush, TRAPPED (documented in 2a78a6f6's own entry, wasm-side) | — | — (wasm-only measurement, no native equivalent run this session) |
+| this session's fix | **3** `emitClosures` calls, ALL complete | **COMPLETES** | **~2021 MB** |
+
+`compile()` — the WHOLE plan→analyze→emit→closures→buildStart→optimizeModule
+pipeline — now finishes natively in 26.6 s at ~2 GB peak RSS, where the base
+kernel's own wasm-side measurement never got past round 27 of an
+open-ended `emitClosures` flush at 4096 MB. `emitClosures` firing only 3
+times (not dozens) is the direct, load-bearing confirmation: the named
+O(programSize)-per-closure pathology is gone.
+
+**The FULL native pipeline (`compile()` + watr's own `watOptimize` +
+`watrCompile`/encode — i.e. everything `jz.compile()` does, matching what
+the self-host kernel's own `compileSelf` does) completes too, at 201.5 s /
+3840.7 MB peak RSS — under 4 GiB natively, but only by ~450 MB, and the
+memory growth from `compile()`-done (~2 GB) to finish (~3.84 GB) happens
+almost entirely inside ONE later phase**: `watOptimize` (144.1 s,
++1.8 GB) — watr's own whole-module optimizer, NOT jz's own `optimizeModule`
+(`optMod:*`, ~2.0→2.05 GB, modest) and NOT `compileAst`/closures (already
+done by then). This is a genuinely different, later, out-of-scope
+mechanism — watr's optimizer operating on a legitimately huge (~10 MB)
+compiled module, not a per-closure pathology in jz's own emit path.
+
+**Cross-check that rules out "jz-level optimize is secretly still the
+lever"**: re-ran the wasm kernel at `optimize:{level:0}` (jz's own optimizer
+passes off) — it STILL traps at the identical 4 GiB ceiling, and takes
+LONGER (10.5 s vs 6.6 s at level 2), not shorter. Consistent with: watr's
+own tail optimize pass runs regardless of jz's optimize level (governed
+independently), so skipping jz's own passes only hands watr a BIGGER,
+less-pre-folded module to optimize — worse, not better. This is direct
+evidence the remaining ceiling is watr-side, not jz-closures-side.
+
+**Why the wasm kernel still traps despite native fitting under 4 GiB**:
+the self-hosted kernel's own runtime (jz's NaN-boxed heap model, no
+compaction, coarser allocation granularity than V8's tagged-object heap)
+almost certainly carries a real "self-hosting tax" over native V8 for the
+same algorithmic work — a ~3.84 GB native peak, sitting only ~450 MB under
+the ceiling, is exactly the kind of margin a modest per-allocation overhead
+multiplier would erase. Not measured directly this session (would need the
+same `opts.profile`-shaped per-phase breadcrumb wired through the
+self-hosted kernel's own memory reads, one more kernel-build cycle); named
+as the leading hypothesis, not proven.
+
+**Module-ladder / curve**: the coarse `memory.buffer.byteLength` metric
+turned out to be an unreliable cross-comparison instrument even at the
+established jessie/watr/jzify-entry sizes — re-running the ESTABLISHED
+4-point corpus (jessie/watr/jzify-entry/jz×jz) against the FIXED dormant
+kernel landed on jessie=1073.7 MB, watr=2147.5 MB, jzify-entry=4295 MB
+(barely fits, `ok:true`), jz×jz=4295 MB (traps) — every row a
+power-of-two-MiB tier HIGHER than 2a78a6f6's own documented table
+(512/1024/2048/—), which looked like a regression until the SAME script
+against the region-jzjz worktree's OWN pre-existing (non-this-session)
+`dist/jz.wasm` on this machine produced the IDENTICAL numbers
+(1073.7/2147.5/4295/4295) — an environment/measurement-granularity
+difference (this session's Node.js v25.9.0 wasm memory implementation,
+almost certainly), not a real regression from this fix. Byte-identity
+(below) is the real "did codegen change" gate, not this coarse peak-MB
+reading — a genuine 20/50/100/155-module ladder wasn't built (constructing
+valid module-count SUBSETS of jz×jz's own real import graph without
+producing an invalid/incomplete program is nontrivial and wasn't
+attempted); the native phase table above is the more precise substitute
+this session actually has.
+
+### Byte-identity (the strongest gate here)
+
+Native `compile(code, {modules, optimize})` for jessie/watr/jzify-entry at
+optimize 0/1/2/3 (12 rows), base worktree (2a78a6f6, unmodified) vs this
+session's fix: SHA-256 of every compiled output byte-IDENTICAL, all 12
+rows. The overlay is pure mechanism — confirmed zero output change for any
+tested program at any optimize level.
+
+### Gates
+
+- Native `npm test`: 3436/3428 pass/2 fail (pre-existing, documented)/6
+  skip — byte-for-byte the same tally as 2a78a6f6's own baseline.
+- `test:wasm`: 2731/2725 pass/0 fail/6 skip.
+- Kernel-oracle, dormant (this session's fixed kernel): 13/13 (541
+  assertions) × 3 runs, identical every time.
+- Kernel-oracle, region-live (this session's fixed kernel, all three
+  `REGION_HOOKS_ACTIVE` boundaries firing): 7/13 × 3 runs, identical every
+  time — the SAME 6 failures every run (kernel-parity byte-identical-WAT at
+  O0/O2, kernel-oracle native+kernel-agree-with-JS at O0, ×2 more, the
+  KNOWN-FAIL audit-#16 bigint-module-ordering row) — matches the task's own
+  expected 7/13 (the OPEN `ctx.transform` defect from 233bf8b5, unchanged by
+  this session, not chased). No further regression.
+- Self-build determinism: dormant ×3 total builds (two direct + one
+  flag-revert re-check), SHA-256
+  `6e9e6c09598c863a41697effcbfc33f64b8f05e24e10b3bfddb8a22be03b1614`, all
+  three identical. Region-live ×2, SHA-256
+  `c30d44f2c55d4fa1f8668a7bd07e0a71cea7816a89a4c6388d9260b94e5459a9`, both
+  identical.
+- Byte-identity vs base (jessie/watr/jzify-entry × optimize 0-3, native):
+  12/12 rows SHA-identical.
+- `node_modules/watr`: 5.7.15 confirmed intact before and after (the `let
+  SW = []` fix present), package.json/package-lock.json untouched by this
+  session.
+- jz×jz goal gate: does NOT complete under 4 GiB in either self-host
+  config — goal gate NOT met. Root mechanism this session was tasked with
+  (closure-body/closure-creation schema/typedElem full-table clones) is
+  fixed and measured-fixed (native: `emitClosures` 27+/trapped →
+  3/complete); the ceiling that remains is a DIFFERENT, later, out-of-scope
+  mechanism (watr's own `watOptimize` pass, ~144 s / +1.8 GB natively) —
+  named, not fixed.
+
+### Disposition
+
+**Landed, both fixes** (`src/compile/index.js`'s `MapOverlay` +
+`emitClosureBody`'s three call sites; `module/function.js`'s
+`ctx.closure.make` capture-scan). Both are pure mechanism — zero output
+change (byte-identity gate), zero behavior change (kernel-oracle/npm
+test/test:wasm all at documented baseline) — and both are independently
+measured-necessary (the module/function.js fix alone was required once the
+emitClosureBody-only fix left the trap byte-for-byte unchanged; discovered
+via native phase profiling, not by re-guessing).
+
+**The goal gate itself is not met**, but not for the reason 2a78a6f6 named
+— that specific, named, line-cited pathology is gone, replaced by a
+DIFFERENT, LATER, well-evidenced next lever: watr's own module-level
+optimizer, whose ~144 s / +1.8 GB native cost on jz×jz's ~10 MB compiled
+output is now the dominant remaining cost, sitting close enough to the
+4 GiB wasm ceiling (native peak 3.84 GB) that the self-host "tax" very
+plausibly tips it over (named hypothesis, not measured this session).
+**Next named lead**: wire the same `opts.profile`-shaped breadcrumb
+technique THROUGH the self-hosted kernel (mirroring 2a78a6f6's own
+`__dbg_mark`/`__dbg_stage`/`__dbg_mem` wasm-global convention, or a fresh
+equivalent) specifically around `watOptimize`'s own internal passes (`rec`/
+`substGets`/`count`/`walkN`/`walkPostN` were the hottest native symbols in
+a `--prof` capture of this run) to confirm the self-host-tax hypothesis and
+find whether watr's optimizer has its own O(programSize)-repeated-per-unit
+cost analogous to the one just fixed here, or whether it's a genuine
+"the module is just this big" floor that needs a different lever entirely
+(chunked/streaming optimization, a size-tier default for kernels this
+large, or accepting jz×jz needs memory64).
+
+**SHAs**. jz worktree: `2a78a6f6` base, this session's commits are the
+`src/compile/index.js` + `module/function.js` pair above plus this ledger
+entry. watr: `5.7.15`, confirmed intact (unmodified by this session).
+Dormant `dist/jz.wasm` (this session, self-build ×3 total across the
+fix-development and final-revert builds): SHA-256
+`6e9e6c09598c863a41697effcbfc33f64b8f05e24e10b3bfddb8a22be03b1614` all
+three. Region-live `dist/jz.wasm` (this session, self-build ×2): SHA-256
+`c30d44f2c55d4fa1f8668a7bd07e0a71cea7816a89a4c6388d9260b94e5459a9` both.
