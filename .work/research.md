@@ -1054,6 +1054,32 @@ verified, checksum-confirmed inference improvement the atomicity fix itself
 unlocked. `materializeVariant` is now the one place a sixth specialization
 path (if one is ever needed) mints/registers/retargets a variant.
 
+## [ ] Heap-epoch effect model (was heap-epoch-design.md; architecture re-audit item 5)
+
+Design only, no `src/` changes. Model: one monotone counter per `SchemaId`
+(`lattice-design.md` §2's own `SlotFacts` key space, no new identity type)
+plus a shared "unknown-target" `⊤` counter that promotes today's `hz.all`
+whole-program hazard boolean into a generation stamp — a fact stamped at
+epoch E for key `sid` is valid to consume at read time iff E equals
+`epochEff(sid) = max(epoch(sid), epochTop)`, closing the exact gap
+`lattice-design.md` §6 risk item 1 named and left uncovered (a cached
+`possibleKinds` reference read stale after a later join widened it).
+Rejects a pure-global counter (schema census storage is already
+per-`SchemaId`, `ctx.schema.slotFacts` et al., and per-sid locality is
+load-bearing for `bench/provenance`/`bench/fftplan`) and a per-binding
+counter (schema slot writes alias across many bindings; `ctx.js` already
+documents `dictValueTypes`/`mapValueTypes` as deliberately not
+scope-aware). Producer/consumer split: `SlotFacts`-shaped census +
+`kindsCoverage:'closed'` claims get epoch-stamped; identity-keyed `WeakMap`
+state (`bodyFacts`, `LoopPlan`, `ClosureEnvPlan`) and the `paramReps`
+fixpoint's own `latticeMeet.changed` signal stay epoch-free by construction
+(a stale `WeakMap` key can't be looked up; a fixpoint visits its own write
+sites). 6 migration slices, Slices 0-4 byte-identical throughout (pure
+caching-layer infra, mirrors `pf.gen`'s existing but coarser mechanism in
+`program-facts.js`), Slice 5 the first to unlock a new consumer
+(`kindsCoverage` exclusion, re-audit item 9(a)'s own stated blocker). Full
+account: `.work/heap-epoch-design.md`.
+
 ## [ ] Heap-kind registry (was heap-kind-registry-design.md; audit-#13 item 3)
 
 One per-tag authority (`layout-kinds.js`, repo root): 16 kinds × 7 columns
