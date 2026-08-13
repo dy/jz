@@ -9054,3 +9054,280 @@ Dormant `dist/jz.wasm` (final gate rebuild): 16,678.9 kB,
 `REGION_HOOKS_ACTIVE` confirmed `false` in the committed `scripts/self.js`
 (unchanged from `475a202d` — this session's only edits to that file were
 scratch, built/tested, then discarded via `git checkout --`).
+
+## §Region arena — WALL2 IS NOT A SEPARATE WALL: it's the LAST HOP's own
+SW-rides-regionExit fix, silently regressed out of every build since because
+`npm ci` never carried it and the pin-verify check was blind to the one file
+that matters. `fromnested`/O2 closes in BOTH configs; oracle 13/13 region-live
+×3 AND 13/13 dormant ×3 — but the shipped, `npm ci`-resolvable state stays
+11/13 both configs: landing the fix for real needs a watr npm publish, out of
+this session's authority. NOT declaring REGION FRONT COMPLETE. A genuinely
+separate, still-open residual is also surfaced and banked (2026-08-13)
+
+**Setup.** `git worktree add` off `98f60fe0` (detached), per the brief.
+`node_modules` copied from the shared checkout rather than freshly `npm
+ci`'d (behaviorally identical — same `package-lock.json`, same resolved
+tarball — confirmed below). Read this ledger's own "wall2"/`fromnested`
+mentions in full (the WAT-diff session, the STRUCTURAL-FUSION DISCRIMINATOR
+pad/pin session, the SAFEPOINT FIX PUBLISHED entry, the LAST HOP entry, and
+`475a202d`/`98f60fe0`'s own closure4232 fix) before touching anything.
+
+### Step 1 — the pin-verify convention has a blind spot, and it already bit
+
+Every session since the LAST HOP entry (`.work/research.md`, "REAL WALL
+FOUND+FIXED… THE LAST HOP", 2026-08-12) reports "`node_modules/watr`
+reconfirmed byte-identical to `/Users/div/projects/watr` (`895ca5b`/5.7.14,
+`watr.js`+`package.json` diff clean)" as its watr-pin verification. That
+check is real but aimed at the wrong file: `watr.js` is a 46-line composed
+entry point (`compile`/`watr`/`parse`/`print` re-exports) that never touches
+`src/optimize.js`'s own content, and `package.json`'s `"version"` field is
+`"5.7.14"` on BOTH sides of the drift this session found — the check passes
+identically whether or not the actual optimizer source matches.
+
+Direct diff, this session, worktree `node_modules/watr` (npm-resolved, per
+this repo's own `package-lock.json`: `resolved:
+https://registry.npmjs.org/watr/-/watr-5.7.14.tgz`, integrity
+`sha512-PNBeHpM7rzstcEDxiG26NW4qonyvo7EPFhSK/tgoTc7QysL/IVPOE9qMclVvjaEGtCb5ExFFLBwqZ4owSHj5bw==`)
+against `/Users/div/projects/watr`'s working tree (`git status`/`git diff
+HEAD` both clean, HEAD `895ca5b`): **every file identical except
+`src/optimize.js`.** `npm view watr@5.7.14 gitHead` confirms the registry
+tarball's own recorded source commit is `a563a63f5a8c14c32c8152bf94fc229825
+958c94` — the LAST HOP entry's own "on top of" baseline, ONE commit BEHIND
+`895ca5b` ("region-arena: SW rides the regionExit root bundle (fa3fe0e
+follow-up)"). **`895ca5b` was never published.** The LAST HOP entry said so
+explicitly at the time ("adopting `895ca5b` for real… is a separate,
+follow-up step outside a single session's safe scope… jz's own
+`package.json`/`node_modules` were deliberately NOT touched… pristine") and
+used a worktree-local `node_modules/watr → /Users/div/projects/watr`
+SYMLINK for its own verification — a convention several later sessions'
+entries also cite by name ("`node_modules/watr → /Users/div/projects/watr`,
+verified intact"). But `475a202d` and `98f60fe0` (the two most recent
+sessions, both cited by this task's own brief as establishing "11/13
+region-live ×3, 13/13 dormant") both record `npm ci` as their setup step
+instead of the symlink — and their own diff check (`watr.js`+`package.json`
+only) could not have caught the difference either way. The fix was banked,
+correct, tested — and has been silently absent from every `npm ci`-built
+kernel for at least three sessions running.
+
+### Step 2 — `fromnested`/O2 is the SAME mechanism, not a second wall
+
+Swapped ONLY `node_modules/watr/src/optimize.js` (stale registry content ↔
+`/Users/div/projects/watr`'s `895ca5b`, one file, one real hunk — the `const
+SW = []` → `let SW = []` declaration plus the regionExit root-bundle call
+site growing `[ast, dirty, snapshots, opts.constF64]` →
+`[ast, dirty, snapshots, opts.constF64, SW]` with the matching `SW =
+__regionOut[4]` rebind) and rebuilt a region-live named kernel each way
+(hand-flipped `REGION_HOOKS_ACTIVE`, `names:true`, no `wat:true`, per
+method). Everything else — jz source, memory config, optimize level —
+byte-identical between the two builds.
+
+- **Stale watr, region-live**: `fromnested` (`Int32Array.from([Float64Array.
+  from([5])[0], 2])`) O2 traps `memory access out of bounds`, 3/3, via both
+  a scratch harness AND the project's own unmodified `test/kernel-oracle.js`
+  (`node test/index.js kernel-oracle`: 13 total / **11 pass / 2 fail** — the
+  exact two rows this campaign has banked as `fromnested`'s signature,
+  `kernel parity: byte-identical WAT at O2` and `kernel oracle: native +
+  kernel agree with JS at O2`, 434 assertions, matching `98f60fe0`'s own
+  reported state exactly).
+- **Fixed watr (`895ca5b`), region-live, nothing else changed**: same two
+  test rows, **13/13, 3/3 reps, deterministic** (541 assertions — the extra
+  107 are the O2 row's own AGREE-tier body, previously never reached past
+  the trap). `kernel-parity` standalone: 3/3 (33 assertions), byte-identical
+  WAT at O0/O2/O3 including the `fromnested` row by name.
+
+**Why this is causally, not coincidentally, region-related.** `src/optimize/
+watr-tail.js` gates watr's `regionMark`/`regionExit` wiring behind a single
+call site: `if (watrOpts && regionHooks) { watrOpts.regionMark =
+regionHooks.mark; watrOpts.regionExit = regionHooks.exit }` — and its own
+comment names `scripts/self.js`'s `optimizeTail` as "the ONLY caller that
+ever passes `regionHooks`". In a region-live KERNEL, `optimizeTail` is
+itself self-hosted with `REGION_HOOKS_ACTIVE` baked `true` — so `opts.
+regionExit` is wired on EVERY optimizer round the kernel runs for ANY
+target program it compiles, `fromnested` included, independent of anything
+`fromnested`'s own source does. `895ca5b`'s bug (SW's own backing pointer,
+relocated by an ordinary mid-round `arrGrow`, gets reclaimed — not
+relocated-and-rebound — by the region exit that only drains its LENGTH,
+because pre-fix SW was never in the root bundle) therefore fires on every
+single self-hosted compile a region-live kernel performs. This is the exact
+same mechanism the LAST HOP entry root-caused for the `computed member key`
+O3 row via a live corruption trace (`$__map_from` ← `substGets` ←
+`forwardPropagate`, landing on a freshly-allocated Map header) — this
+session did not need to re-run that trace to confirm the SAME code path
+explains `fromnested`: the controlled single-file before/after swap is
+strictly stronger evidence (it isolates the ONE candidate line, not just
+one plausible stack).
+
+**The "region-unrelated, disqualified as a discriminator" verdict (this
+ledger's own "TWO 'UNTRIAGED RESIDUALS' TRIAGED" entry, 2026-08-11) is
+REFUTED.** That session tested `fromnested` against `d1f2f2ba`+regionHooks-
+wired — a control that was ALSO region-live, built from the SAME
+watr vintage this session found stale. Two region-live builds agreeing
+that a region-only bug traps is not evidence the bug is region-unrelated;
+it is exactly what a real region-triggered defect looks like when neither
+side of the comparison ever turns regions off. That session's own next-door
+"STRUCTURAL-FUSION DISCRIMINATOR" entry explicitly used the SAME kind of
+region-live-vs-region-live pairing for a DIFFERENT repro and reached a
+correctly negative verdict there — the method is sound in general; it
+simply was never pointed at a genuinely dormant control for `fromnested`,
+which is the one comparison that would have surfaced this.
+
+### Step 3 — dormant ALSO flips, but NOT for the reason above (banked, not solved)
+
+The same file swap flips `fromnested`/O2 from trap to pass in a genuinely
+DORMANT kernel too (`REGION_HOOKS_ACTIVE=false`, confirmed via both a
+scratch harness and the real `test/kernel-oracle.js`: 11/13 → **13/13 ×3**,
+434 → 541 assertions, reproduced across three independent standalone runs).
+This is real and reproducible — but it cannot be `opts.regionExit` actually
+executing: `regionHooks` is wired ONLY by `scripts/self.js`'s `optimizeTail`,
+itself gated by the same `REGION_HOOKS_ACTIVE` literal, `false` throughout
+every dormant compile including the kernel's own self-hosted one — the
+`if (opts.regionExit) {…}` branch `895ca5b` touches is provably dead code
+for every call a dormant kernel ever makes.
+
+Ablated to find out what DOES explain it (three dormant kernel builds,
+otherwise byte-identical, `src/optimize.js` the only varying input):
+- **Pad-only** (16 inert `//` comment lines spliced at the exact same source
+  location, zero functional change): `fromnested`/O2 **still traps 3/3** —
+  rules out a bare "any size perturbation flips it" size-lottery
+  explanation for THIS specific case.
+- **`let`-only** (`const SW = []` → `let SW = []`, nothing else — the
+  regionExit call site left at its original 4-element form): **still traps
+  3/3** — rules out the bare declaration-kind switch alone.
+- **Full `895ca5b` diff** (both hunks together): **passes 3/3.**
+
+The flip needs the SPECIFIC extra AST content of the (dead-in-dormant)
+regionExit branch — real code, not comments, and not the keyword alone —
+which the compiler still has to walk and codegen (it cannot statically
+prove `opts.regionExit` is always falsy across `runRounds`' whole call
+graph), consuming closure/temp-numbering state that shifts everything
+downstream in the ~6,000-closure self-hosted kernel. This is the exact
+"a `$closureN`/`$__mkptr_6_N_d`-class renumbering event… structurally
+invisible to every static, name-based technique" class this ledger has
+named and banked repeatedly (the WAT-diff session's own closing paragraph;
+`closure4232`'s own root cause was a member of the same broader family,
+though independently and fully root-caused there). **Dormant's own
+`fromnested`/O2 failure is therefore a SEPARATE, still-unlocated
+closure-numbering-sensitive miscompile** that this fix does not actually
+repair — it is dodged by luck of code shape, the same way this whole class
+has been dodged and re-triggered by unrelated changes throughout this
+campaign. Flagged honestly, not glossed over: adopting `895ca5b` for real
+will make the ORACLE pass (both configs, see gates below), but the dormant
+axis's own true defect remains open and could resurface on the next
+unrelated size change anywhere in the self-hosted graph.
+
+### Gates (all run against the fixed watr — worktree-local `src/optimize.js`
+overlay only, discarded before session end, never committed)
+
+- **kernel-oracle region-live: 13/13 ×3**, deterministic (541 assertions).
+- **kernel-oracle dormant: 13/13 ×3**, deterministic (541 assertions, three
+  independent standalone runs).
+- **kernel-parity: green, both configs** (3/3, 33 assertions each; WAT
+  byte-identical at O0/O2/O3 including `fromnested` and `computed member
+  key` by name).
+- **jessie/watr/jzify-entry region-live ×3: GREEN**, byte-identical every
+  rep, zero traps: jessie 106,996 B (47 modules), watr 315,222 B (7
+  modules), jzify-entry 611,504 B (69 modules) — module counts/sizes differ
+  slightly from older entries' numbers (codebase drift since those bases),
+  determinism and zero-trap are what this gate checks.
+- **watr's own test suite (`/Users/div/projects/watr`, `895ca5b`): 611
+  total / 591 pass / 20 skip / 0 fail** — includes the two dedicated
+  region-arena regression tests `895ca5b`'s own history already added
+  (`test/optimize.js`: "regionExit boundary drains CNT/CNT_FN/SW/SW_MEM
+  scratch caches", "every value live past regionExit is rooted and
+  rebound") — no new watr test needed, the fix already has first-party
+  coverage at watr's own abstraction level.
+- **Full native `npm test` (dormant, fixed watr): 3436 total / 3428 pass /
+  2 fail / 6 skip — TWO FEWER fails than the documented baseline
+  (3436/3426/4/6), zero new regressions.** The 2 remaining fails are
+  exactly the pre-existing `test/optimizer.js` pins (`interval walk:
+  strided companion cursor…`, `typed RMW: one guard covers…`) — confirmed
+  unrelated to watr/region by every prior session's own ablation, unchanged
+  here. The 2 that closed are precisely `kernel-parity`'s and
+  `kernel-oracle`'s `fromnested`/O2 rows.
+- **Self-build ×2, SHA-256 converges, both configs.** Region-live:
+  `a854a4c875d4d652b631fd2b0fc18098ab01799975c712d17776325f0f9b5c99` twice.
+  Dormant: `ffb6e45a2d191aa4ed8b71ff8bcf71a0b2df565287a7ffd8747cba8b736c763
+  2` twice.
+- **Dormant `test:wasm`: 0 fail** (2731 total / 2725 pass / 6 skip —
+  byte-identical to the documented historical baseline).
+
+### Correcting this task's own premise
+
+The brief cites "11/13 region-live ×3, 13/13 dormant" as the pre-session
+state. **The dormant half of that is not what a real, unmodified `npm ci`
+produces**: this session's very first measurement — fresh worktree, stock
+`node_modules` (npm-resolved, matching `package-lock.json` exactly),
+`REGION_HOOKS_ACTIVE` at its committed default (`false`), the project's own
+unmodified `test/kernel-oracle.js` — read **11/13**, the identical two rows,
+434 assertions. Whatever prior session's dormant run produced 13/13 either
+used the `node_modules/watr → /Users/div/projects/watr` symlink (silently
+carrying `895ca5b` in) without naming it as load-bearing for the DORMANT
+number specifically, or the claim was carried forward from an entry that
+never actually re-verified dormant post-`895ca5b`. Either way: as of a
+plain `npm ci` against this repo's committed `package-lock.json`, BOTH
+configs are 11/13, not just region-live.
+
+### Disposition — WALLED on landing, not on understanding
+
+**No jz source change.** `git status`/`git diff` show nothing beyond this
+ledger entry — the defect is entirely a stale THIRD-PARTY dependency
+resolution, not a bug in any jz-owned file; there is nothing in `src/`,
+`module/`, or `scripts/` for "no special-casing the oracle rows" to apply
+to. `scripts/self.js`'s `REGION_HOOKS_ACTIVE` toggle was hand-flipped for
+each build and reverted to its committed `false` every time (`git diff
+scripts/self.js` clean at session end).
+
+**Watr: no new fix authored — `895ca5b` already is the fix, already has its
+own passing regression tests.** Created branch `wall2-fix-2026-08-13` at
+`/Users/div/projects/watr`'s existing HEAD (`895ca5b`) as a discoverable
+marker for this campaign, per the task's own commit protocol — zero new
+diff (there is nothing to add; the fix predates this session by one day).
+Not pushed. `origin/main` untouched.
+
+**Landing requires publishing.** The pristine-pin policy this campaign has
+maintained since the LAST HOP entry is correct and this session does not
+override it: jz's `package.json`/`package-lock.json` were NOT touched, and
+remain pinned to the real npm registry tarball (`5.7.14`, `a563a63`). The
+single, concrete, already-fully-proven next step is: publish
+`/Users/div/projects/watr` at `895ca5b` as a new npm release (a version
+bump — `5.7.14` cannot be silently overwritten on the registry; something
+like `5.7.15`), bump jz's `package.json`/`package-lock.json` pin to it, and
+re-run the gate battery above — every number in the Gates section was
+produced against exactly that content, so this is a mechanical unblock, not
+a research question. **This is a publish action, explicitly out of this
+session's authority ("do NOT publish") — flagged, not performed.**
+
+**Therefore: NOT declaring "REGION FRONT COMPLETE candidate".** The gate's
+own bar is 13/13 ×3 both configs from what actually ships — and what
+actually ships (`npm ci` against the committed `package-lock.json`) is
+still 11/13 both configs, identically to before this session, because the
+one file that would change that cannot be committed here. What changes:
+the wall is no longer "harder, still open, next lead is a runtime
+`$__alloc`-entry stack-walk" — it is a fully root-caused, already-fixed,
+already-tested defect one `npm publish` away from closing outright, plus
+one small honestly-flagged separate residual (dormant's own
+closure-numbering sensitivity) that publishing will silence again without
+actually resolving.
+
+**Next named lead, in priority order:**
+1. Publish watr `895ca5b` (a human/gated action) and bump jz's pin — closes
+   both oracle rows in both configs immediately, per the Gates above.
+2. Fix the pin-verify convention itself: diff `node_modules/watr/src/*`
+   against `/Users/div/projects/watr/src/*` directly (or just symlink and
+   say so), not `watr.js`+`package.json` — the blind spot this session
+   found is exactly why the LAST HOP's fix silently regressed across three
+   sessions undetected.
+3. Dormant's own residual closure-numbering sensitivity (Step 3 above) is
+   real and unsolved — a genuinely open item for whoever next has budget for
+   another `$closureN`-class hunt; it will keep resurfacing under different
+   trigger names until it's found by a numbering-level technique, not a
+   padding/ablation one (this session's own ablation only localizes it to
+   "real AST content in a dead branch", it does not locate the miscompile
+   itself).
+
+**SHAs.** jz worktree: `98f60fe0` base, this session's only change is this
+ledger entry. watr: `895ca5b` (`/Users/div/projects/watr`), unchanged;
+branch `wall2-fix-2026-08-13` created at that commit, not pushed. Fixed-watr
+gate builds (worktree-local overlay, not committed, discarded): region-live
+`dist/jz.wasm` SHA-256 `a854a4c8…` (×2 identical); dormant `dist/jz.wasm`
+SHA-256 `ffb6e45a…` (×2 identical).
