@@ -11361,3 +11361,186 @@ uncommitted work in the user's own checkout untouched): `module/core.js`,
 `test/mem.js`, `test/perf-ratchet.json`, `.work/research.md`. Source branches
 `heal-length-2026-08-13`/`splice-heal-2026-08-13` and their worktrees deleted
 after the landing commit.
+
+## §main-tip gate attribution @ d29b7686 (2026-08-13)
+
+**Task.** Pure attribution audit of the current main tip — no fixes. Name
+every failing test/oracle row, attribute each to its introducing commit by
+bisection with evidence, across the three suspects on main's own linear
+chain: `893821ee` (region-front, known-good baseline) → `c407f806` (titled
+"bring wasm2c output to native scalar parity"; ALSO bumps `watr`
+`5.7.15`→`5.7.16`, undisclosed in its own title/message) → `d29b7686` (durable-
+array heal chain landing, tip). Confirmed via `git log --format="%H %P"`:
+this is a plain linear chain, one parent each — `d29b7686`'s parent IS
+`c407f806`, not `893821ee` as the heal-chain landing's own ledger entry
+claims for its worktree base.
+
+**Method.** Fresh worktree per commit (`893821ee`, `c407f806`, tip
+`d29b7686`), each `npm ci` against the registry (no overlays, no pins
+touched) for the baseline numbers. A fourth, decisive run reused the tip
+worktree with `node_modules/watr/src/optimize.js` **content**-swapped for
+the 5.7.15 tarball's version (`npm pack watr@5.7.15`, file copy — package.json
+still says `5.7.16`, no `npm install`), then `dist/jz.wasm` rebuilt — isolating
+the watr-logic axis from the heal-chain-code axis while holding everything
+else (real tip source, real tip `dist` build pipeline) fixed.
+
+**watr 5.7.15→5.7.16 delta.** One commit on the watr repo: `39b74370c`
+"optimize if-condition constants" (parent `2bde3c1` = the exact `5.7.15`
+`gitHead`; `/Users/div/projects/watr`'s own `HEAD` at `39b7437` byte-diffs
+clean against the registry `5.7.16` tarball's `src/optimize.js` — same
+commit, not a lookalike). Package-tarball diff (`npm pack` both versions,
+`diff -rq`) touches exactly `src/optimize.js`, `dist/watr.wasm`,
+`package.json`, and `types/src/optimize.d.ts.map` — everything else
+byte-identical. The `optimize.js` diff adds two new functions:
+`conditionConsts(node)` walks an `if`'s condition expression collecting
+tiny constants unconditionally written via `local.set`/`local.tee` before
+any nested branch scope (`try`/`try_table`/branch-scope ops stop the walk —
+a tee inside one arm of a nested conditional isn't guaranteed to execute),
+and `propagateConditionConsts(ifs)` then substitutes those known constants
+into BOTH the then- and else-arms of the very same `if` via the existing
+`substGets` machinery, at any expression depth (not just statement-root
+`if`s). Wired into the main pass loop: `walkPostN` now also collects every
+`if` node during its one pass, and `propagateConditionConsts(ifs)` runs
+BEFORE the pass's own per-scope `forwardPropagate` loop. This is a genuine
+NEW optimization pass — more constants get substituted, in more places,
+before the existing forward-propagation/inlining machinery ever runs — not
+a bugfix to existing logic. Nothing else in watr's inliner itself changed.
+
+**Native `npm test`, each commit (fresh `npm ci`, no overlays):**
+
+| commit | total | pass | fail | skip | fail rows |
+|---|---|---|---|---|---|
+| `893821ee` (baseline) | 3447 | 3440 | **1** | 6 | `typed RMW: one guard covers the pure read and ignored OOB store` (pre-existing banked pin) |
+| `c407f806` (watr 5.7.16 bump, no heal chain) | 3448 | 3442 | **0** | 6 | — none |
+| `d29b7686` (tip) | 3454 | 3446 | **2** | 6 | `kernel parity: byte-identical WAT at O3: boolconst O3: diverges (native 1994B vs kernel 1844B)`; `kernel oracle: native + kernel agree with JS at O3: Unknown local $__inl2_0` |
+
+**Correction to the standing ledger tally.** The `d29b7686` landing entry
+above reports native `npm test` as "3453 total / 3444 pass / **3 fail** / 6
+skip — 1 pre-existing banked `typed RMW` + 2 new." That third fail is
+**stale**. `c407f806` — sitting directly between the baseline and the
+landing on main's own linear history, and literally `d29b7686`'s own git
+parent — changed `test/optimizer.js`'s `typed RMW` assertion from
+`is(…, 4, 'three RMW guards plus one allocator guard…')` to `is(…, 3, 'one
+guard per RMW…')`, matching a real 4→3 guard-count reduction in that
+commit's own codegen work (`src/optimize/vectorize.js` byte-pack rework,
+same commit). Verified directly: `typed RMW` passes clean at `c407f806` AND
+at tip (isolated re-run, `node test/index.js optimizer`: 219/219, zero
+`✗`). The landing session's own gate table never re-ran this specific pin
+against its actual parent commit's content — it inherited the "still
+failing" assumption from the pre-`c407f806` baseline. Actual tip fail count
+is **2, not 3**; `typed RMW` is fully closed, not banked.
+
+**`test/kernel-oracle.js` ×3, tip — rows confirmed as claimed.** 13 total
+(444 assertions)/11 pass/2 fail, every rep, byte-identical failing set each
+time:
+- `kernel parity: byte-identical WAT at O3: boolconst O3: diverges (native 1994B vs kernel 1844B)` (surfaces here too — `kernel-oracle.js` imports `kernel-parity.js`'s `CORPUS`, which runs `kernel-parity.js`'s own top-level `test()` registrations as an import side effect)
+- `kernel oracle: native + kernel agree with JS at O3: Unknown local $__inl2_0`
+
+This part of the standing ledger entry (`11/13 ×3, deterministic, same 2
+rows`) is **accurate** — unlike the native `npm test` 3-fail tally above.
+
+**Bisection — the two failures are a genuine two-axis INTERACTION defect,
+not a single-axis bug.**
+
+| worktree | kernel-oracle | kernel-parity | verdict |
+|---|---|---|---|
+| `893821ee` (baseline: no watr bump, no heal chain) | 13/13 | clean | — |
+| `c407f806` (watr 5.7.16 alone, no heal chain) | 13/13 | clean | watr 5.7.16 ALONE does not trigger it |
+| tip `d29b7686`, real build (watr 5.7.16 + heal chain) | 11/13 | boolconst O3 fails | both present → fails |
+| tip `d29b7686` code, `optimize.js` content reverted to 5.7.15, `dist/jz.wasm` rebuilt (heal chain alone, watr logic reverted) | **13/13** | **3/3, `boolconst O3: identical`** | heal chain ALONE (under 5.7.15 logic) does not trigger it either |
+
+The fourth row is the decisive one: same tip source, same heal-chain
+`array.js`/`core.js`/`collection.js` changes, only `node_modules/watr/src/
+optimize.js`'s CONTENT swapped back (pin left at `5.7.16` — this isolates
+the optimizer-logic axis from the version-string axis) and `dist/jz.wasm`
+rebuilt from it. Clean, both gates. **Neither axis alone reproduces the
+failure; only the combination does.**
+
+This overturns the landing entry's own stated mechanism. That entry's
+bisection ("three worktrees... plain post-region main + array.js's actual
+hot-primitive-site growth... → the divergence, both times... pins the
+trigger specifically to array.js's necessary growth... not to the new
+durable-array-snapshot mechanism's own logic") never actually held the
+watr axis constant against a controlled 5.7.15 baseline — its own text
+states "watr version: `5.7.15` before and after (`node_modules/watr/
+package.json`), unchanged," which is contradicted by main's real linear
+history: `d29b7686`'s only parent is `c407f806`, which had already bumped
+the pin to `5.7.16` before the landing session's own worktree could have
+been created from "main tip `893821ee`" as claimed. Whatever watr version
+that session's three bisection worktrees actually resolved (shared/drifted
+`node_modules`, per that same session's own environment-note two entries
+above), it was not a genuinely watr-version-controlled comparison. The
+overlay experiment above is the first one that actually was — and it shows
+the trigger is watr 5.7.16's new `propagateConditionConsts` pass (more
+aggressive constant substitution ahead of the existing forward-propagate/
+inliner passes) interacting with the heal chain's array.js hot-primitive-
+site growth (bigger/differently-shaped function bodies at `__arr_push1`/
+`__arr_set_idx_ptr`/etc. — the exact sites the pass's own comment names as
+"~18M calls in watr self-host"), not array.js growth exposing a
+watr-inliner bug that was already latent under 5.7.15.
+
+**Non-fuzz `test:wasm` leg (`fuzz` excluded), tip.** The runner supports
+file selection (`node test/index.js <names…>`); computed the default
+`test:wasm` file set (`TESTS` minus `KERNEL_EXCLUDE`) minus `fuzz`, 66
+files, ran explicitly under `JZ_TEST_TARGET=jz.wasm`. **65 of 66 files
+completed clean — zero `✗` across 2454 executed sub-tests.** The 66th,
+`differential.js`, itself embeds a SEPARATE light fuzz section ("fuzz: no
+new miscompiles in seeds 1..200 × opt {0,1,2,3}", 800 kernel compiles) that
+stalled — identical log position for 16+ minutes at ~99–121% CPU with zero
+new output, under this environment's known heavy concurrent-session load
+(the same jetsam-risk class the task brief named for the dedicated
+`fuzz.js` leg, just showing up inside a file that isn't named `fuzz`).
+Killed after ~30 min wall time rather than let it run indefinitely; not
+reproduced further. **Inconclusive, not failing** — no `✗` was ever
+printed for it, it simply didn't finish. Everything else on this leg is a
+clean signal.
+
+**Failure table (deliverable).**
+
+| test | axis | evidence |
+|---|---|---|
+| `kernel parity: byte-identical WAT at O3: boolconst O3` | **interaction: watr 5.7.16 (`c407f806`) × heal-chain array.js growth (`d29b7686`)** | clean at `893821ee` and at `c407f806` alone; fails at tip; clean again at tip with `optimize.js` content reverted to 5.7.15 (heal-chain code held fixed) |
+| `kernel oracle: native + kernel agree with JS at O3` (`Unknown local $__inl2_0`) | **same interaction, same evidence** | identical bisection profile — both rows flip together in every worktree tested, never independently |
+| `typed RMW: one guard covers the pure read and ignored OOB store` | **pre-existing at `893821ee`, closed by `c407f806`** | fails at `893821ee` (banked pin); `c407f806` changes the pinned guard-count assertion 4→3 to match its own codegen change and the test passes clean there and at tip — NOT a currently-failing row, despite the landing ledger's stale "3 fail" claim |
+
+**Banked-vs-need-fix, updated.**
+- **CLOSED, remove from banked list**: `typed RMW` — fixed by `c407f806`'s
+  guard-coalescing work, confirmed passing at tip. The `893821ee`-era
+  "1 pre-existing banked fail" no longer applies to any commit at or after
+  `c407f806`.
+- **NEED-FIX, re-scoped**: `kernel parity: boolconst O3` +
+  `kernel oracle: boolconst O3` (`Unknown local $__inl2_0`) — still exactly
+  2 rows, still self-host/O3-only, still zero native impact (byte-identical
+  native WAT before/after at every level, confirmed previously). Re-scoped
+  from "watr inliner bug, exposed by array.js growth" to **"watr 5.7.16's
+  `propagateConditionConsts` pass × heal-chain array.js hot-primitive
+  growth, interaction-only — absent either, absent the bug."** Named lead:
+  bisect INSIDE `propagateConditionConsts`/`substGets` (watr,
+  `src/optimize.js` lines ~3160–3205) for which specific substitution shape
+  it newly creates against the heal chain's grown `__arr_push1`/
+  `__arr_set_idx_ptr` bodies that watr's OWN inliner (elsewhere in
+  `optimize.js`, not jz's `boolConvertToSelect`) then mishandles by
+  emitting a `local.get` for an inliner temp with no matching declaration.
+  The previously-tried mitigation (gating `boolConvertToSelect` off for the
+  self-host BUILD specifically) is still the wrong lever for the same
+  reason recorded in the landing entry — the bug is in watr's inliner
+  reacting to the RUNTIME `cfg.boolConvertToSelect` request the kernel
+  itself receives at level 3, not in how the kernel was built.
+- **Unaffected pre-existing banked rows, unchanged across every worktree
+  tested** (not re-litigated here, confirmed still present-and-pinned, not
+  newly broken): `kernel oracle: KNOWN-FAIL (audit-#16...)`, `kernel
+  oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier collapse`.
+  Both are part of `kernel-oracle.js`'s own 13-row total and pass their
+  pinned tripwire assertions identically at `893821ee`, `c407f806`, and tip.
+
+**Process note.** `c407f806`'s watr pin bump is undisclosed in its own
+title ("bring wasm2c output to native scalar parity") and commit body —
+only visible in the `package.json`/`package-lock.json` hunks. This is why
+the landing session's own "watr unchanged" claim went unchecked: nothing in
+`c407f806`'s own commit message would prompt a re-check of the watr axis.
+
+**Worktrees.** Four used (`893821ee`, `c407f806`, tip `d29b7686` ×2 builds
+— real and watr-content-overlaid), each fresh `npm ci`/rebuilt as
+documented above, all removed after this audit. No source files touched;
+no pins changed; the user's own untracked `.work/archive/` scratch files
+left exactly as found.
