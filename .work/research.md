@@ -7869,3 +7869,28 @@ its standard build currently needs the boxed carrier at 11 specific sites
 dedicated kernel-source-rewrite slice (Slice 0) or self-hosting breaks.
 Six migration slices total, each gated on 130-program corpus byte-identity
 plus (Slices 0-2 specifically) self-host build/kernel-parity survival.
+
+## §VectorizerGenerality — recognizer taxonomy + consolidation design (2026-08-13)
+
+Assessment + design only (no source change), full write-up:
+`.work/vectorizer-generality-design.md`. Answers: can `src/optimize/
+vectorize.js`'s 19-recognizer chain (feature-reach-census.md §9: 2
+zero-reach, 6 single-specimen) be generalized or should it be cut, and is
+shape-recognizer vectorization a valid strategy against LLVM-backed rivals
+(rustc/zig/tinygo, all wasm32 targets in `bench/bench.mjs`) at all.
+
+**Verdict**: 19 → 12 recognizers via precondition-superset merges (8
+transform classes identified: MAP, REDUCTION, STENCIL, OUTER-STRIP,
+CHANNEL-REDUCE, SLP, BUTTERFLY, BYTE-SCAN) — zero corpus-coverage loss.
+Delete `tryByteScan` only (0/130, confirmed real via a working synthetic
+repro). Strategy: shape-recognizer vectorization is valid for whole-idiom
+fusion LLVM structurally can't reach (masked-divergent escape loops,
+channel-parallel box-filter, bit-exact FFT butterfly) but invalid as sole
+strategy for the ordinary MAP/REDUCTION/STENCIL classes (104/130 reach) —
+those need AST-level affine/dependence proofs (reusing `static.js`'s
+`intExprRange`/`forCounterRange`/`linearIndexOf` and `narrow.js`'s
+`arrayReadProvenInBounds`, built for a different consumer today) to stop
+missing every novel-but-ordinary loop a real dependence-driven vectorizer
+would catch for free. Full taxonomy table, per-class generalization
+sketch, rejected alternatives, migration order, and per-step bench-row
+risk are in the design doc.
